@@ -356,8 +356,10 @@ VERSIONS: dict[str, int] = {
     # Version 5 (2026-10-13, gr345859) gates puts/routes on the fabric
     # invariants; version 6 (same day) declares EVERY channel pin on a
     # sink (unwired ones carry `unused`), not only the wired share —
-    # pcb-lazy-netlist-and-checks.md Slice 2. Both changed the expansion.
-    "ewod_pad_array": 6,
+    # pcb-lazy-netlist-and-checks.md Slice 2; version 7 emits `supplies` /
+    # `client_of` (Slice 6) instead of `pin_swap_groups`. All changed the
+    # expansion.
+    "ewod_pad_array": 7,
 }
 
 
@@ -2528,22 +2530,17 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
                 **({"fixed": sink_cfg.fixed} if sink_cfg.fixed else {}),
                 "pins": pin_decls,
                 "roles": ["ewod_sink"],
-                # docs/backlog/pcb-ewod-multitile.md "Rulings 2026-09-19"
-                # item 6: any electrode this sink drives may sit on any of
-                # its OWN channel pins (the chain order is firmware's
-                # problem, not this generator's) -- ONE admissible set of
-                # every channel pin this instance actually wired, no
-                # exclusions. Every channel pin is DECLARED now (the
-                # `unused` spare channels just above have real pin ids —
-                # before Slice 2 an unwired spare had none, so it could
-                # never have been listed anyway); the group still covers
-                # only the wired set because moving a net onto a netless
-                # pin is the Slice-6 matcher's job, not the swap layer's.
-                # `pcb_route` resolves this into a real
-                # `pinswap.PinSwapGroup` with footprint pad offsets; this
-                # generator only ever states the admissible-set judgment,
-                # never the geometry.
-                "pin_swap_groups": [list(channel_map)],
+                # pcb-lazy-netlist-and-checks.md §1b: this sink SUPPLIES the
+                # `pad_driver` role -- one one-pin block per channel pin the
+                # datasheet names, wired or not (an unwired block is a
+                # spare the Slice-6 matcher may bind). Each driven
+                # electrode pin on the array is `client_of: pad_driver`;
+                # which client takes which block is the matcher's call, not
+                # this generator's. Replaces the old `pin_swap_groups`.
+                "supplies": {
+                    "role": "pad_driver",
+                    "blocks": [[ch] for ch in sink_cfg.channel_pins],
+                },
             }
             if sink_cfg.part:
                 comp["part"] = sink_cfg.part
@@ -2625,6 +2622,7 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
     footprint_name = f"__gen_{name}"
     footprint = {"name": footprint_name, "pads": pads}
 
+    driven_pins = {pin for _r0, _c0, pin in chain_pins}
     component: dict[str, Any] = {
         "refdes": name,
         "label": f"EWOD pad array ({rows}x{cols} {variant})",
@@ -2633,7 +2631,10 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
         "y": y_anchor,
         "rot": 0.0,
         "fixed": "both",
-        "pins": [{"name": p} for p in sorted(pin_positions)],
+        "pins": [
+            {"name": p, "client_of": "pad_driver"} if p in driven_pins else {"name": p}
+            for p in sorted(pin_positions)
+        ],
         "roles": ["ewod_array"],
     }
 

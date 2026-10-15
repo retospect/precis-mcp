@@ -1623,3 +1623,209 @@ def test_svg_sketch_view_warns_when_a_stored_segment_matches_nothing(
     assert resp.body.startswith("<?xml")
     assert "<!-- warning: 1 stored sketch entry matched no segment" in resp.body
     assert "<svg" in resp.body
+
+
+# ── supply/client matching before routing (pcb-lazy-netlist-and-checks
+# Slice 6): replaces the anneal's PIN_SWAP move ───────────────────────────
+def _boom(*_a: Any, **_k: Any) -> Any:
+    raise AssertionError("the optimizer/router must not run")
+
+
+def test_pcb_route_fails_input_when_clients_outnumber_supplies(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    n_sup, n_cli = 64, 70
+    design = {
+        "roles": [{"name": "pad_driver"}],
+        "components": [
+            {
+                "refdes": "U1",
+                "label": "drv",
+                "x": 0.0,
+                "y": 0.0,
+                "pins": [{"name": f"HV{i}"} for i in range(n_sup)],
+                "supplies": {
+                    "role": "pad_driver",
+                    "blocks": [[f"HV{i}"] for i in range(n_sup)],
+                },
+            },
+            {
+                "refdes": "P1",
+                "label": "arr",
+                "x": 20.0,
+                "y": 0.0,
+                "pins": [
+                    {"name": str(i), "client_of": "pad_driver"} for i in range(n_cli)
+                ],
+            },
+        ],
+        "nets": [{"name": f"N{i}", "class": "signal"} for i in range(n_sup)],
+        "connections": [
+            c
+            for i in range(n_sup)
+            for c in (
+                {"net": f"N{i}", "refdes": "U1", "pin": f"HV{i}"},
+                {"net": f"N{i}", "refdes": "P1", "pin": str(i)},
+            )
+        ],
+    }
+    ref_id = _seed(store, "route-unsupplied", design)
+    monkeypatch.setattr(pcb_route, "optimize", _boom)
+    monkeypatch.setattr(pcb_route.pcb_realize, "realize", _boom)
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 1})
+    _route(ctx)
+    assert len(ctx.failures) == 1
+    reason, failure_class = ctx.failures[0]
+    assert failure_class == "input"
+    assert "6 pad_driver clients unsupplied" in reason
+    assert store.pcb_pin_swaps_list(ref_id) == []
+
+
+_TWO_SINK_DESIGN = {
+    "components": [
+        {
+            "refdes": "S1",
+            "label": "drv",
+            "x": -10.0,
+            "y": 0.0,
+            "fixed": "both",
+            "pins": [{"name": "1"}],
+            "supplies": {"role": "drv", "blocks": [["1"]]},
+        },
+        {
+            "refdes": "S2",
+            "label": "drv",
+            "x": 10.0,
+            "y": 0.0,
+            "fixed": "both",
+            "pins": [{"name": "1"}],
+            "supplies": {"role": "drv", "blocks": [["1"]]},
+        },
+        {
+            "refdes": "E1",
+            "label": "pad",
+            "x": -10.0,
+            "y": 5.0,
+            "fixed": "both",
+            "pins": [{"name": "1", "client_of": "drv"}],
+        },
+        {
+            "refdes": "E2",
+            "label": "pad",
+            "x": 10.0,
+            "y": 5.0,
+            "fixed": "both",
+            "pins": [{"name": "1", "client_of": "drv"}],
+        },
+    ],
+    "nets": [{"name": "A", "class": "signal"}, {"name": "B", "class": "signal"}],
+    # Authored crossed: E2 (nearer S2) hangs off S1 and E1 off S2.
+    "connections": [
+        {"net": "A", "refdes": "S1", "pin": "1"},
+        {"net": "A", "refdes": "E2", "pin": "1"},
+        {"net": "B", "refdes": "S2", "pin": "1"},
+        {"net": "B", "refdes": "E1", "pin": "1"},
+    ],
+}
+
+
+def _pin_nets(ir: Any, refdes: str) -> dict[str, str]:
+    return {
+        str(ir.pin_label[p]): str(ir.net_name[int(ir.pin_net[p])])
+        for p in range(ir.n_pins)
+        if str(ir.instance_refdes[int(ir.pin_instance[p])]) == refdes
+    }
+
+
+def test_pcb_route_matching_moves_a_net_across_sinks_and_persists_it(
+    store: Store,
+) -> None:
+    ref_id = _seed(store, "route-match-xinst", _TWO_SINK_DESIGN)
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 1})
+    _route(ctx)
+    assert not ctx.failures
+
+    swaps = {(r["refdes"], r["pin"]): r for r in store.pcb_pin_swaps_list(ref_id)}
+    assert swaps[("S1", "1")]["net"] == "B"
+    assert swaps[("S2", "1")]["net"] == "A"
+    assert all(r["source"] == "derived" for r in swaps.values())
+
+    # The authored netlist is untouched; a fresh IR + the persisted rows
+    # replays the matched wiring (S1 now drives E1, S2 drives E2).
+    graph = store.pcb_graph(ref_id)
+    members = {
+        n["name"]: {(m["refdes"], m["pin"]) for m in n["members"]}
+        for n in graph["nets"]
+    }
+    assert members["A"] == {("S1", "1"), ("E2", "1")}
+    ir = pcb_session.build_ir(graph)
+    assert _pin_nets(ir, "S1") == {"1": "A"}
+    pcb_session.apply_pin_swap_overrides(ir, store.pcb_pin_swaps_list(ref_id))
+    assert _pin_nets(ir, "S1") == {"1": "B"}
+    assert _pin_nets(ir, "S2") == {"1": "A"}
+    assert _pin_nets(ir, "E1") == {"1": "B"}
+
+
+def test_supply_matching_is_pure_and_reports_cost(store: Store) -> None:
+    ref_id = _seed(store, "route-match-pure", _TWO_SINK_DESIGN)
+    graph = store.pcb_graph(ref_id)
+    results = []
+    for _ in range(2):
+        ir = pcb_session.build_ir(graph)
+        report, unsupplied = pcb_route._resolve_supply_matching(ir, graph, {}, [], [])
+        assert unsupplied == []
+        results.append((ir.pin_net.tolist(), report))
+    assert results[0] == results[1]
+    (entry,) = results[0][1]
+    assert entry["role"] == "drv" and entry["method"] == "match"
+    assert entry["clients"] == 2
+    # 5 + 5 mm after matching vs 2 * hypot(20, 5) before.
+    assert entry["cost_mm"] == pytest.approx(10.0)
+    assert entry["prior_cost_mm"] == pytest.approx(2 * (20.0**2 + 5.0**2) ** 0.5)
+
+
+def test_pin_swap_groups_alias_warns_and_matches(store: Store) -> None:
+    design = {
+        "components": [
+            {
+                "refdes": "S1",
+                "label": "drv",
+                "x": 0.0,
+                "y": 0.0,
+                "fixed": "both",
+                "pins": [{"name": "1"}, {"name": "2"}],
+                "pin_swap_groups": [["1", "2"]],
+            },
+            {
+                "refdes": "E1",
+                "label": "pad",
+                "x": -10.0,
+                "y": 5.0,
+                "fixed": "both",
+                "pins": [{"name": "1"}],
+            },
+            {
+                "refdes": "E2",
+                "label": "pad",
+                "x": 10.0,
+                "y": 5.0,
+                "fixed": "both",
+                "pins": [{"name": "1"}],
+            },
+        ],
+        "nets": [{"name": "A", "class": "signal"}, {"name": "B", "class": "signal"}],
+        "connections": [
+            {"net": "A", "refdes": "S1", "pin": "1"},
+            {"net": "A", "refdes": "E2", "pin": "1"},
+            {"net": "B", "refdes": "S1", "pin": "2"},
+            {"net": "B", "refdes": "E1", "pin": "1"},
+        ],
+    }
+    ref_id = _seed(store, "route-match-alias", design)
+    graph = store.pcb_graph(ref_id)
+    ir = pcb_session.build_ir(graph)
+    warnings: list[str] = []
+    report, unsupplied = pcb_route._resolve_supply_matching(ir, graph, {}, [], warnings)
+    assert unsupplied == []
+    assert any("pin_swap_groups on S1 is deprecated" in w for w in warnings)
+    assert [e["role"] for e in report] == ["pin_swap:S1:0"]

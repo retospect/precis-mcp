@@ -525,7 +525,7 @@ call (a real board is minutes of compute, not milliseconds). `put` returns a
 job id immediately; see **[[precis-pcb-route-help]]** for the full `op=` surface
 (`place`/`route`, plus the inline edits `move`/`rip`/`pin_side`/`plane_net`/
 `class_rules`/`stackup`), the congestion/planes read views, and what's still inert
-(including its inert move classes `SIDE_FLIP`/`PIN_SWAP`).
+(including its inert move classes `SIDE_FLIP`).
 
 ```python
 put(kind="pcb", id="s", args={"op": "place", "iters": 2000, "seed": 0})

@@ -1,70 +1,24 @@
-"""Pin/gate swap — the move class a conventional (place-then-maze-route)
-flow structurally cannot express: reassigning which of an instance's
-functionally-interchangeable physical pins carries which net. See
-docs/backlog/pcb-guided-place-route.md's "Pin swap" paragraph in the
-optimizer section and the IR's own "A win that only exists in graph
-space" note.
+"""Pin-swap warm-start helpers for the route job's legacy ``radial``
+mode and the connected-via ``distance`` assignment.
 
-**Admissible sets with side constraints, not free permutation** (task
-instruction, verbatim intent): a real part has pins that LOOK
-interchangeable but are not — ESP32 strapping pins that break boot if
-loaded, GPIOs that vanish under JTAG, ADC2 unusable while WiFi is on.
-This module never invents that domain knowledge. :class:`PinSwapGroup` is
-the caller-supplied admissible set (which physical pins are candidates at
-all) plus an explicit exclusion set (which of those must never move); the
-matcher only ever operates inside what it's told is safe. **Where the
-equivalence data doesn't exist yet, the degrade path is silence**:
-:data:`precis.pcb.optimize.OptimizeConfig.pin_swap_groups` defaults to
-``()``, so :func:`propose_reassignment` is simply never called and no
-swap is ever proposed — nothing here guesses an equivalence class from a
-part number or footprint shape.
-
-**Why this needs geometry the base IR doesn't otherwise carry.** At pure
-instance-centroid granularity (every pin of one instance sharing the same
-``inst_x``/``inst_y``), swapping which net occupies which of an
-instance's OWN pins cannot change any distance-based metric — there is
-nothing to gain. The real effect described in the backlog ("collapse a
-large fraction of crossings") only exists once individual pins have
-distinguishable positions relative to their instance's origin (real
-footprint pad offsets — the same data :mod:`precis.pcb.escape` derives
-per-footprint). :class:`PinSwapGroup.offsets` carries exactly that,
-**scoped to this module only**: it is a side-channel the caller supplies
-(mirroring :data:`precis.pcb.cost.CostConfig.net_annotations` — optional
-domain data, not an IR field), never wired into
-:mod:`precis.pcb.cost`'s registered terms. A pin with no offset entry
-defaults to ``(0.0, 0.0)`` (its instance's own centroid) — the same
-"unmodeled = centroid" state every other pin in the IR is already in, so
-a group with no offset data degrades to a genuinely no-op swap rather
-than a crash. :func:`offsets_from_pads` (and the :func:`group_from_pads`
-convenience wrapper around it) is what actually WIRES a footprint's
-canonical pads into a group's ``offsets`` — matching pad ``number`` to
-:attr:`PcbIR.pin_label` per instance; it supplies geometry only, never an
-admissible-set/exclusion judgment, which stays the caller's job either
-way.
-
-**The cost matrix is a linearized approximation of a jointly-quadratic
-problem, and that is stated here rather than glossed over.** The TRUE
-objective — total crossings among every pair of this instance's airwires
-under a full reassignment — is not decomposable into independent
-``(net, candidate pin)`` cells (two group members' airwires can cross
-each other, and that pairwise term depends on BOTH of their destinations
-at once). :func:`build_cost_matrix` scores each cell against every OTHER
-pin held at its CURRENT position (a standard "coordinate descent" style
-linearization), which is exact for the background (non-participating)
-segments and an approximation for participant-vs-participant crossings.
-It is still useful and testable: :func:`total_group_crossings` is the
-exact ground-truth count :func:`propose_reassignment` is trying to
-reduce, and callers/tests can measure the real before/after effect
-independently of the matrix's own approximation.
+The general assignment (supply/client roles, cross-instance, Euclidean
+min-cost) lives in :mod:`precis.pcb.matching` and is applied by
+``pcb_route._resolve_supply_matching`` before routing; this module keeps
+only what ``pcb_route._apply_pin_swap_warm_start`` still calls:
+:class:`PinSwapGroup` (a caller-supplied admissible set plus per-pin
+offsets), :func:`offsets_from_ir`, :func:`propose_distance_assignment` and
+:func:`propose_radial_assignment`. Nothing here invents an equivalence
+class from a part number or footprint shape. The anneal no longer swaps
+pins (``MoveKind.PIN_SWAP`` was removed with
+``OptimizeConfig.pin_swap_groups``).
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any
 
-from precis.pcb.geom import Point, segments_cross
+from precis.pcb.geom import Point
 from precis.pcb.ir import PcbIR, pin_point
 
 # ── the admissible set + exclusions ─────────────────────────────────────
@@ -88,46 +42,6 @@ class PinSwapGroup:
 
 
 # ── wiring real footprint geometry into a group's offsets ───────────────
-
-
-def offsets_from_pads(
-    ir: PcbIR, instance: int, pads: list[dict[str, Any]]
-) -> dict[int, Point]:
-    """The geometry half of a :class:`PinSwapGroup` — NEVER the
-    admissible-set half. Maps ``pads`` (:mod:`precis.pcb.escape`'s
-    canonical per-footprint pad list: ``number``/``x``/``y``, mm,
-    relative to the footprint's own placement origin — the same frame
-    :attr:`PcbIR.inst_x`/``inst_y`` anchors) onto ``instance``'s own pin
-    ids via :attr:`PcbIR.pin_label` — the netlist's pin name, which is
-    also the pad ``number`` every EasyEDA/JLC-assemblable footprint keys
-    on (:mod:`precis.pcb.easyeda`'s ``_parse_pad``).
-
-    Which pins are candidates for swapping (and which are excluded) is a
-    caller judgment this function never makes — see the module docstring
-    and :class:`PinSwapGroup`'s own "never inferred" contract; this is
-    purely "given a pin id, where does it physically sit".
-
-    A pad with no matching pin (renamed, or on a net this design doesn't
-    carry) or a pin with no matching pad (no footprint geometry cached
-    yet) is simply absent from the returned dict — never a
-    :class:`KeyError`. :class:`PinSwapGroup`'s own default (a pin absent
-    from ``offsets`` sits at the instance centroid, ``(0.0, 0.0)``)
-    already makes that a safe no-op, the same clean-degradation property
-    the module docstring requires: a group built from a footprint with no
-    (or incomplete) pad data degrades to exactly the behaviour a group
-    with no offsets at all already has, never a crash and never an
-    invented equivalence."""
-    by_label: dict[str, int] = {}
-    for pin_id in range(ir.n_pins):
-        if int(ir.pin_instance[pin_id]) == instance:
-            by_label[str(ir.pin_label[pin_id])] = pin_id
-    offsets: dict[int, Point] = {}
-    for pad in pads:
-        matched_pin = by_label.get(str(pad["number"]))
-        if matched_pin is None:
-            continue
-        offsets[matched_pin] = (float(pad["x"]), float(pad["y"]))
-    return offsets
 
 
 def offsets_from_ir(
@@ -164,30 +78,6 @@ def offsets_from_ir(
             continue
         offsets[pin] = (dx, dy)
     return offsets
-
-
-def group_from_pads(
-    ir: PcbIR,
-    instance: int,
-    pins: tuple[int, ...],
-    pads: list[dict[str, Any]],
-    *,
-    excluded: frozenset[int] = frozenset(),
-) -> PinSwapGroup:
-    """Convenience constructor: the caller-supplied admissible set
-    (``pins``, ``excluded`` — a pin-equivalence judgment that is
-    datasheet-derived and stays entirely the caller's job, never inferred
-    here) plus real per-pin geometry looked up from ``pads`` via
-    :func:`offsets_from_pads`. This is the "wire escape.py's derived pad
-    geometry through" half of pin swap; a caller with no ``pads`` (or an
-    empty list) gets back exactly :class:`PinSwapGroup`'s own no-offsets
-    default — a safe no-op, never a fabricated equivalence."""
-    return PinSwapGroup(
-        instance=instance,
-        pins=pins,
-        offsets=offsets_from_pads(ir, instance, pads),
-        excluded=excluded,
-    )
 
 
 # ── local geometry: this instance's own airwires only ───────────────────
@@ -232,95 +122,6 @@ def _instance_edges(ir: PcbIR, instance: int) -> dict[int, list[Point]]:
             continue
         edges.setdefault(near_pin, []).append(far)
     return edges
-
-
-def total_group_crossings(ir: PcbIR, group: PinSwapGroup) -> int:
-    """Ground truth: genuine crossings among every airwire touching
-    ``group.instance`` at the CURRENT pin assignment. This is the exact
-    quantity a proposed swap is trying to reduce — used by tests (and any
-    caller wanting a real before/after measurement) independently of
-    :func:`build_cost_matrix`'s linearized approximation."""
-    inst_x, inst_y = float(ir.inst_x[group.instance]), float(ir.inst_y[group.instance])
-    if math.isnan(inst_x) or math.isnan(inst_y):
-        return 0
-    edges = _instance_edges(ir, group.instance)
-    airwires: list[tuple[Point, Point]] = []
-    for pin, fars in edges.items():
-        near = _pin_pos(inst_x, inst_y, group, pin)
-        airwires.extend((near, far) for far in fars)
-    count = 0
-    for i in range(len(airwires)):
-        for j in range(i + 1, len(airwires)):
-            if segments_cross(*airwires[i], *airwires[j]):
-                count += 1
-    return count
-
-
-# ── the cost matrix + min-cost bipartite matching ────────────────────────
-
-
-def build_cost_matrix(
-    ir: PcbIR, group: PinSwapGroup, *, length_aware: bool = True
-) -> tuple[list[int], list[list[float]]] | None:
-    """``(movable_pins, cost)`` where ``cost[i][j]`` scores the net
-    currently at ``movable_pins[i]`` moving to ``movable_pins[j]`` while
-    every OTHER pin (movable or background) stays at its CURRENT position
-    (module docstring's linearization).
-
-    Crossings are the primary term; with ``length_aware`` (default, gr469871)
-    wire length is a strictly secondary one: ``cost = W * crossings +
-    length`` where ``length`` is the Manhattan distance from the candidate
-    pad to each of the net's far terminals and ``W`` exceeds the longest
-    total wire any assignment could have (the sum over rows of the row's
-    largest length, so derived from the board's actual extent). One
-    crossing therefore outweighs every possible length difference between
-    whole assignments -- lexicographic (crossings, length) -- and length
-    only breaks ties among equal-crossing assignments. ``length_aware=False``
-    restores the bare crossing count. ``None`` when there is nothing to
-    evaluate: fewer than two non-excluded pins, or the instance has no L3
-    position yet (nothing to measure)."""
-    movable = [p for p in group.pins if p not in group.excluded]
-    if len(movable) < 2:
-        return None
-    inst_x, inst_y = float(ir.inst_x[group.instance]), float(ir.inst_y[group.instance])
-    if math.isnan(inst_x) or math.isnan(inst_y):
-        return None
-    edges = _instance_edges(ir, group.instance)
-    movable_set = set(movable)
-    background = [
-        (_pin_pos(inst_x, inst_y, group, pin), far)
-        for pin, fars in edges.items()
-        if pin not in movable_set
-        for far in fars
-    ]
-    n = len(movable)
-    crossings = [[0] * n for _ in range(n)]
-    lengths = [[0.0] * n for _ in range(n)]
-    for i, src_pin in enumerate(movable):
-        fars = edges.get(src_pin, [])
-        if not fars:
-            continue  # this pin carries no segment -- moving it is free
-        others_fixed = list(background)
-        for other_pin in movable:
-            if other_pin == src_pin:
-                continue
-            near = _pin_pos(inst_x, inst_y, group, other_pin)
-            others_fixed.extend((near, far) for far in edges.get(other_pin, ()))
-        for j, dst_pin in enumerate(movable):
-            dst_pos = _pin_pos(inst_x, inst_y, group, dst_pin)
-            for far in fars:
-                lengths[i][j] += abs(far[0] - dst_pos[0]) + abs(far[1] - dst_pos[1])
-                for near, ofar in others_fixed:
-                    if segments_cross(dst_pos, far, near, ofar):
-                        crossings[i][j] += 1
-    if not length_aware:
-        return movable, [[float(c) for c in row] for row in crossings]
-    # Any whole assignment's total length is <= this bound, so W > bound
-    # makes a single crossing dominate every length difference.
-    weight = 1.0 + sum(max(row) for row in lengths)
-    return movable, [
-        [weight * crossings[i][j] + lengths[i][j] for j in range(n)] for i in range(n)
-    ]
 
 
 def _hungarian(cost: list[list[float]]) -> list[int]:
@@ -398,40 +199,6 @@ def _cycles(perm: list[int]) -> list[list[int]]:
     return cycles
 
 
-def propose_reassignment(
-    ir: PcbIR, group: PinSwapGroup, *, length_aware: bool = True
-) -> tuple[tuple[int, int], ...] | None:
-    """The pin-swap move generator's core: solve the min-cost bipartite
-    matching, decompose the winning permutation into pairwise
-    :meth:`precis.pcb.ir.PcbIR.swap_pins` calls (a fixed-pivot cycle
-    decomposition — for cycle ``(i0, i1, ..., ik)`` the transpositions
-    ``(i0,i1), (i0,i2), ..., (i0,ik)`` applied in order realize it), and
-    return ``None`` when there is nothing to evaluate OR the optimal
-    assignment already matches the current one (no beneficial swap
-    found — degrade cleanly rather than propose a no-op)."""
-    built = build_cost_matrix(ir, group, length_aware=length_aware)
-    if built is None:
-        return None
-    movable, cost = built
-    n = len(movable)
-    identity_cost = sum(cost[i][i] for i in range(n))
-    assign = _hungarian(cost)
-    matched_cost = sum(cost[i][assign[i]] for i in range(n))
-    # Relative epsilon: equal-crossing, equal-length assignments differ by
-    # float noise only and must not read as an improvement.
-    if matched_cost >= identity_cost - 1e-9 * max(1.0, abs(identity_cost)):
-        return None
-    pairs: list[tuple[int, int]] = []
-    for cyc in _cycles(assign):
-        if len(cyc) < 2:
-            continue
-        pivot = movable[cyc[0]]
-        pairs.extend((pivot, movable[idx]) for idx in cyc[1:])
-    if not pairs:
-        return None
-    return tuple(pairs)
-
-
 def propose_distance_assignment(
     ir: PcbIR, group: PinSwapGroup, far_by_pin: dict[int, Point]
 ) -> tuple[tuple[tuple[int, int], ...], float] | None:
@@ -487,11 +254,7 @@ def propose_radial_assignment(
     """A planar warm start for a ring-shaped group: match pins to their
     airwires' far ends in CYCLIC ANGULAR ORDER about the instance origin.
 
-    Why this exists next to :func:`propose_reassignment`: that matcher
-    scores each ``(net, candidate pin)`` cell with every other pin held
-    where it is (its docstring's own "coordinate descent" caveat), so from
-    a badly crossed start it finds a local improvement, not the global
-    non-crossing assignment. For the one shape that dominates here — an
+    For the one shape that dominates here — an
     HV507-class sink under an electrode field, its pads on a ring, every
     far end a plaza via inside or around that ring (docs/backlog/
     pcb-ewod-multitile.md ruling 6, "pin swaps make routing trivial") —
@@ -501,14 +264,13 @@ def propose_radial_assignment(
     interleave, so an order-preserving matching has none. The one free
     choice is the cyclic rotation (which pin the first far end takes);
     every rotation is tried and the one with the smallest total airwire
-    length wins, which also keeps each via near its own pad. The anneal's
-    pairwise moves then only ever improve on this.
+    length wins, which also keeps each via near its own pad.
 
     Only pins with exactly one airwire take part (a pin with none has
     nothing to place; several would need a dart-order permutation the IR
     does not support — same limit as :meth:`PcbIR.swap_pins`). Returns
     the transpositions that realize the permutation (the same fixed-pivot
-    cycle decomposition :func:`propose_reassignment` uses) or ``None``
+    cycle decomposition :func:`propose_distance_assignment` uses) or ``None``
     when fewer than two pins qualify or the order already holds."""
     movable = [p for p in group.pins if p not in group.excluded]
     if len(movable) < 2:
@@ -558,11 +320,7 @@ def propose_radial_assignment(
 
 __all__ = [
     "PinSwapGroup",
-    "build_cost_matrix",
-    "group_from_pads",
     "offsets_from_ir",
-    "offsets_from_pads",
+    "propose_distance_assignment",
     "propose_radial_assignment",
-    "propose_reassignment",
-    "total_group_crossings",
 ]

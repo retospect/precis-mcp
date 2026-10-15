@@ -324,24 +324,31 @@ def test_sink_grid_channels_bind_to_the_electrode_escape_nets(pcb):
         assert ("ARR1", elec_pin) in members
 
 
-def test_sink_grid_declares_its_channel_pins_freely_swappable(pcb):
-    """Rulings 2026-09-19 item 6: any electrode a sink drives may sit on
-    any of ITS OWN channel pins (firmware's problem, not placement's), so
-    every sink instance carries one admissible set naming every channel
-    pin it actually wired -- ``pcb_route`` resolves this into a real
-    ``pinswap.PinSwapGroup``; the generator's own job is only to state the
-    judgment, never the geometry."""
-    pcb.put(id="ewod-sink-1", args=_sink_args())
+def test_sink_grid_supplies_pad_driver_and_electrodes_are_clients(pcb):
+    """pcb-lazy-netlist-and-checks.md §1b: every sink SUPPLIES the
+    ``pad_driver`` role with one one-pin block per datasheet channel pin
+    (wired or not); every driven electrode pin is ``client_of`` it. No
+    ``pin_swap_groups`` any more."""
+    args = _sink_args()
+    pcb.put(id="ewod-sink-1", args=args)
     ref = pcb.store.get_ref(kind="pcb", id="ewod-sink-1")
     assert ref is not None
     graph = pcb.store.pcb_graph(ref.id)
     by_refdes = {i["refdes"]: i for i in graph["instances"]}
-    gens = pcb.store.pcb_generators_for(ref.id)
-    ledger = gens["ARR1"]["ledger"]["sink_grid"]
+    channel_pins = [f"OUT{i}" for i in range(16)]
     for refdes in ("ARR1_SINK_0", "ARR1_SINK_1", "ARR1_SINK_2", "ARR1_SINK_3"):
-        channels = ledger[refdes]["channels"]
-        groups = by_refdes[refdes]["pin_swap_groups"]
-        assert groups == [list(channels)]
+        inst = by_refdes[refdes]
+        assert "pin_swap_groups" not in inst
+        assert inst["supplies"] == [
+            {"role": "pad_driver", "blocks": [[p] for p in channel_pins]}
+        ]
+    driven = 0
+    for net in graph["nets"]:
+        for m in net["members"]:
+            if m["refdes"] == "ARR1" and net["name"].startswith("ARR1_"):
+                assert m["meta"]["client_of"] == {"role": "pad_driver"}
+                driven += 1
+    assert driven > 0
 
 
 def test_sink_grid_daisy_chains_din_dout_across_sinks(pcb):

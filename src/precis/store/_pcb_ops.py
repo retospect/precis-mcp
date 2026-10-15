@@ -57,6 +57,121 @@ from precis.store.types import ActorSlug
 from precis.utils.units import parse_angle_deg
 
 
+def _normalize_supplies(
+    raw: Any, component: str, declared: set[str] | None
+) -> list[dict[str, Any]]:
+    """Validate a component's ``supplies`` declaration (pcb-lazy-netlist-and-
+    checks.md §1b): ``{"role", "blocks": [[pin, ...], ...], optional
+    "voltage_v", optional "within_block_swappable"}`` or a list of them.
+    Returns the list form (what ``pcb_graph`` hands the route job).
+    ``declared`` is the set of pin names declared for the component, or
+    ``None`` to skip the membership check (no pin declarations to check
+    against yet)."""
+    items = raw if isinstance(raw, list) else [raw]
+    out: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise ValueError(
+                f"component {component}: supplies must be an object or a list of "
+                f"objects {{role, blocks}}; got {type(item).__name__}"
+            )
+        role = item.get("role")
+        if not isinstance(role, str) or not role.strip():
+            raise ValueError(
+                f"component {component}: supplies needs a non-empty string 'role'"
+            )
+        blocks = item.get("blocks")
+        if (
+            not isinstance(blocks, list)
+            or not blocks
+            or not all(isinstance(b, list) and b for b in blocks)
+        ):
+            raise ValueError(
+                f"component {component}: supplies role {role!r} needs 'blocks': a "
+                "non-empty list of non-empty pin-name lists"
+            )
+        norm_blocks: list[list[str]] = []
+        for b in blocks:
+            names = [str(x).strip() for x in b]
+            if declared is not None:
+                missing = [x for x in names if x not in declared]
+                if missing:
+                    raise ValueError(
+                        f"component {component}: supplies role {role!r} names "
+                        f"undeclared pin(s) {missing!r}; declare them in 'pins'"
+                    )
+            norm_blocks.append(names)
+        entry: dict[str, Any] = {"role": role.strip(), "blocks": norm_blocks}
+        volt = item.get("voltage_v")
+        if volt is not None:
+            if isinstance(volt, bool) or not isinstance(volt, int | float):
+                raise ValueError(
+                    f"component {component}: supplies role {role!r} voltage_v "
+                    "must be a number"
+                )
+            entry["voltage_v"] = float(volt)
+        if item.get("within_block_swappable") is not None:
+            entry["within_block_swappable"] = bool(item["within_block_swappable"])
+        out.append(entry)
+    return out
+
+
+def _normalize_client_of(raw: Any, component: str, pin: str) -> dict[str, Any]:
+    """A pin's ``client_of``: a role name, or ``{"role", optional
+    "min_voltage_v"}``. Returns the dict form."""
+    if isinstance(raw, str):
+        raw = {"role": raw}
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"component {component}: pin {pin!r} client_of must be a role name "
+            "or {role, min_voltage_v}"
+        )
+    role = raw.get("role")
+    if not isinstance(role, str) or not role.strip():
+        raise ValueError(
+            f"component {component}: pin {pin!r} client_of needs a non-empty 'role'"
+        )
+    out: dict[str, Any] = {"role": role.strip()}
+    mv = raw.get("min_voltage_v")
+    if mv is not None:
+        if isinstance(mv, bool) or not isinstance(mv, int | float):
+            raise ValueError(
+                f"component {component}: pin {pin!r} client_of min_voltage_v "
+                "must be a number"
+            )
+        out["min_voltage_v"] = float(mv)
+    return out
+
+
+def _normalize_roles(roles: Any) -> list[tuple[str, float | None, int | None]]:
+    """Validate the top-level ``roles`` list: ``[{name, voltage_v, fanout}]``
+    (``voltage_v`` number or null, ``fanout`` positive int or null =
+    unbounded; absent fanout defaults to 1)."""
+    if not isinstance(roles, list):
+        raise ValueError("pcb roles must be a list of {name, voltage_v, fanout}")
+    out: list[tuple[str, float | None, int | None]] = []
+    for r in roles:
+        if not isinstance(r, dict):
+            raise ValueError("pcb role must be an object {name, voltage_v, fanout}")
+        name = r.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("pcb role needs a non-empty string name")
+        volt = r.get("voltage_v")
+        if volt is not None and (
+            isinstance(volt, bool) or not isinstance(volt, int | float)
+        ):
+            raise ValueError(f"pcb role {name!r}: voltage_v must be a number or null")
+        fan = r.get("fanout", 1)
+        if fan is not None and (
+            isinstance(fan, bool) or not isinstance(fan, int) or fan < 1
+        ):
+            raise ValueError(
+                f"pcb role {name!r}: fanout must be a positive integer or null"
+            )
+        out.append((name.strip(), None if volt is None else float(volt), fan))
+    return out
+
+
 def _validate_pin_declarations(
     pins: list[dict[str, Any]],
     component: str,
@@ -991,6 +1106,16 @@ class PcbMixin:
                 if any(p.get("pad") is not None for p in declarations[refdes])
                 else None,
             )
+            if c.get("supplies") is not None:
+                declared_names = {
+                    str(p.get("name") or "").strip() for p in declarations[refdes]
+                }
+                c = {
+                    **c,
+                    "supplies": _normalize_supplies(
+                        c["supplies"], refdes, declared_names or None
+                    ),
+                }
             if refdes in inst_by_refdes:
                 comp_id = inst_by_refdes[refdes][1]
             else:
@@ -1304,7 +1429,11 @@ class PcbMixin:
         # *meta*, not columns: it documents what the source SAID, while
         # ``part_lcsc`` (its own column, joined into the catalog) is what
         # precis resolves on.
-        component_meta = {k: c[k] for k in ("pin_swap_groups",) if c.get(k) is not None}
+        # `supplies` (pcb-lazy-netlist-and-checks.md §1b) is the successor
+        # and rides the same way (already normalised by `_pcb_apply`).
+        component_meta = {
+            k: c[k] for k in ("pin_swap_groups", "supplies") if c.get(k) is not None
+        }
         if c.get("part_meta"):
             component_meta["part"] = dict(c["part_meta"])
         row = conn.execute(
@@ -1698,6 +1827,11 @@ class PcbMixin:
             for key in ("max_voltage_v", "vih", "vil", "rail"):
                 if p.get(key) is not None:
                     meta[key] = p[key]
+            # Slice 6: the pin is a client of a supply role.
+            if p.get("client_of") is not None:
+                meta["client_of"] = _normalize_client_of(
+                    p["client_of"], component, name
+                )
             try:
                 # A DB pad conflict remains authoritative. Unwind its
                 # savepoint before looking up the owner or translating it.
@@ -2520,9 +2654,18 @@ class PcbMixin:
         route-status summary (counts by
         :class:`pcb_routes.status`; empty = all-unrouted), and the
         unconnected pins. Pure data — the analysis lives in
-        :mod:`precis.pcb`."""
+        :mod:`precis.pcb`. ``roles`` is ``{name: {voltage_v, fanout}}`` from
+        ``pcb_roles`` (§1b supply/client roles)."""
         with self._pcb_conn() as conn:
             board, net_classes, route_status = self._pcb_board_meta(conn, ref_id)
+            roles = {
+                r[0]: {"voltage_v": r[1], "fanout": r[2]}
+                for r in conn.execute(
+                    "SELECT name, voltage_v, fanout FROM pcb_roles "
+                    "WHERE ref_id = %s AND retired_at IS NULL ORDER BY name",
+                    (ref_id,),
+                ).fetchall()
+            }
             instances = [
                 {
                     "refdes": r[0],
@@ -2609,6 +2752,12 @@ class PcbMixin:
                     **(
                         {"pin_swap_groups": (r[14] or {})["pin_swap_groups"]}
                         if "pin_swap_groups" in (r[14] or {})
+                        else {}
+                    ),
+                    # `supplies` (§1b): list of {role, blocks, ...}.
+                    **(
+                        {"supplies": (r[14] or {})["supplies"]}
+                        if "supplies" in (r[14] or {})
                         else {}
                     ),
                     # The catalog-identity blob the .epro2 reader recovered
@@ -2733,6 +2882,7 @@ class PcbMixin:
             "instances": instances,
             "nets": list(nets.values()),
             "net_classes": net_classes,
+            "roles": roles,
             "route_status": route_status,
             "unconnected": unconnected,
         }
@@ -2809,6 +2959,42 @@ class PcbMixin:
             )
             n += 1
         return n
+
+    def pcb_upsert_roles(
+        self,
+        ref_id: int,
+        roles: list[dict[str, Any]],
+        *,
+        conn: Connection | None = None,
+    ) -> int:
+        """Upsert per-design supply/client roles by name
+        (``[{name, voltage_v, fanout}]``; ``fanout`` null = unbounded,
+        absent = 1). Upsert only, like :meth:`pcb_upsert_net_classes`.
+        Returns the count written."""
+        rows = _normalize_roles(roles)
+        if conn is not None:
+            return self._pcb_upsert_roles(conn, ref_id, rows)
+        with self._pcb_tx() as c:
+            return self._pcb_upsert_roles(c, ref_id, rows)
+
+    def _pcb_upsert_roles(
+        self,
+        conn: Connection,
+        ref_id: int,
+        rows: list[tuple[str, float | None, int | None]],
+    ) -> int:
+        for name, volt, fan in rows:
+            conn.execute(
+                """
+                INSERT INTO pcb_roles (ref_id, name, voltage_v, fanout)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (ref_id, name) WHERE retired_at IS NULL
+                DO UPDATE SET voltage_v = EXCLUDED.voltage_v,
+                              fanout = EXCLUDED.fanout
+                """,
+                (ref_id, name, volt, fan),
+            )
+        return len(rows)
 
     # -- geometric DRC findings (pcb-guided-place-route Slice 8) ----------
     def pcb_set_board_phase(self, ref_id: int, phase: str | None) -> str | None:

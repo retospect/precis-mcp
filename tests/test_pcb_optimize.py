@@ -70,7 +70,6 @@ from precis.pcb.optimize import (
     resolve_measures,
     seed_placement,
 )
-from precis.pcb.pinswap import PinSwapGroup, propose_reassignment, total_group_crossings
 
 _FIXTURE_DIR = Path(__file__).parent / "fixtures" / "pcb"
 
@@ -902,135 +901,13 @@ def test_derive_placement_bounds_stays_seed_capped_inside_a_huge_outline():
     assert by1 == pytest.approx(float(ir.inst_y[placed].max()) + pad)
 
 
-# ── slice 7: pin swap ─────────────────────────────────────────────────
-def _pin_swap_ir_and_group():
-    """Two nets whose airwires obviously cross under the CURRENT pin
-    assignment and obviously don't after swapping which of U0's two
-    admissible pins each occupies — the hand-built fixture the task asks
-    for. U0 sits at the origin with two candidate pins offset left/right;
-    U1 (net A's far end) sits up-left, U2 (net B's far end) sits up-right.
-    Net A wired to the RIGHT pin and net B to the LEFT pin cross; swapped,
-    they don't."""
-    graph = {
-        "instances": [
-            {"refdes": "U0", "x": 0.0, "y": 0.0},
-            {"refdes": "U1", "x": -5.0, "y": 5.0},
-            {"refdes": "U2", "x": 5.0, "y": 5.0},
-        ],
-        "nets": [
-            {
-                "name": "A",
-                "net_class": "signal",
-                "domain": "electrical",
-                "members": [
-                    {"refdes": "U0", "pin": "right"},
-                    {"refdes": "U1", "pin": "1"},
-                ],
-            },
-            {
-                "name": "B",
-                "net_class": "signal",
-                "domain": "electrical",
-                "members": [
-                    {"refdes": "U0", "pin": "left"},
-                    {"refdes": "U2", "pin": "1"},
-                ],
-            },
-        ],
-    }
-    ir = from_graph(graph, stackup=DEFAULT_STACKUP)
-    u0 = 0
-    pin_right = next(
-        p
-        for p in range(ir.n_pins)
-        if int(ir.pin_instance[p]) == u0 and str(ir.pin_label[p]) == "right"
-    )
-    pin_left = next(
-        p
-        for p in range(ir.n_pins)
-        if int(ir.pin_instance[p]) == u0 and str(ir.pin_label[p]) == "left"
-    )
-    group = PinSwapGroup(
-        instance=u0,
-        pins=(pin_left, pin_right),
-        offsets={pin_left: (-1.0, 0.0), pin_right: (1.0, 0.0)},
-    )
-    return ir, group, pin_left, pin_right
-
-
-def test_pin_swap_reduces_crossings_on_hand_built_fixture():
-    ir, group, _pin_left, _pin_right = _pin_swap_ir_and_group()
-    before = total_group_crossings(ir, group)
-    assert (
-        before == 1
-    )  # net A (right pin -> upper-left) crosses net B (left pin -> upper-right)
-
-    pairs = propose_reassignment(ir, group)
-    assert pairs  # a beneficial swap must be found on this fixture
-    for a, b in pairs:
-        ir.swap_pins(a, b)
-
-    after = total_group_crossings(ir, group)
-    assert after == 0
-    assert after < before
-
-
-def test_pin_swap_dirties_l2_l4_l5_leaves_l1_l3_clean():
-    ir, group, pin_left, pin_right = _pin_swap_ir_and_group()
-    config = OptimizeConfig(seed=1, pin_swap_groups=(group,))
-    engine = OptimizeEngine(ir, config)
-    rng = random.Random(2)
-    move = MOVE_GENERATORS[MoveKind.PIN_SWAP](engine, rng, 5.0)
-    assert move is not None
-    assert set(move.pin_pairs) == {(pin_left, pin_right)} or set(move.pin_pairs) == {
-        (pin_right, pin_left)
-    }
-
-    before_net_left = int(ir.pin_net[pin_left])
-    before_net_right = int(ir.pin_net[pin_right])
-    engine.apply_move(move)
-    assert int(ir.pin_net[pin_left]) == before_net_right
-    assert int(ir.pin_net[pin_right]) == before_net_left
-    assert not ir.dirty_l1.any()
-    assert not ir.dirty_l3.any()
-    assert ir.dirty_l2.any()
-    assert ir.dirty_l5.any()
-
-    engine.undo_move(move)
-    assert int(ir.pin_net[pin_left]) == before_net_left
-    assert int(ir.pin_net[pin_right]) == before_net_right
-
-
-def test_pin_swap_respects_exclusions():
-    ir, group, pin_left, pin_right = _pin_swap_ir_and_group()
-    excluded_group = dataclasses.replace(group, excluded=frozenset({pin_right}))
-    pairs = propose_reassignment(ir, excluded_group)
-    assert pairs is None  # only one non-excluded pin left -- nothing to match
-
-
-def test_pin_swap_never_proposed_with_empty_config():
-    ir, _group, _pl, _pr = _pin_swap_ir_and_group()
-    engine = OptimizeEngine(ir, OptimizeConfig(seed=3))  # default pin_swap_groups=()
-    rng = random.Random(4)
-    for _ in range(20):
-        assert MOVE_GENERATORS[MoveKind.PIN_SWAP](engine, rng, 5.0) is None
-
-
-def test_pin_swap_delta_correctness_over_random_moves():
-    ir, group, _pl, _pr = _pin_swap_ir_and_group()
-    cost_config = CostConfig()
-    config = OptimizeConfig(seed=5, cost=cost_config, pin_swap_groups=(group,))
-    engine = OptimizeEngine(ir, config)
-    rng = random.Random(6)
-    for trial in range(20):
-        move = MOVE_GENERATORS[MoveKind.PIN_SWAP](engine, rng, 5.0)
-        if move is None:
-            continue
-        engine.apply_move(move)
-        if rng.random() < 0.5:
-            engine.undo_move(move)
-        full = evaluate_cost(ir, Level.L4, cost_config)
-        assert engine.total() == pytest.approx(full.total, rel=1e-9, abs=1e-9), trial
+# ── pin swap left the anneal ──────────────────────────────────────────
+def test_pin_swap_is_not_an_anneal_move():
+    """Pin assignment moved out of the anneal: the supply/client matching
+    (``precis.pcb.matching``) runs before routing instead."""
+    assert not hasattr(MoveKind, "PIN_SWAP")
+    assert "pin_swap_groups" not in {f.name for f in dataclasses.fields(OptimizeConfig)}
+    assert not hasattr(OptimizeConfig(), "pin_swap_groups")
 
 
 # ── delta correctness: the highest-value test in this slice ─────────────
@@ -1154,10 +1031,14 @@ def _hot_run(seed: int):
 def test_final_worse_than_intermediate_restores_best():
     """A hot, barely-cooling run ends far from its best; the best comes back,
     caches agree, and the arrays equal what they were at that moment."""
-    for seed in range(23, 43):
+    for seed in range(23, 143):
         ir, config, engine, seen = _hot_run(seed)
-        # last probe is the post-restore assert read when a restore happened
-        if engine.restored_best_at is not None:
+        # last probe is the post-restore assert read when a restore happened;
+        # a tie (restore to an equal-cost state) is not "worse"
+        if (
+            engine.restored_best_at is not None
+            and seen[-2][0] > min(t for t, _ in seen[:-1]) + 1e-9
+        ):
             break
     else:
         pytest.fail("no seed produced a final state worse than an earlier one")
@@ -1176,9 +1057,13 @@ def test_final_worse_than_intermediate_restores_best():
 
 
 def test_result_reports_restored_best_in_header():
-    ir = from_graph(_board(10, seed=21), stackup=DEFAULT_STACKUP)
-    r = optimize(ir, OptimizeConfig(seed=23, iters=300, t0=500.0, cooling=1.0))
-    assert r.restored_best_at is not None
+    for seed in range(23, 143):
+        ir = from_graph(_board(10, seed=21), stackup=DEFAULT_STACKUP)
+        r = optimize(ir, OptimizeConfig(seed=seed, iters=300, t0=500.0, cooling=1.0))
+        if r.restored_best_at is not None:
+            break
+    else:
+        pytest.fail("no seed restored a best state")
     accepted = sum(r.digest.move_counts.values())
     assert f"best_at={r.restored_best_at}/{accepted} " in digest_toon(r)
     assert r.cost_after <= r.cost_before + 1e-9

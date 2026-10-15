@@ -46,7 +46,7 @@ connectivity (:attr:`PcbIR.via_net` ``>= 0``); a keepout connects nothing
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Any
@@ -735,9 +735,20 @@ class PcbIR:
         """
         if pin_a == pin_b:
             return
-        inst_a, inst_b = int(self.pin_instance[pin_a]), int(self.pin_instance[pin_b])
-        if inst_a != inst_b:
+        if int(self.pin_instance[pin_a]) != int(self.pin_instance[pin_b]):
             raise ValueError("swap_pins requires both pins on the same instance")
+        self._swap_pin_nets(pin_a, pin_b)
+
+    def _swap_pin_nets(self, pin_a: int, pin_b: int) -> None:
+        """:meth:`swap_pins`'s body without the same-instance refusal: the
+        two pins may sit on different instances (a net then moves between
+        parts). Segments of BOTH instances are scanned, and
+        ``_segs_of_instance`` is re-derived for every segment whose
+        endpoint changed instance. Raises ``ValueError`` on unequal
+        rotation-CSR degree before mutating anything."""
+        if pin_a == pin_b:
+            return
+        inst_a, inst_b = int(self.pin_instance[pin_a]), int(self.pin_instance[pin_b])
         lo_a, hi_a = (
             int(self.rotation_index[pin_a]),
             int(self.rotation_index[pin_a + 1]),
@@ -760,8 +771,10 @@ class PcbIR:
         self.rotation_darts[lo_a:hi_a] = b_darts
         self.rotation_darts[lo_b:hi_b] = a_darts
 
+        candidates = set(self._segs_of_instance.get(inst_a, ()))
+        candidates.update(self._segs_of_instance.get(inst_b, ()))
         touched: list[int] = []
-        for seg_id in self._segs_of_instance.get(inst_a, ()):
+        for seg_id in sorted(candidates):
             changed = False
             if int(self.seg_pin_a[seg_id]) == pin_a:
                 self.seg_pin_a[seg_id] = pin_b
@@ -781,6 +794,56 @@ class PcbIR:
             self.dirty_l2[seg_id] = True
             self.dirty_l4[seg_id] = True
             self.dirty_l5[seg_id] = True
+        if inst_a != inst_b:
+            tset = set(touched)
+            for inst in (inst_a, inst_b):
+                keep = [
+                    s for s in self._segs_of_instance.get(inst, ()) if s not in tset
+                ]
+                for seg_id in touched:
+                    for pin in (self.seg_pin_a[seg_id], self.seg_pin_b[seg_id]):
+                        if int(self.pin_instance[pin]) == inst:
+                            keep.append(seg_id)
+                self._segs_of_instance[inst] = sorted(keep)
+
+    def permute_pin_nets(self, target: Mapping[int, int]) -> None:
+        """L0 mutator: make every pin in ``target`` carry the net it maps to,
+        across instances if need be (the min-cost matching of the pin-swap
+        anneal can move a net from one supplier instance to another).
+        ``target`` must be a permutation of the nets those pins carry now
+        (equal multisets) among pins of equal rotation-CSR degree, else
+        ``ValueError`` with nothing mutated. Applied as transpositions in
+        sorted pin-id order, each via :meth:`_swap_pin_nets`."""
+        pins = sorted(int(p) for p in target)
+        want = {p: int(target[p]) for p in pins}
+        cur = {p: int(self.pin_net[p]) for p in pins}
+        if sorted(cur.values()) != sorted(want.values()):
+            raise ValueError(
+                "permute_pin_nets target is not a permutation of the current nets"
+            )
+        deg = np.diff(self.rotation_index)
+        # Plan on a scratch copy of the net assignment so a degree mismatch
+        # is found before the first mutation.
+        plan: list[tuple[int, int]] = []
+        sim = dict(cur)
+        for p in pins:
+            if sim[p] == want[p]:
+                continue
+            q = next(
+                (r for r in pins if r > p and sim[r] == want[p] and sim[r] != want[r]),
+                None,
+            )
+            if q is None:
+                q = next(r for r in pins if r > p and sim[r] == want[p])
+            if int(deg[p]) != int(deg[q]):
+                raise ValueError(
+                    f"permute_pin_nets requires equal rotation-CSR degree "
+                    f"(pin {p} has {int(deg[p])}, pin {q} has {int(deg[q])})"
+                )
+            sim[p], sim[q] = sim[q], sim[p]
+            plan.append((p, q))
+        for p, q in plan:
+            self._swap_pin_nets(p, q)
 
     def set_pin_offset(self, pin_id: int, dx: float, dy: float) -> None:
         """L3 mutator: replace one pin's SYNTHESIZED land-pattern offset

@@ -3900,3 +3900,74 @@ def test_every_enqueue_op_option_is_an_accepted_put_key():
     read = set(re.findall(r'opts(?:\.get\(|\[)"([a-z_]+)"', src))
     assert "groups" in read
     assert read <= PcbHandler.ARGS_KEYS["put"], read - PcbHandler.ARGS_KEYS["put"]
+
+
+def test_roles_supplies_client_of_round_trip(pcb, store):
+    """§1b: top-level ``roles`` upserts ``pcb_roles``; ``supplies`` rides
+    the instance dict; ``client_of`` rides the pin's member meta."""
+    pcb.put(
+        id="roles-rt",
+        args={
+            "roles": [{"name": "pad_driver", "voltage_v": 300, "fanout": None}],
+            "components": [
+                {
+                    "refdes": "U1",
+                    "label": "drv",
+                    "footprint": "X",
+                    "pins": [{"name": "A"}, {"name": "B"}],
+                    "supplies": {"role": "pad_driver", "blocks": [["A"], ["B"]]},
+                },
+                {
+                    "refdes": "P1",
+                    "label": "pad",
+                    "footprint": "Y",
+                    "pins": [
+                        {"name": "1", "client_of": "pad_driver"},
+                        {
+                            "name": "2",
+                            "client_of": {"role": "pad_driver", "min_voltage_v": 250},
+                        },
+                    ],
+                },
+            ],
+            "nets": [{"name": "N1"}, {"name": "N2"}],
+            "connections": [
+                {"net": "N1", "refdes": "U1", "pin": "A"},
+                {"net": "N1", "refdes": "P1", "pin": "1"},
+                {"net": "N2", "refdes": "P1", "pin": "2"},
+            ],
+        },
+    )
+    ref = store.get_ref(kind="pcb", id="roles-rt")
+    assert ref is not None
+    g = store.pcb_graph(ref.id)
+    assert g["roles"] == {"pad_driver": {"voltage_v": 300.0, "fanout": None}}
+    inst = {i["refdes"]: i for i in g["instances"]}
+    assert inst["U1"]["supplies"] == [{"role": "pad_driver", "blocks": [["A"], ["B"]]}]
+    metas = {
+        (m["refdes"], m["pin"]): m["meta"] for n in g["nets"] for m in n["members"]
+    }
+    assert metas[("P1", "1")]["client_of"] == {"role": "pad_driver"}
+    assert metas[("P1", "2")]["client_of"] == {
+        "role": "pad_driver",
+        "min_voltage_v": 250.0,
+    }
+
+
+def test_roles_and_supplies_validation(pcb):
+    with pytest.raises((BadInput, ValueError)):
+        pcb.put(id="roles-bad", args={"roles": [{"name": "r", "fanout": 0}]})
+    with pytest.raises((BadInput, ValueError)):
+        pcb.put(
+            id="roles-bad2",
+            args={
+                "components": [
+                    {
+                        "refdes": "U1",
+                        "label": "d",
+                        "pins": [{"name": "A"}],
+                        "supplies": {"role": "r", "blocks": [["Z"]]},
+                    }
+                ]
+            },
+        )

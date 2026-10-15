@@ -552,6 +552,7 @@ class PcbHandler(Handler):
                 "autoplace",
                 "meta",
                 "net_classes",
+                "roles",
                 "iters",
                 "seed",
                 "warm_start",
@@ -769,6 +770,7 @@ class PcbHandler(Handler):
         autoplace = args.get("autoplace")
         meta = args.get("meta") if isinstance(args.get("meta"), dict) else None
         net_classes = args.get("net_classes")
+        roles = args.get("roles")
         ttl = (title or slug).strip() or slug
 
         self._reject_non_electrical(nets)
@@ -802,6 +804,8 @@ class PcbHandler(Handler):
                     n_classes = self.store.pcb_upsert_net_classes(
                         ref.id, net_classes, conn=conn
                     )
+                if roles:
+                    self.store.pcb_upsert_roles(ref.id, roles, conn=conn)
                 if seeded:
                     reposed, unplaced = self._legalize_generator_seeds(
                         ref.id, seeded, conn=conn

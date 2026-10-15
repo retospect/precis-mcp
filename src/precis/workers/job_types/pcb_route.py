@@ -57,11 +57,13 @@ conflict digest the loop ends in.
 from __future__ import annotations
 
 import logging
+import math
 from collections import Counter
 from typing import TYPE_CHECKING, Any
 
 from precis.pcb import DANGLING_NET_NOTE
 from precis.pcb import feedback as pcb_feedback
+from precis.pcb import matching as pcb_matching
 from precis.pcb import pinswap as pcb_pinswap
 from precis.pcb import realize as pcb_realize
 from precis.pcb import session as pcb_session
@@ -71,6 +73,7 @@ from precis.pcb.geom import segments_cross
 from precis.pcb.ir import (
     UNSET_LAYER,
     net_member_counts,
+    pin_point,
     plane_layers_of,
     segment_points,
 )
@@ -109,7 +112,9 @@ log = logging.getLogger(__name__)
 # 7 = placement-DRC errors refuse the route before the router runs.
 # 8 = a route result worse than the incumbent board (more unrealized nets
 #     or more DRC errors) is not committed (gr480010).
-CODE_VERSION = 8
+# 9 = supply/client matching assigns pins before routing; PIN_SWAP anneal
+#     move removed (pcb-lazy-netlist-and-checks Slice 6).
+CODE_VERSION = 9
 
 PARAMS_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -265,9 +270,9 @@ def _resolve_pin_swap_groups(
     graph: dict[str, Any],
     warnings: list[str],
 ) -> tuple[pcb_pinswap.PinSwapGroup, ...]:
-    """The missing feed for ``OptimizeConfig.pin_swap_groups`` (docs/backlog
-    /pcb-ewod-multitile.md "Rulings 2026-09-19" item 6): an instance's
-    authored ``pin_swap_groups`` (``Store.pcb_graph``'s ``c.meta`` hoist —
+    """The radial warm start's feed (docs/backlog/pcb-ewod-multitile.md
+    "Rulings 2026-09-19" item 6): an instance's ``supplies`` blocks or
+    deprecated ``pin_swap_groups`` (``Store.pcb_graph``'s ``c.meta`` hoist —
     a generator's sink instance, or a hand-authored ``put(kind='pcb')``
     component) resolved into real :class:`precis.pcb.pinswap.PinSwapGroup`
     objects, with real per-pin offsets read off the IR's own placed pins
@@ -289,7 +294,11 @@ def _resolve_pin_swap_groups(
     groups: list[pcb_pinswap.PinSwapGroup] = []
     refdes_to_instance = {str(ir.instance_refdes[i]): i for i in range(ir.n_instances)}
     for inst_dict in graph.get("instances") or []:
-        declared = inst_dict.get("pin_swap_groups")
+        # Legacy `pin_swap_groups` plus every `supplies` block set, as
+        # name lists (spare unwired pins have no IR pin and drop out below).
+        declared = list(inst_dict.get("pin_swap_groups") or [])
+        for sup in inst_dict.get("supplies") or []:
+            declared.append([b[0] for b in sup["blocks"] if len(b) == 1])
         if not declared:
             continue
         refdes = str(inst_dict["refdes"])
@@ -385,6 +394,220 @@ def _apply_pin_swap_warm_start(
             }
         )
     return reports
+
+
+def _matching_model(
+    graph: dict[str, Any], warnings: list[str]
+) -> tuple[
+    list[pcb_matching.Client],
+    list[pcb_matching.Supply],
+    dict[str, pcb_matching.Role],
+]:
+    """The matcher's inputs from the stored graph: declared ``supplies``,
+    ``client_of`` members and ``roles``, plus the deprecated
+    ``pin_swap_groups`` alias — each declared pin becomes a one-pin block
+    of a per-group role (``pin_swap:<refdes>:<k>``) whose clients are the
+    far ends of the 2-member nets on those pins. A pin whose net has any
+    other member count is left out of the alias, with a warning."""
+    roles = {
+        str(name): pcb_matching.Role(
+            name=str(name),
+            voltage_v=spec.get("voltage_v"),
+            fanout=spec.get("fanout", 1),
+        )
+        for name, spec in (graph.get("roles") or {}).items()
+    }
+    supplies: list[pcb_matching.Supply] = []
+    clients: list[pcb_matching.Client] = []
+    net_of: dict[tuple[str, str], dict[str, Any]] = {}
+    for net in graph.get("nets") or []:
+        for m in net.get("members") or []:
+            net_of[(str(m["refdes"]), str(m["pin"]))] = net
+            co = (m.get("meta") or {}).get("client_of")
+            if co:
+                clients.append(
+                    pcb_matching.Client(
+                        instance=str(m["refdes"]),
+                        pin=str(m["pin"]),
+                        role=str(co["role"]),
+                        min_voltage_v=co.get("min_voltage_v"),
+                    )
+                )
+    # A client with no net yet (graph["unconnected"]) still demands a supplier.
+    for m in graph.get("unconnected") or []:
+        co = (m.get("meta") or {}).get("client_of")
+        if co:
+            clients.append(
+                pcb_matching.Client(
+                    instance=str(m["refdes"]),
+                    pin=str(m["pin"]),
+                    role=str(co["role"]),
+                    min_voltage_v=co.get("min_voltage_v"),
+                )
+            )
+    client_keys = {(c.instance, c.pin) for c in clients}
+    for inst in graph.get("instances") or []:
+        refdes = str(inst["refdes"])
+        for sup in inst.get("supplies") or []:
+            supplies.append(
+                pcb_matching.Supply(
+                    instance=refdes,
+                    role=str(sup["role"]),
+                    blocks=tuple(tuple(str(p) for p in b) for b in sup["blocks"]),
+                    voltage_v=sup.get("voltage_v"),
+                    within_block_swappable=bool(sup.get("within_block_swappable")),
+                )
+            )
+        declared = inst.get("pin_swap_groups") or []
+        if not declared:
+            continue
+        warnings.append(
+            f"pin_swap_groups on {refdes} is deprecated; declare supplies/client_of"
+        )
+        for k, names in enumerate(declared):
+            role = f"pin_swap:{refdes}:{k}"
+            blocks: list[tuple[str, ...]] = []
+            for name in names:
+                net = net_of.get((refdes, str(name)))
+                if net is None:
+                    continue  # unwired: no IR pin, nothing to swap
+                members = net.get("members") or []
+                if len(members) != 2:
+                    warnings.append(
+                        f"pin_swap: {refdes}.{name} left out of its group "
+                        f"(net {net.get('name')} has {len(members)} members, not 2)"
+                    )
+                    continue
+                other = next(
+                    m
+                    for m in members
+                    if (str(m["refdes"]), str(m["pin"])) != (refdes, str(name))
+                )
+                okey = (str(other["refdes"]), str(other["pin"]))
+                if okey in client_keys or okey[0] == refdes:
+                    continue
+                client_keys.add(okey)
+                blocks.append((str(name),))
+                clients.append(pcb_matching.Client(okey[0], okey[1], role))
+            if blocks:
+                supplies.append(pcb_matching.Supply(refdes, role, tuple(blocks)))
+    return clients, supplies, roles
+
+
+def _resolve_supply_matching(
+    ir: PcbIR,
+    graph: dict[str, Any],
+    footprints: dict[str, dict[str, Any]],
+    fixed_copper: list[dict[str, Any]],
+    warnings: list[str],
+    method: str = "distance",
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Supply/client matching before any routing (pcb-lazy-netlist-and-
+    checks Slice 6): ``(report, unsupplied_findings)``.
+
+    Gate first: every client against every declared supply block; any
+    unsupplied client returns its findings with ``ir`` untouched (the
+    caller fails the job ``input``). Then, for ``method='distance'``, the
+    min-cost Euclidean solve over the currently wired pairs (a client whose
+    2-member net's other end is a supply pin of its role, against exactly
+    those wired supply pins), warm-started from the current wiring and
+    applied with :meth:`PcbIR.permute_pin_nets` — cross-instance. A client
+    is positioned at its unique fixed-copper via terminal, else at its own
+    pin. ``method='radial'`` keeps the legacy per-instance angular warm
+    start. Settled results reach ``pcb_pin_swaps`` through the ordinary
+    ``pin_swap_diff`` write-back."""
+    clients, supplies, roles = _matching_model(graph, warnings)
+    if clients:
+        try:
+            gate = pcb_matching.solve(
+                clients, supplies, roles, lambda _r, _p: (0.0, 0.0)
+            )
+        except ValueError as exc:
+            return [], [str(exc)]
+        if gate.unsupplied:
+            return [], list(gate.findings)
+        warnings.extend(gate.findings)
+    if method == "radial":
+        groups = _resolve_pin_swap_groups(ir, graph, warnings)
+        return _apply_pin_swap_warm_start(
+            ir, groups, footprints, fixed_copper, "radial"
+        ), []
+    if not clients:
+        return [], []
+
+    pin_id: dict[tuple[str, str], int] = {}
+    net_pins: dict[int, list[int]] = {}
+    for p in range(ir.n_pins):
+        key = (str(ir.instance_refdes[int(ir.pin_instance[p])]), str(ir.pin_label[p]))
+        pin_id[key] = p
+        net = int(ir.pin_net[p])
+        if net >= 0:
+            net_pins.setdefault(net, []).append(p)
+    key_of = {p: k for k, p in pin_id.items()}
+    supply_role = {
+        (s.instance, b[0]): s.role for s in supplies for b in s.blocks if len(b) == 1
+    }
+    wired: list[pcb_matching.Client] = []
+    prior: dict[tuple[str, str], tuple[str, str]] = {}
+    for c in clients:
+        cid = pin_id.get((c.instance, c.pin))
+        if cid is None or int(ir.pin_net[cid]) < 0:
+            continue
+        members = net_pins.get(int(ir.pin_net[cid]), [])
+        if len(members) != 2:
+            continue
+        other = key_of[next(m for m in members if m != cid)]
+        if supply_role.get(other) == c.role:
+            wired.append(c)
+            prior[(c.instance, c.pin)] = other
+    if not wired:
+        return [], []
+    allowed = set(prior.values())
+    wired_keys = {(c.instance, c.pin) for c in wired}
+    terminals = pcb_realize._island_terminals_by_pin(ir, footprints, fixed_copper)
+
+    def position(refdes: str, pin: str) -> tuple[float, float] | None:
+        key = (refdes, pin)
+        pid = pin_id.get(key)
+        if pid is None:
+            return None
+        if key in wired_keys:
+            points = {t.point for t, _ in terminals.get(key, ()) if t.kind == "via"}
+            if len(points) == 1:
+                return next(iter(points))
+        return pin_point(ir, pid)
+
+    def dist(a: tuple[str, str], b: tuple[str, str]) -> float:
+        pa, pb = position(*a), position(*b)
+        if pa is None or pb is None:
+            return 0.0
+        return math.hypot(pa[0] - pb[0], pa[1] - pb[1])
+
+    result = pcb_matching.solve(
+        wired, supplies, roles, position, prior=prior, allowed_suppliers=allowed
+    )
+    report: list[dict[str, Any]] = []
+    for role in sorted({c.role for c in wired}):
+        rc = [(c.instance, c.pin) for c in wired if c.role == role]
+        if any(k in result.unsupplied for k in rc):
+            warnings.append(f"match: role {role} left as wired (unsupplied clients)")
+            continue
+        target = {pin_id[result.assignment[k]]: int(ir.pin_net[pin_id[k]]) for k in rc}
+        try:
+            ir.permute_pin_nets(target)
+        except ValueError as exc:
+            warnings.append(f"match: role {role} left as wired ({exc})")
+            continue
+        report.append(
+            {
+                "role": role,
+                "method": "match",
+                "clients": len(rc),
+                "cost_mm": math.fsum(dist(k, result.assignment[k]) for k in rc),
+                "prior_cost_mm": math.fsum(dist(k, prior[k]) for k in rc),
+            }
+        )
+    return report, []
 
 
 class _LoopGateRefusal(Exception):
@@ -659,12 +882,20 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         )
 
     pin_swap_warnings: list[str] = []
-    pin_swap_groups = _resolve_pin_swap_groups(ir, graph, pin_swap_warnings)
-    # Shorter paths through fixed-copper corridors beat fewer airwire
-    # crossings on the replay. The settled diff still uses the authored baseline.
-    warm_start_report = _apply_pin_swap_warm_start(
-        ir, pin_swap_groups, footprints, fixed_copper, warm_start
+    # Match supply/client pins before the optimizer or any routing. Shorter
+    # paths through fixed-copper corridors beat fewer airwire crossings on
+    # the replay. The settled diff still uses the authored baseline.
+    warm_start_report, unsupplied = _resolve_supply_matching(
+        ir, graph, footprints, fixed_copper, pin_swap_warnings, warm_start
     )
+    if unsupplied:
+        ctx.record_failure(
+            "pcb_route: refusing to route - "
+            + "; ".join(unsupplied)
+            + ". Add suppliers (or fewer clients) for the role, then route again.",
+            failure_class="input",
+        )
+        return
     force = bool(params.get("force", False))
     expansion_caps: ExpansionCaps | None = None
     if loop_rounds:
@@ -696,7 +927,6 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         seed=seed,
         locked_plane_nets=locked_plane_nets,
         measures=measures,
-        pin_swap_groups=pin_swap_groups,
         # None on the single-anneal path AND on a cap-less loop — the
         # priced generators refuse without authored bounds, and the
         # single path's schedule never draws them anyway.

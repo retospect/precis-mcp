@@ -270,6 +270,7 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         "pcb_pins.meta",
         "pcb_planes.meta",
         "pcb_planes.region_hint",
+        "pcb_roles.meta",
         "pcb_routes.fail",
         "pcb_routes.layer_assign",
         "pcb_routes.meta",

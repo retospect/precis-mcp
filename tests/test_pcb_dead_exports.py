@@ -199,15 +199,6 @@ _KNOWN_UNWIRED: dict[str, str] = {
         "own docstring names this the topological proxy a later module "
         "combines with its geometric floating-tile check)"
     ),
-    "src/precis/pcb/pinswap.py::group_from_pads": (
-        "needs caller-supplied datasheet-derived pin-equivalence data "
-        "that 'doesn't exist yet' in production -- optimize.py's own "
-        "documented gap (OptimizeConfig.pin_swap_groups defaults empty)"
-    ),
-    "src/precis/pcb/pinswap.py::total_group_crossings": (
-        "own docstring: 'ground truth' crossing count for MEASURING a "
-        "swap's payoff; only tests want that today"
-    ),
     "src/precis/pcb/realize.py::pin_topology": (
         "own docstring: a thin delegate for the same not-yet-wired "
         "rip-up/re-realize loop as rip_net"

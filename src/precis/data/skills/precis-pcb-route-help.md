@@ -82,12 +82,24 @@ executor lane (see `precis-job-help`).
   parts are never members. Detection is deterministic per netlist;
   nothing persists but poses.
 
+## Assign pins by supply and client roles
+
+Pin assignment is a matching, not an anneal move. A part declares
+`supplies` (`{"role", "blocks": [[pin], ...], optional "voltage_v"}`) and a
+terminal declares `client_of` (a role name, or `{"role", "min_voltage_v"}`);
+top-level `roles` carry `voltage_v` and `fanout`. Before the optimizer or any
+routing, `op='route'` solves every role as a min-cost Euclidean assignment
+(cross-instance, warm-started from the current wiring) and persists changes
+as derived `pcb_pin_swaps`. More clients than supply blocks fails the job
+`input` with e.g. "6 pad_driver clients unsupplied" and writes nothing.
+`pin_swap_groups` on a component is a deprecated alias (warned in the job
+summary). `warm_start` defaults to `"distance"` (that matching);
+`"radial"` keeps the old per-instance angular path.
+`last_route.warm_start` lists per role `{role, method: "match", clients,
+cost_mm, prior_cost_mm}`.
+
 ## Route job options, idempotency and the autoplace alias
 
-- Route `warm_start` defaults to `"distance"` (connected via→pad Manhattan
-  distance before annealing); missing via terminals use radial. `"radial"`
-  selects the old path. `last_route.warm_start` reports each group's method
-  and distance in mm (null for radial).
 - `op='route'` also accepts `negotiate` (int 0–100, default 0 = off):
   experimental negotiated-congestion iterations, tried only when the
   normal rip-up passes leave nets unrouted; capped at 60 s, and the result
@@ -386,7 +398,7 @@ offending layer(s), rather than routing anyway.
 
 The joint optimizer's move set is documented in full in
 `precis.pcb.optimize`; a few are worth calling out here because their
-inertness — or, for `PIN_SWAP`, its data-dependent conditionality — is
+inertness is
 easy to miss from the tool surface alone:
 
 - **`SIDE_FLIP` has no cost effect.** The `crossings` term (the only term
@@ -396,29 +408,6 @@ easy to miss from the tool surface alone:
   `inst_rot`. The move still runs (its dirty-cascade bookkeeping is
   exercised so the plumbing is ready), it just never changes `total()`.
   This is why `op='pin_side'` is a seed, not a lock (see above).
-- **`PIN_SWAP` now fires — declare `pin_swap_groups` on a component
-  (Rulings 2026-09-19 item 6, gr347037).** A `put(kind='pcb')` component
-  dict (hand-authored, or emitted by a generator — `ewod_pad_array`'s own
-  sink instances do this) may carry a `"pin_swap_groups"` key: a list of
-  admissible sets, each a list of that SAME component's own pin names
-  that are freely interchangeable (no partial-exclusion syntax yet — a
-  set names every candidate pin, nothing more). It rides `pcb_components
-  .meta` and round-trips through `Store.pcb_graph`. `op='route'`'s job
-  (`pcb_route._resolve_pin_swap_groups`) resolves every declared set into
-  a real `precis.pcb.pinswap.PinSwapGroup` — pin ids off the instance's
-  own `PcbIR.pin_label`, real per-pin offsets off the SAME cached
-  footprint pads the realizer uses — and feeds it to `OptimizeConfig
-  .pin_swap_groups`, so the anneal's `PIN_SWAP` move (previously always
-  `None` with no groups configured) actually runs. A declared pin whose
-  rotation-CSR degree doesn't match the rest of its own group (a
-  datasheet mismatch, or one this design left unconnected) is dropped
-  from that group alone, noted in the job summary, never failing the
-  run. The settled swap persists exactly as before (`pcb_pin_swaps`,
-  `source: 'derived'`) — only the FEED was missing; the persistence and
-  re-application path was already real.
-  Assignment scoring is crossings first, wire length second: among
-  assignments with the same crossing count the shorter total Manhattan
-  wire to the far terminals wins; a crossing always outweighs any length.
 - **`ROTATE` is cost-neutral too**, for the same structural reason as
   `SIDE_FLIP` — no term reads `inst_rot`. `op='move'`'s `rot=` still
   writes a real rotation to the database (useful for footprint/courtyard

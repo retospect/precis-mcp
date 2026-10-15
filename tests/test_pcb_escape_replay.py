@@ -255,8 +255,9 @@ def test_route_op_distance_warm_start_replay(store):
     pcb_route._dispatch(ctx, pcb_route.SPEC)
     updated = store.get_ref(kind="pcb", id=ref.id)
     last = updated.meta["last_route"]
-    assert last["warm_start"][0]["method"] == "distance"
-    assert last["warm_start"][0]["distance_mm"] > 0
+    entry = last["warm_start"][0]
+    assert entry["method"] == "match"
+    assert 0 < entry["cost_mm"] <= entry["prior_cost_mm"] + 1e-6
     assert last["realized"] >= 51
     assert store.pcb_pin_swaps_list(ref.id)
 
@@ -491,3 +492,63 @@ def test_stored_no_path_labels_have_full_width_actual_terminal_paths(
             json.dumps(evidence, indent=2, default=lambda v: v.tolist()),
             encoding="utf-8",
         )
+
+
+@pytest.mark.slow
+def test_supply_matching_is_no_worse_than_radial_and_pure(store):
+    """Dogfood: the min-cost matcher's total Euclidean client->supplier
+    distance (client at its unique connected via, else its own pin; supplier
+    at its pad) is <= the radial warm start's on the same positions, and two
+    resolves of identical inputs give an identical ``pin_net``."""
+    import copy
+
+    import numpy as np
+
+    from precis.pcb.ir import pin_point
+
+    ir0, graph, _, footprints, fixed, _ = _hydrate(store)
+    terminals = realize._island_terminals_by_pin(ir0, footprints, fixed)
+    clients, _, _ = pcb_route._matching_model(graph, [])
+    assert len(clients) > 8
+
+    def far(ir, pin):
+        key = (
+            str(ir.instance_refdes[int(ir.pin_instance[pin])]),
+            str(ir.pin_label[pin]),
+        )
+        points = {t.point for t, _ in terminals.get(key, ()) if t.kind == "via"}
+        return next(iter(points)) if len(points) == 1 else pin_point(ir, pin)
+
+    def total(ir):
+        by_net: dict[int, list[int]] = {}
+        for p in range(ir.n_pins):
+            by_net.setdefault(int(ir.pin_net[p]), []).append(p)
+        ids = {
+            (str(ir.instance_refdes[int(ir.pin_instance[p])]), str(ir.pin_label[p])): p
+            for p in range(ir.n_pins)
+        }
+        cost = 0.0
+        for c in clients:
+            cid = ids.get((c.instance, c.pin))
+            if cid is None:
+                continue
+            members = by_net[int(ir.pin_net[cid])]
+            if len(members) != 2:
+                continue
+            sup = next(m for m in members if m != cid)
+            fp, sp = far(ir, cid), pin_point(ir, sup)
+            assert fp is not None and sp is not None
+            cost += math.hypot(fp[0] - sp[0], fp[1] - sp[1])
+        return cost
+
+    matched, matched_again, radial = (copy.deepcopy(ir0) for _ in range(3))
+    for ir in (matched, matched_again):
+        report, unsupplied = pcb_route._resolve_supply_matching(
+            ir, graph, footprints, fixed, []
+        )
+        assert not unsupplied and report
+    _apply_pin_swap_warm_start(
+        radial, _resolve_pin_swap_groups(radial, graph, []), footprints, fixed, "radial"
+    )
+    assert np.array_equal(matched.pin_net, matched_again.pin_net)
+    assert total(matched) <= total(radial) + 1e-6

@@ -506,29 +506,30 @@ pins the vertex).
 
 ### Slice 6 — supply/client roles and the matching solver
 
-- Schema: `supplies` on `pcb_components.meta`, `client_of` on
-  `pcb_pins.meta`, a `pcb_roles` row per `(design, role)` carrying
-  `voltage_v`, `fanout`; `pin_swap_groups` accepted as a deprecated alias
-  that expands to a `supplies` block for one release.
-- `resolve` step: build the bipartite graph (clients × supplier blocks,
-  block sizes must match), cost = Euclidean + `gap_capacity_term` penalty,
-  solve with Hungarian (scipy `linear_sum_assignment` is already in the
-  dependency set via shapely/numpy? — verify; else a 200-line pure
-  implementation), warm-started from the prior assignment.
-- Unmatched clients → `unsupplied_client` finding (error), before routing.
-- The route job runs `resolve` first, then the maze; on failure,
-  rip-up-and-reassign with winners frozen, bounded by `route_passes`.
-- Delete `MoveKind.PIN_SWAP` and `_gen_pin_swap` from `optimize.py` once
-  the generator emits `supplies` instead of `pin_swap_groups`.
+**Shipped 2026-10-15:** `pcb_roles` (`voltage_v`, `fanout`, authored on
+`put`), `supplies` on component meta, `client_of` on pin decls;
+`pcb/matching.py::solve` (scipy `linear_sum_assignment`, per role,
+voltage-admissible pairs, prior as tie-break); the route job's
+`_resolve_supply_matching` refuses to route on any unsupplied client
+(`6 pad_driver clients unsupplied`) and otherwise applies the min-cost
+Euclidean assignment over the wired pairs, cross-instance
+(`PcbIR.permute_pin_nets`), persisted through `pcb_pin_swaps`. The EWOD
+generator emits `supplies`/`client_of` (version 7); `pin_swap_groups` is a
+deprecated alias for one release. `MoveKind.PIN_SWAP` and the
+crossing-count matcher are gone.
 
-*Accept:* the dogfood generator emits one `supplies: {role: pad_driver,
-blocks: [[HVOUT1],…,[HVOUT64]]}` per sink and `client_of: pad_driver` per
-electrode, no `pin_swap_groups`; a 70-client / 64-supplier fixture reports
-`6 pad_driver clients unsupplied` with zero routing; two sinks at
-different `voltage_v` under one role name refuse to match across; the
-matcher's assignment for the dogfood is at least as good as
-`propose_radial_assignment`'s on total Euclidean cost; same inputs + same
-prior → identical assignment (purity test).
+**Open:**
+- Cost is Euclidean only: add the `gap_capacity_term` congestion penalty
+  (`solve(penalty=)` is the seam).
+- Rip-up-and-reassign: on failed nets, re-solve with winners frozen,
+  bounded by `route_passes`.
+- Matching onto `unused` spare channels (a netless pin gaining a net)
+  needs Slice 7's snapshot; today only wired supply pins permute.
+- Blocks of size > 1 (differential pairs) raise; needs client tuples.
+- `unsupplied_client` as a `view='check'` finding, not only a route-job
+  refusal.
+- Measure on dogfood (cluster `pcb_route`): matcher vs radial realized
+  count on `ewod-dogfood-2`.
 
 ### Slice 7 — lazy netlist: resolved snapshot, prior, firmware export
 

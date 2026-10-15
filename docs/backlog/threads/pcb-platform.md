@@ -42,8 +42,9 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
    **Slices 5 and 8 shipped 2026-10-13 too** (`view='check'`, authored
    `op='phase'`, the etype/voltage/rail ERC rules).
    **Left:** Slice 1's Reto decision + the prod re-run of
-   `ewod-dogfood-2`; Slices 6 and 7 (Slice 9, per-net maze
-   clearance, shipped 2026-10-15).
+   `ewod-dogfood-2`; Slice 6's open list (congestion cost,
+   rip-up-and-reassign, spare channels) and Slice 7. Slices 9 and 6 core
+   shipped 2026-10-15.
 2. **backlog/pcb-component-model.md** — `draft/high`; the
    Component/LandPattern/Instance reframe that agent-interface-gaps,
    pinout-view-and-connector-intake and meta-blocks all build on.

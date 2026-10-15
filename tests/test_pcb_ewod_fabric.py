@@ -307,9 +307,10 @@ def test_expansion_version_is_4_so_older_boards_regenerate_without_a_param_chang
     invariants as measures (gr345859 §F — ``test_pcb_generator_invariants``
     and ``test_pcb_generator_version_tripwire`` pin both); version 6
     declares every channel pin on a sink, the unwired ones ``unused``
-    (pcb-lazy-netlist-and-checks.md Slice 2)."""
+    (pcb-lazy-netlist-and-checks.md Slice 2); version 7 emits `supplies`
+    and `client_of` in place of `pin_swap_groups` (Slice 6)."""
     exp = G.expand("ewod_pad_array", "ARR", {"grid": [6, 6]})
-    assert exp.version == 6
+    assert exp.version == 7
     necks, vias = _copper_by_ctype(exp)
     # What version 2 MEANS: two copper rows per driven electrode, and the
     # only B.Cu terminal is the via's own far landing.

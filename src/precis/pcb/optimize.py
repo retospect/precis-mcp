@@ -67,8 +67,8 @@ disqualified regardless of cost. This module never calls
   segment (O(layer size), never O(board)). Called once per segment
   incident to a moved instance for TRANSLATE/ROTATE/SWAP (inside
   :meth:`_rescan_after_move`) and once for a ``LAYER_ASSIGN`` move's
-  segment. SIDE_FLIP and PIN_SWAP never move an instance centroid, so
-  neither calls this — provably cost-neutral for ``crossings``.
+  segment. SIDE_FLIP never moves an instance centroid, so
+  it never calls this — provably cost-neutral for ``crossings``.
 - ``courtyard_overlap`` (gr267456): a uniform spatial grid
   (``_courtyard_grid``) buckets instance ids by ``floor(x / cell),
   floor(y / cell)`` with ``cell == _courtyard_cell_mm`` (``2*max(keep-out
@@ -195,7 +195,7 @@ from typing import Any
 import numpy as np
 
 from precis.format import toon
-from precis.pcb import pinswap, pose
+from precis.pcb import pose
 from precis.pcb import support_groups as pcb_support_groups
 from precis.pcb.capabilities import capability_for
 from precis.pcb.cost import (
@@ -247,7 +247,6 @@ from precis.pcb.ir import (
     segment_points,
 )
 from precis.pcb.landpattern import place_points, rotate_offset
-from precis.pcb.pinswap import PinSwapGroup
 from precis.pcb.rules import implied_via_count
 
 # ── move set (slice 6: placement only) ──────────────────────────────────
@@ -269,7 +268,6 @@ class MoveKind(Enum):
     SIDE_FLIP = "side_flip"
     PLANE_PROMOTE = "plane_promote"
     PLANE_DEMOTE = "plane_demote"
-    PIN_SWAP = "pin_swap"
     #: The two PRICED expansion moves (the route-feedback outer loop —
     #: docs/backlog/pcb-anneal-closes-router-loop.md): "as big as it needs
     #: to be" as bounded, fab-priced design moves, never free shape
@@ -311,13 +309,6 @@ class Move:
     - ``PLANE_PROMOTE``/``PLANE_DEMOTE``: ``net`` + ``old_int``/``new_int``
       (the vacated/assigned plane layer — empty tuple when there was/is
       none, i.e. a promote's ``old_int`` and a demote's ``new_int``).
-    - ``PIN_SWAP``: ``pin_pairs`` — a sequence of
-      :meth:`precis.pcb.ir.PcbIR.swap_pins` calls (a fixed-pivot cycle
-      decomposition, see :mod:`precis.pcb.pinswap`) that together realize
-      the proposed reassignment; applying the same pairs in REVERSE order
-      undoes it (each individual swap is self-inverse; reversing a
-      composed sequence of invertible ops always undoes it, regardless of
-      whether the ops commute).
     - ``OUTLINE_GROW``: ``old_outline``/``new_outline`` — the complete
       polygon rings, before and after. The whole ring is recorded, not
       edge+delta, so undo restores the exact prior outline rather than
@@ -339,7 +330,6 @@ class Move:
     old_int: tuple[int, ...] = ()
     new_int: tuple[int, ...] = ()
     net: int | None = None
-    pin_pairs: tuple[tuple[int, int], ...] = ()
     old_outline: tuple[tuple[float, float], ...] = ()
     new_outline: tuple[tuple[float, float], ...] = ()
     layer_entries: tuple[dict[str, Any], ...] = ()
@@ -363,12 +353,12 @@ class ScheduleStage:
 #: mid-schedule (NOT at move zero — while placement is still making large
 #: moves, an assigned layer's gap/congestion story is stale before the
 #: component has even settled near its final neighbourhood), topology
-#: polish (side flips, plane role, pin swap) late, once placement is
+#: polish (side flips, plane role) late, once placement is
 #: near-frozen and the remaining wins are combinatorial. Three stages,
 #: `through_fraction` gating which is "active":
 DEFAULT_SCHEDULE: tuple[ScheduleStage, ...] = (
     # 0% - 50%: placement only, same mix slice 6 shipped. No LAYER_ASSIGN/
-    # SIDE_FLIP/PLANE_*/PIN_SWAP entries at all in this stage -- the
+    # SIDE_FLIP/PLANE_* entries at all in this stage -- the
     # schedule enforces "not at move zero" by simple absence, not a
     # near-zero weight that could still fire early by chance.
     ScheduleStage(
@@ -391,17 +381,13 @@ DEFAULT_SCHEDULE: tuple[ScheduleStage, ...] = (
         },
     ),
     # 85% - 100%: topology-dominant polish. Placement moves shrink to a
-    # minority (fine-tuning only); pin swap -- the most expensive-to-
-    # evaluate move (a per-instance min-cost matching) and the one whose
-    # payoff depends on a nearly-settled placement to even be measured
-    # meaningfully -- joins only here.
+    # minority (fine-tuning only).
     ScheduleStage(
         1.0,
         {
             MoveKind.TRANSLATE: 0.1,
             MoveKind.SIDE_FLIP: 0.3,
             MoveKind.LAYER_ASSIGN: 0.25,
-            MoveKind.PIN_SWAP: 0.2,
             MoveKind.PLANE_PROMOTE: 0.075,
             MoveKind.PLANE_DEMOTE: 0.075,
         },
@@ -413,8 +399,7 @@ DEFAULT_SCHEDULE: tuple[ScheduleStage, ...] = (
 #: ``place.py`` documents), so its ``total()`` delta is a true zero. Still
 #: exercised (dirty cascade honoured, `fixed='rot'` respected) so the
 #: registry/schedule/delta plumbing is ready for a future per-pin-offset
-#: term (the data :func:`precis.pcb.pinswap.offsets_from_pads` already
-#: wires through for PIN_SWAP).
+#: term.
 #:
 #: **SIDE_FLIP is cost-neutral too**, for the same reason: ``crossings``
 #: (:func:`precis.pcb.ir.same_layer_crossing_count`) reads segment
@@ -431,12 +416,9 @@ DEFAULT_SCHEDULE: tuple[ScheduleStage, ...] = (
 #: ``net_plane_layers``) AND ``gap_capacity`` (the plane-exclusion branch)
 #: respond to those moves — see :meth:`OptimizeEngine._refresh_layer_count`,
 #: :meth:`OptimizeEngine._recompute_seg_crossings` and
-#: :func:`precis.pcb.cost.gap_capacity_term`. PIN_SWAP's effect is real
-#: but measured entirely by :mod:`precis.pcb.pinswap`'s own crossing
-#: evaluator (over real per-pin geometry via
-#: :func:`precis.pcb.pinswap.offsets_from_pads` when supplied), never by
-#: ``total()`` — no ``cost.py`` term reads pin identity or sub-instance
-#: pad position.
+#: :func:`precis.pcb.cost.gap_capacity_term`.
+#: Pin assignment is not an anneal move: ``precis.pcb.matching`` solves it
+#: before routing (``pcb_route._resolve_supply_matching``).
 
 
 #: Linear USD-per-mm-of-violation scale for a `soft` measure — a gradient
@@ -708,13 +690,6 @@ class OptimizeConfig:
     max_cluster_size: int = 6
     seed_pitch_mm: float = 8.0
     schedule: tuple[ScheduleStage, ...] = DEFAULT_SCHEDULE
-    #: Caller-supplied pin-swap admissible sets (:mod:`precis.pcb.pinswap`).
-    #: Empty by default — "where the equivalence data doesn't exist yet,
-    #: degrade cleanly (no swaps)" (task instruction, verbatim): with no
-    #: groups, :func:`_gen_pin_swap` always returns ``None`` and PIN_SWAP
-    #: never fires, regardless of its schedule weight. This module never
-    #: invents an equivalence class from a part number or footprint shape.
-    pin_swap_groups: tuple[PinSwapGroup, ...] = ()
     #: Net ids whose plane assignment a human AUTHORED (``ir.promote_plane``
     #: called by something other than this search) rather than one this
     #: search derived. A declaration is a constraint, not a hint: when a
@@ -754,8 +729,7 @@ class OptimizeConfig:
     #: see precis-measures-help) as pre-resolved :class:`MeasureSpec`\\ s —
     #: :func:`resolve_measures` is the caller-side conversion from
     #: ``store.pcb_measures_list``'s raw dicts, mirroring
-    #: :attr:`pin_swap_groups`'s own "caller resolves, engine consumes"
-    #: shape. Empty by default: with no measures, :meth:`OptimizeEngine.
+    #: "caller resolves, engine consumes" shape. Empty by default: with no measures, :meth:`OptimizeEngine.
     #: __init__` resolves an empty pair list, ``_money_measures`` stays 0.0
     #: for the WHOLE anneal, and every move/accept/reject decision is
     #: bit-for-bit identical to a run built before this field existed — the
@@ -3469,7 +3443,7 @@ class OptimizeEngine:
         (``seg_layer``, one segment) and ``PLANE_PROMOTE``/``PLANE_DEMOTE``
         via :meth:`_rescan_net` (``net_plane_layers``, that net's own
         segments — never the whole board). Placement moves (TRANSLATE/
-        ROTATE/SWAP/SIDE_FLIP/PIN_SWAP) never call this: none of them touch
+        ROTATE/SWAP/SIDE_FLIP) never call this: none of them touch
         a field this function reads, matching the module docstring's
         placement-invariance claim exactly."""
         old = self._seg_via_count.get(seg_id, 0)
@@ -4036,7 +4010,7 @@ class OptimizeEngine:
                     self._margin[("coupling", key)] = t
 
     def _rescan_segments(self, seg_ids: tuple[int, ...]) -> None:
-        """Local refresh for LAYER_ASSIGN/SIDE_FLIP/PIN_SWAP: recompute
+        """Local refresh for LAYER_ASSIGN/SIDE_FLIP: recompute
         the per-segment margin caches for exactly the touched segments —
         the segment-scoped analogue of :meth:`_rescan_after_move`'s
         per-instance version. No :meth:`_newly_closer_segments` scan
@@ -4464,8 +4438,6 @@ class OptimizeEngine:
             self._apply_plane_promote(move, forward=forward)
         elif move.kind == MoveKind.PLANE_DEMOTE:
             self._apply_plane_demote(move, forward=forward)
-        elif move.kind == MoveKind.PIN_SWAP:
-            self._apply_pin_swap(move, forward=forward)
         elif move.kind == MoveKind.OUTLINE_GROW:
             self._apply_outline_grow(move, forward=forward)
         elif move.kind == MoveKind.LAYER_ADD:
@@ -4526,18 +4498,6 @@ class OptimizeEngine:
             self.ir.promote_plane(move.net, move.old_int[0])
         self._rescan_net(move.net)
         self._refresh_layer_count()
-
-    def _apply_pin_swap(self, move: Move, *, forward: bool) -> None:
-        pairs = move.pin_pairs if forward else tuple(reversed(move.pin_pairs))
-        touched: set[int] = set()
-        for pin_a, pin_b in pairs:
-            inst = int(self.ir.pin_instance[pin_a])
-            for s in self.ir._segs_of_instance.get(inst, ()):
-                a, b = int(self.ir.seg_pin_a[s]), int(self.ir.seg_pin_b[s])
-                if pin_a in (a, b) or pin_b in (a, b):
-                    touched.add(s)
-            self.ir.swap_pins(pin_a, pin_b)
-        self._rescan_segments(tuple(touched))
 
     # -- SA loop -----------------------------------------------------------
     def _report_schedule(self) -> float:
@@ -5177,27 +5137,6 @@ def _gen_plane_demote(
     return Move(MoveKind.PLANE_DEMOTE, net=net, old_int=(old_layer,))
 
 
-def _gen_pin_swap(
-    engine: OptimizeEngine, rng: random.Random, temp: float
-) -> Move | None:
-    """The "big one" (task instruction): rather than proposing a random
-    pair and letting Metropolis sort it out (as TRANSLATE/ROTATE/SWAP
-    do), this solves :func:`precis.pcb.pinswap.propose_reassignment`'s
-    min-cost bipartite matching directly — a deterministic sub-solve, not
-    a random walk, per the backlog's "polynomial and fast, likely cheaper
-    than the annealing around it". Degrades to always-``None`` when
-    ``config.pin_swap_groups`` is empty (the default) — see that field's
-    docstring."""
-    groups = engine.config.pin_swap_groups
-    if not groups:
-        return None
-    group = groups[rng.randrange(len(groups))]
-    pairs = pinswap.propose_reassignment(engine.ir, group)
-    if not pairs:
-        return None
-    return Move(MoveKind.PIN_SWAP, pin_pairs=pairs)
-
-
 #: Outline-bbox edges OUTLINE_GROW may move: 0=W (x0, -x), 1=E (x1, +x),
 #: 2=S (y0, -y), 3=N (y1, +y). Grows translate every vertex AT the
 #: extreme — exact for a rectangle, the same bbox approximation
@@ -5362,7 +5301,6 @@ MOVE_GENERATORS: dict[MoveKind, MoveGeneratorFn] = {
     MoveKind.SIDE_FLIP: _gen_side_flip,
     MoveKind.PLANE_PROMOTE: _gen_plane_promote,
     MoveKind.PLANE_DEMOTE: _gen_plane_demote,
-    MoveKind.PIN_SWAP: _gen_pin_swap,
     MoveKind.OUTLINE_GROW: _gen_outline_grow,
     MoveKind.LAYER_ADD: _gen_layer_add,
 }
@@ -6166,7 +6104,6 @@ __all__ = [
     "OptimizeConfig",
     "OptimizeEngine",
     "OptimizeResult",
-    "PinSwapGroup",
     "RegionEntry",
     "RouteFailure",
     "RouteLoopConfig",

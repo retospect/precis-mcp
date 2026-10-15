@@ -684,12 +684,20 @@ def apply_pin_swap_overrides(ir: pcb_ir.PcbIR, overrides: list[dict[str, Any]]) 
     changed under it) is silently skipped — never an error, since a fresh
     optimizer run is free to re-decide it; :meth:`PcbIR.swap_pins`'s own
     equal-rotation-degree guard is honoured the same way (``ValueError``
-    from a genuinely stale override is swallowed, not raised)."""
+    from a genuinely stale override is swallowed, not raised).
+
+    The entries are first tried as ONE batch via
+    :meth:`PcbIR.permute_pin_nets`: the min-cost matching may move a net
+    from one supplier instance to another, and every changed pin is
+    persisted, so the changed set is closed under the permutation (its
+    current nets equal its target nets as multisets). When it is not, or
+    the batch is refused, the per-entry same-instance search above runs."""
     pin_by_key: dict[str, int] = {}
     for p in range(ir.n_pins):
         inst = int(ir.pin_instance[p])
         pin_by_key[_pin_key(str(ir.instance_refdes[inst]), str(ir.pin_label[p]))] = p
     net_name_to_id = {str(ir.net_name[n]): n for n in range(ir.n_nets)}
+    resolved: list[tuple[int, int]] = []
     for entry in overrides:
         pin_id = pin_by_key.get(
             _pin_key(str(entry.get("refdes", "")), str(entry.get("pin", "")))
@@ -697,6 +705,17 @@ def apply_pin_swap_overrides(ir: pcb_ir.PcbIR, overrides: list[dict[str, Any]]) 
         target_net = net_name_to_id.get(str(entry.get("net", "")))
         if pin_id is None or target_net is None:
             continue
+        resolved.append((pin_id, target_net))
+    pending = {p: n for p, n in resolved if int(ir.pin_net[p]) != n}
+    if len(pending) > 1 and sorted(int(ir.pin_net[p]) for p in pending) == sorted(
+        pending.values()
+    ):
+        try:
+            ir.permute_pin_nets(pending)
+            return
+        except ValueError:
+            pass
+    for pin_id, target_net in resolved:
         if int(ir.pin_net[pin_id]) == target_net:
             continue
         inst = int(ir.pin_instance[pin_id])

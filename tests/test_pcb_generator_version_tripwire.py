@@ -41,7 +41,7 @@ _CASES: dict[str, list[dict[str, Any]]] = {
 #: generator -> (version, digest over every case's expansion). Re-pin both
 #: together, never the digest alone.
 _PINNED: dict[str, tuple[int, str]] = {
-    "ewod_pad_array": (6, "cccd9721f5d14438"),
+    "ewod_pad_array": (7, "09a1779601db5e25"),
 }
 
 
