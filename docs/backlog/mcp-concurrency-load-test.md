@@ -125,18 +125,75 @@ ceiling. This is now a serving-topology question, and it lands on
 `vllm-per-node-serving.md`'s admission controller rather than on a thread-pool
 tunable.
 
+## MEASURED 2026-10-15 — throughput scales with processes (dev DB)
+
+`scripts/mcp-loadtest --servers K` starts K `precis serve` processes and
+spreads workers across them round-robin (client-side, standing in for a
+balancer). Ramp 1,8,24,32 at 15 s per step, `precis_loadtest`, 0 errors in
+both runs. The host was busy with sibling test gates (load average ~18 on 24
+cores), which is why the single-process plateau is ~18 calls/s, not the
+2026-09-29 run's ~28; the ratio between the two runs is the reading, not the
+absolute numbers.
+
+| N | 1 proc: canary p95 ms | calls/s | server CPU | 3 procs: canary p95 ms | calls/s | server CPU (sum) |
+|---|---|---|---|---|---|---|
+| 1 | 69 | 11.7 | 0.62 | 77 | 8.5 | 0.51 |
+| 8 | 431 | 18.6 | 0.99 | 55 | 56.1 | 2.41 |
+| 24 | 1507 | 17.9 | 0.98 | 548 | 60.7 | 2.61 |
+| 32 | 1957 | 18.4 | 1.07 | 651 | 58.7 | 2.68 |
+
+At N=24, p50/p95 per verb, 1 process vs 3: canary 1130/1633 vs 186/470,
+semantic search 1685/2167 vs 715/998, kind-scoped lexical 1107/1538 vs
+205/504 ms.
+
+* **Throughput is ~3.2x with 3 processes** (18.4 → 58.7 calls/s at N=32).
+  Server CPU sums to ~2.7 cores, ~0.9 per process. This confirms the GIL
+  verdict's remedy: process-level parallelism scales.
+* **The 24-session target at canary p95 ≤ ~500 ms needs 3 processes**: at
+  N=24, 3 processes give canary p95 548 ms. 4 would leave margin. A per-
+  process ceiling of **N≈8** is the number the load gate and run driver
+  should use (canary p95 55 ms at 8 sessions over 3 processes, 431 ms on 1).
+* **The canary sees one process's share.** It rides server 0, so with K
+  servers it reports the latency of a session pinned to that process, which
+  is what an agent behind a sticky balancer gets.
+* The 2026-09-29 `get:paper` verb (`get(kind='paper', q=, view='list')`) is
+  `BadInput` on today's runtime, so that column measured the error path.
+  It is replaced by a kind-scoped lexical search, and the verdict now prints
+  `VERB MIX BROKEN` when any verb fails at the first ramp step.
+
+## Prod run (Reto's)
+
+The harness has a `--url` mode for an already-running server. It refuses to
+start without `--live-target` and a bearer token in `PRECIS_LOADTEST_TOKEN`.
+It issues read verbs only (skill get, lexical and semantic search). It cannot
+see the remote server's CPU or Postgres, so the verdict reports the canary
+curve and throughput and says `WALL NOT NAMED` instead of guessing between
+GIL and pool. Read server CPU on the host alongside.
+
+Not run by any agent. Run it when the fleet is quiet, because it loads the
+server every session is using. Against the local session MCP (`claude mcp get
+precis` shows its URL), from a worktree on the host:
+
+```bash
+PRECIS_LOADTEST_TOKEN="$(claude mcp get precis | sed -n 's/.*Bearer //p')" \
+  uv run --frozen python scripts/mcp_loadtest/harness.py \
+  --url http://127.0.0.1:8765/mcp --live-target \
+  --ramp 1,2,4,8,12,16 --duration 15 --out .scratch/loadtest/prod
+```
+
+In a second terminal, for the CPU reading the harness cannot take:
+
+```bash
+while sleep 2; do ps -o %cpu= -p "$(lsof -ti tcp:8765 -sTCP:LISTEN | head -1)"; done
+```
+
+~100% (one core) while canary p95 climbs is the GIL; near 0% is the pool or a
+lock. The ramp stops at 16 to keep the run under two minutes; extend it only
+if canary p95 is still flat at 16.
+
 ### Still owed
 
 Order and cross-item constraints: `serving-programme-followups.md`.
-
-* **The harness has no tests of its own.** `scripts/mcp_loadtest/` sits
-  outside mypy's `src tests` scope and no gate exercises it, so it passed
-  ruff and nothing else. It is inert on the cluster — a standalone script,
-  imported by nothing in `src/`, run only when invoked — so the exposure is
-  bit-rot, not risk: `pct()`, `tool_error()`, `CpuMeter.read()` and
-  `verdict()` are pure functions that a handful of unit tests would pin
-  cheaply, and the verdict thresholds in particular are the part most likely
-  to drift into being wrong without anyone noticing.
 
 * **Which work holds the GIL.** The measurement says ~1.17 cores of Python
   bytecode; it does not say whether that is JSON serialisation, search
@@ -146,9 +203,12 @@ Order and cross-item constraints: `serving-programme-followups.md`.
 * **Confirm on prod-shaped data.** This ran against a migrated but nearly
   empty `precis_loadtest`. Row counts change the DB verbs' cost; they do not
   obviously change a GIL ceiling, but the claim should be re-measured against
-  a restored corpus before the number is quoted as prod's.
-* **The multi-process arm.** Two or three `serve` processes behind a balancer,
-  re-ramped, to confirm throughput actually scales with processes.
+  a restored corpus before the number is quoted as prod's. The dev path is
+  `scripts/dev seed-prod-shaped` (fills `precis_dev`); the harness creates
+  its own `precis_loadtest`, so it needs a database switch before it can use
+  the seed.
+* **Slice 2 (re-prefill measurement, admission-controller prototype)** needs
+  a serving vLLM and cluster compute; not started.
 
 ## Explicitly NOT in scope
 

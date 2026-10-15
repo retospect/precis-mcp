@@ -18,6 +18,19 @@ embedder. If canary latency climbs in lockstep with load, the queue is for a
 for a *connection*. The canary rides the same server as everything else, so
 it sees the thread pool; the connection sampler talks to Postgres directly,
 so it does not. Neither measurement can mask the other.
+
+Two arms beyond the single-process ramp:
+
+* ``--servers K`` starts K ``precis serve`` processes and spreads the workers
+  across them round-robin. Client-side spreading stands in for a balancer;
+  it is enough to show whether throughput scales with processes, which is
+  the claim the GIL verdict makes.
+* ``--url URL`` targets an already-running server instead of starting one.
+  The harness cannot see that server's CPU or its Postgres, so the verdict
+  reports the canary curve and throughput and leaves GIL-versus-pool to a
+  host-side reading. This is the mode for Reto's prod run; it refuses to
+  start without ``--live-target`` so it cannot load a live server by
+  accident.
 """
 
 from __future__ import annotations
@@ -51,8 +64,15 @@ VERB_MIX: list[tuple[str, str, dict[str, Any], bool]] = [
     ("search:lexical", "search", {"q": "fullerene", "mode": "lexical", "k": 5}, False),
     # DB + embedder: the predicted thread-parker.
     ("search:semantic", "search", {"q": "carbon nanotube junction", "k": 5}, True),
-    # DB-only list read through a different handler path.
-    ("get:paper", "get", {"kind": "paper", "q": "carbon", "view": "list"}, False),
+    # DB-only, kind-scoped lexical search: a different handler path from the
+    # cross-kind fan-out above. (The old get(kind='paper', view='list') call
+    # became BadInput when bare-q get turned into a search.)
+    (
+        "search:paper",
+        "search",
+        {"kind": "paper", "q": "carbon", "mode": "lexical", "k": 5},
+        False,
+    ),
 ]
 
 CANARY = VERB_MIX[0]
@@ -94,6 +114,18 @@ def pct(xs: list[float], p: float) -> float:
     return ys[lo] + (ys[hi] - ys[lo]) * (i - lo)
 
 
+def assign_url(urls: list[str], worker_id: int) -> str:
+    """Round-robin a worker onto one of the servers."""
+    return urls[worker_id % len(urls)]
+
+
+def per_process_cpu(total: float, n_servers: int) -> float:
+    """Server CPU per process; negative stays negative (unobservable)."""
+    if total < 0 or n_servers < 1:
+        return total
+    return total / n_servers
+
+
 class CpuMeter:
     """CPU fraction for a pid, from /proc, between successive reads.
 
@@ -124,6 +156,24 @@ class CpuMeter:
         if prev is None or now <= prev[0]:
             return -1.0
         return (busy - prev[1]) / (now - prev[0])
+
+
+class MultiCpuMeter:
+    """Summed CPU fraction over several server pids.
+
+    Any pid that cannot be read makes the sum unobservable (-1) rather than
+    silently low, since a low reading is itself a verdict (the pool/lock
+    signature).
+    """
+
+    def __init__(self, pids: list[int]) -> None:
+        self.meters = [CpuMeter(p) for p in pids]
+
+    def read(self) -> float:
+        vals = [m.read() for m in self.meters]
+        if not vals or any(v < 0 for v in vals):
+            return -1.0
+        return sum(vals)
 
 
 def tool_error(result: Any) -> str | None:
@@ -246,7 +296,7 @@ async def sampler(
     step: int,
     stop: asyncio.Event,
     out: list[Sample],
-    srv_pid: int | None = None,
+    srv_pids: list[int] | None = None,
 ) -> None:
     """Record the two discriminators every 500 ms.
 
@@ -263,7 +313,7 @@ async def sampler(
 
             conn = psycopg.connect(dsn, autocommit=True)
 
-    srv_meter = CpuMeter(srv_pid) if srv_pid else None
+    srv_meter = MultiCpuMeter(srv_pids) if srv_pids else None
     own_meter = CpuMeter(os.getpid())
     if srv_meter:
         srv_meter.read()
@@ -324,22 +374,25 @@ async def sampler(
 
 
 async def run_step(
-    url: str,
+    urls: list[str],
     token: str,
     dsn: str | None,
     n: int,
     duration: float,
-    srv_pid: int | None = None,
+    srv_pids: list[int] | None = None,
 ) -> tuple[list[Call], list[Sample]]:
     calls: list[Call] = []
     samples: list[Sample] = []
     stop = asyncio.Event()
 
     tasks = [
-        asyncio.create_task(worker(url, token, n, i, stop, calls)) for i in range(n)
+        asyncio.create_task(worker(assign_url(urls, i), token, n, i, stop, calls))
+        for i in range(n)
     ]
+    # The canary rides server 0. With K servers it sees one process's queue,
+    # which is the latency a session pinned to that process would get.
     tasks.append(
-        asyncio.create_task(sampler(url, token, dsn, n, stop, samples, srv_pid))
+        asyncio.create_task(sampler(urls[0], token, dsn, n, stop, samples, srv_pids))
     )
 
     await asyncio.sleep(duration)
@@ -378,6 +431,8 @@ def verdict(
     calls: list[Call],
     samples: list[Sample],
     pg_max: int | None,
+    n_servers: int = 1,
+    ncpu: int | None = None,
 ) -> list[str]:
     """Name the wall, or say plainly that none was reached.
 
@@ -425,10 +480,16 @@ def verdict(
             ]
             srv_med = statistics.median(srv) if srv else -1.0
             own_med = statistics.median(own) if own else -1.0
-            ncpu = os.cpu_count() or 1
+            ncpu = ncpu or os.cpu_count() or 1
+            proc_med = per_process_cpu(srv_med, n_servers)
+            srv_txt = (
+                f"server CPU {srv_med:.2f} over {n_servers} process(es)"
+                if srv_med >= 0
+                else "server CPU not observable"
+            )
             out.append(
-                f"at N={worst_step}: server CPU {srv_med:.2f}, harness CPU "
-                f"{own_med:.2f} (of {ncpu} cores)"
+                f"at N={worst_step}: {srv_txt}, harness CPU {own_med:.2f} "
+                f"(of {ncpu} cores here)"
             )
             # A saturated harness produces the same rising-latency curve as a
             # server-side wall, so it has to be excluded by name before any
@@ -440,19 +501,30 @@ def verdict(
                     "process; re-run with the load split across processes "
                     "before reading any ceiling off this."
                 )
+            elif srv_med < 0:
+                # External target: no /proc view of the server. Saying "pool"
+                # here would be the fall-through, not a measurement.
+                out.append(
+                    "WALL NOT NAMED — the canary queues with load, so there is "
+                    "one shared queue, but the server's CPU is not observable "
+                    "from here (external --url target). GIL versus thread pool "
+                    "needs the host-side reading: ~1 core busy per process is "
+                    "the GIL, ~0 is the pool or a lock."
+                )
             elif srv_med >= 0.85 * ncpu:
                 out.append(
                     "WALL = server CPU. Genuinely compute-bound across the "
                     "whole box, so the lever is fewer/cheaper calls or more "
                     "cores, not a bigger thread pool."
                 )
-            elif srv_med >= 0.7:
+            elif proc_med >= 0.7:
                 # ~1 core busy on a many-core box is the GIL, not a shortage.
                 # Worth separating, because it inverts the remedy: the pool
                 # is not starved of threads, the threads cannot run at once.
                 out.append(
-                    f"WALL = single-threaded execution (GIL). The server holds "
-                    f"~{srv_med:.1f} cores of {ncpu} and will not climb past it "
+                    f"WALL = single-threaded execution (GIL). Each server "
+                    f"process holds ~{proc_med:.1f} cores of {ncpu} and will "
+                    f"not climb past it "
                     f"however many callers arrive. Threads are not the "
                     f"shortage — they cannot run in parallel for CPU-bound "
                     f"work, so raising the anyio pool changes nothing. The "
@@ -482,6 +554,16 @@ def verdict(
             )
 
     out.append(f"overall error rate {err_rate:.1%} over {len(calls)} calls")
+    # A verb that fails even alone is a stale VERB_MIX entry, not load: its
+    # latency column measures the error path and its errors inflate the rate.
+    first = [c for c in calls if c.step == ramp[0]]
+    for label in sorted({c.label for c in first}):
+        mine = [c for c in first if c.label == label]
+        if all(c.error for c in mine):
+            out.append(
+                f"VERB MIX BROKEN — {label} fails at N={ramp[0]} "
+                f"({mine[0].error}); fix VERB_MIX before reading its column."
+            )
     if not any(v.startswith("WALL") for v in out):
         out.append(
             f"NO WALL REACHED. Either the ramp is too short or the ceiling "
@@ -497,15 +579,20 @@ def render(
     samples: list[Sample],
     pg_max: int | None,
     duration: float,
+    n_servers: int = 1,
+    target: str = "local",
 ) -> str:
     lines: list[str] = []
     lines.append("# MCP concurrency load test")
     lines.append("")
-    lines.append(f"Run {datetime.now(UTC).isoformat()} · {duration:.0f}s per step")
+    lines.append(
+        f"Run {datetime.now(UTC).isoformat()} · {duration:.0f}s per step · "
+        f"target {target} · {n_servers} server process(es)"
+    )
     lines.append("")
     lines.append("## Verdict")
     lines.append("")
-    for v in verdict(ramp, calls, samples, pg_max):
+    for v in verdict(ramp, calls, samples, pg_max, n_servers):
         lines.append(f"- {v}")
     lines.append("")
     lines.append("## Latency by verb and concurrency (ms)")
@@ -557,45 +644,62 @@ def render(
 
 async def amain(args: argparse.Namespace) -> int:
     ramp = [int(x) for x in args.ramp.split(",")]
-    token = secrets.token_hex(24)
-    url = f"http://127.0.0.1:{args.port}/mcp"
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    server_log = out_dir / f"{stamp}-server.log"
 
-    dsn = os.environ.get("PRECIS_DATABASE_URL")
+    procs: list[subprocess.Popen[bytes]] = []
+    if args.url:
+        # External target: its CPU and Postgres are not ours to sample.
+        token = os.environ["PRECIS_LOADTEST_TOKEN"]
+        urls = [args.url]
+        dsn = None
+        n_servers = 1
+        target = args.url
+    else:
+        token = secrets.token_hex(24)
+        n_servers = args.servers
+        urls = [f"http://127.0.0.1:{args.port + k}/mcp" for k in range(n_servers)]
+        dsn = os.environ.get("PRECIS_DATABASE_URL")
+        target = "local"
+        for k in range(n_servers):
+            log = out_dir / f"{stamp}-server{k}.log"
+            procs.append(start_server(args.port + k, token, log))
     pg_max = max_connections(dsn)
 
-    proc = start_server(args.port, token, server_log)
     calls: list[Call] = []
     samples: list[Sample] = []
     try:
-        await wait_ready(url, token)
-        print(f"server up on {url}", flush=True)
+        for u in urls:
+            await wait_ready(u, token)
+        print(f"servers up: {', '.join(urls)}", flush=True)
+        pids = [p.pid for p in procs] or None
         for n in ramp:
-            if proc.poll() is not None:
-                print(f"server died before N={n}; see {server_log}", file=sys.stderr)
+            if any(p.poll() is not None for p in procs):
+                print(f"a server died before N={n}; see {out_dir}", file=sys.stderr)
                 break
             print(f"  step N={n} for {args.duration}s …", flush=True)
-            c, s = await run_step(url, token, dsn, n, args.duration, proc.pid)
+            c, s = await run_step(urls, token, dsn, n, args.duration, pids)
             calls.extend(c)
             samples.extend(s)
-            done = len(c)
             errs = sum(1 for x in c if x.error)
-            print(f"    {done} calls, {errs} errors", flush=True)
+            print(f"    {len(c)} calls, {errs} errors", flush=True)
     finally:
-        proc.terminate()
-        with contextlib.suppress(Exception):
-            proc.wait(timeout=20)
+        for p in procs:
+            p.terminate()
+        for p in procs:
+            with contextlib.suppress(Exception):
+                p.wait(timeout=20)
 
-    md = render(ramp, calls, samples, pg_max, args.duration)
+    md = render(ramp, calls, samples, pg_max, args.duration, n_servers, target)
     (out_dir / f"{stamp}-report.md").write_text(md, encoding="utf-8")
     (out_dir / f"{stamp}-raw.json").write_text(
         json.dumps(
             {
                 "ramp": ramp,
                 "duration_s": args.duration,
+                "target": target,
+                "n_servers": n_servers,
                 "pg_max_connections": pg_max,
                 "calls": [asdict(c) for c in calls],
                 "samples": [asdict(s) for s in samples],
@@ -608,14 +712,44 @@ async def amain(args: argparse.Namespace) -> int:
     return 0
 
 
-def main() -> int:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--ramp", default=",".join(str(x) for x in DEFAULT_RAMP))
     p.add_argument("--duration", type=float, default=20.0)
     p.add_argument("--port", type=int, default=8765)
+    p.add_argument(
+        "--servers",
+        type=int,
+        default=1,
+        help="start K serve processes on consecutive ports (multi-process arm)",
+    )
+    p.add_argument(
+        "--url",
+        help="target an already-running server; token from PRECIS_LOADTEST_TOKEN",
+    )
+    p.add_argument(
+        "--live-target",
+        action="store_true",
+        help="required with --url: confirms you mean to load a live server",
+    )
     p.add_argument("--out", default="scripts/mcp_loadtest/out")
-    args = p.parse_args()
-    return asyncio.run(amain(args))
+    args = p.parse_args(argv)
+    if args.servers < 1:
+        p.error("--servers must be >= 1")
+    if args.live_target and not args.url:
+        p.error("--live-target only applies to --url")
+    if args.url:
+        if not args.live_target:
+            p.error("--url loads a live server; add --live-target to confirm")
+        if args.servers != 1:
+            p.error("--servers starts local processes; it does not apply to --url")
+        if not os.environ.get("PRECIS_LOADTEST_TOKEN"):
+            p.error("--url needs the bearer token in PRECIS_LOADTEST_TOKEN")
+    return args
+
+
+def main() -> int:
+    return asyncio.run(amain(parse_args()))
 
 
 if __name__ == "__main__":

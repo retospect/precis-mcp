@@ -35,11 +35,7 @@ session count nears the ~28 calls/s serve ceiling.
 1. **backlog/mcp-concurrency-load-test.md §Still owed** — py-spy at N=32
    names what holds the GIL; decides whether the multi-process arm is
    topology or workaround. One hour, and everything below reads its answer.
-2. **backlog/serving-programme-followups.md item 5** (pin
-   scripts/mcp_loadtest/ pure functions) — outside mypy scope and untested;
-   verdict thresholds drift silently, and 1 and the multi-process arm both
-   re-run this harness.
-3. **backlog/eval-run-spine.md** — items 1-3 and 6 (run versioning, sequence
+2. **backlog/eval-run-spine.md** — items 1-3 and 6 (run versioning, sequence
    numbers, verdict column) have no host dependency and unblock
    curation-gate and `backlog/model-qualification.md` (which writes its
    promote/reject into the verdict column).
@@ -76,8 +72,8 @@ correct it.
 
 - **backlog/session-mcp-http-server.md** — in flight under the
   session-mcp-shared-server thread; not ranked here.
-- mcp-concurrency-load-test MEASURED section — the finding stands; no
-  re-measurement until the multi-process arm exists.
+- mcp-concurrency-load-test — multi-process arm measured 2026-10-15 on the
+  dev DB (3 processes ~3.2x throughput); the `--url` prod run is Reto's.
 
 ## Seam
 

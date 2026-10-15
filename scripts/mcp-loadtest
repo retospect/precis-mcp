@@ -11,6 +11,10 @@
 #   scripts/mcp-loadtest                          # default ramp 1..32, 20s/step
 #   scripts/mcp-loadtest --ramp 1,4,8 --duration 10
 #   scripts/mcp-loadtest --smoke                  # 1,2 at 5s — wiring check
+#   scripts/mcp-loadtest --servers 3              # multi-process arm
+#
+# The --url mode for a live server (Reto's prod run) runs harness.py on the
+# host instead; the exact command is in docs/backlog/mcp-concurrency-load-test.md.
 #
 # Env:
 #   PRECIS_EMBEDDER_INTERACTIVE_MAX_CONCURRENCY   the interactive embed budget

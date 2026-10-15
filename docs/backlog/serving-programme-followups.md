@@ -56,18 +56,10 @@ Re-run: `scripts/mcp-loadtest --ramp 1,8,32,64 --duration 15`.
    plateaus (`vllm-per-node-serving.md` "Slice 0"). Cheaper than budgeted:
    `vllm/vllm-openai:v0.20.1` is already cached on the box and the nvidia
    docker runtime is already configured.
-5. **Pin `scripts/mcp_loadtest/`** — no tests, outside mypy's `src tests`
-   scope, inert on the cluster (standalone script, imported by nothing).
-   Unit-test the pure functions — `pct()`, `tool_error()`,
-   `CpuMeter.read()`, `verdict()` — the verdict thresholds are the drift risk
-   (`mcp-concurrency-load-test.md` `### Still owed`, first bullet).
-6. **The multi-process arm** — 2-3 `precis serve` processes behind a
-   balancer, re-ramped, to confirm throughput actually scales with processes
-   (`mcp-concurrency-load-test.md` `### Still owed`, last bullet).
-
 Why it is an order: 1 gates `eval-run-spine.md` items 4 and 9; 2 gates item 4
 (GPU-in-container, egress) and the frozen world (Postgres major); 3 decides
-whether 6 is topology or workaround; 4 is the go/no-go for the whole
+whether the multi-process topology (measured 2026-10-15: 3 processes
+give ~3.2x throughput) is permanent or a workaround; 4 is the go/no-go for the whole
 oversubscription design — a Mamba-hybrid ceiling at c=8 kills it
 (`vllm-per-node-serving.md` "Slice 0").
 
