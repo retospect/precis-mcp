@@ -117,12 +117,15 @@ def _block_leg(
         include_ref_ids=include_ref_ids,
         card_kinds=card_kinds,
     )
-    best: dict[int, tuple[Ref, float]] = {}
-    for _block, ref, rank in raw:
-        current = best.get(ref.id)
-        if current is None or rank > current[1]:
-            best[ref.id] = (ref, rank)
-    return [ref for ref, _rank in sorted(best.values(), key=lambda t: -t[1])]
+    # ``search_chunks`` returns blocks most-relevant first in every mode, but
+    # the score's direction differs (semantic is a cosine distance, lower is
+    # better), so collapse by first occurrence, never by comparing scores.
+    # Sorting by score descending kept each ref's farthest chunk and listed
+    # the farthest refs first under mode='semantic' (dogfood r38, fi489589).
+    best: dict[int, Ref] = {}
+    for _block, ref, _rank in raw:
+        best.setdefault(ref.id, ref)
+    return list(best.values())
 
 
 def fused_ref_hits(

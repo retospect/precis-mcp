@@ -121,3 +121,58 @@ def test_list_id_is_badinput_not_attributeerror(hub: Hub) -> None:
     with pytest.raises(BadInput, match="takes one integer"):
         bad_id: Any = [1, 2, 3]
         JobHandler._coerce_id(bad_id)
+
+
+# ── semantic scores are distances: lower is better (dogfood r38) ───────
+
+
+def test_block_leg_keeps_nearest_ref_first_under_semantic() -> None:
+    """``search_chunks(mode='semantic')`` scores are cosine distances, listed
+    nearest first. The collapse used to keep the *highest* score per ref and
+    sort descending, so an exact-sentence hit (distance 0) came last and a
+    small page dropped it (fi489589 missing its own self-search on prod)."""
+    from types import SimpleNamespace
+
+    from precis.utils import ref_hybrid
+
+    near, mid, far = (SimpleNamespace(id=i) for i in (1, 2, 3))
+    rows = [
+        (None, near, 0.0),
+        (None, mid, 0.1),
+        (None, near, 0.2),  # near's second, farther chunk must not demote it
+        (None, far, 0.3),
+    ]
+    fake = SimpleNamespace(chunks=SimpleNamespace(search_chunks=lambda **_kw: rows))
+    refs = ref_hybrid._block_leg(
+        fake,
+        q="q",
+        query_vec=[0.0],
+        mode="semantic",
+        kind="finding",
+        tags=None,
+        limit=1,
+        chunk_kinds=None,
+    )
+    assert [r.id for r in refs] == [1, 2, 3]
+
+
+def test_body_chunk_semantic_page_keeps_the_nearest(store: Store) -> None:
+    """Same inversion in ``_best_body_hits``: page_size=1 under
+    mode='semantic' must return the distance-0 ref, not the farthest."""
+    hub = Hub(store=store, embedder=MockEmbedder(dim=store.embedding_dim()))
+    memory = MemoryHandler(hub=hub)
+    marker = "r38nearestfirst"
+    close = store.insert_ref(kind="memory", slug=None, title="close", meta={})
+    far = store.insert_ref(kind="memory", slug=None, title="far", meta={})
+    for ref, text in ((close, "close text"), (far, "far text")):
+        store.chunks.insert_chunks(
+            ref.id, [ChunkInsert(ord=0, text=f"{marker} {text}", embedding=None)]
+        )
+    lexical = store.chunks.search_chunks(
+        q=marker, mode="lexical", kind="memory", limit=10
+    )
+    block = {ref.id: (blk, ref) for blk, ref, _ in lexical}
+    distance_rows = [(*block[close.id], 0.0), (*block[far.id], 0.3)]
+    with patch.object(store.chunks, "search_chunks", return_value=distance_rows):
+        hits = memory.search_hits(q=marker, mode="semantic", page_size=1)
+    assert [h.ref_id for h in hits] == [close.id]

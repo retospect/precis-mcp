@@ -1511,15 +1511,14 @@ class NumericRefHandler(Handler):
             card_kinds=card_kinds,
             chunk_kinds=chunk_kinds,
         )
+        # ``raw`` is most-relevant first in every mode; the score's direction
+        # is not (semantic is a distance), so keep each ref's first block and
+        # the returned order rather than re-sorting by score.
         best_by_ref: dict[int, tuple[Any, Ref, float]] = {}
         for block, ref, rank in raw:
-            existing = best_by_ref.get(ref.id)
-            if existing is None or rank > existing[2]:
-                best_by_ref[ref.id] = (block, ref, rank)
+            best_by_ref.setdefault(ref.id, (block, ref, rank))
         window_start = max(0, (page - 1) * page_size)
-        ordered = sorted(best_by_ref.values(), key=lambda t: t[2], reverse=True)[
-            window_start : window_start + page_size
-        ]
+        ordered = list(best_by_ref.values())[window_start : window_start + page_size]
         # The count is lexical-only while the hits are now fused, so a
         # semantic-only match would render "3 of 0 matches". Floor the total
         # at what we actually return. (It stays an undercount when semantic
