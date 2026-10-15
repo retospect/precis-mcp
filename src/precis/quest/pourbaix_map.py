@@ -74,6 +74,13 @@ BULK_LAYER_NOTE = (
 #: span is a display choice, not a measurement bound.
 DEFAULT_PH_WINDOW = (0.0, 14.0)
 
+#: The swept potential window (V vs RHE) — a coverage scan's default sweep
+#: (``precis_pathway.coverage_job``) and the map's U axis. A potential
+#: outside it is gas evolution (H2 bubbles below, O2 above), so an engine
+#: ``U_opt`` out there is bounded to the nearest edge for ranking
+#: (gr489166, Reto 2026-10-15: "bound").
+U_RHE_WINDOW: tuple[float, float] = (-1.0, 0.5)
+
 
 # ── store collectors ────────────────────────────────────────────────────
 
@@ -675,6 +682,7 @@ __all__ = [
     "BULK_LAYER_NOTE",
     "DEFAULT_PH_WINDOW",
     "SCAN_JOB_TYPE",
+    "U_RHE_WINDOW",
     "build_map",
     "bulk_layer",
     "bulk_verdict",

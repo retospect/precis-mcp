@@ -32,6 +32,8 @@ from dataclasses import dataclass, field, replace
 from itertools import pairwise
 from typing import TYPE_CHECKING, Any, cast
 
+from precis.quest.pourbaix_map import U_RHE_WINDOW
+
 if TYPE_CHECKING:
     from precis.store import Store
 
@@ -247,7 +249,9 @@ _AXIS_DESCRIPTIONS: dict[str, str] = {
     "U_opt": (
         "The potential (V vs RHE) that minimises the energetic span, "
         "closed form from the crossings of the potential-shifted state and "
-        "transition-state lines."
+        "transition-state lines, bounded to the swept window "
+        "(−1.0…+0.5 V): beyond it is gas evolution, so an optimum out "
+        "there ranks at the nearest edge (flag U_opt_bounded)."
     ),
     "P_side": (
         "Probability the route diverts to a side product: 1 − ∏ over forks "
@@ -1579,6 +1583,8 @@ def _candidate_from_structure(
         if k in meta:
             flags[k] = meta[k]
 
+    _bound_u_opt(measures, flags)
+
     # An untrusted barrier (its pathway had non-converged NEB edges / desorbed
     # or mis-bound adsorbates) is noise, not a measurement — exclude it (and
     # span, plus the CHE electro scalars U_L/U_L_abs/U_opt/span_at_Uopt,
@@ -1643,6 +1649,35 @@ def _candidate_from_structure(
         params=params,
         flags=flags,
     )
+
+
+def _bound_u_opt(measures: dict[str, float], flags: dict[str, Any]) -> None:
+    """Bound an engine ``U_opt`` to the swept potential window (gr489166).
+
+    Along a reduction route the span is non-decreasing in U, so with no
+    window the engine's span-minimising U slides off to any point of a
+    half-line (pw483780: −4.24 V vs RHE) — deep in hydrogen evolution,
+    where bubbles make it no operating point. Read-side, so candidates
+    harvested before the bound rank on it too: ``U_opt`` is clamped to the
+    nearest edge of :data:`precis.quest.pourbaix_map.U_RHE_WINDOW`,
+    ``flags['U_opt_bounded']`` records it and ``flags['U_opt_unbounded']``
+    keeps the engine's value. ``span_at_Uopt`` was taken at the unbounded
+    point, not the edge, so it leaves ``measures`` for
+    ``flags['span_at_Uopt_unbounded']`` rather than rank on a potential
+    the window excludes.
+    """
+    u = measures.get("U_opt")
+    if u is None:
+        return
+    lo, hi = U_RHE_WINDOW
+    if lo <= u <= hi:
+        return
+    measures["U_opt"] = min(max(u, lo), hi)
+    flags["U_opt_bounded"] = True
+    flags["U_opt_unbounded"] = u
+    span = measures.pop("span_at_Uopt", None)
+    if span is not None:
+        flags["span_at_Uopt_unbounded"] = span
 
 
 #: Suffix :func:`_candidate_from_structure` stamps onto ``flags`` for every

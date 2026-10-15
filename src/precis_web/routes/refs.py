@@ -2125,7 +2125,22 @@ async def _pathway_detail(request: Request, store: Store, ref: Any) -> HTMLRespo
         # re-derive-don't-import rule as _pathway_warnings_sections; the
         # harvest side is precis_pathway._dispatch_common._electro_blockers).
         "blocked_by": _pathway_electro_blockers(results),
+        "U_opt_unbounded": None,
     }
+    # gr489166: an engine U_opt outside the swept window is no operating
+    # point (gas evolution) — show it bounded to the nearest edge, as the
+    # quest ranks it (frontier._bound_u_opt), with the raw value beside it.
+    # Its span was taken at the raw point, so it is not shown as span(U_opt).
+    u_opt = results_electro["U_opt"]
+    if isinstance(u_opt, (int, float)) and not isinstance(u_opt, bool):
+        from precis.quest.pourbaix_map import U_RHE_WINDOW
+
+        lo, hi = U_RHE_WINDOW
+        results_electro["U_window"] = [lo, hi]
+        if not lo <= u_opt <= hi:
+            results_electro["U_opt"] = min(max(float(u_opt), lo), hi)
+            results_electro["U_opt_unbounded"] = float(u_opt)
+            results_electro["span_at_Uopt"] = None
 
     # Interactive explorer — the
     # clickable energy diagram (item 1), the per-state 3D cell viewer (item 2),

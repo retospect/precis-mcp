@@ -4115,6 +4115,41 @@ class TestAutocatpathHarvest:
         assert "barrier_trusted" not in meta
         assert "barrier_neb_failed" not in meta
 
+    def test_u_opt_outside_the_swept_window_ranks_at_the_edge(self, store: Any) -> None:
+        """gr489166 (Reto 2026-10-15: "bound"): pw483780's engine U_opt of
+        -4.24 V is deep in hydrogen evolution. It ranks at the window's
+        lower edge, flagged, with the raw value kept; span_at_Uopt was
+        taken at the raw point, so it leaves the measures too."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        self._autocatpath_job(
+            store,
+            sid,
+            {"result": {"barrier": 0.4, "U_opt": -4.24, "span_at_Uopt": 1.96}},
+        )
+        compute_mod.harvest_measures(store, qid)
+        c = _cand(store, sid)
+        assert c.measures["U_opt"] == -1.0
+        assert "span_at_Uopt" not in c.measures
+        assert c.flags["U_opt_bounded"] is True
+        assert c.flags["U_opt_unbounded"] == -4.24
+        assert c.flags["span_at_Uopt_unbounded"] == 1.96
+        assert c.measures["barrier"] == 0.4
+
+    def test_u_opt_inside_the_swept_window_is_untouched(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        self._autocatpath_job(
+            store,
+            sid,
+            {"result": {"barrier": 0.4, "U_opt": -0.3, "span_at_Uopt": 0.9}},
+        )
+        compute_mod.harvest_measures(store, qid)
+        c = _cand(store, sid)
+        assert c.measures["U_opt"] == -0.3
+        assert c.measures["span_at_Uopt"] == 0.9
+        assert "U_opt_bounded" not in c.flags
+
     def test_kinetics_trusted_lifts_tof_and_log_tof_as_measures(
         self, store: Any
     ) -> None:

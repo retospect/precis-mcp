@@ -1420,13 +1420,15 @@ def test_pathway_u_readout_scalars_rendered_when_present(client, runtime) -> Non
     assert "T = 300.00 K" in resp.text
     assert 'id="pw-u-snap-ul"' in resp.text
     assert 'id="pw-u-snap-uopt"' in resp.text
-    assert "off the slider window" not in resp.text
+    assert "(bounded;" not in resp.text
 
 
-def test_pathway_u_opt_off_the_slider_is_flagged(client, runtime) -> None:
-    """gr489166/gr489167: an unconstrained U_opt can sit far outside the
-    -1.5…+0.5 V slider (prod pw483780: -4.24 V). The readout flags it, and
-    the snap names the clamp instead of reading the slider end as U_opt."""
+def test_pathway_u_opt_outside_the_swept_window_is_bounded(client, runtime) -> None:
+    """gr489166 (Reto 2026-10-15: "bound"): an engine U_opt outside the
+    swept -1.0…+0.5 V window (prod pw483780: -4.24 V) is gas evolution, no
+    operating point. The readout shows it at the nearest edge with the
+    engine's value beside it, drops span(U_opt) (taken at the raw point),
+    and the snap button carries the bounded value."""
     _seed_pathway(
         runtime.store,
         meta={"graph": _GRAPH3_NH, "results": {**_ELECTRO_RESULTS, "U_opt": -4.24}},
@@ -1434,11 +1436,22 @@ def test_pathway_u_opt_off_the_slider_is_flagged(client, runtime) -> None:
     )
     resp = client.get("/refs/pathway/171696")
     assert resp.status_code == 200
-    assert "U_opt = -4.240 V" in resp.text
-    assert "(off the slider window)" in resp.text
-    # the snap passes its name so setU can say it clamped
-    assert "setU(V.results && V.results.U_opt, 'U_opt')" in resp.text
-    assert "is off the slider (-1.50" in resp.text
+    assert "U_opt = -1.000 V" in resp.text
+    assert "(bounded; engine -4.24 V)" in resp.text
+    assert "span(U_opt)" not in resp.text
+    assert 'id="pw-u-snap-uopt" data-u="-1.0"' in resp.text
+    assert "setU(parseFloat(snapUopt.dataset.u), 'U_opt')" in resp.text
+
+
+def test_pathway_u_opt_inside_the_window_is_not_bounded(client, runtime) -> None:
+    _seed_pathway(
+        runtime.store,
+        meta={"graph": _GRAPH3_NH, "results": _ELECTRO_RESULTS},
+        body_text=None,
+    )
+    resp = client.get("/refs/pathway/171696")
+    assert 'id="pw-u-snap-uopt" data-u="-0.3"' in resp.text
+    assert "(bounded;" not in resp.text
 
 
 def test_pathway_u_readout_scalars_omitted_when_absent(client, runtime) -> None:

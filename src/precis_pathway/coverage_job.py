@@ -72,6 +72,7 @@ from typing import Any
 
 import numpy as np
 
+from precis.quest.pourbaix_map import U_RHE_WINDOW
 from precis.workers.job_types import JobTypeSpec
 
 from .coverage_sites import representable_coverages, slab_top_sites
@@ -86,7 +87,7 @@ NAME = "surface_coverage_scan"
 #: the pathway run itself).
 DEFAULT_ADSORBATES: tuple[str, ...] = ("H", "O", "OH")
 DEFAULT_COVERAGES: tuple[float, ...] = (0.25, 0.5, 0.75, 1.0)
-DEFAULT_U_WINDOW: tuple[float, float] = (-1.0, 0.5)
+DEFAULT_U_WINDOW: tuple[float, float] = U_RHE_WINDOW
 DEFAULT_GRID = 151
 DEFAULT_PH = 7.0
 

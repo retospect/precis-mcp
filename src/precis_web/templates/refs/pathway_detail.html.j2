@@ -155,9 +155,9 @@
     <button type="button" id="pw-u-snap-ul" class="rounded border border-slate-300 px-1.5 py-0.5 hover:bg-slate-100">&rarr; U_L</button>
     {% endif %}
     {% if results_electro.U_opt is not none %}
-    <span>U_opt = {{ '%.3f'|format(results_electro.U_opt) }} V{% if results_electro.U_opt < -1.5 or results_electro.U_opt > 0.5 %}
-      <span class="pw-uopt-off text-amber-700" title="the span minimum lies outside the slider's -1.5…+0.5 V window — an unconstrained optimum, not an operating point">(off the slider window)</span>{% endif %}</span>
-    <button type="button" id="pw-u-snap-uopt" class="rounded border border-slate-300 px-1.5 py-0.5 hover:bg-slate-100">&rarr; U_opt</button>
+    <span>U_opt = {{ '%.3f'|format(results_electro.U_opt) }} V{% if results_electro.U_opt_unbounded is not none %}
+      <span class="pw-uopt-bounded text-amber-700" title="the engine's span minimum lies outside the swept {{ '%+.1f'|format(results_electro.U_window[0]) }}…{{ '%+.1f'|format(results_electro.U_window[1]) }} V window, in gas evolution — bounded to the nearest edge, as the quest ranks it">(bounded; engine {{ '%.2f'|format(results_electro.U_opt_unbounded) }} V)</span>{% endif %}</span>
+    <button type="button" id="pw-u-snap-uopt" data-u="{{ results_electro.U_opt }}" class="rounded border border-slate-300 px-1.5 py-0.5 hover:bg-slate-100">&rarr; U_opt</button>
     {% endif %}
     {% if results_electro.span_at_Uopt is not none %}
     <span>span(U_opt) = {{ '%.3f'|format(results_electro.span_at_Uopt) }} eV</span>
@@ -1995,7 +1995,9 @@
   const snapUL = document.getElementById('pw-u-snap-ul');
   const snapUopt = document.getElementById('pw-u-snap-uopt');
   if (snapUL) snapUL.addEventListener('click', () => setU(V.results && V.results.U_L, 'U_L'));
-  if (snapUopt) snapUopt.addEventListener('click', () => setU(V.results && V.results.U_opt, 'U_opt'));
+  // The bounded U_opt (gr489166): the server clamps an engine optimum
+  // outside the swept window to its nearest edge, as the quest ranks it.
+  if (snapUopt) snapUopt.addEventListener('click', () => setU(parseFloat(snapUopt.dataset.u), 'U_opt'));
 
   // Copy-link (gr486822) — the address bar already carries the whole
   // selection, so the button just copies location.href; the clipboard API
