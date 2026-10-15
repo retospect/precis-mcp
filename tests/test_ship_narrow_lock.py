@@ -142,14 +142,23 @@ class Rig:
             if lib.is_file() and lib.suffix in (".sh", ".py"):
                 shutil.copy2(lib, scripts / "lib" / lib.name)
         shutil.copy2(REPO / "scripts" / "migration-check", scripts / "migration-check")
-        # --checked computes its selection via scripts/select-tests (stdlib,
-        # host-side — works on this minimal tree).
-        sel = REPO / "scripts" / "select-tests"
-        if sel.exists():
-            shutil.copy2(sel, scripts / "select-tests")
         # Drift guard: "age unknown" never refuses (no gh in the rig).
         stub = scripts / "last-gated-main-sha"
         stub.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        stub.chmod(0o755)
+        # --checked computes its selection via scripts/impacted-tests. The
+        # real selector needs the project env + python index, which the rig
+        # repo does not carry — stub it: emit $PRECIS_IMPACTED_STUB verbatim
+        # when set (the test drives the full protocol: 'testmon=N' + targets,
+        # or 'FULL', or a missing file for selector failure), else a minimal
+        # 'testmon=0' + one target.
+        stub = scripts / "impacted-tests"
+        stub.write_text(
+            "#!/bin/sh\n"
+            'if [ -n "${PRECIS_IMPACTED_STUB:-}" ]; then cat "$PRECIS_IMPACTED_STUB";'
+            ' else printf "testmon=0\\ntests/test_stub.py\\n"; fi\n',
+            encoding="utf-8",
+        )
         stub.chmod(0o755)
         (self.primary / ".gitignore").write_text(
             ".claude/\n.ship-sha\ncoverage.xml\n", encoding="utf-8"
@@ -293,7 +302,7 @@ def test_quick_lost_race_forward_merges_and_lands(rig: Rig) -> None:
 
 
 def test_checked_ship_runs_lint_and_selection(rig: Rig) -> None:
-    """--checked = pre-qland lint + the select-tests selection in one extra
+    """--checked = pre-qland lint + the impacted-tests selection in one extra
     gate leg (the fake gate counts two runs), then the --quick merge
     machinery and the PARTIALLY TESTED banner."""
     wt = rig.worktree("chk", {"chk.txt": "c\n"})
@@ -356,6 +365,62 @@ def test_budget_exhausted_full_gate_lands_without_pin(rig: Rig) -> None:
         r"^Gate: forward-merged over 1 commits; tested base [0-9a-f]{40}$", msg, re.M
     ), msg
     assert rig.g(rig.origin, "rev-parse", "refs/heads/main^") == racer_sha
+    assert not rig.lockdir().exists()
+
+
+def test_no_tests_flag_is_rejected(rig: Rig) -> None:
+    """--no-tests is gone: --quick IS the lint-only lane, --checked adds the
+    impacted selection — an unknown flag must die at parse time."""
+    wt = rig.worktree("nt", {"nt.py": "x = 1\n"})
+    proc = subprocess.run(
+        [_BASH, "scripts/ship", "--quick", "--no-tests", "-m", "chore(test): x"],
+        cwd=wt,
+        env=rig.env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert proc.returncode == 2
+    assert "unknown flag --no-tests" in proc.stdout + proc.stderr
+
+
+def test_checked_empty_selection_refuses(rig: Rig) -> None:
+    """A selector that returns nothing on a non-empty diff is broken — the
+    checked lane refuses rather than shipping an untested tree."""
+    sel = rig.root / "sel.txt"
+    sel.write_text("testmon=0\n", encoding="utf-8")
+    wt = rig.worktree("emp", {"emp.py": "x = 1\n"})
+    p, log = rig.ship(wt, "--checked", sleep=1, PRECIS_IMPACTED_STUB=str(sel))
+    rc = p.wait(timeout=120)
+    out = log.read_text(encoding="utf-8")
+    assert rc != 0, out
+    assert "selected nothing" in out
+    assert not rig.lockdir().exists()
+
+
+def test_checked_full_selection_refuses(rig: Rig) -> None:
+    """A harness/schema diff has no honest subset: the selector answers
+    FULL and --checked points at the heavier lanes."""
+    sel = rig.root / "sel.txt"
+    sel.write_text("FULL\n", encoding="utf-8")
+    wt = rig.worktree("ful", {"ful.py": "x = 1\n"})
+    p, log = rig.ship(wt, "--checked", sleep=1, PRECIS_IMPACTED_STUB=str(sel))
+    rc = p.wait(timeout=120)
+    out = log.read_text(encoding="utf-8")
+    assert rc != 0, out
+    assert "selector answers FULL" in out
+    assert "--full" in out
+    assert not rig.lockdir().exists()
+
+
+def test_checked_selector_failure_refuses(rig: Rig) -> None:
+    sel = rig.root / "missing.txt"  # the stub cats this; absent -> cat exits 1
+    wt = rig.worktree("sf", {"sf.py": "x = 1\n"})
+    p, log = rig.ship(wt, "--checked", sleep=1, PRECIS_IMPACTED_STUB=str(sel))
+    rc = p.wait(timeout=120)
+    out = log.read_text(encoding="utf-8")
+    assert rc != 0, out
+    assert "cannot compute the checked selection" in out
     assert not rig.lockdir().exists()
 
 

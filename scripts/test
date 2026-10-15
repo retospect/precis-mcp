@@ -198,9 +198,10 @@ IMPACTED=0
 FAST=0
 # --selected : the `scripts/ship --checked` selection, run locally — the
 # CONTRACT invariant tests + PATH_MAP/corpus-coupled tests + python impact
-# (testmon when ./.testmondata exists, else a static direct-importer scan).
-# Selection is computed host-side by scripts/select-tests; never widens to
-# the full suite. -m 'not slow' applies, same as --impacted.
+# (testmon when ./.testmondata exists, else the index's static evidence).
+# Selection is computed host-side by scripts/impacted-tests (one selector,
+# shared with the release lane). A harness/schema diff answers FULL → the
+# whole suite runs. -m 'not slow' applies, same as --impacted.
 SELECTED=0
 # --coverage : opt-in per-test-context coverage (NOT the default; the ship
 # gate keeps its own coverage path). Passes pytest-cov's
@@ -214,16 +215,22 @@ if [[ "${1:-}" == "--impacted" || "${1:-}" == "-i" ]]; then IMPACTED=1; shift; f
 if [[ "${1:-}" == "--fast" || "${1:-}" == "-f" ]]; then FAST=1; shift; fi
 if [[ "${1:-}" == "--selected" ]]; then SELECTED=1; shift; fi
 
-# --selected: compute the checked-gate selection host-side (stdlib-only
-# script, no container needed). testmon=1 means a ./.testmondata map exists
+# --selected: compute the checked-gate selection host-side (no container
+# needed). testmon=1 means a ./.testmondata map exists
 # for this worktree — reuse the --impacted plumbing for the python half and
 # add the static (contract + map + corpus) half on top.
 SEL_ARGS=()
 if [[ "$SELECTED" == 1 ]]; then
-    _sel_out="$(scripts/select-tests)" || { echo "ERR: scripts/select-tests failed" >&2; exit 1; }
-    _sel_first="${_sel_out%%$'\n'*}"
-    while IFS= read -r _l; do [[ -n "$_l" ]] && SEL_ARGS+=("$_l"); done <<< "$(tail -n +2 <<<"$_sel_out")"
-    if [[ "$_sel_first" == "testmon=1" ]]; then IMPACTED=1; fi
+    _sel_out="$(scripts/impacted-tests)" || { echo "ERR: scripts/impacted-tests failed" >&2; exit 1; }
+    if [[ "$_sel_out" == "FULL" ]]; then
+        # Harness/schema touched — the honest selection IS the suite.
+        echo "checked selection: FULL (harness/schema change) — running the whole suite" >&2
+        SELECTED=0
+    else
+        _sel_first="${_sel_out%%$'\n'*}"
+        while IFS= read -r _l; do [[ -n "$_l" ]] && SEL_ARGS+=("$_l"); done <<< "$(tail -n +2 <<<"$_sel_out")"
+        if [[ "$_sel_first" == "testmon=1" ]]; then IMPACTED=1; fi
+    fi
 fi
 
 INFRA_COMPOSE="${PRECIS_COMPOSE:-${PWD}/docker/dev/compose.yaml}"

@@ -1,4 +1,4 @@
-"""The checked-gate selection (``scripts/select-tests``) stays honest.
+"""The checked-gate selection (``scripts/impacted-tests``) stays honest.
 
 ``--checked`` / ``--selected`` are only useful if the selection actually
 contains the tests a diff can red. This file is the ratchet (gr485791):
@@ -19,6 +19,7 @@ import importlib.machinery
 import importlib.util
 import os
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -26,18 +27,19 @@ from typing import Any
 import pytest
 
 REPO = Path(__file__).resolve().parent.parent
-SEL_PATH = REPO / "scripts" / "select-tests"
+SEL_PATH = REPO / "scripts" / "impacted-tests"
 
 # extension-less executable — hand SourceFileLoader an explicit loader, from
 # a `.py`-suffixed COPY: pytest-testmon fingerprints executed files by
 # extension and IndexErrors on one that has none (same trick as
 # tests/test_coderef_structural.py).
-_sel_copy = Path(tempfile.mkdtemp(prefix="select_tests_py_")) / "select_tests.py"
+_sel_copy = Path(tempfile.mkdtemp(prefix="select_tests_py_")) / "impacted_tests.py"
 shutil.copyfile(SEL_PATH, _sel_copy)
-_loader = importlib.machinery.SourceFileLoader("select_tests", str(_sel_copy))
-_spec = importlib.util.spec_from_loader("select_tests", _loader)
+_loader = importlib.machinery.SourceFileLoader("impacted_tests", str(_sel_copy))
+_spec = importlib.util.spec_from_loader("impacted_tests", _loader)
 assert _spec and _spec.loader
 sel: Any = importlib.util.module_from_spec(_spec)
+sys.modules["impacted_tests"] = sel  # slots=True dataclasses look up __module__
 _spec.loader.exec_module(sel)
 
 
@@ -105,6 +107,10 @@ def test_every_corpus_ref_is_selectable(selector: sel.Selector) -> None:
         trel = str(tpath.relative_to(REPO))
         for ref in refs:
             if ref == "tests" or ref.startswith("tests/"):
+                continue
+            if sel._is_full_trigger(ref):
+                # harness/schema paths select everything (FULL) — coverage
+                # is total by construction, no subset to prove here
                 continue
             targets, _ = selector.select([ref])
             if trel not in {str(_resolve(t)[0].relative_to(REPO)) for t in targets}:

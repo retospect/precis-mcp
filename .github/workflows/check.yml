@@ -317,6 +317,64 @@ jobs:
           python-version: '3.13'
       - run: uv run --all-extras --no-extra catalyst --no-extra catalyst-gpu pytest -m 'not db and not slow'
 
+  # Nightly per-test coverage DB — the measured tier for
+  # scripts/impacted-tests (ship --checked / test --selected today; a
+  # future release lane once the selector has a track record). The whole
+  # suite runs once, unsharded, with `--cov-context=test` so coverage
+  # records which test touched which line; scripts/lib/coverage_manifest.py
+  # then hashes every measured file into .coverage.precis.json (freshness +
+  # base-blob verification), and both files go up as the
+  # `precis-coverage-db` artifact that the selector's --fetch-db downloads.
+  # ~suite wall-clock on one runner is fine at 05:23 — not on the gate path.
+  coverage-db:
+    if: github.event_name == 'schedule' || inputs.full == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: precis_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: '3.13'
+      - name: Install PostgreSQL 17 client to match the pg17 server
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-17
+          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+      - run: >-
+          uv run --all-extras --no-extra catalyst --no-extra catalyst-gpu
+          pytest -n 6 --cov=src --cov-context=test --cov-report=
+        env:
+          PRECIS_TEST_PG_URL: postgresql://postgres:postgres@localhost:5432/precis_test
+      - run: uv run python scripts/lib/coverage_manifest.py .coverage
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: precis-coverage-db
+          path: |
+            .coverage
+            .coverage.precis.json
+          retention-days: 3
+
   # macOS / Windows: no service-container support, so postgres is absent
   # and the db-tagged tests auto-skip via the conftest probe. These legs
   # cover the db-less suite + platform-specific paths. Nightly only (or

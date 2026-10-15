@@ -1,0 +1,1384 @@
+#!/usr/bin/env -S uv run --frozen python
+"""scripts/impacted-tests — the ONE diff -> tests selector.
+
+Used by every lane that asks "which tests does this change affect":
+``scripts/ship --checked`` (the qland middle rung), ``scripts/test
+--selected``, and the measured tiers keep a ``BASE HEAD`` mode for the
+deferred release lane — release gating on the impacted set is deferred
+until the selector has a track record (the full suite gates releases).
+There is deliberately no second selector — a coupling only has to be
+recorded once here.
+
+Input modes:
+
+  scripts/impacted-tests BASE [HEAD]   committed diff (release lane)
+  scripts/impacted-tests               worktree diff: merge-base..HEAD + dirty
+  scripts/impacted-tests --files a b   explicit changed paths (repo-relative)
+  scripts/impacted-tests --stdin       changed paths on stdin (ship --checked)
+
+Output: BASE mode prints ``file<TAB>reason`` (or ``FULL``); the worktree
+family prints line 1 ``testmon=0|1`` then one pytest target per line (or
+``FULL`` alone) — the wire protocol ``scripts/select-tests`` had, so
+``ship --checked`` / ``test --selected`` parse it unchanged. ``testmon=1``
+means this worktree has a ``.testmondata`` map AND Python code is in the
+affected set — the caller should additionally run ``pytest --testmon``.
+
+Evidence, strongest first:
+
+  measured   the per-test-context coverage DB (``.coverage`` + the
+             ``.coverage.precis.json`` manifest that ``scripts/test
+             --coverage`` or the nightly coverage job leave). Used only
+             when the DB is fresh (manifest ``created_at`` within
+             MAX_DB_AGE_HOURS and not older than the base commit) AND a
+             changed file's manifest hash matches its BASE blob —
+             coverage speaks base-side line numbers. Each diff hunk is
+             widened to its enclosing base-side symbol before lookup.
+  static     the python index's call graph + imports: for each changed
+             .py module, ``discover_tests`` per changed symbol; test
+             modules that import the changed module; test files named
+             after it (``test_<stem>``); test sources that name the
+             changed path/basename (covers scripts, fixtures, prompts,
+             skills — anything a test reads by name).
+  contract   CONTRACT — the fast repo-invariant tests that always run:
+             audited tables, closed registries, ratchets, doc/secret/vocab
+             scans. They assert over the whole tree, so a data or config
+             change can red them with no import edge at all.
+  corpus     PATH_MAP — explicit glob -> target couplings the scans cannot
+             see (handler mode/arg vocab vs the audited parity table,
+             reviewed-blob pins, migrations, skill corpus) — plus resolved
+             corpus refs: every test (and src module) is scanned for the
+             repo paths it reads (string literals, ``Path(__file__)``-
+             anchored joins, ``importlib.resources.files(<pkg>)``, dir
+             enumerations), and a changed path selects every test whose
+             refs cover it.
+  always     never narrowed away: a changed test file is itself;
+             ``*/migrations/*.sql`` selects the migration/schema set;
+             docs-only diffs select the doc-hygiene set; a non-doc file
+             with zero other evidence adds the smoke set (unsure widens).
+  full       pyproject/uv.lock/conftest/scripts/test/docker/workflow
+             changes run the WHOLE suite — those change the harness
+             itself, so no selection is honest. Prints ``FULL``.
+
+Usage:
+  scripts/impacted-tests BASE HEAD --list  bare paths for xargs/pytest
+  scripts/impacted-tests --smoke           the fixed smoke set
+  scripts/impacted-tests --migrations      the migration/schema set
+  scripts/impacted-tests BASE HEAD --json  machine-readable selection
+  scripts/impacted-tests --list-contract   the CONTRACT + PATH_MAP tables
+  --db PATH    coverage DB (or dir holding one); default: ./.coverage
+               then $PRECIS_COVERAGE_DB_DIR/.coverage
+  --fetch-db   download the latest nightly coverage artifact into the
+               cache dir (needs gh) — off by default
+
+Static fan-out runs on the indexed working tree (same documented
+limitation as the python kind's impact view); at gate time the worktree
+IS the head, so this costs nothing.
+"""
+
+from __future__ import annotations
+
+import argparse
+import ast
+import fnmatch
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+REPO = Path(__file__).resolve().parent.parent
+
+# A file change under any of these means the harness/schema itself moved —
+# no subset is an honest answer, run everything.
+_FULL_EXACT = frozenset(
+    {
+        "pyproject.toml",
+        "uv.lock",
+        "pytest.ini",
+        "tox.ini",
+        "scripts/test",
+        "scripts/impacted-tests",  # the selector must never gate itself
+    }
+)
+_FULL_GLOBS = (
+    re.compile(r"(^|/)conftest\.py$"),
+    re.compile(r"^docker/"),
+    re.compile(r"^\.github/workflows/"),
+)
+
+_MIGRATION_RE = re.compile(r"/migrations/[^/]+\.sql$")
+
+# Migration/schema battery: resolved by glob so new files join it
+# automatically. Sorted for determinism.
+_MIGRATION_PATTERNS = (
+    "tests/test_*migrat*.py",
+    "tests/test_*schema*.py",
+    "tests/test_baseline_seed_tables.py",
+)
+
+# Docs-only diffs: the DB-free hygiene battery — the same doc-reading tests
+# the qland lint runs (doc pointers, skill prose, the tree-wide secrets
+# sweep, vocab lint, backlog front-matter).
+_DOCS_HYGIENE = (
+    "tests/test_doc_pointers.py",
+    "tests/test_skill_prose.py",
+    "tests/test_deploy_tree_no_secrets.py",
+    "tests/test_vocab_lint.py",
+    "tests/test_backlog_lint.py",
+)
+
+# Fixed smoke set (~a couple of minutes): boot + the verb registry, every
+# advertised kwarg reachable, migrate on an empty DB + the startup schema
+# gate, the shipped skill corpus, the web app import, the CLI.
+SMOKE_TESTS = (
+    "tests/test_dispatch.py",
+    "tests/test_mcp_verb_kwarg_parity.py",
+    "tests/test_cli.py",
+    "tests/test_initial_migration.py",
+    "tests/test_startup_schema_check.py",
+    "tests/test_skill_ingest.py",
+    "tests/precis_web/test_env_context.py",
+)
+
+_DOC_PATH = re.compile(r"^(docs/|[^/]+\.md$|\.gitignore$|LICENSE$|CITATION\.cff$)")
+
+# A coverage DB older than this many hours, or older than the base commit,
+# is stale: static evidence + widening only.
+MAX_DB_AGE_HOURS = 48.0
+
+# Reverse-call depth for the static ladder (helpers/fixtures between the
+# test and the changed symbol).
+_DEPTH = 3
+
+# ── CONTRACT: repo-wide invariants, always selected ──────────────────────
+# The pre-qland hygiene set + the --impacted unconditional set + the audited
+# tables. Keep it to things that take seconds; anything heavy belongs in the
+# map or the import scan instead.
+CONTRACT: list[str] = [
+    # qland hygiene: doc pointers, skill prose, the public-tree secret scan,
+    # vocabulary lint — every one of these has reddened main from a lint-only
+    # land before (gr458977, the 2026-10-03 cluster).
+    "tests/test_doc_pointers.py",
+    "tests/test_skill_prose.py",
+    "tests/test_deploy_tree_no_secrets.py",
+    "tests/test_vocab_lint.py",
+    # code hygiene: ratchets and text-walk guards
+    "tests/test_type_ignore_ratchet.py",
+    "tests/test_posix_only_guards.py",
+    "tests/test_text_io_encoding.py",
+    "tests/test_extra_only_import_guards.py",
+    "tests/test_store_mixin_guard.py",
+    "tests/test_utc_time_convention.py",
+    "tests/test_skill_ingest.py::test_shipped_skill_corpus_has_zero_gate_findings",
+    # schema/migration invariants (testmon has no edge to them — glob-driven)
+    "tests/test_migration_numbering.py",
+    "tests/test_schema_baseline.py",
+    "tests/test_schema_design.py",
+    # cross-cutting wire-shape guards (gr277298 — a mid-red map drops the edge)
+    "tests/test_token_budget.py",
+    "tests/test_mcp_verb_kwarg_parity.py",
+    # audited per-kind mode table + closed skill-family set
+    "tests/test_mode_spec_parity.py",
+    "tests/test_skill_refs.py::test_families_are_a_closed_set_with_real_groups",
+]
+
+# ── PATH_MAP: explicit couplings the corpus scanner cannot see ───────────
+# (glob, [pytest targets]). A changed path selects the union of targets of
+# every pattern covering it. Literal couplings (a test that reads the file)
+# are detected by the corpus scan and do NOT need entries here — this table
+# is for *semantic* couplings only. Every pattern must match ≥1 live repo
+# path and every target must exist (tests/test_select_tests.py enforces).
+PATH_MAP: list[tuple[str, list[str]]] = [
+    # Handler mode/arg vocab: the audited parity table asserts what handlers
+    # declare vs. what they actually branch on — a memory edit-mode added in
+    # handlers/memory.py broke test_mode_spec_parity in r35. Semantic
+    # coupling, not an import or literal edge.
+    (
+        "src/precis/handlers/*.py",
+        [
+            "tests/test_mode_spec_parity.py",
+            "tests/test_mcp_verb_kwarg_parity.py",
+        ],
+    ),
+    # Reviewed-blob pins: the mirror acceptance test pins git blob shas of
+    # these files (MIRROR_BLOBS) — an edit reds it. The literal is detected
+    # by the corpus scan too; listed so the coupling survives a literal-free
+    # refactor of the test.
+    ("src/precis/utils/text.py", ["tests/test_memory_mirror_acceptance.py"]),
+    ("src/precis/cli/memory.py", ["tests/test_memory_mirror_acceptance.py"]),
+    ("src/precis/cli/memory_mirror.py", ["tests/test_memory_mirror_acceptance.py"]),
+    # New SQL migrations: the qgo guard + ship tests scan migrations dirs by
+    # name convention, and numbering/baseline/design are CONTRACT already.
+    (
+        "**/migrations/**",
+        [
+            "tests/test_qgo_guard.py",
+            "tests/test_secret_hint_migration.py",
+        ],
+    ),
+    # Skill corpus: the family closed set + registry/ingest assertions are
+    # largely _list_skills()-mediated (importlib.resources, no literal in the
+    # test). The corpus scan picks that up via the handler module's
+    # resources.files() ref; the entry keeps the coupling independent of it.
+    (
+        "src/precis/data/skills/**",
+        [
+            "tests/test_skill.py",
+            "tests/test_skill_refs.py",
+            "tests/test_skill_ingest.py",
+            "tests/test_skill_plugin_group.py",
+        ],
+    ),
+    # hexfold examples: the snapshot tables enumerate hexfold/examples/*.hx.
+    # A .hx added anywhere is corpus, not just under examples/.
+    (
+        "**/*.hx",
+        [
+            "tests/hexfold/test_seam.py",
+            "tests/hexfold/test_rebuild_idempotent.py",
+        ],
+    ),
+]
+
+# Repo prefixes that are never corpus coupling (git internals are not
+# committable input).
+_IGNORED_REF_PREFIXES = (".git",)
+
+
+def _git(root: Path, *args: str) -> str:
+    cp = subprocess.run(
+        ["git", "-C", str(root), *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+        check=False,
+    )
+    if cp.returncode != 0:
+        raise SystemExit(
+            f"impacted-tests: `git {' '.join(args)}` failed: {cp.stderr.strip()[:300]}"
+        )
+    return cp.stdout
+
+
+def _repo_root() -> Path:
+    cp = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    if cp.returncode != 0:
+        raise SystemExit("impacted-tests: not inside a git worktree")
+    return Path(cp.stdout.strip())
+
+
+def _resolve(root: Path, rev: str) -> str:
+    sha = _git(root, "rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}").strip()
+    if not sha:
+        raise SystemExit(f"impacted-tests: {rev!r} does not resolve to a commit")
+    return sha
+
+
+def changed_files(root: Path, base: str, head: str) -> dict[str, str]:
+    """{path: status-letter} for every changed path (not just .py)."""
+    out = _git(root, "diff", "--name-status", "-z", "--no-renames", base, head)
+    fields = [f for f in out.split("\0") if f]
+    changes: dict[str, str] = {}
+    for i in range(0, len(fields) - 1, 2):
+        changes[fields[i + 1]] = fields[i][0]
+    return changes
+
+
+def _merge_base(root: Path) -> str | None:
+    """merge-base of HEAD with origin/main (or main); None when neither ref
+    exists, or there is no git at all (the gate container) — blob-side
+    tiers go quiet then."""
+    try:
+        for base in ("origin/main", "main"):
+            if _git(root, "rev-parse", "--verify", "-q", base).strip():
+                mb = _git(root, "merge-base", base, "HEAD").strip()
+                if mb:
+                    return mb
+    except SystemExit:
+        return None
+    return None
+
+
+def default_changed(root: Path) -> dict[str, str]:
+    """The worktree-mode diff: branch commits vs origin/main (or main) plus
+    dirty/untracked files."""
+    changes: dict[str, str] = {}
+    mb = _merge_base(root)
+    if mb:
+        changes.update(changed_files(root, mb, "HEAD"))
+    dirty = _git(root, "status", "--porcelain=v1", "-z", "--untracked-files=normal")
+    for rec in dirty.split("\0"):
+        if not rec:
+            continue
+        name = rec[3:]
+        if " -> " in name:
+            name = name.split(" -> ", 1)[1]
+        changes.setdefault(name.strip('"'), "M")
+    return changes
+
+
+def _blob(root: Path, rev: str, path: str) -> bytes | None:
+    cp = subprocess.run(
+        ["git", "-C", str(root), "show", f"{rev}:{path}"],
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    return cp.stdout if cp.returncode == 0 else None
+
+
+def _tree_paths(root: Path, rev: str) -> set[str]:
+    out = _git(root, "ls-tree", "-r", "--name-only", "-z", rev)
+    return {p for p in out.split("\0") if p.endswith(".py")}
+
+
+def _commit_time(root: Path, rev: str) -> datetime | None:
+    out = _git(root, "show", "-s", "--format=%cI", rev).strip()
+    try:
+        return datetime.fromisoformat(out)
+    except ValueError:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Measured tier — the per-test coverage DB, verified against BASE bytes
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class CoverageDB:
+    """A usable per-test-context DB, or why it wasn't used."""
+
+    state: str  # ok | absent | stale | no-contexts | unreadable | unverified
+    note: str
+    data: Any = None  # coverage.CoverageData once state == 'ok'
+    manifest: dict[str, str] = field(default_factory=dict)
+
+
+def _load_manifest(db: Path) -> tuple[dict[str, str], datetime | None]:
+    """(files map, created_at) from the manifest beside ``db``."""
+    man = db.parent / ".coverage.precis.json"
+    try:
+        raw = json.loads(man.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}, None
+    files = raw.get("files")
+    if not isinstance(files, dict):
+        return {}, None
+    try:
+        created = datetime.fromisoformat(
+            str(raw.get("created_at")).replace("Z", "+00:00")
+        )
+    except ValueError:
+        created = None
+    return {str(k): str(v) for k, v in files.items()}, created
+
+
+def load_coverage(root: Path, db: Path | None, base: str) -> CoverageDB:
+    """Open ``db`` if it is fresh and has per-test contexts.
+
+    Fresh: manifest ``created_at`` within MAX_DB_AGE_HOURS and not older
+    than the base commit's timestamp. Per-file verification (manifest hash
+    vs the BASE blob, not the worktree — the DB measured base bytes) is
+    lazy: ``verify_file`` answers it per changed file.
+    """
+    if db is None or not db.is_file():
+        return CoverageDB("absent", "no usable coverage DB found")
+    manifest, created = _load_manifest(db)
+    if not manifest:
+        return CoverageDB(
+            "unverified", f"{db.name} has no readable .coverage.precis.json manifest"
+        )
+    if created is None:
+        return CoverageDB(
+            "stale", "manifest has no created_at — cannot prove freshness"
+        )
+    age_h = (datetime.now(UTC) - created).total_seconds() / 3600
+    if age_h > MAX_DB_AGE_HOURS:
+        return CoverageDB(
+            "stale", f"coverage DB is {age_h:.0f}h old (> {MAX_DB_AGE_HOURS:g}h)"
+        )
+    base_time = _commit_time(root, base)
+    if base_time is not None and created < base_time:
+        return CoverageDB("stale", "coverage DB predates the base commit")
+    try:
+        import coverage  # dev dep (pytest-cov); lazy by design
+    except ImportError:
+        return CoverageDB("unreadable", "coverage package not importable here")
+    try:
+        data = coverage.CoverageData(basename=str(db))
+        data.read()
+    except Exception as exc:
+        return CoverageDB(
+            "unreadable", f"{db.name} unreadable: {type(exc).__name__}: {exc}"
+        )
+    if not any(ctx.split("|", 1)[0] for ctx in data.measured_contexts()):
+        return CoverageDB("no-contexts", f"{db.name} has no per-test contexts")
+    return CoverageDB(
+        "ok", f"coverage DB verified ({age_h:.0f}h old)", data=data, manifest=manifest
+    )
+
+
+def verify_file(cdb: CoverageDB, root: Path, base: str, rel: str) -> str | None:
+    """DB path key for ``rel`` when its manifest hash matches the BASE blob."""
+    for key, want in cdb.manifest.items():
+        if key == rel or key.endswith("/" + rel) or rel.endswith("/" + key):
+            raw = _blob(root, base, rel)
+            if raw is not None and hashlib.sha256(raw).hexdigest() == want:
+                return key
+            return None
+    return None
+
+
+def measured_tests(cdb: CoverageDB, db_key: str, lines: set[int] | None) -> set[str]:
+    """Test files whose context covered any of ``lines`` (None = the file)."""
+    by_line = cdb.data.contexts_by_lineno(db_key)
+    out: set[str] = set()
+    for lineno, ctxs in by_line.items():
+        if lines is not None and lineno not in lines:
+            continue
+        for ctx in ctxs:
+            nodeid = ctx.split("|", 1)[0]
+            if nodeid:
+                out.add(nodeid.split("::", 1)[0])
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Static tier — the python index's call graph / imports / names
+# ---------------------------------------------------------------------------
+
+
+def _index(root: Path):
+    from precis.python_index import index_repo
+
+    return index_repo(root)
+
+
+def _symbol_diff(root: Path, base: str, head: str, files: list[str]):
+    """(per-file ChangedSymbol list, base-side ModuleIndex map) from blobs."""
+    from precis.handlers._python_impact import _diff_modules, _index_side
+
+    base_tree = _tree_paths(root, base)
+    head_tree = _tree_paths(root, head)
+    base_mods = _index_side(
+        {},
+        {f: _blob(root, base, f) for f in files if f in base_tree},
+        base_tree,
+    )
+    head_mods = _index_side(
+        {},
+        {f: _blob(root, head, f) for f in files if f in head_tree},
+        head_tree,
+    )
+    by_file: dict[str, list] = {}
+    for ch in _diff_modules(base_mods, head_mods):
+        by_file.setdefault(ch.file, []).append(ch)
+    return by_file, base_mods
+
+
+def _base_symbol_ranges(
+    base_mod: Any, changes: list, hunk_ranges: list[tuple[int, int]]
+) -> set[int]:
+    """Base-side lines for measured lookup: each changed symbol's range,
+    plus each diff hunk widened to its enclosing symbol (or +-2 lines)."""
+    lines: set[int] = set()
+    if base_mod is not None:
+        syms = {s.qualname: s for s in base_mod.symbols}
+        for ch in changes:
+            s = syms.get(ch.qualname)
+            if s is not None:
+                lines.update(range(s.start_line, s.end_line + 1))
+        for start, end in hunk_ranges:
+            owner = None
+            for s in base_mod.symbols:
+                if s.kind != "module" and s.start_line <= start <= s.end_line:
+                    if owner is None or s.start_line > owner.start_line:
+                        owner = s
+            if owner is not None:
+                lines.update(range(owner.start_line, owner.end_line + 1))
+            else:
+                lines.update(range(max(1, start - 2), end + 3))
+    else:
+        for start, end in hunk_ranges:
+            lines.update(range(max(1, start - 2), end + 3))
+    return lines
+
+
+def _hunk_ranges(root: Path, base: str, head: str, path: str) -> list[tuple[int, int]]:
+    """Base-side (start, end) line ranges per diff hunk of one file."""
+    out = _git(root, "diff", "-U0", "--no-renames", base, head, "--", path)
+    ranges: list[tuple[int, int]] = []
+    for line in out.splitlines():
+        m = re.match(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", line)
+        if not m:
+            continue
+        start, count = int(m.group(1)), int(m.group(2) or "1")
+        if count == 0:
+            # Pure addition: anchor at the surrounding base line.
+            ranges.append((max(1, start), max(1, start)))
+        else:
+            ranges.append((start, start + count - 1))
+    return ranges
+
+
+def _is_test(path: str) -> bool:
+    from precis.handlers._python_tests import is_test_path
+
+    return is_test_path(path)
+
+
+_COLLECTABLE = re.compile(r"(^|/)test_[^/]+\.py$|_test\.py$")
+
+
+def _collectable(path: str) -> bool:
+    """A path pytest would actually collect: under tests/ and test-named.
+    ``file::node`` targets are judged by their file part."""
+    file = path.split("::", 1)[0]
+    return file.startswith("tests/") and bool(_COLLECTABLE.search(file))
+
+
+def _text_scan(
+    idx, path: str, extra_needles: list[str] | None = None
+) -> dict[str, str]:
+    """Test files whose source names the changed path, basename or stem.
+    Only for real files — a changed directory's name is a corpus/name-match
+    question, not a substring one."""
+    out: dict[str, str] = {}
+    base = Path(path).name
+    stem = Path(path).stem
+    needles = [path, *(extra_needles or [])]
+    if "." in base or len(base) >= 6:
+        needles.append(base)
+    if len(stem) >= 5:
+        needles.append(stem)
+    for tmod in idx.modules.values():
+        if not _collectable(tmod.file) or tmod.source is None:
+            continue
+        for n in needles:
+            if n and n in tmod.source:
+                out.setdefault(tmod.file, f"test source names `{n}`")
+                break
+    return out
+
+
+def _name_match(idx, path: str) -> dict[str, str]:
+    """Test files whose own name mentions the changed file's stem."""
+    stem = Path(path).stem
+    if len(stem) < 4:
+        return {}
+    return {
+        tmod.file: f"test file name mentions `{stem}`"
+        for tmod in idx.modules.values()
+        if _collectable(tmod.file) and stem in Path(tmod.file).stem
+    }
+
+
+def _skip(hit) -> bool:
+    """Evidence a gate can't afford: name-substring matches and fixture-
+    parameter guesses. The navigation ladder's two weakest tiers match
+    loosely (`main`, `complete`, `n`, `handler`, `stored` each hit
+    hundreds of tests) — right for a human browsing, wrong for a gate.
+    Call edges (direct/indirect) and imports stay; "tests named after the
+    module" is covered precisely by ``_name_match`` on the module stem.
+    Anything pytest would not collect is dropped too."""
+    from precis.handlers._python_tests import TIER_NAMING
+
+    if not _collectable(hit.file):
+        return True
+    if hit.tier == TIER_NAMING:
+        return True
+    return hit.evidence.startswith("fixture parameter")
+
+
+def _static_tests(idx, file: str, changes: list) -> dict[str, str]:
+    """test file -> reason, from the python index's static evidence."""
+    from precis.handlers._python_impact import _fanout_importers
+    from precis.handlers._python_tests import _edges_to, discover_tests
+
+    out: dict[str, str] = {}
+    mod = idx.file(file)
+
+    # Tests whose calls resolve to a symbol the diff REMOVED: the live index
+    # still holds their call edges under the (now dangling) callee qualname.
+    edges_to = _edges_to(idx)
+    for ch in changes:
+        if ch.live:
+            continue
+        for callee, edges in edges_to.items():
+            if callee == ch.qualname or callee.startswith(ch.qualname + "."):
+                for e in edges:
+                    if _is_test(e.file) and _collectable(e.file):
+                        out.setdefault(e.file, f"calls removed {ch.qualname}")
+
+    if mod is not None:
+        seeds = [
+            s
+            for ch in changes
+            if ch.live and (s := idx.symbol(ch.qualname)) is not None
+        ]
+        if seeds:
+            for s in seeds:
+                for hit in discover_tests(s, idx, depth=_DEPTH):
+                    if _skip(hit):
+                        continue
+                    out.setdefault(
+                        hit.file, f"{hit.confidence}: {hit.evidence} (of {s.qualname})"
+                    )
+        else:
+            # No live symbol-level change: module-scope edits (constants,
+            # imports, docstrings), deletions, or an unparsed file — fall
+            # back to the module's whole test surface.
+            for hit in discover_tests(mod.module_symbol, idx, depth=_DEPTH):
+                if _skip(hit):
+                    continue
+                out.setdefault(
+                    hit.file, f"{hit.confidence}: {hit.evidence} (module scope)"
+                )
+
+        # Test modules importing the changed module (covers constants /
+        # module scope even when the symbol diff is empty).
+        for _qn, mfile, _bound in _fanout_importers(
+            idx, [mod.qualname], depth=1, limit=10000
+        ):
+            if _collectable(mfile):
+                out.setdefault(mfile, f"imports {mod.qualname}")
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Corpus tier — the repo paths a file reads, resolved statically
+# ---------------------------------------------------------------------------
+# Statically resolve the repo paths a file reads: string literals,
+# Path(__file__)-anchored joins, and importlib.resources.files("<pkg>")
+# (which is how src reaches src/precis/data/* — dotted package names, not
+# path literals). A ref is the longest existing repo prefix of whatever the
+# expression resolves to. Best-effort by design: dynamic paths resolve to an
+# ancestor dir or are dropped; the checker test asserts every detected ref
+# is covered, so coverage can tighten but never silently escapes.
+
+
+def _module_name(rel: str) -> str | None:
+    """Repo-relative path -> importable module name, or None."""
+    if not rel.endswith(".py"):
+        return None
+    parts = rel.split("/")
+    if parts[0] == "src":
+        mod = ".".join(parts[1:])[:-3]
+    elif parts[0] == "tests":
+        mod = ".".join(parts)[:-3]
+    else:
+        return None
+    if mod.endswith(".__init__"):
+        mod = mod[: -len(".__init__")]
+    return mod or None
+
+
+def _imports(path: Path) -> set[str]:
+    """Module names a file imports (static ast scan; both `import a.b` and
+    `from a import b` forms — the latter also emits `a.b` unconditionally:
+    it is either a submodule or a name; matching against `affected` decides.
+    Unfiltered on purpose — a *deleted* module's name must still match so its
+    importers get selected."""
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, ValueError):
+        return set()
+    out: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            out.update(a.name for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            out.add(node.module)
+            out.update(f"{node.module}.{a.name}" for a in node.names)
+    return out
+
+
+def _eval_path(
+    node: ast.AST, consts: dict[str, Path], file: Path, repo: Path
+) -> Path | str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.Name):
+        return consts.get(node.id)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        base = _eval_path(node.left, consts, file, repo)
+        part = _eval_path(node.right, consts, file, repo)
+        if isinstance(base, Path) and isinstance(part, str):
+            return base / part
+        return None
+    if isinstance(node, ast.JoinedStr):
+        parts = [
+            v.value
+            for v in node.values
+            if isinstance(v, ast.Constant) and isinstance(v.value, str)
+        ]
+        return "".join(parts) or None
+    if isinstance(node, ast.Attribute):
+        if node.attr == "parent":
+            base = _eval_path(node.value, consts, file, repo)
+            return base.parent if isinstance(base, Path) else None
+        return None
+    if (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.slice, ast.Constant)
+        and isinstance(node.slice.value, int)
+        and isinstance(node.value, ast.Attribute)
+        and node.value.attr == "parents"
+    ):
+        v = _eval_path(node.value.value, consts, file, repo)
+        if isinstance(v, Path):
+            for _ in range(node.slice.value + 1):
+                v = v.parent
+            return v
+        return None
+    if isinstance(node, ast.Call):
+        fn = node.func
+        name = (
+            fn.id
+            if isinstance(fn, ast.Name)
+            else fn.attr
+            if isinstance(fn, ast.Attribute)
+            else None
+        )
+        if name == "Path" and node.args:
+            if isinstance(node.args[0], ast.Name) and node.args[0].id == "__file__":
+                return file
+            v = _eval_path(node.args[0], consts, file, repo)
+            return Path(v) if isinstance(v, str) else v
+        if name == "str" and node.args:
+            return _eval_path(node.args[0], consts, file, repo)
+        if name in ("resolve", "joinpath") and isinstance(fn, ast.Attribute):
+            base = _eval_path(fn.value, consts, file, repo)
+            if not isinstance(base, Path):
+                return None
+            if name == "resolve":
+                return base.resolve()
+            part = _eval_path(node.args[0], consts, file, repo) if node.args else None
+            return base / part if isinstance(part, str) else None
+        # importlib.resources.files("precis.data.skills") -> src/precis/data/skills
+        if name == "files" and node.args:
+            recv = fn.value if isinstance(fn, ast.Attribute) else None
+            dotted = ""
+            while isinstance(recv, ast.Attribute):
+                dotted = "." + recv.attr + dotted
+                recv = recv.value
+            if isinstance(recv, ast.Name):
+                dotted = recv.id + dotted
+            if dotted in ("resources", "importlib.resources"):
+                v = _eval_path(node.args[0], consts, file, repo)
+                if isinstance(v, str):
+                    return repo / "src" / Path(*v.split("."))
+        return None
+    return None
+
+
+def corpus_refs(path: Path, repo: Path = REPO) -> set[str]:
+    """Repo-relative paths (existing files or dirs) a py file reads — its
+    data corpus. Anything outside the repo or unresolvable to an existing
+    prefix is dropped."""
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, ValueError):
+        return set()
+    consts: dict[str, Path] = {}
+    for _ in range(2):  # constant order doesn't matter
+        for stmt in tree.body:
+            if (
+                isinstance(stmt, ast.Assign)
+                and len(stmt.targets) == 1
+                and isinstance(stmt.targets[0], ast.Name)
+            ):
+                v = _eval_path(stmt.value, consts, path, repo)
+                if isinstance(v, Path):
+                    consts[stmt.targets[0].id] = v
+    refs: set[str] = set()
+    for node in ast.walk(tree):
+        v = _eval_path(node, consts, path, repo)
+        cand: Path | None = None
+        if isinstance(v, Path):
+            cand = v if v.is_absolute() else repo / v
+        elif (
+            isinstance(v, str)
+            and "/" in v
+            and "\n" not in v
+            and len(v) < 200
+            and not v.startswith(("http", "{", "*", " "))
+        ):
+            cand = repo / v
+        if cand is None:
+            continue
+        try:
+            while not cand.exists() and cand != cand.parent:
+                cand = cand.parent
+            exists = cand.exists()
+        except OSError:
+            continue
+        if not exists:
+            continue
+        try:
+            rel = str(cand.relative_to(repo))
+        except ValueError:
+            continue
+        if rel in (".", "") or rel.startswith(_IGNORED_REF_PREFIXES):
+            continue
+        refs.add(rel)
+    return refs
+
+
+def _covers(ref: str, changed: str) -> bool:
+    """Whether corpus ref `ref` is affected by changed path `changed` — the
+    ref itself changed, or the change is a file under a ref dir."""
+    return changed == ref or changed.startswith(ref + "/")
+
+
+def _pattern_covers(pattern: str, path: str) -> bool:
+    if fnmatch.fnmatch(path, pattern):
+        return True
+    # a changed dir itself ("src/precis/data/skills") matches "**"-patterns
+    # anchored above it even though fnmatch needs a file under it
+    return fnmatch.fnmatch(path + "/x", pattern)
+
+
+def map_targets(changed: str) -> set[str]:
+    out: set[str] = set()
+    for pat, targets in PATH_MAP:
+        if _pattern_covers(pat, changed):
+            out.update(targets)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Selector — precomputed maps so a batch of selects doesn't rescan the tree
+# ---------------------------------------------------------------------------
+
+
+class Selector:
+    """Corpus/import maps + a lazily built python index, shared across
+    select() calls (tests/test_select_tests.py exercises this interface)."""
+
+    def __init__(self, repo: Path = REPO):
+        self.repo = repo
+        self.mod2file: dict[str, Path] = {}
+        for root in ("src", "tests"):
+            for p in (repo / root).rglob("*.py"):
+                m = _module_name(str(p.relative_to(repo)))
+                if m:
+                    self.mod2file[m] = p
+        self._corpus_built = False
+        self.src_refs: dict[str, set[str]] = {}
+        self.test_refs: dict[Path, set[str]] = {}
+        self.test_imports: dict[Path, set[str]] = {}
+        self._idx: Any = None
+        self._idx_tried = False
+
+    def index(self):
+        """The repo python index, built once per Selector."""
+        if not self._idx_tried:
+            self._idx_tried = True
+            try:
+                self._idx = _index(self.repo)
+            except Exception:
+                self._idx = None
+        return self._idx
+
+    def build_corpus(self) -> None:
+        if self._corpus_built:
+            return
+        self._corpus_built = True
+        for mod, p in self.mod2file.items():
+            refs = corpus_refs(p, self.repo)
+            if mod.startswith("tests."):
+                if refs:
+                    self.test_refs[p] = refs
+            elif refs:
+                self.src_refs[mod] = refs
+
+    def build_imports(self) -> None:
+        if self.test_imports:
+            return
+        for mod, p in self.mod2file.items():
+            if mod.startswith("tests."):
+                self.test_imports[p] = _imports(p)
+
+    def select(
+        self, changed: list[str], db: Path | None = None
+    ) -> tuple[list[str], bool]:
+        """-> (pytest targets, run_testmon) — the worktree-mode answer."""
+        files = [f[2:] if f.startswith("./") else f for f in changed]
+        res = _select(
+            self.repo,
+            {f: "M" for f in files},
+            base=_merge_base(self.repo),
+            head="HEAD",
+            db=db or _default_db(self.repo),
+            maps=self,
+        )
+        if res["mode"] == "full":
+            return ["FULL"], False
+        return sorted(res["files"]), res["testmon"]
+
+
+# ---------------------------------------------------------------------------
+# Assembly
+# ---------------------------------------------------------------------------
+
+
+def migration_set(root: Path) -> list[str]:
+    out: set[str] = set()
+    for pat in _MIGRATION_PATTERNS:
+        out.update(p.relative_to(root).as_posix() for p in root.glob(pat))
+    return sorted(out)
+
+
+def _is_full_trigger(path: str) -> str | None:
+    if path in _FULL_EXACT:
+        return "harness/config file"
+    for rx in _FULL_GLOBS:
+        if rx.search(path):
+            return "harness/config path"
+    return None
+
+
+def _select(
+    root: Path,
+    changes: dict[str, str],
+    base: str | None,
+    head: str | None,
+    db: Path | None,
+    maps: Selector,
+) -> dict[str, Any]:
+    """The selection over an explicit {path: status} change map.
+
+    ``base``/``head`` may be None — blob-side tiers (measured coverage,
+    symbol diff, hunk ranges) go quiet then and the rest widens.
+    """
+    sel: dict[str, list[str]] = {}
+    notes: list[str] = []
+
+    def offer(path: str, reason: str) -> None:
+        sel.setdefault(path, []).append(reason)
+
+    full_because = [
+        f"{p} ({why})" for p in sorted(changes) if (why := _is_full_trigger(p))
+    ]
+    if full_because:
+        return {
+            "mode": "full",
+            "files": {},
+            "full_because": full_because,
+            "notes": notes,
+            "changed": sorted(changes),
+            "base": base,
+            "head": head,
+            "testmon": False,
+        }
+
+    docs_only = bool(changes) and all(_DOC_PATH.match(p) for p in changes)
+
+    # Contract invariants run unconditionally — they assert over the whole
+    # tree, so a data or config change can red them with no import edge.
+    if changes:
+        for t in CONTRACT:
+            offer(t, "contract invariant")
+
+    idx = None if docs_only or not changes else maps.index()
+
+    py_changed = [p for p in changes if p.endswith(".py") and not _is_test(p)]
+    sym_changes: dict[str, list] = {}
+    base_mods: dict[str, Any] = {}
+    if py_changed and base and head:
+        sym_changes, base_mods = _symbol_diff(root, base, head, py_changed)
+
+    cdb = (
+        load_coverage(root, db, base)
+        if base
+        else CoverageDB("absent", "no base rev — measured tier off")
+    )
+    notes.append(f"coverage: {cdb.state} — {cdb.note}")
+
+    # Corpus maps: a .py file can be a *literal* pin in a test (safe_fetch.py
+    # in the qgo guard) as well as a module, and literal pins only show up in
+    # the corpus scan — build it whenever anything changed.
+    affected: set[str] = set()  # changed or corpus-coupled module names
+    if changes:
+        maps.build_corpus()
+
+    for path, status in sorted(changes.items()):
+        offered: set[str] = set()
+
+        def offer_p(t: str, r: str, _acc: set[str] = offered) -> None:
+            _acc.add(t)
+            offer(t, r)
+
+        for t in map_targets(path):
+            offer_p(t, f"path map <- {path}")
+
+        m = _module_name(path)
+        if m:
+            # deleted module: not in mod2file anymore, but still affected —
+            # its former importers break at import time
+            affected.add(m)
+            if m in maps.mod2file and m.startswith("tests."):
+                offer_p(
+                    str(maps.mod2file[m].relative_to(root)),
+                    "changed test file",
+                )
+
+        # Corpus: every test whose resolved refs cover the changed path.
+        for tp, refs in maps.test_refs.items():
+            if any(_covers(r, path) for r in refs):
+                offer_p(str(tp.relative_to(root)), f"reads corpus path <- {path}")
+        # A src module's corpus reads only matter for data changes: for .py
+        # changes the import scan already covers the changed module itself —
+        # letting a reader module go "affected" here would fan a leaf edit
+        # out to every importer of e.g. dispatch (which enumerates handlers/
+        # as data).
+        if m not in maps.mod2file:
+            for mod_name, refs in maps.src_refs.items():
+                if any(_covers(r, path) for r in refs):
+                    affected.add(mod_name)
+
+        if _DOC_PATH.match(path):
+            for f in _DOCS_HYGIENE:
+                offer_p(f, f"docs change ({path})")
+            continue
+
+        if _is_test(path) and _collectable(path):
+            if status != "D" and (root / path).is_file():
+                offer_p(path, "changed test file")
+            continue
+        if _MIGRATION_RE.search(path):
+            for f in migration_set(root):
+                offer_p(f, f"migration changed ({path})")
+            continue
+
+        evidence: dict[str, str] = {}
+        if path.endswith(".py"):
+            ch_list = sym_changes.get(path, [])
+            if status == "D" or idx is None:
+                if idx is not None:
+                    qn = path.removesuffix(".py").replace("/", ".")
+                    evidence.update(_text_scan(idx, path, [qn]))
+                    evidence.update(_name_match(idx, path))
+            else:
+                evidence.update(_static_tests(idx, path, ch_list))
+                evidence.update(_name_match(idx, path))
+            if cdb.state == "ok" and base and head:
+                key = verify_file(cdb, root, base, path)
+                if key is not None:
+                    hunks = _hunk_ranges(root, base, head, path)
+                    lines = _base_symbol_ranges(base_mods.get(path), ch_list, hunks)
+                    for f in measured_tests(cdb, key, lines or None):
+                        evidence.setdefault(f, "measured coverage (base-side lines)")
+                else:
+                    notes.append(
+                        f"coverage: {path} not verified against its base blob — static only"
+                    )
+        elif Path(path).suffix:
+            # A real non-py file: substring evidence. Directories are covered
+            # by the corpus/name-match tiers, not by basename scanning.
+            if idx is not None:
+                evidence.update(_text_scan(idx, path))
+                evidence.update(_name_match(idx, path))
+        else:
+            if idx is not None:
+                evidence.update(_name_match(idx, path))
+        for f, why in evidence.items():
+            offer_p(f, f"{why} <- {path}")
+        if not offered:
+            # Unsure widens, never narrows: a non-doc file with no evidence
+            # still gets the smoke floor.
+            for f in SMOKE_TESTS:
+                offer_p(f, f"no specific evidence for {path} — smoke floor")
+            notes.append(f"widened to smoke: no evidence for {path}")
+
+    # Corpus-coupled or changed src modules: their direct test importers
+    # (testmon's static stand-in — transitive reachability is ~all tests).
+    if affected:
+        maps.build_imports()
+        for p, imps in maps.test_imports.items():
+            if any(i == a or i.startswith(a + ".") for a in affected for i in imps):
+                offer(str(p.relative_to(root)), "imports an affected module")
+
+    if docs_only:
+        notes.append("docs-only diff")
+
+    files = {
+        f: sorted(set(r))
+        for f, r in sorted(sel.items())
+        if (root / f.split("::", 1)[0]).is_file()
+    }
+    # testmon hint: a python-ish change is affected and this worktree carries
+    # a map — the caller should additionally run `pytest --testmon`.
+    testmon = bool(affected) and (root / ".testmondata").exists()
+    return {
+        "mode": "selected",
+        "files": files,
+        "full_because": [],
+        "notes": notes,
+        "changed": sorted(changes),
+        "base": base,
+        "head": head,
+        "coverage": cdb.state,
+        "testmon": testmon,
+    }
+
+
+def select(root: Path, base_rev: str, head_rev: str, db: Path | None) -> dict[str, Any]:
+    """Committed-diff selection (release lane): BASE..HEAD."""
+    base = _resolve(root, base_rev)
+    head = _resolve(root, head_rev)
+    changes = changed_files(root, base, head)
+    return _select(root, changes, base=base, head=head, db=db, maps=Selector(root))
+
+
+def select_worktree(root: Path, db: Path | None = None) -> dict[str, Any]:
+    """No-arg mode: merge-base..HEAD plus dirty/untracked files."""
+    changes = default_changed(root)
+    return _select(
+        root, changes, base=_merge_base(root), head="HEAD", db=db, maps=Selector(root)
+    )
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
+def _default_db(root: Path) -> Path | None:
+    for cand in (
+        root / ".coverage",
+        Path(
+            os.environ.get("PRECIS_COVERAGE_DB_DIR", "~/.cache/precis/coverage-db")
+        ).expanduser()
+        / ".coverage",
+    ):
+        if cand.is_file():
+            return cand
+    return None
+
+
+def _fetch_db(cache: Path) -> int:
+    """Download the newest scheduled-run coverage artifact into ``cache``."""
+    cache.mkdir(parents=True, exist_ok=True)
+    listed = subprocess.run(
+        [
+            "gh",
+            "run",
+            "list",
+            "--workflow",
+            "check.yml",
+            "--branch",
+            "main",
+            "--status",
+            "success",
+            "--limit",
+            "8",
+            "--json",
+            "databaseId",
+            "--jq",
+            ".[].databaseId",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    run_ids = listed.stdout.split()
+    if listed.returncode != 0 or not run_ids:
+        print(
+            "impacted-tests: no successful check.yml run found "
+            f"({listed.stderr.strip()[:200]})",
+            file=sys.stderr,
+        )
+        return 1
+    for run_id in run_ids:
+        # Only schedule / dispatch-full runs carry the artifact; try each.
+        dl = subprocess.run(
+            [
+                "gh",
+                "run",
+                "download",
+                run_id,
+                "-n",
+                "precis-coverage-db",
+                "-D",
+                str(cache),
+                "--clobber",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        if dl.returncode == 0 and (cache / ".coverage").is_file():
+            print(f"coverage DB for run {run_id} -> {cache}")
+            return 0
+    print(
+        "impacted-tests: no recent run carried a precis-coverage-db artifact",
+        file=sys.stderr,
+    )
+    return 1
+
+
+def _emit_worktree(res: dict[str, Any]) -> None:
+    """The worktree-mode wire protocol: `testmon=0|1` then one pytest target
+    per line — or `FULL` alone (the caller decides what FULL means)."""
+    if res["mode"] == "full":
+        print("FULL")
+        return
+    print(f"testmon={int(res['testmon'])}")
+    for t in res["files"]:
+        print(t)
+
+
+def main(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(
+        prog="scripts/impacted-tests", description=__doc__.splitlines()[0]
+    )
+    ap.add_argument("base", nargs="?", help="base rev (tag/sha/ref)")
+    ap.add_argument("head", nargs="?", default="HEAD")
+    ap.add_argument("--root", type=Path, default=None)
+    ap.add_argument(
+        "--db", type=Path, default=None, help=".coverage DB or its directory"
+    )
+    ap.add_argument(
+        "--fetch-db",
+        action="store_true",
+        help="download latest nightly coverage artifact into the cache dir",
+    )
+    ap.add_argument(
+        "--list", dest="as_list", action="store_true", help="bare file list (or FULL)"
+    )
+    ap.add_argument("--json", action="store_true", dest="as_json")
+    ap.add_argument(
+        "--smoke", action="store_true", help="print the fixed smoke set and exit"
+    )
+    ap.add_argument(
+        "--migrations",
+        action="store_true",
+        help="print the migration/schema set and exit",
+    )
+    ap.add_argument(
+        "--files",
+        nargs="+",
+        default=None,
+        help="explicit changed paths (repo-relative) instead of a BASE diff",
+    )
+    ap.add_argument(
+        "--stdin",
+        action="store_true",
+        help="read changed paths (repo-relative) from stdin",
+    )
+    ap.add_argument(
+        "--list-contract",
+        action="store_true",
+        help="print the CONTRACT + PATH_MAP tables and exit",
+    )
+    args = ap.parse_args(argv)
+
+    root = (args.root or _repo_root()).resolve()
+
+    if args.smoke:
+        print("\n".join(SMOKE_TESTS))
+        return 0
+    if args.migrations:
+        print("\n".join(migration_set(root)))
+        return 0
+    if args.list_contract:
+        print("# CONTRACT")
+        for t in CONTRACT:
+            print(t)
+        print("\n# PATH_MAP")
+        for pat, targets in PATH_MAP:
+            print(pat)
+            for t in targets:
+                print(f"    {t}")
+        return 0
+    if args.fetch_db:
+        cache = Path(
+            os.environ.get("PRECIS_COVERAGE_DB_DIR", "~/.cache/precis/coverage-db")
+        ).expanduser()
+        return _fetch_db(cache)
+
+    db = args.db
+    if db is not None and db.is_dir():
+        db = db / ".coverage"
+    db = db or _default_db(root)
+
+    t0 = time.monotonic()
+    if args.base:
+        res = select(root, args.base, args.head, db)
+    elif args.stdin:
+        files = [ln.strip() for ln in sys.stdin.read().splitlines() if ln.strip()]
+        files = [f[2:] if f.startswith("./") else f for f in files]
+        res = _select(
+            root,
+            dict.fromkeys(files, "M"),
+            base=_merge_base(root),
+            head="HEAD",
+            db=db,
+            maps=Selector(root),
+        )
+    elif args.files is not None:
+        files = [f[2:] if f.startswith("./") else f for f in args.files]
+        res = _select(
+            root,
+            dict.fromkeys(files, "M"),
+            base=_merge_base(root),
+            head="HEAD",
+            db=db,
+            maps=Selector(root),
+        )
+    else:
+        res = select_worktree(root, db)
+
+    if args.as_json:
+        res["seconds"] = round(time.monotonic() - t0, 2)
+        print(json.dumps(res, indent=1, sort_keys=True))
+        return 0
+    if not args.base:
+        # Worktree family: the testmon= line + bare targets (or FULL).
+        _emit_worktree(res)
+        for n in res["notes"]:
+            print(f"# {n}", file=sys.stderr)
+        return 0
+    if args.as_list:
+        if res["mode"] == "full":
+            print("FULL")
+        else:
+            print("\n".join(res["files"]))
+        return 0
+    if res["mode"] == "full":
+        print("FULL — the diff touches the harness/schema; no honest subset:")
+        for why in res["full_because"]:
+            print(f"  {why}")
+    else:
+        for f, reasons in res["files"].items():
+            print(f"{f}\t{'; '.join(reasons)}")
+    for n in res["notes"]:
+        print(f"# {n}", file=sys.stderr)
+    print(
+        f"# {len(res['files'])} test file(s) selected from "
+        f"{len(res['changed'])} changed file(s) in {time.monotonic() - t0:.1f}s",
+        file=sys.stderr,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

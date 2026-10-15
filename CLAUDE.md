@@ -27,9 +27,9 @@ a dedicated integration worktree. Mechanics: `docs/conventions/shipping.md`.
   second `/go` rides along or waits.
 - **`/qland`** — `scripts/ship --quick`: lint only, no pytest. Burst-land many
   trees, then one `/go`. `--checked` is the same machinery plus a cheap
-  selected pytest (`scripts/select-tests`: contract invariants + corpus/
-  import map, testmon when a map exists) — the recommended burst lane
-  (gr485791); preview the selection with `scripts/test --selected`.
+  selected pytest (`scripts/impacted-tests`: contract invariants + corpus/
+  import map + index evidence, testmon when a map exists) — the recommended
+  burst lane (gr485791); preview the selection with `scripts/test --selected`.
 - **`/qgo`** — qland + ungated deploy. Never for `*/migrations/*.sql` or
   `safe_fetch.py` (`scripts/qgo-guard` refuses; those take `/go`).
 

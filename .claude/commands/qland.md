@@ -29,7 +29,9 @@ The checked mode is the recommended burst lane (gr485791): same machinery
 as `--quick`, but after the lint it also runs a selected pytest — the
 contract invariants (audited tables, closed registries, ratchets,
 vocab/secret scans) plus corpus-coupled tests for data files and the
-import-scan/testmon set for Python changes — a couple of minutes instead
+index/testmon set for Python changes — all selected by
+`scripts/impacted-tests`, the same selector the release lane uses. That is
+a couple of minutes instead
 of nothing. Every r35 red was a `--quick` land this would have caught.
 `/qland` itself keeps running `--quick`; invoke `scripts/ship --checked`
 directly, and check the same selection beforehand with

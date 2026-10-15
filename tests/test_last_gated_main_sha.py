@@ -869,6 +869,27 @@ def test_check_yml_release_push_never_takes_a_delta_range() -> None:
     assert branch.split("fi ;;")[0].count('range=""') == 1
 
 
+# -- nightly coverage DB producer ---------------------------------------
+
+
+def test_check_yml_nightly_produces_the_coverage_db() -> None:
+    """The measured tier's producer: a scheduled job runs the suite with
+    per-test contexts, writes the manifest, uploads `precis-coverage-db`."""
+    wf = _check_yml()
+    job = wf["jobs"]["coverage-db"]
+    assert "schedule" in str(job["if"])
+    runs = "\n".join(s.get("run", "") for s in job["steps"] if isinstance(s, dict))
+    assert "--cov-context=test" in runs
+    assert "coverage_manifest.py" in runs
+    upload = next(
+        s
+        for s in job["steps"]
+        if str(s.get("uses", "")).startswith("actions/upload-artifact")
+    )
+    assert upload["with"]["name"] == "precis-coverage-db"
+    assert ".coverage.precis.json" in upload["with"]["path"]
+
+
 # -- real git: the window and --start --------------------------------------
 
 

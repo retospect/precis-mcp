@@ -40,6 +40,27 @@ moved. Not yet seen running: the build-cache cap (cache was under 30 GB)
 and `ship --release` on a real round. Open: Do next 1 slice (c), then 2.
 Next step: slice (c), dogfooded on the first round cut after it lands.
 
+2026-10-15 ct-gate: rebased past `--checked` (72242c37a) and cut to the
+ruling "keep the full suite on releases for now" — impacted-only release
+gating is DEFERRED until the selector has a track record (Reto ~09:00Z).
+What survives: `scripts/impacted-tests` is the ONE selector — it absorbed
+select-tests' CONTRACT/PATH_MAP/corpus/import tiers (same `testmon=N` wire
+protocol; `scripts/select-tests` deleted). `--quick` stays lint-only;
+`--checked` is lint + the selector's picked tests (FULL refuses; use
+`--quick`/`--full`/`--remote`); `--no-tests` is gone. `scripts/test
+--selected` previews it. The nightly `coverage-db` job feeds the measured
+tier. Commits: 35b60f9a2 selector+smoke, ce99655d7 --checked, 1101850c3
+coverage DB. Deferred slice, designed + measured: `test-release` CI lane
+(lint + impacted ∪ smoke ∪ migrations over `deployed/r<N-1>`, `test-linux`
+as non-blocking soak, verdict via `last-gated-main-sha --lane release`) —
+the reverted commits show the wiring (8e94e8c33-era, pre-drop sha).
+~15–30 min static-only on release diffs; tighter once the measured tier
+feeds it. First real `--checked` ship is the dogfood; watch for the
+`coverage-db` job's artifact + selector drift on missing evidence.
+Left: gripe-filing from a red soak leg is deliberately out of scope
+(job summary only); `release-ci-diff-coverage.md` now has its DB produced
+nightly — the diff-cover verdict is still open.
+
 ## Do next
 
 1. **Release rounds (was backlog/release-branch-rounds.md, deleted 2026-10-07 as

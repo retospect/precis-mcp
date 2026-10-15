@@ -35,7 +35,7 @@
 #                             affected-tests set; full suite otherwise (/go);
 #                             --quick (/qland) skips pytest (ruff+mypy still run);
 #                             --checked runs lint + a cheap selected pytest
-#                             (scripts/select-tests) — the middle rung.
+#                             (scripts/impacted-tests) — the middle rung.
 #                    · ship   (under the lock) squash `commit-tree` onto
 #                             origin/main + a `--force-with-lease` CAS push,
 #                             then the local-main ff, then the lock is released.
@@ -85,11 +85,12 @@
 #                                        # many worktrees; the suite is deferred to
 #                                        # the next full gate (/go or bare ship).
 #         scripts/ship --checked "…"    # /qland+: everything --quick does (lint)
-#                                        # PLUS a cheap selected pytest —
-#                                        # contract invariants + corpus/import
-#                                        # selection (scripts/select-tests;
-#                                        # testmon when a .testmondata map
-#                                        # exists, static import scan else).
+#                                        # PLUS a selected pytest — the tests
+#                                        # this diff touches per
+#                                        # scripts/impacted-tests (contract
+#                                        # invariants + corpus/map couplings +
+#                                        # measured/index evidence; testmon
+#                                        # too when a .testmondata map exists).
 #                                        # Same merge machinery as --quick; no
 #                                        # .ship-sha. Would have caught all five
 #                                        # r35 lint-only reds (gr485791).
@@ -176,10 +177,11 @@ IMPACTED="${PRECIS_SHIP_IMPACTED:-0}"
 MUTATE="${PRECIS_SHIP_MUTATE:-0}"
 QUICK="${PRECIS_SHIP_QUICK:-0}"
 # --checked (or PRECIS_SHIP_CHECKED=1): the middle rung between --quick and a
-# full gate — --quick's lint PLUS a cheap selected pytest (contract
-# invariants + corpus/import selection from scripts/select-tests; testmon
-# when this worktree has a .testmondata map, the static importer scan when
-# it doesn't — never the full suite). Implies --quick merge machinery:
+# full gate — --quick's lint PLUS a cheap selected pytest (the tests the
+# diff touches per scripts/impacted-tests: contract invariants + corpus/
+# path-map couplings + measured-coverage/index evidence, and testmon when
+# this worktree has a .testmondata map; harness/schema diffs answer FULL
+# and this lane refuses). Implies --quick merge machinery:
 # no .ship-sha pin, no diff-coverage, forward-merge on a moved main.
 # CHECKED_GATE_RAN records that the selection actually passed, for the
 # banner/trailer wording.
@@ -1672,30 +1674,39 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
         fi
         if [[ "$CHECKED" == 1 ]]; then
             # The middle rung (gr485791): --quick's merge machinery, but the
-            # diff also gets the selected pytest from scripts/select-tests —
-            # contract invariants always, corpus/path-map targets for data
-            # and pin couplings, and for Python changes either testmon (when
-            # this worktree has a .testmondata map) or the static
-            # direct-importer scan — never the full suite. Selection runs
-            # host-side (stdlib only); the pytest leg takes a real gate slot
-            # because it IS the RAM pressure the semaphore guards.
+            # diff also gets the pytest selection from scripts/impacted-tests —
+            # the same selector the release lane uses (one mechanism):
+            # contract invariants + path-map couplings always, corpus refs and
+            # the index's call/import evidence per changed file, the smoke
+            # floor when nothing else matches, and for Python changes testmon
+            # too when this worktree has a .testmondata map. Selection runs
+            # host-side (the warm gate has no .git); the pytest leg takes a
+            # real gate slot because it IS the RAM pressure the semaphore
+            # guards. A harness/schema diff has no honest subset (FULL) — this
+            # lane refuses rather than quietly running the suite.
             setup_gate_infra
-            SEL_OUT="$(printf '%s\n' "$CHANGED" | scripts/select-tests --stdin)" \
-                || die "scripts/select-tests failed — cannot compute the checked selection. Fix it (or land lint-only with --quick deliberately) and re-run scripts/ship --checked."
+            SEL_OUT="$(printf '%s\n' "$CHANGED" | scripts/impacted-tests --stdin)" \
+                || die "scripts/impacted-tests failed — cannot compute the checked selection. Fix it (or land lint-only with --quick deliberately) and re-run scripts/ship --checked."
+            if [[ "$SEL_OUT" == FULL ]]; then
+                die "the diff touches the harness/schema — the selector answers FULL, which the checked lane cannot run. Land with --quick (lint only; main CI covers it) or a full gate (--full / --impacted / --remote)."
+            fi
             SEL_TESTMON="${SEL_OUT%%$'\n'*}"
             SEL_LIST="$(tail -n +2 <<<"$SEL_OUT" | tr '\n' ' ')"
             SEL_N="$(wc -w <<<"$SEL_LIST" | tr -d ' ')"
+            if [[ -z "${SEL_LIST// /}" ]]; then
+                die "scripts/impacted-tests selected nothing — refusing rather than shipping untested. Land lint-only with --quick if that is deliberate."
+            fi
             if [[ "$SEL_TESTMON" == "testmon=1" ]]; then
-                say "checked gate — testmon-selected pytest + ${SEL_N} contract/map/corpus targets — ${GATE_MODE} gate, gate slot"
+                say "checked gate — testmon-selected pytest + ${SEL_N} impacted-tests targets — ${GATE_MODE} gate, gate slot"
                 run_gate --slot --testmon "TESTMON_DATAFILE=/app/.testmondata uv run --with pytest-testmon pytest -q --testmon -n0 -m 'not slow' && uv run pytest -q -n ${PRECIS_GATE_N:-6} -m 'not slow' ${SEL_LIST}" \
                     || die "checked selection is RED — not shipping. Fix the failure above and re-run scripts/ship --checked."
             else
-                say "checked gate — ${SEL_N} selected pytest targets (contract + corpus/map + import scan; no testmon map) — ${GATE_MODE} gate, gate slot"
+                say "checked gate — ${SEL_N} impacted-tests targets (contract + map/corpus + index evidence; no testmon map) — ${GATE_MODE} gate, gate slot"
                 run_gate --slot "uv run pytest -q -n ${PRECIS_GATE_N:-6} -m 'not slow' ${SEL_LIST}" \
                     || die "checked selection is RED — not shipping. Fix the failure above and re-run scripts/ship --checked."
             fi
             CHECKED_GATE_RAN=1
-            say "checked ship — selected contract/corpus/impact tests passed; the rest of the suite is deferred to the next full gate (/go)"
+            say "checked ship — the impacted selection passed; the rest of the suite is deferred to the next full gate (/go)"
         else
             say "quick ship — pytest deferred to the next full gate (/go or bare scripts/ship)"
         fi

@@ -91,22 +91,76 @@ flight — qland them one by one, then one `/go` releases the integrated
 
 `scripts/ship --checked` is `--quick`'s merge machinery plus one more gate
 leg: after the pre-qland lint it runs the selection from
-`scripts/select-tests` — the CONTRACT set of fast repo-invariant tests
-(audited mode/kwarg tables, closed registries, ratchets, vocab and secret
-scans) unconditionally, plus corpus-coupled tests for non-Python inputs
-(skills `.md`, `.hx` examples, reviewed-blob pins, fixtures, deploy/docs
-corpus) and, for Python changes, testmon when the worktree has a
-`.testmondata` map or a static direct-importer scan when it doesn't. The
-pytest leg takes a real fleet gate slot; the lint leg still doesn't. It
-lands like a qland: no `.ship-sha`, no diff-coverage, forward-merge trailer
-`Gate: lint + selected pytest` when it races main.
+`scripts/impacted-tests` — the one diff→tests selector (see "Impacted-test
+gates" below), shared with `scripts/test --selected`. The CONTRACT set of
+fast repo-invariant tests (audited
+mode/kwarg tables, closed registries, ratchets, vocab and secret scans)
+runs unconditionally, plus PATH_MAP/corpus-coupled tests for non-Python
+inputs (skills `.md`, `.hx` examples, reviewed-blob pins, fixtures,
+deploy/docs corpus) and, for Python changes, the python index's
+call/import evidence plus measured coverage when a fresh per-test DB is
+around; testmon joins in when the worktree has a `.testmondata` map. The
+pytest leg takes a real fleet gate slot; the lint leg still doesn't. A
+harness/schema diff has no honest subset — the selector answers FULL and
+`--checked` refuses (use `--quick`, `--full`, `--impacted` or `--remote`).
+It lands like a qland: no `.ship-sha`, no diff-coverage, forward-merge
+trailer `Gate: lint + selected pytest` when it races main.
 
 It exists because every r35 red was a lint-only land whose failure a cheap
 invariant/snapshot/table test would have caught (gr485791). For the burst
 lane it is the recommended default over bare `--quick`; the suite debt is
 still settled by the next full gate. Run the same selection without landing
-via `scripts/test --selected`. Refused with `--remote`, `--impacted`,
+via `scripts/test --selected` (or `scripts/impacted-tests` bare). Refused
+with `--remote`, `--impacted`,
 `--full`, `--mutate`, `--release` (also via `PRECIS_SHIP_CHECKED=1`).
+
+## Impacted-test gates
+
+`scripts/impacted-tests` is the one diff→tests selector: `BASE [HEAD]`
+prints `file<TAB>reason` (or `FULL`); with no BASE it speaks the checked
+wire protocol (`testmon=N` then bare targets) for `ship --checked` /
+`test --selected`. Evidence, strongest first:
+
+- **measured** — the per-test-context coverage DB (`.coverage` +
+  `.coverage.precis.json`, produced by `scripts/test --coverage` and the
+  nightly `coverage-db` job; `--fetch-db` downloads the latest artifact to
+  `$PRECIS_COVERAGE_DB_DIR`, default `~/.cache/precis/coverage-db`). Used
+  only when fresh (< 48h, not older than the base) and a file's manifest
+  hash matches its BASE blob — coverage line numbers are base-side.
+- **static** — the python index's call graph and imports: `discover_tests`
+  per changed symbol, test modules importing the changed module, test
+  files named `test_<stem>`, test sources naming the changed path or
+  basename (prompts, skills, templates, fixtures, scripts). The two
+  weakest navigation tiers (test-name substrings, fixture-parameter
+  guesses) are deliberately excluded — they match hundreds of tests on
+  names like `main`.
+- **contract** — the CONTRACT set of fast repo-invariant tests runs on
+  every non-empty diff (audited tables, closed registries, ratchets,
+  doc/secret/vocab scans).
+- **corpus** — PATH_MAP glob couplings (handler vocab → parity tables,
+  reviewed-blob pins, migrations → guard tests, skill corpus, `.hx`), plus
+  resolved corpus refs: a change under a path a test reads selects it.
+- **always** — a changed test file is itself; `*/migrations/*.sql` selects
+  the migration/schema battery; docs-only diffs get the doc-hygiene set; a
+  non-doc file with zero evidence adds the smoke set (`--smoke`: dispatch,
+  kwarg parity, CLI, empty-DB migrate, startup schema gate, skill corpus,
+  web import).
+- **full** — `pyproject.toml`, `uv.lock`, `conftest.py`, `scripts/test`,
+  `scripts/impacted-tests`, `docker/`, `.github/workflows/` changes answer
+  `FULL`: those change the harness (or the selector itself), so no subset
+  is honest.
+
+When unsure it widens; it never narrows below the always-include floor.
+
+Where it gates today: **`scripts/ship --checked`** (selection over
+`merge-base origin/main..HEAD`; FULL refuses) and **`scripts/test
+--selected`**. Release gating on the impacted set is **deferred** —
+releases keep the full suite until the selector has a track record
+(Reto, 2026-10-15). The `BASE HEAD` mode and the nightly coverage DB are
+kept so a later slice can flip the release lane on: a `test-release` job
+selecting over `deployed/r<N-1>` was designed and measured (~15–30 min
+static-only on release diffs, tighter once the measured tier feeds it),
+and the soak-vs-verdict wiring is on `docs/backlog/threads/ship-gate-ci.md`.
 
 ## /qgo — ungated deploy
 
