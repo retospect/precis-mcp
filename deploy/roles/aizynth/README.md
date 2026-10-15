@@ -20,7 +20,8 @@ SURFACE (`PRECIS_CHEM_ENABLED` + `PRECIS_CHEM_ROUTE_NODE`) — wire that via
 ## aarch64: the LinChemIn venv compiles from source
 
 `pip install linchemin` pulls in **hdbscan, which publishes no aarch64
-wheel** — on arm64 (e.g. castor) pip builds it from source and needs a C/C++
+wheel** — on an arm64 chem_route node (topology
+`precis_capabilities.chem_route`) pip builds it from source and needs a C/C++
 toolchain that `python:3.11-slim-bookworm` does not ship. The Dockerfile
 therefore builds the linchemin venv in a `linchemin-builder` stage with
 `build-essential`, and the final image `COPY --from=`s only the finished
