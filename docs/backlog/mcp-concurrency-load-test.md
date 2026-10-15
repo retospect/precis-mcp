@@ -161,6 +161,68 @@ semantic search 1685/2167 vs 715/998, kind-scoped lexical 1107/1538 vs
   It is replaced by a kind-scoped lexical search, and the verdict now prints
   `VERB MIX BROKEN` when any verb fails at the first ramp step.
 
+## MEASURED 2026-10-15 — py-spy at N=32: the GIL holder is psycopg's array dump
+
+`PRECIS_LOADTEST_PTRACE=1 scripts/mcp-loadtest --ramp 32 --duration 240`
+(the env adds `SYS_PTRACE` and a stable container name `mcp-lt-<project>`;
+the container runs uid 501 under yama `ptrace_scope=1`, so a same-uid
+sibling cannot trace — a root `docker exec` inherits the bounding set and
+can). Two `py-spy record` windows on the serve pid, 150 Hz, `-f raw
+--threads`: 75 s all-threads (`out/pysp-n32-all.raw`) and 55 s `--gil`
+(`out/pysp-n32-gil.raw`; records only GIL-holding traces). Raw output is
+gitignored under `scripts/mcp_loadtest/out/`. Reproduce:
+
+```bash
+PRECIS_LOADTEST_PTRACE=1 scripts/mcp-loadtest --ramp 32 --duration 240
+# once "step N=32" starts (project = compose project, e.g. precis-test-<tree>):
+S=mcp-lt-<project>
+PID=$(docker exec $S pgrep -f 'cli.main serve' | head -1)
+docker exec -u root $S uvx py-spy record --pid $PID -r 150 -d 75 \
+    --threads -f raw -o /app/scripts/mcp_loadtest/out/pysp-n32-all.raw
+docker exec -u root $S uvx py-spy record --pid $PID -r 150 -d 55 \
+    --threads --gil -f raw -o /app/scripts/mcp_loadtest/out/pysp-n32-gil.raw
+```
+
+The harness read alongside: 19.7 calls/s, server CPU 1.14 of 12 cores, 0
+errors in 4726 calls — the same plateau as the earlier runs.
+
+* **The GIL is held ~62% of wall time** (5143 GIL-bearing samples of 8250
+  slots in the `--gil` window). The other ~38% is GIL released inside C
+  calls — mostly psycopg's libpq socket waits (`connection.py:484 wait`
+  is the top leaf of the all-threads profile at 24% of *active* samples).
+  CPU ≈ 1.1 cores decomposes as ~0.6 core of Python bytecode plus ~0.5 of
+  released-GIL C work.
+* **The holders are the anyio workers, not the event loop.** 92.4% of
+  GIL-held samples are `AnyIO worker thread`; MainThread — the asyncio
+  loop plus MCP/starlette request parsing and pydantic validation — is
+  7.6%. The transport layer is nearly free.
+* **What the workers hold it for is dumping the query embedding.** 58.5%
+  of all GIL time is under `psycopg/types/array.py` — `dump_list` (25.0%
+  leaf) and `_dump_item` (22.2%), plus `_find_list_element`/`_flatiter` —
+  and every such stack bottoms out at `search_chunks_fused`'s
+  `conn.execute(sql, full_params)` (`_chunks_ops.py`, anchor
+  `search_chunks_fused`). `full_params` binds `query_vec` **twice** per
+  query, as a plain `list[float]` of bge-m3's 1024 dims: the registered
+  pgvector dumper only claims `pgvector.Vector`, so a raw list falls to
+  psycopg's generic array path, which dispatches a dumper per element in
+  pure Python. Each cross-kind `search` repeats that dump once per kind
+  fan-out (~12 handlers) plus the fused refs leg — the same 1024-float
+  list serialized ~25× per call.
+* The rest of the GIL: psycopg execute/result machinery 21%, precis
+  dispatch Python 10.5%, MCP/starlette/JSON/pydantic 5.8%, `embed_one`
+  3.9%. Embedding inference is not the wall; nor is search scoring or
+  response serialisation. By verb, `search` owns 91.5% of GIL time — the
+  canary's share is ~1%; it is queued, not computed.
+
+So "which work holds the GIL" is answered, and the remedy shrinks: the
+hot work is **query-parameter encoding**, a serialisation detail, not the
+search algorithm. Candidate remedies for a follow-up item, in rough cost
+order — wrap `query_vec` in `pgvector.Vector`/numpy or a pre-rendered
+`[…]` literal so the registered dumper takes it; install psycopg's C
+speedups (`psycopg[c]` binary dumpers); hoist the render so it happens
+once per search instead of twice per query per kind. Any of them is a
+few lines; none touches process topology.
+
 ## Prod run (Reto's)
 
 The harness has a `--url` mode for an already-running server. It refuses to
@@ -195,11 +257,10 @@ if canary p95 is still flat at 16.
 
 Order and cross-item constraints: `serving-programme-followups.md`.
 
-* **Which work holds the GIL.** The measurement says ~1.17 cores of Python
-  bytecode; it does not say whether that is JSON serialisation, search
-  scoring, embedding, or the FastMCP layer. A `py-spy` profile at N=32 names
-  it, and that decides whether "move the hot work out of Python" is a small
-  fix or a large one.
+* ~~**Which work holds the GIL.**~~ **Answered 2026-10-15** (profile
+  section above): psycopg's pure-Python array dump of the fused-search
+  `query_vec` — ~59% of GIL time — so "move the hot work out of Python"
+  is a small fix (param encoding), not a large one (the algorithm).
 * **Confirm on prod-shaped data.** This ran against a migrated but nearly
   empty `precis_loadtest`. Row counts change the DB verbs' cost; they do not
   obviously change a GIL ceiling, but the claim should be re-measured against

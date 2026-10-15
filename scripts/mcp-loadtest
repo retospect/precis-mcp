@@ -19,6 +19,13 @@
 # Env:
 #   PRECIS_EMBEDDER_INTERACTIVE_MAX_CONCURRENCY   the interactive embed budget
 #   PRECIS_COMPOSE                                override the compose file
+#   PRECIS_LOADTEST_PTRACE=1                      add CAP_SYS_PTRACE and a
+#       stable container name so py-spy can attach to `precis serve` mid-run:
+#         docker exec -u root mcp-lt-<project> uvx py-spy record \
+#           --pid "$(docker exec mcp-lt-<project> pgrep -f 'cli.main serve')" …
+#       (the container runs uid 501 under yama=1, so a same-uid sibling can't
+#       trace; root exec inherits the bounding set). Attach-only profiling —
+#       py-spy record's own output window covers the ramp step it samples.
 #
 # DEV DB ONLY. It creates and migrates its own `precis_loadtest` database on
 # the dev Postgres, so a run cannot disturb the test DB a sibling gate is
@@ -75,7 +82,12 @@ if [[ "${PRECIS_LOADTEST_NO_THREAD_CAP:-0}" == "1" ]]; then
     echo "▶ thread cap OFF (control run)"
 fi
 
-compose run --rm --no-deps -v "${WORKTREE}":/app \
+PTRACE_ARGS=()
+if [[ "${PRECIS_LOADTEST_PTRACE:-0}" == "1" ]]; then
+    PTRACE_ARGS=(--cap-add SYS_PTRACE --name "mcp-lt-${COMPOSE_PROJECT}")
+fi
+
+compose run --rm --no-deps ${PTRACE_ARGS[@]+"${PTRACE_ARGS[@]}"} -v "${WORKTREE}":/app \
     ${THREAD_CAP[@]+"${THREAD_CAP[@]}"} \
     -e "PRECIS_DATABASE_URL=${DSN}" \
     precis-dev bash -lc '
