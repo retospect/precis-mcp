@@ -854,3 +854,26 @@ class TestAllCapsTitleRecase:
         outcome, ref = self._run(store, verified=True, registry=_MIXED)
         assert outcome.title_recased is None
         assert ref.title == _CAPS
+
+
+class TestSharedLimiterRefusal:
+    def test_openalex_refusal_raises_and_leaves_ref_unstamped(
+        self, store: Store
+    ) -> None:
+        from precis.utils.rate_limit import RateLimited
+
+        rid = _paper(store, slug="rl1", doi="10.1234/rl")
+        msg = _crossref_msg()
+
+        def _refused(doi: str, **k: Any) -> dict[str, Any]:
+            raise RateLimited("openalex")
+
+        with pytest.raises(RateLimited):
+            enrich_paper(
+                store,
+                rid,
+                doi="10.1234/rl",
+                crossref_fn=lambda doi, mailto: msg,
+                openalex_fn=_refused,
+            )
+        assert RESOLVED_AT_KEY not in (_ref(store, rid).meta or {})

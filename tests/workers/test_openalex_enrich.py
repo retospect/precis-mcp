@@ -271,3 +271,27 @@ class TestOpenAlexMissStamp:
         assert _meta(store, rid).get("openalex") is None
         # Still eligible — a transient error must keep retrying.
         assert rid in {r for r, _ in openalex_enrich._fetch_batch(store, limit=50)}
+
+    def test_shared_limiter_refusal_stops_the_batch_unstamped(
+        self, monkeypatch: pytest.MonkeyPatch, store: Store
+    ) -> None:
+        from precis.utils.rate_limit import RateLimited
+
+        calls: list[str] = []
+
+        def _refused(doi: str, **k: Any) -> dict[str, Any]:
+            calls.append(doi)
+            raise RateLimited("openalex")
+
+        monkeypatch.setattr(openalex_meta, "fetch_openalex_work", _refused)
+        rids = [_paper(store, slug=f"q{i}", doi=f"10.1/q{i}") for i in range(3)]
+        store.set_setting(_STATE_KEY, "2000-01-01T00:00:00+00:00")
+
+        run_openalex_enrich_pass(store)
+
+        # One refusal ends the batch: no per-row hammering of a spent quota.
+        assert len(calls) == 1
+        eligible = {r for r, _ in openalex_enrich._fetch_batch(store, limit=50)}
+        for rid in rids:
+            assert _meta(store, rid).get("openalex") is None
+            assert rid in eligible

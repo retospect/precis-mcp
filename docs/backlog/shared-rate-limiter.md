@@ -74,20 +74,19 @@ provider key.
 
 ## Status
 
-- **v1 (shipping):** table + module (both lanes) + S2 rate wiring, flag-gated,
-  fail-open. openalex/unpaywall/arxiv/crossref seeded as **dormant config rows**
-  (both lanes provisioned in schema → no future migration to wire them).
-- **Follow-on:** wire OpenAlex (rate + daily quota lane — first real quota-lane
-  consumer), Unpaywall (daily), arXiv (rate), Crossref (rate, last). Derive
-  limiter keys from the `uses_external=(…)` tuples already declared per pass in
-  `workers/registry.py`.
-  - **The quota lane only bites if the caller honors `acquire()`'s return.**
-    v1 S2 call sites call `acquire("s2")` as a bare statement and proceed
-    regardless — correct for a *rate* lane, where the bounded blocking wait
-    *is* the coordination. But a daily-cap provider returns `False` when the
-    quota is exhausted, and a caller that ignores it fires the request anyway,
-    defeating the hard cap. So the OpenAlex/Unpaywall wiring **must**
-    `if not acquire(provider): skip/defer` (not just call-and-proceed).
+- **Shipped:** table + module (both lanes) + S2 rate wiring; OpenAlex wired
+  on both lanes through `rate_limit.require()` (raises `RateLimited` on a
+  refusal, so a spent daily quota skips the request instead of firing it):
+  `openalex_meta.fetch_openalex_work` plus the three `fetch_oa.py` helpers.
+  `openalex_enrich` stops its batch on the first refusal; `fetch_oa` records
+  `rate_limited` with `limiter: shared`; `paper_meta_enrich` re-raises it
+  and defers the batch unstamped. Deliberately ungated: the `/rate-limit`
+  balance check and the web key probe (low volume, outside the works quota).
+- **Follow-on, in order:** Unpaywall (daily — call `require`, not
+  `acquire`), arXiv (rate), Crossref (rate, last). Derive limiter keys from
+  the `uses_external=(…)` tuples already declared per pass in
+  `workers/registry.py`. unpaywall/arxiv/crossref stay dormant config rows
+  until wired.
 
 ## Reference assets
 

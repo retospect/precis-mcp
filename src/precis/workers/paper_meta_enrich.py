@@ -98,6 +98,7 @@ def run_paper_meta_enrich_pass(
     dsn = store.dsn
 
     from precis.ingest.paper_meta_enrich import enrich_paper
+    from precis.utils.rate_limit import RateLimited
 
     mailto = (settings.get_str("contact.crossref_mailto") or "").strip()
     email = (settings.get_str("contact.polite_email") or "").strip()
@@ -124,6 +125,15 @@ def run_paper_meta_enrich_pass(
                     outcome = enrich_paper(
                         store, ref_id, doi=doi, mailto=mailto, email=email
                     )
+                except RateLimited:
+                    # Shared openalex limiter refused (daily quota spent or
+                    # rate-starved): defer the rest of the batch unstamped.
+                    log.info(
+                        "paper_meta_enrich: shared limiter refused at ref %d; "
+                        "deferring the rest of the batch",
+                        ref_id,
+                    )
+                    break
                 except Exception:
                     log.exception(
                         "paper_meta_enrich: ref %d (%s) enrich failed", ref_id, doi

@@ -25,6 +25,7 @@ from precis import settings
 from precis.cli._common import resolve_dsn
 from precis.ingest.openalex_meta import ENRICH_VERSION, enrich_ref
 from precis.store import Store
+from precis.utils.rate_limit import RateLimited
 
 
 def add_parser(sub: argparse._SubParsersAction) -> None:
@@ -138,6 +139,11 @@ def run(args: argparse.Namespace) -> None:
         for ref_id, doi in targets:
             try:
                 enr = enrich_ref(store, ref_id, doi=doi, email=email)
+            except RateLimited as exc:
+                print(
+                    f"enrich-openalex: stopping at ref {ref_id}: {exc}", file=sys.stderr
+                )
+                break
             except Exception as exc:
                 print(
                     f"enrich-openalex: ref {ref_id} ({doi}) error: {exc}",

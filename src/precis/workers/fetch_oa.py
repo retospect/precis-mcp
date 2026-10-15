@@ -101,6 +101,8 @@ from precis.alerts import resolve_stale_alerts as _resolve_alerts
 from precis.ingest.fetch_sidecar import read_sidecar, sidecar_path, write_sidecar
 from precis.store._stub_predicate import stub_predicate_sql
 from precis.utils.http import http_client, retry_transient
+from precis.utils.rate_limit import RateLimited
+from precis.utils.rate_limit import require as require_rate_limit
 from precis.workers import activity
 
 if TYPE_CHECKING:
@@ -1375,6 +1377,7 @@ def _query_openalex_arxiv_id(doi: str, *, email: str) -> str | None:
     from precis.utils.http import http_client
     from precis.utils.safe_fetch import safe_get
 
+    require_rate_limit("openalex")
     params = {"mailto": email} if email else {}
     with http_client(
         timeout=_API_TIMEOUT_S, headers={"User-Agent": _user_agent_header(email)}
@@ -1589,6 +1592,8 @@ def _try_openalex_content(
     t0 = time.perf_counter()
     try:
         content = _query_openalex_content_urls(stub.doi, email=email)
+    except RateLimited:
+        return _local_rate_limited(stub, t0)
     except Exception as exc:
         return FetchOutcome(
             event="api_error",
@@ -1725,6 +1730,8 @@ def _try_openalex(
     t0 = time.perf_counter()
     try:
         pdf_urls = _query_openalex_pdf_urls(stub.doi, email=email)
+    except RateLimited:
+        return _local_rate_limited(stub, t0)
     except Exception as exc:
         return FetchOutcome(
             event="api_error",
@@ -2831,6 +2838,7 @@ def _query_openalex_pdf_urls(doi: str, *, email: str) -> list[str]:
     is skipped — the ``%PDF-`` guard would reject it anyway and it just
     burns a download attempt).
     """
+    require_rate_limit("openalex")
     url = f"https://api.openalex.org/works/doi:{doi}"
     params = {"mailto": email} if email else {}
     with http_client(
@@ -2953,6 +2961,7 @@ def _query_openalex_content_urls(doi: str, *, email: str = "") -> dict[str, str]
     "no content here", so return ``{}`` (→ ``no_oa_version``) rather than
     letting ``raise_for_status`` bubble it up as an ``api_error``.
     """
+    require_rate_limit("openalex")
     url = f"https://api.openalex.org/works/doi:{doi}"
     params = {"mailto": email} if email else {}
     with http_client(
@@ -3120,6 +3129,17 @@ def _download_headers() -> dict[str, str]:
         # Some hosts insist on an Accept header that names PDFs explicitly.
         "Accept": "application/pdf,*/*;q=0.8",
     }
+
+
+def _local_rate_limited(stub: StubRef, t0: float) -> FetchOutcome:
+    """``rate_limited`` outcome for a request the shared limiter refused
+    before it was sent (OpenAlex daily quota spent or rate-starved). Same
+    event as ``_try_unpaywall``'s 429; ``limiter`` tells the two apart."""
+    return FetchOutcome(
+        event="rate_limited",
+        payload={"doi": stub.doi, "provider": "openalex", "limiter": "shared"},
+        duration_ms=_ms(t0),
+    )
 
 
 def _ms(t0: float) -> int:

@@ -35,6 +35,7 @@ from typing import Any
 
 from precis.utils.authors import to_author_dicts
 from precis.utils.http import http_client, request_with_deadline
+from precis.utils.rate_limit import require as require_rate_limit
 
 log = logging.getLogger(__name__)
 
@@ -57,8 +58,11 @@ def fetch_openalex_work(
     """Fetch the free OpenAlex work object for a DOI, or ``None`` if unknown.
 
     Keyless. A 404 (DOI not in OpenAlex) returns ``None``; other HTTP errors
-    raise for the caller to record. ``mailto`` is polite + faster.
+    raise for the caller to record. ``mailto`` is polite + faster. Raises
+    :class:`precis.utils.rate_limit.RateLimited` without calling out when the
+    shared ``openalex`` limiter refuses (daily quota spent or rate-starved).
     """
+    require_rate_limit("openalex")
     url = f"{_OPENALEX_WORKS}/doi:{doi}"
     params = {"mailto": email} if email else {}
     with http_client(timeout=timeout, headers={"User-Agent": _ua(email)}) as client:

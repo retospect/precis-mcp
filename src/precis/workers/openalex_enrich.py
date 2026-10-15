@@ -192,6 +192,7 @@ def run_openalex_enrich_pass(store: Store, *, limit: int | None = None) -> Batch
     dsn = store.dsn
 
     from precis.ingest.openalex_meta import enrich_ref
+    from precis.utils.rate_limit import RateLimited
 
     email = (settings.get_str("contact.polite_email") or "").strip()
     fetch_limit = limit if limit is not None else _DEFAULT_FETCH_LIMIT
@@ -226,6 +227,16 @@ def run_openalex_enrich_pass(store: Store, *, limit: int | None = None) -> Batch
             for ref_id, doi in _fetch_batch(store, limit=fetch_limit):
                 try:
                     enr = enrich_ref(store, ref_id, doi=doi, email=email)
+                except RateLimited:
+                    # Shared openalex limiter refused (daily quota spent or
+                    # rate-starved): every later row would be refused too, so
+                    # stop fetching; the unstamped rows re-select next pass.
+                    log.info(
+                        "openalex_enrich: shared limiter refused at ref %d; "
+                        "deferring the rest of the batch",
+                        ref_id,
+                    )
+                    break
                 except Exception:
                     log.exception(
                         "openalex_enrich: ref %d (%s) fetch failed", ref_id, doi

@@ -111,6 +111,7 @@ from precis.ingest.provenance import (
 )
 from precis.store import Store
 from precis.utils.authors import author_display, author_names, normalize_authors
+from precis.utils.rate_limit import RateLimited
 
 log = logging.getLogger(__name__)
 
@@ -526,6 +527,11 @@ def enrich_paper(
 
         try:
             work = fetch_openalex(doi, email=email)
+        except RateLimited:
+            # Shared openalex limiter refused: leave the ref unstamped so the
+            # next pass retries it, instead of stamping it resolved without
+            # its OpenAlex ids.
+            raise
         except Exception:
             work = None
         if work:

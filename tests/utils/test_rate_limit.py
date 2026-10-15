@@ -298,3 +298,76 @@ class TestS2Wiring:
         assert mock_acquire.call_count >= 2  # references + citations
         for call in mock_acquire.call_args_list:
             assert call.args == ("s2",)
+
+
+class TestRequire:
+    def test_require_raises_on_refusal(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(rate_limit, "acquire", lambda *a, **k: False)
+        with pytest.raises(rate_limit.RateLimited) as exc:
+            rate_limit.require("openalex")
+        assert exc.value.provider == "openalex"
+
+    def test_require_returns_on_grant(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(rate_limit, "acquire", lambda *a, **k: True)
+        rate_limit.require("openalex")
+
+    def test_require_fails_open_when_flag_off(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PRECIS_RATE_LIMIT", "0")
+        rate_limit.require("openalex")
+
+
+class TestOpenAlexWiring:
+    @patch("precis.ingest.openalex_meta.http_client")
+    @patch("precis.ingest.openalex_meta.require_rate_limit")
+    def test_fetch_openalex_work_refused_never_calls_out(
+        self, mock_require: MagicMock, mock_client: MagicMock
+    ) -> None:
+        from precis.ingest.openalex_meta import fetch_openalex_work
+
+        mock_require.side_effect = rate_limit.RateLimited("openalex")
+        with pytest.raises(rate_limit.RateLimited):
+            fetch_openalex_work("10.1/x")
+        mock_require.assert_called_once_with("openalex")
+        mock_client.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "helper",
+        [
+            "_query_openalex_pdf_urls",
+            "_query_openalex_content_urls",
+            "_query_openalex_arxiv_id",
+        ],
+    )
+    def test_fetch_oa_helpers_require_openalex_before_http(
+        self, helper: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from precis.workers import fetch_oa
+
+        mock_require = MagicMock(side_effect=rate_limit.RateLimited("openalex"))
+        mock_client = MagicMock()
+        monkeypatch.setattr(fetch_oa, "require_rate_limit", mock_require)
+        monkeypatch.setattr(fetch_oa, "http_client", mock_client)
+        monkeypatch.setattr("precis.utils.http.http_client", mock_client)
+        with pytest.raises(rate_limit.RateLimited):
+            getattr(fetch_oa, helper)("10.1/x", email="")
+        mock_require.assert_called_once_with("openalex")
+        mock_client.assert_not_called()
+
+    def test_try_openalex_refusal_is_rate_limited_outcome(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        from precis.workers import fetch_oa
+
+        def _refused(*a: Any, **k: Any) -> list[str]:
+            raise rate_limit.RateLimited("openalex")
+
+        monkeypatch.setattr(fetch_oa, "_query_openalex_pdf_urls", _refused)
+        stub = fetch_oa.StubRef(
+            ref_id=1, doi="10.1234/x", arxiv=None, s2_id=None, cite_key=None
+        )
+        out = fetch_oa._try_openalex(stub, inbox_dir=tmp_path, email="")
+        assert out is not None
+        assert out.event == "rate_limited"
+        assert out.payload["limiter"] == "shared"

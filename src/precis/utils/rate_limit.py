@@ -45,11 +45,16 @@ one process can't race on the module-level handle, and :func:`close`
 (atexit-registered) gives it an explicit shutdown hook instead of leaking
 the connection until process exit.
 
-v1 wires only ``s2`` (rate lane) — see ``precis.ingest.citations``,
-``precis.ingest.semantic_scholar``, and the straggler call site in
-``precis.workers.fetch_oa``. The other seeded providers (``openalex``,
-``unpaywall``, ``arxiv``, ``crossref``) are dormant config rows; nothing
-calls :func:`acquire` for them yet.
+Wired providers: ``s2`` (rate lane) — ``precis.ingest.citations``,
+``precis.ingest.semantic_scholar`` and the straggler call site in
+``precis.workers.fetch_oa`` call :func:`acquire` and proceed either way,
+because for a pure rate lane the bounded wait *is* the coordination.
+``openalex`` (rate + 100k/day quota lane) — ``precis.ingest.openalex_meta``
+and the three OpenAlex helpers in ``precis.workers.fetch_oa`` call
+:func:`require`, which raises :class:`RateLimited` on a refusal so the
+request is skipped instead of fired; a caller that ignored ``False`` would
+defeat the daily cap. ``unpaywall``, ``arxiv`` and ``crossref`` are dormant
+config rows; nothing calls the limiter for them yet.
 """
 
 from __future__ import annotations
@@ -261,4 +266,23 @@ def acquire(provider: str, *, n: int = 1, max_wait_s: float = 30.0) -> bool:
         return True
 
 
-__all__ = ["acquire", "close"]
+class RateLimited(Exception):
+    """The shared limiter refused ``provider``: its daily quota is spent, the
+    rate wait ran past ``max_wait_s``, or the process is draining. Raised by
+    :func:`require`; callers skip or defer the request rather than fire it."""
+
+    def __init__(self, provider: str) -> None:
+        super().__init__(f"rate limit: {provider} refused by the shared limiter")
+        self.provider = provider
+
+
+def require(provider: str, *, n: int = 1, max_wait_s: float = 30.0) -> None:
+    """:func:`acquire`, raising :class:`RateLimited` instead of returning
+    ``False``. For quota-lane providers, where firing the request anyway
+    would breach the hard daily cap. Fails open exactly like :func:`acquire`.
+    """
+    if not acquire(provider, n=n, max_wait_s=max_wait_s):
+        raise RateLimited(provider)
+
+
+__all__ = ["RateLimited", "acquire", "close", "require"]
