@@ -632,6 +632,8 @@ get(
 get(
     kind="structure", id="pd111", view="extxyz"
 )  # extended XYZ (pure; carries cell + pbc + our labels — lossless round-trip)
+# NB: the served extxyz drops the `fixed` mask (no FixAtoms) — a scan
+# resolves the frozen layers server-side via params.structure_ref.
 get(kind="structure", id="pd111", view="cif")  # CIF via ASE (core dep)
 ```
 

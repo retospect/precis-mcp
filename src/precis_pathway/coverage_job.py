@@ -37,6 +37,17 @@ two candidates sharing the ``config.slab`` label never pool anchors
 measured on different slabs (:func:`runner.coverage_anchor_key`'s
 ``slab_key``).
 
+``structure_ref`` is the same thing by address: a precis ``structure``
+ref id the server resolves to the exported slab itself —
+``export.to_extxyz(scene, constraints=True)``, the exact export the
+quest-minted scans inline — so a per-candidate scan is one short put
+instead of a ~100-atom paste (:func:`structure_slab_extxyz`). It refuses
+structures the scan can't honestly anchor on: a cell that is not a (111)
+surface cut, or a structure with no fully-frozen atoms (the frozen bottom
+layers ride the export as a ``FixAtoms``; without them the scan would
+relax what the candidate pins). An explicit ``slab_extxyz`` always wins;
+``structure_ref`` is then provenance only.
+
 Registered via the ``precis.job_types`` entry point
 (``surface_coverage_scan = precis_pathway.coverage_job:SPEC``). Same
 executor seam as ``autocatpath_seed``: ``ssh_node`` with a ``target_node``
@@ -48,8 +59,12 @@ under ``resources.wall_seconds``.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
+import math
 from typing import Any
+
+import numpy as np
 
 from precis.workers.job_types import JobTypeSpec
 
@@ -97,9 +112,12 @@ _PARAMS_SCHEMA: dict[str, Any] = {
         # config.search.energy_thresh, else 0.05.
         "sigma_e_eV": {"type": "number", "minimum": 0},
         # An externally-prepared slab (extxyz; the precis `structure`
-        # seam). null → the engine builds the clean config.slab itself.
+        # seam). null → the engine builds the clean config.slab itself —
+        # or the structure_ref below resolves one server-side.
         "slab_extxyz": {"type": ["string", "null"]},
-        # Provenance: the precis structure ref the slab came from.
+        # The precis structure ref the slab comes from: resolved +
+        # exported (with its FixAtoms) when slab_extxyz is absent;
+        # provenance only when an explicit slab_extxyz is given.
         "structure_ref": {"type": ["integer", "null"]},
     },
     "required": ["config"],
@@ -158,6 +176,146 @@ def check_params(params: dict[str, Any]) -> str | None:
     return None
 
 
+#: (111)-cell signature tolerances. The candidates' cells are computed
+#: (exact to print precision), so the slack only needs to absorb
+#: serialisation noise and a relaxed lattice's last decimal — not real
+#: distortion.
+_LEN_TOL = 0.05  # relative slack on in-plane vector lengths
+_ANG_TOL = 0.05  # |cos| slack on the in-plane angle (~3°)
+_TILT_TOL = 0.06  # |cos| slack on c vs the surface normal (~3.4° tilt)
+_MIN_VACUUM_A = 4.0  # Å of empty cell along c that makes a cut a slab
+
+
+def _slab_111_problem(scene: Any) -> str | None:
+    """The reason ``scene`` is not a (111) slab this scan can anchor on, or
+    ``None``. The structure store records no facet label, so the check is
+    geometric — the fcc(111) signature: in-plane vectors equal at 60°/120°
+    (the hexagonal cell) or in the orthogonal √3 ratio, the third vector
+    along the surface normal, and a vacuum gap along it. A bulk or
+    non-(111) cut fails by shape rather than by name."""
+    if not scene.atoms:
+        return "has no atoms"
+    lat = np.asarray(scene.cell.lattice, dtype=float)
+    if lat.shape != (3, 3):
+        return f"has a malformed cell (shape {lat.shape}, expected 3x3)"
+    a, b, c = lat[0], lat[1], lat[2]
+    na, nb, nc = (float(np.linalg.norm(v)) for v in (a, b, c))
+    if min(na, nb, nc) <= 0.0:
+        return "has a degenerate cell (a zero-length lattice vector)"
+    if (
+        abs(float(np.dot(c, a))) > _TILT_TOL * nc * na
+        or abs(float(np.dot(c, b))) > _TILT_TOL * nc * nb
+    ):
+        return (
+            "is not a surface cut: the third cell vector is not the "
+            "surface normal (slice 1 scans (111) slabs only)"
+        )
+    cos_ab = float(np.dot(a, b)) / (na * nb)
+    hexagonal = (
+        abs(na - nb) <= _LEN_TOL * max(na, nb)
+        and min(abs(cos_ab - 0.5), abs(cos_ab + 0.5)) <= _ANG_TOL
+    )
+    ratio = max(na, nb) / min(na, nb)
+    orthogonal = abs(cos_ab) <= _ANG_TOL and abs(ratio - math.sqrt(3.0)) <= (
+        _LEN_TOL * math.sqrt(3.0)
+    )
+    if not (hexagonal or orthogonal):
+        return (
+            "is not a (111) surface cell: the in-plane vectors are neither "
+            "the hexagonal 60°/120° pair nor the orthogonal √3 cell a "
+            "(111) cut produces"
+        )
+    zs = sorted(float(at.frac[2]) % 1.0 for at in scene.atoms.values())
+    gaps = [zs[i + 1] - zs[i] for i in range(len(zs) - 1)] + [zs[0] + 1.0 - zs[-1]]
+    if max(gaps) * nc < _MIN_VACUUM_A:
+        return (
+            f"has no vacuum gap along the surface normal "
+            f"(< {_MIN_VACUUM_A:g} Å of empty cell) — a bulk cell, not a slab"
+        )
+    return None
+
+
+def structure_slab_extxyz(
+    store: Any, structure_ref: Any
+) -> tuple[str | None, str | None]:
+    """``(slab_extxyz, None)`` or ``(None, reason)`` — resolve
+    ``params.structure_ref`` to the candidate's exported slab the way the
+    quest-minted scans do (``export.to_extxyz(scene, constraints=True)``,
+    the frozen bottom layers riding as a ``FixAtoms``).
+
+    Refusals name the problem: not a structure ref id, no such live
+    structure, a cell that is not a (111) surface cut, or no fully-frozen
+    atoms — a scan without the ``FixAtoms`` would relax the layers the
+    candidate's geometry pins."""
+    try:
+        sid = int(structure_ref)
+    except (TypeError, ValueError):
+        return None, (
+            f"params.structure_ref={structure_ref!r} is not a structure ref id"
+        )
+    ref = store.get_ref(kind="structure", id=sid)
+    if ref is None:
+        return None, f"params.structure_ref={sid}: no live structure with that id"
+    try:
+        scene, _handles = store.structure_load(sid)
+    except Exception as exc:
+        return None, f"params.structure_ref={sid}: structure_load failed ({exc})"
+    problem = _slab_111_problem(scene)
+    if problem is not None:
+        return None, f"params.structure_ref={sid}: {problem}"
+    from precis.structure import export
+    from precis.structure.scene import FIX_ALL
+
+    if not any(a.fixed == FIX_ALL for a in scene.atoms.values()):
+        return None, (
+            f"params.structure_ref={sid}: the structure pins no atoms — the "
+            "scan needs the slab's frozen bottom layers to ride the export "
+            "as a FixAtoms; freeze them on the structure (the slab op's "
+            "fix_layers) or pass slab_extxyz directly"
+        )
+    return export.to_extxyz(scene, constraints=True), None
+
+
+def validate_submit(
+    store: Any, *, gripe_id: int | None = None, params: dict[str, Any]
+) -> str | None:
+    """Submit-time gate (``put(kind='job')``): the ``check_params`` scope
+    refusals up front, then ``structure_ref`` resolved into
+    ``params['slab_extxyz']`` — the minted job then carries the exact
+    geometry it scans, the same shape ``precis.quest.surface_anchors``
+    mints. An explicit ``slab_extxyz`` wins: ``structure_ref`` is
+    provenance only and the structure is never loaded."""
+    del gripe_id
+    bad = check_params(params)
+    if bad is not None:
+        return bad
+    if params.get("slab_extxyz") or params.get("structure_ref") is None:
+        return None
+    slab, err = structure_slab_extxyz(store, params["structure_ref"])
+    if err is not None:
+        return err
+    params["slab_extxyz"] = slab
+    return None
+
+
+def scan_idem_key(
+    structure_ref: int | str, model_index: int, config: dict[str, Any]
+) -> str:
+    """The idem key for a hand-minted scan (the per-candidate recipe in
+    ``precis-pathway-help``): distinct per (structure, model_index, config
+    basis), so scanning a second candidate or model mints a fresh job
+    while a re-run of the same put collapses onto the first. Do NOT rely
+    on the ``link=`` fallback — ``put`` derives a missing idem key from
+    the link string alone, so two scans carrying ``link='quest:N'`` would
+    dedupe onto one job."""
+    basis = hashlib.sha256(
+        json.dumps(config, sort_keys=True, separators=(",", ":"), default=str).encode(
+            "utf-8"
+        )
+    ).hexdigest()[:16]
+    return f"{NAME}:{structure_ref}:m{int(model_index)}:{basis}"
+
+
 def find_sibling_scans(
     store: Any, anchor_key: str, *, exclude: int | None = None
 ) -> dict[str, dict[str, Any]]:
@@ -210,6 +368,15 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     config = with_defaults(dict(params["config"]))
     model_index = int(params.get("model_index", 0) or 0)
     slab_extxyz = params.get("slab_extxyz")
+    structure_ref = params.get("structure_ref")
+    if slab_extxyz is None and structure_ref is not None:
+        # The put path resolves via validate_submit; this fallback covers
+        # jobs minted off that path (a todo-dispatched row skips
+        # validate_submit). slab_extxyz stays the override.
+        slab_extxyz, err = structure_slab_extxyz(ctx.store, structure_ref)
+        if slab_extxyz is None:
+            ctx.record_failure(f"{NAME}: {err}", failure_class="input")
+            return
     resources = params.get("resources") or {}
     try:
         timeout_s = int(resources.get("wall_seconds") or 0)
@@ -244,7 +411,12 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         if achieved != requested
         else ""
     )
-    slab_note = " slab=injected" if slab_extxyz else ""
+    if structure_ref is not None:
+        slab_note = f" slab=st{structure_ref}"
+    elif slab_extxyz:
+        slab_note = " slab=injected"
+    else:
+        slab_note = ""
     ctx.append_chunk(
         "job_event",
         f"{NAME}: {config.get('name', '?')} model#{model_index} "
@@ -330,6 +502,7 @@ SPEC = JobTypeSpec(
     description=DESCRIPTION,
     run=_run,
     dispatch=_dispatch,
+    validate_submit=validate_submit,
 )
 
 
@@ -343,5 +516,8 @@ __all__ = [
     "check_params",
     "find_sibling_scans",
     "load",
+    "scan_idem_key",
+    "structure_slab_extxyz",
+    "validate_submit",
     "with_defaults",
 ]

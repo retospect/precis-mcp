@@ -163,6 +163,7 @@ def test_dispatch_mints_one_scan_per_neb_candidate_and_skips_retick(
     assert put["job_type"] == "surface_coverage_scan"
     assert put["executor"] == "ssh_node"
     assert put["params"]["slab_extxyz"] == "extxyz(scene-42)"
+    assert put["params"]["structure_ref"] == 42
     assert put["params"]["point_U_RHE"] == -0.3
     assert notes == ["created job id=701 (STATUS:queued)"]
     assert links == [{"src_ref_id": 701, "dst_ref_id": 9, "relation": "part-of"}]

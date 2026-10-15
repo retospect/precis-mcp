@@ -10,14 +10,21 @@ catpath's; what is under test is the precis glue around it.
 from __future__ import annotations
 
 import hashlib
+import io
+import math
+from types import SimpleNamespace
 from typing import Any
 
+import numpy as np
 import pytest
 
 pytest.importorskip("autocatpath")
 
 from precis.store import Store
 from precis.store.types import Tag
+from precis.structure import export
+from precis.structure.cell import Cell
+from precis.structure.scene import FIX_ALL, Atom, Scene
 from precis_pathway import coverage_job, runner
 
 CONFIG: dict[str, Any] = {
@@ -624,3 +631,246 @@ def test_job_type_is_registered_by_entry_point() -> None:
     assert names.get(coverage_job.NAME) == "precis_pathway.coverage_job:SPEC"
     assert coverage_job.load() is coverage_job.SPEC
     assert coverage_job.SPEC.compatible_executors == frozenset({"ssh_node"})
+
+
+# ── structure_ref resolution ─────────────────────────────────────────────
+
+
+def _hex_slab_scene(*, fixed_bottom: bool = True) -> Scene:
+    """An in-memory fcc(111)-style slab: hexagonal in-plane vectors at 60°,
+    the third vector the surface normal, a vacuum gap along it, two layers
+    of four atoms — the bottom one frozen unless ``fixed_bottom`` is off."""
+    a = 5.0
+    lat = np.array(
+        [
+            [a, 0.0, 0.0],
+            [a / 2.0, a * math.sqrt(3.0) / 2.0, 0.0],
+            [0.0, 0.0, 20.0],
+        ]
+    )
+    scene = Scene(cell=Cell(lat, (True, True, True)))
+    for i in range(8):
+        layer, x, y = i // 4, (i % 2) * 0.5, ((i // 2) % 2) * 0.5
+        scene.atoms[f"aPd{i}"] = Atom(
+            label=f"aPd{i}",
+            element="Pd",
+            frac=np.array([x, y, 0.30 + 0.15 * layer]),
+            fixed=FIX_ALL if fixed_bottom and layer == 0 else 0,
+        )
+    return scene
+
+
+class _StructStore:
+    """The two store calls the resolver needs, over an in-memory scene."""
+
+    def __init__(self, scene: Scene | None) -> None:
+        self.scene = scene
+
+    def get_ref(self, *, kind: str, id: int) -> Any:
+        if kind == "structure" and self.scene is not None:
+            return SimpleNamespace(id=id, kind="structure")
+        return None
+
+    def structure_load(self, _sid: int) -> tuple[Scene, dict[str, int]]:
+        assert self.scene is not None
+        return self.scene, {}
+
+
+def test_structure_slab_extxyz_exports_the_slab_with_fixatoms() -> None:
+    """The resolved slab is byte-identical to the export the quest-minted
+    scans inline, and the frozen layer round-trips as an ASE FixAtoms."""
+    from ase.constraints import FixAtoms
+    from ase.io import read as ase_read
+
+    scene = _hex_slab_scene()
+    slab, err = coverage_job.structure_slab_extxyz(_StructStore(scene), 42)
+    assert err is None and slab is not None
+    assert slab == export.to_extxyz(scene, constraints=True)
+    atoms = ase_read(io.StringIO(slab), format="extxyz", index=0)
+    assert not isinstance(atoms, list)  # index=0 reads one frame
+    cons = [c for c in atoms.constraints if isinstance(c, FixAtoms)]
+    assert cons and len(cons[0].get_indices()) == 4
+
+
+def _one_atom_scene(lattice: np.ndarray) -> Scene:
+    return Scene(
+        cell=Cell(lattice, (True, True, True)),
+        atoms={
+            "aPd1": Atom(
+                label="aPd1",
+                element="Pd",
+                frac=np.array([0.0, 0.0, 0.0]),
+                fixed=FIX_ALL,
+            )
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    ("scene", "needle"),
+    [
+        (None, "no live structure"),
+        (
+            _one_atom_scene(np.diag([10.0, 10.0, 10.0])),
+            "not a (111) surface cell",
+        ),
+        (
+            # hexagonal in-plane vectors but a tilted third vector — a
+            # sheared cut, not a surface cut the (111) scope covers
+            _one_atom_scene(
+                np.array([[5.0, 0.0, 0.0], [2.5, 4.33, 0.0], [3.0, 2.0, 20.0]])
+            ),
+            "not the surface normal",
+        ),
+        (_one_atom_scene(np.eye(3) * 0.0), "degenerate cell"),
+    ],
+    ids=["missing ref", "orthogonal non-(111) cell", "tilted cut", "degenerate"],
+)
+def test_structure_slab_extxyz_refuses_what_it_cannot_anchor(
+    scene: Scene | None, needle: str
+) -> None:
+    slab, err = coverage_job.structure_slab_extxyz(_StructStore(scene), 42)
+    assert slab is None and err is not None and needle in err
+
+
+def test_structure_slab_extxyz_refuses_a_bulk_cell_and_free_atoms() -> None:
+    """Two distinct refusals: a (111)-looking cell with no vacuum gap is
+    bulk, not a slab; a real slab with nothing frozen would relax the
+    layers the candidate pins."""
+    scene = _hex_slab_scene()
+    # pack atoms through the whole z range: no vacuum gap left
+    for i, atom in enumerate(scene.atoms.values()):
+        atom.frac = np.array([atom.frac[0], atom.frac[1], i / 8.0])
+    slab, err = coverage_job.structure_slab_extxyz(_StructStore(scene), 42)
+    assert slab is None and err is not None and "no vacuum gap" in err
+
+    free = _hex_slab_scene(fixed_bottom=False)
+    slab, err = coverage_job.structure_slab_extxyz(_StructStore(free), 42)
+    assert slab is None and err is not None and "pins no atoms" in err
+    assert "slab_extxyz" in err, "the refusal names the override"
+
+
+def test_structure_slab_extxyz_refuses_a_non_ref() -> None:
+    slab, err = coverage_job.structure_slab_extxyz(
+        _StructStore(_hex_slab_scene()), "not-an-id"
+    )
+    assert slab is None and err is not None and "not a structure ref id" in err
+
+
+def test_validate_submit_resolves_structure_ref_into_slab_extxyz() -> None:
+    """put(kind='job') fills params.slab_extxyz server-side — the minted
+    job is byte-identical in shape to a quest-minted scan."""
+    scene = _hex_slab_scene()
+    params: dict[str, Any] = {"config": CONFIG, "structure_ref": 42}
+    assert coverage_job.validate_submit(_StructStore(scene), params=params) is None
+    assert params["slab_extxyz"] == export.to_extxyz(scene, constraints=True)
+    assert params["structure_ref"] == 42, "provenance stays on the params"
+
+
+def test_validate_submit_refusal_surfaces_at_put_time() -> None:
+    params: dict[str, Any] = {"config": CONFIG, "structure_ref": 42}
+    err = coverage_job.validate_submit(_StructStore(None), params=params)
+    assert err is not None and "no live structure" in err
+    assert "slab_extxyz" not in params
+
+
+def test_validate_submit_explicit_slab_wins_and_never_loads() -> None:
+    """slab_extxyz stays the override: structure_ref is provenance only and
+    the store is never touched."""
+
+    class _Exploding:
+        def get_ref(self, **_kw: Any) -> Any:
+            raise AssertionError("the store must not be queried")
+
+    params: dict[str, Any] = {
+        "config": CONFIG,
+        "slab_extxyz": "2\nLattice\nPd 0 0 0\nPd 1 1 1\n",
+        "structure_ref": 42,
+    }
+    assert coverage_job.validate_submit(_Exploding(), params=params) is None
+    assert params["slab_extxyz"] == "2\nLattice\nPd 0 0 0\nPd 1 1 1\n"
+
+
+def test_validate_submit_runs_the_scope_gate_first() -> None:
+    err = coverage_job.validate_submit(
+        _StructStore(_hex_slab_scene()),
+        params={
+            "config": {**CONFIG, "coverage": {"facets": [[1, 0, 0]]}},
+            "structure_ref": 42,
+        },
+    )
+    assert err is not None and "facets" in err
+
+
+def test_dispatch_resolves_structure_ref_when_no_slab_given(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A job minted off the put path (todo dispatch skips validate_submit)
+    still resolves the slab at dispatch: the exported bytes reach the scan
+    child and their digest folds into the anchor key."""
+    pytest.importorskip("ase.build")
+    from precis.structure.ops import apply_ops
+
+    scene = Scene(cell=Cell(np.eye(3) * 10.0, (True, True, True)))
+    apply_ops(
+        scene,
+        [{"op": "slab", "element": "Pd", "size": [2, 2, 3], "fix_layers": 1}],
+    )
+    ref, _created = store.structure_save(
+        slug="pd111_test",
+        title="Pd(111) test slab",
+        scene=scene,
+        version=1,
+        card_text="test slab",
+    )
+    seen: dict[str, Any] = {}
+
+    def _fake_scan(
+        config: dict[str, Any], model_index: int, **kw: Any
+    ) -> dict[str, Any]:
+        seen.update(kw=kw)
+        return {
+            "model": "emt",
+            "model_index": model_index,
+            "coverage": _coverage("emt", -0.02),
+            "engine_version": "0.25.0",
+            "corrections": None,
+        }
+
+    monkeypatch.setattr(runner, "run_coverage_scan_subprocess", _fake_scan)
+    ctx = _FakeCtx(store=store, params={"config": CONFIG, "structure_ref": ref.id})
+    coverage_job._dispatch(ctx, coverage_job.SPEC)
+
+    assert ctx.status == "succeeded", ctx.failure
+    expected = export.to_extxyz(scene, constraints=True)
+    assert seen["kw"]["slab_extxyz"] == expected
+    assert ctx.meta_updates["anchor_key"] == runner.coverage_anchor_key(
+        coverage_job.with_defaults(CONFIG),
+        slab_key=hashlib.sha256(expected.encode("utf-8")).hexdigest(),
+    )
+    assert f"slab=st{ref.id}" in ctx.chunks[0][1]
+
+
+def test_dispatch_refuses_a_structure_ref_it_cannot_anchor(store: Store) -> None:
+    """The dispatch fallback refuses cleanly (failure_class=input) before
+    any compute is scheduled."""
+    ctx = _FakeCtx(store=store, params={"config": CONFIG, "structure_ref": 999999})
+    coverage_job._dispatch(ctx, coverage_job.SPEC)
+    assert ctx.status == "failed" and ctx.failure_class == "input"
+    assert ctx.failure is not None and "no live structure" in ctx.failure
+
+
+# ── the per-candidate recipe's idem key ──────────────────────────────────
+
+
+def test_scan_idem_key_is_distinct_per_candidate_and_model() -> None:
+    """The recipe's key separates (structure, model_index, config basis):
+    a second candidate or a second model mints a fresh job, while the same
+    put re-run collapses onto the first."""
+    k = coverage_job.scan_idem_key(461558, 0, CONFIG)
+    assert k == coverage_job.scan_idem_key(461558, 0, CONFIG)
+    assert k.startswith("surface_coverage_scan:461558:m0:")
+    assert k != coverage_job.scan_idem_key(261823, 0, CONFIG), "per candidate"
+    assert k != coverage_job.scan_idem_key(461558, 1, CONFIG), "per model"
+    changed = {**CONFIG, "coverage": {"adsorbates": ["N", "NH", "NH2", "NO", "NOH"]}}
+    assert k != coverage_job.scan_idem_key(461558, 0, changed), "per anchor set"

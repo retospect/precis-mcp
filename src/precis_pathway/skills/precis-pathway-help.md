@@ -251,6 +251,58 @@ table at a potential (rows sorted by `SPAN` at U; see the potential lever).
   anchors` until a scan lands. Same map as an SVG page at
   `/pourbaix/<handle>`.
 
+## Scan a candidate's coverage anchors (surface-Pourbaix)
+
+A `surface_coverage_scan` job measures one model's adsorbate coverage
+anchors on a slab and pools every succeeded scan on the same `anchor_key`
+(one per model) into the inner CHE sweep the map above renders. To scan a
+named list of candidates × models **without** flagging
+`meta.surface_anchors` on the quest (which would mint a scan for every
+eligible candidate), put one job per (candidate, model) — the job parents
+on the candidate structure so `view='pourbaix'` picks it up:
+
+```python
+put(kind='job', parent_id=<structure_ref_id>, link='quest:<quest_id>',
+    job_type='surface_coverage_scan',
+    params={'config': <the quest's meta.reaction_config>,
+            'structure_ref': <structure_ref_id>,
+            'model_index': 0},
+    idem_key='surface_coverage_scan:<structure_ref_id>:m0:<config digest>')
+```
+
+- `params.structure_ref` alone is enough — the put resolves the structure
+  and exports the slab with its constraints
+  (`export.to_extxyz(scene, constraints=True)`, the same export the
+  quest-minted scans inline) into `params.slab_extxyz` server-side. It
+  refuses at submit time if the structure is not a (111) slab cell or pins
+  no atoms — the frozen bottom layers ride the export as a `FixAtoms`.
+  An explicit `params.slab_extxyz` is the override (`structure_ref` then
+  stays provenance only).
+- **Always pass an explicit `idem_key`.** A `put` that omits it derives
+  the key from `link=` alone — so a second scan carrying the same
+  `link='quest:N'` would silently reuse the first job instead of minting.
+  `scan_idem_key(structure_ref, model_index, config)` in
+  `precis_pathway.coverage_job` is the recipe's formula:
+  `surface_coverage_scan:<sid>:m<idx>:<sha256(config)[:16]>` — distinct
+  per candidate, model and config basis; a re-run of the same put
+  collapses onto the same job.
+- `config.coverage.adsorbates` selects the anchor terminations; the
+  default is `["H", "O", "OH"]` (the resting-state baseline). For
+  NO-reduction intermediates use `["N", "NH", "NH2", "NO", "NOH"]`; union
+  the two lists for the expanded set. `config.coverage.coverages`
+  (default `[0.25, 0.5, 0.75, 1.0]`, snapped to the slab's representable
+  `n/n_top`) likewise folds into `anchor_key` — a different anchor set is
+  a different footing and does not pool.
+- **Models.** `config.mlip.models: ["medium", "large"]` exposes one spec
+  per entry; `params.model_index` picks which one this job runs (scan one
+  job per index — several models pool under one `anchor_key` and the
+  sweep keeps their model-form band apart). `params.target_node` pins a
+  GPU node; `point_U_RHE` / `window_U_RHE` / `pH` frame the sweep.
+- Baseline probe: `jo486842` (mace:medium) and `jo486844` (mace:large)
+  are already queued on prod for the expanded adsorbate set on the clean
+  slab — leave them alone (no retry/cancel/edit); their outcome gates
+  widening this recipe.
+
 ## See the reaction — the interactive web explorer
 
 `/refs/pathway/{id}` (web, not an MCP verb) is the interactive reaction
