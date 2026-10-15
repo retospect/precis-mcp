@@ -6,6 +6,8 @@ model: opus
 pillar: 3d-design
 ---
 
+shipped: congestion digest view + congestion_cells (65f4e27fa), tile-capacity map in view='congestion' (78bad67ae), route-feedback terms + anneal_route_loop loop= (7a5cf4db2); open: route-independent density prior + shove-apart move class, corrected esp32c3 fixture reapply + hard-zero at all 5 seeds
+
 # pcb congestion-driven spread
 
 Design session 2026-09-10 (Reto + agent), zippy-booping-sky worktree.

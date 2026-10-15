@@ -5,6 +5,8 @@ prio: medium
 pillar: 3d-design
 ---
 
+shipped: courtyard polygon + shared SAT legality/DRC/silk (3e9975e24, 3f5dec8ef, 0e49dcdef), graded signed-separation term + seeds-1-5 fixtures (b3530e55d); open: lone pin-1-dot suppression decision, side_obstacles broad phase, soldermask_expansion/silk_to_mask JLCPCB re-verification
+
 # The anneal steers by a courtyard it no longer enforces
 
 **Items 1-6 of the original courtyard-polygon item all shipped

@@ -184,8 +184,8 @@ review, VERIFIED by Reto 2026-10-14 — review-queue
    Re-routing to a corrected spec is the reason for importing; outranks the
    export half for that reason, not cost. Touches realize/maze, which
    ewod-pcb's generator depends on.
-4. **backlog/pcb-epro-export.md** — slice 2b is BUILT (`epro_write.py`,
-   `view='epro'`); its acceptance is Reto opening the look-at file in Pro
+4. **the `.epro2` writer** (`src/precis/pcb/epro_write.py`,
+   `view='epro'`; retired spec `pcb-epro-export`, git history) — slice 2b is BUILT; its acceptance is Reto opening the look-at file in Pro
    (review-queue `pcb-easyeda-round-trip-2`: an asymmetric part at four
    angles on both sides, against `lookat-expected.svg`). Until that passes,
    Reto opened it in Pro on 2026-10-14 — import clean, parts and
@@ -250,11 +250,11 @@ export/fab if this file outgrows itself.
    carry no net and nothing yet exercises the mirror outbound. Gates 2c and
    2f only; blocks nothing in import.
 
-4. ~~backlog/pcb-epro-export.md slice 2f~~ — landed 2026-10-14 in
+4. ~~the `.epro2` writer's slice 2f~~ (spec `pcb-epro-export` retired) — landed 2026-10-14 in
    `p1-epro` except the pieces with no observed record shape (rule areas,
    mask openings → warned drops) and teardrops (Pro regenerates on
    repour). Retracts into Do next 4's Pro-open acceptance.
-6. ~~backlog/pcb-epro-export.md round-trip test~~ — landed 2026-10-14:
+6. ~~the epro round-trip test~~ (spec `pcb-epro-export` retired) — landed 2026-10-14:
    `test_taz15_import_export_reimport_structural` (gitignored-file-gated)
    + the committed-fixture twin in `test_pcb_epro_export.py`. Still the
    right regression: it diffs structure end to end at 0.5 um.
@@ -309,6 +309,7 @@ export/fab if this file outgrows itself.
 
 ## No action needed
 
-- Spike items S2–S12 and R1 in backlog/pcb-epro-export.md — resolved
-  2026-09-29 against the real board; R2 and R3 stay open inside items 4 and
-  2.
+- Spike items S2–S12 and R1 of the retired pcb-epro-export spec (git
+  history; findings live in `src/precis/pcb/epro.py`'s module docstring) —
+  resolved 2026-09-29 against the real board; R2 and R3 stay open inside
+  items 4 and 2.

@@ -7,6 +7,8 @@ model: opus
 blocked-by: hexfold-integration
 ---
 
+shipped: sp3 seam lines k4-sp3-90-a + k3-sp3-z (692d8830a), k3-sp3-a (260218345); open: seam-vertex example + vertex χ/consistency rules + path-ID class decision
+
 # hexfold: seam vertices (sp³ seam lines shipped)
 
 Reto, 2026-09-16: "we want to add the sp3 join variant in the backlog

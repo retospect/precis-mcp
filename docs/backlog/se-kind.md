@@ -6,6 +6,8 @@ prio: high
 model: opus
 ---
 
+shipped: slices 1-2 block tree/ports/connects/validate (153429344), 3 joints/measures/stack-up/graph-DRC + translational DOF probe (14225b55e), 4r1 notes+freedom ledger (19d95470c), 5 FDM realize/process-DRC/print (c6c9f3aa6), 7r1 se_bom+purchase + atomic/TPU modes (75f1656c3), skill file (4e035b6df); open: se_propose job (4r2), rotational DOF probe, couplings, profile tier, sla/cnc-2.5ax implementer rows + process-skill catalog, compliance advisories (fit-class/backlash/deformation/bond)
+
 # The `se` (structural envelope) kind — 3D environment / space planner
 
 Design session 2026-09-02 (Reto + agent), general-3d-env worktree. Goal:
