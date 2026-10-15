@@ -133,6 +133,8 @@ def _seed_structure(
 def test_pourbaix_unknown_handle_404(pb_client: TestClient) -> None:
     r = pb_client.get("/pourbaix/nope")
     assert r.status_code == 404
+    # gr488208: the timing stamp rides even the error path.
+    assert r.headers.get("server-timing", "").startswith("app;dur=")
 
 
 def test_pourbaix_structure_page_shows_map_provenance_and_incomplete(

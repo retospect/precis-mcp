@@ -1397,6 +1397,28 @@ def render_markdown(value: str) -> Markup:
 
 _TOON_TAB = "\t"
 
+#: ``doi:10.…/…`` tokens inside otherwise-plain citation text (the rxn
+#: source cells — "nasa7-fit: Glarborg et al. (2018),
+#: doi:10.1016/j.pecs.2018.01.002"). Trailing punctuation is excluded so a
+#: sentence-final DOI keeps its period. ``linkify_toon``'s ``doi_links``
+#: map (lower DOI → URL) turns each into an anchor (gr489578).
+_DOI_CITE_RE = re.compile(
+    r"(?i)\bdoi:\s*(10\.\d{4,9}/[^\s<>'\"{}]*[^\s<>'\"{}.,;:)\]])"
+)
+
+#: A stashed DOI token rides the escaping passes as a NUL-bracketed
+#: sentinel — the ``doi`` prefix keeps it disjoint from ``_md_inline``'s
+#: ``\x00<N>\x00`` slots — then becomes an anchor on the final HTML.
+_DOI_SENTINEL = re.compile(r"\x00doi(\d+)\x00")
+
+
+def extract_dois(text: str) -> list[str]:
+    """Every ``doi:``-prefixed DOI in plain ``text``, lowercased and
+    deduped in order — the key set a ``doi_links`` map must cover."""
+    return list(
+        dict.fromkeys(m.group(1).lower() for m in _DOI_CITE_RE.finditer(text or ""))
+    )
+
 
 def _toon_header_cells(cells: list[str]) -> list[str] | None:
     """If ``cells`` is a TOON braced header (``{col1<TAB>col2}``), return
@@ -1467,6 +1489,7 @@ def _render_toon_table(
 def linkify_toon(
     value: str,
     footnotes: dict[tuple[str, str, str | None], int] | None = None,
+    doi_links: dict[str, str] | None = None,
 ) -> Markup:
     """Linkify a plain-text body, rendering tab-separated runs as tables.
 
@@ -1478,12 +1501,25 @@ def linkify_toon(
     left as prose — the guard keeps an incidental tab from becoming a
     one-row table.
 
+    ``doi_links`` maps a lowercased DOI to its in-app URL; each
+    ``doi:<id>`` token then renders as an anchor (gr489578). ``None``
+    leaves the text untouched — the caller skips the lookup entirely.
+
     Returns :class:`markupsafe.Markup` (safe HTML — cells + prose are
     escaped by :func:`_linkify_prose`).
     """
     if not value:
         return Markup("")
-    lines = str(value).split("\n")
+    text = str(value)
+    doi_stash: list[tuple[str, str]] = []
+    if doi_links:
+
+        def _stash(m: re.Match[str]) -> str:
+            doi_stash.append((m.group(0), doi_links.get(m.group(1).lower(), "")))
+            return f"\x00doi{len(doi_stash) - 1}\x00"
+
+        text = _DOI_CITE_RE.sub(_stash, text)
+    lines = text.split("\n")
     out: list[str] = []
     prose: list[str] = []
 
@@ -1511,7 +1547,20 @@ def linkify_toon(
             prose.append(lines[i])
             i += 1
     _flush_prose()
-    return Markup("".join(out))
+    html_out = "".join(out)
+    if doi_stash:
+
+        def _unstash(m: re.Match[str]) -> str:
+            raw, url = doi_stash[int(m.group(1))]
+            if not url:
+                return escape(raw)
+            return (
+                f'<a class="{_ANCHOR_CLS}" href="{escape(url, quote=True)}">'
+                f"{escape(raw)}</a>"
+            )
+
+        html_out = _DOI_SENTINEL.sub(_unstash, html_out)
+    return Markup(html_out)
 
 
 #: A cloze deletion with the cN index + answer + optional ``::hint`` split
@@ -1551,6 +1600,7 @@ def render_cloze(text: str) -> Markup:
 
 
 __all__ = [
+    "extract_dois",
     "linkify_refs",
     "linkify_toon",
     "popover_chip",

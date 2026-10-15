@@ -67,6 +67,7 @@ from precis_web.paper_ident import PAPER_IDENT_KINDS, paper_head
 from precis_web.pathway_kinetics import kinetics_payload
 from precis_web.ref_urls import ref_url
 from precis_web.routes.favorites import faved
+from precis_web.routes.rxn import doi_link_map as rxn_doi_links
 from precis_web.routes.structure import _geom_payload
 from precis_web.timefmt import abs_ts
 
@@ -3065,6 +3066,12 @@ async def detail(
             and bool((ref.meta or {}).get("supplier_links")),
             "references": references,
             "job_actions": job_actions,
+            # gr489578: rxn source cells cite papers as bare ``doi:<id>``
+            # text — each resolves to its /papers page in corpus, else to
+            # the /drive lookup listing what cites it.
+            "doi_links": (
+                rxn_doi_links(store, body) if kind == "rxn" and body else None
+            ),
             "youtube_meta": youtube_meta,
             "orcid_meta": _orcid_meta(store, ref) if kind == "orcid" else None,
             # The generic "Ask & think" Discussion box is a dream-memory

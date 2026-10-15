@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
@@ -42,7 +43,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
 from precis.utils import handle_registry
-from precis_web.deps import get_store, templates
+from precis_web.deps import get_store, templates, timed_response
 from precis_web.pourbaix_svg import map_svg
 from precis_web.ref_urls import ref_url
 
@@ -518,20 +519,25 @@ def _link_state(
 
 @router.get("/pourbaix/{handle}", response_class=HTMLResponse)
 async def pourbaix_detail(request: Request, handle: str) -> HTMLResponse:
+    t0 = time.monotonic()
     store = get_store(request)
     from precis_pathway import pourbaix_map
 
     resolved = _resolve(store, handle)
     if resolved is None:
-        return templates.TemplateResponse(
+        return timed_response(
             request,
-            "error.html.j2",
-            {
-                "title": "Pourbaix map not found",
-                "detail": f"no live quest or structure with handle {handle!r}",
-                "status": 404,
-            },
-            status_code=404,
+            templates.TemplateResponse(
+                request,
+                "error.html.j2",
+                {
+                    "title": "Pourbaix map not found",
+                    "detail": f"no live quest or structure with handle {handle!r}",
+                    "status": 404,
+                },
+                status_code=404,
+            ),
+            t0,
         )
     kind, ref = resolved
     # operating point known before entries: the marker/markers ride it;
@@ -571,30 +577,34 @@ async def pourbaix_detail(request: Request, handle: str) -> HTMLResponse:
         _candidate_ctx(store, s["ref"], u_marker=u0, pathway=pathway) for s in drawn
     ]
     u_lo, u_hi = _u_window(entries, u0)
-    return templates.TemplateResponse(
+    return timed_response(
         request,
-        "pourbaix/detail.html.j2",
-        {
-            "active_tab": "pourbaix",
-            "subject": subject,
-            "title": f"surface-Pourbaix — {subject['handle']}",
-            "entries": entries,
-            "surfaces": surfaces,
-            "selected_handle": selected["handle"] if selected else None,
-            "compare": compare,
-            "surface_notice": surface_notice,
-            "bulk_note": pourbaix_map.BULK_LAYER_NOTE,
-            "u0": u0,
-            "u_lo": u_lo,
-            "u_hi": u_hi,
-            "ph0": ph0,
-            # the server defaults: the client leaves a param out of the
-            # address bar while its slider sits on the default
-            "u_def": u_def,
-            "ph_def": ph_def,
-            "reset_on": reset_on,
-            "link_ignored": link_ignored,
-        },
+        templates.TemplateResponse(
+            request,
+            "pourbaix/detail.html.j2",
+            {
+                "active_tab": "pourbaix",
+                "subject": subject,
+                "title": f"surface-Pourbaix — {subject['handle']}",
+                "entries": entries,
+                "surfaces": surfaces,
+                "selected_handle": selected["handle"] if selected else None,
+                "compare": compare,
+                "surface_notice": surface_notice,
+                "bulk_note": pourbaix_map.BULK_LAYER_NOTE,
+                "u0": u0,
+                "u_lo": u_lo,
+                "u_hi": u_hi,
+                "ph0": ph0,
+                # the server defaults: the client leaves a param out of the
+                # address bar while its slider sits on the default
+                "u_def": u_def,
+                "ph_def": ph_def,
+                "reset_on": reset_on,
+                "link_ignored": link_ignored,
+            },
+        ),
+        t0,
     )
 
 

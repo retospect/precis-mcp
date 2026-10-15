@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import html
 import re
+import time
 from typing import Any
 from urllib.parse import quote
 
@@ -35,7 +36,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from precis.handlers._eye import EYE_LADDER, is_eye_view
 from precis.utils import handle_registry
-from precis_web.deps import await_dispatch, templates
+from precis.utils.eye_render import _TREE_KINDS
+from precis_web.deps import await_dispatch, get_store, templates, timed_response
 from precis_web.graph_filters import parse_kind_filter, parse_space_filter
 from precis_web.ref_urls import ref_url
 
@@ -52,6 +54,11 @@ _SKILL_PREFIX = "sk:"
 #: so ``mx2`` inside ``5mx20`` or a cite key doesn't match.
 _HANDLE_IN_TEXT = re.compile(r"(?<![\w:/.-])([a-z]{2}\d+)(?![\w-])")
 _SKILL_IN_TEXT = re.compile(r"(?<![\w/])sk:([a-z0-9][a-z0-9-]*)")
+
+#: A ``fisheye+2hop`` count line as rendered (already HTML-escaped) by
+#: ``eye_render._second_hop``: "  12 paper via cites". The label may read
+#: ``&lt;-rel`` for an inbound edge with no inverse name.
+_SECOND_HOP_LINE = re.compile(r"(?m)^  (\u2265?\d+) ([a-z][a-z0-9-]*) via (\S+)[ \t]*$")
 
 
 def _eye_href(
@@ -97,6 +104,52 @@ def linkify_handles(
 
     escaped = html.escape(text, quote=False)
     return _SKILL_IN_TEXT.sub(_skill, _HANDLE_IN_TEXT.sub(_record, escaped))
+
+
+def _tree_root_handle(request: Request, target: dict[str, Any]) -> str | None:
+    """For a whole-draft/plan record handle (``dr<id>`` / ``po<id>``) — no
+    eye of its own, the tree kind focuses one section — return the root
+    section's chunk handle so ``/eye/dr<id>`` lands on it instead of
+    dead-ending on the MCP ``Unsupported`` (gr489478). ``None`` for a
+    non-tree target, a dead ref or an empty tree (the dispatch error page
+    then says what happened)."""
+    parsed = handle_registry.parse(str(target.get("id") or ""))
+    if parsed is None or parsed[1] or parsed[0] not in _TREE_KINDS:
+        return None
+    kind, _is_chunk, pk = parsed
+    ref = get_store(request).get_ref(kind=kind, id=pk)
+    if ref is None:
+        return None
+    order = get_store(request).drafts.reading_order(int(ref.id), kind=kind)
+    if not order:
+        return None
+    return handle_registry.format_handle(kind, int(order[0].chunk_id), chunk=True)
+
+
+def _linkify_second_hop(
+    body_html: str,
+    handle: str,
+    extent: str,
+    *,
+    kinds: frozenset[str] | None = None,
+    spaces: frozenset[str] | None = None,
+) -> str:
+    """Make each ``fisheye+2hop`` count line a link to that group's
+    expansion — ``?q=<kind>:<label>`` on the same rung, carrying the
+    active ring filter (gr489577). Other rungs render no count lines, so
+    the pass is a no-op off ``fisheye+2hop`` anyway; gating on it keeps
+    the intent legible."""
+    base = extent[: -len("+recall")] if extent.endswith("+recall") else extent
+    if base != "fisheye+2hop":
+        return body_html
+
+    def _sub(m: re.Match[str]) -> str:
+        kind, label = m.group(2), html.unescape(m.group(3))
+        href = _eye_href(handle, extent, kinds=kinds, spaces=spaces)
+        href += "&q=" + quote(f"{kind}:{label}", safe="")
+        return f'  <a class="eye-handle" href="{href}">{m.group(0).strip()}</a>'
+
+    return _SECOND_HOP_LINE.sub(_sub, body_html)
 
 
 def _handle_target(handle: str) -> dict[str, Any] | None:
@@ -225,41 +278,60 @@ async def eye_focus(
 ) -> Any:
     """The focus page for one handle at one rung, optionally narrowed by
     ``kind=``/``space=`` ring filters."""
+    t0 = time.monotonic()
     target = _handle_target(handle)
     if target is None:
-        return templates.TemplateResponse(
+        return timed_response(
             request,
-            "error.html.j2",
-            {
-                "title": "Not a handle",
-                "status": 404,
-                "detail": f"{handle!r} is not a universal handle (me4641, pc13234, sk:<slug>)",
-            },
-            status_code=404,
+            templates.TemplateResponse(
+                request,
+                "error.html.j2",
+                {
+                    "title": "Not a handle",
+                    "status": 404,
+                    "detail": f"{handle!r} is not a universal handle (me4641, pc13234, sk:<slug>)",
+                },
+                status_code=404,
+            ),
+            t0,
         )
     extent = extent.strip() or DEFAULT_EXTENT
     if not is_eye_view(extent):
-        return templates.TemplateResponse(
+        return timed_response(
             request,
-            "error.html.j2",
-            {
-                "title": "Unknown rung",
-                "status": 400,
-                "detail": f"extent={extent!r}; the ladder is {', '.join(EYE_LADDER)}, "
-                "optionally +recall",
-            },
-            status_code=400,
+            templates.TemplateResponse(
+                request,
+                "error.html.j2",
+                {
+                    "title": "Unknown rung",
+                    "status": 400,
+                    "detail": f"extent={extent!r}; the ladder is {', '.join(EYE_LADDER)}, "
+                    "optionally +recall",
+                },
+                status_code=400,
+            ),
+            t0,
         )
     try:
         kinds = parse_kind_filter(kind)
         spaces = parse_space_filter(space)
     except ValueError as e:
-        return templates.TemplateResponse(
+        return timed_response(
             request,
-            "error.html.j2",
-            {"title": "Bad ring filter", "status": 400, "detail": str(e)},
-            status_code=400,
+            templates.TemplateResponse(
+                request,
+                "error.html.j2",
+                {"title": "Bad ring filter", "status": 400, "detail": str(e)},
+                status_code=400,
+            ),
+            t0,
         )
+    root = _tree_root_handle(request, target)
+    if root is not None:
+        href = _eye_href(root, extent, kinds=kinds, spaces=spaces)
+        if q:
+            href += "&q=" + quote(q, safe="")
+        return timed_response(request, RedirectResponse(href, status_code=303), t0)
     args: dict[str, Any] = {**target, "extent": extent}
     if q:
         args["q"] = q
@@ -276,19 +348,29 @@ async def eye_focus(
         first = body.splitlines()[0] if body else ""
         status = 404 if "[error:NotFound]" in first or "[error:Gone]" in first else 200
     canonical = handle.strip()
-    return templates.TemplateResponse(
+    return timed_response(
         request,
-        "eye/focus.html.j2",
-        {
-            "handle": canonical,
-            "extent": extent,
-            "q": q or "",
-            "body": linkify_handles(body, extent=extent, kinds=kinds, spaces=spaces),
-            "is_error": is_error,
-            "ladder": _ladder(canonical, extent, kinds=kinds, spaces=spaces),
-            "chips": _filter_chips(canonical, extent, kinds=kinds, spaces=spaces),
-            "ring": ring or None,
-            "reader_url": _reader_url(canonical),
-        },
-        status_code=status,
+        templates.TemplateResponse(
+            request,
+            "eye/focus.html.j2",
+            {
+                "handle": canonical,
+                "extent": extent,
+                "q": q or "",
+                "body": _linkify_second_hop(
+                    linkify_handles(body, extent=extent, kinds=kinds, spaces=spaces),
+                    canonical,
+                    extent,
+                    kinds=kinds,
+                    spaces=spaces,
+                ),
+                "is_error": is_error,
+                "ladder": _ladder(canonical, extent, kinds=kinds, spaces=spaces),
+                "chips": _filter_chips(canonical, extent, kinds=kinds, spaces=spaces),
+                "ring": ring or None,
+                "reader_url": _reader_url(canonical),
+            },
+            status_code=status,
+        ),
+        t0,
     )

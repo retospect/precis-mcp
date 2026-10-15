@@ -16,6 +16,7 @@ from precis.handlers._rxn_energetics import render_energetics
 from precis_web.app import create_app
 from precis_web.config import WebConfig
 from precis_web.linkify import linkify_toon
+from precis_web.routes.rxn import doi_link_map
 
 EQUATIONS = (
     "NO + 1/2 H2 -> HNO; HNO + 1/2 H2 -> H2NO; "
@@ -32,7 +33,9 @@ def rxn_client(runtime_with_store: Any, tmp_path: Any) -> TestClient:
     )
 
 
-def test_form_defaults_and_four_step_handler_ledger(rxn_client: TestClient) -> None:
+def test_form_defaults_and_four_step_handler_ledger(
+    rxn_client: TestClient, runtime_with_store: Any
+) -> None:
     landing = rxn_client.get("/rxn")
     assert landing.status_code == 200
     assert 'value="298.15"' in landing.text
@@ -42,7 +45,12 @@ def test_form_defaults_and_four_step_handler_ledger(rxn_client: TestClient) -> N
     response = rxn_client.get("/rxn", params={"q": EQUATIONS, "T": "300"})
     assert response.status_code == 200
     expected = render_energetics(EQUATIONS, T=300).body
-    for table in re.findall(r"<table\b.*?</table>", str(linkify_toon(expected)), re.S):
+    doi_links = doi_link_map(runtime_with_store.store, expected)
+    for table in re.findall(
+        r"<table\b.*?</table>",
+        str(linkify_toon(expected, doi_links=doi_links)),
+        re.S,
+    ):
         assert table in response.text
     assert response.text.count("<table") >= 5
     assert "cum_dG" in response.text
@@ -82,9 +90,11 @@ def test_keep_round_trip_reuses_ref_and_reader_recomputes(
     assert reader.status_code == 200
     assert "Derived ledger recomputed" in reader.text
     assert "STALE SNAPSHOT" not in reader.text
+    body = render_energetics(EQUATIONS, T=300).body
+    doi_links = doi_link_map(runtime_with_store.store, body)
     for table in re.findall(
         r"<table\b.*?</table>",
-        str(linkify_toon(render_energetics(EQUATIONS, T=300).body)),
+        str(linkify_toon(body, doi_links=doi_links)),
         re.S,
     ):
         assert table in reader.text
@@ -135,3 +145,74 @@ def test_optional_n_electrons_is_used_and_pathway_refused(
     )
     assert refused.status_code == 400
     assert "n_electrons is supported for a single reaction only" in refused.text
+
+
+def test_rxn_link_verb_and_put_link(
+    rxn_client: TestClient, runtime_with_store: Any
+) -> None:
+    """gr489578: rxn takes the generic link door — ``rel='cites'`` from the
+    rxn side, and ``put(link=, rel=)`` rides the entity write."""
+    store = runtime_with_store.store
+    paper = store.insert_ref(kind="paper", slug="g18", title="Glarborg 2018")
+    body, err = runtime_with_store.dispatch_with_status(
+        "put",
+        {
+            "kind": "rxn",
+            "id": "nh3-synth",
+            "meta": {"energetics": {"q": "NO + 5/2 H2 -> NH3 + H2O"}},
+            "link": f"pa{paper.id}",
+            "rel": "cites",
+        },
+    )
+    assert not err, body
+    ref = store.get_ref(kind="rxn", id="nh3-synth")
+    assert ref is not None
+    cited = [
+        lk.dst_ref_id
+        for lk in store.links_for(ref.id, direction="out", relation="cites")
+    ]
+    assert cited == [paper.id]
+    body, err = runtime_with_store.dispatch_with_status(
+        "link",
+        {
+            "kind": "rxn",
+            "id": f"rx{ref.id}",
+            "target": f"pa{paper.id}",
+            "rel": "cites",
+            "mode": "remove",
+        },
+    )
+    assert not err, body
+    assert store.links_for(ref.id, direction="out", relation="cites") == []
+    body, err = runtime_with_store.dispatch_with_status(
+        "link",
+        {"kind": "rxn", "id": "nh3-synth", "target": f"pa{paper.id}", "rel": "cites"},
+    )
+    assert not err, body
+    cited = [
+        lk.dst_ref_id
+        for lk in store.links_for(ref.id, direction="out", relation="cites")
+    ]
+    assert cited == [paper.id]
+
+
+def test_rxn_reader_links_doi_source_cells(
+    rxn_client: TestClient, runtime_with_store: Any
+) -> None:
+    """gr489578: a ``doi:<id>`` source cite links to the paper page when
+    the DOI is held, else to the drive lookup that lists what cites it."""
+    store = runtime_with_store.store
+    doi = "10.1016/j.pecs.2018.01.002"
+    params = {"q": EQUATIONS, "T": "298.15"}
+    unheld = rxn_client.get("/rxn", params=params)
+    assert unheld.status_code == 200 and f"doi:{doi}" in unheld.text
+    assert f'href="/drive?q=doi%3A{doi.replace("/", "%2F")}"' in unheld.text
+    paper = store.insert_ref(kind="paper", slug="glarborg18", title="G")
+    store.insert_ref_identifiers(paper.id, [("doi", doi, "test")])
+    held = rxn_client.get("/rxn", params=params)
+    assert f'href="/papers/{paper.id}"' in held.text
+    kept = rxn_client.post(
+        "/rxn/keep", data={**params, "n_electrons": ""}, follow_redirects=False
+    )
+    page = rxn_client.get(kept.headers["location"])
+    assert f'href="/papers/{paper.id}"' in page.text

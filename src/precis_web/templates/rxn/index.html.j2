@@ -19,6 +19,6 @@
 {% if is_error %}
 <div role="alert" class="border border-rose-200 bg-rose-50 rounded p-4 text-sm whitespace-pre-wrap">{{ body }}</div>
 {% elif body %}
-<div class="border rounded bg-white p-4 overflow-x-auto space-y-2">{{ body | linkify_toon }}</div>
+<div class="border rounded bg-white p-4 overflow-x-auto space-y-2">{{ body | linkify_toon(None, doi_links) }}</div>
 {% endif %}
 {% endblock %}

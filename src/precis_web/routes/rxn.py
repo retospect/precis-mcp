@@ -16,6 +16,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -25,8 +27,37 @@ from precis_web.deps import await_dispatch, get_store, templates
 router = APIRouter(prefix="/rxn", tags=["rxn"])
 
 
+def doi_link_map(store: Any, text: str) -> dict[str, str] | None:
+    """``{lowercased doi → url}`` for every ``doi:<id>`` token in ``text``
+    — the paper's own page when the DOI is in the corpus (full text or
+    stub), else the Drive lookup that lists the corpus refs mentioning it
+    (i.e. what cites it). ``None`` when the text carries no DOI, so the
+    renderer skips the pass entirely (gr489578)."""
+    from precis_web.linkify import extract_dois
+
+    dois = extract_dois(text)
+    if not dois:
+        return None
+    held = store.find_paper_refs_by_identifiers_bulk(dois)
+    return {
+        d: (
+            f"/papers/{held[d]}"
+            if d in held
+            else f"/drive?q={quote('doi:' + d, safe='')}"
+        )
+        for d in dois
+    }
+
+
 def _page(
-    request: Request, *, q: str, T: str, n_electrons: str, body: str, is_error: bool
+    request: Request,
+    *,
+    q: str,
+    T: str,
+    n_electrons: str,
+    body: str,
+    is_error: bool,
+    doi_links: dict[str, str] | None = None,
 ) -> HTMLResponse:
     return templates.TemplateResponse(
         request,
@@ -38,6 +69,7 @@ def _page(
             "n_electrons": n_electrons,
             "body": body,
             "is_error": is_error,
+            "doi_links": doi_links,
         },
         status_code=400 if is_error else 200,
     )
@@ -61,7 +93,13 @@ async def index(
             },
         )
     return _page(
-        request, q=q, T=T, n_electrons=n_electrons, body=body, is_error=is_error
+        request,
+        q=q,
+        T=T,
+        n_electrons=n_electrons,
+        body=body,
+        is_error=is_error,
+        doi_links=None if is_error else doi_link_map(get_store(request), body),
     )
 
 

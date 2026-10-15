@@ -61,6 +61,17 @@ from precis.handlers._rxn_ids import (
 )
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
+from precis.utils import handle_registry
+from precis.utils.link_tag_ops import (
+    check_relation_constraints,
+    guard_and_route_contradicts_disputes,
+    guard_taxon_hierarchy,
+    require_link_target,
+    validate_link_mode,
+    validate_relation,
+)
+from precis.utils.link_target import mint_lazy_link_target, parse_link_target
+from precis.utils.slug_ref import resolve_live_slug_ref
 
 _MATURITIES: tuple[str, ...] = ("commercial", "lab", "speculative")
 
@@ -216,6 +227,7 @@ class RxnHandler(Handler):
         supports_get=True,
         supports_put=True,
         supports_search=True,
+        supports_link=True,
         is_numeric=False,
         id_required=False,
         placement="artifact",
@@ -252,8 +264,15 @@ class RxnHandler(Handler):
         value_high: float | None = None,
         title: str | None = None,
         meta: dict[str, Any] | None = None,
+        link: str | None = None,
+        rel: str | None = None,
         **_kw: Any,
     ) -> Response:
+        if link is None and rel is not None:
+            raise BadInput(
+                "rel= needs link= on put",
+                next="put(kind='rxn', id=<slug>, link='pa<id>', rel='cites')",
+            )
         if id is None or not str(id).strip():
             raise BadInput(
                 "put(kind='rxn') requires id=<slug>",
@@ -265,7 +284,7 @@ class RxnHandler(Handler):
             )
         slug = str(id).strip()
         if property is not None:
-            return self._put_value(
+            resp = self._put_value(
                 slug,
                 property=str(property).strip(),
                 value=value,
@@ -282,13 +301,18 @@ class RxnHandler(Handler):
                 value_low=value_low,
                 value_high=value_high,
             )
-        return self._put_entity(
-            slug,
-            title=title,
-            rxn_smiles=rxn_smiles,
-            reaction_class=reaction_class,
-            meta=meta,
-        )
+        else:
+            resp = self._put_entity(
+                slug,
+                title=title,
+                rxn_smiles=rxn_smiles,
+                reaction_class=reaction_class,
+                meta=meta,
+            )
+        if link is not None:
+            linked = self.link(id=slug, target=link, mode="add", rel=rel)
+            resp = Response(body=resp.body + f"\nAlso {linked.body}")
+        return resp
 
     def _put_entity(
         self,
@@ -995,6 +1019,107 @@ class RxnHandler(Handler):
                 )
             )
         return Response(body="\n".join(head) + "\n\n" + "\n\n".join(blocks))
+
+    # ── link ─────────────────────────────────────────────────────────
+
+    def _resolve_ref(self, id: Any) -> Any:
+        """``id`` (slug, ``rx<N>`` handle, bare ref id or ``rxn:<slug>``)
+        → the live rxn ref, with the same Gone/NotFound split the
+        numeric-ref door gives."""
+        s = str(id or "").strip()
+        if s.startswith("rxn:"):
+            s = s[4:]
+        parsed = handle_registry.parse(s)
+        if parsed is not None and parsed[0] == "rxn" and not parsed[1]:
+            s = str(parsed[2])
+        return resolve_live_slug_ref(
+            self.store,
+            kind="rxn",
+            id=int(s) if s.isdigit() else s,
+            next_hint="search(kind='rxn', q='…') to find one",
+        )
+
+    def link(
+        self,
+        *,
+        id: str | int | None = None,
+        target: str | None = None,
+        mode: str = "add",
+        rel: str | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """The generic edge door other refs-backed kinds already expose
+        (gr489578): ``link(kind='rxn', id=<slug>, target='pa<N>',
+        rel='cites')`` lets a reaction cite the paper reporting it from
+        its own side. Same guard chain as ``NumericRefHandler._link`` —
+        relation vocabulary, lazy-target mint, constraint rows and the
+        ``disputes`` write-door."""
+        target = require_link_target(self.spec.kind, target)
+        validate_link_mode(mode)
+        ref = self._resolve_ref(id)
+        target_err: Any = None
+        rel_err: BadInput | None = None
+        link_target = None
+        relation = None
+        try:
+            relation = validate_relation(rel, store=self.store)
+        except BadInput as exc:
+            rel_err = exc
+        try:
+            if mode == "add" and rel_err is None:
+                mint_lazy_link_target(target, store=self.store)
+            link_target = parse_link_target(
+                target, store=self.store, include_retired=mode == "remove"
+            )
+        except (NotFound, BadInput) as exc:
+            target_err = exc
+        if target_err is not None and rel_err is not None:
+            raise BadInput(
+                "link validation failed: "
+                f"(target) {target_err.cause}; (rel) {rel_err.cause}",
+                options=rel_err.options,
+                next=[
+                    n
+                    for n in (
+                        target_err.next if isinstance(target_err.next, str) else None,
+                        rel_err.next if isinstance(rel_err.next, str) else None,
+                    )
+                    if n
+                ]
+                or None,
+            )
+        if target_err is not None:
+            raise target_err
+        if rel_err is not None:
+            raise rel_err
+        assert link_target is not None and relation is not None
+        sense = ref.slug or ref.id
+        if mode == "add":
+            guard_taxon_hierarchy(self.store, int(ref.id), link_target, relation)
+            check_relation_constraints(self.store, relation, int(ref.id), link_target)
+            routed = guard_and_route_contradicts_disputes(
+                self.store, int(ref.id), link_target, relation
+            )
+            if routed is None:
+                self.store.add_link(
+                    src_ref_id=int(ref.id),
+                    dst_ref_id=link_target.ref_id,
+                    dst_pos=link_target.pos,
+                    relation=relation,
+                )
+            return Response(body=f"linked rxn {sense} → {target}")
+        n_removed = self.store.remove_link(
+            src_ref_id=int(ref.id),
+            dst_ref_id=link_target.ref_id,
+            dst_pos=link_target.pos,
+            relation=relation if rel is not None else None,
+        )
+        return Response(
+            body=(
+                f"unlinked rxn {sense} ↛ {target} "
+                f"({n_removed} edge{'s' if n_removed != 1 else ''} removed)"
+            )
+        )
 
     # ── search ───────────────────────────────────────────────────────
 

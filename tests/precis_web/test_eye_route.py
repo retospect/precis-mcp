@@ -32,6 +32,14 @@ def _seed(store: Any) -> tuple[Any, Any]:
     return todo, quest
 
 
+def test_focus_page_stamps_server_timing(client: TestClient, store: Any) -> None:
+    """gr489660: every /eye response carries Server-Timing so a cold load
+    is attributable in logs/devtools."""
+    todo, _quest = _seed(store)
+    r = client.get(f"/eye/td{todo.id}")
+    assert r.headers.get("server-timing", "").startswith("app;dur=")
+
+
 def test_focus_page_renders_the_mcp_eye_with_linked_handles(
     client: TestClient, runtime_with_store: Any, store: Any
 ) -> None:
@@ -123,6 +131,47 @@ def test_focus_page_rejects_a_bad_ring_filter(client: TestClient, store: Any) ->
     assert bad.status_code == 400 and "unknown kind" in bad.text
     bad = client.get(f"/eye/me{focus.id}", params={"space": "outer"})
     assert bad.status_code == 400 and "unknown space" in bad.text
+
+
+def test_focus_page_redirects_a_draft_handle_to_its_root_section(
+    client: TestClient, store: Any
+) -> None:
+    """gr489478: ``/eye/dr<id>`` focused nothing — a draft's eye is its
+    root section, so the record handle redirects to the ``dc`` chunk."""
+    ref, title_chunk = store.drafts.create_draft(name="deye", title="D")
+    r = client.get(f"/eye/dr{ref.id}", follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == (
+        f"/eye/dc{title_chunk.chunk_id}?extent=fisheye%2B1hop"
+    )
+    # ring filter / rung state rides the redirect
+    r = client.get(
+        f"/eye/dr{ref.id}",
+        params={"extent": "fisheye", "kind": "memory"},
+        follow_redirects=False,
+    )
+    assert (
+        r.headers["location"]
+        == f"/eye/dc{title_chunk.chunk_id}?extent=fisheye&kind=memory"
+    )
+    page = client.get(f"/eye/dr{ref.id}")
+    assert page.status_code == 200 and f"dc{title_chunk.chunk_id}" in page.text
+
+
+def test_focus_page_second_hop_counts_link_to_their_expansion(
+    client: TestClient, store: Any
+) -> None:
+    """gr489577: each ``N kind via rel`` line links to the page with that
+    group's ``q=<kind>:<label>`` expansion applied."""
+    focus = store.insert_ref(kind="todo", slug=None, title="Focus")
+    near = store.insert_ref(kind="quest", slug=None, title="Near")
+    far = store.insert_ref(kind="paper", slug="g18", title="Far")
+    store.add_link(src_ref_id=focus.id, dst_ref_id=near.id, relation="serves")
+    store.add_link(src_ref_id=near.id, dst_ref_id=far.id, relation="cites")
+    page = client.get(f"/eye/td{focus.id}", params={"extent": "fisheye+2hop"})
+    assert page.status_code == 200
+    assert "1 paper via cites" in page.text
+    assert f"/eye/td{focus.id}?extent=fisheye%2B2hop&q=paper%3Acites" in page.text
 
 
 def test_index_redirects_a_handle_and_searches_a_query(

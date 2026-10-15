@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
+import time
 from pathlib import Path
 from typing import Any
 
@@ -164,6 +166,25 @@ def _make_jinja_env() -> jinja2.Environment:
 from precis_web.nav import nav_badges
 
 templates = Jinja2Templates(env=_make_jinja_env(), context_processors=[nav_badges])
+
+log = logging.getLogger(__name__)
+
+
+def timed_response[R: Response](request: Request, response: R, t0: float) -> R:
+    """Per-request timing on the heavy read routes: stamp a
+    ``Server-Timing`` header (visible to curl/devtools) and log one line
+    in the same style ``precis.calllat`` uses for MCP calls, so a cold
+    load is attributable after the fact (gr489660, gr488208)."""
+    ms = (time.monotonic() - t0) * 1000
+    response.headers["Server-Timing"] = f"app;dur={ms:.0f}"
+    log.info(
+        "webreq %s %s -> %s %.0fms",
+        request.method,
+        request.url.path,
+        response.status_code,
+        ms,
+    )
+    return response
 
 
 def get_runtime(request: Request) -> Any:
