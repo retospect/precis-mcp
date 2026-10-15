@@ -10,6 +10,22 @@
 #
 # Build:  podman build -t precis-aizynth:<sha> docker/aizynth
 # Run  :  see precis_chem.aizynth.build_aizynth_argv (the dispatch composes it).
+
+# LinChemIn venv builder. linchemin pulls hdbscan, which ships NO aarch64
+# wheel, so pip compiles it from source on the arm64 compute node — and
+# slim-bookworm has no C/C++ toolchain. build-essential lives in this
+# throwaway stage only; the final image copies just the finished venv
+# (same base image, same path, so the venv's interpreter symlink resolves).
+FROM python:3.11-slim-bookworm AS linchemin-builder
+ARG LINCHEMIN_VERSION=3.2.0
+ENV LINCHEMIN_VENV=/opt/linchemin-venv
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends build-essential \
+ && rm -rf /var/lib/apt/lists/* \
+ && python -m venv "${LINCHEMIN_VENV}" \
+ && "${LINCHEMIN_VENV}/bin/pip" install --no-cache-dir \
+      "linchemin==${LINCHEMIN_VERSION}" packaging
+
 FROM python:3.11-slim-bookworm
 
 # AiZynth pulls rdkit + onnxruntime; the slim base needs a couple of shared
@@ -23,16 +39,14 @@ RUN apt-get update \
 # LinChemIn (route normalizer, ADR 0056 slice 2) in its OWN venv: linchemin and
 # aizynthfinder both pin rdkit, so isolating linchemin removes a resolver
 # conflict at build time. The shim calls this venv's python for az_to_route.py.
-# `packaging` is a missing transitive dep of linchemin; add it explicitly.
-# `linchemin_configure` writes $HOME/linchemin/settings.yaml — linchemin's
-# dynaconf REFUSES to import `facade` without it (AttributeError: CONSTRUCTORS).
-# The container runs as root at run time, so HOME=/root matches the build.
-ARG LINCHEMIN_VERSION=3.2.0
+# `packaging` is a missing transitive dep of linchemin; the builder stage adds
+# it explicitly. `linchemin_configure` writes $HOME/linchemin/settings.yaml —
+# linchemin's dynaconf REFUSES to import `facade` without it (AttributeError:
+# CONSTRUCTORS). The container runs as root at run time, so HOME=/root matches
+# the build.
 ENV LINCHEMIN_VENV=/opt/linchemin-venv
-RUN python -m venv "${LINCHEMIN_VENV}" \
- && "${LINCHEMIN_VENV}/bin/pip" install --no-cache-dir \
-      "linchemin==${LINCHEMIN_VERSION}" packaging \
- && HOME=/root "${LINCHEMIN_VENV}/bin/linchemin_configure"
+COPY --from=linchemin-builder ${LINCHEMIN_VENV} ${LINCHEMIN_VENV}
+RUN HOME=/root "${LINCHEMIN_VENV}/bin/linchemin_configure"
 
 # Config lives with the mounted models (node-deploy concern), not in the image.
 ENV PRECIS_AIZYNTH_CONFIG=/models/config.yml
