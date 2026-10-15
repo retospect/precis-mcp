@@ -187,7 +187,7 @@ class RouteGraph:
                 "\nconstraints: " + ", ".join(self.constraints) + " (advisory screen)"
             )
         if not self.steps:
-            return head + "\n\n(no route found)" + self._constraints_tail()
+            return head + "\n\n(no route found)" + self.constraints_tail()
         lines = [head, ""]
         for s in self.steps:
             precursors = " + ".join(f"`{r}`" for r in s.reactants) or "—"
@@ -234,10 +234,11 @@ class RouteGraph:
                 f"{len(self.alternatives)} lower-ranked alternative route(s) kept; "
                 "rerank against a strategy with view='steer', q='<strategy>'",
             ]
-        return "\n".join(lines) + self._constraints_tail()
+        return "\n".join(lines) + self.constraints_tail()
 
-    def _constraints_tail(self) -> str:
-        """The declared-constraint requirement ledger appended to render()."""
+    def constraints_tail(self) -> str:
+        """The declared-constraint requirement ledger appended to render()
+        and to the steered route page (``precis_chem.steer.render_page``)."""
         if not self.constraints:
             return ""
         # Function-local by necessity, not by oversight: constraints.py

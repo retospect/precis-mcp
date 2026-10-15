@@ -40,14 +40,20 @@ corpus, so a claim you make can be cited.
 ```
 search(kind='paper', queries=['synthesis of <target>', 'total synthesis <scaffold>'],
        answers=['<a one-line HyDE answer>'])   # prior art first
-put(kind='route', id='<slug>', target='<SMILES>', engine='aizynth')   # mint the plan
+put(kind='route', id='<slug>', target='<SMILES>', engine='aizynth',
+    strategy='avoid protecting groups')            # mint the plan + record a strategy
 get(kind='route', id='<slug>')                     # poll — the step graph
 get(kind='route', id='<slug>', view='metrics')     # LinChemIn descriptors to score/compare
 get(kind='route', id='<slug>', view='steer', q='avoid protecting groups')  # rerank by strategy
 get(kind='chem', id='<name or CAS>')               # the target's SMILES, sourced
 ```
 
-**Rerank by strategy** with `view='steer'`. AiZynth returns several routes,
+**Rerank by strategy.** `put(strategy='…')` records it on the route (not
+part of the content address — a second put differing only in strategy
+shares one engine run); when the plan job lands it reranks off the request
+path, and the route page then leads with the best route for the strategy,
+the engine's own top beside it. For an ad-hoc strategy on an existing
+route use `view='steer'`. AiZynth returns several routes,
 and precis keeps the top route plus up to 9 alternatives. Each route is
 scored 0–10 by an LLM for how well it fits your plain-language strategy,
 and the scores come back with rationales, best first. This changes only

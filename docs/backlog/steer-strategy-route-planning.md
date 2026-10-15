@@ -72,18 +72,28 @@ Acceptance:
    that the rationales name real steps. Record the cost per rerank.
    **Blocked on deploy.**
 
-### Slice 2: strategy recorded at put, surfaced on the route page
+### Slice 2: strategy recorded at put, surfaced on the route page (SHIPPED 2026-10-15)
 
-`put(kind='route', …, strategy='…')` records the strategy. When the route
-lands, the rerank runs in the retrosynth job, so no LLM call happens in a
-request. The route page then leads with the best route for the strategy
-and shows the engine's own top route beside it. The strategy is **not**
-part of `cache_key`, because the search is unchanged and only the ranking
-layer depends on it.
+`put(kind='route', …, strategy='…')` records the strategy
+(`meta.steer_strategies`, ordered + deduped). When the route lands, the
+rerank runs in the retrosynth job (`_steer_pending`), so no LLM call
+happens in a request. The route page then leads with the best route for
+the strategy (`steer.render_page`) and shows the engine's own top route
+beside it. The strategy is **not** part of `cache_key`, because the search
+is unchanged and only the ranking layer depends on it.
 
-Acceptance: a put with a strategy returns at once. The job's summary names
-the top-ranked route and its score. Two puts that differ only in strategy
-share one AiZynth run (cache hit) and get two rankings.
+Acceptance:
+
+1. [x] A put with a strategy returns at once — the put path never calls
+   the LLM.
+2. [x] The job's summary names the top-ranked route and its score.
+3. [x] Two puts that differ only in strategy share one AiZynth run (cache
+   hit → steer-only job: the dispatch sees the landed plan and skips the
+   engine; a still-in-flight plan absorbs the new strategy via
+   `meta.steer_strategies`) and get two rankings.
+4. [ ] Dogfood on prod once the release is deployed (with slice 1's item
+   5): put two strategies on one target, check both rankings and that the
+   page leads with the pick. **Blocked on deploy.**
 
 ### Slice 3: more candidates per run (image change; code only)
 

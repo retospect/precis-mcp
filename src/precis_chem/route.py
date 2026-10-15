@@ -14,7 +14,13 @@ onto the seven verbs:
   the job. ``constraints=['ewod-oil']`` declares an execution-platform
   constraint (``precis_chem.constraints``): recorded on the route, part of
   the content address, and screened advisorily over each planned step.
-- ``get``    — list routes, or render one route graph (``id=slug``).
+  ``strategy='<text>'`` records a STEER strategy (``precis_chem.steer``):
+  *not* part of the content address (the search is unchanged; only the
+  ranking layer depends on it), reranked inside the job when the plan
+  lands — a ``put`` never makes an LLM call.
+- ``get``    — list routes, or render one route graph (``id=slug``). When a
+  recorded strategy has a cached rerank the page leads with the strategy
+  pick and shows the engine's own top route beside it.
 - ``delete`` — soft-retire a route.
 
 Ships live: no per-plugin dark switch. An operator who needs it off uses
@@ -55,12 +61,15 @@ class RouteHandler(Handler):
         description=(
             "A retrosynthesis route-graph (precis-chem plugin). "
             "put(id='<slug>', target='<SMILES>', engine='stub'|'aizynth', "
-            "requested_by=<todo>, constraints=['ewod-oil']) plans a synthetic "
+            "requested_by=<todo>, constraints=['ewod-oil'], "
+            "strategy='<text>') plans a synthetic "
             "route — a content-addressed cache hit if already planned, else an "
             "in-process solve or a minted retrosynth compute job; a declared "
             "platform constraint (e.g. ewod-oil — EWOD digital microfluidics "
             "in oil) is recorded, cache-keyed, and advisorily screened per "
-            "step. get lists routes or renders one graph (id=slug); "
+            "step; a declared strategy is recorded (not cache-keyed) and "
+            "reranked inside the job. get lists routes or renders one graph "
+            "(id=slug) — a scored strategy's pick leads the page; "
             "view='steer', q='<strategy>' reranks the kept candidate routes "
             "by an LLM's fit to a natural-language strategy; delete "
             "soft-retires. The LLM traverses the graph, never runs a planner "
@@ -96,6 +105,7 @@ class RouteHandler(Handler):
         requested_by: int | str | None = None,
         max_steps: int | None = None,
         constraints: list[str] | str | None = None,
+        strategy: str | None = None,
         **_kw: Any,
     ) -> Response:
         if id is None or not str(id).strip():
@@ -121,6 +131,16 @@ class RouteHandler(Handler):
             declared = [c.name for c in resolve_constraints(constraints)]
         except ValueError as exc:
             raise BadInput(str(exc), next="constraints=['ewod-oil']") from exc
+        strat: str | None = None
+        if strategy is not None:
+            try:
+                strat = steer.normalise_strategy(strategy)
+            except ValueError as exc:
+                raise BadInput(
+                    str(exc),
+                    next="strategy='avoid protecting groups' "
+                    f"(≤{steer.MAX_STRATEGY_CHARS} chars)",
+                ) from exc
         key = cache_key(
             target=tgt,
             engine=eng.name,
@@ -130,14 +150,56 @@ class RouteHandler(Handler):
         )
 
         existing = self.store.get_ref(kind="route", id=slug)
+        # Every strategy ever put against this slug, ordered + deduped — the
+        # rerank reads the ref (not job params) so a put that idem-collapses
+        # onto an in-flight job still gets its ranking.
+        existing_meta = (existing.meta if existing is not None else None) or {}
+        steer_strategies = [
+            str(s) for s in (existing_meta.get("steer_strategies") or [])
+        ]
+        if strat is not None and strat not in steer_strategies:
+            steer_strategies.append(strat)
+
+        params = {
+            "route_ref_id": 0,  # filled once the ref exists
+            "target": tgt,
+            "engine": eng.name,
+            "engine_version": eng.version,
+            "cache_key": key,
+            "max_steps": steps,
+            "constraints": declared,
+        }
+        if strat is not None:
+            params["strategy"] = strat
+
         # Content-addressed cache hit: same slug already carries a solved route
-        # under this exact key ⇒ zero recompute.
+        # under this exact key ⇒ zero recompute. The strategy is *not* part of
+        # the address — a cache hit with an unranked strategy mints a
+        # steer-only job (the dispatch sees the landed plan and skips the
+        # engine), so two puts differing only in strategy share one run.
         if existing is not None:
             meta = existing.meta or {}
             if meta.get("cache_key") == key and meta.get("route"):
                 graph = RouteGraph.from_json(meta["route"])
+                head = f"# route '{slug}' — cache hit (no recompute)\n\n"
+                if strat is None:
+                    return Response(body=head + graph.render())
+                self.store.stamp_ref_meta(
+                    existing.id, {"steer_strategies": steer_strategies}
+                )
+                if steer.steer_key(strat, graph) in (meta.get("steer") or {}):
+                    return Response(
+                        body=head + f"strategy '{strat}' already ranked — "
+                        "the route page leads with its pick.\n\n" + graph.render()
+                    )
+                node = os.environ.get(ROUTE_NODE_ENV)
+                if node:
+                    params["route_ref_id"] = existing.id
+                    return self._dispatch(existing, params, node, requested_by)
                 return Response(
-                    body=f"# route '{slug}' — cache hit (no recompute)\n\n"
+                    body=head
+                    + f"strategy '{strat}' recorded — no compute lane for the "
+                    "rerank here; view='steer' scores it on demand.\n\n"
                     + graph.render()
                 )
 
@@ -151,6 +213,8 @@ class RouteHandler(Handler):
             "max_steps": steps,
             "constraints": declared,
         }
+        if steer_strategies:
+            stamp["steer_strategies"] = steer_strategies
         if existing is None:
             ref = self.store.insert_ref(
                 kind="route",
@@ -161,16 +225,7 @@ class RouteHandler(Handler):
         else:
             ref = existing
             self.store.stamp_ref_meta(ref.id, stamp)
-
-        params = {
-            "route_ref_id": ref.id,
-            "target": tgt,
-            "engine": eng.name,
-            "engine_version": eng.version,
-            "cache_key": key,
-            "max_steps": steps,
-            "constraints": declared,
-        }
+        params["route_ref_id"] = ref.id
 
         node = os.environ.get(ROUTE_NODE_ENV)
         if node:
@@ -191,10 +246,15 @@ class RouteHandler(Handler):
         graph = classify_route(screen_route(graph, declared))
         apply_route_result(self.store, ref.id, graph, cache_key=key)
         state = "solved" if graph.solved else "unsolved"
-        return Response(
-            body=f"# route '{slug}' — {state} ({graph.engine}, in-process)\n\n"
-            + graph.render()
-        )
+        body = f"# route '{slug}' — {state} ({graph.engine}, in-process)\n\n"
+        if strat is not None:
+            # No compute lane ⇒ no job to carry the rerank; the request path
+            # stays LLM-free either way (steer is a job-time/view-time call).
+            body += (
+                f"strategy '{strat}' recorded — no compute lane for the "
+                "rerank here; view='steer' scores it on demand.\n\n"
+            )
+        return Response(body=body + graph.render())
 
     def _dispatch(
         self,
@@ -236,11 +296,28 @@ class RouteHandler(Handler):
         if requester_id is not None:
             self._wire_requester(requester_id, job_resp.body)
             note = f" (todo #{requester_id} will block on it)"
+        # A cache-hit put (plan already landed) mints a steer-only job.
+        planned = (ref.meta or {}).get("route") and (ref.meta or {}).get(
+            "cache_key"
+        ) == params["cache_key"]
+        lands = (
+            "The strategy rerank lands on the route on completion (the plan "
+            "itself is a cache hit — no engine re-run)."
+            if planned
+            else "The plan lands on the route on completion."
+        )
+        strategy_note = ""
+        if params.get("strategy"):
+            strategy_note = (
+                f"strategy '{params['strategy']}' recorded — the rerank runs "
+                "in the job, not here.\n\n"
+            )
         return Response(
             body=(
                 f"# route '{ref.slug}' dispatched to {node}{note}\n\n"
+                f"{strategy_note}"
                 f"{job_resp.body}\n\n"
-                f"The plan lands on the route on completion. "
+                f"{lands} "
                 f"Poll: get(kind='route', id='{ref.slug}')."
             )
         )
@@ -319,7 +396,7 @@ class RouteHandler(Handler):
                     "q='<strategy>' (LLM rerank) | omit for the route graph"
                 ),
             )
-        return Response(body=graph.render())
+        return Response(body=self._page_render(meta, graph))
 
     def _render_steer(
         self, ref: Any, graph: RouteGraph, *, q: str | None, refresh: bool
@@ -351,6 +428,28 @@ class RouteHandler(Handler):
             }
             self.store.stamp_ref_meta(ref.id, {"steer": cache})
         return Response(body=steer.render(strategy, graph, scores, cached=False))
+
+    def _page_render(self, meta: dict[str, Any], graph: RouteGraph) -> str:
+        """The route page: when a recorded strategy has a cached rerank, lead
+        with its pick and show the engine's own top route beside it (the
+        newest recorded strategy with a ranking wins)."""
+        strategies = [str(s) for s in meta.get("steer_strategies") or []]
+        cache = meta.get("steer") or {}
+        for s in reversed(strategies):
+            hit = cache.get(steer.steer_key(s, graph))
+            if hit:
+                scores = [
+                    steer.SteerScore.from_json(x) for x in hit.get("scores") or []
+                ]
+                return steer.render_page(s, graph, scores)
+        body = graph.render()
+        if strategies:
+            body += (
+                f"\n\nstrategy '{strategies[-1]}' recorded — the rerank runs "
+                "in the plan job; not landed yet. "
+                "view='steer', q='<strategy>' scores on demand."
+            )
+        return body
 
     # ── delete ────────────────────────────────────────────────────────
     def delete(self, *, id: str | int | None = None, **_kw: Any) -> Response:

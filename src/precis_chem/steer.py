@@ -1,4 +1,4 @@
-"""STEER slice 1: rerank planned routes against a natural-language strategy.
+"""STEER: rerank planned routes against a natural-language strategy.
 
 After Bran et al. 2025 (finding fi259498, paper bran25 §4.2): the engine
 proposes several routes, each route is rendered as text (every step's
@@ -12,6 +12,15 @@ avoids the positional bias a single all-routes prompt would carry. Calls go
 through :func:`precis.utils.llm.router.route` at :data:`TIER`, each capped
 at :data:`MAX_USD_PER_ROUTE`. A failed or unparseable reply leaves that
 route unscored, ranked last and marked. It is never given a default score.
+
+Slice 2: ``put(kind='route', strategy='…')`` records the strategy on the
+route (``meta.steer_strategies``, ordered + deduped — the last entry is the
+page's lead) and the rerank runs inside the ``retrosynth`` job when the
+plan lands, so a ``put`` never makes an LLM call. Scores land in the same
+``meta.steer`` cache the ``view='steer'`` render reads, so the two paths
+share rankings. A second ``put`` that differs only in strategy hits the
+content-addressed cache and mints a steer-only job — the dispatch sees the
+plan already landed (``cache_key`` match) and skips the engine.
 
 Spec and later slices: ``docs/backlog/steer-strategy-route-planning.md``.
 """
@@ -206,13 +215,7 @@ def render(
         lines.append(head)
         if s.rationale:
             lines.append(f"   why: {s.rationale}")
-        for step in cand.steps:
-            cls = f" — {step.class_name}" if step.class_name else ""
-            lines.append(
-                f"   {step.id}. `{step.product}` ⇐ "
-                + " + ".join(f"`{r}`" for r in step.reactants)
-                + cls
-            )
+        lines += _route_lines(cand)
     if len(cands) == 1:
         lines += [
             "",
@@ -220,6 +223,83 @@ def render(
             "before alternatives were stored have none; re-plan to get them.",
         ]
     return "\n".join(lines)
+
+
+def _route_lines(cand: RouteGraph) -> list[str]:
+    """One indented line per step — the per-route block shared by the steer
+    render and the route page."""
+    out = []
+    for step in cand.steps:
+        cls = f" — {step.class_name}" if step.class_name else ""
+        out.append(
+            f"   {step.id}. `{step.product}` ⇐ "
+            + " + ".join(f"`{r}`" for r in step.reactants)
+            + cls
+        )
+    return out
+
+
+def render_page(strategy: str, graph: RouteGraph, scores: list[SteerScore]) -> str:
+    """The route page for a route put with a strategy (slice 2): lead with
+    the best route *for the strategy*, the engine's own top route beside it.
+
+    ``scores`` come best-first from :func:`steer` (or its ``meta.steer``
+    cache entry). All-unscored falls back to the engine's order with the
+    failure named — never a silent default."""
+    cands = candidates(graph)
+    best = next((s for s in scores if s.score is not None), None)
+    lines = [
+        f"# route → `{graph.target}`",
+        f"engine: {graph.engine} ({graph.engine_version}) · "
+        f"{'solved' if graph.solved else 'unsolved'} · "
+        f"{len(graph.steps)} step(s)",
+        f"strategy: {strategy} — LLM rerank of {len(cands)} candidate(s) "
+        f"({PROMPT_VERSION})",
+    ]
+    if best is None:
+        err = scores[0].error if scores else "no candidates"
+        lines += [
+            "",
+            f"all candidates unscored for this strategy ({err}) — "
+            "the engine's own order follows.",
+            "",
+            *_route_lines(graph),
+        ]
+        return "\n".join(lines) + _render_constraints(graph)
+
+    winner = cands[best.engine_rank - 1]
+    lines += [
+        "",
+        f"## strategy pick — engine route #{best.engine_rank}, "
+        f"score {best.score:g}/10 · "
+        f"{len(winner.steps)} step(s) · {'solved' if winner.solved else 'unsolved'}",
+    ]
+    if best.rationale:
+        lines.append(f"why: {best.rationale}")
+    lines += _route_lines(winner)
+    if best.engine_rank == 1:
+        lines += ["", "the engine's own top route is also the best fit."]
+        return "\n".join(lines) + _render_constraints(graph)
+
+    top = next((s for s in scores if s.engine_rank == 1), None)
+    pos = scores.index(top) + 1 if top is not None else None
+    if top is not None and top.score is not None:
+        note = f"ranked #{pos} for this strategy, score {top.score:g}/10"
+    elif top is not None:
+        note = f"unscored for this strategy ({top.error})"
+    else:
+        note = "not among the scored candidates"
+    lines += [
+        "",
+        f"## engine's top route — {note}",
+        *_route_lines(graph),
+    ]
+    return "\n".join(lines) + _render_constraints(graph)
+
+
+def _render_constraints(graph: RouteGraph) -> str:
+    """The declared-constraint ledger, identical to ``graph.render()``'s tail."""
+    return graph.constraints_tail()
 
 
 __all__ = [
@@ -230,6 +310,7 @@ __all__ = [
     "normalise_strategy",
     "parse_reply",
     "render",
+    "render_page",
     "route_text",
     "router_ask",
     "steer",

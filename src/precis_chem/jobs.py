@@ -24,6 +24,14 @@ whole orchestration + write-back without a cluster.
 Registered via the ``precis.job_types`` entry-point group (see the plugin
 entry points in ``pyproject.toml``); ``get_job_type('retrosynth')`` resolves
 it once precis-mcp is installed.
+
+STEER slice 2: when the plan lands, the dispatch reranks the kept
+candidates against every strategy recorded on the route
+(``meta.steer_strategies``) — the LLM calls live in the job, never in a
+``put``. A dispatch that finds the plan already landed under the same
+``cache_key`` skips the engine entirely: a second ``put`` differing only in
+strategy shares one AiZynth run and mints a steer-only job (same
+``idem_key``, so it also collapses onto a still-in-flight plan).
 """
 
 from __future__ import annotations
@@ -33,10 +41,12 @@ import logging
 import os
 import subprocess
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from precis.workers.job_types import JobTypeSpec
+from precis_chem import steer
 from precis_chem.askcos import (
     TREE_SEARCH_PATH,
     build_treebuilder_request,
@@ -202,6 +212,10 @@ _PARAMS_SCHEMA: dict[str, Any] = {
         "max_steps": {"type": "integer"},
         # Declared platform constraints (advisory screen; part of cache_key).
         "constraints": {"type": "array", "items": {"type": "string"}},
+        # STEER strategy recorded at put — reranked in this job once the
+        # plan lands. Deliberately NOT part of cache_key: the search is
+        # unchanged, only the ranking layer depends on it.
+        "strategy": {"type": "string"},
         # The node this plan pins itself to (the claim gate): only that node's
         # worker claims it. NULL ⇒ any node (used only by the in-process stub).
         "target_node": {"type": ["string", "null"]},
@@ -423,63 +437,152 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         return
 
     engine = resolve_engine(params.get("engine"))
-    transport = getattr(engine, "transport", "inprocess")
-    if transport == "container":
-        graph = _run_container(ctx, params, engine)
-        if graph is None:
-            return  # failure already recorded
-    elif transport == "service":
-        graph = _run_service(ctx, params, engine)
-        if graph is None:
-            return  # failure already recorded
+    graph = _already_planned(ctx.store, route_ref_id, cache_key)
+    if graph is not None:
+        ctx.append_chunk(
+            "job_event",
+            "cache_key match — plan already landed; steer-only pass "
+            "(a put that differed only in strategy shares this run)",
+        )
     else:
-        try:
-            graph = run_retrosynth(params)
-        except Exception as exc:  # engine blew up — bubble, don't crash worker.
-            ctx.record_failure(f"retrosynth: engine failed on {target!r} ({exc})")
-            return
+        transport = getattr(engine, "transport", "inprocess")
+        if transport == "container":
+            graph = _run_container(ctx, params, engine)
+            if graph is None:
+                return  # failure already recorded
+        elif transport == "service":
+            graph = _run_service(ctx, params, engine)
+            if graph is None:
+                return  # failure already recorded
+        else:
+            try:
+                graph = run_retrosynth(params)
+            except Exception as exc:  # engine blew up — bubble, don't crash worker.
+                ctx.record_failure(f"retrosynth: engine failed on {target!r} ({exc})")
+                return
 
-    declared = [str(c) for c in params.get("constraints") or []]
-    if declared:
-        try:
-            graph = screen_route(graph, declared)
-        except ValueError as exc:
-            # An unknown constraint name should have been rejected at put;
-            # reaching here means the registry changed under a replayed
-            # cache_key. Don't lose the plan over the advisory overlay — but
-            # the cache_key was computed FROM `declared`, so the stored blob
-            # must still say it is constrained, or the row and its own
-            # address would disagree about that. Record the names with an
-            # explicit per-step flag that the screen did not run.
-            graph = replace(
-                graph,
-                constraints=declared,
-                steps=[
-                    replace(
-                        s,
-                        constraint_flags=[
-                            f"{n}: unscreened — constraint not in this "
-                            f"build's registry ({exc})"
-                            for n in declared
-                        ],
-                    )
-                    for s in graph.steps
-                ],
-            )
-            ctx.append_chunk("job_event", f"constraint screen skipped: {exc}")
+        declared = [str(c) for c in params.get("constraints") or []]
+        if declared:
+            try:
+                graph = screen_route(graph, declared)
+            except ValueError as exc:
+                # An unknown constraint name should have been rejected at put;
+                # reaching here means the registry changed under a replayed
+                # cache_key. Don't lose the plan over the advisory overlay — but
+                # the cache_key was computed FROM `declared`, so the stored blob
+                # must still say it is constrained, or the row and its own
+                # address would disagree about that. Record the names with an
+                # explicit per-step flag that the screen did not run.
+                graph = replace(
+                    graph,
+                    constraints=declared,
+                    steps=[
+                        replace(
+                            s,
+                            constraint_flags=[
+                                f"{n}: unscreened — constraint not in this "
+                                f"build's registry ({exc})"
+                                for n in declared
+                            ],
+                        )
+                        for s in graph.steps
+                    ],
+                )
+                ctx.append_chunk("job_event", f"constraint screen skipped: {exc}")
 
-    graph = classify_route(graph)
-    apply_route_result(ctx.store, route_ref_id, graph, cache_key=cache_key)
+        graph = classify_route(graph)
+        apply_route_result(ctx.store, route_ref_id, graph, cache_key=cache_key)
 
-    state = "solved" if graph.solved else "unsolved (no buyable leaves)"
-    ctx.set_meta(cache_key=cache_key, solved=graph.solved)
-    ctx.append_chunk(
-        "job_summary",
-        f"route[{graph.engine}] {state}: {len(graph.steps)} step(s) → "
-        f"{target} (cache_key {cache_key[:12]}…). The next identical plan is a "
-        f"zero-compute cache hit.",
-    )
+        state = "solved" if graph.solved else "unsolved (no buyable leaves)"
+        ctx.set_meta(cache_key=cache_key, solved=graph.solved)
+        ctx.append_chunk(
+            "job_summary",
+            f"route[{graph.engine}] {state}: {len(graph.steps)} step(s) → "
+            f"{target} (cache_key {cache_key[:12]}…). The next identical plan is "
+            f"a zero-compute cache hit.",
+        )
+
+    _steer_pending(ctx, route_ref_id, graph, params.get("strategy"))
     ctx.set_status("succeeded")
+
+
+def _already_planned(
+    store: Any, route_ref_id: int, cache_key: str
+) -> RouteGraph | None:
+    """The landed plan when the ref already carries this exact content
+    address — the steer-only re-entry short-circuit (slice 2). ``None``
+    means plan as usual."""
+    ref = store.get_ref(kind="route", id=route_ref_id)
+    meta = (ref.meta if ref is not None else None) or {}
+    blob = meta.get("route")
+    if not blob or meta.get("cache_key") != cache_key:
+        return None
+    try:
+        return RouteGraph.from_json(blob)
+    except Exception:
+        log.warning("retrosynth: stored route unreadable; re-planning", exc_info=True)
+        return None
+
+
+def _steer_pending(
+    ctx: Any, route_ref_id: int, graph: RouteGraph, param_strategy: Any
+) -> None:
+    """Rerank the kept candidates against every strategy recorded on the
+    route (``meta.steer_strategies``) plus this job's own ``strategy`` param.
+
+    Scores land in the same ``meta.steer`` cache ``view='steer'`` reads, so a
+    later get is a cache hit. A strategy whose routes all fail stays
+    uncached (never a default score) and is named in the job summary. A bad
+    LLM turn never fails the job — the plan is the primary deliverable."""
+    ref = ctx.store.get_ref(kind="route", id=route_ref_id)
+    meta = (ref.meta if ref is not None else None) or {}
+    want: list[str] = []
+    for raw in [*(meta.get("steer_strategies") or []), param_strategy]:
+        try:
+            s = steer.normalise_strategy(str(raw) if raw is not None else None)
+        except ValueError:
+            if raw is not None:
+                ctx.append_chunk("job_event", f"steer: strategy {raw!r} rejected")
+            continue
+        if s not in want:
+            want.append(s)
+    if not want:
+        return
+
+    cache = dict(meta.get("steer") or {})
+    lines: list[str] = []
+    for s in want:
+        key = steer.steer_key(s, graph)
+        entry = cache.get(key)
+        if entry is None:
+            scores = steer.steer(s, graph)  # one routed call per candidate
+            if not any(x.score is not None for x in scores):
+                err = scores[0].error if scores else "no candidates"
+                lines.append(
+                    f"steer '{s}': all {len(scores)} candidate(s) unscored "
+                    f"({err}) — left uncached, a re-run retries"
+                )
+                continue
+            entry = {
+                "strategy": s,
+                "prompt": steer.PROMPT_VERSION,
+                "scores": [x.to_json() for x in scores],
+                "at": datetime.now(UTC).isoformat(),
+            }
+            cache[key] = entry
+        scores = [steer.SteerScore.from_json(x) for x in entry.get("scores") or []]
+        best = next((x for x in scores if x.score is not None), None)
+        if best is not None:
+            lines.append(
+                f"steer '{s}': engine route #{best.engine_rank} best, "
+                f"score {best.score:g}/10 ({len(scores)} candidate(s))"
+            )
+    if lines:
+        ctx.append_chunk("job_summary", "\n".join(lines))
+    stamp: dict[str, Any] = {"steer_strategies": want}
+    if cache != (meta.get("steer") or {}):
+        stamp["steer"] = cache
+    ctx.store.stamp_ref_meta(route_ref_id, stamp)
 
 
 def _run_placeholder(*_a: Any, **_kw: Any) -> None:
