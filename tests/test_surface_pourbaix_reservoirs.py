@@ -124,3 +124,62 @@ def test_sweep_records_the_reservoirs() -> None:
     ]
     assert out["reservoir_shift_eV"]["mace:large"]["N"] == pytest.approx(3.3)
     assert out["reservoir_notes"] == []
+
+
+def test_mixture_gamma0_sums_the_per_species_reservoir_shifts() -> None:
+    """NH2+H, counts 2:1, under the NO feed: only the open-shell NH2 moves
+    (3.3 eV per N), so gamma0 = gamma - 2 * 3.3 / area; its nu sums the
+    species (NH2 -4 under the feed, H -1)."""
+    p = _payload()
+    p["facets"][0]["mixtures"] = [
+        {
+            "species": ["NH2", "H"],
+            "label": "NH2+H",
+            "points": [
+                {
+                    "counts": {"NH2": 2, "H": 1},
+                    "n": 3,
+                    "theta": 0.75,
+                    "energy": -100.0,
+                    "gamma": 0.07,
+                    "converged": True,
+                    "detached": False,
+                }
+            ],
+        }
+    ]
+    res = [sp.Reservoir("NO", "N")]
+    key = ("NH2+H", (("NH2", 2), ("H", 1)))
+    plain = {a.key: a for a in sp.anchors_from_coverage(p)}
+    fed = {a.key: a for a in sp.anchors_from_coverage(p, reservoirs=res)}
+    single_shift = plain[("NH2", 1)].gamma0 - fed[("NH2", 1)].gamma0
+    assert single_shift == pytest.approx(0.33)
+    assert plain[key].gamma0 == pytest.approx(0.07)
+    assert fed[key].gamma0 == pytest.approx(0.07 - 2 * single_shift)
+    assert plain[key].slope == pytest.approx(-(2 * -2 + 1 * -1) / AREA)
+    assert fed[key].slope == pytest.approx(-(2 * -4 + 1 * -1) / AREA)
+    assert fed[key].counts == (("NH2", 2), ("H", 1))
+
+
+def test_pool_anchors_keeps_the_reservoirs() -> None:
+    """Pooling must not drop the feed reservoir: N* keeps nu = -2 under NO."""
+    p = _payload()
+    p["facets"][0]["adsorbates"]["N"] = {
+        "site": "fcc",
+        "points": [
+            {
+                "n": 1,
+                "theta": 0.25,
+                "energy": -100.0,
+                "gamma": 0.1,
+                "converged": True,
+                "detached": False,
+            }
+        ],
+    }
+    res = [sp.Reservoir("NO", "N")]
+    anchors = sp.anchors_from_coverage(p, reservoirs=res)
+    assert {a.adsorbate: a for a in anchors}["N"].nu == -2
+    pooled = {a.adsorbate: a for a in sp.pool_anchors({"m": anchors})}
+    assert pooled["N"].nu == -2
+    assert pooled["N"].slope == pytest.approx(+2 / AREA)

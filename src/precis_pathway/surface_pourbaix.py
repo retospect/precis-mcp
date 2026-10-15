@@ -250,7 +250,13 @@ def u_rhe(u_she_v: float, ph: float) -> float:
 class Anchor:
     """One computed termination: adsorbate ``A`` at count ``n`` (coverage
     ``theta`` ML) on the scanned facet, with its surface free energy at
-    U = 0 V_RHE and the bar propagated onto it."""
+    U = 0 V_RHE and the bar propagated onto it.
+
+    A co-adsorbed (mixed) configuration carries ``counts`` — the
+    per-species ``(species, n_i)`` pairs, in the scan's species order —
+    with ``adsorbate`` the mixture's label and ``n`` the total count. Its
+    slope sums the species: ``-sum n_i nu_i / area`` (gr489475); empty
+    ``counts`` is the single-species anchor."""
 
     adsorbate: str
     n: int
@@ -264,22 +270,47 @@ class Anchor:
     sigma_gamma: float
     model: str
     reservoirs: tuple[Reservoir, ...] = ()
+    counts: tuple[tuple[str, int], ...] = ()
 
     @property
     def nu(self) -> float:
+        """Proton-electron pairs released per adsorbate (a mixture's is the
+        count-weighted mean, so ``n * nu`` is the configuration's total)."""
+        if self.counts:
+            return self._electrons_total / self.n
         return electrons_released(self.adsorbate, self.reservoirs)
+
+    @property
+    def _electrons_total(self) -> float:
+        return sum(k * electrons_released(sp, self.reservoirs) for sp, k in self.counts)
 
     @property
     def slope(self) -> float:
         """``d gamma / dU`` (eV/Å² per V)."""
+        if self.counts:
+            return -self._electrons_total / self.area
         return -self.n * self.nu / self.area
 
     def gamma(self, u: float) -> float:
         return self.gamma0 + self.slope * float(u)
 
     @property
-    def key(self) -> tuple[str, int]:
+    def key(self) -> tuple[str, Any]:
+        """``(adsorbate, n)``; a mixture's is ``(label, counts)``."""
+        if self.counts:
+            return (self.adsorbate, self.counts)
         return (self.adsorbate, self.n)
+
+    def brief(self) -> dict[str, Any]:
+        """The termination as an envelope/point winner names it."""
+        out: dict[str, Any] = {
+            "adsorbate": self.adsorbate,
+            "n": self.n,
+            "theta": self.theta,
+        }
+        if self.counts:
+            out["counts"] = dict(self.counts)
+        return out
 
     @property
     def g_ads_per_adsorbate(self) -> float:
@@ -302,6 +333,7 @@ class Anchor:
             "detached": self.detached,
             "sigma_gamma": self.sigma_gamma,
             "model": self.model,
+            **({"counts": dict(self.counts)} if self.counts else {}),
         }
 
 
@@ -400,7 +432,14 @@ def anchors_from_coverage(
     ``reservoirs`` re-price each open-shell anchor containing a reservoir
     element by ``-n * k_el * shift_el / area`` (:func:`reservoir_shifts`)
     and give it the reservoir's ``nu``; a reservoir the scan cannot price
-    is not applied at all."""
+    is not applied at all.
+
+    Co-adsorbed configurations (``facets[].mixtures[]``, catpath's
+    ``coverage.mixtures``; gr489475) parse into anchors carrying per-species
+    ``counts``: the shift and the ``sigma_mu`` term sum over the species
+    (``sum n_i shift_i``, ``sum n_i sigma_mu_i``), the slope over their
+    ``nu``. A scan without the block yields the single-species anchors
+    alone, unchanged."""
     shifts, _notes = reservoir_shifts(payload, reservoirs)
     applied = tuple(r for r in reservoirs if r.element in shifts)
     facets = payload.get("facets") or []
@@ -417,12 +456,7 @@ def anchors_from_coverage(
         except ValueError:
             continue
         s_mu = float(sigma_mu.get(frag, 0.0))
-        counts = element_counts(str(frag))
-        shift = (
-            0.0
-            if _formula(str(frag)) in CLOSED_SHELL
-            else sum(k * shifts.get(el, 0.0) for el, k in counts.items())
-        )
+        shift = _fragment_shift(str(frag), shifts)
         for p in rec.get("points") or []:
             n = int(p["n"])
             sg = math.sqrt(2.0 * sigma_e_ev**2 + (n * s_mu) ** 2) / area
@@ -442,6 +476,72 @@ def anchors_from_coverage(
                     reservoirs=applied,
                 )
             )
+    for mix in facet.get("mixtures") or []:
+        out.extend(
+            _mixture_anchors(mix, area, model, shifts, applied, sigma_e_ev, sigma_mu)
+        )
+    return out
+
+
+def _fragment_shift(frag: str, shifts: dict[str, float]) -> float:
+    """One adsorbed ``frag``'s reservoir re-pricing at U = 0 (eV): the sum of
+    its elements' shifts; a closed-shell species stays on its own gas."""
+    if _formula(frag) in CLOSED_SHELL:
+        return 0.0
+    return sum(k * shifts.get(el, 0.0) for el, k in element_counts(frag).items())
+
+
+def _mixture_anchors(
+    mix: dict[str, Any],
+    area: float,
+    model: str,
+    shifts: dict[str, float],
+    applied: tuple[Reservoir, ...],
+    sigma_e_ev: float,
+    sigma_mu: dict[str, float],
+) -> list[Anchor]:
+    """The anchors of one ``facets[].mixtures[]`` entry, one per point,
+    keyed by ``(label, counts)``. A mixture naming a species the CHE cannot
+    price is skipped whole, like a single-species fragment."""
+    species = [str(sp) for sp in mix.get("species") or []]
+    try:
+        for sp in species:
+            electrons_released(sp)
+    except ValueError:
+        return []
+    label = str(mix.get("label") or "+".join(species))
+    raw_site = mix.get("site")
+    site = (
+        ", ".join(f"{sp}:{raw_site[sp]}" for sp in species if raw_site.get(sp))
+        if isinstance(raw_site, dict)
+        else raw_site
+    )
+    out: list[Anchor] = []
+    for p in mix.get("points") or []:
+        raw = p.get("counts") or {}
+        counts = tuple((sp, int(raw.get(sp, 0))) for sp in species)
+        n = sum(k for _, k in counts)
+        if n <= 0:
+            continue
+        shift = sum(k * _fragment_shift(sp, shifts) for sp, k in counts)
+        s_mu = sum(k * float(sigma_mu.get(sp, 0.0)) for sp, k in counts)
+        out.append(
+            Anchor(
+                adsorbate=label,
+                n=n,
+                theta=float(p["theta"]),
+                energy=float(p["energy"]),
+                gamma0=float(p["gamma"]) - shift / area,
+                area=area,
+                site=site or None,
+                converged=bool(p.get("converged", True)),
+                detached=bool(p.get("detached", False)),
+                sigma_gamma=math.sqrt(2.0 * sigma_e_ev**2 + s_mu**2) / area,
+                model=model,
+                reservoirs=applied,
+                counts=counts,
+            )
+        )
     return out
 
 
@@ -523,9 +623,7 @@ def envelope(anchors: list[Anchor], u_grid: list[float]) -> list[dict[str, Any]]
         rows.append(
             {
                 "U_RHE": float(u),
-                "winner": None
-                if w is None
-                else {"adsorbate": w.adsorbate, "n": w.n, "theta": w.theta},
+                "winner": None if w is None else w.brief(),
                 "gamma": g,
             }
         )
@@ -548,15 +646,20 @@ class Boundary:
     """Where the resting termination changes along U, with its two bands."""
 
     u_star: float
-    below: tuple[str, int] | None
-    above: tuple[str, int] | None
+    below: tuple[str, Any] | None
+    above: tuple[str, Any] | None
     band_propagated: float
     band_model_form: float | None
     n_models: int
 
     def as_dict(self) -> dict[str, Any]:
-        def _k(k: tuple[str, int] | None) -> dict[str, Any] | None:
-            return None if k is None else {"adsorbate": k[0], "n": k[1]}
+        def _k(k: tuple[str, Any] | None) -> dict[str, Any] | None:
+            if k is None:
+                return None
+            if isinstance(k[1], tuple):  # a mixture: (label, counts)
+                counts = dict(k[1])
+                return {"adsorbate": k[0], "n": sum(counts.values()), "counts": counts}
+            return {"adsorbate": k[0], "n": k[1]}
 
         return {
             "U_RHE": self.u_star,
@@ -642,22 +745,30 @@ def _std(values: list[float]) -> float:
     return math.sqrt(sum((v - m) ** 2 for v in values) / (len(values) - 1))
 
 
+def _key_order(item: tuple[tuple[str, Any], Any]) -> tuple[Any, ...]:
+    """Sort order for :attr:`Anchor.key` groups that never compares an
+    ``int`` count with a mixture's ``counts`` tuple (a one-species mixture
+    may share its label with the single-species anchor)."""
+    label, rest = item[0]
+    return (label, 1, rest) if isinstance(rest, tuple) else (label, 0, (rest,))
+
+
 def pool_anchors(anchors_by_model: dict[str, list[Anchor]]) -> list[Anchor]:
-    """One anchor per ``(adsorbate, n)`` across models: ``gamma0`` is the
+    """One anchor per :attr:`Anchor.key` across models: ``gamma0`` is the
     mean, ``sigma_gamma`` the mean of the per-model propagated bars (the
     model spread is NOT folded in — it is the model-form band, reported on
     the boundaries). ``model`` names the contributing models."""
-    groups: dict[tuple[str, int], list[Anchor]] = {}
+    groups: dict[tuple[str, Any], list[Anchor]] = {}
     for anchors in anchors_by_model.values():
         for a in usable(anchors):
             groups.setdefault(a.key, []).append(a)
     pooled: list[Anchor] = []
-    for key, members in sorted(groups.items()):
+    for _key, members in sorted(groups.items(), key=_key_order):
         first = members[0]
         pooled.append(
             Anchor(
-                adsorbate=key[0],
-                n=key[1],
+                adsorbate=first.adsorbate,
+                n=first.n,
                 theta=first.theta,
                 energy=sum(m.energy for m in members) / len(members),
                 gamma0=sum(m.gamma0 for m in members) / len(members),
@@ -667,6 +778,8 @@ def pool_anchors(anchors_by_model: dict[str, list[Anchor]]) -> list[Anchor]:
                 detached=False,
                 sigma_gamma=sum(m.sigma_gamma for m in members) / len(members),
                 model="+".join(sorted({m.model for m in members})),
+                reservoirs=first.reservoirs,
+                counts=first.counts,
             )
         )
     return pooled
@@ -675,21 +788,26 @@ def pool_anchors(anchors_by_model: dict[str, list[Anchor]]) -> list[Anchor]:
 def anchor_spread(
     anchors_by_model: dict[str, list[Anchor]],
 ) -> dict[str, dict[str, Any]]:
-    """Per ``(adsorbate, n)``: the model-form spread of ``gamma0`` across the
-    models that computed it (``None`` below two)."""
-    groups: dict[tuple[str, int], list[float]] = {}
+    """Per :attr:`Anchor.key`: the model-form spread of ``gamma0`` across the
+    models that computed it (``None`` below two). A mixture's entry is
+    named ``label:NO3H1``-style and carries its ``counts``."""
+    groups: dict[tuple[str, Any], list[Anchor]] = {}
     for anchors in anchors_by_model.values():
         for a in usable(anchors):
-            groups.setdefault(a.key, []).append(a.gamma0)
-    return {
-        f"{k[0]}:{k[1]}": {
-            "adsorbate": k[0],
-            "n": k[1],
+            groups.setdefault(a.key, []).append(a)
+    out: dict[str, dict[str, Any]] = {}
+    for _key, members in sorted(groups.items(), key=_key_order):
+        a = members[0]
+        v = [m.gamma0 for m in members]
+        tag = "".join(f"{sp}{k}" for sp, k in a.counts) if a.counts else str(a.n)
+        out[f"{a.adsorbate}:{tag}"] = {
+            "adsorbate": a.adsorbate,
+            "n": a.n,
+            **({"counts": dict(a.counts)} if a.counts else {}),
             "n_models": len(v),
             "gamma0_model_form": _std(v) if len(v) >= 2 else None,
         }
-        for k, v in sorted(groups.items())
-    }
+    return out
 
 
 def compare_lowest_theta(
@@ -783,7 +901,12 @@ def sweep(
         "anchors": [a.as_dict() for a in pooled],
         "anchor_model_form": anchor_spread(by_model),
         "skipped_detached": [
-            {"model": tag, "adsorbate": a.adsorbate, "n": a.n}
+            {
+                "model": tag,
+                "adsorbate": a.adsorbate,
+                "n": a.n,
+                **({"counts": dict(a.counts)} if a.counts else {}),
+            }
             for tag, anchors in by_model.items()
             for a in anchors
             if a.detached
@@ -811,9 +934,7 @@ def sweep(
         out["point"] = {
             "U_RHE": float(point_u_rhe),
             "U_SHE": u_she(point_u_rhe, ph),
-            "winner": None
-            if w is None
-            else {"adsorbate": w.adsorbate, "n": w.n, "theta": w.theta},
+            "winner": None if w is None else w.brief(),
             "gamma": g,
         }
     return out

@@ -390,9 +390,12 @@ Three tiers, cheapest first.
    linearly, and the map and staircase recompute for free. Slice 2 builds
    the generic axis (`surface_pourbaix.Reservoir`: a species, the element
    it sets, an activity) with p_NO as the first instance; every further
-   spectator is a config line. One slice. Mixed NO*+H* phases need a
-   catpath coverage-scan feature (mixed A/B configurations) and are not
-   built from summed single-species γ.
+   spectator is a config line. One slice. Mixed NO*+H* phases come from
+   catpath's `coverage.mixtures` (gr489475), never from summed
+   single-species γ. precis requests the feed + H* grid and parses
+   `facets[].mixtures[]` into per-species-count anchors; the request is
+   gated on the engine having the field. Left: the catpath push and
+   version bump, then a real-MLIP NO+H scan on an n_top ≥ 8 slab.
 2. **Temperature** — *ordered, not scheduled.* More than a slider: the
    anchors need vibrational and entropy terms per species, which the
    engine doesn't store, so an engine addition comes first. One slice,

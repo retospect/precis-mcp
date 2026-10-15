@@ -703,3 +703,58 @@ def test_unflagged_scanned_candidate_meta_unchanged(store: Store, hub: Hub) -> N
             or (0,)
         )[0]
     assert jobs_after == jobs_before
+
+
+# ── coverage.mixtures proposals (gr489475) ───────────────────────────────
+
+_MIX_NOH: dict[str, Any] = {
+    "species": ["NO", "H"],
+    "ratios": [[1, 1]],
+    "coverages": [0.5],
+}
+
+
+def _scan_params(coverage: dict[str, Any] | None = None) -> dict[str, Any]:
+    cfg: dict[str, Any] = {"name": "x", "substrate": "NO"}
+    if coverage is not None:
+        cfg["coverage"] = coverage
+    return {"config": cfg}
+
+
+def test_proposal_with_a_new_mixture_extends_the_scan_config() -> None:
+    out = anchors._proposal_scan_params(
+        _scan_params(), {"params": {"mixtures": [_MIX_NOH]}}
+    )
+    assert out is not None
+    assert out["config"]["coverage"]["mixtures"] == [_MIX_NOH]
+
+
+def test_proposal_repeating_a_configured_mixture_adds_nothing() -> None:
+    params = _scan_params({"mixtures": [dict(_MIX_NOH)]})
+    assert (
+        anchors._proposal_scan_params(params, {"params": {"mixtures": [_MIX_NOH]}})
+        is None
+    )
+
+
+def test_proposal_appends_a_new_mixture_to_the_configured_ones() -> None:
+    other = {"species": ["NO", "H"], "ratios": [[3, 1]], "coverages": [0.75]}
+    out = anchors._proposal_scan_params(
+        _scan_params({"mixtures": [_MIX_NOH]}), {"params": {"mixtures": [other]}}
+    )
+    assert out is not None
+    assert out["config"]["coverage"]["mixtures"] == [_MIX_NOH, other]
+
+
+def test_proposal_naming_only_a_mixed_strip_end_adds_nothing() -> None:
+    proposal = {
+        "params": {
+            "adsorbates": ["NO+H"],
+            "coverage_grid_extension": {
+                "below": {"adsorbate": "NO+H", "n": 4, "counts": {"NO": 3, "H": 1}},
+                "above": None,
+                "n": [4],
+            },
+        }
+    }
+    assert anchors._proposal_scan_params(_scan_params(), proposal) is None

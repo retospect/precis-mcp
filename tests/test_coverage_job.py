@@ -999,3 +999,125 @@ def test_scan_idem_key_is_distinct_per_candidate_and_model() -> None:
     assert k != coverage_job.scan_idem_key(461558, 1, CONFIG), "per model"
     changed = {**CONFIG, "coverage": {"adsorbates": ["N", "NH", "NH2", "NO", "NOH"]}}
     assert k != coverage_job.scan_idem_key(461558, 0, changed), "per anchor set"
+
+
+# ── co-adsorbed mixtures (gr489475) ──────────────────────────────────────
+
+_ASKED_MIXTURE: dict[str, Any] = {
+    "species": ["NO", "OH"],
+    "ratios": [[1, 1]],
+    "coverages": [0.5],
+}
+
+
+def test_with_defaults_has_no_mixtures_by_default() -> None:
+    assert "mixtures" not in coverage_job.with_defaults(CONFIG)["coverage"]
+
+
+def test_with_defaults_strips_caller_mixtures_when_unsupported() -> None:
+    cfg = {**CONFIG, "coverage": {"mixtures": [_ASKED_MIXTURE]}}
+    assert "mixtures" not in coverage_job.with_defaults(cfg)["coverage"]
+    assert "mixtures" not in coverage_job.with_defaults(cfg, mixtures=False)["coverage"]
+    assert "mixtures" in cfg["coverage"], "the caller's dict is not mutated"
+
+
+def test_with_defaults_adds_the_feed_plus_h_grid_when_supported() -> None:
+    cov = coverage_job.with_defaults(CONFIG, mixtures=True)["coverage"]
+    assert cov["mixtures"] == [
+        {
+            "species": ["NO", "H"],
+            "ratios": [[3, 1], [1, 1], [1, 3]],
+            "coverages": [0.5, 0.75],
+        }
+    ]
+
+
+def test_with_defaults_keeps_a_caller_mixtures_list_verbatim() -> None:
+    cfg = {**CONFIG, "coverage": {"mixtures": [_ASKED_MIXTURE]}}
+    cov = coverage_job.with_defaults(cfg, mixtures=True)["coverage"]
+    assert cov["mixtures"] == [_ASKED_MIXTURE]
+
+
+@pytest.mark.parametrize(
+    "substrate", ["H2O", None], ids=["no-feed-gas", "no-substrate"]
+)
+def test_with_defaults_gives_no_mixtures_without_a_feed_reservoir(
+    substrate: str | None,
+) -> None:
+    cfg = {k: v for k, v in CONFIG.items() if k != "substrate"}
+    if substrate is not None:
+        cfg["substrate"] = substrate
+    cov = coverage_job.with_defaults(cfg, mixtures=True)["coverage"]
+    assert "mixtures" not in cov
+
+
+def _mixture_dispatch(
+    store: Store, monkeypatch: pytest.MonkeyPatch, *, supported: bool, config: dict
+) -> tuple[_FakeCtx, dict[str, Any]]:
+    seen: dict[str, Any] = {}
+
+    def _fake_scan(cfg: dict[str, Any], model_index: int, **kw: Any) -> dict[str, Any]:
+        seen["config"] = cfg
+        return {
+            "model": "emt",
+            "model_index": model_index,
+            "coverage": _coverage("emt", -0.02),
+            "engine_version": "0.24.1",
+            "corrections": None,
+        }
+
+    monkeypatch.setattr(runner, "run_coverage_scan_subprocess", _fake_scan)
+    monkeypatch.setattr(runner, "coverage_mixtures_supported", lambda: supported)
+    if supported:
+        # the installed engine may predate coverage.mixtures; its Config
+        # parser (behind the anchor key) would refuse the key we pretend
+        # it takes
+        monkeypatch.setattr(
+            runner, "coverage_anchor_key", lambda config, **kw: "k" * 64
+        )
+    ctx = _FakeCtx(store=store, params={"config": config})
+    coverage_job._dispatch(ctx, coverage_job.SPEC)
+    return ctx, seen
+
+
+def test_dispatch_sends_default_mixtures_to_a_supporting_engine(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, seen = _mixture_dispatch(store, monkeypatch, supported=True, config=CONFIG)
+    assert ctx.status == "succeeded"
+    assert seen["config"]["coverage"]["mixtures"][0]["species"] == ["NO", "H"]
+    event = ctx.chunks[0][1]
+    assert " mixtures=NO+H" in event
+    assert "mixtures dropped" not in event
+
+
+def test_dispatch_drops_asked_mixtures_for_an_older_engine_and_says_so(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    asked = {**CONFIG, "coverage": {"mixtures": [_ASKED_MIXTURE]}}
+    ctx, seen = _mixture_dispatch(store, monkeypatch, supported=False, config=asked)
+    assert ctx.status == "succeeded"
+    assert "mixtures" not in seen["config"]["coverage"]
+    event = ctx.chunks[0][1]
+    assert "mixtures dropped" in event
+    assert " mixtures=" not in event
+
+
+def test_dispatch_is_silent_when_an_older_engine_was_never_asked(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, seen = _mixture_dispatch(store, monkeypatch, supported=False, config=CONFIG)
+    assert ctx.status == "succeeded"
+    assert "mixtures" not in seen["config"]["coverage"]
+    event = ctx.chunks[0][1]
+    assert "mixtures" not in event
+
+
+def test_runner_mixtures_support_matches_the_engine_config_fields() -> None:
+    import dataclasses
+
+    from autocatpath.config import CoverageConfig
+
+    got = runner.coverage_mixtures_supported()
+    assert isinstance(got, bool)
+    assert got == ("mixtures" in {f.name for f in dataclasses.fields(CoverageConfig)})

@@ -87,6 +87,13 @@ NAME = "surface_coverage_scan"
 #: the pathway run itself).
 DEFAULT_ADSORBATES: tuple[str, ...] = ("H", "O", "OH")
 DEFAULT_COVERAGES: tuple[float, ...] = (0.25, 0.5, 0.75, 1.0)
+#: Co-adsorbed feed + H* phases (gr489475: the NORR selectivity switch is
+#: NO*/H* co-coverage) — requested only when the reaction has a feed
+#: reservoir and the engine takes ``coverage.mixtures``. Splits a cell
+#: cannot represent are dropped by the engine with a warning (3:1 at
+#: 0.5 ML needs n_top >= 8).
+DEFAULT_MIXTURE_RATIOS: tuple[tuple[int, int], ...] = ((3, 1), (1, 1), (1, 3))
+DEFAULT_MIXTURE_COVERAGES: tuple[float, ...] = (0.5, 0.75)
 DEFAULT_U_WINDOW: tuple[float, float] = U_RHE_WINDOW
 DEFAULT_GRID = 151
 DEFAULT_PH = 7.0
@@ -140,7 +147,7 @@ DESCRIPTION = (
 )
 
 
-def with_defaults(config: dict[str, Any]) -> dict[str, Any]:
+def with_defaults(config: dict[str, Any], *, mixtures: bool = False) -> dict[str, Any]:
     """``config`` with the slice-1 ``coverage`` defaults filled in (a copy;
     caller-set keys win).
 
@@ -151,7 +158,14 @@ def with_defaults(config: dict[str, Any]) -> dict[str, Any]:
     the dispatched config and its key agree). Caller-set ``coverages``
     pass through verbatim: for an explicit ask the engine's own "not
     representable" warning is the record, and the key normalisation pools
-    it with the snapped form anyway."""
+    it with the snapped form anyway.
+
+    ``mixtures`` says whether the engine takes ``coverage.mixtures``
+    (:func:`runner.coverage_mixtures_supported`). When it does and the
+    caller set none, a reaction with a feed reservoir (an NO substrate)
+    gets the feed + H* grid (``DEFAULT_MIXTURE_*``). When it does not, the
+    key is removed — caller-set or not — since an older engine refuses
+    the whole config over it; :func:`_dispatch` names the drop."""
     cfg = dict(config)
     cov = dict(cfg.get("coverage") or {})
     cov.setdefault("adsorbates", list(DEFAULT_ADSORBATES))
@@ -160,6 +174,20 @@ def with_defaults(config: dict[str, Any]) -> dict[str, Any]:
             list(DEFAULT_COVERAGES), slab_top_sites(cfg)
         )
     cov.setdefault("facets", [])
+    if not mixtures:
+        cov.pop("mixtures", None)
+    elif "mixtures" not in cov:
+        from .surface_pourbaix import feed_reservoir
+
+        feed = feed_reservoir(cfg.get("substrate"))
+        if feed is not None:
+            cov["mixtures"] = [
+                {
+                    "species": [feed.species, "H"],
+                    "ratios": [list(r) for r in DEFAULT_MIXTURE_RATIOS],
+                    "coverages": list(DEFAULT_MIXTURE_COVERAGES),
+                }
+            ]
     cfg["coverage"] = cov
     return cfg
 
@@ -400,7 +428,11 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     if bad is not None:
         ctx.record_failure(f"{NAME}: {bad}", failure_class="input")
         return
-    config = with_defaults(dict(params["config"]))
+    from . import runner, surface_pourbaix
+
+    mixtures_ok = runner.coverage_mixtures_supported()
+    config = with_defaults(dict(params["config"]), mixtures=mixtures_ok)
+    asked_mixtures = (params["config"].get("coverage") or {}).get("mixtures")
     model_index = int(params.get("model_index", 0) or 0)
     slab_extxyz = params.get("slab_extxyz")
     structure_ref = params.get("structure_ref")
@@ -420,8 +452,6 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     cpuset = resources.get("cpuset")
 
     from precis.quest import pourbaix_map
-
-    from . import runner, surface_pourbaix
 
     # Spectator axes (gr489164): an explicit `reservoirs` param, else the
     # reaction's own feed (an NO substrate sets mu_N), else none. Parsed
@@ -467,11 +497,22 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         slab_note = " slab=injected"
     else:
         slab_note = ""
+    if cov.get("mixtures"):
+        mix_note = " mixtures=" + ",".join(
+            "+".join(str(sp) for sp in m.get("species") or []) for m in cov["mixtures"]
+        )
+    elif asked_mixtures:
+        mix_note = (
+            f" mixtures dropped (engine {runner.__version__} lacks coverage.mixtures)"
+        )
+    else:
+        mix_note = ""
     ctx.append_chunk(
         "job_event",
         f"{NAME}: {config.get('name', '?')} model#{model_index} "
         f"adsorbates={cov['adsorbates']} "
-        f"coverages={achieved_text}{snap_note}{slab_note} key={anchor_key[:12]}…",
+        f"coverages={achieved_text}{snap_note}{slab_note}{mix_note} "
+        f"key={anchor_key[:12]}…",
     )
     try:
         kw: dict[str, Any] = {

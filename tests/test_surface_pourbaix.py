@@ -326,3 +326,196 @@ def test_every_model_in_the_band_has_a_correction_set() -> None:
         else:
             # incomparable footprints: nothing to prefer, keep the pool
             assert set(kept) == set(pool) and dropped == []
+
+
+# ── co-adsorbed mixtures (gr489475) ───────────────────────────────────────
+
+
+def _mix_point(
+    no: int, h: int, gamma: float, *, detached: bool = False, theta: float | None = None
+) -> dict:
+    n = no + h
+    return {
+        "counts": {"NO": no, "H": h},
+        "n": n,
+        "theta": n / 8 if theta is None else theta,
+        "theta_by_species": {"NO": no / 8, "H": h / 8},
+        "ratio": [no, h],
+        "energy": -100.0 + gamma * AREA,
+        "gamma": gamma,
+        "converged": True,
+        "detached": detached,
+        "shift": 0.0,
+    }
+
+
+#: A hand-written ``facets[0].mixtures`` block: NO+H at 3:1, 2:2, 1:3, plus a
+#: detached 1:1 point and an all-zero point the parser must skip.
+MIXTURES: list[dict] = [
+    {
+        "species": ["NO", "H"],
+        "label": "NO+H",
+        "mu": {"NO": -12.0, "H": -3.0},
+        "c_ads": {"NO": 0.0, "H": 0.0},
+        "site": {"NO": "fcc", "H": "hcp"},
+        "points": [
+            _mix_point(3, 1, -0.05),
+            _mix_point(2, 2, 0.0),
+            _mix_point(1, 3, -0.04),
+            _mix_point(1, 1, -0.01, detached=True, theta=0.25),
+            _mix_point(0, 0, 0.0, theta=0.0),
+        ],
+    }
+]
+
+
+def _mixed_payload(mixtures: list[dict] | None = None) -> dict:
+    p = _payload("m", {"H": [-0.02], "NO": [-0.01]})
+    p["facets"][0]["mixtures"] = MIXTURES if mixtures is None else mixtures
+    return p
+
+
+def _mix_anchors(**kw) -> dict[tuple, sp.Anchor]:
+    return {
+        a.key: a
+        for a in sp.anchors_from_coverage(_mixed_payload(), **kw)
+        if a.adsorbate == "NO+H"
+    }
+
+
+def test_mixture_points_parse_into_count_carrying_anchors() -> None:
+    anchors = sp.anchors_from_coverage(_mixed_payload())
+    mixed = _mix_anchors()
+    k31 = ("NO+H", (("NO", 3), ("H", 1)))
+    assert k31 in mixed
+    a = mixed[k31]
+    assert a.adsorbate == "NO+H"
+    assert a.n == 4
+    assert a.counts == (("NO", 3), ("H", 1))
+    assert a.key == k31
+    assert a.theta == pytest.approx(0.5)
+    # NO is closed-shell (nu 0), H nu = -1 -> slope = +n_H / area
+    assert a.slope == pytest.approx(+1 / AREA)
+    assert mixed[("NO+H", (("NO", 1), ("H", 3)))].slope == pytest.approx(+3 / AREA)
+    assert a.as_dict()["counts"] == {"NO": 3, "H": 1}
+    # single-species anchors in the same payload are unchanged
+    singles = {x.key: x for x in anchors if not x.counts}
+    assert set(singles) == {("H", 1), ("NO", 1)}
+    assert "counts" not in singles[("H", 1)].as_dict()
+    assert singles[("H", 1)].slope == pytest.approx(+1 / AREA)
+
+
+def test_mixture_flags_detached_and_skips_all_zero_counts() -> None:
+    mixed = _mix_anchors()
+    assert len(mixed) == 4  # 3:1, 2:2, 1:3, detached 1:1; the 0:0 point is gone
+    assert all(a.n > 0 for a in mixed.values())
+    assert mixed[("NO+H", (("NO", 1), ("H", 1)))].detached is True
+    assert mixed[("NO+H", (("NO", 3), ("H", 1)))].detached is False
+
+
+def test_payload_without_mixtures_is_unchanged() -> None:
+    plain = _payload("m", {"H": [-0.02, -0.03], "O": [0.04]})
+    assert "mixtures" not in plain["facets"][0]
+    anchors = sp.anchors_from_coverage(plain)
+    assert all(a.counts == () and "counts" not in a.as_dict() for a in anchors)
+    assert all(a.key == (a.adsorbate, a.n) for a in anchors)
+    out = sp.sweep({"m": plain}, point_u_rhe=-0.3)
+    assert all(
+        row["winner"] is None or "counts" not in row["winner"]
+        for row in out["envelope"]
+    )
+    assert "counts" not in (out["point"]["winner"] or {})
+    # an explicit empty block is the same as no block
+    empty = _payload("m", {"H": [-0.02, -0.03], "O": [0.04]})
+    empty["facets"][0]["mixtures"] = []
+    assert [a.as_dict() for a in sp.anchors_from_coverage(empty)] == [
+        a.as_dict() for a in anchors
+    ]
+
+
+def test_mixture_sigma_sums_the_per_species_mu_bars() -> None:
+    mixed = _mix_anchors(sigma_e_ev=0.05, sigma_mu_ev={"NO": 0.1, "H": 0.2})
+    a = mixed[("NO+H", (("NO", 3), ("H", 1)))]
+    assert a.sigma_gamma == pytest.approx(
+        math.sqrt(2 * 0.05**2 + (3 * 0.1 + 1 * 0.2) ** 2) / AREA
+    )
+
+
+@pytest.mark.parametrize(
+    "bad_species", [["Cl", "H"], ["NO", "Cl"]], ids=["first", "second"]
+)
+def test_mixture_naming_an_unpriceable_species_is_skipped_whole(
+    bad_species: list[str],
+) -> None:
+    mix = {
+        **MIXTURES[0],
+        "species": bad_species,
+        "label": "+".join(bad_species),
+        "points": [
+            {**pt, "counts": dict(zip(bad_species, pt["counts"].values(), strict=True))}
+            for pt in MIXTURES[0]["points"]
+        ],
+    }
+    anchors = sp.anchors_from_coverage(_mixed_payload([mix]))
+    assert [a for a in anchors if a.counts] == []
+    assert {a.adsorbate for a in anchors} == {"H", "NO"}
+
+
+def test_mixture_sweep_winner_carries_counts_and_pool_keeps_splits_apart() -> None:
+    out = sp.sweep({"m": _mixed_payload()}, grid=16, point_u_rhe=-1.0)
+    # at U = -1 V the 1:3 point (slope +0.3) is the lowest: -0.04 - 0.3 = -0.34
+    assert out["point"]["winner"] == {
+        "adsorbate": "NO+H",
+        "n": 4,
+        "theta": 0.5,
+        "counts": {"NO": 1, "H": 3},
+    }
+    assert out["envelope"][0]["winner"]["counts"] == {"NO": 1, "H": 3}
+    mixed = [a for a in out["anchors"] if a["adsorbate"] == "NO+H"]
+    assert sorted(tuple(a["counts"].items()) for a in mixed) == sorted(
+        [
+            (("NO", 3), ("H", 1)),
+            (("NO", 2), ("H", 2)),
+            (("NO", 1), ("H", 3)),
+        ]
+    )
+    # the 3:1 and 1:3 points share label and n but are distinct anchors
+    assert len({tuple(a["counts"].items()) for a in mixed if a["n"] == 4}) == 3
+    assert any(s.get("counts") == {"NO": 1, "H": 1} for s in out["skipped_detached"])
+
+
+def test_anchor_spread_names_a_mixture_by_its_counts() -> None:
+    spread = sp.anchor_spread(
+        {
+            "a": sp.anchors_from_coverage(_mixed_payload()),
+            "b": sp.anchors_from_coverage(_mixed_payload()),
+        }
+    )
+    entry = spread["NO+H:NO3H1"]
+    assert entry["n_models"] == 2
+    assert entry["n"] == 4
+    assert entry["adsorbate"] == "NO+H"
+    assert entry["counts"] == {"NO": 3, "H": 1}
+    assert "counts" not in spread["H:1"]
+    assert "NO+H:NO1H3" in spread
+
+
+def test_pool_anchors_keeps_mixture_counts_and_n() -> None:
+    pooled = sp.pool_anchors({"a": sp.anchors_from_coverage(_mixed_payload())})
+    mixed = {a.key: a for a in pooled if a.counts}
+    a = mixed[("NO+H", (("NO", 3), ("H", 1)))]
+    assert a.n == 4 and a.slope == pytest.approx(+1 / AREA)
+
+
+def test_sweep_boundary_between_clean_and_a_mixture_carries_counts() -> None:
+    out = sp.sweep({"m": _mixed_payload()}, grid=61)
+    ends = [
+        end
+        for b in out["boundaries"]
+        for end in (b["below"], b["above"])
+        if end is not None and end["adsorbate"] == "NO+H"
+    ]
+    assert ends, "a mixed termination wins somewhere in the window"
+    for end in ends:
+        assert end["n"] == sum(end["counts"].values())
+        assert set(end["counts"]) == {"NO", "H"}

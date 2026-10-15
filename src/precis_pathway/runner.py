@@ -1491,6 +1491,19 @@ def aggregate_seed_partials_subprocess(
     return cast("PathwayArtifact", result)
 
 
+def coverage_mixtures_supported() -> bool:
+    """Whether the installed engine's scan takes ``coverage.mixtures`` —
+    co-adsorbed A/B configurations (gr489475). Feature-detected on the
+    config dataclass rather than a version floor: an older engine builds
+    ``CoverageConfig(**coverage)`` and raises ``TypeError`` on the key,
+    so the request side must not send it there."""
+    import dataclasses
+
+    from autocatpath.config import CoverageConfig
+
+    return "mixtures" in {f.name for f in dataclasses.fields(CoverageConfig)}
+
+
 def _import_kinetics() -> Any:
     """The ``autocatpath.kinetics`` module, or ``None`` when the deployed
     engine predates it (the module shipped in engine 0.15.0; the fleet's

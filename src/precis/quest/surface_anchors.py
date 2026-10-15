@@ -395,6 +395,12 @@ def _proposal_coverages(
     return [k / n_top for k in sorted(base_counts | counts)]
 
 
+def _mixture_identity(mix: dict[str, Any]) -> str:
+    """A ``coverage.mixtures`` entry's identity for de-duplication: its
+    canonical JSON (species, ratios, coverages in the caller's order)."""
+    return json.dumps(mix, sort_keys=True, separators=(",", ":"), default=str)
+
+
 def _proposal_scan_params(
     params: dict[str, Any], proposal: dict[str, Any]
 ) -> dict[str, Any] | None:
@@ -403,9 +409,12 @@ def _proposal_scan_params(
     representable θ and no new adsorbate): a same-anchors job would just
     re-key a duplicate footing.
 
-    Otherwise: union the target adsorbates, extend the coverage grid with
-    the counts bracketing the strip's two terminations, and centre the
-    sweep's point marker on the band's U. The distinct ``coverages`` is
+    Otherwise: union the target adsorbates and any co-adsorbed
+    ``mixtures`` the proposal names (``coverage.mixtures`` entries,
+    gr489475 — a new one counts as new anchors), extend the coverage grid
+    with the counts bracketing the strip's two terminations, and centre
+    the sweep's point marker on the band's U. The job drops the mixtures
+    again on an engine that cannot scan them. The distinct ``coverages`` is
     what makes this a *different* anchor set — a different
     ``anchor_key``/idem key. The proposal itself rides as provenance."""
     out = dict(params)
@@ -413,11 +422,46 @@ def _proposal_scan_params(
     p: dict[str, Any] = dict(raw_p) if isinstance(raw_p, dict) else {}
     config = dict(out.get("config") or {})
     cov = dict(config.get("coverage") or {})
-    extended = _proposal_coverages(config, p.get("coverage_grid_extension") or {})
+    extension = dict(p.get("coverage_grid_extension") or {})
+    mixed_ends = [
+        t
+        for t in (extension.get("below"), extension.get("above"))
+        if isinstance(t, dict) and t.get("counts")
+    ]
+    if mixed_ends:
+        # A mixed strip end is no single-species termination: its label is
+        # not an adsorbate and its total count densifies no single grid.
+        labels = {str(t.get("adsorbate")) for t in mixed_ends}
+        single_n = {
+            int(t["n"])
+            for t in (extension.get("below"), extension.get("above"))
+            if isinstance(t, dict)
+            and not t.get("counts")
+            and isinstance(t.get("n"), int)
+        }
+        extension["n"] = sorted(single_n)
+    else:
+        labels = set()
+    extended = _proposal_coverages(config, extension)
     existing_ads = {str(a) for a in cov.get("adsorbates") or []}
-    asked_ads = {str(a) for a in p.get("adsorbates") or []}
-    if extended is None and (not asked_ads or asked_ads <= existing_ads):
+    asked_ads = {str(a) for a in p.get("adsorbates") or []} - labels
+    mixtures = [m for m in cov.get("mixtures") or [] if isinstance(m, dict)]
+    known = {_mixture_identity(m) for m in mixtures}
+    new_mixtures = []
+    for m in p.get("mixtures") or []:
+        if isinstance(m, dict) and m.get("species"):
+            ident = _mixture_identity(m)
+            if ident not in known:
+                known.add(ident)
+                new_mixtures.append(dict(m))
+    if (
+        extended is None
+        and (not asked_ads or asked_ads <= existing_ads)
+        and not new_mixtures
+    ):
         return None
+    if new_mixtures:
+        cov["mixtures"] = mixtures + new_mixtures
     if extended is not None:
         cov["coverages"] = extended
     ads = sorted(existing_ads | asked_ads)
