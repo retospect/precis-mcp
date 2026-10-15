@@ -115,6 +115,30 @@ def test_ack_with_other_tags_applies_both(hub: Hub, store: Store) -> None:
     assert "acked_until" in _meta(store, aid)
 
 
+def test_open_list_keeps_an_acked_alert_and_marks_it(hub: Hub, store: Store) -> None:
+    # Dogfood r38: the ack reply claimed the alert left /open; it stays (it is
+    # open) and /open names it as acked with its expiry, like /alerts dims it.
+    aid, _ = raise_alert(store, source="s", fingerprint="fp:openlist", title="cond")
+    handler = AlertHandler(hub=hub)
+    body = handler.tag(id=aid, add=["ack:6h"]).body
+    assert "marked acked on /open" in body
+    listing = handler.get(id="/open").body
+    assert f"al{aid}" in listing
+    assert f"- al{aid} acked until" in listing
+    handler.tag(id=aid, remove=["ack"])
+    assert f"- al{aid} acked until" not in handler.get(id="/open").body
+
+
+def test_hints_follow_the_ack_state(hub: Hub, store: Store) -> None:
+    aid, _ = raise_alert(store, source="s", fingerprint="fp:hints", title="cond")
+    handler = AlertHandler(hub=hub)
+    acked = handler.tag(id=aid, add=["ack:6h"]).body
+    assert "remove=['ack']" in acked
+    cleared = handler.tag(id=aid, remove=["ack"]).body
+    assert "remove=['ack']" not in cleared
+    assert "add=['ack:6h']" in cleared
+
+
 def test_batch_ack(hub: Hub, store: Store) -> None:
     a, _ = raise_alert(store, source="s", fingerprint="fp:b1", title="one")
     b, _ = raise_alert(store, source="s", fingerprint="fp:b2", title="two")

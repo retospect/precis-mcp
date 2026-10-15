@@ -139,6 +139,20 @@ def _is_open(store: Any, ref_id: int) -> bool:
     return row is not None
 
 
+def _acked_until(ref: Ref) -> datetime | None:
+    """The ack expiry if ``meta.acked_until`` is still in the future."""
+    raw = (ref.meta or {}).get("acked_until")
+    if not raw:
+        return None
+    try:
+        until = datetime.fromisoformat(str(raw))
+    except ValueError:
+        return None
+    if until.tzinfo is None:
+        until = until.replace(tzinfo=UTC)
+    return until if until > datetime.now(UTC) else None
+
+
 #: The resolved budget in a freshness check's detail ("… (budget 170h, …)").
 _BUDGET_RE = re.compile(r"\(budget (\d+(?:\.\d+)?h)\b")
 
@@ -427,7 +441,19 @@ class AlertHandler(NumericRefHandler):
         if not refs:
             return Response(body="no open alerts — all clear.")
         header = f"# {len(refs)} open alert{'' if len(refs) == 1 else 's'}"
-        return Response(body=f"{header}\n{self._render_hits_table(refs)}")
+        body = f"{header}\n{self._render_hits_table(refs)}"
+        # An ack keeps the alert open, so it stays listed; name the acked ones
+        # the way /alerts dims them, with their expiry.
+        acked = [(r.id, _acked_until(r)) for r in refs]
+        acked_lines = [
+            f"- al{ref_id} acked until {until.strftime('%Y-%m-%d %H:%M')}Z"
+            for ref_id, until in acked
+            if until is not None
+        ]
+        if acked_lines:
+            body += "\nacked (left out of the badge and remediation until then):\n"
+            body += "\n".join(acked_lines)
+        return Response(body=body)
 
     # ── get: base views + view='detail' (alias 'full') ─────────────
 
@@ -664,13 +690,20 @@ class AlertHandler(NumericRefHandler):
                 raise BadInput(f"alert {ref_id} is no longer open; not acked")
             lines.append(
                 f"alert {ref_id}: acked until {until.strftime('%Y-%m-%d %H:%M')}Z "
-                f"({acks[0]}); it stays open and leaves the open list until then."
+                f"({acks[0]}); it stays open (marked acked on /open) and is left "
+                "out of the nav badge, the backlog-rot check and remediation "
+                "until then."
             )
-        hints = [
-            (
+        ack_hint = (
+            (f"tag(kind='alert', id={ref_ids[0]}, add=['ack:6h'])", "ack it again")
+            if ttl is None
+            else (
                 f"tag(kind='alert', id={ref_ids[0]}, remove=['ack'])",
                 "clear the ack",
-            ),
+            )
+        )
+        hints = [
+            ack_hint,
             (
                 f"tag(kind='alert', id={ref_ids[0]}, "
                 "add=['alert-state:resolved'], remove=['alert-state:open'])",

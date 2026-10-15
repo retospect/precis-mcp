@@ -97,7 +97,7 @@ failure id's state.
 get(kind='alert', id='/health')        # per-subsystem health panel (above)
 get(kind='alert', id='/rules')         # the failure-id catalogue: meaning, budget, service, triage
 get(kind='alert', id='<source>/<fingerprint>')  # one failure id: state + recurrence + rule
-get(kind='alert', id='/open')          # currently-open alerts
+get(kind='alert', id='/open')          # currently-open alerts (acked ones listed with expiry)
 get(kind='alert', id='/recent')        # recent (open + resolved)
 get(kind='alert', id=42)               # one alert + tags
 get(kind='alert', id=42, view='detail')  # triage shape (below); 'full' is an alias
