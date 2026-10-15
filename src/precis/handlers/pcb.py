@@ -4449,7 +4449,7 @@ class PcbHandler(Handler):
             gate = pcb_matching.solve(
                 clients, supplies, roles, lambda _r, _p: (0.0, 0.0)
             ).unsupplied
-        except ValueError:  # multi-pin blocks: view='check' says not-checked
+        except ValueError:  # invalid model: view='check' says not-checked
             gate = ()
         unmatched = {f"{inst}/{pin}" for inst, pin in gate}
         bound = 0

@@ -3988,6 +3988,38 @@ def test_channel_map_view(pcb):
     assert '"supplier": "U1/A"' in j
 
 
+def test_channel_map_two_suppliers_one_net(pcb):
+    """Two same-role supply pins on the client's net (paralleled
+    channels) bind deterministically instead of reading unbound."""
+
+    def comp(refdes, pins, **kw):
+        return {"refdes": refdes, "label": "x", "footprint": "X", "pins": pins, **kw}
+
+    pcb.put(
+        id="chmap-par",
+        args={
+            "roles": [{"name": "drv", "fanout": 1}],
+            "components": [
+                comp(
+                    "U1",
+                    [{"name": "A"}, {"name": "B"}],
+                    supplies={"role": "drv", "blocks": [["A"], ["B"]]},
+                ),
+                comp("P1", [{"name": "1", "client_of": "drv"}]),
+            ],
+            "nets": [{"name": "N1"}],
+            "connections": [
+                {"net": "N1", "refdes": "U1", "pin": "A"},
+                {"net": "N1", "refdes": "U1", "pin": "B"},
+                {"net": "N1", "refdes": "P1", "pin": "1"},
+            ],
+        },
+    )
+    a = pcb.get(id="chmap-par", view="channel-map").body
+    assert "1 clients, 1 bound, 0 unbound" in a
+    assert "drv,P1/1,N1,U1/A" in a
+
+
 def _client_state_design(*, with_unmatched: bool) -> dict:
     def comp(refdes, pins, **kw):
         return {"refdes": refdes, "label": "x", "footprint": "X", "pins": pins, **kw}

@@ -3649,7 +3649,11 @@ def check_unsupplied_client(
         res = matching.solve(clients, supplies, roles, lambda _r, _p: (0.0, 0.0))
     except ValueError as exc:
         return [_erc_not_checked("unsupplied_client", str(exc))]
-    by_pin = {(c.instance, c.pin): c for c in clients}
+    by_pin = {
+        (c.instance, p): c
+        for c in clients
+        for p in (c.members if c.members is not None else (c.pin,))
+    }
     n_clients: dict[str, int] = {}
     n_terms: dict[str, int] = {}
     for c in clients:

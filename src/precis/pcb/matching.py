@@ -2,11 +2,16 @@
 
 Assigns client pins to supplier terminals per role by minimum-distance
 linear assignment, with voltage admissibility, fanout and a warm-start
-``prior``. No DB, no IR mutation. Design: docs/backlog/pcb-lazy-netlist-and-checks.md.
+``prior``. Members are tuples (§1c): a supply ``blocks`` entry of k pins is
+carried as a unit and only a k-pin client tuple can take it (a
+differential pair; ``within_block_swappable`` permits permuting the
+pairing, otherwise declared order binds member-for-member). No DB, no IR
+mutation. Design: docs/backlog/pcb-lazy-netlist-and-checks.md.
 """
 
 from __future__ import annotations
 
+import itertools
 import math
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
@@ -43,6 +48,9 @@ class Client:
     pin: str
     role: str
     min_voltage_v: float | None = None
+    #: a tuple client (§1c): all member pins on ``instance`` in declared
+    #: order; ``pin`` is its head (``members[0]``). ``None`` = a single pin.
+    members: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +65,10 @@ class MatchResult:
 MatchModel = tuple[list[Client], list[Supply], dict[str, Role]]
 
 
+def _client_pins(c: Client) -> tuple[str, ...]:
+    return c.members if c.members is not None else (c.pin,)
+
+
 def solve(
     clients: Sequence[Client],
     supplies: Sequence[Supply],
@@ -67,10 +79,17 @@ def solve(
     allowed_suppliers: Collection[Pin] | None = None,
     penalty: Callable[[Pin, Pin], float] | None = None,
 ) -> MatchResult:
-    for s in supplies:
-        if any(len(b) != 1 for b in s.blocks):
+    for c in clients:
+        if c.members is None:
+            continue
+        if (
+            not c.members
+            or c.members[0] != c.pin
+            or len(set(c.members)) != len(c.members)
+        ):
             raise ValueError(
-                f"supply {s.instance}: multi-pin blocks need client tuples (not built yet)"
+                f"client {c.instance}/{c.pin}: members must be headed by the "
+                "client's own pin, distinct"
             )
     prior = prior or {}
     allowed = set(allowed_suppliers) if allowed_suppliers is not None else None
@@ -85,19 +104,18 @@ def solve(
         rclients = sorted(
             (c for c in clients if c.role == rname), key=lambda c: (c.instance, c.pin)
         )
-        # terminals: (instance, pin, voltage)
-        terms: dict[Pin, float | None] = {}
+        # supply units: (instance, block, voltage, swappable) — a block is
+        # admissible only whole, so every member pin must be allowed.
+        units: list[tuple[str, tuple[str, ...], float | None, bool]] = []
         for s in sorted(
             (s for s in supplies if s.role == rname), key=lambda s: s.instance
         ):
             v = s.voltage_v if s.voltage_v is not None else role.voltage_v
             for b in s.blocks:
-                t = (s.instance, b[0])
-                if allowed is None or t in allowed:
-                    terms[t] = v
-        tlist = sorted(terms)
+                if allowed is None or all((s.instance, p) in allowed for p in b):
+                    units.append((s.instance, b, v, s.within_block_swappable))
 
-        known = {v for v in terms.values() if v is not None}
+        known = {v for _i, _b, v, _w in units if v is not None}
         mixed = role.voltage_v is None and len(known) >= 2
         if mixed:
             n = sum(1 for c in rclients if c.min_voltage_v is None)
@@ -109,48 +127,73 @@ def solve(
                 )
 
         fan = len(rclients) if role.fanout is None else role.fanout
-        cols = [t for t in tlist for _ in range(max(fan, 0))]
-        kept: list[tuple[Pin, Pin, float]] = []
+        cols = [u for u in units for _ in range(max(fan, 0))]
+        # chosen member order per filled cell: (i, j) -> block index order
+        orders: dict[tuple[int, int], tuple[int, ...]] = {}
+        kept: list[tuple[int, int, float]] = []
         if rclients and cols:
             real = np.full((len(rclients), len(cols)), _SENTINEL)
             adj = real.copy()
             for i, c in enumerate(rclients):
-                cp = (c.instance, c.pin)
+                cpins = _client_pins(c)
                 demand = (
                     c.min_voltage_v if c.min_voltage_v is not None else role.voltage_v
                 )
                 if mixed and c.min_voltage_v is None:
                     continue
-                cpos = position(*cp)
-                for j, t in enumerate(cols):
-                    sv = terms[t]
+                cpos = [position(c.instance, p) for p in cpins]
+                for j, (inst, block, sv, swappable) in enumerate(cols):
+                    if len(block) != len(cpins):
+                        continue
                     if sv is not None and demand is not None and sv < demand:
                         continue
-                    spos = position(*t)
-                    if cpos is None or spos is None:
-                        d = _UNPLACED_COST
-                    else:
-                        d = math.hypot(cpos[0] - spos[0], cpos[1] - spos[1])
-                    if penalty is not None:
-                        d += penalty(cp, t)
-                    real[i, j] = d
-                    adj[i, j] = d - (_PRIOR_BONUS if prior.get(cp) == t else 0.0)
+                    spos = [position(inst, p) for p in block]
+                    choices = (
+                        itertools.permutations(range(len(block)))
+                        if swappable
+                        else (tuple(range(len(block))),)
+                    )
+                    best: tuple[float, float, tuple[int, ...]] | None = None
+                    for order in choices:
+                        d = 0.0
+                        bonus = 0.0
+                        for k, oi in enumerate(order):
+                            pa, pb = cpos[k], spos[oi]
+                            dd = (
+                                _UNPLACED_COST
+                                if pa is None or pb is None
+                                else math.hypot(pa[0] - pb[0], pa[1] - pb[1])
+                            )
+                            if penalty is not None:
+                                dd += penalty((c.instance, cpins[k]), (inst, block[oi]))
+                            d += dd
+                            if prior.get((c.instance, cpins[k])) == (
+                                inst,
+                                block[oi],
+                            ):
+                                bonus += _PRIOR_BONUS
+                        if best is None or d - bonus < best[0]:
+                            best = (d - bonus, d, order)
+                    if best is not None:
+                        real[i, j] = best[1]
+                        adj[i, j] = best[0]
+                        orders[i, j] = best[2]
             ri, ci = linear_sum_assignment(adj)
             for i, j in zip(ri, ci, strict=True):
                 if real[i, j] >= _SENTINEL:
                     continue
-                c = rclients[i]
-                kept.append(((c.instance, c.pin), cols[j], float(real[i, j])))
-        matched = set()
-        for cp, t, d in kept:
-            assignment[cp] = t
-            matched.add(cp)
+                kept.append((int(i), int(j), float(real[i, j])))
+        matched: set[int] = set()
+        for i, j, d in kept:
+            c = rclients[i]
+            inst, block, _v, _w = cols[j]
+            for k, oi in enumerate(orders[i, j]):
+                assignment[(c.instance, _client_pins(c)[k])] = (inst, block[oi])
+            matched.add(i)
             total += d
-        miss = [
-            (c.instance, c.pin) for c in rclients if (c.instance, c.pin) not in matched
-        ]
+        miss = [c for i, c in enumerate(rclients) if i not in matched]
         if miss:
-            unsupplied.extend(miss)
+            unsupplied.extend((c.instance, p) for c in miss for p in _client_pins(c))
             findings.append(f"{len(miss)} {rname} clients unsupplied")
 
     return MatchResult(assignment, tuple(sorted(unsupplied)), total, tuple(findings))
@@ -172,23 +215,25 @@ def channel_map(
     supplies: Sequence[Supply],
     pin_nets: Mapping[Pin, str | None],
 ) -> list[ChannelRow]:
-    """Which supply terminal each client is wired to, read off the effective
-    nets (post pin-swap) rather than solved: a client's supplier is the
-    one-pin-block terminal of a same-role ``Supply`` whose net equals the
-    client's net. Derived, never stored."""
+    """Which supply terminal each client pin is wired to, read off the
+    effective nets (post pin-swap) rather than solved: a client's supplier
+    is a same-role supply terminal — any member pin of any block — whose
+    net equals the client's net. Several same-role terminals on one net
+    (paralleled channels) bind to the first sorted; a tuple client emits
+    one row per member pin. Derived, never stored."""
     by_net: dict[tuple[str, str], list[Pin]] = {}
     for s in supplies:
         for b in s.blocks:
-            if len(b) != 1:
-                continue
-            t = (s.instance, b[0])
-            net = pin_nets.get(t)
-            if net is not None:
-                by_net.setdefault((s.role, net), []).append(t)
+            for p in b:
+                t = (s.instance, p)
+                net = pin_nets.get(t)
+                if net is not None:
+                    by_net.setdefault((s.role, net), []).append(t)
     rows: list[ChannelRow] = []
     for c in sorted(clients, key=lambda c: (c.role, c.instance, c.pin)):
-        cp = (c.instance, c.pin)
-        net = pin_nets.get(cp)
-        hits = sorted(by_net.get((c.role, net), [])) if net is not None else []
-        rows.append(ChannelRow(c.role, cp, net, hits[0] if len(hits) == 1 else None))
+        for p in _client_pins(c):
+            cp = (c.instance, p)
+            net = pin_nets.get(cp)
+            hits = sorted(by_net.get((c.role, net), [])) if net is not None else []
+            rows.append(ChannelRow(c.role, cp, net, hits[0] if hits else None))
     return rows

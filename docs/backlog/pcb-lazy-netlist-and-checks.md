@@ -525,7 +525,12 @@ crossing-count matcher are gone.
   bounded by `route_passes`.
 - Matching onto `unused` spare channels (a netless pin gaining a net)
   needs Slice 7's snapshot; today only wired supply pins permute.
-- Blocks of size > 1 (differential pairs) raise; needs client tuples.
+- Blocks of size > 1: `solve` matches a tuple client (`Client.members`,
+  head = `pin`) against a same-size block atomically;
+  `within_block_swappable` permutes the pairing. Left: the stored-graph
+  plumbing still emits single-pin clients — `client_of` has no tuple
+  member syntax and `_matching_model` doesn't build them (the route job
+  was under freeze when the solver half landed 2026-10-15).
 - Measure on dogfood (cluster `pcb_route`): matcher vs radial realized
   count on `ewod-dogfood-2`.
 
@@ -545,10 +550,10 @@ the route job's capacity/voltage gate). `route-status` prints
   regen via `scripts/bump`).
 - Net naming rule: `_pcb_apply` refuses a touched net whose 2+ members are
   all supply pins, checked on every net whose membership the apply
-  changed (shipped, `_pcb_check_free_ended_nets`). Left: `channel_map`
-  reads a net carrying two same-role suppliers, or a multi-pin block's
-  terminal, as unbound. The canonical default name has nothing to apply to: every net needs an
-  explicit name today.
+  changed (shipped, `_pcb_check_free_ended_nets`). `channel_map` binds a
+  net carrying several same-role suppliers (first sorted) and reads every
+  block member as a terminal (2026-10-15). Left: the canonical default
+  name has nothing to apply to — every net needs an explicit name today.
 
 *Accept:* two resolves with identical intent and prior produce identical
 snapshots; a 0.1 mm nudge with the prior supplied changes ≤ 1 assignment

@@ -401,11 +401,21 @@ def test_unsupplied_client_flags_the_excess() -> None:
     assert drc.check_unsupplied_client([], sup, {}) == []
 
 
-def test_unsupplied_client_multi_pin_block_not_checked() -> None:
+def test_unsupplied_client_multi_pin_block() -> None:
     from precis.pcb.matching import Client, Supply
 
+    # A size-1 client cannot split a size-2 block: a real unsupplied
+    # error, not a not-checked warn. A matching tuple client is served.
     out = drc.check_unsupplied_client(
         [Client("P1", "1", "drv")], [Supply("U1", "drv", (("A", "B"),))], {}
     )
-    assert [f.rule for f in out] == ["unsupplied_client"]
-    assert out[0].severity == "warn"
+    assert [(f.rule, f.severity) for f in out] == [("unsupplied_client", "error")]
+    assert out[0].where == "pin P1/1"
+    assert (
+        drc.check_unsupplied_client(
+            [Client("P1", "1", "drv", members=("1", "2"))],
+            [Supply("U1", "drv", (("A", "B"),))],
+            {},
+        )
+        == []
+    )

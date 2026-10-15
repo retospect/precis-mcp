@@ -86,10 +86,99 @@ def test_optimal_vs_bruteforce():
     assert not r.unsupplied
 
 
-def test_multi_pin_block_raises():
+def test_multi_pin_block_needs_tuple_client():
+    # A block is carried whole: a single-pin client cannot split it, so
+    # it is unsupplied rather than bound to one member.
     sup = Supply("U9", "r", (("1", "2"),))
-    with pytest.raises(ValueError, match="U9"):
-        solve([Client("C", "1", "r")], [sup], {}, lambda r, p: None)
+    r = solve([Client("C", "1", "r")], [sup], {}, lambda r, p: None)
+    assert r.assignment == {}
+    assert r.unsupplied == (("C", "1"),)
+    assert "1 r clients unsupplied" in r.findings
+
+
+def test_tuple_client_binds_block_in_order():
+    # Non-swappable: member k of the client tuple binds member k of the
+    # block (declared order, polarity lock).
+    sup = Supply("U9", "usb", (("DP", "DM"), ("EP", "EM")))
+    clients = [
+        Client("J1", "A1", "usb", members=("A1", "A2")),
+        Client("J2", "B1", "usb", members=("B1", "B2")),
+    ]
+    table = {
+        ("U9", "DP"): (0.0, 0.0),
+        ("U9", "DM"): (1.0, 0.0),
+        ("U9", "EP"): (20.0, 0.0),
+        ("U9", "EM"): (21.0, 0.0),
+        ("J1", "A1"): (0.0, 1.0),
+        ("J1", "A2"): (1.0, 1.0),
+        ("J2", "B1"): (20.0, 1.0),
+        ("J2", "B2"): (21.0, 1.0),
+    }
+    r = solve(clients, [sup], {}, _pos(table))
+    assert r.assignment == {
+        ("J1", "A1"): ("U9", "DP"),
+        ("J1", "A2"): ("U9", "DM"),
+        ("J2", "B1"): ("U9", "EP"),
+        ("J2", "B2"): ("U9", "EM"),
+    }
+    assert not r.unsupplied
+
+
+def test_tuple_client_swappable_permutes():
+    # within_block_swappable: the block serves the pair either way, so
+    # the client lands reversed when that is cheaper.
+    sup = Supply("U9", "usb", (("DP", "DM"),), within_block_swappable=True)
+    clients = [Client("J1", "A1", "usb", members=("A1", "A2"))]
+    table = {
+        ("U9", "DP"): (0.0, 0.0),
+        ("U9", "DM"): (10.0, 0.0),
+        ("J1", "A1"): (10.0, 1.0),  # nearer DM
+        ("J1", "A2"): (0.0, 1.0),  # nearer DP
+    }
+    r = solve(clients, [sup], {}, _pos(table))
+    assert r.assignment == {("J1", "A1"): ("U9", "DM"), ("J1", "A2"): ("U9", "DP")}
+
+
+def test_tuple_client_unsupplied_lists_members():
+    # Only a size-1 block exists for a size-2 client: both member pins
+    # are listed unsupplied, counted once as a client.
+    sup = Supply("U9", "usb", (("DP",),))
+    clients = [Client("J1", "A1", "usb", members=("A1", "A2"))]
+    r = solve(clients, [sup], {}, lambda r, p: None)
+    assert r.unsupplied == (("J1", "A1"), ("J1", "A2"))
+    assert "1 usb clients unsupplied" in r.findings
+
+
+def test_tuple_client_capacity_counts_blocks():
+    sup = Supply("U9", "usb", (("DP", "DM"),))
+    clients = [
+        Client("J1", "A1", "usb", members=("A1", "A2")),
+        Client("J2", "B1", "usb", members=("B1", "B2")),
+    ]
+    r = solve(clients, [sup], {}, lambda r, p: None)
+    assert set(r.unsupplied) == {("J2", "B1"), ("J2", "B2")}
+    assert len(r.assignment) == 2
+
+
+def test_client_members_must_be_headed_by_pin():
+    sup = Supply("U9", "r", (("1", "2"),))
+    with pytest.raises(ValueError, match="J1/A2"):
+        solve(
+            [Client("J1", "A2", "r", members=("A1", "A2"))],
+            [sup],
+            {},
+            lambda r, p: None,
+        )
+
+
+def test_tuple_prior_steers_swappable():
+    # Identical distances; the prior picks the swapped pairing.
+    sup = Supply("U9", "usb", (("DP", "DM"),), within_block_swappable=True)
+    clients = [Client("J1", "A1", "usb", members=("A1", "A2"))]
+    flat = lambda r, p: (0.0, 0.0)
+    prior = {("J1", "A1"): ("U9", "DM"), ("J1", "A2"): ("U9", "DP")}
+    r = solve(clients, [sup], {}, flat, prior=prior)
+    assert r.assignment == prior
 
 
 def test_unbounded_fanout():
@@ -128,3 +217,34 @@ def test_channel_map_role_must_match():
     nets = {("U", "A"): "N", ("C", "1"): "N"}
     rows = channel_map([Client("C", "1", "r")], [sup], nets)
     assert rows[0].supplier is None and rows[0].net == "N"
+
+
+def test_channel_map_binds_two_suppliers_on_one_net():
+    # Paralleled channels: two same-role terminals on the client's net
+    # bind (deterministically, first sorted) instead of reading unbound.
+    from precis.pcb.matching import ChannelRow, channel_map
+
+    sup = Supply("U", "r", (("A",), ("B",)))
+    nets = {("U", "A"): "N", ("U", "B"): "N", ("C", "1"): "N"}
+    assert channel_map([Client("C", "1", "r")], [sup], nets) == [
+        ChannelRow("r", ("C", "1"), "N", ("U", "A"))
+    ]
+
+
+def test_channel_map_reads_multi_pin_block_members():
+    # Every member pin of a block is a terminal; a tuple client emits
+    # one row per member.
+    from precis.pcb.matching import ChannelRow, channel_map
+
+    sup = Supply("U", "usb", (("DP", "DM"),))
+    clients = [Client("J1", "A1", "usb", members=("A1", "A2"))]
+    nets = {
+        ("U", "DP"): "N_P",
+        ("U", "DM"): "N_M",
+        ("J1", "A1"): "N_P",
+        ("J1", "A2"): "N_M",
+    }
+    assert channel_map(clients, [sup], nets) == [
+        ChannelRow("usb", ("J1", "A1"), "N_P", ("U", "DP")),
+        ChannelRow("usb", ("J1", "A2"), "N_M", ("U", "DM")),
+    ]
