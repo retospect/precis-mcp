@@ -28,7 +28,9 @@ import precis.pcb as pcb_pkg
 from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.checklist import ChecklistHandler
+from precis.runtime import PrecisRuntime
 from precis.store import Store
+from precis.tools import core as tools_core
 
 pytestmark = pytest.mark.db
 
@@ -400,3 +402,60 @@ def test_forget_never_touches_human_verdicts(store: Store) -> None:
         item_name="margin-checked",
     )
     assert v is not None and v["origin"] == "human"
+
+
+# ── the MCP boundary ──────────────────────────────────────────────────
+
+
+def test_inputs_and_consumed_cross_the_mcp_edit_verb(
+    store: Store, runtime_with_store: PrecisRuntime
+) -> None:
+    """``inputs=`` and ``consumed=`` must survive ``tools_core.edit`` (the
+    callable FastMCP wires up), not only a direct handler call: record a
+    machine verdict with inputs, then forget it scoped by consumed=."""
+    _board(store)
+    _checklist(store)
+    tools_core._runtime = runtime_with_store
+    try:
+        tools_core.edit(
+            kind="checklist",
+            id="cl4",
+            op="verdict",
+            target="pcb:cl4-board",
+            item="margin-checked",
+            verdict="pass",
+            origin="machine",
+            inputs={_MARGIN_INPUT: 1},
+        )
+        tools_core.edit(
+            kind="checklist",
+            id="cl4",
+            op="verdict",
+            target="pcb:cl4-board",
+            item="other-item",
+            verdict="pass",
+            origin="machine",
+            inputs={"skill:precis-pcb-review-help": 4},
+        )
+        cl = store.checklist_get("cl4")
+        ref = store.get_ref(kind="pcb", id="cl4-board")
+        assert cl is not None and ref is not None
+        v = store.checklist_verdict_latest(
+            target_ref_id=ref.id, checklist_id=cl["id"], item_name="margin-checked"
+        )
+        assert v is not None and v["inputs"] == {_MARGIN_INPUT: 1}
+
+        tools_core.edit(
+            kind="checklist",
+            id="cl4",
+            op="forget",
+            target="pcb:cl4-board",
+            consumed=_MARGIN_INPUT,
+        )
+        verdicts = store.checklist_verdicts_latest_for_target(
+            target_ref_id=ref.id, checklist_id=cl["id"]
+        )
+        assert "margin-checked" not in verdicts
+        assert "other-item" in verdicts
+    finally:
+        tools_core._runtime = None

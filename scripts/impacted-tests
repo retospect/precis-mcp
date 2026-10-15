@@ -1,4 +1,4 @@
-#!/usr/bin/env -S uv run --frozen python
+#!/usr/bin/env -S uv run python
 """scripts/impacted-tests — the ONE diff -> tests selector.
 
 Used by every lane that asks "which tests does this change affect":

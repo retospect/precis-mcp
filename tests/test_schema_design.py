@@ -112,6 +112,11 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         # open-ended per kind (a DRC finding id, a screenshot handle, free
         # text), never queried by key in slice 1.
         "checklist_verdicts.evidence",
+        # 0213: {input-name: revision} a verdict consumed. The name set is
+        # open (margin/policy revisions now, part-fact ids and rule/skill
+        # revisions later); read whole and diffed against the kind
+        # bridge's current revisions, never queried by key.
+        "checklist_verdicts.inputs",
         # 0205: variable-length role declaration (any subset of
         # identity/envelope/free/tool, plus the jlcparts params map) read
         # as a whole by the BOM nudge, never queried per key.

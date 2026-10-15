@@ -1647,7 +1647,9 @@ def edit(
     # prevents=/applies= are add_item's item-definition fields (body= is
     # shared with the file-kind region-rewrite grammar above). verdict=
     # (shared with the review-verdict field above) + evidence=/
-    # fingerprint=/checked_by= record an item's check result. name=/
+    # fingerprint=/checked_by= record an item's check result; inputs=
+    # ({input-name: revision}) records what the verdict consumed, and
+    # consumed= scopes op='forget' to verdicts that read that input. name=/
     # note_kind=/re=/about= (origin= shared above) mint an add_note; name=
     # alone selects remove_note.
     op: str | None = None,
@@ -1661,6 +1663,8 @@ def edit(
     evidence: dict[str, Any] | None = None,
     fingerprint: str | None = None,
     checked_by: str | None = None,
+    inputs: dict[str, Any] | None = None,
+    consumed: str | None = None,
     name: str | None = None,
     note_kind: str | None = None,
     re: str | None = None,
@@ -1752,6 +1756,8 @@ def edit(
         "evidence": evidence,
         "fingerprint": fingerprint,
         "checked_by": checked_by,
+        "inputs": inputs,
+        "consumed": consumed,
         "name": name,
         "note_kind": note_kind,
         "re": re,

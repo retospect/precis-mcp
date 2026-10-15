@@ -71,7 +71,7 @@ def _snapshot(store):
 @pytest.fixture
 def pcb(store, monkeypatch):
     handler = PcbHandler(hub=Hub(store=store))
-    monkeypatch.setattr(handler, "_queue_datasheets", lambda *a, **k: 0)
+    monkeypatch.setattr(handler, "_queue_datasheets", lambda *a, **k: (0, 0))
     return handler
 
 

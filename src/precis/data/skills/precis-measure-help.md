@@ -302,3 +302,13 @@ How a corpus of claims becomes reviewed measures. Nothing here is a worker.
 
 Report what was left out (claims with no anchor, no number) rather than
 extracting them.
+
+The same pass also runs as two jobs. `put(kind='job', job_type='survey_extract',
+params={'paper': <id>})` reads one paper's chunks on the local model, writes
+the checked runs tagged with a batch token in `meta.extraction_run`, then
+spawns `measure_accept`. `measure_accept` has a frontier model review a
+stratified sample of that batch and accepts or fails the batch by the Wilson
+rule (default bar 5%); the verdict lands in the accept job's
+`meta.acceptance`. Run `measure_accept` on its own (`params={'paper': <id>,
+'extraction_run': <token>, 'sample_n': N, 'bar': 0.05}`) to re-accept a batch
+without extracting again.

@@ -116,26 +116,26 @@ _spec.loader.exec_module(coderef)
 #: of the contract: an entry that gains a real caller must be REMOVED,
 #: not left masking a future regression check forever.
 _KNOWN_UNWIRED: dict[str, str] = {
-    "src/precis/pcb/globalplan.py::TileGraph.tile_of": (
-        "docs/backlog/pcb-global-plan-probe.md: slice-0 EXPERIMENT of pcb-global-plan-router; driven by tests/test_pcb_globalplan_ewod.py only, wired into nothing by design until slices 1-3"
+    "src/precis/pcb/globalplan.py::via_lattice": (
+        "64279150b (plaza escape): DEAD LEFTOVER, not a staged slice -- "
+        "plaza_corridors inlines its own chord-based stagger over per-pad "
+        "radii instead of this ring-capacity rule, so "
+        "tests/test_pcb_globalplan_plaza.py pins a lattice production "
+        "never uses. Wire plaza_corridors to it or delete it with its tests"
     ),
-    "src/precis/pcb/globalplan.py::build_tile_graph": (
-        "docs/backlog/pcb-global-plan-probe.md: slice-0 EXPERIMENT of pcb-global-plan-router; driven by tests/test_pcb_globalplan_ewod.py only, wired into nothing by design until slices 1-3"
+    "src/precis/pcb/datasheet_facts.py::facts_revision": (
+        "9f9d59612 (datasheet_facts): the part-fact staleness key a verdict "
+        "records in checklist_verdicts.inputs (pcb-datasheet-review item 6); "
+        "checklist/pcb.py's PcbBridge.input_revision resolves only "
+        "margin:fixed-derating so far and the pcb_review job (item 7) is "
+        "not built"
     ),
-    "src/precis/pcb/globalplan.py::plan_routes": (
-        "docs/backlog/pcb-global-plan-probe.md: slice-0 EXPERIMENT of pcb-global-plan-router; driven by tests/test_pcb_globalplan_ewod.py only, wired into nothing by design until slices 1-3"
-    ),
-    "src/precis/pcb/globalplan.py::plan_order": (
-        "docs/backlog/pcb-global-plan-probe.md: slice-0 EXPERIMENT of pcb-global-plan-router; driven by tests/test_pcb_globalplan_ewod.py only, wired into nothing by design until slices 1-3"
-    ),
-    "src/precis/pcb/globalplan.py::corridor_tiles": (
-        "docs/backlog/pcb-global-plan-probe.md: slice-0 EXPERIMENT of pcb-global-plan-router; driven by tests/test_pcb_globalplan_ewod.py only, wired into nothing by design until slices 1-3"
-    ),
-    "src/precis/pcb/globalplan.py::corridor_mask": (
-        "docs/backlog/pcb-global-plan-probe.md: slice-0 EXPERIMENT of pcb-global-plan-router; driven by tests/test_pcb_globalplan_ewod.py only, wired into nothing by design until slices 1-3"
-    ),
-    "src/precis/pcb/globalplan.py::corridor_route": (
-        "docs/backlog/pcb-global-plan-probe.md: slice-0 EXPERIMENT of pcb-global-plan-router; driven by tests/test_pcb_globalplan_ewod.py only, wired into nothing by design until slices 1-3"
+    "src/precis/pcb/datasheet_facts.py::pin_fact": (
+        "9f9d59612 (datasheet_facts): LEFTOVER -- its docstring calls it the "
+        "part:<C#>~<pin> selector's read, but link_target._resolve_part_pin "
+        "reads part_facts_for_ref + PackageFacts.pin itself (it refuses a "
+        "pin ambiguous across packages, which this wrapper does not). Only "
+        "tests/test_datasheet_facts.py calls it"
     ),
     "src/precis/pcb/jlc_library.py::reset_live_cache": (
         "own docstring: 'Clear the live-lookup negative cache (tests; an "
@@ -376,15 +376,6 @@ _KNOWN_UNWIRED: dict[str, str] = {
         "itself already documented 'no placement pass reads that field "
         "yet') -- not a new finding"
     ),
-    "src/precis/pcb/ir.py::PcbIR.pin_offsets_synthesized": (
-        "real gap flagged by this widened gate 2026-08-29: this field's "
-        "own module docstring calls it 'same discipline as' its sibling "
-        "pin_pad_synthesized and says the synthesized/real distinction "
-        "'must never be lost on the way to fabrication' -- but "
-        "pin_pad_synthesized IS read by realize.py (realize.py:3108) "
-        "while pin_offsets_synthesized never is. Reported to the caller "
-        "as a real gap, not fixed here (realize.py is out of remit)"
-    ),
     "src/precis/pcb/ir.py::PcbIR.pin_poly": (
         "wired both ways, invisibly to this scan: the producer is "
         "PcbIR.set_pin_pad (a subscript store, self.pin_poly[pid] = ..., "
@@ -396,6 +387,11 @@ _KNOWN_UNWIRED: dict[str, str] = {
         "through that function"
     ),
     # ---- class methods/properties: legitimately unwired ------------------
+    "src/precis/pcb/datasheet_facts.py::PinFact.missing": (
+        "9f9d59612 (datasheet_facts): the 'unknown -- ask the user' field "
+        "set for the pcb_review pass (pcb-datasheet-review items 7-8), "
+        "which is not built; tests/test_datasheet_facts.py pins it"
+    ),
 }
 
 
