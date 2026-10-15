@@ -30,6 +30,7 @@ from precis.dispatch import Hub
 from precis.handlers.pcb import PcbHandler
 from precis.ingest import pcb_epro
 from precis.pcb import epro, padplace, session
+from precis.pcb import ir as pcb_ir
 
 _FIXTURE = pathlib.Path(__file__).parent / "fixtures" / "pcb_epro_tiny"
 
@@ -219,14 +220,62 @@ def test_the_stackup_comes_from_the_board_not_the_default(store, imported) -> No
     ]
 
 
-def test_an_outer_pour_does_not_become_a_plane(imported) -> None:
-    """The fixture's only POUR is GND on the BOTTOM layer. An outer pour
-    is local fill around parts; calling it a plane would tell the router
-    that whole side is unavailable."""
+def test_a_board_covering_outer_pour_is_pour_carried(store, imported) -> None:
+    """The fixture's only POUR is GND over the WHOLE board on B.Cu —
+    gr486958: a fill that size is how the source carries the net, not
+    local fill. It lands as ``pour_nets`` on the still-signal layer (the
+    router keeps routing the other nets around it, so the side is NOT
+    lost) and as the same authored ``pcb_planes`` row ``op='plane_net'``
+    writes — the row, not the label, is what the router's skip-net
+    decision reads."""
     assert imported.planes == {}
     b_cu = next(s for s in imported.stackup if s["name"] == "B.Cu")
     assert b_cu["role"] == "signal"
+    assert b_cu["pour_nets"] == ["GND"]
+    assert imported.pour_nets == {"B.Cu": ["GND"]}
     assert any("outer layer B.Cu carries a pour" in w for w in imported.warnings)
+    assert {(p["layer"], p["net"]) for p in store.pcb_planes_list(imported.ref_id)} == {
+        ("B.Cu", "GND")
+    }
+    stored = store.pcb_graph(imported.ref_id)["board"]["stackup"]
+    assert next(s for s in stored if s["name"] == "B.Cu")["pour_nets"] == ["GND"]
+
+
+def test_the_router_skips_the_pour_carried_net(pcb, store, imported) -> None:
+    """The route job's skip-net decision is ``net_plane_layers != 0``,
+    set by re-applying ``pcb_planes`` rows onto the fresh IR — the loop
+    below is what both ``pcb_route`` and ``pcb_place`` run verbatim. The
+    import's B.Cu/GND row therefore skips GND as a trace and re-pours it
+    as fill, exactly like the taz15-blank hand edit it replaces."""
+    ir = pcb._build_ir(imported.ref_id, store.pcb_graph(imported.ref_id))
+    net_id = {str(ir.net_name[n]): n for n in range(ir.n_nets)}
+    layer_idx = {str(e.get("name")): i for i, e in enumerate(ir.stackup)}
+    for plane in store.pcb_planes_list(imported.ref_id):
+        ir.promote_plane(net_id[plane["net"]], layer_idx[plane["layer"]])
+    gnd = net_id["GND"]
+    assert pcb_ir.plane_layers_of(int(ir.net_plane_layers[gnd])) == [layer_idx["B.Cu"]]
+
+
+def test_a_small_outer_pour_changes_nothing(store) -> None:
+    """A pour covering a few percent of the outline is local fill —
+    ``pour_nets`` is append-only-by-coverage so a pour-free shape keeps
+    its exact pre-key entry (and its content-hash digest)."""
+    stream = (_FIXTURE / "board.epru").read_text(encoding="utf-8")
+    small = stream.replace(
+        '"netName":"GND","layerId":2,"width":0.2,"name":"POUR1","order":0,'
+        '"path":[["R",0,500,1000,500,0,0]]',
+        '"netName":"GND","layerId":2,"width":0.2,"name":"POUR1","order":0,'
+        '"path":[["R",400,400,120,120,0,0]]',
+    )
+    assert small != stream
+    result = pcb_epro.import_epro(
+        store, _zip(small.encode("utf-8")), slug="epro-small-pour"
+    )
+    assert result.planes == {} and result.pour_nets == {}
+    b_cu = next(s for s in result.stackup if s["name"] == "B.Cu")
+    assert "pour_nets" not in b_cu
+    assert store.pcb_planes_list(result.ref_id) == []
+    assert any("local fill" in w for w in result.warnings)
 
 
 # ── the design-rule table ────────────────────────────────────────────────
@@ -716,7 +765,10 @@ def test_an_inner_pour_with_no_foreign_tracks_is_a_pure_plane(store) -> None:
 
 
 def test_an_inner_pour_on_two_nets_stays_a_signal_layer(store) -> None:
-    """Guessing which net "wins" would silently connect copper."""
+    """Guessing which net "wins" would silently connect copper — and two
+    board-covering fills on one layer ARE recorded (``pour_nets`` is the
+    "mixed" case) but assigned to neither: one sheet cannot pour two
+    nets."""
     stream = (_FIXTURE / "board.epru").read_text(encoding="utf-8")
     two = stream.replace(
         '"netName":"GND","layerId":2,"width":0.2',
@@ -732,7 +784,11 @@ def test_an_inner_pour_on_two_nets_stays_a_signal_layer(store) -> None:
     assert result.planes == {}
     in1 = next(s for s in result.stackup if s["name"] == "In1.Cu")
     assert in1["role"] == "signal"
+    assert in1["pour_nets"] == ["GND", "SIG"]
+    assert result.pour_nets == {"In1.Cu": ["GND", "SIG"]}
     assert any("2 nets" in w for w in result.warnings)
+    assert any("none assigned" in w for w in result.warnings)
+    assert store.pcb_planes_list(result.ref_id) == []
 
 
 # ── the named pin reaches real copper ────────────────────────────────────

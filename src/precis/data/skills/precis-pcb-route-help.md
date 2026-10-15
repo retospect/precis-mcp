@@ -242,6 +242,10 @@ having changed nothing else.
   `{"role": "signal", "pourable": true}`.
 - `plane_net`: pours that net on that layer, same as `op='plane_net'`.
   The net must already exist.
+- `pour_nets`: the signal-layer spelling of the same fact — net(s) a
+  board-covering fill already carries on a still-routable layer (imports
+  set it from the source's pour zones). One named net assigns like
+  `plane_net`; several are recorded only — one sheet cannot pour two.
 - First and last layers must be `F.Cu` and `B.Cu` — a bottom-side part's
   pads, the Gerber file map and the escape-layer rule all resolve those
   two by name. 2 or 4 layers today (the DRC capability table has rows for

@@ -318,7 +318,9 @@ get(
 )  # the last op='route' run's over-capacity-gap warnings (see precis-pcb-route-help)
 get(
     kind="pcb", id="s", view="planes"
-)  # authored plane assignments (op='plane_net') — which nets are plane-served
+)  # authored plane assignments (op='plane_net', or an import's pour-carried
+#  net — a board-covering source fill lands the same row) — which nets are
+#  plane-served
 get(
     kind="pcb", id="s", view="stackup"
 )  # every layer in order: role, plane net, routable, the nets the router skips

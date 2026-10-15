@@ -53,6 +53,25 @@ def test_soft_pin_changes_the_digest() -> None:
     assert content_hash(pinned, _PARAMS) != content_hash(_GRAPH, _PARAMS)
 
 
+def test_pour_nets_participate_only_when_set() -> None:
+    """gr486958: ``pour_nets`` rides the stackup entry — a board whose
+    fills all carry a net is different routing input than the same
+    entries without the key, while a pour-free stackup keeps its
+    pre-key shape (the pinned digest above carries no key)."""
+    poured: dict[str, Any] = copy.deepcopy(_GRAPH)
+    poured["board"]["stackup"][3]["pour_nets"] = ["GND"]
+    assert content_hash(poured, _PARAMS) != content_hash(_GRAPH, _PARAMS)
+    # And the imported form — the key on a signal-role entry — likewise.
+    imported: dict[str, Any] = copy.deepcopy(_GRAPH)
+    imported["board"]["stackup"] = [
+        {"name": "F.Cu", "role": "signal"},
+        {"name": "In1.Cu", "role": "plane", "plane_net": "GND"},
+        {"name": "In2.Cu", "role": "signal"},
+        {"name": "B.Cu", "role": "signal", "pour_nets": ["GND"]},
+    ]
+    assert content_hash(imported, _PARAMS) != content_hash(_GRAPH, _PARAMS)
+
+
 def test_authored_plane_assignment_changes_the_digest() -> None:
     base_state = {"planes": [{"layer": "In1.Cu", "net": "GND", "source": "authored"}]}
     changed_state: dict[str, Any] = {

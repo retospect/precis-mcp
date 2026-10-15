@@ -1032,8 +1032,9 @@ def extract_pours(
     "net", "polygon"}`` in precis coords) — the AUTHORED zone outline.
 
     Import does not model a pour: an inner-layer single-net zone becomes
-    the layer's plane, an outer one a warning, and the polygon is
-    otherwise dropped. These items exist so the design keeps the
+    the layer's plane, a board-covering outer one a pour-carried net
+    (``derive_stackup``'s ``pour_nets``, gr486958), a small outer one a
+    warning, and the polygon is otherwise dropped. These items exist so the design keeps the
     authored polygon in ``meta.epro_pours`` — the export writes it back
     verbatim and Pro re-pours inside it on open, which beats rebuilding
     the zone from the stackup. The source's computed fill

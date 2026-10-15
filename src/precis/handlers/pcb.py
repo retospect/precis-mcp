@@ -2099,6 +2099,14 @@ class PcbHandler(Handler):
         # declaration true instead of decorative; a named net that does not
         # exist is an error, never a silent skip.
         declared = {e["name"]: e["plane_net"] for e in stackup if "plane_net" in e}
+        # `pour_nets` declares the same thing for a fill-carried net on a
+        # signal layer (gr486958): exactly one named net -> the same
+        # pcb_planes write. A layer listing several is recorded only —
+        # one sheet cannot pour two nets.
+        for e in stackup:
+            pour_nets = e.get("pour_nets") or []
+            if e["name"] not in declared and len(pour_nets) == 1:
+                declared[str(e["name"])] = str(pour_nets[0])
         existing = {str(row["layer"]): str(row["net"]) for row in planes}
         clashes = [
             f"{layer} already pours {existing[layer]!r}"
@@ -2163,6 +2171,11 @@ class PcbHandler(Handler):
                             "routable" if pcb_ir.layer_is_routable(e) else None,
                             "pourable" if pcb_ir.layer_is_pourable(e) else None,
                             f"plane={e['plane_net']}" if "plane_net" in e else None,
+                            (
+                                f"pours={','.join(str(n) for n in e['pour_nets'])}"
+                                if e.get("pour_nets")
+                                else None
+                            ),
                         ],
                     )
                 )

@@ -11,7 +11,11 @@ only the four questions that need a database:
 2. **The stackup**, derived from the board's own ``LAYER`` records rather
    than assumed, with an inner layer carrying exactly one net's pour
    becoming a ``plane`` — which is the right precis model for a pour and
-   the reason pours are not imported as copper.
+   the reason pours are not imported as copper. An OUTER-layer pour that
+   covers most of the board is not copper either: it lands as
+   ``pour_nets`` on the still-signal layer and a ``pcb_planes`` row, so
+   the router skips the net the source already carries by fill
+   (gr486958 — taz15's B.Cu GND / F.Cu 3V3 zones).
 3. **Refusals** that only a loaded design can see: a non-empty slug, and
    a layer count the router would reject later anyway.
 4. **Provenance**, stamped on the ref so a future format failure can be
@@ -42,6 +46,9 @@ import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
+
+from shapely.geometry import Polygon
+from shapely.ops import unary_union
 
 from precis.pcb import copper_report, datasheets, drc, epro, ir, padplace
 from precis.pcb.capabilities import CapabilityRow, capability_for
@@ -77,6 +84,10 @@ class ImportResult:
     counts: dict[str, int] = field(default_factory=dict)
     stackup: list[dict[str, Any]] = field(default_factory=list)
     planes: dict[str, str] = field(default_factory=dict)
+    #: ``{layer name: [pour-carried net names]}`` — fills covering most of
+    #: the board on still-signal layers (``derive_stackup``). A layer
+    #: listing exactly one also gained a ``pcb_planes`` row.
+    pour_nets: dict[str, list[str]] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     stats: dict[str, int] = field(default_factory=dict)
     copper: copper_report.CopperReport | None = None
@@ -399,6 +410,17 @@ def _report(
     )
 
 
+def _outline_path(design: epro.Design) -> list[list[float]] | None:
+    """The board outline ring in board-frame mm (the feature
+    :func:`~precis.pcb.epro.build_design` minted from the OUTLINE layer's
+    POLY records) — the denominator a pour's coverage is measured
+    against."""
+    return next(
+        (f["geom"]["path"] for f in design.features if f.get("ftype") == "outline"),
+        None,
+    )
+
+
 def _design_pads(
     design: epro.Design, stackup: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
@@ -433,7 +455,9 @@ def report_copper(
     project = epro.read_archive(data)
     board = project.pcb(board_uuid)
     _design, frame = epro.build_design(project, board)
-    stackup, _planes, _w = derive_stackup(board)
+    stackup, _planes, _w = derive_stackup(
+        board, pours=_design.epro_pours, outline=_outline_path(_design)
+    )
     graph = store.pcb_graph(ref_id)
     pin_to_net = {
         (m["refdes"], m["pin"]): n["name"] for n in graph["nets"] for m in n["members"]
@@ -451,8 +475,62 @@ def report_copper(
     return rep
 
 
+#: A net whose pour zones cover at least this share of the board outline
+#: is carried by fill — the way a plane carries it — not by a local pour
+#: (gr486958). Picked from the fixtures: the committed fixture's zone IS
+#: the outline verbatim (~100%) and taz15's outer zones are full-board
+#: pours drawn to the board edge; a fill serving one circuit is bounded
+#: by that circuit, an order smaller. "More than half" is the cleanest
+#: split, and it makes the several-carried-nets "mixed" case rare by
+#: construction — two disjoint fills can each claim half, never two
+#: thirds.
+_POUR_CARRIES_BOARD = 0.5
+
+
+def _pour_coverage(
+    pours: list[dict[str, Any]] | None,
+    outline: list[list[float]] | None,
+) -> dict[str, dict[str, float]]:
+    """``{layer name: {net name: share of the board outline covered}}``
+    from the authored pour zone outlines (:func:`precis.pcb.epro.
+    extract_pours`, already in board-frame mm). The zone's own ring is
+    measured, not Pro's computed fill — the decision it feeds is "did the
+    author intend this layer flooded on this net", and the authored zone
+    is the intent. ``{}`` when no outline exists to measure against."""
+    if not pours or not outline or len(outline) < 3:
+        return {}
+    board = Polygon([(float(p[0]), float(p[1])) for p in outline])
+    if not board.is_valid:
+        board = board.buffer(0)
+    if board.is_empty or board.area <= 0:
+        return {}
+    by_net: dict[tuple[str, str], list[Polygon]] = {}
+    for pour in pours:
+        ring = pour.get("polygon") or []
+        net = str(pour.get("net") or "")
+        if len(ring) < 3 or not net:
+            continue
+        poly = Polygon([(float(p[0]), float(p[1])) for p in ring])
+        if not poly.is_valid:
+            poly = poly.buffer(0)
+        if poly.is_empty:
+            continue
+        by_net.setdefault((str(pour.get("layer") or ""), net), []).append(poly)
+    out: dict[str, dict[str, float]] = {}
+    for (layer, net), polys in by_net.items():
+        if not layer:
+            continue
+        share = unary_union(polys).intersection(board).area / board.area
+        if share > 0:
+            out.setdefault(layer, {})[net] = share
+    return out
+
+
 def derive_stackup(
     pcb: epro.EproDocument,
+    *,
+    pours: list[dict[str, Any]] | None = None,
+    outline: list[list[float]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, str], list[str]]:
     """``(stackup, {layer name: plane net}, warnings)`` from the board's
     ``LAYER`` and ``POUR`` records.
@@ -465,15 +543,29 @@ def derive_stackup(
     several nets, or none, stays a signal layer — guessing which net
     "wins" would silently connect copper.
 
-    Outer layers are always signal: a pour on F.Cu/B.Cu is local fill
-    around parts, not a plane, and calling it one would tell the router
-    that side is unavailable.
+    ``pours``/``outline`` (``design.epro_pours`` + the outline feature's
+    ring) add the COVERAGE side (``_pour_coverage``): on any layer that
+    did not classify as a plane, a net whose zones cover at least
+    ``_POUR_CARRIES_BOARD`` of the outline is recorded as ``pour_nets``
+    on the still-``signal`` entry — the import turns exactly one such
+    net per layer into the same ``pcb_planes`` row ``op='plane_net'``
+    writes, so the router skips it as a trace and re-pours its pads'
+    fill. Several qualifying nets on one layer are all recorded (the
+    "mixed" case — a layer that is neither a clean plane nor plain
+    signal) but NONE is assigned: one sheet of copper cannot pour two
+    nets, and picking one would silently connect copper the author
+    separated. Small local pours change nothing — no key, no row, and
+    the layer keeps its plain shape so content-hash digests of pour-free
+    boards are unchanged. Coverage-less calls (``pours``/``outline``
+    omitted) fall back to the name-only rule.
 
     **A plane the author also routed on stays routable** (``"routable":
     True``, :func:`precis.pcb.ir.layer_is_routable`). Measured 2026-10-01
     on a real board: both inner layers carried a single-net pour AND 81
     track runs on 50 other nets. Stacking them as pure planes took away
-    half of the author's routing layers before the router ever ran.
+    half of the author's routing layers before the router ever ran. An
+    outer pour-carried layer likewise stays routable for every OTHER
+    net: signals route around the fill on the same sheet.
     """
     warnings: list[str] = []
     copper = epro.copper_layers(pcb)
@@ -493,6 +585,7 @@ def derive_stackup(
             name = copper.get(int(lid)) if lid is not None else None
             if name is not None and b.get("netName"):
                 track_nets.setdefault(name, set()).add(str(b["netName"]))
+    coverage = _pour_coverage(pours, outline)
 
     outer = {names[0], names[-1]}
     stackup: list[dict[str, Any]] = []
@@ -506,15 +599,53 @@ def derive_stackup(
                 entry["routable"] = True
             stackup.append(entry)
             planes[name] = net
-        else:
-            stackup.append({"name": name, "role": "signal"})
-            if name not in outer and len(nets) > 1:
+            continue
+        shares = coverage.get(name) or {}
+        carried = sorted(
+            n for n, share in shares.items() if share >= _POUR_CARRIES_BOARD
+        )
+        entry = {"name": name, "role": "signal"}
+        if carried:
+            entry["pour_nets"] = carried
+        stackup.append(entry)
+        if name not in outer and len(nets) > 1:
+            warnings.append(
+                f"inner layer {name} carries pours on {len(nets)} nets "
+                f"({', '.join(sorted(nets))}); imported as a SIGNAL layer "
+                f"rather than guessing which net the plane is"
+            )
+            if len(carried) == 1:
                 warnings.append(
-                    f"inner layer {name} carries pours on {len(nets)} nets "
-                    f"({', '.join(sorted(nets))}); imported as a SIGNAL layer "
-                    f"rather than guessing which net the plane is"
+                    f"inner layer {name}: {carried[0]}'s pour covers "
+                    f"{shares[carried[0]]:.0%} of the board — recorded in "
+                    f"pour_nets and assigned like a plane net; the layer "
+                    f"stays routable for the rest"
                 )
-            elif name in outer and nets:
+            elif carried:
+                warnings.append(
+                    f"inner layer {name}: {len(carried)} pours each cover at "
+                    f"least {_POUR_CARRIES_BOARD:.0%} of the board "
+                    f"({', '.join(carried)}); recorded in pour_nets, none "
+                    f"assigned — two fills on one sheet cannot each be the "
+                    f"plane"
+                )
+        elif name in outer and nets:
+            if len(carried) == 1:
+                warnings.append(
+                    f"outer layer {name} carries a pour on {carried[0]} "
+                    f"covering {shares[carried[0]]:.0%} of the board — "
+                    f"recorded in pour_nets and assigned like a plane net "
+                    f"(gr486958); the layer stays routable for the rest"
+                )
+            elif carried:
+                warnings.append(
+                    f"outer layer {name} carries pours on {len(carried)} "
+                    f"nets each covering at least {_POUR_CARRIES_BOARD:.0%} "
+                    f"of the board ({', '.join(carried)}); recorded in "
+                    f"pour_nets, none assigned — two fills on one sheet "
+                    f"cannot each be the plane"
+                )
+            else:
                 warnings.append(
                     f"outer layer {name} carries a pour on "
                     f"{', '.join(sorted(nets))}; outer pours are local fill, "
@@ -591,7 +722,9 @@ def import_epro(
     project = epro.read_archive(data)
     board = project.pcb(board_uuid)
     design, frame = epro.build_design(project, board)
-    stackup, planes, stackup_warnings = derive_stackup(board)
+    stackup, planes, stackup_warnings = derive_stackup(
+        board, pours=design.epro_pours, outline=_outline_path(design)
+    )
     warnings = [*design.warnings, *stackup_warnings]
     if freeze:
         newly = 0
@@ -659,6 +792,9 @@ def import_epro(
         created=False,
         stackup=stackup,
         planes=planes,
+        pour_nets={
+            str(e["name"]): list(e["pour_nets"]) for e in stackup if e.get("pour_nets")
+        },
         warnings=warnings,
         stats=dict(design.stats),
         alignment_candidates=alignment_candidates(design),
@@ -767,9 +903,19 @@ def import_epro(
             result.stats["net_classes"] = store.pcb_upsert_net_classes(
                 result.ref_id, design.net_classes, conn=conn
             )
+        # A layer carrying ONE pour-carried net gets the same authored
+        # pcb_planes row op='plane_net' writes — the router's skip-net
+        # decision reads those rows, not the stackup label. A layer with
+        # SEVERAL is recorded in pour_nets but assigned to none
+        # (derive_stackup's mixed case: one sheet cannot pour two nets).
+        assignments = dict(planes)
+        for e in stackup:
+            pour = e.get("pour_nets") or []
+            if len(pour) == 1:
+                assignments[str(e["name"])] = str(pour[0])
         unresolved = [
             layer
-            for layer, net in sorted(planes.items())
+            for layer, net in sorted(assignments.items())
             if not store.pcb_assign_plane(result.ref_id, layer, net, conn=conn)
         ]
         if copper_mode == "fixed":
@@ -784,7 +930,7 @@ def import_epro(
             )
     for layer in unresolved:
         result.warnings.append(
-            f"plane {layer} -> {planes[layer]}: the net did not survive the "
+            f"plane {layer} -> {assignments[layer]}: the net did not survive the "
             f"import, so the layer is stacked as a plane with no net"
         )
     # Each imported C-number gets its datasheet-of link where the store
@@ -1093,7 +1239,13 @@ def _pad_numbers(footprint: dict[str, Any]) -> list[str]:
 
 def _stackup_shape(stackup: list[dict[str, Any]]) -> list[tuple[Any, ...]]:
     return [
-        (s.get("name"), s.get("role"), s.get("plane_net"), bool(s.get("routable")))
+        (
+            s.get("name"),
+            s.get("role"),
+            s.get("plane_net"),
+            bool(s.get("routable")),
+            tuple(s.get("pour_nets") or ()),
+        )
         for s in stackup
     ]
 
@@ -1160,6 +1312,9 @@ def _update(
         created=False,
         stackup=stackup,
         planes=planes,
+        pour_nets={
+            str(e["name"]): list(e["pour_nets"]) for e in stackup if e.get("pour_nets")
+        },
         warnings=warnings,
         stats=dict(design.stats),
         update=plan,

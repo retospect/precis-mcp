@@ -268,6 +268,10 @@ def format_route_summary(counts: dict[str, int]) -> str:
 #: human ``op='plane_net'`` instruction is honoured on any stackup layer
 #: regardless of either flag (:func:`~precis.pcb.ir.layer_is_pourable`'s
 #: own docstring); only the automatic annealer's own guesses are gated.
+#: A third entry key, ``pour_nets``, records net(s) an import found
+#: carried by a board-covering fill on a signal layer (gr486958) — the
+#: import assigns exactly one such net through ``pcb_planes`` exactly
+#: like ``op='plane_net'``; several on one layer are recorded only.
 DEFAULT_STACKUP: list[dict[str, Any]] = [
     {"name": "F.Cu", "role": "signal"},
     {"name": "In1.Cu", "role": "plane", "plane_net": "GND"},

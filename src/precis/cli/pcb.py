@@ -360,9 +360,13 @@ def _import_epro(args: argparse.Namespace) -> None:
 
 
 def _layer_label(layer: dict[str, object]) -> str:
-    """``In1.Cu (plane, routable)`` — a plane the router may also route on
-    is the case a bare name would hide."""
+    """``In1.Cu (plane, routable)`` / ``B.Cu (pour-carried GND)`` — a
+    plane the router may also route on, or a signal layer whose fill
+    carries a net, are the cases a bare name would hide."""
     if layer.get("role") != "plane":
+        pours = layer.get("pour_nets")
+        if isinstance(pours, list) and pours:
+            return f"{layer['name']} (pour-carried {','.join(str(n) for n in pours)})"
         return str(layer["name"])
     routable = ", routable" if layer.get("routable") else ""
     return f"{layer['name']} (plane{routable})"

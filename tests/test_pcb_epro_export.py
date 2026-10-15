@@ -2055,6 +2055,14 @@ def test_taz15_import_export_reimport_structural(store, pcb, tmp_path) -> None:
         board_uuid="858a5f81603d1987",
     )
     assert first.created
+    # gr486958: the source's full outer pours are pour-carried nets —
+    # B.Cu GND and F.Cu 3V3 land as stackup `pour_nets` plus the authored
+    # `pcb_planes` rows the taz15-blank baseline used to set by hand.
+    assert first.pour_nets == {"B.Cu": ["GND"], "F.Cu": ["3V3"]}
+    assert {(p["layer"], p["net"]) for p in store.pcb_planes_list(first.ref_id)} >= {
+        ("B.Cu", "GND"),
+        ("F.Cu", "3V3"),
+    }
     # The LCSC census (slice 3): every Supplier Part C-number the source
     # carries survives on the component. The board's exceptions are the
     # exact 11 the source simply lacks — JP1/JP2 are bare headers, the
@@ -2105,6 +2113,9 @@ def test_taz15_import_export_reimport_structural(store, pcb, tmp_path) -> None:
         store, out_bytes, slug="taz15-rt-back", title="TAZ RT back"
     )
     assert second.created and second.stats["components"] == len(src_design.components)
+    # The pour zones come back verbatim, so the re-import derives the same
+    # pour-carried nets.
+    assert second.pour_nets == first.pour_nets
     assert not fails, f"{len(fails)} structural differences:\n" + "\n".join(fails[:30])
     assert not shape_fails, (
         f"{len(shape_fails)} record-shape differences vs the source:\n"

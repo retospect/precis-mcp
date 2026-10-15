@@ -1375,6 +1375,15 @@ def from_graph(
 # role-implies-one-or-the-other rule when the key is absent, so
 # :data:`precis.pcb.DEFAULT_STACKUP` and every existing caller that has
 # never heard of either flag keeps behaving exactly as it does today.
+#
+# A third entry key, ``pour_nets``, sits beside both predicates rather
+# than under either: it names the nets an import found carried by a
+# board-covering fill on a still-signal layer (gr486958 — e.g. taz15's
+# B.Cu GND / F.Cu 3V3 zones), and says nothing about the layer's own
+# routability — the layer routes other nets around that fill, which is
+# exactly the both-at-once case the two predicates exist to express per
+# NET assignment (the import's ``pcb_planes`` write) rather than per
+# layer.
 
 
 def layer_is_routable(layer: dict[str, Any]) -> bool:
@@ -1428,7 +1437,9 @@ def layer_is_pourable(layer: dict[str, Any]) -> bool:
 #: the author's instruction is accepted, stored, and never honoured. Same
 #: class of silent miss ``handlers/pcb.py::_op_plane_net``'s
 #: one-net-per-layer guard exists to stop.
-STACKUP_LAYER_KEYS = frozenset({"name", "role", "routable", "pourable", "plane_net"})
+STACKUP_LAYER_KEYS = frozenset(
+    {"name", "role", "routable", "pourable", "plane_net", "pour_nets"}
+)
 
 #: The two outer copper layers, by NAME. Index decides identity
 #: everywhere inside the engine (this module's own "layers are integer
@@ -1510,6 +1521,37 @@ def validate_stackup(layers: Any) -> list[dict[str, Any]]:
                     f"stackup[{i}] ({name}): plane_net must name a net, or be omitted"
                 )
             clean["plane_net"] = plane_net
+        if "pour_nets" in entry:
+            # A net whose fill covers most of the board on a still-signal
+            # layer (gr486958): the source carries it by pour, so the
+            # import records it and assigns it like a plane. Written only
+            # when set — a layer without one keeps its pre-key shape (and
+            # its content-hash digest).
+            raw_pours = entry["pour_nets"]
+            if not isinstance(raw_pours, list | tuple):
+                raise ValueError(
+                    f"stackup[{i}] ({name}): pour_nets must be a list of net "
+                    "names, or be omitted"
+                )
+            seen_nets: set[str] = set()
+            pour_nets = []
+            for raw_net in raw_pours:
+                net = str(raw_net).strip()
+                if not net:
+                    raise ValueError(
+                        f"stackup[{i}] ({name}): pour_nets entries must each name a net"
+                    )
+                if net not in seen_nets:
+                    seen_nets.add(net)
+                    pour_nets.append(net)
+            if pour_nets:
+                clean["pour_nets"] = pour_nets
+        if "plane_net" in clean and "pour_nets" in clean:
+            raise ValueError(
+                f"stackup[{i}] ({name}): plane_net and pour_nets cannot both "
+                "be set — a plane's net goes in plane_net; pour_nets records "
+                "a fill carried on a signal layer"
+            )
         out.append(clean)
     outer = (out[0]["name"], out[-1]["name"])
     if outer != OUTER_LAYER_NAMES:

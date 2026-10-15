@@ -209,6 +209,98 @@ def test_op_stackup_writes_nothing_when_one_plane_net_is_unknown(pcb, store):
     assert store.pcb_graph(ref.id)["board"]["stackup"] == before
 
 
+def test_op_stackup_pour_nets_assigns_like_plane_net(pcb, store):
+    """``pour_nets`` (gr486958) is the signal-layer spelling of the same
+    declaration ``plane_net`` makes — a fill the source carries the net
+    by. It must reach the same ``pcb_planes`` write, else the key is the
+    decorative kind this op was written to kill."""
+    pcb.put(id="stk-pour", args=_DESIGN)
+    resp = pcb.put(
+        id="stk-pour",
+        args={
+            "op": "stackup",
+            "layers": [
+                {"name": "F.Cu", "role": "signal"},
+                {"name": "In1.Cu", "role": "plane", "plane_net": "N1"},
+                {"name": "In2.Cu", "role": "signal"},
+                {"name": "B.Cu", "role": "signal", "pour_nets": ["N2"]},
+            ],
+        },
+    )
+    assert "pours=N2" in resp.body
+    ref = store.get_ref(kind="pcb", id="stk-pour")
+    assert ref is not None
+    assert {(r["layer"], r["net"]) for r in store.pcb_planes_list(ref.id)} == {
+        ("In1.Cu", "N1"),
+        ("B.Cu", "N2"),
+    }
+
+
+def test_op_stackup_several_pour_nets_record_but_assign_none(pcb, store):
+    """The mixed case: several fill-carried nets on one signal layer are
+    all recorded, but a layer is one sheet of copper — none is assigned
+    (guessing which pours would silently connect copper)."""
+    pcb.put(id="stk-pour-mix", args=_DESIGN)
+    pcb.put(
+        id="stk-pour-mix",
+        args={
+            "op": "stackup",
+            "layers": [
+                {"name": "F.Cu", "role": "signal"},
+                {"name": "In1.Cu", "role": "plane"},
+                {"name": "In2.Cu", "role": "signal"},
+                {"name": "B.Cu", "role": "signal", "pour_nets": ["N1", "N2"]},
+            ],
+        },
+    )
+    ref = store.get_ref(kind="pcb", id="stk-pour-mix")
+    assert ref is not None
+    stackup = store.pcb_graph(ref.id)["board"]["stackup"]
+    assert next(e for e in stackup if e["name"] == "B.Cu")["pour_nets"] == [
+        "N1",
+        "N2",
+    ]
+    assert store.pcb_planes_list(ref.id) == []
+
+
+def test_op_stackup_pour_nets_rejects(pcb):
+    """``plane_net`` and ``pour_nets`` name two different shapes of the
+    same fact; both on one entry is refused, and an unknown pour net is
+    an error — never a silent skip."""
+    pcb.put(id="stk-pour-bad", args=_DESIGN)
+    with pytest.raises(BadInput, match="plane_net and pour_nets cannot both"):
+        pcb.put(
+            id="stk-pour-bad",
+            args={
+                "op": "stackup",
+                "layers": [
+                    {"name": "F.Cu", "role": "signal"},
+                    {
+                        "name": "In1.Cu",
+                        "role": "plane",
+                        "plane_net": "N1",
+                        "pour_nets": ["N2"],
+                    },
+                    {"name": "In2.Cu", "role": "signal"},
+                    {"name": "B.Cu", "role": "signal"},
+                ],
+            },
+        )
+    with pytest.raises(BadInput, match="no net 'NOPE'"):
+        pcb.put(
+            id="stk-pour-bad",
+            args={
+                "op": "stackup",
+                "layers": [
+                    {"name": "F.Cu", "role": "signal"},
+                    {"name": "In1.Cu", "role": "plane"},
+                    {"name": "In2.Cu", "role": "signal"},
+                    {"name": "B.Cu", "role": "signal", "pour_nets": ["NOPE"]},
+                ],
+            },
+        )
+
+
 def test_op_stackup_is_listed_in_the_unknown_op_error(pcb):
     """The op surface is discoverable — an LLM that guesses a wrong op
     name is told the real list, including this one."""
