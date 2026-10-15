@@ -33,7 +33,10 @@ Routes:
 Every focus page advances the focus trail (slice 6): a cookie-held
 ``kind:id|…`` list (:data:`TRAIL_COOKIE`, no server storage) rendered as
 crumbs plus a "retreat" link to the previous focus; revisiting a crumb
-truncates the trail back to it.
+truncates the trail back to it. Zoom-out (slice 7) is the second way out:
+the node the focus hangs on by its kind's up relation
+(``utils/refeye.py::UP_RELATIONS`` via ``resolve_up``), or the rule's
+reason when the kind has none.
 
 Slice 4 (``docs/backlog/web-graph-navigation.md``): the filter axes —
 ``rels``, ``kinds``, ``since``/``until``, ``trust`` and ``depth`` — are
@@ -72,7 +75,7 @@ from precis.errors import BadInput, NotFound
 from precis.store._links_ops import PATH_MAX_DEPTH
 from precis.store.types import FINDING_TRUST_TIERS
 from precis.utils import handle_registry
-from precis.utils.refeye import RING_GROUPS, ring_group
+from precis.utils.refeye import RING_GROUPS, resolve_up, ring_group
 from precis_web.deps import get_store, templates
 from precis_web.graph_filters import csv_list, parse_kind_filter
 from precis_web.graph_svg import KIND_SHAPES, focus_graph_svg
@@ -708,6 +711,21 @@ async def graph_focus(
     focus_h = _handle(kind, ref_id)
     page = f"/graph/{kind}/{ref_id}"
     trail = _trail_cards(store, _advance_trail(_read_trail(request), (kind, ref_id)))
+    focus_ref = store.get_ref(kind=kind, id=ref_id, include_deleted=True)
+    up = resolve_up(
+        store,
+        kind,
+        ref_id,
+        parent_id=focus_ref.parent_id if focus_ref is not None else None,
+    )
+    zoom_out = {
+        "target": _card(up["target"]) if up["target"] is not None else None,
+        "rel": up["rel"],
+        "dir": up["dir"],
+        "others": [_card(r) for r in up["others"]],
+        "more": up["n_others"] - len(up["others"]),
+        "reason": up["reason"],
+    }
     qs = f.qs()
     json_qs = f.qs(remove=[("view", f.view)]) if f.view else qs
     other = "radial" if f.view == "outline" else "outline"
@@ -753,6 +771,7 @@ async def graph_focus(
             # template skips the button rather than rendering a dead one.
             "faved": faved(request, ref_id),
             "trail": trail,
+            "zoom_out": zoom_out,
             "retreat": trail[-2] if len(trail) > 1 else None,
         },
     )

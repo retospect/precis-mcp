@@ -19,6 +19,27 @@
       · <a href="{{ json_url }}" class="underline">json</a>
       · <a href="{{ view_href }}" class="underline">{{ view_other }} view</a>
     </p>
+    <p class="mt-1 text-xs text-slate-500" aria-label="zoom out">
+      {% if zoom_out.target %}
+      <a href="{{ zoom_out.target.graph_url }}" class="rounded border border-slate-200 px-1.5 py-0.5 hover:bg-slate-100"
+         data-zoom-out="{{ zoom_out.target.handle }}" rel="up"
+         title="{{ zoom_out.target.label }}">↑ zoom out</a>
+      <span class="font-mono">{{ zoom_out.rel }}</span>
+      <a href="{{ zoom_out.target.graph_url }}" class="font-mono underline">{{ zoom_out.target.handle }}</a>
+      <span>{{ zoom_out.target.label | truncate(60) }}</span>
+      {% if zoom_out.others %}
+      <span class="text-slate-400">· or</span>
+      {% for o in zoom_out.others %}
+      <a href="{{ o.graph_url }}" class="font-mono underline" data-zoom-alt="{{ o.handle }}" title="{{ o.label }}">{{ o.handle }}</a>
+      {% endfor %}
+      {% if zoom_out.more > 0 %}<span class="text-slate-400">+{{ zoom_out.more }} more</span>{% endif %}
+      {% endif %}
+      {% else %}
+      <span class="rounded border border-slate-100 px-1.5 py-0.5 text-slate-300" aria-disabled="true"
+            title="{{ zoom_out.reason }}">↑ zoom out</span>
+      <span class="italic text-slate-400" data-zoom-reason>{{ zoom_out.reason }}</span>
+      {% endif %}
+    </p>
     <form method="get" action="/graph/path" class="mt-1 flex items-center gap-1 text-xs text-slate-500" aria-label="path from here">
       <input type="hidden" name="from" value="{{ kind }}/{{ ref_id }}">
       <input type="text" name="to" placeholder="path to… (handle)" class="w-40 rounded border border-slate-200 px-1.5 py-0.5 font-mono">

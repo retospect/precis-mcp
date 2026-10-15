@@ -39,7 +39,8 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, Protocol
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from precis.store.si_links import ATTENTION_WALK_CAP, queue_si_on_attention_many
 from precis.taproot.seniority import (
@@ -190,6 +191,122 @@ def ring_group(relation: str) -> str | None:
     """The :data:`RING_GROUPS` heading ``relation`` renders under, or None
     when the ring does not follow it."""
     return next((g for g, rels in RING_GROUPS.items() if relation in rels), None)
+
+
+@dataclass(frozen=True)
+class UpRule:
+    """One kind's zoom-out rule (``web-graph-navigation.md`` slice 7):
+    ``steps`` are ``(relation, direction)`` pairs tried in order —
+    ``direction`` is the focus's side of the stored link (``out`` = the
+    focus is ``src``) — and the first with a live far end wins. A rule with
+    no steps is disabled and says why in ``reason``. ``parent`` is the
+    todo tree's virtual relation (``refs.parent_id``), not a links row."""
+
+    steps: tuple[tuple[str, Literal["out", "in"]], ...] = ()
+    reason: str = ""
+
+
+def _no_container(kind: str) -> UpRule:
+    return UpRule(reason=f"no container relation registered for {kind}")
+
+
+_DOC_UP = UpRule(
+    (("establishes", "out"), ("corroborates", "out"), ("instance-of", "out"))
+)
+_PART_UP = UpRule((("part-of", "out"), ("contains", "in")))
+
+#: Kind → the node the focus hangs on, by its family's "up" relation — the
+#: graph page's zoom-out control, distinct from retreating along the trail.
+#: A decision table like :data:`RING_GROUPS`: every registered kind is
+#: listed, disabled ones with their reason, and
+#: ``tests/test_refeye_up_relations.py`` fails on a kind missing here (no
+#: silent default). Evidence documents point *at* the claim they support
+#: (prod 2026-10-15: every ``establishes``/``corroborates`` row is
+#: paper/patent → finding), so their up steps are ``out``. ``memory`` hangs
+#: on its hub by ``part-of`` since the 2026-10-08 mesh cutover made the
+#: hubs refs (me474312's hubs).
+UP_RELATIONS: dict[str, UpRule] = {
+    "finding": UpRule((("serves", "out"), ("part-of", "out"))),
+    "quest": UpRule((("serves", "out"),)),
+    **dict.fromkeys(("paper", "patent", "datasheet", "edgar", "pathway"), _DOC_UP),
+    "taxon": UpRule((("specialises", "out"),)),
+    "concept": UpRule((("has-prerequisite", "out"),)),
+    **dict.fromkeys(("se", "pcb", "cad", "component"), _PART_UP),
+    "todo": UpRule((("parent", "out"),)),
+    "draft": UpRule((("draft-of", "out"),)),
+    "conv": UpRule((("derived-from", "out"),)),
+    "memory": UpRule((("part-of", "out"),)),
+    **{
+        k: _no_container(k)
+        for k in (
+            "agentlog", "alert", "anki", "calc", "cfp", "checklist", "citation",
+            "email", "figure", "fleet", "folder", "gripe", "job", "llm", "make",
+            "markdown", "material", "math", "md", "measure", "mermaid",
+            "message", "news", "oracle", "orcid", "part", "perplexity-reasoning",
+            "perplexity-research", "plaintext", "plan", "pres", "provenance",
+            "python", "random", "rxn", "semanticscholar", "skill", "structure",
+            "tag", "tex", "time", "web", "websearch", "wikipedia", "youtube",
+        )
+    },
+}  # fmt: skip
+
+#: Alternatives listed under the zoom-out target before "+N more".
+UP_CHOOSER = 5
+
+
+def resolve_up(
+    store: Store, kind: str, ref_id: int, *, parent_id: int | None = None
+) -> dict[str, Any]:
+    """Where zoom-out goes from ``kind``/``ref_id`` under
+    :data:`UP_RELATIONS`.
+
+    Returns ``{"target": Ref | None, "rel", "dir", "others": [Ref],
+    "n_others", "reason"}``. The first step with a live far end wins;
+    several far ends tie-break by link degree
+    (:meth:`Store.count_links_for_refs`, highest first, then id) and the
+    rest come back as ``others`` (at most :data:`UP_CHOOSER`). With no
+    target, ``reason`` says why — the rule's own for a disabled kind, else
+    which relations were tried. ``parent_id`` feeds the todo tree's
+    virtual ``parent`` step.
+    """
+    rule = UP_RELATIONS.get(kind) or _no_container(kind)
+    out: dict[str, Any] = {
+        "target": None,
+        "rel": "",
+        "dir": "",
+        "others": [],
+        "n_others": 0,
+        "reason": rule.reason,
+    }
+    for rel, direction in rule.steps:
+        if rel == "parent":
+            ids = [parent_id] if parent_id else []
+        else:
+            ids = []
+            for link in store.links_for(ref_id, direction=direction, relation=rel):
+                far = link.dst_ref_id if link.src_ref_id == ref_id else link.src_ref_id
+                if far != ref_id and far not in ids:
+                    ids.append(far)
+        live = store.fetch_refs_by_ids(ids, include_deleted=False) if ids else {}
+        ids = [i for i in ids if i in live]
+        if not ids:
+            continue
+        if len(ids) > 1:
+            degree = store.count_links_for_refs(ids)
+            ids.sort(key=lambda i: (-degree.get(i, 0), i))
+        out.update(
+            target=live[ids[0]],
+            rel=rel,
+            dir=direction,
+            others=[live[i] for i in ids[1 : 1 + UP_CHOOSER]],
+            n_others=len(ids) - 1,
+            reason="",
+        )
+        return out
+    if rule.steps:
+        tried = " / ".join(f"{r} ({d})" for r, d in rule.steps)
+        out["reason"] = f"no live {tried} link from this {kind}"
+    return out
 
 
 #: Kind → ring group. Anything unlisted falls into "Notes" (memory / finding /
