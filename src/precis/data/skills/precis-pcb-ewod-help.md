@@ -151,6 +151,39 @@ board-edge connectors get pinned. Pinning a sink under the electrode
 array is what put one board's solder lands on top of its own authored
 plaza vias, so prefer the default.
 
+**Control pins.** `clk_pin`, `le_pin`, `bl_pin`, `pol_pin`, `dir_pin`
+(pin names on the sink part) are *driven* lines: each named one gets a
+shared `{name}_clk` / `_le` / `_bl` / `_pol` / `_dir` net bussed to every
+sink, for a board-level `connections` entry to wire the controller to.
+A line that is *tied* (e.g. DIR choosing shift direction) goes in `power`
+instead, never also as `<ctl>_pin` — a pin named twice (control, `power`,
+channel, serial, top-plate) is refused, naming both keys. Unset keys emit
+nothing.
+
+### `tape_land` — copper-tape landing for the ITO top plate
+
+```python
+{"grid": [9, 9], "tape_land": {"edge": "N", "length_mm": 20, "width_mm": 5, "offset_mm": 0}}
+```
+
+One drill-free rect pad on F.Cu along one array edge, pin `top_plate`,
+`role: tape_land`, mask open, no paste, wired to the top-plate net
+(`sink_grid.top_plate_net`, default `{name}_top_plate`). `edge`
+`N|S|E|W` (default `N`, the +y side); `length_mm` defaults to that edge's
+full extent; `width_mm` (default 5, outward thickness) must be > 0;
+`offset_mm` (default 0, flush with the mask opening) must be >= 0. A
+pad already named `top_plate` collides and is refused. The fab bundle
+gains `<name>-fab-notes.txt` (parylene process order; mask the tape land
+during deposition — a coated land is an open circuit).
+
+### HV net class
+
+With `drive_voltage_v` set and a top-plate net (a sink's `top_plate_pin`
+or `tape_land`), that net joins an `ewod_{name}_hv` class carrying
+`working_voltage_v` = the drive voltage. Its clearance derives from
+IPC-2221B (coated column) and is an **ERROR** floor, not a warning; add
+other HV nets via `op='class_rules'`. Class keys: [[precis-pcb-route-help]].
+
 ## See also
 
 ```python

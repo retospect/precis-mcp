@@ -397,6 +397,13 @@ scoped to one class). It is judged: router copper the new rules no longer admit 
 
 Class clearance is clamped up to the fab minimum, never below it.
 
+Two more clearance keys: `working_voltage_v` derives `clearance_mm` from
+IPC-2221B spacing (coated column; above 500 V it is refused as bad input,
+not extrapolated), and `min_clearance_mm` is a hard floor. Either one
+makes a copper gap under the floor a DRC **error** (not a warning) naming
+`min_clearance_mm`; the stricter floor of the two nets in the pair wins,
+and the derived value also raises `clearance_mm`.
+
 **Net-class `layers` IS consumed (Rulings 2026-09-19 item 7, gr347037).**
 A class's `rules` may name `"layers": ["B.Cu", ...]` (stackup layer names)
 — every net tagged with that class routes ONLY on the intersection of
