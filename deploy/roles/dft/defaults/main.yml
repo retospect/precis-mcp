@@ -31,6 +31,14 @@ dft_mpi_ranks: 0
 dft_omp_threads: 4
 # Empty = no DFT-specific pin (the fleet-wide PRECIS_JOB_CPUSET, if any, applies).
 dft_cpuset: ""
+
+# Memory cap on the gpaw container (docker size string → --memory/--memory-swap
+# via PRECIS_DFT_MEM_LIMIT). The GB10 is unified CPU+GPU LPDDR5X, so an uncapped
+# relax starves the co-resident 48G compute lane (gr489395; the wedge the
+# host-lanes budget in roles/hardening guards against). 40g matches the
+# compute lane's container_reserve — the number the per-host budget already
+# books for one GPU container. Empty ⇒ no cap.
+dft_mem_limit: 40g
 # Host directory of GPAW PAW datasets, mounted at /opt/gpaw-setups. The
 # Dockerfile bakes none; empty = no mount (an image with them baked in).
 dft_paw_dir: ""

@@ -141,8 +141,9 @@
         precis_target_sha: "{{ precis_worker_git_ref if precis_worker_git_ref_is_sha else precis_target_ls.stdout }}"
 
     - name: Pin every managed venv's install ref + the compare target to that sha
-      # set_fact beats the role defaults (precis_*_git_ref: main) so the install
-      # roles install `@<sha>`; it does NOT beat an explicit `-e` (extra-vars),
+      # set_fact supplies the refs the install roles now REQUIRE (gr489462 —
+      # they carry no "main" default and refuse when unset); it does NOT beat
+      # an explicit `-e` (extra-vars),
       # so a deliberate branch deploy is untouched. precis_target_sha is the
       # single source of truth the pre-flight (0b) and the assert (4) compare to.
       ansible.builtin.set_fact:

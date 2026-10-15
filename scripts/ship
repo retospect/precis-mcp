@@ -964,6 +964,66 @@ _sync_local_main() {
     fi
 }
 
+# Stale-mint guard (gr489414): refuse BEFORE any gate when this branch adds
+# a migration whose number is not its ledger dir's next free number on
+# origin/main. The in-lock collision guard only sees numbers minted while
+# THIS ship waits — the common double-mint is older than that: both branches
+# grabbed the same next number, the first landed earlier, and by the time the
+# second ships the collision sits in its merge-base (the 0216 pair on
+# 2026-10-15: main carried two 0216 files until 24cc61d7c renumbered one).
+# Rule per ledger dir (0016 in precis_se and in precis_chem are different
+# numbers, same as the in-lock guard): our added numbers must be exactly
+# max+1, max+2, … — an already-taken number forks the ledger, a lower free
+# number inserts out of order, a skipped number was minted off a stale main.
+# A ledger dir main has never seen starts wherever the branch mints, but its
+# own adds still run contiguously. Skipped under --release: a release fix
+# numbers off the RELEASE head, not main's tip (_release_migration_guard
+# covers its own collisions).
+_refuse_stale_migration_mint() {
+    local ours dirs d f base nums num main_max expect n b existing pairs first pair
+    ours="$(git diff --name-only --no-renames --diff-filter=A "$(git merge-base origin/main HEAD)" HEAD \
+        | grep -E '/migrations/[0-9]+_[^/]*\.sql$' || true)"
+    [[ -n "$ours" ]] || return 0
+    dirs="$(printf '%s\n' "$ours" | sed 's|/[^/]*$||' | sort -u)"
+    while IFS= read -r d; do
+        [[ -n "$d" ]] || continue
+        main_max=0
+        while IFS= read -r b; do
+            [[ -n "$b" ]] || continue
+            b="${b##*/}"
+            [[ "$b" =~ ^[0-9]+_ ]] || continue
+            n=$((10#${b%%_*}))
+            (( n > main_max )) && main_max=$n
+        done < <(git ls-tree --name-only origin/main -- "$d/")
+        # This branch's additions in the dir, ascending by number.
+        pairs="$(printf '%s\n' "$ours" | grep -F "${d}/" | while IFS= read -r _f; do
+            [[ -n "$_f" ]] && printf '%s\t%s\n' "$(basename "$_f" | grep -oE '^[0-9]+')" "$_f"
+        done | sort -n)"
+        if (( main_max == 0 )); then
+            # A ledger dir main has never seen has no number to fork — the
+            # branch's own lowest mint starts it (a plugin's first 0016 is
+            # legal). Only our own adds must run contiguous from there.
+            first="$(printf '%s\n' "$pairs" | head -1 | cut -f1)"
+            expect=$((10#$first))
+        else
+            expect=$(( main_max + 1 ))
+        fi
+        while IFS= read -r pair; do
+            [[ -n "$pair" ]] || continue
+            nums="${pair%%	*}"; f="${pair#*	}"
+            base="$(basename "$f")"
+            num=$((10#$nums))
+            (( num == expect )) && { expect=$(( expect + 1 )); continue; }
+            existing="$(git ls-tree --name-only origin/main -- "$d/" \
+                | grep -E "/${nums}_" | grep -vxF "$f" | head -1 || true)"
+            if [[ -n "$existing" ]]; then
+                die "migration number collision: this branch adds ${base} but origin/main already carries $(basename "$existing") at number ${nums} in ${d}. Renumber it to $(printf '%04d' "$expect") — origin/main's next free number there — and re-run scripts/ship. Nothing was pushed."
+            fi
+            die "migration ${base} is numbered ${nums}, but origin/main's next free number in ${d} is $(printf '%04d' "$expect") (main's highest there is $(printf '%04d' "$main_max")). The mint went stale — renumber to $(printf '%04d' "$expect") and re-run scripts/ship. Nothing was pushed."
+        done <<< "$pairs"
+    done <<< "$dirs"
+}
+
 # Squawk on this ship's NEW migration SQL (sealed files are frozen and never
 # re-linted). Blocking, unlike the advisories in the loop: it catches the
 # operational hazards the schema-design tests can't (NOT NULL without default,
@@ -1543,6 +1603,10 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
 
     git fetch -q origin main
     CHANGED="$(git diff --name-only "$(git merge-base origin/main HEAD)" HEAD)"
+    # Stale-mint refusal (gr489414) — cheap, pre-gate. A migration number this
+    # branch minted that origin/main already has (or that leaves a gap/below-
+    # max insert) dies here in every tier, before lint/CI burn time on it.
+    [[ "$RELEASE" != 1 ]] && _refuse_stale_migration_mint
     if [[ "$attempt" == 1 && "$REMOTE" == 1 && "$RELEASE" != 1 ]]; then
         _set_remote_budget
     fi

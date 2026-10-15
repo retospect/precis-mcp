@@ -27,6 +27,19 @@
 # OS prerequisites (CPython headers for Triton's runtime JIT). Shared with
 # roles/precis_worker/tasks/provision.yml so a plain redeploy self-heals a
 # drifted node — see prereqs.yml for the full story.
+# gr489462: never let a bare `ansible-playbook` install GitHub main — the
+# install below rides precis_worker_git_ref, which must arrive pinned
+# (scripts/deploy, scripts/host-ops/play, or redeploy-precis.yml's step-0).
+- name: Refuse an unpinned precis-mcp install (precis_worker_git_ref unset)
+  ansible.builtin.fail:
+    msg: >-
+      precis_worker_git_ref is unset — this play would pip-install
+      precis-mcp from GitHub main, which crash-looped the workers twice on
+      2026-10-15 (gr489462). Pin it: run via scripts/deploy or
+      scripts/host-ops/play (both pin all three refs to the target sha), or
+      pass -e precis_worker_git_ref=<sha>.
+  when: (precis_worker_git_ref | default('')) | length == 0
+
 - name: Install the autocatpath OS prerequisites
   ansible.builtin.include_tasks: prereqs.yml
 
@@ -51,7 +64,7 @@
       --overrides /opt/precis/overrides.txt \
       --no-sources \
       --find-links {{ autocatpath_wheelhouse }} \
-      'precis-mcp[{{ autocatpath_extras }}] @ git+https://github.com/retospect/precis-mcp@{{ precis_worker_git_ref | default("main") }}'
+      'precis-mcp[{{ autocatpath_extras }}] @ git+https://github.com/retospect/precis-mcp@{{ precis_worker_git_ref }}'
   become: true
   register: autocatpath_install
   changed_when: >-

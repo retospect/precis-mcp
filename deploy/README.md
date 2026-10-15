@@ -246,6 +246,14 @@ playbook). Advisory only: it never fails a deploy. Running the other
 playbooks automatically is deliberately not done — see
 `docs/backlog/deploy-renders-only-precis-roles.md`.
 
+Hand-run playbooks: every role that pip-installs precis-mcp refuses when its
+`*_git_ref` is unset (gr489462 — a "main" default crash-looped the workers
+twice on 2026-10-15). Run leaf plays via `scripts/host-ops/play` (pins all
+three refs to `origin/prod`) or pass the refs explicitly, e.g.
+`-e precis_worker_git_ref=<sha> -e precis_web_git_ref=<sha>
+-e precis_embedder_git_ref=<sha>` (`-e asa_git_ref=<sha>` for the asa
+plays).
+
 ## The secret boundary (read before you commit)
 
 precis-mcp is a **public** repository. A commit that leaks the real cluster's

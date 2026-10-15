@@ -16,11 +16,11 @@
 
 precis_embedder_venv: /opt/precis/embedder-venv
 
-# Git ref to install precis-mcp[embed] from. Tracks the same ref as the
-# worker by default so a single push redeploys both consistently — keeps
-# the wire schema (precis.embedder_wire) and the served model in lockstep
-# with the clients.
-precis_embedder_git_ref: "{{ precis_worker_git_ref | default('main') }}"
+# Git ref to install precis-mcp[embed] from — falls back to the worker's
+# pinned ref, NEVER to "main" (gr489462): the install task refuses when
+# this resolves empty. scripts/deploy / scripts/host-ops/play pin all three
+# refs; a lone -e precis_worker_git_ref=<sha> still covers this one.
+precis_embedder_git_ref: "{{ precis_worker_git_ref | default('') }}"
 
 # Bind address + port. Loopback only: the sole consumers are same-node
 # native daemons (worker / watch / the MCP serve process), so there is no

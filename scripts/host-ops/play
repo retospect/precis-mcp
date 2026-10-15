@@ -66,8 +66,9 @@ VPASS="$(dirname "$(dirname "$OVERLAY")")/.vault-pass"
 echo "pinned ${prod:0:9} | overlay $(dirname "$OVERLAY") | $*"
 cd "$PROD_CHECKOUT/deploy"
 # cluster-desk 2026-10-15: the install roles pip-install precis-mcp from GitHub
-# @ precis_worker_git_ref (default "main"), so the checkout pin alone still
-# installs main. Pin the refs to prod like scripts/deploy's SHA_ARGS.
+# @ precis_worker_git_ref — gr489462 removed the "main" default entirely (the
+# roles now refuse when unset), and these -e pins are what satisfy them.
+# Pin the refs to prod like scripts/deploy's SHA_ARGS.
 exec ansible-playbook -i "$OVERLAY" \
   --vault-password-file "$VPASS" \
   -e precis_worker_git_ref="$prod" -e precis_web_git_ref="$prod" -e precis_embedder_git_ref="$prod" \

@@ -479,6 +479,69 @@ def test_migrations_are_numbered_per_plugin_dir(rig: Rig) -> None:
     } <= _tree_files(rig)
 
 
+def test_stale_migration_mint_dies_naming_the_next_free_number(rig: Rig) -> None:
+    """gr489414: the 0216 double-mint. The sibling's 0002 lands BEFORE our
+    ship runs — by sync time the collision is inside our merge-base, outside
+    the in-lock guard's window; the stale-mint check must refuse and name
+    origin/main's next free number."""
+    wt = rig.worktree(
+        "m", {"src/precis/migrations/0002_ours.sql": "select 2;\n", "m.txt": "m\n"}
+    )
+    racer_sha = rig.race({"src/precis/migrations/0002_theirs.sql": "select 3;\n"})
+    p, log = rig.ship(wt, "--quick", sleep=1)
+    rc = p.wait(timeout=120)
+    out = log.read_text(encoding="utf-8")
+    assert rc != 0, out
+    assert "migration number collision" in out, out
+    assert "0002_ours.sql" in out and "0002_theirs.sql" in out
+    assert "0003" in out, "the refusal must print origin/main's next free number"
+    assert rig.origin_ref("main") == racer_sha, "main must be unchanged"
+    assert not rig.lockdir().exists()
+
+
+def test_migration_number_above_next_free_dies(rig: Rig) -> None:
+    """A gap mint is the same stale-base tell: 0003 against main's 0001 means
+    the branch minted off a tree that predates main's current tip — or typed
+    a number by hand. Either way it renumbers to 0002 before it ships."""
+    wt = rig.worktree("m", {"src/precis/migrations/0003_gap.sql": "select 2;\n"})
+    p, log = rig.ship(wt, "--quick", sleep=1)
+    rc = p.wait(timeout=120)
+    out = log.read_text(encoding="utf-8")
+    assert rc != 0, out
+    assert "next free number" in out and "0002" in out, out
+    assert "0003_gap.sql" not in _tree_files(rig)  # never landed
+
+
+def test_contiguous_migrations_at_next_free_land(rig: Rig) -> None:
+    """Control: numbers that ARE main's next free (a two-migration branch
+    minted off current main) must not trip the guard."""
+    wt = rig.worktree(
+        "m",
+        {
+            "src/precis/migrations/0002_a.sql": "select 2;\n",
+            "src/precis/migrations/0003_b.sql": "select 3;\n",
+        },
+    )
+    p, log = rig.ship(wt, "--quick", sleep=1)
+    _finish(p, log)
+    assert {
+        "src/precis/migrations/0002_a.sql",
+        "src/precis/migrations/0003_b.sql",
+    } <= _tree_files(rig)
+
+
+def test_new_plugin_ledger_mints_at_any_start(rig: Rig) -> None:
+    """A migrations/ dir main has never seen has no number to fork — the
+    branch's own mint starts the ledger (keeps the 0016-style plugin-dir
+    convention of test_migrations_are_numbered_per_plugin_dir legal)."""
+    wt = rig.worktree(
+        "newplug", {"src/precis_new/migrations/0016_a.sql": "select 1;\n"}
+    )
+    p, log = rig.ship(wt, "--quick", sleep=1)
+    _finish(p, log)
+    assert "src/precis_new/migrations/0016_a.sql" in _tree_files(rig)
+
+
 def test_shared_origin_main_ref_moved_after_the_in_lock_fetch_cannot_revert(
     rig: Rig,
 ) -> None:

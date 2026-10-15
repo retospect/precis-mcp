@@ -1086,6 +1086,22 @@ def test_paw_dir_mounts_read_only_at_the_image_setup_path(
     assert argv.index(mount) < argv.index(struct_relax._IMAGE)
 
 
+def test_dft_mem_limit_caps_the_container(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr489395: PRECIS_DFT_MEM_LIMIT (rendered by roles/dft, default 40g —
+    the compute lane's container_reserve) puts --memory + an equal
+    --memory-swap on the gpaw container; unset means no cap."""
+    monkeypatch.delenv("PRECIS_DFT_MEM_LIMIT", raising=False)
+    argv = struct_relax.build_run_argv(ref_id=7, in_dir="/i", out_dir="/o")
+    assert "--memory" not in argv and "--memory-swap" not in argv
+
+    monkeypatch.setenv("PRECIS_DFT_MEM_LIMIT", "40g")
+    argv = struct_relax.build_run_argv(ref_id=7, in_dir="/i", out_dir="/o")
+    assert argv[argv.index("--memory") + 1] == "40g"
+    assert argv[argv.index("--memory-swap") + 1] == "40g"
+
+
 def test_mpi_ranks_wrap_the_container_command(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

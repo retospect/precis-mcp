@@ -7,12 +7,13 @@
 
 precis_worker_venv: /opt/precis/venv
 
-# Git ref to install precis-mcp from. Tracks ``main`` post-F20
-# (per-chunk keybert + dynamic TOC); the long-running
-# ``feat/storage-v2-step-b`` branch was retired when storage-v2 landed
-# on main. Override per-host (or via ``--extra-vars``) if you want to
-# test a different branch on, say, the GPU node first.
-precis_worker_git_ref: main
+# Git ref to install precis-mcp from — DELIBERATELY UNSET (gr489462): a
+# "main" default let a hand-run playbook install GitHub main and crash-loop
+# the workers twice on 2026-10-15. provision.yml refuses when the ref is
+# unset; scripts/deploy and scripts/host-ops/play pin all three
+# precis_*_git_ref vars to the target sha, and redeploy-precis.yml's step-0
+# set_facts them.
+#precis_worker_git_ref: <sha-or-branch>   # required; no default
 
 # Connection target: pgbouncer on the postgres host, reached directly over tailscale.
 # Skipping the ssh_tunnels indirection because (a) a tunnel-less node has none

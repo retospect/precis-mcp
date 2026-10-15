@@ -7,6 +7,25 @@
 # macOS) but installs the [embed] extra into a dedicated venv and runs
 # the HTTP service instead of the queue worker.
 
+# gr489462: never let a bare `ansible-playbook` install GitHub main —
+# precis_embedder_git_ref must arrive pinned (scripts/deploy,
+# scripts/host-ops/play, or redeploy-precis.yml's step-0; it falls back to
+# precis_worker_git_ref, not to "main").
+- name: Refuse an unpinned precis-mcp install (precis_embedder_git_ref unset)
+  ansible.builtin.fail:
+    msg: >-
+      precis_embedder_git_ref is unset — this play would pip-install
+      precis-mcp from GitHub main, which crash-looped the workers twice on
+      2026-10-15 (gr489462). Pin it: run via scripts/deploy or
+      scripts/host-ops/play (both pin all three refs to the target sha), or
+      pass -e precis_embedder_git_ref=<sha> (a pinned
+      precis_worker_git_ref covers it too).
+  when: >-
+    (precis_embedder_git_ref | default('')) | length == 0
+    and ((precis_deploy_changed | default(true) | bool)
+      or (precis_force_install | default(false) | bool)
+      or (precis_embedder_trace | default(false) | bool))
+
 # torch (via sentence-transformers) has no Python 3.14 wheels yet and the
 # src build fails on the macOS 26 toolchain — pin to 3.12, same as the
 # worker / watch roles.
@@ -104,7 +123,7 @@
   # `precis_embedder_trace` also forces it — the gr172390 trace tasks
   # below report this task's rc/stdout, which a skip wouldn't have.
   vars:
-    _precis_embedder_ref_is_sha: "{{ (precis_embedder_git_ref | default('main')) is match('^[0-9a-f]{40}$') }}"
+    _precis_embedder_ref_is_sha: "{{ (precis_embedder_git_ref | default('')) is match('^[0-9a-f]{40}$') }}"
   when: >-
     (precis_deploy_changed | default(true) | bool)
     or (precis_force_install | default(false) | bool)

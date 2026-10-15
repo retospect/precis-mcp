@@ -29,7 +29,10 @@ precis_web_dsn: "postgresql://agent_rw@{{ hostvars[postgres_host]['ansible_host'
 # /opt/shared/corpus path (now a transition symlink to shared_mount) as
 # a fallback for any PDFs staged there before the path was unified.
 precis_web_corpus: "{{ papers_corpus_path }}:/opt/shared/corpus"
-precis_web_git_ref: main
+# Git ref to install precis-mcp from — DELIBERATELY UNSET (gr489462), like
+# precis_worker_git_ref: install.yml refuses when it is unset; scripts/deploy,
+# scripts/host-ops/play and redeploy-precis.yml's step-0 all pin it.
+#precis_web_git_ref: <sha-or-branch>   # required; no default
 # Public-internet exposure via ``tailscale funnel`` instead of
 # ``tailscale serve`` (tailnet-only). **False here on purpose.** Funnel
 # publishes the whole UI — /console, /secrets, /env — to the internet

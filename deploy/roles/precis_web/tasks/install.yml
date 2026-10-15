@@ -6,6 +6,26 @@
 # main.yml imports this unchanged; on the redeploy path the second pass
 # finds the venv already on the pinned sha and changes nothing.
 
+# gr489462: never let a bare `ansible-playbook` install GitHub main. The ref
+# must arrive pinned — scripts/deploy and scripts/host-ops/play pass all
+# three precis_*_git_ref vars as -e, redeploy-precis.yml's step-0 set_facts
+# them; a hand-run play that skipped that pin used to fall back to "main"
+# and crash-loop the workers against an unmigrated DB (2026-10-15, twice).
+- name: Refuse an unpinned precis-mcp install (precis_web_git_ref unset)
+  ansible.builtin.fail:
+    msg: >-
+      precis_web_git_ref is unset — this play would pip-install
+      precis-mcp from GitHub main, which crash-looped the workers twice on
+      2026-10-15 (gr489462). Pin it: run via scripts/deploy or
+      scripts/host-ops/play (both pin all three refs to the target sha), or
+      pass -e precis_web_git_ref=<sha>.
+  when:
+    - os_family == "darwin"
+    - (precis_web_git_ref | default('')) | length == 0
+    - >-
+      (precis_deploy_changed | default(true) | bool)
+      or (precis_force_install | default(false) | bool)
+
 # uv binary path — same conditional shape the mcps role uses
 # (role-local, not a global). Set here so we don't depend on a
 # role earlier in the play setting it for us.
@@ -31,7 +51,7 @@
       (precis_deploy_changed | default(true) | bool)
       or (precis_force_install | default(false) | bool)
   vars:
-    _precis_web_ref_is_sha: "{{ (precis_web_git_ref | default('main')) is match('^[0-9a-f]{40}$') }}"
+    _precis_web_ref_is_sha: "{{ (precis_web_git_ref | default('')) is match('^[0-9a-f]{40}$') }}"
   # NOTE: docx (python-docx + latex2mathml), mermaid (mermaidx) and calc
   # (sympy + pint) are core deps now, not extras — the shared venv gets the
   # .docx OMML-math export route, /mermaid render/validate, and local
@@ -106,6 +126,43 @@
   ansible.builtin.include_role:
     name: autocatpath
     tasks_from: wheelhouse_seed
+
+# gr489600: an empty wheelhouse resolves no autocatpath at the floor the
+# [catalyst] extra requires (>=0.25.0, not on PyPI) — fail before the pip
+# install and name play 44's wheel push as the fix. Same guard as
+# precis_worker/tasks/provision.yml carries.
+- name: Find autocatpath wheels in the wheelhouse (autocatpath_plugin hosts only)
+  when:
+    - os_family == "darwin"
+    - inventory_hostname in (precis_capabilities.autocatpath_plugin | default([]))
+  ansible.builtin.find:
+    paths: "{{ autocatpath_wheelhouse | default('/opt/precis/wheels') }}"
+    patterns: "autocatpath-*.whl"
+  register: _precis_web_acp_wheels
+  become: true
+
+- name: Refuse when the wheelhouse cannot satisfy the catalyst floor (gr489600)
+  when:
+    - os_family == "darwin"
+    - inventory_hostname in (precis_capabilities.autocatpath_plugin | default([]))
+    - >-
+      (precis_deploy_changed | default(true) | bool)
+      or (precis_force_install | default(false) | bool)
+    - >-
+      (_precis_web_acp_wheels.files | default([])
+        | map(attribute='path') | map('basename')
+        | map('regex_replace', '^autocatpath-([0-9][^-]*)-.*$', '\\1')
+        | select('version', autocatpath_min_version | default('0.25.0'), '>=')
+        | list | length) == 0
+  ansible.builtin.fail:
+    msg: >-
+      {{ autocatpath_wheelhouse | default('/opt/precis/wheels') }} holds no
+      autocatpath wheel >= {{ autocatpath_min_version | default('0.25.0') }},
+      but the `catalyst` extra this host installs requires it (not on PyPI;
+      release-gated). Push it first with play 44's wheel push:
+      `scripts/host-ops/play playbooks/44-autocatpath.yml -e
+      autocatpath_wheel=<path-to-autocatpath-X.Y.Z-*.whl> --limit <this host>`
+      — then re-run this play (gr489600).
 
 - name: Install precis-mcp[catalyst] into the MCP venv (pathway kind surface — pulls pure autocatpath)
   when:

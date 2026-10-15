@@ -307,6 +307,15 @@ def _relax_timeout_s() -> float:
         return float(_RELAX_TIMEOUT_S_DEFAULT)
 
 
+#: ``--memory <m> --memory-swap <m>`` on the gpaw container (gr489395): the
+#: GB10's memory is UNIFIED (the GPU reads the same 121 GiB the OS does), so
+#: an uncapped slab relax could push a compute host past its per-host budget
+#: beside the 48G compute lane (host-lanes, 932364d0a). roles/dft renders
+#: ``PRECIS_DFT_MEM_LIMIT`` (default 40g — the compute lane's
+#: ``container_reserve``); empty ⇒ no cap.
+_DFT_MEM_LIMIT_ENV = "PRECIS_DFT_MEM_LIMIT"
+
+
 def _gpu_flags(container_cmd: str) -> list[str]:
     """GPU passthrough flags for the runtime. docker uses the nvidia runtime
     hook (``--gpus all``); podman uses CDI (``--device nvidia.com/gpu=all``)."""
@@ -346,6 +355,11 @@ def build_run_argv(
             del limits[i : i + 2]
         limits += ["--cpuset-cpus", dft_cpuset]
     argv += limits
+    mem_limit = os.environ.get(_DFT_MEM_LIMIT_ENV, "").strip()
+    if mem_limit:
+        # --memory + an equal --memory-swap: the cap is hard, no swap
+        # thrashing on top of it (same shape as precis_bio/alphafold.py).
+        argv += ["--memory", mem_limit, "--memory-swap", mem_limit]
     threads = _omp_threads()
     if threads:
         argv += ["-e", f"OMP_NUM_THREADS={threads}"]

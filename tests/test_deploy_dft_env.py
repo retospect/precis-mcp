@@ -35,14 +35,24 @@ def test_defaults_preserve_serial_runtime_and_fleet_binding() -> None:
     assert "PRECIS_DFT_PAW_DIR" not in env
 
 
+def test_mem_limit_renders_by_default_and_opts_out_on_empty() -> None:
+    """gr489395: the gpaw container cap ships ON by default (40g — the compute
+    lane's container_reserve); an explicit empty dft_mem_limit opts out."""
+    env = _render()
+    assert env["PRECIS_DFT_MEM_LIMIT"] == "40g"
+    assert "PRECIS_DFT_MEM_LIMIT" not in _render(dft_mem_limit="")
+
+
 def test_host_overrides_reach_the_worker_environment() -> None:
     env = _render(
         dft_mpi_ranks=8,
         dft_omp_threads=1,
         dft_cpuset="10-17",
         dft_paw_dir="/var/lib/precis/gpaw-setups",
+        dft_mem_limit="56g",
     )
     assert env["PRECIS_DFT_MPI_RANKS"] == "8"
     assert env["PRECIS_DFT_OMP_THREADS"] == "1"
     assert env["PRECIS_DFT_CPUSET"] == "10-17"
     assert env["PRECIS_DFT_PAW_DIR"] == "/var/lib/precis/gpaw-setups"
+    assert env["PRECIS_DFT_MEM_LIMIT"] == "56g"

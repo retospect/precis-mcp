@@ -206,6 +206,15 @@ def test_gpu_container_reserve_covers_the_fold_cap() -> None:
     assert _gib(fold) <= _gib(lanes["compute"]["container_reserve"])
 
 
+def test_gpu_container_reserve_covers_the_dft_cap() -> None:
+    """gr489395: the gpaw relax container rides the same compute lane
+    container_reserve the fold cap is sized against — dft_mem_limit must
+    fit inside it, or a relax pushes the host past its budget."""
+    lanes = {lane["lane"]: lane for lane in _defaults()["precis_lane_memory"]}
+    dft = _yaml(_ROLES / "dft" / "defaults" / "main.yml")["dft_mem_limit"]
+    assert _gib(dft) <= _gib(lanes["compute"]["container_reserve"])
+
+
 def test_sandbox_container_reserve_covers_the_executor_default() -> None:
     lanes = {lane["lane"]: lane for lane in _defaults()["precis_lane_memory"]}
     src = _SANDBOX_EXECUTOR.read_text(encoding="utf-8")

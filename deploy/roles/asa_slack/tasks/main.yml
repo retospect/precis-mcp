@@ -4,6 +4,17 @@
 # config, and SOUL.md with asa_bot — see roles/asa_slack/README.md for the
 # one-time Slack app + vault-token prep this role does NOT automate.
 
+# gr489462: never let a bare `ansible-playbook` install GitHub main — the
+# install below rides asa_git_ref, which must arrive pinned (scripts/deploy
+# does not cover asa; pass -e asa_git_ref=<sha> or run scripts/host-ops/play).
+- name: Refuse an unpinned precis-mcp install (asa_git_ref unset)
+  ansible.builtin.fail:
+    msg: >-
+      asa_git_ref is unset — this play would pip-install precis-mcp from
+      GitHub main, which crash-looped the workers twice on 2026-10-15
+      (gr489462). Pin it: pass -e asa_git_ref=<sha> (e.g. origin/prod).
+  when: (asa_git_ref | default('')) | length == 0
+
 - name: Ensure asa_slack directories
   ansible.builtin.file:
     path: "{{ item.path }}"
@@ -53,7 +64,7 @@
       --refresh-package precis-mcp \
       --constraints /opt/precis/constraints.txt \
       --overrides /opt/precis/overrides.txt \
-      'precis-mcp[asa-slack] @ git+https://github.com/retospect/precis-mcp@{{ asa_git_ref | default("main") }}'
+      'precis-mcp[asa-slack] @ git+https://github.com/retospect/precis-mcp@{{ asa_git_ref }}'
   become: true
   register: asa_slack_pip
   changed_when: >-

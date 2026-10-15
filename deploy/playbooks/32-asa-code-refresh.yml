@@ -25,8 +25,8 @@
 #   step 0) as the rest of the cluster, so asa can't drift onto a different
 #   commit than the workers. Guarded on /opt/asa/venv existing — a cluster
 #   without asa installed is a clean no-op; initial install stays the role's
-#   job. Run standalone it falls back to `main` and skips the convergence
-#   assert (no pinned sha to compare against).
+#   job. Run standalone it REFUSES without -e asa_git_ref=<sha> (gr489462 —
+#   a "main" fallback installed GitHub main and crash-looped workers).
 #
 #   The install below passes `--constraints /opt/precis/constraints.txt` —
 #   self-import the export/copy play so a standalone run (or a host that
@@ -41,15 +41,30 @@
   hosts: gateway
   become: true
   vars:
-    # The pinned sha when imported by redeploy-precis.yml (step 0); `main` for a
-    # standalone run. Installing the exact frozen sha keeps asa in lockstep with
-    # the precis venvs a /go just deployed.
-    _asa_ref: "{{ precis_target_sha | default(asa_git_ref | default('main')) }}"
+    # The pinned sha when imported by redeploy-precis.yml (step 0); standalone
+    # needs an explicit -e asa_git_ref=<sha> — NO "main" fallback (gr489462).
+    # Installing the exact frozen sha keeps asa in lockstep with the precis
+    # venvs a /go just deployed.
+    _asa_ref: "{{ precis_target_sha | default(asa_git_ref | default('')) }}"
   tasks:
     - name: Check whether the shared asa venv exists
       ansible.builtin.stat:
         path: /opt/asa/venv/bin/python
       register: asa_venv
+
+    # gr489462: a standalone run with no pinned ref would pip-install GitHub
+    # main (that's how the workers crash-looped twice on 2026-10-15). Refuse
+    # before touching the venv; a cluster without asa stays a clean no-op.
+    - name: Refuse an unpinned precis-mcp install (asa_git_ref unset)
+      when:
+        - asa_venv.stat.exists
+        - _asa_ref | length == 0
+      ansible.builtin.fail:
+        msg: >-
+          No pinned ref (precis_target_sha unset and no -e asa_git_ref=<sha>)
+          — this play would pip-install precis-mcp from GitHub main
+          (gr489462). Pass -e asa_git_ref=<sha> (e.g. origin/prod) or run
+          scripts/host-ops/play.
 
     - name: Snapshot the asa venv's installed sha (gate the bounce)
       # Reads pip's direct_url.json (the sha actually built into the venv) and
