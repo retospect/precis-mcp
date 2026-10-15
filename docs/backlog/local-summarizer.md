@@ -50,12 +50,6 @@ id='/placement')` (the `small` tier row).
   candidate: the shared client wiring in
   `workers/job_types/derived_drain.py::_make_summarize_runner`, or the first
   `client.complete()` blocking on a long timeout.
-- **Slot-capacity mismatch.** Advertised `resource_slots` capacity must
-  match the server's `--parallel` (the summariser was advertised at 6 while
-  melchior's `llama-server` ran `--parallel 4`; two of six threads were
-  guaranteed into backoff). Derive `derived_drain._DEFAULT_CONCURRENCY` from
-  the advertised capacity rather than a hardcoded number when the local rung
-  returns.
 
 ## Recheck due 2026-10-12 — first full day of the live chain (td478882)
 
@@ -75,7 +69,7 @@ The prod row `llm.op.llm_summarize` was written 2026-10-11 11:53:54Z (local
 
 ## In scope
 
-- Mechanism built: `llm.op.llm_summarize` with a `chain` (summarise-only chain, `operations.resolve_op_chain`); the prod row is not yet written.
+- Mechanism built: `llm.op.llm_summarize` with a `chain` (summarise-only chain, `operations.resolve_op_chain`); prod row written 2026-10-11 (local `glm-4.7-flash`, cloud overflow).
 - A local summarise rung ahead of the cloud rung in `llm.chain.small` (or a
   summarise-only chain), cloud as overflow when the local slot is saturated.
 - Placement of the dedicated slice (a whole machine or a share of one) —

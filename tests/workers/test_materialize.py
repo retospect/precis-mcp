@@ -688,6 +688,19 @@ def test_drain_limit_env_scales_mint_capacity(
     assert limits == [1000, 1000]
 
 
+def test_small_drain_concurrency_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``params.concurrency`` is minted only from an explicit
+    PRECIS_SMALL_DRAIN_CONCURRENCY — unset, the key is absent so the drain
+    derives its width from advertised ``resource_slots`` capacity at claim
+    time (``derived_drain._derived_concurrency``)."""
+    monkeypatch.delenv("PRECIS_SMALL_DRAIN_CONCURRENCY", raising=False)
+    params = m._small_drain_params("llm_summarize")(0)
+    assert params["pass"] == "llm_summarize"
+    assert "concurrency" not in params
+    monkeypatch.setenv("PRECIS_SMALL_DRAIN_CONCURRENCY", "9")
+    assert m._small_drain_params("llm_summarize")(0)["concurrency"] == 9
+
+
 def test_band_source_disabled_mints_nothing(
     store: Store, monkeypatch: pytest.MonkeyPatch, _small_band_env: None
 ) -> None:

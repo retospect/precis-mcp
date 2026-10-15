@@ -115,10 +115,12 @@ _SMALL_TARGET_NODE_ENV = "PRECIS_SMALL_DRAIN_TARGET_NODE"
 _DEFAULT_BAND_LOW = 20
 _DEFAULT_BAND_HIGH = 50
 _DEFAULT_SMALL_DRAIN_LIMIT = 500  # params.limit per derived_drain job
-#: A thread-pool width for I/O fan-out against the (now cloud-only)
-#: llm.chain.small endpoint — NOT a router local-serving slot cap (there is
-#: no local slot to cap post the 2026-08-15 cloud cutover; see
-#: workers/job_types/derived_drain.py's module docstring).
+#: Parse-fallback for ``PRECIS_SMALL_DRAIN_CONCURRENCY`` when the var is set
+#: but unreadable — and nothing more. With the env unset the minter writes NO
+#: ``params.concurrency`` and the drain derives its width at claim time from
+#: the advertised ``resource_slots`` ``llm:<model>`` capacity behind the
+#: resolved chain (``derived_drain._derived_concurrency``), so the pool
+#: follows the server's ``--parallel`` instead of a baked constant.
 _DEFAULT_SMALL_DRAIN_CONCURRENCY = 16
 _DEFAULT_SMALL_TARGET_NODE = "melchior"
 
@@ -140,17 +142,23 @@ def _small_drain_limit() -> int:
 
 def _small_drain_params(pass_name: str) -> Callable[[int], dict[str, Any]]:
     """A ``params_fn`` for a SMALL derived_drain source — carries the pass
-    discriminator, the per-job chunk limit, the in-pass concurrency (== the
-    router slot cap), and the melchior host pin."""
+    discriminator, the per-job chunk limit, and the melchior host pin.
+
+    ``params.concurrency`` is minted ONLY from an explicit
+    ``PRECIS_SMALL_DRAIN_CONCURRENCY``: unset → the key is absent and the
+    drain derives its width from the advertised local-serving capacity at
+    claim time (``derived_drain._derived_concurrency``), so the fan-out
+    tracks ``served_by``/``--parallel`` instead of a minted-in constant."""
 
     def _fn(_batch_limit: int) -> dict[str, Any]:
         params: dict[str, Any] = {
             "pass": pass_name,
             "limit": _small_drain_limit(),
-            "concurrency": env_int(
-                _SMALL_DRAIN_CONCURRENCY_ENV, _DEFAULT_SMALL_DRAIN_CONCURRENCY, lo=1
-            ),
         }
+        if os.environ.get(_SMALL_DRAIN_CONCURRENCY_ENV):
+            params["concurrency"] = env_int(
+                _SMALL_DRAIN_CONCURRENCY_ENV, _DEFAULT_SMALL_DRAIN_CONCURRENCY, lo=1
+            )
         target = os.environ.get(_SMALL_TARGET_NODE_ENV, _DEFAULT_SMALL_TARGET_NODE)
         if target:
             params["target_node"] = target

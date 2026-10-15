@@ -12,22 +12,31 @@ machinery), this job **wraps** the existing ``run_llm_summarize_pass`` /
 ``run_classify_pass`` and drives it in a bounded, lease-renewing loop
 (``params.limit`` chunks, or until the derived queue is empty).
 
-Placement + cap (post the 2026-08-15 SMALL-tier cloud cutover; ``llm.chain.small`` is
-now cloud-only, openai_compat, no local slot):
+Placement + cap (post the 2026-08-15 SMALL-tier cloud cutover ``llm.chain.small``
+is cloud-only, openai_compat, no local slot — though ``llm_summarize`` carries
+its own local-first ``llm.op.llm_summarize`` chain since 2026-10-11):
 
 * ``params.target_node`` optionally pins the job to a specific host — via
   ``job_inproc``'s claim-gate node pin (``struct_relax`` uses the same field
-  for GPU pinning), NOT the soft 10-min ``LLM_AFFINITY_GRACE_MIN`` affinity —
-  but is no longer load-bearing for SMALL placement now that ``Tier.SMALL``
-  is cloud-only: any host can dispatch it. The materializer still defaults
-  ``target_node`` to melchior (``_DEFAULT_SMALL_TARGET_NODE`` in
-  ``materialize.py``) for historical reasons; that default is free to drop
-  once nothing else depends on it.
-* Concurrency is NOT capped by a router local-serving slot anymore — a
-  cloud rung has none to cap. ``_DEFAULT_CONCURRENCY`` is a plain
-  thread-pool width for I/O fan-out against the cloud endpoint, gated by
-  the provider's own breaker/rate-limit behavior (``paused``-back on
-  admission refusal), not a fixed local-serving admission count.
+  for GPU pinning), NOT the soft 10-min ``LLM_AFFINITY_GRACE_MIN`` affinity.
+  For ``llm_summarize`` it is load-bearing again since the 2026-10-11
+  ``llm.op.llm_summarize`` chain put a local rung back ahead of cloud:
+  melchior's ``served_by`` endpoint is loopback-only, so a drain claimed on
+  any other host finds no ``llm:`` slot and falls through to the cloud rung
+  for every call. The materializer defaults ``target_node`` to melchior
+  (``_DEFAULT_SMALL_TARGET_NODE`` in ``materialize.py``).
+* ``params.concurrency`` wins when set. Absent it, the default width is
+  derived from the local capacity the pass's resolved chain actually
+  advertises — summed ``resource_slots`` ``capacity`` over the
+  ``llm:<model>`` rows behind the chain's local rungs
+  (:func:`_derived_concurrency`) — so the pool matches the server's
+  ``--parallel`` rather than a guess (the advertised-6/``--parallel 4``
+  mismatch that left two threads in guaranteed backoff, per
+  ``docs/backlog/local-summarizer.md``). A cloud-only chain — nothing
+  advertised — keeps ``_DEFAULT_CONCURRENCY``: a plain I/O fan-out against
+  the cloud endpoint, gated by the provider's breaker/rate-limit behavior
+  (``paused``-back on admission refusal), not a fixed local-serving
+  admission count.
 * ``Tier.SMALL`` used to be local-only by construction (the router never
   routed SMALL to a cloud backend); that invariant is gone post-cutover —
   SMALL is cloud-only now, so a saturated slot means provider backpressure
@@ -103,11 +112,19 @@ _DEFAULT_LIMIT = 500
 #: pass's own ``batch_size`` (both default 16).
 _DEFAULT_BATCH = 16
 
-#: In-pass thread-pool width for I/O fan-out against the (now cloud-only)
-#: SMALL endpoint — NOT a local-serving slot cap (there isn't one post the
-#: 2026-08-15 cutover). Breaker/rate-limit-gated, not slot-gated: a value
-#: too high just eats more ``paused`` backoff from the provider side.
+#: In-pass thread-pool width when ``params.concurrency`` is unset AND the
+#: resolved chain advertises no local serving capacity (the all-cloud case).
+#: Breaker/rate-limit-gated, not slot-gated: a value too high just eats more
+#: ``paused`` backoff from the provider side. When the chain has local rungs
+#: backed by ``resource_slots`` ``llm:<model>`` rows,
+#: :func:`_derived_concurrency` replaces this with the advertised total.
 _DEFAULT_CONCURRENCY = 16
+
+#: Ceiling on the slot-derived default — a fat-fingered advertised capacity
+#: must not spawn a matching thread mob. Matches the wrapped passes' own
+#: hard caps (``llm_summarize``/``classify`` ``_DEFAULT_MAX_CONCURRENCY``),
+#: which clamp whatever is asked for regardless.
+_MAX_DERIVED_CONCURRENCY = 32
 
 #: Consecutive fully-unproductive batches (claimed &gt; 0 but ok == 0 — a saturated
 #: slot or a model that keeps missing) before the drain bails early instead of
@@ -189,6 +206,88 @@ _RUNNER_FACTORIES: dict[str, Callable[[], _PassRunner]] = {
 }
 
 
+def _request_model(pass_name: str) -> str | None:
+    """The ``req.model`` a pass's ``DispatchClient`` pins — what ``route()``
+    sees for a *non-steerable* source. classify's is its env escape hatch;
+    the summarize client pins nothing (its registered op override owns the
+    model instead, so a pin here would be ignored anyway)."""
+    if pass_name == "classify":
+        return os.environ.get("PRECIS_CLASSIFY_MODEL") or None
+    return None
+
+
+def _local_rung_resources(pass_name: str) -> set[str]:
+    """The ``llm:<model>`` resource names the pass's resolved chain can debit
+    locally — one per rung ``route()``'s own classifier calls non-cloud,
+    keyed on the model the rung actually dispatches under (``rung.model or
+    model``, the same ``serve_model`` :func:`~precis.utils.llm.router.route`
+    acquires its slot as). Mirrors route()'s resolution: the op-registry
+    tier/model remap for a registered source, then the ``llm.op.<source>``
+    chain ahead of the tier chain."""
+    from precis.utils.llm import operations
+    from precis.utils.llm.router import (
+        Backend,
+        Tier,
+        _rung_is_cloud,
+        resolve_backend,
+        resolve_chain,
+        resolve_model,
+    )
+
+    backend = resolve_backend()
+    if backend is Backend.OPENAI and not os.environ.get("PRECIS_LLM_BASE_URL"):
+        backend = Backend.ANTHROPIC
+    op = operations.resolve_op(pass_name)
+    tier = op[0] if op is not None else Tier.SMALL
+    if op is not None:
+        model = op[1] or resolve_model(tier, backend=backend)
+    else:
+        model = _request_model(pass_name) or resolve_model(tier, backend=backend)
+    rungs = operations.resolve_op_chain(
+        pass_name, tools_needed=False, backend=backend
+    ) or resolve_chain(tier, tools_needed=False, backend=backend)
+    return {f"llm:{rung.model or model}" for rung in rungs if not _rung_is_cloud(rung)}
+
+
+def _derived_concurrency(store: Store, pass_name: str) -> int:
+    """The ``params.concurrency`` default: the advertised local-serving
+    capacity behind the pass's chain — summed ``capacity`` of the
+    ``resource_slots`` rows :func:`_local_rung_resources` names, clamped to
+    ``[1, _MAX_DERIVED_CONCURRENCY]``.
+
+    ``_DEFAULT_CONCURRENCY`` when the chain has no local rung or no ``llm:``
+    row answers (nothing to right-size against — provider backpressure is
+    the bound), and on any lookup failure: a bookkeeping hiccup must not
+    break a drain job.
+    """
+    read = getattr(store, "all_resource_slots", None)
+    if not callable(read):
+        return _DEFAULT_CONCURRENCY
+    try:
+        resources = _local_rung_resources(pass_name)
+        if not resources:
+            return _DEFAULT_CONCURRENCY
+        total = sum(s.capacity for s in read() if s.resource in resources)
+        if total <= 0:
+            return _DEFAULT_CONCURRENCY
+        derived = max(1, min(total, _MAX_DERIVED_CONCURRENCY))
+        log.info(
+            "derived_drain[%s]: concurrency %d from advertised %s",
+            pass_name,
+            derived,
+            sorted(resources),
+        )
+        return derived
+    except Exception:
+        log.warning(
+            "derived_drain[%s]: slot-capacity lookup failed — using "
+            "_DEFAULT_CONCURRENCY",
+            pass_name,
+            exc_info=True,
+        )
+        return _DEFAULT_CONCURRENCY
+
+
 def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     params = dict(ctx.meta.get("params") or {})
     pass_name = params.get("pass")
@@ -207,7 +306,10 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         )
         return
     batch_size = max(1, int(params.get("batch_size", _DEFAULT_BATCH)))
-    concurrency = max(1, int(params.get("concurrency", _DEFAULT_CONCURRENCY)))
+    if params.get("concurrency") is not None:
+        concurrency = max(1, int(params["concurrency"]))
+    else:
+        concurrency = _derived_concurrency(ctx.store, pass_name)
 
     run_once = _RUNNER_FACTORIES[pass_name]()
     processed = ok_total = failed_total = 0

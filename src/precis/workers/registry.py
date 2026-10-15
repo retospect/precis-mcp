@@ -747,9 +747,9 @@ SERVICES: tuple[ServiceSpec, ...] = (
         # (summarize/classify) as a minted job. `requires=frozenset()`
         # DELIBERATELY (unlike embed_batch's {'embedder'}): concurrency is capped
         # at the ROUTER's local-serving slot per call, so reserving an executor
-        # slot here would double-count. Melchior-pinned via params.target_node,
-        # never cloud (Tier.SMALL). Minted by the materialize SMALL bands; dark
-        # until those are enabled.
+        # slot here would double-count. Melchior-pinned via params.target_node;
+        # llm_summarize rides its local-first llm.op.llm_summarize chain (cloud
+        # rung is slot-overflow only). Minted by the materialize SMALL bands.
         name="derived_drain",
         label="Derived drain (SMALL LLM job)",
         category="jobs",
@@ -757,7 +757,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         uses_model=True,
         cost_sources=("llm_summarize", "classify"),
         one_line="Bounded work order draining a SMALL-tier derived LLM queue "
-        "(summarize/classify) — melchior-pinned, router-capped, never cloud.",
+        "(summarize/classify) — melchior-pinned, router-capped.",
         doc_skill="precis-job-help",
     ),
     ServiceSpec(
