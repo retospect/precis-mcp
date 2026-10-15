@@ -724,6 +724,7 @@ class PaperHandler(Handler):
         resolver_err: Exception | None = None
         s2_meta: dict[str, Any] | None = None
         registry_meta: dict[str, Any] | None = None
+        s2_down = False
         if id_pair is not None:
             try:
                 meta = _lookup_acquire_metadata(*id_pair)
@@ -765,8 +766,20 @@ class PaperHandler(Handler):
                 # "hallucinated" and loses the request entirely; the stub
                 # is the "fetch NOW" the caller asked for and the fetch
                 # cascade's non-S2 legs don't need this lookup
-                # (gr483930).
-                unverified = True
+                # (gr483930). A DOI still gets the registry check: a
+                # Crossref/DataCite hit verifies it without S2 (gr489237
+                # — a gateway with no S2 client minted every DOI
+                # unverified).
+                s2_down = True
+                if id_pair[0] == "doi":
+                    try:
+                        registry_meta = _lookup_doi_registry(id_pair[1])
+                    except Exception:
+                        registry_meta = None
+                if registry_meta is not None:
+                    resolver_err = None
+                else:
+                    unverified = True
             else:
                 # A genuine S2 "no such paper" — not an outage. S2's
                 # index lags fresh records and misses whole registries
@@ -782,14 +795,7 @@ class PaperHandler(Handler):
                 if resolver_err is not None:
                     unverified = True
                 elif registry_meta is not None:
-                    stub_title = stub_title or (registry_meta.get("title") or None)
-                    raw_year = registry_meta.get("year")
-                    year = int(raw_year) if isinstance(raw_year, int) else year
-                    reg_doi = registry_meta.get("doi")
-                    if reg_doi:
-                        pair = ("doi", str(reg_doi).lower())
-                        if pair not in identifiers:
-                            identifiers.append(pair)
+                    pass  # verified by a registry; fields applied below
                 elif verify and not has_title:
                     # Strict path: caller gave us only an identifier and
                     # neither S2 nor (for a DOI) any registration agency
@@ -831,6 +837,16 @@ class PaperHandler(Handler):
                     # couldn't auto-confirm the identifier. Mark
                     # unverified.
                     unverified = True
+
+        if registry_meta is not None:
+            stub_title = stub_title or (registry_meta.get("title") or None)
+            raw_year = registry_meta.get("year")
+            year = int(raw_year) if isinstance(raw_year, int) else year
+            reg_doi = registry_meta.get("doi")
+            if reg_doi:
+                pair = ("doi", str(reg_doi).lower())
+                if pair not in identifiers:
+                    identifiers.append(pair)
 
         with self.store.tx() as conn:
             ref_id, created = self.store.upsert_stub_paper(
@@ -922,15 +938,21 @@ class PaperHandler(Handler):
         state = "minted stub" if created else "already tracked"
         parts = [f"acquire: {state} paper id={ref_id}"]
         if resolver_err is not None:
+            # Say what failed and what clears the flag (gr489237): the
+            # fetch runs either way, and S2 enrichment or a landed PDF
+            # flips the stub to verified.
             parts.append(
-                "(identifier resolver unreachable — minted unverified; "
-                "fetch proceeds regardless)"
+                "(identifier not verified yet — "
+                f"{type(resolver_err).__name__}: {str(resolver_err)[:80]}; "
+                "tagged acquire:unverified until S2 enrichment or the "
+                "fetch confirms it)"
             )
         if registry_meta is not None:
             reg_label = _REGISTRY_LABELS.get(
                 str(registry_meta.get("source") or ""), "a DOI registry"
             )
-            parts.append(f"(identifier verified via {reg_label} — S2 has no record)")
+            s2_state = "S2 unavailable" if s2_down else "S2 has no record"
+            parts.append(f"(identifier verified via {reg_label} — {s2_state})")
         if pinned:
             parts.append("(pinned to front of fetch queue)")
         if identifiers:

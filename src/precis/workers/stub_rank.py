@@ -64,6 +64,7 @@ from psycopg.types.json import Jsonb
 from precis.embedder import Embedder
 from precis.ingest.semantic_scholar import get_papers_batch, s2_stub_meta
 from precis.store import Store
+from precis.store._refs_ops import clear_acquire_unverified
 from precis.store._stub_predicate import stub_predicate_sql
 from precis.utils.llm.json_reply import extract_json_object
 
@@ -334,6 +335,10 @@ def _run_enrich(
                 "WHERE ref_id = %s",
                 (Jsonb(patch), ref_id),
             )
+            if resolved is not None:
+                # S2 knows the paper: an acquire stub minted unverified
+                # (resolver fault at mint time) is now confirmed.
+                clear_acquire_unverified(conn, ref_id, by="s2_enrich")
     return len(candidates), resolved_count
 
 

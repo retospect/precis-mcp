@@ -25,6 +25,7 @@ from precis.ingest.db_writer import (
     resolve_cite_key,
     write_paper,
 )
+from precis.store.types import Tag
 
 # ---------------------------------------------------------------------------
 # _next_cite_key — pure unit tests
@@ -451,6 +452,58 @@ class TestAttachOnlyGuard:
             ).fetchone()
         assert row is not None and row[0] == sha  # printable attached
         assert body is not None and body[0] == 2  # original body, no dup
+
+    def test_body_landing_clears_acquire_unverified(self, store):
+        """gr489237: a stub acquire minted unverified is confirmed once
+        the fetch lands a body — the flag and tag go, the leg is stamped."""
+        stub = PaperToWrite(
+            title="Unverified",
+            authors=[{"name": "E, F"}],
+            year=2025,
+            paper_id="st333333",
+            cite_key_prefix="unver25",
+            doi="10.9/unverified",
+            provider="crossref",
+            chunks=[
+                ChunkToWrite(ord=-1, chunk_kind="card_combined", text="Unverified"),
+            ],
+        )
+        with store.pool.connection() as conn:
+            ref_id = write_paper(stub, conn=conn).ref_id
+            conn.execute(
+                "UPDATE refs SET meta = meta || "
+                '\'{"acquire_unverified": true, '
+                '"acquire_unverified_reason": "S2 down"}\'::jsonb '
+                "WHERE ref_id = %s",
+                (ref_id,),
+            )
+            conn.commit()
+        store.add_tag(ref_id, Tag.open("acquire:unverified"), set_by="agent")
+
+        markup = PaperToWrite(
+            title="Unverified",
+            authors=[{"name": "E, F"}],
+            year=2025,
+            paper_id="st333333",
+            cite_key_prefix="unver25",
+            doi="10.9/unverified",
+            provider="markup",
+            content_hash="cd" * 32,
+            chunks=_body_chunks(),
+        )
+        with store.pool.connection() as conn:
+            register_aliases_and_maybe_upgrade(ref_id, markup, conn=conn)
+            conn.commit()
+            row = conn.execute(
+                "SELECT meta FROM refs WHERE ref_id = %s", (ref_id,)
+            ).fetchone()
+        assert row is not None
+        meta = row[0]
+        assert "acquire_unverified" not in meta
+        assert "acquire_unverified_reason" not in meta
+        assert meta.get("acquire_verified_by") == "fetch"
+        tags = {str(t) for t in store.tags_for(ref_id)}
+        assert not any("acquire:unverified" in t for t in tags)
 
     def test_markup_body_populates_metadata_only_stub(self, store):
         # A metadata-only stub (no body chunks, pdf_sha256 NULL).

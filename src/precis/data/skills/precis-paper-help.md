@@ -545,8 +545,11 @@ put(kind="paper", title="Some Paper With No DOI Yet")  # title-only backlog stub
 Idempotent (already-held / already-wanted is a no-op). A DOI Semantic
 Scholar doesn't know is tried against Crossref, then DataCite, before
 refusal — only a DOI no registry knows is rejected as likely mistyped
-(`verify=False` remains the explicit override). Full contract +
-backlog view in `precis-stubs-help`.
+(`verify=False` remains the explicit override). When S2 cannot answer
+at all, a DOI is still checked against the registries; a stub minted
+anyway is tagged `acquire:unverified`, and the tag clears itself once
+S2 enrichment or the fetch confirms the paper (`meta.acquire_verified_by`).
+Full contract + backlog view in `precis-stubs-help`.
 
 **A slow put is backoff, not a wedge.** Minting a stub resolves the
 identifier against Semantic Scholar, and S2 rate-limits burst traffic —

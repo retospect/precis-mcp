@@ -71,7 +71,8 @@ put(kind="paper", arxiv="2401.00001", title="…")
   the backlog). Pass `verify=False` for known-real preprints S2
   hasn't indexed yet. If you pass `title=` alongside an unresolvable
   identifier, the stub mints with the title and is tagged
-  `acquire:unverified` so the operator can re-check it.
+  `acquire:unverified`; the tag clears when S2 enrichment or the fetch
+  later confirms the paper.
 
 The stub mints with `pdf_sha256 IS NULL` and one or more
 `ref_identifiers` rows. The `precis worker --only fetch` pass

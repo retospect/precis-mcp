@@ -207,6 +207,37 @@ def _write_authors_projection(
     )
 
 
+def clear_acquire_unverified(conn: Connection, ref_id: int, *, by: str) -> bool:
+    """Reconcile an ``acquire`` stub minted unverified once the paper is
+    confirmed (gr489237): drop ``meta.acquire_unverified`` (+ its reason)
+    and the ``acquire:unverified`` tag, stamping ``acquire_verified_by``
+    (``s2_enrich`` / ``fetch``) and ``acquire_verified_at``. ``True`` when
+    the ref carried the flag; a no-op on any other ref."""
+    cur = conn.execute(
+        "UPDATE refs SET meta = (meta - 'acquire_unverified' "
+        "  - 'acquire_unverified_reason') || %s::jsonb, updated_at = now() "
+        "WHERE ref_id = %s AND (meta->>'acquire_unverified')::boolean IS TRUE",
+        (
+            Jsonb(
+                {
+                    "acquire_verified_by": by,
+                    "acquire_verified_at": datetime.now(UTC).isoformat(),
+                }
+            ),
+            ref_id,
+        ),
+    )
+    if cur.rowcount == 0:
+        return False
+    conn.execute(
+        "DELETE FROM ref_tags rt USING tags t "
+        "WHERE rt.tag_id = t.tag_id AND rt.ref_id = %s "
+        "  AND t.namespace = 'OPEN' AND t.value = 'acquire:unverified'",
+        (ref_id,),
+    )
+    return True
+
+
 def project_paper_authors(
     conn: Connection, ref_id: int, authors: Any, *, source: str
 ) -> list[dict[str, Any]]:

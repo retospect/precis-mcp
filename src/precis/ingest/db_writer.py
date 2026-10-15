@@ -32,7 +32,7 @@ from psycopg import Connection
 from psycopg.types.json import Jsonb
 
 from precis.identity import normalize_arxiv, normalize_doi
-from precis.store._refs_ops import project_paper_authors
+from precis.store._refs_ops import clear_acquire_unverified, project_paper_authors
 from precis.utils.authors import AUTHOR_SOURCES
 
 log = logging.getLogger(__name__)
@@ -664,6 +664,9 @@ def register_aliases_and_maybe_upgrade(
             "WHERE ref_id = %s AND retired_at IS NULL",
             (paper.pdf_sha256, pdf_pages, paper.pdf_role, existing_ref_id),
         )
+        # The fetched bytes confirm the paper exists: reconcile an
+        # acquire stub minted unverified (gr489237).
+        clear_acquire_unverified(conn, existing_ref_id, by="fetch")
 
     # Markup-backfill gated replacement (gr372781 item 3). A ref pinned
     # by paper_hygiene.requeue_front_matter_only_papers carries
@@ -800,6 +803,9 @@ def register_aliases_and_maybe_upgrade(
     # paper.meta, so glyph_health and source_format never reached the
     # ~99.7% of papers that arrive by stub upgrade).
     _merge_ingest_meta(existing_ref_id, paper.meta, conn=conn)
+    if new_body > 0:
+        # A markup body with no PDF confirms the paper too (gr489237).
+        clear_acquire_unverified(conn, existing_ref_id, by="fetch")
 
     # Write this ingest's chunks (cards + body). Mirror the write_paper §5
     # code path so the upgraded row looks identical to one written fresh.

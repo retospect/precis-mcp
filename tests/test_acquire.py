@@ -397,7 +397,7 @@ def test_acquire_resolver_fault_mints_unverified(
     monkeypatch.setattr(paper_mod, "_lookup_acquire_metadata", _down)
     r = handler.acquire(identifier="doi:10.1038/nature10352")
     assert "minted stub" in r.body
-    assert "resolver unreachable" in r.body
+    assert "not verified yet" in r.body and "S2ResolverError" in r.body
     rid = _ref_id(r.body)
     assert "acquire:unverified" in _tags(store, rid)
     meta = _meta(store, rid)
@@ -432,6 +432,86 @@ def test_acquire_not_found_still_rejects_under_verify(
     monkeypatch.setattr(paper_mod, "_lookup_acquire_metadata", lambda *_: None)
     with pytest.raises(BadInput, match="did not resolve"):
         handler.acquire(identifier="doi:10.fake/hallucination")
+
+
+def test_acquire_s2_fault_doi_verified_by_registry(
+    handler: PaperHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr489237: a gateway with no S2 client (pa489234's reason was
+    "No module named 'semanticscholar'") still verifies a DOI through
+    Crossref, so the stub is not minted unverified."""
+
+    def _nobib(*_a: object) -> None:
+        raise ModuleNotFoundError("No module named 'semanticscholar'")
+
+    monkeypatch.setattr(paper_mod, "_lookup_acquire_metadata", _nobib)
+    monkeypatch.setattr(
+        paper_mod,
+        "_lookup_doi_registry",
+        lambda *_: {
+            "title": "Chitosan Films",
+            "year": 2025,
+            "doi": "10.1016/j.carbpol.2025.124361",
+            "source": "crossref",
+        },
+    )
+    r = handler.acquire(identifier="doi:10.1016/j.carbpol.2025.124361")
+    assert "via Crossref — S2 unavailable" in r.body
+    assert "not verified" not in r.body
+    rid = _ref_id(r.body)
+    assert "acquire:unverified" not in _tags(store, rid)
+    meta = _meta(store, rid)
+    assert "acquire_unverified" not in meta
+    assert meta.get("acquire_registry") == "crossref"
+
+
+def test_clear_acquire_unverified_flips_the_stub(
+    handler: PaperHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr489237: once the paper is confirmed the flag, its reason and the
+    tag go, and the confirming leg is stamped; a second call is a no-op."""
+    from precis.store._refs_ops import clear_acquire_unverified
+
+    def _nobib(*_a: object) -> None:
+        raise ModuleNotFoundError("No module named 'semanticscholar'")
+
+    monkeypatch.setattr(paper_mod, "_lookup_acquire_metadata", _nobib)
+    rid = _ref_id(handler.acquire(identifier="arxiv:2401.00002").body)
+    assert "acquire:unverified" in _tags(store, rid)
+    with store.pool.connection() as conn:
+        assert clear_acquire_unverified(conn, rid, by="fetch") is True
+        assert clear_acquire_unverified(conn, rid, by="fetch") is False
+    assert "acquire:unverified" not in _tags(store, rid)
+    meta = _meta(store, rid)
+    assert "acquire_unverified" not in meta
+    assert "acquire_unverified_reason" not in meta
+    assert meta.get("acquire_verified_by") == "fetch"
+    assert meta.get("acquire_verified_at")
+
+
+def test_stub_rank_enrich_verifies_an_unverified_stub(
+    handler: PaperHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr489237: the S2 enrich pass resolving an acquire stub minted
+    unverified flips it to verified (pa489234's path)."""
+    from precis.workers import stub_rank
+
+    def _nobib(*_a: object) -> None:
+        raise ModuleNotFoundError("No module named 'semanticscholar'")
+
+    monkeypatch.setattr(paper_mod, "_lookup_acquire_metadata", _nobib)
+    rid = _ref_id(handler.acquire(identifier="arxiv:2401.00003").body)
+    attempted, resolved = stub_rank._run_enrich(
+        store,
+        limit=50,
+        api_key="",
+        resolve_batch=lambda ids, _key: [
+            {"fields": ["Chemistry"], "citation_count": 1} for _ in ids
+        ],
+    )
+    assert attempted >= 1 and resolved >= 1
+    assert "acquire:unverified" not in _tags(store, rid)
+    assert _meta(store, rid).get("acquire_verified_by") == "s2_enrich"
 
 
 # ── S2 miss → DOI registry fallback (gr486090) ─────────────────────
@@ -535,7 +615,7 @@ def test_acquire_registry_fault_mints_unverified(
     monkeypatch.setattr(paper_mod, "_lookup_doi_registry", _down)
     r = handler.acquire(identifier="doi:10.real/maybe")
     assert "minted stub" in r.body
-    assert "resolver unreachable" in r.body
+    assert "not verified yet" in r.body
     rid = _ref_id(r.body)
     assert "acquire:unverified" in _tags(store, rid)
     assert "crossref" in str(_meta(store, rid).get("acquire_unverified_reason", ""))
