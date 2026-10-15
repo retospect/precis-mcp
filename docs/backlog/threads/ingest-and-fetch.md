@@ -4,9 +4,9 @@
 
 - **Pillar:** memory-graph
 - **Next:** item 3’s still-bodiless policy pass and close td461154; then the stub-queue policy decision (item 8 — mint outpaces fetch ~7:1, queue 8,085). Fixes for gr483930 (S2 acquire), gr484234 (DOI addressing) and the embed_batch lock-contention head are committed in `worktree-ingest-fix` (40a8b1cb2, 72b9ea243, 9b4adcdf8), awaiting the release owner — verify post-deploy error rates per item 9.
-- **Blocked by:** Nothing from deployment; safe_fetch fallback remains at the orchestrator’s gate. Item 1 retires only after walker and web SI triggers are seen on prod.
+- **Blocked by:** Nothing from deployment; safe_fetch fallback remains at the orchestrator’s gate.
 - **Unblocks:** Evidence acquisition for [catalysis](catalysis-selectivity.md#resume).
-- **Acceptance:** Use [the latest handoff](#thread-context) and [ranked work](#do-next): account for the bodiless remainder, verify the 10-14 gripe fixes on prod, and observe both SI trigger paths before retiring the item.
+- **Acceptance:** Use [the latest handoff](#thread-context) and [ranked work](#do-next): account for the bodiless remainder and verify the 10-14 gripe fixes on prod.
 - **Worktree:** `ingest-fix`
 - **Builds:** Not estimated here; use the owning item's current slice estimate.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
@@ -52,10 +52,16 @@ is verified done on prod.
   drained (120 gained bodies, 18 tried-none, 45 held Elsevier previews).
   Only 464821 remains a no-pdf stub.
 - Landed earlier this thread (historical): SI builds 1 and 2 with re-arm
-  fixes (item 1), the arXiv e-print magic-byte and plain-TeX staging,
+  fixes (item 1, retired 2026-10-15 — prod shows both attention triggers
+  firing and claimed: 17 of 21 `by='web'` and 61 of 120 `by='walker'`
+  requests carry `si_checked_at >= requested_at`, e.g. refs 1254
+  (`si_none`) and 2954 (`si_blocked`→`si_found`) for web, 543/1944/2069
+  for walker; the rest sit queued behind fetch-lane depth, not a defect),
+  the arXiv e-print magic-byte and plain-TeX staging,
   a connect-failure retry on Crossref and bib_parse (round 6, c83c46973),
   the gr465474 no-body fold fix, and the FOR NO KEY UPDATE fold
-  serialisation.
+  serialisation. `precis paper fetch-si <id>` is the CLI spelling of
+  `put(kind='paper', id=…, mode='fetch-si')`.
 - At the orchestrator's gate, not landed by this thread: the safe_fetch
   next-address fallback, branch `worktree-agent-a3b62578f305e3772` tip
   3e1e8cb5c (reviews §3, verdict LAND; gr465931). Ruled (Reto 2026-10-12,
@@ -68,15 +74,6 @@ is verified done on prod.
   DOI validity 63 s, SI Crossref leg 43 s, habanero 2× timeout + 3 s.
 
 ## Do next
-
-1. **`backlog/si-attachments.md`** — builds 1 and 2 shipped and deployed
-   (`si_discovery.py`, `si_fetch.py`, `si_links.py`; `put(kind='paper',
-   id=…, mode='fetch-si')` and the attention trigger from the web paper
-   page, the MCP `get` overview and the fisheye ring walk). Both quest
-   papers have their SI ingested; catalysis-selectivity-17 is resolved.
-   Left, per the file: observe the web and walker attention triggers on
-   prod once each, then delete the file and this item. Optional: a CLI
-   for `fetch-si`.
 
 2. **`backlog/ingest-strips-greek-glyphs.md`** — μ/Greek
    destroyed at extraction. Confirmed live, and its deployed detector was
