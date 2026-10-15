@@ -103,7 +103,8 @@ def env(tmp_path: Path) -> dict[str, str]:
         "CWD": str(repo),
     }
     for k in ("FLEET_TMUX_SESSION", "FLEET_TMUX_SOCKET", "FLEET_MODEL",
-              "FLEET_COORDINATOR", "FLEET_RELEASE_OWNER", "FLEET_APPROVAL"):  # fmt: skip
+              "FLEET_COORDINATOR", "FLEET_RELEASE_OWNER", "FLEET_APPROVAL",
+              "FLEET_COORDINATOR_TREE", "CLAUDE_SESSION_ID"):  # fmt: skip
         out.pop(k, None)
     return out
 
@@ -123,17 +124,35 @@ def _windows(
         (d / f"pane-{w}.esc").write_text(text, encoding="utf-8")
 
 
-def _run(env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
+def _run(
+    env: dict[str, str], *args: str, cwd: str | None = None
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [str(SCRIPT), *args],
-        cwd=env["CWD"],
+        cwd=cwd or env["CWD"],
         env=env,
+        stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
         encoding="utf-8",
         timeout=60,
         check=False,
     )
+
+
+def _commit(env: dict[str, str], msg: str) -> str:
+    repo = Path(env["CWD"])
+    subprocess.run(
+        ["git", "commit", "-q", "--allow-empty", "-m", msg], cwd=repo, check=True
+    )
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    ).stdout.strip()
 
 
 def _tmux_calls(env: dict[str, str]) -> list[list[str]]:
@@ -318,3 +337,97 @@ def test_close_removes_clean_tree_keeps_dirty(env: dict[str, str]) -> None:
     assert " done1 worktree-done1 " in log and "dirty1" not in log
     kills = [c for c in _tmux_calls(env) if c[0] == "kill-window"]
     assert [c[-1] for c in kills] == ["claude-done1", "claude-dirty1"]
+
+
+def _coordinator(env: dict[str, str]) -> dict[str, str]:
+    """env with the approve guard satisfied: coordinator tree + a user."""
+    return {**env, "FLEET_COORDINATOR_TREE": env["CWD"], "USER": "tester"}
+
+
+def _ledger(env: dict[str, str], tree: str = "t1") -> Path:
+    return Path(env["FLEET_STATE"]) / "approvals" / f"{tree}.tsv"
+
+
+def test_ledger_entries_parse_and_roundtrip(tmp_path: Path) -> None:
+    m = _module()
+    path = tmp_path / "t.tsv"
+    path.write_text(
+        "2026-10-15T19:30:00Z\tapprove\tabc,def\tnote here\treto+tty\n"
+        "2026-10-15T19:31:00Z\trevoke\tdef\t\treto+s1\n"
+        "garbage line\n",
+        encoding="utf-8",
+    )
+    entries = m._ledger_entries(path)
+    assert entries == [
+        ("2026-10-15T19:30:00Z", "approve", ["abc", "def"], "note here", "reto+tty"),
+        ("2026-10-15T19:31:00Z", "revoke", ["def"], "", "reto+s1"),
+    ]
+    assert m._ledger_entries(tmp_path / "missing.tsv") == []
+    assert m._tsv("a\tb\nc") == "a b c"
+
+
+def test_approve_writes_full_shas_then_approved_passes(env: dict[str, str]) -> None:
+    env = _coordinator(env)
+    sha1, sha2 = _commit(env, "one"), _commit(env, "two")
+    proc = _run(env, "approve", "t1", f"{sha1[:8]},{sha2}", "--note", "tab\tnote")
+    assert proc.returncode == 0, proc.stderr
+    lines = _ledger(env).read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    stamp, action, shas, note, approver = lines[0].split("\t")
+    assert stamp.endswith("Z") and action == "approve"
+    assert shas == f"{sha1},{sha2}"  # short shas resolved to full
+    assert note == "tab note"  # tabs cannot break the TSV
+    assert approver == "tester+tty"
+    ok = _run(env, "approved", "t1", f"{sha1},{sha2[:9]}")
+    assert ok.returncode == 0, ok.stdout
+    listed = _run(env, "approve", "--list", "t1")
+    assert listed.returncode == 0 and lines[0] in listed.stdout
+
+
+def test_approved_fails_on_partial_list(env: dict[str, str]) -> None:
+    env = _coordinator(env)
+    sha1, sha2, sha3 = (_commit(env, m) for m in ("one", "two", "three"))
+    assert _run(env, "approve", "t1", f"{sha1},{sha2}").returncode == 0
+    proc = _run(env, "approved", "t1", f"{sha1},{sha3}")
+    assert proc.returncode == 1
+    assert proc.stdout == f"missing: {sha3}\n"
+    assert _run(env, "approved", "t1", sha1).returncode == 0
+
+
+def test_revoke_beats_an_earlier_approve(env: dict[str, str]) -> None:
+    env = _coordinator(env)
+    sha = _commit(env, "one")
+    assert _run(env, "approve", "t1", sha).returncode == 0
+    assert _run(env, "approve", "--revoke", "t1", sha).returncode == 0
+    proc = _run(env, "approved", "t1", sha)
+    assert proc.returncode == 1 and proc.stdout == f"revoked: {sha}\n"
+    # A later approve wins again; the revoke line was never edited.
+    assert _run(env, "approve", "t1", sha).returncode == 0
+    assert _run(env, "approved", "t1", sha).returncode == 0
+    actions = [
+        ln.split("\t")[1]
+        for ln in _ledger(env).read_text(encoding="utf-8").splitlines()
+    ]
+    assert actions == ["approve", "revoke", "approve"]
+
+
+def test_approve_refuses_without_coordinator_tree_or_known_sha(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    sha = _commit(env, "one")
+    # FLEET_COORDINATOR_TREE unset.
+    proc = _run(env, "approve", "t1", sha)
+    assert proc.returncode == 3 and "FLEET_COORDINATOR_TREE" in proc.stderr
+    # cwd is not the coordinator tree.
+    env = _coordinator(env)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    proc = _run(env, "approve", "t1", sha, cwd=str(elsewhere))
+    assert proc.returncode == 3 and "coordinator tree" in proc.stderr
+    assert (
+        _run(env, "approve", "--revoke", "t1", sha, cwd=str(elsewhere)).returncode == 3
+    )
+    # Unknown shas are refused; nothing was ever written.
+    proc = _run(env, "approve", "t1", "0" * 40)
+    assert proc.returncode == 2 and "unknown sha" in proc.stderr
+    assert not _ledger(env).exists()

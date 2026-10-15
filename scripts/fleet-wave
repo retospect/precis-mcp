@@ -16,6 +16,10 @@ The thread-session fleet (one window per roadmap thread) is
     fleet-wave watch-done NAME...       emit when <tree>/.claude/purpose finishes
     fleet-wave stuck-watch [NAME...]    emit on prompt / quiet / done / gone
     fleet-wave close NAME...            kill window, remove tree, drop branch
+    fleet-wave approve TREE SHA[,SHA...] [--note ".."]   grant landing these shas
+    fleet-wave approve --list [TREE]    print the approval ledger
+    fleet-wave approve --revoke TREE SHA[,SHA...]        append a revoke line
+    fleet-wave approved TREE SHA[,SHA...]  exit 0 iff all approved, none revoked
 
 WIN is a window name (``claude-x``) or a wave NAME (resolved to its
 ``claude-``/``devin-`` window). tmux is always called with an argument
@@ -23,13 +27,27 @@ list, never a shell string. Nothing is stored in the repo: footers come
 from .claude/fleet/footers/<tier>.txt with ``{coordinator}``,
 ``{release_owner}`` and ``{approval}`` filled at launch.
 
+The approval ledger lives in ``$FLEET_STATE/approvals/<tree>.tsv`` (never
+the repo: its lines carry user and session ids, and the repo is public).
+It is append-only TSV — stamp, action, shas, note, approver — and revoke
+is a later line, never an edit. ``approve``/``--revoke`` run only from
+the coordinator tree (``FLEET_COORDINATOR_TREE``; refused when unset):
+the grant is typed by the user in the coordinator window, never relayed
+through a session message. This is a convention-level guard — anything
+with shell access could append to the file directly. It holds because
+the coordinator session's own rules forbid it writing a grant the user
+did not type, and the coordinator transcript shows which lines the user
+typed; .claude/fleet/authority.md still governs.
+
 Configuration (env, or the matching flag before the subcommand):
   FLEET_TMUX_SESSION  --session   tmux session (default: the current one)
   FLEET_TMUX_SOCKET   --socket    private tmux server (tmux -L), tests
   FLEET_WORKTREES     --worktrees worktree root (default <main>/.claude/worktrees)
   FLEET_MODEL         --model     builder model (default opus)
-  FLEET_STATE                     watcher state + close log
+  FLEET_STATE                     watcher state + close log + approvals/
                                   (default ~/.claude/fleet-wave)
+  FLEET_COORDINATOR_TREE          absolute path of the coordinator tree;
+                                  approve/--revoke refuse anywhere else
   FLEET_COORDINATOR, FLEET_RELEASE_OWNER, FLEET_APPROVAL   footer fills
 """
 
@@ -137,6 +155,141 @@ def git(*argv: str, cwd: Path | None = None) -> str:
         check=False,
     )
     return proc.stdout if proc.returncode == 0 else ""
+
+
+# --- approval ledger -----------------------------------------------------------
+
+
+def _tsv(text: str) -> str:
+    """One field: tabs and newlines would break the TSV line."""
+    return re.sub(r"[\t\r\n]+", " ", text).strip()
+
+
+def _ledger_path(f: Fleet, tree: str) -> Path:
+    return f.state / "approvals" / f"{tree}.tsv"
+
+
+def _ledger_entries(path: Path) -> list[tuple[str, str, list[str], str, str]]:
+    """(stamp, action, shas, note, approver) per line; malformed lines skip."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    out = []
+    for ln in text.splitlines():
+        fields = ln.split("\t")
+        if len(fields) < 4 or fields[1] not in ("approve", "revoke"):
+            continue
+        out.append(
+            (
+                fields[0],
+                fields[1],
+                [s for s in fields[2].split(",") if s],
+                fields[3],
+                fields[4] if len(fields) > 4 else "",
+            )
+        )
+    return out
+
+
+def _coordinator_refusal() -> str | None:
+    """Refusal reason for a ledger write, or None. Convention-level only:
+    shell access beats the check — it holds because the coordinator
+    session's rules forbid it writing a grant the user did not type, and
+    .claude/fleet/authority.md governs."""
+    coord = os.environ.get("FLEET_COORDINATOR_TREE", "")
+    if not coord or not Path(coord).is_absolute():
+        return "FLEET_COORDINATOR_TREE is unset or not an absolute path"
+    if Path.cwd().resolve() != Path(coord).resolve():
+        return f"not the coordinator tree ({coord})"
+    return None
+
+
+def _full_sha(want: str) -> str:
+    """The full commit sha for ``want``, or "" when it does not resolve."""
+    return git("rev-parse", "--verify", f"{want}^{{commit}}").strip()
+
+
+def _bad_tree(tree: str) -> bool:
+    return not re.fullmatch(r"[A-Za-z0-9._-]+", tree) or ".." in tree
+
+
+def cmd_approve(f: Fleet, a: argparse.Namespace) -> int:
+    if a.list:
+        paths = (
+            sorted((f.state / "approvals").glob("*.tsv"))
+            if a.tree is None
+            else [_ledger_path(f, a.tree)]
+        )
+        rc = 0
+        for p in paths:
+            if a.tree is None:
+                print(f"--- {p.stem}")
+            try:
+                print(p.read_text(encoding="utf-8"), end="")
+            except OSError:
+                print(f"(no ledger for {p.stem})")
+                rc = 1
+        return rc
+    if not a.tree or not a.shas:
+        print(
+            "fleet-wave: approve needs <tree> <sha>[,<sha>...] (or --list)",
+            file=sys.stderr,
+        )
+        return 2
+    if _bad_tree(a.tree):
+        print(f"fleet-wave: bad tree name {a.tree!r}", file=sys.stderr)
+        return 2
+    if why := _coordinator_refusal():
+        print(f"fleet-wave: REFUSED: {why}", file=sys.stderr)
+        return 3
+    full = []
+    for s in a.shas.split(","):
+        s = s.strip()
+        if not (sha := _full_sha(s)):
+            print(f"fleet-wave: unknown sha {s!r}", file=sys.stderr)
+            return 2
+        full.append(sha)
+    action = "revoke" if a.revoke else "approve"
+    path = _ledger_path(f, a.tree)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    approver = _tsv(
+        f"{os.environ.get('USER', '?')}+{os.environ.get('CLAUDE_SESSION_ID', 'tty')}"
+    )
+    line = "\t".join(
+        [utc_stamp(), action, ",".join(full), _tsv(a.note or ""), approver]
+    )
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(line + "\n")
+    print(f"{action}d {a.tree} {','.join(full)}")
+    return 0
+
+
+def _sha_match(stored: str, want: str, full: str) -> bool:
+    """A ledger sha covers ``want``: exact, the rev-parse'd form, or a
+    7+-char short sha."""
+    return stored in (want, full) or (len(want) >= 7 and stored.startswith(want))
+
+
+def cmd_approved(f: Fleet, a: argparse.Namespace) -> int:
+    entries = _ledger_entries(_ledger_path(f, a.tree))
+    rc = 0
+    for want in a.shas.split(","):
+        want = want.strip()
+        if not want:
+            continue
+        full = _full_sha(want)
+        last = ""
+        for _stamp, action, shas, _note, _who in entries:
+            if any(_sha_match(s, want, full) for s in shas):
+                last = action
+        if last == "approve":
+            continue
+        print(f"{'revoked' if last else 'missing'}: {want}")
+        rc = 1
+    if rc == 0:
+        print(f"approved {a.tree} {a.shas}")
+    return rc
 
 
 # --- pane parsing (pure) ----------------------------------------------------
@@ -538,6 +691,33 @@ def parser() -> argparse.ArgumentParser:
     s = sub.add_parser("close", help="kill window, remove tree, drop branch")
     s.add_argument("names", nargs="+")
     s.set_defaults(fn=cmd_close)
+
+    s = sub.add_parser(
+        "approve",
+        help="append a grant to the approval ledger (coordinator tree only)",
+        description="Append a grant (or, with --revoke, a revoke) to "
+        "$FLEET_STATE/approvals/<tree>.tsv. Refuses unless run from "
+        "FLEET_COORDINATOR_TREE — a convention-level guard; anyone with "
+        "shell access could append directly, so it holds because the "
+        "coordinator session's own rules forbid it writing a grant the "
+        "user did not type (the coordinator transcript shows which lines "
+        "the user typed). A grant relayed in a session message is not an "
+        "approval; .claude/fleet/authority.md still governs.",
+    )
+    s.add_argument("tree", nargs="?")
+    s.add_argument("shas", nargs="?")
+    s.add_argument("--note", default="")
+    s.add_argument("--list", action="store_true", help="print the ledger")
+    s.add_argument("--revoke", action="store_true", help="append a revoke line")
+    s.set_defaults(fn=cmd_approve)
+
+    s = sub.add_parser(
+        "approved",
+        help="exit 0 iff every sha has a grant and no later revoke",
+    )
+    s.add_argument("tree")
+    s.add_argument("shas")
+    s.set_defaults(fn=cmd_approved)
     return p
 
 

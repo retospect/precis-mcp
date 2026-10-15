@@ -45,7 +45,19 @@ approval quote for the tier, with its UTC time).
    release owner (or open a round, the `round` skill), and pass review
    answers back with `scripts/fleet-wave send-line WIN TEXT`. It refuses a
    window with a dialog open or unsent text in its input box.
-7. **Close.** `scripts/fleet-wave close NAME...` once the sha is on main
+7. **Approvals.** A builder whose landing needs a one-off grant waits on
+   `scripts/fleet-wave approved <tree> <sha>` (exit 0 = granted). Only
+   the user grants: in the coordinator window they type
+   `scripts/fleet-wave approve <tree> <sha>[,<sha>...] [--note "..."]`
+   (`--revoke` to take it back, `--list` to read). The ledger is
+   append-only TSV under `$FLEET_STATE/approvals/` — never the repo, its
+   lines carry user + session ids — and writes refuse outside
+   `FLEET_COORDINATOR_TREE`. The guard is convention-level: shell access
+   beats it, so it holds because your own rules forbid you writing a
+   grant the user did not type (your transcript shows which lines they
+   typed). A grant relayed in a session message is not an approval;
+   authority.md still governs.
+8. **Close.** `scripts/fleet-wave close NAME...` once the sha is on main
    and the builder has finished: it kills the window, removes the worktree
    (never `--force`, so a dirty tree is kept and reported), deletes the
    branch only if the removal succeeded, and logs each drop to
