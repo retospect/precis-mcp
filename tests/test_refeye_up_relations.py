@@ -121,3 +121,36 @@ def test_disabled_kind_renders_its_reason(graph_client, store: Store) -> None:
     assert 'aria-disabled="true"' in r.text
     assert "no container relation registered for anki" in r.text
     assert "data-zoom-out=" not in r.text
+
+
+def test_eye_page_up_link_reads_the_same_table(graph_client, store: Store) -> None:
+    """``/eye/<handle>`` shows one "up" link from ``resolve_up``, keeping
+    the rung and ring filter; the chooser lists the runner-up."""
+    fi = _ref(store, "finding", "the hub")
+    qu, alt = _ref(store, "quest", "the goal"), _ref(store, "quest", "side goal")
+    store.add_link(src_ref_id=fi, dst_ref_id=qu, relation="serves")
+    store.add_link(src_ref_id=fi, dst_ref_id=alt, relation="serves")
+    store.add_link(
+        src_ref_id=_ref(store, "paper", "p"), dst_ref_id=qu, relation="serves"
+    )
+    fi_h = handle_registry.format_handle("finding", fi)
+    qu_h = handle_registry.format_handle("quest", qu)
+    r = graph_client.get(f"/eye/{fi_h}?extent=fisheye&kind=quest")
+    assert r.status_code == 200
+    up = re.search(r'<a href="([^"]+)"[^>]*data-zoom-out="([^"]+)"', r.text)
+    assert up and up.group(2) == qu_h
+    assert up.group(1).replace("&amp;", "&") == f"/eye/{qu_h}?extent=fisheye&kind=quest"
+    alt_h = handle_registry.format_handle("quest", alt)
+    assert f'data-zoom-alt="{alt_h}"' in r.text
+
+
+def test_eye_page_up_link_disabled_with_reason(graph_client, store: Store) -> None:
+    an = _ref(store, "anki", "a card")
+    r = graph_client.get(f"/eye/{handle_registry.format_handle('anki', an)}")
+    assert r.status_code == 200
+    assert 'aria-disabled="true"' in r.text
+    assert "no container relation registered for anki" in r.text
+    assert "data-zoom-out=" not in r.text
+    td = _ref(store, "todo", "orphan")
+    r = graph_client.get(f"/eye/{handle_registry.format_handle('todo', td)}")
+    assert "no live parent (out) link from this todo" in r.text

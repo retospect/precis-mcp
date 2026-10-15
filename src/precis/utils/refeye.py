@@ -243,7 +243,7 @@ UP_RELATIONS: dict[str, UpRule] = {
             "email", "figure", "fleet", "folder", "gripe", "job", "llm", "make",
             "markdown", "material", "math", "md", "measure", "mermaid",
             "message", "news", "oracle", "orcid", "part", "perplexity-reasoning",
-            "perplexity-research", "plaintext", "plan", "pres", "provenance",
+            "perplexity-research", "plaintext", "plan", "pres", "profile", "provenance",
             "python", "random", "rxn", "semanticscholar", "skill", "structure",
             "tag", "tex", "time", "web", "websearch", "wikipedia", "youtube",
         )

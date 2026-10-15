@@ -9,6 +9,28 @@
       {% if reader_url %}· <a href="{{ reader_url }}" class="underline">open in its reader</a>{% endif %}
       · <span class="font-mono">get(id='{{ handle }}', extent='{{ extent }}'{% if q %}, q='{{ q }}'{% endif %}{% if ring %}, args={'ring': {{ ring }}}{% endif %})</span>
     </p>
+    {% if up %}
+    <p class="mt-1 text-xs text-slate-500" aria-label="zoom out">
+      {% if up.href %}
+      <a href="{{ up.href }}" class="rounded border border-slate-200 px-1.5 py-0.5 hover:bg-slate-100"
+         data-zoom-out="{{ up.handle }}" rel="up" title="{{ up.label }}">↑ up</a>
+      <span class="font-mono">{{ up.rel }}</span>
+      <a href="{{ up.href }}" class="font-mono underline">{{ up.handle }}</a>
+      <span>{{ up.label | truncate(60) }}</span>
+      {% if up.others %}
+      <span class="text-slate-400">· or</span>
+      {% for o in up.others %}
+      <a href="{{ o.href }}" class="font-mono underline" data-zoom-alt="{{ o.handle }}" title="{{ o.label }}">{{ o.handle }}</a>
+      {% endfor %}
+      {% if up.more > 0 %}<span class="text-slate-400">+{{ up.more }} more</span>{% endif %}
+      {% endif %}
+      {% else %}
+      <span class="rounded border border-slate-100 px-1.5 py-0.5 text-slate-300" aria-disabled="true"
+            title="{{ up.reason }}">↑ up</span>
+      <span class="italic text-slate-400" data-zoom-reason>{{ up.reason }}</span>
+      {% endif %}
+    </p>
+    {% endif %}
   </div>
   <nav class="flex flex-wrap gap-1 text-xs" aria-label="extent ladder">
     {% for r in ladder %}

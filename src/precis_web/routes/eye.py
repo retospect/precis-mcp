@@ -21,6 +21,11 @@ cross-link.
   ``SPACE:`` tag axis (``fisheye-everywhere.md`` in-scope 1), parsed by
   the same :mod:`precis_web.graph_filters` the ``/graph`` pages read —
   the URL is the state and the chips above the body reflect it.
+
+The header carries one "up" link: the node the focus hangs on, read from
+``utils/refeye.py::UP_RELATIONS`` via ``resolve_up`` — the same table the
+``/graph`` focus page's zoom-out reads — or shown disabled with the rule's
+reason (``web-graph-navigation.md`` item 7).
 """
 
 from __future__ import annotations
@@ -37,6 +42,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from precis.handlers._eye import EYE_LADDER, is_eye_view
 from precis.utils import handle_registry
 from precis.utils.eye_render import _TREE_KINDS
+from precis.utils.refeye import resolve_up
 from precis_web.deps import await_dispatch, get_store, templates, timed_response
 from precis_web.graph_filters import parse_kind_filter, parse_space_filter
 from precis_web.ref_urls import ref_url
@@ -247,6 +253,52 @@ def _filter_chips(
     return chips
 
 
+def _up_link(
+    request: Request,
+    target: dict[str, Any],
+    extent: str,
+    *,
+    kinds: frozenset[str] | None = None,
+    spaces: frozenset[str] | None = None,
+) -> dict[str, Any] | None:
+    """The header's "up" link under :data:`refeye.UP_RELATIONS`:
+    ``{"href", "handle", "label", "rel", "others", "more"}`` when the focus
+    hangs on a live node, else ``{"reason"}`` (the rule's own for a
+    disabled kind, a chunk or skill handle's, or which relations were
+    tried). ``None`` for a dead ref — the body already says so. The link
+    keeps the rung and the ring filter."""
+    store = get_store(request)
+    if target["kind"] == "skill":
+        return {"reason": resolve_up(store, "skill", 0)["reason"]}
+    parsed = handle_registry.parse(str(target["id"]))
+    if parsed is None:
+        return None
+    kind, is_chunk, pk = parsed
+    if is_chunk:
+        return {"reason": "a chunk handle; zoom out from its record"}
+    ref = store.get_ref(kind=kind, id=pk)
+    if ref is None:
+        return None
+    up = resolve_up(store, kind, pk, parent_id=ref.parent_id)
+    if up["target"] is None:
+        return {"reason": up["reason"]}
+
+    def _card(r: Any) -> dict[str, str]:
+        h = handle_registry.format_handle(r.kind, int(r.id))
+        return {
+            "handle": h,
+            "label": r.title or "",
+            "href": _eye_href(h, extent, kinds=kinds, spaces=spaces),
+        }
+
+    return {
+        **_card(up["target"]),
+        "rel": up["rel"],
+        "others": [_card(r) for r in up["others"]],
+        "more": up["n_others"] - len(up["others"]),
+    }
+
+
 @router.get("/", response_class=HTMLResponse)
 async def eye_index(request: Request, q: str | None = None) -> Any:
     """The box: a handle redirects to its focus, a query shows hits."""
@@ -369,6 +421,9 @@ async def eye_focus(
                 "chips": _filter_chips(canonical, extent, kinds=kinds, spaces=spaces),
                 "ring": ring or None,
                 "reader_url": _reader_url(canonical),
+                "up": None
+                if is_error
+                else _up_link(request, target, extent, kinds=kinds, spaces=spaces),
             },
             status_code=status,
         ),
