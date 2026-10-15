@@ -976,7 +976,14 @@ def _foreign_template_uids(c: Connection, tree: SeTree) -> dict[tuple[str, str],
     """``{(slug, label): uid}`` for every cross-design ``template`` in
     ``tree`` that resolves to a live block — ONE query however many
     instances reference other designs, and none when no template is
-    cross-design (the overwhelming majority)."""
+    cross-design (the overwhelming majority).
+
+    A (slug, label) that matches more than one live block resolves to
+    NOTHING (the dangling name-text fallback), never to an arbitrary pick:
+    today ``se_blocks_ref_name_key`` and the cite_key primary key make the
+    match single-valued, but a label is a helper, not an identity, and a
+    relaxed name index must not silently bind an instance to the wrong
+    block."""
     keys = sorted(
         {
             ref
@@ -991,7 +998,10 @@ def _foreign_template_uids(c: Connection, tree: SeTree) -> dict[tuple[str, str],
     rows = c.execute(
         _FOREIGN_BY_NAME_SQL, ([k[0] for k in keys], [k[1] for k in keys])
     ).fetchall()
-    return {(str(r[0]), str(r[1])): int(r[2]) for r in rows}
+    found: dict[tuple[str, str], set[int]] = {}
+    for r in rows:
+        found.setdefault((str(r[0]), str(r[1])), set()).add(int(r[2]))
+    return {key: next(iter(uids)) for key, uids in found.items() if len(uids) == 1}
 
 
 def _foreign_template_labels(

@@ -18,7 +18,7 @@ here.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -293,6 +293,53 @@ def test_dangling_cross_design_template_keeps_its_name_text(
         )
     tree = persist.load_tree(store, _ref_id(store, "cart1"))
     assert tree.blocks["w1"].template == "lib1#wheel"
+
+
+class _Rows:
+    def __init__(self, rows: list[tuple[Any, ...]]) -> None:
+        self._rows = rows
+
+    def fetchall(self) -> list[tuple[Any, ...]]:
+        return self._rows
+
+
+class _FakeConn:
+    def __init__(self, rows: list[tuple[Any, ...]]) -> None:
+        self._rows = rows
+
+    def execute(self, _sql: str, _params: Any) -> _Rows:
+        return _Rows(self._rows)
+
+
+def test_ambiguous_foreign_label_resolves_to_nothing() -> None:
+    """Two live blocks answering to one (slug, label) bind no uid — the
+    instance keeps its name text (dangling fallback) rather than an
+    arbitrary pick; an unambiguous key still resolves."""
+    tree = SeTree()
+    tree.blocks["w1"] = SeBlock(name="w1", template="lib#wheel")
+    tree.blocks["h1"] = SeBlock(name="h1", template="lib#hub")
+    conn = _FakeConn([("lib", "wheel", 7), ("lib", "wheel", 9), ("lib", "hub", 3)])
+    assert persist._foreign_template_uids(cast(Any, conn), tree) == {("lib", "hub"): 3}
+
+
+def test_foreign_label_key_is_unique_by_schema(store: Store) -> None:
+    """The premise that makes se 0020's backfill join single-valued (and
+    the save-side resolver unambiguous): a live block label is unique per
+    design and a cite_key names one ref. Relaxing either index needs a
+    deterministic pick in 0020's successor first."""
+    with store.pool.connection() as c:
+        index_row = c.execute(
+            "SELECT indexdef FROM pg_indexes WHERE indexname = 'se_blocks_ref_name_key'"
+        ).fetchone()
+        pk_row = c.execute(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conname = 'ref_identifiers_pkey'"
+        ).fetchone()
+    assert index_row is not None and pk_row is not None
+    indexdef, pk = str(index_row[0]), str(pk_row[0])
+    assert "UNIQUE" in indexdef and "(ref_id, name)" in indexdef
+    assert "retired_at IS NULL" in indexdef
+    assert pk == "PRIMARY KEY (id_kind, id_value)"
 
 
 # ── the uid is what a load follows ───────────────────────────────────────

@@ -99,6 +99,12 @@ step 3 (recommend: stub here, table in step 3).
   load, and `precis.blocktree` keeps resolving by the label text it is
   handed — no foreign `load_tree` added to the read path, and the
   blocktree package stays store-free.
+- 2026-10-15 (template uid, ambiguity): se `0020`'s backfill join and
+  the save-side resolver are single-valued only because
+  `se_blocks_ref_name_key` (live label unique per design) and the
+  cite_key primary key hold; a test pins both. The resolver also binds
+  NO uid when a (slug, label) matches two live blocks, so relaxing the
+  label index can never bind an instance to an arbitrary block.
 - 2026-10-15 (7a): the contract is on the CONNECT (spec `Interface.
   contract`), the cone on the BLOCK (spec `Block.insertion_direction`),
   as the spec places them. Contract loads are in the design frame;
