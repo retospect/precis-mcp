@@ -548,30 +548,61 @@ of the 122 outputs against its chunk.
 **Build D: fisheye on the quest (qland, independent).** The ladder on
 `kind='quest'` (fisheye-everywhere AC 2). In flight 2026-10-03.
 
-## Next slice — the extraction pass itself (planned, unbuilt)
+## Next slice — the extraction pass itself (built 2026-10-16)
 
-The six pilot gaps and the 0188 unit-skip are closed (decisions log,
-2026-10-14) and Reto's sign-off ruling is settled, so numeric extraction
-from papers can restart. This is the plan for the first pass; nothing
-here is built.
+**Built** on `worktree-survey-extract` (commits `8db25d7a4` the library,
+`475cf34ce` + `aa3ba952a` the worker, `2144b7345` migration 0212,
+after the prerequisite commits `eb5f64103`/`f4df6bcb8`/`377bc418d`/
+`df71dbf51`):
 
-**Where it runs.** The extraction pass runs on a local model on Spark
-(Reto, 2026-10-14: restart "on a local model (Spark)"), not the frontier
-tier. The deterministic checks and the materializer stay pure functions
-over chunks (`corpus-quantitative-extraction.md` in-scope 8); the reader
-call is a queued worker job, never an in-process direct call — already
-decided there.
+- **`src/precis/extract/`** — the ported pilot machinery as pure
+  functions: versioned positional anchors (scheme 2, the abbreviation
+  guard), literal/unit/numeric-region checks (`verify.py`), the reader
+  reply → checked `MeasureSpec` runs contract (`proposals.py`), the
+  reader + sampler prompts (`prompt.py`), the Wilson-interval rule and
+  deterministic stratified sampling (`accept.py`).
+- **`survey_extract` coordinator job** — walks a paper's chunks in
+  slices, prompts the local reader (Tier.BIG on the served-OSS lane —
+  "the local model on Spark"), writes checked runs through
+  `insert_measure` stamped `meta.extraction_run` + `meta.anchor_id`,
+  fails closed after a run of lane errors. Rows dedup on anchor span +
+  literal, so a re-run is idempotent.
+- **`measure_accept` coordinator job** — spawned by the parent when the
+  paper is read (also standalone for re-acceptance): stratified sample
+  seeded by the run token, frontier-tier verdicts on the `reviews`
+  ledger (`correct`→`approved`, `wrong`→`rejected`,
+  `undecidable`→`proposed`), Wilson-interval verdict at a 5 % bar on
+  `refs.meta.acceptance`. `wrong` and `undecidable` both count as
+  errors.
+- **Migration `0212_measurand_higher_is_better.sql`** — sets
+  `higher_is_better` on `total-current-density` (true) and
+  `adsorption-energy` (false — E_ads is stored negative, stronger
+  binding is the screening direction); NULL-keyed only, ambiguous taxa
+  stay NULL.
+- Tests: `tests/test_extract_survey.py` (library, 22), 
+  `tests/test_survey_extract_job.py` (dispatches end to end on the dev
+  DB + the 0212 replay, 9), fixtures in `tests/extract_helpers.py`.
 
-**Acceptance is sampled, not per-value** (Reto, 2026-10-14). A frontier
-model reviews a stratified sample per paper × measurand; the batch is
-accepted when the sampled error rate is under the bar — start at 5 %,
-measured with a Wilson interval — and only escalations reach Reto.
-Per-value human sign-off is retired; the qu202467 batch (122 rows, all
-reviewed) is the last of its kind. The sample size per stratum and which
-failures count as errors are build decisions.
+**Run recipe (post-deploy):** parent a job on the serving quest —
+`put(kind='job', job_type='survey_extract', executor='coordinator',
+params={'paper': <id>}, parent_id=164903)` — it walks the chunks and
+spawns its own `measure_accept` child; the batch verdict lands in the
+parent's summary and `meta.acceptance`.
 
-**Start with one big review paper.** Candidates measured in prod,
-read-only, 2026-10-14 (chunks = live chunk count; serves = quest links):
+**Still open in this item:**
+
+- **Running the pass on prod** — pa5044 first (below), then the rest of
+  the candidate list. That is an operation on prod, deliberately not
+  launched from the build.
+- **Port items 3–6 of the extraction-defect list** — group-level
+  condition sets (3), escalation severity (4), sub-sentence anchors +
+  recipe row overrides + units in a third column (5), `contradicts` +
+  "stated but unattributed" beyond `tier='asserted'` (6).
+- **What Build B left open** — `convert` rules (SHE↔RHE needs pH), a
+  `display_unit` revision-log key, and input-row search as first-class
+  results.
+
+**First targets** (chunks = live chunk count measured 2026-10-14):
 
 | paper | chunks | serves |
 |---|---|---|
@@ -589,37 +620,22 @@ table that exists today. None of the candidates has findings or
 measures yet; pa4743 is bigger but is synthesis/economics, not the
 electrocatalysis domain the pilot taxa cover.
 
-**Port the pilot defects first, in this order** (the full list is
-`corpus-quantitative-extraction.md` In scope; the code is
-`paper-extraction-pilot/`):
+**Prerequisites, all landed** (per the port order, one commit each on
+`worktree-survey-extract`): the versioned anchor scheme under
+`ANCHOR_SCHEME=2` (`f4df6bcb8` — the splitter keeps `ca.`/`Fig.`/`satd.`
+so a positional anchor stays where the reader saw it), the
+`expansion_directory` map-label path (`eb5f64103`), the `%` letter-
+lookaround (`377bc418d`), and categorical rows as
+`value_form='categorical'` (`df71dbf51`).
 
-1. **The versioned anchor scheme** — `ANCHOR_SCHEME` on maps and binding
-   documents; the materializer refuses a scheme mismatch AND a missing
-   scheme (fails closed); the constant is append-only. Correctness first:
-   a one-line splitter change silently re-pointed 16 % of anchors in
-   the pilot.
-2. **The three verified small bugs** — `expansion_directory` built from a
-   hardcoded path ignoring the map label (`bindings.py`); the sentence
-   splitter breaking after `ca.`/`Fig.`/`satd.` (under a NEW anchor
-   scheme, never in place); `unit_has_text_support`'s `%` letter-
-   lookaround false-negative (all 25 `unit_without_text_support`
-   escalations on one paper).
-3. Then in the item's order: explicit condition roles (2 — landed as the
-   measure row's `role`), group-level condition sets (3), escalation
-   severity (4), sub-sentence anchors + recipe row overrides + units in a
-   third column (5), categorical rows (5b — `value_form='categorical'`),
-   `contradicts` + "stated but unattributed" (6 — `tier='asserted'`).
-
-**The write path is settled.** Rows go in as runs through
-`put(kind='measure')` via `scripts/prod-precis`, Build C's recipe in
-`precis-measure-help`: the Spark model proposes runs, a script checks
-them against chunk text and the taxon list, puts land, and the frontier
-sample writes `edit(kind='measure', review='model', verdict=…)` on the
-sampled ids. The write itself flags order-of-magnitude outliers
-(`implausible_value`) and glyph-suspected sources (`glyph_suspected`);
-flagged rows, anchor mismatches and the sample's rejections are the
-escalation list; a batch under the bar is accepted without a human in
-the loop.
+**The write path landed differently than planned here.** Rows do not go
+through `put(kind='measure')` via `scripts/prod-precis` — the pass is a
+coordinator job writing runs through `store.insert_measure` directly,
+which the prod-precis shell never saw anyway (the MCP path is for
+interactive writes, not a 634-chunk batch). The frontier verdicts land
+on `reviews` through `record_target_review` — `edit(kind='measure',
+review='model', …)` is still the right surface for one-off reviews;
+the accept job just doesn't detour through it.
 
 ## In scope
 

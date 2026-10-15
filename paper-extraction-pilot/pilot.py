@@ -72,6 +72,7 @@ V2_ENUMS = {
         "interval",
         "lower_bound",
         "upper_bound",
+        "categorical",
         "not_established",
     },
     "normalization_status": {"explicit", "inferred", "unresolved", "not_applicable"},
@@ -543,11 +544,15 @@ def unit_has_text_support(unit: Any, quotes: str) -> bool:
     if not isinstance(unit, str) or not unit.strip():
         return False
     literal = re.sub(r"\s+", "", unit_surface(unit))
-    pattern = (
-        r"(?<![A-Za-zµΩ])"
-        + r"\s*".join(re.escape(char) for char in literal)
-        + r"(?![A-Za-zµΩ])"
-    )
+    #  Letter guards only where the literal's own edge is a letter: they stop
+    #  "eV" matching inside "meV", but a bare "%" carries no letter edge —
+    #  "95%NO3" or "2%w/v" still spells the unit exactly.
+    edges = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzµΩ"
+    pattern = r"\s*".join(re.escape(char) for char in literal)
+    if literal[0] in edges:
+        pattern = r"(?<![A-Za-zµΩ])" + pattern
+    if literal[-1] in edges:
+        pattern += r"(?![A-Za-zµΩ])"
     return bool(re.search(pattern, unit_surface(quotes)))
 
 
@@ -800,7 +805,7 @@ def validate(source: dict[str, Any], document: dict[str, Any]) -> dict[str, Any]
             evidence_text,
             name,
             anchors[anchor_start:],
-            numeric_required=True,
+            numeric_required=result.get("value_form") != "categorical",
         )
         unit_quotes = (
             evidence_text

@@ -828,6 +828,36 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-paper-help",
     ),
     ServiceSpec(
+        # docs/backlog/measures-substrate.md "Next slice": the survey/
+        # review numeric-extraction pass — a local reader walks a paper's
+        # chunks proposing anchored measure runs, then a spawned
+        # measure_accept child samples the batch. put(kind='job',
+        # job_type='survey_extract', params={'paper': ...}).
+        name="survey_extract",
+        label="Survey extract (job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        uses_model=True,
+        cost_sources=("survey_extract",),
+        one_line="Local-model extraction of anchored measure rows over a "
+        "survey paper's chunks, then a spawned sampling-acceptance child.",
+        doc_skill="precis-measure-help",
+    ),
+    ServiceSpec(
+        # The acceptance half — stratified sample of the batch's output
+        # rows, frontier verdicts, Wilson rule at a 5% bar. Standalone
+        # too (re-accept a batch without re-extracting).
+        name="measure_accept",
+        label="Measure accept (job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        uses_model=True,
+        cost_sources=("measure_accept",),
+        one_line="Frontier-model sampling review of an extraction batch, "
+        "Wilson-interval verdict on the batch.",
+        doc_skill="precis-measure-help",
+    ),
+    ServiceSpec(
         name="llm_summarize",
         label="LLM summarize (llm-v1)",
         category="discovery",

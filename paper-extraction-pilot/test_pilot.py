@@ -226,6 +226,37 @@ class PilotTests(unittest.TestCase):
         errors = pilot.validate(self.source, document)["errors"]
         self.assertTrue(any("normalization" in error for error in errors))
 
+    def test_v2_accepts_a_categorical_result_row(self):
+        """A categorical literal is verbatim-checked, not number-checked.
+
+        "Cordierite" or "NH3" carries no numeric region; the row still
+        proves its literal sits inside the cited evidence.
+        """
+        raw = {
+            key: self.source[key]
+            for key in ("ref_id", "title", "chunks", "bibliography", "citations")
+        }
+        raw["chunks"] = [
+            dict(raw["chunks"][0], text="Sample A produced NH3 at −0.4 V vs RHE.")
+        ]
+        self.source = pilot.prepare_source(raw)
+        document = self.v2_document()
+        document["source_fingerprint"] = self.source["fingerprint"]
+        result = document["results"][0]
+        result.update(
+            measurand="Product",
+            reported_value="NH3",
+            reported_unit=None,
+            value_form="categorical",
+            evidence=[
+                {"chunk_id": 20, "quote": "Sample A produced NH3 at −0.4 V vs RHE."}
+            ],
+            conditions=[],
+        )
+        self.assertEqual(pilot.validate(self.source, document)["errors"], [])
+        result["reported_value"] = "N2"
+        self.assertTrue(pilot.validate(self.source, document)["errors"])
+
     def test_v2_rejects_exact_as_a_value_form(self):
         document = self.v2_document()
         document["results"][0]["value_form"] = "exact"
@@ -414,6 +445,41 @@ class PilotTests(unittest.TestCase):
                 for warning in pilot.validate(self.source, self.document)["warnings"]
             )
         )
+
+    def test_unit_support_accepts_percent_glued_to_a_word(self):
+        """A bare ``%`` carries no letter edge: ``95%NO3`` spells the unit.
+
+        The letter lookarounds that stop "eV" matching inside "meV" also
+        rejected "%" next to a letter — a false "unanchored unit" warning on
+        the common no-space spelling. Only a literal whose own edge is a
+        letter gets the guards now.
+        """
+        raw = {
+            key: self.source[key]
+            for key in ("ref_id", "title", "chunks", "bibliography", "citations")
+        }
+        raw["chunks"] = [
+            dict(
+                raw["chunks"][0],
+                text="Sample A gave 98.0%NO3 selectivity at −0.4 V vs RHE.",
+            )
+        ]
+        self.source = pilot.prepare_source(raw)
+        self.document["source_fingerprint"] = self.source["fingerprint"]
+        self.document["results"][0]["evidence"] = [
+            {
+                "chunk_id": 20,
+                "quote": "Sample A gave 98.0%NO3 selectivity at −0.4 V vs RHE.",
+            }
+        ]
+        self.document["results"][0]["conditions"][0]["evidence"] = [
+            {"chunk_id": 20, "quote": "−0.4 V vs RHE."}
+        ]
+        report = pilot.validate(self.source, self.document)
+        self.assertEqual(report["errors"], [])
+        self.assertFalse(any("unit" in warning for warning in report["warnings"]))
+        self.assertTrue(pilot.unit_has_text_support("%", "95%NO3 selectivity"))
+        self.assertFalse(pilot.unit_has_text_support("eV", "a 95 meV barrier"))
 
     def test_en_dash_negative_literal_uses_original_source_boundaries(self):
         self.append_source_text(" Voltage –0.645 V.")

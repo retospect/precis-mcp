@@ -805,6 +805,21 @@ def get_job_type(name: str) -> JobTypeSpec | None:
 
         _REGISTRY[name] = SPEC
         return SPEC
+    if name == "survey_extract":
+        # The survey/review numeric extraction pass — local reader over a
+        # paper's chunks writing anchored measure runs, then a spawned
+        # measure_accept child. Plugin dispatch under coordinator.
+        from precis.workers.job_types.survey_extract import SPEC
+
+        _REGISTRY[name] = SPEC
+        return SPEC
+    if name == "measure_accept":
+        # The sampling-acceptance half of survey_extract — stratified
+        # sample + frontier verdicts + Wilson rule. Also standalone.
+        from precis.workers.job_types.survey_extract import ACCEPT_SPEC
+
+        _REGISTRY[name] = ACCEPT_SPEC
+        return ACCEPT_SPEC
     # Fall through to plugin-discovered specs. Cached on first
     # lookup so subsequent calls are cheap.
     plugins = _get_plugin_specs()
@@ -856,6 +871,8 @@ def known_job_types() -> list[str]:
         "pcb_argue",
         "paper_pull",
         "deferred_llm_call",
+        "survey_extract",
+        "measure_accept",
     ]
     plugin_names = sorted(_get_plugin_specs())
     # Built-ins first so the error-message ordering is stable for

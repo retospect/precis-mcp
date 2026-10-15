@@ -33,8 +33,11 @@ SCHEMA_VERSION = 4
 #  source fingerprint still matches, which is silent evidence corruption.
 #  Bump this whenever sentence_spans, numeric_regions or the id format changes;
 #  materialize then refuses documents written under the older scheme instead of
-#  resolving them against the new one.
-ANCHOR_SCHEME = 1
+#  resolving them against the new one. History (append-only):
+#    1 — the pilot splitter, which broke after ca./Fig./satd.;
+#    2 — _ABBREVIATIONS skips a candidate break whose last token is a listed
+#        abbreviation's period.
+ANCHOR_SCHEME = 2
 
 RESULT_FIELDS = (
     ("id", "id"),
@@ -72,6 +75,46 @@ PASSTHROUGH = (
 )
 
 SENTENCE_BREAK = re.compile(r"(?<=[.!?])[ \t]+(?=[^a-z])|\n{2,}|(?<=\|)\n(?=\|)")
+
+#  Tokens whose trailing period is an abbreviation, not a sentence end.
+#  The scheme-1 splitter broke after "ca. 5", "Fig. 3" and "satd. K" —
+#  every abbreviation followed by a digit or capital inflated the anchor
+#  count and, worse, split a result from its conditions. The break CANDIDATE
+#  still comes from SENTENCE_BREAK; a candidate whose last token (period
+#  stripped, brackets allowed) is in this set is skipped. The trade-off is
+#  a rare under-split (a real sentence ending in "et al.") against the
+#  measured over-split that motivated the guard.
+_ABBREVIATIONS = frozenset(
+    {
+        "ca",
+        "cf",
+        "fig",
+        "figs",
+        "eq",
+        "eqs",
+        "ref",
+        "refs",
+        "sec",
+        "no",
+        "nos",
+        "vs",
+        "al",
+        "e.g",
+        "i.e",
+        "dr",
+        "prof",
+        "st",
+        "approx",
+        "resp",
+        "satd",
+        "wt",
+        "at",
+        "vol",
+        "ch",
+        "sc",
+    }
+)
+
 TABLE_ROW = re.compile(r"^\s*\|.*\|\s*$")
 TABLE_RULE = re.compile(r"^[\s|:\-–—]+$")
 TEMPERATURE_TERM = re.compile(
@@ -90,12 +133,28 @@ AUDIT_SAMPLE_SIZE = 3
 #  ---------------------------------------------------------------- anchors
 
 
+def _ends_in_abbreviation(tail: str) -> bool:
+    """The final token before a break is a listed abbreviation ('ca.', 'Fig.')."""
+    words = tail.split()
+    if not words:
+        return False
+    token = words[-1].lower().strip("([{<«").rstrip(".!?)]}>»,;:")
+    return token in _ABBREVIATIONS
+
+
 def sentence_spans(text):
     """Split a chunk into stable, exactly reconstructable sentence spans."""
     spans = []
     start = 0
     for match in SENTENCE_BREAK.finditer(text):
         end = match.start()
+        if (
+            match.group()[0] in " \t"
+            and end > 0
+            and text[end - 1] == "."
+            and _ends_in_abbreviation(text[:end])
+        ):
+            continue
         if text[start:end].strip():
             spans.append((start, end))
         start = match.end()
@@ -1315,6 +1374,14 @@ def command_map(base, label, selection_version, only=None):
             continue
         source = pilot.load_json(path)
         document = build_map(source, selection_version)
+        #  build_map cannot know this run's label: stamp the real blocks
+        #  directory and recompute the fingerprint over it, the same
+        #  treatment compact.build_files gives its packets. The path a
+        #  reader resolves is the one on disk — never maps/blocks/<id>
+        #  under a different label.
+        document["expansion_directory"] = f"maps/{label}/blocks/{source['ref_id']}"
+        document.pop("map_fingerprint")
+        document["map_fingerprint"] = pilot.digest(document)
         pilot.save_json(output / f"{source['ref_id']}.json", document)
         for chunk in source["chunks"]:
             pilot.save_json(

@@ -1,5 +1,6 @@
 import copy
 import json
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -147,6 +148,37 @@ class AnchorTests(unittest.TestCase):
             rendered = bindings.anchored_text(chunk["text"])
             stripped = bindings.re.sub(r"\[\d+\]", "", rendered)
             self.assertEqual(stripped, chunk["text"])
+
+    def test_abbreviations_do_not_break_sentences(self):
+        """Scheme-2 regression: ca./Fig./satd. are not sentence ends.
+
+        The old splitter broke after every abbreviation followed by a digit
+        or capital, so "The loading was ca. 5 mg (Fig. 2)" minted three
+        anchors instead of one — a result split from its conditions, and
+        every later anchor id silently shifted.
+        """
+        text = (
+            "The loading was ca. 5 mg as shown in Fig. 2. "
+            "Cathodes were satd. at 90% RH before the run, cf. Smith et al. "
+            "(2020), and the yield reached 91.5%."
+        )
+        spans = bindings.sentence_spans(text)
+        pieces = [text[a:b] for a, b in spans]
+        self.assertEqual(len(pieces), 2)
+        self.assertIn("ca. 5 mg", pieces[0])
+        self.assertIn("Fig. 2.", pieces[0])
+        self.assertIn("satd. at 90% RH", pieces[1])
+        self.assertIn("et al.", pieces[1])
+
+    def test_a_real_sentence_break_still_splits(self):
+        text = "Yield reached 91.5%. The potential was held at -0.4 V vs RHE."
+        pieces = [text[a:b] for a, b in bindings.sentence_spans(text)]
+        self.assertEqual(len(pieces), 2)
+
+    def test_anchor_scheme_is_stamped_on_the_document(self):
+        document = bindings.build_map(self.source)
+        self.assertEqual(document["anchor_scheme"], bindings.ANCHOR_SCHEME)
+        self.assertGreaterEqual(bindings.ANCHOR_SCHEME, 2)
 
     def test_anchor_index_resolves_ids_and_runs(self):
         index = bindings.anchor_index(self.source)
@@ -599,6 +631,37 @@ class EscalationTests(unittest.TestCase):
         report = bindings.check(document, self.source)
         self.assertTrue(report["binding_errors"])
         self.assertFalse(report["semantic_validity_established"])
+
+
+class CommandMapTests(unittest.TestCase):
+    def test_expansion_directory_carries_the_map_label(self):
+        """The declared blocks directory must be the one on disk.
+
+        Regression: ``build_map`` hardcoded ``maps/blocks/<ref>`` with no
+        label, so a second map run (``--label v2``) wrote its blocks under
+        ``maps/v2/blocks/`` while the document still pointed at ``maps/blocks/``
+        — a directory that does not exist. The writer stamps the real path
+        and re-fingerprints, the same treatment ``compact.build_files``
+        gives its packets.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            (base / "sources").mkdir()
+            source = synthetic_source()
+            pilot.save_json(base / "sources" / f"{source['ref_id']}.json", source)
+            bindings.command_map(base, "v2", 4)
+            document = pilot.load_json(
+                base / "maps" / "v2" / f"{source['ref_id']}.json"
+            )
+            declared = document["expansion_directory"]
+            self.assertEqual(declared, f"maps/v2/blocks/{source['ref_id']}")
+            self.assertTrue((base / declared).is_dir())
+            self.assertEqual(
+                document["map_fingerprint"],
+                pilot.digest(
+                    {k: v for k, v in document.items() if k != "map_fingerprint"}
+                ),
+            )
 
 
 class InternTests(unittest.TestCase):
