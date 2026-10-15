@@ -286,11 +286,12 @@ def _run_container(ctx: Any, params: dict[str, Any], engine: Any) -> RouteGraph 
         return None
     if route.exists():
         try:
-            return parse_syngraph(
+            graph = parse_syngraph(
                 route.read_text(encoding="utf-8"),
                 target=smiles,
                 engine_version=engine.version,
             )
+            return _with_native_alternatives(graph, native, engine, smiles)
         except Exception as exc:
             # A garbled route.json still lets us fall back to the native output.
             log.warning("retrosynth: bad %s, trying native", ROUTE_FILE, exc_info=True)
@@ -309,6 +310,26 @@ def _run_container(ctx: Any, params: dict[str, Any], engine: Any) -> RouteGraph 
             return None
     ctx.record_failure(f"retrosynth: no readable {ROUTE_FILE} and no native parser")
     return None
+
+
+def _with_native_alternatives(
+    graph: RouteGraph, native: Path | None, engine: Any, smiles: str
+) -> RouteGraph:
+    """route.json carries only the top route; the engine's native output
+    (AiZynth trees.json) carries the lower-ranked ones STEER reranks.
+    Best-effort: a missing or unreadable native file keeps ``graph``."""
+    if native is None or not native.exists() or not hasattr(engine, "native_parser"):
+        return graph
+    try:
+        alts = engine.native_parser(
+            native.read_text(encoding="utf-8"),
+            target=smiles,
+            engine_version=engine.version,
+        ).alternatives
+    except Exception:
+        log.warning("retrosynth: alternatives unreadable", exc_info=True)
+        return graph
+    return replace(graph, alternatives=alts)
 
 
 def _run_service(ctx: Any, params: dict[str, Any], engine: Any) -> RouteGraph | None:

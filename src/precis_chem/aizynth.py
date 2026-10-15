@@ -28,6 +28,7 @@ the argv only carries the target.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from typing import Any
 
 from precis.utils.coerce import as_float
@@ -59,14 +60,20 @@ def _extract_routes(data: Any) -> list[dict[str, Any]]:
     return []
 
 
+#: Lower-ranked routes kept beside the top one as STEER rerank candidates.
+MAX_ALTERNATIVES = 9
+
+
 def parse_aizynth_trees(
     content: str | bytes | Any,
     *,
     target: str | None = None,
     engine_version: str = "aizynth",
+    max_alternatives: int = MAX_ALTERNATIVES,
 ) -> RouteGraph:
-    """Parse AiZynth ``trees.json`` into a :class:`RouteGraph` (top-ranked
-    route). ``target`` overrides the root SMILES for the graph label."""
+    """Parse AiZynth ``trees.json`` into a :class:`RouteGraph`: the
+    top-ranked route, with up to ``max_alternatives`` lower-ranked routes
+    on ``alternatives``. ``target`` overrides the root SMILES label."""
     if isinstance(content, (str, bytes)):
         data = json.loads(content)
     else:
@@ -84,10 +91,19 @@ def parse_aizynth_trees(
             provenance={"engine": "aizynth", "n_routes": 0},
         )
 
-    root = routes[0]
     if not tgt:
-        tgt = normalize_smiles(str(root.get("smiles", "")))
+        tgt = normalize_smiles(str(routes[0].get("smiles", "")))
+    graphs = [
+        _route_graph(root, tgt, engine_version, len(routes))
+        for root in routes[: 1 + max(0, max_alternatives)]
+    ]
+    return replace(graphs[0], alternatives=graphs[1:])
 
+
+def _route_graph(
+    root: dict[str, Any], tgt: str, engine_version: str, n_routes: int
+) -> RouteGraph:
+    """One AiZynth reaction tree → a flat :class:`RouteGraph`."""
     steps: list[RouteStep] = []
     solved = True
 
@@ -146,7 +162,7 @@ def parse_aizynth_trees(
         score=as_float(root.get("scores", {}).get("state score"))
         if isinstance(root.get("scores"), dict)
         else None,
-        provenance={"engine": "aizynth", "n_routes": len(routes)},
+        provenance={"engine": "aizynth", "n_routes": n_routes},
     )
 
 

@@ -43,7 +43,18 @@ search(kind='paper', queries=['synthesis of <target>', 'total synthesis <scaffol
 put(kind='route', id='<slug>', target='<SMILES>', engine='aizynth')   # mint the plan
 get(kind='route', id='<slug>')                     # poll — the step graph
 get(kind='route', id='<slug>', view='metrics')     # LinChemIn descriptors to score/compare
+get(kind='route', id='<slug>', view='steer', q='avoid protecting groups')  # rerank by strategy
+get(kind='chem', id='<name or CAS>')               # the target's SMILES, sourced
 ```
+
+**Rerank by strategy** with `view='steer'`. AiZynth returns several routes,
+and precis keeps the top route plus up to 9 alternatives. Each route is
+scored 0–10 by an LLM for how well it fits your plain-language strategy,
+and the scores come back with rationales, best first. This changes only
+the ranking. It does not check feasibility, and it does not make the
+engine search differently. The scores are cached per strategy;
+`refresh=True` asks again. Each step's `class:` line is the RXNO reaction
+class (`precis-rxn-help`).
 
 Read the prior art *before* proposing a route so you can favour a known
 disconnection. Swap `engine='askcos'` for a second opinion — the IR is identical,

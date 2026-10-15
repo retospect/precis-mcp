@@ -25,12 +25,14 @@ from __future__ import annotations
 
 import os
 import re
+from datetime import UTC, datetime
 from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
+from precis_chem import steer
 from precis_chem.classify import classify_route
 from precis_chem.constraints import resolve_constraints, screen_route
 from precis_chem.engine import DEFAULT_MAX_STEPS, resolve_engine
@@ -58,7 +60,9 @@ class RouteHandler(Handler):
             "in-process solve or a minted retrosynth compute job; a declared "
             "platform constraint (e.g. ewod-oil — EWOD digital microfluidics "
             "in oil) is recorded, cache-keyed, and advisorily screened per "
-            "step. get lists routes or renders one graph (id=slug); delete "
+            "step. get lists routes or renders one graph (id=slug); "
+            "view='steer', q='<strategy>' reranks the kept candidate routes "
+            "by an LLM's fit to a natural-language strategy; delete "
             "soft-retires. The LLM traverses the graph, never runs a planner "
             "in the request path."
         ),
@@ -71,6 +75,9 @@ class RouteHandler(Handler):
         corpus_role="none",
         can_own_jobs=True,
     )
+
+    #: STEER scorer; None = the model router. Tests inject a fake.
+    steer_ask: steer.Ask | None = None
 
     def __init__(self, *, hub: Hub) -> None:
         if hub.store is None:
@@ -277,6 +284,8 @@ class RouteHandler(Handler):
         *,
         id: str | int | None = None,
         view: str | None = None,
+        q: str | None = None,
+        refresh: bool = False,
         **_kw: Any,
     ) -> Response:
         if id is None or (isinstance(id, str) and id.strip() in ("", "/")):
@@ -300,12 +309,48 @@ class RouteHandler(Handler):
             # Route-level descriptors — the scoring substrate (slice 2). Only the
             # LinChemIn-normalized path populates them; a stub/legacy route says so.
             return Response(body=graph.metrics_render())
+        if v == "steer":
+            return self._render_steer(ref, graph, q=q, refresh=bool(refresh))
         if v and v not in ("route", "graph", "tree"):
             raise BadInput(
                 f"unknown route view {view!r}",
-                next="view='metrics' (route descriptors) | omit for the route graph",
+                next=(
+                    "view='metrics' (route descriptors) | view='steer', "
+                    "q='<strategy>' (LLM rerank) | omit for the route graph"
+                ),
             )
         return Response(body=graph.render())
+
+    def _render_steer(
+        self, ref: Any, graph: RouteGraph, *, q: str | None, refresh: bool
+    ) -> Response:
+        """Rerank the kept routes against the strategy in ``q=``. Scores are
+        cached on ``meta.steer`` keyed by strategy + routes, so a repeat
+        costs nothing; ``refresh=True`` re-asks."""
+        try:
+            strategy = steer.normalise_strategy(q)
+        except ValueError as exc:
+            raise BadInput(
+                str(exc),
+                next=f"get(kind='route', id={ref.slug!r}, view='steer', "
+                "q='avoid protecting groups')",
+            ) from exc
+        key = steer.steer_key(strategy, graph)
+        cache = dict((ref.meta or {}).get("steer") or {})
+        hit = cache.get(key)
+        if hit and not refresh:
+            scores = [steer.SteerScore.from_json(s) for s in hit.get("scores") or []]
+            return Response(body=steer.render(strategy, graph, scores, cached=True))
+        scores = steer.steer(strategy, graph, ask=self.steer_ask)
+        if any(s.score is not None for s in scores):
+            cache[key] = {
+                "strategy": strategy,
+                "prompt": steer.PROMPT_VERSION,
+                "scores": [s.to_json() for s in scores],
+                "at": datetime.now(UTC).isoformat(),
+            }
+            self.store.stamp_ref_meta(ref.id, {"steer": cache})
+        return Response(body=steer.render(strategy, graph, scores, cached=False))
 
     # ── delete ────────────────────────────────────────────────────────
     def delete(self, *, id: str | int | None = None, **_kw: Any) -> Response:

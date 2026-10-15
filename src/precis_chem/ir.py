@@ -115,9 +115,19 @@ class RouteGraph:
     #: Declared platform constraints (``precis_chem.constraints`` names, e.g.
     #: ``ewod-oil``) — advisory screen, part of the plan's content address.
     constraints: list[str] = field(default_factory=list)
+    #: Lower-ranked routes the engine also returned (AiZynth emits several),
+    #: kept so a strategy rerank (``precis_chem.steer``) has candidates.
+    #: One level deep: an alternative carries no alternatives of its own.
+    alternatives: list[RouteGraph] = field(default_factory=list)
 
     # ── serialization ────────────────────────────────────────────────
     def to_json(self) -> dict[str, Any]:
+        out = self._to_json_flat()
+        if self.alternatives:
+            out["alternatives"] = [a._to_json_flat() for a in self.alternatives]
+        return out
+
+    def _to_json_flat(self) -> dict[str, Any]:
         return {
             "version": IR_VERSION,
             "target": self.target,
@@ -143,6 +153,11 @@ class RouteGraph:
             metrics=dict(d.get("metrics", {})),
             provenance=dict(d.get("provenance", {})),
             constraints=[str(c) for c in d.get("constraints", [])],
+            alternatives=[
+                cls.from_json({**a, "alternatives": []})
+                for a in d.get("alternatives") or []
+                if isinstance(a, dict)
+            ],
         )
 
     # ── renders ──────────────────────────────────────────────────────
@@ -213,6 +228,12 @@ class RouteGraph:
                 lines.append(f"   {mark} {flag}")
         if self.metrics:
             lines += ["", self._metrics_line()]
+        if self.alternatives:
+            lines += [
+                "",
+                f"{len(self.alternatives)} lower-ranked alternative route(s) kept; "
+                "rerank against a strategy with view='steer', q='<strategy>'",
+            ]
         return "\n".join(lines) + self._constraints_tail()
 
     def _constraints_tail(self) -> str:
