@@ -649,10 +649,16 @@ def test_harvest_stamps_theta0_check(store: Store, hub: Hub) -> None:
 
 
 @pytest.mark.db
-def test_unflagged_scanned_candidate_meta_unchanged(store: Store, hub: Hub) -> None:
-    """Snapshot: on an unflagged quest a candidate that already HAS a
-    succeeded scan keeps its meta bit-identical through dispatch +
-    harvest — nothing mints, nothing stamps."""
+def test_scanned_candidate_without_operating_point_stamps_no_measures(
+    store: Store, hub: Hub
+) -> None:
+    """On an unflagged quest a candidate that already HAS a succeeded scan
+    mints nothing through dispatch + harvest. The window-measures stamp
+    does run (gr489165: it runs wherever a scan ran, flag or not) but
+    finds no operating point, no pathway and no U window — so it lands
+    only the "why" diagnostics (``window_notes`` + the input hash) and
+    none of ``WINDOW_MEASURE_KEYS``; every pre-existing meta key is
+    untouched."""
     resp = QuestHandler(hub=hub).put(text="unflagged quest")
     m = re.search(r"\bqu(\d+)\b", resp.body)
     assert m is not None
@@ -690,10 +696,19 @@ def test_unflagged_scanned_candidate_meta_unchanged(store: Store, hub: Hub) -> N
     ref = store.fetch_refs_by_ids({sid})[sid]
     assert anchors.dispatch_surface_anchors(store, qid, hub=hub) == []
     assert anchors.harvest_surface_anchors(store, qid, ref) is None
-    assert wo.stamp_window_measures(store, qid, ref) is None
+    note = wo.stamp_window_measures(store, qid, ref)
+    assert note is not None and "none yet" in note
 
     after = dict(store.fetch_refs_by_ids({sid})[sid].meta or {})
-    assert after == before
+    assert not set(wo.WINDOW_MEASURE_KEYS) & set(after)
+    assert set(after) - set(before) == {"window_notes", wo.WINDOW_INPUTS_KEY}
+    assert all(after[k] == v for k, v in before.items())
+    assert any("no operating point" in n for n in after["window_notes"])
+    # idempotent: the input hash now matches, a second pass stays silent
+    assert (
+        wo.stamp_window_measures(store, qid, store.fetch_refs_by_ids({sid})[sid])
+        is None
+    )
     with store.pool.connection() as conn:
         jobs_after = (
             conn.execute(
