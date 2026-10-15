@@ -1,90 +1,42 @@
 ---
 status: draft
-title: a pulled datasheet's ratings, key specs, package and pin table land as page-cited facts on the part ref
+title: a pulled datasheet's ratings and key specs land as page-cited measures rows on the part ref
 pillar: memory-graph
 prio: normal
 model: sonnet
 blocked-by: measures-substrate
 ---
 
-# datasheet facts in the mesh
+# datasheet facts in the mesh — remainder
 
-## Motivation / why
+Shipped 2026-10-14 (worktree ds-facts): the pin table, required externals
+and conditional (strap/address) tables as one structured block per
+package under `refs.meta.datasheet_facts` (`src/precis/pcb/datasheet_facts.py`),
+the `datasheet_facts` extraction job (enqueued next to `datasheet_pull`
+at put time), and the `part:<C#>~<pin>` link selector. The gr458878
+pad-map check and pcb-datasheet-review slices 5-7 read
+`part_facts(store, lcsc)`.
 
-Reto, 2026-10-02 (ewod-pcb-2 option 1, knowledge-mesh-4/6): a pulled
-datasheet joins the mesh as extracted facts, not a PDF in storage:
-absolute-max and recommended ratings, key electrical specs, package and
-the pin table, each citing its datasheet page and linked to the part.
-The pull (fetch, ingest, `datasheet-of`) is ewod-pcb's
-the shipped `datasheet_pull` job (`src/precis/pcb/datasheets.py`, 2b3c62811). The pin table is the payoff: it can be
-checked against the footprint's pad map, which nothing checks today
-(gr458878).
+## Remaining scope
 
-## In scope
+- **Ratings and key specs** as `measures` rows with `subject_ref_id` =
+  the part ref, measurand = a taxon node, value normalised to the
+  measurand's canonical unit, printed literal + unit as provenance,
+  conditions (`Tj=25 °C`) in `conditions`, evidence anchor on the
+  datasheet's page chunk. The extraction job's prompt doesn't emit them;
+  this adds a measures-writing stage to `datasheet_facts` (or a sibling
+  job) plus the measurand taxa (supply voltage abs-max/recommended, …).
+- AC leftover: the part's fisheye shows its datasheet, its specs and its
+  boards (the facts block already rides the part ref's meta — verify the
+  eye renders it readably).
 
-1. **Subject.** The part ref (shipped; `precis.handlers.part`); the datasheet links
-   `datasheet-of` → part.
-2. **Ratings and key specs** as `measures` rows with `subject_ref_id` =
-   the part ref, measurand = a taxon node, the value normalised to the
-   measurand's canonical unit (`measures-substrate.md` in-scope 4), the
-   printed literal and unit as provenance, conditions (e.g. `Tj=25 °C`)
-   in `conditions`, and the evidence anchor on the datasheet's page
-   chunk.
-3. **Pin table**: one structured block per package on the part ref (pin
-   number, name, function, type, page anchor), read by the gr458878
-   pad-map check.
-4. **Extraction**: one LLM read of the datasheet's table chunks in a
-   worker lane after ingest (about one BIG-tier call per datasheet).
+## Decisions carried from the landed slices
 
-## Explicitly NOT in scope
-
-- The fetch and ingest (ewod-pcb).
-- A finding per fact (rejected in knowledge-mesh-4 option 3: it floods
-  the claim graph).
-- Non-PDF parametrics (Octopart/Nexar), a later source.
-
-## Acceptance criteria
-
-1. A pulled datasheet for one part yields measures rows whose values are
-   in canonical units and whose anchors open the right page.
-2. The pin table for the part's package is stored and the gr458878 check
-   compares it with the footprint's pad map, reporting mismatches. The
-   failing case is loud: a declared `OUT0..63` against a part whose real
-   pads are `HVOUT1..64` reports the mismatch and synthesizes no pads.
-   The check stays advisory until a human confirms the extraction.
-3. The part's fisheye shows its datasheet, its specs and its boards.
-
-## Target + blast radius
-
-- worker lane for extraction; `measures` writes; part ref meta
-- `handlers/datasheet.py`, the pcb pad-map check (gr458878)
-
-## Open questions / decisions log
-
-- **[decided 2026-10-02, Reto ewod-pcb-2]** Content: ratings, key specs,
-  package, pin table, page-cited, linked to the part.
-- **[decided 2026-10-02, Reto knowledge-mesh-6]** Subject is a lazy part
-  ref; facts are `measures` rows, so this builds after
-  `measures-substrate.md`.
+- Subject is the lazy part ref; pin provenance is the page-anchored pin
+  table on the part ref, not one finding per pin (knowledge-mesh-4).
+- Facts are trusted by default; an unclear/contradictory read is a low
+  `confidence`, not a refusal (Reto 2026-10-13).
 - **[open, risk]** Marker's table recognition on pinout and
-  electrical-characteristics tables (`docs/design/pcb-0042-
-  implementation.md` §Slice 3). A bad read gives wrong pins, so the
-  pad-map check doubles as the extraction's first test.
-- **[decided 2026-10-02, knowledge-mesh-4]** Pin provenance is the
-  page-anchored pin table on the part ref, not one finding per pin (that
-  floods the claim graph). This supersedes gr458878's proposed
-  pin → finding → chunk shape.
-- **[decided 2026-10-12, Reto design-fold]** Build the single-pin
-  citation: `part:<C#>~<pin>` is a link selector (`handlers/_link_target.py`
-  resolves refs and chunks only today). Reto: "we need this to talk" — an
-  argument about a pin must be able to cite the datasheet row for that
-  pin. It does not become a second scheme: the pad handle in the
-  `pcb-argue-with-design.md` anchor grammar (`U_TEMP.3`, `ARR1.R3C4`,
-  resolved in `src/precis/pcb/argue.py`) resolves through the instance's
-  part to `part:<C#>~<pin>`, and the selector resolves to the pin-table
-  row (number, name, function, type, page anchor). So a design pad, the
-  part pin and the datasheet page are one walk. Pin names use the pin
-  table's number. Acceptance: `link(target='part:<C#>~3')` resolves and
-  shows the row with its page anchor; an argue note about `U_TEMP.3` reports
-  the same row; an unknown pin is a BadInput quoting the valid pins.
-  Builds with the pin table (this item's slice that stores it).
+  electrical-characteristics tables — a bad read gives wrong pins; the
+  pad-map check doubles as the extraction's first test. Unverified on
+  prod data yet.

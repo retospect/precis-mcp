@@ -59,7 +59,12 @@ Map, in pipeline order (design doc:
   (pads in board coordinates), :mod:`~precis.pcb.landpattern`
   (synthesized pads when no footprint is cached),
   :mod:`~precis.pcb.escape` (footprint-intrinsic escape precompute),
-  :mod:`~precis.pcb.capabilities` (fab rules as versioned data).
+  :mod:`~precis.pcb.capabilities` (fab rules as versioned data),
+  :mod:`~precis.pcb.datasheets` (the ``datasheet_pull`` trigger + read
+  side) and :mod:`~precis.pcb.datasheet_facts` (the extracted pin table /
+  required externals / conditional-table block on the part ref —
+  ``get(kind='part', view='facts')`` reads it, the ``datasheet_facts``
+  job writes it).
 * **Place + route** — :mod:`~precis.pcb.place` (force-directed seed),
   :mod:`~precis.pcb.optimize` (the joint place+route annealer, the
   package's largest engine), :mod:`~precis.pcb.cost` (its one cost

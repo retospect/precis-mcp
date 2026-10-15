@@ -62,6 +62,27 @@ A family datasheet that covers several parts takes one more link per extra
 part: `link(kind='datasheet', id='<slug>', rel='datasheet-of',
 target='part:<C-number>')`.
 
+## The fact layer — `view='facts'`
+
+After a pull lands, a `datasheet_facts` job (one BIG-tier read) extracts
+the part's facts onto the part ref: the pin table per package (number,
+name, function, `etype`, `rail`, `max_voltage_v`, `vih`/`vil`,
+`max_current_a`, `nc`), required externals ("1 µF X5R on IN within 5 mm")
+and conditional tables (strap/address), each row citing its datasheet
+chunk + page with a confidence. Read them, don't re-derive:
+
+```python
+get(kind='part', id='C25804', view='facts')   # the extracted block
+put(kind='job', job_type='datasheet_facts',   # extract now (once per sheet)
+    parent_id=<pcb ref>, params={'lcsc': 'C25804'})
+```
+
+A field the sheet doesn't print stays absent — the review asks the user
+rather than guessing. Cite one pin's row with `link(target='part:C…~3')`:
+the selector resolves through the pin table to the datasheet page chunk.
+An unclear/contradictory read is a low `confidence`, not a refusal — quote
+the cited page and correct it if the sheet says otherwise.
+
 ## The move
 
 Encode what you read as net **classes** ([[precis-net-class-help]]) and

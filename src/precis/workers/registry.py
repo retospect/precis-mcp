@@ -817,6 +817,21 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-pcb-route-help",
     ),
     ServiceSpec(
+        # Extract a part's datasheet facts (pin table, required externals,
+        # conditional tables) into refs.meta.datasheet_facts — one BIG-tier
+        # routed call; minted by datasheet_pull's dispatch on a landed pull,
+        # or put(kind='job', job_type='datasheet_facts', parent_id=<pcb>).
+        name="datasheet_facts",
+        label="Datasheet facts (job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        uses_model=True,
+        cost_sources=("datasheet-facts",),
+        one_line="One BIG-tier read of a part's datasheet into its fact "
+        "block — chained after datasheet_pull.",
+        doc_skill="precis-datasheet-help",
+    ),
+    ServiceSpec(
         # Fetch an agent-supplied PDF URL into the watch inbox for a paper
         # stub; minted by put(kind='paper', args={'pdf_url': ...}).
         name="paper_pull",

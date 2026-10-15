@@ -792,6 +792,13 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "datasheet_pull":
         _REGISTRY["datasheet_pull"] = _load_datasheet_pull()
         return _REGISTRY["datasheet_pull"]
+    if name == "datasheet_facts":
+        # One BIG-tier read of a pulled datasheet -> the part ref's fact
+        # block (datasheet-facts-mesh). Plugin dispatch under claude_inproc.
+        from precis.workers.job_types.datasheet_facts import SPEC
+
+        _REGISTRY[name] = SPEC
+        return SPEC
     if name == "pcb_argue":
         _REGISTRY["pcb_argue"] = _load_pcb_argue()
         return _REGISTRY["pcb_argue"]
@@ -868,6 +875,7 @@ def known_job_types() -> list[str]:
         "pcb_place",
         "pcb_route",
         "datasheet_pull",
+        "datasheet_facts",
         "pcb_argue",
         "paper_pull",
         "deferred_llm_call",

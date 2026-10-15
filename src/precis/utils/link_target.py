@@ -31,7 +31,7 @@ buried in a stack trace.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput, NotFound
 from precis.hints import merged_redirect_hint
@@ -288,6 +288,14 @@ def parse_link_target(
             redirected_from=redirected_from,
         )
 
+    if kind == "part" and selector:
+        # ``part:<C#>~<pin>`` (datasheet-facts-mesh): the selector is the
+        # pin-table's pin number; it resolves through the part's extracted
+        # pin table to the datasheet chunk that prints the row, so the cite
+        # opens the page itself — design pad -> part pin -> datasheet page
+        # is one walk.
+        return _resolve_part_pin(store, ref, target, identifier, selector)
+
     pos: int | None = None
     if selector.isdigit() or (selector.startswith("-") and selector[1:].isdigit()):
         # Numeric pos. Negative pos has no meaning (the schema's
@@ -321,6 +329,98 @@ def parse_link_target(
 
     return LinkTarget(
         ref_id=ref.id, pos=pos, kind=kind, raw=target, redirected_from=redirected_from
+    )
+
+
+def _resolve_part_pin(
+    store: Store, ref: Any, target: str, identifier: str, selector: str
+) -> LinkTarget:
+    """Resolve ``part:<C#>~<pin>`` to the datasheet chunk citing that pin's
+    pin-table row. An unknown pin quotes the valid pins; a pin with no
+    page-cited provenance can't be a selector target at all."""
+    from precis.pcb import datasheet_facts as pf
+
+    facts = pf.part_facts_for_ref(store, ref.id)
+    if facts is None:
+        raise BadInput(
+            f"link target {target!r}: part {identifier} has no extracted "
+            "datasheet facts yet",
+            next="the datasheet_facts job runs after the pull; then this "
+            "selector resolves to the pin's datasheet row",
+        )
+    # A pin number is unique within a package block; across packages an
+    # ambiguous hit is an error, not a coin flip.
+    hits = [
+        (pkg_name, p)
+        for pkg_name, pkg in facts.packages.items()
+        for p in [pkg.pin(selector)]
+        if p is not None
+    ]
+    if not hits:
+        valid = sorted(
+            {p.pin for pkg in facts.packages.values() for p in pkg.pins},
+            key=lambda s: (len(s), s),
+        )
+        raise BadInput(
+            f"link target {target!r}: part {identifier} has no pin "
+            f"{selector!r} in its pin table",
+            options=valid or None,
+            next="use one of the pin table's pin numbers, or "
+            f"link the part itself: part:{identifier}",
+        )
+    if len(hits) > 1:
+        raise BadInput(
+            f"link target {target!r}: pin {selector!r} exists in several "
+            f"packages ({sorted(n for n, _ in hits)}) — the single-package "
+            "selector can't disambiguate",
+            next=f"link the part itself: part:{identifier}",
+        )
+    pin = hits[0][1]
+    if pin.source is None or pin.source.chunk_id is None:
+        raise BadInput(
+            f"link target {target!r}: pin {selector!r} of {identifier} has no "
+            "page-cited provenance to resolve to",
+            next=f"link the part itself: part:{identifier}",
+        )
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT ref_id, ord, page_first FROM chunks "
+            "WHERE chunk_id = %s AND retired_at IS NULL",
+            (pin.source.chunk_id,),
+        ).fetchone()
+    if row is None:
+        raise BadInput(
+            f"link target {target!r}: the cited chunk {pin.source.chunk_id} is gone",
+            next=f"link the part itself: part:{identifier}",
+        )
+    ds_ref_id, ord_, page = int(row[0]), int(row[1]), row[2]
+    from precis.hints import Hint
+
+    desc = ", ".join(
+        b
+        for b in (
+            pin.name,
+            pin.function,
+            f"p.{page or pin.source.page or '?'}",
+        )
+        if b
+    )
+    store.emit_hint(
+        Hint(
+            text=(
+                f"{target}: pin {pin.pin} ({desc or 'unnamed'}) cites "
+                f"datasheet chunk {pin.source.chunk_id} — the link lands on "
+                "that page, not the part ref"
+            ),
+            topic=f"part.pin.{identifier}.{pin.pin}",
+        )
+    )
+    return LinkTarget(
+        ref_id=ds_ref_id,
+        pos=ord_,
+        kind="datasheet",
+        raw=target,
+        redirected_from=None,
     )
 
 

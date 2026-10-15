@@ -26,9 +26,59 @@ log = logging.getLogger(__name__)
 
 JOB_TYPE = "datasheet_pull"
 
+#: The extraction job chained after a pull (datasheet-facts-mesh): one
+#: BIG-tier read per part, enqueued at put time next to the pull —
+#: ``precis.workers.job_types.datasheet_facts`` is the worker half.
+FACTS_JOB_TYPE = "datasheet_facts"
+
 
 def idem_key(lcsc: str) -> str:
     return f"{JOB_TYPE}:{lcsc}"
+
+
+def facts_idem_key(lcsc: str) -> str:
+    """One extraction per part; idem dedupe only collapses a job still
+    in flight, so a re-put after a terminal run mints a fresh one (a new
+    datasheet revision re-extracts)."""
+    return f"{FACTS_JOB_TYPE}:{lcsc.strip().upper()}"
+
+
+#: Terminal STATUS values for a job ref — mirrors ``handlers/job.py``'s
+#: tuple without importing the handler layer (this module is read by
+#: workers; the three values are the contract's stable end states).
+_JOB_TERMINAL = ("succeeded", "failed", "cancelled")
+
+
+def pull_in_flight(store: Store, lcsc: str) -> bool:
+    """A non-terminal ``datasheet_pull`` job exists for this C-number
+    (queued, running, or parked) — the facts job parks on it rather than
+    recording ``no_datasheet`` halfway through the pull."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM refs r "
+            "WHERE r.kind = 'job' AND r.retired_at IS NULL "
+            "  AND r.meta->>'job_type' = %s "
+            "  AND r.meta->'params'->>'lcsc' = %s "
+            "  AND NOT EXISTS ("
+            "    SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id) "
+            "    WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' "
+            "      AND t.value = ANY(%s)) "
+            "LIMIT 1",
+            (JOB_TYPE, lcsc.strip().upper(), list(_JOB_TERMINAL)),
+        ).fetchone()
+    return row is not None
+
+
+def _facts_extracted(store: Store, part_ref_id: int | None) -> bool:
+    if part_ref_id is None:
+        return False
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta->'datasheet_facts'->>'extracted_at' FROM refs "
+            "WHERE ref_id = %s",
+            (part_ref_id,),
+        ).fetchone()
+    return bool(row and row[0])
 
 
 def live_lcscs(store: Store, pcb_ref_id: int) -> list[str]:
@@ -244,16 +294,56 @@ def enqueue_pulls(
     return queued
 
 
+def enqueue_facts(store: Store, job: Any, pcb_ref_id: int) -> int:
+    """Enqueue one ``datasheet_facts`` job per live C-number that has (or
+    is about to have — its pull is queued/in-flight) a datasheet and no
+    extracted fact block yet. Called next to :func:`enqueue_pulls` from
+    the put path, which owns the handler; the facts job parks itself when
+    it wins the race against its pull (:func:`pull_in_flight`). Never
+    raises — a queue failure must not undo the put that triggered it."""
+    queued = 0
+    try:
+        lcscs = live_lcscs(store, pcb_ref_id)
+        if not lcscs:
+            return 0
+        states = datasheet_states(store, lcscs)
+        for lcsc in lcscs:
+            state = states[lcsc]
+            has_pull = pull_in_flight(store, lcsc)
+            if state["datasheet"] is None and not has_pull:
+                continue
+            if _facts_extracted(store, state["part_ref_id"]):
+                continue
+            resp = job.put(
+                job_type=FACTS_JOB_TYPE,
+                executor="claude_inproc",
+                parent_id=pcb_ref_id,
+                params={"lcsc": lcsc},
+                idem_key=facts_idem_key(lcsc),
+            )
+            if not getattr(resp, "reused", False):
+                queued += 1
+    except Exception:
+        log.warning(
+            "datasheet_facts: enqueue for pcb %s failed", pcb_ref_id, exc_info=True
+        )
+    return queued
+
+
 __all__ = [
+    "FACTS_JOB_TYPE",
     "JOB_TYPE",
     "RETRY_AFTER",
     "datasheet_state",
     "datasheet_states",
+    "enqueue_facts",
     "enqueue_pulls",
+    "facts_idem_key",
     "idem_key",
     "is_transient",
     "link_known",
     "live_lcscs",
     "pending_lcscs",
+    "pull_in_flight",
     "status_line",
 ]

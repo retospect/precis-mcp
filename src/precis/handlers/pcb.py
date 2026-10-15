@@ -805,8 +805,8 @@ class PcbHandler(Handler):
             raise BadInput(f"pcb: {exc}") from exc
 
         # After the commit, never inside the judged transaction: queue the
-        # datasheet pulls (jobs; nothing is fetched here).
-        queued = self._queue_datasheets(ref.id)
+        # datasheet pulls + extractions (jobs; nothing is fetched here).
+        queued, facts_queued = self._queue_datasheets(ref.id)
 
         if autoplace:
             # Retired as a computed-inline behavior (pcb-guided-place-route
@@ -875,15 +875,24 @@ class PcbHandler(Handler):
             + judged.lines()
             + "".join(n + "\n" for n in notes)
             + (f"{queued} datasheet pull(s) queued\n" if queued else "")
+            + (
+                f"{facts_queued} datasheet facts extraction(s) queued\n"
+                if facts_queued
+                else ""
+            )
             + self._toc(design)
         )
 
-    def _queue_datasheets(self, ref_id: int, *, force: bool = False) -> int:
+    def _queue_datasheets(self, ref_id: int, *, force: bool = False) -> tuple[int, int]:
         """Enqueue a ``datasheet_pull`` job per C-number on the board that has
-        no datasheet and no recorded attempt (:mod:`precis.pcb.datasheets`);
-        returns how many were newly queued."""
-        return pcb_datasheets.enqueue_pulls(
-            self.store, self.hub.sibling("job"), ref_id, force=force
+        no datasheet and no recorded attempt, plus a ``datasheet_facts``
+        extraction per part that has (or is pulling) a datasheet but no
+        fact block yet (:mod:`precis.pcb.datasheets`); returns
+        ``(pulls_queued, facts_queued)``."""
+        job = self.hub.sibling("job")
+        return (
+            pcb_datasheets.enqueue_pulls(self.store, job, ref_id, force=force),
+            pcb_datasheets.enqueue_facts(self.store, job, ref_id),
         )
 
     def _stale_note(self, ref_id: int) -> str:
@@ -1194,9 +1203,10 @@ class PcbHandler(Handler):
         if op == "order":
             return self._op_order(ref, args)
         if op == "datasheets":
-            n = self._queue_datasheets(ref.id, force=bool(args.get("force")))
+            n, nf = self._queue_datasheets(ref.id, force=bool(args.get("force")))
             return Response(
-                body=f"{ref.slug}: {n} datasheet pull(s) queued"
+                body=f"{ref.slug}: {n} datasheet pull(s) queued, "
+                f"{nf} facts extraction(s) queued"
                 + ("" if args.get("force") else " (force=true re-queues failed pulls)")
             )
         raise BadInput(

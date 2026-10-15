@@ -67,10 +67,12 @@ from typing import Any, ClassVar
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
 from precis.format import render_agent_table
+from precis.handlers._eye import is_eye_view
 from precis.handlers._links_render import render_links_section
 from precis.pcb import catalog, jlc_library
 from precis.pcb._http import VendorError
 from precis.pcb.catalog import min_unit_price
+from precis.pcb.datasheet_facts import part_facts, render_facts
 from precis.pcb.datasheets import datasheet_state
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
@@ -125,13 +127,19 @@ class PartHandler(Handler):
             "search(kind='part', q='0.1uF 0402 X7R') filters "
             "to JLCPCB-assemblable parts and prefers Basic + high-turnover + "
             "cheap. Used by a pcb design to pick manufacturable parts. "
+            "view='facts' reads the extracted datasheet pin table / "
+            "required externals (precis.pcb.datasheet_facts). "
             "See precis-part-select-help."
         ),
         supports_get=True,
         supports_search=True,
         is_numeric=False,
         id_required=False,
+        views=("facts",),
     )
+
+    def accepted_views(self, *, id: Any = None) -> list[str]:
+        return ["facts"]
 
     def __init__(
         self,
@@ -157,7 +165,24 @@ class PartHandler(Handler):
         return fn(self.store, lcsc)
 
     # ── get ──────────────────────────────────────────────────────────
-    def get(self, *, id: str | int | None = None, **_kw: Any) -> Response:
+    def get(
+        self, *, id: str | int | None = None, view: str | None = None, **_kw: Any
+    ) -> Response:
+        if view is not None:
+            if is_eye_view(view):
+                return self.eye(id=id, extent=view)
+            if view != "facts":
+                raise BadInput(
+                    f"kind='part' has no view {view!r}",
+                    next="get(kind='part', id='C…', view='facts') — the "
+                    "datasheet-extracted pin table / required externals",
+                )
+            if id is None or not str(id).strip():
+                raise BadInput(
+                    "get(kind='part', view='facts') requires id= (an LCSC C-number)"
+                )
+            lcsc = catalog.lcsc_id(id) or str(id).strip().upper()
+            return Response(body=render_facts(part_facts(self.store, lcsc), lcsc=lcsc))
         if id is None or not str(id).strip():
             raise BadInput(
                 "get(kind='part') requires id= (an LCSC C-number)",
