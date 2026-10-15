@@ -41,6 +41,7 @@ ERC_RULES = frozenset(
         "rail_crossing",
         "no_decoupling",
         "over_current",
+        "unsupplied_client",
         "passive_rating",
     }
 )

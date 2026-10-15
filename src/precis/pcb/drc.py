@@ -116,7 +116,7 @@ import collections
 import dataclasses
 import math
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -3475,6 +3475,49 @@ def check_no_driver(
                     + " but nothing that drives them"
                 ),
                 objects=tuple(_pin_obj(m) for m in consumers),
+            )
+        )
+    return out
+
+
+def check_unsupplied_client(
+    clients: Sequence[Any],
+    supplies: Sequence[Any],
+    roles: Mapping[str, Any],
+) -> list[DrcFinding]:
+    """A ``client_of`` pin no supplier terminal can serve: runs the same
+    capacity/voltage gate the route job uses (distance-free
+    :func:`precis.pcb.matching.solve`) and errors once per unsupplied
+    client. No clients -> no findings."""
+    from precis.pcb import matching
+
+    if not clients:
+        return []
+    try:
+        res = matching.solve(clients, supplies, roles, lambda _r, _p: (0.0, 0.0))
+    except ValueError as exc:
+        return [_erc_not_checked("unsupplied_client", str(exc))]
+    by_pin = {(c.instance, c.pin): c for c in clients}
+    n_clients: dict[str, int] = {}
+    n_terms: dict[str, int] = {}
+    for c in clients:
+        n_clients[c.role] = n_clients.get(c.role, 0) + 1
+    for s in supplies:
+        n_terms[s.role] = n_terms.get(s.role, 0) + len(s.blocks)
+    out: list[DrcFinding] = []
+    for refdes, pin in res.unsupplied:
+        role = by_pin[(refdes, pin)].role
+        out.append(
+            DrcFinding(
+                rule="unsupplied_client",
+                severity="error",
+                where=f"pin {refdes}/{pin}",
+                detail=(
+                    f"pin {refdes}/{pin} is a client of role {role} but no "
+                    f"supplier of role {role} has a free admissible terminal "
+                    f"({n_clients[role]} clients vs {n_terms.get(role, 0)} terminals)"
+                ),
+                objects=(_pin_obj({"refdes": refdes, "pin": pin}),),
             )
         )
     return out

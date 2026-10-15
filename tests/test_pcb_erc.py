@@ -382,3 +382,30 @@ def test_net_rail_lands_in_meta(pcb: PcbHandler, store: Any) -> None:
     ref = store.get_ref(kind="pcb", id="erc-rail")
     nets = {n["name"]: n for n in store.pcb_graph(ref.id)["nets"]}
     assert nets["VCC"]["meta"]["rail"] == "vcc"
+
+
+# ── unsupplied_client ─────────────────────────────────────────────────
+
+
+def test_unsupplied_client_flags_the_excess() -> None:
+    from precis.pcb.matching import Client, Role, Supply
+
+    sup = [Supply("U1", "drv", (("A",),))]
+    clients = [Client("P1", "1", "drv"), Client("P2", "1", "drv")]
+    out = drc.check_unsupplied_client(clients, sup, {"drv": Role("drv")})
+    assert [(f.rule, f.severity) for f in out] == [("unsupplied_client", "error")]
+    assert "drv" in out[0].detail and "2 clients vs 1 terminals" in out[0].detail
+    assert out[0].where in ("pin P1/1", "pin P2/1")
+    sup2 = [Supply("U1", "drv", (("A",), ("B",)))]
+    assert drc.check_unsupplied_client(clients, sup2, {"drv": Role("drv")}) == []
+    assert drc.check_unsupplied_client([], sup, {}) == []
+
+
+def test_unsupplied_client_multi_pin_block_not_checked() -> None:
+    from precis.pcb.matching import Client, Supply
+
+    out = drc.check_unsupplied_client(
+        [Client("P1", "1", "drv")], [Supply("U1", "drv", (("A", "B"),))], {}
+    )
+    assert [f.rule for f in out] == ["unsupplied_client"]
+    assert out[0].severity == "warn"

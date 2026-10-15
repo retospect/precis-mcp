@@ -526,28 +526,29 @@ crossing-count matcher are gone.
 - Matching onto `unused` spare channels (a netless pin gaining a net)
   needs Slice 7's snapshot; today only wired supply pins permute.
 - Blocks of size > 1 (differential pairs) raise; needs client tuples.
-- `unsupplied_client` as a `view='check'` finding, not only a route-job
-  refusal.
 - Measure on dogfood (cluster `pcb_route`): matcher vs radial realized
   count on `ewod-dogfood-2`.
 
 ### Slice 7 — lazy netlist: resolved snapshot, prior, firmware export
+
+**Shipped 2026-10-15:** `view='channel-map'` (`args.format` `csv|json`,
+`matching.channel_map`), read off the swap-applied IR on every read, and
+the `unsupplied_client` error on `view='check'` (`drc.check_unsupplied_client`,
+the route job's capacity/voltage gate). `route-status` prints
+`clients: N (a bound, b unresolved, c unmatched)` with the pins
+(`PcbHandler._client_state_text`). Open below.
 
 - `pcb_netlist_snapshots` (derived, per `resolve`): the effective
   `(pin, net)` set, the prior it was solved from, the `content_hash` of
   the intent. `_build_ir` reads the latest snapshot; `pcb_pin_swaps` is
   migrated into it and dropped (forward-only: a new migration, baseline
   regen via `scripts/bump`).
-- `view='channel-map'` (format `csv|json`): client → supplier terminal per
-  role, regenerated on every resolve, never stored as authored data. This
-  is the firmware export that does not exist today.
-- Net naming rule enforced (§1d): a connection with no constrained end is
-  refused at `_pcb_apply` with the rule text; a multi-constrained net
-  without an explicit name takes the canonical first terminal.
-- `route-status` gains the three-state split: `unresolved` (no solve yet,
-  reported as phase, not finding), `unmatched` (solve ran, client
-  unbound — `unsupplied_client` finding), `unrouted` (bound, no copper —
-  unchanged).
+- Net naming rule: `_pcb_apply` refuses a touched net whose 2+ members are
+  all supply pins, checked on every net whose membership the apply
+  changed (shipped, `_pcb_check_free_ended_nets`). Left: `channel_map`
+  reads a net carrying two same-role suppliers, or a multi-pin block's
+  terminal, as unbound. The canonical default name has nothing to apply to: every net needs an
+  explicit name today.
 
 *Accept:* two resolves with identical intent and prior produce identical
 snapshots; a 0.1 mm nudge with the prior supplied changes ≤ 1 assignment

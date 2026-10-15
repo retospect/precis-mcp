@@ -439,33 +439,15 @@ def connected_pin_pairs(model: dict[str, Any]) -> set[frozenset[tuple[str, str]]
     A pad with no ``net``, or missing ``refdes``/``pin`` identity (the
     mounting-hole rings :func:`~precis.pcb.realize.pads_for_ir` emits
     carry neither), contributes no pair — same "nothing to check against"
-    convention :func:`_pad_primitives` already applies to a netless pad."""
+    convention :func:`_pad_primitives` already applies to a netless pad.
+    Drilled pads are one primitive per board layer there (gr489175)."""
     prims, via_groups = _copper_primitives_with_vias(model)
     pad_offset = len(prims)
-    pad_keys: list[_PadKey] = []
-    pad_polys: dict[int, tuple[Point, ...]] = {}
-    for pad in model.get("pads") or []:
-        net = str(pad.get("net", ""))
-        if not net:
-            continue
-        w = float(pad.get("w", 0.0))
-        h = float(pad.get("h", w))
-        r = min(w, h) / 2.0
-        pad_index = len(prims)
-        prims.append(
-            _Prim(
-                (float(pad["x"]), float(pad["y"])),
-                None,
-                r,
-                pad_offset + len(pad_keys),
-                net,
-                str(pad.get("layer", "")),
-            )
-        )
-        poly = _pad_poly(pad)
-        if poly is not None:
-            pad_polys[pad_index] = poly
-        pad_keys.append(_pad_key(pad))
+    pad_prims, pad_polys_raw, pad_keys, pad_barrels = _pad_primitives(
+        model, start_group=len(model.get("copper") or [])
+    )
+    prims += pad_prims
+    pad_polys = {pad_offset + k: v for k, v in pad_polys_raw.items()}
     if not prims:
         return set()
 
@@ -473,6 +455,9 @@ def connected_pin_pairs(model: dict[str, Any]) -> set[frozenset[tuple[str, str]]
     for members in via_groups.values():
         for other in members[1:]:
             dsu.union(members[0], other)
+    for barrel in pad_barrels:
+        for other in barrel[1:]:
+            dsu.union(pad_offset + barrel[0], pad_offset + other)
     _union_same_pin_pads(dsu, pad_offset, pad_keys)
 
     pours = [
@@ -562,36 +547,18 @@ def fixed_copper_pin_terminals(
     A pin with no fixed copper in its island — the overwhelmingly common
     case, every board with no ``fixed_copper`` argument at all included —
     is simply absent from the returned mapping; no empty tuple is stored
-    for the majority that gets nothing extra."""
+    for the majority that gets nothing extra. Drilled pads reach every
+    layer, as in :func:`net_islands` (gr489175)."""
     prims, via_groups = _copper_primitives_with_vias(model)
     n_fixed_prims = len(prims)
     if n_fixed_prims == 0:
         return {}
     pad_offset = n_fixed_prims
-    pad_keys: list[_PadKey] = []
-    pad_polys: dict[int, tuple[Point, ...]] = {}
-    for pad in model.get("pads") or []:
-        net = str(pad.get("net", ""))
-        if not net:
-            continue
-        w = float(pad.get("w", 0.0))
-        h = float(pad.get("h", w))
-        r = min(w, h) / 2.0
-        pad_index = len(prims)
-        prims.append(
-            _Prim(
-                (float(pad["x"]), float(pad["y"])),
-                None,
-                r,
-                pad_offset + len(pad_keys),
-                net,
-                str(pad.get("layer", "")),
-            )
-        )
-        poly = _pad_poly(pad)
-        if poly is not None:
-            pad_polys[pad_index] = poly
-        pad_keys.append(_pad_key(pad))
+    pad_prims, pad_polys_raw, pad_keys, pad_barrels = _pad_primitives(
+        model, start_group=len(model.get("copper") or [])
+    )
+    prims += pad_prims
+    pad_polys = {pad_offset + k: v for k, v in pad_polys_raw.items()}
     if not prims:
         return {}
 
@@ -599,6 +566,9 @@ def fixed_copper_pin_terminals(
     for members in via_groups.values():
         for other in members[1:]:
             dsu.union(members[0], other)
+    for barrel in pad_barrels:
+        for other in barrel[1:]:
+            dsu.union(pad_offset + barrel[0], pad_offset + other)
     _union_same_pin_pads(dsu, pad_offset, pad_keys)
 
     by_key: dict[tuple[str, str], list[int]] = {}
@@ -625,7 +595,7 @@ def fixed_copper_pin_terminals(
 
     out: dict[tuple[str, str], tuple[FixedTerminal, ...]] = {}
     for offset, key in enumerate(pad_keys):
-        if key is None:
+        if key is None or key in out:
             continue
         fixed_members = fixed_by_root.get(dsu.find(pad_offset + offset))
         if not fixed_members:

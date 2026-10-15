@@ -44,7 +44,7 @@ pixels. The verbs map onto the seven-verb surface:
   instance's neighbourhood (``id='slug#U3'`` — its pins, the net on each, and
   the connected instances); a net's members (``id='slug@SCL'``); the *eyes*
   (``view='crossings'|'ratsnest'|'drc'|'trace'|'proximity'|'measures'|
-  'feasibility'|'route-status'|'congestion'|'planes'|'stackup'``); ``view='footprints'``
+  'feasibility'|'route-status'|'congestion'|'planes'|'stackup'|'channel-map'``); ``view='footprints'``
   — which catalog-part instances have a cached footprint, the read-side
   counterpart to ``op='footprint'``; ``view='svg'`` — a
   publication-quality vector figure (``args={'level':'board'|'sketch'|'fab'}``,
@@ -75,7 +75,9 @@ See ``precis-pcb-help`` and ``precis-pcb-route-help``.
 from __future__ import annotations
 
 import collections
+import csv
 import dataclasses
+import io
 import json
 import logging
 import math
@@ -121,6 +123,7 @@ from precis.pcb import jlc_library as pcb_jlc_library
 from precis.pcb import jlc_order as pcb_jlc_order
 from precis.pcb import layer_lock as pcb_layer_lock
 from precis.pcb import length_ratio as pcb_length_ratio
+from precis.pcb import matching as pcb_matching
 from precis.pcb import optimize as pcb_optimize
 from precis.pcb import realize as pcb_realize
 from precis.pcb import route as pcb_route
@@ -207,7 +210,7 @@ _STATUS_VIEWS = ("route-status",)
 #: read-side: congestion warnings from the latest ``op='route'`` run, and
 #: authored plane assignments. ``stackup`` (gr486893) is the board's
 #: copper stackup as the router sees it — role, plane net, routable.
-_SESSION_VIEWS = ("congestion", "planes", "stackup")
+_SESSION_VIEWS = ("congestion", "planes", "stackup", "channel-map")
 
 #: pcb-svg-render — publication-quality vector figures off the same
 #: copper model Gerber writes from (:mod:`precis.pcb.svg`), plus the L3
@@ -642,7 +645,7 @@ class PcbHandler(Handler):
             "instance's neighbourhood (id='slug#U3'), a net's members "
             "(id='slug@SCL'), the eyes (view='crossings'|'ratsnest'|'drc'|"
             "'trace'|'proximity'|'measures'|'feasibility'|'route-status'|"
-            "'congestion'|'planes'|'stackup'), per-BOM-line stock/library/lifecycle "
+            "'congestion'|'planes'|'stackup'|'channel-map'), per-BOM-line stock/library/lifecycle "
             "for an EOL sweep (view='availability', live-refreshes stale "
             "C-numbers), which catalog parts have a cached "
             "footprint (view='footprints', one row per catalog-part "
@@ -2725,6 +2728,8 @@ class PcbHandler(Handler):
             return self._render_planes(ref_id)
         if view == "stackup":
             return self._render_stackup(ref_id)
+        if view == "channel-map":
+            return self._render_channel_map(ref_id, args)
         if view == "drc":
             return self._render_drc(ref_id, args)
         if view == "check":
@@ -4087,6 +4092,7 @@ class PcbHandler(Handler):
                 "(~1 = direct; large = detour, gr451277)"
             )
         ref = self.store.get_ref(kind="pcb", id=ref_id)
+        body += self._client_state_text(ref_id)
         loop_meta = (
             ((ref.meta or {}).get("last_route") or {}).get("loop")
             if ref is not None
@@ -4306,6 +4312,112 @@ class PcbHandler(Handler):
             body=f"# planes — {len(rows)} assignment(s)\n"
             + render_agent_table(table_rows, schema=["layer", "net", "source"])
         )
+
+    def _client_channel_rows(
+        self, ref_id: int
+    ) -> tuple[pcb_matching.MatchModel, list[pcb_matching.ChannelRow]]:
+        """``((clients, supplies, roles), channel rows)`` for a design's
+        ``client_of`` pins under the current assignment; rows are empty when
+        it declares no clients. Shared by ``channel-map`` and
+        ``route-status``."""
+        from precis.workers.job_types import pcb_route as pcb_route_job
+
+        graph = self.store.pcb_graph(ref_id)
+        model = pcb_route_job._matching_model(graph, [])
+        clients, supplies, _roles = model
+        if not clients:
+            return model, []
+        ir = self._build_ir(ref_id, graph)
+        pin_nets: dict[tuple[str, str], str | None] = {}
+        for p in range(ir.n_pins):
+            net = int(ir.pin_net[p])
+            pin_nets[
+                (str(ir.instance_refdes[int(ir.pin_instance[p])]), str(ir.pin_label[p]))
+            ] = str(ir.net_name[net]) if net >= 0 else None
+        return model, pcb_matching.channel_map(clients, supplies, pin_nets)
+
+    def _client_state_text(self, ref_id: int) -> str:
+        """The ``clients: N (a bound, b unresolved, c unmatched)`` block for
+        ``route-status``; empty for a design with no ``client_of`` pins.
+        unmatched = the capacity/voltage gate cannot serve the client (an
+        error); unresolved = servable but its net carries no supplier
+        terminal yet (a phase fact, the solve has not bound it)."""
+        (clients, supplies, roles), rows = self._client_channel_rows(ref_id)
+        if not clients:
+            return ""
+        try:
+            gate = pcb_matching.solve(
+                clients, supplies, roles, lambda _r, _p: (0.0, 0.0)
+            ).unsupplied
+        except ValueError:  # multi-pin blocks: view='check' says not-checked
+            gate = ()
+        unmatched = {f"{inst}/{pin}" for inst, pin in gate}
+        bound = 0
+        unresolved: list[str] = []
+        unmatched_pins: list[str] = []
+        for r in rows:
+            pin = f"{r.client[0]}/{r.client[1]}"
+            if pin in unmatched:
+                unmatched_pins.append(pin)
+            elif r.supplier is None:
+                unresolved.append(pin)
+            else:
+                bound += 1
+        out = (
+            f"\nclients: {len(rows)} ({bound} bound, {len(unresolved)} "
+            f"unresolved, {len(unmatched_pins)} unmatched)"
+        )
+        for label, pins, note in (
+            ("unmatched", unmatched_pins, "error: no admissible supplier terminal"),
+            ("unresolved", unresolved, "no supplier terminal on its net yet"),
+        ):
+            if pins:
+                shown = ", ".join(pins[:10])
+                more = f" (+{len(pins) - 10} more)" if len(pins) > 10 else ""
+                out += f"\n  {label} ({note}): {shown}{more}"
+        return out
+
+    def _render_channel_map(self, ref_id: int, args: dict[str, Any]) -> Response:
+        """``view='channel-map'`` — which supply terminal each ``client_of``
+        pin is wired to under the current (swap-applied) assignment, as CSV
+        or JSON. Derived and regenerated on read, never stored."""
+        fmt = str(args.get("format") or "csv").lower()
+        if fmt not in ("csv", "json"):
+            raise BadInput(
+                f"unknown channel-map format {fmt!r}", next="format='csv'|'json'"
+            )
+        (clients, _supplies, _roles), rows = self._client_channel_rows(ref_id)
+        if not clients:
+            return Response(
+                body="channel-map: no clients - declare client_of on pins "
+                "and supplies on the supplying part's components entry"
+            )
+        bound = sum(1 for r in rows if r.supplier is not None)
+
+        def cell(pin: tuple[str, str] | None) -> str:
+            return f"{pin[0]}/{pin[1]}" if pin else ""
+
+        recs = [
+            {
+                "role": r.role,
+                "client": cell(r.client),
+                "net": r.net or "",
+                "supplier": cell(r.supplier),
+            }
+            for r in rows
+        ]
+        head = (
+            "# channel-map - derived from the current assignment, regenerated on "
+            f"read; {len(rows)} clients, {bound} bound, {len(rows) - bound} unbound\n"
+        )
+        if fmt == "json":
+            return Response(body=head + json.dumps(recs, indent=1))
+        buf = io.StringIO()
+        w = csv.writer(buf, lineterminator="\n")
+        w.writerow(["role", "client", "net", "supplier"])
+        for rec in recs:
+            w.writerow([rec["role"], rec["client"], rec["net"], rec["supplier"]])
+        return Response(body=head + buf.getvalue())
 
     def _render_stackup(self, ref_id: int) -> Response:
         """The board's copper stackup (``pcb_boards.stackup``) — one row
@@ -5090,10 +5202,18 @@ class PcbHandler(Handler):
                 nets, positions, roles_by_refdes=roles_by_refdes
             )
             + pcb_drc.check_over_current(nets)
+            + self._unsupplied_client_findings(graph)
             + pcb_drc.check_passive_rating(
                 nets, graph.get("instances") or [], design.get("net_classes")
             )
         )
+
+    @staticmethod
+    def _unsupplied_client_findings(graph: dict[str, Any]) -> list[pcb_drc.DrcFinding]:
+        from precis.workers.job_types import pcb_route as pcb_route_job
+
+        clients, supplies, roles = pcb_route_job._matching_model(graph, [])
+        return pcb_drc.check_unsupplied_client(clients, supplies, roles)
 
     def _drc_run(
         self,

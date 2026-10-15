@@ -53,6 +53,10 @@ class MatchResult:
     findings: tuple[str, ...]
 
 
+#: ``(clients, supplies, roles)`` -- the matcher's inputs off a stored graph.
+MatchModel = tuple[list[Client], list[Supply], dict[str, Role]]
+
+
 def solve(
     clients: Sequence[Client],
     supplies: Sequence[Supply],
@@ -150,3 +154,41 @@ def solve(
             findings.append(f"{len(miss)} {rname} clients unsupplied")
 
     return MatchResult(assignment, tuple(sorted(unsupplied)), total, tuple(findings))
+
+
+@dataclass(frozen=True, slots=True)
+class ChannelRow:
+    """One client pin of the channel map: its role, effective net and the
+    supply terminal on that net (``None`` = unbound)."""
+
+    role: str
+    client: Pin
+    net: str | None
+    supplier: Pin | None
+
+
+def channel_map(
+    clients: Sequence[Client],
+    supplies: Sequence[Supply],
+    pin_nets: Mapping[Pin, str | None],
+) -> list[ChannelRow]:
+    """Which supply terminal each client is wired to, read off the effective
+    nets (post pin-swap) rather than solved: a client's supplier is the
+    one-pin-block terminal of a same-role ``Supply`` whose net equals the
+    client's net. Derived, never stored."""
+    by_net: dict[tuple[str, str], list[Pin]] = {}
+    for s in supplies:
+        for b in s.blocks:
+            if len(b) != 1:
+                continue
+            t = (s.instance, b[0])
+            net = pin_nets.get(t)
+            if net is not None:
+                by_net.setdefault((s.role, net), []).append(t)
+    rows: list[ChannelRow] = []
+    for c in sorted(clients, key=lambda c: (c.role, c.instance, c.pin)):
+        cp = (c.instance, c.pin)
+        net = pin_nets.get(cp)
+        hits = sorted(by_net.get((c.role, net), [])) if net is not None else []
+        rows.append(ChannelRow(c.role, cp, net, hits[0] if len(hits) == 1 else None))
+    return rows

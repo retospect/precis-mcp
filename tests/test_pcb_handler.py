@@ -3954,6 +3954,91 @@ def test_roles_supplies_client_of_round_trip(pcb, store):
     }
 
 
+def test_channel_map_view(pcb):
+    def comp(refdes, pins, **kw):
+        return {"refdes": refdes, "label": "x", "footprint": "X", "pins": pins, **kw}
+
+    pcb.put(
+        id="chmap",
+        args={
+            "roles": [{"name": "drv", "fanout": 1}],
+            "components": [
+                comp(
+                    "U1",
+                    [{"name": "A"}, {"name": "B"}],
+                    supplies={"role": "drv", "blocks": [["A"], ["B"]]},
+                ),
+                comp("P1", [{"name": "1", "client_of": "drv"}]),
+                comp("P2", [{"name": "1", "client_of": "drv"}]),
+            ],
+            "nets": [{"name": "N1"}, {"name": "N2"}],
+            "connections": [
+                {"net": "N1", "refdes": "U1", "pin": "A"},
+                {"net": "N1", "refdes": "P1", "pin": "1"},
+                {"net": "N2", "refdes": "P2", "pin": "1"},
+            ],
+        },
+    )
+    a = pcb.get(id="chmap", view="channel-map").body
+    assert pcb.get(id="chmap", view="channel-map").body == a
+    assert "2 clients, 1 bound, 1 unbound" in a
+    assert "role,client,net,supplier\ndrv,P1/1,N1,U1/A\ndrv,P2/1,N2,\n" in a
+    j = pcb.get(id="chmap", view="channel-map", args={"format": "json"}).body
+    assert '"supplier": "U1/A"' in j
+
+
+def _client_state_design(*, with_unmatched: bool) -> dict:
+    def comp(refdes, pins, **kw):
+        return {"refdes": refdes, "label": "x", "footprint": "X", "pins": pins, **kw}
+
+    comps = [
+        comp(
+            "U1",
+            [{"name": "A"}, {"name": "B"}],
+            supplies={"role": "drv", "blocks": [["A"], ["B"]]},
+        ),
+        comp("P1", [{"name": "1", "client_of": "drv"}]),
+        comp("P2", [{"name": "1", "client_of": "drv"}]),
+    ]
+    conns = [
+        {"net": "N1", "refdes": "U1", "pin": "A"},
+        {"net": "N1", "refdes": "P1", "pin": "1"},
+        {"net": "N2", "refdes": "P2", "pin": "1"},
+    ]
+    if with_unmatched:
+        comps.append(comp("P3", [{"name": "1", "client_of": "drv"}]))
+        conns.append({"net": "N3", "refdes": "P3", "pin": "1"})
+    return {
+        "roles": [{"name": "drv", "fanout": 1}],
+        "components": comps,
+        "nets": [{"name": "N1"}, {"name": "N2"}, {"name": "N3"}],
+        "connections": conns,
+    }
+
+
+def test_route_status_client_states(pcb):
+    # 3 clients, 2 terminals: P1 bound, P2 unresolved (its net has no
+    # supplier), P3 is the 3rd client past capacity -> unmatched.
+    pcb.put(id="rs-clients", args=_client_state_design(with_unmatched=True))
+    body = pcb.get(id="rs-clients", view="route-status").body
+    assert "clients: 3 (1 bound, 1 unresolved, 1 unmatched)" in body
+    assert "unmatched (error: no admissible supplier terminal): P3/1" in body
+    assert "unresolved (no supplier terminal on its net yet): P2/1" in body
+
+
+def test_route_status_no_clients_unchanged(pcb):
+    pcb.put(id="rs-noclients", args=_DESIGN)
+    body = pcb.get(id="rs-noclients", view="route-status").body
+    assert "clients:" not in body
+    assert "unmatched" not in body and "unresolved" not in body
+
+
+def test_channel_map_view_no_clients(pcb):
+    pcb.put(id="chmap0", args=_DESIGN)
+    body = pcb.get(id="chmap0", view="channel-map").body
+    assert "client_of" in body and "supplies" in body
+
+
 def test_roles_and_supplies_validation(pcb):
     with pytest.raises((BadInput, ValueError)):
         pcb.put(id="roles-bad", args={"roles": [{"name": "r", "fanout": 0}]})

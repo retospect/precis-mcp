@@ -100,3 +100,31 @@ def test_unbounded_fanout():
     )
     assert len(r.assignment) == 5
     assert set(r.assignment.values()) == {("U", "1")}
+
+
+def test_channel_map_binds_by_net():
+    from precis.pcb.matching import ChannelRow, channel_map
+
+    sup = Supply("U", "r", (("A",), ("B",)))
+    clients = [Client("C2", "1", "r"), Client("C1", "1", "r"), Client("C3", "1", "r")]
+    nets = {
+        ("U", "A"): "N1",
+        ("U", "B"): "N2",
+        ("C1", "1"): "N1",
+        ("C2", "1"): "N2",
+        ("C3", "1"): None,
+    }
+    assert channel_map(clients, [sup], nets) == [
+        ChannelRow("r", ("C1", "1"), "N1", ("U", "A")),
+        ChannelRow("r", ("C2", "1"), "N2", ("U", "B")),
+        ChannelRow("r", ("C3", "1"), None, None),
+    ]
+
+
+def test_channel_map_role_must_match():
+    from precis.pcb.matching import channel_map
+
+    sup = Supply("U", "other", (("A",),))
+    nets = {("U", "A"): "N", ("C", "1"): "N"}
+    rows = channel_map([Client("C", "1", "r")], [sup], nets)
+    assert rows[0].supplier is None and rows[0].net == "N"

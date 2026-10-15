@@ -1213,10 +1213,23 @@ class PcbMixin:
                 conn, ref.id, board_id, gname, gtype, str(gversion), copper_rows
             )
 
+        before = self._pcb_net_memberships(conn, ref.id) if connections else {}
         for k in connections:
             counts["conns"] += self._pcb_connect(
                 conn, ref.id, k, inst_by_refdes, net_by_name
             )
+
+        # Net naming rule (pcb-lazy-netlist-and-checks.md §1d): checked on
+        # the FINAL state of every net whose membership this apply changed
+        # (a pin moved off a net changes that net too), so a later op in the
+        # batch can add the constrained member and an unchanged legacy net
+        # is never refused.
+        if connections:
+            after = self._pcb_net_memberships(conn, ref.id)
+            changed = {
+                n for n in before.keys() | after.keys() if before.get(n) != after.get(n)
+            }
+            self._pcb_check_free_ended_nets(conn, changed)
 
         for mm in measures or []:
             self._pcb_insert_measure(conn, ref.id, mm)
@@ -2296,6 +2309,61 @@ class PcbMixin:
                 f.get("note"),
             ),
         )
+
+    def _pcb_net_memberships(
+        self, conn: Connection, ref_id: int
+    ) -> dict[int, frozenset[tuple[int, int]]]:
+        """``net_id -> {(instance_id, pin_id)}`` over the design's live nets."""
+        out: dict[int, set[tuple[int, int]]] = {}
+        for net_id, inst_id, pin_id in conn.execute(
+            "SELECT nc.net_id, nc.instance_id, nc.pin_id FROM pcb_netconns nc "
+            "JOIN pcb_nets n ON n.net_id = nc.net_id "
+            "WHERE n.ref_id = %s AND n.retired_at IS NULL",
+            (ref_id,),
+        ).fetchall():
+            out.setdefault(int(net_id), set()).add((int(inst_id), int(pin_id)))
+        return {k: frozenset(v) for k, v in out.items()}
+
+    def _pcb_check_free_ended_nets(self, conn: Connection, net_ids: set[int]) -> None:
+        """Refuse a touched net whose members (2+) are all supply pins.
+
+        A supply pin (in some component's ``supplies`` blocks) is a FREE
+        end -- the matcher may move it -- so a net made only of them has no
+        constrained end to be named after (§1d rule, consequence 2)."""
+        if not net_ids:
+            return
+        rows = conn.execute(
+            "SELECT n.net_id, n.name, i.refdes, p.name, c.meta -> 'supplies' "
+            "FROM pcb_netconns nc "
+            "JOIN pcb_nets n ON n.net_id = nc.net_id "
+            "JOIN pcb_instances i ON i.instance_id = nc.instance_id "
+            "JOIN pcb_pins p ON p.pin_id = nc.pin_id "
+            "JOIN pcb_components c ON c.component_id = nc.component_id "
+            "WHERE nc.net_id = ANY(%s) AND n.retired_at IS NULL "
+            "AND i.retired_at IS NULL AND p.retired_at IS NULL",
+            (sorted(net_ids),),
+        ).fetchall()
+        members: dict[int, tuple[str, list[tuple[str, str, bool]]]] = {}
+        for net_id, net_name, refdes, pin, supplies in rows:
+            free = {
+                str(x)
+                for entry in (supplies or [])
+                for block in entry.get("blocks") or []
+                for x in block
+            }
+            members.setdefault(int(net_id), (str(net_name), []))[1].append(
+                (str(refdes), str(pin), str(pin) in free)
+            )
+        for net_name, mem in members.values():
+            if len(mem) >= 2 and all(f for _r, _p, f in mem):
+                listed = ", ".join(f"{r}.{p}" for r, p, _f in sorted(mem))
+                raise BadInput(
+                    f"pcb net {net_name!r} ({listed}) has only supply pins, "
+                    "which are free ends: a net is named after its constrained "
+                    "end, so connect a constrained terminal (e.g. the client "
+                    "electrode) or tag the clients `client_of` and let the "
+                    "matcher bind them"
+                )
 
     def _pcb_connect(
         self,

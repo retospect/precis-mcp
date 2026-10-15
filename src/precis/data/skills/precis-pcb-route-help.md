@@ -98,6 +98,19 @@ summary). `warm_start` defaults to `"distance"` (that matching);
 `last_route.warm_start` lists per role `{role, method: "match", clients,
 cost_mm, prior_cost_mm}`.
 
+A net is named after its constrained end, and a supply pin is a free end
+(the matcher may move it). `put` refuses a net you touch whose members are
+2+ supply pins and nothing else: connect a constrained terminal (e.g. the
+client electrode) or tag the clients `client_of` and let the matcher bind them.
+
+`get(kind="pcb", id=s, view="channel-map")` lists which supply terminal each
+client is wired to now: `role,client,net,supplier` rows (`REFDES/PIN`; empty
+supplier = unbound), or `args={"format": "json"}`. It is read off the current
+assignment, swaps included, and regenerated on every read; it stores
+nothing. `view='check'` raises an `unsupplied_client` error per client that
+no supplier terminal can serve (the same capacity and voltage gate the route
+job applies).
+
 ## Route job options, idempotency and the autoplace alias
 
 - `op='route'` also accepts `negotiate` (int 0–100, default 0 = off):
