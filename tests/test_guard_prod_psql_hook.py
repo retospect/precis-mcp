@@ -9,6 +9,7 @@ opinion, so `--ro` cannot smuggle a second command past the prompt.
 from __future__ import annotations
 
 import importlib.util
+import re
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -238,14 +239,109 @@ def test_backslash_meta_commands_ask_even_with_ro() -> None:
         "\\gexec",
         "\\i /tmp/x.sql",
         "\\o /tmp/x",
-        "\\set x 1",
-        "SELECT 1 \\g",
     ):
         assert _verdict(f"scripts/prod-psql '{sql}'") == "ask", sql
         assert _verdict(f"scripts/prod-psql --ro '{sql}'") == "ask", sql
+    # Without --ro every non-listing meta-command still asks.
+    for sql in ("\\set x 1", "SELECT 1 \\g"):
+        assert _verdict(f"scripts/prod-psql '{sql}'") == "ask", sql
     for sql in ("\\d refs", "\\dt+", "\\l", "\\x"):
         assert _verdict(f"scripts/prod-psql '{sql}'") == "allow", sql
         assert _verdict(f"scripts/prod-psql --ro '{sql}'") == "allow", sql
+
+
+def _ro_dq(sql: str) -> str:
+    """A lone --ro call passing ``sql`` in bash double quotes, escaped."""
+    return 'scripts/prod-psql --ro "' + re.sub(r'([$`"\\])', r"\\\1", sql) + '"'
+
+
+def test_ro_passes_the_2026_10_15_false_positives() -> None:
+    """Two --ro reads that stalled builders on 2026-10-15: a schema-qualified
+    \\d, and a SELECT whose regex literal holds shell-escaped backticks."""
+    assert _verdict('scripts/prod-psql --ro "\\d vault.events"') == "allow"
+    cmd = (
+        'scripts/prod-psql --ro "SELECT count(*) FROM blocks b '
+        "WHERE b.text ~ '\\`\\`\\`'\""
+    )
+    assert _verdict(cmd) == "allow"
+
+
+def test_ro_passes_harmless_meta_commands_and_backslashes_in_literals() -> None:
+    for sql in (
+        "\\set x 1",
+        "SELECT 1 \\g",
+        "\\x\nSELECT 1",
+        "\\d+ public.refs",
+        "\\timing on\nSELECT 1",
+        "SELECT 'a\\!b', $$\\! id$$, \"c\\o\" FROM t -- \\! id",
+        "SELECT E'it\\'s \\! here'",
+        "\\copy (SELECT x FROM t WHERE y = ')') TO STDOUT WITH CSV",
+        "\\copy refs (id) to pstdout",
+        "SELECT '`id`'",
+    ):
+        assert _verdict(_ro_dq(sql)) == "allow", sql
+
+
+def test_ro_still_asks_for_meta_commands_that_act_on_the_node() -> None:
+    for sql in (
+        "\\! id",
+        "\\x \\! id",
+        "\\copy refs to '/tmp/x'",
+        "\\copy refs from program 'id'",
+        "\\copy (SELECT 1) to program 'sh'",
+        "\\copy (SELECT ')to stdout') to '/tmp/x'",
+        "\\copy refs to stdout program 'id'",
+        "\\o | sh",
+        "\\o /tmp/out",
+        "SELECT 1 \\g | sh",
+        "SELECT 1 \\gx /tmp/x",
+        "SELECT 'x' \\gexec",
+        "\\i /tmp/x.sql",
+        "\\ir x.sql",
+        "\\include x.sql",
+        "\\w /tmp/x",
+        "\\s /tmp/hist",
+        "\\c precis_prod agent_rw",
+        "\\connect precis_prod agent_rw",
+        "\\setenv PAGER sh",
+        "\\e",
+        "\\ef f",
+        "\\cd /tmp",
+        "\\lo_export 1 /tmp/x",
+        "\\password",
+        "\\echo `id`",
+        "\\set x `id`",
+        "SELECT 'unterminated",
+    ):
+        assert _verdict(_ro_dq(sql)) == "ask", sql
+    # The same through double quotes (escaped backticks reach psql verbatim).
+    assert _verdict('scripts/prod-psql --ro "\\echo \\`id\\`"') == "ask"
+    assert _verdict('scripts/prod-psql --ro "\\! id"') == "ask"
+
+
+def test_ro_with_shell_interpolation_is_not_allowed() -> None:
+    for cmd in (
+        'scripts/prod-psql --ro "SELECT $(id)"',
+        'scripts/prod-psql --ro "SELECT `id`"',
+        'scripts/prod-psql --ro "SELECT $HOME"',
+        'scripts/prod-psql --ro "SELECT ${x}"',
+    ):
+        assert _verdict(cmd) != "allow", cmd
+    # A literal $ the shell leaves alone is fine.
+    assert _verdict("scripts/prod-psql --ro \"SELECT 'a' ~ '^a$'\"") == "allow"
+
+
+def test_compound_ro_asks_only_for_node_acting_meta_commands() -> None:
+    assert _verdict('scripts/prod-psql --ro "\\d vault.events" | head') is None
+    # The third 2026-10-15 stall: escaped backticks in E'' plus 2>&1 | sed.
+    cmd = (
+        "scripts/prod-psql --ro \"SELECT position(E'\\`\\`\\`' in b.text) "
+        "FROM chunks b WHERE b.text LIKE E'%\\`\\`\\`%' LIMIT 5\" 2>&1 | sed -n 2,9p"
+    )
+    assert _verdict(cmd) is None
+    assert _verdict("scripts/prod-psql --ro '\\! id' 2>&1 | head") == "ask"
+    assert _verdict("scripts/prod-psql --ro '\\! id' | head") == "ask"
+    assert _verdict("echo '\\! id' | scripts/prod-psql --ro") == "ask"
 
 
 def test_env_prefix_blocks_every_allow() -> None:

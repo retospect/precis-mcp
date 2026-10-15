@@ -20,9 +20,18 @@ decision point, keyed off the SQL:
   * a verb we do not know -> ask if it is a known write keyword, else no
     opinion.
 - ``--ro`` must be its own word (``--ro"..."`` is not it: the script tests
-  ``$1 == --ro``). Any other psql backslash meta-command (``\\!``, ``\\i``,
-  ``\\o``, ``\\gexec``, ``\\g``, ``\\set``, ...) **asks**, ``--ro`` included:
-  they run on the node whatever the role.
+  ``$1 == --ro``). Without ``--ro`` any other psql backslash meta-command
+  (``\\!``, ``\\i``, ``\\o``, ``\\gexec``, ``\\g``, ``\\set``, ...) **asks**.
+- With ``--ro`` the SQL argument is decoded as bash would (single quotes, or
+  double quotes with ``\\$ \\` \\" \\\\`` escapes; an unescaped ``$name``/``$(``
+  or backtick is shell interpolation and is never allowed), then lexed like
+  psql (quotes, dollar bodies, comments) to find the real meta-commands. Only
+  those that act on the node outside the read-only transaction **ask**:
+  ``\\!``, ``\\copy`` other than ``TO STDOUT``, ``\\o``/``\\g``/``\\gx``/``\\s``
+  with a target, ``\\gexec``, ``\\i``/``\\ir``, ``\\w``, ``\\c`` (a reconnect
+  leaves agent_ro), ``\\e``/``\\ef``/``\\ev``, ``\\setenv``, ``\\cd``,
+  ``\\lo_*``, ``\\password``, and any backtick on a meta-command line (psql
+  runs it in a shell). Everything else passes.
 - A ``VAR=`` env prefix (``PRECIS_PROD_PSQL_OPTS`` injects psql flags,
   ``PRECIS_PROD_SSH_HOST`` redirects the host) is never auto-allowed, for any
   kind including ``--ro`` and reads.
@@ -273,6 +282,171 @@ def _strip_meta(sql: str) -> tuple[str, bool]:
     return "\n".join(keep), True
 
 
+#: Meta-commands that act on the node outside the read-only transaction:
+#: shell, file input/output, a reconnect (leaves agent_ro), editors, client
+#: env. ``\o``/``\g``/``\gx``/``\s`` and ``\copy`` are judged by argument.
+_RO_META_ASK = {
+    "!", "gexec", "i", "include", "ir", "include_relative", "w", "write",
+    "c", "connect", "e", "edit", "ef", "ev", "setenv", "cd", "password",
+    "lo_export", "lo_import", "lo_unlink",
+}  # fmt: skip
+_RO_META_TARGET = {"o", "out", "g", "gx", "s"}
+_COPY_TO_STDOUT = re.compile(
+    r"\s*(?:\([^()]*\)\s*)?TO\s+P?STDOUT\b(?![^;]*\bPROGRAM\b)", re.IGNORECASE
+)
+
+
+def _copy_to_stdout(arg: str) -> bool:
+    """True when a ``\\copy`` argument writes only to (p)stdout: ``(query) TO
+    STDOUT`` or ``table [(cols)] TO STDOUT``."""
+    arg = arg.strip()
+    if arg.startswith("("):
+        depth, quote = 0, ""
+        for k, ch in enumerate(arg):
+            if quote:
+                quote = "" if ch == quote else quote
+                continue
+            if ch in "'\"":
+                quote = ch
+                continue
+            depth += (ch == "(") - (ch == ")")
+            if depth == 0:
+                return bool(_COPY_TO_STDOUT.match(arg, k + 1))
+        return False
+    table = re.match(r"[\w.\"]+", arg)
+    return bool(table and _COPY_TO_STDOUT.match(arg, table.end()))
+
+
+#: Raw-text fallback for a ``--ro`` call we cannot decode (piped or
+#: compound): any dangerous meta-command name after a backslash, anywhere.
+_RO_RAW_DANGER = re.compile(
+    r"\\(?:!|gexec|include_relative|include|ir|i|write|w|connect|c|edit|e[fv]?"
+    r"|setenv|cd|password|lo_\w+|copy|out|o|gx|g|s)(?![A-Za-z_])",
+    re.IGNORECASE,
+)
+
+
+#: A leading quoted word followed only by fd redirections (``2>&1``,
+#: ``>out``) — the SQL argument of a compound ``--ro`` call.
+_LEAD_QUOTED = re.compile(
+    r"\s*(\"(?:[^\"\\]|\\.)*\"|'[^']*')((?:\s+\d?>>?&?\s*[\w./-]+)*)\s*$", re.S
+)
+
+
+def _bash_quoted_arg(args: str) -> str | None:
+    """The text bash passes for ``args`` when it is ONE quoted word, else None.
+    Double quotes keep a backslash only before ``$ ` " \\`` and newline; an
+    unescaped expansion (``$name``, ``${``, ``$(``, backtick) returns None."""
+    args = args.strip()
+    if len(args) >= 2 and args[0] == args[-1] == "'" and "'" not in args[1:-1]:
+        return args[1:-1]
+    if len(args) < 2 or args[0] != '"' or args[-1] != '"':
+        return None
+    out: list[str] = []
+    body, i = args[1:-1], 0
+    while i < len(body):
+        c = body[i]
+        nxt = body[i + 1] if i + 1 < len(body) else ""
+        if c == "\\" and nxt and nxt in '$`"\\\n':
+            if nxt != "\n":
+                out.append(nxt)
+            i += 2
+            continue
+        if c in '"`':
+            return None
+        if c == "$" and nxt and (nxt.isalnum() or nxt in "_{(@*#?$!-"):
+            return None
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def _psql_meta_lines(sql: str) -> list[str]:
+    """Each meta-command line psql would run: the text from an unquoted
+    backslash to end of line. Raises ``_Ambiguous`` on an unterminated
+    quote, comment or dollar body."""
+    metas: list[str] = []
+    i, n = 0, len(sql)
+    while i < n:
+        c = sql[i]
+        if c == "\\":
+            j = sql.find("\n", i)
+            j = n if j < 0 else j
+            metas.append(sql[i:j])
+            i = j
+        elif sql.startswith("--", i):
+            j = sql.find("\n", i)
+            i = n if j < 0 else j
+        elif sql.startswith("/*", i):
+            depth, i = 1, i + 2
+            while i < n and depth:
+                if sql.startswith("/*", i):
+                    depth, i = depth + 1, i + 2
+                elif sql.startswith("*/", i):
+                    depth, i = depth - 1, i + 2
+                else:
+                    i += 1
+            if depth:
+                raise _Ambiguous("unterminated comment")
+        elif c in "'\"":
+            esc = (
+                c == "'"
+                and i > 0
+                and sql[i - 1] in "Ee"
+                and not (i > 1 and (sql[i - 2].isalnum() or sql[i - 2] == "_"))
+            )
+            j = i + 1
+            while True:
+                if j >= n:
+                    raise _Ambiguous("unterminated quote")
+                if esc and sql[j] == "\\":
+                    j += 2
+                    continue
+                if sql[j] == c:
+                    if sql.startswith(c, j + 1):
+                        j += 2
+                        continue
+                    break
+                j += 1
+            i = j + 1
+        elif (
+            c == "$"
+            and (tag := _DOLLAR_TAG.match(sql, i))
+            and not (i and (sql[i - 1].isalnum() or sql[i - 1] == "_"))
+        ):
+            j = sql.find(tag.group(0), tag.end())
+            if j < 0:
+                raise _Ambiguous("unterminated dollar quote")
+            i = j + len(tag.group(0))
+        else:
+            i += 1
+    return metas
+
+
+def _ro_meta_danger(sql: str) -> str | None:
+    """Why a ``--ro`` SQL text would act outside the read-only transaction,
+    or None when every meta-command in it is harmless."""
+    try:
+        metas = _psql_meta_lines(sql)
+    except _Ambiguous as exc:
+        return f"ambiguous SQL ({exc})"
+    for line in metas:
+        if "`" in line:
+            return "backtick in a psql meta-command runs a shell"
+        # Arguments end at the next backslash, which starts another
+        # meta-command (``\x \! id`` runs both), so judge every one.
+        for part in line.split("\\")[1:]:
+            name, _, arg = part.strip().partition(" ")
+            name, arg = name.lower(), arg.strip()
+            if name in _RO_META_ASK:
+                return f"\\{name} acts on the node outside the read-only transaction"
+            if name in _RO_META_TARGET and arg:
+                return f"\\{name} {arg.split()[0]} writes a node file or pipe"
+            if name == "copy" and not _copy_to_stdout(arg):
+                return "\\copy to or from a node file or program"
+    return None
+
+
 def _classify(sql: str, *, strip: bool = True) -> tuple[str, str]:
     """Judge ``sql`` by its most dangerous statement: ``(kind, why)`` with
     kind ask / unknown / write / read. ``strip=False`` judges raw text (shell
@@ -421,21 +595,22 @@ def evaluate(command: str) -> dict[str, str] | None:
     # psql flags / redirects the host: more than the SQL we judge, so it is
     # never auto-allowed -- not even --ro or a read.
     bare = bool(_PROD_PSQL_WORD.match(segs[0][0].split(None, 1)[0]))
+    if len(segs) == 1 and bare and calls[0][1][0]:
+        sql_ro = _bash_quoted_arg(calls[0][1][1])
+        if sql_ro is not None:
+            # agent_ro inside BEGIN READ ONLY: the server refuses any write.
+            # Only meta-commands acting on the node itself are judged.
+            if danger := _ro_meta_danger(sql_ro):
+                return _ask(danger)
+            return {
+                "decision": "allow",
+                "reason": "prod-psql --ro (agent_ro, read-only transaction) — auto-approved",
+            }
     if len(segs) == 1 and bare:
         ro, args = calls[0][1]
         m = re.fullmatch(r"\s*(\"[^\"$`\\]*\"|'[^']*')\s*", args)
-        if m:
+        if m and not ro:
             sql = m.group(1)[1:-1]
-            if ro:
-                # agent_ro inside BEGIN READ ONLY: the server refuses any
-                # write. Backslash meta-commands (\!, \i) still run on the
-                # node, so those are judged even here.
-                if _strip_meta(sql)[1]:
-                    return {
-                        "decision": "allow",
-                        "reason": "prod-psql --ro (agent_ro, read-only transaction) — auto-approved",
-                    }
-                return _ask("psql backslash meta-command")
             kind, why = _classify(sql)
             if kind == "ask":
                 return _ask(why)
@@ -462,8 +637,15 @@ def evaluate(command: str) -> dict[str, str] | None:
             k -= 1
             fed += " " + segs[k][0]
         if ro:
-            if not _strip_meta(fed)[1]:
-                return _ask("psql backslash meta-command")
+            # The SQL is the leading quoted word; redirections after it
+            # (`2>&1`) are the shell's business, judged by the normal prompt.
+            lead = _LEAD_QUOTED.match(args)
+            decoded = _bash_quoted_arg(lead.group(1)) if lead and k == n else None
+            if decoded is not None:
+                if danger := _ro_meta_danger(decoded):
+                    return _ask(danger)
+            elif _RO_RAW_DANGER.search(fed) or ("\\" in fed and "`" in fed):
+                return _ask("psql meta-command that acts on the node")
             continue
         kind, why = _classify(fed, strip=False)
         if kind == "ask":
