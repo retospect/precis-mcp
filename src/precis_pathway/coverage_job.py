@@ -49,8 +49,10 @@ instead of a ~100-atom paste (:func:`structure_slab_extxyz`). It refuses
 structures the scan can't honestly anchor on: a cell that is not a (111)
 surface cut, or a structure with no fully-frozen atoms (the frozen bottom
 layers ride the export as a ``FixAtoms``; without them the scan would
-relax what the candidate pins). An explicit ``slab_extxyz`` always wins;
-``structure_ref`` is then provenance only.
+relax what the candidate pins). A put names the slab one way — either
+``slab_extxyz`` or ``structure_ref``; both together is refused, since
+the server cannot tell which geometry the caller meant to scan. The
+resolved row then carries both (``structure_ref`` as provenance).
 
 Registered via the ``precis.job_types`` entry point
 (``surface_coverage_scan = precis_pathway.coverage_job:SPEC``). Same
@@ -120,8 +122,8 @@ _PARAMS_SCHEMA: dict[str, Any] = {
         # or the structure_ref below resolves one server-side.
         "slab_extxyz": {"type": ["string", "null"]},
         # The precis structure ref the slab comes from: resolved +
-        # exported (with its FixAtoms) when slab_extxyz is absent;
-        # provenance only when an explicit slab_extxyz is given.
+        # exported (with its FixAtoms) at put time. Mutually exclusive
+        # with slab_extxyz on a put.
         "structure_ref": {"type": ["integer", "null"]},
     },
     "required": ["config"],
@@ -287,14 +289,20 @@ def validate_submit(
     refusals up front, then ``structure_ref`` resolved into
     ``params['slab_extxyz']`` — the minted job then carries the exact
     geometry it scans, the same shape ``precis.quest.surface_anchors``
-    mints. An explicit ``slab_extxyz`` wins: ``structure_ref`` is
-    provenance only and the structure is never loaded."""
+    mints. ``slab_extxyz`` and ``structure_ref`` are one-of: both given
+    is refused before the structure is loaded."""
     del gripe_id
     bad = check_params(params)
     if bad is not None:
         return bad
-    if params.get("slab_extxyz") or params.get("structure_ref") is None:
+    if params.get("structure_ref") is None:
         return None
+    if params.get("slab_extxyz"):
+        return (
+            "params.slab_extxyz and params.structure_ref are one-of: pass "
+            "structure_ref alone (the server exports the slab with its "
+            "FixAtoms) or slab_extxyz alone, not both"
+        )
     slab, err = structure_slab_extxyz(store, params["structure_ref"])
     if err is not None:
         return err
@@ -398,7 +406,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     if slab_extxyz is None and structure_ref is not None:
         # The put path resolves via validate_submit; this fallback covers
         # jobs minted off that path (a todo-dispatched row skips
-        # validate_submit). slab_extxyz stays the override.
+        # validate_submit). A resolved row carries both; its slab wins.
         slab_extxyz, err = structure_slab_extxyz(ctx.store, structure_ref)
         if slab_extxyz is None:
             ctx.record_failure(f"{NAME}: {err}", failure_class="input")

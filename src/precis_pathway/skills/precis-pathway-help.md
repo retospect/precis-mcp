@@ -276,8 +276,9 @@ put(kind='job', parent_id=<structure_ref_id>, link='quest:<quest_id>',
   quest-minted scans inline) into `params.slab_extxyz` server-side. It
   refuses at submit time if the structure is not a (111) slab cell or pins
   no atoms — the frozen bottom layers ride the export as a `FixAtoms`.
-  An explicit `params.slab_extxyz` is the override (`structure_ref` then
-  stays provenance only).
+  `slab_extxyz` and `structure_ref` are one-of: a put carrying both is
+  refused (pass the pasted slab alone only for geometry no structure ref
+  holds).
 - **Always pass an explicit `idem_key`.** A `put` that omits it derives
   the key from `link=` alone — so a second scan carrying the same
   `link='quest:N'` would silently reuse the first job instead of minting.

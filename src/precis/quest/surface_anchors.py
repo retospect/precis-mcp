@@ -311,11 +311,9 @@ def _mint_scan_job(
             parent_id=candidate.id,
             job_type=SCAN_JOB_TYPE,
             executor="ssh_node",
-            params={
-                **params,
-                "slab_extxyz": slab_extxyz,
-                "structure_ref": candidate.id,
-            },
+            # parent_id is the provenance: the put refuses slab_extxyz
+            # and structure_ref together.
+            params={**params, "slab_extxyz": slab_extxyz},
             idem_key=idem_key,
         )
     except Exception as exc:

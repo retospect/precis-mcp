@@ -841,21 +841,32 @@ def test_validate_submit_refusal_surfaces_at_put_time() -> None:
     assert "slab_extxyz" not in params
 
 
-def test_validate_submit_explicit_slab_wins_and_never_loads() -> None:
-    """slab_extxyz stays the override: structure_ref is provenance only and
-    the store is never touched."""
+def test_validate_submit_refuses_slab_and_structure_ref_together() -> None:
+    """slab_extxyz and structure_ref are one-of (gr486841): both given is
+    refused before the store is touched, and params stay unmodified."""
 
     class _Exploding:
         def get_ref(self, **_kw: Any) -> Any:
             raise AssertionError("the store must not be queried")
 
+    slab = "2\nLattice\nPd 0 0 0\nPd 1 1 1\n"
     params: dict[str, Any] = {
         "config": CONFIG,
-        "slab_extxyz": "2\nLattice\nPd 0 0 0\nPd 1 1 1\n",
+        "slab_extxyz": slab,
         "structure_ref": 42,
     }
+    err = coverage_job.validate_submit(_Exploding(), params=params)
+    assert err is not None and "one-of" in err
+    assert params["slab_extxyz"] == slab
+
+
+def test_validate_submit_explicit_slab_alone_never_loads() -> None:
+    class _Exploding:
+        def get_ref(self, **_kw: Any) -> Any:
+            raise AssertionError("the store must not be queried")
+
+    params: dict[str, Any] = {"config": CONFIG, "slab_extxyz": "2\nL\n"}
     assert coverage_job.validate_submit(_Exploding(), params=params) is None
-    assert params["slab_extxyz"] == "2\nLattice\nPd 0 0 0\nPd 1 1 1\n"
 
 
 def test_validate_submit_runs_the_scope_gate_first() -> None:
