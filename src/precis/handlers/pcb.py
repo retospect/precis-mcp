@@ -209,11 +209,6 @@ _STATUS_VIEWS = ("route-status",)
 #: copper stackup as the router sees it — role, plane net, routable.
 _SESSION_VIEWS = ("congestion", "planes", "stackup")
 
-#: ``view='congestion'``'s capacity map, one entry per ref keyed by the
-#: board's ``content_hash`` — the strict flow-graph build costs seconds
-#: on a real board, and every input the map reads is inside that digest.
-_CAPACITY_MAP_CACHE: dict[int, tuple[str, str]] = {}
-
 #: pcb-svg-render — publication-quality vector figures off the same
 #: copper model Gerber writes from (:mod:`precis.pcb.svg`), plus the L3
 #: rubber-band sketch off the IR. See :meth:`PcbHandler._render_svg`.
@@ -715,6 +710,13 @@ class PcbHandler(Handler):
         #: ``(store, lcscs) -> {lcsc: 'hit'|'miss'|'error: …'}``; defaults
         #: to :func:`precis.pcb.jlc_library.live_refresh_many`.
         self._live_refresh = live_refresh
+        #: ``view='congestion'``'s capacity map, one entry per ref keyed
+        #: by the board's ``content_hash`` — the strict flow-graph build
+        #: costs seconds on a real board, and every input the map reads
+        #: is inside that digest. Scoped to the handler instance: a
+        #: module-level cache survives across boards (and tests) whose
+        #: ref ids collide.
+        self._capacity_map_cache: dict[int, tuple[str, str]] = {}
 
     # ── put ──────────────────────────────────────────────────────────
     def put(
@@ -4175,12 +4177,13 @@ class PcbHandler(Handler):
         board has nothing to measure.
 
         The build costs seconds on a real board, so the rendered text is
-        cached in ``_CAPACITY_MAP_CACHE`` keyed on the board's
-        ``content_hash`` — every map input (placement, outline, fixed
-        copper, swaps, planes, classes) is inside that digest, so a
-        changed board always rebuilds and an unchanged board's repeat
-        reads are free. Realized-route status is deliberately NOT in the
-        digest: the map describes the pre-route grid, not the copper."""
+        cached per ref in ``self._capacity_map_cache`` keyed on the
+        board's ``content_hash`` — the digest is built from exactly the
+        rows the map reads (graph, features, pin_swaps, planes,
+        fixed_copper), so a changed board always rebuilds and an
+        unchanged board's repeat reads are free. Routes are not passed
+        at all: the map describes the pre-route static grid, so neither
+        realized copper nor authored route topology can stale it."""
         try:
             graph = self.store.pcb_graph(ref_id)
             if not graph.get("nets"):
@@ -4200,14 +4203,12 @@ class PcbHandler(Handler):
                 {},
                 session_state={
                     "features": features,
-                    "routes": self.store.pcb_routes_get(ref_id),
                     "pin_swaps": pin_swaps,
                     "planes": planes,
-                    "measures": self.store.pcb_measures_list(ref_id),
                     "fixed_copper": fixed,
                 },
             )
-            hit = _CAPACITY_MAP_CACHE.get(ref_id)
+            hit = self._capacity_map_cache.get(ref_id)
             if hit is not None and hit[0] == key:
                 return hit[1]
             ir = pcb_session.build_ir(
@@ -4272,7 +4273,7 @@ class PcbHandler(Handler):
                 f"(track {track_mm} + clearance {clearance_mm}, modal class)\n"
                 + "\n".join(tgraph.row_report)
             )
-            _CAPACITY_MAP_CACHE[ref_id] = (key, text)
+            self._capacity_map_cache[ref_id] = (key, text)
             return text
         except Exception as exc:  # the digest above still renders without it
             return f"\n\n# capacity map — unavailable ({exc})"
