@@ -4,7 +4,7 @@
 
 - **Pillar:** 3d-design
 - **Next:** Station-path-finder (`nanoreactor-station-path-finder`); the T1 entry slice (`/rxn` ledger, kept rxn records) is in prod.
-- **Blocked by:** Nothing for station-path-finder. T2's tunnel scaffold is built (reservoir sheets + opening solver, 2026-10-14); H2/H3 remain.
+- **Blocked by:** Station-path-finder is a draft: it needs a `ready` pass and slicing first. T2's tunnel scaffold is built (reservoir sheets + opening solver, 2026-10-14); H2/H3 remain.
 - **Unblocks:** The per-station barrier ledger that decides whether the NO → NH3 nanoreactor needs a drive; the reaction movie.
 - **Acceptance:** Each item's own acceptance criteria; the thread ends with the T6 movie of a designed nanoreactor.
 - **Worktree:** `nanoreactor`
@@ -26,11 +26,12 @@ output.
 
 1. **backlog/nanoreactor-station-path-finder.md** — T1. The bare and
    theozyme tiers decide whether a drive is needed, and its station record
-   is the contract every later tool reads.
-2. **First kept NO → NH3 ledger** (`todo:470273`, owner or root; a prod
-   write): keep the four-step NO→HNO→H2NO→NH2OH→NH3+H2O set at 300 K via
-   `/rxn` (or the `put` in `precis-rxn-help`) and link its `/refs/rxn/<id>`
-   URL here. Prod held no kept rxn record as of 2026-10-15.
+   is the contract every later tool reads. Still a draft: it needs a
+   `ready` pass and slicing (engine work sits in autocatpath) before a
+   build.
+
+The first kept NO → NH3 ledger at 300 K is `rxn:no-nh3-ledger-300k`
+(reader `/refs/rxn/489242`, `todo:470273`).
 
 ## Horizon
 
