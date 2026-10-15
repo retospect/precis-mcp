@@ -819,8 +819,10 @@ SERVICES: tuple[ServiceSpec, ...] = (
     ServiceSpec(
         # Extract a part's datasheet facts (pin table, required externals,
         # conditional tables) into refs.meta.datasheet_facts — one BIG-tier
-        # routed call; minted by datasheet_pull's dispatch on a landed pull,
-        # or put(kind='job', job_type='datasheet_facts', parent_id=<pcb>).
+        # routed call; enqueued at pcb put time next to datasheet_pull
+        # (precis.pcb.datasheets.enqueue_facts — a facts job ahead of its
+        # pull parks until the pull lands), or ad-hoc via
+        # put(kind='job', job_type='datasheet_facts', parent_id=<pcb>).
         name="datasheet_facts",
         label="Datasheet facts (job)",
         category="jobs",
@@ -828,7 +830,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         uses_model=True,
         cost_sources=("datasheet-facts",),
         one_line="One BIG-tier read of a part's datasheet into its fact "
-        "block — chained after datasheet_pull.",
+        "block — queued with the pull at pcb put time.",
         doc_skill="precis-datasheet-help",
     ),
     ServiceSpec(

@@ -64,7 +64,7 @@ REQUIRES: frozenset[str] = frozenset({"claude_bin"})
 DESCRIPTION = (
     "Extract one part's datasheet facts (pin table, required externals, "
     "conditional tables) into refs.meta.datasheet_facts — one BIG-tier "
-    "read, chained after datasheet_pull."
+    "read, enqueued next to datasheet_pull at pcb put time."
 )
 
 #: Spend + wall-clock on the single BIG-tier call.
