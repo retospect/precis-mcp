@@ -234,12 +234,14 @@ WITH inv(slug, inv) AS (
 x AS (
   SELECT l.link_id, l.created_at AS lat, l.src_ref_id AS anchor,
          l.dst_ref_id AS far, 'out'::text AS dir, l.relation AS rel,
-         l.trust_origin || ' · ' || l.trust_confidence AS ltrust
+         l.trust_origin || ' · ' || l.trust_confidence AS ltrust,
+         l.src_chunk_id AS sck, l.dst_chunk_id AS dck
     FROM links l WHERE l.src_ref_id = ANY(%(anchors)s::bigint[])
   UNION ALL
   SELECT l.link_id, l.created_at, l.dst_ref_id, l.src_ref_id, 'in',
          COALESCE(inv.inv, l.relation),
-         l.trust_origin || ' · ' || l.trust_confidence
+         l.trust_origin || ' · ' || l.trust_confidence,
+         l.src_chunk_id, l.dst_chunk_id
     FROM links l LEFT JOIN inv ON inv.slug = l.relation
    WHERE l.dst_ref_id = ANY(%(anchors)s::bigint[])
 ),
@@ -261,12 +263,12 @@ e AS (
 )
 SELECT 'c'::text, NULL::bigint, NULL::bigint, NULL::text, rel, fkind,
        NULL::text, NULL::text, count(*)::bigint, NULL::bool, NULL::text,
-       NULL::text
+       NULL::text, NULL::bigint, NULL::bigint, NULL::bigint
   FROM e GROUP BY rel, fkind
 UNION ALL
 SELECT * FROM (
   SELECT 'r'::text, anchor, far, dir, rel, fkind, ftitle, fstate, 0::bigint,
-         fret, ftrust, ltrust
+         fret, ftrust, ltrust, link_id, sck, dck
     FROM e ORDER BY lat DESC, link_id DESC
    LIMIT %(lim)s::int
 ) rr
@@ -303,12 +305,18 @@ def _nbh_edge(
     anchor_kind: str,
     r: tuple[Any, ...],
     h: Callable[[str, int], str],
+    *,
+    ids: bool = False,
 ) -> dict[str, Any]:
     """One edge dict from a ``_NBH_SQL`` row, stored direction preserved;
-    ``trust`` is the link's own origin · confidence (0214)."""
+    ``trust`` is the link's own origin · confidence (0214). ``ids`` adds
+    the physical ``link_id`` and the stored chunk endpoints (nullable)."""
     a, f = h(anchor_kind, anchor_id), h(r[5], int(r[2]))
     src, dst = (a, f) if r[3] == "out" else (f, a)
-    return {"src": src, "dst": dst, "rel": r[4], "dir": r[3], "trust": r[11]}
+    e = {"src": src, "dst": dst, "rel": r[4], "dir": r[3], "trust": r[11]}
+    if ids:
+        e.update(link_id=int(r[12]), src_chunk_id=r[13], dst_chunk_id=r[14])
+    return e
 
 
 class LinksMixin:
@@ -789,6 +797,7 @@ class LinksMixin:
         trust: str | None = None,
         cap: int = 200,
         include_retired: bool = False,
+        link_ids: bool = False,
     ) -> dict[str, Any]:
         """The ref-level link neighbourhood of one ref, as plain data.
 
@@ -838,6 +847,10 @@ class LinksMixin:
           this") and reports the focus's own ``state``/``retired``. The
           web outline view (``?view=outline``, gr486410) is the consumer;
           the default path is byte-identical to before.
+        - ``link_ids`` adds ``link_id`` and the stored ``src_chunk_id`` /
+          ``dst_chunk_id`` (nullable) to every edge, so parallel chunk
+          links stay distinguishable — the graph JSON route's contract
+          (td470556); off by default, same statement either way.
         - ``cap`` bounds hop-1 nodes: when more exist the first ``cap``
           (newest links first) come back with ``truncated: True`` and
           ``counts`` still covering every matching edge.
@@ -890,7 +903,7 @@ class LinksMixin:
             data: list[tuple[Any, ...]] = []
             counts: dict[str, dict[str, int]] = {}
             # Row layout: (tag, anchor, far, dir, rel, kind, title, state,
-            # n, retired)
+            # n, retired, ftrust, ltrust, link_id, src_chunk, dst_chunk)
             for r in conn.execute(_NBH_SQL, params).fetchall():
                 if r[0] == "c":
                     counts.setdefault(r[4], {})[r[5]] = int(r[8])
@@ -944,7 +957,7 @@ class LinksMixin:
                     if r[9]:
                         n["retired"] = True
                     nodes.append(n)
-                edges.append(_nbh_edge(ref_id, kind, r, _h))
+                edges.append(_nbh_edge(ref_id, kind, r, _h, ids=link_ids))
             focus: dict[str, Any] = {
                 "kind": kind,
                 "id": ref_id,
@@ -984,7 +997,7 @@ class LinksMixin:
                             if r[9]:
                                 n["retired"] = True
                             nodes.append(n)
-                        e = _nbh_edge(int(r[1]), seen[int(r[1])], r, _h)
+                        e = _nbh_edge(int(r[1]), seen[int(r[1])], r, _h, ids=link_ids)
                         e["hop"] = 2
                         edges.append(e)
             elif depth == 2:

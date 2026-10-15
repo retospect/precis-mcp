@@ -5,7 +5,10 @@ here is the HTTP contract — parity with the store (and so with
 ``links_for(direction='both')`` plus the inverse rule), the ``groups``
 bucketing by ``refeye.ring_group``, query-param plumbing, JSON errors and
 the round-trip count — not the store's own semantics
-(``tests/test_link_crud.py::TestNeighbourhood``).
+(``tests/test_link_crud.py::TestNeighbourhood``) — and the liaison
+contract's JSON-only additions (td470556): ``link_id`` + chunk endpoints,
+``dir: "cross"``, tombstones, ``meta.native_targets`` and the per-group
+``{total, returned, next}`` windows.
 """
 
 from __future__ import annotations
@@ -22,12 +25,18 @@ pytest.importorskip("fastapi")
 
 from fastapi.testclient import TestClient
 
+from precis.store import ChunkInsert
 from precis.store.store import Store
 from precis.utils import handle_registry
 from precis.utils.refeye import ring_group
 from precis_web.app import create_app
 from precis_web.config import WebConfig
-from precis_web.routes.graph import DEFAULT_CAP, MAX_CAP, ring_groups
+from precis_web.routes.graph import (
+    DEFAULT_CAP,
+    MAX_CAP,
+    PANEL_GROUP_ROWS,
+    ring_groups,
+)
 
 
 @pytest.fixture
@@ -79,6 +88,22 @@ def _h(kind: str, ref_id: int) -> str:
     return handle_registry.format_handle(kind, ref_id)
 
 
+def _store_view(store: Store, focus: int, **kw: Any) -> dict[str, Any]:
+    """What the route returns from the store below every cap: tombstones
+    and link ids on, depth-2 edges re-read as ``cross``."""
+    exp = store.neighbourhood(
+        "paper", focus, cap=DEFAULT_CAP, include_retired=True, link_ids=True, **kw
+    )
+    for e in exp["edges"]:
+        if e.get("hop"):
+            e["dir"] = "cross"
+    return exp
+
+
+def _core(body: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in body.items() if k not in ("groups", "meta")}
+
+
 @contextmanager
 def _query_counter(
     monkeypatch: pytest.MonkeyPatch, store: Store
@@ -118,14 +143,16 @@ def test_json_matches_store_and_links_for(
     assert r.headers["content-type"].startswith("application/json")
     body = r.json()
 
-    expected = store.neighbourhood("paper", focus, cap=DEFAULT_CAP)
-    expected["groups"] = ring_groups(expected["counts"])
-    assert body == expected
+    assert _core(body) == _store_view(store, focus)
+    assert [
+        {k: g[k] for k in ("heading", "rels", "n")} for g in body["groups"]
+    ] == ring_groups(body["counts"])
     assert body["focus"] == {
         "kind": "paper",
         "id": focus,
         "label": "Paper focus2020",
         "trust": "unknown · unknown",
+        "state": "live",
     }
     assert body["truncated"] is False
     assert "counts2" not in body
@@ -154,6 +181,10 @@ def test_json_matches_store_and_links_for(
         (e["src"], e["dst"], e["rel"], e["dir"]) for e in body["edges"]
     } == exp_edges
     assert len(body["edges"]) == 5 == len(exp_edges)
+    # one physical row per edge: the link ids are links_for's
+    assert sorted(e["link_id"] for e in body["edges"]) == sorted(
+        ln.id for ln in store.links_for(focus, direction="both")
+    )
     assert {(n["kind"], n["id"]) for n in body["nodes"]} == {
         (kind_of[v], v) for k, v in fixture_graph.items() if k != "focus"
     }
@@ -170,10 +201,32 @@ def test_groups_follow_ring_group_with_other(
 ) -> None:
     body = graph_client.get(f"/graph/paper/{fixture_graph['focus']}.json").json()
     assert ring_group("cited-by") is None and ring_group("supersedes") is None
+    w = {"next": None}
     assert body["groups"] == [
-        {"heading": "Roadmap", "rels": ["serves"], "n": 1},
-        {"heading": "Notes & links", "rels": ["cites", "related-to"], "n": 2},
-        {"heading": "Other", "rels": ["cited-by", "supersedes"], "n": 2},
+        {
+            "heading": "Roadmap",
+            "rels": ["serves"],
+            "n": 1,
+            "total": 1,
+            "returned": 1,
+            **w,
+        },
+        {
+            "heading": "Notes & links",
+            "rels": ["cites", "related-to"],
+            "n": 2,
+            "total": 2,
+            "returned": 2,
+            **w,
+        },
+        {
+            "heading": "Other",
+            "rels": ["cited-by", "supersedes"],
+            "n": 2,
+            "total": 2,
+            "returned": 2,
+            **w,
+        },
     ]
     # every hop-1 relation lands in exactly one group
     assert sorted(r for g in body["groups"] for r in g["rels"]) == sorted(
@@ -235,10 +288,7 @@ def test_query_params_plumb_through(
     deep = graph_client.get(f"/graph/paper/{focus}.json?depth=2").json()
     assert deep["counts2"] == {"related-to": {"memory": 1}}
     assert [n["id"] for n in deep["nodes"] if n.get("hop") == 2] == [leaf]
-    assert deep == {
-        **store.neighbourhood("paper", focus, depth=2, cap=DEFAULT_CAP),
-        "groups": deep["groups"],
-    }
+    assert _core(deep) == _store_view(store, focus, depth=2)
 
 
 def test_json_errors(graph_client: TestClient, fixture_graph: dict[str, int]) -> None:
@@ -271,3 +321,111 @@ def test_round_trips(
     with _query_counter(monkeypatch, store) as c2:
         assert graph_client.get(f"/graph/paper/{focus}.json?depth=2").status_code == 200
     assert (c1["n"], c2["n"]) == (2, 3), (c1["sql"], c2["sql"])
+
+
+def test_edges_carry_link_and_chunk_ids(graph_client: TestClient, store: Store) -> None:
+    """Two parallel ``cites`` rows from different chunks of one paper stay
+    two edges, told apart by ``link_id`` and ``src_chunk_id``."""
+    focus = _paper(store, "chunky2020")
+    store.chunks.insert_chunks(
+        focus, [ChunkInsert(ord=i, text=f"block {i}", meta={}) for i in range(2)]
+    )
+    cited = _paper(store, "target2019")
+    a = store.add_link(src_ref_id=focus, dst_ref_id=cited, relation="cites", src_pos=0)
+    b = store.add_link(src_ref_id=focus, dst_ref_id=cited, relation="cites", src_pos=1)
+    body = graph_client.get(f"/graph/paper/{focus}.json").json()
+    got = {(e["link_id"], e["src_chunk_id"], e["dst_chunk_id"]) for e in body["edges"]}
+    assert got == {
+        (a.id, a.src_chunk_id, None),
+        (b.id, b.src_chunk_id, None),
+    }
+    assert a.src_chunk_id is not None and a.src_chunk_id != b.src_chunk_id
+    assert len(body["nodes"]) == 1
+
+
+def test_depth2_edges_read_cross(
+    graph_client: TestClient, store: Store, fixture_graph: dict[str, int]
+) -> None:
+    focus, goal = fixture_graph["focus"], fixture_graph["goal"]
+    leaf = _memory(store, "leaf")
+    store.add_link(src_ref_id=leaf, dst_ref_id=goal, relation="related-to")
+    deep = graph_client.get(f"/graph/paper/{focus}.json?depth=2").json()
+    hop2 = [e for e in deep["edges"] if e.get("hop") == 2]
+    # stored direction kept: leaf -> goal, though goal is the anchor
+    assert [(e["src"], e["dst"], e["dir"]) for e in hop2] == [
+        (_h("memory", leaf), _h("memory", goal), "cross")
+    ]
+    assert {e["dir"] for e in deep["edges"] if not e.get("hop")} == {"in", "out"}
+
+
+def test_retired_endpoint_is_a_tombstone(
+    graph_client: TestClient, store: Store, fixture_graph: dict[str, int]
+) -> None:
+    focus, old = fixture_graph["focus"], fixture_graph["old"]
+    store.retire_ref(old)
+    body = graph_client.get(f"/graph/paper/{focus}.json").json()
+    (node,) = [n for n in body["nodes"] if n["id"] == old]
+    assert node["retired"] is True
+    assert any(e["dst"] == _h("memory", old) for e in body["edges"])
+    assert body["counts"]["supersedes"] == {"memory": 1}
+
+
+def test_native_targets_cover_every_endpoint(
+    graph_client: TestClient, fixture_graph: dict[str, int]
+) -> None:
+    focus = fixture_graph["focus"]
+    body = graph_client.get(f"/graph/paper/{focus}.json").json()
+    targets = body["meta"]["native_targets"]
+    named = {h for e in body["edges"] for h in (e["src"], e["dst"])}
+    assert set(targets) == named | {_h("paper", focus)}
+    goal = fixture_graph["goal"]
+    assert targets[_h("memory", goal)] == {
+        "kind": "memory",
+        "id": goal,
+        "get": {"kind": "memory", "id": _h("memory", goal)},
+    }
+
+
+def test_group_window_continues_past_the_cap(
+    graph_client: TestClient, store: Store
+) -> None:
+    """26 ``related-to`` neighbours: the first window returns 25 and a
+    ``next`` URL; following it returns the 26th and ends."""
+    focus = _paper(store, "hub2020")
+    mems = [_memory(store, f"m{i}") for i in range(PANEL_GROUP_ROWS + 1)]
+    for m in mems:
+        store.add_link(src_ref_id=m, dst_ref_id=focus, relation="related-to")
+    first = graph_client.get(f"/graph/paper/{focus}.json?kinds=memory").json()
+    (g,) = first["groups"]
+    assert (g["heading"], g["total"], g["returned"]) == (
+        "Notes & links",
+        PANEL_GROUP_ROWS + 1,
+        PANEL_GROUP_ROWS,
+    )
+    assert first["truncated"] is True and len(first["nodes"]) == PANEL_GROUP_ROWS
+    assert g["next"] == (
+        f"/graph/paper/{focus}.json?kinds=memory"
+        f"&group=Notes%20%26%20links&offset={PANEL_GROUP_ROWS}"
+    )
+    second = graph_client.get(g["next"]).json()
+    (g2,) = second["groups"]
+    assert (g2["total"], g2["returned"], g2["next"]) == (PANEL_GROUP_ROWS + 1, 1, None)
+    seen = {n["id"] for n in first["nodes"]} | {n["id"] for n in second["nodes"]}
+    assert seen == set(mems)
+    # counts never move with the window
+    assert second["counts"] == first["counts"]
+
+
+def test_group_params_reject(
+    graph_client: TestClient, fixture_graph: dict[str, int]
+) -> None:
+    focus = fixture_graph["focus"]
+    r = graph_client.get(f"/graph/paper/{focus}.json?group=Nope")
+    assert r.status_code == 400 and "group" in r.json()["error"]
+    r = graph_client.get(f"/graph/paper/{focus}.json?offset=3")
+    assert r.status_code == 400 and "offset" in r.json()["error"]
+    # a rels filter outside the group leaves the group empty, not unfiltered
+    body = graph_client.get(
+        f"/graph/paper/{focus}.json?rels=serves&group=Notes%20%26%20links"
+    ).json()
+    assert body["edges"] == [] and body["groups"] == []

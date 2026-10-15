@@ -168,7 +168,8 @@ def test_outline_tombstones(
     graph_client: TestClient, fixture_graph: dict[str, int], store: Store
 ) -> None:
     """A retired neighbour renders as a struck, marked tombstone in the
-    outline — and stays absent from the SVG and the default JSON."""
+    outline — and stays absent from the SVG; the JSON returns it as a
+    tombstone (the liaison contract, td470556)."""
     focus = fixture_graph["focus"]
     store.retire_ref(fixture_graph["cited"])
 
@@ -180,9 +181,10 @@ def test_outline_tombstones(
     assert _outline_node_set(body) == _svg_nodes(
         graph_client.get(f"/graph/paper/{focus}").text
     )
-    assert fixture_graph["cited"] not in {
-        n["id"] for n in graph_client.get(f"/graph/paper/{focus}.json").json()["nodes"]
-    }
+    assert {
+        n["id"]: n.get("retired", False)
+        for n in graph_client.get(f"/graph/paper/{focus}.json").json()["nodes"]
+    }[fixture_graph["cited"]] is True
 
 
 def test_outline_escapes_labels(graph_client: TestClient, store: Store) -> None:

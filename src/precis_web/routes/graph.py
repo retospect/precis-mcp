@@ -51,7 +51,13 @@ that the tier predicate is single-sourced
 On top of the store shape the JSON route adds ``groups``: the hop-1
 relations bucketed under the fisheye ring headings
 (``utils/refeye.py::ring_group``), ``"Other"`` for a relation no ring
-follows — the heading order a browser panel renders in.
+follows — the heading order a browser panel renders in. The rest of the
+liaison contract (td470556) is JSON-only, see :func:`_json_contract`:
+edges carry ``link_id`` and stored chunk endpoints, depth-2 edges read
+``dir: "cross"``, retired endpoints come back as tombstones
+(``retired: true``), ``meta.native_targets`` names the follow-up ``get``,
+and each group is a ``{total, returned, next}`` window of
+:data:`PANEL_GROUP_ROWS` rows (``?group=<heading>&offset=N`` continues).
 
 Errors are JSON too (``{"error": ...}``) on ``.json`` — 404 for a missing
 ref, 400 for a bad argument — not the HTML error page the ``PrecisError``
@@ -64,7 +70,7 @@ from __future__ import annotations
 import html
 import re
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
@@ -297,6 +303,7 @@ def _neighbourhood(
     depth: int,
     cap: int,
     include_retired: bool = False,
+    link_ids: bool = False,
 ) -> dict[str, Any]:
     """The one read all three surfaces share — same filters in, same
     nodes/edges out. ``include_retired`` (the outline view) keeps retired
@@ -312,6 +319,7 @@ def _neighbourhood(
         trust=f.trust or None,
         cap=cap,
         include_retired=include_retired,
+        link_ids=link_ids,
     )
 
 
@@ -539,22 +547,137 @@ async def neighbourhood_json(
     until: str = "",
     trust: str = "",
     cap: int = DEFAULT_CAP,
+    group: str = "",
+    offset: int = 0,
 ) -> JSONResponse:
     """The ref's link neighbourhood, see the module docstring for the shape."""
     store = get_store(request)
     try:
         if not 1 <= cap <= MAX_CAP:
             raise BadInput(f"cap must be between 1 and {MAX_CAP}, got {cap!r}")
+        if group and group not in (*RING_GROUPS, OTHER_GROUP):
+            raise BadInput(
+                f"unknown group={group!r}", options=[*RING_GROUPS, OTHER_GROUP]
+            )
+        if offset < 0 or (offset and not group):
+            raise BadInput("offset must be >= 0 and needs group=")
         f = _parse_filters(
             rels=rels, kinds=kinds, since=since, until=until, trust=trust
         )
-        data = _neighbourhood(store, kind, ref_id, f, depth=depth, cap=cap)
+        qs = replace(f, depth=depth if depth != 1 else None).qs()
+        if group:
+            # a continuation reads the widest window the store allows, over
+            # the group's own relations where the ring names them
+            cap = MAX_CAP
+            if group in RING_GROUPS:
+                # (none left: keep the caller's rels, the group comes back empty)
+                own = tuple(
+                    r for r in sorted(RING_GROUPS[group]) if not f.rels or r in f.rels
+                )
+                f = replace(f, rels=own or f.rels)
+        data = _neighbourhood(
+            store,
+            kind,
+            ref_id,
+            f,
+            depth=depth,
+            cap=cap,
+            include_retired=True,
+            link_ids=True,
+        )
     except NotFound as exc:
         return JSONResponse({"error": str(exc)}, status_code=404)
     except BadInput as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
-    data["groups"] = ring_groups(data["counts"])
-    return JSONResponse(data)
+    base = f"/graph/{kind}/{ref_id}.json"
+    return JSONResponse(
+        _json_contract(data, base=base, qs=qs, group=group, offset=offset)
+    )
+
+
+def _json_contract(
+    data: dict[str, Any], *, base: str, qs: str, group: str, offset: int
+) -> dict[str, Any]:
+    """The ``.json`` contract on top of the store shape (td470556).
+
+    - Hop-1 edges are windowed per ring group, :data:`PANEL_GROUP_ROWS`
+      rows from ``offset`` (``group=`` picks one group, the continuation);
+      hop-2 edges stay only under a kept hop-1 anchor, nodes only when a
+      kept edge names them. A ring-group continuation narrows ``rels`` to
+      the group's own, so its hop-2 edges follow those relations too.
+    - ``groups[i]`` gains ``total`` (the group's edge count, before any
+      cap), ``returned`` and ``next`` — the URL of the following window,
+      ``None`` once the group is exhausted or past the store's
+      :data:`MAX_CAP` reach (``truncated`` then stays true).
+    - Depth-2 edges join two non-focus nodes and read ``dir: "cross"``;
+      ``src``/``dst`` keep the stored direction.
+    - ``meta.native_targets`` maps every handle in ``src``/``dst`` (and the
+      focus) to its typed id and the ``get`` selector that reads it.
+    """
+    nodes = {_handle(n["kind"], n["id"]): n for n in data["nodes"]}
+    focus = data["focus"]
+    focus_h = _handle(focus["kind"], focus["id"])
+    by_group: dict[str, list[dict[str, Any]]] = {}
+    for e in data["edges"]:
+        if not e.get("hop"):
+            by_group.setdefault(ring_group(e["rel"]) or OTHER_GROUP, []).append(e)
+
+    groups = ring_groups(data["counts"])
+    if group:
+        groups = [g for g in groups if g["heading"] == group]
+    kept: list[dict[str, Any]] = []
+    clipped = False
+    for g in groups:
+        rows = by_group.get(g["heading"], [])
+        window = rows[offset : offset + PANEL_GROUP_ROWS]
+        kept.extend(window)
+        end = offset + len(window)
+        # a continuation already read the store's full reach: no further page
+        more = end < g["n"] and (end < len(rows) or (data["truncated"] and not group))
+        clipped = clipped or end < g["n"]
+        g.update(
+            total=g["n"],
+            returned=len(window),
+            next=(
+                f"{base}?{qs + '&' if qs else ''}"
+                f"group={quote(g['heading'])}&offset={end}"
+                if more and window
+                else None
+            ),
+        )
+
+    far1 = {e["dst"] if e["dir"] == "out" else e["src"] for e in kept}
+    kept_ids = {id(e) for e in kept}
+    edges = []
+    for e in data["edges"]:
+        if not e.get("hop"):
+            if id(e) in kept_ids:
+                edges.append(e)
+        elif e["src"] in far1 or e["dst"] in far1:
+            edges.append({**e, "dir": "cross"})
+    named = {h for e in edges for h in (e["src"], e["dst"])}
+    targets = {
+        h: _native_target(n["kind"], n["id"]) for h, n in nodes.items() if h in named
+    }
+    targets[focus_h] = _native_target(focus["kind"], focus["id"])
+    return {
+        **data,
+        "nodes": [n for h, n in nodes.items() if h in named],
+        "edges": edges,
+        "truncated": bool(data["truncated"] or clipped),
+        "groups": groups,
+        "meta": {"group_rows": PANEL_GROUP_ROWS, "native_targets": targets},
+    }
+
+
+def _native_target(kind: str, ref_id: int) -> dict[str, Any]:
+    """Typed id plus the ``get`` selector for one node: the handle where
+    the kind has a handle code, else the numeric ref id."""
+    return {
+        "kind": kind,
+        "id": ref_id,
+        "get": {"kind": kind, "id": handle_registry.try_format(kind, ref_id) or ref_id},
+    }
 
 
 def _handle(kind: str, ref_id: int) -> str:
