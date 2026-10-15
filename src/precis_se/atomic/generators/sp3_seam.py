@@ -17,12 +17,18 @@ import numpy as np
 from hexfold.check import Relaxed, _findings_from_net, geometry_findings
 from hexfold.lattice import SP3_IDEAL_DEG
 from hexfold.report import Finding, Report, Severity
-from hexfold.sp3_seam import _rim_angles, _seam_angles, straight_k3z, straight_k4
+from hexfold.sp3_seam import (
+    _rim_angles,
+    _seam_angles,
+    straight_k3a,
+    straight_k3z,
+    straight_k4,
+)
 from hexfold.stick import _angle_springs, stick_relax_pinned
 from precis_se.atomic.generators._types import GeneratedBlock, GeneratorError
 from precis_se.atomic.generators.hexfold_spec import _block_from_net, terminate_mode
 
-_FEATURE_TYPES = ("k4-sp3-90-a", "k3-sp3-z")
+_FEATURE_TYPES = ("k4-sp3-90-a", "k3-sp3-z", "k3-sp3-a")
 
 
 def _normalize(params: dict[str, Any]) -> tuple[str, int, int, str, float]:
@@ -65,6 +71,7 @@ def _normalize(params: dict[str, Any]) -> tuple[str, int, int, str, float]:
     expected = {
         "k4-sp3-90-a": [90.0] * 4,
         "k3-sp3-z": [120.0] * 3,
+        "k3-sp3-a": [120.0] * 3,
     }
     angles = feature["dihedrals_deg"]
     if kind not in expected or not (
@@ -77,16 +84,16 @@ def _normalize(params: dict[str, Any]) -> tuple[str, int, int, str, float]:
     ):
         raise GeneratorError(
             "fit.unsolvable: only k4-sp3-90-a with [90,90,90,90] and "
-            "k3-sp3-z with [120,120,120] are supported; unequal dihedrals/"
-            "k>=5 unavailable"
+            "k3-sp3-z/k3-sp3-a with [120,120,120] are supported; unequal "
+            "dihedrals/k>=5 unavailable"
         )
     if kind == "k3-sp3-z" and sheet[0] % 2 != 0:
         raise GeneratorError(
             "fit.unsolvable: k3-sp3-z pairs seam atoms along the chain; "
             "needs an even period count"
         )
-    if kind == "k4-sp3-90-a" and sheet[1] < 3:
-        raise GeneratorError("k4-sp3-90-a rows (armchair atom levels) must be >= 3")
+    if kind in ("k4-sp3-90-a", "k3-sp3-a") and sheet[1] < 3:
+        raise GeneratorError(f"{kind} rows (armchair atom levels) must be >= 3")
     name = feature["name"]
     if not isinstance(name, str) or not name.strip():
         raise GeneratorError("sp3 seam feature name must be nonempty")
@@ -106,11 +113,12 @@ def _normalize(params: dict[str, Any]) -> tuple[str, int, int, str, float]:
 def build_sp3_seam(params: dict[str, Any]) -> GeneratedBlock:
     kind, periods, rows, name, k = _normalize(params)
     termination = terminate_mode(params)
-    net, result = (
-        straight_k4(periods, rows)
-        if kind == "k4-sp3-90-a"
-        else straight_k3z(periods, rows)
-    )
+    builder = {
+        "k4-sp3-90-a": straight_k4,
+        "k3-sp3-z": straight_k3z,
+        "k3-sp3-a": straight_k3a,
+    }[kind]
+    net, result = builder(periods, rows)
     normals = np.zeros_like(result.coords)
     for j, (_region, ords) in enumerate(net.regions):
         # row-vector placement uses rotation.T; input sheet normal is z.
@@ -164,10 +172,15 @@ def build_sp3_seam(params: dict[str, Any]) -> GeneratedBlock:
             "sp3 seam tethered relaxation returned nonfinite coordinates/force"
         )
     tables = _seam_angles(pos, net.bonds, result.seam_atoms)
-    if any(len(t) != 6 for t in tables):
-        raise GeneratorError("sp3 seam atom is not degree-four")
+    # k3-sp3-a leaves the terminal a_0/b_{n-1} degree-three at the open
+    # ends; every other seam atom must be degree four
+    allowed_ends = {0, len(result.seam_atoms) - 1} if kind == "k3-sp3-a" else set()
+    if any(
+        len(t) != 6 for _idx, t in enumerate(tables) if _idx not in allowed_ends
+    ) or any(len(t) != 3 for _idx, t in enumerate(tables) if _idx in allowed_ends):
+        raise GeneratorError("sp3 seam atom carries a wrong carbon degree")
     rim_tables = _rim_angles(pos, net.bonds, result.seam_atoms)
-    angle_dev = float(np.max(np.abs(np.asarray(tables) - SP3_IDEAL_DEG)))
+    angle_dev = float(max(abs(a - SP3_IDEAL_DEG) for t in tables for a in t))
     faces = [list(ring) for ring in net.rings if any(o in seam_set for o in ring)]
     sizes = sorted({len(ring) for ring in faces})
     census = {n: sum(1 for ring in faces if len(ring) == n) for n in sizes}
@@ -198,7 +211,10 @@ def build_sp3_seam(params: dict[str, Any]) -> GeneratedBlock:
                 "tethered pass, not measured relaxation evidence",
                 where=name,
                 data=(
-                    ("degree", 4),
+                    (
+                        "degree",
+                        "4 (open ends degree 3)" if kind == "k3-sp3-a" else 4,
+                    ),
                     ("hybridisation", "sp3"),
                     ("angle_deviation_max_deg", angle_dev),
                     (

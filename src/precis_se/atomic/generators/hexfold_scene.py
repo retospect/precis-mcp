@@ -641,8 +641,11 @@ def build_hexfold_scene(params: dict[str, Any]) -> GeneratedBlock:
     An exclusive feature ``type='k3-sp2-120-z'`` instead builds the finite
     straight Y; see :mod:`.y_junction` for its strict contract. An exclusive
     ``type='fin-sp3-z'`` builds the sp3-grafted fin on an armchair tube;
-    see :mod:`.fin`. Exclusive ``type='k4-sp3-90-a'``/``'k3-sp3-z'`` build
-    the sp3 seam rows; see :mod:`.sp3_seam`.
+    see :mod:`.fin`. Exclusive ``type='k4-sp3-90-a'``/``'k3-sp3-z'``/
+    ``'k3-sp3-a'`` build the sp3 seam rows; see :mod:`.sp3_seam`.
+    Exclusive ``type='chan-k3-sp3-z'`` builds the channel junction (wall
+    arcs on paired corner seams, strips in or out per ``sides``); see
+    :mod:`.channel`.
     """
     features_arg = params.get("features")
     typed = (
@@ -663,13 +666,17 @@ def build_hexfold_scene(params: dict[str, Any]) -> GeneratedBlock:
             from precis_se.atomic.generators.rail120 import build_rail120
 
             return build_rail120(params)
+        if typed == ["chan-k3-sp3-z"]:
+            from precis_se.atomic.generators.channel import build_channel
+
+            return build_channel(params)
         if typed == ["tunnel-reservoirs"]:
             from precis_se.atomic.generators.tunnel import (
                 build_tunnel_reservoirs,
             )
 
             return build_tunnel_reservoirs(params)
-        if typed == ["k4-sp3-90-a"] or typed == ["k3-sp3-z"]:
+        if typed in (["k4-sp3-90-a"], ["k3-sp3-z"], ["k3-sp3-a"]):
             from precis_se.atomic.generators.sp3_seam import build_sp3_seam
 
             return build_sp3_seam(params)

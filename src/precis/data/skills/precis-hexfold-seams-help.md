@@ -48,13 +48,32 @@ Three planes are unsupported by the revolution target format, so stored
 `surface_deviation` is honestly unavailable. Unequal dihedrals/k>=5 return
 `fit.unsolvable`; variant B remains unimplemented.
 
+**The equal-120 sp2 seam is not a free minimum.** Free GFN2-xTB relaxes
+the sp2 120° Y and the seam tube INTO the k3 dimer chain (axial pairs
+1.60–1.64 Å, sheet bonds 1.50–1.53 Å, seam angle sums ~341°; hexhex
+2026-10-13, confirmed again by the 2026-10-14 `a-sharp` control which
+converges within 0.01 eV of the authored `k3-sp3-z` structure). Author
+new seam scenes on the sp3 rows; the sp2 row remains as the analytic
+preview construction.
+
 sp3 siblings on the same contract: `k4-sp3-90-a` (four armchair sheets at
 90°, one degree-4 seam atom per period, `sheet[1]`>=3 atom levels) and
 `k3-sp3-z` (three zigzag sheets on a dimer seam chain, even `sheet[0]`);
-an H cap landing under 1.0 Å from another atom is dropped outright
-(`terminate.dropped`, bare edge). Free GFN2-xTB relaxes the sp2 120° Y and
-the seam tube INTO the k3 dimer chain (axial pairs 1.60–1.64 Å, sheet bonds
-1.50–1.53 Å, seam angle sums ~341°; hexhex 2026-10-13).
+`k3-sp3-a` (three armchair sheets at 120°, two seam atoms per armchair
+period — one per dangling class, chained across periods; `sheet[1]`>=3;
+the terminal seam atoms stay degree-three open ends) is the GFN2-xTB-
+verified armchair sibling: the 2026-10-14 model holds its authored graph
+with sheet bonds 1.52 Å, chain bonds 1.55 Å, tetrahedral seam atoms.
+
+```json
+{"op":"generate","generator":"hexfold_scene","name":"s",
+ "params":{"sheet":[8,4],"k_tether":1.0,
+ "features":[{"name":"s","type":"k3-sp3-a",
+              "dihedrals_deg":[120,120,120]}]}}
+```
+
+An H cap landing under 1.0 Å from another atom is dropped outright
+(`terminate.dropped`, bare edge).
 
 ## Seam tube: the 120° Y seam run along a tube axis
 
@@ -94,6 +113,35 @@ third sheet an inward rib — no far-side fuse. Same `tube` (even rows),
 `out`. Optional `pores:[{"arc":k,"at":[u,v]}]` carves one hexagon each,
 refused at a rim or another pore. Findings add `pore.rings` and `sites`
 (open-valence rib/seam carbons, lumen normals, 2.5–3.0 Å pendant pairs).
+
+## Channel junction: N arcs on paired k3-sp3-z seams, strips in or out
+
+```json
+{"op":"generate","generator":"hexfold_scene","name":"s",
+ "params":{"tube":[4,6],"k_tether":1.0,
+ "features":[{"name":"s","type":"chan-k3-sp3-z",
+              "sides":["out","out","out"],"rows":3}]}}
+```
+
+`tube` is `[rows, periods]` as for the rail tube (even rows in [4,40],
+periods in [2,60] — even, since every corner seam carries the k3-sp3-z
+dimer chain). `sides` is a list of 2-6 'in'/'out' entries (default three
+'out'); `rows` the strip width in [2,12]. Outward strips register the
+seam half a sigma outside the wall circle with rim dangling atoms at
+±120°; inward strips keep the rail-tube registration and refuse when
+their free edge would come within 2 Å of the axis or a neighbouring
+inward strip. Same contract as the seam rows: one tethered stick pass,
+seams and neighbours pinned at the authored dimer registration, arcs
+free; `seam.rings`, `seam.geometry`, `channel.cross_section` retained;
+`surface_deviation` unavailable.
+
+The equal-120 sp2 corner seams are **not** stable: the 2026-10-14
+GFN2-xTB channel model (b-r4) dimerised all three corners into the
+authored `k3-sp3-z` chain (0.07 eV off the pre-paired twin over 354
+carbons). The fused-corner siblings (each corner's rim pair bonded, strip
+grafted onto it) reconstruct instead — 12 of the authored fuse bonds
+opened and re-paired into a half-zipped double graft; no authored
+periodic form held, so no row.
 
 ## Reservoir tunnel: sheet | tube | sheet
 

@@ -3,7 +3,7 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** (1) deploy carries the 2026-10-13 wave (open-pole sphere top 85cbabe5b, xtb rung 669d615cf, atomic clearance sweep 4eaae25ba, rail tube b7fcf3328, sp3 seam lines 692d8830a); after it, relax the prod candidates `hexfold-relax-{y-a,fin-out,fin-in,seam-out,seam-in,valve}` through `fidelity='xtb'` from a tblite host (`scripts/prod-precis`, background) and mint the open-pole nanobud and a 3-rail tube on prod. (2) The [relax campaign](#relax-campaign-2026-10-13) verdict: the equal-120 sp2 seam is not a GFN2-xTB minimum (it dimerises into the `k3-sp3-z` chain), so seam-family scenes should be authored on the sp3 row, and the sp2 Y/seam-tube rows need a note in the catalogue. (3) `backlog/hexfold-tethered-relax-op.md` (slice 0; brief ready, launch owed by Reto), then the re-vet of Do-next 1a, then gr459928. Open for Reto on gr470905: stored-mode surface deviation scores the H caps too. Earlier prod records: [Prod runs 2026-10-07](#prod-runs-and-measurements-2026-10-07); [catalogue R17 variant A](../hexfold-seam-type-catalogue.md#r17-variant-a-public-scene-contract--2026-10-07).
+- **Next:** (1) deploy carries the 2026-10-13 wave (open-pole sphere top 85cbabe5b, xtb rung 669d615cf, atomic clearance sweep 4eaae25ba, rail tube b7fcf3328, sp3 seam lines 692d8830a); after it, relax the prod candidates `hexfold-relax-{y-a,fin-out,fin-in,seam-out,seam-in,valve}` through `fidelity='xtb'` from a tblite host (`scripts/prod-precis`, background) and mint the open-pole nanobud and a 3-rail tube on prod. (2) The [relax campaign](#relax-campaign-2026-10-13) verdict: the equal-120 sp2 seam is not a GFN2-xTB minimum (it dimerises into the `k3-sp3-z` chain), so seam-family scenes should be authored on the sp3 row — the [2026-10-14 junction sweep](#junction-model-campaign-2026-10-14) added `k3-sp3-a` and `chan-k3-sp3-z` rows and wrote the catalogue note, pending land. (3) `backlog/hexfold-tethered-relax-op.md` (slice 0; brief ready, launch owed by Reto), then the re-vet of Do-next 1a, then gr459928. Open for Reto on gr470905: stored-mode surface deviation scores the H caps too. Earlier prod records: [Prod runs 2026-10-07](#prod-runs-and-measurements-2026-10-07); [catalogue R17 variant A](../hexfold-seam-type-catalogue.md#r17-variant-a-public-scene-contract--2026-10-07).
 - **Blocked by:** Three-plane Y cannot use the revolution-target receipt; surface_deviation stays unavailable. Legacy r5 remains unavailable without receipt. Unequal variant B needs seam-row measurement. Larger-pillar cost gate is a separate next slice; scientific/hero/model holds unchanged.
 - **Unblocks:** Trusted geometry for [nanobuds-paper](nanobuds-paper.md#resume).
 - **Acceptance:** Use [hexfold-ideal-surface-then-tile](../hexfold-ideal-surface-then-tile.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
@@ -49,6 +49,22 @@ to 1.35 Å; guard carbons of neighbouring sheets bond at the segment
 start; one H cap migrated onto a wall carbon on the seam tube. Campaign
 complete 19:31Z. Consequence: the sp2 120° seam is a construction
 convenience, not a minimum; author seam scenes on `k3-sp3-z`.
+
+## Junction-model campaign 2026-10-14
+
+Follow-up Mac-local GFN2-xTB sweep on ~180–650-atom segments comparing
+the candidate three-sheet seam junctions (control sp² Y, pre-paired
+k3-sp3-z, armchair-rim seams, channel junctions at R 4/6/8 Å, Reto's
+in/out compensation, fused-corner grafts, +1-row variants). Table with
+per-model excess energy per C, steps and held/reconstructed verdicts:
+`../hexfold-seam-type-catalogue.md#seam-junction-relax-campaign-2026-10-14-mac-local-gfn2-xtb`.
+Every authored sp² k3 seam dimerised into the k3-sp3-z chain at every
+radius; the two stable new forms landed as rows — `k3-sp3-a`
+(armchair, two chained sp3 atoms per period, lowest excess) and the
+`chan-k3-sp3-z` channel composite (arcs on paired corner seams, strips
+in/out). Fused-corner grafts re-pair rather than hold; the armchair
+seam must consume both dangling classes (a half-consumed rim knits
+itself shut).
 
 ## Prod runs and measurements 2026-10-07
 

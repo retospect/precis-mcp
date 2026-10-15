@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from hexfold.sp3_seam import straight_k3z, straight_k4
+from hexfold.sp3_seam import straight_k3a, straight_k3z, straight_k4
 from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.store import Store
@@ -20,6 +20,7 @@ from precis_se.handler import SeHandler
 ROWS = {
     "k4-sp3-90-a": ([4, 4], [90, 90, 90, 90], straight_k4),
     "k3-sp3-z": ([4, 4], [120, 120, 120], straight_k3z),
+    "k3-sp3-a": ([4, 4], [120, 120, 120], straight_k3a),
 }
 
 
@@ -83,14 +84,31 @@ def test_public_sp3_seam_route_tethered_test_db_roundtrip(
     assert "spec" not in record and "surface_target" not in record
     findings = record["report"]["findings"]
     assert not [f for f in findings if f["code"] in ("geom.clash", "geom.seed_overlap")]
+    # pinned seam atoms + neighbours keep the analytic registration;
+    # seed is built up front so the seam ordinals are known below
+    seed_net, seed = build(*sheet)
     seam = next(f["data"] for f in findings if f["code"] == "seam.geometry")
-    assert seam["degree"] == 4 and seam["hybridisation"] == "sp3"
-    assert len(seam["angles_deg"]) == sheet[0]
-    for table in seam["angles_deg"].values():
-        assert len(table) == 6
+    # k3-sp3-a's terminal a_0/b_{n-1} are degree-three open ends; every
+    # other seam atom is degree four
+    if kind == "k3-sp3-a":
+        assert seam["degree"] == "4 (open ends degree 3)"
+        assert len(seam["angles_deg"]) == 2 * sheet[0]
+        seam_pos = {o: k for k, o in enumerate(seed.seam_atoms)}
+        for ordinal, table in seam["angles_deg"].items():
+            expected = 3 if seam_pos[int(ordinal)] in (0, 2 * sheet[0] - 1) else 6
+            assert len(table) == expected
+    else:
+        assert seam["degree"] == 4
+        assert len(seam["angles_deg"]) == sheet[0]
+        for table in seam["angles_deg"].values():
+            assert len(table) == 6
+    assert seam["hybridisation"] == "sp3"
     # the bonded rim atoms' angles are reported too: for k3-z they carry
-    # the row's tilt residual, pinned at the authored seed registration
-    assert len(seam["rim_angles_deg"]) == sheet[0] * (4 if kind == "k4-sp3-90-a" else 3)
+    # the row's tilt residual, pinned at the authored seed registration;
+    # k3-a consumes both dangling classes (2 per period per sheet)
+    assert len(seam["rim_angles_deg"]) == sheet[0] * (
+        4 if kind == "k4-sp3-90-a" else 6 if kind == "k3-sp3-a" else 3
+    )
     residuals = {
         dict(f["data"])["sheet"]: dict(f["data"])["residual"]
         for f in findings
@@ -102,7 +120,6 @@ def test_public_sp3_seam_route_tethered_test_db_roundtrip(
     # pinned seam atoms + neighbours keep the analytic registration;
     # termination may trim clashing rim atoms (gr486406), renumbering the
     # block ordinals -- map seed ords through the trimmed paths
-    seed_net, seed = build(*sheet)
     pinned = _pinned_set(seed_net, seed.seam_atoms)
     trimmed_paths = set(record["terminated"]["trimmed"])
     block_ord: dict[int, int] = {}
@@ -133,7 +150,10 @@ def test_public_sp3_seam_route_tethered_test_db_roundtrip(
     assert direct.bonds and len(direct.bonds[0]) >= 2
     dropped = record["terminated"]["dropped"]
     assert dropped > 0
-    assert n_h == _open_rim_slots(direct.elements[:n_c], carbon_bonds) - dropped
+    # k3-sp3-a's two open-end seam atoms are degree-three sp3: each is
+    # short one bond of its sp3 valence and takes one extra cap
+    extra = 2 if kind == "k3-sp3-a" else 0
+    assert n_h == _open_rim_slots(direct.elements[:n_c], carbon_bonds) + extra - dropped
     assert record["terminated"]["count"] == n_h
     assert any(f["code"] == "terminate.dropped" for f in findings)
     # no minted non-bonded pair involving H sits under 1.0 A
@@ -218,6 +238,7 @@ def test_sp3_seam_invalid_input_refuses_before_build_or_relax(
 
     monkeypatch.setattr("precis_se.atomic.generators.sp3_seam.straight_k4", forbidden)
     monkeypatch.setattr("precis_se.atomic.generators.sp3_seam.straight_k3z", forbidden)
+    monkeypatch.setattr("precis_se.atomic.generators.sp3_seam.straight_k3a", forbidden)
     monkeypatch.setattr(
         "precis_se.atomic.generators.sp3_seam.stick_relax_pinned", forbidden
     )

@@ -31,6 +31,15 @@ censuses are derived from the built graphs and recorded in
 not extended — the construction is private, exactly like the Y and the
 fins. What remains in this item is the vertex, not the line.
 
+**Added 2026-10-14:** `k3-sp3-a` (scene feature of the same name;
+`hexfold.sp3_seam.straight_k3a`) — three armchair-rimmed sheets at 120°
+on TWO seam atoms per armchair period, one per dangling class, chained
+cross-period. Free GFN2-xTB (Mac-local, the `a-full` model) holds the
+authored graph; it is the all-consumed counterpart of the `k3-sp3-z`
+chain. Census 3·(n−1) hexagons + 3·(n−1) decagons per seam; literature
+calls the armchair-ribbon junction a 6-6-6 triple — the hexagon set
+matches, the decagons are the corridor faces the label does not see.
+
 ## Scope (remaining)
 
 - **Seam vertices.** Points where seam curves meet (Plateau's second law:

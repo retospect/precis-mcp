@@ -20,6 +20,16 @@ grammar, no cyclic Port.  Two rows of
   those lengths — and each bonded rim atom reads 103.46/120/136.54 deg.
   The public pass pins seam atoms and their neighbours, so those tables
   are the held seed registration, not relaxed evidence.
+- ``k3-sp3-a`` — three armchair-rimmed sheets at equal 120 degrees, two
+  seam atoms per armchair period: ``a_i`` bonds the ``dangling_a`` atom
+  of all three sheets, ``b_i`` the ``dangling_b`` atom of all three, and
+  the ``sigma``-spaced ``(b_i, a_{i+1})`` cross-period pairs carry the
+  chain bonds, so every rim atom is consumed and every interior seam
+  atom is degree four.  Seed geometry is the 2026-10-14 GFN2-xTB model
+  (sheet bonds 1.52 A, chain bonds 1.55 A): the seam atoms sit on the
+  axis at 103.3 x3 + 115.1 x3 degrees at the authored registration; the
+  terminal ``a_0``/``b_{n-1}`` stay degree-three boundary atoms and take
+  the H cap.
 
 ``compose_sp3`` follows ``join.compose_k3``'s admission rules: integer
 ordinals in range, closed faces, equal dangling counts, and typed
@@ -368,7 +378,8 @@ def _sheet_residuals(
 
 
 def _seam_angles(coords: np.ndarray, bonds, seam: tuple[int, ...]) -> list[list[float]]:
-    """The six pairwise bond angles at each seam atom, ascending."""
+    """The pairwise bond angles at each seam atom, ascending — six at a
+    degree-four atom, three at a degree-three terminal atom."""
     adj = _adjacency(bonds)
     out: list[list[float]] = []
     for atom in seam:
@@ -376,7 +387,8 @@ def _seam_angles(coords: np.ndarray, bonds, seam: tuple[int, ...]) -> list[list[
         vec = vec / np.linalg.norm(vec, axis=1)[:, None]
         cos = np.clip(vec @ vec.T, -1.0, 1.0)
         ang = np.degrees(np.arccos(cos))
-        out.append(sorted(float(ang[i, j]) for i in range(4) for j in range(i + 1, 4)))
+        d = len(adj[atom])
+        out.append(sorted(float(ang[i, j]) for i in range(d) for j in range(i + 1, d)))
     return out
 
 
@@ -580,6 +592,111 @@ def _place_k3z(
     )
 
 
+def _place_k3a(
+    blocks: tuple[Block, ...],
+    rims: tuple[_ArmchairSegment, ...],
+    frames: list[np.ndarray],
+) -> _Sp3Composite:
+    """Three armchair sheets at equal 120 deg; two seam atoms per armchair
+    period, ``a_i`` bonded to the ``dangling_a_i`` of every sheet and
+    ``b_i`` to the ``dangling_b_i``, with the ``(b_i, a_{i+1})`` pairs
+    chained along the axis.  Seed: the 2026-10-14 GFN2-xTB model's
+    relaxed lengths — sheet bonds 1.52 A, chain 1.55 A — placing the rim
+    at rho ~ 1.38 A and each seam atom 0.645 A axially off its dangling
+    atoms.  The terminal ``a_0``/``b_{n-1}`` have no chain partner and
+    stay degree-three open-boundary atoms."""
+    sigma = blocks[0].sigma
+    n = len(rims[0].dangling_a)
+    period = 3.0 * sigma
+    sheet_bond = 1.52
+    chain = 1.55
+    off = (2.0 * sigma - chain) / 2.0
+    rho = math.sqrt(sheet_bond**2 - off**2)
+    coords: list[np.ndarray] = []
+    transforms: list[tuple[np.ndarray, np.ndarray]] = []
+    bonds: list[tuple[int, int, int]] = []
+    rings: list[tuple[int, ...]] = []
+    sheets: list[tuple[str, tuple[int, ...]]] = []
+    boundaries: list[tuple[int, ...]] = []
+    walks: list[tuple[int, ...]] = []
+    dangling_a: list[tuple[int, ...]] = []
+    dangling_b: list[tuple[int, ...]] = []
+    elements: tuple[str, ...] = ()
+    offset = 0
+    for j, (block, rim, frame) in enumerate(zip(blocks, rims, frames)):
+        angle = 2 * math.pi * j / 3
+        radial = np.array([0.0, math.cos(angle), math.sin(angle)])
+        axis = np.array([1.0, 0.0, 0.0])
+        target = np.column_stack((axis, radial, np.cross(axis, radial)))
+        rotation = target @ frame.T
+        shift = rho * radial - rotation @ block.coords[rim.dangling_a[0]]
+        coords.append(block.coords @ rotation.T + shift)
+        transforms.append((rotation, shift))
+        bonds.extend((a + offset, b + offset, k) for a, b, k in block.bonds)
+        rings.extend(tuple(i + offset for i in ring) for ring in block.rings)
+        walks.append(tuple(i + offset for i in rim.atoms))
+        dangling_a.append(tuple(i + offset for i in rim.dangling_a))
+        dangling_b.append(tuple(i + offset for i in rim.dangling_b))
+        elements += block.elements
+        sheets.append((f"sheet{j}", tuple(range(offset, offset + len(block.elements)))))
+        boundaries.append(
+            tuple(i + offset for i in _boundary_atoms(block.bonds, block.rings))
+        )
+        offset += len(block.elements)
+    seam = tuple(range(offset, offset + 2 * n))
+    spos = np.zeros((2 * n, 3))
+    for i in range(n):
+        spos[2 * i, 0] = period * i - off
+        spos[2 * i + 1, 0] = period * i + sigma + off
+    coords.append(spos)
+    for i in range(n):
+        a_i, b_i = seam[2 * i], seam[2 * i + 1]
+        for j in range(3):
+            bonds.append((dangling_a[j][i], a_i, 1))
+            bonds.append((dangling_b[j][i], b_i, 1))
+        if i + 1 < n:
+            bonds.append((b_i, seam[2 * (i + 1)], 1))
+    # Faces (i = 1..n-1): per sheet the hexagon
+    # (a_i, A_i, W_{i-1}, S_{i-1}, B_{i-1}, b_{i-1}) through the
+    # sigma-spaced chain bond, and per sheet pair the decagon that closes
+    # the corridor between the two sheets' rim walks.  The walk order is
+    # A_i, B_i, S_i, W_i per cell, cells starting at -1, so the rim
+    # segment from B_{i-1} to A_i is walk[4i+1 : 4i+5].
+    pos_walk = [{atom: idx for idx, atom in enumerate(walk)} for walk in walks]
+    for j in range(3):
+        walk = walks[j]
+        for i in range(1, n):
+            seg = walk[
+                pos_walk[j][dangling_b[j][i - 1]] : pos_walk[j][dangling_a[j][i]] + 1
+            ]
+            rings.append((seam[2 * i],) + seg[::-1] + (seam[2 * (i - 1) + 1],))
+    for a, b in ((0, 1), (1, 2), (2, 0)):
+        wa, wb = walks[a], walks[b]
+        for i in range(1, n):
+            seg_a = wa[
+                pos_walk[a][dangling_b[a][i - 1]] : pos_walk[a][dangling_a[a][i]] + 1
+            ]
+            seg_b = wb[
+                pos_walk[b][dangling_b[b][i - 1]] : pos_walk[b][dangling_a[b][i]] + 1
+            ]
+            rings.append(
+                (seam[2 * i],) + seg_a[::-1] + (seam[2 * (i - 1) + 1],) + seg_b
+            )
+    hybridisation = ("sp2",) * offset + ("sp3",) * (2 * n)
+    return _Sp3Composite(
+        elements + ("C",) * (2 * n),
+        np.vstack(coords),
+        tuple(bonds),
+        tuple(rings),
+        hybridisation,
+        seam,
+        tuple(transforms),
+        tuple(sheets),
+        tuple(boundaries),
+        [],
+    )
+
+
 def compose_sp3(
     blocks: tuple[Block, ...],
     rims: tuple[_ZigzagSegment | _ArmchairSegment, ...],
@@ -597,6 +714,7 @@ def compose_sp3(
     specs = {
         "k4-sp3-90-a": (4, (90.0,) * 4, _ArmchairSegment),
         "k3-sp3-z": (3, (120.0,) * 3, _ZigzagSegment),
+        "k3-sp3-a": (3, (120.0,) * 3, _ArmchairSegment),
     }
     spec = specs.get(seam_type)
     if (
@@ -622,7 +740,7 @@ def compose_sp3(
     if rim_type is _ArmchairSegment and len(armchair) != len(rims):
         return _sp3_refusal(
             "port.mismatch",
-            "k4-sp3-90-a requires armchair segments on every sheet",
+            f"{seam_type} requires armchair segments on every sheet",
             seam_type=seam_type,
         )
     if rim_type is _ZigzagSegment and len(zigzag) != len(rims):
@@ -672,6 +790,8 @@ def compose_sp3(
         frames.append(frame)
     if seam_type == "k4-sp3-90-a":
         return _place_k4(blocks, tuple(armchair), frames)
+    if seam_type == "k3-sp3-a":
+        return _place_k3a(blocks, tuple(armchair), frames)
     return _place_k3z(blocks, tuple(zigzag), frames)
 
 
@@ -758,6 +878,26 @@ def straight_k3z(periods: int, row_pairs: int) -> tuple[Net, _Sp3Composite]:
         (block, block, block),
         (rim, rim, rim),
         seam_type="k3-sp3-z",
+        dihedrals_deg=(120, 120, 120),
+    )
+    if result.findings:
+        raise ValueError(Report(tuple(result.findings)).render())
+    return _seam_net(3, result), result
+
+
+def straight_k3a(periods: int, levels: int) -> tuple[Net, _Sp3Composite]:
+    """Three armchair-rimmed sheets at 120 deg; two seam atoms per period,
+    chained across periods.  Public admission belongs to the SE adapter;
+    ``levels`` follows :func:`straight_k4`."""
+    if any(type(n) is not int or not 2 <= n <= 30 for n in (periods, levels)):
+        raise ValueError("straight k3a counts must be integers in [2,30]")
+    if levels < 3:
+        raise ValueError("straight k3a levels must be >= 3")
+    block, rim = _armchair_sheet(periods, levels)
+    result = compose_sp3(
+        (block, block, block),
+        (rim, rim, rim),
+        seam_type="k3-sp3-a",
         dihedrals_deg=(120, 120, 120),
     )
     if result.findings:

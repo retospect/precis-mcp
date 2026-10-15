@@ -113,9 +113,9 @@ submit jobs; `next.can_submit` stays false. Legacy run records remain unverified
   unavailable, not zero) are the seam family — `k3-sp2-120-z` (three
   sheets on a straight equal-120 seam), `fin-sp3-z` (sp3 graft fin on a
   tube), `fin-k3-120-z` (the seam along a tube axis), `rail-k3-120-z` (N
-  inward ribs, pores, `generated.sites`), `k4-sp3-90-a` and `k3-sp3-z`
-  (sp3 seam lines; an H cap under 1.0 Å from another atom is dropped,
-  `terminate.dropped`). Exact params and retained findings:
+  inward ribs, pores, `generated.sites`), `k4-sp3-90-a`, `k3-sp3-z` and
+  `k3-sp3-a` (sp3 seam lines; an H cap under 1.0 Å from another atom is
+  dropped, `terminate.dropped`). Exact params and retained findings:
   `precis-hexfold-seams-help`.
   `smooth_drum` takes `neck` and `wall` (zigzag tube counts `n` of a
   `(n,0)` stalk and wall, `wall > neck`) plus optional `stalk_length_A`,

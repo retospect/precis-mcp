@@ -17,6 +17,7 @@ from hexfold.sp3_seam import (
     _seam_angles,
     _sheet_residuals,
     compose_sp3,
+    straight_k3a,
     straight_k3z,
     straight_k4,
 )
@@ -233,14 +234,15 @@ def test_compose_refusal_table() -> None:
     ] = [
         # armchair rims offered to the zigzag row
         ("k3-sp3-z", (ab,) * 3, (ar,) * 3, (120,) * 3, "port.mismatch"),
-        # zigzag rims offered to the armchair row
+        # zigzag rims offered to the armchair rows
         ("k4-sp3-90-a", (zb,) * 4, (zr,) * 4, (90,) * 4, "port.mismatch"),
+        ("k3-sp3-a", (zb,) * 3, (zr,) * 3, (120,) * 3, "port.mismatch"),
         # unequal dihedrals
         ("k3-sp3-z", (zb,) * 3, (zr,) * 3, (110, 120, 130), "fit.unsolvable"),
         # k>=5 / wrong arity
         ("k4-sp3-90-a", (zb,) * 5, (zr,) * 5, (90,) * 5, "fit.unsolvable"),
         # unknown type
-        ("k3-sp3-a", (zb,) * 3, (zr,) * 3, (120,) * 3, "fit.unsolvable"),
+        ("k3-sp3-x", (zb,) * 3, (zr,) * 3, (120,) * 3, "fit.unsolvable"),
     ]
     for st, blocks, rims, dh, code in cases:
         result = compose_sp3(blocks, rims, seam_type=st, dihedrals_deg=dh)
@@ -291,3 +293,82 @@ def test_seam_atoms_are_sp3_carbon_degree_four() -> None:
             assert a.element == "C" and a.hyb == "sp3" and deg[atom] == 4
         findings = _findings_from_net(net)
         assert not [f for f in findings if f.severity.name != "INFO"]
+
+
+# GFN2-xTB-relaxed k3-sp3-a seed lengths (the a-full model of the
+# 2026-10-14 Mac campaign): sheet bonds 1.52 A, cross-period chain
+# bonds 1.55 A, seam atoms on the axis.
+_K3A_SHEET = 1.52
+_K3A_CHAIN = 1.55
+# axial offset of a seam atom from its dangling atoms: 2*sigma - chain
+_K3A_OFF = (2.0 * SIGMA - _K3A_CHAIN) / 2.0
+_K3A_RHO = math.sqrt(_K3A_SHEET**2 - _K3A_OFF**2)
+
+
+@pytest.mark.parametrize("sheet", [[3, 4], [6, 4], [7, 3]])
+def test_k3a_analytic_two_atom_chain(sheet: list[int]) -> None:
+    """k3-sp3-a: three armchair sheets at equal 120 deg, a_i and b_i seam
+    atoms per period consuming both dangling classes, chained
+    cross-period; the terminal a_0/b_{n-1} are degree-three ends."""
+    net, result = straight_k3a(*sheet)
+    n = sheet[0]
+    assert len(result.seam_atoms) == 2 * n
+    _rings_are_bond_walks(net)
+    deg = _degrees(net)
+    for k, atom in enumerate(result.seam_atoms):
+        assert net.atoms[atom].hyb == "sp3"
+        want = 3 if k in (0, 2 * n - 1) else 4
+        assert deg[atom] == want, (k, atom)
+    # chain bonds only between (b_i, a_{i+1}) pairs at the xTB length
+    seam_set = set(result.seam_atoms)
+    chain = [
+        (min(i, j), max(i, j))
+        for i, j, _ in net.bonds
+        if i in seam_set and j in seam_set
+    ]
+    assert sorted(chain) == sorted(
+        (result.seam_atoms[2 * i + 1], result.seam_atoms[2 * i + 2])
+        for i in range(n - 1)
+    )
+    for a, b in chain:
+        assert np.linalg.norm(result.coords[a] - result.coords[b]) == pytest.approx(
+            _K3A_CHAIN, abs=1e-12
+        )
+    # seam-sheet bonds at the xTB seed length; sheet-internal bonds sigma
+    for i, j, _ in net.bonds:
+        if i in seam_set and j in seam_set:
+            continue
+        expected = _K3A_SHEET if (i in seam_set or j in seam_set) else SIGMA
+        assert np.linalg.norm(result.coords[i] - result.coords[j]) == pytest.approx(
+            expected, abs=1e-12
+        )
+    # seam faces: per period a hexagon on each sheet and a decagon in
+    # each sheet-pair corridor
+    census = _seam_census(net, result.seam_atoms)
+    assert census == {6: 3 * (n - 1), 10: 3 * (n - 1)}
+    assert _sheet_residuals(result.sheets, net.bonds, net.rings) == {
+        f"sheet{j}": 0 for j in range(3)
+    }
+
+
+def test_k3a_deterministic_repeat() -> None:
+    net, result = straight_k3a(5, 4)
+    again, repeat = straight_k3a(5, 4)
+    assert net == again
+    assert np.array_equal(result.coords, repeat.coords)
+
+
+def test_k3a_angles_near_tetrahedral() -> None:
+    """The authored registration reads 103.3 x3 + 115.1 x3 degrees per
+    interior seam atom — as tetrahedral as the alternating armchair
+    tilts allow at the xTB seed lengths."""
+    net, result = straight_k3a(6, 4)
+    cos_ss = (_K3A_OFF**2 - _K3A_RHO**2 / 2) / _K3A_SHEET**2
+    ang_ss = math.degrees(math.acos(cos_ss))
+    ang_sc = math.degrees(math.acos(-_K3A_OFF / _K3A_SHEET))
+    tables = _seam_angles(result.coords, net.bonds, result.seam_atoms)
+    for table in tables[1:-1]:
+        assert table == pytest.approx(sorted([ang_ss] * 3 + [ang_sc] * 3), abs=1e-6)
+    # terminal atoms: three sheet bonds only
+    for table in (tables[0], tables[-1]):
+        assert table == pytest.approx([ang_ss] * 3, abs=1e-6)

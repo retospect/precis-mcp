@@ -304,6 +304,53 @@ stronger than §11.3's present rule, which only requires the k rims to have
 edge-words compatible with *each other* and says nothing about matching
 the seam's dihedral pattern.
 
+## Seam-junction relax campaign 2026-10-14 (Mac-local, GFN2-xTB)
+
+Free relaxations (tblite, Te 1000 K, FIRE fmax 0.05 eV/Å, no pins, H caps
+kept) of ~180–650-atom finite segments, one per candidate junction form.
+Excess energy per carbon is `(E − n_C·μ_C − n_H·μ_H)/n_C` with μ_C =
+−58.640 eV, μ_H = −13.166 eV fitted to three flat capped-graphene
+segments (same cell convention; fit residual 0.035 eV). Different-size
+models carry different edge fractions — read the column as
+junction+edge+strain together, and compare same-size rows first. New/lost
+bonds are carbon bonds present after/before but not before/after, minus
+the known end-column knittings (guard columns at the two open ends bond
+across sheets in every model; they are finite-segment artefacts, listed
+per model in the scratch graph JSONs).
+
+| model | form | C | excess meV/C | steps (s) | π-twist° | junction held? | notes |
+|---|---|---|---|---|---|---|---|
+| a-sharp | equal-120 sp² Y (control) | 198 | 40.5 | 80 (486) | 43/42 | no — dimerises | 3 new axial seam bonds 1.56–1.60 Å; seam atoms go degree-4, angle sums ~655°; converges to the same structure/energy as d-sp3 (ΔE 0.01 eV) |
+| d-sp3 | k3-sp3-z seam, pre-paired | 198 | 40.4 | 84 (489) | 43/42 | yes | authored dimer chain is already the minimum; identical end state to a-sharp |
+| d-sp3x | k3-sp3-z + one sheet row | 246 | 29.5 | 98 (890) | 180/138 | yes | extra row dilutes junction+edge cost; same tetrahedral seam |
+| a-full | armchair Y, both dangling classes on a 2-atom/period sp3 chain | 186 | 37.9 | 57 (221) | 180/105 | yes | **k3-sp3-a** — seam atoms tetrahedral, sheet bonds 1.52 Å, chain 1.55 Å |
+| e-full | k3-sp3-a + one sheet row | 231 | 27.7 | 150 (962) | 180/112 | yes | lowest excess of the campaign |
+| a-arm | armchair Y, one dangling class only | 180 | 293.0 | 79 (507) | 0/0 | no — rim knits | seam line holds (puckered deg-3, sums ~299°) but the open rim self-knits into cross-sheet 3-rings |
+| a-arm-ab | armchair Y, alternating classes | 180 | 153.7 | 225 (1037) | 126/117 | no — rim knits | alternating dimer chain holds but the unused dangling set knits itself shut; consume both classes or none |
+| b-r4 | channel, equal-120 sp² corners, R≈4 Å | 354 | 74.9 | 205 (3952) | 180/124 | no — dimerises | all 3 corner seams form k3-sp3-z chains (9 new interior dimers) |
+| b-r6 | same, R≈6 Å | 450 | 50.1 | 290 (6997) | 180/116 | no — dimerises | same, radius does not protect the sp² seam |
+| b-r8 | same, R≈8 Å | 546 | 35.7 | 400 (11165) | 176/83 | no — dimerises | same at the largest radius; channel excess falls with R (curvature cost, not junction cost) |
+| b-sp3 | channel, pre-paired sp3 corners | 354 | 74.7 | 192 (3751) | 180/124 | yes | b-r4's authored dimer-chain twin; identical end state |
+| c-in | compensation: channel, one strip inward | 546 | 49.8 | 236 (8334) | 180/89 | no — dimerises | all 3 corners form dimer chains; the in/out side mix does not protect the sp² seam either |
+| t-tri | fused corners + double graft (3-rings) | 336 | 127.7 | 166 (3686) | 148/82 | no — re-pairs | 12 authored fuse bonds open; strips re-graft to both rims, sparse rim stitches remain |
+| z-zip | fused corners + alternating graft | 336 | 127.7 | 166 (3708) | 148/84 | no — re-pairs | same final basin as t-tri (same E to 0.0003 eV); the authored periodic corner is unstable either way |
+
+π-twist column: max/mean angle between successive seam atoms' estimated
+sheet normals along the junction line. For the planar-sp² seam atoms of
+a-sharp/d-sp3 the ~43° twist is the real signature — the p orbital folds
+along the dimer chain. Degree-4 tetrahedral atoms have no unique normal,
+so the ~180° reads on the sp3-corner models are the estimator's flips,
+not a π statement.
+
+Verdict: every authored planar sp² three-sheet seam dimerises into the
+k3-sp3-z chain, at any channel radius tested; the stable seam rows are
+`k3-sp3-z` (zigzag rims) and `k3-sp3-a` (armchair, lowest excess), both
+shipped, plus the `chan-k3-sp3-z` channel composite that carries the
+same dimer chain on its corners. Compensation and fused-corner
+geometries reconstruct rather than hold. Scripts and per-model JSONs:
+`.scratch/seam-models/` (builders `mk_models.py`, relax `xtb_relax.py`,
+analysis `analyze.py`/`compare.py`, outputs `out/`).
+
 ## In scope — the catalogue
 
 Each entry is keyed `(k, dihedral pattern, rim edge-word, hybridisation)`
@@ -312,9 +359,10 @@ and owes a seam-atom motif, a ring census and a strain figure.
 | k | dihedrals | rim | seam atoms | status |
 |---|---|---|---|---|
 | 2 | crease | either | — | not a seam; `fuse` merges to one sheet (§6.4). Implemented |
-| 3 | 120·3 | zigzag | 1 × sp² | §6.2's model. Unstrained, coplanar, trivalent. Implemented as `k3-sp2-120-z` |
+| 3 | 120·3 | zigzag | 1 × sp² | §6.2's model — geometrically clean (coplanar, trivalent) but **not a free minimum**: GFN2-xTB reconstructs every equal-120 sp² k3 seam into the `k3-sp3-z` dimer chain (2026-10-13 campaign and again on the 2026-10-14 `a-sharp` control: 3 new axial dimer bonds at 1.56–1.60 Å, tetrahedral angle sums ~655° over the six seam bonds, final structure identical to the authored `k3-sp3-z` minimum, ΔE ~0.01 eV). Implemented as `k3-sp2-120-z`; the row stays as the tethered/analytic construction but is documented unstable |
 | 3 | 120·3 | zigzag | 1 × sp³ + one seam-chain bond | **Built** (`k3-sp3-z`; `hexfold.sp3_seam.straight_k3z`, scene feature `k3-sp3-z`): seam atoms pair into dimers along the axis, so the row takes an even period count. Free GFN2-xTB of the sp² 120° Y **and** of the seam tube both relax *into* this motif (axial pairs 1.60–1.64 Å, sheet bonds 1.50–1.53 Å, seam-atom angle sums ~341° — a flattened tetrahedron); seeded at dimer 1.60 Å / sheet 1.51 Å / gap 3.32 Å, seam angles 106.54°×3 + 112.24°×3, bonded rim atoms carry a 16.54° in-plane tilt at the pinned seed. Census, derived from the built graph: 3·n/2 pentagons (one per dimer per sheet) + 3·(n/2−1) octagons (one per sheet-pair channel per inter-dimer gap) |
 | 4 | 90·4 | armchair | 1 × sp³ | **Built** (`k4-sp3-90-a`; `hexfold.sp3_seam.straight_k4`, scene feature `k4-sp3-90-a`): alternating up/down sheet bonds give the squashed tetrahedron 104.48°×4 + 120°×2, ≈5° off ideal on four bonds. Census, derived from the built graph: 4·(n−1) 12-cycles, one per sheet-pair channel per period gap |
+| 3 | 120·3 | armchair | 2 × sp³ + one seam-chain bond | **Built** (`k3-sp3-a`; `hexfold.sp3_seam.straight_k3a`, scene feature `k3-sp3-a`): both dangling classes consumed — seam atom `a_i` bonds each sheet's `dangling_a_i`, `b_i` each `dangling_b_i`, and the σ-spaced `(b_i, a_{i+1})` pairs carry chain bonds, so every interior seam atom is degree four and the terminal `a_0`/`b_{n−1}` stay degree-three open ends. Free GFN2-xTB (2026-10-14, the `a-full` model) holds the authored graph: seam atoms read ≈tetrahedral (angle-sum ~655°), sheet bonds 1.52 Å, chain 1.55 Å, no interior reconstruction. A seam that consumes only one dangling class (a-arm models) keeps its puckered degree-3 line but the open rim knits itself shut across sheets — consume both classes or none. Census, derived from the built graph: 3·(n−1) hexagons (one per sheet per period) + 3·(n−1) decagons (one per sheet-pair corridor per period); each chain bond borders three faces. Seeded at sheet 1.52 Å / chain 1.55 Å, seam angles 103.3°×3 + 115.1°×3 |
 | 4 | 90·4 | armchair | 2 × sp², bonded to each other, 2 sheets each | Reto's third option; had no home anywhere before this item |
 | 3 | unequal | — | — | **OUT — "we just don't do yet" (Reto, 2026-09-26). Refuse, do not approximate** |
 
