@@ -3,7 +3,7 @@
 ## Resume
 
 - **Pillar:** platform
-- **Next:** Reap idle gate/test-db pairs (docker-vm-disk-fills-silently, Do next 2); slices (a)–(c) of the release-branch-rounds item are all on main (item deleted 2026-10-07) (`scripts/round` tags `deployed/r<N>` and merges back; tags r6–r16 exist on origin).
+- **Next:** Do next 1 (confirm the prod-as-second-parent test); slices (a)–(c) of the release-branch-rounds item are all on main (item deleted 2026-10-07) (`scripts/round` tags `deployed/r<N>` and merges back; tags r6–r16 exist on origin).
 - **Blocked by:** Nothing; verify the prod-as-second-parent test exists before retiring Do next 1.
 - **Unblocks:** Verified release deployments for every thread.
 - **Acceptance:** Use the [release-cycle runbook](../../runbooks/release-cycle.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
@@ -69,11 +69,7 @@ nightly — the diff-cover verdict is still open.
    release head with the `deployed/r<N>` tag and merge-back (`scripts/round`;
    tags `deployed/r6`–`r16` on origin). Left here: confirm the
    prod-as-second-parent test exists under `tests/`; if not, add it.
-2. **backlog/docker-vm-disk-fills-silently.md** — a 90 GB build cache filled
-   the VM disk on 2026-10-03, and every gate died on a raw ENOSPC.
-   The `scripts/test` and `scripts/ship` refusals below 10 GB and the
-   reaper's cache cap shipped; left: reaping idle gate/test-db pairs.
-3. **release-candidate-verdicts** (item deleted 2026-10-12, all settled) — p1 (Reto 2026-10-03). Main's
+2. **release-candidate-verdicts** (item deleted 2026-10-12, all settled) — p1 (Reto 2026-10-03). Main's
    CI runs cancel each other at ~8 qlands/hour, so main has no verdicts and
    the drift guard is blind (25-commit walk); the round's local full gate
    holds the ship lock. All four slices shipped 2026-10-03 (hygiene tests
@@ -96,7 +92,7 @@ nightly — the diff-cover verdict is still open.
    started (a pending run replaced by a newer push, as designed). Ruled
    2026-10-12 (Reto): the max candidate age stays 6 h
    (`DEFAULT_MAX_CANDIDATE_HOURS` in `scripts/round`); nothing open.
-4. **backlog/reaper-removed-live-session-worktree.md** — auto-reap deleted
+3. **backlog/reaper-removed-live-session-worktree.md** — auto-reap deleted
    live sessions' trees; fixes 1–3, the grace/purpose guards and the
    two-sessions-in-one-tree process-table check shipped,
    the harness kill/SessionEnd coupling (proposal 4) is open. Its sibling
@@ -114,15 +110,15 @@ nightly — the diff-cover verdict is still open.
    project down at exit (ae5084ae3), and colima's docker pools were widened
    from ~31 to 256 networks (Reto, review-queue ship-gate-ci-2, done by
    the orchestrator 19:01Z).
-5. **backlog/deploy-renders-only-precis-roles.md** — `scripts/deploy` never
+4. **backlog/deploy-renders-only-precis-roles.md** — `scripts/deploy` never
    renders backups, monitoring or pgbouncer roles; a B2 sync fix sat
    unrendered for 7 weeks. Draft, Reto picks (i)/(ii)/(iii).
-6. **backlog/orphaned-test-runs-hold-gate-slots-forever.md** — a subagent
+5. **backlog/orphaned-test-runs-hold-gate-slots-forever.md** — a subagent
    exiting without reaping `scripts/test` holds a slot forever, starving the
    2-slot gate for every tree.
-7. **backlog/gate-hang-diagnosis.md** — py-spy cannot run inside the gate
-   container; the tooling that makes 6 diagnosable.
-8. **backlog/local-gate-red-on-green-main-token-budget.md** — gating CI is
+6. **backlog/gate-hang-diagnosis.md** — py-spy cannot run inside the gate
+   container; the tooling that makes 5 diagnosable.
+7. **backlog/local-gate-red-on-green-main-token-budget.md** — gating CI is
    3.13-only but prod runs 3.12; nightly red on a green main.
 
 ## Horizon

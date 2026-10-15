@@ -140,8 +140,9 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
    - (c) **Big-Mac hardening**, a deploy-role branch to the orchestrator:
      - drop the idle 27B from llama-swap;
      - add a Docker VM disk alert at >85%. ship-gate-ci owns the refusal
-       below 10 GB and the cache cap (`docker-vm-disk-fills-silently.md`);
-       the alert is ours. It is a textfile metric from inside the colima VM
+       below 10 GB (`scripts/lib/docker-disk.sh`), the cache cap
+       (`scripts/reap-test-dbs`) and the idle gate-pair reap
+       (`scripts/reap-idle-gates`); the alert is ours. It is a textfile metric from inside the colima VM
        plus a Prometheus rule, because node_exporter on the host cannot see
        the VM's `/var/lib/docker`.
 2b. **External HPC, three uses (Reto 2026-10-03 21:50Z: "bump that up in

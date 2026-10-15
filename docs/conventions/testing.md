@@ -42,6 +42,16 @@ name can't be inverted, `compose_project_for` is not injective — and tears
 down the ones whose tree is gone. A tree that still exists is never touched,
 so it can't race a parked session or an in-flight gate. First run reaped 13.
 
+`scripts/ship` leaves its warm `precis-gate` container running, and
+`reap-test-dbs` skips any project with a running gate, so a dead session's
+gate/db pair used to stay up for days, pinning its image on the VM disk.
+`scripts/reap-idle-gates` (SessionStart, after `reap-test-dbs`) removes the
+pair, its `gate-cache` volume and its network when the tree is registered,
+sessionless per `scripts/inflight`, has no fresh `.claude/purpose`, has no
+exec attached, and has been idle 24 h (2 h for `agent-*`). It also removes a
+`gate-cache` volume no registered worktree mints. `--dry-run` lists every
+project with its verdict. The next gate in a reaped tree rebuilds its caches.
+
 The remote side leaks the same way. `scripts/ship --remote` pushes the tree to
 a throwaway `ci/<branch>` for check.yml, and deletes it again only on a
 completed ship — a red gate you then `/qland`, or a ship killed mid-run, leaves

@@ -1,0 +1,464 @@
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
+"""scripts/reap-idle-gates — reap idle warm-gate pairs: a tree's
+``precis-gate`` + ``precis-test-db`` containers and its ``gate-cache`` volume,
+once the tree has gone quiet.
+
+Wired in .claude/settings.json (SessionStart), after ``scripts/reap-test-dbs``.
+Stdlib only. ``PRECIS_NO_AUTOREAP=1`` makes it a no-op (shared with the other
+reapers).
+
+The leak: ``scripts/ship`` starts a long-lived ``precis-gate`` container
+(``sleep infinity``) in the tree's ``precis-test-<tree>`` compose project and
+never stops it. ``scripts/reap-test-dbs`` reaps a project whose tree is gone,
+and an idle db-only project of a sessionless tree, but it skips any project
+with a running non-db container, so a warm gate keeps its whole project up
+forever. On 2026-10-03 21 such gates ran (11 up 26-35 h), 13 of them on an
+untagged ~32 GB ``precis-dev`` image they alone kept on the VM disk.
+
+Safe by construction. A project is reaped only when every check holds:
+
+1. its name starts with ``precis-test-``, every container in it is a
+   ``precis-gate`` or ``precis-test-db`` service, and a gate is among them;
+2. every container's compose file label is ``<tree>/docker/dev/compose.yaml``
+   for one tree that ``git worktree list`` registers in this repo, the tree
+   is not the primary checkout, it exists, and ``compose_project_for`` of it
+   gives this project name (a gone tree belongs to ``reap-test-dbs``);
+3. ``scripts/inflight --json`` names the tree and its ``session`` is ``—`` or
+   ``dead-lock#<pid>``; no inflight answer means nothing is reaped;
+4. ``.claude/purpose`` is absent or older than
+   ``PRECIS_REAP_GATE_PURPOSE_FRESH_SECONDS`` (default 6 h);
+5. no container in the project has an exec attached (a gate in flight runs
+   ``compose exec``), checked again just before removal;
+6. the newest container start and the tree's last git activity (index,
+   HEAD, logs/HEAD, purpose mtimes) are both at least
+   ``PRECIS_REAP_GATE_MIN_AGE_SECONDS`` old (default 24 h;
+   ``PRECIS_REAP_AGENT_GATE_MIN_AGE_SECONDS``, default 2 h, for ``agent-*``).
+
+Removal is by the exact ids judged, never ``compose down``: a container that
+appears after the judgment is never touched. Volumes and the network are
+removed only when their compose labels name this project (and, for a volume,
+the ``gate-cache`` key). Every docker call is best-effort and bounded.
+
+A second pass removes an orphaned ``precis-test-*`` ``gate-cache`` volume:
+no container of its project exists, and no registered worktree mints its
+project name.
+
+Usage: ``scripts/reap-idle-gates [--dry-run]``. ``--dry-run`` removes nothing and
+lists each pair it would reap and each it keeps, with the reason.
+"""
+
+from __future__ import annotations
+
+import argparse
+import calendar
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+
+PROJECT_PREFIX = "precis-test-"
+GATE_SERVICE = "precis-gate"
+DB_SERVICE = "precis-test-db"
+PAIR_SERVICES = frozenset({GATE_SERVICE, DB_SERVICE})
+GATE_VOLUME_KEY = "gate-cache"
+COMPOSE_SUFFIX = "/docker/dev/compose.yaml"
+
+L_PROJECT = "com.docker.compose.project"
+L_SERVICE = "com.docker.compose.service"
+L_CONFIG = "com.docker.compose.project.config_files"
+L_VOLUME = "com.docker.compose.volume"
+
+DOCKER_TIMEOUT_S = 30
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _env_seconds(name: str, default: int) -> int:
+    raw = os.environ.get(name, "")
+    return int(raw) if raw.isdigit() else default
+
+
+MIN_AGE_S = _env_seconds("PRECIS_REAP_GATE_MIN_AGE_SECONDS", 86400)
+AGENT_MIN_AGE_S = _env_seconds("PRECIS_REAP_AGENT_GATE_MIN_AGE_SECONDS", 7200)
+PURPOSE_FRESH_S = _env_seconds("PRECIS_REAP_GATE_PURPOSE_FRESH_SECONDS", 21600)
+
+
+def compose_project_for(path: str) -> str:
+    """Python twin of ``compose_project_for`` in scripts/lib/compose-project.sh."""
+    base = os.path.basename(os.path.realpath(path))
+    base = re.sub(r"[^a-zA-Z0-9_-]", "-", base).lower()
+    return PROJECT_PREFIX + base if base else ""
+
+
+def _docker(*args: str) -> str | None:
+    try:
+        out = subprocess.run(
+            ["docker", *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=DOCKER_TIMEOUT_S,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return out.stdout if out.returncode == 0 else None
+
+
+def _inspect(*args: str) -> list[dict]:
+    out = _docker(*args)
+    if not out:
+        return []
+    try:
+        data = json.loads(out)
+    except ValueError:
+        return []
+    return [d for d in data if isinstance(d, dict)] if isinstance(data, list) else []
+
+
+def _epoch(ts: str) -> float | None:
+    """Docker's RFC 3339 UTC timestamp to epoch seconds; None if unusable."""
+    try:
+        t = calendar.timegm(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S"))
+    except (TypeError, ValueError):
+        return None
+    return float(t) if t > 0 else None  # 0001-01-01: never started
+
+
+def _labels(obj: dict) -> dict[str, str]:
+    labels = obj.get("Labels")
+    if labels is None:
+        labels = (obj.get("Config") or {}).get("Labels")
+    return labels if isinstance(labels, dict) else {}
+
+
+@dataclass
+class Container:
+    id: str
+    name: str
+    service: str
+    config: str
+    exec_ids: list[str]
+    started: float | None
+
+    @classmethod
+    def from_inspect(cls, d: dict) -> Container:
+        labels = _labels(d)
+        state = d.get("State") or {}
+        started = _epoch(state.get("StartedAt", "")) or _epoch(d.get("Created", ""))
+        return cls(
+            id=str(d.get("Id", "")),
+            name=str(d.get("Name", "")).lstrip("/"),
+            service=labels.get(L_SERVICE, ""),
+            config=labels.get(L_CONFIG, "").split(",")[0],
+            exec_ids=list(d.get("ExecIDs") or []),
+            started=started,
+        )
+
+
+@dataclass
+class Verdict:
+    project: str
+    reap: bool
+    reason: str
+    tree: str = ""
+    containers: list[Container] = field(default_factory=list)
+
+
+def _worktrees() -> tuple[list[str], str]:
+    """Registered worktree paths (real) of this repo, and the primary's."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(ROOT), "worktree", "list", "--porcelain"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=DOCKER_TIMEOUT_S,
+            check=False,
+        ).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return [], ""
+    paths = [
+        os.path.realpath(line[len("worktree ") :])
+        for line in out.splitlines()
+        if line.startswith("worktree ")
+    ]
+    return paths, (paths[0] if paths else "")
+
+
+def _sessions() -> dict[str, str] | None:
+    """realpath -> inflight ``session`` field; None when inflight can't answer."""
+    inflight = ROOT / "scripts" / "inflight"
+    if not os.access(inflight, os.X_OK):
+        return None
+    try:
+        out = subprocess.run(
+            [str(inflight), "--json"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
+            check=False,
+        )
+        data = json.loads(out.stdout)
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return None
+    if out.returncode != 0 or not isinstance(data, dict):
+        return None
+    return {
+        os.path.realpath(wt.get("path", "")): str(wt.get("session", ""))
+        for wt in data.get("worktrees", [])
+        if isinstance(wt, dict) and wt.get("path")
+    }
+
+
+def _sessionless(session: str) -> bool:
+    return session == "—" or session.startswith("dead-lock#")
+
+
+def _git_dir(tree: str) -> str | None:
+    dotgit = os.path.join(tree, ".git")
+    if os.path.isdir(dotgit):
+        return dotgit
+    try:
+        with open(dotgit, encoding="utf-8") as fh:
+            line = fh.readline().strip()
+    except OSError:
+        return None
+    if not line.startswith("gitdir: "):
+        return None
+    gd = line[len("gitdir: ") :]
+    return gd if os.path.isabs(gd) else os.path.join(tree, gd)
+
+
+def _last_activity(tree: str) -> float | None:
+    """Newest mtime of the tree's git index/HEAD/reflog and its purpose file."""
+    gd = _git_dir(tree)
+    if gd is None:
+        return None
+    mtimes = []
+    for p in (
+        os.path.join(gd, "index"),
+        os.path.join(gd, "HEAD"),
+        os.path.join(gd, "logs", "HEAD"),
+        os.path.join(tree, ".claude", "purpose"),
+    ):
+        try:
+            mtimes.append(os.path.getmtime(p))
+        except OSError:
+            continue
+    return max(mtimes) if mtimes else None
+
+
+def _purpose_stale(tree: str, now: float) -> bool:
+    try:
+        return now - os.path.getmtime(os.path.join(tree, ".claude", "purpose")) >= (
+            PURPOSE_FRESH_S
+        )
+    except OSError:
+        return True  # no purpose file at all
+
+
+def _hours(seconds: float) -> str:
+    return f"{seconds / 3600:.1f}h"
+
+
+def judge(
+    project: str,
+    containers: list[Container],
+    worktrees: list[str],
+    primary: str,
+    sessions: dict[str, str] | None,
+    now: float,
+) -> Verdict:
+    def keep(reason: str, tree: str = "") -> Verdict:
+        return Verdict(project, False, reason, tree)
+
+    services = {c.service for c in containers}
+    if not services <= PAIR_SERVICES:
+        return keep(f"other service {sorted(services - PAIR_SERVICES)}")
+    if GATE_SERVICE not in services:
+        return keep("no gate container (db-only: reap-test-dbs owns it)")
+    configs = {c.config for c in containers}
+    if len(configs) != 1:
+        return keep("containers name different compose files")
+    cfg = configs.pop()
+    if not cfg.endswith(COMPOSE_SUFFIX) or cfg == COMPOSE_SUFFIX:
+        return keep(f"compose file {cfg!r} is not <tree>{COMPOSE_SUFFIX}")
+    tree = cfg[: -len(COMPOSE_SUFFIX)]
+    real = os.path.realpath(tree)
+    if not os.path.isdir(real):
+        return keep("tree gone (reap-test-dbs owns it)", tree)
+    if real not in worktrees:
+        return keep("not a registered worktree of this repo", tree)
+    if real == primary:
+        return keep("primary checkout", tree)
+    if compose_project_for(real) != project:
+        return keep("project name does not match the tree", tree)
+    if sessions is None:
+        return keep("scripts/inflight unavailable", tree)
+    session = sessions.get(real)
+    if session is None:
+        return keep("tree missing from scripts/inflight", tree)
+    if not _sessionless(session):
+        return keep(f"session {session}", tree)
+    if not _purpose_stale(real, now):
+        return keep("fresh .claude/purpose", tree)
+    if any(c.exec_ids for c in containers):
+        return keep("exec in flight", tree)
+    min_age = (
+        AGENT_MIN_AGE_S if os.path.basename(real).startswith("agent-") else MIN_AGE_S
+    )
+    starts = [c.started for c in containers]
+    if any(s is None for s in starts):
+        return keep("unreadable container start time", tree)
+    up_age = now - max(s for s in starts if s is not None)
+    activity = _last_activity(real)
+    if activity is None:
+        return keep("unreadable tree activity", tree)
+    idle = min(up_age, now - activity)
+    if idle < min_age:
+        return keep(f"idle {_hours(idle)} < {_hours(min_age)}", tree)
+    return Verdict(
+        project,
+        True,
+        f"idle {_hours(idle)}, session {session}",
+        tree,
+        containers,
+    )
+
+
+def _project_volumes(project: str) -> list[str]:
+    out = _docker("volume", "ls", "-q", "--filter", f"label={L_PROJECT}={project}")
+    names = (out or "").split()
+    return [
+        str(v.get("Name"))
+        for v in (_inspect("volume", "inspect", *names) if names else [])
+        if _labels(v).get(L_PROJECT) == project
+        and _labels(v).get(L_VOLUME) == GATE_VOLUME_KEY
+    ]
+
+
+def _project_networks(project: str) -> list[str]:
+    out = _docker("network", "ls", "-q", "--filter", f"label={L_PROJECT}={project}")
+    ids = (out or "").split()
+    return [
+        str(n.get("Name"))
+        for n in (_inspect("network", "inspect", *ids) if ids else [])
+        if _labels(n).get(L_PROJECT) == project
+    ]
+
+
+def reap_pair(v: Verdict) -> list[str]:
+    """Remove the judged containers, then the project's gate volume and network.
+
+    Returns what was removed. Aborts before any removal if an exec has
+    attached since the judgment.
+    """
+    ids = [c.id for c in v.containers]
+    fresh = _inspect("inspect", *ids)
+    if len(fresh) != len(ids) or any(d.get("ExecIDs") for d in fresh):
+        return []
+    removed = []
+    # Gate first: it depends on the db.
+    for c in sorted(v.containers, key=lambda c: c.service != GATE_SERVICE):
+        if _docker("rm", "-f", c.id) is not None:
+            removed.append(c.name or c.id[:12])
+    if len(removed) != len(ids):
+        return removed
+    for vol in _project_volumes(v.project):
+        if _docker("volume", "rm", vol) is not None:
+            removed.append(vol)
+    for net in _project_networks(v.project):
+        if _docker("network", "rm", net) is not None:
+            removed.append(net)
+    return removed
+
+
+def orphan_volumes(
+    projects_with_containers: set[str], worktrees: list[str]
+) -> list[str]:
+    out = _docker(
+        "volume", "ls", "-q", "--filter", f"label={L_VOLUME}={GATE_VOLUME_KEY}"
+    )
+    names = (out or "").split()
+    minted = {compose_project_for(w) for w in worktrees}
+    orphans = []
+    for v in _inspect("volume", "inspect", *names) if names else []:
+        labels = _labels(v)
+        proj = labels.get(L_PROJECT, "")
+        if (
+            proj.startswith(PROJECT_PREFIX)
+            and labels.get(L_VOLUME) == GATE_VOLUME_KEY
+            and proj not in projects_with_containers
+            and proj not in minted
+            and v.get("Name") == f"{proj}_{GATE_VOLUME_KEY}"
+        ):
+            orphans.append(str(v["Name"]))
+    return orphans
+
+
+def main(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(prog="reap-idle-gates")
+    ap.add_argument("--dry-run", action="store_true")
+    dry = ap.parse_args(argv).dry_run
+    if os.environ.get("PRECIS_NO_AUTOREAP"):
+        return 0
+    tag = "reap-idle-gates" + (" --dry-run" if dry else "")
+
+    ids_out = _docker("ps", "-a", "-q", "--filter", f"label={L_PROJECT}")
+    if ids_out is None:
+        return 0  # daemon unreachable: a hook must stay quiet
+    ids = ids_out.split()
+    groups: dict[str, list[Container]] = {}
+    for d in _inspect("inspect", *ids) if ids else []:
+        proj = _labels(d).get(L_PROJECT, "")
+        if proj.startswith(PROJECT_PREFIX):
+            groups.setdefault(proj, []).append(Container.from_inspect(d))
+
+    worktrees, primary = _worktrees()
+    if not worktrees:
+        print(f"{tag}: no git worktree list — nothing judged")
+        return 0
+    # scripts/inflight takes seconds; ask only when some project has a gate.
+    has_gate = any(c.service == GATE_SERVICE for cs in groups.values() for c in cs)
+    sessions = _sessions() if has_gate else None
+    now = time.time()
+    verdicts = [
+        judge(p, cs, worktrees, primary, sessions, now)
+        for p, cs in sorted(groups.items())
+    ]
+    orphans = orphan_volumes(set(groups), worktrees)
+
+    acted: list[str] = []
+    for v in verdicts:
+        if not v.reap:
+            continue
+        if dry or reap_pair(v):
+            acted.append(v.project)
+    for vol in orphans:
+        if dry or _docker("volume", "rm", vol) is not None:
+            acted.append(vol)
+
+    if dry:
+        for v in verdicts:
+            what = "would reap" if v.reap else "keep"
+            names = ", ".join(c.name for c in v.containers) if v.reap else ""
+            print(
+                f"  {what} {v.project}: {v.reason}" + (f" [{names}]" if names else "")
+            )
+        for vol in orphans:
+            print(f"  would reap orphan volume {vol}")
+    if not acted:
+        print(f"{tag}: nothing to reap")
+    else:
+        verb = "would reap" if dry else "reaped"
+        print(f"{tag}: {verb} {len(acted)}: {' '.join(acted)}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

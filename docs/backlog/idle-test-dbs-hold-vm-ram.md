@@ -13,6 +13,9 @@ down at SessionStart, whatever removed the tree. First run reaped 13 — trees
 removed weeks earlier with their Postgres still resident, which is how routine
 the event-coupled miss had become.
 
+A tree with a warm gate is out of this item's scope: `scripts/reap-idle-gates`
+removes a sessionless tree's gate/db pair after 24 h idle.
+
 It deliberately does **not** touch the other population: projects whose
 worktree still exists but has been untouched for days. On 2026-08-21 that was
 `majestic-growing-zephyr` (24h) and `frolicking-kindling-platypus` (5 days,
