@@ -151,6 +151,15 @@ class PcbBridge:
         )
 
     def input_revision(self, store: Any, ref_id: int, name: str) -> Any:
+        # ``part:<C#>`` — the part's datasheet-facts rev (slice 7's
+        # pcb_review records it per consumed part): a corrected fact
+        # marks every verdict that read it stale. An unknown part is
+        # unresolvable, never a staleness trigger.
+        if name.startswith("part:"):
+            from precis.pcb.datasheet_facts import facts_revision
+
+            part_ref_id = store.part_ref_id(name[len("part:") :].strip().upper())
+            return None if part_ref_id is None else facts_revision(store, part_ref_id)
         return _current_input_revisions().get(name)
 
 

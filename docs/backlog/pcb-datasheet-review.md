@@ -325,7 +325,20 @@ recency); a stored sibling order is YAGNI until a reader needs it.
    slice 5's fact ids.
 5. Part fact shapes (3) — with/after `datasheet-facts-mesh.md`'s pin table.
 6. Derived facts + `required_external`, `bus_address_conflict` (4, 5).
-7. `pcb_review` job + `precis-pcb-review-help` (7, 8).
+7. ~~`pcb_review` job + `precis-pcb-review-help` (7, 8)~~ — **SHIPPED
+   2026-10-15** (worktree `pcb-review-job`): `put(kind='pcb',
+   args={'op':'review', item?, limit?})` runs the check surface fresh
+   (persisted, ERC) then enqueues `pcb_review` (job_inproc) over the
+   `pcb-tapeout` judgment items that are `not checked`/`stale`; nothing
+   queued → no job. One fresh-context MEDIUM call per item
+   (`precis.pcb.review`); pass/fail/n/a land as machine verdicts anchored
+   to the named refdes/nets with the quote, `inputs` = `part:<C#>` facts
+   revs (resolved by `PcbBridge.input_revision`) + the margin policy when
+   used. `not_checkable` writes a `question` note keyed on item rev +
+   board fingerprint + input revisions, so an unchanged re-run makes zero
+   calls. The quest board's Review button sends `op='review'`. NOT
+   shipped: recomputing derived facts (slice 6 owns them); the I²C fold
+   into `precis-i2c-help` (slice 6).
 8. Lifecycle attribute + the shortlist and recorded selection (9, 11).
 9. Design from facts — required externals and straps (10).
 10. Provenance reverse query + adversarial re-check (12).

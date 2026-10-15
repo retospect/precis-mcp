@@ -116,13 +116,6 @@ _spec.loader.exec_module(coderef)
 #: of the contract: an entry that gains a real caller must be REMOVED,
 #: not left masking a future regression check forever.
 _KNOWN_UNWIRED: dict[str, str] = {
-    "src/precis/pcb/datasheet_facts.py::facts_revision": (
-        "9f9d59612 (datasheet_facts): the part-fact staleness key a verdict "
-        "records in checklist_verdicts.inputs (pcb-datasheet-review item 6); "
-        "checklist/pcb.py's PcbBridge.input_revision resolves only "
-        "margin:fixed-derating so far and the pcb_review job (item 7) is "
-        "not built"
-    ),
     "src/precis/pcb/jlc_library.py::reset_live_cache": (
         "own docstring: 'Clear the live-lookup negative cache (tests; an "
         "operator retry)' -- same ops-tool shape as _http.reset_circuit"

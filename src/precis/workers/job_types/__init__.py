@@ -528,6 +528,16 @@ def _load_pcb_argue() -> JobTypeSpec:
     return pcb_argue.SPEC
 
 
+def _load_pcb_review() -> JobTypeSpec:
+    # docs/backlog/pcb-datasheet-review.md slice 7: work the pcb-tapeout
+    # judgment items that are not checked or stale, one fresh-context
+    # call each, machine verdicts anchored + quoted. Plugin dispatch
+    # under job_inproc.
+    from precis.workers.job_types import pcb_review
+
+    return pcb_review.SPEC
+
+
 def _load_paper_pull() -> JobTypeSpec:
     # Fetch an agent-supplied PDF URL into the watch inbox with a fetch
     # sidecar for a paper stub — the enqueued half of
@@ -802,6 +812,9 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "pcb_argue":
         _REGISTRY["pcb_argue"] = _load_pcb_argue()
         return _REGISTRY["pcb_argue"]
+    if name == "pcb_review":
+        _REGISTRY["pcb_review"] = _load_pcb_review()
+        return _REGISTRY["pcb_review"]
     if name == "paper_pull":
         _REGISTRY["paper_pull"] = _load_paper_pull()
         return _REGISTRY["paper_pull"]
@@ -877,6 +890,7 @@ def known_job_types() -> list[str]:
         "datasheet_pull",
         "datasheet_facts",
         "pcb_argue",
+        "pcb_review",
         "paper_pull",
         "deferred_llm_call",
         "survey_extract",

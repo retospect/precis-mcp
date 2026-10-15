@@ -834,6 +834,21 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-datasheet-help",
     ),
     ServiceSpec(
+        # docs/backlog/pcb-datasheet-review.md slice 7: the re-check pass —
+        # work a design's not-checked/stale pcb-tapeout judgment items, one
+        # fresh-context MEDIUM-tier call each (in-process router, no
+        # `requires`), machine verdicts anchored + quoted.
+        name="pcb_review",
+        label="PCB review (job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        uses_model=True,
+        cost_sources=("pcb-review",),
+        one_line="Re-check a pcb design against pcb-tapeout — minted by "
+        "put(kind='pcb', args={'op':'review'}).",
+        doc_skill="precis-pcb-review-help",
+    ),
+    ServiceSpec(
         # Fetch an agent-supplied PDF URL into the watch inbox for a paper
         # stub; minted by put(kind='paper', args={'pdf_url': ...}).
         name="paper_pull",

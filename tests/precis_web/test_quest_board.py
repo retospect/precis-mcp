@@ -322,10 +322,13 @@ def test_place_action_with_groups(client, runtime) -> None:
     assert runtime.calls[-1][1]["__extras__"] == {"op": "place", "groups": True}
 
 
-def test_review_action_runs_check(client, runtime) -> None:
+def test_review_action_queues_review_job(client, runtime) -> None:
     resp = client.post("/pcb/taz15/op", data={"op": "review"}, follow_redirects=False)
     assert resp.status_code == 303
-    assert runtime.calls[-1] == ("get", {"kind": "pcb", "id": "taz15", "view": "check"})
+    assert runtime.calls[-1] == (
+        "put",
+        {"kind": "pcb", "id": "taz15", "__extras__": {"op": "review"}},
+    )
 
 
 def test_action_refusals_queue_nothing(client, runtime) -> None:

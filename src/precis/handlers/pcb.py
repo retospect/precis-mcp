@@ -126,6 +126,7 @@ from precis.pcb import length_ratio as pcb_length_ratio
 from precis.pcb import matching as pcb_matching
 from precis.pcb import optimize as pcb_optimize
 from precis.pcb import realize as pcb_realize
+from precis.pcb import review as pcb_review
 from precis.pcb import route as pcb_route
 from precis.pcb import selectables as pcb_selectables
 from precis.pcb import session as pcb_session
@@ -272,7 +273,14 @@ _FOOTPRINT_OPS = ("footprint",)
 #: Cheap request-building plus bounded HTTP, not worker compute — inline
 #: like ``footprint``, guarded by ``dry_run``/``confirm='add-to-cart'``.
 _ORDER_OPS = ("order",)
-_OPS = (*_JOB_OPS, *_INLINE_EDIT_OPS, *_FOOTPRINT_OPS, *_ORDER_OPS, "datasheets")
+_OPS = (
+    *_JOB_OPS,
+    *_INLINE_EDIT_OPS,
+    *_FOOTPRINT_OPS,
+    *_ORDER_OPS,
+    "datasheets",
+    "review",
+)
 
 #: ``view='availability'``: catalog rows older than this (or absent) are
 #: re-checked live, bounded by ``jlc_library._LIVE_BATCH_MAX`` per call.
@@ -588,6 +596,8 @@ class PcbHandler(Handler):
                 "phase",
                 "pins",
                 "source",
+                "item",
+                "limit",
             }
         ),
         "get": frozenset(
@@ -685,7 +695,9 @@ class PcbHandler(Handler):
             "text box writes (handles REFDES | REFDES.PIN | net:NAME) — "
             "put(kind='job', job_type='pcb_argue', parent_id=<this ref>, "
             "params={'pcb_ref_id':N}) answers every open question in "
-            "place; "
+            "place; put(args={'op':'review'}) runs the check and queues a "
+            "pcb_review job over the unchecked/stale pcb-tapeout items "
+            "(precis-pcb-review-help); "
             "search over names; delete soft-retires; link/unlink "
             "edges to other refs (rel= per precis-relations — e.g. a "
             "board 'serves' the quest it feeds). "
@@ -1225,6 +1237,8 @@ class PcbHandler(Handler):
             return self._op_footprint(ref, args)
         if op == "order":
             return self._op_order(ref, args)
+        if op == "review":
+            return self._op_review(ref, args)
         if op == "datasheets":
             n, nf = self._queue_datasheets(ref.id, force=bool(args.get("force")))
             return Response(
@@ -1399,6 +1413,85 @@ class PcbHandler(Handler):
                 f"Next: get(kind='pcb', id='{ref.slug}', view='{status_view}') "
                 "to check progress once the job lands."
             )
+        )
+
+    def _op_review(self, ref: Any, args: dict[str, Any]) -> Response:
+        """``put(args={'op':'review', 'item'?, 'limit'?})`` — pcb-datasheet-
+        review slice 7: run the check surface fresh (``view='check'``'s
+        run, persisted, ERC included) and enqueue a ``pcb_review`` job over
+        the ``pcb-tapeout`` judgment items that are not checked or stale.
+        The check runs here because it lives in this layer and the worker
+        may not import it; the job quotes the run by id. Nothing queued →
+        no job: a settled design costs no model call."""
+        design = self.store.pcb_load(ref.id)
+        if design["board"] is None:
+            raise BadInput(
+                f"pcb: {ref.slug!r} has no board yet — nothing to review",
+                next="put(kind='pcb', id='slug', args={'components':[...],"
+                "'nets':[...]}) to create the design",
+            )
+        item = str(args.get("item") or "").strip() or None
+        params: dict[str, Any] = {"pcb_ref_id": ref.id}
+        if item is not None:
+            params["item"] = item
+        if args.get("limit") is not None:
+            limit = int(args["limit"])
+            if not 1 <= limit <= 60:
+                raise BadInput("pcb: review limit must be 1..60 items")
+            params["limit"] = limit
+        ran = self._drc_run(
+            ref.id,
+            design,
+            eval_phase=self._design_phase(design),
+            eval_phase_claimed=False,
+            erc=True,
+        )
+        check_line = (
+            "check: nothing the rules at this phase can check"
+            if ran is None
+            else f"check run {str(ran.run_id)[:12]}: {len(ran.findings)} finding(s)"
+        )
+        q = pcb_review.queue(self.store, ref.id, item=item)
+        if q.reason is not None:
+            raise BadInput(f"pcb: {ref.slug}: {q.reason}")
+        status_next = (
+            f"Next: get(kind='checklist', id='{pcb_review.CHECKLIST}', "
+            f"target='pcb:{ref.slug}')"
+        )
+        if item is not None and not any(st.name == item for st in q.statuses):
+            raise BadInput(
+                f"pcb: {item!r} is not an item on {pcb_review.CHECKLIST}",
+                options=[st.name for st in q.statuses],
+            )
+        work, skipped = pcb_review.pending(
+            self.store,
+            ref.id,
+            q,
+            pcb_review.input_revisions(self.store, self.store.pcb_graph(ref.id)),
+        )
+        if not work:
+            return Response(
+                body=f"# review {ref.slug} — nothing to review\n{check_line}\n"
+                f"every judgment item is settled ({skipped} not checkable at "
+                "the current inputs); no job queued.\n" + status_next
+            )
+        # Idempotent per (design, queue state): re-submitting while the
+        # same items are pending collapses onto the in-flight job.
+        queued = sorted(f"{st.name}@{st.item['rev']}:{st.status}" for st, _ in work)
+        digest = pcb_session.content_hash(
+            self.store.pcb_graph(ref.id), {**params, "queue": queued}
+        )
+        job_resp = self.hub.sibling("job").put(
+            job_type="pcb_review",
+            executor="job_inproc",
+            parent_id=ref.id,
+            params=params,
+            idem_key=f"pcb_review:{ref.id}:{digest}",
+        )
+        return Response(
+            body=f"# review {ref.slug} — enqueued ({len(work)} item(s) not "
+            f"checked or stale)\n{check_line}\n{job_resp.body}\n\n"
+            f"{status_next} once the job lands — see precis-pcb-review-help."
         )
 
     @staticmethod

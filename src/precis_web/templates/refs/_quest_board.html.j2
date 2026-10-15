@@ -132,10 +132,10 @@
           <button class="rounded-md bg-sky-600 text-white px-2 py-1 hover:bg-sky-700">Place</button>
         </form>
         <form method="post" action="{{ b.op_url }}" class="flex flex-wrap items-center gap-2 text-xs"
-              onsubmit="return confirm('Run a fresh DRC/ERC check on {{ b.slug }}? It records a check run on production.');">
+              onsubmit="return confirm('Review {{ b.slug }}? Runs a fresh DRC/ERC check and queues a pcb_review job (model calls) over the unchecked/stale tapeout items, on production.');">
           <input type="hidden" name="op" value="review">
           <input type="hidden" name="back" value="/refs/quest/{{ ref.id }}#board">
-          <button class="rounded-md border border-slate-300 bg-white text-slate-700 px-2 py-1 hover:bg-slate-50">Review (check)</button>
+          <button class="rounded-md border border-slate-300 bg-white text-slate-700 px-2 py-1 hover:bg-slate-50">Review</button>
         </form>
       </div>
     </div>
