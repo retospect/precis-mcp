@@ -21,6 +21,9 @@
 \usepackage[T1]{fontenc}
 \usepackage{amsmath,amssymb}
 \usepackage{graphicx}
+\usepackage{booktabs,array}
+\usepackage{upgreek}
+\usepackage{multicol}
 \hypersetup{hidelinks,pdfborder={0 0 0},pdftitle={},pdfauthor={}}
 \usetheme{default}
 \usecolortheme{default}
@@ -28,20 +31,36 @@
 \setbeamertemplate{headline}{}
 \setbeamertemplate{footline}{}
 
-% Declared colour roles; a future validated branding profile supplies values.
-\colorlet{accent}{black!75}
-\colorlet{heading}{black!85}
-\colorlet{band}{black!85}
-\colorlet{bodytint}{black!4}
-\colorlet{citation}{black!70}
-\colorlet{measured}{black!80}
-\colorlet{computed}{black!65}
-\colorlet{bandtext}{white}
-\colorlet{bodytext}{black}
+% Declared colour roles — the neutral product defaults. A validated
+% branding profile redefines each role by injecting
+% \definecolor{<role>}{HTML}{<hex>} ahead of the document body; every rule
+% below names a role, never a hue, so that is the ONLY thing a rebrand
+% touches.
+\definecolor{accent}{HTML}{404040}
+\definecolor{heading}{HTML}{262626}
+\definecolor{band}{HTML}{262626}
+\definecolor{bodytint}{HTML}{F5F5F5}
+\definecolor{citation}{HTML}{4D4D4D}
+\definecolor{measured}{HTML}{333333}
+\definecolor{computed}{HTML}{595959}
+\definecolor{bandtext}{HTML}{FFFFFF}
+\definecolor{bodytext}{HTML}{000000}
 \setbeamercolor{normal text}{fg=bodytext,bg=white}
 \setbeamercolor{block title}{fg=bandtext,bg=heading}
 \setbeamercolor{banner}{fg=bandtext,bg=band}
 \setbeamercolor{block body}{fg=bodytext,bg=bodytint}
+\setbeamercolor{logostrip}{fg=bandtext,bg=white}
+
+% Semantic emphasis — a colour may mean exactly one thing. Content uses
+% these; \hlm marks MEASURED values, \hlc COMPUTED/predicted values,
+% \hl colourless emphasis. (\boldmath is a switch: keep it inside the
+% argument's group — see docs/conventions/poster-typography.md.)
+\newcommand{\hlm}[1]{\textcolor{measured}{\boldmath\textbf{#1}}}
+\newcommand{\hlc}[1]{\textcolor{computed}{\boldmath\textbf{#1}}}
+\newcommand{\hl}[1]{{\boldmath\textbf{#1}}}
+% Citation glue: never wrap away from the cited word (\unskip eats the
+% call-site space, \nobreak\ replaces it unbreakably).
+\newcommand{\src}[1]{\unskip\nobreak\ {\footnotesize\textcolor{citation}{[#1]}}}
 \setbeamerfont{block title}{size=\Large,series=\bfseries}
 \setbeamertemplate{block begin}{%
   \vskip0.3ex
@@ -66,6 +85,16 @@
 \newcommand{\PosterColumnTwo}{}
 \newcommand{\PosterColumnThree}{}
 \newcommand{\PosterFooter}{}
+% Logo strip — \PosterStrip stays empty on the bare scaffold; export
+% renews it to a \PosterStripBox call (institution logos, then sponsor
+% logos, then \hfill + the sponsor line), which renders only then.
+\newcommand{\PosterStripBox}[1]{%
+  \vspace*{-\topsep}\begin{center}\begin{minipage}{0.95\textwidth}%
+  \begin{beamercolorbox}[wd=\linewidth,leftskip=1.2em,rightskip=1.2em,vmode]{logostrip}
+    \vskip0.6ex #1\vskip0.6ex
+  \end{beamercolorbox}%
+  \end{minipage}\end{center}\vspace*{-\topsep}\vskip0.8ex}
+\newcommand{\PosterStrip}{}
 
 \begin{document}
 \begin{frame}[t]
@@ -84,6 +113,7 @@
 \end{beamercolorbox}%
 \end{minipage}\end{center}%
 \vspace*{-\topsep}
+\PosterStrip
 \vskip1.6ex
 \begin{center}\begin{minipage}{0.95\textwidth}
 \begin{columns}[t,totalwidth=\textwidth]

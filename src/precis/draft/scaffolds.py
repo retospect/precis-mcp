@@ -12,6 +12,8 @@ same skeleton, since both read this one table.
 
 from __future__ import annotations
 
+from typing import Any
+
 #: Document types offered by the "+ New draft" form. Each maps to a
 #: standing guidance line folded into the project brief (so the planner
 #: writes in the right register — the brief is injected as the
@@ -83,6 +85,19 @@ DOC_TYPES: list[dict[str, str]] = [
         "label": "General article",
         "brief": "",
     },
+    {
+        "value": "poster",
+        "label": "Conference poster (A0)",
+        # Section-6 prose register (docs/backlog/draft-poster-genre-and-
+        # themes.md): poster prose is read in glances, so it is stricter
+        # than llm-facing-prose. A rebrand never touches this — it is
+        # genre register, not theme.
+        "brief": "This is a conference poster (A0 portrait): prose is read "
+        "in glances. No em-dashes; no negation-of-a-strawman openers; no "
+        "metaphor doing a noun's work; no instructions to the reader — "
+        "state the thing itself. Numbers to at most 2 significant figures "
+        "unless the extra figure is load-bearing.",
+    },
 ]
 DOC_TYPE_BRIEF: dict[str, str] = {d["value"]: d["brief"] for d in DOC_TYPES}
 
@@ -138,8 +153,21 @@ SECTION_STYLES: dict[str, list[tuple[str, str]]] = {
         ("sci-results", "Key points"),
         ("sci-methods", "Details"),
     ],
+    "poster": [
+        ("sci-introduction", "Introduction"),
+        ("sci-methods", "Methods"),
+        ("sci-results", "Results"),
+        ("sci-discussion", "Discussion"),
+        ("sci-conclusion", "Conclusions"),
+    ],
 }
 
+
+#: One scaffolded section: ``(heading, style)``, or ``(heading, style,
+#: extra_meta)`` where the dict merges into the heading chunk's ``meta``
+#: — the ``poster`` scaffold uses it for the ``poster_column`` hint
+#: (1|2|3) the poster export reads when packing blocks into columns.
+ScaffoldSection = tuple[str, str | None] | tuple[str, str | None, dict[str, Any]]
 
 #: The standard section skeleton laid down when a draft of this ``doc_type``
 #: is created: an ordered list of ``(heading, style)``.
@@ -148,7 +176,7 @@ SECTION_STYLES: dict[str, list[tuple[str, str]]] = {
 #: skill then fires when editing under it). Empty/absent → no scaffold.
 #: A ``None`` style means "no matching sci-* style" (rather than inventing
 #: one) — the section still lands, just without a style skill.
-SCAFFOLDS: dict[str, list[tuple[str, str | None]]] = {
+SCAFFOLDS: dict[str, list[ScaffoldSection]] = {
     "patent": [
         ("Field of the Invention", "patent-description"),
         ("Background", "patent-description"),
@@ -216,6 +244,19 @@ SCAFFOLDS: dict[str, list[tuple[str, str | None]]] = {
         ("Key Points", "sci-results"),
         ("Details", "sci-methods"),
         ("References", None),
+    ],
+    # poster (A0 conference poster): sections become beamer ``block``s
+    # packed into the template's three stretch columns; ``poster_column``
+    # is the per-block column hint the export reads (1-based). Reading
+    # order: motivate+method in column 1, results in column 2 (the widest
+    # reading position), wrap-up + references in column 3.
+    "poster": [
+        ("Introduction", "sci-introduction", {"poster_column": 1}),
+        ("Methods", "sci-methods", {"poster_column": 1}),
+        ("Results", "sci-results", {"poster_column": 2}),
+        ("Discussion", "sci-discussion", {"poster_column": 2}),
+        ("Conclusions", "sci-conclusion", {"poster_column": 3}),
+        ("References", None, {"poster_column": 3}),
     ],
 }
 

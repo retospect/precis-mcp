@@ -31,6 +31,7 @@ Word/pandoc path.
 from __future__ import annotations
 
 import html
+import json
 import re
 import shutil
 from dataclasses import dataclass, field
@@ -91,6 +92,14 @@ if TYPE_CHECKING:
 #: ``meta.workspace.doc_type`` value that switches export into patent-spec
 #: mode: prior-art rendered in-text, no ``\cite`` / no bibliography.
 _PATENT_DOC_TYPE = "patent"
+
+#: ``meta.workspace.doc_type`` value that switches export onto the
+#: packaged ``poster.tex`` A0 beamerposter template: sections become
+#: ``block``s packed into three stretch columns by each heading's
+#: ``meta.poster_column`` hint; branding comes from the resolved
+#: :mod:`precis.export.poster_profile`, injected as ``\definecolor`` role
+#: values + a logo strip before ``\begin{document}``.
+_POSTER_DOC_TYPE = "poster"
 
 #: Closed allowlist of biblatex styles an export may select (``bib_style=`` /
 #: ``meta.workspace.style``). Keys are what callers may pass (canonical names
@@ -627,6 +636,10 @@ class ExportResult:
     #: no figure carried a snapshot, so a snapshot-free export is
     #: byte-identical to before.
     data_package_path: Path | None = None
+    #: ``doc_type='poster'`` exports only — the resolved branding profile
+    #: written into the build dir (``poster_profile.json``; the poster
+    #: path also reports it as :attr:`preamble`). ``None`` otherwise.
+    poster_profile: Path | None = None
 
 
 def _latex_escape(text: str) -> str:
@@ -953,6 +966,12 @@ class _Ctx:
     #: ``dc`` handles of heading chunks that render as unnumbered
     #: ``\\paragraph`` — cross-referenced with ``\\nameref``, not ``\\cref``.
     paragraph_handles: frozenset[str] = frozenset()
+    #: ``doc_type='poster'`` render mode: heading chunks inside a block
+    #: render as bold run-in lines (block titles are the real headings),
+    #: and figure/table chunks emit non-floating markup — ``figure``
+    #: floats and ``longtable`` both error inside the template's
+    #: stretch-minipage columns.
+    poster: bool = False
 
     def __post_init__(self) -> None:
         if self.trust is None and self.store is not None:
@@ -2140,11 +2159,7 @@ def _render_table(chunk: Any, ctx: _Ctx, label: str) -> list[str]:
         out.append(
             f"\\noindent\\textbf{{{_render_inline(caption, ctx)}}}\\par\\nopagebreak"
         )
-    out.append(f"\\begin{{longtable}}{{{colspec}}}")
-    out.append("\\toprule")
-    out.append(" & ".join(_render_inline(h, ctx) for h in header) + r" \\")
-    out.append("\\midrule\\endhead")
-    out.append("\\bottomrule\\endlastfoot")
+    rendered_rows: list[str] = []
     for row in rows:
         cells = [_render_inline(row[j], ctx) if j < len(row) else "" for j in range(n)]
         line = " & ".join(cells)
@@ -2154,7 +2169,27 @@ def _render_table(chunk: Any, ctx: _Ctx, label: str) -> list[str]:
             # measure" — nano-computer's ``[2] Rotaxane…`` citation-marker
             # cell). Brace-protect it.
             line = "{[}" + line[1:]
-        out.append(line + r" \\")
+        rendered_rows.append(line + r" \\")
+    if ctx.poster:
+        # longtable errors inside the column minipage — a plain tabular
+        # (poster tables are small; they never need to page-break).
+        out.append("\\begin{center}")
+        out.append(f"\\begin{{tabular}}{{{colspec}}}")
+        out.append("\\toprule")
+        out.append(" & ".join(_render_inline(h, ctx) for h in header) + r" \\")
+        out.append("\\midrule")
+        out.extend(rendered_rows)
+        out.append("\\bottomrule")
+        out.append("\\end{tabular}")
+        out.append("\\end{center}")
+        out.append(label)
+        return out
+    out.append(f"\\begin{{longtable}}{{{colspec}}}")
+    out.append("\\toprule")
+    out.append(" & ".join(_render_inline(h, ctx) for h in header) + r" \\")
+    out.append("\\midrule\\endhead")
+    out.append("\\bottomrule\\endlastfoot")
+    out.extend(rendered_rows)
     out.append("\\end{longtable}")
     out.append(label)
     return out
@@ -2281,6 +2316,38 @@ def render_body(
         )
         | back_matter,
     )
+    lines = _render_chunk_lines(
+        chunks, ctx, depth_of=depth_of, title_dc=title_dc, back_matter=back_matter
+    )
+    return RenderResult(
+        body="\n".join(lines).strip() + "\n",
+        cited_slugs=ctx.cited,
+        acronyms=abbrevs,
+        acronym_keys=ctx.keymap,
+        warnings=ctx.warnings,
+        figures=ctx.figures,
+        trust=ctx.trust,
+        data_package=ctx.data_package,
+    )
+
+
+def _render_chunk_lines(
+    chunks: list[Any],
+    ctx: _Ctx,
+    *,
+    depth_of: Any,
+    title_dc: str | None,
+    back_matter: frozenset[str],
+) -> list[str]:
+    """The per-chunk emit loop shared by :func:`render_body` and the
+    poster assembler — the poster path calls it once per section (its
+    top-level headings are consumed as ``block`` titles, never emitted
+    here), so the two exports can't drift on inline/table/figure rules.
+
+    ``ctx.poster`` switches the three emitters that are invalid inside a
+    poster column minipage: nested ``heading`` → a bold run-in line,
+    ``figure`` → a centred non-float, ``table`` → ``tabular`` (not
+    ``longtable``)."""
     lines: list[str] = []
     # Open list environments (migration 0037): ulist→itemize, olist→
     # enumerate. A container opens an env; its `item` children emit \item;
@@ -2318,14 +2385,21 @@ def render_body(
         if c.chunk_kind == "figure":
             lines.extend(_render_figure(c, ctx, label))
         elif c.chunk_kind == "heading":
-            cmd = _SECTION_CMD[min(depth, len(_SECTION_CMD) - 1)]
             title = _render_moving_arg(c.text or "", ctx)
-            if c.dc in back_matter and cmd != "paragraph":
-                # unnumbered journal back matter, still listed in the TOC
-                lines.append(f"\\{cmd}*{{{title}}}{label}")
-                lines.append(f"\\addcontentsline{{toc}}{{{cmd}}}{{{title}}}")
+            if ctx.poster:
+                # In-block subheading: bold run-in line, never \section —
+                # the beamer block title IS the section heading.
+                lines.append(
+                    f"\\par\\medskip\\phantomsection{label}{{\\bfseries {title}}}\\par"
+                )
             else:
-                lines.append(f"\\{cmd}{{{title}}}{label}")
+                cmd = _SECTION_CMD[min(depth, len(_SECTION_CMD) - 1)]
+                if c.dc in back_matter and cmd != "paragraph":
+                    # unnumbered journal back matter, still listed in the TOC
+                    lines.append(f"\\{cmd}*{{{title}}}{label}")
+                    lines.append(f"\\addcontentsline{{toc}}{{{cmd}}}{{{title}}}")
+                else:
+                    lines.append(f"\\{cmd}{{{title}}}{label}")
         elif c.chunk_kind in ("listing", "code"):
             # Code is verbatim — no inline rendering / escaping.
             lines.append(f"% {label[1:]}")
@@ -2351,16 +2425,7 @@ def render_body(
         lines.append("")  # blank line → paragraph break
     while list_stack:  # close any lists still open at the document end
         lines.append(f"\\end{{{list_stack.pop()[0]}}}")
-    return RenderResult(
-        body="\n".join(lines).strip() + "\n",
-        cited_slugs=ctx.cited,
-        acronyms=abbrevs,
-        acronym_keys=ctx.keymap,
-        warnings=ctx.warnings,
-        figures=ctx.figures,
-        trust=ctx.trust,
-        data_package=ctx.data_package,
-    )
+    return lines
 
 
 def _render_moving_arg(text: str, ctx: _Ctx) -> str:
@@ -2400,6 +2465,13 @@ def _render_figure(c: Any, ctx: _Ctx, label: str) -> list[str]:
         box = "\\emph{Figure withheld pending permission}"
         if who:
             box += f"\\\\ {who}"
+        if ctx.poster:
+            return [
+                "\\begin{center}",
+                f"\\fbox{{\\parbox{{0.9\\linewidth}}{{\\centering{box}}}}}",
+                f"\\par{{\\footnotesize {caption}}}{label}",
+                "\\end{center}",
+            ]
         return [
             "\\begin{figure}[htbp]",
             "\\centering",
@@ -2417,10 +2489,18 @@ def _render_figure(c: Any, ctx: _Ctx, label: str) -> list[str]:
             if render_err
             else f"figure {c.dc} has no exportable image — placeholder used"
         )
+        pending = "\\fbox{\\emph{[figure image pending]}}"
+        if ctx.poster:
+            return [
+                "\\begin{center}",
+                pending,
+                f"\\par{{\\footnotesize {caption}}}{label}",
+                "\\end{center}",
+            ]
         return [
             "\\begin{figure}[htbp]",
             "\\centering",
-            "\\fbox{\\emph{[figure image pending]}}",
+            pending,
             f"\\caption{{{caption}}}{label}",
             "\\end{figure}",
         ]
@@ -2432,6 +2512,16 @@ def _render_figure(c: Any, ctx: _Ctx, label: str) -> list[str]:
         ctx.data_package.append(
             DataPackageFigure(label=c.dc, caption=c.text or "", snapshot=snapshot)
         )
+    if ctx.poster:
+        # No floats inside the column minipage — centred include + a
+        # footnote-size caption line instead.
+        return [
+            "\\begin{center}",
+            f"\\includegraphics[width=\\linewidth,height=0.30\\textheight,"
+            f"keepaspectratio]{{{relpath}}}",
+            f"\\par{{\\footnotesize {caption}}}{label}",
+            "\\end{center}",
+        ]
     return [
         "\\begin{figure}[htbp]",
         "\\centering",
@@ -3066,6 +3156,282 @@ def assemble_document(
     return "\n".join(parts)
 
 
+# ── poster genre ──────────────────────────────────────────────
+
+_POSTER_COLUMNS = 3
+_POSTER_COLUMN_SLOTS = ("One", "Two", "Three")
+
+
+def _poster_sections(
+    chunks: list[Any],
+    depth_of: Any,
+    title_dc: str | None,
+) -> list[tuple[str, int | None, list[Any]]]:
+    """Group reading order into poster sections: each effective-depth-0
+    heading opens a new section (its text becomes the ``block`` title);
+    everything under it is a member. Chunks before the first section
+    heading form one anonymous leading block. Returns
+    ``(title, poster_column_hint, members)`` triples."""
+    sections: list[tuple[str, int | None, list[Any]]] = []
+    cur_title = ""
+    cur_col: int | None = None
+    cur: list[Any] = []
+    started = False
+
+    def flush() -> None:
+        nonlocal cur_title, cur_col, cur, started
+        if started or cur:
+            sections.append((cur_title, cur_col, cur))
+        cur_title, cur_col, cur, started = "", None, [], False
+
+    for c in chunks:
+        if c.dc == title_dc:
+            continue
+        if c.chunk_kind == "heading" and depth_of(c) == 0:
+            flush()
+            started = True
+            cur_title = c.text or ""
+            meta = getattr(c, "meta", None) or {}
+            raw_col = meta.get("poster_column")
+            try:
+                cur_col = int(raw_col) if raw_col is not None else None
+            except (TypeError, ValueError):
+                cur_col = None
+        else:
+            cur.append(c)
+    flush()
+    return sections
+
+
+def _poster_column_index(hint: int | None, counts: list[int]) -> int:
+    """Column for a section: an in-range ``poster_column`` hint wins;
+    otherwise the currently least-populated column (reading order is
+    preserved within a column)."""
+    if hint is not None and 1 <= hint <= _POSTER_COLUMNS:
+        return hint - 1
+    return min(range(_POSTER_COLUMNS), key=lambda i: counts[i])
+
+
+def _figure_logo_asset(store: Store, figure_id: str) -> tuple[bytes, str] | None:
+    """``(bytes, ext)`` for a strip logo — a ``kind='figure'`` ref
+    resolved by slug (or numeric id): its SVG canvas rasterises to PNG
+    (same ``resvg`` path as figure export); a chunk blob passes through.
+    ``None`` when the ref is absent or carries no usable asset."""
+    fid: int | str = figure_id
+    if str(figure_id).isdigit():
+        fid = int(figure_id)
+    try:
+        ref = store.get_ref(kind="figure", id=fid)
+    except Exception:
+        return None
+    if ref is None:
+        return None
+    from precis.utils.figure_source import _svg_to_png
+
+    for c in store.drafts.reading_order(ref.id, kind="figure"):
+        if c.chunk_kind == "figure_node" and (c.text or "").strip():
+            png = _svg_to_png(c.text)
+            return (png, "png") if png else None
+        blob = store.drafts.get_chunk_blob(c.handle)
+        if blob is not None:
+            data, mime = blob
+            mime = (mime or "").split(";", 1)[0].strip()
+            if mime == "image/svg+xml":
+                png = _svg_to_png(data.decode("utf-8", "replace"))
+                return (png, "png") if png else None
+            ext = _EXT_BY_MIME_LOGO.get(mime)
+            if ext:
+                return data, ext
+    return None
+
+
+_EXT_BY_MIME_LOGO: dict[str, str] = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/gif": "gif",
+    "image/webp": "webp",
+    "image/tiff": "tiff",
+    "image/bmp": "bmp",
+    "application/pdf": "pdf",
+}
+
+
+def _export_poster(
+    store: Store,
+    ref: Any,
+    *,
+    target_dir: Path,
+    doi_links: bool,
+    library_links: bool,
+    withheld_figures: frozenset[str],
+) -> ExportResult:
+    """Render a ``doc_type='poster'`` draft into a compilable A0 project:
+    the packaged ``poster.tex`` with the resolved branding profile
+    injected (role ``\\definecolor``s, font package line, logo strip), the
+    draft's sections as ``block``s in the three stretch columns, logo
+    images under ``logos/``, figures under ``pics/``, and the resolved
+    profile as ``poster_profile.json``.
+
+    Section→column packing reads each top-level heading's
+    ``meta.poster_column`` (laid down by the ``poster`` scaffold);
+    unhinted sections fill the currently emptiest column. A
+    references-titled block gets ``\\printbibliography``; without one a
+    References block is appended to column 3 when cites exist. Raises
+    :class:`~precis.export.poster_profile.PosterValidationError` on a
+    failed profile check — the export fails before anything compiles.
+    """
+    from precis.export.poster_profile import ALLOWED_FONTS, resolve_and_validate
+
+    profile = resolve_and_validate(
+        getattr(ref, "meta", None),
+        logo_resolver=lambda fid: _figure_logo_asset(store, fid),
+    )
+
+    chunks = store.drafts.reading_order(ref.id)
+    back_matter = _back_matter_handles(chunks)
+    title_dc = _title_heading_dc(chunks, getattr(ref, "title", None))
+    shift = 1 if title_dc and len(chunks) > 1 and int(chunks[1].depth) >= 1 else 0
+
+    def depth_of(c: Any) -> int:
+        return max(0, int(c.depth) - shift)
+
+    abbrevs: dict[str, str] = store.drafts.defined_abbrevs(ref.id)
+    from precis.config import load_config
+
+    cfg = load_config()
+    ctx = _Ctx(
+        keymap=_acronym_keymap(abbrevs),
+        abbrevs=abbrevs,
+        known_handles={c.dc for c in chunks},
+        store=store,
+        legacy_to_dc={c.handle: c.dc for c in chunks},
+        doc_type=_POSTER_DOC_TYPE,
+        doi_links=doi_links,
+        library_links=library_links,
+        library_label=cfg.library_label,
+        library_search_url=cfg.library_search_url,
+        withheld_figures=withheld_figures,
+        poster=True,
+    )
+
+    sections = _poster_sections(chunks, depth_of, title_dc)
+    bodies: list[tuple[str, int | None, list[str]]] = [
+        (
+            title,
+            hint,
+            _render_chunk_lines(
+                members,
+                ctx,
+                depth_of=depth_of,
+                title_dc=title_dc,
+                back_matter=back_matter,
+            ),
+        )
+        for title, hint, members in sections
+    ]
+    if ctx.cited:
+        # \printbibliography lands inside a references-titled block when
+        # the draft scaffolded one, else as an extra block on column 3.
+        if not any((t or "").strip().casefold() == "references" for t, _, _ in bodies):
+            bodies.append(("References", _POSTER_COLUMNS, ["\\printbibliography"]))
+        else:
+            for _t, _h, lines in bodies:
+                if (_t or "").strip().casefold() == "references":
+                    lines.append("\\printbibliography")
+    columns: list[list[str]] = [[] for _ in range(_POSTER_COLUMNS)]
+    counts = [0] * _POSTER_COLUMNS
+    for title, hint, lines in bodies:
+        col = _poster_column_index(hint, counts)
+        counts[col] += 1
+        block_lines = "\n".join(lines).strip()
+        block = (
+            f"\\begin{{block}}{{{_render_moving_arg(title, ctx)}}}\n"
+            f"{block_lines}\n\\end{{block}}"
+        )
+        columns[col].append(block)
+
+    # Logo strip + profile sidecar.
+    logo_runs: list[str] = []
+    logo_files: list[tuple[str, bytes]] = []
+    for i, logo in enumerate(profile.ordered_logos(), start=1):
+        asset = _figure_logo_asset(store, logo.figure)
+        assert asset is not None  # validation already resolved each logo
+        data, ext = asset
+        rel = f"logos/logo{i:02d}.{ext}"
+        logo_files.append((rel, data))
+        logo_runs.append(
+            f"\\includegraphics[height={logo.height_cm}cm]{{{rel}}}"
+            f"% {logo.alt or logo.figure}"
+        )
+    strip_on = bool(logo_runs or profile.sponsor_line.strip())
+
+    title = (ref.title or ref.slug or "Untitled").split("\n", 1)[0]
+    byline = build_byline(getattr(ref, "authors", None))
+    authors = ", ".join(a["name"] for a in byline["authors"]) or str(
+        (ref.meta or {}).get("author") or ""
+    )
+    affiliations = "; ".join(a["org"] for a in byline["affiliations"])
+
+    inject = [f"% ── poster profile: {profile.name} ──"]
+    for role in sorted(profile.palette):
+        inject.append(
+            f"\\definecolor{{{role}}}{{HTML}}{{{profile.palette[role].lstrip('#').upper()}}}"
+        )
+    font_line = ALLOWED_FONTS.get(profile.fonts.get("body", "lmodern"), "")
+    if font_line:
+        inject.append(font_line)
+    if ctx.cited:
+        inject.append("\\usepackage[backend=biber]{biblatex}")
+        inject.append("\\addbibresource{refs.bib}")
+    inject.append(f"\\renewcommand{{\\PosterTitle}}{{{_tex(title)}}}")
+    inject.append(f"\\renewcommand{{\\PosterAuthors}}{{{_tex(authors)}}}")
+    inject.append(f"\\renewcommand{{\\PosterAffiliations}}{{{_tex(affiliations)}}}")
+    for name, col_blocks in zip(_POSTER_COLUMN_SLOTS, columns):
+        inject.append(
+            f"\\renewcommand{{\\PosterColumn{name}}}{{{chr(10).join(col_blocks)}}}"
+        )
+    if strip_on:
+        strip = "\\hspace{1.5em}%\n".join(logo_runs)
+        if profile.sponsor_line.strip():
+            strip += f"\\hfill{{\\large {_tex(profile.sponsor_line)}}}"
+        inject.append(f"\\renewcommand{{\\PosterStrip}}{{\\PosterStripBox{{{strip}}}}}")
+
+    head, sep, tail = _template_text("poster.tex").rpartition("\\begin{document}")
+    assert sep, "poster.tex lost its \\begin{document} anchor"
+    main_tex = head + "\n".join(inject) + "\n" + sep + tail
+    bib_text = build_bib(store, ctx.cited, ctx.warnings) if ctx.cited else ""
+
+    record_override_event(store, ref, ctx.trust)
+
+    profile_path = target_dir / "poster_profile.json"
+    profile_path.write_text(
+        json.dumps(profile.to_dict(), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    for relpath, data in [*ctx.figures, *logo_files]:
+        dest = target_dir / relpath
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
+
+    main_path = target_dir / "main.tex"
+    bib_path = target_dir / "refs.bib"
+    latexmkrc_path = target_dir / ".latexmkrc"
+    main_path.write_text(main_tex, encoding="utf-8")
+    bib_path.write_text(bib_text, encoding="utf-8")
+    latexmkrc_path.write_text(_template_text("latexmkrc"), encoding="utf-8")
+
+    return ExportResult(
+        main_tex=main_path,
+        bib=bib_path,
+        preamble=profile_path,
+        latexmkrc=latexmkrc_path,
+        cited_slugs=ctx.cited,
+        acronyms=abbrevs,
+        warnings=ctx.warnings,
+        poster_profile=profile_path,
+    )
+
+
 def export_draft(
     store: Store,
     ref: Any,
@@ -3121,6 +3487,15 @@ def export_draft(
     if doc_type is None:
         ws = Workspace.from_meta(getattr(ref, "meta", None))
         doc_type = ws.doc_type if ws else ""
+    if doc_type == _POSTER_DOC_TYPE:
+        return _export_poster(
+            store,
+            ref,
+            target_dir=target_dir,
+            doi_links=doi_links,
+            library_links=library_links,
+            withheld_figures=withheld_figures,
+        )
     patent_mode = doc_type == _PATENT_DOC_TYPE
     if not (bib_style or "").strip():
         ws_style = Workspace.from_meta(getattr(ref, "meta", None))

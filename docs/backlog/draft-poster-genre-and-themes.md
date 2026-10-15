@@ -40,56 +40,35 @@ same path that already produces docx/pdf.
 
 ## In scope
 
-First slice (Reto, 2026-10-06): strip the supplied private poster source into
-`precis/data/templates/draft/poster.tex`, a standalone, empty generic scaffold.
-Retain A0 portrait, scale, inset three-column stretch layout, block chrome and
-documented custom-print/overflow knobs. Remove manuscript, metadata, images,
-bibliography, institutional palette and all logo references. Compile the empty
-scaffold and a synthetic populated layout at A0; check dimensions and vertical
-overflow. This slice adds a packaged asset, not poster export dispatch or user
-branding resolution. The remaining acceptance criteria below stay open.
+Shipped 2026-10-15 (slices 1–5): the generic `poster.tex` scaffold; the
+`poster` entry in `DOC_TYPES` with the §6 prose-register brief, a
+section skeleton and `meta.poster_column` hints; the typography rules as
+`docs/conventions/poster-typography.md`; `precis.export.poster_profile`
+(schema, resolution order, validators emitting `poster_role_missing` /
+`poster_role_unknown` / `poster_logo_missing` /
+`poster_logo_resolution_low` / `poster_contrast_insufficient` plus the
+size-limit codes, 4.5:1 WCAG floor, 10 MiB / 40 MP / 64 KiB / 20-logo
+caps); and export dispatch — `doc_type='poster'` assembles the template
+with role `\definecolor`s, the logo strip and `poster_profile.json`, then
+compiles via the existing `latexmk` path.
 
-- Add `poster` and `slides` to `DOC_TYPES`. A poster remains `kind='draft'`,
-  with `meta.workspace.doc_type='poster'` and column hints on its blocks.
-- One product-owned generic `beamerposter` template, supplied by Reto, owns
-  layout, block chrome, typographic rules, columns, allowed fonts and colour
-  roles. It contains no institution hues or logos. The nanobud `ul-bernal`
-  specifics become a branding profile on top, not another template.
-- Per-user branding profiles are data, not `.tex`: role→hue values for every
-  declared role (accent, heading, band, body tint, citation, measured,
-  computed, plus text foreground roles), an allowed font, and separate ordered
-  institution and sponsor/funder logo lists. Each logo has a file handle,
-  alt text, preferred height, light/dark variant and order.
-- Resolve fields from poster `meta.workspace` overrides, then the owning
-  author's user-profile default, then product default. Multi-author posters
-  use the recorded owning user's profile, never the first author or exporting
-  user. Co-author institution logos and extra sponsors are per-poster additions;
-  adding them does not edit anyone's profile. The strip re-flows within the
-  generic template's reserved space.
-- Keep profiles user-scoped in private storage, following the per-user vault
-  convention (`precis.export.remarkable`, `precis.users`, `precis.secrets`);
-  keep logo binaries under a user-scoped private asset root outside the repo.
-  Apply the storage/ACL ADR conventions at implementation: names alone are
-  not access control; self-service edits check ownership and export jobs read
-  only the poster's authorized assets. The repo is PUBLIC: no real institution
-  logos or brand files in tracked files. The shipped example uses placeholder
-  logos and neutral branding. Users are responsible for logo licences.
-- Prefer vector PDF/SVG (SVG→PDF precedent in §5); accept PNG/JPEG too.
-  Limit each logo to 10 MiB, raster decoding to 40 megapixels, profile JSON
-  to 64 KiB and the rendered strip to 20 logos; PDFs are single-page.
-- Validate before export: `poster_role_missing` for any unfilled declared
-  role; `poster_role_unknown` for an undeclared semantic role;
-  `poster_logo_missing` for an absent selected file; `poster_logo_resolution_low`
-  for raster logos below 300 ppi in either dimension at their rendered size.
-  Check text-on-band and text-on-body contrast at **4.5:1 minimum**, using
-  relative luminance from [WCAG 2.2 SC 1.4.3](https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum.html)
-  after tint/background composition; fail `poster_contrast_insufficient`.
-  This adopts its normal-text floor for all poster text; 300 ppi is a product
-  print-quality floor. Preserve existing TeX hardening.
-- Users set their default through MCP `edit` on a user/profile object and
-  the web account/settings page. These are planned profile surfaces, not an
-  assertion that a MCP profile kind already exists. `/drafts/new` offers
-  genre `poster` with the user's profile preselected.
+**Remaining — slice 6 (profile storage + surfaces):**
+
+- New owner-scoped `kind='profile'` (Reto ruling 1): fields name,
+  palette (role→hex per §1), fonts, logos (figure ids), sponsor line,
+  owner (ruling 4). Logos are figure ids resolved through the figure
+  store (ruling 2) — `_figure_logo_asset` in `precis.export.latex` is
+  the existing resolver. ACL: owner-only read + owner-checked write
+  (ruling 3).
+- MCP surface: `put`/`edit` on `kind='profile'`. Resolution seam already
+  exists — `poster_profile.resolve_poster_profile(meta, user_default=…)`;
+  wire the owning author's stored default into that parameter (never the
+  first author or the exporting user for multi-author posters).
+- Web account/settings page edits the profile; `/drafts/new` offers genre
+  `poster` with the owner's profile preselected.
+- Post-deploy manual check (ruling 5): Reto exports a poster draft under
+  the private `ul-bernal` profile and eyeballs the result.
+- `slides` stays out (ruling 6).
 
 ## Explicitly NOT in scope
 
@@ -103,29 +82,25 @@ branding resolution. The remaining acceptance criteria below stay open.
 
 ## Acceptance criteria
 
+Done in slices 1–5: two-profile branding diff (hues/font/logo strip only),
+sponsor re-flow, the named validation failures, `docs/conventions/`
+typography rules. Remaining:
+
 - A poster draft with the private `ul-bernal` profile exports an A0 portrait
-  poster through the generic template, without hand-kept `.tex`.
-- Export the same poster under two users' profiles (controlled owner fixtures):
-  only hues, allowed fonts and logo strip differ; content, column model and
-  generic layout rules stay the same. Product fixtures use placeholder logos.
-- Adding one sponsor per poster re-flows the strip without layout edits and
-  leaves the user's profile unchanged. Co-author institution logos are explicit
-  additions; the owning user's default wins unless the poster overrides it.
-- Export fails with the named errors above on an unfilled role, missing logo,
-  inadequate contrast, low-resolution raster or undeclared semantic role.
+  poster through the generic template — **manual post-deploy check by Reto**
+  (ruling 5).
 - MCP/profile settings agree; `/drafts/new` preselects the owner's profile.
-- `docs/conventions/` gains the genre-independent typography rules below.
+- Adding one sponsor per poster leaves the user's profile unchanged;
+  co-author institution logos are per-poster additions; the owning user's
+  default wins unless the poster overrides it.
 
 ## Target + blast radius
 
-`precis.draft.scaffolds` (`DOC_TYPES`) · `precis/data/templates/draft/`
-(generic template, neutral example) · `precis.render.latex`,
-`precis.export.latex`, `precis.workers.job_types.draft_export` (branding
-resolution and checks) · `precis.handlers.draft` (workspace overrides) ·
-user/profile storage and its authenticated MCP edit surface ·
-`precis_web.routes.account` (settings) and `precis_web.routes.drafts`
-(`/drafts/new`). Confirm the storage/ACL design before implementation;
-this amendment adds no code or schema.
+Slice 6 lands on: a new `kind='profile'` kind + owner-scoped storage ·
+`precis.handlers` (the put/edit surface, owner-checked writes) ·
+`precis.export.latex` (`resolve_poster_profile`'s `user_default` seam —
+the owning author's stored default) · `precis_web.routes.account`
+(settings) and `precis_web.routes.drafts` (`/drafts/new` preselect).
 
 ---
 
@@ -342,6 +317,15 @@ stricter, because poster prose is read in glances:
   three deliberately and flagged.
 
 ## Open questions / decisions log
+
+Reto, 2026-10-15 20:35Z: (1) user profiles are a new owner-scoped
+kind='profile'; (2) logos live in the figure blob store, referenced by
+figure id; (3) owner-only read plus owner-checked write is enough ACL;
+(4) the MCP surface is put/edit on kind='profile' with fields name,
+palette (role->hex per spec section 1), fonts, logos (figure ids),
+sponsor line, owner; (5) the ul-bernal private-palette acceptance becomes
+a manual post-deploy check by Reto; (6) slides waits; only poster goes in
+DOC_TYPES.
 
 Resolved 2026-10-06: Reto supplied `fleet-state/scratch/poster-template-src/poster.tex`
 and `README.md`. Only the stripped generic scaffold enters the public package;

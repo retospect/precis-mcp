@@ -259,6 +259,12 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             )
 
     include_sources = bool(params.get("include_sources"))
+    doc_type = _resolve_doc_type(ctx)
+    if doc_type == "poster" and include_sources:
+        # The poster template doesn't load pdfpages — a sources appendix
+        # is a paper-genre feature; don't let it break a poster compile.
+        ctx.append_chunk("job_event", "warn: include_sources ignored for poster export")
+        include_sources = False
     # The route already decided (and blocked, if not overridden) — recompute
     # the same no-network read here so the appendix records exactly which
     # cites were retracted, without threading paper details through the job
@@ -283,7 +289,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             ref,
             target_dir=out_dir,
             include_sources=include_sources,
-            doc_type=_resolve_doc_type(ctx),
+            doc_type=doc_type,
             retraction_override=retraction_override,
             doi_links=bool(params.get("doi_links", True)),
             library_links=bool(params.get("library_links", True)),
@@ -297,6 +303,10 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         return
     for w in result.warnings:
         ctx.append_chunk("job_event", f"warn: {w}")
+    if result.poster_profile is not None:
+        ctx.append_chunk(
+            "job_event", f"poster branding profile → {result.poster_profile.name}"
+        )
     ctx.append_chunk(
         "job_event",
         f"wrote {result.main_tex.name} + {result.bib.name}; "

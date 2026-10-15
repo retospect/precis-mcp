@@ -25,7 +25,7 @@ import hashlib
 import io
 import logging
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from functools import cached_property
@@ -3343,13 +3343,19 @@ class DraftStore(_AbbrevMixin):
         return None
 
     def scaffold_sections(
-        self, ref_id: int, sections: list[tuple[str, str | None]]
+        self,
+        ref_id: int,
+        sections: Sequence[
+            tuple[str, str | None] | tuple[str, str | None, dict[str, Any]]
+        ],
     ) -> list[str]:
         """Lay down a genre's standard sections: append one ``heading`` per
-        ``(title, style)`` at the top level, after any existing top-level
-        chunks (e.g. the auto-minted title), with ``meta.style`` set.
-        Returns the new ``dc`` handles. Used by the new-draft flow to
-        scaffold from the picked ``doc_type``."""
+        ``(title, style[, extra_meta])`` at the top level, after any
+        existing top-level chunks (e.g. the auto-minted title), with
+        ``meta.style`` set — plus any ``extra_meta`` keys merged in (the
+        poster scaffold's ``poster_column`` hint). Returns the new ``dc``
+        handles. Used by the new-draft flow to scaffold from the picked
+        ``doc_type``."""
         if not sections:
             return []
         with self.tx() as conn:
@@ -3363,8 +3369,11 @@ class DraftStore(_AbbrevMixin):
             last = row[0] if row else None
             keys = n_keys_between(last, None, len(sections))
             out: list[str] = []
-            for (title, style), pos in zip(sections, keys):
-                meta = {"style": style} if style else None
+            for entry, pos in zip(sections, keys):
+                title, style = entry[0], entry[1]
+                meta: dict[str, Any] = {"style": style} if style else {}
+                if len(entry) > 2:
+                    meta.update(entry[2])
                 c = self._insert_draft_chunk(
                     conn,
                     ref_id=ref_id,
@@ -3372,7 +3381,7 @@ class DraftStore(_AbbrevMixin):
                     text=title,
                     parent_chunk_id=None,
                     pos=pos,
-                    meta=meta,
+                    meta=meta or None,
                     source={"reason": "scaffold"},
                 )
                 out.append(c.dc)
