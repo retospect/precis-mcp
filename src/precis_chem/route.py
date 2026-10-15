@@ -31,6 +31,7 @@ from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
+from precis_chem.classify import classify_route
 from precis_chem.constraints import resolve_constraints, screen_route
 from precis_chem.engine import DEFAULT_MAX_STEPS, resolve_engine
 from precis_chem.ir import RouteGraph, cache_key, normalize_smiles
@@ -180,7 +181,7 @@ class RouteHandler(Handler):
                 next=f"set {ROUTE_NODE_ENV}=<node> (and build the wrapper image), "
                 "or use engine='stub'",
             ) from exc
-        graph = screen_route(graph, declared)
+        graph = classify_route(screen_route(graph, declared))
         apply_route_result(self.store, ref.id, graph, cache_key=key)
         state = "solved" if graph.solved else "unsolved"
         return Response(

@@ -129,7 +129,9 @@ def test_joining_unnamed_when_no_reaction_transition_names_an_rxn(
 def test_joining_class_unknown_when_rxn_has_no_reaction_class(
     handler: SeHandler, store: Store
 ) -> None:
-    _rxn(store).put(id="click-noclass", rxn_smiles="CC(=O)O.OCC>>CC(=O)OCC.O")
+    # A transformation no classifier template reproduces, so put leaves
+    # reaction_class unset (an esterification would now be auto-classified).
+    _rxn(store).put(id="click-noclass", rxn_smiles="C1CCCCC1=O>>O=C(O)C1CCCC1")
     handler.put(
         id="classunknown1",
         text=json.dumps(

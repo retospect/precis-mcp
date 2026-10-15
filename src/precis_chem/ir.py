@@ -61,9 +61,18 @@ class RouteStep:
     #: Advisory platform-constraint flags (``precis_chem.constraints``) —
     #: empty on an unconstrained route. Additive: absent in old blobs.
     constraint_flags: list[str] = field(default_factory=list)
+    #: RXNO/MOP class from ``precis.handlers._rxn_classify`` (None when
+    #: unclassified or rdkit was absent). Additive: absent in old blobs.
+    reaction_class: str | None = None
+    class_name: str | None = None
+    class_confidence: float | None = None
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
+
+    def reaction_smiles(self) -> str:
+        """``reactants>>product`` for the classifier."""
+        return ".".join(self.reactants) + ">>" + self.product
 
     @classmethod
     def from_json(cls, d: dict[str, Any]) -> RouteStep:
@@ -77,6 +86,9 @@ class RouteStep:
             confidence=d.get("confidence"),
             in_stock=bool(d.get("in_stock", False)),
             constraint_flags=[str(f) for f in d.get("constraint_flags", [])],
+            reaction_class=d.get("reaction_class"),
+            class_name=d.get("class_name"),
+            class_confidence=d.get("class_confidence"),
         )
 
 
@@ -172,6 +184,15 @@ class RouteGraph:
             # thing.
             tmpl = f"  `«{s.template_id}»`" if s.template_id else ""
             lines.append(f"{s.id}. `{s.product}` ⇐ {precursors}{conf}{tmpl}{leaf}")
+            if s.reaction_class:
+                cc = (
+                    f" ({s.class_confidence:.1f})"
+                    if s.class_confidence is not None
+                    else ""
+                )
+                lines.append(
+                    f"   class: {s.reaction_class} {s.class_name or ''}".rstrip() + cc
+                )
             if s.conditions:
                 # Free text from the engine — reagents/solvent/catalyst. Ligand
                 # notation like Pd[P(t-Bu)3](OAc)2 hits the same inline-link

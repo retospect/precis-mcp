@@ -42,6 +42,7 @@ from precis_chem.askcos import (
     build_treebuilder_request,
     extract_paths,
 )
+from precis_chem.classify import classify_route
 from precis_chem.constraints import screen_route
 from precis_chem.engine import DEFAULT_MAX_STEPS, resolve_engine
 from precis_chem.ir import RouteGraph
@@ -446,6 +447,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             )
             ctx.append_chunk("job_event", f"constraint screen skipped: {exc}")
 
+    graph = classify_route(graph)
     apply_route_result(ctx.store, route_ref_id, graph, cache_key=cache_key)
 
     state = "solved" if graph.solved else "unsolved (no buyable leaves)"

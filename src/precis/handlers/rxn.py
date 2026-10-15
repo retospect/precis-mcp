@@ -47,6 +47,12 @@ from typing import Any, ClassVar
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
 from precis.format import render_agent_table
+from precis.handlers._rxn_classify import (
+    CLASSIFIER_VERSION,
+    ClassifierUnavailable,
+    class_name,
+    classify,
+)
 from precis.handlers._rxn_energetics import render_energetics
 from precis.handlers._rxn_ids import (
     RxnParseError,
@@ -75,7 +81,7 @@ _METHODS: tuple[str, ...] = (
 #: omits it — patents are where the reaction literature actually lives.
 _SOURCE_KINDS: tuple[str, ...] = ("paper", "patent", "datasheet")
 
-_VIEWS: tuple[str, ...] = ("table", "properties", "energetics")
+_VIEWS: tuple[str, ...] = ("table", "properties", "energetics", "classify")
 _VALUE_TYPES: tuple[str, ...] = ("quantity", "ratio", "categorical", "boolean", "text")
 _SMILES_IDENTITY_KEYS = (
     "rxn_smiles_raw",
@@ -146,6 +152,26 @@ def fmt_smiles(smiles: Any) -> str:
     """
     s = str(smiles).strip()
     return f"`{s}`" if s else "—"
+
+
+def fmt_class(meta: dict[str, Any]) -> str:
+    """``class:`` line — id, name, and who assigned it (caller, or the
+    classifier with its confidence and any equally-fitting alternatives)."""
+    cid = meta.get("reaction_class") or ""
+    name = meta.get("class_name") or class_name(cid)
+    line = f"class: {cid}" + (f" {name}" if name else "")
+    source = meta.get("class_source")
+    conf = meta.get("class_confidence")
+    if source and source != "caller" and conf is not None:
+        line += f" (confidence {float(conf):.1f}, {source})"
+        alts = meta.get("class_alternatives") or []
+        if alts:
+            line += "; also fits: " + ", ".join(
+                f"{a} {class_name(a)}".strip() for a in alts
+            )
+    elif source == "caller":
+        line += " (given by caller)"
+    return line
 
 
 def _fmt_conditions(conditions: Any) -> str:
@@ -281,7 +307,12 @@ class RxnHandler(Handler):
         existing = self.store.get_ref(kind="rxn", id=slug)
         patch: dict[str, Any] = dict(meta or {})
         if reaction_class is not None:
-            patch["reaction_class"] = str(reaction_class).strip()
+            cid = str(reaction_class).strip()
+            patch["reaction_class"] = cid
+            patch["class_name"] = class_name(cid)
+            patch["class_source"] = "caller"
+            patch["class_confidence"] = None
+            patch["class_alternatives"] = []
         existing_meta = (existing.meta or {}) if existing is not None else {}
         effective = {**existing_meta, **patch}
         if "energetics" in effective and (
@@ -331,6 +362,11 @@ class RxnHandler(Handler):
             )
 
         notes: list[str] = []
+        if patch.get("class_source") == "caller" and not patch.get("class_name"):
+            notes.append(
+                f"note: reaction_class {patch['reaction_class']!r} is not an "
+                "RXNO/MOP id in the vendored ontology; stored as given"
+            )
 
         if rxn_smiles is not None:
             raw = str(rxn_smiles).strip()
@@ -351,6 +387,7 @@ class RxnHandler(Handler):
                 patch["uid_strict"] = ident.uid_strict
                 patch["uid_transform"] = ident.uid_transform
                 patch["desired_product"] = ident.desired_product
+                notes.extend(self._auto_classify(raw, existing_meta, patch))
                 # Surface a same-chemistry sibling rather than silently
                 # creating a duplicate: the transform key is what converges
                 # sources that record byproducts differently.
@@ -380,7 +417,7 @@ class RxnHandler(Handler):
         if rmeta.get("rxn_smiles"):
             lines.append(f"smiles: {fmt_smiles(rmeta['rxn_smiles'])}")
         if rmeta.get("reaction_class"):
-            lines.append(f"class: {rmeta['reaction_class']}")
+            lines.append(fmt_class(rmeta))
         if rmeta.get("uid_transform"):
             lines.append(
                 f"uid: transform={rmeta['uid_transform']} "
@@ -388,6 +425,44 @@ class RxnHandler(Handler):
             )
         lines.extend(notes)
         return Response(body="\n".join(lines))
+
+    @staticmethod
+    def _auto_classify(
+        rxn_smiles: str, existing_meta: dict[str, Any], patch: dict[str, Any]
+    ) -> list[str]:
+        """Fill ``reaction_class`` from the template classifier.
+
+        A caller-supplied class (this write or an earlier one) is never
+        overwritten. A new SMILES drops an earlier *classifier* label even
+        when the new reaction is unclassified, so a stale label cannot
+        outlive the reaction it described."""
+        if patch.get("class_source") == "caller" or (
+            "reaction_class" not in patch
+            and existing_meta.get("reaction_class")
+            and existing_meta.get("class_source") != CLASSIFIER_VERSION
+        ):
+            return []
+        try:
+            result = classify(rxn_smiles)
+        except ClassifierUnavailable:
+            return ["note: reaction not classified (rdkit absent)"]
+        except ValueError as exc:
+            return [f"note: reaction not classified ({exc})"]
+        if result.best is None:
+            if existing_meta.get("class_source") == CLASSIFIER_VERSION:
+                patch.update(
+                    reaction_class=None,
+                    class_name=None,
+                    class_confidence=None,
+                    class_source=None,
+                    class_alternatives=[],
+                )
+            return [
+                "note: unclassified — no template reproduced the product; "
+                "pass reaction_class='RXNO:…' if you know it"
+            ]
+        patch.update(result.to_meta())
+        return []
 
     def _put_value(
         self,
@@ -702,12 +777,15 @@ class RxnHandler(Handler):
             return render_energetics(q, T=T, n_electrons=n_electrons)
         if v in ("properties", "registry"):
             return self._render_registry()
+        if v == "classify":
+            return self._render_classify(id=id, q=q)
         if v and v not in ("table", "page"):
             raise BadInput(
                 f"unknown rxn view {view!r}",
                 next=(
                     "view='properties' (the registry) | view='energetics' "
-                    "with q='<equation>' | omit for the page"
+                    "with q='<equation>' | view='classify' with q='A.B>>C' "
+                    "or id= | omit for the page"
                 ),
             )
         if id is None or (isinstance(id, str) and id.strip() in ("", "/")):
@@ -724,6 +802,39 @@ class RxnHandler(Handler):
         if ref is None:
             raise NotFound(f"rxn {ident!r} not found")
         return ref
+
+    def _render_classify(self, *, id: Any, q: str | None) -> Response:
+        """Run the classifier on ``q=`` (a reaction SMILES) or a stored
+        rxn's SMILES. Read-only: a stored ref is not relabelled; ``put``
+        with the same ``rxn_smiles`` does that."""
+        stored: dict[str, Any] = {}
+        if q is not None and str(q).strip():
+            smiles = str(q).strip()
+            head = f"# classify {fmt_smiles(smiles)}"
+        elif id is not None and str(id).strip():
+            ref = self._read_ref(id)
+            stored = ref.meta or {}
+            smiles = stored.get("rxn_smiles") or stored.get("rxn_smiles_raw") or ""
+            if not smiles:
+                raise BadInput(f"rxn {id!r} has no reaction SMILES to classify")
+            head = f"# classify rxn {ref.slug or ref.id} {fmt_smiles(smiles)}"
+        else:
+            raise BadInput(
+                "view='classify' needs q='<reaction SMILES>' or id=<rxn>",
+                next="get(kind='rxn', view='classify', q='CC(=O)O.OCC>>CC(=O)OCC.O')",
+            )
+        try:
+            result = classify(smiles)
+        except ClassifierUnavailable as exc:
+            raise BadInput(str(exc)) from exc
+        except ValueError as exc:
+            raise BadInput(f"not a usable reaction SMILES: {exc}") from exc
+        lines = [head, result.render()]
+        if result.note and result.best is not None:
+            lines.append(f"note: {result.note}")
+        if stored.get("reaction_class"):
+            lines.append(f"stored {fmt_class(stored)}")
+        return Response(body="\n".join(lines))
 
     def _render_registry(self) -> Response:
         rows = self.store.rxn_properties_list()
@@ -763,7 +874,19 @@ class RxnHandler(Handler):
                     "smiles": fmt_smiles(
                         m.get("rxn_smiles") or m.get("rxn_smiles_raw") or ""
                     ),
-                    "class": m.get("reaction_class") or "—",
+                    "class": (
+                        " ".join(
+                            filter(
+                                None,
+                                [
+                                    m.get("reaction_class"),
+                                    m.get("class_name")
+                                    or class_name(m.get("reaction_class") or ""),
+                                ],
+                            )
+                        )
+                        or "—"
+                    ),
                 }
             )
         return Response(
@@ -796,7 +919,7 @@ class RxnHandler(Handler):
                 f"smiles: {fmt_smiles(meta.get('rxn_smiles') or meta['rxn_smiles_raw'])}"
             )
         if meta.get("reaction_class"):
-            head.append(f"class: {meta['reaction_class']}")
+            head.append(fmt_class(meta))
         if meta.get("uid_transform"):
             head.append(
                 f"uid: transform={meta['uid_transform']} "

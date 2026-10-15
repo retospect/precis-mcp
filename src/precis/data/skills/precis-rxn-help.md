@@ -68,6 +68,39 @@ Agents (catalyst, solvent) are recorded but excluded from identity — the same
 transformation with a different catalyst is the same transformation, and the
 catalyst belongs in a value's `conditions` where it can be compared.
 
+To get the SMILES of a named reagent, use `get(kind='chem', id='<name or CAS>')`
+(`precis-chem-help`). Do not write it from memory.
+
+## Reaction class
+
+When you put `rxn_smiles=` without `reaction_class=`, the reaction is
+classified automatically. The classifier holds about 30 reaction templates,
+each tied to an RXNO id: amide coupling, esterification, Boc on and off,
+Suzuki, Buchwald–Hartwig, SNAr, Sonogashira, Heck, reductive amination,
+Williamson, nitro reduction, alcohol oxidation, carbonyl reduction,
+Diels–Alder, Grignard, sulfonamide, ester hydrolysis and others. A class is
+stored only when its template, run on your reactants, **reproduces your
+product**.
+
+- Confidence 0.9: exactly one class fits.
+- Confidence 0.5: several unrelated classes fit. They are listed after
+  "also fits".
+- `unclassified`: no template reproduces the product. The classifier never
+  guesses a class.
+
+The page shows `class: RXNO:0000140 Suzuki-Miyaura coupling (confidence 0.9,
+precis-templates-v1)`. A class you pass yourself always wins, and the page
+marks it `(given by caller)`. The classifier needs rdkit. Without rdkit the
+put says so and stores no class.
+
+```python
+get(kind='rxn', view='classify', q='Brc1ccccc1.OB(O)c1ccccc1>>c1ccc(-c2ccccc2)cc1')
+get(kind='rxn', id='fischer-etoac', view='classify')   # re-check a stored one
+```
+
+`view='classify'` only reads. It never relabels a stored reaction. Route steps
+(`kind='route'`) are classified the same way after planning.
+
 ## Read it
 
 ```python

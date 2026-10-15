@@ -1458,6 +1458,17 @@ wheel; neuro-symbolic — a template must reproduce the product before it labels
 **very new, 2026-06, unproven**). **The real gap is here**: NameRxn ~89.3 %
 coverage vs 64–68 % free — **20–25 points of recall**.
 
+**Class-assignment path shipped (2026-10-15):** `precis.handlers._rxn_classify`.
+It holds about 30 hand-written rdkit templates keyed by RXNO/MOP id, and a
+class is stored only when its template reproduces the product. It
+auto-labels `put(kind='rxn', rxn_smiles=)` and route steps, and
+`view='classify'` runs it on demand. The vendored id→name table is
+`data/rxno_classes.json` (CC BY 4.0). Still open, as a recall upgrade:
+swap in `reactionclassifier` (22 MB wheel plus torch) or Rxn-INSIGHT
+(rxnmapper → transformers plus torch). Either needs torch, so it cannot run
+in the torch-free serve venv and would need its own job lane or container.
+Neither has been benchmarked against the template table yet.
+
 ### Compute — three install traps and one aarch64 reprieve
 
 - ⚠️ **`pip install crest` installs the WRONG package** (an unrelated REST CLI).
