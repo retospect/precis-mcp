@@ -45,7 +45,12 @@ def row(tree: str = "main", vendor: str = "claude", **kw: Any) -> dict[str, Any]
         "quiet_min": 1.0,
         "last_active": iso(1),
         "ctx_pct": 20.0,
-        "tmux": {"pane_id": "%7", "session": "main", "window": "3"},
+        "tmux": {
+            "pane_id": "%7",
+            "session": "main",
+            "window": "3",
+            "window_name": "proj-tree",
+        },
         "attach": "tmux attach -t main:3",
     }
     base.update(kw)
@@ -85,6 +90,7 @@ def test_first_report_inserts_agent_and_host_rows(h: FleetHandler) -> None:
         "%7",
         20.0,
     )
+    assert m["tmux"] == "main:3" and m["window_name"] == "proj-tree"
     assert m["exceptions"] == []
     hm = agent(h, f"host:{HOST}").meta
     assert hm["type"] == "host" and hm["reporter_version"] == 1
@@ -118,6 +124,7 @@ def test_vanished_pane_and_attach_are_cleared_with_null(h: FleetHandler) -> None
     send(h, rep([row(tmux=None, attach=None)]))
     m = agent(h, KEY).meta
     assert m["pane"] is None and m["attach"] is None
+    assert m["tmux"] is None and m["window_name"] is None
 
 
 def test_vanished_agent_goes_dead_and_revives(h: FleetHandler) -> None:
@@ -277,13 +284,39 @@ def test_fisheye_blocks_and_filters(h: FleetHandler) -> None:
     lines = out.splitlines()
     assert lines[0] == "EXCEPTIONS"
     assert f"  {who}  asking   attach: tmux attach -t main:3" in lines
-    assert f"  {who} · asking · 1m · build the thing · 20%" in lines
-    assert f"  claude@{HOST}/other/side · working · 1m · {'x' * 40} · -" in lines
+    assert f"  {who} main:3 · asking · 1m · build the thing · 20%" in lines
+    assert f"  claude@{HOST}/other/side main:3 · working · 1m · {'x' * 40} · -" in lines
     assert "QUOTA   codex 5h 12% · codex week 40%" in lines
     assert "STALE" not in out
     only = h.get(project="other").body
     assert "proj/main" not in only and "other/side" in only
     assert "proj/main" not in h.get(host="nowhere").body
+
+
+def test_done_purpose_marks_ready_and_shows_in_agents(h: FleetHandler) -> None:
+    send(
+        h,
+        rep(
+            [
+                row(purpose="main at 93f5ef461: landed the fleet push slice"),
+                row(tree="side", purpose="still working on it"),
+            ]
+        ),
+    )
+    out = h.get().body
+    lines = out.splitlines()
+    ready = lines[lines.index("READY") + 1 : lines.index("AGENTS")]
+    assert ready == [
+        f"  claude@{HOST}/proj/main · main:3 · done@93f5ef461"
+        "   attach: tmux attach -t main:3"
+    ]
+    assert (
+        f"  claude@{HOST}/proj/main main:3 · working · 1m · "
+        "main at 93f5ef461: landed the fleet push · 20% · done@93f5ef461"
+    ) in lines
+    # The finish line is rewritten by the next report, not sticky.
+    send(h, rep([row(), row(tree="side", purpose="still working on it")]))
+    assert "READY\n  none" in h.get().body
 
 
 def test_stale_host_marks_agents_and_lists_exception(h: FleetHandler) -> None:

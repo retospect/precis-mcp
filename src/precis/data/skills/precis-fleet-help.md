@@ -23,21 +23,29 @@ Live state of the agent fleet. Not embedded, not searchable.
 ## Read
 
 ```
-get(kind='fleet')                              # EXCEPTIONS / AGENTS / QUOTA
+get(kind='fleet')                              # EXCEPTIONS / READY / AGENTS / QUOTA
 get(kind='fleet', args={'project': 'precis-mcp', 'host': 'melchior'})
 get(kind='fleet', id='claude:melchior:precis-mcp:main')   # one row by key
 get(kind='fleet', id='fl123')                  # one row by handle
 ```
 
-AGENTS line: `vendor@host/project/tree · state · quiet · purpose · ctx%`.
-`quiet` is derived from `last_active`. A host that has not reported for over
-3 minutes marks all its agents `STALE` and appears under EXCEPTIONS.
+AGENTS line: `vendor@host/project/tree tmux · state · quiet · purpose ·
+ctx%` (tmux target like `0:7`, omitted for pane-less rows). `quiet` is
+derived from `last_active`. ctx% comes from the live pane footer when one
+shows it (`Context: …`, `N% ctx`, Codex `Context N% left`), else the
+transcript's usage against the per-model window. A host that has not
+reported for over 3 minutes marks all its agents `STALE` and appears under
+EXCEPTIONS.
+
+READY lists trees whose `.claude/purpose` first line reads `<tree> at
+<sha>: …` — a session that wrote its done line; the AGENTS line ends
+`· done@<sha>` for those.
 
 ## Rows
 
 | type | key | fields |
 |---|---|---|
-| agent | `vendor:host:project:tree` | reporter-owned: `branch purpose state last_active ctx_pct dirty ahead behind pane attach exceptions`; coordinator-owned: `assigned slice note` |
+| agent | `vendor:host:project:tree` | reporter-owned: `branch purpose state last_active ctx_pct dirty ahead behind pane tmux window_name attach exceptions`; coordinator-owned: `assigned slice note` |
 | host | `host:<host>` | `reported_at quota reporter_version exceptions_hash` |
 
 State: `working idle asking waiting dead`. One row per vendor per tree. A
@@ -56,5 +64,7 @@ edit(kind='fleet', id='fl123', mode='replace', args={'assigned': 'gr12345', 'not
 fields are refused.
 
 Collector, on each host: `scripts/fleet-report --push` (set
-`PRECIS_MCP_TOKEN`; `PRECIS_FLEET_MCP_URL` overrides the endpoint).
-`--remote HOST` pushes another host's report through this one.
+`PRECIS_MCP_TOKEN` or `PRECIS_MCP_TOKEN_FILE`;
+`PRECIS_FLEET_MCP_URL` overrides the endpoint). `--remote HOST` pushes
+another host's report through this one. Operator install/scheduling of
+the push lives in `scripts/fleet-report-install --help` (launchd, macOS).

@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# Install, inspect or remove the per-host fleet reporter as a macOS
+# launchd user agent: `scripts/fleet-report --push` every 60 s.
+#
+#   scripts/fleet-report-install [--token-file PATH] [--url URL] [--remote HOST]...
+#   scripts/fleet-report-install --status
+#   scripts/fleet-report-install --uninstall
+#
+# Token: `--token-file PATH` puts PRECIS_MCP_TOKEN_FILE=PATH into the
+# agent's environment (fleet-report reads the bearer from that file);
+# without it, a PRECIS_MCP_TOKEN in the installer's environment is embedded
+# in the plist (installed mode 600). The token never lands in the repo.
+# Plist: ~/Library/LaunchAgents/com.precis.fleet-report.plist; the agent
+# runs as the installing user (gui/$UID). Reinstalling bootouts the old
+# label first. Logs: ~/Library/Logs/fleet-report.{out,err}.log.
+set -u
+
+label="com.precis.fleet-report"
+plist="$HOME/Library/LaunchAgents/$label.plist"
+out_log="$HOME/Library/Logs/fleet-report.out.log"
+err_log="$HOME/Library/Logs/fleet-report.err.log"
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+reporter="$root/scripts/fleet-report"
+domain="gui/$(id -u)"
+
+token_file=""
+mcp_url="${PRECIS_FLEET_MCP_URL:-}"
+remotes=""
+rargs=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --token-file) token_file="${2:?--token-file needs a path}"; shift 2 ;;
+    --url) mcp_url="${2:?--url needs a value}"; shift 2 ;;
+    --remote) remotes="$remotes ${2:?--remote needs a host}"; rargs="$rargs --remote $2"; shift 2 ;;
+    --status)
+      if [ -f "$plist" ]; then echo "installed: $plist"; else echo "not installed: no $plist"; fi
+      if command -v launchctl >/dev/null && launchctl print "$domain/$label" >/dev/null 2>&1; then
+        launchctl print "$domain/$label" | grep -E '^\s+(state|pid|last exit code) =' | sed 's/^ *//'
+      else
+        echo "not loaded in $domain"
+      fi
+      for f in "$out_log" "$err_log"; do
+        [ -f "$f" ] && echo "-- $f (last 3):" && tail -3 "$f"
+      done
+      exit 0
+      ;;
+    --uninstall)
+      if launchctl print "$domain/$label" >/dev/null 2>&1; then
+        launchctl bootout "$domain/$label" || exit 1
+        # bootout is asynchronous; wait until the label is actually gone.
+        i=0
+        while launchctl print "$domain/$label" >/dev/null 2>&1; do
+          i=$((i + 1)); [ "$i" -gt 20 ] && { echo "bootout of $label never finished" >&2; exit 1; }
+          sleep 0.5
+        done
+      fi
+      rm -f "$plist"
+      echo "uninstalled $label (logs kept: $out_log, $err_log)"
+      exit 0
+      ;;
+    -h|--help) sed -n '2,16p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    *) echo "unknown flag: $1" >&2; exit 2 ;;
+  esac
+done
+
+command -v launchctl >/dev/null || { echo "launchctl not found: this installs a macOS launchd agent" >&2; exit 1; }
+[ -x "$reporter" ] || { echo "missing reporter: $reporter" >&2; exit 1; }
+
+xml() { printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
+
+args=""
+for r in $remotes; do args="$args    <string>--remote</string>\n    <string>$(xml "$r")</string>\n"; done
+
+env_entries="    <key>PATH</key>\n    <string>$(xml "$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin")</string>\n"
+if [ -n "$token_file" ]; then
+  [ -f "$token_file" ] || { echo "token file not found: $token_file" >&2; exit 1; }
+  env_entries="$env_entries    <key>PRECIS_MCP_TOKEN_FILE</key>\n    <string>$(xml "$token_file")</string>\n"
+elif [ -n "${PRECIS_MCP_TOKEN:-}" ]; then
+  env_entries="$env_entries    <key>PRECIS_MCP_TOKEN</key>\n    <string>$(xml "$PRECIS_MCP_TOKEN")</string>\n"
+else
+  echo "note: no --token-file and no PRECIS_MCP_TOKEN; pushes will be unauthenticated" >&2
+fi
+if [ -n "$mcp_url" ]; then
+  env_entries="$env_entries    <key>PRECIS_FLEET_MCP_URL</key>\n    <string>$(xml "$mcp_url")</string>\n"
+fi
+
+mkdir -p "$(dirname "$plist")" "$HOME/Library/Logs"
+tmp="$plist.tmp.$$"
+{
+  printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>'
+  printf '%s\n' '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
+  printf '%s\n' '<plist version="1.0">'
+  printf '%s\n' '<dict>'
+  printf '    <key>Label</key>\n    <string>%s</string>\n' "$label"
+  printf '    <key>ProgramArguments</key>\n    <array>\n'
+  printf '        <string>%s</string>\n        <string>--push</string>\n' "$(xml "$reporter")"
+  printf '%b' "$args"
+  printf '    </array>\n'
+  printf '    <key>EnvironmentVariables</key>\n    <dict>\n'
+  printf '%b' "$env_entries"
+  printf '    </dict>\n'
+  printf '    <key>StartInterval</key>\n    <integer>60</integer>\n'
+  printf '    <key>RunAtLoad</key>\n    <true/>\n'
+  printf '    <key>ProcessType</key>\n    <string>Background</string>\n'
+  printf '    <key>StandardOutPath</key>\n    <string>%s</string>\n' "$(xml "$out_log")"
+  printf '    <key>StandardErrorPath</key>\n    <string>%s</string>\n' "$(xml "$err_log")"
+  printf '%s\n' '</dict>'
+  printf '%s\n' '</plist>'
+} > "$tmp" || { rm -f "$tmp"; exit 1; }
+chmod 600 "$tmp"
+mv "$tmp" "$plist"
+
+# bootout is asynchronous; poll until the old label is gone before
+# bootstrapping (deploy/tasks/reload_launchd.yml explains the race).
+if launchctl print "$domain/$label" >/dev/null 2>&1; then
+  launchctl bootout "$domain/$label" || exit 1
+  i=0
+  while launchctl print "$domain/$label" >/dev/null 2>&1; do
+    i=$((i + 1)); [ "$i" -gt 20 ] && { echo "bootout of $label never finished" >&2; exit 1; }
+    sleep 0.5
+  done
+fi
+launchctl bootstrap "$domain" "$plist" || exit 1
+echo "installed $label: $reporter --push$rargs every 60 s (logs: $out_log)"

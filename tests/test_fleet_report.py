@@ -41,21 +41,25 @@ def write_jsonl(path: Path, rows: list[dict], age_s: float = 0) -> None:
     os.utime(path, (t, t))
 
 
-def assistant(content: list[dict], stop: str | None, age_s: float = 0) -> dict:
-    return {
-        "type": "assistant",
-        "timestamp": stamp(age_s),
-        "message": {
-            "role": "assistant",
-            "stop_reason": stop,
-            "content": content,
-            "usage": {
-                "input_tokens": 2,
-                "cache_read_input_tokens": 100_000,
-                "cache_creation_input_tokens": 20_000,
-            },
+def assistant(
+    content: list[dict],
+    stop: str | None,
+    age_s: float = 0,
+    model: str | None = None,
+) -> dict:
+    message: dict[str, Any] = {
+        "role": "assistant",
+        "stop_reason": stop,
+        "content": content,
+        "usage": {
+            "input_tokens": 2,
+            "cache_read_input_tokens": 100_000,
+            "cache_creation_input_tokens": 20_000,
         },
     }
+    if model:
+        message["model"] = model
+    return {"type": "assistant", "timestamp": stamp(age_s), "message": message}
 
 
 def user_result(age_s: float = 0) -> dict:
@@ -333,6 +337,63 @@ def test_codex_question_modal_on_screen_is_asking(env):
     assert row["state"] == "asking"
 
 
+def test_claude_window_follows_the_transcript_model(env):
+    # 120_002 tokens: 12.0% of a 1M window, 60.0% of 200k.
+    for model, pct in (
+        ("claude-opus-5-5", 12.0),
+        ("claude-sonnet-5-5", 12.0),
+        ("claude-fable-5-1", 12.0),
+        ("claude-haiku-4-5-20251001", 60.0),
+        ("claude-haiku-4-5[1m]", 12.0),
+        ("unlisted-1", 60.0),
+    ):
+        write_jsonl(
+            env.transcript_dir / "a.jsonl",
+            [assistant([{"type": "text"}], "end_turn", 5, model=model)],
+        )
+        row = report(env)["rows"][0]
+        assert row["ctx_pct"] == pct, model
+        assert row["model"] == model
+
+
+def test_claude_window_flag_overrides_the_model_table(env):
+    write_jsonl(
+        env.transcript_dir / "a.jsonl",
+        [assistant([{"type": "text"}], "end_turn", 5, model="claude-opus-5-5")],
+    )
+    row = report(env, "--claude-window", "150000")["rows"][0]
+    assert row["ctx_pct"] == 80.0
+
+
+def test_claude_pane_footer_ctx_wins_over_the_transcript(env):
+    write_jsonl(
+        env.transcript_dir / "a.jsonl",
+        [assistant([{"type": "text"}], "end_turn", 5, model="claude-opus-5-5")],
+    )
+    env.panes.write_text(pane_line(env, command="claude"), encoding="utf-8")
+    env.capture.write_text(
+        "stale scrollback 55% ctx\n"
+        "❯\n"
+        "────────────────────────────────────────\n"
+        "  Opus 5.5  19% ctx\n"
+        "  -- INSERT -- ⏵⏵ auto mode on\n",
+        encoding="utf-8",
+    )
+    row = report(env)["rows"][0]
+    assert row["ctx_pct"] == 19.0  # the last %ctx line is the live footer
+
+
+def test_devin_pane_footer_gives_ctx_for_a_devin_row(env):
+    env.panes.write_text(pane_line(env, command="devin"), encoding="utf-8")
+    env.capture.write_text(
+        "❭ Ask Devin to build features\n"
+        "SWE-2 High            Context: 212k / 262k tokens (81%)\n",
+        encoding="utf-8",
+    )
+    row = next(r for r in report(env)["rows"] if r["vendor"] == "devin")
+    assert row["ctx_pct"] == 81.0
+
+
 def test_approval_pattern_marks_waiting_with_attach(env):
     write_jsonl(
         env.transcript_dir / "a.jsonl",
@@ -440,6 +501,29 @@ def test_text_output_blocks(env):
     assert re.search(r"claude@\S+/proj/proj · idle · \d+m · build the thing · 60%", out)
 
 
+def test_text_output_ready_line_and_tmux_target(env):
+    (env.repo / ".claude" / "purpose").write_text(
+        "proj at 93f5ef461: landed the slice\n", encoding="utf-8"
+    )
+    write_jsonl(
+        env.transcript_dir / "a.jsonl", [assistant([{"type": "text"}], "end_turn", 5)]
+    )
+    env.panes.write_text(pane_line(env), encoding="utf-8")
+    out = run_script(env)
+    lines = out.splitlines()
+    ready = lines[lines.index("READY") + 1 : lines.index("AGENTS")]
+    assert len(ready) == 1
+    assert re.match(
+        r"  claude@\S+/proj/proj main:3 · done@93f5ef461"
+        r"   attach: tmux attach -t main:3",
+        ready[0],
+    )
+    assert re.search(
+        r"claude@\S+/proj/proj main:3 · idle · \d+m · proj at 93f5ef461: landed the slice · 60% · done@93f5ef461",
+        out,
+    )
+
+
 def test_last_active_is_iso_utc_and_matches_quiet(env):
     write_jsonl(
         env.transcript_dir / "a.jsonl", [assistant([{"type": "text"}], "end_turn", 600)]
@@ -526,6 +610,21 @@ def test_push_runs_the_mcp_handshake_and_puts_the_report(env, monkeypatch, sse):
     sent = call["arguments"]["args"]
     assert sent["host"] == sent["report"]["host"]
     assert sent["report"]["rows"][0]["last_active"]
+
+
+def test_push_reads_the_token_from_a_file(env, monkeypatch, tmp_path):
+    write_jsonl(
+        env.transcript_dir / "a.jsonl", [assistant([{"type": "text"}], "end_turn", 5)]
+    )
+    token_file = tmp_path / "token"
+    token_file.write_text("tok-from-file\n", encoding="utf-8")
+    monkeypatch.delenv("PRECIS_MCP_TOKEN", raising=False)
+    monkeypatch.setenv("PRECIS_MCP_TOKEN_FILE", str(token_file))
+    with FakeMcp(False) as mcp:
+        monkeypatch.setenv("PRECIS_FLEET_MCP_URL", mcp.url)
+        out = run_script(env, "--push")
+    assert out.strip() == "local: reported ok"
+    assert mcp.posts[0][0]["Authorization"] == "Bearer tok-from-file"
 
 
 def test_push_failure_exits_nonzero_without_leaking_token(env, monkeypatch):

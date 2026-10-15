@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -40,6 +41,8 @@ REPORTER_FIELDS: tuple[str, ...] = (
     "ahead",
     "behind",
     "pane",
+    "tmux",
+    "window_name",
     "attach",
     "exceptions",
 )
@@ -58,8 +61,20 @@ _DEAD_PATCH: dict[str, Any] = {
     "state": "dead",
     "exceptions": [],
     "pane": None,
+    "tmux": None,
+    "window_name": None,
     "attach": None,
 }
+
+#: A `.claude/purpose` first line of the form ``<tree> at <sha>: …`` marks
+#: the row as finished-with-tip (the session wrote its done line); the
+#: fisheye lists it under READY.
+DONE_RE = re.compile(r"^\S+\s+at\s+([0-9a-f]{7,40})\b")
+
+
+def done_sha(purpose: Any) -> str | None:
+    m = DONE_RE.match(purpose) if isinstance(purpose, str) else None
+    return m.group(1) if m else None
 
 
 def agent_key(vendor: str, host: str, project: str, tree: str) -> str:
@@ -100,6 +115,12 @@ def _agent_fields(row: dict[str, Any], host: str, codes: list[str]) -> dict[str,
         "ahead": row.get("ahead"),
         "behind": row.get("behind"),
         "pane": tmux.get("pane_id") if isinstance(tmux, dict) else None,
+        "tmux": (
+            f"{tmux.get('session')}:{tmux.get('window')}"
+            if isinstance(tmux, dict) and tmux.get("session")
+            else None
+        ),
+        "window_name": tmux.get("window_name") if isinstance(tmux, dict) else None,
         "attach": row.get("attach") or None,
         "exceptions": sorted(set(codes)),
     }
@@ -251,10 +272,12 @@ def gc_dead_rows(store: Store, *, older_than_hours: int = DEAD_RETENTION_HOURS) 
 
 __all__ = [
     "COORDINATOR_FIELDS",
+    "DONE_RE",
     "REPORTER_FIELDS",
     "ReportResult",
     "agent_key",
     "apply_report",
+    "done_sha",
     "exception_code",
     "gc_dead_rows",
     "host_key",

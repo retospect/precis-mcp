@@ -8,7 +8,7 @@ owns ``assigned`` / ``slice`` / ``note``. Not embedded, not searchable.
       collector's ``scripts/fleet-report --json`` output (the only put)
     - edit(kind='fleet', id=…, mode='replace', args={'assigned': …}) —
       coordinator-owned fields only
-    - get(kind='fleet')            — the fisheye (EXCEPTIONS / AGENTS / QUOTA)
+    - get(kind='fleet')            — the fisheye (EXCEPTIONS / READY / AGENTS / QUOTA)
     - get(kind='fleet', id=key|fl123) — one row
 
 Write logic lives in :mod:`precis.fleet`.
@@ -74,7 +74,7 @@ class FleetHandler(NumericRefHandler):
             "context fill, exceptions, attach line) and one per host (report "
             "time, quota). Collectors push with put(mode='report'); the "
             "coordinator sets assigned/slice/note with edit(mode='replace'). "
-            "get(kind='fleet') renders EXCEPTIONS / AGENTS / QUOTA; "
+            "get(kind='fleet') renders EXCEPTIONS / READY / AGENTS / QUOTA; "
             "args={'project','host'} filter. Not embedded, not searchable."
         ),
         supports_get=True,
@@ -303,6 +303,19 @@ class FleetHandler(NumericRefHandler):
         if not n_exc:
             lines.append("  none")
 
+        lines.append("READY")
+        n_ready = 0
+        for m in agents:
+            done = fleet.done_sha(m.get("purpose"))
+            if not done:
+                continue
+            tgt = f" · {m['tmux']}" if m.get("tmux") else ""
+            tail = f"   attach: {m['attach']}" if m.get("attach") else ""
+            lines.append(f"  {_who(m)}{tgt} · done@{done}{tail}")
+            n_ready += 1
+        if not n_ready:
+            lines.append("  none")
+
         lines.append("AGENTS")
         for m in agents:
             quiet = _age_min(m.get("last_active"), now)
@@ -310,8 +323,11 @@ class FleetHandler(NumericRefHandler):
             ctx = f"{m['ctx_pct']:.0f}%" if m.get("ctx_pct") is not None else "-"
             purpose = str(m.get("purpose") or "")[:40]
             stale = " · STALE" if is_stale(m) else ""
+            tgt = f" {m['tmux']}" if m.get("tmux") else ""
+            sha = fleet.done_sha(m.get("purpose"))
+            done = f" · done@{sha}" if sha else ""
             lines.append(
-                f"  {_who(m)} · {m.get('state')}{stale} · {q} · {purpose} · {ctx}"
+                f"  {_who(m)}{tgt} · {m.get('state')}{stale} · {q} · {purpose} · {ctx}{done}"
             )
         if not agents:
             lines.append("  none")

@@ -64,8 +64,8 @@ engines. Ruled with Reto 2026-10-09.
 
 ### Reporter (`scripts/fleet-report`)
 
-Runs every ~60 s per host (launchd; both hosts are macOS). Sees,
-per session:
+Runs every ~60 s per host (launchd — `scripts/fleet-report-install`;
+both hosts are macOS). Sees, per session:
 
 - **Git:** worktree, branch, dirty, ahead/behind, last commit,
   `.claude/purpose`; `merge-tree` conflict prediction.
@@ -171,7 +171,6 @@ and that headless volume is within each plan's terms.
    completes the turn and the footer says Ready; the rollout's
    function_call marks the row `asking`. Open: real approval-dialog text
    (`APPROVAL_PATTERNS` are guesses), the Codex footer while working,
-   Claude context window per model (assumes 200k, `--claude-window`),
    and `merge-tree` conflict prediction.
 2. **`fleet` kind + migration** (`/go`), `test_kind_totality`,
    `test_item_view`, skill `precis-fleet-help`; reporter writes it;
@@ -203,8 +202,11 @@ and that headless volume is within each plan's terms.
     `branch`, `purpose` (from `.claude/purpose`), `state`
     (working/idle/asking/waiting/dead), `last_active` (UTC, the transcript
     time, not a derived "quiet N min"), `ctx_pct`, `dirty`, `ahead`,
-    `behind`, `pane`, `attach`, `exceptions` (list of codes). The
-    reporter sends explicit `null` for a vanished `pane`/`attach`
+    `behind`, `pane`, `tmux` (session:window), `window_name`, `attach`,
+    `exceptions` (list of codes). A `purpose` of the form
+    `<tree> at <sha>: …` marks the row finished-with-tip: the fisheye
+    shows `done@<sha>` on the AGENTS line and lists the row under READY.
+    The reporter sends explicit `null` for a vanished `pane`/`attach`
     (`meta || patch` merges top level only and cannot delete a key).
     Coordinator-owned fields (`assigned`, `slice`, `note`) are never
     touched by a report.
@@ -254,15 +256,21 @@ from melchior. Tuning before step 3:
 - A worktree with no Claude session still gets a `claude` row (`idle`,
   no age, no ctx): every Devin tree shows twice. Emit a row only for a
   session that exists.
-- `ctx_pct` passes 100% (112%, 128%): the 200k window is wrong for the
-  current models. Read the window per model from the transcript's model
-  id; until then the `context` exception is noise.
-- Devin rows are `unknown`: state needs a Devin source (pane footer).
+- Devin rows are `unknown`: state needs a Devin source (ctx now comes
+  from the pane footer; state is still tmux-only).
 - The fisheye lists every row; fold idle rows with no session age into
   one count line.
-- The collector needs the bearer token without an env var on the Mac:
-  read it from the precis entry in `~/.claude.json` when
-  `PRECIS_MCP_TOKEN` is unset, never printed.
+
+**Push scheduling + row detail (2026-10-14, gr486948):** shipped —
+`scripts/fleet-report-install` installs the 60 s launchd push (token via
+`--token-file` → `PRECIS_MCP_TOKEN_FILE`, or an embedded
+`PRECIS_MCP_TOKEN`; logs to `~/Library/Logs`); `ctx_pct` uses the
+transcript's model id (gen-5 ids are a native 1M window, haiku-4-5 and
+older 200k; `--claude-window` overrides) and a live pane footer
+(`Context: Nk / Mk tokens (P%)`, `N% ctx`, `Context N% left`) wins over
+transcript usage; agent rows carry `tmux` (`session:window`) and
+`window_name`, and a `<tree> at <sha>: …` purpose marks the row
+finished-with-tip (READY section, `done@<sha>` in AGENTS).
 
 Write-path tests on the dev DB. Fallback when prod precis is down: local
 files (`round.json`, `.claude/purpose`, `inflight`) keep working.

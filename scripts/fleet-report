@@ -5,7 +5,7 @@ Step 1 of docs/backlog/fleet-coordination-via-precis.md. No DB, no precis
 writes: it reads tmux, git worktrees, Claude transcripts
 (`~/.claude/projects/<cwd with non-alphanumerics -> '-'>/*.jsonl`) and Codex
 rollouts (`$CODEX_HOME/sessions/**/rollout-*.jsonl`), then prints a compact
-fisheye (EXCEPTIONS / AGENTS / QUOTA) or `--json`.
+fisheye (EXCEPTIONS / READY / AGENTS / QUOTA) or `--json`.
 
 State per row: working | idle | waiting | dead | unknown. `dead` means the
 worktree lock's pid is gone, or no tmux pane exists while the transcript says
@@ -55,6 +55,29 @@ QUESTION_PATTERNS = (
 )
 AGENT_COMMANDS = ("claude", "codex", "devin", "node")
 CLAUDE_WINDOW_DEFAULT = 200_000
+#: Context window per Claude model id, from the harness's own model table
+#: (claude-code 2.1.x embeds ``context:{window:…}`` per model): opus-4.7+,
+#: sonnet-5+, fable-5+ and mythos-5 run a native 1M window; haiku-4-5 and
+#: older ids are 200k. A trailing ``[1m]`` selects the 1M window on models
+#: that support it; an unlisted id falls back to --claude-window.
+CLAUDE_MODEL_WINDOWS = {
+    "claude-fable-5": 1_000_000,
+    "claude-fable-5-1": 1_000_000,
+    "claude-mythos-5": 1_000_000,
+    "claude-mythos-5-1": 1_000_000,
+    "claude-opus-4-7": 1_000_000,
+    "claude-opus-4-8": 1_000_000,
+    "claude-opus-5": 1_000_000,
+    "claude-opus-5-5": 1_000_000,
+    "claude-sonnet-5": 1_000_000,
+    "claude-sonnet-5-5": 1_000_000,
+    "claude-haiku-4-5": 200_000,
+    # Bare tier names in transcripts resolve to the current tier model.
+    "fable": 1_000_000,
+    "opus": 1_000_000,
+    "sonnet": 1_000_000,
+    "haiku": 200_000,
+}
 DEAD_SILENT_MIN = 5.0
 RECENT_WORKING_S = 120
 REPORT_VERSION = 1
@@ -163,21 +186,48 @@ def pane_approval(text: str) -> bool:
     return any(re.search(p, text, re.I) for p in APPROVAL_PATTERNS)
 
 
+def claude_window(model: str | None, override: int | None = None) -> int:
+    """Context window for a transcript's model id; --claude-window wins."""
+    if override:
+        return override
+    m = (model or "").strip().lower()
+    if m.endswith("[1m]"):
+        return 1_000_000
+    m = re.sub(r"-\d{8}$", "", m.split("@", 1)[0])  # dated variant suffix
+    return CLAUDE_MODEL_WINDOWS.get(m, CLAUDE_WINDOW_DEFAULT)
+
+
+def pane_ctx_pct(text: str) -> float | None:
+    """Context fill % from a live pane footer; None when it shows none.
+
+    Devin prints ``Context: 212k / 262k tokens (81%)``, Claude ``Opus 5.5
+    19% ctx`` (both are % used) and Codex ``Context 87% left`` (% left).
+    The last match wins: the footer is the bottom-most line on screen.
+    """
+    for pat, used in (
+        (r"Context:[^\n()]*\((\d+)%\)", True),
+        (r"(\d+)%\s*ctx\b", True),
+        (r"Context\s+(\d+)%\s*left", False),
+    ):
+        hits = list(re.finditer(pat, text, re.I))
+        if hits:
+            pct = float(hits[-1].group(1))
+            return pct if used else 100 - pct
+    return None
+
+
 def codex_footer(text: str) -> tuple[str | None, float | None]:
     """State and context fill from the Codex TUI status line.
 
     A fresh Codex writes no rollout until its first turn, and a rollout lags
     a live turn; the footer (`… · Context 87% left · Ready`) is current.
     """
-    state = ctx = None
-    m = re.search(r"Context (\d+)% left", text)
-    if m:
-        ctx = float(100 - int(m.group(1)))
+    state = None
     lines = [ln for ln in text.splitlines() if "Context" in ln and "left" in ln]
     if lines:
         last = lines[-1].rsplit("·", 1)[-1].strip().lower()
         state = "idle" if last.startswith("ready") else "working" if last else None
-    return state, ctx
+    return state, pane_ctx_pct(text)
 
 
 def git(path: str | Path, *args: str) -> str | None:
@@ -282,14 +332,14 @@ def newest(paths) -> Path | None:
     return best
 
 
-def claude_session(cwd: str, window: int) -> dict | None:
+def claude_session(cwd: str, window: int | None) -> dict | None:
     """State from the newest transcript for this cwd (None when absent)."""
     f = newest(claude_dir(cwd).glob("*.jsonl"))
     if f is None:
         return None
     mtime = f.stat().st_mtime
     entries = [d for d in json_tail(f) if d.get("type") in ("assistant", "user")]
-    ctx = None
+    ctx = model = None
     for d in reversed(entries):
         u = (d.get("message") or {}).get("usage")
         if d["type"] == "assistant" and isinstance(u, dict):
@@ -298,7 +348,9 @@ def claude_session(cwd: str, window: int) -> dict | None:
                 + (u.get("cache_read_input_tokens") or 0)
                 + (u.get("cache_creation_input_tokens") or 0)
             )
+            model = (d.get("message") or {}).get("model")
             break
+    win = claude_window(model, window)
     state = "unknown"
     if entries:
         last = entries[-1]
@@ -319,8 +371,9 @@ def claude_session(cwd: str, window: int) -> dict | None:
         "file": str(f),
         "mtime": mtime,
         "state": state,
+        "model": model,
         "ctx_tokens": ctx,
-        "ctx_pct": round(100 * ctx / window, 1) if ctx is not None else None,
+        "ctx_pct": round(100 * ctx / win, 1) if ctx is not None else None,
     }
 
 
@@ -425,7 +478,9 @@ def vendor_of(command: str) -> str:
     return "claude" if c == "node" else c
 
 
-def collect(repos: list[str], quiet_min: float, since_min: float, window: int) -> dict:
+def collect(
+    repos: list[str], quiet_min: float, since_min: float, window: int | None
+) -> dict:
     host = socket.gethostname().split(".")[0]
     t = now_ts()
     panes = tmux_panes()
@@ -477,6 +532,11 @@ def collect(repos: list[str], quiet_min: float, since_min: float, window: int) -
             if state != "asking":
                 state = f_state or state
             ctx_pct = f_ctx if f_ctx is not None else ctx_pct
+        else:
+            # A live footer is fresher than the last transcript usage record.
+            foot = pane_ctx_pct(screen)
+            if foot is not None:
+                ctx_pct = foot
         if screen and any(re.search(p, screen) for p in QUESTION_PATTERNS):
             state = "asking"
         elif screen and vendor != "devin" and pane_approval(screen):
@@ -508,6 +568,7 @@ def collect(repos: list[str], quiet_min: float, since_min: float, window: int) -
             "transcript_mtime": iso(sess["mtime"]) if sess else None,
             "ctx_pct": ctx_pct,
             "ctx_tokens": sess["ctx_tokens"] if sess else None,
+            "model": sess.get("model") if sess else None,
             "rate_limits": sess.get("rate_limits") if sess else None,
             "tmux": None,
             "attach": None,
@@ -584,21 +645,43 @@ def exceptions(rows: list[dict], quiet_min: float, ctx_max: float = 60.0) -> lis
     return out
 
 
+#: `.claude/purpose` "<tree> at <sha>: …" marks a finished tip (mirrors
+#: precis.fleet.DONE_RE; the script must stay import-free).
+DONE_RE = re.compile(r"^\S+\s+at\s+([0-9a-f]{7,40})\b")
+
+
 def render(rep: dict) -> str:
+    def who(r: dict) -> str:
+        tm = r.get("tmux") or {}
+        tgt = (
+            f" {tm['session']}:{tm['window']}"
+            if isinstance(tm, dict) and tm.get("session")
+            else ""
+        )
+        return f"{r['vendor']}@{r['host']}/{r['project']}/{r['tree']}{tgt}"
+
     lines = ["EXCEPTIONS"]
     for e in rep["exceptions"]:
         tail = f"   attach: {e['attach']}" if e["attach"] else ""
         lines.append(f"  {e['who']}  {e['reason']}{tail}")
     if not rep["exceptions"]:
         lines.append("  none")
+    ready = [r for r in rep["rows"] if DONE_RE.match(r["purpose"] or "")]
+    lines.append("READY")
+    for r in ready:
+        sha = DONE_RE.match(r["purpose"]).group(1)
+        tail = f"   attach: {r['attach']}" if r["attach"] else ""
+        lines.append(f"  {who(r)} · done@{sha}{tail}")
+    if not ready:
+        lines.append("  none")
     lines.append("AGENTS")
     for r in rep["rows"]:
         q = f"{r['quiet_min']:.0f}m" if r["quiet_min"] is not None else "-"
         ctx = f"{r['ctx_pct']:.0f}%" if r["ctx_pct"] is not None else "-"
         purpose = r["purpose"][:40]
-        lines.append(
-            f"  {r['vendor']}@{r['host']}/{r['project']}/{r['tree']} · {r['state']} · {q} · {purpose} · {ctx}"
-        )
+        m = DONE_RE.match(r["purpose"] or "")
+        done = f" · done@{m.group(1)}" if m else ""
+        lines.append(f"  {who(r)} · {r['state']} · {q} · {purpose} · {ctx}{done}")
     if not rep["rows"]:
         lines.append("  none")
     quota = {}
@@ -800,8 +883,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--claude-window",
         type=int,
-        default=CLAUDE_WINDOW_DEFAULT,
-        help="Claude context window in tokens",
+        default=None,
+        metavar="TOKENS",
+        help="force this context window for every Claude session "
+        "(default: the transcript's model id picks from "
+        "CLAUDE_MODEL_WINDOWS, 200k when unlisted)",
     )
     ap.add_argument(
         "--push",
@@ -823,6 +909,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     url = os.environ.get("PRECIS_FLEET_MCP_URL") or DEFAULT_MCP_URL
     token = os.environ.get("PRECIS_MCP_TOKEN")
+    if not token:
+        token_file = os.environ.get("PRECIS_MCP_TOKEN_FILE")
+        if token_file:
+            try:
+                token = Path(token_file).read_text(encoding="utf-8").strip()
+            except OSError:
+                token = None
     status = 0
 
     def push(label: str, make) -> None:
