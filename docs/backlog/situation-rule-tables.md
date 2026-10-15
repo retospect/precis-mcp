@@ -3,7 +3,6 @@ status: draft
 title: situation rule tables — three-verdict pair checks over swept volumes in se drc
 pillar: 3d-design
 prio: normal
-blocked-by: design-state-core
 ---
 
 # Situation rule tables — three-verdict pair checks over swept volumes

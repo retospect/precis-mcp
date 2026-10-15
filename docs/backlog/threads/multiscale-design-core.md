@@ -3,11 +3,11 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** design-state-core is built (2026-10-15, awaiting deploy + its
-  post-deploy check); pattern-groups is next.
+- **Next:** pattern-groups (design-state-core shipped in r37, post-deploy
+  check passed 2026-10-15).
 - **Blocked by:** No declared active owner.
 - **Unblocks:** A shared substrate for se, hexfold, PCB and CAD.
-- **Acceptance:** Use [design-state-core](../design-state-core.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
+- **Acceptance:** Use [pattern-groups](../pattern-groups.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
 - **Worktree:** `multiscale-design-core`
 - **Builds:** Not estimated here; use the owning item's current slice estimate.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
@@ -29,13 +29,13 @@ consumer kind (se-machine-design, pcb-platform) is implicitly waiting on.
 
 ## Do next
 
-1. **backlog/design-state-core.md** — `in-progress/high`; unblocks pattern-groups
-   below and is the node type every later milestone in this file writes
-   into. All slices shipped 2026-10-15; open: the post-
-   deploy check (live unicycle loads, revalidates, accepts a checkpoint).
-2. **backlog/pattern-groups.md** — blocked-by 1 (design-state-core).
-3. **backlog/make-tree-vs-design-tree.md**
-4. **backlog/attached-models-layer.md**
+1. **backlog/pattern-groups.md**
+2. **backlog/make-tree-vs-design-tree.md**
+3. **backlog/attached-models-layer.md**
+
+(design-state-core.md deleted 2026-10-15: shipped in r37; the post-deploy
+check passed — designs load and validate, no dangling_* in drc, checkpoint
+accepted. History: `git log -- src/precis/design src/precis_se`.)
 
 (pose-vector-units.md deleted 2026-10-13: every round shipped; the
 notation-robustness rerun moved to backlog/claude-code-on-local-serving.md.)

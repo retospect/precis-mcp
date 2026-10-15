@@ -224,8 +224,8 @@ off that gap until it closes.
 20. **backlog/boxel-exercise-tooling-gaps.md** — what the boxel exercise
     taught about the cad/structure surface; read it before starting
     the cad items (9–11, 13).
-21. **backlog/situation-rule-tables.md** — `blocked-by` design-state-core
-    (multiscale-design-core Do-next 1, not ranked here). Three-verdict pair
+21. **backlog/situation-rule-tables.md** — unblocked (design-state-core
+    shipped in r37). Three-verdict pair
     checks over swept volumes in se drc; arguably multiscale-design-core's
     (it is a constraint-catalogue piece), kept here because its only
     consumer today is se drc — seam, move it if that thread opens first.

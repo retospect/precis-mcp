@@ -2,7 +2,6 @@
 status: draft
 title: pattern groups — one prototype, a transform group, orbit-deduped checks
 prio: high
-blocked-by: design-state-core
 pillar: 3d-design
 ---
 
