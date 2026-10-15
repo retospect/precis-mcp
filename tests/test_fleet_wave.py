@@ -1,0 +1,319 @@
+"""scripts/fleet-wave — the builder-wave coordinator kit, against a fake tmux.
+
+Each test runs the real script in a throwaway git repo with a fake ``tmux``
+(and, for launch, a fake ``claude``) first on PATH. The fake tmux logs its
+argv as JSON lines and serves pane text from files, so the tests also pin
+that tmux only ever gets an argument list.
+"""
+
+from __future__ import annotations
+
+import importlib.machinery
+import importlib.util
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from types import ModuleType
+
+import pytest
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX-only: execs scripts with fake bins"
+)
+
+REPO = Path(__file__).resolve().parents[1]
+SCRIPT = REPO / "scripts" / "fleet-wave"
+
+FAKE_TMUX = f"""#!{sys.executable}
+import json, os, subprocess, sys
+argv = sys.argv[1:]
+if argv[:1] == ["-L"]:
+    argv = argv[2:]
+d = os.environ["FAKE_TMUX_DIR"]
+with open(os.path.join(d, "log.jsonl"), "a", encoding="utf-8") as fh:
+    fh.write(json.dumps(argv) + "\\n")
+cmd = argv[0]
+def target():
+    t = argv[argv.index("-t") + 1]
+    return t.lstrip("=").split(":")[-1]
+if cmd in ("list-windows", "list-panes"):
+    name = "windows" if cmd == "list-windows" else "panes"
+    p = os.path.join(d, name)
+    sys.stdout.write(open(p, encoding="utf-8").read() if os.path.exists(p) else "")
+elif cmd == "capture-pane":
+    ext = ".esc" if "-e" in argv else ".txt"
+    p = os.path.join(d, "pane-" + target() + ext)
+    if not os.path.exists(p) and ext == ".esc":
+        p = os.path.join(d, "pane-" + target() + ".txt")
+    if not os.path.exists(p):
+        sys.exit(1)
+    sys.stdout.write(open(p, encoding="utf-8").read())
+elif cmd == "new-window" and "--" in argv:
+    sys.exit(subprocess.run(argv[argv.index("--") + 1:]).returncode)
+"""
+
+FAKE_CLAUDE = f"""#!{sys.executable}
+import json, os, sys
+with open(os.environ["FAKE_CLAUDE_LOG"], "w", encoding="utf-8") as fh:
+    json.dump(sys.argv[1:], fh)
+"""
+
+
+def _module() -> ModuleType:
+    loader = importlib.machinery.SourceFileLoader("fleet_wave", str(SCRIPT))
+    spec = importlib.util.spec_from_loader("fleet_wave", loader)
+    assert spec is not None
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+@pytest.fixture
+def env(tmp_path: Path) -> dict[str, str]:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for cmd in (
+        ["git", "init", "-q", "-b", "main"],
+        ["git", "config", "user.email", "t@example.invalid"],
+        ["git", "config", "user.name", "t"],
+        ["git", "commit", "-q", "--allow-empty", "-m", "init"],
+    ):
+        subprocess.run(cmd, cwd=repo, check=True)
+    shutil.copytree(
+        REPO / ".claude" / "fleet" / "footers", repo / ".claude" / "fleet" / "footers"
+    )
+    fake = tmp_path / "fake"
+    fake.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name, body in (("tmux", FAKE_TMUX), ("claude", FAKE_CLAUDE)):
+        exe = bin_dir / name
+        exe.write_text(body, encoding="utf-8")
+        exe.chmod(0o755)
+    out = {
+        **os.environ,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "FAKE_TMUX_DIR": str(fake),
+        "FAKE_CLAUDE_LOG": str(tmp_path / "claude.json"),
+        "FLEET_STATE": str(tmp_path / "state"),
+        "FLEET_WORKTREES": str(repo / ".claude" / "worktrees"),
+        "CWD": str(repo),
+    }
+    for k in ("FLEET_TMUX_SESSION", "FLEET_TMUX_SOCKET", "FLEET_MODEL",
+              "FLEET_COORDINATOR", "FLEET_RELEASE_OWNER", "FLEET_APPROVAL"):  # fmt: skip
+        out.pop(k, None)
+    return out
+
+
+def _windows(
+    env: dict[str, str], panes: dict[str, str], esc: dict[str, str] | None = None
+) -> None:
+    d = Path(env["FAKE_TMUX_DIR"])
+    (d / "windows").write_text("".join(f"{w}\n" for w in panes), encoding="utf-8")
+    (d / "panes").write_text(
+        "".join(f"%{i}\tw:{w}\n" for i, w in enumerate(panes)), encoding="utf-8"
+    )
+    for i, (w, text) in enumerate(panes.items()):
+        (d / f"pane-{w}.txt").write_text(text, encoding="utf-8")
+        (d / f"pane-%{i}.txt").write_text(text, encoding="utf-8")
+    for w, text in (esc or {}).items():
+        (d / f"pane-{w}.esc").write_text(text, encoding="utf-8")
+
+
+def _run(env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [str(SCRIPT), *args],
+        cwd=env["CWD"],
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+        check=False,
+    )
+
+
+def _tmux_calls(env: dict[str, str]) -> list[list[str]]:
+    log = Path(env["FAKE_TMUX_DIR"]) / "log.jsonl"
+    if not log.exists():
+        return []
+    return [json.loads(ln) for ln in log.read_text(encoding="utf-8").splitlines()]
+
+
+IDLE = "some output\n\n────\n❯ \n────\n  12% ctx · opus\n"
+# Layout sampled from a live pane, 2026-10-15.
+PROMPT = (
+    '● Bash(scripts/prod-psql --ro "\\! id")\n'
+    " Bash command\n"
+    " Run shell command\n"
+    "╌╌╌╌╌╌╌╌\n"
+    ' │ scripts/prod-psql --ro "\\! id"\n'
+    "╌╌╌╌╌╌╌╌\n"
+    " │ Hook PreToolUse:Bash requires confirmation for this command:\n"
+    " │ `scripts/prod-psql` destructive or unclassifiable statement\n"
+    " settings.json to update hooks\n"
+    " Do you want to proceed?\n"
+    " ❯ 1. Yes\n"
+    "   2. No\n"
+    " Esc to cancel · Tab to amend\n"
+)
+
+
+def test_pane_parsers() -> None:
+    m = _module()
+    assert m.ctx_percent(IDLE) == 12
+    assert m.ctx_percent("Context: 340k/1M (34%)") == 34
+    assert m.ctx_percent("nothing") is None
+    assert m.dialog_type(PROMPT) == "permission"
+    assert m.dialog_type(IDLE) is None
+    # A marker string printed in scrollback (a file, a diff) is not a dialog.
+    assert m.dialog_type("re = 'Do you trust the files'\n1. item\n" + IDLE) is None
+    question = "Pick one?\n❯ 1. Ship\n  2. Hold\nEnter to select · ↑/↓ to navigate\n"
+    assert m.dialog_type(question) == "question"
+    assert m.dialog_command(PROMPT) == 'scripts/prod-psql --ro "\\! id"'
+    assert m.unsent_input("❯ \n") == ""
+    assert m.unsent_input("│ ❯ half a mess │\n") == "half a mess"
+    # A dim placeholder hint is not unsent text.
+    assert m.unsent_input('❯ \x1b[2mTry "fix lint"\x1b[0m\n') == ""
+
+
+def test_peek_ctx_prompts(env: dict[str, str]) -> None:
+    _windows(env, {"claude-a": IDLE, "claude-b": PROMPT, "other": "x\n"})
+    out = _run(env, "peek", "a", "-n", "2").stdout
+    assert out.splitlines() == ["--- claude-a", "────", "  12% ctx · opus"]
+    # No windows named: every claude-/devin- window, nothing else.
+    heads = [ln for ln in _run(env, "peek").stdout.splitlines() if ln.startswith("---")]
+    assert heads == ["--- claude-a", "--- claude-b"]
+    assert _run(env, "ctx").stdout == "w:claude-a\t12%\n"
+    prompts = _run(env, "prompts").stdout.splitlines()
+    assert prompts == ['claude-b\tpermission\tscripts/prod-psql --ro "\\! id"']
+    for call in _tmux_calls(env):
+        assert isinstance(call, list) and call[0] in (
+            "list-windows",
+            "list-panes",
+            "capture-pane",
+        )
+
+
+def test_send_line_types_then_enters(env: dict[str, str]) -> None:
+    _windows(env, {"claude-a": IDLE})
+    proc = _run(env, "send-line", "a", "rebase and reship", "--pause", "0")
+    assert proc.returncode == 0, proc.stderr
+    sends = [c for c in _tmux_calls(env) if c[0] == "send-keys"]
+    assert sends == [
+        ["send-keys", "-t", "claude-a", "-l", "--", "rebase and reship"],
+        ["send-keys", "-t", "claude-a", "Enter"],
+    ]
+
+
+def test_send_line_long_text_is_one_paste(env: dict[str, str]) -> None:
+    _windows(env, {"claude-a": IDLE})
+    text = "line one\nline two; $(not expanded) `nor this`"
+    assert _run(env, "send-line", "claude-a", text, "--pause", "0").returncode == 0
+    calls = _tmux_calls(env)
+    sb = next(c for c in calls if c[0] == "set-buffer")
+    assert sb[-1] == text
+    assert any(c[0] == "paste-buffer" and "-p" in c for c in calls)
+
+
+def test_send_line_refuses_unsent_text_and_dialogs(env: dict[str, str]) -> None:
+    _windows(
+        env,
+        {"claude-a": IDLE, "claude-b": PROMPT},
+        esc={"claude-a": "out\n❯ \x1b[1mhalf typed\x1b[0m\n"},
+    )
+    for win in ("a", "b"):
+        proc = _run(env, "send-line", win, "hello", "--pause", "0")
+        assert proc.returncode == 3
+        assert proc.stdout.startswith("REFUSED")
+    assert not [c for c in _tmux_calls(env) if c[0] == "send-keys"]
+
+
+def test_launch_fills_footer_and_runs_claude_by_argv(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    _windows(env, {})
+    brief = tmp_path / "brief.txt"
+    brief.write_text("Task: fix the thing.\n", encoding="utf-8")
+    proc = _run(env, "launch", "fix-x", "--brief", str(brief), "--tier", "qland")
+    assert proc.returncode != 0 and "unfilled" in proc.stderr
+    env = {**env, "FLEET_COORDINATOR": "coord-1", "FLEET_RELEASE_OWNER": "rel-2",
+           "FLEET_APPROVAL": "approved 2026-01-01T00:00Z"}  # fmt: skip
+    proc = _run(
+        env,
+        "--model",
+        "sonnet",
+        "launch",
+        "fix-x",
+        "--brief",
+        str(brief),
+        "--tier",
+        "qland",
+    )
+    assert proc.returncode == 0, proc.stderr
+    nw = next(c for c in _tmux_calls(env) if c[0] == "new-window")
+    assert nw[nw.index("-n") + 1] == "claude-fix-x"
+    argv = json.loads(Path(env["FAKE_CLAUDE_LOG"]).read_text(encoding="utf-8"))
+    assert argv[:6] == ["-w", "fix-x", "--model", "sonnet", "--permission-mode", "auto"]
+    prompt = argv[6]
+    assert prompt.startswith("Task: fix the thing.\nRules:")
+    assert "coord-1" in prompt and "rel-2" in prompt and "approved 2026" in prompt
+    assert "{" not in prompt.replace("{0,", "")
+
+
+def test_watch_done_emits_once_per_finish_line(env: dict[str, str]) -> None:
+    purpose = Path(env["FLEET_WORKTREES"]) / "t1" / ".claude" / "purpose"
+    purpose.parent.mkdir(parents=True)
+    purpose.write_text("working on it\n", encoding="utf-8")
+    assert _run(env, "watch-done", "t1", "--ticks", "1").stdout == ""
+    purpose.write_text("t1 at abc1234: did it\n", encoding="utf-8")
+    out = _run(env, "watch-done", "t1", "--ticks", "1").stdout
+    assert out.startswith("DONE ") and out.rstrip().endswith("t1 at abc1234: did it")
+    assert _run(env, "watch-done", "t1", "--ticks", "1").stdout == ""
+
+
+def test_stuck_watch_reports_prompt_and_gone(env: dict[str, str]) -> None:
+    _windows(env, {"claude-a": IDLE, "claude-b": PROMPT})
+    out = _run(env, "stuck-watch", "a", "b", "c", "--ticks", "1").stdout
+    lines = out.splitlines()
+    assert any("claude-b prompt: scripts/prod-psql" in ln for ln in lines)
+    assert any(ln.endswith(" c gone") for ln in lines)
+    assert not any("claude-a" in ln for ln in lines)
+    # Unchanged state is not re-emitted.
+    assert _run(env, "stuck-watch", "a", "b", "c", "--ticks", "1").stdout == ""
+
+
+def test_close_removes_clean_tree_keeps_dirty(env: dict[str, str]) -> None:
+    repo = Path(env["CWD"])
+    wt = Path(env["FLEET_WORKTREES"])
+    for name in ("done1", "dirty1"):
+        subprocess.run(
+            ["git", "worktree", "add", "-q", "-b", f"worktree-{name}", str(wt / name)],
+            cwd=repo,
+            check=True,
+        )
+    (wt / "dirty1" / "x.txt").write_text("unsaved\n", encoding="utf-8")
+    _windows(env, {"claude-done1": IDLE, "claude-dirty1": IDLE})
+    proc = _run(env, "close", "done1", "dirty1")
+    assert proc.returncode == 1
+    assert "branch deleted: worktree-done1" in proc.stdout
+    assert "KEPT (dirty or busy): dirty1" in proc.stdout
+    assert not (wt / "done1").exists() and (wt / "dirty1").exists()
+    branches = subprocess.run(
+        ["git", "branch", "--list", "worktree-*"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    ).stdout
+    assert "worktree-done1" not in branches and "worktree-dirty1" in branches
+    log = (Path(env["FLEET_STATE"]) / "dropped-branches.log").read_text(
+        encoding="utf-8"
+    )
+    assert " done1 worktree-done1 " in log and "dirty1" not in log
+    kills = [c for c in _tmux_calls(env) if c[0] == "kill-window"]
+    assert [c[-1] for c in kills] == ["claude-done1", "claude-dirty1"]

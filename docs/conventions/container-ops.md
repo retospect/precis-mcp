@@ -159,3 +159,25 @@ All of this is best-effort git plumbing guarded with `|| true` — it can
 never fail or block a ship. A future `PRECIS_AUTODEPLOY_STALE=1` could opt
 into *actually* invoking `scripts/deploy` past the stale threshold, but
 that isn't implemented — this change only surfaces the lag.
+
+## Coordinator tooling: builder waves and cluster liveness
+
+- **`scripts/fleet-wave`** drives a builder wave in tmux: `launch NAME
+  --brief FILE --tier readonly|qland` (a `claude -w NAME` window, or
+  `--devin` via `scripts/devin-tree`; the footer comes from
+  `.claude/fleet/footers/<tier>.txt` with the coordinator, release owner and
+  approval quote filled from `FLEET_*` env or flags), `peek WIN…`, `ctx`
+  (context % per Claude pane, from the status line), `prompts` (panes at a
+  dialog, with the command), `send-line WIN TEXT` (refuses a pane with a
+  dialog open or unsent text in its input box), `watch-done NAME…` and
+  `stuck-watch [NAME…]` (Monitor-friendly, one line per transition), and
+  `close NAME…` (kill the window, `git worktree remove` without `--force`,
+  delete the branch only after a clean removal, log it). It calls tmux with
+  argument lists only. Session, worktree root and model come from
+  `FLEET_TMUX_SESSION`, `FLEET_WORKTREES`, `FLEET_MODEL`. The runbook is the
+  `gripe-fleet` skill. The thread-session fleet is `scripts/fleet`, a
+  separate tool.
+- **`scripts/cluster-ping [NODE…]`** prints one line per inventory host
+  (ping, then `ssh uptime` bounded by ConnectTimeout/ServerAlive options, so a
+  wedged host fails in about 15 s) and exits 1 if any host fails ssh. Hosts
+  come from the gitignored overlay through `scripts/lib/pgb-host.sh`.

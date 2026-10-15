@@ -1,0 +1,550 @@
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
+"""scripts/fleet-wave — the coordinator kit for a builder wave in tmux.
+
+A wave is a set of builder sessions, one tmux window each: ``claude-NAME``
+(``claude -w NAME``) or ``devin-NAME`` (``scripts/devin-tree NAME``). This
+tool launches them, reads their panes, types into them and closes them.
+The thread-session fleet (one window per roadmap thread) is
+``scripts/fleet``; this is the per-wave kit beside it. Runbook: the
+``gripe-fleet`` skill (.claude/skills/gripe-fleet/SKILL.md).
+
+    fleet-wave launch NAME --brief FILE [--tier readonly|qland] [--devin]
+    fleet-wave peek [WIN...] [-n N]     last N non-empty lines per window
+    fleet-wave ctx                      context % per Claude pane
+    fleet-wave prompts                  panes at a dialog: window, type, command
+    fleet-wave send-line WIN TEXT       type TEXT + Enter; refuses unsent input
+    fleet-wave watch-done NAME...       emit when <tree>/.claude/purpose finishes
+    fleet-wave stuck-watch [NAME...]    emit on prompt / quiet / done / gone
+    fleet-wave close NAME...            kill window, remove tree, drop branch
+
+WIN is a window name (``claude-x``) or a wave NAME (resolved to its
+``claude-``/``devin-`` window). tmux is always called with an argument
+list, never a shell string. Nothing is stored in the repo: footers come
+from .claude/fleet/footers/<tier>.txt with ``{coordinator}``,
+``{release_owner}`` and ``{approval}`` filled at launch.
+
+Configuration (env, or the matching flag before the subcommand):
+  FLEET_TMUX_SESSION  --session   tmux session (default: the current one)
+  FLEET_TMUX_SOCKET   --socket    private tmux server (tmux -L), tests
+  FLEET_WORKTREES     --worktrees worktree root (default <main>/.claude/worktrees)
+  FLEET_MODEL         --model     builder model (default opus)
+  FLEET_STATE                     watcher state + close log
+                                  (default ~/.claude/fleet-wave)
+  FLEET_COORDINATOR, FLEET_RELEASE_OWNER, FLEET_APPROVAL   footer fills
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import itertools
+import os
+import re
+import subprocess
+import sys
+import time
+from collections.abc import Iterable, Sequence
+from datetime import UTC, datetime
+from pathlib import Path
+
+#: Dialog markers (same set as scripts/fleet's dialog_re).
+DIALOG_RE = re.compile(r"Enter to select|Do you want to|Do you trust the files")
+CTX_RE = re.compile(r"(\d+)% ctx|Context[^%\n]*?(\d+)%")
+BOX_RE = re.compile(r"^[\s│┃║╭╮╰╯─━═┌┐└┘├┤┬┴┼]*$")
+SIDE_RE = re.compile(r"^[\s│┃║]+|[\s│┃║]+$")
+ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+#: A dim SGR span (Claude Code's placeholder hint in an empty input box).
+DIM_SPAN_RE = re.compile(r"\x1b\[(?:[0-9;]*;)?2m.*?(?=\x1b\[(?:0|22)?m|$)")
+#: Busy marker: the spinner line "… (12s · esc to interrupt)".
+BUSY_RE = re.compile(r"… \(\d+")
+PROMPT_CHAR = "❯"
+#: Above this length, or with a newline, text goes in as one bracketed
+#: paste (typed text loses its head in a Claude pane; see scripts/fleet).
+PASTE_MIN = 200
+PREFIXES = ("claude-", "devin-")
+PLACEHOLDER_RE = re.compile(r"\{(coordinator|release_owner|approval)\}")
+
+
+def utc_stamp() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+class Fleet:
+    def __init__(self, args: argparse.Namespace) -> None:
+        self.session: str = args.session or os.environ.get("FLEET_TMUX_SESSION", "")
+        self.socket: str = args.socket or os.environ.get("FLEET_TMUX_SOCKET", "")
+        self.model: str = args.model or os.environ.get("FLEET_MODEL", "opus")
+        self.repo = Path(
+            git("rev-parse", "--show-toplevel", cwd=Path.cwd()).strip() or "."
+        )
+        common = git("rev-parse", "--path-format=absolute", "--git-common-dir")
+        self.main = Path(common.strip()).parent if common.strip() else self.repo
+        wt = args.worktrees or os.environ.get("FLEET_WORKTREES", "")
+        self.worktrees = Path(wt) if wt else self.main / ".claude" / "worktrees"
+        st = os.environ.get("FLEET_STATE", "")
+        self.state = Path(st) if st else Path.home() / ".claude" / "fleet-wave"
+
+    # --- tmux ---------------------------------------------------------------
+
+    def tmux(self, *argv: str, check: bool = True) -> str:
+        cmd = ["tmux", *(["-L", self.socket] if self.socket else []), *argv]
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, encoding="utf-8", check=False
+        )
+        if check and proc.returncode:
+            raise SystemExit(f"fleet-wave: {' '.join(cmd[:4])}…: {proc.stderr.strip()}")
+        return proc.stdout
+
+    def target(self, win: str) -> str:
+        return f"={self.session}:{win}" if self.session else win
+
+    def windows(self) -> list[str]:
+        argv = ["list-windows", "-F", "#{window_name}"]
+        if self.session:
+            argv[1:1] = ["-t", f"={self.session}"]
+        return [w for w in self.tmux(*argv).splitlines() if w]
+
+    def resolve(self, name: str) -> str | None:
+        wins = self.windows()
+        if name in wins:
+            return name
+        for p in PREFIXES:
+            if p + name in wins:
+                return p + name
+        return None
+
+    def capture(self, win: str, *, escapes: bool = False) -> str | None:
+        argv = ["capture-pane", "-p", "-J", "-t", self.target(win)]
+        if escapes:
+            argv.insert(2, "-e")
+        cmd = ["tmux", *(["-L", self.socket] if self.socket else []), *argv]
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, encoding="utf-8", check=False
+        )
+        return None if proc.returncode else proc.stdout
+
+    def wave_windows(self) -> list[str]:
+        return [w for w in self.windows() if w.startswith(PREFIXES)]
+
+
+def git(*argv: str, cwd: Path | None = None) -> str:
+    proc = subprocess.run(
+        ["git", *argv],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=cwd,
+        check=False,
+    )
+    return proc.stdout if proc.returncode == 0 else ""
+
+
+# --- pane parsing (pure) ----------------------------------------------------
+
+
+def nonempty_tail(pane: str, n: int) -> list[str]:
+    return [ln for ln in pane.splitlines() if ln.strip()][-n:]
+
+
+def ctx_percent(pane: str) -> int | None:
+    hits = CTX_RE.findall(pane)
+    if not hits:
+        return None
+    a, b = hits[-1]
+    return int(a or b)
+
+
+#: A dialog's first option line: ``❯ 1. Yes`` / ``  1. Yes`` (box sides allowed).
+OPTION_RE = re.compile(r"^[\s│┃║]*(❯\s*)?1\.\s")
+
+
+def dialog_type(pane: str) -> str | None:
+    """permission / trust / question for a pane showing a dialog, else None.
+
+    A dialog sits at the bottom of the pane, so only the last 25 non-empty
+    lines count, and a marker needs an option line (``1. …``) after it: a
+    marker string merely printed in scrollback (a diff, a file) is not one."""
+    tail = nonempty_tail(pane, 25)
+    # The input box is hidden while a dialog is open: keep only what follows
+    # the last input-box line (``❯`` not followed by an option number).
+    for k in range(len(tail) - 1, -1, -1):
+        bare = SIDE_RE.sub("", tail[k])
+        if bare.startswith(PROMPT_CHAR) and not OPTION_RE.match(tail[k]):
+            tail = tail[k + 1 :]
+            break
+    for i, ln in enumerate(tail):
+        after = tail[i + 1 :]
+        if not any(OPTION_RE.match(a) for a in after):
+            continue
+        if "Do you trust the files" in ln:
+            return "trust"
+        if "Do you want to" in ln:
+            return "permission"
+    # AskUserQuestion: options first, then an "Enter to select" footer line.
+    if any("Enter to select" in ln for ln in tail[-3:]) and any(
+        OPTION_RE.match(ln) for ln in tail
+    ):
+        return "question"
+    return None
+
+
+def dialog_command(pane: str) -> str:
+    """The command a dialog asks about: the nearest non-box line above the
+    first marker within the 30 lines before it."""
+    lines = pane.splitlines()
+    idx = [i for i, ln in enumerate(lines) if DIALOG_RE.search(ln)]
+    if not idx:
+        return ""
+    last = idx[-1]
+    window = lines[max(0, last - 30) : last + 1]
+    first = next(i for i, ln in enumerate(window) if DIALOG_RE.search(ln))
+    # A tool dialog shows the command in `│`-prefixed lines under its header
+    # ("Bash command"); the hook's own reason lines are not the command.
+    boxed = [
+        SIDE_RE.sub("", ln)
+        for ln in window[:first]
+        if ln.lstrip().startswith("│") and "requires confirmation" not in ln
+    ]
+    if boxed and boxed[0]:
+        return boxed[0][:100]
+    above = [
+        SIDE_RE.sub("", ln)
+        for ln in window[:first]
+        if ln.strip() and not BOX_RE.match(ln)
+    ]
+    above = [a for a in above if a and not re.match(r"^(❯\s*)?\d+\.", a)]
+    return above[-1][:100] if above else ""
+
+
+def unsent_input(pane_with_escapes: str) -> str:
+    """Text typed into the input box but not sent: what follows the last
+    ``❯`` line's prompt char, with dim placeholder hints and ANSI removed."""
+    for raw in reversed(pane_with_escapes.splitlines()):
+        plain = ANSI_RE.sub("", raw)
+        stripped = SIDE_RE.sub("", plain)
+        if stripped.startswith(PROMPT_CHAR):
+            tail = raw[raw.index(PROMPT_CHAR) + 1 :]
+            tail = ANSI_RE.sub("", DIM_SPAN_RE.sub("", tail))
+            return SIDE_RE.sub("", tail.replace("\xa0", " ")).strip()
+    return ""
+
+
+# --- subcommands --------------------------------------------------------------
+
+
+def cmd_peek(f: Fleet, a: argparse.Namespace) -> int:
+    rc = 0
+    for name in a.win or f.wave_windows():
+        win = f.resolve(name)
+        pane = f.capture(win) if win else None
+        print(f"--- {win or name}")
+        if pane is None:
+            print("(no such window)")
+            rc = 1
+            continue
+        for ln in nonempty_tail(pane, a.n):
+            print(ln)
+    return rc
+
+
+def cmd_ctx(f: Fleet, _a: argparse.Namespace) -> int:
+    out = f.tmux("list-panes", "-a", "-F", "#{pane_id}\t#{session_name}:#{window_name}")
+    for line in out.splitlines():
+        pane_id, _, label = line.partition("\t")
+        if f.session and not label.startswith(f.session + ":"):
+            continue
+        pane = f.capture(pane_id)
+        pct = ctx_percent(pane or "")
+        if pct is not None:
+            print(f"{label}\t{pct}%")
+    return 0
+
+
+def cmd_prompts(f: Fleet, _a: argparse.Namespace) -> int:
+    for win in f.windows():
+        pane = f.capture(win)
+        kind = dialog_type(pane or "")
+        if kind:
+            print(f"{win}\t{kind}\t{dialog_command(pane or '')}")
+    return 0
+
+
+def cmd_send_line(f: Fleet, a: argparse.Namespace) -> int:
+    win = f.resolve(a.win)
+    if not win:
+        print(f"fleet-wave: no window {a.win}", file=sys.stderr)
+        return 2
+    pane = f.capture(win, escapes=True)
+    if pane is None:
+        print(f"fleet-wave: cannot read {win}", file=sys.stderr)
+        return 2
+    plain = ANSI_RE.sub("", pane)
+    if dialog_type(plain):
+        print(f"REFUSED {win}: a dialog is open ({dialog_command(plain)})")
+        return 3
+    if pending := unsent_input(pane):
+        print(f"REFUSED {win}: input box holds unsent text: {pending[:60]}")
+        return 3
+    text = a.text
+    t = f.target(win)
+    if len(text) > PASTE_MIN or "\n" in text:
+        buf = f"fleet-wave-{os.getpid()}"
+        f.tmux("set-buffer", "-b", buf, "--", text)
+        f.tmux("paste-buffer", "-p", "-d", "-b", buf, "-t", t)
+    else:
+        f.tmux("send-keys", "-t", t, "-l", "--", text)
+    # An Enter arriving with the text is swallowed by the paste: pause first.
+    time.sleep(a.pause)
+    f.tmux("send-keys", "-t", t, "Enter")
+    print(f"sent: {win}")
+    return 0
+
+
+def _fill_footer(text: str, fills: dict[str, str]) -> str:
+    missing = sorted({m for m in PLACEHOLDER_RE.findall(text) if not fills.get(m)})
+    if missing:
+        raise SystemExit(
+            "fleet-wave: footer placeholders unfilled: "
+            + ", ".join(missing)
+            + " (flags --coordinator/--release-owner/--approval or FLEET_* env)"
+        )
+    return PLACEHOLDER_RE.sub(lambda m: fills[m.group(1)], text)
+
+
+def cmd_launch(f: Fleet, a: argparse.Namespace) -> int:
+    name = a.name
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", name):
+        print(f"fleet-wave: bad tree name {name!r}", file=sys.stderr)
+        return 2
+    win = ("devin-" if a.devin else "claude-") + name
+    if win in f.windows():
+        print(f"exists: {win}")
+        return 0
+    footer_path = f.repo / ".claude" / "fleet" / "footers" / f"{a.tier}.txt"
+    fills = {
+        "coordinator": a.coordinator or os.environ.get("FLEET_COORDINATOR", ""),
+        "release_owner": a.release_owner or os.environ.get("FLEET_RELEASE_OWNER", ""),
+        "approval": a.approval or os.environ.get("FLEET_APPROVAL", ""),
+    }
+    footer = _fill_footer(footer_path.read_text(encoding="utf-8"), fills)
+    brief = Path(a.brief).read_text(encoding="utf-8").rstrip("\n")
+    text = f"{brief}\n{footer}"
+    f.state.mkdir(parents=True, exist_ok=True)
+    prompt_file = f.state / f"{win}.prompt"
+    prompt_file.write_text(text, encoding="utf-8")
+    if a.devin:
+        argv = [
+            str(f.repo / "scripts" / "devin-tree"),
+            name,
+            "--prompt-file",
+            str(prompt_file),
+        ]
+        if f.session:
+            argv += ["--session", f.session]
+        if a.dry_run:
+            print(" ".join(argv))
+            return 0
+        return subprocess.run(argv, check=False).returncode
+    tmux_argv = ["new-window", "-d", "-n", win, "-c", str(f.main)]
+    if f.session:
+        tmux_argv[2:2] = ["-t", f"={f.session}:"]
+    claude = [
+        "claude",
+        "-w",
+        name,
+        "--model",
+        f.model,
+        "--permission-mode",
+        "auto",
+        text,
+    ]
+    if a.dry_run:
+        print(" ".join([*tmux_argv, "--", *claude[:-1], f"<{len(text)} chars>"]))
+        return 0
+    f.tmux(*tmux_argv, "--", *claude)
+    print(f"launched {win} ({f.model}, tier {a.tier}, prompt {prompt_file})")
+    return 0
+
+
+def _finish_line(f: Fleet, name: str) -> str:
+    purpose = f.worktrees / name / ".claude" / "purpose"
+    try:
+        lines = purpose.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+    hits = [ln for ln in lines if ln.startswith(f"{name} at ")]
+    return hits[-1] if hits else ""
+
+
+def _ticks(a: argparse.Namespace) -> Iterable[int]:
+    return range(a.ticks) if a.ticks else itertools.count()
+
+
+def cmd_watch_done(f: Fleet, a: argparse.Namespace) -> int:
+    seen_dir = f.state / "watch-seen"
+    seen_dir.mkdir(parents=True, exist_ok=True)
+    for k, _ in enumerate(_ticks(a)):
+        if k:
+            time.sleep(a.interval)
+        for name in a.names:
+            line = _finish_line(f, name)
+            seen = seen_dir / name
+            old = seen.read_text(encoding="utf-8") if seen.exists() else ""
+            if line and line != old:
+                seen.write_text(line, encoding="utf-8")
+                print(f"DONE {utc_stamp()} {line[:160]}", flush=True)
+    return 0
+
+
+def _stuck_state(f: Fleet, name: str, win: str | None, quiet_s: int) -> str:
+    pane = f.capture(win) if win else None
+    if pane is None:
+        return "gone"
+    st_dir = f.state / "stuck-seen"
+    digest = hashlib.sha256(pane.encode("utf-8")).hexdigest()[:12]
+    hfile, tfile = st_dir / f"{name}.hash", st_dir / f"{name}.t"
+    now = int(time.time())
+    if not hfile.exists() or hfile.read_text(encoding="utf-8") != digest:
+        hfile.write_text(digest, encoding="utf-8")
+        tfile.write_text(str(now), encoding="utf-8")
+    since = int(tfile.read_text(encoding="utf-8") or now) if tfile.exists() else now
+    age = now - since
+    if dialog_type(pane):
+        return "prompt: " + dialog_command(pane)[:80]
+    if _finish_line(f, name):
+        return "done"
+    if age > quiet_s:
+        return f"quiet{age // 600 * 10}m"
+    return "ok"
+
+
+def cmd_stuck_watch(f: Fleet, a: argparse.Namespace) -> int:
+    st_dir = f.state / "stuck-seen"
+    st_dir.mkdir(parents=True, exist_ok=True)
+    for k, _ in enumerate(_ticks(a)):
+        if k:
+            time.sleep(a.interval)
+        names = a.names or [w.split("-", 1)[1] for w in f.wave_windows()]
+        for name in names:
+            win = f.resolve(name)
+            st = _stuck_state(f, name, win, a.quiet_min * 60)
+            sfile = st_dir / f"{name}.st"
+            old = sfile.read_text(encoding="utf-8") if sfile.exists() else ""
+            if st != old:
+                sfile.write_text(st, encoding="utf-8")
+                if st != "ok":
+                    print(f"{utc_stamp()} {win or name} {st}", flush=True)
+    return 0
+
+
+def cmd_close(f: Fleet, a: argparse.Namespace) -> int:
+    log = f.state / "dropped-branches.log"
+    f.state.mkdir(parents=True, exist_ok=True)
+    rc = 0
+    wins = f.windows()
+    for name in a.names:
+        for p in PREFIXES:
+            if p + name in wins:
+                f.tmux("kill-window", "-t", f.target(p + name), check=False)
+                print(f"window closed: {p}{name}")
+        tree = f.worktrees / name
+        if not tree.is_dir():
+            print(f"no tree: {name}")
+            continue
+        branch = git("rev-parse", "--abbrev-ref", "HEAD", cwd=tree).strip()
+        sha = git("rev-parse", "--short", "HEAD", cwd=tree).strip()
+        git("worktree", "unlock", str(tree), cwd=f.main)
+        proc = subprocess.run(
+            ["git", "worktree", "remove", str(tree)],
+            cwd=f.main,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        if proc.returncode:
+            print(f"KEPT (dirty or busy): {name}: {proc.stderr.strip()[:120]}")
+            rc = 1
+            continue
+        dropped = ""
+        if branch and branch != "HEAD":
+            d = subprocess.run(
+                ["git", "branch", "-D", branch],
+                cwd=f.main,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+            dropped = branch if d.returncode == 0 else ""
+        with log.open("a", encoding="utf-8") as fh:
+            fh.write(f"{utc_stamp()} {name} {branch} {sha} removed\n")
+        print(
+            f"removed: {name} at {sha}"
+            + (f"; branch deleted: {dropped}" if dropped else "")
+        )
+    return rc
+
+
+def parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="fleet-wave",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p.add_argument("--session", default="")
+    p.add_argument("--socket", default="")
+    p.add_argument("--worktrees", default="")
+    p.add_argument("--model", default="")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    s = sub.add_parser("launch", help="start a builder window")
+    s.add_argument("name")
+    s.add_argument("--brief", required=True)
+    s.add_argument("--tier", choices=("readonly", "qland"), default="readonly")
+    s.add_argument("--devin", action="store_true")
+    s.add_argument("--coordinator", default="")
+    s.add_argument("--release-owner", default="")
+    s.add_argument("--approval", default="")
+    s.add_argument("--dry-run", action="store_true")
+    s.set_defaults(fn=cmd_launch)
+
+    s = sub.add_parser("peek", help="last lines of each window")
+    s.add_argument("win", nargs="*")
+    s.add_argument("-n", type=int, default=int(os.environ.get("PEEK_N", "6")))
+    s.set_defaults(fn=cmd_peek)
+
+    sub.add_parser("ctx", help="context %% per Claude pane").set_defaults(fn=cmd_ctx)
+    sub.add_parser("prompts", help="panes at a dialog").set_defaults(fn=cmd_prompts)
+
+    s = sub.add_parser("send-line", help="type TEXT and press Enter")
+    s.add_argument("win")
+    s.add_argument("text")
+    s.add_argument("--pause", type=float, default=1.0, help=argparse.SUPPRESS)
+    s.set_defaults(fn=cmd_send_line)
+
+    for cmd, fn, nargs in (
+        ("watch-done", cmd_watch_done, "+"),
+        ("stuck-watch", cmd_stuck_watch, "*"),
+    ):
+        s = sub.add_parser(cmd)
+        s.add_argument("names", nargs=nargs)
+        s.add_argument("--interval", type=float, default=60.0)
+        s.add_argument("--ticks", type=int, default=0, help="stop after N polls")
+        if cmd == "stuck-watch":
+            s.add_argument("--quiet-min", type=int, default=20)
+        s.set_defaults(fn=fn)
+
+    s = sub.add_parser("close", help="kill window, remove tree, drop branch")
+    s.add_argument("names", nargs="+")
+    s.set_defaults(fn=cmd_close)
+    return p
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    a = parser().parse_args(argv)
+    return int(a.fn(Fleet(a), a))
+
+
+if __name__ == "__main__":
+    sys.exit(main())
