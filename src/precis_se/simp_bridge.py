@@ -90,6 +90,7 @@ from precis.cad.relate import component_sdf_np
 from precis.cad.scene import NodeSpec, SceneSpec
 from precis.cad.vec import as_vec3
 from precis.cad.vec import pose as cad_pose
+from precis.design import history as design_history
 from precis.structsolve.simp import (
     ENGINE_VERSION,
     SimpResult,
@@ -106,6 +107,7 @@ from precis_se.ops import (
     apply_ops,
     effective_envelope,
     print_intent,
+    stamp_solver_provenance,
 )
 from precis_se.ops import effective_ports as se_effective_ports
 from precis_se.realize import _unique_cad_slug, resolve_realize_target
@@ -1135,6 +1137,17 @@ def realize_simp(
                     {"op": "set_mode", "block": req.block, "mode": req.mode},
                 ],
             )
+            stamp_solver_provenance(
+                node,
+                "geometry",
+                solver_id=ENGINE_VERSION,
+                fidelity="full_solve",
+                assumptions=[
+                    "linear elastic compliance minimisation",
+                    f"volume fraction {req.volfrac:g}",
+                    f"voxel pitch {req.pitch:g} m",
+                ],
+            )
             frame = _BuildFrame.for_dir(req.build_dir)
             intent = print_intent(node)  # a group root's intent is not a pin
             node.build_frame = {
@@ -1158,6 +1171,12 @@ def realize_simp(
                 conn=conn,
             )
             summary["previous_cad"] = previous
+            # The envelope revision this result was scored under, read at
+            # bind time inside the lock (design-state-core.md item 5): a
+            # later tightening makes the run detectably stale.
+            summary["envelope_revision"] = design_history.current_revision(
+                store, ref_id, conn=conn
+            )
             existing = dict(meta_now.get(META_KEY) or {})
             runs = [r for r in (existing.get("runs") or []) if isinstance(r, dict)]
             runs.append(summary)

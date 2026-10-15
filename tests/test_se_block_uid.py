@@ -207,12 +207,14 @@ def test_measure_bom_threading_and_template_are_stored_by_uid(
     assert template is not None and template[0] == uids["wheel"]
 
 
-def test_cross_design_template_keeps_its_name_text(
+def test_cross_design_template_follows_the_foreign_uid(
     handler: SeHandler, store: Store
 ) -> None:
-    """A ``'slug#block'`` reference has no uid half yet — resolution lives
-    in ``precis.blocktree`` and walks foreign trees by slug (persist's
-    module docstring). It must still round-trip untouched."""
+    """A ``'slug#block'`` reference stores the FOREIGN block's uid
+    (migration ``0020``): the key is (design slug, uid), since uids are
+    unique per design only. A load renders it back from the foreign
+    block's current label, so a relabel in the library design doesn't
+    strand the instance; the name text stays the dangling fallback."""
     handler.put(
         id="lib1",
         text=json.dumps(
@@ -237,7 +239,58 @@ def test_cross_design_template_keeps_its_name_text(
     )
     assert row is not None
     assert row[0] == "lib1#wheel"
-    assert row[1] is None
+    assert row[1] == _uids(store, "lib1")["wheel"]
+    cart_id = _ref_id(store, "cart1")
+    assert persist.load_tree(store, cart_id).blocks["w1"].template == "lib1#wheel"
+
+    # Relabel the library block behind persist's back (no rename op yet).
+    with store.tx() as c:
+        c.execute(
+            "UPDATE se_blocks SET name = 'wheel_v2' "
+            "WHERE ref_id = %s AND retired_at IS NULL AND name = 'wheel'",
+            (_ref_id(store, "lib1"),),
+        )
+    tree = persist.load_tree(store, cart_id)
+    assert tree.blocks["w1"].template == "lib1#wheel_v2"
+    # ...and the instance still resolves its template's envelope through it.
+    assert "cyl:r0.04h0.02" in handler.get(id="cart1", view="tree").body
+    # A re-save writes the new label text beside the same uid.
+    handler.edit(id="cart1", ops=[{"op": "add_block", "name": "frame"}])
+    row = _row(
+        store,
+        "SELECT template_ref, template_uid FROM se_blocks "
+        "WHERE ref_id = %s AND retired_at IS NULL AND name = 'w1'",
+        "cart1",
+    )
+    assert row is not None and row[0] == "lib1#wheel_v2"
+
+
+def test_dangling_cross_design_template_keeps_its_name_text(
+    handler: SeHandler, store: Store
+) -> None:
+    """A foreign block that is gone leaves the stored text as the label —
+    the same dangling fallback a local reference has."""
+    handler.put(
+        id="lib1",
+        text=json.dumps(
+            {
+                "ops": [
+                    {"op": "add_block", "name": "wheel", "envelope": "cyl:r0.04h0.02"}
+                ]
+            }
+        ),
+    )
+    handler.put(
+        id="cart1",
+        text=json.dumps(
+            {"ops": [{"op": "instance_block", "name": "w1", "template": "lib1#wheel"}]}
+        ),
+    )
+    with store.tx() as c:
+        c.execute(
+            "UPDATE se_blocks SET retired_at = now() WHERE ref_id = %s",
+            (_ref_id(store, "lib1"),),
+        )
     tree = persist.load_tree(store, _ref_id(store, "cart1"))
     assert tree.blocks["w1"].template == "lib1#wheel"
 

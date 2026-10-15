@@ -96,7 +96,12 @@ from precis_se.chain.vocab import (
     chain_role,
     group_domains,
 )
-from precis_se.ops import OpError, SeTree, compose_world_pose
+from precis_se.ops import (
+    OpError,
+    SeTree,
+    compose_world_pose,
+    stamp_solver_provenance,
+)
 from precis_se.state_arg import merged_occupancy
 
 #: Nanometres per metre — the one scale factor in this module (module
@@ -825,6 +830,13 @@ def _write_back(
         pose, rot = segment_pose(capsule)
         node.local_pose, node.local_rot = pose, rot
         node.origins["pose"] = "proposed"
+        stamp_solver_provenance(
+            node,
+            "pose",
+            solver_id="se.chain.relax",
+            fidelity="surrogate",
+            assumptions=["coarse-grained helix bodies", "hinge stiffness model"],
+        )
         written += 1
     compose_world_pose(tree)
     return written

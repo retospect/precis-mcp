@@ -131,6 +131,10 @@ class MeasureSpec:
     #: block bound to a different slug/version says so
     #: (:func:`precis_se.datums.pin_status`).
     datum_pin: str | None = None
+    #: This number's provenance entry (``se_measures.provenance``, migration
+    #: ``0019``) in :mod:`precis.design.provenance` shape — where a margin
+    #: rule records ``margin_origin``. ``None`` = no claim.
+    provenance: dict[str, Any] | None = None
 
 
 def measurand_name(m: MeasureSpec) -> str | None:

@@ -147,6 +147,10 @@ def test_cantilever_op_enqueues_and_the_job_realizes_a_field_leaf_design(
     beam = tree.blocks["beam"]
     assert beam.bound_kind == "cad" and beam.bound == "simp-cant-beam"
     assert beam.mode == "fdm/pla"
+    # the solved geometry carries its provenance (design-state-core item 4)
+    geometry = beam.provenance["geometry"]
+    assert geometry["source"] == "solver" and geometry["fidelity"] == "full_solve"
+    assert geometry["solver_id"] == "simp/1"
     assert beam.build_frame == {
         "down": [0.0, 0.0, -1.0],
         "origin": "simp",
@@ -177,6 +181,8 @@ def test_cantilever_op_enqueues_and_the_job_realizes_a_field_leaf_design(
     assert summary["overhang_violations_field"] == 0
     assert summary["passive_elements"] > 0 and summary["load_nodes"] == 49
     assert summary["support_nodes"] == 49
+    # scored under the design's envelope revision (design-state-core item 5)
+    assert summary["envelope_revision"] == 0
     assert any("never a hard DRC" in n for n in summary["notes"])
     assert summary["ran_at"].endswith("+00:00")
     assert len(ref.meta["simp"]["runs"]) == 1

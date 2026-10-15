@@ -297,18 +297,12 @@ Blocks that talk by Förster resonance energy transfer: `set_chromophore` /
 
 ## Views (`get(kind='se', id=…, view=…)`)
 
-`tree · block · report · ports · topology · chain · measures · revisions · datums · validate · clearance · sweep ·
+`tree · block · report · ports · topology · chain · measures · revisions · branches · diff · provenance · contracts · datums · validate · clearance · sweep ·
 drc · bom · order · fasten · interview · freedom · stability · mechanics ·
 literature · fret · links · export · cut · ops`. No `mass` view — mass
 goes via `bom`. `interview` elicits what's missing.
 `mechanics`/`literature`/`topology` are atomic-mode views; `view='cut'`
 is the flat-pack file (`precis-se-flatpack-help`).
-
-`view='revisions'` lists every saved revision of the design — rev number,
-UTC time, op names, block count. `edit(kind='se', id=…,
-ops=[{'op':'restore_revision','rev':N}])` puts the design back to
-revision N (a sole op in its call); the restore is itself recorded as a
-new revision, so nothing is rewound. An unknown N names the available range.
 
 The default tree shows, beside each structure-bound block, both halves labelled
 by source: the stored build report's error/warning counts (`build report:`) AND
@@ -343,6 +337,54 @@ target='kind:identifier', rel=…)` — `rel='serves'` for the quest/todo
 the design serves, default `related-to` for a sibling variant,
 `rel='parent'` (with `target='folder:N'`) files it into a folder;
 `mode='remove'` deletes the edge.
+
+## Design history and provenance
+
+`view='revisions'` lists every saved revision of the design — rev number,
+UTC time, op names, block count. `edit(kind='se', id=…,
+ops=[{'op':'restore_revision','rev':N}])` puts the design back to
+revision N (a sole op in its call); the restore is itself recorded as a
+new revision, so nothing is rewound. An unknown N names the available range.
+
+**Envelope revision.** A save that replaces a surviving block's envelope
+(including none → set) mints the next envelope revision; a new block or a
+cleared envelope mints none. `view='validate'`/`view='drc'` print
+`envelope revision: N`, and stored results (rev snapshots, SIMP runs) carry
+it — a result scored under an older N is stale.
+
+**Checkpoints and branches** (each the sole op of its edit call).
+`{'op':'checkpoint','label':L,'reason'?}` snapshots the live tree;
+`{'op':'restore','label':L}` puts it back as a new revision (labels
+`rev-N` are reserved). `{'op':'pin','as':'<new slug>','reason':R,
+'ops':[...]}` copies the design (uids kept, scenario/states/envelope
+log carried), applies `ops` to the copy only, and replies with a
+headline table (blocks, validate errors/warnings, BOM mass/cost when
+fully covered), the delta vs parent and `infeasible:` naming the first
+new validate error. Both designs stay live; `view='branches'` lists
+them one line each; `view='diff', args={'against': <slug>}` gives
+per-block deltas joined on uid.
+
+**Provenance.** Numbers carry `{source, fidelity?, solver_id?,
+assumptions, library_version?, margin_origin?}` (source: user_stated |
+llm_assumed | derived | solver | library | measured; a computed source
+needs fidelity). Solvers stamp their own (formfind → pose, relax_chain →
+pose, SIMP → geometry); `set_pose`/`set_envelope`/`set_binding` and
+`add_measure`/`set_measure` take `provenance=`; `set_provenance
+{block, facet: pose|envelope|geometry, provenance|null}` sets one
+directly. Overwriting a solver-claimed facet restates it as
+user_stated/llm_assumed. `view='provenance'` lists every claim;
+`args={'margin': true}` is the margin audit.
+
+**Contracts and insertion cones.** `{'op':'set_contract','a':…,'b':…,
+'loads':{'Fz':-40,…},'load_provenance'?:'user_stated'|'llm_assumed'|
+'derived_by_statics','provenance'?:{comp: entry}}` merges up to six
+components (Fx Fy Fz N, Mx My Mz N·m, design frame); null unsets one,
+`clear=true` drops the contract. An absent component is UNKNOWN, never
+zero — validate's `contract_component_unknown` names each one.
+`{'op':'set_insertion','block':…,'direction':[x,y,z],'half_angle':'15 deg'}`
+declares an assembly cone in the block frame (≤ 90°); validate's
+`insertion_cones_disjoint` (error) fires when no one direction fits
+every cone. `view='contracts'` shows both.
 
 ## Check rigidity — view='stability'
 

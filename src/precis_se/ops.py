@@ -343,14 +343,17 @@ from precis.blocktree.types import BlockNode, Connect, OpError, Port, Tree
 from precis.cad.vec import as_vec3 as cad_as_vec3
 from precis.cad.vec import euler_rad_from_matrix as cad_euler_rad
 from precis.cad.vec import pose as cad_pose
+from precis.design import provenance as design_provenance
 from precis.design.states import StateError, validate_driver_kind
 from precis.errors import BadInput
 from precis.utils.units import (
     Dimension,
     echo_vector,
+    parse_angle_deg,
     parse_vector_quantity,
 )
 from precis_se import capabilities as se_caps
+from precis_se import contracts as se_contracts
 from precis_se import joints as se_joints
 from precis_se.atomic.vocab import (
     CONNECT_KINDS,
@@ -498,6 +501,11 @@ class ConnectSpec(Connect):
     #: different physics on the same pair, and two blocks that are bonded
     #: and also exchange excitation are an ordinary molecule.
     optical: dict[str, Any] | None = None
+    #: The six-component interface contract (``se_connects.contract``,
+    #: migration ``0021``; :mod:`precis_se.contracts`): ``{'loads': {Fx..Mz:
+    #: number}, 'provenance': {component: entry}}``. An absent component is
+    #: UNKNOWN, never zero; ``None`` = no contract declared yet.
+    contract: dict[str, Any] | None = None
 
 
 @dataclass
@@ -653,6 +661,11 @@ class SeBlock(BlockNode):
     #: are :attr:`SeTree.domains`, because each is a fact about a (strand,
     #: helix) pair rather than about one block.
     chain: dict[str, Any] | None = None
+    #: The permitted assembly-direction cone (``se_blocks.insertion``,
+    #: migration ``0021``; :mod:`precis_se.contracts`): ``{'direction':
+    #: unit [x, y, z] in this block's frame, 'half_angle_rad': h}``.
+    #: ``None`` = unconstrained.
+    insertion: dict[str, Any] | None = None
     #: Named pockets (:mod:`precis_se.pockets`), keyed by pocket name —
     #: each a set of region selectors plus a shape. Template-owned like
     #: measures; persisted to ``se_pockets`` in lockstep with the block
@@ -664,6 +677,13 @@ class SeBlock(BlockNode):
     #: job stamps ``proposed`` on its own choices and treats user facets
     #: as contract.
     origins: dict[str, str] = field(default_factory=dict)
+    #: Per-facet provenance sidecar (``se_blocks.provenance``, migration
+    #: ``0019``): ``{facet: entry}`` in :mod:`precis.design.provenance`
+    #: shape, facets ``'pose'``/``'envelope'``/``'geometry'``. Empty = no
+    #: claim. Written by solvers (:func:`stamp_solver_provenance`), by an
+    #: op's explicit ``provenance=``, and replaced on a manual overwrite of
+    #: a solver-claimed facet (:func:`_restate_provenance`).
+    provenance: dict[str, dict[str, Any]] = field(default_factory=dict)
     #: This call's ``declare_states``/``declare_transitions`` payload
     #: (blocktree slice 2), vetted but not yet written — ``None`` means
     #: neither op ran this call. NEVER round-tripped through ``se_blocks``:
@@ -1210,6 +1230,9 @@ def _op_set_envelope(tree: SeTree, op: dict[str, Any]) -> None:
         _validate_envelope(envelope)
     node.envelope = envelope
     _stamp_origin(node, op, facet="envelope", opname="set_envelope")
+    _restate_provenance(
+        node, op, facet="envelope", opname="set_envelope", cleared=envelope is None
+    )
 
 
 def _op_set_desc(tree: SeTree, op: dict[str, Any]) -> None:
@@ -1258,6 +1281,160 @@ def _stamp_origin(
         node.origins[facet] = origin
 
 
+#: Block facets a provenance sidecar entry may describe
+#: (``SeBlock.provenance``): the two authored numbers plus the realized
+#: geometry a solver binds.
+PROVENANCE_FACETS = ("pose", "envelope", "geometry")
+
+
+def _vet_provenance(
+    op: dict[str, Any], *, opname: str, param: str | None = None
+) -> dict[str, Any] | None:
+    """An op's optional ``provenance`` payload, vetted into the shared
+    entry shape (:func:`precis.design.provenance.validate_entry`); ``None``
+    when absent. Loud at write time — a malformed entry that reaches
+    storage audits as nothing."""
+    raw = op.get("provenance")
+    if raw is None:
+        return None
+    try:
+        return design_provenance.validate_entry(raw, param=param)
+    except design_provenance.ProvenanceError as exc:
+        raise OpError(f"{opname}: {exc}") from exc
+
+
+def stamp_solver_provenance(
+    node: SeBlock,
+    facet: str,
+    *,
+    solver_id: str,
+    fidelity: str,
+    assumptions: list[str],
+) -> None:
+    """Record that a solver produced ``facet`` on ``node`` — the one
+    writer every solving path (formfind, chain relax, SIMP) shares, so a
+    solved number never lands without its provenance."""
+    node.provenance[facet] = design_provenance.entry(
+        source="solver",
+        fidelity=fidelity,
+        solver_id=solver_id,
+        assumptions=assumptions,
+    )
+
+
+def _restate_provenance(
+    node: SeBlock, op: dict[str, Any], *, facet: str, opname: str, cleared: bool
+) -> None:
+    """After an author writes ``facet``: an explicit ``provenance`` wins;
+    otherwise a facet that already carried a claim (a solver's, say) is
+    restated as authored — ``llm_assumed`` when the facet is stamped
+    ``proposed``, else ``user_stated`` — so a stale solver claim never
+    outlives the number it described. A facet nobody claimed stays
+    unclaimed, and a cleared facet (``cleared``) drops its entry."""
+    explicit = _vet_provenance(op, opname=opname, param=facet)
+    if cleared:
+        node.provenance.pop(facet, None)
+        return
+    if explicit is not None:
+        node.provenance[facet] = explicit
+    elif facet in node.provenance:
+        source = (
+            "llm_assumed" if node.origins.get(facet) == "proposed" else "user_stated"
+        )
+        node.provenance[facet] = design_provenance.entry(source=source)
+
+
+def _op_set_provenance(tree: SeTree, op: dict[str, Any]) -> None:
+    """Set (or clear, with ``provenance: null``) one block facet's
+    provenance entry — for the claim no other op makes, e.g. recording a
+    ``margin_origin`` on an envelope sized with a safety allowance.
+    Measures take theirs on ``add_measure``/``set_measure``."""
+    name = _require_block(tree, op, "block", "set_provenance")
+    node = tree.blocks[name]
+    facet = str(op.get("facet") or "").strip()
+    if facet not in PROVENANCE_FACETS:
+        raise OpError(
+            f"set_provenance 'facet' must be one of {' | '.join(PROVENANCE_FACETS)}, "
+            f"got {op.get('facet')!r} (a measure's provenance rides "
+            "add_measure/set_measure)"
+        )
+    if "provenance" not in op:
+        raise OpError("set_provenance needs 'provenance' (an entry, or null)")
+    entry = _vet_provenance(op, opname="set_provenance", param=f"{name}.{facet}")
+    if entry is None:
+        node.provenance.pop(facet, None)
+    else:
+        node.provenance[facet] = entry
+
+
+def _op_set_contract(tree: SeTree, op: dict[str, Any]) -> None:
+    """Merge six-component contract loads onto an existing connect
+    (``a=``/``b=``): ``loads={'Fx'..'Mz': number | null}`` (N, N·m; null
+    makes a component unknown again), with per-component ``provenance``
+    and/or the spec's ``load_provenance`` shorthand
+    (:mod:`precis_se.contracts`). ``clear=true`` removes the contract."""
+    allowed = {"op", "a", "b", "loads", "load_provenance", "provenance", "clear"}
+    strays = sorted(set(op) - allowed)
+    if strays:
+        raise OpError(
+            f"set_contract: unknown key(s) {', '.join(strays)} — accepted: "
+            f"{', '.join(sorted(allowed - {'op'}))}"
+        )
+    c = _find_connect(tree, op, opname="set_contract")
+    if op.get("clear"):
+        if any(
+            op.get(k) is not None for k in ("loads", "load_provenance", "provenance")
+        ):
+            raise OpError(
+                "set_contract: 'clear' and loads/provenance are mutually exclusive"
+            )
+        c.contract = None
+        return
+    loads = op.get("loads")
+    if loads is None and op.get("provenance") is None:
+        raise OpError(
+            "set_contract needs 'loads' ({Fx, Fy, Fz: N, Mx, My, Mz: N·m}; "
+            "absent = unknown) and/or 'provenance', or clear=true"
+        )
+    try:
+        c.contract = se_contracts.merge_loads(
+            c.contract,
+            loads or {},
+            load_provenance=op.get("load_provenance"),
+            provenance=op.get("provenance"),
+        )
+    except se_contracts.ContractError as exc:
+        raise OpError(f"set_contract: {exc}") from exc
+
+
+def _op_set_insertion(tree: SeTree, op: dict[str, Any]) -> None:
+    """Declare (or ``clear=true``) a block's permitted assembly-direction
+    cone: ``direction=[x, y, z]`` in the block's own frame and
+    ``half_angle`` with a unit (``'15 deg'``). Validate intersects every
+    declared cone in the design frame (``insertion_cones_disjoint``)."""
+    name = _require_block(tree, op, "block", "set_insertion")
+    node = tree.blocks[name]
+    if op.get("clear"):
+        if op.get("direction") is not None or op.get("half_angle") is not None:
+            raise OpError(
+                "set_insertion: 'clear' and direction/half_angle are exclusive"
+            )
+        node.insertion = None
+        return
+    if op.get("direction") is None or op.get("half_angle") is None:
+        raise OpError(
+            "set_insertion needs 'direction' ([x, y, z], block frame) and "
+            "'half_angle' (e.g. '15 deg'), or clear=true"
+        )
+    try:
+        half = parse_angle_deg(op["half_angle"], arg_name="set_insertion half_angle")
+        node.insertion = se_contracts.vet_cone(op["direction"], half)
+    except BadInput as exc:
+        raise OpError(f"{exc} — {exc.next}" if exc.next else str(exc)) from exc
+    except se_contracts.ContractError as exc:
+        raise OpError(f"set_insertion: {exc}") from exc
+
+
 def _op_set_pose(tree: SeTree, op: dict[str, Any]) -> None:
     """The core ``set_pose`` plus the facet-origin stamp (an instance's
     pose is its own, so the stamp lands on the posed node itself)."""
@@ -1270,6 +1447,7 @@ def _op_set_pose(tree: SeTree, op: dict[str, Any]) -> None:
     # (module-level compose_world_pose's docstring).
     _sync_local_pose(tree, name, pose="pose" in op, rot="rot" in op)
     _stamp_origin(node, op, facet="pose", opname="set_pose")
+    _restate_provenance(node, op, facet="pose", opname="set_pose", cleared=False)
 
 
 def _op_remove_block(tree: SeTree, op: dict[str, Any]) -> None:
@@ -1732,6 +1910,9 @@ def _vet_measure_fields(op: dict[str, Any], *, opname: str) -> dict[str, Any]:
     reason = _opt_str(op.get("reason"))
     if reason is not None:
         out["reason"] = reason
+    provenance = _vet_provenance(op, opname=opname, param=op.get("name"))
+    if provenance is not None:
+        out["provenance"] = provenance
     if op.get("datum") is not None:
         # Strict on shape at write (the selector grammar is vetted now);
         # lenient on existence — a selector naming a face that isn't
@@ -1949,11 +2130,12 @@ def _op_set_measure(tree: SeTree, op: dict[str, Any]) -> None:
         "datum",
         "measurand",
         "datum_pin",
+        "provenance",
     )
     if not any(k in op for k in field_keys):
         raise OpError(
             "set_measure needs at least one of value/relation/strength/"
-            "reason/min/max/origin/unit/datum/measurand"
+            "reason/min/max/origin/unit/datum/measurand/provenance"
         )
     # An explicit null must push back, not silently no-op (reviewer
     # finding): presence-based updates can't express "clear this field".
@@ -2360,6 +2542,7 @@ def _op_set_binding(tree: SeTree, op: dict[str, Any]) -> None:
             raise OpError("set_binding: 'clear' and kind/design are mutually exclusive")
         node.bound_kind = None
         node.bound = None
+        node.provenance.pop("geometry", None)
         return
     kind = str(op.get("kind") or "").strip()
     if kind not in _BINDING_KINDS:
@@ -2373,8 +2556,16 @@ def _op_set_binding(tree: SeTree, op: dict[str, Any]) -> None:
             f"set_binding needs 'design' — the {kind} "
             f"{'C-number' if kind == 'part' else 'slug'} this block realizes as"
         )
+    changed = (node.bound_kind, node.bound) != (kind, design)
     node.bound_kind = kind
     node.bound = design
+    # A rebind is a new realization: whatever produced the old geometry
+    # no longer describes it (a solver re-stamps after its own bind).
+    if changed:
+        node.provenance.pop("geometry", None)
+    explicit = _vet_provenance(op, opname="set_binding", param="geometry")
+    if explicit is not None:
+        node.provenance["geometry"] = explicit
 
 
 def _op_set_process_override(tree: SeTree, op: dict[str, Any]) -> None:
@@ -4095,6 +4286,9 @@ _OPS = {
     "instance_block": _op_instance_block,
     "array_block": _op_array_block,
     "set_envelope": _op_set_envelope,
+    "set_provenance": _op_set_provenance,
+    "set_contract": _op_set_contract,
+    "set_insertion": _op_set_insertion,
     "remove_block": _op_remove_block,
     "connect": _op_connect,
     "disconnect": _op_disconnect,

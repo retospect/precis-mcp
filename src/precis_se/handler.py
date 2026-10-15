@@ -113,7 +113,9 @@ from precis.cad import dsl as cad_dsl
 from precis.cad import relate as cad_relate
 from precis.cad.export import ExportError, needs_field_backend
 from precis.cad.graph import Design as CadDesign
+from precis.cad.vec import as_vec3 as cad_as_vec3
 from precis.cad.vec import euler_rad_from_matrix as cad_euler_rad
+from precis.cad.vec import pose as cad_pose
 from precis.cad.vec import rotation as cad_rotation
 from precis.design import history as design_history
 from precis.design import scenarios as design_scenarios
@@ -137,6 +139,7 @@ from precis.utils.units import (
     sticky_prefunits_scope,
 )
 from precis_se import bom as se_bom
+from precis_se import contracts as se_contracts
 from precis_se import datums as se_datums
 from precis_se import drc as se_drc
 from precis_se import fasten as se_fasten
@@ -304,6 +307,8 @@ class SeHandler(Handler):
                 "exposure_A",
                 "lining",
                 "cargo_A3",
+                "against",
+                "margin",
                 "prefunits",
             }
         ),
@@ -579,6 +584,10 @@ class SeHandler(Handler):
             "chain",
             "measures",
             "revisions",
+            "branches",
+            "diff",
+            "provenance",
+            "contracts",
             "datums",
             "pockets",
             "validate",
@@ -866,6 +875,7 @@ class SeHandler(Handler):
             if existing is None
             else persist.tree_mutation(self.store, existing.id)
         )
+        envelopes_before: dict[int, tuple[str, str | None]] = {}
         with lock as conn:
             if existing is None:
                 ref = self.store.insert_ref(
@@ -874,6 +884,12 @@ class SeHandler(Handler):
                 created = True
             else:
                 ref = existing
+                # A replace keeps a block's uid by label (persist._assign_uids),
+                # so the stored tree is the before-picture its tightenings
+                # are measured against.
+                envelopes_before = _envelope_marks(
+                    persist.load_tree(self.store, ref.id, conn=conn)
+                )
                 conn.execute(
                     "UPDATE refs SET title = %s, meta = %s WHERE ref_id = %s",
                     (ttl, Jsonb(meta), ref.id),
@@ -889,6 +905,9 @@ class SeHandler(Handler):
             # Every block now carries the uid it was saved under — the
             # shared design-core tables' write only becomes possible here.
             _materialize_states(self.store, ref.id, tree, conn=conn, set_by="se.put")
+            tightened = _mint_tightenings(
+                self.store, ref.id, envelopes_before, tree, conn=conn, set_by="se.put"
+            )
             _record_revision(self.store, ref.id, ops=ops, conn=conn)
             if scenario_id is not None:
                 # Same transaction as the tree: a design and the production
@@ -911,6 +930,9 @@ class SeHandler(Handler):
             )
             if echo:
                 body += f"\n\n{echo}"
+            tightening = _tightening_echo(tightened)
+            if tightening:
+                body += f"\n\n{tightening}"
             if pending_jobs:
                 body += "\n\n" + self._run_pending(ref, tree, pending_jobs)
             body += "\n\n" + self._reply_digest(tree, ref.id)
@@ -972,19 +994,36 @@ class SeHandler(Handler):
         description = str((ref.meta or {}).get("description") or "").strip()
         ttl = ref.title or str(ref.slug)
         if "prefunits" in payload and any(
-            isinstance(o, dict)
-            and (o.get("op") == "restore_revision" or o.get("dry_run"))
+            isinstance(o, dict) and (o.get("op") in _HISTORY_OPS or o.get("dry_run"))
             for o in op_list
         ):
             raise BadInput(
-                "prefunits cannot ride an op list containing restore_revision "
-                "or a dry_run — those return before the meta write; send the "
-                "prefunits change as a separate edit"
+                "prefunits cannot ride an op list containing a design-history op "
+                f"({', '.join(_HISTORY_OPS)}) or a dry_run — those return before "
+                "the meta write; send the prefunits change as a separate edit"
             )
-        if any(
-            isinstance(o, dict) and o.get("op") == "restore_revision" for o in op_list
-        ):
-            return self._restore_revision(ref, op_list, turn=turn)
+        history_op = next(
+            (
+                str(o["op"])
+                for o in op_list
+                if isinstance(o, dict) and o.get("op") in _HISTORY_OPS
+            ),
+            None,
+        )
+        if history_op is not None:
+            if len(op_list) != 1:
+                raise BadInput(
+                    f"{history_op} must be the only op in its edit call",
+                    next="edit(kind='se', id="
+                    f"{str(ref.slug)!r}, ops=[{{'op':{history_op!r}, ...}}])",
+                )
+            if history_op == "restore_revision":
+                return self._restore_revision(ref, op_list, turn=turn)
+            if history_op == "restore":
+                return self._restore_label(ref, op_list, turn=turn)
+            if history_op == "checkpoint":
+                return self._checkpoint(ref, op_list[0])
+            return self._pin(ref, op_list[0])
         if any(isinstance(o, dict) and o.get("dry_run") for o in op_list):
             return self._join_dry_run(ref, op_list)
         pending_jobs: list[PendingJob] = []
@@ -1007,7 +1046,9 @@ class SeHandler(Handler):
                     "UPDATE refs SET meta = meta || %s WHERE ref_id = %s",
                     (Jsonb({"prefunits": dict(call_pref)}), ref.id),
                 )
+            tightened: list[int] = []
             if op_list:
+                envelopes_before = _envelope_marks(tree)
                 echo = self._apply(
                     tree,
                     op_list,
@@ -1035,6 +1076,14 @@ class SeHandler(Handler):
                 _materialize_states(
                     self.store, ref.id, tree, conn=conn, set_by="se.edit"
                 )
+                tightened = _mint_tightenings(
+                    self.store,
+                    ref.id,
+                    envelopes_before,
+                    tree,
+                    conn=conn,
+                    set_by="se.edit",
+                )
                 _record_revision(self.store, ref.id, ops=op_list, turn=turn, conn=conn)
             else:
                 # A prefunits-only edit: nothing about the tree changed, so
@@ -1047,6 +1096,9 @@ class SeHandler(Handler):
             )
             if echo:
                 body += f"\n\n{echo}"
+            tightening = _tightening_echo(tightened)
+            if tightening:
+                body += f"\n\n{tightening}"
             if pending_jobs:
                 body += "\n\n" + self._run_pending(ref, tree, pending_jobs)
             body += "\n\n" + self._reply_digest(tree, ref.id)
@@ -1100,34 +1152,75 @@ class SeHandler(Handler):
         """``restore_revision`` — put the design back to checkpoint ``rev-N``
         through the normal edit save path, so the restore is itself a new
         revision (history stays append-only; nothing is rewound)."""
-        if len(op_list) != 1:
-            raise BadInput(
-                "restore_revision must be the only op in its edit call",
-                next="edit(kind='se', id="
-                f"{str(ref.slug)!r}, ops=[{{'op':'restore_revision','rev':N}}])",
-            )
         rev_raw = op_list[0].get("rev")
         if isinstance(rev_raw, bool) or not isinstance(rev_raw, int):
             raise BadInput(
                 "restore_revision requires an integer 'rev'",
                 next=f"get(kind='se', id={str(ref.slug)!r}, view='revisions')",
             )
+
+        def missing(conn: Any) -> NotFound:
+            revs = design_history.list_revisions(self.store, ref.id, conn=conn)
+            have = (
+                f"available revisions: {revs[0].rev}..{revs[-1].rev}"
+                if revs
+                else "this design has no recorded revisions"
+            )
+            return NotFound(
+                f"se design {str(ref.slug)!r} has no revision {rev_raw}; {have}"
+            )
+
+        return self._restore_checkpoint(
+            ref, f"rev-{rev_raw}", f"rev {rev_raw}", op_list, turn=turn, missing=missing
+        )
+
+    def _restore_label(
+        self, ref: Any, op_list: list[dict[str, Any]], *, turn: str | None
+    ) -> Response:
+        """``restore`` — the named-checkpoint twin of ``restore_revision``
+        (design-state-core.md item 5's ``checkpoint``/``restore`` pair)."""
+        label = _checkpoint_label(op_list[0], ref.slug)
+
+        def missing(conn: Any) -> NotFound:
+            named = [
+                c.label
+                for c in design_history.list_checkpoints(self.store, ref.id, conn=conn)
+                if not c.label.startswith(_REV_LABEL_PREFIX)
+            ]
+            have = (
+                "checkpoints: " + ", ".join(sorted(named))
+                if named
+                else "this design has no named checkpoints"
+            )
+            return NotFound(
+                f"se design {str(ref.slug)!r} has no checkpoint {label!r}; {have}"
+            )
+
+        return self._restore_checkpoint(
+            ref, label, f"checkpoint {label!r}", op_list, turn=turn, missing=missing
+        )
+
+    def _restore_checkpoint(
+        self,
+        ref: Any,
+        label: str,
+        shown: str,
+        op_list: list[dict[str, Any]],
+        *,
+        turn: str | None,
+        missing: Callable[[Any], NotFound],
+    ) -> Response:
+        """Put the design back to the snapshot under ``label`` through the
+        normal save path; the restore records itself as a new revision."""
         description = str((ref.meta or {}).get("description") or "").strip()
         ttl = ref.title or str(ref.slug)
         with persist.tree_mutation(self.store, ref.id) as conn:
-            revs = design_history.list_revisions(self.store, ref.id, conn=conn)
-            ckpt = design_history.load_checkpoint(
-                self.store, ref.id, f"rev-{rev_raw}", conn=conn
-            )
+            ckpt = design_history.load_checkpoint(self.store, ref.id, label, conn=conn)
             if ckpt is None:
-                have = (
-                    f"available revisions: {revs[0].rev}..{revs[-1].rev}"
-                    if revs
-                    else "this design has no recorded revisions"
-                )
-                raise NotFound(
-                    f"se design {str(ref.slug)!r} has no revision {rev_raw}; {have}"
-                )
+                raise missing(conn)
+            envelopes_before = _envelope_marks(
+                persist.load_tree(self.store, ref.id, conn=conn)
+            )
             tree = persist.tree_from_json(ckpt.payload, store=self.store)
             tree.own_slug = str(ref.slug)
             tree.foreign = self._foreign_resolver()
@@ -1139,17 +1232,415 @@ class SeHandler(Handler):
                 conn=conn,
             )
             _materialize_states(self.store, ref.id, tree, conn=conn, set_by="se.edit")
+            # A restore can put back an envelope tighter than the live one,
+            # so it is scored by the same rule as any other save.
+            tightened = _mint_tightenings(
+                self.store, ref.id, envelopes_before, tree, conn=conn, set_by="se.edit"
+            )
             new_rev = _record_revision(
                 self.store, ref.id, ops=op_list, turn=turn, conn=conn
             )
         persist.sync_realized_by(self.store, ref.id, tree)
+        tightening = _tightening_echo(tightened)
         return Response(
             body=(
-                f"# se design '{ref.slug}' restored to rev {rev_raw} "
+                f"# se design '{ref.slug}' restored to {shown} "
                 f"(recorded as rev {new_rev})\n\n"
             )
             + _render_tree(tree, ttl, description)
+            + (f"\n\n{tightening}" if tightening else "")
         )
+
+    def _checkpoint(self, ref: Any, op: dict[str, Any]) -> Response:
+        """``checkpoint`` — snapshot the live tree under a caller-chosen
+        label (spec §5.3 ``checkpoint(design, label)``). Writes no revision:
+        the tree did not change. A second checkpoint under the same label
+        replaces the first."""
+        label = _checkpoint_label(op, ref.slug)
+        reason = _opt_text(op.get("reason"))
+        snapshot = persist.load_tree(self.store, ref.id)
+        headline = self._headline(snapshot, ref.id)
+        ckpt = design_history.save_checkpoint(
+            self.store,
+            ref.id,
+            label=label,
+            payload=persist.tree_to_json(snapshot),
+            headline=headline,
+            reason=reason,
+            set_by="se.edit",
+        )
+        slug = str(ref.slug)
+        return Response(
+            body=(
+                f"# se design '{slug}' checkpoint {label!r} saved\n\n"
+                f"envelope revision {ckpt.envelope_revision} · "
+                f"{_headline_text(headline)}\n\n"
+                f"restore: edit(kind='se', id={slug!r}, "
+                f"ops=[{{'op':'restore','label':{label!r}}}])"
+            )
+        )
+
+    def _headline(self, tree: SeTree, ref_id: int) -> dict[str, Any]:
+        """A design's headline numbers (spec §5.6: mass, worst utilisation,
+        cost) as se can state them today: block count, validate error and
+        warning counts, and BOM ``mass``/``unit_cost`` totals ONLY when every
+        bought item is priced/massed. A partial total is left out rather
+        than shown — absent is unknown, never zero. Worst utilisation is
+        absent for the same reason: se computes no per-block utilisation
+        yet."""
+        findings = self._validate_findings(tree, ref_id)
+        out: dict[str, Any] = {
+            "blocks": len(tree.blocks),
+            "validate_errors": sum(1 for f in findings if f.severity == "error"),
+            "validate_warnings": sum(1 for f in findings if f.severity == "warn"),
+        }
+        totals = self._bom_totals(tree)
+        if totals is not None:
+            cost, cost_covered, mass, mass_covered, n = totals
+            if cost_covered == n:
+                out["unit_cost"] = cost
+            if mass_covered == n:
+                out["mass"] = mass
+        return out
+
+    def _pin(self, ref: Any, op: dict[str, Any]) -> Response:
+        """``pin`` — a branch, never an overwrite (spec §5.6): copy the live
+        design into a new slug (block uids preserved, so the two diff
+        block-by-block), apply the op's own ``ops`` to the COPY only, and
+        answer with a :class:`~precis.design.history.BranchResult` — the
+        branch's headline against its parent's. The parent is untouched,
+        so a pin is always reversible: both designs stay live."""
+        parent_slug = str(ref.slug)
+        new_slug = str(op.get("as") or "").strip()
+        if not new_slug:
+            raise BadInput(
+                "pin needs 'as' (the branch design's slug)",
+                next=f"edit(kind='se', id={parent_slug!r}, ops=[{{'op':'pin',"
+                f"'as':'{parent_slug}-b1','reason':'why','ops':[...]}}])",
+            )
+        reason = _opt_text(op.get("reason"))
+        if reason is None:
+            raise BadInput(
+                "pin needs a one-line 'reason' — it is the branch's whole "
+                "browsing surface (view='branches')"
+            )
+        branch_ops = op.get("ops") or []
+        if not isinstance(branch_ops, list) or not all(
+            isinstance(o, dict) for o in branch_ops
+        ):
+            raise BadInput("pin's 'ops' must be a list of typed ops for the branch")
+        if any(o.get("op") in _HISTORY_OPS for o in branch_ops):
+            raise BadInput("pin's 'ops' cannot carry another design-history op")
+        if self.store.get_ref(kind="se", id=new_slug) is not None:
+            raise BadInput(
+                f"se design {new_slug!r} already exists — a pin never overwrites; "
+                "choose a new 'as' slug"
+            )
+        parent_tree = persist.load_tree(self.store, ref.id)
+        parent_headline = self._headline(parent_tree, ref.id)
+        tree = persist.tree_from_json(
+            persist.tree_to_json(parent_tree), store=self.store
+        )
+        tree.own_slug = new_slug
+        tree.foreign = self._foreign_resolver()
+        envelopes_before = _envelope_marks(tree)
+        pending_jobs: list[PendingJob] = []
+        flatpack_params: list[dict[str, Any]] = []
+        echo = None
+        if branch_ops:
+            echo = self._apply(
+                tree,
+                branch_ops,
+                slug=new_slug,
+                pending_jobs=pending_jobs,
+                flatpack_params=flatpack_params,
+            )
+        meta = {
+            k: v
+            for k, v in (ref.meta or {}).items()
+            if k in ("description", "prefunits", "flatpack")
+        }
+        if flatpack_params:
+            meta["flatpack"] = flatpack_params[-1]
+        description = str(meta.get("description") or "").strip()
+        title = str(op.get("title") or "").strip() or new_slug
+        parent_branch = design_history.get_branch(self.store, ref.id)
+        parent_branch_id = parent_branch.id if parent_branch else None
+        with self.store.tx() as conn:
+            new_ref = self.store.insert_ref(
+                kind="se", slug=new_slug, title=title, meta=meta, conn=conn
+            )
+            persist.save_tree(
+                self.store,
+                ref_id=new_ref.id,
+                tree=tree,
+                card_text=_card_text(title, description, tree),
+                conn=conn,
+            )
+            # Core rows (scenario, exemptions, revision log, states) follow
+            # the uids the save just carried over.
+            design_history.copy_core_rows(self.store, ref.id, new_ref.id, conn=conn)
+            _materialize_states(
+                self.store, new_ref.id, tree, conn=conn, set_by="se.pin"
+            )
+            tightened = _mint_tightenings(
+                self.store,
+                new_ref.id,
+                envelopes_before,
+                tree,
+                conn=conn,
+                set_by="se.pin",
+            )
+            _record_revision(self.store, new_ref.id, ops=[op], conn=conn)
+            design_history.record_branch(
+                self.store,
+                new_ref.id,
+                reason=reason,
+                parent_ref_id=ref.id,
+                parent_branch_id=parent_branch_id,
+                set_by="se.pin",
+                conn=conn,
+            )
+        persist.sync_realized_by(self.store, new_ref.id, tree)
+        # The headline needs the committed branch (validate reads over the
+        # store's own connections), so the ledger row is completed after.
+        branch = design_history.record_branch(
+            self.store,
+            new_ref.id,
+            reason=reason,
+            parent_ref_id=ref.id,
+            parent_branch_id=parent_branch_id,
+            headline=self._headline(tree, new_ref.id),
+            set_by="se.pin",
+        )
+        result = design_history.branch_result(
+            branch,
+            parent_headline=parent_headline,
+            infeasible=self._what_broke(parent_tree, ref.id, tree, new_ref.id),
+        )
+        body = _render_branch_result(result, parent_slug, new_slug, parent_headline)
+        if echo:
+            body += f"\n\n{echo}"
+        tightening = _tightening_echo(tightened)
+        if tightening:
+            body += f"\n\n{tightening}"
+        if pending_jobs:
+            body += "\n\n" + self._run_pending(new_ref, tree, pending_jobs)
+        return Response(body=body)
+
+    def _what_broke(
+        self, parent: SeTree, parent_id: int, branch: SeTree, branch_id: int
+    ) -> dict[str, Any] | None:
+        """BranchResult's ``infeasible``: the first validate ERROR the
+        branch has that its parent did not (by rule + subject), as
+        ``{what_broke, which_constraint}``; ``None`` when the pin introduced
+        no new error. An error the parent already carried is not something
+        the pin broke."""
+        before = {
+            (f.rule, f.subject)
+            for f in self._validate_findings(parent, parent_id)
+            if f.severity == "error"
+        }
+        for f in self._validate_findings(branch, branch_id):
+            if f.severity == "error" and (f.rule, f.subject) not in before:
+                return {
+                    "what_broke": f"{f.subject}: {f.detail}",
+                    "which_constraint": f.rule,
+                }
+        return None
+
+    def _render_branches(self, ref: Any) -> str:
+        """``view='branches'`` — one line per branch (spec §5.6: no tree
+        browser). Shows where this design came from, when it is a branch,
+        and every branch pinned off it."""
+        slug = str(ref.slug)
+        lines = [f"# se design '{slug}' branches", ""]
+        mine = design_history.get_branch(self.store, ref.id)
+        if mine is not None:
+            parent_slug = (
+                self._slug_of(mine.parent_ref_id)
+                if mine.parent_ref_id is not None
+                else "?"
+            )
+            lines += [
+                f"branch of {parent_slug!r} (branch #{mine.id}, envelope revision "
+                f"{mine.envelope_revision}): {mine.reason}",
+                "",
+            ]
+        children = design_history.list_branches(self.store, parent_ref_id=ref.id)
+        if not children:
+            lines.append(
+                "no branches pinned off this design — "
+                f"edit(kind='se', id={slug!r}, ops=[{{'op':'pin','as':'<slug>',"
+                "'reason':'...','ops':[...]}])"
+            )
+            return "\n".join(lines)
+        lines.append(f"{len(children)} branch(es):")
+        for b in children:
+            lines.append(
+                f"- {self._slug_of(b.ref_id)!r} (#{b.id}): {b.reason} · "
+                f"{_headline_text(b.headline)}"
+            )
+        return "\n".join(lines)
+
+    def _render_diff(self, ref: Any, args: dict[str, Any] | None) -> str:
+        """``view='diff'``, ``args={'against': '<slug>'}`` — spec §5.6's
+        ``diff_branches``: per-block deltas between two se designs, joined
+        on block uid. A pin preserves uids, so a branch lines up with its
+        parent block-by-block and a relabel reads as a relabel, not as one
+        removal plus one addition."""
+        other_slug = str((args or {}).get("against") or "").strip()
+        slug = str(ref.slug)
+        if not other_slug:
+            raise BadInput(
+                "view='diff' needs args={'against': '<other se design>'}",
+                next=f"get(kind='se', id={slug!r}, view='diff', "
+                "args={'against': '<parent or branch slug>'})",
+            )
+        other = self.store.get_ref(kind="se", id=other_slug)
+        if other is None:
+            raise NotFound(f"se design {other_slug!r} not found")
+        mine = _blocks_by_uid(persist.load_tree(self.store, ref.id))
+        theirs = _blocks_by_uid(persist.load_tree(self.store, other.id))
+        lines = [f"# se diff '{other_slug}' → '{slug}' (joined on block uid)", ""]
+        changed = 0
+        for uid in sorted(set(mine) | set(theirs)):
+            a, b = theirs.get(uid), mine.get(uid)
+            if a is None and b is not None:
+                lines.append(f"+ #{uid} {b['name']!r} added")
+            elif b is None and a is not None:
+                lines.append(f"- #{uid} {a['name']!r} removed")
+            elif a is not None and b is not None and a != b:
+                deltas = [
+                    f"{k}: {_short(a.get(k))} -> {_short(b.get(k))}"
+                    for k in sorted(set(a) | set(b))
+                    if a.get(k) != b.get(k)
+                ]
+                lines.append(f"~ #{uid} {b['name']!r}: " + "; ".join(deltas))
+            else:
+                continue
+            changed += 1
+        if not changed:
+            lines.append("no block differs")
+        shared = len(set(mine) & set(theirs))
+        lines += ["", f"{changed} block(s) differ; {shared} uid(s) shared"]
+        return "\n".join(lines)
+
+    def _render_provenance(self, ref: Any, args: dict[str, Any] | None) -> str:
+        """``view='provenance'`` — every stored number's provenance claim
+        (design-state-core.md item 4): block facets and measures, one row
+        each. ``args={'margin': true}`` narrows to the **margin audit**
+        (entries carrying ``margin_origin``). A number with no row made no
+        claim — absent is unknown, never a default."""
+        margin_only = bool((args or {}).get("margin"))
+        rows = persist.provenance_rows(
+            self.store, ref_id=ref.id, margin_only=margin_only
+        )
+        slug = str(ref.slug)
+        title = "margin audit" if margin_only else "provenance"
+        if not rows:
+            what = (
+                "no number carries a margin_origin"
+                if margin_only
+                else "no number carries a provenance claim yet (solvers stamp "
+                "theirs; ops take provenance=)"
+            )
+            return f"# se design '{slug}' {title}\n\n{what}"
+        lines = [
+            f"# se design '{slug}' {title} ({len(rows)})",
+            "",
+            "| block | param | source | fidelity | solver | margin_origin | "
+            "assumptions |",
+            "|---|---|---|---|---|---|---|",
+        ]
+        for r in rows:
+            e = r["entry"]
+            lines.append(
+                f"| {r['block']} | {r['param']} | {e.get('source', '?')} | "
+                f"{e.get('fidelity') or '—'} | {e.get('solver_id') or '—'} | "
+                f"{e.get('margin_origin') or '—'} | "
+                f"{'; '.join(e.get('assumptions') or []) or '—'} |"
+            )
+        return "\n".join(lines)
+
+    def _render_contracts(self, tree: SeTree, ref: Any) -> str:
+        """``view='contracts'`` — every connect's six-component contract
+        (``?`` = unknown, never zero) with each component's provenance
+        source, then the insertion cones and whether one assembly
+        direction satisfies them all (:mod:`precis_se.contracts`)."""
+        slug = str(ref.slug)
+        lines = [f"# se design '{slug}' contracts", ""]
+        declared = [c for c in tree.connects if c.contract is not None]
+        bare = len(tree.connects) - len(declared)
+        if declared:
+            head = " | ".join(se_contracts.COMPONENTS)
+            lines += [
+                f"| connect | {head} | provenance |",
+                "|---|" + "---|" * len(se_contracts.COMPONENTS) + "---|",
+            ]
+            for c in declared:
+                loads = (c.contract or {}).get("loads") or {}
+                claims = (c.contract or {}).get("provenance") or {}
+                cells = " | ".join(
+                    f"{loads[k]:g}" if k in loads else "?"
+                    for k in se_contracts.COMPONENTS
+                )
+                sources = ", ".join(
+                    f"{k} {claims[k].get('source', '?')}"
+                    for k in se_contracts.COMPONENTS
+                    if k in claims
+                )
+                lines.append(
+                    f"| {c.a_block}.{c.a_port}—{c.b_block}.{c.b_port} | {cells} | "
+                    f"{sources or '—'} |"
+                )
+            lines.append("")
+        lines.append(
+            f"{len(declared)} connect(s) with a contract, {bare} without "
+            "(forces N, moments N·m, design frame; ? = unknown)"
+        )
+        cones = [
+            (name, node) for name, node in sorted(tree.blocks.items()) if node.insertion
+        ]
+        lines += ["", "## insertion cones", ""]
+        if not cones:
+            lines.append(
+                "none declared — set_insertion(block=, direction=, half_angle=)"
+            )
+            return "\n".join(lines)
+        world: list[tuple[list[float], float]] = []
+        for name, node in cones:
+            ins = node.insertion or {}
+            d = cad_pose(cad_as_vec3(node.pose), cad_as_vec3(node.rot)).apply_dir(
+                cad_as_vec3(ins["direction"])
+            )
+            axis = [float(v) for v in d]
+            world.append((axis, float(ins["half_angle_rad"])))
+            lines.append(
+                f"- {name}: axis [{', '.join(f'{v:.3g}' for v in axis)}] ± "
+                f"{math.degrees(float(ins['half_angle_rad'])):.3g}°"
+            )
+        common = se_contracts.common_direction(world)
+        lines.append("")
+        lines.append(
+            "one assembly direction fits all: ["
+            + ", ".join(f"{v:.3g}" for v in common)
+            + "]"
+            if common is not None
+            else "NO single assembly direction fits every cone "
+            "(validate: insertion_cones_disjoint)"
+        )
+        return "\n".join(lines)
+
+    def _slug_of(self, ref_id: int) -> str:
+        """An se design's slug by ref id (``ref <id>`` when it is gone)."""
+        with self.store.pool.connection() as c:
+            row = c.execute(
+                "SELECT id_value FROM ref_identifiers "
+                "WHERE ref_id = %s AND id_kind = 'cite_key'",
+                (ref_id,),
+            ).fetchone()
+        return str(row[0]) if row is not None else f"ref {ref_id}"
 
     def _render_revisions(self, ref: Any) -> str:
         revs = design_history.list_revisions(self.store, ref.id)
@@ -1182,6 +1673,20 @@ class SeHandler(Handler):
             "restore: edit(kind='se', id="
             f"{str(ref.slug)!r}, ops=[{{'op':'restore_revision','rev':N}}])",
         ]
+        named = [c for c in ckpts.values() if not c.label.startswith(_REV_LABEL_PREFIX)]
+        if named:
+            lines += ["", f"## named checkpoints ({len(named)})", ""]
+            for c in named:  # newest first, as list_checkpoints orders them
+                why = f" — {c.reason}" if c.reason else ""
+                lines.append(
+                    f"- {c.label!r}: envelope revision {c.envelope_revision} · "
+                    f"{_headline_text(c.headline)}{why}"
+                )
+            lines += [
+                "",
+                "restore one: edit(kind='se', id="
+                f"{str(ref.slug)!r}, ops=[{{'op':'restore','label':'<label>'}}])",
+            ]
         return "\n".join(lines)
 
     # ── get ──────────────────────────────────────────────────────────
@@ -1346,6 +1851,14 @@ class SeHandler(Handler):
             return Response(body=self._render_cut(ref, args))
         if v == "revisions":
             return Response(body=self._render_revisions(ref))
+        if v == "branches":
+            return Response(body=self._render_branches(ref))
+        if v == "diff":
+            return Response(body=self._render_diff(ref, args))
+        if v == "provenance":
+            return Response(body=self._render_provenance(ref, args))
+        if v == "contracts":
+            return Response(body=self._render_contracts(tree, ref))
         if v == "measures":
             return Response(body=_render_measures(tree))
         if v == "datums":
@@ -1379,7 +1892,9 @@ class SeHandler(Handler):
                 tree,
                 self.store,
                 ref.id,
-                _scenario_line(self.store, ref.id),
+                _scenario_line(self.store, ref.id)
+                + "\n"
+                + _envelope_revision_line(self.store, ref.id),
                 args,
             )
             try:
@@ -1547,7 +2062,11 @@ class SeHandler(Handler):
         findings = self._validate_findings(
             tree, ref_id, load_cases=_load_cases_arg(tree, args)
         )
-        header_lines = [_fill_fraction_line(tree), _scenario_line(self.store, ref_id)]
+        header_lines = [
+            _fill_fraction_line(tree),
+            _scenario_line(self.store, ref_id),
+            _envelope_revision_line(self.store, ref_id),
+        ]
         atomic_line = se_atomic_render.atomic_fill_line(tree)
         if atomic_line:
             header_lines.append(atomic_line)
@@ -1932,6 +2451,19 @@ class SeHandler(Handler):
         purchase row exists, se-print-implementer.md's "the view='bom'
         cost/mass line": one BOM total, never two truths. ``None`` when
         nothing is bought at all (``view='bom'``'s own empty case)."""
+        totals = self._bom_totals(tree)
+        if totals is None:
+            return None
+        total_cost, cost_covered, total_mass, mass_covered, n = totals
+        return (
+            f"unit_cost total: {total_cost:g} — priced: {cost_covered} of {n} item(s)\n"
+            f"mass total: {total_mass:g} — massed: {mass_covered} of {n} item(s)"
+        )
+
+    def _bom_totals(self, tree: SeTree) -> tuple[float, int, float, int, int] | None:
+        """``(cost, priced, mass, massed, items)`` over the BOM rollup — the
+        one computation behind :meth:`_bom_cost_mass_footer` and a pin's
+        headline (:meth:`_headline`). ``None`` when nothing is bought."""
         totals = se_bom.rollup(tree)
         if not totals:
             return None
@@ -1954,11 +2486,7 @@ class SeHandler(Handler):
             if mass_num is not None:
                 total_mass += total.total * mass_num
                 mass_covered += 1
-        n = len(totals)
-        return (
-            f"unit_cost total: {total_cost:g} — priced: {cost_covered} of {n} item(s)\n"
-            f"mass total: {total_mass:g} — massed: {mass_covered} of {n} item(s)"
-        )
+        return total_cost, cost_covered, total_mass, mass_covered, len(totals)
 
     def _fdm_print_status(
         self, tree: SeTree
@@ -2686,6 +3214,197 @@ def _scenario_line(store: Any, ref_id: int) -> str:
         )
         bits.append(f"weights: {weights}")
     return " · ".join(bits)
+
+
+def _envelope_revision_line(store: Any, ref_id: int) -> str:
+    """The "scored under envelope revision N" header line beside
+    :func:`_scenario_line` in ``view='validate'`` and ``view='drc'``
+    (design-state-core.md item 5): a verdict copied out of this view can
+    later be checked against :func:`precis.design.history.current_revision`
+    and read as stale once an envelope has tightened since."""
+    log_rows = design_history.revision_log(store, ref_id)
+    if not log_rows:
+        return "envelope revision: 0 (no envelope tightened since creation)"
+    last = log_rows[-1]
+    why = f" — last: {last['reason']}" if last.get("reason") else ""
+    return f"envelope revision: {int(last['revision'])}{why}"
+
+
+#: Design-history ops (design-state-core.md item 5): edit-only, each the
+#: sole op of its call, intercepted by :meth:`SeHandler._edit_impl` before
+#: the op table — like ``restore_revision``, they act on the design's
+#: history (snapshot, restore, branch), not on its tree.
+_HISTORY_OPS = ("restore_revision", "checkpoint", "restore", "pin")
+
+#: Checkpoint labels under this prefix are the per-save revision snapshots
+#: :func:`_record_revision` writes; a named checkpoint may not take one.
+_REV_LABEL_PREFIX = "rev-"
+
+
+def _opt_text(raw: Any) -> str | None:
+    """A stripped string, or ``None`` for absent/blank."""
+    text = str(raw).strip() if raw is not None else ""
+    return text or None
+
+
+def _checkpoint_label(op: dict[str, Any], slug: Any) -> str:
+    """``checkpoint``/``restore``'s ``label``, vetted: non-empty and not in
+    the ``rev-`` namespace the revision snapshots own."""
+    label = _opt_text(op.get("label"))
+    if label is None:
+        raise BadInput(
+            f"{op.get('op')} needs a 'label'",
+            next=f"edit(kind='se', id={str(slug)!r}, "
+            f"ops=[{{'op':{op.get('op')!r},'label':'before-fork-swap'}}])",
+        )
+    if label.startswith(_REV_LABEL_PREFIX):
+        raise BadInput(
+            f"checkpoint label {label!r} is reserved — 'rev-N' labels are the "
+            "per-save revision snapshots (restore one with restore_revision)"
+        )
+    return label
+
+
+def _headline_text(headline: Mapping[str, Any]) -> str:
+    """One line of headline numbers, in a fixed key order."""
+    if not headline:
+        return "no headline recorded"
+    return ", ".join(f"{k} {_fmt_headline(v)}" for k, v in sorted(headline.items()))
+
+
+def _fmt_headline(value: Any) -> str:
+    return f"{value:g}" if isinstance(value, float) else str(value)
+
+
+def _render_branch_result(
+    result: Any, parent_slug: str, branch_slug: str, parent_headline: Mapping[str, Any]
+) -> str:
+    """``pin``'s reply: the :class:`~precis.design.history.BranchResult` as
+    a comparison table — headline per side and the delta — plus the
+    ``infeasible`` verdict and how to reach both designs."""
+    lines = [
+        f"# se design '{parent_slug}' pinned → branch '{branch_slug}' "
+        f"(branch #{result.branch_id})",
+        "",
+        f"reason: {result.reason}",
+        "",
+        f"| headline | {parent_slug} | {branch_slug} | delta |",
+        "|---|---|---|---|",
+    ]
+    keys = sorted(set(parent_headline) | set(result.headline))
+    for key in keys:
+        was = parent_headline.get(key)
+        now = result.headline.get(key)
+        delta = result.delta_vs_parent.get(key)
+        if delta is None:
+            shown = "—"
+        elif "delta" in delta:
+            pct = delta.get("pct")
+            shown = f"{_fmt_headline(delta['delta'])}" + (
+                f" ({pct:+.1f}%)" if pct is not None else ""
+            )
+        else:
+            shown = "changed"
+        lines.append(
+            f"| {key} | {'—' if was is None else _fmt_headline(was)} | "
+            f"{'—' if now is None else _fmt_headline(now)} | {shown} |"
+        )
+    lines.append("")
+    if result.infeasible:
+        lines.append(
+            f"infeasible: {result.infeasible['what_broke']} "
+            f"(constraint: {result.infeasible['which_constraint']})"
+        )
+    else:
+        lines.append("feasible: the pin introduced no new validate error")
+    lines += [
+        "",
+        f"both designs stay live: get(kind='se', id={parent_slug!r}) · "
+        f"get(kind='se', id={branch_slug!r}) · view='branches' on either",
+    ]
+    return "\n".join(lines)
+
+
+def _blocks_by_uid(tree: SeTree) -> dict[int, dict[str, Any]]:
+    """``{uid: block as tree_to_json serialises it}`` — the unit
+    ``view='diff'`` compares."""
+    return {
+        int(b["uid"]): b
+        for b in persist.tree_to_json(tree)["blocks"]
+        if b.get("uid") is not None
+    }
+
+
+def _short(value: Any, limit: int = 60) -> str:
+    """A diff cell: the value's repr, cut to ``limit`` characters."""
+    text = "none" if value is None else repr(value)
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _envelope_marks(tree: SeTree) -> dict[int, tuple[str, str | None]]:
+    """``{uid: (label, envelope)}`` for every ordinary block that has a
+    uid — the before/after evidence :func:`_mint_tightenings` compares.
+    Instances are skipped: their envelope lives on the template, which is
+    itself an ordinary block in this map."""
+    return {
+        int(node.uid): (name, node.envelope)
+        for name, node in tree.blocks.items()
+        if node.uid is not None and node.template is None
+    }
+
+
+def _mint_tightenings(
+    store: Any,
+    ref_id: int,
+    before: dict[int, tuple[str, str | None]],
+    tree: SeTree,
+    *,
+    conn: Any,
+    set_by: str,
+) -> list[int]:
+    """Mint one envelope revision per surviving block whose envelope was
+    replaced by a different non-null one in this save; return the
+    revisions minted, oldest first.
+
+    "Tightening" is read as *any* replacement of a set envelope, not only a
+    geometrically contained one: a cad DSL envelope has no cheap
+    containment test, and the revision exists so a stale result is
+    detectable — over-minting costs a re-score, under-minting trusts a
+    stale one. A block added in this save mints nothing (no result was
+    ever scored against it), and a cleared envelope (``null``) mints
+    nothing (dropping a constraint cannot make a feasible result
+    infeasible). Runs after ``save_tree`` so every block carries its uid,
+    and before :func:`_record_revision` so the ``rev-N`` snapshot records
+    the revision it was saved under."""
+    minted: list[int] = []
+    for uid, (name, envelope) in _envelope_marks(tree).items():
+        prior = before.get(uid)
+        if prior is None or envelope is None or envelope == prior[1]:
+            continue
+        was = prior[1] if prior[1] is not None else "none"
+        minted.append(
+            design_history.mint_envelope_revision(
+                store,
+                ref_id,
+                reason=f"{name}: {was} -> {envelope}",
+                block_uid=uid,
+                set_by=set_by,
+                conn=conn,
+            )
+        )
+    return minted
+
+
+def _tightening_echo(minted: list[int]) -> str | None:
+    """The reply line a save that tightened an envelope ends with, or
+    ``None`` when nothing tightened."""
+    if not minted:
+        return None
+    revs = ", ".join(str(r) for r in minted)
+    return (
+        f"envelope revision {minted[-1]} (minted: {revs}) — results scored "
+        "under an earlier revision are now stale; see view='validate'"
+    )
 
 
 def _record_revision(
@@ -6230,6 +6949,10 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
     "cut": frozenset({"format"}),
     "measures": frozenset(),
     "revisions": frozenset(),
+    "branches": frozenset(),
+    "diff": frozenset({"against"}),
+    "provenance": frozenset({"margin"}),
+    "contracts": frozenset(),
     "datums": frozenset(),
     "pockets": frozenset(),
     "validate": frozenset({"previous", "load_cases"}),

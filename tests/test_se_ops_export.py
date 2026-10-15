@@ -144,6 +144,30 @@ _CART: list[dict[str, Any]] = [
         "min": 0.098,
         "max": 0.102,
         "reason": "supplier tolerance",
+        "provenance": {"source": "measured", "margin_origin": "wear allowance"},
+    },
+    {
+        "op": "set_contract",
+        "a": "cart.bore",
+        "b": "wheel.hub",
+        "loads": {"Fz": -120.0, "Mx": 0.0},
+        "load_provenance": "llm_assumed",
+    },
+    {
+        "op": "set_insertion",
+        "block": "axle",
+        "direction": [0.0, 0.0, 1.0],
+        "half_angle": "10 deg",
+    },
+    {
+        "op": "set_provenance",
+        "block": "cart",
+        "facet": "envelope",
+        "provenance": {
+            "source": "library",
+            "fidelity": "template",
+            "library_version": "cart-kit-2",
+        },
     },
     {
         "op": "add_bom",
@@ -525,7 +549,11 @@ _VERDICTS: dict[str, dict[str, str]] = {
         # the COMPOSED world placement; local_pose/local_rot above are the
         # authored values the pose ops actually take
         "pose": "derived",
+        # set_insertion, the cone's half-angle re-quoted in rad
+        "insertion": "op",
         "process_overrides": "op",
+        # set_provenance, one per facet, after the block's other ops
+        "provenance": "op",
         "rot": "derived",
         "template": "op",
         "uid": "gap",
@@ -553,6 +581,8 @@ _VERDICTS: dict[str, dict[str, str]] = {
         "a_port": "op",
         "b_block": "op",
         "b_port": "op",
+        # set_contract after the connect, loads + per-component provenance
+        "contract": "op",
         "joint": "op",
         "kind": "op",
         "objectives": "op",
@@ -576,6 +606,7 @@ _VERDICTS: dict[str, dict[str, str]] = {
         "min_value": "op",
         "name": "op",
         "origin": "op",
+        "provenance": "op",
         "reason": "op",
         "relation": "op",
         "strength": "op",

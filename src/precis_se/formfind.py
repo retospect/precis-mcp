@@ -46,6 +46,7 @@ from precis_se.ops import (
     _connects_endpoint_pair,
     _split_endpoint,
     local_position_from_world,
+    stamp_solver_provenance,
 )
 
 #: Role → the op key holding its default force density. ``undeclared``
@@ -332,3 +333,10 @@ def op_formfind(tree: SeTree, op: dict[str, Any]) -> None:
         # local_rot needs no update.
         node.local_pose = local_position_from_world(tree, name, new_pose)
         node.origins["pose"] = "proposed"
+        stamp_solver_provenance(
+            node,
+            "pose",
+            solver_id="structsolve.form_find",
+            fidelity="analytic",
+            assumptions=["pin-jointed axial members", "force-density equilibrium"],
+        )

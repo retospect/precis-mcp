@@ -61,6 +61,7 @@ from precis.cad.vec import as_vec3 as cad_as_vec3
 from precis.cad.vec import pose as cad_pose
 from precis.design import states as design_states
 from precis_se import bom as se_bom
+from precis_se import contracts as se_contracts
 from precis_se import stability as se_stability
 from precis_se.chain.vocab import SEGMENT_ROLE, chain_role
 from precis_se.ops import SeBlock, SeTree, effective_envelope, effective_ports
@@ -602,7 +603,69 @@ def validate(
                 severity=severity,
             )
         )
+    findings.extend(contract_findings(tree))
     return findings
+
+
+def contract_findings(tree: SeTree) -> list[ValidationIssue]:
+    """Rules 7–8, the interface-contract adoption
+    (:mod:`precis_se.contracts`, design-state-core.md item 7a):
+
+    7. ``contract_component_unknown`` (warn) — a declared contract leaves
+       components unknown. Named one by one, because "absent = unknown,
+       never zero" only helps if the gap is stated: the fix is to resubmit
+       exactly those components, not to guess. A connect with no contract
+       at all is not flagged (nothing was declared to be incomplete).
+    8. ``insertion_cones_disjoint`` (error) — no single direction lies in
+       every declared insertion cone (block frame → design frame by each
+       block's composed rotation), so no one assembly stroke closes the
+       design: the spec's early single-direction-assembly rejection."""
+    out: list[ValidationIssue] = []
+    for c in tree.connects:
+        if c.contract is None:
+            continue
+        unknown = se_contracts.missing(c.contract)
+        if unknown:
+            out.append(
+                ValidationIssue(
+                    rule="contract_component_unknown",
+                    subject=f"{c.a_block}.{c.a_port}—{c.b_block}.{c.b_port}",
+                    detail=(
+                        f"contract leaves {', '.join(unknown)} unknown (absent = "
+                        "unknown, never zero) — set_contract(a=, b=, loads={"
+                        + ", ".join(f"'{u}': …" for u in unknown)
+                        + "})"
+                    ),
+                    severity="warn",
+                )
+            )
+    cones: list[tuple[list[float], float]] = []
+    names: list[str] = []
+    for name in sorted(tree.blocks):
+        node = tree.blocks[name]
+        if node.insertion is None:
+            continue
+        world = cad_pose(cad_as_vec3(node.pose), cad_as_vec3(node.rot)).apply_dir(
+            cad_as_vec3(node.insertion["direction"])
+        )
+        cones.append(
+            ([float(v) for v in world], float(node.insertion["half_angle_rad"]))
+        )
+        names.append(name)
+    if len(cones) > 1 and se_contracts.common_direction(cones) is None:
+        out.append(
+            ValidationIssue(
+                rule="insertion_cones_disjoint",
+                subject=", ".join(names),
+                detail=(
+                    "no single assembly direction lies inside every declared "
+                    "insertion cone — widen a cone (set_insertion half_angle), "
+                    "re-orient a block, or split the assembly into stages"
+                ),
+                severity="error",
+            )
+        )
+    return out
 
 
 def port_override_unapplied_findings(

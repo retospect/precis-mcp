@@ -3,7 +3,8 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** When activated, start design-state-core before pattern groups.
+- **Next:** design-state-core is built (2026-10-15, awaiting deploy + its
+  post-deploy check); pattern-groups is next.
 - **Blocked by:** No declared active owner.
 - **Unblocks:** A shared substrate for se, hexfold, PCB and CAD.
 - **Acceptance:** Use [design-state-core](../design-state-core.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
@@ -28,9 +29,10 @@ consumer kind (se-machine-design, pcb-platform) is implicitly waiting on.
 
 ## Do next
 
-1. **backlog/design-state-core.md** — `ready/high`; unblocks pattern-groups
+1. **backlog/design-state-core.md** — `in-progress/high`; unblocks pattern-groups
    below and is the node type every later milestone in this file writes
-   into.
+   into. All slices shipped 2026-10-15; open: the post-
+   deploy check (live unicycle loads, revalidates, accepts a checkpoint).
 2. **backlog/pattern-groups.md** — blocked-by 1 (design-state-core).
 3. **backlog/make-tree-vs-design-tree.md**
 4. **backlog/attached-models-layer.md**

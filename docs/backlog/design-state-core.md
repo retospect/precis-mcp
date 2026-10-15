@@ -1,143 +1,43 @@
 ---
-status: ready
+status: in-progress
 pillar: 3d-design
-title: design core — shared scenarios, provenance, design history, and discrete-states machinery for se + nm
+title: design core — shared scenarios, provenance, design history, and discrete-states machinery for se
 prio: high
 model: opus
 ---
 
 # Design core — shared scenarios, provenance, design history, discrete states
 
-The shared substrate the multiscale spec's new subsystems stand on
-(multiscale-design-system-spec.md §1.3–1.6, §5.6; map §Build order
-step 2). One internal core package rented by `se` (including its
-post-merge atomic mode) exactly as se rents the cad kernel — **not a
-new kind, no user-visible surface of its own** (Reto 2026-09-12); its
-capabilities appear only through the se ops and views.
+The shared substrate the multiscale spec's subsystems stand on
+(multiscale-design-system-spec.md §1.3–1.6, §5.6): one internal package,
+`src/precis/design/`, rented by `se` (nm merged into se's atomic mode), no
+kind or verb of its own. Every in-scope item has shipped on a branch; what
+is left is the deploy and its check. `git log -- src/precis/design
+src/precis_se` has the history; the surfaces are in skill
+`precis-se-help` §Design history and provenance and in the
+`precis.design` package docstring.
 
-**2026-09-14 resequence (map §Build order amendment): the nm kind
-merges into se (window 1b, `nm-se-merge.md`) BEFORE this item's
-plugin-side slices.** Single renter: every "se/nm", "both scales",
-"nm adoption" reading below collapses to the merged se. Item 7b and
-the nm persist rewrite in item 2 are CANCELLED (the merge deletes
-their target); the se persist uid-rewrite runs AFTER the merge window
-closes, against the merged tree. **Progress: round 1 (core package
-`src/precis/design/` + migration 0162 + tests) landed 2026-09-14** —
-scenario/service-environment + presets, provenance sidecar helpers,
-design history (revisions/checkpoints/branches), discrete states +
-transitions (closed driver enum incl. `mechanical`, per-block state,
-A9 cache rule), `design_block_uid_seq` mint, situation stub.
-**Round 2 (se plugin migration 0009 + `precis_se.persist`/`identity` +
-the thin rental proof) landed 2026-09-14**: every `se_blocks` row
-carries a carried-forward `uid`; `se_connects`/`se_measures`/`se_bom`/
-`se_topology` and LOCAL `template_ref` store it beside the name, and a
-load follows the uid (name = display label, and the fallback for a
-dangling reference); blocks address by label or `'#41'` with the
-structured ambiguity error; `put` takes `scenario=` and
-validate/DRC print which scenario governed. **Round 3 landed
-2026-09-14**: every op that addresses an existing block routes its
-token through one resolver (`Tree.resolve_key`, overridden by `SeTree`
-— block halves of `'block.port'` endpoints included), so `'#41'` works
-wherever a label does and the ambiguity error arrives as an ordinary
-`OpError`→`BadInput` with its uid list; block names are reserved
-against a leading `'uid:'` at mint time; viewer 3D leaf paths and
-mermaid node ids are the uid, not `se_blocks.id` (a row id is rebuilt
-by every save); and adoption-by-label on save is restricted to a tree
-that arrived wholly uid-less (a full `put`) — on the `edit` path a
-uid-less node is NEW and always mints, so `remove_block('wheel')` +
-`add_block('wheel')` in one call can no longer inherit the dead
-block's identity (gr339743). Branch copies **preserve uids** — the
-mechanism is verified by test (`test_branch_style_copy_preserves_uids`),
-while the `pin`→`branch` verb itself lands with the design-history
-wiring (item 5). **Still open**: cross-design `template_ref` → uid
-(needs a uid→design resolver in `precis.blocktree.ops.resolve_template`)
-and item 7a.
+Shipped (rounds 1–3 2026-09-14; the rest 2026-10-15): scenarios and
+presets; block uids carried across saves, every in-design cross-reference
+keyed by uid, cross-design `template_ref` keyed by (slug, uid) (se
+migration `0020`); discrete states + transitions; envelope revisions;
+named `checkpoint`/`restore`, `pin` → branch with BranchResult,
+`view='branches'`, `view='diff'`; per-number provenance on block facets
+and measures with the margin audit (se `0019`); six-component interface
+contracts and insertion cones (se `0021`).
 
-## Motivation / why
+## Remaining — post-deploy check
 
-Four subsystems recur identically at both scales and must not be built
-twice: (1) scenario/service-environment context that decides which
-physics runs at all; (2) per-number provenance that makes margin audits,
-fidelity ladders and library-update notification queries rather than
-features; (3) **design history** — envelope revisions, checkpoints,
-pin→branch — so stale results are detectable and a pin is always
-reversible; (4) **discrete states + stimulus-labelled transitions**,
-which are true macro AND nano (Howell-style compliant bistables, hard
-stops · photoswitches, conformers — Reto 2026-09-12). Blocktree slice 2
-becomes the nm *adoption* of (4), not its owner; the macro adoption
-enters via the pseudo-rigid-body route on the existing member machinery.
+After the release carrying se migrations `0019`–`0021` deploys:
 
-## In scope
-
-1. **Package** `src/precis/design/` + core migrations. Vocabulary per
-   the 2026-09-12 rulings: `scenario` = production context; `situation`
-   = named swept-volume bundle (schema stub only here — the rule table
-   itself is build-order step 3); `state` = physical discrete state;
-   the versioning axis is called **design history**, never "design
-   state".
-2. **Identity — stable `uid`, not row ids.** Today both persist layers
-   rebuild row ids on every save (retire-all/reinsert-all) and store
-   cross-references (se_connects/se_ports/nm_topology/template_ref) as
-   bare name text — "identity is the block name". This item introduces
-   a DB-minted stable `uid` (bigint) as PRIMARY identity: minted once
-   per block, carried forward across retire/reinsert saves as ordinary
-   column data (row ids stay ephemeral and unexposed, honouring nm's
-   invariant), preserved by branch copies so branches diff
-   block-by-block; new blocks mint new uids. Cross-reference columns
-   migrate name-text → uid in the SAME slice (persist load/save keyed
-   by uid; names become display labels resolved through the uid map).
-   Ops accept uid always; a label resolves when unambiguous, else a
-   structured error listing matching uids. Uids are the viewer path
-   leaf names. Label uniqueness per design is KEPT for now (live
-   `(ref_id, name)` unique index stands — relaxing it is possible once
-   nothing references names, logged as a later option, out of scope
-   here).
-3. **Scenario + ServiceEnvironment** tables: name, quantity,
-   objective_weights, lifetime master switch, temperature/chemical/
-   vibration/cycle fields, load-case list; presets `prototype`,
-   `small_batch`, `mass_production` seeded. A design references one
-   scenario. Standard load-case library applied by default,
-   explicitly exemptable.
-4. **Per-number provenance**: one shared sidecar convention
-   ({param: {source, fidelity, solver_id, assumptions,
-   library_version?, margin_origin?}}) + helpers/validators in the core;
-   contract loads use the SAME enum (the spec's `load_provenance`
-   collapses into it — one mechanism).
-5. **Design history**: `envelope_revision` int minted on every
-   tightening, recorded on every scored result; `checkpoint`/`restore`;
-   `pin → branch` with parent_branch_id, one-line reason, headline
-   numbers, and the BranchResult comparison (delta vs parent,
-   infeasible-what-broke). Branch storage is **naive full copy** via
-   the retire-all/reinsert-all persist pattern with uids preserved
-   (item 2's carried-forward uid is exactly what makes the copy
-   diffable) — CoW structural sharing only when branch count
-   measurably hurts (the spec's own naive-first-and-measure rule).
-6. **Discrete states machinery** — schema OWNED by blocktree slice 2's
-   shape and BUILT by that track as first consumer, in the shared core
-   home: `state: (block, name, envelope?, port_pose_overrides?)`,
-   `transition: (block, from_state, to_state, driver_kind, driver_ref,
-   params)`; **per-block** current state (two independently switchable
-   blocks in different states is the photoswitch case — no design-level
-   pointer); `driver_kind` stays a CLOSED enum, extended by migration
-   with `mechanical` (force/displacement-driven snap-through) for the
-   macro adopters alongside {light, reaction, redox, ph, thermal}.
-   This item's part is only: verify the macro rental fits (a compliant
-   bistable expressible with zero schema change) and that the tables
-   live under the core package, not nm-locally.
-   **Hysteresis caching rule** (`multiscale-design-addendum-a.md` A9): a
-   state-carrying block is the ONE place history is load-bearing —
-   state is NOT a function of the parameter vector. Any cache or solver
-   keyed on configuration alone will get hysteretic blocks wrong: cache
-   keys for anything evaluated over a state-carrying block MUST include
-   the block's current discrete state. Ratchets are asymmetric per-edge
-   barriers on this same transition graph — no extra machinery.
-7. **se adoption — SEPARATELY SHIPPABLE sub-slice** (vet advisory
-   accepted; 7b CANCELLED by the 2026-09-14 merge — one renter): (7a)
-   se adoption — scenario_id, six-component contract storage with
-   absent = unknown never zero (Rejection names the missing
-   component), insertion-direction cones, provenance on params/loads.
-   The core item itself (1–6) ships with one thin se rental proof;
-   7a follows as its own land, after the merge window.
+1. The live unicycle and the regenerated atomic-mode designs load,
+   `view='validate'` runs, and `edit(ops=[{'op':'checkpoint','label':
+   'post-deploy'}])` succeeds on one of them.
+2. Every cross-reference resolves post uid-migration: `view='drc'` shows
+   no new `dangling_*` finding on those designs.
+3. Delete this file once 1–2 hold; `pattern-groups.md` and
+   `situation-rule-tables.md` then drop their `blocked-by:
+   design-state-core`.
 
 ## Explicitly NOT in scope
 
@@ -151,37 +51,6 @@ enters via the pseudo-rigid-body route on the existing member machinery.
   ops and views.
 - Photoswitch physics payloads (blocktree/photoswitch docs own those).
 
-## Acceptance criteria
-
-- A design created under `prototype` vs `small_batch` stores different
-  objective weights and lifetime; validate/DRC output records which
-  scenario governed.
-- Every solved param on a re-saved se design carries provenance; a
-  margin-audit query (all numbers with margin_origin set) returns rows.
-- `pin` on a live se design returns a BranchResult with headline +
-  delta vs parent; both branches remain fully inspectable; `restore`
-  of a checkpoint round-trips.
-- A block with two states + a stimulus-labelled transition persists,
-  revalidates per state, and the nm side can express an azobenzene
-  E/Z pair with it (schema check with blocktree slice 2's tests).
-- Label collision: two blocks labelled "strut" → op by label returns
-  the structured ambiguity error with both ids; op by id works.
-- Envelope revision increments on a tightening write and is present on
-  subsequently stored results.
-- mypy/ruff clean, `scripts/test --impacted` green, migrations apply on
-  a fresh DB and forward from prod baseline.
-
-## Target + blast radius
-
-New `precis/design/` package + core migrations *(landed, round 1)* ·
-**post-merge-window**: merged `precis_se` persist.py REWRITE
-(uid-keyed load/save) + handler/validate + plugin migration converting
-se_connects/se_ports/notes/template_ref name-refs to uid ·
-`precis.blocktree` template_ref resolution · viewer path scheme (uids
-as leaves) · skill precis-se-help. Post-deploy check: live unicycle
-(+ the regenerated atomic-mode designs) load, revalidate, and accept
-a checkpoint; all cross-references resolve post uid-migration.
-
 ## Open questions / decisions log
 
 Resolved with Reto 2026-09-12: shared core, DRY (not an se-only
@@ -192,68 +61,56 @@ implementation): exact id form (bigint vs uuid — recommend bigint,
 matches house style); whether `situation` stub lands here or waits for
 step 3 (recommend: stub here, table in step 3).
 
-## Readiness vet findings (ready-gate, 2026-09-12) — RESOLVED same day
-
-Resolutions: (1) label uniqueness KEPT (live `(ref_id,name)` index
-stands); identity moves to a stable carried-forward `uid` and ALL
-name-text cross-references migrate to uid in the same slice — the
-persist rewrites are now named in Target+blast radius. (2) Stable
-identity is the uid column, not row ids — retire-all/reinsert-all row
-mechanics stay, nm's "row ids never exposed" invariant honoured; branch
-copies preserve uids. (3) States schema defers to blocktree slice 2's
-concrete shape (per-block state, closed driver_kind enum + `mechanical`
-by migration, no design-level pointer), built by that track in the
-shared core home; blocktree plan carries the matching note and both
-items now declare their ordering via blocked-by. (4) Adoption split
-into 7a/7b sub-slices. Original findings kept below for the record.
-
-- blocker: item 2's "caller labels become... NOT unique" contradicts the
-  *live* invariant the persist layer is built on, not just op-dispatch.
-  `se_blocks_ref_name_key`/`nm_blocks_ref_name_key` are DB UNIQUE indexes
-  on `(ref_id, name)` (`0001_se_kind.sql`, comment: "a block name is
-  unique within its (live) design — simpler addressing than per-parent
-  scoping"). `load_tree` in both `precis_se/persist.py` and
-  `precis_nm/persist.py` keys the whole in-memory tree by name, and
-  `se_connects`/`se_ports`/`nm_topology`/`template_ref` all store
-  endpoints as bare NAME text with **no block-row FK at all** ("identity
-  is the block name" — both persist.py module docstrings). Dropping name
-  uniqueness doesn't just need the structured ambiguity error the AC
-  describes for op-by-label; it breaks the name-keyed reconstruction that
-  connects/ports/notes/template_ref depend on for correctness, with no
-  disambiguation path designed. Target+blast radius never names
-  `se_connects`/`se_ports`/`nm_topology`/`precis.blocktree` template-ref
-  resolution as touched, though non-unique labels force a rewrite of all
-  of them.
-- blocker: item 2's "Minted ids are the viewer path leaf names" assumes
-  ids are a *stable* external identity, but both persist.py modules
-  document the opposite: se's save model is "retire-all/reinsert-all...
-  **Row ids are rebuilt on every save**"; nm's is stronger still — "row
-  ids are never exposed outside this module" and the "Round-2 landmine"
-  note is literally about `save_tree` rebuilding every `nm_blocks.id` on
-  every save. Item 5 says branch storage reuses this exact retire-all/
-  reinsert-all pattern **unchanged**. A viewer leaf name, a per-block
-  state row, or provenance keyed to a block id cannot survive a save
-  under the pattern as documented, and no persist.py rewrite to make ids
-  stable is named in Explicitly-NOT-in-scope or Target+blast radius —
-  items 2 and 5 pull in opposite directions on the same mechanism.
-- blocker: item 6's states schema doesn't match the se block-states
-  design (`src/precis_se/__init__.py` docstring), which is already
-  `status: ready` and already concrete: `driver_kind ∈ {light, reaction,
-  redox, ph, thermal}` (closed enum) vs. this spec's "open vocabulary:
-  wavelength, force, temperature, chemistry"; `state: (block, name,
-  envelope?, port_pose_overrides?)` (per-block, no design-level state)
-  vs. this spec's "current-state pointer per design" (implies one
-  pointer for the whole design, which cannot represent two
-  independently-switchable blocks in different states, exactly the
-  photoswitch case both docs want). The map (`multiscale-design-
-  architecture.md` §Build order, step 2) calls these two "parallel
-  tracks... co-designed," but neither file declares `blocked-by` on the
-  other, and blocktree slice 2 reads as self-contained and buildable
-  today by a different agent with zero reference to a shared core
-  package. Nothing stops the two landing with incompatible schemas.
-- advisory: item 7 bundles the core package build with two separately
-  shippable plugin-adoption slices (se's six-component contract/
-  insertion-direction cones/provenance; nm's scenario_id+provenance) —
-  each is independently testable once items 1-5 exist and could be split
-  out, leaving this item to the core substrate plus one thin rental
-  proof.
+- 2026-10-15 (envelope revisions): "tightening" reads as any
+  replacement of an envelope on a block that existed before the save,
+  including none → set; a new block or a cleared (`null`) envelope mints
+  nothing. A cad DSL envelope has no cheap containment test, and the
+  revision exists to make staleness detectable — over-minting costs a
+  re-score, under-minting trusts a stale result. One revision per
+  changed block (so `block_uid` names what tightened), not one per call.
+- 2026-10-15 (pin): the spec's `pin(target, value, reason)` becomes an
+  se edit op `{'op':'pin','as':<slug>,'reason':R,'ops':[...]}` — the
+  pinned change is an op list applied to the copy only, since se has no
+  single "value" slot to pin. Headline = blocks, validate error/warning
+  counts, BOM `mass`/`unit_cost` only when every bought item is covered;
+  `worst_utilisation` stays absent (se computes none yet — absent is
+  unknown, never zero). `infeasible` = the first validate error the
+  branch has and the parent lacks (rule + subject). A branch inherits
+  the scenario, exemptions, envelope revision log and states; NOT the
+  parent's checkpoints or revision ledger (its history starts at the
+  pin). `switch_branch` needs no verb: a branch is an ordinary design,
+  addressed by its slug.
+- 2026-10-15 (provenance): se's "params" are its block facets (pose,
+  envelope, realized geometry) and its named measures, so the sidecar
+  lives in two columns — a `{facet: entry}` sidecar on `se_blocks` and
+  one entry per `se_measures` row — both in the core shape. "Every solved
+  param" = every number a solver wrote: formfind (`structsolve.form_find`,
+  analytic), chain relax (`se.chain.relax`, surrogate), SIMP (`simp/1`,
+  full_solve). Absent = no claim; nothing is defaulted onto authored
+  numbers, but an authored overwrite of a CLAIMED facet restates it
+  (`user_stated`, or `llm_assumed` when the facet's origin stamp is
+  `proposed`) so a solver claim never outlives its number; a rebind drops
+  the geometry claim. Loads' provenance stays with item 7a.
+- 2026-10-15 (cross-design template uid): the spec's "uid→design
+  resolver in `resolve_template`" is not needed. A uid is unique per
+  design only (branch copies share them), so the identity of a foreign
+  block is (design slug, uid); the slug is already in `template_ref`.
+  persist resolves both halves with one batched SQL join at save and at
+  load, and `precis.blocktree` keeps resolving by the label text it is
+  handed — no foreign `load_tree` added to the read path, and the
+  blocktree package stays store-free.
+- 2026-10-15 (7a): the contract is on the CONNECT (spec `Interface.
+  contract`), the cone on the BLOCK (spec `Block.insertion_direction`),
+  as the spec places them. Contract loads are in the design frame;
+  cone directions in the block frame (rotated by the block's composed
+  pose for the check), since a cone travels with its part. "Rejection
+  names the missing component" is a validate finding (warn) naming every
+  unknown component, not a write-time refusal: se's posture is that a
+  partly-known contract is an honest state to save. A connect with no
+  contract at all is not flagged — flagging every legacy connect would
+  bury the signal; whether undeclared contracts should warn is open.
+  The cone intersection is exact for caps ≤ 90° (axes plus pairwise
+  boundary crossings as candidates); wider cones are refused.
+- 2026-10-15 (item open): whether a connect with NO contract should warn
+  once a design opts into contracts (see the 7a entry above). Not
+  blocking; settle with the first consumer that reads contracts.

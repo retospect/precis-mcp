@@ -49,10 +49,10 @@ arrives carrying its uid, so a uid-less node is by construction a NEW
 block and always mints (:func:`_assign_uids` for the full rule and the
 remove-then-re-add case that forces it).
 
-Copying a design's rows with their uids intact is what would make a
-branch diff block-by-block (design-state-core.md item 5); the mechanism
-is verified by test here, and the ``pin``→``branch`` verb itself lands
-with the design-history wiring.
+Copying a design's rows with their uids intact is what makes a branch
+diff block-by-block (design-state-core.md item 5): the se ``pin`` op
+copies through :func:`tree_to_json`/:func:`tree_from_json` and
+:func:`save_tree`, and ``view='diff'`` joins the two on uid.
 
 Soft references stay name text on purpose and are NOT part of the uid
 cutover: a measure ``relation.source`` (``'block.measure'``) and a note's
@@ -67,12 +67,15 @@ slice 1 — the ``precis_nm.persist`` counterpart transferred verbatim): a
 bare local block name, or ``<design-slug>#<block-name>`` naming a block in
 ANOTHER live ``se`` design. ``node.template`` round-trips through this
 column unchanged — resolution happens only at READ time, in
-:mod:`precis.blocktree.ops`, never here. A **local** reference additionally
-stores ``template_uid`` (0009) and is rendered back from it, so it survives
-a relabel like every other cross-reference; a **cross-design** one cannot
-yet, because :func:`precis.blocktree.ops.resolve_template` walks foreign
-trees by slug and there is no uid→design index to walk instead — that
-conversion is its own slice.
+:mod:`precis.blocktree.ops`, never here. Both forms additionally store
+``template_uid`` and are rendered back from it, so they survive a relabel
+like every other cross-reference: a **local** reference (0009) by this
+design's uid map, a **cross-design** one (0020) by ``(design slug, uid)``
+— a uid is unique per design only, since branch copies share them — in
+one batched query each way (:func:`_foreign_template_uids` at save,
+:func:`_foreign_template_labels` at load), never a foreign
+:func:`load_tree`. The slug half stays text: an se slug is the design's
+public identity.
 
 **Every load→mutate→save of a tree runs inside :func:`tree_mutation`**
 (the invariant, 2026-09-18). Retire-all/reinsert-all means two
@@ -107,7 +110,7 @@ from psycopg import Connection
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from precis.blocktree.types import parse_template_ref
+from precis.blocktree.types import TEMPLATE_SEP, parse_template_ref
 from precis.design.uids import mint_uids
 from precis_se import catalog
 from precis_se.atomic.vocab import ThreadingSpec
@@ -135,7 +138,7 @@ _BLOCK_COLS = (
     "id, uid, parent_block_id, template_ref, template_uid, name, pose_xyz, "
     "pose_rot, envelope, array_spec, descr, use_, objectives, mode, "
     "bound_kind, bound_design, origins, dof, chromophore, process_overrides, "
-    "build_frame, chain"
+    "build_frame, chain, provenance, insertion"
 )
 _PORT_COLS = (
     "block_id, name, roles, direction, annotations, expected_element, "
@@ -144,11 +147,12 @@ _PORT_COLS = (
 )
 _CONNECT_COLS = (
     "a_block, a_block_uid, a_port, b_block, b_block_uid, b_port, joint, "
-    "kind, objectives, optical"
+    "kind, objectives, optical, contract"
 )
 _MEASURE_COLS = (
     "block, block_uid, name, value, relation, strength, reason, min_value, "
-    "max_value, origin, unit, datum, measurand, measurand_ref_id, datum_pin"
+    "max_value, origin, unit, datum, measurand, measurand_ref_id, datum_pin, "
+    "provenance"
 )
 #: ``se_pockets`` (migration ``0018_se_regions.sql``) — block-row keyed
 #: like ``se_ports``, written in lockstep with the fresh block ids.
@@ -338,6 +342,7 @@ def load_tree(store: Any, ref_id: int, *, conn: Connection | None = None) -> SeT
                 (ref_id,),
             )
             optics_row = cur.fetchone()
+        foreign_labels = _foreign_template_labels(conn, rows)
     by_id = {r["id"]: r for r in rows}
     #: uid → the block's current label, the read half of the cutover.
     uid_to_name = {int(r["uid"]): r["name"] for r in rows if r["uid"] is not None}
@@ -349,10 +354,9 @@ def load_tree(store: Any, ref_id: int, *, conn: Connection | None = None) -> SeT
             name=r["name"],
             uid=int(r["uid"]) if r["uid"] is not None else None,
             parent=parent_row["name"] if parent_row else None,
-            # A LOCAL template reference comes back from its uid; a
-            # cross-design one ('slug#block') round-trips as text —
-            # module docstring.
-            template=_label(uid_to_name, r["template_uid"], r["template_ref"]),
+            # A template reference comes back from its uid — local, or
+            # (slug, uid) for a cross-design one — module docstring.
+            template=_template_label(uid_to_name, foreign_labels, r),
             # As stored — the block origin in the PARENT's frame
             # (precis-se-help.md's Units section). ``pose``/``rot`` (below,
             # via compose_world_pose) become the WORLD-frame placement
@@ -370,6 +374,8 @@ def load_tree(store: Any, ref_id: int, *, conn: Connection | None = None) -> SeT
             bound_kind=r["bound_kind"],
             bound=r["bound_design"],
             origins=dict(r["origins"] or {}),
+            provenance=dict(r["provenance"] or {}),
+            insertion=(dict(r["insertion"]) if r["insertion"] is not None else None),
             dof=dict(r["dof"]) if r["dof"] is not None else None,
             chromophore=dict(r["chromophore"])
             if r["chromophore"] is not None
@@ -421,6 +427,7 @@ def load_tree(store: Any, ref_id: int, *, conn: Connection | None = None) -> SeT
                 kind=c["kind"],
                 objectives=dict(c["objectives"] or {}),
                 optical=dict(c["optical"]) if c["optical"] is not None else None,
+                contract=(dict(c["contract"]) if c["contract"] is not None else None),
             )
         )
     for m in measure_rows:
@@ -444,6 +451,9 @@ def load_tree(store: Any, ref_id: int, *, conn: Connection | None = None) -> SeT
                     else None
                 ),
                 datum_pin=m["datum_pin"],
+                provenance=(
+                    dict(m["provenance"]) if m["provenance"] is not None else None
+                ),
             )
         )
     for taxon_id, live in live_slugs.items():
@@ -780,6 +790,50 @@ def attach_catalog(store: Any, tree: SeTree) -> None:
             node.derived = by_slug.get(node.bound)
 
 
+def provenance_rows(
+    store: Any, *, ref_id: int | None = None, margin_only: bool = False
+) -> list[dict[str, Any]]:
+    """Every stored provenance claim over live se rows — block facets
+    (``se_blocks.provenance``) and measures (``se_measures.provenance``),
+    migration ``0019`` — as ``{ref_id, block, param, entry}``; ``param`` is
+    the facet name, or ``'measure:<name>'`` for a measure.
+
+    ``margin_only`` is the **margin audit** (design-state-core.md item 4):
+    every number a margin rule touched, i.e. whose entry carries
+    ``margin_origin``. A query over the store, not a feature — across all
+    designs when ``ref_id`` is None. Ordered by design, block, param."""
+    where_ref = "AND ref_id = %s " if ref_id is not None else ""
+    margin = "AND f.value ? 'margin_origin' " if margin_only else ""
+    params: tuple[Any, ...] = (ref_id,) if ref_id is not None else ()
+    with store.pool.connection() as c:
+        with c.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                "SELECT ref_id, block, param, entry FROM ("
+                "  SELECT b.ref_id, b.name AS block, f.key AS param, "
+                "         f.value AS entry "
+                "  FROM se_blocks b, jsonb_each(b.provenance) f "
+                "  WHERE b.retired_at IS NULL AND b.provenance IS NOT NULL "
+                f"  {where_ref.replace('ref_id', 'b.ref_id')}{margin}"
+                "  UNION ALL "
+                "  SELECT m.ref_id, m.block, 'measure:' || m.name AS param, "
+                "         m.provenance AS entry "
+                "  FROM se_measures m, LATERAL (SELECT m.provenance AS value) f "
+                "  WHERE m.retired_at IS NULL AND m.provenance IS NOT NULL "
+                f"  {where_ref.replace('ref_id', 'm.ref_id')}{margin}"
+                ") rows ORDER BY ref_id, block, param",
+                params * 2,
+            )
+            return [
+                {
+                    "ref_id": int(r["ref_id"]),
+                    "block": str(r["block"]),
+                    "param": str(r["param"]),
+                    "entry": dict(r["entry"] or {}),
+                }
+                for r in cur.fetchall()
+            ]
+
+
 def sync_realized_by(store: Any, ref_id: int, tree: SeTree) -> None:
     """Mirror the design's `component` bindings as ``realized-by`` links
     (se design → the procurable ``component`` ref) — migration 0156's
@@ -879,19 +933,107 @@ def _derive_one(store: Any, slug: str) -> Derived:
     return catalog.derive(category, specs)
 
 
-def _local_template_uid(uid_of: dict[str, int], template: str | None) -> int | None:
-    """The uid half of a ``template_ref``, for a LOCAL reference only.
-
-    A cross-design reference (``'slug#block'``) gets ``None``: its uid is
-    perfectly well defined — uids are global — but resolving it would mean
-    loading the foreign design here, and reading it back would mean a
-    uid→design index that does not exist (module docstring). The name text
-    keeps that case working exactly as it did.
-    """
+def _template_uid(
+    uid_of: dict[str, int],
+    foreign_uids: dict[tuple[str, str], int],
+    template: str | None,
+) -> int | None:
+    """The uid half of a ``template_ref``: the local block's uid for a
+    bare reference, the FOREIGN block's uid for ``'slug#block'``
+    (:func:`_foreign_template_uids`). ``None`` when it does not resolve —
+    a dangling reference keeps working through its name text, the same
+    fallback every other cross-reference has (module docstring)."""
     if template is None:
         return None
     design_slug, block_name = parse_template_ref(template)
-    return None if design_slug is not None else uid_of.get(block_name)
+    if design_slug is None:
+        return uid_of.get(block_name)
+    return foreign_uids.get((design_slug, block_name))
+
+
+#: Live se blocks by (design slug, label) — the save half of a cross-design
+#: ``template_ref``'s uid. A uid is unique only within one design (branch
+#: copies share them), so the design slug stays part of the key.
+_FOREIGN_BY_NAME_SQL = (
+    "SELECT i.id_value, b.name, b.uid FROM se_blocks b "
+    "JOIN refs r ON r.ref_id = b.ref_id AND r.kind = 'se' AND r.retired_at IS NULL "
+    "JOIN ref_identifiers i ON i.ref_id = r.ref_id AND i.id_kind = 'cite_key' "
+    "WHERE b.retired_at IS NULL AND b.uid IS NOT NULL "
+    "AND (i.id_value, b.name) IN (SELECT * FROM unnest(%s::text[], %s::text[]))"
+)
+
+#: The load half: (design slug, uid) → that block's CURRENT label.
+_FOREIGN_BY_UID_SQL = (
+    "SELECT i.id_value, b.uid, b.name FROM se_blocks b "
+    "JOIN refs r ON r.ref_id = b.ref_id AND r.kind = 'se' AND r.retired_at IS NULL "
+    "JOIN ref_identifiers i ON i.ref_id = r.ref_id AND i.id_kind = 'cite_key' "
+    "WHERE b.retired_at IS NULL "
+    "AND (i.id_value, b.uid) IN (SELECT * FROM unnest(%s::text[], %s::bigint[]))"
+)
+
+
+def _foreign_template_uids(c: Connection, tree: SeTree) -> dict[tuple[str, str], int]:
+    """``{(slug, label): uid}`` for every cross-design ``template`` in
+    ``tree`` that resolves to a live block — ONE query however many
+    instances reference other designs, and none when no template is
+    cross-design (the overwhelming majority)."""
+    keys = sorted(
+        {
+            ref
+            for node in tree.blocks.values()
+            if node.template is not None
+            for ref in [parse_template_ref(node.template)]
+            if ref[0] is not None
+        }
+    )
+    if not keys:
+        return {}
+    rows = c.execute(
+        _FOREIGN_BY_NAME_SQL, ([k[0] for k in keys], [k[1] for k in keys])
+    ).fetchall()
+    return {(str(r[0]), str(r[1])): int(r[2]) for r in rows}
+
+
+def _foreign_template_labels(
+    c: Connection, rows: list[dict[str, Any]]
+) -> dict[tuple[str, int], str]:
+    """``{(slug, uid): current label}`` for every stored cross-design
+    ``template_ref`` carrying a uid — the read half, so an instance follows
+    its foreign template across a relabel. One query, or none."""
+    keys = sorted(
+        {
+            (design, int(r["template_uid"]))
+            for r in rows
+            if r["template_uid"] is not None and r["template_ref"]
+            for design in [parse_template_ref(r["template_ref"])[0]]
+            if design is not None
+        }
+    )
+    if not keys:
+        return {}
+    found = c.execute(
+        _FOREIGN_BY_UID_SQL, ([k[0] for k in keys], [k[1] for k in keys])
+    ).fetchall()
+    return {(str(f[0]), int(f[1])): str(f[2]) for f in found}
+
+
+def _template_label(
+    uid_to_name: dict[int, str],
+    foreign_labels: dict[tuple[str, int], str],
+    row: dict[str, Any],
+) -> str | None:
+    """A stored ``template_ref`` read back: from its uid when that still
+    resolves (local or foreign — a relabel never strands an instance),
+    else the stored text (the dangling fallback)."""
+    stored = row["template_ref"]
+    if stored is None:
+        return None
+    design, _block = parse_template_ref(stored)
+    if design is None:
+        return _label(uid_to_name, row["template_uid"], stored)
+    uid = row["template_uid"]
+    current = foreign_labels.get((design, int(uid))) if uid is not None else None
+    return f"{design}{TEMPLATE_SEP}{current}" if current is not None else stored
 
 
 def _topo_order(tree: SeTree) -> list[str]:
@@ -1006,6 +1148,7 @@ def save_tree(
         # Before anything is retired: the uid a block keeps is decided
         # against the design's CURRENT live rows.
         uid_of = _assign_uids(store, c, ref_id, tree)
+        foreign_uids = _foreign_template_uids(c, tree)
         # Ports have no ref_id of their own — reach them through their
         # blocks. Retiring by the blocks' ref (not only the blocks just
         # retired below) also mops up any port left live by an interrupted
@@ -1066,9 +1209,10 @@ def save_tree(
                 "(ref_id, uid, parent_block_id, template_ref, template_uid, "
                 " name, pose_xyz, pose_rot, envelope, array_spec, descr, "
                 " use_, objectives, mode, bound_kind, bound_design, origins, "
-                " dof, chromophore, process_overrides, build_frame, chain) "
+                " dof, chromophore, process_overrides, build_frame, chain, "
+                " provenance, insertion) "
                 "VALUES "
-                "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
                 "RETURNING id",
                 (
                     ref_id,
@@ -1077,7 +1221,7 @@ def save_tree(
                     # The label text is written for both reference forms;
                     # only a LOCAL one also gets a uid — module docstring.
                     node.template,
-                    _local_template_uid(uid_of, node.template),
+                    _template_uid(uid_of, foreign_uids, node.template),
                     name,
                     # Parent-relative, as stored (module docstring's engine
                     # fix): NEVER node.pose/node.rot, which by this point
@@ -1103,6 +1247,8 @@ def save_tree(
                     else None,
                     Jsonb(node.build_frame) if node.build_frame is not None else None,
                     Jsonb(node.chain) if node.chain is not None else None,
+                    Jsonb(node.provenance) if node.provenance else None,
+                    Jsonb(node.insertion) if node.insertion is not None else None,
                 ),
             ).fetchone()
             assert row is not None
@@ -1155,8 +1301,8 @@ def save_tree(
             c.execute(
                 "INSERT INTO se_connects "
                 "(ref_id, a_block, a_block_uid, a_port, b_block, b_block_uid, "
-                " b_port, joint, kind, objectives, optical) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                " b_port, joint, kind, objectives, optical, contract) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (
                     ref_id,
                     a[0],
@@ -1169,6 +1315,11 @@ def save_tree(
                     conn_spec.kind,
                     Jsonb(conn_spec.objectives) if conn_spec.objectives else None,
                     Jsonb(conn_spec.optical) if conn_spec.optical is not None else None,
+                    (
+                        Jsonb(conn_spec.contract)
+                        if conn_spec.contract is not None
+                        else None
+                    ),
                 ),
             )
         for m in tree.measures:
@@ -1176,8 +1327,8 @@ def save_tree(
                 "INSERT INTO se_measures "
                 "(ref_id, block, block_uid, name, value, relation, strength, "
                 " reason, min_value, max_value, origin, unit, datum, "
-                " measurand, measurand_ref_id, datum_pin) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                " measurand, measurand_ref_id, datum_pin, provenance) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (
                     ref_id,
                     m.block,
@@ -1195,6 +1346,7 @@ def save_tree(
                     m.measurand,
                     m.measurand_ref,
                     m.datum_pin,
+                    Jsonb(m.provenance) if m.provenance else None,
                 ),
             )
         for note in tree.notes:

@@ -439,6 +439,56 @@ def record_branch(
     return _branch_from_row(row)
 
 
+#: Core tables a branch inherits from its parent, with the columns copied
+#: verbatim (``ref_id`` is rewritten to the branch; ids and timestamps are
+#: minted fresh). Order matters: ``design_transitions`` and
+#: ``design_block_state`` reference ``design_states`` rows, so states go
+#: first.
+_BRANCH_INHERITED: tuple[tuple[str, str], ...] = (
+    ("design_scenario_link", "scenario_id, set_by"),
+    ("design_load_case_exemptions", "case_id, reason, set_by"),
+    ("design_envelope_revisions", "revision, block_uid, reason, set_by"),
+    (
+        "design_states",
+        "block_uid, name, envelope, port_pose_overrides, descr, occupancy, pose",
+    ),
+    (
+        "design_transitions",
+        "block_uid, from_state, to_state, driver_kind, driver_ref, params, requires",
+    ),
+    ("design_block_state", "block_uid, state_name, set_by"),
+)
+
+
+def copy_core_rows(
+    store: Any, src_ref_id: int, dst_ref_id: int, *, conn: Connection | None = None
+) -> dict[str, int]:
+    """Copy every core-owned row of design ``src_ref_id`` onto
+    ``dst_ref_id`` — the core half of a naive full-copy branch.
+
+    The renter copies its own block tables (uids preserved); the rows
+    keyed on ``(ref_id, block_uid)`` here — scenario, load-case
+    exemptions, envelope revision log, declared states, transitions and
+    per-block current state — are core's, so core copies them. Because
+    block uids survive the renter's copy, every copied row still points at
+    the same block. The revision log is inherited so a branch keeps
+    counting from its parent's revision (a result scored on the parent
+    under revision N stays comparable on the branch). Checkpoints and
+    revisions are NOT copied: they are the parent's own history, and the
+    branch's starts at its creation. Returns ``{table: rows copied}``."""
+    if src_ref_id == dst_ref_id:
+        raise ValueError("a branch copy needs two different designs")
+    copied: dict[str, int] = {}
+    with write_conn(store, conn) as c:
+        for table, cols in _BRANCH_INHERITED:
+            copied[table] = c.execute(
+                f"INSERT INTO {table} (ref_id, {cols}) "
+                f"SELECT %s, {cols} FROM {table} WHERE ref_id = %s",
+                (dst_ref_id, src_ref_id),
+            ).rowcount
+    return copied
+
+
 def get_branch(
     store: Any, ref_id: int, *, conn: Connection | None = None
 ) -> Branch | None:

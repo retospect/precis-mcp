@@ -237,6 +237,16 @@ def _connect_ops(tree: SeTree) -> list[dict[str, Any]]:
         )
         if c.optical:
             ops.append(_op("set_optical_link", a=a, b=b, **c.optical))
+        if c.contract:
+            ops.append(
+                _op(
+                    "set_contract",
+                    a=a,
+                    b=b,
+                    loads=dict(c.contract.get("loads") or {}),
+                    provenance=dict(c.contract.get("provenance") or {}),
+                )
+            )
     return ops
 
 
@@ -274,6 +284,19 @@ def _facet_ops(tree: SeTree) -> list[dict[str, Any]]:
         chain_op = _chain_op(name, node.chain)
         if chain_op is not None:
             ops.append(chain_op)
+        if node.insertion:
+            ops.append(
+                _op(
+                    "set_insertion",
+                    block=name,
+                    direction=list(node.insertion["direction"]),
+                    half_angle=f"{node.insertion['half_angle_rad']!r} rad",
+                )
+            )
+        # Last, so no earlier op of this block (a rebind drops the
+        # geometry claim) can undo it on replay.
+        for facet, entry in sorted((node.provenance or {}).items()):
+            ops.append(_op("set_provenance", block=name, facet=facet, provenance=entry))
     return ops
 
 
@@ -356,6 +379,7 @@ def _ledger_ops(tree: SeTree) -> list[dict[str, Any]]:
                 # carried verbatim, so a replay keeps the indices' version
                 # (a copy bound to another structure shows region_pin_stale)
                 datum_pin=m.datum_pin,
+                provenance=m.provenance,
             )
         )
     for b in tree.bom:
