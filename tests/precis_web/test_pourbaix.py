@@ -504,3 +504,240 @@ def test_pourbaix_page_draws_reset_layer_and_ships_rung_margins(
     assert "hysteretic" in text
     # the client-side verdict needs the per-rung required overdrive
     assert "data-rmargin" in text and "m_e" in text
+
+
+# ── gr488208: cold render — batched reads, identical output ──────────────
+
+
+def _scan_jobs_oracle(store: Any, sid: int) -> list[dict[str, Any]]:
+    """The pre-gr488208 per-structure read (one query plus one ``tags_for``
+    per job) — the equality oracle for ``scan_jobs_many``."""
+    from precis.quest import pourbaix_map as pm
+
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT j.ref_id, j.meta FROM refs j "
+            "WHERE j.kind = 'job' AND j.retired_at IS NULL "
+            "AND j.meta->>'job_type' = %(jt)s "
+            "AND (j.parent_id = %(sid)s OR j.parent_id IN ("
+            "      SELECT ref_id FROM refs WHERE parent_id = %(sid)s "
+            "        AND kind = 'todo' AND retired_at IS NULL)) "
+            "ORDER BY j.ref_id DESC LIMIT 100",
+            {"jt": pm.SCAN_JOB_TYPE, "sid": int(sid)},
+        ).fetchall()
+    out = []
+    for ref_id, meta in rows:
+        if not any(str(t) == "STATUS:succeeded" for t in store.tags_for(int(ref_id))):
+            continue
+        m = dict(meta or {})
+        out.append(
+            {
+                "ref_id": int(ref_id),
+                "model": m.get("model"),
+                "anchor_key": m.get("anchor_key"),
+                "engine_version": m.get("engine_version"),
+                "corrections": m.get("corrections"),
+                "che_sweep": m.get("che_sweep")
+                if isinstance(m.get("che_sweep"), dict)
+                else None,
+            }
+        )
+    return out
+
+
+def _scan(store: Any, parent: int, status: str, model: str = "m") -> int:
+    job = store.insert_ref(
+        kind="job",
+        slug=None,
+        title=f"scan {model}",
+        parent_id=parent,
+        meta={
+            "job_type": "surface_coverage_scan",
+            "anchor_key": "k" * 64,
+            "model": model,
+            "engine_version": "0.24.0",
+            "corrections": None,
+            "che_sweep": _sweep(),
+        },
+    )
+    store.add_tag(
+        job.id, Tag.closed("STATUS", status), set_by="agent", replace_prefix=True
+    )
+    return int(job.id)
+
+
+def test_scan_jobs_many_matches_the_per_structure_read(runtime_with_store) -> None:
+    from precis.quest import pourbaix_map as pm
+
+    store = runtime_with_store.store
+    sa = _seed_structure(runtime_with_store, "pd_sa", with_scan=False)
+    sb = _seed_structure(runtime_with_store, "pd_sb", with_scan=False)
+    sc = _seed_structure(runtime_with_store, "pd_sc", with_scan=False)
+    todo = store.insert_ref(kind="todo", slug=None, title="t", parent_id=sa)
+    gone = store.insert_ref(kind="todo", slug=None, title="g", parent_id=sb)
+    _scan(store, sa, "succeeded", "m1")
+    _scan(store, int(todo.id), "succeeded", "m2")  # via a todo under sa
+    _scan(store, sa, "failed")
+    _scan(store, sb, "succeeded")
+    _scan(store, int(gone.id), "succeeded")
+    store.retire_ref(int(gone.id))  # a retired todo's jobs drop out
+    store.insert_ref(
+        kind="job", slug=None, title="x", parent_id=sb, meta={"job_type": "other"}
+    )
+    many = pm.scan_jobs_many(store, [sa, sb, sc])
+    for sid in (sa, sb, sc):
+        assert many[sid] == _scan_jobs_oracle(store, sid)
+    assert [j["model"] for j in many[sa]] == ["m2", "m1"]
+    assert len(many[sb]) == 1
+    assert many[sc] == []
+
+
+def test_structure_runs_many_matches_structure_runs(runtime_with_store) -> None:
+    store = runtime_with_store.store
+    sa = _seed_structure(runtime_with_store, "pd_ra", with_scan=False)
+    sb = _seed_structure(runtime_with_store, "pd_rb", with_scan=False)
+    for e in (-1.0, -2.0, -3.0):
+        _converged(store, sa, energy=e)
+    many = store.structure_runs_many([sa, sb], limit=2)
+    assert many[sa] == store.structure_runs(sa, limit=2)
+    assert many[sb] == store.structure_runs(sb, limit=2)
+    assert len(many[sa]) == 2
+    assert store.structure_runs_many([]) == {}
+
+
+def _many_surface_quest(runtime_with_store, n: int) -> tuple[int, list[int]]:
+    """A quest served by ``n`` ranked candidates (no geometry, so no scene
+    loads) plus two anchored surfaces carrying scan jobs."""
+    store = runtime_with_store.store
+    qid = _mk_quest(runtime_with_store)
+    sids = []
+    for i in range(n):
+        st = store.insert_ref(
+            kind="structure",
+            slug=f"pbc_{qid}_{i}",
+            title=f"cand {i}",
+            meta={"geom_hash_c": f"h{i}", "barrier": 0.5 + i * 0.01},
+        )
+        _converged(store, int(st.id), energy=-float(i))
+        store.add_link(src_ref_id=st.id, dst_ref_id=qid, relation="serves")
+        sids.append(int(st.id))
+    for k in range(2):
+        sid = _seed_structure(runtime_with_store, f"pbc_{qid}_anch_{k}")
+        store.add_link(src_ref_id=sid, dst_ref_id=qid, relation="serves")
+        sids.append(sid)
+    return qid, sids
+
+
+class _QueryCounter:
+    """Counts SQL statements issued through psycopg while installed."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import psycopg
+
+        self.n = 0
+        cur_exec = psycopg.Cursor.execute
+        conn_exec = psycopg.Connection.execute
+
+        def _cur(this: Any, *a: Any, **k: Any) -> Any:
+            self.n += 1
+            return cur_exec(this, *a, **k)
+
+        def _conn(this: Any, *a: Any, **k: Any) -> Any:
+            self.n += 1
+            return conn_exec(this, *a, **k)
+
+        monkeypatch.setattr(psycopg.Cursor, "execute", _cur)
+        monkeypatch.setattr(psycopg.Connection, "execute", _conn)
+
+
+def test_pourbaix_quest_page_query_count_is_flat_in_surfaces(
+    pb_client: TestClient, runtime_with_store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr488208: the render issued ~4 queries per candidate (1,017 on a
+    239-surface fixture shaped like qu164903); the reads are batched now,
+    so the count does not grow with the surface count."""
+    counts = []
+    for n in (5, 40):
+        qid, _ = _many_surface_quest(runtime_with_store, n)
+        pb_client.get(f"/pourbaix/qu{qid}")  # warm template + imports
+        counter = _QueryCounter(monkeypatch)
+        r = pb_client.get(f"/pourbaix/qu{qid}")
+        monkeypatch.undo()
+        assert r.status_code == 200
+        counts.append(counter.n)
+    assert counts[1] == counts[0], counts
+    assert counts[0] < 80, counts
+
+
+def test_pourbaix_quest_page_cold_render_bound(runtime_with_store, tmp_path) -> None:
+    """A fresh app's first render of a 239-surface quest stays well under
+    the pre-gr488208 cost (0.86 s locally, 3.4 s at 1 ms per query).
+    Generous: it catches an N+1 regression, it is not a benchmark."""
+    import time
+
+    qid, _ = _many_surface_quest(runtime_with_store, 239)
+    client = TestClient(
+        create_app(
+            runtime=runtime_with_store, web_config=WebConfig(corpus_dir=tmp_path)
+        )
+    )
+    t0 = time.perf_counter()
+    r = client.get(f"/pourbaix/qu{qid}")
+    elapsed = time.perf_counter() - t0
+    assert r.status_code == 200
+    assert r.text.count('class="pbx-entry') == 1
+    assert elapsed < 5.0, f"cold render took {elapsed:.2f}s"
+
+
+def test_pourbaix_quest_page_batched_equals_per_structure(
+    pb_client: TestClient, runtime_with_store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The batched reads render the same page, byte for byte, as the
+    per-structure reads they replaced — default pick and compare view."""
+    from precis.quest import pourbaix_map as pm
+    from precis.store.store import Store
+
+    store = runtime_with_store.store
+    qid, sids = _many_surface_quest(runtime_with_store, 12)
+    pw = _pathway(store, "pw_eq", _reset_results())
+    store.add_link(
+        src_ref_id=sids[-1], dst_ref_id=pw.id, relation="related-to", set_by="system"
+    )
+    urls = [
+        f"/pourbaix/qu{qid}?surface=st{sids[-1]}",
+        f"/pourbaix/qu{qid}",
+        f"/pourbaix/qu{qid}?view=compare",
+    ]
+    batched = [pb_client.get(u).text for u in urls]
+    monkeypatch.setattr(
+        pm,
+        "scan_jobs_many",
+        lambda st, ids: {int(i): _scan_jobs_oracle(st, int(i)) for i in ids},
+    )
+    monkeypatch.setattr(
+        Store,
+        "structure_runs_many",
+        lambda self, ids, limit=20: {
+            int(i): self.structure_runs(int(i), limit=limit) for i in ids
+        },
+    )
+    per_structure = [pb_client.get(u).text for u in urls]
+    assert batched == per_structure
+    assert "<svg" in batched[0] and "pbx-staircase" in batched[0]
+    assert batched[2].count('class="pbx-entry') == len(sids)
+
+
+def test_pourbaix_quest_page_reflects_a_new_scan_on_the_next_render(
+    pb_client: TestClient, runtime_with_store
+) -> None:
+    """Nothing is cached between renders: a scan job that lands after the
+    first render shows on the next one."""
+    store = runtime_with_store.store
+    sid = _seed_structure(runtime_with_store, "pd_late", with_scan=False)
+    qid = _mk_quest(runtime_with_store)
+    store.add_link(src_ref_id=sid, dst_ref_id=qid, relation="serves")
+    first = pb_client.get(f"/pourbaix/qu{qid}").text
+    assert "no anchors" in first
+    _scan(store, sid, "succeeded")
+    second = pb_client.get(f"/pourbaix/qu{qid}").text
+    assert "no anchors" not in second and "U (V vs RHE)" in second

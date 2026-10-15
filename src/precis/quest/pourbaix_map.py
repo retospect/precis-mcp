@@ -85,23 +85,52 @@ def scan_jobs(store: Any, structure_ref_id: int) -> list[dict[str, Any]]:
     pooled-sweep stamp). The parent convention mirrors
     ``precis.quest.compute``'s candidate-job lookup: parented on the
     structure or on a todo under it."""
+    return scan_jobs_many(store, [int(structure_ref_id)])[int(structure_ref_id)]
+
+
+def scan_jobs_many(
+    store: Any, structure_ref_ids: list[int]
+) -> dict[int, list[dict[str, Any]]]:
+    """:func:`scan_jobs` for many structures in two queries (jobs, then
+    their tags) instead of two per structure plus one per job — the quest
+    page reads every candidate (gr488208). Same rows per structure, same
+    order, same 100-job cap; a structure without scans maps to ``[]``."""
+    out: dict[int, list[dict[str, Any]]] = {int(i): [] for i in structure_ref_ids}
+    if not out:
+        return out
     with store.pool.connection() as conn:
         rows = conn.execute(
-            "SELECT j.ref_id, j.meta FROM refs j "
-            "WHERE j.kind = 'job' AND j.retired_at IS NULL "
-            "AND j.meta->>'job_type' = %(jt)s "
-            "AND (j.parent_id = %(sid)s OR j.parent_id IN ("
-            "      SELECT ref_id FROM refs WHERE parent_id = %(sid)s "
-            "        AND kind = 'todo' AND retired_at IS NULL)) "
-            "ORDER BY j.ref_id DESC LIMIT 100",
-            {"jt": SCAN_JOB_TYPE, "sid": int(structure_ref_id)},
+            "SELECT sid, ref_id, meta FROM ("
+            "  SELECT COALESCE(t.parent_id, j.parent_id) AS sid, j.ref_id, j.meta,"
+            "    row_number() OVER (PARTITION BY COALESCE(t.parent_id, j.parent_id)"
+            "      ORDER BY j.ref_id DESC) AS rn"
+            "  FROM refs j"
+            "  LEFT JOIN refs t ON t.ref_id = j.parent_id AND t.kind = 'todo'"
+            "    AND t.retired_at IS NULL AND t.parent_id = ANY(%(sids)s)"
+            "  WHERE j.kind = 'job' AND j.retired_at IS NULL"
+            "    AND j.meta->>'job_type' = %(jt)s"
+            "    AND (j.parent_id = ANY(%(sids)s) OR t.ref_id IS NOT NULL)"
+            ") q WHERE rn <= 100 ORDER BY sid, ref_id DESC",
+            {"jt": SCAN_JOB_TYPE, "sids": list(out)},
         ).fetchall()
-    out: list[dict[str, Any]] = []
-    for ref_id, meta in rows:
-        if not any(str(t) == "STATUS:succeeded" for t in store.tags_for(int(ref_id))):
+        job_ids = [int(r[1]) for r in rows]
+        tag_rows = (
+            conn.execute(
+                "SELECT rt.ref_id, t.namespace, t.value "
+                "FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+                "WHERE rt.ref_id = ANY(%s) AND t.namespace = 'STATUS' "
+                "AND t.value = 'succeeded'",
+                (job_ids,),
+            ).fetchall()
+            if job_ids
+            else []
+        )
+    succeeded = {int(r[0]) for r in tag_rows}
+    for sid, ref_id, meta in rows:
+        if int(ref_id) not in succeeded:
             continue
         m = dict(meta or {})
-        out.append(
+        out[int(sid)].append(
             {
                 "ref_id": int(ref_id),
                 "model": m.get("model"),
@@ -134,7 +163,11 @@ def bulk_verdict(store: Any, candidate_meta: dict[str, Any]) -> dict[str, Any] |
     job_id = (candidate_meta or {}).get("pourbaix_job_id")
     if not isinstance(job_id, int):
         return None
-    job = store.fetch_refs_by_ids({job_id}).get(job_id)
+    return _verdict_of(store.fetch_refs_by_ids({job_id}).get(job_id))
+
+
+def _verdict_of(job: Any) -> dict[str, Any] | None:
+    """A ``pourbaix_bulk`` job ref's ``meta.verdict``, else ``None``."""
     verdict = (job.meta or {}).get("verdict") if job is not None else None
     return dict(verdict) if isinstance(verdict, dict) else None
 
@@ -338,23 +371,32 @@ def newest_or_first(jobs: list[dict[str, Any]], key: str) -> Any:
 
 
 def maps_for_structure(
-    store: Any, ref: Any, *, jobs: list[dict[str, Any]] | None = None
+    store: Any,
+    ref: Any,
+    *,
+    jobs: list[dict[str, Any]] | None = None,
+    verdicts: dict[int, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """One map per footing among the structure's succeeded scans; the bulk
     layer rides on every one (it is the same bulk verdict, labelled
     uncertain on each). ``jobs`` lets a caller that already ran
-    :func:`scan_jobs` pass the rows through instead of re-querying."""
+    :func:`scan_jobs` pass the rows through instead of re-querying;
+    ``verdicts`` (``{pourbaix job id: job ref}``) does the same for the
+    bulk verdict's source job."""
     if jobs is None:
         jobs = scan_jobs(store, int(ref.id))
     groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
     for row in jobs:
         groups.setdefault(_footing_key(row), []).append(row)
     candidate_meta = dict(getattr(ref, "meta", None) or {})
-    verdict = (
-        bulk_verdict(store, candidate_meta)
-        if any(k in candidate_meta for k in _BULK_META_KEYS)
-        else None
-    )
+    verdict = None
+    if any(k in candidate_meta for k in _BULK_META_KEYS):
+        if verdicts is None:
+            verdict = bulk_verdict(store, candidate_meta)
+        else:
+            job_id = candidate_meta.get("pourbaix_job_id")
+            if isinstance(job_id, int):
+                verdict = _verdict_of(verdicts.get(job_id))
     bulk = bulk_layer(candidate_meta, verdict)
     return [build_map(group, bulk=bulk) for group in groups.values()]
 
@@ -362,22 +404,32 @@ def maps_for_structure(
 def quest_maps(store: Any, quest_ref: Any) -> list[dict[str, Any]]:
     """``[{ref, handle, maps}]`` per live structure serving the quest —
     candidates without scans come back with an empty ``maps`` list rather
-    than dropped, so the view can say "no anchors" by name."""
+    than dropped, so the view can say "no anchors" by name. Scans and bulk
+    verdicts are read for every candidate at once (gr488208: a quest
+    carries hundreds)."""
     from precis.quest.gaps import _live_servers
 
-    out: list[dict[str, Any]] = []
-    for srv in _live_servers(store, int(quest_ref.id)):
-        if srv.kind != "structure":
-            continue
-        out.append(
-            {
-                "ref": srv,
-                "handle": handle_registry.try_format("structure", srv.id)
-                or f"structure:{srv.id}",
-                "maps": maps_for_structure(store, srv),
-            }
-        )
-    return out
+    servers = [
+        s for s in _live_servers(store, int(quest_ref.id)) if s.kind == "structure"
+    ]
+    jobs = scan_jobs_many(store, [int(s.id) for s in servers])
+    job_ids = {
+        jid
+        for s in servers
+        if isinstance(jid := (s.meta or {}).get("pourbaix_job_id"), int)
+    }
+    verdicts = store.fetch_refs_by_ids(job_ids) if job_ids else {}
+    return [
+        {
+            "ref": srv,
+            "handle": handle_registry.try_format("structure", srv.id)
+            or f"structure:{srv.id}",
+            "maps": maps_for_structure(
+                store, srv, jobs=jobs[int(srv.id)], verdicts=verdicts
+            ),
+        }
+        for srv in servers
+    ]
 
 
 # ── text render (llm-facing-prose; render_text's style) ─────────────────

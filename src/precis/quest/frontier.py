@@ -1361,7 +1361,9 @@ def _numeric(v: Any) -> float | None:
     return None
 
 
-def _candidate_from_structure(store: Store, s: Any) -> Candidate:
+def _candidate_from_structure(
+    store: Store, s: Any, *, runs: list[Any] | None = None
+) -> Candidate:
     """Build a :class:`Candidate` from a structure ref + its measures.
 
     Measures are gathered **generically** (not a fixed column list) so the
@@ -1381,12 +1383,18 @@ def _candidate_from_structure(store: Store, s: Any) -> Candidate:
 
     ``meta.params`` (the candidate's point in the quest param space, §7.8) rides
     along for a later optimizer advisor; it is not a measure.
+
+    ``runs`` lets a quest-wide caller pass the structure's
+    :meth:`~precis.store.Store.structure_runs` rows fetched in one batch
+    (:meth:`~precis.store.Store.structure_runs_many`) instead of one query
+    per candidate (gr488208).
     """
     from precis.utils import handle_registry
 
     handle = handle_registry.try_format("structure", s.id) or f"structure:{s.id}"
     name = (s.title or "").splitlines()[0] if s.title else handle
-    runs = store.structure_runs(s.id)
+    if runs is None:
+        runs = store.structure_runs(s.id)
     # Best = the most recent converged run THAT CARRIES AN ENERGY
     # (structure_runs is newest-first). A rung-0 ``clean``/``geo`` pass —
     # recorded by every structure put/edit, no calculator, energy None — is
@@ -2337,7 +2345,10 @@ def quest_frontier(
 
     objs = objectives or _objectives_for(store, quest_id)
     structures = [s for s in _live_servers(store, quest_id) if s.kind == "structure"]
-    candidates = [_candidate_from_structure(store, s) for s in structures]
+    runs = store.structure_runs_many([int(s.id) for s in structures])
+    candidates = [
+        _candidate_from_structure(store, s, runs=runs[int(s.id)]) for s in structures
+    ]
     apply_network_demotion(candidates)
     _flag_geom_duplicates(store, candidates, structures)
     _flag_energy_twins(candidates, structures)

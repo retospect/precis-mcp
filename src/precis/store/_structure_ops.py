@@ -839,6 +839,33 @@ class StructureMixin:
                 rows = cur.fetchall()
         return [cast(StructRunRow, r) for r in rows]
 
+    def structure_runs_many(
+        self, ref_ids: list[int], *, limit: int = 20
+    ) -> dict[int, list[StructRunRow]]:
+        """:meth:`structure_runs` for many designs in one query — the N+1
+        avoidance for a quest-wide read (the frontier over hundreds of
+        candidates, gr488208). Same rows, columns and order per design;
+        a design with no runs maps to ``[]``."""
+        out: dict[int, list[StructRunRow]] = {int(i): [] for i in ref_ids}
+        if not out:
+            return out
+        with self.pool.connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(
+                    "SELECT ref_id AS _ref_id, id, fidelity, status, model, "
+                    "on_version, converged, n_steps, energy, max_force, "
+                    "max_disp, created_at, forces, charges FROM ("
+                    "  SELECT *, row_number() OVER ("
+                    "    PARTITION BY ref_id ORDER BY id DESC) AS _rn "
+                    "  FROM struct_runs WHERE ref_id = ANY(%s)) q "
+                    "WHERE _rn <= %s ORDER BY ref_id, id DESC",
+                    (list(out), limit),
+                )
+                rows = cur.fetchall()
+        for r in rows:
+            out[int(r.pop("_ref_id"))].append(cast(StructRunRow, r))
+        return out
+
     def structure_find_cached_run(self, cache_key: str) -> StructCachedRunRow | None:
         """Look a relax request up in the run-cube cache.
 
