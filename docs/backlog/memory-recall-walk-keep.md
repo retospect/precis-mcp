@@ -45,7 +45,7 @@ DB operation, service action, export or legacy retirement.
 
 ## Motivation / why
 
-Reto's R17 ruling (`memory-file-mirror.md` §Boundary): files and graph
+Reto's R17 ruling (R17 ruling 2026-10-06; spec deleted on ship, `git show c06e338fc`): files and graph
 coexist; the real harness import and the cutover stay held. The mirror
 (`cli/memory_mirror.py::import_mirror` / `export_mirror`, on main since
 aa669f59f, synthetic acceptance td470555) gives every topic file a
@@ -178,7 +178,7 @@ other, 2 and 3 are independent of everything above.
 ## Explicitly NOT in scope
 
 - The real harness import, the cutover, and retiring any file class
-  (`memory-file-mirror.md` §Boundary; `memory-native-authoring.md` holds
+  (R17 ruling, see Motivation; `memory-native-authoring.md` holds
   the cutover sequence).
 - A metadata policy that exports native nodes to new files, and any
   graph-first write rule (open question 1; the mirror item defers it to
@@ -417,8 +417,8 @@ other, 2 and 3 are independent of everything above.
   and the acceptance test's key set are named; AC 5 checks in its
   queries; AC 6 lost the non-deterministic top-hit clause; the
   `extent=`/`view=` spelling is reconciled. Split taken as 1a/1b/2/3.
-- **Dependencies, stated honestly.** On `memory-file-mirror.md`: shipped
-  on main (R17), not yet deployed; slices 1a/1b/2 do not need it, slice 3
+- **Dependencies, stated honestly.** On the file mirror
+  (`cli/memory_mirror.py`): shipped and deployed; slices 1a/1b/2 do not need it, slice 3
   does. On `file-mirror.md` in-scope 5 (recall fixture): not needed, AC 5
   checks in its own 10 queries. On `web-graph-navigation.md`: slice 1
   moves here; nothing else.

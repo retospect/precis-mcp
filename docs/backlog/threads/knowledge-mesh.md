@@ -181,18 +181,9 @@ graph-health-metrics, five parked gripes, and the seam with
    the pillar review). Right after 7 because it builds on the same taxon
    identity; consumed by `se-machine-design.md` (pocket specs) and
    `materials-molecular-substitution-db.md`.
-9. **backlog/memory-file-mirror.md** — R17 bounded memory consumer slice:
-   explicit namespace import/export preserving filenames, YAML and body;
-   conflict detection, no automatic retirement. Synthetic files/test DB only;
-   real source import/cutover held. Explicit export supersedes the earlier
-   no-export decision for this slice. Graph-memory owns implementation/review.
-   **backlog/file-mirror.md** retains the broader skill/root mirror. Skills and the
-   Claude Code memory files as read-only `markdown` roots with links from
-   `[[slug]]` and frontmatter; replaces the unfiled "memory/skills mesh
-   pilot". Mirror first, ruled 2026-09-30; native authoring is judged
-   after its recall AC. Readiness vet the same day: needs-work, four
-   blockers folded into the item, re-vet before build. Below 8 only
-   because its recall AC is cheap to run at any time.
+9. **memory-file-mirror** — SHIPPED (aa669f59f, c06e338fc, legacy refresh
+   8993c22e6, native export afa814bd9), backlog doc deleted 2026-10-15.
+   Real import live: 150 refs in namespace `repo-dev-harness-20261007`.
 10. **backlog/norr-her-meta.md** — the consumer of list.v1.yaml (20-paper
    round, gold set, figure). Starts on a frozen list.
 

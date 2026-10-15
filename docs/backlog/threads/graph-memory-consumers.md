@@ -89,12 +89,9 @@ and the R17 ruling keeps files and graph coexisting. Kept for the record.
    the coexistence write rule and the mirror's legacy/unexported reports.
    Ready 2026-10-07 after the readiness vet (split 1a/1b/2/3; 1a is
    also web-graph-navigation slice 1).
-2. **backlog/memory-file-mirror.md** — on main, deploys with round 5.
-   Per Reto's 2026-10-07 ruling the real import follows a `--legacy
-   refresh` slice (recall-walk-keep slice 4: adopt title-matching legacy
-   nodes in place) and the approved native-export policy; then the
-   cutover sequence in the Resume. The revert-cause question is the one
-   open precondition.
+2. **memory-file-mirror** — SHIPPED and deployed, backlog doc deleted
+   2026-10-15. Legacy refresh (8993c22e6) and native export (afa814bd9)
+   landed; the real import is live (namespace `repo-dev-harness-20261007`).
 3. **backlog/memory-native-authoring.md** — Reto 2026-10-01: top priority,
    ahead of td458720's sequencing. **State 2026-10-07:** the cutover it
    records was reverted; `MEMORY.md` is a file index again, memory-lint

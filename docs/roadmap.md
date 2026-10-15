@@ -121,7 +121,7 @@ the taproot umbrella vs its defect cluster, recorded in `threads/INDEX.md`.
 Top priority (Reto, 2026-10-07, "cut over soon"; supersedes the 10-01 line
 and the coexistence reading of R17): the cutover sequence —
 `backlog/memory-recall-walk-keep.md` slices 1a+2 → deploy the mirror
-(`backlog/memory-file-mirror.md`) → refresh the 146 stale `SPACE:repo-dev`
+(`cli/memory_mirror.py`, shipped) → refresh the 146 stale `SPACE:repo-dev`
 nodes in place + the real import → hook on, `MEMORY.md` becomes a pointer
 to the mesh root memory node (plus how to bring the server back up) →
 `backlog/memory-native-authoring.md` as the primary write path → skills
