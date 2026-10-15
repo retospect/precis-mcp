@@ -120,9 +120,10 @@ get(kind="gripe", id=42)
 #   tags + linked jobs
 ```
 
-`get` composes a body head (a long body cuts with a `+N chars` marker),
-then the newest comment head, then older ones as one-line gists, so the
-current state is never pushed off the page. Read the full body and every
+`get` composes the body, then the newest comment, then older ones as
+one-line gists, so the current state is never pushed off the page. A long
+body or newest comment keeps its head and tail (the ask sits at the end)
+around a `[… N chars cut — get(…view='comments') …]` marker. Read the full body and every
 comment, oldest first, with `get(kind='gripe', id=42, view='comments')`.
 `view='log'` remains the audit log.
 Holding several ids, pass them at once: `get(kind='gripe', id=[42, 43, 44])`

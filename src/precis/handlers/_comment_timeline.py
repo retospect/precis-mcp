@@ -72,18 +72,45 @@ def _policy(kind: str) -> _Policy:
     return _KIND_POLICY.get(kind, _DEFAULT_POLICY)
 
 
-def _comment_head(text: str, chars: int | None) -> str:
-    """Cut a full-rendered comment at a line boundary inside the budget.
+#: A text up to ``budget * CUT_SLACK`` renders whole: cutting a body 22%
+#: over budget at a line boundary hid 704 of 1833 chars (gr489192), more
+#: than the overage it saved.
+CUT_SLACK = 1.25
+#: Share of the kept budget that goes to the head; the rest is the tail.
+#: Comments and gripe bodies end on the current-state ask ("Needs …",
+#: "Fix shape"), so a head-only cut dropped exactly that (gr489190).
+HEAD_SHARE = 0.6
 
-    ``None`` renders the comment uncapped (the default policy); a short
-    text always passes through whole.
+
+def clip_middle(text: str, budget: int | None, pointer: str) -> str:
+    """Keep the head and the tail of an over-budget ``text``, cut the middle.
+
+    ``budget=None`` or a text within ``budget * CUT_SLACK`` passes through
+    whole. Otherwise the head gets ``HEAD_SHARE`` of the budget and the
+    tail the rest, each cut at a line boundary when one falls in the
+    outer half of its share (else at a space, else hard). The marker
+    names the cut size and ``pointer`` — the read that has the whole
+    text (gr489191).
     """
-    if chars is None or len(text) <= chars:
+    if budget is None or len(text) <= budget * CUT_SLACK:
         return text
-    cut = text.rfind("\n", 0, chars)
-    if cut < chars // 2:
-        cut = chars
-    return text[:cut].rstrip() + " …"
+    head_n = int(budget * HEAD_SHARE)
+    tail_n = budget - head_n
+    head_end = text.rfind("\n", 0, head_n)
+    if head_end < head_n // 2:
+        head_end = text.rfind(" ", 0, head_n)
+    if head_end < head_n // 2:
+        head_end = head_n
+    floor = len(text) - tail_n
+    tail_start = text.find("\n", floor, floor + tail_n // 2)
+    if tail_start < 0:
+        tail_start = text.find(" ", floor, floor + tail_n // 2)
+    tail_start = floor if tail_start < 0 else tail_start + 1
+    return (
+        text[:head_end].rstrip()
+        + f"\n[… {tail_start - head_end} chars cut — {pointer} …]\n"
+        + text[tail_start:].lstrip()
+    )
 
 
 #: ``args=`` keys ``delete`` reads on a comment-capable kind.
@@ -135,8 +162,10 @@ def render_comments(
         if len(visible) > policy.full_count
         else []
     )
+    pointer = f"get(kind={kind!r}, id={ref.id}, view='comments')"
     parts = [
-        f"## comment {c.ord} · {_stamp(c)}\n{_comment_head(c.text, policy.full_chars)}"
+        f"## comment {c.ord} · {_stamp(c)}\n"
+        + clip_middle(c.text, policy.full_chars, pointer)
         for c in newest
     ]
     if older:
@@ -158,9 +187,9 @@ def render_comments(
         )
     else:
         shown = (
-            "newest head"
+            "newest (long ones cut mid-text)"
             if policy.full_count == 1
-            else f"newest {policy.full_count} heads"
+            else f"newest {policy.full_count} (long ones cut mid-text)"
         )
     parts.append(
         f"comments: {shown}, older as one-liners · "

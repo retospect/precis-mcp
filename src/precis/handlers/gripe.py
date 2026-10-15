@@ -14,8 +14,9 @@ Surface (see ``precis-gripe-help``):
   verb, no separate ``comment=`` field). ``link=``/``rel=`` and
   ``tags=``/``untags=`` ride along in the same transaction, so
   comment-then-close is one call.
-- ``get(kind='gripe', id=N)`` composes a body head (``_BODY_HEAD_CHARS``,
-  with a ``+N chars`` marker when cut) + the newest comment head
+- ``get(kind='gripe', id=N)`` composes a body (``_BODY_HEAD_CHARS``;
+  past it, head + tail around a ``[… N chars cut …]`` marker) + the newest
+  comment (same middle cut)
   (older ones as one-liners; per-kind policy in
   :mod:`_comment_timeline`) alongside header / tags.
   ``view='comments'`` returns the full body + the full timeline;
@@ -51,9 +52,10 @@ _BODY_KIND = "gripe_body"
 _COMMENT_KIND = "gripe_comment"
 
 #: Bare-get body head budget (render diet 2026-10-14: the default read
-#: measured p95 6.7 KB, half of it the body). Over-budget bodies cut at
-#: a line boundary and get a ``+N chars`` marker pointing at
-#: ``view='comments'``, the complete read.
+#: measured p95 6.7 KB, half of it the body). A body past the budget plus
+#: slack keeps its head and tail with a ``[… N chars cut — …]`` marker
+#: pointing at ``view='comments'``, the complete read
+#: (:func:`_comment_timeline.clip_middle`).
 _BODY_HEAD_CHARS = 1500
 
 
@@ -483,19 +485,12 @@ class GripeHandler(NumericRefHandler):
 
     @staticmethod
     def _body_head(body: str, ref_id: int) -> str:
-        """Bare-get body head: line-boundary cut inside the budget, then
-        a marker naming the view that carries the rest. The pointer is
-        inline (not in a footer) because a comment-free gripe renders no
-        comments footer to point at it."""
-        if len(body) <= _BODY_HEAD_CHARS:
-            return body
-        cut = body.rfind("\n", 0, _BODY_HEAD_CHARS)
-        if cut < _BODY_HEAD_CHARS // 2:
-            cut = _BODY_HEAD_CHARS
-        return (
-            body[:cut].rstrip()
-            + f"\n[+{len(body) - cut} chars — "
-            + f"get(kind='gripe', id={ref_id}, view='comments')]"
+        """Bare-get body: head and tail of an over-budget body (the tail
+        carries the fix shape), cut marker naming the view that has the
+        rest. The pointer is inline (not in a footer) because a
+        comment-free gripe renders no comments footer to point at it."""
+        return tl.clip_middle(
+            body, _BODY_HEAD_CHARS, f"get(kind='gripe', id={ref_id}, view='comments')"
         )
 
     def _render_create_ack(self, ref_id: int) -> Response:

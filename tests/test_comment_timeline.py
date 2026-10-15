@@ -62,7 +62,7 @@ def test_append_ack_and_display_policy(
     assert oneliners[0].endswith(f"· note-{5 - full_count}")
     assert out.index("note-5") < out.index("note-4") < out.index("note-3")
     footer = (
-        "comments: newest head, older as one-liners"
+        "comments: newest (long ones cut mid-text), older as one-liners"
         if full_count == 1
         else f"comments: newest {full_count} in full, older as one-liners"
     )
