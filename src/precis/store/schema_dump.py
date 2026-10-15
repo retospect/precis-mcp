@@ -211,7 +211,9 @@ def parse_baseline_ledger(sql_text: str) -> list[tuple[str, str]]:
 def _run_pg_dump(pg_dump_bin: str, scratch_dsn: str, extra: list[str]) -> str:
     """Invoke ``pg_dump`` against ``scratch_dsn``; return its stdout."""
     cmd = [pg_dump_bin, "--no-owner", "--no-privileges", *extra, "-d", scratch_dsn]
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    proc = subprocess.run(
+        cmd, capture_output=True, text=True, encoding="utf-8", check=False
+    )
     if proc.returncode != 0:
         raise RuntimeError(
             f"{pg_dump_bin} failed (exit {proc.returncode}): {proc.stderr.strip()}"

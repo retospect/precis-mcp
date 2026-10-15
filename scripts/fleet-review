@@ -125,7 +125,7 @@ def tick(state_root: Path, path: Path, state: dict, now: datetime, retry=False) 
         result = subprocess.run(
             ["codex", "queue", "--thread", thread, "--message", message],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8",
             timeout=60,
             check=False,
         )

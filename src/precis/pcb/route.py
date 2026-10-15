@@ -125,7 +125,13 @@ def route_dsn(
     log.info("route_dsn: %s (timeout=%ds)", " ".join(cmd), timeout_s)
     try:
         proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout_s, check=False
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_s,
+            check=False,
         )
     except subprocess.TimeoutExpired:
         return RouteResult(

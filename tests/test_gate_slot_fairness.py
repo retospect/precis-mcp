@@ -183,6 +183,7 @@ def test_release_clears_an_unacquired_waiters_ticket(
         ["bash", "-c", script],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=20,
         check=True,
     )

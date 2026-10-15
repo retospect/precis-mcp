@@ -166,6 +166,8 @@ def run_trace(
                 cmd,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 cwd=str(cwd) if cwd else None,
                 env=proc_env,
                 timeout=timeout,

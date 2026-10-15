@@ -206,6 +206,7 @@ def _git_clone_readonly(repo_dir: Path, dest: Path) -> None:
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
 
 

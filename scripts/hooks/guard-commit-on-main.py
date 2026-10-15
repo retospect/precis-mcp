@@ -55,6 +55,7 @@ def _branch(cwd: str) -> str:
             ["git", "-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=True,
         )
         return out.stdout.strip()
@@ -69,6 +70,7 @@ def _repo_root(cwd: str) -> str:
             ["git", "-C", cwd, "rev-parse", "--show-toplevel"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=True,
         )
         return out.stdout.strip()

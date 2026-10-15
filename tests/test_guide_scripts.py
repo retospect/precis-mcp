@@ -499,6 +499,7 @@ def test_build_produces_all_section_anchors_and_nav(tmp_path: Path) -> None:
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False,
     )
     assert result.returncode == 0, result.stderr
@@ -552,6 +553,7 @@ def test_build_is_idempotent(tmp_path: Path) -> None:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=False,
         )
         assert result.returncode == 0, result.stderr
@@ -575,6 +577,7 @@ def test_build_well_formed_html(tmp_path: Path) -> None:
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=True,
     )
     doc = out.read_text(encoding="utf-8")
@@ -669,6 +672,7 @@ def test_build_markdown_produces_all_sections_and_nav(tmp_path: Path) -> None:
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False,
     )
     assert result.returncode == 0, result.stderr
@@ -715,6 +719,7 @@ def test_build_markdown_nav_hrefs_match_emitted_anchors(tmp_path: Path) -> None:
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=True,
     )
     doc = out.read_text(encoding="utf-8")
@@ -742,6 +747,7 @@ def test_build_markdown_is_idempotent(tmp_path: Path) -> None:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=False,
         )
         assert result.returncode == 0, result.stderr
@@ -824,6 +830,7 @@ def test_guide_readme_md_matches_generated(tmp_path: Path) -> None:
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False,
     )
     assert result.returncode == 0, result.stderr
@@ -854,6 +861,7 @@ def test_guide_narrate_check_segments_all_nine() -> None:
         [sys.executable, str(_REPO_ROOT / "scripts" / "guide-narrate"), "--check"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False,
     )
     assert result.returncode == 0, result.stderr
@@ -886,6 +894,7 @@ def test_guide_narrate_check_only_filters_to_one_section() -> None:
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False,
     )
     assert result.returncode == 0, result.stderr
@@ -905,6 +914,7 @@ def test_guide_narrate_rejects_unknown_voice() -> None:
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False,
     )
     assert result.returncode == 1

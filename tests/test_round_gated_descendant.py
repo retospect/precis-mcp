@@ -116,7 +116,13 @@ printf '%s | %s\\n' "$PWD" "$*" >> {log}
     pin = rig.root / ".ship-sha"
     pin.write_text(rig.shas["c3"], encoding="utf-8")
     refused = subprocess.run(
-        command, cwd=cwd, env=env, capture_output=True, text=True, check=False
+        command,
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
     )
     assert refused.returncode == 1
     assert ".ship-sha here pins" in refused.stderr
@@ -124,7 +130,13 @@ printf '%s | %s\\n' "$PWD" "$*" >> {log}
     assert rig.deploy_log() == []
     pin.write_text(head, encoding="utf-8")
     out = subprocess.run(
-        command, cwd=cwd, env=env, capture_output=True, text=True, check=False
+        command,
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
     )
     assert out.returncode == 3, out.stderr
     assert rig.deploy_log() == [f"{head} --pinned"]
@@ -150,6 +162,7 @@ printf '%s | %s\\n' "$PWD" "$*" >> {log}
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False,
     )
     assert confirmed.returncode == 0, confirmed.stderr

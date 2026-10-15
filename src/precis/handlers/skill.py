@@ -2318,6 +2318,7 @@ def _git_cli_info(src: Path) -> dict[str, str]:
                 ["git", "-C", str(src), *args],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 timeout=3,
             )
         except (OSError, subprocess.SubprocessError):
@@ -2720,6 +2721,7 @@ def _commits_behind(root: Path, old: str, new: str) -> int | None:
             ["git", "-C", str(root), "rev-list", "--count", f"{old}..{new}"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=3,
         )
     except (OSError, subprocess.SubprocessError):

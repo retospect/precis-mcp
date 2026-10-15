@@ -29,6 +29,7 @@ def test_shared_view_state_smoke() -> None:
         ["node", str(_REPO / "scripts" / "se_view_state_smoke.mjs")],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=60,
     )
     assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"

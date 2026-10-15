@@ -296,6 +296,8 @@ def _read_mcp_identity_ok(pid: int) -> bool:
             ["ps", "-p", str(pid), "-o", "command="],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
             check=False,
         )

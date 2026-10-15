@@ -544,6 +544,7 @@ def _git_commit(repo: Path, rel_files: list[str], *, branch: str, message: str) 
             ["git", "-C", str(repo), *args],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=check,
             timeout=30,
         )

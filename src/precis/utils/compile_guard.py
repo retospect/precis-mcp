@@ -110,6 +110,8 @@ def check_workspace_compiles(
                 env=hardened_latex_env(),
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=timeout_s,
                 check=False,
             )

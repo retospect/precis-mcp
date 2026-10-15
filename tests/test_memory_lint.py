@@ -58,7 +58,12 @@ def _test_env(**extra: str) -> dict[str, str]:
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
-        ["git", *args], cwd=str(cwd), env=_test_env(), capture_output=True, text=True
+        ["git", *args],
+        cwd=str(cwd),
+        env=_test_env(),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
     )
     assert result.returncode == 0, f"git {args} failed: {result.stderr}"
     return result
@@ -145,6 +150,7 @@ def _run(
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=30,
         check=False,
     )

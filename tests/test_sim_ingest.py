@@ -25,7 +25,12 @@ from precis.store import Store
 
 def _git(path: Path, *cmd: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["git", *cmd], cwd=path, check=True, capture_output=True, text=True
+        ["git", *cmd],
+        cwd=path,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
     )
 
 

@@ -361,6 +361,7 @@ def _podman(args: list[str], *, timeout: int = 60) -> subprocess.CompletedProces
         [_reap_bin(), *args],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=timeout,
         check=False,
     )
@@ -791,6 +792,8 @@ def _launch_build(
         argv,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=120,
         check=False,
         env={**os.environ, "CLAUDE_CODE_OAUTH_TOKEN": _oauth},
@@ -889,7 +892,15 @@ def _launch_run(
         pids_limit=pids_limit,
         network=_network_mode(),
     )
-    res = subprocess.run(argv, capture_output=True, text=True, timeout=120, check=False)
+    res = subprocess.run(
+        argv,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=120,
+        check=False,
+    )
     if res.returncode != 0:
         tail = (res.stderr or res.stdout or "").strip()[-2000:]
         _fail(store, ref_id, f"sandbox_run: podman run failed: {tail}")

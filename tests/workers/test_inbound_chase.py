@@ -567,6 +567,6 @@ def test_importable_without_semanticscholar() -> None:
         "import precis.workers.inbound_chase\n"
     )
     proc = subprocess.run(
-        [sys.executable, "-c", script], capture_output=True, text=True
+        [sys.executable, "-c", script], capture_output=True, text=True, encoding="utf-8"
     )
     assert proc.returncode == 0, proc.stderr

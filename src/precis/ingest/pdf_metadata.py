@@ -185,6 +185,7 @@ def _read_existing_pdf_metadata(pdf_path: Path) -> dict[str, Any]:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=30,
         )
         if result.returncode != 0:

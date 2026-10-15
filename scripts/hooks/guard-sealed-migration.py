@@ -39,6 +39,7 @@ def _sealed(path: str) -> bool:
             ["git", "-C", os.path.dirname(path) or ".", "rev-parse", "--show-toplevel"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=True,
         ).stdout.strip()
         rel = os.path.relpath(path, top)

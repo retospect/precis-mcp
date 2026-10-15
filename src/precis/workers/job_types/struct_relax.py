@@ -440,7 +440,12 @@ def _container_still_present(
     cmd = list_argv if local else _remote_argv(target, list_argv)
     try:
         res = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=30, check=False
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+            check=False,
         )
     except (OSError, subprocess.SubprocessError):
         log.warning(
@@ -490,7 +495,12 @@ def kill_container(
     cmd = argv if local else _remote_argv(target, argv)
     try:
         res = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=30, check=False
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+            check=False,
         )
     except (OSError, subprocess.SubprocessError):
         log.warning(
@@ -544,7 +554,12 @@ def reset_gpu(*, node: str | None = None, container_cmd: str = _CONTAINER_CMD) -
     cmd = argv if local else _remote_argv(target, argv)
     try:
         res = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=60, check=False
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
+            check=False,
         )
     except (OSError, subprocess.SubprocessError):
         log.warning("struct_relax: reset_gpu on %s failed", target, exc_info=True)
@@ -611,7 +626,12 @@ def reap_stale_containers(
     cmd = list_argv if local else _remote_argv(target, list_argv)
     try:
         res = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=30, check=False
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+            check=False,
         )
     except (OSError, subprocess.SubprocessError):
         log.warning(
@@ -641,7 +661,12 @@ def reap_stale_containers(
         rm_cmd = rm_argv if local else _remote_argv(target, rm_argv)
         try:
             rm_res = subprocess.run(
-                rm_cmd, capture_output=True, text=True, timeout=30, check=False
+                rm_cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=30,
+                check=False,
             )
         except (OSError, subprocess.SubprocessError):
             log.warning(
@@ -693,7 +718,14 @@ def _default_runner(
     write-back runs without a cluster."""
     local = node == os.environ.get("PRECIS_NODE")
     cmd = argv if local else ["ssh", node, *argv]
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+    )
     return proc.returncode, proc.stdout + proc.stderr
 
 

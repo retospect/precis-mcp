@@ -101,12 +101,17 @@ class Fleet:
             env={**self.env, **env},
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=False,
         )
 
     def git(self, *args: str, cwd: Path | None = None) -> str:
         return subprocess.check_output(
-            ["git", *args], cwd=cwd or self.root, text=True, stderr=subprocess.DEVNULL
+            ["git", *args],
+            cwd=cwd or self.root,
+            text=True,
+            encoding="utf-8",
+            stderr=subprocess.DEVNULL,
         ).strip()
 
     def windows(self) -> dict:

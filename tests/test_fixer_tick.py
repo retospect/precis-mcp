@@ -139,6 +139,7 @@ def _init_repo(path: Path) -> None:
         cwd=path,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=True,
     ).stdout.strip()
     subprocess.run(

@@ -84,7 +84,12 @@ def _test_env(**extra: str) -> dict[str, str]:
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
-        ["git", *args], cwd=str(cwd), env=_test_env(), capture_output=True, text=True
+        ["git", *args],
+        cwd=str(cwd),
+        env=_test_env(),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
     )
     assert result.returncode == 0, f"git {args} failed: {result.stderr}"
     return result
@@ -103,6 +108,7 @@ def _lib_call(fn: str, *args: str) -> str:
         ["bash", "-c", f"source '{DEPLOY_STATE_LIB_SRC}'; {fn} {quoted_args}"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=15,
     )
     assert result.returncode == 0, result.stderr
@@ -247,6 +253,7 @@ def _run_deploy(
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=60,
     )
 
@@ -468,6 +475,7 @@ def test_canary_path_pins_a_local_sha(fx: Fixture, tmp_path: Path) -> None:
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=60,
     )
     assert "could not resolve" not in result.stderr
@@ -525,6 +533,7 @@ def _canary_migrate_run(
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=60,
     )
     calls = record.read_text(encoding="utf-8").splitlines() if record.exists() else []
@@ -581,6 +590,7 @@ def test_canary_path_refuses_a_sha_no_remote_branch_reaches(
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=60,
     )
     assert result.returncode != 0
@@ -700,7 +710,11 @@ def test_ship_pins_the_gated_sha_only_after_a_full_gate(
         f'SHIP_SHA_FILE="{pin}"\n' + _ship_pin_block() + "\n"
     )
     result = subprocess.run(
-        ["bash", "-c", script], capture_output=True, text=True, timeout=15
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=15,
     )
     assert result.returncode == 0, result.stderr
 
@@ -721,7 +735,11 @@ def test_ship_never_pins_an_empty_sha(tmp_path: Path) -> None:
         f'SHIP_SHA_FILE="{pin}"\n' + _ship_pin_block() + "\n"
     )
     result = subprocess.run(
-        ["bash", "-c", script], capture_output=True, text=True, timeout=15
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=15,
     )
     assert result.returncode == 0, result.stderr
     assert not pin.exists()

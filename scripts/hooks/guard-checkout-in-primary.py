@@ -61,7 +61,11 @@ def _git(cwd: str, *args: str) -> str:
     """Run ``git <args>`` at ``cwd``; empty string on any failure."""
     try:
         out = subprocess.run(
-            ["git", "-C", cwd, *args], capture_output=True, text=True, check=True
+            ["git", "-C", cwd, *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
         )
         return out.stdout.strip()
     except Exception:
@@ -77,7 +81,11 @@ def _git_ok(cwd: str, *args: str) -> bool:
     """
     try:
         subprocess.run(
-            ["git", "-C", cwd, *args], capture_output=True, text=True, check=True
+            ["git", "-C", cwd, *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
         )
         return True
     except Exception:

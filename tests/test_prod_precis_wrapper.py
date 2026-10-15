@@ -59,6 +59,7 @@ def test_cloud_url_child_environment(
         ["bash", str(wrapper), "tools", "get", "--kind", "gripe", "--id", "fixture"],
         env=env,
         text=True,
+        encoding="utf-8",
         capture_output=True,
         timeout=10,
         check=True,

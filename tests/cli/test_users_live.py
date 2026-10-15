@@ -80,6 +80,7 @@ def _cli(*argv: str, dsn: str, stdin: str | None = None) -> subprocess.Completed
         input=stdin,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=120,
     )
 
@@ -108,6 +109,7 @@ def test_cli_creates_an_account_a_live_server_then_accepts(store: Store) -> None
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        encoding="utf-8",
     )
     try:
         deadline = time.monotonic() + 90

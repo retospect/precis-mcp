@@ -137,6 +137,8 @@ def render_via_container(
                 timeout=timeout,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
             )
         except subprocess.CalledProcessError as exc:
             # Capture what the container printed — without this the daemon

@@ -36,7 +36,7 @@ if args.command == "export-prod":
         env={**os.environ, "PRECIS_PROD_PSQL_OPTS": "-Atq"},
         check=True,
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8",
     )
     # -q suppresses transaction tags; exactly one JSON row is required.
     fixture = normalize(json.loads(completed.stdout))

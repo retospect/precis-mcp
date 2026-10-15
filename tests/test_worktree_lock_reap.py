@@ -107,7 +107,12 @@ def _test_env() -> dict[str, str]:
 
 def _run(cmd: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
-        cmd, cwd=str(cwd), env=_test_env(), capture_output=True, text=True
+        cmd,
+        cwd=str(cwd),
+        env=_test_env(),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
     )
     assert result.returncode == 0, (
         f"cmd failed: {cmd}\nstdout: {result.stdout}\nstderr: {result.stderr}"
@@ -410,6 +415,7 @@ sleep 120
             env=_test_env(),
             capture_output=True,
             text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0, result.stderr
 
@@ -445,6 +451,7 @@ sleep 120
         env=_test_env(),
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     assert result.returncode == 0, result.stderr
 
@@ -658,6 +665,7 @@ def test_session_end_reap_still_reaps_dead_lock(
         env=_test_env(),
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     assert result.returncode == 0, result.stderr
 
@@ -782,6 +790,7 @@ def test_reap_worktrees_skips_a_dead_locked_tree_with_a_live_session_in_it(
             env=_reap_env(PRECIS_REAP_GRACE_SECONDS="1"),
             capture_output=True,
             text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0, result.stderr
         assert "gr474985" in result.stdout, result.stdout
@@ -811,6 +820,7 @@ def test_session_end_reap_holds_a_lock_owned_by_another_users_live_pid(
         env=_test_env(),
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     assert result.returncode == 0, result.stderr
 
@@ -853,6 +863,7 @@ def test_session_end_reap_holds_when_it_cannot_identify_itself(
             env=_test_env(),
             capture_output=True,
             text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0, result.stderr
 
@@ -895,6 +906,7 @@ def test_session_end_reap_holds_when_shared_lib_is_missing(
             env=_test_env(),
             capture_output=True,
             text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0, result.stderr
 
@@ -928,6 +940,7 @@ def _reassert(
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
 
 
@@ -1165,6 +1178,7 @@ def test_reap_worktrees_purpose_tripwire_blocks_removal(
         env=_reap_env(PRECIS_REAP_GRACE_SECONDS="1"),
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     assert result.returncode == 0, result.stderr
     assert "purpose" in result.stdout.lower(), result.stdout
@@ -1202,6 +1216,7 @@ def test_reap_worktrees_purpose_tripwire_respects_staleness_threshold(
         ),
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     assert result.returncode == 0, result.stderr
 
@@ -1229,6 +1244,7 @@ def test_reap_worktrees_grace_period_skips_a_tree_that_goes_dirty_mid_sleep(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
     )
     try:
         time.sleep(0.5)
@@ -1264,6 +1280,7 @@ def test_reap_worktrees_grace_period_still_reaps_when_nothing_changes(
         env=_reap_env(PRECIS_REAP_GRACE_SECONDS="1"),
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     assert result.returncode == 0, result.stderr
 
@@ -1443,7 +1460,12 @@ exec "{real_git}" "$@"
 
     def _shimgit(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
         result = subprocess.run(
-            ["git", *args], cwd=str(cwd), env=env, capture_output=True, text=True
+            ["git", *args],
+            cwd=str(cwd),
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0, (args, result.stdout, result.stderr)
         return result
@@ -1475,6 +1497,7 @@ exec "{real_git}" "$@"
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     assert probe.returncode != 0, "shim must fail merge-tree --write-tree"
 
@@ -1484,6 +1507,7 @@ exec "{real_git}" "$@"
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     assert result.returncode == 0, result.stderr
     bucket = _bucket_for(result.stdout, b)
@@ -1631,7 +1655,7 @@ def _run_reap_test_dbs(
     if dry_run:
         cmd.append("--dry-run")
     result = subprocess.run(
-        cmd, cwd=str(primary), env=env, capture_output=True, text=True
+        cmd, cwd=str(primary), env=env, capture_output=True, text=True, encoding="utf-8"
     )
     return result, log_file.read_text(encoding="utf-8")
 
@@ -1812,6 +1836,7 @@ def _commit_at(repo: Path, message: str, *, days_ago: int) -> None:
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     assert result.returncode == 0, result.stderr
 
@@ -1893,6 +1918,7 @@ def test_sweep_deletes_only_the_stale_orphaned_gate_refs(
         env=_reap_env(PRECIS_REAP_GRACE_SECONDS="1"),
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     assert result.returncode == 0, result.stderr
 
@@ -1914,6 +1940,7 @@ def test_sweep_dry_run_reports_without_deleting(
         env=_reap_env(),
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     assert result.returncode == 0, result.stderr
     assert "would delete" in result.stdout, result.stdout
@@ -1935,6 +1962,7 @@ def test_sweep_honours_its_own_escape_hatch(
         env=_reap_env(PRECIS_NO_CI_REF_REAP="1", PRECIS_REAP_GRACE_SECONDS="1"),
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     assert result.returncode == 0, result.stderr
     assert len(_origin_gate_refs(origin)) == 4
@@ -1955,6 +1983,7 @@ def test_sweep_is_silent_when_the_remote_is_unreachable(
         env=_reap_env(PRECIS_REAP_GRACE_SECONDS="1"),
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     assert result.returncode == 0, result.stderr
     assert "gate ref" not in result.stdout
@@ -2016,6 +2045,7 @@ def test_reap_worktrees_leaves_non_pid_locked_worktree_alone(
         env=_reap_env(PRECIS_REAP_GRACE_SECONDS="1"),
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     assert result.returncode == 0, result.stderr
 

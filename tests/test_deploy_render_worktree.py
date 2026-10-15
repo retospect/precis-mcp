@@ -66,7 +66,12 @@ def _test_env(**extra: str) -> dict[str, str]:
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
-        ["git", *args], cwd=str(cwd), env=_test_env(), capture_output=True, text=True
+        ["git", *args],
+        cwd=str(cwd),
+        env=_test_env(),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
     )
     assert result.returncode == 0, f"git {args} failed: {result.stderr}"
     return result
@@ -78,6 +83,7 @@ def _lib_call(fn: str, *args: str) -> str:
         ["bash", "-c", f"source '{DEPLOY_STATE_LIB_SRC}'; {fn} {quoted}"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=15,
     )
     assert result.returncode == 0, result.stderr
@@ -233,6 +239,7 @@ def _run_deploy(
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=120,
     )
 

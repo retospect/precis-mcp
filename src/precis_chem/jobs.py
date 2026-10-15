@@ -81,7 +81,14 @@ def _default_runner(
     :data:`RUNNER` for a stub that writes a fake ``trees.json`` into out_dir."""
     local = node == os.environ.get("PRECIS_NODE")
     cmd = argv if local else ["ssh", node, *argv]
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+    )
     return proc.returncode, proc.stdout + proc.stderr
 
 

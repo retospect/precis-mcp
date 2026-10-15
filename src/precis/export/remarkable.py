@@ -399,6 +399,7 @@ def _run(
             env=env,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=timeout_s,
             check=False,
         )

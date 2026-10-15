@@ -99,6 +99,7 @@ def attempt_llm_fix(
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=timeout_s,
             check=False,
         )
@@ -152,6 +153,8 @@ def _run_chktex(text: str) -> tuple[str, ...]:
             input=text,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=15,
             check=False,
         )

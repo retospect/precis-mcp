@@ -56,6 +56,7 @@ def _run(
         input=payload,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         env=env,
         check=False,
     )

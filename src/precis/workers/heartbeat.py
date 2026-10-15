@@ -225,6 +225,8 @@ def collect_top_cpu(n: int = 3) -> list[dict[str, Any]]:
             ["ps", "-Ao", "pcpu=,comm="],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
             check=False,
         )
@@ -589,6 +591,8 @@ def _temp_from_cmd(cmd: str) -> float | None:
             shell=True,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
             check=False,
         )
@@ -788,6 +792,7 @@ def _temp_from_macos_smc() -> float | None:
                 [path],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 timeout=5,
                 check=False,
             )

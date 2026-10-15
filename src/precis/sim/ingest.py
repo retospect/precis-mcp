@@ -70,6 +70,7 @@ def _git_head_sha(repo_path: Path) -> str | None:
             ["git", "-C", str(repo_path), "rev-parse", "HEAD"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=True,
             timeout=10,
         )

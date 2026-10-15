@@ -251,6 +251,7 @@ def test_sweep_awk_strips_the_dead_unit_marker() -> None:
         input=rows,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=True,
     ).stdout.splitlines()
     assert out == [
@@ -272,6 +273,7 @@ def test_step2_unit_listing_strips_the_dead_unit_marker() -> None:
         input="● precis-worker.service loaded failed failed dead worker\n",
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=True,
     ).stdout.strip()
     assert out == "precis-worker.service"

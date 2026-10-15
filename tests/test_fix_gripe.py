@@ -1012,7 +1012,12 @@ class TestRunExceptionMapping:
 
         def _run(*args: str) -> None:
             subprocess.run(
-                args, cwd=str(repo), check=True, capture_output=True, text=True
+                args,
+                cwd=str(repo),
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
             )
 
         subprocess.run(
@@ -1394,6 +1399,7 @@ class TestRunPerformsTrustedSidePush:
             cwd=str(repo),
             capture_output=True,
             text=True,
+            encoding="utf-8",
         )
         assert check.returncode == 0
         assert check.stdout.strip() == outcome.sha
@@ -1433,7 +1439,12 @@ class TestDeliveryIsDecidedByTheRemote:
         import subprocess
 
         subprocess.run(
-            ["git", *args], cwd=str(cwd), check=True, capture_output=True, text=True
+            ["git", *args],
+            cwd=str(cwd),
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
         )
 
     def _commit_in_clone(self, clone_dir: Path) -> Any:
@@ -1513,6 +1524,7 @@ class TestDeliveryIsDecidedByTheRemote:
             cwd=str(other),
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=True,
         ).stdout.strip()
 
@@ -1536,6 +1548,7 @@ class TestDeliveryIsDecidedByTheRemote:
             cwd=str(upstream),
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=True,
         ).stdout.strip()
 

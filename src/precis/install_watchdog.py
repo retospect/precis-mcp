@@ -155,6 +155,7 @@ def _git_sha_short() -> str:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=3,
         )
     except (OSError, subprocess.SubprocessError):

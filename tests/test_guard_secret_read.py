@@ -165,6 +165,7 @@ def test_end_to_end_emits_a_deny_decision() -> None:
         ),
         capture_output=True,
         text=True,
+        encoding="utf-8",
         env={"PATH": "/usr/bin:/bin"},  # no ALLOW_SECRET_READ
     )
     assert proc.returncode == 0
@@ -181,6 +182,7 @@ def test_escape_hatch_allows_the_read() -> None:
         ),
         capture_output=True,
         text=True,
+        encoding="utf-8",
         env={"PATH": "/usr/bin:/bin", "ALLOW_SECRET_READ": "1"},
     )
     assert proc.returncode == 0

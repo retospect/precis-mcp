@@ -126,6 +126,7 @@ def _git(
         cwd=str(repo),
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=check,
     )
 
@@ -220,6 +221,7 @@ def _spawn_claude(
         cwd=str(cwd),
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=cfg.build_timeout_s,
         check=False,
     )
@@ -256,7 +258,12 @@ def _autofix_lint(worktree: Path) -> None:
         ("uv", "run", "ruff", "format", "."),
     ):
         subprocess.run(
-            list(cmd), cwd=str(worktree), capture_output=True, text=True, check=False
+            list(cmd),
+            cwd=str(worktree),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
         )
     _commit_if_dirty(worktree, "style: ruff autofix (fixer)")
 
@@ -272,7 +279,12 @@ def _quick_gate(cfg: FixerConfig, worktree: Path) -> tuple[bool, str]:
     """
     for cmd in cfg.gate_cmds:
         res = subprocess.run(
-            list(cmd), cwd=str(worktree), capture_output=True, text=True, check=False
+            list(cmd),
+            cwd=str(worktree),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
         )
         if res.returncode != 0:
             tail = "\n".join((res.stdout + res.stderr).splitlines()[-15:])
@@ -286,6 +298,7 @@ def _run_script(cfg: FixerConfig, script: str, *args: str) -> tuple[bool, str]:
         cwd=str(cfg.repo_root),
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False,
     )
     tail = "\n".join((res.stdout + res.stderr).splitlines()[-20:])
@@ -538,6 +551,7 @@ def _run_script_in_worktree(worktree: Path, script: str, msg: str) -> tuple[bool
         cwd=str(worktree),
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False,
     )
     tail = "\n".join((res.stdout + res.stderr).splitlines()[-20:])

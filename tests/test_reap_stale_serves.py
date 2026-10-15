@@ -121,6 +121,7 @@ def _run(match: str, *args: str) -> subprocess.CompletedProcess[str]:
         env={**os.environ, "PRECIS_REAP_SERVE_CMD": match},
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=30,
         check=False,
     )
@@ -160,6 +161,7 @@ def test_escape_hatch_and_no_matches_are_quiet_noops(tmp_path: Path) -> None:
         },
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=30,
         check=False,
     )
@@ -171,6 +173,7 @@ def test_escape_hatch_and_no_matches_are_quiet_noops(tmp_path: Path) -> None:
         env={**os.environ, "PRECIS_NO_AUTOREAP": "1"},
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=30,
         check=False,
     )

@@ -165,6 +165,7 @@ def run_ruff(content: str, target_path: Path) -> tuple[str, RuffChanges]:
             input=content,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=False,
         )
         fixed = fix_result.stdout
@@ -178,6 +179,7 @@ def run_ruff(content: str, target_path: Path) -> tuple[str, RuffChanges]:
             input=fixed,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=False,
         )
         if fmt_result.returncode != 0:

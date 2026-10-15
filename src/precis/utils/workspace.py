@@ -371,6 +371,7 @@ def ensure_initialized(workspace: Workspace, precis_root: Path) -> Path:
                 check=True,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
             )
         except (subprocess.CalledProcessError, FileNotFoundError) as exc:
             log.warning(
@@ -388,6 +389,7 @@ def ensure_initialized(workspace: Workspace, precis_root: Path) -> Path:
             cwd=root,
             capture_output=True,
             text=True,
+            encoding="utf-8",
         )
         has_commits = rev.returncode == 0
     except FileNotFoundError:
@@ -400,6 +402,7 @@ def ensure_initialized(workspace: Workspace, precis_root: Path) -> Path:
                 check=True,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
             )
             subprocess.run(
                 [
@@ -417,6 +420,7 @@ def ensure_initialized(workspace: Workspace, precis_root: Path) -> Path:
                 check=True,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
             )
         except (subprocess.CalledProcessError, FileNotFoundError) as exc:
             # Most common cause on NFS: git uses the file owner for
@@ -524,6 +528,7 @@ def commit_put(
             check=True,
             capture_output=True,
             text=True,
+            encoding="utf-8",
         )
         sha = subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -531,6 +536,7 @@ def commit_put(
             check=True,
             capture_output=True,
             text=True,
+            encoding="utf-8",
         ).stdout.strip()
         return sha
     except (subprocess.CalledProcessError, FileNotFoundError) as exc:

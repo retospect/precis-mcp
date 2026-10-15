@@ -528,6 +528,7 @@ def _run_prod_psql(sql: str) -> str | None:
             [str(script), "--ro", sql],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             env=env,
             check=False,
             timeout=180,

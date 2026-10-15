@@ -124,6 +124,7 @@ def _probe_gpu() -> int | None:
             ["nvidia-smi", "-L"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=10,
             check=False,
         )
@@ -442,6 +443,7 @@ def _macos_mem_free_pct() -> float | None:
             ["memory_pressure", "-Q"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=10,
             check=False,
         )

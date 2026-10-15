@@ -217,6 +217,7 @@ def test_shell_readers_refuse_invalid_lifecycle_records(
         env=rig.env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False,
     )
     assert out.returncode == 1

@@ -43,6 +43,7 @@ def _sh(snippet: str) -> subprocess.CompletedProcess[str]:
         ["bash", "-c", f'source "{LIB}"\n{snippet}'],
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
 
 

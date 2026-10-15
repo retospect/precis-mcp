@@ -33,11 +33,19 @@ def test_commit_if_dirty_commits_and_reports(tmp_path: Path) -> None:
     assert _commit_if_dirty(tmp_path, "style: ruff autofix (fixer)") is True
 
     porcelain = subprocess.run(
-        ["git", "status", "--porcelain"], cwd=tmp_path, capture_output=True, text=True
+        ["git", "status", "--porcelain"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
     )
     assert porcelain.stdout.strip() == ""  # working tree clean after commit
     log = subprocess.run(
-        ["git", "log", "--oneline"], cwd=tmp_path, capture_output=True, text=True
+        ["git", "log", "--oneline"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
     )
     assert "style: ruff autofix (fixer)" in log.stdout
 

@@ -76,6 +76,7 @@ def _run_hook(
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=120,
     )
 
@@ -213,6 +214,7 @@ def test_hook_unrunnable_cli_prints_one_line_and_exits_zero(tmp_path: Path) -> N
         },
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=60,
     )
     assert env_proc.returncode == 0

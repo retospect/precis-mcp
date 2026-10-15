@@ -38,6 +38,7 @@ def _run(*args: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
 
 

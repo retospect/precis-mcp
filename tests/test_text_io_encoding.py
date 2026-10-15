@@ -15,9 +15,20 @@ is the dominant path-building idiom here. Ruff caught 69 sites; the real
 population was 388. So the lint rule guards new code written the first way and
 this test guards the rest — neither is redundant.
 
+The same default bites ``subprocess`` text pipes: ``text=True`` /
+``universal_newlines=True`` decode the child's stdout with the locale
+encoding, and no ruff rule covers it, so the second check below flags
+``subprocess.run``/``Popen``/``call``/``check_call``/``check_output`` calls
+that set a text-mode flag without ``encoding=``. Detection is import-aware:
+the attribute form is recognised through the module's import aliases
+(``import subprocess as sp`` counts) and the bare form only when the name was
+``from subprocess import``ed — a local helper named ``run`` stays unflagged.
+
 Failure means: add ``encoding="utf-8"``. If a site genuinely needs bytes, open
 it in binary mode instead; if it genuinely needs the locale encoding, name it
-explicitly so the intent is legible.
+explicitly so the intent is legible. If the child's bytes are not ours to
+assume (TeX tools, container/ssh job output, ``ps`` command lines), pair the
+encoding with ``errors="replace"``.
 """
 
 from __future__ import annotations
@@ -49,6 +60,7 @@ _NOT_PATHLIB = {
     "distribution",
     "opener",  # urllib OpenerDirector.open(request, timeout=...)
 }
+_SUBPROCESS_FUNCS = {"run", "Popen", "call", "check_call", "check_output"}
 
 
 def _sources() -> list[Path]:
@@ -78,10 +90,56 @@ def _mode(call: ast.Call, *, arg_index: int) -> str:
     return ""
 
 
+def _subprocess_names(tree: ast.AST) -> tuple[set[str], set[str]]:
+    """``(module aliases, from-imported funcs)`` bound to subprocess."""
+    mods, funcs = set(), set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            mods |= {a.asname or a.name for a in node.names if a.name == "subprocess"}
+        elif isinstance(node, ast.ImportFrom) and node.module == "subprocess":
+            funcs |= {
+                a.asname or a.name for a in node.names if a.name in _SUBPROCESS_FUNCS
+            }
+    return mods, funcs
+
+
+def _is_subprocess_call(call: ast.Call, mods: set[str], funcs: set[str]) -> str | None:
+    """The called function name when ``call`` invokes subprocess, else None."""
+    func = call.func
+    if (
+        isinstance(func, ast.Attribute)
+        and func.attr in _SUBPROCESS_FUNCS
+        and isinstance(func.value, ast.Name)
+        and func.value.id in mods
+    ):
+        return func.attr
+    if isinstance(func, ast.Name) and func.id in funcs:
+        return func.id
+    return None
+
+
+def _text_mode_without_encoding(call: ast.Call) -> bool:
+    """text=True/universal_newlines=True is set and ``encoding=`` is not."""
+    if any(kw.arg == "encoding" for kw in call.keywords):
+        return False
+    return any(
+        kw.arg in ("text", "universal_newlines")
+        and isinstance(kw.value, ast.Constant)
+        and kw.value.value is True
+        for kw in call.keywords
+    )
+
+
 def _offenders(tree: ast.AST) -> list[tuple[int, str]]:
+    mods, funcs = _subprocess_names(tree)
     out = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
+            continue
+        subproc = _is_subprocess_call(node, mods, funcs)
+        if subproc is not None:
+            if _text_mode_without_encoding(node):
+                out.append((node.lineno, f"subprocess.{subproc}()"))
             continue
         if any(kw.arg == "encoding" for kw in node.keywords):
             continue

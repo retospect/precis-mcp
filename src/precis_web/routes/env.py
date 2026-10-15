@@ -136,6 +136,7 @@ def _read_plist_env(label: str) -> dict[str, str]:
                 ["/usr/bin/plutil", "-convert", "json", "-o", "-", str(path)],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 timeout=5,
                 check=False,
             )

@@ -67,6 +67,7 @@ def test_poster_template_print_layout(
         ],
         cwd=tmp_path,
         text=True,
+        encoding="utf-8",
         capture_output=True,
         timeout=120,
         check=False,

@@ -189,6 +189,7 @@ def _dump_schema(pg_dump_bin: str, dsn: str) -> str:
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=True,
     ).stdout
     # Drop comments / blank lines / SET preamble so the comparison is on

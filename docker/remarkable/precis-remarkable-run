@@ -35,7 +35,7 @@ def _run(
     """Run an rmapi subcommand; ``None`` on timeout. Never raises."""
     try:
         return subprocess.run(
-            cmd, env=env, capture_output=True, text=True, timeout=timeout_s, check=False
+            cmd, env=env, capture_output=True, text=True, encoding="utf-8", timeout=timeout_s, check=False
         )
     except subprocess.TimeoutExpired:
         return None

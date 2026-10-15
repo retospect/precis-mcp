@@ -52,7 +52,12 @@ def _test_env() -> dict[str, str]:
 
 def _run(cmd: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
-        cmd, cwd=str(cwd), env=_test_env(), capture_output=True, text=True
+        cmd,
+        cwd=str(cwd),
+        env=_test_env(),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
     )
     assert result.returncode == 0, (
         f"cmd failed: {cmd}\nstdout: {result.stdout}\nstderr: {result.stderr}"
@@ -161,6 +166,7 @@ def test_reap_worktrees_dry_run_lists_squash_merged_branchless_branch_as_safe(
         env=_test_env(),
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     assert result.returncode == 0, result.stderr
     assert "feat/landed" in result.stdout, result.stdout
@@ -180,6 +186,7 @@ def test_reap_worktrees_deletes_safe_branchless_branch(repo: Path) -> None:
         env=_test_env(),
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     assert result.returncode == 0, result.stderr
     assert "deleted branchless branch feat/landed" in result.stdout, result.stdout
@@ -197,6 +204,7 @@ def test_reap_worktrees_reports_stranded_branch_without_deleting(repo: Path) -> 
         env=_test_env(),
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     assert result.returncode == 0, result.stderr
     assert "stranded: feat/stray" in result.stdout, result.stdout
@@ -248,6 +256,7 @@ def test_migration_check_flags_collision_from_branchless_branch(
         env=_test_env(),
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     assert result.returncode == 1, result.stdout
     assert "0011" in result.stdout, result.stdout

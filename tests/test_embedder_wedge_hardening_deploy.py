@@ -140,6 +140,7 @@ def _run_tick(
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=10,
     )
 

@@ -724,6 +724,7 @@ def _run_request_subprocess(
                 timeout=timeout,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 check=False,
             )
         except subprocess.TimeoutExpired as exc:

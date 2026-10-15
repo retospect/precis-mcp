@@ -51,7 +51,11 @@ def _migration_collision(path: str) -> str:
     )
     try:
         r = subprocess.run(
-            [check, "--quiet"], capture_output=True, text=True, timeout=15
+            [check, "--quiet"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=15,
         )
         if r.returncode != 0 and r.stdout.strip():
             return " ⚠ " + " ".join(r.stdout.split())

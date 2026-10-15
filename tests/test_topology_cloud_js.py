@@ -48,6 +48,7 @@ def test_topology_cloud_renders_a_panel() -> None:
         ["node", str(_SCRIPT)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=60,
     )
     assert result.returncode == 0, (

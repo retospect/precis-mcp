@@ -181,6 +181,7 @@ def _psql_known_identifiers(db_url: str) -> set[str]:
         ["psql", db_url, "-At", "-c", sql],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False,
     )
     if res.returncode != 0:
@@ -880,6 +881,7 @@ def _psql_doi_to_slug_map(db_url: str) -> dict[str, str]:
         ["psql", db_url, "-At", "-c", sql],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False,
     )
     if res.returncode != 0:

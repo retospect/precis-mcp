@@ -100,6 +100,7 @@ def test_browser_tessellator_matches_server(tmp_path: Path) -> None:
         ["node", str(_SCRIPT), str(cases_file)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=60,
     )
     assert result.returncode == 0, (

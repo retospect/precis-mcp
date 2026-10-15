@@ -208,6 +208,8 @@ def render_python(
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=timeout_s,
                 start_new_session=True,
                 preexec_fn=_preexec(

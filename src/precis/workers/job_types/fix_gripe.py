@@ -1159,6 +1159,7 @@ def _git_clone_and_branch(repo_dir: Path, dest: Path, branch: str) -> None:
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         env=_git_env(),
     )
     subprocess.run(
@@ -1167,6 +1168,7 @@ def _git_clone_and_branch(repo_dir: Path, dest: Path, branch: str) -> None:
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         env=_git_env(),
     )
 
@@ -1254,6 +1256,7 @@ def _publish_target(repo_dir: Path) -> str:
         cwd=str(repo_dir),
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False,
         env=_git_env(),
     )
@@ -1288,6 +1291,7 @@ def _publish_preflight(cwd: Path, branch: str, target: str) -> str | None:
             cwd=str(cwd),
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=False,
             env=_git_env(),
             timeout=_REMOTE_TIMEOUT_S,
@@ -1322,6 +1326,7 @@ def _ls_remote_sha(target: str, branch: str, cwd: Path) -> str | None:
             cwd=str(cwd),
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=False,
             env=_git_env(),
             timeout=_REMOTE_TIMEOUT_S,
@@ -1343,6 +1348,7 @@ def _git(
         cwd=str(cwd),
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=check,
         env=env or _git_env(),
         timeout=_REMOTE_TIMEOUT_S,
@@ -1556,6 +1562,7 @@ def _git_rev_parse(clone_dir: Path, refname: str) -> str | None:
         cwd=str(clone_dir),
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False,
         env=_git_env(),
     )
@@ -1572,6 +1579,7 @@ def _git_diff_stat(clone_dir: Path, base: str | None, head: str) -> str:
         cwd=str(clone_dir),
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False,
         env=_git_env(),
     )
