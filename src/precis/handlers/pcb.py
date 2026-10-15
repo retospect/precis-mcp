@@ -115,6 +115,7 @@ from precis.pcb import furniture as pcb_furniture
 from precis.pcb import generators as pcb_generators
 from precis.pcb import geom as pcb_geom
 from precis.pcb import gerber as pcb_gerber
+from precis.pcb import globalplan as pcb_globalplan
 from precis.pcb import ir as pcb_ir
 from precis.pcb import jlc_library as pcb_jlc_library
 from precis.pcb import jlc_order as pcb_jlc_order
@@ -4038,6 +4039,7 @@ class PcbHandler(Handler):
             return Response(
                 body="no route run yet\n\nNext: put(kind='pcb', id='slug', "
                 "args={'op':'route'}) then re-check this view."
+                + self._capacity_map_text(ref_id)
             )
         warnings = last_route.get("warnings") or []
         head = (
@@ -4056,7 +4058,11 @@ class PcbHandler(Handler):
                 f"{status.get('realized', 0)} realized, "
                 f"{status.get('unrouted', 0)} unrouted (view='route-status')"
             )
-            return Response(body=head + "".join(f"\n- {w}" for w in warnings))
+            return Response(
+                body=head
+                + "".join(f"\n- {w}" for w in warnings)
+                + self._capacity_map_text(ref_id)
+            )
         if not warnings:
             # No tick under failed nets: "no over-capacity gaps" only rules
             # out ONE cause, and read beside "40 failed" it reads as a pass.
@@ -4064,9 +4070,108 @@ class PcbHandler(Handler):
                 return Response(
                     body=head + "\n(no over-capacity gaps — the failures have "
                     "another cause; per-net status: view='route-status')"
+                    + self._capacity_map_text(ref_id)
                 )
-            return Response(body=head + "\n(no over-capacity gaps ✓)")
-        return Response(body=head + "\n" + "\n".join(f"- {w}" for w in warnings))
+            return Response(
+                body=head
+                + "\n(no over-capacity gaps ✓)"
+                + self._capacity_map_text(ref_id)
+            )
+        return Response(
+            body=head
+            + "\n"
+            + "\n".join(f"- {w}" for w in warnings)
+            + self._capacity_map_text(ref_id)
+        )
+
+    def _capacity_map_text(self, ref_id: int) -> str:
+        """The tile-capacity map for ``view='congestion'`` — the strict
+        flow model (``docs/backlog/pcb-global-plan-router.md`` slice 1):
+        per-layer rows of summed/min boundary track capacities measured
+        as vertex-disjoint paths across each two-tile strip on the SAME
+        static occupancy grid a route pass would start from, so a wall
+        the router hits is a wall the map shows. Built lazily on each
+        view (the grid is a few hundred ms on a small board), never
+        stored — a stored map could describe copper a later ``op='rip'``
+        removed. Empty string when the board has nothing to measure."""
+        try:
+            graph = self.store.pcb_graph(ref_id)
+            if not graph.get("nets"):
+                return ""
+            board = graph.get("board") or {}
+            board_id = board.get("board_id")
+            fixed = (
+                self.store.pcb_fixed_copper_list(int(board_id))
+                if board_id is not None
+                else []
+            )
+            features = self.store.pcb_features_list(ref_id)
+            ir = pcb_session.build_ir(
+                graph,
+                outline=pcb_session.outline_from_features(features),
+                mounting_holes=pcb_session.mounting_holes_from_features(features),
+                footprints_by_lcsc=self.store.pcb_footprints_for(ref_id),
+                local_footprints_by_name=self.store.pcb_local_footprints_for(ref_id),
+                fixed_copper=fixed,
+            )
+            pcb_session.apply_pin_swap_overrides(
+                ir, self.store.pcb_pin_swaps_list(ref_id)
+            )
+            name_to_net = {str(ir.net_name[n]): n for n in range(ir.n_nets)}
+            layer_idx = {
+                str(layer.get("name")): i for i, layer in enumerate(ir.stackup)
+            }
+            for plane in self.store.pcb_planes_list(ref_id):
+                net_id = name_to_net.get(plane["net"])
+                li = layer_idx.get(plane["layer"])
+                if net_id is not None and li is not None:
+                    ir.promote_plane(net_id, li)
+            footprints = pcb_session.footprints_by_refdes(
+                ir,
+                self.store.pcb_footprints_for(ref_id),
+                local_footprints_by_name=self.store.pcb_local_footprints_for(ref_id),
+                local_names_by_refdes=pcb_session.local_footprint_names_by_refdes(
+                    graph
+                ),
+            )
+            capability = self._stackup_capability(ir.stackup) or capability_for(
+                "4layer"
+            )
+            config = pcb_realize.RealizeConfig(
+                fab_caps=capability, class_rules=graph.get("net_classes")
+            )
+            ctx = pcb_realize._route_context(
+                ir, list(range(ir.n_segments)), config, footprints, fixed
+            )
+            if ctx is None or not ctx.route_ids:
+                return ""
+            grid, _t, _v, _u, _f = pcb_realize._static_route_grid(ir, ctx, config)
+            (track_mm, clearance_mm, via_dia_mm), _n = collections.Counter(
+                (
+                    ctx.rules_by_net[int(ir.seg_net[s])].track_width_mm,
+                    ctx.rules_by_net[int(ir.seg_net[s])].clearance_mm,
+                    ctx.rules_by_net[int(ir.seg_net[s])].via_dia_mm,
+                )
+                for s in ctx.route_ids
+            ).most_common(1)[0]
+            tgraph = pcb_globalplan.build_tile_graph(
+                grid,
+                layers=ctx.signal_layers,
+                track_mm=track_mm,
+                clearance_mm=clearance_mm,
+                via_dia_mm=via_dia_mm or 0.45,
+                participant_nets={int(ir.seg_net[s]) for s in ctx.route_ids},
+                strict=True,
+                capacity="flow",
+            )
+            return (
+                f"\n\n# capacity map — strict flow, tile {tgraph.tile_mm} mm, "
+                f"lane {track_mm + clearance_mm:.3f} mm "
+                f"(track {track_mm} + clearance {clearance_mm}, modal class)\n"
+                + "\n".join(tgraph.row_report)
+            )
+        except Exception as exc:  # the digest above still renders without it
+            return f"\n\n# capacity map — unavailable ({exc})"
 
     def _render_planes(self, ref_id: int) -> Response:
         """Plane assignments (``pcb_planes``) — which nets are

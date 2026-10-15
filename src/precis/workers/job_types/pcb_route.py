@@ -126,6 +126,9 @@ PARAMS_SCHEMA: dict[str, Any] = {
             "minimum": 0,
             "maximum": pcb_realize.MAX_NEGOTIATE_ITERATIONS,
         },
+        # Off-corridor cell price for the tile-plan corridor experiment
+        # (globalplan slice 1): 0/absent = plain 12-pass router.
+        "corridor": {"type": "number", "minimum": 0},
         # The route -> penalise -> anneal -> route outer loop
         # (optimize.anneal_route_loop): 0 = the single anneal+realize
         # (default), 1..LOOP_MAX_ROUNDS = that many budgeted rounds.
@@ -701,6 +704,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         fab_caps=fab_caps,
         class_rules=graph.get("net_classes"),
         negotiate_iterations=negotiate,
+        corridor_penalty=float(params.get("corridor") or 0.0),
     )
     # `footprints` (the same refdes-keyed pad geometry PIN_SWAP's feed
     # above also used) was resolved earlier, before the anneal — see that

@@ -60,10 +60,12 @@ from __future__ import annotations
 import heapq
 import itertools
 import math
+from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+import numba
 import numpy as np
 
 from precis.pcb import maze, pinswap, realize
@@ -136,6 +138,216 @@ def _run_capacity(free: np.ndarray, cell_mm: float, lane_mm: float) -> int:
     return cap
 
 
+#: Neighbour offsets for :func:`_disjoint_paths`, ordered so direction
+#: ``k``'s opposite is ``7 - k`` — the maze's own 8-connected step set
+#: (``maze._STEPS``), so a flow path is legal centreline motion exactly
+#: where the router could put one.
+_FLOW_DIRS: tuple[tuple[int, int], ...] = (
+    (-1, -1),
+    (-1, 0),
+    (-1, 1),
+    (0, -1),
+    (0, 1),
+    (1, -1),
+    (1, 0),
+    (1, 1),
+)
+
+
+@numba.njit(cache=False, nogil=True)
+def _disjoint_paths(
+    free: np.ndarray,
+    h: int,
+    w: int,
+    src: np.ndarray,
+    snk: np.ndarray,
+    limit: int,
+) -> int:
+    """Vertex-disjoint max-flow on a small cell region (Edmonds-Karp).
+
+    ``free``/``src``/``snk`` are flat ``h * w`` masks over a rectangular
+    cell window. Every cell is a unit-capacity node (standard in/out
+    split); 8-connected edges between free cells carry the paths. The
+    returned count is the number of cell-disjoint paths from any ``src``
+    cell to any ``snk`` cell — the connectivity the fine grid actually
+    offers, before the caller rescales cells to track lanes. Stops at
+    ``limit`` paths (the caller's upper bound; nothing above it can
+    change the lane count)."""
+    n = h * w
+    source = 2 * n
+    target = 2 * n + 1
+    cap_io = free.astype(np.int8)
+    f_io = np.zeros(n, dtype=np.int8)
+    f_uv = np.zeros((n, 8), dtype=np.int8)
+    f_s = np.zeros(n, dtype=np.int8)
+    f_t = np.zeros(n, dtype=np.int8)
+    prev = np.empty(2 * n + 2, dtype=np.int64)
+    queue = np.empty(2 * n + 2, dtype=np.int64)
+    dy = np.empty(8, dtype=np.int64)
+    dx = np.empty(8, dtype=np.int64)
+    for k in range(8):
+        dy[k], dx[k] = _FLOW_DIRS[k]
+    total = 0
+    while total < limit:
+        for i in range(2 * n + 2):
+            prev[i] = -1
+        head = 0
+        tail = 0
+        queue[tail] = source
+        tail += 1
+        prev[source] = source
+        while head < tail and prev[target] < 0:
+            u = queue[head]
+            head += 1
+            if u == source:
+                for c in range(n):
+                    if src[c] and f_s[c] == 0 and prev[2 * c] < 0:
+                        prev[2 * c] = u
+                        queue[tail] = 2 * c
+                        tail += 1
+            elif u % 2 == 0:
+                c = u // 2
+                if cap_io[c] > f_io[c] and prev[u + 1] < 0:
+                    prev[u + 1] = u
+                    queue[tail] = u + 1
+                    tail += 1
+                # Residual arcs BACK to an out-node: undo a path that
+                # entered c from neighbour p (flow on out(p) -> in(c)).
+                cy, cx = divmod(c, w)
+                for k in range(8):
+                    py, px = cy + dy[k], cx + dx[k]
+                    if 0 <= py < h and 0 <= px < w:
+                        p = py * w + px
+                        v = 2 * p + 1
+                        if f_uv[p, 7 - k] == 1 and prev[v] < 0:
+                            prev[v] = u
+                            queue[tail] = v
+                            tail += 1
+            else:
+                c = (u - 1) // 2
+                cy, cx = divmod(c, w)
+                for k in range(8):
+                    ny_, nx_ = cy + dy[k], cx + dx[k]
+                    if 0 <= ny_ < h and 0 <= nx_ < w:
+                        nb = ny_ * w + nx_
+                        v = 2 * nb
+                        if free[nb] and f_uv[c, k] == 0 and prev[v] < 0:
+                            prev[v] = u
+                            queue[tail] = v
+                            tail += 1
+                if f_io[c] == 1 and prev[2 * c] < 0:
+                    prev[2 * c] = u
+                    queue[tail] = 2 * c
+                    tail += 1
+                if snk[c] and f_t[c] == 0 and prev[target] < 0:
+                    prev[target] = u
+                    queue[tail] = target
+                    tail += 1
+        if prev[target] < 0:
+            break
+        v = target
+        while prev[v] != v:
+            u = prev[v]
+            if u == source:
+                f_s[v // 2] = 1
+            elif v == target:
+                f_t[u // 2] = 1
+            elif u % 2 == 0:
+                if v // 2 == u // 2:
+                    f_io[u // 2] = 1
+                else:
+                    # in(c) -> out(p): a backward traversal of out(p) ->
+                    # in(c); remove that unit of flow.
+                    p = v // 2
+                    k = _flow_dir_index((u // 2) // w - p // w, (u // 2) % w - p % w)
+                    f_uv[p, k] = 0
+            else:
+                c = (u - 1) // 2
+                if v // 2 == c:
+                    f_io[c] = 0
+                else:
+                    nb = v // 2
+                    k = _flow_dir_index(nb // w - c // w, nb % w - c % w)
+                    f_uv[c, k] = 1
+            v = u
+        total += 1
+    return total
+
+
+@numba.njit(cache=False, nogil=True, inline="always")
+def _flow_dir_index(dy: int, dx: int) -> int:
+    """``(dy, dx)`` unit offset -> its slot in :data:`_FLOW_DIRS`."""
+    k = (dy + 1) * 3 + (dx + 1)
+    return k if k < 4 else k - 1
+
+
+def _flow_cap(
+    free: np.ndarray,
+    r0: int,
+    r1: int,
+    c0: int,
+    c1: int,
+    split: int,
+    axis: str,
+    pitch: float,
+    lane_mm: float,
+) -> int:
+    """Max lanes across one tile boundary, from the cells themselves.
+
+    The window is the two-tile strip ``free[r0:r1, c0:c1]``; ``split``
+    is the boundary's position inside it (columns or rows of the first
+    tile, ``axis`` ``"x"``/``"y"``). The answer is the tighter of two
+    fine-grid cuts:
+
+    * the BOUNDARY FACE itself — the run capacity of the free cell
+      pairs astride the split, the same measure ``capacity="runs"``
+      takes (a crossing track must occupy one of those pairs);
+    * the strip's interior connectivity — ``M`` vertex-disjoint paths
+      from ANY free cell of the first tile to the second tile's free
+      cells on its three OUTER faces (``axis`` ``"x"``: its far column
+      and top/bottom rows). Sources are the whole first tile rather
+      than its outer faces because a plan edge prices only the
+      crossing: how a track got into the first tile is the previous
+      edge's question, not this strip's — charging the approach here
+      under-reads exactly where the fan is already tight.
+
+    ``M`` cell-paths pack to ``1 + floor((M - 1) * pitch / lane_mm)``
+    lane-separated centrelines — the first track needs a legal cell,
+    each next one a lane's spacing, not a fresh lane's width. Interior
+    walls that spare the face (a via row mid-tile) only show up in the
+    second term; boundary slits too narrow for a lane only show up in
+    the first."""
+    h, w = r1 - r0, c1 - c0
+    sub = free[r0:r1, c0:c1]
+    yy, xx = np.mgrid[0:h, 0:w]
+    if axis == "x":
+        face = sub[:, split - 1] & sub[:, split]
+        src = sub & (xx < split)
+        snk = (xx >= split) & ((xx == w - 1) | (yy == 0) | (yy == h - 1))
+    else:
+        face = sub[split - 1, :] & sub[split, :]
+        src = sub & (yy < split)
+        snk = (yy >= split) & ((yy == h - 1) | (xx == 0) | (xx == w - 1))
+    snk &= sub
+    face_cap = _run_capacity(face, pitch, lane_mm)
+    if face_cap == 0:
+        return 0
+    limit = int(min(src.sum(), snk.sum()))
+    if limit == 0:
+        return 0
+    m = _disjoint_paths(
+        np.ascontiguousarray(sub.reshape(-1)),
+        h,
+        w,
+        np.ascontiguousarray(src.reshape(-1)),
+        np.ascontiguousarray(snk.reshape(-1)),
+        limit,
+    )
+    if m == 0:
+        return 0
+    return min(face_cap, 1 + math.floor((m - 1) * pitch / lane_mm + 1e-9))
+
+
 @dataclass(frozen=True, slots=True)
 class TileGraph:
     """The coarse routing graph for one board state.
@@ -169,6 +381,10 @@ class TileGraph:
     #: Track lanes one planned through-via takes from each boundary of its
     #: tile on every planned layer (0 = vias uncharged, the original model).
     via_lanes: int = 0
+    #: How ``cap_x``/``cap_y`` were measured — ``"runs"`` (boundary free
+    #: span) or ``"flow"`` (vertex-disjoint paths across the two-tile
+    #: strip, :func:`build_tile_graph`).
+    capacity: str = "runs"
 
     def tile_of(self, x: float, y: float) -> tuple[int, int]:
         tx = math.floor((x - self.ox) / self.tile_mm)
@@ -194,6 +410,7 @@ def build_tile_graph(
     tile_mm: float = DEFAULT_TILE_MM,
     participant_nets: Iterable[int] = (),
     strict: bool = False,
+    capacity: str = "runs",
 ) -> TileGraph:
     """Measure the tile graph's capacities off ``grid``'s stamped claims.
 
@@ -209,7 +426,20 @@ def build_tile_graph(
     copper net-blind — folded with ``grid``'s own pad keep-out mask, so a
     tile under a pad row reports zero rather than a nominal count the
     router could never use.
+
+    ``capacity="runs"`` (the default, slices 0–0b) prices each boundary
+    by the free span along the boundary itself — which over-reads
+    wherever the free face connects to a region a track cannot actually
+    get THROUGH (the 2026-10-13 open/strict bracket: open 55 >= 51 >=
+    strict 38, neither reading the fine grid's own connectivity).
+    ``capacity="flow"`` (slice 1) instead counts vertex-disjoint paths
+    across the two-tile strip on the free-centreline cells
+    (:func:`_disjoint_paths`/:func:`_flow_cap`): the boundary's capacity
+    is the strip's narrowest interior waist, so a via row or keep-out
+    INSIDE a tile subtracts lanes the run model still reports free.
     """
+    if capacity not in ("runs", "flow"):
+        raise ValueError(f"capacity must be 'runs' or 'flow', got {capacity!r}")
     spec = grid.spec
     owner = grid.owner
     xs = spec.x0 + np.arange(spec.nx) * spec.pitch
@@ -240,8 +470,39 @@ def build_tile_graph(
         int(np.searchsorted(ys, oy + (ty + 1) * tile_mm, side="left")) - 1
         for ty in range(nty - 1)
     ]
+    # Each tile's own cell block (the flow model's strip is two of these).
+    cols_of = [np.nonzero(tx_of == tx)[0] for tx in range(ntx)]
+    rows_of = [np.nonzero(ty_of == ty)[0] for ty in range(nty)]
 
     def boundary_cap(free: np.ndarray, kind: str, ty: int, tx: int) -> int:
+        if capacity == "flow":
+            if kind == "x":
+                rows = rows_of[ty]
+                ca, cb = cols_of[tx], cols_of[tx + 1]
+                return _flow_cap(
+                    free,
+                    int(rows[0]),
+                    int(rows[-1]) + 1,
+                    int(ca[0]),
+                    int(cb[-1]) + 1,
+                    int(cb[0]) - int(ca[0]),
+                    "x",
+                    spec.pitch,
+                    lane_mm,
+                )
+            cols = cols_of[tx]
+            ra, rb = rows_of[ty], rows_of[ty + 1]
+            return _flow_cap(
+                free,
+                int(ra[0]),
+                int(rb[-1]) + 1,
+                int(cols[0]),
+                int(cols[-1]) + 1,
+                int(rb[0]) - int(ra[0]),
+                "y",
+                spec.pitch,
+                lane_mm,
+            )
         if kind == "x":
             i = bx_cells[tx]
             if i < 0 or i + 1 >= spec.nx:
@@ -342,6 +603,7 @@ def build_tile_graph(
         tuple(lines),
         exit_cap,
         math.floor((via_dia_mm + clearance_mm) / lane_mm) if strict else 0,
+        capacity,
     )
 
 
@@ -359,6 +621,14 @@ class PlanNet:
     sink: int | None
     sinks: tuple[int, ...] = ()
     sink_pins: tuple[int, ...] = ()
+    #: Additional acceptable end nodes in the FIXED-sink mode (island
+    #: terminals, a drilled pad's other layers) — the search ends at
+    #: whichever of ``{sink} ∪ alt_sinks`` it reaches cheapest. Unused
+    #: by ``free_sinks`` (``sinks`` is the candidate set there).
+    alt_sinks: tuple[int, ...] = ()
+    #: Graph layer indices this net may plan on (a net-class layer lock);
+    #: empty = every planned layer.
+    layers: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -493,8 +763,11 @@ def plan_routes(
     ) -> tuple[np.ndarray, np.ndarray]:
         """Min-cost tree from ``net.sources`` over current usage.
         ``(dist, came)``; early-exits once every member of ``targets``
-        is closed (``None`` = run to exhaustion)."""
+        is closed (``None`` = run to exhaustion). ``net.layers`` (graph
+        layer indices, empty = all) gates the via transitions — a net
+        locked to a layer subset never plans a hop off it."""
         mine = exit_by_net.get(net.net_id, {})
+        allowed = frozenset(net.layers)
 
         def cx(li: int, ty: int, tx: int) -> int:
             return mine.get(("x", li, ty, tx), int(graph.cap_x[li, ty, tx]))
@@ -571,7 +844,7 @@ def plan_routes(
                     seq += 1
             if graph.via_cap[ty, tx] > 0:
                 for lj in range(len(graph.layers)):
-                    if lj == li:
+                    if lj == li or (allowed and lj not in allowed):
                         continue
                     nb = node + (lj - li) * ntx * nty
                     c = d + via_cost_mm * price(
@@ -655,13 +928,20 @@ def plan_routes(
                     continue
                 if net.seg_id in paths:
                     add(paths[net.seg_id], -1)
-                dist, came = dijkstra(
-                    net, frozenset({net.sink}) if net.sink is not None else None
+                targets = (
+                    frozenset({net.sink} | set(net.alt_sinks))
+                    if net.sink is not None
+                    else frozenset(net.alt_sinks)
                 )
-                if net.sink is None or not math.isfinite(dist[net.sink]):
+                if not targets:
                     paths.pop(net.seg_id, None)
                     continue
-                nodes = path_nodes(came, net.sink)
+                dist, came = dijkstra(net, targets)
+                best = min(targets, key=lambda t: dist[t])
+                if not math.isfinite(dist[best]):
+                    paths.pop(net.seg_id, None)
+                    continue
+                nodes = path_nodes(came, best)
                 paths[net.seg_id] = nodes
                 add(nodes, 1)
         eff_x, eff_y = _effective_caps(graph, paths, net_of)
@@ -1092,9 +1372,202 @@ def _resources(graph: TileGraph, nodes: tuple[int, ...]):
     return exs, eys, vts
 
 
+def plan_nets(
+    ir: PcbIR,
+    reqs: dict[int, realize._SegRequest],
+    graph: TileGraph,
+    pad_geoms: Sequence[Any] = (),
+) -> list[PlanNet]:
+    """One :class:`PlanNet` per resolved segment — the generic sibling of
+    the probe test's escape-class builder. Sources: the start's tile on
+    its start layer, every ``extra_start_terminals`` tile on its own
+    layer, and — for a THROUGH start (a drilled pad, or a via island
+    terminal: copper that lands on every layer) — the start tile on
+    every layer the net may use. Sinks mirror that on the goal side:
+    the goal tile on its goal layer, plus alternate terminal tiles and
+    the through-goal's other layers as :attr:`PlanNet.alt_sinks`. A
+    segment locked to layers outside the graph's set is skipped (it
+    stays the ordinary passes' problem, never a phantom corridor)."""
+    layer_li = {layer: i for i, layer in enumerate(graph.layers)}
+    nets: list[PlanNet] = []
+    for seg_id, req in reqs.items():
+        allowed_li = tuple(
+            sorted({layer_li[l] for l in req.route_kwargs["layers"] if l in layer_li})
+        )
+        if (
+            not allowed_li
+            or req.start_layer not in layer_li
+            or req.goal_layer not in layer_li
+        ):
+            continue
+        a, b = int(ir.seg_pin_a[seg_id]), int(ir.seg_pin_b[seg_id])
+        term_a, term_b = req.terms if req.terms else ((), ())
+        sources = {
+            graph.node(layer_li[req.start_layer], *graph.tile_of(*req.eff_start))
+        }
+        a_through = (a < len(pad_geoms) and bool(pad_geoms[a].drill_mm)) or any(
+            t.kind == "via" for t, _l in term_a
+        )
+        if a_through:
+            tx, ty = graph.tile_of(*req.eff_start)
+            sources |= {graph.node(li, tx, ty) for li in allowed_li}
+        for t, layer in term_a:
+            if layer in layer_li:
+                sources.add(graph.node(layer_li[layer], *graph.tile_of(*t.point)))
+        sinks = {graph.node(layer_li[req.goal_layer], *graph.tile_of(*req.eff_goal))}
+        b_through = (b < len(pad_geoms) and bool(pad_geoms[b].drill_mm)) or any(
+            t.kind == "via" for t, _l in term_b
+        )
+        if b_through:
+            tx, ty = graph.tile_of(*req.eff_goal)
+            sinks |= {graph.node(li, tx, ty) for li in allowed_li}
+        for t, layer in term_b:
+            if layer in layer_li:
+                sinks.add(graph.node(layer_li[layer], *graph.tile_of(*t.point)))
+        sink = graph.node(layer_li[req.goal_layer], *graph.tile_of(*req.eff_goal))
+        nets.append(
+            PlanNet(
+                seg_id=seg_id,
+                net_id=req.net_id,
+                name=str(ir.net_name[req.net_id]),
+                sources=tuple(sorted(sources)),
+                sink=sink,
+                alt_sinks=tuple(sorted(sinks - {sink})),
+                layers=allowed_li,
+            )
+        )
+    return nets
+
+
+@dataclass(frozen=True, slots=True)
+class CorridorPlan:
+    """What :func:`corridor_attempt` produced: ``preferred`` proposals
+    for ``_route_pass``'s verbatim-commit seam plus the route order
+    (most-constrained planned segments first, then everything else in
+    the pass's own order). ``plan`` is the negotiated result, for the
+    caller's report."""
+
+    preferred: dict[int, realize._Proposal]
+    order: list[int]
+    plan: PlanResult
+
+
+def corridor_attempt(
+    ir: PcbIR,
+    ctx: realize._RouteContext,
+    config: realize.RealizeConfig,
+) -> CorridorPlan | None:
+    """Corridors-as-cost on a strict flow-capacity tile plan (slice 1,
+    ``docs/backlog/pcb-global-plan-router.md``), the opt-in half of
+    ``RealizeConfig.corridor_penalty``.
+
+    Builds the static grid the first route pass would see, measures tile
+    capacities as fine-grid connectivity (``capacity="flow"``, strict:
+    participant copper blocks lanes, planned through-vias charged),
+    negotiates one PathFinder plan over every routed segment, then lets
+    each planned segment search with its corridor dilated one tile and
+    every off-corridor cell priced ``corridor_penalty`` — a cost, not a
+    wall, so a wrong corridor still finds its detour. Committed paths
+    come back as ``preferred`` proposals for the reorder passes;
+    segments the plan left unrouted stay ordinary searches. ``None``
+    when there is nothing to plan or the plan produced no paths — the
+    caller falls back to plain passes.
+
+    The capacity measurement prices every net at the MODAL
+    (track, clearance, via_dia) rules triple — a shared graph cannot
+    carry per-net widths; on a mixed-class board the map describes the
+    dominant class and other nets' corridors are the approximation.
+    """
+    reqs: dict[int, realize._SegRequest] = {}
+    for seg_id in ctx.order:
+        req = realize._seg_request(
+            ir,
+            seg_id,
+            config,
+            ctx.rules_by_net,
+            ctx.clearance,
+            ctx.signal_layers,
+            ctx.island_terminals,
+            ctx.net_layers,
+        )
+        if req is not None and not req.failed:
+            reqs[seg_id] = req
+    if not reqs:
+        return None
+    grid, _plane_t, _plane_v, _su, _pf = realize._static_route_grid(ir, ctx, config)
+    layers = sorted(
+        {layer for r in reqs.values() for layer in r.route_kwargs["layers"]}
+    )
+    if not layers:
+        return None
+    (track_mm, clearance_mm, via_dia_mm), _count = Counter(
+        (r.rules.track_width_mm, r.rules.clearance_mm, r.rules.via_dia_mm)
+        for r in reqs.values()
+    ).most_common(1)[0]
+    tgraph = build_tile_graph(
+        grid,
+        layers=layers,
+        track_mm=track_mm,
+        clearance_mm=clearance_mm,
+        via_dia_mm=via_dia_mm or 0.45,
+        participant_nets={r.net_id for r in reqs.values()},
+        strict=True,
+        capacity="flow",
+    )
+    nets = plan_nets(ir, reqs, tgraph, ctx.pad_geoms)
+    if not nets:
+        return None
+    plan = plan_routes(
+        tgraph,
+        nets,
+        layer_prefs=(
+            realize._layer_preferences(ir, ctx.signal_layers)
+            if config.preferred_directions
+            else None
+        ),
+    )
+    if not plan.paths:
+        return None
+    corridors: dict[int, np.ndarray] = {}
+    clayers: dict[int, list[int]] = {}
+    for seg_id, path in plan.paths.items():
+        req = reqs[seg_id]
+        corridors[seg_id] = corridor_mask(
+            tgraph,
+            corridor_tiles(tgraph, path),
+            extra=(
+                (req.start_layer, req.eff_start[0], req.eff_start[1]),
+                (req.goal_layer, req.eff_goal[0], req.eff_goal[1]),
+            ),
+        )
+        clayers[seg_id] = sorted(
+            {tgraph.layers[tgraph.node_parts(n)[0]] for n in path.nodes}
+        )
+    guided = plan_order(tgraph, plan, [s for s in ctx.order if s in plan.paths])
+    route_grid, _pt, _pv, _su2, _pf2 = realize._static_route_grid(ir, ctx, config)
+    _t, _v, _unrouted, paths, _exhausted = corridor_route(
+        route_grid,
+        ir,
+        reqs,
+        guided,
+        corridors,
+        clayers,
+        config,
+        ctx.spec,
+        ink_field=ctx.ink_field,
+        soft_penalty=config.corridor_penalty,
+    )
+    preferred = {s: realize._Proposal(p, p) for s, p in paths.items()}
+    order = [s for s in guided if s in paths] + [
+        s for s in ctx.order if s not in set(paths)
+    ]
+    return CorridorPlan(preferred, order, plan)
+
+
 __all__ = [
     "CORRIDOR_DILATE_TILES",
     "DEFAULT_TILE_MM",
+    "CorridorPlan",
     "PlanNet",
     "PlanResult",
     "PlannedPath",
@@ -1102,9 +1575,11 @@ __all__ = [
     "TileGraph",
     "build_tile_graph",
     "commit_searched_path",
+    "corridor_attempt",
     "corridor_mask",
     "corridor_route",
     "corridor_tiles",
+    "plan_nets",
     "plan_order",
     "plan_routes",
 ]

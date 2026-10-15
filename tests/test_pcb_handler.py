@@ -2169,6 +2169,16 @@ def test_congestion_view_gives_no_tick_when_nets_failed(pcb, store):
     assert "✓" in pcb.get(id="cong-failed", view="congestion").body
 
 
+def test_congestion_view_appends_the_capacity_map(pcb):
+    """Slice 1 of pcb-global-plan-router: the strict flow tile-capacity
+    map renders under every congestion verdict, including no-run-yet."""
+    pcb.put(id="cong-map", args=_CROSSED)
+    body = pcb.get(id="cong-map", view="congestion").body
+    assert "no route run yet" in body
+    assert "# capacity map" in body
+    assert "strict flow" in body
+
+
 def test_congestion_view_flags_a_digest_whose_nets_were_ripped_since(pcb, store):
     """heater-base-test: every net was ripped after a 66-realized route and
     view='congestion' still reported the 66 with no hint the copper was

@@ -92,6 +92,15 @@ executor lane (see `precis-job-help`).
   experimental negotiated-congestion iterations, tried only when the
   normal rip-up passes leave nets unrouted; capped at 60 s, and the result
   is kept only if it routes more nets. Unmeasured on real boards yet.
+- `op='route'` also accepts `corridor` (number ≥ 0, default 0 = off):
+  the tile-plan corridor experiment (slice 1 of the global-plan
+  router). When on, a strict
+  flow-capacity tile plan is negotiated first, each planned segment
+  searches with every off-corridor cell priced `corridor`, and the
+  ordinary rip-up passes still run after — so it can cost time, never
+  nets. Measured 2026-10-15 on both benchmarks: EWOD dogfood-6 replay
+  51/55 (same as plain), QFP plaza warm 53/55 (same as plain) — opt-in
+  only until a pinned measurement beats plain on both.
 - `op='route'` also accepts `loop` (int 0–3, default 0 = off): the
   bounded **route → penalise → anneal → route** outer loop
   (`optimize.anneal_route_loop`). Each round routes the current board,
@@ -182,7 +191,10 @@ is written: prior poses, copper and route statuses stay, and the job fails
 (`non-convergence`) with the attempt's summary. An equal or better result
 commits as usual.
 
-`view='congestion'` reports gaps only. With failed nets and no gap warning
+`view='congestion'` reports gaps plus the tile-capacity map — the strict
+flow model's per-layer boundary lanes, measured off the same static
+occupancy grid a route pass starts from (interior chokes count, so the
+map's zeroes are real walls). With failed nets and no gap warning
 it says the failures have another cause; read `view='route-status'` for
 each net's reason. Before routing, `view='feasibility'` lists pins whose
 net class `"layers"` lock forbids their pad's layer. A pin with no authored

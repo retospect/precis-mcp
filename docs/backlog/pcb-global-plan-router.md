@@ -213,15 +213,36 @@ the unproven one.
    from the fine grid's own connectivity (per-tile max-flow over free
    cells, or smaller tiles), not a setting of the current measure.
    Benchmarks: the replay (51) and the plaza fanout member (53/55).
-1. `globalplan.py`: tile graph + capacities from stamped copper; a text
-   capacity map in `view='congestion'` ("no map yet" ≠ cool).
+1. **Capacity from the fine grid's own connectivity — DONE 2026-10-15**
+   (`build_tile_graph(capacity="flow")`, test
+   `test_pcb_globalplan_flow.py`). Each boundary's lane count is the
+   tighter of two fine-grid cuts: the free cell pairs astride the face
+   (the runs measure) and `1 + floor((M−1)·pitch/lane)` where M is the
+   vertex-disjoint max-flow from inside the source tile to the sink
+   tile's outer faces — an interior wall mid-tile now subtracts lanes
+   the boundary-run model still reports free (24 boundaries tighter
+   than strict-runs on the replay, none looser; ~2 s to build). The
+   text capacity map ships in `view='congestion'`. The bracket, as
+   measured: participant-transparent flow admits 55 (the chokes are
+   participant copper), strict flow admits 35 — the SAME plan the
+   strict-runs mask walls off, so the plan-level stall is the tile
+   abstraction's, not the measure's: a boundary cannot express the
+   braid the escape needs inside one tile. Corridor hand-off at
+   `corridor=5`: strict-flow plan → 47, open-flow → 45; the realize
+   opt-in (guided passes, then the plain fallback) lands 51/55 in 97 s
+   vs plain 51/55, and the QFP plaza member lands 53/55 in 16 s vs
+   plain 53/55 in 5.8 s — ties on both benchmarks, so `corridor`
+   stays an opt-in route param, not a default (the doc's own rule).
+   What shipped: the honest measure + the map + the opt-in seam; the
+   wall it confirms is the one slice 2 has to break.
 2. Negotiated plan with pin assignment folded in; `RoutePlan` persisted
    per route (corridors, layers, via tiles) next to the sketch; the
    min-cut witness in the digest.
-3. Corridor-guided maze routing in `pcb_route`: corridors as a cost
-   first (slice 0b measures hard `mask=` vs priced off-corridor cells),
-   default on only when it beats the plain 12-pass on both benchmarks;
-   ratchet unchanged.
+3. Corridor-guided maze routing in `pcb_route` — **shipped opt-in
+   2026-10-15** (`corridor` number ≥ 0, default off; see item 1 for the
+   tie measurement). Still owed before a default is reconsidered: the
+   slice-2 model (plaza packing / an angular escape assignment) that
+   lets a plan admit the braid the tile abstraction drops.
 4. Loop: corridor failure → capacity−1 → re-plan; infeasible plan →
    `anneal_route_loop` expansion moves (surface wiring is the open item 1
    of `pcb-anneal-closes-router-loop.md`; brief

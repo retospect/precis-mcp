@@ -398,6 +398,17 @@ class RealizeConfig:
     #: preference, not the ``via_count`` MONEY term" figure that module
     #: documents for :data:`~precis.pcb.maze.VIA_COST_MM` itself.
     via_body_cost_mm: float = maze.VIA_UNDER_BODY_COST_MM
+    #: Corridors-as-cost from a tile-capacity global plan
+    #: (:mod:`precis.pcb.globalplan`, slice 1 of
+    #: ``docs/backlog/pcb-global-plan-router.md``): ``0.0`` (off) is the
+    #: default until a pinned measurement shows the plan-guided pass beats
+    #: the plain 12-pass reorder on the benchmark pair; opt in per call
+    #: (``pcb_route``'s ``corridor`` param). When on, one negotiated
+    #: tile-level plan is routed first — each planned segment searches
+    #: with every OFF-corridor cell carrying this static price — and its
+    #: commits ride the ordinary reorder passes as verbatim proposals,
+    #: with plain passes as the fallback for whatever is still unrouted.
+    corridor_penalty: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -1452,52 +1463,42 @@ def _pad_shape(
     return maze.PadShape("circle", point[0], point[1], diameter, diameter)
 
 
-def _realize_maze(
+@dataclass(frozen=True, slots=True)
+class _RouteContext:
+    """Everything a routing attempt is built from, before the first
+    search — factored out of :func:`_realize_maze`'s preamble so the
+    tile-capacity planner (:func:`precis.pcb.globalplan.corridor_attempt`)
+    and the capacity map (``view='congestion'``) build the SAME static
+    grid a real pass would, rather than a second copy of the pad/fixed-
+    copper claim list that would drift."""
+
+    signal_layers: list[int]
+    pad_geoms: list[PadGeom]
+    pads: list[tuple[Point, int, maze.PadShape, tuple[int, ...]]]
+    rules_by_net: dict[int, NetRules]
+    net_layers: dict[int, list[int]]
+    net_layer_lock_fail: dict[int, str]
+    clearance: float
+    spec: maze.GridSpec
+    plane_ids: list[int]
+    route_ids: list[int]
+    order: list[int]
+    ink_field: _InkField | None
+    body_mask: np.ndarray
+    island_terminals: dict[int, tuple[_EndTerminals, _EndTerminals]]
+    fixed_copper: list[dict[str, Any]] | None
+    edge_min: float
+
+
+def _route_context(
     ir: PcbIR,
     ids: list[int],
     config: RealizeConfig,
-    footprints: dict[str, dict[str, Any]] | None = None,
-    fixed_copper: list[dict[str, Any]] | None = None,
-) -> tuple[
-    list[RealizedTrack],
-    list[RealizedVia],
-    list[int],
-    list[dict[str, Any]],
-    list[UnroutedReason],
-    list[UnstitchedNet],
-    dict[int, str],
-    NegotiationReport | None,
-    tuple[CongestionCell, ...],
-]:
-    """Route ``ids`` on a shared occupancy grid — see :mod:`precis.pcb.
-    maze` for why this cannot emit overlapping copper, and what it gives
-    up in exchange (unrouted segments, reported not hidden).
-
-    **Rip-up and retry, by re-ordering.** One shortest-first pass is
-    order-dependent: a connection fails because earlier ones took the
-    corridor it needed, not because no route exists. So the whole pass is
-    re-run on a fresh grid with the failures moved to the front, up to
-    ``config.route_passes`` times, and the best result wins. This is
-    PathFinder's idea (McMurchie & Ebeling 1995) in its crudest form —
-    history-based *ordering* rather than history-based *cost* — chosen
-    because the occupancy grid has no incremental un-claim: a track
-    overwrites the clearance halo of copper it passes, so clearing one
-    net's cells would strip protection from its neighbours, while
-    re-running a pass is cheap.
-
-    **A history COST on top was tried and lost** (2026-10-01, 140-part
-    board): surcharging, after each pass, the corridor each lost-race
-    connection takes on a board with nothing routed realized 49/89 at one
-    grid step per cell and 62/89 at a quarter step, against 65/89 without.
-    Those corridors run through the same pad-escape regions every net
-    needs, so the surcharge pushes everyone into longer detours that use up
-    more board. Real negotiated congestion lets nets share cells while
-    they negotiate, which this hard-ownership grid cannot express.
-
-    Every pass is individually clean by construction, so this trades
-    runtime for routability and never for correctness — a later pass
-    cannot introduce an overlap a single pass would have refused.
-    """
+    footprints: dict[str, dict[str, Any]] | None,
+    fixed_copper: list[dict[str, Any]] | None,
+) -> _RouteContext | None:
+    """The :func:`_realize_maze` preamble, standalone — ``None`` when the
+    board has no pads or no routable nets (the maze's early-out cases)."""
     signal_layers = _signal_layers(ir)
     # Every board layer, not just the routable ones -- what a DRILLED pad's
     # claim spans below (same "a hole is a physical fact on every layer,
@@ -1560,13 +1561,12 @@ def _realize_maze(
             )
             pads.append((point, net, shape, layers))
     if not pads:
-        return [], [], list(ids), [], [], [], {}, None, ()
-
+        return None
     rules_by_net = {
         n: _resolve_track_rules(ir, n, PAD_LAYER, config) for n in range(ir.n_nets)
     }
     if not rules_by_net:
-        return [], [], list(ids), [], [], [], {}, None, ()
+        return None
     # Rulings 2026-09-19 item 7 — per-net layer lock, resolved ONCE
     # (net-class-derived, not attempt-derived, same "built once outside
     # the retry loop" reasoning as `rules_by_net` itself). A net absent
@@ -1674,6 +1674,120 @@ def _realize_maze(
             _sibling_pad_terminals_by_pin(ir, footprints, signal_layers),
         ),
     )
+    return _RouteContext(
+        signal_layers,
+        pad_geoms,
+        pads,
+        rules_by_net,
+        net_layers,
+        net_layer_lock_fail,
+        clearance,
+        spec,
+        plane_ids,
+        route_ids,
+        order,
+        ink_field,
+        body_mask,
+        island_terminals,
+        fixed_copper,
+        edge_min,
+    )
+
+
+def _static_route_grid(
+    ir: PcbIR, ctx: _RouteContext, config: RealizeConfig
+) -> tuple[
+    maze.OccupancyGrid,
+    list[RealizedTrack],
+    list[RealizedVia],
+    list[int],
+    list[int],
+]:
+    """The occupancy grid one routing attempt starts from — ``ctx``'s
+    static claims (fixed copper, keep-outs, pads, plane fan-out) stamped,
+    no routed net. The tile-capacity planner and the ``view='congestion'``
+    capacity map measure this grid; the reorder passes each build their
+    own through :func:`_route_pass` as before."""
+    grid = maze.OccupancyGrid(ctx.spec, clearance_mm=ctx.clearance)
+    grid.set_body_mask(ctx.body_mask)
+    tracks, vias, unrouted, failed_pins = _claim_static(
+        ir,
+        ctx.plane_ids,
+        grid,
+        config,
+        ctx.rules_by_net,
+        ctx.pads,
+        ctx.pad_geoms,
+        ctx.ink_field,
+        ctx.fixed_copper,
+    )
+    return grid, tracks, vias, unrouted, failed_pins
+
+
+def _realize_maze(
+    ir: PcbIR,
+    ids: list[int],
+    config: RealizeConfig,
+    footprints: dict[str, dict[str, Any]] | None = None,
+    fixed_copper: list[dict[str, Any]] | None = None,
+) -> tuple[
+    list[RealizedTrack],
+    list[RealizedVia],
+    list[int],
+    list[dict[str, Any]],
+    list[UnroutedReason],
+    list[UnstitchedNet],
+    dict[int, str],
+    NegotiationReport | None,
+    tuple[CongestionCell, ...],
+]:
+    """Route ``ids`` on a shared occupancy grid — see :mod:`precis.pcb.
+    maze` for why this cannot emit overlapping copper, and what it gives
+    up in exchange (unrouted segments, reported not hidden).
+
+    **Rip-up and retry, by re-ordering.** One shortest-first pass is
+    order-dependent: a connection fails because earlier ones took the
+    corridor it needed, not because no route exists. So the whole pass is
+    re-run on a fresh grid with the failures moved to the front, up to
+    ``config.route_passes`` times, and the best result wins. This is
+    PathFinder's idea (McMurchie & Ebeling 1995) in its crudest form —
+    history-based *ordering* rather than history-based *cost* — chosen
+    because the occupancy grid has no incremental un-claim: a track
+    overwrites the clearance halo of copper it passes, so clearing one
+    net's cells would strip protection from its neighbours, while
+    re-running a pass is cheap.
+
+    **A history COST on top was tried and lost** (2026-10-01, 140-part
+    board): surcharging, after each pass, the corridor each lost-race
+    connection takes on a board with nothing routed realized 49/89 at one
+    grid step per cell and 62/89 at a quarter step, against 65/89 without.
+    Those corridors run through the same pad-escape regions every net
+    needs, so the surcharge pushes everyone into longer detours that use up
+    more board. Real negotiated congestion lets nets share cells while
+    they negotiate, which this hard-ownership grid cannot express.
+
+    Every pass is individually clean by construction, so this trades
+    runtime for routability and never for correctness — a later pass
+    cannot introduce an overlap a single pass would have refused.
+    """
+    ctx = _route_context(ir, ids, config, footprints, fixed_copper)
+    if ctx is None:
+        return [], [], list(ids), [], [], [], {}, None, ()
+    signal_layers = ctx.signal_layers
+    pad_geoms = ctx.pad_geoms
+    pads = ctx.pads
+    rules_by_net = ctx.rules_by_net
+    net_layers = ctx.net_layers
+    net_layer_lock_fail = ctx.net_layer_lock_fail
+    clearance = ctx.clearance
+    spec = ctx.spec
+    plane_ids = ctx.plane_ids
+    route_ids = ctx.route_ids
+    order = ctx.order
+    ink_field = ctx.ink_field
+    body_mask = ctx.body_mask
+    island_terminals = ctx.island_terminals
+    edge_min = ctx.edge_min
     Outcome = tuple[
         list[RealizedTrack],
         list[RealizedVia],
@@ -1727,7 +1841,24 @@ def _realize_maze(
             failed = [s for s in order if s in set(outcome[2])]
             order = failed + [s for s in order if s not in set(failed)]
 
-    attempts(order, None)
+    # Corridors-as-cost (slice 1, pcb-global-plan-router): a strict
+    # flow-capacity tile plan guides each planned segment's search, the
+    # commits ride the reorder passes as verbatim proposals. Opt-in only
+    # (``RealizeConfig.corridor_penalty``); a corridor attempt that still
+    # leaves nets unrouted falls through to the plain passes below, so the
+    # opt-in can cost time, never nets. The deferred import keeps
+    # `globalplan`'s own dependency on this module one-directional.
+    if config.corridor_penalty > 0.0 and route_ids:
+        try:
+            from precis.pcb import globalplan
+
+            guided = globalplan.corridor_attempt(ir, ctx, config)
+        except Exception:  # the opt-in must never take the plain route down
+            guided = None
+        if guided is not None:
+            attempts(guided.order, guided.preferred)
+    if best is None or best_score[0]:
+        attempts(order, None)
     negotiation: NegotiationReport | None = None
     congestion: tuple[CongestionCell, ...] = ()
     if best_score[0] and config.negotiate_iterations > 0:
