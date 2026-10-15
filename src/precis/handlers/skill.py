@@ -2122,6 +2122,8 @@ class SkillHandler(Handler):
         lines.extend(_render_dark_switches(store))
         lines.extend(["", "**Fleet utilisation (last hour)**", ""])
         lines.extend(_render_fleet_utilisation(store))
+        lines.extend(["", "**Tool-call latency (last hour, all processes)**", ""])
+        lines.extend(_render_tool_latency(store))
         lines.extend(["", "**Embedder**", ""])
         embedder = getattr(self.hub, "embedder", None) if self.hub is not None else None
         if embedder is None:
@@ -3048,6 +3050,51 @@ def _render_fleet_utilisation(store: Store | None) -> list[str]:
         "is healthy."
     )
     return out
+
+
+#: Slowest verb/kind pairs the status table lists.
+_TOOL_LATENCY_TOP = 8
+
+
+def _render_tool_latency(store: Store | None) -> list[str]:
+    """p50/p95 per verb/kind from the durable ``tool_calls`` ledger
+    (gr479849) — survives a restart, unlike the per-process
+    ``tool_latency_1h`` Runtime rows. Reads the same
+    :func:`precis.health_checks.tool_latency` the ``tool_latency`` digest
+    check alerts on, with its budget.
+    """
+    if store is None:
+        return ["_stateless build — no tool_calls ledger to read_"]
+    from precis import health_checks
+
+    try:
+        with store.pool.connection() as conn:
+            rows = health_checks.tool_latency(conn)
+    except Exception as exc:
+        return [f"_unreachable: {type(exc).__name__}: {exc}_"]
+    if not rows:
+        return ["_no tool calls in the last hour_"]
+    total = sum(t.calls for t in rows)
+    errors = sum(t.errors for t in rows)
+    return [
+        f"{total} calls, {errors} errors, {len(rows)} verb/kind pair(s); "
+        f"slowest {min(len(rows), _TOOL_LATENCY_TOP)}:",
+        "",
+        render_agent_table(
+            [
+                {
+                    "verb/kind": f"{t.verb}/{t.kind}",
+                    "n": t.calls,
+                    "p50_ms": t.p50_ms,
+                    "p95_ms": t.p95_ms,
+                    "budget_ms": t.budget_ms,
+                    "errors": t.errors,
+                }
+                for t in rows[:_TOOL_LATENCY_TOP]
+            ],
+            schema=["verb/kind", "n", "p50_ms", "p95_ms", "budget_ms", "errors"],
+        ),
+    ]
 
 
 def _collect_database_info(store: Store | None) -> list[tuple[str, str]] | str:

@@ -625,14 +625,125 @@ def idle_lanes(
     ]
 
 
+@dataclass(frozen=True, slots=True)
+class ToolLatency:
+    """One ``(verb, kind)`` pair's ``tool_calls`` latency over a window.
+
+    ``kind`` is ``'-'`` when the caller omitted ``kind=``. The ``baseline_*``
+    fields are the trailing window before it (zero calls / ``None`` when
+    :func:`tool_latency` ran without a baseline).
+    """
+
+    verb: str
+    kind: str
+    calls: int
+    p50_ms: int
+    p95_ms: int
+    errors: int
+    baseline_calls: int = 0
+    baseline_p95_ms: int | None = None
+
+    @property
+    def budget_ms(self) -> int:
+        return tool_latency_budget_ms(self.verb, self.kind)
+
+
+#: Default p95 budget for one verb/kind over an hour (gr479849). Measured
+#: 2026-10-15 on prod over 7 days of hourly buckets with >= 10 calls: a
+#: local-DB pair breached 15 s in 7 of ~1100 pair-hours (get/skill,
+#: search/memory, search/gripe, search/todo, put/finding, get/python,
+#: delete/draft), while normal hours sit under 1 s.
+TOOL_LATENCY_BUDGET_MS = 15_000
+
+#: Per-pair overrides, keyed ``"verb/kind"`` or bare ``"kind"`` (any verb);
+#: ``verb/kind`` wins. Only kinds whose call waits on an outside service
+#: or a long LLM run: their 30-day prod p95 is the evidence (2026-10-15:
+#: perplexity-research 398 s, perplexity-reasoning 113 s, get/web 51 s,
+#: get/semanticscholar 38 s, search/websearch 27 s).
+TOOL_LATENCY_BUDGET_OVERRIDES_MS: dict[str, int] = {
+    "perplexity-research": 600_000,
+    "perplexity-reasoning": 180_000,
+    "web": 90_000,
+    "websearch": 60_000,
+    "semanticscholar": 60_000,
+    "youtube": 120_000,
+}
+
+#: Fewer calls than this in the window and the p95 is one call's time,
+#: so neither the budget check nor the regression check judges the pair.
+TOOL_LATENCY_MIN_CALLS = 10
+
+
+def tool_latency_budget_ms(verb: str, kind: str) -> int:
+    """The p95 budget for ``verb/kind``: override, then kind, then default."""
+    o = TOOL_LATENCY_BUDGET_OVERRIDES_MS
+    return o.get(f"{verb}/{kind}", o.get(kind, TOOL_LATENCY_BUDGET_MS))
+
+
+def tool_latency(
+    conn: Any, *, window_s: int = 3600, baseline_s: int = 0
+) -> list[ToolLatency]:
+    """p50/p95 per ``(verb, kind)`` from the durable ``tool_calls`` ledger,
+    slowest p95 first — one indexed scan, the same for every process.
+
+    ``latency_ms`` is the ``dispatch`` run time; it leaves out the MCP
+    server's semaphore queue, which the ``precis.calllat`` log measured at
+    0 ms across 830 calls (2026-10-15). With ``baseline_s > 0`` the same
+    scan also returns each pair's p95 over the ``baseline_s`` before the
+    window. Pairs with no call in the window are omitted.
+    """
+    rows = conn.execute(
+        """
+        SELECT verb, coalesce(kind, '-'),
+               count(*) FILTER (WHERE cur),
+               percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms)
+                 FILTER (WHERE cur),
+               percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)
+                 FILTER (WHERE cur),
+               count(*) FILTER (WHERE cur AND outcome <> 'ok'),
+               count(*) FILTER (WHERE NOT cur),
+               percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)
+                 FILTER (WHERE NOT cur)
+          FROM (SELECT verb, kind, latency_ms, outcome,
+                       ts >= now() - make_interval(secs => %(w)s) AS cur
+                  FROM tool_calls
+                 WHERE ts >= now() - make_interval(secs => %(w)s + %(b)s)
+                   AND latency_ms IS NOT NULL) t
+         GROUP BY 1, 2
+        HAVING count(*) FILTER (WHERE cur) > 0
+         ORDER BY 5 DESC, 1, 2
+        """,
+        {"w": window_s, "b": baseline_s},
+    ).fetchall()
+    return [
+        ToolLatency(
+            verb=v,
+            kind=k,
+            calls=int(n),
+            p50_ms=round(p50),
+            p95_ms=round(p95),
+            errors=int(e),
+            baseline_calls=int(bn),
+            baseline_p95_ms=None if bp95 is None else round(bp95),
+        )
+        for v, k, n, p50, p95, e, bn, bp95 in rows
+    ]
+
+
 __all__ = [
+    "TOOL_LATENCY_BUDGET_MS",
+    "TOOL_LATENCY_BUDGET_OVERRIDES_MS",
+    "TOOL_LATENCY_MIN_CALLS",
     "FreshnessProbe",
     "IdleLane",
     "LoopUtilisation",
+    "ToolLatency",
     "activity_by_handler",
     "backlog_counts",
     "compute_backlog_counts",
     "fetch_freshness_timestamps",
     "idle_lanes",
     "loop_utilisation",
+    "tool_latency",
+    "tool_latency_budget_ms",
 ]

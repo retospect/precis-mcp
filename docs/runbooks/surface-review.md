@@ -69,6 +69,11 @@ up on now mines near-nothing; `tool_calls` replaced it for rates and the
 local corpus replaced it for causes. Keep `--jobs` in the run because the
 window may predate the collapse, but do not expect it to carry the pass.
 
+Rank slow verb/kind pairs with `precis.health_checks.tool_latency(conn,
+window_s=…)`: the same p50/p95 rollup precis-status shows and the
+`tool_latency` health-digest check alerts on, so a ranking never
+disagrees with the alert.
+
 ## The pass
 
 `/surface-review [window]` runs this. By hand:

@@ -226,6 +226,21 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         service="heartbeat",
     ),
     _watchdog(
+        "infra",
+        "tool_latency",
+        "A tool verb/kind's p95 over the last hour exceeds its latency budget.",
+        budget="15s p95 (per-kind overrides)",
+        service=None,
+    ),
+    _watchdog(
+        "infra",
+        "tool_latency_regressed",
+        "A tool verb/kind's p95 over the last hour more than doubled against the past week.",
+        budget="2x trailing-week p95",
+        service=None,
+        severity="info",
+    ),
+    _watchdog(
         "meta",
         "alert_backlog_rot",
         "Open alerts older than 7 days — the response loop itself is rotting.",

@@ -39,7 +39,9 @@ also counts as a failure for the re-arm backoff. No row at all means the
 cold),
 **Database** (connected DSN host/port/name/user, postgres server
 version, last applied migration + count, and `schema_state` —
-ledger-vs-package drift), and the existing
+ledger-vs-package drift), **Tool-call latency** (p50/p95 per verb/kind
+over the last hour from the durable `tool_calls` ledger, every process,
+with the p95 budget the health digest alerts on), and the existing
 **Optional dependencies** import probe.
 
 ## Where the git facts come from: the five `served_from` lanes

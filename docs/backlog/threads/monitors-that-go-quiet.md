@@ -110,10 +110,6 @@ gr346534, soft-deleted)
    gr472019 and gr476100; the router tracker binding shipped, what is left
    is the OTS batch 7 re-stamp). It ranks below 1–4 because the alerts still
    fire; what is missing is the tracker binding, so nothing goes silent.
-6. **backlog/mcp-call-latency-alerting.md** (gr479849, ruled 2026-10-12).
-   Tool-call p50/p95 from the durable `tool_calls` ledger plus a
-   health-digest budget check; today only a per-process ring exists, so a
-   slow MCP goes unnoticed.
 
 ## Horizon
 

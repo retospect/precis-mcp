@@ -83,6 +83,8 @@ plus the bespoke checks that share the `CheckResult` shape:
 | `lanes_idle_beside_queue` | `autonomy` | no executor has queued work while claiming nothing for an hour |
 | `doctor_report_fresh` | `autonomy` | the `doctor_tick` pass wrote a report within twice its fresh window |
 | `hosts_alive` | `infra` | every recently-active host's `host_heartbeat` row is <15 min old |
+| `tool_latency` | `infra` | every verb/kind with ≥10 calls in the last hour has its `tool_calls` p95 under budget (15 s; slower for perplexity, web, websearch, semanticscholar, youtube) |
+| `tool_latency_regressed` | `infra` | no verb/kind's last-hour p95 (≥1 s) more than doubled against the trailing week (info) |
 | `alert_backlog_rot` | `meta` | no `alert-state:open` row is >7d old — the response loop itself rotting (info) |
 
 Derived groups name their check after the thing they watch:

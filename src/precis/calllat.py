@@ -8,7 +8,8 @@ memory so ``precis-status`` can show p50/p95 per verb+kind (:func:`summary`).
 Never records argument text: the log line and the ring hold names, a duration
 and a byte count only. The ring is per process (the shared session server
 serves every session), bounded by :data:`_MAX_PER_KEY`, and lost on restart;
-a durable table is a follow-up if trending across restarts is wanted.
+the durable view across processes and restarts is
+:func:`precis.health_checks.tool_latency` over the ``tool_calls`` ledger.
 
 ``duration_ms`` is the full time the caller waited (semaphore queue + the
 worker-thread run); ``wait_ms`` is the queue part alone, so a slow call from

@@ -27,6 +27,10 @@ import anywhere, enforced by ``tests/workers/test_health_digest.py``.
      re-filing a pipeline-stuck gripe against a pass that finished its work.
      ``lanes_idle_beside_queue`` flags a job executor with old queued work
      and no claim in an hour (:func:`precis.health_checks.idle_lanes`).
+     ``tool_latency`` / ``tool_latency_regressed`` read the ``tool_calls``
+     ledger (:func:`precis.health_checks.tool_latency`, the rollup
+     ``precis-status`` shows): a verb/kind p95 over its budget, or more
+     than double its trailing-week p95.
    * **Cadence staleness** (:func:`_cadence_staleness_checks`, derived) —
      every ``scheduler_leases`` row overdue past its *live*-resolved
      interval + margin; zero per-cadence config, so a new
@@ -1367,6 +1371,103 @@ def _check_alert_backlog_rot(conn: Any) -> CheckResult:
     )
 
 
+#: Trailing window the ``tool_latency_regressed`` check compares the last
+#: hour against. The DB keeps no deploy timestamp, so "since the last
+#: deploy" (gr479849) reads as "against the week before this hour"; a
+#: deploy that slows a pair shows the same doubling.
+_TOOL_LATENCY_BASELINE_S = 7 * 86400
+
+#: A pair whose p95 doubled but is still under this is not reported:
+#: 40 ms → 90 ms is noise, not a slow MCP.
+_TOOL_LATENCY_REGRESSION_FLOOR_MS = 1000
+
+
+def _fmt_pair(t: health_checks.ToolLatency, *, with_baseline: bool = False) -> str:
+    s = f"{t.verb}/{t.kind} p95 {t.p95_ms / 1000:.1f}s"
+    if with_baseline and t.baseline_p95_ms is not None:
+        return f"{s} (week {t.baseline_p95_ms / 1000:.1f}s, n={t.calls})"
+    return f"{s} > {t.budget_ms / 1000:.0f}s budget (n={t.calls})"
+
+
+def _tool_latency_checks(conn: Any) -> list[CheckResult]:
+    """MCP tool-call latency over the last hour from the ``tool_calls``
+    ledger (gr479849): ``tool_latency`` goes stale when a verb/kind's p95
+    exceeds its budget
+    (:func:`precis.health_checks.tool_latency_budget_ms`);
+    ``tool_latency_regressed`` when it more than doubled against the
+    trailing week. Pairs under
+    :data:`~precis.health_checks.TOOL_LATENCY_MIN_CALLS` calls are not
+    judged.
+    """
+    try:
+        rows = health_checks.tool_latency(conn, baseline_s=_TOOL_LATENCY_BASELINE_S)
+    except Exception:
+        log.exception("health_digest: tool_latency probe failed")
+        try:
+            conn.rollback()
+        except Exception:
+            log.exception("health_digest: rollback after tool_latency probe failed")
+        return [
+            CheckResult(
+                "infra", "tool_latency", "unknown", "tool latency: probe failed", _WARN
+            ),
+            CheckResult(
+                "infra",
+                "tool_latency_regressed",
+                "unknown",
+                "tool latency trend: probe failed",
+                _INFO,
+            ),
+        ]
+    floor = health_checks.TOOL_LATENCY_MIN_CALLS
+    judged = [t for t in rows if t.calls >= floor]
+    over = [t for t in judged if t.p95_ms > t.budget_ms]
+    regressed = [
+        t
+        for t in judged
+        if t.baseline_calls >= floor
+        and t.baseline_p95_ms is not None
+        and t.p95_ms >= _TOOL_LATENCY_REGRESSION_FLOOR_MS
+        and t.p95_ms > 2 * t.baseline_p95_ms
+    ]
+    budget = (
+        CheckResult(
+            "infra",
+            "tool_latency",
+            "stale",
+            "tool latency 1h: " + "; ".join(_fmt_pair(t) for t in over),
+            _WARN,
+        )
+        if over
+        else CheckResult(
+            "infra",
+            "tool_latency",
+            "ok",
+            f"tool latency 1h: {len(judged)} verb/kind pair(s) within budget",
+            _WARN,
+        )
+    )
+    trend = (
+        CheckResult(
+            "infra",
+            "tool_latency_regressed",
+            "stale",
+            "tool latency 1h more than doubled: "
+            + "; ".join(_fmt_pair(t, with_baseline=True) for t in regressed),
+            _INFO,
+        )
+        if regressed
+        else CheckResult(
+            "infra",
+            "tool_latency_regressed",
+            "ok",
+            "tool latency 1h: no pair doubled against the past week",
+            _INFO,
+        )
+    )
+    return [budget, trend]
+
+
 #: The registry service name gating the role3 classifier (see
 #: ``workers/registry.py``'s ``classify`` :class:`ServiceSpec`) — the name
 #: :func:`_classify_gate_enabled` looks up.
@@ -1582,6 +1683,7 @@ def _layer1_checks(store: Store) -> list[CheckResult]:
         out.append(_check_doctor_report_fresh(conn))
         out.append(_check_hosts_alive(conn))
         out.append(_check_alert_backlog_rot(conn))
+        out += _tool_latency_checks(conn)
     if not _classify_gate_enabled(store):
         out = [
             _idle_classify_check() if c.name == "chunks_classified" else c for c in out
@@ -1869,6 +1971,8 @@ _PINNED_FINGERPRINTS: dict[tuple[str, str], str] = {
     ("autonomy", "doctor_report_fresh"): "doctor_report_fresh",
     ("infra", "hosts_alive"): "hosts_alive",
     ("meta", "alert_backlog_rot"): "alert_backlog_rot",
+    ("infra", "tool_latency"): "tool_latency",
+    ("infra", "tool_latency_regressed"): "tool_latency_regressed",
 }
 
 
