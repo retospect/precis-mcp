@@ -40,10 +40,12 @@ forwards ``page_size=None`` when unset so the handler resolves it *after*
 Explicit ``unique_per=`` echoes into same-search continuations so a
 ``page=N+1`` hint can't flip shapes mid-walk.
 
-Inline links and gripe comments share one capped-section renderer —
-selection plus an explicit full-view pointer bound child counts on
-routine reads (:mod:`precis.handlers._capped_section`; the gripe comment
-policy: :mod:`precis.handlers._comment_timeline`).
+Child collections on routine reads are bounded, with an explicit
+full-view pointer — inline links via the shared capped-section renderer
+(:mod:`precis.handlers._capped_section`), comment timelines via the
+richer newest-in-full / one-liner policy in
+:mod:`precis.handlers._comment_timeline` (the single-``limit`` shape
+can't express it; both kinds share that one implementation).
 
 Memory authoring reuses ``utils.edit_resolve`` for anchored body edits:
 all handler body writes lock the owning ref, and anchored writes also

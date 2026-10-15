@@ -27,40 +27,35 @@ tables. Also landed: `policy-gates-must-fail-distinguishably`.
 schema regen and the two changed product skills (`precis-fisheye-help`,
 `precis-status-help`) are live and validated.
 
-## The order, and why it is an order
+## The order — all items shipped (2026-10-15)
 
-1. **Shared render cap** — `src/precis/handlers/_capped_section.py` now
-   serves inline links and routine gripe comments in prepared R14 source;
-   combined gate and deployed replay remain pending.
+1. **Shared render cap** — shipped and on prod. Mechanism note for the
+   record: `_capped_section.render_capped_section` serves inline links;
+   comment timelines moved to `_comment_timeline`'s richer two-tier policy
+   (b9f44519f) — a single `limit` can't express newest-in-full +
+   one-liners + hidden. Render-diet (c37b29150 et al.) tuned that policy;
+   the stale "one shared renderer" docstrings were corrected in the same
+   pass.
 2. **`singleton-id-no-batch-form`** — shipped in full: the batch
    `get`/`tag` half 2026-10-09 (`_coerce_ids`, cap 50, one transaction for
    the tag batch), the batch `put(kind='draft', chunk_kind='term',
    terms=[...])` glossary case 2026-10-12 (one transaction, per-term
    outcome lines, same `BATCH_ID_CAP`).
-
-**Deployed 1 gates 2.** A batch `get` of 50 gripes whose comment timelines are
-uncapped is worse than the singleton loop it replaces. Doing 2 first
-actively makes things worse, which is the kind of thing that is obvious in
-sequence and invisible in a backlog list.
-
-Both are deliberately framed as shared-seam fixes rather than point fixes —
-Reto's call, 2026-09-29: *"copying a decided convention smells like not
-DRY."* The links cap already existed and the lesson did not transfer to
-comments; a second cap constant beside the first would repeat that.
-
 3. **`draft-write-latency-whole-draft-rescan`** — shipped 2026-10-02/03
    (chunk-scoped `sync_draft_links`, concurrent dedup judges, a full sync
    before export's gates): prod text edits p50 24 s → 0.27 s (n=39).
-4. **Ledger instrumentation** — `mcp-surface-economy.md`, the
-   "Instrumentation blocker" section: `result_bytes`, the reserved-but-NULL
-   `result_count`, and a correlation key that is actually populated
-   (`agentlog_id` is set on 0.03% of rows). Needs a migration ⇒ `/go` only.
-   This is what turns the next pass's biggest number from an extrapolation
-   into a measurement.
+4. **Ledger instrumentation** — shipped 2026-10-15, no migration needed
+   after all (the columns already existed): `result_bytes` live since the
+   0209 deploy; `result_count` now populated from `Response.result_count`;
+   the correlation key is `session_id`/`seq` for MCP-bound calls and, for
+   the in-process OSS agent loop, `env_overlay`'s context keys now bind the
+   per-tick ContextVar (`_overlay_tick_context`) so `agentlog_id`/`source`
+   land there too. Residual: spawned-claude MCP env pass-through is deploy
+   plumbing (template carries it; fleet propagation unverified on prod).
 5. **`gr456287`** (harness worktree guard, 308 refusals / 97 of 99 sessions)
-   — in-repo lever is only the accepted-shape cheat sheet into
-   `docs/conventions/container-ops.md`; the guard itself is a harness
-   built-in. See `worktree-path-guard-false-positives.md`.
+   — the in-repo lever (accepted-shape cheat sheet) already lives in
+   `docs/conventions/container-ops.md`; what remains is upstream-only in
+   `worktree-path-guard-false-positives.md`.
 
 ## Next pass
 

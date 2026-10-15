@@ -72,7 +72,8 @@ def render_event_log(
             body=(
                 f"log: no events recorded for ref_id={ref_id}"
                 + (f" (source={source!r})" if source else "")
-            )
+            ),
+            result_count=0,
         )
 
     # store.events_for returns newest-first; flip so we read top-to-bottom
@@ -91,7 +92,7 @@ def render_event_log(
         if ev.duration_ms is not None:
             line += f"  ({ev.duration_ms} ms)"
         lines.append(line)
-    return Response(body="\n".join(lines))
+    return Response(body="\n".join(lines), result_count=len(events))
 
 
 def _summarise(

@@ -33,6 +33,16 @@ the MCP client's self-declared ``clientInfo`` (``name/version``, plus a
 ``_meta`` model id when sent) — verbatim, ``NULL`` when there is no
 bound session or no declaration.
 
+``result_count`` — 0133's reserved column — is populated from
+:attr:`precis.response.Response.result_count`, which collection-rendering
+code paths set (search/list/count views, batch gets, links/log views on
+the numeric-ref family, ``utils.search_merge.merge_and_render``);
+``None`` where the response doesn't enumerate a result set. Correlation:
+``session_id``/``seq`` bind MCP-session calls; ``agentlog_id``/``source``
+cover the in-process agent loop via ``LlmRequest.env_overlay`` →
+:func:`precis.utils.llm.router._overlay_tick_context` (the spawned-claude
+path's env back-doors have no subprocess on that transport).
+
 Operational, **not corpus** — never embedded (peer to
 :mod:`precis.route_log` / :mod:`precis.agentlog` / alerts).
 
@@ -128,6 +138,8 @@ class ToolCallRecord:
     #: ``'ok'`` | ``'error'``.
     outcome: str
     error_type: str | None = None
+    #: Items the response enumerated (:attr:`Response.result_count`) —
+    #: 0133's "reserved" column, populated since the handlers carry it.
     result_count: int | None = None
     latency_ms: int | None = None
     agentlog_id: int | None = None

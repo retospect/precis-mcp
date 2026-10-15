@@ -38,6 +38,7 @@ the tool-using cloud tiers.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import random
@@ -65,6 +66,7 @@ from precis.utils.llm import failure as _failure
 from precis.utils.llm.quota import is_quota_exhaustion_text, quota_retry_at
 
 if TYPE_CHECKING:
+    from precis.utils.inproc_context import TickContext
     from precis.utils.llm.local_serving import LocalSlot
     from precis.utils.llm.openai_tools import AgentLoopResult
     from precis.utils.prompt.model import Profile
@@ -1252,9 +1254,12 @@ class LlmRequest:
     #: Extra env vars overlaid onto the ``claude_agent`` subprocess env (the
     #: planner tick's runtime back-doors: ``PRECIS_CURRENT_TODO``/``_MODEL``/
     #: ``PRECIS_WORKSPACE``/the agentlog id/``PRECIS_KINDS_DISABLED``). The
-    #: spawned MCP server inherits them; ignored by the other transports (the
-    #: in-process loop carries context in a ContextVar, not env). ``None`` ⇒
-    #: inherit the worker env unchanged.
+    #: spawned MCP server inherits them; on ``OPENAI_TOOLS`` — no subprocess
+    #: env to inherit — the same keys bind the per-tick ContextVar for the
+    #: loop's span instead (:func:`_overlay_tick_context`), so run attribution
+    #: (``tool_calls.agentlog_id``/``source``, ``touched`` links) works
+    #: in-process too. Other transports ignore it. ``None`` ⇒ inherit the
+    #: worker env unchanged.
     env_overlay: dict[str, str] | None = None
     #: Working directory for the ``claude_agent`` subprocess — a CLAUDE.md-free
     #: neutral cwd so ``claude -p`` discovers no ambient project persona.
@@ -3531,6 +3536,72 @@ def run_oss_tool_loop(
     )
 
 
+#: ``env_overlay`` keys that carry the run's runtime context — the same
+#: back-doors the spawned-``claude`` tick's MCP server reads from its env.
+#: On this in-process transport they bind a per-tick ContextVar instead
+#: (:func:`_overlay_tick_context`), so the loop's ``runtime.dispatch``
+#: calls attribute to the run (``tool_calls.agentlog_id``/``source``,
+#: ``touched`` links) instead of resolving against the worker's own env —
+#: the dormancy behind ``agentlog_id`` landing on ~0% of ledger rows.
+_OVERLAY_CTX_KEYS = (
+    "PRECIS_CURRENT_TODO",
+    "PRECIS_CURRENT_MODEL",
+    "PRECIS_WORKSPACE",
+    "PRECIS_CURRENT_AGENTLOG",
+    "PRECIS_KINDS_DISABLED",
+)
+
+
+def _overlay_tick_context(overlay: Mapping[str, str] | None) -> TickContext | None:
+    """Translate an ``env_overlay``'s run-context keys into a TickContext.
+
+    Env-inheritance semantics: a recognized key overrides the ambient
+    in-process context (an outer ``tick_context``, e.g. plan_tick's own
+    binding — whose overlay carries the same values anyway); a key the
+    overlay omits keeps the ambient value, mirroring how
+    ``proc_env.update(overlay)`` leaves untouched vars visible to the
+    spawned subprocess. ``None`` when the overlay carries no recognized
+    key — nothing binds and the ambient context stands.
+    """
+    if overlay is None or not any(k in overlay for k in _OVERLAY_CTX_KEYS):
+        return None
+    from precis import kind_gate
+    from precis.utils.inproc_context import TickContext, current
+
+    base = current() or TickContext()
+
+    def _sval(name: str, fallback: str | None) -> str | None:
+        if name not in overlay:
+            return fallback
+        return str(overlay[name]).strip() or None
+
+    def _ival(name: str, fallback: int | None) -> int | None:
+        if name not in overlay:
+            return fallback
+        try:
+            v = int(str(overlay[name]).strip())
+        except (TypeError, ValueError):
+            return None
+        return v if v > 0 else None
+
+    if "PRECIS_KINDS_DISABLED" in overlay:
+        raw = overlay["PRECIS_KINDS_DISABLED"]
+        reasons = kind_gate.parse_disabled_reasons(raw)
+        disabled = tuple(
+            (k, reasons.get(k, "disabled for this run"))
+            for k in sorted(kind_gate.parse_disabled(raw))
+        )
+    else:
+        disabled = base.disabled_kinds
+    return TickContext(
+        parent_todo=_ival("PRECIS_CURRENT_TODO", base.parent_todo),
+        workspace=_sval("PRECIS_WORKSPACE", base.workspace),
+        model=_sval("PRECIS_CURRENT_MODEL", base.model),
+        agentlog_id=_ival("PRECIS_CURRENT_AGENTLOG", base.agentlog_id),
+        disabled_kinds=disabled,
+    )
+
+
 def _dispatch_openai_tools(req: LlmRequest, model: str) -> LlmResult:
     """Drive the OSS ``tools=`` agent loop (the ``OPENAI_TOOLS`` transport).
 
@@ -3545,20 +3616,24 @@ def _dispatch_openai_tools(req: LlmRequest, model: str) -> LlmResult:
     stays a plain completion loop and can't call precis verbs — matching the
     claude path, where ``mcp_config=None`` means no tools advertised.
     """
+    from precis.utils.inproc_context import tick_context
+
+    ctx = _overlay_tick_context(req.env_overlay)
     try:
-        result = run_oss_tool_loop(
-            prompt=req.prompt,
-            model=model,
-            system_prompt=req.system_prompt,
-            max_turns=req.max_turns,
-            timeout_s=req.timeout_s,
-            tool_less=req.mcp_config is None,
-            local_url=req.local_url,
-            temperature=req.temperature,
-            thinking=req.thinking,
-            stream=req.stream,
-            max_tokens=req.max_tokens,
-        )
+        with tick_context(ctx) if ctx is not None else contextlib.nullcontext():
+            result = run_oss_tool_loop(
+                prompt=req.prompt,
+                model=model,
+                system_prompt=req.system_prompt,
+                max_turns=req.max_turns,
+                timeout_s=req.timeout_s,
+                tool_less=req.mcp_config is None,
+                local_url=req.local_url,
+                temperature=req.temperature,
+                thinking=req.thinking,
+                stream=req.stream,
+                max_tokens=req.max_tokens,
+            )
     except (RuntimeError, OSError) as exc:
         return _classified(
             LlmResult(

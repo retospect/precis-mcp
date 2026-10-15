@@ -85,8 +85,12 @@ def _stamp_non_production_embedder(
     lines = response.body.splitlines()
     if lines:
         lines.insert(1, marker)
-        return Response(body="\n".join(lines), cost=response.cost)
-    return Response(body=marker, cost=response.cost)
+        return Response(
+            body="\n".join(lines),
+            cost=response.cost,
+            result_count=response.result_count,
+        )
+    return Response(body=marker, cost=response.cost, result_count=response.result_count)
 
 
 def _stub_state_line(row: dict[str, Any]) -> str:
@@ -845,7 +849,11 @@ class SearchMixin(RuntimeShape):
             lines = response.body.splitlines()
             if lines:
                 lines.insert(1, f"_(per kind: {breakdown})_")
-                response = Response(body="\n".join(lines), cost=response.cost)
+                response = Response(
+                    body="\n".join(lines),
+                    cost=response.cost,
+                    result_count=response.result_count,
+                )
 
         # Partial failure is not silence either: a kind that errored is
         # indistinguishable from a kind with zero matches in the per-kind
@@ -864,7 +872,11 @@ class SearchMixin(RuntimeShape):
                 lines.insert(1, tip)
             else:
                 lines.append(tip)
-            response = Response(body="\n".join(lines), cost=response.cost)
+            response = Response(
+                body="\n".join(lines),
+                cost=response.cost,
+                result_count=response.result_count,
+            )
 
         # Broad-pass finding #7: when cross-kind ran with the wildcard
         # (kind=None or kind='*'), surface the kinds that have search
@@ -890,7 +902,11 @@ class SearchMixin(RuntimeShape):
                     lines.insert(1, tip)
                 else:
                     lines.append(tip)
-                response = Response(body="\n".join(lines), cost=response.cost)
+                response = Response(
+                    body="\n".join(lines),
+                    cost=response.cost,
+                    result_count=response.result_count,
+                )
 
         if uncited_dropped_kinds:
             lines = response.body.splitlines()
@@ -905,7 +921,11 @@ class SearchMixin(RuntimeShape):
                 lines.insert(1, tip)
             else:
                 lines.append(tip)
-            response = Response(body="\n".join(lines), cost=response.cost)
+            response = Response(
+                body="\n".join(lines),
+                cost=response.cost,
+                result_count=response.result_count,
+            )
 
         # gr485250: a C-number query is almost certainly a part lookup.
         # ``part`` opts out of the cross-kind merge (per-kind TOON table),
@@ -921,7 +941,11 @@ class SearchMixin(RuntimeShape):
                 f"get(kind='part', id='{lcsc_q}') resolves it, live on a "
                 "catalog miss)_"
             )
-            response = Response(body="\n".join(lines), cost=response.cost)
+            response = Response(
+                body="\n".join(lines),
+                cost=response.cost,
+                result_count=response.result_count,
+            )
 
         return _stamp_non_production_embedder(response, embedder)
 
@@ -987,7 +1011,7 @@ class SearchMixin(RuntimeShape):
                 title = r.title or r.slug or f"#{r.id}"
                 lines.append(f"{r.kind}:{r.id}  {title}")
             body = "\n".join(lines)
-        return Response(body=body)
+        return Response(body=body, result_count=len(refs))
 
     def _resolve_folder_scope(self, value: Any) -> tuple[set[int], str]:
         """Resolve a ``folder=`` argument to ``(subtree_ref_ids, label)``.

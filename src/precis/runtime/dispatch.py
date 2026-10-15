@@ -726,7 +726,9 @@ class DispatchMixin(RuntimeShape):
                     recipe=recipe,
                     transient=response.transient,
                 )
-                self._record_tool_call(verb, args, body, False, started)
+                self._record_tool_call(
+                    verb, args, body, False, started, response.result_count
+                )
                 return body, False
             except PrecisError as e:
                 self._maybe_add_skill_hint(e, verb, args)
@@ -763,6 +765,7 @@ class DispatchMixin(RuntimeShape):
         body: str,
         is_error: bool,
         started: float,
+        result_count: int | None = None,
     ) -> None:
         """Best-effort tool-call ledger write (migration 0133).
 
@@ -815,6 +818,7 @@ class DispatchMixin(RuntimeShape):
                     input_keys=sorted(str(k) for k, v in args.items() if v is not None),
                     outcome="error" if is_error else "ok",
                     error_type=error_type,
+                    result_count=result_count,
                     latency_ms=int((time.monotonic() - started) * 1000),
                     agentlog_id=current_from_env(),
                     source=current_model_from_env(),

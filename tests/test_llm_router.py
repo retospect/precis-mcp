@@ -1179,6 +1179,87 @@ def test_openai_tools_threads_tool_calls(monkeypatch: pytest.MonkeyPatch) -> Non
     assert acted.tool_calls == 4
 
 
+def test_openai_tools_binds_overlay_tick_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``env_overlay``'s run-context keys bind the per-tick ContextVar for
+    the in-process loop's span — the spawned-claude path's env back-doors
+    have no subprocess here, so without this ``tool_calls.agentlog_id``/
+    ``source`` stay NULL for every in-proc agent run."""
+    from precis.utils import inproc_context
+    from precis.utils.llm.openai_tools import AgentLoopResult
+    from precis.utils.llm.router import LlmRequest, Tier, _dispatch_openai_tools
+
+    seen: list[inproc_context.TickContext | None] = []
+
+    def fake_loop(**k: Any) -> AgentLoopResult:
+        seen.append(inproc_context.current())
+        return AgentLoopResult(
+            final_text="",
+            turns_used=1,
+            tool_calls_made=0,
+            total_tokens=None,
+            stop_reason="stop",
+        )
+
+    monkeypatch.setattr("precis.utils.llm.router.run_oss_tool_loop", fake_loop)
+    _dispatch_openai_tools(
+        LlmRequest(
+            tier=Tier.BIG,
+            prompt="x",
+            tools_needed=True,
+            env_overlay={
+                "PRECIS_CURRENT_AGENTLOG": "4242",
+                "PRECIS_CURRENT_TODO": "77",
+                "PRECIS_CURRENT_MODEL": "sonnet",
+                "PRECIS_WORKSPACE": "projects/x",
+                "PRECIS_KINDS_DISABLED": "tex:write into the bound draft,md",
+            },
+        ),
+        "m",
+    )
+    ctx = seen.pop()
+    assert ctx is not None
+    assert ctx.agentlog_id == 4242
+    assert ctx.parent_todo == 77
+    assert ctx.model == "sonnet"
+    assert ctx.workspace == "projects/x"
+    assert dict(ctx.disabled_kinds) == {
+        "tex": "write into the bound draft",
+        "md": "disabled for this run",
+    }
+    # The binding resets on exit — the ambient context stands after.
+    assert inproc_context.current() is None
+
+    # An overlay with no recognized key binds nothing.
+    _dispatch_openai_tools(
+        LlmRequest(
+            tier=Tier.BIG, prompt="x", tools_needed=True, env_overlay={"FOO": "1"}
+        ),
+        "m",
+    )
+    assert seen.pop() is None
+
+    # An omitted overlay key inherits the ambient in-process context —
+    # env-overlay semantics (``proc_env.update``) applied to the ContextVar.
+    ambient = inproc_context.TickContext(parent_todo=9, model="haiku")
+    with inproc_context.tick_context(ambient):
+        _dispatch_openai_tools(
+            LlmRequest(
+                tier=Tier.BIG,
+                prompt="x",
+                tools_needed=True,
+                env_overlay={"PRECIS_CURRENT_AGENTLOG": "55"},
+            ),
+            "m",
+        )
+    merged = seen.pop()
+    assert merged is not None
+    assert merged.agentlog_id == 55  # overlay wins its key
+    assert merged.parent_todo == 9  # ambient keeps the rest
+    assert merged.model == "haiku"
+
+
 def test_openai_tools_threads_loop_paused(monkeypatch: pytest.MonkeyPatch) -> None:
     """The loop's own unavailability classification (set where the exception
     is actually caught, inside `run_tool_loop`) rides through to

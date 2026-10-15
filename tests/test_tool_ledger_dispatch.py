@@ -181,6 +181,68 @@ def test_dispatch_ledger_0209_session_seq_sample(
     assert ok_row[4] is not None and "skill" in str(ok_row[4])
 
 
+def test_dispatch_ledger_records_result_count(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """``Response.result_count`` lands in ``tool_calls.result_count`` (the
+    "reserved" column of migration 0133): a search records its hit count,
+    a bare get records 1, a non-enumerating verb records NULL."""
+    tag = uuid4().hex[:8]
+    marker = f"rc-{tag}"
+    _, is_error = runtime_with_store.dispatch_with_status(
+        "put",
+        {"kind": "memory", "text": f"body-{tag}", "title": marker, "tags": [marker]},
+    )
+    assert is_error is False
+
+    store = runtime_with_store.store
+    assert store is not None
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT ref_id FROM refs WHERE kind='memory' AND title=%s "
+            "ORDER BY ref_id DESC LIMIT 1",
+            (marker,),
+        ).fetchone()
+    assert row is not None
+    ref_id = int(row[0])
+
+    _b, err_get = runtime_with_store.dispatch_with_status(
+        "get", {"kind": "memory", "id": str(ref_id)}
+    )
+    assert err_get is False
+    _b, err_hit = runtime_with_store.dispatch_with_status(
+        "search", {"kind": "memory", "tags": [marker]}
+    )
+    assert err_hit is False
+    _b, err_miss = runtime_with_store.dispatch_with_status(
+        "search", {"kind": "memory", "tags": [f"{marker}-none"]}
+    )
+    assert err_miss is False
+
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT verb, result_count FROM tool_calls "
+            "WHERE ts > now() - interval '1 minute' "
+            "AND arg_sample::text LIKE %s "
+            "ORDER BY call_id DESC",
+            (f"%{tag}%",),
+        ).fetchall()
+        get_row = conn.execute(
+            "SELECT result_count FROM tool_calls "
+            "WHERE verb='get' AND ts > now() - interval '1 minute' "
+            "AND arg_sample::text LIKE %s "
+            "ORDER BY call_id DESC LIMIT 1",
+            (f'%"{ref_id}"%',),
+        ).fetchone()
+    by_verb = {(r[0], str(r[1])) for r in rows}
+    # The tag value rides arg_sample on both searches; the put too (its
+    # tags= list is sampled, its payload scalars length-summarized).
+    assert ("search", "1") in by_verb  # tagged hit
+    assert ("search", "0") in by_verb  # the -none tag found nothing
+    assert ("put", "None") in by_verb  # an ack enumerates no collection
+    assert get_row is not None and get_row[0] == 1  # a resolved single ref
+
+
 def test_dispatch_survives_ledger_write_failure(
     runtime_with_store: PrecisRuntime, monkeypatch: Any
 ) -> None:

@@ -344,7 +344,7 @@ def merge_and_render(
 
     if not merged:
         body = empty_body or _empty_body(header_noun, query)
-        return Response(body=body)
+        return Response(body=body, result_count=0)
 
     rendered = merged[:page_size]
     total_pre_cap = len(merged)
@@ -369,7 +369,7 @@ def merge_and_render(
     else:
         for i, hit in enumerate(rendered, 1):
             lines.append(_render_hit(i, hit, show_label=show_label))
-    return Response(body="\n".join(lines))
+    return Response(body="\n".join(lines), result_count=len(rendered))
 
 
 # ---------------------------------------------------------------------------

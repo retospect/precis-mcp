@@ -103,28 +103,26 @@ consecutive identical-shape singleton calls**, over 52 of 99 sessions. Split
 out into its own item — `singleton-id-no-batch-form.md` — with the ranked
 `(verb, kind)` table and the `_coerce_id` crash it also uncovered.
 
-**Instrumentation blocker for the next pass.** The biggest number this pass
-produced is an *extrapolation*, not a measurement: fleet `get(kind='gripe')`
-is 27,680 calls, but `tool_calls` carries no payload, so fleet byte volume
-was estimated by applying the local mean (4,716 B, n=645) — ≈130 MB / ≈33M
-tokens over 5 days. Adding a `result_bytes` INT to the ledger write path
-(`runtime/dispatch.py::dispatch_with_status`) would make this directly
-measurable without retaining any payload — a length is not content.
+**Instrumentation blocker — RESOLVED 2026-10-15.** The biggest number this
+pass produced was an *extrapolation*, not a measurement. All three columns
+now carry data; no migration was needed (every column already existed):
 
-**`result_bytes` alone is not enough** (Reto asked; answering here so the next
-pass doesn't re-derive it). Three columns, none retaining payload:
-
-- `result_bytes INT` — the volume question.
-- `result_count INT` — **already declared in migration 0133 as "reserved:
-  populated once Response carries a structured hit count" and still NULL.**
-  Without it you cannot separate one huge render from a hundred small hits,
-  which is exactly the render-diet-vs-pagination distinction.
-- **A correlation key that is actually set.** `agentlog_id` exists but is
-  populated on 25 of 83,721 rows (0.03%) and `source` is NULL throughout, so
-  the ledger cannot group a burst of calls into one agent's run. This is an
-  instrumentation bug, not a schema change, and it is the highest-leverage of
-  the three: it is why the 58%-singleton-runs measurement had to come from
-  local transcripts instead of the fleet-wide ledger.
+- `result_bytes INT` — live since migration 0209's deploy (100% of rows
+  written after it).
+- `result_count INT` — 0133's "reserved" column, now populated from
+  `Response.result_count`: collection renders set it at the count they
+  already know (numeric-ref search/list/count/get/batch/links/log paths +
+  `search_merge.merge_and_render`); NULL where no result set is
+  enumerated.
+- **Correlation key, actually set.** `session_id`/`seq` (0209) bind every
+  MCP-session call; for the in-process OSS agent loop — the producer of
+  the session-less NULL rows — `LlmRequest.env_overlay`'s context keys now
+  bind the per-tick ContextVar (`router._overlay_tick_context`), so
+  `agentlog_id`/`source` land there too (dream's ~54 runs/3d was the
+  dormant case: `env_overlay` reached a subprocess that never existed).
+  Residual, deploy-side only: spawned-claude runs need the mcp.json env
+  pass-through reaching the fleet's rendered config (`PRECIS_CURRENT_MODEL`
+  joined `PRECIS_CURRENT_AGENTLOG` in `claude_mcp.json.j2`).
 
 **2026-09-29: the seventh gap's doc half is fixed.** `scripts/gen-schema` was
 *broken*, not merely unrun — `information_schema`'s `_pg_expandarray` blew the

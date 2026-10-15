@@ -40,3 +40,15 @@ class Response:
 
     #: Live licensed data must never enter the pagination cache.
     transient: bool = False
+
+    #: How many items the body enumerates when the response is a result
+    #: set — search hits / list rows shown on this page, the batch size
+    #: on a multi-id ``get``, ``1`` for a single-ref read, ``0`` for an
+    #: empty result set. ``None`` when the verb doesn't enumerate a
+    #: collection (put/edit/delete acks, errors). The dispatch
+    #: chokepoint records it into ``tool_calls.result_count`` (the
+    #: "reserved" column of migration 0133) so the surface-economy pass
+    #: can separate one huge render from a hundred small hits. Set it
+    #: where the count is already in hand — never an extra COUNT query
+    #: for the ledger's sake.
+    result_count: int | None = None

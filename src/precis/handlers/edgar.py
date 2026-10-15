@@ -280,7 +280,9 @@ class EdgarHandler(Handler):
                 ]
             )
             response = Response(
-                body=response.body + "\n\n" + trailer, cost=response.cost
+                body=response.body + "\n\n" + trailer,
+                cost=response.cost,
+                result_count=response.result_count,
             )
 
         return response

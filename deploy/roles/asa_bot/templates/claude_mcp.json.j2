@@ -44,6 +44,9 @@
    link). `:-` ⇒ empty when not a tick; agentlog.current_from_env treats empty
    as unset (no-op), so it's safe for asa / non-tick runs. #}
         "PRECIS_CURRENT_AGENTLOG": "${PRECIS_CURRENT_AGENTLOG:-}",
+{# Same pass-through, same rationale: the run's cascade tier so the spawned
+   `serve` records it as tool_calls.source (the ledger's per-tier split). #}
+        "PRECIS_CURRENT_MODEL": "${PRECIS_CURRENT_MODEL:-}",
 {# gr478548: asa sets the Discord speaker's account abbrev per turn so this
    stdio `serve` writes as user:<abbrev> (precis.acting_user). Empty ⇒ the
    generic `agent` — every non-asa run and every unmapped speaker. #}

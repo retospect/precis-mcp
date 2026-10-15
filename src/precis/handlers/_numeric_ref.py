@@ -611,7 +611,10 @@ class NumericRefHandler(Handler):
                     self.store, ref.id, source=self._event_log_source()
                 )
             if view == "raw":
-                return Response(body=self._render_raw(ref, self.store.tags_for(ref.id)))
+                return Response(
+                    body=self._render_raw(ref, self.store.tags_for(ref.id)),
+                    result_count=1,
+                )
         tags = self.store.tags_for(ref.id)
         body = self._render_one(ref, tags)
         # F8: surface the link graph for this ref so the agent's
@@ -631,7 +634,7 @@ class NumericRefHandler(Handler):
         body += self._render_links_section(
             ref, limit=DEFAULT_LINK_ROW_CAP, priority=True
         )
-        return Response(body=body)
+        return Response(body=body, result_count=1)
 
     def _event_log_source(self) -> str | None:
         """Subsystem to filter ``view='log'`` to, or ``None`` for all.
@@ -873,7 +876,7 @@ class NumericRefHandler(Handler):
                 )
             )
             body += render_next_section(nav)
-            return Response(body=body)
+            return Response(body=body, result_count=0)
 
         # Salience: heat the entries this page surfaced. Ref-level kinds
         # carry their salience on the card_combined chunk (ord=-1); kinds
@@ -909,7 +912,7 @@ class NumericRefHandler(Handler):
         if trunc:
             parts.append(trunc)
         parts.append(table)
-        return Response(body="\n".join(parts))
+        return Response(body="\n".join(parts), result_count=len(hit_refs))
 
     def _apply_status_default(
         self, status: str | None, tags: list[str] | None
@@ -1160,7 +1163,7 @@ class NumericRefHandler(Handler):
         if extra:
             parts.append("")
             parts.append(extra)
-        return Response(body="\n".join(parts))
+        return Response(body="\n".join(parts), result_count=total)
 
     def _count_view_extra(
         self,
@@ -1238,7 +1241,7 @@ class NumericRefHandler(Handler):
                 )
                 if note:
                     body += f"\n{note}"
-                return Response(body=body)
+                return Response(body=body, result_count=0)
             body = f"no {self._sense()} entries tagged {tags}"
             if note:
                 body += f"\n{note}"
@@ -1254,7 +1257,7 @@ class NumericRefHandler(Handler):
                     ),
                 ]
             )
-            return Response(body=body)
+            return Response(body=body, result_count=0)
         shown = len(refs)
         if page > 1:
             # "N of K" alone doesn't say *which* N once page > 1 — show
@@ -1276,7 +1279,7 @@ class NumericRefHandler(Handler):
         if note:
             parts.append(note)
         parts.append(self._render_hits_table(refs))
-        return Response(body="\n".join(parts))
+        return Response(body="\n".join(parts), result_count=len(refs))
 
     def _list_by_link(
         self,
@@ -1330,7 +1333,7 @@ class NumericRefHandler(Handler):
                 )
                 if note:
                     body += f"\n{note}"
-                return Response(body=body)
+                return Response(body=body, result_count=0)
             body = f"no {self._sense()} entries linked to {label}"
             if note:
                 body += f"\n{note}"
@@ -1342,7 +1345,7 @@ class NumericRefHandler(Handler):
                     ),
                 ]
             )
-            return Response(body=body)
+            return Response(body=body, result_count=0)
         shown = len(page_rows)
         if page > 1:
             first_row = offset + 1
@@ -1361,7 +1364,7 @@ class NumericRefHandler(Handler):
         if note:
             parts.append(note)
         parts.append(self._render_hits_table(page_rows))
-        return Response(body="\n".join(parts))
+        return Response(body="\n".join(parts), result_count=len(page_rows))
 
     # ── search_hits: structured form for cross-kind merge ──────────
 
@@ -1573,7 +1576,8 @@ class NumericRefHandler(Handler):
                 # positive), just an empty window. Say so rather than
                 # implying the search itself came up dry.
                 return Response(
-                    body=f"page {page}: no {self._sense()} entries — {total} total"
+                    body=f"page {page}: no {self._sense()} entries — {total} total",
+                    result_count=0,
                 )
             tag_suffix = f" tagged {tags}" if tags else ""
             body = f"no {self._sense()} entries match {q!r}{tag_suffix}"
@@ -1593,7 +1597,7 @@ class NumericRefHandler(Handler):
                 )
             )
             body += render_next_section(nav)
-            return Response(body=body)
+            return Response(body=body, result_count=0)
         lines = [
             format_search_headline(
                 n_returned=len(hits),
@@ -1613,7 +1617,7 @@ class NumericRefHandler(Handler):
             lines.append(trunc)
         for block, ref, rank in hits:
             lines.append(self._render_body_search_hit(ref, block, rank))
-        return Response(body="\n".join(lines))
+        return Response(body="\n".join(lines), result_count=len(hits))
 
     def _hit_text(self, ref: Ref, block: Any) -> str:
         """Display text for a best-hit chunk. Default: the chunk itself;
@@ -2491,7 +2495,7 @@ class NumericRefHandler(Handler):
                 ),
             ]
         )
-        return Response(body=body)
+        return Response(body=body, result_count=len(ref_ids))
 
     def _get_batch_view(self, ref_ids: list[int], *, view: str) -> Response:
         """``get(id=[...], view='…')``: the single-id view mapped per id.
@@ -2516,7 +2520,8 @@ class NumericRefHandler(Handler):
                 blocks.append(f"{handle}  deleted")
         return Response(
             body=f"# {len(ref_ids)} {self._sense()} (batch, view={view!r})\n\n"
-            + "\n\n".join(blocks)
+            + "\n\n".join(blocks),
+            result_count=len(ref_ids),
         )
 
     def _tag_batch(self, ids: list[Any], **kw: Any) -> Response:
@@ -2585,7 +2590,7 @@ class NumericRefHandler(Handler):
                 f"add one with: link(kind={self.kind!r}, id={ref.id}, "
                 "target='kind:identifier', rel='related-to')"
             )
-            return Response(body="\n".join(lines))
+            return Response(body="\n".join(lines), result_count=0)
 
         # Pre-fetch every distinct ref touched by either side so we
         # render kind:identifier rather than bare ref_ids. One round
@@ -2612,7 +2617,7 @@ class NumericRefHandler(Handler):
             lines[0] += f" (kind={of_kind})"
             if not out_links and not in_links:
                 lines += ["", f"(no links to kind {of_kind!r})"]
-                return Response(body="\n".join(lines))
+                return Response(body="\n".join(lines), result_count=0)
 
         if out_links:
             lines.append("")
@@ -2624,7 +2629,9 @@ class NumericRefHandler(Handler):
             lines.append("## inbound")
             for link in in_links:
                 lines.append(self._format_link_line(link, endpoints, "←"))
-        return Response(body="\n".join(lines))
+        return Response(
+            body="\n".join(lines), result_count=len(out_links) + len(in_links)
+        )
 
     def _fetch_endpoints(self, ref_ids: set[int]) -> dict[int, Ref]:
         """Bulk-fetch refs by id, returning ``{id: Ref}``.
@@ -2911,7 +2918,7 @@ class NumericRefHandler(Handler):
                         ),
                     ]
                 )
-                return Response(body=body)
+                return Response(body=body, result_count=0)
             # F14: render as TOON, with an adaptive ``tags`` column.
             # When at least one ref carries tags, surface them so the
             # agent sees the classification on recall; when no ref has
@@ -2943,5 +2950,5 @@ class NumericRefHandler(Handler):
                     ),
                 ]
             )
-            return Response(body=body)
+            return Response(body=body, result_count=len(refs))
         return None
