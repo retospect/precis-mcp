@@ -2347,6 +2347,92 @@ def test_stackup_view_routable_plane_reads_mixed(pcb):
     assert "yes" in in1
 
 
+_POUR_DESIGN: dict[str, Any] = {
+    "components": [
+        {
+            "refdes": "U1",
+            "label": "MCU",
+            "x": 10.0,
+            "y": 10.0,
+            "pins": [{"name": "A"}, {"name": "B"}, {"name": "C"}, {"name": "D"}],
+        },
+    ],
+    "nets": [
+        {"name": "GND"},
+        {"name": "3V3"},
+        {"name": "PV+"},
+        {"name": "12V_POWER"},
+    ],
+    "connections": [
+        {"net": "GND", "refdes": "U1", "pin": "A"},
+        {"net": "3V3", "refdes": "U1", "pin": "B"},
+        {"net": "PV+", "refdes": "U1", "pin": "C"},
+        {"net": "12V_POWER", "refdes": "U1", "pin": "D"},
+    ],
+}
+
+
+def test_stackup_view_shows_the_taz15_outer_pours(pcb):
+    """r37 review — the taz15 shape gr486958 produces: B.Cu carries GND
+    and F.Cu carries 3V3 as pour-carried nets on still-signal layers
+    (pour_nets + authored pcb_planes rows), In1/In2 are planes. Every
+    fill-carried net must show on its own row and in the skip line —
+    `pour_nets` is a known stackup key, so `extra` columns never surface
+    it."""
+    pcb.put(id="stackup-taz", args=_POUR_DESIGN)
+    pcb.put(
+        id="stackup-taz",
+        args={
+            "op": "stackup",
+            "layers": [
+                {"name": "F.Cu", "role": "signal", "pour_nets": ["3V3"]},
+                {"name": "In1.Cu", "role": "plane", "plane_net": "PV+"},
+                {"name": "In2.Cu", "role": "plane", "plane_net": "12V_POWER"},
+                {"name": "B.Cu", "role": "signal", "pour_nets": ["GND"]},
+            ],
+        },
+    )
+    body = pcb.get(id="stackup-taz", view="stackup").body
+    f_cu = next(line for line in body.splitlines() if "F.Cu" in line)
+    b_cu = next(line for line in body.splitlines() if "B.Cu" in line)
+    assert "3V3" in f_cu and "GND" in b_cu
+    # and the rows they became are what the router skips
+    assert "3V3 (F.Cu, authored)" in body
+    assert "GND (B.Cu, authored)" in body
+    assert "PV+ (In1.Cu, authored)" in body
+    assert "12V_POWER (In2.Cu, authored)" in body
+    # assigned pour nets need no "still routes" note
+    assert "pour_nets" not in body.splitlines()[-1]
+
+
+def test_stackup_view_shows_a_multi_pour_layer(pcb):
+    """Several pour nets on one layer are recorded but assigned to none —
+    the view shows them in `pours` and says plainly the router still
+    routes them, instead of the plane column reading '—' and the fill
+    disappearing."""
+    pcb.put(id="stackup-mp", args=_POUR_DESIGN)
+    pcb.put(
+        id="stackup-mp",
+        args={
+            "op": "stackup",
+            "layers": [
+                {"name": "F.Cu", "role": "signal"},
+                {"name": "In1.Cu", "role": "plane", "plane_net": "PV+"},
+                {"name": "In2.Cu", "role": "signal"},
+                {"name": "B.Cu", "role": "signal", "pour_nets": ["GND", "3V3"]},
+            ],
+        },
+    )
+    body = pcb.get(id="stackup-mp", view="stackup").body
+    b_cu = next(line for line in body.splitlines() if "B.Cu" in line)
+    assert "GND,3V3" in b_cu
+    # recorded but unassigned — NOT in the skip line...
+    assert "GND (B.Cu" not in body and "3V3 (B.Cu" not in body
+    # ...but named so the record is not silent
+    assert "B.Cu pour_nets=GND,3V3" in body
+    assert "router still routes" in body
+
+
 def test_stackup_view_no_board_says_so(pcb, store):
     """A design with no pcb_boards row (pre-0138 import, or a board row
     gone) must say so, not 500 — the gripe's original dead end."""

@@ -4230,7 +4230,13 @@ class PcbHandler(Handler):
         end-to-end. It is the ``pcb_planes`` read, which is exactly what
         the ``pcb_route`` job re-applies into ``ir.net_plane_layers``;
         declared-but-unassigned plane_nets are listed separately so the
-        view never reports a skip the router will not make."""
+        view never reports a skip the router will not make. The same
+        discipline covers ``pour_nets`` (gr486958 — fills the source
+        carries a net by, on still-signal layers): the ``pours`` column
+        shows the record per layer, and recorded nets with no assignment
+        row get a note saying the router still routes them — several
+        pour nets on one sheet are recorded but assigned to none, so a
+        mixed layer must not read as more skipped than it is."""
         design = self.store.pcb_load(ref_id)
         board = design.get("board") or {}
         stackup = list(board.get("stackup") or [])
@@ -4248,7 +4254,14 @@ class PcbHandler(Handler):
         # carry them (the ``pcb_boards.stackup`` jsonb is shaped for it),
         # so show whatever keys exist rather than a fixed schema.
         extra = sorted({k for e in stackup for k in e} - pcb_ir.STACKUP_LAYER_KEYS)
-        schema = ["layer", "role", "plane", "src", "routable", "pourable", *extra]
+        # `pour_nets` is a KNOWN key, so `extra` never surfaces it — it
+        # gets a `pours` column only when some layer carries it, keeping
+        # a pour-free board's table exactly as it was.
+        has_pours = any(e.get("pour_nets") for e in stackup)
+        schema = ["layer", "role", "plane", "src"]
+        if has_pours:
+            schema.append("pours")
+        schema += ["routable", "pourable", *extra]
         rows = []
         for entry in stackup:
             name = str(entry.get("name"))
@@ -4257,6 +4270,7 @@ class PcbHandler(Handler):
             role = "mixed" if routable and pourable else str(entry.get("role") or "—")
             assigned = by_layer.get(name) or []
             declared = str(entry.get("plane_net") or "")
+            recorded = [str(n) for n in entry.get("pour_nets") or []]
             row = {
                 "layer": name,
                 "role": role,
@@ -4265,6 +4279,7 @@ class PcbHandler(Handler):
                     ",".join(str(r["source"]) for r in assigned)
                     or ("stackup-declared" if declared else "—")
                 ),
+                "pours": ",".join(recorded) if recorded else "—",
                 "routable": "yes" if routable else "no",
                 "pourable": "yes" if pourable else "no",
             }
@@ -4291,6 +4306,25 @@ class PcbHandler(Handler):
                 + ", ".join(sorted(dead))
                 + " declared in the stackup but no assignment row — the "
                 "router will not pour it"
+            )
+        # Recorded but unassigned pour nets: the router reads pcb_planes
+        # rows, so a pour_nets entry without one is still routed — the
+        # mixed case (several nets on one sheet, assigned to none) lands
+        # here by design, and the view must not imply a skip it won't
+        # make.
+        unassigned_pours = []
+        for e in stackup:
+            recorded = [str(n) for n in e.get("pour_nets") or []]
+            live = {str(r["net"]) for r in by_layer.get(str(e.get("name"))) or []}
+            missing = [n for n in recorded if n not in live]
+            if missing:
+                unassigned_pours.append(f"{e['name']} pour_nets={','.join(missing)}")
+        if unassigned_pours:
+            skip_line += (
+                "\nnote: "
+                + ", ".join(unassigned_pours)
+                + " — recorded in the stackup but no assignment row, so the "
+                "router still routes them"
             )
         return Response(
             body=head + render_agent_table(rows, schema=schema) + "\n" + skip_line
