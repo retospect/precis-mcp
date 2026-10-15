@@ -81,6 +81,16 @@ def _nf(x: Any) -> float:
     return float("nan") if x is None else float(x)
 
 
+def _lookup(store: Any, ident: str) -> Any:
+    """The live pathway ``ident`` names: its slug first, then — for an
+    all-digit string — its bare ref id (gr489163: ``id='246367'`` missed
+    while ``pw246367`` and numeric quest ids resolve). ``None`` if neither."""
+    ref = store.get_ref(kind="pathway", id=ident)
+    if ref is None and ident.strip().isdigit():
+        ref = store.get_ref(kind="pathway", id=int(ident))
+    return ref
+
+
 class PathwayHandler(Handler):
     #: args= keys each verb reads out of ``args`` (gr475332); dispatch
     #: rejects any other key. Keep in step with :func:`_potential_arg`.
@@ -368,7 +378,7 @@ class PathwayHandler(Handler):
         slug, sep, step_label = ident.partition("~")
         if sep:
             return self._get_step(store, slug, step_label)
-        ref = store.get_ref(kind="pathway", id=slug)
+        ref = _lookup(store, slug)
         if ref is None:
             raise BadInput(f"no pathway '{id}'")
 
@@ -481,7 +491,7 @@ class PathwayHandler(Handler):
         computed graph's edges (``meta['graph']['links']``) — see
         ``analysis._path_steps``'s ``f"{source}→{target}"`` label, unique per
         network."""
-        ref = store.get_ref(kind="pathway", id=slug)
+        ref = _lookup(store, slug)
         if ref is None:
             raise BadInput(f"no pathway '{slug}'")
         meta = ref.meta or {}
@@ -776,7 +786,7 @@ class PathwayHandler(Handler):
         if id is None:
             raise BadInput("pathway delete needs an id")
         store = self.hub.live_store
-        ref = store.get_ref(kind="pathway", id=str(id))
+        ref = _lookup(store, str(id))
         if ref is None:
             raise BadInput(f"no pathway '{id}'")
         store.retire_ref(ref.id)
@@ -794,7 +804,7 @@ class PathwayHandler(Handler):
         if id is None:
             raise BadInput("pathway tag needs an id")
         store = self.hub.live_store
-        ref = store.get_ref(kind="pathway", id=str(id))
+        ref = _lookup(store, str(id))
         if ref is None:
             raise BadInput(f"no pathway '{id}'")
         with store.tx() as conn:

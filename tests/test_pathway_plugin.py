@@ -2937,6 +2937,25 @@ def test_bare_get_lists_pathways_with_real_slugs(pathway_store: Store) -> None:
     assert "id='list-ready-a'" in hint
 
 
+def test_get_resolves_a_bare_numeric_ref_id(pathway_store: Store) -> None:
+    """gr489163: ``id='246367'`` raised "no pathway" while ``pw246367``
+    resolved; the slug is tried first, then an all-digit id as a ref id."""
+    from precis.errors import BadInput
+
+    ref = pathway_store.insert_ref(
+        kind="pathway",
+        slug="numeric-id-pw",
+        title="NO → NH3 on Pd",
+        meta={"status": "ready", "config": {}},
+    )
+    h = _handler(pathway_store)
+    by_slug = h.get(id="numeric-id-pw", view="config").body
+    assert h.get(id=str(ref.id), view="config").body == by_slug
+    assert h.get(id=ref.id, view="config").body == by_slug
+    with pytest.raises(BadInput, match="no pathway"):
+        h.get(id="999999999")
+
+
 def test_bare_get_names_a_shared_title_once(pathway_store: Store) -> None:
     """Quest candidates all carry one reaction title; repeating it per row
     hid the columns that tell them apart (prod 2026-10-02: 20 rows of
