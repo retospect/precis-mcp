@@ -52,20 +52,18 @@ caps); and export dispatch — `doc_type='poster'` assembles the template
 with role `\definecolor`s, the logo strip and `poster_profile.json`, then
 compiles via the existing `latexmk` path.
 
-**Remaining — slice 6 (profile storage + surfaces):**
+Shipped 2026-10-15 (slice 6, profile storage + surfaces): `kind='profile'`
+owner-scoped refs (payload in `refs.meta['profile']`, `refs.owner_login`
+the ACL column — no migration; kinds boot-upsert), `ProfileHandler`
+put/edit/get/delete validated through the poster validators; resolution
+wired in `precis.profiles.draft_user_default`
+(`meta.workspace.poster.profile` selector → the draft owner's `default`
+profile → product palette), drafts stamped `owner_login` at create; the
+`/account` poster-branding form and the `/drafts/new` profile preselect;
+skill `precis-profile-help`.
 
-- New owner-scoped `kind='profile'` (Reto ruling 1): fields name,
-  palette (role→hex per §1), fonts, logos (figure ids), sponsor line,
-  owner (ruling 4). Logos are figure ids resolved through the figure
-  store (ruling 2) — `_figure_logo_asset` in `precis.export.latex` is
-  the existing resolver. ACL: owner-only read + owner-checked write
-  (ruling 3).
-- MCP surface: `put`/`edit` on `kind='profile'`. Resolution seam already
-  exists — `poster_profile.resolve_poster_profile(meta, user_default=…)`;
-  wire the owning author's stored default into that parameter (never the
-  first author or the exporting user for multi-author posters).
-- Web account/settings page edits the profile; `/drafts/new` offers genre
-  `poster` with the owner's profile preselected.
+**Still open:**
+
 - Post-deploy manual check (ruling 5): Reto exports a poster draft under
   the private `ul-bernal` profile and eyeballs the result.
 - `slides` stays out (ruling 6).

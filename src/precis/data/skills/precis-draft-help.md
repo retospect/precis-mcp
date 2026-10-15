@@ -496,7 +496,9 @@ the draft block as a 🔔.
 
 ## Export the draft
 
-See [[precis-draft-export-help]].
+See [[precis-draft-export-help]]. A `doc_type='poster'` draft is branded
+by a `kind='profile'` profile — `meta.workspace.poster.profile` pins one,
+else the draft owner's default — see [[precis-profile-help]].
 
 ## See also
 
@@ -513,4 +515,5 @@ See [[precis-draft-export-help]].
 - [[precis-draft-cite-help]] — citations vs links in prose, never fabricate, request an unheld paper.
 - [[precis-draft-rich-content-help]] — figures, images, and data tables.
 - [[precis-draft-export-help]] — LaTeX/PDF/Word/reMarkable export.
+- [[precis-profile-help]] — owner-scoped branding profiles for poster drafts.
 - [[precis-write-paper-help]] — prose craft: structure, diction, LLM tells to avoid.

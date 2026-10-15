@@ -152,8 +152,7 @@ def build_route(trees_content: str, *, engine_version: str) -> dict[str, Any]:
     # Slice 3: normalise EVERY kept route — each gets steps + its own
     # descriptors row. The top-level fields stay routes[0] for old readers.
     routes = [
-        _route_entry(sg, enrich, buyable, rank)
-        for rank, sg in enumerate(syngraphs)
+        _route_entry(sg, enrich, buyable, rank) for rank, sg in enumerate(syngraphs)
     ]
     top = routes[0]
     target = syngraphs[0].get_roots()[0].smiles if syngraphs[0].get_roots() else ""

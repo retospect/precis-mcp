@@ -3280,10 +3280,12 @@ def _export_poster(
     :class:`~precis.export.poster_profile.PosterValidationError` on a
     failed profile check — the export fails before anything compiles.
     """
+    from precis import profiles
     from precis.export.poster_profile import ALLOWED_FONTS, resolve_and_validate
 
     profile = resolve_and_validate(
         getattr(ref, "meta", None),
+        user_default=profiles.draft_user_default(store, ref),
         logo_resolver=lambda fid: _figure_logo_asset(store, fid),
     )
 

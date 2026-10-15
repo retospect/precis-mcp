@@ -138,6 +138,9 @@ KIND_CODES: dict[str, str] = {
     # core, chunk-tree sibling of the figure, never exported. Record ``mm`` /
     # chunk ``mn`` below.
     "mermaid": "mm",
+    # owner-scoped branding profile (draft-poster-genre-and-themes slice 6)
+    # — a plain numeric ref, payload in meta.profile. Record ``pf``.
+    "profile": "pf",
     # named, versioned check ledger (checklist-kind slice 1) — an
     # artifact-placement slug entity, never exported.
     "checklist": "ck",

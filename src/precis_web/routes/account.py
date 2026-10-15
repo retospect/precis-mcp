@@ -162,7 +162,10 @@ def _render(
     remarkable_paired = False
     anki_connected = False
     anki_email: str | None = None
+    poster_profile: dict[str, Any] | None = None
+    poster_roles: list[str] = []
     if user is not None:
+        from precis import profiles
         from precis.anki.creds import get_user_credentials
         from precis.export.remarkable import user_remarkable_configured
 
@@ -171,6 +174,13 @@ def _render(
         creds = get_user_credentials(store, user.login)
         anki_connected = creds is not None
         anki_email = creds[0] if creds is not None else None
+        default_ref = profiles.owner_default(store, user.login)
+        if default_ref is not None:
+            poster_profile = profiles.payload_of(default_ref)
+            poster_profile["_ref_id"] = default_ref.id
+        from precis.export.poster_profile import ROLES
+
+        poster_roles = sorted(ROLES)
     return templates.TemplateResponse(
         request,
         "account/index.html.j2",
@@ -183,6 +193,8 @@ def _render(
             "remarkable_paired": remarkable_paired,
             "anki_connected": anki_connected,
             "anki_email": anki_email,
+            "poster_profile": poster_profile,
+            "poster_roles": poster_roles,
             "auth_on": get_web_config(request).auth_required,
             "min_password_length": MIN_PASSWORD_LENGTH,
         },
@@ -523,3 +535,56 @@ def _base_url(request: Request) -> str:
     """Origin for the feed URL — same rule the feed itself uses."""
     cfg: Any = get_web_config(request)
     return cfg.podcast_base_url or str(request.base_url).rstrip("/")
+
+
+@router.post("/poster-profile")
+async def save_poster_profile(
+    request: Request,
+    name: str = Form("default"),
+    font_body: str = Form("lmodern"),
+    sponsor_line: str = Form(""),
+    logos: str = Form(""),
+) -> Response:
+    """Create or patch this user's default ``kind='profile'`` (poster
+    branding). Dispatches ``put``/``edit`` so the handler's owner check
+    and the poster validators stay single-sourced — a rejected palette
+    renders its ``poster_*`` codes inline, same as MCP.
+
+    Role colours arrive as ``role_<role>`` colour inputs; the account
+    page edits the user's *default* profile only (``default=True`` always
+    on this form — named alternates are an MCP surface).
+    """
+    from precis import profiles
+    from precis.export.poster_profile import ROLES
+    from precis_web.deps import await_dispatch
+
+    user = _require_self(request)
+    store = get_store(request)
+
+    form = await request.form()
+    palette = {
+        role: str(form.get(f"role_{role}", "")).strip()
+        for role in sorted(ROLES)
+        if str(form.get(f"role_{role}", "")).strip()
+    }
+    logo_ids = [s.strip() for s in logos.replace("\n", ",").split(",") if s.strip()]
+
+    existing = profiles.owner_default(store, user.login)
+    args: dict[str, Any] = {
+        "kind": "profile",
+        "name": name.strip() or "default",
+        "palette": palette,
+        "fonts": {"body": font_body.strip() or "lmodern"},
+        "logos": logo_ids,
+        "sponsor_line": sponsor_line.strip(),
+        "owner": user.login,
+        "default": True,
+    }
+    verb = "put"
+    if existing is not None:
+        verb = "edit"
+        args["id"] = existing.id
+    body, is_error = await await_dispatch(request, verb, args)
+    if is_error:
+        return _render(request, user=_fresh(request, user), error=body)
+    return RedirectResponse("/account?saved=1", status_code=303)

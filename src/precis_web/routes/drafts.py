@@ -872,6 +872,7 @@ async def new_draft(
     slug: str = Form(""),
     summary: str = Form(""),
     doctype: str = Form("paper"),
+    profile: str = Form(""),
     cfp: str = Form(""),
     seeds: str = Form(""),
     tags: str = Form(""),
@@ -925,6 +926,14 @@ async def new_draft(
     doctype = doctype.strip() or "paper"
     if doctype in _DOC_TYPE_BRIEF:
         workspace["doc_type"] = doctype
+    # Poster branding: the picker preselects the owner's default
+    # kind='profile'; the choice pins meta.workspace.poster.profile —
+    # the first rung of the export resolution order (slice 6).
+    profile_sel = profile.strip()
+    if doctype == "poster" and profile_sel:
+        workspace["poster"] = {
+            "profile": int(profile_sel) if profile_sel.isdigit() else profile_sel
+        }
     # The brief is the planner's standing ``## Project context`` — the
     # document-type register/voice guidance only. The user's description is
     # the *ask*, so it rides as the todo body below (and cascades to child

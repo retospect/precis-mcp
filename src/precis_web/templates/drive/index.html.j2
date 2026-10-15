@@ -1,7 +1,7 @@
 {% extends "base.html.j2" %}
 {% block title %}Drive{% endblock %}
 {% block content %}
-<div class="mb-3 flex items-start gap-3" x-data="{ open: false, kind: 'draft' }">
+<div class="mb-3 flex items-start gap-3" x-data="{ open: false, kind: 'draft', doctype: 'paper' }">
   <div class="min-w-0">
     <h1 class="text-lg font-semibold">Drive</h1>
     <p class="text-sm text-slate-500">
@@ -53,10 +53,23 @@
          Options come from the same _DOC_TYPES source the /drafts page renders. #}
       <div x-show="kind === 'draft'">
         <label class="block text-xs font-medium text-slate-600 mb-1">Type</label>
-        <select name="doctype"
+        <select name="doctype" x-model="doctype"
                 class="w-full rounded border border-slate-300 px-2 py-1.5 text-sm bg-white">
           {% for d in doctypes %}
           <option value="{{ d.value }}"{% if d.default %} selected{% endif %}>{{ d.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      {# Poster branding: when the genre is poster, pin the owner's
+         kind='profile' — the default is preselected. Writes
+         meta.workspace.poster.profile. #}
+      <div x-show="kind === 'draft' && doctype === 'poster'" x-cloak>
+        <label class="block text-xs font-medium text-slate-600 mb-1">Branding profile</label>
+        <select name="profile"
+                class="w-full rounded border border-slate-300 px-2 py-1.5 text-sm bg-white">
+          <option value="">(product default)</option>
+          {% for p in poster_profiles %}
+          <option value="{{ p.id }}"{% if p.default %} selected{% endif %}>{{ p.name }}</option>
           {% endfor %}
         </select>
       </div>

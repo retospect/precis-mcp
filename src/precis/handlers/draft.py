@@ -1362,6 +1362,15 @@ class DraftHandler(Handler):
             project_ref_id=project_ref_id,
             meta=meta,
         )
+        # Slice 6 (poster profiles): a draft created by an identified user
+        # belongs to them — ``refs.owner_login`` is what export reads to pick
+        # the owning author's default ``kind='profile'``. Unidentified
+        # callers (agent fleet) leave it NULL → product default.
+        from precis import profiles
+
+        login = profiles.acting_login(self.store)
+        if login:
+            self.store.set_ref_owner(ref.id, login)
         return Response(
             body=(
                 f"created draft '{slug}' (title heading {title_chunk.dc}); "

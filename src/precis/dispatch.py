@@ -244,6 +244,7 @@ class Hub:
         "finding": ("precis.handlers.finding", "FindingHandler"),
         "conv": ("precis.handlers.conversation", "ConversationHandler"),
         "memory": ("precis.handlers.memory", "MemoryHandler"),
+        "profile": ("precis.handlers.profile", "ProfileHandler"),
     }
 
     def sibling(self, kind: str) -> Any:
@@ -1033,6 +1034,9 @@ def boot(
         # when the store is up. Each handler reads ``hub.store`` /
         # ``hub.embedder`` directly — boot only threads the hub.
         _gated(MemoryHandler)
+        from precis.handlers.profile import ProfileHandler
+
+        _gated(ProfileHandler)
         _gated(TodoHandler)
         _gated(FolderHandler)
         _gated(GripeHandler)

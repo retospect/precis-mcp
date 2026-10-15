@@ -398,6 +398,32 @@ def _doctypes() -> list[dict[str, Any]]:
     ]
 
 
+def _poster_profiles(request: Request, store: Store) -> list[dict[str, Any]]:
+    """The signed-in user's ``kind='profile'`` rows for the "+ New" form's
+    poster-branding picker — the ``default``-flagged (or only) one carries
+    ``default=True`` so the template preselects it. Empty when nobody is
+    signed in or no profiles exist."""
+    from precis import profiles
+    from precis_web.auth import current_user
+
+    user = current_user(request)
+    if user is None:
+        return []
+    try:
+        mine = profiles.profiles_for_owner(store, user.login)
+    except Exception:  # pragma: no cover - defensive; picker just hides
+        return []
+    default = profiles.owner_default(store, user.login)
+    return [
+        {
+            "id": r.id,
+            "name": str(profiles.payload_of(r).get("name") or r.title or ""),
+            "default": default is not None and r.id == default.id,
+        }
+        for r in mine
+    ]
+
+
 def _folder_tree(store: Store) -> list[dict[str, Any]]:
     """Every live folder as a nested tree (name-sorted per level)."""
     with store.pool.connection() as conn:
@@ -1169,6 +1195,7 @@ async def index(
             "first_url": first_url,
             "last_url": last_url,
             "doctypes": _doctypes(),
+            "poster_profiles": _poster_profiles(request, store),
             "watch_dir": watch_dir,
             "dropzones": dropzones,
         },

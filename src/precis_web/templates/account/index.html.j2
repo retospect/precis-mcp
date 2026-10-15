@@ -332,6 +332,59 @@
   {% endif %}
 </div>
 
+{# ── Poster branding (kind='profile' default) ─────────────────────── #}
+<h2 class="text-sm font-semibold text-slate-700 mt-6 mb-2">Poster branding</h2>
+<div class="rounded-lg border border-slate-200 bg-white px-4 py-4 mb-6 max-w-2xl">
+  <p class="text-xs text-slate-500 mb-3">
+    Your default <code>kind='profile'</code> — the palette, font and logo
+    strip a <code>doc_type='poster'</code> draft exports under unless the
+    poster overrides it. Role colours are validated (contrast floor 4.5:1);
+    a rejected save lists the <code>poster_*</code> codes.
+  </p>
+  <form method="post" action="/account/poster-profile" class="space-y-2">
+    <div class="grid grid-cols-[10rem_1fr] items-center gap-2">
+      <label for="pp-name" class="text-xs text-slate-600">Profile name</label>
+      <input id="pp-name" name="name" autocomplete="off"
+             value="{{ (poster_profile or {}).get('name', 'default') }}"
+             class="rounded border border-slate-200 px-2 py-1 text-sm
+                    focus:border-sky-400 focus:outline-none" />
+      {% for role in poster_roles %}
+      <label for="pp-{{ role }}" class="text-xs text-slate-600">{{ role }}</label>
+      <input id="pp-{{ role }}" name="role_{{ role }}" type="text"
+             autocomplete="off" placeholder="#RRGGBB"
+             value="{{ ((poster_profile or {}).get('palette') or {}).get(role, '') }}"
+             class="rounded border border-slate-200 px-2 py-1 text-sm
+                    focus:border-sky-400 focus:outline-none" />
+      {% endfor %}
+      <label for="pp-font" class="text-xs text-slate-600">Font</label>
+      <select id="pp-font" name="font_body"
+              class="rounded border border-slate-200 px-2 py-1 text-sm bg-white">
+        {% for f in ['lmodern', 'helvet'] %}
+        <option value="{{ f }}"{% if ((poster_profile or {}).get('fonts') or {}).get('body') == f %} selected{% endif %}>{{ f }}</option>
+        {% endfor %}
+      </select>
+      <label for="pp-sponsor" class="text-xs text-slate-600">Sponsor line</label>
+      <input id="pp-sponsor" name="sponsor_line" autocomplete="off"
+             value="{{ (poster_profile or {}).get('sponsor_line', '') }}"
+             class="rounded border border-slate-200 px-2 py-1 text-sm
+                    focus:border-sky-400 focus:outline-none" />
+      <label for="pp-logos" class="text-xs text-slate-600">Logos</label>
+      <input id="pp-logos" name="logos" autocomplete="off"
+             placeholder="figure ids, comma-separated"
+             value="{{ ((poster_profile or {}).get('logos') or []) | map(attribute='figure') | join(', ') }}"
+             class="rounded border border-slate-200 px-2 py-1 text-sm
+                    focus:border-sky-400 focus:outline-none" />
+    </div>
+    <button type="submit"
+            class="rounded bg-sky-600 text-white text-xs px-3 py-1.5
+                   hover:bg-sky-700 transition">Save</button>
+  </form>
+  <p class="text-[11px] text-slate-400 mt-3">
+    Every role must carry a valid <code>#RRGGBB</code>; logo ids are
+    <code>kind='figure'</code> refs resolved at export.
+  </p>
+</div>
+
 {# ── sign out ────────────────────────────────────────────────────── #}
 <h2 class="text-sm font-semibold text-slate-700 mt-6 mb-2">Sign out</h2>
 <div class="rounded-lg border border-slate-200 bg-white px-4 py-4 max-w-2xl">
