@@ -288,7 +288,7 @@ def test_se_scrubber_rev1_renders_the_snapshot_tree(
     assert "revision 1 of 2" in page.text
     assert "2 blocks" in page.text  # the snapshot's count, not the live 3
     assert '<option value="cap"' not in page.text  # cap did not exist at 1
-    assert 'id="bt3d-note-panel"' not in page.text  # read-only: no note form
+    assert 'id="bt3d-argue"' not in page.text  # read-only: no note form
     # The scene URL is tojson-embedded, so its "&" is the \u0026 escape.
     assert "/se/caster_scrub/scene3d.json?level=refined\\u0026rev=1" in page.text
     assert _panel_ops(page.text, "bt3d-revision-ops") == _CASTER_OPS
@@ -342,7 +342,7 @@ def test_se_scrubber_rev2_changed_uids_are_the_added_block(
     # rev 2 IS current: editable. The badge stays in the DOM, hidden, so
     # the in-place scrubber (gr458084) can show it without a reload.
     assert 'id="bt3d-readonly" hidden' in page
-    assert 'id="bt3d-note-panel"' in page
+    assert 'id="bt3d-argue"' in page
     assert "+1 block" in page and "cap" in page
     assert _panel_ops(page, "bt3d-revision-ops") == _CAP_OPS
 

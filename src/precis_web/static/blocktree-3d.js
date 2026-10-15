@@ -974,6 +974,10 @@ export async function blocktreeViewer3D({
   // `smoothEls.legend`); each holds `data-role` children — toggle,
   // threshold, value, min, max, and `measure` on the angle row. Optional.
   strainEls,
+  // The argue box (pcb-argue-backport-se): `noteUrls` = {save, rewrite},
+  // `noteEls` = {raw, suggestButton, proposal, text, kind, saveButton,
+  // status}. Absent = no note routes for this kind / read-only revision —
+  // picks then just do not insert handles. All optional.
   noteUrls,
   noteEls,
   // Design chat (design-workbench build, slice 3): called with the block
@@ -1346,7 +1350,7 @@ export async function blocktreeViewer3D({
     // being parsed back out of the path.
     const part = findPart(data.shapes, primaryPath);
     if (part && part.uid !== undefined) highlightTopologyNode(part.uid);
-    showNotePanel(primaryPath);
+    if (part && part.name) insertArgueHandle(part.name);
     if (typeof onSelectBlock === "function" && part && part.name) {
       onSelectBlock(part.name);
     }
@@ -1512,33 +1516,46 @@ export async function blocktreeViewer3D({
     pickEls.panel.classList.remove("hidden");
   }
 
-  // ── comment on the selection → interview note (slice 2 of
-  // docs/backlog/se-topology-cloud-and-surface-notes.md). The flow keeps
-  // the user's words sovereign: raw comment → server-side AI rewrite →
-  // shown EDITABLE for accept/edit → save posts the (possibly edited)
-  // text plus the verbatim original. Every status/error string lands via
-  // textContent (see showError — server text is untrusted).
-  let selectedBlock = null;
+  // ── argue with the design → interview note (the pcb argue box
+  // back-ported, docs/backlog/pcb-argue-backport-se.md). ONE always-present
+  // box, not a per-selection panel: a block pick inserts its name at the
+  // caret, so one argument accumulates several anchors in the user's own
+  // sentence order and about[] carries them all. se keeps the rewrite step
+  // pcb skips: raw words → server-side AI rewrite → shown EDITABLE for
+  // accept/edit → save posts the (possibly edited) text plus the verbatim
+  // original. Every status/error string lands via textContent (see
+  // showError — server text is untrusted).
+  const clickedAnchors = [];
 
   function noteStatus(msg) {
     if (noteEls && noteEls.status) noteEls.status.textContent = msg;
   }
 
-  function showNotePanel(primaryPath) {
-    if (!noteEls || !noteUrls) return;
-    const part = findPart(data.shapes, primaryPath);
-    const name = part ? part.name : null;
-    if (!name) return;
-    if (name !== selectedBlock) {
-      // A fresh selection restarts the capture — a half-typed comment
-      // about another block must not silently attach here.
-      noteEls.raw.value = "";
-      noteEls.proposal.classList.add("hidden");
-      noteStatus("");
-    }
-    selectedBlock = name;
-    noteEls.blockLabel.textContent = name;
-    noteEls.panel.classList.remove("hidden");
+  // pcb-argue.js's insertHandle: at the caret, one trailing space so the
+  // next word is not glued on; the name joins clickedAnchors once.
+  function insertArgueHandle(name) {
+    if (!noteEls || !noteUrls || !name) return;
+    const box = noteEls.raw;
+    // Hidden = the scrubber is showing a past revision (currentOnlyEls):
+    // a note can't be written there, so a pick must not type into an
+    // invisible box.
+    if (box.offsetParent === null) return;
+    const start = box.selectionStart == null ? box.value.length : box.selectionStart;
+    const end = box.selectionEnd == null ? start : box.selectionEnd;
+    const before = box.value.slice(0, start);
+    const ins = (before && !/\s$/.test(before) ? " " : "") + name + " ";
+    box.value = before + ins + box.value.slice(end);
+    const caret = start + ins.length;
+    try { box.setSelectionRange(caret, caret); } catch (e) { /* not focusable yet */ }
+    box.focus();
+    if (clickedAnchors.indexOf(name) === -1) clickedAnchors.push(name);
+  }
+
+  // pcb-argue.js's rule: only a handle still present in the text counts —
+  // the user can strike one out before submitting.
+  function anchorsInText() {
+    const text = noteEls && noteEls.raw ? noteEls.raw.value : "";
+    return clickedAnchors.filter((h) => text.indexOf(h) !== -1);
   }
 
   async function postJson(url, payload) {
@@ -1555,8 +1572,8 @@ export async function blocktreeViewer3D({
   if (noteEls && noteUrls) {
     noteEls.suggestButton.addEventListener("click", async () => {
       const comment = noteEls.raw.value.trim();
-      if (!comment || !selectedBlock) {
-        noteStatus(comment ? "select a block first" : "type a comment first");
+      if (!comment) {
+        noteStatus("type an argument first");
         return;
       }
       noteEls.suggestButton.disabled = true;
@@ -1564,7 +1581,7 @@ export async function blocktreeViewer3D({
       try {
         const j = await postJson(noteUrls.rewrite, {
           comment,
-          block: selectedBlock,
+          about: anchorsInText(),
         });
         noteEls.text.value = j.text || comment;
         noteEls.kind.value = j.kind === "decision" ? "decision" : "question";
@@ -1583,7 +1600,7 @@ export async function blocktreeViewer3D({
 
     noteEls.saveButton.addEventListener("click", async () => {
       const text = noteEls.text.value.trim();
-      if (!text || !selectedBlock) {
+      if (!text) {
         noteStatus("nothing to save");
         return;
       }
@@ -1593,11 +1610,12 @@ export async function blocktreeViewer3D({
         const j = await postJson(noteUrls.save, {
           text,
           kind: noteEls.kind.value,
-          block: selectedBlock,
+          about: anchorsInText(),
           verbatim: noteEls.raw.value.trim(),
         });
         noteStatus(`saved as ${j.name}`);
         noteEls.raw.value = "";
+        clickedAnchors.length = 0;
         noteEls.proposal.classList.add("hidden");
       } catch (err) {
         noteStatus("save failed: " + String(err.message || err));

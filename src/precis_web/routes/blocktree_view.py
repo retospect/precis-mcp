@@ -51,17 +51,22 @@ forwarded unchanged (``_view3d_redirect``), so an old bookmark/link
 never just 404s.
 
 The anchored-notes layer arrived via
-docs/backlog/se-topology-cloud-and-surface-notes.md slice 2:
+docs/backlog/se-topology-cloud-and-surface-notes.md slice 2, re-shaped by
+docs/backlog/pcb-argue-backport-se.md (one always-present argue box, not a
+per-selection panel):
 
 * ``POST /se/{slug}/note/rewrite`` — AI-assisted intent capture: a raw
-  comment typed against the 3D selection comes back as a crisp one-or-
-  two-sentence note + a proposed kind (question | decision), for the
-  page to show inline for accept/edit. LLM failure degrades to the raw
-  text (``degraded: true``) — capture never blocks on the model.
+  argument typed into the box (plus its accumulated ``about`` anchors as
+  context) comes back as a crisp one-or-two-sentence note + a proposed
+  kind (question | decision), for the page to show inline for
+  accept/edit. LLM failure degrades to the raw text (``degraded:
+  true``) — capture never blocks on the model.
 * ``POST /se/{slug}/note`` — save the accepted note into the design's
   interrogation ledger via the existing ``add_note`` op path (origin
-  ``'user'``, ``about=[block]``, verbatim original appended as a
-  ``(verbatim: …)`` trailer when the text was rewritten).
+  ``'user'``, ``about=[anchor, …]`` — the picked handles still present
+  in the text; ``block=<name>`` stays as the one-anchor shorthand),
+  verbatim original appended as a ``(verbatim: …)`` trailer when the
+  text was rewritten).
 
 The revision scrubber (the design-workbench build, slice 2 (2026-09-18)):
 ``?rev=N`` on the 3D page and on ``scene3d.json``. N < current renders
@@ -71,7 +76,7 @@ that differ from N−1 — added, or with a changed pose/rot/envelope/parent,
 matched by block ``uid`` — come back as ``changed_uids`` and are tinted in
 the Shapes tree (:func:`precis_web.blocktree_3d.tint_blocks`). The page's
 "Revision N" panel lists that diff, the recorded ops and the chat ``turn``;
-a past revision is read-only (no note panel). A design saved before the
+a past revision is read-only (no argue box). A design saved before the
 record existed shows one position, "current, no record". Scrubbing does
 not reload the page (gr458084): the client refetches ``scene3d.json?rev=N``
 through its live-scene seam, camera held, and swaps the panel's body from
@@ -129,6 +134,7 @@ from precis.structure.probe import detect_bonds
 from precis.viz3d.sheetsmooth import deviation as sheet_deviation
 from precis.viz3d.sheetsmooth import ring_faces, smooth_sheet
 from precis_se import fasten as se_fasten
+from precis_se import notes as se_notes
 from precis_se import persist as se_persist
 from precis_se import stability as se_stability
 from precis_se import validate as se_validate
@@ -1111,11 +1117,11 @@ async def _view3d_page(
         if kind == "se"
         else ""
     )
-    # Comment-on-selection (slice 2, se only today — the routes are
-    # registered per kind, so a second blocktree kind opts in by adding
-    # its own note routes; the template hides the panel when unset). A
-    # past revision is read-only: the note op would land on the CURRENT
-    # tree, so the panel is not offered at all.
+    # The argue box (slice 2 → pcb-argue-backport-se, se only today — the
+    # routes are registered per kind, so a second blocktree kind opts in
+    # by adding its own note routes; the template hides the box when
+    # unset). A past revision is read-only: the note op would land on the
+    # CURRENT tree, so the box is not offered at all.
     note_url = (
         f"/{kind}/{quote(slug, safe='')}/note"
         if kind == "se" and not axis.read_only
@@ -1125,7 +1131,7 @@ async def _view3d_page(
     # The pick panel's click-time level list (se-pick-hierarchy): se only,
     # and offered on a past revision too — reading levels writes nothing.
     pick_url = f"/{kind}/{quote(slug, safe='')}/pick" if kind == "se" else ""
-    # The design chat (slice 3) — se only, like the note panel; on a past
+    # The design chat (slice 3) — se only, like the argue box; on a past
     # revision the partial renders one read-only line and reads nothing.
     chat = (
         design_chat.panel_context(
@@ -2412,8 +2418,9 @@ async def se_pick(
     )
 
 
-# ── comment-on-selection → interview note (slice 2 of
-#    docs/backlog/se-topology-cloud-and-surface-notes.md) ─────────────────
+# ── argue box → interview note (slice 2 of
+#    docs/backlog/se-topology-cloud-and-surface-notes.md, re-shaped by
+#    docs/backlog/pcb-argue-backport-se.md: one box, many anchors) ────────
 
 #: The kinds the web comment box can mint. An ``answer`` needs a ``re``
 #: target picked from the existing ledger — out of scope for a viewer
@@ -2421,10 +2428,10 @@ async def se_pick(
 _WEB_NOTE_KINDS = ("question", "decision")
 
 _NOTE_REWRITE_PROMPT = """\
-You are capturing design intent on a structural design. The user selected
-block {block} in a 3D viewer and typed a raw comment about it. Rewrite the
-comment as ONE crisp interview note of one or two sentences, preserving the
-user's intent precisely — do not invent facts, soften, or expand scope.
+You are capturing design intent on a structural design. The user typed a
+raw argument in a 3D viewer, anchored to {block}. Rewrite the comment as
+ONE crisp interview note of one or two sentences, preserving the user's
+intent precisely — do not invent facts, soften, or expand scope.
 Classify it: "question" if it asks or opens something, "decision" if it
 settles or directs something.
 
@@ -2435,6 +2442,21 @@ Reply with ONLY a JSON object: {{"text": "...", "kind": "question" or "decision"
 """
 
 
+def _note_anchors(payload: Any) -> tuple[list[str], JSONResponse | None]:
+    """The ``about`` anchors of a note payload — a list of anchor names
+    (``block`` or ``block.measure``), or the legacy single ``block``
+    string. Empty list = a whole-design argument. Returns
+    ``(anchors, None)`` or ``([], <400 response>)`` on a bad shape."""
+    raw = payload.get("about")
+    if raw is None:
+        block = str(payload.get("block") or "").strip()
+        return ([block] if block else []), None
+    try:
+        return se_notes.validate_about(raw), None
+    except se_notes.NoteError as exc:
+        return [], JSONResponse({"error": str(exc)}, status_code=400)
+
+
 def _rewrite_note_comment(comment: str, block: str | None) -> dict[str, Any]:
     """One MEDIUM-tier judge call: raw comment → ``{'text', 'kind'}``.
     Raises on any transport/parse failure — the route degrades to the raw
@@ -2443,7 +2465,7 @@ def _rewrite_note_comment(comment: str, block: str | None) -> dict[str, Any]:
     from precis.utils.llm.router import LlmRequest, Tier, route
 
     prompt = _NOTE_REWRITE_PROMPT.format(
-        block=repr(block) if block else "(none selected)", comment=comment
+        block=block or "(no anchors — a whole-design argument)", comment=comment
     )
     res = route(
         LlmRequest(
@@ -2493,9 +2515,13 @@ async def se_note_rewrite(request: Request, slug: str) -> JSONResponse:
     comment = str(payload.get("comment") or "").strip()
     if not comment:
         return JSONResponse({"error": "empty comment"}, status_code=400)
-    block = str(payload.get("block") or "").strip() or None
+    anchors, err = _note_anchors(payload)
+    if err is not None:
+        return err
     try:
-        proposal = await asyncio.to_thread(_rewrite_note_comment, comment, block)
+        proposal = await asyncio.to_thread(
+            _rewrite_note_comment, comment, ", ".join(anchors)
+        )
     except Exception:
         # Degrade honestly: the raw words come back editable, flagged —
         # capture must never block on the model being reachable.
@@ -2524,7 +2550,9 @@ async def se_note_save(request: Request, slug: str) -> JSONResponse:
             {"error": f"kind must be one of {' | '.join(_WEB_NOTE_KINDS)}"},
             status_code=400,
         )
-    block = str(payload.get("block") or "").strip() or None
+    anchors, err = _note_anchors(payload)
+    if err is not None:
+        return err
     verbatim = str(payload.get("verbatim") or "").strip()
 
     def _save() -> str:
@@ -2542,10 +2570,10 @@ async def se_note_save(request: Request, slug: str) -> JSONResponse:
             "text": body,
             "origin": "user",
         }
-        if block:
+        if anchors:
             # A dangling anchor is legal by design (the interview view
             # annotates it) — no existence check here.
-            op["about"] = [block]
+            op["about"] = anchors
         SeHandler(hub=Hub(store=store)).edit(id=str(ref.slug), ops=[op])
         return name
 

@@ -65,8 +65,11 @@ The Edge_Cuts group of `render_fab_svg` now carries
   not exercised in a browser by the shipping session. Manual check: open
   `/pcb/ewod-dogfood-1`, click an electrode pad, the HV507 body and a
   track; the box must read e.g. `ARR1.R3C4 U1 net:HV_RAIL`.
-- `pcb-argue-backport-se.md` is unblocked — slice 2 is the shared job it
-  mirrors.
+- `pcb-argue-backport-se.md`'s box shipped 2026-10-15 — one always-present
+  argue box on `/se/{slug}` (`#bt3d-argue`), a block pick inserts the
+  handle at the caret, `about[]` carries every clicked anchor still in
+  the text, se keeps its rewrite step. That file now holds only the
+  gr335242 remainder (playbook, surface anchors/markers, stick figure).
 
 ## Left from gr335242 (se/nm viewer, rounds 1/2a shipped)
 

@@ -1115,6 +1115,66 @@ def test_se_note_save_dedupes_names(
     assert names <= saved
 
 
+def test_se_note_save_multi_anchor_about(
+    blocktree_client, runtime_with_store, store
+) -> None:
+    """The argue box accumulates every picked handle into one note's
+    ``about[]`` (docs/backlog/pcb-argue-backport-se.md) — the per-selection
+    panel could only anchor one block."""
+    _seed_se(runtime_with_store)
+    r = blocktree_client.post(
+        "/se/unicycle_web/note",
+        json={
+            "text": "hub rubs rim at full lock",
+            "kind": "question",
+            "about": ["hub", "rim"],
+        },
+    )
+    assert r.status_code == 200
+    note = next(n for n in _load_notes(store) if n.name == r.json()["name"])
+    assert note.about == ["hub", "rim"]
+
+
+def test_se_note_save_whole_design_argument(
+    blocktree_client, runtime_with_store, store
+) -> None:
+    """A whole-design argument needs no click — empty ``about`` stores an
+    unanchored note rather than 400ing on a missing block."""
+    _seed_se(runtime_with_store)
+    r = blocktree_client.post(
+        "/se/unicycle_web/note",
+        json={"text": "the whole assembly feels overbuilt", "about": []},
+    )
+    assert r.status_code == 200
+    note = next(n for n in _load_notes(store) if n.name == r.json()["name"])
+    assert note.about == []
+
+
+def test_se_note_save_rejects_bad_about_shape(
+    blocktree_client, runtime_with_store
+) -> None:
+    """``about`` is a list of anchor names — a non-list (or a list with
+    non-string members) is a client bug, not a note."""
+    _seed_se(runtime_with_store)
+    for bad in ({"a": 1}, ["hub", 42], [""]):
+        r = blocktree_client.post(
+            "/se/unicycle_web/note", json={"text": "x", "about": bad}
+        )
+        assert r.status_code == 400
+        assert "about" in r.json()["error"]
+
+
+def test_se_argue_box_is_always_present(blocktree_client, runtime_with_store) -> None:
+    """The back-port replaced the hidden per-selection panel with ONE
+    always-present box — a whole-design argument needs no pick to open
+    it."""
+    _seed_se(runtime_with_store)
+    r = blocktree_client.get("/se/unicycle_web")
+    assert r.status_code == 200
+    assert 'id="bt3d-argue"' in r.text
+    assert 'id="bt3d-note-panel"' not in r.text
+
+
 def test_se_note_save_rejects_bad_kind(blocktree_client, runtime_with_store) -> None:
     """``answer`` needs a ``re`` target picked from the ledger — the
     viewer comment box only mints question|decision."""
