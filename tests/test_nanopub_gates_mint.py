@@ -4,6 +4,7 @@ vault rows and no network are involved."""
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -15,6 +16,7 @@ from precis.nanopub.keys import generate_keypair
 from precis.store.types import Tag
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import attach_evidence, link_claims, mint_hub
+from tests.test_taproot_hub import _seed_pathway
 from tests.workers._helpers import seed_ref
 
 _QUOTE = (
@@ -1335,3 +1337,186 @@ def test_advisory_lint_is_exactly_the_nonblocking_half() -> None:
     blocking_msgs = " ".join(v.message for v in check_claim_sentence(s))
     assert "e-notation" in blocking_msgs
     assert advisory_lint("") == []
+
+
+# ── computed (pathway) evidence gate ──────────────────────────────────
+# docs/backlog/computed-pathways-cannot-be-cited-as-claim-evidence.md —
+# the admissibility rubric's blocking half: a pathway citation whose pin
+# moved, whose stated barrier no longer matches, or that carries no pin
+# refuses mint. Runs on the live bundle at approve AND at sign — a
+# supersession landing between the two must catch the sign.
+
+_COMPUTED_SLUGS = {"computed-pin", "computed-stale", "computed-mismatch"}
+
+
+def _set_pathway_meta(store: Any, ref_id: int, patch: dict[str, Any]) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
+            (json.dumps(patch), ref_id),
+        )
+        conn.commit()
+
+
+def _computed_claim_hub(
+    store: Any,
+    paper: int,
+    pathway: int,
+    *,
+    edge_meta: dict[str, Any] | None = None,
+) -> int:
+    """A claim hub carrying one paper corroborator AND one computed
+    (pathway) edge — mixed support, the shape the mint gate must read."""
+    hub = mint_hub(
+        store,
+        CanonicalClaim(
+            sentence="DFT shows NO dissociation on Pd(111) has a 1.2 eV barrier.",
+            scope={},
+        ),
+    )
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=paper,
+        role="corroborates",
+        check_retraction=False,
+    )
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=pathway,
+        role="corroborates",
+        meta=edge_meta,
+        check_retraction=False,
+    )
+    return hub
+
+
+def test_live_computed_edge_passes_mint_gates(store: Any) -> None:
+    paper, chunk, sha = _seed_paper(store)
+    pathway = _seed_pathway(store, slug="gate-rx-aaa111", content_key="sha-aaa111")
+    hub = _computed_claim_hub(store, paper, pathway)
+    assert _gate_slugs(store, hub, _payload(chunk, sha)).isdisjoint(_COMPUTED_SLUGS)
+
+
+def test_superseded_pathway_edge_refuses_mint(store: Any) -> None:
+    paper, chunk, sha = _seed_paper(store)
+    pathway = _seed_pathway(store, slug="gate-rx-bbb222", content_key="sha-bbb222")
+    successor = _seed_pathway(store, slug="gate-rx-ccc333", content_key="sha-ccc333")
+    hub = _computed_claim_hub(store, paper, pathway)
+    _set_pathway_meta(
+        store, pathway, {"status": "superseded", "superseded_by": successor}
+    )
+    slugs = _gate_slugs(store, hub, _payload(chunk, sha))
+    assert "computed-stale" in slugs
+    violations = gates.run_mint_gates(
+        store, evidence.load_bundle(store, hub), _payload(chunk, sha)
+    )
+    stale = [v for v in violations if v.gate == "computed-stale"]
+    assert "superseded" in stale[0].message
+
+
+def test_content_key_drift_refuses_mint(store: Any) -> None:
+    paper, chunk, sha = _seed_paper(store)
+    pathway = _seed_pathway(store, slug="gate-rx-ddd444", content_key="sha-ddd444")
+    hub = _computed_claim_hub(store, paper, pathway)
+    _set_pathway_meta(store, pathway, {"content_key": "sha-eee555aa"})
+    assert "computed-stale" in _gate_slugs(store, hub, _payload(chunk, sha))
+
+
+def test_computed_barrier_mismatch_refuses_mint(store: Any) -> None:
+    """A claim's stated barrier that no longer matches the pathway's
+    CURRENT graph fails at mint — the same re-check attach ran."""
+    paper, chunk, sha = _seed_paper(store)
+    pathway = _seed_pathway(
+        store,
+        slug="gate-rx-fff666",
+        content_key="sha-fff666",
+        links=[{"source": "A", "target": "B", "barrier": 1.2, "barrier_std": 0.05}],
+    )
+    hub = _computed_claim_hub(
+        store, paper, pathway, edge_meta={"claimed_barrier": 1.21}
+    )
+    assert _gate_slugs(store, hub, _payload(chunk, sha)).isdisjoint(_COMPUTED_SLUGS)
+
+    # The pathway's computed number moved under the citation.
+    _set_pathway_meta(
+        store,
+        pathway,
+        {
+            "graph": {
+                "links": [
+                    {"source": "A", "target": "B", "barrier": 1.9, "barrier_std": 0.05}
+                ]
+            }
+        },
+    )
+    assert "computed-mismatch" in _gate_slugs(store, hub, _payload(chunk, sha))
+
+
+def test_unpinned_computed_edge_refuses_mint(store: Any) -> None:
+    """A pathway edge written around ``attach_evidence``'s pin door
+    carries no content_key — a citation that cannot be re-checked must
+    not mint."""
+    paper, chunk, sha = _seed_paper(store)
+    pathway = _seed_pathway(store, slug="gate-rx-ggg777", content_key="sha-ggg777")
+    hub = mint_hub(
+        store,
+        CanonicalClaim(
+            sentence="DFT shows NO dissociation on Pd(111) has a 1.2 eV barrier.",
+            scope={},
+        ),
+    )
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=paper,
+        role="corroborates",
+        check_retraction=False,
+    )
+    store.add_link(
+        src_ref_id=pathway,
+        dst_ref_id=hub,
+        relation="corroborates",
+        meta={},  # no content_key pin — bypasses the attach door's stamp
+    )
+    assert "computed-pin" in _gate_slugs(store, hub, _payload(chunk, sha))
+
+
+def test_hypothesis_with_computed_edge_refuses_mint(store: Any) -> None:
+    """A hypothesis cites motivation, not evidence — the computed edge's
+    refusal mirrors the passages arm of the schema gate."""
+    pathway = _seed_pathway(store, slug="gate-rx-hhh888", content_key="sha-hhh888")
+    hub = mint_hub(
+        store,
+        CanonicalClaim(
+            sentence="A double barrier governs NO dissociation on Pd(111).",
+            scope={},
+        ),
+    )
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=pathway,
+        role="corroborates",
+        check_retraction=False,
+    )
+    payload = {
+        "hypothesis": True,
+        "motivation": "Two sequential steps suggest a double barrier.",
+        "testable_by": "Resolving the NO dissociation transition state.",
+    }
+    violations = gates.run_mint_gates(store, evidence.load_bundle(store, hub), payload)
+    assert any(v.gate == "schema-lint" and "computed" in v.message for v in violations)
+
+
+def test_approve_refuses_a_superseded_pathway_edge(store: Any) -> None:
+    """End-to-end: the gate bites inside approve, not only in the
+    preflight read."""
+    paper, chunk, sha = _seed_paper(store)
+    pathway = _seed_pathway(store, slug="gate-rx-iii999", content_key="sha-iii999")
+    hub = _computed_claim_hub(store, paper, pathway)
+    _set_pathway_meta(store, pathway, {"status": "superseded"})
+    with pytest.raises(mint.MintGateError) as exc:
+        mint.approve(store, hub, payload=_payload(chunk, sha), interactive=True)
+    assert "computed-stale" in {v.gate for v in exc.value.violations}

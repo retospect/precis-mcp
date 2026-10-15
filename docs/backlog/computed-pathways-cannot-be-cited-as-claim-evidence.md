@@ -157,10 +157,37 @@ trust label is a decision for the admissibility work below, not a read fix.
 - **Web attach form** (was Still-open 4): the `/nanopub/fi<id>/evidence/add`
   door parses `pw<id>` beside `pa`/`pt` and surfaces the refusal text.
 
-Still open:
+## Status 2026-10-15 — admissibility rubric, blocking half
 
-- **Admissibility rubric.** What a compute-backed nanopub asserts — the
-  question in "Target + blast radius". `load_bundle` exposes the edges
-  for review, but nothing feeds a mint gate or the artifact, and
-  `approve` is unchanged: a compute-backed claim still goes through the
-  same human gate as any other.
+`nanopub/gates.py::check_computed` (run unconditionally in
+`run_mint_gates`, so at approve AND at sign — a pathway superseded
+between the two blocks the sign; `frozen` has no arm because the pin IS
+the comparison, there is no frozen copy of compute results). Three
+violations per edge: `computed-pin` (edge carries no `content_key` —
+unverifiable citation, written around the attach door), `computed-stale`
+(`ComputedEdge.stale_reason` — superseded names the successor; key drift
+names both keys), `computed-mismatch` (`ComputedEdge.mismatch_reason` —
+the edge's stated barrier re-checked against the pathway's CURRENT
+`graph.links`). Plus: a `hypothesis` mint on a hub carrying computed
+edges refuses (`schema-lint`, mirroring the passages arm — motivation,
+not evidence).
+
+Deliberately unchanged, pending the calls below: a computed edge does
+NOT satisfy the claim schema gate's grounding requirement (a
+computed-only claim still mints only `hanging`), `approve`'s human gate
+is untouched, and the artifact serializes nothing about computed edges —
+a minted claim backed by a pathway still publishes with no provenance
+node for it.
+
+Still open — design calls for Reto:
+
+- Does a live computed edge satisfy the claim's grounding requirement
+  (a computed-only claim mints non-hanging), or must a compute-backed
+  claim still carry a grounding passage / mint hanging?
+- What does the artifact assert for computed evidence — the pathway as
+  a provenance source node anchored by its content key (e.g.
+  `urn:precis:pathway:<key>` + `precis:evidenceTier "computed"` + the
+  stated barrier/std literals), or a PROV activity/agent shape?
+- Should `approve` freeze the computed pin set into the payload
+  (`_freeze_source_anchor`-style) so sign checks the frozen set, or is
+  the live-edge re-check the right authority?

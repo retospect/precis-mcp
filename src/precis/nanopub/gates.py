@@ -7,7 +7,10 @@ by genre); quote verbatim-containment; snip uniqueness; structured-field
 containment; schema lint (claim/composite/hypothesis/report/definition
 shape, :func:`check_claim_sentence`, :func:`check_nonempirical`); quantity-bound presence; llm-attribution;
 ``pdf_sha256`` uniqueness; publish-row cardinality; drift
-(:func:`check_drift`); topo/mint-order (:func:`check_mint_order`).
+(:func:`check_drift`); topo/mint-order (:func:`check_mint_order`);
+computed-evidence standing (:func:`check_computed` — a ``pathway``
+citation whose pin moved, whose magnitude no longer matches, or that
+carries no pin refuses the mint).
 
 Every check lives in the cheapest layer that can catch it; failures
 auto-route (a hygiene defect points at its gripe/backlog item, a grounding
@@ -43,6 +46,7 @@ from precis.taproot.hub import human_rejected
 from precis.taproot.notation import lint_notation
 from precis.taproot.review_like import proceedings_venue, venue_vetoed
 from precis.taproot.sentence_lint import lint_claim_sentence
+from precis.utils import handle_registry
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -329,6 +333,16 @@ def run_mint_gates(
     # 1 — contradicts-edge gate (first; SQL-cheap; worst-of applies).
     violations += check_contradicts(store, bundle)
 
+    # Computed evidence (pathway citations) still stands: superseded or
+    # key-drifted compute is revoked evidence, and a stated barrier that
+    # no longer matches the pathway's own graph fails the magnitude
+    # re-check — both refuse rather than signing over them. Runs for
+    # every artifact type: the check reads the hub's live computed edges,
+    # not the payload, so `frozen` does not soften it (a pathway
+    # superseded between approve and sign blocks the sign — the
+    # content-key pin's designed break-visibly property).
+    violations += check_computed(bundle)
+
     # Resolved before the sentence lint, not just before the schema arm:
     # the blocking set is scoped by artifact type
     # (`_ARTIFACT_LINT_EXEMPTIONS`).
@@ -361,6 +375,16 @@ def run_mint_gates(
 
     # 6 — schema lint: quote presence is gated by artifact type.
     if artifact_type == "hypothesis":
+        if bundle.computed:
+            violations.append(
+                GateViolation(
+                    "schema-lint",
+                    "hypothesis with computed (pathway) evidence — a "
+                    "hypothesis has no supporting evidence by definition "
+                    "(motivation, not evidence); re-mint as a claim or "
+                    "detach the pathway edge",
+                )
+            )
         if passages:
             violations.append(
                 GateViolation(
@@ -999,6 +1023,79 @@ def check_contradicts(store: Store, bundle: ev.HubBundle) -> list[GateViolation]
                     f"conjunct atom fi{atom_id} carries a live contradicts "
                     f"edge {edge.direction} {edge.kind} {edge.ref_id} — "
                     "worst-of blocks the composite",
+                )
+            )
+    return out
+
+
+def check_computed(bundle: ev.HubBundle) -> list[GateViolation]:
+    """Computed-evidence standing gate: a ``pathway`` evidence edge
+    (:attr:`~precis.nanopub.evidence.HubBundle.computed`) refuses mint
+    when it no longer stands, exactly the content-key pin's designed
+    behavior (docs/backlog/computed-pathways-cannot-be-cited-as-claim-
+    evidence.md — a claim pinned to ``(pathway_ref_id, content_key)``
+    breaks visibly when its evidence is invalidated, and the publish
+    boundary is where breaking must refuse, not merely render).
+
+    Three arms, one per edge:
+
+    * ``computed-pin`` — the edge carries no ``content_key`` (not written
+      through ``attach_evidence``'s pathway door). A citation that cannot
+      be re-checked against the pathway's current key is silently wrong
+      by construction; re-attach through the door to pin it.
+    * ``computed-stale`` — :attr:`~precis.taproot.seniority.ComputedEdge.
+      stale_reason` is set: the pathway was superseded (names the
+      successor) or its own ``meta.content_key`` moved off the pin.
+      Re-attach the superseding pathway, never sign revoked evidence.
+    * ``computed-mismatch`` — :attr:`~precis.taproot.seniority.
+      ComputedEdge.mismatch_reason` is set: the edge's stored
+      ``claimed_barrier``/``claimed_barrier_std`` no longer matches the
+      pathway's CURRENT ``graph.links`` numbers (the read-time half of
+      :func:`precis.taproot.hub.pathway_barrier_mismatch` — the compute
+      analogue of the verbatim-quote gate, re-run here so a number that
+      drifted post-attach cannot mint).
+
+    Reads the live ``bundle.computed`` — ``stale_reason`` /
+    ``mismatch_reason`` are already re-derived against the pathway's
+    current ``meta`` at read time, so the same check is correct at
+    approve and at sign (where ``run_mint_gates`` re-runs with
+    ``frozen=True``; the live check is what catches a supersession that
+    lands between the two). A pathway edge is never ``frozen`` — there
+    is no frozen copy of compute results the way a web passage has one;
+    the pin IS the comparison, so ``frozen`` has no arm here."""
+    out: list[GateViolation] = []
+    for edge in bundle.computed:
+        handle = handle_registry.try_format("pathway", edge.pathway_ref_id) or (
+            f"pathway ref {edge.pathway_ref_id}"
+        )
+        if edge.content_key is None:
+            out.append(
+                GateViolation(
+                    "computed-pin",
+                    f"computed edge from {handle} pins no content_key — a "
+                    "pathway citation that cannot be re-checked is not "
+                    "citable; re-attach through attach_evidence so the edge "
+                    "pins (pathway_ref_id, content_key)",
+                )
+            )
+        if edge.stale_reason:
+            out.append(
+                GateViolation(
+                    "computed-stale",
+                    f"computed evidence {handle} ({edge.title[:60]}…) is "
+                    f"stale: {edge.stale_reason} — the cited compute no "
+                    "longer stands; re-attach the superseding pathway "
+                    "before minting (a superseded content key is revoked "
+                    "evidence, never signed)",
+                )
+            )
+        if edge.mismatch_reason:
+            out.append(
+                GateViolation(
+                    "computed-mismatch",
+                    f"computed evidence {handle}: {edge.mismatch_reason} — "
+                    "re-state the claim's barrier or attach the pathway "
+                    "that actually computed it",
                 )
             )
     return out

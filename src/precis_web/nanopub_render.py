@@ -512,6 +512,15 @@ _MINT_GATES: list[tuple[str, str]] = [
         "mint-order",
         "conjunct atoms carry signed artifacts before their composite mints",
     ),
+    ("computed-pin", "every computed (pathway) edge pins a content_key"),
+    (
+        "computed-stale",
+        "no computed evidence edge is superseded or key-drifted",
+    ),
+    (
+        "computed-mismatch",
+        "a claimed barrier still matches the pathway's own numbers",
+    ),
     ("rejected-memo", "the sentence is not a previously rejected claim string"),
 ]
 

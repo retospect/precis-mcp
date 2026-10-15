@@ -209,6 +209,15 @@ failures an extraction agent can avoid up front:
   own evidence or mints as a `precis:Hypothesis` (declarative sentence,
   type carries the epistemic status, `testableBy` names the
   discriminating experiment).
+- **Computed (pathway) evidence must still stand** — a `pw` evidence
+  edge pins `(pathway_ref_id, content_key)`; mint refuses when the
+  pathway was superseded or its content key moved (`computed-stale`),
+  when the edge's stated barrier no longer matches the pathway's own
+  `graph.links` numbers (`computed-mismatch`), or when the edge pins no
+  key at all (`computed-pin`). Remedy: re-attach the superseding
+  pathway, or re-state the claim's barrier to match the current graph.
+  A hypothesis cites no evidence — a computed edge on a hypothesis hub
+  refuses too.
 - **One public identifier per passage** — provenance content is the
   source's identifier + quote + snip. A paper is cited by its DOI; an
   `edgar` filing by its SEC accession number (the ref slug; the source
