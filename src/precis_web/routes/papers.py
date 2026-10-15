@@ -77,6 +77,7 @@ from precis_web.deps import (
 from precis_web.paper_ident import paper_abstract
 from precis_web.paper_links import doi_url, scholar_title_url
 from precis_web.ref_urls import ref_url
+from precis_web.routes.favorites import faved
 from precis_web.timefmt import utc_date
 
 if TYPE_CHECKING:
@@ -624,6 +625,11 @@ def _render_detail(
         # plugged via ``doc.meta_panel`` and still reads the vars above.
         "doc": {
             "id": ref_id,
+            "kind": ref.kind,
+            # Heart toggle (gr486409) — None when auth is off, so the
+            # reader header skips the button rather than rendering a
+            # dead one.
+            "faved": faved(request, ref_id),
             "title": paper["title"],
             "handle": format_handle(ref.kind, ref_id),
             "slug": cite_key,

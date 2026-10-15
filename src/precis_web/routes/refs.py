@@ -66,6 +66,7 @@ from precis_web.item_view import display_title
 from precis_web.paper_ident import PAPER_IDENT_KINDS, paper_head
 from precis_web.pathway_kinetics import kinetics_payload
 from precis_web.ref_urls import ref_url
+from precis_web.routes.favorites import faved
 from precis_web.routes.structure import _geom_payload
 from precis_web.timefmt import abs_ts
 
@@ -813,6 +814,9 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
             "quest_tag": quest_tag,
             "quest_stubs_url": quest_stubs_url,
             "discussions": _followup_discussions(store, qid),
+            # Heart toggle (gr486409) — None when auth is off, so the
+            # template skips the button rather than rendering a dead one.
+            "faved": faved(request, qid),
         },
     )
 
@@ -3039,6 +3043,8 @@ async def detail(
             "discussions": (
                 None if kind == "job" else _followup_discussions(store, ref.id)
             ),
+            # Heart toggle (gr486409) — None when auth is off.
+            "faved": faved(request, ref.id),
         },
     )
 

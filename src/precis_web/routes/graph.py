@@ -68,6 +68,7 @@ from precis_web.deps import get_store, templates
 from precis_web.graph_filters import csv_list, parse_kind_filter
 from precis_web.graph_svg import KIND_SHAPES, focus_graph_svg
 from precis_web.ref_urls import ref_url
+from precis_web.routes.favorites import faved
 from precis_web.routes.items import _parse_date
 
 if TYPE_CHECKING:
@@ -583,6 +584,9 @@ async def graph_focus(
             "trust_tiers": FINDING_TRUST_TIERS,
             "filters_on": f.filters_on,
             "clear_url": f.clear_href(page),
+            # Heart toggle (gr486409) — None when auth is off, so the
+            # template skips the button rather than rendering a dead one.
+            "faved": faved(request, ref_id),
         },
     )
 

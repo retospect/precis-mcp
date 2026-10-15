@@ -5,7 +5,14 @@
 {% block content %}
 {{ drive_back(kind, kind_label) }}
 <div class="mt-2 mb-4">
-  <h1 class="text-lg font-semibold">{{ ref.title }}</h1>
+  <h1 class="text-lg font-semibold">
+    {{ ref.title }}
+    {% if faved is defined and faved is not none %}
+      {# Per-user heart (gr486409); faved is None when auth is off. #}
+      {% set fav_kind, fav_id = kind, ref.id %}
+      {% include "_heart.html.j2" %}
+    {% endif %}
+  </h1>
   <p class="text-sm text-slate-500">
     #{{ ref.id }}
     {% if ref.slug %}· <span class="font-mono">{{ ref.slug }}</span>{% endif %}

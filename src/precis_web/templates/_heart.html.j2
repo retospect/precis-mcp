@@ -1,0 +1,27 @@
+{# Heart toggle — per-user favorite (``ref_favorites``, gr486409).
+   Caller provides:
+     fav_kind   — the ref's kind (e.g. 'paper', 'quest')
+     fav_id     — the ref id
+     faved      — current state for the signed-in user
+     return_to  — path the no-JS fallback 303s back to (default: current
+                  page via the caller; the POST's htmx path ignores it)
+
+   Progressive enhancement mirrors _flag_buttons.html.j2: htmx POSTs the
+   toggle and swaps this button in place (outerHTML) — no full reload;
+   the plain method/action attributes remain the no-JS fallback. #}
+<form method="post" action="/favorites/{{ fav_kind }}/{{ fav_id }}" class="inline shrink-0"
+      hx-post="/favorites/{{ fav_kind }}/{{ fav_id }}"
+      hx-target="this"
+      hx-swap="outerHTML">
+  <input type="hidden" name="op" value="{{ 'remove' if faved else 'add' }}" />
+  <input type="hidden" name="return_to" value="{{ return_to or request.url.path }}" />
+  <button type="submit"
+          aria-pressed="{{ 'true' if faved else 'false' }}"
+          aria-label="{{ 'Remove from favorites' if faved else 'Add to favorites' }}"
+          title="{{ 'In your favorites — click to remove' if faved else 'Add to favorites' }}"
+          class="rounded border px-1.5 py-0.5 text-sm leading-none transition-colors
+                 {% if faved %}border-rose-300 bg-rose-50 text-rose-600
+                 {% else %}border-slate-200 text-slate-300 hover:text-rose-400 hover:border-rose-200{% endif %}">
+    {{ '♥' if faved else '♡' }}
+  </button>
+</form>

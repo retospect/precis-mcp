@@ -1,0 +1,44 @@
+{% extends "base.html.j2" %}
+{% block title %}Favorites{% endblock %}
+{% block content %}
+<a href="/drive" class="text-xs text-slate-400 hover:text-slate-600">&larr; Drive</a>
+
+<div class="mt-2 mb-3">
+  <h1 class="text-lg font-semibold">Favorites</h1>
+  <p class="text-sm text-slate-500">
+    Refs you hearted, newest first. Only you can see this list — it is
+    keyed to your login, not shared.
+  </p>
+</div>
+
+{% if rows %}
+<ul class="divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white">
+  {% for r in rows %}
+  <li class="flex items-center gap-3 px-3 py-2">
+    {# Everything listed is hearted — faved is always true here; the
+       toggle's htmx swap re-renders the button as unfilled in place. #}
+    {% set fav_kind, fav_id, faved = r.kind, r.ref_id, true %}
+    {% include "_heart.html.j2" %}
+    <span class="w-20 shrink-0 font-mono text-xs text-slate-500">{{ r.kind }}</span>
+    {% if r.retired %}
+      {# Tombstone: the ref is soft-deleted — the link lands on the
+         generic detail route's tombstone view (undelete affordance),
+         not the native reader or /graph, which would 404 on a miss. #}
+      <a href="{{ r.reader_url }}" class="min-w-0 flex-1 truncate text-sm text-slate-400 line-through hover:underline"
+         title="deleted — opens the tombstone page">{{ r.title }}</a>
+      <span class="shrink-0 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 border border-amber-200">deleted</span>
+    {% else %}
+      <a href="{{ r.reader_url }}" class="min-w-0 flex-1 truncate text-sm text-sky-700 hover:underline">{{ r.title }}</a>
+      <a href="{{ r.graph_url }}" class="shrink-0 text-xs text-slate-400 hover:text-slate-600 hover:underline">graph</a>
+    {% endif %}
+    <span class="shrink-0 text-xs text-slate-400" title="{{ r.updated_at }}">{{ r.updated_at | ago }}</span>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="rounded-lg border border-dashed border-slate-300 bg-white p-6 text-sm text-slate-500">
+  Nothing hearted yet. The ♡ on a graph focus page or a ref/paper
+  reader adds it here.
+</p>
+{% endif %}
+{% endblock %}

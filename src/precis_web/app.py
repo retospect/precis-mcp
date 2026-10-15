@@ -173,6 +173,7 @@ def create_app(
         env,
         eye,
         factory,
+        favorites,
         figure,
         flags,
         graph,
@@ -212,6 +213,7 @@ def create_app(
     app.include_router(papers_needed.router)
     app.include_router(podcast.router)
     app.include_router(flags.router)
+    app.include_router(favorites.router)
     app.include_router(items.router)
     app.include_router(llm.router)
     app.include_router(llm.pages)

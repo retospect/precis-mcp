@@ -3,7 +3,14 @@
 {% block content %}
 <div class="mt-2 mb-3 flex flex-wrap items-baseline justify-between gap-3">
   <div>
-    <h1 class="text-lg font-semibold font-mono">{{ handle }}</h1>
+    <h1 class="text-lg font-semibold font-mono">
+      {{ handle }}
+      {% if faved is defined and faved is not none %}
+        {# Per-user heart (gr486409); faved is None when auth is off. #}
+        {% set fav_kind, fav_id = kind, ref_id %}
+        {% include "_heart.html.j2" %}
+      {% endif %}
+    </h1>
     <p class="text-sm text-slate-600">{{ focus_label }}</p>
     <p class="text-xs text-slate-500">
       <a href="{{ reader_url }}" class="underline">reader</a>

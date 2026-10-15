@@ -117,6 +117,10 @@ class FakeStore(_FakeStoreBase):
         #: {ref_id, source, event, payload} dicts written via append_event
         #: (e.g. POST /downloads/mark-tried's manual:open log).
         self.appended_events: list[dict[str, Any]] = []
+        #: {login: {ref_id: favorited-at datetime}} — in-memory
+        #: ``ref_favorites`` fake for the /favorites routes (per-user,
+        #: insertion-ordered dict; ``list_favorites`` returns newest first).
+        self.favorites: dict[str, dict[int, Any]] = {}
         #: (ref_id, meta-updates) tuples written via stamp_ref_meta — the
         #: genre/brief workspace writes from the /drafts/<id>/workspace route.
         self.meta_writes: list[tuple[int, dict[str, Any]]] = []
@@ -795,6 +799,23 @@ class FakeStore(_FakeStoreBase):
             pool = {**self.deleted_refs, **pool}
         return {i: pool[i] for i in ids if i in pool}
 
+    def neighbourhood(self, kind: str, ref_id: int, **kw: Any):
+        """Canned ``Store.neighbourhood`` for the /graph focus page — the
+        ref alone at the centre, no edges (the SVG renders an empty
+        neighbourhood fine). ``NotFound`` mirrors the real contract."""
+        from precis.errors import NotFound
+
+        ref = self.fetch_refs_by_ids([ref_id]).get(ref_id)
+        if ref is None or ref.kind != kind:
+            raise NotFound(f"{kind} id={ref_id} not found")
+        return {
+            "focus": {"kind": kind, "id": ref_id, "label": ref.title},
+            "nodes": [],
+            "edges": [],
+            "counts": {},
+            "truncated": False,
+        }
+
     def get_paper_authors(self, ref_id):
         """``paper_authors`` row projection off the fake's ``ref.authors``
         jsonb — this fake has no real table, so it reprojects on every
@@ -1327,6 +1348,60 @@ class FakeStore(_FakeStoreBase):
                 )
             ]
         return []
+
+    # ── ref_favorites (per-user hearts, migration 0211) ──────────────
+
+    def set_favorite(self, login: str, ref_id: int) -> bool:
+        from datetime import UTC, datetime
+
+        per = self.favorites.setdefault(login, {})
+        if ref_id in per:
+            return False
+        per[ref_id] = datetime.now(UTC)
+        return True
+
+    def unset_favorite(self, login: str, ref_id: int) -> bool:
+        return self.favorites.get(login, {}).pop(ref_id, None) is not None
+
+    def is_favorite(self, login: str, ref_id: int) -> bool:
+        return ref_id in self.favorites.get(login, {})
+
+    def list_favorites(self, login: str):
+        """``FavoriteRow``s over the fixture pools, newest hearted first —
+        soft-deleted refs report ``retired_at`` so the list tombstones."""
+        from datetime import UTC, datetime
+
+        from precis.store._favorites_ops import FavoriteRow
+
+        pool = {
+            **self.fetch_refs_by_ids(list(self.favorites.get(login, {}))),
+            **self.deleted_refs,
+        }
+        return [
+            FavoriteRow(
+                ref_id=r.id,
+                kind=r.kind,
+                title=r.title,
+                slug=r.slug,
+                handle=None,
+                ref_updated_at=getattr(r, "updated_at", None),
+                retired_at=(
+                    getattr(r, "retired_at", None)
+                    or (
+                        datetime(2026, 1, 1, tzinfo=UTC)
+                        if r.id in self.deleted_refs
+                        else None
+                    )
+                ),
+                favorited_at=fav_at,
+            )
+            for ref_id, fav_at in sorted(
+                self.favorites.get(login, {}).items(),
+                key=lambda kv: kv[1],
+                reverse=True,
+            )
+            if (r := pool.get(ref_id)) is not None
+        ]
 
 
 class FakeRuntime:

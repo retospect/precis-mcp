@@ -39,6 +39,11 @@
        can't render HTML. #}
     <h1 class="tex-scope truncate text-base font-semibold" title="{{ doc.title }}">{{ doc.title }}</h1>
     <span class="shrink-0 font-mono text-xs text-slate-400">{{ doc.handle }}{% if doc.slug %} · {{ doc.slug }}{% endif %}</span>
+    {% if doc.faved is defined and doc.faved is not none %}
+      {# Per-user heart (gr486409); doc.faved is None when auth is off. #}
+      {% set fav_kind, fav_id = doc.kind, doc.id %}
+      {% include "_heart.html.j2" %}
+    {% endif %}
     <button type="button" @click="sidebarOpen = !sidebarOpen"
             class="ml-auto shrink-0 rounded border border-slate-300 px-2 py-1 text-xs hover:bg-slate-50">
       <span x-text="sidebarOpen ? '⟨ hide panel' : 'show panel ⟩'"></span>
