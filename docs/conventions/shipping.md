@@ -210,3 +210,16 @@ head with a fresh green CI verdict (newest green main without a release) via
 and recovers after a crash, with `/fleet` (`scripts/fleet up`); in a fleet
 session a question for Reto is a review-queue item
 (`.claude/fleet/review-protocol.md`), not a stop in the pane.
+
+Two fleet-coordination rules (Reto 2026-09-30):
+
+- **The no-deploy window.** Deploys wait out the 03:00–04:20Z nightly
+  backup window; when a peer asks when the deploy runs, the answer is
+  "after 04:20Z", never a time inside it. `scripts/deploy` already
+  enforces the migration side mechanically (`container-ops.md` §Ship vs
+  deploy; runbook `migration-deploy-window.md`); the ruling covers the
+  deploy itself, code-only included.
+- **Peer-ping cadence.** Ping only pending peers — every ping is a billed
+  turn — no "gate starting" broadcasts, and drop a peer silent for 3+
+  pings. A peer's "landed `<sha>` remote-green, carry it" is the /go
+  trigger.

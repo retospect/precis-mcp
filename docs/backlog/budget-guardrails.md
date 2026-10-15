@@ -73,7 +73,12 @@ Shipped (`quota.TAPER_FLOORS`, `breaker._gate_quota`). Every LLM request
 carries a work class (`LlmRequest.work_class`; unset → the ambient
 `work_class_scope` → `background`). The quota taper decides per
 (class, tier) from one table; percentages are of a window *used*
-(Reto 2026-10-13: "warning 2% or so"). The provider's `allowed_warning` /
+(Reto 2026-10-13: "warning 2% or so"). It began as a flat tiered rule
+(Reto 2026-10-11, gr347551): <25% remaining stops BIG/FRONTIER
+admission, <10% stops MEDIUM too, at 0 all gated work parks until the
+provider reset — and `out_of_credits` is a skip, never a failure. The
+work-class axis (Reto 2026-10-12) split the floors per class into the
+table. The provider's `allowed_warning` /
 `warning` status is only a blind fallback — it stops BIG when no live
 window reports a percentage, and stops nothing once one does:
 

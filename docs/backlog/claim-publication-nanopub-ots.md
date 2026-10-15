@@ -166,7 +166,9 @@ via user-authorized curl to the web door, paced. If that pattern
 recurs, a feature-flagged MCP approve (allowlist/authorization-token
 gated, server-side pacing) would remove the curl scaffolding — but it
 moves a line that is currently deliberately drawn. Decide before
-building. Sign/signoff/anchor/publish stay human-only regardless.
+building. Sign/signoff/anchor/publish stay human-only regardless:
+signing runs by hand — `precis nanopub sign <fi> --attest`, Reto's
+call per hub; a nanopub is never auto-signed (Reto 2026-10-11).
 
 ### 3. Minor
 
