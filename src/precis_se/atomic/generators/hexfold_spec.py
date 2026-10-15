@@ -33,6 +33,7 @@ allowed when they agree.
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from typing import Any
 
@@ -46,7 +47,7 @@ from hexfold.check import check, geometry_findings
 from hexfold.extent import measures as hx_measures
 from hexfold.lattice import SP3_IDEAL_DEG
 from hexfold.report import BuildError, Finding, HexfoldError, Profile, Report, Severity
-from hexfold.stick import stick
+from hexfold.stick import _angle_springs, stick, stick_relax_pinned
 from precis_se.atomic.generators._types import (
     GeneratedBlock,
     GeneratedMeasure,
@@ -371,6 +372,370 @@ def _terminate_open_edges(
     return hosts, positions
 
 
+#: ``_resolve_edge_caps`` — two cap-bearing carbons whose placed H
+#: collide and that sit within this many lattice spacings are "within
+#: bonding reach": the (tethered) stick pass leaves converging rims
+#: ~1.7-1.8 sigma (2.4-2.6 A at sigma 1.42) apart — the non-bonded
+#: repulsion floor plus angle-spring pressure — and GFN2-xTB then closes
+#: them into ordinary C-C bonds (relax1013 campaign, gr486406). Two
+#: sigma is the hexagon's para distance — the width of one missing bond
+#: across a rim gap; an authored opening sits wider still (~2 sigma +
+#: vdW margins).
+_RING_CLOSE_REACH_SIGMA = 2.0
+
+#: Each resolution pass adds at least one ring-closure bond or removes at
+#: least one rim atom, so the loop converges or exhausts this bound and
+#: the build refuses.
+_TERMINATE_MAX_PASSES = 16
+
+#: After a resolution change a short local stick polish settles the
+#: touched neighbourhood (a closed pair relaxes to an ordinary bond
+#: length): atoms within this many bonds of a changed site may move,
+#: everything else stays put — so the authored (pinned) registrations a
+#: scene caller holds stay exact, and the polish cannot rewrite the far
+#: field.
+_TERMINATE_POLISH_HOPS = 3
+_TERMINATE_POLISH_ITERS = 800
+
+
+def _cap_clash_pairs(
+    coords: np.ndarray,
+    hosts: list[int],
+    positions: list[np.ndarray],
+) -> dict[tuple[int, int], tuple[float, set[int]]]:
+    """Carbon pairs implicated by clashing caps: ``(a, b) -> (worst cap
+    distance, {cap hosts})``. A cap-vs-carbon clash yields the host and
+    the carbon it landed on; a cap-vs-cap clash the two hosts (a cap on
+    the same host as another never counts — a =CH2 pair is legal)."""
+    profile = Profile.DEFAULT
+    pairs: dict[tuple[int, int], tuple[float, set[int]]] = {}
+    if not positions:
+        return pairs
+    h_xyz = np.asarray(positions, dtype=float)
+
+    def note(a: int, b: int, d: float, cap_hosts: set[int]) -> None:
+        key = (min(a, b), max(a, b))
+        best, old = pairs.get(key, (math.inf, set()))
+        pairs[key] = (min(best, d), old | cap_hosts)
+
+    for k, (host, p) in enumerate(zip(hosts, h_xyz)):
+        d_c = np.linalg.norm(coords - p, axis=1)
+        d_c[host] = np.inf
+        for other in np.flatnonzero(d_c < profile.clash_bar("C", "C")):
+            note(host, int(other), float(d_c[other]), {host})
+        d_h = np.linalg.norm(h_xyz[k + 1 :] - p, axis=1)
+        for m in np.flatnonzero(d_h < profile.clash_bar("H", "H")):
+            other_host = hosts[k + 1 + int(m)]
+            if other_host != host:
+                note(host, other_host, float(d_h[m]), {host, other_host})
+    return pairs
+
+
+def _net_minus_atoms(
+    net: Net, coords: np.ndarray, drop: set[int]
+) -> tuple[Net, np.ndarray, dict[int, int]]:
+    """``net`` without the atoms in ``drop`` (and non-lattice atoms left
+    orphaned — an authored cap cannot survive its host), ordinals
+    renumbered, every ordinal-bearing field remapped. Rings containing a
+    removed atom are dropped; ``sheets`` face indices follow. Returns the
+    reduced net, reduced coords and the old→new ordinal map."""
+    lat_el = set(net.lattice.elements)
+    drop = set(drop)
+    for i, j, _o in net.bonds:
+        if i in drop and net.atoms[j].element not in lat_el:
+            drop.add(j)
+        elif j in drop and net.atoms[i].element not in lat_el:
+            drop.add(i)
+    renum = {a.ord: n for n, a in enumerate(a for a in net.atoms if a.ord not in drop)}
+    atoms = tuple(
+        dataclasses.replace(a, ord=renum[a.ord]) for a in net.atoms if a.ord in renum
+    )
+
+    def rem(ords: tuple[int, ...]) -> tuple[int, ...]:
+        return tuple(renum[o] for o in ords if o in renum)
+
+    ports = []
+    for name, port in net.ports:
+        ring = rem(port.atoms)
+        if not ring:
+            raise GeneratorError(
+                f"termination trimming emptied port {name!r}'s rim — an "
+                "authored interface cannot be cut away"
+            )
+        ports.append(
+            (
+                name,
+                dataclasses.replace(port, atoms=ring, dangling=rem(port.dangling)),
+            )
+        )
+    ringmap: dict[int, int] = {}
+    rings: list[tuple[int, ...]] = []
+    for idx, ring in enumerate(net.rings):
+        if all(o in renum for o in ring):
+            ringmap[idx] = len(rings)
+            rings.append(rem(ring))
+    reduced = dataclasses.replace(
+        net,
+        atoms=atoms,
+        bonds=tuple(
+            sorted(
+                (renum[i], renum[j], o)
+                for i, j, o in net.bonds
+                if i in renum and j in renum
+            )
+        ),
+        rings=tuple(rings),
+        ports=tuple(ports),
+        regions=tuple((n, rem(ords)) for n, ords in net.regions),
+        seams=tuple(dataclasses.replace(s, atoms=rem(s.atoms)) for s in net.seams),
+        attach=tuple(
+            (renum[i], renum[j]) for i, j in net.attach if i in renum and j in renum
+        ),
+        consumed_rims=tuple(rem(r) for r in net.consumed_rims),
+        term_rims=tuple((rem(a), b, be) for a, b, be in net.term_rims),
+        seam_rims=tuple((rem(a), b, be) for a, b, be in net.seam_rims),
+        sheet_atoms=tuple((n, rem(o)) for n, o in net.sheet_atoms),
+        sheets=tuple(
+            (n, tuple(ringmap[f] for f in faces if f in ringmap))
+            for n, faces in net.sheets
+        ),
+        seed3=(
+            tuple(row for o, row in enumerate(net.seed3) if o in renum)
+            if net.seed3 is not None
+            else None
+        ),
+    )
+    return reduced, coords[sorted(renum)], renum
+
+
+def _polish_termination(
+    net: Net,
+    coords: np.ndarray,
+    sites: set[int],
+    pinned: frozenset[int],
+) -> tuple[np.ndarray, float, float]:
+    """Settle the neighbourhood of ``sites`` (closed-pair endpoints,
+    trimmed atoms' former neighbours): a short stick pass with only atoms
+    within ``_TERMINATE_POLISH_HOPS`` bonds movable — and never a pinned
+    (authored-registration) atom. Returns coords, max force, max
+    displacement."""
+    adjacency: list[set[int]] = [set() for _ in net.atoms]
+    for i, j, _o in net.bonds:
+        adjacency[i].add(j)
+        adjacency[j].add(i)
+    movable_set = set(sites)
+    front = set(sites)
+    for _hop in range(_TERMINATE_POLISH_HOPS):
+        nxt = set().union(*(adjacency[a] for a in front)) if front else set()
+        nxt -= movable_set
+        movable_set |= nxt
+        front = nxt
+    movable_set -= set(pinned)
+    if not movable_set or not net.bonds:
+        return coords, 0.0, 0.0
+    movable = np.zeros(len(net.atoms), dtype=float)
+    movable[sorted(movable_set)] = 1.0
+    lat_el = set(net.lattice.elements)
+    brest = np.asarray(
+        [
+            net.lattice.sigma_A
+            if net.atoms[i].element in lat_el and net.atoms[j].element in lat_el
+            else net.lattice.sigma_CH_A
+            for i, j, _o in net.bonds
+        ]
+    )
+    springs = np.asarray(_angle_springs(net), dtype=float).reshape(-1, 3)
+    pos, force = stick_relax_pinned(
+        np.asarray(coords, dtype=float),
+        np.asarray([(i, j) for i, j, _o in net.bonds], dtype=np.int64),
+        brest,
+        springs,
+        net.lattice.sigma_A,
+        iters=_TERMINATE_POLISH_ITERS,
+        movable=movable,
+    )
+    if not np.isfinite(pos).all() or not math.isfinite(force):
+        raise GeneratorError("termination polish returned nonfinite coordinates")
+    return pos, float(force), float(np.linalg.norm(pos - coords, axis=1).max())
+
+
+def _resolve_edge_caps(
+    net: Net,
+    coords: np.ndarray,
+    terminate: str,
+    *,
+    drop_bar: float | None,
+    pinned: frozenset[int],
+) -> tuple[
+    Net,
+    np.ndarray,
+    list[int],
+    list[np.ndarray],
+    list[int],
+    list[str],
+    list[tuple[int, int]],
+    float,
+]:
+    """Resolve cap collisions at converging rims before the H atoms are
+    minted (gr486406). Returns the net and coords — atoms may have been
+    trimmed and ring-closure bonds added — plus the surviving cap
+    hosts/positions, dropped-cap hosts, trimmed atoms' paths, the closed
+    pairs (final ordinals) and the largest polish displacement.
+
+    Each pass places caps on the current net and collects the carbon
+    pairs whose caps collide. In order: (1) a pair within
+    ``_RING_CLOSE_REACH_SIGMA * sigma_A`` is bondable — drop the caps, add
+    the C-C bond (a carbon that reaches degree four is relabelled sp3);
+    (2) a pair out of reach loses its dangling rim atom(s) — trimmed out
+    of the net, the newly exposed atoms re-capped on the next pass;
+    authored interfaces (port rims, seam records, ``bond``-verb
+    endpoints) and ``pinned`` atoms are never trimmed. (3) Any cap still
+    inside the clash bar when a pass changes nothing — or the pass bound
+    runs out — fails the build, naming the atoms. Every changed
+    neighbourhood gets a short pinned stick polish so closed pairs sit at
+    a real bond length.
+    """
+    work = net
+    xyz = np.asarray(coords, dtype=float)
+    pinned = frozenset(pinned)
+    protected = set(pinned)
+    for _name, port in work.ports:
+        protected.update(port.atoms)
+    for s in work.seams:
+        protected.update(s.atoms)
+    for i, j in work.attach:
+        protected.update((i, j))
+    lat_el = set(work.lattice.elements)
+    reach = _RING_CLOSE_REACH_SIGMA * work.lattice.sigma_A
+    trimmed: list[str] = []
+    closed_paths: list[tuple[str, str]] = []
+    polish_disp = 0.0
+
+    def closed_pairs() -> list[tuple[int, int]]:
+        by_path = {str(a.path): a.ord for a in work.atoms}
+        return sorted(
+            {
+                (min(by_path[pa], by_path[pb]), max(by_path[pa], by_path[pb]))
+                for pa, pb in closed_paths
+                if pa in by_path and pb in by_path
+            }
+        )
+
+    pairs: dict[tuple[int, int], tuple[float, set[int]]] = {}
+    for _pass in range(_TERMINATE_MAX_PASSES):
+        hosts, positions = _terminate_open_edges(work, xyz, terminate)
+        dropped: list[int] = []
+        if positions and drop_bar is not None:
+            h_xyz = np.asarray(positions, dtype=float)
+            keep: list[int] = []
+            for k, (host, p) in enumerate(zip(hosts, h_xyz)):
+                d_c = np.linalg.norm(xyz - p, axis=1)
+                d_c[host] = np.inf
+                d_h = np.linalg.norm(h_xyz - p, axis=1)
+                d_h[k] = np.inf
+                if min(float(d_c.min()), float(d_h.min())) < drop_bar:
+                    dropped.append(host)
+                else:
+                    keep.append(k)
+            hosts = [hosts[k] for k in keep]
+            positions = [positions[k] for k in keep]
+        pairs = _cap_clash_pairs(xyz, hosts, positions)
+        if not pairs:
+            return (
+                work,
+                xyz,
+                hosts,
+                positions,
+                dropped,
+                trimmed,
+                closed_pairs(),
+                polish_disp,
+            )
+        bonded = {frozenset((i, j)) for i, j, _o in work.bonds}
+        degree = [0] * len(work.atoms)
+        for i, j, _o in work.bonds:
+            degree[i] += 1
+            degree[j] += 1
+        new_bonds: list[tuple[int, int]] = []
+        to_trim: set[int] = set()
+        for (a, b), (_d, cap_hosts) in sorted(pairs.items()):
+            if (
+                frozenset((a, b)) not in bonded
+                and work.atoms[a].element in lat_el
+                and work.atoms[b].element in lat_el
+                and degree[a] < 4
+                and degree[b] < 4
+                and float(np.linalg.norm(xyz[a] - xyz[b])) <= reach
+            ):
+                new_bonds.append((a, b))
+                degree[a] += 1
+                degree[b] += 1
+            else:
+                to_trim.update(h for h in cap_hosts if h not in protected)
+        if not new_bonds and not to_trim:
+            break
+        changed: set[int] = set()
+        if to_trim:
+            nbrs: list[set[int]] = [set() for _ in work.atoms]
+            for i, j, _o in work.bonds:
+                nbrs[i].add(j)
+                nbrs[j].add(i)
+            freed = {n for t in to_trim for n in nbrs[t]} - to_trim
+            trimmed.extend(str(work.atoms[t].path) for t in sorted(to_trim))
+            work, xyz, renum = _net_minus_atoms(work, xyz, to_trim)
+            changed.update(renum[f] for f in freed if f in renum)
+            pinned = frozenset(
+                p for p in (renum.get(o) for o in pinned) if p is not None
+            )
+            protected = {r for o in protected if (r := renum.get(o)) is not None}
+            new_bonds = [
+                (renum[a], renum[b]) for a, b in new_bonds if a in renum and b in renum
+            ]
+        if new_bonds:
+            closed_now = {(min(a, b), max(a, b), 1) for a, b in new_bonds}
+            closed_paths.extend(
+                (str(work.atoms[a].path), str(work.atoms[b].path)) for a, b in new_bonds
+            )
+            work = dataclasses.replace(
+                work, bonds=tuple(sorted(set(work.bonds) | closed_now))
+            )
+            changed.update(o for a, b in new_bonds for o in (a, b))
+            degree = [0] * len(work.atoms)
+            for i, j, _o in work.bonds:
+                degree[i] += 1
+                degree[j] += 1
+            touched = {o for a, b in new_bonds for o in (a, b)}
+            flip = {
+                a.ord
+                for a in work.atoms
+                if a.ord in touched and a.hyb == "sp2" and degree[a.ord] >= 4
+            }
+            if flip:
+                work = dataclasses.replace(
+                    work,
+                    atoms=tuple(
+                        dataclasses.replace(a, hyb="sp3") if a.ord in flip else a
+                        for a in work.atoms
+                    ),
+                )
+        xyz, _force, disp = _polish_termination(work, xyz, changed, pinned)
+        polish_disp = max(polish_disp, disp)
+    # stalled or out of passes: re-scan so the refusal names what remains
+    hosts, positions = _terminate_open_edges(work, xyz, terminate)
+    pairs = _cap_clash_pairs(xyz, hosts, positions)
+    names = "; ".join(
+        f"{work.atoms[a].path}~{work.atoms[b].path} ({d:.2f} A)"
+        for (a, b), (d, _hs) in sorted(pairs.items())[:6]
+    )
+    raise GeneratorError(
+        f"terminate.clash: {len(pairs)} cap clash(es) at converging rims "
+        f"could not be resolved — closest atoms {names}. Pairs within "
+        f"{reach:.2f} A were bond-closed and dangling rim atoms trimmed; "
+        "what is left sits on an authored interface or beyond reach. "
+        "Use terminate='none' and cap by hand, or open the seam wider."
+    )
+
+
 def _block_from_net(
     net: Net,
     raw_coords: np.ndarray,
@@ -384,6 +749,7 @@ def _block_from_net(
     provenance_tail: str = "",
     terminate: str = "H",
     drop_h_under_A: float | None = None,
+    pinned: set[int] | frozenset[int] | None = None,
 ) -> GeneratedBlock:
     """Mint the block from a built ``net`` and its coordinates: the
     canonical frame and envelope, bond orders/kinds, ports, rings, length
@@ -403,6 +769,21 @@ def _block_from_net(
     ordinals), recorded in ``topology["terminated"]`` and tagged
     :data:`TERMINATED_TAG` on the structure; ``"ports-open"`` leaves the
     join ports' rim atoms bare for a later fuse, ``"none"`` caps nothing.
+
+    Where open rims converge (a Y's seam end, a fin's corner against the
+    tube) independently placed caps collide. ``_resolve_edge_caps`` fixes
+    the topology instead of minting colliding H (gr486406): cap pairs
+    whose host carbons are within bonding reach
+    (``_RING_CLOSE_REACH_SIGMA * sigma_A`` after the relax pass) are
+    dropped and the C-C ring bond is added; dangling rim atoms whose caps
+    clash out of reach are trimmed and the new rim re-capped; a clash on
+    an authored interface (port rim, seam record, ``bond`` verb endpoint)
+    or past the pass bound refuses the build. Each change is settled by
+    a short stick polish over the touched neighbourhood — ``pinned``
+    atoms (a caller's authored registration) never move — and every
+    closure/trim is recorded in the report and on
+    ``topology["terminated"]``.
+
     ``drop_h_under_A`` (default None, keep every cap) drops a placed H
     outright when any other atom sits under that distance — for seam
     rows whose converging rims would otherwise mint overlapping
@@ -414,6 +795,29 @@ def _block_from_net(
         np.asarray(raw_coords, dtype=float),
         inverse=inverse if target is not None else None,
     )
+    closed: list[tuple[int, int]] = []
+    trimmed: list[str] = []
+    h_dropped: list[int] = []  # host ordinals whose caps were dropped
+    polish_disp = 0.0
+    if terminate != "none":
+        (
+            net,
+            coords,
+            h_hosts,
+            h_positions,
+            h_dropped,
+            trimmed,
+            closed,
+            polish_disp,
+        ) = _resolve_edge_caps(
+            net,
+            coords,
+            terminate,
+            drop_bar=drop_h_under_A,
+            pinned=frozenset(pinned or ()),
+        )
+    else:
+        h_hosts, h_positions = [], []
     elements = [a.element for a in net.atoms]
     hybridizations = [a.hyb for a in net.atoms]
     sp3 = {i for i, a in enumerate(net.atoms) if a.hyb == "sp3"}
@@ -427,24 +831,6 @@ def _block_from_net(
         )
         for i, j, _o in net.bonds
     ]
-    h_hosts, h_positions = _terminate_open_edges(net, coords, terminate)
-    h_dropped: list[int] = []  # host ordinals whose caps were dropped
-    if h_positions and drop_h_under_A is not None:
-        # Both members of a clashing pair go: each sees the other under
-        # the bar when the whole placed set is evaluated at once.
-        h_xyz0 = np.asarray(h_positions, dtype=float)
-        keep_h: list[int] = []
-        for k, (host, p) in enumerate(zip(h_hosts, h_xyz0)):
-            d_c = np.linalg.norm(coords - p, axis=1)
-            d_c[host] = np.inf
-            d_h = np.linalg.norm(h_xyz0 - p, axis=1)
-            d_h[k] = np.inf
-            if min(float(d_c.min()), float(d_h.min())) < drop_h_under_A:
-                h_dropped.append(host)
-            else:
-                keep_h.append(k)
-        h_hosts = [h_hosts[k] for k in keep_h]
-        h_positions = [h_positions[k] for k in keep_h]
     if h_dropped:
         report = report.merge(
             Report(
@@ -462,15 +848,53 @@ def _block_from_net(
                 )
             )
         )
+    if closed or trimmed:
+        found: list[Finding] = []
+        if closed:
+            found.append(
+                Finding(
+                    "terminate.closed",
+                    Severity.INFO,
+                    f"{len(closed)} rim carbon pair(s) bond-closed where their "
+                    "caps collided at a converging rim; a local stick polish "
+                    "settled the junction",
+                    data=(
+                        ("count", len(closed)),
+                        ("pairs", [list(p) for p in closed]),
+                        (
+                            "atoms",
+                            [
+                                [str(net.atoms[a].path), str(net.atoms[b].path)]
+                                for a, b in closed
+                            ],
+                        ),
+                        ("polish_max_disp_A", round(polish_disp, 3)),
+                    ),
+                )
+            )
+        if trimmed:
+            found.append(
+                Finding(
+                    "terminate.trimmed",
+                    Severity.INFO,
+                    f"{len(trimmed)} dangling rim atom(s) trimmed where caps "
+                    "collided out of bonding reach; the exposed rim was "
+                    "re-capped",
+                    data=(("count", len(trimmed)), ("atoms", trimmed)),
+                )
+            )
+        report = report.merge(Report(tuple(found)))
     h_clashes: list[tuple[float, int, int]] = []
-    if h_positions:
+    if h_positions or closed or trimmed:
         base = len(elements)
         carbon = coords
-        coords = np.vstack([coords, np.asarray(h_positions, dtype=float)])
+        if h_positions:
+            coords = np.vstack([coords, np.asarray(h_positions, dtype=float)])
         # the envelope must hold the caps too: same frame, re-floored so
         # the lowest atom (now possibly an H) sits one vdW margin above
         # z = 0 as the envelope contract says, re-measured over every atom;
-        # the carbons move by that one rigid z shift and nothing else
+        # the carbons move by that one rigid z shift and nothing else.
+        # Re-measuring also covers the resolver's trims and polish.
         lift = VDW_MARGIN_A - float(coords[:, 2].min())
         if lift:
             coords[:, 2] += lift
@@ -485,15 +909,14 @@ def _block_from_net(
         bonds.extend(
             (host, base + k, 1.0, "pairwise") for k, host in enumerate(h_hosts)
         )
-        # a placed H that lands inside another atom's clash bar is reported,
-        # never dropped: two converging rims (a Y's seam end, a strip's
-        # corner against a tube rim) can want H where there is no room
+        # hard gate, kept as the last word after resolution: a cap inside
+        # the clash bar means the minted block carries colliding atoms
         profile = Profile.DEFAULT
         h_xyz = coords[base:]
         for k, (host, p) in enumerate(zip(h_hosts, h_xyz)):
             d_c = np.linalg.norm(carbon - p, axis=1)
             d_c[host] = np.inf
-            for other in np.flatnonzero(d_c < profile.clash_bar("C", elements[0])):
+            for other in np.flatnonzero(d_c < profile.clash_bar("C", "C")):
                 h_clashes.append((float(d_c[other]), base + k, int(other)))
             d_h = np.linalg.norm(h_xyz[k + 1 :] - p, axis=1)
             for m in np.flatnonzero(d_h < profile.clash_bar("H", "H")):
@@ -501,26 +924,17 @@ def _block_from_net(
         h_clashes.sort()
         if h_clashes:
             worst = h_clashes[0]
-            report = report.merge(
-                Report(
-                    (
-                        Finding(
-                            "terminate.clash",
-                            Severity.WARN,
-                            f"{len(h_clashes)} placed H within another atom's clash "
-                            f"bar (closest {worst[0]:.2f} A, atoms {worst[1]} and "
-                            f"{worst[2]}): converging open edges want H where there "
-                            "is no room; the caps are kept, judge the edge before a "
-                            "DFT handoff",
-                            where=str(worst[1]),
-                            data=(
-                                ("count", len(h_clashes)),
-                                ("min_A", round(worst[0], 3)),
-                                ("pairs", [[i, j] for _d, i, j in h_clashes[:10]]),
-                            ),
-                        ),
-                    )
-                )
+
+            def _label(ord_: int) -> str:
+                if ord_ < len(net.atoms):
+                    return str(net.atoms[ord_].path)
+                return f"H{ord_} on {net.atoms[h_hosts[ord_ - base]].path}"
+
+            raise GeneratorError(
+                f"terminate.clash: {len(h_clashes)} placed H cap(s) within "
+                f"another atom's clash bar after rim resolution (closest "
+                f"{worst[0]:.2f} A, {_label(worst[1])}~{_label(worst[2])}) — "
+                "refusing to mint a colliding structure"
             )
     capped = bool(h_positions) or any(a.element == "H" for a in net.atoms)
 
@@ -598,11 +1012,16 @@ def _block_from_net(
         "count": len(h_positions),
         "hosts": sorted(set(h_hosts)),
         "clashes": len(h_clashes),
+        "closed": [list(p) for p in closed],
+        "trimmed": trimmed,
+        "polish_max_disp_A": round(polish_disp, 4),
         "dropped": len(h_dropped),
         "bond_A": net.lattice.sigma_CH_A,
         "why": "open edges capped after the relax and the judgement so renders, "
         "se reports and a DFT handoff see a closed-shell edge; the report "
-        "describes the carbon net",
+        "describes the carbon net; caps that collide at a converging rim "
+        "are resolved by a C-C ring bond or a rim trim before minting, "
+        "and a clash the rim cannot resolve fails the build",
     }
     if target is not None:
         if target_flip is None:
@@ -632,6 +1051,12 @@ def _block_from_net(
         f"seed={net.seed_kind}; coordinates derived, not part of the format"
         f"{provenance_tail}"
         + (f"; {len(h_positions)} open edge(s) H-terminated" if h_positions else "")
+        + (
+            f"; {len(closed)} rim pair(s) bond-closed, "
+            f"{len(trimmed)} rim atom(s) trimmed at converging caps"
+            if closed or trimmed
+            else ""
+        )
     )
     return GeneratedBlock(
         envelope=envelope,

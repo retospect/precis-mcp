@@ -244,6 +244,7 @@ def build_fin120(params: dict[str, Any]) -> GeneratedBlock:
         pos,
         spec="",
         terminate=termination,
+        pinned=frozenset(tube.pinned),
         report=Report(tuple(findings)).sorted(),
         fidelity="stick",
         extra_topology={

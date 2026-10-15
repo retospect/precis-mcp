@@ -401,9 +401,13 @@ net, and ports, regions and finding ordinals are unchanged (H atoms are
 appended). `params.terminate` is `"H"` (default), `"ports-open"` (the
 join ports' rim atoms stay bare so a later fuse can use them) or
 `"none"`. A spec's own `terminate: inst.port = H` lines still work and
-are not doubled: a capped atom is no longer short. A placed H that lands
-inside another atom's clash bar (converging rims at a Y's seam end) is
-kept and reported as `terminate.clash` WARN. Parts built to be joined
+are not doubled: a capped atom is no longer short. Where open rims
+converge (a Y's seam end), independently placed caps collide — the
+terminator resolves that instead of minting overlapping H: hosts within
+bonding reach are bond-closed (`terminate.closed` INFO), dangling rim
+atoms out of reach are trimmed and re-capped (`terminate.trimmed` INFO),
+and a clash that can't be resolved (e.g. on an authored interface) fails
+the build with `terminate.clash`. Parts built to be joined
 should use `"ports-open"`: a join trims the caps off the ports it
 consumes, but a part relaxed with capped rims before the join keeps that
 rim geometry elsewhere. A join's own composite is not re-capped yet.

@@ -222,6 +222,7 @@ def build_y_junction(params: dict[str, Any]) -> GeneratedBlock:
         pos,
         spec="",
         terminate=termination,
+        pinned=pinned,
         report=Report(tuple(findings)).sorted(),
         fidelity="stick",
         extra_topology={

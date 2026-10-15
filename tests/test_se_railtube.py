@@ -151,15 +151,23 @@ def test_public_rail_tube_tethered_test_db_roundtrip(
         assert arc["seam_rho_A"] < arc["rho_mean_A"]
     pore = next(f["data"] for f in findings if f["code"] == "pore.rings")
     assert pore["count"] == 1 and pore["rim_sizes"] == [6]
-    # the carbon net's open valences are the H caps (pore rims included)
-    net, tube = rail_tube(4, 14, 3, 2, pores=[(0, 1, 2)])
-    degrees = np.bincount(
-        [v for i, j, _ in net.bonds for v in (i, j)], minlength=len(net.atoms)
+    # the resolved carbon net's open valences are the H caps: converging
+    # seam-end rims bond-close first (gr486406), which changes valences, so
+    # count the slots on the minted block's carbon graph
+    _net, tube = rail_tube(4, 14, 3, 2, pores=[(0, 1, 2)])
+    direct = build_hexfold_scene(p)
+    n_c = direct.elements.count("C")
+    carbon_bonds = [(i, j) for i, j, *_ in direct.bonds if i < n_c and j < n_c]
+    block_degrees = np.bincount(
+        [v for i, j in carbon_bonds for v in (i, j)], minlength=n_c
     )
-    expected_h = int(sum(min(3 - int(d), 2) for d in degrees if d < 3))
+    expected_h = int(sum(min(3 - int(d), 2) for d in block_degrees if d < 3))
     assert record["terminated"]["count"] == expected_h
     sites = record["sites"]
     strip_set = {o for strip in tube.strip_atoms for o in strip}
+    degrees = np.bincount(
+        [v for i, j, _ in _net.bonds for v in (i, j)], minlength=len(_net.atoms)
+    )
     expected_sites = sum(1 for o in strip_set if degrees[o] < 3) + 2 * 4
     assert len(sites["sites"]) == expected_sites
     snap = store.structure_positions_snapshot(ref.id)
@@ -177,7 +185,9 @@ def test_public_rail_tube_tethered_test_db_roundtrip(
                 entry["z_A"],
             ]
         )
-        assert np.linalg.norm(xyz @ rot + shift - relaxed[entry["ordinal"]]) < 0.1
+        # rim atoms near a cap-collision closure settle by ~0.2 A in the
+        # termination polish (gr486406); the frame fit itself is sub-0.01
+        assert np.linalg.norm(xyz @ rot + shift - relaxed[entry["ordinal"]]) < 0.25
         n_hat = np.asarray(entry["normal"])
         assert np.linalg.norm(n_hat) == pytest.approx(1.0, abs=1e-9)
         # normals are inward/toward-axis in the recorded build frame

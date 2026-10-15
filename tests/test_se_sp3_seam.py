@@ -99,18 +99,27 @@ def test_public_sp3_seam_route_tethered_test_db_roundtrip(
     assert len(residuals) == (4 if kind == "k4-sp3-90-a" else 3)
     assert all(v == 0 for v in residuals.values())
 
-    # pinned seam atoms + neighbours keep the analytic registration
+    # pinned seam atoms + neighbours keep the analytic registration;
+    # termination may trim clashing rim atoms (gr486406), renumbering the
+    # block ordinals -- map seed ords through the trimmed paths
     seed_net, seed = build(*sheet)
     pinned = _pinned_set(seed_net, seed.seam_atoms)
+    trimmed_paths = set(record["terminated"]["trimmed"])
+    block_ord: dict[int, int] = {}
+    for a in seed_net.atoms:
+        if str(a.path) not in trimmed_paths:
+            block_ord[a.ord] = len(block_ord)
     snap = store.structure_positions_snapshot(ref.id)
     assert snap is not None
     relaxed = np.asarray(snap["fractional"]) @ np.asarray(snap["lattice"])
     keep = sorted(pinned)
+    assert all(o in block_ord for o in keep)
+    keep_block = [block_ord[o] for o in keep]
 
     def pair_distances(xyz: np.ndarray) -> np.ndarray:
         return np.linalg.norm(xyz[:, None] - xyz[None], axis=-1)
 
-    assert pair_distances(relaxed[keep]) == pytest.approx(
+    assert pair_distances(relaxed[keep_block]) == pytest.approx(
         pair_distances(seed.coords[keep]), abs=1e-6
     )
 
