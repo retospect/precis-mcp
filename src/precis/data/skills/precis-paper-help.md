@@ -541,7 +541,10 @@ put(kind="paper", arxiv="2401.00001", title="…")  # or an arXiv id
 put(kind="paper", title="Some Paper With No DOI Yet")  # title-only backlog stub
 ```
 
-Idempotent (already-held / already-wanted is a no-op). Full contract +
+Idempotent (already-held / already-wanted is a no-op). A DOI Semantic
+Scholar doesn't know is tried against Crossref, then DataCite, before
+refusal — only a DOI no registry knows is rejected as likely mistyped
+(`verify=False` remains the explicit override). Full contract +
 backlog view in `precis-stubs-help`.
 
 **A slow put is backoff, not a wedge.** Minting a stub resolves the

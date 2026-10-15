@@ -113,7 +113,8 @@ the front (`prio=1`) so `fetch_oa` tries it on its very next pass —
 re-requesting an already-wanted stub re-pins it, including one
 immediate retry for a stub deep in fetch backoff. (Auto-discovered
 stubs — citation chase, watched feeds — instead wait their ranked
-turn.) A hallucinated identifier is rejected up front (pass
+turn.) An identifier no resolver knows — S2, plus Crossref/DataCite for
+a DOI — is rejected up front (pass
 `verify=False` to force a known-real preprint S2 hasn't indexed). A **title-only** stub
 just parks in the backlog until someone supplies an identifier — no
 auto-fetch. Optional: `year=` (disambiguates the cite key) and

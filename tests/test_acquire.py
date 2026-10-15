@@ -26,13 +26,15 @@ def handler(hub: Hub) -> PaperHandler:
 @pytest.fixture(autouse=True)
 def _offline(monkeypatch: pytest.MonkeyPatch) -> None:
     """Default: a placeholder S2 lookup that satisfies the verify=True
-    validator without populating any stub fields. Individual tests
-    override to return real metadata, or ``None`` to exercise the
-    hallucinated-identifier rejection path.
+    validator without populating any stub fields, and a DOI-registry
+    fallback that knows nothing. Individual tests override the S2 stub
+    to return real metadata, or ``None`` to exercise the DOI-registry
+    fallback and the hallucinated-identifier rejection path (gr486090).
     """
     monkeypatch.setattr(
         paper_mod, "_lookup_acquire_metadata", lambda *_: {"_resolved": True}
     )
+    monkeypatch.setattr(paper_mod, "_lookup_doi_registry", lambda *_: None)
 
 
 def _ref_id(body: str) -> int:
@@ -430,6 +432,144 @@ def test_acquire_not_found_still_rejects_under_verify(
     monkeypatch.setattr(paper_mod, "_lookup_acquire_metadata", lambda *_: None)
     with pytest.raises(BadInput, match="did not resolve"):
         handler.acquire(identifier="doi:10.fake/hallucination")
+
+
+# ── S2 miss → DOI registry fallback (gr486090) ─────────────────────
+
+
+def test_acquire_s2_miss_consults_registries_before_rejecting(
+    handler: PaperHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A genuine S2 miss for a DOI asks Crossref/DataCite first; the
+    'hallucinated or mistyped' refusal fires only when no registry
+    knows the DOI either."""
+    consulted: list[str] = []
+    monkeypatch.setattr(paper_mod, "_lookup_acquire_metadata", lambda *_: None)
+    monkeypatch.setattr(
+        paper_mod,
+        "_lookup_doi_registry",
+        consulted.append,
+    )
+    with pytest.raises(BadInput, match="hallucinated"):
+        handler.acquire(identifier="doi:10.fake/nothing")
+    assert consulted == ["10.fake/nothing"]
+
+
+def test_acquire_s2_miss_crossref_hit_mints_with_metadata(
+    handler: PaperHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr486090: S2 miss + Crossref hit mints the stub with the
+    registry's bibliographic metadata and names the registry."""
+    monkeypatch.setattr(paper_mod, "_lookup_acquire_metadata", lambda *_: None)
+    monkeypatch.setattr(
+        paper_mod,
+        "_lookup_doi_registry",
+        lambda *_: {
+            "title": "A Science Advances Paper S2 Missed",
+            "authors": [{"given": "Jane", "family": "Doe"}],
+            "year": 2026,
+            "doi": "10.1126/sciadv.adx3969",
+            "journal": "Science Advances",
+            "abstract": "We measured a thing.",
+            "entry_type": "journal-article",
+            "source": "crossref",
+        },
+    )
+    r = handler.acquire(identifier="doi:10.1126/sciadv.adx3969")
+    assert "minted stub" in r.body
+    assert "via Crossref" in r.body
+    rid = _ref_id(r.body)
+    got = store.get_ref(kind="paper", id=rid)
+    assert got is not None
+    assert got.title == "A Science Advances Paper S2 Missed"
+    assert got.year == 2026
+    assert got.authors and "Doe" in str(got.authors)
+    meta = _meta(store, rid)
+    assert meta.get("acquire_registry") == "crossref"
+    assert meta.get("journal") == "Science Advances"
+    assert meta.get("abstract") == "We measured a thing."
+    assert "acquire:unverified" not in _tags(store, rid)
+    assert ("doi", "10.1126/sciadv.adx3969") in _identifiers(store, rid)
+
+
+def test_acquire_s2_miss_datacite_hit_mints(
+    handler: PaperHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The DataCite leg covers DOIs Crossref doesn't register
+    (LIPIcs proceedings & co)."""
+    monkeypatch.setattr(paper_mod, "_lookup_acquire_metadata", lambda *_: None)
+    monkeypatch.setattr(
+        paper_mod,
+        "_lookup_doi_registry",
+        lambda *_: {
+            "title": "A LIPIcs Proceedings Paper",
+            "authors": [{"given": "Jane", "family": "Doe"}],
+            "year": 2025,
+            "doi": "10.4230/lipics.dna.32.9",
+            "journal": "LIPIcs, Vol. 32",
+            "source": "datacite",
+        },
+    )
+    r = handler.acquire(identifier="doi:10.4230/LIPIcs.DNA.32.9")
+    assert "minted stub" in r.body
+    assert "via DataCite" in r.body
+    rid = _ref_id(r.body)
+    got = store.get_ref(kind="paper", id=rid)
+    assert got is not None
+    assert got.title == "A LIPIcs Proceedings Paper"
+    assert got.year == 2025
+    assert _meta(store, rid).get("acquire_registry") == "datacite"
+    assert "acquire:unverified" not in _tags(store, rid)
+
+
+def test_acquire_registry_fault_mints_unverified(
+    handler: PaperHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A registry leg that can't answer (outage/5xx) is not evidence the
+    DOI is wrong — mint unverified, same rule as an S2 fault."""
+    monkeypatch.setattr(paper_mod, "_lookup_acquire_metadata", lambda *_: None)
+
+    def _down(*_a: object) -> None:
+        raise RuntimeError("crossref answered HTTP 503")
+
+    monkeypatch.setattr(paper_mod, "_lookup_doi_registry", _down)
+    r = handler.acquire(identifier="doi:10.real/maybe")
+    assert "minted stub" in r.body
+    assert "resolver unreachable" in r.body
+    rid = _ref_id(r.body)
+    assert "acquire:unverified" in _tags(store, rid)
+    assert "crossref" in str(_meta(store, rid).get("acquire_unverified_reason", ""))
+
+
+def test_acquire_registry_lookup_skipped_on_s2_hit(
+    handler: PaperHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An S2 hit never reaches the registry fallback."""
+    consulted: list[str] = []
+    monkeypatch.setattr(
+        paper_mod,
+        "_lookup_doi_registry",
+        consulted.append,
+    )
+    r = handler.acquire(identifier="doi:10.1/x")
+    assert "minted stub" in r.body
+    assert consulted == []
+
+
+def test_acquire_registry_lookup_skipped_for_non_doi(
+    handler: PaperHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """arXiv/S2 ids have no registry to ask — unchanged reject path."""
+    consulted: list[str] = []
+    monkeypatch.setattr(paper_mod, "_lookup_acquire_metadata", lambda *_: None)
+    monkeypatch.setattr(
+        paper_mod,
+        "_lookup_doi_registry",
+        consulted.append,
+    )
+    with pytest.raises(BadInput, match="did not resolve"):
+        handler.acquire(identifier="arxiv:2401.99999")
+    assert consulted == []
 
 
 # ── enrichment ──────────────────────────────────────────────────────

@@ -268,6 +268,30 @@ def _lookup_acquire_metadata(id_kind: str, id_value: str) -> dict[str, Any] | No
     return None
 
 
+def _lookup_doi_registry(doi: str) -> dict[str, Any] | None:
+    """DOI registration-agency fallback for a genuine S2 miss (gr486090).
+
+    Crossref then DataCite via :mod:`precis.ingest.doi_registry` — the
+    fetch goes through ``safe_get`` because the DOI is agent-supplied.
+    Returns the normalized metadata dict or ``None`` when no registry
+    knows the DOI. ``RegistryLookupError`` propagates so the caller can
+    mint unverified rather than reject a real DOI over a registry
+    outage — the same miss-vs-fault split the S2 leg draws (gr483930).
+    Patched out in tests.
+    """
+    from precis.ingest.doi_registry import resolve_registry_doi
+
+    return resolve_registry_doi(
+        doi, mailto=settings.get_str("contact.crossref_mailto") or ""
+    )
+
+
+#: Display names for the ``meta.source`` tags ``resolve_registry_doi``
+#: returns — surfaced in the acquire response so the caller can see
+#: which registry vouched for the DOI.
+_REGISTRY_LABELS = {"crossref": "Crossref", "datacite": "DataCite"}
+
+
 class PaperHandler(Handler):
     """Slug-addressed paper handler (read-only bodies; metadata-editable).
 
@@ -636,12 +660,14 @@ class PaperHandler(Handler):
         ``dream_agent``.
 
         ``verify`` (default ``True``): an unrecognised identifier (S2
-        returns no metadata) is rejected with :class:`BadInput` so a
-        hallucinated DOI/arXiv ID never lands on the "Papers we need"
-        backlog. Pass ``verify=False`` for a known-real preprint S2
-        hasn't indexed, or when the resolver is unreachable — resolver
-        outages mint with ``meta.acquire_unverified=True`` for a later
-        re-check.
+        returns no metadata — for a DOI, Crossref and DataCite are asked
+        before refusing, since S2's index lags fresh records and skips
+        whole registries; gr486090) is rejected with :class:`BadInput`
+        so a hallucinated DOI/arXiv ID never lands on the "Papers we
+        need" backlog. Pass ``verify=False`` for a known-real preprint
+        no index carries yet, or when the resolvers are unreachable —
+        resolver outages mint with ``meta.acquire_unverified=True`` for
+        a later re-check.
         """
         has_identifier = bool(identifier and identifier.strip())
         has_title = bool(title and title.strip())
@@ -691,6 +717,7 @@ class PaperHandler(Handler):
         unverified = False
         resolver_err: Exception | None = None
         s2_meta: dict[str, Any] | None = None
+        registry_meta: dict[str, Any] | None = None
         if id_pair is not None:
             try:
                 meta = _lookup_acquire_metadata(*id_pair)
@@ -734,39 +761,70 @@ class PaperHandler(Handler):
                 # cascade's non-S2 legs don't need this lookup
                 # (gr483930).
                 unverified = True
-            elif verify and not has_title:
-                # Strict path: caller gave us only an identifier and the
-                # resolver returned nothing — a *genuine* not-found, not
-                # an outage (resolver faults mint unverified above). The
-                # safe default is to reject hallucinated identifiers, and
-                # let the caller pass ``verify=False`` for known-real
-                # niche / brand-new papers, or add a ``title=`` hint
-                # that converts this from "validate-or-reject" into
-                # "validate-best-effort" (the title path means the
-                # operator can still recognise the stub by hand).
-                kind_key, val = id_pair
-                raise BadInput(
-                    f"acquire: identifier {identifier!r} did not resolve "
-                    "via Semantic Scholar — likely a hallucinated or "
-                    "mistyped ID",
-                    # Name the spelling that actually reaches the handler:
-                    # these knobs ride ``args=`` on the slim MCP schema
-                    # (gr483930 — the bare ``verify=False`` wording sent
-                    # callers into the args= key rejection).
-                    next=(
-                        f"verify {kind_key}:{val} on doi.org / arxiv.org, "
-                        f"OR put(kind='paper', args={{'identifier': "
-                        f"{identifier!r}, 'title': '<best-known title>'}}) to "
-                        "mint a stub that resolves best-effort, OR "
-                        f"put(kind='paper', args={{'identifier': {identifier!r}, "
-                        "'verify': False}}) if you know the paper is real"
-                    ),
-                )
-            elif verify and has_title:
-                # We had a title hint, so the operator can still find
-                # this in the "Papers we need" tab even though we
-                # couldn't auto-confirm the identifier. Mark unverified.
-                unverified = True
+            else:
+                # A genuine S2 "no such paper" — not an outage. S2's
+                # index lags fresh records and misses whole registries
+                # (DataCite proceedings like LIPIcs), so for a DOI ask
+                # the registration agencies before rejecting (gr486090).
+                if id_pair[0] == "doi":
+                    try:
+                        registry_meta = _lookup_doi_registry(id_pair[1])
+                    except Exception as exc:
+                        # Same rule as the S2 leg: a registry fault is
+                        # not evidence the identifier is wrong.
+                        resolver_err = exc
+                if resolver_err is not None:
+                    unverified = True
+                elif registry_meta is not None:
+                    stub_title = stub_title or (registry_meta.get("title") or None)
+                    raw_year = registry_meta.get("year")
+                    year = int(raw_year) if isinstance(raw_year, int) else year
+                    reg_doi = registry_meta.get("doi")
+                    if reg_doi:
+                        pair = ("doi", str(reg_doi).lower())
+                        if pair not in identifiers:
+                            identifiers.append(pair)
+                elif verify and not has_title:
+                    # Strict path: caller gave us only an identifier and
+                    # neither S2 nor (for a DOI) any registration agency
+                    # knows it — a *genuine* not-found, not an outage
+                    # (resolver faults mint unverified above). The safe
+                    # default is to reject hallucinated identifiers, and
+                    # let the caller pass ``verify=False`` for known-real
+                    # niche / brand-new papers, or add a ``title=`` hint
+                    # that converts this from "validate-or-reject" into
+                    # "validate-best-effort" (the title path means the
+                    # operator can still recognise the stub by hand).
+                    kind_key, val = id_pair
+                    via = (
+                        "Semantic Scholar or the DOI registries"
+                        if kind_key == "doi"
+                        else "Semantic Scholar"
+                    )
+                    raise BadInput(
+                        f"acquire: identifier {identifier!r} did not resolve "
+                        f"via {via} — likely a hallucinated or mistyped ID",
+                        # Name the spelling that actually reaches the
+                        # handler: these knobs ride ``args=`` on the slim
+                        # MCP schema (gr483930 — the bare ``verify=False``
+                        # wording sent callers into the args= key
+                        # rejection).
+                        next=(
+                            f"verify {kind_key}:{val} on doi.org / arxiv.org, "
+                            f"OR put(kind='paper', args={{'identifier': "
+                            f"{identifier!r}, 'title': '<best-known title>'}}) "
+                            "to mint a stub that resolves best-effort, OR "
+                            f"put(kind='paper', args={{'identifier': "
+                            f"{identifier!r}, 'verify': False}}) if you know "
+                            "the paper is real"
+                        ),
+                    )
+                elif verify and has_title:
+                    # We had a title hint, so the operator can still find
+                    # this in the "Papers we need" tab even though we
+                    # couldn't auto-confirm the identifier. Mark
+                    # unverified.
+                    unverified = True
 
         with self.store.tx() as conn:
             ref_id, created = self.store.upsert_stub_paper(
@@ -808,6 +866,36 @@ class PaperHandler(Handler):
                         "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
                         (Jsonb(patch), ref_id),
                     )
+                if registry_meta is not None:
+                    # A registry-resolved stub is verified — carry the
+                    # bibliographic fields onto it: authors column plus
+                    # journal/abstract meta, and ``acquire_registry`` as
+                    # provenance. No ``s2_enriched_at`` stamp — the stub
+                    # stays claimable for stub_rank's real S2 enrich once
+                    # S2's index catches up.
+                    reg_patch: dict[str, Any] = {}
+                    reg_source = str(registry_meta.get("source") or "")
+                    if reg_source:
+                        reg_patch["acquire_registry"] = reg_source
+                    journal = registry_meta.get("journal")
+                    if isinstance(journal, str) and journal.strip():
+                        reg_patch["journal"] = journal.strip()
+                    abstract = registry_meta.get("abstract")
+                    if isinstance(abstract, str) and abstract.strip():
+                        reg_patch["abstract"] = abstract.strip()
+                    self.store.update_paper_fields(
+                        ref_id,
+                        authors=registry_meta.get("authors") or None,
+                        meta_patch=reg_patch,
+                        source=f"acquire:{reg_source or 'registry'}",
+                        # ``paper_authors.source`` has no ``datacite``
+                        # tier — the generic ``pdf`` tier is the
+                        # sanctioned fallback for programmatic writers.
+                        authors_source=(
+                            "crossref" if reg_source == "crossref" else "pdf"
+                        ),
+                        conn=conn,
+                    )
             if ctx_id is not None:
                 self.store.add_link(
                     src_ref_id=ctx_id,
@@ -832,6 +920,11 @@ class PaperHandler(Handler):
                 "(identifier resolver unreachable — minted unverified; "
                 "fetch proceeds regardless)"
             )
+        if registry_meta is not None:
+            reg_label = _REGISTRY_LABELS.get(
+                str(registry_meta.get("source") or ""), "a DOI registry"
+            )
+            parts.append(f"(identifier verified via {reg_label} — S2 has no record)")
         if pinned:
             parts.append("(pinned to front of fetch queue)")
         if identifiers:
