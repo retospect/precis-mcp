@@ -285,7 +285,13 @@ def _link_hints(handler: Any, ref_id: int) -> list[tuple[str, str]]:
                 )
             )
     elif "section:threads" in values:
-        gotchas = _unlinked_gotchas(store, ref_id, mine)
+        # A part-of child (its direct parent is a summary node, not a hub)
+        # inherits the parent's gotcha links — the split convention puts
+        # ``qualifies`` edges on the summary only, so a detail node never
+        # gets this hint (gr489921).
+        direct = parents_of(store, [ref_id]).get(ref_id, [])
+        detail_child = bool(set(direct) - _live_hubs(store, set(direct)))
+        gotchas = [] if detail_child else _unlinked_gotchas(store, ref_id, mine)
         for gid in gotchas[:_HINT_GOTCHAS]:
             lines.append(
                 (

@@ -33,7 +33,12 @@ recipe; the `put`/`edit` response's `Next:` lines do most of it for you.
    No `Next:` lines = the node is in place.
 5. **Size.** The fisheye shows 4000 chars of a body. Over that, the response
    says so: keep the node as a short summary and move detail into children
-   `put(…, link='memory:<summary id>', rel='part-of')` with the same type tag.
+   `put(…, link='memory:<summary id>', rel='part-of')`. Each child gets a
+   unique title (the summary's title + the pass/sub-thread it holds — a
+   shared title prefix trips the dup-thread check), the parent's
+   `section:<type>` tag (`section:reference` when the child is a result),
+   one `part-of` edge to the summary only, and no `qualifies` links —
+   those live on the summary.
 6. **Cite durably.** Code as `path/file.py::Qual.name`
    (`docs/conventions/code-anchors.md`), commits as bare short shas, dates
    in UTC. A thread's landed history is not a fact — git has it.

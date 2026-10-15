@@ -175,6 +175,27 @@ def test_thread_hints_unlinked_gotchas_of_its_hub(hub: Hub) -> None:
     assert not any(_h(gotchas[0]) in c or _h(runbook) in c for c in calls)
 
 
+def test_part_of_child_gets_no_qualifies_hint(hub: Hub) -> None:
+    """gr489921: a split detail node (``part-of`` a summary node, not of
+    the hub directly) inherits the summary's gotcha links — the write-path
+    hint must not offer ``qualifies`` links for it, while the summary
+    itself still gets them."""
+    store, handler = hub.live_store, MemoryHandler(hub=hub)
+    root = _note(handler, "Root", "x", HUB)
+    summary = _note(handler, "Thread", "t", "section:threads")
+    _part_of(store, summary, root)
+    child = _note(handler, "Thread — pass 2", "t", "section:threads")
+    _part_of(store, child, summary)
+    gotcha = _note(handler, "G0", "g", "section:gotchas")
+    _part_of(store, gotcha, root)
+
+    child_calls = [c for c, _d in link_hints(handler, child)]
+    assert not any("rel='qualifies'" in c for c in child_calls)
+
+    parent_calls = [c for c, _d in link_hints(handler, summary)]
+    assert any(_h(gotcha) in c and "rel='qualifies'" in c for c in parent_calls)
+
+
 def test_hint_failure_never_breaks_a_write(
     hub: Hub, monkeypatch: pytest.MonkeyPatch
 ) -> None:

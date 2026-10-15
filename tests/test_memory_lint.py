@@ -635,6 +635,59 @@ def test_graph_mode_stale_reads_the_manifest_date_not_the_export_mtime(
     assert "me3" not in res.stdout, res.stdout
 
 
+def test_graph_mode_retire_check_keys_on_the_threads_tag_not_the_title(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    """gr489920: a node whose title contains "thread"/"campaign" but is not
+    ``section:threads``-tagged must NOT be listed as a retire candidate —
+    the landed heuristic keys on the manifest's section column (the tag),
+    with a bare ``Left:``/``NEXT:`` line as the untagged fallback.
+    ``section:reference``/``section:workflow`` nodes are skipped entirely,
+    even when stale."""
+    home, _mem, cache, nodes = graph_setup
+    sha = _landed_sha(lint_repo)
+    today = _days_ago(0)
+    # title-keyworded but tagged reference / workflow / untagged: no flag
+    (nodes / "me60.md").write_text(
+        f"# Thread triage notes\n\nlanded at {sha}.\n", encoding="utf-8"
+    )
+    (nodes / "me62.md").write_text(
+        f"# The campaign protocol\n\nlanded at {sha}.\n", encoding="utf-8"
+    )
+    (nodes / "me63.md").write_text(
+        f"# Old campaign\n\nshipped at {sha}.\n", encoding="utf-8"
+    )
+    # positive controls: tagged threads, and untagged but Left:-marked
+    (nodes / "me61.md").write_text(
+        f"# Done campaign\n\nLeft: none.\nlanded {sha}.\n", encoding="utf-8"
+    )
+    (nodes / "me64.md").write_text(
+        f"# Review pass\n\nNEXT: done\nlanded {sha}.\n", encoding="utf-8"
+    )
+    (nodes / "_sections.tsv").write_text(
+        _manifest_row("me60", "reference", today)
+        + "\n"
+        + _manifest_row("me61", "threads", today)
+        + "\n"
+        + _manifest_row("me62", "workflow", _days_ago(40))
+        + "\n"
+        + _manifest_row("me63", "", today)
+        + "\n"
+        + _manifest_row("me64", "", today)
+        + "\n",
+        encoding="utf-8",
+    )
+
+    out = _run(lint_repo, home, cache=cache, nodes=nodes).stdout
+
+    assert "retire candidate → me60" not in out, out  # reference, keyword title
+    assert "retire candidate → me62" not in out, out  # workflow, 40d stale
+    assert "retire candidate → me63" not in out, out  # untagged, keyword title
+    assert "retire candidate → me61 (Done campaign): thread landed" in out, out
+    assert "retire candidate → me64 (Review pass): thread landed" in out, out
+    assert "retire candidates: 2 " in out, out
+
+
 def test_graph_mode_flags_a_thread_node_untouched_14_days(
     lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
 ) -> None:

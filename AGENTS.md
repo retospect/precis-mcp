@@ -88,8 +88,12 @@ nodes, each with one `part-of` edge to its hub (or to a summary node that
 has one) and one type tag `section:threads|gotchas|runbooks|workflow|reference`;
 a gotcha links the threads it applies to with `qualifies`. Bodies stay under
 the 4000-char fisheye cut; longer material becomes `part-of` children of a
-short summary. Writes: the `remember` skill (the `put`/`edit` response's
-`Next:` lines name the missing links). Periodic cleanup: the
+short summary — a child takes a unique title (the summary's title + the
+pass/sub-thread it holds, so the dup-thread-prefix check stays quiet), the
+parent's `section:<type>` tag (`section:reference` when the child is a
+result), one `part-of` edge to the summary only, and no `qualifies` links
+(it inherits the parent's). Writes: the `remember` skill (the `put`/`edit`
+response's `Next:` lines name the missing links). Periodic cleanup: the
 `reconsolidate` skill. Search one subtree with `args={'under': 'me<hub>'}`.
 
 Imported and legacy memories are dated evidence, not current permissions,

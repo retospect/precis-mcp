@@ -1859,6 +1859,94 @@ def test_nursery_backlog_never_files_per_ref(store) -> None:
     assert len(gripes) == 1
 
 
+def _seed_tracker_gripe(store, alert_id: int, *, status: str = "open") -> int:
+    """A live (or deliberately terminal) hand-filed gripe linked to the
+    alert — the disposition a triage agent records, e.g. gr485350 on
+    al484951."""
+    with store.tx() as conn:
+        ref = store.insert_ref(
+            kind="gripe", slug=None, title="tracker", meta={}, conn=conn
+        )
+        store.add_tag(
+            ref.id,
+            Tag.closed("STATUS", status),
+            set_by="system",
+            replace_prefix=True,
+            conn=conn,
+        )
+        store.add_link(
+            src_ref_id=ref.id,
+            dst_ref_id=alert_id,
+            relation="related-to",
+            conn=conn,
+        )
+    return int(ref.id)
+
+
+def test_nursery_backlog_tracked_alert_never_files(store) -> None:
+    """gr488682: a surfaced nursery alert already bound to a live tracker
+    gripe is dispositioned work, not unhandled backlog — it must not hold
+    the category's aggregate ``backlog`` condition open (no gripe filed)."""
+    alert_id = _seed_nursery_backlog_alert(
+        store,
+        source="nursery:child-failed-parked",
+        ref_id=600,
+        hours_old=30,
+        total=1,
+    )
+    _seed_tracker_gripe(store, alert_id)
+
+    routed = _route_findings(store)
+
+    assert routed == frozenset()
+    gripes = store.list_refs(kind="gripe", tags=["STATUS:open"])
+    assert len(gripes) == 1  # just the tracker; no aggregate filed
+
+
+def test_nursery_backlog_tracked_alert_auto_closes_aggregate(store) -> None:
+    """gr488682: once every surfaced alert in the category is bound to a
+    live tracker, the aggregate marker gripe auto-closes — the category is
+    fully dispositioned even though the per-ref alert still shows open."""
+    alert_id = _seed_nursery_backlog_alert(
+        store,
+        source="nursery:child-failed-parked",
+        ref_id=601,
+        hours_old=30,
+        total=1,
+    )
+    _route_findings(store)
+    (aggregate,) = [
+        g
+        for g in store.list_refs(kind="gripe", tags=["STATUS:open"])
+        if store.chunks.list_chunks_for_ref(g.id)[0].text.startswith(
+            "watchdog-condition:"
+        )
+    ]
+
+    _seed_tracker_gripe(store, alert_id)
+    routed = _route_findings(store)
+
+    assert ("nursery-backlog", "nursery:child-failed-parked") not in routed
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT retired_at FROM refs WHERE ref_id = %s", (aggregate.id,)
+        ).fetchone()
+    assert row[0] is not None
+
+
+def test_nursery_backlog_terminal_tracker_does_not_suppress(store) -> None:
+    """A dead tracker (STATUS:done) releases the binding — the still-open
+    alert is unhandled backlog again and the aggregate files."""
+    alert_id = _seed_nursery_backlog_alert(
+        store, source="nursery:orphan", ref_id=602, hours_old=30, total=4
+    )
+    _seed_tracker_gripe(store, alert_id, status="done")
+
+    routed = _route_findings(store)
+
+    assert ("nursery-backlog", "nursery:orphan") in routed
+
+
 def test_child_failed_parked_leaf_rebinds_after_tracker_deleted(store) -> None:
     """gr474610: one parked leaf whose tracker gripe was soft-deleted gets a
     fresh live tracker on the next eval — the marker scan skips retired

@@ -2118,6 +2118,8 @@ _ROUTER_FLOOD_CAP = 3
 #: auto-closing marker gripe per category when the backlog is not
 #: draining — a human hand-off, never an alert auto-resolve. Critical
 #: nursery categories are intentionally excluded (they page in real-time).
+#: A surfaced alert bound to a live gripe is dispositioned — someone owns
+#: it — so it doesn't count toward "not draining" (gr488682).
 _NURSERY_BACKLOG_SOURCES: frozenset[str] = frozenset(
     {"nursery:orphan", "nursery:stuck-doable", "nursery:child-failed-parked"}
 )
@@ -2278,6 +2280,41 @@ def _open_marker_gripes(store: Store) -> dict[tuple[str, str], int]:
     return out
 
 
+def _tracked_alert_ids(store: Store, alert_ids: list[int]) -> set[int]:
+    """Alert ref ids already bound to a live gripe — any link in either
+    direction to a non-retired, non-terminal (not ``done``/``wontfix``)
+    gripe. A dispositioned condition is owned work, not unhandled backlog:
+    it must not feed the nursery-backlog aggregate's "not draining"
+    verdict (gr488682 — a parked leaf with a live tracker kept the
+    category's marker gripe open forever). A dead tracker releases the
+    binding, exactly like the marker scan's live-status rule."""
+    if not alert_ids:
+        return set()
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT a.ref_id
+              FROM refs a
+              JOIN links l
+                ON a.ref_id IN (l.src_ref_id, l.dst_ref_id)
+              JOIN refs g
+                ON g.ref_id IN (l.src_ref_id, l.dst_ref_id)
+               AND g.ref_id <> a.ref_id
+               AND g.kind = 'gripe'
+               AND g.retired_at IS NULL
+             WHERE a.ref_id = ANY(%s)
+               AND NOT EXISTS (
+                     SELECT 1 FROM ref_tags rt
+                      JOIN tags t ON t.tag_id = rt.tag_id
+                     WHERE rt.ref_id = g.ref_id
+                       AND t.namespace = 'STATUS'
+                       AND t.value = ANY(%s))
+            """,
+            (list(alert_ids), ["done", "wontfix"]),
+        ).fetchall()
+    return {int(r[0]) for r in rows}
+
+
 def _auto_close_marker_gripe(
     store: Store, gripe_id: int, source: str, fingerprint: str
 ) -> None:
@@ -2424,10 +2461,20 @@ def _route_findings(store: Store) -> frozenset[tuple[str, str]]:
     nursery_agg: dict[str, dict[str, Any]] = {}
     # aggregate-mode tracked sources: source -> [(created_at, fingerprint)]
     tracked_agg: dict[str, list[tuple[datetime, str]]] = {}
+    # Nursery per-ref alerts bound to a live tracker gripe are
+    # dispositioned, not unhandled backlog: they don't count toward the
+    # aggregate's live/surfaced/oldest, so a category whose every surfaced
+    # condition is owned reads clear (and its marker gripe auto-closes).
+    nursery_tracked = _tracked_alert_ids(
+        store,
+        [int(r[0]) for r in alert_rows if str(r[1]) in _NURSERY_BACKLOG_SOURCES],
+    )
     for _rid, source, fp, created_at, _title, _detail, _severity, total in alert_rows:
         source = str(source)
         fp = str(fp)
         if source in _NURSERY_BACKLOG_SOURCES:
+            if int(_rid) in nursery_tracked:
+                continue
             live_conditions.add((source, _NURSERY_BACKLOG_FP))
             agg = nursery_agg.setdefault(
                 source, {"surfaced": 0, "total": 0, "oldest": created_at}

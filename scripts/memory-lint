@@ -33,9 +33,11 @@
 #
 # Retire candidates (check 7, both modes): lists — never retires — notes the
 # memory should drop: a thread-type note whose every resolvable cited sha is in
-# main and whose NEXT line is empty/done, and any note untouched >30d. Cited
-# shas are resolved ONCE (one `git cat-file --batch-check`, one `git rev-list
-# main`) into $SHAMAP, which check 2 reads too.
+# main and whose NEXT/Left line is empty/done (graph mode: thread-type keys on
+# the section:threads tag or an explicit Left:/NEXT: marker, never the title —
+# section:reference/workflow nodes are skipped outright), and any note untouched
+# >30d. Cited shas are resolved ONCE (one `git cat-file --batch-check`, one `git
+# rev-list main`) into $SHAMAP, which check 2 reads too.
 #
 # Checks (all advisory — always exits 0; for `/whatneedsdoing`, not a gate):
 #   1. broken index links + unindexed topic files (file mode only).
@@ -459,31 +461,55 @@ fi
 # $problems or the exit code. Heuristics (deliberately simple):
 #   thread-type = frontmatter `type:` absent or `project`, AND (the file name or
 #                 first-line title contains "thread"/"campaign", OR a body line
-#                 starts with NEXT).
+#                 starts with NEXT or Left:).
+#                 GRAPH MODE: thread-type keys on the manifest's section column
+#                 (the node's section:threads tag), not a title keyword — a
+#                 "…thread…"/"…campaign…" title on a gotcha/runbook/reference
+#                 node re-flagged it every pass (gr489920). The fallback with no
+#                 tag is an explicit `Left:`/`NEXT:` resume line, and
+#                 section:reference/workflow nodes are skipped outright (check
+#                 8's 60-day "cold" finding owns their ageing).
 #   landed      = thread-type, >=1 resolvable cited sha, every resolvable sha in
 #                 main (unresolvable hex tokens are words/cross-repo: ignored),
-#                 and its NEXT line (if any) empty or done/shipped/none/nothing.
+#                 and its Left:/NEXT line (if any) empty or done/shipped/none/
+#                 nothing.
 #   stale >30d  = frontmatter `modified:` date, else the manifest's updated
 #                 date (graph mode), else file mtime.
-# Graph-mode node bodies carry no frontmatter, so there the title/NEXT rules and
-# the node's updated_at apply.
+# Graph-mode node bodies carry no frontmatter, so there the tag/marker rules
+# and the node's updated_at apply.
 retire=0
 if [[ -n "$SCAN_DIR" ]]; then
     now_e=$(date +%s)
     for tf in "$SCAN_DIR"/*.md; do
         b=$(basename "$tf")
         [[ -f "$tf" ]] && is_topic "$b" || continue
+        # Graph mode: read the node's section:<slug> tag from the manifest.
+        # reference/workflow nodes are never retire candidates — durable
+        # knowledge, not campaigns; both heuristics only re-flagged them.
+        sec=""
+        if (( GRAPH )) && [[ -n "$MANIFEST" ]]; then
+            sec=$(awk -F'\t' -v h="${b%.md}" '$1 == h { print $2; exit }' "$MANIFEST")
+            [[ "$sec" == reference || "$sec" == workflow ]] && continue
+        fi
         reasons=()
         fm=$(awk 'NR==1 && $0!="---" { exit } NR>1 && $0=="---" { exit } NR>1' "$tf")
         ftype=$(printf '%s\n' "$fm" | sed -nE 's/^[[:space:]]*type:[[:space:]]*"?([A-Za-z_-]+).*/\1/p' | head -n 1)
         if [[ -z "$ftype" || "$ftype" == project ]]; then
             title=$(grep -m1 -E '^# ' "$tf" 2>/dev/null || true)
-            nextline=$(grep -m1 -E '^[-*[:space:]]*NEXT\b' "$tf" || true)
-            if printf '%s %s' "$b" "$title" | grep -qiE 'thread|campaign' || [[ -n "$nextline" ]]; then
-                nexttext=$(printf '%s' "$nextline" | sed -E 's/^[-*[:space:]]*NEXT\b[^A-Za-z0-9]*//')
+            nextline=$(grep -m1 -E '^[-*[:space:]]*(NEXT([^A-Za-z0-9_]|$)|Left:)' "$tf" || true)
+            is_thread=0
+            if (( GRAPH )); then
+                # tag-keyed, never title-keyed; the marker line is the
+                # fallback for a node whose tag the manifest lacks
+                [[ "$sec" == threads || -n "$nextline" ]] && is_thread=1
+            elif printf '%s %s' "$b" "$title" | grep -qiE 'thread|campaign' || [[ -n "$nextline" ]]; then
+                is_thread=1
+            fi
+            if (( is_thread )); then
+                nexttext=$(printf '%s' "$nextline" | sed -E 's/^[-*[:space:]]*(NEXT|Left)([^A-Za-z0-9_]|$)[^A-Za-z0-9]*//')
                 if [[ -z "${nexttext//[[:space:]]/}" ]]; then
-                    # bare `NEXT:` heading: open if a list item follows on the next non-blank line
-                    nexttext=$(awk '/^[-*[:space:]]*NEXT([^A-Za-z0-9_]|$)/ { f=1; next } f && NF { print; exit }' "$tf" \
+                    # bare `NEXT:`/`Left:` heading: open if a list item follows on the next non-blank line
+                    nexttext=$(awk '/^[-*[:space:]]*(NEXT|Left)([^A-Za-z0-9_]|$)/ { f=1; next } f && NF { print; exit }' "$tf" \
                         | sed -E 's/^[[:space:]]*([-*]|[0-9]+[.)])[[:space:]]+//' | grep -E '^[[:space:]]*[^[:space:]]' || true)
                 fi
                 if [[ -z "${nexttext//[[:space:]]/}" ]] || printf '%s' "$nexttext" | grep -qiE '^(done|shipped|none|nothing)\b'; then

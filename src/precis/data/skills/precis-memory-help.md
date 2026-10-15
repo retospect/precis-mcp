@@ -335,7 +335,12 @@ link(kind="memory", id="me12", target="me40", rel="qualifies")   # me40 = thread
 ```
 
 A detail node is `part-of` its summary node, not the hub; it belongs to
-the nearest hub up the `part-of` chain.
+the nearest hub up the `part-of` chain. Its title is unique (the
+summary's title + the pass/sub-thread it holds — a shared title prefix
+trips the duplicate-thread check), it carries the parent's
+`section:<type>` tag (`section:reference` when the detail is a result),
+and it takes no `qualifies` links — the summary's gotcha links already
+cover it.
 
 `get(kind="memory", id="me3", view="fisheye+1hop")` on a hub lists every
 member on one line (handle, title, hook) — no cap. Other relation groups
