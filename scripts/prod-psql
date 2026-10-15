@@ -145,7 +145,12 @@ refuse_tx_control() {
 # (pg_stat_xact_user_tables, readable by any role), not psql's ROW_COUNT:
 # ROW_COUNT is the LAST query's, and a trailing `;;` or `; -- note` sends an
 # empty query that resets it to 0 (measured 2026-10-15, psql 18 / PG 17).
-# Cascaded and trigger-made changes count too. The marker is gone when the
+# Cascaded and trigger-made changes count too. That view also carries counts
+# a pooled server connection has not flushed yet from EARLIER clients'
+# transactions (prod via pgbouncer, 2026-10-15: a 1-row UPDATE read 4, a
+# 150-row one 152), so the cap is on the difference from a baseline read
+# right after BEGIN; the server flushes only between transactions, so the
+# baseline holds for ours. The marker is gone when the
 # user's SQL ended the transaction early: nothing is left to roll back, and
 # the wrapper says so. The "prod-psql: <VERDICT>" lines are what run_sql
 # reads back. The trailing `;` rule is wrap_ro's.
@@ -155,9 +160,11 @@ wrap_cap() {
     if [[ "$trimmed" != *\; ]]; then
         body+=$'\n;'
     fi
-    printf 'BEGIN;\nSET LOCAL precis.prod_psql_cap = on;\n%s\n' "$body"
+    local tally='(SELECT coalesce(sum(n_tup_upd + n_tup_del), 0) AS n FROM pg_stat_xact_user_tables) s'
+    printf 'BEGIN;\nSET LOCAL precis.prod_psql_cap = on;\n'
+    printf 'SELECT n AS prod_psql_base FROM %s \\gset\n%s\n' "$tally" "$body"
     cat <<EOF
-SELECT n AS prod_psql_rows, n > ${MAX_ROWS} AS prod_psql_over, coalesce(current_setting('precis.prod_psql_cap', true), '') = 'on' AS prod_psql_in_tx FROM (SELECT coalesce(sum(n_tup_upd + n_tup_del), 0) AS n FROM pg_stat_xact_user_tables) s \\gset
+SELECT n - :prod_psql_base AS prod_psql_rows, n - :prod_psql_base > ${MAX_ROWS} AS prod_psql_over, coalesce(current_setting('precis.prod_psql_cap', true), '') = 'on' AS prod_psql_in_tx FROM ${tally} \\gset
 \\if :prod_psql_in_tx
 \\if :prod_psql_over
 \\echo prod-psql: ROLLBACK, :prod_psql_rows rows is over the cap of ${MAX_ROWS} (PRECIS_PROD_WRITE_MAX_ROWS), nothing changed

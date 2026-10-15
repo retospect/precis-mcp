@@ -31,6 +31,9 @@ import os, re, sys
 text = sys.stdin.read()
 open(os.environ["FAKE_LOG"], "w", encoding="utf-8").write(text)
 rows = int(os.environ.get("FAKE_ROWS", "0"))
+# Counts a pooled server connection has not flushed from earlier clients'
+# transactions: pg_stat_xact_user_tables shows them inside ours too.
+pending = int(os.environ.get("FAKE_PENDING", "0"))
 changed, in_tx, marker = 0, False, False
 var: dict[str, str] = {}
 stack: list[bool] = []
@@ -75,10 +78,15 @@ for line in text.split("\n"):
     if not live():
         continue
     if line.endswith("\\gset"):
-        cap = int(re.search(r"n > (\d+)", line).group(1))
+        tally = pending + changed
+        if "AS prod_psql_base" in line:
+            var["prod_psql_base"] = str(tally)
+            continue
+        cap = int(re.search(r"n - :prod_psql_base > (\d+)", line).group(1))
+        delta = tally - int(var["prod_psql_base"])
         var.update(
-            prod_psql_rows=str(changed),
-            prod_psql_over="t" if changed > cap else "f",
+            prod_psql_rows=str(delta),
+            prod_psql_over="t" if delta > cap else "f",
             prod_psql_in_tx="t" if marker else "f",
         )
         continue
@@ -161,6 +169,24 @@ def test_empty_trailing_statement_does_not_reset_the_count(tmp_path: Path) -> No
     ):
         proc, _ = _run(tmp_path, sql, 150)
         assert proc.returncode == 4, sql
+
+
+def test_unflushed_counts_from_earlier_transactions_do_not_count(
+    tmp_path: Path,
+) -> None:
+    """Measured on prod via pgbouncer 2026-10-15: a 1-row UPDATE read 4 on
+    the raw tally. The cap is on the difference from the post-BEGIN
+    baseline, so pending counts neither inflate nor hide the write."""
+    proc, sent = _run(
+        tmp_path, "UPDATE t SET a = 1 WHERE id = 1", 1, FAKE_PENDING="500"
+    )
+    assert proc.returncode == 0, proc.stdout
+    assert "prod-psql: COMMIT, 1 rows, within the cap of 100" in proc.stdout
+    assert sent.index("AS prod_psql_base") < sent.index("UPDATE t SET")
+    proc, _ = _run(
+        tmp_path, "UPDATE t SET a = 1 WHERE id < 999", 101, FAKE_PENDING="500"
+    )
+    assert proc.returncode == 4
 
 
 def test_reads_and_inserts_are_not_wrapped(tmp_path: Path) -> None:
