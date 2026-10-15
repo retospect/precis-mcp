@@ -33,6 +33,7 @@ import pytest
 from precis.alerts import list_open_alerts
 from precis.ingest.fetch_sidecar import read_sidecar
 from precis.store import Store
+from precis.utils.rate_limit import RateLimited
 from precis.utils.safe_fetch import SsrfBlocked
 from precis.workers import fetch_oa
 from precis.workers.fetch_oa import (
@@ -640,6 +641,24 @@ class TestTryUnpaywall:
         assert out.event == "rate_limited"
         assert out.payload["retry_after"] == "60"
 
+    def test_shared_limiter_refusal_skips_the_request(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Spent unpaywall daily quota: no HTTP call, a shared rate_limited.
+        def _no_http(*_: Any, **__: Any) -> Any:
+            raise AssertionError("request fired despite a limiter refusal")
+
+        monkeypatch.setattr(fetch_oa, "require_rate_limit", _refuse)
+        monkeypatch.setattr(fetch_oa, "http_client", _no_http)
+        out = _try_unpaywall(_stub(doi="10.1234/x"), inbox_dir=tmp_path, email="a@b")
+        assert out is not None
+        assert out.event == "rate_limited"
+        assert out.payload == {
+            "doi": "10.1234/x",
+            "provider": "unpaywall",
+            "limiter": "shared",
+        }
+
     def test_api_error_on_unexpected_exception(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -719,6 +738,17 @@ class TestTryUnpaywall:
 def _no_arxiv_metadata_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
     """Never hit OpenAlex for DOI->arXiv resolution unless a test opts in."""
     monkeypatch.setattr(fetch_oa, "_query_openalex_arxiv_id", lambda doi, email: None)
+
+
+@pytest.fixture(autouse=True)
+def _shared_limiter_grants(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub the shared rate limiter to grant, so no test waits on a seeded
+    ``external_rate_limits`` row; refusal tests re-patch it to raise."""
+    monkeypatch.setattr(fetch_oa, "require_rate_limit", lambda provider, **_: None)
+
+
+def _refuse(provider: str, **_: Any) -> None:
+    raise RateLimited(provider)
 
 
 class TestResolveArxivFromDoi:

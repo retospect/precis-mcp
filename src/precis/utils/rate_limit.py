@@ -53,8 +53,10 @@ because for a pure rate lane the bounded wait *is* the coordination.
 and the three OpenAlex helpers in ``precis.workers.fetch_oa`` call
 :func:`require`, which raises :class:`RateLimited` on a refusal so the
 request is skipped instead of fired; a caller that ignored ``False`` would
-defeat the daily cap. ``unpaywall``, ``arxiv`` and ``crossref`` are dormant
-config rows; nothing calls the limiter for them yet.
+defeat the daily cap. ``unpaywall`` (100k/day quota lane) —
+``precis.workers.fetch_oa._query_unpaywall`` calls :func:`require` the same
+way. ``arxiv`` and ``crossref`` are dormant config rows; nothing calls the
+limiter for them yet.
 """
 
 from __future__ import annotations

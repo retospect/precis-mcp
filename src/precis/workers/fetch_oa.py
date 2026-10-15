@@ -1294,6 +1294,8 @@ def _try_unpaywall(
 
     try:
         data = _query_unpaywall(stub.doi, email=email)
+    except RateLimited:
+        return _local_rate_limited(stub, t0, provider="unpaywall")
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 429:
             return FetchOutcome(
@@ -1593,7 +1595,7 @@ def _try_openalex_content(
     try:
         content = _query_openalex_content_urls(stub.doi, email=email)
     except RateLimited:
-        return _local_rate_limited(stub, t0)
+        return _local_rate_limited(stub, t0, provider="openalex")
     except Exception as exc:
         return FetchOutcome(
             event="api_error",
@@ -1731,7 +1733,7 @@ def _try_openalex(
     try:
         pdf_urls = _query_openalex_pdf_urls(stub.doi, email=email)
     except RateLimited:
-        return _local_rate_limited(stub, t0)
+        return _local_rate_limited(stub, t0, provider="openalex")
     except Exception as exc:
         return FetchOutcome(
             event="api_error",
@@ -2796,7 +2798,10 @@ def _query_unpaywall(doi: str, *, email: str) -> dict[str, Any]:
     Retries on transport / timeout errors; HTTPStatusError (400/404/
     429/5xx) bubbles up to the caller for per-status handling. The
     return shape is documented at https://unpaywall.org/data-format.
+    Raises :class:`RateLimited` without calling out when the shared
+    ``unpaywall`` limiter refuses (100k/day quota spent); not retried.
     """
+    require_rate_limit("unpaywall")
     url = f"{_UNPAYWALL_BASE}/{doi}"
     with http_client(timeout=_API_TIMEOUT_S, user_agent=None) as client:
         resp = client.get(url, params={"email": email})
@@ -3131,13 +3136,13 @@ def _download_headers() -> dict[str, str]:
     }
 
 
-def _local_rate_limited(stub: StubRef, t0: float) -> FetchOutcome:
+def _local_rate_limited(stub: StubRef, t0: float, *, provider: str) -> FetchOutcome:
     """``rate_limited`` outcome for a request the shared limiter refused
-    before it was sent (OpenAlex daily quota spent or rate-starved). Same
-    event as ``_try_unpaywall``'s 429; ``limiter`` tells the two apart."""
+    before it was sent (daily quota spent or rate-starved). Same event as
+    ``_try_unpaywall``'s 429; ``limiter`` tells the two apart."""
     return FetchOutcome(
         event="rate_limited",
-        payload={"doi": stub.doi, "provider": "openalex", "limiter": "shared"},
+        payload={"doi": stub.doi, "provider": provider, "limiter": "shared"},
         duration_ms=_ms(t0),
     )
 

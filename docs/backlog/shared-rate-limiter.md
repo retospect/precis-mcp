@@ -82,11 +82,13 @@ provider key.
   `rate_limited` with `limiter: shared`; `paper_meta_enrich` re-raises it
   and defers the batch unstamped. Deliberately ungated: the `/rate-limit`
   balance check and the web key probe (low volume, outside the works quota).
-- **Follow-on, in order:** Unpaywall (daily — call `require`, not
-  `acquire`), arXiv (rate), Crossref (rate, last). Derive limiter keys from
-  the `uses_external=(…)` tuples already declared per pass in
-  `workers/registry.py`. unpaywall/arxiv/crossref stay dormant config rows
-  until wired.
+  Unpaywall wired on its daily lane: `fetch_oa._query_unpaywall` calls
+  `require("unpaywall")`; a refusal records `rate_limited` with
+  `provider: unpaywall, limiter: shared` and sends no request.
+- **Follow-on, in order:** arXiv (rate), Crossref (rate, last). Derive
+  limiter keys from the `uses_external=(…)` tuples already declared per pass
+  in `workers/registry.py`. arxiv/crossref stay dormant config rows until
+  wired.
 
 ## Reference assets
 
