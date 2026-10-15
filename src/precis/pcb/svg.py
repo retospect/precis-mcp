@@ -842,6 +842,26 @@ def render_capability_map(
                 f'<circle cx="{_fmt(vx)}" cy="{_fmt(vy)}" r="{_fmt(max(label_half * 0.1, 0.05))}" '
                 f'fill="{_CAP_VIA}"/>'
             )
+    # The copper-tape landing (ewod-controller-and-hv-supply.md Defect B):
+    # drawn at its footprint-local rect off the ledger so the strip is
+    # visible on the map it is authored for.
+    tape = ledger.get("tape_land") or {}
+    if tape:
+        tx, ty = float(tape["x"]), float(tape["y"])
+        tw, th = float(tape["w"]), float(tape["h"])
+        pad_extents.append((tx - tw / 2, tx + tw / 2, ty - th / 2, ty + th / 2))
+        body.append(
+            f'<rect x="{_fmt(tx - tw / 2)}" y="{_fmt(ty - th / 2)}" '
+            f'width="{_fmt(tw)}" height="{_fmt(th)}" fill="#E69F00" '
+            'fill-opacity="0.55" stroke="#000000" stroke-width="0.03" '
+            'stroke-dasharray="0.3,0.15"/>'
+        )
+        body.append(
+            f'<text x="{_fmt(tx)}" y="{_fmt(ty)}" font-size="{_fmt(max(min(tw, th) * 0.25, 0.3))}" '
+            'font-family="sans-serif" text-anchor="middle" dominant-baseline="middle">'
+            f"TAPE LAND ({esc(str(tape.get('edge') or '?'))} edge -> "
+            f"{esc(str(tape.get('net') or ''))})</text>"
+        )
 
     dot_r = max(half * 0.12, 0.05)
     for slot_key, plaza in sorted(plazas.items()):

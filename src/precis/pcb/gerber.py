@@ -461,6 +461,50 @@ def soldermask_gerber(model: dict[str, Any], side: str) -> str:
     return _assemble(f"Soldermask,{'Top' if side == 'top' else 'Bot'}", apertures, body)
 
 
+def fab_notes_txt(model: dict[str, Any]) -> str | None:
+    """The ``<name>-fab-notes.txt`` rider in the fab bundle — the assembly
+    notes a gerber cannot carry (pcb-ewod-multitile.md's "fab-notes text
+    file in the gerber zip"; ewod-controller-and-hv-supply.md Slice 3).
+
+    Returns ``None`` when the board has nothing to say, so a plain design's
+    bundle gains no stray file. Everything here is DERIVED from the model —
+    a note is emitted because the geometry that needs it is present, never
+    remembered from an authoring-time string.
+
+    - an EWOD array (electrode pads or a field-wide ``mask_open`` region)
+      gets the parylene process order — the coating step coats whatever it
+      sees, so anything that must stay uncoated is masked first;
+    - a ``role: 'tape_land'`` pad (the ITO top plate's copper-tape
+      landing) gets its own masking callout: parylene is conformal and a
+      coated land is an open circuit, so the strip is taped off during
+      deposition.
+    """
+    pads = model.get("pads") or []
+    ewod = any(p.get("role") == "electrode" for p in pads) or bool(
+        model.get("mask_open_regions")
+    )
+    tape_lands = sorted(
+        {str(p.get("refdes") or "?") for p in pads if p.get("role") == "tape_land"}
+    )
+    if not (ewod or tape_lands):
+        return None
+    lines = ["Fabrication/assembly notes"]
+    if ewod:
+        lines.append(
+            "- parylene process order: assemble the bottom side -> mask the "
+            "bottom (fixturing/tape) -> parylene deposit the top. The coating "
+            "is conformal over everything it can see; the order is what "
+            "keeps solderable surfaces uncoated."
+        )
+    if tape_lands:
+        lines.append(
+            f"- mask the copper-tape landing ({', '.join(tape_lands)}) during "
+            "parylene deposition: parylene is conformal, and a coated tape "
+            "land is an open circuit to the ITO top plate."
+        )
+    return "\n".join(lines) + "\n"
+
+
 def solderpaste_gerber(model: dict[str, Any], side: str) -> str:
     """Top/bottom solder paste — the **stencil**, not the board.
 
@@ -664,6 +708,9 @@ def export_fab(
             )
     out = export_gerbers(model, name=name)
     out.update(excellon_files(model, name=name))
+    notes = fab_notes_txt(model)
+    if notes is not None:
+        out[f"{name}-fab-notes.txt"] = notes
     return out
 
 
@@ -686,6 +733,7 @@ __all__ = [
     "excellon_files",
     "export_fab",
     "export_gerbers",
+    "fab_notes_txt",
     "outline_gerber",
     "silkscreen_gerber",
     "soldermask_gerber",

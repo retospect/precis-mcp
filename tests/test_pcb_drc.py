@@ -190,6 +190,83 @@ def test_check_clearance_net_rules_absent_net_falls_back_to_generic_house():
     assert drc.check_clearance(model, _CAP4, net_rules={}) == []
 
 
+# ── Slice 4b/c (ewod-controller-and-hv-supply.md): class min_clearance_mm
+# error floor + working_voltage_v-derived spacing ─────────────────────────
+def _hv_model(gap: float) -> dict[str, Any]:
+    return {
+        "layers": ["F.Cu"],
+        "copper": [
+            _track("HV250", "F.Cu", (0.0, 0.0), (1.0, 0.0)),
+            _track("GND", "F.Cu", (0.0, 0.2 + gap), (1.0, 0.2 + gap)),
+        ],
+    }
+
+
+def test_min_clearance_mm_is_an_error_floor_not_a_warn_tier():
+    """A 0.4mm-class net vs GND: 0.3mm is an ERROR (not a warn), 0.45mm
+    clean — the spec's own acceptance numbers."""
+    from precis.pcb.rules import resolve_net_rules
+
+    rules = {
+        "HV250": resolve_net_rules(
+            "hv",
+            layer_is_outer=True,
+            fab_caps=_CAP4,
+            overrides={"min_clearance_mm": 0.4},
+        ),
+        "GND": resolve_net_rules("", layer_is_outer=True, fab_caps=_CAP4),
+    }
+    assert rules["HV250"].min_clearance_mm == pytest.approx(0.4)
+    findings = drc.check_clearance(_hv_model(0.3), _CAP4, net_rules=rules)
+    assert len(findings) == 1
+    assert findings[0].severity == "error"
+    assert "class floor 0.400mm" in findings[0].detail
+    assert drc.check_clearance(_hv_model(0.45), _CAP4, net_rules=rules) == []
+
+
+def test_working_voltage_v_derives_the_spacing():
+    """250V resolves to the IPC-2221B B4 (coated) 0.4mm; 600V is refused
+    (past the table's 500V top band — no extrapolation)."""
+    from precis.pcb.rules import resolve_net_rules
+
+    r = resolve_net_rules(
+        "hv",
+        layer_is_outer=True,
+        fab_caps=_CAP4,
+        overrides={"working_voltage_v": 250},
+    )
+    assert r.clearance_mm == pytest.approx(0.4)
+    assert r.min_clearance_mm == pytest.approx(0.4)
+    internal = resolve_net_rules(
+        "hv",
+        layer_is_outer=False,
+        fab_caps=_CAP4,
+        overrides={"working_voltage_v": 250},
+    )
+    assert internal.min_clearance_mm == pytest.approx(0.2)  # B1 column
+    with pytest.raises(ValueError, match="top band"):
+        resolve_net_rules(
+            "hv",
+            layer_is_outer=True,
+            fab_caps=_CAP4,
+            overrides={"working_voltage_v": 600},
+        )
+
+
+def test_electrode_gap_class_stays_warn_only():
+    """An authored clearance_mm alone still moves only the WARN tier —
+    the error floor stays the fab's (the electrode-gap class's contract)."""
+    jlc_min = _CAP4.jlc_min["trace_spacing_mm"]
+    assert jlc_min is not None
+    rules = {
+        "HV250": NetRules(track_width_mm=0.2, clearance_mm=0.4),
+        "GND": NetRules(track_width_mm=0.2, clearance_mm=jlc_min),
+    }
+    findings = drc.check_clearance(_hv_model(jlc_min + 0.02), _CAP4, net_rules=rules)
+    assert len(findings) == 1
+    assert findings[0].severity == "warn"
+
+
 # ── pour antipads (gripe 269908: a pour's ``holes`` must not be dropped,
 # turning a real antipad into phantom solid copper for clearance) ───────
 

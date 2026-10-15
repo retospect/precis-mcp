@@ -2028,10 +2028,17 @@ class PcbHandler(Handler):
                     ),
                     options=routable,
                 )
-        _, judged = self._judged_mutation(
-            ref.id,
-            lambda conn: self.store.pcb_set_class_rules(ref.id, name, rules, conn=conn),
-        )
+        try:
+            _, judged = self._judged_mutation(
+                ref.id,
+                lambda conn: self.store.pcb_set_class_rules(
+                    ref.id, name, rules, conn=conn
+                ),
+            )
+        except ValueError as exc:
+            # A rules value the table cannot honour (e.g. working_voltage_v
+            # past IPC-2221B's top band) is bad input, not a judge verdict.
+            raise BadInput(str(exc)) from exc
         return Response(
             body=f"# net class {name!r} rules set: {rules}\n" + judged.lines()
         )

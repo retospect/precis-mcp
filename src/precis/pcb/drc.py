@@ -799,13 +799,25 @@ def _clearance_detail(
     process: str,
     severity: str,
     margin_mm: float,
+    floor_mm: float | None = None,
 ) -> str:
     """Same two-tier wording as :func:`_margin_detail`, but takes the
     per-PAIR required clearance directly rather than pulling a single
     figure off ``capability.house_default`` — the ``check_clearance``
     threshold is now per-net (``net_rules``), not always the fab's generic
-    house default (module docstring)."""
+    house default (module docstring). ``floor_mm`` is the pair's actual
+    error threshold — above ``jlc_min`` when a class's ``min_clearance_mm``
+    / ``working_voltage_v`` hard floor binds (Slice 4b), so the message
+    names the floor that was crossed, never a figure that wasn't."""
     if severity == "error":
+        floor = floor_mm if floor_mm is not None else jlc_min
+        if floor > jlc_min:
+            return (
+                f"copper clearance {value_mm:.3f}mm < class floor "
+                f"{floor:.3f}mm (net-class min_clearance_mm; JLC min "
+                f"{jlc_min:.3f}mm, {process}) — {abs(margin_mm):.3f}mm short "
+                "of the creepage/voltage requirement"
+            )
         return (
             f"copper clearance {value_mm:.3f}mm < JLC min {jlc_min:.3f}mm "
             f"({process}) — {abs(margin_mm):.3f}mm short of manufacturable"
@@ -993,7 +1005,24 @@ def check_clearance(
                 spacing = _voltage_spacing_mm(v_a - v_b, outer=layer in outer_layers)
                 if spacing is not None:
                     required = spacing if required is None else max(required, spacing)
-        result = _two_tier(gap, jlc_min, required)
+        # Slice 4b (ewod-controller-and-hv-supply.md): a net's resolved
+        # ``min_clearance_mm`` is a HARD floor — below it is an ERROR, the
+        # same tier the fab minimum owns, because a creepage requirement
+        # reported as a warning is not acceptable. The pair floor is the
+        # stricter of the two nets', never below the fab's own.
+        floor = jlc_min
+        if net_rules:
+            floors = [
+                r.min_clearance_mm
+                for r in (
+                    net_rules.get(str(a.get("net"))),
+                    net_rules.get(str(b.get("net"))),
+                )
+                if r is not None and r.min_clearance_mm is not None
+            ]
+            if floors:
+                floor = max(floor, *floors)
+        result = _two_tier(gap, floor, required)
         if result is None:
             continue
         severity, margin = result
@@ -1012,7 +1041,13 @@ def check_clearance(
                 severity=severity,
                 where=where,
                 detail=_clearance_detail(
-                    gap, jlc_min, required, capability.process, severity, margin
+                    gap,
+                    jlc_min,
+                    required,
+                    capability.process,
+                    severity,
+                    margin,
+                    floor_mm=floor,
                 )
                 + (
                     f" — nearest points ({near_a[0]:.3f}, {near_a[1]:.3f}) / "

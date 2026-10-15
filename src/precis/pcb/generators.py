@@ -357,9 +357,14 @@ VERSIONS: dict[str, int] = {
     # invariants; version 6 (same day) declares EVERY channel pin on a
     # sink (unwired ones carry `unused`), not only the wired share —
     # pcb-lazy-netlist-and-checks.md Slice 2; version 7 emits `supplies` /
-    # `client_of` (Slice 6) instead of `pin_swap_groups`. All changed the
+    # `client_of` (Slice 6) instead of `pin_swap_groups`; version 8 adds
+    # the `sink_grid` control-pin keys (`clk_pin`/`le_pin`/`bl_pin`/
+    # `pol_pin`/`dir_pin`, ewod-controller-and-hv-supply.md Slice 2,
+    # ruling 12) and the `tape_land` top-plate pad (same doc, Slice 3,
+    # ruling 4) — both emitted only when the config asks, so a board
+    # without them re-expands byte-identically. All changed the
     # expansion.
-    "ewod_pad_array": 7,
+    "ewod_pad_array": 8,
 }
 
 
@@ -1917,6 +1922,18 @@ class _SinkGrid:
     serial_out_pin: str
     top_plate_pin: str | None
     top_plate_net: str
+    #: Driven control lines, ``{ctl: pin_name}`` from the ``clk_pin`` /
+    #: ``le_pin`` / ``bl_pin`` / ``pol_pin`` / ``dir_pin`` keys (ewod-
+    #: controller-and-hv-supply.md Slice 2, ruling 12): a line that is
+    #: DRIVEN gets one externally-facing ``{name}_{ctl}`` net bussed to
+    #: every sink (the same convention ``{name}_serial_in`` already uses
+    #: for the daisy's free ends), so a board-level ``connections`` entry
+    #: can wire the controller to it. A line that is TIED instead
+    #: (HV507's DIR choosing the shift direction, BL held active) is
+    #: never named here -- it goes through the ``power`` map like any
+    #: other rail tie, and naming the same pin in both places is a
+    #: ``ValueError`` (one pin, one declared role).
+    controls: dict[str, str]
     power: dict[str, str]
     #: Optional placement lock for every sink this grid emits --
     #: ``'xy'``, ``'rot'``, ``'both'``, or ``None`` (the DEFAULT: the
@@ -1927,6 +1944,15 @@ class _SinkGrid:
     #: preference. A sink's emitted ``x``/``y`` -- the centroid of its
     #: own share of electrodes -- is a seed either way.
     fixed: str | None
+
+
+#: The driven control lines a ``sink_grid`` may name, as ``{ctl}_pin``
+#: keys (ewod-controller-and-hv-supply.md Slice 2): HV507's CLK/LE/BL/
+#: POL/DIR, kept part-agnostic (a different sink part names its own pins —
+#: the key is the FUNCTION, the value is the pin name). The list order is
+#: also the emission order, so a config's nets/components are
+#: deterministic.
+_SINK_CONTROL_KEYS: tuple[str, ...] = ("clk", "le", "bl", "pol", "dir")
 
 
 def _parse_sink_grid(params: dict[str, Any], name: str) -> _SinkGrid | None:
@@ -1979,17 +2005,52 @@ def _parse_sink_grid(params: dict[str, Any], name: str) -> _SinkGrid | None:
             f"-- got {fixed!r}. An unknown value would be stored, accepted, "
             "and silently read as 'not locked' by ir.py::from_graph"
         )
+    controls = {
+        ctl: str(cfg[f"{ctl}_pin"])
+        for ctl in _SINK_CONTROL_KEYS
+        if cfg.get(f"{ctl}_pin") is not None
+    }
+    power = {str(k): str(v) for k, v in dict(cfg.get("power") or {}).items()}
+    # One pin, one role: a pin named in two places (driven control AND a
+    # power tie, two control functions, a channel and a serial line) is a
+    # config bug, not an ambiguity to resolve -- refuse it by name
+    # (ewod-controller-and-hv-supply.md Slice 2's own acceptance).
+    seen: dict[str, str] = {}
+    collisions: list[str] = []
+    serial_in = str(cfg.get("serial_in_pin") or "DIN")
+    serial_out = str(cfg.get("serial_out_pin") or "DOUT")
+    named_pins: list[tuple[str, str]] = [
+        ("serial_in_pin", serial_in),
+        ("serial_out_pin", serial_out),
+        *((("top_plate_pin", str(top_plate_pin)),) if top_plate_pin else ()),
+        *((f"{ctl}_pin", pin) for ctl, pin in controls.items()),
+        *((f"power[{p}]", p) for p in power),
+        *((f"channel_pins[{i}]", p) for i, p in enumerate(channel_pins)),
+    ]
+    for key, pin in named_pins:
+        if pin in seen:
+            collisions.append(f"{key} and {seen[pin]} both name pin {pin!r}")
+        else:
+            seen[pin] = key
+    if collisions:
+        raise ValueError(
+            "ewod_pad_array: sink_grid names the same pin twice -- "
+            + "; ".join(collisions)
+            + ". A control line that is TIED (not driven) belongs in "
+            "'power' alone; drop the '<ctl>_pin' key"
+        )
     return _SinkGrid(
         part=str(part) if part else None,
         footprint=str(footprint) if footprint else None,
         footprint_label=str(cfg.get("label") or footprint or f"sink:{part}"),
         channels_per_sink=channels_per_sink,
         channel_pins=channel_pins,
-        serial_in_pin=str(cfg.get("serial_in_pin") or "DIN"),
-        serial_out_pin=str(cfg.get("serial_out_pin") or "DOUT"),
+        serial_in_pin=serial_in,
+        serial_out_pin=serial_out,
         top_plate_pin=str(top_plate_pin) if top_plate_pin else None,
         top_plate_net=str(cfg.get("top_plate_net") or f"{name}_top_plate"),
-        power={str(k): str(v) for k, v in dict(cfg.get("power") or {}).items()},
+        controls=controls,
+        power=power,
         fixed=str(fixed) if fixed else None,
     )
 
@@ -2073,6 +2134,88 @@ def _coating_verdict(name: str, width_mm: float, height_mm: float) -> dict[str, 
             "the ARRAY fits the coating step; the finished board is larger "
             "and is not screened here"
         ),
+    }
+
+
+def _parse_tape_land(
+    params: dict[str, Any],
+    name: str,
+    sizing: dict[str, Any],
+    rows: int,
+    cols: int,
+) -> dict[str, Any] | None:
+    """Resolve the ``tape_land`` param (ewod-controller-and-hv-supply.md
+    Slice 3 — ruling 4's copper-tape landing for the ITO top plate, the
+    "Defect B" gap): ONE drill-free rect pad on F.Cu laid along one edge
+    of the array's own footprint, ``role: 'tape_land'``, ``mask: 'open'``
+    (the ITO plate's tape must REACH the copper — a covered strip is an
+    open circuit), ``paste: 'none'`` (tape, not stencil solder).
+
+    ``{edge: 'N'|'S'|'E'|'W', length_mm, width_mm, offset_mm}``: ``edge``
+    picks the side (``'N'`` is the +y/highest-row edge — the hinge side
+    of a dogfood layout), ``length_mm`` runs along that edge (default:
+    the edge's full extent), ``width_mm`` is the strip's thickness
+    outward (default ~5 mm of tapeable copper), and ``offset_mm`` is the
+    gap between the array's own mask-extent boundary and the strip's
+    inner edge (default 0 — flush). Returns ``{pad, edge, length_mm,
+    width_mm, offset_mm}`` in footprint-local coordinates, or ``None``
+    when unconfigured."""
+    cfg = params.get("tape_land")
+    if cfg is None:
+        return None
+    if not isinstance(cfg, dict):
+        raise ValueError(
+            "ewod_pad_array: tape_land must be a dict "
+            "{edge: 'N'|'S'|'E'|'W', length_mm, width_mm, offset_mm}"
+        )
+    edge = str(cfg.get("edge") or "N").strip().upper()
+    if edge not in ("N", "S", "E", "W"):
+        raise ValueError(
+            f"ewod_pad_array: tape_land.edge must be one of 'N', 'S', 'E', "
+            f"'W', got {cfg.get('edge')!r}"
+        )
+    width = float(cfg.get("width_mm") or 5.0)
+    offset = float(cfg.get("offset_mm") or 0.0)
+    if width <= 0 or offset < 0:
+        raise ValueError(
+            f"ewod_pad_array: tape_land needs width_mm > 0 and "
+            f"offset_mm >= 0 (got width_mm={width}, offset_mm={offset})"
+        )
+    # "The array edge" is the same boundary the field-wide mask_open
+    # feature already draws — `cols*pitch/2 + gap` — so offset_mm=0 lands
+    # the strip flush against the mask opening, clear of the electrode
+    # field itself.
+    half_x = cols * float(sizing["pitch"]) / 2.0 + float(sizing["gap"])
+    half_y = rows * float(sizing["pitch"]) / 2.0 + float(sizing["gap"])
+    along = 2.0 * (half_x if edge in ("N", "S") else half_y)
+    length = float(cfg.get("length_mm") or along)
+    if length <= 0:
+        raise ValueError(
+            f"ewod_pad_array: tape_land.length_mm must be > 0, got {length}"
+        )
+    pad: dict[str, Any]
+    if edge in ("N", "S"):
+        py = (half_y + offset + width / 2.0) * (1 if edge == "N" else -1)
+        pad = {"x": 0.0, "y": py, "w": length, "h": width}
+    else:
+        px = (half_x + offset + width / 2.0) * (1 if edge == "E" else -1)
+        pad = {"x": px, "y": 0.0, "w": width, "h": length}
+    pad.update(
+        {
+            "pin": "top_plate",
+            "shape": "rect",
+            "layer": "F.Cu",
+            "role": "tape_land",
+            "mask": "open",
+            "paste": "none",
+        }
+    )
+    return {
+        "pad": pad,
+        "edge": edge,
+        "length_mm": length,
+        "width_mm": width,
+        "offset_mm": offset,
     }
 
 
@@ -2492,6 +2635,21 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
                 sink_connections.append(
                     {"net": net_name, "refdes": sink_refdes, "pin": pn}
                 )
+            # Driven control lines (Slice 2, ruling 12): one shared
+            # `{name}_{ctl}` net bussed to EVERY sink's pin -- CLK/LE/BL/
+            # POL are common rails across a daisy chain, not per-sink
+            # wires (DIN/DOUT are the only chained lines). The board wires
+            # the controller onto these net names via `connections`, the
+            # same way the serial chain's free ends work.
+            for ctl, ctl_pin in sink_cfg.controls.items():
+                pin_decls.append({"name": ctl_pin})
+                sink_connections.append(
+                    {
+                        "net": f"{name}_{ctl}",
+                        "refdes": sink_refdes,
+                        "pin": ctl_pin,
+                    }
+                )
 
             mean_r0 = sum(r0 for r0, _c0, _pin in share) / len(share)
             mean_c0 = sum(c0 for _r0, c0, _pin in share) / len(share)
@@ -2575,6 +2733,11 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
             ledger_sinks["_serial_out_net"] = prev_out_net
             if sink_cfg.top_plate_pin:
                 ledger_sinks["_top_plate_net"] = sink_cfg.top_plate_net
+            if sink_cfg.controls:
+                ledger_sinks["_control_nets"] = {
+                    ctl: {"pin": pin, "net": f"{name}_{ctl}"}
+                    for ctl, pin in sink_cfg.controls.items()
+                }
         else:
             warnings.append(
                 "sink_grid: configured but no electrode claimed a usable "
@@ -2678,6 +2841,28 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
         nets.append({"name": net_name, "net_class": pin_class})
         connections.append({"net": net_name, "refdes": name, "pin": pin})
 
+    # Ruling 4 / ewod-controller-and-hv-supply.md Slice 3 (Defect B): the
+    # copper-tape landing for the ITO top plate — one rect pad on the
+    # array's own footprint, wired to the top-plate net so the ordinary
+    # router closes it (no layer lock on this net: F.Cu pad -> via ->
+    # B.Cu run to the sink's top_plate_pin is a plain route).
+    tape_land = _parse_tape_land(params, name, sizing, rows, cols)
+    top_plate_target = (
+        sink_cfg.top_plate_net if sink_cfg is not None else f"{name}_top_plate"
+    )
+    if tape_land is not None:
+        if "top_plate" in pin_positions:
+            raise ValueError(
+                "ewod_pad_array: tape_land needs pin 'top_plate' but an "
+                "electrode/merged pad already claims that name — rename the "
+                "pad_sizes entry"
+            )
+        pads.append(tape_land["pad"])
+        component["pins"].append({"name": "top_plate"})
+        connections.append(
+            {"net": top_plate_target, "refdes": name, "pin": "top_plate"}
+        )
+
     half_extent_x = cols * sizing["pitch"] / 2.0 + sizing["gap"]
     half_extent_y = rows * sizing["pitch"] / 2.0 + sizing["gap"]
     coating = _coating_verdict(name, 2.0 * half_extent_x, 2.0 * half_extent_y)
@@ -2737,6 +2922,47 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
     }
     if sink_cfg is not None:
         ledger["sink_grid"] = ledger_sinks
+    if tape_land is not None:
+        # Footprint-local geometry (the component pose carries the board
+        # frame) — the strip the capability map draws and the fab-notes
+        # file names.
+        ledger["tape_land"] = {
+            "pin": "top_plate",
+            "net": top_plate_target,
+            "edge": tape_land["edge"],
+            "length_mm": tape_land["length_mm"],
+            "width_mm": tape_land["width_mm"],
+            "offset_mm": tape_land["offset_mm"],
+            "x": tape_land["pad"]["x"],
+            "y": tape_land["pad"]["y"],
+            "w": tape_land["pad"]["w"],
+            "h": tape_land["pad"]["h"],
+        }
+
+    # ewod-controller-and-hv-supply.md Slice 4d: when the array declares a
+    # drive voltage and a top-plate (VPP) net exists (a sink's
+    # top_plate_pin or the tape_land strip), that net carries the FULL
+    # drive voltage — put it in an `ewod_{name}_hv` class whose
+    # `working_voltage_v` derives the creepage floor through IPC-2221B
+    # B4 in `resolve_net_rules` (ruling 3's column — these boards are
+    # parylene-coated), ERROR-tier via `min_clearance_mm`, rather than a
+    # typed `clearance_mm` number ("derived, not typed"). Other converter
+    # nets (the ladder stages, the buck) join this class board-side via
+    # `op='class_rules'` / a `nets[]` row.
+    net_classes: dict[str, dict[str, Any]] = {
+        net_class: {"clearance_mm": gap_clearance_mm},
+        escape_class: {
+            "clearance_mm": gap_clearance_mm,
+            "layers": list(escape_layers),
+        },
+    }
+    drive_voltage_v = params.get("drive_voltage_v")
+    if drive_voltage_v is not None and (
+        tape_land is not None or (sink_cfg is not None and sink_cfg.top_plate_pin)
+    ):
+        hv_class = f"ewod_{name}_hv"
+        net_classes[hv_class] = {"working_voltage_v": float(drive_voltage_v)}
+        nets.append({"name": top_plate_target, "net_class": hv_class})
 
     unique_merges = {m.pin: m for m in merges.values()}
     canonical_pad_sizes = [
@@ -2764,9 +2990,30 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
                 "top_plate_pin": sink_cfg.top_plate_pin,
                 "top_plate_net": sink_cfg.top_plate_net,
                 "power": sink_cfg.power,
+                **{
+                    f"{ctl}_pin": sink_cfg.controls[ctl]
+                    for ctl in _SINK_CONTROL_KEYS
+                    if ctl in sink_cfg.controls
+                },
             }
             if sink_cfg is not None
             else None
+        ),
+        # Param-gated keys stay ABSENT from canonical_params when
+        # unconfigured (not None-valued) so an unchanged config produces a
+        # byte-identical expansion — same discipline as the ctl-pin keys
+        # in sink_grid above.
+        **(
+            {
+                "tape_land": {
+                    "edge": tape_land["edge"],
+                    "length_mm": tape_land["length_mm"],
+                    "width_mm": tape_land["width_mm"],
+                    "offset_mm": tape_land["offset_mm"],
+                }
+            }
+            if tape_land is not None
+            else {}
         ),
         **sizing,
     }
@@ -2785,13 +3032,7 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
         warnings=warnings,
         copper=copper,
         measures=_invariant_measures(name, sizing, copper),
-        net_classes={
-            net_class: {"clearance_mm": gap_clearance_mm},
-            escape_class: {
-                "clearance_mm": gap_clearance_mm,
-                "layers": list(escape_layers),
-            },
-        },
+        net_classes=net_classes,
     )
 
 

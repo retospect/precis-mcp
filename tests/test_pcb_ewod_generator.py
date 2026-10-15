@@ -436,6 +436,230 @@ def test_sink_grid_not_supported_with_rim_variant(pcb):
         )
 
 
+# ── sink_grid control pins (ewod-controller-and-hv-supply.md Slice 2,
+# ruling 12 — HV507's CLK/LE/BL/POL/DIR as named config) ──────────────────
+_CONTROL_SINK_GRID = {
+    "clk_pin": "CLK",
+    "le_pin": "LE",
+    "pol_pin": "POL",
+    "dir_pin": "DIR",
+    "bl_pin": "BL",
+}
+
+
+def test_sink_grid_control_pins_get_one_bussed_external_net_each(pcb):
+    args = _sink_args(sink_grid=dict(_CONTROL_SINK_GRID))
+    # A board-level connections entry wires the controller onto the
+    # externally-facing `{name}_<ctl>` nets — the Slice-2 acceptance path.
+    args["components"] = [
+        {"refdes": "U1", "footprint": "mcu", "pins": [{"name": "SCK"}]}
+    ]
+    args["footprints"] = [
+        {
+            "name": "mcu",
+            "pads": [{"pin": "SCK", "shape": "rect", "x": 0, "y": 0, "w": 0.4}],
+        }
+    ]
+    args["connections"] = [{"net": "ARR1_clk", "refdes": "U1", "pin": "SCK"}]
+    pcb.put(id="ewod-sink-ctl", args=args)
+    ref = pcb.store.get_ref(kind="pcb", id="ewod-sink-ctl")
+    assert ref is not None
+    gens = pcb.store.pcb_generators_for(ref.id)
+    control_nets = gens["ARR1"]["ledger"]["sink_grid"]["_control_nets"]
+    assert control_nets == {
+        ctl: {"pin": pin, "net": f"ARR1_{ctl}"}
+        for ctl, pin in (
+            ("clk", "CLK"),
+            ("le", "LE"),
+            ("bl", "BL"),
+            ("pol", "POL"),
+            ("dir", "DIR"),
+        )
+    }
+    graph = pcb.store.pcb_graph(ref.id)
+    members_by_net = {
+        n["name"]: {(m["refdes"], m["pin"]) for m in n["members"]}
+        for n in graph["nets"]
+    }
+    sinks = {f"ARR1_SINK_{i}" for i in range(4)}
+    for ctl, pin in (
+        ("clk", "CLK"),
+        ("le", "LE"),
+        ("bl", "BL"),
+        ("pol", "POL"),
+        ("dir", "DIR"),
+    ):
+        # Each control net is bussed to every sink's own pin of that name.
+        assert {(s, pin) for s in sinks} <= members_by_net[f"ARR1_{ctl}"]
+    # The board-level connections entry landed on the same net.
+    assert ("U1", "SCK") in members_by_net["ARR1_clk"]
+
+
+def test_sink_grid_a_control_pin_also_in_power_is_bad_input(pcb):
+    with pytest.raises(BadInput, match="same pin twice"):
+        pcb.put(
+            id="ewod-bad",
+            args=_sink_args(
+                sink_grid={"clk_pin": "CLK", "power": {"CLK": "GND", "GND": "GND"}}
+            ),
+        )
+
+
+def test_sink_grid_two_control_keys_on_one_pin_is_bad_input(pcb):
+    with pytest.raises(BadInput, match="same pin twice"):
+        pcb.put(
+            id="ewod-bad",
+            args=_sink_args(sink_grid={"clk_pin": "CTL", "le_pin": "CTL"}),
+        )
+
+
+def test_sink_grid_a_control_pin_colliding_with_a_channel_pin_is_bad_input(pcb):
+    with pytest.raises(BadInput, match="same pin twice"):
+        pcb.put(
+            id="ewod-bad",
+            args=_sink_args(sink_grid={"dir_pin": "OUT3"}),
+        )
+
+
+# ── tape_land (ewod-controller-and-hv-supply.md Slice 3 — ruling 4's
+# copper-tape landing for the ITO top plate, "Defect B") ──────────────────
+def test_tape_land_emits_one_open_paste_free_drill_free_pad(pcb):
+    pcb.put(
+        id="ewod-tape",
+        args=_sink_args(
+            tape_land={
+                "edge": "N",
+                "length_mm": 20.0,
+                "width_mm": 6.0,
+                "offset_mm": 1.0,
+            }
+        ),
+    )
+    ref = pcb.store.get_ref(kind="pcb", id="ewod-tape")
+    assert ref is not None
+    fp = pcb.store.pcb_local_footprints_for(ref.id)["__gen_ARR1"]
+    lands = [p for p in fp["pads"] if p.get("role") == "tape_land"]
+    assert len(lands) == 1
+    pad = lands[0]
+    assert pad["number"] == "top_plate"
+    assert pad["shape"] == "rect"
+    assert pad["mask"] == "open"
+    assert pad["paste"] == "none"
+    assert pad["layer"] == "F.Cu"
+    assert not pad.get("drill")
+    assert pad["w"] == pytest.approx(20.0)
+    assert pad["h"] == pytest.approx(6.0)
+    # N edge: the strip sits just past the +y boundary of the array's own
+    # mask extent (rows*pitch/2 + gap + offset + width/2 => centre).
+    assert pad["y"] > 0.0
+
+    ledger = pcb.store.pcb_generators_for(ref.id)["ARR1"]["ledger"]["tape_land"]
+    assert ledger["edge"] == "N"
+    assert ledger["net"] == "ARR1_top_plate"
+    assert ledger["length_mm"] == pytest.approx(20.0)
+
+    # The strip is wired to the SAME top-plate net the sinks' CPLT pins
+    # carry — one net, five members (4 sinks + the landing itself).
+    graph = pcb.store.pcb_graph(ref.id)
+    members = {
+        (m["refdes"], m["pin"])
+        for n in graph["nets"]
+        if n["name"] == "ARR1_top_plate"
+        for m in n["members"]
+    }
+    assert ("ARR1", "top_plate") in members
+    assert len(members) == 5
+
+
+def test_tape_land_defaults_to_a_full_edge_strip(pcb):
+    pcb.put(id="ewod-tape", args=_array_args(grid=[6, 6], tape_land={}))
+    ref = pcb.store.get_ref(kind="pcb", id="ewod-tape")
+    assert ref is not None
+    fp = pcb.store.pcb_local_footprints_for(ref.id)["__gen_ARR1"]
+    (pad,) = [p for p in fp["pads"] if p.get("role") == "tape_land"]
+    assert pad["h"] == pytest.approx(5.0)  # width_mm default
+    assert pad["w"] == pytest.approx(6 * 2.25 + 2 * 0.10)  # full N edge extent
+    # No sink_grid: the default top-plate net name applies.
+    graph = pcb.store.pcb_graph(ref.id)
+    members = {
+        (m["refdes"], m["pin"])
+        for n in graph["nets"]
+        if n["name"] == "ARR1_top_plate"
+        for m in n["members"]
+    }
+    assert members == {("ARR1", "top_plate")}
+
+
+def test_tape_land_length_mm_changes_the_strip(pcb):
+    pcb.put(id="ewod-tape", args=_array_args(grid=[6, 6], tape_land={}))
+    pcb.put(
+        id="ewod-tape",
+        args=_array_args(grid=[6, 6], tape_land={"length_mm": 9.0}),
+    )
+    ref = pcb.store.get_ref(kind="pcb", id="ewod-tape")
+    fp = pcb.store.pcb_local_footprints_for(ref.id)["__gen_ARR1"]
+    (pad,) = [p for p in fp["pads"] if p.get("role") == "tape_land"]
+    assert pad["w"] == pytest.approx(9.0)
+
+
+def test_tape_land_bad_edge_is_bad_input(pcb):
+    with pytest.raises(BadInput, match="tape_land.edge"):
+        pcb.put(id="ewod-bad", args=_array_args(grid=[3, 3], tape_land={"edge": "X"}))
+
+
+def test_tape_land_shows_in_the_capability_map(pcb):
+    pcb.put(id="ewod-tape", args=_array_args(grid=[6, 6], tape_land={"edge": "E"}))
+    resp = pcb.get(id="ewod-tape", view="capability")
+    assert "TAPE LAND" in resp.body
+
+
+def test_top_plate_net_lands_in_the_hv_class_when_voltage_is_declared(pcb):
+    """Slice 4d: with drive_voltage_v declared, the top-plate net gets the
+    ewod_<name>_hv class carrying working_voltage_v — the 0.4mm creepage
+    floor is derived, not typed."""
+    args = _sink_args(
+        sink_grid=dict(_CONTROL_SINK_GRID),
+        drive_voltage_v=250,
+        tape_land={"edge": "N"},
+    )
+    pcb.put(id="ewod-hv", args=args)
+    ref = pcb.store.get_ref(kind="pcb", id="ewod-hv")
+    assert ref is not None
+    classes = pcb.store.pcb_graph(ref.id)["net_classes"]
+    assert classes["ewod_ARR1_hv"] == {"working_voltage_v": 250.0}
+    graph = pcb.store.pcb_graph(ref.id)
+    top_plate = [n for n in graph["nets"] if n["name"] == "ARR1_top_plate"]
+    assert top_plate[0]["net_class"] == "ewod_ARR1_hv"
+
+
+def test_class_rules_refuses_a_voltage_past_the_table(pcb):
+    pcb.put(id="ewod-hv", args=_array_args(grid=[3, 3]))
+    with pytest.raises(BadInput, match="top band"):
+        pcb.put(
+            id="ewod-hv",
+            args={
+                "op": "class_rules",
+                "name": "hv",
+                "rules": {"working_voltage_v": 600},
+            },
+        )
+
+
+def test_fab_bundle_carries_the_notes_file_with_the_parylene_mask_note(pcb, tmp_path):
+    # No sink_grid here: the synthetic sink part has no cached footprint in
+    # this fixture and the fab bundle rightly refuses synthesized pads.
+    pcb.put(id="ewod-tape", args=_array_args(grid=[6, 6], tape_land={"edge": "N"}))
+    resp = pcb.get(id="ewod-tape", view="gerber", args={"dir": str(tmp_path)})
+    assert "SynthesizedPadError" not in resp.body
+    zpath = tmp_path / "ewod-tape-fab.zip"
+    with zipfile.ZipFile(zpath) as zf:
+        names = set(zf.namelist())
+        notes = zf.read("ewod-tape-fab-notes.txt").decode("utf-8")
+    assert "ewod-tape-fab-notes.txt" in names
+    assert "parylene process order" in notes  # the pre-existing EWOD note
+    assert "mask the copper-tape landing" in notes
+
+
 def test_reserve_marks_a_plaza_slot_unusable(pcb):
     pcb.put(id="ewod-gen-1", args=_array_args(grid=[3, 3], reserve=["P1_1:N"]))
     ref = pcb.store.get_ref(kind="pcb", id="ewod-gen-1")

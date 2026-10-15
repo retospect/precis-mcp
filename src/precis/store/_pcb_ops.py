@@ -52,7 +52,7 @@ from precis.pcb import (
 from precis.pcb import generators as pcb_generators
 from precis.pcb import geom as pcb_geom
 from precis.pcb import padplace as pcb_padplace
-from precis.pcb.capabilities import capability_for
+from precis.pcb.capabilities import capability_for, conductor_spacing_mm
 from precis.store.types import ActorSlug
 from precis.utils.units import parse_angle_deg
 
@@ -262,7 +262,7 @@ def _first_present(d: dict[str, Any], *keys: str) -> Any:
 #: DB CHECK constraint so a bad value fails at `put` time with the
 #: offending pad's own pin name in the message, not a bare constraint
 #: name from Postgres.
-_LOCAL_PAD_ROLES = ("solderable", "electrode", "probe")
+_LOCAL_PAD_ROLES = ("solderable", "electrode", "probe", "tape_land")
 _LOCAL_PAD_MASKS = ("open", "covered")
 _LOCAL_PAD_PASTES = ("none", "full")
 _LOCAL_PAD_SHAPES = ("circle", "rect", "obround", "polygon")
@@ -277,12 +277,14 @@ def _normalize_local_footprint_pad(p: dict[str, Any]) -> dict[str, Any]:
     ring (footprint-local mm — same frame as ``x``/``y`` on every other
     shape).
 
-    ``paste`` defaults to ``"none"`` for an ``electrode`` pad and
-    ``"full"`` otherwise when the author omits it — resolved HERE, once,
-    so every downstream reader (:mod:`precis.pcb.padplace`,
-    :mod:`precis.pcb.gerber`) can treat the field as always-explicit
-    rather than re-deriving the same default (acceptance criterion 3: "no
-    paste on any role: electrode pad").
+    ``paste`` defaults to ``"none"`` for an ``electrode`` or
+    ``tape_land`` pad and ``"full"`` otherwise when the author omits it —
+    resolved HERE, once, so every downstream reader
+    (:mod:`precis.pcb.padplace`, :mod:`precis.pcb.gerber`) can treat the
+    field as always-explicit rather than re-deriving the same default
+    (acceptance criterion 3: "no paste on any role: electrode pad"; a
+    tape land takes copper tape, never stencil-printed solder —
+    ewod-controller-and-hv-supply.md Defect B).
     """
     pin_name = str(p.get("pin") or p.get("number") or "").strip()
     if not pin_name:
@@ -309,7 +311,7 @@ def _normalize_local_footprint_pad(p: dict[str, Any]) -> dict[str, Any]:
     paste = (
         str(paste_raw).strip().lower()
         if paste_raw is not None
-        else ("none" if role == "electrode" else "full")
+        else ("none" if role in ("electrode", "tape_land") else "full")
     )
     if paste not in _LOCAL_PAD_PASTES:
         raise ValueError(
@@ -3016,6 +3018,16 @@ class PcbMixin:
             name = str(name).strip()
             if not name:
                 raise ValueError("pcb net_class needs a name")
+            # ewod-controller-and-hv-supply.md Slice 4c: refuse a value the
+            # spacing table cannot honour NOW (a stored-but-unresolvable
+            # class would otherwise crash every later resolve_net_rules
+            # call). conductor_spacing_mm raises above its 500 V top band.
+            wv = (rules or {}).get("working_voltage_v")
+            if wv is not None:
+                try:
+                    conductor_spacing_mm(float(wv), layer="external", coated=True)
+                except ValueError as exc:
+                    raise ValueError(f"pcb net_class {name!r}: {exc}") from exc
             conn.execute(
                 """
                 INSERT INTO pcb_net_classes (ref_id, name, rules)

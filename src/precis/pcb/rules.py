@@ -66,7 +66,7 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
-from precis.pcb.capabilities import CapabilityRow
+from precis.pcb.capabilities import CapabilityRow, conductor_spacing_mm
 from precis.pcb.ir import UNSET_LAYER, PcbIR
 
 #: IPC-2221 external/internal constants (module docstring, verbatim).
@@ -98,6 +98,14 @@ class NetRules:
     clearance_mm: float
     via_dia_mm: float | None = None
     via_drill_mm: float | None = None
+    #: The net's HARD clearance floor (ewod-controller-and-hv-supply.md
+    #: Slice 4b/c) — ``None`` means "the fab minimum is the whole answer"
+    #: (today's behaviour). When set, :func:`precis.pcb.drc.check_clearance`
+    #: reports a pair under it as an ERROR, not a WARN — a creepage/
+    #: working-voltage requirement is a hard floor, not a preferred
+    #: margin. Fed by a class's own ``min_clearance_mm`` key or derived
+    #: from its ``working_voltage_v`` through IPC-2221B Table 6-1.
+    min_clearance_mm: float | None = None
 
 
 def ipc2221_track_width_mm(
@@ -232,11 +240,50 @@ def resolve_net_rules(
         width_mm = max(float(width_mm), width_min)
 
     clearance_mm = overrides.get("clearance_mm")
+
+    # Slice 4c (ewod-controller-and-hv-supply.md): a class's
+    # ``working_voltage_v`` — the SAME key ``drc.py::_net_voltage`` reads
+    # for the ERC checks — derives a spacing floor through IPC-2221B Table
+    # 6-1, so the number is derived, not typed. External nets read the B4
+    # (coated) column: the EWOD boards this exists for are
+    # parylene-coated (ruling 3/10's own column choice); internal nets
+    # read B1 (coated is inapplicable there anyway). Above the table's
+    # 500 V top band this RAISES — a voltage claim the table cannot answer
+    # is refused, never extrapolated.
+    derived: float | None = None
+    working_voltage_v = overrides.get("working_voltage_v")
+    if working_voltage_v is not None:
+        derived = conductor_spacing_mm(
+            float(working_voltage_v),
+            layer="internal" if not layer_is_outer else "external",
+            coated=True,
+        )
+        if clearance_mm is None:
+            clearance_mm = derived
     if clearance_mm is None:
         clearance_mm = _fab_floor(fab_caps, "trace_spacing_mm", _FALLBACK_CLEARANCE_MM)
     clearance_min = _fab_min(fab_caps, "trace_spacing_mm")
     if clearance_min is not None:
         clearance_mm = max(float(clearance_mm), clearance_min)
+
+    # Slice 4b: ``min_clearance_mm`` is the class's HARD floor — the
+    # error-tier threshold ``check_clearance`` applies where ``jlc_min``
+    # alone used to set it. An authored explicit key and the derived
+    # voltage floor both feed it; the resolved value never dips below the
+    # fab floor (below it the fab can't build anything anyway).
+    explicit_floor = overrides.get("min_clearance_mm")
+    min_clearance_mm: float | None = None
+    if explicit_floor is not None or derived is not None:
+        min_clearance_mm = max(
+            float(explicit_floor) if explicit_floor is not None else 0.0,
+            derived or 0.0,
+        )
+        if clearance_min is not None:
+            min_clearance_mm = max(min_clearance_mm, clearance_min)
+        # The derived floor also raises the preferred tier — the router
+        # (which reads ``clearance_mm``) and the WARN band must both keep
+        # the creepage distance, not merely error below it.
+        clearance_mm = max(clearance_mm, min_clearance_mm)
 
     via_dia_mm = overrides.get("via_dia_mm")
     if via_dia_mm is None:
@@ -261,6 +308,7 @@ def resolve_net_rules(
         clearance_mm=float(clearance_mm),
         via_dia_mm=None if via_dia_mm is None else float(via_dia_mm),
         via_drill_mm=None if via_drill_mm is None else float(via_drill_mm),
+        min_clearance_mm=min_clearance_mm,
     )
 
 

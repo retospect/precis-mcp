@@ -492,29 +492,38 @@ declares every channel pin (`unused` on the unwired share) at version 5.
 Nothing remains here — the Defect A analysis above stays as the diagnosis.
 
 **Slice 2 — `sink_grid` control pins as named config. Pure generator
-work.** `clk_pin`, `le_pin`, `bl_pin`, `pol_pin`, `dir_pin` (each optional;
-a pin named in `power` is tied, else it gets an externally-facing
-`{name}_<ctl>` net); `HVGND` documented as a `power` entry.
-*Accept:* the ledger lists every control net with its pin; a config naming
-the same pin twice (control + power) is a `ValueError`; a board-level
-`connections` entry to `{name}_clk` etc. routes on the fixture.
+work.** **SHIPPED 2026-10-15** (worktree `ewod-board`): `clk_pin`,
+`le_pin`, `bl_pin`, `pol_pin`, `dir_pin` are named config; each driven
+line gets one `{name}_<ctl>` net bussed to every sink (ledger
+`sink_grid._control_nets`); a pin named twice (control + power + serial +
+channels) is a `ValueError`; `HVGND`/tied DIR/BL stay on the `power` map.
+Generator version 8.
 
 **Slice 3 — `role: tape_land` strip (Defect B / ruling 4). Pure generator +
-store work.** As specified above.
-*Accept:* `view='gerber'` shows a mask opening over the strip with no paste
-aperture and no drill; the strip is on the `top_plate_net` and
-`connectivity` reports it connected after `op='route'` on the fixture;
-`length_mm` changes the strip length in the ledger; the fab-notes file
-carries the parylene-mask sentence.
+store work.** **SHIPPED 2026-10-15** (worktree `ewod-board`): `tape_land`
+param `{edge, length_mm, width_mm~5, offset_mm}` emits one drill-free
+rect pad (`role: tape_land`, `mask: open`, `paste: none`, F.Cu) along the
+configured array edge; the array gains pin `top_plate` wired to
+`sink_grid.top_plate_net`. `tape_land` joined `_LOCAL_PAD_ROLES`
+(paste-none default). New: the fab zip carries `<slug>-fab-notes.txt`
+when a model has EWOD content — the parylene process-order note (built
+here, the "existing" note never actually shipped) plus the tape-land
+masking sentence. Ledger `tape_land` + capability map draw it.
+*Open:* `connectivity`-after-`op='route'` acceptance is a routed-board
+fact, deferred to Slice 7's harness run.
 
 **Slice 4 — HV net class end-to-end. Engine work, no footprints.**
 (a) per-net clearance in the grid — shipped (Blocker 1);
-(b) `min_clearance_mm` hard-floor class key at ERROR tier (Blocker 2);
-(c) `working_voltage_v` class key → `conductor_spacing_mm(layer, coated)`
-in `resolve_net_rules`, clamped to the fab floor like everything else;
-(d) `ewod_pad_array` emits an `hv_250v`-style class for `top_plate_net`
-and the dogfood board authors the ladder/output nets into it via
-`op='class_rules'`.
+(b–d) **SHIPPED 2026-10-15** (worktree `ewod-board`): `NetRules` gains
+`min_clearance_mm`; `resolve_net_rules` reads class `min_clearance_mm`
+(explicit error floor) and `working_voltage_v` (derived through
+`conductor_spacing_mm` — external=B4 coated per ruling 3, internal=B1),
+both feed the floor AND raise `clearance_mm` so the router keeps the
+spacing; `check_clearance` errors below the pair floor (message names
+the class floor); `_pcb_upsert_net_classes` refuses `working_voltage_v`
+past the 500 V band; `ewod_pad_array` emits `ewod_{name}_hv` with
+`working_voltage_v` for the top-plate net when `drive_voltage_v` is
+declared. Board authoring of ladder/output nets rides `op='class_rules'`.
 *Accept:* a two-net fixture with one 0.4 mm class and one default net
 routes the default net at fab clearance and keeps 0.4 mm around the HV net;
 an HV-vs-GND gap of 0.3 mm is a DRC **error**, 0.45 mm clean; a class with
