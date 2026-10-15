@@ -15,7 +15,8 @@ The thread-session fleet (one window per roadmap thread) is
     fleet-wave send-line WIN TEXT       type TEXT + Enter; refuses unsent input
     fleet-wave watch-done NAME...       emit when <tree>/.claude/purpose finishes
     fleet-wave stuck-watch [NAME...]    emit on prompt / quiet / done / gone
-    fleet-wave close NAME...            kill window, remove tree, drop branch
+    fleet-wave close NAME...            kill window, remove tree, drop branch;
+                                        refuses a tree with unlanded commits
     fleet-wave approve TREE SHA[,SHA...] [--note ".."]   grant landing these shas
     fleet-wave approve --list [TREE]    print the approval ledger
     fleet-wave approve --revoke TREE SHA[,SHA...]        append a revoke line
@@ -595,15 +596,33 @@ def cmd_close(f: Fleet, a: argparse.Namespace) -> int:
     f.state.mkdir(parents=True, exist_ok=True)
     rc = 0
     wins = f.windows()
+    # Best effort: a stale origin/main only errs towards refusing.
+    git("fetch", "origin", cwd=f.main)
     for name in a.names:
+        tree = f.worktrees / name
+        if not tree.is_dir():
+            for p in PREFIXES:
+                if p + name in wins:
+                    f.tmux("kill-window", "-t", f.target(p + name), check=False)
+                    print(f"window closed: {p}{name}")
+            print(f"no tree: {name}")
+            continue
+        if not git("rev-parse", "--verify", "origin/main", cwd=tree).strip():
+            print(f"REFUSED {name}: origin/main does not resolve; kept")
+            rc = 1
+            continue
+        cherry = git("cherry", "origin/main", "HEAD", cwd=tree).splitlines()
+        if not all(ln.startswith("-") for ln in cherry):
+            print(f"REFUSED {name}: unlanded commits; window, tree, branch kept")
+            print(git("log", "--oneline", "origin/main..HEAD", cwd=tree), end="")
+            rc = 1
+            continue
+        # Merged by patch, not ancestry (a squash-land): -d fails, -D is safe.
+        patch_equiv = bool(cherry)
         for p in PREFIXES:
             if p + name in wins:
                 f.tmux("kill-window", "-t", f.target(p + name), check=False)
                 print(f"window closed: {p}{name}")
-        tree = f.worktrees / name
-        if not tree.is_dir():
-            print(f"no tree: {name}")
-            continue
         branch = git("rev-parse", "--abbrev-ref", "HEAD", cwd=tree).strip()
         sha = git("rev-parse", "--short", "HEAD", cwd=tree).strip()
         git("worktree", "unlock", str(tree), cwd=f.main)
@@ -622,13 +641,22 @@ def cmd_close(f: Fleet, a: argparse.Namespace) -> int:
         dropped = ""
         if branch and branch != "HEAD":
             d = subprocess.run(
-                ["git", "branch", "-D", branch],
+                ["git", "branch", "-d", branch],
                 cwd=f.main,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
                 check=False,
             )
+            if d.returncode and patch_equiv:
+                d = subprocess.run(
+                    ["git", "branch", "-D", branch],
+                    cwd=f.main,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    check=False,
+                )
             dropped = branch if d.returncode == 0 else ""
         with log.open("a", encoding="utf-8") as fh:
             fh.write(f"{utc_stamp()} {name} {branch} {sha} removed\n")
@@ -688,7 +716,10 @@ def parser() -> argparse.ArgumentParser:
             s.add_argument("--quiet-min", type=int, default=20)
         s.set_defaults(fn=fn)
 
-    s = sub.add_parser("close", help="kill window, remove tree, drop branch")
+    s = sub.add_parser(
+        "close",
+        help="kill window, remove tree, drop branch; refuses unlanded work",
+    )
     s.add_argument("names", nargs="+")
     s.set_defaults(fn=cmd_close)
 

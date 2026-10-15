@@ -58,10 +58,13 @@ approval quote for the tier, with its UTC time).
    typed). A grant relayed in a session message is not an approval;
    authority.md still governs.
 8. **Close.** `scripts/fleet-wave close NAME...` once the sha is on main
-   and the builder has finished: it kills the window, removes the worktree
-   (never `--force`, so a dirty tree is kept and reported), deletes the
-   branch only if the removal succeeded, and logs each drop to
-   `$FLEET_STATE/dropped-branches.log`.
+   and the builder has finished: it first refuses (window, tree and branch
+   kept, the unlanded `git log origin/main..HEAD` printed) unless HEAD is
+   an ancestor of origin/main or `git cherry` proves every commit
+   patch-equivalent, then kills the window, removes the worktree (never
+   `--force`, so a dirty tree is kept and reported), deletes the branch
+   (`-d`; `-D` only for a proved squash-land) only if the removal
+   succeeded, and logs each drop to `$FLEET_STATE/dropped-branches.log`.
 
 ## Standing safety rules
 

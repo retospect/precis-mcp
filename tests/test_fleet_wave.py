@@ -80,6 +80,9 @@ def env(tmp_path: Path) -> dict[str, str]:
         ["git", "config", "user.email", "t@example.invalid"],
         ["git", "config", "user.name", "t"],
         ["git", "commit", "-q", "--allow-empty", "-m", "init"],
+        # close checks landedness against origin/main; there is no real
+        # remote, so the ref is set by hand (fetch just fails silently).
+        ["git", "update-ref", "refs/remotes/origin/main", "HEAD"],
     ):
         subprocess.run(cmd, cwd=repo, check=True)
     shutil.copytree(
@@ -160,6 +163,27 @@ def _tmux_calls(env: dict[str, str]) -> list[list[str]]:
     if not log.exists():
         return []
     return [json.loads(ln) for ln in log.read_text(encoding="utf-8").splitlines()]
+
+
+def _worktree(env: dict[str, str], name: str) -> Path:
+    wt = Path(env["FLEET_WORKTREES"]) / name
+    subprocess.run(
+        ["git", "worktree", "add", "-q", "-b", f"worktree-{name}", str(wt)],
+        cwd=env["CWD"],
+        check=True,
+    )
+    return wt
+
+
+def _branches(env: dict[str, str]) -> str:
+    return subprocess.run(
+        ["git", "branch", "--list", "worktree-*"],
+        cwd=env["CWD"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    ).stdout
 
 
 IDLE = "some output\n\n────\n❯ \n────\n  12% ctx · opus\n"
@@ -307,14 +331,9 @@ def test_stuck_watch_reports_prompt_and_gone(env: dict[str, str]) -> None:
 
 
 def test_close_removes_clean_tree_keeps_dirty(env: dict[str, str]) -> None:
-    repo = Path(env["CWD"])
     wt = Path(env["FLEET_WORKTREES"])
     for name in ("done1", "dirty1"):
-        subprocess.run(
-            ["git", "worktree", "add", "-q", "-b", f"worktree-{name}", str(wt / name)],
-            cwd=repo,
-            check=True,
-        )
+        _worktree(env, name)
     (wt / "dirty1" / "x.txt").write_text("unsaved\n", encoding="utf-8")
     _windows(env, {"claude-done1": IDLE, "claude-dirty1": IDLE})
     proc = _run(env, "close", "done1", "dirty1")
@@ -322,14 +341,7 @@ def test_close_removes_clean_tree_keeps_dirty(env: dict[str, str]) -> None:
     assert "branch deleted: worktree-done1" in proc.stdout
     assert "KEPT (dirty or busy): dirty1" in proc.stdout
     assert not (wt / "done1").exists() and (wt / "dirty1").exists()
-    branches = subprocess.run(
-        ["git", "branch", "--list", "worktree-*"],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        check=True,
-    ).stdout
+    branches = _branches(env)
     assert "worktree-done1" not in branches and "worktree-dirty1" in branches
     log = (Path(env["FLEET_STATE"]) / "dropped-branches.log").read_text(
         encoding="utf-8"
@@ -337,6 +349,59 @@ def test_close_removes_clean_tree_keeps_dirty(env: dict[str, str]) -> None:
     assert " done1 worktree-done1 " in log and "dirty1" not in log
     kills = [c for c in _tmux_calls(env) if c[0] == "kill-window"]
     assert [c[-1] for c in kills] == ["claude-done1", "claude-dirty1"]
+
+
+def test_close_refuses_unlanded_commit_and_carries_on(env: dict[str, str]) -> None:
+    wt = Path(env["FLEET_WORKTREES"])
+    wip = _worktree(env, "wip1")
+    subprocess.run(
+        ["git", "commit", "-q", "--allow-empty", "-m", "unlanded work"],
+        cwd=wip,
+        check=True,
+    )
+    _worktree(env, "ok1")  # HEAD == main: a clean close
+    _windows(env, {"claude-wip1": IDLE, "claude-ok1": IDLE})
+    proc = _run(env, "close", "wip1", "ok1")
+    assert proc.returncode == 1
+    assert "REFUSED wip1" in proc.stdout and "unlanded work" in proc.stdout
+    assert "removed: ok1" in proc.stdout
+    assert wip.exists() and not (wt / "ok1").exists()
+    branches = _branches(env)
+    assert "worktree-wip1" in branches and "worktree-ok1" not in branches
+    kills = [c for c in _tmux_calls(env) if c[0] == "kill-window"]
+    assert [c[-1] for c in kills] == ["claude-ok1"]
+
+
+def test_close_squash_landed_tree(env: dict[str, str]) -> None:
+    repo = Path(env["CWD"])
+    sq = _worktree(env, "sq1")
+    (sq / "f.txt").write_text("payload\n", encoding="utf-8")
+    for cmd in (["git", "add", "f.txt"], ["git", "commit", "-q", "-m", "squash-me"]):
+        subprocess.run(cmd, cwd=sq, check=True)
+    sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=sq,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    ).stdout.strip()
+    # Same patch lands on main under a different sha (a squash-merge;
+    # --no-commit because a plain cherry-pick would fast-forward here).
+    subprocess.run(["git", "cherry-pick", "-n", sha], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "squashed"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/main", "HEAD"],
+        cwd=repo,
+        check=True,
+    )
+    _windows(env, {"claude-sq1": IDLE})
+    proc = _run(env, "close", "sq1")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "branch deleted: worktree-sq1" in proc.stdout
+    assert not sq.exists() and "worktree-sq1" not in _branches(env)
+    kills = [c for c in _tmux_calls(env) if c[0] == "kill-window"]
+    assert [c[-1] for c in kills] == ["claude-sq1"]
 
 
 def _coordinator(env: dict[str, str]) -> dict[str, str]:
