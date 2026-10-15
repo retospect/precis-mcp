@@ -32,7 +32,7 @@ intentional stateless-after-stateful construction, and shutdown-during-sync.
 Owner anchors: `src/precis/runtime/factory.py::build_runtime`,
 `src/precis/runtime/core.py::PrecisRuntime`, `src/precis/dispatch.py::boot`,
 `src/precis/server.py::_shutdown_runtime`, `src/precis/tools/core.py::_build_runtime_locked`.
-Related: `cli-bind-store-audit.md`.
+Related: `tests/test_cli_binds_store.py` (CLI commands bind the store before routing).
 
 ## Replace PrecisRuntime cross-mixin stubs with explicit collaborators
 

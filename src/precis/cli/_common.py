@@ -8,9 +8,15 @@ so callers don't have to grep across the tree to find the impl.
 from __future__ import annotations
 
 import argparse
+import logging
 import re
 import sys
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from precis.store import Store
+
+log = logging.getLogger(__name__)
 
 # Format names recognised by ``--format``. Mirrors the registry keys
 # in :mod:`precis.format` so the CLI doesn't quietly accept formats
@@ -41,6 +47,48 @@ def is_refusal(payload: object) -> bool:
     ``process`` on an error string (gr458317).
     """
     return bool(_REFUSAL_RE.match(str(payload).lstrip()))
+
+
+def bind_process_store(store: Store) -> None:
+    """Bind ``store`` as the process store the model router reads, as
+    ``precis worker`` does at boot: route log, budget meter, DB settings.
+
+    Call it right after ``Store.connect`` in any command that reaches the
+    router. Unbound, ``budget.meter.active_store()`` is None and every
+    ``live_config`` override (``llm.backend``, ``llm.chain.<tier>``,
+    ``llm.op.<source>``) silently reads as "no override", because that layer
+    is failure-tolerant by design. ``tests/test_cli_binds_store.py`` holds
+    every command to it.
+    """
+    from precis import route_log, settings
+    from precis.budget import bind_store
+
+    route_log.bind_store(store)
+    bind_store(store)
+    settings.bind_store(store)
+
+
+def connect_router_store(database_url: str | None) -> Store | None:
+    """Connect and bind a store for a command that has no database work of
+    its own but calls the model router, so live routing still applies.
+
+    Best effort: with no DSN configured, or the database unreachable, it
+    warns and returns None, and the router runs on its env/compiled defaults.
+    """
+    from precis.config import load_config
+    from precis.store import Store
+
+    dsn = database_url or load_config().database_url
+    if not dsn:
+        log.warning("no database_url: live LLM routing overrides not applied")
+        return None
+    try:
+        store = Store.connect(dsn)
+    except Exception as exc:
+        log.warning("database unreachable (%s): live LLM routing not applied", exc)
+        return None
+    bind_process_store(store)
+    return store
 
 
 def resolve_dsn(override: str | None, *, cfg: Any = None) -> str:

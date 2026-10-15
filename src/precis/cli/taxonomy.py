@@ -17,6 +17,7 @@ import argparse
 import json
 from pathlib import Path
 
+from precis.cli._common import connect_router_store
 from precis.taxonomy import discovery
 from precis.taxonomy import run as pipeline
 from precis.taxonomy.config import CampaignConfig, load_campaign
@@ -179,6 +180,9 @@ def run(args: argparse.Namespace) -> None:
         if args.call_timeout is not None
         else discovery.call_timeout_s(args.pack)
     )
+    # No database work of its own, but the router reads live routing
+    # overrides through the bound store.
+    connect_router_store(None)
     result = pipeline.run_pipeline(
         config,
         discovery.router_client(timeout_s=timeout_s, placement=args.placement),

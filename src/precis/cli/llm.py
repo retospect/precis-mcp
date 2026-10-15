@@ -19,7 +19,7 @@ import argparse
 import json
 from typing import Any
 
-from precis.cli._common import resolve_dsn
+from precis.cli._common import bind_process_store, resolve_dsn
 from precis.errors import BadInput
 from precis.store import Store
 
@@ -686,15 +686,10 @@ def _bind_process_store(store: Store) -> None:
     route-log, budget meter, DB settings. Without it ``llm eval`` finds no
     local slot, ignores ``llm.chain.*`` settings and cannot resolve vault keys.
     """
-    from precis import route_log as _route_log
     from precis import secrets as _secrets
-    from precis import settings as _settings
-    from precis.budget import bind_store as _bind_budget_store
 
     _secrets.adopt_process_store(store)
-    _route_log.bind_store(store)
-    _bind_budget_store(store)
-    _settings.bind_store(store)
+    bind_process_store(store)
 
 
 def run(args: argparse.Namespace) -> None:

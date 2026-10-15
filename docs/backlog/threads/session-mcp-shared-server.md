@@ -308,9 +308,7 @@ check their state first.
     assert plus an MCP staleness banner; guards the stale-process class.
 9. **backlog/improve-ack-scrape-eradication.md** — replace regex-on-ack
     with structured Response fields.
-10. **backlog/cli-bind-store-audit.md** — CLI entrypoints without bind_store
-    miss live routing.
-11. **backlog/serverinfo-title.md** — serverInfo.title blocked upstream on
+10. **backlog/serverinfo-title.md** — serverInfo.title blocked upstream on
     FastMCP; still blocked, so last.
 
 ## Parked

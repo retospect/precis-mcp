@@ -29,7 +29,7 @@ import os
 import sys
 from pathlib import Path
 
-from precis.cli._common import resolve_dsn
+from precis.cli._common import bind_process_store, resolve_dsn
 
 log = logging.getLogger(__name__)
 
@@ -287,6 +287,7 @@ def run_ingest(args: argparse.Namespace) -> None:
 
     dsn = resolve_dsn(args.database_url, cfg=cfg)
     store = Store.connect(dsn)
+    bind_process_store(store)
     handler_ctors: dict[str, type] = {
         "md": MarkdownHandler,
         "plaintext": PlaintextHandler,
@@ -403,6 +404,7 @@ def run_oracles(args: argparse.Namespace) -> None:
 
     dsn = resolve_dsn(args.database_url, cfg=cfg)
     store = Store.connect(dsn)
+    bind_process_store(store)
     try:
         embedder = make_embedder(cfg.embedder, dim=store.embedding_dim())
 

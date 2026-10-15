@@ -32,7 +32,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from precis.cli._common import resolve_dsn
+from precis.cli._common import bind_process_store, resolve_dsn
 
 
 def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
@@ -170,6 +170,7 @@ def _run_ingest(args: argparse.Namespace) -> None:
 
     dsn = resolve_dsn(getattr(args, "database_url", None), cfg=cfg)
     store = Store.connect(dsn)
+    bind_process_store(store)
     try:
         embedder = make_embedder(cfg.embedder, dim=store.embedding_dim())
         hub = Hub(store=store, embedder=embedder)
@@ -242,6 +243,7 @@ def _run_verify(args: argparse.Namespace) -> None:
     dry_run = bool(args.dry_run)
 
     store = Store.connect(dsn)
+    bind_process_store(store)
     try:
         embedder = make_embedder(cfg.embedder, dim=store.embedding_dim())
         hub = Hub(store=store, embedder=embedder)

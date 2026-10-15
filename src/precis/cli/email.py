@@ -25,7 +25,7 @@ import argparse
 import json
 import sys
 
-from precis.cli._common import resolve_dsn
+from precis.cli._common import bind_process_store, resolve_dsn
 from precis.mail.account import Account, AuthMode, default_secret_name
 from precis.store import Store
 
@@ -136,6 +136,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 
 def run(args: argparse.Namespace) -> None:
     store = Store.connect(resolve_dsn(getattr(args, "database_url", None)))
+    bind_process_store(store)
     try:
         cmd = args.email_cmd
         if cmd == "add":

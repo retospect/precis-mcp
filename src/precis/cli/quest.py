@@ -25,7 +25,7 @@ from __future__ import annotations
 import argparse
 from typing import Any
 
-from precis.cli._common import resolve_dsn
+from precis.cli._common import bind_process_store, resolve_dsn
 from precis.store import Store
 
 
@@ -779,6 +779,7 @@ def _cmd_status(store: Store, args: argparse.Namespace) -> None:
 
 def run(args: argparse.Namespace) -> None:
     store = Store.connect(resolve_dsn(args.database_url))
+    bind_process_store(store)
     try:
         if args.quest_cmd == "tick":
             _cmd_tick(store, args)
