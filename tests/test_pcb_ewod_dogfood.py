@@ -456,13 +456,15 @@ def test_dogfood_applies_and_places_69_channel_sink_under_the_array(pcb):
     # order") -- not exactly the field's own geometric centre, since the
     # merged RESV pad (a top-left corner span) drops one electrode's own
     # chain position asymmetrically, but still well inside the field,
-    # "directly under the array" either way. The put-time seed
-    # legalisation (pcb-global-plan-router slice 5b) may slide it a
-    # lattice step or two when this put runs before the footprint cache
-    # is warm and the sink's synthesized lands read as over the plaza
-    # vias — still well inside the field either way.
-    assert by_refdes["ARR1_SINK_0"]["x"] == pytest.approx(0.0, abs=2.0)
-    assert by_refdes["ARR1_SINK_0"]["y"] == pytest.approx(0.0, abs=2.0)
+    # "directly under the array" either way. This put runs BEFORE the
+    # footprint cache is warm (`_seed` uploads the ring footprint after),
+    # so the sink's lands are synthesized here and put-time seed
+    # legalisation (pcb-global-plan-router slice 5b) deliberately leaves
+    # synthesized-lands seeds alone — a via conflict computed on guessed
+    # geometry is a guess. The pose below is therefore the emitted
+    # centroid seed itself, exact.
+    assert by_refdes["ARR1_SINK_0"]["x"] == pytest.approx(0.0, abs=1.0)
+    assert by_refdes["ARR1_SINK_0"]["y"] == pytest.approx(0.0, abs=1.0)
     # 64 pads - 9 auto plazas - 1 (the RESV merge removes one net) = 54
     # distinct escape pins on an 8x8 field; the merged RESV pad plus
     # whichever boundary cells lack an adjacent plaza are excluded from
