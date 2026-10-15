@@ -31,8 +31,8 @@ class _FakeConn:
 
     def execute(self, sql: str, _params: Any = ()) -> Any:
         if "vault.list()" in sql:
-            # No versions known: entries fall back to the 60 s window.
-            return type("R", (), {"fetchall": lambda self: []})()
+            # Grant held, no versions known: entries keep the 60 s window.
+            return type("R", (), {"fetchall": lambda self: [(True, None, None)]})()
         self._counter[0] += 1
         val = self._value
         return type("R", (), {"fetchone": lambda self: (val,)})()

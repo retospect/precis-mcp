@@ -1,6 +1,7 @@
 """The version-checked reveal cache in :mod:`precis.secrets` — no DB required.
 
-A fake vault answers ``vault.list()`` and ``vault.reveal()`` and counts the
+A fake vault answers the recheck (reveal grant plus ``vault.list()``) and
+``vault.reveal()`` and counts the
 reveals (each one is a decrypt plus a ``vault.events`` row); a fake clock
 drives simulated days. The budget under test: a hot ``get_secret`` loop
 decrypts at most once per max age per process, while a rotation or delete
@@ -34,6 +35,7 @@ class _FakeVault:
         self.reveals = 0
         self.lists = 0
         self.list_fails = False
+        self.can_reveal = True
         self.reveal_delay = 0.0
         self.on_reveal: Any = None
 
@@ -52,9 +54,14 @@ class _Conn:
             fake.lists += 1
             if fake.list_fails:
                 raise RuntimeError("list unavailable")
-            rows = [(n, v[1]) for n, v in fake.rows.items()]
+            assert "has_function_privilege" in sql
+            rows: list[tuple[Any, ...]] = [
+                (fake.can_reveal, n, v[1]) for n, v in fake.rows.items()
+            ] or [(fake.can_reveal, None, None)]
             return SimpleNamespace(fetchall=lambda: rows)
         if "vault.reveal" in sql:
+            if not fake.can_reveal:
+                raise RuntimeError("permission denied for function reveal")
             fake.reveals += 1
             if fake.reveal_delay:
                 time.sleep(fake.reveal_delay)
@@ -348,3 +355,34 @@ def test_fill_locks_stay_bounded_across_many_names(fake: _FakeVault) -> None:
         vault.get_secret(f"NAME_{i}", store=store)
     assert len(vault._fill_locks) == vault._FILL_STRIPES
     assert len(vault._fill_miss) <= vault._MISS_RECORDS_MAX
+
+
+def test_revoked_reveal_grant_drops_cached_plaintext_within_one_window(
+    fake: _FakeVault, clock: _Clock
+) -> None:
+    """The version check alone would keep serving after the role lost
+    EXECUTE on vault.reveal, up to the 1 h max age; the same round trip
+    probes the grant and drops every cached entry when it is gone."""
+    fake.set("OTHER_KEY", "other-fake-value")
+    store = cast(Any, _Store(fake))
+    assert vault.get_secret("HOT_KEY", store=store) == FAKE_VALUE
+    assert vault.get_secret("OTHER_KEY", store=store) == "other-fake-value"
+    fake.can_reveal = False  # REVOKE EXECUTE ON FUNCTION vault.reveal(...)
+    clock.t += vault._CACHE_TTL_SECONDS
+    assert vault.get_secret("HOT_KEY", store=store, default="d") == "d"
+    assert vault._cache == {}
+    assert vault.get_secret("OTHER_KEY", store=store, default="d") == "d"
+    assert fake.reveals == 2
+
+
+def test_recheck_error_drops_every_cached_entry(
+    fake: _FakeVault, clock: _Clock
+) -> None:
+    fake.set("OTHER_KEY", "other-fake-value")
+    store = cast(Any, _Store(fake))
+    assert vault.get_secret("HOT_KEY", store=store) == FAKE_VALUE
+    assert vault.get_secret("OTHER_KEY", store=store) == "other-fake-value"
+    fake.list_fails = True
+    clock.t += vault._CACHE_TTL_SECONDS
+    assert vault.get_secret("HOT_KEY", store=store) == FAKE_VALUE  # re-revealed
+    assert "OTHER_KEY" not in vault._cache

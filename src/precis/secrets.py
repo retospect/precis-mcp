@@ -475,27 +475,51 @@ def require_vault_secret(name: str, *, store: Store) -> str:
     return value
 
 
+#: The recheck's one round trip: may this role still call the reveal it uses
+#: (the 6-arg form, migration 0111), plus ``vault.list()``'s versions. The
+#: LEFT JOIN keeps one row when the vault is empty, so the privilege answer
+#: always comes back. Neither part decrypts or writes an audit row.
+_VERSIONS_SQL = (
+    "SELECT has_function_privilege(current_user, "
+    "'vault.reveal(text, text, text, integer, integer, text)', 'EXECUTE'), "
+    "l.name, l.updated_at "
+    "FROM (SELECT 1) AS one LEFT JOIN vault.list() AS l ON true"
+)
+
+
 def _list_versions(store: Store) -> dict[str, object] | None:
     """``name -> updated_at`` from ``vault.list()``: no decrypt, no audit row.
-    ``None`` on any error; the detail stays out of the log (type name only)."""
+
+    ``None`` when this role can no longer execute ``vault.reveal`` or on any
+    error; the caller then drops every cached plaintext, so a revoked grant
+    stops serving within one window, not at the hour's max age. The detail
+    stays out of the log (type name only)."""
     try:
         with store.pool.connection() as conn:
-            rows = conn.execute("SELECT name, updated_at FROM vault.list()").fetchall()
+            rows = conn.execute(_VERSIONS_SQL).fetchall()
     except Exception as exc:
         _warn_once(
             f"versions:{type(exc).__name__}",
-            f"secrets: vault.list() unavailable ({type(exc).__name__}); "
-            "cached secrets fall back to a 60 s reveal",
+            f"secrets: vault recheck unavailable ({type(exc).__name__}); "
+            "dropped cached secrets, falling back to a 60 s reveal",
         )
         return None
-    return {str(r[0]): r[1] for r in rows}
+    if not rows or rows[0][0] is not True:
+        _warn_once(
+            "versions:revoked",
+            "secrets: this role can no longer execute vault.reveal; "
+            "dropped cached secrets",
+        )
+        return None
+    return {str(r[1]): r[2] for r in rows if r[1] is not None}
 
 
 def _current_versions(
     store: Store, now: float
 ) -> tuple[dict[str, object], float] | None:
     """The version snapshot and when it was taken (monotonic), refreshed at
-    most once per window per process; ``None`` when ``vault.list()`` fails."""
+    most once per window per process. ``None`` when the recheck fails or the
+    reveal grant is gone, and then every cached plaintext is dropped."""
     global _versions_at
     with _cache_lock:
         if _versions_at is not None and now - _versions_at < _CACHE_TTL_SECONDS:
@@ -505,6 +529,7 @@ def _current_versions(
         _versions.clear()
         if snap is None:
             _versions_at = None
+            _cache.clear()
             return None
         _versions.update(snap)
         _versions_at = now

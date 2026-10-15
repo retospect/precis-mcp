@@ -236,3 +236,13 @@ def test_saved_hint_html_is_write_only(
     assert '<textarea name="value"' in html
     assert "</textarea>" in html
     assert value not in html
+
+
+def test_recheck_probe_runs_against_real_postgres(vault_store: Store) -> None:
+    """The recheck's privilege + versions round trip parses and answers on a
+    real vault, empty or not (the LEFT JOIN keeps the grant row)."""
+    assert vault._list_versions(vault_store) == {}
+    vault.set_secret("A_KEY", "fake-value-for-tests-only", store=vault_store)
+    versions = vault._list_versions(vault_store)
+    assert versions is not None
+    assert set(versions) == {"A_KEY"}
