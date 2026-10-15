@@ -16,6 +16,8 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
+from psycopg.types.json import Jsonb
+
 log = logging.getLogger(__name__)
 
 #: Stored edge direction: SI ref (src) -> parent paper (dst).
@@ -199,3 +201,36 @@ def queue_si_on_attention_many(store: Any, ref_ids: list[int], by: str) -> int:
 def queue_si_on_attention(store: Any, ref_id: int, by: str) -> bool:
     """Single-paper :func:`queue_si_on_attention_many`; True when queued."""
     return queue_si_on_attention_many(store, [ref_id], by) > 0
+
+
+def request_si_fetch(
+    conn: Any, ref_id: int, *, by: str
+) -> tuple[str, tuple[int, str | None] | None]:
+    """Queue an explicit SI fetch for one paper; returns ``(status, parent)``.
+
+    Stamps ``refs.meta.si_fetch = {requested_at, by}`` unless a request is
+    still pending (no ``si_checked_at`` newer than the last
+    ``requested_at``): attention checks a paper once ever, but an explicit
+    request re-arms a checked one. ``status`` is ``'queued'``,
+    ``'pending'`` (an earlier request is still unclaimed — nothing
+    written), or ``'is_supplement'`` — then ``parent`` is
+    ``(parent_ref_id, parent_cite_key)`` and the caller reports the parent
+    instead of queueing. Does not commit; the caller owns the transaction.
+    Shared by ``PaperHandler._queue_si_fetch`` and ``precis paper fetch-si``.
+    """
+    parent = supplement_parent(conn, ref_id)
+    if parent is not None:
+        return "is_supplement", parent
+    row = conn.execute(
+        "SELECT meta->'si_fetch'->>'requested_at', meta->>'si_checked_at' "
+        "FROM refs WHERE ref_id = %s",
+        (ref_id,),
+    ).fetchone()
+    if row is not None and row[0] and (row[1] is None or str(row[1]) < str(row[0])):
+        return "pending", None
+    conn.execute(
+        "UPDATE refs SET meta = meta || jsonb_build_object("
+        "'si_fetch', %s::jsonb) WHERE ref_id = %s",
+        (Jsonb({"requested_at": utc_stamp(), "by": by}), ref_id),
+    )
+    return "queued", None

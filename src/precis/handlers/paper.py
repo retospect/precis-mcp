@@ -578,9 +578,7 @@ class PaperHandler(Handler):
         """Flag a paper so the ``fetch_oa`` lane's SI pass discovers and fetches
         its supplementary information. Writes ``meta.si_fetch`` only — the MCP
         server fetches nothing (no Marker, no inbox here)."""
-        from psycopg.types.json import Jsonb
-
-        from precis.store.si_links import supplement_parent, utc_stamp
+        from precis.store.si_links import request_si_fetch
 
         if id is None or (isinstance(id, str) and not id.strip()):
             raise BadInput(
@@ -589,31 +587,16 @@ class PaperHandler(Handler):
             )
         slug, ref_id = self._resolve_paper_slug(id)
         with self.store.pool.connection() as conn:
-            parent = supplement_parent(conn, ref_id)
-            if parent is not None:
+            status, parent = request_si_fetch(conn, ref_id, by="agent")
+            if status == "is_supplement":
+                assert parent is not None
                 raise BadInput(
                     f"{slug} is itself supplementary information of "
                     f"{parent[1] or parent[0]}",
                     next=f"put(kind='paper', id='{parent[1] or parent[0]}', mode='fetch-si')",
                 )
-            row = conn.execute(
-                "SELECT meta->'si_fetch'->>'requested_at', meta->>'si_checked_at' "
-                "FROM refs WHERE ref_id = %s",
-                (ref_id,),
-            ).fetchone()
-            pending = bool(
-                row is not None
-                and row[0]
-                and (row[1] is None or str(row[1]) < str(row[0]))
-            )
-            if not pending:
-                conn.execute(
-                    "UPDATE refs SET meta = meta || jsonb_build_object("
-                    "'si_fetch', %s::jsonb) WHERE ref_id = %s",
-                    (Jsonb({"requested_at": utc_stamp(), "by": "agent"}), ref_id),
-                )
             conn.commit()
-        state = "already queued" if pending else "queued"
+        state = "already queued" if status == "pending" else "queued"
         return Response(
             body=(
                 f"{state}: supplementary-information fetch for {slug} — the "
@@ -1562,35 +1545,7 @@ class PaperHandler(Handler):
         present) or ``NotFound`` (slug unknown) so the caller can
         let those propagate.
         """
-        if isinstance(id, int) or (isinstance(id, str) and id.strip().isdigit()):
-            ref_id = int(id)
-            ref = self.store.fetch_refs_by_ids([ref_id], include_deleted=False).get(
-                ref_id
-            )
-            if ref is None or ref.kind != self.spec.kind:
-                raise NotFound(
-                    f"{self.spec.kind} id={ref_id} not found",
-                    next=f"search(kind='{self.spec.kind}', q='...') to find existing",
-                )
-            return ref.slug or str(ref_id), ref_id
-        raw_id = _maybe_resolve_doi(self.store, str(id))
-        slug, chunk_spec, path_view = _parse_paper_id(raw_id, self.spec.kind)
-        reject_chunk_or_path_view(
-            kind=self.spec.kind,
-            slug=slug,
-            sel=chunk_spec,
-            path_view=path_view,
-        )
-        ref = resolve_live_slug_ref(
-            self.store,
-            kind=self.spec.kind,
-            id=slug,
-            next_hint=(
-                f"search(kind='{self.spec.kind}', q='...') to find existing slugs"
-            ),
-            options=_suggest_paper_slugs(slug, store=self.store, kind=self.spec.kind),
-        )
-        return slug, ref.id
+        return resolve_paper_slug(self.store, id, kind=self.spec.kind)
 
     def _resolve_paper_ref_id(self, id: str | int) -> int:
         """Resolve an id to a live paper ``ref_id``.
@@ -3567,6 +3522,52 @@ def _render_citation_candidates(citation: str, cands: list[dict[str, Any]]) -> s
         "(substitute the right DOI)"
     )
     return "\n".join(lines)
+
+
+def resolve_paper_slug(
+    store: Store, id: str | int, *, kind: str = "paper"
+) -> tuple[str, int]:
+    """Coerce a paper id to a ``(slug, ref_id)`` pair — the module-level home
+    of what ``PaperHandler._resolve_paper_slug`` used to do inline, shared
+    with ``precis paper fetch-si``.
+
+    Accepts a numeric ``ref_id`` (the web addresses papers by id, e.g. the
+    triage queue's "Clear flag" → ``tag`` and the detail page's link ops),
+    a slug, or a DOI/identifier form. Slugs are never all-digits, so the
+    numeric branch is unambiguous — and it must come first, because
+    :func:`resolve_live_slug_ref` stringifies its id and would otherwise
+    look ``"5822"`` up as a *cite_key* (a guaranteed miss that raised
+    ``NotFound`` and silently no-op'd the web tag ops).
+
+    Rejects chunk selectors and path views — link/tag ops live at the ref
+    level only. Raises ``BadInput`` (selector present) or ``NotFound``
+    (slug unknown) so the caller can let those propagate.
+    """
+    if isinstance(id, int) or (isinstance(id, str) and id.strip().isdigit()):
+        ref_id = int(id)
+        ref = store.fetch_refs_by_ids([ref_id], include_deleted=False).get(ref_id)
+        if ref is None or ref.kind != kind:
+            raise NotFound(
+                f"{kind} id={ref_id} not found",
+                next=f"search(kind='{kind}', q='...') to find existing",
+            )
+        return ref.slug or str(ref_id), ref_id
+    raw_id = _maybe_resolve_doi(store, str(id))
+    slug, chunk_spec, path_view = _parse_paper_id(raw_id, kind)
+    reject_chunk_or_path_view(
+        kind=kind,
+        slug=slug,
+        sel=chunk_spec,
+        path_view=path_view,
+    )
+    ref = resolve_live_slug_ref(
+        store,
+        kind=kind,
+        id=slug,
+        next_hint=(f"search(kind='{kind}', q='...') to find existing slugs"),
+        options=_suggest_paper_slugs(slug, store=store, kind=kind),
+    )
+    return slug, ref.id
 
 
 def _maybe_resolve_doi(store: Store, raw: str) -> str:

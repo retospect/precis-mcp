@@ -185,3 +185,72 @@ def test_fetch_si_rearms_attention_checked_paper(store) -> None:
     with store.pool.connection() as conn:
         assert [p.ref_id for p in si_fetch.claim_si_parents(conn)] == [pid]
         conn.commit()
+
+
+def test_request_si_fetch_statuses(store) -> None:
+    from precis.store.si_links import request_si_fetch
+
+    pid = _seed(store)
+    with store.pool.connection() as conn:
+        assert request_si_fetch(conn, pid, by="cli") == ("queued", None)
+        conn.commit()
+    stamp = _meta(store, pid)["si_fetch"]
+    assert stamp["by"] == "cli" and "trigger" not in stamp
+    with store.pool.connection() as conn:
+        assert request_si_fetch(conn, pid, by="cli") == ("pending", None)
+        assert request_si_fetch(conn, pid, by="cli") == ("pending", None)
+        conn.commit()
+    assert _meta(store, pid)["si_fetch"] == stamp
+    # A claimed request (si_checked_at >= requested_at) re-arms on a fresh ask.
+    _sql(
+        store,
+        "UPDATE refs SET meta = meta || "
+        "jsonb_build_object('si_checked_at', %s::text) WHERE ref_id = %s",
+        (stamp["requested_at"], pid),
+    )
+    with store.pool.connection() as conn:
+        assert request_si_fetch(conn, pid, by="cli") == ("queued", None)
+        conn.commit()
+    assert _meta(store, pid)["si_fetch"]["requested_at"] > stamp["requested_at"]
+
+
+def test_request_si_fetch_refuses_supplement(store) -> None:
+    from precis.store.si_links import link_supplement, request_si_fetch
+
+    pid = _seed(store)
+    sid = _seed(store, slug="supp2", doi=DOI + "s2")
+    _sql(store, "UPDATE refs SET pdf_role = 'supplement' WHERE ref_id = %s", (sid,))
+    with store.pool.connection() as conn:
+        link_supplement(sid, pid, store=store, conn=conn)
+        status, parent = request_si_fetch(conn, sid, by="cli")
+        conn.commit()
+    assert status == "is_supplement"
+    assert parent is not None and parent[0] == pid
+    assert "si_fetch" not in _meta(store, sid)
+
+
+def test_cli_fetch_si(store) -> None:
+    import pytest
+
+    from precis.cli.paper import fetch_si
+    from precis.errors import BadInput, NotFound
+    from precis.store.si_links import link_supplement
+
+    pid = _seed(store)
+    assert fetch_si(store, "smith2023cat") == ("smith2023cat", "queued")
+    assert _meta(store, pid)["si_fetch"]["by"] == "cli"
+    assert fetch_si(store, "smith2023cat") == ("smith2023cat", "pending")
+    # Numeric ref_id, handle-form and DOI-form ids resolve to the same paper
+    # (the numeric branch echoes refs.slug — the pa-handle — not the cite_key).
+    for form in (pid, f"pa{pid}", DOI, f"doi:{DOI}"):
+        assert fetch_si(store, form)[1] == "pending"
+    assert _meta(store, pid)["si_fetch"]["by"] == "cli"
+    with pytest.raises(NotFound):
+        fetch_si(store, "no-such-paper-slug")
+    sid = _seed(store, slug="supp3", doi=DOI + "s3")
+    _sql(store, "UPDATE refs SET pdf_role = 'supplement' WHERE ref_id = %s", (sid,))
+    with store.pool.connection() as conn:
+        link_supplement(sid, pid, store=store, conn=conn)
+        conn.commit()
+    with pytest.raises(BadInput):
+        fetch_si(store, "supp3")

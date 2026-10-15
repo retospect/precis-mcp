@@ -16,6 +16,12 @@ Subcommands:
   article papers whose extracted ``pdf_pages`` span is <= 2 (the signature in
   ``docs/runbooks/elsevier-preview-pdf-remediation.md``): ref id, title,
   pages, chunk count. Writes nothing.
+* ``precis paper fetch-si <id>`` — stamp ``meta.si_fetch`` on one paper so
+  the fetch lane's SI pass discovers, downloads and ingests its
+  supplementary files as linked ``role='supplement'`` refs. The CLI
+  spelling of ``put(kind='paper', id=…, mode='fetch-si')`` (stamps
+  ``by='cli'``); ``<id>`` takes a cite_key slug, ``paNNN`` handle,
+  numeric ref_id or DOI/identifier form.
 """
 
 from __future__ import annotations
@@ -23,7 +29,8 @@ from __future__ import annotations
 import argparse
 import sys
 
-from precis.cli._common import resolve_dsn
+from precis.cli._common import REFUSAL_EXIT, resolve_dsn
+from precis.errors import PrecisError
 from precis.store import Store
 
 
@@ -72,6 +79,26 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
     )
 
+    fs = psub.add_parser(
+        "fetch-si",
+        help="Queue a supplementary-information fetch for one paper.",
+        description=(
+            "Stamp refs.meta.si_fetch so the fetch_oa lane's SI pass "
+            "discovers, downloads and ingests the paper's supplementary "
+            "files as linked role='supplement' refs - the CLI spelling of "
+            "put(kind='paper', id=..., mode='fetch-si'), stamped by='cli'. "
+            "The outcome lands on the paper (si_found / si_none / "
+            "si_blocked / si_error)."
+        ),
+    )
+    fs.add_argument(
+        "id",
+        help="Paper id: cite_key slug, paNNN handle, numeric ref_id or DOI.",
+    )
+    fs.add_argument(
+        "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
+    )
+
 
 def run(args: argparse.Namespace) -> None:
     if args.paper_cmd == "authors-resplit":
@@ -79,6 +106,9 @@ def run(args: argparse.Namespace) -> None:
         return
     if args.paper_cmd == "suspect-previews":
         _run_suspect_previews(args)
+        return
+    if args.paper_cmd == "fetch-si":
+        _run_fetch_si(args)
         return
     print(f"paper: unknown subcommand {args.paper_cmd!r}", file=sys.stderr)
     sys.exit(2)
@@ -186,3 +216,58 @@ def _run_suspect_previews(args: argparse.Namespace) -> None:
     for ref_id, title, pages, chunks in rows:
         print(f"{ref_id}\tpages={pages}\tchunks={chunks}\t{title[:100]}")
     print(f"suspect-previews: {len(rows)} paper(s)")
+
+
+def fetch_si(store: Store, id: str | int) -> tuple[str, str]:
+    """Queue an SI fetch for one paper; returns ``(slug, status)``.
+
+    ``status`` is ``'queued'`` or ``'pending'`` (a request is already
+    waiting — nothing re-stamped). Raises :class:`NotFound` for an unknown
+    id and :class:`BadInput` when the ref is itself a supplement (the
+    error's ``next`` names the parent's fetch-si command). The lib call
+    behind ``precis paper fetch-si``.
+    """
+    from precis.errors import BadInput
+    from precis.handlers.paper import resolve_paper_slug
+    from precis.store.si_links import request_si_fetch
+
+    slug, ref_id = resolve_paper_slug(store, id)
+    with store.pool.connection() as conn:
+        status, parent = request_si_fetch(conn, ref_id, by="cli")
+        conn.commit()
+    if status == "is_supplement":
+        assert parent is not None
+        raise BadInput(
+            f"{slug} is itself supplementary information of {parent[1] or parent[0]}",
+            next=f"precis paper fetch-si {parent[1] or parent[0]}",
+        )
+    return slug, status
+
+
+def _render_precis_error(err: PrecisError) -> str:
+    """The ``[error:Class] cause / next:`` envelope, as the verb surface
+    renders it — kept local so this command doesn't need the runtime."""
+    parts = [f"[error:{err.__class__.__name__}] {err.cause}"]
+    if err.options:
+        parts.append(f"  options: {', '.join(map(str, err.options))}")
+    nexts = err.next if isinstance(err.next, list) else [err.next]
+    parts += [f"  next: {h}" for h in nexts if h]
+    return "\n".join(parts)
+
+
+def _run_fetch_si(args: argparse.Namespace) -> None:
+    store = Store.connect(resolve_dsn(args.database_url))
+    try:
+        slug, status = fetch_si(store, args.id)
+    except PrecisError as exc:
+        print(_render_precis_error(exc), file=sys.stderr)
+        sys.exit(REFUSAL_EXIT)
+    finally:
+        store.close()
+    state = "already queued" if status == "pending" else "queued"
+    print(
+        f"{state}: supplementary-information fetch for {slug} — the fetch "
+        "worker's next pass discovers and downloads the SI; each PDF becomes "
+        "its own linked supplement ref. The outcome lands on the paper "
+        "(si_found / si_none / si_blocked / si_error)."
+    )
