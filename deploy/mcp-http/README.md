@@ -157,6 +157,12 @@ says LEGACY) yourself afterwards.
 - Both backend colours mount the same secrets directory, md vector cache and
   uv cache volume; during a swap the two overlap for the new one's start-up,
   so the DB pool (`PRECIS_DB_POOL_MAX_SIZE`, 16) briefly counts twice.
+- The kind-surface env (`PRECIS_CHEM_ENABLED`/`PRECIS_CHEM_ROUTE_NODE`,
+  `PRECIS_BIO_ENABLED`/`PRECIS_FOLD_NODE`, `PRECIS_AUTOCATPATH_ROUTE_NODE`,
+  `PRECIS_DFT_NODE`) is rendered from `precis_capabilities` in the gitignored
+  overlay by `scripts/lib/cluster-topology.sh`, mirroring the precis-web
+  plist — never a committed node literal. A missing overlay leaves the kinds
+  dark; it never fails the ensure (gr489468).
 
 ## The second machine
 

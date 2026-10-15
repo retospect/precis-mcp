@@ -434,6 +434,26 @@ if [ -f "${STATE_DIR}/python-roots" ]; then
     done < "${STATE_DIR}/python-roots"
 fi
 
+# Kind-surface env from cluster topology (gr489468): this container is the
+# same `route`/`protein`/`pathway` mint surface as the gateway's precis-web,
+# but its env was hand-listed — so put(kind='route', engine='aizynth') was
+# refused here while the gateway worked. scripts/lib/cluster-topology.sh
+# renders the same PRECIS_{CHEM,BIO,FOLD,AUTOCATPATH,DFT}* vars the plist
+# template emits, from `precis_capabilities` in the gitignored overlay
+# (deploy/inventory/group_vars/all/) — never a committed node literal.
+# Sourced from the REPO checkout, not the script's own directory: the
+# installed copy lives outside the repo. A missing overlay or an older REPO
+# without the lib leaves the kinds dark — a SessionStart-path failure here
+# must degrade, never abort the ensure.
+TOPO_ENVS=()
+if [ -f "${REPO}/scripts/lib/cluster-topology.sh" ]; then
+    # shellcheck disable=SC1091
+    . "${REPO}/scripts/lib/cluster-topology.sh"
+    while IFS= read -r kv; do
+        [ -n "$kv" ] && TOPO_ENVS+=(-e "$kv")
+    done < <(topology_surface_env 2>/dev/null || true)
+fi
+
 ENVS=(
     -e PRECIS_SECRETS_FILE_DIR=/run/precis-secrets
     -e PRECIS_ROOT=/data/notes
@@ -458,6 +478,7 @@ ENVS=(
     # Keyed on the resolved sha, NOT mtimes — a git checkout touches every
     # mtime, which is exactly why the install-watchdog arm refuses source trees.
     -e PRECIS_CHECKOUT_WATCHDOG=/src
+    ${TOPO_ENVS[@]+"${TOPO_ENVS[@]}"}
 )
 
 # Snapshot the checkout instead of bind-mounting it live. With one long-lived
