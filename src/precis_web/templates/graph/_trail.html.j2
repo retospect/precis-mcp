@@ -1,0 +1,20 @@
+{# Focus trail (web-graph-navigation slice 6): the cookie-held list of
+   recent focus pages, oldest first. Each crumb re-focuses (and truncates
+   the trail back to it); "retreat" is the crumb before the current one.
+   `here` = the current focus handle, or none on pages that are not a focus. #}
+{% if trail %}
+<nav class="mt-1 flex flex-wrap items-center gap-1 text-xs text-slate-500" aria-label="focus trail">
+  {% if retreat %}
+  <a href="{{ retreat.graph_url }}" class="rounded border border-slate-200 px-1.5 py-0.5 hover:bg-slate-100"
+     aria-label="retreat" title="back along the trail to {{ retreat.handle }}" rel="prev">← retreat</a>
+  {% endif %}
+  {% for c in trail %}
+  {% if not loop.first %}<span class="text-slate-300">›</span>{% endif %}
+  {% if here is defined and c.handle == here and loop.last %}
+  <span class="font-mono font-semibold text-slate-700" title="{{ c.label }}" aria-current="page">{{ c.handle }}</span>
+  {% else %}
+  <a href="{{ c.graph_url }}" class="font-mono underline" title="{{ c.label }}" data-crumb="{{ c.handle }}">{{ c.handle }}</a>
+  {% endif %}
+  {% endfor %}
+</nav>
+{% endif %}

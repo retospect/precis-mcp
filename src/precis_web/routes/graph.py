@@ -30,6 +30,11 @@ Routes:
   path between two refs (:meth:`Store.link_path`, depth ≤ 4), as a chain
   of ref cards; the focus page carries a "path to…" form into it.
 
+Every focus page advances the focus trail (slice 6): a cookie-held
+``kind:id|…`` list (:data:`TRAIL_COOKIE`, no server storage) rendered as
+crumbs plus a "retreat" link to the previous focus; revisiting a crumb
+truncates the trail back to it.
+
 Slice 4 (``docs/backlog/web-graph-navigation.md``): the filter axes —
 ``rels``, ``kinds``, ``since``/``until``, ``trust`` and ``depth`` — are
 one parsed :class:`_Filters` applied to the same
@@ -336,6 +341,44 @@ def _card(ref: Any) -> dict[str, Any]:
     }
 
 
+#: The focus trail (slice 6): a cookie-held list of the last focus pages,
+#: no server storage (Reto 2026-10-06: "cookie is adequate for now").
+#: Value ``kind:id|kind:id|…``, oldest first — every character is legal in
+#: a bare cookie value, so it travels unquoted.
+TRAIL_COOKIE = "graph_trail"
+TRAIL_MAX = 8
+_TRAIL_ITEM_RE = re.compile(r"^([a-z][a-z0-9-]*):(\d+)$")
+
+
+def _read_trail(request: Request) -> list[tuple[str, int]]:
+    """The trail cookie as ``[(kind, id), …]``, oldest first; malformed
+    items are dropped (the cookie is client-held, so it is untrusted)."""
+    out: list[tuple[str, int]] = []
+    for item in request.cookies.get(TRAIL_COOKIE, "").split("|"):
+        m = _TRAIL_ITEM_RE.match(item)
+        if m:
+            out.append((m.group(1), int(m.group(2))))
+    return out[-TRAIL_MAX:]
+
+
+def _advance_trail(
+    trail: list[tuple[str, int]], here: tuple[str, int]
+) -> list[tuple[str, int]]:
+    """``trail`` after visiting ``here``: a node already on it truncates
+    the trail back to that node (a retreat or a crumb click), a new one is
+    appended, oldest dropped past :data:`TRAIL_MAX`."""
+    if here in trail:
+        return trail[: trail.index(here) + 1]
+    return [*trail, here][-TRAIL_MAX:]
+
+
+def _trail_cards(store: Store, trail: list[tuple[str, int]]) -> list[dict[str, Any]]:
+    """The trail as ref cards, one batched read; retired or vanished refs
+    (and a kind that no longer matches the id) drop out."""
+    refs = store.fetch_refs_by_ids([i for _, i in trail], include_deleted=False)
+    return [_card(refs[i]) for k, i in trail if i in refs and refs[i].kind == k]
+
+
 @router.get("/path", response_class=HTMLResponse)
 async def graph_path(
     request: Request,
@@ -361,6 +404,7 @@ async def graph_path(
         "rels": rels,
         "max_depth": PATH_MAX_DEPTH,
         "asked": False,
+        "trail": _trail_cards(store, _read_trail(request)),
     }
     if not from_.strip() and not to.strip():
         return templates.TemplateResponse(request, "graph/path.html.j2", ctx)
@@ -663,6 +707,7 @@ async def graph_focus(
         )
     focus_h = _handle(kind, ref_id)
     page = f"/graph/{kind}/{ref_id}"
+    trail = _trail_cards(store, _advance_trail(_read_trail(request), (kind, ref_id)))
     qs = f.qs()
     json_qs = f.qs(remove=[("view", f.view)]) if f.view else qs
     other = "radial" if f.view == "outline" else "outline"
@@ -673,7 +718,7 @@ async def graph_focus(
         {n["kind"] for n in data["nodes"]} | {kind},
         key=lambda k: (KIND_SHAPES.get(k, "circle"), k),
     )
-    return templates.TemplateResponse(
+    response = templates.TemplateResponse(
         request,
         "graph/focus.html.j2",
         {
@@ -707,8 +752,18 @@ async def graph_focus(
             # Heart toggle (gr486409) — None when auth is off, so the
             # template skips the button rather than rendering a dead one.
             "faved": faved(request, ref_id),
+            "trail": trail,
+            "retreat": trail[-2] if len(trail) > 1 else None,
         },
     )
+    response.set_cookie(
+        TRAIL_COOKIE,
+        "|".join(f"{c['kind']}:{c['id']}" for c in trail),
+        path="/graph",
+        httponly=True,
+        samesite="lax",
+    )
+    return response
 
 
 @router.get("/{kind}/{ref_id}/panel", response_class=HTMLResponse)

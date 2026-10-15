@@ -1,6 +1,7 @@
 {% extends "base.html.j2" %}
 {% block title %}Graph · path{% endblock %}
 {% block content %}
+{% set retreat = trail[-1] if trail else none %}{% include "graph/_trail.html.j2" %}
 <h1 class="mt-2 mb-2 text-lg font-semibold">Path between two refs</h1>
 <form method="get" action="/graph/path" class="mb-3 flex flex-wrap items-center gap-2 text-xs text-slate-600" aria-label="path query">
   <input type="text" name="from" value="{{ from_ }}" placeholder="from: me474312 or memory/474312"

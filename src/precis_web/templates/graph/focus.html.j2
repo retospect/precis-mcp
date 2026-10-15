@@ -1,6 +1,7 @@
 {% extends "base.html.j2" %}
 {% block title %}Graph · {{ handle }}{% endblock %}
 {% block content %}
+{% set here = handle %}{% include "graph/_trail.html.j2" %}
 <div class="mt-2 mb-3 flex flex-wrap items-baseline justify-between gap-3">
   <div>
     <h1 class="text-lg font-semibold font-mono">
