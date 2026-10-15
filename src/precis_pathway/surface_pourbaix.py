@@ -51,6 +51,19 @@ of two affine lines, so they are closed-form (:func:`boundaries`).
   (:func:`drop_uncorrected`), because a mixed corrected/uncorrected band
   prices the correction, not the model form (gr486949).
 
+**Closed-shell adsorbates** (``NO*``, ``NH3*``, ``H2O*``, ``N2O*``,
+``NH2OH*`` …) are priced by the scan against their own gas, not the
+elemental reservoirs, so they release no proton-electron pairs: ``nu = 0``,
+U-flat (:data:`CLOSED_SHELL`).
+
+**Spectator reservoirs** (:class:`Reservoir`, gr489164): a species in the
+feed or electrolyte can set an element's chemical potential instead of the
+default reservoir — an NO feed at ``p_NO`` sets ``mu_N = mu_NO + kT ln p_NO
+- mu_O(U)``, so an open-shell N fragment releases ``nu_N = -2`` per N and
+its anchors are re-priced from the scan's own recorded ``mu`` table. The
+axis is generic (a species, the element it sets, an activity) so further
+spectators are config lines, not code.
+
 No ``autocatpath`` import: this module is pure arithmetic over the JSON the
 scan already wrote, so it is testable on a host without the engine.
 """
@@ -75,6 +88,30 @@ PREFAC_V = K_B_EV * T_STANDARD * math.log(10.0)
 #: ``mu_element`` in U. See the module docstring.
 _NU_PER_ELEMENT: dict[str, int] = {"H": -1, "O": 2, "C": 4, "N": 0}
 
+#: Closed-shell molecules the coverage scan prices against their own gas
+#: (``autocatpath.ledger.GAS_MOLECULES``, mirrored — no engine import): as
+#: adsorbates they take or give no proton-electron pairs, ``nu = 0``.
+CLOSED_SHELL: frozenset[str] = frozenset(
+    {
+        "H2",
+        "N2",
+        "O2",
+        "H2O",
+        "NH3",
+        "NO",
+        "N2O",
+        "NO2",
+        "NH2OH",
+        "CO",
+        "CO2",
+        "CH4",
+        "CH2O",
+        "CH3OH",
+        "C2H6",
+        "C2H4",
+    }
+)
+
 #: Default per-anchor energy bar (eV) when the config states no tolerance —
 #: catpath's own ``search.energy_thresh`` default.
 DEFAULT_SIGMA_E_EV = 0.05
@@ -94,18 +131,108 @@ def element_counts(fragment: str) -> dict[str, int]:
     return counts
 
 
-def electrons_released(adsorbate: str) -> int:
+def _formula(fragment: str) -> str:
+    return fragment.split("@", 1)[0].split("~", 1)[0]
+
+
+@dataclass(frozen=True)
+class Reservoir:
+    """A spectator axis: ``species`` (a closed-shell gas or solute) at
+    ``activity`` (bar for a gas, relative to 1) sets the chemical potential
+    of ``element``; the species' other elements stay on the CHE
+    reservoirs. ``Reservoir("NO", "N")`` is an NO feed at 1 bar."""
+
+    species: str
+    element: str
+    activity: float = 1.0
+
+    def __post_init__(self) -> None:
+        counts = element_counts(self.species)
+        if _formula(self.species) not in CLOSED_SHELL:
+            raise ValueError(
+                f"reservoir {self.species!r} is not a closed-shell species"
+            )
+        if self.element not in counts:
+            raise ValueError(f"reservoir {self.species!r} has no {self.element!r}")
+        if self.element in ("H", "O"):
+            raise ValueError("H and O are set by the CHE (H2 / H2O) reservoirs")
+        if not set(counts) <= set(_NU_PER_ELEMENT):
+            raise ValueError(f"reservoir {self.species!r}: H, C, N, O only")
+        if not self.activity > 0:
+            raise ValueError("reservoir activity must be > 0")
+
+    @property
+    def nu_element(self) -> float:
+        """Electrons released per atom of ``element`` drawn from this
+        reservoir: the U slope of ``mu_element`` (NO feed: ``-2``)."""
+        counts = element_counts(self.species)
+        others = sum(
+            k * _NU_PER_ELEMENT[el] for el, k in counts.items() if el != self.element
+        )
+        return -others / counts[self.element]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "species": self.species,
+            "element": self.element,
+            "activity": self.activity,
+            "nu_element": self.nu_element,
+        }
+
+
+def reservoirs_from(spec: Any) -> list[Reservoir]:
+    """``[{species, element, activity?}, …]`` (a job param / config line)
+    → reservoirs; a malformed entry raises ``ValueError``."""
+    out: list[Reservoir] = []
+    for row in spec or []:
+        if not isinstance(row, dict):
+            raise ValueError(f"reservoir entry must be a mapping, got {row!r}")
+        out.append(
+            Reservoir(
+                species=str(row["species"]),
+                element=str(row["element"]),
+                activity=float(row.get("activity", 1.0)),
+            )
+        )
+    if len({r.element for r in out}) != len(out):
+        raise ValueError("two reservoirs set the same element")
+    return out
+
+
+def feed_reservoir(substrate: Any) -> Reservoir | None:
+    """The reaction's feed as a spectator reservoir: a closed-shell
+    substrate with exactly one element outside H/O sets that element
+    (``NO`` → N). ``None`` otherwise."""
+    if not isinstance(substrate, str) or _formula(substrate) not in CLOSED_SHELL:
+        return None
+    rest = [el for el in element_counts(substrate) if el not in ("H", "O")]
+    if len(rest) != 1:
+        return None
+    try:
+        return Reservoir(substrate, rest[0])
+    except ValueError:
+        return None
+
+
+def electrons_released(
+    adsorbate: str, reservoirs: tuple[Reservoir, ...] | list[Reservoir] = ()
+) -> float:
     """``nu_A``: proton-electron pairs released forming one ``A`` from the
-    reservoirs (``H*`` → -1, ``OH*`` → 1, ``O*`` → 2, ``N*`` → 0).
-    Raises ``ValueError`` for an element without a reservoir convention."""
-    nu = 0
+    reservoirs (``H*`` → -1, ``OH*`` → 1, ``O*`` → 2, ``N*`` → 0; with an
+    NO feed reservoir ``N*`` → -2). A closed-shell adsorbate is priced
+    against its own gas: 0. Raises ``ValueError`` for an element without a
+    reservoir convention."""
+    by_el = {r.element: r.nu_element for r in reservoirs}
+    nu: float = 0
     for el, k in element_counts(adsorbate).items():
         if el not in _NU_PER_ELEMENT:
             raise ValueError(
                 f"no CHE reservoir convention for element {el!r} in {adsorbate!r} "
                 "(H, C, N, O only)"
             )
-        nu += k * _NU_PER_ELEMENT[el]
+        nu += k * by_el.get(el, _NU_PER_ELEMENT[el])
+    if _formula(adsorbate) in CLOSED_SHELL:
+        return 0
     return nu
 
 
@@ -136,10 +263,11 @@ class Anchor:
     detached: bool
     sigma_gamma: float
     model: str
+    reservoirs: tuple[Reservoir, ...] = ()
 
     @property
-    def nu(self) -> int:
-        return electrons_released(self.adsorbate)
+    def nu(self) -> float:
+        return electrons_released(self.adsorbate, self.reservoirs)
 
     @property
     def slope(self) -> float:
@@ -177,12 +305,87 @@ class Anchor:
         }
 
 
+def _element_mu(payload: dict[str, Any]) -> dict[str, float]:
+    """The scan's elemental reservoir potentials at U = 0, solved from its
+    own per-fragment ``mu`` table (open-shell fragments are priced element
+    by element, so ``mu_A = sum_el n_el mu_el``). Only elements the table
+    determines are returned."""
+    import numpy as np
+
+    mu = payload.get("mu")
+    if not isinstance(mu, dict):
+        return {}
+    rows = []
+    for frag, v in mu.items():
+        if _formula(str(frag)) in CLOSED_SHELL or not isinstance(v, int | float):
+            continue
+        counts = element_counts(str(frag))
+        if counts and set(counts) <= set(_NU_PER_ELEMENT):
+            rows.append((counts, float(v)))
+    els = sorted({el for c, _ in rows for el in c})
+    if not rows or not els:
+        return {}
+    a = np.array([[c.get(el, 0) for el in els] for c, _ in rows], dtype=float)
+    b = np.array([v for _, v in rows])
+    x, _res, rank, _sv = np.linalg.lstsq(a, b, rcond=None)
+    if rank < len(els):
+        return {}
+    if float(np.max(np.abs(a @ x - b))) > 1e-6:
+        return {}
+    return {el: float(v) for el, v in zip(els, x, strict=True)}
+
+
+def reservoir_shifts(
+    payload: dict[str, Any], reservoirs: tuple[Reservoir, ...] | list[Reservoir]
+) -> tuple[dict[str, float], list[str]]:
+    """Per element, ``mu_el(reservoir) - mu_el(scan)`` at U = 0 (eV), from
+    the scan's own ``mu`` table: ``mu_S + kT ln(a / p_scan) - sum of the
+    species' other elements``. A reservoir the table cannot price is left
+    out, named in the notes — its element then stays on the scan's
+    reservoir (and its ``nu``), never half-applied."""
+    shifts: dict[str, float] = {}
+    notes: list[str] = []
+    if not reservoirs:
+        return shifts, notes
+    el_mu = _element_mu(payload)
+    raw_mu = payload.get("mu")
+    mu: dict[str, Any] = raw_mu if isinstance(raw_mu, dict) else {}
+    pressures = (payload.get("conditions") or {}).get("pressures") or {}
+    t = float((payload.get("conditions") or {}).get("temperature") or T_STANDARD)
+    for r in reservoirs:
+        mu_s = mu.get(r.species)
+        counts = element_counts(r.species)
+        others = {el: k for el, k in counts.items() if el != r.element}
+        if not isinstance(mu_s, int | float) or r.element not in el_mu:
+            notes.append(
+                f"reservoir {r.species}→{r.element}: the scan recorded no mu for "
+                f"{r.species} or {r.element}; left on the scan's reservoir"
+            )
+            continue
+        if any(el not in el_mu for el in others):
+            notes.append(
+                f"reservoir {r.species}→{r.element}: the scan does not price "
+                f"{', '.join(el for el in others if el not in el_mu)}; left on "
+                "the scan's reservoir"
+            )
+            continue
+        p_scan = float(pressures.get(r.species, 1.0) or 1.0)
+        mu_el = (
+            float(mu_s)
+            + K_B_EV * t * math.log(r.activity / p_scan)
+            - sum(k * el_mu[el] for el, k in others.items())
+        ) / counts[r.element]
+        shifts[r.element] = mu_el - el_mu[r.element]
+    return shifts, notes
+
+
 def anchors_from_coverage(
     payload: dict[str, Any],
     *,
     sigma_e_ev: float = DEFAULT_SIGMA_E_EV,
     sigma_mu_ev: dict[str, float] | None = None,
     facet_index: int = 0,
+    reservoirs: tuple[Reservoir, ...] | list[Reservoir] = (),
 ) -> list[Anchor]:
     """Parse one ``coverage.json`` payload (``autocatpath.coverage.scan``'s
     return) into anchors.
@@ -192,7 +395,14 @@ def anchors_from_coverage(
     adsorbate's reservoir pricing (the correction-set uncertainty once the
     engine records one). Both propagate as ``sigma_gamma = sqrt(2 sigma_e^2
     + (n sigma_mu)^2) / area``. A fragment the CHE cannot price (an element
-    outside H/C/N/O) is skipped rather than guessed."""
+    outside H/C/N/O) is skipped rather than guessed.
+
+    ``reservoirs`` re-price each open-shell anchor containing a reservoir
+    element by ``-n * k_el * shift_el / area`` (:func:`reservoir_shifts`)
+    and give it the reservoir's ``nu``; a reservoir the scan cannot price
+    is not applied at all."""
+    shifts, _notes = reservoir_shifts(payload, reservoirs)
+    applied = tuple(r for r in reservoirs if r.element in shifts)
     facets = payload.get("facets") or []
     if not facets:
         return []
@@ -207,6 +417,12 @@ def anchors_from_coverage(
         except ValueError:
             continue
         s_mu = float(sigma_mu.get(frag, 0.0))
+        counts = element_counts(str(frag))
+        shift = (
+            0.0
+            if _formula(str(frag)) in CLOSED_SHELL
+            else sum(k * shifts.get(el, 0.0) for el, k in counts.items())
+        )
         for p in rec.get("points") or []:
             n = int(p["n"])
             sg = math.sqrt(2.0 * sigma_e_ev**2 + (n * s_mu) ** 2) / area
@@ -216,13 +432,14 @@ def anchors_from_coverage(
                     n=n,
                     theta=float(p["theta"]),
                     energy=float(p["energy"]),
-                    gamma0=float(p["gamma"]),
+                    gamma0=float(p["gamma"]) - n * shift / area,
                     area=area,
                     site=rec.get("site"),
                     converged=bool(p.get("converged", True)),
                     detached=bool(p.get("detached", False)),
                     sigma_gamma=sg,
                     model=model,
+                    reservoirs=applied,
                 )
             )
     return out
@@ -515,6 +732,7 @@ def sweep(
     point_u_rhe: float | None = None,
     sigma_e_ev: float = DEFAULT_SIGMA_E_EV,
     sigma_mu_ev: dict[str, float] | None = None,
+    reservoirs: tuple[Reservoir, ...] | list[Reservoir] = (),
 ) -> dict[str, Any]:
     """The inner CHE sweep: pooled anchors, the resting envelope on a U grid,
     every boundary with its two bands, and the boundaries ranked by the
@@ -523,16 +741,26 @@ def sweep(
     ``payloads_by_model`` maps a model tag to that model's ``coverage.json``
     payload (one scan job each). ``ph`` only labels the SHE view (the RHE
     sweep is pH-flat). ``point_u_rhe`` adds the winner at the operating
-    point. JSON-safe return."""
+    point. ``reservoirs`` are the spectator axes (:class:`Reservoir`),
+    recorded in the output with each model's applied shifts. JSON-safe
+    return."""
     if grid < 2:
         raise ValueError("grid must be >= 2")
     u_lo, u_hi = float(u_window[0]), float(u_window[1])
     if not u_lo < u_hi:
         raise ValueError("u_window must be [lo, hi] with lo < hi")
     by_model = {
-        tag: anchors_from_coverage(p, sigma_e_ev=sigma_e_ev, sigma_mu_ev=sigma_mu_ev)
+        tag: anchors_from_coverage(
+            p, sigma_e_ev=sigma_e_ev, sigma_mu_ev=sigma_mu_ev, reservoirs=reservoirs
+        )
         for tag, p in payloads_by_model.items()
     }
+    reservoir_notes: list[str] = []
+    applied_shifts: dict[str, dict[str, float]] = {}
+    for tag, p in payloads_by_model.items():
+        shifts, notes = reservoir_shifts(p, reservoirs)
+        applied_shifts[tag] = shifts
+        reservoir_notes.extend(f"{tag}: {n}" for n in notes)
     pooled = pool_anchors(by_model)
     step = (u_hi - u_lo) / (grid - 1)
     u_grid = [u_lo + i * step for i in range(grid)]
@@ -547,6 +775,9 @@ def sweep(
         "U_RHE_window": [u_lo, u_hi],
         "grid": grid,
         "sigma_e_eV": sigma_e_ev,
+        "reservoirs": [r.as_dict() for r in reservoirs],
+        "reservoir_shift_eV": applied_shifts,
+        "reservoir_notes": reservoir_notes,
         "models": sorted(by_model),
         "n_models": len(by_model),
         "anchors": [a.as_dict() for a in pooled],
@@ -563,6 +794,9 @@ def sweep(
         "notes": [
             "gamma(U) = gamma(0) - n*nu*U/area under CHE on the RHE scale; "
             "pH enters only through U_RHE = U_SHE + 0.059*pH.",
+            "Closed-shell adsorbates are priced against their own gas (nu = "
+            "0); a spectator reservoir sets its element's mu (see "
+            "reservoirs).",
             "band_propagated: per-anchor energy bars pushed through the CHE "
             "arithmetic (uncertainty source 2; remedy: add an anchor). "
             "band_model_form: spread of the same boundary across MLIP models "
@@ -627,10 +861,12 @@ def render_text(sweep_out: dict[str, Any]) -> str:
 
 
 __all__ = [
+    "CLOSED_SHELL",
     "DEFAULT_SIGMA_E_EV",
     "PREFAC_V",
     "Anchor",
     "Boundary",
+    "Reservoir",
     "anchor_spread",
     "anchors_from_coverage",
     "boundaries",
@@ -638,8 +874,11 @@ __all__ = [
     "electrons_released",
     "element_counts",
     "envelope",
+    "feed_reservoir",
     "pool_anchors",
     "render_text",
+    "reservoir_shifts",
+    "reservoirs_from",
     "sweep",
     "u_rhe",
     "u_she",

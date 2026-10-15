@@ -447,6 +447,53 @@ def test_dispatch_refuses_out_of_scope_params_before_any_compute(
     assert ctx.failure is not None and "facets" in ctx.failure
 
 
+def test_dispatch_refuses_a_malformed_reservoir_before_any_compute(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _boom(*a: Any, **k: Any) -> dict[str, Any]:
+        raise AssertionError("the engine must not be called")
+
+    monkeypatch.setattr(runner, "run_coverage_scan_subprocess", _boom)
+    ctx = _FakeCtx(
+        store=store,
+        params={"config": CONFIG, "reservoirs": [{"species": "NH2", "element": "N"}]},
+    )
+    coverage_job._dispatch(ctx, coverage_job.SPEC)
+    assert ctx.status == "failed" and ctx.failure_class == "input"
+    assert ctx.failure is not None and "reservoirs" in ctx.failure
+
+
+def test_dispatch_takes_the_feed_as_the_spectator_reservoir(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An NO substrate sets mu_N by default (gr489164); an explicit empty
+    ``reservoirs`` turns it off."""
+
+    def _fake_scan(
+        config: dict[str, Any], model_index: int, **kw: Any
+    ) -> dict[str, Any]:
+        return {
+            "model": "emt",
+            "model_index": model_index,
+            "coverage": _coverage("emt", -0.02),
+            "engine_version": "0.24.1",
+            "corrections": None,
+        }
+
+    monkeypatch.setattr(runner, "run_coverage_scan_subprocess", _fake_scan)
+    fed = _FakeCtx(store=store, params={"config": {**CONFIG, "substrate": "NO"}})
+    coverage_job._dispatch(fed, coverage_job.SPEC)
+    assert fed.status == "succeeded"
+    (res,) = fed.meta_updates["che_sweep"]["reservoirs"]
+    assert res["species"] == "NO" and res["element"] == "N"
+    off = _FakeCtx(
+        store=store,
+        params={"config": {**CONFIG, "substrate": "NO"}, "reservoirs": []},
+    )
+    coverage_job._dispatch(off, coverage_job.SPEC)
+    assert off.meta_updates["che_sweep"]["reservoirs"] == []
+
+
 def test_dispatch_passes_the_injected_slab_through(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

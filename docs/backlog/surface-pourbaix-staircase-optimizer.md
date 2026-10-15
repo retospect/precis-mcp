@@ -381,6 +381,26 @@ never mixed in one contract.
   (`DEFAULT_EPS_EV`; Reto: "I like the 0.3 eV thing"), electrochemical
   rungs to 0; `window_objectives.eps_eV` still overrides.
 
+## Spectator axes (ruled 2026-10-15)
+
+Three tiers, cheapest first.
+
+1. **Spectator axes** (p_NO, chloride as a spectator, dissolved metal) —
+   *in progress.* Cheap: each shifts one species' chemical potential
+   linearly, and the map and staircase recompute for free. Slice 2 builds
+   the generic axis (`surface_pourbaix.Reservoir`: a species, the element
+   it sets, an activity) with p_NO as the first instance; every further
+   spectator is a config line. One slice. Mixed NO*+H* phases need a
+   catpath coverage-scan feature (mixed A/B configurations) and are not
+   built from summed single-species γ.
+2. **Temperature** — *ordered, not scheduled.* More than a slider: the
+   anchors need vibrational and entropy terms per species, which the
+   engine doesn't store, so an engine addition comes first. One slice,
+   later.
+3. **Adsorbers** (chloride that binds Pd, subsurface H) — *ordered, not
+   scheduled.* New slabs in the outer DFT-priced loop, not sliders:
+   slice-8-class work, plus the open subsurface-H question.
+
 - **Open, for the pillar review:** paper-date collision. This item's
   Fe-doped Pd PoC (~Nov 2026) and the catpath trust-demo paper
   (`threads/chemistry.md`) both sit under qu459585's one-paper-a-month.

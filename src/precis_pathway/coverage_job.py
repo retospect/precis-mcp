@@ -423,6 +423,19 @@ def _dispatch(ctx: Any, spec: Any) -> None:
 
     from . import runner, surface_pourbaix
 
+    # Spectator axes (gr489164): an explicit `reservoirs` param, else the
+    # reaction's own feed (an NO substrate sets mu_N), else none. Parsed
+    # before the scan so a malformed line costs no compute.
+    try:
+        if params.get("reservoirs") is not None:
+            reservoirs = surface_pourbaix.reservoirs_from(params["reservoirs"])
+        else:
+            feed = surface_pourbaix.feed_reservoir(config.get("substrate"))
+            reservoirs = [feed] if feed is not None else []
+    except (KeyError, TypeError, ValueError) as exc:
+        ctx.record_failure(f"{NAME}: reservoirs: {exc}", failure_class="input")
+        return
+
     # An injected slab is part of the anchor set's content address (see
     # runner.coverage_anchor_key's slab_key): a digest of the bytes, never
     # the bytes themselves, so the key stays a key.
@@ -524,6 +537,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         ph=float(params.get("pH", DEFAULT_PH)),
         point_u_rhe=None if point is None else float(point),
         sigma_e_ev=_sigma_e(params, config),
+        reservoirs=reservoirs,
     )
     che["footing_key"] = footing
     if dropped_uncorrected:
