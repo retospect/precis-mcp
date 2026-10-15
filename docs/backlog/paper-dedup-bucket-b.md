@@ -16,9 +16,6 @@ Ops-gated resolve-metadata runs plus the standing-worker follow-up.
 - Build the standing worker for future id-less stubs after the CLI proves
   itself on prod. The 49 id-bearing stubs that title-match a held paper stay
   in the review lane — real merges need cross-id (S2) equivalence proof.
-- Watcher NFS race: recognize the wrapped file-vanished error in
-  `src/precis/cli/watch.py` and skip silently; verify the 7 split orphans
-  self-heal post-deploy.
 
 ## Systemic: paper unmerge + bad-merge data repair (gr264748)
 

@@ -862,6 +862,28 @@ def _check_marker_fallback(pdf: Path, result: IngestResult, *, store: Store) -> 
         )
 
 
+def _file_vanished(exc: BaseException) -> bool:
+    """True when a :class:`FileNotFoundError` sits anywhere in ``exc``'s
+    ``__cause__``/``__context__`` chain.
+
+    The mid-ingest vanish on a shared inbox surfaces directly when the
+    failed ``open`` propagates, but a layer in between (Marker, the
+    extractor) may re-raise it inside its own exception — then only the
+    chain still records the vanished file.
+    """
+    seen: set[int] = set()
+    stack = [exc]
+    while stack:
+        cur = stack.pop()
+        if id(cur) in seen:
+            continue
+        seen.add(id(cur))
+        if isinstance(cur, FileNotFoundError):
+            return True
+        stack.extend(e for e in (cur.__cause__, cur.__context__) if e is not None)
+    return False
+
+
 def process_pdf(
     pdf: Path,
     *,
@@ -1023,22 +1045,6 @@ def process_pdf(
             _handle_failure(pdf, exc, errors_dir=errors_dir)
         clear_sidecar(pdf)
         return None
-    except FileNotFoundError as exc:
-        # Race on a shared inbox: another host ingested this PDF and
-        # moved it between our ``_wait_stable`` success and the read
-        # inside ``precis_add``. The other host is handling it; don't
-        # synthesize an error file for a non-event. (Source-PDF still
-        # present here would be a genuine bug — surface it normally.)
-        if not pdf.exists():
-            log.info(
-                "precis ingest: %s vanished mid-ingest — another host owns it, skipping",
-                pdf.name,
-            )
-            return None
-        log.exception("precis ingest: ingest failed for %s", pdf.name)
-        _handle_failure(pdf, exc, errors_dir=errors_dir)
-        clear_sidecar(pdf)
-        return None
     except OperationalError as exc:
         # Transient DB outage (server restart, network blip,
         # connection reaper). Leave the PDF in place so the next
@@ -1052,6 +1058,20 @@ def process_pdf(
         )
         return None
     except Exception as exc:
+        # Race on a shared inbox: another host ingested this PDF and
+        # moved it between our ``_wait_stable`` success and the read
+        # inside ``precis_add`` — the FileNotFoundError reaches us bare
+        # or wrapped in a higher-level exception's
+        # ``__cause__``/``__context__``. The other host is handling it;
+        # don't synthesize an error file for a non-event. (Source-PDF
+        # still present here would be a genuine bug — surface it
+        # normally.)
+        if _file_vanished(exc) and not pdf.exists():
+            log.info(
+                "precis ingest: %s vanished mid-ingest — another host owns it, skipping",
+                pdf.name,
+            )
+            return None
         log.exception("precis ingest: ingest failed for %s", pdf.name)
         _handle_failure(pdf, exc, errors_dir=errors_dir)
         clear_sidecar(pdf)

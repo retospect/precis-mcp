@@ -861,6 +861,42 @@ class TestProcessPdf:
         ]
         assert ts_buckets == []
 
+    def test_wrapped_filenotfound_race_does_not_write_error(self, tmp_path: Path):
+        """The same mid-ingest vanish arriving *wrapped* — a layer inside
+        precis_add re-raising the failed open as its own exception, so
+        the FileNotFoundError survives only on __cause__/__context__ —
+        must be skipped identically, not routed to errors/."""
+        watch_dir, errors_dir, duplicates_dir, corpus_dir = self._layout(tmp_path)
+        pdf = watch_dir / "raced_wrapped.pdf"
+        pdf.write_bytes(b"%PDF-1.4 test")
+
+        def vanish_then_raise(*a: Any, **kw: Any) -> Any:
+            pdf.unlink()
+            try:
+                raise FileNotFoundError(f"PDF not found: {pdf}")
+            except FileNotFoundError:
+                raise RuntimeError("extraction failed") from None
+
+        with patch("precis.cli.watch.precis_add", side_effect=vanish_then_raise):
+            dest = process_pdf(
+                pdf,
+                store=cast(Store, object()),
+                watch_dir=watch_dir,
+                corpus_dir=corpus_dir,
+                corpus_pres_dir=corpus_dir.parent / "corpus_pres",
+                errors_dir=errors_dir,
+                duplicates_dir=duplicates_dir,
+                debounce=0.01,
+                user="",
+            )
+
+        assert dest is None
+        # No bucket created under errors/, no .error.txt written.
+        ts_buckets = [
+            p for p in errors_dir.iterdir() if p.is_dir() and p.name != "duplicates"
+        ]
+        assert ts_buckets == []
+
     def test_filenotfound_with_file_present_still_errors(self, tmp_path: Path):
         """FileNotFoundError where the source PDF *is* still on disk
         is a genuine bug, not a race — must surface normally."""
