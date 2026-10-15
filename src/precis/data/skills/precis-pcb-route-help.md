@@ -69,6 +69,15 @@ executor lane (see `precis-job-help`).
   pose; hard `align` operands are left alone (hard aligns win);
   soft-pinned parts snap only inside their leash. Snapped parts get
   `meta.preferred_snap` stamped. Idempotent.
+- Both `op='place'` and `op='route'` accept `groups` (bool, default
+  `false`): a pre-anneal pass that recognises support passives from the
+  netlist — pull-up/pull-down banks sharing a rail, per-IC decoupling
+  caps, LED+resistor and series pairs — and places each group as ONE
+  rigid body: a row at a uniform pitch, uniform rotation, the shared
+  (rail/return) pads on one line so a single trace serves the row,
+  beside the pins it serves. The row then moves as a unit through the
+  anneal. `fixed`/`max_travel_mm`/edge-mated parts are never members.
+  Detection is deterministic per netlist; nothing persists but poses.
 
 ## Route job options, idempotency and the autoplace alias
 

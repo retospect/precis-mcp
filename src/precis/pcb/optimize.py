@@ -196,6 +196,7 @@ import numpy as np
 
 from precis.format import toon
 from precis.pcb import pinswap, pose
+from precis.pcb import support_groups as pcb_support_groups
 from precis.pcb.capabilities import capability_for
 from precis.pcb.cost import (
     _BY_NAME,
@@ -769,6 +770,14 @@ class OptimizeConfig:
     #: schedule the caller chooses: :data:`DEFAULT_SCHEDULE` carries no
     #: weight for either, so an ordinary anneal never grows a board.
     expansion: ExpansionCaps | None = None
+    #: Opt-in pre-pass: :func:`precis.pcb.support_groups.apply_support_groups`
+    #: detects netlist support structure (pull-up/pull-down banks,
+    #: per-IC decoupling rows, LED+resistor and series pairs) and stamps
+    #: each group as a derived rigid body in an organised row, between
+    #: the seed and engine construction. ``False`` (the default) leaves
+    #: the IR exactly as seeded — an anneal without the flag is
+    #: bit-for-bit the run it was.
+    support_groups: bool = False
 
     def __post_init__(self) -> None:
         if self.cost.p_norm is not None:
@@ -978,6 +987,10 @@ class OptimizeResult:
     #: it onto instance ``meta['preferred_snap']``; empty when
     #: :attr:`OptimizeConfig.preferred_snap` was off.
     preferred_snapped: dict[str, dict[str, float]] = field(default_factory=dict)
+    #: ``"kind: refdes,refdes,…"`` per support group the opt-in pre-pass
+    #: (:attr:`OptimizeConfig.support_groups`) organised into a rigid
+    #: row — empty when the flag is off or the netlist carries none.
+    support_groups: tuple[str, ...] = ()
 
 
 # ── constructive seed: connectivity clustering + cluster drop ───────────
@@ -3227,6 +3240,121 @@ class OptimizeEngine:
                             }
         return snapped
 
+    def organize_support_groups(
+        self,
+    ) -> tuple[pcb_support_groups.SupportGroup, ...]:
+        """Deterministic post-anneal support-passive re-organisation
+        (opt-in via :attr:`OptimizeConfig.support_groups`, spec and
+        measurement in docs/backlog/pcb-placement-groups.md).
+
+        :func:`precis.pcb.support_groups.detect_support_groups` finds
+        the netlist support structure (pull-up/pull-down banks
+        sub-clustered per bus stop, per-IC decoupling rows, LED+resistor
+        and series pairs); this pass re-lays each group as one organised
+        row — uniform pitch, member rotations putting the shared
+        (rail/return/link) pads on one line so a single trace serves
+        the row, anchored beside the pins it serves.
+
+        **Why post-anneal and not a rigid body through the search:**
+        measured on taz15-blank seed 1, derived rigid rows cost the
+        anneal 3.4x its settled objective and one routed net — a
+        multi-member rigid body is nearly immovable on a dense board
+        (the same immobility ``_merge_pattern_clusters`` documents for
+        pattern tiles), so a row stamped suboptimal stayed there.
+        Organising after the search keeps every member's mobility and
+        ends organised regardless.
+
+        Each group's whole-row proposal goes through
+        :meth:`_placement_is_legal` — the same courtyard / mounting-hole
+        / authored-via / outline / soft-pin gate a generated move takes,
+        including proposals-versus-proposals — searched on a small
+        offset ring around the anchor, then over every candidate anchor
+        rotation (best-cost order); a group with no legal landing keeps
+        its members' annealed poses (graceful no-op, never a broken
+        layout). Frozen, leashed, authored-grouped and edge-mated
+        instances are excluded at detection; steering hard-``align``
+        operands are skipped here too — hard aligns win, same as
+        :meth:`snap_to_preferred`. Members that are movable but unplaced
+        (NaN) are skipped as well.
+
+        Returns the moved groups — the caller reports them
+        (:func:`precis.pcb.support_groups.summary_lines`); empty when
+        the netlist carries no support structure or no row could be
+        placed legally."""
+        ir = self.ir
+        groups = pcb_support_groups.detect_support_groups(ir)
+        if not groups:
+            return ()
+        hard_paired = {
+            inst
+            for a, b, spec in self._measure_pairs
+            if spec.metric == "align" and spec.hard and spec.weight > 0.0
+            for inst in (a, b)
+            if inst >= 0
+        }
+        step = _LEGALIZE_STEP_MM
+        rings = [(0.0, 0.0)] + [
+            (dx * step, dy * step)
+            for ring in range(1, 17)
+            for dx in range(-ring, ring + 1)
+            for dy in range(-ring, ring + 1)
+            if max(abs(dx), abs(dy)) == ring
+        ]
+        moved: list[pcb_support_groups.SupportGroup] = []
+        for group in groups:
+            keep = {
+                m
+                for m in group.members
+                if m in self._movable_set
+                and m not in hard_paired
+                and math.isfinite(float(ir.inst_x[m]))
+                and math.isfinite(float(ir.inst_y[m]))
+            }
+            g = group.restricted(keep)
+            if len(g.members) < 2:
+                continue
+            offsets, ax, ay, rots = pcb_support_groups.layout_group(
+                ir, g, self._keepout_r
+            )
+            members = g.members
+            old = tuple(
+                (
+                    float(ir.inst_x[m]),
+                    float(ir.inst_y[m]),
+                    float(ir.inst_rot[m]),
+                )
+                for m in members
+            )
+            placed: (
+                tuple[float, float, tuple[tuple[float, float, float], ...]] | None
+            ) = None
+            for arot in rots:
+                base = tuple(
+                    (
+                        ax + rotate_offset(dx, dy, arot)[0],
+                        ay + rotate_offset(dx, dy, arot)[1],
+                        (arot + drot) % 360.0,
+                    )
+                    for dx, dy, drot in offsets
+                )
+                rotations = {m: r for m, (_x, _y, r) in zip(members, base)}
+                for ddx, ddy in rings:
+                    proposals = [
+                        (m, x + ddx, y + ddy) for m, (x, y, _r) in zip(members, base)
+                    ]
+                    if self._placement_is_legal(proposals, rotations=rotations):
+                        placed = (ddx, ddy, base)
+                        break
+                if placed is not None:
+                    break
+            if placed is None:
+                continue  # keep the annealed poses
+            ddx, ddy, base = placed
+            new = tuple((x + ddx, y + ddy, r) for x, y, r in base)
+            self.apply_move(Move(MoveKind.TRANSLATE, members, old, new))
+            moved.append(g)
+        return tuple(moved)
+
     # -- board-edge-clearance delta (O(1) per instance) -------------------
     def _refresh_board_edge(self, inst: int) -> None:
         t = board_edge_clearance_term(self.ir, inst, self.level, self.config.cost)
@@ -5298,6 +5426,18 @@ def optimize(
     # The snap is part of the placement, not cosmetic: it runs BEFORE
     # `cost_after` so the reported cost is the cost of the returned board.
     snapped = engine.snap_hard_aligns()
+    # Opt-in support-passive organisation (docs/backlog/
+    # pcb-placement-groups.md): a post-anneal pass — hard aligns already
+    # snapped win, and the organised rows' cost counts in cost_after.
+    # NO polish anneal after it: measured on taz15 seeds 1-2 a short
+    # settle (any of movable-rigid, frozen-rows, or cold t0=0.5) lost
+    # ratsnest and routed nets — the disturbance is already priced into
+    # the pass, and every further search step only trades the wires it
+    # was organised for back into the cost model's other terms.
+    support_groups: tuple[str, ...] = ()
+    if config.support_groups:
+        placed_groups = engine.organize_support_groups()
+        support_groups = pcb_support_groups.summary_lines(ir, placed_groups)
     cost_after = engine.total()
     # Cosmetic, post-measurement: `cost_before`/`cost_after` grade the
     # anneal's own work; the rigid recentre below changes absolute
@@ -5364,6 +5504,7 @@ def optimize(
         snapped=snapped,
         soft_pin_travel_mm=soft_pin_travel_mm,
         preferred_snapped=preferred_snapped,
+        support_groups=support_groups,
     )
 
 
@@ -5870,6 +6011,11 @@ def anneal_route_loop(
     snap_to_edges(ir)
     engine = OptimizeEngine(ir, config)
     engine.legalize_start()
+    # Same opt-in post-anneal pass `optimize()` runs — applied before
+    # each round's route so the route measures the organised board, and
+    # the best-round restore then carries the organised poses forward.
+    if config.support_groups:
+        engine.organize_support_groups()
 
     rounds: list[RouteLoopRound] = []
     outcomes: list[RouteOutcome] = []
@@ -5910,6 +6056,8 @@ def anneal_route_loop(
         engine.apply_route_feedback(outcome)
         engine.anneal(rng)
         all_moves.extend(engine.moves)
+        if config.support_groups:
+            engine.organize_support_groups()
 
     # Best round: fewest failures, then most routed, then lowest cost.
     def _rank(i: int) -> tuple[float, float, float]:

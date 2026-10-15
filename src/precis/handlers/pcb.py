@@ -1137,6 +1137,11 @@ class PcbHandler(Handler):
             params["seed"] = int(opts["seed"])
         if op == "place" and opts.get("snap") is not None:
             params["snap"] = bool(opts["snap"])
+        # Opt-in support-passive organisation (optimize.OptimizeConfig.
+        # support_groups): pull-up banks, per-IC decoupling rows and
+        # series pairs placed as rigid rows.
+        if op in ("place", "route") and opts.get("groups") is not None:
+            params["groups"] = bool(opts["groups"])
         if op == "route" and opts.get("warm_start") is not None:
             warm_start = opts["warm_start"]
             if warm_start not in ("distance", "radial"):

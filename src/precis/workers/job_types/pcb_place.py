@@ -54,6 +54,7 @@ PARAMS_SCHEMA: dict[str, Any] = {
         "iters": {"type": "integer", "minimum": 1},
         "seed": {"type": "integer"},
         "snap": {"type": "boolean"},
+        "groups": {"type": "boolean"},
     },
     "required": ["pcb_ref_id"],
     "additionalProperties": False,
@@ -141,12 +142,22 @@ def _preferred_snap_note(snapped: dict[str, dict[str, float]]) -> str:
     return f"preferred snap: {shown}\n\n"
 
 
+def _support_groups_note(groups: tuple[str, ...]) -> str:
+    """The job summary's line listing the support-passive rows the
+    ``groups=true`` pre-pass organised — empty when the pass was off or
+    the netlist carries no support structure."""
+    if not groups:
+        return ""
+    return f"support groups: {'; '.join(groups)}\n\n"
+
+
 def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     params = dict(ctx.meta.get("params") or {})
     pcb_ref_id = int(params["pcb_ref_id"])
     iters = int(params.get("iters") or _DEFAULT_ITERS)
     seed = int(params.get("seed") or 0)
     snap = bool(params.get("snap") or False)
+    groups = bool(params.get("groups") or False)
 
     graph = ctx.store.pcb_graph(pcb_ref_id)
     if not graph.get("instances"):
@@ -236,6 +247,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         schedule=_PLACE_ONLY_SCHEDULE,
         measures=measures,
         preferred_snap=snap,
+        support_groups=groups,
     )
     result = optimize(ir, config)
 
@@ -341,6 +353,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         f"{n_placement_errors} pre-route DRC error(s)\n\n"
         + _legalized_note(result.legalized)
         + _soft_pin_note(result.soft_pin_travel_mm)
+        + _support_groups_note(result.support_groups)
         + _preferred_snap_note(result.preferred_snapped)
         + _on_fixed_vias_note(result.on_fixed_vias)
         + digest_toon(result),

@@ -136,6 +136,8 @@ PARAMS_SCHEMA: dict[str, Any] = {
         "expansion_caps": {"type": "object"},
         # Route despite pre-route placement DRC errors (recorded in the summary).
         "force": {"type": "boolean"},
+        # Opt-in support-passive rows (optimize.OptimizeConfig.support_groups).
+        "groups": {"type": "boolean"},
     },
     "required": ["pcb_ref_id"],
     "additionalProperties": False,
@@ -439,6 +441,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     pcb_ref_id = int(params["pcb_ref_id"])
     iters = int(params.get("iters") or _DEFAULT_ITERS)
     seed = int(params.get("seed") or 0)
+    groups = bool(params.get("groups") or False)
 
     graph = ctx.store.pcb_graph(pcb_ref_id)
     if not graph.get("nets"):
@@ -692,6 +695,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         # priced generators refuse without authored bounds, and the
         # single path's schedule never draws them anyway.
         expansion=expansion_caps,
+        support_groups=groups,
     )
     realize_config = pcb_realize.RealizeConfig(
         fab_caps=fab_caps,
@@ -1329,6 +1333,9 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         loop_line = ""
         assert result is not None
         digest_text = digest_toon(result)
+    groups_line = ""
+    if result is not None and result.support_groups:
+        groups_line = f"support groups: {'; '.join(result.support_groups)}\n"
     attempt_summary = (
         f"{placement_summary}"
         f"routed {len(rows)} net(s): {n_realized} realized, "
@@ -1339,7 +1346,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         f"{n_placement_errors} pre-route DRC error(s), "
         f"{len(drc_fail)} net(s) stripped by post-route DRC, "
         f"{n_disconnected} net(s) failed as disconnected copper"
-        f"{pin_swap_summary}{loop_line}\n\n" + digest_text
+        f"{pin_swap_summary}{loop_line}\n\n" + groups_line + digest_text
     )
 
     if worse:
