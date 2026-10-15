@@ -12,13 +12,20 @@ Mismatched-dim embedders raise on INSERT — caller should pre-check
 
 from __future__ import annotations
 
+import logging
+import time
 from datetime import datetime
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from psycopg import Connection
 
 from precis.embedder import Embedder, EmbedderUnavailable, make_embedder
 from precis.workers.base import ClaimedChunk, WorkerHandler
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
+
+log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Fresh-claim priority tiers — draft/conv jump the ~1M-chunk paper backlog
@@ -37,18 +44,22 @@ from precis.workers.base import ClaimedChunk, WorkerHandler
 # class's other subclass) keeps the inherited flat order — lifting tiering
 # into the shared base would change its claim order too, out of scope here.
 
-#: Ref kinds whose chunks jump the embed queue.
-_PRIORITY_KINDS = ("draft", "conv")
+#: Ref kinds whose chunks jump the embed queue. ``finding`` leads: a hub's
+#: ``finding_body`` is what the mint-time dedup gate ANN-searches, so an
+#: unembedded hub is invisible to the next mint (gr489243);
+#: :func:`nudge_fresh_embed` makes sure a job is there to claim it.
+_PRIORITY_KINDS = ("finding", "draft", "conv")
 
-#: Fresh-claim tiers, in queue order: draft > conv > rest. Each is
+#: Fresh-claim tiers, in queue order: finding > draft > conv > rest. Each is
 #: ``(kind_pred, order_by)`` spliced into ``_TIERED_FRESH_CLAIM_SQL``. The
 #: priority tiers keep ``c.ref_id, c.ord`` contiguity (small populations);
 #: ``rest`` keeps the base class's flat ``c.chunk_id`` FIFO so corpus-wide
 #: embed throughput is unchanged when no priority chunk is pending.
 _FRESH_TIERS: dict[str, tuple[str, str]] = {
+    "finding": ("r.kind = 'finding'", "c.ref_id, c.ord"),
     "draft": ("r.kind = 'draft'", "c.ref_id, c.ord"),
     "conv": ("r.kind = 'conv'", "c.ref_id, c.ord"),
-    "rest": ("(r.kind <> ALL(ARRAY['conv', 'draft']))", "c.chunk_id"),
+    "rest": ("(r.kind <> ALL(ARRAY['conv', 'draft', 'finding']))", "c.chunk_id"),
 }
 
 #: Same predicate as ``WorkerHandler._claim_fresh`` (no current, non-failed
@@ -293,7 +304,8 @@ class EmbedHandler(WorkerHandler):
 
     def _claim_fresh(self, conn: Connection, *, limit: int) -> list[ClaimedChunk]:
         """Claim fresh (never-embedded or stale-``content_sha``) chunks in
-        queue-priority order: draft > conv > rest (see :data:`_FRESH_TIERS`).
+        queue-priority order: finding > draft > conv > rest (see
+        :data:`_FRESH_TIERS`).
 
         Overrides :meth:`WorkerHandler._claim_fresh` — everything else
         (:meth:`WorkerHandler.claim_batch`'s reclaim top-up, ``release_claims``,
@@ -302,14 +314,14 @@ class EmbedHandler(WorkerHandler):
         runs its own claim statement (rather than one query with an ``ORDER
         BY CASE``) so an empty priority tier costs a cheap indexed probe, not
         a sort over the whole candidate set — the tiers partition, so
-        corpus-wide throughput is unchanged when no draft/conv chunk is
+        corpus-wide throughput is unchanged when no finding/draft/conv chunk is
         pending. A chunk claimed by an earlier tier is excluded from a later
         one by the fresh ``NOT EXISTS chunk_claims`` (its claim row is
         written in the same statement).
         """
         skip_clause, skip_kinds = self._skip_clause("c")
         claimed: list[ClaimedChunk] = []
-        for tier in ("draft", "conv", "rest"):
+        for tier in ("finding", "draft", "conv", "rest"):
             remaining = limit - len(claimed)
             if remaining <= 0:
                 break
@@ -563,10 +575,102 @@ def failed_embedding_count(conn: Connection, *, ref_id: int) -> int:
     return int(count_row[0]) if count_row else 0
 
 
+# ---------------------------------------------------------------------------
+# Fresh-hub nudge — create embed work within seconds of a hub write
+# ---------------------------------------------------------------------------
+#
+# gr489243 (embed-freshness B; Reto 2026-10-15: "worker picks"): the
+# materializer mints ``embed_batch`` on a 300s cadence with a 30-minute age
+# trigger, so a new hub's ``finding_body`` waited p50 34 min (max 2h09m, prod,
+# 2026-10-08..15) for its vector, and until then the mint-time dedup gate
+# cannot see it. Priority alone can't fix that (no job exists to reorder); the
+# nudge creates one. job_inproc claims an ``embed_batch`` in p50 1.4 s / p90
+# 4.6 s, and the ``finding`` tier in ``_FRESH_TIERS`` makes that job (or any
+# already-running one, at its next micro-batch) take the hub first. The embed
+# itself still runs in the worker: the hub write only queues a job and never
+# calls the embedder.
+
+#: ``params.limit`` of a nudge job: enough for a burst of hubs, small enough
+#: to finish in seconds and free the embedder slot for the materializer.
+NUDGE_LIMIT = 64
+
+#: Job prio of a nudge (ASC, lower = more urgent): ahead of the materializer's
+#: background mints (8), since a caller is about to search for this hub.
+NUDGE_PRIO = 2
+
+#: Burst-coalescing window: hub writes within one bucket share one job.
+_NUDGE_BUCKET_S = 10
+
+
+def nudge_fresh_embed(store: Store, *, conn: Connection, reason: str) -> int | None:
+    """Queue a small high-priority ``embed_batch`` so a just-written hub chunk
+    is embedded within seconds. Returns the new job's ref id, or ``None``
+    when an ``embed_batch`` is already queued (it claims the ``finding`` tier
+    first) or the nudge failed.
+
+    Runs on the caller's ``conn`` inside a savepoint, so the job commits with
+    the hub. A failure is logged and swallowed: the materializer's age trigger
+    still embeds the hub, only later. Never raises into the write.
+    """
+    from precis.store.types import Tag
+
+    idem_key = f"embed-nudge:{int(time.time()) // _NUDGE_BUCKET_S}"
+    try:
+        with conn.transaction():
+            queued = conn.execute(
+                """
+                SELECT 1 FROM refs r
+                 WHERE r.kind = 'job' AND r.retired_at IS NULL
+                   AND r.meta->>'job_type' = 'embed_batch'
+                   AND (r.meta->>'idem_key' = %s
+                        OR EXISTS (
+                             SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                              WHERE rt.ref_id = r.ref_id
+                                AND t.namespace = 'STATUS'
+                                AND t.value = 'queued'))
+                 LIMIT 1
+                """,
+                (idem_key,),
+            ).fetchone()
+            if queued is not None:
+                return None
+            ref = store.insert_ref(
+                kind="job",
+                slug=None,
+                title=f"embed_batch (fresh-hub nudge: {reason})",
+                meta={
+                    "job_type": "embed_batch",
+                    "executor": "job_inproc",
+                    "params": {"limit": NUDGE_LIMIT},
+                    "idem_key": idem_key,
+                },
+                prio=NUDGE_PRIO,
+                conn=conn,
+            )
+            store.add_tag(
+                ref.id,
+                Tag.closed("STATUS", "queued"),
+                set_by="system",
+                replace_prefix=True,
+                conn=conn,
+            )
+            return int(ref.id)
+    except Exception:
+        log.warning(
+            "embed nudge failed (%s); the materializer embeds it later",
+            reason,
+            exc_info=True,
+        )
+        return None
+
+
 __all__ = [
+    "NUDGE_LIMIT",
+    "NUDGE_PRIO",
     "EmbedHandler",
     "eligible_chunk_count",
     "failed_embedding_count",
+    "nudge_fresh_embed",
     "oldest_unembedded_chunk_at",
     "resolve_embedder",
     "unembedded_chunk_count",

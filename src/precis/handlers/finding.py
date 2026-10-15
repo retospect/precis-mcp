@@ -122,6 +122,7 @@ from precis.utils.link_tag_ops import apply_tag_ops
 from precis.utils.link_target import LinkTarget, parse_link_target
 from precis.utils.ref_hybrid import fused_ref_hits
 from precis.utils.search_merge import SearchHit, ref_hits_to_search_hits
+from precis.workers.embed import nudge_fresh_embed
 
 if TYPE_CHECKING:
     from precis.nanopub.overview import HubOverviewRow
@@ -605,6 +606,9 @@ class FindingHandler(NumericRefHandler):
                     ],
                     conn=conn,
                 )
+                # Embed the body within seconds so a paraphrase search
+                # (and the next mint's dedup) can find it.
+                nudge_fresh_embed(self.store, conn=conn, reason="put finding")
                 # STATUS:tracing — closed namespace, one value per
                 # ref. Replace any existing STATUS tag (defensive;
                 # shouldn't exist on a fresh ref).

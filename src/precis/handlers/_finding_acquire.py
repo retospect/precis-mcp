@@ -23,6 +23,7 @@ from precis.store.types import ChunkInsert, Tag
 from precis.utils import handle_registry
 from precis.utils.link_tag_ops import apply_tag_ops
 from precis.utils.link_target import LinkTarget, parse_link_target
+from precis.workers.embed import nudge_fresh_embed
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -265,6 +266,7 @@ def put_acquiring(
                 ],
                 conn=conn,
             )
+            nudge_fresh_embed(store, conn=conn, reason="put finding (acquiring)")
             store.add_tag(
                 ref.id,
                 Tag.closed(_STATUS_NAMESPACE, _STATUS_ACQUIRING),

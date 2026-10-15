@@ -642,6 +642,11 @@ def mint_hub(
             conn=c,
         )
         _enqueue_conflict_sweep(store, int(ref.id), conn=c)
+        # The next mint's dedup gate ANN-searches finding_body: get this
+        # one embedded within seconds, not at the next materializer batch.
+        from precis.workers.embed import nudge_fresh_embed
+
+        nudge_fresh_embed(store, conn=c, reason=f"mint_hub fi{ref.id}")
         log.info("taproot: minted hub ref_id=%s pub_id=%s", ref.id, pub_id)
         return int(ref.id)
 
@@ -821,6 +826,9 @@ def refine_claim_sentence(
         store.chunks.replace_body_chunk(
             hub_ref_id, stripped, chunk_kind="finding_body", source=set_by, conn=c
         )
+        from precis.workers.embed import nudge_fresh_embed
+
+        nudge_fresh_embed(store, conn=c, reason=f"reword fi{hub_ref_id}")
 
         # (3) card variants — no staleness-detecting pass exists for a hub
         # (see the docstring); DELETE so a stale card never keeps matching
