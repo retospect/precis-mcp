@@ -142,6 +142,7 @@ class AiZynthEngine:
         smiles: str,
         container_cmd: str,
         models_dir: str | None,
+        max_routes: int | None = None,
     ) -> list[str]:
         """The ``podman/docker run`` argv for one plan (delegates to the
         aizynth argv builder; lazy import keeps this module chem-dep-free)."""
@@ -155,6 +156,7 @@ class AiZynthEngine:
             image=self.image,
             container_cmd=container_cmd,
             models_dir=models_dir,
+            max_routes=max_routes,
         )
 
     def native_parser(

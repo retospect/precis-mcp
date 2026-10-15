@@ -6,20 +6,56 @@
 # `retrosynth` job dispatch (precis_chem.jobs._run_container) prefers route.json
 # (engine-agnostic + route descriptors) and falls back to trees.json.
 #
-#   precis-aizynth-run "<SMILES>"
+#   precis-aizynth-run "<SMILES>" [CONFIG_OVERLAY]
 #
 # The config (policy + stock model paths) is $PRECIS_AIZYNTH_CONFIG, which
 # lives under the read-only /models mount (weights come from the NAS, not the
 # image — ADR 0056 §5).
+#
+# STEER slice 3: the optional second argument is a per-job config OVERLAY the
+# dispatch staged into /work/in (precis_chem.jobs writes in_dir/config.yml —
+# /work/in mounts read-only, so the merged file lands in writable /work/out).
+# Today it carries post_processing.max_routes + all_routes so the search keeps
+# N candidate routes instead of AiZynth's default, giving the strategy rerank
+# a wider pool; route.json then carries every kept route with descriptors.
 set -euo pipefail
 
-SMILES="${1:?usage: precis-aizynth-run '<SMILES>'}"
+SMILES="${1:?usage: precis-aizynth-run '<SMILES>' [/work/in/config.yml]}"
+OVERLAY="${2:-}"
 CONFIG="${PRECIS_AIZYNTH_CONFIG:-/models/config.yml}"
 LINCHEMIN_VENV="${LINCHEMIN_VENV:-/opt/linchemin-venv}"
 
 if [[ ! -f "$CONFIG" ]]; then
   echo "precis-aizynth-run: config not found at $CONFIG (mount /models)" >&2
   exit 2
+fi
+
+# Merge the per-job overlay over the base config (one level of dict merge —
+# post_processing lands as keys under the existing section). python3 is the
+# image's interpreter (pyyaml ships with aizynthfinder). A missing or
+# unreadable overlay just runs the base config.
+if [[ -n "$OVERLAY" && -f "$OVERLAY" ]]; then
+  MERGED="/work/out/.precis-config.yml"
+  python3 - "$CONFIG" "$OVERLAY" "$MERGED" <<'PY'
+import sys
+
+import yaml
+
+base_path, overlay_path, out_path = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(base_path, encoding="utf-8") as fh:
+    base = yaml.safe_load(fh) or {}
+with open(overlay_path, encoding="utf-8") as fh:
+    overlay = yaml.safe_load(fh) or {}
+for key, value in overlay.items():
+    if isinstance(value, dict) and isinstance(base.get(key), dict):
+        base[key].update(value)
+    else:
+        base[key] = value
+with open(out_path, "w", encoding="utf-8") as fh:
+    yaml.safe_dump(base, fh)
+PY
+  CONFIG="$MERGED"
+  echo "precis-aizynth-run: merged $OVERLAY over base config" >&2
 fi
 
 # aizynthcli writes trees.json into the current dir for a single SMILES; the

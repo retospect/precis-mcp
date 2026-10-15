@@ -16,10 +16,15 @@ loads on the always-on request path and the parse is shared by every engine
                 "reaction_smiles": "<r>>p>", "template_id": "…",
                 "confidence": 0.81, "conditions": "…", "in_stock": false}, …],
      "metrics": {"nr_steps": 2, "cdscore": 0.33, …},
-     "score": 0.33, "provenance": {"normalizer": "linchemin", …}}
+     "score": 0.33, "provenance": {"normalizer": "linchemin", …},
+     "routes": [{…same step/metrics/score/solved shape per route…}, …]}
 
 The step order is authoritative (the shim emits target-first). ``metrics`` is the
 LinChemIn ``routes_descriptors`` row — the substrate for our own route scoring.
+STEER slice 3 adds the optional ``routes`` list: every route the engine kept,
+each normalised with its own descriptors — ``routes[0]`` duplicates the
+top-level fields (old readers see only the top route); the rest land on
+``RouteGraph.alternatives``.
 """
 
 from __future__ import annotations
@@ -57,6 +62,7 @@ def parse_syngraph(
     *,
     target: str | None = None,
     engine_version: str | None = None,
+    max_alternatives: int = 9,
 ) -> RouteGraph:
     """Parse a container-emitted ``route.json`` into a :class:`RouteGraph`.
 
@@ -64,6 +70,10 @@ def parse_syngraph(
     this shape. ``target`` / ``engine_version`` override the JSON's values when
     the caller knows better (the job passes the requested SMILES + image digest).
     Tolerant of missing optional keys; raises only on unparseable JSON.
+
+    A ``routes`` list (slice 3) carries the kept lower-ranked routes — each
+    normalised with its own descriptors — onto ``alternatives``, capped at
+    ``max_alternatives``.
     """
     if isinstance(content, (str, bytes)):
         data = json.loads(content)
@@ -72,29 +82,56 @@ def parse_syngraph(
     if not isinstance(data, dict):
         raise ValueError(f"route.json must be a JSON object, got {type(data).__name__}")
 
-    steps = [
-        _step_from_json(s, fallback_id=i)
-        for i, s in enumerate(data.get("steps", []) or [], 1)
-        if isinstance(s, dict)
-    ]
     tgt = (
         normalize_smiles(target)
         if target
         else normalize_smiles(str(data.get("target", "")))
     )
     ev = engine_version or str(data.get("engine_version", "?"))
+    engine = str(data.get("engine", "?"))
 
     prov_raw = data.get("provenance")
     provenance: dict[str, Any] = dict(prov_raw) if isinstance(prov_raw, dict) else {}
     provenance["route_schema"] = int(data.get("schema_version", IR_VERSION))
 
+    alternatives = [
+        _route_doc_to_graph(alt, target=tgt, engine=engine, engine_version=ev)
+        for alt in (data.get("routes") or [])[1 : 1 + max(0, max_alternatives)]
+        if isinstance(alt, dict)
+    ]
+
     return RouteGraph(
         target=tgt,
-        engine=str(data.get("engine", "?")),
+        engine=engine,
         engine_version=ev,
-        steps=steps,
+        steps=_steps(data),
         solved=bool(data.get("solved", False)),
         score=as_float(data.get("score")),
         metrics=dict(data.get("metrics") or {}),
         provenance=provenance,
+        alternatives=alternatives,
+    )
+
+
+def _steps(d: dict[str, Any]) -> list[RouteStep]:
+    return [
+        _step_from_json(s, fallback_id=i)
+        for i, s in enumerate(d.get("steps", []) or [], 1)
+        if isinstance(s, dict)
+    ]
+
+
+def _route_doc_to_graph(
+    d: dict[str, Any], *, target: str, engine: str, engine_version: str
+) -> RouteGraph:
+    """One ``routes[]`` entry → a RouteGraph (no alternatives of its own —
+    the list is flat)."""
+    return RouteGraph(
+        target=target,
+        engine=engine,
+        engine_version=engine_version,
+        steps=_steps(d),
+        solved=bool(d.get("solved", False)),
+        score=as_float(d.get("score")),
+        metrics=dict(d.get("metrics") or {}),
     )

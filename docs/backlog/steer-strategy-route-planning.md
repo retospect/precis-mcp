@@ -95,17 +95,29 @@ Acceptance:
    5): put two strategies on one target, check both rankings and that the
    page leads with the pick. **Blocked on deploy.**
 
-### Slice 3: more candidates per run (image change; code only)
+### Slice 3: more candidates per run (image change; code only — SHIPPED 2026-10-15)
 
-The ranking can only be as good as the candidate set. Raise AiZynth's
-`post_processing.max_routes` and set `all_routes` in a per-job `config.yml`
-written to `/work/in`. That needs a shim argument in `precis-aizynth-run`.
-`az_to_route.py` should also emit descriptors for every route, not just the
-top one. The change lands in the repo and deploys with the next castor
-image build. Per Reto's castor ruling, no build happens here.
+The ranking can only be as good as the candidate set. `put(…, max_routes=N)`
+carries N (it folds into `cache_key` — a wider candidate set is a different
+plan) into the job params; the dispatch stages a per-job `config.yml`
+overlay (`post_processing.max_routes` + `all_routes`) into `/work/in`, and
+the shim's second argument merges it over `/models/config.yml` (the merged
+file lands in writable `/work/out`). `az_to_route.py` emits a `routes` list —
+every kept route normalised with its own descriptors — and
+`parse_syngraph` lands them on `alternatives` (top-level stays route 0, so
+old readers are unaffected). The change lands in the repo and deploys with
+the next castor image build. Per Reto's castor ruling, no build happens
+here.
 
-Acceptance: a job can request N routes, and `route.json` carries N
-normalised routes, each with descriptors.
+Acceptance:
+
+1. [x] A job can request N routes (`max_routes` param → overlay → shim
+   arg → merged config).
+2. [x] `route.json` carries N normalised routes, each with descriptors
+   (`routes[]`), landing on `alternatives`.
+3. [ ] Dogfood once the new image is built and deployed: request
+   `max_routes=20`, check the route keeps >9 candidates and a steer rerank
+   sees them. **Blocked on castor image build + deploy.**
 
 ### Slice 4: strategy-guided search (paper's full method)
 

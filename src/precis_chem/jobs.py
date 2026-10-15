@@ -210,6 +210,9 @@ _PARAMS_SCHEMA: dict[str, Any] = {
         # The content address — same key ⇒ zero recompute.
         "cache_key": {"type": "string"},
         "max_steps": {"type": "integer"},
+        # STEER slice 3: how many candidate routes the engine keeps (staged
+        # as a per-job config overlay; part of cache_key via the put).
+        "max_routes": {"type": "integer"},
         # Declared platform constraints (advisory screen; part of cache_key).
         "constraints": {"type": "array", "items": {"type": "string"}},
         # STEER strategy recorded at put — reranked in this job once the
@@ -271,6 +274,20 @@ def _run_container(ctx: Any, params: dict[str, Any], engine: Any) -> RouteGraph 
 
     in_dir, out_dir = STAGER(ref_id)
     Path(in_dir, "target.smi").write_text(smiles, encoding="utf-8")
+    # STEER slice 3: a requested candidate width (params.max_routes) becomes
+    # a per-job config overlay staged beside the target — the container's
+    # /work/in mount is read-only to the shim, so precis writes it here and
+    # the shim merges it over the base /models/config.yml.
+    max_routes = int(params.get("max_routes") or 0)
+    if max_routes > 0:
+        Path(in_dir, "config.yml").write_text(
+            "# per-job AiZynth overrides — merged over the base config by\n"
+            "# precis-aizynth-run (docker/aizynth)\n"
+            "post_processing:\n"
+            f"  max_routes: {max_routes}\n"
+            "  all_routes: true\n",
+            encoding="utf-8",
+        )
     argv = engine.run_argv(
         ref_id=ref_id,
         in_dir=in_dir,
@@ -278,6 +295,7 @@ def _run_container(ctx: Any, params: dict[str, Any], engine: Any) -> RouteGraph 
         smiles=smiles,
         container_cmd=_CONTAINER_CMD,
         models_dir=os.environ.get("PRECIS_CHEM_MODELS_DIR") or None,
+        max_routes=max_routes or None,
     )
     ctx.append_chunk("job_event", f"route[{engine.name}] on {node}: {' '.join(argv)}")
 
@@ -329,9 +347,13 @@ def _run_container(ctx: Any, params: dict[str, Any], engine: Any) -> RouteGraph 
 def _with_native_alternatives(
     graph: RouteGraph, native: Path | None, engine: Any, smiles: str
 ) -> RouteGraph:
-    """route.json carries only the top route; the engine's native output
-    (AiZynth trees.json) carries the lower-ranked ones STEER reranks.
-    Best-effort: a missing or unreadable native file keeps ``graph``."""
+    """The engine's native output (AiZynth trees.json) carries lower-ranked
+    routes STEER reranks — fill ``alternatives`` from it when route.json
+    didn't already (slice-3 route.json carries them WITH descriptors, which
+    the bespoke trees parse lacks, so a populated list wins). Best-effort:
+    a missing or unreadable native file keeps ``graph``."""
+    if graph.alternatives:
+        return graph
     if native is None or not native.exists() or not hasattr(engine, "native_parser"):
         return graph
     try:

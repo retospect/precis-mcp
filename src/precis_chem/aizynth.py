@@ -181,15 +181,22 @@ def build_aizynth_argv(
     image: str,
     container_cmd: str = "podman",
     models_dir: str | None = None,
+    max_routes: int | None = None,
 ) -> list[str]:
     """The ``podman run`` argv for one AiZynth plan (pure, testable).
 
     Deterministic ``--name precis-route-<ref_id>`` so a sweeper can kill it by
     name. The wrapper image's ``precis-aizynth-run`` entrypoint runs
-    ``aizynthcli`` and drops ``trees.json`` into ``/work/out``; the target
-    SMILES is the only per-job argument. When ``models_dir`` is given (the NAS
-    path, a node-deploy concern), it is bind-mounted read-only at
-    :data:`CONTAINER_MODELS` so the config's model paths resolve.
+    ``aizynthcli`` and drops ``trees.json`` into ``/work/out``. When
+    ``models_dir`` is given (the NAS path, a node-deploy concern), it is
+    bind-mounted read-only at :data:`CONTAINER_MODELS` so the config's model
+    paths resolve.
+
+    STEER slice 3: ``max_routes`` names the per-job config overlay the
+    dispatch staged at ``{CONTAINER_IN}/config.yml`` — the shim's second
+    argument; it merges the overlay (``post_processing.max_routes`` +
+    ``all_routes``) over the base ``/models/config.yml`` so the run keeps N
+    candidate routes.
     """
     argv = [
         container_cmd,
@@ -205,4 +212,6 @@ def build_aizynth_argv(
     if models_dir:
         argv += ["-v", f"{models_dir}:{CONTAINER_MODELS}:ro"]
     argv += [image, "precis-aizynth-run", smiles]
+    if max_routes:
+        argv.append(f"{CONTAINER_IN}/config.yml")
     return argv

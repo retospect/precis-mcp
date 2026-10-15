@@ -319,16 +319,19 @@ def cache_key(
     engine_version: str,
     stock: str = "",
     max_steps: int = 0,
+    max_routes: int = 0,
     constraints: tuple[str, ...] | list[str] = (),
 ) -> str:
     """Content address for a route plan.
 
-    Same ``(target, engine, engine_version, stock snapshot, depth,
-    constraints)`` ⇒ same key ⇒ zero recompute. The engine *version* (an
-    image digest in prod) invalidates the cache when the model changes;
+    Same ``(target, engine, engine_version, stock snapshot, depth, candidate
+    width, constraints)`` ⇒ same key ⇒ zero recompute. The engine *version*
+    (an image digest in prod) invalidates the cache when the model changes;
     ``stock`` is the buyable-set snapshot id. Declared platform constraints
-    fold in only when non-empty, so every pre-constraint key stays valid.
-    Returned as ``retrosynth:<sha256[:16]>``.
+    fold in only when non-empty, so every pre-constraint key stays valid;
+    ``max_routes`` (STEER slice 3 — how many candidate routes the engine
+    keeps) folds in only when non-zero, so every pre-slice-3 key stays valid
+    too. Returned as ``retrosynth:<sha256[:16]>``.
     """
     body: dict[str, Any] = {
         "t": normalize_smiles(target),
@@ -337,6 +340,8 @@ def cache_key(
         "s": stock,
         "n": int(max_steps),
     }
+    if max_routes:
+        body["r"] = int(max_routes)
     if constraints:
         body["c"] = sorted(str(c) for c in constraints)
     payload = json.dumps(body, sort_keys=True)

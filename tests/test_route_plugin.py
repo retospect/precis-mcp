@@ -21,6 +21,7 @@ import pytest
 
 import precis_chem
 from precis.dispatch import Hub, _try
+from precis.errors import BadInput
 from precis.store import Store
 from precis.workers import job_types as jt
 from precis_chem import jobs as chem_jobs
@@ -394,6 +395,17 @@ def test_build_aizynth_argv() -> None:
         models_dir="/nas/models",
     )
     assert f"/nas/models:{CONTAINER_MODELS}:ro" in argv2
+    # STEER slice 3: a requested candidate width names the staged config
+    # overlay as the shim's second argument.
+    argv3 = build_aizynth_argv(
+        ref_id=7,
+        in_dir="/s/in",
+        out_dir="/s/out",
+        smiles="CCO",
+        image="img",
+        max_routes=20,
+    )
+    assert argv3[-1] == "/work/in/config.yml"
 
 
 def test_container_dispatch_round_trip(
@@ -443,6 +455,157 @@ def test_container_dispatch_round_trip(
         and (landed.meta or {}).get("status") == "solved"
     )
     assert route["steps"][0]["product"] == "CCO"
+
+
+def test_container_dispatch_stages_max_routes_overlay(
+    route_store: Store, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """params.max_routes ⇒ the dispatch stages a per-job config overlay into
+    /work/in (post_processing.max_routes + all_routes) and the shim argv
+    names it — the shim merges it over the base /models/config.yml."""
+    in_dir = tmp_path / "in"
+    out_dir = tmp_path / "out"
+    in_dir.mkdir()
+    out_dir.mkdir()
+    seen_argv: list[str] = []
+
+    def _runner(argv: list[str], *, node: str, timeout: Any = None) -> tuple[int, str]:
+        seen_argv.extend(argv)
+        (out_dir / "trees.json").write_text(
+            _aizynth_trees(solved=True), encoding="utf-8"
+        )
+        return 0, "ok"
+
+    monkeypatch.setattr(chem_jobs, "STAGER", lambda rid: (str(in_dir), str(out_dir)))
+    monkeypatch.setattr(chem_jobs, "RUNNER", _runner)
+
+    ref = route_store.insert_ref(
+        kind="route", slug="wide", title="wide", meta={"target": "CCO"}
+    )
+    params = {
+        "route_ref_id": ref.id,
+        "target": "CCO",
+        "engine": "aizynth",
+        "engine_version": "aizynth-container",
+        "cache_key": "retrosynth:wide",
+        "max_routes": 20,
+        "target_node": "spark",
+    }
+    ctx = _FakeCtx(store=route_store, params=params)
+    chem_jobs._dispatch(ctx, RETROSYNTH_SPEC)
+    assert ctx.status == "succeeded"
+    overlay = (in_dir / "config.yml").read_text(encoding="utf-8")
+    assert "max_routes: 20" in overlay and "all_routes: true" in overlay
+    assert seen_argv[-1] == "/work/in/config.yml"
+
+
+def test_route_json_routes_list_lands_as_alternatives(
+    route_store: Store, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A slice-3 route.json carries every kept route WITH descriptors; the
+    dispatch prefers those over the descriptor-free trees.json parse."""
+    doc = json.loads(_route_json())
+    alt = {
+        "solved": True,
+        "steps": [
+            {
+                "id": 1,
+                "product": "CC(=O)Oc1ccccc1C(=O)O",
+                "reactants": ["CC(=O)Cl", "O=C(O)c1ccccc1O"],
+                "in_stock": True,
+            }
+        ],
+        "metrics": {"nr_steps": 1, "cdscore": 0.9},
+        "score": 0.9,
+    }
+    doc["routes"] = [
+        {
+            "solved": doc["solved"],
+            "steps": doc["steps"],
+            "metrics": doc["metrics"],
+            "score": doc["score"],
+        },
+        alt,
+    ]
+    in_dir = tmp_path / "in"
+    out_dir = tmp_path / "out"
+    in_dir.mkdir()
+    out_dir.mkdir()
+
+    def _runner(argv: list[str], *, node: str, timeout: Any = None) -> tuple[int, str]:
+        (out_dir / "trees.json").write_text(
+            _aizynth_trees(solved=True), encoding="utf-8"
+        )
+        (out_dir / ROUTE_FILE).write_text(json.dumps(doc), encoding="utf-8")
+        return 0, "ok"
+
+    monkeypatch.setattr(chem_jobs, "STAGER", lambda rid: (str(in_dir), str(out_dir)))
+    monkeypatch.setattr(chem_jobs, "RUNNER", _runner)
+
+    ref = route_store.insert_ref(
+        kind="route", slug="multi", title="multi", meta={"target": "CCO"}
+    )
+    params = {
+        "route_ref_id": ref.id,
+        "target": "CC(=O)Oc1ccccc1C(=O)O",
+        "engine": "aizynth",
+        "engine_version": "aizynth-container",
+        "cache_key": "retrosynth:multi",
+        "target_node": "spark",
+    }
+    ctx = _FakeCtx(store=route_store, params=params)
+    chem_jobs._dispatch(ctx, RETROSYNTH_SPEC)
+    assert ctx.status == "succeeded"
+    route = _route_meta(route_store, "multi").get("route") or {}
+    alts = route.get("alternatives") or []
+    assert len(alts) == 1
+    # The route.json alternative carries descriptors; a trees.json fallback
+    # would not.
+    assert alts[0]["metrics"]["nr_steps"] == 1
+    assert alts[0]["steps"][0]["reactants"] == ["CC(=O)Cl", "O=C(O)c1ccccc1O"]
+
+
+def test_parse_syngraph_routes_list() -> None:
+    doc = json.loads(_route_json())
+    doc["routes"] = [
+        {"steps": doc["steps"], "metrics": doc["metrics"], "solved": True}
+    ] + [{"steps": [], "metrics": {"nr_steps": i}, "solved": False} for i in range(12)]
+    g = parse_syngraph(json.dumps(doc))
+    assert len(g.alternatives) == 9  # capped at the default max_alternatives
+    assert g.alternatives[0].metrics == {"nr_steps": 0}
+    g1 = parse_syngraph(json.dumps(doc), max_alternatives=1)
+    assert len(g1.alternatives) == 1
+
+
+def test_cache_key_max_routes() -> None:
+    k1 = cache_key(target="CCO", engine="aizynth", engine_version="v")
+    k2 = cache_key(target="CCO", engine="aizynth", engine_version="v", max_routes=20)
+    assert k1 != k2
+    # The default key is untouched: absent and 0 coincide.
+    assert k1 == cache_key(
+        target="CCO", engine="aizynth", engine_version="v", max_routes=0
+    )
+
+
+def test_put_max_routes_validates_and_reaches_params(
+    route_store: Store,
+    register_retrosynth: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PRECIS_CHEM_ROUTE_NODE", "spark")
+    h = _try(RouteHandler, hub=Hub(store=route_store))
+    assert h is not None
+    with pytest.raises(BadInput):
+        h.put(id="bad", target="CCO", engine="stub", max_routes=0)
+    h.put(id="wide", target="CCO", engine="stub", max_routes=15)
+    route_ref = route_store.get_ref(kind="route", id="wide")
+    assert route_ref is not None
+    with route_store.pool.connection() as c:
+        row = c.execute(
+            "SELECT meta FROM refs WHERE kind = 'job' AND parent_id = %s",
+            (route_ref.id,),
+        ).fetchone()
+    assert row is not None and row[0]["params"]["max_routes"] == 15
 
 
 def test_container_dispatch_missing_node_fails(

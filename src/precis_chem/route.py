@@ -62,13 +62,15 @@ class RouteHandler(Handler):
             "A retrosynthesis route-graph (precis-chem plugin). "
             "put(id='<slug>', target='<SMILES>', engine='stub'|'aizynth', "
             "requested_by=<todo>, constraints=['ewod-oil'], "
-            "strategy='<text>') plans a synthetic "
+            "strategy='<text>', max_routes=N) plans a synthetic "
             "route — a content-addressed cache hit if already planned, else an "
             "in-process solve or a minted retrosynth compute job; a declared "
             "platform constraint (e.g. ewod-oil — EWOD digital microfluidics "
             "in oil) is recorded, cache-keyed, and advisorily screened per "
             "step; a declared strategy is recorded (not cache-keyed) and "
-            "reranked inside the job. get lists routes or renders one graph "
+            "reranked inside the job; max_routes widens the kept candidate "
+            "set (cache-keyed; container engines only). get lists routes or "
+            "renders one graph "
             "(id=slug) — a scored strategy's pick leads the page; "
             "view='steer', q='<strategy>' reranks the kept candidate routes "
             "by an LLM's fit to a natural-language strategy; delete "
@@ -104,6 +106,7 @@ class RouteHandler(Handler):
         title: str | None = None,
         requested_by: int | str | None = None,
         max_steps: int | None = None,
+        max_routes: int | None = None,
         constraints: list[str] | str | None = None,
         strategy: str | None = None,
         **_kw: Any,
@@ -127,6 +130,15 @@ class RouteHandler(Handler):
         except ValueError as exc:
             raise BadInput(str(exc), next="engine='stub' | 'aizynth'") from exc
         steps = int(max_steps) if max_steps is not None else DEFAULT_MAX_STEPS
+        width = 0
+        if max_routes is not None:
+            width = int(max_routes)
+            if width < 1:
+                raise BadInput(
+                    "max_routes must be a positive integer",
+                    next="max_routes=10 (kept candidate routes; part of the "
+                    "content address — container engines only)",
+                )
         try:
             declared = [c.name for c in resolve_constraints(constraints)]
         except ValueError as exc:
@@ -146,6 +158,7 @@ class RouteHandler(Handler):
             engine=eng.name,
             engine_version=eng.version,
             max_steps=steps,
+            max_routes=width,
             constraints=declared,
         )
 
@@ -169,6 +182,8 @@ class RouteHandler(Handler):
             "max_steps": steps,
             "constraints": declared,
         }
+        if width:
+            params["max_routes"] = width
         if strat is not None:
             params["strategy"] = strat
 
@@ -213,6 +228,8 @@ class RouteHandler(Handler):
             "max_steps": steps,
             "constraints": declared,
         }
+        if width:
+            stamp["max_routes"] = width
         if steer_strategies:
             stamp["steer_strategies"] = steer_strategies
         if existing is None:

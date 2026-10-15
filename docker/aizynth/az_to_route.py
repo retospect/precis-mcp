@@ -12,7 +12,10 @@ calls this module to:
   4. enrich each step with AiZynth-only metadata (policy probability, buyable
      leaves, reaction class, template) pulled from the raw ``trees.json``,
 
-and emit ``route.json``. It is **best-effort**: any failure leaves ``trees.json``
+and emit ``route.json``. STEER slice 3: **every** route the engine kept is
+normalised — the ``routes`` list carries each route's steps + descriptors;
+the top-level fields stay the top route so an old reader sees only it. The
+file is **best-effort**: any failure leaves ``trees.json``
 in place (the precis side falls back to the bespoke ``parse_aizynth_trees``), so
 a normalizer hiccup never fails an otherwise-good plan.
 
@@ -145,21 +148,53 @@ def build_route(trees_content: str, *, engine_version: str) -> dict[str, Any]:
     syngraphs, _meta = facade(
         "translate", trees, input_format="az_retro", output_format="syngraph"
     )
-    top = syngraphs[0]
-    steps = syngraph_steps(top)
+    enrich, buyable = aizynth_enrichment(trees)
+    # Slice 3: normalise EVERY kept route — each gets steps + its own
+    # descriptors row. The top-level fields stay routes[0] for old readers.
+    routes = [
+        _route_entry(sg, enrich, buyable, rank)
+        for rank, sg in enumerate(syngraphs)
+    ]
+    top = routes[0]
+    target = syngraphs[0].get_roots()[0].smiles if syngraphs[0].get_roots() else ""
 
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "engine": "aizynth",
+        "engine_version": engine_version,
+        "target": target,
+        "solved": top["solved"],
+        "steps": top["steps"],
+        "metrics": top["metrics"],
+        "score": top["score"],
+        "routes": routes,
+        "provenance": {
+            "engine": "aizynth",
+            "normalizer": "linchemin",
+            "n_routes": len(syngraphs),
+        },
+    }
+
+
+def _route_entry(
+    sg: Any, enrich: dict[str, dict], buyable: set[str], rank: int
+) -> dict[str, Any]:
+    """One SynGraph → the ``routes[]`` entry: steps + its own descriptors +
+    solved flag."""
+    from linchemin.interfaces.facade import facade
+
+    steps = syngraph_steps(sg)
     try:
-        df, _m = facade("routes_descriptors", [top])
+        df, _m = facade("routes_descriptors", [sg])
         metrics = {
             k: (float(v) if hasattr(v, "__float__") else v)
             for k, v in df.iloc[0].to_dict().items()
             if k != "route_id"
         }
     except Exception as exc:  # descriptors are optional enrichment
-        print(f"az_to_route: descriptors failed: {exc}", file=sys.stderr)
+        print(f"az_to_route: descriptors failed (route {rank}): {exc}", file=sys.stderr)
         metrics = {}
 
-    enrich, buyable = aizynth_enrichment(trees)
     for step in steps:
         e = enrich.get(_canon(step["product"]), {})
         step["confidence"] = e.get("confidence")
@@ -170,24 +205,13 @@ def build_route(trees_content: str, *, engine_version: str) -> dict[str, Any]:
             _canon(r) in buyable for r in step["reactants"]
         )
 
-    leaves = [m.smiles for m in top.get_leaves()]
+    leaves = [m.smiles for m in sg.get_leaves()]
     solved = all(_canon(leaf) in buyable for leaf in leaves) if leaves else False
-    target = top.get_roots()[0].smiles if top.get_roots() else ""
-
     return {
-        "schema_version": SCHEMA_VERSION,
-        "engine": "aizynth",
-        "engine_version": engine_version,
-        "target": target,
         "solved": solved,
         "steps": steps,
         "metrics": metrics,
         "score": metrics.get("cdscore"),
-        "provenance": {
-            "engine": "aizynth",
-            "normalizer": "linchemin",
-            "n_routes": len(syngraphs),
-        },
     }
 
 
