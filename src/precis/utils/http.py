@@ -13,6 +13,9 @@ open-coded per call site:
    (``safe_get`` walks the chain itself, revalidating each hop). A client
    that defaulted to ``follow_redirects=True`` would let an agent-supplied
    URL redirect into a private/loopback/metadata address.
+4. :func:`request_with_deadline` — an overall wall-clock bound on a
+   request, which per-phase httpx timeouts cannot express (a trickling
+   peer defeats read timeouts indefinitely — gr486823).
 
 Bespoke per-kind error messages and ``next=`` hints stay at the call site —
 deliberately tuned per kind, not duplication.
@@ -30,6 +33,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
+from precis.utils.deadline import DeadlineExceeded, call_with_deadline
 from precis.utils.optional_deps import require_optional
 
 if TYPE_CHECKING:
@@ -96,6 +100,34 @@ def http_client(
         headers=merged,
         transport=pinning_transport(),
     )
+
+
+def request_with_deadline(
+    client: httpx.Client,
+    deadline_s: float,
+    send: Callable[[], httpx.Response],
+    *,
+    label: str = "",
+) -> httpx.Response:
+    """Run ``send()`` (e.g. ``lambda: client.get(url)`` or a ``safe_get``
+    call) under an overall wall-clock deadline.
+
+    The client's own ``timeout`` is *per phase* — a peer that trickles a
+    byte inside every read window keeps the call alive indefinitely, which
+    is how an ``orcid_enrich`` SSL read once held balthazar's worker loop
+    ~15 min (gr486823). On expiry the client is closed (best-effort socket
+    kill — see :mod:`precis.utils.deadline` for why a blocked recv may
+    outlive it) and ``httpx.ReadTimeout`` is raised, so call sites
+    catching ``httpx.HTTPError`` map it to their usual upstream error.
+    The client must not be reused after a deadline hit.
+    """
+    httpx_mod = require_httpx()
+    try:
+        return call_with_deadline(
+            send, deadline_s=deadline_s, abort=client.close, label=label
+        )
+    except DeadlineExceeded as exc:
+        raise httpx_mod.ReadTimeout(str(exc)) from exc
 
 
 def external_retry(
@@ -198,6 +230,7 @@ __all__ = [
     "DEFAULT_USER_AGENT",
     "external_retry",
     "http_client",
+    "request_with_deadline",
     "require_httpx",
     "retry_transient",
 ]

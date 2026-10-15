@@ -79,7 +79,7 @@ def _confidence(parsed: dict[str, str], item: dict[str, Any]) -> float:
 
 def _fetch_items(citation: str, mailto: str) -> list[dict[str, Any]]:
     """``query.bibliographic`` lookup via ``safe_get``; ``[]`` on any failure."""
-    from precis.utils.http import http_client
+    from precis.utils.http import http_client, request_with_deadline
     from precis.utils.safe_fetch import safe_get
 
     params: dict[str, Any] = {
@@ -92,9 +92,16 @@ def _fetch_items(citation: str, mailto: str) -> list[dict[str, Any]]:
         params["mailto"] = mailto
     try:
         with http_client(timeout=_TIMEOUT_S) as client:
-            resp = retry_transient(
-                lambda: safe_get(client, _CROSSREF_WORKS_URL, params=params),
-                host="api.crossref.org",
+            # Overall deadline covers retries too: per-phase timeouts alone
+            # can't stop a peer trickling bytes forever (gr486823).
+            resp = request_with_deadline(
+                client,
+                2 * _TIMEOUT_S,
+                lambda: retry_transient(
+                    lambda: safe_get(client, _CROSSREF_WORKS_URL, params=params),
+                    host="api.crossref.org",
+                ),
+                label=f"GET {_CROSSREF_WORKS_URL}",
             )
         if resp.status_code != 200:
             return []

@@ -582,3 +582,98 @@ def test_anki_sync_cadence_ineligible_by_default(store, monkeypatch) -> None:
     lease = {ln.name: ln for ln in store.scheduler_leases()}[anki_cad.name]
     assert lease.last_fired_at is None
     assert lease.last_host is None
+
+
+# ── gr486823: a wedged cadence run must not hold the rotation ────────────
+
+
+def test_hanging_cadence_abandoned_and_sibling_keeps_firing(store) -> None:
+    """A ``cad.run`` that blocks forever (the orcid_enrich SSL-read stall
+    class) is abandoned past the run bound: this pass reports it failed,
+    a sibling cadence still fires this cycle and re-fires next cycle, and
+    the wedged cadence is NOT re-claimed while its detached run lives."""
+    import threading
+
+    from precis.workers import scheduler as scheduler_mod
+
+    release = threading.Event()
+    ran: list[str] = []
+
+    def hang(s, b) -> None:
+        ran.append("hang")
+        release.wait(30)
+
+    hang_cad = _cad(hang)
+    tick = _cad(lambda s, b: ran.append("tick"))
+
+    try:
+        r1 = run_scheduler_pass(
+            store, host="h", cadences=(hang_cad, tick), run_deadline_s=0.2
+        )
+        assert (r1.claimed, r1.ok, r1.failed) == (2, 1, 1)
+        lease1 = {ln.name: ln for ln in store.scheduler_leases()}[hang_cad.name]
+        first_fired = lease1.last_fired_at
+        assert first_fired is not None
+
+        # Make the sibling due again — the cadence stand-in for
+        # materialize/cron_tick re-firing while a sibling hangs.
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE scheduler_leases SET next_fire_at = now() - interval '1 second' "
+                "WHERE name = %s",
+                (tick.name,),
+            )
+        r2 = run_scheduler_pass(
+            store, host="h", cadences=(hang_cad, tick), run_deadline_s=0.2
+        )
+        # hang skipped BEFORE the claim (its lease is not advanced past
+        # the wedge); tick fires again.
+        assert (r2.claimed, r2.ok, r2.failed) == (1, 1, 0)
+        assert ran == ["hang", "tick", "tick"]
+        lease2 = {ln.name: ln for ln in store.scheduler_leases()}[hang_cad.name]
+        assert lease2.last_fired_at == first_fired
+    finally:
+        release.set()
+        scheduler_mod._INFLIGHT.pop(hang_cad.name, None)
+
+
+def test_detached_cadence_reclaims_lease_after_finishing(store) -> None:
+    """Once the abandoned run ends, the cadence claims and fires normally
+    again — the bound is liveness, not a permanent disable."""
+    import threading
+
+    from precis.workers import scheduler as scheduler_mod
+
+    first_done = threading.Event()
+    ran: list[str] = []
+
+    def hang_once(s, b) -> None:
+        ran.append("hang")
+        if len(ran) == 1:
+            first_done.wait(30)
+
+    cad = _cad(hang_once)
+    try:
+        r1 = run_scheduler_pass(store, host="h", cadences=(cad,), run_deadline_s=0.2)
+        assert (r1.claimed, r1.ok, r1.failed) == (1, 0, 1)
+        first_done.set()
+        # Give the detached thread a beat to unwind, then make the lease
+        # due again so the second pass re-claims it.
+        import time
+
+        for _ in range(500):
+            if not scheduler_mod._INFLIGHT[cad.name].is_alive():
+                break
+            time.sleep(0.01)
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE scheduler_leases SET next_fire_at = now() - interval '1 second' "
+                "WHERE name = %s",
+                (cad.name,),
+            )
+        r2 = run_scheduler_pass(store, host="h", cadences=(cad,), run_deadline_s=0.2)
+        assert (r2.claimed, r2.ok, r2.failed) == (1, 1, 0)
+        assert ran == ["hang", "hang"]
+    finally:
+        first_done.set()
+        scheduler_mod._INFLIGHT.pop(cad.name, None)

@@ -21,6 +21,7 @@ from precis.workers.embed import EmbedHandler
 from precis.workers.runner import (
     DRAIN_FILE_ENV,
     BatchResult,
+    BoundedPass,
     run_handler_once,
     run_loop,
 )
@@ -593,3 +594,167 @@ class TestClaimLease:
         # Now the reclaim path picks it back up (same chunk, refreshed lease).
         assert self._claim_ids(store, h) == [cid]
         assert self._claims_in_table(store, h) == 1
+
+
+# ---------------------------------------------------------------------------
+# run_loop — ref-pass deadline (gr486823): a pass that blocks forever
+# (the orcid_enrich SSL-read hang) must be abandoned past its ``deadline_s``
+# so the serial rotation — and the cadences riding it — keeps ticking.
+# ---------------------------------------------------------------------------
+
+
+class TestRunLoopRefPassDeadline:
+    def test_wedged_ref_pass_abandoned_and_sibling_keeps_ticking(
+        self, store, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A never-returning pass is abandoned at its deadline (errored
+        payload row, like the crash path), skipped while the detached run
+        is still alive, and never re-entered — while a sibling pass keeps
+        running every cycle."""
+        calls = {"hang": 0, "tick": 0}
+        release = threading.Event()
+
+        def _orcid_enrich_pass(batch_size: int) -> BatchResult:
+            calls["hang"] += 1
+            release.wait(30)
+            return BatchResult(handler="orcid_enrich", claimed=0, ok=0, failed=0)
+
+        def _cron_tick_pass(batch_size: int) -> BatchResult:
+            calls["tick"] += 1
+            return BatchResult(handler="cron_tick", claimed=0, ok=0, failed=0)
+
+        t0 = time.monotonic()
+        try:
+            with caplog.at_level("INFO", logger="precis.workers.runner"):
+                run_loop(
+                    [],
+                    store,
+                    once=False,
+                    idle_seconds=0.01,
+                    should_stop=lambda: calls["tick"] >= 3,
+                    ref_passes=[
+                        BoundedPass(_orcid_enrich_pass, deadline_s=0.2),
+                        _cron_tick_pass,
+                    ],
+                )
+        finally:
+            release.set()
+        elapsed = time.monotonic() - t0
+        assert elapsed < 10, f"loop held by wedged pass ({elapsed:.1f}s)"
+        assert calls["hang"] == 1  # abandoned once, never re-entered
+        assert calls["tick"] == 3  # sibling cadence kept firing
+
+        errored = [
+            r
+            for r in caplog.records
+            if (p := _payload(r)) is not None
+            and p.get("handler") == "orcid_enrich"
+            and p.get("error") == "DeadlineExceeded"
+        ]
+        assert len(errored) == 1
+        assert errored[0].levelname == "ERROR"
+        payload = _payload(errored[0])
+        assert payload is not None
+        assert payload["failed"] == 1
+        assert payload["claimed"] == 0
+
+    def test_detached_pass_is_reentered_once_its_run_finishes(self, store) -> None:
+        """Skip-while-detached is liveness, not a permanent disable: once
+        the abandoned run finishes, the pass is invoked again."""
+        calls = {"hang": 0}
+        released = threading.Event()
+
+        def _enrich_pass(batch_size: int) -> BatchResult:
+            calls["hang"] += 1
+            if calls["hang"] == 1:
+                released.wait(30)
+            return BatchResult(handler="enrich", claimed=0, ok=0, failed=0)
+
+        def _tick_pass(batch_size: int) -> BatchResult:
+            if calls["hang"] >= 1:
+                released.set()  # let the detached run finish
+            return BatchResult(handler="tick", claimed=0, ok=0, failed=0)
+
+        run_loop(
+            [],
+            store,
+            once=False,
+            idle_seconds=0.01,
+            should_stop=lambda: calls["hang"] >= 2,
+            ref_passes=[BoundedPass(_enrich_pass, deadline_s=0.2), _tick_pass],
+        )
+        assert calls["hang"] == 2
+
+    def test_once_ignores_deadline(self, store) -> None:
+        """``once=True`` runs passes inline: a manual one-shot must not
+        abandon the pass it was invoked for and return mid-work."""
+        calls: list[int] = []
+
+        def _slow_pass(batch_size: int) -> BatchResult:
+            time.sleep(0.3)
+            calls.append(batch_size)
+            return BatchResult(handler="slow", claimed=0, ok=0, failed=0)
+
+        run_loop(
+            [],
+            store,
+            once=True,
+            ref_passes=[BoundedPass(_slow_pass, deadline_s=0.05)],
+        )
+        assert calls == [32]  # ran to completion, default batch_size
+
+    def test_loop_level_deadline_bounds_passes_without_attribute(self, store) -> None:
+        """``ref_pass_deadline_s`` bounds passes that carry no
+        ``deadline_s`` attribute; a pass attribute overrides it."""
+        calls = {"hang": 0, "ok": 0}
+        release = threading.Event()
+
+        def _wedged(batch_size: int) -> BatchResult:
+            calls["hang"] += 1
+            release.wait(30)
+            return BatchResult(handler="wedged", claimed=0, ok=0, failed=0)
+
+        def _fine(batch_size: int) -> BatchResult:
+            calls["ok"] += 1
+            return BatchResult(handler="fine", claimed=0, ok=0, failed=0)
+
+        t0 = time.monotonic()
+        try:
+            run_loop(
+                [],
+                store,
+                once=False,
+                idle_seconds=0.01,
+                should_stop=lambda: calls["ok"] >= 2,
+                ref_passes=[_wedged, _fine],
+                ref_pass_deadline_s=0.2,
+            )
+        finally:
+            release.set()
+        assert time.monotonic() - t0 < 10
+        assert calls["hang"] == 1
+        assert calls["ok"] == 2
+
+    def test_detached_run_uses_its_own_connection(self, store) -> None:
+        """An abandoned pass keeps running on the shared ``Store``. That
+        is safe because every store op checks out its own pooled conn and
+        the one cross-caller seam — ``pin_connection``'s ContextVar — is
+        not inherited by a new thread. Proved end-to-end: a write made
+        from ``call_with_deadline``'s worker thread commits on its own
+        connection even while the calling thread sits inside a
+        ``store.atomic()`` scope, and survives that scope's rollback.
+        """
+        from precis.utils.deadline import call_with_deadline
+
+        def _detached_write() -> None:
+            store.set_setting("test.detached", "committed-off-thread")
+
+        with pytest.raises(RuntimeError, match="abort"):
+            with store.atomic():
+                # Pinned conn: rolls back with the atomic scope.
+                store.set_setting("test.caller", "rolled-back")
+                call_with_deadline(_detached_write, deadline_s=10.0)
+                raise RuntimeError("abort the atomic scope")
+
+        assert store.get_setting("test.detached") == "committed-off-thread"
+        assert store.get_setting("test.caller") is None

@@ -1800,4 +1800,39 @@ def build_ref_passes(
 
         ref_passes.append(_materialize_pass)
 
+    # gr486823: every pass that reaches outside the process gets the loop
+    # bound — a wedged socket read (the orcid_enrich SSL hang) must not
+    # hold the strictly-serial rotation past `PRECIS_REF_PASS_DEADLINE_S`
+    # (run_loop abandons the pass detached past the bound and skips it
+    # while that run is still alive). `uses_external` is the declaration
+    # that a pass does blocking I/O to a service we don't control, so the
+    # tag lands on new external passes automatically rather than relying
+    # on each registration remembering. Job executors (`job_*`) are
+    # exempt: they hold job leases, and a lease expiring under a detached
+    # still-running job invites a second claimant — costlier than the
+    # starvation a bounded-by-design job run poses.
+    from precis.utils.env import env_float
+    from precis.workers.registry import SERVICES
+    from precis.workers.runner import BoundedPass
+
+    _deadline_s = env_float("PRECIS_REF_PASS_DEADLINE_S", 300.0, lo=0.0)
+    if _deadline_s > 0:
+        _spec_by_handler = {s.log_handler: s for s in SERVICES} | {
+            s.name: s for s in SERVICES
+        }
+        for _i, _p in enumerate(ref_passes):
+            _fn_name = getattr(_p, "__name__", "")
+            _name = getattr(_p, "service_name", None) or (
+                _fn_name[1:-5]
+                if _fn_name.startswith("_") and _fn_name.endswith("_pass")
+                else _fn_name
+            )
+            _spec = _spec_by_handler.get(_name)
+            if (
+                _spec is not None
+                and _spec.uses_external
+                and not _spec.name.startswith("job_")
+            ):
+                ref_passes[_i] = BoundedPass(_p, _deadline_s)
+
     return ref_passes, heartbeat_registered, _axes_env_set, _topics_env_set

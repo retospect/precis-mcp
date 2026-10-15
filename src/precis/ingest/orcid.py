@@ -25,7 +25,7 @@ import time
 from typing import Any
 
 from precis.errors import BadInput, NotFound, Upstream
-from precis.utils.http import http_client, require_httpx
+from precis.utils.http import http_client, request_with_deadline, require_httpx
 
 # Public API + OAuth token endpoints. The *public* token endpoint is on
 # the main orcid.org host; the data lives on pub.orcid.org/v3.0.
@@ -33,6 +33,11 @@ _TOKEN_URL = "https://orcid.org/oauth/token"
 _API_BASE = "https://pub.orcid.org/v3.0"
 
 _TIMEOUT_S = 30.0
+#: Overall wall-clock bound per HTTP call (gr486823): httpx's
+#: ``_TIMEOUT_S`` is per-phase, so a peer trickling bytes inside every
+#: read window held an SSL recv ~15 min and stalled the worker loop.
+#: ``request_with_deadline`` abandons the call past this bound.
+_DEADLINE_S = 2 * _TIMEOUT_S
 _USER_AGENT = "precis-mcp/1.0 (+https://orcid.org)"
 
 # An ORCID iD is 16 digits in 4 groups of 4, last char may be 'X'
@@ -140,15 +145,20 @@ def _get_token() -> str:
     httpx = require_httpx()
     try:
         with http_client(timeout=_TIMEOUT_S, user_agent=None) as client:
-            resp = client.post(
-                _TOKEN_URL,
-                data={
-                    "client_id": cid,
-                    "client_secret": secret,
-                    "grant_type": "client_credentials",
-                    "scope": "/read-public",
-                },
-                headers={"Accept": "application/json"},
+            resp = request_with_deadline(
+                client,
+                _DEADLINE_S,
+                lambda: client.post(
+                    _TOKEN_URL,
+                    data={
+                        "client_id": cid,
+                        "client_secret": secret,
+                        "grant_type": "client_credentials",
+                        "scope": "/read-public",
+                    },
+                    headers={"Accept": "application/json"},
+                ),
+                label=f"POST {_TOKEN_URL}",
             )
     except httpx.HTTPError as exc:
         raise Upstream(f"ORCID token transport error: {exc}") from exc
@@ -182,7 +192,12 @@ def _api_get(path: str) -> dict[str, Any]:
     }
     try:
         with http_client(timeout=_TIMEOUT_S, user_agent=None) as client:
-            resp = client.get(url, headers=headers)
+            resp = request_with_deadline(
+                client,
+                _DEADLINE_S,
+                lambda: client.get(url, headers=headers),
+                label=f"GET {url}",
+            )
     except httpx.HTTPError as exc:
         raise Upstream(f"ORCID transport error: {exc}") from exc
     if resp.status_code == 404:

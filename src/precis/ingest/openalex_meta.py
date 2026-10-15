@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from precis.utils.authors import to_author_dicts
-from precis.utils.http import http_client
+from precis.utils.http import http_client, request_with_deadline
 
 log = logging.getLogger(__name__)
 
@@ -62,7 +62,12 @@ def fetch_openalex_work(
     url = f"{_OPENALEX_WORKS}/doi:{doi}"
     params = {"mailto": email} if email else {}
     with http_client(timeout=timeout, headers={"User-Agent": _ua(email)}) as client:
-        resp = client.get(url, params=params)
+        # httpx timeouts are per-phase — a trickling peer defeats them
+        # (gr486823), so the whole request gets an overall wall-clock
+        # bound of 2x the per-phase timeout.
+        resp = request_with_deadline(
+            client, 2 * timeout, lambda: client.get(url, params=params)
+        )
         if resp.status_code == 404:
             return None
         resp.raise_for_status()

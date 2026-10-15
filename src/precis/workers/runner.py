@@ -6,7 +6,11 @@ Two entry points:
   *one* transaction. The unit tests pin behaviour against this.
 * :func:`run_loop` — round-robin across a list of handlers, polling
   each one until it returns zero claimed rows; sleep when all
-  handlers are idle. Used by the ``precis worker`` CLI.
+  handlers are idle. Used by the ``precis worker`` CLI. Ref-passes
+  carrying a ``deadline_s`` attribute run bounded and are abandoned
+  (kept running detached, skipped while alive) past it — the
+  strictly-serial rotation must never be held hostage by one wedged
+  pass (gr486823).
 
 The runner deliberately catches :class:`Exception` around each
 chunk's :meth:`process` call: a single bad chunk should never crash
@@ -28,13 +32,16 @@ from __future__ import annotations
 import logging
 import os
 import random
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial, update_wrapper
 
 from precis.embedder import EmbedderUnavailable
 from precis.store import Store
 from precis.utils.db_retry import retry_locked
+from precis.utils.deadline import DeadlineExceeded, call_with_deadline
 from precis.workers import activity
 from precis.workers.base import WorkerHandler
 
@@ -196,6 +203,28 @@ def run_handler_once(
 RefPass = Callable[[int], BatchResult]
 
 
+class BoundedPass:
+    """A ref-pass carrying an explicit loop bound, ``deadline_s`` seconds.
+
+    A plain function can't declare a typed extra attribute — smuggling
+    ``fn.deadline_s = x`` on is exactly what the ``type: ignore`` ratchet
+    exists to catch — so the bound rides on this wrapper instead.
+    ``functools.update_wrapper`` copies ``__name__``, ``service_name``
+    and any other attributes the registration epilogue set, so the pass
+    still logs, gates and counts under its original name.
+    ``deadline_s=None`` is a valid explicit opt-out: it wins over
+    :func:`run_loop`'s ``ref_pass_deadline_s`` fallback.
+    """
+
+    def __init__(self, fn: RefPass, deadline_s: float | None) -> None:
+        self._fn = fn
+        update_wrapper(self, fn)
+        self.deadline_s = deadline_s
+
+    def __call__(self, batch_size: int) -> BatchResult:
+        return self._fn(batch_size)
+
+
 def run_loop(
     handlers: list[WorkerHandler],
     store: Store,
@@ -206,6 +235,7 @@ def run_loop(
     should_stop: Callable[[], bool] | None = None,
     ref_passes: list[RefPass] | None = None,
     pass_gate: Callable[[str], bool] | None = None,
+    ref_pass_deadline_s: float | None = None,
 ) -> None:
     """Drive ``handlers`` (chunk-level) and ``ref_passes`` (ref-level)
     in round-robin until stopped or drained.
@@ -236,6 +266,37 @@ def run_loop(
       ``classify``). A closure with neither is never gated. Returning
       ``False`` skips the pass this cycle; ``None`` gate disables gating
       entirely.
+    * Ref-pass deadline (gr486823): a pass wrapped in
+      :class:`BoundedPass` (``deadline_s`` seconds) — or every pass when
+      ``ref_pass_deadline_s`` is given; a pass attribute of ``None``
+      wins — runs on a daemon thread and is *abandoned* past the bound:
+      the loop moves on, the pass keeps running detached, an errored
+      payload row is logged (same shape as the crash path, so the
+      pass-dead probe keeps seeing it), and the pass is skipped while
+      the detached run is still alive — no piling a second attempt on a
+      wedged first. This exists because a ref-pass is arbitrary blocking
+      I/O: the orcid_enrich SSL read that stalled balthazar ~15 min held
+      every cadence on the host (materialize, cron_tick) behind it.
+      Under ``once=True`` deadlines are ignored — a manual one-shot run
+      must not outlive its own pass. Job executors stay unbounded by
+      choice: abandoning one mid-run strands a claimed job's lease.
+
+      The abandoned run keeps the SAME ``store`` — safe because
+      ``Store`` carries no per-caller connection state: every store op
+      checks out its own conn via ``PrecisPool.connection`` (psycopg
+      pool checkout is thread-safe and exclusive — one conn, one
+      holder), and the one cross-caller seam,
+      :func:`precis.store.pool.pin_connection`, is a ``ContextVar`` a
+      new thread does not inherit — so a detached run can neither join
+      the abandoning thread's ``store.atomic()`` scope nor hand its conn
+      over; it checks out, transacts and commits on its own (proved
+      end-to-end in ``tests/workers/test_runner.py`` — the detached
+      write survives the caller's rollback). ``activity`` state and the
+      hint bus are likewise lock-guarded / None on worker paths. Bounded
+      footprint: at most one detached run per pass (skipped while
+      alive), holding at most one pooled conn if it wedged
+      mid-transaction — worst case one of the pool's ``max_size`` slots
+      until the socket dies.
 
     **Drain.** Before each cycle, checks whether the drain-flag file
     (``$PRECIS_WORKER_DRAIN_FILE``, default :data:`DEFAULT_DRAIN_FILE`)
@@ -255,6 +316,14 @@ def run_loop(
         return
 
     drain_active = False
+
+    # Ref-passes abandoned past their ``deadline_s``: handler name → the
+    # still-running detached thread. While an entry's thread is alive the
+    # pass is skipped each cycle — a wedged pass is not re-entered on top
+    # of itself. ``_pending_logged`` demotes the skip note to DEBUG after
+    # its first cycle (the abandon itself already logged ERROR).
+    pending: dict[str, threading.Thread] = {}
+    pending_logged: set[str] = set()
 
     while True:
         drain_path = os.environ.get(DRAIN_FILE_ENV, DEFAULT_DRAIN_FILE)
@@ -343,10 +412,62 @@ def run_loop(
                 # this cycle; not counted as work so the loop can
                 # still idle-sleep when everything else is drained.
                 continue
+            handler_name = str(service or getattr(ref_pass, "__name__", "ref_pass"))
+            # Under ``once`` deadlines are inert (a manual run must not
+            # abandon the pass it was invoked for and return mid-work).
+            deadline_s = (
+                None if once else getattr(ref_pass, "deadline_s", ref_pass_deadline_s)
+            )
+            if deadline_s:
+                prev = pending.get(handler_name)
+                if prev is not None:
+                    if prev.is_alive():
+                        if handler_name not in pending_logged:
+                            pending_logged.add(handler_name)
+                            log.info(
+                                "worker: %s still running detached past its "
+                                "deadline; skipping this cycle",
+                                handler_name,
+                            )
+                        else:
+                            log.debug(
+                                "worker: %s still running detached; skipping",
+                                handler_name,
+                            )
+                        continue
+                    pending.pop(handler_name)
+                    pending_logged.discard(handler_name)
+                    log.info("worker: %s detached ref-pass run finished", handler_name)
             activity.set_pass(ref_pass.__name__)
             t0 = time.monotonic()
             try:
-                result = ref_pass(batch_size)
+                if deadline_s:
+                    result = call_with_deadline(
+                        partial(ref_pass, batch_size),
+                        deadline_s=deadline_s,
+                        label=handler_name,
+                    )
+                else:
+                    result = ref_pass(batch_size)
+            except DeadlineExceeded as exc:
+                pending[handler_name] = exc.thread
+                log.error(
+                    "worker: %s ref-pass exceeded its %gs deadline; abandoned "
+                    "(still running detached)",
+                    handler_name,
+                    deadline_s,
+                    extra={
+                        "payload": {
+                            "handler": handler_name,
+                            "claimed": 0,
+                            "ok": 0,
+                            "failed": 1,
+                            "error": "DeadlineExceeded",
+                            "duration_ms": int((time.monotonic() - t0) * 1000),
+                        }
+                    },
+                )
+                continue
             except Exception as exc:
                 # A ref-pass that crashes every single cycle must not go
                 # structurally invisible: the pass-dead probe
@@ -363,7 +484,6 @@ def run_loop(
                 # see stub_rank's per-step guards -- via its normal
                 # failed>0 success-path payload instead of even reaching
                 # here).
-                handler_name = service or getattr(ref_pass, "__name__", "ref_pass")
                 log.exception(
                     "worker: %s ref-pass raised; continuing",
                     handler_name,
@@ -425,4 +545,4 @@ def run_loop(
                 slept += tick
 
 
-__all__ = ["BatchResult", "RefPass", "run_handler_once", "run_loop"]
+__all__ = ["BatchResult", "BoundedPass", "RefPass", "run_handler_once", "run_loop"]

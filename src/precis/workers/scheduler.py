@@ -43,11 +43,15 @@ mint a capability-routed job instead; the lease mechanism is unchanged.
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
+from precis.utils.deadline import DeadlineExceeded, call_with_deadline
+from precis.utils.env import env_float
 from precis.workers.runner import BatchResult
 
 if TYPE_CHECKING:
@@ -853,6 +857,28 @@ CADENCES: tuple[Cadence, ...] = (
 )
 
 
+#: Overall bound on one cadence's work inside a fire (gr486823). Cadence
+#: work is arbitrary blocking I/O (watch_poll→S2, anki_sync→AnkiWeb,
+#: ots_sweep→calendar, …) and this pass runs them inline on the shared
+#: worker rotation — a wedged ``cad.run`` starves every other cadence the
+#: same way the wedged orcid_enrich ref-pass did. Past the bound the run
+#: is *abandoned* — it keeps going detached on its daemon thread — and
+#: while it is still alive the cadence's claim is skipped entirely, so
+#: the lease goes stale and health_digest's cadence-staleness check
+#: reports the truth instead of advancing ``last_fired_at`` over work
+#: that never landed. Default sits under the staleness margin floor
+#: (health_digest's ``_CADENCE_MARGIN_FLOOR_S`` = 900) so a single wedge
+#: resolves before the watchdog would even alert. A detached run sharing
+#: ``store`` is safe for the same reason as a detached ref-pass —
+#: ``Store`` ops each check out their own pooled conn, and the pinned-conn
+#: ``ContextVar`` does not propagate across threads (see run_loop's
+#: ref-pass deadline docstring for the full argument + the test that
+#: proves it).
+_INFLIGHT: dict[str, threading.Thread] = {}
+_RUN_DEADLINE_ENV = "PRECIS_CADENCE_RUN_DEADLINE_S"
+_RUN_DEADLINE_DEFAULT_S = 300.0
+
+
 def run_scheduler_pass(
     # forwards into the Store-typed _run_*/_over_daily_budget helpers;
     # test_scheduler_budget_gate.py calls this directly with a minimal
@@ -862,6 +888,7 @@ def run_scheduler_pass(
     host: str,
     batch_size: int = 32,
     cadences: tuple[Cadence, ...] = CADENCES,
+    run_deadline_s: float | None = None,
 ) -> BatchResult:
     """Claim + fire every due cadence this cycle. Decentralized: safe to run
     concurrently on every worker — the lease's conditional advance guarantees
@@ -878,7 +905,18 @@ def run_scheduler_pass(
     the loop still idle-sleeps); ``ok`` = cadences that ran clean; ``failed`` =
     cadences whose work raised (the lease already advanced — a raise doesn't
     re-fire until next interval, matching the launchd timer's fire-and-forget).
+
+    ``run_deadline_s`` bounds each cadence's work (default
+    :data:`_RUN_DEADLINE_DEFAULT_S`, env ``PRECIS_CADENCE_RUN_DEADLINE_S``;
+    <= 0 disables). A cadence whose previous fire is still running
+    detached past that bound is skipped BEFORE the claim — no lease
+    advance, so staleness alerting reports it honestly.
     """
+    bound = (
+        run_deadline_s
+        if run_deadline_s is not None
+        else env_float(_RUN_DEADLINE_ENV, _RUN_DEADLINE_DEFAULT_S, lo=0.0)
+    )
     claimed = ok = failed = 0
 
     for cad in cadences:
@@ -920,6 +958,21 @@ def run_scheduler_pass(
                     cad.interval_s,
                     exc_info=True,
                 )
+        prev = _INFLIGHT.get(cad.name)
+        if prev is not None:
+            if prev.is_alive():
+                # A fire abandoned past its bound is still running — skip
+                # the claim (no lease advance) so staleness alerting reads
+                # the wedge truthfully and we never stack a second run.
+                log.warning(
+                    "scheduler: cadence %s still running detached past the "
+                    "%gs run bound — skipping claim",
+                    cad.name,
+                    bound,
+                )
+                continue
+            del _INFLIGHT[cad.name]
+            log.info("scheduler: cadence %s detached run finished", cad.name)
         try:
             won = store.claim_scheduler_lease(cad.name, interval_s, host)
         except Exception:  # pragma: no cover — a lease blip must not wedge the loop
@@ -940,8 +993,25 @@ def run_scheduler_pass(
             host,
         )
         try:
-            cad.run(store, batch_size)
+            if bound > 0:
+                call_with_deadline(
+                    partial(cad.run, store, batch_size),
+                    deadline_s=bound,
+                    label=f"cadence {cad.name}",
+                )
+            else:
+                cad.run(store, batch_size)
             ok += 1
+        except DeadlineExceeded as exc:
+            _INFLIGHT[cad.name] = exc.thread
+            log.error(
+                "scheduler: cadence %s exceeded %gs run bound on %s; abandoned "
+                "(still running detached)",
+                cad.name,
+                bound,
+                host,
+            )
+            failed += 1
         except Exception:
             log.exception("scheduler: cadence %s work raised", cad.name)
             failed += 1

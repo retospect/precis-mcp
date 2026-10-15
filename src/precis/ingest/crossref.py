@@ -6,7 +6,16 @@ from typing import Any
 
 from habanero import Crossref
 
+from precis.utils.deadline import call_with_deadline
 from precis.utils.http import retry_transient
+
+#: Overall wall-clock bound on the whole ``cr.works`` call (connect,
+#: request, body read, any connect-retry). habanero/requests timeouts are
+#: per-phase, so a peer trickling bytes inside each read window can hold
+#: the call open forever — the gr486823 stall class. There is no socket
+#: handle to abort, so a wedged call is simply abandoned (the detached
+#: daemon thread dies with the socket; the worker loop is not held).
+_DEADLINE_S = 60.0
 
 
 def fetch_message(doi: str, mailto: str = "") -> dict[str, Any] | None:
@@ -23,7 +32,11 @@ def fetch_message(doi: str, mailto: str = "") -> dict[str, Any] | None:
     """
     cr = Crossref(mailto=mailto) if mailto else Crossref()
     try:
-        result = retry_transient(lambda: cr.works(ids=doi), host="api.crossref.org")
+        result = call_with_deadline(
+            lambda: retry_transient(lambda: cr.works(ids=doi), host="api.crossref.org"),
+            deadline_s=_DEADLINE_S,
+            label=f"crossref works {doi}",
+        )
     except Exception:
         return None
     if not result or "message" not in result:
