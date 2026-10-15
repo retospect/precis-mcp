@@ -740,11 +740,19 @@ def extract_vias(pcb: EproDocument, frame: Frame) -> Extraction:
     ``unusedInnerLayers``. Only a ``NORMAL`` via with nothing unused has
     been spiked, so anything else is reported and skipped — emitting a
     blind via as through-hole would short it to layers it must not touch.
+
+    Two ``VIA`` records of one net at the same centre with the same hole
+    and ring are ONE drilled hole on the fabricated board (taz15 carries
+    such a pair on ESP32RX); emitted twice they read as two barrels
+    overlapping by their full diameter (``via_via_keepout``, which by its
+    own contract does not exempt a same-spot pair) and refuse every
+    route. The duplicate is dropped with a warning naming it.
     """
     out = Extraction()
     layers = copper_layers(pcb)
     names = list(layers.values())
     span = [names[0], names[-1]]
+    seen: set[tuple[str, float, float, float, float]] = set()
     for b in pcb.bodies("VIA"):
         net = str(b.get("netName") or "")
         vtype = str(b.get("viaType", ""))
@@ -764,6 +772,17 @@ def extract_vias(pcb: EproDocument, frame: Frame) -> Extraction:
             )
             continue
         x, y = frame.xy(x_mil, y_mil)
+        dia_mm = Frame.length(b["viaDiameter"])
+        drill_mm = Frame.length(b["holeDiameter"])
+        key = (net, round(x, 4), round(y, 4), round(dia_mm, 4), round(drill_mm, 4))
+        if key in seen:
+            out.warnings.append(
+                f"duplicate via on {net} at ({x:.3f}, {y:.3f}) mm: the source "
+                "carries two identical VIA records there; one kept — two would "
+                "read as overlapping barrels (via_via_keepout)"
+            )
+            continue
+        seen.add(key)
         out.vias.append(
             {
                 "ctype": "via",
@@ -772,8 +791,8 @@ def extract_vias(pcb: EproDocument, frame: Frame) -> Extraction:
                 "geom": {
                     "x": x,
                     "y": y,
-                    "dia_mm": Frame.length(b["viaDiameter"]),
-                    "drill_mm": Frame.length(b["holeDiameter"]),
+                    "dia_mm": dia_mm,
+                    "drill_mm": drill_mm,
                     "span": span,
                 },
             }

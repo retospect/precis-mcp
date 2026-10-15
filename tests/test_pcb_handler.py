@@ -3649,6 +3649,9 @@ def test_drc_view_findings_carry_stable_ids_and_report_new_still_gone(pcb, store
     AGAIN, not still broken) while the finding's lifetime
     (``first_seen_at``) still starts at the first run."""
     slug = "finding-ids"
+    # 1.2mm apart: the two 1x1 lands clear by 0.2mm inside each other's
+    # 0.4mm routing margin, so the courtyard finding is a WARNING
+    # (gr489912) — identity, not severity, is what this test pins.
     _put_standing(pcb, store, slug, _two_real_pads(0.0, 0.0, 1.2, 0.0))
 
     first = pcb.get(id=slug, view="drc").body
@@ -3698,9 +3701,7 @@ def test_drc_view_findings_carry_stable_ids_and_report_new_still_gone(pcb, store
     assert f"## gone since run {run3[:8]} (1)" in fourth
     m3 = _by_rule(rows3)["courtyard_overlap"]["margin_mm"]
     assert m3 > m1
-    assert (
-        f"- {overlap_key}  error  courtyard_overlap: A <-> B  ({m3:+.3f}mm)" in fourth
-    )
+    assert f"- {overlap_key}  warn  courtyard_overlap: A <-> B  ({m3:+.3f}mm)" in fourth
     run4, rows4 = _drc_rows(store, slug)
     assert overlap_key not in {r["finding_key"] for r in rows4}
     assert len(rows4) == n_standing

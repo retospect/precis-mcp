@@ -1358,7 +1358,7 @@ class PcbHandler(Handler):
             if caps is not None:
                 params["expansion_caps"] = caps
         # Override for the pre-route placement DRC gate; absent unless True.
-        if op == "route" and opts.get("force") is not None:
+        if op in ("place", "route") and opts.get("force") is not None:
             if not isinstance(opts["force"], bool):
                 raise BadInput("pcb: force must be a boolean (True or False)")
             if opts["force"]:
@@ -5561,6 +5561,7 @@ class PcbHandler(Handler):
             edge_mates=pcb_edge_mate.records(ir),
             unconnected=graph.get("unconnected"),
             phase=phase,
+            courtyard_clearance_mm=pcb_ir.COURTYARD_CLEARANCE_MM,
             undeclared_unchecked=undeclared_unchecked,
         )
         # Parylene-coater size (gr414481): drc.py knows no components, so
@@ -5654,7 +5655,10 @@ class PcbHandler(Handler):
         ]
         if courtyards:
             findings += pcb_drc.check_courtyard_overlap(
-                courtyards, bottom_by_refdes=courtyard_bottom
+                courtyards,
+                bottom_by_refdes=courtyard_bottom,
+                clearance_mm=pcb_ir.COURTYARD_CLEARANCE_MM,
+                pads=pads,
             )
             findings += pcb_drc.check_courtyard_hole(
                 courtyards,

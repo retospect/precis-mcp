@@ -54,7 +54,7 @@ class _FakeCtx:
         return False
 
 
-_CROSSED = {
+_CROSSED: dict[str, Any] = {
     "components": [
         {"refdes": "A", "label": "ic", "x": 0.0, "y": 0.0, "pins": [{"name": "1"}]},
         {"refdes": "B", "label": "ic", "x": 2.0, "y": 2.0, "pins": [{"name": "1"}]},
@@ -74,6 +74,11 @@ _CROSSED = {
 }
 
 
+def _dispatch(ctx: _FakeCtx) -> None:
+    """Run the place job on a fake context (duck-typed JobContext)."""
+    pcb_place._dispatch(ctx, pcb_place.SPEC)  # type: ignore[arg-type]
+
+
 def _seed(store: Store, slug: str, args: dict[str, Any]) -> int:
     handler = PcbHandler(hub=Hub(store=store))
     handler.put(id=slug, args=args)
@@ -85,7 +90,7 @@ def _seed(store: Store, slug: str, args: dict[str, Any]) -> int:
 def test_pcb_place_moves_instances_and_reduces_crossings(store: Store) -> None:
     ref_id = _seed(store, "place-x", _CROSSED)
     ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 2000, "seed": 1})
-    pcb_place._dispatch(ctx, pcb_place.SPEC)  # type: ignore[arg-type]
+    _dispatch(ctx)
 
     assert not ctx.failures
     assert ctx.summaries and ctx.summaries[0][0] == "job_summary"
@@ -98,6 +103,81 @@ def test_pcb_place_moves_instances_and_reduces_crossings(store: Store) -> None:
 
     wires = ratsnest.build_airwires(placed, graph["nets"])
     assert len(ratsnest.crossings(wires)) == 0
+
+
+def test_pcb_place_refuses_to_commit_a_worse_placement(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr489911: on taz15 the anneal moved every part off its own fixed
+    source copper and the job WROTE the poses with 186 pre-route errors
+    over a stored placement with 37. The gate is now measured before and
+    after the anneal: a worse count refuses the write (nothing persisted),
+    ``force=True`` writes it and says so in the summary."""
+    ref_id = _seed(store, "place-worse", _CROSSED)
+    before = {
+        i["refdes"]: (i["x"], i["y"]) for i in store.pcb_graph(ref_id)["instances"]
+    }
+    real_optimize = pcb_place.optimize
+
+    def _collapse(ir: Any, config: Any) -> Any:
+        result = real_optimize(ir, config)
+        # Park every part on A: four pads of two nets on one spot.
+        ir.inst_x[:] = ir.inst_x[0]
+        ir.inst_y[:] = ir.inst_y[0]
+        return result
+
+    monkeypatch.setattr(pcb_place, "optimize", _collapse)
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 1})
+    _dispatch(ctx)
+    assert ctx.failures and ctx.failures[0][1] == "non-convergence"
+    assert "refusing to commit" in ctx.failures[0][0]
+    assert "the stored one has 0" in ctx.failures[0][0]
+    assert not ctx.summaries
+    after = {
+        i["refdes"]: (i["x"], i["y"]) for i in store.pcb_graph(ref_id)["instances"]
+    }
+    assert after == before, "a refused placement must not be written"
+
+    forced = _FakeCtx(
+        store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 1, "force": True}
+    )
+    _dispatch(forced)
+    assert not forced.failures
+    assert "OVERRIDDEN (force=True)" in forced.summaries[0][1]
+    written = {
+        i["refdes"]: (i["x"], i["y"]) for i in store.pcb_graph(ref_id)["instances"]
+    }
+    assert len({tuple(v) for v in written.values()}) == 1
+
+
+def test_pcb_place_first_placement_is_not_judged_against_an_unplaced_board(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A never-placed board measures ~0 errors before the anneal (NaN poses
+    are skipped by the gate), which is no baseline: a first placement with
+    a residual error must still be written and reported, not refused."""
+    design = {
+        **_CROSSED,
+        "components": [
+            {k: v for k, v in c.items() if k not in ("x", "y")}
+            for c in _CROSSED["components"]
+        ],
+    }
+    ref_id = _seed(store, "place-first", design)
+    real_optimize = pcb_place.optimize
+
+    def _collapse(ir: Any, config: Any) -> Any:
+        result = real_optimize(ir, config)
+        ir.inst_x[:] = ir.inst_x[0]
+        ir.inst_y[:] = ir.inst_y[0]
+        return result
+
+    monkeypatch.setattr(pcb_place, "optimize", _collapse)
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 1})
+    _dispatch(ctx)
+    assert not ctx.failures
+    assert "pre-route DRC error(s)" in ctx.summaries[0][1]
+    assert "OVERRIDDEN" not in ctx.summaries[0][1]
 
 
 def test_pcb_place_never_moves_a_fixed_instance(store: Store) -> None:
@@ -134,7 +214,7 @@ def test_pcb_place_never_moves_a_fixed_instance(store: Store) -> None:
     }
     ref_id = _seed(store, "place-fixed", args)
     ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 300, "seed": 2})
-    pcb_place._dispatch(ctx, pcb_place.SPEC)  # type: ignore[arg-type]
+    _dispatch(ctx)
 
     assert not ctx.failures
     graph = store.pcb_graph(ref_id)
@@ -184,7 +264,7 @@ def test_pcb_place_snap_and_soft_pin_report_and_stamp(store: Store) -> None:
         store,
         params={"pcb_ref_id": ref_id, "iters": 100, "seed": 1, "snap": True},
     )
-    pcb_place._dispatch(ctx, pcb_place.SPEC)  # type: ignore[arg-type]
+    _dispatch(ctx)
 
     assert not ctx.failures
     summary = ctx.summaries[0][1]
@@ -232,7 +312,7 @@ def test_pcb_place_reapplies_persisted_plane_without_writing_back(
     monkeypatch.setattr(pcb_place, "optimize", _spy_optimize)
 
     ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 200, "seed": 3})
-    pcb_place._dispatch(ctx, pcb_place.SPEC)  # type: ignore[arg-type]
+    _dispatch(ctx)
 
     assert not ctx.failures
 
@@ -294,7 +374,7 @@ def test_pcb_place_honors_an_authored_proximity_measure(store: Store) -> None:
     }
     ref_id = _seed(store, "place-measure", args)
     ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 6000, "seed": 1})
-    pcb_place._dispatch(ctx, pcb_place.SPEC)  # type: ignore[arg-type]
+    _dispatch(ctx)
 
     assert not ctx.failures
     graph = store.pcb_graph(ref_id)
@@ -309,6 +389,6 @@ def test_pcb_place_fails_legibly_on_empty_design(store: Store) -> None:
     ref = store.get_ref(kind="pcb", id="place-empty")
     assert ref is not None
     ctx = _FakeCtx(store, params={"pcb_ref_id": ref.id})
-    pcb_place._dispatch(ctx, pcb_place.SPEC)  # type: ignore[arg-type]
+    _dispatch(ctx)
     assert ctx.failures
     assert "no instances" in ctx.failures[0][0]

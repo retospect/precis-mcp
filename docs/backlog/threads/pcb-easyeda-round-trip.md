@@ -143,6 +143,25 @@ review, VERIFIED by Reto 2026-10-14 — review-queue
    are all `unrouted`, i.e. congestion. Own-path via pairs inside one
    search are kept a keep-out apart by the router itself since
    2026-10-13 (`maze.py::OccupancyGrid._own_vias_apart`).
+   **taz15 measured 2026-10-15 (builder taz15-loop, dev replay of the
+   prod snapshots, branch `worktree-agent-ad15fd57082a9e156`):** the
+   0.000 mm pad hits in jo484766 were the route job's OWN annealed
+   placement, and prod's taz15 now carries jo489777's annealed poses
+   (186 placement errors; the source poses live on `taz15-blank`) —
+   gr489911/gr489913 (op='place' now refuses a placement worse than
+   the stored one; pinning parts to their copper is part 2). At the source poses with every part frozen: the
+   categorical `courtyard_overlap` error refused the route on 30 pairs
+   the fab built (gr489912, fixed: graded on lands);
+   `taz15` with its source copper then routed 146 → **150/151** after
+   the plane fan-out stopped drilling drop vias for pins the pour or a
+   source via already serves (gr489924, unlanded: branch
+   `worktree-agent-ad15fd57082a9e156` 7731da53b); the last
+   net is gr489175. `taz15-blank` from scratch: 138/151 as imported
+   (GND/3V3 traced, no outer pours), 139/151 with GND→B.Cu and
+   3V3→F.Cu declared — 8 of the rest are CN4's 0.5 mm-pitch escapes
+   (gr489923), 2 drop-via sites (GND/PV+), 2 search budget. The
+   source's 7 `via_via_keepout` errors still need `force=True` on
+   `taz15` (gr489914; the doubled via is deduped at import).
 2. ~~The real board's design-rule table is dropped at import~~ — **DONE
    2026-10-14 in `p1-epro`.** V1.15's table is 19 `RULE` records on every
    PCB document and ZERO `RULE_SELECTOR`s (the "16 + 168" guess was wrong).

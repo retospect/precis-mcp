@@ -27,6 +27,7 @@ Runs under the ``job_inproc`` executor (bounded, in-process — mirrors
 from __future__ import annotations
 
 import logging
+import math
 from typing import TYPE_CHECKING, Any
 
 from precis.pcb import realize as pcb_realize
@@ -55,6 +56,7 @@ PARAMS_SCHEMA: dict[str, Any] = {
         "seed": {"type": "integer"},
         "snap": {"type": "boolean"},
         "groups": {"type": "boolean"},
+        "force": {"type": "boolean"},
     },
     "required": ["pcb_ref_id"],
     "additionalProperties": False,
@@ -249,7 +251,118 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         preferred_snap=snap,
         support_groups=groups,
     )
+    # Pre-route DRC gate, measured TWICE: on the stored placement before
+    # the anneal touches `ir`, and on the annealed one before anything is
+    # written. The route job has had a never-commit-a-worse-board guard
+    # since gr480010; this job had none, and on taz15 (gr489911, an
+    # EasyEDA import whose source routing is 937 fixed-copper rows) it
+    # annealed all 96 parts off the copper terminating on their pads and
+    # wrote the poses with 186 placement errors where the stored board had
+    # 37 — every later route then refused on 172 fixed-copper shorts no
+    # router can remove. A worse count refuses the write unless
+    # `force=True`; equal or better writes as before. Best-effort, same as
+    # the old end-of-place gate: a stackup with no fab capability row (not
+    # 2/4-layer) or a board not yet minted is not a placement error, so the
+    # gate is skipped (both counts None), never failed — and a crash in
+    # this geometry pass degrades to "no gate result", logged.
+    force = bool(params.get("force", False))
+    gate_board_id = (graph.get("board") or {}).get("board_id")
+    capability = None
+    footprints: dict[str, Any] | None = None
+    try:
+        if gate_board_id is not None:
+            try:
+                capability = capability_for(_process_for_stackup(ir.stackup))
+            except ValueError:
+                capability = None
+        if gate_board_id is not None and capability is not None:
+            footprints = pcb_session.footprints_by_refdes(
+                ir,
+                ctx.store.pcb_footprints_for(pcb_ref_id),
+                local_footprints_by_name=ctx.store.pcb_local_footprints_for(pcb_ref_id),
+                local_names_by_refdes=pcb_session.local_footprint_names_by_refdes(
+                    graph
+                ),
+            )
+    except Exception:
+        log.exception("pcb_place: pre-route DRC gate inputs raised; gate skipped")
+        capability = None
+    # The "before" count is only a baseline when every part HAD a pose:
+    # `placement_drc_findings` skips NaN-pose instances, so a never-placed
+    # (or partly placed) board measures ~0 errors before the anneal and a
+    # first placement with one residual error would read as "worse than
+    # stored". There the guard has nothing honest to compare against.
+    fully_placed_before = bool(
+        ir.n_instances
+        and not any(
+            math.isnan(float(ir.inst_x[i])) or math.isnan(float(ir.inst_y[i]))
+            for i in range(ir.n_instances)
+        )
+    )
+
+    def _placement_gate() -> tuple[int, str | None] | tuple[None, None]:
+        """``(n_errors, rendered report)`` over the CURRENT ``ir``;
+        ``(None, None)`` when the gate cannot run."""
+        if gate_board_id is None or capability is None:
+            return None, None
+        try:
+            placement_findings = pcb_session.placement_drc_findings(
+                ir,
+                capability=capability,
+                footprints=footprints,
+                fixed_copper=ctx.store.pcb_fixed_copper_list(int(gate_board_id)),
+                outline=pcb_session.outline_from_features(features),
+            )
+            # gr345859 §F — violated `strength='invariant'` measures join
+            # the report (the route job's copy of this gate is the one that
+            # refuses on them; here they count like any other error).
+            layers = [str(layer.get("name")) for layer in ir.stackup]
+            placement_findings += pcb_session.invariant_measure_findings(
+                graph=graph,
+                measures=ctx.store.pcb_measures_list(pcb_ref_id),
+                features=features,
+                generators_rows=ctx.store.pcb_generators_for(pcb_ref_id),
+                pads=pcb_realize.pads_for_ir(ir, layers, footprints),
+                copper=[
+                    {**row, "net": row.get("net") or ""}
+                    if row.get("fixed")
+                    else {**row, "derived": True}
+                    for row in ctx.store.pcb_copper_list(int(gate_board_id))
+                ],
+                layers=layers,
+            )
+            return pcb_session.placement_drc_report(placement_findings)
+        except Exception:
+            log.exception("pcb_place: pre-route DRC gate raised; placement kept")
+            return None, None
+
+    errors_before, _report_before = (
+        _placement_gate() if fully_placed_before else (None, None)
+    )
     result = optimize(ir, config)
+    n_placement_errors, placement_report = _placement_gate()
+    worse = (
+        errors_before is not None
+        and n_placement_errors is not None
+        and n_placement_errors > errors_before
+    )
+    if worse and not force:
+        ctx.record_failure(
+            "pcb_place: refusing to commit — the annealed placement has "
+            f"{n_placement_errors} pre-route DRC error(s), the stored one has "
+            f"{errors_before}; nothing written.\n{placement_report}\n"
+            "Pin the parts that must not move (fixed='both', or keep the "
+            "source placement of an imported board), try another seed, or "
+            "pass force=True to write it anyway.",
+            failure_class="non-convergence",
+        )
+        return
+    if worse and force:
+        placement_report = (
+            f"pre-route DRC gate OVERRIDDEN (force=True): wrote a placement "
+            f"with {n_placement_errors} error(s) over a stored one with "
+            f"{errors_before}\n{placement_report}"
+        )
 
     pose = pcb_session.positions(ir)
     moved = ctx.store.pcb_set_pose(
@@ -278,79 +391,26 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     for refdes, stamp in result.preferred_snapped.items():
         ctx.store.pcb_move_instance(pcb_ref_id, refdes, meta={"preferred_snap": stamp})
 
-    # Pre-route DRC gate at the END of place (the bug this closes): nothing
-    # ran a geometric check between placement and routing, so an already-
-    # illegal placement (gr451052: authored escape vias 0.008–0.225mm from
-    # the HV507 driver's own lands, against a 0.090mm floor) was carried
-    # silently into the route job and only surfaced when a human opened
-    # `view='drc'`. Run the placement-only subset here, off the settled
-    # positions plus only the authored fixed copper, and name any error in
-    # the job summary — the same NAMED, up-front flag the route job now
-    # raises (`pcb_session.placement_drc_findings`/`placement_drc_report`,
-    # one definition, so the two jobs cannot drift). Best-effort: a stackup
-    # with no fab capability row (not 2/4-layer) or a board not yet minted
-    # is not a placement error, so the gate is skipped, never failed, there.
-    placement_report: str | None = None
-    n_placement_errors = 0
-    board = graph.get("board") or {}
-    board_id = board.get("board_id")
-    # Belt-and-suspenders: a crash in this NEW geometry pass must never take
-    # down a placement that otherwise settled — degrade to "no gate result",
-    # logged, never a failed place job.
-    try:
-        capability = None
-        if board_id is not None:
-            try:
-                capability = capability_for(_process_for_stackup(ir.stackup))
-            except ValueError:
-                capability = None
-        if board_id is not None and capability is not None:
-            footprints = pcb_session.footprints_by_refdes(
-                ir,
-                ctx.store.pcb_footprints_for(pcb_ref_id),
-                local_footprints_by_name=ctx.store.pcb_local_footprints_for(pcb_ref_id),
-                local_names_by_refdes=pcb_session.local_footprint_names_by_refdes(
-                    graph
-                ),
-            )
-            placement_findings = pcb_session.placement_drc_findings(
-                ir,
-                capability=capability,
-                footprints=footprints,
-                fixed_copper=ctx.store.pcb_fixed_copper_list(int(board_id)),
-                outline=pcb_session.outline_from_features(features),
-            )
-            # gr345859 §F — violated `strength='invariant'` measures join
-            # the report (advisory here: the poses are already written —
-            # the route job's copy of this gate is the refusing one).
-            layers = [str(layer.get("name")) for layer in ir.stackup]
-            placement_findings += pcb_session.invariant_measure_findings(
-                graph=graph,
-                measures=ctx.store.pcb_measures_list(pcb_ref_id),
-                features=features,
-                generators_rows=ctx.store.pcb_generators_for(pcb_ref_id),
-                pads=pcb_realize.pads_for_ir(ir, layers, footprints),
-                copper=[
-                    {**row, "net": row.get("net") or ""}
-                    if row.get("fixed")
-                    else {**row, "derived": True}
-                    for row in ctx.store.pcb_copper_list(int(board_id))
-                ],
-                layers=layers,
-            )
-            n_placement_errors, placement_report = pcb_session.placement_drc_report(
-                placement_findings
-            )
-    except Exception:
-        log.exception("pcb_place: pre-route DRC gate raised; placement kept")
-
+    # The pre-route DRC report (gr451052: nothing used to run a geometric
+    # check between placement and routing, so an illegal placement was
+    # carried silently into the route job) now comes from the gate above,
+    # measured on the settled positions before they were written; it is
+    # named here in the job summary — the same NAMED, up-front flag the
+    # route job raises (`pcb_session.placement_drc_findings`/
+    # `placement_drc_report`, one definition, so the two jobs cannot drift).
     placement_summary = f"{placement_report}\n\n" if placement_report else ""
     ctx.append_chunk(
         "job_summary",
         f"{placement_summary}"
         f"placed {moved} instance(s), {result.iters} iters — "
         f"cost {result.cost_before:.4f} -> {result.cost_after:.4f}, "
-        f"{n_placement_errors} pre-route DRC error(s)\n\n"
+        f"{n_placement_errors or 0} pre-route DRC error(s)"
+        + (
+            f" (stored placement had {errors_before})"
+            if errors_before is not None
+            else ""
+        )
+        + "\n\n"
         + _legalized_note(result.legalized)
         + _soft_pin_note(result.soft_pin_travel_mm)
         + _support_groups_note(result.support_groups)

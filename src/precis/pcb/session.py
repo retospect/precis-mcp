@@ -900,6 +900,7 @@ def placement_drc_findings(
         courtyard_bottom=courtyard_bottom,
         net_rules=net_rules,
         edge_mates=pcb_edge_mate.records(ir),
+        courtyard_clearance_mm=COURTYARD_CLEARANCE_MM,
     )
 
 

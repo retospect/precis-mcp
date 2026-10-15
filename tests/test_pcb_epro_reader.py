@@ -379,6 +379,20 @@ def test_through_hole_via_carries_the_full_span(pcb, frame):
     assert via["geom"]["dia_mm"] == pytest.approx(0.61, abs=1e-4)
 
 
+def test_duplicate_via_records_collapse_to_one_hole_with_a_warning(pcb, frame):
+    """taz15 carries two identical VIA records on ESP32RX at one centre —
+    one drilled hole on the board, two barrels overlapping by their full
+    diameter to via_via_keepout (which by contract never exempts a
+    same-spot pair), so the pre-route gate refused every route."""
+    via_rec = next(
+        r for r in pcb.records if r.type == "VIA" and r.body.get("netName") == "SIG"
+    )
+    pcb.records.append(via_rec)
+    ext = epro.extract_vias(pcb, frame)
+    assert [v["net"] for v in ext.vias] == ["SIG"]
+    assert any("duplicate via on SIG" in w and "one kept" in w for w in ext.warnings)
+
+
 def test_buried_via_is_skipped_not_flattened(pcb, frame):
     """Emitting a blind/buried via as through-hole would short it to
     layers it must not touch — a short that no view would show."""

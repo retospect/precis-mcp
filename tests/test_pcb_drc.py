@@ -1405,6 +1405,119 @@ def test_courtyards_that_merely_touch_are_not_an_overlap():
     assert drc.check_courtyard_overlap(corner) == []
 
 
+def test_courtyard_overlap_grades_on_the_land_hulls_when_the_offset_is_known():
+    """taz15 (2026-10-15): the manufactured source board has 30 neighbour
+    pairs whose lands clear by 0.58–0.79mm, under the placer's 2 x 0.40mm
+    courtyard reservation; graded as categorical errors they refused every
+    route. With the offset known, lands that clear are a WARN (the placer's
+    margin is short, not a fab floor); lands that touch stay an ERROR."""
+    # 2x2 courtyards = 1.2x1.2 land hulls inflated by 0.4 on each side.
+    margin_short = [("U1", _square(0.0, 0.0)), ("U2", _square(1.5, 0.0))]
+    findings = drc.check_courtyard_overlap(margin_short, clearance_mm=0.4)
+    assert [f.severity for f in findings] == ["warn"]
+    # Hulls span [-0.6, 0.6] and [0.9, 2.1]: 0.3mm of land clearance.
+    assert "clear by 0.300mm" in findings[0].detail
+    assert findings[0].margin_mm == pytest.approx(-0.5, abs=1e-6)
+
+    lands_collide = [("U1", _square(0.0, 0.0)), ("U2", _square(1.0, 0.0))]
+    findings = drc.check_courtyard_overlap(lands_collide, clearance_mm=0.4)
+    assert [f.severity for f in findings] == ["error"]
+    assert "clear by" not in findings[0].detail
+
+    # Hulls exactly touching ([-0.6, 0.6] against [0.6, 1.8]) are a
+    # collision, not a clearance.
+    lands_touch = [("U1", _square(0.0, 0.0)), ("U2", _square(1.2, 0.0))]
+    findings = drc.check_courtyard_overlap(lands_touch, clearance_mm=0.4)
+    assert [f.severity for f in findings] == ["error"]
+
+    # Hulls overlap, but the real lands do not: a convex hull is an
+    # over-approximation of the part (taz15: an inductor pad reaching into
+    # a TO-263's hull between its leads). With the pads given, a WARN.
+    pads = [
+        {
+            "refdes": "U1",
+            "layer": "F.Cu",
+            "net": "A",
+            "shape": "rect",
+            "x": -0.3,
+            "y": 0.0,
+            "w": 0.4,
+            "h": 0.4,
+        },
+        {
+            "refdes": "U1",
+            "layer": "F.Cu",
+            "net": "B",
+            "shape": "rect",
+            "x": 0.3,
+            "y": 0.0,
+            "w": 0.4,
+            "h": 0.4,
+        },
+        {
+            "refdes": "U2",
+            "layer": "F.Cu",
+            "net": "C",
+            "shape": "rect",
+            "x": 1.3,
+            "y": 0.0,
+            "w": 0.4,
+            "h": 0.4,
+        },
+    ]
+    findings = drc.check_courtyard_overlap(lands_collide, clearance_mm=0.4, pads=pads)
+    assert [f.severity for f in findings] == ["warn"]
+    assert "nearest lands 0.600mm apart" in findings[0].detail
+    # ...and an ERROR again when a land of each really touches.
+    touching_pads = pads + [
+        {
+            "refdes": "U2",
+            "layer": "F.Cu",
+            "net": "C",
+            "shape": "rect",
+            "x": 0.5,
+            "y": 0.0,
+            "w": 0.4,
+            "h": 0.4,
+        },
+    ]
+    findings = drc.check_courtyard_overlap(
+        lands_collide, clearance_mm=0.4, pads=touching_pads
+    )
+    assert [f.severity for f in findings] == ["error"]
+
+    # Offset unknown: the categorical error, exactly as before.
+    findings = drc.check_courtyard_overlap(margin_short)
+    assert [f.severity for f in findings] == ["error"]
+
+    # A courtyard too small to deflate (a pinless fallback square) keeps
+    # the categorical reading rather than guessing.
+    tiny = [("MH1", _square(0.0, 0.0, half=0.3)), ("U2", _square(0.5, 0.0))]
+    findings = drc.check_courtyard_overlap(tiny, clearance_mm=0.4)
+    assert [f.severity for f in findings] == ["error"]
+    # With pads known, a part that has NO land (a mounting hole's bare
+    # fallback square, which was never inflated) is not deflated either:
+    # the same geometry that would read "clear" for two real parts stays
+    # an error when one side is such a square.
+    hole_pair = [("MH1", _square(0.0, 0.0)), ("U2", _square(1.5, 0.0))]
+    u2_only = [p for p in pads if p["refdes"] == "U2"]
+    findings = drc.check_courtyard_overlap(hole_pair, clearance_mm=0.4, pads=u2_only)
+    assert [f.severity for f in findings] == ["error"]
+
+
+def test_run_placement_drc_threads_the_courtyard_offset():
+    model = {"layers": ["F.Cu", "B.Cu"], "copper": [], "pads": []}
+    pair = [("U1", _square(0.0, 0.0)), ("U2", _square(1.5, 0.0))]
+    graded = drc.run_placement_drc(
+        model, capability=_CAP4, courtyards=pair, courtyard_clearance_mm=0.4
+    )
+    assert [f.severity for f in graded if f.rule == "courtyard_overlap"] == ["warn"]
+    categorical = drc.run_placement_drc(model, capability=_CAP4, courtyards=pair)
+    assert [f.severity for f in categorical if f.rule == "courtyard_overlap"] == [
+        "error"
+    ]
+
+
 def test_courtyard_overlap_sees_a_rotation_a_radius_could_not():
     """The reason this rule takes polygons at all. Two 6x1 bars crossing
     at right angles, centres 2mm apart, overlap — but their circumscribed

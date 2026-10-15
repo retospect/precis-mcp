@@ -145,6 +145,7 @@ from precis.pcb.capabilities import CapabilityRow, conductor_spacing_mm
 from precis.pcb.catalog import parse_passive_description
 from precis.pcb.geom import _orient, dist_point_to_segment
 from precis.pcb.geom import dist as _dist
+from precis.pcb.ir import COURTYARD_MITRE_LIMIT
 from precis.pcb.rules import NetRules
 from precis.pcb.silk import SilkPlacement
 
@@ -2131,11 +2132,43 @@ HoleKeepout = tuple[str, list[tuple[float, float]], str | None]
 
 
 def check_courtyard_overlap(
-    courtyards: list[Courtyard], *, bottom_by_refdes: dict[str, bool] | None = None
+    courtyards: list[Courtyard],
+    *,
+    bottom_by_refdes: dict[str, bool] | None = None,
+    clearance_mm: float | None = None,
+    pads: Sequence[dict[str, Any]] | None = None,
 ) -> list[DrcFinding]:
-    """Any two parts' courtyards overlapping is a hard error — no
-    capability two-tier here; overlap is categorical, not a
-    manufacturability margin.
+    """Two parts' courtyards overlapping is an ERROR when their land
+    patterns themselves collide, and a WARNING when only the placer's
+    routing-corridor margin is short.
+
+    ``pads`` (``model["pads"]``, each carrying ``refdes``) refines the
+    error tier further: a courtyard is the CONVEX hull of a part's pads,
+    an over-approximation of what the part occupies, so two hulls
+    intersecting proves nothing about the lands (docs/backlog/
+    pcb-lazy-netlist-and-checks.md §1g-bis — an over-approximation is
+    sound for proving a collision ABSENT, not present). With pads given,
+    the error is kept only when a real land of one part intersects a real
+    land of the other; hulls that overlap with every land clear are a
+    warning naming the land gap (taz15's L2 inductor pad reaching into
+    the TO-263's hull between its leads, 1.06 mm "deep" by hull, 0 mm by
+    land). Bodies are not modelled; that is said in the finding.
+
+    ``clearance_mm`` is the offset the caller inflated each courtyard by
+    (:data:`precis.pcb.ir.COURTYARD_CLEARANCE_MM` for every placer/DRC
+    caller). Given, the rule deflates both polygons by it to recover the
+    pad hulls and grades the pair on THOSE: hulls that intersect are two
+    parts physically on top of each other (error); hulls that clear each
+    other are two parts closer than the placer's reservation, which is a
+    tuning pin for the router's escape corridor (that constant's own
+    docstring: "a pin, not an optimum"), not a fab figure. taz15 (2026-10-15)
+    is the case: the manufactured source board has 30 neighbour pairs with
+    land gaps of 0.58–0.79 mm against a 2 x 0.40 mm reservation, and the
+    categorical error refused every route of a board that was built and
+    works. Different-net lands closer than the fab floor are
+    :func:`check_clearance`'s finding, not this rule's. Left ``None``, every
+    overlap is the categorical error it always was (the courtyards' own
+    offset is unknown, so nothing can be deflated).
 
     The polygons are :func:`precis.pcb.ir.instance_courtyard_polygon`
     placed into board coordinates — **the same objects the placer reserves
@@ -2173,6 +2206,7 @@ def check_courtyard_overlap(
     if len(indexed) < 2:
         return []
     tree = STRtree([g for _, g in indexed])
+    lands = _land_polygons_by_refdes(pads)
     findings: list[DrcFinding] = []
     seen: set[tuple[int, int]] = set()
     for pos, (i, gi) in enumerate(indexed):
@@ -2197,21 +2231,98 @@ def check_courtyard_overlap(
                 # A shared edge or a single touching vertex: STRtree's
                 # `intersects` counts it, zero area means it is not one.
                 continue
+            severity = "error"
+            detail = (
+                f"{courtyards[i][0]} and {courtyards[j][0]} courtyards "
+                f"overlap over {overlap.area:.4f}mm^2, "
+                f"{_overlap_depth_mm(overlap):.3f}mm deep"
+            )
+            # Only a courtyard built from real lands can be deflated back
+            # to them: with `pads` supplied (non-empty), a part that has no land in it
+            # (a pinless mounting hole or fiducial, whose courtyard is the
+            # caller's bare fallback square, never inflated) keeps the
+            # categorical reading rather than a shrunken square's.
+            deflatable = not pads or (
+                bool(lands.get(courtyards[i][0])) and bool(lands.get(courtyards[j][0]))
+            )
+            land_gap = _land_hull_gap_mm(gi, gj, clearance_mm) if deflatable else None
+            if land_gap is not None and land_gap > _EPS:
+                severity = "warn"
+                detail += (
+                    f" — the land patterns themselves clear by {land_gap:.3f}mm; "
+                    f"short of the {clearance_mm:.2f}mm courtyard margin the "
+                    "placer reserves for routing, not of a fab floor"
+                )
+            elif land_gap is not None:
+                pad_gap = _pad_gap_mm(
+                    lands.get(courtyards[i][0]), lands.get(courtyards[j][0])
+                )
+                if pad_gap is not None and pad_gap > _EPS:
+                    severity = "warn"
+                    detail += (
+                        f" — the pad hulls overlap but no land touches another "
+                        f"(nearest lands {pad_gap:.3f}mm apart); the hull is a "
+                        "convex over-approximation and part bodies are not "
+                        "modelled, so this is not a proven collision"
+                    )
             findings.append(
                 DrcFinding(
                     rule="courtyard_overlap",
-                    severity="error",
+                    severity=severity,
                     where=f"{courtyards[i][0]} <-> {courtyards[j][0]}",
-                    detail=(
-                        f"{courtyards[i][0]} and {courtyards[j][0]} courtyards "
-                        f"overlap over {overlap.area:.4f}mm^2, "
-                        f"{_overlap_depth_mm(overlap):.3f}mm deep"
-                    ),
+                    detail=detail,
                     objects=({"a": courtyards[i][0], "b": courtyards[j][0]},),
                     margin_mm=-_overlap_depth_mm(overlap),
                 )
             )
     return findings
+
+
+def _land_hull_gap_mm(
+    gi: Polygon, gj: Polygon, clearance_mm: float | None
+) -> float | None:
+    """The edge-to-edge gap between two courtyards' LAND hulls — each
+    polygon deflated by the ``clearance_mm`` it was inflated by (mitred,
+    the inverse of :func:`precis.pcb.ir.instance_courtyard_polygon`'s
+    offset). ``None`` when no clearance is known or a deflated hull
+    vanishes (a pinless fallback square smaller than the offset): the
+    caller then keeps the categorical reading. ``0.0`` when the hulls
+    touch or overlap."""
+    if clearance_mm is None or clearance_mm <= 0:
+        return None
+    hi = gi.buffer(-clearance_mm, join_style="mitre", mitre_limit=COURTYARD_MITRE_LIMIT)
+    hj = gj.buffer(-clearance_mm, join_style="mitre", mitre_limit=COURTYARD_MITRE_LIMIT)
+    if hi.is_empty or hj.is_empty:
+        return None
+    return float(hi.distance(hj))
+
+
+def _land_polygons_by_refdes(
+    pads: Sequence[dict[str, Any]] | None,
+) -> dict[str, list[BaseGeometry]]:
+    """Each part's real land polygons (:func:`_copper_item_polygon` over
+    its ``model["pads"]`` rows), keyed by refdes — the exact geometry
+    :func:`check_courtyard_overlap` grades a hull overlap against."""
+    out: dict[str, list[BaseGeometry]] = {}
+    for pad in pads or ():
+        refdes = pad.get("refdes")
+        if not refdes:
+            continue
+        poly = _copper_item_polygon({**pad, "ctype": "pad"})
+        if poly is not None and not poly.is_empty:
+            out.setdefault(str(refdes), []).append(poly)
+    return out
+
+
+def _pad_gap_mm(
+    a: list[BaseGeometry] | None, b: list[BaseGeometry] | None
+) -> float | None:
+    """The smallest edge-to-edge distance between any land of ``a`` and
+    any land of ``b`` — ``0.0`` when two lands touch or overlap, ``None``
+    when either part has no land geometry to judge by."""
+    if not a or not b:
+        return None
+    return min(float(pa.distance(pb)) for pa in a for pb in b)
 
 
 def check_courtyard_hole(
@@ -3249,9 +3360,12 @@ def run_geometric_drc(
     unconnected: Iterable[dict[str, Any]] | None = None,
     phase: str = "netlist",
     undeclared_unchecked: Sequence[str] = (),
+    courtyard_clearance_mm: float | None = None,
 ) -> list[DrcFinding]:
     """Every geometric DRC rule over one realized board, in one call — what
     ``view='drc'`` and the ``netlist_drc_clean`` gate evaluator both run.
+    ``courtyard_clearance_mm`` is the offset ``courtyards`` were inflated
+    by, threaded to :func:`check_courtyard_overlap`'s land-hull grading.
     ``net_rules`` (net name -> resolved :class:`~precis.pcb.rules.NetRules`)
     threads the per-net clearance override into :func:`check_clearance`
     only — the other rules stay capability-only (module docstring: they
@@ -3324,7 +3438,10 @@ def run_geometric_drc(
     findings += check_undeclared_pads(model, unchecked=undeclared_unchecked)
     if courtyards:
         findings += check_courtyard_overlap(
-            courtyards, bottom_by_refdes=courtyard_bottom
+            courtyards,
+            bottom_by_refdes=courtyard_bottom,
+            clearance_mm=courtyard_clearance_mm,
+            pads=model.get("pads"),
         )
         findings += check_courtyard_hole(courtyards, holes)
     findings += check_silk_missing(census or (), model)
@@ -4190,6 +4307,7 @@ def run_placement_drc(
     courtyard_bottom: dict[str, bool] | None = None,
     net_rules: dict[str, NetRules] | None = None,
     edge_mates: Sequence[Any] | None = None,
+    courtyard_clearance_mm: float | None = None,
 ) -> list[DrcFinding]:
     """The PLACEMENT-only subset of :func:`run_geometric_drc` — every rule
     that can fire before a single trace is routed, over a model carrying
@@ -4238,7 +4356,10 @@ def run_placement_drc(
     findings += check_edge_mating(edge_mates, outline=outline)
     if courtyards:
         findings += check_courtyard_overlap(
-            courtyards, bottom_by_refdes=courtyard_bottom
+            courtyards,
+            bottom_by_refdes=courtyard_bottom,
+            clearance_mm=courtyard_clearance_mm,
+            pads=model.get("pads"),
         )
     return findings
 

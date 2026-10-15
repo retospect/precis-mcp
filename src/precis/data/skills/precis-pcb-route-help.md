@@ -61,6 +61,16 @@ executor lane (see `precis-job-help`).
   move the part at most that far from its stored pose with rotation held;
   `0` behaves like `fixed='both'`. The job summary reports the travel each
   soft-pinned part used.
+- `op='place'` never writes a placement worse than the stored one: the
+  placement-only DRC (below) is measured on the stored poses before the
+  anneal and on the settled poses after it; more error-severity findings
+  after than before fails the job (`non-convergence`) with nothing
+  written and the findings listed. `force=True` writes it anyway; a
+  forced write that is worse opens its summary with
+  `pre-route DRC gate OVERRIDDEN (force=True)`. On a
+  board imported with its source routing as fixed copper, the anneal moves
+  parts off the copper that ends on their pads — pin those parts
+  (`fixed='both'`) or route the stored placement instead of re-placing.
 - `op='place'` also accepts `snap` (bool, default `false`): a
   deterministic post-anneal pass that snaps each non-frozen part's centre
   onto a part-scaled grid (its own pin pitch for connectors/headers over
@@ -206,8 +216,10 @@ router, the job runs the placement-only DRC (pad overlap, pad-to-via keepout,
 courtyard overlap, outline containment) over the settled poses plus authored
 fixed copper. Any error-severity finding fails the job (`input`) and writes
 nothing; the reason lists each finding with its measured margin. Warnings do
-not block. Fix the placement (`op='move'`, unpin a part, re-place) and route
-again; `view='drc'` runs the full check. `force=True` routes the illegal
+not block. `courtyard_overlap` is an error only when two parts' lands
+touch; overlapping courtyards with clear lands (inside the placer's
+0.40 mm margin) are a warning naming the land gap. Fix the placement
+(`op='move'`, unpin a part, re-place) and route again; `view='drc'` runs the full check. `force=True` routes the illegal
 placement anyway; the job summary then opens with `pre-route DRC gate
 OVERRIDDEN (force=True)` and the findings.
 
