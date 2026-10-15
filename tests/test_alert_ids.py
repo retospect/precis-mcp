@@ -372,7 +372,13 @@ def test_tabular_check_budgets_and_severities_match_the_registry() -> None:
             f"watchdog:{group}", health_digest._PINNED_FINGERPRINTS[(group, key)]
         )
         assert rule is not None
-        assert rule.budget == f"{budget_hours:g}h", (rule.id, rule.budget, budget_hours)
+        # A key in _SCHEDULE_BUDGET_JOBS widens the floor from the live
+        # recurring crons (weekly lanes read ~7d, not the floor) — the
+        # registered budget says so instead of mirroring the floor alone.
+        expected = f"{budget_hours:g}h"
+        if key in health_digest._SCHEDULE_BUDGET_JOBS:
+            expected = f"{budget_hours:g}h floor; follows live crons"
+        assert rule.budget == expected, (rule.id, rule.budget, budget_hours)
         assert rule.severity == severity, rule.id
 
 

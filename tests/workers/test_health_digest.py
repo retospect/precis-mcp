@@ -2617,3 +2617,26 @@ def test_cast_audio_idle_ticks_do_not_reset_the_clock(store) -> None:
     _seed_cast_audio_runner_row(store, hours_ago=0.2)
     res = _cast_audio_check(store)
     assert res.status == "stale", res.detail
+
+
+def test_cast_audio_weekly_cadence_tolerates_a_days_old_publish(store) -> None:
+    """The check's window follows the live cast crons: the Sunday/Monday
+    weekly pair leaves a ~6.7d publish gap, so a 70h-old publish is a
+    healthy weekly cadence, not a stall — a flat 26h window would warn
+    most days (r37 review)."""
+    _seed_recurring(store, "meditation", "0 19 * * 0")
+    _seed_recurring(store, "reading_brief", "30 2 * * 1")
+    _seed_cast_audio_runner_row(store, hours_ago=70.0, claimed=1, ok=1)
+    res = _cast_audio_check(store)
+    assert res.status == "ok", res.detail
+    assert "schedule" in res.detail
+
+
+def test_cast_audio_daily_cadence_warns_past_a_day(store) -> None:
+    """Same 30h-old publish under a daily producer: the window follows
+    the cron back down to ~26h and a missed day reads stale."""
+    _seed_recurring(store, "reading_brief", "30 2 * * *")
+    _seed_cast_audio_runner_row(store, hours_ago=30.0, claimed=1, ok=1)
+    res = _cast_audio_check(store)
+    assert res.status == "stale", res.detail
+    assert "budget 26h" in res.detail

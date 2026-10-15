@@ -115,7 +115,7 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         "ingest",
         "news",
         "No new news ref landed within budget.",
-        budget="8h",
+        budget="8h floor; follows live crons",
         service="news_poll",
     ),
     _watchdog(
@@ -164,14 +164,14 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         "reading",
         "cast_audio",
         "cast_audio has not narrated a cast within budget.",
-        budget="26h",
+        budget="26h floor; follows live crons",
         service="cast_audio",
     ),
     _watchdog(
         "reading",
         "card_forge",
         "No card_forge job completed within budget while cards were due.",
-        budget="26h",
+        budget="26h floor; follows live crons",
         service=None,
     ),
     _watchdog(
