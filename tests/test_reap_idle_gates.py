@@ -80,6 +80,12 @@ def inspect(items, key, wanted):
             for o in found:
                 o["ExecIDs"] = ["late-exec"]
         save()
+    for o in found:
+        if "RetagOnInspect" in o:
+            o["seen"] = o.get("seen", 0) + 1
+            if o["seen"] >= o["RetagOnInspect"]:
+                o["RepoTags"] = ["precis-dev:latest"]
+            save()
     print(json.dumps(found))
     sys.exit(0 if len(found) == len(wanted) else 1)
 
@@ -95,6 +101,16 @@ def remove(kind, key, name):
 
 if argv[:1] == ["ps"]:
     print("\n".join(o["Id"] for o in filtered(st["containers"], argv)))
+elif argv[:1] == ["images"]:
+    assert argv[1:] == ["-q", "--no-trunc", "--filter", "dangling=true"], argv
+    print("\n".join(o["Id"] for o in st["images"] if not o["RepoTags"]))
+elif argv[:2] == ["image", "inspect"]:
+    inspect(st["images"], "Id", argv[2:])
+elif argv[:1] == ["rmi"]:
+    assert len(argv) == 2, argv  # never -f
+    if any(c.get("Image") == argv[1] for c in st["containers"]):
+        sys.exit(1)  # docker refuses an image a container uses
+    remove("images", "Id", argv[1])
 elif argv[:1] == ["inspect"]:
     inspect(st["containers"], "Id", argv[1:])
 elif argv[:2] == ["rm", "-f"]:
@@ -156,6 +172,7 @@ class Env:
             "containers": [],
             "volumes": [],
             "networks": [],
+            "images": [],
         }
         self.sessions: dict[str, str] = {str(self.primary): "—"}
 
@@ -192,6 +209,7 @@ class Env:
         up_h: float = 30.0,
         services: tuple[str, ...] = ("precis-test-db", "precis-gate"),
         exec_ids: list[str] | None = None,
+        image: str = "sha256:current",
     ) -> None:
         for svc in services:
             self.state["containers"].append(
@@ -204,6 +222,7 @@ class Env:
                         "StartedAt": _iso(self.now - up_h * HOUR),
                     },
                     "ExecIDs": exec_ids if svc == "precis-gate" else None,
+                    "Image": image,
                     "Config": {
                         "Labels": {
                             "com.docker.compose.project": project,
@@ -224,6 +243,19 @@ class Env:
                     "com.docker.compose.project": project,
                     "com.docker.compose.network": "default",
                 },
+            }
+        )
+
+    def image(
+        self, iid: str, *, tags: list[str] | None = None, precis: bool = True
+    ) -> None:
+        env = ["PATH=/usr/bin", "PRECIS_GIT_SHA=abc123"] if precis else ["A=1"]
+        self.state["images"].append(
+            {
+                "Id": iid,
+                "RepoTags": tags or [],
+                "Size": 32 * 2**30,
+                "Config": {"Env": env},
             }
         )
 
@@ -274,7 +306,7 @@ class Env:
             json.loads(line)
             for line in self.log_path.read_text(encoding="utf-8").splitlines()
         ]
-        return [c for c in calls if "rm" in c[:2]]
+        return [c for c in calls if "rm" in c[:2] or c[:1] == ["rmi"]]
 
     def remaining(self) -> dict[str, list[str]]:
         st = json.loads(self.state_path.read_text(encoding="utf-8"))
@@ -282,6 +314,7 @@ class Env:
             "containers": [c["Id"] for c in st["containers"]],
             "volumes": [v["Name"] for v in st["volumes"]],
             "networks": [n["Name"] for n in st["networks"]],
+            "images": [i["Id"] for i in st["images"]],
         }
 
 
@@ -302,7 +335,12 @@ def test_idle_sessionless_pair_is_reaped_gate_first(env: Env) -> None:
         ["volume", "rm", "precis-test-idle-tree_gate-cache"],
         ["network", "rm", "precis-test-idle-tree_default"],
     ]
-    assert env.remaining() == {"containers": [], "volumes": [], "networks": []}
+    assert env.remaining() == {
+        "containers": [],
+        "volumes": [],
+        "networks": [],
+        "images": [],
+    }
 
 
 def test_dry_run_lists_and_removes_nothing(env: Env) -> None:
@@ -497,3 +535,52 @@ def test_project_name_matches_the_bash_helper(
         check=True,
     ).stdout.strip()
     assert mod.compose_project_for(str(path)) == bash
+
+
+def test_unreferenced_dangling_precis_image_is_removed(env: Env) -> None:
+    env.image("sha256:old")
+    out = env.run()
+    assert out.returncode == 0, out.stderr
+    assert "reaped 1: image:old" in out.stdout
+    assert env.removals() == [["rmi", "sha256:old"]]
+    assert env.remaining()["images"] == []
+
+
+def test_tagged_and_non_precis_images_are_never_removed(env: Env) -> None:
+    env.image("sha256:tagged", tags=["precis-dev:latest"])
+    env.image("sha256:foreign", precis=False)
+    out = env.run()
+    assert "nothing to reap" in out.stdout
+    assert env.removals() == []
+    assert env.remaining()["images"] == ["sha256:tagged", "sha256:foreign"]
+
+
+def test_image_a_kept_container_uses_is_kept(env: Env) -> None:
+    tree = env.tree("busy", session="live#1")
+    env.pair("precis-test-busy", tree, image="sha256:old")
+    env.image("sha256:old")
+    out = env.run()
+    assert "nothing to reap" in out.stdout
+    assert env.removals() == []
+
+
+def test_image_freed_by_a_reaped_gate_goes_in_the_same_run(env: Env) -> None:
+    tree = env.tree("idle-tree")
+    env.pair("precis-test-idle-tree", tree, image="sha256:old")
+    env.image("sha256:old")
+    dry = env.run("--dry-run")
+    assert "would remove dangling precis image old (32.0 GiB)" in dry.stdout
+    assert env.removals() == []
+    out = env.run()
+    assert "reaped 2: precis-test-idle-tree image:old" in out.stdout
+    assert env.removals()[-1] == ["rmi", "sha256:old"]
+    assert env.remaining()["images"] == []
+
+
+def test_image_retagged_after_judgment_is_kept(env: Env) -> None:
+    env.image("sha256:old")
+    # The pre-removal re-inspect (2nd image inspect) sees a fresh tag.
+    env.state["images"][0]["RetagOnInspect"] = 2
+    out = env.run()
+    assert "nothing to reap" in out.stdout
+    assert env.removals() == []

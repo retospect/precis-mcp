@@ -43,8 +43,18 @@ A second pass removes an orphaned ``precis-test-*`` ``gate-cache`` volume:
 no container of its project exists, and no registered worktree mints its
 project name.
 
+A third pass removes dangling precis images (gr488889). A rebuild moves the
+``precis-dev`` tag to the new image and leaves the old one untagged, ~32 GB
+each, and nothing else prunes it. An image is removed only when it has no
+repo tag, carries the ``PRECIS_GIT_SHA=`` env entry that docker/Dockerfile
+bakes into its precis stages (a dangling image keeps no name, so this is the
+fingerprint; non-precis images never have it), and no container, running or
+stopped, references it. Tags are re-checked just before ``docker rmi``
+(never ``-f``), which itself refuses an image a container still uses.
+
 Usage: ``scripts/reap-idle-gates [--dry-run]``. ``--dry-run`` removes nothing and
-lists each pair it would reap and each it keeps, with the reason.
+lists each pair it would reap and each it keeps, with the reason, and each
+dangling precis image it would remove.
 """
 
 from __future__ import annotations
@@ -71,6 +81,8 @@ L_PROJECT = "com.docker.compose.project"
 L_SERVICE = "com.docker.compose.service"
 L_CONFIG = "com.docker.compose.project.config_files"
 L_VOLUME = "com.docker.compose.volume"
+
+PRECIS_IMAGE_ENV = "PRECIS_GIT_SHA="
 
 DOCKER_TIMEOUT_S = 30
 ROOT = Path(__file__).resolve().parents[1]
@@ -401,6 +413,61 @@ def orphan_volumes(
     return orphans
 
 
+def _untagged(image: dict) -> bool:
+    tags = [t for t in image.get("RepoTags") or [] if t != "<none>:<none>"]
+    return not tags
+
+
+def _precis_image(image: dict) -> bool:
+    env = (image.get("Config") or {}).get("Env") or []
+    return any(isinstance(e, str) and e.startswith(PRECIS_IMAGE_ENV) for e in env)
+
+
+def dangling_images(exclude_containers: set[str]) -> list[dict]:
+    """Untagged precis images no container (bar ``exclude_containers``) uses.
+
+    Empty when docker can't say which images containers reference: an image
+    is never judged unreferenced on a failed read.
+    """
+    out = _docker("images", "-q", "--no-trunc", "--filter", "dangling=true")
+    ids = sorted(set((out or "").split()))
+    if not ids:
+        return []
+    candidates = [
+        d
+        for d in _inspect("image", "inspect", *ids)
+        if _untagged(d) and _precis_image(d)
+    ]
+    if not candidates:
+        return []
+    cids_out = _docker("ps", "-a", "-q", "--no-trunc")
+    if cids_out is None:
+        return []
+    cids = cids_out.split()
+    containers = _inspect("inspect", *cids) if cids else []
+    if len(containers) != len(cids):
+        return []
+    used = {
+        str(c.get("Image", ""))
+        for c in containers
+        if str(c.get("Id", "")) not in exclude_containers
+    }
+    return [d for d in candidates if str(d.get("Id", "")) not in used]
+
+
+def remove_image(image: dict) -> bool:
+    """``docker rmi`` (never ``-f``) once the image is confirmed still untagged."""
+    iid = str(image.get("Id", ""))
+    fresh = _inspect("image", "inspect", iid)
+    if len(fresh) != 1 or not _untagged(fresh[0]):
+        return False
+    return _docker("rmi", iid) is not None
+
+
+def _short(image_id: str) -> str:
+    return image_id.removeprefix("sha256:")[:12]
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="reap-idle-gates")
     ap.add_argument("--dry-run", action="store_true")
@@ -442,6 +509,13 @@ def main(argv: list[str]) -> int:
     for vol in orphans:
         if dry or _docker("volume", "rm", vol) is not None:
             acted.append(vol)
+    # After the pairs: an image only a just-reaped gate held is free now. A
+    # dry run removed nothing, so it discounts the pairs it would reap.
+    would_go = {c.id for v in verdicts if v.reap for c in v.containers}
+    images = dangling_images(would_go if dry else set())
+    for img in images:
+        if dry or remove_image(img):
+            acted.append(f"image:{_short(str(img.get('Id', '')))}")
 
     if dry:
         for v in verdicts:
@@ -452,6 +526,12 @@ def main(argv: list[str]) -> int:
             )
         for vol in orphans:
             print(f"  would reap orphan volume {vol}")
+        for img in images:
+            gib = int(img.get("Size") or 0) / 2**30
+            print(
+                f"  would remove dangling precis image "
+                f"{_short(str(img.get('Id', '')))} ({gib:.1f} GiB)"
+            )
     if not acted:
         print(f"{tag}: nothing to reap")
     else:

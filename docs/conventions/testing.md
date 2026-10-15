@@ -49,8 +49,11 @@ gate/db pair used to stay up for days, pinning its image on the VM disk.
 pair, its `gate-cache` volume and its network when the tree is registered,
 sessionless per `scripts/inflight`, has no fresh `.claude/purpose`, has no
 exec attached, and has been idle 24 h (2 h for `agent-*`). It also removes a
-`gate-cache` volume no registered worktree mints. `--dry-run` lists every
-project with its verdict. The next gate in a reaped tree rebuilds its caches.
+`gate-cache` volume no registered worktree mints, and every dangling precis
+image (untagged, carrying docker/Dockerfile's `PRECIS_GIT_SHA` env, used by no
+container) that a rebuild left behind; tagged and non-precis images are never
+touched. `--dry-run` lists every project with its verdict and each image it
+would remove. The next gate in a reaped tree rebuilds its caches.
 
 The remote side leaks the same way. `scripts/ship --remote` pushes the tree to
 a throwaway `ci/<branch>` for check.yml, and deletes it again only on a
