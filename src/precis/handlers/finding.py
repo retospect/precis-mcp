@@ -879,6 +879,8 @@ class FindingHandler(NumericRefHandler):
         These views are deliberately kept off ``_BASE_VIEWS`` — finding-specific,
         not something every numeric-ref kind should expose.
         """
+        if (r := self._route_find(id=id, view=view, q=q)) is not None:
+            return r
         if isinstance(id, list):
             return super().get(id=id, view=view, q=q, **_kw)  # refused: no batch form
         id = self._resolve_pub_id_slug(id)
@@ -932,6 +934,10 @@ class FindingHandler(NumericRefHandler):
         ref = self._resolve_live_ref(self._coerce_id(self._resolve_pub_id_slug(id)))
         resp = super().eye(id=int(ref.id), extent=extent, q=q, ring=ring)
         return Response(body=_hub_eye_header(self.store, ref) + resp.body)
+
+    def _find_resolve_ref(self, id: Any) -> Ref:
+        """pub_id slug resolves like it does on ``get``."""
+        return self._resolve_live_ref(self._coerce_id(self._resolve_pub_id_slug(id)))
 
     def _resolve_pub_id_slug(self, id: str | int | None) -> str | int | None:
         """Translate a bare ``pub_id`` slug (e.g. ``'tbx2hd'``) to its ref_id.

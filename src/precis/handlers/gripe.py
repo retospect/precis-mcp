@@ -445,6 +445,8 @@ class GripeHandler(NumericRefHandler):
         q: str | None = None,
         **_kw: Any,
     ) -> Response:
+        if (r := self._route_find(id=id, view=view, q=q)) is not None:
+            return r
         if isinstance(id, list):
             # Batch form: the base class renders it (summary-shaped) or
             # refuses the view= combination.

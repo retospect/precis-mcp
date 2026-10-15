@@ -36,6 +36,7 @@ from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound, Unsupported
+from precis.handlers._eye import is_eye_view
 from precis.handlers._mode_help import require_mode
 from precis.handlers._readonly_fs import translate_readonly_fs as _translate_readonly_fs
 from precis.handlers._slug_ref_shared import reject_chunk_or_path_view
@@ -296,6 +297,11 @@ class PlaintextHandler(Handler):
     #: :meth:`_render_view` to add their own (e.g. tex's ``toc``).
     _SUPPORTED_VIEWS: ClassVar[tuple[str, ...]] = ("raw",)
 
+    #: ``get(id='<slug>', q='…')`` is find-in-ref (gr486840): the file's
+    #: ingested blocks carry ``meta.line_start``, so passage line numbers
+    #: are real file lines.
+    supports_find_in_ref = True
+
     # ── parser hooks (overrideable by subclasses) ─────────────────
     def _parse_blocks(self, content: str) -> list[PlaintextChunk]:
         """Parse ``content`` into a list of paragraph-shaped blocks.
@@ -456,13 +462,107 @@ class PlaintextHandler(Handler):
 
     # ── get ────────────────────────────────────────────────────────
 
+    def find_in_ref(
+        self,
+        *,
+        id: Any = None,
+        q: Any = None,
+        view: Any = None,
+        context: Any = None,
+    ) -> Response:
+        """``get(id='<slug>', q='…')`` — matching passages inside one file.
+
+        The ``~SEL`` suffix narrows the scan to one block (``~slug``,
+        ``~pos``) or a line range (``~L42-58``); the dispatcher routes
+        ``q`` here before ``get``, and the early route inside ``get``
+        covers direct calls (gr486840).
+        """
+        from precis.handlers._find_in_ref import find_preflight, find_response
+
+        find_preflight(kind=self._KIND, id=id, view=view, q=q)
+        slug, sel, path_view = _parse_file_id(
+            str(id), extensions=self._EXTENSIONS, views=self._SUPPORTED_VIEWS
+        )
+        if path_view is not None:
+            raise BadInput(
+                f"q= (find-in-ref) doesn't combine with a /{path_view} path",
+                next=f"get(kind='{self._KIND}', id='{slug}', q={str(q).strip()!r})",
+            )
+        ref = self._require_existing_file(slug)
+        blocks = self.store.chunks.list_chunks_for_ref(ref.id)
+        if sel is not None:
+            blocks = self._find_scope_blocks(ref, blocks, sel)
+        return find_response(
+            kind=self._KIND,
+            display=ref.slug or slug,
+            chunks=blocks,
+            q=str(q).strip(),
+            context=context,
+            ref_id=ref.id,
+        )
+
+    def _find_scope_blocks(
+        self, ref: Ref, blocks: list[Any], sel: _BlockSel
+    ) -> list[Any]:
+        """Narrow ``blocks`` to the ``~SEL`` scope of a find-in-ref call.
+
+        Same resolution grammar as :meth:`_render_block` (exact slug →
+        unique-prefix shorthand → NotFound, pos, or a line range) but
+        returning the row list the find renderer scans.
+        """
+        if sel.is_line_range:
+            scoped = [
+                b
+                for b in blocks
+                if (m := b.meta or {}).get("line_start") is not None
+                and _intersects(
+                    int(m["line_start"]),
+                    int(m.get("line_end") or m["line_start"]),
+                    sel.line_start,
+                    sel.line_end,
+                )
+            ]
+            if not scoped:
+                raise NotFound(
+                    f"no block intersects L{sel.line_start}-{sel.line_end} "
+                    f"in {ref.slug!r}",
+                    next=f"get(kind='{self._KIND}', id='{ref.slug}/raw')",
+                )
+            return scoped
+        if sel.is_pos:
+            try:
+                pos = int(sel.value)
+            except ValueError as exc:
+                raise BadInput(
+                    f"unparseable pos selector: {sel.value!r}",
+                    next=f"get(kind='{self._KIND}', id='{ref.slug}~SLUG')",
+                ) from exc
+            block = self.store.chunks.get_chunk(ref.id, pos=pos)
+        else:
+            block = self.store.chunks.get_chunk(ref.id, slug=sel.value)
+            if block is None:
+                hits = _prefix_shorthand_matches(blocks, sel.value)
+                if len(hits) == 1:
+                    block = next(b for b in blocks if b.slug == hits[0])
+        if block is None:
+            raise NotFound(
+                f"no {self._block_noun()} at ~{sel.value} in {ref.slug!r}",
+                next=f"get(kind='{self._KIND}', id='{ref.slug}')",
+            )
+        return [block]
+
     def get(
         self,
         *,
         id: str | int | None = None,
         view: str | None = None,
+        q: str | None = None,
         **_kw: Any,
     ) -> Response:
+        # find-in-ref (gr486840): ``q`` on a concrete get is the shared
+        # find, never silently dropped.
+        if q is not None and not is_eye_view(view):
+            return self.find_in_ref(id=id, view=view, q=q)
         # Index/list sentinels — every form an agent might reach for
         # to mean "show me what's here":
         # - ``id=None`` (no id at all)

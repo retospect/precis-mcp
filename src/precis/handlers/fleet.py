@@ -190,6 +190,9 @@ class FleetHandler(NumericRefHandler):
 
     # ── id resolution: key, numeric id, or the fl handle ────────────
 
+    def _find_resolve_ref(self, id: Any) -> Ref:
+        return self._ref_for(id)
+
     def _ref_for(self, id: str | int) -> Ref:
         if isinstance(id, str):
             s = id.strip()
@@ -216,6 +219,8 @@ class FleetHandler(NumericRefHandler):
         host: str | None = None,
         **_kw: Any,
     ) -> Response:
+        if (r := self._route_find(id=id, view=view, q=q)) is not None:
+            return r
         if isinstance(id, list):
             return super().get(id=id, view=view, q=q, **_kw)  # refused: no batch form
         if id is None and view is None:

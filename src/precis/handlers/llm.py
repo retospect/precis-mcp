@@ -67,6 +67,9 @@ class LlmHandler(NumericRefHandler):
 
     # ── id resolution: model slug, numeric id, or the lm handle ─────
 
+    def _find_resolve_ref(self, id: Any) -> Ref:
+        return self._ref_for(id)
+
     def _ref_for(self, id: str | int) -> Ref:
         """Resolve ``id`` → a live ref, accepting a **model slug**
         (``claude-opus-4-8`` — the human key, looked up via ``meta.model_id``), a
@@ -98,6 +101,8 @@ class LlmHandler(NumericRefHandler):
         q: str | None = None,
         **_kw: Any,
     ) -> Response:
+        if (r := self._route_find(id=id, view=view, q=q)) is not None:
+            return r
         if isinstance(id, list):
             return super().get(id=id, view=view, q=q, **_kw)  # refused: no batch form
         concrete = id is not None and not (isinstance(id, str) and id.startswith("/"))

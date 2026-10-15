@@ -53,6 +53,7 @@ from precis.handlers._numeric_ref import _BASE_VIEWS, NumericRefHandler
 from precis.protocol import KindSpec
 from precis.reading.concepts import normalize_name, split_name_def
 from precis.response import Response
+from precis.store import Ref
 from precis.taxonomy.nodes import (
     BOUNDARY_KEYS,
     EDITABLE_KEYS,
@@ -200,6 +201,10 @@ class TaxonHandler(NumericRefHandler):
         return split_name_def(text)[0] or text
 
     # ── id resolution: numeric, handle, taxon:<id>, path form ───────
+
+    def _find_resolve_ref(self, id: Any) -> Ref:
+        """Taxon path/spec ids resolve like they do on ``get``."""
+        return self._resolve_live_ref(self._coerce_id(self._resolve_spec(id)))
 
     def _resolve_spec(self, spec: str | int) -> int:
         """A node reference to its ref id: ``42``, ``'42'``, ``tn42``,
@@ -804,6 +809,8 @@ class TaxonHandler(NumericRefHandler):
     ) -> Response:
         """``view='path'`` / ``view='facets'`` (``args={'sort': …, 'cross':
         […]}``) on a concrete node; otherwise the generic numeric-ref get."""
+        if (r := self._route_find(id=id, view=view, q=q)) is not None:
+            return r
         if isinstance(id, str) and not id.startswith("/"):
             id = self._resolve_spec(id)
         concrete = id is not None and not (isinstance(id, str) and id.startswith("/"))

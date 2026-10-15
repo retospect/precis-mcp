@@ -177,6 +177,7 @@ get(
 )  # raw ref-events audit trail (generic, not logbook-specific)
 get(kind="quest", id="/active")  # every active striving
 get(kind="quest", id="/gaps")  # gaps across ALL active quests
+get(kind="quest", id=7, q="perovskite")  # passages inside this quest (find-in-ref)
 ```
 
 **The complete `view=` set is** `tree · gaps · dossier · frontier ·

@@ -324,6 +324,8 @@ class TodoHandler(NumericRefHandler):
         q: str | None = None,
         **_kw: Any,
     ) -> Response:
+        if (r := self._route_find(id=id, view=view, q=q)) is not None:
+            return r
         if isinstance(id, list):
             return super().get(id=id, view=view, q=q, **_kw)
         # Tree view is special: needs a numeric id, dispatches before

@@ -34,6 +34,7 @@ from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.format import render_agent_table
 from precis.handlers._exclude_closure import resolve_exclude_paper_ids
+from precis.handlers._eye import is_eye_view
 from precis.handlers._paper_format import (
     _clean_inline_text,
     _format_authors,
@@ -303,6 +304,11 @@ class PaperHandler(Handler):
 
     #: ingest of third-party papers (cfp/datasheet inherit): the agent-write secret gate (dispatch) skips this kind.
     stores_opaque_text: ClassVar[bool] = True
+
+    #: ``get(id='<slug>', q='…')`` is find-in-ref (gr486840) — ``q`` on a
+    #: concrete id scans the paper's chunks; ``id=None`` keeps its older
+    #: meaning (delegate to ``search``).
+    supports_find_in_ref = True
     ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
         # Every acquire knob — ``args={'doi': …, 'verify': False}`` is the
         # spelling the slim schema pushes (kind-specific fields ride
@@ -954,6 +960,75 @@ class PaperHandler(Handler):
 
     # -- get -----------------------------------------------------------------
 
+    def find_in_ref(
+        self,
+        *,
+        id: Any = None,
+        q: Any = None,
+        view: Any = None,
+        context: Any = None,
+    ) -> Response:
+        """``get(id='<slug>', q='…')`` — matching passages inside one paper.
+
+        A ``~A..B`` chunk-range suffix scopes the scan to that range;
+        ``id=None`` keeps ``get``'s older delegation to ``search`` so the
+        bare ``get(kind='paper', q='…')`` shape doesn't regress
+        (gr486840). cfp/datasheet inherit this unchanged.
+        """
+        from precis.handlers._find_in_ref import find_preflight, find_response
+
+        if id is None:
+            # The established bare-q shape: rank papers, not find-in-ref.
+            # A blank q falls back to the list view exactly as the get
+            # path below does.
+            if q is None or not str(q).strip():
+                return self._render_list_papers()
+            if view is not None:
+                raise BadInput(
+                    "view= doesn't combine with a bare-q get — the q is a "
+                    "search query here",
+                    next=f"search(kind={self.spec.kind!r}, q={str(q).strip()!r})",
+                )
+            return self.search(q=str(q).strip())
+        find_preflight(kind=self.spec.kind, id=id, view=view, q=q)
+        raw_id = _maybe_resolve_doi(self.store, str(id))
+        slug, chunk_spec, path_view = _parse_paper_id(raw_id, self.spec.kind)
+        if path_view is not None:
+            raise BadInput(
+                f"q= (find-in-ref) doesn't combine with a /{path_view} path",
+                next=f"get(kind='{self.spec.kind}', id='{slug}', q={str(q).strip()!r})",
+            )
+        ref = resolve_live_slug_ref(
+            self.store,
+            kind=self.spec.kind,
+            id=slug,
+            next_hint=f"search(kind='{self.spec.kind}', q='your query') to find existing",
+        )
+        if chunk_spec is not None and chunk_spec[0] < 0:
+            raise BadInput(
+                "find-in-ref scans body chunks, not the synthetic card "
+                f"chunk (~{chunk_spec[0]})",
+                next=f"get(kind='{self.spec.kind}', id='{slug}', q={str(q).strip()!r})",
+            )
+        pos_range = chunk_spec if chunk_spec is not None else None
+        if pos_range is not None:
+            chunks = self.store.chunks.list_chunks_for_ref(ref.id, pos_range=pos_range)
+            if not chunks:
+                raise NotFound(
+                    f"no blocks in {ref.slug} for range ~{pos_range[0]}..{pos_range[1]}",
+                    next=f"get(id='{_pa(ref)}', view='toc')",
+                )
+        else:
+            chunks = self.store.chunks.list_chunks_for_ref(ref.id)
+        return find_response(
+            kind=ref.kind,
+            display=_pa(ref),
+            chunks=chunks,
+            q=str(q).strip(),
+            context=context,
+            ref_id=ref.id,
+        )
+
     def get(
         self,
         *,
@@ -962,6 +1037,11 @@ class PaperHandler(Handler):
         q: str | None = None,
         **_kw: Any,
     ) -> Response:
+        # find-in-ref (gr486840): ``q`` on a concrete get is the shared
+        # find; ``id=None`` keeps its older meaning below (delegate to
+        # ``search``). Eye views keep their own ``q`` (ring expansion).
+        if q is not None and not is_eye_view(view):
+            return self.find_in_ref(id=id, view=view, q=q)
         # Round-2 picky 2026-05-30: ``get(kind='paper', q='...')`` was
         # silently dropping ``q=`` and rendering the paper list,
         # leaving callers confused why their search returned no

@@ -381,6 +381,8 @@ class AlertHandler(NumericRefHandler):
         minutes: int | str | None = None,
         **_kw: Any,
     ) -> Response:
+        if (r := self._route_find(id=id, view=view, q=q)) is not None:
+            return r
         # gr259632: recurring health-digest/nursery ticks repeatedly
         # guessed view='detail' / view='full' on a concrete id and hit
         # the generic [error:Unsupported] every tick (each tick is a

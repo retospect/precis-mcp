@@ -335,6 +335,8 @@ class MemoryHandler(NumericRefHandler):
         q: str | None = None,
         **_kw: Any,
     ) -> Response:
+        if (r := self._route_find(id=id, view=view, q=q)) is not None:
+            return r
         # view='argument' on a concrete id renders the kind-scoped argument
         # graph (proof tree + stale-premise + inherited-caveat flags).
         # Path-views (id='/recent', id='/sticky') and the base views

@@ -298,6 +298,9 @@ class NumericRefHandler(Handler):
     """Base class for numeric-id ref kinds (memory, todo, gripe, anki, …)."""
 
     stamps_recall = True
+    #: ``get(id=N, q='…')`` is find-in-ref on every numeric-ref kind —
+    #: they all carry their prose in ``chunks`` rows.
+    supports_find_in_ref = True
 
     spec: ClassVar[KindSpec]
     kind: ClassVar[str]
@@ -470,6 +473,57 @@ class NumericRefHandler(Handler):
         ref = self._resolve_live_ref(self._coerce_id(id))
         return super().eye(id=int(ref.id), extent=extent, q=q, ring=ring)
 
+    def find_in_ref(
+        self,
+        *,
+        id: Any = None,
+        q: Any = None,
+        view: Any = None,
+        context: Any = None,
+    ) -> Response:
+        """``get(id=N, q='…')`` — matching passages inside one ref (gr486840).
+
+        Resolves the id the way ``get`` does (int / ``<kind>:<int>`` /
+        universal handle, ``Gone`` on tombstones), then scans every
+        non-synthetic chunk — body *and* comments — via the shared
+        find-in-ref renderer. The dispatcher routes ``q`` here before
+        ``get``; the early route inside ``get`` covers direct calls.
+        """
+        from precis.handlers._find_in_ref import find_preflight, find_response
+
+        find_preflight(kind=self.kind, id=id, view=view, q=q)
+        ref = self._find_resolve_ref(id)
+        chunks = self.store.chunks.list_chunks_for_ref(ref.id)
+        display = handle_registry.try_format(self.kind, ref.id) or str(ref.id)
+        return find_response(
+            kind=self.kind,
+            display=display,
+            chunks=chunks,
+            q=str(q).strip(),
+            context=context,
+            ref_id=ref.id,
+        )
+
+    def _find_resolve_ref(self, id: Any) -> Ref:
+        """``id`` → live ref for :meth:`find_in_ref` — ``_coerce_id`` +
+        ``_resolve_live_ref`` by default; kinds whose public id isn't the
+        bare int (finding's pub_id, llm's model slug, fleet's
+        ``vendor:host:project:tree`` key, taxon's path) override so the
+        find addresses refs the same way ``get`` does."""
+        return self._resolve_live_ref(self._coerce_id(id))
+
+    def _route_find(self, *, id: Any, view: Any, q: Any) -> Response | None:
+        """First-line ``get`` guard for direct calls (gr486840).
+
+        Returns the find-in-ref response when ``q`` is set on a
+        non-eye-view get, ``None`` otherwise — subclasses that intercept
+        their own ``view=`` before ``super().get`` call this first so a
+        ``view=<custom>``+``q`` call can't drop the find silently.
+        """
+        if q is not None and not is_eye_view(view):
+            return self.find_in_ref(id=id, view=view, q=q)
+        return None
+
     def get(
         self,
         *,
@@ -479,6 +533,11 @@ class NumericRefHandler(Handler):
         of_kind: str | None = None,
         **_kw: Any,
     ) -> Response:
+        # find-in-ref (gr486840): ``q`` on a concrete get is the shared
+        # find, never silently dropped. Eye views keep their own ``q``
+        # (ring expansion); the ladder routes through ``eye`` below.
+        if (r := self._route_find(id=id, view=view, q=q)) is not None:
+            return r
         if isinstance(id, list):
             return self._get_batch(id, view=view)
         # `id='/recent'` and similar path views — subclasses may

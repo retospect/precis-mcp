@@ -48,6 +48,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from importlib import resources
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, ClassVar
 from urllib.parse import urlparse
 
@@ -545,6 +546,11 @@ class SkillHandler(Handler):
     #: Adding a synthesised skill is one entry here plus one render
     #: method.  All other gates (availability-gap, index, prompt
     #: enumeration) discover the slug through this dict.
+    #: ``get(id='<slug>', q='…')`` is find-in-ref (gr486840): scans the
+    #: served skill body line by line; ``id=None`` keeps its older
+    #: meaning (delegate to ``search``).
+    supports_find_in_ref = True
+
     _SYNTHESIZED_SKILLS: ClassVar[dict[str, str]] = {
         "precis-help": ("active kinds + verbs (auto-generated from this server)"),
         "precis-status": ("build + runtime + DB + optional-dependency probe"),
@@ -596,6 +602,72 @@ class SkillHandler(Handler):
 
     # ── get ────────────────────────────────────────────────────────
 
+    def find_in_ref(
+        self,
+        *,
+        id: Any = None,
+        q: Any = None,
+        view: Any = None,
+        context: Any = None,
+    ) -> Response:
+        """``get(id='<slug>', q='…')`` — matching passages inside one skill.
+
+        Scans the served body (includes expanded). A synthesized slug
+        (``precis-toc`` …) scans its rendered body instead; ``id=None``
+        keeps ``get``'s older delegation to ``search`` (gr486840).
+        """
+        from precis.handlers._find_in_ref import find_preflight, find_response
+
+        if id is None:
+            if view is not None:
+                raise BadInput(
+                    "view= doesn't combine with a bare-q get — the q is a "
+                    "search query here",
+                    next=f"search(kind='skill', q={str(q).strip()!r})",
+                )
+            if q is None or not str(q).strip():
+                return self._render_index()
+            return self.search(q=str(q).strip())
+        find_preflight(kind="skill", id=id, view=view, q=q)
+        s = str(id).strip()
+        slug = s.split("~", 1)[0].split("/", 1)[0]
+        if s != slug:
+            raise BadInput(
+                "find-in-ref covers the whole skill body — selectors and "
+                "view paths don't combine with q=",
+                next=f"get(kind='skill', id={slug!r}, q={str(q).strip()!r})",
+            )
+        if not _SLUG_RE.match(slug):
+            raise BadInput(
+                f"invalid skill slug: {slug!r}",
+                next="skill slugs are lowercase letters/digits/hyphens",
+            )
+        text = _load_skill(slug)
+        if text is None:
+            alias_target = f"precis-{slug}-help"
+            if skill_exists(alias_target):
+                text = _load_skill(alias_target)
+                slug = alias_target
+        if text is None and slug in self._SYNTHESIZED_SKILLS:
+            # Synthesized skills have no file body; scan what get renders.
+            text = self.get(id=slug).body
+        if text is None:
+            raise NotFound(
+                f"skill {slug!r} not found",
+                next="search(kind='skill', q='<what you want to do>')",
+            )
+        body = SimpleNamespace(
+            id=None, ord=0, slug=slug, text=text, meta={}, chunk_kind="body"
+        )
+        return find_response(
+            kind="skill",
+            display=slug,
+            chunks=[body],
+            q=str(q).strip(),
+            context=context,
+            chunk_label=lambda _c: slug,
+        )
+
     def get(
         self,
         *,
@@ -610,6 +682,13 @@ class SkillHandler(Handler):
         have: str | None = None,
         **_kw: Any,
     ) -> Response:
+        # find-in-ref (gr486840): ``q`` on a concrete id is the shared
+        # find; ``id=None`` keeps its older meaning below (delegate to
+        # ``search``). Eye views keep their own ``q`` (ring expansion).
+        from precis.handlers._eye import is_eye_view
+
+        if q is not None and not is_eye_view(view):
+            return self.find_in_ref(id=id, view=view, q=q)
         # Round-2 picky 2026-05-30: ``get(kind='skill', q='reading a
         # paper')`` previously dropped ``q=`` and returned the grouped
         # index — agents searching by topic via ``get`` got a flat

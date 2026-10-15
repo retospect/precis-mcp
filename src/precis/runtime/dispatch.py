@@ -2131,6 +2131,61 @@ class DispatchMixin(RuntimeShape):
                         exc.cause = f"(searched kind={kind!r}) {exc.cause}"
                     raise
 
+        # gr486840 find-in-ref: ``get(kind=K, id=N, q='…')`` on a kind
+        # that opts in (``Handler.supports_find_in_ref``) routes to
+        # ``handler.find_in_ref`` here — before the extras/kwargs gates
+        # and before any subclass ``view=`` interception — so ``q`` can
+        # never be silently dropped the way it was when it rode into
+        # ``get`` as a kwarg (the gripe's ``get(kind='memory', id, q=…)``
+        # returning the whole body). Compute-style kinds (calc, the
+        # cache-backed fetchers) don't opt in: their ``q`` still flows
+        # to ``get`` unchanged. Kinds that neither opt in nor declare
+        # ``q`` on ``get`` refuse it at the strictness gate below, so
+        # every ``q`` either finds, computes, or errors — never vanishes.
+        if (
+            verb == "get"
+            and args.get("q") is not None
+            and getattr(handler, "supports_find_in_ref", False)
+        ):
+            # q + any other top-level kwarg (of_kind=, spec=, page=, …)
+            # can't ride silently into a find that ignores them.
+            stray = sorted(k for k in args if k not in ("id", "view", "q", _EXTRAS_KEY))
+            if stray:
+                raise BadInput(
+                    f"get(kind={kind!r}): q= (find-in-ref) doesn't combine "
+                    f"with {stray!r} — drop them, or drop q=",
+                    next=(
+                        f"get(kind={kind!r}, id=<ref>, "
+                        f"q={str(args.get('q')).strip()!r})"
+                    ),
+                )
+            extras = args.get(_EXTRAS_KEY)
+            context = None
+            if isinstance(extras, dict):
+                unknown = sorted(set(extras) - {"context"})
+                if unknown:
+                    raise BadInput(
+                        f"keys {unknown!r} not accepted by {kind} find-in-ref; "
+                        "its args= key is 'context'",
+                        next="args={'context': 5} widens the ±3-line window",
+                    )
+                context = extras.get("context")
+            try:
+                response = handler.find_in_ref(
+                    id=args.get("id"),
+                    q=args["q"],
+                    view=args.get("view"),
+                    **({"context": context} if context is not None else {}),
+                )
+            except PrecisError as exc:
+                if kind_was_defaulted:
+                    exc.cause = f"(searched kind={kind!r}) {exc.cause}"
+                raise
+            self._stamp_recalled(kind, args.get("id"))
+            if kind_was_defaulted:
+                response = self._tag_defaulted_kind(response, kind)
+            return response
+
         # local-mesh-upkeep §2b: edit's reason= belongs to the revision
         # log, not the handler — consume it before the kwargs gate. put's
         # reason= is consumed the same way unless the handler's own put

@@ -89,6 +89,7 @@ get(
 )  # by block pos (output shows the handle mc<id>; get(id='mc<id>') works too)
 get(kind="markdown", id="notes/meeting.md/toc")  # full TOC
 get(kind="markdown", id="notes/meeting.md/raw")  # source
+get(kind="markdown", id="notes/meeting.md", q="deadline")  # passages inside it (find-in-ref)
 get(kind="markdown", id="/Users/bots/notes/meeting.md")  # absolute path also works
 ```
 

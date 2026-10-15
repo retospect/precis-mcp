@@ -886,6 +886,8 @@ class QuestHandler(NumericRefHandler):
         args: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
+        if (r := self._route_find(id=id, view=view, q=q)) is not None:
+            return r
         # `view='tree'` on a concrete id rolls up the servers + deed ledger +
         # health + gaps; `view='gaps'` is the focused exploration queue for one
         # quest. Path-views (id='/active', id='/gaps') and the base views

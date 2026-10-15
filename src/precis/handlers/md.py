@@ -276,15 +276,79 @@ class MdHandler(Handler):
             self._vector_cache_resolved = True
         return self._vector_cache
 
+    #: ``get(id='<alias>/<file>.md', q='…')`` is find-in-ref (gr486840):
+    #: passage line numbers are real file lines and each passage header
+    #: carries the ``~<block-slug>`` selector ``get`` resolves.
+    supports_find_in_ref = True
+
     # ── get ────────────────────────────────────────────────────────
+
+    def find_in_ref(
+        self,
+        *,
+        id: Any = None,
+        q: Any = None,
+        view: Any = None,
+        context: Any = None,
+    ) -> Response:
+        """``get(id='<alias>/<file>.md', q='…')`` — passages inside one file.
+
+        A ``~selector`` narrows the scan to that section (heading +
+        nested blocks), the same grammar the plain get uses.
+        """
+        from precis.handlers._find_in_ref import find_preflight, find_response
+
+        find_preflight(kind="md", id=id, view=view, q=q)
+        parsed = _parse_id(str(id))
+        root = self._resolve_alias(parsed.alias)
+        idx = self.cache.get(root)
+        if parsed.file is None:
+            raise BadInput(
+                "q= (find-in-ref) needs a file, not a whole md root",
+                next=(
+                    f"get(kind='md', id='{parsed.alias}/<file>.md', "
+                    f"q={str(q).strip()!r}) — or search(kind='md', q=…) "
+                    "to rank blocks across the root"
+                ),
+            )
+        file_entry = idx.file(parsed.file)
+        if file_entry is None:
+            raise NotFound(
+                f"file {parsed.file!r} not found in md root {parsed.alias!r}",
+                next=f"get(kind='md', id='{parsed.alias}')",
+            )
+        display = f"{parsed.alias}/{parsed.file}"
+        blocks: list[MdBlockEntry] = list(file_entry.blocks)
+        if parsed.selector is not None:
+            block = _resolve_selector(file_entry, parsed.selector)
+            if block is None:
+                raise NotFound(
+                    f"no heading {parsed.selector!r} in {parsed.file}",
+                    next=f"get(kind='md', id='{display}')",
+                )
+            blocks = _section_blocks(file_entry, block)
+            display = f"{display}~{block.slug}"
+        return find_response(
+            kind="md",
+            display=display,
+            chunks=blocks,
+            q=str(q).strip(),
+            context=context,
+            chunk_label=lambda b: f"{parsed.alias}/{parsed.file}~{b.slug}",
+        )
 
     def get(
         self,
         *,
         id: str | int | None = None,
         view: str | None = None,
+        q: str | None = None,
         **_kw: Any,
     ) -> Response:
+        # find-in-ref (gr486840): ``q`` on a concrete get is the shared
+        # find, never silently dropped.
+        if q is not None:
+            return self.find_in_ref(id=id, view=view, q=q)
         if id is None or id == "/" or id == "":
             return Response(body=_render_index(self.roots))
 

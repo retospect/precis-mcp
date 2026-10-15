@@ -68,7 +68,6 @@ class EmailHandler(Handler):
         id: str | int | None = None,
         account: str | None = None,
         view: str | None = None,
-        q: str | None = None,
         limit: int | None = None,
         **_kw: Any,
     ) -> Response:

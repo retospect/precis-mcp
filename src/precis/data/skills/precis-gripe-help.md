@@ -63,7 +63,9 @@ search(kind="gripe", q="HNSW duplicates")
 
 Search before you file. Duplicates are OK but the existing thread
 often has the context you'd otherwise rediscover. Body text and
-every comment chunk are searchable.
+every comment chunk are searchable — and `get(kind='gripe', id=N,
+q='…')` finds the matching passages inside one gripe (find-in-ref,
+`precis-get-help`).
 
 **Queryless browse defaults to live statuses** (hiding done/wontfix), with
 status per row and an exact hidden count. Query-based search retains its

@@ -327,6 +327,8 @@ class JobHandler(NumericRefHandler):
         sha: str | None = None,
         **_kw: Any,
     ) -> Response:
+        if (r := self._route_find(id=id, view=view, q=q)) is not None:
+            return r
         # ``sha=`` is the ``/builds`` ancestry question (gr463592). It is
         # declared here, not read off the query string alone, so
         # ``get(kind='job', id='/builds', args={'sha': ...})`` passes the

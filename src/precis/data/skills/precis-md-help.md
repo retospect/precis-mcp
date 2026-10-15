@@ -30,6 +30,7 @@ get(kind="md", id="docs")  # root overview: file/block counts, top dirs
 get(kind="md", id="docs/backlog/some-item.md")  # file's heading outline
 get(kind="md", id="docs/backlog/some-item.md", view="source")  # full file text
 get(kind="md", id="docs/backlog/some-item.md~Motivation")  # one heading's section
+get(kind="md", id="docs/backlog/some-item.md", q="find me")  # passages inside the file (find-in-ref)
 ```
 
 `<alias>` comes from `PRECIS_MD_ROOTS`. `~<heading>` takes the

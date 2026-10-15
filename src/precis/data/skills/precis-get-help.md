@@ -180,6 +180,31 @@ get(kind="youtube", q="dQw4w9WgXcQ")  # transcript
 Results cache durably per kind. See `precis-cache` for TTLs and the
 cost trailer.
 
+## Find text inside one ref
+## Grep one ref instead of reading all of it
+## How do I locate a passage inside a ref I already have?
+
+```python
+get(kind="memory", id=483106, q="plaza packing")  # passages + context
+get(kind="paper", id="<slug>", q="NOx", args={"context": 5})
+get(kind="markdown", id="notes", q="re:TODO|FIXME")  # bounded regex
+```
+
+`q=` on a concrete `id=` is find-in-ref on every text-bearing kind
+(memory, todo, gripe, quest, finding, job, draft, paper, cfp, datasheet,
+markdown, plaintext, tex, md, skill): it returns only the matching
+lines, each with ~3 lines of context, the chunk/selector handle
+(`pc<N>`, `gc<N>`, `dc<N>`, `me<id>~ord`, `alias/file~slug`) and the
+line number — plus a match count, or `no match` when nothing hits.
+Literal `q` is case-insensitive text; `q='re:<pattern>'` is a bounded
+regex (no backrefs or nested quantifiers). `args={'context': N}` widens
+the window (≤25). `~SEL` on the id scopes the find (draft `~dc<N>`,
+file `~<block>` / `~L42-58`, paper `~A..B`). Long results page through
+`more()` like any get. `q=` does not combine with `view=`, a list
+(`id='/recent'`, `id=[…]`) or a missing `id` — and a kind that can't
+honour `q` refuses it; it is never silently ignored. To rank refs by
+content instead, use `search(kind=…, q=…)`.
+
 ## Find the help skill for a specific kind
 ## Where do I read about kind X?
 

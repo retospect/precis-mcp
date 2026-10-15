@@ -331,6 +331,9 @@ def _coerce_word_target(
 
 
 class DraftHandler(Handler):
+    #: ``get(id='<draft>', q='…')`` is find-in-ref (gr486840).
+    supports_find_in_ref = True
+
     #: args= keys each verb reads out of ``args`` (gr475332); dispatch
     #: rejects any other key. Keep in step with the verb bodies.
     ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
@@ -502,16 +505,91 @@ class DraftHandler(Handler):
             return Response(body=eye_body(self.store, s, extent, q=q, ring=ring))
         return super().eye(id=id, extent=extent, q=q, ring=ring)
 
+    def find_in_ref(
+        self,
+        *,
+        id: Any = None,
+        q: Any = None,
+        view: Any = None,
+        context: Any = None,
+    ) -> Response:
+        """``get(id='<draft>', q='…')`` — matching passages inside a draft.
+
+        Scans the draft's live chunks in DFS reading order (gr486840).
+        ``dc<N>`` — or ``<draft>~dc<N>`` — scopes the scan to that
+        section's subtree; a whole-draft id scans everything.
+        """
+        from precis.handlers._find_in_ref import find_preflight, find_response
+
+        find_preflight(kind="draft", id=id, view=view, q=q)
+        s = str(id).strip()
+        sel: str | None = None
+        if "~" in s:
+            s, _, sel = s.partition("~")
+            sel = sel.strip()
+            if not s.strip() or not _is_draft_chunk_handle(sel):
+                raise BadInput(
+                    f"unknown draft selector {sel!r} in id={id!r}",
+                    next="selector must be a chunk handle: "
+                    "get(kind='draft', id='dr<N>~dc<M>', q='…')",
+                )
+            s = s.strip()
+        if _is_draft_chunk_handle(s):
+            only = self.store.drafts.get_draft_chunk(s)
+            if only is None or only.retired:
+                raise NotFound(f"draft chunk {s!r} not found")
+            ref_id = int(only.ref_id)
+            root_id: int | None = int(only.chunk_id)
+        else:
+            ref = resolve_live_slug_ref(self.store, kind="draft", id=s)
+            ref_id = int(ref.id)
+            root_id = None
+            if sel is not None:
+                only = self.store.drafts.get_draft_chunk(sel)
+                if only is None or only.retired or int(only.ref_id) != ref_id:
+                    raise NotFound(f"draft chunk {sel!r} not found in draft {s!r}")
+                root_id = int(only.chunk_id)
+        chunks = self.store.drafts.reading_order(ref_id)
+        display = handle_registry.try_format("draft", ref_id) or str(ref_id)
+        if root_id is not None:
+            idx = next(
+                (i for i, c in enumerate(chunks) if c.chunk_id == root_id),
+                None,
+            )
+            if idx is None:
+                raise NotFound(f"draft chunk {root_id} not found")
+            base = chunks[idx]
+            subtree = [base]
+            for c in chunks[idx + 1 :]:
+                if c.depth <= base.depth:
+                    break
+                subtree.append(c)
+            chunks = subtree
+            display = handle_registry.format_handle("draft", root_id, chunk=True)
+        return find_response(
+            kind="draft",
+            display=display,
+            chunks=chunks,
+            q=str(q).strip(),
+            context=context,
+            ref_id=ref_id,
+        )
+
     def get(
         self,
         *,
         id: str | int | None = None,
         view: str | None = None,
+        q: str | None = None,
         targets: list[str] | None = None,
         project: str | int | None = None,
         args: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
+        # find-in-ref (gr486840): ``q`` on a concrete get is the shared
+        # find, never silently dropped. Eye views keep their own ``q``.
+        if q is not None and not is_eye_view(view):
+            return self.find_in_ref(id=id, view=view, q=q)
         if project is not None:
             # Reverse lookup (paper-writing pipeline rung 4,
             # docs/backlog/paper-writing-pipeline.md §Gap-analysis —

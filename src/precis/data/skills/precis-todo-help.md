@@ -65,7 +65,9 @@ search(kind="todo", view="done")  # completed
 ```
 
 (The old `id='/open'` `/queue` `/doing` `/blocked` `/done` paths still
-work as deprecated aliases of these views.)
+work as deprecated aliases of these views.) `get(kind='todo', id=N,
+q='…')` is find-in-ref — the matching passages inside one todo
+(`precis-get-help`).
 
 ## Start work on a todo
 ## Mark a todo as in-progress

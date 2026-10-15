@@ -32,6 +32,7 @@ search/get output back into `get`/`tag`/`link`.
 ```python
 get(kind="paper", id="pa40")  # full overview, by handle
 get(kind="paper", id="pa40", view="toc")  # TOC — the reading entry point
+get(kind="paper", id="pa40", q="NOx")  # passages inside the paper (find-in-ref)
 get(kind="paper", id="10.1038/nature10352")  # bare DOI resolves via metadata
 get(kind="paper", id="10.1038/nature10352", view="abstract")  # DOI + view = kwarg only
 get(kind="paper", id="10.1038/nature10352", view="toc")

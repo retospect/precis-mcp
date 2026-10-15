@@ -302,6 +302,15 @@ class Handler(ABC):
     #: the dispatcher's generic part-of ``under`` facet leaves them alone.
     owns_under: ClassVar[bool] = False
 
+    #: ``get(kind=K, id=N, q='…')`` is find-in-ref on this kind (gr486840):
+    #: the dispatcher routes ``q`` to :meth:`find_in_ref` before ``get``
+    #: runs, so it can't be silently dropped by a subclass's ``view=``
+    #: interception. True only on text-bearing kinds whose ids resolve to a
+    #: chunk-bearing ref or a file body; kinds where ``q`` is the
+    #: compute/fetch query (calc, the cache-backed fetchers) keep it False
+    #: and receive ``q`` in ``get`` unchanged.
+    supports_find_in_ref: ClassVar[bool] = False
+
     #: Populated by :meth:`_register_with` so handlers that need
     #: hub introspection (e.g. SkillHandler rendering
     #: ``precis-help``, or any handler that wants the embedder /
@@ -353,6 +362,26 @@ class Handler(ABC):
 
     def get(self, **kw: Any) -> Response:
         raise Unsupported(f"{self.spec.kind} does not support get")
+
+    def find_in_ref(
+        self,
+        *,
+        id: Any = None,
+        q: Any = None,
+        view: Any = None,
+        context: Any = None,
+    ) -> Response:
+        """``get(kind=K, id=N, q='…')`` on a find-in-ref kind.
+
+        The dispatcher only calls this when
+        :attr:`supports_find_in_ref` is set; the base implementation is
+        the honest refusal for every other kind (reached only by a
+        direct in-process call — the strictness gate has already
+        refused ``q`` on kinds whose ``get`` never declared it).
+        """
+        raise Unsupported(
+            f"{self.spec.kind} does not support q= on get — no find-in-ref"
+        )
 
     def search(self, **kw: Any) -> Response:
         raise Unsupported(f"{self.spec.kind} does not support search")
