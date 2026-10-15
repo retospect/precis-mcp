@@ -76,3 +76,23 @@ cgroup limits: `precis_worker_memory_*`, `host_memory_guard_units`, `memsnap_ena
 `deploy/inventory.example/group_vars/all/memory-guard.example.yml`). Apply with
 `playbooks/10-hardening.yml`; daemon-reload only, no restarts. Read snapshots with
 `journalctl -t memsnap`.
+
+## Per-host memory budget (GB10 lanes)
+
+Since 2026-10-15 (castor wedged twice: vLLM 0.70 + 56G compute + 24G sandbox +
+24G worker on 121 GiB) each worker lane's cap comes from the inventory group
+that places it (`precis_lane_memory` in `roles/hardening/defaults/main.yml`):
+heartbeat `precis-worker` 4G on `serving`/`compute`, `precis-worker-compute`
+48G + a 40G GPU-container reserve on `compute`, `precis-worker-sandbox` 2G + an
+8G container reserve on `agent_sandbox_hosts`. One template
+(`templates/memory-budget.json.j2`) writes the drop-ins and sums the host:
+placed lane caps + container reserves + `host_memory_guard_units` + the LLM
+share (`vllm_gpu_memory_utilization` / `sglang_mem_fraction_static` x
+`host_memory_total`) + `host_memory_os_reserve` (10G) +
+`host_memory_extra_reserve` (per host, non-precis services). Over
+`host_memory_total` (121G), an LLM group joined with `compute`, or a placed
+lane with no MemoryMax fails 10-hardening and the lane plays 35/43/49/49a.
+`tests/test_deploy_memory_budget.py` checks every group combination from the
+defaults. Per-unit exceptions go in `precis_worker_memory_overrides`, which the
+budget counts too. To retire lanes from a host that stays on duty:
+`playbooks/retire-worker-lanes.yml -e retire_host=<node> -e retire_lanes=compute,sandbox`.

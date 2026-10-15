@@ -35,6 +35,10 @@
     - name: "Isolation anchor: the gateway only keeps this play's batch alive"
       ansible.builtin.meta: end_host
       when: inventory_hostname not in (groups['agent_sandbox_hosts'] | default([]))
+    - name: "host-lanes: this host's lanes fit its memory (roles/hardening budget)"
+      ansible.builtin.import_role:
+        name: hardening
+        tasks_from: memory_budget
   vars:
     _sb_venv: /opt/precis/venv
     _sb_dsn: "postgresql://agent_rw@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"

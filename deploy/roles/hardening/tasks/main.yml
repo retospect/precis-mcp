@@ -270,6 +270,16 @@
 # memory guards, memsnap) for a host that must not get the full role.
 # cgroup MemoryHigh/Max: an mmapped model's page cache is charged to its unit,
 # so the unit thrashes itself instead of starving sshd. daemon-reload only.
+# The per-unit values come from the host's memory plan (memory_budget.yml):
+# override > placed lane cap > top-level precis_worker_memory_*. The same
+# plan's budget assert runs first, so an over-budget host writes nothing.
+- name: Plan + budget-check this host's lane memory (Linux)
+  tags: [oom-guard]
+  ansible.builtin.include_tasks:
+    file: memory_budget.yml
+    apply:
+      tags: [oom-guard]
+
 - name: Ensure precis worker memory-guard drop-in dirs (Linux)
   tags: [oom-guard]
   when:
@@ -280,15 +290,10 @@
     state: directory
     mode: "0755"
   become: true
-  loop: "{{ precis_worker_memory_units }}"
+  loop: "{{ host_memory_plan.units | default([]) }}"
   loop_control:
-    loop_var: wunit
-  vars:
-    unit_cfg: &worker_unit_cfg
-      name: "{{ wunit | regex_replace('[.]service$', '') }}.service"
-      memory_high: "{{ (precis_worker_memory_overrides[wunit] | default({})).memory_high | default(precis_worker_memory_high) }}"
-      memory_max: "{{ (precis_worker_memory_overrides[wunit] | default({})).memory_max | default(precis_worker_memory_max) }}"
-      memory_swap_max: "{{ (precis_worker_memory_overrides[wunit] | default({})).memory_swap_max | default(precis_worker_memory_swap_max) }}"
+    loop_var: unit_cfg
+    label: "{{ unit_cfg.name }}"
 
 - name: Memory-guard drop-in for precis worker units (Linux)
   tags: [oom-guard]
@@ -300,11 +305,10 @@
     dest: "/etc/systemd/system/{{ unit_cfg.name }}.d/50-memory-guard.conf"
     mode: "0644"
   become: true
-  loop: "{{ precis_worker_memory_units }}"
+  loop: "{{ host_memory_plan.units | default([]) }}"
   loop_control:
-    loop_var: wunit
-  vars:
-    unit_cfg: *worker_unit_cfg
+    loop_var: unit_cfg
+    label: "{{ unit_cfg.name }}"
   notify: reload systemd (hardening)
 
 - name: Ensure memory-guard drop-in dirs for hand-managed units (Linux)

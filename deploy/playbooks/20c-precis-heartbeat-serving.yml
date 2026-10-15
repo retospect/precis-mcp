@@ -29,9 +29,14 @@
 # install needs /opt/precis/constraints.txt, the password-free agent_rw DSN
 # needs ~deploy/.pgpass).
 
-- name: Deploy the heartbeat-only precis worker (serving hosts)
+- name: Deploy the heartbeat-only precis worker (serving + compute hosts)
+  # `compute` joins (host-lanes, Reto 2026-10-15): a GB10 that only runs the
+  # science lanes is in `compute` but not `serving`. Its compute lane (43)
+  # rides the venv this play provisions, and the heartbeat puts it on
+  # /status. A host in both groups is matched once.
   hosts:
     - serving
+    - compute
     - gateway
   become: true
   # Per-host isolation (r36, gr488897): ansible ends the WHOLE playbook when
@@ -44,7 +49,11 @@
   pre_tasks:
     - name: "Isolation anchor: the gateway only keeps this play's batch alive"
       ansible.builtin.meta: end_host
-      when: inventory_hostname not in (groups['serving'] | default([]))
+      # An `inference` host runs 20b's collapsed worker under the same unit
+      # name; a heartbeat-only render would clobber it, so it leaves too.
+      when: >-
+        inventory_hostname not in ((groups['serving'] | default([])) + (groups['compute'] | default([])))
+        or inventory_hostname in (groups['inference'] | default([]))
   tasks:
     # precis_worker/provision assumes uv at /root/.local/bin/uv on Linux
     # (the GPU node got it out-of-band; make it explicit for fresh serving

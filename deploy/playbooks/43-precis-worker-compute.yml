@@ -100,6 +100,10 @@
     - name: "Isolation anchor: the gateway only keeps this play's batch alive"
       ansible.builtin.meta: end_host
       when: inventory_hostname not in ((groups['compute'] | default([])) + (groups['inference'] | default([])))
+    - name: "host-lanes: this host's lanes fit its memory (roles/hardening budget)"
+      ansible.builtin.import_role:
+        name: hardening
+        tasks_from: memory_budget
   vars:
     # Kept in sync with roles/precis_worker/defaults/main.yml — this playbook
     # deliberately does not import that role (see header), so its defaults are

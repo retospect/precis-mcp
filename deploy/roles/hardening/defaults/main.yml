@@ -57,6 +57,84 @@ precis_worker_memory_units:
   - precis-worker-sandbox
 precis_worker_memory_overrides: {}
 
+# ── Lane caps + per-host memory budget (host-lanes, Reto 2026-10-15) ──────
+# The LLM host wedged twice on 2026-10-15: vLLM at 0.70 (~85 GiB) plus a 56G compute
+# lane, a 24G sandbox lane and a 24G heartbeat worker summed far past its
+# 121 GiB. Each lane's cap now comes from the inventory GROUP that places the
+# lane, and templates/memory-budget.json.j2 sums what a host carries:
+#   unit MemoryMax of every placed lane + its container reserve
+#   + host_memory_guard_units + the LLM's share + OS reserve + extra reserve
+# which must stay <= host_memory_total. tasks/memory_budget.yml fails the play
+# on a host over budget; tests/test_deploy_memory_budget.py checks every
+# lane-group combination from these defaults.
+#
+# A lane is placed when the host is in any of `groups` and none of
+# `not_groups`. Precedence per unit: precis_worker_memory_overrides[unit] >
+# the placed lane's caps > the top-level precis_worker_memory_* values.
+# `container_reserve` counts docker containers the lane starts outside its
+# own cgroup.
+precis_lane_memory:
+  # Heartbeat-only precis-worker (20c). Measured RSS ~110 MiB.
+  # An inference host runs 20b's collapsed worker under the same unit name.
+  - lane: heartbeat
+    unit: precis-worker
+    groups: [serving, compute]
+    not_groups: [inference]
+    memory_high: 3G
+    memory_max: 4G
+  # 20b's collapsed worker on a Linux inference host: no lane cap, so the
+  # top-level precis_worker_memory_* values apply, and an unset MemoryMax
+  # fails the budget as uncapped.
+  - lane: collapsed
+    unit: precis-worker
+    groups: [inference]
+  # job_ssh_node lane (43): autocatpath seeds run inside this cgroup (LLM host
+  # peak 20.6 GiB with 5 seeds at ~3.5 GiB, 2026-10-15). The GPU container
+  # (fold, gpaw dft) runs under docker, one at a time per host (resource slot
+  # gpu=1): its reserve must cover alphafold_mem_limit.
+  - lane: compute
+    unit: precis-worker-compute
+    groups: [compute, inference]
+    memory_high: 40G
+    memory_max: 48G
+    container_reserve: 40G
+  # job_claude_docker lane (35): the worker is small (~120 MiB); each job is
+  # one docker container capped by PRECIS_SANDBOX_MEMORY (default 8g, batch 1).
+  - lane: sandbox
+    unit: precis-worker-sandbox
+    groups: [agent_sandbox_hosts]
+    memory_high: 1536M
+    memory_max: 2G
+    container_reserve: 8G
+
+# GB10 unified memory as the OS reports it (free -g: 121).
+host_memory_total: 121G
+host_memory_os_reserve: 10G
+# Per host: memory held by non-precis services (monitoring, n8n, ...).
+host_memory_extra_reserve: 0G
+# LLM serving groups and the fraction of host_memory_total each reserves.
+# An inventory value wins; else the serving role's own default, which
+# tasks/memory_budget.yml loads under a private name; else 1.0 (whole box,
+# fails the budget rather than guessing low).
+host_llm_lanes:
+  - group: vllm_serving
+    fraction: >-
+      {{ vllm_gpu_memory_utilization
+         | default((_hardening_vllm_defaults | default({})).vllm_gpu_memory_utilization | default(1.0)) }}
+  - group: sglang_serving
+    fraction: >-
+      {{ sglang_mem_fraction_static
+         | default((_hardening_sglang_defaults | default({})).sglang_mem_fraction_static | default(1.0)) }}
+# Group pairs no host may join together: an LLM host runs no science lanes.
+host_lane_exclusive_groups:
+  - [vllm_serving, compute]
+  - [sglang_serving, compute]
+  - [vllm_serving, inference]
+  - [sglang_serving, inference]
+# Fail the play when a host is over budget. Off only for a measured,
+# reviewed exception.
+host_memory_budget_enforce: true
+
 # Existing units NOT managed by ansible (hand-made): we only add the drop-in,
 # never template the unit. systemd reads the limits on daemon-reload; we do
 # not restart, so a unit not yet running them picks them up on its next start.

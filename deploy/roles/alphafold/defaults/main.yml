@@ -44,9 +44,12 @@ alphafold_xla_cache_dir: "{{ alphafold_nfs_root }}/xla-af3"
 # Memory cap on the fold container (docker size string → --memory/--memory-swap
 # via PRECIS_FOLD_MEM_LIMIT). The GB10 is a DGX the GPU node with UNIFIED CPU+GPU
 # LPDDR5X (~121 GB total here), so an uncapped AF3 XLA-compile spike could starve
-# the resident precis-worker (+ its embedder) and wedge the node. 96g leaves
-# ~25 GB headroom for the OS/worker/driver. Empty ⇒ no cap.
-alphafold_mem_limit: 96g
+# the resident precis-worker (+ its embedder) and wedge the node. Empty ⇒ no
+# cap. 40g (was 96g) since host-lanes 2026-10-15: the fold host also runs a
+# 48G compute lane, and the per-host budget (roles/hardening precis_lane_memory,
+# the compute lane's 40G container_reserve) must hold both. Zero fold jobs ran
+# in the 30 days before the change; raise it only with the lane caps.
+alphafold_mem_limit: 40g
 
 # The worker runs as this user; rootful docker (deploy in the docker group) can
 # bind-mount the models under /home/reto regardless of owner.

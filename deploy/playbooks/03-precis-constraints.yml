@@ -51,6 +51,8 @@
     - data
     - inference
     - serving
+    # compute hosts outside `serving`: 20c provisions their venv too.
+    - compute
   become: false
   tasks:
     # The three delegate_to: localhost tasks override ansible.cfg's

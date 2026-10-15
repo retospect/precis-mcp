@@ -501,6 +501,7 @@
     - scheduler
     - inference
     - serving
+    - compute
   become: true
   tags: [restart-once, precis]
   tasks:

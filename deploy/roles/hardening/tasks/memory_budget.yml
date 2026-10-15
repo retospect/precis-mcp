@@ -1,0 +1,56 @@
+---
+# Per-host memory plan + budget assert (host-lanes, Reto 2026-10-15). See
+# defaults/main.yml (precis_lane_memory) for the rule. Included by main.yml
+# before the memory-guard drop-ins, and by the lane plays (35, 43, 49, 49a)
+# so a group move cannot place a lane past the budget without the hardening
+# play running. Linux only: the macOS hosts carry no lane units.
+
+- name: Load the vLLM role defaults under a private name (LLM share)
+  tags: [oom-guard]
+  when: os_family == "linux"
+  ansible.builtin.include_vars:
+    file: "{{ role_path }}/../vllm/defaults/main.yml"
+    name: _hardening_vllm_defaults
+
+- name: Load the SGLang role defaults under a private name (LLM share)
+  tags: [oom-guard]
+  when: os_family == "linux"
+  ansible.builtin.include_vars:
+    file: "{{ role_path }}/../sglang/defaults/main.yml"
+    name: _hardening_sglang_defaults
+
+- name: Compute this host's memory plan
+  tags: [oom-guard]
+  when: os_family == "linux"
+  ansible.builtin.set_fact:
+    host_memory_plan: "{{ lookup('ansible.builtin.template', role_path ~ '/templates/memory-budget.json.j2') | from_json }}"
+
+- name: Report this host's memory budget
+  tags: [oom-guard]
+  when: os_family == "linux"
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }} memory budget
+      {{ (host_memory_plan.total_mib / 1024) | round(1) }} /
+      {{ (host_memory_plan.limit_mib / 1024) | round(1) }} GiB:
+      {{ host_memory_plan['items'] | map('join', '=') | join(', ') }} (MiB)
+
+- name: Assert this host's lanes fit its memory
+  tags: [oom-guard]
+  when:
+    - os_family == "linux"
+    - host_memory_budget_enforce | bool
+  ansible.builtin.assert:
+    that:
+      - host_memory_plan.exclusive | length == 0
+      - host_memory_plan.uncapped | length == 0
+      - host_memory_plan.total_mib <= host_memory_plan.limit_mib
+    fail_msg: >-
+      {{ inventory_hostname }} is over its memory budget or mis-grouped.
+      exclusive groups joined: {{ host_memory_plan.exclusive }};
+      placed units with no MemoryMax: {{ host_memory_plan.uncapped }};
+      total {{ host_memory_plan.total_mib }} MiB vs limit
+      {{ host_memory_plan.limit_mib }} MiB ({{ host_memory_plan['items'] }}).
+      Fix the inventory groups or the lane caps (roles/hardening/defaults,
+      precis_worker_memory_overrides), not this assert.
+    quiet: true

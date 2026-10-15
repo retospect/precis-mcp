@@ -1235,7 +1235,7 @@ fi
 # host is recorded for catch-up (the r33/r34 lesson: one Tailscale drop
 # used to abort the whole deploy and then the verdict-age guard refused
 # the resume hours later). Critical hosts down still abort the run.
-PING_TARGETS="gateway:scheduler:data:inference:serving"
+PING_TARGETS="gateway:scheduler:data:inference:serving:compute:agent_sandbox_hosts"
 say "checking cluster reachability (ansible ping — ${PING_TARGETS})"
 _PING_OUT="/tmp/precis-deploy-ping.$$"
 _ping_rc=0

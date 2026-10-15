@@ -1,0 +1,106 @@
+---
+# retire-worker-lanes.yml — take named worker LANES off one host, leaving its
+# other precis units running. retire-node-precis-units.yml removes every
+# precis unit; this one is for a host that stays on duty with fewer lanes
+# (host-lanes 2026-10-15: the LLM host keeps its heartbeat worker and drops
+# the compute and sandbox lanes). The inventory side (the host out of
+# `compute` / `agent_sandbox_hosts`, out of the precis_capabilities entries)
+# must land first: no play stops a unit on a host that left its group, and the
+# redeploy's orphan sweep (gr485861) only restarts and flags it.
+#
+#   ansible-playbook playbooks/retire-worker-lanes.yml -e retire_host=<node> \
+#     -e retire_lanes=compute,sandbox
+#
+# Lanes: compute (precis-worker-compute, playbook 43; also drops the
+# autocatpath/aizynth env drop-ins the heartbeat worker sources) and sandbox
+# (precis-worker-sandbox, playbook 35). Refuses a host still in a lane's
+# owning group. Drain first: `precis service reserve <node>` and wait for the
+# node's running jobs to finish. Idempotent. Not wired into site.yml or
+# redeploy-precis.yml.
+
+- name: Retire named worker lanes from one host
+  hosts: "{{ retire_host | default('__unset__') }}"
+  become: true
+  vars:
+    _lanes: "{{ (retire_lanes | default('')).split(',') | map('trim') | select | list }}"
+    _lane_units:
+      compute: precis-worker-compute
+      sandbox: precis-worker-sandbox
+    _lane_groups:
+      compute: [compute, inference]
+      sandbox: [agent_sandbox_hosts]
+    # Feature drop-ins (on precis-worker) + env files a retired compute lane
+    # leaves behind; PRECIS_NODE in them would still advertise the host.
+    _lane_dropins:
+      compute:
+        - /etc/systemd/system/precis-worker.service.d/10-dft.conf
+        - /etc/systemd/system/precis-worker.service.d/20-autocatpath.conf
+        - /etc/systemd/system/precis-worker.service.d/30-aizynth.conf
+        - /etc/systemd/system/precis-worker.service.d/40-alphafold.conf
+        - /etc/precis/dft.env
+        - /etc/precis/autocatpath.env
+        - /etc/precis/aizynth.env
+        - /etc/precis/alphafold.env
+      sandbox: []
+  tasks:
+    - name: Lanes named and known
+      ansible.builtin.assert:
+        that:
+          - _lanes | length > 0
+          - _lanes | difference(_lane_units.keys() | list) | length == 0
+        fail_msg: "retire_lanes must name one or more of {{ _lane_units.keys() | list }}; got {{ _lanes }}"
+        quiet: true
+
+    - name: Host has left each lane's owning groups
+      ansible.builtin.assert:
+        that: group_names | intersect(_lane_groups[item]) | length == 0
+        fail_msg: >-
+          {{ inventory_hostname }} is still in {{ group_names | intersect(_lane_groups[item]) }}:
+          the next deploy would reinstall the {{ item }} lane. Move it out of the
+          inventory group first.
+        quiet: true
+      loop: "{{ _lanes }}"
+
+    - name: Stop + disable the lane units
+      ansible.builtin.systemd:
+        name: "{{ _lane_units[item] }}.service"
+        state: stopped
+        enabled: false
+      loop: "{{ _lanes }}"
+      register: _retire_stop
+      # An absent unit (re-run) is fine; anything else surfaces.
+      failed_when:
+        - _retire_stop.failed | default(false)
+        - "'Could not find the requested service' not in (_retire_stop.msg | default(''))"
+
+    - name: Remove the lane unit files, drop-in dirs and feature env
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop: >-
+        {{ (_lanes | map('extract', _lane_units)
+              | map('regex_replace', '^(.*)$', '/etc/systemd/system/\1.service') | list)
+           + (_lanes | map('extract', _lane_units)
+              | map('regex_replace', '^(.*)$', '/etc/systemd/system/\1.service.d') | list)
+           + (_lanes | map('extract', _lane_dropins) | flatten) }}
+
+    - name: Reload systemd so the removals take
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Restart the remaining precis-worker so it drops the removed env
+      when: "'compute' in _lanes"
+      ansible.builtin.systemd:
+        name: precis-worker.service
+        state: restarted
+
+    - name: Clear failed-unit residue
+      ansible.builtin.command: systemctl reset-failed
+      changed_when: false
+
+    - name: Confirm the retired lane units are gone
+      ansible.builtin.command: systemctl list-unit-files --no-legend {{ _lane_units[item] }}.service
+      loop: "{{ _lanes }}"
+      register: _retire_left
+      changed_when: false
+      failed_when: (_retire_left.stdout | trim | length) > 0

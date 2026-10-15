@@ -9,6 +9,9 @@
     - data
     - inference
     - serving
+    # compute hosts outside `serving` (a GB10 that only runs science lanes)
+    # need the same agent_rw DSN for their heartbeat + compute lane.
+    - compute
   become: true
   roles:
     - pgpass

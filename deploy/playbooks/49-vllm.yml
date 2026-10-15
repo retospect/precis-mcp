@@ -8,6 +8,11 @@
 - name: Run vLLM on the dedicated serving host
   hosts: vllm_serving
   become: false
+  pre_tasks:
+    - name: "host-lanes: this host's lanes fit its memory (roles/hardening budget)"
+      ansible.builtin.import_role:
+        name: hardening
+        tasks_from: memory_budget
   roles:
     - vllm
   tags: [vllm]

@@ -1,0 +1,84 @@
+{#- Per-host memory plan + budget (host-lanes, Reto 2026-10-15). ONE source for
+    both the memory-guard drop-ins (tasks/main.yml) and the budget assert
+    (tasks/memory_budget.yml); tests/test_deploy_memory_budget.py renders this
+    same file for every lane-group combination. Renders JSON:
+      units:      effective {name, lane, placed, memory_high, memory_max,
+                  memory_swap_max} for every precis_worker_memory_units entry
+      items:      [[label, MiB], ...] — what counts against the host
+      total_mib / limit_mib, uncapped (placed units with no MemoryMax),
+      exclusive (violated host_lane_exclusive_groups pairs)
+    Sizes: systemd/docker strings (512M, 4G, 40g, 1T); "" / infinity = none. -#}
+{%- macro mib(s) -%}
+{%- set t = (s | string | trim | lower) -%}
+{%- if t in ['', 'infinity', 'none'] -%}0
+{%- elif t[-1] in ['k', 'm', 'g', 't'] -%}
+{{- ((t[:-1] | float) * {'k': 1 / 1024, 'm': 1, 'g': 1024, 't': 1048576}[t[-1]]) | round | int -}}
+{%- else -%}{{- ((t | float) / 1048576) | round | int -}}
+{%- endif -%}
+{%- endmacro -%}
+{%- set ns = namespace(units=[], items=[], uncapped=[], exclusive=[]) -%}
+{%- set overrides = precis_worker_memory_overrides | default({}) -%}
+{%- for wunit in precis_worker_memory_units -%}
+{%-   set uname = wunit | regex_replace('[.]service$', '') -%}
+{%-   set ns.lane = none -%}
+{%-   for lane in precis_lane_memory -%}
+{%-     if ns.lane is none and lane.unit == uname
+          and (group_names | intersect(lane.groups) | length > 0)
+          and (group_names | intersect(lane.not_groups | default([])) | length == 0) -%}
+{%-       set ns.lane = lane -%}
+{%-     endif -%}
+{%-   endfor -%}
+{%-   set ov = overrides[wunit] | default(overrides[uname] | default({})) -%}
+{%-   set base = ns.lane if ns.lane is not none else {} -%}
+{%-   set cfg = {
+        'name': uname ~ '.service',
+        'lane': (ns.lane.lane if ns.lane is not none else ''),
+        'placed': ns.lane is not none,
+        'memory_high': ov.memory_high | default(base.memory_high | default(precis_worker_memory_high | default(''))),
+        'memory_max': ov.memory_max | default(base.memory_max | default(precis_worker_memory_max | default(''))),
+        'memory_swap_max': ov.memory_swap_max | default(base.memory_swap_max | default(precis_worker_memory_swap_max | default(''))),
+      } -%}
+{%-   set ns.units = ns.units + [cfg] -%}
+{%-   if ns.lane is not none -%}
+{%-     if (mib(cfg.memory_max) | int) == 0 -%}
+{%-       set ns.uncapped = ns.uncapped + [cfg.name] -%}
+{%-     endif -%}
+{%-     set ns.items = ns.items + [['unit ' ~ cfg.name, mib(cfg.memory_max) | int]] -%}
+{%-     if ns.lane.container_reserve | default('') | string | length > 0 -%}
+{%-       set ns.items = ns.items + [['containers ' ~ ns.lane.lane, mib(ns.lane.container_reserve) | int]] -%}
+{%-     endif -%}
+{%-   endif -%}
+{%- endfor -%}
+{%- for unit_cfg in host_memory_guard_units | default([]) -%}
+{%-   set ns.items = ns.items + [['unit ' ~ unit_cfg.name, mib(unit_cfg.memory_max | default('')) | int]] -%}
+{%- endfor -%}
+{%- set ns.llm = 0 -%}
+{%- set ns.llm_label = '' -%}
+{%- for llm in host_llm_lanes | default([]) -%}
+{%-   if llm.group in group_names -%}
+{%-     set share = ((mib(host_memory_total) | int) * (llm.fraction | float)) | round | int -%}
+{%-     if share > ns.llm -%}
+{%-       set ns.llm = share -%}
+{%-       set ns.llm_label = 'llm ' ~ llm.group ~ ' @' ~ llm.fraction -%}
+{%-     endif -%}
+{%-   endif -%}
+{%- endfor -%}
+{%- if ns.llm > 0 -%}
+{%-   set ns.items = ns.items + [[ns.llm_label, ns.llm]] -%}
+{%- endif -%}
+{%- set ns.items = ns.items + [['os reserve', mib(host_memory_os_reserve) | int]] -%}
+{%- if (mib(host_memory_extra_reserve | default('')) | int) > 0 -%}
+{%-   set ns.items = ns.items + [['extra reserve', mib(host_memory_extra_reserve) | int]] -%}
+{%- endif -%}
+{%- for pair in host_lane_exclusive_groups | default([]) -%}
+{%-   if group_names | intersect(pair) | length == pair | length -%}
+{%-     set ns.exclusive = ns.exclusive + [pair | join('+')] -%}
+{%-   endif -%}
+{%- endfor -%}
+{%- set ns.total = 0 -%}
+{%- for item in ns.items -%}
+{%-   set ns.total = ns.total + item[1] -%}
+{%- endfor -%}
+{{ {'units': ns.units, 'items': ns.items, 'total_mib': ns.total,
+    'limit_mib': mib(host_memory_total) | int, 'uncapped': ns.uncapped,
+    'exclusive': ns.exclusive} | tojson }}

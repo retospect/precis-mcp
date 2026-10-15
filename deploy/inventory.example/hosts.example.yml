@@ -95,6 +95,19 @@ all:
     #     node-serve-a:
     #     node-serve-b:
 
+    # GB10 lane layout (host-lanes): an LLM host is in vllm_serving (or
+    # sglang_serving) and never in compute; science hosts are in compute
+    # (20c gives them the heartbeat worker + venv, 43 the job_ssh_node lane).
+    # roles/hardening sums each host's lane caps + LLM share + OS reserve and
+    # fails the play past host_memory_total (tests/test_deploy_memory_budget.py).
+    # vllm_serving:
+    #   hosts:
+    #     node-serve-a:
+    # compute:
+    #   hosts:
+    #     node-serve-b:
+    #     node-gpu:
+
     # ── Capability-bearing groups (membership is the placement knob) ────────
     llamacpp_hosts:
       hosts:
