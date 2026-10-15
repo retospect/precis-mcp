@@ -84,11 +84,13 @@ provider key.
   balance check and the web key probe (low volume, outside the works quota).
   Unpaywall wired on its daily lane: `fetch_oa._query_unpaywall` calls
   `require("unpaywall")`; a refusal records `rate_limited` with
-  `provider: unpaywall, limiter: shared` and sends no request.
-- **Follow-on, in order:** arXiv (rate), Crossref (rate, last). Derive
-  limiter keys from the `uses_external=(…)` tuples already declared per pass
-  in `workers/registry.py`. arxiv/crossref stay dormant config rows until
-  wired.
+  `provider: unpaywall, limiter: shared` and sends no request. arXiv wired
+  on its rate lane: `_try_arxiv` and the arXiv HTML/source markup legs
+  (`_MarkupLeg.limiter`) call `require("arxiv")`; a refusal records
+  `rate_limited` and skips the download.
+- **Follow-on:** Crossref (rate, last). Derive limiter keys from the
+  `uses_external=(…)` tuples already declared per pass in
+  `workers/registry.py`. crossref stays a dormant config row until wired.
 
 ## Reference assets
 

@@ -55,8 +55,10 @@ and the three OpenAlex helpers in ``precis.workers.fetch_oa`` call
 request is skipped instead of fired; a caller that ignored ``False`` would
 defeat the daily cap. ``unpaywall`` (100k/day quota lane) —
 ``precis.workers.fetch_oa._query_unpaywall`` calls :func:`require` the same
-way. ``arxiv`` and ``crossref`` are dormant config rows; nothing calls the
-limiter for them yet.
+way. ``arxiv`` (rate lane, ~1 request per 3s) — the arXiv PDF leg
+(``fetch_oa._try_arxiv``) and the arXiv HTML/source markup legs call
+:func:`require`; a refusal records ``rate_limited`` and skips the download.
+``crossref`` is a dormant config row; nothing calls the limiter for it yet.
 """
 
 from __future__ import annotations

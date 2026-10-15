@@ -867,6 +867,24 @@ class TestTryArxiv:
         assert seen_urls == ["https://arxiv.org/pdf/2401.12345.pdf"]
         assert out.payload["license"] == "arxiv"
 
+    def test_shared_limiter_refusal_skips_download(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(fetch_oa, "require_rate_limit", _refuse)
+        monkeypatch.setattr(
+            fetch_oa,
+            "_download_pdf",
+            lambda url, target: pytest.fail("download fired despite a refusal"),
+        )
+        out = _try_arxiv(_stub(arxiv="2401.12345"), inbox_dir=tmp_path)
+        assert out is not None
+        assert out.event == "rate_limited"
+        assert out.payload == {
+            "arxiv": "2401.12345",
+            "provider": "arxiv",
+            "limiter": "shared",
+        }
+
 
 class TestTryS2:
     def test_priority_doi_over_arxiv(
@@ -1269,6 +1287,42 @@ class TestRunMarkupCascade:
             store, _stub(ref_id=1, doi="10.1016/j.x.2025.1"), tmp_path, "KEY"
         )
         assert landed is None
+
+    def test_arxiv_legs_record_shared_refusal_without_download(
+        self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PRECIS_FETCH_MARKUP", "1")
+        asked: list[str] = []
+
+        def _refuse_once(provider: str, **_: Any) -> None:
+            asked.append(provider)
+            raise RateLimited(provider)
+
+        monkeypatch.setattr(fetch_oa, "require_rate_limit", _refuse_once)
+        monkeypatch.setattr(
+            fetch_oa,
+            "_download_markup",
+            lambda *a, **k: pytest.fail("download fired despite a refusal"),
+        )
+        events: list[tuple[str, str, dict[str, Any]]] = []
+        monkeypatch.setattr(
+            store,
+            "append_event",
+            lambda ref_id, *, source, event, payload, duration_ms: events.append(
+                (source, event, payload)
+            ),
+        )
+        landed = fetch_oa._run_markup_cascade(
+            store, _stub(ref_id=1, doi=None, arxiv="2401.12345"), tmp_path, ""
+        )
+        assert landed is None
+        assert [(src, ev) for src, ev, _ in events] == [
+            (fetch_oa._SOURCE_ARXIV_HTML, "rate_limited"),
+            (fetch_oa._SOURCE_ARXIV_SOURCE, "rate_limited"),
+        ]
+        assert all(p["provider"] == "arxiv" for _, _, p in events)
+        # The second arXiv leg reuses the refusal instead of waiting again.
+        assert asked == ["arxiv"]
 
     def test_elsevier_landed_writes_sidecar_and_skips_other_legs(
         self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

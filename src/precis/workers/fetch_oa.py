@@ -1427,8 +1427,9 @@ def _try_arxiv(
 
     arXiv hosts every preprint as a PDF at a deterministic URL:
     ``https://arxiv.org/pdf/<id>.pdf`` (also accepts versioned ids
-    like ``2401.12345v2``). No API key, no metadata round-trip,
-    no rate-limit issues for occasional fetches.
+    like ``2401.12345v2``). No API key, no metadata round-trip. The
+    shared ``arxiv`` limiter paces the download (~1 request per 3s
+    cluster-wide); a refusal returns ``rate_limited`` without fetching.
 
     Returns ``None`` when the stub has no arXiv id (cascade falls
     through). When the id is present, attempts download and writes
@@ -1447,6 +1448,14 @@ def _try_arxiv(
             duration_ms=_ms(t0),
         )
 
+    try:
+        require_rate_limit("arxiv")
+    except RateLimited:
+        return FetchOutcome(
+            event="rate_limited",
+            payload={"arxiv": arxiv_id, "provider": "arxiv", "limiter": "shared"},
+            duration_ms=_ms(t0),
+        )
     url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
     filename = _stub_filename(stub) + ".pdf"
     target = inbox_dir / filename
@@ -2283,6 +2292,8 @@ class _MarkupLeg:
     suffix: str
     #: Returns the fetch URL for ``stub``, or ``None`` to skip this leg.
     url_for: Callable[[StubRef], str | None]
+    #: Shared rate-limiter key the download must clear, or ``None``.
+    limiter: str | None = None
 
 
 def _europepmc_jats_url(stub: StubRef) -> str | None:
@@ -2322,8 +2333,12 @@ def _arxiv_source_url(stub: StubRef) -> str | None:
 #: (flatten-and-chunk fallback).
 _MARKUP_LEGS: tuple[_MarkupLeg, ...] = (
     _MarkupLeg(_SOURCE_EUROPEPMC_JATS, "jats", ".xml", _europepmc_jats_url),
-    _MarkupLeg(_SOURCE_ARXIV_HTML, "arxiv_html", ".html", _arxiv_html_url),
-    _MarkupLeg(_SOURCE_ARXIV_SOURCE, "latex", ".tar.gz", _arxiv_source_url),
+    _MarkupLeg(
+        _SOURCE_ARXIV_HTML, "arxiv_html", ".html", _arxiv_html_url, limiter="arxiv"
+    ),
+    _MarkupLeg(
+        _SOURCE_ARXIV_SOURCE, "latex", ".tar.gz", _arxiv_source_url, limiter="arxiv"
+    ),
 )
 
 
@@ -2429,6 +2444,9 @@ def _run_markup_cascade(
         stub.doi,
         stub.arxiv,
     )
+    # Limiter keys already refused this stub: a second leg on the same key
+    # would only sit out another bounded wait to be refused again.
+    refused: set[str] = set()
     for leg in _MARKUP_LEGS:
         t0 = time.perf_counter()
         try:
@@ -2444,6 +2462,21 @@ def _run_markup_cascade(
             continue
         if url is None:
             continue  # no identifier for this leg — silent skip
+        if leg.limiter is not None:
+            try:
+                if leg.limiter in refused:
+                    raise RateLimited(leg.limiter)
+                require_rate_limit(leg.limiter)
+            except RateLimited:
+                refused.add(leg.limiter)
+                store.append_event(
+                    stub.ref_id,
+                    source=leg.source,
+                    event="rate_limited",
+                    payload={"url": url, "provider": leg.limiter, "limiter": "shared"},
+                    duration_ms=_ms(t0),
+                )
+                continue
         final_path = inbox_dir / (_stub_filename(stub) + leg.suffix)
         staged_path = staging_dir / final_path.name
         try:
