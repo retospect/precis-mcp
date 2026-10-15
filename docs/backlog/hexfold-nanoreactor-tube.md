@@ -50,6 +50,13 @@ Still needed from hexfold (ranked):
   this host), reporting strain per seam and junction; a 7k-atom preview
   build relaxes in seconds under stick but a GFN2-xTB pass is hours, so
   this belongs to a dedicated compute slice, not a generation op.
+  The strain read is in place: `tunnel_strain` (in
+  `precis_se.atomic.generators.tunnel`) takes coordinates plus the
+  junction/seam bookkeeping only and emits `junction.strain` per mouth
+  and `seam.strain` per rail seam (incident bond lengths, 120° angle
+  deviation, pyramidalisation), so a relaxed geometry can be re-scored
+  without the stick seed. Left: run the xtb/MLIP relax on the compute
+  group and wire `tunnel_strain` onto the relaxed atoms.
 
 test: a spec with one tube, two sheets, three inner rails and two pores
 builds, checks clean, and its site list round-trips to (z, θ) within

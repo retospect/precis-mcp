@@ -167,7 +167,8 @@ The feature takes `name`, `type`, `sheet` only; `sheet` is
 the mouth polygon plus margin. One tethered stick pass: both sheets
 plane-tethered, tube and junctions free. Findings: `opening.defects`
 (pairs + defect census per mouth), `junction.strain` (seam-bond and
-face-angle residuals), `termination.covered` / `geom.contacts` gates.
+face-angle residuals), `seam.strain` (rail tubes: per-seam
+bond, angle and pyramidalisation residuals), `termination.covered` / `geom.contacts` gates.
 `topology["sites"]` labels junction atoms `fused`/`defect`/`unbonded`
 and rail lumen/seam sites with (z, θ, normal) plus a `to_stored` frame.
 The grammar special case lives at `hexfold/examples/tunnel_reservoirs.hx`

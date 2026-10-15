@@ -4,12 +4,15 @@ the analytic composite and its defect-ring findings."""
 
 from __future__ import annotations
 
+import functools
 from typing import Any
 
+import numpy as np
 import pytest
 
 from precis_se.atomic.generators import GeneratorError
 from precis_se.atomic.generators.hexfold_scene import build_hexfold_scene
+from precis_se.atomic.generators.tunnel import tunnel_strain
 
 
 def params(
@@ -146,6 +149,88 @@ def test_rail_tunnel_builds() -> None:
     assert findings.count("opening.defects") == 2
     # rail ends cannot mint closed arcs across the seam gaps
     assert "opening.face.open" in findings
+
+
+RAIL = {"rail": [14, 4], "rails": 2, "rows": 3, "pores": []}
+
+
+@functools.cache
+def _rail_inputs() -> tuple[Any, Any, Any]:
+    """One shared rail build for the strain tests (read-only; callers copy)."""
+    from hexfold.tunnel import tunnel_reservoirs
+    from precis_se.atomic.generators.tunnel import _normalize
+
+    tspec, sheet, _name, _k, kind = _normalize(params(tube=RAIL, sheet=[46, 46]))
+    net, tun = tunnel_reservoirs(tspec, sheet, kind=kind)
+    return build_hexfold_scene(params(tube=RAIL, sheet=[46, 46])), net, tun
+
+
+def _by_code(block: Any, code: str) -> list[dict[str, Any]]:
+    return [f for f in block.topology["report"]["findings"] if f["code"] == code]
+
+
+def test_rail_tunnel_emits_seam_strain_per_seam() -> None:
+    block, _net, tun = _rail_inputs()
+    seams = _by_code(block, "seam.strain")
+    assert len(seams) == len(tun.seam_atoms) > 0
+    for k, f in enumerate(seams):
+        assert f["where"] == f"seam{k}"
+        d = dict(f["data"]) if not isinstance(f["data"], dict) else f["data"]
+        assert d["atoms"] == len(tun.seam_atoms[k])
+        for key in ("bonds_min_A", "bonds_max_A", "bonds_mean_A"):
+            assert 1.2 <= d[key] <= 1.7
+        assert np.isfinite(d["angle_dev_max_deg"])
+        assert np.isfinite(d["pyramidal_max_A"])
+
+
+def test_tunnel_strain_reproduces_build_junction_strain() -> None:
+    block, net, tun = _rail_inputs()
+    fresh = tunnel_strain(
+        block.coords,
+        block.elements,
+        block.bonds,
+        tun.junctions,
+        tun.seam_atoms,
+        net.lattice.sigma_A,
+    )
+    stored = {f["where"]: f for f in _by_code(block, "junction.strain")}
+    got = [f for f in fresh if f.code == "junction.strain"]
+    assert len(got) == 2
+    for f in got:
+        want = stored[f.where]
+        assert f.message == want["message"]
+        d = want["data"]
+        assert dict(f.data) == (dict(d) if not isinstance(d, dict) else d)
+
+
+def test_seam_strain_rises_when_a_seam_atom_is_displaced() -> None:
+    block, net, tun = _rail_inputs()
+
+    def read(coords: Any) -> list[Any]:
+        return [
+            dict(f.data)
+            for f in tunnel_strain(
+                coords,
+                block.elements,
+                block.bonds,
+                tun.junctions,
+                tun.seam_atoms,
+                net.lattice.sigma_A,
+            )
+            if f.code == "seam.strain"
+        ]
+
+    base = read(block.coords)[0]
+    raised = False
+    for atom in tun.seam_atoms[0]:
+        moved = np.array(block.coords, dtype=float)
+        moved[atom, 0] += 0.3
+        after = read(moved)[0]
+        raised |= (
+            after["angle_dev_max_deg"] > base["angle_dev_max_deg"]
+            or after["pyramidal_max_A"] > base["pyramidal_max_A"]
+        )
+    assert raised
 
 
 @pytest.mark.parametrize(

@@ -32,6 +32,7 @@ Analytic seed plus a tethered preview relax: no stability claim.
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable, Sequence
 from typing import Any
 
 import numpy as np
@@ -40,7 +41,7 @@ from hexfold.build import Net
 from hexfold.check import Relaxed, geometry_findings
 from hexfold.report import Finding, Report, Severity
 from hexfold.stick import angle_springs, stick_relax_pinned
-from hexfold.tunnel import Tunnel, tunnel_reservoirs
+from hexfold.tunnel import Junction, Tunnel, tunnel_reservoirs
 from precis_se.atomic.generators._types import GeneratedBlock, GeneratorError
 from precis_se.atomic.generators.hexfold_spec import _block_from_net, terminate_mode
 
@@ -401,12 +402,147 @@ def build_tunnel_reservoirs(params: dict[str, Any]) -> GeneratedBlock:
     return block
 
 
+def tunnel_strain(
+    coords: np.ndarray,
+    elements: Sequence[str] | np.ndarray,
+    bonds: Iterable[tuple[int, int, Any, Any]],
+    junctions: Sequence[Junction],
+    seam_atoms: Sequence[Sequence[int]],
+    sigma: float,
+) -> list[Finding]:
+    """Strain read on any coordinate set: one ``junction.strain`` INFO per
+    junction (seam-bond and zone-bond lengths, worst face-angle deviation,
+    degree range) plus one ``seam.strain`` INFO per rail seam chain in
+    ``seam_atoms`` (lengths of the C-C bonds incident to the chain, worst
+    C-C-C angle deviation from 120 deg, worst pyramidalisation at degree-3 seam atoms; ``None`` where a chain
+    has no incident C-C bond or no degree-3 atom).
+
+    Pure over its arguments -- it needs neither the Net nor the stick seed,
+    so it is the read to re-run on relaxed coordinates (stick now; the
+    xtb/MLIP relax of H3 runs on the compute group).  ``bonds`` are
+    ``GeneratedBlock.bonds`` tuples ``(i, j, order, kind)``; ``coords``,
+    ``elements`` and ordinals share the stored-block indexing.
+    """
+    xyz = np.asarray(coords, dtype=float)
+    is_c = np.asarray(elements) == "C"
+    blist = list(bonds)
+    cb: list[set[int]] = [set() for _ in range(len(xyz))]
+    for i, j, _o, _k in blist:
+        if is_c[i] and is_c[j]:
+            cb[i].add(j)
+            cb[j].add(i)
+    out: list[Finding] = []
+    for tag, jun in zip(("low", "high"), junctions, strict=False):
+        jset = set(jun.atoms)
+        degs = [len(cb[a]) for a in jun.atoms]
+        seam_bl = [float(np.linalg.norm(xyz[h] - xyz[r])) for h, r in jun.fused]
+        zone_bl = [
+            float(np.linalg.norm(xyz[i] - xyz[j]))
+            for i, j, _o, _k in blist
+            if (i in jset or j in jset) and is_c[i] and is_c[j]
+        ]
+        # max interior-angle deviation inside the minted faces
+        worst_angle = 0.0
+        for f in jun.faces:
+            n = len(f)
+            ideal = (n - 2) * 180.0 / n
+            for k in range(n):
+                a, v, b = f[k - 1], f[k], f[(k + 1) % n]
+                va = xyz[a] - xyz[v]
+                vb = xyz[b] - xyz[v]
+                na, nb = np.linalg.norm(va), np.linalg.norm(vb)
+                if na < 1e-9 or nb < 1e-9:
+                    continue
+                ang = math.degrees(
+                    math.acos(float(np.clip(va @ vb / (na * nb), -1, 1)))
+                )
+                worst_angle = max(worst_angle, abs(ang - ideal))
+        out.append(
+            Finding(
+                "junction.strain",
+                Severity.INFO,
+                f"{tag} junction: {len(jun.fused)} seam bonds "
+                f"{min(seam_bl):.2f}-{max(seam_bl):.2f} A (ideal {sigma:.2f}); "
+                f"zone bonds {min(zone_bl):.2f}-{max(zone_bl):.2f} A; "
+                f"max face-angle deviation {worst_angle:.1f} deg; "
+                f"degree min/max {min(degs)}/{max(degs)}",
+                where=tag,
+                data=(
+                    ("seam_bonds_min_A", min(seam_bl)),
+                    ("seam_bonds_max_A", max(seam_bl)),
+                    ("seam_bonds_mean_A", float(np.mean(seam_bl))),
+                    ("zone_bonds_min_A", min(zone_bl)),
+                    ("zone_bonds_max_A", max(zone_bl)),
+                    ("angle_dev_max_deg", worst_angle),
+                    ("degree_min", min(degs)),
+                    ("degree_max", max(degs)),
+                ),
+            )
+        )
+    for kk, seam in enumerate(seam_atoms):
+        # rail seam atoms are every-other atoms of the seam line (second
+        # neighbours, ~2.5 A apart), so consecutive chain atoms are never
+        # bonded: read the C-C bonds incident to the chain instead
+        sset = set(seam)
+        lens = [
+            float(np.linalg.norm(xyz[i] - xyz[j]))
+            for i, j, _o, _k in blist
+            if (i in sset or j in sset) and is_c[i] and is_c[j]
+        ]
+        ang_dev: list[float] = []
+        pyr: list[float] = []
+        for a in seam:
+            if len(cb[a]) != 3:
+                continue
+            nb = sorted(cb[a])
+            v = xyz[nb] - xyz[a]
+            vl = np.linalg.norm(v, axis=1)
+            if (vl < 1e-9).any():
+                continue
+            u = v / vl[:, None]
+            ang = np.degrees(np.arccos(np.clip(u @ u.T, -1, 1)))
+            ang_dev.append(float(np.abs(ang[np.triu_indices(3, 1)] - 120.0).max()))
+            pn = np.cross(xyz[nb[1]] - xyz[nb[0]], xyz[nb[2]] - xyz[nb[0]])
+            nn = np.linalg.norm(pn)
+            if nn > 1e-9:
+                pyr.append(float(abs((xyz[a] - xyz[nb[0]]) @ pn) / nn))
+        bmin = min(lens) if lens else None
+        bmax = max(lens) if lens else None
+        bmean = float(np.mean(lens)) if lens else None
+        adev = max(ang_dev) if ang_dev else None
+        pmax = max(pyr) if pyr else None
+
+        def fmt(x: float | None, spec: str) -> str:
+            return "n/a" if x is None else format(x, spec)
+
+        out.append(
+            Finding(
+                "seam.strain",
+                Severity.INFO,
+                f"seam {kk}: {len(seam)} atoms, bonds "
+                f"{fmt(bmin, '.2f')}-{fmt(bmax, '.2f')} A (ideal {sigma:.2f}); "
+                f"max angle deviation {fmt(adev, '.1f')} deg; "
+                f"max pyramidalisation {fmt(pmax, '.2f')} A",
+                where=f"seam{kk}",
+                data=(
+                    ("bonds_min_A", bmin),
+                    ("bonds_max_A", bmax),
+                    ("bonds_mean_A", bmean),
+                    ("angle_dev_max_deg", adev),
+                    ("pyramidal_max_A", pmax),
+                    ("atoms", len(seam)),
+                ),
+            )
+        )
+    return out
+
+
 def _junction_checks(
     block: GeneratedBlock, net: Net, tun: Tunnel, termination: str
 ) -> list[Finding]:
     """Slice-4 validation on the *stored* block (H caps included):
     no dangling carbon without a cap, no contact under 1.2 A, coordination
-    inside each junction, and a per-junction strain read."""
+    inside each junction, and a per-junction strain read (see :func:`tunnel_strain`)."""
     out: list[Finding] = []
     coords = np.asarray(block.coords)
     elements = np.asarray(block.elements)
@@ -475,10 +611,22 @@ def _junction_checks(
             )
         )
     # 3. per-junction coordination + strain on stored coords
-    sigma = net.lattice.sigma_A
+    strain = tunnel_strain(
+        coords,
+        elements,
+        block.bonds,
+        tun.junctions,
+        tun.seam_atoms if tun.kind == "rail" else (),
+        net.lattice.sigma_A,
+    )
+    strain_by_tag: dict[str, list[Finding]] = {}
+    seam_strain: list[Finding] = []
+    for f in strain:
+        if f.code == "junction.strain":
+            strain_by_tag.setdefault(f.where, []).append(f)
+        else:
+            seam_strain.append(f)
     for tag, jun in zip(("low", "high"), tun.junctions, strict=True):
-        jset = set(jun.atoms)
-        degs = [len(cbonds[a]) for a in jun.atoms]
         over = [a for a in jun.atoms if len(cbonds[a]) > 3]
         under = [a for a in jun.atoms if len(cbonds[a]) < 2]
         if over or under:
@@ -492,50 +640,7 @@ def _junction_checks(
                     data=(("over", sorted(over)), ("under", sorted(under))),
                 )
             )
-        seam_bl = [float(np.linalg.norm(coords[h] - coords[r])) for h, r in jun.fused]
-        zone_bl = [
-            float(np.linalg.norm(coords[i] - coords[j]))
-            for i, j, _o, _k in block.bonds
-            if (i in jset or j in jset) and is_c[i] and is_c[j]
-        ]
-        # max interior-angle deviation inside the minted faces
-        worst_angle = 0.0
-        for f in jun.faces:
-            n = len(f)
-            ideal = (n - 2) * 180.0 / n
-            for k in range(n):
-                a, v, b = f[k - 1], f[k], f[(k + 1) % n]
-                va = coords[a] - coords[v]
-                vb = coords[b] - coords[v]
-                na, nb = np.linalg.norm(va), np.linalg.norm(vb)
-                if na < 1e-9 or nb < 1e-9:
-                    continue
-                ang = math.degrees(
-                    math.acos(float(np.clip(va @ vb / (na * nb), -1, 1)))
-                )
-                worst_angle = max(worst_angle, abs(ang - ideal))
-        out.append(
-            Finding(
-                "junction.strain",
-                Severity.INFO,
-                f"{tag} junction: {len(jun.fused)} seam bonds "
-                f"{min(seam_bl):.2f}-{max(seam_bl):.2f} A (ideal {sigma:.2f}); "
-                f"zone bonds {min(zone_bl):.2f}-{max(zone_bl):.2f} A; "
-                f"max face-angle deviation {worst_angle:.1f} deg; "
-                f"degree min/max {min(degs)}/{max(degs)}",
-                where=tag,
-                data=(
-                    ("seam_bonds_min_A", min(seam_bl)),
-                    ("seam_bonds_max_A", max(seam_bl)),
-                    ("seam_bonds_mean_A", float(np.mean(seam_bl))),
-                    ("zone_bonds_min_A", min(zone_bl)),
-                    ("zone_bonds_max_A", max(zone_bl)),
-                    ("angle_dev_max_deg", worst_angle),
-                    ("degree_min", min(degs)),
-                    ("degree_max", max(degs)),
-                ),
-            )
-        )
+        out.extend(strain_by_tag.get(tag, ()))
         # relax research (memory me482127): an equal-120 sp2 seam dimerises
         # into sp3 under GFN2-xTB -- flag a run of flat equal-120 degree-3
         # junction atoms so the pattern is never silently emitted
@@ -585,6 +690,7 @@ def _junction_checks(
                     data=(("runs", runs), ("flat120_atoms", len(flat120))),
                 )
             )
+    out.extend(seam_strain)
     # rail seams: each seam chain must end terminated — fused into the
     # junction or carrying a cap; an open end is never emitted
     if tun.kind == "rail":
