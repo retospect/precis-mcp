@@ -133,21 +133,19 @@ nightly — the diff-cover verdict is still open.
    RAM; Tier 2 reaping deferred.
 5. **backlog/per-agent-green-is-not-integrated-green.md** — six subagents
    each green, the integrated run red; a workflow gap, not a defect.
-6. **backlog/pathway-plugin-ci-image.md** — the pathway plugin is untested
-   until the dev image carries autocatpath; couples to plugin-split.
-7. **backlog/ops-gate-hygiene.md** — service_config rollback gates need
+6. **backlog/ops-gate-hygiene.md** — service_config rollback gates need
    expiry and review; a housekeeping grab-bag.
-8. **backlog/worktree-path-guard-false-positives.md** — the brief tells
+7. **backlog/worktree-path-guard-false-positives.md** — the brief tells
    agents to read other worktrees; the harness refuses.
-9. **backlog/ruff-is-unpinned-across-worktrees.md** — a `ruff>=0.11` floor
+8. **backlog/ruff-is-unpinned-across-worktrees.md** — a `ruff>=0.11` floor
    lets trees format differently, so qland lint drifts.
-10. **backlog/windows-ci-residuals.md** — Windows timing-flake watch after
+9. **backlog/windows-ci-residuals.md** — Windows timing-flake watch after
     the skipif pass.
-11. **backlog/piped-exit-guard-tuning.md** — guard-piped-exit-code
+10. **backlog/piped-exit-guard-tuning.md** — guard-piped-exit-code
     false-positive rate vs value; a decision, not a defect.
-12. **backlog/token-review-hook-gaps.md** — the bash-reflex nudge misses
+11. **backlog/token-review-hook-gaps.md** — the bash-reflex nudge misses
     real traffic; compact-thrash re-reads.
-13. **backlog/fleet-coordination-via-precis.md** — peer messages and
+12. **backlog/fleet-coordination-via-precis.md** — peer messages and
     wakeups cost a full ~250k-context turn each; consider moving the
     status relay into precis.
 
@@ -159,10 +157,9 @@ nightly — the diff-cover verdict is still open.
 
 ## Seam
 
-`plugin-split` owns the plugin-boundary and image work that
-`pathway-plugin-ci-image` waits on. `monitors-that-go-quiet` owns signals
-that lie; this thread owns the gate, the reaper and the qland drift guard
-that feeds that thread's "is main green" answer. `deploy-fleet-ops` owns the
+`monitors-that-go-quiet` owns signals that lie; this thread owns the gate,
+the reaper and the qland drift guard that feeds that thread's "is main
+green" answer. `deploy-fleet-ops` owns the
 rest of `deploy-async-task-controller-filenotfounderror.md` (whether a
 vanished play file should abort a running play; the apt stall).
 

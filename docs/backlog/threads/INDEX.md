@@ -214,8 +214,7 @@ plan-tick-context-cut; agent execution lanes, budget and crash recovery) ·
 platform items; code-debt, db-schema and docs-audit items stay unthreaded.
 
 Seams:
-- `ship-gate-ci` ↔ `plugin-split` / `monitors-that-go-quiet` —
-  `backlog/pathway-plugin-ci-image.md` waits on plugin-split's image work;
+- `ship-gate-ci` ↔ `monitors-that-go-quiet` —
   monitors owns signals that lie, ship-gate-ci owns the gate and reaper that
   produce them.
 - `deploy-fleet-ops` ↔ `session-mcp-shared-server` — both touch
