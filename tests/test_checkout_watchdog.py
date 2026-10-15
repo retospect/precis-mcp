@@ -18,12 +18,19 @@ here:
 from __future__ import annotations
 
 import json
+import sys
 import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+
+if sys.platform == "win32":
+    pytest.skip(
+        "POSIX-only: precis.install_watchdog reads signal.SIGHUP at import",
+        allow_module_level=True,
+    )
 
 from precis import inflight, install_watchdog, serve_ledger
 from precis.install_watchdog import (

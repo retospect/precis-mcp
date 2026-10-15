@@ -3,3 +3,9 @@
 # conversion does not inflate every line by a byte and fail the cap there
 # for a file that passes everywhere else.
 src/precis/data/skills/*.md text eol=lf
+
+# .epru fixtures are read with read_bytes() into a zip whose records split
+# on "\n" (precis.pcb.epro.split_documents). CRLF conversion on a Windows
+# checkout leaves a "\r" after each record's trailing "|", so the body
+# parse fails. Pin LF for the same reason as the skills above.
+tests/fixtures/**/*.epru text eol=lf

@@ -1,5 +1,7 @@
 """Per-skill eval harness — does an agent *given* a skill complete the task
-the skill teaches? (``docs/backlog/skill-eval-harness.md``, Reto 2026-09-09.)
+the skill teaches? (convention: ``docs/conventions/skill-evals.md``; the
+harness spec is shipped — the open remainder is
+``docs/backlog/skill-eval-executed-runner.md``.)
 
 Skills are the product's runtime docs and ship on prose review alone; every
 other feedback loop is post-hoc. This harness closes the loop pre-ship: an
@@ -30,8 +32,9 @@ Shape, by module:
   builds the :class:`Report` (JSON file + short table).
 
 Why a dry run and not an executed one: executing against the dev DB needs
-``precis serve`` plus MCP wiring per run, which is the corpus-growth
-remainder in the backlog file; the dry run already catches the failure the
+``precis serve`` plus MCP wiring per run — the open remainder, spec'd in
+``docs/backlog/skill-eval-executed-runner.md``; the dry run already
+catches the failure the
 spec names (a skill misleading on one of its ``answers:`` questions sends
 the planned calls to the wrong verb/kind). Advisory like
 ``scripts/mutate-diff``: ``scripts/skill-eval`` is never a ``scripts/ship``

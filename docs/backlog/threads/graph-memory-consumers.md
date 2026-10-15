@@ -192,7 +192,8 @@ how an agent reaches the graph; `fisheye-*` is how it moves within it):
    natural-language `search(kind='python')` returns hits).
 3. **backlog/capability-discovery-on-a-sprawling-surface.md**
 4. **backlog/docs-and-skills-redesign.md**
-5. **backlog/skill-eval-harness.md**
+5. **backlog/skill-eval-executed-runner.md** — the harness + corpus
+   shipped; the open item is the executed (dev-DB) runner.
 6. **backlog/skill-bundled-scripts.md**
 7. **backlog/turn-routing-and-context-dsl.md**
 8. **backlog/context-quality-eval.md** +

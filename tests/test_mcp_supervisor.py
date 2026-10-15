@@ -17,11 +17,14 @@ from typing import Any
 
 import pytest
 
-from precis import mcp_supervisor
+if sys.platform == "win32":
+    pytest.skip(
+        "POSIX-only: process groups and POSIX signals "
+        "(precis.mcp_supervisor reads signal.SIGHUP at import)",
+        allow_module_level=True,
+    )
 
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32", reason="POSIX-only: process groups and POSIX signals"
-)
+from precis import mcp_supervisor
 
 SUPERVISOR = Path(mcp_supervisor.__file__)
 

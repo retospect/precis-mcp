@@ -14,14 +14,18 @@ from typing import Any, cast
 
 import pytest
 
+if sys.platform == "win32":
+    pytest.skip(
+        "POSIX-only: precis.remote.credentials needs fcntl at import",
+        allow_module_level=True,
+    )
+
 from precis.remote import credentials
 from precis.remote.credentials import CredentialRefs, vault_ssh_session
 from precis.remote.ssh import RemoteError, SshProfile, bounded_process
 
 pytestmark = pytest.mark.skipif(
-    sys.platform == "win32"
-    or shutil.which("ssh-keygen") is None
-    or shutil.which("ssh-agent") is None,
+    shutil.which("ssh-keygen") is None or shutil.which("ssh-agent") is None,
     reason="POSIX-only: needs openssh client tools (ssh-keygen, ssh-agent)",
 )
 

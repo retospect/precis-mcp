@@ -31,7 +31,7 @@ The territory is already well-populated — this pass's job is to put
   `capability-discovery-on-a-sprawling-surface`, `vocab-compaction`,
   `token-review-hook-gaps`, `llm-prompt-surface-audit`,
   `mcp-verb-kwarg-parity`, `tick-tool-lists-and-discovery-reflex`,
-  `skill-eval-harness`, `context-quality-eval`.
+  `skill-eval-executed-runner`, `context-quality-eval`.
 
 Hold this as the known set. Every candidate later gets marked known/new
 against it.

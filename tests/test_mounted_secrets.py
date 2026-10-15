@@ -11,10 +11,17 @@ up the prod DSN from ``~/.secrets/pw`` by accident.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
+
+if sys.platform == "win32":
+    pytest.skip(
+        "POSIX-only: precis.mcp_supervisor reads signal.SIGHUP at import",
+        allow_module_level=True,
+    )
 
 from precis import mcp_supervisor
 from precis.config import PrecisConfig

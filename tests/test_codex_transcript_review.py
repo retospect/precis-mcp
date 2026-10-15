@@ -12,6 +12,12 @@ from pathlib import Path
 
 import pytest
 
+if sys.platform == "win32":
+    pytest.skip(
+        "POSIX-only: scripts/fleet-review needs fcntl at import",
+        allow_module_level=True,
+    )
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts/mine-sessions"))
 import codex_source

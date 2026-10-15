@@ -5,11 +5,18 @@ from __future__ import annotations
 import hashlib
 import json
 import posixpath
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 import pytest
+
+if sys.platform == "win32":
+    pytest.skip(
+        "POSIX-only: precis.remote.slurm needs fcntl at import",
+        allow_module_level=True,
+    )
 
 from precis.remote.slurm import Limits, SlurmRunner
 from precis.remote.ssh import CommandResult, RemoteError

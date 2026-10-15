@@ -16,6 +16,12 @@ from pathlib import Path
 
 import pytest
 
+if sys.platform == "win32":
+    pytest.skip(
+        "POSIX-only: precis.install_watchdog reads signal.SIGHUP at import",
+        allow_module_level=True,
+    )
+
 from precis import install_watchdog
 from precis.install_watchdog import (
     CheckoutWatchdog,

@@ -2,8 +2,16 @@
 
 from __future__ import annotations
 
+import sys
+
 import httpx
 import pytest
+
+if sys.platform == "win32":
+    pytest.skip(
+        "POSIX-only: precis.utils.stall_capture needs fcntl at import",
+        allow_module_level=True,
+    )
 
 from precis.utils import stall_capture as sc
 
