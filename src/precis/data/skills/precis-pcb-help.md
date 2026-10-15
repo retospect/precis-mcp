@@ -17,7 +17,7 @@ kinds: [pcb]
 
 # precis-pcb-help — design circuits the LLM can *read*
 
-A `pcb` design is a **netlist + placement graph** (ADR 0042): component
+A `pcb` design is a **netlist + placement graph**: component
 *types* that own pins, *instances* (refdes) placed in 2-D, *nets* that wire
 pins together, and *measures* (design intent). You **author it in batch** and
 **read it back as a graph** — "what's on U1's SCL pin? → which net? → who else
@@ -39,7 +39,8 @@ board; `view='links'` reads them back).
 Related skills: [[precis-pcb-route-help]] (place/route as enqueued jobs — the
 `op=` surface, once the netlist exists), [[precis-pcb-check-help]] (the
 check surface — view='check', phases, finding delta, ERC),
-[[precis-part-select-help]] (pick
+[[precis-pcb-fab-help]] (export views, the JLCPCB fab package/order, the
+availability sweep, the CAD-enclosure bridge), [[precis-part-select-help]] (pick
 real parts), [[precis-net-class-help]] (name + classify nets),
 [[precis-measures-help]] (the "measuring tapes"), [[precis-pcb-ewod-help]]
 (computed-component **generators** — a `generators: [...]` block on `put`
@@ -198,7 +199,8 @@ Field notes:
   declared on the component is **created on the fly**.
 - A connection to an unknown **net** auto-creates the net; an unknown
   **refdes** is an error (declare the component first).
-- Optional `measures` and `features` arrays — see below.
+- Optional `measures` and `features` arrays — measures below; `features`
+  (outline/holes for the enclosure) in [[precis-pcb-fab-help]].
 - Optional `net_classes` — `{name: rules}` per-design router/DRC rules
   (upsert; existing names not in the batch are left alone). `rules` is a
   free-form dict (`clearance_mm`, track width, via drill/annular, permitted
@@ -505,108 +507,13 @@ stamped. Idempotent — a second run is a no-op.
 `args={'autoplace': {...}}` is a **deprecated alias** for `op='place'` (same
 enqueue, same params) — kept for one release, then removed.
 
-## Export & route — `get(view=…)`
+## Export it, order it, drive an enclosure — [[precis-pcb-fab-help]]
 
-Export is the only place the design leaves the graph. Artifacts land under
-`<PRECIS_CORPUS_DIR>/pcb/<slug>/` (override with `args={'dir':'…'}`).
-
-```python
-get(kind="pcb", id="s", view="bom")  # JLCPCB BOM CSV (grouped designators)
-get(
-    kind="pcb", id="s", view="cpl"
-)  # JLCPCB pick-and-place CSV (rotation converted to CCW)
-get(kind="pcb", id="s", view="netlist")  # KiCad s-expr netlist
-get(kind="pcb", id="s", view="dsn")  # Specctra .dsn (the autorouter's input)
-get(
-    kind="pcb", id="s", view="mechanical"
-)  # outline + mounting holes + height-blocks → a cad enclosure (ADR 0041)
-get(
-    kind="pcb", id="s", view="route", args={"max_passes": 3}
-)  # Freerouting place↔route round-trip
-get(kind="pcb", id="s", view="gerber")  # the fab bundle: gerbers + drill, zipped
-```
-
-`view='gerber'` runs DRC first and **leads its response with the verdict**.
-A board with DRC errors still exports, so you can look at it, but the
-response opens with a `DRC FAILED` block naming the error count, the rules
-and the first findings. Do not send that bundle to a fab: fix the board and
-re-export until the first line reads `DRC: 0 errors`.
-
-`view='route'` runs the §9 hand-off: place → `.dsn` → Freerouting → on an
-incomplete route, re-place (more iters) and re-route, bounded. With no router
-installed it **degrades to a `.dsn`-only pass** (open it in EasyEDA/KiCad as a
-manual escape hatch). `bom`/`cpl` warn about unplaced or non-assemblable
-(no-LCSC) parts. An instance that is etched copper rather than a part (a
-footprint whose pads are all `role: 'electrode'` or `'probe'`, such as an
-EWOD electrode array) is left out of both: there is nothing to place or buy.
-
-`view='bom'` also ends its **response** with a `## Consolidation` nudge
-(the written CSV is untouched): same-package parts of one jlcparts class
-differing only in a free parametric (`parts.params` — Resistance,
-Capacitance) get a "one value?" line proposing the house-set or plurality
-member with a one-sentence LLM verdict and its cited inputs; a
-`kept-distinct:<label>:<label>[:<reason>]` tag on the design suppresses a
-pair and prints the reason (pcb component types aren't refs, so the
-link-door `rel='kept-distinct'` is the component kind's form). See
-[[precis-component-help]] for the attribute-role model.
-
-## BOM availability — `view='availability'` (the EOL sweep)
-
-```python
-get(kind="pcb", id="s", view="availability")  # stock/lifecycle per BOM line
-```
-
-One row per component type: `refdes · qty · lcsc · mfr_part · lib · stock ·
-$ea · lifecycle · fetched`. `lib` is `basic`/`ext` (the JLCPCB library
-class; a Basic part sits on the line free, an Extended part costs a
-loading fee).
-`lifecycle` is every signal the catalog row carries — `merged→<C-no>` (the
-part was folded into a successor — strongest EOL tell), `alts`, `no-buy`,
-`idle`, `est`, `dropped-from-dump`, `stock 0` — or `ok`. A line with no
-LCSC number lists as such; a C-number absent from the catalog says `not in
-catalog` (or `absent from jlcpcb.com` when the live check just ran).
-
-Rows whose catalog data is older than ~6h — or missing — get one **bounded**
-live refresh from the jlcpcb.com listing on the way out (≤12 C-numbers per
-call; the head line reports `re-catalogued / absent / failed / skipped`).
-The live listing carries no explicit "EOL" flag, so lifecycle is inferred
-from the signals above + stock. Component `part:`/`part_lcsc:` values take
-a bare `C<n>` in any case or a pasted lcsc.com/jlcpcb.com product URL
-(extracted, never fetched). See [[precis-part-select-help]] for the
-part-kind side.
-
-## Mechanical features — the CAD bridge
-
-Add non-electrical geometry so the board can drive an enclosure:
-
-```python
-put(
-    kind="pcb",
-    id="s",
-    args={
-        "features": [
-            {
-                "ftype": "outline",
-                # corner_radius_mm (optional) rounds every outline corner
-                # (fillet, polygonized); pours/DRC/silk all inherit it.
-                "geom": {"path": [[0, 0], [30, 0], [30, 20], [0, 20]],
-                         "corner_radius_mm": 2.0},
-            },
-            # bare screw hole (unplated; copper must clear it — DRC npth rule)
-            {"ftype": "mounting_hole", "x": 2, "y": 2, "geom": {"diameter": 3.2}},
-            # solder-on nut: plated hole + copper ring on every layer
-            # (rendered, gerber'd, and cleared like a pad; router+pours
-            # avoid both kinds automatically)
-            {"ftype": "mounting_hole", "x": 28, "y": 18,
-             "geom": {"diameter": 5.6, "ring_dia_mm": 8.0, "plated": True,
-                      "style": "solder_nut_m4"}},
-        ]
-    },
-)
-```
-
-`view='mechanical'` emits a JSON profile (outline + holes + component
-height-blocks) a `cad` enclosure references (see [[precis-cad-help]]).
+Export is the only place the design leaves the graph; all of it lives in
+the sibling skill: the export views (`bom`/`cpl`/`netlist`/`dsn`/
+`mechanical`/`route`/`gerber`), `view='fab'` (the JLCPCB order package),
+`op='order'` (dry-run/place), `view='availability'` (the EOL/stock sweep)
+and the `features` array + `view='mechanical'` CAD-enclosure bridge.
 
 ## Read a DRC run as a delta — finding ids
 
@@ -649,23 +556,6 @@ delete(kind="pcb", id="sensor-node")  # soft-retire the whole design (recoverabl
    ([[precis-pcb-route-help]]'s rip-up loop).
 7. **Export & order** — `view='fab'` writes the JLC package (gerber+drill
    zip + BOM + CPL) in one dir; `op='order'` dry-runs/places the JLCPCB
-   order (below); `view='mechanical'` for the enclosure; `view='route'`
-   (Freerouting) stays available as a demoted escape hatch.
-
-## Order at JLCPCB — `view='fab'`, `op='order'`
-
-`view='fab'` (args `{dir}`) writes `{slug}-fab.zip`, `{slug}-bom.csv`,
-`{slug}-cpl.csv` — the zip is the order upload; BOM/CPL attach by hand at
-jlcpcb.com checkout (the order API has no PCBA endpoints).
-
-`put(args={'op':'order'})` builds the JLCPCB order payload — layers/size
-from the board; `qty`, `thickness_mm`, `pcb_param={...}` (JLC's int craft
-codes — surface finish, color), `smt_stencil`, `shipping_address`,
-`shipping_method`, `country`/`postcode`/`city`. `dry_run` defaults true:
-prints the exact `pcb/create` body and attempts the read-only quote.
-Placing it is explicit: `{'op':'order','dry_run':False,
-'confirm':'add-to-cart','shipping_address':{...}}` uploads the zip, quotes
-with the file key, then `pcb/create` — an **unpaid order awaiting your
-checkout** (the API's cart equivalent; there is no pay or submit endpoint
-and this op exposes none). Batch/order id lands in the board's meta as
-`jlc_order`; a repeat needs `reorder=True`.
+   order; `view='mechanical'` for the enclosure; `view='route'`
+   (Freerouting) stays available as a demoted escape hatch. All of step 7:
+   [[precis-pcb-fab-help]].
