@@ -275,8 +275,8 @@ def run_loop(
       pass-dead probe keeps seeing it), and the pass is skipped while
       the detached run is still alive — no piling a second attempt on a
       wedged first. This exists because a ref-pass is arbitrary blocking
-      I/O: the orcid_enrich SSL read that stalled balthazar ~15 min held
-      every cadence on the host (materialize, cron_tick) behind it.
+      I/O: the orcid_enrich SSL read that stalled a worker host ~15 min
+      held every cadence on that host (materialize, cron_tick) behind it.
       Under ``once=True`` deadlines are ignored — a manual one-shot run
       must not outlive its own pass. Job executors stay unbounded by
       choice: abandoning one mid-run strands a claimed job's lease.

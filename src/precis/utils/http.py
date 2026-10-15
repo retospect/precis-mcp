@@ -114,7 +114,7 @@ def request_with_deadline(
 
     The client's own ``timeout`` is *per phase* — a peer that trickles a
     byte inside every read window keeps the call alive indefinitely, which
-    is how an ``orcid_enrich`` SSL read once held balthazar's worker loop
+    is how an ``orcid_enrich`` SSL read once held a worker host's loop
     ~15 min (gr486823). On expiry the client is closed (best-effort socket
     kill — see :mod:`precis.utils.deadline` for why a blocked recv may
     outlive it) and ``httpx.ReadTimeout`` is raised, so call sites
