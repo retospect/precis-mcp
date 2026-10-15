@@ -298,10 +298,12 @@ put(kind='job', parent_id=<structure_ref_id>, link='quest:<quest_id>',
   job per index — several models pool under one `anchor_key` and the
   sweep keeps their model-form band apart). `params.target_node` pins a
   GPU node; `point_U_RHE` / `window_U_RHE` / `pH` frame the sweep.
-- Baseline probe: `jo486842` (mace:medium) and `jo486844` (mace:large)
-  are already queued on prod for the expanded adsorbate set on the clean
-  slab — leave them alone (no retry/cancel/edit); their outcome gates
-  widening this recipe.
+- Baseline probes ride along first: a scan with no `structure_ref` runs
+  the config's own clean label slab (the footing candidate scans pool
+  under). Check for ones still in flight before widening this recipe —
+  `search(kind='job', q='surface_coverage_scan', tags=['STATUS:queued'])`
+  and the `STATUS:running` tag — and leave them alone (no
+  retry/cancel/edit); their outcome gates widening.
 
 ## See the reaction — the interactive web explorer
 

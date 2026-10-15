@@ -877,8 +877,9 @@ def test_family_root_slugs_only_pins_canonical_roots() -> None:
 
     roots = _family_root_slugs(_list_skills())
     assert roots["cad"] == "precis-cad-help"
+    assert roots["job"] == "precis-job-help"  # the compute split's family
     assert roots["mermaid"] == "precis-mermaid-help"  # -help beats the bare slug
-    for word in ("job", "help", "claim", "review", "doi"):
+    for word in ("gripe", "help", "claim", "review", "doi"):
         assert word not in roots, (word, roots.get(word))
 
     # Synthetic shapes: -help preferred, bare precis-<word> next, a
@@ -937,7 +938,7 @@ def test_family_root_pin_is_the_root_only_never_siblings(
     ]
     assert pinned == ["precis-cad-help"], pinned
 
-    out = skill.search(q="job banana orange grape mango kiwi")
+    out = skill.search(q="gripe banana orange grape mango kiwi")
     assert "title match" not in out.body, out.body
 
 
