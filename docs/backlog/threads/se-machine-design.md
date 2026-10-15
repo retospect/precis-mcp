@@ -3,7 +3,7 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** O5 + declared flat faces (Do next 2), then the pcb-se-binding rough box (Do next 6; "rough box yes" is the standing default, Reto 2026-10-12). O2–O4 shipped 2026-10-15 (`min_member=`, default rounding, stall-damped OC moves); print 2 wants a re-run of the bracket with `min_member=0.003` and `max_iter` about 150.
+- **Next:** O5 + declared flat faces (Do next 2), then the pcb-se-binding rough box (Do next 6; "rough box yes" is the standing default, Reto 2026-10-12). O2–O4 shipped 2026-10-15 (`min_member=`, default rounding, stall-damped OC moves); print 2 (a re-run of the bracket with `min_member=0.003` and `max_iter` about 150) is owed after r40 is live.
 - **Blocked by:** Nothing. Reto deprioritised this thread on 2026-10-12; the load-test numbers (solver predicts 0.04 mm at 1 kg, 0.08 mm at 2 kg; needs a dial gauge or a load that visibly moves it) and the first Print files click are still owed, with no date.
 - **Unblocks:** Intent-based machine design with charge, field and optical properties.
 - **Acceptance:** Scaled print files shipped (`?scale=`, `-x<factor>` name, `precis:scale_factor`, `.json` descriptor, checks at printed size); the atom-model floor and `models` list wait on [printable-atomic-models](../printable-atomic-models.md). Preserve the already dogfooded region slice A.
@@ -117,8 +117,8 @@ off that gap until it closes.
      about 1 build, no migration.
    - The house `min_member` figure (null in every fdm row; 3 mm proposed)
      waits on print 2 being handled. Print 2 is a re-run of the bracket
-     with `min_member=0.003`, `max_iter` about 150; it needs cluster
-     compute.
+     with `min_member=0.003`, `max_iter` about 150, owed after r40 is
+     live (the se_simp job needs the deploy that carries engine simp/2).
    Print 1 is the bracket `organic-bracket-1` (job 464356). Printer: Bambu
    Lab X1 Carbon with tree supports; the goal is support-free.
 3. **backlog/flatpack-furniture-generator.md** — builds 1 and 2 shipped
