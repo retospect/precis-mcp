@@ -13,7 +13,10 @@ container stack, never a bare local binary pointed at ad-hoc state:
   `scripts/prod-psql` for that.
 - `scripts/prod-psql` → the live prod DB through pgbouncer, as `agent_rw`;
   `--ro` connects as `agent_ro` inside `BEGIN READ ONLY`, the guard to use
-  for reads. **Never a session-level `SET`/`RESET` through the prod DSN**:
+  for reads. A targeted write (one INSERT, or one UPDATE/DELETE with a
+  WHERE) passes the permission hook; prod-psql runs SQL mentioning
+  UPDATE/DELETE in a transaction and rolls it back (exit 4) when it changed
+  more than `PRECIS_PROD_WRITE_MAX_ROWS` rows (default 100). **Never a session-level `SET`/`RESET` through the prod DSN**:
   pgbouncer pools by transaction, so the setting sticks to a shared server
   connection and every later client inherits it — one
   `SET default_transaction_read_only = on` "read-only guard" broke every

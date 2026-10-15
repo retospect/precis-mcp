@@ -17,6 +17,16 @@
 #   scripts/prod-psql --ro "SELECT ..."               # read-only: agent_ro role,
 #                                                      # wrapped in BEGIN READ ONLY
 #
+# Row cap (.claude/fleet/authority.md, 2026-10-15): a one-shot or piped SQL
+# text without --ro that mentions UPDATE or DELETE runs inside BEGIN; the
+# rows the transaction updated or deleted (all its statements, see
+# wrap_cap) are checked against PRECIS_PROD_WRITE_MAX_ROWS (default 100).
+# Over the cap it ROLLBACKs and exits 4; under it, COMMIT. The count is
+# printed either way. The match is on the raw text, so a read that merely
+# mentions the word runs in the wrapper too (0 rows, commits). SQL that ends the
+# transaction itself (BEGIN/COMMIT/ROLLBACK/END/ABORT) is refused, and a
+# server-side marker catches one that slips past the refusal (exit 5).
+#
 # ⚠ Never `SET` a session setting here (`SET default_transaction_read_only`,
 # `SET SESSION …`, `RESET …`). pgbouncer runs transaction pooling: a
 # session-level SET stays on the SHARED server connection and every later
@@ -28,6 +38,7 @@
 # Overrides (env):
 #   PRECIS_PROD_SSH_HOST=melchior     # default caspar
 #   PRECIS_PROD_PSQL_OPTS="-At"       # extra psql flags (e.g. terse -At, -x)
+#   PRECIS_PROD_WRITE_MAX_ROWS=500    # row cap for UPDATE/DELETE (default 100)
 set -euo pipefail
 
 RO=0
@@ -100,17 +111,96 @@ wrap_ro() {
     fi
 }
 
+MAX_ROWS="${PRECIS_PROD_WRITE_MAX_ROWS:-100}"
+if [[ ! "$MAX_ROWS" =~ ^[0-9]+$ ]]; then
+    echo "prod-psql: PRECIS_PROD_WRITE_MAX_ROWS must be a whole number, got '$MAX_ROWS'." >&2
+    exit 2
+fi
+
+# True when a non --ro SQL text mentions UPDATE or DELETE as a word (raw,
+# any case): a superset of the statements that change existing rows.
+needs_cap() {
+    [[ $RO -eq 0 ]] &&
+        printf '%s' "$1" | grep -qiE '(^|[^[:alnum:]_])(UPDATE|DELETE)([^[:alnum:]_]|$)'
+}
+
+# A capped write leaves the transaction to the wrapper, or its own COMMIT
+# lands before the check.
+refuse_tx_control() {
+    if printf '%s' "$1" | perl -0777 -ne '
+        s{--[^\n]*}{}g; s{/\*.*?\*/}{}gs;
+        for my $st (split /;/) {
+            exit 1 if $st =~ /^\s*(BEGIN|COMMIT|ROLLBACK|END|ABORT|START\s+TRANSACTION|PREPARE\s+TRANSACTION)\b/i;
+        }
+        exit 0;'; then
+        return 0
+    fi
+    echo "prod-psql: refused — an UPDATE/DELETE runs inside the row-cap transaction; drop your own BEGIN/COMMIT/ROLLBACK." >&2
+    exit 2
+}
+
+# BEGIN, a SET LOCAL marker, the user's SQL, then psql compares the rows
+# the transaction updated or deleted to the cap and picks COMMIT or
+# ROLLBACK. The count is the server's own per-transaction tally
+# (pg_stat_xact_user_tables, readable by any role), not psql's ROW_COUNT:
+# ROW_COUNT is the LAST query's, and a trailing `;;` or `; -- note` sends an
+# empty query that resets it to 0 (measured 2026-10-15, psql 18 / PG 17).
+# Cascaded and trigger-made changes count too. The marker is gone when the
+# user's SQL ended the transaction early: nothing is left to roll back, and
+# the wrapper says so. The "prod-psql: <VERDICT>" lines are what run_sql
+# reads back. The trailing `;` rule is wrap_ro's.
+wrap_cap() {
+    local body="$1" trimmed
+    trimmed="${body%"${body##*[![:space:]]}"}"
+    if [[ "$trimmed" != *\; ]]; then
+        body+=$'\n;'
+    fi
+    printf 'BEGIN;\nSET LOCAL precis.prod_psql_cap = on;\n%s\n' "$body"
+    cat <<EOF
+SELECT n AS prod_psql_rows, n > ${MAX_ROWS} AS prod_psql_over, coalesce(current_setting('precis.prod_psql_cap', true), '') = 'on' AS prod_psql_in_tx FROM (SELECT coalesce(sum(n_tup_upd + n_tup_del), 0) AS n FROM pg_stat_xact_user_tables) s \\gset
+\\if :prod_psql_in_tx
+\\if :prod_psql_over
+\\echo prod-psql: ROLLBACK, :prod_psql_rows rows is over the cap of ${MAX_ROWS} (PRECIS_PROD_WRITE_MAX_ROWS), nothing changed
+ROLLBACK;
+\\else
+\\echo prod-psql: COMMIT, :prod_psql_rows rows, within the cap of ${MAX_ROWS}
+COMMIT;
+\\endif
+\\else
+\\echo prod-psql: UNCAPPED, the SQL ended the transaction itself, its writes are already committed
+\\endif
+EOF
+}
+
+# Run one SQL text non-interactively. A capped write tees psql's stdout to
+# read its verdict line back: ROLLBACK exits 4, UNCAPPED exits 5.
+run_sql() {
+    local sql="$1"
+    refuse_session_set "$sql"
+    if ! needs_cap "$sql"; then
+        wrap_ro "$sql" | ssh -o IdentityAgent=none "$HOST" "$REMOTE_SCRIPTED"
+        return
+    fi
+    refuse_tx_control "$sql"
+    OUT="$(mktemp)"
+    trap 'rm -f "$OUT"' EXIT
+    wrap_cap "$sql" | ssh -o IdentityAgent=none "$HOST" "$REMOTE_SCRIPTED" | tee "$OUT"
+    if grep -q '^prod-psql: ROLLBACK' "$OUT"; then
+        echo "prod-psql: rolled back — narrow the WHERE, or set PRECIS_PROD_WRITE_MAX_ROWS for a deliberate bulk change." >&2
+        exit 4
+    fi
+    if grep -q '^prod-psql: UNCAPPED' "$OUT"; then
+        exit 5
+    fi
+}
+
 if [[ $# -gt 0 ]]; then
     # One-shot: the SQL goes over ssh via psql's STDIN, never interpolated into
     # the remote command line — so any quotes/`$`/`;` in the SQL are safe.
-    SQL="$*"
-    refuse_session_set "$SQL"
-    wrap_ro "$SQL" | ssh -o IdentityAgent=none "$HOST" "$REMOTE_SCRIPTED"
+    run_sql "$*"
 elif [[ ! -t 0 ]]; then
     # Piped SQL on stdin — read it whole so it can be checked first.
-    SQL="$(cat)"
-    refuse_session_set "$SQL"
-    wrap_ro "$SQL" | ssh -o IdentityAgent=none "$HOST" "$REMOTE_SCRIPTED"
+    run_sql "$(cat)"
 else
     # Interactive: nothing to pre-check; the ⚠ above applies to what you type.
     # With --ro the session is agent_ro, which cannot write at all.

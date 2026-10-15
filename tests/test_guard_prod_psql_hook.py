@@ -105,17 +105,22 @@ def test_non_destructive_writes_are_allowed() -> None:
         "UPDATE t SET a = (SELECT max(b) FROM u WHERE u.id = 1) WHERE id = 3",
         "CREATE INDEX CONCURRENTLY i ON t (a)",
         "SELECT nextval('s')",
-        "INSERT INTO a VALUES (1); UPDATE b SET x = 1 WHERE y = 2",
+        # authority.md 2026-10-15: a targeted DELETE passes; prod-psql caps rows
+        "DELETE FROM refs WHERE id = 1",
+        "DELETE FROM refs r USING tags g WHERE g.ref_id = r.id AND g.tag = 'x'",
+        "WITH d AS (DELETE FROM refs WHERE id = 1 RETURNING *) SELECT * FROM d",
+        "UPDATE refs SET title = 'x' WHERE id = 1;",
+        "SELECT 1; SELECT 2",  # several reads stay fine
     ):
         assert _decision(sql) == "allow", sql
     result = _hook().evaluate('scripts/prod-psql "INSERT INTO t VALUES (1)"')
-    assert result is not None and "non-destructive prod write" in result["reason"]
+    assert result is not None and "targeted prod write" in result["reason"]
 
 
 def test_destructive_statements_ask() -> None:
     for sql in (
-        "DELETE FROM refs WHERE id = 1",  # DELETE asks even with WHERE
         "DELETE FROM refs",
+        "DELETE FROM t USING (SELECT id FROM u WHERE a = 1) x",
         "DROP TABLE refs",
         "TRUNCATE refs",
         "ALTER TABLE refs DROP COLUMN x",
@@ -126,7 +131,9 @@ def test_destructive_statements_ask() -> None:
         "UPDATE t SET a = (SELECT max(b) FROM u WHERE u.id = 1)",
         "INSERT INTO a VALUES (1); UPDATE b SET x = 1",  # most dangerous wins
         "SELECT 1; DELETE FROM refs WHERE id = 1",
-        "WITH d AS (DELETE FROM refs WHERE id = 1 RETURNING *) SELECT * FROM d",
+        "INSERT INTO a VALUES (1); UPDATE b SET x = 1 WHERE y = 2",
+        "UPDATE a SET x = 1 WHERE id = 1; UPDATE b SET x = 1 WHERE id = 2",
+        "WITH d AS (DELETE FROM refs RETURNING *) SELECT * FROM d",
         "WITH u AS (UPDATE t SET a = 1) SELECT * FROM z WHERE z.id = 1",
         "DO 'BEGIN END'",
         "SELECT 'unterminated",
@@ -412,3 +419,89 @@ def test_cr_vt_ff_in_the_command_asks() -> None:
         'scripts/prod-psql --ro\x0c"\rDROP TABLE refs"',
     ):
         assert _verdict(cmd) == "ask", repr(cmd)
+
+
+# --- authority.md 2026-10-15: targeted writes pass, everything else asks -----
+
+
+def test_targeted_write_shapes_are_allowed() -> None:
+    for sql in (
+        "INSERT INTO gripes (title) VALUES ('x')",
+        "INSERT INTO t (a) SELECT a FROM u WHERE b = 1",
+        "UPDATE jobs SET status = 'failed' WHERE id = 42",
+        "UPDATE ONLY jobs SET status = 'x' WHERE id IN (1, 2)",
+        "DELETE FROM tags WHERE ref_id = 7 AND tag = 'stale'",
+        "DELETE FROM ONLY tags WHERE ref_id = 7",
+        "UPDATE t SET note = 'a; DROP TABLE t' WHERE id = 1",
+        "UPDATE t SET note = 'x' WHERE id = 1 -- ; DELETE FROM t",
+        "UPDATE t SET note = 'x' /* ; DROP TABLE t */ WHERE id = 1",
+    ):
+        assert _decision(sql) == "allow", sql
+
+
+def test_untargeted_and_privileged_shapes_ask() -> None:
+    for sql in (
+        "DROP TABLE refs",
+        "TRUNCATE refs",
+        "ALTER TABLE refs ADD COLUMN x int",
+        "ALTER TABLE refs DISABLE TRIGGER ALL",
+        "ALTER TABLE refs DISABLE ROW LEVEL SECURITY",
+        "CREATE ROLE r",
+        "CREATE USER r",
+        "CREATE GROUP g",
+        "DROP ROLE r",
+        "ALTER ROLE r SUPERUSER",
+        "GRANT ALL ON refs TO r",
+        "REVOKE SELECT ON refs FROM r",
+        "UPDATE refs SET a = 1",
+        "DELETE FROM refs",
+        "DELETE FROM refs WHERE id = 1; DELETE FROM tags WHERE id = 2",
+        "INSERT INTO t VALUES (1); INSERT INTO t VALUES (2)",
+        "COPY refs FROM STDIN",
+        "COPY refs FROM '/tmp/x'",
+        "UPDATE pg_catalog.pg_class SET relname = 'x' WHERE oid = 1",
+        "UPDATE pg_class SET relname = 'x' WHERE oid = 1",
+        "DELETE FROM pg_catalog.pg_proc WHERE oid = 1",
+        "INSERT INTO information_schema.sql_features VALUES ('x')",
+        "UPDATE \"pg_class\" SET relname = 'x' WHERE oid = 1",
+        "SET ROLE postgres",
+        "SET SESSION AUTHORIZATION postgres",
+        "RESET ROLE",
+        "SET LOCAL row_security = off",
+        "SET LOCAL session_replication_role = replica",
+        "SELECT set_config('row_security', 'off', true)",
+        "BEGIN; UPDATE t SET a = 1 WHERE id = 1; COMMIT",
+    ):
+        assert _decision(sql) == "ask", sql
+
+
+def test_second_statement_cannot_hide_in_literals_or_comments() -> None:
+    """A `;` inside a literal or comment is not a statement break, and a
+    statement after a real `;` counts even when a quote or comment wraps
+    around the boundary (lexed like the --ro path, 12c566791)."""
+    for sql in (
+        "UPDATE t SET a = 'x' WHERE id = 1; DROP TABLE t",
+        "UPDATE t SET a = 'it''s' WHERE id = 1; DELETE FROM t WHERE id = 2",
+        "UPDATE t SET a = 1 WHERE id = 1 /* c */; UPDATE u SET b = 1 WHERE id = 2",
+    ):
+        assert _decision(sql) == "ask", sql
+    # Dollar quotes and E'' strings are ambiguous: ask (single-quoted shell
+    # word, so `$$` reaches psql).
+    for cmd in (
+        "scripts/prod-psql 'UPDATE t SET a = $$x; DROP TABLE t$$ WHERE id = 1'",
+        "scripts/prod-psql 'UPDATE t SET a = E'''\\''' WHERE id = 1'",
+    ):
+        assert _verdict(cmd) == "ask", cmd
+
+
+def test_write_meta_commands_ask_without_ro() -> None:
+    for sql in (
+        "UPDATE t SET a = 1 WHERE id = 1 \\gexec",
+        "\\copy refs from '/tmp/x'",
+        "\\! psql -c 'DROP TABLE t'",
+        "\\i /tmp/x.sql",
+        "\\o /tmp/x",
+        "\\c precis_prod postgres",
+        "\\set ON_ERROR_STOP 0",
+    ):
+        assert _verdict(f"scripts/prod-psql '{sql}'") == "ask", sql

@@ -2,9 +2,10 @@
 """PreToolUse hook: decide ``scripts/prod-psql`` calls by what the SQL does.
 
 ``prod-psql`` connects as **write-capable `agent_rw`**. Reto's rulings
-(2026-10-01 "default is go", 2026-10-11 gr462727): approved prod writes must
-not stall on a prompt; only DESTRUCTIVE ones ask. This hook is the single
-decision point, keyed off the SQL:
+(2026-10-01 "default is go", 2026-10-11 gr462727) and the standing grant in
+``.claude/fleet/authority.md`` (2026-10-15): targeted prod writes must not
+stall on a prompt; destructive or untargeted ones ask. This hook is the
+single decision point, keyed off the SQL:
 
 - A **lone** `scripts/prod-psql --ro "<any SQL>"` -> **allow**: agent_ro inside
   BEGIN READ ONLY, the server refuses writes.
@@ -13,8 +14,12 @@ decision point, keyed off the SQL:
   prefix at all) is parsed statement by statement and judged by its MOST DANGEROUS
   statement:
   * any destructive statement -> **ask** (below);
-  * otherwise any write (INSERT, UPDATE ... WHERE, CREATE, REFRESH, nextval, ...) -> **allow**, reason naming a non-destructive prod
-    write;
+  * more than one statement when any of them writes -> **ask**;
+  * otherwise one write (INSERT, UPDATE ... WHERE, DELETE ... WHERE, CREATE,
+    REFRESH, nextval, ...) -> **allow**. ``scripts/prod-psql`` runs SQL that
+    mentions UPDATE/DELETE inside BEGIN and rolls it back when the
+    transaction changed more than ``PRECIS_PROD_WRITE_MAX_ROWS`` rows
+    (default 100);
   * only reads (SELECT/EXPLAIN/WITH/SHOW/TABLE/VALUES, and the line-start
     meta-commands ``\\d \\dt \\di \\l \\x``) -> **allow**;
   * a verb we do not know -> ask if it is a known write keyword, else no
@@ -45,9 +50,11 @@ literals and quoted identifiers are blanked first, so ``'DELETE'``, ``-- drop``
 and a column ``"drop"`` do not trip it; ``ON UPDATE`` and ``ON CONFLICT DO
 UPDATE`` are not UPDATE statements):
 
-- ``DELETE`` (always, with or without WHERE; also inside a CTE), ``DROP``
-  (so ``ALTER ... DROP`` too), ``TRUNCATE``;
-- an ``UPDATE`` with no ``WHERE`` at its own parenthesis depth;
+- ``DROP`` (so ``ALTER ... DROP`` too), ``TRUNCATE``;
+- an ``UPDATE`` or ``DELETE`` (also inside a CTE) with no ``WHERE`` at its
+  own parenthesis depth;
+- any INSERT/UPDATE/DELETE naming ``pg_catalog``, ``information_schema`` or a
+  ``pg_*`` target; ``row_security``; ``CREATE USER|GROUP`` (roles below);
 - every ``ALTER`` (thresholds.md schema changes: TYPE, RENAME, ADD COLUMN,
   SET SCHEMA, DETACH, DISABLE ... -- the hook cannot know if a table is
   populated, so all ask), ``CREATE OR REPLACE``, ``VACUUM FULL``, ``REINDEX``,
@@ -65,7 +72,8 @@ UPDATE`` are not UPDATE statements):
   (bodies hide statements), roles, ``pg_terminate_backend``.
 
 NOT statically checkable (never asked about here): a ``WHERE`` that matches
-every row (``WHERE true``, ``1=1``) or any huge bulk UPDATE; whether a table
+every row (``WHERE true``, ``1=1``) -- the row cap in ``scripts/prod-psql``
+bounds that for UPDATE/DELETE, not for INSERT ... SELECT; whether a table
 being altered is populated; the embedding dimension of
 ``chunk_embeddings.vector`` beyond the ALTER rule; wiping the DB or
 rewriting user-owned data files by a non-SQL route; force-pushes; anything
@@ -164,7 +172,11 @@ def _blank(sql: str) -> str:
                     j += 2
                     continue
                 break
-            out.append(" _q " if c == '"' else " ")
+            ident = sql[i + 1 : j]
+            if c == '"' and re.fullmatch(r"pg_\w*|information_schema", ident):
+                out.append(f" {ident} ")  # a quoted catalog name still counts
+            else:
+                out.append(" _q " if c == '"' else " ")
             i = j + 1
         elif (
             c == "$"
@@ -180,13 +192,13 @@ def _blank(sql: str) -> str:
 
 _READ_VERBS = {"SELECT", "EXPLAIN", "WITH", "SHOW", "TABLE", "VALUES"}
 _WRITE_VERBS = {
-    "INSERT", "UPDATE", "CREATE", "ALTER", "REFRESH", "COMMENT", "REINDEX",
+    "INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "REFRESH", "COMMENT", "REINDEX",
     "VACUUM", "ANALYZE", "BEGIN", "COMMIT", "ROLLBACK", "END",
 }  # fmt: skip
 #: Tokens that make a SELECT/WITH/EXPLAIN statement a write.
 _WRITE_TOKENS = {
     "INSERT", "UPDATE", "CREATE", "ALTER", "REFRESH", "COMMENT", "REINDEX",
-    "VACUUM", "NEXTVAL", "SETVAL", "INTO",
+    "VACUUM", "NEXTVAL", "SETVAL", "INTO", "DELETE",
 }  # fmt: skip
 _FORCE_ASK_FIRST = {
     "DO", "EXECUTE", "COPY", "CALL", "MERGE", "GRANT", "REVOKE", "LOCK", "CLUSTER",
@@ -205,10 +217,35 @@ _SIDE_EFFECT_FN = re.compile(
 )
 
 
+#: Statement verbs a data-modifying CTE or subquery can carry.
+_DML = {"INSERT", "UPDATE", "DELETE"}
+#: Schemas whose rows only the server may write.
+_CATALOG = {"PG_CATALOG", "INFORMATION_SCHEMA"}
+
+
+def _dml_positions(toks: list[str]) -> list[int]:
+    """Indexes of the tokens that start an INSERT/UPDATE/DELETE statement
+    (not ``FOR UPDATE``, ``ON UPDATE``, ``DO UPDATE``, ``OF UPDATE``, ...)."""
+    return [
+        k
+        for k, t in enumerate(toks)
+        if t in _DML
+        and not (
+            k and toks[k - 1] in ("FOR", "KEY", "ON", "DO", "OF", "BEFORE", "AFTER")
+        )
+    ]
+
+
+def _target(toks: list[str], k: int) -> str:
+    """The table token after the DML verb at ``k`` (INTO / FROM / ONLY skipped)."""
+    rest = [t for t in toks[k + 1 : k + 4] if t not in ("INTO", "FROM", "ONLY")]
+    return rest[0] if rest else ""
+
+
 def _statement_verdict(toks: list[str]) -> tuple[str, str]:
     """``(kind, why)`` for one statement; kind is ask / write / read / unknown."""
     for t in toks:
-        if t in ("DELETE", "DROP", "TRUNCATE"):
+        if t in ("DROP", "TRUNCATE"):
             return "ask", f"{t} is destructive"
     first = toks[0] if toks else ""
     if first in _FORCE_ASK_FIRST:
@@ -216,10 +253,14 @@ def _statement_verdict(toks: list[str]) -> tuple[str, str]:
     for t in toks:
         if t in _FORCE_ASK_ANY:
             return "ask", f"{t} cannot be judged statically"
+    if first == "CREATE" and toks[1:2] and toks[1] in ("USER", "GROUP"):
+        return "ask", f"CREATE {toks[1]} makes a role"
     # Every ALTER asks (SET SCHEMA, DETACH, DISABLE TRIGGER, TYPE, RENAME, ADD
     # COLUMN, ... are all schema changes thresholds.md says to confirm).
     if "ALTER" in toks:
         return "ask", "ALTER (thresholds.md schema change)"
+    if "ROW_SECURITY" in toks:
+        return "ask", "row_security switches row-level security"
     for k, t in enumerate(toks):
         if t == "OR" and toks[k + 1 : k + 2] == ["REPLACE"] and "CREATE" in toks:
             return "ask", "CREATE OR REPLACE rewrites an existing object"
@@ -229,18 +270,20 @@ def _statement_verdict(toks: list[str]) -> tuple[str, str]:
             return "ask", f"{t} has server-side effects"
     if "VACUUM" in toks and "FULL" in toks:
         return "ask", "VACUUM FULL rewrites the table"
-    # An UPDATE statement (not FOR UPDATE / ON UPDATE / DO UPDATE) needs a
-    # WHERE at its own parenthesis depth, before that depth closes.
+    # An UPDATE or DELETE statement (a CTE's too) needs a WHERE at its own
+    # parenthesis depth, before that depth closes.
     depths: list[int] = []
     d = 0
     for t in toks:
         d += (t == "(") - (t == ")")
         depths.append(d)
-    is_update = False
-    for k, t in enumerate(toks):
-        if t != "UPDATE" or (k and toks[k - 1] in ("FOR", "KEY", "ON", "DO", "OF")):
+    dml = _dml_positions(toks)
+    for k in dml:
+        t = toks[k]
+        if _target(toks, k).startswith("PG_") or _CATALOG & set(toks):
+            return "ask", f"{t} on a system catalog"
+        if t == "INSERT":
             continue
-        is_update = True
         found = False
         for m in range(k + 1, len(toks)):
             if depths[m] < depths[k]:
@@ -249,9 +292,9 @@ def _statement_verdict(toks: list[str]) -> tuple[str, str]:
                 found = True
                 break
         if not found:
-            return "ask", "UPDATE without WHERE"
+            return "ask", f"{t} without WHERE"
     if first in _READ_VERBS or first == "(":
-        if is_update or _WRITE_TOKENS & set(toks):
+        if dml or _WRITE_TOKENS & set(toks):
             return "write", ""
         return "read", ""
     if (
@@ -470,6 +513,11 @@ def _classify(sql: str, *, strip: bool = True) -> tuple[str, str]:
             cur = []
         else:
             cur.append(tok)
+    # One write per call (.claude/fleet/authority.md): a second statement is
+    # where an unreviewed change rides along with the targeted one.
+    if len(verdicts) > 1 and any(kind != "read" for kind, _ in verdicts):
+        if not any(kind == "ask" for kind, _ in verdicts):
+            return "ask", "more than one statement with a write"
     for want in ("ask", "unknown", "write", "read"):
         for kind, why in verdicts:
             if kind == want:
@@ -623,8 +671,9 @@ def evaluate(command: str) -> dict[str, str] | None:
                 return {
                     "decision": "allow",
                     "reason": (
-                        "non-destructive prod write (no DELETE/DROP/TRUNCATE, every "
-                        "UPDATE has a WHERE) — auto-approved per thresholds.md"
+                        "targeted prod write (one statement; UPDATE/DELETE carry a "
+                        "WHERE, prod-psql rolls back over the row cap) — "
+                        "auto-approved per .claude/fleet/authority.md"
                     ),
                 }
 

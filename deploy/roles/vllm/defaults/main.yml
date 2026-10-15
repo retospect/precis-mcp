@@ -57,8 +57,13 @@ vllm_env:
 # GB10 memory is unified: this fraction of the WHOLE box goes to vLLM. At 0.80
 # on a 121 GiB castor the engine held 98 GiB, the host had 1 GiB free and was
 # swapping, and generation was garbage from the first token (2026-10-12, see
-# docs/backlog/claude-code-on-local-serving.md). 0.70 leaves the OS ~36 GiB.
-vllm_gpu_memory_utilization: 0.70
+# docs/backlog/claude-code-on-local-serving.md). 0.70 (85 GiB to vLLM, ~36 GiB
+# left) still wedged castor twice on 2026-10-15 with the MACE and compute lanes
+# and docker builds beside it (Reto: 0.7 -> 0.6). 0.60 gives vLLM ~73 GiB and
+# leaves ~48 GiB; gpt-oss-120b MXFP4 weights take ~61 GiB of the 73, so the KV
+# cache shrinks to roughly half the 0.70 pool. Check vLLM's "Maximum
+# concurrency" startup line against vllm_max_num_seqs after a redeploy.
+vllm_gpu_memory_utilization: 0.60
 # 16384 is the only window measured sound on castor with this image: 65536 and
 # 131072 produced empty replies, stray token-0 `!` and nondeterministic output at
 # temperature 0 (2026-10-12). Claude Code turns (scripts/claude-local) need more;

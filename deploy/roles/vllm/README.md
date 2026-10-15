@@ -28,6 +28,21 @@ the day a fixed vLLM image (`cu130-nightly` or the NGC track) is pullable. `vllm
 `scripts/claude-local` needs more (a Claude Code first request exceeds 16k),
 see `docs/backlog/claude-code-on-local-serving.md`.
 
+## Memory on the GB10
+
+GPU and CPU share one 121 GiB pool, so `vllm_gpu_memory_utilization` is a
+fraction of the whole box. 0.80 (98 GiB) left the host 1 GiB and swapping
+(2026-10-12). 0.70 (85 GiB, ~36 GiB left) wedged castor twice on 2026-10-15
+once the MACE and compute lanes and docker builds ran beside it. The default
+is now 0.60: vLLM gets ~73 GiB, the rest of the host ~48 GiB, and
+MemAvailable stays well above earlyoom's 10% line. The gpt-oss-120b MXFP4
+weights take ~61 GiB of vLLM's share, so the KV cache is roughly half the
+0.70 pool; compare the "Maximum concurrency" line in the container log with
+`vllm_max_num_seqs` after a redeploy.
+
+Applying this role stops and disables the `sglang` unit
+(`vllm_supersedes_service`): it switches the host's serving stack.
+
 ## Prerequisites on the host
 
 - docker with the nvidia runtime configured (no role does this; the role
