@@ -663,8 +663,11 @@ TOOL_LATENCY_BUDGET_MS = 15_000
 #: ``verb/kind`` wins. Only kinds whose call waits on an outside service
 #: or a long LLM run: their 30-day prod p95 is the evidence (2026-10-15:
 #: perplexity-research 398 s, perplexity-reasoning 113 s, get/web 51 s,
-#: get/semanticscholar 38 s, search/websearch 27 s).
+#: get/semanticscholar 38 s, search/websearch 27 s). Draft writes re-render
+#: the whole draft: put/draft 164 s and edit/draft 375 s 30-day p95.
 TOOL_LATENCY_BUDGET_OVERRIDES_MS: dict[str, int] = {
+    "put/draft": 400_000,
+    "edit/draft": 400_000,
     "perplexity-research": 600_000,
     "perplexity-reasoning": 180_000,
     "web": 90_000,

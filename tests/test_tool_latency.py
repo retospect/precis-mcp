@@ -38,6 +38,14 @@ def test_budget_override_beats_default() -> None:
     )
 
 
+def test_draft_writes_have_a_pair_budget() -> None:
+    assert health_checks.tool_latency_budget_ms("edit", "draft") == 400_000
+    assert health_checks.tool_latency_budget_ms("put", "draft") == 400_000
+    assert health_checks.tool_latency_budget_ms("get", "draft") == (
+        health_checks.TOOL_LATENCY_BUDGET_MS
+    )
+
+
 def test_rollup_reads_window_and_baseline(store) -> None:
     _seed(store, "get", "paper", [10] * 19 + [1000])
     _seed(store, "search", None, [5])
