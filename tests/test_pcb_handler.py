@@ -2213,6 +2213,114 @@ def test_planes_view_empty_then_assigned(pcb, store):
     assert "N1" in resp.body
 
 
+# ── stackup view (gr486893) ──────────────────────────────────────────
+
+
+def test_stackup_view_is_discoverable():
+    assert "stackup" in PcbHandler.spec.views
+
+
+def test_stackup_view_default_4_layer(pcb):
+    """The board every put() is born on: DEFAULT_STACKUP declares
+    In1.Cu/GND but writes no pcb_planes row (the mirror is op='stackup''s,
+    not pcb_ensure_board's) — so the row shows the declaration while the
+    skip line honestly reports the router pours nothing."""
+    pcb.put(id="stackup-4", args=_CROSSED)
+    resp = pcb.get(id="stackup-4", view="stackup")
+    assert "4 layer(s)" in resp.body
+    for layer in ("F.Cu", "In1.Cu", "In2.Cu", "B.Cu"):
+        assert layer in resp.body
+    assert "router skips: none" in resp.body
+    # In1.Cu declares plane_net=GND with no assignment row — dead until
+    # op='plane_net' lands; the view flags it rather than imply a pour.
+    assert "In1.Cu=GND" in resp.body
+    assert "will not pour" in resp.body
+
+
+def test_stackup_view_4_layer_with_planes(pcb):
+    """op='stackup' with declared plane_nets mirrors them into pcb_planes,
+    so the skip line names exactly the nets the router will not route
+    end-to-end — authored source kept."""
+    pcb.put(id="stackup-pwr", args=_DESIGN)
+    pcb.put(
+        id="stackup-pwr",
+        args={
+            "op": "stackup",
+            "layers": [
+                {"name": "F.Cu", "role": "signal"},
+                {"name": "In1.Cu", "role": "plane", "plane_net": "GND"},
+                {"name": "In2.Cu", "role": "plane", "plane_net": "VCC3V3"},
+                {"name": "B.Cu", "role": "signal"},
+            ],
+        },
+    )
+    resp = pcb.get(id="stackup-pwr", view="stackup")
+    assert "4 layer(s)" in resp.body
+    assert "GND (In1.Cu, authored)" in resp.body
+    assert "VCC3V3 (In2.Cu, authored)" in resp.body
+    assert "I2C_SCL" not in resp.body
+
+
+def test_stackup_view_2_layer(pcb):
+    pcb.put(id="stackup-2", args=_CROSSED)
+    pcb.put(
+        id="stackup-2",
+        args={
+            "op": "stackup",
+            "layers": [
+                {"name": "F.Cu", "role": "signal"},
+                {"name": "B.Cu", "role": "signal"},
+            ],
+        },
+    )
+    resp = pcb.get(id="stackup-2", view="stackup")
+    assert "2 layer(s)" in resp.body
+    assert "F.Cu" in resp.body and "B.Cu" in resp.body
+    assert "In1.Cu" not in resp.body
+    assert "router skips: none" in resp.body
+
+
+def test_stackup_view_routable_plane_reads_mixed(pcb):
+    """A plane layer with routable: true carries traces AND a pour —
+    role alone can't say that, so the view renders 'mixed' (gr486893's
+    'whether the inner planes are routable' question)."""
+    pcb.put(id="stackup-mixed", args=_DESIGN)
+    pcb.put(
+        id="stackup-mixed",
+        args={
+            "op": "stackup",
+            "layers": [
+                {"name": "F.Cu", "role": "signal"},
+                {
+                    "name": "In1.Cu",
+                    "role": "plane",
+                    "plane_net": "GND",
+                    "routable": True,
+                },
+                {"name": "In2.Cu", "role": "signal"},
+                {"name": "B.Cu", "role": "signal"},
+            ],
+        },
+    )
+    body = pcb.get(id="stackup-mixed", view="stackup").body
+    assert "mixed" in body
+    in1 = next(line for line in body.splitlines() if "In1.Cu" in line)
+    assert "yes" in in1
+
+
+def test_stackup_view_no_board_says_so(pcb, store):
+    """A design with no pcb_boards row (pre-0138 import, or a board row
+    gone) must say so, not 500 — the gripe's original dead end."""
+    pcb.put(id="stackup-none", args=_CROSSED)
+    ref = store.get_ref(kind="pcb", id="stackup-none")
+    assert ref is not None
+    with store.pool.connection() as conn:
+        conn.execute("DELETE FROM pcb_boards WHERE ref_id = %s", (ref.id,))
+        conn.commit()
+    resp = pcb.get(id="stackup-none", view="stackup")
+    assert "no stackup stored" in resp.body
+
+
 # ── svg view (pcb-svg-render) ────────────────────────────────────────
 
 

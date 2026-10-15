@@ -242,6 +242,16 @@ having changed nothing else.
 - Refused if it would drop a layer that still carries copper or a plane
   assignment — `op='rip'` first if you mean it.
 
+Read it back with `get(kind="pcb", id="s", view="stackup")` — one row per
+layer in stack order: `role` (`signal`/`plane`, or `mixed` when the layer
+both routes and pours), the plane's net with its assignment `src`
+(`authored`/`derived`; `stackup-declared` marks a `plane_net` key that
+never reached `pcb_planes`, so the router will NOT pour it), `routable`/
+`pourable` as the router's own predicates answer them, and any stored
+physical keys (copper weight, dielectric). Its last line names the nets
+the router skips — a pour carries them, so their pads via down instead of
+routing end-to-end. `view='planes'` is the assignment table alone.
+
 **A stackup is half the change.** Opening a layer does not make any net
 use it: a net class that locks `"layers"` (and the EWOD generator's
 `escape_layers`) still says where its nets may go. Widen both, or the new

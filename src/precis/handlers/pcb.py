@@ -40,7 +40,7 @@ pixels. The verbs map onto the seven-verb surface:
   instance's neighbourhood (``id='slug#U3'`` — its pins, the net on each, and
   the connected instances); a net's members (``id='slug@SCL'``); the *eyes*
   (``view='crossings'|'ratsnest'|'drc'|'trace'|'proximity'|'measures'|
-  'feasibility'|'route-status'|'congestion'|'planes'``); ``view='footprints'``
+  'feasibility'|'route-status'|'congestion'|'planes'|'stackup'``); ``view='footprints'``
   — which catalog-part instances have a cached footprint, the read-side
   counterpart to ``op='footprint'``; ``view='svg'`` — a
   publication-quality vector figure (``args={'level':'board'|'sketch'|'fab'}``,
@@ -200,8 +200,9 @@ _ROUTE_VIEWS = ("route",)
 _STATUS_VIEWS = ("route-status",)
 #: pcb-guided-place-route Slice 10 — the enqueued optimizer/realizer's
 #: read-side: congestion warnings from the latest ``op='route'`` run, and
-#: authored plane assignments.
-_SESSION_VIEWS = ("congestion", "planes")
+#: authored plane assignments. ``stackup`` (gr486893) is the board's
+#: copper stackup as the router sees it — role, plane net, routable.
+_SESSION_VIEWS = ("congestion", "planes", "stackup")
 #: pcb-svg-render — publication-quality vector figures off the same
 #: copper model Gerber writes from (:mod:`precis.pcb.svg`), plus the L3
 #: rubber-band sketch off the IR. See :meth:`PcbHandler._render_svg`.
@@ -628,7 +629,7 @@ class PcbHandler(Handler):
             "instance's neighbourhood (id='slug#U3'), a net's members "
             "(id='slug@SCL'), the eyes (view='crossings'|'ratsnest'|'drc'|"
             "'trace'|'proximity'|'measures'|'feasibility'|'route-status'|"
-            "'congestion'|'planes'), per-BOM-line stock/library/lifecycle "
+            "'congestion'|'planes'|'stackup'), per-BOM-line stock/library/lifecycle "
             "for an EOL sweep (view='availability', live-refreshes stale "
             "C-numbers), which catalog parts have a cached "
             "footprint (view='footprints', one row per catalog-part "
@@ -2494,6 +2495,8 @@ class PcbHandler(Handler):
             return self._render_congestion(ref_id)
         if view == "planes":
             return self._render_planes(ref_id)
+        if view == "stackup":
+            return self._render_stackup(ref_id)
         if view == "drc":
             return self._render_drc(ref_id, args)
         if view == "check":
@@ -3948,6 +3951,94 @@ class PcbHandler(Handler):
         return Response(
             body=f"# planes — {len(rows)} assignment(s)\n"
             + render_agent_table(table_rows, schema=["layer", "net", "source"])
+        )
+
+    def _render_stackup(self, ref_id: int) -> Response:
+        """The board's copper stackup (``pcb_boards.stackup``) — one row
+        per layer in stack order, as the ROUTER reads it. gr486893: the
+        write side (``op='stackup'``/``op='plane_net'``, the ``.epro2``
+        import) has existed; the read side was a prod-psql detour.
+
+        ``routable``/``pourable`` come from
+        :func:`precis.pcb.ir.layer_is_routable`/``layer_is_pourable``,
+        not the stored ``role`` — a ``routable: true`` plane layer shows
+        ``yes``; both yes renders ``mixed``. ``plane`` is the live
+        ``pcb_planes`` assignment for the layer (``src`` =
+        authored/derived); a stackup entry's own ``plane_net`` key with
+        no assignment row shows ``src=stackup-declared`` — that key is a
+        declaration ``op='stackup'`` mirrors into ``pcb_planes`` at write
+        time, and a board stamped before that fix (every board is born on
+        ``DEFAULT_STACKUP``, which declares In1.Cu/GND) carries it dead.
+
+        The closing line names the nets the router will skip — pour
+        carries them, their pads drop to it by via instead of routing
+        end-to-end. It is the ``pcb_planes`` read, which is exactly what
+        the ``pcb_route`` job re-applies into ``ir.net_plane_layers``;
+        declared-but-unassigned plane_nets are listed separately so the
+        view never reports a skip the router will not make."""
+        design = self.store.pcb_load(ref_id)
+        board = design.get("board") or {}
+        stackup = list(board.get("stackup") or [])
+        if not stackup:
+            return Response(
+                body="no stackup stored for this board\n\nNext: "
+                "put(kind='pcb', id='slug', args={'op':'stackup','layers':[...]})"
+            )
+        planes = self.store.pcb_planes_list(ref_id)
+        by_layer: dict[str, list[dict[str, Any]]] = {}
+        for p in planes:
+            by_layer.setdefault(str(p["layer"]), []).append(p)
+        # Physical columns (copper weight, dielectric, …) are render-only:
+        # ``validate_stackup`` admits none today, but a stored row may
+        # carry them (the ``pcb_boards.stackup`` jsonb is shaped for it),
+        # so show whatever keys exist rather than a fixed schema.
+        extra = sorted({k for e in stackup for k in e} - pcb_ir.STACKUP_LAYER_KEYS)
+        schema = ["layer", "role", "plane", "src", "routable", "pourable", *extra]
+        rows = []
+        for entry in stackup:
+            name = str(entry.get("name"))
+            routable = pcb_ir.layer_is_routable(entry)
+            pourable = pcb_ir.layer_is_pourable(entry)
+            role = "mixed" if routable and pourable else str(entry.get("role") or "—")
+            assigned = by_layer.get(name) or []
+            declared = str(entry.get("plane_net") or "")
+            row = {
+                "layer": name,
+                "role": role,
+                "plane": (",".join(str(r["net"]) for r in assigned) or declared or "—"),
+                "src": (
+                    ",".join(str(r["source"]) for r in assigned)
+                    or ("stackup-declared" if declared else "—")
+                ),
+                "routable": "yes" if routable else "no",
+                "pourable": "yes" if pourable else "no",
+            }
+            row.update({k: entry.get(k, "—") for k in extra})
+            rows.append(row)
+        head = f"# stackup — {board.get('name', 'main')}, {len(stackup)} layer(s)\n"
+        skip = ", ".join(
+            f"{r['net']} ({r['layer']}, {r['source']})"
+            for r in sorted(planes, key=lambda r: (str(r["net"]), str(r["layer"])))
+        )
+        skip_line = (
+            "router skips (a plane/pour carries them): " + skip
+            if skip
+            else "router skips: none — every net routes as traces"
+        )
+        dead = [
+            f"{e['name']}={e['plane_net']}"
+            for e in stackup
+            if e.get("plane_net") and str(e["name"]) not in by_layer
+        ]
+        if dead:
+            skip_line += (
+                "\nnote: "
+                + ", ".join(sorted(dead))
+                + " declared in the stackup but no assignment row — the "
+                "router will not pour it"
+            )
+        return Response(
+            body=head + render_agent_table(rows, schema=schema) + "\n" + skip_line
         )
 
     def _render_footprints_view(self, ref_id: int) -> Response:

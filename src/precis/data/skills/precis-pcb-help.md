@@ -320,6 +320,9 @@ get(
     kind="pcb", id="s", view="planes"
 )  # authored plane assignments (op='plane_net') — which nets are plane-served
 get(
+    kind="pcb", id="s", view="stackup"
+)  # every layer in order: role, plane net, routable, the nets the router skips
+get(
     kind="pcb", id="s", view="proximity", args={"a": "U1", "b": "C1"}
 )  # centroid gap (mm)
 get(
