@@ -23,6 +23,7 @@ from shapely.geometry import Polygon, box
 
 from precis.sheet import Polyline
 from precis.sheet.dxf import export_dxf
+from precis.sheet.svg_cricut import export_cricut_svg
 from precis.sheet.svg_laser import export_laser_svg
 from precis_se.flatpack import NestingError, flatpack_box
 from precis_se.flatpack.generator import placed_polygon
@@ -131,6 +132,21 @@ def test_cube_laser_svg_matches_golden() -> None:
         "top",
     ]
     assert all(p.get("data-role") == "outer" for p in paths)
+
+
+def test_cube_cricut_svg_has_only_cut_paths_with_blade_attrs() -> None:
+    fp = flatpack_box(50, 50, 50)
+    out = export_cricut_svg(fp.job)
+    root = ET.fromstring(out.text)
+    groups = root.findall(f"{SVG_NS}g")
+    # the box job has one cut layer — nothing a Cricut cannot do
+    assert [g.get("data-op") for g in groups] == ["cut"]
+    (group,) = groups
+    assert group.get("data-pressure") is not None and group.get("data-blade")
+    assert "cricut defaults" in out.text  # the cut layer carries laser settings only
+    paths = group.findall(f"{SVG_NS}path")
+    assert len(paths) == 5
+    assert all(p.get("data-part") for p in paths)
 
 
 def test_cube_dxf_has_the_cut_layer_and_five_closed_polylines() -> None:

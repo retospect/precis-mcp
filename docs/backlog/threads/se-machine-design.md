@@ -126,9 +126,11 @@ off that gap until it closes.
    finger/straight joints, shelves, skyline nesting, laser SVG and DXF,
    the 50 mm cube golden); build 3 shipped 2026-10-13
    (`flatpack_box` op, `meta['flatpack']` params home, `view='cut'`,
-   store-aware `flatpack_*` checks, both skills). Left: the cardboard
+   store-aware `flatpack_*` checks, both skills); build 4 shipped
+   2026-10-15 (the Cricut SVG exporter `precis.sheet.svg_cricut`,
+   `view='cut'` `format='cricut'`). Left: the cardboard
    cut — Reto cuts the 50 mm cube and records the `fit`/`kerf` that
-   seat — then the later builds (Cricut, raster engrave, the geom move,
+   seat — then the later builds (raster engrave, the geom move,
    engrave labels). Rulings (laser first, 3 mm cardboard, finger
    joints default, shared sheet job under flat-pack, PCB writes through
    ewod-pcb's adapter only) are recorded in the file.

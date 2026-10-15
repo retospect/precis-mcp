@@ -284,6 +284,15 @@ class TestCutView:
         assert "no recorded fit" in body
         assert "colour -> settings" in body
 
+    def test_cricut_body_is_the_file(self, handler: SeHandler) -> None:
+        _put_box(handler)
+        body = handler.get(id="cube50", view="cut", args={"format": "cricut"}).body
+        assert body.startswith("<?xml")
+        root = ET.fromstring(body)
+        assert root.tag.endswith("svg")
+        assert 'data-op="cut"' in body and "data-blade" in body
+        assert "pressure" in body and "parts: 5" in body
+
     def test_dxf_body_is_the_file(self, handler: SeHandler) -> None:
         _put_box(handler)
         body = handler.get(id="cube50", view="cut", args={"format": "dxf"}).body

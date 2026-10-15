@@ -2893,21 +2893,22 @@ class SeHandler(Handler):
         Regenerates the sheet job from the design's ``meta['flatpack']``
         params home (every export regenerates; nothing stores the panels)
         and runs the ``precis.sheet`` exporter for ``args['format']``
-        (``svg`` → LightBurn SVG, ``dxf`` → DXF R12 for the Maslow). The
-        notes live in the file's leading comment — the SVG ``<!-- -->`` /
-        DXF group-999 the exporters write — parts, sheet size,
-        utilisation, the colour→settings table and the figures used.
-        A sibling of ``view='export'``'s ``render_export``, not a branch
-        inside it."""
+        (``svg`` → LightBurn SVG, ``cricut`` → Design Space SVG, ``dxf`` →
+        DXF R12 for the Maslow). The notes live in the file's leading
+        comment — the SVG ``<!-- -->`` / DXF group-999 the exporters
+        write — parts, sheet size, utilisation, the colour→settings
+        table and the figures used. A sibling of ``view='export'``'s
+        ``render_export``, not a branch inside it."""
         from precis.sheet.dxf import export_dxf
+        from precis.sheet.svg_cricut import export_cricut_svg
         from precis.sheet.svg_laser import export_laser_svg
         from precis_se.flatpack import flatpack_box
         from precis_se.flatpack.panels import FlatpackError
 
         fmt = str((args or {}).get("format") or "").strip().lower()
-        if fmt not in ("svg", "dxf"):
+        if fmt not in ("svg", "dxf", "cricut"):
             raise BadInput(
-                f"cut: format {fmt or '(missing)'!r} — one of svg, dxf",
+                f"cut: format {fmt or '(missing)'!r} — one of svg, dxf, cricut",
                 next="get(kind='se', id=…, view='cut', args={'format': 'svg'})",
             )
         params = (ref.meta or {}).get("flatpack")
@@ -2931,7 +2932,11 @@ class SeHandler(Handler):
                 "meta['flatpack']",
             ) from exc
         job = fp.job
-        return export_laser_svg(job).text if fmt == "svg" else export_dxf(job).text
+        if fmt == "dxf":
+            return export_dxf(job).text
+        if fmt == "cricut":
+            return export_cricut_svg(job).text
+        return export_laser_svg(job).text
 
     # ── delete ───────────────────────────────────────────────────────
     def delete(self, *, id: str | int | None = None, **_kw: Any) -> Response:

@@ -1,5 +1,5 @@
 """The shared sheet job (:mod:`precis.sheet`): model validation, the laser
-SVG writer and the DXF R12 writer — build-1 acceptance of
+and Cricut SVG writers and the DXF R12 writer — build-1 acceptance of
 docs/backlog/flatpack-furniture-generator.md.
 
 The DXF reader here is test-local (group-code pairs → entities); the tree
@@ -25,6 +25,7 @@ from precis.sheet import (
     order_layers,
 )
 from precis.sheet.dxf import export_dxf
+from precis.sheet.svg_cricut import export_cricut_svg
 from precis.sheet.svg_laser import PALETTE, export_laser_svg
 
 SVG_NS = "{http://www.w3.org/2000/svg}"
@@ -165,6 +166,63 @@ def test_laser_svg_refuses_raster_by_layer_name() -> None:
     job.layers.insert(0, Layer("photo", "engrave_raster"))
     with pytest.raises(SheetExportError, match="layer 'photo': op 'engrave_raster'"):
         export_laser_svg(job)
+
+
+# ── cricut SVG ─────────────────────────────────────────────────────────
+
+
+def _cricut_job() -> SheetJob:
+    """Only the ops a Cricut can do: a score line and a cut outline. The
+    score layer overrides just ``pressure``; its blade comes from the
+    defaults."""
+    job = SheetJob(
+        Sheet(100, 80, "corrugated-3mm", 3.0),
+        layers=[
+            Layer("score", "score", {"cricut": {"pressure": 30}}),
+            Layer("cut", "cut", {"cricut": {"pressure": 350, "blade": "knife"}}),
+        ],
+        parts=[Part("a", "panel A")],
+    )
+    job.shapes += [
+        Polyline("score", ((12, 25), (38, 25)), closed=False, part="a"),
+        Polyline("cut", ((10, 10), (40, 10), (40, 40), (10, 40)), part="a"),
+    ]
+    return job
+
+
+def test_cricut_svg_carries_pressure_and_blade_per_layer() -> None:
+    out = export_cricut_svg(_cricut_job())
+    root = ET.fromstring(out.text)
+    assert root.get("width") == "100mm" and root.get("viewBox") == "0 0 100 80"
+    groups = root.findall(f"{SVG_NS}g")
+    assert [g.get("id") for g in groups] == ["score", "cut"]
+    assert [g.get("data-op") for g in groups] == ["score", "cut"]
+    score, cut = groups
+    # partial cricut settings merge over the per-op defaults
+    assert (score.get("data-pressure"), score.get("data-blade")) == (
+        "30",
+        "scoring-stylus",
+    )
+    assert (cut.get("data-pressure"), cut.get("data-blade")) == ("350", "knife")
+    score_path = score.find(f"{SVG_NS}path")
+    assert score_path is not None and score_path.get("d") == "M 12 55 L 38 55"
+    assert "defaults" not in next(n for n in out.notes if " score op=" in n)
+
+
+def test_cricut_svg_notes_say_which_layers_used_defaults() -> None:
+    job = _cricut_job()
+    job.layers[1] = Layer("cut", "cut")  # no cricut settings at all
+    out = export_cricut_svg(job)
+    line = next(n for n in out.notes if " cut op=" in n)
+    assert "cricut defaults" in line and line in out.text
+
+
+@pytest.mark.parametrize("op", ["engrave_vector", "engrave_raster", "drill"])
+def test_cricut_svg_refuses_other_ops_by_name(op: str) -> None:
+    job = _cricut_job()
+    job.layers.insert(0, Layer("bad", op))
+    with pytest.raises(SheetExportError, match=f"layer 'bad': op '{op}'"):
+        export_cricut_svg(job)
 
 
 # ── DXF ────────────────────────────────────────────────────────────────

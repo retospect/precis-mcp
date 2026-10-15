@@ -1,11 +1,11 @@
 """precis.sheet — the shared **sheet job**: one planar cut job, several machines.
 
 A sheet job is the 2-D artefact under everything that cuts flat stock: the
-flat-pack generator (:mod:`precis_se.flatpack`), later the Cricut and PCB's
-mechanical layers (edge cuts, NPTH drills, the EWOD gasket). Reto's three 2-D
-machines want the same object — a job of **layers**, each layer exactly one
-operation, with settings per machine — so the exporters are written once
-against this model instead of once per emitter
+flat-pack generator (:mod:`precis_se.flatpack`), the Cricut, and — later —
+PCB's mechanical layers (edge cuts, NPTH drills, the EWOD gasket). Reto's
+three 2-D machines want the same object — a job of **layers**, each layer
+exactly one operation, with settings per machine — so the exporters are
+written once against this model instead of once per emitter
 (docs/backlog/flatpack-furniture-generator.md, se-machine-design-7 option 1).
 
 **Neutral by contract.** Pure data and pure functions: no DB, no handler, and
@@ -36,14 +36,23 @@ refuses the rest by layer name — never a silent drop:
   leading comment are for the operator). Document order is cut order:
   layers in job order, parts in nesting order, a part's inner contours
   before its outline.
+- :mod:`precis.sheet.svg_cricut` — the same SVG restricted to ``cut`` and
+  ``score`` (a blade plotter has no drill or engrave), one
+  ``<g id=layer data-op data-pressure data-blade>`` per layer, coloured
+  like the laser file. ``pressure``/``blade`` come from the layer's
+  ``cricut`` settings, falling back to
+  :data:`precis.sheet.svg_cricut.CRICUT_DEFAULTS`; Design Space reads
+  neither, so the colour → settings table in the leading comment is the
+  operator's setup list.
 - :mod:`precis.sheet.dxf` — hand-written ASCII DXF R12 (``POLYLINE``/
   ``VERTEX``, ``CIRCLE``), one DXF layer per vector layer, for the Maslow
   CNC. R12 has no units header; mm is stated in a group-999 comment. No
   ``ezdxf``: the tree has no DXF writer and gains no dependency for one.
 
 A layer carrying no settings for the exporting machine exports with that
-machine's defaults (:data:`precis.sheet.svg_laser.LASER_DEFAULTS`) and the
-notes say so. Notes travel in the returned :class:`Export` and, as a leading
+machine's defaults (:data:`precis.sheet.svg_laser.LASER_DEFAULTS`,
+:data:`precis.sheet.svg_cricut.CRICUT_DEFAULTS`) and the notes say so.
+Notes travel in the returned :class:`Export` and, as a leading
 comment, in the file itself, so the file alone tells the operator what it
 assumes.
 """

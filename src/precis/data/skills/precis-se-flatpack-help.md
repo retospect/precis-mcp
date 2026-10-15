@@ -1,8 +1,8 @@
 ---
 id: precis-se-flatpack-help
 family: se
-title: precis — flat-pack boxes with shelves from one sheet (finger joints from the sheet thickness, nesting, laser SVG and CNC DXF)
-summary: the flatpack generator turns W × H × D and a sheet material into panels with finger or butt joints and shelf tabs, nests them on a sheet with kerf and fit, and writes the laser SVG (LightBurn colours) or DXF R12 (Maslow) from one shared sheet job; which parameters exist, which figures are recorded per material, and how the first physical cut records fit and kerf
+title: precis — flat-pack boxes with shelves from one sheet (finger joints from the sheet thickness, nesting, laser SVG, Cricut SVG and CNC DXF)
+summary: the flatpack generator turns W × H × D and a sheet material into panels with finger or butt joints and shelf tabs, nests them on a sheet with kerf and fit, and writes the laser SVG (LightBurn colours), Cricut SVG (Design Space) or DXF R12 (Maslow) from one shared sheet job; which parameters exist, which figures are recorded per material, and how the first physical cut records fit and kerf
 answers:
   - how do I make a laser-cut or CNC-cut box with shelves from 3 mm cardboard or plywood?
   - what do fit, kerf and cutter_d mean for a flat-pack part, and which values are recorded?
@@ -51,10 +51,11 @@ checks regenerate from.
 get(kind='se', id='cube50', view='cut', args={'format': 'svg'})
 ```
 
-`format` is `svg` (LightBurn) or `dxf` (Maslow). The body is the file
-only; the parts, sheet size, utilisation, colour→settings table and the
-figures used (or "no recorded figure") are in its leading comment. A
-design without `meta['flatpack']` is refused — run the op first.
+`format` is `svg` (LightBurn), `cricut` (Design Space) or `dxf`
+(Maslow). The body is the file only; the parts, sheet size, utilisation,
+colour→settings table and the figures used (or "no recorded figure") are
+in its leading comment. A design without `meta['flatpack']` is refused —
+run the op first.
 
 `view='drc'` appends the `flatpack_*` checks: `flatpack_mating` (every
 tab/finger in its mate's slot at the `fit` clearance; every gap filled),
@@ -144,6 +145,11 @@ export of it falls back to the exporter's generic defaults and says so.
   settings table for the LightBurn setup (LightBurn reads none of it from
   the file). A layer without laser settings exports with the defaults and
   the notes say so.
+- `precis.sheet.svg_cricut.export_cricut_svg` — the same SVG restricted
+  to `cut` and `score` (a blade plotter has no drill or engrave; any
+  other op is refused by layer name), with `data-pressure`/`data-blade`
+  per layer from the layer's `cricut` settings — the exporter's defaults
+  when it carries none, noted like the laser's.
 - `precis.sheet.dxf.export_dxf` — DXF R12, one DXF layer per vector
   layer, circles for drills, mm by convention.
 

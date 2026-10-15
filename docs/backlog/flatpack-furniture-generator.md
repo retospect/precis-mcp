@@ -1,6 +1,6 @@
 ---
 status: ready
-title: Flat-pack furniture generator on a shared sheet job — the cardboard cut and the later exporters (builds 1–3 shipped)
+title: Flat-pack furniture generator on a shared sheet job — the cardboard cut and the later exporters (builds 1–4 shipped)
 pillar: 3d-design
 prio: normal
 model: opus
@@ -26,9 +26,10 @@ ruled on it the same day:
   - PCB writes into it through an adapter ewod-pcb owns, and never reads
     from it.
 
-## What shipped (builds 1–3)
+## What shipped (builds 1–4)
 
-`src/precis/sheet/` (model, validation, laser SVG and DXF R12 exporters)
+`src/precis/sheet/` (model, validation, laser SVG, Cricut SVG and DXF R12
+exporters)
 and `src/precis_se/flatpack/` (materials, panel model with finger/straight
 joints, shelves, `fit`, dog-bones, mitre kerf, skyline nesting,
 `flatpack_box(...)` emitting the sheet job). The geometry rules and the
@@ -49,6 +50,12 @@ exporters' leading comment), and the store-aware `flatpack_*` checks in
 `precis-se-help` and `precis-se-flatpack-help` describe the surface; the
 acceptance figures are pinned in `tests/test_flatpack_se.py`.
 
+Build 4 added the Cricut export: `src/precis/sheet/svg_cricut.py` — the
+same SVG restricted to `cut` and `score` (every other op refused by
+name), with `data-pressure`/`data-blade` per layer from the layer's
+`cricut` settings over `CRICUT_DEFAULTS`, wired as `view='cut'`
+`format='cricut'`.
+
 ## The first physical check — Reto's
 
 Not agent-gradable; handed over as a review-queue item once build 3 lands.
@@ -64,10 +71,6 @@ Not agent-gradable; handed over as a review-queue item once build 3 lands.
 ## Builds
 
 Later, each its own build or less:
-- **Cricut SVG exporter.** Close to free on top of the laser writer: the
-  SVG restricted to `cut` and `score`, plus `pressure` and `blade` per
-  layer from the layer's `cricut` settings. Any other op is refused by
-  name.
 - **Grayscale raster engrave.** Image placement (the image, a placement
   rectangle, the dpi), the grey-to-power map over the laser layer's power
   range, and embedding in the laser SVG. One build, when Reto wants images
