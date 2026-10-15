@@ -2333,3 +2333,261 @@ def test_pathway_pw455722_shape_draws_no_grey_dashed_sawtooth(
     svg = _render_diagram_svg(tmp_path, resp.text)
     assert "stroke-dasharray" not in svg
     assert "#94a3b8" not in "".join(re.findall(r"<polyline[^>]*>", svg))
+
+
+# ── shareable link state (gr486822) ─────────────────────────────────────
+
+#: Runs the page script under node with a fuller stub DOM than
+#: ``_NODE_PAGE_JS``: elements record event handlers and attributes,
+#: ``document.createElement``'d nodes are tracked (the path-legend
+#: buttons), delegated document handlers are captured for dispatch, and
+#: ``history.replaceState``/``navigator.clipboard`` calls are recorded —
+#: so the selection -> URL -> restored-selection round trip runs headlessly
+#: end to end. ``AFTER`` (argv[4]) is evaluated after the page script, with
+#: ``els``/``created``/``docHandlers`` in scope, to drive user actions.
+_NODE_URL_JS = r"""
+const fs = require('fs');
+const script = fs.readFileSync(process.argv[2], 'utf-8');
+const SEARCH = process.argv[3] || '';
+const AFTER = process.argv[4] || '';
+const els = {};
+const created = [];
+const docHandlers = {};
+const rsCalls = [];
+const clipCalls = [];
+const mk = () => {
+  const el = {
+    innerHTML: '', textContent: '', style: {}, dataset: {}, value: '0',
+    className: '', attrs: {}, children: [], handlers: {},
+    classList: {
+      toggle(c, on) {
+        const want = on === undefined ? !el.classList.contains(c) : !!on;
+        const ws = el.className.split(/\s+/).filter((w) => w && w !== c);
+        if (want) { ws.push(c); }
+        el.className = ws.join(' ');
+        return want;
+      },
+      contains(c) { return el.className.split(/\s+/).includes(c); },
+      add(c) { el.classList.toggle(c, true); },
+      remove(c) { el.classList.toggle(c, false); },
+    },
+    setAttribute(k, v) { el.attrs[k] = String(v); },
+    getAttribute(k) { return k in el.attrs ? el.attrs[k] : null; },
+    addEventListener(t, f) { (el.handlers[t] = el.handlers[t] || []).push(f); },
+    appendChild(c) { el.children.push(c); },
+    remove() {},
+    querySelector() { return null; },
+    querySelectorAll() { return []; },
+    closest() { return null; },
+    getBoundingClientRect() { return { top: 0, bottom: 0 }; },
+    scrollIntoView() {},
+    scrollTop: 0,
+    title: '',
+    type: '',
+  };
+  Object.defineProperty(el, 'childElementCount', {
+    get: () => el.children.length,
+  });
+  return el;
+};
+const byClass = (cls) => created.filter((el) => el.classList.contains(cls));
+global.document = {
+  getElementById: (id) => {
+    if (!els[id]) {
+      els[id] = mk();
+      // the real element ships class="hidden" — mirror that initial state
+      if (id === 'pw-link-note') { els[id].className = 'hidden'; }
+    }
+    return els[id];
+  },
+  querySelectorAll: (sel) => (sel.charAt(0) === '.' ? byClass(sel.slice(1)) : []),
+  querySelector: () => null,
+  addEventListener: (t, f) => {
+    (docHandlers[t] = docHandlers[t] || []).push(f);
+  },
+  createElement: (tag) => {
+    const el = mk();
+    el.tag = tag;
+    created.push(el);
+    return el;
+  },
+  readyState: 'complete',
+};
+global.window = {
+  location: {
+    search: SEARCH,
+    pathname: '/refs/pathway/171696',
+    href: 'http://precis.test/refs/pathway/171696' + SEARCH,
+  },
+};
+global.history = {
+  replaceState: (a, b, url) => {
+    rsCalls.push(url);
+    global.window.location.href = 'http://precis.test' + url;
+  },
+};
+// Node >= 21 ships a getter-only global navigator — a plain assignment is
+// silently ignored, so define it.
+Object.defineProperty(globalThis, 'navigator', {
+  value: {
+    clipboard: {
+      writeText: (t) => {
+        clipCalls.push(t);
+        return { then: (ok) => { ok(); return { catch() {} }; } };
+      },
+    },
+  },
+  configurable: true,
+});
+global.setTimeout = () => 0;
+global.CSS = { escape: (s) => s };
+(0, eval)(script);
+// direct eval (not (0, eval)) — AFTER must see this scope's els/handlers
+if (AFTER) { eval(AFTER); }
+const note = els['pw-link-note'];
+console.log(JSON.stringify({
+  sel: els['pw-selection'] ? els['pw-selection'].innerHTML : null,
+  note: note ? note.textContent : null,
+  noteHidden: note ? note.classList.contains('hidden') : null,
+  u: els['pw-u-slider'] ? els['pw-u-slider'].value : null,
+  ph: els['pw-ph-input'] ? els['pw-ph-input'].value : null,
+  uReadout: els['pw-u-readout'] ? els['pw-u-readout'].textContent : null,
+  pressed: created
+    .filter((el) => el.classList.contains('pw-path-btn'))
+    .map((b) => b.attrs['aria-pressed'] || null),
+  rs: rsCalls,
+  clip: clipCalls,
+  copyLabel: els['pw-copy-link'] ? els['pw-copy-link'].textContent : null,
+}));
+"""
+
+
+def _run_url_probe(tmp_path: Path, html: str, search: str = "", after: str = "") -> Any:
+    """Run the page's own script under :data:`_NODE_URL_JS` and return the
+    dumped selection/URL observations."""
+    scripts = re.findall(r"<script>(.*?)</script>", html, re.DOTALL)
+    (script,) = [s for s in scripts if "function renderDiagram" in s]
+    (tmp_path / "page.js").write_text(script, encoding="utf-8")
+    driver = tmp_path / "url_driver.js"
+    driver.write_text(_NODE_URL_JS, encoding="utf-8")
+    out = subprocess.run(
+        ["node", str(driver), str(tmp_path / "page.js"), search, after],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+        timeout=60,
+    )
+    return json.loads(out.stdout)
+
+
+def test_pathway_detail_copy_link_and_note_rendered(client, runtime) -> None:
+    """The copy-link control sits next to the selection readout and the
+    stale-parameter notice element is on the page (hidden until needed)."""
+    _seed_parked(runtime, _parked_graph())
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    assert 'id="pw-copy-link"' in resp.text
+    assert 'id="pw-link-note"' in resp.text
+    assert 'id="pw-selection"' in resp.text
+    assert "history.replaceState" in resp.text
+
+
+@_needs_node
+def test_pathway_url_state_round_trip(client, runtime, tmp_path: Path) -> None:
+    """Selection -> URL -> restored selection: a state click, a path
+    isolation, a U move and a pH entry each rewrite the address bar via
+    ``history.replaceState`` (no reload), the copy-link button hands out
+    that URL, and loading it restores the same view — the same state
+    selected, the same path pressed, U/pH back in their controls — without
+    itself rewriting the address bar."""
+    _seed_parked(runtime, _parked_graph())
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+
+    after = """
+docHandlers.click.forEach((f) => f({target: {closest: () => ({getAttribute: () => 'NH3'})}}));
+created.filter((e) => e.classList.contains('pw-path-btn'))[0].handlers.click[0]();
+els['pw-u-slider'].value = '-1';
+els['pw-u-slider'].handlers.input[0]();
+els['pw-ph-input'].value = '7';
+els['pw-ph-input'].handlers.input[0]();
+els['pw-copy-link'].handlers.click[0]();
+"""
+    out = _run_url_probe(tmp_path, resp.text, after=after)
+    assert out["rs"] == [
+        "/refs/pathway/171696?state=NH3",
+        "/refs/pathway/171696?state=NH3&path=NH3",
+        "/refs/pathway/171696?state=NH3&path=NH3&u=-1",
+        "/refs/pathway/171696?state=NH3&path=NH3&u=-1&ph=7",
+    ]
+    assert out["clip"] == ["http://precis.test" + out["rs"][-1]]
+    assert out["copyLabel"] == "copied ✓"
+
+    restored = _run_url_probe(
+        tmp_path, resp.text, search="?state=NH3&path=NH3&u=-1&ph=7"
+    )
+    assert restored["rs"] == []  # loading a link never rewrites it
+    assert restored["noteHidden"] is True
+    assert "NH3" in restored["sel"]
+    assert restored["pressed"] == ["true", "false"]
+    assert restored["u"] == "-1"
+    assert restored["ph"] == "7"
+    assert "-1.00" in restored["uReadout"]
+    assert "pH 7" in restored["uReadout"]
+
+
+@_needs_node
+def test_pathway_url_state_invalid_params_fall_back_with_notice(
+    client, runtime, tmp_path: Path
+) -> None:
+    """Stale/invalid params each fall back to the default with a one-line
+    notice naming what was ignored — never an error — while the valid ones
+    still apply."""
+    _seed_parked(runtime, _parked_graph())
+    html = client.get("/refs/pathway/171696").text
+
+    out = _run_url_probe(tmp_path, html, search="?state=zzz&path=zzz&u=abc&ph=xyz")
+    assert out["noteHidden"] is False
+    for p in ("state", "path", "u", "ph"):
+        assert p in out["note"]
+    # the default view: first state selected, lever defaults, nothing pressed
+    assert "NO@N" in out["sel"]
+    assert out["u"] == "0"
+    assert out["ph"] == "0"
+    assert out["pressed"] == ["false", "false"]
+
+    # a bad path leaf doesn't take the valid state down with it
+    out = _run_url_probe(tmp_path, html, search="?state=NH3&path=zzz")
+    assert "NH3" in out["sel"]
+    assert out["noteHidden"] is False
+    assert "path" in out["note"]
+
+    # a valid leaf alone restores the path, keyed by leaf id not position
+    out = _run_url_probe(tmp_path, html, search="?path=H2O")
+    assert out["pressed"] == ["false", "true"]
+    assert out["noteHidden"] is True
+
+
+@_needs_node
+def test_pathway_url_state_escapes_state_ids(client, runtime, tmp_path: Path) -> None:
+    """A state id with a literal ``+`` (coadsorbed fragments) percent-
+    encodes into ``%2B`` — a bare ``+`` decodes as a space and resolves
+    nothing — and decodes back to the same selection."""
+    _seed_parked(runtime, _parked_graph())
+    html = client.get("/refs/pathway/171696").text
+    after = (
+        "docHandlers.click.forEach((f) => f({target: {closest: () => "
+        "({getAttribute: () => 'N+H'})}}));"
+    )
+    out = _run_url_probe(tmp_path, html, after=after)
+    assert out["rs"][-1].endswith("?state=N%2BH")
+
+    restored = _run_url_probe(tmp_path, html, search="?state=N%2BH")
+    assert "N+H" in restored["sel"]
+    assert restored["noteHidden"] is True
+
+    # a raw '+' decodes to a space -> unknown state -> notice + default
+    raw = _run_url_probe(tmp_path, html, search="?state=N+H")
+    assert raw["noteHidden"] is False
+    assert "N+H" not in (raw["sel"] or "")

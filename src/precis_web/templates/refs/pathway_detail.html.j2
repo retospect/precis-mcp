@@ -179,8 +179,15 @@
   <div id="pw-path-legend" class="flex flex-wrap items-center gap-1 mb-1"></div>
   {# what is selected right now (state and/or isolated path) — filled by
      updateSelectionReadout; a click used to scroll the page to the table
-     with nothing on the diagram saying what it had picked. #}
-  <div id="pw-selection" class="mb-1 min-h-[1.25rem] text-[11px] text-slate-600" aria-live="polite"></div>
+     with nothing on the diagram saying what it had picked. The copy-link
+     button mirrors the selection into a shareable URL — the whole
+     selection already round-trips through the query string (gr486822). #}
+  <div class="mb-1 flex items-center gap-2">
+    <div id="pw-selection" class="min-h-[1.25rem] flex-1 text-[11px] text-slate-600" aria-live="polite"></div>
+    <button type="button" id="pw-copy-link"
+            class="shrink-0 rounded border border-slate-300 px-1.5 py-0.5 text-[11px] text-slate-600 hover:bg-slate-100"
+            title="copy a link that re-opens this exact selection">copy link</button>
+  </div>
   <div id="pw-diagram" class="w-full overflow-x-auto rounded border border-sky-200 bg-slate-50 p-1"></div>
   <p id="pw-diagram-key" class="mt-1 text-[10px] leading-snug text-slate-500">
     <b>Key:</b>
@@ -214,6 +221,12 @@
   {% else %}
   <p class="text-sm text-slate-400 italic">no energetics graph recorded for this pathway yet.</p>
   {% endif %}
+
+  {# stale/invalid link parameters (gr486822) land here — a one-line
+     notice, never an error; filled by applyUrlSelection. Outside the
+     diagram guard so a bad ?state= on a graph-less pathway still notes
+     itself. #}
+  <p id="pw-link-note" class="hidden mb-2 text-[11px] text-amber-700"></p>
 
   {% if state_ids %}
   <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4">
@@ -1472,6 +1485,7 @@
   function togglePathSelection(pi) {
     selectedPath = (selectedPath === pi) ? null : pi;
     applyPathSelection();
+    syncUrl();
   }
 
   function buildPathLegend(paths) {
@@ -1502,6 +1516,7 @@
       if (ev.key === 'Escape' && selectedPath != null) {
         selectedPath = null;
         applyPathSelection();
+        syncUrl();
       }
     });
   }
@@ -1748,11 +1763,14 @@
     }
   }
 
-  function showState(id) {
+  // ``quiet`` skips the URL rewrite — bootMol's re-select only loads the
+  // geometry for the already-chosen state, it isn't a new selection.
+  function showState(id, quiet) {
     if (!V.stateIds.includes(id)) { return; }
     selected = id;
     highlightState(id, true);
     renderMeasuresPanel(id);
+    if (!quiet) { syncUrl(); }
 
     const emptyMsg = document.getElementById('pw-mol-empty');
     if (!molViewer) { return; }
@@ -1798,16 +1816,91 @@
     showState(ids[i]);
   }
 
-  // Candidate stepper (item E) — a page load carrying ``?state=<id>``
-  // (stamped by the stepper's own prev/next/select navigation below) opens
-  // on that state instead of the default first one, so switching candidates
-  // never loses the operator's place in the network.
-  function initialStateId() {
+  // ── shareable link state (gr486822) — the page's whole selection (state
+  // box, isolated path, U lever, pH) round-trips through the query string:
+  // every change rewrites the address bar via history.replaceState (no
+  // reload, no history entries), and a pasted link re-opens the same view.
+  // Params carry STABLE identifiers — the state id, and a path's leaf state
+  // id (what the legend prints), never a list position — so a link
+  // survives path re-ordering. A param that doesn't resolve on this
+  // pathway (stale or hand-edited) is ignored with a one-line note, never
+  // an error; absent params keep their defaults (first state, no isolated
+  // path, U=0, pH=0). The candidate stepper's carry-forward reads the same
+  // query string, so it forwards the whole selection, not just ?state=. ──
+  let urlSyncLive = false;
+
+  function pwQueryString() {
+    const qs = new URLSearchParams();
+    if (selected) { qs.set('state', selected); }
+    if (selectedPath != null) {
+      const p = ((V.diagram || {}).paths || [])[selectedPath];
+      if (p && p.length) { qs.set('path', p[p.length - 1]); }
+    }
+    if (currentU !== 0) { qs.set('u', String(+currentU.toFixed(2))); }
+    const ph = phInput ? parseFloat(phInput.value) : NaN;
+    if (ph) { qs.set('ph', String(ph)); }
+    const s = qs.toString();
+    return s ? '?' + s : '';
+  }
+
+  function syncUrl() {
+    if (!urlSyncLive) { return; }
     try {
-      const qs = new URLSearchParams(window.location.search).get('state');
-      if (qs && V.stateIds.includes(qs)) { return qs; }
-    } catch (err) { /* malformed query string — fall through to default */ }
-    return V.stateIds[0];
+      history.replaceState(null, '', window.location.pathname + pwQueryString());
+    } catch (err) { /* file:// / sandboxed context — the copy button still works */ }
+  }
+
+  const linkNote = document.getElementById('pw-link-note');
+  function showLinkNote(text) {
+    if (!linkNote) { return; }
+    linkNote.textContent = text;
+    linkNote.classList.remove('hidden');
+  }
+
+  // Read the query string once at init: apply what resolves, collect what
+  // doesn't into the notice, and return the state to open on (null -> the
+  // default first state). Runs before the first renderDiagram so a linked
+  // path/U land in the very first paint.
+  function applyUrlSelection() {
+    let initState = null;
+    const ignored = [];
+    let qs;
+    try {
+      qs = new URLSearchParams(window.location.search);
+    } catch (err) {
+      qs = new URLSearchParams();
+    }
+    const qState = qs.get('state');
+    if (qState) {
+      if (V.stateIds.includes(qState)) { initState = qState; }
+      else { ignored.push('state'); }
+    }
+    const qPath = qs.get('path');
+    if (qPath) {
+      const paths = (V.diagram && V.diagram.paths) || [];
+      const pi = paths.findIndex((p) => p.length && p[p.length - 1] === qPath);
+      if (pi >= 0) { selectedPath = pi; } else { ignored.push('path'); }
+    }
+    const qU = qs.get('u');
+    if (qU != null) {
+      const u = parseFloat(qU);
+      if (Number.isFinite(u)) {
+        currentU = Math.max(-1.5, Math.min(0.5, u));
+        if (uSlider) { uSlider.value = String(currentU); }
+      } else { ignored.push('u'); }
+    }
+    const qPh = qs.get('ph');
+    if (qPh != null) {
+      const p = parseFloat(qPh);
+      if (Number.isFinite(p)) { if (phInput) { phInput.value = String(p); } }
+      else { ignored.push('ph'); }
+    }
+    if (ignored.length) {
+      showLinkNote('Ignored link parameter' + (ignored.length > 1 ? 's' : '')
+        + ' that don\u2019t match this pathway (stale or invalid): '
+        + ignored.join(', ') + ' \u2014 showing the default for those.');
+    }
+    return initState;
   }
 
   function bootMol() {
@@ -1815,7 +1908,9 @@
     const el = document.getElementById('pw-mol');
     if (!el || !V.stateIds.length) { return; }
     molViewer = $3Dmol.createViewer(el, { backgroundColor: 'white' });
-    showState(initialStateId());
+    // The init showState below ran before the viewer existed — re-run it to
+    // load the geometry for whatever state ended up selected.
+    showState(selected || V.stateIds[0], true);
   }
 
   document.addEventListener('click', (ev) => {
@@ -1828,12 +1923,13 @@
   if (nextBtn) nextBtn.addEventListener('click', () => stepState(1));
 
   // Candidate stepper navigation — every link/select carries the currently
-  // selected state forward via ``?state=`` so the new candidate's page opens
-  // on the same state (``initialStateId`` above reads it back).
+  // selected state forward via the query string (``pwQueryString`` — the
+  // whole selection, not just ?state=) so the new candidate's page opens
+  // on the same view (``applyUrlSelection`` above reads it back).
   function withStateParam(url) {
     if (!url || url === '#') { return null; }
-    const id = selected || (V.stateIds && V.stateIds[0]);
-    return id ? `${url}?state=${encodeURIComponent(id)}` : url;
+    const q = pwQueryString();
+    return q ? url + q : url;
   }
   function navigateStepper(ev, url) {
     const dest = withStateParam(url);
@@ -1883,13 +1979,38 @@
     } catch (err) {
       console.error('pathway diagram re-render failed', err);
     }
+    syncUrl();
   }
   if (uSlider) { uSlider.addEventListener('input', () => setU(parseFloat(uSlider.value))); }
-  if (phInput) { phInput.addEventListener('input', updateUReadout); }
+  if (phInput) { phInput.addEventListener('input', () => { updateUReadout(); syncUrl(); }); }
   const snapUL = document.getElementById('pw-u-snap-ul');
   const snapUopt = document.getElementById('pw-u-snap-uopt');
   if (snapUL) snapUL.addEventListener('click', () => setU(V.results && V.results.U_L));
   if (snapUopt) snapUopt.addEventListener('click', () => setU(V.results && V.results.U_opt));
+
+  // Copy-link (gr486822) — the address bar already carries the whole
+  // selection, so the button just copies location.href; the clipboard API
+  // is async and needs a secure context, so its rejection falls back to a
+  // prompt with the URL pre-filled rather than dying silently.
+  const copyLink = document.getElementById('pw-copy-link');
+  if (copyLink) {
+    copyLink.addEventListener('click', () => {
+      const url = window.location.href;
+      const flash = () => {
+        copyLink.textContent = 'copied \u2713';
+        setTimeout(() => { copyLink.textContent = 'copy link'; }, 1500);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(url).then(flash, () => {
+          if (window.prompt) { window.prompt('Copy this link:', url); }
+        });
+      } else if (window.prompt) {
+        window.prompt('Copy this link:', url);
+      }
+    });
+  }
+
+  const initState = applyUrlSelection();
   updateUReadout();
 
   // A diagram-render failure (e.g. a still-unanticipated bad graph shape)
@@ -1900,6 +2021,12 @@
   } catch (err) {
     console.error('pathway diagram render failed', err);
   }
+  // Open on the linked/default state right away — the 3D viewer may still
+  // be loading (bootMol retries on $3Dmol), but the list highlight, diagram
+  // outline and measures shouldn't wait on it. bootMol re-runs showState
+  // once the viewer exists, to load the geometry.
+  if (V.stateIds.length) { showState(initState || V.stateIds[0]); }
+  urlSyncLive = true;
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', bootMol);
   } else { bootMol(); }
