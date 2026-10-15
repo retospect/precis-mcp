@@ -72,6 +72,33 @@ def test_delete_draft_refused_on_dossier(runtime_with_store: Any, store: Store) 
     assert _texts(store, ref_id) == before
 
 
+@pytest.mark.parametrize("universal", [True, False])
+def test_text_and_block_delete_accept_dc_and_base58_handles(
+    runtime_with_store: Any, store: Store, universal: bool
+) -> None:
+    """A posted ``dc<id>`` used to reach the verb as ``¶dc<id>`` — parsed as
+    a legacy base-58 anchor that matches no chunk (NotFound)."""
+    proj = store.insert_ref(kind="todo", slug=None, title="P").id
+    ref, title = store.drafts.create_draft(name="dcweb", title="T", project_ref_id=proj)
+    p1, p2 = (
+        store.drafts.add_chunks(
+            ref_id=ref.id, chunk_kind="paragraph", text=t, at={"after": title.handle}
+        )[0]
+        for t in ("first", "second")
+    )
+
+    def posted(chunk: Any) -> str:
+        return f"dc{chunk.chunk_id}" if universal else chunk.handle
+
+    c = _client(runtime_with_store)
+    r = c.post("/drafts/dcweb/text", data={"handle": posted(p1), "text": "edited"})
+    assert r.status_code == 200 and r.json()["ok"], r.text
+    assert "edited" in _texts(store, ref.id)
+    r = c.post(f"/drafts/dcweb/block/{posted(p2)}/delete")
+    assert r.status_code == 200 and r.json()["ok"], r.text
+    assert "second" not in _texts(store, ref.id)
+
+
 def test_ordinary_draft_block_flow_and_delete(
     runtime_with_store: Any, store: Store
 ) -> None:

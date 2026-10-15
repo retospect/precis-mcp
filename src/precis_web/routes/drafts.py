@@ -2378,7 +2378,10 @@ async def edit_text_inline(
             status_code=422,
         )
     # Write through the edit verb (validation + link-sync + hints single-sourced).
-    args: dict[str, Any] = {"kind": "draft", "id": f"¶{handle}", "text": text}
+    # The verb takes the resolved chunk's universal handle: wrapping a posted
+    # ``dc<id>`` as ``¶dc<id>`` reads as an unresolvable legacy base-58 anchor.
+    dc = handle_registry.format_handle("draft", chunk.chunk_id, chunk=True)
+    args: dict[str, Any] = {"kind": "draft", "id": dc, "text": text}
     if base_sha.strip():
         args["base_sha"] = base_sha.strip()
     body, is_error = await await_dispatch(request, "edit", args)
@@ -2681,7 +2684,8 @@ async def delete_block(
     chunk = store.drafts.get_draft_chunk(handle)
     if chunk is None or chunk.ref_id != ref.id:
         return JSONResponse({"ok": False, "error": "block not found"}, status_code=404)
-    args: dict[str, Any] = {"kind": "draft", "id": f"¶{handle}"}
+    dc = handle_registry.format_handle("draft", chunk.chunk_id, chunk=True)
+    args: dict[str, Any] = {"kind": "draft", "id": dc}
     if cascade.strip():
         args["mode"] = "cascade"
     body, is_error = await await_dispatch(request, "delete", args)
