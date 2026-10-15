@@ -63,7 +63,8 @@ legacy note shrunk to just the prompt-assembly `Block` type.
   `tier_promote_neb/_verify`→`fidelity_promote_*`, candidate
   `flags/measures.barrier_tier`→`barrier_fidelity` — migration UPDATE backfill
   of quest/candidate meta + code + skills (`precis-quest-help`) + glossary
-  (**tier ladder**→**fidelity ladder** entry).
+  (**tier ladder**→**fidelity ladder** entry). Since renamed again to
+  `fidelity_levels` / **fidelity levels** (migration 0216).
 - Review digest `tier_tag` open-tag strings on memories — backfill UPDATE of
   ref_tags + code field rename (`digest_tag`).
 - wall_seconds cleanup: backfill in-flight job rows flat→nested, then remove

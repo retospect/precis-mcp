@@ -44,7 +44,6 @@ The coined term is actively misleading or costs a reader real effort.
 | coined | proposed | rationale |
 |---|---|---|
 | `abstraction ladder`, `rung 0..5` (se) | **conceptual / embodiment / detail design**, or FBS levels | Pahl & Beitz systematic design is the standard decomposition; Gero's function–behaviour–structure is the standard ontology. "Rung 3" carries no meaning to anyone outside this repo. See the unicycle finding below. |
-| `fidelity ladder` | **fidelity levels** / model hierarchy | Peherstorfer, Willcox & Gunzburger (`pa449700`) is the canonical taxonomy (adaptation / fusion / filtering). "Ladder" implies a total order the literature does not assume. |
 | `establishes` / `corroborates` / `contradicts` | align to **CiTO** (`cito:supports`, `cito:disagreesWith`) | CiTO is the deployed standard for citation intent; nanopublication (Groth et al.) is already the model for the hub itself, so the edge vocabulary should match rather than fork. |
 | `atom` / `compound` claim | **atomic** / **composite** claim | "compound" collides with the chemistry sense in this very corpus — an overloaded-term problem of our own making |
 | `brick` / `linker` (se atomic) | `linker` is already standard (MOF); **node / secondary building unit (SBU)** for `brick` | reticular chemistry vocabulary |
@@ -163,10 +162,6 @@ hierarchical shape inline rather than repoint at `unicycle-c1`.
     `artifact_type='composite'`, skills, `nanopub_render`,
     `docs/reference/nanopub-example/`), shipping through the orchestrator's
     gate.
-  - `fidelity ladder` → `fidelity levels`: `meta.fidelity_ladder` is a prod
-    quest meta key (itself renamed from `tier_ladder` by 0145), read in
-    `quest/{compute,graduate,catalyst_seed,frontier}.py`, code the
-    catalysis-selectivity and roadmap-quest trees edit daily.
   - `rung` (se abstraction levels): in `precis_se` migrations 0003/0011/0016
     and six `precis_se` modules; overlaps se-machine-design. Distinct from
     the todo `meta.rung` (a roadmap rung, `check_rung_meta`), which is not

@@ -29,7 +29,7 @@ from precis.quest.compute import (
     _AUTOCATPATH_BARRIER_KEYS,
     _AUTOCATPATH_SPAN_KEYS,
     _TIER_VERIFY,
-    _fidelity_ladder_enabled,
+    _fidelity_levels_enabled,
 )
 from precis.quest.logbook import append_entry
 from precis.store import Tag
@@ -89,7 +89,7 @@ def graduate_frontier(store: Store, quest_id: int, *, by: str = "agent") -> list
     # tier) lets a candidate rank on the working frontier, but graduation to
     # a real-world experiment requires every declared axis measured.
     fr = quest_frontier(store, quest_id, strict=True)
-    ladder_on = _fidelity_ladder_enabled(store, quest_id)
+    ladder_on = _fidelity_levels_enabled(store, quest_id)
     graduated: list[int] = []
     for c in fr.frontier:
         value = c.measures.get(key)
@@ -119,7 +119,7 @@ def graduate_frontier(store: Store, quest_id: int, *, by: str = "agent") -> list
         # deed — the neb tier's barrier is best_first-pruned, screening has none.
         # `barrier_fidelity` (:func:`precis.quest.compute._canonicalize_barrier`)
         # tracks which tier the candidate's CURRENT canonical `barrier` came
-        # from; a ladder-off quest (no `meta.fidelity_ladder`) is exempt —
+        # from; a ladder-off quest (no `meta.fidelity_levels`) is exempt —
         # today's straight-to-NEB behaviour is unaffected.
         if (
             ladder_on

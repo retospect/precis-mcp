@@ -2,7 +2,7 @@
 
 A one-off, capped attachment for a chunk that carries resolved
 chunk-scoped ``cites`` edges from ``workers/inbound_chase.py`` —
-deliberately **not** a slice of the deferred fidelity-ladder /
+deliberately **not** a slice of the deferred fidelity-level /
 turn-routing-context-DSL proposal
 (``docs/backlog/turn-routing-and-context-dsl.md``, still "deferred —
 design captured, not sliced"); this render reuses that proposal's

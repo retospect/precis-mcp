@@ -25,7 +25,7 @@ selection remains independent of that history bound.
 
 Compute-adjacent seams, each with its own module docstring:
 
-- `relax` — the rented fidelity ladder (``clean``/``emt`` ours, always-on;
+- `relax` — the rented fidelity levels (``clean``/``emt`` ours, always-on;
   higher rungs extras-gated, GPU-dispatched via the compute job lane).
   ``dispersion=True`` adds DFT-D3 on the ``ml`` rung — off by default, but
   load-bearing for van-der-Waals-bound designs, and local-only (the GPU

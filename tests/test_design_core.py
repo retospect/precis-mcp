@@ -207,7 +207,7 @@ def test_sidecar_validation_and_queries() -> None:
     assert set(sidecar) == {"length", "wall", "bearing_life"}
     # The margin audit is a query over the sidecar, not a feature.
     assert provenance.margin_audit(sidecar) == {"wall": "fatigue_knockdown"}
-    # The fidelity ladder, likewise. Stated numbers aren't on the ladder.
+    # The fidelity levels, likewise. Stated numbers sit on no level.
     assert provenance.below_fidelity(sidecar, "full_solve") == [
         "bearing_life",
         "wall",

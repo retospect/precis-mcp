@@ -151,7 +151,7 @@ def seed_catalyst_quest(
     *,
     hub: Any | None = None,
     rubric_composite: dict[str, Any] | None = None,
-    fidelity_ladder: bool = True,
+    fidelity_levels: bool = True,
     fidelity_promote_neb: int | None = None,
     fidelity_promote_verify: int | None = None,
 ) -> tuple[int, bool]:
@@ -169,15 +169,15 @@ def seed_catalyst_quest(
     the LLM loop may write this key later (the agent may not tune its own
     objective).
 
-    ``fidelity_ladder`` (default ``True``) opts the quest into the
-    **screening → neb → verify** catpath fidelity ladder
+    ``fidelity_levels`` (default ``True``) opts the quest into the
+    **screening → neb → verify** catpath fidelity levels
     (:mod:`precis.quest.compute` — ``run_compute_step``'s initial dispatch +
-    ``promote_tiers``' code-driven promotion both read ``meta.fidelity_ladder``).
-    A NEW catalyst quest gets it on by default; pass ``fidelity_ladder=False``
+    ``promote_tiers``' code-driven promotion both read ``meta.fidelity_levels``).
+    A NEW catalyst quest gets it on by default; pass ``fidelity_levels=False``
     for today's straight-to-NEB behaviour. This default only affects quests
     minted through THIS seed — a quest built any other way (a bare
     ``QuestHandler.put`` + manual ``meta.reaction_config`` stamp, as every
-    pre-ladder test does) has no ``meta.fidelity_ladder`` key at all and stays
+    pre-ladder test does) has no ``meta.fidelity_levels`` key at all and stays
     ladder-off, unaffected. ``fidelity_promote_neb`` / ``fidelity_promote_verify``
     (default :data:`precis.quest.compute._DEFAULT_TIER_PROMOTE_NEB` /
     :data:`precis.quest.compute._DEFAULT_TIER_PROMOTE_VERIFY` when omitted)
@@ -208,7 +208,7 @@ def seed_catalyst_quest(
         "rubric_objectives": RUBRIC_OBJECTIVES,
         "graduation": GRADUATION,
         "param_space": PARAM_SPACE,
-        "fidelity_ladder": fidelity_ladder,
+        "fidelity_levels": fidelity_levels,
         "fidelity_promote_neb": (
             fidelity_promote_neb
             if fidelity_promote_neb is not None

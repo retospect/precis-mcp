@@ -39,7 +39,7 @@ Revisit the thin-slice simplifications:
 - Wait modes: add `wait=<seconds>` block-poll sugar + document the
   tick-resurrection pattern (interactive callers keep the async
   handle).
-- Fidelity ladder constraint (decided): batch triage children (~30
+- Fidelity-level constraint (decided): batch triage children (~30
   candidates/child), not 1-agent-per-hit — cost scales with fan-out.
 
 ### Phase 3 — provider seam (separate)

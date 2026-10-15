@@ -81,7 +81,7 @@ Package-level invariants (detail lives on the named module):
   quest means *owned by* it; ``search.LINKABLE_KINDS``). The logbook line per
   query reports local vs acquired.
 - **Human-set knobs the LLM may not tune**: ``meta.rubric_composite``,
-  ``meta.fidelity_ladder`` (screening→neb→verify) — seed time only.
+  ``meta.fidelity_levels`` (screening→neb→verify) — seed time only.
 - **Bulk Pourbaix is diagnostic until the gate lands.** Dispatch requires
   human-set ``operating_conditions`` and content-addresses geometry + inputs;
   a successful current-input verdict is stamped as evidence, while every

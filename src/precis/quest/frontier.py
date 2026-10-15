@@ -1944,7 +1944,7 @@ def _provisional_split(
 #: Tier-ladder glyph column (tier-ladder UX item 4) — one character per rung,
 #: read off ``Candidate.flags['tier']`` (the candidate's OWN highest-attained
 #: tier, not ``barrier_fidelity``). A candidate with no tier stamp at all (a
-#: pre-ladder quest, or one that opted out — ``fidelity_ladder=False``) gets no
+#: pre-ladder quest, or one that opted out — ``fidelity_levels=False``) gets no
 #: glyph rather than a fabricated one. The word each glyph stands for isn't
 #: repeatable in a plain TOON cell (no title-attribute equivalent), so
 #: ``QuestHandler._render_leaderboard`` prints the legend once in the

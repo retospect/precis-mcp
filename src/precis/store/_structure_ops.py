@@ -79,7 +79,7 @@ class StructureCompletionGeometrySnapshot(TypedDict):
 
 
 class StructRunRow(TypedDict):
-    """One ``struct_runs`` row — the fidelity-ladder compute history
+    """One ``struct_runs`` row — the fidelity-level compute history
     (``structure_runs``)."""
 
     id: int
@@ -823,7 +823,7 @@ class StructureMixin:
         return run_id
 
     def structure_runs(self, ref_id: int, *, limit: int = 20) -> list[StructRunRow]:
-        """A design's compute history, most-recent first (the fidelity ladder).
+        """A design's compute history, most-recent first (the fidelity levels).
         ``forces``/``charges`` (gripe 161576) ride along raw (jsonb-decoded
         dict/``None``) so a renderer can flag which runs carry a per-atom force
         estimate without a second query."""

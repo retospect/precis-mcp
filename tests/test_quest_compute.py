@@ -6016,7 +6016,7 @@ class TestDispatchAutocatpath:
         candidate on a ladder quest at screening (not an unearned neb)."""
         qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
         store.stamp_ref_meta(
-            qid, {"reaction_config": self._RX, "fidelity_ladder": True}
+            qid, {"reaction_config": self._RX, "fidelity_levels": True}
         )
         spec2 = {
             "cell": {"a": 8.4, "b": 8.4, "c": 24.0, "pbc": [True, True, False]},
@@ -6052,7 +6052,7 @@ class TestDispatchAutocatpath:
         sid = self._candidate(store, qid)
         ref = store.fetch_refs_by_ids({sid})[sid]
         assert compute_mod._redispatch_tier(store, qid, ref) == compute_mod._TIER_NEB
-        store.stamp_ref_meta(qid, {"fidelity_ladder": True})
+        store.stamp_ref_meta(qid, {"fidelity_levels": True})
         assert (
             compute_mod._redispatch_tier(store, qid, ref) == compute_mod._TIER_SCREENING
         )
@@ -6535,7 +6535,7 @@ class TestReactionCoDispatch:
     def test_ladder_on_quest_dispatches_screening_tier_first(
         self, store: Any, monkeypatch: Any
     ) -> None:
-        """``meta.fidelity_ladder=True`` steers a NEW candidate's first
+        """``meta.fidelity_levels=True`` steers a NEW candidate's first
         autocatpath run to the cheap screening rung, not straight to neb."""
         tier_calls: list[Any] = []
 
@@ -6549,7 +6549,7 @@ class TestReactionCoDispatch:
         monkeypatch.setattr(compute_mod, "dispatch_autocatpath", _fake_autocatpath)
         qid = _mk_quest(store, "Lowest-barrier Pd catalyst for NO→NH₃")
         store.stamp_ref_meta(
-            qid, {"reaction_config": self._RX, "fidelity_ladder": True}
+            qid, {"reaction_config": self._RX, "fidelity_levels": True}
         )
         compute_mod.run_compute_step(store, qid, [{"name": "Pd", "structure": _SPEC}])
         assert tier_calls == [compute_mod._TIER_SCREENING]
@@ -6557,7 +6557,7 @@ class TestReactionCoDispatch:
     def test_ladder_off_quest_dispatches_neb_tier_by_default(
         self, store: Any, monkeypatch: Any
     ) -> None:
-        """No ``meta.fidelity_ladder`` (the pre-ladder default, and every
+        """No ``meta.fidelity_levels`` (the pre-ladder default, and every
         existing quest/test) keeps today's straight-to-NEB dispatch."""
         tier_calls: list[Any] = []
 
@@ -6655,7 +6655,7 @@ class TestTierPromotion:
     def _quest(self, store: Any, **extra_meta: Any) -> int:
         qid = _mk_quest(store, "Lowest-barrier Pd catalyst for NO→NH₃")
         store.stamp_ref_meta(
-            qid, {"reaction_config": self._RX, "fidelity_ladder": True, **extra_meta}
+            qid, {"reaction_config": self._RX, "fidelity_levels": True, **extra_meta}
         )
         return qid
 
@@ -7029,7 +7029,7 @@ class TestTierPromotion:
     def test_ladder_off_is_a_noop(self, store: Any, monkeypatch: Any) -> None:
         calls = self._stub_dispatch(monkeypatch)
         qid = _mk_quest(store, "A striving")
-        store.stamp_ref_meta(qid, {"reaction_config": self._RX})  # no fidelity_ladder
+        store.stamp_ref_meta(qid, {"reaction_config": self._RX})  # no fidelity_levels
         self._screening_candidate(store, qid, "A", 0.5)
         assert compute_mod.promote_tiers(store, qid) == []
         assert calls == []
@@ -7037,7 +7037,7 @@ class TestTierPromotion:
     def test_no_reaction_config_is_a_noop(self, store: Any, monkeypatch: Any) -> None:
         calls = self._stub_dispatch(monkeypatch)
         qid = _mk_quest(store, "A striving")
-        store.stamp_ref_meta(qid, {"fidelity_ladder": True})  # no reaction_config
+        store.stamp_ref_meta(qid, {"fidelity_levels": True})  # no reaction_config
         assert compute_mod.promote_tiers(store, qid) == []
         assert calls == []
 

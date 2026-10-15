@@ -53,7 +53,7 @@ the per-type recipe skills for invocation details.)
 
 Flag the quest `meta.surface_anchors: true`. Each tick then mints one
 `surface_coverage_scan` per live candidate that reached the `neb` rung
-of the fidelity ladder or sits on the merged Pareto front
+of the fidelity levels or sits on the merged Pareto front
 (`precis.quest.surface_anchors`), its exported slab injected as
 `slab_extxyz`; the harvest stamps `anchors_job_id`, `anchor_key`,
 `anchors_footing`, `resting_termination_at_point`, `needs_anchor_top`

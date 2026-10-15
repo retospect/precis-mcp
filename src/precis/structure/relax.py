@@ -1,4 +1,4 @@
-"""The relax surface — a rented fidelity ladder.
+"""The relax surface — rented fidelity levels.
 
 `relax` is one verb with a ``fidelity`` rung: ``clean`` (rung 0) is **ours and
 always available** — a pure geometric repair that pushes sub-covalent / overlapping

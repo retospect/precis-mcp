@@ -45,7 +45,7 @@ only be best-effort at propose time, unlike
 :func:`precis_se.atomic.validate.envelope_fit`'s bind-preflight check, which
 has a real placement to check against). Like ``structure_propose``, a
 proposed ``relax`` op is rejected outright — a proposal is a from-scratch
-geometry build, never a fidelity-ladder dispatch (that's compute-heavy and
+geometry build, never a fidelity-level dispatch (that's compute-heavy and
 belongs to Apply, not Propose, the same "propose stays synchronous and
 cheap" reasoning ``structure_propose`` documents for its own rejection).
 
@@ -460,7 +460,7 @@ def dry_run(
     if any(o.get("op") == "relax" for o in ops):
         return (
             "a proposal may not include a 'relax' op — it builds geometry "
-            "from scratch only; a fidelity-ladder relax is compute-heavy "
+            "from scratch only; a fidelity-level relax is compute-heavy "
             "and belongs to a later Apply step, not Propose",
             [],
         )

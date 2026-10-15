@@ -83,8 +83,8 @@ class TestSeedCatalystQuest:
 
 
 class TestTierLadderSeed:
-    """A NEW catalyst quest opts into the screening→neb→verify fidelity ladder
-    by default; ``fidelity_ladder=False`` keeps today's straight-to-NEB shape.
+    """A NEW catalyst quest opts into the screening→neb→verify fidelity levels
+    by default; ``fidelity_levels=False`` keeps today's straight-to-NEB shape.
     The promotion caps are human-set at seed time (never a tick/LLM write)."""
 
     def test_tier_ladder_on_by_default(self, store: Any) -> None:
@@ -96,14 +96,14 @@ class TestTierLadderSeed:
         qid, created = seed_catalyst_quest(store)
         assert created is True
         meta = _meta(store, qid)
-        assert meta["fidelity_ladder"] is True
+        assert meta["fidelity_levels"] is True
         assert meta["fidelity_promote_neb"] == _DEFAULT_TIER_PROMOTE_NEB
         assert meta["fidelity_promote_verify"] == _DEFAULT_TIER_PROMOTE_VERIFY
 
     def test_tier_ladder_can_be_opted_out(self, store: Any) -> None:
-        qid, created = seed_catalyst_quest(store, fidelity_ladder=False)
+        qid, created = seed_catalyst_quest(store, fidelity_levels=False)
         assert created is True
-        assert _meta(store, qid)["fidelity_ladder"] is False
+        assert _meta(store, qid)["fidelity_levels"] is False
 
     def test_explicit_promotion_caps_are_written_verbatim(self, store: Any) -> None:
         qid, created = seed_catalyst_quest(

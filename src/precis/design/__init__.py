@@ -29,7 +29,7 @@ renter should cost a new import, not a migration.
   enum pair for every number in the system: the spec's separate
   ``load_provenance`` collapses into it (:func:`~precis.design.provenance.
   from_load_provenance` is the shim). This is what makes the margin audit,
-  the fidelity ladder and library-update notification *queries* rather
+  the fidelity levels and library-update notification *queries* rather
   than features.
 - :mod:`precis.design.history` — the versioning axis, called **design
   history** and never "design state" (the glossary reserves *state* for

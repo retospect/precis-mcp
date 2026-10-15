@@ -50,7 +50,7 @@ Owned elsewhere (read the owner first):
   (adopt this doc's brick/linker vocabulary there), π systems + interaction terms →
   `nm-stick-placement.md`, switching physics →
   `photoswitch-states-and-spectral-dof.md`. Held here: the `density_at`
-  fidelity ladder, conformer enumeration, degradation/cleavage records,
+  fidelity levels, conformer enumeration, degradation/cleavage records,
   strain-as-utilisation language.
 - **§5.3 verb surface** — the shipped se op surface (`put`/`edit` +
   `add_block`/`connect`/`set_load`/…) is the surface of record; read
@@ -234,7 +234,7 @@ Provenance
   margin_origin?   # which margin rule contributed
 ```
 
-This makes the margin audit, the fidelity ladder and the library-update notification all queries rather than features.
+This makes the margin audit, the fidelity levels and the library-update notification all queries rather than features.
 
 ### 1.5 Versioning
 
@@ -417,7 +417,7 @@ Resolution order: **interfaces before interiors**, with defaults proposed rather
 
 - Blocks well inside their envelope: cheap analytic estimate.
 - Blocks near the limit: full solve.
-- Same escalation logic as representation (§4.2) and as the molecular fidelity ladder (§4.9).
+- Same escalation logic as representation (§4.2) and as the molecular fidelity levels (§4.9).
 
 ### 3.8 Solve provenance
 
@@ -589,7 +589,7 @@ Over-constraint counting works identically to the mechanical closed-loop check, 
 
 **Delocalised π systems are first-class objects**, with handles, contributing atoms, electron count, and a ray-intersectable isosurface — the benzene lobes above and below the ring. This shares a representation with the π-stacking energy term, so the geometric query and the energy term agree by construction. Hybridisation, by contrast, is a *bookkeeping* attribute on the atom driving bond angles and valence — real density has no sp³ lobes in it — and is never ray-traversed.
 
-**Fidelity ladder**, behind one interface (`density_at(point, fidelity)`):
+**Fidelity levels**, behind one interface (`density_at(point, fidelity)`):
 
 ```
 1. per-hybridisation template field   (cheap, everywhere, composable by summation)

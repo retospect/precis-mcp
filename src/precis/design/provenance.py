@@ -11,7 +11,7 @@ the params it describes, keyed by param name::
                         "margin_origin": "fatigue_knockdown"}}
 
 That shape is what turns three features into three **queries**: the margin
-audit (every number with a ``margin_origin``), the fidelity ladder (every
+audit (every number with a ``margin_origin``), the fidelity levels (every
 number below the rung you now need), and library-update notification (every
 number sourced from a library version that moved).
 
@@ -52,7 +52,7 @@ SOURCES: tuple[str, ...] = (
     "measured",
 )
 
-#: How hard it was computed, cheapest rung first. The fidelity ladder walks
+#: How hard it was computed, cheapest rung first. The fidelity levels walk
 #: this order, so the order is load-bearing, not cosmetic.
 FIDELITIES: tuple[str, ...] = (
     "template",
@@ -272,7 +272,7 @@ def margin_audit(sidecar: Mapping[str, Any] | None) -> dict[str, str]:
 
 
 def below_fidelity(sidecar: Mapping[str, Any] | None, rung: str) -> list[str]:
-    """Params computed at a rung cheaper than ``rung`` — the fidelity-ladder
+    """Params computed at a rung cheaper than ``rung`` — the fidelity-level
     query. Numbers with no fidelity (stated, assumed, measured) are NOT
     listed: they aren't on the ladder at all, and reporting them as "too
     cheap" would send a caller re-solving a measurement."""

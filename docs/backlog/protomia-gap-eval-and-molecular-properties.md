@@ -22,7 +22,7 @@ whether or not they exist.
 
 Protomia Solution 2 (Aitomistic) is an LLM workbench over MLatom/PySCF/xTB/CP2K
 that overlaps our `structure` lane and diverges sharply above it. Reading their
-docs surfaced one structural hole on our side: our fidelity ladder
+docs surfaced one structural hole on our side: our fidelity levels
 (`structure/relax.py::_RENTED_RUNGS` — `ff`/`xtb`/`ml`/`dft-fast`/`dft-tight`)
 returns **geometries and energies only**. There is no Hessian anywhere in
 `src/precis/structure/`, and therefore no vibrational, thermochemical, or

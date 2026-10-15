@@ -70,8 +70,8 @@ retrofitted — the decision it forces is recorded under Open questions.
 
 - Any mechanosynthesis / fabrication claim. This is design notation and
   validation, the same footing as hexfold.
-- Electronic structure. Geometry and valence only; the fidelity ladder
-  (`geo`/`emt`/`ml`) is where physics enters, as for hexfold.
+- Electronic structure. Geometry and valence only; the fidelity levels
+  (`geo`/`emt`/`ml`) are where physics enters, as for hexfold.
 - Replacing hexfold or `precis_surface`. Three shape languages, one part
   system.
 - The freeform sp³ regime (a diamondoid solid approximating an arbitrary

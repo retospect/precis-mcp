@@ -22,7 +22,7 @@ is never re-minted — the Part A convention: ``_find_job_by_idem_key``
 sees jobs of ANY status, and a human re-arms by changing the basis.
 
 **Mint rule.** A candidate earns a scan when it has completed at least
-the ``neb`` rung of the fidelity ladder (``meta.tier`` or
+the ``neb`` fidelity level (``meta.tier`` or
 ``meta.barrier_fidelity`` ≥ ``neb`` — :func:`precis.quest.compute.promote_tiers`)
 OR sits on the quest's current merged Pareto front
 (:func:`precis.quest.compute._merged_frontier_ids` over

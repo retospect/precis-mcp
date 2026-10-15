@@ -43,7 +43,7 @@ Section → owner:
   atomic merge-then-resplit, LLM-proposed split surfaces with random-cut
   hedge, demand-driven LLM consultation.
 - §8–9 scale mapping — consistent with spec §4.9 (its `density_at`
-  fidelity ladder is this note's MM→DFT ladder in the other costume).
+  fidelity levels are this note's MM→DFT ladder in the other costume).
   Held here: alchemical relaxation (§9.3), new.
 - §10 open items — carried, updated.
 - §6b pcb as second renter — `pcb-guided-place-route.md` /
@@ -687,7 +687,7 @@ critical path.
 is exactly the continuous inner layer — positions differentiable, forces
 are the gradient, descend. MM/semi-empirical/DFT/ML potentials all
 supply analytic gradients; the best-behaved inner solve in the stack.
-The fidelity ladder becomes *more* important: inner-solve cost spans
+The fidelity levels become *more* important: inner-solve cost spans
 ~six orders of magnitude (ms MM to hours DFT) vs ~two at macro, so
 per-candidate solver-fidelity choice stops being an optimisation and
 decides whether the search is possible at all. Screening, termination

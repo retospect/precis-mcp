@@ -1418,7 +1418,7 @@ class StructureHandler(Handler):
         }
 
     def _render_runs(self, ref: Any) -> Response:
-        """The design's compute history — the fidelity ladder over time (§9),
+        """The design's compute history — the fidelity levels over time (§9),
         each row labeled with its provenance (``computed`` vs ``external``) and, for an imported row, its method fingerprint."""
         runs = self.store.structure_runs(ref.id)
         if not runs:

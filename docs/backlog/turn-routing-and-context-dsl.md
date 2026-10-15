@@ -139,7 +139,7 @@ Same discipline class as the SSRF guard.
 1. **Persist turn-as-job + shadow router** — zero live risk; yields
    the calibration corpus that tells you whether Part 1 is sound.
 2. **Universal short codes**, then the read-only half of Part 2:
-   fidelity ladder + auto-demotion with inline warnings. No forks, no
+   fidelity levels + auto-demotion with inline warnings. No forks, no
    Call/Spawn yet.
 3. Wire **Call / Spawn** onto the existing `requested`→job /
    `derived_job_succeeded` / `dispatch` primitives, with the

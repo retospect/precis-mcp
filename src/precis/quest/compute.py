@@ -2604,7 +2604,7 @@ def _redispatch_tier(store: Store, quest_id: int, structure: Any) -> str:
     rung = _candidate_rung(getattr(structure, "meta", None))
     if rung is not None:
         return rung
-    return _TIER_SCREENING if _fidelity_ladder_enabled(store, quest_id) else _TIER_NEB
+    return _TIER_SCREENING if _fidelity_levels_enabled(store, quest_id) else _TIER_NEB
 
 
 def _retry_tier(store: Store, job_meta: dict[str, Any]) -> str:
@@ -3673,17 +3673,17 @@ def _quest_reaction_config(store: Store, quest_id: int) -> dict[str, Any] | None
     return cfg if isinstance(cfg, dict) and cfg else None
 
 
-def _fidelity_ladder_enabled(store: Store, quest_id: int) -> bool:
-    """``meta.fidelity_ladder`` — human-set at seed time (default ``True`` for
+def _fidelity_levels_enabled(store: Store, quest_id: int) -> bool:
+    """``meta.fidelity_levels`` — human-set at seed time (default ``True`` for
     a quest minted via :func:`precis.quest.catalyst_seed.seed_catalyst_quest`,
     see its own docstring), never written by the tick/LLM loop. Absent (a
-    quest predating the ladder, or one seeded with ``fidelity_ladder=False``)
+    quest predating the ladder, or one seeded with ``fidelity_levels=False``)
     keeps today's straight-to-NEB behaviour: :func:`run_compute_step`
     dispatches a new candidate's first autocatpath run at ``tier="neb"`` and
     :func:`promote_tiers` never fires.
     """
     ref = store.get_ref(kind="quest", id=quest_id)
-    return bool((ref.meta or {}).get("fidelity_ladder")) if ref is not None else False
+    return bool((ref.meta or {}).get("fidelity_levels")) if ref is not None else False
 
 
 def _candidate_struct_ids(store: Store, quest_id: int) -> list[int]:
@@ -3906,8 +3906,8 @@ def promote_tiers(
     whichever candidates earned it. Never an LLM decision (no proposal, no
     prompt): purely a function of the harvested measures + human-set caps.
 
-    A no-op unless the quest opted into the ladder (``meta.fidelity_ladder``,
-    see :func:`_fidelity_ladder_enabled`) and declares a reaction
+    A no-op unless the quest opted into the ladder (``meta.fidelity_levels``,
+    see :func:`_fidelity_levels_enabled`) and declares a reaction
     (``meta.reaction_config``). Two independent promotions, each a fresh
     :func:`dispatch_autocatpath` call at the next tier — content-addressed
     (the tier folds into the config, hence the idem key), so a promotion
@@ -3984,7 +3984,7 @@ def promote_tiers(
     """
     notes: list[str] = []
     try:
-        if not _fidelity_ladder_enabled(store, quest_id):
+        if not _fidelity_levels_enabled(store, quest_id):
             return notes
         reaction = _quest_reaction_config(store, quest_id)
         if reaction is None:
@@ -4311,7 +4311,7 @@ def run_compute_step(
     # pre-ladder quest/test) keeps today's straight-to-neb dispatch.
     initial_tier = (
         _TIER_SCREENING
-        if reaction is not None and _fidelity_ladder_enabled(store, quest_id)
+        if reaction is not None and _fidelity_levels_enabled(store, quest_id)
         else _TIER_NEB
     )
     created = dispatched = duplicates = 0

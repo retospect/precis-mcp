@@ -84,7 +84,7 @@ Why these words and not the five I first picked:
 - **Do not call these "tiers".** `docs/glossary.md:51` reads "**fidelity
   ladder** (legacy: tier ladder)" — this repo already retired "tier" as
   the word for a cost ladder once. Reviving it mints a second vocabulary
-  for one idea. They are check *classes*; the fidelity ladder is the
+  for one idea. They are check *classes*; the fidelity levels are the
   separate thing `physics` escalates along.
 - **DRC is not rejected — it is taken.** `src/precis_se/drc.py` is 644
   lines of "Graph-tier design DRC" backing `view='drc'`, the se mechanical

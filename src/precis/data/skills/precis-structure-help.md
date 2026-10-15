@@ -2,10 +2,10 @@
 id: precis-structure-help
 family: science
 title: precis — the structure kind (atomistic cells you can read as a graph)
-summary: build a periodic cell + bond graph as typed ops, then probe it analytically (neighbours/coordination/line/plane/sphere/path/rings/fragments/diff/pov), relax it on a fidelity ladder (clean→ml→dft), and export POSCAR/extXYZ/CIF — no pixels; the graph + numbers are the interface
+summary: build a periodic cell + bond graph as typed ops, then probe it analytically (neighbours/coordination/line/plane/sphere/path/rings/fragments/diff/pov), relax it across fidelity levels (clean→ml→dft), and export POSCAR/extXYZ/CIF — no pixels; the graph + numbers are the interface
 answers:
   - how do I build an atomistic cell and bond graph as typed ops?
-  - how do I relax a structure through the fidelity ladder (clean to ml to DFT)?
+  - how do I relax a structure through the fidelity levels (clean to ml to DFT)?
   - how do I probe coordination, rings, or fragments in a structure?
   - how do I import a structure from an external catalyst database?
   - how do I export a structure to POSCAR or CIF?
@@ -368,7 +368,7 @@ The TOC and web detail page surface these links (paper, DOI, your `note`);
 re-linking the same edge updates the note. To *find* the papers, use the
 literature view below.
 
-## Relax — the fidelity ladder (`{"op":"relax", …}`)
+## Relax — the fidelity levels (`{"op":"relax", …}`)
 
 One verb, a `fidelity` rung from fast-and-rough to slow-and-correct. Run it
 as a terminal op in `put`/`edit`. The relaxed geometry is written back onto

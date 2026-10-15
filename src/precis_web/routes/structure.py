@@ -10,7 +10,7 @@ compute history.
   the ``kind=structure`` facet preset.
 * ``GET /structure/{slug}`` — one design: an interactive 3D cell viewer
   (initial vs DFT-relaxed geometry) beside the **run-cube** panel — every
-  fidelity-ladder pass with its energy, forces, and the content-addressed
+  fidelity-level pass with its energy, forces, and the content-addressed
   ``cache_key`` that makes an identical relax a zero-compute hit (§23.16).
 * ``GET /structure/{slug}/run/{run_id}`` — one run of the cube, explained:
   the rung and what that rung actually computes, the numbers with their

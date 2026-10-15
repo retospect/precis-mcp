@@ -83,7 +83,7 @@ already handled by `precis_se.validate.kernel_scale`.
 | process repair/projection + composition + deferred commitment; lattice preference; catalogue ingestion | spec §4.4–4.7 | spec'd |
 | microfluidic cards | spec §4.8 | PARKED (Reto 2026-09-12) — out of this campaign |
 | radiometric transport + irradiance contract | spec §4.8 | spec'd — kept: smooth, cheap, propagating constraints (Reto 2026-09-12) |
-| molecular `density_at` fidelity ladder, conformer enumeration, degradation/cleavage records | spec §4.9 | spec'd |
+| molecular `density_at` fidelity levels, conformer enumeration, degradation/cleavage records | spec §4.9 | spec'd |
 | inspection toolkit (cast_ray, max_stress/under_utilised, digest, bookmarks); job searching→improving status | spec §5.4–5.7 | spec'd |
 | reference targets (struts-and-strings bracket; azobenzene/tensegrity flagship as architectural test) | `multiscale-design-addendum-a.md` A1 | spec'd 2026-09-12 |
 | limited component DOF + meshing-controlled generated geometry (principles) | addendum A2 | spec'd 2026-09-12 |

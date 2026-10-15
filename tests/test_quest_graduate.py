@@ -260,11 +260,11 @@ class TestBarrierQualityGate:
 
 
 class TestTierLadderGraduationGate:
-    """A ``meta.fidelity_ladder`` quest additionally requires the candidate's
+    """A ``meta.fidelity_levels`` quest additionally requires the candidate's
     canonical barrier to have come from a TRUSTED verify-tier (coadsorbed)
     pathway before it graduates — a barrier that only crossed the ceiling on
     the cheaper parked/neb tier is held back as "pending verify", not
-    graduated. A ladder-off quest (no ``meta.fidelity_ladder``) is unaffected —
+    graduated. A ladder-off quest (no ``meta.fidelity_levels``) is unaffected —
     today's straight-to-NEB graduation stays exactly as tested above."""
 
     def _candidate_with_tiered_barrier(
@@ -302,7 +302,7 @@ class TestTierLadderGraduationGate:
         store.stamp_ref_meta(
             qid,
             {
-                "fidelity_ladder": True,
+                "fidelity_levels": True,
                 "rubric_objectives": [{"key": "barrier", "sense": "min"}],
             },
         )
@@ -332,7 +332,7 @@ class TestTierLadderGraduationGate:
         store.stamp_ref_meta(
             qid,
             {
-                "fidelity_ladder": True,
+                "fidelity_levels": True,
                 "rubric_objectives": [{"key": "barrier", "sense": "min"}],
             },
         )
@@ -347,7 +347,7 @@ class TestTierLadderGraduationGate:
     def test_ladder_off_quest_graduates_on_a_neb_tier_barrier_unaffected(
         self, store: Any
     ) -> None:
-        """No ``meta.fidelity_ladder`` at all (the default, pre-ladder shape) —
+        """No ``meta.fidelity_levels`` at all (the default, pre-ladder shape) —
         the new verify-only gate never fires, matching every existing
         `TestBarrierQualityGate` assertion above."""
         qid = _mk_quest(store, "Lowest-barrier Pd catalyst")

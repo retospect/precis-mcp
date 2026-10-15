@@ -794,7 +794,7 @@ Canonical form covers the **authored sections only** (0.2).
 6. The **content hash** is sha256 of the canonical authored JSON; it keys
    the generated section (§18) and the catalogue (§26).
 
-### 15. Derived geometry and the fidelity ladder
+### 15. Derived geometry and the fidelity levels
 
 #### 15.1 `stick` `[impl 0.1]`
 
