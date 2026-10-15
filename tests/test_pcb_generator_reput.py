@@ -1,6 +1,7 @@
 """gr481705 — a stale-``ewod_pad_array`` re-put through the JUDGED
 ``PcbHandler.put`` surface must not reset a placed generator-owned
-instance to the expansion's emitted seed pose.
+instance to the expansion's emitted seed pose, and a seed that IS taken
+is legalised before the always-valid gate sees it.
 
 The fixture board ``ewod-dogfood-6-escape-regression`` stores ARR1 at an
 old ``ewod_pad_array`` version with ``ARR1_SINK_0`` already placed
@@ -9,9 +10,15 @@ generators entry — the refresh the stale-route guard's own ``next``
 hints at — used to retire the sink and re-insert it at the emitted
 centroid seed, a pose the always-valid gate refuses: the centroid lands
 sink pads on the array's own plaza vias (14 ``invariant:no_via_in_pad``
-hits). The re-apply now carries each generator-owned instance's stored
-pose forward onto the re-emitted component; only the explicit
-``regenerate`` escape re-seeds.
+hits). Two halves landed: the re-apply carries each generator-owned
+instance's stored pose forward onto the re-emitted component, and a pose
+that IS seeded (fresh apply, ``regenerate``, or a new secondary) is
+legalised before the judge runs — slid by the placer's own
+``legalize_start`` where a lattice-reachable legal pose exists, else
+left UNPLACED for ``op='place'`` to own (pcb-global-plan-router slice
+5b — the part-agnostic expansion cannot compute a legal seed from
+footprint geometry it never sees, and on a dense via field the legal
+islands are sub-lattice thin).
 """
 
 from __future__ import annotations
@@ -88,14 +95,57 @@ def test_stale_generators_reput_through_judged_put(store: Store) -> None:
     assert _pose(store, ref.id, "ARR1_SINK_0") == pose_before
 
 
-def test_regenerate_reput_still_reseeds(store: Store) -> None:
+def test_regenerate_reput_reseeds_and_never_refuses(store: Store) -> None:
     """``regenerate`` is the documented explicit reset — "retires the
     whole expansion, placement and routing with it" — so it must NOT
-    carry the stored pose forward: the sink lands back on the emitted
-    seed (here, refused by the same invariant — proving the reset
-    reached the judge rather than silently keeping stale placement)."""
+    carry the stored pose forward. On this board the emitted centroid
+    seed is itself an ``invariant:no_via_in_pad`` violation (sink pads
+    over plaza vias) and the legal islands are narrower than the
+    legaliser's 0.25mm lattice, so the seed cannot be slid to a legal
+    pose cheaply: slice 5b legalises what it can and UNPLACES what it
+    cannot — the put lands incomplete-but-valid (the one permitted
+    failure), leaving the pose to ``op='place'``, whose anneal does find
+    a legal pose for this board (measured: the stored pose itself was an
+    anneal's own find). The put must succeed with the sink left unplaced
+    and the generator row at the current version."""
     ref = _hydrate(store)
     params = dict(store.pcb_generators_for(ref.id)["ARR1"]["params"])
+
+    pcb = PcbHandler(hub=Hub(store=store))
+    pcb.put(
+        id=str(ref.slug),
+        args={
+            "generators": [
+                {
+                    "name": "ARR1",
+                    "generator": "ewod_pad_array",
+                    "params": params,
+                    "regenerate": True,
+                }
+            ]
+        },
+    )
+
+    assert _pose(store, ref.id, "ARR1_SINK_0")[:2] == (None, None)
+    rows = store.pcb_generators_for(ref.id)
+    assert int(rows["ARR1"]["version"]) == pcb_generators.VERSIONS["ewod_pad_array"]
+    bad = [
+        f
+        for f in pcb._validity_findings(ref.id)
+        if f.rule == "invariant:no_via_in_pad" and f.severity == "error"
+    ]
+    assert bad == []
+
+
+def test_locked_seed_with_no_legal_pose_still_refuses(store: Store) -> None:
+    """Slice 5b legalises seeds; it never disarms the gate. A sink pinned
+    at its seed (``sink_grid.fixed='both'`` — a caller asserting the pose
+    is a mechanical constraint) cannot be slid off the vias, so the same
+    seed the legaliser would have repaired still refuses the put with
+    ``invariant:no_via_in_pad``."""
+    ref = _hydrate(store)
+    params = dict(store.pcb_generators_for(ref.id)["ARR1"]["params"])
+    params["sink_grid"] = {**params["sink_grid"], "fixed": "both"}
     pcb = PcbHandler(hub=Hub(store=store))
     with pytest.raises(BadInput, match="invariant:no_via_in_pad"):
         pcb.put(

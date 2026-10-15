@@ -682,6 +682,7 @@ class PcbMixin:
         generators: list[dict[str, Any]] | None = None,
         meta: dict[str, Any] | None = None,
         conn: Connection | None = None,
+        seeded: list[str] | None = None,
     ) -> tuple[Any, bool, dict[str, int]]:
         """Create-or-extend a design, batch. Returns ``(ref, created,
         counts)``.
@@ -731,6 +732,12 @@ class PcbMixin:
         nets/connections/its mask_open feature) and re-inserts fresh —
         see :meth:`_pcb_generator_retire_expansion`.
 
+        ``seeded``, when given, is an out-list: every refdes an expansion
+        emitted at its seed pose (a fresh generator apply, a
+        ``regenerate``, or a changed expansion's NEW secondary that had no
+        stored pose to carry forward) is appended, so the caller can
+        legalise seeds before the always-valid gate reads the board.
+
         Reuses ``conn`` inside an existing transaction (e.g. bundling
         the ``net_classes`` upsert so both commit/rollback as one unit);
         opens its own otherwise (mirrors :meth:`pcb_ensure_board`)."""
@@ -747,6 +754,7 @@ class PcbMixin:
                 footprints=footprints,
                 generators=generators,
                 meta=meta,
+                seeded=seeded,
             )
         with self._pcb_tx() as c:
             return self._pcb_apply(
@@ -761,6 +769,7 @@ class PcbMixin:
                 footprints=footprints,
                 generators=generators,
                 meta=meta,
+                seeded=seeded,
             )
 
     def _pcb_apply(
@@ -777,6 +786,7 @@ class PcbMixin:
         footprints: list[dict[str, Any]] | None = None,
         generators: list[dict[str, Any]] | None = None,
         meta: dict[str, Any] | None = None,
+        seeded: list[str] | None = None,
     ) -> tuple[Any, bool, dict[str, int]]:
         """The body of :meth:`pcb_apply`, given an already-open ``conn``."""
         existing = self.get_ref(kind="pcb", id=slug)
@@ -862,32 +872,36 @@ class PcbMixin:
                 and existing_gen["params"] == expansion.canonical_params
             ):
                 continue  # unchanged -- no-op, nothing to merge/re-insert
+            # gr481705 — an expansion's emitted x/y/rot is a SEED for
+            # the placer, not placement truth (`_expand_ewod_pad_array`'s
+            # own sink-centroid comment). A retire-and-reinsert that
+            # drops the stored pose resets a placed part back to that
+            # seed — which for an `ewod_pad_array` sink can be a pose
+            # the always-valid gate must refuse (its centroid lands
+            # pads on the array's own plaza vias). Placement is real
+            # board state a re-apply carries forward; only the
+            # explicit `regenerate` escape resets it (its documented
+            # contract — "retires the whole expansion, placement and
+            # routing with it").
+            kept: dict[str, dict[str, Any]] = {}
             if existing_gen is not None:
-                # gr481705 — an expansion's emitted x/y/rot is a SEED for
-                # the placer, not placement truth (`_expand_ewod_pad_array`'s
-                # own sink-centroid comment). A retire-and-reinsert that
-                # drops the stored pose resets a placed part back to that
-                # seed — which for an `ewod_pad_array` sink can be a pose
-                # the always-valid gate must refuse (its centroid lands
-                # pads on the array's own plaza vias). Placement is real
-                # board state a re-apply carries forward; only the
-                # explicit `regenerate` escape resets it (its documented
-                # contract — "retires the whole expansion, placement and
-                # routing with it").
-                kept = (
-                    {}
-                    if g.get("regenerate")
-                    else self._pcb_generator_poses(
+                if not g.get("regenerate"):
+                    kept = self._pcb_generator_poses(
                         conn, ref.id, existing_gen["refdes"], existing_gen["name"]
                     )
-                )
                 self._pcb_generator_retire_expansion(
                     conn, ref.id, existing_gen["refdes"], existing_gen["name"]
                 )
-                for c in expansion.components:
-                    pose = kept.get(str(c.get("refdes") or ""))
-                    if pose is not None:
-                        c.update(pose)
+            for c in expansion.components:
+                pose = kept.get(str(c.get("refdes") or ""))
+                if pose is not None:
+                    c.update(pose)
+                elif seeded is not None:
+                    # A component that kept no committed pose lands on the
+                    # emitted seed — the caller (PcbHandler.put) may
+                    # legalise it before the always-valid judge sees the
+                    # board (pcb-global-plan-router slice 5b).
+                    seeded.append(str(c.get("refdes") or ""))
             components += expansion.components
             nets += expansion.nets
             connections += expansion.connections

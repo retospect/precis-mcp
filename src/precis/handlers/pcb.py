@@ -16,7 +16,11 @@ pixels. The verbs map onto the seven-verb surface:
   (``{name, generator, params}``, e.g. ``generator='ewod_pad_array'``) —
   expanded deterministically into components/nets/connections/footprints/
   features (:mod:`precis.pcb.generators`); re-applying the SAME params is
-  a no-op, changed params retire-and-reinsert the previous expansion.
+  a no-op, changed params retire-and-reinsert the previous expansion
+  (carrying each generator-owned instance's committed pose forward;
+  freshly-seeded secondaries are legalised — or unplaced when their own
+  expansion's copper makes the seed untenable — before the always-valid
+  judge reads the board, pcb-global-plan-router slice 5b).
   Re-runnable. Every design gets a default board (``pcb-guided-place-route``
   Slice 1 — one 4-layer FR-4 board, ``pcb_boards``) on first write; nets are
   electrical-only in v1 (``domain`` != ``'electrical'`` is rejected).
@@ -763,6 +767,7 @@ class PcbHandler(Handler):
             existing = self.store.get_ref(kind="pcb", id=slug)
 
             def apply(conn: Any) -> tuple[Any, bool, dict[str, int], int]:
+                seeded: list[str] = []
                 ref, created, counts = self.store.pcb_apply(
                     slug=slug,
                     title=ttl,
@@ -775,12 +780,19 @@ class PcbHandler(Handler):
                     generators=generators,
                     meta=meta,
                     conn=conn,
+                    seeded=seeded,
                 )
                 n_classes = 0
                 if isinstance(net_classes, dict) and net_classes:
                     n_classes = self.store.pcb_upsert_net_classes(
                         ref.id, net_classes, conn=conn
                     )
+                if seeded:
+                    reposed, unplaced = self._legalize_generator_seeds(
+                        ref.id, seeded, conn=conn
+                    )
+                    counts["seeds_legalized"] = reposed
+                    counts["seeds_unplaced"] = unplaced
                 return ref, created, counts, n_classes
 
             (ref, created, counts, n_classes), judged = self._judged_mutation(
@@ -824,6 +836,17 @@ class PcbHandler(Handler):
             extra += f", +{counts['footprints']} footprint(s)"
         if counts.get("generators"):
             extra += f", {counts['generators']} generator(s) applied"
+        if counts.get("seeds_legalized"):
+            extra += (
+                f", {counts['seeds_legalized']} generator-seeded part(s) "
+                "legalised to a valid pose"
+            )
+        if counts.get("seeds_unplaced"):
+            extra += (
+                f", {counts['seeds_unplaced']} generator-seeded part(s) left "
+                "unplaced (their seed pose was invalid; op='place' owns "
+                "finding one)"
+            )
         # An annotation pass re-puts nets that already exist, so +0 net(s)
         # is the NORMAL result and says nothing about whether the edit
         # landed. Report the patch separately or it reads as a no-op
@@ -1045,6 +1068,104 @@ class PcbHandler(Handler):
                     "put(args={'op':'route'})"
                 ),
             )
+
+    def _legalize_generator_seeds(
+        self, ref_id: int, seeded: list[str], *, conn: Any
+    ) -> tuple[int, int]:
+        """docs/backlog/pcb-global-plan-router.md slice 5b (gr481705): a
+        generator-emitted x/y/rot is a SEED for the placer, not placement
+        truth — but until now the always-valid gate judged that seed raw,
+        so an ``ewod_pad_array`` sink whose centroid lands on the array's
+        own plaza vias made the whole put refuse with
+        ``invariant:no_via_in_pad`` even though a legal pose exists (the
+        anneal finds one — the legal islands can be fractions of a
+        lattice step wide on a dense via field, which the ring search
+        cannot land on). The seed can't compute that itself: the
+        expansion is part-agnostic and never sees the sink's real lands.
+
+        So a freshly-seeded instance gets, BEFORE the judge runs, the
+        same :meth:`precis.pcb.optimize.OptimizeEngine.legalize_start`
+        slide the anneal opens with — over the board as this put left it,
+        authored vias hydrated so ``via_pad_keepout`` binds. A seed the
+        ring search cannot repair is then UNPLACED (x/y cleared) when the
+        surviving conflict is the generator's own authored vias — the
+        seed can never verify that pose, so deferring it to
+        ``op='place'``'s seed+legalise+anneal (which owns finding poses)
+        is the honest degrade: unplaced is the one incomplete-but-valid
+        state the gate permits. A courtyard/hole conflict instead lands
+        for the judge to refuse as before — a pose-vs-other-parts clash
+        is authored arrangement, not seed blindness. And a part that
+        ASSERTS its pose (``fixed`` xy) is never touched here either —
+        the judged wrapper refuses it with the invariant's own witness,
+        as ruled.
+
+        Only the just-seeded refdes are written back (plus any
+        rigid-group member a seeded instance shares its body with — a
+        group moves as one, persisting a slice would tear it). A foreign
+        part ``legalize_start`` also shifted stays hypothetical; a
+        carried-forward pose is committed placement and is never touched
+        here. And a seed whose footprint is not yet cached is left alone
+        entirely: under synthesized lands a ``via_pad_keepout`` conflict
+        is a guess, and sliding or unplacing a pose the judge accepts on
+        a guess is a regression, not a legalisation (the ring-fixture
+        route-op test's seed reads as conflicting until its footprint
+        lands). Returns ``(reposed, unplaced)`` counts."""
+        graph = self.store.pcb_graph(ref_id)
+        ir = self._build_ir(ref_id, graph, with_fixed_copper=True)
+        ir.outline = self._move_outline(ref_id)
+        idx = {str(r): i for i, r in enumerate(ir.instance_refdes)}
+        seed_set = set(seeded)
+        # Per-instance: did ``land_rects_by_instance`` hydrate REAL pads,
+        # or the pin-derived synthesized bound? The same ``by_refdes``
+        # drives ``apply_real_pin_offsets``, so a synthesized pin offset
+        # is the honest signal. Mask synthesized-lands seeds out of the
+        # legalise search — ``inst_fixed_xy`` is exactly the "leave this
+        # pose alone" bit ``legalize_start`` honours, and the unplace
+        # fallback below skips it for the same reason.
+        for i in range(ir.n_instances):
+            pins = ir.pin_instance == i
+            if not bool(pins.any()) or bool(ir.pin_offsets_synthesized[pins].all()):
+                ir.inst_fixed_xy[i] = True
+        engine = pcb_optimize.OptimizeEngine(ir, pcb_optimize.OptimizeConfig())
+        moved = set(engine.legalize_start())
+        groups = {
+            int(ir.inst_group[idx[rd]])
+            for rd in moved & seed_set
+            if int(ir.inst_group[idx[rd]]) >= 0
+        }
+        persist = {
+            rd
+            for rd in moved
+            if rd in idx and (rd in seed_set or int(ir.inst_group[idx[rd]]) in groups)
+        }
+        for rd in persist:
+            i = idx[rd]
+            self.store.pcb_move_instance(
+                ref_id,
+                rd,
+                x=float(ir.inst_x[i]),
+                y=float(ir.inst_y[i]),
+                rot=float(ir.inst_rot[i]),
+                conn=conn,
+            )
+        unplaced = 0
+        for rd in seed_set:
+            si = idx.get(rd)
+            if si is None:
+                continue
+            x, y = float(ir.inst_x[si]), float(ir.inst_y[si])
+            if math.isnan(x) or math.isnan(y) or bool(ir.inst_fixed_xy[si]):
+                continue
+            if any(
+                rule == "via_pad_keepout" for rule, _ in engine.pose_conflicts(si, x, y)
+            ):
+                conn.execute(
+                    "UPDATE pcb_instances SET x = NULL, y = NULL "
+                    "WHERE ref_id = %s AND refdes = %s AND retired_at IS NULL",
+                    (ref_id, rd),
+                )
+                unplaced += 1
+        return len(persist), unplaced
 
     # ── pcb-guided-place-route Slice 10 tool surface ────────────────────
     def _dispatch_op(self, ref: Any, op: str, args: dict[str, Any]) -> Response:

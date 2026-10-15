@@ -228,13 +228,20 @@ the unproven one.
    `/tmp/pcb-devin/devin-pcb-loop-surface.txt`).
 5. Placement terms: density prior + net separation on the tile grid;
    retire `gap_capacity`.
-5b. Seed legalisation (gr481705 residual, ruled 2026-10-13): a
-   generator-emitted x/y/rot is a seed; the fresh-expansion and
-   `regenerate` paths slide generator secondaries to the nearest legal
-   pose (`OptimizeEngine.legalize_start`) before the always-valid judge,
-   refusing with the witness only when no legal pose exists inside the
-   outline. The ordinary re-apply already carries the stored pose
-   forward (abf7e0ece).
+5b. Seed legalisation — DONE 2026-10-14 (gr481705): the judged `put`
+   now runs `OptimizeEngine.legalize_start` over freshly-seeded
+   generator components before the always-valid gate reads the board,
+   and UNPLACES (x/y := NULL) a movable secondary whose seed still
+   conflicts with the generator's own authored vias — the anneal's
+   legal islands can be sub-lattice thin (ewod-dogfood-6's sink island
+   is ~0.01mm wide; the 0.25mm ring search cannot land on it), and an
+   unplaced part is the one incomplete-but-valid state the gate permits
+   while `op='place'` owns the pose. A `fixed` seed keeps the refusal
+   verdict. The ordinary re-apply already carries the stored pose
+   forward (abf7e0ece). Residual for the global router proper: seeds
+   legalised-or-unplaced still rely on the anneal to rediscover the
+   island every regenerate — a capacity-aware seed (slice 0's planner
+   feeding placement) would emit a corridor-aware pose directly.
 6. LLM menu op: digest → menu → one IR change → re-run; the noise
    source/sensitive measures.
 
