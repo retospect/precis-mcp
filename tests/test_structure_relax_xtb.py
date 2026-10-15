@@ -5,8 +5,9 @@ C60 − hexagon ball, open rim H-terminated — is the 2026-10-11 reference
 relaxer run (hexfold-corner/s4_xtb.py): six seam C–C bonds at ~1.403 Å
 after a whole-molecule FIRE relax.
 
-Only the real-backend geometry test needs the wheel itself (tblite ships
-no linux-aarch64 wheel, so it skips there); the recording / refusal /
+Only the real-backend geometry test needs the wheel itself (PyPI has no
+linux-aarch64 wheel, so it skips there unless the wheelhouse build is
+installed); the recording / refusal /
 render tests stub or block the import and run on every platform.
 """
 
@@ -111,7 +112,7 @@ def test_xtb_relaxes_the_pillar_neck() -> None:
 
 
 def test_xtb_unsupported_without_tblite(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A host without the tblite wheel (linux-aarch64 has none) raises
+    """A host without the tblite wheel (PyPI has no linux-aarch64 one) raises
     RelaxUnsupported naming the platform limit — never a bare
     ImportError, and the rung is refused rather than computed on
     different physics."""
@@ -228,20 +229,55 @@ def test_handler_refuses_xtb_cell_before_dispatch(store: Any) -> None:
         )
 
 
-def test_handler_does_not_dispatch_xtb_without_tblite(
+def test_handler_dispatches_xtb_without_local_tblite(
     store: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A host without tblite gets the platform Unsupported, never a queued
-    struct_relax job: the aarch64 nodes a job would land on are exactly the
-    hosts with no wheel."""
-    from precis.errors import Unsupported
-
+    """A host without tblite (the linux-aarch64 MCP container) mints a
+    struct_relax job pinned into the compute group, whose worker venv
+    carries the wheelhouse tblite wheel (gr488907) — the same path as an
+    ``ml`` rung, with the model pinned to gfn2-xtb."""
     monkeypatch.setitem(sys.modules, "tblite.ase", None)
+    monkeypatch.setenv("PRECIS_MLIP_NODES", "alpha,beta")
     structure = StructureHandler(hub=Hub(store=store))
     structure.put(id="mol", text=_MOLECULE)
-    with pytest.raises(Unsupported, match="aarch64"):
-        structure.edit(id="mol", ops=[{"op": "relax", "fidelity": "xtb"}])
-    assert not store.structure_runs(store.get_ref(kind="structure", id="mol").id)
+    resp = structure.edit(id="mol", ops=[{"op": "relax", "fidelity": "xtb"}])
+    assert "dispatched" in resp.body
+    ref = store.get_ref(kind="structure", id="mol")
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT meta FROM refs WHERE parent_id = %s AND kind = 'job' "
+            "AND retired_at IS NULL ORDER BY ref_id",
+            (ref.id,),
+        ).fetchall()
+    assert len(rows) == 1
+    params = rows[0][0]["params"]
+    assert params["fidelity"] == "xtb" and params["model"] == "gfn2-xtb"
+    assert params["target_node"] in {"alpha", "beta"}
+    assert "cell" not in params
+
+
+def test_tblite_present_wherever_it_is_promised() -> None:
+    """Fails, never skips, when tblite should be importable and is not: an
+    ``[estimate]`` venv on a platform the lock's marker covers (macOS,
+    x86_64 — CI's all-extras venv), or any host that sets
+    PRECIS_REQUIRE_TBLITE=1 (a compute host carrying the wheelhouse wheel).
+    The geometry test above skips without tblite; this one keeps a lost
+    wheel from going unnoticed."""
+    import importlib.util
+    import os
+    import platform
+
+    promised = os.environ.get("PRECIS_REQUIRE_TBLITE") == "1" or (
+        importlib.util.find_spec("pymatgen") is not None
+        and importlib.util.find_spec("mendeleev") is not None
+        and (sys.platform == "darwin" or platform.machine() == "x86_64")
+    )
+    if not promised:
+        pytest.skip(
+            "no tblite promised here: no [estimate] extra, or linux-aarch64 "
+            "without PRECIS_REQUIRE_TBLITE=1"
+        )
+    from tblite.ase import TBLite  # noqa: F401 — the import is the assertion
 
 
 def test_se_summary_reports_live_xtb_rung(store: Any) -> None:

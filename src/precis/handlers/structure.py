@@ -1979,16 +1979,11 @@ class StructureHandler(Handler):
                     next="install the [dft-ml] extra locally, or re-run with "
                     "dispersion omitted to use the cluster",
                 ) from exc
-            # xtb has no cluster home: tblite ships no linux-aarch64 wheel,
-            # so a dispatched job would land on a node that lacks it and fail
-            # as infra after queueing. Refuse here with the platform message.
-            if fidelity == "xtb":
-                raise Unsupported(
-                    str(exc),
-                    next="run the relax on a host with tblite (macOS or x86_64, "
-                    "the [estimate] extra), e.g. scripts/prod-precis in the "
-                    "background, or use fidelity='ml'",
-                ) from exc
+            # xtb dispatches like ml: its jobs pin to the compute group
+            # (struct_relax.mlip_nodes), whose worker venv carries the
+            # linux-aarch64 tblite wheel from the wheelhouse
+            # (scripts/build-tblite-wheel, gr488907). A node without it fails
+            # the job as infra, naming the extra.
             if cache_key is None:  # defensive — clean never reaches here
                 raise Unsupported(
                     str(exc),

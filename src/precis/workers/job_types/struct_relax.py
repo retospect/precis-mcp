@@ -22,7 +22,7 @@ the node via :func:`_default_ml_runner`, reusing
 :func:`precis.structure.relax._ml_calculator` /
 :func:`._xtb_calculator` — the same backends a local ``relax()`` would
 use, already installed where their extras land (torch + CUDA for the
-MLIP; the platform-markered tblite wheel for GFN2-xTB). A rung in
+MLIP; tblite for GFN2-xTB, from the wheelhouse on aarch64). A rung in
 neither set fails the job: this dispatcher used to send
 *every* fidelity to ``gpaw-relax``, so an ``ml`` request silently ran a
 spin-polarized RPBE DFT relax and, if it ever finished inside the wall-clock
@@ -99,7 +99,7 @@ _PARAMS_SCHEMA: dict[str, Any] = {
         # view='runs'); the cache lookup itself is global by cache_key.
         "structure_ref_id": {"type": "integer"},
         "on_version": {"type": "integer"},
-        # 'ml' (in-process MLIP) | 'gpaw' (container). Anything else has no
+        # 'ml'|'xtb' (in-process) | 'gpaw' (container). Anything else has no
         # backend and the dispatcher fails the job — see _CONTAINER_FIDELITIES.
         "fidelity": {"type": "string"},
         "model": {"type": ["string", "null"]},
@@ -192,8 +192,9 @@ _CONTAINER_FIDELITIES = frozenset({"gpaw"})
 #: (:func:`precis.structure.relax._ml_calculator`), already installed on the
 #: DFT node alongside torch/CUDA, and GFN2-xTB is tblite's ASE calculator
 #: (:func:`precis.structure.relax._xtb_calculator`, the ``[estimate]``
-#: extra — absent on linux-aarch64, where the in-proc runner fails the job
-#: honestly as infra rather than running different physics).
+#: extra; PyPI has no linux-aarch64 wheel, so the compute hosts install the
+#: wheelhouse build, and a node without it fails the job honestly as infra
+#: rather than running different physics).
 _INPROC_FIDELITIES = frozenset({"ml", "xtb"})
 
 #: Force-convergence target for the in-process MLIP rung, matching the floor

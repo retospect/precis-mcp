@@ -378,7 +378,7 @@ the design and **every run is recorded** (see `view='runs'`).
 |----------|---------|-------|------|
 | `clean` (default) | pure geometry repair (ours) | nothing | fix overlaps / sub-covalent bonds — "make the stupid geometry sane" |
 | `emt` | ASE EMT + FIRE (ours) | nothing | cheap approximate energy/forces on `{Al,Ni,Cu,Pd,Ag,Pt,Au,H,C,N,O}`; never dispatches |
-| `xtb` | tblite GFN2-xTB + FIRE | `[estimate]` (no linux-aarch64 wheel) | hexfold's relaxer of record; light elements, atoms-only, never dispatches |
+| `xtb` | tblite GFN2-xTB + FIRE | `[estimate]`; aarch64 nodes use a wheelhouse build | hexfold's relaxer of record; light elements, atoms-only; dispatches like `ml` without local tblite |
 | `ml` | ASE + MACE-MP-0 / CHGNet | `[dft-ml]` | cheap, physical pre-relax before any DFT |
 | `ff` · `dft-fast` · `dft-tight` | rented | later | progressively more correct |
 

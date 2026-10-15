@@ -31,3 +31,15 @@
     dest: "{{ autocatpath_wheelhouse }}/"
     mode: "0644"
   become: true
+
+# The linux-aarch64 tblite wheel (see defaults: tblite_wheel). Linux only —
+# the macOS kind-surface hosts take tblite from PyPI via [estimate].
+- name: Push the controller-side tblite wheel into the wheelhouse
+  when:
+    - tblite_wheel | default('') | length > 0
+    - os_family == "linux"
+  ansible.builtin.copy:
+    src: "{{ tblite_wheel }}"
+    dest: "{{ autocatpath_wheelhouse }}/"
+    mode: "0644"
+  become: true

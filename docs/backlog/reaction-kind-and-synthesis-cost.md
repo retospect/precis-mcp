@@ -894,10 +894,10 @@ which overlaps with but is not the same question as "can this exist". Same
 discipline as SAscore: it ranks, it never rejects.
 
 Two honest caveats. A0 does **not** catch all nonsense — `c1ccc1` (a
-four-membered "aromatic" ring) parses. And A3's `tblite` ships no
-linux-aarch64 wheel (the existing `[estimate]` platform marker), so the
-semi-empirical rung is unavailable on the aarch64 cluster nodes — it runs on
-the Mac and x86_64 only.
+four-membered "aromatic" ring) parses. And A3's `tblite` has no
+linux-aarch64 wheel on PyPI (the existing `[estimate]` platform marker); the
+aarch64 compute hosts take a wheelhouse build (`scripts/build-tblite-wheel`,
+gr488907), so a cluster A3 runs in the compute-group worker venv.
 
 ### Ladder B — could it be synthesised like that? (a proposed route)
 
@@ -1466,8 +1466,9 @@ coverage vs 64–68 % free — **20–25 points of recall**.
 - ⚠️ Use **`tblite`**, not `xtb-python` — the latter has had no release since
   2022 and is linux-x86_64 only.
 - 👍 **PySCF is the QC pick**: `pip install pyscf`, **Apache-2.0**, wheels for
-  macOS arm64 **and linux aarch64**, deps only numpy/scipy/h5py. That covers the
-  aarch64 cluster nodes where `tblite` cannot go.
+  macOS arm64 **and linux aarch64**, deps only numpy/scipy/h5py. On PyPI alone
+  it covers the aarch64 cluster nodes; `tblite` reaches them only through the
+  wheelhouse build (`scripts/build-tblite-wheel`).
 - **CREST is too slow for routine use** — a 747-molecule benchmark reports
   ~20–27 min/molecule. Default to ETKDGv3 + tblite reoptimisation (as the
   ladder already proposes); reserve CREST for cases that matter.

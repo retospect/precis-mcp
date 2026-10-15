@@ -488,9 +488,10 @@ def _xtb_calculator():
 
     The import is isolated here so a missing backend gives one clean
     ``RelaxUnsupported`` naming the extra AND the platform limit, never a
-    stray ImportError — tblite ships no linux-aarch64 wheel, so the rung is
-    genuinely absent on the aarch64 cluster nodes rather than merely
-    uninstalled (``pyproject.toml``'s ``[estimate]`` marker comment). GFN2
+    stray ImportError — PyPI's tblite has no linux-aarch64 wheel, so
+    ``[estimate]`` skips it there (``pyproject.toml``'s marker comment) and
+    the aarch64 compute hosts take the wheelhouse build from
+    ``scripts/build-tblite-wheel`` instead (gr488907). GFN2
     at 1000 K electronic temperature is the recipe the hexfold neck re-runs
     of 2026-10-11 validated (hexfold-corner/s4_xtb.py)."""
     try:
@@ -498,8 +499,8 @@ def _xtb_calculator():
     except ImportError as exc:
         raise RelaxUnsupported(
             "relax rung 'xtb' (GFN2-xTB) needs tblite — pip install "
-            "'precis-mcp[estimate]'; tblite ships no linux-aarch64 wheel "
-            "(macOS arm64/x86_64 and manylinux x86_64 only)"
+            "'precis-mcp[estimate]'; PyPI has no linux-aarch64 wheel, so "
+            "those hosts install the wheelhouse build (scripts/build-tblite-wheel)"
         ) from exc
     return TBLite(method="GFN2-xTB", electronic_temperature=1000.0, verbosity=0)
 
@@ -521,7 +522,7 @@ def _relax_xtb(scene: Scene, *, steps: int, tol: float) -> RelaxResult:
     never relaxed — a molecule stays whatever box it was saved in
     (variable-cell requests are refused in :func:`relax` before this
     runs). A missing tblite raises :class:`RelaxUnsupported` naming the
-    platform limit (no linux-aarch64 wheel).
+    platform limit (no linux-aarch64 wheel on PyPI).
     """
     if not export.ase_available():
         raise RelaxUnsupported(

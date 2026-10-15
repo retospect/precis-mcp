@@ -435,7 +435,10 @@ chem = ["rdkit>=2023.9"]
 # only) and won't build from source in the dev container — the platform
 # marker keeps `--all-extras` image rebuilds green on Apple-Silicon Docker
 # and aarch64 cluster nodes; the xtb tier (slice 2) degrades gracefully
-# where it's absent. Drop the marker when upstream ships the wheel.
+# where it's absent. The aarch64 compute hosts (where xtb struct_relax jobs
+# pin) get tblite from the wheelhouse instead: scripts/build-tblite-wheel
+# builds it, roles/autocatpath's wheelhouse.yml installs it (gr488907).
+# Drop the marker and that channel when upstream ships the wheel.
 estimate = [
     "mendeleev>=1.2.0",
     "pymatgen>=2026.5",

@@ -41,6 +41,21 @@ autocatpath_wheelhouse: /opt/precis/wheels
 #     -e autocatpath_wheel=$HOME/catpath/dist/autocatpath-0.18.0-py3-none-any.whl
 autocatpath_wheel: ""
 
+# ── tblite (GFN2-xTB backend of the `xtb` relax rung) ──────────────────────
+# PyPI ships no linux-aarch64 tblite wheel, and `[estimate]`'s platform marker
+# skips it on these hosts, so the wheel built by scripts/build-tblite-wheel
+# rides the same wheelhouse. xtb struct_relax jobs pin to the
+# precis_capabilities.autocatpath group (struct_relax.mlip_nodes), so the
+# wheelhouse re-apply installs it there, then smokes a GFN2 single point.
+# Push one with:
+#   ansible-playbook playbooks/44-autocatpath.yml \
+#     -e tblite_wheel=$PWD/../dist/tblite/tblite-0.7.0-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl
+# Drop the wheel (and this channel) once upstream publishes linux-aarch64.
+tblite_wheel: ""
+# Fail the deploy when no tblite wheel sits in the wheelhouse: every xtb job
+# pinned here would otherwise fail as infra. Off until the first push lands.
+tblite_required: false
+
 # The precis-mcp extra to install, derived from the topology in ONE expression:
 # 'catalyst-gpu,struct-search' (→ autocatpath[mace] + AGOX, the torch/MACE
 # backend + the global-structure-search job) on autocatpath_mace nodes; else

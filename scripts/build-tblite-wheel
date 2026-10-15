@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# Build tblite (GFN-xTB, the `xtb` relax rung's backend) as a linux-aarch64
+# wheel, then smoke it (import + a GFN2 single point on water) in a clean
+# container with the cluster worker's Python.
+#
+# Why: PyPI's tblite ships macOS and manylinux x86_64 wheels only; the
+# compute hosts are aarch64 Linux, so `[estimate]` resolves no tblite there
+# and the xtb rung has never run on prod (gr488907). The wheel this builds
+# goes into the host wheelhouse (/opt/precis/wheels) — see
+# deploy/roles/autocatpath/defaults/main.yml `tblite_wheel`.
+#
+# Base: AlmaLinux 8, the distro manylinux_2_28 is built on (glibc 2.28, below
+# the hosts' Ubuntu 24.04 glibc 2.39), pulled via mirror.gcr.io because
+# quay.io (the manylinux images) and Docker Hub timed out from the Mac on
+# 2026-10-15. gfortran is gcc-toolset-12, the manylinux_2_28 toolchain;
+# OpenBLAS is the LAPACK. auditwheel repair vendors
+# libopenblas/libgfortran/libgomp and stamps manylinux_2_28_aarch64.
+#
+# The Mac is arm64, so --platform linux/arm64 is a native build (no QEMU).
+# Recipe-reproducible, not byte-reproducible: zip timestamps differ per
+# build, so record the sha256 of the wheel you actually push.
+#
+#   scripts/build-tblite-wheel                 # cp312 (the worker venv) → dist/tblite/
+#   PYVERS="3.11 3.12" scripts/build-tblite-wheel   # AlmaLinux 8 ships 3.11/3.12
+#   OUT=$HOME/wheels scripts/build-tblite-wheel   # colima mounts $HOME only
+set -euo pipefail
+
+TBLITE_VERSION="${TBLITE_VERSION:-0.7.0}"
+# sha256 of the PyPI sdist (matches uv.lock's tblite 0.7.0 sdist hash).
+TBLITE_SDIST_SHA256="${TBLITE_SDIST_SHA256:-c303bc45e0c48e46dad7f032d377432c8717e17b0eb8eedb6c42c5237c3856d2}"
+BASE="${BASE:-mirror.gcr.io/library/almalinux:8@sha256:8b469a3a78515e8a18ea8fc727e6a3679e1d0c5ba6f58d5b30be3d0d9b86cffe}"
+# Clean runtime image for the smoke test: Debian, nothing tblite-related.
+SMOKE_BASE="${SMOKE_BASE:-mirror.gcr.io/library/python}"
+PYVERS="${PYVERS:-3.12}"
+OUT="${OUT:-$(git rev-parse --show-toplevel)/dist/tblite}"
+
+mkdir -p "$OUT"
+OUT="$(cd "$OUT" && pwd)"
+# Under $OUT (inside $HOME), not $TMPDIR or /tmp: colima shares only $HOME
+# into its VM, and an unshared bind-mount shows up empty in the container.
+work="$(mktemp -d "$OUT/.build.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+
+sdist="tblite-${TBLITE_VERSION}.tar.gz"
+curl -fsSL --retry 5 --retry-all-errors -o "$work/$sdist" \
+  "https://files.pythonhosted.org/packages/source/t/tblite/$sdist"
+echo "$TBLITE_SDIST_SHA256  $work/$sdist" | shasum -a 256 -c -
+
+for py in $PYVERS; do
+  tag="cp${py/./}"
+  builder="precis-tblite-builder:alma8-py${py}"
+  echo "--- builder image $builder (toolchain only; layer-cached across runs)"
+  docker build --platform linux/arm64 -t "$builder" - <<DOCKERFILE
+FROM $BASE
+RUN dnf -y -q install dnf-plugins-core \\
+ && dnf config-manager --set-enabled powertools \\
+ && dnf -y -q install python${py} python${py}-devel python${py}-pip \\
+      gcc-toolset-12-gcc gcc-toolset-12-gcc-gfortran gcc-toolset-12-gcc-c++ \\
+      openblas-devel \\
+ && dnf clean all \\
+ && python${py} -m venv /venv \\
+ && /venv/bin/pip -q install --upgrade pip build auditwheel patchelf
+# auditwheel needs patchelf >= 0.14.5; EL8's rpm is 0.12, so the PyPI one.
+ENV PATH=/venv/bin:\$PATH
+DOCKERFILE
+  echo "--- build $tag"
+  docker run --rm --platform linux/arm64 \
+    -v "$work:/src:ro" -v "$OUT:/out" -e SDIST="$sdist" \
+    "$builder" bash -euo pipefail -c '
+      source /opt/rh/gcc-toolset-12/enable
+      cd /tmp
+      tar xzf "/src/$SDIST"
+      cd "${SDIST%.tar.gz}"
+      # Every vendored subproject with a lapack option gets openblas: their
+      # options yield only to the top-level wrapper, which has none, so each
+      # would otherwise auto-probe a bare liblapack. hdf5/trexio off:
+      # optional I/O backends whose system libs we do not want auditwheel to
+      # vendor; ddx stays on as upstream ships.
+      /venv/bin/python -m build --wheel --outdir /tmp/raw \
+        -Csetup-args=-Dtblite:lapack=openblas \
+        -Csetup-args=-Ddftd4:lapack=openblas \
+        -Csetup-args=-Dmulticharge:lapack=openblas \
+        -Csetup-args=-Dddx:lapack=openblas \
+        -Csetup-args=-Dtblite:hdf5=disabled \
+        -Csetup-args=-Dtblite:trexio=disabled
+      /venv/bin/auditwheel repair --plat manylinux_2_28_aarch64 -w /out /tmp/raw/*.whl
+    '
+done
+
+for py in $PYVERS; do
+  tag="cp${py/./}"
+  whl="$(ls "$OUT"/tblite-"${TBLITE_VERSION}"-"$tag"-"$tag"-*aarch64*.whl)"
+  echo "--- smoke $(basename "$whl") on ${SMOKE_BASE}:${py}-slim-bookworm"
+  docker run --rm --platform linux/arm64 -v "$OUT:/out:ro" \
+    "${SMOKE_BASE}:${py}-slim-bookworm" bash -euo pipefail -c "
+      pip -q install --root-user-action=ignore '/out/$(basename "$whl")' ase
+      python - <<'PY'
+import numpy as np
+from ase.build import molecule
+from tblite.ase import TBLite
+from tblite.interface import Calculator
+
+w = molecule('H2O')
+# Library API: GFN2 single point, energy in Hartree.
+calc = Calculator('GFN2-xTB', w.numbers, w.positions / 0.52917721067)
+calc.set('verbosity', 0)
+e_h = calc.singlepoint().get('energy')
+# The rung's exact calculator settings (precis.structure.relax._xtb_calculator).
+w.calc = TBLite(method='GFN2-xTB', electronic_temperature=1000.0, verbosity=0)
+e_ev = w.get_potential_energy()
+fmax = float(np.sqrt((w.get_forces() ** 2).sum(axis=1).max()))
+print(f'GFN2 water: E={e_h:.6f} Eh, ase E={e_ev:.4f} eV, fmax={fmax:.4f} eV/A')
+assert -5.2 < e_h < -5.0, e_h
+PY
+    "
+done
+
+echo "--- sha256"
+for py in $PYVERS; do
+  tag="cp${py/./}"
+  shasum -a 256 "$OUT"/tblite-"${TBLITE_VERSION}"-"$tag"-"$tag"-*aarch64*.whl
+done
