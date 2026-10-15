@@ -900,7 +900,8 @@
       ansible.builtin.shell: >-
         set -o pipefail;
         systemctl list-units --type=service --all --no-legend 'precis-*.service'
-        | awk '{print $1}' | grep -vx 'precis-embedder.service'
+        | awk '{sub(/^●[[:space:]]*/, ""); print $1}'
+        | grep -vx 'precis-embedder.service'
       args:
         executable: /bin/bash
       register: precis_units
@@ -1065,12 +1066,15 @@
     - agent_sandbox_hosts
   become: true
   tasks:
+    # The awk sub() strips the `● ` marker systemctl prepends to
+    # dead/failed units — otherwise $1 is the marker and $3 the LOAD
+    # column, and a failed orphan would misparse out of the sweep entirely.
     - name: List loaded precis-worker-* units with their active state (Linux)
       when: os_family == "linux"
       ansible.builtin.shell: >-
         set -o pipefail;
         systemctl list-units --type=service --all --no-legend 'precis-worker-*.service'
-        | awk '{print $1 " " $3}'
+        | awk '{sub(/^●[[:space:]]*/, ""); print $1 " " $3}'
       args:
         executable: /bin/bash
       register: _orphan_lane_units
@@ -1122,11 +1126,11 @@
     - name: "Flag orphaned worker lanes (installed here, owned by no play)"
       when:
         - os_family == "linux"
-        - _orphan_lanes | default([]) | length > 0
+        - _orphan_lanes_all | default([]) | length > 0
       ansible.builtin.debug:
         msg: >-
           WARNING {{ inventory_hostname }}: precis-worker-*.service unit(s)
-          {{ _orphan_lanes }} are installed here but owned by no lane play
+          {{ _orphan_lanes_all }} are installed here but owned by no lane play
           (this host is not in the unit's owning group — e.g. a former
           agent_sandbox_hosts member after the group was emptied). Running
           orphans were restarted onto the deployed venv above. Resolve the

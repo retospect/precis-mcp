@@ -24,6 +24,8 @@ test_deploy_watch_unit_reconverge.py).
 
 from __future__ import annotations
 
+import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -196,3 +198,69 @@ def test_sweep_is_untagged() -> None:
         "the orphan sweep play must stay untagged — --skip-tags must not be "
         "able to remove it"
     )
+
+
+def test_sweep_references_only_defined_orphan_vars() -> None:
+    """r37 review: the flag task read `_orphan_lanes`, which nothing set —
+    undefined -> default([]) -> length 0 -> the WARNING never fired. Assert
+    every `_orphan_*` name referenced anywhere in the play is actually
+    produced by a register or set_fact."""
+    defined: set[str] = set()
+    for t in _sweep_play().get("tasks", []):
+        if t.get("register"):
+            defined.add(str(t["register"]))
+        facts = t.get("ansible.builtin.set_fact")
+        if isinstance(facts, dict):
+            defined.update(str(k) for k in facts)
+    referenced = set(re.findall(r"_orphan_\w+", yaml.safe_dump(_sweep_play())))
+    missing = referenced - defined
+    assert not missing, (
+        f"sweep play references undefined var(s) {sorted(missing)} — an "
+        "unset name defaults to [] and the check silently never fires"
+    )
+
+
+def test_sweep_awk_strips_the_dead_unit_marker() -> None:
+    """systemctl list-units prefixes dead units with `● ` — unstripped, $1
+    is the marker and $3 the LOAD column, so a failed orphan reads as unit
+    `●` in state `loaded` and drops out of the sweep. Run the shipped awk
+    program against fixture rows."""
+    task = _task(
+        _sweep_play(),
+        "List loaded precis-worker-* units with their active state (Linux)",
+    )
+    prog = re.search(r"awk '([^']+)'", task["ansible.builtin.shell"])
+    assert prog, "no awk program in the unit-listing pipeline"
+    rows = (
+        "precis-worker.service         loaded active   running collapsed\n"
+        "● precis-worker-agent.service loaded failed failed  retired lane\n"
+    )
+    out = subprocess.run(
+        ["awk", prog.group(1)],
+        input=rows,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.splitlines()
+    assert out == [
+        "precis-worker.service active",
+        "precis-worker-agent.service failed",
+    ]
+
+
+def test_step2_unit_listing_strips_the_dead_unit_marker() -> None:
+    """Same `● ` trap in the step-2 bounce play's unit enumeration —
+    unstripped, a FAILED precis unit yields the marker as its name and is
+    skipped by the restart loop instead of being recovered."""
+    play = _find_play(_plays(_REDEPLOY), "Bounce all precis daemons")
+    task = _task(play, "Find precis systemd units except embedder (Linux/the GPU node)")
+    prog = re.search(r"awk '([^']+)'", task["ansible.builtin.shell"])
+    assert prog
+    out = subprocess.run(
+        ["awk", prog.group(1)],
+        input="● precis-worker.service loaded failed failed dead worker\n",
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert out == "precis-worker.service"
