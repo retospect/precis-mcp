@@ -46,6 +46,27 @@
   until: vllm_pull.rc == 0
   changed_when: "'Pull complete' in vllm_pull.stdout"
 
+- name: Look for the superseded serving unit
+  when: vllm_supersedes_service | length > 0
+  ansible.builtin.stat:
+    path: "/etc/systemd/system/{{ vllm_supersedes_service }}.service"
+  register: vllm_superseded_unit
+
+- name: Stop + disable the superseded serving unit (same port, same GPU)
+  # One host runs one serving stack: the sglang unit would collide on
+  # {{ vllm_port }} and hold the GPU memory this server sizes against.
+  # Disabled, not just stopped, so a reboot cannot start both (gr485635).
+  # Absent unit = nothing to do.
+  when:
+    - vllm_supersedes_service | length > 0
+    - vllm_superseded_unit.stat.exists
+  ansible.builtin.systemd:
+    name: "{{ vllm_supersedes_service }}"
+    state: stopped
+    enabled: false
+    daemon_reload: true
+  become: true
+
 - name: Deploy vllm systemd unit
   ansible.builtin.template:
     src: vllm.service.j2

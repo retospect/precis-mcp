@@ -74,6 +74,11 @@ dft, alphafold, autocatpath, ...) must not be scheduled on it: they contend
 for the same unified memory. Keep it out of those capability groups in the
 topology map. This role changes no worker config.
 
+One serving stack per host: `vllm_supersedes_service` (default `sglang`)
+names a unit the role stops and disables before starting vLLM, and the
+sglang role does the reverse, so a reboot never brings both up on the same
+port and GPU memory.
+
 ## Next steps (not in this role)
 
 - Register the `llm` card (`source="static"`) and the `resource_slots`

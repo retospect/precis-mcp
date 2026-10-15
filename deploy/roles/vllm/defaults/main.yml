@@ -16,6 +16,9 @@ vllm_service_name: vllm
 vllm_pull_retries: 6
 vllm_pull_delay: 20
 vllm_pull_timeout: 900          # seconds per pull attempt (hard cap)
+# A unit that must not coexist with this one on the same port: stopped and
+# disabled when present (the sglang role's unit). Empty string = no check.
+vllm_supersedes_service: sglang
 
 # ── Endpoint ──
 # Matches llamacpp (llama-swap binds 0.0.0.0): LAN-reachable. Set to the

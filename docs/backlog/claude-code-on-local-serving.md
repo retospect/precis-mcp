@@ -252,8 +252,9 @@ scheduler at 100% CPU, python at 416%; Reto power-cycled at 14:47Z. The
 still-enabled `vllm` unit came back at boot serving gpt-oss-120b on :8000
 at `max_model_len` 16384 (both model names answer, but long-prompt calls
 are rejected) until playbook 49a lands — the sglang role's supersedes task
-stops AND disables that unit, so a reboot cannot bring it back beside
-sglang. Reto authorized the same day: `sglang_mem_fraction_static` 0.80
+stops AND disables that unit (the vllm role does the reverse;
+`tests/test_deploy_serving_exclusive.py`), so a reboot cannot bring it
+back beside sglang. Reto authorized the same day: `sglang_mem_fraction_static` 0.80
 and `sglang_max_running_requests` 32 (the feedback-controller level). The
 KV-pool numbers above were measured at 0.86 and shrink at 0.80 — weights
 alone need ≥0.80 of the box, so if a max-length call stops fitting, the

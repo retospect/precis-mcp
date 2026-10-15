@@ -47,17 +47,26 @@
   until: sglang_pull.rc == 0
   changed_when: "'Pull complete' in sglang_pull.stdout"
 
-- name: Stop + disable the superseded serving unit (same port)
+- name: Look for the superseded serving unit
+  when: sglang_supersedes_service | length > 0
+  ansible.builtin.stat:
+    path: "/etc/systemd/system/{{ sglang_supersedes_service }}.service"
+  register: sglang_superseded_unit
+
+- name: Stop + disable the superseded serving unit (same port, same GPU)
   # One host runs one serving stack: the vllm unit would collide on
   # {{ sglang_port }} and hold the GPU memory this server sizes against.
-  when: sglang_supersedes_service | length > 0
+  # Disabled, not just stopped: an enabled vllm unit came back at boot beside
+  # sglang on 2026-10-14 (gr485635). Absent unit = nothing to do.
+  when:
+    - sglang_supersedes_service | length > 0
+    - sglang_superseded_unit.stat.exists
   ansible.builtin.systemd:
     name: "{{ sglang_supersedes_service }}"
     state: stopped
     enabled: false
     daemon_reload: true
   become: true
-  failed_when: false
 
 - name: Deploy sglang systemd unit
   ansible.builtin.template:
