@@ -386,7 +386,7 @@ never mixed in one contract.
 Three tiers, cheapest first.
 
 1. **Spectator axes** (p_NO, chloride as a spectator, dissolved metal) —
-   *in progress.* Cheap: each shifts one species' chemical potential
+   *built 2026-10-15 (p_NO, 68a9901df).* Cheap: each shifts one species' chemical potential
    linearly, and the map and staircase recompute for free. Slice 2 builds
    the generic axis (`surface_pourbaix.Reservoir`: a species, the element
    it sets, an activity) with p_NO as the first instance; every further
@@ -455,8 +455,6 @@ separate from the propagated/model-form bands.
 
 ## Follow-ups from wave review (2026-10-13, non-blocking)
 
-- `pourbaix_map`: region edges built from sampled rows leave gaps;
-  `propagated_complete` is only flagged on non-finite values (A3 review).
 - `/pourbaix` quest page builds each candidate's maps twice (`quest_maps`
   then `_candidate_ctx`); pass the precomputed maps through (B2 review).
 - Structure `view='staircase'` catches every exception from the pathway

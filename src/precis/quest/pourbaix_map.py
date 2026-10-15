@@ -40,6 +40,7 @@ or on a todo under it.
 
 from __future__ import annotations
 
+import itertools
 import json
 import math
 from typing import Any
@@ -355,7 +356,37 @@ def _regions(
                 "trust": trust,
             }
         )
+    _snap_edges(regions, sweep.get("boundaries") or [])
     return regions
+
+
+def _boundary_key(side: Any) -> list[Any] | None:
+    if not isinstance(side, dict):
+        return None
+    return [side.get("adsorbate"), side.get("n")]
+
+
+def _snap_edges(regions: list[dict[str, Any]], bnds: list[dict[str, Any]]) -> None:
+    """Close the gap sampled rows leave between neighbouring regions: both
+    sides of a transition share one edge, the stored closed-form crossing
+    of the same two terminations (nearest the gap), else the gap's midpoint.
+    Without this a U between two grid samples belongs to no region."""
+    for lo_r, hi_r in itertools.pairwise(regions):
+        a, b = lo_r["U_RHE_range"][1], hi_r["U_RHE_range"][0]
+        mid = (a + b) / 2
+        hits = [
+            float(x["U_RHE"])
+            for x in bnds
+            if _boundary_key(x.get("below")) == lo_r["key"]
+            and _boundary_key(x.get("above")) == hi_r["key"]
+            and isinstance(x.get("U_RHE"), int | float)
+            and math.isfinite(float(x["U_RHE"]))
+        ]
+        edge = min(hits, key=lambda u: abs(u - mid)) if hits else mid
+        # Never past either side's own samples (a crossing inconsistent
+        # with the sampled envelope would invert a one-sample region).
+        edge = min(max(edge, min(a, b)), max(a, b))
+        lo_r["U_RHE_range"][1] = hi_r["U_RHE_range"][0] = edge
 
 
 def build_map(
@@ -400,8 +431,10 @@ def build_map(
         prop = b.get("band_propagated")
         row = dict(b)
         row["model_form_complete"] = b.get("band_model_form") is not None
-        if prop is not None and not math.isfinite(float(prop)):
-            row["propagated_complete"] = False
+        # A missing bar is as incomplete as an infinite one (no slope gap).
+        row["propagated_complete"] = isinstance(prop, int | float) and math.isfinite(
+            float(prop)
+        )
         boundaries.append(row)
     if boundaries and n_models < 2:
         incomplete.append(

@@ -111,6 +111,28 @@ def test_map_regions_split_the_window_at_the_boundary() -> None:
     (b,) = m["boundaries"]
     assert b["U_RHE"] == pytest.approx(0.2)
     assert b["model_form_complete"] is False
+    assert b["propagated_complete"] is True
+
+
+def test_neighbouring_regions_share_the_boundary_edge() -> None:
+    """Sampled rows stop one grid step short of the crossing; both regions
+    end at the stored boundary U, so a U between two samples is covered."""
+    from precis.quest import staircase
+
+    sweep = _sweep({"m": _payload("m", {"H": [-0.02]})}, grid=6)
+    m = pm.build_map([_job(7, "m", sweep)])
+    lo, hi = m["regions"]
+    assert lo["U_RHE_range"][1] == hi["U_RHE_range"][0] == pytest.approx(0.2)
+    assert staircase.resting_label(m, 0.15) == "H* at 0.25 ML"
+    assert staircase.resting_label(m, 0.25) == "clean"
+
+
+def test_propagated_band_missing_is_incomplete() -> None:
+    sweep = _sweep({"m": _payload("m", {"H": [-0.02]})})
+    for b in sweep["boundaries"]:
+        b["band_propagated"] = None
+    (b,) = pm.build_map([_job(7, "m", sweep)])["boundaries"]
+    assert b["propagated_complete"] is False
 
 
 def test_incomplete_marks_missing_uncertainty_inputs_never_invented() -> None:
