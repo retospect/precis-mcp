@@ -401,10 +401,11 @@ def _dedupe(cands: list[StructureReading]) -> list[StructureReading]:
 # ── entry point ──────────────────────────────────────────────────────────
 
 
-def resolve(raw_query: str, fetch: Fetch) -> Resolution:
+def resolve(raw_query: str, fetch: Fetch, cir_fetch: Fetch | None = None) -> Resolution:
     """Resolve ``raw_query`` through the tiers. Never raises on upstream
-    trouble — faults land in ``tiers`` and, if nothing answered, in
-    ``status='fault'``."""
+    trouble: faults land in ``tiers``, and ``status='fault'`` only when
+    PubChem itself failed to answer. ``cir_fetch`` lets the caller give
+    the corroborating CIR leg a shorter timeout."""
     query = normalise_query(raw_query)
     qtype = classify_query(query)
     res = Resolution(query=query, query_type=qtype, status="not_found")
@@ -457,7 +458,8 @@ def resolve(raw_query: str, fetch: Fetch) -> Resolution:
         res.tiers.append(("OPSIN", "skipped (CAS number)"))
 
     pubchem = _dedupe(run("PubChem", lambda: _tier_pubchem(query, fetch, notes)) or [])
-    cir = _dedupe(run("CIR", lambda: _tier_cir(query, fetch, notes)) or [])
+    pubchem_faulted = res.tiers[-1][1].startswith("fault")
+    cir = _dedupe(run("CIR", lambda: _tier_cir(query, cir_fetch or fetch, notes)) or [])
 
     if pubchem:
         if len(pubchem) > 1:
@@ -471,6 +473,14 @@ def resolve(raw_query: str, fetch: Fetch) -> Resolution:
             res.candidates = _dedupe([best, *conflicts])
             res.status = "ambiguous"
             notes.append("PubChem and CIR read this name as different structures")
+            return res
+        if qtype == "name" and underspecified_locants(query, best.name):
+            res.candidates, res.status = [best], "ambiguous"
+            notes.append(
+                f"the name does not fix substituent positions; PubChem picked "
+                f"{best.name}. Other positional isomers exist — ask with the "
+                "locants (e.g. the full name above) or the CAS number"
+            )
             return res
         stereo = [c for c in cir if c.inchikey != best.inchikey]
         if stereo:
@@ -490,13 +500,38 @@ def resolve(raw_query: str, fetch: Fetch) -> Resolution:
         res.status = "resolved" if len(cir) == 1 else "ambiguous"
         return res
 
-    res.status = "fault" if faulted else "not_found"
+    # PubChem is the authoritative tier: a PubChem miss is a real "not
+    # found" even when the corroborating CIR leg is unreachable.
+    if pubchem_faulted:
+        res.status = "fault"
+    else:
+        res.status = "not_found"
+        if faulted:
+            notes.append("CIR was unreachable; OPSIN and PubChem found nothing")
     return res
 
 
-def http_fetch(timeout_s: float = 20.0) -> Fetch:
+_LOCANT_RE = re.compile(r"\b\d+(?:,\d+)*-")
+
+
+def underspecified_locants(query: str, title: str) -> bool:
+    """True when ``title`` is ``query`` plus numeric locants only, e.g.
+    "dichloroethane" → "1,1-Dichloroethane", "propanol" → "1-Propanol":
+    the name left the substituent positions open and the registry picked
+    one isomer. Stereo descriptors are not locants and do not count."""
+    if not _LOCANT_RE.search(title):
+        return False
+
+    def flat(s: str) -> str:
+        return re.sub(r"[\s\-]", "", s).casefold()
+
+    return flat(_LOCANT_RE.sub("", title)) == flat(query) and flat(title) != flat(query)
+
+
+def http_fetch(timeout_s: float = 20.0, attempts: int = 2) -> Fetch:
     """Production fetcher: SSRF-pinned ``safe_get`` per call. The query
-    is agent-supplied and rides the URL path; the hosts are fixed."""
+    is agent-supplied and rides the URL path; the hosts are fixed.
+    ``attempts`` counts connect-phase retries (``retry_transient``)."""
     from urllib.parse import urlsplit
 
     from precis.utils.http import http_client, retry_transient
@@ -505,7 +540,9 @@ def http_fetch(timeout_s: float = 20.0) -> Fetch:
     def fetch(url: str) -> tuple[int, str]:
         with http_client(timeout=timeout_s) as client:
             resp = retry_transient(
-                lambda: safe_get(client, url), host=urlsplit(url).netloc
+                lambda: safe_get(client, url),
+                host=urlsplit(url).netloc,
+                attempts=attempts,
             )
         return resp.status_code, resp.text
 

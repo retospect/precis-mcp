@@ -278,3 +278,70 @@ def test_handler_rejects_bad_cas(chem: ChemHandler) -> None:
     chem.fetch = Replay({})
     with pytest.raises(BadInput, match="check digit"):
         chem.get(id="50-78-3")
+
+
+# ── r38 dogfood: CIR unreachable from prod ───────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("query", "title", "expect"),
+    [
+        ("dichloroethane", "1,1-Dichloroethane", True),
+        ("propanol", "1-Propanol", True),
+        ("Dichloro ethane", "1,2-Dichloroethane", True),
+        ("aspirin", "Aspirin", False),
+        ("glucose", "D-Glucose", False),
+        ("isopropanol", "Isopropyl Alcohol", False),
+        ("1,1-dichloroethane", "1,1-Dichloroethane", False),
+    ],
+)
+def test_underspecified_locants(query: str, title: str, expect: bool) -> None:
+    assert cr.underspecified_locants(query, title) is expect
+
+
+def _dce_cir_down() -> Replay:
+    # Prod at r38: CIR fails the TLS handshake, PubChem picks the 1,1-isomer.
+    return Replay(
+        {
+            _opsin("dichloroethane"): (404, _fx("opsin_failure.json")),
+            _pc_name("dichloroethane"): (200, _fx("pubchem_name_dichloroethane.json")),
+            _pc_props("6365"): (200, _fx("pubchem_cid_6365.json")),
+            _cir("dichloroethane"): TimeoutError("handshake timed out"),
+        }
+    )
+
+
+def test_underspecified_name_refused_when_cir_is_down() -> None:
+    res = cr.resolve("dichloroethane", _dce_cir_down())
+    assert res.status == "ambiguous"
+    assert [c.name for c in res.candidates] == ["1,1-Dichloroethane"]
+    assert any("substituent positions" in n for n in res.notes)
+
+
+def test_pubchem_miss_with_cir_down_is_not_found() -> None:
+    q = "notachemicalzzq"
+    fetch = Replay(
+        {
+            _opsin(q): (404, _fx("opsin_failure.json")),
+            _pc_name(q): (404, _fx("pubchem_name_notachemicalzzq.json")),
+            _cir(q): TimeoutError("handshake timed out"),
+        }
+    )
+    res = cr.resolve(q, fetch)
+    assert res.status == "not_found"
+    assert "CIR was unreachable; OPSIN and PubChem found nothing" in res.notes
+
+
+def test_cir_leg_uses_its_own_fetcher() -> None:
+    main = Replay({k: v for k, v in _aspirin_routes().items() if "cactus" not in k})
+    cir = Replay({_cir("aspirin"): (200, "CC(=O)Oc1ccccc1C(O)=O\n")})
+    res = cr.resolve("aspirin", main, cir)
+    assert res.status == "resolved"
+    assert cir.calls == [_cir("aspirin")]
+
+
+def test_handler_renders_underspecified_refusal(chem: ChemHandler) -> None:
+    chem.fetch = _dce_cir_down()
+    body = chem.get(id="dichloroethane").body
+    assert "REFUSED: underspecified" in body
+    assert "1. 1,1-Dichloroethane: CC(Cl)Cl" in body

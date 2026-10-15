@@ -73,16 +73,24 @@ Instead it lists the readings with their sources:
   example, PubChem maps the bare name "dichloroethane" to the
   1,1-isomer, while "1,2-dichloroethane" is the common solvent.
 
+- a name that leaves substituent positions open, where PubChem's pick
+  only adds numeric locants: "dichloroethane" gives 1,1-dichloroethane,
+  and "propanol" gives 1-propanol. Here the body says `REFUSED:
+  underspecified` and shows PubChem's pick. If that pick is what you
+  mean, ask again with its full name.
+
 To resolve it, ask again with the full name or the CAS number of the
-reading you mean. A name that both PubChem and CIR read the same
-underspecified way still passes, so check the `name:` line.
+reading you mean. Stereo is not checked this way, so "glucose" passes as
+PubChem's D-glucose. Check the `name:` line.
 
 ## Caching and faults
 
 Answers are cached for 30 days. This includes refusals and "not found".
-To look again, pass `mode='refresh'`. If no source answered because a
-source faulted (a timeout or a 5xx error), the call raises an error and
-nothing is cached, so a retry runs the lookup again. A CAS number with a
+To look again, pass `mode='refresh'`. If PubChem itself faulted (a
+timeout or a 5xx error) and no other source answered, the call raises an
+error and nothing is cached, so a retry runs the lookup again. CIR only
+cross-checks: when it is unreachable, the answer stands and a note says
+it was not cross-checked. A CAS number with a
 bad check digit is refused before any lookup.
 
 The structured answer is stored in the cache meta as `smiles`,

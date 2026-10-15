@@ -89,7 +89,12 @@ class ChemHandler(CacheBackedHandler):
         return (cache.meta or {}).get("query")
 
     def _fetch(self, key: str) -> FetchResult:
-        res = resolve(key, self.fetch or http_fetch())
+        # CIR only corroborates, and it was unreachable from prod at r38
+        # (TLS handshake timeouts): short timeout, no connect retry.
+        if self.fetch is not None:
+            res = resolve(key, self.fetch)
+        else:
+            res = resolve(key, http_fetch(), http_fetch(timeout_s=8.0, attempts=1))
         if res.status == "fault":
             raise Upstream(
                 f"chem: no source answered for {key!r} ({_tier_line(res)})",
@@ -132,10 +137,17 @@ def render_resolution(res: Resolution) -> str:
         if ans.source_smiles and ans.source_smiles != ans.smiles:
             lines.append(f"source smiles: {ans.source_smiles}")
     elif res.status == "ambiguous":
-        lines += [
-            f"{res.query} ({res.query_type}) → REFUSED: ambiguous, "
-            f"{len(res.candidates)} readings. Pick one by its full name or CAS:",
-        ]
+        if len(res.candidates) == 1:
+            lines.append(
+                f"{res.query} ({res.query_type}) → REFUSED: underspecified. The "
+                "registry's pick is shown; confirm it by asking for its full "
+                "name or CAS:"
+            )
+        else:
+            lines.append(
+                f"{res.query} ({res.query_type}) → REFUSED: ambiguous, "
+                f"{len(res.candidates)} readings. Pick one by its full name or CAS:"
+            )
         for i, c in enumerate(res.candidates, 1):
             ref = f" — {c.source_ref}" if c.source_ref else ""
             lines.append(
