@@ -65,30 +65,33 @@ def test_pad_row_wraps_the_centre_or_is_rejected():
     assert globalplan._pad_row(circle[:6]) is None
 
 
-def test_via_lattice_packs_at_the_envelope():
+def test_margin_slots_pack_at_the_envelope():
+    """The stagger plaza_corridors plans its via slots with."""
     env = 0.65
     n, r0 = 20, 5.0
-    # One ring's capacity: floor(2*pi*5/0.65) = 48 — 20 fits unstaggered.
-    slots = globalplan.via_lattice([2 * math.pi * i / n for i in range(n)], r0, env)
+    # Neighbour chord 2*5*sin(pi/20) = 1.56 >= 0.65 — 20 fits unstaggered.
+    angles = [2 * math.pi * i / n for i in range(n)]
+    slots = globalplan._margin_slots(angles, [r0] * n, env)
     assert slots == [r0] * n
-    # 60 > 48: the odd entries stagger out one hex row.
+    # The margin follows the row's outline: per-pad radii pass through.
+    wavy = [r0 + 0.5 * (i % 3) for i in range(n)]
+    assert globalplan._margin_slots(angles, wavy, env) == wavy
+    # 60 entries: chord 2*5*sin(pi/60) = 0.52 < 0.65 — the odd entries
+    # stagger out one hex row.
     n2 = 60
-    slots2 = globalplan.via_lattice([2 * math.pi * i / n2 for i in range(n2)], r0, env)
+    angles2 = [2 * math.pi * i / n2 for i in range(n2)]
+    slots2 = globalplan._margin_slots(angles2, [r0] * n2, env)
     assert slots2[0] == r0 and slots2[1] == r0 + globalplan._VIA_STAGGER * env
     # Consecutive same-row slots keep the envelope: chord spacing on the
     # circle stays at or above the via envelope either way.
     for row in (0, 1):
         pts = [
-            (
-                (r0 + (globalplan._VIA_STAGGER * env if row else 0.0))
-                * math.cos(2 * math.pi * i / n2),
-                (r0 + (globalplan._VIA_STAGGER * env if row else 0.0))
-                * math.sin(2 * math.pi * i / n2),
-            )
+            (slots2[i] * math.cos(angles2[i]), slots2[i] * math.sin(angles2[i]))
             for i in range(row, n2, 2)
         ]
         for a, b in itertools.pairwise(pts):
             assert math.hypot(a[0] - b[0], a[1] - b[1]) >= env * 0.98
+    assert globalplan._margin_slots([], [], env) == []
 
 
 def test_angular_assignment_is_planar():
@@ -102,7 +105,7 @@ def test_angular_assignment_is_planar():
     # assignment's job), landed anywhere inside the ring.
     sources = [(r_src * math.cos(a + 0.15), r_src * math.sin(a + 0.15)) for a in angles]
     ring_r = r_pad + 1.0 + env / 2.0 + 0.05
-    slots = globalplan.via_lattice(angles, ring_r, env)
+    slots = globalplan._margin_slots(angles, [ring_r] * n, env)
     vias = [(r * math.cos(a), r * math.sin(a)) for r, a in zip(slots, angles)]
     paths = list(zip(pads, vias, sources))
     for i in range(n):

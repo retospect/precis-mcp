@@ -1745,21 +1745,33 @@ def _inner_layer(req: realize._SegRequest, pad_layer: int) -> int | None:
     return None
 
 
-def via_lattice(
+def _margin_slots(
     angles: Sequence[float],
-    r0: float,
+    base: Sequence[float],
     envelope: float,
 ) -> list[float]:
-    """The packed margin lattice: one slot per ``angles`` entry on a
-    circle of radius ``r0`` — radii only (callers add the centre); when
-    the ring cannot hold the count at the via ``envelope`` the odd
-    entries stagger out one hex row (``_VIA_STAGGER * envelope``)."""
+    """The packed margin lattice's slot radii (callers add the centre):
+    entry ``i`` sits at ``base[i]`` on the ray at ``angles[i]`` — the
+    margin follows the row's outline, not a circle. When any pair of
+    angular neighbours (cyclic) lands closer than the via ``envelope``
+    the odd entries stagger out one hex row (``_VIA_STAGGER * envelope``)."""
     n = len(angles)
     if n == 0:
         return []
-    one_ring = int(2 * math.pi * r0 / envelope)
-    row2 = n > max(1, one_ring)
-    return [r0 + (_VIA_STAGGER * envelope if row2 and i % 2 else 0.0) for i in range(n)]
+    chords = [
+        math.hypot(
+            base[i] * math.cos(angles[i])
+            - base[(i + 1) % n] * math.cos(angles[(i + 1) % n]),
+            base[i] * math.sin(angles[i])
+            - base[(i + 1) % n] * math.sin(angles[(i + 1) % n]),
+        )
+        for i in range(n)
+    ]
+    slots = list(base)
+    if min(chords) < envelope:
+        for i in range(1, n, 2):
+            slots[i] += _VIA_STAGGER * envelope
+    return slots
 
 
 def _seg_cells(
@@ -1829,7 +1841,7 @@ def plaza_corridors(
 ) -> tuple[dict[int, np.ndarray], dict[int, list[int]], list[int]]:
     """The angular escape assignment for the tough groups: via slots on
     a packed margin lattice at the via envelope (staggered into a second
-    row when one ring cannot hold the count), each segment's corridor
+    row when angular neighbours crowd the envelope), each segment's corridor
     the wedge pad → slot → source. Returns ``(corridors, layers, order)``
     — corridors keyed by seg, the layer pair each runs on, and the
     segments in plan order (angular)."""
@@ -1839,17 +1851,13 @@ def plaza_corridors(
     order: list[int] = []
     for group in groups:
         cx, cy = group.centre
-        n = len(group.segs)
         envelope = max(
             float(reqs[s].rules.via_dia_mm or 0.45)
             + 2 * float(reqs[s].rules.clearance_mm)
             for s in group.segs
         )
         # Each slot sits just past its own pad's outer extent on the
-        # pad's ray — the margin follows the row's outline, not a
-        # circle. When neighbouring slots would land inside the via
-        # envelope of each other the odd entries stagger one hex row
-        # out.
+        # pad's ray; ``_margin_slots`` staggers crowded neighbours.
         angles = [
             math.atan2(
                 (reqs[s].end if s in group.b_pad else reqs[s].start)[1] - cy,
@@ -1864,19 +1872,7 @@ def plaza_corridors(
             + 0.05
             for i, s in enumerate(group.segs)
         ]
-        chords = [
-            math.hypot(
-                base[i] * math.cos(angles[i])
-                - base[(i + 1) % n] * math.cos(angles[(i + 1) % n]),
-                base[i] * math.sin(angles[i])
-                - base[(i + 1) % n] * math.sin(angles[(i + 1) % n]),
-            )
-            for i in range(n)
-        ]
-        slots = list(base)
-        if min(chords) < envelope:
-            for i in range(1, n, 2):
-                slots[i] += _VIA_STAGGER * envelope
+        slots = _margin_slots(angles, base, envelope)
         for i, seg_id in enumerate(group.segs):
             req = reqs[seg_id]
             rules = req.rules
@@ -2020,5 +2016,4 @@ __all__ = [
     "plaza_attempt",
     "plaza_corridors",
     "plaza_mask",
-    "via_lattice",
 ]

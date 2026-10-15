@@ -116,26 +116,12 @@ _spec.loader.exec_module(coderef)
 #: of the contract: an entry that gains a real caller must be REMOVED,
 #: not left masking a future regression check forever.
 _KNOWN_UNWIRED: dict[str, str] = {
-    "src/precis/pcb/globalplan.py::via_lattice": (
-        "64279150b (plaza escape): DEAD LEFTOVER, not a staged slice -- "
-        "plaza_corridors inlines its own chord-based stagger over per-pad "
-        "radii instead of this ring-capacity rule, so "
-        "tests/test_pcb_globalplan_plaza.py pins a lattice production "
-        "never uses. Wire plaza_corridors to it or delete it with its tests"
-    ),
     "src/precis/pcb/datasheet_facts.py::facts_revision": (
         "9f9d59612 (datasheet_facts): the part-fact staleness key a verdict "
         "records in checklist_verdicts.inputs (pcb-datasheet-review item 6); "
         "checklist/pcb.py's PcbBridge.input_revision resolves only "
         "margin:fixed-derating so far and the pcb_review job (item 7) is "
         "not built"
-    ),
-    "src/precis/pcb/datasheet_facts.py::pin_fact": (
-        "9f9d59612 (datasheet_facts): LEFTOVER -- its docstring calls it the "
-        "part:<C#>~<pin> selector's read, but link_target._resolve_part_pin "
-        "reads part_facts_for_ref + PackageFacts.pin itself (it refuses a "
-        "pin ambiguous across packages, which this wrapper does not). Only "
-        "tests/test_datasheet_facts.py calls it"
     ),
     "src/precis/pcb/jlc_library.py::reset_live_cache": (
         "own docstring: 'Clear the live-lookup negative cache (tests; an "

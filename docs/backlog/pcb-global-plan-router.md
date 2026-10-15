@@ -237,7 +237,7 @@ the unproven one.
    wall it confirms is the one slice 2 has to break.
 1b. **Plaza packing, targeted for tough spots — DONE 2026-10-15**
    (`escape="plaza"` route param, opt-in; `plaza_attempt` /
-   `plaza_corridors` / `via_lattice` in `globalplan.py`, test
+   `plaza_corridors` / `_margin_slots` in `globalplan.py`, test
    `test_pcb_globalplan_plaza.py`). A pad row is a CLOSED row wrapping
    the centroid — sorted pad angles cover the circle, shape-agnostic
    (the square QFP ring qualifies; a first circle-fit cut rejected

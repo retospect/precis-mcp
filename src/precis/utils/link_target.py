@@ -348,15 +348,16 @@ def _resolve_part_pin(
             next="the datasheet_facts job runs after the pull; then this "
             "selector resolves to the pin's datasheet row",
         )
-    # A pin number is unique within a package block; across packages an
-    # ambiguous hit is an error, not a coin flip.
-    hits = [
-        (pkg_name, p)
-        for pkg_name, pkg in facts.packages.items()
-        for p in [pkg.pin(selector)]
-        if p is not None
-    ]
-    if not hits:
+    try:
+        pin = pf.pin_fact(facts, selector)
+    except BadInput as exc:
+        # Ambiguous across packages: an error, not a coin flip — the
+        # single-package selector has no way to name the package.
+        raise BadInput(
+            f"link target {target!r}: {exc}",
+            next=f"link the part itself: part:{identifier}",
+        ) from exc
+    if pin is None:
         valid = sorted(
             {p.pin for pkg in facts.packages.values() for p in pkg.pins},
             key=lambda s: (len(s), s),
@@ -368,14 +369,6 @@ def _resolve_part_pin(
             next="use one of the pin table's pin numbers, or "
             f"link the part itself: part:{identifier}",
         )
-    if len(hits) > 1:
-        raise BadInput(
-            f"link target {target!r}: pin {selector!r} exists in several "
-            f"packages ({sorted(n for n, _ in hits)}) — the single-package "
-            "selector can't disambiguate",
-            next=f"link the part itself: part:{identifier}",
-        )
-    pin = hits[0][1]
     if pin.source is None or pin.source.chunk_id is None:
         raise BadInput(
             f"link target {target!r}: pin {selector!r} of {identifier} has no "

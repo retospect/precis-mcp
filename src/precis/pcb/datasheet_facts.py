@@ -595,11 +595,28 @@ def part_facts_for_ref(store: Store, part_ref_id: int) -> PartFacts | None:
 
 
 def pin_fact(
-    store: Store, lcsc: str, pin: str | int, *, package: str | None = None
+    facts: PartFacts, pin: str | int, *, package: str | None = None
 ) -> PinFact | None:
-    """One pin row for ``part:<lcsc>~<pin>`` — the selector's read."""
-    facts = part_facts(store, lcsc)
-    return facts.pin(pin, package=package) if facts is not None else None
+    """One pin row for ``part:<lcsc>~<pin>`` — the selector's read.
+
+    A named ``package`` reads that block only. Without one the pin number
+    is looked up across every package: a pin number is unique within a
+    package block, not across them, so a hit in more than one is refused
+    (``BadInput``) rather than picked. ``None`` = no package has the pin."""
+    if package is not None:
+        pkg = facts.packages.get(package)
+        return pkg.pin(pin) if pkg is not None else None
+    hits = [
+        (name, p)
+        for name, pkg in facts.packages.items()
+        if (p := pkg.pin(pin)) is not None
+    ]
+    if len(hits) > 1:
+        raise BadInput(
+            f"pin {str(pin).strip()!r} exists in several packages "
+            f"({sorted(n for n, _ in hits)}) — name the package to disambiguate"
+        )
+    return hits[0][1] if hits else None
 
 
 def facts_revision(store: Store, part_ref_id: int) -> int:

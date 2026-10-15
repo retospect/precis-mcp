@@ -310,9 +310,11 @@ def test_facts_view_on_part_get(store):
     assert "p.5" in body
 
     # The selector's read: one pin by number through the store API.
-    pin3 = df.pin_fact(store, "C5446", "3")
+    facts = df.part_facts(store, "C5446")
+    assert facts is not None
+    pin3 = df.pin_fact(facts, "3")
     assert pin3 is not None and pin3.name == "IN"
-    assert df.pin_fact(store, "C5446", "99") is None
+    assert df.pin_fact(facts, "99") is None
 
 
 def test_facts_view_without_facts(store):
@@ -480,7 +482,9 @@ def test_dispatch_full(store, monkeypatch):
     fj._dispatch(ctx, fj.SPEC)
     assert ctx.status == "succeeded"
     assert ctx.meta_set["facts_status"] == "ok" and ctx.meta_set["facts_rev"] == 1
-    pin = df.pin_fact(store, "C5446", "3")
+    facts = df.part_facts(store, "C5446")
+    assert facts is not None
+    pin = df.pin_fact(facts, "3")
     assert pin is not None and pin.source is not None
     assert pin.source.chunk_id is not None  # cited a real chunk
 
@@ -594,6 +598,34 @@ def test_pin_selector_unknown_pin_quotes_valid(store):
     _with_facts(store)
     with pytest.raises(BadInput, match="no pin '99'"):
         parse_link_target("part:C5446~99", store=store)
+
+
+def _two_packages(store):
+    """The same pin table under two package names — pin 3 is in both."""
+    part_id, ds_id, chunk_ids = _linked(store)
+    payload = _payload(chunk_ids[0])
+    pkg = payload["packages"]["SOT-23-5"]
+    payload["packages"]["SC-70-5"] = {"pins": [dict(p) for p in pkg["pins"]]}
+    df.write_facts(store, part_id, payload, datasheet_ref_id=ds_id)
+    facts = df.part_facts(store, "C5446")
+    assert facts is not None and len(facts.packages) == 2
+    return facts
+
+
+def test_pin_fact_refuses_pin_ambiguous_across_packages(store):
+    facts = _two_packages(store)
+    with pytest.raises(BadInput, match="several packages"):
+        df.pin_fact(facts, "3")
+    # naming the package disambiguates
+    pin = df.pin_fact(facts, "3", package="SC-70-5")
+    assert pin is not None and pin.name == "IN"
+    assert df.pin_fact(facts, "99") is None
+
+
+def test_pin_selector_refuses_pin_ambiguous_across_packages(store):
+    _two_packages(store)
+    with pytest.raises(BadInput, match="several packages"):
+        parse_link_target("part:C5446~3", store=store)
 
 
 def test_pin_selector_without_facts(store):
