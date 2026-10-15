@@ -1,0 +1,53 @@
+# Eval cases for precis-python-help (schema: precis.skill_eval.cases).
+skill: precis-python-help
+cases:
+  # source: tool_calls get|python NotFound x37 (call 407475 replayed the
+  # dead doc example 'precis::precis.registry.Registry.get'; gripe 488916)
+  # — resolve the real qualname with pattern search before get.
+  - id: resolve-symbol-before-get
+    prompt: |
+      In the precis repo I need the function that parses
+      'kind:identifier' link targets — something in the link_target util
+      area. Find its real qualified name and open its signature.
+    expect:
+      calls:
+        - {verb: search, kind: python, args: {mode: pattern}}
+    forbid:
+      calls:
+        # the dead example agents kept replaying (gr488916)
+        - {verb: get, kind: python, args: {id: 're:.*registry.*'}}
+    fake:
+      calls:
+        - {verb: search, kind: python, args: {q: 'link_target parse', mode: pattern, scope: precis}}
+        - {verb: get, kind: python, args: {id: 'precis::precis.utils.link_target.parse_link_target'}}
+      record: null
+      answer: >
+        search(kind='python', mode='pattern', q='link_target parse',
+        scope='precis') resolves the real qualname, then
+        get(kind='python', id='precis::precis.utils.link_target.parse_link_target')
+        opens signature + callers — don't guess qualnames.
+
+  # source: same family — call 407475 paired a guessed symbol id with
+  # view='tests'; the view is real, the discovery path is the trap.
+  - id: tests-view-on-real-symbol
+    prompt: |
+      Which tests cover parse_link_target in precis.utils.link_target?
+      List the ranked test nodeids.
+    expect:
+      calls:
+        - verb: get
+          kind: python
+          args: {id: 're:(main|precis)::precis\.utils\.link_target\.parse_link_target', view: tests}
+    forbid:
+      calls:
+        - {verb: get, kind: python, args: {id: 're:.*registry.*'}}
+        - {verb: search, kind: paper}                      # tests aren't corpus text
+    fake:
+      calls:
+        - verb: get
+          kind: python
+          args: {id: 'main::precis.utils.link_target.parse_link_target', view: tests}
+      record: null
+      answer: >
+        get(kind='python', id='main::precis.utils.link_target.parse_link_target',
+        view='tests') returns the ranked test nodeids with evidence labels.

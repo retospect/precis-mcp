@@ -1,0 +1,26 @@
+# Eval cases for precis-patent-search-help (schema: precis.skill_eval.cases).
+skill: precis-patent-search-help
+cases:
+  # source: tool_calls search|patent keys ['n','q',...] BadInput (call
+  # 407897) — result count is page_size=; 'n' is not a search kwarg.
+  - id: page-size-not-n
+    prompt: |
+      Search the patent corpus for the Brønsted–Evans–Polanyi scaling
+      relation on volcano plots — I only want the top 5 hits.
+    expect:
+      calls:
+        - verb: search
+          kind: patent
+          args: {q: 're:(?is).*(scaling|volcano).*', page_size: 're:^5$'}
+    forbid:
+      calls:
+        - {verb: search, args: {n: 're:\d+'}}             # page_size=, not n=
+    fake:
+      calls:
+        - verb: search
+          kind: patent
+          args: {q: 'Bronsted Evans Polanyi scaling relation volcano plot', page_size: 5}
+      record: null
+      answer: >
+        search(kind='patent', q='…', page_size=5) — the result-count knob
+        is page_size=; page= walks further pages.

@@ -1,0 +1,32 @@
+# Eval cases for precis-perplexity-help (schema: precis.skill_eval.cases).
+skill: precis-perplexity-help
+cases:
+  # source: tool_calls put|perplexity-research without mode BadInput
+  # (call 407966) — paid-import kinds require mode='import'; a bare
+  # put(text=) is refused.
+  - id: import-mode-required
+    prompt: |
+      I already asked Perplexity Pro in the web UI about the NO→NH3
+      pathway and have the answer text in front of me. Store it in precis
+      under the query 'no-to-nh3-pathway' so the cache serves it later —
+      do not pay for a second run.
+    expect:
+      calls:
+        - verb: put
+          kind: perplexity-research
+          args: {mode: import, id: 're:no.?to.?nh3.*', text: 're:(?is).+'}
+      record: {kind: perplexity-research}
+    forbid:
+      calls:
+        - {verb: get, kind: perplexity-research}           # re-runs the paid query
+    fake:
+      calls:
+        - verb: put
+          kind: perplexity-research
+          args: {mode: import, id: 'no-to-nh3-pathway', text: '<the Pro answer text>'}
+      record: {kind: perplexity-research}
+      answer: >
+        put(kind='perplexity-research', mode='import',
+        id='no-to-nh3-pathway', text='<the answer>') — the import door
+        caches your free answer under an explicit id; a plain put is
+        refused.

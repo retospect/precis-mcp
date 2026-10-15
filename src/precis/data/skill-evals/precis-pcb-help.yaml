@@ -1,0 +1,24 @@
+# Eval cases for precis-pcb-help (schema: precis.skill_eval.cases).
+skill: precis-pcb-help
+cases:
+  # source: tool_calls get|pcb view='stackup' BadInput (call 407010) —
+  # the agent guessed the view name before it existed; view='stackup'
+  # landed in 34226118e and is the right read for the layer stack.
+  - id: stackup-view
+    prompt: |
+      Show me taz15's copper stackup — which layers exist, which are
+      planes, which are routable. Read only.
+    expect:
+      calls:
+        - {verb: get, kind: pcb, args: {id: taz15, view: stackup}}
+    forbid:
+      calls:
+        - {verb: put, kind: pcb}            # stackup is an op= write, not a read
+    fake:
+      calls:
+        - {verb: get, kind: pcb, args: {id: taz15, view: stackup}}
+      record: null
+      answer: >
+        get(kind='pcb', id='taz15', view='stackup') prints layer, role,
+        plane and routable/pourable flags as the router sees them;
+        put(args={'op':'stackup'}) is the write path.

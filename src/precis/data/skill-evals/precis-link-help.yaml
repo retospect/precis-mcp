@@ -1,0 +1,31 @@
+# Eval cases for precis-link-help (schema: precis.skill_eval.cases).
+skill: precis-link-help
+cases:
+  # source: gripe 488918 (fan-out/fan-in direction confused) + tool_calls
+  # link|memory BadInput x32 — id=[...] is the fan-in batch: every id to
+  # the ONE target, and target= needs the canonical kind:identifier form.
+  - id: fan-in-batch-canonical-target
+    prompt: |
+      Memories me71, me72 and me73 all cite the same source paper pa7.
+      Link all three to it in one call.
+    expect:
+      calls:
+        - verb: link
+          kind: memory
+          args:
+            id: ['re:(me)?\d+', 're:(me)?\d+', 're:(me)?\d+']
+            target: 're:paper:(pa)?7'
+    forbid:
+      calls:
+        - {verb: put, kind: memory}         # re-minting is not linking
+        - {verb: link, args: {target: 're:^pa\d+$'}}   # target needs kind:identifier
+    fake:
+      calls:
+        - verb: link
+          kind: memory
+          args: {id: [71, 72, 73], target: 'paper:pa7', rel: cites}
+      record: null
+      answer: >
+        link(kind='memory', id=[71, 72, 73], target='paper:pa7',
+        rel='cites') — the id list is the fan-in batch form; target=
+        takes the canonical kind:identifier, 'paper:pa7' not 'pa7'.

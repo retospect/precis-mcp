@@ -158,3 +158,69 @@ cases:
         tags=['topic:noxrr','confidence-moderate'],
         link='perplexity-research:mechanism-of-noxrr', rel='derived-from')
         — the memory outlives the cache's TTL and carries your own framing.
+
+  # source: tool_calls put|memory id=489276 BadInput "put on existing
+  # memory id= is not supported" (call 407525) — update in place is edit.
+  - id: edit-not-put-on-existing
+    prompt: |
+      Memory me489276 says the eval harness runs only the three seed
+      skills — that's stale, the corpus grew. Fix the body in place.
+    expect:
+      calls:
+        - {verb: edit, kind: memory, args: {id: 're:(me)?489276'}}
+    forbid:
+      calls:
+        - {verb: put, kind: memory, args: {id: 're:.+'}}   # put can't touch an existing memory
+    fake:
+      calls:
+        - verb: edit
+          kind: memory
+          args: {id: 489276, mode: 'find-replace', find: 'only the three seed skills', text: 'the seed skills plus the long-tail corpus'}
+      record: {kind: memory}
+      answer: >
+        edit(kind='memory', id=489276, mode='find-replace', find='…',
+        text='…') — put with an existing id is refused; edit rewrites in
+        place.
+
+  # source: tool_calls search|memory tags=['DREAM:speculative',
+  # 'speculative'] BadInput x37 (calls 407274, 407310) — a bare flag that
+  # collides with a closed value is refused; pass the qualified tag.
+  - id: closed-tag-qualified
+    prompt: |
+      List my memories tagged DREAM:speculative — five is enough.
+    expect:
+      calls:
+        - verb: search
+          kind: memory
+          args: {tags: ['re:^DREAM:speculative$'], page_size: 're:^5$'}
+    forbid:
+      calls:
+        - {verb: search, kind: memory, args: {tags: ['re:^speculative$']}}
+    fake:
+      calls:
+        - {verb: search, kind: memory, args: {tags: ['DREAM:speculative'], page_size: 5}}
+      record: null
+      answer: >
+        search(kind='memory', tags=['DREAM:speculative'], page_size=5) —
+        DREAM: is a closed axis, so the qualified tag is the filter; the
+        bare 'speculative' flag collides with it and is refused.
+
+  # source: gripe 486840 — agents detoured to prod-psql to grep a memory
+  # because they didn't know q= on a single id is find-in-ref.
+  - id: find-in-ref-q
+    prompt: |
+      Memory me73 is long. Find where in it I wrote about CACHE: pinning
+      — just the matching passages, not the whole body.
+    expect:
+      calls:
+        - {verb: get, kind: memory, args: {id: 're:(me)?73', q: 're:(?i).*cache.*'}}
+    forbid:
+      text: ["SELECT ", "psql"]
+    fake:
+      calls:
+        - {verb: get, kind: memory, args: {id: me73, q: 'CACHE: pinning'}}
+      record: null
+      answer: >
+        get(kind='memory', id='me73', q='CACHE: pinning') — q= on a
+        single id is find-in-ref: matching passages with context, not
+        the whole body. No SQL detour.

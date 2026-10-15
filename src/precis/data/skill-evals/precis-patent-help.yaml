@@ -1,0 +1,23 @@
+# Eval cases for precis-patent-help (schema: precis.skill_eval.cases).
+skill: precis-patent-help
+cases:
+  # source: tool_calls get|patent view='toc' Unsupported x62 (calls
+  # 407046, 407486) — papers/skills have toc; patents split into
+  # abstract/biblio/claims/description/bibtex.
+  - id: claims-not-toc
+    prompt: |
+      What does patent CN116716618A actually claim? I want the claim text,
+      not a bibliography.
+    expect:
+      calls:
+        - {verb: get, kind: patent, args: {id: 're:(?i)cn116716618a', view: claims}}
+    forbid:
+      calls:
+        - {verb: get, kind: patent, args: {view: toc}}
+    fake:
+      calls:
+        - {verb: get, kind: patent, args: {id: cn116716618a, view: claims}}
+      record: null
+      answer: >
+        get(kind='patent', id='cn116716618a', view='claims') — patent views
+        are abstract/biblio/claims/description/bibtex; there is no 'toc'.

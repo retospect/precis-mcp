@@ -1,0 +1,48 @@
+# Eval cases for precis-get-help (schema: precis.skill_eval.cases).
+skill: precis-get-help
+cases:
+  # source: tool_calls get|pathway id=483780 BadInput "no pathway"
+  # (call 407920; gripe 489163 same shape for 246367) — handles carry the
+  # 2-char prefix: pw<N>, not a bare number.
+  - id: handle-keeps-prefix
+    prompt: |
+      Open pathway 483780 — I want to read its route summary.
+    expect:
+      calls:
+        - {verb: get, kind: pathway, args: {id: 're:pw\d+'}}
+    forbid:
+      calls:
+        - {verb: get, kind: pathway, args: {id: 're:^\d+$'}}   # bare number isn't the handle
+    fake:
+      calls:
+        - {verb: get, kind: pathway, args: {id: pw483780}}
+      record: null
+      answer: >
+        get(kind='pathway', id='pw483780') — the canonical handle includes
+        the pw prefix; copy it back verbatim from the listing or link.
+
+  # source: tool_calls get kind=<missing> BadInput x35+19 (e.g. call
+  # 407924 passed id='pc' + a placeholder q) — when the id can't infer
+  # the kind, kind= is required.
+  - id: kind-required-for-unprefixed-id
+    prompt: |
+      A colleague gave me ref id 164903 and told me it's a quest. Open
+      its link graph filtered to pathway neighbours only.
+    expect:
+      calls:
+        - verb: get
+          kind: quest
+          args: {id: 're:(qu)?164903', view: links, args: {of_kind: pathway}}
+    forbid:
+      calls:
+        - {verb: search}                                 # the id is known — get, don't hunt
+    fake:
+      calls:
+        - verb: get
+          kind: quest
+          args: {id: 164903, view: links, args: {of_kind: pathway}}
+      record: null
+      answer: >
+        get(kind='quest', id=164903, view='links',
+        args={'of_kind': 'pathway'}) — a bare numeric id needs kind=
+        (a 'pw483780'-style handle would infer it from the prefix).

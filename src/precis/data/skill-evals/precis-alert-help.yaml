@@ -1,0 +1,29 @@
+# Eval cases for precis-alert-help (schema: precis.skill_eval.cases).
+skill: precis-alert-help
+cases:
+  # source: tool_calls get|alert view='comments' Unsupported (call
+  # 407699) — comments is a gripe view; alert triage views are
+  # detail/context/links/raw.
+  - id: context-not-comments
+    prompt: |
+      Batch-read alerts 484950, 484949 and 484951 for triage — I want
+      each alert's body plus the worker-logs window around it, in one
+      call.
+    expect:
+      calls:
+        - verb: get
+          kind: alert
+          args:
+            id: ['re:\d+', 're:\d+', 're:\d+']
+            view: context
+    forbid:
+      calls:
+        - {verb: get, kind: alert, args: {view: comments}}   # gripe's view, not alert's
+    fake:
+      calls:
+        - {verb: get, kind: alert, args: {id: [484950, 484949, 484951], view: context}}
+      record: null
+      answer: >
+        get(kind='alert', id=[484950, 484949, 484951], view='context') —
+        detail plus the worker_logs window, mapped over the batch.
+        'comments' belongs to gripe.

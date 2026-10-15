@@ -215,3 +215,27 @@ cases:
         cites and names how many refs it excluded;
         get(view='backfill') is the section-driven twin for sweeping a
         section without a phrased question.
+
+  # source: tool_calls search|paper view='bibtex' BadInput
+  # "search(kind='paper') does not accept ['view']" (call 407874) —
+  # search ranks; the per-ref render view rides get.
+  - id: search-then-bibtex
+    prompt: |
+      Search papers for "Pt(111) NO reduction coverage effects DFT N2O
+      selectivity" and give me the bibtex of the best hit.
+    expect:
+      calls:
+        - {verb: search, kind: paper, args: {q: 're:(?is).*reduction.*'}}
+        - {verb: get, kind: paper, args: {view: bibtex}}
+    forbid:
+      calls:
+        - {verb: search, kind: paper, args: {view: 're:.+'}}   # views belong to get
+    fake:
+      calls:
+        - {verb: search, kind: paper, args: {q: 'Pt(111) NO reduction coverage effects DFT N2O selectivity', page_size: 3}}
+        - {verb: get, kind: paper, args: {id: pa4112, view: bibtex}}
+      record: null
+      answer: >
+        search(kind='paper', q='…') ranks the corpus, then
+        get(kind='paper', id='pa4112', view='bibtex') renders the hit —
+        view= is a get knob, search takes no render view.

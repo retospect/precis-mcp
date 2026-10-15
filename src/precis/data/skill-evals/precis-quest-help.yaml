@@ -1,0 +1,24 @@
+# Eval cases for precis-quest-help (schema: precis.skill_eval.cases).
+skill: precis-quest-help
+cases:
+  # source: tool_calls get|quest view='status'/'rubric' Unsupported
+  # (calls 407665, 407933) — neither is a quest view; the health rollup
+  # is view='tree'.
+  - id: tree-not-status
+    prompt: |
+      How is quest qu164903 doing overall — servers, deeds, health, open
+      gaps? One rollup read.
+    expect:
+      calls:
+        - {verb: get, kind: quest, args: {id: 're:(qu)?164903', view: tree}}
+    forbid:
+      calls:
+        - {verb: get, kind: quest, args: {view: 're:status|rubric'}}
+    fake:
+      calls:
+        - {verb: get, kind: quest, args: {id: qu164903, view: tree}}
+      record: null
+      answer: >
+        get(kind='quest', id='qu164903', view='tree') is the rollup —
+        servers + deed ledger + health + gaps. 'status' and 'rubric' are
+        not quest views.

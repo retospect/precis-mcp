@@ -1,0 +1,147 @@
+# Eval cases for precis-gripe-help (schema: precis.skill_eval.cases).
+skill: precis-gripe-help
+cases:
+  # source: tool_calls edit|gripe Unsupported x18 (e.g. call 393379) — a
+  # gripe's body is immutable; agents kept trying to edit() it instead of
+  # appending a comment via put(id=, text=).
+  - id: comment-not-edit
+    prompt: |
+      My investigation found the root cause of gripe gr42 (the pcb netlist
+      collapse): the connectivity check was run at the wrong phase. Record
+      that finding on the gripe so the next agent sees it.
+    expect:
+      calls:
+        - {verb: put, kind: gripe, args: {id: 're:(gr)?42', text: 're:(?is).+'}}
+    forbid:
+      calls:
+        - {verb: edit, kind: gripe}          # a gripe's body can't be edited — append
+    fake:
+      calls:
+        - {verb: put, kind: gripe, args: {id: 42, text: "Root cause: connectivity ran at the placed phase, not routed."}}
+      record: {kind: gripe}
+      answer: >
+        put(kind='gripe', id=42, text='Root cause: connectivity ran at the
+        placed phase, not routed.') — a gripe takes no edit; put with id=
+        appends a comment chunk.
+
+  # source: tool_calls get|gripe view='full' Unsupported x27 (call 406793)
+  # — 'full' is an alert alias, not a gripe view; the full record incl.
+  # comments is view='comments' (or the bare default).
+  - id: comments-view-not-full
+    prompt: |
+      Gripe gr488897's summary line isn't enough — I need the whole body
+      and every comment on it, oldest first.
+    expect:
+      calls:
+        - {verb: get, kind: gripe, args: {id: 're:(gr)?488897', view: comments}}
+    forbid:
+      calls:
+        - {verb: get, kind: gripe, args: {view: full}}    # no such gripe view
+    fake:
+      calls:
+        - {verb: get, kind: gripe, args: {id: 488897, view: comments}}
+      record: null
+      answer: >
+        get(kind='gripe', id=488897, view='comments') renders the body
+        plus the comment timeline; 'full' is an alert view, not gripe's.
+
+  # source: tool_calls search|gripe status='open|triaged|ready_for_fix|in_review'
+  # BadInput x8 in one session (calls 406900-406907) — status= takes ONE
+  # value; open is already the gripe default, so plain search suffices.
+  - id: status-single-value
+    prompt: |
+      Which open gripes mention quest qu164903? Just the live ones —
+      closed history doesn't matter.
+    expect:
+      calls:
+        - {verb: search, kind: gripe, args: {q: 're:.*164903.*'}}
+    forbid:
+      calls:
+        - {verb: search, args: {status: 're:.*\|.*'}}     # status= is one value
+        - {verb: search, args: {status: 're:(?i)closed'}}
+    fake:
+      calls:
+        - {verb: search, kind: gripe, args: {q: qu164903}}
+      record: null
+      answer: >
+        search(kind='gripe', q='qu164903') — kind='gripe' already defaults
+        to open entries; for another single status pass status='wontfix',
+        or pin a STATUS: tag in tags= for a combined filter.
+
+  # source: tool_calls tag|gripe add=['STATUS:closed'] BadInput (calls
+  # 407736, 407741) — 'closed' is not a gripe status; fixed closes as
+  # STATUS:done.
+  - id: close-with-done-not-closed
+    prompt: |
+      I landed the fix for gripe gr489288 in commit abc1234. Close the
+      gripe out with that evidence.
+    expect:
+      calls:
+        - verb: put
+          kind: gripe
+          args: {id: 're:(gr)?489288', text: 're:(?is).+', tags: ['re:STATUS:done']}
+    forbid:
+      calls:
+        - {verb: tag, args: {add: ['re:(?i).*closed.*']}}
+        - {verb: put, args: {tags: ['re:(?i).*closed.*']}}
+        - {verb: delete, kind: gripe}       # a fixed gripe is done, not deleted
+    fake:
+      calls:
+        - {verb: put, kind: gripe, args: {id: 489288, text: 'fixed in abc1234', tags: ['STATUS:done']}}
+      record: {kind: gripe}
+      answer: >
+        put(kind='gripe', id=489288, text='fixed in abc1234',
+        tags=['STATUS:done']) — one call comments and closes; 'closed' is
+        not a STATUS value (done/wontfix are the terminal ones).
+
+  # source: tool_calls put|gripe keys ['body','kind','tags','text']
+  # BadInput x11 (e.g. call 406384) — gripe carries its prose in text=;
+  # body= is a finding kwarg.
+  - id: file-gripe-text-not-body
+    prompt: |
+      File a gripe: search(kind='skill', mode='verbatim') misses skills
+      whose H2 sections match the query — it only ranks the header.
+      Tag it surface friction.
+    expect:
+      calls:
+        - {verb: put, kind: gripe, args: {text: 're:(?is).*verbatim.*'}}
+      record: {kind: gripe}
+    forbid:
+      calls:
+        - {verb: put, kind: gripe, args: {body: 're:.+'}}   # body= is finding's, not gripe's
+    fake:
+      calls:
+        - verb: put
+          kind: gripe
+          args:
+            text: "search(kind='skill', mode='verbatim') misses skills whose H2 sections match"
+            tags: [surface-friction]
+      record: {kind: gripe}
+      answer: >
+        put(kind='gripe', text='…', tags=['surface-friction']) — a gripe's
+        prose goes in text=; the title is the first line.
+
+  # source: gripe 488919 — batch view= maps a single-id view over
+  # id=[...] (works for gripe, documented in gripe-help); agents still
+  # loop or believe id=[...] is summary-only.
+  - id: batch-comments
+    prompt: |
+      Read the comment timelines of gripes 486893 and 486399 — both, in
+      one call.
+    expect:
+      calls:
+        - verb: get
+          kind: gripe
+          args:
+            id: ['re:(gr)?\d+', 're:(gr)?\d+']
+            view: comments
+    forbid:
+      calls:
+        - {verb: get, kind: gripe, args: {view: full}}
+    fake:
+      calls:
+        - {verb: get, kind: gripe, args: {id: [486893, 486399], view: comments}}
+      record: null
+      answer: >
+        get(kind='gripe', id=[486893, 486399], view='comments') — the
+        single-id view maps over the batch; no loop needed.

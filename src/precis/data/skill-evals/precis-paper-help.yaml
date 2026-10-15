@@ -24,3 +24,24 @@ cases:
         get(kind='paper', id='10.1038/nature10352', view='abstract') — a DOI
         resolves via metadata; the view goes in the kwarg because DOI
         suffixes can contain '/'. Keep the pa<id> handle from the reply.
+
+  # source: tool_calls get|paper id='pa5052~684990..684994' NotFound
+  # "no blocks in fiorentin26 for range" (call 407906) — the selector
+  # counts block ordinals, not pc chunk ids.
+  - id: block-range-ordinals
+    prompt: |
+      Read blocks 63 through 89 of pa5052 — that span covers the results
+      section I need.
+    expect:
+      calls:
+        - {verb: get, kind: paper, args: {id: 're:pa5052~\d+\.\.\d+'}}
+    forbid:
+      calls:
+        - {verb: get, kind: paper, args: {id: 're:.*~\d{5,}\.\.\d{5,}'}}   # chunk ids aren't ordinals
+    fake:
+      calls:
+        - {verb: get, kind: paper, args: {id: 'pa5052~63..89'}}
+      record: null
+      answer: >
+        get(kind='paper', id='pa5052~63..89') — the ~ range takes block
+        ordinals within the paper (from view='toc'), not pc chunk ids.

@@ -1,0 +1,27 @@
+# Eval cases for precis-web-help (schema: precis.skill_eval.cases).
+skill: precis-web-help
+cases:
+  # source: tool_calls get|websearch id=... BadInput (calls 407506,
+  # 407507) — websearch is a compute kind keyed by query TEXT via q=;
+  # a bare number reads as a ref-id, a long slug truncates.
+  - id: websearch-query-not-id
+    prompt: |
+      Run a web search for "N2 triple bond dissociation energy vs NO bond
+      dissociation energy" and give me the answer.
+    expect:
+      calls:
+        - {verb: get, kind: websearch, args: {q: 're:(?is).*dissociation.*'}}
+    forbid:
+      calls:
+        - {verb: get, kind: websearch, args: {id: 're:.+'}}   # queries ride q=
+        - {verb: search, kind: web}
+    fake:
+      calls:
+        - verb: get
+          kind: websearch
+          args: {q: 'N2 triple bond dissociation energy vs NO bond dissociation energy'}
+      record: null
+      answer: >
+        get(kind='websearch', q='N2 triple bond dissociation energy vs NO
+        bond dissociation energy') — websearch computes from query text;
+        there is no id= to look up.
