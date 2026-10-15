@@ -1892,6 +1892,23 @@ class TestTryCrossref:
         assert out is not None
         assert out.event == "api_error"
 
+    def test_shared_limiter_refusal_skips_the_request(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _no_http(*_: Any, **__: Any) -> Any:
+            raise AssertionError("request fired despite a limiter refusal")
+
+        monkeypatch.setattr(fetch_oa, "require_rate_limit", _refuse)
+        monkeypatch.setattr(fetch_oa, "http_client", _no_http)
+        out = _try_crossref(_stub(doi="10.1234/x"), inbox_dir=tmp_path, email="a@b")
+        assert out is not None
+        assert out.event == "rate_limited"
+        assert out.payload == {
+            "doi": "10.1234/x",
+            "provider": "crossref",
+            "limiter": "shared",
+        }
+
 
 class TestTryOpenalex:
     def test_none_without_doi(self, tmp_path: Path) -> None:

@@ -100,6 +100,7 @@ class TestCrossrefQueryDrain:
             raise RuntimeError("network down")
 
         monkeypatch.setattr("precis.utils.safe_fetch.safe_get", _boom)
+        monkeypatch.setattr(bib_parse_mod, "require_rate_limit", lambda p, **_: None)
 
         start = time.monotonic()
         result = bib_parse_mod._crossref_query("some raw citation text")

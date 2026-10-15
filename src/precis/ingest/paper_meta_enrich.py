@@ -112,6 +112,7 @@ from precis.ingest.provenance import (
 from precis.store import Store
 from precis.utils.authors import author_display, author_names, normalize_authors
 from precis.utils.rate_limit import RateLimited
+from precis.utils.rate_limit import require as require_rate_limit
 
 log = logging.getLogger(__name__)
 
@@ -450,6 +451,9 @@ def enrich_paper(
     msg: dict[str, Any] | None = None
     doi = (doi or "").strip() or None
     if doi:
+        # Shared crossref limiter: a refusal raises RateLimited before any
+        # write, so the ref stays unstamped and the caller defers the batch.
+        require_rate_limit("crossref")
         try:
             msg = fetch_crossref(doi, mailto)
         except Exception:

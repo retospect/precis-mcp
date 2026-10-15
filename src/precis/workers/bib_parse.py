@@ -66,6 +66,8 @@ from precis.liveness import drain_sleep
 from precis.utils.boilerplate import MARKER_LINE_RE as _MARKER_LINE_RE
 from precis.utils.db_retry import retry_locked
 from precis.utils.llm.json_reply import extract_json_object
+from precis.utils.rate_limit import RateLimited
+from precis.utils.rate_limit import require as require_rate_limit
 from precis.workers import ref_lease
 
 log = logging.getLogger(__name__)
@@ -415,6 +417,10 @@ def _crossref_query(raw_text: str, *, mailto: str = "") -> list[dict[str, Any]] 
     outage during a backfill would permanently poison every entry it
     touched — the caller leaves ``match_conf`` NULL instead, so a later
     attempt retries it.
+
+    Each attempt first clears the shared ``crossref`` limiter; a refusal
+    raises :class:`RateLimited` (not ``None``) so the pass can defer the
+    paper unstamped instead of finishing it with unmatched entries.
     """
     from precis.utils.http import http_client
     from precis.utils.safe_fetch import safe_get
@@ -428,6 +434,7 @@ def _crossref_query(raw_text: str, *, mailto: str = "") -> list[dict[str, Any]] 
     # with backoff, and nesting the two doubles the worst-case hold.
     with http_client(timeout=_CROSSREF_TIMEOUT_S) as client:
         for attempt in range(_CROSSREF_RETRY_MAX_ATTEMPTS):
+            require_rate_limit("crossref")
             try:
                 resp = safe_get(client, _CROSSREF_BASE, params=params)
             except Exception as exc:
@@ -819,7 +826,7 @@ def run_bib_parse_pass(
         return {"claimed": 0, "ok": 0, "failed": 0}
 
     ok = failed = 0
-    for ref_id, _title in rows:
+    for i, (ref_id, _title) in enumerate(rows):
         try:
             with store.pool.connection() as conn:
                 chunk_rows = _paper_chunks(conn, ref_id)
@@ -860,6 +867,23 @@ def run_bib_parse_pass(
                 ref_lease.clear_attempt(store, ref_id, _LEASE_NS, conn=conn)
                 conn.commit()
             ok += 1
+        except RateLimited:
+            # Shared crossref limiter refused mid-match: leave this paper
+            # unstamped (its attempt lease brakes re-claim) and stop the
+            # batch — every later paper would be refused too. The papers
+            # never attempted get their leases back so they re-claim next
+            # pass instead of sitting out the cooldown.
+            log.info(
+                "bib_parse: shared limiter refused at ref_id=%s; deferring "
+                "the rest of the batch",
+                ref_id,
+            )
+            failed += 1
+            with store.pool.connection() as conn:
+                for skipped_id, _ in rows[i + 1 :]:
+                    ref_lease.clear_attempt(store, skipped_id, _LEASE_NS, conn=conn)
+                conn.commit()
+            break
         except (LockNotAvailable, DeadlockDetected):
             # Residual lock contention that outlasted retry_locked's own
             # budget (attempts exhausted -- either error class, same as

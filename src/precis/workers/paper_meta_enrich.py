@@ -126,8 +126,9 @@ def run_paper_meta_enrich_pass(
                         store, ref_id, doi=doi, mailto=mailto, email=email
                     )
                 except RateLimited:
-                    # Shared openalex limiter refused (daily quota spent or
-                    # rate-starved): defer the rest of the batch unstamped.
+                    # Shared crossref/openalex limiter refused (daily quota
+                    # spent or rate-starved): defer the rest of the batch
+                    # unstamped.
                     log.info(
                         "paper_meta_enrich: shared limiter refused at ref %d; "
                         "deferring the rest of the batch",

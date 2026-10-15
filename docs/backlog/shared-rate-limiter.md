@@ -87,10 +87,17 @@ provider key.
   `provider: unpaywall, limiter: shared` and sends no request. arXiv wired
   on its rate lane: `_try_arxiv` and the arXiv HTML/source markup legs
   (`_MarkupLeg.limiter`) call `require("arxiv")`; a refusal records
-  `rate_limited` and skips the download.
-- **Follow-on:** Crossref (rate, last). Derive limiter keys from the
-  `uses_external=(…)` tuples already declared per pass in
-  `workers/registry.py`. crossref stays a dormant config row until wired.
+  `rate_limited` and skips the download. Crossref wired on its rate lane at
+  the three `_SYS` pass chokepoints: `paper_meta_enrich.enrich_paper`
+  (batch deferred unstamped), `bib_parse._crossref_query` (paper left
+  unstamped, batch stopped) and `fetch_oa._query_crossref_pdf_links`.
+- **Open:** the on-demand/ingest-time Crossref lookups
+  (`ingest/crossref.lookup_crossref` via `lookup_doi`/`doi_backfill`/
+  `metadata_resolve`, `ingest/provenance`, `doi_registry`,
+  `crossref_citation`, `si_discovery`) are ungated; gate whichever turn out
+  to run as cluster-wide passes. The crossref seed row (20 rps) is looser
+  than Crossref's published polite-pool limit — confirm before relying on
+  it.
 
 ## Reference assets
 

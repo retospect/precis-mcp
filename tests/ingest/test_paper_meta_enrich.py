@@ -19,6 +19,13 @@ from precis.ingest.paper_meta_enrich import (
 )
 from precis.store import Store
 
+
+@pytest.fixture(autouse=True)
+def _shared_limiter_grants(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never touch the real shared limiter; refusal tests re-patch it."""
+    monkeypatch.setattr(paper_meta_enrich, "require_rate_limit", lambda p, **_: None)
+
+
 _VALID_ORCID = "0000-0002-1825-0097"
 
 
@@ -876,4 +883,32 @@ class TestSharedLimiterRefusal:
                 crossref_fn=lambda doi, mailto: msg,
                 openalex_fn=_refused,
             )
+        assert RESOLVED_AT_KEY not in (_ref(store, rid).meta or {})
+
+    def test_crossref_refusal_raises_before_fetch_and_leaves_ref_unstamped(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from precis.utils.rate_limit import RateLimited
+
+        rid = _paper(store, slug="rl2", doi="10.1234/rl2")
+        calls: list[str] = []
+
+        def _refuse(provider: str, **_: Any) -> None:
+            calls.append(provider)
+            raise RateLimited(provider)
+
+        def _crossref(doi: str, mailto: str) -> dict[str, Any]:
+            raise AssertionError("crossref fetched despite a limiter refusal")
+
+        monkeypatch.setattr(paper_meta_enrich, "require_rate_limit", _refuse)
+        with pytest.raises(RateLimited) as exc:
+            enrich_paper(
+                store,
+                rid,
+                doi="10.1234/rl2",
+                crossref_fn=_crossref,
+                openalex_fn=lambda doi, **k: None,
+            )
+        assert exc.value.provider == "crossref"
+        assert calls == ["crossref"]
         assert RESOLVED_AT_KEY not in (_ref(store, rid).meta or {})

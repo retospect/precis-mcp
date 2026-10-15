@@ -58,7 +58,14 @@ defeat the daily cap. ``unpaywall`` (100k/day quota lane) —
 way. ``arxiv`` (rate lane, ~1 request per 3s) — the arXiv PDF leg
 (``fetch_oa._try_arxiv``) and the arXiv HTML/source markup legs call
 :func:`require`; a refusal records ``rate_limited`` and skips the download.
-``crossref`` is a dormant config row; nothing calls the limiter for it yet.
+``crossref`` (rate lane) — the three worker-pass chokepoints call
+:func:`require`: ``precis.ingest.paper_meta_enrich.enrich_paper`` (defers
+its batch unstamped), ``precis.workers.bib_parse._crossref_query`` (defers
+the paper unstamped and stops the batch) and
+``precis.workers.fetch_oa._query_crossref_pdf_links``. On-demand and
+ingest-time Crossref lookups (``precis.ingest.crossref.lookup_crossref``,
+``precis.ingest.provenance``, ``doi_registry``, ``crossref_citation``,
+``si_discovery``) stay ungated.
 """
 
 from __future__ import annotations

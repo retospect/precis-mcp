@@ -106,3 +106,28 @@ class TestFailureIsolation:
         assert result.ok == 1
         assert paper_meta_enrich.RESOLVED_AT_KEY in _meta(store, rid_ok)
         assert paper_meta_enrich.RESOLVED_AT_KEY not in _meta(store, rid_bad)
+
+
+class TestSharedLimiterRefusal:
+    def test_crossref_refusal_stops_the_batch(
+        self, monkeypatch: pytest.MonkeyPatch, store: Store
+    ) -> None:
+        from precis.utils.rate_limit import RateLimited
+
+        rid_a = _paper(store, slug="rl-a", doi="10.1/rl-a")
+        rid_b = _paper(store, slug="rl-b", doi="10.1/rl-b")
+        store.set_setting(_STATE_KEY, "2000-01-01T00:00:00+00:00")
+        attempted: list[int] = []
+
+        def _refused(store_: Store, ref_id: int, **kw: Any) -> Any:
+            attempted.append(ref_id)
+            raise RateLimited("crossref")
+
+        monkeypatch.setattr(paper_meta_enrich, "enrich_paper", _refused)
+
+        result = run_paper_meta_enrich_pass(store)
+
+        assert len(attempted) == 1  # second ref never attempted
+        assert result.ok == 0
+        for rid in (rid_a, rid_b):
+            assert paper_meta_enrich.RESOLVED_AT_KEY not in _meta(store, rid)

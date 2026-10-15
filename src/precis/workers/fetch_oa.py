@@ -1706,6 +1706,8 @@ def _try_crossref(
     t0 = time.perf_counter()
     try:
         pdf_urls = _query_crossref_pdf_links(stub.doi, email=email)
+    except RateLimited:
+        return _local_rate_limited(stub, t0, provider="crossref")
     except Exception as exc:
         return FetchOutcome(
             event="api_error",
@@ -2848,8 +2850,11 @@ def _query_crossref_pdf_links(doi: str, *, email: str) -> list[str]:
     ``mailto`` routes us to Crossref's polite pool (the anonymous pool
     connection-resets under load). Non-PDF TDM links (xml/plain, e.g.
     Elsevier's api.elsevier.com mining endpoints) are filtered out —
-    those are handled by the dedicated Elsevier leg, not here.
+    those are handled by the dedicated Elsevier leg, not here. Raises
+    :class:`RateLimited` without calling out when the shared ``crossref``
+    limiter refuses.
     """
+    require_rate_limit("crossref")
     url = f"https://api.crossref.org/works/{doi}"
     with http_client(
         timeout=_API_TIMEOUT_S, headers={"User-Agent": _user_agent_header(email)}

@@ -32,6 +32,19 @@ from precis.workers.bib_parse import (
 )
 from tests.workers._helpers import seed_chunk, seed_ref
 
+
+@pytest.fixture(autouse=True)
+def _shared_limiter_grants(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never touch the real shared limiter; refusal tests re-patch it."""
+    monkeypatch.setattr(bib_parse_mod, "require_rate_limit", lambda p, **_: None)
+
+
+def _refuse(provider: str, **_: Any) -> None:
+    from precis.utils.rate_limit import RateLimited
+
+    raise RateLimited(provider)
+
+
 #: The proposal's worked example (AC 1, pa42553 entry [126]) minus the
 #: leading ``- [126] `` marker (raw_text excludes it -- see
 #: ``_split_entries``).
@@ -855,3 +868,63 @@ class TestMatchCrossref:
         doi, _s2_id, _held, match_conf = _entry_row(store, entry_id)
         assert doi is None
         assert match_conf is None  # NOT memoized -- eligible for retry
+
+
+# ── shared crossref limiter refusal ─────────────────────────────────────
+
+
+class TestSharedLimiterRefusal:
+    def test_crossref_query_raises_without_calling_safe_get(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from precis.utils.rate_limit import RateLimited
+
+        def _no_http(*_a: Any, **_k: Any) -> Any:
+            raise AssertionError("safe_get fired despite a limiter refusal")
+
+        monkeypatch.setattr(bib_parse_mod, "require_rate_limit", _refuse)
+        monkeypatch.setattr("precis.utils.safe_fetch.safe_get", _no_http)
+        with pytest.raises(RateLimited) as exc:
+            bib_parse_mod._crossref_query("Some raw citation text")
+        assert exc.value.provider == "crossref"
+
+    def test_pass_refusal_leaves_paper_unstamped_and_stops_batch(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _no_http(*_a: Any, **_k: Any) -> Any:
+            raise AssertionError("safe_get fired despite a limiter refusal")
+
+        monkeypatch.setattr(bib_parse_mod, "require_rate_limit", _refuse)
+        monkeypatch.setattr("precis.utils.safe_fetch.safe_get", _no_http)
+        ref_ids = []
+        for i in range(2):
+            ref_id = seed_ref(store, title=f"carbon paper {i}")
+            seed_chunk(
+                store,
+                ref_id=ref_id,
+                ord=0,
+                chunk_kind="paragraph",
+                text="- [126] " + ACS_LINE,
+            )
+            ref_ids.append(ref_id)
+        client = _FakeClient("{}")
+
+        result = run_bib_parse_pass(
+            store, client=client, batch_size=10, ref_ids=ref_ids
+        )
+
+        assert result["claimed"] == 2
+        assert result["failed"] >= 1
+        assert result["ok"] == 0
+        # Exactly one paper was reached (the break), and none were stamped.
+        assert [_meta_version(store, r) for r in ref_ids] == [None, None]
+        reached = [r for r in ref_ids if _bib_rows(store, r)]
+        assert len(reached) == 1
+        # The refused paper keeps its lease; the unattempted one is
+        # re-claimable at once.
+        with store.pool.connection() as conn:
+            reclaimable = [
+                r for r, _ in bib_parse_mod._claim(conn, limit=10, ref_ids=ref_ids)
+            ]
+            conn.rollback()
+        assert reclaimable == [r for r in ref_ids if r not in reached]
