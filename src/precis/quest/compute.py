@@ -3239,15 +3239,11 @@ def harvest_measures(
     # once per candidate inside the per-structure loop (the per-candidate
     # helpers still take the meta so standalone callers keep working).
     from precis.quest.surface_anchors import harvest_surface_anchors
-    from precis.quest.window_objectives import (
-        stamp_window_measures,
-        window_objectives_enabled,
-    )
+    from precis.quest.window_objectives import stamp_window_measures
 
     quest_ref = store.fetch_refs_by_ids({quest_id}).get(quest_id)
     quest_meta = dict(quest_ref.meta or {}) if quest_ref is not None else {}
     anchors_flagged = bool(quest_meta.get("surface_anchors"))
-    windows_flagged = window_objectives_enabled(quest_meta)
     for s in structures:
         handle = handle_registry.try_format("structure", s.id) or f"structure:{s.id}"
         name = (s.title or "").splitlines()[0] if s.title else handle
@@ -3273,18 +3269,17 @@ def harvest_measures(
                     "harvest_measures: surface-anchors harvest failed for %s", s.id
                 )
         # After the anchors harvest: window measures read the
-        # resting_termination_at_point it stamps.
-        if windows_flagged:
-            try:
-                window_note = stamp_window_measures(
-                    store, quest_id, s, quest_meta=quest_meta
-                )
-                if window_note:
-                    notes.append(window_note)
-            except Exception:
-                log.exception(
-                    "harvest_measures: window-measures stamp failed for %s", s.id
-                )
+        # resting_termination_at_point it stamps. Stamps whenever the
+        # candidate carries coverage scans — the rubric declaration only
+        # decides whether they surface as Pareto axes (gr489165).
+        try:
+            window_note = stamp_window_measures(
+                store, quest_id, s, quest_meta=quest_meta
+            )
+            if window_note:
+                notes.append(window_note)
+        except Exception:
+            log.exception("harvest_measures: window-measures stamp failed for %s", s.id)
         if "atom_cost" not in (s.meta or {}):
             try:
                 scene, _handles = store.structure_load(s.id)

@@ -385,15 +385,118 @@ def _structure_ref(store: Store, sid: int) -> Any:
     return store.fetch_refs_by_ids({sid})[sid]
 
 
-def test_stamp_requires_the_rubric_flag(store: Store, hub: Hub) -> None:
-    """An unflagged quest is bit-identical: no stamp, no notes."""
+def test_stamp_runs_without_the_rubric_flag(
+    store: Store, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr489165: the fields stamp whenever the scan ran — the rubric
+    declaration only promotes them to Pareto axes and the logbook. An
+    unflagged quest gets the stamps but no per-candidate logbook entry."""
+    entries: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "precis.quest.logbook.append_entry", lambda *_a, **kw: entries.append(kw)
+    )
     qid = _mk_quest(store, hub)  # no rubric_objectives → default energy
     sid = _mk_candidate(store, qid)
     _scan(store, sid, _sweep({"m": _payload("m", {"H": [-0.02]})}))
-    s = _structure_ref(store, sid)
-    assert wo.stamp_window_measures(store, qid, s) is None
+    store.insert_ref(
+        kind="pathway", slug=f"pwtest{sid}", title="pw", meta={"candidate_ref": sid}
+    )
+    _fake_routes(monkeypatch, [sm.Route("norr", (_rung("r1", 0.13),))], None)
+
+    note = wo.stamp_window_measures(store, qid, _structure_ref(store, sid))
+    assert note is not None and "window measures" in note
     meta = dict(store.fetch_refs_by_ids({sid})[sid].meta or {})
-    assert not any(k in meta for k in wo.WINDOW_MEASURE_KEYS)
+    assert meta["window_area_VpH"] is not None
+    assert meta["window_fraction"] is not None
+    assert meta["shapley_ipr"] is not None
+    assert meta["window_notes"]
+    assert meta[wo.WINDOW_INPUTS_KEY]
+    assert not entries, "no logbook entry on an unflagged quest"
+
+
+def test_flagged_quest_logs_the_stamp(
+    store: Store, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The rubric declaration is what announces the stamp on the logbook."""
+    entries: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "precis.quest.logbook.append_entry", lambda *_a, **kw: entries.append(kw)
+    )
+    qid = _mk_quest(
+        store, hub, rubric_objectives=[{"key": "window_area_VpH", "sense": "max"}]
+    )
+    sid = _mk_candidate(store, qid)
+    _scan(store, sid, _sweep({"m": _payload("m", {"H": [-0.02]})}))
+    store.insert_ref(
+        kind="pathway", slug=f"pwtest{sid}", title="pw", meta={"candidate_ref": sid}
+    )
+    _fake_routes(monkeypatch, [sm.Route("norr", (_rung("r1", 0.13),))], None)
+
+    assert wo.stamp_window_measures(store, qid, _structure_ref(store, sid))
+    assert len(entries) == 1 and entries[0]["entry_type"] == "result"
+
+
+def test_her_margin_declared_but_pathway_lacks_network_her(
+    store: Store, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr489168: the quest asks her_margin_at_Uopt but the pathway ran
+    without network.her — the stamp names the missing config flag instead
+    of leaving a silent None."""
+    qid = _mk_quest(
+        store,
+        hub,
+        rubric_objectives=[{"key": "her_margin_at_Uopt", "sense": "max"}],
+    )
+    sid = _mk_candidate(store, qid)
+    _scan(store, sid, _sweep({"m": _payload("m", {"H": [-0.02]})}))
+    store.insert_ref(
+        kind="pathway",
+        slug=f"pwtest{sid}",
+        title="pw",
+        meta={"candidate_ref": sid, "config": {"network": "ammonia"}},
+    )
+    _fake_routes(monkeypatch, [sm.Route("norr", (_rung("r1", 0.13),))], None)
+
+    wo.stamp_window_measures(store, qid, _structure_ref(store, sid))
+    meta = dict(store.fetch_refs_by_ids({sid})[sid].meta or {})
+    assert meta.get("her_margin_at_Uopt") is None
+    assert any("without network.her" in n for n in meta["window_notes"])
+
+
+def test_her_margin_warn_needs_the_declaration_and_the_flag_off(
+    store: Store, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The warn is the ask↔config mismatch: undeclared quests and
+    network.her-on pathways (the adapter's own ``missing`` case) don't
+    get it."""
+    for meta_extra, declared in (
+        ({"config": {"network": {"kind": "ammonia", "her": True}}}, True),
+        ({"config": {"network": "ammonia"}}, False),
+    ):
+        qid = _mk_quest(
+            store,
+            hub,
+            rubric_objectives=[{"key": "her_margin_at_Uopt", "sense": "max"}]
+            if declared
+            else [{"key": "window_area_VpH", "sense": "max"}],
+        )
+        sid = _mk_candidate(store, qid)
+        _scan(store, sid, _sweep({"m": _payload("m", {"H": [-0.02]})}))
+        store.insert_ref(
+            kind="pathway",
+            slug=f"pwtest{sid}",
+            title="pw",
+            meta={"candidate_ref": sid, **meta_extra},
+        )
+        _fake_routes(monkeypatch, [sm.Route("norr", (_rung("r1", 0.13),))], None)
+
+        wo.stamp_window_measures(store, qid, _structure_ref(store, sid))
+        meta = dict(store.fetch_refs_by_ids({sid})[sid].meta or {})
+        assert meta.get("her_margin_at_Uopt") is None
+        assert not any("without network.her" in n for n in meta["window_notes"]), (
+            declared,
+            meta["window_notes"],
+        )
 
 
 def test_stamp_stamps_measures_and_validity(

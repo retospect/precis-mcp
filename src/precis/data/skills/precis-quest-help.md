@@ -464,7 +464,21 @@ that's wedged.
   explicitly when a striving genuinely has no candidate materials to
   propose, e.g. a literature-synthesis or landscape-mapping quest.
 - **`rubric_objectives`** — the frontier's measured-axis override, see
-  "A research tick" above.
+  "A research tick" above. On a catalyst quest with
+  `surface_coverage_scan` anchors the **window/Shapley fields** stamp on
+  each scanned candidate whether or not they are declared:
+  `window_area_VpH` / `window_fraction` (the operating window — resting
+  surface ∩ every staircase rung ∩ HER), `shapley_sumsq_raw` /
+  `shapley_ipr` / `ridge_churn` (which rung owns the lost area),
+  `her_margin_at_Uopt` (limiting HER rung minus the route's at the
+  window's U centroid — needs the pathway run with `network.her`),
+  `reset_window_area` / `reset_window_fraction` (the guaranteed-reset
+  window beside the thermodynamic one), plus the diagnostics
+  `bottleneck_rung`, `window_notes` and `validity_region_at_point`.
+  Declaring one in `rubric_objectives` (`{"key": "window_area_VpH",
+  "sense": "max"}`) promotes it to a Pareto axis; `meta.window_objectives`
+  tunes the knobs (`eps_eV`, `her_margin_eV`, `reset_eta_eV`,
+  `reset_ea_floor_eV`).
 - **`"roadmap"`** — a fourth body: grows a pathway/capability/rung graph
   from measured gaps instead of proposing materials or writing prose.
   Only the root quest ticks; see [[precis-roadmap-help]] for the rung

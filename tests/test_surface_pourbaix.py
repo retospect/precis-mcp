@@ -290,3 +290,39 @@ def test_drop_uncorrected_never_empties_the_pool() -> None:
     b["corrections"] = _corr(h_star_set=True)
     kept, dropped = sp.drop_uncorrected({"a": a, "b": b})
     assert set(kept) == {"a", "b"} and dropped == []
+
+
+def test_every_model_in_the_band_has_a_correction_set() -> None:
+    """gr486949's invariant: when the pool holds a model on the union
+    correction footprint, every model kept in the band applied that full
+    set — a model the table has no entry for (or a strict subset) never
+    shares the model-form band with a corrected one."""
+
+    def _p(tag: str, **kw: bool) -> dict:
+        p = _payload(tag, {"H": [-0.02]})
+        p["corrections"] = _corr(**kw)
+        return p
+
+    pools = [
+        {
+            "a": _p("a", gas_set=True, h_star_set=True),
+            "b": _p("b", gas_set=True, h_star_set=True),
+        },
+        {"a": _p("a", gas_set=True, h_star_set=True), "b": _p("b")},
+        {"a": _p("a", gas_set=True, h_star_set=True), "b": _p("b", gas_set=True)},
+        {"a": _p("a"), "b": _p("b")},
+        {"a": _p("a", gas_set=True), "b": _p("b", h_star_set=True)},
+    ]
+    for pool in pools:
+        footprints = {m: sp.correction_footprint(p) for m, p in pool.items()}
+        union = frozenset().union(*footprints.values())
+        kept, dropped = sp.drop_uncorrected(pool)
+        if any(fp == union for fp in footprints.values()):
+            # a fully-corrected model exists: every band member applied it
+            assert all(footprints[m] == union for m in kept)
+            assert set(dropped) == {m for m, fp in footprints.items() if fp != union}
+            if union:
+                assert all(footprints[m] for m in kept)
+        else:
+            # incomparable footprints: nothing to prefer, keep the pool
+            assert set(kept) == set(pool) and dropped == []

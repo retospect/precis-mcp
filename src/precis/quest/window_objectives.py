@@ -16,10 +16,14 @@ missing module — plugin not installed, or the sibling slice's
 never a crash and never a fabricated value (the same rule
 ``pourbaix_map`` applies to invented sigmas).
 
-**Feature-flagged.** Nothing is computed, stamped or rendered unless the
-quest's ``meta.rubric_objectives`` declares at least one of
-:data:`WINDOW_MEASURE_KEYS` — an unflagged quest is bit-identical to
-before this module existed. Optional knobs ride
+**Computed whenever the anchors exist.** A coverage scan is the paid
+measurement: the window/Shapley fields stamp on every candidate that
+carries one, whether or not the quest's ``meta.rubric_objectives``
+declares a :data:`WINDOW_MEASURE_KEYS` key (gr489165 — an undeclared
+objective left the fields unreadable on every scanned candidate). The
+declaration still decides what the *frontier* ranks on and whether the
+logbook announces the stamps, so an unflagged quest's ranking and logbook
+stay as before. Optional knobs ride
 ``meta.window_objectives = {"eps_eV": …, "her_margin_eV": …,
 "reset_eta_eV": …, "reset_ea_floor_eV": …}`` (ε defaults to each rung's
 own ``eps_eV`` then 0; the HER margin to 0; η to the contour module's
@@ -508,9 +512,11 @@ def stamp_window_measures(
     candidate. The single call ``compute.harvest_measures`` makes, placed
     after the bulk-Pourbaix harvest.
 
-    No-ops (returns ``None``, stamps nothing) unless the quest declares a
-    :data:`WINDOW_MEASURE_KEYS` objective — the feature flag keeping
-    unflagged quests bit-identical. ``quest_meta`` lets the tick pass the
+    No-ops (returns ``None``, stamps nothing) when the candidate carries
+    no coverage scans — the scans are what is being measured. The rubric
+    declaration only decides whether the frontier ranks on the measures
+    and the logbook announces the stamps (gr489165). ``quest_meta`` lets
+    the tick pass the
     quest meta it already fetched. When the input hash
     (``meta.window_measures_input``) is unchanged the map/routes/Shapley
     recompute is skipped — the stamps it would write are identical by
@@ -525,8 +531,6 @@ def stamp_window_measures(
     if quest_meta is None:
         quest = store.fetch_refs_by_ids({quest_id}).get(quest_id)
         quest_meta = dict(quest.meta or {}) if quest is not None else {}
-    if not window_objectives_enabled(quest_meta):
-        return None
 
     # Fresh meta: the anchors harvest may have stamped
     # ``resting_termination_at_point`` earlier in this same tick.
@@ -590,6 +594,25 @@ def stamp_window_measures(
                     notes.append(
                         f"routes missing rungs: {', '.join(map(str, missing))}"
                     )
+                # gr489168: a quest that declares the HER margin against a
+                # pathway run without ``network.her`` gets the name of the
+                # missing input, not a silent ``None``.
+                if her is None and "her_margin_at_Uopt" in _declared_objective_keys(
+                    quest_meta
+                ):
+                    pw_meta = (pw.meta or {}) if pw is not None else {}
+                    pw_config = pw_meta.get("config")
+                    net = (
+                        pw_config.get("network")
+                        if isinstance(pw_config, dict)
+                        else None
+                    )
+                    if not (isinstance(net, dict) and net.get("her")):
+                        notes.append(
+                            "quest declares her_margin_at_Uopt but the pathway "
+                            "ran without network.her — set network.her in the "
+                            "pathway config and re-run; the margin stays unset"
+                        )
             except Exception:
                 log.exception(
                     "stamp_window_measures: routes_for_pathway failed for %s",
@@ -652,7 +675,7 @@ def stamp_window_measures(
         + (", ".join(measured) if measured else "none yet")
         + (f" — {'; '.join(all_notes)}" if all_notes else "")
     )
-    if measured:
+    if measured and window_objectives_enabled(quest_meta):
         append_entry(store, quest_id, text=text, entry_type="result", by=MEASURED_BY)
     return text
 
