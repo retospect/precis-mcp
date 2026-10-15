@@ -279,3 +279,22 @@ def test_store_retired_ref_lists_as_tombstone(store: Store) -> None:
     rows = store.list_favorites("reto")
     assert [r.ref_id for r in rows] == [ref.id]
     assert rows[0].retired_at is not None
+
+
+def test_missing_title_falls_back_to_handle_or_kind_id(
+    runtime: FakeRuntime, tmp_path
+) -> None:
+    """A NULL/empty title must never render the literal "None" —
+    the row degrades to the ref's handle, then its ``kind:id``."""
+    store = runtime.store
+    c = _client_as(runtime, "reto", tmp_path)
+    store.memories[0].title = None
+    store.memories[0].handle = "mm20"  # handle wins over kind:id
+    store.memories[1].title = None  # no handle → kind:id
+    c.post("/favorites/memory/20", data={"op": "add"})
+    c.post("/favorites/memory/21", data={"op": "add"})
+    resp = c.get("/favorites")
+    assert resp.status_code == 200
+    assert ">None<" not in resp.text
+    assert "mm20" in resp.text
+    assert "memory:21" in resp.text

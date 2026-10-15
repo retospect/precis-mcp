@@ -99,7 +99,9 @@ class FavoritesMixin:
             FavoriteRow(
                 ref_id=int(r[0]),
                 kind=str(r[1]),
-                title=str(r[2]),
+                # A missing/empty title must not render as "None" — fall
+                # back to the ref's handle, then its ``kind:id`` address.
+                title=str(r[2] or r[3] or f"{r[1]}:{r[0]}"),
                 slug=r[7],
                 handle=r[3],
                 ref_updated_at=r[4],

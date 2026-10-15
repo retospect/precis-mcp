@@ -1383,7 +1383,9 @@ class FakeStore(_FakeStoreBase):
                 kind=r.kind,
                 title=r.title,
                 slug=r.slug,
-                handle=None,
+                # Mirrors the real SELECT's refs.handle column (a ref can
+                # carry one for its ``kind:id``-less handle address).
+                handle=getattr(r, "handle", None),
                 ref_updated_at=getattr(r, "updated_at", None),
                 retired_at=(
                     getattr(r, "retired_at", None)

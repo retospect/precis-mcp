@@ -90,7 +90,10 @@ def _row(r: FavoriteRow) -> dict[str, Any]:
     return {
         "kind": r.kind,
         "ref_id": r.ref_id,
-        "title": r.title or "(untitled)",
+        # Same fallback chain as the store's: a None/empty title would
+        # otherwise render the literal "None" — degrade to the handle,
+        # then the ``kind:id`` address.
+        "title": r.title or r.handle or f"{r.kind}:{r.ref_id}",
         "handle": r.handle or "",
         "slug": r.slug or "",
         "updated_at": r.ref_updated_at,
