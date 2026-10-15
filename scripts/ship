@@ -9,7 +9,9 @@
 #
 # Steps, in order:
 #   1. sanity      — refuse to run on main
-#   2. commit WIP  — stage + commit any dirty tree
+#   2. commit WIP  — refuse (naming the files) if anything outside .claude/ is
+#                    uncommitted (gr489288); commit only .claude/ bookkeeping
+#                    and the Tailwind rebuild's output
 #   3. lock        — NARROW mkdir-mutex on the shared .git dir, held ONLY around
 #                    the final seconds-long section (fetch · ancestor check ·
 #                    forward merge · squash · CAS push · local-main ff), never
@@ -451,6 +453,22 @@ elif stats="$(_deploy_lag_stats)" 2>/dev/null && [[ -n "$stats" ]]; then
         printf '\n\033[33m⚠ deploy lag: oldest undeployed commit is %sh old (>%sh) — consider scripts/deploy or /go\033[0m\n' "$_lag_age_h" "$_stale_h"
     fi
 fi
+
+# ── 1a. refuse a dirty tree ─────────────────────────────────────────────
+# Uncommitted edits outside .claude/ are the builder's, not ship's: ship
+# refuses and names them instead of sweeping them into a WIP commit or
+# letting a later sync/reset drop them (gr489288: render-diet lost
+# uncommitted edits to a --quick ship). Commit or discard, then re-run.
+# .claude/ bookkeeping still rides the WIP commit below, as does the
+# Tailwind rebuild's own output.
+_dirty="$(git status --porcelain --untracked-files=all \
+    | awk '{ p = substr($0, 4); sub(/.* -> /, "", p); gsub(/^"|"$/, "", p); if (p !~ /^\.claude\//) print p }')"
+if [[ -n "$_dirty" ]]; then
+    die "uncommitted changes outside .claude/ — ship never commits or resets them for you:
+$(printf '%s\n' "$_dirty" | sed 's/^/    /')
+Commit them on this branch ('git add <files> && git commit -m \"type(scope): what\"') or discard them, then re-run scripts/ship."
+fi
+unset _dirty
 
 # ── 1b. prebuild Tailwind CSS ────────────────────────────────────────────
 # Regenerate the production static stylesheet from the content scan so it

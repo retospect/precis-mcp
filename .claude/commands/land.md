@@ -39,7 +39,8 @@ Optional ship message from the user: `$ARGUMENTS`
    skill under `src/precis/data/skills/`; update in place — terse, per
    `docs/conventions/llm-facing-prose.md` — **only where the change altered
    the contract or shape**, not for every edit. These edits ride
-   the same ship commit (the script auto-commits WIP).
+   the same ship commit: commit them yourself (ship refuses uncommitted
+   edits outside `.claude/` and names them).
 
 3. **Review risky diffs before shipping (size/risk-gated, blocking).** Check
    `git diff --stat origin/main...HEAD` (or `main...HEAD`). Spawn `reviewer`
@@ -80,8 +81,8 @@ Optional ship message from the user: `$ARGUMENTS`
    (`scripts/ship --impacted` without `--remote` is the legacy local-gate
    ship — still valid when GitHub is down.)
 
-   `scripts/ship --remote` does, in order: refuse-if-on-main → commit any
-   WIP → sync (`git fetch` + `git merge` origin/main) → push to
+   `scripts/ship --remote` does, in order: refuse-if-on-main → refuse a
+   dirty tree (outside `.claude/`) → sync (`git fetch` + `git merge` origin/main) → push to
    `ci/<branch>` → **poll the check.yml run to conclusion** → squash-merge
    to `main` via `commit-tree` + a `--force-with-lease` CAS push → delete
    the remote feature + ci branches → reset the feature branch to the

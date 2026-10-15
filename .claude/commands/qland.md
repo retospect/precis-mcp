@@ -1,5 +1,5 @@
 ---
-description: "Quick-land: commit WIP, sync, ruff+mypy only, squash-merge without pytest. For burst-landing many worktrees; finish with one /go."
+description: "Quick-land: commit your work, sync, ruff+mypy only, squash-merge without pytest. For burst-landing many worktrees; finish with one /go."
 argument-hint: "[optional commit/ship message]"
 allowed-tools: Bash(scripts/ship:*), Bash(git:*), Agent
 ---
@@ -65,7 +65,7 @@ Optional ship message from the user: `$ARGUMENTS`
    ```
    scripts/ship --quick "<message>"
    ```
-   It does: refuse-if-on-main → commit WIP → sync (`git fetch` +
+   It does: refuse-if-on-main → refuse a dirty tree (outside `.claude/`) → sync (`git fetch` +
    `git merge` origin/main) → **pre-qland lint** (unlocked) → ship-lock (seconds;
    if main moved, `git merge` it forward inside the lock, lint not re-run, a
    `Gate: lint only` trailer on the squash) → squash-merge to `main` via

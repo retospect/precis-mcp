@@ -20,7 +20,8 @@ MCP verbs; the checker itself reads local files and never repoints comments.
 
 ## /land — gate on GitHub
 
-`scripts/ship --remote`: commit WIP → sync main → push `ci/<branch>` → wait
+`scripts/ship --remote`: refuse uncommitted edits outside `.claude/`
+(named; never committed or reset for you, gr489288) → sync main → push `ci/<branch>` → wait
 for the check.yml gate (shape and duration: `docs/conventions/testing.md`
 §CI shapes; run ship in background, output to a log) → atomic CAS
 squash-merge to `main`. A full-gate ship lands an exactly-tested tree, or
@@ -77,7 +78,7 @@ step 7.
 
 ## /qland — pytest-ungated burst-land
 
-`scripts/ship --quick`: commit WIP → sync → **drift guard** (warns when
+`scripts/ship --quick`: refuse a dirty tree → sync → **drift guard** (warns when
 main's last all-green shard matrix is 24h old, refuses at 48h — a burst that
 outran its verdicts wants a `/go`, not another qland; never refuses on an age
 it could not look up) → **pre-qland lint** (ruff · mypy · import contracts ·

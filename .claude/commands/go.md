@@ -49,7 +49,7 @@ Optional ship message from the user: `$ARGUMENTS`
    before step 5; if you deliberately don't fix one, note why. `clean`, or
    under-threshold, means go straight to step 5.
 
-5. **Land to main.** `scripts/ship --quick` is idempotent: commit WIP →
+5. **Land to main.** `scripts/ship --quick` is idempotent: refuse a dirty tree →
    sync onto main → lint (ruff · mypy · import contracts · DB-free hygiene
    tests) → squash-merge. No pytest here: the authoritative gate is CI on the
    release cut in step 7, which tests main at a frozen sha, so later main

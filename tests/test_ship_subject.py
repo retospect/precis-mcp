@@ -150,6 +150,10 @@ def test_ship_dies_on_wip_only_branch_before_the_gate(tmp_path: Path) -> None:
         (scripts / lib.name).write_bytes(lib.read_bytes())
     (repo / ".gitignore").write_text(".claude/\n", encoding="utf-8")
     (repo / "x.txt").write_text("x\n", encoding="utf-8")
+    # Ship refuses a dirty tree (gr489288), so the placeholder is committed
+    # by hand, as an older ship's WIP step would have.
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "wip(feat-x): end-of-session snapshot")
     r = subprocess.run(
         ["bash", "scripts/ship", "--quick"],
         cwd=repo,
