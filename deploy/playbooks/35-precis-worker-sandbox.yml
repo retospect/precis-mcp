@@ -93,3 +93,28 @@
                'PRECIS_SANDBOX_HOSTS': (groups['agent_sandbox_hosts'] | default([])) | join(','),
                'PRECIS_ROOT': nas_root ~ '/precis_root',
              }) }}
+
+    # Code-refresh bounce — the ONLY restart this unit gets on a redeploy.
+    # service_unit above restarts on a UNIT-FILE change only, and
+    # redeploy-precis.yml's step-2 "Bounce all precis daemons" play targets
+    # gateway/scheduler/inference — never this group — so a venv refresh
+    # alone left the lane running pre-deploy code indefinitely (gr485861:
+    # the unit ran pre-r35 code until a manual restart; the same gap
+    # play 43's site.yml-path task covers for the compute lane). Fires
+    # whenever a deploy did NOT prove this host's venvs static:
+    # `precis_deploy_changed` is unset on this group either way (the
+    # pre-flight play never targets agent_sandbox_hosts), and a
+    # defined-true must still bounce because no other play will. Only a
+    # defined-false (a redeploy that found no managed venv moving) skips.
+    # Orphan case — the unit installed on a host that LEFT this group — is
+    # covered by redeploy-precis.yml's step-2f sweep, not here: an empty
+    # group means this play runs nowhere.
+    - name: Bounce the sandbox lane on a code refresh (no step-2 coverage — gr485861)
+      when:
+        - os_family == "linux"
+        - precis_deploy_changed | default(true) | bool
+      ansible.builtin.systemd:
+        name: precis-worker-sandbox
+        state: restarted
+        daemon_reload: true
+      failed_when: false

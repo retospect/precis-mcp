@@ -535,9 +535,12 @@
 # `--only job_ssh_node` worker so node-pinned detached GPU jobs (autocatpath
 # seeds, dft gpaw_relax) drain at compute-completion speed instead of once
 # per the collapsed worker's serial rotation. Must follow 20b (reuses its
-# /opt/precis/venv + the autocatpath/dft env drops). The step-2 bounce play
-# force-restarts precis-worker-compute.service with the rest (its
-# `precis-*.service` glob), so it never runs stale code after this refresh.
+# /opt/precis/venv + the autocatpath/dft env drops). The lane never runs
+# stale code after this refresh: on `inference` members the step-2 bounce
+# play's `precis-*.service` glob restarts it; on `compute`-only members
+# (outside step-2's hosts) `precis_deploy_changed` is unset — the
+# pre-flight play doesn't target them — so 43's own site.yml-path bounce
+# fires instead. Same coverage pattern the sandbox lane lacked (gr485861).
 - name: "Compute worker lane            (inference, job_ssh_node only)"
   ansible.builtin.import_playbook: playbooks/43-precis-worker-compute.yml
 
@@ -1037,6 +1040,97 @@
   # diffs.
   ansible.builtin.import_playbook: playbooks/35-precis-worker-sandbox.yml
   tags: [sandbox]
+
+# ── 2f. Orphaned worker-lane sweep (gr485861) ──
+# A lane play owns a precis-worker-*.service only where its GROUP says so —
+# and nothing uninstalls the unit when a host leaves that group. The r35
+# incident: agent_sandbox_hosts was emptied (lane dark) while
+# precis-worker-sandbox.service stayed installed+enabled on its former
+# member; every deploy then upgraded /opt/precis/venv there and left the
+# running unit on pre-deploy code — plays 34/35 logged "no hosts matched"
+# and the step-2 bounce play (gateway/scheduler/inference) never covered
+# the host. This sweep is the backstop on the groups that can carry worker
+# lanes but sit OUTSIDE step-2: restart any loaded precis-worker-*.service
+# no lane play owns on that host (so it runs the deployed build), and flag
+# it loudly — an orphan means the host should rejoin the owning group or
+# the unit should be retired, and it must not silently run stale code in
+# the meantime. Runs untagged: orphans must bounce even when role scoping
+# skipped the lane's own play. Linux-only: the darwin lane plists live on
+# gateway/scheduler, which the step-2 com.precis.*.plist glob already
+# covers; serving/compute/agent_sandbox_hosts are systemd groups.
+- name: "Bounce + flag orphaned precis worker lanes (no play owns them here)"
+  hosts:
+    - serving
+    - compute
+    - agent_sandbox_hosts
+  become: true
+  tasks:
+    - name: List loaded precis-worker-* units with their active state (Linux)
+      when: os_family == "linux"
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        systemctl list-units --type=service --all --no-legend 'precis-worker-*.service'
+        | awk '{print $1 " " $3}'
+      args:
+        executable: /bin/bash
+      register: _orphan_lane_units
+      changed_when: false
+      failed_when: false
+
+    # The owned set mirrors the lane plays' own host rules — extend it when
+    # a new lane lands (43 on compute:inference, 35 on agent_sandbox_hosts).
+    # A unit listed there is already bounced by its owning play, so the
+    # sweep leaves it alone.
+    - name: Worker lane units a lane play owns on this host
+      when: os_family == "linux"
+      ansible.builtin.set_fact:
+        _orphan_lanes_owned: >-
+          {{ (['precis-worker-compute.service']
+              if inventory_hostname in
+                 ((groups['compute'] | default([])) + (groups['inference'] | default([])))
+              else [])
+           + (['precis-worker-sandbox.service']
+              if inventory_hostname in (groups['agent_sandbox_hosts'] | default([]))
+              else []) }}
+
+    - name: Orphaned lane units on this host (loaded but owned by no play)
+      when: os_family == "linux"
+      ansible.builtin.set_fact:
+        _orphan_lanes_all: >-
+          {{ (_orphan_lane_units.stdout_lines | default([]))
+             | map('regex_replace', ' .*$', '')
+             | difference(_orphan_lanes_owned)
+             | list }}
+        _orphan_lanes_running: >-
+          {{ (_orphan_lane_units.stdout_lines | default([]))
+             | select('search', ' active$')
+             | map('regex_replace', ' .*$', '')
+             | difference(_orphan_lanes_owned)
+             | list }}
+
+    - name: Restart running orphaned lane units onto the deployed venv
+      when: os_family == "linux"
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: restarted
+        daemon_reload: true
+      loop: "{{ _orphan_lanes_running | default([]) }}"
+      loop_control:
+        label: "{{ item }}"
+      failed_when: false
+
+    - name: "Flag orphaned worker lanes (installed here, owned by no play)"
+      when:
+        - os_family == "linux"
+        - _orphan_lanes | default([]) | length > 0
+      ansible.builtin.debug:
+        msg: >-
+          WARNING {{ inventory_hostname }}: precis-worker-*.service unit(s)
+          {{ _orphan_lanes }} are installed here but owned by no lane play
+          (this host is not in the unit's owning group — e.g. a former
+          agent_sandbox_hosts member after the group was emptied). Running
+          orphans were restarted onto the deployed venv above. Resolve the
+          drift: put the host back in the owning group, or retire the unit.
 
 # ── 3. Remove the vestigial /opt/mcps/venv relic off hosts that never run it ──
 # `precis_web` — the only role that installs the gateway's /opt/mcps/venv —
