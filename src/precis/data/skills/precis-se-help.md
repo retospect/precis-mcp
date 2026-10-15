@@ -301,8 +301,10 @@ Blocks that talk by Förster resonance energy transfer: `set_chromophore` /
 drc · bom · order · fasten · interview · freedom · stability · mechanics ·
 literature · fret · links · export · cut · ops`. No `mass` view — mass
 goes via `bom`. `interview` elicits what's missing.
-`mechanics`/`literature`/`topology` are atomic-mode views; `view='cut'`
-is the flat-pack file (`precis-se-flatpack-help`).
+Atomic-mode views — `mechanics`/`literature`/`topology`/`sites`/
+`catalogue`, and `clearance`'s atomic path (vdW gap, `sweep`, `lining`)
+— are documented in `precis-se-atomic-help`; `view='cut'` is the
+flat-pack file (`precis-se-flatpack-help`).
 
 The default tree shows, beside each structure-bound block, both halves labelled
 by source: the stored build report's error/warning counts (`build report:`) AND

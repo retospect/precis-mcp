@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -477,6 +478,68 @@ def test_dangling_binding_pair_is_skipped_with_a_note(store: Store) -> None:
     assert "structure-bound" in body and "can't measure" in body
 
 
+def test_bonded_pair_is_tagged_bonded_not_interpenetrating(
+    handler: SeHandler,
+) -> None:
+    """gr488903: a ``kind='bond'`` connect (what ``join`` writes for a
+    fused seam) puts atoms at bond length, so a negative vdW gap across
+    it is the bond, not a clash. The digest tags the row ``bonded`` and
+    ranks it after the real interferences; an ``interaction`` connect
+    over the same geometry still reads ``interpenetrating``."""
+    _put_valve(handler, "clear11", offset_x_A=3.0)
+    handler.edit(
+        id="clear11",
+        ops=[{"op": "connect", "a": "shell.in", "b": "rotor.in", "kind": "bond"}],
+    )
+    body = handler.get(id="clear11", view="clearance").body
+    (row,) = _toon_rows(body, "gap")
+    assert row["tag"] == "bonded", body
+    assert "bond length" in body  # the legend says what the tag means
+    pair = handler.get(
+        id="clear11", view="clearance", args={"a": "shell", "b": "rotor"}
+    ).body
+    assert "kind='bond' connect" in pair, pair
+
+    _put_valve(handler, "clear12", offset_x_A=3.0)
+    handler.edit(
+        id="clear12",
+        ops=[
+            {
+                "op": "connect",
+                "a": "shell.in",
+                "b": "rotor.in",
+                "kind": "interaction",
+            }
+        ],
+    )
+    (row,) = _toon_rows(handler.get(id="clear12", view="clearance").body, "gap")
+    assert row["tag"] == "interpenetrating"
+
+
+def test_nested_pair_is_tagged_nested(store: Store, handler: SeHandler) -> None:
+    """gr488903: a join composite holds its parts' atoms, so composite vs
+    its own descendant overlaps by construction — ``nested``, never a
+    clash, and sorted after the measured rows."""
+    _put_valve(handler, "clear13", offset_x_A=3.0)
+    ref = store.get_ref(kind="se", id="clear13")
+    assert ref is not None
+    tree = persist.load_tree(store, int(ref.id))
+    tree.blocks["rotor"].parent = "shell"
+    apply_ops(
+        tree,
+        [
+            {
+                "op": "connect",
+                "a": "shell.in",
+                "b": "rotor.in",
+                "kind": "interaction",
+            }
+        ],
+    )
+    (row,) = _toon_rows(_render_clearance_digest(store, tree), "gap")
+    assert row["tag"] == "nested"
+
+
 # ── view='sites' — the attachment-site enumerator ──────────────────────
 
 
@@ -510,7 +573,9 @@ def test_sites_enumerates_rim_and_ring_carbons(
     open-edge (degree-2 dangling bond, axial free direction); every
     interior carbon is 6-ring with both wall faces."""
     _put_valve(handler, "sites1")
-    body = handler.get(id="sites1", view="sites", args={"block": "rotor"}).body
+    body = handler.get(
+        id="sites1", view="sites", args={"block": "rotor", "limit": 0}
+    ).body
     counts = _counts(body)
     assert counts.get(("open-edge", "axial"), 0) > 0
     assert ("open-edge", "6-ring") not in counts
@@ -530,7 +595,7 @@ def test_sites_face_and_exposure_match_the_geometry(
     shell's atoms — and wall sites come in 'in'/'out' pairs per carbon."""
     _put_valve(handler, "sites2", offset_x_A=2.0)
     body = handler.get(
-        id="sites2", view="sites", args={"a": "shell", "b": "rotor"}
+        id="sites2", view="sites", args={"a": "shell", "b": "rotor", "limit": 0}
     ).body
     rows = _site_rows(body)
     assert rows, body
@@ -542,7 +607,9 @@ def test_sites_face_and_exposure_match_the_geometry(
     # rim sites face the open ends, not the partner — read them off the
     # single-block view; an axial dangling bond is wider open than a wall
     # site pressed against the shell.
-    single = handler.get(id="sites2", view="sites", args={"block": "rotor"}).body
+    single = handler.get(
+        id="sites2", view="sites", args={"block": "rotor", "limit": 0}
+    ).body
     open_end = max(
         float(r["exposure"]) for r in _site_rows(single) if r["face"] == "axial"
     )
@@ -554,7 +621,7 @@ def test_sites_pair_view_is_facing_only(handler: SeHandler) -> None:
     partner within the default pocket gap; nothing axial shows."""
     _put_valve(handler, "sites3")
     body = handler.get(
-        id="sites3", view="sites", args={"a": "shell", "b": "rotor"}
+        id="sites3", view="sites", args={"a": "shell", "b": "rotor", "limit": 0}
     ).body
     rows = _site_rows(body)
     assert rows
@@ -813,3 +880,162 @@ def test_sites_rejects_a_non_atomic_block(handler: SeHandler) -> None:
     handler.put(id="sites11", text=json.dumps({"ops": ops}))
     with pytest.raises(BadInput, match="structure-bound"):
         handler.get(id="sites11", view="sites", args={"block": "box"})
+
+
+# ── gr488904 — sites correctness and size ──────────────────────────────
+
+_PILLBOX = """\
+hexfold 0.2
+origin a
+a: tube(12, 0, len=4)
+b: cap(12, 0)
+c: cap(12, 0)
+a.out --fuse k=0--> b.in
+a.in --fuse k=0--> c.in
+"""
+
+
+def _put_pillbox(handler: SeHandler, slug: str) -> None:
+    ops = [
+        {
+            "op": "generate",
+            "generator": "hexfold",
+            "params": {"spec": _PILLBOX, "terminate": "none"},
+            "name": "pill",
+        }
+    ]
+    handler.put(id=slug, text=json.dumps({"ops": ops}))
+
+
+def test_lining_ring_selector_matching_nothing_is_refused(
+    handler: SeHandler,
+) -> None:
+    """(a) a ring-class selector that matches no carbon was a silent
+    no-op; it now names the classes the block does have and that the
+    class is the SMALLEST ring a carbon closes."""
+    _put_valve(handler, "sites12")
+    with pytest.raises(BadInput, match="(?i)smallest ring") as exc:
+        handler.get(
+            id="sites12",
+            view="clearance",
+            args={
+                "a": "shell",
+                "b": "rotor",
+                "lining": {"rotor": [{"site": "ring:5-ring", "group": "OH"}]},
+            },
+        )
+    assert "6-ring" in str(exc.value)
+
+
+def test_closed_cage_lists_every_carbon_and_seals_its_interior(
+    handler: SeHandler,
+) -> None:
+    """(b) every carbon of a capped tube is a site — the cap carbons whose
+    wall normal runs along the axis used to be dropped; (c) a closed cage's
+    'in' face is sealed: exposure 0 and a header note."""
+    _put_pillbox(handler, "sites13")
+    body = handler.get(
+        id="sites13", view="sites", args={"block": "pill", "limit": 0}
+    ).body
+    rows = _site_rows(body)
+    m = re.search(r"(\d+) carbon", body)
+    assert m, body[:400]
+    n_carbon = int(m.group(1))
+    assert {int(r["ordinal"]) for r in rows} == set(range(n_carbon)), body[:400]
+    assert sum(_counts(body).values()) == 2 * n_carbon
+    inside = [r for r in rows if r["face"] == "in"]
+    assert inside and all(float(r["exposure"]) == 0.0 for r in inside)
+    assert "closed cage" in body
+
+
+def test_sites_table_is_capped_by_limit(handler: SeHandler) -> None:
+    """(d) the table shows the top ``limit`` rows by exposure (default
+    50) and says how many it held back; ``limit=0`` lists all; the
+    summary always counts every row."""
+    _put_valve(handler, "sites14")
+    full = handler.get(
+        id="sites14", view="sites", args={"block": "shell", "limit": 0}
+    ).body
+    total = len(_site_rows(full))
+    assert total > 50
+    capped = handler.get(id="sites14", view="sites", args={"block": "shell"}).body
+    assert len(_site_rows(capped)) == 50
+    assert f"showing 50 of {total}" in capped
+    assert _counts(capped) == _counts(full)
+    with pytest.raises(BadInput, match="limit"):
+        handler.get(id="sites14", view="sites", args={"block": "shell", "limit": -1})
+
+
+def test_sweep_takes_united_angles(handler: SeHandler) -> None:
+    """gr488905: se's units-carry rule — ``step``/``range`` take united
+    angles ('30 deg', 'rad'); the bare-degree ``step_deg``/``range_deg``
+    stay for existing callers. A bare ``step`` and naming both spellings
+    of one quantity are refused."""
+    _put_valve(handler, "sweep1")
+    pair = {"a": "shell", "b": "rotor"}
+    legacy = handler.get(
+        id="sweep1",
+        view="clearance",
+        args={**pair, "sweep": {"step_deg": 90, "range_deg": 180}},
+    ).body
+    united = handler.get(
+        id="sweep1",
+        view="clearance",
+        args={**pair, "sweep": {"step": "90 deg", "range": "180 deg"}},
+    ).body
+    assert _toon_rows(united, "angle") == _toon_rows(legacy, "angle")
+    assert len(_toon_rows(united, "angle")) == 3  # 0, 90, 180: a part-turn
+    radians = handler.get(
+        id="sweep1",
+        view="clearance",
+        args={**pair, "sweep": {"step": f"{math.pi!r} rad"}},
+    ).body
+    assert [r["angle"] for r in _toon_rows(radians, "angle")] == ["0°", "180°"]
+    with pytest.raises(BadInput, match="step"):
+        handler.get(id="sweep1", view="clearance", args={**pair, "sweep": {"step": 30}})
+    with pytest.raises(BadInput, match="both"):
+        handler.get(
+            id="sweep1",
+            view="clearance",
+            args={**pair, "sweep": {"step": "30 deg", "step_deg": 30}},
+        )
+
+
+def test_atomic_view_errors_point_at_the_atomic_skill(handler: SeHandler) -> None:
+    """gr488906: sites/lining/sweep args are documented in
+    precis-se-atomic-help, so their BadInputs say so first — the runtime's
+    generic precis-se-help hint only follows."""
+    _put_valve(handler, "hint1")
+    hint = "get(kind='skill', id='precis-se-atomic-help')"
+    for args, view in (
+        ({"block": "rotor", "face": "sideways"}, "sites"),
+        ({"a": "shell", "b": "rotor", "sweep": {"bogus": 1}}, "clearance"),
+        (
+            {"a": "shell", "b": "rotor", "lining": {"rotor": [{"site": -1}]}},
+            "clearance",
+        ),
+    ):
+        with pytest.raises(BadInput) as exc:
+            handler.get(id="hint1", view=view, args=args)
+        nxt = exc.value.next
+        first = nxt if isinstance(nxt, str) else (nxt[0] if nxt else None)
+        assert first == hint, (view, args, nxt)
+
+
+def test_se_help_views_list_names_the_atomic_views() -> None:
+    text = (
+        Path(__file__).resolve().parents[1] / "src/precis/data/skills/precis-se-help.md"
+    ).read_text(encoding="utf-8")
+    views = next(ln for ln in text.splitlines() if ln.startswith("`tree · block"))
+    block = text[text.index(views) :].split("\n\n")[0]
+    assert "sites" in block and "precis-se-atomic-help" in block
+
+
+def test_sites_face_filter_accepts_axial(handler: SeHandler) -> None:
+    """(e) the table prints ``axial`` faces, so the filter takes it."""
+    _put_valve(handler, "sites15")
+    body = handler.get(
+        id="sites15", view="sites", args={"block": "rotor", "face": "axial"}
+    ).body
+    rows = _site_rows(body)
+    assert rows and {r["face"] for r in rows} == {"axial"}

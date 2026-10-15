@@ -28,7 +28,9 @@ from hexfold.stick import angle_springs, stick_relax_pinned
 from precis_se.atomic.generators._types import GeneratedBlock, GeneratorError
 from precis_se.atomic.generators.hexfold_spec import _block_from_net, terminate_mode
 
-_FEATURE_TYPES = ("k4-sp3-90-a", "k3-sp3-z", "k3-sp3-a")
+#: The typed hexfold_scene entries this module builds
+#: (:mod:`.typed_features`).
+FEATURE_TYPES = ("k4-sp3-90-a", "k3-sp3-z", "k3-sp3-a")
 
 
 def _normalize(params: dict[str, Any]) -> tuple[str, int, int, str, float]:

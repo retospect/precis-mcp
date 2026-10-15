@@ -1,14 +1,14 @@
 ---
 id: precis-hexfold-seams-help
 family: se
-title: precis — hexfold seams: the straight Y, seam tube, rail tube, fin, reservoir tunnel
-summary: the equal-120 sp2 k3 seam entries of generator='hexfold_scene' — the straight three-sheet Y (k3-sp2-120-z), one seam along a tube axis (fin-k3-120-z), a closed tube of N arcs on N seams each carrying an inward rib (rail-k3-120-z), the sp3 graft fin (fin-sp3-z), and a tube closed between two reservoir sheets (tunnel-reservoirs)
+title: precis — hexfold seams: every typed hexfold_scene entry (Y, sp3 seam lines, seam/rail tubes, channel, reservoir tunnel, fin)
+summary: the exclusive typed feature entries of generator='hexfold_scene', one section each — the straight Y (k3-sp2-120-z) and its sp3 seam-line siblings (k4-sp3-90-a, k3-sp3-z, k3-sp3-a), the seam tube (fin-k3-120-z), the rail tube (rail-k3-120-z), the channel junction (chan-k3-sp3-z), the reservoir tunnel (tunnel-reservoirs) and the sp3 graft fin (fin-sp3-z)
 answers:
   - how do I build a straight 120-degree Y junction of three sheets?
   - how do I run a seam or a strip along a tube axis?
   - how do I close a tube of N arcs on N seams with inward ribs, pores and a site list?
   - how do I close a tube between two reservoir sheets (sheet | tube | sheet)?
-  - what are the rail-k3-120-z / fin-k3-120-z / fin-sp3-z / tunnel-reservoirs feature params?
+  - what feature types does hexfold_scene take, and what are each one's params?
 applies-to: put/edit (kind='se', op='generate')
 status: active
 tags: verbs, design
@@ -17,9 +17,9 @@ kinds: se
 
 # precis-hexfold-seams-help — equal-120 seams along open sheets and tubes
 
-The four exclusive `hexfold_scene` feature entries that use the k3 seam
-grammar and the sp3 graft, split out of [[precis-hexfold-help]] (call
-shape, scene features, tops, refusals live there). All mint analytic
+Every exclusive typed `hexfold_scene` feature entry — the k3 seam
+grammar, the sp3 seam lines and the sp3 graft — split out of
+[[precis-hexfold-help]] (call shape, scene features, tops, refusals live there). All mint analytic
 preview geometry only.
 
 ## Straight Y: equal-120 sp2 seam

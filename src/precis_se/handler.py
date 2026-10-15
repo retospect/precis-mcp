@@ -309,6 +309,7 @@ class SeHandler(Handler):
                 "cargo_A3",
                 "against",
                 "margin",
+                "limit",
                 "prefunits",
             }
         ),
@@ -1880,7 +1881,9 @@ class SeHandler(Handler):
         if v == "clearance":
             return Response(body=_render_clearance(self.store, tree, args))
         if v == "sites":
-            return Response(body=se_atomic_sites.render_sites(self.store, tree, args))
+            with se_atomic_clearance.atomic_help_hint():
+                body = se_atomic_sites.render_sites(self.store, tree, args)
+            return Response(body=body)
         if v == "sweep":
             return Response(body=_render_sweep(self.store, ref.id, tree))
         if v == "stations":
@@ -6959,7 +6962,9 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
     "clearance": frozenset(
         {"a", "b", "state", "previous", "sweep", "pocket_gap_A", "lining", "cargo_A3"}
     ),
-    "sites": frozenset({"block", "a", "b", "face", "exposure_A", "pocket_gap_A"}),
+    "sites": frozenset(
+        {"block", "a", "b", "face", "exposure_A", "pocket_gap_A", "limit"}
+    ),
     "sweep": frozenset(),
     "stations": frozenset({"walker", "cursor", "target"}),
     "pick": frozenset({"block", "atom", "token"}),
@@ -7293,6 +7298,7 @@ def _pair_clearance(
                 "clearance path can't measure this pair"
             )
         gap_m, verdict, witness_m = hit
+        verdict = se_atomic_clearance.pair_relation(tree, a_name, b_name) or verdict
         return _PairClearance(
             a_name=a_name,
             b_name=b_name,
@@ -7404,15 +7410,17 @@ def _render_clearance(store: Store, tree: SeTree, args: dict[str, Any] | None) -
     if b_node is None:
         raise NotFound(_block_not_found(tree, b_name))
     if se_atomic_clearance.is_atomic_pair(a_node, b_node):
-        return se_atomic_clearance.render_atomic_clearance(
-            store, tree, a_name, b_name, args or {}
-        )
+        with se_atomic_clearance.atomic_help_hint():
+            return se_atomic_clearance.render_atomic_clearance(
+                store, tree, a_name, b_name, args or {}
+            )
     for key in ("sweep", "pocket_gap_A", "lining", "cargo_A3"):
         if (args or {}).get(key) is not None:
             raise BadInput(
                 f"view='clearance' {key!r} only applies to an atomic pair — "
                 f"{a_name!r} vs {b_name!r} is not two structure-bound "
-                "blocks; drop it to query the envelope gap"
+                "blocks; drop it to query the envelope gap",
+                next=se_atomic_clearance.ATOMIC_HELP_HINT,
             )
     try:
         pc = _pair_clearance(tree, a_name, b_name)
@@ -7500,8 +7508,11 @@ def _render_clearance_digest(
         except (_ClearanceUnavailable, NotFound) as exc:
             notes.append(f"- {a_name!r} vs {b_name!r}: skipped — {exc}")
 
-    # Worst (most negative = deepest interference) gap first.
-    computed.sort(key=lambda pc: pc.gap_m)
+    # Worst (most negative = deepest interference) gap first; a bonded or
+    # nested atomic pair overlaps by construction, so it ranks after the
+    # measured clearances.
+    relation_tags = set(se_atomic_clearance.RELATION_NOTES)
+    computed.sort(key=lambda pc: (pc.verdict in relation_tags, pc.gap_m))
 
     # id = the pair, never the gap: a deeper interference between the same
     # two blocks is the same row (``still``), not gone + new.
@@ -7551,6 +7562,11 @@ def _render_clearance_digest(
         schema.insert(1, "delta")
     table = render_agent_table(rows, schema=schema)
     body = f"{header}\n\n" + (f"{delta_text}\n\n" if delta_text else "") + table
+    shown = sorted({pc.verdict for pc in computed} & relation_tags)
+    if shown:
+        body += "\n\n" + "\n".join(
+            f"{tag}: {se_atomic_clearance.RELATION_NOTES[tag]}" for tag in shown
+        )
     if notes:
         body += "\n\n" + "\n".join(notes)
     return body

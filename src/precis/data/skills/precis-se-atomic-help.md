@@ -108,15 +108,12 @@ submit jobs; `next.can_submit` stays false. Legacy run records remain unverified
   (`params.sheet`, `params.features` — `precis-hexfold-help`); misses and
   caveats come back as `scene.bar` / `scene.top.joint` WARNs, also in the
   returned provenance. Unknown keys are refused.
-  Its exclusive typed entries (one feature, no mixed feet or `extra`;
-  seam and neighbours pinned, the rest tethered; stored surface deviation
-  unavailable, not zero) are the seam family — `k3-sp2-120-z` (three
-  sheets on a straight equal-120 seam), `fin-sp3-z` (sp3 graft fin on a
-  tube), `fin-k3-120-z` (the seam along a tube axis), `rail-k3-120-z` (N
-  inward ribs, pores, `generated.sites`), `k4-sp3-90-a`, `k3-sp3-z` and
-  `k3-sp3-a` (sp3 seam lines; an H cap under 1.0 Å from another atom is
-  dropped, `terminate.dropped`). Exact params and retained findings:
-  `precis-hexfold-seams-help`.
+  Its exclusive typed entries (one feature with a `type`, no mixed feet
+  or `extra`; seam and neighbours pinned, the rest tethered; stored
+  surface deviation unavailable, not zero) are the seam family — the
+  straight Y, seam and rail tubes, fins, sp3 seam lines, the channel
+  junction, the reservoir tunnel. The list, each type's params and its
+  retained findings live in one place: `precis-hexfold-seams-help`.
   `smooth_drum` takes `neck` and `wall` (zigzag tube counts `n` of a
   `(n,0)` stalk and wall, `wall > neck`) plus optional `stalk_length_A`,
   `wall_height_A`, `sheet_radius_A`, `min_flat_A`, `relax`: a sheet →
@@ -230,7 +227,7 @@ get(kind="se", id="valve", view="clearance",
     args={"a": "shell6", "b": "pillbox"})
 get(kind="se", id="valve", view="clearance", args={
     "a": "shell6", "b": "pillbox",
-    "sweep": {"axis": "b", "step_deg": 15, "range_deg": 360},
+    "sweep": {"axis": "b", "step": "15 deg", "range": "360 deg"},
     "pocket_gap_A": 3.5})
 ```
 
@@ -248,14 +245,19 @@ void; the count at the loading angle is the valve's metering number. Each
 pocket lists per-block atom counts, centroid (z, θ about the axis), angular
 extent, and an approximate convex-hull volume.
 
-`sweep` rigidly rotates `b` about the axis and re-measures per angle —
+`sweep` rigidly rotates `b` about the axis and re-measures per angle
+(`step`/`range` take united angles; the bare-degree `step_deg`/
+`range_deg` still work) —
 read-only, never a pose write. `axis`: `"b"`/`"a"` (that block's own
 z-axis envelope through its posed origin) or `[point, direction]` in
 metres; omitted, a declared revolute `joint.axis` between the pair wins,
 else `b`'s envelope. The table is angle | min gap | worst pair | n<1Å |
 pockets, plus the worst/best angle and a one-line verdict. On the no-args
 CONNECTS digest, atomic pairs measure atoms and the rest measure
-envelopes on the same table, worst first. `sweep`/`pocket_gap_A` on a
+envelopes on the same table, worst first. A pair joined by a `kind='bond'`
+connect (a `join` seam) is tagged `bonded`, and a composite vs its own
+descendant `nested` — both overlap by construction, so they rank after
+the measured rows instead of reading `interpenetrating`. `sweep`/`pocket_gap_A` on a
 non-atomic pair is a rejection.
 
 The header prints each bound structure's `last_relax` rung — `stick`
@@ -270,7 +272,7 @@ get(kind="se", id="valve", view="sites",
     args={"a": "shell6", "b": "pillbox", "pocket_gap_A": 3.5})
 get(kind="se", id="valve", view="clearance", args={
     "a": "shell6", "b": "pillbox",
-    "sweep": {"axis": "a", "step_deg": 30},
+    "sweep": {"axis": "a", "step": "30 deg"},
     "cargo_A3": 120, "pocket_gap_A": 3.5,
     "lining": {"shell6": [{"site": 137, "group": "OH"},
                           {"site": "ring:6-ring", "group": "CH3"}],
@@ -293,7 +295,12 @@ clearance pocket report. Wall carbons show once per face.
 `args={'block'}` lists a block alone; `args={'a','b'}` lists only the
 sites that FACE the other block within `pocket_gap_A` — for the valve,
 the rotor's `out` rows and the shell's `in` rows; read-only.
-`face: 'in'|'out'|'both'` filters (default both).
+`face: 'in'|'out'|'axial'|'both'` filters (default both); `limit`
+caps the table at the N most exposed rows (default 50, `0` = all) — the
+summary always counts every row. A cap carbon whose wall normal runs
+along the axis takes out/in against the block's centroid. A closed cage
+(no open edge — a pillbox, a fullerene) lists its `in` sites at
+exposure 0: the cavity is sealed.
 
 `lining` on `view='clearance'` is the complementarity STUB — shape and
 polarity match, NO energetics (those come later via the atomic-mode
@@ -301,7 +308,9 @@ ladder: relax rungs, charges). It decorates site carbons: `site` is the
 atom `ordinal` from the sites table or `'ring:<class>'` for every carbon
 of that class (`non-ring` excluded); `group` maps to a polarity class —
 OH→polar-donor, NH3+→cationic, COO-→anionic, CH3→apolar,
-H/undecorated→bare. `lining` alone implies the default sweep and the
+H/undecorated→bare. A `ring:<class>` that matches no carbon on
+the block is refused, naming the classes present (the class is the
+SMALLEST ring a carbon closes — address a heptagon's carbons by ordinal). `lining` alone implies the default sweep and the
 lining is validated BEFORE the sweep runs. Each pocket scores per angle:
 shape = pocket volume vs `cargo_A3`, polarity = COMPATIBLE decorated
 contact pairs (+1: polar–polar, cationic–anionic, apolar–apolar,

@@ -654,37 +654,11 @@ def build_hexfold_scene(params: dict[str, Any]) -> GeneratedBlock:
         else []
     )
     if typed:
-        if typed == ["fin-sp3-z"]:
-            from precis_se.atomic.generators.fin import build_fin
+        # one registry (typed_features) — the Y adapter owns every typed
+        # declaration it does not match, including the refusals
+        from precis_se.atomic.generators.typed_features import builder_for
 
-            return build_fin(params)
-        if typed == ["fin-k3-120-z"]:
-            from precis_se.atomic.generators.fin120 import build_fin120
-
-            return build_fin120(params)
-        if typed == ["rail-k3-120-z"]:
-            from precis_se.atomic.generators.rail120 import build_rail120
-
-            return build_rail120(params)
-        if typed == ["chan-k3-sp3-z"]:
-            from precis_se.atomic.generators.channel import build_channel
-
-            return build_channel(params)
-        if typed == ["tunnel-reservoirs"]:
-            from precis_se.atomic.generators.tunnel import (
-                build_tunnel_reservoirs,
-            )
-
-            return build_tunnel_reservoirs(params)
-        if typed in (["k4-sp3-90-a"], ["k3-sp3-z"], ["k3-sp3-a"]):
-            from precis_se.atomic.generators.sp3_seam import build_sp3_seam
-
-            return build_sp3_seam(params)
-        # the Y adapter owns every other typed declaration, including the
-        # refusals (unequal dihedrals, k >= 5, unknown types)
-        from precis_se.atomic.generators.y_junction import build_y_junction
-
-        return build_y_junction(params)
+        return builder_for(typed)(params)
 
     from precis_se.atomic.generators.authored_foot import _FLIP
     from precis_se.atomic.surface_target import capture_target

@@ -370,6 +370,7 @@ def enumerate_sites(
         else cloud.pts_A
     )
     occluder_tree = cKDTree(occl)
+    centroid = cloud.pts_A.mean(axis=0)
     sites: list[Site] = []
     for i, ring in enumerate(classes):
         if ring is None or ring in _EXCLUDED_CLASSES:
@@ -380,8 +381,14 @@ def enumerate_sites(
         for free_dir in _free_dirs(i, cloud.pts_A, cadj, adj):
             face = _face(free_dir, radial) if axis is not None else "n/a"
             if face == "axial" and len(cadj[i]) >= 3:
-                continue  # a wall normal that lands exactly on the axis —
-                # vanishingly rare and meaningless as a face; skip it.
+                # A wall normal along the axis — a cap carbon near the
+                # pole. Its two faces are still a surface's two sides:
+                # out is away from the block's centroid.
+                face = (
+                    "out"
+                    if float(np.dot(free_dir, cloud.pts_A[i] - centroid)) > 0
+                    else "in"
+                )
             exp = _exposure(cloud.pts_A[i], free_dir, occluder_tree, exposure_A)
             z, theta, r = (
                 _cyl(cloud.pts_A[i], axis)
@@ -456,18 +463,43 @@ def _vet_exposure_A(args: dict[str, Any]) -> float:
 
 def _vet_face(args: dict[str, Any]) -> str:
     face = str(args.get("face") or "both").strip().lower()
-    if face not in ("in", "out", "both"):
+    if face not in ("in", "out", "axial", "both"):
         raise BadInput(
-            f"view='sites' 'face' must be 'in', 'out' or 'both'; got {face!r}"
+            f"view='sites' 'face' must be 'in', 'out', 'axial' or 'both'; got {face!r}"
         )
     return face
 
 
-def _fmt_sites(sites: list[Site], classes: dict[str, list[str | None]]) -> list[str]:
-    """The site table plus the per-(class, face) summary — the summary
-    covers the EXCLUDED classes too (``sp3``/``substituted`` count under
-    a ``—`` face) so a graft junction is accounted for, not dropped."""
+#: Default cap on listed site rows — the table is sorted by exposure, so
+#: the head is the most open sites; the summary always counts them all.
+_LIMIT_DEFAULT = 50
+
+
+def _vet_limit(args: dict[str, Any]) -> int:
+    raw = args.get("limit", _LIMIT_DEFAULT)
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+        raise BadInput(
+            "view='sites' 'limit' must be a whole number of rows >= 0 "
+            f"(0 lists every row); got {raw!r}"
+        )
+    return raw
+
+
+def _fmt_sites(
+    sites: list[Site], classes: dict[str, list[str | None]], limit: int = 0
+) -> list[str]:
+    """The site table (the top ``limit`` rows by exposure; 0 = all) plus
+    the per-(class, face) summary over EVERY row — the summary covers the
+    EXCLUDED classes too (``sp3``/``substituted`` count under a ``—``
+    face) so a graft junction is accounted for, not dropped."""
     lines: list[str] = []
+    shown = sites[:limit] if limit else sites
+    if len(shown) < len(sites):
+        lines.append(
+            f"showing {len(shown)} of {len(sites)} site rows, most exposed "
+            "first — args={'limit': 0} lists every row; the summary below "
+            "counts all of them"
+        )
     if not sites:
         lines.append("(no sites)")
     else:
@@ -483,7 +515,7 @@ def _fmt_sites(sites: list[Site], classes: dict[str, list[str | None]]) -> list[
                 "θ": f"{s.theta_deg:.1f}°" if s.theta_deg is not None else "—",
                 "r (Å)": f"{s.r_A:.2f}" if s.r_A is not None else "—",
             }
-            for s in sites
+            for s in shown
         ]
         lines.append(
             render_agent_table(
@@ -556,6 +588,14 @@ def _require_atomic(
     return node, se_atomic_clearance.atom_cloud(node, scene), scene
 
 
+def is_closed_cage(cloud: AtomCloud, classes: list[str | None]) -> bool:
+    """A carbon net with no open edge — every carbon closes rings on all
+    sides, so the surface is sealed and its ``in`` face is an interior no
+    reagent reaches (a pillbox, a fullerene)."""
+    carbons = [c for c in classes if c is not None]
+    return bool(carbons) and "open-edge" not in carbons
+
+
 def _sites_block(
     cloud: AtomCloud,
     scene: StructScene,
@@ -565,13 +605,29 @@ def _sites_block(
 ) -> tuple[list[Site], list[str | None]]:
     """``(sites, classes)`` — the bond graph is built once here and feeds
     the classifier AND the free-direction search (finding 5: no double
-    walk of the scene's bonds)."""
+    walk of the scene's bonds). A closed cage's ``in`` sites read
+    exposure 0: the probe sphere fits inside the cavity, but the cavity is
+    sealed (:func:`is_closed_cage`)."""
     adj, unsat = _bond_graph(scene, cloud.labels, cloud.pts_A)
     classes = ring_classes(cloud, adj, unsat, _hyb_of(scene, cloud))
-    return (
-        enumerate_sites(cloud, classes, adj, axis, exposure_A, occluder_pts=occl),
-        classes,
-    )
+    sites = enumerate_sites(cloud, classes, adj, axis, exposure_A, occluder_pts=occl)
+    if is_closed_cage(cloud, classes):
+        for s in sites:
+            if s.face == "in":
+                s.exposure = 0.0
+        sites.sort(key=lambda s: (-s.exposure, s.block, s.ordinal, s.face))
+    return sites, classes
+
+
+def _carbon_note(name: str, cloud: AtomCloud, classes: list[str | None]) -> str:
+    n = sum(1 for c in classes if c is not None)
+    note = f"{name}: {n} carbon(s)"
+    if is_closed_cage(cloud, classes):
+        note += (
+            " — closed cage: no open edge, so the 'in' face is a sealed "
+            "interior; its sites list at exposure 0"
+        )
+    return note
 
 
 def _axis_note(axis: SweepAxis | None) -> str:
@@ -590,6 +646,7 @@ def render_sites(store: Store, tree: SeTree, args: dict[str, Any] | None) -> str
     args = args or {}
     face = _vet_face(args)
     exposure_A = _vet_exposure_A(args)
+    limit = _vet_limit(args)
     a_name = args.get("a")
     b_name = args.get("b")
     block_name = args.get("block")
@@ -616,7 +673,8 @@ def render_sites(store: Store, tree: SeTree, args: dict[str, Any] | None) -> str
             "stick/preview geometry unless relaxed"
         )
         lines.append(_axis_note(axis))
-        lines += _fmt_sites(sites, {name: classes})
+        lines.append(_carbon_note(name, cloud, classes))
+        lines += _fmt_sites(sites, {name: classes}, limit)
         return "\n".join(lines) + "\n"
 
     a_name, b_name = str(a_name).strip(), str(b_name).strip()
@@ -650,7 +708,9 @@ def render_sites(store: Store, tree: SeTree, args: dict[str, Any] | None) -> str
         "each (z, θ, r) is measured against the site's OWN block axis — "
         "see view='clearance' for the pair axis"
     )
-    lines += _fmt_sites(facing, {a_name: classes_a, b_name: classes_b})
+    lines.append(_carbon_note(a_name, cloud_a, classes_a))
+    lines.append(_carbon_note(b_name, cloud_b, classes_b))
+    lines += _fmt_sites(facing, {a_name: classes_a, b_name: classes_b}, limit)
     return "\n".join(lines) + "\n"
 
 
@@ -715,9 +775,22 @@ def _polarity_map(
                         f"lining[{name!r}] site 'ring:' class must be one of "
                         f"{selectable}; got {site!r}"
                     )
-                for i, cls in enumerate(classes):
-                    if cls == ring:
-                        out[name][i] = GROUP_POLARITY[group]
+                matched = [i for i, cls in enumerate(classes) if cls == ring]
+                if not matched:
+                    present: dict[str, int] = {}
+                    for cls in classes:
+                        if cls in selectable:
+                            present[cls] = present.get(cls, 0) + 1
+                    have = ", ".join(f"{c} {n}" for c, n in present.items()) or "none"
+                    raise BadInput(
+                        f"lining[{name!r}] site {site!r} matches no carbon on "
+                        f"{name!r} (classes present: {have}). A carbon's class "
+                        "is the SMALLEST ring it closes, so a heptagon's "
+                        "carbons that also sit on a hexagon read 6-ring — "
+                        "list their ordinals from view='sites' instead"
+                    )
+                for i in matched:
+                    out[name][i] = GROUP_POLARITY[group]
                 continue
             try:
                 ordinal = int(site)

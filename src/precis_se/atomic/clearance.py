@@ -54,7 +54,8 @@ path's: atoms are exact, not an SDF solve, so ``interpenetrating``
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -67,6 +68,7 @@ from precis.cad.vec import pose as cad_pose
 from precis.errors import BadInput
 from precis.format import render_agent_table
 from precis.structure import Scene as StructScene
+from precis.utils.units import parse_angle_deg
 from precis_se.atomic import validate as se_atomic_validate
 from precis_se.ops import SeBlock, SeTree, effective_envelope
 
@@ -652,6 +654,30 @@ def _rung_of(store: Store, node: SeBlock) -> str:
     return str(((ref.meta or {}).get("last_relax") or {}).get("rung") or "stick")
 
 
+#: Where the atomic views' args (sites, lining, sweep, pocket_gap_A) are
+#: documented — their BadInputs lead with it (gr488906).
+ATOMIC_HELP_HINT = "get(kind='skill', id='precis-se-atomic-help')"
+
+
+@contextmanager
+def atomic_help_hint() -> Iterator[None]:
+    """Put :data:`ATOMIC_HELP_HINT` first on a BadInput raised inside —
+    the runtime's generic ``precis-se-help`` hint, appended later, only
+    follows it."""
+    try:
+        yield
+    except BadInput as exc:
+        existing = exc.next
+        if existing is None:
+            exc.next = ATOMIC_HELP_HINT
+        elif isinstance(existing, str):
+            if existing != ATOMIC_HELP_HINT:
+                exc.next = [ATOMIC_HELP_HINT, existing]
+        elif ATOMIC_HELP_HINT not in existing:
+            exc.next = [ATOMIC_HELP_HINT, *existing]
+        raise
+
+
 def is_atomic_pair(a_node: SeBlock, b_node: SeBlock) -> bool:
     """Both blocks bound to real chemistry — the condition under which
     ``view='clearance'`` takes this path instead of the cad kernel."""
@@ -663,26 +689,92 @@ def is_atomic_pair(a_node: SeBlock, b_node: SeBlock) -> bool:
     )
 
 
+#: Tags for an atomic pair whose vdW gap is not a clearance (gr488903):
+#: the atoms overlap by construction, so ``interpenetrating`` would be a
+#: false alarm. The digest ranks these after the measured rows.
+NESTED = "nested"
+BONDED = "bonded"
+
+RELATION_NOTES = {
+    NESTED: (
+        "one block is the other's ancestor — a join composite holds its "
+        "parts' atoms, so they coincide by construction; not a clash"
+    ),
+    BONDED: (
+        "a kind='bond' connect joins these blocks (what join writes for a "
+        "fused seam) — atoms across it sit at bond length, inside each "
+        "other's vdW radii, so the negative gap is the bond, not a clash"
+    ),
+}
+
+
+def _is_ancestor(tree: SeTree, older: str, younger: str) -> bool:
+    seen: set[str] = set()
+    node = tree.blocks.get(younger)
+    while node is not None and node.parent and node.parent not in seen:
+        if node.parent == older:
+            return True
+        seen.add(node.parent)
+        node = tree.blocks.get(node.parent)
+    return False
+
+
+def pair_relation(tree: SeTree, a_name: str, b_name: str) -> str | None:
+    """:data:`NESTED` when one block is the other's ancestor,
+    :data:`BONDED` when a ``kind='bond'`` connect joins the pair, else
+    ``None`` — a pair whose vdW gap is a real clearance."""
+    if _is_ancestor(tree, a_name, b_name) or _is_ancestor(tree, b_name, a_name):
+        return NESTED
+    pair = frozenset((a_name, b_name))
+    for conn in tree.connects:
+        if frozenset((conn.a_block, conn.b_block)) == pair and (
+            getattr(conn, "kind", None) == "bond"
+        ):
+            return BONDED
+    return None
+
+
+def _sweep_angle_deg(raw: dict[str, Any], key: str, default: float) -> float:
+    """One sweep angle in degrees: ``key`` takes a united angle
+    (``'15 deg'``, ``'0.26 rad'`` — se's units-carry rule, a bare nonzero
+    number refused with the two-reading hint); ``<key>_deg`` keeps the
+    bare-degree spelling existing callers use. Naming both is refused."""
+    legacy = f"{key}_deg"
+    if key in raw and legacy in raw:
+        raise BadInput(
+            f"sweep names both {key!r} and {legacy!r} — give one: {key} as a "
+            f"united angle ('15 deg') or {legacy} as bare degrees"
+        )
+    if key in raw:
+        return parse_angle_deg(raw[key], arg_name=f"sweep {key}")
+    value = raw.get(legacy, default)
+    if isinstance(value, bool):
+        raise BadInput(f"sweep {legacy} must be a number; got {value!r}")
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise BadInput(
+            f"sweep {legacy} must be a number (bare degrees); got {value!r}"
+        ) from exc
+
+
 def _vet_sweep_args(raw: Any) -> tuple[Any, float, float]:
     """``args['sweep']`` → ``(axis_arg, step_deg, range_deg)`` vetted."""
     if not isinstance(raw, dict):
         raise BadInput(
             "clearance 'sweep' must be an object like "
-            "{'axis': 'b' | [point, direction], 'step_deg': 15, 'range_deg': 360}; "
+            "{'axis': 'b' | [point, direction], 'step': '15 deg', "
+            "'range': '360 deg'}; "
             f"got {raw!r}"
         )
-    unknown = sorted(set(raw) - {"axis", "step_deg", "range_deg"})
+    unknown = sorted(set(raw) - {"axis", "step", "range", "step_deg", "range_deg"})
     if unknown:
         raise BadInput(
-            f"unknown sweep key(s) {unknown}; accepted: axis, step_deg, range_deg"
+            f"unknown sweep key(s) {unknown}; accepted: axis, step, range "
+            "(united angles, e.g. '15 deg'), step_deg, range_deg (bare degrees)"
         )
-    try:
-        step_deg = float(raw.get("step_deg", 15.0))
-        range_deg = float(raw.get("range_deg", 360.0))
-    except (TypeError, ValueError) as exc:
-        raise BadInput(
-            f"sweep step_deg/range_deg must be numbers; got {raw!r}"
-        ) from exc
+    step_deg = _sweep_angle_deg(raw, "step", 15.0)
+    range_deg = _sweep_angle_deg(raw, "range", 360.0)
     if not (0.0 < step_deg <= 360.0):
         raise BadInput(f"sweep step_deg must be in (0, 360]; got {step_deg}")
     if not (0.0 < range_deg <= 360.0):
@@ -795,6 +887,9 @@ def render_atomic_clearance(
         axis_err = str(exc)
     pocket_list = pockets(cloud_a, cloud_b, field, threshold_A, axis=axis)
     lines.append(f"gap: {report.min_gap_A:.2f} Å  ({report.verdict})")
+    relation = pair_relation(tree, a_name, b_name)
+    if relation is not None:
+        lines.append(f"note: {relation} — {RELATION_NOTES[relation]}")
     lines.append(
         f"distribution: p05 {report.p05_A:.2f} Å · p50 {report.p50_A:.2f} Å — "
         "each atom's nearest cross-block gap"

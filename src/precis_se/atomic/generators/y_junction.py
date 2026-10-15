@@ -20,6 +20,9 @@ from hexfold.y_junction import straight_y
 from precis_se.atomic.generators._types import GeneratedBlock, GeneratorError
 from precis_se.atomic.generators.hexfold_spec import _block_from_net, terminate_mode
 
+#: The typed hexfold_scene entry this module builds (:mod:`.typed_features`).
+FEATURE_TYPE = "k3-sp2-120-z"
+
 
 def _normalize(params: dict[str, Any]) -> tuple[int, int, str, float]:
     if set(params) - {"sheet", "features", "k_tether", "terminate"}:
@@ -59,7 +62,7 @@ def _normalize(params: dict[str, Any]) -> tuple[int, int, str, float]:
         )
     angles = feature["dihedrals_deg"]
     if (
-        feature["type"] != "k3-sp2-120-z"
+        feature["type"] != FEATURE_TYPE
         or not isinstance(angles, list | tuple)
         or len(angles) != 3
         or any(
