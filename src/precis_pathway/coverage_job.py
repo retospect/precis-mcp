@@ -16,11 +16,16 @@ once per slab. The job then:
    with, ``None`` on an engine that records none) — so every anchor says
    what it was measured on (slice-1 acceptance: one footing);
 2. pools this scan with every earlier succeeded scan on the same
-   ``anchor_key`` (one per model, newest wins) and runs
-   :func:`precis_pathway.surface_pourbaix.sweep` over them — the resting
-   envelope along U, every boundary with its propagated band and, with two
-   or more models, its model-form band — into ``meta.che_sweep`` and a
-   ``job_summary`` chunk.
+   ``anchor_key`` (one per model, newest wins), drops any model whose
+   recorded correction set is a strict subset of the pool's
+   (:func:`precis_pathway.surface_pourbaix.drop_uncorrected` — a band
+   across mixed corrected/uncorrected anchors prices the correction, not
+   the model form; gr486949), and runs
+   :func:`precis_pathway.surface_pourbaix.sweep` over what is left — the
+   resting envelope along U, every boundary with its propagated band and,
+   with two or more models, its model-form band — into ``meta.che_sweep``
+   and a ``job_summary`` chunk. Dropped models are named in the sweep's
+   ``dropped_uncorrected`` and in the scan warnings.
 
 Scope (Reto's 2026-10-07 rulings): (111) only — ``coverage.facets`` must
 be empty and ``slab.miller`` unset or (1,1,1). ``slab_extxyz`` injects an
@@ -272,6 +277,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         ctx.store, anchor_key, exclude=int(own_id) if isinstance(own_id, int) else None
     )
     payloads[model] = coverage  # this run wins over an older scan of the same model
+    payloads, dropped_uncorrected = surface_pourbaix.drop_uncorrected(payloads)
     window = params.get("window_U_RHE") or list(DEFAULT_U_WINDOW)
     point = params.get("point_U_RHE")
     che = surface_pourbaix.sweep(
@@ -282,6 +288,8 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         point_u_rhe=None if point is None else float(point),
         sigma_e_ev=_sigma_e(params, config),
     )
+    if dropped_uncorrected:
+        che["dropped_uncorrected"] = dropped_uncorrected
     ctx.set_meta(
         anchor_key=anchor_key,
         model=model,
@@ -294,6 +302,15 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         che_sweep=che,
     )
     warnings = list(coverage.get("warnings") or [])
+    if dropped_uncorrected:
+        warnings.append(
+            "corrections: model(s) "
+            + ", ".join(dropped_uncorrected)
+            + " dropped from the pooled sweep — scanned without the "
+            "correction set the kept model(s) applied; a band across mixed "
+            "corrected/uncorrected anchors prices the correction, not the "
+            "model form (the dropped scans' own anchors still stand)"
+        )
     text = surface_pourbaix.render_text(che)
     if warnings:
         text += "\nscan warnings: " + "; ".join(str(w) for w in warnings[:6])

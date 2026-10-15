@@ -218,3 +218,75 @@ def test_compare_lowest_theta_reports_per_adsorbate_deltas() -> None:
     assert [(r["adsorbate"], r["theta"]) for r in rows] == [("H", 0.25), ("O", 0.25)]
     assert rows[0]["g_ads_anchor"] == pytest.approx(-0.2)
     assert rows[0]["delta"] == pytest.approx(0.05)
+
+
+# ── correction footing (gr486949) ─────────────────────────────────────────
+
+
+def _corr(*, gas_set: bool = False, h_star_set: bool = False) -> dict:
+    """The ``corrections`` block an engine records on its coverage.json:
+    enabled levers plus the per-model sets actually applied."""
+    return {
+        "version": "2026-10-02",
+        "gas": {
+            "enabled": True,
+            "anchors": ["H2", "N2", "H2O"],
+            "sets": {"m": {"key": ["mace", "medium"]}} if gas_set else {},
+            "unknown": [] if gas_set else [["mace", "large"]],
+        },
+        "h_star": {
+            "enabled": True,
+            "host_metal": "Pd",
+            "sets": {"m": {"key": ["mace", "medium", "Pd"]}} if h_star_set else {},
+            "unanchored": [] if h_star_set else [["mace", "large", "Pd"]],
+        },
+    }
+
+
+def test_correction_footprint_is_what_the_engine_applied() -> None:
+    """The footprint is the recorded sets, not the request: no block (an old
+    engine), a lever switched off, or a lever with no matching table entry
+    all count as not applied."""
+    p = _payload("m", {"H": [-0.02]})
+    assert sp.correction_footprint(p) == frozenset()
+    p["corrections"] = _corr(gas_set=True, h_star_set=True)
+    assert sp.correction_footprint(p) == {"gas", "h_star"}
+    p["corrections"]["gas"]["enabled"] = False
+    assert sp.correction_footprint(p) == {"h_star"}
+    p["corrections"]["gas"]["enabled"] = True
+    p["corrections"]["gas"]["sets"] = {}
+    assert sp.correction_footprint(p) == {"h_star"}
+
+
+def test_drop_uncorrected_splits_mixed_correction_footings() -> None:
+    """gr486949: pooling a corrected model with an uncorrected one prices the
+    correction into the anchors — the undercorrected model drops out of the
+    pooled sweep; uniform footings keep it whole."""
+    a = _payload("a", {"H": [-0.02]})
+    a["corrections"] = _corr(gas_set=True, h_star_set=True)
+    b = _payload("b", {"H": [-0.03]})
+    b["corrections"] = _corr()  # levers on, nothing applied
+    kept, dropped = sp.drop_uncorrected({"a": a, "b": b})
+    assert set(kept) == {"a"} and dropped == ["b"]
+    # a missing lever short of full correction drops the same way
+    c = _payload("c", {"H": [-0.04]})
+    c["corrections"] = _corr(gas_set=True)
+    kept2, dropped2 = sp.drop_uncorrected({"a": a, "c": c})
+    assert set(kept2) == {"a"} and dropped2 == ["c"]
+    # uniform footings keep the pool, corrected or not
+    kept3, dropped3 = sp.drop_uncorrected({"a": a, "d": dict(a)})
+    assert set(kept3) == {"a", "d"} and dropped3 == []
+    kept4, dropped4 = sp.drop_uncorrected({"b": b, "e": dict(b)})
+    assert set(kept4) == {"b", "e"} and dropped4 == []
+
+
+def test_drop_uncorrected_never_empties_the_pool() -> None:
+    """Incomparable footprints (each model missing a different lever — no
+    engine table produces one) keep everything: there is no corrected
+    model to prefer."""
+    a = _payload("a", {"H": [-0.02]})
+    a["corrections"] = _corr(gas_set=True)
+    b = _payload("b", {"H": [-0.03]})
+    b["corrections"] = _corr(h_star_set=True)
+    kept, dropped = sp.drop_uncorrected({"a": a, "b": b})
+    assert set(kept) == {"a", "b"} and dropped == []

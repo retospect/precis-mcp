@@ -45,7 +45,11 @@ of two affine lines, so they are closed-form (:func:`boundaries`).
 * *model-form* (uncertainty source 3) — the spread of the same boundary
   across the MLIP models that computed it. It does not shrink with more
   sampling; its remedy is a better potential or an experiment. Reported
-  beside the first, never added to it.
+  beside the first, never added to it. Only models on the same correction
+  footing may share it: a model whose recorded correction set is a strict
+  subset of the pool's is dropped before pooling
+  (:func:`drop_uncorrected`), because a mixed corrected/uncorrected band
+  prices the correction, not the model form (gr486949).
 
 No ``autocatpath`` import: this module is pure arithmetic over the JSON the
 scan already wrote, so it is testable on a host without the engine.
@@ -230,6 +234,55 @@ def usable(anchors: list[Anchor]) -> list[Anchor]:
     Unconverged points stay — they are a numerical caveat, not a different
     phase — and carry their flag through to the report."""
     return [a for a in anchors if not a.detached]
+
+
+def correction_footprint(payload: dict[str, Any]) -> frozenset[str]:
+    """The correction levers a coverage scan actually applied, read from the
+    ``corrections`` block the engine recorded in its ``coverage.json`` —
+    never the config's request (a requested lever the model has no table
+    entry for applies nothing). ``{"gas", "h_star"}`` subsets; an engine
+    too old to record the block counts as uncorrected."""
+    corr = payload.get("corrections")
+    if not isinstance(corr, dict):
+        return frozenset()
+    return frozenset(
+        lever
+        for lever in ("gas", "h_star")
+        if isinstance(corr.get(lever), dict)
+        and corr[lever].get("enabled")
+        and corr[lever].get("sets")
+    )
+
+
+def drop_uncorrected(
+    payloads_by_model: dict[str, dict[str, Any]],
+) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    """``(kept, dropped)`` — the models that may share one pooled sweep.
+
+    Anchors measured under different correction sets are different
+    footings: pooling a corrected model with an uncorrected one prices the
+    correction into every shared anchor, so the "model-form" band measures
+    the correction rather than the potential — the same never-blend rule
+    ``precis.quest.pourbaix_map`` applies to stored scans (one map per
+    ``(anchor_key, engine, corrections)`` footing; gr486949). A model
+    whose :func:`correction_footprint` is a strict subset of the pool's
+    union is dropped and named to the caller; all-equal footprints (every
+    model corrected alike, or none) keep the whole pool. A pool where no
+    model applied every lever any other did (incomparable footprints — no
+    engine correction table produces one today) keeps everything: there is
+    no corrected model to prefer, and the scans' own warnings still flag
+    the unapplied sets."""
+    footprints = {
+        model: correction_footprint(payload)
+        for model, payload in payloads_by_model.items()
+    }
+    if len(set(footprints.values())) <= 1:
+        return dict(payloads_by_model), []
+    union = frozenset().union(*footprints.values())
+    kept = {m: p for m, p in payloads_by_model.items() if footprints[m] == union}
+    if not kept:
+        return dict(payloads_by_model), []
+    return kept, sorted(set(payloads_by_model) - set(kept))
 
 
 def _winner(anchors: list[Anchor], u: float) -> tuple[Anchor | None, float]:

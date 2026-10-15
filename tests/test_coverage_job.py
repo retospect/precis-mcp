@@ -486,6 +486,125 @@ def test_dispatch_passes_the_injected_slab_through(
     assert "slab=injected" in ctx.chunks[0][1]
 
 
+def test_dispatch_drops_an_uncorrected_sibling_from_the_band(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr486949: a sibling scan recorded without a gas-correction set must
+    not pool into the model-form band — the sweep reports the corrected
+    model alone and the summary names the dropped model."""
+    key = "c" * 64
+    bad = _coverage("mace:large", -0.05)
+    bad["corrections"] = {
+        "gas": {
+            "enabled": True,
+            "sets": {},
+            "unknown": [["mace", "large"]],
+        },
+        "h_star": {
+            "enabled": True,
+            "sets": {},
+            "unanchored": [["mace", "large", "Pd"]],
+        },
+    }
+    _scan_job(
+        store, anchor_key=key, model="mace:large", coverage=bad, status="succeeded"
+    )
+
+    def _fake_scan(
+        config: dict[str, Any], model_index: int, **kw: Any
+    ) -> dict[str, Any]:
+        cov = _coverage("mace:medium", -0.02)
+        cov["corrections"] = {
+            "gas": {
+                "enabled": True,
+                "sets": {"mace:medium": {"key": ["mace", "medium"]}},
+                "unknown": [],
+            },
+            "h_star": {
+                "enabled": True,
+                "sets": {"mace:medium": {"key": ["mace", "medium", "Pd"]}},
+                "unanchored": [],
+            },
+        }
+        return {
+            "model": "mace:medium",
+            "model_index": model_index,
+            "coverage": cov,
+            "engine_version": "0.25.0",
+            "corrections": cov["corrections"],
+        }
+
+    monkeypatch.setattr(runner, "run_coverage_scan_subprocess", _fake_scan)
+    ctx = _FakeCtx(store=store, params={"config": CONFIG, "anchor_key": key})
+    coverage_job._dispatch(ctx, coverage_job.SPEC)
+
+    assert ctx.status == "succeeded", ctx.failure
+    che = ctx.meta_updates["che_sweep"]
+    assert che["models"] == ["mace:medium"] and che["n_models"] == 1
+    assert che["dropped_uncorrected"] == ["mace:large"]
+    (b,) = che["boundaries"]
+    assert b["band_model_form"] is None and b["n_models"] == 1
+    summary = ctx.chunks[-1][1]
+    assert "mace:large" in summary and "dropped from the pooled sweep" in summary
+
+
+def test_dispatch_drops_its_own_scan_when_it_is_the_uncorrected_one(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr486949's jo486844 case: the job that ran the uncorrected model
+    still stamps its own anchors and succeeds — its sweep is the corrected
+    sibling's alone."""
+    key = "d" * 64
+    good = _coverage("mace:medium", -0.03)
+    good["corrections"] = {
+        "gas": {
+            "enabled": True,
+            "sets": {"mace:medium": {"key": ["mace", "medium"]}},
+            "unknown": [],
+        },
+        "h_star": {
+            "enabled": True,
+            "sets": {"mace:medium": {"key": ["mace", "medium", "Pd"]}},
+            "unanchored": [],
+        },
+    }
+    _scan_job(
+        store, anchor_key=key, model="mace:medium", coverage=good, status="succeeded"
+    )
+
+    def _fake_scan(
+        config: dict[str, Any], model_index: int, **kw: Any
+    ) -> dict[str, Any]:
+        cov = _coverage("mace:large", -0.05)
+        cov["corrections"] = {
+            "gas": {
+                "enabled": True,
+                "sets": {},
+                "unknown": [["mace", "large"]],
+            },
+            "h_star": {"enabled": True, "sets": {}, "unanchored": []},
+        }
+        return {
+            "model": "mace:large",
+            "model_index": model_index,
+            "coverage": cov,
+            "engine_version": "0.25.0",
+            "corrections": cov["corrections"],
+        }
+
+    monkeypatch.setattr(runner, "run_coverage_scan_subprocess", _fake_scan)
+    ctx = _FakeCtx(store=store, params={"config": CONFIG, "anchor_key": key})
+    coverage_job._dispatch(ctx, coverage_job.SPEC)
+
+    assert ctx.status == "succeeded", ctx.failure
+    m = ctx.meta_updates
+    assert m["model"] == "mace:large" and m["coverage"]["model"] == "mace:large"
+    che = m["che_sweep"]
+    assert che["models"] == ["mace:medium"] and che["n_models"] == 1
+    assert che["dropped_uncorrected"] == ["mace:large"]
+    assert "mace:large" in ctx.chunks[-1][1]
+
+
 def test_dispatch_classes_a_killed_child_as_infra(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

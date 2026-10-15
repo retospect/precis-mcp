@@ -47,7 +47,10 @@ barrier/span, ``selectivity_margin``/``trap_margin``/``poison_margin``
 coverage scan for one MLIP model (the anchors, on a recorded footing:
 ``anchor_key``/``engine_version``/``corrections``) and pools every model's
 scan on the same key into the CHE sweep — resting termination along U, each
-boundary with its propagated and model-form bands kept apart. The slice-2
+boundary with its propagated and model-form bands kept apart. A model whose
+recorded correction set is a strict subset of the pool's is dropped first
+(``surface_pourbaix.drop_uncorrected`` — a mixed corrected/uncorrected band
+prices the correction, not the model form; gr486949). The slice-2
 read — the resting-state validity map (``view='pourbaix'`` on the quest and
 structure kinds, ``/pourbaix/<handle>`` on the web) — lives in
 ``precis.quest.pourbaix_map`` and is re-exported as
