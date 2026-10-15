@@ -206,6 +206,17 @@ PATH_MAP: list[tuple[str, list[str]]] = [
             "tests/test_mcp_verb_kwarg_parity.py",
         ],
     ),
+    # Numeric-ref browse sort: the advertised sort hint and its refusal text
+    # live in _numeric_ref.py, but the tests reach it only through
+    # core.search -> hub dispatch, an edge the static ladder misses
+    # (gr485791: the r35 sort-hint red).
+    (
+        "src/precis/handlers/_numeric_ref.py",
+        [
+            "tests/test_numeric_browse_sort.py",
+            "tests/test_surface_sort_vocabulary.py",
+        ],
+    ),
     # Reviewed-blob pins: the mirror acceptance test pins git blob shas of
     # these files (MIRROR_BLOBS) — an edit reds it. The literal is detected
     # by the corpus scan too; listed so the coupling survives a literal-free

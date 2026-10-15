@@ -125,6 +125,11 @@ def test_every_corpus_ref_is_selectable(selector: sel.Selector) -> None:
 R35_CASES = [
     # call-errors: advertised sort hint changed -> numeric browse sort test
     (["src/precis/tools/core.py"], "tests/test_numeric_browse_sort.py"),
+    # ...and the same hint edited where it lives, with no core.py change
+    (
+        ["src/precis/handlers/_numeric_ref.py"],
+        "tests/test_numeric_browse_sort.py",
+    ),
     # call-errors: memory edit mode='append' -> audited mode table
     (["src/precis/handlers/memory.py"], "tests/test_mode_spec_parity.py"),
     # gardener: skill family 'maintenance' -> closed-set check
