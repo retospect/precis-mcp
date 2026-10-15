@@ -39,7 +39,11 @@ the agent surface is the read / triage half:
                                              a well-formed answer, never
                                              NotFound
     - search(kind='alert', q=...)         — lexical search over alert titles
-    - tag(id=N, add/remove=[...])    — ack / reclassify (resolve via
+    - tag(id=N, add=['ack:6h'])      — ack: silence an open alert for a
+                                        TTL (ack:<N>m|h|d, ≤90d) via
+                                        alerts.ack_alert; remove=['ack']
+                                        clears it. Not stored as a tag.
+    - tag(id=N, add/remove=[...])    — reclassify (resolve via
                                         add=['alert-state:resolved'],
                                         remove=['alert-state:open'];
                                         the handler syncs the
@@ -56,16 +60,19 @@ by semantic search. See :mod:`precis.alerts` for the lifecycle.
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 
 from precis import alert_ids
 from precis.alerts import (
     STATE_OPEN,
     STATE_RESOLVED,
+    ack_alert,
     alert_history,
     sync_resolved_at_with_tags,
+    unack_alert,
 )
-from precis.errors import Unsupported
+from precis.errors import BadInput, Unsupported
 from precis.handlers._numeric_ref import _BASE_VIEWS, NumericRefHandler
 from precis.protocol import KindSpec
 from precis.response import Response
@@ -89,6 +96,47 @@ _DETAIL_VIEWS: tuple[str, ...] = ("detail", "full")
 _CONTEXT_LINES = 80
 _CONTEXT_MARGIN_MIN = 10
 _CONTEXT_LINE_CHARS = 220
+
+
+#: ``tag(kind='alert', add=['ack:6h'])`` (gr489245): an ack is a TTL, not a
+#: mute button, so it is capped like the web tab's (``_MAX_ACK_DAYS``).
+_ACK_RE = re.compile(r"ack:(\d+)([mhd])")
+_ACK_UNITS = {"m": "minutes", "h": "hours", "d": "days"}
+_ACK_MAX = timedelta(days=90)
+_ACK_FORMS = (
+    "Accepted: add=['ack:<N>m|h|d'] (e.g. ack:30m, ack:6h, ack:7d; "
+    "1 minute to 90 days) to ack, remove=['ack'] to clear."
+)
+
+
+def _is_ack(tag: str) -> bool:
+    return tag.strip().lower() == "ack" or tag.strip().lower().startswith("ack:")
+
+
+def _parse_ack(tag: str) -> timedelta:
+    """``ack:6h`` → 6 hours; anything else refuses with the accepted forms."""
+    m = _ACK_RE.fullmatch(tag.strip().lower())
+    if m is None:
+        raise BadInput(f"bad ack duration {tag!r}. {_ACK_FORMS}")
+    try:
+        ttl = timedelta(**{_ACK_UNITS[m.group(2)]: int(m.group(1))})
+    except OverflowError:
+        ttl = _ACK_MAX + _ACK_MAX
+    if ttl <= timedelta(0) or ttl > _ACK_MAX:
+        raise BadInput(f"ack duration {tag!r} out of range. {_ACK_FORMS}")
+    return ttl
+
+
+def _is_open(store: Any, ref_id: int) -> bool:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE rt.ref_id = %s AND t.namespace = 'OPEN' AND t.value = %s
+            """,
+            (ref_id, STATE_OPEN),
+        ).fetchone()
+    return row is not None
 
 
 #: The resolved budget in a freshness check's detail ("… (budget 170h, …)").
@@ -569,6 +617,67 @@ class AlertHandler(NumericRefHandler):
         body = "\n".join(out)
         body += self._render_links_section(ref)
         return Response(body=body)
+
+    # ── tag-verb ack (gr489245) ─────────────────────────────────────
+
+    def tag(self, **kw: Any) -> Response:
+        """``add=['ack:6h']`` silences an open alert for that long through
+        :func:`precis.alerts.ack_alert` (``meta.acked_until``; the row stays
+        open and nothing is stored as a tag); ``remove=['ack']`` clears it.
+        Every other tag goes through the generic tag path. Takes ``**kw``
+        (``id``, ``add``, ``remove``, ...) to match the verb protocol.
+        """
+        id: str | int | list[str | int] = kw.pop("id")
+        add: list[str] | None = kw.pop("add", None)
+        remove: list[str] | None = kw.pop("remove", None)
+        acks = [s for s in add or [] if _is_ack(s)]
+        unacks = [s for s in remove or [] if _is_ack(s)]
+        if not acks and not unacks:
+            return super().tag(id=id, add=add, remove=remove, **kw)
+        if len(acks) > 1:
+            raise BadInput(f"one ack per call, got {acks}. {_ACK_FORMS}")
+        if acks and unacks:
+            raise BadInput(f"add=['ack:…'] and remove=['ack'] together. {_ACK_FORMS}")
+        ttl = _parse_ack(acks[0]) if acks else None
+        ids = id if isinstance(id, list) else [id]
+        ref_ids = [self._coerce_id(i) for i in ids]
+        for ref_id in ref_ids:
+            self._resolve_live_ref(ref_id)
+            if not _is_open(self.store, ref_id):
+                raise BadInput(
+                    f"alert {ref_id} is not open; only an open alert takes an ack"
+                )
+        rest_add = [s for s in add or [] if not _is_ack(s)]
+        rest_remove = [s for s in remove or [] if not _is_ack(s)]
+        lines: list[str] = []
+        if rest_add or rest_remove:
+            lines.append(
+                super().tag(id=id, add=rest_add, remove=rest_remove, **kw).body
+            )
+        for ref_id in ref_ids:
+            if ttl is None:
+                unack_alert(self.store, ref_id)
+                lines.append(f"alert {ref_id}: ack cleared; it counts as live again.")
+                continue
+            until = datetime.now(UTC) + ttl
+            if not ack_alert(self.store, ref_id, until=until, acked_by="agent"):
+                raise BadInput(f"alert {ref_id} is no longer open; not acked")
+            lines.append(
+                f"alert {ref_id}: acked until {until.strftime('%Y-%m-%d %H:%M')}Z "
+                f"({acks[0]}); it stays open and leaves the open list until then."
+            )
+        hints = [
+            (
+                f"tag(kind='alert', id={ref_ids[0]}, remove=['ack'])",
+                "clear the ack",
+            ),
+            (
+                f"tag(kind='alert', id={ref_ids[0]}, "
+                "add=['alert-state:resolved'], remove=['alert-state:open'])",
+                "resolve it instead",
+            ),
+        ]
+        return Response(body="\n".join(lines) + render_next_section(hints))
 
     # ── tag-verb lifecycle sync ─────────────────────────────────────
 

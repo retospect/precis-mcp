@@ -1,34 +1,18 @@
 ---
-status: ready
+status: idea
 pillar: platform
-title: alert failure ids — remainder: agent verb to ack
-prio: normal
-model: sonnet
+title: alert failure ids — read-cost revisit triggers
+prio: low
 ---
 
-# Alert failure ids — the remainder
+# Alert failure ids — revisit triggers
 
-Shipped 2026-10-09 (`feat(alert): registered failure ids, /rules catalogue
-and an idle-aware health panel`): `src/precis/alert_ids.py` (the rule
-catalogue, `resolve()`), `raise_alert` stamping `meta.rule_id` and refusing
-`/` in a source, `health_digest` pinned fingerprints
-(`_PINNED_FINGERPRINTS`) + the hourly checks snapshot
-(`health_digest:checks_snapshot`) + `health_panel()`, and on `AlertHandler`
-`id='/rules'`, `id='/health'` and `id='<source>/<fingerprint>'`
-(`alert_history`). Totality gate: `tests/test_alert_ids.py`. Skill routing:
-`precis-alert-help` §Health questions, `precis-status-help`, the doctor
-prompt and the `cluster-ops` remit. Also shipped (`feat(alert): acked_until
-TTL`): `alerts.ack_alert` / `unack_alert` store `meta.acked_until` on a
-still-open row; `ACKED_SQL` filters it in `list_open_alerts`, the nav badge,
-`_check_alert_backlog_rot` and the remediation router; `/alerts` shows acked
-rows dimmed with ack/unack buttons. Shipped 2026-10-12
-(`refactor(alert): /status onto health_panel; call-site rule constants`):
-the Health sub-tab renders `health_panel()` — the same object the agent's
-`/health` reads (`/status/backlog` still computes live); every producer's
-`source=` spelling binds `RULES_BY_ID["<rule id>"].rule` instead of a local
-literal (the totality test resolves the binding and gates each key names a
-registered id). What is left: an agent verb to ack (the web
-tab and `ack_alert` are the only entry points).
+Everything this item specified has shipped: the rule catalogue
+(`src/precis/alert_ids.py`, `/rules`, `/health`, `<source>/<fingerprint>`),
+`acked_until` TTL acks, and (2026-10-15, gr489245) the agent's ack through
+the tag verb, `tag(kind='alert', id=N, add=['ack:6h'])` (skill
+`precis-alert-help` §Triage, `tests/test_alert_ack_tag.py`). What remains
+is two conditional performance fixes, to do only when a trigger fires.
 
 ## Notes carried forward
 

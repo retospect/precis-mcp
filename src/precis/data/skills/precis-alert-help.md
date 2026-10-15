@@ -8,6 +8,7 @@ answers:
   - what does an alert on kind='alert' mean and who raised it?
   - is a specific failure id open, and has it come back before?
   - how do I triage or resolve an open alert?
+  - how do I ack an alert for a few hours without resolving it?
   - which background passes raise alerts, and for what conditions?
   - does an alert show up in normal search?
 applies-to: kind='alert'; precis.alerts.raise_alert / resolve_stale_alerts / resolve_alert; /alerts web tab
@@ -163,14 +164,23 @@ condition has cleared, so manual resolution is rarely needed.
 
 **Acknowledge, don't resolve, a known-failing id.** Resolving asserts the
 condition is gone and is undone the next time the producer sees it. To
-silence a still-failing id for a while, use **ack 7d** on the `/alerts` tab
-(it sets `meta.acked_until`; **unack** clears it). An acked alert stays
+silence a still-failing id for a while, ack it with a TTL:
+
+```
+tag(kind='alert', id=42, add=['ack:6h'])   # ack:<N>m|h|d, 1 minute to 90 days
+tag(kind='alert', id=42, remove=['ack'])   # clear the ack
+```
+
+`ack:` is not stored as a tag: it sets `meta.acked_until` (the `/alerts`
+tab's **ack 7d** / **unack** buttons do the same). A malformed or
+out-of-range duration is refused with the accepted forms; a resolved alert
+refuses an ack. `id=[42, 43]` acks several. An acked alert stays
 `alert-state:open`: producers keep bumping `seen_count`, it still
 auto-resolves when the condition clears, and it shows dimmed on `/alerts`
 with its expiry. While acked it is left out of the nav badge, the
 `alert_backlog_rot` check and the remediation router (which also closes the
 tracker gripe it had filed). A resolve → re-raise is a new row and does not
-inherit the ack. Never ack with a tag.
+inherit the ack.
 
 ## Producers
 
