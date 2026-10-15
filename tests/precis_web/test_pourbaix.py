@@ -7,7 +7,9 @@ shape ``coverage_job._dispatch`` stamps as ``meta.che_sweep``.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 from typing import Any
 
 import pytest
@@ -84,11 +86,13 @@ def pb_client(runtime_with_store, tmp_path) -> TestClient:
     )
 
 
-def _seed_structure(runtime_with_store, *, with_scan: bool = True) -> int:
+def _seed_structure(
+    runtime_with_store, slug: str = "pd_map", *, with_scan: bool = True
+) -> int:
     hub = runtime_with_store.hub
     store = runtime_with_store.store
     StructureHandler(hub=hub).put(
-        id="pd_map",
+        id=slug,
         text=json.dumps(
             {
                 "cell": {
@@ -101,7 +105,7 @@ def _seed_structure(runtime_with_store, *, with_scan: bool = True) -> int:
             }
         ),
     )
-    st = store.get_ref(kind="structure", id="pd_map")
+    st = store.get_ref(kind="structure", id=slug)
     if with_scan:
         job = store.insert_ref(
             kind="job",
@@ -110,7 +114,7 @@ def _seed_structure(runtime_with_store, *, with_scan: bool = True) -> int:
             parent_id=st.id,
             meta={
                 "job_type": "surface_coverage_scan",
-                "anchor_key": "a" * 64,
+                "anchor_key": hashlib.sha256(slug.encode("utf-8")).hexdigest(),
                 "model": "m",
                 "engine_version": "0.24.0",
                 "corrections": None,
@@ -268,24 +272,135 @@ def test_pourbaix_page_map_only_when_no_pathway(
     assert "<svg" in r.text and "pbx-staircase" not in r.text
 
 
+def _mk_quest(runtime_with_store, text: str = "map quest") -> int:
+    from precis.handlers.quest import QuestHandler
+
+    created = QuestHandler(hub=runtime_with_store.hub).put(text=text)
+    match = re.search(r"qu(\d+)", created.body)
+    assert match is not None
+    return int(match.group(1))
+
+
+def _converged(store: Any, sid: int, *, energy: float) -> None:
+    """A converged relax — the measure the default (energy-min) frontier
+    ranks the candidate on."""
+    store.structure_record_run(
+        sid,
+        fidelity="ml",
+        on_version=1,
+        converged=True,
+        n_steps=1,
+        max_disp=0.0,
+        energy=energy,
+    )
+
+
 def test_pourbaix_quest_page_maps_candidates(
     pb_client: TestClient, runtime_with_store
 ) -> None:
-    hub = runtime_with_store.hub
     store = runtime_with_store.store
     sid = _seed_structure(runtime_with_store)
-    from precis.handlers.quest import QuestHandler
-
-    created = QuestHandler(hub=hub).put(text="map quest")
-    import re
-
-    match = re.search(r"qu(\d+)", created.body)
-    assert match is not None
-    qid = int(match.group(1))
+    qid = _mk_quest(runtime_with_store)
     store.add_link(src_ref_id=sid, dst_ref_id=qid, relation="serves")
     r = pb_client.get(f"/pourbaix/qu{qid}")
     assert r.status_code == 200
     assert f"st{sid}" in r.text and "<svg" in r.text
+    # one surface → drawn directly; the picker still lists it
+    assert r.text.count('class="pbx-entry') == 1
+    assert f"?surface=st{sid}" in r.text
+
+
+def _quest_with_two_surfaces(runtime_with_store) -> tuple[int, int, int]:
+    """``(qid, sid_a, sid_b)`` — two anchored candidates linked in order
+    a-then-b, with b the best-ranked (lower converged energy), so the
+    default pick proves ranking beats link order."""
+    store = runtime_with_store.store
+    sid_a = _seed_structure(runtime_with_store, "pd_a")
+    sid_b = _seed_structure(runtime_with_store, "pd_b")
+    _converged(store, sid_a, energy=-1.0)
+    _converged(store, sid_b, energy=-9.0)
+    qid = _mk_quest(runtime_with_store)
+    store.add_link(src_ref_id=sid_a, dst_ref_id=qid, relation="serves")
+    store.add_link(src_ref_id=sid_b, dst_ref_id=qid, relation="serves")
+    return qid, sid_a, sid_b
+
+
+def test_pourbaix_quest_page_draws_one_surface_best_ranked(
+    pb_client: TestClient, runtime_with_store
+) -> None:
+    qid, sid_a, sid_b = _quest_with_two_surfaces(runtime_with_store)
+    r = pb_client.get(f"/pourbaix/qu{qid}")
+    assert r.status_code == 200
+    text = r.text
+    # exactly one surface's panel is drawn — the best-ranked one (b),
+    # not the first-linked (a)
+    assert text.count('class="pbx-entry') == 1
+    assert 'href="/structure/pd_b"' in text
+    assert 'href="/structure/pd_a"' not in text
+    # the picker lists every surface best-ranked first, each linking to
+    # its own /pourbaix/<handle> page plus an on-page draw link
+    assert text.index(f">st{sid_b}<") < text.index(f">st{sid_a}<")
+    assert f"/pourbaix/st{sid_a}" in text and f"/pourbaix/st{sid_b}" in text
+    assert f"?surface=st{sid_a}" in text and f"?surface=st{sid_b}" in text
+
+
+def test_pourbaix_quest_page_surface_param_selects(
+    pb_client: TestClient, runtime_with_store
+) -> None:
+    qid, sid_a, sid_b = _quest_with_two_surfaces(runtime_with_store)
+    r = pb_client.get(f"/pourbaix/qu{qid}?surface=st{sid_a}")
+    assert r.status_code == 200
+    assert r.text.count('class="pbx-entry') == 1
+    assert 'href="/structure/pd_a"' in r.text
+    assert 'href="/structure/pd_b"' not in r.text
+    # the slug and the bare ref_id address the same surface
+    r = pb_client.get(f"/pourbaix/qu{qid}?surface=pd_a")
+    assert 'href="/structure/pd_a"' in r.text
+    r = pb_client.get(f"/pourbaix/qu{qid}?surface={sid_a}")
+    assert 'href="/structure/pd_a"' in r.text
+
+
+def test_pourbaix_quest_page_unknown_surface_falls_back_with_notice(
+    pb_client: TestClient, runtime_with_store
+) -> None:
+    qid, _sid_a, _sid_b = _quest_with_two_surfaces(runtime_with_store)
+    r = pb_client.get(f"/pourbaix/qu{qid}?surface=nope123")
+    assert r.status_code == 200
+    # quotes in the notice are HTML-escaped (repr → &#x27;)
+    assert "no surface" in r.text and "nope123" in r.text
+    assert "serves this quest" in r.text
+    assert r.text.count('class="pbx-entry') == 1
+    assert 'href="/structure/pd_b"' in r.text  # the best-ranked surface is drawn
+
+
+def test_pourbaix_quest_page_surface_param_is_escaped(
+    pb_client: TestClient, runtime_with_store
+) -> None:
+    qid, _sid_a, _sid_b = _quest_with_two_surfaces(runtime_with_store)
+    r = pb_client.get(f"/pourbaix/qu{qid}?surface=<img src=x onerror=alert(1)>")
+    assert r.status_code == 200
+    assert "<img src=x" not in r.text
+    assert "&lt;img src=x onerror=alert(1)&gt;" in r.text
+
+
+def test_pourbaix_quest_page_compare_view_draws_all_labelled(
+    pb_client: TestClient, runtime_with_store
+) -> None:
+    qid, _sid_a, _sid_b = _quest_with_two_surfaces(runtime_with_store)
+    r = pb_client.get(f"/pourbaix/qu{qid}?view=compare")
+    assert r.status_code == 200
+    assert r.text.count('class="pbx-entry') == 2
+    assert "comparison view" in r.text
+
+
+def test_pourbaix_structure_page_has_no_surface_picker(
+    pb_client: TestClient, runtime_with_store
+) -> None:
+    sid = _seed_structure(runtime_with_store)
+    r = pb_client.get(f"/pourbaix/st{sid}")
+    assert r.status_code == 200
+    assert "compare all on one page" not in r.text
+    assert "?surface=" not in r.text
 
 
 def test_map_svg_draws_regions_bands_and_bulk_overlay() -> None:

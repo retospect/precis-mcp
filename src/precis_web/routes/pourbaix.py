@@ -2,8 +2,13 @@
 linked reaction-staircase panel (slices 2+3).
 
 * ``GET /pourbaix/{handle}`` — the map for one structure handle (``st<id>``
-  or slug) or, for a quest handle (``qu<id>``/id), every candidate structure
-  that serves it. The map object is the one ``view='pourbaix'`` renders as
+  or slug). For a quest handle (``qu<id>``/id) the page draws ONE candidate
+  surface at a time — a Pourbaix map is a per-surface object (gr486821):
+  ``?surface=<handle|slug|id>`` picks it, defaulting to the quest's
+  best-ranked candidate (leaderboard order); the other surfaces are listed
+  as links to their own ``/pourbaix/<handle>`` pages, and ``?view=compare``
+  is the explicit secondary view that draws them all, labelled a
+  comparison. The map object is the one ``view='pourbaix'`` renders as
   text (:mod:`precis.quest.pourbaix_map`, reached here through the
   pathway-side name :mod:`precis_pathway.pourbaix_map` — ``precis_web`` sits
   outside the core→plugin import boundary): validity regions per U interval,
@@ -23,6 +28,7 @@ from __future__ import annotations
 import logging
 import math
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
@@ -353,6 +359,79 @@ def _u_window(entries: list[dict[str, Any]], u0: float) -> tuple[float, float]:
     return min(lo, u0), max(hi, u0)
 
 
+def _quest_surfaces(store: Store, quest_ref: Any) -> list[dict[str, Any]]:
+    """The quest's candidate surfaces, best-ranked first.
+
+    :func:`precis.quest.pourbaix_map.quest_maps` supplies the live
+    ``serves`` structures plus their maps; the leaderboard order
+    (frontier → dominated → provisional → awaiting, the primary objective
+    inside a band — the same order ``view='leaderboard'`` prints)
+    supplies the ranking. A failed frontier read degrades to link order:
+    ranking must not 500 the page."""
+    from precis.quest import frontier as frontier_mod
+    from precis_pathway import pourbaix_map
+
+    entries = pourbaix_map.quest_maps(store, quest_ref)
+    order: list[str] = []
+    band: dict[str, str] = {}
+    try:
+        rows, _schema = frontier_mod.leaderboard(
+            frontier_mod.quest_frontier(store, int(quest_ref.id))
+        )
+        order = [str(r.get("design") or "") for r in rows]
+        band = {str(r.get("design") or ""): str(r.get("band") or "") for r in rows}
+    except Exception:
+        log.warning(
+            "pourbaix: frontier ranking failed for quest %s",
+            quest_ref.id,
+            exc_info=True,
+        )
+    by_handle = {e["handle"]: e for e in entries}
+    ranked = [by_handle.pop(h) for h in order if h in by_handle]
+    ranked.extend(e for e in entries if e["handle"] in by_handle)
+    out: list[dict[str, Any]] = []
+    for e in ranked:
+        ref = e["ref"]
+        handle = str(e["handle"])
+        quoted = quote(handle, safe="")
+        out.append(
+            {
+                "ref": ref,
+                "handle": handle,
+                "title": (ref.title or "").splitlines()[0]
+                if getattr(ref, "title", None)
+                else "",
+                "band": band.get(handle, ""),
+                "has_maps": bool(e["maps"]),
+                "page_url": f"/pourbaix/{quoted}",
+                "select_url": f"?surface={quoted}",
+            }
+        )
+    return out
+
+
+def _select_surface(
+    surfaces: list[dict[str, Any]], raw: str | None
+) -> tuple[dict[str, Any] | None, str | None]:
+    """``(entry, notice)`` for the ``?surface=`` pick — matched on the
+    formatted handle, the bare ref_id or the slug — else the best-ranked
+    surface. An unknown value falls back to best-ranked with a notice: a
+    picker param never 404s."""
+    if not surfaces:
+        return None, None
+    if raw is None or not raw.strip():
+        return surfaces[0], None
+    raw = raw.strip()
+    for s in surfaces:
+        ref = s["ref"]
+        if raw in (s["handle"], str(ref.id), getattr(ref, "slug", None)):
+            return s, None
+    return surfaces[0], (
+        f"no surface {raw!r} serves this quest — showing "
+        f"{surfaces[0]['handle']} (best-ranked)"
+    )
+
+
 @router.get("/pourbaix/{handle}", response_class=HTMLResponse)
 async def pourbaix_detail(request: Request, handle: str) -> HTMLResponse:
     store = get_store(request)
@@ -371,25 +450,35 @@ async def pourbaix_detail(request: Request, handle: str) -> HTMLResponse:
             status_code=404,
         )
     kind, ref = resolved
+    # operating point known before entries: the marker/markers ride it
+    u0 = _u_default(store, kind, ref)
+    surfaces: list[dict[str, Any]] = []
+    compare = False
+    selected: dict[str, Any] | None = None
+    surface_notice: str | None = None
     if kind == "quest":
-        # operating point known before entries: the marker/markers ride it
-        u0 = _u_default(store, kind, ref)
-        entries = []
-        for e in pourbaix_map.quest_maps(store, ref):
-            entries.append(_candidate_ctx(store, e["ref"], u_marker=u0))
+        # one surface at a time (gr486821): the ranked picker lists them
+        # all; ?surface= picks the drawn one, ?view=compare is the
+        # labelled cross-surface comparison.
+        surfaces = _quest_surfaces(store, ref)
+        compare = request.query_params.get("view") == "compare"
+        selected, surface_notice = _select_surface(
+            surfaces, request.query_params.get("surface")
+        )
+        drawn = surfaces if compare else ([selected] if selected else [])
         subject = {
             "kind": "quest",
             "handle": handle_registry.try_format("quest", ref.id) or f"qu{ref.id}",
             "title": (ref.title or "").splitlines()[0] if ref.title else "",
         }
     else:
-        u0 = _u_default(store, kind, ref)
-        entries = [_candidate_ctx(store, ref, u_marker=u0)]
+        drawn = [{"ref": ref}]
         subject = {
             "kind": "structure",
             "handle": handle_registry.try_format("structure", ref.id) or f"st{ref.id}",
             "title": (ref.title or "").splitlines()[0] if ref.title else "",
         }
+    entries = [_candidate_ctx(store, s["ref"], u_marker=u0) for s in drawn]
     u_lo, u_hi = _u_window(entries, u0)
     return templates.TemplateResponse(
         request,
@@ -399,6 +488,10 @@ async def pourbaix_detail(request: Request, handle: str) -> HTMLResponse:
             "subject": subject,
             "title": f"surface-Pourbaix — {subject['handle']}",
             "entries": entries,
+            "surfaces": surfaces,
+            "selected_handle": selected["handle"] if selected else None,
+            "compare": compare,
+            "surface_notice": surface_notice,
             "bulk_note": pourbaix_map.BULK_LAYER_NOTE,
             "u0": u0,
             "u_lo": u_lo,
