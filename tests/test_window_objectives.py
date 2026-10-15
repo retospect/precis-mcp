@@ -340,6 +340,9 @@ def _mk_candidate(store: Store, qid: int, name: str = "Pd") -> int:
 
 
 def _scan(store: Store, sid: int, sweep: dict[str, Any], **meta: Any) -> int:
+    # The job's model is the one the pooled sweep drew (c2c634274: a sweep
+    # pooling models the footing's jobs didn't scan is dropped as foreign).
+    swept = sorted(sweep.get("models") or ["mace:medium"])
     ref = store.insert_ref(
         kind="job",
         slug=None,
@@ -348,7 +351,7 @@ def _scan(store: Store, sid: int, sweep: dict[str, Any], **meta: Any) -> int:
         meta={
             "job_type": "surface_coverage_scan",
             "anchor_key": "a" * 64,
-            "model": "mace:medium",
+            "model": swept[0],
             "engine_version": "0.24.1",
             "corrections": None,
             "che_sweep": sweep,

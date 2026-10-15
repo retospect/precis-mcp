@@ -45,7 +45,7 @@ class MetaFakeStore(SmartDraftFakeStore):
     """A draft carrying the shapes the panel exists for: a known key, an
     unknown one, a failure stamp, and an inbound concern."""
 
-    def get_ref(self, *, kind, id):
+    def get_ref(self, *, kind, id, include_deleted=False):
         if kind == "draft" and id in ("sdt", 700):
             return _META_DRAFT
         return super().get_ref(kind=kind, id=id)
@@ -237,7 +237,7 @@ def test_a_draft_deleted_mid_rename_is_404_not_500(tmp_path) -> None:
     real_get_ref = store.get_ref
     calls = {"n": 0}
 
-    def vanishing_get_ref(*, kind, id):
+    def vanishing_get_ref(*, kind, id, include_deleted=False):
         calls["n"] += 1
         return real_get_ref(kind=kind, id=id) if calls["n"] == 1 else None
 

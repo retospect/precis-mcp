@@ -146,7 +146,7 @@ class SmartDraftFakeStore(FakeStore):
             ),
         ]
 
-    def get_ref(self, *, kind, id):
+    def get_ref(self, *, kind, id, include_deleted=False):
         if kind == "draft" and id in ("sdt", 700):
             return _DRAFT
         return super().get_ref(kind=kind, id=id)
