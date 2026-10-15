@@ -64,6 +64,7 @@ from precis.handlers import _comment_timeline as tl
 from precis.handlers._mode_help import require_mode
 from precis.handlers._numeric_ref import NumericRefHandler
 from precis.handlers._prio_tag import PRIO_TAG_TO_INT, split_prio, validate_prio
+from precis.handlers._request_state import RequestState
 from precis.handlers._tag_redirect import redirect_long_tag_values
 from precis.handlers.plaintext import _require_find_and_text
 from precis.protocol import KindSpec
@@ -92,6 +93,28 @@ if TYPE_CHECKING:
 #: (a good header already); the body is extra prose read on ``get`` and
 #: embedded + keyworded for free. Additive — most todos never set one.
 _BODY_KIND = TODO_BODY_KIND
+
+
+@dataclasses.dataclass(frozen=True)
+class _PutState:
+    """What one ``put`` hands ``_create`` / ``_render_create_ack``.
+
+    The base ``put`` calls those hooks with a fixed argument set, so the
+    todo-only fields ride a request-scoped :class:`RequestState` — never
+    the shared handler instance (concurrent calls would swap them).
+    """
+
+    parent_id: int | None = None
+    meta: dict[str, Any] | None = None
+    prio: int | None = None
+    body: str | None = None
+    #: True when this call's parented-write default stamped
+    #: ``meta.llm_tier='opus'`` (auto-dispatch armed) — the create ack
+    #: announces it so the arming is never silent.
+    stamped_default_tier: bool = False
+
+
+_PUT_STATE: RequestState[_PutState] = RequestState("precis_todo_put", _PutState())
 #: Chunk kind of an appended comment (migration 0195; the gripe_comment shape).
 _COMMENT_KIND = "todo_comment"
 
@@ -662,7 +685,7 @@ class TodoHandler(NumericRefHandler):
         # ``plan_tick`` dispatch candidate; stamping ``llm_tier`` there
         # both defeats the parking and silently bills opus for a leaf
         # that never should have run.
-        if (
+        stamped_default_tier = (
             id is None
             and parent_int is not None
             and not llm_tier_opt_out
@@ -670,14 +693,14 @@ class TodoHandler(NumericRefHandler):
             and not (isinstance(meta, dict) and meta.get("executor"))
             and not (isinstance(meta, dict) and "schedule" in meta)
             and not (isinstance(meta, dict) and "auto_check" in meta)
-        ):
+        )
+        # The flag rides ``_PutState`` so the create ack surfaces the stamp
+        # — the default silently arms billed compute (dispatch mints a
+        # plan_tick for any llm_tier-set leaf), and a write receipt must
+        # state consequential state the server added, not just what the
+        # caller sent.
+        if stamped_default_tier:
             meta = {**(meta or {}), "llm_tier": "opus"}
-            # Surface the stamp in the create ack — the default silently
-            # arms billed compute (dispatch mints a plan_tick for any
-            # llm_tier-set leaf), and a write receipt must state
-            # consequential state the server added, not just what the
-            # caller sent.
-            self._stamped_default_tier = True
         # Default parent_id for a recurring root (``meta.schedule`` set) to
         # the seeded Watches umbrella — every recurring lives under it by
         # default, so the operator gets a tidy two-panel ``view='roots'``
@@ -703,14 +726,15 @@ class TodoHandler(NumericRefHandler):
         # consumed here, not forwarded, so the base's own id-rejection
         # would never fire on it). It calls back into ``_create``, which
         # we override to plumb ``parent_id``, ``meta``, and ``prio``
-        # through to the store layer.
-        self._pending_parent_id = parent_int
-        self._pending_meta = meta
-        self._pending_prio = prio
-        self._pending_body = (
-            body.strip() if isinstance(body, str) and body.strip() else None
+        # through to the store layer via the request-scoped ``_PUT_STATE``.
+        state = _PutState(
+            parent_id=parent_int,
+            meta=dict(meta) if meta is not None else None,
+            prio=prio,
+            body=body.strip() if isinstance(body, str) and body.strip() else None,
+            stamped_default_tier=stamped_default_tier,
         )
-        try:
+        with _PUT_STATE.bind(state):
             return super().put(
                 text=text,
                 mode=mode,
@@ -721,25 +745,6 @@ class TodoHandler(NumericRefHandler):
                 rel=rel,
                 auto_refresh_days=auto_refresh_days,
             )
-        finally:
-            # Always clear so a follow-up put without parent_id can't
-            # accidentally inherit the prior call's value.
-            self._pending_parent_id = None
-            self._pending_meta = None
-            self._pending_prio = None
-            self._pending_body = None
-            self._stamped_default_tier = False
-
-    # Per-call slots for plumbing parent_id / meta / prio / body from ``put``
-    # into ``_create`` without changing the base class's signature.
-    _pending_parent_id: int | None = None
-    _pending_meta: dict[str, Any] | None = None
-    _pending_prio: int | None = None
-    _pending_body: str | None = None
-    #: True when this call's parented-write default stamped
-    #: ``meta.llm_tier='opus'`` (auto-dispatch armed) — the create ack
-    #: announces it so the arming is never silent.
-    _stamped_default_tier: bool = False
 
     def _create(
         self,
@@ -778,29 +783,30 @@ class TodoHandler(NumericRefHandler):
         all_tag_strs: list[str] = list(self.default_tags_on_create)
         if tags:
             all_tag_strs.extend(tags)
+        state = _PUT_STATE.get()
 
         with self.store.tx() as conn:
             ref = self.store.insert_ref(
                 kind=self.kind,
                 slug=None,
                 title=text,
-                meta=self._pending_meta or {},
+                meta=dict(state.meta or {}),
                 auto_refresh_days=auto_refresh_days,
-                parent_id=self._pending_parent_id,
-                prio=self._pending_prio,
+                parent_id=state.parent_id,
+                prio=state.prio,
                 conn=conn,
             )
             # Optional details body → a todo_body chunk at pos 0, written
             # *before* the tag-overflow redirect (which appends at the next
             # free ord). Additive: the title stays in refs.title; the
             # body is extra prose, embedded + keyworded by the workers.
-            if self._pending_body:
+            if state.body:
                 self.store.chunks.insert_chunks(
                     ref.id,
                     [
                         ChunkInsert(
                             ord=0,
-                            text=self._pending_body,
+                            text=state.body,
                             meta={"chunk_kind": _BODY_KIND},
                         )
                     ],
@@ -840,7 +846,7 @@ class TodoHandler(NumericRefHandler):
         # picked up by the dispatch worker, so it spawns no children and
         # the planner brief in its body is inert. Non-breaking HintBus
         # tip — the owner may legitimately intend to drive it by hand.
-        if guards.strategic_lacks_auto_run(self._pending_meta, all_tag_strs):
+        if guards.strategic_lacks_auto_run(state.meta, all_tag_strs):
             hub = getattr(self, "hub", None)
             if hub is not None:
                 from precis.hints import Hint
@@ -1568,7 +1574,8 @@ class TodoHandler(NumericRefHandler):
     # ── create-ack: surface parent_id if set ──────────────────────
 
     def _render_create_ack(self, ref_id: int) -> Response:
-        parent = self._pending_parent_id
+        state = _PUT_STATE.get()
+        parent = state.parent_id
         # surface the universal handle (``td<id>``) in the ack.
         handle = handle_registry.try_format(self.kind, ref_id) or f"id={ref_id}"
         tags = self.store.tags_for(ref_id)
@@ -1579,10 +1586,10 @@ class TodoHandler(NumericRefHandler):
         body = f"created {self.kind} {handle} (STATUS:{status})"
         if parent is not None:
             body += f" under {handle_registry.format_handle('todo', parent)}"
-        if self._pending_prio is not None:
-            body += f", prio={self._pending_prio}"
+        if state.prio is not None:
+            body += f", prio={state.prio}"
         body += "."
-        executor = (self._pending_meta or {}).get("executor")
+        executor = (state.meta or {}).get("executor")
         if executor:
             # gr453861: the minter is one pass in a sequential SYS cycle, so
             # the job child is not instant — say so in the write receipt.
@@ -1591,7 +1598,7 @@ class TodoHandler(NumericRefHandler):
                 " pass (minutes, up to ~20 min on a busy cluster); a child"
                 " job appears under this todo with a `job-minted` event."
             )
-        if self._stamped_default_tier:
+        if state.stamped_default_tier:
             # The parented-write default armed billed compute; a write
             # receipt must say so (silent side effects erode agent trust).
             body += (

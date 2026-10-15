@@ -487,16 +487,15 @@ def _author_work(i: int, **over: object) -> dict:
 
 
 def test_canonical_key_author_complete_gets_a_distinct_suffix(handler) -> None:
-    """``complete=True`` (threaded via ``_pending_complete``, mirroring
-    ``_pending_exclude``) folds into the canonical key so the walked
-    listing caches separately from the capped default page."""
-    handler._pending_complete = False
+    """``complete=True`` (threaded via the request-scoped ``_GET_STATE``)
+    folds into the canonical key so the walked listing caches separately
+    from the capped default page."""
+    from precis.handlers.semanticscholar import _GET_STATE, _GetState
+
     assert handler._canonical_key("author:1741101") == "author:1741101"
-    handler._pending_complete = True
-    try:
+    with _GET_STATE.bind(_GetState(complete=True)):
         assert handler._canonical_key("author:1741101") == "author:1741101:complete"
-    finally:
-        handler._pending_complete = False
+    assert handler._canonical_key("author:1741101") == "author:1741101"
 
 
 def test_format_author_papers_table_sorts_truncates_and_maps_corpus() -> None:

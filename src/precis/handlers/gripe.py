@@ -41,6 +41,7 @@ from precis.handlers import _comment_timeline as tl
 from precis.handlers._mode_help import require_mode
 from precis.handlers._numeric_ref import _BASE_VIEWS, NumericRefHandler
 from precis.handlers._prio_tag import PRIO_TAG_TO_INT, split_prio, validate_prio
+from precis.handlers._request_state import RequestState
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Tag
@@ -57,6 +58,12 @@ _COMMENT_KIND = "gripe_comment"
 #: pointing at ``view='comments'``, the complete read
 #: (:func:`_comment_timeline.clip_middle`).
 _BODY_HEAD_CHARS = 1500
+
+
+#: A create-time ``prio=`` plumbed from ``put`` into ``_create`` (which the
+#: base class calls with a fixed arg set). Request-scoped, not an instance
+#: attribute: one handler instance serves concurrent calls.
+_PUT_PRIO: RequestState[int | None] = RequestState("precis_gripe_put_prio", None)
 
 
 class GripeHandler(NumericRefHandler):
@@ -199,11 +206,10 @@ class GripeHandler(NumericRefHandler):
                 what=f"{self._sense()} comment",
             )
         # Create path: plumb a create-time ``prio=`` into ``_create`` via a
-        # per-call slot (the todo pending-slot pattern — the base put's
+        # request-scoped slot (``_PUT_PRIO``, as todo does — the base put's
         # signature stays untouched). The ``PRIO:`` tag alias keeps working;
         # the explicit kwarg wins.
-        self._pending_prio = validate_prio(prio)
-        try:
+        with _PUT_PRIO.bind(validate_prio(prio)):
             return super().put(
                 id=id,
                 text=text,
@@ -217,8 +223,6 @@ class GripeHandler(NumericRefHandler):
                 unlink=unlink,
                 rel=rel,
             )
-        finally:
-            self._pending_prio = None
 
     def _validate_put_mode(self, *, id: str | int | None, mode: str) -> None:
         """Check an explicit ``put`` ``mode=`` against reality.
@@ -244,10 +248,6 @@ class GripeHandler(NumericRefHandler):
                     else f"put(kind={self.kind!r}, id={id}, text='...')"
                 ),
             )
-
-    #: Per-call slot plumbing a create-time ``prio=`` from ``put`` into
-    #: ``_create`` (which the base class calls with a fixed arg set).
-    _pending_prio: int | None = None
 
     # ── tag: sync a PRIO: alias into the canonical prio column ───────
 
@@ -361,10 +361,10 @@ class GripeHandler(NumericRefHandler):
         # A create-time ``PRIO:`` alias syncs to the canonical prio column
         # (which the backlog groomer inherits onto the fix todo), not a
         # decorative tag row. Strip it before strict tag parsing. An
-        # explicit ``put(prio=)`` (plumbed via the pending slot) wins.
+        # explicit ``put(prio=)`` (plumbed via ``_PUT_PRIO``) wins.
         tags, prio_from_tag = split_prio(tags)
-        if self._pending_prio is not None:
-            prio_from_tag = self._pending_prio
+        if (put_prio := _PUT_PRIO.get()) is not None:
+            prio_from_tag = put_prio
         parsed_extra_tags = [Tag.parse_strict(t, kind=self.kind) for t in (tags or [])]
 
         with self.store.tx() as conn:

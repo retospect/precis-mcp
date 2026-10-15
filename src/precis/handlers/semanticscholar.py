@@ -41,11 +41,13 @@ from __future__ import annotations
 import logging
 import re
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from precis.errors import BadInput, Upstream
 from precis.handlers._cache_base import CacheBackedHandler, FetchResult, _cite_pointer
 from precis.handlers._exclude_closure import resolve_exclude_paper_ids
+from precis.handlers._request_state import RequestState
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store.types import ChunkInsert
@@ -134,6 +136,27 @@ _AUTHOR_PAPERS_LIMIT = 50
 #: row, distinct from the capped default page (gr346833).
 _AUTHOR_COMPLETE_SUFFIX = ":complete"
 
+
+@dataclass(frozen=True)
+class _GetState:
+    """Subclass-only ``get()`` kwargs threaded to the base-class hooks.
+
+    The base ``CacheBackedHandler.get`` only forwards the shared cache-flow
+    kwargs, so these ride a request-scoped :class:`RequestState` — never
+    the shared handler instance (concurrent calls would swap them).
+    """
+
+    #: Container-aware exclude= entries this request wants dropped from a
+    #: topic-search render. Read by :meth:`SemanticScholarHandler._render_topic_search`.
+    exclude: tuple[str, ...] | None = None
+    #: ``author:`` walks only: fold ``complete=True`` into a distinct cache
+    #: key (read by :meth:`SemanticScholarHandler._canonical_key`), so a
+    #: complete walk never reads back a stale capped-at-50 row (or vice versa).
+    complete: bool = False
+
+
+_GET_STATE: RequestState[_GetState] = RequestState("precis_s2_get", _GetState())
+
 #: Page size for the ``complete=True`` offset/limit walk — S2's own max.
 _AUTHOR_COMPLETE_PAGE_LIMIT = 100
 
@@ -182,22 +205,6 @@ class SemanticScholarHandler(CacheBackedHandler):
     shared cite-closure walk (:mod:`precis.handlers._exclude_closure`).
     See docs/backlog/discovery-exclude-by-container.md.
     """
-
-    #: Set for the duration of one ``get()`` call — the container-aware
-    #: exclude= entries this request wants dropped from a topic-search
-    #: render. ``get()`` isn't part of the base ``CacheBackedHandler``
-    #: signature (it only accepts the shared cache-flow kwargs), so this
-    #: mirrors the ``_pending_*`` convention other handlers use (e.g.
-    #: ``memory.py``'s ``_pending_title``) to thread a subclass-only kwarg
-    #: through to ``_render`` without changing the base class's contract.
-    _pending_exclude: list[str] | None = None
-
-    #: Set for the duration of one ``get()`` call — mirrors
-    #: ``_pending_exclude`` above. Read by :meth:`_canonical_key` (only
-    #: reachable on the ``author:`` nav prefix) to fold ``complete=True``
-    #: into a distinct cache key, so a ``complete=True`` walk never reads
-    #: back a stale capped-at-50 row (or vice versa).
-    _pending_complete: bool = False
 
     spec: ClassVar[KindSpec] = KindSpec(
         kind="semanticscholar",
@@ -277,7 +284,7 @@ class SemanticScholarHandler(CacheBackedHandler):
                         f"semanticscholar {prefix} needs {needs}",
                         next=f"get(kind='semanticscholar', id='{example}')",
                     )
-                if mode == "author" and self._pending_complete:
+                if mode == "author" and _GET_STATE.get().complete:
                     ident = f"{ident}{_AUTHOR_COMPLETE_SUFFIX}"
                 return f"{prefix}{ident}"
         return low
@@ -361,9 +368,11 @@ class SemanticScholarHandler(CacheBackedHandler):
         (gr346833): instead of the default capped 50-work page, walks the
         S2 API's full offset/limit pagination — see :meth:`_fetch_author_papers`.
         """
-        self._pending_exclude = exclude
-        self._pending_complete = complete
-        try:
+        state = _GetState(
+            exclude=tuple(exclude) if exclude is not None else None,
+            complete=complete,
+        )
+        with _GET_STATE.bind(state):
             return super().get(
                 id=id,
                 q=q,
@@ -377,9 +386,6 @@ class SemanticScholarHandler(CacheBackedHandler):
                 literal=literal,
                 **_kw,
             )
-        finally:
-            self._pending_exclude = None
-            self._pending_complete = False
 
     def _render(self, ref: Ref, cache: CacheEntry, *, hit: bool) -> Response:
         """Corpus-diff render for a plain topic-search ref; everything
@@ -411,7 +417,10 @@ class SemanticScholarHandler(CacheBackedHandler):
         # ``.dead_handles`` (gr340059) isn't surfaced here — this view has
         # no exclude= notice slot; the single-kind paper search path is
         # where a dead exclude= handle gets a footer.
-        exclude_ids = resolve_exclude_paper_ids(self._pending_exclude, store=self.store)
+        exclude = _GET_STATE.get().exclude
+        exclude_ids = resolve_exclude_paper_ids(
+            list(exclude) if exclude is not None else None, store=self.store
+        )
         flags = self._corpus_flags_bulk(papers)
         lines = [f"# {ref.title}", ""]
         shown = held_n = stub_n = new_n = excluded_n = 0

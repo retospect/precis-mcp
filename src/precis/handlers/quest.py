@@ -48,6 +48,7 @@ from precis.handlers._eye import EYE_LADDER, is_eye_view
 from precis.handlers._mode_help import require_mode
 from precis.handlers._numeric_ref import _BASE_VIEWS, NumericRefHandler
 from precis.handlers._prio_tag import PRIO_TAG_TO_INT, split_prio, validate_prio
+from precis.handlers._request_state import RequestState
 from precis.protocol import KindSpec
 from precis.quest import weave_tick as _weave_tick
 from precis.quest.logbook import (
@@ -480,6 +481,12 @@ def _fit_bands(
     return text
 
 
+#: A create-time ``prio=`` plumbed from ``put`` into ``_create`` (which the
+#: base class calls with a fixed arg set). Request-scoped, not an instance
+#: attribute: one handler instance serves concurrent calls.
+_PUT_PRIO: RequestState[int | None] = RequestState("precis_quest_put_prio", None)
+
+
 class QuestHandler(NumericRefHandler):
     #: args= keys each verb reads out of ``args`` (gr475332); dispatch
     #: rejects any other key. Keep in step with the verb bodies.
@@ -557,9 +564,9 @@ class QuestHandler(NumericRefHandler):
         put_meta: dict[str, Any] | None = None,
     ) -> Response:
         tags, prio_from_tag = _split_prio(tags)
-        if self._pending_prio is not None:
+        if (put_prio := _PUT_PRIO.get()) is not None:
             # An explicit ``put(prio=)`` wins over the tag alias.
-            prio_from_tag = self._pending_prio
+            prio_from_tag = put_prio
         resp = super()._create(
             text=text,
             tags=tags,
@@ -699,10 +706,9 @@ class QuestHandler(NumericRefHandler):
                 what="logbook entry",
             )
         # Create path: plumb a create-time ``prio=`` into ``_create`` via a
-        # per-call slot (the todo / gripe pending-slot pattern). The
+        # request-scoped slot (``_PUT_PRIO``, as todo / gripe do). The
         # ``PRIO:`` tag alias keeps working; the explicit kwarg wins.
-        self._pending_prio = validate_prio(prio)
-        try:
+        with _PUT_PRIO.bind(validate_prio(prio)):
             return super().put(
                 id=id,
                 text=text,
@@ -713,12 +719,6 @@ class QuestHandler(NumericRefHandler):
                 unlink=unlink,
                 rel=rel,
             )
-        finally:
-            self._pending_prio = None
-
-    #: Per-call slot plumbing a create-time ``prio=`` from ``put`` into
-    #: ``_create`` (which the base class calls with a fixed arg set).
-    _pending_prio: int | None = None
 
     def _append_log(
         self,
