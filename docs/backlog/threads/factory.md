@@ -67,15 +67,11 @@ quality-of-life and container items.
 11. **backlog/plan-tick-context-cut.md** — pre-fetch to shrink planner turns,
    exponential re-tick cooldown; overdue since 2026-08-24, needs one healthy
    baseline first (10).
-12. **backlog/llm-quota-failure-classification.md** — only the prod MEDIUM
-    ladder proof remains: a `llm.chain.medium` override (paid OpenRouter rung
-    below claude) plus one observed `fell back to rung 1` warning. Needs
-    prod + Reto's provider pick; code side landed 2026-10-12.
-13. **backlog/fixer-salvage-failed-builds.md** — push failed fixer build
+12. **backlog/fixer-salvage-failed-builds.md** — push failed fixer build
     branches instead of discarding them.
-14. **backlog/prioritization-auto-scoring.md** — severity x frequency
+13. **backlog/prioritization-auto-scoring.md** — severity x frequency
     auto-score plus a human triage loop.
-15. **backlog/backlog-groomer-items-half.md** — groomer for work items;
+14. **backlog/backlog-groomer-items-half.md** — groomer for work items;
     blocked on two prereqs.
 
 ## Parked

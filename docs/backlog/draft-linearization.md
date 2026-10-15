@@ -23,7 +23,8 @@ gist and body, citations emitted as `[fi<id>]` hubs per the cite-findings-
 only policy.
 
 This is a horizon item. It needs the generic walk (`knowledge-mesh.md`)
-and benefits from every node kind having a gist (`fisheye-everywhere.md`).
+and benefits from every node kind having a gist (the quest eye already
+composes one — `handlers/quest.py::quest_gist`).
 
 ## In scope (v1, render-only — Reto, 2026-09-30)
 

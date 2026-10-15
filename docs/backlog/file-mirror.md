@@ -71,8 +71,8 @@ storage, so there is one alias-root grammar and one DB-backed prose kind.
    `precis-overview`. `parent:` overrides the rule; the seed authors it for
    the index skills only. Links carry `meta.source='mirror'` so the pass
    can remove what a file no longer says.
-4. **Fisheye rings** for the two roots land via `fisheye-everywhere.md`'s
-   ring table (`related-to`, `part-of`).
+4. **Fisheye rings** for the two roots land via the shipped ring table
+   (`utils/refeye.py::RING_GROUPS`; `related-to`, `part-of`).
 5. **Recall measurement** (the AC that makes the later migration
    decidable), in two halves that must not be confused. Gate half: a
    synthetic memory tree checked in under `tests/fixtures/file_mirror/`

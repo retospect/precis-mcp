@@ -259,8 +259,9 @@ The 0-rows `material_values` registry is superseded by `measures` with
 2. Frontier adapter + harvest dual-write; capability supply-from-`measures`
    read, as a v2 widening once `bootstrap-roadmap-quest.md`'s `meta.supply`
    is superseded — not this item's v1.
-3. (moved to `fisheye-everywhere.md`, 2026-09-30 — it depends on no
-   measures work; this item's walk reuses its ladder.)
+3. (shipped with the eye ladder 2026-10-12 — `extent=` on every kind;
+   it depended on no measures work, and this item's walk reuses that
+   ladder.)
 4. Numeric-conflict rule in `conflict_search`.
 5. `quest_mesh` service with the four actions, per-quest budget.
 6. Integration seam for the extraction worker pass: `materialized

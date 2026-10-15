@@ -1,9 +1,13 @@
 ---
-status: ready
+status: idea
 pillar: 3d-design
 ---
 
 # structure kind → internal import filter (staged demotion)
+
+**Blocked on:** the Apply design in `se-atomic-round2.md` —
+`se_propose_atomic` payloads must be se-mediated before stages 3–4 can
+hide the kind (see the blocker paragraph below).
 
 Reto, 2026-09-14: se is now the origin of atoms; structure is "arguably
 an import filter" — no direct agent access, like pcb's internals vs its

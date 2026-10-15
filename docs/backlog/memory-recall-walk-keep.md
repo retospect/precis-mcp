@@ -72,11 +72,10 @@ The three gaps, each measured against code on main (readiness vet
 - **Walk.** The renderer is built: `utils/eye_render.py::_render_note_eye`,
   `_rings`, `_first_hop` and `_recall` render a memory at every rung
   including `+recall`, and `tests/test_eye_render.py::test_memory_eye_1hop_shows_link_neighborhood_by_relation`
-  covers it. Only the handler blocks it: `handlers/memory.py::MemoryHandler.get`
-  accepts the base views (`links`/`log`/`raw`) plus `argument` and raises
-  `Unsupported` for `fisheye`; `handlers/finding.py::FindingHandler.get`
-  has the `extent_ladder` branch to copy. `fisheye-everywhere.md` AC 3
-  (`+recall` on memory) is unmet for that reason alone.
+  covers it. Only the handler blocked it then (`handlers/memory.py::MemoryHandler.get`
+  raised `Unsupported` for `fisheye`); landed 2026-10-12 —
+  `MemoryHandler.get` routes `extent=` to `Handler.eye` (53c1b6a05), so
+  the eye ladder's `+recall`-on-memory acceptance is met.
   `web-graph-navigation.md` slice 1 (neighbourhood JSON) is `ready` and
   unbuilt; it wants one store-level neighbourhood function that panel,
   focus page and agent tooling share. No such function exists in `src/`;
@@ -125,9 +124,8 @@ other, 2 and 3 are independent of everything above.
   tag filter (add a `tags=` kwarg there, matching how `kinds=` narrows),
   so k is filled from the right scope rather than post-filtered down.
   `precis-fisheye-help`: `memory` moves from "not wired" to live;
-  `applies-to` and `kinds:` gain `memory`. `fisheye-everywhere.md` AC 3's
-  `extent='+recall'` is read as `view='fisheye+1hop+recall'` (the MCP
-  spelling); that item's AC text is corrected in the same commit.
+  `applies-to` and `kinds:` gain `memory`. The shipped spelling is
+  `view='fisheye+1hop+recall'` (the MCP spelling, 53c1b6a05).
 - **2. Recall — the index line is the hit.**
   - `MemoryHandler` gains a `search` override declaring `view: str | None`
     explicitly (today `NumericRefHandler.search` has no `view` kwarg and
@@ -190,8 +188,8 @@ other, 2 and 3 are independent of everything above.
   after 1a; touches every link kind).
 - The web panel, focus page SVG, path finding and trail
   (`web-graph-navigation.md` slices 2–6) and that item's route for slice 1.
-- `extent=` on kinds other than `memory` (`fisheye-everywhere.md` in-scope
-  2 owns the totality).
+- `extent=` on kinds other than `memory` (shipped 2026-10-12, cb2c9c2df
+  owns the totality).
 - The `focus` verb and render→act loop (`fisheye-level2.md`).
 - Dreaming, session transcripts, the resident/discovered split
   (`context-memory-hierarchy.md`), and any change to the harness's own
@@ -243,8 +241,7 @@ other, 2 and 3 are independent of everything above.
 - 1b: `src/precis/handlers/memory.py::MemoryHandler.get`,
   `src/precis/utils/eye_render.py::_render_note_eye`, `::_recall`,
   `src/precis/store/_chunks_ops.py::search_chunks_semantic` (`tags=`),
-  `src/precis/data/skills/precis-fisheye-help.md`,
-  `docs/backlog/fisheye-everywhere.md` (AC 3 spelling), tests
+  `src/precis/data/skills/precis-fisheye-help.md`, tests
   `tests/test_memory.py`, `tests/test_eye_render.py`
 - 2: `src/precis/handlers/memory.py` (new `search` override),
   `src/precis/cli/memory.py::render_memory_index`, `::add_parser`,

@@ -36,4 +36,6 @@ invisible from the paper overview and from `si_fetched` sweeps.
 
 `docs/backlog/ref-2615-is-a-mis-bound-record.md` (the wang22c record
 itself; repair = declare it `supplement_of` nasibulin07a and give it a
-non-mining handle). `docs/backlog/si-fetch-reliability-r15.md`.
+non-mining handle). The R15 SI-discovery work shipped
+(6c67c065a … 5a418c305: landing-page HTML fetch, named `non_pdf`
+skips, fixtures in `tests/fixtures/si/`).

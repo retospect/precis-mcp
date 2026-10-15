@@ -546,7 +546,8 @@ of the 122 outputs against its chunk.
 - **The batch files** are `scratch/qu202467-review-0{0..3}.jsonl`.
 
 **Build D: fisheye on the quest (qland, independent).** The ladder on
-`kind='quest'` (fisheye-everywhere AC 2). In flight 2026-10-03.
+`kind='quest'` — landed 2026-10-12 (gist opening, quest-first `Roadmap`
+ring).
 
 ## Next slice — the extraction pass itself (built 2026-10-16)
 

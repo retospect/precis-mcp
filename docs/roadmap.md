@@ -100,8 +100,8 @@ no affordance (shipped 2026-10-02 as draft `view='history'`/`'proposals'`
 and the landed-sha edit ack); the memory
 skill declares precis memory a different system from the harness files
 (`backlog/file-mirror.md`); fisheye raises `Unsupported` on paper and
-memory, and no human graph browse existed (`backlog/fisheye-everywhere.md`,
-whose browser focus page is that surface). The same day a sibling session
+memory, and no human graph browse existed (the eye-ladder item, since
+shipped 2026-10-12 — `/eye/<handle>` is that surface). The same day a sibling session
 given the same goal filed `backlog/experiment-loop.md` (hypothesis → test
 → measure → verdict through the verbs), `backlog/draft-linearization.md`
 (a draft is a render of a subgraph) and relation constraints (shipped

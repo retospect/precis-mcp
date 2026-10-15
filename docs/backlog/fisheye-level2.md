@@ -25,6 +25,6 @@ WorkingSet.crunch already exist, nothing drives them); promote-plan-node→todo
 Ranked in `threads/graph-memory-consumers.md` (pillar 1, consumers).
 `precis-fisheye-help` documents that `view='fisheye'` on `paper`, `patent`,
 `web`, `datasheet`, `cfp` and `memory` raises `Unsupported`; that is
-now owned by `fisheye-everywhere.md` (every kind, plus the browser focus
-page), which replaced the former "generalize the affordance" section — the doctrine (`docs/roadmap.md` pillar 1) is one fisheye over the
+now shipped — `extent=` on every kind's `get` plus the `/eye/<handle>`
+browser focus page — which replaced the former "generalize the affordance" section — the doctrine (`docs/roadmap.md` pillar 1) is one fisheye over the
 whole graph, and `memory` in particular cannot stay outside it.

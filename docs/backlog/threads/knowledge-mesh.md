@@ -155,11 +155,11 @@ graph-health-metrics, five parked gripes, and the seam with
    When pcb-platform fills the catalog: re-run the dry run, hand Reto
    the real run as a command, then read one board's part with
    `get(kind='part')`.
-6. **backlog/fisheye-everywhere.md** — status ready, no blocker. The
-   ladder is live on every kind, the `/eye/<handle>` focus page carries
-   ring filters (`?kind=&space=`), the Roadmap ring ranks sub-quests
-   first and the quest eye opens on its gist — all landed 2026-10-12.
-   What remains is Reto's human acceptance walk (item 2). The goal's
+6. **fisheye-everywhere** — SHIPPED 2026-10-12, backlog doc deleted
+   2026-10-15. The ladder is live on every kind, the `/eye/<handle>`
+   focus page carries ring filters (`?kind=&space=`), the Roadmap ring
+   ranks sub-quests first and the quest eye opens on its gist. The only
+   remainder — Reto's human acceptance walk — is a fleet todo. The goal's
    most visible surface; also the answer to "a viewer for the memory"
    once 9 lands. 2026-10-06
    (Reto: "dive into the graph and back out again"): the navigation
@@ -328,5 +328,6 @@ items.
 thread does not rank: draft authoring in the graph, the `focus` verb,
 capability discovery, skill quality gates, source-code ingest. The memory
 half (file-mirror, context-memory-hierarchy, session-history-into-precis)
-and every surface item (fisheye-everywhere, draft-linearization) are
+and every surface item (draft-linearization; fisheye-everywhere shipped
+2026-10-12) are
 ranked HERE. Do not duplicate ranking across the two files.

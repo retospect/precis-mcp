@@ -88,8 +88,6 @@ All `backlog/<slug>.md`. Not hit by the October paper (reason in brackets).
 
 ## Parked
 
-- **convert-remaining-markdown-list-drafts** — unparks when a markdown-list draft
-  is next needed as a real draft.
 - **dr42995-boxel-draft** · **dft-hbond-draft-27-paywalled-dois** — one-draft
   content chores, not tooling; unpark with Reto's word on that draft.
 - **Patents** — `patent-drafting-merge` · `patent-authoring-loop` (status

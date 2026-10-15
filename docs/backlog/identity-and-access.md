@@ -64,7 +64,8 @@ Open decisions: commons versus private defaults by kind; legacy backfill;
 group administrators and inheritance; grant revocation/cache semantics;
 which system passes truly require broad access. Reto's interest in groups
 does not approve any of these defaults. Link migration planning to
-`memory-native-authoring.md` and `fisheye-everywhere.md`: repo-dev and
+`memory-native-authoring.md` and the shipped eye ladder
+(`utils/refeye.py`): repo-dev and
 personal memory need the same enforcement as other working documents.
 
 Grouped 2026-09-26 from 2 items that are sub-parts of one deliverable (each keeps its own section below; the originals are in the history). Split a section back out only when it becomes independently shippable.

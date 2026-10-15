@@ -46,7 +46,7 @@ landed-sha edit ack. Both views were dogfooded 2026-10-03 on the live
 server (63301c5c) against dr173020, and both rendered. The edit ack was
 not exercised on that live review draft. The memory
 half (file-mirror, context hierarchy, session history) and the surfaces
-(fisheye-everywhere, draft-linearization) are ranked in `knowledge-mesh.md`
+(the eye ladder — shipped 2026-10-12, draft-linearization) are ranked in `knowledge-mesh.md`
 since 2026-09-30; this thread ranks the agent-side affordances only, by
 what a live consumer is already going without.
 **Last reviewed:** 2026-10-07
@@ -153,8 +153,8 @@ and the R17 ruling keeps files and graph coexisting. Kept for the record.
      and hypothesis; the one `compound` row is now `composite`.
      `nanopub_artifacts` is append-only and was not rewritten.
 5. **backlog/fisheye-level2.md** — the focus verb and the render→act loop;
-   the render side (every kind, the browser focus page) is
-   `fisheye-everywhere.md`, knowledge-mesh Do-next 4.
+   the render side (every kind, the browser focus page) shipped
+   2026-10-12.
 6. **backlog/server-side-session-context.md** — precondition td458385
    (sessions move to the shared MCP server); the SPACE-axis segregation
    `file-mirror.md` §"Pillar-review deltas" defines is what it selects on.
@@ -202,9 +202,6 @@ how an agent reaches the graph; `fisheye-*` is how it moves within it):
 - **backlog/dev-context-diet.md** — small enabler, parked until a
   consumer above needs it.
 - **backlog/contextual-chunk-embeddings.md** — small enabler.
-- **backlog/context-sentence-rag-over-body.md** — small enabler; the
-  code part landed, what remains is prod ops (re-clear the no-abstract
-  cohort + refs 498/3234/42556, then the blast-radius measurement).
 - **backlog/universal-short-codes.md** — small enabler.
 
 ## No action needed
@@ -218,6 +215,6 @@ left for `platform`; `paper-search-unique-per-paper` shipped 2026-10-12.
 
 `knowledge-mesh` owns the substrate (knowledge-mesh, measures-substrate,
 graph-gardener), the memory half (file-mirror, context-memory-hierarchy,
-session-history-into-precis) and the surfaces (fisheye-everywhere,
-draft-linearization). This thread owns the agent-side affordances listed
+session-history-into-precis) and the surfaces (draft-linearization — the eye ladder
+shipped 2026-10-12). This thread owns the agent-side affordances listed
 above. Do not duplicate ranking across the two files.

@@ -163,10 +163,10 @@ Seams:
   setting `part_lcsc` on the pulled datasheet writes the edge too, and
   `datasheet-facts-mesh.md` (knowledge-mesh Horizon 16) hangs the
   extracted facts on the part ref.
-- `backlog/fisheye-everywhere.md` — knowledge-mesh Do-next 4; roadmap's
-  `view='tree'` and the se viewer thread both render through its ladder;
-  the browser focus page it adds is the human graph-browse surface
-  (docs/roadmap.md pillar 1).
+- `fisheye-everywhere` — landed 2026-10-12 (backlog doc deleted
+  2026-10-15); the eye ladder on every kind and the `/eye/<handle>`
+  focus page are the human graph-browse surface (docs/roadmap.md
+  pillar 1).
 - `backlog/file-mirror.md` — knowledge-mesh Do-next 7; the memory half of the
   thread (context-memory-hierarchy, session-history-into-precis) is
   ranked in `knowledge-mesh.md` from 2026-09-30.

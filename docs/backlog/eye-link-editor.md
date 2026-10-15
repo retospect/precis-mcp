@@ -13,8 +13,8 @@ blocked-by: web-graph-navigation
 
 Reto, 2026-10-06: a knowledge-graph viewer "(/editor)" — dive into the
 graph, back out again, and fix what is wrong while there. The viewer is
-`fisheye-everywhere.md` in-scope 4 (`/eye/<handle>`), which by its own
-scope "renders, it does not act". This item is the acting half for a
+the shipped `/eye/<handle>` focus page (`precis_web/routes/eye.py`),
+which renders, it does not act. This item is the acting half for a
 human: when the focus page shows a wrong or missing edge, the repair
 happens on that page, not in SQL and not by composing a `link(...)` call
 by hand.
@@ -139,7 +139,7 @@ open their own connection, so there is no multi-op transaction.
   (in-scope 0); `tools/core.py::link` signature if it drops `meta` today.
 - `src/precis/store/_links_ops.py::relation_constraints` — select
   `deprecated_at`.
-- `src/precis_web/routes/<eye route from fisheye-everywhere>` — POST
+- `src/precis_web/routes/eye.py` — POST
   add / retype / remove / undo; partials under `templates/eye/`.
 - Skills: `precis-fisheye-help`, `precis-link-help`, `precis-relations`.
 - Tests: `tests/precis_web/test_eye_edit_routes.py` (TestClient, per
@@ -148,8 +148,8 @@ open their own connection, so there is no multi-op transaction.
 
 ## Open questions / decisions log
 
-- **[decided 2026-10-06]** Split from the viewer rather than folded into
-  `fisheye-everywhere.md`: the viewer ships read-only and is `ready`;
+- **[decided 2026-10-06]** Split from the viewer item rather than folded into it: the
+  viewer shipped read-only;
   writing from the page adds guard-feedback UI and provenance that would
   reopen a specced item. `blocked-by` carries the ordering.
 - **[decided 2026-10-06]** Retype is remove + add, not an UPDATE on
