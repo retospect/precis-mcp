@@ -409,6 +409,15 @@ class RealizeConfig:
     #: commits ride the ordinary reorder passes as verbatim proposals,
     #: with plain passes as the fallback for whatever is still unrouted.
     corridor_penalty: float = 0.0
+    #: Plaza packing, targeted for tough spots (slice 2 of
+    #: ``docs/backlog/pcb-global-plan-router.md``; Reto 2026-10-14):
+    #: ``"plaza"`` detects dense pad rows the strict flow map reads as
+    #: lanes-free and gives each an angular escape — stub outward on the
+    #: pad's layer to a packed margin via lattice, inner-layer run to the
+    #: source — as wedge corridors priced by ``corridor_penalty``
+    #: (default 5.0 when unset). Anything else / empty = off; the plain
+    #: passes still run after, so it can cost time, never nets.
+    escape: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -1848,11 +1857,15 @@ def _realize_maze(
     # leaves nets unrouted falls through to the plain passes below, so the
     # opt-in can cost time, never nets. The deferred import keeps
     # `globalplan`'s own dependency on this module one-directional.
-    if config.corridor_penalty > 0.0 and route_ids:
+    if (config.corridor_penalty > 0.0 or config.escape) and route_ids:
         try:
             from precis.pcb import globalplan
 
-            guided = globalplan.corridor_attempt(ir, ctx, config)
+            guided = (
+                globalplan.plaza_attempt(ir, ctx, config)
+                if config.escape == "plaza"
+                else globalplan.corridor_attempt(ir, ctx, config)
+            )
         except Exception:  # the opt-in must never take the plain route down
             guided = None
         if guided is not None:

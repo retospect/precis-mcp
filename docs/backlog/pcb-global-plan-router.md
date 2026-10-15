@@ -235,14 +235,38 @@ the unproven one.
    stays an opt-in route param, not a default (the doc's own rule).
    What shipped: the honest measure + the map + the opt-in seam; the
    wall it confirms is the one slice 2 has to break.
+1b. **Plaza packing, targeted for tough spots — DONE 2026-10-15**
+   (`escape="plaza"` route param, opt-in; `plaza_attempt` /
+   `plaza_corridors` / `via_lattice` in `globalplan.py`, test
+   `test_pcb_globalplan_plaza.py`). A pad row is a CLOSED row wrapping
+   the centroid — sorted pad angles cover the circle, shape-agnostic
+   (the square QFP ring qualifies; a first circle-fit cut rejected
+   exactly that case) — and a row counts tough when ≥half its
+   ring-crossing boundaries read 0 lanes on the strict flow map (the
+   QFP member reads 0 on all 55). The escape is assigned the way a
+   human lays it: pads ordered by angle, each takes a stub outward on
+   the pad's layer to a via slot on a packed margin lattice at the via
+   envelope (hex-staggered when the row can't hold the count), then an
+   inner-layer run back under the row to the source — planar by
+   construction, handed to the maze as wedge corridors priced by
+   `corridor_penalty` (default 5.0), with the plain passes as the
+   fallback so it can cost time, never nets. Measured: QFP plaza
+   member 53/55 in 11.7 s vs plain 53/55 in ~6 s (43 vs 35 vias — the
+   lattice is used; the same two nets stall, their plaza sources
+   squeezed at the ring's edge); EWOD replay 51/55 in 67 s vs plain
+   51/55. Ties on both benchmarks — `escape` stays opt-in per the
+   doc's rule. Reading: correct escape topology alone does not move
+   the last nets; the residual is the fine-grid squeeze the assignment
+   cannot open either.
 2. Negotiated plan with pin assignment folded in; `RoutePlan` persisted
    per route (corridors, layers, via tiles) next to the sketch; the
    min-cut witness in the digest.
 3. Corridor-guided maze routing in `pcb_route` — **shipped opt-in
-   2026-10-15** (`corridor` number ≥ 0, default off; see item 1 for the
-   tie measurement). Still owed before a default is reconsidered: the
-   slice-2 model (plaza packing / an angular escape assignment) that
-   lets a plan admit the braid the tile abstraction drops.
+   2026-10-15** (`corridor` number ≥ 0, `escape="plaza"`; both default
+   off; items 1 and 1b for the measurements). Both opt-ins tie plain on
+   both benchmarks, so nothing is a default candidate until a variant
+   converts plan intent into the +2 nets the fine grid keeps — the
+   measured residual is the intra-tile squeeze, not the topology.
 4. Loop: corridor failure → capacity−1 → re-plan; infeasible plan →
    `anneal_route_loop` expansion moves (surface wiring is the open item 1
    of `pcb-anneal-closes-router-loop.md`; brief

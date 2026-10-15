@@ -1280,6 +1280,17 @@ class PcbHandler(Handler):
                     f"to {cap} negotiated-congestion iterations."
                 )
             params["negotiate"] = negotiate
+        # Opt-in corridors-as-cost / plaza escape (RealizeConfig.
+        # corridor_penalty / escape); absent = the plain router.
+        if op == "route" and opts.get("corridor") is not None:
+            corridor = float(opts["corridor"])
+            if not corridor >= 0:
+                raise BadInput("pcb: corridor must be a number >= 0")
+            params["corridor"] = corridor
+        if op == "route" and opts.get("escape") is not None:
+            if opts["escape"] != "plaza":
+                raise BadInput("pcb: escape must be 'plaza' when set")
+            params["escape"] = "plaza"
         # Opt-in route -> penalise -> anneal -> route outer loop
         # (optimize.anneal_route_loop); off unless asked for.
         if op == "route" and opts.get("loop") is not None:

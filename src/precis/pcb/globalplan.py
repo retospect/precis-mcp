@@ -1445,11 +1445,35 @@ class CorridorPlan:
     for ``_route_pass``'s verbatim-commit seam plus the route order
     (most-constrained planned segments first, then everything else in
     the pass's own order). ``plan`` is the negotiated result, for the
-    caller's report."""
+    caller's report (``None`` for :func:`plaza_attempt`, whose corridors
+    come from the angular assignment, not a negotiated plan)."""
 
     preferred: dict[int, realize._Proposal]
     order: list[int]
-    plan: PlanResult
+    plan: PlanResult | None
+
+
+def _route_requests(
+    ir: PcbIR, ctx: realize._RouteContext, config: realize.RealizeConfig
+) -> dict[int, realize._SegRequest]:
+    """Every routable segment's request, resolved the way the first pass
+    resolves it — shared by :func:`corridor_attempt` and
+    :func:`plaza_attempt`."""
+    reqs: dict[int, realize._SegRequest] = {}
+    for seg_id in ctx.order:
+        req = realize._seg_request(
+            ir,
+            seg_id,
+            config,
+            ctx.rules_by_net,
+            ctx.clearance,
+            ctx.signal_layers,
+            ctx.island_terminals,
+            ctx.net_layers,
+        )
+        if req is not None and not req.failed:
+            reqs[seg_id] = req
+    return reqs
 
 
 def corridor_attempt(
@@ -1478,20 +1502,7 @@ def corridor_attempt(
     carry per-net widths; on a mixed-class board the map describes the
     dominant class and other nets' corridors are the approximation.
     """
-    reqs: dict[int, realize._SegRequest] = {}
-    for seg_id in ctx.order:
-        req = realize._seg_request(
-            ir,
-            seg_id,
-            config,
-            ctx.rules_by_net,
-            ctx.clearance,
-            ctx.signal_layers,
-            ctx.island_terminals,
-            ctx.net_layers,
-        )
-        if req is not None and not req.failed:
-            reqs[seg_id] = req
+    reqs = _route_requests(ir, ctx, config)
     if not reqs:
         return None
     grid, _plane_t, _plane_v, _su, _pf = realize._static_route_grid(ir, ctx, config)
@@ -1564,6 +1575,430 @@ def corridor_attempt(
     return CorridorPlan(preferred, order, plan)
 
 
+# ── plaza packing (slice 2) ─────────────────────────────────────────────
+#
+# The tile plan's measured wall is the tile abstraction itself: a dense
+# pad row (a QFP ring, the EWOD driver pads) needs its escaping nets
+# BRAIDED, which per-boundary capacities cannot express (slice-1
+# decisions log: strict flow admits the same 35 as strict runs while the
+# fine grid routes 51). Reto's ruling of 2026-10-14 — plaza packing,
+# targeted for tough spots: plan the escape the way a human does, ONLY
+# where the capacity map says the row cannot carry the demand. Order the
+# escaping pads by angle around the package, take each outward on an
+# inner layer past the pad row to a via on a packed margin lattice at
+# the via envelope, run a short stub back to the pad — the assignment
+# is planar (no crossings in the escape region) by construction, and the
+# wedge corridors hand it to the maze as a cost, not a wall.
+
+#: Minimum routed pads on a ring before the plaza treatment applies —
+#: below it the ordinary search is not losing to the braid.
+PLAZA_MIN_ESCAPE = 8
+#: A pad row's sorted pad angles must cover the circle — the largest
+#: angular gap allowed between neighbours before the row reads as an
+#: open edge, not a closed loop (a straight connector row, a two-sided
+#: DIP edge: no wrap, no plaza).
+_PLAZA_MAX_GAP_DEG = 120.0
+#: A group is "tough" (the capacity map says the row cannot carry the
+#: demand) when this fraction of its ring-crossing boundaries read
+#: zero lanes in the strict flow map.
+_PLAZA_TOUGH_FRACTION = 0.5
+#: Second staggered via row's offset, as a fraction of the envelope —
+#: the hex-packing step.
+_VIA_STAGGER = 0.8
+
+
+@dataclass(frozen=True, slots=True)
+class PlazaGroup:
+    """One pad row the angular escape is assigned around: ``segs`` in
+    pad-angle order, ``centre`` the row's hub, ``pad_out`` each pad's
+    own radial half-extent (aligned with ``segs``). ``b_pad`` is the
+    subset whose row pin is the segment's pin B — the row can sit at
+    either end (the QFP member's packages are the far pin)."""
+
+    instance: int
+    segs: tuple[int, ...]
+    centre: tuple[float, float]
+    pad_out: tuple[float, ...]
+    b_pad: frozenset[int] = frozenset()
+
+
+def _pad_row(
+    points: list[tuple[float, float]],
+) -> tuple[float, float] | None:
+    """``(cx, cy)`` when ``points`` form a CLOSED pad row wrapping the
+    centroid — sorted angles cover the circle with no gap over
+    ``_PLAZA_MAX_GAP_DEG`` — else ``None``. Shape-agnostic: a square
+    QFP ring and a round connector ring both qualify; the radius is a
+    per-pad fact, not a group constant."""
+    if len(points) < PLAZA_MIN_ESCAPE:
+        return None
+    cx = sum(p[0] for p in points) / len(points)
+    cy = sum(p[1] for p in points) / len(points)
+    angles = sorted(math.atan2(p[1] - cy, p[0] - cx) for p in points)
+    gaps = [angles[(i + 1) % len(angles)] - angles[i] for i in range(len(angles))]
+    gaps[-1] += 2 * math.pi
+    if max(gaps) > math.radians(_PLAZA_MAX_GAP_DEG):
+        return None
+    return cx, cy
+
+
+def _plaza_groups(
+    ir: PcbIR,
+    reqs: dict[int, realize._SegRequest],
+    pad_geoms: Sequence[Any] = (),
+) -> list[PlazaGroup]:
+    """Pad rows among the routed segments: group each segment by EITHER
+    pin's instance (the row can be the near or the far end — the QFP
+    member's packages are pin B), keep instances whose routed pads wrap
+    the centroid in at least ``PLAZA_MIN_ESCAPE`` pads. The anchor is
+    the pin's own point — ``eff_start``/``eff_goal`` can sit at an
+    island terminal off the row."""
+    by_inst: dict[int, list[tuple[int, bool, tuple[float, float], float]]] = {}
+    for seg_id, req in reqs.items():
+        a = int(ir.seg_pin_a[seg_id])
+        b = int(ir.seg_pin_b[seg_id])
+        for pin, is_b, pt in ((a, False, req.start), (b, True, req.end)):
+            inst = int(ir.pin_instance[pin])
+            geom = pad_geoms[pin] if pin < len(pad_geoms) else None
+            pad_extent = max(geom.w_mm, geom.h_mm) / 2.0 if geom is not None else 0.3
+            by_inst.setdefault(inst, []).append((seg_id, is_b, pt, pad_extent))
+    groups: list[PlazaGroup] = []
+    for inst, members in by_inst.items():
+        row = _pad_row([pt for _s, _b, pt, _e in members])
+        if row is None:
+            continue
+        cx, cy = row
+        # One seg could land on this instance through both pins — keep
+        # its pin-A entry (appended first) so a group never carries it
+        # twice.
+        by_seg: dict[int, tuple[int, bool, tuple[float, float], float]] = {}
+        for m in members:
+            if m[0] not in by_seg or not m[1]:
+                by_seg[m[0]] = m
+        deduped = sorted(
+            by_seg.values(), key=lambda m: math.atan2(m[2][1] - cy, m[2][0] - cx)
+        )
+        groups.append(
+            PlazaGroup(
+                instance=inst,
+                segs=tuple(m[0] for m in deduped),
+                centre=(cx, cy),
+                pad_out=tuple(m[3] for m in deduped),
+                b_pad=frozenset(m[0] for m in deduped if m[1]),
+            )
+        )
+    return groups
+
+
+def _ring_crossing_cap(
+    graph: TileGraph,
+    layer: int,
+    centre: tuple[float, float],
+    point: tuple[float, float],
+) -> int:
+    """Lanes across the boundary between the pad's tile and the next
+    tile OUTWARD along its radial ray — the boundary the escape stub
+    must cross, on the pad's layer."""
+    li = graph.layers.index(layer)
+    tx, ty = graph.tile_of(*point)
+    cx, cy = centre
+    dx, dy = point[0] - cx, point[1] - cy
+    r = math.hypot(dx, dy) or 1.0
+    # One full tile outward along the ray.
+    nx_, ny_ = point[0] + dx / r * graph.tile_mm, point[1] + dy / r * graph.tile_mm
+    tx2, ty2 = graph.tile_of(nx_, ny_)
+    if tx2 == tx + 1 and ty2 == ty and tx + 1 < graph.ntx:
+        return int(graph.cap_x[li, ty, tx])
+    if tx2 == tx - 1 and ty2 == ty and tx > 0:
+        return int(graph.cap_x[li, ty, tx - 1])
+    if ty2 == ty + 1 and tx2 == tx and ty + 1 < graph.nty:
+        return int(graph.cap_y[li, ty, tx])
+    if ty2 == ty - 1 and tx2 == tx and ty > 0:
+        return int(graph.cap_y[li, ty - 1, tx])
+    if tx2 == tx and ty2 == ty:
+        # The outward step stayed inside the tile (tile bigger than the
+        # pad row's spacing): test the boundary the ray crosses next.
+        return 2  # no wall detected on this row — not a tough spot
+    return min(
+        int(graph.cap_x[li, ty, tx]) if tx2 > tx and tx + 1 < graph.ntx else 99,
+        int(graph.cap_x[li, ty, tx - 1]) if tx2 < tx and tx > 0 else 99,
+        int(graph.cap_y[li, ty, tx]) if ty2 > ty and ty + 1 < graph.nty else 99,
+        int(graph.cap_y[li, ty - 1, tx]) if ty2 < ty and ty > 0 else 99,
+    )
+
+
+def _inner_layer(req: realize._SegRequest, pad_layer: int) -> int | None:
+    """The inner layer the escape's radial run drops to: the allowed
+    layer second-closest to the far stackup side — a pad on the bottom
+    gets ``In2`` (the EWOD plan's own choice), a pad on top gets the
+    first inner layer. ``None`` when the net has no second layer."""
+    allowed = sorted(set(req.route_kwargs["layers"]))
+    if len(allowed) < 2:
+        return None
+    if pad_layer == allowed[-1]:
+        return allowed[-2]
+    if pad_layer == allowed[0]:
+        return allowed[1]
+    for layer in allowed:
+        if layer != pad_layer:
+            return layer
+    return None
+
+
+def via_lattice(
+    angles: Sequence[float],
+    r0: float,
+    envelope: float,
+) -> list[float]:
+    """The packed margin lattice: one slot per ``angles`` entry on a
+    circle of radius ``r0`` — radii only (callers add the centre); when
+    the ring cannot hold the count at the via ``envelope`` the odd
+    entries stagger out one hex row (``_VIA_STAGGER * envelope``)."""
+    n = len(angles)
+    if n == 0:
+        return []
+    one_ring = int(2 * math.pi * r0 / envelope)
+    row2 = n > max(1, one_ring)
+    return [r0 + (_VIA_STAGGER * envelope if row2 and i % 2 else 0.0) for i in range(n)]
+
+
+def _seg_cells(
+    spec: maze.GridSpec,
+    a: tuple[float, float],
+    b: tuple[float, float],
+    half_w: float,
+    out: np.ndarray,
+) -> None:
+    """OR the cells within ``half_w`` of segment ``a``→``b`` into
+    ``out`` — a flat ``spec.nx * spec.ny`` boolean view of one layer."""
+    xs = spec.x0 + np.arange(spec.nx) * spec.pitch
+    ys = spec.y0 + np.arange(spec.ny) * spec.pitch
+    gx, gy = np.meshgrid(xs, ys)
+    ax, ay = a
+    vx, vy = b[0] - ax, b[1] - ay
+    ll = vx * vx + vy * vy
+    if ll == 0:
+        dist2 = (gx - ax) ** 2 + (gy - ay) ** 2
+    else:
+        t = np.clip(((gx - ax) * vx + (gy - ay) * vy) / ll, 0.0, 1.0)
+        dist2 = (ax + t * vx - gx) ** 2 + (ay + t * vy - gy) ** 2
+    out |= (dist2 <= half_w * half_w).reshape(-1)
+
+
+def plaza_mask(
+    spec: maze.GridSpec,
+    *,
+    pad_layer: int,
+    inner_layer: int | None,
+    pad_point: tuple[float, float],
+    via_point: tuple[float, float],
+    source_point: tuple[float, float],
+    half_w: float,
+    via_r: float,
+    extra: Sequence[tuple[int, float, float]] = (),
+) -> np.ndarray:
+    """One segment's wedge corridor on the fine grid: a ``half_w``-wide
+    lane for the stub (pad → via slot, on the pad's layer) and for the
+    inner run (via slot → source, on the inner layer), plus a via-sized
+    disk at the slot on every layer — the lattice cell the drop is
+    planned into. ``extra`` are ``(layer, x, y)`` cells always inside
+    (endpoints, island terminals)."""
+    mask = np.zeros((spec.n_layers, spec.ny, spec.nx), dtype=bool)
+    _seg_cells(spec, pad_point, via_point, half_w, mask[pad_layer].reshape(-1))
+    if inner_layer is not None:
+        _seg_cells(spec, via_point, source_point, half_w, mask[inner_layer].reshape(-1))
+    xs = spec.x0 + np.arange(spec.nx) * spec.pitch
+    ys = spec.y0 + np.arange(spec.ny) * spec.pitch
+    gx, gy = np.meshgrid(xs, ys)
+    disk = (gx - via_point[0]) ** 2 + (gy - via_point[1]) ** 2 <= via_r * via_r
+    mask |= disk[None, :, :]
+    for layer, x, y in extra:
+        iy = int((y - spec.y0) / spec.pitch)
+        ix = int((x - spec.x0) / spec.pitch)
+        if 0 <= layer < spec.n_layers and 0 <= iy < spec.ny and 0 <= ix < spec.nx:
+            mask[layer, iy, ix] = True
+    return mask
+
+
+def plaza_corridors(
+    ir: PcbIR,
+    ctx: realize._RouteContext,
+    reqs: dict[int, realize._SegRequest],
+    graph: TileGraph,
+    groups: list[PlazaGroup],
+) -> tuple[dict[int, np.ndarray], dict[int, list[int]], list[int]]:
+    """The angular escape assignment for the tough groups: via slots on
+    a packed margin lattice at the via envelope (staggered into a second
+    row when one ring cannot hold the count), each segment's corridor
+    the wedge pad → slot → source. Returns ``(corridors, layers, order)``
+    — corridors keyed by seg, the layer pair each runs on, and the
+    segments in plan order (angular)."""
+    spec = ctx.spec
+    corridors: dict[int, np.ndarray] = {}
+    clayers: dict[int, list[int]] = {}
+    order: list[int] = []
+    for group in groups:
+        cx, cy = group.centre
+        n = len(group.segs)
+        envelope = max(
+            float(reqs[s].rules.via_dia_mm or 0.45)
+            + 2 * float(reqs[s].rules.clearance_mm)
+            for s in group.segs
+        )
+        # Each slot sits just past its own pad's outer extent on the
+        # pad's ray — the margin follows the row's outline, not a
+        # circle. When neighbouring slots would land inside the via
+        # envelope of each other the odd entries stagger one hex row
+        # out.
+        angles = [
+            math.atan2(
+                (reqs[s].end if s in group.b_pad else reqs[s].start)[1] - cy,
+                (reqs[s].end if s in group.b_pad else reqs[s].start)[0] - cx,
+            )
+            for s in group.segs
+        ]
+        base = [
+            dist(reqs[s].end if s in group.b_pad else reqs[s].start, (cx, cy))
+            + group.pad_out[i]
+            + envelope / 2.0
+            + 0.05
+            for i, s in enumerate(group.segs)
+        ]
+        chords = [
+            math.hypot(
+                base[i] * math.cos(angles[i])
+                - base[(i + 1) % n] * math.cos(angles[(i + 1) % n]),
+                base[i] * math.sin(angles[i])
+                - base[(i + 1) % n] * math.sin(angles[(i + 1) % n]),
+            )
+            for i in range(n)
+        ]
+        slots = list(base)
+        if min(chords) < envelope:
+            for i in range(1, n, 2):
+                slots[i] += _VIA_STAGGER * envelope
+        for i, seg_id in enumerate(group.segs):
+            req = reqs[seg_id]
+            rules = req.rules
+            clearance = float(rules.clearance_mm)
+            via = (
+                cx + slots[i] * math.cos(angles[i]),
+                cy + slots[i] * math.sin(angles[i]),
+            )
+            is_b = seg_id in group.b_pad
+            pad = req.end if is_b else req.start
+            pad_layer = req.goal_layer if is_b else req.start_layer
+            source = req.eff_start if is_b else req.eff_goal
+            source_layer = req.start_layer if is_b else req.goal_layer
+            inner = _inner_layer(req, pad_layer)
+            layer_set = {pad_layer} | ({inner} if inner is not None else set())
+            extra: list[tuple[int, float, float]] = [
+                (pad_layer, *(req.eff_goal if is_b else req.eff_start)),
+                (source_layer, *source),
+            ]
+            for t, layer in req.terms[0] if req.terms else ():
+                extra.append((layer, *t.point))
+            for t, layer in req.terms[1] if req.terms else ():
+                extra.append((layer, *t.point))
+            mask = plaza_mask(
+                spec,
+                pad_layer=pad_layer,
+                inner_layer=inner,
+                pad_point=pad,
+                via_point=via,
+                source_point=source,
+                half_w=max(rules.track_width_mm + clearance, 0.35),
+                via_r=envelope / 2.0 + spec.pitch,
+                extra=extra,
+            )
+            corridors[seg_id] = mask
+            clayers[seg_id] = sorted(layer_set)
+            order.append(seg_id)
+    return corridors, clayers, order
+
+
+def plaza_attempt(
+    ir: PcbIR,
+    ctx: realize._RouteContext,
+    config: realize.RealizeConfig,
+) -> CorridorPlan | None:
+    """Plaza packing, targeted for tough spots (slice 2,
+    ``docs/backlog/pcb-global-plan-router.md``; Reto's 2026-10-14 ruling
+    that connectivity capacity is the start and plaza packing targets
+    the tough spots). Detects pad rows whose ring-crossing boundaries
+    the strict flow map reads as lanes-free (``_plaza_groups`` +
+    ``_ring_crossing_cap``), assigns each tough row an angular escape —
+    stub outward on the pad's layer, via drop on a packed margin
+    lattice, inner-layer run to the source — and hands the wedges to the
+    maze as off-corridor costs, the same seam as
+    :func:`corridor_attempt`. Rows the map does not flag stay ordinary
+    searches; ``None`` when no row is tough (the plain passes take over).
+    """
+    reqs = _route_requests(ir, ctx, config)
+    if not reqs:
+        return None
+    grid, _pt, _pv, _su, _pf = realize._static_route_grid(ir, ctx, config)
+    layers = sorted(
+        {layer for r in reqs.values() for layer in r.route_kwargs["layers"]}
+    )
+    if not layers:
+        return None
+    (track_mm, clearance_mm, via_dia_mm), _n = Counter(
+        (r.rules.track_width_mm, r.rules.clearance_mm, r.rules.via_dia_mm)
+        for r in reqs.values()
+    ).most_common(1)[0]
+    tgraph = build_tile_graph(
+        grid,
+        layers=layers,
+        track_mm=track_mm,
+        clearance_mm=clearance_mm,
+        via_dia_mm=via_dia_mm or 0.45,
+        participant_nets={r.net_id for r in reqs.values()},
+        strict=True,
+        capacity="flow",
+    )
+    tough = [
+        g
+        for g in _plaza_groups(ir, reqs, ctx.pad_geoms)
+        if sum(
+            _ring_crossing_cap(
+                tgraph,
+                reqs[s].goal_layer if s in g.b_pad else reqs[s].start_layer,
+                g.centre,
+                reqs[s].end if s in g.b_pad else reqs[s].start,
+            )
+            == 0
+            for s in g.segs
+        )
+        / len(g.segs)
+        >= _PLAZA_TOUGH_FRACTION
+    ]
+    if not tough:
+        return None
+    corridors, clayers, order = plaza_corridors(ir, ctx, reqs, tgraph, tough)
+    if not corridors:
+        return None
+    route_grid, _pt2, _pv2, _su2, _pf2 = realize._static_route_grid(ir, ctx, config)
+    penalty = config.corridor_penalty if config.corridor_penalty > 0 else 5.0
+    _t, _v, _unrouted, paths, _exhausted = corridor_route(
+        route_grid,
+        ir,
+        reqs,
+        order,
+        corridors,
+        clayers,
+        config,
+        ctx.spec,
+        ink_field=ctx.ink_field,
+        soft_penalty=penalty,
+    )
+    preferred = {s: realize._Proposal(p, p) for s, p in paths.items()}
+    route_order = [s for s in order if s in paths] + [
+        s for s in ctx.order if s not in set(paths)
+    ]
+    return CorridorPlan(preferred, route_order, None)
+
+
 __all__ = [
     "CORRIDOR_DILATE_TILES",
     "DEFAULT_TILE_MM",
@@ -1582,4 +2017,8 @@ __all__ = [
     "plan_nets",
     "plan_order",
     "plan_routes",
+    "plaza_attempt",
+    "plaza_corridors",
+    "plaza_mask",
+    "via_lattice",
 ]

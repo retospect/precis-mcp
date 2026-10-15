@@ -1158,6 +1158,35 @@ def test_op_route_warm_start_flag(store, monkeypatch):
     ctx.record_failure.assert_called_once()
 
 
+def test_op_route_corridor_and_escape_flags(store, monkeypatch):
+    """``corridor``/``escape`` reach the job params and its idem key;
+    an invalid ``escape`` is refused at enqueue. Absent, neither key is
+    in params — the digest is the plain router's."""
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    hub = Hub(store=store)
+    PcbHandler(hub=hub).put(id="route-opt-ins", args=_CROSSED)
+    ref = store.get_ref(kind="pcb", id="route-opt-ins")
+    assert ref is not None
+    job = Mock()
+    job.put.return_value = SimpleNamespace(body="job captured")
+    monkeypatch.setattr(hub, "sibling", lambda kind: job)
+    handler = PcbHandler(hub=hub)
+    handler._enqueue_op(ref, "route", {"corridor": 5, "escape": "plaza"})
+    params = job.put.call_args.kwargs["params"]
+    assert params["corridor"] == 5.0 and params["escape"] == "plaza"
+    opt_key = job.put.call_args.kwargs["idem_key"]
+    handler._enqueue_op(ref, "route", {})
+    params = job.put.call_args.kwargs["params"]
+    assert "corridor" not in params and "escape" not in params
+    assert job.put.call_args.kwargs["idem_key"] != opt_key
+    with pytest.raises(BadInput, match="escape"):
+        handler._enqueue_op(ref, "route", {"escape": "maze"})
+    with pytest.raises(BadInput, match="corridor"):
+        handler._enqueue_op(ref, "route", {"corridor": -1})
+
+
 def test_op_route_enqueues_a_pcb_route_job(pcb, store):
     pcb.put(id="route-enqueue", args=_CROSSED)
     resp = pcb.put(id="route-enqueue", args={"op": "route"})

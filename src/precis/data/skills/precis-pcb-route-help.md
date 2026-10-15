@@ -101,6 +101,15 @@ executor lane (see `precis-job-help`).
   nets. Measured 2026-10-15 on both benchmarks: EWOD dogfood-6 replay
   51/55 (same as plain), QFP plaza warm 53/55 (same as plain) — opt-in
   only until a pinned measurement beats plain on both.
+- `op='route'` also accepts `escape` (string `"plaza"`, default off):
+  plaza packing for tough pad rows (slice 1b of the global-plan
+  router). A closed pad row whose
+  ring-crossing boundaries read zero lanes on the strict flow map gets
+  an angular escape assignment — stub outward to a packed margin via
+  lattice, inner-layer run to the source — handed to the maze as wedge
+  corridors at the `corridor` price (default 5 when unset); the plain
+  passes still run after. Measured 2026-10-15: EWOD replay 51/55,
+  QFP plaza warm 53/55 — same as plain on both.
 - `op='route'` also accepts `loop` (int 0–3, default 0 = off): the
   bounded **route → penalise → anneal → route** outer loop
   (`optimize.anneal_route_loop`). Each round routes the current board,

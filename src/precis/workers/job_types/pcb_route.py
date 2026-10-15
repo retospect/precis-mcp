@@ -129,6 +129,9 @@ PARAMS_SCHEMA: dict[str, Any] = {
         # Off-corridor cell price for the tile-plan corridor experiment
         # (globalplan slice 1): 0/absent = plain 12-pass router.
         "corridor": {"type": "number", "minimum": 0},
+        # Angular escape assignment for dense pad rows (globalplan
+        # slice 2): absent = the ordinary search.
+        "escape": {"type": "string", "enum": ["plaza"]},
         # The route -> penalise -> anneal -> route outer loop
         # (optimize.anneal_route_loop): 0 = the single anneal+realize
         # (default), 1..LOOP_MAX_ROUNDS = that many budgeted rounds.
@@ -705,6 +708,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         class_rules=graph.get("net_classes"),
         negotiate_iterations=negotiate,
         corridor_penalty=float(params.get("corridor") or 0.0),
+        escape=str(params.get("escape") or ""),
     )
     # `footprints` (the same refdes-keyed pad geometry PIN_SWAP's feed
     # above also used) was resolved earlier, before the anneal — see that
