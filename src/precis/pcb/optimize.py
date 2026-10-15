@@ -770,13 +770,17 @@ class OptimizeConfig:
     #: schedule the caller chooses: :data:`DEFAULT_SCHEDULE` carries no
     #: weight for either, so an ordinary anneal never grows a board.
     expansion: ExpansionCaps | None = None
-    #: Opt-in pre-pass: :func:`precis.pcb.support_groups.apply_support_groups`
-    #: detects netlist support structure (pull-up/pull-down banks,
-    #: per-IC decoupling rows, LED+resistor and series pairs) and stamps
-    #: each group as a derived rigid body in an organised row, between
-    #: the seed and engine construction. ``False`` (the default) leaves
-    #: the IR exactly as seeded — an anneal without the flag is
-    #: bit-for-bit the run it was.
+    #: Opt-in post-anneal pass:
+    #: :meth:`OptimizeEngine.organize_support_groups` detects netlist
+    #: support structure (pull-up/pull-down banks, per-IC decoupling
+    #: rows, LED+resistor and series pairs) and re-lays each group as an
+    #: organised row beside the pins it serves, after the search and
+    #: after :meth:`OptimizeEngine.snap_hard_aligns`. Rows are POSES,
+    #: not rigid bodies — every member anneals independently, then the
+    #: pass collects them (a rigid row through the search measured
+    #: strictly worse: a multi-member body is nearly immovable on a
+    #: dense board). ``False`` (the default) is bit-for-bit the run the
+    #: anneal would otherwise produce.
     support_groups: bool = False
 
     def __post_init__(self) -> None:
@@ -987,9 +991,11 @@ class OptimizeResult:
     #: it onto instance ``meta['preferred_snap']``; empty when
     #: :attr:`OptimizeConfig.preferred_snap` was off.
     preferred_snapped: dict[str, dict[str, float]] = field(default_factory=dict)
-    #: ``"kind: refdes,refdes,…"`` per support group the opt-in pre-pass
-    #: (:attr:`OptimizeConfig.support_groups`) organised into a rigid
-    #: row — empty when the flag is off or the netlist carries none.
+    #: ``"kind: refdes,refdes,…"`` per support group the opt-in
+    #: post-anneal pass (:attr:`OptimizeConfig.support_groups` via
+    #: :meth:`OptimizeEngine.organize_support_groups`) re-laid as an
+    #: organised row — empty when the flag is off, the netlist carries
+    #: no support structure, or no row found a legal landing.
     support_groups: tuple[str, ...] = ()
 
 

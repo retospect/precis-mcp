@@ -1260,7 +1260,7 @@ class PcbHandler(Handler):
             params["snap"] = bool(opts["snap"])
         # Opt-in support-passive organisation (optimize.OptimizeConfig.
         # support_groups): pull-up banks, per-IC decoupling rows and
-        # series pairs placed as rigid rows.
+        # series pairs re-laid as organised rows post-anneal.
         if op in ("place", "route") and opts.get("groups") is not None:
             params["groups"] = bool(opts["groups"])
         if op == "route" and opts.get("warm_start") is not None:

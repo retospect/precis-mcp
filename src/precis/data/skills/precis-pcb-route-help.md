@@ -70,14 +70,17 @@ executor lane (see `precis-job-help`).
   soft-pinned parts snap only inside their leash. Snapped parts get
   `meta.preferred_snap` stamped. Idempotent.
 - Both `op='place'` and `op='route'` accept `groups` (bool, default
-  `false`): a pre-anneal pass that recognises support passives from the
-  netlist — pull-up/pull-down banks sharing a rail, per-IC decoupling
-  caps, LED+resistor and series pairs — and places each group as ONE
-  rigid body: a row at a uniform pitch, uniform rotation, the shared
-  (rail/return) pads on one line so a single trace serves the row,
-  beside the pins it serves. The row then moves as a unit through the
-  anneal. `fixed`/`max_travel_mm`/edge-mated parts are never members.
-  Detection is deterministic per netlist; nothing persists but poses.
+  `false`): a POST-anneal pass that recognises support passives from
+  the netlist — pull-up/pull-down banks sharing a rail, per-IC
+  decoupling caps, LED+resistor and series pairs — and re-lays each
+  group as an organised row: uniform pitch, member rotations putting
+  the shared (rail/return/link) pads on one line so a single trace
+  serves the row, beside the pins it serves. The members anneal
+  independently (the pass only arranges them at the end, legal per the
+  same gate a generated move takes — a row with no legal landing keeps
+  the annealed poses). `fixed`/`max_travel_mm`/edge-mated/hard-aligned
+  parts are never members. Detection is deterministic per netlist;
+  nothing persists but poses.
 
 ## Route job options, idempotency and the autoplace alias
 

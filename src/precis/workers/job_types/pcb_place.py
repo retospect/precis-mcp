@@ -144,8 +144,8 @@ def _preferred_snap_note(snapped: dict[str, dict[str, float]]) -> str:
 
 def _support_groups_note(groups: tuple[str, ...]) -> str:
     """The job summary's line listing the support-passive rows the
-    ``groups=true`` pre-pass organised — empty when the pass was off or
-    the netlist carries no support structure."""
+    ``groups=true`` post-anneal pass organised — empty when the pass was
+    off or the netlist carries no support structure."""
     if not groups:
         return ""
     return f"support groups: {'; '.join(groups)}\n\n"
