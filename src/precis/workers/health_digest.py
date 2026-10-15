@@ -240,9 +240,23 @@ _FRESHNESS_CHECKS: tuple[tuple[str, str, str, float, str, str], ...] = (
         "the morning briefing pass running",
     ),
     (
+        # Probe the runner's structured BatchResult rows, not the
+        # module's log lines: ``pass='cast_audio'`` is logger-derived, so
+        # *every* ``precis.workers.cast_audio`` line refreshes it —
+        # including the ``render failed`` warnings a failing draft emits
+        # at least hourly for its whole 48h selection window. On the
+        # weekly cast cadence that failure noise alone could keep the
+        # check green indefinitely with zero narrations. ``ok>0`` lands
+        # only on a publish (``cli/_worker_passes._cast_audio_pass``) —
+        # same "last real output" shape the backlog checks' last-done
+        # probe uses (``health_checks.compute_backlog_counts``).
         "cast_audio",
         "reading",
-        "SELECT max(ts) FROM worker_logs WHERE pass = 'cast_audio'",
+        "SELECT ts FROM worker_logs "
+        "WHERE pass = 'runner' "
+        "AND split_part(payload->>'handler', ':', 1) = 'cast_audio' "
+        "AND COALESCE((payload->>'ok')::int, 0) > 0 "
+        "ORDER BY ts DESC LIMIT 1",
         26.0,
         _WARN,
         "cast_audio narrating a cast",

@@ -2536,3 +2536,84 @@ def test_recurring_budget_no_live_schedule_keeps_the_floor(store) -> None:
         budget, note = health_digest._recurring_budget(conn, ("card_forge",), 26.0)
     assert budget == 26.0
     assert "no live" in note
+
+
+# ── cast_audio probe reads a publish, not module log lines ────────────
+
+
+def _seed_cast_audio_runner_row(
+    store, *, hours_ago: float, claimed: int = 0, ok: int = 0, failed: int = 0
+) -> None:
+    """One ``worker_logs`` row shaped like ``run_loop``'s per-cycle
+    ``cast_audio`` BatchResult (``workers/runner.py``): pass='runner'
+    with a ``payload.handler='cast_audio'`` BatchResult — ``ok>0`` is
+    stamped only when a narration actually published."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO worker_logs (ts, host, process, pass, level, logger, message, payload) "
+            "VALUES (now() - (%(h)s || ' hours')::interval, 'th', 'precis-worker', "
+            "'runner', 'INFO', 'precis.workers.runner', %(msg)s, %(payload)s::jsonb)",
+            {
+                "h": hours_ago,
+                "msg": f"worker: cast_audio claimed={claimed} ok={ok} failed={failed}",
+                "payload": json.dumps(
+                    {
+                        "handler": "cast_audio",
+                        "claimed": claimed,
+                        "ok": ok,
+                        "failed": failed,
+                    }
+                ),
+            },
+        )
+        conn.commit()
+
+
+def _seed_cast_audio_module_line(store, *, hours_ago: float) -> None:
+    """A ``pass='cast_audio'`` row — any ``precis.workers.cast_audio``
+    log line, including the ``render failed`` warning stamped every
+    failed attempt. Under the old probe this refreshed 'last seen'
+    even while nothing published."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO worker_logs (ts, host, process, pass, level, logger, message) "
+            "VALUES (now() - (%s || ' hours')::interval, 'th', 'precis-worker', "
+            "'cast_audio', 'WARNING', 'precis.workers.cast_audio', "
+            "'cast_audio: render failed for ref 1 (boom)')",
+            (hours_ago,),
+        )
+        conn.commit()
+
+
+def _cast_audio_check(store) -> CheckResult:
+    with store.pool.connection() as conn:
+        out = health_digest._freshness_layer1(conn)
+    return next(c for c in out if c.name == "cast_audio")
+
+
+def test_cast_audio_publish_row_is_fresh(store) -> None:
+    _seed_cast_audio_runner_row(store, hours_ago=1.0, claimed=1, ok=1)
+    res = _cast_audio_check(store)
+    assert res.status == "ok", res.detail
+
+
+def test_cast_audio_failure_noise_does_not_read_as_fresh(store) -> None:
+    """gr484238's masked failure mode: a cast draft failing every render
+    emits ``pass='cast_audio'`` warning lines (and failed=1 tick rows) at
+    least hourly for its 48h selection window — on the weekly cadence
+    that noise alone could keep a `pass`-keyed probe green forever with
+    zero narrations. The probe must read the last PUBLISH."""
+    _seed_cast_audio_runner_row(store, hours_ago=30.0, claimed=1, ok=1)
+    _seed_cast_audio_runner_row(store, hours_ago=0.5, failed=1)
+    _seed_cast_audio_module_line(store, hours_ago=0.5)
+    res = _cast_audio_check(store)
+    assert res.status == "stale", res.detail
+
+
+def test_cast_audio_idle_ticks_do_not_reset_the_clock(store) -> None:
+    """Weekly-lane silence: claimed=0/ok=0 ticks land every cycle; only a
+    publish is an outcome."""
+    _seed_cast_audio_runner_row(store, hours_ago=30.0, claimed=1, ok=1)
+    _seed_cast_audio_runner_row(store, hours_ago=0.2)
+    res = _cast_audio_check(store)
+    assert res.status == "stale", res.detail
