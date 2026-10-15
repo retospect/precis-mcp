@@ -350,6 +350,15 @@ change, read `tools/list` before and after the watchdog bounce that picks
 it up, and confirm the new kwarg appears without a client restart. Cheap
 when the change is someone else's and already landing; not worth forcing.
 
+Retroactive closure does not work, checked 2026-10-15. `cb2c9c2df`
+(2026-10-09 20:39Z, `extent=` on `get`) was a qualifying kwarg, but no
+local transcript (276 scanned) spans that time, and `tool_calls.session_id`
+is minted per MCP-session object (`tool_ledger.py`, migration 0209), so a
+re-initialized client gets a new id and the ledger cannot link one session
+across a bounce. The evidence has to be captured live: the `tools/list`
+before/after above, plus the already-open session's own transcript showing
+the new kwarg honored.
+
 **AC5 PASSES, verified 2026-10-01T11:00Z.** `docker ps -a` shows exactly
 one `precis-mcp:dev`-family container, `precis-mcp-http`. The eleven
 pre-flip `precis-mcp-dev-*` stdio containers went when their sessions
