@@ -12,6 +12,7 @@
       "Bash(git:*)",
       "Bash(docker:*)",
       "Bash(scripts/prod-psql --ro:*)",
+      "Bash(scripts/host-ops/:*)",
       "Bash(scripts/ship --quick:*)",
       "Bash(scripts/cluster-ping:*)",
       "Bash(scripts/fleet-wave:*)",
