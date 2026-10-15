@@ -24,7 +24,7 @@
 # (@pytest.mark.slow, so scripts/test --fast / --impacted / the ship gate's
 # default all skip it) and pre-deploy from scripts/deploy (see there).
 #
-# Extras: mirrors deploy/roles/precis_web/tasks/main.yml's
+# Extras: mirrors deploy/roles/precis_web/tasks/install.yml's
 # `precis-mcp[web,pcb,estimate]` install — the actual extra set prod
 # installs into the venv that serves precis_web.
 set -euo pipefail

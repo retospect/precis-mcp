@@ -10,10 +10,14 @@ The traps are around it.
 ## How migrations reach prod
 
 `scripts/deploy` / `/go` runs `redeploy-precis.yml`, which **applies pending
-migrations automatically** — the `precis_web` role task "Apply pending precis
-DB migrations" (`deploy/roles/precis_web/tasks/main.yml`) runs `precis migrate`
-over the pgbouncer DSN *before* the web daemon comes up, so a
-shipped-but-unmigrated DB is caught up on the next deploy. Default is APPLY
+migrations automatically** — its migrate-first play
+(`deploy/playbooks/07-precis-migrate.yml`) lands the pinned code in the
+gateway's MCP venv and runs the `precis_web` task "Apply pending precis DB
+migrations" (`deploy/roles/precis_web/tasks/migrate.yml`) over the pgbouncer
+DSN *before any play restarts a daemon onto the new code*, so a
+shipped-but-unmigrated DB is caught up on the next deploy and no worker boots
+against a DB that is behind (r36, gr488897). A failed migration ends the run
+there; `scripts/deploy` then leaves `origin/prod` where it was. Default is APPLY
 (`precis_migrate_dry_run: false`); preview with `-e precis_migrate_dry_run=true`.
 So the correct procedure for a feature with a migration is just a deploy (it
 migrates, then bounces every `com.precis.*` daemon —
@@ -31,7 +35,8 @@ Add `--dry-run` to preview. Verify after: `precis migrate --dry-run` →
 ## ⚠ No-deploy window: 03:00–~04:20 UTC
 
 A migration deploy that lands in this window hangs ~48 min on `precis_web :
-Apply pending precis DB migrations`, then proceeds on its own.
+Apply pending precis DB migrations` (the migrate-first play, early in the run),
+then proceeds on its own.
 
 - 03:00Z: caspar (the prod DB node) reboots nightly
   (`daily-update-reboot.sh`; graceful PG drain first).

@@ -46,9 +46,12 @@ per-cluster piece is the gitignored local overlay (`deploy/inventory/` +
    warns and proceeds; `--ignore-backup-window` overrides
    (`docs/runbooks/migration-deploy-window.md`).
 
-   The cluster deliberately leaves `PRECIS_AUTO_MIGRATE` off: the role
-   runs `precis migrate` itself before daemons restart
-   (`roles/precis_web/tasks/main.yml`), because a long migration must
+   The cluster deliberately leaves `PRECIS_AUTO_MIGRATE` off: the deploy
+   runs `precis migrate` itself, once, from the gateway
+   (`playbooks/07-precis-migrate.yml` → `roles/precis_web/tasks/migrate.yml`),
+   before any play restarts a daemon onto the new code — a failed migration
+   ends the run there and `origin/prod` does not move (r36, gr488897;
+   order pinned by `tests/test_deploy_play_order.py`). A long migration must
    not kick off inside N racing daemons (the 0077/0078 db-thrash
    lesson). The startup schema gate is still armed — a daemon that finds
    pending migrations refuses to boot until the migrate step lands, and
@@ -203,6 +206,23 @@ status` shows the laggards; the next deploy or `scripts/round deploy
 playbook is marked skipped the same way and the deploy completes; a
 critical host down, before or mid-run, still aborts. `PRECIS_DEPLOY_SKIP_HOSTS`
 keeps working and lands in the same record.
+
+Inside the playbook a failed or unreachable host is dropped for the rest of
+the run and the other hosts' plays continue: no play sets `any_errors_fatal`
+(except the migrate-first play), `max_fail_percentage` or `serial`. Ansible
+still ends the whole run when every host of one play's batch fails — r36:
+play 43 failed on both compute hosts and play 38 never ran — so each play
+that targets only lane hosts (20c, 43, 34, 35, the orphan sweep) lists the
+gateway as an isolation anchor that leaves in its first pre_task.
+
+`scripts/deploy` moves `origin/prod` and the deploy-state marker only when
+the playbook output carries `PRECIS_DEPLOY_MIGRATED` (the migrate-first play
+passed) and `PRECIS_DEPLOY_COMPLETE` (the gateway reached the last play) and
+every critical host is clean in the PLAY RECAP. The recap alone cannot tell a
+finished run from one ansible stopped early: hosts it never reached read
+`failed=0`. A finished run with non-critical hosts behind is a partial
+success — they are recorded for `scripts/round deploy --catch-up`; a run
+missing either line moves nothing and records nothing.
 
 The controller also scopes work: it diffs the deploy-state marker sha
 against the target and passes `--skip-tags` for the optional imports in

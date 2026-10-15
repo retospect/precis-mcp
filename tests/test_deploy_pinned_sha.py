@@ -480,6 +480,83 @@ def test_canary_path_pins_a_local_sha(fx: Fixture, tmp_path: Path) -> None:
     assert "canary verify" in result.stderr
 
 
+# Records each ansible-playbook argv; the migrate-only call prints the marker
+# unless FAKE_MIGRATE_FAIL is set (then it exits red, as a failed migration).
+_FAKE_PLAYBOOK_RECORDING = """#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$PB_RECORD"
+case "$*" in
+  *07-precis-migrate.yml*)
+    [ -n "${FAKE_MIGRATE_FAIL:-}" ] && { echo 'fatal: [gateway]: FAILED!'; exit 2; }
+    echo '    "msg": "PRECIS_DEPLOY_MIGRATED 0123abc"' ;;
+esac
+exit 0
+"""
+
+
+def _canary_migrate_run(
+    fx: Fixture, tmp_path: Path, **extra: str
+) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    fx.set_marker(fx.base)
+    (fx.cluster_dir / "playbooks").mkdir()
+    (fx.cluster_dir / "playbooks" / "07-precis-migrate.yml").write_text(
+        "---\n", encoding="utf-8"
+    )
+    env_bin = _make_fake_bin(tmp_path)
+    (env_bin / "ansible-playbook").write_text(
+        _FAKE_PLAYBOOK_RECORDING, encoding="utf-8"
+    )
+    record = tmp_path / "playbook-calls.txt"
+    env = _test_env(
+        PRECIS_DEPLOY_SKIP_CATPATH_WHEEL="1",
+        PRECIS_DEPLOY_SKIP_WHEEL_SMOKE="1",
+        PRECIS_DEPLOY_FROM_TREE="",
+        PRECIS_CLUSTER_DIR=str(fx.cluster_dir),
+        PRECIS_DEPLOY_NO_LOG="1",
+        PRECIS_DEPLOY_ALLOW_STALE="1",
+        PRECIS_DEPLOY_CANARY="inference",
+        PRECIS_DEPLOY_CANARY_TIMEOUT_S="0",
+        PB_RECORD=str(record),
+        **extra,
+    )
+    env["PATH"] = f"{env_bin}:{env['PATH']}"
+    result = subprocess.run(
+        ["bash", str(fx.repo / "scripts" / "deploy"), fx.gated, "--pinned"],
+        cwd=str(fx.repo),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    calls = record.read_text(encoding="utf-8").splitlines() if record.exists() else []
+    return result, calls
+
+
+def test_canary_path_migrates_from_the_gateway_before_phase_1(
+    fx: Fixture, tmp_path: Path
+) -> None:
+    """Phase 1's --limit <canary> leaves the gateway, and with it the
+    migrate-first play, out (r36, gr488897). Phase 0 migrates from the
+    gateway alone, with the web restart handler held off."""
+    result, calls = _canary_migrate_run(fx, tmp_path)
+    assert len(calls) >= 2, calls
+    assert "playbooks/07-precis-migrate.yml" in calls[0]
+    assert "--limit gateway" in calls[0]
+    assert "precis_deploy_changed=true" in calls[0]
+    assert "redeploy-precis.yml" in calls[1] and "--limit inference" in calls[1]
+    # the heartbeat verify still fails here for want of prod — past phase 1
+    assert "canary verify" in result.stderr
+
+
+def test_canary_path_stops_when_the_migration_fails(
+    fx: Fixture, tmp_path: Path
+) -> None:
+    result, calls = _canary_migrate_run(fx, tmp_path, FAKE_MIGRATE_FAIL="1")
+    assert result.returncode != 0
+    assert "canary phase 0" in result.stderr
+    assert len(calls) == 1, calls  # phase 1 never ran
+    assert fx.marker_sha() == fx.base
+
+
 def test_canary_path_refuses_a_sha_no_remote_branch_reaches(
     fx: Fixture, tmp_path: Path
 ) -> None:

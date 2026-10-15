@@ -1,0 +1,70 @@
+---
+# 07-precis-migrate.yml — apply the DB migrations ONCE, before any play
+# restarts a daemon onto new code (r36, gr488897).
+#
+# WHY. New precis code refuses to start against a database that is behind
+# ("database is N migration(s) behind this package"). `precis migrate` used to
+# run only inside play 38 (precis_web), near the END of redeploy-precis.yml and
+# site.yml — after 20b/20c/43 had already restarted workers onto the new code.
+# In r36 (migrations 0209+0210) the compute and heartbeat workers on the
+# serving pair crash-looped on exactly that refusal; play 43 then failed on
+# both its hosts, ansible ended the whole run, 38 never migrated, and prod sat
+# half-deployed for about an hour.
+#
+# WHAT. On the gateway (the one host that has always migrated): land the
+# pinned code in /opt/mcps/venv with precis_web's own install.yml — the same
+# tasks play 38 runs, so 38's second pass finds the venv current — then run
+# `precis migrate` with precis_web's migrate.yml. Nothing restarts here: under
+# redeploy the install's notify handler skips (precis_deploy_changed is set),
+# so the running web keeps its in-memory code until the step-2 bounce. Under
+# site.yml (no pre-flight) the handler restarts precis-web at the end of this
+# play, which is after the migration.
+#
+# Order is safe because migrations are forward-only and additive
+# (docs/conventions/invariants.md): the old code keeps running against the
+# migrated schema until its own host is bounced.
+#
+# FAILURE STOPS THE RUN. any_errors_fatal on a gateway-only play: a failed
+# install or migrate fails the gateway, the batch is all-failed, and ansible
+# ends the playbook right here, before 19a/20b/20c/43 touch anything.
+# scripts/deploy then finds no PRECIS_DEPLOY_MIGRATED line and does not move
+# origin/prod.
+#
+# Tagged `always`: a `--tags <lane>` partial run restarts that lane onto new
+# code too, so it must migrate first as well. `apply:` carries the tag onto the
+# included tasks (a dynamic include does not inherit play tags).
+#
+# The debug line is a contract with scripts/deploy (_deploy_markers) and
+# tests/test_deploy_play_order.py: keep the literal `PRECIS_DEPLOY_MIGRATED`.
+
+- name: "Migrate the prod DB once, before any daemon restarts onto new code"
+  hosts: gateway
+  become: true
+  any_errors_fatal: true
+  tasks:
+    - name: Land the pinned precis-mcp in the gateway's MCP venv (precis_web install.yml)
+      ansible.builtin.include_role:
+        name: precis_web
+        tasks_from: install
+        apply:
+          tags: [always]
+      tags: [always]
+
+    - name: Apply pending migrations (precis_web migrate.yml)
+      ansible.builtin.include_role:
+        name: precis_web
+        tasks_from: migrate
+        apply:
+          tags: [always]
+      tags: [always]
+
+    - name: Record that this run migrated (play 38 skips its own migrate)
+      ansible.builtin.set_fact:
+        precis_db_migrated: true
+      tags: [always]
+
+    - name: Report the migrate-first gate (scripts/deploy reads this line)
+      ansible.builtin.debug:
+        msg: "PRECIS_DEPLOY_MIGRATED {{ precis_target_sha | default(precis_web_git_ref | default('main')) }}"
+      tags: [always]
+  tags: [always, precis-migrate]

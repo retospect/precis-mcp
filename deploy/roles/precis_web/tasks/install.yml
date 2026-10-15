@@ -1,0 +1,126 @@
+---
+# precis_web install half — the /opt/mcps/venv refresh, split out of
+# main.yml so redeploy-precis.yml's migrate-first play (playbooks/
+# 07-precis-migrate.yml) can land the pinned code on the gateway and run
+# `precis migrate` BEFORE any play restarts a daemon onto that code.
+# main.yml imports this unchanged; on the redeploy path the second pass
+# finds the venv already on the pinned sha and changes nothing.
+
+# uv binary path — same conditional shape the mcps role uses
+# (role-local, not a global). Set here so we don't depend on a
+# role earlier in the play setting it for us.
+- name: Resolve uv binary path
+  ansible.builtin.set_fact:
+    uv_bin: "{{ '/opt/homebrew/bin/uv' if os_family == 'darwin' else '/root/.local/bin/uv' }}"
+
+# estimate: the ms chemistry-workup kind (mendeleev/pymatgen/tblite — light,
+# torch-free) — lives in the shared MCP venv so get(kind='estimate') serves
+# from the gateway; without the extra the handler boots but every get()
+# errors "install [estimate]" (the extra-gap class).
+- name: Install precis-mcp[web,pcb,estimate] into shared MCP venv
+  # Gated on the redeploy pre-flight (`precis_deploy_changed`, step 0b) so a
+  # same-sha redeploy skips the uv resolve; undefined → install (fail-safe for
+  # a standalone 38/14 run). `-e precis_force_install=true` overrides.
+  # `--refresh-package precis-mcp` is dropped when the ref is a frozen 40-char
+  # sha (redeploy step 0 pins every deploy) — uv's cached checkout/build of an
+  # immutable sha is exactly right; the flag only earns its cost on a moving
+  # branch ref (see precis_worker/tasks/provision.yml for the full rationale).
+  when:
+    - os_family == "darwin"
+    - >-
+      (precis_deploy_changed | default(true) | bool)
+      or (precis_force_install | default(false) | bool)
+  vars:
+    _precis_web_ref_is_sha: "{{ (precis_web_git_ref | default('main')) is match('^[0-9a-f]{40}$') }}"
+  # NOTE: docx (python-docx + latex2mathml), mermaid (mermaidx) and calc
+  # (sympy + pint) are core deps now, not extras — the shared venv gets the
+  # .docx OMML-math export route, /mermaid render/validate, and local
+  # get(kind='calc') automatically. See pyproject's "Deterministic, pure-
+  # code, no-API tool deps" note.
+  #
+  # The ``pcb`` extra (easyeda2kicad) backs the kind='pcb' Flow-B footprint
+  # conversion (ADR 0042 §5) — the shared venv runs both precis-web and the
+  # agent worker that drive PCB export/route. The Freerouting jar it routes
+  # with is installed separately by the precis_eda role.
+  #
+  # The web/news fetch deps (trafilatura + feedparser + wolframalpha +
+  # youtube-transcript-api + httpx) are core since the 2026-08-16 extras
+  # promotion — the former ``external`` extra (whose absence broke the
+  # dream cycle's web fetch, gr48611) is gone; every venv carries them.
+  ansible.builtin.shell: |
+    {{ uv_bin }} pip install --python {{ precis_web_venv }}/bin/python --upgrade \
+      {{ '' if _precis_web_ref_is_sha | bool else '--refresh-package precis-mcp' }} \
+      --constraints /opt/precis/constraints.txt \
+      --overrides /opt/precis/overrides.txt \
+      'precis-mcp[web,pcb,estimate] @ git+https://github.com/retospect/precis-mcp@{{ precis_web_git_ref }}'
+  become: true
+  register: precis_web_install
+  # uv prints its "Installed/Updated N package(s)" summary to STDERR, so
+  # a stdout-only match never fires on a real code-only refresh — the
+  # files land on disk but `notify: restart precis-web` is skipped and
+  # the daemon keeps serving stale code. Check both streams (cf. the
+  # llamacpp role, which already does).
+  changed_when: >-
+    'Installed' in (precis_web_install.stdout + precis_web_install.stderr)
+    or 'Updated' in (precis_web_install.stdout + precis_web_install.stderr)
+  # Without this notify the daemon keeps running the *old* venv
+  # contents — Jinja env, runtime, filters all cached in the live
+  # process. After a code bump that registers a new filter (e.g.
+  # linkify_refs) but doesn't change the plist, deploys would land
+  # new files on disk while the live process kept rendering with
+  # the old environment, producing 500s like "No filter named X".
+  # Mirrors the precis_worker / precis_worker_agent roles, which
+  # have always notified their reload handler on install changes.
+  notify: restart precis-web
+
+# autocatpath `pathway` kind surface (topology: autocatpath_plugin). The plugin
+# glue + migration ship in-tree with precis-mcp (src/precis_pathway, ADR 0069);
+# the `[catalyst]` extra pulls the LIGHT pure `autocatpath` engine (no ML backend
+# — the gateway mints jobs, it doesn't compute) so `precis_pathway`'s handler
+# imports and the `pathway` kind un-darks (else it InitErrors). Must run BEFORE
+# the migrate task so the pure engine is present when the plugin migration
+# (shipped via precis-mcp's own precis.migrations entry-point) creates the kind.
+# The plist enables it + routes compute to the pinned node (see the template).
+#
+# Gated on the same step-0b preflight as the main install above: on a same-sha
+# redeploy `--refresh-package autocatpath` re-installs the (unchanged) engine
+# from cache, the changed_when fires on uv's "Installed" line, and the notify
+# needlessly bounces com.precis.web — the single biggest line of a no-op deploy
+# (10.9s + a live-service blip, measured 2026-08-16). Safe to gate: the
+# autocatpath pin lives in uv.lock → the constraints file, so a pin bump always
+# rides a new commit → new sha → preflight DIFF → this runs. Out-of-band engine
+# work targets the inference-node GPU venv (playbook 44), not this venv.
+# `-e precis_force_install=true` overrides.
+# autocatpath's floor is >=0.18.0, not on PyPI yet (release-gated; PyPI tops
+# out at 0.13.0) — land the controller-side private wheel into this host's
+# wheelhouse BEFORE the install below so its --find-links can resolve it.
+# See roles/autocatpath/tasks/wheelhouse_seed.yml.
+- name: Seed the autocatpath wheelhouse before the catalyst install (autocatpath_plugin hosts only)
+  when:
+    - os_family == "darwin"
+    - inventory_hostname in (precis_capabilities.autocatpath_plugin | default([]))
+  ansible.builtin.include_role:
+    name: autocatpath
+    tasks_from: wheelhouse_seed
+
+- name: Install precis-mcp[catalyst] into the MCP venv (pathway kind surface — pulls pure autocatpath)
+  when:
+    - os_family == "darwin"
+    - inventory_hostname in (precis_capabilities.autocatpath_plugin | default([]))
+    - >-
+      (precis_deploy_changed | default(true) | bool)
+      or (precis_force_install | default(false) | bool)
+  ansible.builtin.shell: |
+    {{ uv_bin }} pip install --python {{ precis_web_venv }}/bin/python --upgrade \
+      --refresh-package autocatpath \
+      --constraints /opt/precis/constraints.txt \
+      --overrides /opt/precis/overrides.txt \
+      --no-sources \
+      --find-links {{ autocatpath_wheelhouse | default('/opt/precis/wheels') }} \
+      'precis-mcp[catalyst] @ git+https://github.com/retospect/precis-mcp@{{ precis_web_git_ref }}'
+  become: true
+  register: precis_web_autocatpath
+  changed_when: >-
+    'Installed' in (precis_web_autocatpath.stdout + precis_web_autocatpath.stderr)
+    or 'Updated' in (precis_web_autocatpath.stdout + precis_web_autocatpath.stderr)
+  notify: restart precis-web

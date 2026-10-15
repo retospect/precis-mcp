@@ -23,7 +23,11 @@
 #   2. deploy       — run the redeploy playbook for the ref.
 #   3. report       — the play's final debug task prints installed sha +
 #                     bounced daemons; a `failed=`/`unreachable=` on a
-#                     critical host exits non-zero.
+#                     critical host exits non-zero. origin/prod and the
+#                     deploy-state marker move only when the output also
+#                     carries PRECIS_DEPLOY_MIGRATED (the migrate-first play
+#                     passed) and PRECIS_DEPLOY_COMPLETE (the gateway reached
+#                     the last play) — see _deploy_markers_ok (r36).
 #
 # Usage:  scripts/deploy            # deploy main (default)
 #         scripts/deploy some-branch
@@ -487,13 +491,55 @@ _analyze_failures() {
 # The die text for a red rollout: only an install failure may claim mixed
 # versions (gr256065).
 _redeploy_failure_msg() {
-    if [[ -z "$FAIL_SUMMARY" ]]; then
+    if [[ -n "$MARKER_FAIL" ]]; then
+        _marker_failure_msg
+    elif [[ -z "$FAIL_SUMMARY" ]]; then
         printf '%s' "redeploy failed — see the failing task above (nodes may be on mixed versions; re-run once fixed)."
     elif [[ "$FAIL_MIXED" == 1 ]]; then
         printf '%s' "redeploy failed on ${FAIL_SUMMARY} — the precis install itself failed (nodes may be on mixed versions; re-run once fixed)."
     else
         printf '%s' "redeploy failed on ${FAIL_SUMMARY} — not a precis install failure (see the failed-host list above); this failure leaves no mixed versions. Re-run once fixed."
     fi
+}
+
+# ── run markers (r36, gr488897): did the migration run, did the run finish ──
+# The PLAY RECAP cannot say whether ansible reached the end. When every host of
+# one play's batch fails, ansible ends the whole playbook, and every host it
+# never reached still reads failed=0 unreachable=0. In r36 play 43 failed on
+# both compute hosts, the run stopped before play 38 migrated, the gateway's
+# recap line was clean, the two compute hosts were auto-skipped as
+# non-critical, and origin/prod moved over a DB two migrations behind the code.
+# redeploy-precis.yml now prints two lines this script requires before any
+# success write:
+#   PRECIS_DEPLOY_MIGRATED <sha> — the migrate-first play (07) passed
+#   PRECIS_DEPLOY_COMPLETE <sha> — the gateway reached the last play
+# A playbook that does not declare them (a --force-rollback to a sha older
+# than this change renders its own, older playbook) keeps the recap-only
+# behaviour. The `[^{[:space:]]` guard keeps an unrendered template echoed in
+# an error message from counting as the marker.
+MARKER_FAIL=""
+_deploy_markers_ok() {
+    local play_out="$1"
+    MARKER_FAIL=""
+    grep -q 'PRECIS_DEPLOY_COMPLETE' "${CLUSTER_DIR}/redeploy-precis.yml" 2>/dev/null || return 0
+    if ! grep -qE 'PRECIS_DEPLOY_MIGRATED [^{[:space:]]' "$play_out"; then
+        MARKER_FAIL="migrate"
+        return 1
+    fi
+    if ! grep -qE 'PRECIS_DEPLOY_COMPLETE [^{[:space:]]' "$play_out"; then
+        MARKER_FAIL="incomplete"
+        return 1
+    fi
+    return 0
+}
+
+_marker_failure_msg() {
+    case "$MARKER_FAIL" in
+        migrate)
+            printf '%s' "the DB migration did not pass (no PRECIS_DEPLOY_MIGRATED line) — the run stopped at the migrate-first play, before any daemon restarted onto new code. origin/prod and the deploy-state marker were NOT moved. Fix the migration (see the failing task above) and re-run." ;;
+        *)
+            printf '%s' "the run stopped before its last play (no PRECIS_DEPLOY_COMPLETE line) — hosts it never reached read clean in the PLAY RECAP but did not get every play. origin/prod and the deploy-state marker were NOT moved; nothing was recorded as skipped. Re-run the same pinned sha once fixed." ;;
+    esac
 }
 
 # Run one redeploy-precis.yml invocation. Its combined output is ALSO tee'd
@@ -518,7 +564,12 @@ _run_rollout_playbook() {
     fi
     [[ "$rc" -eq 0 ]] || _say_if_render_tree_gone
     [[ "$rc" -eq 0 ]] || _analyze_failures "$play_out"
-    if [[ "$rc" -ne 0 ]] && _rollout_converged "$play_out"; then
+    if ! _deploy_markers_ok "$play_out"; then
+        # Neither success writer may run: no marker, no origin/prod move,
+        # no skipped-host record (which hosts are behind is unknown when the
+        # run never reached them).
+        rc=1
+    elif [[ "$rc" -ne 0 ]] && _rollout_converged "$play_out"; then
         say "redeploy-precis.yml exited non-zero, but every rollout host (${ROLLOUT_HOSTS}) converged clean in its own PLAY RECAP line — recording the deploy-state marker before reporting the failure (gr332009)"
         _write_deploy_state_marker
     elif [[ "$rc" -ne 0 ]]; then
@@ -1506,6 +1557,27 @@ else
     fi
     SHA_ARGS=(-e precis_worker_git_ref="$_target_sha" -e precis_web_git_ref="$_target_sha" -e precis_embedder_git_ref="$_target_sha")
     _rollback_hint="rollback: scripts/deploy <previous-sha> with PRECIS_DEPLOY_CANARY=${CANARY} (targets just the canary)."
+
+    # Migrate-first (r36, gr488897): phase 1's --limit leaves the gateway, and
+    # with it the migrate-first play, out — the canary would start new code
+    # against a DB that is behind. Migrate from the gateway on its own first.
+    # precis_deploy_changed=true keeps the venv install's notify handler from
+    # restarting precis-web; phase 2's step-2 bounce does that. Skipped for a
+    # target whose tree predates the migrate playbook (an old-sha rollback).
+    if [[ -f playbooks/07-precis-migrate.yml ]]; then
+        say "canary deploy: phase 0 — migrate the DB from the gateway (pinned ${_target_sha:0:8})"
+        _mig_out="$(mktemp)"
+        if ! PYTHONUNBUFFERED=1 ansible-playbook playbooks/07-precis-migrate.yml ${INV_ARGS[@]+"${INV_ARGS[@]}"} \
+            --limit gateway \
+            "${SHA_ARGS[@]}" -e precis_deploy_changed=true \
+            ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} 2>&1 | tee "$_mig_out" \
+            || ! grep -qE 'PRECIS_DEPLOY_MIGRATED [^{[:space:]]' "$_mig_out"; then
+            rm -f "$_mig_out"
+            MARKER_FAIL="migrate"
+            die "canary phase 0: $(_marker_failure_msg)"
+        fi
+        rm -f "$_mig_out"
+    fi
 
     say "canary deploy: phase 1 — ${CANARY} only (pinned ${_target_sha:0:8})"
     _phase1_start="$(date +%s)"

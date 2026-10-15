@@ -122,8 +122,19 @@ def _sweep_play() -> dict[str, Any]:
 def test_sweep_targets_the_lane_groups_step_2_misses() -> None:
     """gateway/scheduler/inference already get a blanket `precis-*.service`
     bounce in step 2 — the sweep must cover exactly the lane-bearing groups
-    that play does NOT reach."""
-    hosts = set(_sweep_play()["hosts"])
+    that play does NOT reach.
+
+    The gateway is listed as the per-host isolation anchor (r36, gr488897;
+    tests/test_deploy_play_order.py) and must leave in the first pre_task,
+    before any sweep task runs — so it is not a sweep host."""
+    play = _sweep_play()
+    hosts = set(play["hosts"])
+    anchor = play["pre_tasks"][0]
+    assert anchor["ansible.builtin.meta"] == "end_host"
+    for group in ("serving", "compute", "agent_sandbox_hosts"):
+        assert f"groups['{group}']" in anchor["when"], group
+    assert "groups['gateway']" not in anchor["when"]
+    hosts.discard("gateway")
     assert {"serving", "compute", "agent_sandbox_hosts"} <= hosts, (
         f"orphan sweep hosts {hosts} miss a lane-bearing group — units on "
         "those hosts have no bounce coverage outside their owning play"

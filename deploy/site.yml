@@ -57,6 +57,13 @@
 - name: "13a — precis-mcp constraints file (fresh-resolve guard, before any precis-mcp install)"
   ansible.builtin.import_playbook: playbooks/03-precis-constraints.yml
 
+# Migrate-first (r36, gr488897): new code refuses to start against a database
+# that is behind, so the migration runs here, before 14 and every precis
+# daemon play below can restart anything onto new code. A failed migrate ends
+# the run (any_errors_fatal). tests/test_deploy_play_order.py pins this.
+- name: "13b — precis DB migrate (gateway, once, before any daemon restart)"
+  ansible.builtin.import_playbook: playbooks/07-precis-migrate.yml
+
 - name: "14 — MCPs"
   ansible.builtin.import_playbook: playbooks/14-mcps.yml
 

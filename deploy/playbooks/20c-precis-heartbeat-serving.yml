@@ -32,7 +32,19 @@
 - name: Deploy the heartbeat-only precis worker (serving hosts)
   hosts:
     - serving
+    - gateway
   become: true
+  # Per-host isolation (r36, gr488897): ansible ends the WHOLE playbook when
+  # every host in one play's batch fails (playbook_executor: len(batch) ==
+  # failed). This play's hosts can all fail together, and in r36 that stopped
+  # the run before play 38 ever migrated. The gateway joins as an anchor and
+  # leaves in its first pre_task, so the batch always has a survivor: a failed
+  # or unreachable lane host is dropped for the rest of the run and named in
+  # the PLAY RECAP, while every other host's plays still run.
+  pre_tasks:
+    - name: "Isolation anchor: the gateway only keeps this play's batch alive"
+      ansible.builtin.meta: end_host
+      when: inventory_hostname not in (groups['serving'] | default([]))
   tasks:
     # precis_worker/provision assumes uv at /root/.local/bin/uv on Linux
     # (the GPU node got it out-of-band; make it explicit for fresh serving

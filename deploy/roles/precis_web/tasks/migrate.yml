@@ -1,0 +1,38 @@
+---
+# Apply pending forward-only DB migrations before the daemon comes up
+# on the new code. Without this the deploy ships routes/queries that
+# reference tables a migration was supposed to create, and the live
+# service 500s with UndefinedTable (e.g. 0027_clusterize / the
+# /clusters grid, 2026-06). The gateway is a single host and reaches
+# the DB over the same pgbouncer DSN the daemon uses; migrations are
+# forward-only and idempotent (each is BEGIN/COMMIT, IF NOT EXISTS),
+# so running this every deploy is safe and a no-op once caught up.
+# Runs unconditionally — not gated on the install changing — so a
+# previously-shipped-but-unmigrated DB (exactly the 0027 case) still
+# gets caught up on the next deploy. The Migrator opens its own
+# autocommit connection per migration with no session-level advisory
+# locks, so it is safe through pgbouncer transaction pooling.
+#
+# Migrate-first (r36, gr488897): redeploy-precis.yml and site.yml run this
+# file from playbooks/07-precis-migrate.yml BEFORE any play restarts a daemon
+# onto the new code, then set `precis_db_migrated` on the gateway; the second
+# pass through main.yml (play 38) skips. A standalone 38 run never sets it, so
+# it still migrates here.
+- name: Apply pending precis DB migrations
+  when:
+    - os_family == "darwin"
+    - not (precis_db_migrated | default(false) | bool)
+  ansible.builtin.command:
+    # `--dry-run` (set -e precis_migrate_dry_run=true) reports pending
+    # migrations without applying — handy to preview a deploy.
+    argv: "{{ ['' ~ precis_web_venv ~ '/bin/precis', 'migrate'] + (['--dry-run'] if precis_migrate_dry_run | bool else []) }}"
+  # §L: the DSN is password-free — libpq needs ~deploy/.pgpass, so this must
+  # run as deploy with HOME set (root has no pgpass; fe_sendauth otherwise).
+  environment:
+    PRECIS_DATABASE_URL: "{{ precis_web_dsn }}"
+    HOME: "{{ '/Users/deploy' if os_family == 'darwin' else '/home/deploy' }}"
+  become: true
+  become_user: deploy
+  register: precis_web_migrate
+  changed_when: "'migrate: applied' in precis_web_migrate.stdout"
+  tags: [precis-migrate]

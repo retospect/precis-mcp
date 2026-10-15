@@ -18,7 +18,7 @@
 #     /opt/mcps/venv            ← 38-precis-web       (web, worker-agent, watch-poll, cron-tick)
 #     /opt/precis/embedder-venv ← 19a-precis-embedder (embedder)
 #
-# This playbook does seven things:
+# This playbook does eight things:
 #   0. Pin the target: resolve the deploy ref (default `main`) to ONE commit
 #      sha *once* at play start and freeze every install/compare against it.
 #      Without this the install, the pre-flight, and the convergence assert
@@ -42,6 +42,9 @@
 #      version than what the ship gate locked (2026-07-30: `mcp 2.0.0` broke
 #      `precis serve` cluster-wide on an all-green gate week). See
 #      playbooks/03-precis-constraints.yml for the full rationale.
+#   0e. Migrate first: land the pinned code in the gateway's /opt/mcps/venv
+#      and run `precis migrate` ONCE, before any play below restarts a daemon
+#      onto new code (r36, gr488897). A failed migrate ends the run there.
 #   1. Re-runs those three install plays → the PINNED commit lands in every
 #      venv. Each install task is gated on 0b (skipped when the host's venvs
 #      are already on the pinned sha), and drops `--refresh-package` when the
@@ -58,6 +61,16 @@
 #      (direct_url.json) must equal the PINNED sha, or the redeploy fails
 #      loudly. This is the proof the deploy actually landed everywhere — the
 #      uv checkout cache's .git/HEAD lags and cannot be trusted for it.
+#   5. Prints PRECIS_DEPLOY_COMPLETE from the gateway in the last play, so
+#      scripts/deploy can tell "every play ran" from "ansible stopped early
+#      with a clean-looking PLAY RECAP" (r36).
+#
+# Per-host isolation: no play here sets any_errors_fatal (except 0e's
+# migrate), max_fail_percentage or serial, so a failed host is dropped for the
+# rest of the run while the others continue. Ansible still ends the whole run
+# when EVERY host of one play's batch fails, so each play that targets only
+# non-critical lane hosts (20c, 43, 34, 35, the orphan sweep) carries the
+# gateway as an isolation anchor that leaves in its first pre_task.
 
 # ── 0. Pin the deploy target to ONE commit (kills the mid-deploy race) ──
 # The install roles install `@{{ precis_*_git_ref }}` and the pre-flight (0b)
@@ -431,6 +444,25 @@
   # interpreter inputs (pyproject.toml, the role, this playbook) moved.
   ansible.builtin.import_playbook: playbooks/06-pythonorg.yml
 
+# gr196677: re-assert ~deploy/.pgpass (+ hermes's) every deploy — the mcp.json
+# DSN is password-free (§L gr171431), so every plan_tick spawn stands or falls
+# on this file; provisioned only by the standalone 19-pgpass.yml it silently
+# drifted. Idempotent; the template module writes atomically (tmp + rename).
+# Must precede 20b (the collapsed worker's provision step asserts the file)
+# and the migrate-first play below (`precis migrate` runs as deploy and
+# authenticates with ~deploy/.pgpass). Restarts nothing.
+- name: "Re-assert ~/.pgpass on all nodes  (plan_tick / asa DB credential)"
+  ansible.builtin.import_playbook: playbooks/19-pgpass.yml
+
+# ── 0e. Migrate the DB ONCE, before any play restarts a daemon (r36) ──
+# New code refuses to start against a database that is behind. Every play
+# above this line installs or restarts nothing precis; every play below may
+# restart a daemon onto the pinned code. A failed migrate ends the run here
+# (any_errors_fatal) and scripts/deploy does not move origin/prod. See the
+# playbook header; tests/test_deploy_play_order.py pins the placement.
+- name: "Migrate the prod DB once (gateway) — before any daemon restarts"
+  ansible.builtin.import_playbook: playbooks/07-precis-migrate.yml
+
 # ── 1. Reinstall from GitHub HEAD ──
 # Order matters: the embedder goes FIRST. The system worker calls the
 # embedder at boot (`_build_handlers` → `EmbedHandler` → GET /model) and
@@ -441,14 +473,6 @@
 # for the same invariant at restart time.
 - name: "Refresh /opt/precis/embedder-venv (embedder) — FIRST, dependents need it"
   ansible.builtin.import_playbook: playbooks/19a-precis-embedder.yml
-
-# gr196677: re-assert ~deploy/.pgpass (+ hermes's) every deploy — the mcp.json
-# DSN is password-free (§L gr171431), so every plan_tick spawn stands or falls
-# on this file; provisioned only by the standalone 19-pgpass.yml it silently
-# drifted. Idempotent; the template module writes atomically (tmp + rename).
-# Must precede 20b: the collapsed worker's provision step now asserts the file.
-- name: "Re-assert ~/.pgpass on all nodes  (plan_tick / asa DB credential)"
-  ansible.builtin.import_playbook: playbooks/19-pgpass.yml
 
 # gr191008: re-assert worker-log rotation every deploy. The copy-truncate
 # rotator (script + root cron) + /shared/logs newsyslog config were provisioned
@@ -1064,7 +1088,19 @@
     - serving
     - compute
     - agent_sandbox_hosts
+    - gateway
   become: true
+  # Per-host isolation (r36, gr488897): ansible ends the WHOLE playbook when
+  # every host in one play's batch fails (playbook_executor: len(batch) ==
+  # failed). This play's hosts can all fail together, and in r36 that stopped
+  # the run before play 38 ever migrated. The gateway joins as an anchor and
+  # leaves in its first pre_task, so the batch always has a survivor: a failed
+  # or unreachable lane host is dropped for the rest of the run and named in
+  # the PLAY RECAP, while every other host's plays still run.
+  pre_tasks:
+    - name: "Isolation anchor: the gateway only keeps this play's batch alive"
+      ansible.builtin.meta: end_host
+      when: inventory_hostname not in ((groups['serving'] | default([])) + (groups['compute'] | default([])) + (groups['agent_sandbox_hosts'] | default([])))
   tasks:
     # The awk sub() strips the `● ` marker systemctl prepends to
     # dead/failed units — otherwise $1 is the marker and $3 the LOAD
@@ -1277,3 +1313,20 @@
       loop: "{{ precis_convergence.results }}"
       loop_control:
         label: "{{ inventory_hostname }}:{{ item.item.key }}"
+
+# ── 5. Completion marker — the gateway reached the last play ──
+# ansible's PLAY RECAP alone cannot say whether the run finished: when one
+# play's whole batch fails, ansible stops the playbook and every host that was
+# never reached still shows failed=0 (r36: the gateway looked clean while play
+# 38 never ran). scripts/deploy (_deploy_markers) only moves origin/prod when
+# this line is in the output. The gateway is the critical host every required
+# play runs on, so it reaching this play means each of them passed there.
+- name: "Deploy complete (gateway reached the last play)"
+  hosts: gateway
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Report the run reached its last play (scripts/deploy reads this line)
+      ansible.builtin.debug:
+        msg: "PRECIS_DEPLOY_COMPLETE {{ precis_target_sha | default(precis_web_git_ref | default('main')) }}"
+  tags: [always]

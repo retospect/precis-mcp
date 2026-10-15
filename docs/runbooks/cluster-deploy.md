@@ -12,8 +12,10 @@ The nodes share the NAS (`/opt/nas` on Macs, `/nas` on Linux) — the same
 `inbox`, `corpus` and `precis_prod` DB. Each host running `precis watch` races
 the others on the shared inbox: whichever grabs a dropped PDF first processes
 it. A watch-behaviour fix on ONE host loses to an old-code host. Deploy to
-**all** hosts running `precis watch`; `scripts/deploy` pings every host first
-and aborts if any is unreachable, so the cluster never runs mixed versions.
+**all** hosts running `precis watch`. `scripts/deploy` pings every host first:
+a critical host (`data`, `gateway`) down aborts; a non-critical one is skipped
+and recorded, and `scripts/round deploy --catch-up` installs it later
+(`deploy/README.md` §Deploy fault tolerance).
 
 ## Hosts and venvs (ownership)
 
@@ -64,6 +66,17 @@ it (step 1 = `ansible all -m ping`).
   `-e precis_worker_git_ref=<branch> -e precis_web_git_ref=<branch>` still
   wins. Read the recap's sha or the venv's `direct_url.json` — never assume the
   deployed sha equals the one you gated.
+- **Migrate first, once.** `playbooks/07-precis-migrate.yml` runs right after
+  the pin, pre-flight, constraints, interpreters and pgpass plays: it lands the
+  pinned code in the gateway's `/opt/mcps/venv` and runs `precis migrate`
+  before any play restarts a daemon. A failure ends the run there
+  (`any_errors_fatal`) and `origin/prod` does not move. r36 (gr488897) is why:
+  the compute lane restarted onto code two migrations ahead of the DB.
+- **Per-host isolation.** A failed or unreachable host is dropped and the rest
+  continue; lane-only plays carry the gateway as an anchor so ansible never
+  ends the run because one play's every host failed. The last play prints
+  `PRECIS_DEPLOY_COMPLETE`; `scripts/deploy` moves `origin/prod` only with it
+  and `PRECIS_DEPLOY_MIGRATED` in the output.
 - The play `uv --refresh-package`-reinstalls into all venvs, **embedder-first
   behind a `/healthz` gate** (the worker crash-loops if the embedder listener
   is down at boot), then force-bounces every `com.precis.*` launchd daemon and
