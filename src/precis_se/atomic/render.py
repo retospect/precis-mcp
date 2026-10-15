@@ -188,24 +188,29 @@ def cached_validator_summary(store: Store, ref: Any) -> dict[str, Any] | None:
     """The structure validator's tally (:func:`precis_se.atomic.validate.
     validator_tally`) for one resolved structure ref — ``None`` when the ref
     is missing or the scene no longer loads. The summary (not the scene) is
-    what ``view='tree'`` and the web validate panel need, so caching it by
-    ``(ref.id, meta['version'], updated_at)`` keeps those reads cheap; a
-    miss pays one ``structure_load`` and the findings themselves are
-    memoised on content hash
+    what ``view='tree'|'block'|'report'`` and the web validate panel need,
+    so caching it by ``(ref.id, meta['version'], updated_at)`` keeps those
+    reads cheap; a miss deliberately pays one ``structure_load`` and the
+    findings themselves are memoised on content hash
     (:func:`precis.structure.validate.findings_cached`), so the
     ``view='validate'`` rollup never re-runs the kernel either."""
     if ref is None:
         return None
     load = getattr(store, "structure_load", None)
     if load is None:
-        return None  # a read surface without geometry access (view='report'
-        # is contractually geometry-free) — report "unavailable", not clean.
+        # A store with no geometry access at all (read-only/fake surfaces,
+        # e.g. test_se_report's ReadOnlyStore) still renders, degraded —
+        # report "unavailable", never "clean".
+        return None
     version = (ref.meta or {}).get("version")
-    key = (
-        (int(ref.id), int(version), str(getattr(ref, "updated_at", "")))
-        if version is not None
-        else None
-    )
+    try:
+        key = (
+            (int(ref.id), int(version), str(getattr(ref, "updated_at", "")))
+            if version is not None
+            else None
+        )
+    except (TypeError, ValueError):
+        key = None  # a non-integer version stamp can't key the LRU safely
     if key is not None and key in _validator_summary_cache:
         _validator_summary_cache.move_to_end(key)
         return _validator_summary_cache[key]

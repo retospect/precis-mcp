@@ -6,7 +6,8 @@ design level (gr464342: view=validate said 0 errors while view=block showed
 from __future__ import annotations
 
 import json
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 import numpy as np
 import pytest
@@ -16,6 +17,7 @@ from precis.dispatch import Hub
 from precis.store import Store
 from precis.structure.cell import Cell
 from precis.structure.scene import Atom, Scene
+from precis_se.atomic import render as se_atomic_render
 from precis_se.atomic import validate as se_atomic_validate
 from precis_se.atomic.generate import generated_record
 from precis_se.handler import SeHandler, _render_tree, validate_digest
@@ -269,6 +271,47 @@ def test_bound_structure_validator_errors_reach_tree_and_validate(
     assert "atom_overlap x1" in error_line and "overlap-foot" in error_line
     digest = handler.get(id="validator-dirty-design", view="drc").body
     assert "validate: 1 error(s)" in digest
+    # view='report' shows the same current-geometry read beside the stored
+    # build record — it pays the cached geometry load (see the unit tests
+    # below for the miss/hit contract).
+    report = handler.get(id="validator-dirty-design", view="report").body
+    assert "validator: 1 error(s), 0 warning(s) (atom_overlap x1)" in report
+
+
+class _CountingStore:
+    """A geometry-capable stub: just ``structure_load``, call-counted."""
+
+    def __init__(self, scene: Scene) -> None:
+        self.scene = scene
+        self.loads: list[int] = []
+
+    def structure_load(self, ref_id: int) -> tuple[Scene, dict[str, int]]:
+        self.loads.append(ref_id)
+        return self.scene, {}
+
+
+def test_cached_validator_summary_miss_loads_once_then_hits() -> None:
+    """The (ref.id, meta version, updated_at) key: a cold call pays one
+    ``structure_load``, the repeat read of an unchanged structure is a hit."""
+    store = _CountingStore(_overlap_scene())
+    ref = SimpleNamespace(id=7, meta={"version": 3}, updated_at=None)
+    first = se_atomic_render.cached_validator_summary(cast(Any, store), ref)
+    second = se_atomic_render.cached_validator_summary(cast(Any, store), ref)
+    assert store.loads == [7]
+    assert first == second
+    assert first is not None
+    assert first["errors"] == 1 and first["error_rules"] == {"atom_overlap": 1}
+
+
+def test_cached_validator_summary_non_integer_version_skips_the_key() -> None:
+    """A meta version that is not an int must not raise — it just can't key
+    the LRU, so each call recomputes uncached."""
+    store = _CountingStore(_overlap_scene())
+    for version in ("abc", {"v": 3}):
+        ref = SimpleNamespace(id=8, meta={"version": version}, updated_at=None)
+        summary = se_atomic_render.cached_validator_summary(cast(Any, store), ref)
+        assert summary is not None and summary["errors"] == 1
+    assert len(store.loads) == 2
 
 
 def test_bound_structure_clean_validator_reads_zero(store: Store) -> None:

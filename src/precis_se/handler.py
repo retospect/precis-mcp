@@ -3272,7 +3272,15 @@ def _render_tree(
 
 
 def _render_report(store: Any, tree: SeTree, args: dict[str, Any] | None) -> str:
-    """Read stored reports for direct blocks, without loading geometry."""
+    """Read stored reports for direct blocks.
+
+    The report rows are pure stored-record reads; each bound structure's
+    ``validator:`` line beside them deliberately pays a geometry read (one
+    ``structure_load`` on a miss, then memoised —
+    :func:`precis_se.atomic.render.cached_validator_summary`), so this view
+    is no longer strictly geometry-free. A store that cannot load geometry
+    at all still renders every report row, with the line degrading to
+    ``validator: unavailable`` (never "clean")."""
     selector = (args or {}).get("block")
     if selector is not None:
         if not isinstance(selector, str) or not selector.strip():

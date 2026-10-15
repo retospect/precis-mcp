@@ -319,10 +319,12 @@ ERROR/WARN findings by block (grouped by error code, warnings summarised) plus
 are build-time evidence, the validator rows are the current read.
 
 `view='report'` reads stored generate/join build findings (severity, code,
-where, message, span) without recomputation. Omit args for every direct block,
-or use `args={'block': '<label or #uid>'}`. Missing records are unavailable,
-not evidence of a successful build; this does not validate current geometry
-or expand template occurrences. State overrides are not accepted.
+where, message, span) plus each bound structure's current `validator:` tally
+(one cached geometry read per structure — the tally, not the finding list;
+full detail stays in `view='validate'`/`view='block'`). Omit args for every
+direct block, or use `args={'block': '<label or #uid>'}`. Missing records are
+unavailable, not evidence of a successful build; template occurrences are not
+expanded. State overrides are not accepted.
 
 `view='ops'` is the only view that reads back into `put`: the design as a
 replayable ops list in a fenced `{"ops": [...]}` block, so a design can be
