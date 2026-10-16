@@ -397,6 +397,60 @@ _TERMINATE_MAX_PASSES = 16
 _TERMINATE_POLISH_HOPS = 3
 _TERMINATE_POLISH_ITERS = 800
 
+#: A ring-closure bond between atoms this many bonds apart (or fewer)
+#: would make a 3- or 4-membered ring — a cyclopropane/cyclobutane knot
+#: at a seam end, not a rim knit shut (gr486406 re-mint). Such a pair is
+#: never closed; its caps get trimmed instead.
+_SMALL_RING_HOPS = 3
+
+
+def _within_hops(adj: list[set[int]], a: int, b: int, limit: int) -> bool:
+    """Whether ``b`` is reachable from ``a`` in at most ``limit`` bonds."""
+    seen = {a}
+    front = {a}
+    for _hop in range(limit):
+        front = set().union(*(adj[o] for o in front)) - seen
+        if b in front:
+            return True
+        seen |= front
+    return False
+
+
+def _converging_stubs(
+    net: Net,
+    coords: np.ndarray,
+    adj: list[set[int]],
+    reach: float,
+    converging: set[int],
+) -> set[int]:
+    """One-bond lattice atoms (a strip corner) within ``reach`` of a
+    ``converging`` atom (a cap-clash host or ring-closure endpoint) more
+    than ``_SMALL_RING_HOPS`` bonds away: a rim stub poking into a seam
+    convergence the resolver is already knitting, which would otherwise
+    mint a =CH2 there even when its own caps clear the clash bar
+    (gr486406 re-mint, aC1). A corner on an ordinary sheet edge, or an
+    authored strip corner beside a seam row, has no such partner. The
+    resolver trims these rather than ring-closing them:
+    closing the seam-out stub to its partner left 83-87 degree angles on
+    both sides of the new bond, while trimming leaves its neighbour at
+    119-122 degrees."""
+    lat_el = set(net.lattice.elements)
+    lattice = [a.ord for a in net.atoms if a.element in lat_el]
+    lat_xyz = coords[lattice]
+    out: set[int] = set()
+    for a in lattice:
+        if len(adj[a]) != 1 or a in converging:
+            continue
+        dist = np.linalg.norm(lat_xyz - coords[a], axis=1)
+        for k in np.argsort(dist):
+            b = lattice[int(k)]
+            if float(dist[k]) > reach:
+                break
+            if b in converging and not _within_hops(adj, a, b, _SMALL_RING_HOPS):
+                out.add(a)
+                break
+    return out
+
 
 def _cap_clash_pairs(
     coords: np.ndarray,
@@ -583,11 +637,17 @@ def _resolve_edge_caps(
     pairs (final ordinals) and the largest polish displacement.
 
     Each pass places caps on the current net and collects the carbon
-    pairs whose caps collide. In order: (1) a pair within
-    ``_RING_CLOSE_REACH_SIGMA * sigma_A`` is bondable — drop the caps, add
-    the C-C bond (a carbon that reaches degree four is relabelled sp3);
+    pairs whose caps collide. In order, closest pair first: (1) a pair
+    within ``_RING_CLOSE_REACH_SIGMA * sigma_A`` is bondable — drop the
+    caps, add the C-C bond (a carbon that reaches degree four is
+    relabelled sp3) — unless the pair is within ``_SMALL_RING_HOPS``
+    bonds, where the bond would make a 3- or 4-ring: then it is re-judged
+    next pass if a closure this pass touched it, else trimmed as in (2);
     (2) a pair out of reach loses its dangling rim atom(s) — trimmed out
-    of the net, the newly exposed atoms re-capped on the next pass;
+    of the net, the newly exposed atoms re-capped on the next pass. A
+    one-bond strip corner poking into a convergence
+    (:func:`_converging_stubs`) is trimmed the same way even when its
+    caps clear the bar, instead of minting a =CH2 there;
     authored interfaces (port rims, seam records, ``bond``-verb
     endpoints) and ``pinned`` atoms are never trimmed. (3) Any cap still
     inside the clash bar when a pass changes nothing — or the pass bound
@@ -640,7 +700,15 @@ def _resolve_edge_caps(
             hosts = [hosts[k] for k in keep]
             positions = [positions[k] for k in keep]
         pairs = _cap_clash_pairs(xyz, hosts, positions)
-        if not pairs:
+        nbrs: list[set[int]] = [set() for _ in work.atoms]
+        for i, j, _o in work.bonds:
+            nbrs[i].add(j)
+            nbrs[j].add(i)
+        # a stub whose caps clash goes through the close-first rule below
+        converging = {o for pair in pairs for o in pair}
+        converging |= {o for pair in closed_pairs() for o in pair}
+        stubs = _converging_stubs(work, xyz, nbrs, reach, converging) - protected
+        if not pairs and not stubs:
             return (
                 work,
                 xyz,
@@ -651,35 +719,61 @@ def _resolve_edge_caps(
                 closed_pairs(),
                 polish_disp,
             )
-        bonded = {frozenset((i, j)) for i, j, _o in work.bonds}
-        degree = [0] * len(work.atoms)
-        for i, j, _o in work.bonds:
-            degree[i] += 1
-            degree[j] += 1
+        degree = [len(n) for n in nbrs]
+        adj = [set(n) for n in nbrs]  # grows with this pass's closures
         new_bonds: list[tuple[int, int]] = []
-        to_trim: set[int] = set()
-        for (a, b), (_d, cap_hosts) in sorted(pairs.items()):
+        small: list[tuple[int, int, set[int]]] = []
+        to_trim: set[int] = set(stubs)
+        # closest pair first, so a three-rim convergence knits its
+        # shortest gaps and the small-ring guard refuses the third side
+        for (a, b), (_d, cap_hosts) in sorted(
+            pairs.items(),
+            key=lambda kv: (
+                float(np.linalg.norm(xyz[kv[0][0]] - xyz[kv[0][1]])),
+                kv[0],
+            ),
+        ):
+            if a in to_trim or b in to_trim:
+                continue  # going this pass; the next pass re-judges the rest
             if (
-                frozenset((a, b)) not in bonded
+                b not in adj[a]
                 and work.atoms[a].element in lat_el
                 and work.atoms[b].element in lat_el
                 and degree[a] < 4
                 and degree[b] < 4
                 and float(np.linalg.norm(xyz[a] - xyz[b])) <= reach
             ):
-                new_bonds.append((a, b))
-                degree[a] += 1
-                degree[b] += 1
-            else:
-                to_trim.update(h for h in cap_hosts if h not in protected)
+                if not _within_hops(adj, a, b, _SMALL_RING_HOPS):
+                    new_bonds.append((a, b))
+                    adj[a].add(b)
+                    adj[b].add(a)
+                    degree[a] += 1
+                    degree[b] += 1
+                    continue
+                small.append((a, b, cap_hosts))
+                continue
+            to_trim.update(h for h in cap_hosts if h not in protected)
+        if not new_bonds:
+            # a closure moves caps, so small-ring pairs wait for a pass
+            # that closed nothing; then the dangling host goes — or, when
+            # every host is an authored interface that cannot be trimmed,
+            # the closure stands rather than refusing the build
+            for a, b, cap_hosts in small:
+                if a in to_trim or b in to_trim:
+                    continue
+                free = {h for h in cap_hosts if h not in protected}
+                if free:
+                    to_trim |= free
+                elif b not in adj[a] and degree[a] < 4 and degree[b] < 4:
+                    new_bonds.append((a, b))
+                    adj[a].add(b)
+                    adj[b].add(a)
+                    degree[a] += 1
+                    degree[b] += 1
         if not new_bonds and not to_trim:
             break
         changed: set[int] = set()
         if to_trim:
-            nbrs: list[set[int]] = [set() for _ in work.atoms]
-            for i, j, _o in work.bonds:
-                nbrs[i].add(j)
-                nbrs[j].add(i)
             freed = {n for t in to_trim for n in nbrs[t]} - to_trim
             trimmed.extend(str(work.atoms[t].path) for t in sorted(to_trim))
             work, xyz, renum = _net_minus_atoms(work, xyz, to_trim)
@@ -734,6 +828,26 @@ def _resolve_edge_caps(
         "what is left sits on an authored interface or beyond reach. "
         "Use terminate='none' and cap by hand, or open the seam wider."
     )
+
+
+def surviving_ordinals(net: Net, block: GeneratedBlock) -> dict[int, int]:
+    """Authored ``net`` ordinal -> the minted ``block``'s ordinal. The
+    terminator may trim rim atoms (``topology["terminated"]["trimmed"]``
+    paths, with any authored non-lattice atom left orphaned), and the
+    survivors keep their order, so a generator that reports per-atom
+    records against its authored net remaps through this map; a trimmed
+    atom has no entry."""
+    gone = {str(p) for p in block.topology.get("terminated", {}).get("trimmed", [])}
+    lat_el = set(net.lattice.elements)
+    nbrs: dict[int, set[int]] = {a.ord: set() for a in net.atoms}
+    for i, j, _o in net.bonds:
+        nbrs[i].add(j)
+        nbrs[j].add(i)
+    drop = {a.ord for a in net.atoms if str(a.path) in gone}
+    # mirrors _net_minus_atoms: a non-lattice atom goes with its host
+    drop |= {a.ord for a in net.atoms if a.element not in lat_el and nbrs[a.ord] & drop}
+    kept = [a.ord for a in net.atoms if a.ord not in drop]
+    return {o: n for n, o in enumerate(kept)}
 
 
 def _block_from_net(

@@ -31,6 +31,7 @@ Analytic seed plus a tethered preview relax: no stability claim.
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from collections.abc import Iterable, Sequence
 from typing import Any
@@ -43,7 +44,11 @@ from hexfold.report import Finding, Report, Severity
 from hexfold.stick import angle_springs, stick_relax_pinned
 from hexfold.tunnel import Junction, Tunnel, tunnel_reservoirs
 from precis_se.atomic.generators._types import GeneratedBlock, GeneratorError
-from precis_se.atomic.generators.hexfold_spec import _block_from_net, terminate_mode
+from precis_se.atomic.generators.hexfold_spec import (
+    _block_from_net,
+    surviving_ordinals,
+    terminate_mode,
+)
 
 FEATURE_TYPE = "tunnel-reservoirs"
 
@@ -379,10 +384,21 @@ def build_tunnel_reservoirs(params: dict[str, Any]) -> GeneratedBlock:
     block.topology.pop("canonical_json", None)
     # sites are measured on the relaxed authored frame (tunnel axis at
     # x=y=0); ``frame.to_stored`` is the affine map into the stored
-    # coordinates for round-tripping against stored atoms.
-    n_carbon = len(net.atoms)
-    design = np.hstack([pos, np.ones((n_carbon, 1))])
-    xf, *_ = np.linalg.lstsq(design, block.coords[:n_carbon], rcond=None)
+    # coordinates for round-tripping against stored atoms. A rim atom the
+    # terminator trimmed is gone from the block: fit on the survivors and
+    # move the site and junction records onto stored ordinals.
+    remap = surviving_ordinals(net, block)
+    kept = sorted(remap, key=remap.__getitem__)
+    design = np.hstack([pos[kept], np.ones((len(kept), 1))])
+    xf, *_ = np.linalg.lstsq(design, block.coords[: len(kept)], rcond=None)
+    site_data["sites"] = [
+        {**e, "ordinal": remap[e["ordinal"]]}
+        for e in site_data["sites"]
+        if e["ordinal"] in remap
+    ]
+    site_data["pairs"] = [
+        [remap[a], remap[b]] for a, b in site_data["pairs"] if a in remap and b in remap
+    ]
     site_data["frame"] = {
         "axis": "tunnel axis, +z through the mouth centres",
         "origin_A": [0.0, 0.0, 0.0],
@@ -396,7 +412,10 @@ def build_tunnel_reservoirs(params: dict[str, Any]) -> GeneratedBlock:
     block.topology["sites"] = site_data
     stored_findings = list(block.topology["report"]["findings"])
     stored_findings.extend(
-        f.to_dict() for f in _junction_checks(block, net, tun, termination)
+        f.to_dict()
+        for f in _junction_checks(
+            block, net, stored_tunnel(net, tun, block), termination
+        )
     )
     block.topology["report"]["findings"] = stored_findings
     return block
@@ -535,6 +554,41 @@ def tunnel_strain(
             )
         )
     return out
+
+
+def stored_tunnel(net: Net, tun: Tunnel, block: GeneratedBlock) -> Tunnel:
+    """``tun`` with every ordinal moved onto the stored ``block``: the
+    terminator may trim rim atoms at a mouth (gr486406), which shifts the
+    survivors down, so the authored composite ordinals would read the
+    wrong atoms. A trimmed atom drops out of each list (and a fused pair
+    with it)."""
+    remap = surviving_ordinals(net, block)
+
+    def ords(seq: Iterable[int]) -> tuple[int, ...]:
+        return tuple(remap[o] for o in seq if o in remap)
+
+    def junction(j: Junction) -> Junction:
+        return Junction(
+            fused=tuple(
+                (remap[s], remap[t]) for s, t in j.fused if s in remap and t in remap
+            ),
+            faces=tuple(ords(f) for f in j.faces),
+            unbonded_sheet=ords(j.unbonded_sheet),
+            unbonded_tube=ords(j.unbonded_tube),
+            atoms=ords(j.atoms),
+        )
+
+    kept = sorted(remap, key=remap.__getitem__)
+    return dataclasses.replace(
+        tun,
+        sheet_lo=ords(tun.sheet_lo),
+        sheet_hi=ords(tun.sheet_hi),
+        tube_atoms=ords(tun.tube_atoms),
+        junctions=(junction(tun.junctions[0]), junction(tun.junctions[1])),
+        coords=np.asarray(tun.coords)[kept],
+        strip_atoms=tuple(ords(s) for s in tun.strip_atoms),
+        seam_atoms=tuple(ords(s) for s in tun.seam_atoms),
+    )
 
 
 def _junction_checks(

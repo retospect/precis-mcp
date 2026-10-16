@@ -157,6 +157,7 @@ from precis_se.atomic.generators.hexfold_spec import (
     _block_from_net,
     _internal_message,
     _terminate_open_edges,
+    surviving_ordinals,
     terminate_mode,
 )
 
@@ -608,13 +609,19 @@ def _ring_sites(
     scene = np.asarray(block.coords, dtype=float) @ np.asarray(
         mapping["Q"], dtype=float
     ) + np.asarray(mapping["b_A"], dtype=float)
-    n_carbon = len(net.atoms)
+    # rim hosts are authored ordinals; a trimmed rim atom (gr486406) is
+    # gone and the survivors shifted down
+    remap = surviving_ordinals(net, block)
+    n_carbon = len(remap)
     h_of = {i: j for i, j, *_ in block.bonds if j >= n_carbon}
     centres = {ft.name: ft.centre for ft in plan.target_features}
     ring: list[dict[str, Any]] = []
     for name, st in open_rims.items():
         cx, cy = centres[name]
-        for host in st["rim"]:
+        for authored in st["rim"]:
+            if authored not in remap:
+                continue
+            host = remap[authored]
             h = h_of.get(host)
             if h is None:
                 continue

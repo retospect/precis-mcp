@@ -25,7 +25,11 @@ from hexfold.railtube import rail_tube
 from hexfold.report import Finding, Report, Severity
 from hexfold.stick import angle_springs, stick_relax_pinned
 from precis_se.atomic.generators._types import GeneratedBlock, GeneratorError
-from precis_se.atomic.generators.hexfold_spec import _block_from_net, terminate_mode
+from precis_se.atomic.generators.hexfold_spec import (
+    _block_from_net,
+    surviving_ordinals,
+    terminate_mode,
+)
 
 FEATURE_TYPE = "rail-k3-120-z"
 DEFAULT_ROWS = 4
@@ -438,9 +442,20 @@ def build_rail120(params: dict[str, Any]) -> GeneratedBlock:
     # they are not a stable reference once a pore breaks the N-fold
     # symmetry. ``frame.to_stored`` is the affine map into the stored
     # coordinates for round-tripping against stored atoms.
-    n_carbon = len(net.atoms)
-    design = np.hstack([pos, np.ones((n_carbon, 1))])
-    xf, *_ = np.linalg.lstsq(design, block.coords[:n_carbon], rcond=None)
+    # a seam-end stub the terminator trimmed (gr486406) is gone from the
+    # block: fit the frame on the survivors and remap the site records
+    remap = surviving_ordinals(net, block)
+    kept = sorted(remap, key=remap.__getitem__)
+    design = np.hstack([pos[kept], np.ones((len(kept), 1))])
+    xf, *_ = np.linalg.lstsq(design, block.coords[: len(kept)], rcond=None)
+    site_data["sites"] = [
+        {**e, "ordinal": remap[e["ordinal"]]}
+        for e in site_data["sites"]
+        if e["ordinal"] in remap
+    ]
+    site_data["pairs"] = [
+        [remap[a], remap[b]] for a, b in site_data["pairs"] if a in remap and b in remap
+    ]
     site_data["frame"] = {
         "axis": "authored tube axis, +z through x=y=0",
         "origin_A": [0.0, 0.0, 0.0],

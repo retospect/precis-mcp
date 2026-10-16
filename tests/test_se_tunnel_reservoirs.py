@@ -156,13 +156,19 @@ RAIL = {"rail": [14, 4], "rails": 2, "rows": 3, "pores": []}
 
 @functools.cache
 def _rail_inputs() -> tuple[Any, Any, Any]:
-    """One shared rail build for the strain tests (read-only; callers copy)."""
+    """One shared rail build for the strain tests (read-only; callers copy).
+    The tunnel bookkeeping is moved onto the stored block's ordinals: the
+    terminator trims mouth-rim atoms, which shifts every later ordinal."""
     from hexfold.tunnel import tunnel_reservoirs
-    from precis_se.atomic.generators.tunnel import _normalize
+    from precis_se.atomic.generators.tunnel import _normalize, stored_tunnel
 
     tspec, sheet, _name, _k, kind = _normalize(params(tube=RAIL, sheet=[46, 46]))
     net, tun = tunnel_reservoirs(tspec, sheet, kind=kind)
-    return build_hexfold_scene(params(tube=RAIL, sheet=[46, 46])), net, tun
+    block = build_hexfold_scene(params(tube=RAIL, sheet=[46, 46]))
+    assert block.topology["terminated"]["trimmed"]  # the shift is exercised
+    stored = stored_tunnel(net, tun, block)
+    assert all(len(s) == len(t) for s, t in zip(stored.seam_atoms, tun.seam_atoms))
+    return block, net, stored
 
 
 def _by_code(block: Any, code: str) -> list[dict[str, Any]]:

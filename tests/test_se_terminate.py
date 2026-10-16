@@ -34,13 +34,15 @@ TUBE = "hexfold 0.2\nt: tube(8,8, len=4)\n"
 
 
 def _toy_net(
-    xyz: list[tuple[float, float, float]], bonds: list[tuple[int, int]]
+    xyz: list[tuple[float, float, float]],
+    bonds: list[tuple[int, int]],
+    hydrogens: frozenset[int] = frozenset(),
 ) -> Net:
     atoms = tuple(
         Atom(
             path=AtomPath(instance="t", site=Site(i, 0, 0)),
             ord=i,
-            element="C",
+            element="H" if i in hydrogens else "C",
             hyb="sp2",
             instance="t",
         )
@@ -75,6 +77,54 @@ def _min_hh(block: Any) -> float:
 def _h_bonds(block: Any) -> list[tuple[int, int]]:
     el = block.elements
     return [(i, j) for i, j, _o, _k in block.bonds if el[i] == "H" or el[j] == "H"]
+
+
+def _carbon_adjacency(block: Any) -> dict[int, set[int]]:
+    el = block.elements
+    adj: dict[int, set[int]] = {i: set() for i, e in enumerate(el) if e == "C"}
+    for i, j, _o, _k in block.bonds:
+        if el[i] == "C" and el[j] == "C":
+            adj[i].add(j)
+            adj[j].add(i)
+    return adj
+
+
+def _small_rings(block: Any) -> set[tuple[int, ...]]:
+    """Every 3- or 4-membered carbon ring, as sorted ordinal tuples."""
+    adj = _carbon_adjacency(block)
+    rings: set[tuple[int, ...]] = set()
+    for a, nbrs in adj.items():
+        for b, c in itertools.combinations(sorted(nbrs), 2):
+            if c in adj[b]:
+                rings.add(tuple(sorted((a, b, c))))
+            for d in (adj[b] & adj[c]) - {a}:
+                rings.add(tuple(sorted((a, b, d, c))))
+    return rings
+
+
+def _converging_ch2(block: Any) -> list[int]:
+    """=CH2 carbons at a converging rim: a carbon carrying two H with
+    another carbon more than three bonds away inside two lattice spacings
+    (2.84 A) -- a strip corner poking into a seam end. An ordinary sheet
+    corner's nearest far atom is the hexagon's para atom, three bonds."""
+    el = block.elements
+    pos = np.asarray(block.coords)
+    adj = _carbon_adjacency(block)
+    n_h = dict.fromkeys(adj, 0)
+    for i, j, _o, _k in block.bonds:
+        for c, h in ((i, j), (j, i)):
+            if el[h] == "H" and c in n_h:
+                n_h[c] += 1
+    out = []
+    for c in (c for c, n in n_h.items() if n >= 2):
+        near, front = {c}, {c}
+        for _hop in range(3):
+            front = set().union(*(adj[o] for o in front)) - near
+            near |= front
+        far = [o for o in adj if o not in near]
+        if far and np.linalg.norm(pos[far] - pos[c], axis=1).min() <= 2 * 1.42:
+            out.append(c)
+    return out
 
 
 def test_terminate_mode_defaults_to_h_and_refuses_other_values() -> None:
@@ -156,7 +206,9 @@ def test_a_spec_terminate_line_is_not_doubled_and_still_tags() -> None:
 def test_converging_edges_ring_close_the_clashing_cap_hosts() -> None:
     # the Y's seam end converges three sheet rims: the colliding caps'
     # hosts are within bonding reach, so the resolver drops the caps and
-    # knits the rims shut -- no colliding H is minted (gr486406)
+    # knits the rims shut -- no colliding H is minted (gr486406). At each
+    # seam end the two shortest gaps close; the third side would make a
+    # cyclopropane (gr486406 re-mint), so it is refused
     block = build_hexfold_scene(
         {
             "sheet": [4, 3],
@@ -177,8 +229,9 @@ def test_converging_edges_ring_close_the_clashing_cap_hosts() -> None:
         if isinstance(closed[0]["data"], list)
         else closed[0]["data"]
     )
-    assert data["count"] == 5
-    assert len(term["closed"]) == 5
+    assert data["count"] == 4
+    assert len(term["closed"]) == 4
+    assert _small_rings(block) == set()
     for a, b in term["closed"]:
         assert block.elements[a] == "C" and block.elements[b] == "C"
         assert np.linalg.norm(block.coords[a] - block.coords[b]) < 1.8
@@ -219,7 +272,13 @@ def test_seam_convergence_resolves_to_a_clean_block(params: dict[str, Any]) -> N
     block = build_hexfold_scene(params)
     term = block.topology["terminated"]
     assert term["clashes"] == 0
-    assert term["closed"] and term["trimmed"] == []
+    # the fin's one-bond strip corner at the -y seam end (aC1 in the
+    # gr486406 re-mint) is trimmed, not capped =CH2; the open sheet Y has
+    # no such stub
+    assert term["closed"]
+    assert term["trimmed"] == ([] if "sheet" in params else ["f/(0,0,A)"])
+    assert _converging_ch2(block) == []
+    assert _small_rings(block) == set()
     findings = block.topology["report"]["findings"]
     assert not [f for f in findings if f["severity"] == "ERROR"]
     assert not [f for f in findings if f["code"] == "terminate.clash"]
@@ -269,6 +328,8 @@ def test_seam_out_validate_reports_zero_errors(
     validation = handler.get(id=slug, view="validate").body
     assert "generated_report_error" not in validation
     assert "terminate.clash" not in validation
+    # gr486406 re-mint: the seam-end ring closures made a 3- and a 4-ring
+    assert "small_ring" not in validation
     snap = store.structure_positions_snapshot(ref.id)
     assert snap is not None
     pos = np.asarray(snap["fractional"]) @ np.asarray(snap["lattice"])
@@ -302,8 +363,9 @@ def test_cap_clash_within_bonding_reach_ring_closes() -> None:
 
 
 def _trim_fixture() -> tuple[Net, np.ndarray]:
-    # a deg-1 stub whose cap lands 1.77 A from a full-valence carbon while
-    # the hosts sit 2.86 A apart -- out of ring-close reach
+    # a deg-1 stub whose cap lands 1.77 A from a full-valence carbon (three
+    # authored H) while the hosts sit 2.86 A apart -- out of ring-close
+    # reach
     xyz = [
         (0.0, 0.0, 0.0),  # 0: the dangling rim atom (cap aims at +x)
         (-0.71, 1.23, 0.0),  # 1
@@ -313,7 +375,9 @@ def _trim_fixture() -> tuple[Net, np.ndarray]:
         (3.5, -1.2, 0.0),
         (4.4, 0.0, 0.0),
     ]
-    net = _toy_net(xyz, [(0, 1), (1, 2), (3, 4), (3, 5), (3, 6)])
+    net = _toy_net(
+        xyz, [(0, 1), (1, 2), (3, 4), (3, 5), (3, 6)], hydrogens=frozenset({4, 5, 6})
+    )
     return net, np.asarray(xyz, dtype=float)
 
 
@@ -322,7 +386,7 @@ def test_cap_clash_beyond_reach_trims_the_dangling_rim_atom() -> None:
     block = _block_from_net(net, xyz, spec="", report=Report(()), fidelity="stick")
     term = block.topology["terminated"]
     assert term["trimmed"] == ["t/(0,0,A)"]
-    assert term["clashes"] == 0 and block.elements.count("C") == 6
+    assert term["clashes"] == 0 and block.elements.count("C") == 3
     findings = block.topology["report"]["findings"]
     trimmed = [f for f in findings if f["code"] == "terminate.trimmed"]
     assert len(trimmed) == 1 and trimmed[0]["severity"] == "INFO"
@@ -348,10 +412,13 @@ def test_fin_scene_is_capped_by_default() -> None:
     }
     block = build_hexfold_scene(params)
     bare = build_hexfold_scene({**params, "terminate": "none"})
-    # two cap pairs collide at the graft corners; their hosts are within
-    # bonding reach and ring-close (gr486406), so 4 caps fewer mint
+    # cap pairs collide at the graft corners; hosts within bonding reach
+    # ring-close (gr486406), and where a closure would make a 4-ring the
+    # dangling rim atom is trimmed instead
     assert block.elements.count("H") == 30 and bare.elements.count("H") == 0
-    assert len(block.topology["terminated"]["closed"]) == 2
+    assert len(block.topology["terminated"]["closed"]) == 3
+    assert len(block.topology["terminated"]["trimmed"]) == 2
+    assert _small_rings(block) == set()
     assert "terminate" not in block.topology["scene"]
     assert bare.topology["scene"] == {**block.topology["scene"], "terminate": "none"}
     assert block.tags == [TERMINATED_TAG]

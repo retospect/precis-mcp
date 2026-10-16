@@ -422,8 +422,10 @@ join ports' rim atoms stay bare so a later fuse can use them) or
 are not doubled: a capped atom is no longer short. Where open rims
 converge (a Y's seam end), independently placed caps collide — the
 terminator resolves that instead of minting overlapping H: hosts within
-bonding reach are bond-closed (`terminate.closed` INFO), dangling rim
-atoms out of reach are trimmed and re-capped (`terminate.trimmed` INFO),
+bonding reach are bond-closed (`terminate.closed` INFO) unless the bond
+would make a 3- or 4-ring, dangling rim atoms out of reach (and one-bond
+corners poking into the seam end) are trimmed and re-capped
+(`terminate.trimmed` INFO),
 and a clash that can't be resolved (e.g. on an authored interface) fails
 the build with `terminate.clash`. Parts built to be joined
 should use `"ports-open"`: a join trims the caps off the ports it

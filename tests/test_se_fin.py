@@ -184,6 +184,14 @@ def test_public_fin_scene_tethered_test_db_roundtrip(
     assert 80.0 <= graft["angle_min_deg"] <= graft["angle_max_deg"] <= 130.0
     seed_net, seed = fin_tube(6, 4, 3, "out")
     pinned = sorted({*seed.wall_atoms, *seed.rim_atoms})
+    # the terminator trims a graft-corner atom rather than close a 4-ring
+    # (gr486406); pinned atoms are never trimmed, and the survivors keep
+    # their order, so the stored ordinals shift past each trimmed atom
+    trimmed = set(record["terminated"]["trimmed"])
+    gone = {a.ord for a in seed_net.atoms if str(a.path) in trimmed}
+    assert len(gone) == len(trimmed) and gone.isdisjoint(pinned)
+    kept = [a.ord for a in seed_net.atoms if a.ord not in gone]
+    stored = [kept.index(o) for o in pinned]
     snap = store.structure_positions_snapshot(ref.id)
     assert snap is not None
     relaxed = np.asarray(snap["fractional"]) @ np.asarray(snap["lattice"])
@@ -191,7 +199,7 @@ def test_public_fin_scene_tethered_test_db_roundtrip(
     def pair_distances(xyz: np.ndarray) -> np.ndarray:
         return np.linalg.norm(xyz[:, None] - xyz[None], axis=-1)
 
-    assert pair_distances(relaxed[pinned]) == pytest.approx(
+    assert pair_distances(relaxed[stored]) == pytest.approx(
         pair_distances(seed.coords[pinned]), abs=1e-6
     )
     again = build_hexfold_scene(params())

@@ -168,7 +168,15 @@ def test_public_rail_tube_tethered_test_db_roundtrip(
     degrees = np.bincount(
         [v for i, j, _ in _net.bonds for v in (i, j)], minlength=len(_net.atoms)
     )
-    expected_sites = sum(1 for o in strip_set if degrees[o] < 3) + 2 * 4
+    # a seam-end strip corner the terminator trimmed (gr486406) is no site;
+    # the site records carry the minted block's ordinals
+    trimmed = set(record["terminated"]["trimmed"])
+    gone = {a.ord for a in _net.atoms if str(a.path) in trimmed}
+    assert len(gone) == len(trimmed)
+    remap = {o: n for n, o in enumerate(a.ord for a in _net.atoms if a.ord not in gone)}
+    expected_sites = (
+        sum(1 for o in strip_set if degrees[o] < 3 and o not in gone) + 2 * 4
+    )
     assert len(sites["sites"]) == expected_sites
     snap = store.structure_positions_snapshot(ref.id)
     assert snap is not None
@@ -177,11 +185,18 @@ def test_public_rail_tube_tethered_test_db_roundtrip(
     rot = np.asarray(sites["frame"]["to_stored"]["rot"])
     shift = np.asarray(sites["frame"]["to_stored"]["shift_A"])
     # the termination polish (gr486406) may move carbons near a closed rim
-    # pair — within 3 hops, matching _TERMINATE_POLISH_HOPS in hexfold_spec —
-    # so those sites legitimately sit off the authored lattice position
-    # (measured up to 0.18 A here); every other site keeps the tight 0.1 A
-    # bound, where the frame fit itself is sub-0.01
+    # pair or a trimmed stub's neighbour — within 3 hops, matching
+    # _TERMINATE_POLISH_HOPS in hexfold_spec — so those sites legitimately
+    # sit off the authored lattice position (measured below); every other
+    # site keeps the tight 0.1 A bound, where the frame fit
+    # itself is sub-0.01
     polished = {o for pair in direct.topology["terminated"]["closed"] for o in pair}
+    polished |= {
+        remap[n]
+        for i, j, _ in _net.bonds
+        for t, n in ((i, j), (j, i))
+        if t in gone and n in remap
+    }
     adj: list[set[int]] = [set() for _ in range(n_c)]
     for i, j in carbon_bonds:
         adj[i].add(j)
@@ -197,7 +212,10 @@ def test_public_rail_tube_tethered_test_db_roundtrip(
                 entry["z_A"],
             ]
         )
-        bound = 0.25 if entry["ordinal"] in polished else 0.1
+        # polish zone: 0.18 A max with the old seam-end triangles; 0.351 A
+        # once the small-ring guard knits the seam end without them
+        # (gr486406 re-mint); trim-zone sites 0.038 A, far field 0.053 A
+        bound = 0.4 if entry["ordinal"] in polished else 0.1
         assert np.linalg.norm(xyz @ rot + shift - relaxed[entry["ordinal"]]) < bound
         n_hat = np.asarray(entry["normal"])
         assert np.linalg.norm(n_hat) == pytest.approx(1.0, abs=1e-9)
