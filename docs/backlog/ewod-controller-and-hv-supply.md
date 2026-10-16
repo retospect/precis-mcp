@@ -1,11 +1,18 @@
 ---
 status: ready
 pillar: 3d-design
-title: EWOD dogfood board — Arduino Pro Mini controller, USB-C PD 20 V power + programming, on-board 250 V flyback supply (rulings 12–19) + two prod-review defects
+title: EWOD dogfood board — Arduino Pro Mini controller, USB-C power + programming, on-board 250 V flyback supply from the 5 V rail (rulings 12–21) + two prod-review defects
 prio: high
 ---
 
-# EWOD dogfood board — controller, USB-C PD power, on-board 250 V supply (rulings 12–19) + two prod-review defects
+# EWOD dogfood board — controller, USB-C power, on-board 250 V supply (rulings 12–21) + two prod-review defects
+
+> **Ruling 21 (Reto, approved ~18:10Z 2026-10-16) supersedes the 20 V HV
+> input.** The 250 V flyback runs from the **5 V buck rail**, not 20 V VBUS,
+> and is **off by default** (the Mini enables and kills it). Every 20 V
+> statement about the HV stage below carries a "Superseded by ruling 21"
+> note. Whether the 20 V PD contract is still needed is an open question
+> for Reto (Open questions 3).
 
 Companion to `pcb-ewod-multitile.md` (the array generator; rulings 1–11
 live there). This item holds rulings **12–15** (Reto, 2026-09-24),
@@ -105,7 +112,9 @@ in the netlist test that no net joins VBUS to any Mini pin.
 Reto: "can we pd and get 20 V and would it be easier" → **yes for the HV
 stage, roughly a wash on part count; do it.**
 
-- **Why 20 V helps the HV stage** — see ruling 14: a Cockcroft-Walton
+- **Why 20 V helps the HV stage** *(superseded 2026-10-16 by ruling 21:
+  the HV stage runs from the 5 V rail; the argument is retained as history
+  and no longer justifies the 20 V contract)* — see ruling 14: a Cockcroft-Walton
   ladder's output is `N × Vpp` of its drive, so 20 V in is N = 7 stages
   where 5 V in is N = 25+; for the rejected flyback it is the turns ratio
   (~1:5 vs ~1:20). At ~1 W and ~75 % efficiency the average input current
@@ -133,14 +142,16 @@ stage, roughly a wash on part count; do it.**
   alive before the contract; at Vin ≈ 5 V a buck cannot make 5.0 V —
   choose one that passes through at ~100 % duty (output ~4.7–4.9 V, inside
   HV507's 4.5 V floor and the ATmega328P's 16 MHz operating region;
-  `SOURCE NEEDED`: ATmega328P safe-operating-area figure). **HV stage:
+  `SOURCE NEEDED`: ATmega328P safe-operating-area figure). ~~**HV stage:
   recommend letting it run wide-Vin**, no inhibit — a CW ladder's output
   scales linearly with its drive rail, so at 5 V the ladder sits at ~70 V,
   harmless; firmware reads the HV feedback divider (ruling 14) on a second
   ADC pin to know when the rail is up. Alternative (inhibit until the
   contract is confirmed) is one gate on the bridge driver's enable — keep
   the enable line on the schematic, default-on, so the alternative is a
-  firmware choice later.
+  firmware choice later.~~ **Superseded 2026-10-16 by ruling 21:** the HV
+  stage is OFF by default (FA/SD pulled up) and the Mini enables and kills
+  it; it never runs wide-Vin.
 - **TRAP — the USB-serial bridge (CH340N, ruling 17) is powered from the
   5 V buck rail, NOT VBUS.** Reference designs tie bridge VCC to VBUS;
   here VBUS is 20 V after negotiation and destroys the bridge. D+/D− are
@@ -160,6 +171,12 @@ stage, roughly a wash on part count; do it.**
 > 250 V output net — read those parts forward.
 
 ## Ruling 15 — the 250 V supply is a flyback from the 20 V PD rail
+
+> **Input rail superseded 2026-10-16 by ruling 21:** the flyback topology
+> stands, but VIN is the **5 V buck rail**, not the 20 V PD rail (reason
+> 2 below, and the ~1:5 ratio, are history). The ~1:20 transformer is the
+> part that was chosen anyway (ruling 17). "Standalone, no MCU" is also
+> superseded: the stage is off by default and the Mini enables/kills it.
 
 **RULED 2026-09-24 (Reto).** Two facts that post-date ruling 14 reversed
 it, and neither was available when the ladder was chosen:
@@ -378,6 +395,10 @@ has margin, consistent with ruling 3.
 
 ### Rejected alternative — flyback from the 20 V rail
 
+> **Superseded 2026-10-16 by rulings 15/20/21:** a flyback is the chosen
+> topology, now from the 5 V rail (D ≈ 0.71 CCM-ideal at 1:20, DCM in
+> practice); the text below is the ladder-era rejection, kept as history.
+
 Plain boost is out either way (D = 98 % from 5 V, 92 % from 20 V); a
 flyback from 20 V needs ~1:5 turns (~1:20 from 5 V at D ≈ 0.7). Easier
 regulation (a real current-mode loop) and fewer parts, **rejected** because
@@ -450,6 +471,16 @@ and the LCSC product pages. Re-check it at footprint intake.
 | Flyback transformer | Coilcraft **LPR6235-253PMRC** | **C19191684** | 2,914 | Extended | Coupled inductor sold for flyback and step-up use (Coilcraft Doc 752NR-1). **1:20, Lp 25 µH ±20 %, Isat 0.7 A, DCR 0.20 Ω / 72 Ω, SRF 580 kHz**, 6 × 6 × 3.5 mm SMD. At 20 V in, 250 V out needs D ≈ 0.38 (`Vout = n·Vin·D/(1−D)`). The switch sees ≈ 20 + 250/20 = 32.5 V plus the leakage spike, so a 60 V FET suffices. At 0.6 A peak and 200 kHz in DCM it delivers ≈ 0.9 W, which covers the 1 W budget; the operating point is ~90 mW. |
 | Transformer fallback | Coilcraft LPR6235-253LML (1:10, 25 µH, Isat 1.3 A, same datasheet) | not found in JLC stock | — | — | D ≈ 0.56 at 20 V. More current headroom than the 1:20, but more switch stress. |
 
+> **20 V figures in this table superseded 2026-10-16 by ruling 21.** The
+> transformer row's "At 20 V in … D ≈ 0.38", "switch sees ≈ 32.5 V" and
+> "0.6 A peak … ≈ 0.9 W" are for a 20 V input. At VIN = 5 V the guaranteed
+> output is 0.45–0.65 W (open risk in ruling 21), and the switch sees
+> ≈ 5 V plus the clamped leakage spike (clamp drain to VIN). The fallback
+> row (1:10, D ≈ 0.56 at 20 V) is likewise a 20 V figure. The buck row stays
+> only while the 20 V PD contract is kept (Open questions 3): the Mini, the
+> HV507 and the CH340N need a 5 V rail either way, and the same rail now
+> also feeds the HV stage.
+
 The ratio is 1:20, not the ~1:5 that ruling 15 sketched. 1:5 is the
 minimum ratio that reaches 250 V. A higher ratio lowers duty and switch
 voltage, and secondary current at sub-mA is not a constraint.
@@ -473,7 +504,7 @@ photoflash-type transformer was found in JLC stock.
 The **flyback controller** is not covered by ruling 17. The UC384x class
 is dropped (ruling 20): UVLO start 8.4 V / stop 7.6 V, so it cannot
 start from 5 V (`perplexity-reasoning:492683`). The controller pick is
-held, see ruling 20.
+LM3478MAX, see ruling 21.
 
 ### Ruling 20 — flyback build, reopened by Reto 2026-10-16
 
@@ -492,25 +523,70 @@ held is decided.
   module"). Off-the-shelf HV modules run $100-300 and none is stocked by
   LCSC (`perplexity-research:492685`).
 - Switching frequency stays under the transformer's 580 kHz SRF.
-- Input is the 20 V PD rail per rulings 15/17 (D ≈ 0.38). 5 V is also
-  feasible (D ≈ 0.71).
+- ~~Input is the 20 V PD rail per rulings 15/17 (D ≈ 0.38). 5 V is also
+  feasible (D ≈ 0.71).~~ **Superseded 2026-10-16 by ruling 21: VIN = 5 V.**
 
-**Reto decides (pending decision table):**
-- Controller (LM3478, LCSC C115907, SOIC-8, is the candidate). Datasheet
-  fact, TI LM3478 table "Electrical Characteristics": Dmax is 100% and
-  the datasheet gives no limit because "the part does not permit less
-  than 100% maximum duty cycle operation". D ≈ 0.38 and 0.71 both fit.
-  Gate drive equals VIN below 7.2 V and is 7.2 V above it; VIN is
-  2.97-40 V. Current-mode, so duty above 50% needs slope compensation.
-- Topology: flyback versus TPS61170 plus a Cockcroft-Walton multiplier
-  (no magnetics).
-- External FET (60-100 V logic-level) and its C-number.
-- ≥ 400 V ultrafast output diode, output capacitor.
-- Hardware output ceiling (about 270 V from the series divider) and the
-  TVS/zener clamp on the HV rail.
-- Voltage set and control: ATmega PWM through an RC into FB, wired so it
-  can only lower Vout, versus a DAC for a gentle ramp.
-- Switching frequency inside 150-250 kHz.
+The ~~"Reto decides (pending decision table)"~~ list that stood here (controller,
+topology, FET, diode and output cap, output ceiling and clamp, voltage set,
+frequency) is **decided by ruling 21 below**.
+
+### Ruling 21 — EWOD HV decision table, APPROVED by Reto ~18:10Z 2026-10-16
+
+Approved by Reto (via the coordinator witty-forging-bee-d4, which holds his
+EWOD-picks delegation: "You pick my decisions, and I approve"), ~18:10Z
+2026-10-16. It replaces every "Reto decides" hold of ruling 20 and
+**amends rulings 13 and 15**: the HV runs from the **5 V buck rail, not 20 V
+VBUS**, and is **off by default** — the Mini enables it and kills it through
+the controller's FA/SD pin.
+
+| Role | Decision | LCSC |
+|---|---|---|
+| Topology | Flyback, DCM, ~200 kHz, VIN = 5 V | — |
+| Controller | TI **LM3478MAX**, internal 4 ms soft-start, no SS pin. VSSOP alternate | **C115907** (alt. C404045) |
+| Transformer | Coilcraft LPR6235-253PMRC (ruling 17) | C19191684 |
+| Switch FET | **HL2310A**, Basic tier, 60 V, 125 mΩ at 4.5 V. Alternate DMN10H220L-7 | **C7420347** (alt. C102615) |
+| Current sense | 0.27 Ω 0805, plus 100 Ω / 1 nF filter on ISEN | C47782 |
+| Primary clamp | BZT52C24 zener plus B5819W Schottky, drain to VIN | C19077416 + C7420330 |
+| Output diode | US1MF, 1 kV | C64877 |
+| Output caps | 3 × 100 nF / 500 V 1206, kept off board edges and V-scores | C22374889 |
+| HV clamp | 3 × 1SMA4763A 91 V in series (259–287 V) | C22393402 |
+| Divider and bleeder | Top 5 × 1 MΩ, bottom 33.2 kΩ, bleeder 4 × 1 MΩ, all 1206 | C17927 |
+| Voltage set | MCP4725A0T DAC through 2 × 49.9 kΩ, 2.2 µF from the midpoint to FB. DNP Mini-PWM resistor into the RC node as fallback | C144198 |
+| Enable | Mini GPIO → 1N4148WS → FA/SD, 10 kΩ pull-up (off by default), DNP pull-down site | C2128 |
+| Fallback (documented, not built) | TPS61170 plus an 8-stage Cockcroft-Walton ladder | — |
+
+**Voltage-set polarity.** The DAC drives FB through the divider, so it can
+only lower Vout from the hardware ceiling: ~255 V at DAC 0, and code 4095 ≈
+0 V. The ceiling comes from the divider, independent of firmware.
+
+**Ramp and kill sequence (firmware contract).** Power-up: General Call
+Reset (DAC to its power-on state), write 4095, release FA/SD, ramp 8 LSB/ms
+(≈ 0.5 V/ms), ADC check against the divider. Kill: FA/SD high plus code
+4095.
+
+**Datasheet facts kept from ruling 20** (TI LM3478): Dmax is 100 %; gate
+drive equals VIN below 7.2 V; VIN 2.97–40 V; current-mode, so duty above
+50 % needs slope compensation (Slice 6 sizes it at bring-up).
+
+**OPEN RISKS — recorded, not decided:**
+1. **Power.** 0.45–0.65 W is guaranteed from a 5 V input, not 1 W. The
+   operating point is ~90 mW, so the budget has margin; the 1 W figure in
+   earlier rulings is withdrawn.
+2. **Hipot.** The transformer's 300 Vrms/1 min winding insulation is a
+   test rating, not a working rating. Ask Coilcraft for the working
+   voltage at ~250 V DC across the windings.
+3. **MLCC DC bias.** Capacitance of the 500 V 1206 caps at 250 V DC is
+   unknown; measure at bring-up and add a cap if the ripple needs it.
+4. **Minimum load.** The bleeder value (4 × 1 MΩ) is tuned at bring-up
+   against the DCM no-load behaviour.
+5. **20 V PD contract.** With the HV on the 5 V rail, nothing on the board
+   needs 20 V. Reto to decide whether the contract is still wanted (Open
+   questions 3).
+
+**Sources.** TI `lm3478.pdf` and `tps61170.pdf`; Microchip `22039d.pdf`
+(MCP4725); Coilcraft LPR6235 datasheet
+(https://www.coilcraft.com/getmedia/1aa7eee3-2e1c-41c5-a485-234fb57f5458/lpr6235.pdf);
+rationale in `perplexity-reasoning:492700`.
 
 ## Defect A — a generated package does not declare all its pins
 
@@ -666,38 +742,46 @@ footprint intake.** Pro Mini LOCAL footprint (verified drawing); `op=
 the buck (AP63205WU-7 C2071056 proposed, ruling 17), CH340N (ruling 17),
 ESD array, LEDs. C-numbers for the CH224K, CH340N, ESD array and LEDs
 are chosen at intake. Netlist per rulings 12/13; tests assert VBUS reaches only the PD
-controller, the buck input and the divider; the bridge's VCC is on the
+controller, the buck input and the divider (ruling 21: the HV stage no
+longer reads VBUS, and if Reto drops the 20 V contract, Open questions 3,
+the PD controller and this clause go with it); the bridge's VCC is on the
 5 V rail; RAW is unconnected.
 *Accept:* `view='footprints'` shows no synthesized pin on any new part;
 netlist assertions above; board places and routes on the offline harness
 with the fabric count no worse than the HEAD re-measure (prerequisite).
 
-**Slice 6 — flyback HV stage on `ewod-dogfood-6` (rulings 15/16).
-BLOCKED on footprint intake** (Slice 4 has shipped). Parts: the flyback
-transformer (LPR6235-253PMRC C19191684 proposed, ruling 17; the open
-VERIFY items are listed there), a current-mode flyback controller plus a
-≥ 60 V N-FET with a primary current-sense resistor (controller and FET
-held, ruling 20: Reto decides), a ≥ 400 V ultrafast output diode, ≥ 400 V output capacitance
-(film, or a ceramic bank derated for DC bias), and an RCD or Zener clamp
-on the primary for the leakage spike. Regulation is closed-loop from the
-feedback divider. The divider's top leg is 3–4 resistors in series, and
-its bottom node (≤ 5 V) feeds both the controller's FB pin and a Mini ADC
-pin (ruling 13 bring-up). The bleeder doubles as the safety discharge
-path and the minimum load that keeps a DCM loop from running away at
-zero load (ruling 15). The controller is standalone: the Mini is never
-responsible for the 250 V rail existing. A default-on enable line keeps
-"inhibit until the PD contract" a later firmware choice (ruling 13).
-At vSafe5V the loop would need D ≈ 0.71 at 1:20 for 250 V, so expect
-the controller's current limit to hold the output lower until 20 V
-arrives. This is harmless, and firmware reads the divider to see when the
-rail is up. The 250 V net is VPP. It feeds HV507 VPP and, after ruling
-18, reaches the plate only through a switched channel.
+**Slice 6 — flyback HV stage on `ewod-dogfood-6` (rulings 15/16/21).
+BLOCKED on footprint intake** (Slice 4 has shipped). Every part is now
+decided by ruling 21 (APPROVED 2026-10-16): LM3478MAX controller, HL2310A
+switch, 0.27 Ω sense with the 100 Ω / 1 nF ISEN filter, the BZT52C24 +
+B5819W primary clamp (drain to VIN), LPR6235-253PMRC transformer, US1MF
+output diode, 3 × 100 nF / 500 V output caps, the 3 × 1SMA4763A HV clamp,
+the 5 × 1 MΩ / 33.2 kΩ divider with a 4 × 1 MΩ bleeder, the MCP4725A0T
+voltage-set DAC and the FA/SD enable gate. C-numbers are in the ruling 21
+table. VIN is the **5 V buck rail**, not VBUS. The stage is **off by
+default**: FA/SD is pulled up by 10 kΩ and the Mini releases it (ruling
+21), so ruling 15's "standalone" and ruling 13's "default-on enable" are
+superseded. The divider's top leg is 5 series resistors, and its bottom
+node (≤ 5 V) feeds both the controller's FB pin and a Mini ADC pin. The
+bleeder doubles as the safety discharge path and the DCM minimum load
+(tuned at bring-up). The 250 V net is VPP. It feeds HV507 VPP and, after
+ruling 18, reaches the plate only through a switched channel. Output caps
+sit off board edges and V-scores.
+
+*Generator work not done here.* The footprints (LM3478 SOIC-8/VSSOP-8, SOT-23
+FET, 0805/1206 passives, SMA zener, SOD-123F, LPR6235, MCP4725 SOT-23-6)
+need `op='footprint'` intake on prod; that is a prod pcb edit and is out of
+scope for the docs-only table landing. Next slice: footprint intake, then
+the `ewod_hv_stage` authoring with the netlist assertions below.
+
 *Accept:* the 250 V output/VPP net and the transformer secondary are in
 the 0.4 mm class (`working_voltage_v: 250`) and DRC-clean at ERROR tier;
-the divider top leg is ≥ 3 series resistors (netlist assertion); a
-bleeder connects the 250 V node to GND (netlist assertion); no VBUS or
-20 V net touches the secondary side except through the transformer
-(netlist assertion); fab notes state the discharge time to < 50 V.
+the divider top leg is ≥ 3 series resistors (netlist assertion; the
+design uses 5); a bleeder connects the 250 V node to GND (netlist
+assertion); the transformer primary side connects to the 5 V rail and no
+VBUS net touches the HV stage (netlist assertion); FA/SD has a pull-up to
+5 V (netlist assertion, off by default); fab notes state the discharge time
+to < 50 V.
 
 **Slice 7 — prod acceptance after deploy.** Re-apply `ewod-dogfood-6`,
 `op='route'`, `view='drc'`, `view='gerber'`; the "Read first" note
@@ -719,7 +803,8 @@ a B.Cu pad without a via (the gr346744 signature) — else file it as new.
 - Rewriting `pcb-usb-c-pd-nano-testboard.md` beyond marking its blocker 3
   stale.
 - Choosing C-numbers in this document, except the buck and flyback
-  transformer proposal that ruling 17 asks for.
+  transformer proposal that ruling 17 asks for and the HV decision table
+  of ruling 21 (approved by Reto).
 
 ## Acceptance criteria (summary — detail per slice above)
 
@@ -731,7 +816,7 @@ a B.Cu pad without a via (the gr346744 signature) — else file it as new.
 4. A 0.4 mm class binds the router per-net and DRC at error tier, derived
    from `working_voltage_v` (Slice 4).
 5. `ewod-dogfood-6` carries Pro Mini + USB-C PD + buck + bridge + flyback
-   HV stage with the netlist traps asserted (Slices 5–6).
+   HV stage from the 5 V rail with the netlist traps asserted (Slices 5–6).
 6. Prod matches the offline harness after deploy (Slice 7).
 
 ## Target + blast radius
@@ -779,7 +864,15 @@ id — import the OpenDrop paper and cite it there too).
    the fabric still routes at 2.25 mm pitch is measured on the harness
    after the router reland, not before. If F.Cu electrode adjacency must
    stay exempt, this needs per-(net, layer) clearance.
-2. **Flyback parts and control** — held, ruling 20 ("Reto decides, pending decision table").
+2. ~~**Flyback parts and control** — held, ruling 20.~~ **Decided
+   2026-10-16, ruling 21.** The residual risks (power, hipot, MLCC DC bias,
+   bleeder tuning) are listed there.
+3. **Is the 20 V PD contract still needed?** Ruling 21 moved the HV stage
+   to the 5 V rail, so no load wants 20 V. Dropping the contract would
+   delete the CH224K, the wide-Vin buck's reason to exist (a 5 V USB
+   source could feed the rail through a load switch or a smaller regulator)
+   and Slice 5's 20 V sequencing. Slice 5 stays as written until Reto
+   answers.
 
 (Former questions settled: the top plate goes on a switched channel
 (ruling 18), and the full-wave versus half-wave ladder question went
