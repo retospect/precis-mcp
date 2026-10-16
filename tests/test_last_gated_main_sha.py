@@ -330,7 +330,7 @@ def _run_node(name: str, conclusion: str | None, hours_ago: float) -> dict[str, 
 
 def _shards(
     conclusion: str | None = "SUCCESS",
-    n: int = 6,
+    n: int = 12,
     *,
     hours_ago: float = 1.0,
     lint: str | None = "SUCCESS",

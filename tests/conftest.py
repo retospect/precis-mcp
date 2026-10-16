@@ -411,7 +411,7 @@ def pytest_configure(config: pytest.Config) -> None:
         "(gr261537) and, since this marker's cluster grew, the ship gate "
         "itself (`scripts/ship --slow` or PRECIS_GATE_SLOW=1 restores the "
         "full set). The marked cluster is still run on every push by "
-        "check.yml's 6 Linux shards, which carry no -m filter, and by the "
+        "check.yml's 12 Linux shards, which carry no -m filter, and by the "
         "nightly matrix. See docs/conventions/testing.md.",
     )
     config.addinivalue_line(

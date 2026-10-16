@@ -85,12 +85,12 @@ scripts/test --selected              # the `ship --checked` selection via
                                      # scripts/impacted-tests: contract +
                                      # corpus/map + index (testmon if a map)
 scripts/test --durations=25 …        # profile: pytest prints the 25 slowest
-scripts/test --shard 2/6             # bucket 2 of a 6-way split (what CI runs per job)
+scripts/test --shard 2/12            # bucket 2 of a 12-way split (what CI runs per job)
 ```
 
 `--shard K/N` (tests/conftest.py) hashes every test id into one of N
 buckets (crc32, so every process agrees). The N shards partition the suite
-exactly; check.yml runs the Linux legs as 6 parallel shard jobs so the gate's
+exactly; check.yml runs the Linux legs as 12 parallel shard jobs so the gate's
 wall-clock is one shard, not the suite. Locally it is only for reproducing a
 red CI shard — run the same `K/N` the failing job name shows.
 
@@ -99,7 +99,7 @@ gate shape and duration: a full-gate run (`/land`, `/go`) takes ~90 min
 wall-clock under fleet load (2026-10-06); a docs-only diff takes ~5 min;
 `scripts/ship --quick` lint takes ~3 min. Other docs link here instead of quoting
 numbers. The ship gate
-(`ci/**` and `main` pushes, PRs) is lint + mypy + 6 shards of Linux+db on
+(`ci/**` and `main` pushes, PRs) is lint + mypy + 12 shards of Linux+db on
 3.13 — 8 jobs, so two ships fan out fully under the 20-runner cap. A diff
 that touches only `docs/` and root `*.md` gets the **docs lane** instead of
 the shards: one job of the fast set (`-m 'not db and not slow'`, no
@@ -170,7 +170,7 @@ cluster and `/go` gets its verdict in minutes.
 
 What still covers it, so nothing is actually ungated:
 
-- **check.yml's 6 Linux shards carry no `-m` filter** — every push to `main`
+- **check.yml's 12 Linux shards carry no `-m` filter** — every push to `main`
   and every `ci/**` pre-merge gate runs the whole cluster.
 - The nightly full matrix runs it on 3.12, macOS and Windows too.
 

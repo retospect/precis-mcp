@@ -22,10 +22,10 @@ on:
   #
   # 05:23 UTC is this fleet's quietest hour: over the 14 days to 2026-09-18,
   # main took 6 squash-merges in the 05:00 hour and 5 in the 06:00 hour,
-  # against 27 in the busiest (19:00). The full shape is 18 of the account's
-  # 20 concurrent job slots, so a ship gate starting inside the nightly
-  # queues behind it (~40 min) — the concurrency note below explains why
-  # that is now a wait instead of the nightly being cancelled. Keep the
+  # against 27 in the busiest (19:00). The full shape is 31 jobs, held to
+  # 26 concurrent (max-parallel) of the account's 40 slots, so one ship gate
+  # (14 jobs) starting inside the nightly still fits — the concurrency note
+  # below has the arithmetic and why the nightly is never cancelled. Keep the
   # minute off :00: GitHub drops scheduled events under load, and the top of
   # the hour is where that load is.
   schedule:
@@ -60,7 +60,7 @@ permissions:
 # the range of pushes since the last finished run, not one sha.
 #
 # Why not a run per push (the sha in the key, 2026-10-03 12:16–16:00Z): at
-# fleet rate (~33 pushes/h) × 8 jobs × ~100 runner-min against the 20-job cap
+# fleet rate (~33 pushes/h) × 8 jobs × ~100 runner-min against the then 20-job cap
 # (~12 full pushes/h), main queued 18 runs with 10–18 min queue delay, and a
 # `ship --remote` gate waited behind them. Reto ruled for the shared group
 # (review-queue ship-gate-ci-1, 2026-10-03).
@@ -71,12 +71,15 @@ permissions:
 # fix's gate, so a newer push must not replace the one pending behind it.
 # Main's shared group above is unchanged.
 #
-# Job budget: the ship-gate shape is 8 jobs (plan + lint + 6 shards of one
-# Linux leg); the nightly full shape is 18. The account's standard-runner
-# concurrency cap is 20 (GitHub Free), so TWO concurrent ships fan out
-# fully; a third queues behind them rather than failing. Adding shards or
-# legs to the gate shape past ~10 jobs costs that second slot — reshape,
-# don't grow.
+# Job budget: the account is GitHub Pro, standard-runner concurrency cap 40.
+# The ship-gate shape is 14 jobs (plan + lint + 12 shards of one Linux leg).
+# The nightly full shape is 31 (plan + lint + coverage-db + 4 test-other +
+# 2 Pythons x 12 shards = 24) and holds test-linux to `max-parallel: 19`
+# (below), i.e. at most 7 + 19 = 26 concurrent jobs. 26 + one overlapping
+# ship gate (14) = 40, so a nightly never pushes a gate past the cap; a
+# second concurrent gate (14 more) queues rather than failing. Two ships
+# alone (28) fit with room. Adding shards or legs past this budget costs
+# that headroom: re-do the arithmetic here and in `max-parallel` first.
 #
 # The group key carries the run's SHAPE, not just the ref, so the nightly
 # gets its own lane on main. Keying on the ref alone put the 18-job full
@@ -86,10 +89,11 @@ permissions:
 # schedule above exists to prevent (gr346455; latent, never observed —
 # ships cluster hours earlier). `workflow_dispatch` with full=true rides the
 # same lane, so a deliberately-dispatched full run is likewise un-cancellable
-# by a push. Cost of the split: the two shapes now coexist and 18 + 8 > 20,
-# so a gate starting inside the nightly waits rather than pre-empting it
-# (~40 min, well inside ship's 150 min CI timeout, and a CAS race lost while
-# queued re-runs CI per gr343941).
+# by a push. Cost of the split: the two shapes now coexist; max-parallel on
+# test-linux holds the nightly to 26 jobs, so nightly + one gate (14) = 40
+# and a gate starting inside the nightly runs beside it. A second concurrent
+# gate waits rather than pre-empting anything (well inside ship's 150 min CI
+# timeout, and a CAS race lost while queued re-runs CI per gr343941).
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ (github.event_name == 'schedule' || inputs.full) && 'full' || 'gate' }}${{ startsWith(github.ref, 'refs/heads/release/') && format('-{0}', github.sha) || '' }}
   cancel-in-progress: ${{ github.event_name != 'schedule' && github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/') }}
@@ -106,7 +110,7 @@ jobs:
   #               are deliberately NOT docs here — skills are served and
   #               tested at runtime, scripts are executed by tests, and the
   #               .claude hooks are shell that tests exercise.
-  # Anything else is the ship-gate shape: lint + 6 shards of 3.13 Linux.
+  # Anything else is the ship-gate shape: lint + 12 shards of 3.13 Linux.
   plan:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -223,7 +227,7 @@ jobs:
   # N shard jobs partition the suite exactly and run in parallel on
   # separate runners, each with its own postgres service. Wall-clock is
   # one shard's worth (~8 min + setup). The shard count is spelled twice
-  # below (matrix list + `/6`) — keep them equal.
+  # below (matrix list + `/12`) — keep them equal.
   #
   # Gate shape runs 3.13 only; the nightly adds 3.12 (see `plan`).
   test-linux:
@@ -236,9 +240,11 @@ jobs:
     timeout-minutes: 40
     strategy:
       fail-fast: false
+      # Nightly: cap test-linux so nightly + one gate stays <= 40 (budget above).
+      max-parallel: ${{ needs.plan.outputs.full == 'true' && 19 || 12 }}
       matrix:
         python-version: ${{ needs.plan.outputs.full == 'true' && fromJSON('["3.12", "3.13"]') || fromJSON('["3.13"]') }}
-        shard: [1, 2, 3, 4, 5, 6]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     services:
       postgres:
         # pgvector image so the `vector` extension is present; the
@@ -295,7 +301,7 @@ jobs:
       # (test_nm_sugars' rdkit-primary-path assertion, and test_rxn's
       # q='CCO' search, which only matches the rdkit-CANONICALISED
       # ethanol; the raw fixture SMILES spells it OCC).
-      - run: uv run --all-extras --no-extra catalyst --no-extra catalyst-gpu pytest --shard ${{ matrix.shard }}/6
+      - run: uv run --all-extras --no-extra catalyst --no-extra catalyst-gpu pytest --shard ${{ matrix.shard }}/12
         env:
           PRECIS_TEST_PG_URL: postgresql://postgres:postgres@localhost:5432/precis_test
 
@@ -379,7 +385,7 @@ jobs:
   # and the db-tagged tests auto-skip via the conftest probe. These legs
   # cover the db-less suite + platform-specific paths. Nightly only (or
   # `workflow_dispatch` with full=true) — off the ship gate since
-  # 2026-09-16 so two ships fit the runner cap; `tests/test_posix_only_guards.py`
+  # 2026-09-16 so two ships fit the runner cap (then 20 slots; now 40, Pro); `tests/test_posix_only_guards.py`
   # is the compile-time stand-in for the Windows leg.
   test-other:
     needs: plan
