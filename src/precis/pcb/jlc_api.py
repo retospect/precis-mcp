@@ -467,6 +467,68 @@ class JlcApiClient:
                 break
 
 
+#: Negative cache for live lookups that came back empty: ``{C-no: monotonic
+#: at miss}``. A real miss (endpoint reachable, no exact row) is stable
+#: enough that re-asking within the TTL is just latency.
+_LIVE_MISS_TTL_S = 300.0
+_live_misses: dict[str, float] = {}
+
+#: Live lookups per batch refresh -- an interactive cap so a stale-heavy
+#: board can't hang a tool call; the un-refreshed tail just stays stale.
+_LIVE_BATCH_MAX = 12
+
+
+def reset_live_cache() -> None:
+    """Clear the live-lookup negative cache (tests; an operator retry)."""
+    _live_misses.clear()
+
+
+def live_lookup(
+    store: Store, lcsc: str, *, client: JlcApiClient | None = None
+) -> dict[str, Any] | None:
+    """Fetch one C-number live via :meth:`JlcApiClient.component_info` and
+    upsert it into ``parts`` (the catalog-miss fallback behind
+    ``get(kind='part')``). ``None`` on a real miss, negative-cached for
+    :data:`_LIVE_MISS_TTL_S`. Without credentials this raises
+    :class:`VendorError` -- a missing key is not a miss, so it is neither
+    cached nor reported as "no such part"."""
+    client = client or JlcApiClient(store=store)
+    if not client.available:
+        raise VendorError("jlcpcb", "no JLCPCB API credentials configured")
+    key = str(lcsc).strip().upper()
+    missed_at = _live_misses.get(key)
+    if missed_at is not None and time.monotonic() - missed_at < _LIVE_MISS_TTL_S:
+        return None
+    row = client.component_info(key)
+    if row is None:
+        _live_misses[key] = time.monotonic()
+        return None
+    _live_misses.pop(key, None)
+    store.parts_import([row])
+    return row
+
+
+def live_refresh_many(
+    store: Store,
+    lcscs: list[str],
+    *,
+    client: JlcApiClient | None = None,
+    limit: int = _LIVE_BATCH_MAX,
+) -> dict[str, str]:
+    """Live-lookup each C-number, bounded by ``limit``. Returns
+    ``{lcsc: "hit" | "miss" | "error: <detail>"}``; entries past ``limit``
+    are absent (the caller reports them as still-stale)."""
+    client = client or JlcApiClient(store=store)
+    out: dict[str, str] = {}
+    for lcsc in list(lcscs)[:limit]:
+        try:
+            hit = live_lookup(store, lcsc, client=client) is not None
+            out[str(lcsc)] = "hit" if hit else "miss"
+        except VendorError as exc:
+            out[str(lcsc)] = f"error: {exc}"
+    return out
+
+
 __all__ = [
     "ACCESS_KEY_SECRET",
     "APP_ID_SECRET",
@@ -478,6 +540,9 @@ __all__ = [
     "JlcApiClient",
     "JlcPermissionError",
     "credentials_available",
+    "live_lookup",
+    "live_refresh_many",
     "normalize_api_row",
+    "reset_live_cache",
     "sign_request",
 ]

@@ -468,7 +468,7 @@ def mint_lazy_link_target(target: str, *, store: Store) -> None:
         # fetched). On a catalog miss ask the live listing endpoint once
         # (gr485250): the dump lacks the Extended range, so a catalog miss
         # is not proof the part does not exist.
-        from precis.pcb import catalog, jlc_library
+        from precis.pcb import catalog, jlc_api
 
         key = catalog.lcsc_id(identifier) or identifier
         try:
@@ -478,7 +478,7 @@ def mint_lazy_link_target(target: str, *, store: Store) -> None:
             if catalog.lcsc_id(key) is None:
                 raise
             try:
-                found = jlc_library.live_lookup(store, key)
+                found = jlc_api.live_lookup(store, key)
             except Exception as live_exc:
                 exc.next = [
                     *([exc.next] if isinstance(exc.next, str) else []),

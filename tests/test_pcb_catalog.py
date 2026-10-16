@@ -433,63 +433,13 @@ class _FakeJlcApiClient:
         self.last_key = None  # walk exhausted — reset for the next full pass
 
 
-def _OK_LIBRARY(store):
-    """Library top-up stub: no network in tests."""
-    del store
-    return {"rows": 0, "upserted": 0, "restocked": 0}
-
-
-def _listing_post(rows=(), *, pages=1, calls=None):
-    """Fake ``selectSmtComponentList`` POST for the unfiltered listing walk:
-    one canned page of raw listing rows (``componentCode`` etc.), page 1
-    only unless ``pages`` says otherwise."""
-
-    def post(body):
-        if calls is not None:
-            calls.append(dict(body))
-        page = body.get("currentPage", 1)
-        return {
-            "data": {
-                "componentPageInfo": {
-                    "total": len(rows),
-                    "pages": pages,
-                    "list": list(rows) if page == 1 else [],
-                }
-            }
-        }
-
-    return post
-
-
-def _listing_row(lcsc: str, *, stock: int = 10, model: str = "X1") -> dict:
-    return {
-        "componentCode": lcsc,
-        "componentLibraryType": "expand",
-        "componentModelEn": model,
-        "stockCount": stock,
-    }
-
-
-_EMPTY_LISTING = _listing_post()
-
-
 def test_parts_refresh_pass_no_credentials_is_a_clean_noop(store):
     from precis.workers.parts_refresh import run_parts_refresh_pass
 
     client = _FakeJlcApiClient(available=False)
-    result = run_parts_refresh_pass(
-        store, client=client, library=_OK_LIBRARY, list_post=_EMPTY_LISTING
-    )
-    assert result == {
-        "claimed": 0,
-        "ok": 0,
-        "failed": 0,
-        "library": 0,
-        "listing": 0,
-        "api_walk": "dark",
-        "coverage_lost": result["coverage_lost"],  # a note, content aside
-    }
-    assert "listing walk" in result["coverage_lost"]
+    result = run_parts_refresh_pass(store, client=client)
+    assert result == {"claimed": 0, "ok": 0, "failed": 0}
+    assert client.seen_since_keys == []  # dark never walks
 
 
 def test_parts_refresh_pass_imports_and_checkpoints_a_bounded_walk(store):
@@ -510,23 +460,8 @@ def test_parts_refresh_pass_imports_and_checkpoints_a_bounded_walk(store):
         },
     ]
     client = _FakeJlcApiClient(pages=pages)
-    result = run_parts_refresh_pass(
-        store,
-        client=client,
-        row_budget=1,
-        library=_OK_LIBRARY,
-        list_post=_EMPTY_LISTING,
-    )
-    assert result == {
-        "claimed": 1,
-        "ok": 1,
-        "failed": 0,
-        "restocked": 0,
-        "library": 0,
-        "listing": 0,
-        "api_walk": "ok",
-        "coverage_lost": None,
-    }
+    result = run_parts_refresh_pass(store, client=client, row_budget=1)
+    assert result == {"claimed": 1, "ok": 1, "failed": 0, "restocked": 0}
     assert store.part_row("C90001") is not None
     assert store.part_row("C90002") is None  # row_budget stopped the walk here
     # Partial walk: the cursor advanced past row 1, so it's checkpointed —
@@ -541,58 +476,8 @@ def test_parts_refresh_pass_resumes_from_its_checkpoint(store):
     client = _FakeJlcApiClient(
         pages=[{"lcsc": "C90003", "stock": 5, "_cursor": "cursor-2"}]
     )
-    run_parts_refresh_pass(
-        store, client=client, library=_OK_LIBRARY, list_post=_EMPTY_LISTING
-    )
+    run_parts_refresh_pass(store, client=client)
     assert client.seen_since_keys == ["cursor-1"]
-
-
-def test_parts_refresh_pass_surfaces_permission_error(store):
-    from precis.pcb.jlc_api import JlcPermissionError
-    from precis.workers.parts_refresh import run_parts_refresh_pass
-
-    client = _FakeJlcApiClient(
-        permission_error=JlcPermissionError(
-            "jlcpcb", "console scope not granted", status=403
-        )
-    )
-    result = run_parts_refresh_pass(
-        store, client=client, library=_OK_LIBRARY, list_post=_EMPTY_LISTING
-    )
-    # gr481902: a failed walk degrades — the alert carries it, `error`
-    # keeps the verbatim message, the job itself does not fail.
-    assert result["failed"] == 0
-    assert "console scope not granted" in result["error"]
-
-
-def test_parts_refresh_failure_raises_alert_and_success_resolves_it(store):
-    """gr464537: a failing walk must be visible, and clear on recovery."""
-    from precis.alerts import open_alert_severity
-    from precis.pcb._http import VendorError
-    from precis.workers.parts_refresh import run_parts_refresh_pass
-
-    def _sev():
-        return open_alert_severity(
-            store, source="parts_refresh", fingerprint="jlcpcb-api"
-        )
-
-    client = _FakeJlcApiClient(permission_error=VendorError("jlcpcb", "HTTP 500"))
-    assert (
-        run_parts_refresh_pass(
-            store, client=client, library=_OK_LIBRARY, list_post=_EMPTY_LISTING
-        )["failed"]
-        == 0
-    )
-    assert _sev() is not None
-
-    ok = _FakeJlcApiClient(pages=[{"lcsc": "C90009", "stock": 1}])
-    assert (
-        run_parts_refresh_pass(
-            store, client=ok, library=_OK_LIBRARY, list_post=_EMPTY_LISTING
-        )["failed"]
-        == 0
-    )
-    assert _sev() is None
 
 
 def _walk_alert(store):
@@ -609,175 +494,120 @@ def _walk_alert(store):
     )
 
 
-def test_parts_refresh_walk_500_degrades_and_tracks_the_outage(store, caplog):
-    """gr481902: an upstream HTTP 500 on getComponentInfos must not fail the
-    pass AND must not alert — the listing walk carries the catalog, so a
-    5xx is one WARN line + an app_state outage record, nothing more."""
-    import json
-    import logging
-    from datetime import UTC, datetime
-
-    from precis.pcb._http import VendorUnavailable
-    from precis.workers.parts_refresh import OUTAGE_SETTING_KEY, run_parts_refresh_pass
-
-    def _library(store):
-        del store
-        return {"rows": 1586, "upserted": 1586, "restocked": 110}
+def test_parts_refresh_pass_surfaces_permission_error(store):
+    from precis.pcb.jlc_api import JlcPermissionError
+    from precis.workers.parts_refresh import run_parts_refresh_pass
 
     client = _FakeJlcApiClient(
-        permission_error=VendorUnavailable(
-            "jlcpcb", "4 attempts exhausted; last: HTTP 500", status=500
+        permission_error=JlcPermissionError(
+            "jlcpcb", "console scope not granted", status=403
         )
     )
-    with caplog.at_level(logging.WARNING, "precis.workers.parts_refresh"):
-        result = run_parts_refresh_pass(
-            store, client=client, library=_library, list_post=_EMPTY_LISTING
-        )
-    assert result["failed"] == 0
-    assert result["library"] == 1586 and result["listing"] == 0
-    assert "HTTP 500" in result["error"]
-    assert "HTTP 500" in result["api_walk"]
-    assert "listing walk" in result["coverage_lost"]  # the honest record
-    # One WARN line naming the outage — and NO alert.
-    warns = [r for r in caplog.records if r.levelno == logging.WARNING]
-    assert len(warns) == 1 and "upstream HTTP 500" in warns[0].getMessage()
-    assert _walk_alert(store) is None
-
-    today = datetime.now(UTC).date().isoformat()
-    rec = json.loads(store.get_setting(OUTAGE_SETTING_KEY))
-    assert rec == {"first_seen": today, "runs": 1, "status": 500}
-
-    # Outage days 2..6 skip the leg entirely — no attempts, no alert, the
-    # streak keeps counting; the listing walk still runs.
-    calls: list[dict] = []
-    for _ in range(5):
-        result = run_parts_refresh_pass(
-            store,
-            client=client,
-            library=_OK_LIBRARY,
-            list_post=_listing_post(calls=calls),
-        )
-        assert result["api_walk"].startswith("skipped:")
-        assert _walk_alert(store) is None
-    # Only the first (unrecorded) outage day actually attempted the walk;
-    # days 2–6 skipped the leg entirely.
-    assert len(client.seen_since_keys) == 1
-    assert len(calls) == 5  # the listing walk still ran each day
-    rec = json.loads(store.get_setting(OUTAGE_SETTING_KEY))
-    assert rec["runs"] == 6
-
-    # Outage day 7 is a probe day: the leg is attempted; a recovered
-    # endpoint clears the record and the alert stays silent.
-    ok = _FakeJlcApiClient(pages=[{"lcsc": "C90010", "stock": 1}])
-    result = run_parts_refresh_pass(
-        store, client=ok, library=_OK_LIBRARY, list_post=_EMPTY_LISTING
-    )
-    assert result["api_walk"] == "ok" and result["ok"] == 1
-    assert _walk_alert(store) is None
-    assert store.get_setting(OUTAGE_SETTING_KEY) == ""
+    result = run_parts_refresh_pass(store, client=client)
+    assert result["failed"] == 1
+    assert "console scope not granted" in result["error"]
+    assert _walk_alert(store) is not None
 
 
-def test_parts_refresh_walk_non_5xx_keeps_the_generic_alert(store):
-    """A walk failure that ISN'T a 5xx (transport error, 4xx) still degrades
-    the job but keeps the generic alert — "skipped on outage" would be a
-    lie, and no outage record is written."""
+def test_parts_refresh_failure_raises_alert_and_success_resolves_it(store):
+    """gr464537: a failing walk must be visible, and clear on recovery."""
+    from precis.alerts import open_alert_severity
     from precis.pcb._http import VendorError
-    from precis.workers.parts_refresh import OUTAGE_SETTING_KEY, run_parts_refresh_pass
+    from precis.workers.parts_refresh import run_parts_refresh_pass
 
-    client = _FakeJlcApiClient(
-        permission_error=VendorError("jlcpcb", "transport error: boom")
-    )
-    result = run_parts_refresh_pass(
-        store, client=client, library=_OK_LIBRARY, list_post=_EMPTY_LISTING
-    )
-    assert result["failed"] == 0
-    alert = _walk_alert(store)
-    assert alert is not None
-    assert alert["title"] == "[parts_refresh] JLCPCB catalog walk is failing"
-    assert store.get_setting(OUTAGE_SETTING_KEY) is None
+    def _sev():
+        return open_alert_severity(
+            store, source="parts_refresh", fingerprint="jlcpcb-api"
+        )
+
+    client = _FakeJlcApiClient(permission_error=VendorError("jlcpcb", "HTTP 400"))
+    assert run_parts_refresh_pass(store, client=client)["failed"] == 1
+    assert _sev() is not None
+
+    ok = _FakeJlcApiClient(pages=[{"lcsc": "C90009", "stock": 1}])
+    assert run_parts_refresh_pass(store, client=ok)["failed"] == 0
+    assert _sev() is None
 
 
-def test_parts_refresh_walk_error_still_imports_partial_rows(store):
-    """gr481902: rows the walk yielded before the endpoint died are imported —
-    the cursor checkpoint already moved past them, so dropping them would
-    lose them permanently."""
+def test_parts_refresh_walk_5xx_alerts_and_keeps_partial_rows(store):
+    """gr464537: the 5xx outage-skip is retired (the 500s were our signing
+    timestamp, not an outage) -- a 5xx walk failure is a plain failure: the
+    jlcpcb-api alert, failed=1, the rows yielded before it imported, and the
+    cursor it reached checkpointed. A later success resolves the alert."""
+    from precis.alerts import open_alert_severity
     from precis.pcb._http import VendorUnavailable
     from precis.workers.parts_refresh import CURSOR_SETTING_KEY, run_parts_refresh_pass
 
     client = _FakeJlcApiClient(
         pages=[{"lcsc": "C90011", "stock": 7, "_cursor": "cursor-1"}],
-        permission_error=VendorUnavailable("jlcpcb", "HTTP 500", status=500),
+        permission_error=VendorUnavailable(
+            "jlcpcb", "4 attempts exhausted; last: HTTP 500", status=500
+        ),
     )
-    result = run_parts_refresh_pass(
-        store, client=client, library=_OK_LIBRARY, list_post=_EMPTY_LISTING
-    )
-    assert result["failed"] == 0 and result["ok"] == 1
+    result = run_parts_refresh_pass(store, client=client)
+    assert result["failed"] == 1 and result["ok"] == 1 and result["claimed"] == 1
+    assert "HTTP 500" in result["error"]
     assert store.part_row("C90011") is not None
     assert store.get_setting(CURSOR_SETTING_KEY) == "cursor-1"
+    alert = _walk_alert(store)
+    assert alert is not None
+    assert alert["title"] == "[parts_refresh] JLCPCB catalog walk is failing"
 
+    # Attempted every run -- no skip days, no outage record.
+    run_parts_refresh_pass(store, client=client)
+    assert client.seen_since_keys == [None, "cursor-1"]
 
-# ── the listing walk (gr481902 §the credential-free catalog leg) ─────
-
-
-def test_listing_walk_imports_and_checkpoints_pages(store):
-    """The unfiltered listing is the pass's real catalog coverage: pages are
-    pulled in order, upserted, and the page cursor resumes next tick."""
-    from precis.workers.parts_refresh import (
-        LIST_PAGE_SETTING_KEY,
-        run_parts_refresh_pass,
+    ok = _FakeJlcApiClient(pages=[{"lcsc": "C90012", "stock": 1}])
+    assert run_parts_refresh_pass(store, client=ok)["failed"] == 0
+    assert (
+        open_alert_severity(store, source="parts_refresh", fingerprint="jlcpcb-api")
+        is None
     )
-
-    calls: list[dict] = []
-    post = _listing_post(
-        [_listing_row("C50001"), _listing_row("C50002")], pages=3, calls=calls
-    )
-    client = _FakeJlcApiClient(available=False)
-    result = run_parts_refresh_pass(
-        store,
-        client=client,
-        library=_OK_LIBRARY,
-        list_post=post,
-        row_budget=1,  # one row per tick -> one page
-    )
-    assert result["listing"] == 2 and result["api_walk"] == "dark"
-    assert store.part_row("C50001") is not None
-    assert store.get_setting(LIST_PAGE_SETTING_KEY) == "2"
-    assert [c["currentPage"] for c in calls] == [1]
+    assert _walk_alert(store) is None
 
 
-def test_listing_walk_wraps_at_the_last_page(store):
-    from precis.workers.parts_refresh import (
-        LIST_PAGE_SETTING_KEY,
-        run_parts_refresh_pass,
-    )
+def test_parts_refresh_uses_the_injected_api_client_never_the_website(
+    store, monkeypatch
+):
+    """gr464537: the pass is API-only -- constructing the jlcpcb.com poster
+    (any website call) would raise here, and the retired walk/top-up symbols
+    are gone from the worker module."""
+    import precis.workers.parts_refresh as pr
 
-    post = _listing_post([_listing_row("C50003")], pages=1)
-    run_parts_refresh_pass(
-        store,
-        client=_FakeJlcApiClient(available=False),
-        library=_OK_LIBRARY,
-        list_post=post,
-    )
-    # Reached the last page -> the checkpoint resets to "" so tomorrow's
-    # tick starts a fresh rescan from page 1.
-    assert store.get_setting(LIST_PAGE_SETTING_KEY) == ""
+    def _boom(*_a, **_k):
+        raise AssertionError("parts_refresh touched the jlcpcb.com web poster")
+
+    monkeypatch.setattr("precis.pcb.jlc_library._WebPoster", _boom)
+    client = _FakeJlcApiClient(pages=[{"lcsc": "C90020", "stock": 1}])
+    result = pr.run_parts_refresh_pass(store, client=client)
+    assert result["failed"] == 0 and result["ok"] == 1
+    assert client.seen_since_keys == [None]  # the injected client did the walk
+    assert store.part_row("C90020") is not None
+    for gone in (
+        "walk_listing",
+        "refresh_library_parts",
+        "OUTAGE_SETTING_KEY",
+        "LIST_PAGE_SETTING_KEY",
+    ):
+        assert not hasattr(pr, gone), gone
 
 
-def test_listing_walk_failure_alerts_without_touching_the_api_leg(store):
-    from precis.pcb._http import VendorError
+def test_parts_refresh_clears_retired_listing_and_library_alerts(store):
+    """The pass resolves every parts_refresh alert it isn't failing on, so
+    rows left open by the retired jlcpcb-listing/-library rules close on the
+    first run."""
+    from precis.alerts import open_alert_severity, raise_alert
     from precis.workers.parts_refresh import run_parts_refresh_pass
 
-    def post(body):
-        raise VendorError("jlcpcb-web", "HTTP 503 from listing", status=503)
-
-    client = _FakeJlcApiClient(pages=[{"lcsc": "C90020", "stock": 1}])
-    result = run_parts_refresh_pass(
-        store, client=client, library=_OK_LIBRARY, list_post=post
-    )
-    assert result["failed"] == 1 and result["ok"] == 1  # api walk still ran
-    assert "503" in result["listing_error"]
-    alert = _walk_alert(store)
-    assert alert["title"] == "[parts_refresh] JLCPCB listing walk is failing"
+    for fp in ("jlcpcb-listing", "jlcpcb-library"):
+        raise_alert(
+            store, source="parts_refresh", fingerprint=fp, title="t", detail="d"
+        )
+    run_parts_refresh_pass(store, client=_FakeJlcApiClient(pages=[]))
+    for fp in ("jlcpcb-listing", "jlcpcb-library"):
+        assert (
+            open_alert_severity(store, source="parts_refresh", fingerprint=fp) is None
+        )
 
 
 def test_parts_refresh_service_spec_is_registered_and_discoverable():
@@ -840,7 +670,7 @@ def test_cli_refresh_default_falls_back_to_sqlite_without_credentials(
     )
     monkeypatch.setenv("PRECIS_JLCPARTS_DUMP_PATH", str(db))
 
-    pcb_cli._refresh_default(store, page_size=100, row_limit=None, library=False)
+    pcb_cli._refresh_default(store, page_size=100, row_limit=None)
 
     out = capsys.readouterr().out
     assert "no JLCPCB API credentials" in out
@@ -928,67 +758,7 @@ def test_cli_refresh_from_sqlite_uses_the_bulk_swap(store, tmp_path, capsys):
             )
         ],
     )
-    pcb_cli._refresh_from_sqlite(store, str(db), library=False)
+    pcb_cli._refresh_from_sqlite(store, str(db))
     out = capsys.readouterr().out
     assert "source=jlcparts-dump" in out and "loaded=1" in out
     assert store.part_row("C77007") is not None
-
-
-def _one_row_dump(tmp_path):
-    db = tmp_path / "cache.sqlite3"
-    _write_jlcparts_sqlite(
-        db,
-        [(77008, "Murata", "GRM1", "cap", 1, 1, "0402", "http://x", "[]", "{}")],
-    )
-    return str(db)
-
-
-def test_cli_refresh_from_sqlite_tops_up_library_after_dump(
-    store, tmp_path, monkeypatch, capsys
-):
-    calls = []
-
-    def _fake(st, **kw):
-        calls.append(st)
-        return {"rows": 5, "upserted": 4, "restocked": 1}
-
-    monkeypatch.setattr("precis.pcb.jlc_library.refresh_library_parts", _fake)
-    pcb_cli._refresh_from_sqlite(store, _one_row_dump(tmp_path))
-    out = capsys.readouterr().out
-    assert calls == [store]
-    assert "source=jlcpcb-library rows=5 upserted=4 restocked=1" in out
-
-
-def test_cli_refresh_from_sqlite_no_library_skips_top_up(store, tmp_path, monkeypatch):
-    def _boom(st, **kw):
-        raise AssertionError("top-up must not run")
-
-    monkeypatch.setattr("precis.pcb.jlc_library.refresh_library_parts", _boom)
-    pcb_cli._refresh_from_sqlite(store, _one_row_dump(tmp_path), library=False)
-
-
-def test_cli_refresh_from_sqlite_library_failure_warns_not_fails(
-    store, tmp_path, monkeypatch, capsys
-):
-    from precis.pcb._http import VendorError
-
-    def _fail(st, **kw):
-        raise VendorError("jlcpcb-web", "HTTP 503")
-
-    monkeypatch.setattr("precis.pcb.jlc_library.refresh_library_parts", _fail)
-    pcb_cli._refresh_from_sqlite(store, _one_row_dump(tmp_path))
-    err = capsys.readouterr().err
-    assert "WARNING library top-up failed" in err and "HTTP 503" in err
-    assert store.part_row("C77008") is not None
-
-
-def test_cli_refresh_library_only_surfaces_vendor_error(store, monkeypatch):
-    from precis.pcb._http import VendorError
-
-    def _fail(st, **kw):
-        raise VendorError("jlcpcb-web", "HTTP 503")
-
-    monkeypatch.setattr("precis.pcb.jlc_library.refresh_library_parts", _fail)
-    with pytest.raises(SystemExit) as excinfo:
-        pcb_cli._refresh_library(store)
-    assert "HTTP 503" in str(excinfo.value)

@@ -1,35 +1,22 @@
-"""JLCPCB parts-library top-up (Basic + Preferred) from the public website.
+"""Live keyword search of jlcpcb.com's parts listing -- the ONE website call left.
 
-Prod ``parts`` was filled from the yaqwsx/jlcparts ``source-db-v2`` dump, but
-that dump has no C-number below ~6.37M (upstream's walk lost the low range),
-so JLCPCB Basic parts (C25804, C1525, …) were missing, and the Open API
-(:mod:`precis.pcb.jlc_api`) answered HTTP 500 on every call until the 2026-10-16
-ms-to-seconds signing fix (gr464537). This
-module tops up the *library* (~1.6k Basic + Preferred rows) from the
-credential-less listing endpoint behind jlcpcb.com's parts-library page:
-``GET`` an XSRF cookie, then ``POST`` the paged list with the token echoed in
-a header. Applied after every dump reload (``precis pcb refresh-parts``) and
-in the daily ``parts_refresh`` pass.
-
-The server's ``hasNextPage`` is False even when more pages exist, so paging
-runs on ``pages``. ``assemblyComponentFlag`` is false even for Basic parts
-and is deliberately unused: the library is JLCPCB's assembly library by
-definition. The host is fixed, never agent-supplied.
-
-The same listing endpoint takes a ``keyword`` field — that is the *live*
-lookup path (gr485250): ``get``/``search`` for a part the catalog misses
-queries it directly (:func:`live_lookup`, :func:`live_search`), so Extended
-parts the jlcparts dump never carried are still reachable. Live calls use
-the tighter :data:`LIVE_POLICY` (an agent is waiting) and a short
-in-process negative cache (:data:`_LIVE_MISS_TTL_S`) so a genuinely absent
-C-number doesn't re-hit the site on every retry.
+The Open API (:mod:`precis.pcb.jlc_api`) has a bulk cursor walk and a lookup
+by C-number, but no keyword/free-text query. ``search(kind='part', q=...)``
+falls back to a keyword search when the local catalog has no hit, and that is
+the gap this module still covers, via the listing endpoint behind the
+parts-library page: ``GET`` an XSRF cookie, then ``POST`` the list with the
+token echoed in a header. Interactive only, one page per query; the catalog
+refresh and C-number lookups all go through the Open API (gr464537). That
+endpoint sits under ``/api``, which jlcpcb.com's robots.txt disallows, so it
+leaves as soon as the Open API gains a keyword query. The host is fixed,
+never agent-supplied. Live calls use the tight :data:`LIVE_POLICY` (an
+agent is waiting).
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import time
 from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING, Any
 
@@ -56,44 +43,19 @@ HOST = "https://jlcpcb.com"
 XSRF_PATH = "/api/overseas-pcb-order/v1/getAll"
 LIST_PATH = "/api/overseas-pcb-order/v1/shoppingCart/smtGood/selectSmtComponentList"
 
-#: One listing walk per filter; a part in both (Basic and Preferred) is
-#: deduped by C-number.
-LIBRARY_FILTERS: tuple[dict[str, Any], ...] = (
-    {"componentLibraryType": "base"},
-    {"preferredComponentFlag": True},
-)
-
-#: Safety cap per filter (pages of 100; the library is ~13 + ~13 pages).
-MAX_PAGES = 50
-_PAGE_SIZE = 100
 _SERVICE = "jlcpcb-web"
 
-#: Live single-part/keyword lookups run inside a tool call — a tighter
+#: Live keyword lookups run inside a tool call — a tighter
 #: policy than the bulk walk: fewer attempts, a small cap, and a shorter
 #: breaker cooldown so an agent is not pinned for minutes on a wedged
 #: endpoint.
 LIVE_POLICY = Policy(attempts=3, base=0.6, cap=8.0, breaker_cooldown=120.0)
 
-#: Page size / page budget for live keyword queries. The listing ranks by
-#: relevance, so an exact C-number — when it exists — lands on page one;
-#: the extra pages are a safety net for the endpoint's fuzzy matching
-#: (a never-issued number still returns neighbours).
+#: Page size for live keyword queries (one page per query).
 _LIVE_PAGE_SIZE = 25
-_MAX_LIVE_PAGES = 4
-
-#: Negative cache for live lookups that came back empty: ``{C-no: monotonic
-#: at miss}``. A real miss (endpoint reachable, no exact row) is stable
-#: enough that re-asking within the TTL is just latency.
-_LIVE_MISS_TTL_S = 300.0
-_live_misses: dict[str, float] = {}
 
 #: One list request body in -> decoded JSON out. Swappable in tests.
 PostFn = Callable[[dict[str, Any]], dict[str, Any]]
-
-
-def reset_live_cache() -> None:
-    """Clear the live-lookup negative cache (tests; an operator retry)."""
-    _live_misses.clear()
 
 
 class _WebPoster:
@@ -177,109 +139,6 @@ class _WebPoster:
         if not isinstance(data, dict):
             return {}
         return check_envelope(_SERVICE, data, resp, LIST_PATH)
-
-
-def walk_listing(
-    store: Store,
-    *,
-    row_budget: int,
-    start_page: int = 1,
-    page_size: int = _PAGE_SIZE,
-    post: PostFn | None = None,
-) -> dict[str, Any]:
-    """Bounded pull of the UNFILTERED listing — the whole ~7.27M-row
-    JLCPCB-assemblable catalog in ascending ``componentCode`` order
-    (verified 2026-10-14: a bare ``{currentPage, pageSize}`` POST returns
-    ``total=7269753``). This is the credential-free substitute for the
-    dead ``getComponentInfos`` Open API walk (gr481902/gr464537): same
-    catalog scope, plus per-row fields the API never normalized
-    (``params._category``/``_lifecycle``/``_lcsc_url``).
-
-    The listing has no ``lastKey`` cursor — ``currentPage`` IS the resume
-    token, so this returns ``next_page`` for the caller to checkpoint
-    (``None`` when the walk reached the last page or an empty page — the
-    caller stores "" and tomorrow starts a fresh sweep). New parts land
-    at the END of the ascending order, so a wrap's early pages are a
-    stock/price rescan, not a discovery pass — same profile as the old
-    cursor walk."""
-    poster: _WebPoster | None = None
-    send = post
-    if send is None:
-        poster = _WebPoster()
-        send = poster
-    rows: list[dict[str, Any]] = []
-    batch: list[dict[str, Any]] = []
-    last_page = start_page - 1
-    pages = 0
-    try:
-        page = start_page
-        while len(rows) < row_budget:
-            try:
-                data = send({"currentPage": page, "pageSize": page_size})
-            except VendorError:
-                raise
-            except Exception as exc:
-                raise VendorError(_SERVICE, f"listing walk failed: {exc!r}") from exc
-            info = (data.get("data") or {}).get("componentPageInfo") or {}
-            batch = list(info.get("list") or [])
-            pages = to_int(info.get("pages")) or 0
-            for raw in batch:
-                if (n := normalize_library_row(raw)) is not None:
-                    rows.append(n)
-            last_page = page
-            if not batch or page >= pages:
-                break
-            page += 1
-        counts = store.parts_import(rows) if rows else {"upserted": 0, "restocked": 0}
-        exhausted = not batch or last_page >= pages
-        return {
-            "rows": len(rows),
-            **counts,
-            "next_page": None if exhausted else last_page + 1,
-            "pages": pages,
-        }
-    finally:
-        if poster is not None:
-            poster.close()
-
-
-def iter_library_rows(post: PostFn | None = None) -> Iterator[dict[str, Any]]:
-    """Raw listing rows for every :data:`LIBRARY_FILTERS` walk, deduped by
-    ``componentCode``. Pages on ``pages`` (``hasNextPage`` lies)."""
-    poster: _WebPoster | None = None
-    send: PostFn
-    if post is None:
-        poster = _WebPoster()
-        send = poster
-    else:
-        send = post
-    seen: set[str] = set()
-    try:
-        for flt in LIBRARY_FILTERS:
-            page = 1
-            while True:
-                data = send({"currentPage": page, "pageSize": _PAGE_SIZE, **flt})
-                info = (data.get("data") or {}).get("componentPageInfo") or {}
-                for row in info.get("list") or []:
-                    code = row.get("componentCode")
-                    if code and code not in seen:
-                        seen.add(code)
-                        yield row
-                pages = to_int(info.get("pages")) or 0
-                if page >= pages:
-                    break
-                if page >= MAX_PAGES:
-                    log.warning(
-                        "jlc_library: hit MAX_PAGES=%d for filter %s (pages=%d)",
-                        MAX_PAGES,
-                        flt,
-                        pages,
-                    )
-                    break
-                page += 1
-    finally:
-        if poster is not None:
-            poster.close()
 
 
 def _price(raw: Any) -> list[dict[str, Any]] | None:
@@ -366,32 +225,6 @@ def normalize_library_row(row: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def refresh_library_parts(
-    store: Store, *, post: PostFn | None = None
-) -> dict[str, int]:
-    """Fetch the Basic + Preferred library and upsert it into ``parts``.
-    An empty listing is a failure (:class:`VendorError`), never a no-op.
-
-    Any fetch/parse failure surfaces as :class:`VendorError` — ``with_backoff``
-    only wraps ``httpx.HTTPError``, and ``safe_fetch.SsrfBlocked`` (a DNS blip
-    at connect) or a malformed envelope would otherwise escape and kill the
-    caller's API walk. ``parts_import`` (DB) errors still propagate."""
-    try:
-        rows = [
-            n
-            for raw in iter_library_rows(post)
-            if (n := normalize_library_row(raw)) is not None
-        ]
-    except VendorError:
-        raise
-    except Exception as exc:
-        raise VendorError(_SERVICE, f"parts-library fetch failed: {exc!r}") from exc
-    if not rows:
-        raise VendorError(_SERVICE, "parts-library listing returned no rows")
-    counts = store.parts_import(rows)
-    return {"rows": len(rows), **counts}
-
-
 def _live_poster(post: PostFn | None) -> tuple[PostFn, _WebPoster | None]:
     """``(send, poster-to-close)`` for a live call: the injected fake, or a
     real poster on the interactive policy + a tighter socket timeout."""
@@ -437,44 +270,6 @@ def iter_keyword_rows(
             poster.close()
 
 
-def live_lookup(
-    store: Store, lcsc: str, *, post: PostFn | None = None
-) -> dict[str, Any] | None:
-    """Fetch one C-number live from the listing endpoint and upsert it.
-
-    The endpoint fuzzy-matches a keyword (a never-issued number returns
-    neighbours, not an empty page), so only an exact ``componentCode`` match
-    counts — neighbours are NOT imported: importing them would fill the
-    catalog with rows the agent never asked for under a query that looks
-    like a hit for ``lcsc``. Returns the normalized ``parts``-shape dict,
-    or ``None`` on a real miss (negative-cached for
-    :data:`_LIVE_MISS_TTL_S`)."""
-    key = str(lcsc).strip().upper()
-    missed_at = _live_misses.get(key)
-    if missed_at is not None and time.monotonic() - missed_at < _LIVE_MISS_TTL_S:
-        return None
-    hit: dict[str, Any] | None = None
-    try:
-        for raw in iter_keyword_rows(key, post=post, max_pages=_MAX_LIVE_PAGES):
-            if str(raw.get("componentCode") or "").strip().upper() == key:
-                hit = raw
-                break
-    except VendorError:
-        raise
-    except Exception as exc:
-        raise VendorError(_SERVICE, f"live part lookup failed: {exc!r}") from exc
-    if hit is None:
-        _live_misses[key] = time.monotonic()
-        return None
-    row = normalize_library_row(hit)
-    if row is None:
-        _live_misses[key] = time.monotonic()
-        return None
-    _live_misses.pop(key, None)
-    store.parts_import([row])
-    return row
-
-
 def live_search(
     store: Store,
     q: str,
@@ -496,53 +291,13 @@ def live_search(
     return rows
 
 
-#: Live lookups per batch refresh — an interactive cap so a stale-heavy
-#: board can't hang a tool call; the un-refreshed tail just stays stale.
-_LIVE_BATCH_MAX = 12
-
-
-def live_refresh_many(
-    store: Store,
-    lcscs: list[str],
-    *,
-    post: PostFn | None = None,
-    limit: int = _LIVE_BATCH_MAX,
-) -> dict[str, str]:
-    """Live-lookup each C-number, one shared poster, bounded by ``limit``.
-
-    Returns ``{lcsc: "hit" | "miss" | "error: <detail>"}``; entries past
-    ``limit`` are absent (the caller reports them as still-stale)."""
-    send, poster = _live_poster(post)
-    out: dict[str, str] = {}
-    try:
-        for lcsc in list(lcscs)[:limit]:
-            try:
-                out[str(lcsc)] = (
-                    "hit" if live_lookup(store, lcsc, post=send) is not None else "miss"
-                )
-            except VendorError as exc:
-                out[str(lcsc)] = f"error: {exc}"
-    finally:
-        if poster is not None:
-            poster.close()
-    return out
-
-
 __all__ = [
     "HOST",
-    "LIBRARY_FILTERS",
     "LIST_PATH",
     "LIVE_POLICY",
-    "MAX_PAGES",
     "XSRF_PATH",
     "PostFn",
     "iter_keyword_rows",
-    "iter_library_rows",
-    "live_lookup",
-    "live_refresh_many",
     "live_search",
     "normalize_library_row",
-    "refresh_library_parts",
-    "reset_live_cache",
-    "walk_listing",
 ]

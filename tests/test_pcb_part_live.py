@@ -1,21 +1,25 @@
 """Live single-part fallback on a catalog miss (gr485250).
 
 ``get(kind='part', id='C…')`` on a part the jlcparts dump + library top-up
-never carried queries JLCPCB's public listing endpoint by ``keyword``,
-exact-matches the C-number (the endpoint fuzzy-matches — a never-issued
-number returns neighbours, not an empty page), upserts via ``parts_import``
-and returns the row. No network here: the ``post=`` seam feeds canned
-listing envelopes.
+never carried asks the JLCPCB Open API (``getComponentDetailByCode`` via
+:func:`precis.pcb.jlc_api.live_lookup`), upserts via ``parts_import`` and
+returns the row; free-text search still uses the keyword listing
+(:func:`precis.pcb.jlc_library.live_search`). No network here: the
+``post=`` seam feeds canned listing envelopes and an injected
+``JlcApiClient(send=...)`` feeds canned detail envelopes.
 """
 
 from __future__ import annotations
 
+import json
+
+import httpx
 import pytest
 
 from precis.dispatch import Hub
 from precis.errors import NotFound
 from precis.handlers.part import PartHandler
-from precis.pcb import catalog, jlc_library
+from precis.pcb import catalog, jlc_api, jlc_library
 from precis.pcb._http import VendorError
 
 #: Trimmed real row: keyword 'C2655145' → AS7341 DLGT (expand, stock 492).
@@ -70,11 +74,51 @@ def _post_with(rows, *, pages=1, calls=None):
     return post
 
 
+#: The same part as the Open API's getComponentDetailByCode returns it.
+API_C2655145 = {
+    "componentCode": "C2655145",
+    "manufacturer": "AMS",
+    "mfrPartNumber": "AS7341-DLGT",
+    "description": "Ambient Light Sensors ROHS",
+    "basic": False,
+    "stockCount": 492,
+    "componentSpecificationEn": "OLGA-8(2x3.1)",
+}
+
+
 @pytest.fixture(autouse=True)
 def _fresh_live_cache():
-    jlc_library.reset_live_cache()
+    jlc_api.reset_live_cache()
     yield
-    jlc_library.reset_live_cache()
+    jlc_api.reset_live_cache()
+
+
+@pytest.fixture
+def creds(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(jlc_api.APP_ID_SECRET, "test-app-id")
+    monkeypatch.setenv(jlc_api.ACCESS_KEY_SECRET, "test-access-key")
+    monkeypatch.setenv(jlc_api.SECRET_KEY_SECRET, "test-secret-key")
+
+
+def _api_client(rows_by_code, calls=None, *, status=200):
+    """A credentialed ``JlcApiClient`` whose wire is a fake: each request's
+    ``componentCodes`` are answered from ``rows_by_code`` (absent -> empty
+    list = a real miss), or with ``status`` when it isn't 200."""
+
+    def send(method, path, headers, body):
+        codes = json.loads(body)["componentCodes"]
+        if calls is not None:
+            calls.extend(codes)
+        if status != 200:
+            return httpx.Response(status, text="boom")
+        rows = [rows_by_code[c] for c in codes if c in rows_by_code]
+        return httpx.Response(
+            200, json={"data": {"componentDetailResponseVOList": rows}}
+        )
+
+    return jlc_api.JlcApiClient(
+        send=send, sleep=lambda _s: None, pace=lambda _name: None
+    )
 
 
 def test_lcsc_id_forms():
@@ -101,50 +145,99 @@ def test_lcsc_id_forms():
     assert catalog.lcsc_id("") is None
 
 
-def test_live_lookup_exact_match_upserts(store):
-    post = _post_with([_NEIGHBOUR, C2655145])
-    row = jlc_library.live_lookup(store, "C2655145", post=post)
+def test_live_lookup_exact_match_upserts(store, creds):
+    calls: list[str] = []
+    client = _api_client({"C2655145": API_C2655145}, calls)
+    row = jlc_api.live_lookup(store, "c2655145", client=client)
     assert row is not None and row["lcsc"] == "C2655145"
-    assert row["basic"] is False  # componentLibraryType 'expand'
-    assert row["stock"] == 492 and row["params"]["_category"].endswith("Sensors")
+    assert row["basic"] is False
+    assert row["stock"] == 492
     got = store.part_row("C2655145")
     assert got is not None and got["mfr_part"] == "AS7341-DLGT"
-    # Neighbours the endpoint fuzzy-matched are NOT imported.
-    assert store.part_row("C1396897") is None
+    assert calls == ["C2655145"]
 
 
-def test_live_lookup_miss_is_negative_cached(store):
-    calls: list[dict] = []
-    post = _post_with([_NEIGHBOUR], calls=calls)
-    assert jlc_library.live_lookup(store, "C99999999", post=post) is None
-    assert jlc_library.live_lookup(store, "C99999999", post=post) is None
-    assert len(calls) == 1  # second call served by the miss cache
+def test_live_lookup_miss_is_negative_cached(store, creds):
+    calls: list[str] = []
+    client = _api_client({}, calls)
+    assert jlc_api.live_lookup(store, "C99999999", client=client) is None
+    assert jlc_api.live_lookup(store, "C99999999", client=client) is None
+    assert calls == ["C99999999"]  # second call served by the miss cache
+    assert store.part_row("C99999999") is None
 
 
-def test_live_lookup_error_wraps(store):
-    def post(body):
-        raise RuntimeError("boom")
+def test_live_lookup_without_credentials_raises_uncached(store, monkeypatch):
+    for name in (
+        jlc_api.APP_ID_SECRET,
+        jlc_api.ACCESS_KEY_SECRET,
+        jlc_api.SECRET_KEY_SECRET,
+    ):
+        monkeypatch.delenv(name, raising=False)
 
-    with pytest.raises(VendorError, match="live part lookup failed"):
-        jlc_library.live_lookup(store, "C2655145", post=post)
+    def send(*_a):
+        raise AssertionError("no-credential client must not touch the wire")
+
+    client = jlc_api.JlcApiClient(send=send)
+    assert not client.available
+    for _ in range(2):  # a missing key is not a miss: never negative-cached
+        with pytest.raises(VendorError, match="no JLCPCB API credentials"):
+            jlc_api.live_lookup(store, "C2655145", client=client)
+    assert "C2655145" not in jlc_api._live_misses
 
 
-def test_get_falls_back_to_live(store):
-    post = _post_with([C2655145])
+def test_live_lookup_error_propagates_and_is_not_cached(store, creds):
+    client = _api_client({}, status=500)
+    with pytest.raises(VendorError):
+        jlc_api.live_lookup(store, "C2655145", client=client)
+    assert "C2655145" not in jlc_api._live_misses
+
+
+def test_live_refresh_many_maps_hit_miss_error(store, creds):
+    client = _api_client({"C2655145": API_C2655145})
+    out = jlc_api.live_refresh_many(store, ["C2655145", "C99999999"], client=client)
+    assert out == {"C2655145": "hit", "C99999999": "miss"}
+    bad = _api_client({}, status=500)
+    out = jlc_api.live_refresh_many(store, ["C1"], client=bad)
+    assert out["C1"].startswith("error: ")
+
+
+def test_live_refresh_many_without_credentials_reports_errors(store, monkeypatch):
+    for name in (
+        jlc_api.APP_ID_SECRET,
+        jlc_api.ACCESS_KEY_SECRET,
+        jlc_api.SECRET_KEY_SECRET,
+    ):
+        monkeypatch.delenv(name, raising=False)
+    out = jlc_api.live_refresh_many(store, ["C1"], client=jlc_api.JlcApiClient())
+    assert out["C1"].startswith("error: ")
+
+
+def test_live_refresh_many_honours_limit(store, creds):
+    calls: list[str] = []
+    client = _api_client({}, calls)
+    codes = [f"C9{i:07d}" for i in range(5)]
+    out = jlc_api.live_refresh_many(store, codes, client=client, limit=3)
+    assert list(out) == codes[:3]
+    assert calls == codes[:3]
+    assert jlc_api._LIVE_BATCH_MAX == 12
+
+
+def test_get_falls_back_to_live(store, creds):
+    client = _api_client({"C2655145": API_C2655145})
     part = PartHandler(
         hub=Hub(store=store),
-        live_lookup=lambda s, c: jlc_library.live_lookup(s, c, post=post),
+        live_lookup=lambda s, c: jlc_api.live_lookup(s, c, client=client),
     )
     body = part.get(id="C2655145").body
     assert "C2655145" in body and "AS7341-DLGT" in body
     assert store.part_row("C2655145") is not None  # the hit was catalogued
 
 
-def test_get_real_miss_names_the_live_check(store):
-    post = _post_with([_NEIGHBOUR])
+def test_get_real_miss_names_the_live_check(store, creds):
+    client = _api_client({})
     part = PartHandler(
         hub=Hub(store=store),
-        live_lookup=lambda s, c: jlc_library.live_lookup(s, c, post=post),
+        live_lookup=lambda s, c: jlc_api.live_lookup(s, c, client=client),
     )
     with pytest.raises(NotFound, match="C99999999") as exc:
         part.get(id="C99999999")
@@ -256,7 +349,7 @@ def test_link_mints_a_live_only_part(store, monkeypatch):
         s.parts_import([{"lcsc": c, "mfr_part": "AS7341-DLGT", "description": "als"}])
         return {"lcsc": c}
 
-    monkeypatch.setattr(jlc_library, "live_lookup", live)
+    monkeypatch.setattr(jlc_api, "live_lookup", live)
     memory = MemoryHandler(hub=Hub(store=store))
     mem = store.insert_ref(kind="memory", slug=None, title="t").id
     memory.link(id=mem, target="part:C2655145", rel="related-to")
@@ -267,7 +360,7 @@ def test_link_mints_a_live_only_part(store, monkeypatch):
 def test_link_real_miss_still_refuses_with_live_note(store, monkeypatch):
     from precis.handlers.memory import MemoryHandler
 
-    monkeypatch.setattr(jlc_library, "live_lookup", lambda *a, **k: None)
+    monkeypatch.setattr(jlc_api, "live_lookup", lambda *a, **k: None)
     memory = MemoryHandler(hub=Hub(store=store))
     mem = store.insert_ref(kind="memory", slug=None, title="t").id
     with pytest.raises(NotFound, match="C99999999") as exc:
@@ -359,37 +452,6 @@ def test_cross_kind_search_tips_part(runtime_with_store):
 
 # ── view='availability' (EOL sweep) ──────────────────────────────────
 
-#: A live row carrying the endpoint's lifecycle signals.
-_EOL_ROW = {
-    **_NEIGHBOUR,
-    "componentCode": "C2177020",
-    "componentLibraryType": "expand",
-    "componentModelEn": "CBR06C999B5GAC",
-    "stockCount": 0,
-    "mergedComponentCode": "C9001",
-    "componentAlternativesCode": "C111,C222",
-    "lossNumber": 4,
-}
-
-
-def _post_by_keyword(mapping, calls=None):
-    def post(body):
-        if calls is not None:
-            calls.append(dict(body))
-        rows = mapping.get(body.get("keyword") or "", [])
-        return {
-            "data": {
-                "componentPageInfo": {
-                    "total": len(rows),
-                    "pages": 1,
-                    "hasNextPage": False,
-                    "list": rows,
-                }
-            }
-        }
-
-    return post
-
 
 def _board(store, slug: str, parts: dict[str, str | None]) -> int:
     ref, _created, _counts = store.pcb_apply(
@@ -414,7 +476,7 @@ def _age_row(store, lcsc: str, days: int) -> None:
         )
 
 
-def test_availability_view_sweeps_stale_rows_live(store):
+def test_availability_view_sweeps_stale_rows_live(store, creds):
     from precis.handlers.pcb import PcbHandler
 
     store.parts_import(
@@ -442,15 +504,14 @@ def test_availability_view_sweeps_stale_rows_live(store):
             "J1": None,  # no LCSC number at all
         },
     )
-    calls: list[dict] = []
-    post = _post_by_keyword({"C2655145": [C2655145], "C99999999": [_NEIGHBOUR]}, calls)
+    fetched: list[str] = []
+    client = _api_client({"C2655145": API_C2655145}, fetched)
     pcb = PcbHandler(
         hub=Hub(store=store),
-        live_refresh=lambda s, lcs: jlc_library.live_refresh_many(s, lcs, post=post),
+        live_refresh=lambda s, lcs: jlc_api.live_refresh_many(s, lcs, client=client),
     )
     body = pcb.get(id="sweep", view="availability").body
     # The live pass refreshed only the stale/absent rows.
-    fetched = [c["keyword"] for c in calls]
     assert "C25804" not in fetched  # fresh row: untouched
     assert set(fetched) == {"C2655145", "C99999999"}
     assert "2 re-catalogued" in body or "1 re-catalogued" in body
@@ -484,19 +545,18 @@ def test_availability_view_renders_lifecycle_signals(store):
     assert "ext" in body  # library class column
 
 
-def test_availability_live_refresh_is_bounded(store):
+def test_availability_live_refresh_is_bounded(store, creds):
     from precis.handlers.pcb import PcbHandler
 
     parts: dict[str, str | None] = {f"U{i}": f"C9{i:07d}" for i in range(15)}
     _board(store, "fat", parts)
-    calls: list[dict] = []
+    calls: list[str] = []
+    client = _api_client({}, calls)
     pcb = PcbHandler(
         hub=Hub(store=store),
-        live_refresh=lambda s, lcs: jlc_library.live_refresh_many(
-            s, lcs, post=_post_by_keyword({}, calls)
-        ),
+        live_refresh=lambda s, lcs: jlc_api.live_refresh_many(s, lcs, client=client),
     )
     body = pcb.get(id="fat", view="availability").body
-    assert len(calls) == jlc_library._LIVE_BATCH_MAX  # 12, not 15
+    assert len(calls) == jlc_api._LIVE_BATCH_MAX  # 12, not 15
     assert "skipped (bounded)" in body
     assert body.count("not in catalog") >= 3

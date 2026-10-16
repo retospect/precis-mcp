@@ -36,7 +36,7 @@ from typing import Any, ClassVar
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.handlers.paper import PaperHandler
-from precis.pcb import jlc_library
+from precis.pcb import jlc_api
 from precis.pcb._http import VendorError
 from precis.pcb.datasheets import enqueue_one
 from precis.protocol import KindSpec
@@ -183,7 +183,7 @@ class DatasheetHandler(PaperHandler):
                 # same catalog-miss fallback as get(kind='part'): the dump
                 # lacks the Extended range; a hit is upserted by the lookup
                 try:
-                    found = jlc_library.live_lookup(self.store, lcsc) is not None
+                    found = jlc_api.live_lookup(self.store, lcsc) is not None
                 except VendorError:
                     found = False
                 if not found:

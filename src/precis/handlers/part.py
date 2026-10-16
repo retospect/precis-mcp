@@ -7,12 +7,11 @@ It is **ingest-only** — populated by ``precis pcb refresh-parts`` / the
 community ``jlcparts`` SQLite dump absent API credentials), never by
 ``put``. Selection prefers **JLCPCB-assemblable, high-turnover** parts.
 
-On a catalog miss ``get``/``search`` fall back to a **live** query against
-JLCPCB's public parts-listing endpoint (:mod:`precis.pcb.jlc_library`,
-gr485250): the dump lacks the Extended range below ~C6.37M and beyond, so a
-C-number the catalog doesn't know (or a free-text query with no local hit)
-is asked of the site directly and the hit is upserted into ``parts`` on the
-way out. Live misses are negative-cached briefly; a wedged endpoint degrades
+On a catalog miss ``get`` falls back to a **live** C-number lookup through
+the JLCPCB Open API (:func:`precis.pcb.jlc_api.live_lookup`, gr485250) and
+``search`` to a keyword query (:mod:`precis.pcb.jlc_library` -- the Open API
+has no keyword search, the one website call left); the hit is upserted into
+``parts`` on the way out. Live misses are negative-cached briefly; a wedged endpoint degrades
 to the catalog's own answer with the failure noted.
 
 Slice 1 ships read-only access (``get`` one part, ``search`` the catalog) over
@@ -69,7 +68,7 @@ from precis.errors import BadInput, NotFound
 from precis.format import render_agent_table
 from precis.handlers._eye import is_eye_view
 from precis.handlers._links_render import render_links_section
-from precis.pcb import catalog, jlc_library
+from precis.pcb import catalog, jlc_api, jlc_library
 from precis.pcb._http import VendorError
 from precis.pcb.catalog import min_unit_price
 from precis.pcb.datasheet_facts import part_facts, render_facts
@@ -155,15 +154,15 @@ class PartHandler(Handler):
         self.hub = hub
         #: Test seams — ``live_lookup``: ``(store, lcsc) -> normalized row |
         #: None``; ``live_search``: ``(store, q, page_size=) -> rows``.
-        #: Both default to the real endpoint (:mod:`precis.pcb.jlc_library`).
+        #: Defaults: :mod:`precis.pcb.jlc_api` / :mod:`precis.pcb.jlc_library`.
         self._live_lookup = live_lookup
         self._live_search = live_search
 
     def _live(self, lcsc: str) -> dict[str, Any] | None:
         """The injectable live lookup; resolves to the real endpoint
-        (:func:`precis.pcb.jlc_library.live_lookup`) when no test double
+        (:func:`precis.pcb.jlc_api.live_lookup`, the Open API) when no test double
         was injected."""
-        fn = self._live_lookup or jlc_library.live_lookup
+        fn = self._live_lookup or jlc_api.live_lookup
         return fn(self.store, lcsc)
 
     # ── get ──────────────────────────────────────────────────────────

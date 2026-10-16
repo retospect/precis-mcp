@@ -119,7 +119,7 @@ from precis.pcb import geom as pcb_geom
 from precis.pcb import gerber as pcb_gerber
 from precis.pcb import globalplan as pcb_globalplan
 from precis.pcb import ir as pcb_ir
-from precis.pcb import jlc_library as pcb_jlc_library
+from precis.pcb import jlc_api as pcb_jlc_api
 from precis.pcb import jlc_order as pcb_jlc_order
 from precis.pcb import layer_lock as pcb_layer_lock
 from precis.pcb import length_ratio as pcb_length_ratio
@@ -285,7 +285,7 @@ _OPS = (
 )
 
 #: ``view='availability'``: catalog rows older than this (or absent) are
-#: re-checked live, bounded by ``jlc_library._LIVE_BATCH_MAX`` per call.
+#: re-checked live, bounded by ``jlc_api._LIVE_BATCH_MAX`` per call.
 _AVAIL_STALE_S = 6 * 3600
 
 
@@ -772,7 +772,7 @@ class PcbHandler(Handler):
         self.embedder = hub.embedder
         #: Test seam for ``view='availability'``'s bounded live refresh —
         #: ``(store, lcscs) -> {lcsc: 'hit'|'miss'|'error: …'}``; defaults
-        #: to :func:`precis.pcb.jlc_library.live_refresh_many`.
+        #: to :func:`precis.pcb.jlc_api.live_refresh_many`.
         self._live_refresh = live_refresh
         #: ``view='congestion'``'s capacity map, one entry per ref keyed
         #: by the board's ``content_hash`` — the strict flow-graph build
@@ -5049,7 +5049,7 @@ class PcbHandler(Handler):
         merged/alt successor, no-buy reason, idle, restock estimate;
         plus ``part_availability.discontinued``). Parts rows older than
         ``_AVAIL_STALE_S`` — or absent from ``parts`` entirely — get a
-        bounded live refresh from the jlcpcb.com listing on the way out."""
+        bounded live refresh from the JLCPCB Open API on the way out."""
         rows = self.store.pcb_bom_availability(ref_id)
         if not rows:
             return Response(body="no components on this board")
@@ -5068,7 +5068,7 @@ class PcbHandler(Handler):
         head = f"# availability — {len(rows)} BOM line(s)"
         outcomes: dict[str, str] = {}
         if stale:
-            fn = self._live_refresh or pcb_jlc_library.live_refresh_many
+            fn = self._live_refresh or pcb_jlc_api.live_refresh_many
             outcomes = fn(self.store, stale)
             hits = sum(1 for v in outcomes.values() if v == "hit")
             miss = sum(1 for v in outcomes.values() if v == "miss")
@@ -5076,7 +5076,7 @@ class PcbHandler(Handler):
             skipped = len(stale) - len(outcomes)
             head += (
                 f"\nlive refresh ({len(stale)} stale): {hits} re-catalogued, "
-                f"{miss} absent from the listing"
+                f"{miss} absent from the JLCPCB catalog"
                 + (f", {len(errs)} failed: {', '.join(errs)}" if errs else "")
                 + (f", {skipped} skipped (bounded)" if skipped else "")
             )

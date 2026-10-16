@@ -19,10 +19,10 @@ A `part` is reference data in the LCSC/JLCPCB catalog, addressed by its **LCSC
 C-number** (`C25804`). It is **ingest-only** (loaded via `precis pcb
 refresh-parts` / the `parts_refresh` worker, from the JLCPCB Open API or the
 community `jlcparts` dump) — you `get`, `search` and link it, never `put` it.
-On a catalog miss, `get`/`search`/linking fall back to a **live** query
-against JLCPCB's public parts listing and catalogue the hit — the dump lacks
-the Extended range below ~C6.37M and newer parts, so a catalog miss does not
-mean the part doesn't exist. The whole catalog is **JLCPCB-assemblable by
+On a catalog miss, `get`/linking fall back to a **live** C-number lookup
+through the JLCPCB Open API, and `search` to a keyword query against JLCPCB's
+public parts listing (the Open API has no keyword search); hits are
+catalogued — a catalog miss does not mean the part doesn't exist. The whole catalog is **JLCPCB-assemblable by
 definition**, so a part you find here can be placed and soldered by the fab.
 This skill feeds the `part` field of a `pcb` component ([[precis-pcb-help]]).
 
@@ -81,8 +81,8 @@ get(
 
 The id is a C-number **however it arrives** — `c25804`, or a pasted
 `lcsc.com`/`jlcpcb.com` product URL (the C-number is extracted from the
-string; the URL is never fetched). On a catalog miss `get` queries the live
-listing endpoint once and catalogues the hit — an Extended part the dump
+string; the URL is never fetched). On a catalog miss `get` asks the Open API
+once and catalogues the hit — an Extended part the dump
 never carried resolves transparently. A real miss is negative-cached for a
 few minutes, then the `NotFound` says the live listing was checked too.
 
@@ -210,11 +210,8 @@ The catalog itself is refreshed by the `parts_refresh` pass, which walks
 the JLCPCB Open API `lastKey` cursor daily. A failed walk raises
 `parts_refresh/jlcpcb-api` (warn — the parts table just stays stale);
 triage starts at the alert detail (auth/permission vs transport), and
-`precis pcb refresh-parts --from-sqlite` is the fallback. Two siblings
-cover the same pass: `parts_refresh/jlcpcb-listing` (the jlcpcb.com listing
-walk failed) and `parts_refresh/jlcpcb-library` (the Basic/Preferred
-top-up failed; retry with `precis pcb refresh-parts --library`). Day-to-day you
-shouldn't need either: the live lookup above covers individual parts on
+`precis pcb refresh-parts --from-sqlite` is the fallback. Day-to-day you
+shouldn't need it: the live lookup above covers individual parts on
 demand — refresh-parts is for keeping the *bulk* catalog fresh, not for
 answering "does C<n> exist?"
 

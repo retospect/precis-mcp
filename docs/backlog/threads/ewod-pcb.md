@@ -88,18 +88,16 @@ se-machine-design's input shape (Do-next).
    (datasheet pull, build 5). Order confirmed by Reto (ewod-pcb-3).
    After the deploy, dogfood: a put that shrinks the outline under routed
    copper rips the net and does not refuse.
-4. gr464537 (only the graceful degrade landed, 9440c6ed8; the walk
-   itself is still owed): JLCPCB's getComponentInfos 500s for every body
-   (upstream or account side; ask JLCPCB support). `parts` holds 2.0M rows from the
+4. gr464537 (the 500 was our ms signing timestamp, fixed 484ec24f1;
+   parts_refresh is API-only again): after deploy confirm the daily walk
+   advances `pcb.parts_refresh.last_key` and C25804/C1525 stay in `parts`.
+   Background: `parts` holds 2.0M rows from the
    jlcparts v2 dump, but that dump has nothing below ~C6.37M: upstream
    re-bootstrapped its cache ~2026-09-14 mid-walk and keeps walking up
    from there. The low range returns when upstream's next walk starts
-   (walk ~98% done 2026-10-12). Meanwhile `refresh-parts --library` and
-   the daily pass top up JLCPCB's Basic + Preferred library (~1.6k
-   parts) with no credentials; every dump load re-applies it. After
-   deploy: run the fill, check C25804/C1525 in `parts`. Later: re-run
-   `--from-sqlite` once the upstream dump goes below C6.37M. Delete
-   this item then.
+   (walk ~98% done 2026-10-12). The Open API walk
+   now fills the low range itself. Delete this item once the walk has
+   wrapped once and `min(lcsc)` in `parts` is below C1000.
 5. **Judge cost (round-3 diff review, 2026-10-03).** `_judged_mutation`
    runs the validity DRC twice, plus pcb_load, _build_ir and a copper
    listing, on every judged put, class_rules and footprint call.

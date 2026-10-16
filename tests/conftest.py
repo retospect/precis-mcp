@@ -572,16 +572,19 @@ def _reset_drain_flag() -> Iterator[None]:
 
 @pytest.fixture(autouse=True)
 def _no_live_jlcpcb_http(monkeypatch: pytest.MonkeyPatch) -> None:
-    """gr485250: the part live-lookup path (:mod:`precis.pcb.jlc_library`
-    ``live_lookup``/``live_search``/``iter_keyword_rows``) POSTs to the real
-    jlcpcb.com listing endpoint when no ``post=`` is injected — reachable
-    from handler/link code paths now, not just the refresh worker, so a
-    test that forgets the seam would make a real network call. Deny by
-    default: constructing the real poster in a test raises ``VendorError``
-    (the same degradation a wedged endpoint produces), which is what the
-    callers' miss/failure handling is built to absorb. Tests exercise the
-    path by injecting a fake ``post=`` (or by patching ``live_lookup``
-    /``live_search`` outright).
+    """gr485250: the one remaining jlcpcb.com website call is the keyword
+    search (:mod:`precis.pcb.jlc_library` ``live_search``/
+    ``iter_keyword_rows``), which POSTs to the real listing endpoint when no
+    ``post=`` is injected -- reachable from handler code paths, so a test
+    that forgets the seam would make a real network call. Deny by default:
+    constructing the real poster in a test raises ``VendorError`` (the same
+    degradation a wedged endpoint produces). Tests exercise the path by
+    injecting a fake ``post=`` (or by patching ``live_search`` outright).
+
+    The Open API paths (``jlc_api.live_lookup``/``live_refresh_many``, the
+    refresh walk) need no deny: a ``JlcApiClient`` without credentials is
+    inert (``available`` False, no wire), and tests that supply credentials
+    inject ``send=``.
     """
     import precis.pcb.jlc_library as _jl
 

@@ -555,7 +555,7 @@ def test_put_for_a_part_not_in_the_catalog_mints_nothing(
     from precis.errors import NotFound
 
     monkeypatch.setattr(
-        "precis.handlers.datasheet.jlc_library.live_lookup", lambda s, c: None
+        "precis.handlers.datasheet.jlc_api.live_lookup", lambda s, c: None
     )
     with pytest.raises(NotFound, match="not in the catalog"):
         ds_handler.put(args={"url": "https://x.test/a.pdf", "part": "C99999999"})

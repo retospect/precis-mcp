@@ -116,7 +116,7 @@ _spec.loader.exec_module(coderef)
 #: of the contract: an entry that gains a real caller must be REMOVED,
 #: not left masking a future regression check forever.
 _KNOWN_UNWIRED: dict[str, str] = {
-    "src/precis/pcb/jlc_library.py::reset_live_cache": (
+    "src/precis/pcb/jlc_api.py::reset_live_cache": (
         "own docstring: 'Clear the live-lookup negative cache (tests; an "
         "operator retry)' -- same ops-tool shape as _http.reset_circuit"
     ),
