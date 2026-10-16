@@ -37,10 +37,10 @@ import logging
 import math
 import time
 from typing import TYPE_CHECKING, Any
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from precis.utils import handle_registry
 from precis_web.deps import get_store, templates, timed_response
@@ -93,11 +93,14 @@ def _map_ctx(
     u_marker: float | None = None,
     vlines: list[dict[str, Any]] | None = None,
     reset: list[dict[str, Any]] | None = None,
+    masks: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """One map for the template: the SVG plus its provenance footer and
     the region list the slider bank's resting-state label reads."""
     return {
-        "svg": map_svg(m, u_marker=u_marker, vlines=vlines, reset=reset),
+        "svg": map_svg(m, u_marker=u_marker, vlines=vlines, reset=reset, masks=masks),
+        "mask_rungs": [r["name"] for r in (masks or {}).get("rungs") or []],
+        "mask_her": bool((masks or {}).get("her") is not None),
         "anchor_key": str(m.get("anchor_key") or "?"),
         "models": m.get("models") or [],
         "engine_version": m.get("engine_version"),
@@ -121,21 +124,21 @@ def _map_ctx(
 
 def _staircase_ctx(
     store: Store, ref: Any, *, pathway: str | None = None
-) -> tuple[dict[str, Any] | None, Any]:
+) -> tuple[dict[str, Any] | None, Any, Any]:
     """The affine staircase of the candidate's best linked pathway — or of
     the ready linked pathway ``pathway`` names (handle, ref_id or slug; the
     ``?pathway=`` deep link, falling back to the best with a notice) —
     JSON-safe rungs for the client-side re-tilt (each carrying its
     slice-7 reset margin + estimator label), the engine's own per-route
     scalars, the HER competitor, footing and the honest ``missing``
-    list. Returns ``(ctx, staircase_routes)``; ``(None, None)`` when no
-    ready pathway is linked."""
+    list. Returns ``(ctx, staircase_routes, pathway_ref)``; all ``None``
+    when no ready pathway is linked."""
     from precis.quest import staircase as sq
     from precis_pathway import reset_contour, staircase_routes
 
     ranked = sq.ranked_pathways(store, int(ref.id))
     if not ranked:
-        return None, None
+        return None, None, None
     pw, notice = _pick_pathway(ranked, pathway)
     sr = staircase_routes.routes_for_pathway(store, pw)
     handle = _pathway_handle(pw)
@@ -207,6 +210,7 @@ def _staircase_ctx(
             ],
         },
         sr,
+        pw,
     )
 
 
@@ -294,6 +298,96 @@ def _reset_layer(sr: Any, u_window: Any) -> list[dict[str, Any]]:
     return out
 
 
+def _mask_layer(
+    sr: Any, m: dict[str, Any], coads: dict[str, int]
+) -> dict[str, Any] | None:
+    """The slice-4 overlays for one map (gr489471): per PCET rung of
+    route 1 (the scorecard's head — one route keeps the map legible), the
+    U spans where it is viable; the HER mask's spans; and the operating
+    window — the rung masks ∩ HER ∩ the map's region matching the surface
+    the pathway was computed on. All pH-flat on RHE, so spans in U."""
+    import numpy as np
+
+    from precis.quest import staircase as sq
+    from precis_pathway import staircase_masks as sm
+
+    pcet = list(getattr(sr, "pcet_routes", None) or [])
+    route = pcet[0] if pcet else None
+    win = list(m.get("U_RHE_window") or [None, None])[:2]
+    if route is None or not route.rungs or win[0] is None or win[1] is None:
+        return None
+    if not float(win[0]) < float(win[1]):
+        return None
+    u_axis = np.linspace(float(win[0]), float(win[1]), 401)
+    full = sm.RestingMap.full(u_axis, np.array([0.0, 14.0]))
+    # the off_map rule of point_states (staircase.mismatch): a U with no
+    # region judges nothing, so it stays on-surface — one rule, both views
+    on_surface = np.array(
+        [
+            sq.mismatch(sq.resting_region(m, float(u)), coads, u=float(u), label=None)
+            is None
+            for u in u_axis
+        ]
+    )
+    resting = sm.RestingMap(
+        u_axis, np.array([0.0, 14.0]), np.vstack([on_surface, on_surface])
+    )
+    rungs = [
+        {
+            "name": rg.name,
+            "viable": _mask_intervals(sm.rung_mask(rg, full).viable[0], u_axis),
+        }
+        for rg in route.rungs
+    ]
+    her = None
+    if sr.her is not None and sr.her.rungs:
+        her = _mask_intervals(sm.her_mask(full, route, sr.her)[0], u_axis)
+    window = sm.operating_window(resting, route, her=sr.her)
+    return {
+        "rungs": rungs,
+        "her": her,
+        "window": _mask_intervals(window.mask[0], u_axis),
+    }
+
+
+def _point(
+    store: Store,
+    ref: Any,
+    pw: Any,
+    sr: Any,
+    maps: list[dict[str, Any]],
+    *,
+    u: float,
+    ph: float,
+    coads: dict[str, int] | None = None,
+) -> dict[str, Any]:
+    """:func:`precis_pathway.staircase_states.point_states` at ``(u, ph)``
+    as JSON — the one call behind the first paint and ``/states``. The
+    map is the structure's first (the one the overlays are drawn on); the
+    surface the pathway was computed on follows ruling 3
+    (:func:`~precis_pathway.staircase_states.pathway_coads`) unless the
+    caller already resolved it."""
+    from precis_pathway import staircase_states as ss
+
+    if coads is None:
+        coads = ss.pathway_coads(store, pw.meta or {}, ref.meta or {})
+    return ss.point_states(
+        sr, maps[0] if maps else None, u_rhe=u, ph=ph, coads=coads
+    ).as_dict()
+
+
+def _split_state(states: dict[str, Any], i: int, name: str) -> dict[str, Any] | None:
+    """The PCET parent row a rendered (split) rung inherits, from the
+    ``/states`` JSON — the dict twin of ``PointStates.state_of``."""
+    routes = states.get("routes") or []
+    if i >= len(routes):
+        return None
+    for rs in routes[i].get("rungs") or []:
+        if name in (rs.get("split_children") or []):
+            return rs
+    return None
+
+
 def _vlines(staircase: dict[str, Any] | None) -> list[dict[str, Any]]:
     """The campaign carry-over: each route's ``U_L`` (solid) and ``U_opt``
     (dashed) drawn as verticals on the map, plus ``U_L_her`` — clipped to
@@ -325,23 +419,53 @@ def _candidate_ctx(
     ref: Any,
     *,
     u_marker: float | None = None,
+    ph: float = 0.0,
     pathway: str | None = None,
 ) -> dict[str, Any]:
     from precis.quest import staircase as sq
     from precis_pathway import pourbaix_map
+    from precis_pathway import staircase_states as ss
 
     handle = handle_registry.try_format("structure", int(ref.id)) or f"st{ref.id}"
-    staircase, sr = _staircase_ctx(store, ref, pathway=pathway)
+    staircase, sr, pw = _staircase_ctx(store, ref, pathway=pathway)
+    raw_maps = pourbaix_map.maps_for_structure(store, ref)
+    pw_coads = (
+        ss.pathway_coads(store, pw.meta or {}, ref.meta or {})
+        if pw is not None
+        else sq.coads_of(ref.meta or {})
+    )
     maps = [
         _map_ctx(
             m,
             u_marker=u_marker,
             vlines=_vlines(staircase),
             reset=_reset_layer(sr, m.get("U_RHE_window")),
+            # overlays on the first map only: the rung states are judged
+            # against it, so a second footing's map never contradicts them
+            masks=_mask_layer(sr, m, pw_coads) if sr is not None and k == 0 else None,
         )
-        for m in pourbaix_map.maps_for_structure(store, ref)
+        for k, m in enumerate(raw_maps)
     ]
     coads = sq.coads_of(ref.meta or {})
+    if staircase is not None and u_marker is not None:
+        # the server-rendered first paint: the same call /states answers
+        staircase["states"] = _point(
+            store,
+            ref,
+            pw,
+            sr,
+            raw_maps,
+            u=float(u_marker),
+            ph=float(ph),
+            coads=pw_coads,
+        )
+        staircase["states_url"] = (
+            f"/pourbaix/{quote(handle, safe='')}/states?"
+            + urlencode({"pathway": staircase["pathway_handle"]})
+        )
+        for i, r in enumerate(staircase["routes"]):
+            for rg in r["rungs"]:
+                rg["state"] = _split_state(staircase["states"], i, rg["name"])
     return {
         "ref_id": int(ref.id),
         "handle": handle,
@@ -517,6 +641,57 @@ def _link_state(
     return u, ph, raw_reset != "0", ignored
 
 
+@router.get("/pourbaix/{handle}/states")
+async def pourbaix_states(request: Request, handle: str) -> JSONResponse:
+    """The picked point's rung states as JSON (gr489471) —
+    ``point_states`` for ``?U=&pH=&pathway=`` on one structure handle,
+    the same call the page's first paint renders. ``U``/``pH`` default
+    to the page's defaults; one that does not parse is a 400, not a
+    silent default — the picker always sends both."""
+    from precis_pathway import pourbaix_map
+
+    store = get_store(request)
+    resolved = _resolve(store, handle)
+    if resolved is None or resolved[0] != "structure":
+        return JSONResponse(
+            {"error": f"no live structure with handle {handle!r}"}, status_code=404
+        )
+    ref = resolved[1]
+    params = request.query_params
+    point: dict[str, float] = {}
+    for key, default in (
+        ("U", _u_default(store, "structure", ref)),
+        ("pH", _ph_default(ref)),
+    ):
+        raw = params.get(key)
+        try:
+            val = default if raw is None else float(raw)
+        except ValueError:
+            val = math.nan
+        if not math.isfinite(val):
+            return JSONResponse(
+                {"error": f"{key}={raw!r} is not a finite number"}, status_code=400
+            )
+        point[key] = val
+    staircase, sr, pw = _staircase_ctx(store, ref, pathway=params.get("pathway"))
+    if staircase is None:
+        return JSONResponse(
+            {"error": "no ready pathway is linked to this structure"}, status_code=404
+        )
+    body = _point(
+        store,
+        ref,
+        pw,
+        sr,
+        pourbaix_map.maps_for_structure(store, ref),
+        u=max(-_LINK_U_BOUND, min(_LINK_U_BOUND, point["U"])),
+        ph=max(0.0, min(14.0, point["pH"])),
+    )
+    body["pathway"] = staircase["pathway_handle"]
+    body["pathway_notice"] = staircase["pathway_notice"]
+    return JSONResponse(body)
+
+
 @router.get("/pourbaix/{handle}", response_class=HTMLResponse)
 async def pourbaix_detail(request: Request, handle: str) -> HTMLResponse:
     t0 = time.monotonic()
@@ -574,7 +749,8 @@ async def pourbaix_detail(request: Request, handle: str) -> HTMLResponse:
     # comparison view keeps every surface on its own best pathway
     pathway = None if compare else request.query_params.get("pathway")
     entries = [
-        _candidate_ctx(store, s["ref"], u_marker=u0, pathway=pathway) for s in drawn
+        _candidate_ctx(store, s["ref"], u_marker=u0, ph=ph0, pathway=pathway)
+        for s in drawn
     ]
     u_lo, u_hi = _u_window(entries, u0)
     return timed_response(

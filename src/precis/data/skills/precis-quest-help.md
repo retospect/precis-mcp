@@ -253,6 +253,31 @@ listed as `no anchors`. Same map on a structure
 (`view='pourbaix'` on `kind='structure'`) and as an SVG page at
 `/pourbaix/<handle>`.
 
+To judge a candidate's reaction staircase at one point on that map, pass
+the point to `view='staircase'` on the structure or its pathway:
+
+```python
+get(kind="structure", id="pd111", view="staircase", args={"U": -0.3, "pH": 7})
+get(kind="pathway", id="pw483780", view="staircase", args={"point": "-0.3,7"})
+```
+
+Each rung line gains a state. Each merged proton-electron step is judged
+once; both of its halves show the result.
+
+- `off_map`: the map rests on a different surface at U than the one the
+  pathway was computed on.
+- `thermally_blocked`: a U-flat step more than 0.3 eV uphill.
+- `electro_uphill`: a proton-electron step uphill at U; the line says
+  where it opens.
+- `viable`.
+
+A point block follows the rungs: `window inside | outside | outside
+(HER)`, the resting termination, and the worst rung with its reason. On
+the web page, click, drag or use the arrow keys on the map to pick the
+point. Rung rows recolour from `/pourbaix/<handle>/states?U=&pH=`, which
+is the same verdict, and the map's overlay toggles show where each rung
+is viable.
+
 ## Health + gaps — the exploration queue
 
 A quest is measured by *striving*, not finishing, so the tree rollup ends

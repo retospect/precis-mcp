@@ -259,6 +259,13 @@ refine, not replace, them.
   (toggle per rung) overlaid on the map, the intersection drawn as the
   operating window. Same object on MCP and web (roadmap §Surfaces). Reto
   offered the fuller reminder prompt if the owner needs it.
+  The slice 4 render is built (gr489471):
+  `precis_pathway.staircase_states.point_states`, `/pourbaix/<st>/states`,
+  the map picker and overlays, and `view='staircase'` with `U`/`pH`/`point`.
+  **Left:** the prod check once the st203306 affine HER run lands. A
+  point inside the window should show every rung viable; a point in
+  another termination region should show every rung off-map, with that
+  termination named.
 
 ## Slice 1 contract (built 2026-10-07; the prompt's §3 inner loop + §5 source 2)
 

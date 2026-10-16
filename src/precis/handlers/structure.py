@@ -739,6 +739,10 @@ class StructureHandler(Handler):
                 "vs",
                 "support",
                 "reach",
+                # view='staircase': the picked point (``point`` doubles as
+                # 'U,pH' there, gr489471)
+                "U",
+                "pH",
             }
         ),
     }
@@ -1174,7 +1178,10 @@ class StructureHandler(Handler):
                     "evaluating pathway with a `related-to` link)."
                 )
             )
-        if u is None:
+        # the picked point (gr489471) rides through to the pathway render,
+        # which validates it; point= carries its own U
+        fwd: dict[str, Any] = {k: args[k] for k in ("pH", "point") if k in args}
+        if u is None and "point" not in fwd:
             u = sq.quest_operating_u(self.store, int(ref.id))
         pw_handle = (
             handle_registry.try_format("pathway", int(pw.id)) or f"pathway:{pw.id}"
@@ -1192,8 +1199,10 @@ class StructureHandler(Handler):
             body = pw_handler.get(
                 id=str(pw.slug or pw.id),
                 view="staircase",
-                args={"U": u} if u is not None else {},
+                args={**({"U": u} if u is not None else {}), **fwd},
             ).body
+        except BadInput:
+            raise  # a bad pH/point is the caller's, not a missing plugin
         except Exception as exc:  # plugin absent or init-guard tripped
             log.debug("structure %s: pathway sibling unavailable (%s)", ref.id, exc)
             body = (

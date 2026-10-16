@@ -612,14 +612,13 @@ get(kind="structure", id="pd111", view="staircase", args={"U": -0.3})
 ```
 
 The best linked pathway's staircase from the engine's affine CHE export
-(`che_affine`, engine ≥ 0.25.0), re-tilted at `U` (default: the serving
-quest's operating point, else the pathway's recorded one, else 0): each
-rung's ΔG(U), the limiting rung, per-route U_L/U_opt, the HER margin when
-present. Where a coverage-scan map exists, its resting termination at U is
-named as the starting surface with the coads-mismatch verdict when the
-pathway's slab spec disagrees. `no staircase` until a ready pathway is
-linked; a pre-0.25.0 result reports `che_affine absent`. Same panel at
-`/pourbaix/<handle>`.
+(`che_affine`, engine ≥ 0.25.0) at `U` (default: the quest's operating
+point, else the pathway's, else 0): each rung's ΔG(U), the limiting rung,
+per-route U_L/U_opt, the HER margin. A coverage-scan map names its resting
+termination at U as the starting surface, with the coads-mismatch verdict.
+`no staircase` until a ready pathway is linked; pre-0.25.0 reports
+`che_affine absent`. Add `pH` (or `point='U,pH'`) for a state per rung at
+that point (`precis-quest-help`). Web: `/pourbaix/<handle>`.
 
 ## Export — `get(view='poscar'|'extxyz'|'cif')`
 

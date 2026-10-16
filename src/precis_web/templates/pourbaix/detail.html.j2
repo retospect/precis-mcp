@@ -5,6 +5,15 @@
 <style>
   .pbx-rung.pbx-limit td { background: #fef3c7; }
   .pbx-rung td { white-space: nowrap; }
+  /* slice 4 rung states at the picked point (gr489471) */
+  .pbx-rung[data-state="electro_uphill"] td { color: #b91c1c; }
+  .pbx-rung[data-state="thermally_blocked"] td { color: #b45309; }
+  .pbx-rung[data-state="off_map"] td {
+    color: #64748b;
+    background: repeating-linear-gradient(45deg, #f1f5f9 0 4px, #e2e8f0 4px 8px);
+  }
+  svg.pbx-map.pbx-pickable { cursor: crosshair; touch-action: none; }
+  svg.pbx-map:focus { outline: 2px solid #38bdf8; outline-offset: 2px; }
 </style>
 
 <div class="mb-4">
@@ -119,6 +128,16 @@ band — viable but not guaranteed (dashed); each in its route's colour">
     <div class="mb-4">
       <div class="overflow-auto">{{ m.svg | safe }}</div>
       <div class="pbx-resting mt-1 text-[11px] font-medium text-slate-700"></div>
+      {% if m.mask_rungs %}
+      <div class="pbx-mask-toggles mt-1 flex flex-wrap gap-x-3 text-[11px] text-slate-600">
+        <span>overlays (where each PCET rung of route 1 is viable):</span>
+        <label><input type="checkbox" class="pbx-tog-window" checked> window</label>
+        {% if m.mask_her %}<label><input type="checkbox" class="pbx-tog-her"> HER wins</label>{% endif %}
+        {% for name in m.mask_rungs %}
+        <label class="font-mono"><input type="checkbox" class="pbx-tog-rung" data-rung="{{ name }}"> {{ name }}</label>
+        {% endfor %}
+      </div>
+      {% endif %}
       <div class="mt-1 text-[11px] text-slate-500 space-y-0.5">
         <div>
           anchor_key <span class="font-mono">{{ m.anchor_key[:16] }}…</span> ·
@@ -167,6 +186,16 @@ band — viable but not guaranteed (dashed); each in its route's colour">
       <div class="mt-1 text-[11px] text-amber-700">no resting map on this
         structure — the staircase's starting surface is unverified</div>
       {% endif %}
+      {% if sc.states %}
+      {# the picked point's verdict — server-rendered first paint of the
+         same point_states call /states answers (gr489471) #}
+      <div class="pbx-point mt-1 text-[11px] text-slate-700"
+           data-states-url="{{ sc.states_url }}">
+        <span class="pbx-point-window font-medium">window {{ sc.states.window }}</span>
+        <span class="pbx-point-term text-slate-500">· resting {{ sc.states.termination or 'unmapped' }}, pathway computed on {{ sc.states.assumed }}</span>
+        <div class="pbx-point-worst">{% if sc.states.worst %}worst rung (route {{ sc.states.worst.route_index + 1 }}): {{ sc.states.worst.line }}{% endif %}</div>
+      </div>
+      {% endif %}
       {% for r in sc.routes %}
       <div class="pbx-route mt-2">
         <div class="text-[11px] font-medium text-slate-700">
@@ -189,7 +218,8 @@ band — viable but not guaranteed (dashed); each in its route's colour">
           {% for rg in r.rungs %}
           <tr class="pbx-rung" data-dg0="{{ rg.delta_g0 }}" data-ne="{{ rg.n_e }}"
               data-name="{{ rg.name }}" data-eps="{{ rg.eps }}"
-              data-rmargin="{{ rg.margin if rg.margin is not none else '' }}">
+              data-rmargin="{{ rg.margin if rg.margin is not none else '' }}"
+              {%- if rg.state %} data-state="{{ rg.state.state }}" title="{{ rg.state.reason }}"{% endif %}>
             <td class="pr-3">{{ rg.name }}</td>
             <td class="pr-3">{{ rg.kind }}</td>
             <td class="pr-3">{{ rg.n_e }}</td>
@@ -382,6 +412,7 @@ band — viable but not guaranteed (dashed); each in its route's colour">
         });
       }
     });
+    placeMarkers();
   }
   // slice 7: the reset layer is a per-map <g class="pbx-reset"> group —
   // the bank toggle shows/hides it without touching the DFT bands.
@@ -429,9 +460,152 @@ band — viable but not guaranteed (dashed); each in its route's colour">
     } catch (e) { /* sandboxed context: the links still carry the state */ }
   }
 
+  // ── slice 4 (gr489471): the point picker, rung states, mask overlays.
+  // States come from the server (/pourbaix/<st>/states — point_states,
+  // the same call the first paint rendered); this script only applies
+  // them. Click/drag/arrow keys on a map write the two sliders, so deep
+  // links carry the point through syncLinks. ──
+  const SVGNS = 'http://www.w3.org/2000/svg';
+  function applyStates(sec, st) {
+    sec.querySelectorAll('.pbx-route').forEach((rt, i) => {
+      const parents = (st.routes && st.routes[i] && st.routes[i].rungs) || [];
+      rt.querySelectorAll('.pbx-rung').forEach((row) => {
+        const p = parents.find((rs) => (rs.split_children || []).includes(row.dataset.name));
+        if (p) { row.dataset.state = p.state; row.title = p.reason; }
+        else { delete row.dataset.state; row.removeAttribute('title'); }
+      });
+    });
+    const pt = sec.querySelector('.pbx-point');
+    if (!pt) return;
+    pt.querySelector('.pbx-point-window').textContent = 'window ' + st.window;
+    pt.querySelector('.pbx-point-term').textContent =
+      '· resting ' + (st.termination || 'unmapped') + ', pathway computed on ' + st.assumed;
+    pt.querySelector('.pbx-point-worst').textContent = st.worst
+      ? 'worst rung (route ' + (st.worst.route_index + 1) + '): ' + st.worst.line
+      : '';
+  }
+  let statesTimer = null;
+  let statesSeq = 0;
+  function fetchStates() {
+    clearTimeout(statesTimer);
+    statesTimer = setTimeout(() => {
+      const seq = ++statesSeq;
+      document.querySelectorAll('section.pbx-entry').forEach((sec) => {
+        const pt = sec.querySelector('.pbx-point');
+        if (!pt || !pt.dataset.statesUrl) return;
+        const url = new URL(pt.dataset.statesUrl, window.location.href);
+        url.searchParams.set('U', String(+parseFloat(uEl.value).toFixed(4)));
+        url.searchParams.set('pH', String(+parseFloat(phEl.value).toFixed(2)));
+        fetch(url.pathname + url.search)
+          .then((r) => (r.ok ? r.json() : null))
+          .then((st) => { if (st && seq === statesSeq) applyStates(sec, st); })
+          .catch(() => { /* keep the last verdict; the next move retries */ });
+      });
+    }, 120);
+  }
+  function placeMarkers() {
+    const u = parseFloat(uEl.value), ph = parseFloat(phEl.value);
+    document.querySelectorAll('section.pbx-entry').forEach((sec) => {
+      let data = null;
+      const dj = sec.querySelector('script.pbx-ejson');
+      if (dj) { try { data = JSON.parse(dj.textContent); } catch (e) {} }
+      sec.querySelectorAll('svg.pbx-map').forEach((svg, i) => {
+        if (!svg.dataset.ulo) return;
+        const lo = +svg.dataset.ulo, hi = +svg.dataset.uhi;
+        const plo = +svg.dataset.phlo, phi = +svg.dataset.phhi;
+        const x = +svg.dataset.x0 + ((Math.min(Math.max(u, lo), hi) - lo) / (hi - lo)) * +svg.dataset.pw;
+        const y = +svg.dataset.y0 + ((phi - Math.min(Math.max(ph, plo), phi)) / (phi - plo)) * +svg.dataset.ploth;
+        let g = svg.querySelector('g.pbx-pt');
+        if (!g) {
+          g = document.createElementNS(SVGNS, 'g');
+          g.setAttribute('class', 'pbx-pt');
+          g.setAttribute('pointer-events', 'none');
+          const c = document.createElementNS(SVGNS, 'circle');
+          c.setAttribute('r', '5');
+          c.setAttribute('fill', '#dc2626');
+          c.setAttribute('stroke', '#fff');
+          c.setAttribute('stroke-width', '1.5');
+          const t = document.createElementNS(SVGNS, 'text');
+          t.setAttribute('font-size', '10');
+          t.setAttribute('fill', '#0f172a');
+          g.append(c, t);
+          svg.appendChild(g);
+        }
+        g.querySelector('circle').setAttribute('cx', x);
+        g.querySelector('circle').setAttribute('cy', y);
+        const t = g.querySelector('text');
+        const regs = data && data.maps && data.maps[i] ? data.maps[i].regions : [];
+        const r = regionAt(regs, u);
+        t.textContent = r ? r.label : 'unmapped';
+        t.setAttribute('x', x + 8);
+        t.setAttribute('y', y - 6);
+      });
+    });
+  }
+  function setPoint(u, ph) {
+    const clamp = (v, el) => Math.min(Math.max(v, parseFloat(el.min)), parseFloat(el.max));
+    uEl.value = String(clamp(u, uEl));
+    phEl.value = String(clamp(ph, phEl));
+    update();
+    syncLinks(true);
+    fetchStates();
+  }
+  function pointFromEvent(svg, ev) {
+    const box = svg.getBoundingClientRect();
+    const vb = svg.viewBox && svg.viewBox.baseVal;
+    const sx = vb && vb.width ? vb.width / box.width : 1;
+    const sy = vb && vb.height ? vb.height / box.height : 1;
+    const x = (ev.clientX - box.left) * sx, y = (ev.clientY - box.top) * sy;
+    const lo = +svg.dataset.ulo, hi = +svg.dataset.uhi;
+    const plo = +svg.dataset.phlo, phi = +svg.dataset.phhi;
+    const fx = (x - +svg.dataset.x0) / +svg.dataset.pw;
+    const fy = (y - +svg.dataset.y0) / +svg.dataset.ploth;
+    if (fx < 0 || fx > 1 || fy < 0 || fy > 1) return null;
+    return [lo + fx * (hi - lo), phi - fy * (phi - plo)];
+  }
+  document.querySelectorAll('svg.pbx-map').forEach((svg) => {
+    if (!svg.dataset.ulo) return;
+    svg.classList.add('pbx-pickable');
+    svg.setAttribute('tabindex', '0');
+    let dragging = false;
+    const pick = (ev) => {
+      const p = pointFromEvent(svg, ev);
+      if (p) setPoint(p[0], p[1]);
+    };
+    svg.addEventListener('pointerdown', (ev) => {
+      dragging = true;
+      try { svg.setPointerCapture(ev.pointerId); } catch (e) {}
+      pick(ev);
+    });
+    svg.addEventListener('pointermove', (ev) => { if (dragging) pick(ev); });
+    svg.addEventListener('pointerup', () => { dragging = false; });
+    svg.addEventListener('pointercancel', () => { dragging = false; });
+    svg.addEventListener('keydown', (ev) => {
+      const du = { ArrowLeft: -0.01, ArrowRight: 0.01 }[ev.key] || 0;
+      const dp = { ArrowDown: -0.1, ArrowUp: 0.1 }[ev.key] || 0;
+      if (!du && !dp) return;
+      ev.preventDefault();
+      setPoint(parseFloat(uEl.value) + du, parseFloat(phEl.value) + dp);
+    });
+  });
+  // overlay toggles: each map's checkboxes address its own svg groups
+  document.querySelectorAll('.pbx-mask-toggles').forEach((bar) => {
+    const svg = bar.parentElement.querySelector('svg.pbx-map');
+    if (!svg) return;
+    const show = (sel, on) => svg.querySelectorAll(sel).forEach((g) => { g.style.display = on ? '' : 'none'; });
+    bar.querySelectorAll('input').forEach((cb) => {
+      const sel = cb.classList.contains('pbx-tog-window') ? 'g.pbx-window'
+        : cb.classList.contains('pbx-tog-her') ? 'g.pbx-mask-her'
+        : 'g.pbx-mask[data-rung="' + CSS.escape(cb.dataset.rung) + '"]';
+      const apply = () => show(sel, cb.checked);
+      cb.addEventListener('change', apply);
+      apply();
+    });
+  });
+
   if (resetT) resetT.addEventListener('change', () => { applyResetLayer(); syncLinks(true); });
-  uEl.addEventListener('input', () => { update(); syncLinks(true); });
-  phEl.addEventListener('input', () => { update(); syncLinks(true); });
+  uEl.addEventListener('input', () => { update(); syncLinks(true); fetchStates(); });
+  phEl.addEventListener('input', () => { update(); syncLinks(true); fetchStates(); });
   update();
   applyResetLayer();
   syncLinks(false);

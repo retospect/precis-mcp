@@ -90,6 +90,7 @@ def map_svg(
     u_marker: float | None = None,
     vlines: list[dict[str, Any]] | None = None,
     reset: list[dict[str, Any]] | None = None,
+    masks: dict[str, Any] | None = None,
 ) -> str:
     """One map → an inline ``<svg>`` fragment. ``m`` is the
     :func:`precis.quest.pourbaix_map.build_map` object.
@@ -107,7 +108,15 @@ def map_svg(
     guaranteed window (solid tint, the route's own colour) and ``band``
     the hysteretic zone — viable but not guaranteed, the region §6.2
     says not to rely on — drawn dashed at the same colour. It is its own
-    layer, never merged with the propagated/model-form bands."""
+    layer, never merged with the propagated/model-form bands.
+
+    Slice 4 (gr489471): ``masks`` — ``{"rungs": [{"name", "viable":
+    [(u_lo, u_hi)…]}…], "her": [(u_lo, u_hi)…] | None, "window":
+    [(u_lo, u_hi)…]}`` — draws one ``<g class="pbx-mask"
+    data-rung=…>`` per PCET rung (where it is viable), a
+    ``<g class="pbx-mask-her">`` and the operating window as an outlined
+    ``<g class="pbx-window">``. The page's toggles show/hide each group;
+    rung and HER groups start hidden."""
     window = m.get("U_RHE_window") or [None, None]
     if window[0] is None or window[1] is None or not (window[0] < window[1]):
         return (
@@ -256,6 +265,40 @@ def map_svg(
             if rr.get("ok") or rr.get("band"):
                 legend_reset.append((str(rr.get("name") or "?"), color))
         parts.append("</g>")
+
+    # Slice 4: per-rung viability bands, the HER mask and the operating
+    # window — each its own group so the page's toggles address it.
+    if masks:
+
+        def spans(group: str, items: Any, style: str) -> None:
+            parts.append(group)
+            for lo, hi in items or []:
+                x0, x1 = X(float(lo)), X(float(hi))
+                parts.append(
+                    f'<rect x="{x0:.1f}" y="{_MT}" width="{max(x1 - x0, 0.5):.1f}" '
+                    f'height="{plot_h}" {style}/>'
+                )
+            parts.append("</g>")
+
+        for rr in masks.get("rungs") or []:
+            spans(
+                f'<g class="pbx-mask" data-rung="{_esc(rr.get("name"))}" '
+                'style="display:none">',
+                rr.get("viable"),
+                'fill="#2563eb" fill-opacity="0.12"',
+            )
+        if masks.get("her") is not None:
+            spans(
+                '<g class="pbx-mask-her" style="display:none">',
+                masks.get("her"),
+                'fill="#dc2626" fill-opacity="0.10"',
+            )
+        spans(
+            '<g class="pbx-window">',
+            masks.get("window"),
+            'fill="#16a34a" fill-opacity="0.10" stroke="#15803d" '
+            'stroke-width="1.6" stroke-dasharray="6 3"',
+        )
 
     # Slice 3: route U_L / U_opt verticals (fixed — the affine terms they
     # come from are U-invariant), then the draggable U marker last so it

@@ -19,6 +19,7 @@ import pytest
 pytest.importorskip("autocatpath")
 
 from precis.dispatch import Hub
+from precis.errors import BadInput
 from precis.handlers.structure import StructureHandler
 from precis.store import Store
 from precis.store.types import Tag
@@ -438,3 +439,75 @@ def test_structure_staircase_view_picks_the_best_linked_pathway(
     _structure(store, hub, "pd_none")
     body = sh.get(id="pd_none", view="staircase").body
     assert "no staircase" in body
+
+
+# ── the picked point (gr489471) ─────────────────────────────────────────
+
+
+def test_pathway_staircase_point_adds_state_column_worst_and_window(
+    store: Store, hub: Hub
+) -> None:
+    _pathway(store, _results(), "pw_point")
+    h = _handler(hub)
+    body = h.get(id="pw_point", view="staircase", args={"U": 0.0, "pH": 7}).body
+    # no_reduce (n_e 2, ΔG0 +0.3) is uphill at 0 V and opens below −0.15 V
+    assert "[electro_uphill]" in body
+    assert "point U_RHE +0.000 V, pH 7: window outside" in body
+    assert "worst rung (route 1): electro_uphill: no_reduce" in body
+    assert "opens below -0.15 V" in body
+    # point='U,pH' is the same pick
+    same = h.get(id="pw_point", view="staircase", args={"point": "0.0,7"}).body
+    assert same == body
+    # no args, or U alone (the plain re-tilt): no point block
+    for args in (None, {"U": 0.0}):
+        plain = h.get(id="pw_point", view="staircase", args=args).body
+        assert "point U_RHE" not in plain and "[electro_uphill]" not in plain
+
+
+def test_pathway_point_args_are_validated(store: Store, hub: Hub) -> None:
+    _pathway(store, _results(), "pw_point_bad")
+    h = _handler(hub)
+    with pytest.raises(BadInput, match="view='staircase' only"):
+        h.get(id="pw_point_bad", view="analysis", args={"U": 0.0, "pH": 7})
+    with pytest.raises(BadInput, match="point is 'U,pH'"):
+        h.get(id="pw_point_bad", view="staircase", args={"point": "0.1"})
+    with pytest.raises(BadInput, match="not both"):
+        h.get(id="pw_point_bad", view="staircase", args={"point": "0,1", "U": 0})
+
+
+def test_pathway_point_on_another_termination_is_off_map(
+    store: Store, hub: Hub
+) -> None:
+    st = _structure(store, hub, "pd_point_map")
+    pw = _pathway(store, _results(), "pw_point_map")
+    store.add_link(
+        src_ref_id=st.id, dst_ref_id=pw.id, relation="related-to", set_by="system"
+    )
+    sweep = sp.sweep(
+        {"m": _payload("m")}, u_window=(-0.5, 0.5), grid=21, sigma_e_ev=0.05
+    )
+    _scan_job(store, st.id, sweep)
+    body = (
+        _handler(hub)
+        .get(id="pw_point_map", view="staircase", args={"U": -0.3, "pH": 1})
+        .body
+    )
+    # H* rests at −0.30 V while the pathway ran on clean Pd: every rung is
+    # off-map with the termination named, even the ones viable on clean
+    assert "[off_map]" in body
+    assert "[viable]" not in body and "[electro_uphill]" not in body
+    assert "map: H* at 0.25 ML here; pathway computed on clean" in body
+
+
+def test_structure_staircase_forwards_the_point(store: Store, hub: Hub) -> None:
+    st = _structure(store, hub, "pd_point_fwd")
+    pw = _pathway(store, _results(), "pw_point_fwd")
+    store.add_link(
+        src_ref_id=st.id, dst_ref_id=pw.id, relation="related-to", set_by="system"
+    )
+    sh = StructureHandler(hub=hub)
+    sh._register_with(hub)
+    body = sh.get(id="pd_point_fwd", view="staircase", args={"point": "-0.2,3"}).body
+    assert "point U_RHE -0.200 V, pH 3: window" in body
+    with pytest.raises(BadInput):
+        sh.get(id="pd_point_fwd", view="staircase", args={"point": "nope"})

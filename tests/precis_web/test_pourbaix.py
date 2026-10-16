@@ -248,6 +248,80 @@ def test_pourbaix_page_shows_map_and_staircase_on_one_bank(
     assert "HER competitor" in text
 
 
+# ── slice 4: the point picker, rung states, mask overlays (gr489471) ────
+
+
+def _linked(runtime_with_store) -> tuple[int, Any]:
+    store = runtime_with_store.store
+    sid = _seed_structure(runtime_with_store)
+    pw = _pathway(store, "pw_pick", _pathway_results())
+    store.add_link(
+        src_ref_id=sid, dst_ref_id=pw.id, relation="related-to", set_by="system"
+    )
+    return sid, pw
+
+
+def test_states_json_is_point_states(pb_client: TestClient, runtime_with_store) -> None:
+    from precis_pathway import pourbaix_map
+    from precis_pathway import staircase_states as ss
+    from precis_pathway.staircase_routes import routes_for_pathway
+
+    store = runtime_with_store.store
+    sid, pw = _linked(runtime_with_store)
+    r = pb_client.get(f"/pourbaix/st{sid}/states?U=0&pH=7&pathway=pw_pick")
+    assert r.status_code == 200
+    body = r.json()
+    st = store.get_ref(kind="structure", id=sid)
+    pw = store.get_ref(kind="pathway", id="pw_pick")
+    want = ss.point_states(
+        routes_for_pathway(store, pw),
+        pourbaix_map.maps_for_structure(store, st)[0],
+        u_rhe=0.0,
+        ph=7.0,
+        coads=ss.pathway_coads(store, pw.meta or {}, st.meta or {}),
+    ).as_dict()
+    got = {k: v for k, v in body.items() if k not in ("pathway", "pathway_notice")}
+    assert got == json.loads(json.dumps(want))
+    # H* rests at 0 V on this map while the pathway ran on clean Pd: every
+    # rung is off-map (it outranks no_reduce being uphill there too)
+    assert str(body["termination"]).startswith("H*")
+    assert {rs["state"] for rs in body["routes"][0]["rungs"]} == {"off_map"}
+    assert body["window"] == "outside"
+
+
+def test_first_paint_matches_the_states_json(
+    pb_client: TestClient, runtime_with_store
+) -> None:
+    sid, _pw = _linked(runtime_with_store)
+    page = pb_client.get(f"/pourbaix/st{sid}?u=0&ph=7").text
+    body = pb_client.get(f"/pourbaix/st{sid}/states?U=0&pH=7").json()
+    for rs in body["routes"][0]["rungs"]:
+        for name in rs["split_children"]:
+            row = re.search(rf'<tr class="pbx-rung"[^>]*data-name="{name}"[^>]*>', page)
+            assert row is not None
+            assert f'data-state="{rs["state"]}"' in row.group(0)
+    assert f"window {body['window']}" in page
+    assert f"/pourbaix/st{sid}/states?pathway=" in page
+
+
+def test_states_rejects_bad_input(pb_client: TestClient, runtime_with_store) -> None:
+    sid, _pw = _linked(runtime_with_store)
+    assert pb_client.get(f"/pourbaix/st{sid}/states?U=nope").status_code == 400
+    assert pb_client.get("/pourbaix/nope/states").status_code == 404
+    bare = _seed_structure(runtime_with_store, "pd_bare", with_scan=False)
+    assert pb_client.get(f"/pourbaix/st{bare}/states").status_code == 404
+
+
+def test_map_carries_mask_overlays_and_toggles(
+    pb_client: TestClient, runtime_with_store
+) -> None:
+    sid, _pw = _linked(runtime_with_store)
+    text = pb_client.get(f"/pourbaix/st{sid}").text
+    assert 'class="pbx-mask" data-rung="no_reduce"' in text
+    assert 'class="pbx-window"' in text and 'class="pbx-mask-her"' in text
+    assert 'class="pbx-tog-rung" data-rung="no_reduce"' in text
+
+
 def test_pourbaix_page_staircase_only_when_no_anchors(
     pb_client: TestClient, runtime_with_store
 ) -> None:

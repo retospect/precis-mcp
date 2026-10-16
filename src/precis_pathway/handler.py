@@ -52,27 +52,52 @@ _ROUTE_NODE_ENV = "PRECIS_AUTOCATPATH_ROUTE_NODE"
 _POTENTIAL_VIEWS = ("analysis", "profile", "compare", "staircase")
 
 
-def _potential_arg(args: dict[str, Any] | None) -> float | None:
-    """``args['U']`` as a finite float (V vs RHE), or None when absent. Any
-    other key is rejected by name so a typo (``u``, ``potential``) never
-    reads as "no lever"."""
-    if not isinstance(args, dict) or not args:
-        return None
-    unknown = sorted(str(k) for k in args if k != "U")
-    if unknown:
-        raise BadInput(
-            f"pathway get args={unknown!r} not recognised",
-            options=["U"],
-            next="args={'U': -0.3}  (potential, V vs RHE; views analysis|profile|compare)",
-        )
-    raw = args["U"]
+def _finite(raw: Any, name: str, unit: str) -> float:
     if (
         isinstance(raw, bool)
         or not isinstance(raw, int | float)
         or not math.isfinite(raw)
     ):
-        raise BadInput(f"args={{'U': {raw!r}}}: U must be a finite number (V vs RHE)")
+        raise BadInput(
+            f"args={{'{name}': {raw!r}}}: {name} must be a finite number ({unit})"
+        )
     return float(raw)
+
+
+def _point_args(args: dict[str, Any] | None) -> tuple[float | None, float | None]:
+    """``(U, pH)`` from ``args`` — ``U`` (V vs RHE), ``pH``, or ``point``
+    as ``'U,pH'`` / ``[U, pH]`` (the picked point of ``view='staircase'``,
+    gr489471). Absent → ``None``. Any other key is rejected by name so a
+    typo (``u``, ``potential``) never reads as "no lever"."""
+    if not isinstance(args, dict) or not args:
+        return None, None
+    unknown = sorted(str(k) for k in args if k not in ("U", "pH", "point"))
+    if unknown:
+        raise BadInput(
+            f"pathway get args={unknown!r} not recognised",
+            options=["U", "pH", "point"],
+            next="args={'U': -0.3}  (potential, V vs RHE; views analysis|profile|compare)",
+        )
+    u = _finite(args["U"], "U", "V vs RHE") if "U" in args else None
+    ph = _finite(args["pH"], "pH", "pH units") if "pH" in args else None
+    if "point" in args:
+        raw = args["point"]
+        parts = raw.split(",") if isinstance(raw, str) else raw
+        try:
+            pu, pp = (float(x) for x in parts)
+        except (TypeError, ValueError):
+            raise BadInput(
+                f"args={{'point': {raw!r}}}: point is 'U,pH' (V vs RHE, pH)"
+            ) from None
+        if u is not None or ph is not None:
+            raise BadInput("args: give point= or U=/pH=, not both")
+        u, ph = _finite(pu, "U", "V vs RHE"), _finite(pp, "pH", "pH units")
+    return u, ph
+
+
+def _potential_arg(args: dict[str, Any] | None) -> float | None:
+    """``args['U']`` as a finite float (V vs RHE), or None when absent."""
+    return _point_args(args)[0]
 
 
 def _nf(x: Any) -> float:
@@ -93,9 +118,9 @@ def _lookup(store: Any, ident: str) -> Any:
 
 class PathwayHandler(Handler):
     #: args= keys each verb reads out of ``args`` (gr475332); dispatch
-    #: rejects any other key. Keep in step with :func:`_potential_arg`.
+    #: rejects any other key. Keep in step with :func:`_point_args`.
     ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
-        "get": frozenset({"U"}),
+        "get": frozenset({"U", "pH", "point"}),
     }
 
     spec: ClassVar[KindSpec] = KindSpec(
@@ -434,7 +459,7 @@ class PathwayHandler(Handler):
             # to find any of ~700 pathways — and this branch's error pointed
             # at an example slug that never existed.
             return Response(body=self._list(store))
-        U = _potential_arg(args)
+        U, pH = _point_args(args)
         # A trailing ``~<source>→<target>`` step selector (Simulation step
         # deep-links) — dispatch's universal-handle/slug routing reattaches
         # any ``~selector`` suffix to the resolved id untouched (it only
@@ -469,6 +494,12 @@ class PathwayHandler(Handler):
                 options=list(_POTENTIAL_VIEWS),
                 next=f"get(kind='pathway', id={id!r}, view='analysis', args={{'U': {U}}})",
             )
+        if pH is not None and v != "staircase":
+            raise BadInput(
+                "args pH/point picks a point on view='staircase' only",
+                next=f"get(kind='pathway', id={id!r}, view='staircase', "
+                f"args={{'U': {U}, 'pH': {pH}}})",
+            )
 
         meta = ref.meta or {}
         if meta.get("status") == "computing":
@@ -488,7 +519,18 @@ class PathwayHandler(Handler):
         if v == "compare":
             return Response(body=self._compare(store, ref, meta, U=U))
         if v == "staircase":
-            return Response(body=self._staircase(store, ref, meta, U=U))
+            return Response(
+                # U alone is the plain re-tilt (the structure view always
+                # forwards its quest's U); a pH or point picks a point
+                body=self._staircase(
+                    store,
+                    ref,
+                    meta,
+                    U=U,
+                    pH=pH,
+                    picked=isinstance(args, dict) and ("pH" in args or "point" in args),
+                )
+            )
 
         computed = bool(meta.get("graph"))
         if v in ("analysis", "steps", "kinetics", "trust", "warnings") and not computed:
@@ -716,18 +758,33 @@ class PathwayHandler(Handler):
 
     # -- staircase (SPSO slice 3, the che_affine read) --------------------
     def _staircase(
-        self, store: Store, ref: Any, meta: dict[str, Any], *, U: float | None
+        self,
+        store: Store,
+        ref: Any,
+        meta: dict[str, Any],
+        *,
+        U: float | None,
+        pH: float | None = None,
+        picked: bool = False,
     ) -> str:
         """`view='staircase'` — the reaction staircase from the engine's
         affine CHE export, re-tilted at ``U`` (default: the pathway's
         recorded operating point, else 0 V). Where a linked structure has
         a surface-Pourbaix map, the map's resting termination at U is the
         staircase's stated starting surface (§7.2), with the coads
-        mismatch verdict when the pathway's slab spec disagrees."""
+        mismatch verdict when the pathway's slab spec disagrees.
+
+        ``picked`` (any of ``U``/``pH``/``point`` given) adds the point
+        verdict (gr489471): a state per rung, the worst rung and window
+        membership, from :func:`~precis_pathway.staircase_states.
+        point_states` — the same object the web picker reads. Its map is
+        the one of the structure the pathway ran on (``candidate_ref``)
+        when linked, else the first linked structure with a map."""
         from precis.quest import pourbaix_map
         from precis.quest import staircase as sq
 
         from .staircase_routes import render_staircase, routes_for_pathway
+        from .staircase_states import pathway_coads, point_states
 
         results = meta.get("results") if isinstance(meta.get("results"), dict) else {}
         u = U if U is not None else sq.pathway_operating_u(meta.get("config"), results)
@@ -741,6 +798,8 @@ class PathwayHandler(Handler):
             if ph is None and isinstance(c, int | float) and not isinstance(c, bool):
                 ph = float(c)
         structures = []
+        point_map: tuple[int, dict[str, Any], dict[str, Any]] | None = None
+        cand = meta.get("candidate_ref")
         for s in sq.structures_for_pathway(store, int(ref.id)):
             smeta = dict(s.meta or {})
             coads = sq.coads_of(smeta)
@@ -749,7 +808,11 @@ class PathwayHandler(Handler):
                 or f"structure:{s.id}"
             )
             resting, region = None, None
-            for m in pourbaix_map.maps_for_structure(store, s):
+            maps = pourbaix_map.maps_for_structure(store, s)
+            # the structure the pathway ran on wins over another linked one
+            if maps and (point_map is None or int(s.id) == cand):
+                point_map = (int(s.id), maps[0], smeta)
+            for m in maps:
                 region = sq.resting_region(m, u)
                 if region is not None:
                     resting = str(region.get("label") or "?")
@@ -762,6 +825,17 @@ class PathwayHandler(Handler):
                     "mismatch": sq.mismatch(region, coads, u=u, label=resting),
                 }
             )
+        states = None
+        if picked:
+            if pH is not None:
+                ph = pH
+            states = point_states(
+                sr,
+                point_map[1] if point_map else None,
+                u_rhe=u,
+                ph=ph if ph is not None else 0.0,
+                coads=pathway_coads(store, meta, point_map[2] if point_map else None),
+            )
         return render_staircase(
             sr,
             results,
@@ -769,6 +843,7 @@ class PathwayHandler(Handler):
             title=ref.title,
             ph=ph,
             structures=structures,
+            states=states,
         )
 
     # -- preview (cheap, no compute) -------------------------------------

@@ -50,6 +50,8 @@ from .staircase_masks import PREFAC_V, Route, Rung, pcet_route, u_limiting, u_sh
 if TYPE_CHECKING:
     from precis.store.store import Store
 
+    from .staircase_states import PointStates
+
 #: Name the HER competitor route gets (``kind="her"`` already labels each
 #: rung; the name is what masks/renders print).
 HER_ROUTE_NAME = "HER"
@@ -356,6 +358,7 @@ def render_staircase(
     title: str | None = None,
     ph: float | None = None,
     structures: list[dict[str, Any]] | None = None,
+    states: PointStates | None = None,
 ) -> str:
     """The staircase at one potential, agent-readable text.
 
@@ -363,7 +366,12 @@ def render_staircase(
     map → staircase link): each ``{handle, resting, assumed, mismatch}``
     row is the map's resting termination at ``u_rhe`` plus the coads
     verdict, computed by the caller (the plugin-side helper or
-    :mod:`precis.quest.staircase`)."""
+    :mod:`precis.quest.staircase`).
+
+    ``states`` — the picked point's verdict
+    (:func:`~precis_pathway.staircase_states.point_states`, gr489471):
+    each rung line gains its state (a split rung shows its PCET
+    parent's), and a point block names the worst rung and the window."""
     u = float(u_rhe)
     ph_v = ph if ph is not None else sr.pH
     lines = [f"# reaction staircase — {title or 'pathway'}", ""]
@@ -434,9 +442,11 @@ def render_staircase(
             if best is None or dg > best[1]:
                 best = (rung, dg)
             sig = f" ±{rung.sigma:.3f}" if rung.sigma is not None else ""
+            st = states.state_of(i, rung.name) if states is not None else None
             lines.append(
                 f"  {rung.name:<28} {rung.kind:<15} n_e {rung.n_e:>2}  "
                 f"ΔG0 {rung.delta_g0:+.3f}  ΔG(U) {dg:+.3f} eV{sig}"
+                + (f"  [{st.state}]" if st is not None else "")
             )
         assert best is not None
         pcet = sr.pcet_routes[i] if i < len(sr.pcet_routes) else route
@@ -500,6 +510,20 @@ def render_staircase(
                 "(limiting_HER − limiting_route; positive = the route "
                 "out-competes HER)"
             )
+    if states is not None:
+        lines.append("")
+        lines.append(
+            f"point U_RHE {states.u_rhe:+.3f} V, pH {states.ph:g}: window "
+            f"{states.window}; resting {states.termination or 'unmapped'}, "
+            f"pathway computed on {states.assumed}"
+        )
+        if states.worst is not None:
+            lines.append(
+                f"  worst rung (route {states.worst['route_index'] + 1}): "
+                + states.worst["line"]
+            )
+        for note in states.notes:
+            lines.append(f"  {note}")
     if sr.missing:
         lines.append("")
         lines.append("missing: " + "; ".join(str(m) for m in sr.missing))
