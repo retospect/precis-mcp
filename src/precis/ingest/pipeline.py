@@ -803,6 +803,9 @@ def fetch_paper_by_doi(
 
     Raises :class:`ValueError` when CrossRef returns nothing — the
     caller surfaces that as a CLI error in B4d.
+
+    :class:`precis.utils.rate_limit.RateLimited` propagates (a rate limit is
+    not a miss).
     """
     normalised = normalize_doi(doi)
     if not normalised:

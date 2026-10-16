@@ -34,6 +34,7 @@ from typing import Any, Literal
 from precis.errors import Upstream
 from precis.ingest._text_norm import best_jaccard, surname_matches
 from precis.store import Store, Tag
+from precis.utils.rate_limit import RateLimited
 
 # ---------------------------------------------------------------------------
 # DOI format validation
@@ -413,6 +414,10 @@ def _check_cited_doi(
 
     try:
         msg = _fetch_crossref_message(cited_doi, mailto)
+    except RateLimited:
+        # A refusal is not a verdict: leave the cache untouched and let
+        # the caller report the cite-walk as incomplete.
+        raise
     except Exception:
         cache[cited_doi] = _CITE_CLEAN
         return None
@@ -592,8 +597,12 @@ def _fetch_crossref_message(doi: str, mailto: str | None) -> dict[str, Any] | No
     from habanero import Crossref
 
     from precis.utils.http import retry_transient
+    from precis.utils.rate_limit import require as require_rate_limit
 
     cr = Crossref(mailto=mailto) if mailto else Crossref()
+    # Shared crossref limiter: a refusal raises RateLimited before any
+    # request, propagating like other transport errors (-> check_failed).
+    require_rate_limit("crossref")
     try:
         result = retry_transient(lambda: cr.works(ids=doi), host="api.crossref.org")
     except Exception as exc:
@@ -648,8 +657,10 @@ def _search_crossref_works(
     if author:
         kwargs["query_author"] = author
     from precis.utils.http import retry_transient
+    from precis.utils.rate_limit import require as require_rate_limit
 
     try:
+        require_rate_limit("crossref")
         result = retry_transient(lambda: cr.works(**kwargs), host="api.crossref.org")
     except Exception:
         return []
@@ -1207,12 +1218,19 @@ def check_doi(
     if transitive and msg is not None:
         cache = _cite_cache if _cite_cache is not None else {}
         for cited_doi in _extract_cited_dois(msg):
-            finding = _check_cited_doi(
-                cited_doi,
-                mailto=mailto,
-                cache=cache,
-                store=store,
-            )
+            try:
+                finding = _check_cited_doi(
+                    cited_doi,
+                    mailto=mailto,
+                    cache=cache,
+                    store=store,
+                )
+            except RateLimited:
+                # Remaining lookups would be refused too; flag the walk as
+                # incomplete rather than reporting the rest as clean.
+                if crossref_error is None:
+                    crossref_error = "cite-walk incomplete: crossref rate-limited"
+                break
             if finding is not None:
                 cited_findings.append(finding)
 
@@ -1644,11 +1662,13 @@ def _fetch_doi_validity(doi: str, *, mailto: str | None) -> DoiStatus | None:
     answer we never actually got.
     """
     from precis.utils.http import http_client, retry_transient
+    from precis.utils.rate_limit import require as require_rate_limit
     from precis.utils.safe_fetch import safe_get
 
     url = f"{_CROSSREF_WORKS_BASE}/{doi}"
     params = {"mailto": mailto} if mailto else None
     try:
+        require_rate_limit("crossref")
         with http_client(timeout=_DOI_VALIDATE_TIMEOUT_S) as client:
             resp = retry_transient(
                 lambda: safe_get(client, url, params=params), host=url

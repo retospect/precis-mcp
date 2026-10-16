@@ -62,10 +62,11 @@ way. ``arxiv`` (rate lane, ~1 request per 3s) — the arXiv PDF leg
 :func:`require`: ``precis.ingest.paper_meta_enrich.enrich_paper`` (defers
 its batch unstamped), ``precis.workers.bib_parse._crossref_query`` (defers
 the paper unstamped and stops the batch) and
-``precis.workers.fetch_oa._query_crossref_pdf_links``. On-demand and
-ingest-time Crossref lookups (``precis.ingest.crossref.lookup_crossref``,
-``precis.ingest.provenance``, ``doi_registry``, ``crossref_citation``,
-``si_discovery``) stay ungated.
+``precis.workers.fetch_oa._query_crossref_pdf_links``. The on-demand and
+ingest-time lookups call it too: ``precis.ingest.crossref.lookup_crossref``
+(``doi_backfill``/``metadata_resolve``), ``precis.ingest.provenance``,
+``doi_registry``, ``crossref_citation`` and ``si_discovery``; each maps a
+refusal onto its existing transport-failure outcome, never a "not found".
 """
 
 from __future__ import annotations

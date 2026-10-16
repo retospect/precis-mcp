@@ -91,13 +91,36 @@ provider key.
   the three `_SYS` pass chokepoints: `paper_meta_enrich.enrich_paper`
   (batch deferred unstamped), `bib_parse._crossref_query` (paper left
   unstamped, batch stopped) and `fetch_oa._query_crossref_pdf_links`.
-- **Open:** the on-demand/ingest-time Crossref lookups
-  (`ingest/crossref.lookup_crossref` via `lookup_doi`/`doi_backfill`/
-  `metadata_resolve`, `ingest/provenance`, `doi_registry`,
-  `crossref_citation`, `si_discovery`) are ungated; gate whichever turn out
-  to run as cluster-wide passes. The crossref seed row (20 rps) is looser
-  than Crossref's published polite-pool limit — confirm before relying on
-  it.
+  The on-demand/ingest-time Crossref lookups are gated too (ruling 2):
+  `ingest/crossref.lookup_crossref` (the `crossref_fn` default of
+  `doi_backfill` and `metadata_resolve`; a refusal raises, never a
+  "not found"), `ingest/provenance` (DOI check → `check_failed`, candidate
+  search → `[]`, DOI validity → unstamped), `doi_registry._crossref_meta`
+  (→ `RegistryLookupError`), `crossref_citation` (→ `[]`) and
+  `si_discovery` (→ the existing transport miss). No HTTP is sent on a
+  refusal. `bib_parse.run_bib_rematch_sweep` (ruling 3) re-matches entries
+  a Crossref query failure left `match_conf IS NULL` on a stamped paper —
+  never a true no-match (0.0) — at most 50 per run, only on a cycle whose
+  claim pass found nothing, stopping on the first limiter refusal.
+- **Open:** an entry Crossref can never answer (a 400 on odd citation
+  text, an unparseable body) stays NULL and the sweep may re-pick it on
+  every idle cycle — add a per-entry attempt marker if that shows up in
+  the limiter budget. The crossref seed row is 20 rps; ruling 1 lowers it to 1/s in a
+  new migration.
+
+## Rulings (Reto, 2026-10-16 ~10:2xZ, morning-queue entry 7)
+
+1. Crossref gets at most 1 request/s: "Be nice. We have time." The cap is
+   1/s whatever Crossref's headers say. Header reading, one polite GET
+   (`/works?rows=0` with the project mailto) at 2026-10-16 10:25:37Z:
+   `x-rate-limit-limit: 3`, `x-rate-limit-interval: 1s`,
+   `x-concurrency-limit: 3`, `x-api-pool: polite-array`.
+2. Gate the on-demand and ingest-time Crossref lookups (`doi_backfill`,
+   `metadata_resolve`, `provenance`, `doi_registry`, `crossref_citation`,
+   `si_discovery`) through the same `require()` chokepoint.
+3. Re-match `bib_parse` entries left NULL-match by a plain Crossref failure
+   (rate-limit or transport error, not a true no-match), at the limiter's
+   pace; idempotent and bounded per run.
 
 ## Reference assets
 

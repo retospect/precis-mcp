@@ -31,6 +31,9 @@ each claimed paper it:
      memoized (non-NULL ``match_conf`` doubles as the resolved marker);
      a Crossref *query failure* deliberately is not — ``match_conf``
      stays NULL so an outage window can't permanently poison an entry.
+     Since the paper is stamped regardless, those stranded entries are
+     retried by ``run_bib_rematch_sweep``, run from the worker cycle only
+     once the claim pass has drained.
 
 The pass **always stamps** ``refs.meta.bib_parse_version`` at the end,
 even when it finds no bibliography — so a no-bibliography paper converges
@@ -599,6 +602,63 @@ def _write_crossref_match(
     )
 
 
+def _match_one_entry(
+    store: Store,
+    ref_id: int,
+    entry_id: int,
+    raw_text: str,
+    *,
+    client: Any,
+    mailto: str = "",
+) -> str:
+    """Match one entry and write the result. Returns ``"matched"`` (a DOI
+    was written), ``"unmatched"`` (a genuine no-match, memoized at
+    :data:`_MATCH_CONF_UNMATCHED`) or ``"failed"`` (Crossref query failure:
+    ``match_conf`` left NULL). :class:`RateLimited` propagates. Holds no
+    connection across the Crossref/LLM calls (see
+    :func:`run_bib_parse_match_pass`).
+    """
+    # Local DOI-exact match: DB reads only, no network -- fine to hold
+    # a connection for the length of this lookup.
+    with store.pool.connection() as conn:
+        local = _match_entry_via_local_doi(conn, ref_id, raw_text)
+        conn.commit()
+
+    if local is not None:
+        doi, s2_id, held_ref_id = local
+
+        def _write_local() -> None:
+            with store.pool.connection() as wconn:
+                _write_local_doi_match(wconn, entry_id, doi, s2_id, held_ref_id)
+                wconn.commit()
+
+        retry_locked(_write_local, label=f"bib_parse match entry_id={entry_id}")
+        return "matched"
+
+    items = _crossref_query(raw_text, mailto=mailto)
+    if items is None:
+        log.warning(
+            "bib_parse: crossref query failed for entry_id=%s -- leaving "
+            "match_conf NULL for a later retry",
+            entry_id,
+        )
+        return "failed"
+
+    matched_doi, match_conf = _resolve_crossref_candidates(client, raw_text, items)
+
+    with store.pool.connection() as conn:
+        held_ref_id = _held_ref_for_doi(conn, matched_doi) if matched_doi else None
+        conn.commit()
+
+    def _write_crossref() -> None:
+        with store.pool.connection() as wconn:
+            _write_crossref_match(wconn, entry_id, matched_doi, held_ref_id, match_conf)
+            wconn.commit()
+
+    retry_locked(_write_crossref, label=f"bib_parse match entry_id={entry_id}")
+    return "matched" if matched_doi else "unmatched"
+
+
 def run_bib_parse_match_pass(
     store: Store, ref_id: int, *, client: Any, mailto: str = ""
 ) -> dict[str, int]:
@@ -639,60 +699,79 @@ def run_bib_parse_match_pass(
         conn.commit()
 
     for raw_entry_id, raw_text in rows:
-        entry_id = int(raw_entry_id)
-
-        # Local DOI-exact match: DB reads only, no network -- fine to hold
-        # a connection for the length of this lookup.
-        with store.pool.connection() as conn:
-            local = _match_entry_via_local_doi(conn, ref_id, raw_text)
-            conn.commit()
-
-        if local is not None:
-            doi, s2_id, held_ref_id = local
-
-            def _write_local(
-                entry_id: int = entry_id,
-                doi: str = doi,
-                s2_id: str | None = s2_id,
-                held_ref_id: int | None = held_ref_id,
-            ) -> None:
-                with store.pool.connection() as wconn:
-                    _write_local_doi_match(wconn, entry_id, doi, s2_id, held_ref_id)
-                    wconn.commit()
-
-            retry_locked(_write_local, label=f"bib_parse match entry_id={entry_id}")
-            continue
-
-        items = _crossref_query(raw_text, mailto=mailto)
-        if items is None:
-            log.warning(
-                "bib_parse: crossref query failed for entry_id=%s -- leaving "
-                "match_conf NULL for a later retry",
-                entry_id,
-            )
-            continue
-
-        matched_doi, match_conf = _resolve_crossref_candidates(client, raw_text, items)
-
-        with store.pool.connection() as conn:
-            held_ref_id = _held_ref_for_doi(conn, matched_doi) if matched_doi else None
-            conn.commit()
-
-        def _write_crossref(
-            entry_id: int = entry_id,
-            matched_doi: str | None = matched_doi,
-            held_ref_id: int | None = held_ref_id,
-            match_conf: float = match_conf,
-        ) -> None:
-            with store.pool.connection() as wconn:
-                _write_crossref_match(
-                    wconn, entry_id, matched_doi, held_ref_id, match_conf
-                )
-                wconn.commit()
-
-        retry_locked(_write_crossref, label=f"bib_parse match entry_id={entry_id}")
+        _match_one_entry(
+            store, ref_id, int(raw_entry_id), raw_text, client=client, mailto=mailto
+        )
 
     return {"attempted": len(rows)}
+
+
+#: Max stranded entries one :func:`run_bib_rematch_sweep` call retries.
+#: Each costs up to a few Crossref calls through the shared limiter, so this
+#: bounds one worker cycle's outbound spend; ``ORDER BY random()`` keeps a
+#: persistently failing entry from starving the rest across cycles.
+_REMATCH_SWEEP_LIMIT = 50
+
+
+def run_bib_rematch_sweep(
+    store: Store,
+    *,
+    client: Any,
+    limit: int = _REMATCH_SWEEP_LIMIT,
+    mailto: str = "",
+) -> dict[str, int]:
+    """Retry entries stranded by a Crossref query failure.
+
+    A failure leaves ``match_conf`` NULL, but the paper is still stamped by
+    :func:`run_bib_parse_pass`, so nothing re-claims it. Selects up to
+    ``limit`` current-version NULL entries on *stamped*, non-retired papers
+    not under a live attempt lease (unstamped papers belong to the main
+    pass), randomly ordered, and matches each via :func:`_match_one_entry`.
+    Rows with a non-NULL ``match_conf`` (including true no-matches at 0.0)
+    are never touched. A :class:`RateLimited` refusal stops the sweep at
+    once, leaving the rest NULL. Idempotent: once resolved, a rerun selects
+    nothing and makes zero Crossref calls.
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT e.id, e.ref_id, e.raw_text FROM paper_bib_entries e "
+            "JOIN refs r ON r.ref_id = e.ref_id "
+            "WHERE e.match_conf IS NULL AND e.parse_version = %(ver)s "
+            "AND r.retired_at IS NULL "
+            "AND COALESCE((r.meta->>%(mk)s)::int, 0) >= %(ver)s "
+            + ref_lease.exclude_clause("r.ref_id", "lease_ns")
+            + " ORDER BY random() LIMIT %(limit)s",
+            {
+                "ver": BIB_PARSE_VERSION,
+                "mk": _META_VERSION_KEY,
+                "lease_ns": ref_lease.attempt_ns(_LEASE_NS),
+                "limit": limit,
+            },
+        ).fetchall()
+        conn.commit()
+
+    out = {
+        "selected": len(rows),
+        "matched": 0,
+        "unmatched": 0,
+        "failed": 0,
+        "rate_limited": 0,
+    }
+    for entry_id, ref_id, raw_text in rows:
+        try:
+            outcome = _match_one_entry(
+                store,
+                int(ref_id),
+                int(entry_id),
+                raw_text,
+                client=client,
+                mailto=mailto,
+            )
+        except RateLimited:
+            out["rate_limited"] = 1
+            break
+        out[outcome] += 1
+    return out
 
 
 # ── DB: claim + chunk read + write ─────────────────────────────────────
@@ -913,8 +992,27 @@ def run_bib_parse_pass(
     return {"claimed": len(rows), "ok": ok, "failed": failed}
 
 
+def run_bib_parse_cycle(
+    store: Store, *, client: Any, batch_size: int = 4, mailto: str = ""
+) -> dict[str, int]:
+    """One worker cycle: the claim pass, then -- only when it claimed
+    nothing (backlog drained, so the sweep never competes with fresh
+    papers) -- :func:`run_bib_rematch_sweep`. Returns the pass's counts."""
+    r = run_bib_parse_pass(store, client=client, batch_size=batch_size, mailto=mailto)
+    if r["claimed"] == 0:
+        try:
+            run_bib_rematch_sweep(store, client=client, mailto=mailto)
+        except Exception:
+            # The sweep is opportunistic; its failure must not replace the
+            # claim-pass counts the worker loop reports.
+            log.exception("bib_parse: re-match sweep failed")
+    return r
+
+
 __all__ = [
     "BIB_PARSE_VERSION",
+    "run_bib_parse_cycle",
     "run_bib_parse_match_pass",
     "run_bib_parse_pass",
+    "run_bib_rematch_sweep",
 ]

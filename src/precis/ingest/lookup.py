@@ -20,6 +20,7 @@ from precis.ingest.semantic_scholar import get_paper_by_id, lookup_s2
 from precis.ingest.verify_metadata import verify_metadata
 from precis.secrets import get_secret
 from precis.utils.authors import is_junk_author_name
+from precis.utils.rate_limit import RateLimited
 
 log = logging.getLogger(__name__)
 
@@ -44,7 +45,7 @@ def lookup(pdf_path: str) -> dict[str, Any]:
 
     # Try DOI → CrossRef
     if doi:
-        result = lookup_doi(doi, mailto=mailto)
+        result = _lookup_doi_or_none(doi, mailto)
         if result:
             result["pdf_hash"] = pdf_meta["pdf_hash"]
             result["page_count"] = pdf_meta["page_count"]
@@ -74,7 +75,7 @@ def lookup(pdf_path: str) -> dict[str, Any]:
     if not doi:
         filename_doi = extract_doi_from_filename(pdf_path)
         if filename_doi:
-            result = lookup_doi(filename_doi, mailto=mailto)
+            result = _lookup_doi_or_none(filename_doi, mailto)
             if result:
                 result["pdf_hash"] = pdf_meta["pdf_hash"]
                 result["page_count"] = pdf_meta["page_count"]
@@ -143,6 +144,15 @@ def lookup(pdf_path: str) -> dict[str, Any]:
         "page_count": pdf_meta["page_count"],
         "first_pages_text": pdf_meta["first_pages_text"],
     }
+
+
+def _lookup_doi_or_none(doi: str, mailto: str) -> dict[str, Any] | None:
+    """``lookup_doi`` where a limiter refusal falls through like a miss."""
+    try:
+        return lookup_doi(doi, mailto=mailto)
+    except RateLimited:
+        log.info("crossref rate-limited for %s; cascading to next leg", doi)
+        return None
 
 
 def lookup_doi(doi: str, mailto: str = "") -> dict[str, Any] | None:

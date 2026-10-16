@@ -928,3 +928,216 @@ class TestSharedLimiterRefusal:
             ]
             conn.rollback()
         assert reclaimable == [r for r in ref_ids if r not in reached]
+
+
+# ── re-match sweep for failure-stranded entries ─────────────────────────
+
+
+def _stamp(store: Any, ref_id: int) -> None:
+    with store.pool.connection() as conn:
+        bib_parse_mod._stamp_paper_version(conn, ref_id)
+        conn.commit()
+
+
+def _set_conf(store: Any, entry_id: int, conf: float) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE paper_bib_entries SET match_conf = %s WHERE id = %s",
+            (conf, entry_id),
+        )
+        conn.commit()
+
+
+def _crossref_hit(monkeypatch: pytest.MonkeyPatch, items: list[Any]) -> list[str]:
+    """Patch ``_crossref_query`` to return ``items``; returns the call log."""
+    calls: list[str] = []
+
+    def fake(raw_text: str, *, mailto: str = "") -> Any:
+        calls.append(raw_text)
+        return items
+
+    monkeypatch.setattr(bib_parse_mod, "_crossref_query", fake)
+    return calls
+
+
+_HIT = [
+    {
+        "DOI": "10.1/zzz",
+        "score": 90.0,
+        "title": ["A Paper"],
+        "container-title": ["J"],
+        "issued": {"date-parts": [[2020]]},
+    }
+]
+
+
+class TestRematchSweep:
+    def test_rematches_failure_null_entry_on_stamped_paper(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ref_id = seed_ref(store, title="stamped")
+        entry_id = _insert_entry(store, ref_id, 1, "stranded citation, J, 2020.")
+        _stamp(store, ref_id)
+        calls = _crossref_hit(monkeypatch, _HIT)
+
+        out = bib_parse_mod.run_bib_rematch_sweep(store, client=_FakeClient("{}"))
+
+        assert out == {
+            "selected": 1,
+            "matched": 1,
+            "unmatched": 0,
+            "failed": 0,
+            "rate_limited": 0,
+        }
+        assert len(calls) == 1
+        doi, _s2, _held, conf = _entry_row(store, entry_id)
+        assert doi == "10.1/zzz"
+        assert conf == pytest.approx(0.8)
+
+    def test_still_failing_entry_stays_null(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ref_id = seed_ref(store, title="stamped")
+        entry_id = _insert_entry(store, ref_id, 1, "stranded citation, J, 2020.")
+        _stamp(store, ref_id)
+        monkeypatch.setattr(bib_parse_mod, "_crossref_query", lambda *_a, **_k: None)
+        out = bib_parse_mod.run_bib_rematch_sweep(store, client=_FakeClient("{}"))
+        assert out["selected"] == 1 and out["failed"] == 1
+        assert _entry_row(store, entry_id)[3] is None
+
+    def test_never_requeries_resolved_entries(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ref_id = seed_ref(store, title="stamped")
+        no_match = _insert_entry(store, ref_id, 1, "true no match, J, 2020.")
+        matched = _insert_entry(store, ref_id, 2, "already matched, J, 2021.")
+        _set_conf(store, no_match, 0.0)
+        _set_conf(store, matched, 0.8)
+        _stamp(store, ref_id)
+        calls = _crossref_hit(monkeypatch, _HIT)
+
+        out = bib_parse_mod.run_bib_rematch_sweep(store, client=_FakeClient("{}"))
+
+        assert out["selected"] == 0
+        assert calls == []
+        assert _entry_row(store, no_match)[3] == 0.0
+        assert _entry_row(store, matched)[3] == pytest.approx(0.8)
+
+    def test_skips_unstamped_and_leased_papers(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        unstamped = seed_ref(store, title="unstamped")
+        _insert_entry(store, unstamped, 1, "citation on unstamped, J, 2020.")
+        leased = seed_ref(store, title="leased")
+        _insert_entry(store, leased, 1, "citation on leased, J, 2020.")
+        _stamp(store, leased)
+        with store.pool.connection() as conn:
+            ref_lease.stamp_attempt(store, leased, bib_parse_mod._LEASE_NS, conn=conn)
+            conn.commit()
+        calls = _crossref_hit(monkeypatch, _HIT)
+
+        out = bib_parse_mod.run_bib_rematch_sweep(store, client=_FakeClient("{}"))
+
+        assert out["selected"] == 0
+        assert calls == []
+
+    def test_respects_limit(self, store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+        ref_id = seed_ref(store, title="stamped")
+        ids = [
+            _insert_entry(store, ref_id, m, f"stranded citation {m}, J, 2020.")
+            for m in range(1, 5)
+        ]
+        _stamp(store, ref_id)
+        calls = _crossref_hit(monkeypatch, [])
+
+        out = bib_parse_mod.run_bib_rematch_sweep(
+            store, client=_FakeClient("{}"), limit=2
+        )
+
+        assert out["selected"] == 2 and out["unmatched"] == 2
+        assert len(calls) == 2
+        resolved = [i for i in ids if _entry_row(store, i)[3] is not None]
+        assert len(resolved) == 2
+
+    def test_second_run_is_noop_with_zero_crossref_calls(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ref_id = seed_ref(store, title="stamped")
+        _insert_entry(store, ref_id, 1, "stranded one, J, 2020.")
+        _insert_entry(store, ref_id, 2, "stranded two, J, 2021.")
+        _stamp(store, ref_id)
+        calls = _crossref_hit(monkeypatch, [])
+        bib_parse_mod.run_bib_rematch_sweep(store, client=_FakeClient("{}"))
+        assert len(calls) == 2
+
+        out = bib_parse_mod.run_bib_rematch_sweep(store, client=_FakeClient("{}"))
+
+        assert out["selected"] == 0
+        assert len(calls) == 2
+
+    def test_rate_limited_stops_sweep_and_leaves_null(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ref_id = seed_ref(store, title="stamped")
+        ids = [
+            _insert_entry(store, ref_id, m, f"stranded citation {m}, J, 2020.")
+            for m in range(1, 4)
+        ]
+        _stamp(store, ref_id)
+        refusals: list[str] = []
+
+        def refuse(provider: str, **_: Any) -> None:
+            refusals.append(provider)
+            _refuse(provider)
+
+        def _no_http(*_a: Any, **_k: Any) -> Any:
+            raise AssertionError("safe_get fired despite a limiter refusal")
+
+        monkeypatch.setattr(bib_parse_mod, "require_rate_limit", refuse)
+        monkeypatch.setattr("precis.utils.safe_fetch.safe_get", _no_http)
+
+        out = bib_parse_mod.run_bib_rematch_sweep(store, client=_FakeClient("{}"))
+
+        assert out["selected"] == 3 and out["rate_limited"] == 1
+        assert len(refusals) == 1  # stopped at the first refusal
+        assert all(_entry_row(store, i)[3] is None for i in ids)
+
+
+class TestCycleWiring:
+    def test_sweep_runs_only_when_nothing_claimed(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sweeps: list[int] = []
+
+        def _sweep(*_a: Any, **_k: Any) -> dict[str, int]:
+            sweeps.append(1)
+            return {}
+
+        monkeypatch.setattr(bib_parse_mod, "run_bib_rematch_sweep", _sweep)
+        claimed = {"claimed": 2, "ok": 2, "failed": 0}
+        monkeypatch.setattr(
+            bib_parse_mod, "run_bib_parse_pass", lambda *a, **k: claimed
+        )
+        r = bib_parse_mod.run_bib_parse_cycle(store, client=_FakeClient("{}"))
+        assert r == claimed and sweeps == []
+
+        drained = {"claimed": 0, "ok": 0, "failed": 0}
+        monkeypatch.setattr(
+            bib_parse_mod, "run_bib_parse_pass", lambda *a, **k: drained
+        )
+        r = bib_parse_mod.run_bib_parse_cycle(store, client=_FakeClient("{}"))
+        assert r == drained and sweeps == [1]
+
+    def test_sweep_failure_keeps_claim_pass_counts(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def boom(*_a: Any, **_k: Any) -> Any:
+            raise RuntimeError("sweep exploded")
+
+        drained = {"claimed": 0, "ok": 0, "failed": 0}
+        monkeypatch.setattr(bib_parse_mod, "run_bib_rematch_sweep", boom)
+        monkeypatch.setattr(
+            bib_parse_mod, "run_bib_parse_pass", lambda *a, **k: drained
+        )
+        r = bib_parse_mod.run_bib_parse_cycle(store, client=_FakeClient("{}"))
+        assert r == drained

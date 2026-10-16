@@ -8,6 +8,7 @@ from habanero import Crossref
 
 from precis.utils.deadline import call_with_deadline
 from precis.utils.http import retry_transient
+from precis.utils.rate_limit import require as require_rate_limit
 
 #: Overall wall-clock bound on the whole ``cr.works`` call (connect,
 #: request, body read, any connect-retry). habanero/requests timeouts are
@@ -53,7 +54,12 @@ def lookup_crossref(doi: str, mailto: str = "") -> dict[str, Any] | None:
 
     Returns:
         Normalized metadata dict or None if not found.
+
+    Raises:
+        precis.utils.rate_limit.RateLimited: the shared crossref limiter
+            refused; deliberately not folded into ``None`` (= not found).
     """
+    require_rate_limit("crossref")
     msg = fetch_message(doi, mailto)
     if msg is None:
         return None

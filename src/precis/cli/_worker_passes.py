@@ -111,9 +111,9 @@ def build_ref_passes(
         _bp_mailto = settings.get_str("contact.polite_email") or ""
 
         def _bib_parse_pass(batch_size: int) -> _BpBatchResult:
-            from precis.workers.bib_parse import run_bib_parse_pass
+            from precis.workers.bib_parse import run_bib_parse_cycle
 
-            r = run_bib_parse_pass(
+            r = run_bib_parse_cycle(
                 store,
                 client=_bp_client,
                 batch_size=min(batch_size, 4),

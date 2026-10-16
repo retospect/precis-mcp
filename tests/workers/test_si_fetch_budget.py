@@ -407,6 +407,16 @@ def test_network_failure_logs_si_error_not_si_blocked(store, tmp_path) -> None:
     assert [e[0] for e in _events(store, pid)] == ["si_error"]
 
 
+def test_rate_limited_miss_is_transient_si_error(store, tmp_path) -> None:
+    """A limiter refusal (miss ``error:RateLimited``) re-arms, never si_blocked."""
+    assert si_fetch._is_transient("error:RateLimited")
+    pid = _seed(store)
+    _flag(store, pid, "2026-10-03T10:00:00.000000Z")
+    si_fetch.run_si_pass(store, tmp_path, fetch=_flaky("RateLimited"))
+    assert [e[0] for e in _events(store, pid)] == ["si_error"]
+    assert _meta(store, pid)["si_fetch"]["deadline_retries"] == 1
+
+
 def test_network_failure_plus_wall_stays_si_blocked(store, tmp_path) -> None:
     pid = _seed(store)
     _flag(store, pid, "2026-10-03T10:00:00.000000Z")

@@ -155,8 +155,30 @@ def _summarise_fetcher(
     if event == "fetch_failed":
         return payload.get("error", "(no detail)")
     if event == "rate_limited":
-        return "Unpaywall rate limit hit"
+        return _summarise_rate_limited(payload)
     return _generic_payload(payload)
+
+
+#: Display names for the ``provider`` key of a ``rate_limited`` payload.
+_PROVIDER_NAMES = {
+    "unpaywall": "Unpaywall",
+    "arxiv": "arXiv",
+    "crossref": "Crossref",
+    "openalex": "OpenAlex",
+    "s2": "Semantic Scholar",
+}
+
+
+def _summarise_rate_limited(payload: dict[str, Any]) -> str:
+    """A shared-limiter refusal (``fetch_oa._local_rate_limited`` and the
+    arXiv legs) carries ``provider`` and ``limiter='shared'``; the legacy
+    Unpaywall HTTP 429 carries neither, so no ``provider`` means Unpaywall."""
+    provider = str(payload.get("provider") or "unpaywall")
+    name = _PROVIDER_NAMES.get(provider, provider)
+    line = f"{name} rate limit hit"
+    if payload.get("limiter"):
+        line += f" (limiter={payload['limiter']})"
+    return line
 
 
 def _generic_payload(payload: dict[str, Any]) -> str:

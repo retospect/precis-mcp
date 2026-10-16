@@ -420,10 +420,16 @@ def discover(doi: str, fetch: FetchFn) -> DiscoveryResult:
     # b. Crossref relation
     component_dois: list[str] = []
     from precis.utils.http import retry_transient
+    from precis.utils.rate_limit import require as require_rate_limit
+
+    def _crossref_fetch(u: str) -> HttpResult:
+        # Shared crossref limiter; a refusal is recorded as a transport miss.
+        require_rate_limit("crossref")
+        return retry_transient(lambda: fetch(u), host=u)
 
     cr_url = f"{_CROSSREF_API}/{doi}"
     cr = _safe_fetch(
-        lambda u: retry_transient(lambda: fetch(u), host=u),
+        _crossref_fetch,
         cr_url,
         SOURCE_CROSSREF,
         result,

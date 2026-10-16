@@ -28,6 +28,8 @@ from typing import Any
 from urllib.parse import quote, urlsplit
 
 from precis.utils.http import http_client, retry_transient
+from precis.utils.rate_limit import RateLimited
+from precis.utils.rate_limit import require as require_rate_limit
 from precis.utils.safe_fetch import safe_get
 
 log = logging.getLogger(__name__)
@@ -74,6 +76,11 @@ def _crossref_meta(doi: str, mailto: str = "") -> dict[str, Any] | None:
     from precis.ingest.crossref import _normalize as crossref_normalize
 
     params = {"mailto": mailto} if mailto else None
+    try:
+        require_rate_limit("crossref")
+    except RateLimited as exc:
+        # A refusal is "lookup failed", never ``None`` (= registry said 404).
+        raise RegistryLookupError(str(exc)) from exc
     data = _get_json(_CROSSREF_WORK + quote(doi, safe=""), params=params)
     if not isinstance(data, dict):
         return None

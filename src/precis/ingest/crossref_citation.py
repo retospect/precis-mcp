@@ -16,6 +16,7 @@ from collections.abc import Callable
 from typing import Any
 
 from precis.utils.http import retry_transient
+from precis.utils.rate_limit import require as require_rate_limit
 
 _CROSSREF_WORKS_URL = "https://api.crossref.org/works"
 _TIMEOUT_S = 15.0
@@ -91,6 +92,7 @@ def _fetch_items(citation: str, mailto: str) -> list[dict[str, Any]]:
     if mailto:
         params["mailto"] = mailto
     try:
+        require_rate_limit("crossref")
         with http_client(timeout=_TIMEOUT_S) as client:
             # Overall deadline covers retries too: per-phase timeouts alone
             # can't stop a peer trickling bytes forever (gr486823).

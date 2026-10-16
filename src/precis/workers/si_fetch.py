@@ -87,6 +87,8 @@ _TRANSIENT_ERRORS = frozenset(
         "ConnectError",
         "RemoteProtocolError",
         "PoolTimeout",
+        # Shared-limiter refusal (si_discovery's Crossref leg): not a verdict.
+        "RateLimited",
     }
 )
 
