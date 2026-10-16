@@ -25,7 +25,9 @@ cross-link.
 The header carries one "up" link: the node the focus hangs on, read from
 ``utils/refeye.py::UP_RELATIONS`` via ``resolve_up`` — the same table the
 ``/graph`` focus page's zoom-out reads — or shown disabled with the rule's
-reason (``web-graph-navigation.md`` item 7).
+reason (``web-graph-navigation.md`` item 7). Like ``/graph``, the focus
+resolves ``include_deleted``: a soft-deleted focus 404s its body on
+``[error:Gone]`` but keeps its up link to a live far end.
 """
 
 from __future__ import annotations
@@ -265,10 +267,12 @@ def _up_link(
 ) -> dict[str, Any] | None:
     """The header's "up" link under :data:`refeye.UP_RELATIONS`:
     ``{"href", "handle", "label", "rel", "others", "more"}`` when the focus
-    hangs on a live node, else ``{"reason"}`` (the rule's own for a
-    disabled kind, a chunk or skill handle's, or which relations were
-    tried). ``None`` for a dead ref — the body already says so. The link
-    keeps the rung and the ring filter."""
+    hangs on a node, else ``{"reason"}`` (the rule's own for a disabled
+    kind, a chunk or skill handle's, or which relations were tried). The
+    focus resolves ``include_deleted`` like the ``/graph`` page's zoom-out
+    — a soft-deleted focus keeps its up link; :func:`resolve_up` still
+    wants a live far end. ``None`` for a ref that doesn't exist — the body
+    already says so. The link keeps the rung and the ring filter."""
     store = get_store(request)
     if target["kind"] == "skill":
         return {"reason": resolve_up(store, "skill", 0)["reason"]}
@@ -278,7 +282,7 @@ def _up_link(
     kind, is_chunk, pk = parsed
     if is_chunk:
         return {"reason": "a chunk handle; zoom out from its record"}
-    ref = store.get_ref(kind=kind, id=pk)
+    ref = store.get_ref(kind=kind, id=pk, include_deleted=True)
     # Another owner's profile is a missing ref here too (gr490266): no
     # up link, no title — on the focus itself or on an up target.
     user = current_user(request)
@@ -427,9 +431,10 @@ async def eye_focus(
                 "chips": _filter_chips(canonical, extent, kinds=kinds, spaces=spaces),
                 "ring": ring or None,
                 "reader_url": _reader_url(canonical),
-                "up": None
-                if is_error
-                else _up_link(request, target, extent, kinds=kinds, spaces=spaces),
+                # Computed even on a dispatch error: a Gone body is exactly
+                # the soft-deleted focus that keeps its up link (/graph
+                # parity); a missing ref still returns None inside.
+                "up": _up_link(request, target, extent, kinds=kinds, spaces=spaces),
             },
             status_code=status,
         ),

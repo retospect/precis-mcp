@@ -94,6 +94,28 @@ def test_focus_page_on_a_skill_and_on_a_dead_handle(
     assert client.get("/eye/not-a-handle").status_code == 404
 
 
+def test_focus_page_keeps_the_up_link_on_a_soft_deleted_focus(
+    client: TestClient, store: Any
+) -> None:
+    """``/graph`` parity: the focus resolves ``include_deleted``, so a
+    soft-deleted focus — body 404s on ``[error:Gone]`` — still shows its
+    up link to a live far end, or the rule's reason when none is live."""
+    parent = store.insert_ref(kind="quest", slug=None, title="Parent")
+    focus = store.insert_ref(kind="quest", slug=None, title="Retired")
+    store.add_link(src_ref_id=focus.id, dst_ref_id=parent.id, relation="serves")
+    store.retire_ref(focus.id)
+    page = client.get(f"/eye/qu{focus.id}")
+    assert page.status_code == 404 and "[error:" in page.text
+    assert f'data-zoom-out="qu{parent.id}"' in page.text
+    assert f'href="/eye/qu{parent.id}?extent=fisheye%2B1hop"' in page.text
+    # no live far end: the disabled reason shows rather than hiding the row
+    orphan = store.insert_ref(kind="todo", slug=None, title="Orphan")
+    store.retire_ref(orphan.id)
+    page = client.get(f"/eye/td{orphan.id}")
+    assert page.status_code == 404
+    assert "no live parent (out) link from this todo" in page.text
+
+
 def test_focus_page_ring_filters_narrow_and_chip(
     client: TestClient, store: Any
 ) -> None:
