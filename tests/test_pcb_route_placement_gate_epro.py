@@ -155,6 +155,11 @@ def test_overlapping_pinned_parts_are_refused_and_nothing_written(
     assert "clearance" in reason, reason
     assert a in reason and b in reason
     assert "force=True" in reason
+    # gr489913: every part is pinned, so nothing moved — the stored
+    # placement is the illegal one, and the fixed hint names the pair.
+    assert "the placement is already illegal" in reason
+    assert "ANNEALED" not in reason
+    assert "cannot be auto-shifted" in reason
     assert not ctx.summaries
     assert all(r["status"] != "realized" for r in store.pcb_route_status(imported))
     assert _copper_count(store, imported) == 0

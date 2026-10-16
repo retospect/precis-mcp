@@ -34,6 +34,7 @@ import hashlib
 import json
 import logging
 import re
+from collections.abc import Collection
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -1371,7 +1372,25 @@ def strip_drc_violating_nets(
     return stripped, problems
 
 
-def placement_drc_report(findings: list[DrcFinding]) -> tuple[int, str | None]:
+def finding_refdes(finding: DrcFinding) -> list[str]:
+    """Every part a finding names, in order, deduplicated — a pad's
+    ``refdes`` (or its ``a_``/``b_`` halves) and a courtyard pair's
+    ``a``/``b`` (a ``hole…`` label is not a part)."""
+    out: list[str] = []
+    for o in finding.objects:
+        for key in ("refdes", "a_refdes", "b_refdes", "a", "b"):
+            v = o.get(key)
+            if v and not str(v).startswith("hole") and str(v) not in out:
+                out.append(str(v))
+    return out
+
+
+def placement_drc_report(
+    findings: list[DrcFinding],
+    *,
+    fixed_refdes: Collection[str] = (),
+    subject: str = "as placed",
+) -> tuple[int, str | None]:
     """``(error_count, block)`` — the loud, NAMED account of a pre-route DRC
     pass a job appends to its ``job_summary`` chunk.
 
@@ -1394,13 +1413,27 @@ def placement_drc_report(findings: list[DrcFinding]) -> tuple[int, str | None]:
         return 0, None
     lines = [
         f"pre-route DRC: {len(errors)} placement error(s) — unmanufacturable "
-        "as placed, before a single trace is routed (run view='drc' for the "
-        "full check, and note a board with every part fixed='both' cannot be "
-        "auto-shifted to fix these):"
+        f"{subject}, before a single trace is routed (run view='drc' for the "
+        "full check):"
     ]
+    violators: list[str] = []
     for f in errors:
         margin = "" if f.margin_mm is None else f" ({f.margin_mm:+.3f}mm)"
         lines.append(f"  ✗ {f.rule}: {f.where}{margin} — {f.detail}")
+        violators += [r for r in finding_refdes(f) if r not in violators]
+    # gr489913 (b): the fixed='both' hint only where a violator IS fixed —
+    # printed unconditionally it read as "your parts are locked" on a board
+    # with none fixed. Free violators are named as the ones to pin or move.
+    fixed = set(fixed_refdes)
+    pinned = [r for r in violators if r in fixed]
+    free = [r for r in violators if r not in fixed]
+    if pinned:
+        lines.append(
+            f"  fixed violator(s) {', '.join(pinned)} cannot be auto-shifted; "
+            "unpin or move them by hand"
+        )
+    if free:
+        lines.append(f"  violator(s) you can pin or move: {', '.join(free)}")
     return len(errors), "\n".join(lines)
 
 

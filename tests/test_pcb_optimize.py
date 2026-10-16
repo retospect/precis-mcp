@@ -2488,6 +2488,32 @@ def test_courtyard_overlap_cost_agrees_with_legality_about_board_side():
     assert opposite.is_bound is False
 
 
+def test_courtyard_overlap_cost_prices_a_through_hole_part_on_the_opposite_side():
+    """gr489913: legality refuses a top part over a bottom THT part's
+    drilled pads (``_sides_clear``), so the graded term must price that
+    overlap too — a flat zero gave the anneal no slope off XH pads."""
+    from precis.pcb.ir import FootprintPad
+
+    config = CostConfig()
+    for drilled in (0, 1):
+        ir = _two_part_ir(second_layer="bottom")
+        ir.footprint_pads = (
+            FootprintPad(
+                instance=drilled,
+                number="1",
+                label="a" if drilled == 0 else "b",
+                pin=-1,
+                primary=False,
+                raw={"x": 0.0, "y": 0.0, "w": 1.7, "h": 1.7, "drill": 1.0},
+            ),
+        )
+        term = courtyard_overlap_pair_term(ir, 0, 1, Level.L3, config)
+        assert term.raw > 0.0, drilled
+        engine = OptimizeEngine(ir, OptimizeConfig(seed=3))
+        assert bool(engine._through_hole[drilled]) is True
+        assert engine._sides_clear(0, 1) is False
+
+
 # ── authored vias: a land may not sit on one, a body may cover one ───────
 def _via_ir(*, lands, via_xy, second_layer: str = "bottom"):
     """``_two_part_ir`` with U1 parked far away, ``lands`` (footprint-local
