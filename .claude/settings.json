@@ -7,6 +7,7 @@
     "defaultMode": "auto",
     "allow": [
       "Bash(scripts/ship:*)",
+      "Bash(scripts/mcp-image-refresh*)",
       "Bash(scripts/deploy:*)",
       "Bash(scripts/dev:*)",
       "Bash(git:*)",
