@@ -20,14 +20,18 @@ real time passing.
 
 from __future__ import annotations
 
+import logging
 import random
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import httpx
+
+logger = logging.getLogger(__name__)
 
 #: Statuses worth a retry. Everything else is either success or our fault.
 RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
@@ -82,6 +86,14 @@ class Policy:
     breaker_cooldown: float = 300.0
     #: Minimum spacing between calls to one service (bulk-walk politeness).
     min_interval: float = 0.0
+    #: Extra random spacing, uniform in ``[0, spacing_jitter]``, added on top
+    #: of ``min_interval`` so a fleet's calls don't land on a fixed beat.
+    spacing_jitter: float = 0.0
+    #: When set, a fatal 401/403 opens the breaker at once for this many
+    #: seconds (instead of counting toward ``breaker_threshold``).
+    fatal_cooldown: float | None = None
+    #: Human name for operator-facing messages (defaults to the service key).
+    label: str = ""
 
 
 DEFAULT_POLICY = Policy()
@@ -90,12 +102,33 @@ DEFAULT_POLICY = Policy()
 #: gives up sooner, because a long walk has time to notice an outage.
 BULK_POLICY = Policy(attempts=4, base=2.0, cap=120.0, min_interval=0.5)
 
+#: EasyEDA is a CDN-fronted guest service that has 403'd us. One policy for
+#: every call site (single fetch and bulk warm alike): >=2 s between calls
+#: plus jitter, and a refusal parks us for 30 min instead of probing again.
+EASYEDA_POLICY = Policy(
+    attempts=5,
+    base=2.0,
+    cap=60.0,
+    min_interval=2.0,
+    spacing_jitter=1.0,
+    fatal_cooldown=1800.0,
+    label="EasyEDA",
+)
+
+#: Length of the refusal body kept in the diagnostics log line.
+_REFUSAL_BODY_LOG = 300
+
 
 @dataclass
 class _Circuit:
     consecutive_failures: int = 0
     opened_at: float | None = None
     last_call_at: float = field(default=0.0)
+    #: Cooldown this opening lasts (the policy's, or the longer fatal one).
+    cooldown: float = 0.0
+    #: Set only by a fatal refusal: wall-clock end of the cooldown, for the
+    #: operator-facing message.
+    refused_until: datetime | None = None
 
 
 _CIRCUITS: dict[str, _Circuit] = {}
@@ -161,6 +194,7 @@ def with_backoff(
     sleep: Callable[[float], None] = time.sleep,
     now: Callable[[], float] = time.monotonic,
     rng: random.Random | None = None,
+    wall: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> httpx.Response:
     """Call ``send()`` under the politeness rules; return the final response.
 
@@ -178,19 +212,27 @@ def with_backoff(
 
     if circuit.opened_at is not None:
         elapsed = now() - circuit.opened_at
-        if elapsed < policy.breaker_cooldown:
+        if elapsed < circuit.cooldown:
+            if circuit.refused_until is not None:
+                raise VendorUnavailable(
+                    service,
+                    f"{policy.label or service} refused, cooling down until "
+                    f"{circuit.refused_until:%H:%M}Z",
+                )
             raise VendorUnavailable(
                 service,
                 f"circuit open ({circuit.consecutive_failures} consecutive "
-                f"failures); retry in {policy.breaker_cooldown - elapsed:.0f}s",
+                f"failures); retry in {circuit.cooldown - elapsed:.0f}s",
             )
         # Cooldown elapsed — half-open: let one call through to probe.
         circuit.opened_at = None
+        circuit.refused_until = None
 
     if policy.min_interval > 0.0:
+        required = policy.min_interval + rng.uniform(0.0, policy.spacing_jitter)
         gap = now() - circuit.last_call_at
-        if gap < policy.min_interval:
-            sleep(policy.min_interval - gap)
+        if gap < required:
+            sleep(required - gap)
 
     last_detail = "no attempts made"
     last_status: int | None = None
@@ -209,11 +251,21 @@ def with_backoff(
             last_body = None
             last_url = None
             last_exc = exc
+            circuit.last_call_at = now()
         else:
             last_exc = None
             circuit.last_call_at = now()
             if resp.status_code in FATAL_STATUSES:
-                _trip(circuit, policy, now)
+                _log_refusal(service, resp)
+                if policy.fatal_cooldown is not None:
+                    circuit.consecutive_failures += 1
+                    circuit.opened_at = now()
+                    circuit.cooldown = policy.fatal_cooldown
+                    circuit.refused_until = wall() + timedelta(
+                        seconds=policy.fatal_cooldown
+                    )
+                else:
+                    _trip(circuit, policy, now)
                 raise VendorError(
                     service,
                     f"HTTP {resp.status_code} — auth/permission failure, not retried",
@@ -253,6 +305,21 @@ def with_backoff(
     ) from last_exc
 
 
+def _log_refusal(service: str, resp: httpx.Response) -> None:
+    """Diagnostics for a 401/403: bounded body prefix and the CDN request id
+    (``x-amz-cf-id``, which the operator can quote to the CDN). Read-only —
+    nothing here feeds back into the request headers."""
+    body = _body_prefix(resp) or ""
+    logger.warning(
+        "%s refused HTTP %s url=%s x-amz-cf-id=%s body=%r",
+        service,
+        resp.status_code,
+        _url_of(resp),
+        resp.headers.get("x-amz-cf-id"),
+        body[:_REFUSAL_BODY_LOG],
+    )
+
+
 def _trip(circuit: _Circuit, policy: Policy, now: Callable[[], float]) -> None:
     circuit.consecutive_failures += 1
     if (
@@ -260,11 +327,13 @@ def _trip(circuit: _Circuit, policy: Policy, now: Callable[[], float]) -> None:
         and circuit.opened_at is None
     ):
         circuit.opened_at = now()
+        circuit.cooldown = policy.breaker_cooldown
 
 
 __all__ = [
     "BULK_POLICY",
     "DEFAULT_POLICY",
+    "EASYEDA_POLICY",
     "FATAL_STATUSES",
     "RETRY_STATUSES",
     "Policy",

@@ -40,7 +40,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from precis.pcb._http import with_backoff
+from precis.pcb._http import EASYEDA_POLICY, with_backoff
 from precis.utils.coerce import float_or_zero
 
 if TYPE_CHECKING:
@@ -94,14 +94,18 @@ def fetch_component(
     # the parser rather than a missing header.
     if client is not None:
         resp = with_backoff(
-            lambda: safe_get(client, url, headers=_HEADERS), service="easyeda"
+            lambda: safe_get(client, url, headers=_HEADERS),
+            service="easyeda",
+            policy=EASYEDA_POLICY,
         )
     else:
         from precis.utils.http import http_client
 
         with http_client(timeout=20.0) as opened:
             resp = with_backoff(
-                lambda: safe_get(opened, url, headers=_HEADERS), service="easyeda"
+                lambda: safe_get(opened, url, headers=_HEADERS),
+                service="easyeda",
+                policy=EASYEDA_POLICY,
             )
 
     if resp.status_code == 404:
