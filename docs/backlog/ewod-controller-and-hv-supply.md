@@ -1,14 +1,15 @@
 ---
 status: ready
 pillar: 3d-design
-title: EWOD dogfood board — Arduino Pro Mini controller, USB-C PD 20 V power + programming, on-board 250 V Cockcroft-Walton supply (rulings 12–14) + two prod-review defects
+title: EWOD dogfood board — Arduino Pro Mini controller, USB-C PD 20 V power + programming, on-board 250 V flyback supply (rulings 12–19) + two prod-review defects
 prio: high
 ---
 
-# EWOD dogfood board — controller, USB-C PD power, on-board 250 V supply (rulings 12–14) + two prod-review defects
+# EWOD dogfood board — controller, USB-C PD power, on-board 250 V supply (rulings 12–19) + two prod-review defects
 
 Companion to `pcb-ewod-multitile.md` (the array generator; rulings 1–11
-live there). This item holds rulings **12–14** (Reto, 2026-09-24) and the
+live there). This item holds rulings **12–15** (Reto, 2026-09-24),
+rulings **16–19** (Reto, 2026-10-16) and the
 two defects Reto found reviewing `ewod-dogfood-2` in the prod web view the
 same day. Ruling 12 **supersedes ruling 9** (Teensy 4.0 + 74HCT245); ruling
 14 **supersedes design-review item 6** (external boost + HV-in connector).
@@ -139,7 +140,7 @@ stage, roughly a wash on part count; do it.**
   contract is confirmed) is one gate on the bridge driver's enable — keep
   the enable line on the schematic, default-on, so the alternative is a
   firmware choice later.
-- **TRAP — the USB-serial bridge (CH340N or CP2102N) is powered from the
+- **TRAP — the USB-serial bridge (CH340N, ruling 17) is powered from the
   5 V buck rail, NOT VBUS.** Reference designs tie bridge VCC to VBUS;
   here VBUS is 20 V after negotiation and destroys the bridge. D+/D− are
   unaffected by the contract (PD runs on CC). The bridge's DTR goes to the
@@ -383,6 +384,68 @@ it needs a custom magnetic, an RCD clamp, a ≥ 400 V ultrafast diode and a
 ≥ 400 V output capacitor (DC-bias-derated ceramic or film) for a load that
 justifies none of them.
 
+## Rulings 16–19 — Reto, 2026-10-16 (morning-queue entry 5)
+
+Ruled ~10:2xZ, relayed by the coordinator session witty-forging-bee-d4.
+
+- **Ruling 16 — Slice 6 is a flyback.** Reto picked option (a): "rewrite
+  slice 6 as a flyback". Slice 6 still described the Cockcroft-Walton
+  ladder that ruling 15 had replaced. It is rewritten below.
+- **Ruling 17 — parts.** Reto: "CH224K for the PD sink, CH340N for the USB
+  bridge". The buck converter and the flyback transformer were left to
+  the builder, picked from JLC stock. The proposal is below. This lifts
+  the "no C-numbers in this document" rule for those two parts only.
+- **Ruling 18 — the top plate goes on a switched channel.** Reto picked
+  option (b): "We want to invert plate and pixel to avoid droplet
+  polarization (there's an invert pin)." The plate takes one HV507
+  output instead of VPP. That sink's POL (the invert pin) sits on the
+  same polarity net as every pixel sink's POL, so one POL edge flips the
+  plate and all the pixels together. This settles former open question 1.
+- **Ruling 19 — the escape nets carry `working_voltage_v = 250`.** Reto:
+  "Yes". Measuring on the harness whether the fabric still routes at
+  0.4 mm comes after the router reland. Do not run it before then. This
+  settles the ruling half of former open question 2.
+
+**Generator side of rulings 18/19:** it needs no footprints, because the
+generator is part-agnostic. It covers the `sink_grid.top_plate_channel`
+key and `working_voltage_v` on the `ewod_{name}_escape` class. It is
+built in this tree as the follow-on commit.
+
+### Part proposal (ruling 17) — buck and flyback transformer
+
+Stock was read on 2026-10-16 at ~10:20Z, through the precis part search
+and the LCSC product pages. Re-check it at footprint intake.
+
+| Role | Part | LCSC | Stock | JLC tier | Why |
+|---|---|---|---|---|---|
+| Buck 20 → 5 V | Diodes **AP63205WU-7** | **C2071056** | 43,955 | Extended | Fixed 5 V output, so no divider. Vin 3.8–32 V (abs max 35 V; 40 V for 400 ms), 2 A, 1.1 MHz. Datasheet: "the regulator enters low dropout mode by holding Q1 on for multiple clock cycles… The effective duty cycle is approximately 100%". It therefore passes vSafe5V through before the PD contract (ruling 13 sequencing). Package TSOT-23-6, plus L, bootstrap cap, input cap and output cap. |
+| Buck fallback | TI LMR51420XDDCR | C5246146 | 8,385 | Extended | Vin 4.5–36 V, 2 A, 98 % max duty; frequency drops in dropout. Needs a feedback divider. Its 4.5 V minimum Vin is tight against vSafe5V's 4.75 V floor. |
+| Flyback transformer | Coilcraft **LPR6235-253PMRC** | **C19191684** | 2,914 | Extended | Coupled inductor sold for flyback and step-up use (Coilcraft Doc 752NR-1). **1:20, Lp 25 µH ±20 %, Isat 0.7 A, DCR 0.20 Ω / 72 Ω, SRF 580 kHz**, 6 × 6 × 3.5 mm SMD. At 20 V in, 250 V out needs D ≈ 0.38 (`Vout = n·Vin·D/(1−D)`). The switch sees ≈ 20 + 250/20 = 32.5 V plus the leakage spike, so a 60 V FET suffices. At 0.6 A peak and 200 kHz in DCM it delivers ≈ 0.9 W, which covers the 1 W budget; the operating point is ~90 mW. |
+| Transformer fallback | Coilcraft LPR6235-253LML (1:10, 25 µH, Isat 1.3 A, same datasheet) | not found in JLC stock | — | — | D ≈ 0.56 at 20 V. More current headroom than the 1:20, but more switch stress. |
+
+The ratio is 1:20, not the ~1:5 that ruling 15 sketched. 1:5 is the
+minimum ratio that reaches 250 V. A higher ratio lowers duty and switch
+voltage, and secondary current at sub-mA is not a constraint.
+
+Rejected: C5382958 (LPR6235-123QMRC). Its 1:50 ratio is too high, its
+secondary DCR is 200 Ω, and only 181 are in stock. No 1:5–1:12
+photoflash-type transformer was found in JLC stock.
+
+**VERIFY at intake:**
+- LCSC lists the `…PMRC` suffix, but the datasheet table lists `…PML_`.
+  Confirm that the R and L variants are electrically the same part.
+- The datasheet states no winding-to-winding voltage rating (k = 0.95,
+  not a safety-isolated part). The circuit is non-isolated, but the
+  windings sit up to ~250 V apart. Confirm with Coilcraft or the drawing.
+- No Basic-tier part was found for either role, so both pay JLC's
+  extended-part loading fee.
+
+The **flyback controller** is not covered by ruling 17 and stays open.
+JLC stocks LT8300 (no-opto, TSOT-23-5) and LT3484 (photoflash) only in
+the tens of units, at $7–10. A current-mode PWM controller with an
+external 60 V FET (UC384x class) is the cheap route. Pick it at Slice 6
+intake.
+
 ## Defect A — a generated package does not declare all its pins
 
 Reto: "ARR1_sink_0_0 does not have all the pins, a package should always
@@ -533,22 +596,42 @@ is refused (table top band); existing electrode-gap class behaviour
 
 **Slice 5 — controller + USB-C power on `ewod-dogfood-2`. BLOCKED on
 footprint intake.** Pro Mini LOCAL footprint (verified drawing); `op=
-'footprint'` intake for: USB-C 16-pin receptacle, CH224K, wide-Vin buck,
-CH340N/CP2102N, ESD array, LEDs — C-numbers chosen at intake, none named
-here. Netlist per rulings 12/13; tests assert VBUS reaches only the PD
+'footprint'` intake for: USB-C 16-pin receptacle, CH224K (ruling 17),
+the buck (AP63205WU-7 C2071056 proposed, ruling 17), CH340N (ruling 17),
+ESD array, LEDs. C-numbers for the CH224K, CH340N, ESD array and LEDs
+are chosen at intake. Netlist per rulings 12/13; tests assert VBUS reaches only the PD
 controller, the buck input and the divider; the bridge's VCC is on the
 5 V rail; RAW is unconnected.
 *Accept:* `view='footprints'` shows no synthesized pin on any new part;
 netlist assertions above; board places and routes on the offline harness
 with the fabric count no worse than the HEAD re-measure (prerequisite).
 
-**Slice 6 — CW HV stage on `ewod-dogfood-2`. BLOCKED on Slice 4 + intake.**
-Bridge FETs + driver/oscillator, N = 7 ladder (full-wave if area allows),
-comparator + divider (series top leg), bleeder, output filter, HV enable.
-*Accept:* every ladder/output/VPP net is in the 0.4 mm class and DRC-clean
-at ERROR tier; the divider top leg is ≥ 3 series resistors (netlist
-assertion); a bleeder connects the 250 V node to GND (netlist assertion);
-fab notes state the discharge time.
+**Slice 6 — flyback HV stage on `ewod-dogfood-2` (rulings 15/16).
+BLOCKED on footprint intake** (Slice 4 has shipped). Parts: the flyback
+transformer (LPR6235-253PMRC C19191684 proposed, ruling 17; the open
+VERIFY items are listed there), a current-mode flyback controller plus a
+≥ 60 V N-FET with a primary current-sense resistor (controller not yet
+picked), a ≥ 400 V ultrafast output diode, ≥ 400 V output capacitance
+(film, or a ceramic bank derated for DC bias), and an RCD or Zener clamp
+on the primary for the leakage spike. Regulation is closed-loop from the
+feedback divider. The divider's top leg is 3–4 resistors in series, and
+its bottom node (≤ 5 V) feeds both the controller's FB pin and a Mini ADC
+pin (ruling 13 bring-up). The bleeder doubles as the safety discharge
+path and the minimum load that keeps a DCM loop from running away at
+zero load (ruling 15). The controller is standalone: the Mini is never
+responsible for the 250 V rail existing. A default-on enable line keeps
+"inhibit until the PD contract" a later firmware choice (ruling 13).
+At vSafe5V the loop would need D ≈ 0.71 at 1:20 for 250 V, so expect
+the controller's current limit to hold the output lower until 20 V
+arrives. This is harmless, and firmware reads the divider to see when the
+rail is up. The 250 V net is VPP. It feeds HV507 VPP and, after ruling
+18, reaches the plate only through a switched channel.
+*Accept:* the 250 V output/VPP net and the transformer secondary are in
+the 0.4 mm class (`working_voltage_v: 250`) and DRC-clean at ERROR tier;
+the divider top leg is ≥ 3 series resistors (netlist assertion); a
+bleeder connects the 250 V node to GND (netlist assertion); no VBUS or
+20 V net touches the secondary side except through the transformer
+(netlist assertion); fab notes state the discharge time to < 50 V.
 
 **Slice 7 — prod acceptance after deploy.** Re-apply `ewod-dogfood-2`,
 `op='route'`, `view='drc'`, `view='gerber'`; the "Read first" note
@@ -569,7 +652,8 @@ a B.Cu pad without a via (the gr346744 signature) — else file it as new.
   the dielectric but 0.4 mm on B.Cu) — Open question, not built here.
 - Rewriting `pcb-usb-c-pd-nano-testboard.md` beyond marking its blocker 3
   stale.
-- Choosing C-numbers in this document.
+- Choosing C-numbers in this document, except the buck and flyback
+  transformer proposal that ruling 17 asks for.
 
 ## Acceptance criteria (summary — detail per slice above)
 
@@ -580,8 +664,8 @@ a B.Cu pad without a via (the gr346744 signature) — else file it as new.
    net is emitted, exported and connected (Slice 3).
 4. A 0.4 mm class binds the router per-net and DRC at error tier, derived
    from `working_voltage_v` (Slice 4).
-5. `ewod-dogfood-2` carries Pro Mini + USB-C PD + buck + bridge + CW HV
-   stage with the netlist traps asserted (Slices 5–6).
+5. `ewod-dogfood-2` carries Pro Mini + USB-C PD + buck + bridge + flyback
+   HV stage with the netlist traps asserted (Slices 5–6).
 6. Prod matches the offline harness after deploy (Slice 7).
 
 ## Target + blast radius
@@ -624,15 +708,13 @@ id — import the OpenDrop paper and cite it there too).
 
 ## Open questions / Reto's calls
 
-1. **Top plate on VPP vs a switched channel.** The dogfood config ties
-   `top_plate_pin` to VPP (fixed +250 V, DC drive: electrode at VPP = 0 V
-   differential, at GND = full). Complement AC drive (design-review item
-   1) needs the plate on a switched HV507 channel or its own half-bridge.
-   Not decided by rulings 12–14; affects the load budget only marginally.
-2. **Escape nets at B4 clearance.** Once Slice 4(a) lands, should the
-   `{name}_escape` class carry `working_voltage_v: 250` (0.4 mm on B.Cu,
-   ruling 3's stated intent) — and does the fabric still route at 2.25 mm
-   pitch? Measure on the harness, then rule. Needs per-(net, layer)
-   clearance if the F.Cu electrode adjacency must stay exempt.
-3. **Full-wave ladder or half-wave** — area call once Slice 5's parts are
-   placed (≈ 49 vs 28 passives).
+1. **Escape nets at B4 clearance: does the fabric still route?**
+   Ruling 19 put `working_voltage_v: 250` on the escape class. Whether
+   the fabric still routes at 2.25 mm pitch is measured on the harness
+   after the router reland, not before. If F.Cu electrode adjacency must
+   stay exempt, this needs per-(net, layer) clearance.
+2. **Flyback controller part** — open (see the ruling-17 part proposal).
+
+(Former questions settled: the top plate goes on a switched channel
+(ruling 18), and the full-wave versus half-wave ladder question went
+with the ladder (rulings 15/16).)
