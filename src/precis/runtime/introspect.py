@@ -66,7 +66,10 @@ class IntrospectionMixin(RuntimeShape):
                 next=f"search(kind='job', view='{view}')",
             )
         kind_s = self._expand_kind_code(kind_s)
-        if kind_s not in self.hub.kinds:
+        # The inventory reads store rows only, so a kind whose handler is
+        # dark here (plugin extra not installed: ``pathway`` without
+        # autocatpath) is still inspectable; ``loadabilities`` records it.
+        if kind_s not in self.hub.kinds and kind_s not in self.hub.loadabilities:
             raise BadInput(
                 f"unknown kind {kind_s!r} for view='{view}'",
                 options=sorted(self.hub.kinds),
