@@ -216,7 +216,11 @@ sha-stale verdict. What's left is **operational**, against prod:
    (the nanobuds set was already pushed back 2026-08-21; ~1208 edges
    outside it remain). `hub_refine` chips at the same debt
    (`_REVERIFY_PER_PASS` per hub per pass) but never strips — the sweep
-   is the completion mechanism.
+   is the completion mechanism. Since 2026-10-16 the default run also
+   covers the **stale-verified** cohort (sha-stamped edges whose claim
+   was edited after verification; gr492678) — before that no cohort
+   reached them and a reworded hub's edges stayed withheld with the
+   approve page pointing at a no-op sweep.
 2. **The 209 legacy verified edges carry no `verified_claim_sha`.**
    Verdicts from the 2026-08-21 retro-verify pass predate the sha stamp;
    invalidation is forward-only by design, so an edit to those claims

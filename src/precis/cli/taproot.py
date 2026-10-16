@@ -1424,6 +1424,7 @@ def _run_verify_edges(args: argparse.Namespace) -> None:
     from precis.store import Store
     from precis.taproot.verify_edges import (
         count_passageless_edges,
+        select_stale_verified_edges,
         select_unverified_stamped_edges,
         select_withheld_edges,
         verify_edge,
@@ -1435,6 +1436,7 @@ def _run_verify_edges(args: argparse.Namespace) -> None:
     counts: dict[str, int] = {}
     n_errors = 0
     n_passageless = 0
+    n_stale = 0
 
     store = Store.connect(resolve_dsn(args.database_url))
     # Same bind as repair-evidence: the verify dispatch resolves its
@@ -1456,16 +1458,28 @@ def _run_verify_edges(args: argparse.Namespace) -> None:
                 store, hub_ref_id=hub_ref_id, limit=args.limit
             )
         else:
+            # The default run is the preflight's withheld set: unstamped
+            # edges plus stale-verified ones (claim edited after the stamp,
+            # gr492678). The latter are stamped rows, so a non-corroborating
+            # verdict strips them exactly as --unverified-stamped would.
             edges = select_withheld_edges(
                 store, hub_ref_id=hub_ref_id, limit=args.limit
             )
+            stale = select_stale_verified_edges(
+                store, hub_ref_id=hub_ref_id, limit=args.limit
+            )
+            n_stale = len(stale)
+            edges = [*edges, *stale]
         n_passageless = count_passageless_edges(
             store, unverified_stamped=unverified, hub_ref_id=hub_ref_id
         )
         for edge in edges:
             try:
                 result = verify_edge(
-                    store, edge, apply=apply, unverified_stamped=unverified
+                    store,
+                    edge,
+                    apply=apply,
+                    unverified_stamped=unverified or edge.stale,
                 )
             except Exception as exc:
                 n_errors += 1
@@ -1503,13 +1517,14 @@ def _run_verify_edges(args: argparse.Namespace) -> None:
         suffix = ""
     else:
         would = f"would stamp {counts.get('verified', 0)}"
-        if unverified:
+        if unverified or n_stale:
             would += f", strip {counts.get('stripped', 0)}"
         suffix = f"  [DRY-RUN -- nothing written; {would}]"
     breakdown = ", ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "none"
+    stale_note = f", stale_verified={n_stale}" if not unverified else ""
     print(
         f"taproot verify-edges: {len(rows)} edge(s) processed -- {breakdown}, "
-        f"skipped_passageless={n_passageless}, errors={n_errors}{suffix}",
+        f"skipped_passageless={n_passageless}{stale_note}, errors={n_errors}{suffix}",
         file=sys.stderr,
     )
     if n_errors > 0:

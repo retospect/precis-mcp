@@ -95,9 +95,16 @@ def _seed_paper(
 
 
 def _attach(store: Any, *, hub: int, paper: int, chunk_id: int, role: str) -> None:
-    # ``verified_by`` keeps the seeded edge out of the publish-gate
-    # re-verify arm's cohort (these tests exercise reground, and the arm's
-    # verify hook is deliberately left unpatched here).
+    # ``verified_by`` + the LIVE sentence's sha keep the seeded edge out of
+    # every publish-gate re-verify cohort (these tests exercise reground,
+    # and the arm's verify hook is deliberately left unpatched here):
+    # without the sha it is an untrustworthy stamp (2026-08-31), with a
+    # stale sha it is re-verified by the stale-verified cohort (gr492678).
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT title FROM refs WHERE ref_id = %s", (hub,)
+        ).fetchone()
+    assert row is not None
     attach_evidence(
         store,
         hub_ref_id=hub,
@@ -107,10 +114,7 @@ def _attach(store: Any, *, hub: int, paper: int, chunk_id: int, role: str) -> No
             "support": "yes",
             "source_handle": f"pc{chunk_id}",
             "verified_by": "test-seed",
-            # A settled verdict carries BOTH keys. Without the sha the edge
-            # is an untrustworthy stamp and re-enters the
-            # unverified-stamped cohort by design (2026-08-31).
-            "verified_claim_sha": "0" * 64,
+            "verified_claim_sha": claim_sha(str(row[0])),
         },
         set_by="system",
         check_retraction=False,

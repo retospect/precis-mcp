@@ -290,6 +290,7 @@ from precis.taproot.resolve import resolve_citation
 # module or the workers package surface (workers/__init__ exports only the
 # chunk-pass core), so reusing its cohort selectors here cannot cycle.
 from precis.taproot.verify_edges import (
+    select_stale_verified_edges,
     select_unverified_stamped_edges,
     select_withheld_edges,
 )
@@ -3240,11 +3241,13 @@ def _reverify_pinned_edges(
     """Certify this hub's attached-but-unverified evidence for the publish
     gate — the module docstring's re-verify-pinned-edges step.
 
-    Two cohorts (``taproot.verify_edges``'s hub-scoped selectors):
-    **withheld** (no ``support``, no ``publish_signoff``) and
+    Three cohorts (``taproot.verify_edges``'s hub-scoped selectors):
+    **withheld** (no ``support``, no ``publish_signoff``),
     **unverified-stamped** (``support`` present but not trustworthy: no
     ``verified_by``, the mint-time default, or no ``verified_claim_sha``,
-    a verdict from before that stamp existed). An edge already KEEP-memoed
+    a verdict from before that stamp existed) and **stale-verified** (a
+    real stamp whose ``verified_claim_sha`` is not the live sentence's —
+    the claim was edited after verification; gr492678). An edge already KEEP-memoed
     under this ``sha`` by the reground audit (stage 2 above) is stamped
     straight from that memo (gr369540) — never skipped, and never re-read
     by the verifier below (the judge already read the passage against the
@@ -3271,6 +3274,9 @@ def _reverify_pinned_edges(
     candidates = [
         *select_withheld_edges(store, hub_ref_id=hub_ref_id, limit=_REVERIFY_PER_PASS),
         *select_unverified_stamped_edges(
+            store, hub_ref_id=hub_ref_id, limit=_REVERIFY_PER_PASS
+        ),
+        *select_stale_verified_edges(
             store, hub_ref_id=hub_ref_id, limit=_REVERIFY_PER_PASS
         ),
     ]

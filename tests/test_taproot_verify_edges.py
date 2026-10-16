@@ -27,6 +27,7 @@ from precis.taproot.canon import CanonicalClaim, claim_sha
 from precis.taproot.hub import mint_hub
 from precis.taproot.verify_edges import (
     count_passageless_edges,
+    select_stale_verified_edges,
     select_unverified_stamped_edges,
     select_withheld_edges,
     verify_edge,
@@ -693,3 +694,147 @@ def test_cli_bad_hub_handle_exits_nonzero(store: Any) -> None:
     with pytest.raises(SystemExit) as exc:
         taproot_cli.run(_cli_args(hub=handle_registry.format_handle("paper", paper)))
     assert exc.value.code == 1
+
+
+# ── the stale-verified cohort (gr492678) ─────────────────────────────────
+
+
+def _stamp_for(claim: str, *, support: str = "yes") -> dict[str, Any]:
+    """A trustworthy stamp issued for ``claim``: all three stamp keys."""
+    return {
+        "support": support,
+        "support_reason": "read against the sentence at the time",
+        "verified_by": "verify-edges",
+        "verified_claim_sha": claim_sha(claim),
+    }
+
+
+def _retitle(store: Any, hub: int, title: str) -> None:
+    with store.pool.connection() as conn:
+        conn.execute("UPDATE refs SET title = %s WHERE ref_id = %s", (title, hub))
+        conn.commit()
+
+
+def test_stale_verified_cohort_selects_only_a_sha_mismatch(store: Any) -> None:
+    """Regression (fi189543, 2026-10-16): a hub retitled after its edges
+    were verified. The preflight withholds every edge (sha mismatch), but
+    neither existing cohort selected them -- ``support`` present excludes
+    them from withheld, ``verified_by`` + sha present excludes them from
+    unverified-stamped -- so ``--hub`` reported ``0 edge(s)`` and only a
+    per-edge human sign-off could release them."""
+    hub, _p, _c, stale = _seed_edge(store, meta=_stamp_for(_CLAIM))
+    _retitle(store, hub, _OTHER_CLAIM)
+    # A settled stamp under the live sentence: nothing to re-verify.
+    _seed_edge(
+        store, claim=_THIRD_CLAIM, passage=_THIRD_CLAIM, meta=_stamp_for(_THIRD_CLAIM)
+    )
+
+    selected = select_stale_verified_edges(store)
+
+    assert [e.link_id for e in selected] == [stale]
+    assert selected[0].stale is True
+    assert selected[0].sentence == _OTHER_CLAIM
+    # Not either older cohort's row -- that is exactly the gap.
+    assert select_withheld_edges(store) == []
+    assert select_unverified_stamped_edges(store) == []
+
+
+def test_stale_verified_cohort_skips_signed_off_edges(store: Any) -> None:
+    hub, _p, _c, _link = _seed_edge(
+        store,
+        meta={
+            **_stamp_for(_CLAIM),
+            "publish_signoff": {"by": "reto", "note": "re-read after reword"},
+        },
+    )
+    _retitle(store, hub, _OTHER_CLAIM)
+
+    assert select_stale_verified_edges(store) == []
+
+
+def test_stale_verified_hub_filter_and_limit_apply_after_the_sha_filter(
+    store: Any,
+) -> None:
+    hub_a, _pa, _ca, link_a = _seed_edge(store, meta=_stamp_for(_CLAIM))
+    _retitle(store, hub_a, "Graphene exhibits a tensile strength near 130 GPa.")
+    hub_b, _pb, _cb, link_b = _seed_edge(
+        store, claim=_OTHER_CLAIM, passage=_OTHER_CLAIM, meta=_stamp_for(_OTHER_CLAIM)
+    )
+    _retitle(store, hub_b, _THIRD_CLAIM)
+
+    assert [e.link_id for e in select_stale_verified_edges(store)] == [link_a, link_b]
+    scoped = select_stale_verified_edges(store, hub_ref_id=hub_b)
+    assert [e.link_id for e in scoped] == [link_b]
+    assert [e.link_id for e in select_stale_verified_edges(store, limit=1)] == [link_a]
+
+
+def test_stale_verified_apply_restamps_under_the_live_sha(
+    store: Any, monkeypatch: Any
+) -> None:
+    hub, _p, chunk_id, link_id = _seed_edge(store, meta=_stamp_for(_CLAIM))
+    _retitle(store, hub, _OTHER_CLAIM)
+    calls: list[dict[str, Any]] = []
+    _patch_verify(monkeypatch, _VERDICT_PARTIAL, calls=calls)
+
+    (edge,) = select_stale_verified_edges(store)
+    result = verify_edge(store, edge, apply=True, unverified_stamped=edge.stale)
+
+    assert result.status == "verified"
+    assert result.applied is True
+    # The verifier read the LIVE sentence, not the one the old stamp was for.
+    assert calls[0]["claim"] == _OTHER_CLAIM
+    meta = _link_meta(store, link_id)
+    assert meta["support"] == "partial"
+    assert meta["verified_claim_sha"] == claim_sha(_OTHER_CLAIM)
+    assert meta["source_handle"] == f"pc{chunk_id}"
+    # Re-stamped => no longer stale; the cohort self-converges.
+    assert select_stale_verified_edges(store) == []
+
+
+def test_stale_verified_apply_strips_support_on_non_corroborate(
+    store: Any, monkeypatch: Any
+) -> None:
+    """The old verdict was for a different sentence; once the passage no
+    longer corroborates the live one the stamp must come off (same
+    treatment as --unverified-stamped), not linger as a stale 'yes'."""
+    hub, _p, _c, link_id = _seed_edge(store, meta=_stamp_for(_CLAIM))
+    _retitle(store, hub, _OTHER_CLAIM)
+    _patch_verify(monkeypatch, _VERDICT_NO)
+
+    (edge,) = select_stale_verified_edges(store)
+    result = verify_edge(store, edge, apply=True, unverified_stamped=edge.stale)
+
+    assert result.status == "stripped"
+    meta = _link_meta(store, link_id)
+    assert "support" not in meta
+    assert [e.link_id for e in select_withheld_edges(store)] == [link_id]
+    assert select_stale_verified_edges(store) == []
+
+
+def test_cli_default_run_reaches_a_retitled_hubs_edges(
+    store: Any, monkeypatch: Any, tmp_path: Any, capsys: Any
+) -> None:
+    """The approve page's 'the sweep must re-check it' is now true: a
+    ``--hub`` run over a reworded hub processes its stale edges in the
+    default cohort (no extra flag) and re-stamps them."""
+    from precis.cli import taproot as taproot_cli
+
+    hub, _p, _c, link_id = _seed_edge(store, meta=_stamp_for(_CLAIM))
+    _retitle(store, hub, _OTHER_CLAIM)
+    _patch_verify(monkeypatch, _VERDICT_YES)
+    out = tmp_path / "stale.jsonl"
+
+    taproot_cli.run(_cli_args(apply=True, hub=str(hub), out=str(out)))
+
+    rows = [
+        json.loads(line)
+        for line in out.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert [(r["link_id"], r["status"], r["action"]) for r in rows] == [
+        (link_id, "verified", "stamped")
+    ]
+    assert _link_meta(store, link_id)["verified_claim_sha"] == claim_sha(_OTHER_CLAIM)
+    err = capsys.readouterr().err
+    assert "stale_verified=1" in err
+    assert "1 edge(s) processed" in err

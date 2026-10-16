@@ -343,7 +343,10 @@ link framing it):
   sentence invalidates sha-carrying verdicts, so an edited hub's edges
   re-enter verification rather than keeping a stale stamp. `precis
   taproot verify-edges` (dry-run default) is the certification sweep;
-  the literal sign-off stays human-only.
+  its default run covers both the unstamped and the stale-verified
+  edges (`--hub fi<id> --apply` releases a reworded hub's edges in one
+  go), and `hub_refine` re-verifies the same three cohorts per pass.
+  The literal sign-off stays human-only.
 - **Trust allowlist** — only pinned (identity, key-fingerprint) pairs
   are trusted, and publishing requires the *attesting* (human) entry.
 - **Order** — atoms publish before the composites citing them; hanging

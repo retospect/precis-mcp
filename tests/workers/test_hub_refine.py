@@ -1033,10 +1033,13 @@ def test_edge_exists_precheck_skips_verify_for_a_pre_attached_paper(store: Any) 
             "caveats": [],
             "source_handle": f"pc{chunk_id}",
             "verified_by": "test-seed",
-            # A settled verdict carries BOTH keys. Without the sha the edge
-            # is an untrustworthy stamp and re-enters the
-            # unverified-stamped cohort by design (2026-08-31).
-            "verified_claim_sha": "0" * 64,
+            # A settled verdict carries BOTH keys, and the sha must be the
+            # LIVE sentence's: without the key the edge is an untrustworthy
+            # stamp (unverified-stamped cohort, 2026-08-31); with a stale
+            # one it is re-verified by the stale-verified cohort (gr492678).
+            "verified_claim_sha": claim_sha(
+                "MoS2 monolayers exhibit direct bandgap emission."
+            ),
         },
         set_by="agent",
     )
@@ -1097,10 +1100,11 @@ def test_attached_source_never_occupies_a_widening_slot(store: Any) -> None:
             "caveats": [],
             "source_handle": f"pc{held_chunk}",
             "verified_by": "test-seed",
-            # A settled verdict carries BOTH keys. Without the sha the edge
-            # is an untrustworthy stamp and re-enters the
-            # unverified-stamped cohort by design (2026-08-31).
-            "verified_claim_sha": "0" * 64,
+            # A settled verdict carries BOTH keys, and the sha must be the
+            # LIVE sentence's: without the key the edge is an untrustworthy
+            # stamp (unverified-stamped cohort, 2026-08-31); with a stale
+            # one it is re-verified by the stale-verified cohort (gr492678).
+            "verified_claim_sha": claim_sha(claim),
         },
         set_by="agent",
     )
@@ -1206,10 +1210,8 @@ def test_exclusion_is_ref_grained_so_a_sibling_chunk_is_excluded_too(
             "caveats": [],
             "source_handle": f"pc{grounding_chunk}",
             "verified_by": "test-seed",
-            # A settled verdict carries BOTH keys. Without the sha the edge
-            # is an untrustworthy stamp and re-enters the
-            # unverified-stamped cohort by design (2026-08-31).
-            "verified_claim_sha": "0" * 64,
+            # Settled: both keys, sha of the LIVE sentence (see above).
+            "verified_claim_sha": claim_sha(claim),
         },
         set_by="agent",
     )
@@ -1393,10 +1395,8 @@ def _seed_citation_scenario(
             "caveats": [],
             "source_handle": f"pc{citing_chunk}",
             "verified_by": "test-seed",
-            # A settled verdict carries BOTH keys. Without the sha the edge
-            # is an untrustworthy stamp and re-enters the
-            # unverified-stamped cohort by design (2026-08-31).
-            "verified_claim_sha": "0" * 64,
+            # Settled: both keys, sha of the LIVE sentence (see above).
+            "verified_claim_sha": claim_sha(claim),
         },
         set_by="system",
     )
@@ -1684,10 +1684,10 @@ def test_attached_patent_is_not_reverified_next_pass(store: Any) -> None:
             "caveats": [],
             "source_handle": f"pc{chunk_id}",
             "verified_by": "test-seed",
-            # A settled verdict carries BOTH keys. Without the sha the edge
-            # is an untrustworthy stamp and re-enters the
-            # unverified-stamped cohort by design (2026-08-31).
-            "verified_claim_sha": "0" * 64,
+            # Settled: both keys, sha of the LIVE sentence (see above).
+            "verified_claim_sha": claim_sha(
+                "A patent already-attached precheck probe."
+            ),
         },
         set_by="agent",
     )

@@ -18,7 +18,7 @@ non-corroborating verdict (the attach gate is
 ``hub_refine``'s write door) is **never stamped** — pruning stays
 reground's door.
 
-Two cohorts, same verify, different write:
+Three cohorts, same verify, different write:
 
 * **withheld** (default, :func:`select_withheld_edges`): ``support`` absent,
   no ``publish_signoff``, a pinned passage (``src_chunk_id``). Passage-less
@@ -36,6 +36,15 @@ Two cohorts, same verify, different write:
   2026-08-31). A corroborating verdict OVERWRITES the stamp with the real
   one; a non-corroborating verdict STRIPS the ``support`` key, returning
   the edge to withheld behind the publish gate.
+* **stale-verified** (in the default run alongside withheld,
+  :func:`select_stale_verified_edges`): a real stamp (``support`` +
+  ``verified_by`` + ``verified_claim_sha``) whose sha no longer matches the
+  live sentence — the claim was edited after verification. The preflight
+  withholds these (its third arm) but until 2026-10-16 no cohort reached
+  them: a reworded hub's edges stayed withheld with the approve page
+  pointing at a sweep that reported ``0 edge(s)`` (gr492678, fi189543).
+  Same write as unverified-stamped: a corroborating verdict re-stamps
+  under the live sha, a non-corroborating one strips ``support``.
 
 The stamp (:func:`verify_edge` with ``apply=True``, corroborating only)
 jsonb-merges ``support`` / ``support_reason`` / ``caveats`` /
@@ -71,6 +80,7 @@ __all__ = [
     "EdgeVerifyResult",
     "EdgeVerifyStatus",
     "count_passageless_edges",
+    "select_stale_verified_edges",
     "select_unverified_stamped_edges",
     "select_withheld_edges",
     "verify_edge",
@@ -125,6 +135,17 @@ class CandidateEdge:
     cite_key: str | None
     sentence: str
     scope: dict[str, str]
+    #: The sha the edge's current stamp was verified under (``None`` when
+    #: unstamped) — the stale-verified cohort compares it to the live one.
+    verified_claim_sha: str | None = None
+
+    @property
+    def stale(self) -> bool:
+        """A stamped edge whose verdict was issued for an earlier sentence."""
+        return (
+            self.verified_claim_sha is not None
+            and self.verified_claim_sha != claim_sha(self.sentence)
+        )
 
 
 @dataclass(frozen=True)
@@ -209,6 +230,21 @@ _UNVERIFIED_STAMPED_CLAUSE = """
        AND NOT (l.meta ? 'verified_by' AND l.meta ? 'verified_claim_sha')
 """
 
+#: The sha-stamped shape — the SQL half of the stale-verified cohort: a
+#: trustworthy stamp (``support`` + ``verified_by`` + ``verified_claim_sha``)
+#: with no human sign-off. Whether the sha still matches the live sentence
+#: is decided in Python (:attr:`CandidateEdge.stale`): ``claim_sha`` is a
+#: blake2b over the stripped title with no SQL mirror, so
+#: :func:`select_stale_verified_edges` filters after the fetch and applies
+#: ``limit`` to the filtered list. Mirrors ``preflight.withheld_edges``'s
+#: ``verified_claim_sha IS DISTINCT FROM live`` arm.
+_SHA_STAMPED_CLAUSE = """
+       AND l.meta->>'support' IS NOT NULL
+       AND l.meta ? 'verified_by'
+       AND l.meta->>'verified_claim_sha' IS NOT NULL
+       AND l.meta->'publish_signoff' IS NULL
+"""
+
 #: Live strict claim hub, alias ``h``. NOT
 #: :func:`~precis.taproot.canon.claim_hub_predicate_sql`: that helper
 #: deliberately carries no ``rt.expires_at`` filter (the hot dedup path
@@ -241,7 +277,7 @@ _COHORT_SQL = """
            (SELECT id_value FROM ref_identifiers
              WHERE ref_id = s.ref_id AND id_kind = 'cite_key'
              ORDER BY created_at DESC LIMIT 1) AS cite_key,
-           h.title, h.meta->'scope'
+           h.title, h.meta->'scope', l.meta->>'verified_claim_sha'
       FROM links l
       JOIN refs s ON s.ref_id = l.src_ref_id AND s.retired_at IS NULL
       JOIN refs h ON h.ref_id = l.dst_ref_id AND h.retired_at IS NULL
@@ -310,6 +346,7 @@ def _select_cohort(
             cite_key=str(r[8]) if r[8] else None,
             sentence=str(r[9] or "").strip(),
             scope={str(k): str(v) for k, v in (r[10] or {}).items()},
+            verified_claim_sha=str(r[11]) if r[11] is not None else None,
         )
         for r in rows
     ]
@@ -339,6 +376,23 @@ def select_unverified_stamped_edges(
     return _select_cohort(
         store, _UNVERIFIED_STAMPED_CLAUSE, hub_ref_id=hub_ref_id, limit=limit
     )
+
+
+def select_stale_verified_edges(
+    store: Store, *, hub_ref_id: int | None = None, limit: int | None = None
+) -> list[CandidateEdge]:
+    """The stale-verified cohort: pinned, un-signed-off edges on live strict
+    claim hubs whose stamp was issued under a ``verified_claim_sha`` that
+    no longer matches the live sentence (the claim was edited after
+    verification). The sha comparison runs in Python, so ``limit`` caps
+    the *filtered* list — still a stable ``link_id``-ordered prefix.
+    Same ordering/scoping as :func:`select_withheld_edges`."""
+    stale = [
+        e
+        for e in _select_cohort(store, _SHA_STAMPED_CLAUSE, hub_ref_id=hub_ref_id)
+        if e.stale
+    ]
+    return stale[:limit] if limit is not None else stale
 
 
 def count_passageless_edges(
@@ -422,6 +476,13 @@ def verify_edge(
     ``unverified_stamped`` runs only — :data:`STATUS_STRIPPED` (``support``
     removed), and only the ``meta`` of the one ``link_id`` passed in. A
     ``None`` verdict (LLM failure) is a skip, never a judgment.
+
+    ``unverified_stamped`` is the strip-on-non-corroboration switch: pass
+    it for every edge that already carries a ``support`` value this sweep
+    cannot stand behind — the ``--unverified-stamped`` cohort AND the
+    stale-verified rows of the default run (:attr:`CandidateEdge.stale`),
+    since a verdict for an earlier sentence must not stay on the edge once
+    the passage no longer corroborates the live one.
     """
     text = edge.chunk_text
     ord_ = edge.chunk_ord
