@@ -14,11 +14,10 @@ flagged "a real batch op is a design call". Related: the opt-in
 
 ## Ruling status
 
-The task that filed this item says Reto ruled option (a) for gr491442. No
-comment on gr491442 or gr486841 names the options or the ruling (gr491442
-has none). **Reto decides: paste the option (a) text here** before this
-goes `ready`; §Design below is written from the gripe text only and is the
-shape the batch op must take, not a choice between options.
+Ruled (Reto, 2026-10-16 ~11:45Z, relayed by the fleet coordinator): "(a):
+add a quest-level batch coverage-scan op, one job over all of a quest's
+structures, instead of N per-structure puts. Builder-ready; route it when
+there's a free lane (not urgent)." §Design below follows that ruling.
 
 ## Problem
 
@@ -81,7 +80,6 @@ long queue: the op must cap the list.
 
 ## Open questions / decisions log
 
-- Reto decides: the option (a) ruling text (see §Ruling status).
 - Reto decides: the surface: a new `quest` verb arg, a quest meta key such as
   `meta.surface_anchor_candidates` read by `dispatch_surface_anchors`, or a
   tool-level helper. A meta key keeps the mint inside the tick and the idem
