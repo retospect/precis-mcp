@@ -122,6 +122,63 @@ def test_realize_a_via_bridges_two_coincident_pins():
     assert result.vias == ()
 
 
+def test_plane_fanout_skips_a_pin_the_source_via_already_drops_to_the_plane():
+    """gr489924: a plane-net pin whose AUTHORED fixed copper already reaches
+    the poured layer through the source's own via (taz15: every GND /
+    12V_POWER / PV+ pin of the EasyEDA-routed board) gets no second drop
+    via — the fan-out used to stack one on the source via (via_via_keepout,
+    net stripped) or, with that via in its way, fail the net as
+    plane_drop_blocked. The other pin, with no fixed copper, still drops."""
+    from precis.pcb.capabilities import capability_for
+
+    graph = {
+        "instances": [
+            {"refdes": "U0", "x": 0.0, "y": 0.0},
+            {"refdes": "U1", "x": 20.0, "y": 0.0},
+        ],
+        "nets": [
+            {
+                "name": "GND",
+                "net_class": "ground",
+                "domain": "electrical",
+                "members": [{"refdes": "U0", "pin": "1"}, {"refdes": "U1", "pin": "1"}],
+            }
+        ],
+    }
+    outline = [[-10.0, -10.0], [30.0, -10.0], [30.0, 10.0], [-10.0, 10.0]]
+    ir = from_graph(graph, stackup=DEFAULT_STACKUP, outline=outline)
+    ir.promote_plane(0, 1)  # In1.Cu, the GND plane layer
+    # The source's own escape: a stub off U0's pad into a through via.
+    fixed_copper = [
+        {
+            "ctype": "track",
+            "layer": "F.Cu",
+            "net": "GND",
+            "segments": [{"shape": "line", "start": [0.0, 0.0], "end": [1.5, 0.0]}],
+            "width_mm": 0.3,
+        },
+        {
+            "ctype": "via",
+            "layer": "F.Cu",
+            "net": "GND",
+            "x": 1.5,
+            "y": 0.0,
+            "dia_mm": 0.6,
+            "drill_mm": 0.3,
+            "span": ["F.Cu", "B.Cu"],
+        },
+    ]
+    from precis.pcb import session as pcb_session
+
+    ir.fixed_vias = pcb_session.fixed_vias_from_copper(fixed_copper)
+    config = RealizeConfig(router="maze", fab_caps=capability_for("4layer"))
+    result = realize(ir, config=config, fixed_copper=fixed_copper)
+    assert not result.unrouted, [r.message for r in result.unrouted_reasons]
+    drops = [v for v in result.vias if v.endpoint == "a"]
+    assert len(drops) == 1, "only the pin with no source via drops to the plane"
+    assert drops[0].x > 10.0, "the drop belongs to U1, never stacked on U0's via"
+
+
 def test_realize_claims_fixed_copper_as_an_obstacle_for_a_foreign_net():
     """(b) A fixed track on net A, spanning the FULL height of a narrow
     board on both signal layers, sits directly across the only corridor

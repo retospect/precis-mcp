@@ -154,8 +154,7 @@ review, VERIFIED by Reto 2026-10-14 — review-queue
    the fab built (gr489912, fixed: graded on lands);
    `taz15` with its source copper then routed 146 → **150/151** after
    the plane fan-out stopped drilling drop vias for pins the pour or a
-   source via already serves (gr489924, unlanded: branch
-   `worktree-agent-ad15fd57082a9e156` 7731da53b); the last
+   source via already serves (gr489924, fixed); the last
    net is gr489175. `taz15-blank` from scratch: 138/151 as imported
    (GND/3V3 traced, no outer pours), 139/151 with GND→B.Cu and
    3V3→F.Cu declared — 8 of the rest are CN4's 0.5 mm-pitch escapes
