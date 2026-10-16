@@ -416,6 +416,8 @@ choice under `sink_grid._top_plate_channel`. The dogfood board still
 ties the plate to VPP and switches when Slice 5 re-authors it.
 
 **Ruling 19, generator side — BLOCKED on per-(net, layer) clearance.**
+Ruled (Reto, 2026-10-16 ~16:05Z, via the fleet coordinator: "add the constraint when it is supported.") Apply it as soon as pcb-vector-router Slice 1
+(per-(net, layer) clearance) lands; no workaround before then.
 Putting `working_voltage_v: 250` on the `ewod_{name}_escape` class sets
 a 0.4 mm ERROR floor on every layer. The array's own F.Cu plaza stubs
 then sit closer than that to neighbouring electrode pads (for example

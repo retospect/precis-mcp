@@ -495,6 +495,10 @@ and B.Cu pairs under 0.4 mm still ERROR (new tests in `tests/test_pcb_rules.py`,
 `tests/test_pcb_drc.py`); a board with none of the new keys is bit-for-bit
 unchanged (nano, esp32c3 DRC identical).
 
+Follow-on once this lands: put EWOD ruling 19 (`working_voltage_v: 250`
+on the `ewod_{name}_escape` class) into the generator
+(`docs/backlog/ewod-controller-and-hv-supply.md`; Reto, 2026-10-16 ~16:05Z, via the fleet coordinator: "add the constraint when it is supported.")
+
 Owning files: `src/precis/pcb/rules.py`, `drc.py`, `maze.py`, `realize.py`
 (`_net_clearances`), `src/precis/handlers/pcb.py`, skill
 `precis-pcb-route-help`.
