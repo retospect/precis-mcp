@@ -22,9 +22,10 @@ Without those flags it stays read-only.
 Session-hook collector: `--hook` reports only the calling session as a
 one-row partial report (the session's own state and context fill, not a
 host scan), for harness lifecycle hooks (SessionStart/Stop/SessionEnd;
-.devin/hooks.v1.json wires Devin, a .claude/settings.json entry wires
-Claude). `--hook --push` sends it; hook mode never breaks the session
-(failures go to stderr, exit 0; PRECIS_FLEET_HOOK=0 disables).
+an uncommitted .devin/hooks.v1.json wires Devin, a
+.claude/settings.json entry wires Claude). `--hook --push` sends it;
+hook mode never breaks the session (failures go to stderr, exit 0;
+PRECIS_FLEET_HOOK=0 disables).
 """
 
 from __future__ import annotations

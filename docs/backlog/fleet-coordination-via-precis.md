@@ -279,9 +279,10 @@ without dead-marking absent rows or clobbering `quota`/
 `exceptions_hash`. Hook rows carry `via='hook'`: a full collector report
 patches fields it sees but leaves liveness to the session (SessionEnd
 pushes `dead`); a full report that sees the same key patches `via` back
-and owns it again. Wired for Devin by `.devin/hooks.v1.json`
-(SessionStart/UserPromptSubmit → working, PermissionRequest → waiting,
-Stop → idle, SessionEnd → dead). Claude needs the same entries under
+and owns it again. For Devin, `.devin/hooks.v1.json` is not committed —
+Reto adds it himself if wanted (SessionStart/UserPromptSubmit →
+working, PermissionRequest → waiting, Stop → idle, SessionEnd → dead).
+Claude needs the same entries under
 `hooks` in `.claude/settings.json`; settings.json is user-owned, so the
 repo ships the script and the recipe — the exact JSON and the disable
 knob are in docs/runbooks/fleet-session-push.md.

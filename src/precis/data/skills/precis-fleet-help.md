@@ -77,9 +77,10 @@ and keeps the host fresh but never dead-marks absent rows and never
 clobbers host `quota`/`exceptions_hash`. Its rows carry `via: "hook"`: a
 full host report patches the fields it sees but does not dead-mark a
 hook-owned row (the session says `dead` itself on SessionEnd). Wiring:
-`.devin/hooks.v1.json` in this repo covers Devin
-(SessionStart/UserPromptSubmit → working, PermissionRequest → waiting,
-Stop → idle, SessionEnd → dead); the Claude `.claude/settings.json`
-entry and the disable knob live in docs/runbooks/fleet-session-push.md.
+`.devin/hooks.v1.json` is not committed — Reto adds it himself if
+wanted (SessionStart/UserPromptSubmit → working, PermissionRequest →
+waiting, Stop → idle, SessionEnd → dead); the Claude
+`.claude/settings.json` entry and the disable knob live in
+docs/runbooks/fleet-session-push.md.
 Hook mode never breaks the session — push failures go to stderr with
 exit 0.

@@ -28,9 +28,9 @@ context fill fresher than a 60 s scan. Mechanism: `scripts/fleet-report
 
 ## Wiring
 
-Devin is wired by `.devin/hooks.v1.json` in this repo
-(SessionStart/UserPromptSubmit → `working`, PermissionRequest →
-`waiting`, Stop → `idle`, SessionEnd → `dead`).
+Devin's `.devin/hooks.v1.json` is not committed — Reto adds it himself
+if wanted (SessionStart/UserPromptSubmit → `working`, PermissionRequest
+→ `waiting`, Stop → `idle`, SessionEnd → `dead`).
 
 Claude needs the same entries under `hooks` in `.claude/settings.json`
 (user-owned, not committed — an operator adds them):
