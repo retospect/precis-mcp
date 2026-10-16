@@ -15,6 +15,7 @@ import base64
 import os
 from dataclasses import replace
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -22,6 +23,7 @@ pytest.importorskip("fastapi")
 
 from fastapi.testclient import TestClient
 
+from precis.errors import BadInput
 from precis.users import (
     ALGO_PEPPERED,
     MIN_PASSWORD_LENGTH,
@@ -61,6 +63,9 @@ class FakeStore:
         self.record = hash_password(password, pepper=pepper)
         self.feed_digest: str | None = None
         self.password_writes = 0
+        #: ``refs`` rows ``list_refs`` serves — the /account and /drive
+        #: profile pickers read the owner's ``kind='profile'`` rows.
+        self.refs: list[Any] = []
 
     # ── reads (shared with the gate) ──────────────────────────────────
     def count_web_users(self, *, enabled_only: bool = True) -> int:
@@ -79,6 +84,32 @@ class FakeStore:
 
     def touch_web_user_login(self, login: str) -> None:
         pass
+
+    def list_refs(
+        self,
+        *,
+        kind: str | None = None,
+        owner_login: str | None = None,
+        unowned: bool = False,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[Any]:
+        """``Store.list_refs``'s live/kind/owner filters over ``self.refs``.
+        The other real filters are deliberately absent: a caller that
+        starts passing one fails loudly here instead of being ignored."""
+        if owner_login is not None and unowned:
+            raise BadInput(
+                "list_refs: owner_login= and unowned=True are mutually exclusive"
+            )
+        rows = [
+            r
+            for r in self.refs
+            if r.retired_at is None
+            and (kind is None or r.kind == kind)
+            and (owner_login is None or r.owner_login == owner_login)
+            and not (unowned and r.owner_login is not None)
+        ]
+        return rows[offset : offset + limit]
 
     # ── writes ────────────────────────────────────────────────────────
     def set_web_user_password(self, login: str, password: PasswordRecord) -> bool:
@@ -482,6 +513,46 @@ def test_the_account_page_is_never_cached() -> None:
     """It carries a live credential in the body on every render now."""
     r = _client(FakeStore()).get("/account", headers=_auth())
     assert r.headers["cache-control"] == "no-store"
+
+
+def test_the_poster_profile_form_shows_only_the_viewers_own_default() -> None:
+    """gr490266: /account reads the viewer's profiles through
+    ``list_refs(owner_login=)`` — another owner's default-flagged profile
+    and the viewer's own retired one never prefill the form."""
+    from tests.precis_web.conftest import make_ref
+
+    store = FakeStore()
+    store.refs = [
+        make_ref(
+            id=1,
+            kind="profile",
+            title="Mallory Brand",
+            owner_login="mallory",
+            retired_at=None,
+            meta={"profile": {"name": "Mallory Brand", "default": True}},
+        ),
+        make_ref(
+            id=2,
+            kind="profile",
+            title="Old Reto Brand",
+            owner_login="reto",
+            retired_at="2026-10-01T00:00:00Z",
+            meta={"profile": {"name": "Old Reto Brand", "default": True}},
+        ),
+        make_ref(
+            id=3,
+            kind="profile",
+            title="Reto Brand",
+            owner_login="reto",
+            retired_at=None,
+            meta={"profile": {"name": "Reto Brand"}},
+        ),
+    ]
+    r = _client(store).get("/account", headers=_auth())
+    assert r.status_code == 200
+    assert 'value="Reto Brand"' in r.text
+    assert "Mallory Brand" not in r.text
+    assert "Old Reto Brand" not in r.text
 
 
 # ── reMarkable pairing ──────────────────────────────────────────────

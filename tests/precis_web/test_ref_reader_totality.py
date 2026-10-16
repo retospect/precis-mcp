@@ -84,6 +84,26 @@ def test_registered_and_drive_kinds_have_readers(store, tmp_path):
                     [ChunkInsert(ord=0, text="Stored snapshot survives missing file")],
                 )
             response = client.get(f"/refs/{kind}/{ref.id}", follow_redirects=False)
+            if kind == "profile":
+                # Owner-private by design (gr490266): the generic reader
+                # refuses every profile and navigation points at the owner
+                # surface instead, so no listed row is a dead link.
+                # tests/precis_web/test_refs_profile_acl.py pins the
+                # per-owner ACL itself.
+                assert response.status_code == 404, response.text[:300]
+                assert expected == "/account"
+                assert client.get(expected).status_code == 200
+                drive = client.get(
+                    f"/drive?submitted=1&sort=created&k={kind}&state=all"
+                    "&paper_chunks=both"
+                )
+                assert drive.status_code == 200
+                assert f'href="/refs/{kind}/{ref.id}"' not in drive.text
+                assert f'href="{expected}"' in drive.text
+                pivot = client.get(f"/tags/refs?kind={kind}")
+                assert pivot.status_code == 200
+                assert f'href="/refs/{kind}/{ref.id}"' not in pivot.text
+                continue
             assert response.status_code in (200, 303), (kind, response.text[:300])
             if expected != f"/refs/{kind}/{ref.id}":
                 assert response.status_code == 303

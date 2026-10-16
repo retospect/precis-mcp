@@ -132,10 +132,12 @@ def test_drive_new_defaults_kind_to_draft(client) -> None:
     mostly listing papers — a first-time user had to scan an unlabelled
     5-item dropdown before any draft field appeared. Draft is now the
     default, both for Alpine's initial ``x-model`` state and the plain
-    HTML ``selected`` option (no-JS fallback)."""
+    HTML ``selected`` option (no-JS fallback). The same Alpine scope also
+    carries ``doctype`` (default ``paper``) since the poster branding-profile
+    picker keys off it (b7b9c874e)."""
     r = client.get("/drive")
     assert r.status_code == 200
-    assert "x-data=\"{ open: false, kind: 'draft' }\"" in r.text
+    assert "x-data=\"{ open: false, kind: 'draft', doctype: 'paper' }\"" in r.text
     assert '<option value="draft" selected>Draft (document)</option>' in r.text
 
 

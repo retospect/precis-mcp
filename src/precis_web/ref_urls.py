@@ -20,6 +20,9 @@ NATIVE_REF_URLS: dict[str, str] = {
     "figure": "/figure/{slug}",
     "mermaid": "/mermaid/{slug}",
     "pcb": "/pcb/{slug}",
+    # owner-private (gr490266): the generic reader refuses profiles, so
+    # every surface that still lists one sends the owner to /account
+    "profile": "/account",
 }
 
 
