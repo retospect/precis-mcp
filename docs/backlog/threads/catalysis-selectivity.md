@@ -265,6 +265,11 @@ Reto: gr482121 backfill of the 559 overwritten `pw-*` structure refs.
    - It reuses `precis_surface` + `hexfold.smooth` for the cage
      generator, and leaves hexfold-toolkit's and nanobuds-paper's items
      alone. F2 is flagged as touching the nanobuds paper.
+5. **backlog/electrochem-kinetics-beyond-che.md** (Reto, 2026-10-16:
+   pile, needs design) — β·U and surface-charge terms in catpath kinetics,
+   ported from the CatMAP/CatmapInterface.jl stack, plus a CatMAP parity
+   export. Ranked last: Do-next 5–6 define the window and the decisive
+   edges it would make U-dependent, and Horizon 1 supplies the barriers.
 
 ## Parked
 
