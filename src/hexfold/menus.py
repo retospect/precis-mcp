@@ -45,7 +45,73 @@ def _c60_min_site(ring: list[Any]) -> Site:
 
 #: menu names :func:`expand` implements; anything else is refused
 #: (:class:`MenuError`) instead of expanding to nothing
-KNOWN = ("2+2", "4+4", "9-6", "8-7", "DA-neck", "DB-neck")
+KNOWN = ("2+2", "4+4", "9-6", "8-7", "DA-neck", "DB-neck", "reducer")
+
+
+def _tube_nm(insts: list[Instance], ref: str) -> tuple[int, int]:
+    """``(n, m)`` of the tube instance a port ref ``inst.port`` names."""
+    name = ref.rsplit(".", 1)[0]
+    for inst in insts:
+        if inst.name == name and inst.kind == "tube":
+            p = dict(inst.params)
+            try:
+                return int(p.get("0", p.get("n", ""))), int(p.get("1", p.get("m", "0")))
+            except ValueError:
+                # a roll-up tube(fit, ...) has no (n, m) until the domain solve
+                raise ReducerError(
+                    f"reducer endpoint {ref}: tube needs integer (n, m)"
+                ) from None
+    raise ReducerError(f"reducer endpoint {ref}: not a tube port")
+
+
+class ReducerError(ValueError):
+    """A ``fuse{reducer}`` line whose two tube ends no 5/7 washer joins."""
+
+
+def reducer_washer(
+    wide: tuple[int, int], narrow: tuple[int, int]
+) -> tuple[int, int, int]:
+    """``(k, r, fuse_k)`` of the coaxial 5/7 reducer between two tube ends.
+
+    The reducer is a flat annulus ``cap(6k,0) - hex(r)`` (SPEC 28.3's
+    washer): the wide rim fuses onto the lid rim, the narrow rim into the
+    ``hex(r)`` hole.  Rim counts must be ``6k`` and ``6(r+1)`` with
+    ``k >= r+3`` (else the hole clips the lid rim, ``cut.overlap``).
+    Zigzag ``(n,0)`` ends meet the zigzag annulus at registry 0 (the
+    valve shell, six pentagons + six heptagons); armchair ``(n,n)`` ends
+    at registry 1, where every seam face is a 5, 6 or 7 ring -- registry
+    0 mints squares and octagons, and an armchair rim whose pair count
+    per annulus side is not whole (``n % 6 != 0``) mints them at every
+    registry, so those ends are refused here rather than built wrong.
+    """
+    (wn, wm), (nn, nm) = wide, narrow
+    if wm == 0 and nm == 0:
+        rims, fuse_k = (wn, nn), 0
+    elif wm == wn and nm == nn:
+        if wn % 6 or nn % 6:
+            raise ReducerError(
+                f"reducer ({wn},{wm})->({nn},{nm}): armchair ends need n % 6 == 0 "
+                "(no registry closes the seam in 5/6/7 rings otherwise)"
+            )
+        rims, fuse_k = (2 * wn, 2 * nn), 1
+    else:
+        raise ReducerError(
+            f"reducer ({wn},{wm})->({nn},{nm}): both ends must be armchair (n,n) "
+            "or both zigzag (n,0)"
+        )
+    if rims[0] % 6 or rims[1] % 6:
+        raise ReducerError(
+            f"reducer ({wn},{wm})->({nn},{nm}): rim atom counts {rims} must be "
+            "multiples of 6"
+        )
+    k, r = rims[0] // 6, rims[1] // 6 - 1
+    if r < 0 or k < r + 3:
+        raise ReducerError(
+            f"reducer ({wn},{wm})->({nn},{nm}): the wide rim needs at least "
+            f"{6 * (r + 3)} atoms over the narrow rim's {rims[1]} (the annulus "
+            "must be two rings wide)"
+        )
+    return k, r, fuse_k
 
 
 class MenuError(ValueError):
@@ -102,6 +168,43 @@ def _add_hole(insts: list[Instance], name: str, hole: Hole, source: str) -> str:
     raise KeyError(name)
 
 
+def _expand_reducer(
+    c: Connect, insts: list[Instance]
+) -> tuple[list[Connect], dict[str, Any]]:
+    """``a.port --fuse{reducer}--> b.port``: append the washer instance to
+    ``insts`` and return the two fuses plus the expansion record.  Either
+    end may be the wide one."""
+    a, b = _tube_nm(insts, c.src), _tube_nm(insts, c.dst)
+    wide_ref, narrow_ref = (
+        (c.src, c.dst) if a[0] + a[1] >= b[0] + b[1] else (c.dst, c.src)
+    )
+    k, r, fuse_k = reducer_washer(
+        _tube_nm(insts, wide_ref), _tube_nm(insts, narrow_ref)
+    )
+    wname = _gen_name(insts, "reducer")
+    insts.append(
+        Instance(
+            name=wname,
+            kind="cap",
+            params=(("0", str(6 * k)), ("1", "0")),
+            holes=(Hole(-10 - r, Site(0, 0, 0), 0, source="reducer"),),
+            source="reducer",
+        )
+    )
+    gen = [
+        Connect(src=wide_ref, dst=f"{wname}.in", verb="fuse", k=fuse_k, span=c.span),
+        Connect(
+            src=f"{wname}.hole", dst=narrow_ref, verb="fuse", k=fuse_k, span=c.span
+        ),
+    ]
+    exp: dict[str, Any] = {
+        "menu": "reducer",
+        "instances": [f"{wname}: cap({6 * k}, 0) - hex({r})@(0,0,A):0"],
+        "connects": [f"{g.src} --fuse k={g.k}--> {g.dst}" for g in gen],
+    }
+    return gen, exp
+
+
 def expand(spec: Spec) -> Spec:
     """Expand every ``verb == 'menu'`` connect into concrete lines."""
     insts = list(spec.instances)
@@ -126,6 +229,11 @@ def expand(spec: Spec) -> Spec:
         m = _MENU_ARG.match(menu)
         name = m["name"] if m else menu
         arg = m["arg"] if m else None
+        if name == "reducer":
+            red_gen, red_exp = _expand_reducer(c, insts)
+            connects.append(replace(c, expanded=red_exp))
+            connects.extend(replace(g, source=menu) for g in red_gen)
+            continue
         host, hsite, hdir = _host_ref(c.dst)
         bud = c.src
         exp: dict[str, Any] = {"menu": menu}

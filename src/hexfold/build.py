@@ -1898,6 +1898,12 @@ def build(
                 + [Finding("menu.unknown", Severity.ERROR, str(exc), span=exc.span)]
             )
         ) from exc
+    except menus.ReducerError as exc:
+        raise BuildError(
+            profile.apply_all(
+                snap_findings + [Finding("reducer.ends", Severity.ERROR, str(exc))]
+            )
+        ) from exc
 
     # len=fit (SPEC section 8): the smallest integer len for which the
     # whole spec builds with no ERROR findings.  len is in whole
@@ -4701,6 +4707,9 @@ def _apply_connects(
                 )
             )
 
+    # seam rings of each `fuse{reducer}`'s two generated fuses, keyed by
+    # the authored line's span (menus.expand stamps it on both)
+    reducer_rings: dict[tuple[int, int], Counter[int]] = {}
     for ci, c in enumerate(spec.connects):
         if c.verb == "menu":
             name = (c.menu or "").split("(", 1)[0]
@@ -4876,6 +4885,8 @@ def _apply_connects(
                     data=(("k", 2), ("rings", dict(sorted(fcensus.items())))),
                 )
             )
+            if c.source == "reducer":
+                reducer_rings.setdefault(c.span, Counter()).update(fcensus)
             for sz in fcensus:
                 if not 4 <= sz <= 8:
                     findings.append(
@@ -4890,6 +4901,24 @@ def _apply_connects(
             consumed_rims.append(tuple(q.atoms))
             del ports[p.name]
             del ports[q.name]
+
+    # a tube-to-tube reducer is a flat annulus between two coaxial rims:
+    # Euler over it (chi = 0, two boundaries) forces P5 = P7, and the
+    # registries menus.expand picked must leave nothing but 5/6/7 rings
+    for span, rc in reducer_rings.items():
+        p5, p7 = rc.get(5, 0), rc.get(7, 0)
+        other = sorted(sz for sz in rc if sz not in (5, 6, 7))
+        ok = p5 == p7 and not other
+        findings.append(
+            Finding(
+                "reducer.rings",
+                Severity.INFO if ok else Severity.ERROR,
+                f"reducer {p5} pentagons, {p7} heptagons"
+                + ("" if ok else f" -- not a 5/7 ring (P5 != P7 or rings {other})"),
+                span=span,
+                data=(("pentagons", p5), ("heptagons", p7), ("other", other)),
+            )
+        )
 
     # k>=3 seams (SPEC 11.3): resolved after menu/fuse but before bond
     # connects, so a `--bond-->` can name a seam atom `<seam>/s<i>` that

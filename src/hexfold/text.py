@@ -272,6 +272,23 @@ def parse(text: str) -> Spec:
             version = "0.2"
             continue
         m = _CONN_RE.match(line)
+        if m and m["menu"] and m["menu"].strip() == "reducer":
+            # tube-to-tube 5/7 reducer: a menu over two ports, expanded by
+            # menus.expand into a washer instance and two fuses
+            if m["verb"] != "fuse" or m["k"] or m["face"] or m["order"]:
+                raise _err(
+                    "reducer takes 'A.port --fuse{reducer}--> B.port' only", lineno
+                )
+            connects.append(
+                Connect(
+                    src=m["src"],
+                    dst=m["dst"],
+                    verb="menu",
+                    menu="reducer",
+                    span=_span(lineno),
+                )
+            )
+            continue
         if m:
             connects.append(
                 Connect(
@@ -522,6 +539,9 @@ def to_text(spec: Spec) -> str:
         lines.append("")
         for c in authored:
             face = f" face={c.face}" if c.face else ""
+            if c.verb == "menu" and c.menu == "reducer":
+                lines.append(f"{c.src} --fuse{{reducer}}--> {c.dst}")
+                continue
             if c.verb == "menu":
                 dst, site = c.dst.split("/", 1)
                 lines.append(f"{c.src} @ {dst}/{site} [{c.menu}]{face}")

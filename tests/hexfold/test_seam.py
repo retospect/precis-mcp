@@ -368,6 +368,10 @@ _PRE_SEAM_EULER_SNAPSHOT: dict[str, tuple[bool, list[tuple[str, str, int]]]] = {
         True,
         [("euler.chi", "INFO", 0), ("euler.residual", "INFO", 0)],
     ),
+    "tube_reducer.hx": (
+        True,
+        [("euler.chi", "INFO", 0), ("euler.residual", "INFO", 0)],
+    ),
     "valve_shell.hx": (
         True,
         [("euler.chi", "INFO", -2), ("euler.residual", "INFO", 0)],

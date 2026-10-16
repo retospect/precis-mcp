@@ -5,8 +5,8 @@ title: hexfold builds an instrumentable nanoreactor tube — a tube between two 
 ---
 
 wip: slice 2 (reservoir sheets, armchair-rim opening solver, junction
-sites + validation) landed 2026-10-14; next slice H2 (several radii along
-the tube + optional outer Y-junction) unassigned
+sites + validation) landed 2026-10-14; H2 radius step landed as
+`fuse{reducer}` 2026-10-16; the outer Y-junction option is unassigned
 
 # hexfold: instrumentable nanoreactor tube (T2 of the nanoreactor chain)
 
@@ -44,7 +44,10 @@ Still needed from hexfold (ranked):
 - **H2: several radii along the tube**, via existing joins/cones, with
   an optional outer Y-junction where a radius change would otherwise
   strain the wall — the catalysis staging wants diameter steps as the
-  binding-pocket analogue.
+  binding-pocket analogue. The radius step itself is built: `fuse{reducer}`
+  (Reto 2026-10-16 option (a), coaxial 5/7 ring), e.g. (12,12)→(6,6)
+  with 12 pentagons + 12 heptagons. Left: the outer Y-junction option
+  and wiring the reducer into the tunnel/rail-tube scene feature.
 - **H3: relaxed geometry with per-seam strain** — MLIP/GFN-FF relax of
   the assembled tunnel (tblite is wired for the `xtb` rung but absent on
   this host), reporting strain per seam and junction; a 7k-atom preview

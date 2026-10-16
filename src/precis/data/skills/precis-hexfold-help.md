@@ -116,6 +116,15 @@ same spec with `fidelity="check"`.
 
 Any other menu name is refused (`menu.unknown` ERROR).
 
+**Tube reducer.** `wide.out --fuse{reducer}--> narrow.in` joins two coaxial
+tube ends of different size through a flat `cap(6k,0) - hex(r)` washer: a
+ring of pentagons at the wide seam, heptagons split over both seams,
+equal counts (Euler), checked as `reducer.rings` (ERROR if P5 ≠ P7 or a 4/8 ring
+appears). Ends: both armchair `(n,n)` with n % 6 == 0, or both zigzag
+`(n,0)` with n % 6 == 0; the wide rim at least 12 atoms more than the narrow one,
+e.g. `(12,12)→(6,6)` (12 + 12), `(18,18)→(6,6)`. Anything else is
+`reducer.ends` ERROR.
+
 ## Check codes (hexfold spec §13, terse)
 
 `euler.chi` INFO · `euler.residual` INFO/WARN (curvature budget; both

@@ -845,6 +845,7 @@ generated line inherits.
 | `DA-neck(len)` | C60 `- pentagon` → `tube(5,0,len)` → host `- path3` opening, neck fuse `k` fitted over 0..4 by smallest max seam ring | [S15] | TEM-consistent |
 | `DB-neck(len)` | C60 `- hexagon` → `tube(6,0,len)` → host `- hexagon`, both fuses `k=0` | [S15] | TEM-consistent |
 | `collar{r×k @fit}` | k defects of ring size r in a `C_k` orbit | — | — |
+| `fuse{reducer}` | tube-to-tube 5/7 reducer, written `wide.out --fuse{reducer}--> narrow.in`: a generated `cap(6k,0) - hex(r)` washer (the §28.3 radius-changing step) between two coaxial ends, wide rim onto `in`, narrow rim into `hole`; zigzag `(n,0)` ends at fuse `k=0`, armchair `(n,n)` ends (n % 6 = 0) at `k=1`, the registry whose seam faces are all 5/6/7 rings; `reducer.rings` checks P5 = P7 (Euler: a tube-to-tube annulus has χ = 0 over two rims) | — | — |
 
 A sheet↔tube seam needs no collar: `hex(0)` ↔ a `(6,0)` end already fuses
 to `{7:6}`, and adding `collar{7×6}` doubles the heptagons

@@ -88,6 +88,12 @@ Every deviation bar is measured after removing a rigid z-offset and
 nothing else. There is no fitted rotation or scale, which would let the
 judge co-optimise the surface again (orchestrator, S1 verdict 2026-10-03).
 
+- Reducer: once surface-then-tile works, tiling a filleted frustum between
+  two tube radii must reproduce the 5/7 reducer (Reto 2026-10-16: "We can
+  also tile the smooth and this falls out automatically"; Euler:
+  tube-to-tube means equal pentagons and heptagons). The discrete reference
+  is the grammar's `fuse{reducer}` (`hexfold.menus.reducer_washer`):
+  (12,12)→(6,6) mints 12 pentagons and 12 heptagons.
 - S1, **built** (`revolution.authored_meridian`, `arc_curvature`,
   `precis_surface.deviation`; the judge is exact on lines and arcs to 1e-9):
   - `hexa-smooth-drum-v2` is a mean 0.70 Å off its own target. The flats
