@@ -1106,6 +1106,21 @@ _AUTOCATPATH_VERIFY_WALL_SECONDS_ENV = "PRECIS_AUTOCATPATH_VERIFY_WALL_SECONDS"
 _DEFAULT_VERIFY_WALL_SECONDS = 64800
 
 
+#: Interim GB10 unified-memory guard (gr491506): the fixed
+#: ``search.neb_pool_size`` precis stamps on a GPU-routed MACE run.
+#: autocatpath's ``"auto"`` governor sizes the pooled-NEB batch by
+#: wall-time-per-graph, not by a hard memory ceiling — on jo489257
+#: (pollux, 2026-10-16) it pooled 37 bands into one MACE forward and the
+#: driver's unified-memory allocations (invisible to RSS and the unit's
+#: MemoryMax) triggered a global OOM kill. 4 keeps the batch small until
+#: the engine-side fix (a pending catpath PR) ships; pool width measured
+#: ~neutral for wall time on the GB10 anyway (catpath
+#: docs/GPU_BATCHING.md §Measured), so the cap costs nothing. Applied
+#: via ``setdefault``: an explicit per-quest ``search.neb_pool_size``
+#: wins. Remove when the catpath fix is released and adopted.
+_GB10_MACE_NEB_POOL_SIZE = 4
+
+
 #: Env pin for the CPU set seed children run on (``taskset -c``); unset/blank →
 #: unpinned. See :func:`_autocatpath_seed_cpuset`.
 _AUTOCATPATH_SEED_CPUSET_ENV = "PRECIS_AUTOCATPATH_SEED_CPUSET"
@@ -1698,6 +1713,15 @@ def dispatch_autocatpath(
         # while the per-eval descent runs at ~float32 speed. The seed-wall-overrun
         # lever (paired with best_first NEB scheduling below). Explicit override wins.
         run_config["mlip"].setdefault("dtype", "mixed")
+        if any(b == "mace" for b, _model in _autocatpath_mlip_specs(run_config)):
+            # GB10 unified-memory guard (gr491506): cap the inter-band
+            # pooled-NEB batch — 'auto' pooled 37 bands into one MACE
+            # forward on jo489257 and OOM-killed the host. MACE only
+            # (EMT/other backends allocate no driver memory); an explicit
+            # per-quest ``search.neb_pool_size`` wins.
+            search = dict(run_config.get("search") or {})
+            search.setdefault("neb_pool_size", _GB10_MACE_NEB_POOL_SIZE)
+            run_config = {**run_config, "search": search}
     key = _autocatpath_content_key(run_config, slab_extxyz)
     reaction_key = _autocatpath_reaction_key(run_config)
     pslug = f"{ref.slug}-rx-{key[:10]}"

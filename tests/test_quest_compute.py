@@ -6238,6 +6238,70 @@ class TestDispatchAutocatpath:
         assert cfg["substrate"] == "NO"  # original keys ride along
         assert "mlip" not in self._RX  # caller's dict untouched
 
+    # ── gr491506: GB10 unified-memory guard — fixed neb_pool_size ────────
+
+    _RX_MACE = {
+        "substrate": "NO",
+        "target": "NH3",
+        "network": "ammonia",
+        "mlip": {"backend": "mace", "model": "medium"},
+    }
+
+    def test_routed_mace_run_pins_neb_pool_size(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """gr491506: a GPU-routed MACE run carries a fixed
+        ``search.neb_pool_size`` — 'auto' pooled 37 bands into one MACE
+        forward on jo489257 and OOM-killed the GB10 host."""
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, "spark")
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        compute_mod.dispatch_autocatpath(store, sid, self._RX_MACE)
+        _job_id, jmeta = self._seed_jobs(store, sid)[0]
+        cfg = (jmeta.get("params") or {})["config"]
+        assert cfg["search"]["neb_pool_size"] == (compute_mod._GB10_MACE_NEB_POOL_SIZE)
+        assert "search" not in self._RX_MACE  # caller's dict untouched
+
+    def test_routed_non_mace_run_carries_no_neb_pool_size(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """Non-MACE backends keep the engine default — EMT allocates no
+        driver memory, so the GB10 guard must not touch it."""
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, "spark")
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)  # no mlip → emt
+        _job_id, jmeta = self._seed_jobs(store, sid)[0]
+        cfg = (jmeta.get("params") or {})["config"]
+        assert "neb_pool_size" not in cfg["search"]
+
+    def test_unrouted_mace_run_carries_no_neb_pool_size(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """The unrouted (CPU, in-process) path is untouched — no
+        ``search.neb_pool_size`` is stamped."""
+        monkeypatch.delenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, raising=False)
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        compute_mod.dispatch_autocatpath(store, sid, self._RX_MACE)
+        _job_id, jmeta = self._seed_jobs(store, sid)[0]
+        cfg = (jmeta.get("params") or {})["config"]
+        assert "neb_pool_size" not in cfg["search"]
+
+    def test_explicit_neb_pool_size_override_wins(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """A per-quest ``search.neb_pool_size`` is a hand-tuned choice —
+        the guard fills a default, it never overwrites one."""
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, "spark")
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        cfg_in = {**self._RX_MACE, "search": {"neb_pool_size": 8}}
+        compute_mod.dispatch_autocatpath(store, sid, cfg_in)
+        _job_id, jmeta = self._seed_jobs(store, sid)[0]
+        cfg = (jmeta.get("params") or {})["config"]
+        assert cfg["search"]["neb_pool_size"] == 8
+
     def test_wall_seconds_env_reaches_the_job_and_the_ssh_node_lease(
         self, store: Any, monkeypatch: Any
     ) -> None:
