@@ -17,10 +17,14 @@ onto the seven verbs:
   ``strategy='<text>'`` records a STEER strategy (``precis_chem.steer``):
   *not* part of the content address (the search is unchanged; only the
   ranking layer depends on it), reranked inside the job when the plan
-  lands — a ``put`` never makes an LLM call.
+  lands (or inline when no route node is configured — the slice-0
+  fallback). ``refresh=True`` re-asks for an already-ranked strategy; the
+  new ranking replaces the cached one only if it scores at least one route. The rerank is a write: only ``put`` computes it.
 - ``get``    — list routes, or render one route graph (``id=slug``). When a
   recorded strategy has a cached rerank the page leads with the strategy
   pick and shows the engine's own top route beside it.
+  ``view='steer', q='<strategy>'`` reads the cached rerank only — a get
+  never calls the model or writes the ref (gr491367).
 - ``delete`` — soft-retire a route.
 
 Ships live: no per-plugin dark switch. An operator who needs it off uses
@@ -72,8 +76,9 @@ class RouteHandler(Handler):
             "set (cache-keyed; container engines only). get lists routes or "
             "renders one graph "
             "(id=slug) — a scored strategy's pick leads the page; "
-            "view='steer', q='<strategy>' reranks the kept candidate routes "
-            "by an LLM's fit to a natural-language strategy; delete "
+            "view='steer', q='<strategy>' reads the cached rerank of the kept "
+            "candidate routes by an LLM's fit to that strategy (computed only "
+            "by put(strategy=…); refresh=True re-asks); delete "
             "soft-retires. The LLM traverses the graph, never runs a planner "
             "in the request path."
         ),
@@ -109,6 +114,7 @@ class RouteHandler(Handler):
         max_routes: int | None = None,
         constraints: list[str] | str | None = None,
         strategy: str | None = None,
+        refresh: bool = False,
         **_kw: Any,
     ) -> Response:
         if id is None or not str(id).strip():
@@ -202,20 +208,21 @@ class RouteHandler(Handler):
                 self.store.stamp_ref_meta(
                     existing.id, {"steer_strategies": steer_strategies}
                 )
-                if steer.steer_key(strat, graph) in (meta.get("steer") or {}):
+                ranked = steer.steer_key(strat, graph) in (meta.get("steer") or {})
+                if ranked and not refresh:
                     return Response(
                         body=head + f"strategy '{strat}' already ranked — "
-                        "the route page leads with its pick.\n\n" + graph.render()
+                        "the route page leads with its pick "
+                        "(refresh=True re-asks).\n\n" + graph.render()
                     )
                 node = os.environ.get(ROUTE_NODE_ENV)
                 if node:
                     params["route_ref_id"] = existing.id
+                    if refresh:
+                        params["steer_refresh"] = True
                     return self._dispatch(existing, params, node, requested_by)
                 return Response(
-                    body=head
-                    + f"strategy '{strat}' recorded — no compute lane for the "
-                    "rerank here; view='steer' scores it on demand.\n\n"
-                    + graph.render()
+                    body=head + self._steer_inline(existing.id, strat, graph)
                 )
 
         # Ensure the ref exists (create on first put; re-plan updates meta).
@@ -265,13 +272,32 @@ class RouteHandler(Handler):
         state = "solved" if graph.solved else "unsolved"
         body = f"# route '{slug}' — {state} ({graph.engine}, in-process)\n\n"
         if strat is not None:
-            # No compute lane ⇒ no job to carry the rerank; the request path
-            # stays LLM-free either way (steer is a job-time/view-time call).
-            body += (
-                f"strategy '{strat}' recorded — no compute lane for the "
-                "rerank here; view='steer' scores it on demand.\n\n"
-            )
+            # No compute lane ⇒ no job to carry the rerank; this explicit
+            # write runs it inline, like the engine above.
+            return Response(body=body + self._steer_inline(ref.id, strat, graph))
         return Response(body=body + graph.render())
+
+    def _steer_inline(self, ref_id: int, strategy: str, graph: RouteGraph) -> str:
+        """Rerank ``graph`` against ``strategy`` now and cache it on
+        ``meta.steer`` — the no-route-node fallback of the job-time rerank.
+        Only ``put`` calls this; an all-unscored result stays uncached (never
+        a default score), so a later put retries."""
+        scores = steer.steer(strategy, graph, ask=self.steer_ask)
+        if any(s.score is not None for s in scores):
+            ref = self.store.get_ref(kind="route", id=ref_id)
+            meta = (ref.meta if ref is not None else None) or {}
+            cache = dict(meta.get("steer") or {})
+            cache[steer.steer_key(strategy, graph)] = {
+                "strategy": strategy,
+                "prompt": steer.PROMPT_VERSION,
+                "scores": [s.to_json() for s in scores],
+                "at": datetime.now(UTC).isoformat(),
+            }
+            self.store.stamp_ref_meta(ref_id, {"steer": cache})
+        return (
+            f"strategy '{strategy}' reranked in-process (no route node).\n\n"
+            + steer.render(strategy, graph, scores, cached=False)
+        )
 
     def _dispatch(
         self,
@@ -379,7 +405,6 @@ class RouteHandler(Handler):
         id: str | int | None = None,
         view: str | None = None,
         q: str | None = None,
-        refresh: bool = False,
         **_kw: Any,
     ) -> Response:
         if id is None or (isinstance(id, str) and id.strip() in ("", "/")):
@@ -404,23 +429,21 @@ class RouteHandler(Handler):
             # LinChemIn-normalized path populates them; a stub/legacy route says so.
             return Response(body=graph.metrics_render())
         if v == "steer":
-            return self._render_steer(ref, graph, q=q, refresh=bool(refresh))
+            return self._render_steer(ref, graph, q=q)
         if v and v not in ("route", "graph", "tree"):
             raise BadInput(
                 f"unknown route view {view!r}",
                 next=(
                     "view='metrics' (route descriptors) | view='steer', "
-                    "q='<strategy>' (LLM rerank) | omit for the route graph"
+                    "q='<strategy>' (cached LLM rerank) | omit for the route graph"
                 ),
             )
         return Response(body=self._page_render(meta, graph))
 
-    def _render_steer(
-        self, ref: Any, graph: RouteGraph, *, q: str | None, refresh: bool
-    ) -> Response:
-        """Rerank the kept routes against the strategy in ``q=``. Scores are
-        cached on ``meta.steer`` keyed by strategy + routes, so a repeat
-        costs nothing; ``refresh=True`` re-asks."""
+    def _render_steer(self, ref: Any, graph: RouteGraph, *, q: str | None) -> Response:
+        """The cached rerank of the kept routes against the strategy in
+        ``q=``. Read-only: a miss names the write that computes it
+        (``put(strategy=…)``) instead of calling the model (gr491367)."""
         try:
             strategy = steer.normalise_strategy(q)
         except ValueError as exc:
@@ -429,22 +452,38 @@ class RouteHandler(Handler):
                 next=f"get(kind='route', id={ref.slug!r}, view='steer', "
                 "q='avoid protecting groups')",
             ) from exc
-        key = steer.steer_key(strategy, graph)
-        cache = dict((ref.meta or {}).get("steer") or {})
-        hit = cache.get(key)
-        if hit and not refresh:
+        cache = (ref.meta or {}).get("steer") or {}
+        hit = cache.get(steer.steer_key(strategy, graph))
+        if hit:
             scores = [steer.SteerScore.from_json(s) for s in hit.get("scores") or []]
             return Response(body=steer.render(strategy, graph, scores, cached=True))
-        scores = steer.steer(strategy, graph, ask=self.steer_ask)
-        if any(s.score is not None for s in scores):
-            cache[key] = {
-                "strategy": strategy,
-                "prompt": steer.PROMPT_VERSION,
-                "scores": [s.to_json() for s in scores],
-                "at": datetime.now(UTC).isoformat(),
-            }
-            self.store.stamp_ref_meta(ref.id, {"steer": cache})
-        return Response(body=steer.render(strategy, graph, scores, cached=False))
+        return Response(
+            body=f"# route '{ref.slug}' — no rerank yet for strategy "
+            f"'{strategy}'\n\nThe rerank is a write; a get never calls the "
+            f"model. Run {self._steer_put_call(ref, strategy)} — the plan is "
+            "a cache hit, so only the rerank runs (a steer-only job on the "
+            "compute lane, or inline when no route node is configured), then "
+            "read this view again."
+        )
+
+    @staticmethod
+    def _steer_put_call(ref: Any, strategy: str) -> str:
+        """The exact ``put`` that reranks this route: it repeats the plan's
+        content address so it lands as a cache hit, not a re-plan."""
+        meta = ref.meta or {}
+        parts = [
+            f"id={ref.slug!r}",
+            f"target={meta.get('target', '?')!r}",
+            f"engine={meta.get('engine', '?')!r}",
+        ]
+        if meta.get("max_steps") not in (None, DEFAULT_MAX_STEPS):
+            parts.append(f"max_steps={meta['max_steps']}")
+        if meta.get("max_routes"):
+            parts.append(f"max_routes={meta['max_routes']}")
+        if meta.get("constraints"):
+            parts.append(f"constraints={list(meta['constraints'])!r}")
+        parts.append(f"strategy={strategy!r}")
+        return "put(kind='route', " + ", ".join(parts) + ")"
 
     def _page_render(self, meta: dict[str, Any], graph: RouteGraph) -> str:
         """The route page: when a recorded strategy has a cached rerank, lead
@@ -463,8 +502,7 @@ class RouteHandler(Handler):
         if strategies:
             body += (
                 f"\n\nstrategy '{strategies[-1]}' recorded — the rerank runs "
-                "in the plan job; not landed yet. "
-                "view='steer', q='<strategy>' scores on demand."
+                "in the plan job; not landed yet."
             )
         return body
 

@@ -16,9 +16,10 @@ route unscored, ranked last and marked. It is never given a default score.
 Slice 2: ``put(kind='route', strategy='…')`` records the strategy on the
 route (``meta.steer_strategies``, ordered + deduped — the last entry is the
 page's lead) and the rerank runs inside the ``retrosynth`` job when the
-plan lands, so a ``put`` never makes an LLM call. Scores land in the same
-``meta.steer`` cache the ``view='steer'`` render reads, so the two paths
-share rankings. A second ``put`` that differs only in strategy hits the
+plan lands (inline in the ``put`` when no route node is configured;
+``refresh=True`` re-asks). Scores land in the ``meta.steer`` cache the
+``view='steer'`` render reads; that view is read-only — a get never calls
+the model or writes the ref (gr491367). A second ``put`` that differs only in strategy hits the
 content-addressed cache and mints a steer-only job — the dispatch sees the
 plan already landed (``cache_key`` match) and skips the engine.
 

@@ -45,14 +45,16 @@ itself.
 - The IR keeps alternatives. `RouteGraph.alternatives` holds up to 9
   lower-ranked routes. `parse_aizynth_trees` fills it from `trees.json`,
   and the retrosynth job attaches it when `route.json` wins.
-- `get(kind='route', id=…, view='steer', q='<strategy>')` makes one routed
-  call per candidate route (at most 10), at Tier.MEDIUM with a $0.05 cap
-  per route. It shows the routes best first, each with its 0–10 score,
-  the rationale and its steps.
+- The rerank makes one routed call per candidate route (at most 10), at
+  Tier.MEDIUM with a $0.05 cap per route. Only `put(strategy=…)` runs it
+  (in the job, or inline without a route node);
+  `get(kind='route', id=…, view='steer', q='<strategy>')` reads the cache
+  and never calls the model (gr491367). It shows the routes best first,
+  each with its 0–10 score, the rationale and its steps.
 - A reply that fails or does not parse leaves that route unscored and
   ranked last, with the reason shown. It never gets a default score.
 - Results are cached on `meta.steer`, keyed by prompt version, strategy and
-  the routes scored. `refresh=True` asks the LLM again.
+  the routes scored. `put(…, strategy=…, refresh=True)` asks the LLM again.
 - Code: `precis_chem/steer.py`. Tests: `tests/test_route_steer.py`, which
   uses a fake scorer and calls no model.
 
@@ -130,10 +132,6 @@ need the twins?
 
 ## Open questions
 
-- **Synchronous view vs job.** Slice 1 makes up to 10 MEDIUM calls inside
-  `get` (about 10 to 60 s, under $0.50 cold, free when cached). Slice 2
-  moves the default path into the job, and the view stays for ad-hoc
-  strategies. Revisit if the latency bites.
 - **Tier.** The paper used frontier models and found that small models
   rank poorly. MEDIUM is the starting point. Compare MEDIUM and BIG on a
   dogfood target before slice 2 fixes the default.

@@ -1158,6 +1158,9 @@ def put(
     max_steps: int | None = None,
     max_routes: int | None = None,
     strategy: str | None = None,
+    # route: re-ask the STEER rerank for an already-ranked strategy
+    # (gr491367 — the rerank is a put; view='steer' only reads the cache).
+    refresh: bool | None = None,
     requested_by: int | str | None = None,
     constraints: list[str] | str | None = None,
     sequence: str | None = None,
@@ -1420,6 +1423,7 @@ def put(
             "max_steps": max_steps,
             "max_routes": max_routes,
             "strategy": strategy,
+            "refresh": refresh,
             "requested_by": requested_by,
             "constraints": constraints,
             "sequence": sequence,

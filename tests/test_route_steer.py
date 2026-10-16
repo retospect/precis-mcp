@@ -1,5 +1,6 @@
 """STEER slices 1+2: kept alternative routes + LLM strategy rerank, then a
-strategy recorded at ``put`` reranked inside the retrosynth job.
+strategy recorded at ``put`` reranked inside the retrosynth job (or inline
+in the put without a route node). ``view='steer'`` is read-only (gr491367).
 
 No model is called: every test injects a fake ``ask`` / patches
 ``steer.router_ask``.
@@ -139,31 +140,102 @@ def test_route_text_carries_step_classes() -> None:
     assert "step 1: T <= A + B [N-acylation to amide] (in stock)" in steer.route_text(g)
 
 
-def test_view_steer_scores_caches_and_refreshes(
+def _raising_ask(prompt: str) -> tuple[str, str | None]:
+    raise AssertionError("view='steer' called the model")
+
+
+def test_view_steer_is_read_only(
     route_store: Store,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """gr491367: a get never calls the model or writes the ref. A miss names
+    the exact put that computes the rerank; a hit renders the cache."""
+    monkeypatch.setattr(StubEngine, "plan", lambda self, t, **kw: _graph())
     h = RouteHandler(hub=Hub(store=route_store))
     h.put(id="amide", target="CC(=O)NC", engine="stub")
-    ref = route_store.get_ref(kind="route", id="amide")
-    assert ref is not None
-    apply_route_result(route_store, ref.id, _graph(), cache_key="k")
+    before = _route_meta(route_store, "amide")
+    h.steer_ask = _raising_ask
+    monkeypatch.setattr(steer, "router_ask", _raising_ask)
+
+    def _no_write(*_a: Any, **_kw: Any) -> None:
+        raise AssertionError("view='steer' wrote to the store")
+
+    monkeypatch.setattr(route_store, "stamp_ref_meta", _no_write)
+    monkeypatch.setattr(route_store, "insert_ref", _no_write)
+
+    body = h.get(id="amide", view="steer", q="avoid  acid chlorides").body
+    assert "no rerank yet for strategy 'avoid acid chlorides'" in body
+    # The hint repeats the plan's content address so the put is a cache hit.
+    assert "put(kind='route', id='amide', target='CC(=O)NC', engine=" in body
+    assert "strategy='avoid acid chlorides')" in body
+    assert _route_meta(route_store, "amide") == before
+    with pytest.raises(BadInput):
+        h.get(id="amide", view="steer")
+
+
+def test_put_strategy_inline_scores_caches_and_refreshes(
+    route_store: Store,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No route node: the put is the explicit write that reranks inline;
+    view='steer' then reads the cache, and put(refresh=True) re-asks."""
+    monkeypatch.setattr(StubEngine, "plan", lambda self, t, **kw: _graph())
+    h = RouteHandler(hub=Hub(store=route_store))
     calls: list[str] = []
     h.steer_ask = _fake_ask(calls)
 
-    body = h.get(id="amide", view="steer", q="avoid acid chlorides").body
+    body = h.put(
+        id="amide", target="CC(=O)NC", engine="stub", strategy="avoid acid chlorides"
+    ).body
     assert "1. engine route #1: score 9" in body
     assert "2. engine route #2: score 1" in body
     assert "UNSCORED (model unavailable)" in body
     assert len(calls) == 3
+    assert len(_route_meta(route_store, "amide").get("steer") or {}) == 1
 
     again = h.get(id="amide", view="steer", q="avoid  acid chlorides").body
-    assert "cached" in again and len(calls) == 3
+    assert "cached" in again and "1. engine route #1: score 9" in again
+    assert len(calls) == 3
 
-    h.get(id="amide", view="steer", q="avoid acid chlorides", refresh=True)
+    r = h.put(
+        id="amide", target="CC(=O)NC", engine="stub", strategy="avoid acid chlorides"
+    )
+    assert "already ranked" in r.body and len(calls) == 3
+
+    h.put(
+        id="amide",
+        target="CC(=O)NC",
+        engine="stub",
+        strategy="avoid acid chlorides",
+        refresh=True,
+    )
     assert len(calls) == 6
+    cached = _route_meta(route_store, "amide").get("steer") or {}
+    assert len(cached) == 1
 
-    with pytest.raises(BadInput):
-        h.get(id="amide", view="steer")
+    # A refresh that scores nothing keeps the previous ranking.
+    h.steer_ask = lambda prompt: ("", "model unavailable")
+    h.put(
+        id="amide",
+        target="CC(=O)NC",
+        engine="stub",
+        strategy="avoid acid chlorides",
+        refresh=True,
+    )
+    assert _route_meta(route_store, "amide").get("steer") == cached
+
+
+def test_put_strategy_all_unscored_stays_uncached(
+    route_store: Store,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rerank whose every candidate fails is never cached (no default
+    score), so the next put retries."""
+    monkeypatch.setattr(StubEngine, "plan", lambda self, t, **kw: _graph())
+    h = RouteHandler(hub=Hub(store=route_store))
+    h.steer_ask = lambda prompt: ("", "model unavailable")
+    h.put(id="amide", target="CC(=O)NC", engine="stub", strategy="fewest steps")
+    assert not _route_meta(route_store, "amide").get("steer")
 
 
 # ── slice 2: strategy recorded at put, reranked inside the job ─────────
@@ -181,21 +253,35 @@ def _job_rows(store: Store, route_ref_id: int) -> list[tuple[int, dict[str, Any]
 
 def test_put_records_strategy_and_returns_at_once(
     route_store: Store,  # noqa: F811
+    register_retrosynth: Any,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Inline path (no route node): the strategy is recorded, no LLM call
-    happens in the request, and the page notes the pending rerank."""
-    h = RouteHandler(hub=Hub(store=route_store))
+    """Compute lane: the put records the strategy and returns at once — no
+    LLM call in the request (the rerank runs in the job), and the page notes
+    the pending rerank."""
+    monkeypatch.setenv("PRECIS_CHEM_ROUTE_NODE", "spark")
+    h = _try(RouteHandler, hub=Hub(store=route_store))
+    assert h is not None
     calls: list[str] = []
     h.steer_ask = _fake_ask(calls)
+    monkeypatch.setattr(steer, "router_ask", _fake_ask(calls))
     resp = h.put(
         id="amide", target="CC(=O)NC", engine="stub", strategy=" avoid  acid chlorides "
     )
     assert "strategy 'avoid acid chlorides' recorded" in resp.body
-    assert calls == []  # put never calls the model
+    assert calls == []  # the put dispatches; the job calls the model
     meta = _route_meta(route_store, "amide")
     assert meta["steer_strategies"] == ["avoid acid chlorides"]
-    # No ranking yet — the page says so instead of hiding it.
+    [(_, job_meta)] = _job_rows(
+        route_store, h.store.get_ref(kind="route", id="amide").id
+    )
+    assert job_meta["params"]["strategy"] == "avoid acid chlorides"
+    # Plan landed, rerank not yet — the page says so instead of hiding it.
+    apply_route_result(
+        route_store, job_meta["params"]["route_ref_id"], _graph(), cache_key="k"
+    )
     assert "not landed yet" in h.get(id="amide").body
+    assert calls == []
 
 
 def test_put_strategy_validates(
@@ -353,6 +439,25 @@ def test_two_puts_differing_only_in_strategy_share_one_run(
     assert len(_job_rows(route_store, route_ref.id)) == before
     assert len(calls) == 6
 
+    # refresh=True on a ranked strategy mints a steer-only job that re-asks
+    # for that strategy alone; the engine still does not re-run.
+    route_store.add_tag(job2_id, Tag.closed("STATUS", "succeeded"), set_by="system")
+    h.put(
+        id="amide",
+        target="CC(=O)NC",
+        engine="stub",
+        strategy="fewest steps",
+        refresh=True,
+    )
+    job4_id, job4_meta = _job_rows(route_store, route_ref.id)[-1]
+    assert len(_job_rows(route_store, route_ref.id)) == before + 1
+    assert job4_meta["params"]["steer_refresh"] is True
+    ctx4 = _FakeCtx(store=route_store, params=job4_meta["params"])
+    chem_jobs._dispatch(ctx4, RETROSYNTH_SPEC)
+    assert ctx4.status == "succeeded"
+    assert len(calls) == 9 and plans == ["CC(=O)NC"]
+    assert len(_route_meta(route_store, "amide").get("steer") or {}) == 2
+
 
 def _fake_ask_reorder(calls: list[str]) -> steer.Ask:
     """Ranks engine route #2 first — the strategy pick differs from the
@@ -407,6 +512,7 @@ def test_route_page_leads_with_strategy_pick(
     assert "strategy: fastest chloride route" in body
     # view='steer' with the recorded strategy is now a cache hit.
     h = RouteHandler(hub=Hub(store=route_store))
+    h.steer_ask = _raising_ask
     assert "cached" in h.get(id="amide", view="steer", q="fastest chloride route").body
     assert len(calls) == 3  # the get made no new call
 

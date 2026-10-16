@@ -232,7 +232,7 @@ class RouteGraph:
             lines += [
                 "",
                 f"{len(self.alternatives)} lower-ranked alternative route(s) kept; "
-                "rerank against a strategy with view='steer', q='<strategy>'",
+                "rerank against a strategy with put(strategy='<strategy>')",
             ]
         return "\n".join(lines) + self.constraints_tail()
 

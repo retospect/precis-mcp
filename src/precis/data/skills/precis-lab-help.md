@@ -44,7 +44,7 @@ put(kind='route', id='<slug>', target='<SMILES>', engine='aizynth',
     strategy='avoid protecting groups')            # mint the plan + record a strategy
 get(kind='route', id='<slug>')                     # poll — the step graph
 get(kind='route', id='<slug>', view='metrics')     # LinChemIn descriptors to score/compare
-get(kind='route', id='<slug>', view='steer', q='avoid protecting groups')  # rerank by strategy
+get(kind='route', id='<slug>', view='steer', q='avoid protecting groups')  # read the cached rerank
 get(kind='chem', id='<name or CAS>')               # the target's SMILES, sourced
 ```
 
@@ -52,14 +52,19 @@ get(kind='chem', id='<name or CAS>')               # the target's SMILES, source
 part of the content address — a second put differing only in strategy
 shares one engine run); when the plan job lands it reranks off the request
 path, and the route page then leads with the best route for the strategy,
-the engine's own top beside it. For an ad-hoc strategy on an existing
-route use `view='steer'`. AiZynth returns several routes,
-and precis keeps the top route plus up to 9 alternatives. Each route is
+the engine's own top beside it. For a new strategy on an existing route,
+repeat the same `put` (same target, engine, max_steps, max_routes,
+constraints) with the new `strategy=`: the plan is a cache hit and only
+the rerank runs (a steer-only job, or inline without a route node).
+`view='steer', q='…'` reads a cached rerank and never computes one; on a
+miss it prints the exact `put` to run. AiZynth returns several routes, and
+precis keeps the top route plus up to 9 alternatives. Each route is
 scored 0–10 by an LLM for how well it fits your plain-language strategy,
 and the scores come back with rationales, best first. This changes only
 the ranking. It does not check feasibility, and it does not make the
 engine search differently. The scores are cached per strategy;
-`refresh=True` asks again. Each step's `class:` line is the RXNO reaction
+`put(..., strategy='…', refresh=True)` asks again and keeps the old
+scores if the new pass scores nothing. Each step's `class:` line is the RXNO reaction
 class (`precis-rxn-help`).
 
 Read the prior art *before* proposing a route so you can favour a known

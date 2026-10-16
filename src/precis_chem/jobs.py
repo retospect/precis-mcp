@@ -524,7 +524,13 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             f"a zero-compute cache hit.",
         )
 
-    _steer_pending(ctx, route_ref_id, graph, params.get("strategy"))
+    _steer_pending(
+        ctx,
+        route_ref_id,
+        graph,
+        params.get("strategy"),
+        refresh=bool(params.get("steer_refresh")),
+    )
     ctx.set_status("succeeded")
 
 
@@ -547,15 +553,23 @@ def _already_planned(
 
 
 def _steer_pending(
-    ctx: Any, route_ref_id: int, graph: RouteGraph, param_strategy: Any
+    ctx: Any,
+    route_ref_id: int,
+    graph: RouteGraph,
+    param_strategy: Any,
+    *,
+    refresh: bool = False,
 ) -> None:
     """Rerank the kept candidates against every strategy recorded on the
     route (``meta.steer_strategies``) plus this job's own ``strategy`` param.
 
-    Scores land in the same ``meta.steer`` cache ``view='steer'`` reads, so a
+    Scores land in the same ``meta.steer`` cache ``view='steer'`` reads (a
+    get never computes them — gr491367), so a
     later get is a cache hit. A strategy whose routes all fail stays
     uncached (never a default score) and is named in the job summary. A bad
-    LLM turn never fails the job — the plan is the primary deliverable."""
+    LLM turn never fails the job — the plan is the primary deliverable.
+    ``refresh`` (``put(refresh=True)``) re-asks for the job's own strategy
+    even when cached; the old ranking survives unless the new one scores."""
     ref = ctx.store.get_ref(kind="route", id=route_ref_id)
     meta = (ref.meta if ref is not None else None) or {}
     want: list[str] = []
@@ -573,16 +587,21 @@ def _steer_pending(
 
     cache = dict(meta.get("steer") or {})
     lines: list[str] = []
+    try:
+        redo = steer.normalise_strategy(param_strategy) if refresh else None
+    except ValueError:
+        redo = None
     for s in want:
         key = steer.steer_key(s, graph)
         entry = cache.get(key)
-        if entry is None:
+        if entry is None or s == redo:
             scores = steer.steer(s, graph)  # one routed call per candidate
             if not any(x.score is not None for x in scores):
                 err = scores[0].error if scores else "no candidates"
+                kept = "previous ranking kept" if entry else "left uncached"
                 lines.append(
                     f"steer '{s}': all {len(scores)} candidate(s) unscored "
-                    f"({err}) — left uncached, a re-run retries"
+                    f"({err}) — {kept}, a re-run retries"
                 )
                 continue
             entry = {
