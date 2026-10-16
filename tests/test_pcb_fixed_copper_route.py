@@ -122,6 +122,181 @@ def test_realize_a_via_bridges_two_coincident_pins():
     assert result.vias == ()
 
 
+def test_plane_fanout_skips_a_pin_the_source_via_already_drops_to_the_plane():
+    """gr489924: a plane-net pin whose AUTHORED fixed copper already reaches
+    the poured layer through the source's own via (taz15: every GND /
+    12V_POWER / PV+ pin of the EasyEDA-routed board) gets no second drop
+    via — the fan-out used to stack one on the source via (via_via_keepout,
+    net stripped) or, with that via in its way, fail the net as
+    plane_drop_blocked. The other pin, with no fixed copper, still drops."""
+    from precis.pcb.capabilities import capability_for
+
+    graph = {
+        "instances": [
+            {"refdes": "U0", "x": 0.0, "y": 0.0},
+            {"refdes": "U1", "x": 20.0, "y": 0.0},
+        ],
+        "nets": [
+            {
+                "name": "GND",
+                "net_class": "ground",
+                "domain": "electrical",
+                "members": [{"refdes": "U0", "pin": "1"}, {"refdes": "U1", "pin": "1"}],
+            }
+        ],
+    }
+    outline = [[-10.0, -10.0], [30.0, -10.0], [30.0, 10.0], [-10.0, 10.0]]
+    ir = from_graph(graph, stackup=DEFAULT_STACKUP, outline=outline)
+    ir.promote_plane(0, 1)  # In1.Cu, the GND plane layer
+    # The source's own escape: a stub off U0's pad into a through via.
+    fixed_copper = [
+        {
+            "ctype": "track",
+            "layer": "F.Cu",
+            "net": "GND",
+            "segments": [{"shape": "line", "start": [0.0, 0.0], "end": [1.5, 0.0]}],
+            "width_mm": 0.3,
+        },
+        {
+            "ctype": "via",
+            "layer": "F.Cu",
+            "net": "GND",
+            "x": 1.5,
+            "y": 0.0,
+            "dia_mm": 0.6,
+            "drill_mm": 0.3,
+            "span": ["F.Cu", "B.Cu"],
+        },
+    ]
+    from precis.pcb import session as pcb_session
+
+    ir.fixed_vias = pcb_session.fixed_vias_from_copper(fixed_copper)
+    config = RealizeConfig(router="maze", fab_caps=capability_for("4layer"))
+    result = realize(ir, config=config, fixed_copper=fixed_copper)
+    assert not result.unrouted, [r.message for r in result.unrouted_reasons]
+    drops = [v for v in result.vias if v.endpoint == "a"]
+    assert len(drops) == 1, "only the pin with no source via drops to the plane"
+    assert drops[0].x > 10.0, "the drop belongs to U1, never stacked on U0's via"
+
+
+def test_plane_fanout_keeps_the_drop_for_a_pin_the_source_reaches_only_partway():
+    """gr489924: a pin counts as served by the pour only when its fixed-copper
+    island reaches EVERY poured layer of its net. Here GND is poured on In1.Cu
+    and In2.Cu, and U0's source copper is a blind via that stops at In1.Cu, so
+    U0 keeps a drop via spanning down to In2.Cu, which is what ties the second
+    pour in. U1, with no fixed copper, drops as usual."""
+    from precis.pcb.capabilities import capability_for
+
+    graph = {
+        "instances": [
+            {"refdes": "U0", "x": 0.0, "y": 0.0},
+            {"refdes": "U1", "x": 20.0, "y": 0.0},
+        ],
+        "nets": [
+            {
+                "name": "GND",
+                "net_class": "ground",
+                "domain": "electrical",
+                "members": [{"refdes": "U0", "pin": "1"}, {"refdes": "U1", "pin": "1"}],
+            }
+        ],
+    }
+    outline = [[-10.0, -10.0], [30.0, -10.0], [30.0, 10.0], [-10.0, 10.0]]
+    ir = from_graph(graph, stackup=DEFAULT_STACKUP, outline=outline)
+    ir.promote_plane(0, 1)  # In1.Cu
+    ir.promote_plane(0, 2)  # In2.Cu
+    fixed_copper = [
+        {
+            "ctype": "track",
+            "layer": "F.Cu",
+            "net": "GND",
+            "segments": [{"shape": "line", "start": [0.0, 0.0], "end": [1.5, 0.0]}],
+            "width_mm": 0.3,
+        },
+        {
+            "ctype": "via",
+            "layer": "F.Cu",
+            "net": "GND",
+            "x": 1.5,
+            "y": 0.0,
+            "dia_mm": 0.6,
+            "drill_mm": 0.3,
+            "span": ["F.Cu", "In1.Cu"],
+        },
+    ]
+    from precis.pcb import session as pcb_session
+
+    ir.fixed_vias = pcb_session.fixed_vias_from_copper(fixed_copper)
+    config = RealizeConfig(router="maze", fab_caps=capability_for("4layer"))
+    result = realize(ir, config=config, fixed_copper=fixed_copper)
+    assert not result.unrouted, [r.message for r in result.unrouted_reasons]
+    drops = [v for v in result.vias if v.endpoint == "a"]
+    assert len(drops) == 2, "a partway source via does not serve the pin"
+    u0_drops = [v for v in drops if v.x < 10.0]
+    assert len(u0_drops) == 1
+    assert u0_drops[0].layer_hi == 2, "U0's drop reaches the In2.Cu pour"
+
+
+def test_plane_fanout_keeps_the_stub_for_a_pad_on_its_own_pour_layer(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """gr489909: GND poured on F.Cu only, both GND pads on F.Cu. The pour is
+    cut around foreign copper, so the fan-out cannot know it reaches a land:
+    the fab-render board, seed 3, lost a GND pad walled off by foreign-pad
+    halos when 2bf9dc75e skipped every such stub. The fan-out offers a stub
+    and drop for each pad with a legal site; only after pouring does
+    :func:`_prune_redundant_drop_vias` drop the ones whose pad the FILLED
+    pour contains (here both, on an open board)."""
+    from precis.pcb import realize as realize_mod
+    from precis.pcb.capabilities import capability_for
+
+    graph = {
+        "instances": [
+            {"refdes": "U0", "x": 0.0, "y": 0.0},
+            {"refdes": "U1", "x": 20.0, "y": 0.0},
+            {"refdes": "R0", "x": 0.0, "y": 1.2},
+            {"refdes": "R1", "x": 20.0, "y": 6.0},
+        ],
+        "nets": [
+            {
+                "name": "GND",
+                "net_class": "ground",
+                "domain": "electrical",
+                "members": [{"refdes": "U0", "pin": "1"}, {"refdes": "U1", "pin": "1"}],
+            },
+            {
+                "name": "SIG",
+                "net_class": "signal",
+                "domain": "electrical",
+                "members": [{"refdes": "R0", "pin": "1"}, {"refdes": "R1", "pin": "1"}],
+            },
+        ],
+    }
+    outline = [[-10.0, -10.0], [30.0, -10.0], [30.0, 10.0], [-10.0, 10.0]]
+    ir = from_graph(graph, stackup=DEFAULT_STACKUP, outline=outline)
+    ir.promote_plane(0, 0)  # F.Cu, the pads' own layer
+    config = RealizeConfig(router="maze", fab_caps=capability_for("4layer"))
+    offered: list[Any] = []
+    fanout = realize_mod._plane_fanout
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        out = fanout(*args, **kwargs)
+        offered.append(out)
+        return out
+
+    monkeypatch.setattr(realize_mod, "_plane_fanout", spy)
+    result = realize(ir, config=config)
+    assert not result.unrouted, [r.message for r in result.unrouted_reasons]
+    assert offered
+    tracks, vias, failed = offered[-1]
+    assert not failed
+    assert len([t for t in tracks if t.net_id == 0]) == 2, "each pad gets a stub"
+    assert len([v for v in vias if v.net_id == 0]) == 2, "and a drop via"
+    assert not [t for t in result.tracks if t.is_dogbone], (
+        "the pour contains both lands, so the prune removes both stubs"
+    )
+
+
 def test_realize_claims_fixed_copper_as_an_obstacle_for_a_foreign_net():
     """(b) A fixed track on net A, spanning the FULL height of a narrow
     board on both signal layers, sits directly across the only corridor

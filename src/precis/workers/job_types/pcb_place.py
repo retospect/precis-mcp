@@ -331,7 +331,14 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
                 ],
                 layers=layers,
             )
-            return pcb_session.placement_drc_report(placement_findings)
+            return pcb_session.placement_drc_report(
+                placement_findings,
+                fixed_refdes=[
+                    str(ir.instance_refdes[i])
+                    for i in range(ir.n_instances)
+                    if bool(ir.inst_fixed_xy[i])
+                ],
+            )
         except Exception:
             log.exception("pcb_place: pre-route DRC gate raised; placement kept")
             return None, None
