@@ -509,6 +509,91 @@ def test_self_gating_falls_back_when_capability_unadvertised(store: Store) -> No
     assert "reserved" not in rows[0][2]  # nothing reserved (self-gated off)
 
 
+# ── gr491098: dark-window defer for unadvertised non-llm: requires ────────
+#
+# The fall-through above exists for the first-populate window — but it also
+# fired mid-outage, when a host's heartbeat went stale and its whole slot
+# map dropped out of ``advertised``. On castor (2026-10-15) a post-restart
+# claim burst co-claimed five ``gpu:1`` autocatpath seeds in 25 s with zero
+# reservations — the GPU gate silently vanished exactly when the box was
+# being piled onto. A stale-but-recent heartbeat now defers the claim
+# instead; a fossil or never-heartbeated host still falls through.
+
+
+def test_requires_claim_defers_while_reservation_host_recently_dark(
+    store: Store,
+) -> None:
+    """Heartbeat stale-but-recent (mid-outage) → the requires-bearing claim
+    is skipped, not claimed unreserved; it claims + reserves normally once
+    the host re-advertises."""
+    _advertise(store, "h_dark", {"gpu": 1}, age_minutes=30)  # dark < 4h
+    jid = _queue_job(store, executor="ex_dark", requires={"gpu": 1})
+    rows = _claim(store, "ex_dark", "h_dark")
+    assert rows == []  # deferred — stays queued, no reservation stamped
+    with store.pool.connection() as conn:
+        meta_row = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s", (jid,)
+        ).fetchone()
+    assert meta_row is not None
+    assert "reserved" not in meta_row[0]
+    assert "requires_dropped" not in meta_row[0]  # never ran unreserved
+
+    # Host comes back → the slot advertises → normal gated claim resumes.
+    _advertise(store, "h_dark", {"gpu": 1}, age_minutes=0.5)
+    rows2 = _claim(store, "ex_dark", "h_dark")
+    assert [r[0] for r in rows2] == [jid]
+    assert rows2[0][2]["reserved"] == {"host": "h_dark", "slots": {"gpu": 1}}
+    assert _free(store, "h_dark", "gpu") == 0
+
+
+def test_requires_claim_falls_through_on_fossil_dark_host(store: Store) -> None:
+    """Heartbeat stale past the defer ceiling → fossil/down host: the
+    unadvertised fallback fires as before (no stall), and the dropped gate
+    is recorded on ``meta.requires_dropped`` so a post-mortem can tell this
+    run went unreserved (``meta.reserved`` is popped at terminalization)."""
+    _advertise(store, "fossil_d", {"gpu": 1}, age_minutes=60 * 24 * 3)
+    jid = _queue_job(store, executor="ex_fossil_d", requires={"gpu": 1})
+    rows = _claim(store, "ex_fossil_d", "fossil_d")
+    assert [r[0] for r in rows] == [jid]
+    assert "reserved" not in rows[0][2]
+    assert rows[0][2]["requires_dropped"] == ["gpu"]
+
+
+def test_requires_dropped_stamped_on_never_advertised_host(store: Store) -> None:
+    """No heartbeat row at all (never probed) → falls through as before,
+    still stamping ``requires_dropped`` for the post-mortem distinction."""
+    jid = _queue_job(store, executor="ex_never", requires={"gpu": 1})
+    rows = _claim(store, "ex_never", "never_heartbeat_host")
+    assert [r[0] for r in rows] == [jid]
+    assert "reserved" not in rows[0][2]
+    assert rows[0][2]["requires_dropped"] == ["gpu"]
+
+
+def test_requires_dropped_not_stamped_when_fully_reserved(store: Store) -> None:
+    """A fully-reserved claim stamps no ``requires_dropped`` — the key's
+    presence must always mean the run lacked its declared gate."""
+    _advertise(store, "h_full", {"gpu": 1})
+    jid = _queue_job(store, executor="ex_full", requires={"gpu": 1})
+    rows = _claim(store, "ex_full", "h_full")
+    assert [r[0] for r in rows] == [jid]
+    assert "requires_dropped" not in rows[0][2]
+
+
+def test_llm_requirement_unadvertised_does_not_stamp_requires_dropped(
+    store: Store,
+) -> None:
+    """``llm:`` requirements are affinity, not a counted slot gate — past
+    their own grace they claim host-agnostic by design; that drop must not
+    read as "ran unreserved" to ``_seed_timeout_held``-style consumers."""
+    from precis.workers.executors._common import LLM_AFFINITY_GRACE_MIN
+
+    jid = _queue_job(store, executor="ex_llm_drop", requires={"llm:qwen-x": 1})
+    _age_job(store, jid, LLM_AFFINITY_GRACE_MIN + 1)
+    rows = _claim(store, "ex_llm_drop", "host_llm_drop")
+    assert [r[0] for r in rows] == [jid]
+    assert "requires_dropped" not in rows[0][2]
+
+
 # ── llm:-requirement is a TIME-BOUNDED claim affinity (unlike the gpu
 # soft-drop above) ──────────────────────────────────────────────────────
 #

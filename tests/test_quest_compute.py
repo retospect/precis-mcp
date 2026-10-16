@@ -1651,6 +1651,56 @@ class TestHarvest:
         assert meta.get("quest_seed_infra_retries") == 1
         assert not any("timed out" in n for n in step.notes)
 
+    def test_timeout_seed_that_ran_unreserved_retries_at_same_wall(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr491098: a deadline kill on a job that claimed with its
+        ``requires`` dropped (``meta.requires_dropped`` — the slot gate
+        vanished in a heartbeat-dark window and co-claimed siblings ran it
+        contended) says nothing about the seed's solo cost, so the same-wall
+        hold doesn't apply — it re-dispatches like an infra retry."""
+        qid = self._reaction_quest(store)
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert sid is not None
+        self._stuck_seed(
+            store,
+            sid,
+            job_meta={
+                "failure_class": "timeout",
+                "requires_dropped": ["gpu"],
+                "params": {"resources": {"wall_seconds": 5400}},
+            },
+        )
+        calls: list[int] = []
+        gripes: list[dict[str, Any]] = []
+
+        def _fake_dispatch(_s: Any, structure_ref_id: int, _c: Any, **_kw: Any) -> str:
+            calls.append(structure_ref_id)
+            return "autocatpath[ml]"
+
+        class _FakeGripeHandler:
+            def __init__(self, *, hub: Any) -> None:
+                pass
+
+            def put(self, *, text: str, tags: list[str] | None = None) -> None:
+                gripes.append({"text": text})
+
+        monkeypatch.setattr(compute_mod, "dispatch_autocatpath", _fake_dispatch)
+        monkeypatch.setattr("precis.handlers.gripe.GripeHandler", _FakeGripeHandler)
+        monkeypatch.delenv(compute_mod._AUTOCATPATH_WALL_SECONDS_ENV, raising=False)
+        monkeypatch.delenv(
+            compute_mod._AUTOCATPATH_VERIFY_WALL_SECONDS_ENV, raising=False
+        )
+        step = compute_mod.harvest_measures(store, qid, hub=object())
+        assert calls == [sid]
+        assert gripes == []
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta.get("quest_seed_infra_retries") == 1
+        assert "quest_seed_timeout_noted" not in meta
+        assert not any("timed out" in n for n in step.notes)
+
     def test_non_timeout_failed_seed_still_retries_with_pinned_wall(
         self, store: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -125,6 +125,17 @@ def claim_age_step_s() -> float:
 #: critical alert would ever fire on it.
 LLM_AFFINITY_GRACE_MIN = 10
 
+#: Staleness ceiling (minutes) for the dark-window claim defer: a
+#: requires-bearing job whose non-``llm:`` resources aren't advertised on
+#: the reservation host defers instead of claiming unreserved while that
+#: host's heartbeat is stale-but-recent (gr491098: a post-restart claim
+#: burst on castor dropped every ``gpu:1`` gate — heartbeat dark → the slot
+#: map read empty — and co-claimed five cpuset-pinned NEB seeds onto one
+#: GPU box, all deadline-killed). Past this the host reads as fossil and
+#: the unadvertised-requires fallback fires as before, so a permanently
+#: dark advertisement can't strand the queue.
+_DARK_CLAIM_DEFER_MAX_MIN = 240
+
 #: Candidate over-fetch factor for the scarcity re-rank (6d-deferred, §5.3).
 #: The SQL fetches ``limit × this`` rows in prio/age order, then the scarcity
 #: term re-ranks in Python and the top ``limit`` are reserved — so a rare-
@@ -333,6 +344,26 @@ def _advertised_by_host(conn: Connection) -> dict[str, set[str]]:
     for host, resource in rows:
         out.setdefault(str(host), set()).add(str(resource))
     return out
+
+
+def _host_recently_dark(conn: Connection, host: str) -> bool:
+    """True when ``host`` has a ``host_heartbeat`` row that is stale but not
+    ancient — i.e. it beat recently enough that its slot map should come
+    back with the next healthy pass.
+
+    Both other shapes deliberately read False: no row at all (the host has
+    never heartbeated — its first probe hasn't populated the table, the
+    exact window the unadvertised-requires fallback exists for) and a row
+    stale past :data:`_DARK_CLAIM_DEFER_MAX_MIN` (a fossil/permanently-down
+    advertisement — the fallback must still fire or a pinned queue strands
+    forever)."""
+    row = conn.execute(
+        "SELECT ts FROM host_heartbeat WHERE host = %s", (host,)
+    ).fetchone()
+    if row is None or row[0] is None:
+        return False
+    age_min = (datetime.now(UTC) - row[0]).total_seconds() / 60.0
+    return HOST_DARK_SILENCE_MIN < age_min <= _DARK_CLAIM_DEFER_MAX_MIN
 
 
 def _reclaim_reason(
@@ -920,6 +951,29 @@ def claim_executor_jobs(
         reservable = {
             res: units for res, units in requires.items() if res in advertised_here
         }
+        dropped = sorted(
+            res
+            for res in requires
+            if not res.startswith("llm:") and res not in advertised_here
+        )
+        if dropped and _host_recently_dark(conn, res_host):
+            # The reservation host's heartbeat is stale-but-recent — its
+            # slot map dropped out of ``advertised`` mid-outage, so claiming
+            # now would run the job UNRESERVED into a co-claimed pile-up
+            # (gr491098: five gpu:1 autocatpath seeds claimed on a dark
+            # castor in 25s, all pinned to the same cpuset; the 5400s-wall
+            # pair was deadline-killed while their pollux twins finished in
+            # ~72min). Defer: the lock frees at commit and the job re-gates
+            # once the heartbeat/probe repopulates. ``_host_recently_dark``'s
+            # staleness ceiling keeps a permanently dark host fall-through.
+            log.info(
+                "claim: defer job %s — reservation host %s heartbeat dark, "
+                "would drop requires %s",
+                ref_id,
+                res_host,
+                dropped,
+            )
+            return None
         if reservable and not reserve_resource_slots(conn, res_host, reservable):
             # A live slot is full → drop it; the lock frees at commit and
             # the job waits for capacity on that host.
@@ -927,11 +981,25 @@ def claim_executor_jobs(
         if reservable:
             reserved = {"host": res_host, "slots": reservable}
             conn.execute(
-                "UPDATE refs SET meta = meta || "
+                "UPDATE refs SET meta = (meta - 'requires_dropped') || "
                 "jsonb_build_object('reserved', %s::jsonb) WHERE ref_id = %s",
                 (json.dumps(reserved), ref_id),
             )
             meta["reserved"] = reserved
+            meta.pop("requires_dropped", None)  # stale stamp from an earlier
+            # unreserved claim — this run holds its declared gate
+        if dropped:
+            # Durable record that this run went unreserved — ``meta.reserved``
+            # is popped at terminalization, so without the stamp a post-mortem
+            # can't tell "ran under its slot gate" from "the gate silently
+            # dropped" (the gr491098 timeout vs. a genuinely oversized seed).
+            conn.execute(
+                "UPDATE refs SET meta = meta || "
+                "jsonb_build_object('requires_dropped', %s::jsonb) "
+                "WHERE ref_id = %s",
+                (json.dumps(dropped), ref_id),
+            )
+            meta["requires_dropped"] = dropped
         _stamp_lease_identity(ref_id, meta, status_value)
         return (ref_id, title, meta)
 

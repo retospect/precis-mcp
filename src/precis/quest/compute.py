@@ -2933,6 +2933,15 @@ def _seed_timeout_held(
     """
     if seed_meta.get("failure_class") != "timeout":
         return False
+    if seed_meta.get("requires_dropped"):
+        # The run claimed with its ``requires`` dropped (the reservation
+        # host's heartbeat was dark past the defer window, or the slot map
+        # never existed — ``_common.claim_executor_jobs`` stamps the list
+        # before running it unreserved). The deadline then measured a
+        # co-tenant-contended run, not the seed's solo cost, so the hold
+        # doesn't apply: retry at the same wall. Still bounded — the retry
+        # path bumps ``_seed_infra_retry_count`` and gripes on recurrence.
+        return False
     params = seed_meta.get("params")
     res = params.get("resources") if isinstance(params, dict) else None
     ran = res.get("wall_seconds") if isinstance(res, dict) else None
