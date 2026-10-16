@@ -37,7 +37,14 @@ def _board(store: Store, slug: str = "rv-board") -> int:
                 "label": "MCU",
                 "pins": [{"name": "1"}, {"name": "2"}],
             },
-            {"refdes": "R1", "label": "R", "pins": [{"name": "1"}, {"name": "2"}]},
+            # A generic resistor: value + package given, so a pass on it
+            # needs no datasheet facts (generic_passive).
+            {
+                "refdes": "R1",
+                "label": "10k",
+                "footprint": "0402",
+                "pins": [{"name": "1"}, {"name": "2"}],
+            },
         ],
         nets=[{"name": "VCC"}, {"name": "GND"}],
         connections=[
@@ -112,7 +119,7 @@ _PASS = {
     "verdict": "pass",
     "reason": "decoupled",
     "quote": "VCC: U1.1 R1.1",
-    "anchors": ["U1", "NOPE"],
+    "anchors": ["R1", "NOPE"],
     "inputs": ["margin:fixed-derating", "bogus:input"],
 }
 
@@ -169,7 +176,7 @@ def test_rerun_on_unchanged_design_makes_no_model_call(
     assert v["origin"] == "machine"
     assert v["checked_by"] == review.REVIEWER
     # Unknown anchors are dropped; only offered inputs are recorded.
-    assert list(v["anchors"]) == ["U1"]
+    assert list(v["anchors"]) == ["R1"]
     assert v["inputs"] == {"margin:fixed-derating": precis.pcb.PASSIVE_MARGIN_REVISION}
     assert v["evidence"]["quote"] == "VCC: U1.1 R1.1"
 
@@ -273,6 +280,75 @@ def test_net_anchor_consumes_the_parts_on_that_net() -> None:
         "part:C2",
         "part:C3",
     }
+
+
+@pytest.mark.parametrize("anchors", [["U1"], ["VCC"], []])
+def test_factless_ic_cannot_pass(
+    store: Store, board: int, monkeypatch: pytest.MonkeyPatch, anchors: list[str]
+) -> None:
+    # U1 has no part number, so no datasheet facts: a pass naming it, a
+    # net it sits on, or the whole board is refused and becomes a
+    # not-checkable note, never a ledger pass.
+    item = "current-budget-per-rail"
+    _install(monkeypatch, {**_PASS, "anchors": anchors})
+    summary, _ = _run(store, board, item=item)
+    assert "pass refused" in summary[0]
+    q = review.queue(store, board, item=item)
+    assert [st.status for st in q.todo] == ["not checked"]
+    assert q.checklist is not None
+    notes = store.checklist_notes_list(
+        target_ref_id=board, checklist_id=q.checklist["id"], item_name=item
+    )
+    assert [n["body"] for n in notes] == [
+        "not checkable (pass refused: no datasheet facts for U1 (no part number))"
+    ]
+
+
+def test_generic_resistor_with_value_and_package_can_pass(
+    store: Store, board: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    item = "current-budget-per-rail"
+    _install(monkeypatch, {**_PASS, "anchors": ["R1"]})
+    _run(store, board, item=item)
+    st = review.queue(store, board, item=item).statuses
+    assert next(s for s in st if s.name == item).status == "pass"
+
+
+@pytest.mark.parametrize(
+    ("inst", "generic"),
+    [
+        ({"refdes": "R1", "label": "10k", "footprint": "0402"}, True),
+        ({"refdes": "L2", "label": "4.7uH", "footprint": "0805"}, True),
+        (
+            {
+                "refdes": "C3",
+                "label": "C",
+                "part_description": "100nF 16V X7R 0402 MLCC Capacitor",
+            },
+            True,
+        ),
+        ({"refdes": "R1", "label": "R", "footprint": "0402"}, False),  # no value
+        ({"refdes": "R1", "label": "10k"}, False),  # no package
+        ({"refdes": "LED1", "label": "10", "footprint": "0603"}, False),
+        ({"refdes": "U1", "label": "10k", "footprint": "SOT-23"}, False),
+    ],
+)
+def test_generic_passive(inst: dict[str, Any], generic: bool) -> None:
+    assert review.generic_passive(inst) is generic
+
+
+def test_factless_parts_reads_facts_revisions() -> None:
+    graph = {
+        "instances": [
+            {"refdes": "U1", "part_lcsc": "C1"},
+            {"refdes": "U2", "part_lcsc": "C2"},
+            {"refdes": "R1", "label": "10k", "footprint": "0402"},
+        ],
+        "nets": [{"name": "VCC", "members": [{"refdes": "U1", "pin": "1"}]}],
+    }
+    revisions = {"part:C1": 3, "part:C2": 0}
+    assert review.factless_parts(["VCC", "R1"], graph, revisions) == []
+    assert review.factless_parts([], graph, revisions) == ["U2 (C2)"]
 
 
 def test_failed_answers_stay_queued_and_fail_the_run(

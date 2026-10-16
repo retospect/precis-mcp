@@ -403,6 +403,20 @@ questions:
 
 No open questions remain; the item can go to `/ready`.
 
+Rulings by Reto, 2026-10-16 ~10:2xZ (morning-queue entry 6, relayed by
+the coordinator), on slice 7's follow-ups:
+
+- **[decided]** (1a) "not checkable" becomes a real `checklist_verdicts`
+  value via a migration, rendered distinctly in the views — "so we can
+  see". Replaces the keyed `question` note slice 7 wrote.
+- **[decided]** (2a) "Never pass without part facts" is enforced in code:
+  `precis.pcb.review.record` turns a `pass` that reads a part with no
+  datasheet facts into `not checkable`. Exemption kept: a generic R/C/L
+  whose value and package are both given (`generic_passive`), where
+  value plus package is the whole check.
+- **[decided]** (3a) The check-surface run moves into `precis.pcb`, so
+  the `pcb_review` job runs it rather than the `op='review'` caller.
+
 Ready-gate findings, 2026-10-13:
 
 - **blocker** — Bundles ~4 independently shippable deliverables (13 scope items, 11 slices, 2 deps still draft); split: A = slices 1-3 (import, op='pins', passive_rating; no deps), B = slice 4 (verdict inputs/origin/forget; checklist substrate), C = slices 5-7,10-11 (needs datasheet-facts-mesh, blocked-by it), D = slices 8-9 (selection/design; needs C + digikey-component-import for lifecycle). A whole-item `blocked-by` would wrongly gate A.

@@ -20,7 +20,11 @@ none), and the nets. The model answers strict JSON:
   the revisions it consumed: every anchored part's datasheet-facts rev
   (``part:<C#>``) plus whatever the model declares it read from the
   offered input list (``margin:fixed-derating``). A later bump of any of
-  them marks exactly this verdict stale.
+  them marks exactly this verdict stale. A ``pass`` that reads a part
+  with no datasheet facts is refused in code and written as
+  ``not_checkable`` instead (:func:`factless_parts`; Reto 2026-10-16:
+  never pass without part facts), except a :func:`generic_passive` R/C/L
+  whose value and package are given.
 * ``not_checkable`` → no verdict (a pass by omission is the thing this
   pass exists to prevent, and the ledger has no "not checkable" value):
   a ``question`` note on the item's thread, ``not checkable (<why>)``.
@@ -41,12 +45,13 @@ import hashlib
 import json
 import re
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from precis import pcb as _pcb_pkg
 from precis.checklist.status import ItemStatus, bridge_for, compute_statuses
 from precis.pcb import datasheet_facts as ds_facts
+from precis.pcb.catalog import parse_passive_description
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -243,7 +248,9 @@ Rules:
 - "n/a" only when the item cannot apply to this board (say why).
 - "not_checkable" when the evidence needed is missing — e.g. a part the
   item depends on has "no datasheet facts" — name what is missing. Never
-  pass for lack of evidence.
+  pass for lack of evidence: a pass that rests on a part with no
+  datasheet facts is refused (a generic resistor, capacitor or inductor
+  whose value and package are given needs none).
 - "anchors": the refdes and net names the verdict is about (exactly as
   written below); [] for the whole board.
 - "inputs": which of {offered} you relied on ([] if none).
@@ -380,6 +387,14 @@ def record(
         for a in answer.anchors
         if bridge is not None and bridge.anchor_exists(store, ref_id, a)
     ]
+    if answer.verdict == "pass":
+        factless = factless_parts(anchors, graph, revisions)
+        if factless:
+            answer = replace(
+                answer,
+                verdict="not_checkable",
+                reason=f"pass refused: no datasheet facts for {', '.join(factless)}",
+            )
     if answer.verdict == "not_checkable":
         store.checklist_note_insert(
             target_ref_id=ref_id,
@@ -425,19 +440,11 @@ def _consumed(
     verdict every part's — plus each offered input the model declared it
     read."""
     instances = {i["refdes"]: i for i in graph.get("instances") or []}
-    if anchors:
-        nets = {n["name"]: n for n in graph.get("nets") or []}
-        refdes = {a for a in anchors if a in instances}
-        for a in anchors:
-            for m in (nets.get(a) or {}).get("members") or []:
-                refdes.add(str(m["refdes"]))
-        lcscs = {
-            str(instances[r]["part_lcsc"]).strip().upper()
-            for r in refdes
-            if r in instances and instances[r].get("part_lcsc")
-        }
-    else:
-        lcscs = _lcscs(graph)
+    lcscs = {
+        str(instances[r]["part_lcsc"]).strip().upper()
+        for r in _consumed_refdes(anchors, graph)
+        if instances[r].get("part_lcsc")
+    }
     out = {
         part_input(c): revisions[part_input(c)]
         for c in sorted(lcscs)
@@ -446,6 +453,75 @@ def _consumed(
     for name in answer.inputs:
         if name == MARGIN_INPUT:
             out[name] = revisions[MARGIN_INPUT]
+    return out
+
+
+def _consumed_refdes(anchors: Sequence[str], graph: dict[str, Any]) -> set[str]:
+    """The refdes a verdict reads: each anchored refdes plus every part on
+    an anchored net; a whole-board verdict (no anchors) reads them all."""
+    instances = {str(i["refdes"]) for i in graph.get("instances") or []}
+    if not anchors:
+        return instances
+    nets = {n["name"]: n for n in graph.get("nets") or []}
+    refdes = {a for a in anchors if a in instances}
+    for a in anchors:
+        for m in (nets.get(a) or {}).get("members") or []:
+            if str(m["refdes"]) in instances:
+                refdes.add(str(m["refdes"]))
+    return refdes
+
+
+#: A generic two-terminal passive's refdes (``R12``, ``C3``, ``L1``,
+#: ``R4A``); ``LED1`` and ``CN1`` do not match.
+_PASSIVE_REFDES_RE = re.compile(r"^[RCL]\d+[A-Z]?$")
+#: A value written as the label: ``10k``, ``4k7``, ``100nF``, ``4.7uH``, ``0R``.
+_VALUE_LABEL_RE = re.compile(
+    r"^\s*\d+(?:[.,]\d+)?\s*[pnuµμmkKMGR]?\d*\s*(?:F|H|Ω|ohms?)?\s*$"
+)
+#: An imperial chip package size in a catalog description.
+_PACKAGE_RE = re.compile(r"\b(?:01005|0201|0402|0603|0805|1206|1210|1812|2010|2512)\b")
+
+
+def generic_passive(inst: dict[str, Any]) -> bool:
+    """A generic R/C/L with its value and package both given: value plus
+    package is the whole check, so a pass needs no datasheet facts for it
+    (Reto's ruling 2026-10-16). The value comes from the catalog
+    description's parse or the label, the package from the footprint or a
+    size code in the description. Either one missing → facts required."""
+    if not _PASSIVE_REFDES_RE.match(str(inst.get("refdes") or "")):
+        return False
+    raw = inst.get("part_description")
+    desc = raw if isinstance(raw, str) else ""
+    spec = parse_passive_description(desc) or {}
+    has_value = (
+        spec.get("value_f") is not None
+        or spec.get("ohm") is not None
+        or bool(_VALUE_LABEL_RE.match(str(inst.get("label") or "")))
+    )
+    has_package = bool(str(inst.get("footprint") or "").strip()) or bool(
+        _PACKAGE_RE.search(desc)
+    )
+    return has_value and has_package
+
+
+def factless_parts(
+    anchors: Sequence[str], graph: dict[str, Any], revisions: dict[str, Any]
+) -> list[str]:
+    """The parts a verdict reads (:func:`_consumed_refdes`) that have no
+    datasheet facts (no part number, an unknown part, or facts rev 0) and
+    are not :func:`generic_passive`. :func:`record` refuses a pass that
+    rests on any of them (Reto's ruling 2026-10-16)."""
+    instances = {str(i["refdes"]): i for i in graph.get("instances") or []}
+    out: list[str] = []
+    for r in sorted(_consumed_refdes(anchors, graph)):
+        inst = instances[r]
+        if generic_passive(inst):
+            continue
+        lcsc = str(inst.get("part_lcsc") or "").strip().upper()
+        if not lcsc:
+            out.append(f"{r} (no part number)")
+        elif not revisions.get(part_input(lcsc)):
+            out.append(f"{r} ({lcsc})")
     return out
 
 
@@ -459,6 +535,8 @@ __all__ = [
     "Queue",
     "ask",
     "evidence",
+    "factless_parts",
+    "generic_passive",
     "has_note",
     "input_revisions",
     "not_checkable_key",
