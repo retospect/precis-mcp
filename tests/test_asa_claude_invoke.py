@@ -535,6 +535,82 @@ def test_model_local_swallows_error_with_text(
     assert result.error is None
 
 
+_CONTROL_STREAM = "".join(
+    '{"type":"control_response","response":{"subtype":"success",'
+    f'"request_id":"mcp-status-{n}","response":{{"mcpServers":'
+    '[{"name":"precis","status":"pending"}]}}}\n'
+    for n in range(1, 8)
+)
+
+
+def test_overlapping_turns_never_reply_with_control_plane_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr490201: a second message sent while the first is in flight.
+
+    The second turn's claude rung fails the MCP readiness gate (``precis``
+    still ``pending``); its stdout is the gate's ``control_response`` polls
+    only. The real router fold (``_error_result``) and the chain lane must
+    surface that as an error, never as the reply text.
+    """
+    import threading
+
+    from precis.utils.claude_agent import ClaudeAgentError
+    from precis.utils.llm.router import Tier, _error_result
+
+    second_entered = threading.Event()
+    calls: list[str] = []
+
+    def fake_dispatch(req: Any) -> Any:
+        calls.append(req.prompt)
+        if req.prompt == "one":
+            # Hold the first turn open until the second has started.
+            assert second_entered.wait(timeout=10), "turns did not overlap"
+            return _llm_result(text="first answer")
+        second_entered.set()
+        exc = ClaudeAgentError(
+            "precis MCP not connected after 30s",
+            stdout=_CONTROL_STREAM,
+            mcp_not_ready=True,
+            mcp_status={"precis": "pending"},
+        )
+        return _error_result(exc, model="claude-sonnet", tier=Tier.BIG)
+
+    _chain_stubs(monkeypatch, None)
+    monkeypatch.setattr("asa_bot.claude_invoke.route", fake_dispatch)
+    cfg = _cfg(command=["claude", "-p", "--model", "local"])
+
+    async def two_overlapping() -> list[ClaudeResult]:
+        first = asyncio.create_task(invoke(cfg, "sys", "one", conv_slug="conv-o"))
+        await asyncio.sleep(0.05)
+        second = asyncio.create_task(invoke(cfg, "sys", "two", conv_slug="conv-o"))
+        return list(await asyncio.gather(first, second))
+
+    first, second = asyncio.run(two_overlapping())
+    assert sorted(calls) == ["one", "two"]
+    assert first.text == "first answer"
+    for result in (first, second):
+        assert "control_response" not in result.text
+        assert "mcp-status" not in result.text
+    assert second.text == ""
+    assert second.error is not None
+    assert "MCP not connected" in second.error
+
+
+def test_error_result_drops_preflight_stdout() -> None:
+    """A gate refusal or missing CLI ran no model turn: its stdout is not
+    answer text. Exhaustion keeps its partial stdout."""
+    from precis.utils.claude_agent import ClaudeAgentError
+    from precis.utils.llm.router import Tier, _error_result
+
+    gate = ClaudeAgentError("gate", stdout=_CONTROL_STREAM, mcp_not_ready=True)
+    assert _error_result(gate, model="m", tier=Tier.BIG).text == ""
+    missing = ClaudeAgentError("no cli", stdout="x", binary_missing=True)
+    assert _error_result(missing, model="m", tier=Tier.BIG).text == ""
+    exhausted = ClaudeAgentError("max turns", stdout="partial", returncode=1)
+    assert _error_result(exhausted, model="m", tier=Tier.BIG).text == "partial"
+
+
 def test_model_local_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     """Same never-raise contract as the streaming lane — bot.py has no
     fallback reply for a raised invoke()."""

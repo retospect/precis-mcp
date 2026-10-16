@@ -3687,7 +3687,9 @@ def _error_result(exc: ClaudeProcessError, *, model: str, tier: Tier) -> LlmResu
 
     Surfaces any partial stdout the wrapper captured as ``text`` so a
     caller keeps a recoverable-exhaustion answer while still seeing the
-    ``error``.
+    ``error``. A pre-flight refusal (MCP gate not ready, CLI missing) ran no
+    model turn, so its stdout is control-plane traffic only (the gate's
+    ``control_response`` polls) and is never surfaced as ``text`` (gr490201).
 
     A signal-terminated child (returncode ≥ 128 = 128 + signum) is flagged
     ``interrupted``: the process was killed by a signal (worker bounce / jetsam),
@@ -3695,8 +3697,11 @@ def _error_result(exc: ClaudeProcessError, *, model: str, tier: Tier) -> LlmResu
     dispatch failure (see :attr:`LlmResult.interrupted`).
     """
     rc = getattr(exc, "returncode", None)
+    preflight = getattr(exc, "mcp_not_ready", False) or getattr(
+        exc, "binary_missing", False
+    )
     result = LlmResult(
-        text=getattr(exc, "stdout", "") or "",
+        text="" if preflight else (getattr(exc, "stdout", "") or ""),
         cost_usd=None,
         turns_used=None,
         model=model,

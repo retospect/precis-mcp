@@ -641,7 +641,10 @@ async def _invoke_via_chain(
         result.error = "internal error dispatching to the LLM router"
         return result
 
-    result.text = llm_result.text or ""
+    # A pre-flight refusal (MCP gate not ready, CLI missing) ran no model
+    # turn: any text it carries is not an answer (gr490201).
+    preflight = llm_result.mcp_not_ready or llm_result.cli_unavailable
+    result.text = "" if preflight else (llm_result.text or "")
     result.paused = llm_result.paused
     result.reason_class = llm_result.reason_class
     result.stop_reason = llm_result.stop_reason
