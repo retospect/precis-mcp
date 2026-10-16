@@ -50,7 +50,10 @@
         <div>
           <dt class="text-xs font-semibold uppercase text-slate-400">DRC / ERC</dt>
           <dd>
-            {% if b.drc and b.drc.has_run %}
+            {% if b.drc and b.drc.has_run and b.drc.stale %}
+            <span class="text-amber-700 font-medium">stale, re-check</span>
+            <div class="text-xs text-slate-500">the board changed since the last recorded check</div>
+            {% elif b.drc and b.drc.has_run %}
             {% set d = b.drc %}
             DRC <span class="{% if d.drc_errors %}text-rose-700 font-medium{% endif %}">{{ d.drc_errors }} error{{ '' if d.drc_errors == 1 else 's' }}</span>, {{ d.drc_warns }} warn ·
             ERC <span class="{% if d.erc_errors %}text-rose-700 font-medium{% endif %}">{{ d.erc_errors }} error{{ '' if d.erc_errors == 1 else 's' }}</span>, {{ d.erc_warns }} warn

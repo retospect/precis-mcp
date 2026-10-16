@@ -282,6 +282,15 @@ def _machinery(
                 "answers as unchecked, not clean"
             )
     run_id, rows = store.pcb_drc_findings_latest(ref_id)
+    if store.pcb_drc_run_stale(ref_id, run_id):
+        # gr492096: the board changed since that run — quoting it would
+        # answer about a design that no longer exists.
+        notes.append(
+            f"the last full DRC run ({(run_id or '?')[:12]}) is stale, "
+            "re-check: the board changed since it was recorded, so its "
+            "findings are not quoted"
+        )
+        rows = []
     if rows:
         run_tag = (run_id or "?")[:12]
         for r in rows:

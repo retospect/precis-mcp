@@ -284,6 +284,14 @@ stays as a preset filter for continuity.
   runs the check before queuing its job). There is no post-change check
   job yet; if one is added it records through the same `record=True`
   path (`PcbHandler._drc_run`).
+- **A recorded run goes stale on an edit** (Reto 2026-10-16, gr492096
+  option (2)). Each recorded run stores the design revision it checked
+  (`Store.pcb_design_revision`, an md5 over the design tables, copper
+  and cached footprints; kept in `pcb_boards.meta['drc_revisions']`, no
+  migration). On a mismatch, the readers of the latest run say
+  "stale, re-check" and never count it clean, and the check views flag
+  a stale `vs run` baseline with both revisions. No post-change job,
+  and no get writes.
 
 ### 1g-bis. A fourth oracle obligation: an approximation's soundness must match the predicate's polarity
 

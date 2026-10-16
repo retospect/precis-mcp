@@ -273,15 +273,18 @@ def vitals(store: Any, ref_id: int) -> dict[str, Any]:
     shared by the board page's inline answer and the ``pcb_argue`` job so
     the two never quote different vitals at the same design."""
     design = store.pcb_load(ref_id)
-    _run, findings = store.pcb_drc_findings_latest(ref_id)
+    run_id, findings = store.pcb_drc_findings_latest(ref_id)
     drc = collections.Counter(
         str(f["rule"]) for f in findings if f["severity"] == "error"
     )
+    # gr492096: a run older than the board's last edit is no tally at all
+    # — an empty one would read as clean.
+    stale = store.pcb_drc_run_stale(ref_id, run_id)
     return {
         "n_parts": len(design["instances"]),
         "n_nets": len(design["nets"]),
         "route_status": design.get("route_status") or {},
-        "drc": dict(sorted(drc.items())),
+        "drc": "stale, re-check" if stale else dict(sorted(drc.items())),
     }
 
 

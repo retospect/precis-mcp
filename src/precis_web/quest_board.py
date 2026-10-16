@@ -148,6 +148,7 @@ def _drc_section(store: Any, ref_id: int) -> dict[str, Any]:
             rules[rule] += 1
     return {
         "has_run": run_id is not None,
+        "stale": store.pcb_drc_run_stale(ref_id, run_id),
         "drc_errors": drc["error"],
         "drc_warns": drc["warn"],
         "erc_errors": erc["error"],

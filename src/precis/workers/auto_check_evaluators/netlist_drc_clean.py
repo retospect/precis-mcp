@@ -62,4 +62,6 @@ def evaluate(store: Store, spec: dict[str, Any], **_kw: Any) -> bool | None:
     run_id, findings = store.pcb_drc_findings_latest(ref_id)
     if run_id is None:
         return None  # no DRC run recorded yet — not yet, not a failure
+    if store.pcb_drc_run_stale(ref_id, run_id):
+        return None  # gr492096: the board changed since — stale, re-check
     return not any(f["severity"] == "error" for f in findings)

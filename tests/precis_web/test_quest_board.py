@@ -157,6 +157,9 @@ def board_quest(runtime, monkeypatch):
         store, "pcb_drc_findings_latest", lambda rid: _FINDINGS[rid], raising=False
     )
     monkeypatch.setattr(
+        store, "pcb_drc_run_stale", lambda rid, run_id: False, raising=False
+    )
+    monkeypatch.setattr(
         store, "pcb_bom_availability", lambda rid: _BOM[rid], raising=False
     )
     monkeypatch.setattr(

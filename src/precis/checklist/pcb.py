@@ -31,7 +31,14 @@ def _digest(payload: Any) -> str:
 
 
 def _graph(store: Any, ref_id: int) -> dict[str, Any]:
-    return dict(store.pcb_graph(ref_id))
+    graph = dict(store.pcb_graph(ref_id))
+    board = graph.get("board")
+    if isinstance(board, dict) and "drc_revisions" in (board.get("meta") or {}):
+        # gr492096: recording a DRC run stamps meta['drc_revisions']; that
+        # bookkeeping is not a design change and must not stale a verdict.
+        meta = {k: v for k, v in board["meta"].items() if k != "drc_revisions"}
+        graph["board"] = {**board, "meta": meta}
+    return graph
 
 
 def _check_drc(store: Any, ref_id: int) -> ToolResult:
@@ -41,6 +48,14 @@ def _check_drc(store: Any, ref_id: int) -> ToolResult:
             None,
             reason=(
                 "no DRC run recorded — put(kind='pcb', id=..., args={'op':'check'})"
+            ),
+        )
+    if store.pcb_drc_run_stale(ref_id, run_id):
+        return ToolResult(
+            None,
+            reason=(
+                f"stale, re-check — the board changed since DRC run "
+                f"{run_id[:12]}; put(kind='pcb', id=..., args={{'op':'check'}})"
             ),
         )
     live = [f for f in findings if not f.get("waived_by")]
