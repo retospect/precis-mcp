@@ -2002,3 +2002,69 @@ def test_hub_under_review_drains_ahead_of_the_backlog(store: Any) -> None:
     assert _hub_meta(store, review).get("last_refined_at")
     assert not _hub_meta(store, backlog).get("last_refined_at")
     assert not _hub_meta(store, signed).get("last_refined_at")
+
+
+def _attach_rejected(
+    store: Any, embedder: Any, sentence: str, cite_key: str
+) -> tuple[int, int, int]:
+    """A withheld edge ``taproot verify-edges`` already said no to under
+    ``sentence`` (the gr493006 rejection memo, no ``support``)."""
+    hub = _seed_hub(store, sentence=sentence)
+    paper, chunk_id = _seed_paper_chunk(
+        store, embedder, cite_key=cite_key, text="A cycling measurement statement."
+    )
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=paper,
+        role="corroborates",
+        meta={
+            "source_handle": f"pc{chunk_id}",
+            "rejected_by": "verify-edges",
+            "rejected_claim_sha": claim_sha(sentence),
+        },
+        set_by="agent",
+    )
+    return hub, paper, chunk_id
+
+
+def test_reverify_does_not_resend_a_rejected_edge_to_the_verifier(
+    store: Any,
+) -> None:
+    embedder = make_mock_bge_m3()
+    sentence = "The anode keeps 90% capacity after 800 cycles."
+    _hub, paper, _chunk = _attach_rejected(store, embedder, sentence, "rej-skip")
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+        run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    assert mock_verify.call_count == 0
+    _dst, _relation, meta = _edges_from(store, paper)[0]
+    assert "support" not in meta
+
+
+def test_reverify_still_stamps_a_rejected_edge_from_a_keep_memo(store: Any) -> None:
+    """The rejected filter must not undo gr369540: a reground KEEP under the
+    live sha still settles the edge without a verifier call."""
+    embedder = make_mock_bge_m3()
+    sentence = "The cathode keeps 85% capacity after 900 cycles."
+    hub, paper, chunk_id = _attach_rejected(store, embedder, sentence, "rej-keep")
+    store.update_ref(
+        hub,
+        meta_patch={
+            "reground_seen": {
+                f"{paper}:{chunk_id}": {
+                    "sha": claim_sha(sentence),
+                    "verdict": "KEEP",
+                    "reason": "primary content substantiating the claim",
+                    "at": datetime.now(UTC).isoformat(),
+                }
+            }
+        },
+    )
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+        run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    assert mock_verify.call_count == 0
+    _dst, _relation, meta = _edges_from(store, paper)[0]
+    assert meta["support"] == "yes"
+    assert meta["verified_claim_sha"] == claim_sha(sentence)

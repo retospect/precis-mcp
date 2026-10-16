@@ -190,9 +190,9 @@ def test_withheld_cohort_skips_stamped_and_signed_off_edges(store: Any) -> None:
     assert select_withheld_edges(store) == []
 
 
-def test_withheld_cohort_requires_a_strict_claim_hub(store: Any) -> None:
-    # A bare finding (no TAPROOT:claim / STATUS:canonical tags -- e.g. a
-    # chase-tree finding) is not a hub; its edges are not this sweep's.
+def test_withheld_cohort_requires_a_claim_hub(store: Any) -> None:
+    # A bare finding (no TAPROOT:claim tag) is not a hub; its edges are not
+    # this sweep's.
     paper = seed_ref(store, title="Lee 2008", kind="paper")
     seed_chunk(store, ref_id=paper, text=_PASSAGE, ord=0)
     finding = seed_ref(store, title=_CLAIM, kind="finding")
@@ -331,11 +331,12 @@ def test_apply_stamps_a_corroborating_verdict_with_the_full_meta(
     assert select_unverified_stamped_edges(store) == []
 
 
-def test_non_corroborating_default_cohort_reports_and_writes_nothing(
+def test_non_corroborating_default_cohort_reports_and_only_memos(
     store: Any, monkeypatch: Any
 ) -> None:
     """A no is reported for reground/human follow-up -- never stamped, even
-    under --apply (pruning is reground's door)."""
+    under --apply (pruning is reground's door). The only write is the
+    rejection memo, which keeps the edge withheld (no ``support``)."""
     _hub, _paper, _chunk, link_id = _seed_edge(store)
     _patch_verify(monkeypatch, _VERDICT_NO)
     before = _link_meta(store, link_id)
@@ -344,11 +345,29 @@ def test_non_corroborating_default_cohort_reports_and_writes_nothing(
     result = verify_edge(store, edge, apply=True)
 
     assert result.status == "not-corroborated"
-    assert result.applied is False
+    assert result.applied is True
     assert result.action == "reported"
     assert result.supports == "no"
+    meta = _link_meta(store, link_id)
+    assert {k: v for k, v in meta.items() if not k.startswith("rejected_")} == before
+    assert "support" not in meta
+    assert "verified_by" not in meta
+    assert meta["rejected_by"] == "verify-edges"
+    assert meta["rejected_claim_sha"] == claim_sha(_CLAIM)
+    assert meta["rejected_support"] == "no"
+
+
+def test_non_corroborating_dry_run_writes_no_memo(store: Any, monkeypatch: Any) -> None:
+    _hub, _paper, _chunk, link_id = _seed_edge(store)
+    _patch_verify(monkeypatch, _VERDICT_NO)
+    before = _link_meta(store, link_id)
+
+    (edge,) = select_withheld_edges(store)
+    result = verify_edge(store, edge)
+
+    assert result.applied is False
     assert _link_meta(store, link_id) == before
-    assert "support" not in _link_meta(store, link_id)
+    assert [e.link_id for e in select_withheld_edges(store)] == [link_id]
 
 
 def test_contradicting_partial_is_not_corroborating(
@@ -473,8 +492,10 @@ def test_unverified_stamped_apply_strips_support_on_non_corroborate(
     assert "support" not in meta  # back behind the publish gate
     assert "verified_by" not in meta  # a no/contradicts is never stamped
     assert meta["source_handle"] == f"pc{chunk_id}"  # unrelated keys survive
-    # The stripped edge lands back in the DEFAULT withheld cohort.
-    assert [e.link_id for e in select_withheld_edges(store)] == [link_id]
+    assert meta["rejected_claim_sha"] == claim_sha(_CLAIM)
+    # Withheld at publish (no support), but already judged under this
+    # sentence: the default cohort does not re-pay for the same no.
+    assert select_withheld_edges(store) == []
 
 
 def test_unverified_stamped_dry_run_strips_nothing(
@@ -807,7 +828,8 @@ def test_stale_verified_apply_strips_support_on_non_corroborate(
     assert result.status == "stripped"
     meta = _link_meta(store, link_id)
     assert "support" not in meta
-    assert [e.link_id for e in select_withheld_edges(store)] == [link_id]
+    assert meta["rejected_claim_sha"] == claim_sha(_OTHER_CLAIM)
+    assert select_withheld_edges(store) == []
     assert select_stale_verified_edges(store) == []
 
 
@@ -838,3 +860,170 @@ def test_cli_default_run_reaches_a_retitled_hubs_edges(
     err = capsys.readouterr().err
     assert "stale_verified=1" in err
     assert "1 edge(s) processed" in err
+
+
+# ── the rejection memo (gr493006) ────────────────────────────────────────
+
+
+def test_a_stripped_edge_is_not_rejudged_under_the_same_sentence(
+    store: Any, monkeypatch: Any
+) -> None:
+    """Regression (fi191010 link 2398328, 2026-10-16): a strip removed only
+    ``support``, so the edge matched the withheld cohort again and the next
+    ``--hub --apply`` paid another LLM call to reach the same no."""
+    _hub, _paper, _chunk, link_id = _seed_edge(store, meta=dict(_BORN_RELEASED_META))
+    _patch_verify(monkeypatch, _VERDICT_NO)
+    (edge,) = select_unverified_stamped_edges(store)
+    verify_edge(store, edge, apply=True, unverified_stamped=True)
+
+    _never_verify(monkeypatch)
+    assert select_withheld_edges(store) == []
+    assert select_unverified_stamped_edges(store) == []
+    assert select_stale_verified_edges(store) == []
+    assert "support" not in _link_meta(store, link_id)
+
+
+def test_a_rejected_edge_reenters_after_a_retitle_and_a_stamp_clears_the_memo(
+    store: Any, monkeypatch: Any
+) -> None:
+    hub, _paper, _chunk, link_id = _seed_edge(store)
+    _patch_verify(monkeypatch, _VERDICT_NO)
+    (edge,) = select_withheld_edges(store)
+    verify_edge(store, edge, apply=True)
+    assert select_withheld_edges(store) == []
+
+    _retitle(store, hub, _OTHER_CLAIM)
+    (edge,) = select_withheld_edges(store)
+    assert edge.link_id == link_id
+    _patch_verify(monkeypatch, _VERDICT_YES)
+    verify_edge(store, edge, apply=True)
+
+    meta = _link_meta(store, link_id)
+    assert meta["support"] == "yes"
+    assert meta["verified_claim_sha"] == claim_sha(_OTHER_CLAIM)
+    assert not any(k.startswith("rejected_") for k in meta)
+
+
+def test_withheld_limit_applies_after_the_rejected_filter(store: Any) -> None:
+    _seed_edge(store, meta={"rejected_claim_sha": claim_sha(_CLAIM)})
+    _h, _p, _c, live = _seed_edge(store, claim=_OTHER_CLAIM, passage=_OTHER_CLAIM)
+
+    assert [e.link_id for e in select_withheld_edges(store, limit=1)] == [live]
+
+
+def test_preflight_marks_a_rejected_withheld_edge(store: Any, monkeypatch: Any) -> None:
+    from precis.nanopub.preflight import withheld_edges
+
+    hub, _paper, _chunk, link_id = _seed_edge(store)
+    _patch_verify(monkeypatch, _VERDICT_NO)
+    (edge,) = select_withheld_edges(store)
+    verify_edge(store, edge, apply=True)
+
+    (w,) = withheld_edges(store, hub)
+    assert w.link_id == link_id
+    assert w.stale is False
+    assert w.rejected_at is not None
+    # After a retitle the no is for an earlier sentence: plain unverified.
+    _retitle(store, hub, _OTHER_CLAIM)
+    (w,) = withheld_edges(store, hub)
+    assert w.rejected_at is None
+
+
+# ── hub reach (gr493007) ─────────────────────────────────────────────────
+
+
+def _set_status(store: Any, hub: int, value: str) -> None:
+    """Swap the hub's STATUS tag (mint_hub writes canonical)."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO tags (namespace, value) VALUES ('STATUS', %s) "
+            "ON CONFLICT DO NOTHING",
+            (value,),
+        )
+        conn.execute(
+            "UPDATE ref_tags SET tag_id = (SELECT tag_id FROM tags "
+            "WHERE namespace = 'STATUS' AND value = %s) "
+            "WHERE ref_id = %s AND tag_id IN "
+            "(SELECT tag_id FROM tags WHERE namespace = 'STATUS')",
+            (value, hub),
+        )
+        conn.commit()
+
+
+def test_cohorts_reach_a_taproot_claim_hub_at_status_established(
+    store: Any,
+) -> None:
+    """Regression (fi204564, 2026-10-16): a TAPROOT:claim finding at
+    STATUS:established can be approved and its never-judged edge is
+    withheld at publish, but the sweep demanded STATUS:canonical and
+    reported ``0 edge(s)``."""
+    from precis.nanopub.preflight import withheld_edges
+
+    hub, _paper, _chunk, link_id = _seed_edge(store)
+    _set_status(store, hub, "established")
+
+    assert [w.link_id for w in withheld_edges(store, hub)] == [link_id]
+    assert [e.link_id for e in select_withheld_edges(store, hub_ref_id=hub)] == [
+        link_id
+    ]
+
+
+def test_cohorts_skip_a_hub_whose_claim_tag_lapsed(store: Any) -> None:
+    hub, _paper, _chunk, _link = _seed_edge(store)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE ref_tags SET expires_at = now() - interval '1 day' "
+            "WHERE ref_id = %s AND tag_id IN (SELECT tag_id FROM tags "
+            "WHERE namespace = 'TAPROOT' AND value = 'claim')",
+            (hub,),
+        )
+        conn.commit()
+
+    assert select_withheld_edges(store) == []
+
+
+# ── --hub takes every cohort (gr493008) ──────────────────────────────────
+
+
+def test_cli_hub_run_reaches_mint_stamped_edges_without_the_flag(
+    store: Any, monkeypatch: Any, tmp_path: Any, capsys: Any
+) -> None:
+    """Regression (fi191303 & co., 2026-10-16): after a retitle the default
+    ``--hub fiN --apply`` reported 0 edges on hubs whose edges carried only
+    a mint-time stamp (support, no verified_by / sha)."""
+    from precis.cli import taproot as taproot_cli
+
+    hub, _p, _c, born = _seed_edge(store, meta=dict(_BORN_RELEASED_META))
+    _retitle(store, hub, _OTHER_CLAIM)
+    # Another hub's mint-time stamp stays out of a scoped run.
+    _h2, _p2, _c2, other = _seed_edge(
+        store, claim=_THIRD_CLAIM, passage=_THIRD_CLAIM, meta=dict(_BORN_RELEASED_META)
+    )
+    _patch_verify(monkeypatch, _VERDICT_NO)
+    out = tmp_path / "hub.jsonl"
+
+    taproot_cli.run(_cli_args(apply=True, hub=f"fi{hub}", out=str(out)))
+
+    rows = [
+        json.loads(line)
+        for line in out.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert [(r["link_id"], r["action"]) for r in rows] == [(born, "stripped")]
+    assert "support" not in _link_meta(store, born)
+    assert _link_meta(store, other)["support"] == "yes"
+    assert "unverified_stamped=1" in capsys.readouterr().err
+
+
+def test_cli_unscoped_default_run_still_leaves_mint_stamped_edges(
+    store: Any, monkeypatch: Any, tmp_path: Any
+) -> None:
+    from precis.cli import taproot as taproot_cli
+
+    _seed_edge(store, meta=dict(_BORN_RELEASED_META))
+    _never_verify(monkeypatch)
+    out = tmp_path / "all.jsonl"
+
+    taproot_cli.run(_cli_args(apply=True, out=str(out)))
+
+    assert out.read_text(encoding="utf-8").strip() == ""

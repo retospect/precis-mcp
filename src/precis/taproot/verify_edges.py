@@ -10,6 +10,10 @@ MEDIUM) and writes the ``meta.support`` the preflight reads. The 2026-08-27
 audit found 264 withheld edges across 248 hubs — mostly campaign/reground-era
 attaches — plus the born-released cohort below.
 
+Hubs are any live ``TAPROOT:claim`` finding, whatever its ``STATUS``
+(:data:`_LIVE_CLAIM_HUB_PREDICATE`): the preflight's reach, not the
+canonical-hub definition (gr493007).
+
 Distinct from reground's strict judge, which decides whether an edge should
 EXIST (KEEP/PRUNE/CONTRADICTS, memoed in ``meta.reground_seen``): this pass
 only certifies edges for the publish gate and never prunes. A
@@ -24,7 +28,11 @@ Three cohorts, same verify, different write:
   no ``publish_signoff``, a pinned passage (``src_chunk_id``). Passage-less
   rows are ``repair-evidence`` territory — counted
   (:func:`count_passageless_edges`), never verified here. A non-corroborating
-  verdict is reported for reground/human follow-up; nothing is written.
+  verdict is reported for reground/human follow-up; under ``--apply`` it
+  writes only a rejection memo (``rejected_claim_sha`` & co.), which keeps
+  the edge withheld but out of this cohort until the sentence changes —
+  before 2026-10-16 every pass re-paid an LLM call for the same no
+  (gr493006).
 * **unverified-stamped** (``--unverified-stamped``,
   :func:`select_unverified_stamped_edges`): ``support`` present but not
   trustworthy — either no ``verified_by`` (the born-released cohort: three
@@ -45,6 +53,10 @@ Three cohorts, same verify, different write:
   pointing at a sweep that reported ``0 edge(s)`` (gr492678, fi189543).
   Same write as unverified-stamped: a corroborating verdict re-stamps
   under the live sha, a non-corroborating one strips ``support``.
+
+A ``--hub`` run takes all three cohorts: it is the re-verify an agent runs
+after a retitle, and a mint-time stamp carries no sha, so whether it holds
+for the reworded sentence is unknown until it is read (gr493008).
 
 The stamp (:func:`verify_edge` with ``apply=True``, corroborating only)
 jsonb-merges ``support`` / ``support_reason`` / ``caveats`` /
@@ -101,12 +113,14 @@ EdgeVerifyStatus = Literal[
 #: Corroborating verdict — the only status that stamps (under ``apply``).
 STATUS_VERIFIED: EdgeVerifyStatus = "verified"
 #: Non-corroborating verdict in the DEFAULT cohort — reported for
-#: reground/human follow-up, nothing written (pruning is reground's door).
+#: reground/human follow-up. Under ``apply`` only the rejection memo is
+#: written (no stamp, no prune: pruning is reground's door), so the next
+#: run skips the edge until the sentence changes (gr493006).
 STATUS_NOT_CORROBORATED: EdgeVerifyStatus = "not-corroborated"
 #: Non-corroborating verdict in the ``--unverified-stamped`` cohort — the
 #: mint-time ``support`` key is removed (under ``apply``), returning the
-#: edge to withheld behind the publish gate. ``verified_by`` is NOT
-#: written: a no/contradicts is never stamped.
+#: edge to withheld behind the publish gate, with the rejection memo.
+#: ``verified_by`` is NOT written: a no/contradicts is never stamped.
 STATUS_STRIPPED: EdgeVerifyStatus = "stripped"
 #: The verify hook returned ``None`` (LLM/dispatch failure) — skipped,
 #: retried by a later run; never recorded as a support judgment.
@@ -138,6 +152,10 @@ class CandidateEdge:
     #: The sha the edge's current stamp was verified under (``None`` when
     #: unstamped) — the stale-verified cohort compares it to the live one.
     verified_claim_sha: str | None = None
+    #: The sha a non-corroborating verdict was last issued under
+    #: (``meta.rejected_claim_sha``, :func:`_reject_edge`) — ``None`` when
+    #: this sweep never said no to the edge.
+    rejected_claim_sha: str | None = None
 
     @property
     def stale(self) -> bool:
@@ -145,6 +163,14 @@ class CandidateEdge:
         return (
             self.verified_claim_sha is not None
             and self.verified_claim_sha != claim_sha(self.sentence)
+        )
+
+    @property
+    def rejected(self) -> bool:
+        """Already judged non-corroborating against the LIVE sentence — a
+        re-verify would pay an LLM call to reach the same no (gr493006)."""
+        return self.rejected_claim_sha is not None and (
+            self.rejected_claim_sha == claim_sha(self.sentence)
         )
 
 
@@ -245,24 +271,29 @@ _SHA_STAMPED_CLAUSE = """
        AND l.meta->'publish_signoff' IS NULL
 """
 
-#: Live strict claim hub, alias ``h``. NOT
-#: :func:`~precis.taproot.canon.claim_hub_predicate_sql`: that helper
-#: deliberately carries no ``rt.expires_at`` filter (the hot dedup path
-#: doesn't need it), but a publish-adjacent sweep must not certify edges
-#: onto a hub whose claim tag has lapsed — so this copy adds the guard,
-#: mirroring ``workers/health_digest.py::_check_nanopub_candidates_fresh``.
-#: Bind params: :data:`~precis.taproot.canon.CLAIM_HUB_PREDICATE_PARAMS`.
-_LIVE_STRICT_HUB_PREDICATE = """EXISTS (
+#: Live claim hub, alias ``h``: a live (unexpired) ``TAPROOT:claim`` tag,
+#: any ``STATUS``. NOT :func:`~precis.taproot.canon.claim_hub_predicate_sql`,
+#: for two reasons:
+#:
+#: * that helper carries no ``rt.expires_at`` filter (the hot dedup path
+#:   doesn't need it), but a publish-adjacent sweep must not certify edges
+#:   onto a hub whose claim tag has lapsed — mirroring
+#:   ``workers/health_digest.py::_check_nanopub_candidates_fresh``;
+#: * it demands ``STATUS:canonical``, and this sweep must reach whatever
+#:   the preflight withholds. ``mint``/``approve`` apply no status
+#:   predicate (the same reach argument as
+#:   ``nanopub/evidence.py::prose_marked_hubs``), so a ``TAPROOT:claim``
+#:   finding at ``STATUS:established`` can be approved and then sit behind
+#:   ``withheld_edges`` with this sweep reporting ``0 edge(s)`` (gr493007,
+#:   fi204564). A hub-status filter here only ever strands edges.
+#:
+#: Bind params: :data:`~precis.taproot.canon.CLAIM_HUB_PREDICATE_PARAMS`
+#: (its ``status_*`` keys go unused).
+_LIVE_CLAIM_HUB_PREDICATE = """EXISTS (
              SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
               WHERE rt.ref_id = h.ref_id
                 AND (rt.expires_at IS NULL OR rt.expires_at > now())
                 AND t.namespace = %(taproot_ns)s AND t.value = %(taproot_claim)s
-           )
-       AND EXISTS (
-             SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
-              WHERE rt.ref_id = h.ref_id
-                AND (rt.expires_at IS NULL OR rt.expires_at > now())
-                AND t.namespace = %(status_ns)s AND t.value = %(status_canonical)s
            )"""
 
 #: The verifiable cohort. The ``chunks`` join is a LEFT join on purpose: an
@@ -277,7 +308,8 @@ _COHORT_SQL = """
            (SELECT id_value FROM ref_identifiers
              WHERE ref_id = s.ref_id AND id_kind = 'cite_key'
              ORDER BY created_at DESC LIMIT 1) AS cite_key,
-           h.title, h.meta->'scope', l.meta->>'verified_claim_sha'
+           h.title, h.meta->'scope', l.meta->>'verified_claim_sha',
+           l.meta->>'rejected_claim_sha'
       FROM links l
       JOIN refs s ON s.ref_id = l.src_ref_id AND s.retired_at IS NULL
       JOIN refs h ON h.ref_id = l.dst_ref_id AND h.retired_at IS NULL
@@ -327,7 +359,7 @@ def _select_cohort(
         params["limit"] = limit
     sql = _COHORT_SQL.format(
         support_clause=support_clause,
-        hub_predicate=_LIVE_STRICT_HUB_PREDICATE,
+        hub_predicate=_LIVE_CLAIM_HUB_PREDICATE,
         hub_clause=hub_clause,
         limit_clause=limit_clause,
     )
@@ -347,21 +379,37 @@ def _select_cohort(
             sentence=str(r[9] or "").strip(),
             scope={str(k): str(v) for k, v in (r[10] or {}).items()},
             verified_claim_sha=str(r[11]) if r[11] is not None else None,
+            rejected_claim_sha=str(r[12]) if r[12] is not None else None,
         )
         for r in rows
     ]
 
 
 def select_withheld_edges(
-    store: Store, *, hub_ref_id: int | None = None, limit: int | None = None
+    store: Store,
+    *,
+    hub_ref_id: int | None = None,
+    limit: int | None = None,
+    include_rejected: bool = False,
 ) -> list[CandidateEdge]:
     """The default cohort: pinned, unstamped, un-signed-off evidence edges
-    on live strict claim hubs, oldest ``link_id`` first.
+    on live claim hubs, oldest ``link_id`` first — minus the edges this
+    sweep already judged non-corroborating under the live sentence
+    (:attr:`CandidateEdge.rejected`; they stay withheld for a human to
+    remove or sign off, and re-enter after a retitle).
 
-    ``hub_ref_id`` scopes to one hub; ``limit`` caps the batch. Both apply
-    in SQL, so a limited run is a stable prefix of the full cohort.
+    ``hub_ref_id`` scopes to one hub; ``limit`` caps the batch. The
+    rejected filter runs in Python (``claim_sha`` has no SQL mirror), so
+    ``limit`` caps the filtered list — still a stable ``link_id`` prefix.
+    ``include_rejected`` keeps them, for a caller that can settle an edge
+    without a verifier call (``hub_refine``'s reground-KEEP stamp).
     """
-    return _select_cohort(store, _WITHHELD_CLAUSE, hub_ref_id=hub_ref_id, limit=limit)
+    edges = [
+        e
+        for e in _select_cohort(store, _WITHHELD_CLAUSE, hub_ref_id=hub_ref_id)
+        if include_rejected or not e.rejected
+    ]
+    return edges[:limit] if limit is not None else edges
 
 
 def select_unverified_stamped_edges(
@@ -410,7 +458,7 @@ def count_passageless_edges(
         support_clause=(
             _UNVERIFIED_STAMPED_CLAUSE if unverified_stamped else _WITHHELD_CLAUSE
         ),
-        hub_predicate=_LIVE_STRICT_HUB_PREDICATE,
+        hub_predicate=_LIVE_CLAIM_HUB_PREDICATE,
         hub_clause=hub_clause,
     )
     with store.pool.connection() as conn:
@@ -440,24 +488,72 @@ def _stamp_edge(
         "verified_at": datetime.now(UTC).isoformat(),
         "verified_claim_sha": claim_sha(sentence),
     }
+    # A corroborating verdict supersedes an earlier no (a retitle can turn
+    # one into the other), so the rejection memo comes off with the stamp.
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE links SET meta = (COALESCE(meta, '{}'::jsonb) - %s::text[]) "
+            "|| %s WHERE link_id = %s",
+            (list(_REJECTION_KEYS), Jsonb(patch), link_id),
+        )
+
+
+#: The rejection memo :func:`_reject_edge` writes. Deliberately NOT the
+#: stamp keys and NOT ``support: "no"``: ``preflight.withheld_edges``
+#: releases any edge with a ``support`` value under the live sha, so a
+#: memo in the stamp's shape would publish a passage the verifier refused.
+_REJECTION_KEYS = (
+    "rejected_by",
+    "rejected_at",
+    "rejected_claim_sha",
+    "rejected_support",
+)
+
+
+def _rejection_patch(verdict: dict[str, Any], sentence: str) -> dict[str, Any]:
+    supports = verdict.get("supports")
+    return {
+        "rejected_by": VERIFIED_BY,
+        "rejected_at": datetime.now(UTC).isoformat(),
+        "rejected_claim_sha": claim_sha(sentence),
+        "rejected_support": str(supports) if supports is not None else None,
+    }
+
+
+@trust_door("generated")
+def _reject_edge(
+    store: Store, link_id: int, verdict: dict[str, Any], sentence: str
+) -> None:
+    """Memo a non-corroborating verdict on an unstamped edge: the edge stays
+    withheld (no ``support`` is written) but :func:`select_withheld_edges`
+    skips it until the sentence changes, so a re-run doesn't pay an LLM
+    call to reach the same no (gr493006). Settling it — remove or sign off
+    — is a human's or reground's call; nothing here detaches."""
+    from psycopg.types.json import Jsonb
+
     with store.pool.connection() as conn:
         conn.execute(
             "UPDATE links SET meta = COALESCE(meta, '{}'::jsonb) || %s "
             "WHERE link_id = %s",
-            (Jsonb(patch), link_id),
+            (Jsonb(_rejection_patch(verdict, sentence)), link_id),
         )
 
 
 @trust_door("generated")
-def _strip_support(store: Store, link_id: int) -> None:
-    """Remove exactly the ``support`` key — the edge returns to withheld
-    behind the publish gate. Deliberately nothing else: ``verified_by`` is
-    not written (a no/contradicts is never stamped), so the edge lands back
-    in the default cohort for a later sweep/reground to settle."""
+def _strip_support(
+    store: Store, link_id: int, verdict: dict[str, Any], sentence: str
+) -> None:
+    """Remove the ``support`` key — the edge returns to withheld behind the
+    publish gate — and write the rejection memo in the same statement, so
+    the withheld cohort does not re-select it under the same sentence
+    (gr493006: a stripped edge was re-judged no minutes later).
+    ``verified_by`` is not written: a no/contradicts is never stamped."""
+    from psycopg.types.json import Jsonb
+
     with store.pool.connection() as conn:
         conn.execute(
-            "UPDATE links SET meta = meta - 'support' WHERE link_id = %s",
-            (link_id,),
+            "UPDATE links SET meta = (meta - 'support') || %s WHERE link_id = %s",
+            (Jsonb(_rejection_patch(verdict, sentence)), link_id),
         )
 
 
@@ -472,10 +568,12 @@ def verify_edge(
     ``apply=True``) write the outcome.
 
     ``apply=False`` (the default) computes the verdict and writes NOTHING.
-    ``apply=True`` writes only on :data:`STATUS_VERIFIED` (the stamp) or —
-    ``unverified_stamped`` runs only — :data:`STATUS_STRIPPED` (``support``
-    removed), and only the ``meta`` of the one ``link_id`` passed in. A
-    ``None`` verdict (LLM failure) is a skip, never a judgment.
+    ``apply=True`` writes only the ``meta`` of the one ``link_id`` passed
+    in: the stamp on :data:`STATUS_VERIFIED`; on a non-corroborating
+    verdict the rejection memo (:data:`_REJECTION_KEYS`) — plus, for
+    ``unverified_stamped`` edges, removal of ``support``
+    (:data:`STATUS_STRIPPED`). A ``None`` verdict (LLM failure) is a skip,
+    never a judgment, and writes no memo.
 
     ``unverified_stamped`` is the strip-on-non-corroboration switch: pass
     it for every edge that already carries a ``support`` value this sweep
@@ -538,7 +636,7 @@ def verify_edge(
     if unverified_stamped:
         applied = False
         if apply:
-            _strip_support(store, edge.link_id)
+            _strip_support(store, edge.link_id, verdict, edge.sentence)
             applied = True
         return EdgeVerifyResult(
             link_id=edge.link_id,
@@ -552,6 +650,10 @@ def verify_edge(
             applied=applied,
         )
 
+    applied = False
+    if apply:
+        _reject_edge(store, edge.link_id, verdict, edge.sentence)
+        applied = True
     return EdgeVerifyResult(
         link_id=edge.link_id,
         hub_ref_id=edge.hub_ref_id,
@@ -561,4 +663,5 @@ def verify_edge(
         supports=supports_str,
         support_reason=reason_str,
         contradicts=contradicts,
+        applied=applied,
     )

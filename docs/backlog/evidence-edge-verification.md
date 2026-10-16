@@ -220,7 +220,11 @@ sha-stale verdict. What's left is **operational**, against prod:
    covers the **stale-verified** cohort (sha-stamped edges whose claim
    was edited after verification; gr492678) — before that no cohort
    reached them and a reworded hub's edges stayed withheld with the
-   approve page pointing at a no-op sweep.
+   approve page pointing at a no-op sweep. A `--hub` run also takes the
+   unverified-stamped cohort (gr493008), hubs are any live
+   `TAPROOT:claim` finding regardless of `STATUS` (gr493007), and a
+   non-corroborating verdict is memoed (`rejected_claim_sha`) so re-runs
+   stop re-paying for the same no (gr493006).
 2. **The 209 legacy verified edges carry no `verified_claim_sha`.**
    Verdicts from the 2026-08-21 retro-verify pass predate the sha stamp;
    invalidation is forward-only by design, so an edit to those claims

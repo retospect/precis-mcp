@@ -3298,7 +3298,11 @@ def _reverify_pinned_edges(
     from psycopg.types.json import Jsonb
 
     candidates = [
-        *select_withheld_edges(store, hub_ref_id=hub_ref_id, limit=_REVERIFY_PER_PASS),
+        # Rejected edges too: a reground KEEP memo still stamps them below
+        # (gr369540); they are never re-sent to the verifier (gr493006).
+        # Unlimited, so a run of rejected rows can't starve the fresh ones
+        # (the spend cap below still bounds the verifier calls).
+        *select_withheld_edges(store, hub_ref_id=hub_ref_id, include_rejected=True),
         *select_unverified_stamped_edges(
             store, hub_ref_id=hub_ref_id, limit=_REVERIFY_PER_PASS
         ),
@@ -3335,6 +3339,8 @@ def _reverify_pinned_edges(
                     (Jsonb(patch), edge.link_id),
                 )
             continue  # judged once per claim_sha (audit or an earlier pass)
+        if edge.rejected:
+            continue  # verify-edges already said no under this sentence
         if not edge.chunk_text or edge.chunk_ord is None:
             continue  # pinned chunk retired/deleted — repair-evidence territory
         spent += 1

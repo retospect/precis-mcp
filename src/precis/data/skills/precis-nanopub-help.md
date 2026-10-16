@@ -344,8 +344,11 @@ link framing it):
   re-enter verification rather than keeping a stale stamp. `precis
   taproot verify-edges` (dry-run default) is the certification sweep;
   its default run covers both the unstamped and the stale-verified
-  edges (`--hub fi<id> --apply` releases a reworded hub's edges in one
-  go), and `hub_refine` re-verifies the same three cohorts per pass.
+  edges; `--hub fi<id> --apply` takes all three cohorts (mint-time
+  stamps too) and releases a reworded hub's edges in one go. A no is
+  memoed on the edge (`rejected_claim_sha`), so re-runs skip it until
+  the claim is edited: remove or sign off such an edge on the claim page.
+  `hub_refine` re-verifies the same three cohorts per pass.
   The literal sign-off stays human-only.
 - **Trust allowlist** — only pinned (identity, key-fingerprint) pairs
   are trusted, and publishing requires the *attesting* (human) entry.

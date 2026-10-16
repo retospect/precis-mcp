@@ -1184,6 +1184,9 @@ def _withheld_rows(store: Any, withheld: list[Any]) -> list[dict[str, Any]]:
                 "verified_on": (utc_date(w.verified_at) or None)
                 if w.verified_at
                 else None,
+                "rejected_on": (utc_date(w.rejected_at) or None)
+                if w.rejected_at
+                else None,
                 "chunk_handle": w.chunk_handle,
                 "passage": w.passage,
                 "reviewed_at": (

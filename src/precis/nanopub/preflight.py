@@ -96,6 +96,11 @@ class WithheldEdge:
     #: edge carries — "claim edited after verification on <date>". ``None``
     #: for unverified edges or verdicts stamped without a time.
     verified_at: str | None = None
+    #: ``links.meta['rejected_at']`` when ``taproot verify-edges`` judged
+    #: this unstamped edge non-corroborating under the LIVE sentence — the
+    #: sweep will not re-check it until the claim is edited (gr493006), so
+    #: the only releases left are remove or sign-off. ``None`` otherwise.
+    rejected_at: str | None = None
     #: The grounding chunk's ``pc<id>`` handle — the Phase-3 chase pointer
     #: (``links.meta['source_handle']``) when set, else the handle of the
     #: ``links.src_chunk_id`` the paper→hub edge pins directly (same
@@ -216,6 +221,12 @@ def withheld_edges(store: Store, hub_ref_id: int) -> list[WithheldEdge]:
                 verified_at=(r[6] or {}).get("verified_at")
                 if r[4] is not None
                 else None,
+                rejected_at=(
+                    (r[6] or {}).get("rejected_at")
+                    if r[4] is None
+                    and (r[6] or {}).get("rejected_claim_sha") == live_sha
+                    else None
+                ),
                 chunk_handle=(
                     handle_registry.try_format("paper", chunk_id, chunk=True)
                     if chunk_id is not None

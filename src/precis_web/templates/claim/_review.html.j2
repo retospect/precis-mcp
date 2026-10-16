@@ -455,6 +455,7 @@
       </p>
       <p class="text-[11px] text-amber-700">Why withheld:
         {% if w.stale %}stale: claim edited after verification{% if w.verified_on %} (verified {{ w.verified_on }}){% endif %}; the sweep must re-check it
+        {% elif w.rejected_on %}the sweep judged this passage not supporting the claim ({{ w.rejected_on }}) and will not re-check it unless the claim is edited; remove it or sign it off
         {% else %}never verified: the sweep has not checked this edge yet{% endif %}.</p>
       {% if w.passage %}
       <blockquote class="italic text-slate-600 text-xs border-l-2 border-amber-200 pl-2">

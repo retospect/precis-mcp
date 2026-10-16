@@ -280,8 +280,9 @@ def add_parser(subparsers: Any) -> None:
         "reads (2026-08-27 audit: 264 withheld edges across 248 hubs). "
         "DRY-RUN BY DEFAULT: zero DB writes unless --apply. A "
         "non-corroborating verdict is NEVER stamped -- reported (default "
-        "cohort) or stripped back to withheld (--unverified-stamped); "
-        "pruning stays reground's door. Passage-less edges are skipped + "
+        "cohort) or stripped back to withheld (stamped rows), and on "
+        "--apply memoed so later runs skip it until the claim is "
+        "edited; pruning stays reground's door. Passage-less edges are skipped + "
         "counted (repair-evidence territory).",
     )
     ve_mode = ve.add_mutually_exclusive_group()
@@ -315,7 +316,10 @@ def add_parser(subparsers: Any) -> None:
         "--hub",
         default=None,
         help="Restrict to one claim hub (fi<id> handle, pub_id, cite_key, "
-        "or bare ref_id). Default: every live strict claim hub.",
+        "or bare ref_id) and take all three cohorts -- withheld, "
+        "stale-verified AND unverified-stamped -- the re-verify to run "
+        "after a retitle. Default: every live TAPROOT:claim hub, any "
+        "STATUS.",
     )
     ve.add_argument(
         "--limit",
@@ -1453,6 +1457,9 @@ def _run_verify_edges(args: argparse.Namespace) -> None:
     n_errors = 0
     n_passageless = 0
     n_stale = 0
+    n_unverified = 0
+    # Rows that carry a `support` value: a non-corroborating verdict strips it.
+    strip_ids: set[int] = set()
 
     store = Store.connect(resolve_dsn(args.database_url))
     # Same bind as repair-evidence: the verify dispatch resolves its
@@ -1473,6 +1480,22 @@ def _run_verify_edges(args: argparse.Namespace) -> None:
             edges = select_unverified_stamped_edges(
                 store, hub_ref_id=hub_ref_id, limit=args.limit
             )
+        elif hub_ref_id is not None:
+            # A hub-scoped run is the re-verify after a retitle: all three
+            # cohorts, so mint-time stamps (no sha, so unknown against the
+            # reworded sentence) are read too without the flag (gr493008).
+            stamped = [
+                *select_unverified_stamped_edges(store, hub_ref_id=hub_ref_id),
+                *select_stale_verified_edges(store, hub_ref_id=hub_ref_id),
+            ]
+            strip_ids = {e.link_id for e in stamped}
+            edges = [*select_withheld_edges(store, hub_ref_id=hub_ref_id), *stamped]
+            if args.limit is not None:
+                edges = edges[: args.limit]
+            n_stale = sum(1 for e in edges if e.link_id in strip_ids and e.stale)
+            n_unverified = sum(
+                1 for e in edges if e.link_id in strip_ids and not e.stale
+            )
         else:
             # The default run is the preflight's withheld set: unstamped
             # edges plus stale-verified ones (claim edited after the stamp,
@@ -1485,6 +1508,7 @@ def _run_verify_edges(args: argparse.Namespace) -> None:
                 store, hub_ref_id=hub_ref_id, limit=args.limit
             )
             n_stale = len(stale)
+            strip_ids = {e.link_id for e in stale}
             edges = [*edges, *stale]
         n_passageless = count_passageless_edges(
             store, unverified_stamped=unverified, hub_ref_id=hub_ref_id
@@ -1495,7 +1519,7 @@ def _run_verify_edges(args: argparse.Namespace) -> None:
                     store,
                     edge,
                     apply=apply,
-                    unverified_stamped=unverified or edge.stale,
+                    unverified_stamped=unverified or edge.link_id in strip_ids,
                 )
             except Exception as exc:
                 n_errors += 1
@@ -1533,11 +1557,13 @@ def _run_verify_edges(args: argparse.Namespace) -> None:
         suffix = ""
     else:
         would = f"would stamp {counts.get('verified', 0)}"
-        if unverified or n_stale:
+        if unverified or strip_ids:
             would += f", strip {counts.get('stripped', 0)}"
         suffix = f"  [DRY-RUN -- nothing written; {would}]"
     breakdown = ", ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "none"
     stale_note = f", stale_verified={n_stale}" if not unverified else ""
+    if hub_ref_id is not None and not unverified:
+        stale_note += f", unverified_stamped={n_unverified}"
     print(
         f"taproot verify-edges: {len(rows)} edge(s) processed -- {breakdown}, "
         f"skipped_passageless={n_passageless}{stale_note}, errors={n_errors}{suffix}",
