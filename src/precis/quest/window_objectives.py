@@ -596,7 +596,10 @@ def stamp_window_measures(
                     )
                 # gr489168: a quest that declares the HER margin against a
                 # pathway run without ``network.her`` gets the name of the
-                # missing input, not a silent ``None``.
+                # missing input, not a silent ``None``. The stored config is
+                # ``Config.to_dict()`` — ``network`` normalises to the bare
+                # kind string and the flag lands as flat ``network_her``;
+                # the dict spelling is the pre-normalisation YAML form.
                 if her is None and "her_margin_at_Uopt" in _declared_objective_keys(
                     quest_meta
                 ):
@@ -607,7 +610,11 @@ def stamp_window_measures(
                         if isinstance(pw_config, dict)
                         else None
                     )
-                    if not (isinstance(net, dict) and net.get("her")):
+                    her_on = (
+                        isinstance(pw_config, dict)
+                        and bool(pw_config.get("network_her"))
+                    ) or (isinstance(net, dict) and bool(net.get("her")))
+                    if not her_on:
                         notes.append(
                             "quest declares her_margin_at_Uopt but the pathway "
                             "ran without network.her — set network.her in the "

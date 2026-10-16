@@ -88,7 +88,9 @@ _LIFECYCLE: frozenset[str] = _KIND_STATUS_VALUES["quest"]
 #: (the frontier's measured-axis override, :mod:`precis.quest.frontier`),
 #: ``demand`` / ``supply`` (a roadmap capability's per-axis requirement and
 #: best cited literature value — :func:`_check_demand_meta` /
-#: :func:`_check_supply_meta`, ``bootstrap-roadmap-quest.md``).
+#: :func:`_check_supply_meta`, ``bootstrap-roadmap-quest.md``),
+#: ``reaction_config`` (the autocatpath config the compute lane dispatches —
+#: shallow-merged, :func:`_check_reaction_config`, gr489168).
 #: Mirrors ``todo.tag()``'s ``TAG_META_ALLOWED_KEYS`` promotion gate
 #: (``guards.check_meta_keys_promotable``) — a closed set, not a general meta
 #: bag; anything else still goes through ``put()``/create-time meta. Before
@@ -102,8 +104,92 @@ _META_ALLOWED_KEYS: frozenset[str] = frozenset(
         "demand",
         "supply",
         "operating_conditions",
+        "reaction_config",
     }
 )
+
+#: ``meta.reaction_config``'s allowed keys — the autocatpath ``Config``
+#: dataclass's field names (``autocatpath.config.Config``). The engine is an
+#: optional extra (``catalyst``) absent from the MCP-server install, so the
+#: live list comes from :func:`_reaction_config_allowed_keys`: the dataclass
+#: when importable, this pinned copy otherwise. A test pins the copy to the
+#: engine's own fields so a new engine knob either joins the allowlist or
+#: reddens the pin (gr489168).
+_REACTION_CONFIG_KEYS: frozenset[str] = frozenset(
+    {
+        "name",
+        "substrate",
+        "target",
+        "network",
+        "network_her",
+        "template",
+        "reagents",
+        "poisons",
+        "substrates",
+        "slab",
+        "mlip",
+        "search",
+        "render",
+        "outputs",
+        "auto",
+        "diagram",
+        "dft",
+        "refine",
+        "outdir",
+        "electrochemistry",
+        "conditions",
+        "thermo",
+        "corrections",
+        "coverage",
+        "kinetics",
+    }
+)
+
+_REACTION_CONFIG_NEXT = "meta={'reaction_config': {'network_her': True}}"
+
+
+def _reaction_config_allowed_keys() -> frozenset[str]:
+    """autocatpath ``Config``'s field names — the engine's own dataclass when
+    the ``catalyst`` extra is installed, the pinned copy
+    (:data:`_REACTION_CONFIG_KEYS`) when it isn't."""
+    try:
+        import dataclasses
+
+        from autocatpath.config import Config
+    except ImportError:
+        return _REACTION_CONFIG_KEYS
+    return frozenset(f.name for f in dataclasses.fields(Config))
+
+
+def _check_reaction_config(meta: dict[str, Any]) -> None:
+    """Reject a ``meta.reaction_config`` patch that isn't an autocatpath
+    config fragment: a dict of ``Config`` field names only, with
+    ``network_her`` a real bool (the HER-competitor switch — a truthy
+    string would silently mis-set it, gr489168)."""
+    if "reaction_config" not in meta:
+        return
+    value = meta["reaction_config"]
+    if not isinstance(value, dict):
+        raise BadInput(
+            "meta.reaction_config must be a dict of autocatpath Config "
+            f"fields, got {type(value).__name__}",
+            next=_REACTION_CONFIG_NEXT,
+        )
+    allowed = _reaction_config_allowed_keys()
+    unknown = sorted(set(value) - allowed, key=str)
+    if unknown:
+        raise BadInput(
+            f"meta.reaction_config key(s) {unknown} are not autocatpath "
+            f"Config fields — allowed: [{', '.join(sorted(allowed))}]",
+            next=_REACTION_CONFIG_NEXT,
+        )
+    if "network_her" in value and not isinstance(value["network_her"], bool):
+        raise BadInput(
+            "meta.reaction_config.network_her must be a bool, "
+            f"got {value['network_her']!r}",
+            next=_REACTION_CONFIG_NEXT,
+        )
+
 
 _DEMAND_ENTRY_KEYS: frozenset[str] = frozenset({"value", "source", "reason"})
 _SUPPLY_ENTRY_KEYS: frozenset[str] = frozenset({"value", "evidence"})
@@ -789,9 +875,12 @@ class QuestHandler(NumericRefHandler):
         ``meta=`` is a **closed allowlist**
         (:data:`_META_ALLOWED_KEYS` — ``compute_lane``/``quest_body``/
         ``rubric_objectives``/``demand``/``supply``/
-        ``operating_conditions``), patch-merged via
+        ``operating_conditions``/``reaction_config``), patch-merged via
         ``store.stamp_ref_meta`` (existing keys outside the patch untouched —
-        never a whole-dict clobber). An unknown key is refused naming the
+        never a whole-dict clobber; ``reaction_config`` itself shallow-merges
+        into the stored config so a ``network_her`` flip keeps ``slab``/
+        ``mlip``/``search`` — gr489168) and logged as a ``meta_patched``
+        ``ref_events`` row (``view='log'``). An unknown key is refused naming the
         allowlist, mirroring ``todo.tag()``'s ``check_meta_keys_promotable``
         gate; ``demand``/``supply`` are shape-checked (a ``supply`` axis with
         no ``evidence`` is refused — no number, no rung), and operating
@@ -838,7 +927,27 @@ class QuestHandler(NumericRefHandler):
             _check_demand_meta(meta)
             _check_supply_meta(meta)
             _check_operating_conditions(meta)
-            self.store.stamp_ref_meta(ref_id, meta)
+            _check_reaction_config(meta)
+            patch = dict(meta)
+            # ``reaction_config`` is itself a dict: merge the patch into the
+            # stored config rather than clobbering its sibling keys — a
+            # ``network_her`` flip keeps ``slab``/``mlip``/``search``
+            # (gr489168).
+            if "reaction_config" in patch:
+                prev_rc = (ref.meta or {}).get("reaction_config")
+                merged_rc = dict(prev_rc) if isinstance(prev_rc, dict) else {}
+                merged_rc.update(patch["reaction_config"])
+                patch["reaction_config"] = merged_rc
+            old_vals = {k: (ref.meta or {}).get(k) for k in patch}
+            with self.store.tx() as conn:
+                self.store.stamp_ref_meta(ref_id, patch, conn=conn)
+                self.store.append_event(
+                    ref_id,
+                    source="agent",
+                    event="meta_patched",
+                    payload={"old": old_vals, "new": patch},
+                    conn=conn,
+                )
             meta_changed = sorted(meta)
 
         if text is None or not text.strip():
@@ -846,7 +955,8 @@ class QuestHandler(NumericRefHandler):
                 raise BadInput(
                     "edit(kind='quest', mode='replace') requires text= "
                     "(or meta= to patch compute_lane/quest_body/"
-                    "rubric_objectives/demand/supply/operating_conditions)",
+                    "rubric_objectives/demand/supply/operating_conditions/"
+                    "reaction_config)",
                     next=(
                         "edit(kind='quest', id=N, mode='replace', "
                         "text='new striving statement') or "

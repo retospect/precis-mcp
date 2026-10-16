@@ -468,9 +468,14 @@ def test_her_margin_warn_needs_the_declaration_and_the_flag_off(
 ) -> None:
     """The warn is the ask↔config mismatch: undeclared quests and
     network.her-on pathways (the adapter's own ``missing`` case) don't
-    get it."""
+    get it. The flag is checked in both stored spellings — the YAML
+    ``network: {her: true}`` mapping and the ``Config.to_dict()`` flat
+    ``network_her`` (gr489168 follow-up: the stored pathway config
+    serialises ``network`` to the bare kind string, so only the flat
+    key is live)."""
     for meta_extra, declared in (
         ({"config": {"network": {"kind": "ammonia", "her": True}}}, True),
+        ({"config": {"network": "ammonia", "network_her": True}}, True),
         ({"config": {"network": "ammonia"}}, False),
     ):
         qid = _mk_quest(
@@ -497,6 +502,35 @@ def test_her_margin_warn_needs_the_declaration_and_the_flag_off(
             declared,
             meta["window_notes"],
         )
+
+
+def test_her_margin_warn_still_fires_on_flat_network_her_false(
+    store: Store, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stored ``network_her: false`` (the ``to_dict`` spelling) is HER
+    genuinely off — the note still fires."""
+    qid = _mk_quest(
+        store,
+        hub,
+        rubric_objectives=[{"key": "her_margin_at_Uopt", "sense": "max"}],
+    )
+    sid = _mk_candidate(store, qid)
+    _scan(store, sid, _sweep({"m": _payload("m", {"H": [-0.02]})}))
+    store.insert_ref(
+        kind="pathway",
+        slug=f"pwtest{sid}",
+        title="pw",
+        meta={
+            "candidate_ref": sid,
+            "config": {"network": "ammonia", "network_her": False},
+        },
+    )
+    _fake_routes(monkeypatch, [sm.Route("norr", (_rung("r1", 0.13),))], None)
+
+    wo.stamp_window_measures(store, qid, _structure_ref(store, sid))
+    meta = dict(store.fetch_refs_by_ids({sid})[sid].meta or {})
+    assert meta.get("her_margin_at_Uopt") is None
+    assert any("without network.her" in n for n in meta["window_notes"])
 
 
 def test_stamp_stamps_measures_and_validity(

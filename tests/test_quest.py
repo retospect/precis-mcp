@@ -266,6 +266,96 @@ class TestEdit:
                 },
             )
 
+    # ── meta.reaction_config (gr489168) ────────────────────────────
+
+    def test_edit_meta_reaction_config_shallow_merges_and_logs(
+        self, store: Any
+    ) -> None:
+        """gr489168: a ``reaction_config`` patch shallow-merges into the
+        stored config — flipping ``network_her`` keeps ``slab``/``mlip``/
+        ``search`` — and the write lands a ``meta_patched`` ref_events row."""
+        h = _handler(store)
+        qid = _created_id(h.put(text="A NO→NH₃ catalyst"))
+        store.stamp_ref_meta(
+            qid,
+            {
+                "reaction_config": {
+                    "name": "no_to_nh3_pd",
+                    "substrate": "NO",
+                    "target": "NH3",
+                    "network": "ammonia",
+                    "slab": {"element": "Pd", "size": [3, 3, 4]},
+                    "mlip": {"backend": "mace"},
+                    "search": {"seeds": [0, 1]},
+                }
+            },
+        )
+
+        resp = h.edit(id=qid, meta={"reaction_config": {"network_her": True}})
+        assert "patched meta" in resp.body
+        rc = store.get_ref(kind="quest", id=qid).meta["reaction_config"]
+        assert rc["network_her"] is True
+        assert rc["slab"] == {"element": "Pd", "size": [3, 3, 4]}
+        assert rc["mlip"] == {"backend": "mace"}
+        assert rc["search"] == {"seeds": [0, 1]}
+
+        events = [e for e in store.events_for(qid) if e.event == "meta_patched"]
+        assert events
+        assert events[0].payload["new"]["reaction_config"]["network_her"] is True
+        assert "network_her" not in (
+            events[0].payload["old"].get("reaction_config") or {}
+        )
+
+    def test_edit_meta_reaction_config_non_dict_refused(self, store: Any) -> None:
+        import pytest
+
+        from precis.errors import BadInput
+
+        h = _handler(store)
+        qid = _created_id(h.put(text="A NO→NH₃ catalyst"))
+        with pytest.raises(BadInput, match="must be a dict"):
+            h.edit(id=qid, meta={"reaction_config": "ammonia"})
+
+    def test_edit_meta_reaction_config_unknown_key_refused(self, store: Any) -> None:
+        import pytest
+
+        from precis.errors import BadInput
+
+        h = _handler(store)
+        qid = _created_id(h.put(text="A NO→NH₃ catalyst"))
+        with pytest.raises(BadInput, match="not autocatpath Config fields"):
+            h.edit(id=qid, meta={"reaction_config": {"her": True}})
+        assert "reaction_config" not in (store.get_ref(kind="quest", id=qid).meta or {})
+
+    def test_edit_meta_reaction_config_network_her_must_be_bool(
+        self, store: Any
+    ) -> None:
+        import pytest
+
+        from precis.errors import BadInput
+
+        h = _handler(store)
+        qid = _created_id(h.put(text="A NO→NH₃ catalyst"))
+        with pytest.raises(BadInput, match="network_her must be a bool"):
+            h.edit(id=qid, meta={"reaction_config": {"network_her": "yes"}})
+
+
+def test_reaction_config_allowlist_pinned_to_engine_fields() -> None:
+    """``_REACTION_CONFIG_KEYS`` is the fallback the handler validates
+    ``meta.reaction_config`` against when the ``catalyst`` extra isn't
+    installed — it must equal the autocatpath ``Config`` dataclass's own
+    field names, or a new engine knob silently refuses (or a removed one
+    silently accepts)."""
+    import dataclasses
+
+    import pytest
+
+    autocatpath_config = pytest.importorskip("autocatpath.config")
+    from precis.handlers.quest import _REACTION_CONFIG_KEYS
+
+    engine = {f.name for f in dataclasses.fields(autocatpath_config.Config)}
+    assert set(_REACTION_CONFIG_KEYS) == engine
+
 
 class TestServesAndTree:
     def test_serves_edge_surfaces_in_tree(self, store: Any) -> None:

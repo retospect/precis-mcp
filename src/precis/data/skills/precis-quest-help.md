@@ -465,11 +465,12 @@ automatically, and compute is off unless you pass `--compute`
 (`PRECIS_QUEST_LOOP_ENABLED` gates the autonomous loop; the manual CLI
 runs regardless).
 
-## Patch quest meta — compute_lane / quest_body / rubric_objectives
+## Patch quest meta — compute_lane / quest_body / rubric_objectives / reaction_config
 
 `edit(kind='quest', id=N, meta={...})` patch-merges an **allowlisted** key
 into `refs.meta` (siblings untouched — never a whole-dict clobber); an
-unknown key is refused, naming the allowlist. Same allowlist over the CLI:
+unknown key is refused, naming the allowlist. The write lands as a
+`meta_patched` row in `view='log'`. Same allowlist over the CLI:
 `precis quest set <id> <key> <value>` (`value` is JSON-decoded when it
 parses, so `true`/`[...]` land typed — `off` stays the plain string
 `"off"`) — the lever to reach for when the MCP itself is the thing
@@ -509,6 +510,12 @@ that's wedged.
   "sense": "max"}`) promotes it to a Pareto axis; `meta.window_objectives`
   tunes the knobs (`eps_eV`, `her_margin_eV`, `reset_eta_eV`,
   `reset_ea_floor_eV`).
+- **`reaction_config`** — the autocatpath config the compute lane
+  dispatches. A dict of engine `Config` field names only (unknown keys
+  refused); `network_her` must be a bool. The patch **shallow-merges**
+  into the stored config — `meta={'reaction_config': {'network_her':
+  true}}` flips the HER-competitor branch without touching
+  `slab`/`mlip`/`search` — so re-dispatched pathways run with it on.
 - **`"roadmap"`** — a fourth body: grows a pathway/capability/rung graph
   from measured gaps instead of proposing materials or writing prose.
   Only the root quest ticks; see [[precis-roadmap-help]] for the rung

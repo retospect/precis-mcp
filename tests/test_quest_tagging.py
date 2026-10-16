@@ -412,3 +412,27 @@ class TestCliQuestSet:
 
         with pytest.raises(BadInput):
             _cmd_set(store, Namespace(id=qid, key="nope", value="x"))
+
+    def test_set_reaction_config_json_merges(self, store: Any) -> None:
+        """gr489168: ``precis quest set <id> reaction_config '{...}'``
+        JSON-decodes the fragment and lands the same shallow-merge the
+        MCP verb does — sibling config keys survive a ``network_her``
+        flip."""
+        from precis.cli.quest import _cmd_set
+
+        h = _handler(store)
+        qid = _created_id(h.put(text="A quest set from the CLI"))
+        store.stamp_ref_meta(
+            qid,
+            {"reaction_config": {"network": "ammonia", "slab": {"element": "Pd"}}},
+        )
+
+        _cmd_set(
+            store,
+            Namespace(id=qid, key="reaction_config", value='{"network_her": true}'),
+        )
+
+        rc = store.get_ref(kind="quest", id=qid).meta["reaction_config"]
+        assert rc["network_her"] is True
+        assert rc["slab"] == {"element": "Pd"}
+        assert rc["network"] == "ammonia"

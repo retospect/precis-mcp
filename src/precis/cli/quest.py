@@ -252,7 +252,8 @@ def add_parser(subparsers: Any) -> None:
     s = qsub.add_parser(
         "set",
         help="Patch one allowlisted quest meta key (compute_lane/quest_body/"
-        "rubric_objectives) — the operator lever for an incident (e.g. "
+        "rubric_objectives/demand/supply/operating_conditions/"
+        "reaction_config) — the operator lever for an incident (e.g. "
         "`precis quest set 401863 compute_lane off` stops the force-acquire "
         "fallback even if the MCP is wedged). Same allowlist + patch-merge "
         "as edit(kind='quest', meta=...).",
@@ -262,7 +263,10 @@ def add_parser(subparsers: Any) -> None:
         "key",
         help="Meta key: compute_lane, quest_body (materials|weave|inquiry|"
         "roadmap — e.g. `precis quest set 453863 quest_body roadmap`), "
-        "rubric_objectives, demand, or supply.",
+        "rubric_objectives, demand, supply, operating_conditions, or "
+        "reaction_config (a JSON fragment shallow-merged into the stored "
+        "config — `precis quest set 164903 reaction_config "
+        "'{\"network_her\": true}`').",
     )
     s.add_argument(
         "value",
