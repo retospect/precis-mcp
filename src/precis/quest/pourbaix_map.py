@@ -109,15 +109,22 @@ def scan_jobs_many(
     with store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT sid, ref_id, meta FROM ("
-            "  SELECT COALESCE(t.parent_id, j.parent_id) AS sid, j.ref_id, j.meta,"
-            "    row_number() OVER (PARTITION BY COALESCE(t.parent_id, j.parent_id)"
-            "      ORDER BY j.ref_id DESC) AS rn"
-            "  FROM refs j"
-            "  LEFT JOIN refs t ON t.ref_id = j.parent_id AND t.kind = 'todo'"
-            "    AND t.retired_at IS NULL AND t.parent_id = ANY(%(sids)s)"
-            "  WHERE j.kind = 'job' AND j.retired_at IS NULL"
-            "    AND j.meta->>'job_type' = %(jt)s"
-            "    AND (j.parent_id = ANY(%(sids)s) OR t.ref_id IS NOT NULL)"
+            "  SELECT sid, ref_id, meta,"
+            "    row_number() OVER (PARTITION BY sid ORDER BY ref_id DESC) AS rn"
+            "  FROM ("
+            # reach jobs through parent_id (indexed) rather than scanning
+            # every kind='job' ref and filtering on meta: that scan was
+            # ~235 ms warm on prod (gr488208)
+            "    SELECT j.parent_id AS sid, j.ref_id, j.meta FROM refs j"
+            "    WHERE j.parent_id = ANY(%(sids)s) AND j.kind = 'job'"
+            "      AND j.retired_at IS NULL AND j.meta->>'job_type' = %(jt)s"
+            "    UNION ALL"
+            "    SELECT t.parent_id, j.ref_id, j.meta FROM refs t"
+            "    JOIN refs j ON j.parent_id = t.ref_id"
+            "    WHERE t.parent_id = ANY(%(sids)s) AND t.kind = 'todo'"
+            "      AND t.retired_at IS NULL AND j.kind = 'job'"
+            "      AND j.retired_at IS NULL AND j.meta->>'job_type' = %(jt)s"
+            "  ) u"
             ") q WHERE rn <= 100 ORDER BY sid, ref_id DESC",
             {"jt": SCAN_JOB_TYPE, "sids": list(out)},
         ).fetchall()
