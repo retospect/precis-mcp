@@ -47,8 +47,12 @@ name="$(basename "$PWD")"
 common="$(cd "$(git rev-parse --git-common-dir)" && pwd)"
 : > "$d/$name.started"
 echo run >> "$d/$name.runs"
+# PRECIS_FAKE_LINT_HOLD=1: run until the test creates $d/release (load-proof;
+# the 300 s cap only bounds a hung test) instead of a fixed sleep.
 end=$((SECONDS + ${PRECIS_FAKE_LINT_SLEEP:-4}))
+if [ "${PRECIS_FAKE_LINT_HOLD:-0}" = 1 ]; then end=$((SECONDS + 300)); fi
 while [ "$SECONDS" -lt "$end" ]; do
+    if [ "${PRECIS_FAKE_LINT_HOLD:-0}" = 1 ] && { [ -e "$d/release" ] || [ -e "$d/$name.release" ]; }; then break; fi
     if [ "${PRECIS_FAKE_LINT_PROBE:-0}" = 1 ]; then
         if [ -d "$common/precis-ship.lock.d" ]; then
             echo present >> "$d/$name.lockseen"
@@ -155,6 +159,9 @@ class Rig:
         stub = scripts / "impacted-tests"
         stub.write_text(
             "#!/bin/sh\n"
+            # Drain stdin: ship pipes the changed list in, and a stub that exits
+            # first makes printf die of SIGPIPE (pipefail => selector "failed").
+            "cat >/dev/null\n"
             'if [ -n "${PRECIS_IMPACTED_STUB:-}" ]; then cat "$PRECIS_IMPACTED_STUB";'
             ' else printf "testmon=0\\ntests/test_stub.py\\n"; fi\n',
             encoding="utf-8",
@@ -197,13 +204,22 @@ class Rig:
         return self.origin_ref("main")
 
     def ship(
-        self, wt: Path, *flags: str, sleep: float = 4, probe: bool = False, **env: str
+        self,
+        wt: Path,
+        *flags: str,
+        sleep: float = 4,
+        probe: bool = False,
+        hold: bool = False,
+        **env: str,
     ) -> tuple[subprocess.Popen[str], Path]:
+        """Start scripts/ship. ``hold=True`` makes the fake gate wait for
+        ``release()`` rather than for ``sleep`` seconds."""
         log = self.root / f"{wt.name}.log"
         full_env = {
             **self.env,
             "PRECIS_FAKE_LINT_SLEEP": str(sleep),
             "PRECIS_FAKE_LINT_PROBE": "1" if probe else "0",
+            "PRECIS_FAKE_LINT_HOLD": "1" if hold else "0",
             **env,
         }
         fh = log.open("w", encoding="utf-8")
@@ -225,13 +241,19 @@ class Rig:
             assert time.monotonic() < end, f"{wt.name}: lint never started"
             time.sleep(0.1)
 
+    def release(self, wt: Path | None = None) -> None:
+        """Let held fake gates (``wt``'s only, else all; later legs too) finish."""
+        (self.lintdir / (f"{wt.name}.release" if wt else "release")).touch()
+
     def lockdir(self) -> Path:
         return self.primary / ".git" / "precis-ship.lock.d"
 
 
 @pytest.fixture
-def rig(tmp_path: Path) -> Rig:
-    return Rig(tmp_path)
+def rig(tmp_path: Path) -> Iterator[Rig]:
+    r = Rig(tmp_path)
+    yield r
+    r.release()  # never leave a held fake gate running after a failed test
 
 
 def _finish(proc: subprocess.Popen[str], log: Path, timeout: float = 120) -> str:
@@ -246,35 +268,45 @@ def _tree_files(rig: Rig, ref: str = "origin/main") -> set[str]:
 
 
 def test_two_quick_ships_overlap_their_lint(rig: Rig) -> None:
-    """Both land; wall time ~ one lint, not two (lint is unlocked)."""
-    solo = rig.worktree("solo", {"solo.txt": "s\n"})
+    """Both land; both lints are in flight at once (lint is unlocked).
+
+    Held gates make the overlap structural rather than a wall-time ratio: both
+    lints have started before either is allowed to finish, which could not
+    happen if one ship held the lock across its lint.
+    """
     a = rig.worktree("a", {"a.txt": "a\n"})
     b = rig.worktree("b", {"b.txt": "b\n"})
 
-    t0 = time.monotonic()
-    p, log = rig.ship(solo, "--quick", sleep=7)
-    _finish(p, log)
-    t_solo = time.monotonic() - t0
-
-    # Different lint lengths keep the two final sections apart, so a lock
-    # wait in either log can only mean the lock was held across a lint.
-    t0 = time.monotonic()
-    pa, la = rig.ship(a, "--quick", sleep=5)
-    pb, lb = rig.ship(b, "--quick", sleep=7)
+    pa, la = rig.ship(a, "--quick", hold=True)
+    pb, lb = rig.ship(b, "--quick", hold=True)
+    rig.wait_lint_started(a)
+    rig.wait_lint_started(b)
+    assert not (rig.lintdir / "a.finished").exists()
+    assert not (rig.lintdir / "b.finished").exists()
+    # Staggered so the two final sections cannot meet: a lock wait in either
+    # log could then only mean the lock was held across a lint.
+    rig.release(a)
     out_a = _finish(pa, la)
+    rig.release(b)
     out_b = _finish(pb, lb)
-    t_pair = time.monotonic() - t0
-    print(f"measured wall: solo={t_solo:.2f}s pair={t_pair:.2f}s")
 
-    assert {"solo.txt", "a.txt", "b.txt"} <= _tree_files(rig)
+    assert {"a.txt", "b.txt"} <= _tree_files(rig)
     assert "waiting for the ship lock" not in out_a + out_b
-    # Serial would be ~ (5 + 7) + 2x overhead; overlapped is ~ 7 + overhead.
-    assert t_pair < 1.5 * t_solo, (t_solo, t_pair)
 
 
 def test_lock_dir_absent_while_lint_runs(rig: Rig) -> None:
     wt = rig.worktree("probe", {"p.txt": "p\n"})
-    p, log = rig.ship(wt, "--quick", sleep=3, probe=True)
+    p, log = rig.ship(wt, "--quick", hold=True, probe=True)
+    probes_file = rig.lintdir / "probe.probes"
+    end = time.monotonic() + 60
+    lockseen = rig.lintdir / "probe.lockseen"
+    while not lockseen.exists() and not (
+        probes_file.exists()
+        and len(probes_file.read_text(encoding="utf-8").splitlines()) >= 5
+    ):
+        assert time.monotonic() < end, "the probe never ran (vacuous pass)"
+        time.sleep(0.1)
+    rig.release()
     out = _finish(p, log)
     probes = (rig.lintdir / "probe.probes").read_text(encoding="utf-8").splitlines()
     assert len(probes) >= 5, "the probe never ran (vacuous pass)"
@@ -285,9 +317,10 @@ def test_lock_dir_absent_while_lint_runs(rig: Rig) -> None:
 
 def test_quick_lost_race_forward_merges_and_lands(rig: Rig) -> None:
     wt = rig.worktree("q", {"q.txt": "q\n"})
-    p, log = rig.ship(wt, "--quick", sleep=4)
+    p, log = rig.ship(wt, "--quick", hold=True)
     rig.wait_lint_started(wt)
     racer_sha = rig.race({"racer.txt": "r\n"})
+    rig.release()
     out = _finish(p, log)
     assert "forward-merged over 1 commits (lint not re-run)" in out
     assert {"q.txt", "racer.txt"} <= _tree_files(rig)
@@ -318,9 +351,10 @@ def test_checked_lost_race_trailer_names_the_selection(rig: Rig) -> None:
     """A forward-merged --checked land must not read as 'lint only' in the
     squash trailer — git log is how a reader tells what actually gated."""
     wt = rig.worktree("qc", {"qc.txt": "q\n"})
-    p, log = rig.ship(wt, "--checked", sleep=4)
+    p, log = rig.ship(wt, "--checked", hold=True)
     rig.wait_lint_started(wt)
     rig.race({"racer.txt": "r\n"})
+    rig.release()
     out = _finish(p, log)
     assert "forward-merged over 1 commits (lint not re-run)" in out
     msg = rig.g(rig.origin, "log", "-1", "--format=%B", "refs/heads/main")
@@ -351,9 +385,10 @@ def test_checked_refuses_other_gates(rig: Rig, flags: list[str]) -> None:
 
 def test_budget_exhausted_full_gate_lands_without_pin(rig: Rig) -> None:
     wt = rig.worktree("f", {"f.txt": "f\n"})
-    p, log = rig.ship(wt, sleep=4, PRECIS_SHIP_MAX_ATTEMPTS="1")
+    p, log = rig.ship(wt, hold=True, PRECIS_SHIP_MAX_ATTEMPTS="1")
     rig.wait_lint_started(wt)
     racer_sha = rig.race({"racer.txt": "r\n"})
+    rig.release()
     out = _finish(p, log)
     assert "not a deploy warrant" in out
     assert "merged forward over 1 commits" in out
@@ -440,9 +475,10 @@ def test_exact_land_full_gate_pins_and_has_no_trailer(rig: Rig) -> None:
 def test_race_retry_prints_budget_and_elapsed(rig: Rig) -> None:
     """A full-gate loss with budget left re-gates (unlocked) and says what's left."""
     wt = rig.worktree("r", {"r.txt": "r\n"})
-    p, log = rig.ship(wt, sleep=3, PRECIS_SHIP_MAX_ATTEMPTS="2")
+    p, log = rig.ship(wt, hold=True, PRECIS_SHIP_MAX_ATTEMPTS="2")
     rig.wait_lint_started(wt)
     rig.race({"racer.txt": "r\n"})
+    rig.release()
     out = _finish(p, log)
     assert re.search(r"race budget: 1 of 2 attempts left; elapsed \d+m ?\d+s", out), out
     assert "not a deploy warrant" not in out  # the re-gate landed it exactly
@@ -453,9 +489,10 @@ def test_migration_number_collision_with_merged_range_dies(rig: Rig) -> None:
     wt = rig.worktree(
         "m", {"src/precis/migrations/0002_ours.sql": "select 2;\n", "m.txt": "m\n"}
     )
-    p, log = rig.ship(wt, sleep=3, PRECIS_SHIP_MAX_ATTEMPTS="1")
+    p, log = rig.ship(wt, hold=True, PRECIS_SHIP_MAX_ATTEMPTS="1")
     rig.wait_lint_started(wt)
     racer_sha = rig.race({"src/precis/migrations/0002_theirs.sql": "select 3;\n"})
+    rig.release()
     rc = p.wait(timeout=120)
     out = log.read_text(encoding="utf-8")
     assert rc != 0, out
@@ -468,9 +505,10 @@ def test_migration_number_collision_with_merged_range_dies(rig: Rig) -> None:
 def test_migrations_are_numbered_per_plugin_dir(rig: Rig) -> None:
     """0016 in precis_se vs 0016 in precis_chem is two ledgers, not a collision."""
     wt = rig.worktree("plug", {"src/precis_se/migrations/0016_a.sql": "select 1;\n"})
-    p, log = rig.ship(wt, sleep=3, PRECIS_SHIP_MAX_ATTEMPTS="1")
+    p, log = rig.ship(wt, hold=True, PRECIS_SHIP_MAX_ATTEMPTS="1")
     rig.wait_lint_started(wt)
     rig.race({"src/precis_chem/migrations/0016_b.sql": "select 2;\n"})
+    rig.release()
     out = _finish(p, log)
     assert "migration number collision" not in out
     assert {
@@ -618,9 +656,10 @@ def test_non_cas_push_failure_dies_at_once(rig: Rig) -> None:
 
 def test_safe_fetch_on_both_sides_refuses_the_forward_merge(rig: Rig) -> None:
     wt = rig.worktree("s", {"src/precis/utils/safe_fetch.py": "X = 1\n"})
-    p, log = rig.ship(wt, "--quick", sleep=3)
+    p, log = rig.ship(wt, "--quick", hold=True)
     rig.wait_lint_started(wt)
     racer_sha = rig.race({"src/precis/utils/safe_fetch.py": "X = 2\n"})
+    rig.release()
     rc = p.wait(timeout=120)
     out = log.read_text(encoding="utf-8")
     assert rc != 0, out
