@@ -13,19 +13,34 @@ if TYPE_CHECKING:
 
 
 class _StubStore:
-    """Duck-types just the one method the evaluator calls."""
+    """Duck-types just the methods the evaluator calls; ``stale`` is the
+    gr492096 freshness verdict for the latest run."""
 
-    def __init__(self, latest: tuple[str | None, list[dict[str, Any]]]) -> None:
+    def __init__(
+        self, latest: tuple[str | None, list[dict[str, Any]]], stale: bool = False
+    ) -> None:
         self._latest = latest
+        self._stale = stale
 
     def pcb_drc_findings_latest(
         self, ref_id: int
     ) -> tuple[str | None, list[dict[str, Any]]]:
         return self._latest
 
+    def pcb_drc_run_stale(self, ref_id: int, run_id: str | None) -> bool:
+        return self._stale
 
-def _store(latest: tuple[str | None, list[dict[str, Any]]]) -> Store:
-    return cast("Store", _StubStore(latest))
+
+def _store(
+    latest: tuple[str | None, list[dict[str, Any]]], stale: bool = False
+) -> Store:
+    return cast("Store", _StubStore(latest, stale))
+
+
+def test_none_when_the_latest_clean_run_is_stale():
+    """gr492096: a run older than the board's last edit never reads clean."""
+    store = _store(("run1", []), stale=True)
+    assert netlist_drc_clean.evaluate(store, {"pcb": 42}) is None
 
 
 def test_none_when_no_run_recorded_yet():

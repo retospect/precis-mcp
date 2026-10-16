@@ -73,6 +73,15 @@ and creates three is not "no change". The table's `delta` column reads
 `new` / `still` / `still, worse (was -0.090)` / `still, better (was …)`;
 a `## gone since run …` list names what went, by id. The first run at a
 phase says "none to compare against" rather than calling everything new.
+
+Each recorded run stores the board revision it checked (a hash over the
+design, copper and cached footprints). When the board has changed since,
+the head adds `stale baseline: that run was recorded <time> at revision
+<a>; the board is now at revision <b>`. Every reader of the latest run
+(the `netlist_drc_clean` gate, the checklist's drc-clean item, argue, the
+quest board) says `stale, re-check` instead of a verdict, and a stale run
+never counts as clean. Re-record with `args={'op':'check'}` to clear it.
+
 A recorded run's findings persist in `pcb_drc_findings` with `finding_key`, `margin_mm`
 and `first_seen_at` (the lifetime start — surviving a clean run in
 between, so "broken again" reads `new` while keeping its original

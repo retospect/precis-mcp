@@ -684,6 +684,110 @@ _AMBIENT_CONN: contextvars.ContextVar[Connection | None] = contextvars.ContextVa
 )
 
 
+#: What a DRC verdict depends on, per table: (row expression, FROM,
+#: ORDER BY, WHERE). Board meta drops the keys the recorder writes
+#: (``drc_runs_by_phase``, ``drc_revisions``) and ``op='order'``'s
+#: ``jlc_order`` cart record — none changes a verdict; ``part_footprints``
+#: hashes only its geometry columns.
+_REVISION_PARTS: tuple[tuple[str, str, str, str], ...] = (
+    (
+        "ROW(t.board_id, t.name, t.stackup, t.fold_lines, "
+        "COALESCE(t.meta, '{}'::jsonb) - 'drc_runs_by_phase' - 'drc_revisions' "
+        "- 'jlc_order')",
+        "pcb_boards t",
+        "t.board_id",
+        "t.ref_id = %(ref)s AND t.retired_at IS NULL",
+    ),
+    (
+        "t",
+        "pcb_components t",
+        "t.component_id",
+        "t.ref_id = %(ref)s AND t.retired_at IS NULL",
+    ),
+    (
+        "t",
+        "pcb_pins t JOIN pcb_components c ON c.component_id = t.component_id",
+        "t.pin_id",
+        "c.ref_id = %(ref)s AND t.retired_at IS NULL",
+    ),
+    (
+        "t",
+        "pcb_instances t",
+        "t.instance_id",
+        "t.ref_id = %(ref)s AND t.retired_at IS NULL",
+    ),
+    ("t", "pcb_nets t", "t.net_id", "t.ref_id = %(ref)s AND t.retired_at IS NULL"),
+    (
+        "t",
+        "pcb_netconns t JOIN pcb_nets n ON n.net_id = t.net_id",
+        "t.netconn_id",
+        "n.ref_id = %(ref)s",
+    ),
+    (
+        "t",
+        "pcb_net_classes t",
+        "t.class_id",
+        "t.ref_id = %(ref)s AND t.retired_at IS NULL",
+    ),
+    (
+        "t",
+        "pcb_features t",
+        "t.feature_id",
+        "t.ref_id = %(ref)s AND t.retired_at IS NULL",
+    ),
+    (
+        "t",
+        "pcb_fixed_copper t",
+        "t.fixed_id",
+        "t.ref_id = %(ref)s AND t.retired_at IS NULL",
+    ),
+    ("t", "pcb_generators t", "t.name", "t.ref_id = %(ref)s"),
+    ("t", "pcb_local_footprints t", "t.name", "t.ref_id = %(ref)s"),
+    (
+        "t",
+        "pcb_copper t JOIN pcb_boards b ON b.board_id = t.board_id",
+        "t.copper_id",
+        "b.ref_id = %(ref)s",
+    ),
+    (
+        "t",
+        "pcb_routes t JOIN pcb_boards b ON b.board_id = t.board_id",
+        "t.route_id",
+        "b.ref_id = %(ref)s",
+    ),
+    (
+        "t",
+        "pcb_planes t JOIN pcb_boards b ON b.board_id = t.board_id",
+        "t.plane_id",
+        "b.ref_id = %(ref)s AND t.retired_at IS NULL",
+    ),
+    (
+        "t",
+        "pcb_pin_swaps t JOIN pcb_boards b ON b.board_id = t.board_id",
+        "t.swap_id",
+        "b.ref_id = %(ref)s AND t.retired_at IS NULL",
+    ),
+    (
+        "ROW(t.lcsc, t.pads, t.pin_map, t.courtyard, t.centroid, t.holes, "
+        "t.fetched_at)",
+        "part_footprints t",
+        "t.lcsc",
+        "t.lcsc IN (SELECT c.part_lcsc FROM pcb_components c "
+        "WHERE c.ref_id = %(ref)s AND c.retired_at IS NULL)",
+    ),
+)
+
+#: The design revision (gr492096): one md5 over every part above, each
+#: part COALESCEd so an empty table never shifts its neighbours.
+_PCB_REVISION_SQL = "SELECT md5(concat_ws('|', {}))".format(
+    ", ".join(
+        f"COALESCE((SELECT string_agg(({expr})::text, ';' ORDER BY {order}) "
+        f"FROM {frm} WHERE {where}), '')"
+        for expr, frm, order, where in _REVISION_PARTS
+    )
+)
+
+
 class PcbMixin:
     pool: Any
     tx: Any
@@ -3246,12 +3350,22 @@ class PcbMixin:
             "VALUES (%s, %s, %s, %s, %s)",
             (board_id, run_id, pads_only, n_error, len(findings) - n_error),
         )
-        if phase is not None:
-            row = conn.execute(
-                "SELECT meta FROM pcb_boards WHERE board_id = %s", (board_id,)
-            ).fetchone()
-            meta = dict((row[0] if row else None) or {})
-            meta.setdefault("drc_runs_by_phase", {})[phase] = run_id
+        row = conn.execute(
+            "SELECT ref_id, meta FROM pcb_boards WHERE board_id = %s", (board_id,)
+        ).fetchone()
+        if row is not None:
+            meta = dict(row[1] or {})
+            if phase is not None:
+                meta.setdefault("drc_runs_by_phase", {})[phase] = run_id
+            # gr492096: the revision each still-referenced run checked
+            # (this run plus every phase baseline) — a reader compares it
+            # with the board's current one and calls a mismatch stale.
+            keep = {run_id, *(meta.get("drc_runs_by_phase") or {}).values()}
+            revisions = {
+                k: v for k, v in (meta.get("drc_revisions") or {}).items() if k in keep
+            }
+            revisions[run_id] = self._pcb_design_revision(conn, int(row[0]))
+            meta["drc_revisions"] = revisions
             conn.execute(
                 "UPDATE pcb_boards SET meta = %s WHERE board_id = %s",
                 (Jsonb(meta), board_id),
@@ -3279,6 +3393,62 @@ class PcbMixin:
                     f.get("finding_key"),
                 ),
             )
+
+    def _pcb_design_revision(self, conn: Connection, ref_id: int) -> str:
+        """An md5 over every live row a DRC verdict depends on (see
+        :data:`_PCB_REVISION_SQL`): any design edit, place/route write-back
+        or footprint fill changes it. The board-meta keys the recorder
+        itself writes are excluded, so recording a run never stales it."""
+        row = conn.execute(_PCB_REVISION_SQL, {"ref": ref_id}).fetchone()
+        return str(row[0]) if row else ""
+
+    def pcb_board_ref_id(self, board_id: int) -> int:
+        with self._pcb_conn() as conn:
+            row = conn.execute(
+                "SELECT ref_id FROM pcb_boards WHERE board_id = %s", (board_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"no pcb board {board_id}")
+        return int(row[0])
+
+    def pcb_design_revision(self, ref_id: int) -> str:
+        """The design's current revision (:meth:`_pcb_design_revision`)."""
+        with self._pcb_conn() as conn:
+            return self._pcb_design_revision(conn, ref_id)
+
+    def pcb_drc_run_freshness(
+        self, ref_id: int, run_id: str | None
+    ) -> dict[str, Any] | None:
+        """Whether recorded run ``run_id`` still describes the board
+        (gr492096, Reto 2026-10-16): ``{stale, recorded_revision,
+        current_revision, recorded_at}``. Stale when the design changed
+        since the run was recorded, or when the run carries no revision
+        stamp (it predates stamping) — unknown counts as stale, so a stale
+        run never reads clean. ``None`` for no run: that is "not yet",
+        which callers already handle."""
+        if run_id is None:
+            return None
+        with self._pcb_conn() as conn:
+            row = conn.execute(
+                "SELECT b.meta -> 'drc_revisions' ->> %s, r.created_at "
+                "FROM pcb_boards b LEFT JOIN pcb_drc_runs r "
+                "  ON r.board_id = b.board_id AND r.run_id = %s "
+                "WHERE b.ref_id = %s AND b.name = 'main' AND b.retired_at IS NULL",
+                (run_id, run_id, ref_id),
+            ).fetchone()
+            current = self._pcb_design_revision(conn, ref_id)
+        recorded = None if row is None else row[0]
+        return {
+            "stale": recorded != current,
+            "recorded_revision": recorded,
+            "current_revision": current,
+            "recorded_at": None if row is None else row[1],
+        }
+
+    def pcb_drc_run_stale(self, ref_id: int, run_id: str | None) -> bool:
+        """:meth:`pcb_drc_run_freshness`'s verdict alone; no run → False."""
+        fresh = self.pcb_drc_run_freshness(ref_id, run_id)
+        return bool(fresh and fresh["stale"])
 
     _DRC_FINDING_COLS = (
         "rule, severity, objects, detail, waived_by, "

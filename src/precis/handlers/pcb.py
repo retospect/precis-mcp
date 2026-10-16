@@ -399,6 +399,9 @@ class _DrcRun(NamedTuple):
     findings: list[pcb_drc.DrcFinding]
     pads_only: bool
     delta: pcb_drc.FindingDelta
+    #: :meth:`Store.pcb_drc_run_freshness` of ``delta``'s baseline, taken
+    #: BEFORE this run records (recording prunes superseded stamps).
+    baseline: dict[str, Any] | None = None
 
 
 #: Gone findings listed in full up to this many; past it, a count.
@@ -419,6 +422,25 @@ _DRC_RECORD_HINT = (
     "\n\nThis view records nothing; the delta is against the last recorded "
     "run. To record one: put(kind='pcb', id='{slug}', args={{'op':'check'}})"
 )
+
+
+def _drc_stale_line(baseline: dict[str, Any] | None) -> str:
+    """gr492096: the line under ``vs run X`` when that run is older than
+    the board's current revision — both revisions and the record time, so
+    the delta is never read as a comparison against the current design."""
+    if not baseline or not baseline["stale"]:
+        return ""
+    at = baseline["recorded_at"]
+    when = (
+        at.astimezone(UTC).strftime("%Y-%m-%d %H:%MZ")
+        if at is not None
+        else "unknown time"
+    )
+    rec = (baseline["recorded_revision"] or "unstamped")[:8]
+    return (
+        f"\nstale baseline: that run was recorded {when} at revision {rec}; "
+        f"the board is now at revision {baseline['current_revision'][:8]}"
+    )
 
 
 def _drc_delta_line(delta: pcb_drc.FindingDelta) -> str:
@@ -5001,13 +5023,13 @@ class PcbHandler(Handler):
                 "id='slug', args={'op':'route'}) to realize copper, then "
                 "re-check this view."
             )
-        run_id, findings, pads_only, delta = ran
+        run_id, findings, pads_only, delta, baseline = ran
         n_error = sum(1 for f in findings if f.severity == "error")
         n_warn = len(findings) - n_error
         head = (
             f"# DRC — {_drc_run_label(run_id)} — {n_error} error(s), {n_warn} warn(s)"
         )
-        head += "\n" + _drc_delta_line(delta)
+        head += "\n" + _drc_delta_line(delta) + _drc_stale_line(baseline)
         n_synth = sum(1 for f in findings if f.rule == "synthesized_footprint")
         if n_synth:
             head += (
@@ -5139,7 +5161,7 @@ class PcbHandler(Handler):
                 body=f"# check — phase {phase}\n— nothing the rules at this "
                 "phase can check (no pins, pads or copper yet)"
             )
-        run_id, findings, pads_only, delta = ran
+        run_id, findings, pads_only, delta, baseline = ran
 
         # Not-checked rows present as ``info`` — the same ruling the se
         # completeness findings use: "we could not run to a verdict" is
@@ -5196,7 +5218,7 @@ class PcbHandler(Handler):
                 f"{len(delta.still)} still"
                 + (f" ({n_worse} worse)" if n_worse else "")
                 + f", {len(delta.gone)} resolved"
-            )
+            ) + _drc_stale_line(baseline)
         n_synth = sum(1 for f in findings if f.rule == "synthesized_footprint")
         if n_synth:
             head += (
@@ -5373,6 +5395,14 @@ class PcbHandler(Handler):
             routed=any(k != "unrouted" for k in (design.get("route_status") or {})),
         )
 
+    def _drc_baseline_freshness(
+        self, board_id: int, run_id: str | None
+    ) -> dict[str, Any] | None:
+        if run_id is None:
+            return None
+        ref_id = self.store.pcb_board_ref_id(board_id)
+        return self.store.pcb_drc_run_freshness(ref_id, run_id)
+
     def _drc_record_hint(self, ref_id: int, run_id: str | None) -> str:
         """The record-a-run pointer under a read-only check view; empty
         when the run was recorded."""
@@ -5401,6 +5431,7 @@ class PcbHandler(Handler):
         a ``netlist`` eval's zero copper findings must never read to the
         next full run as "everything resolved"."""
         prev_run_id, prev_rows = self.store.pcb_drc_previous_run(board_id, phase=phase)
+        baseline = self._drc_baseline_freshness(board_id, prev_run_id)
         run_id: str | None = None
         if record:
             run_id = uuid.uuid4().hex
@@ -5412,7 +5443,7 @@ class PcbHandler(Handler):
                 phase=phase,
             )
         delta = pcb_drc.delta_against(prev_run_id, prev_rows, findings)
-        return _DrcRun(run_id, list(findings), pads_only, delta)
+        return _DrcRun(run_id, list(findings), pads_only, delta, baseline)
 
     def _erc_findings(
         self,
@@ -5982,7 +6013,7 @@ class PcbHandler(Handler):
                 "to check; this bundle is unverified",
                 0,
             )
-        run_id, findings, pads_only, _delta = ran
+        run_id, findings, pads_only, _delta, _baseline = ran
         # Judged AT fab — severities tier at fab too, so a netless pin a
         # placed board merely warns about is the error it is at tape-out.
         errors = [
