@@ -49,6 +49,7 @@ from typing import Any
 from psycopg import Connection
 from psycopg_pool import ConnectionPool
 
+from precis.store._chunks_ops import _vec_param
 from precis.store._mappers import _lookup_chunk_id, _upsert_tag
 from precis.store.types import ActorSlug, Tag
 
@@ -676,6 +677,7 @@ class TagsMixin:
         if page < 1:
             page = 1
         offset = (page - 1) * page_size
+        qv = _vec_param(query_vector)
         with self.pool.connection() as conn:
             rows = conn.execute(
                 "SELECT namespace, value, "
@@ -684,7 +686,7 @@ class TagsMixin:
                 "WHERE vector IS NOT NULL "
                 "ORDER BY vector <=> %s::vector ASC "
                 "LIMIT %s OFFSET %s",
-                (query_vector, query_vector, page_size, offset),
+                (qv, qv, page_size, offset),
             ).fetchall()
         return [(str(r[0]), str(r[1]), float(r[2])) for r in rows]
 

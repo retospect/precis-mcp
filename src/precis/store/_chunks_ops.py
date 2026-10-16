@@ -2322,12 +2322,11 @@ class ChunkStore:
             "  AND r.kind = ANY(%s) "
             "ORDER BY ce.vector <=> %s::vector ASC LIMIT %s"
         )
+        qv = _vec_param(seed_vec)
         with self.pool.connection() as conn:
             embedder = self._default_embedder_name(conn)
             _prepare_filtered_ann(conn, n)
-            rows = conn.execute(
-                sql, (seed_vec, embedder, list(kinds), seed_vec, n)
-            ).fetchall()
+            rows = conn.execute(sql, (qv, embedder, list(kinds), qv, n)).fetchall()
         region = [
             (
                 _row_to_chunk(r[:_BLOCK_END]),
@@ -2483,11 +2482,12 @@ class ChunkStore:
             "ce.status = 'ok'",
             "r.kind = ANY(%s)",
         ]
-        params: list[Any] = [vec, embedder, kinds]
+        qv = _vec_param(vec)
+        params: list[Any] = [qv, embedder, kinds]
         if exclude:
             clauses.append("c.chunk_id <> ALL(%s)")
             params.append(list(exclude))
-        params.append(vec)
+        params.append(qv)
         sql = (
             f"SELECT {proj}, {_REFS_COLS_ALIASED}, "
             "       (ce.vector <=> %s::vector) AS dist "

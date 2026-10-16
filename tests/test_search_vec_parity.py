@@ -1,7 +1,8 @@
 """Parity pin for chunk-search ``query_vec`` binding.
 
 Pins exact ranked keys + scores of the semantic / fused / dispatcher /
-multi search paths so a change in how ``query_vec`` is bound to SQL
+multi search paths, plus the dream region, ``_nearest_chunk`` and
+tag-semantic reads, so a change in how ``query_vec`` is bound to SQL
 (``list[float]`` -> ``pgvector.Vector``) is provably result-neutral.
 Hits are keyed by ``(ref slug, chunk ord)``, never by database id.
 """
@@ -136,10 +137,80 @@ def _cases() -> dict[str, Callable[[Store], list[Any]]]:
     c["multi_one_leg"] = lambda s: s.chunks.search_chunks_multi(
         q_texts=[_Q_NITRATE], query_vecs=[vec(_Q_NITRATE)], limit=20
     )
+    c["dreamable_region"] = lambda s: s.chunks.dreamable_region(n=8)[1]
+    c["nearest_chunk"] = lambda s: _nearest(s, _Q_AMMONIA, exclude_first=False)
+    c["nearest_chunk_exclude"] = lambda s: _nearest(s, _Q_AMMONIA, exclude_first=True)
+    c["tags_semantic"] = _tags_semantic
     return c
 
 
+def _nearest(store: Store, q: str, *, exclude_first: bool) -> list[Any]:
+    """``_nearest_chunk`` direct (no public caller is deterministic);
+    ``exclude_first`` re-asks with the first answer excluded."""
+    ops = store.chunks
+    with ops.pool.connection() as conn:
+        emb = ops._default_embedder_name(conn)
+        kinds = ["paper", "memory"]
+        hit = ops._nearest_chunk(conn, _EMB.embed_one(q), emb, kinds, set())
+        if hit is not None and exclude_first:
+            hit = ops._nearest_chunk(conn, _EMB.embed_one(q), emb, kinds, {hit[0].id})
+    return [] if hit is None else [hit]
+
+
+_TAGS = ["topic:nitrate", "topic:ammonia", "topic:perovskite", "topic:enzymes"]
+
+
+def _tags_semantic(store: Store) -> list[Any]:
+    """Tag rows keyed as ``(namespace:value, 0, distance)`` to reuse ``_hits``'
+    shape; seeds ``tag_embeddings`` (upsert, so idempotent)."""
+    for t in _TAGS:
+        store.write_tag_embedding(
+            namespace="OPEN",
+            value=t,
+            vector=_EMB.embed_one(t),
+            embedder="bge-m3",
+            version=1,
+        )
+    rows = store.search_tags_semantic(
+        query_vector=_EMB.embed_one(_Q_NITRATE), page_size=10
+    )
+    return [(_TagBlk(), _TagRef(f"{ns}:{v}"), d) for ns, v, d in rows]
+
+
+class _TagBlk:
+    ord = 0
+
+
+class _TagRef:
+    kind = "tag"
+
+    def __init__(self, slug: str) -> None:
+        self.slug = slug
+
+
 GOLDEN: dict[str, list[tuple[str, int, float]]] = {
+    "dreamable_region": [
+        ("wang2020nitrate", 0, 1.0),
+        ("smith2019perovskite", 1, 0.071781926),
+        ("wang2020nitrate", 2, 0.037359937),
+        ("lee2021enzymes", 0, 0.007271919),
+        ("lee2021enzymes", 3, 0.005072339),
+        ("lee2021enzymes", 2, -3.9335e-05),
+        ("wang2020nitrate", 1, -0.002583644),
+        ("wang2020nitrate", 3, -0.015080154),
+    ],
+    "nearest_chunk": [
+        ("lee2021enzymes", 3, 0.952645039),
+    ],
+    "nearest_chunk_exclude": [
+        ("<memory>", 0, 0.953617598),
+    ],
+    "tags_semantic": [
+        ("OPEN:topic:nitrate", 0, 0.995835711),
+        ("OPEN:topic:ammonia", 0, 1.003841642),
+        ("OPEN:topic:perovskite", 0, 1.034315997),
+        ("OPEN:topic:enzymes", 0, 1.045198365),
+    ],
     "semantic_nitrate": [
         ("smith2019perovskite", 0, 0.942743912),
         ("wang2020nitrate", 3, 0.967486654),
