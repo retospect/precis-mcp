@@ -1645,7 +1645,10 @@ def build_ref_passes(
     # works, and cross-checks each authored edge's paper DOI against
     # the record's works. Same throttle shape as openalex_enrich /
     # paper_meta_enrich just above, cadence via
-    # PRECIS_ORCID_ENRICH_REFRESH_HOURS (default 1).
+    # PRECIS_ORCID_ENRICH_REFRESH_HOURS (default 1). The node loop is
+    # self-bounded per cycle (PRECIS_ORCID_ENRICH_PASS_WALL_S, default
+    # 240 — under the 300s ref-pass bound; gr492115) and resumes where
+    # it stopped, since the claim holds no lease.
     if _register("orcid_enrich"):
         from precis.workers.orcid_enrich import run_once as _run_orcid_enrich_pass
         from precis.workers.runner import BatchResult as _BatchResult

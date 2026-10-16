@@ -30,6 +30,17 @@ modules' docstrings for the detailed rationale):
 * **Cadence throttle.** An ``orcid_enrich:last_run`` marker in
   ``app_state`` gates the whole pass to once per
   ``PRECIS_ORCID_ENRICH_REFRESH_HOURS`` (default 1).
+* **Cycle bound.** The pass stops starting new nodes once
+  ``PRECIS_ORCID_ENRICH_PASS_WALL_S`` (default 240 — below the runner's
+  300s ref-pass deadline) has elapsed since the node loop began, and each
+  node's fetch is itself capped (``_NODE_FETCH_CAP_S``). gr492115: a full
+  100-node batch at ~8s/node (three sequential pub.orcid.org calls plus
+  store work) needed ~800s, so *every* pass blew the ref-pass deadline
+  and ran on detached. The pass is resumable by construction — a node's
+  ``meta.fetched_at``/``fetch_failed_at`` is stamped as it completes and
+  the claim holds no lease — so the unstarted remainder just stays
+  claimable for the next due pass (``fetch_oa._pass_wall_s`` is the same
+  idiom).
 * Unlike those two, this pass carries no single-runner advisory lock —
   its claim predicate (``meta.fetched_at IS NULL``) is naturally
   converging (a node visited by any node never re-selects), so a rare
@@ -55,6 +66,7 @@ import logging
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
+from functools import partial
 from typing import Any
 
 from precis import alerts
@@ -64,7 +76,8 @@ from precis.identity import normalize_doi
 from precis.ingest import orcid as orcid_api
 from precis.store import Store
 from precis.utils.authors import split_middle
-from precis.utils.env import env_int
+from precis.utils.deadline import call_with_deadline
+from precis.utils.env import env_float, env_int
 from precis.workers import _throttle
 from precis.workers.runner import BatchResult
 
@@ -99,6 +112,31 @@ _MAX_BACKOFF_STEPS = 5
 _MAX_FETCHES_PER_SECOND = 2.0
 _MIN_INTERVAL_S = 1.0 / _MAX_FETCHES_PER_SECOND
 
+#: Env var + default for the per-cycle wall budget (see the module
+#: docstring's "Cycle bound" bullet). Default sits below the worker
+#: loop's 300s ref-pass deadline so a pass returns inside it. ``0`` or
+#: less disables the budget.
+_PASS_WALL_ENV_VAR = "PRECIS_ORCID_ENRICH_PASS_WALL_S"
+_DEFAULT_PASS_WALL_S = 240.0
+
+#: Hard bound on one node's ``fetch_record`` inside a pass: three
+#: sequential API calls, each already bounded at ~60s by
+#: ``request_with_deadline``, so a fully-wedged record could otherwise
+#: eat ~180s of the cycle budget. A node cut by this bound is stamped
+#: failed and backed off like any other fetch failure.
+_NODE_FETCH_CAP_S = 90.0
+
+#: Budget reserved past a node's fetch for its store/enqueue/cross-check
+#: writes, and the minimum fetch budget worth starting a node on — below
+#: it the fetch would just be cut and stamped unfairly.
+_NODE_TAIL_SLACK_S = 15.0
+_MIN_FETCH_BUDGET_S = 15.0
+
+#: Clock for the pass wall budget; a module attribute so tests can drive
+#: it without touching the process-wide ``time.monotonic`` (same idiom
+#: as ``fetch_oa._clock``).
+_clock = time.monotonic
+
 #: Set True after the missing-credentials alert has fired once this
 #: process — guards against re-raising (and re-round-tripping the DB via
 #: ``alerts.raise_alert``) every due pass while ORCID_CLIENT_ID/_SECRET
@@ -118,6 +156,18 @@ def _due(store: Store) -> bool:
 
 def _batch_limit() -> int:
     return env_int(_BATCH_ENV_VAR, _DEFAULT_BATCH_LIMIT, lo=1)
+
+
+def _pass_wall_s() -> float:
+    """``PRECIS_ORCID_ENRICH_PASS_WALL_S`` — default **_DEFAULT_PASS_WALL_S**.
+
+    Wall-time budget for one :func:`run_once` node loop: no new node is
+    started once this much time has elapsed since the loop began, and a
+    node is only started on a remaining budget of at least
+    ``_MIN_FETCH_BUDGET_S`` + ``_NODE_TAIL_SLACK_S``. ``0`` or less
+    disables the budget (each node still carries ``_NODE_FETCH_CAP_S``).
+    """
+    return env_float(_PASS_WALL_ENV_VAR, _DEFAULT_PASS_WALL_S, lo=0.0)
 
 
 def _raise_missing_credentials_alert(store: Store) -> None:
@@ -296,13 +346,16 @@ def run_once(
 ) -> BatchResult:
     """Run the ORCID fetch + cross-check sweep if due; otherwise no-op.
 
-    ``claimed`` counts nodes selected this pass; ``ok`` counts nodes
+    ``claimed`` counts nodes visited this pass; ``ok`` counts nodes
     fetched + stored + cross-checked; ``failed`` counts nodes whose fetch
-    raised — logged, ``meta.fetched_at`` left unset, and the node stamped
-    (:func:`_record_failure`) so :func:`_claim_batch` holds it back for a
-    widening window rather than re-failing it on every pass. Idle passes
-    (no dsn, throttled, or missing credentials) return all zeros and claim
-    nothing.
+    raised (including a fetch cut by its ``_NODE_FETCH_CAP_S``/remaining-
+    budget deadline) — logged, ``meta.fetched_at`` left unset, and the
+    node stamped (:func:`_record_failure`) so :func:`_claim_batch` holds
+    it back for a widening window rather than re-failing it on every
+    pass. The node loop stops starting new work once
+    :func:`_pass_wall_s` is spent, leaving the rest of the batch
+    claimable for the next due pass. Idle passes (no dsn, throttled, or
+    missing credentials) return all zeros and claim nothing.
     """
     idle = BatchResult(handler="orcid_enrich", claimed=0, ok=0, failed=0)
     if not store.dsn or not _due(store):
@@ -318,7 +371,29 @@ def run_once(
 
     ok = 0
     failed = 0
+    visited = 0
+    wall_s = _pass_wall_s()
+    started = _clock()
     for ref_id in node_ids:
+        # gr492115: bound the cycle, not just the batch — a full 100-node
+        # batch at ~8s/node overran the 300s ref-pass deadline on every
+        # pass. Unstarted nodes hold no lease; their stamps are only
+        # written as they complete, so the remainder stays claimable for
+        # the next due pass.
+        fetch_budget = _NODE_FETCH_CAP_S
+        if wall_s > 0:
+            remaining = wall_s - (_clock() - started) - _NODE_TAIL_SLACK_S
+            if remaining < _MIN_FETCH_BUDGET_S:
+                log.info(
+                    "orcid_enrich: pass wall budget %.0fs spent after %d/%d "
+                    "nodes; the rest stay claimable for the next pass",
+                    wall_s,
+                    visited,
+                    len(node_ids),
+                )
+                break
+            fetch_budget = min(_NODE_FETCH_CAP_S, remaining)
+        visited += 1
         orcid_id = _orcid_id_for_node(store, ref_id)
         if orcid_id is None:
             log.warning("orcid_enrich: node %d has no resolvable orcid_id", ref_id)
@@ -326,7 +401,11 @@ def run_once(
             failed += 1
             continue
         try:
-            record = fetch(orcid_id)
+            record = call_with_deadline(
+                partial(fetch, orcid_id),
+                deadline_s=fetch_budget,
+                label=f"orcid fetch {orcid_id}",
+            )
         except Exception:
             log.exception("orcid_enrich: node %d (%s) fetch failed", ref_id, orcid_id)
             _record_failure(store, ref_id)
@@ -342,16 +421,14 @@ def run_once(
 
     store.set_setting(_STATE_KEY, datetime.now(UTC).isoformat())
 
-    if node_ids:
+    if visited:
         log.info(
             "orcid_enrich: visited %d node(s), %d ok, %d failed",
-            len(node_ids),
+            visited,
             ok,
             failed,
         )
-    return BatchResult(
-        handler="orcid_enrich", claimed=len(node_ids), ok=ok, failed=failed
-    )
+    return BatchResult(handler="orcid_enrich", claimed=visited, ok=ok, failed=failed)
 
 
 __all__ = ["run_once"]

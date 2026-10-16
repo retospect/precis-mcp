@@ -8,6 +8,7 @@ stay offline; ``has_credentials`` is monkeypatched per test.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Iterator
 from typing import Any
 
@@ -351,6 +352,91 @@ class TestCrossCheck:
         run_once(store, fetch_fn=lambda _oid: record, sleep_fn=lambda _s: None)
 
         assert paper_authors_drift_check(store)["count"] == 0
+
+
+class TestPassBudget:
+    """gr492115: a full 100-node batch at ~8s/node (three sequential
+    pub.orcid.org calls + store work) needed ~800s, so every pass blew
+    the runner's 300s ref-pass deadline and ran on detached. The node
+    loop is now wall-budgeted (``_pass_wall_s``) and each node's fetch
+    capped (``_NODE_FETCH_CAP_S``); the pass is resumable because a
+    node's stamp lands as it completes and the claim holds no lease.
+    """
+
+    def test_wall_budget_truncates_and_the_rest_resumes_next_pass(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _stub_credentials(monkeypatch, present=True)
+        total = 10
+        for i in range(total):
+            oid = f"0000-0002-1825-{i:04d}"
+            _orcid_node(store, slug=f"orcid:{oid}", orcid_id=oid)
+
+        # Fake clock: each fetch burns 8s of pass wall time, the measured
+        # prod cost per node. 60s wall - 15s tail slack - 15s min start
+        # budget => the loop stops once elapsed passes 30s: exactly 4
+        # nodes fit per pass.
+        now = [0.0]
+        monkeypatch.setattr(orcid_enrich, "_clock", lambda: now[0])
+        monkeypatch.setenv("PRECIS_ORCID_ENRICH_PASS_WALL_S", "60")
+
+        record = _record()
+
+        def _fetch(_oid: str) -> dict[str, Any]:
+            now[0] += 8.0
+            return record
+
+        first = run_once(store, fetch_fn=_fetch, sleep_fn=lambda _s: None)
+        assert (first.claimed, first.ok, first.failed) == (4, 4, 0)
+        assert len(orcid_enrich._claim_batch(store, limit=total)) == total - 4
+
+        # Next due pass picks up exactly the unvisited remainder rather
+        # than redoing work — the pass resumes where it stopped.
+        store.set_setting(orcid_enrich._STATE_KEY, "2000-01-01T00:00:00+00:00")
+        now[0] = 0.0
+        second = run_once(store, fetch_fn=_fetch, sleep_fn=lambda _s: None)
+        assert (second.claimed, second.ok) == (4, 4)
+
+        store.set_setting(orcid_enrich._STATE_KEY, "2000-01-01T00:00:00+00:00")
+        now[0] = 0.0
+        third = run_once(store, fetch_fn=_fetch, sleep_fn=lambda _s: None)
+        assert (third.claimed, third.ok) == (2, 2)
+        assert orcid_enrich._claim_batch(store, limit=total) == []
+
+    def test_a_wedged_fetch_is_cut_at_the_node_cap_and_stamped(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An external call that outlives its bound is abandoned and the
+        node stamped failed — the pass moves on instead of holding the
+        whole cycle hostage."""
+        _stub_credentials(monkeypatch, present=True)
+        wedged_oid = "0000-0002-1825-0001"
+        _orcid_node(store, slug=f"orcid:{wedged_oid}", orcid_id=wedged_oid)
+        ok_oid = "0000-0002-1825-0002"
+        _orcid_node(store, slug=f"orcid:{ok_oid}", orcid_id=ok_oid)
+
+        monkeypatch.setattr(orcid_enrich, "_NODE_FETCH_CAP_S", 0.05)
+        monkeypatch.setenv("PRECIS_ORCID_ENRICH_PASS_WALL_S", "0")
+
+        def _fetch(oid: str) -> dict[str, Any]:
+            if oid == wedged_oid:
+                time.sleep(2.0)  # wedged — abandoned at the cap
+            return _record()
+
+        result = run_once(store, fetch_fn=_fetch, sleep_fn=lambda _s: None)
+        assert result.claimed == 2
+        assert (result.ok, result.failed) == (1, 1)
+
+        wedged_ref = store.get_ref(kind="orcid", id=f"orcid:{wedged_oid}")
+        assert wedged_ref is not None
+        assert (wedged_ref.meta or {}).get("fetch_failed_at")
+        # ...and the stamp holds the wedged node out of the next pass
+        # instead of letting it re-run (and re-wedge) every cycle.
+        assert orcid_enrich._claim_batch(store, limit=10) == []
+
+        ok_ref = store.get_ref(kind="orcid", id=f"orcid:{ok_oid}")
+        assert ok_ref is not None
+        assert (ok_ref.meta or {}).get("fetched_at")
 
 
 class TestMissingCredentials:
