@@ -102,6 +102,7 @@ class TestTagsView:
         _gripe(store, "area:x")
         _gripe(store, "area:x")
         g3 = _gripe(store, "area:y")
+        GripeHandler(hub=hub).put(id=g3, text="resolved: abc (r1) — fixture")
         GripeHandler(hub=hub).tag(id=g3, add=["STATUS:done"])
         body = runtime_with_store.dispatch("search", {"kind": "gripe", "view": "tags"})
         assert "# tag counts — gripe (3 live refs)" in body
@@ -119,6 +120,7 @@ class TestTagsView:
     ) -> None:
         _gripe(store, "area:x")
         g2 = _gripe(store, "area:y")
+        GripeHandler(hub=hub).put(id=g2, text="resolved: abc (r1) — fixture")
         GripeHandler(hub=hub).tag(id=g2, add=["STATUS:done"])
         body = runtime_with_store.dispatch(
             "search", {"kind": "gripe", "view": "tags", "status": "open"}

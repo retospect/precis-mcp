@@ -36,7 +36,7 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from precis.errors import BadInput, Unsupported
+from precis.errors import BadInput, Gone, NotFound, Unsupported
 from precis.handlers import _comment_timeline as tl
 from precis.handlers._mode_help import require_mode
 from precis.handlers._numeric_ref import _BASE_VIEWS, NumericRefHandler
@@ -50,6 +50,8 @@ from precis.utils.secret_scan import mask_secrets
 
 # Chunk-kind slugs we own. Match the seed in 0005.
 _BODY_KIND = "gripe_body"
+_RESOLVED_PREFIX = "resolved:"
+_TERMINAL_STATUS_TAGS = frozenset({"STATUS:done", "STATUS:wontfix"})
 _COMMENT_KIND = "gripe_comment"
 
 #: Bare-get body head budget (render diet 2026-10-14: the default read
@@ -285,6 +287,7 @@ class GripeHandler(NumericRefHandler):
                     "add=['STATUS:wontfix']) — a STATUS add displaces the old value"
                 ),
             )
+        self._require_resolved_comment(id, add)
         add, prio_from_tag = split_prio(add)
         clear_prio = False
         if remove:
@@ -303,6 +306,60 @@ class GripeHandler(NumericRefHandler):
                 shown = f"prio={prio}" if prio is not None else "prio=cleared"
                 return Response(body=f"set {shown} on {self._sense()} id={ref_id}")
         return super().tag(id=id, add=add, remove=remove, **_kw)
+
+    def _comments(self, ref_id: int, ref: Ref | None = None) -> list[Any]:
+        """Visible comments (hidden ones, per ``refs.meta``, are skipped)."""
+        if ref is None:
+            ref = self.store.get_ref(kind=self.kind, id=ref_id, include_deleted=True)
+        hidden = tl.hidden_comments(ref) if ref is not None else set()
+        return [
+            c
+            for c in self.store.chunks.list_chunks_for_ref(ref_id)
+            if c.chunk_kind == _COMMENT_KIND and c.ord not in hidden
+        ]
+
+    def _require_resolved_comment(self, id: str | int, add: list[str] | None) -> None:
+        """A terminal STATUS needs a newest comment starting ``resolved:``."""
+        if not any(t in _TERMINAL_STATUS_TAGS for t in add or ()):
+            return
+        ref_id = self._coerce_id(id)
+        self._resolve_live_ref(ref_id)
+        comments = self._comments(ref_id)
+        newest = max(comments, key=lambda c: c.ord).text if comments else ""
+        if newest.lstrip().startswith(_RESOLVED_PREFIX):
+            return
+        wontfix = "STATUS:wontfix" in (add or ())
+        example = (
+            "resolved: wontfix — <reason>"
+            if wontfix
+            else "resolved: <sha> (r<N>) — <how verified>"
+        )
+        raise BadInput(
+            f"closing a {self._sense()} needs a newest comment starting "
+            f"{_RESOLVED_PREFIX!r}",
+            next=(
+                f"put(kind={self.kind!r}, id={ref_id}, text={example!r}) first, "
+                f"then repeat this tag (or pass tags={list(add or ())!r} on that put)"
+            ),
+        )
+
+    def _render_tombstone(self, ref_id: int) -> Response:
+        """Read-only view of a soft-deleted gripe: title, last STATUS, last comment."""
+        ref = self.store.get_ref(kind=self.kind, id=ref_id, include_deleted=True)
+        if ref is None:
+            raise NotFound(f"{self._sense()} id={ref_id} not found")
+        statuses = [
+            str(t) for t in self.store.tags_for(ref_id) if str(t).startswith("STATUS:")
+        ]
+        comments = self._comments(ref_id)
+        last = max(comments, key=lambda c: c.ord) if comments else None
+        lines = [
+            f"{self._sense()} id={ref_id} [soft-deleted, read-only]",
+            f"title: {ref.title}",
+            f"last status: {', '.join(statuses) or '(none)'}",
+            f"last comment: {last.text if last else '(none)'}",
+        ]
+        return Response(body="\n".join(lines))
 
     # ── create: ref + body chunk + default tags + (optional) link ──
 
@@ -349,6 +406,14 @@ class GripeHandler(NumericRefHandler):
             raise BadInput(
                 f"creating a {self._sense()} requires text=",
                 next=f"put(kind={self.kind!r}, text='your content')",
+            )
+        if any(t in _TERMINAL_STATUS_TAGS for t in tags or ()):
+            raise BadInput(
+                f"a new {self._sense()} cannot be filed already closed",
+                next=(
+                    f"file it, then put(kind={self.kind!r}, id=<new id>, "
+                    "text='resolved: …', tags=['STATUS:done'])"
+                ),
             )
         if link is not None:
             mint_lazy_link_target(link, store=self.store)
@@ -467,7 +532,13 @@ class GripeHandler(NumericRefHandler):
                 options=views,
                 next="get(kind='gripe', id=<id>, view='comments') for the full timeline",
             )
-        return super().get(id=id, view=view, q=q, **_kw)
+        try:
+            return super().get(id=id, view=view, q=q, **_kw)
+        except Gone:
+            # Soft-deleted: keep past closures readable instead of a bare Gone.
+            if view is not None or id is None:
+                raise
+            return self._render_tombstone(self._coerce_id(id))
 
     def _render_one(self, ref: Ref, tags: list[Tag]) -> str:
         return self._render_timeline(ref, tags, full=False)

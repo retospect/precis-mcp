@@ -71,8 +71,8 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
    `origin/prod` (`git fetch origin prod`, then
    `git merge-base --is-ancestor <sha> origin/prod`), it is not
    open work — leave a one-line resolution comment naming the sha, then
-   soft-delete it (`put(kind='gripe', id=N, text='resolved in <sha> …')` →
-   `delete(kind='gripe', id=N)`; history is preserved). Merged to `main` but
+   close it (`put(kind='gripe', id=N, text='resolved: <sha> (r<N>) — <how verified>',
+   tags=['STATUS:done'])`; never delete a fixed gripe). Merged to `main` but
    not deployed: leave it open and say so. Leave it open too when its body or
    comments name a pending human or browser check that nobody has reported
    passing. A gripe stays open only if it is genuinely unfixed or unverified.

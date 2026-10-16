@@ -75,7 +75,7 @@ their own view set instead, is in `precis-overview`.
 | Rewrite a region of a file | `edit(kind='markdown', id='notes/x.md', find='...', text='...')` | `precis-edit-help` |
 | Delete a matched span | `edit(..., find='...', text='')` | `precis-edit-help` |
 | Rewrite a todo in place | `edit(kind='todo', id=122, mode='replace', text='...')` | `precis-todo-help` |
-| Soft-delete a ref | `delete(kind='gripe', id=42)` | `precis-delete-help` |
+| Soft-delete a ref (a duplicate/spam gripe; fixed gripes close via `STATUS:done`) | `delete(kind='gripe', id=42)` | `precis-delete-help` |
 | Classify / prioritise | `tag(kind='todo', id=122, add=['STATUS:done'])` | `precis-tag-help`, `precis-tags` |
 | Connect two refs | `link(kind='todo', id=141, target='todo:158', rel='blocked-by')` | `precis-link-help`, `precis-relations` |
 | Page a long response | `more(cursor='...')` (from a `Next: more(...)` footer) | `precis-toon` |

@@ -183,9 +183,14 @@ Once check.yml on main is green for the landed commit and the
 fix holds:
 
 ```python
-put(kind="gripe", id=42, text="verified: <sha> fixes it")
-delete(kind="gripe", id=42)
+put(kind="gripe", id=42, text="resolved: <sha> (r<N>) — <how verified>",
+    tags=["STATUS:done"])
 ```
+
+The comment must come first and start with `resolved:`; the tag is refused
+otherwise (the error names the put to make). Won't-fix is
+`resolved: wontfix — <reason>` plus `STATUS:wontfix`. `delete` is only for
+duplicates, spam and gripes filed in error.
 
 ## Reject the fix and ask for another pass
 ## Iterate on a half-done fix

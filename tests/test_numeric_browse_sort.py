@@ -44,6 +44,8 @@ def test_priority_and_recency_pages(
     closed = next(
         r.id for r in store.list_refs(kind=kind) if r.title == "fixture-sort-closed"
     )
+    if kind == "gripe":
+        handler.put(id=closed, text="resolved: abc (r1) — fixture")
     handler.tag(
         id=closed,
         add=[

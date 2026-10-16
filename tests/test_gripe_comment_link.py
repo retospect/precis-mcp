@@ -53,9 +53,9 @@ def _tags(h, ref_id: int) -> set[str]:
 
 def test_comment_and_close_in_one_put(hub: Hub) -> None:
     h, dup, canon = _two(hub)
-    resp = h.put(id=dup, text="closing as wontfix", tags=["STATUS:wontfix"])
+    resp = h.put(id=dup, text="resolved: wontfix — closing", tags=["STATUS:wontfix"])
     assert "appended comment" in resp.body and "tagged" in resp.body
-    assert "closing as wontfix" in h.get(id=dup).body
+    assert "resolved: wontfix — closing" in h.get(id=dup).body
     tags = _tags(h, dup)
     assert "STATUS:wontfix" in tags and "STATUS:open" not in tags
 
@@ -64,7 +64,7 @@ def test_comment_tags_and_link_together(hub: Hub) -> None:
     h, dup, canon = _two(hub)
     resp = h.put(
         id=dup,
-        text="dup of canonical",
+        text="resolved: wontfix — dup of canonical",
         link=f"gripe:{canon}",
         rel="superseded-by",
         tags=["STATUS:wontfix"],

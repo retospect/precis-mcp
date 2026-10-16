@@ -197,6 +197,7 @@ class TestGripeTagAxisFacet:
         open_id = _gripe(store, "live gripe")
         done_id = _gripe(store, "closed gripe")
         # Grips start STATUS:open; displace one to a terminal value.
+        gripes.put(id=done_id, text="resolved: abc (r1) — fixture")
         gripes.tag(id=done_id, add=["STATUS:done"])
         del open_id
 

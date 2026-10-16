@@ -84,7 +84,7 @@ it, then let it shape the whole handoff:
    "persist first" move `/go` step 10 makes after a ship. Conversely, if this
    session's work already resolved something durable-list-worthy (a gripe a
    landed commit fixed, a `docs/backlog/` item whose fix has merged), close
-   it now — resolution-comment-then-soft-delete for a gripe, delete-the-file
+   it now — `resolved: <sha> …` comment plus `STATUS:done` for a gripe, delete-the-file
    for `docs/backlog/` (per `/whatneedsdoing`'s convention) — rather than
    leaving it dangling for the recovery prompt to route around. Don't
    persist things that don't need it: a next step you're about to hand off

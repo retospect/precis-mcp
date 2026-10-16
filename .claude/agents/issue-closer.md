@@ -38,14 +38,15 @@ justify against the diff.
   some, don't close it — leave a one-line comment on the gripe noting which
   part is fixed (`put`), and stop there.
 - Never use `STATUS:wontfix` here — that means "decided not to act", not
-  "fixed". A resolved gripe is always `delete`, never a tag mutation.
+  "fixed". A resolved gripe is closed with a `resolved: <sha> (r<N>) — <how verified>`
+  comment plus `STATUS:done`; never `delete` it.
 - When genuinely unsure, don't close. Leaving something open is the correct
   output, not a missed opportunity.
 
 ## Closing mechanics
-- Gripe: `put(kind='gripe', id=N, text='fixed by <sha>: <what changed>')`
-  (comment first — good manners per `precis-gripe-help.md`), then
-  `delete(kind='gripe', id=N)` (soft-delete, per that skill's convention).
+- Gripe: `put(kind='gripe', id=N, text='resolved: <sha> (r<N>) — <how verified>',
+  tags=['STATUS:done'])`. The tag is refused unless the newest comment
+  starts `resolved:`. `delete` is only for duplicates, spam, filed-in-error.
 - Backlog item: `git rm docs/backlog/<slug>.md` in the same pass
   (delete-on-ship, no done-markers, per this repo's own convention) and
   commit that edit separately — the ship commit already happened, don't

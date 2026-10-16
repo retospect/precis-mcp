@@ -130,6 +130,9 @@ def test_footer_and_open_concern_banner(runtime: PrecisRuntime, store: Store) ->
         ).fetchone()
     assert gid is not None
     runtime.dispatch(
+        "put", {"kind": "gripe", "id": int(gid[0]), "text": "resolved: wontfix — test"}
+    )
+    runtime.dispatch(
         "tag", {"kind": "gripe", "id": int(gid[0]), "add": ["STATUS:wontfix"]}
     )
     out = runtime.dispatch("get", {"kind": "skill", "id": SKILL, "full": True})

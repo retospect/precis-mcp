@@ -43,7 +43,8 @@ best-effort count of currently-open shipped-marked gripes (`title ILIKE
    `git log -S'<callsite>'` / `git merge-base --is-ancestor <sha>
    <deployed_sha>` as needed.
 3. Close the **genuinely-fully-shipped** ones as `STATUS:done`: a
-   one-line resolution comment naming the sha, then
+   `resolved: <sha> (r<N>) — <how verified>` comment (the tag is refused
+   without it), then
    `tag(kind='gripe', id=N, add=['STATUS:done'])`. `delete` is for
    junk/test artifacts and empty duplicates only.
 4. **Do not close** a gripe marked "shipped" whose fix landed **with open

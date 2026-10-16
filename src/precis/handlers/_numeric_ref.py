@@ -2030,11 +2030,13 @@ class NumericRefHandler(Handler):
                 extras.append(
                     self._link(id=id, target=unlink, mode="remove", rel=rel).body
                 )
+            # Append first: a kind's tag guard may read the new comment
+            # (gripe's STATUS:done needs a newest ``resolved:`` comment).
+            appended = append()
             if has_tag_ops:
                 # ``tag`` validates add=/remove= itself (an all-empty call
                 # raises there, never silently no-ops).
                 extras.append(self.tag(id=id, add=tags, remove=untags).body)
-            appended = append()
         return Response(body=appended.body + "".join(f"\nAlso {b}" for b in extras))
 
     def _link(

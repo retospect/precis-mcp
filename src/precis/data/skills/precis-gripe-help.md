@@ -256,15 +256,16 @@ put(kind="gripe", id=42, text="parking until after the F20 freeze")
 ## Retire a gripe that's been resolved
 
 ```python
-put(kind="gripe", id=42, text="fixed in <sha>: <one-line evidence>", tags=["STATUS:done"])
+put(kind="gripe", id=42, text="resolved: <sha> (r<N>) — <how verified>", tags=["STATUS:done"])
 ```
 
 One call — comment and close land together (two calls,
 `tag(kind='gripe', id=42, add=['STATUS:done'])` after the put, work
-too). Fixed gripes close as `STATUS:done` with a closing comment
-naming the
-sha, so the resolution stays searchable. `delete` is only for
-junk/test artifacts and empty duplicates; won't-do is `STATUS:wontfix`.
+too). `STATUS:done` and `STATUS:wontfix` are refused unless the gripe's
+newest comment starts `resolved:`. Won't-do is
+`resolved: wontfix — <reason>` plus `STATUS:wontfix`. `delete` is only for
+duplicates, spam and gripes filed in error; a soft-deleted gripe still
+`get`s read-only (title, last STATUS, last comment).
 
 ## Bundled into a planned-work spec
 
@@ -426,7 +427,7 @@ citation audit emits findings and todos, not gripes.
 | `STATUS:in_review`     | A fix landed on a branch; awaits merge  |
 | `STATUS:done`          | Fixed/resolved — terminal; hidden from the live queue |
 | `STATUS:wontfix`       | Decided not to act (kept on record)     |
-| (deleted)              | `delete` — junk/test artifacts and empty duplicates only; history preserved. A *fixed* gripe is `STATUS:done` + closing comment naming the fix |
+| (deleted)              | `delete` — duplicates, spam and gripes filed in error only. A *fixed* gripe is a `resolved: <sha> (r<N>) — <how verified>` comment + `STATUS:done` |
 
 ## See also
 

@@ -453,16 +453,16 @@ def test_news_recent_listing_carries_record_handle(
 
 
 @_NEEDS_PAPER_EXTRA
-def test_surface_get_soft_deleted_handle_is_gone(
+def test_surface_get_soft_deleted_gripe_handle_shows_tombstone(
     runtime_with_store: PrecisRuntime, store: Store
 ) -> None:
     ref = insert_gripe(store, "doomed", meta={})
     store.retire_ref(ref.id)
     h = handle_registry.format_handle("gripe", ref.id)  # 'gr<ref_id>'
     out, is_error = runtime_with_store.dispatch_with_status("get", {"id": h})
-    assert is_error
-    assert "[error:Gone]" in out
+    assert not is_error
     assert "soft-deleted" in out
+    assert "doomed" in out
     assert "must be an integer" not in out
 
 
