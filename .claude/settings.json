@@ -7,6 +7,8 @@
     "defaultMode": "auto",
     "allow": [
       "Bash(scripts/ship:*)",
+      "Bash(docker builder prune -f*)",
+      "Bash(docker image prune -f)",
       "Bash(scripts/mcp-image-refresh*)",
       "Bash(scripts/deploy:*)",
       "Bash(scripts/dev:*)",
