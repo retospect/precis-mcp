@@ -12,6 +12,7 @@ from domain mixins, each owning one slice of the persistence surface:
 * :class:`precis.store._identifiers_ops.IdentifiersMixin` — ``ref_identifiers`` alias lookup
 * :class:`precis.store._users_ops.WebUsersMixin`          — ``web_users`` (precis-web Basic auth)
 * :class:`precis.store._favorites_ops.FavoritesMixin`     — ``ref_favorites`` (per-user hearts)
+* :class:`precis.store._drive_state_ops.DriveStateMixin`  — Drive Return history + Showcase (migration 0220)
 * :class:`precis.store._review_ops.ReviewsMixin`           — ``reviews`` ledger + ``revisions`` log
 * :class:`precis.store._measures_ops.MeasuresMixin`         — ``measures`` (sourced numbers, append-only runs; migration 0187)
 
@@ -62,6 +63,7 @@ from precis.store._chunks_ops import ChunkStore
 from precis.store._claude_quota_ops import ClaudeQuotaMixin
 from precis.store._component_ops import ComponentMixin
 from precis.store._draft_ops import DraftStore
+from precis.store._drive_state_ops import DriveStateMixin
 from precis.store._email_ops import EmailAccountMixin
 from precis.store._events_ops import EventsMixin
 from precis.store._favorites_ops import FavoritesMixin
@@ -136,6 +138,7 @@ class Store(
     EmailAccountMixin,
     WebUsersMixin,
     FavoritesMixin,
+    DriveStateMixin,
     KindsMixin,
     PdfMixin,
 ):

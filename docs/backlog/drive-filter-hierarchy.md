@@ -165,7 +165,7 @@ Alternatives: event JSON avoids DDL but lacks user FK/indexed latest-state and
 isolated deletion and exposes history through global audit readers; user tags/
 folders/graph edges reuse storage but lack the collection/isolation contract or
 change item placement. A new-table migration still needs owner review and the
-normal migration `/go` gate (migration 0223, slice 1).
+normal migration `/go` gate (migration 0220, slice 1).
 No full suite, production/backfill/deploy or source/UI change at storage review.
 
 ## Owner rulings (Reto, 2026-10-16 ~11:05Z, morning-queue 14)
@@ -187,7 +187,7 @@ review above; the proposal is now the contract.
 
 ## Slices
 
-1. **Store and migration.** Migration `0223_drive_return_showcase.sql`
+1. **Store and migration.** Migration `0220_drive_return_showcase.sql`
    (the three tables above) and `store/_drive_state_ops.py`
    (`record_open`, `forget_open`, `clear_history`, `ensure_showcase`,
    `add_member`, `remove_member`, scoped reads), each read and write keyed
