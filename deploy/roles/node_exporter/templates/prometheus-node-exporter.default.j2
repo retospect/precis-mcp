@@ -1,0 +1,6 @@
+# {{ ansible_managed }}
+# The packaged mount-points-exclude hides /mnt; /mnt/cluster is the NFS mount
+# the NFSMount* rules watch, so this list keeps the packaged default minus
+# `mnt` (gr465126). Host-specific flags ride in node_exporter_extra_args and
+# are appended ahead of it — never replaced.
+ARGS="{{ (node_exporter_extra_args + ['--collector.filesystem.mount-points-exclude=' + node_exporter_fs_mount_exclude]) | join(' ') }}"

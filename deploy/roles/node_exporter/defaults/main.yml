@@ -16,3 +16,14 @@ node_exporter_colima_user: reto
 node_exporter_colima_profile: default
 node_exporter_colima_bin: /opt/homebrew/bin/colima
 node_exporter_colima_timeout_s: 20
+
+# Linux: Ubuntu's packaged mount-points-exclude hides /mnt, and /mnt/cluster
+# is the NFS mount the NFSMount* rules watch — under the packaged default
+# NFSMountAbsent fires on every Linux host and NFSMountHung /
+# NFSMountFullOrEmpty can never fire (gr465126). The rendered list is the
+# packaged default minus `mnt`.
+node_exporter_fs_mount_exclude: "^/(dev|proc|run|sys|media|var/lib/docker/.+)($|/)"
+# Extra flags joined into ARGS in /etc/default/prometheus-node-exporter ahead
+# of the mount-points-exclude flag. Host-specific args belong here: they are
+# appended, never replaced.
+node_exporter_extra_args: []

@@ -15,6 +15,21 @@
     state: present
   become: true
 
+# The packaged /etc/default ships ARGS="" and a mount-points-exclude that
+# hides /mnt; render it so /mnt/cluster stays visible to the fs collector
+# (gr465126). backup keeps the packaged file the template replaces.
+- name: Write node_exporter defaults (Linux — keep /mnt visible)
+  when: os_family == "linux"
+  ansible.builtin.template:
+    src: prometheus-node-exporter.default.j2
+    dest: /etc/default/prometheus-node-exporter
+    owner: root
+    group: root
+    mode: "0644"
+    backup: true
+  become: true
+  notify: restart node_exporter
+
 # ── colima Docker-VM disk metric (textfile collector) ──
 - name: Probe for a colima VM owned by the metric user
   when: os_family == "darwin" and node_exporter_colima_disk_enabled

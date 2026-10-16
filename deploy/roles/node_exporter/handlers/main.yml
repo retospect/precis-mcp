@@ -10,6 +10,15 @@
   # (wait for :9100, scrape-error check) are what actually gate the play.
   failed_when: false
 
+# Same handler name as the brew path: notify picks whichever `when` matches,
+# like the monitoring role's two `restart prometheus` handlers.
+- name: restart node_exporter
+  when: os_family == "linux"
+  ansible.builtin.systemd:
+    name: prometheus-node-exporter
+    state: restarted
+  become: true
+
 - name: reload colima docker-fs metric daemon
   ansible.builtin.shell: |
     launchctl bootout system/com.precis.colima-docker-fs 2>/dev/null || true
