@@ -7,6 +7,7 @@ the test, so nothing reaches the network.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any
 
@@ -245,18 +246,72 @@ def test_cir_disabled_never_calls_it() -> None:
     assert "uncorroborated: CIR unavailable" in res.notes
 
 
-def test_locant_refusal_still_fires_with_cir_disabled() -> None:
+def _locant_probe_routes() -> dict[str, tuple[int, str] | Exception]:
+    """dichloroethane refusal sweep: OPSIN resolves the in-range locant
+    variants (2,2- parses to the 1,1- structure) and 404s the rest."""
+    fail = _fx("opsin_1,3-dichloroethane.json")
+    return {
+        _opsin("dichloroethane"): (404, _fx("opsin_failure.json")),
+        _pc_name("dichloroethane"): (200, _fx("pubchem_name_dichloroethane.json")),
+        _pc_props("6365"): (200, _fx("pubchem_cid_6365.json")),
+        _opsin("1,2-Dichloroethane"): (200, _fx("opsin_1,2-dichloroethane.json")),
+        _opsin("2,2-Dichloroethane"): (200, _fx("opsin_2,2-dichloroethane.json")),
+        _opsin("1,3-Dichloroethane"): (404, fail),
+        _opsin("2,3-Dichloroethane"): (404, fail),
+        _opsin("3,3-Dichloroethane"): (404, fail),
+    }
+
+
+def test_locant_refusal_lists_every_isomer() -> None:
+    res = cr.resolve(
+        "dichloroethane", Replay(_locant_probe_routes()), cir_enabled=False
+    )
+    assert res.status == "ambiguous"
+    assert [c.name for c in res.candidates] == [
+        "1,1-Dichloroethane",
+        "1,2-Dichloroethane",
+    ]
+    assert {c.smiles for c in res.candidates} == {"CC(Cl)Cl", "ClCCCl"}
+    assert any("substituent positions" in n for n in res.notes)
+    assert any(t == "OPSIN-locants" for t, _ in res.tiers)
+
+
+def test_locant_enumeration_skipped_when_opsin_disabled() -> None:
     fetch = Replay(
         {
-            _opsin("dichloroethane"): (404, _fx("opsin_failure.json")),
             _pc_name("dichloroethane"): (200, _fx("pubchem_name_dichloroethane.json")),
             _pc_props("6365"): (200, _fx("pubchem_cid_6365.json")),
         }
     )
-    res = cr.resolve("dichloroethane", fetch, cir_enabled=False)
+    res = cr.resolve("dichloroethane", fetch, cir_enabled=False, opsin_enabled=False)
     assert res.status == "ambiguous"
     assert [c.name for c in res.candidates] == ["1,1-Dichloroethane"]
-    assert any("substituent positions" in n for n in res.notes)
+    assert not any("ebi.ac.uk" in url for url in fetch.calls)
+    assert any("not enumerated" in n for n in res.notes)
+
+
+def test_locant_enumeration_aborts_on_opsin_fault() -> None:
+    routes = _locant_probe_routes()
+    routes[_opsin("1,2-Dichloroethane")] = TimeoutError("handshake timed out")
+    res = cr.resolve("dichloroethane", Replay(routes), cir_enabled=False)
+    assert res.status == "ambiguous"
+    assert [c.name for c in res.candidates] == ["1,1-Dichloroethane"]
+    assert any("could not enumerate" in n for n in res.notes)
+
+
+def test_locant_refusal_stays_fast_offline() -> None:
+    # The ~9.9s post-PubChem stall was the lazy `from rdkit import Chem`
+    # in _rdkit_canonical; it now warms at module import. Warm it here so
+    # the bound covers the request path, not the one-time import.
+    cr._rdkit_canonical("CC(Cl)Cl")
+    t0 = time.monotonic()
+    res = cr.resolve(
+        "dichloroethane", Replay(_locant_probe_routes()), cir_enabled=False
+    )
+    elapsed = time.monotonic() - t0
+    assert res.status == "ambiguous"
+    assert len(res.candidates) == 2
+    assert elapsed < 2.0
 
 
 # ── handler (cache flow) ─────────────────────────────────────────────
@@ -336,20 +391,18 @@ def test_underspecified_locants(query: str, title: str, expect: bool) -> None:
 
 def _dce_cir_down() -> Replay:
     # Prod at r38: CIR fails the TLS handshake, PubChem picks the 1,1-isomer.
-    return Replay(
-        {
-            _opsin("dichloroethane"): (404, _fx("opsin_failure.json")),
-            _pc_name("dichloroethane"): (200, _fx("pubchem_name_dichloroethane.json")),
-            _pc_props("6365"): (200, _fx("pubchem_cid_6365.json")),
-            _cir("dichloroethane"): TimeoutError("handshake timed out"),
-        }
-    )
+    routes = _locant_probe_routes()
+    routes[_cir("dichloroethane")] = TimeoutError("handshake timed out")
+    return Replay(routes)
 
 
 def test_underspecified_name_refused_when_cir_is_down() -> None:
     res = cr.resolve("dichloroethane", _dce_cir_down())
     assert res.status == "ambiguous"
-    assert [c.name for c in res.candidates] == ["1,1-Dichloroethane"]
+    assert [c.name for c in res.candidates] == [
+        "1,1-Dichloroethane",
+        "1,2-Dichloroethane",
+    ]
     assert any("substituent positions" in n for n in res.notes)
 
 
@@ -407,8 +460,9 @@ def test_handler_opsin_off_via_env_never_calls_it(
 def test_handler_renders_underspecified_refusal(chem: ChemHandler) -> None:
     chem.fetch = _dce_cir_down()
     body = chem.get(id="dichloroethane").body
-    assert "REFUSED: underspecified" in body
+    assert "REFUSED: ambiguous, 2 readings" in body
     assert "1. 1,1-Dichloroethane: CC(Cl)Cl" in body
+    assert "2. 1,2-Dichloroethane: ClCCCl" in body
 
 
 def test_handler_cir_off_via_env_never_calls_it(

@@ -32,8 +32,10 @@ nothing answered and something faulted, :func:`resolve` returns status
 
 from __future__ import annotations
 
+import itertools
 import json
 import re
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -55,6 +57,24 @@ CIR_URL = "https://cactus.nci.nih.gov/chemical/structure/{name}/{rep}"
 
 #: StructureReading cap when PubChem answers several CIDs for one name.
 MAX_CANDIDATES = 5
+
+
+def _warm_rdkit() -> None:
+    """Import ``rdkit.Chem`` off the request path (gr491590).
+
+    The lazy import inside :func:`_rdkit_canonical` costs ~10 s cold and
+    first runs inside the post-PubChem candidate pass — the ~9.9 s of
+    dead time the dichloroethane refusal showed with no HTTP traffic.
+    Started at module import (server boot) so the cost overlaps startup
+    instead of a lookup; the in-function imports then join sys.modules.
+    """
+    try:
+        from rdkit import Chem, rdBase  # noqa: F401
+    except ImportError:
+        return
+
+
+threading.Thread(target=_warm_rdkit, daemon=True, name="chem-rdkit-warm").start()
 
 _CAS_RE = re.compile(r"^(\d{2,7})-(\d{2})-(\d)$")
 
@@ -474,6 +494,7 @@ def resolve(
             res.candidates = [opsin]
             res.status = "resolved"
             return res
+    opsin_state = res.tiers[-1][1]
 
     pubchem = _dedupe(run("PubChem", lambda: _tier_pubchem(query, fetch, notes)) or [])
     pubchem_faulted = res.tiers[-1][1].startswith("fault")
@@ -501,11 +522,32 @@ def resolve(
             notes.append("PubChem and CIR read this name as different structures")
             return res
         if qtype == "name" and underspecified_locants(query, best.name):
-            res.candidates, res.status = [best], "ambiguous"
+            variants: list[StructureReading] = []
+            if opsin_state == "miss":
+                got, probes = _locant_isomers(best, opsin_fetch or fetch, notes)
+                if got is None:
+                    notes.append(
+                        "could not enumerate the locant isomers: OPSIN "
+                        "stopped answering"
+                    )
+                else:
+                    variants = got
+                    res.tiers.append(
+                        (
+                            "OPSIN-locants",
+                            f"{len(variants)} readings ({probes} probes)",
+                        )
+                    )
+            elif not opsin_enabled:
+                notes.append("locant isomers not enumerated: OPSIN is disabled")
+            else:
+                notes.append("locant isomers not enumerated: OPSIN did not answer")
+            res.candidates = _dedupe([best, *variants])
+            res.status = "ambiguous"
             notes.append(
                 f"the name does not fix substituent positions; PubChem picked "
-                f"{best.name}. Other positional isomers exist — ask with the "
-                "locants (e.g. the full name above) or the CAS number"
+                f"{best.name}. Ask for the isomer you mean by its full name "
+                "or CAS number"
             )
             return res
         stereo = [c for c in cir if c.inchikey != best.inchikey]
@@ -560,6 +602,68 @@ def underspecified_locants(query: str, title: str) -> bool:
         return re.sub(r"[\s\-]", "", s).casefold()
 
     return flat(_LOCANT_RE.sub("", title)) == flat(query) and flat(title) != flat(query)
+
+
+#: Cap on OPSIN probes while enumerating the locant variants of an
+#: underspecified name (gr491590): keeps the refusal cheap on a large
+#: parent. The sweep works outward in max-locant order, so every isomer
+#: a small parent admits is found before the cap binds.
+_MAX_LOCANT_PROBES = 16
+
+
+def _locant_isomers(
+    pick: StructureReading, fetch: Fetch, notes: list[str]
+) -> tuple[list[StructureReading] | None, int]:
+    """OPSIN-resolve every other locant variant of the refused name.
+
+    ``pick``'s title carries the locant tuple the registry chose
+    ("1,1-Dichloroethane" for "dichloroethane"); the remaining readings
+    are the other locant multisets of the same arity the parent admits.
+    OPSIN rejects a locant past the parent's positions (404/FAILURE —
+    "Cannot find in scope fragment with atom with locant N"), so the
+    sweep ends on the first all-miss ring; equivalent locant orders
+    ("2,2-dichloroethane") parse to the same structure and dedupe away.
+    Returns ``(readings, probes)`` — ``readings`` excludes the pick's own
+    structure and is ``None`` when OPSIN faulted mid-sweep.
+    """
+    blocks = _LOCANT_RE.findall(pick.name)
+    if len(blocks) != 1:
+        return [], 0
+    pick_locants = tuple(int(x) for x in blocks[0].rstrip("-").split(","))
+    k = len(pick_locants)
+    stem = _LOCANT_RE.sub("", pick.name, count=1)
+    if not stem:
+        return [], 0
+    seen = {pick.inchikey or pick.smiles}
+    found: list[StructureReading] = []
+    probes = 0
+    for maxloc in itertools.count(1):
+        tried = ok = False
+        for combo in itertools.combinations_with_replacement(range(1, maxloc + 1), k):
+            if combo[-1] != maxloc or combo == pick_locants:
+                continue
+            if probes >= _MAX_LOCANT_PROBES:
+                notes.append(
+                    f"locant enumeration stopped after {probes} OPSIN probes; "
+                    "a bigger parent's isomers may be missing"
+                )
+                return found, probes
+            probes += 1
+            tried = True
+            variant = "-".join((",".join(str(i) for i in combo), stem))
+            try:
+                got = _tier_opsin(variant, fetch, notes)
+            except _Fault:
+                return None, probes
+            if got is None:
+                continue
+            ok = True
+            if (got.inchikey or got.smiles) not in seen:
+                seen.add(got.inchikey or got.smiles)
+                found.append(got)
+        if tried and not ok:
+            return found, probes
+    return found, probes
 
 
 def http_fetch(timeout_s: float = 20.0, attempts: int = 2) -> Fetch:

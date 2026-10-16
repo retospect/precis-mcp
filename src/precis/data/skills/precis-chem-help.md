@@ -80,9 +80,12 @@ Instead it lists the readings with their sources:
 
 - a name that leaves substituent positions open, where PubChem's pick
   only adds numeric locants: "dichloroethane" gives 1,1-dichloroethane,
-  and "propanol" gives 1-propanol. Here the body says `REFUSED:
-  underspecified` and shows PubChem's pick. If that pick is what you
-  mean, ask again with its full name.
+  and "propanol" gives 1-propanol. The refusal lists every positional
+  isomer the name admits — the resolver probes OPSIN on each
+  locant-explicit variant ("1,2-dichloroethane", …) so "dichloroethane"
+  shows both the 1,1- and the 1,2- structure. When OPSIN is off or
+  unreachable only PubChem's pick is listed, with a note. If one is
+  what you mean, ask again with its full name.
 
 To resolve it, ask again with the full name or the CAS number of the
 reading you mean. Stereo is not checked this way, so "glucose" passes as
