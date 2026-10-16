@@ -1156,6 +1156,8 @@ def put(
     # is planned for; ``sequence``/``seeds`` are the protein side.
     engine: str | None = None,
     max_steps: int | None = None,
+    max_routes: int | None = None,
+    strategy: str | None = None,
     requested_by: int | str | None = None,
     constraints: list[str] | str | None = None,
     sequence: str | None = None,
@@ -1405,6 +1407,8 @@ def put(
             "verified_at": verified_at,
             "engine": engine,
             "max_steps": max_steps,
+            "max_routes": max_routes,
+            "strategy": strategy,
             "requested_by": requested_by,
             "constraints": constraints,
             "sequence": sequence,

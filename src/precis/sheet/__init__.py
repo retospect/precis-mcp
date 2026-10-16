@@ -36,14 +36,10 @@ refuses the rest by layer name — never a silent drop:
   leading comment are for the operator). Document order is cut order:
   layers in job order, parts in nesting order, a part's inner contours
   before its outline.
-- :mod:`precis.sheet.svg_cricut` — the same SVG restricted to ``cut`` and
-  ``score`` (a blade plotter has no drill or engrave), one
-  ``<g id=layer data-op data-pressure data-blade>`` per layer, coloured
-  like the laser file. ``pressure``/``blade`` come from the layer's
-  ``cricut`` settings, falling back to
-  :data:`precis.sheet.svg_cricut.CRICUT_DEFAULTS`; Design Space reads
-  neither, so the colour → settings table in the leading comment is the
-  operator's setup list.
+- :mod:`precis.sheet.svg_cricut` — Cricut SVG, ``cut`` and ``score`` only,
+  settings from the layer's ``cricut`` entry or
+  :data:`precis.sheet.svg_cricut.CRICUT_DEFAULTS`; format in
+  ``precis-se-flatpack-help``.
 - :mod:`precis.sheet.dxf` — hand-written ASCII DXF R12 (``POLYLINE``/
   ``VERTEX``, ``CIRCLE``), one DXF layer per vector layer, for the Maslow
   CNC. R12 has no units header; mm is stated in a group-999 comment. No
