@@ -269,6 +269,9 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         "pcb_pin_swaps.meta",
         "pcb_pins.meta",
         "pcb_planes.meta",
+        # 0219: fill region polygon, superseding region_hint — read back
+        # whole as geometry, never queried by key.
+        "pcb_planes.region",
         "pcb_planes.region_hint",
         "pcb_roles.meta",
         "pcb_routes.fail",
