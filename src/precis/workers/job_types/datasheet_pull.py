@@ -46,6 +46,7 @@ from typing import TYPE_CHECKING, Any
 
 import psycopg
 
+from precis.pcb.datasheets import datasheet_state
 from precis.pcb.jlc_api import JlcApiClient
 from precis.utils.http import http_client, require_httpx
 from precis.utils.safe_fetch import SsrfBlocked, safe_stream
@@ -248,6 +249,7 @@ def pull(store: Store, lcsc: str, url: str | None = None) -> dict[str, Any]:
     agent-supplied datasheet URL (``put(kind='datasheet')``) that replaces
     the JLC/catalog lookup; the download is the same ``safe_stream`` one."""
     lcsc = lcsc.strip().upper()
+    prior = _stored_ok(store, lcsc)  # read once, before this pull touches anything
     try:
         url = url or _resolve_url(store, lcsc)
         with tempfile.TemporaryDirectory(prefix="datasheet-pull-") as tmp:
@@ -270,14 +272,20 @@ def pull(store: Store, lcsc: str, url: str | None = None) -> dict[str, Any]:
                         source="datasheet_pull",
                     )
         part_id = store.ensure_part_ref(lcsc, uncatalogued_ok=True)
-        store.add_link(src_ref_id=ds_id, dst_ref_id=part_id, relation="datasheet-of")
+        empty = _body_chunks(store, ds_id) == 0
+        if not (empty and prior is not None):
+            # an empty re-ingest never becomes a second datasheet of a part
+            # that already holds a good one
+            store.add_link(
+                src_ref_id=ds_id, dst_ref_id=part_id, relation="datasheet-of"
+            )
         record: dict[str, Any] = {
             "status": "ok",
             "url": final_url,
             "sha256": sha,
             "at": now_iso(),
         }
-        if _body_chunks(store, ds_id) == 0:
+        if empty:
             # Marker down (or an image-only PDF) ingests "successfully" with
             # no text: keep the ref and the link, but do not call it a pull.
             record["status"] = "failed"
@@ -290,8 +298,29 @@ def pull(store: Store, lcsc: str, url: str | None = None) -> dict[str, Any]:
         if url:
             record["url"] = url
         part_id = store.ensure_part_ref(lcsc, uncatalogued_ok=True)
+    if record["status"] == "failed" and prior is not None:
+        # A later failed/partial pull never replaces a stored ok record: the
+        # ok record stays as is and carries the failure as ``last_attempt``.
+        store.update_ref(
+            part_id, meta_patch={"datasheet_pull": {**prior, "last_attempt": record}}
+        )
+        return record
     store.update_ref(part_id, meta_patch={"datasheet_pull": record})
     return record
+
+
+def _stored_ok(store: Store, lcsc: str) -> dict[str, Any] | None:
+    """The part's recorded ``ok`` pull (without its ``last_attempt``), if any."""
+    ref = store.get_ref(kind="part", id=lcsc)
+    prior = (ref.meta or {}).get("datasheet_pull") if ref is not None else None
+    if (
+        isinstance(prior, dict)
+        and prior.get("status") == "ok"
+        # an ok record whose datasheet is gone is stale: let the failure show
+        and datasheet_state(store, lcsc)["datasheet"] is not None
+    ):
+        return {k: v for k, v in prior.items() if k != "last_attempt"}
+    return None
 
 
 def pull_component(store: Store, ref_id: int, url: str) -> dict[str, Any]:

@@ -7,7 +7,8 @@ for it (``precis.workers.job_types.datasheet_pull`` does the fetch, never this
 module, never inline in the put).
 
 The outcome of an attempt lives on the part ref's ``meta.datasheet_pull``
-(``{status: ok|failed, reason?, detail?, url?, sha256?, at}``), so "no
+(``{status: ok|failed, reason?, detail?, url?, sha256?, at}``; an ok record
+survives a later failed pull and carries it as ``last_attempt``), so "no
 datasheet" reads differently from "never tried" (:func:`status_line`).
 A failed pull is not retried by a later put; ``put(kind='pcb',
 args={'op': 'datasheets', 'force': True})`` re-queues it.
@@ -165,7 +166,12 @@ def status_line(state: dict[str, Any]) -> str:
     failed = pull is not None and pull.get("status") == "failed"
     if ds is not None:
         line = f"datasheet {ds[1] or ds[0]}"
-        return line + (f" (pull: {pull.get('reason')})" if failed else "")
+        if failed:
+            return line + f" (pull: {pull.get('reason')})"
+        last = (pull or {}).get("last_attempt")
+        if isinstance(last, dict):
+            return line + f" (latest re-pull failed: {last.get('reason')})"
+        return line
     if pull is None:
         return "queued"
     if failed:

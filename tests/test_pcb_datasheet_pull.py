@@ -609,3 +609,75 @@ def test_part_lookup_queues_the_pull_once_before_any_design(
     assert pcb_datasheets.datasheet_state(store, "C25900")["datasheet"] is not None
     part.get(id="C25900")  # attached: no further job
     assert len(_jobs(store)) == 1
+
+
+# ── a later failed pull never overwrites a stored ok record ──────────
+
+
+def _ok_pull(store, serve, fake_ingest):
+    store.parts_import([_catalog_row(25900, "https://x.test/a.pdf")])
+    rec = dp.pull(store, "C25900")
+    assert rec["status"] == "ok"
+    return rec
+
+
+def test_failed_repull_keeps_the_ok_record(store, no_jlc, serve, fake_ingest):
+    ok = _ok_pull(store, serve, fake_ingest)
+    serve["status"] = 503
+    rec = dp.pull(store, "C25900")
+    assert rec["reason"] == "http_503"
+    meta = store.get_ref(kind="part", id="C25900").meta["datasheet_pull"]
+    assert (meta["status"], meta["sha256"], meta["at"]) == (
+        "ok",
+        ok["sha256"],
+        ok["at"],
+    )
+    assert meta["last_attempt"]["status"] == "failed"
+    assert meta["last_attempt"]["reason"] == "http_503"
+    state = pcb_datasheets.datasheet_state(store, "C25900")
+    assert state["datasheet"] is not None
+    assert "latest re-pull failed: http_503" in pcb_datasheets.status_line(state)
+
+
+def test_non_pdf_repull_keeps_the_ok_record(store, no_jlc, serve, fake_ingest):
+    ok = _ok_pull(store, serve, fake_ingest)
+    serve["body"] = b"<html>sign in to download</html>"
+    assert dp.pull(store, "C25900")["reason"] == "not_pdf"
+    meta = store.get_ref(kind="part", id="C25900").meta["datasheet_pull"]
+    assert meta["status"] == "ok" and meta["sha256"] == ok["sha256"]
+    assert meta["last_attempt"]["reason"] == "not_pdf"
+    assert len(fake_ingest) == 1
+
+
+def test_partial_body_repull_keeps_the_ok_record_and_link(
+    store, no_jlc, serve, fake_ingest, monkeypatch
+):
+    ok = _ok_pull(store, serve, fake_ingest)
+    first = pcb_datasheets.datasheet_state(store, "C25900")["datasheet"]
+    serve["body"] = _PDF + b"truncated revision"
+    monkeypatch.setattr(dp, "_body_chunks", lambda st, ref_id: 0)
+    rec = dp.pull(store, "C25900")
+    assert (rec["status"], rec["reason"]) == ("failed", "ingest_empty")
+    meta = store.get_ref(kind="part", id="C25900").meta["datasheet_pull"]
+    assert meta["status"] == "ok" and meta["sha256"] == ok["sha256"]
+    assert meta["last_attempt"]["reason"] == "ingest_empty"
+    assert pcb_datasheets.datasheet_state(store, "C25900")["datasheet"] == first
+
+
+def test_later_ok_pull_clears_last_attempt(store, no_jlc, serve, fake_ingest):
+    _ok_pull(store, serve, fake_ingest)
+    serve["status"] = 503
+    dp.pull(store, "C25900")
+    serve["status"] = 200
+    assert dp.pull(store, "C25900")["status"] == "ok"
+    meta = store.get_ref(kind="part", id="C25900").meta["datasheet_pull"]
+    assert "last_attempt" not in meta
+
+
+def test_first_failure_is_recorded_as_before(store, no_jlc, serve, fake_ingest):
+    store.parts_import([_catalog_row(25900, "https://x.test/a.pdf")])
+    serve["status"] = 404
+    dp.pull(store, "C25900")
+    meta = store.get_ref(kind="part", id="C25900").meta["datasheet_pull"]
+    assert (meta["status"], meta["reason"]) == ("failed", "http_404")
+    assert "last_attempt" not in meta
