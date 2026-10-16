@@ -1547,7 +1547,7 @@ export async function blocktreeViewer3D({
     box.value = before + ins + box.value.slice(end);
     const caret = start + ins.length;
     try { box.setSelectionRange(caret, caret); } catch (e) { /* not focusable yet */ }
-    box.focus();
+    box.focus({ preventScroll: true });
     if (clickedAnchors.indexOf(name) === -1) clickedAnchors.push(name);
   }
 

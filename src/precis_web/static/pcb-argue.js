@@ -37,7 +37,7 @@
     box.value = before + ins + after;
     var caret = start + ins.length;
     box.setSelectionRange(caret, caret);
-    box.focus();
+    box.focus({ preventScroll: true });
     if (clicked.indexOf(handle) === -1) clicked.push(handle);
   }
 
