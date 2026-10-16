@@ -417,21 +417,37 @@ def render_staircase(
         )
     for i, route in enumerate(sr.routes):
         stats = sr.route_stats.get(route.name) or {}
+        pcet = sr.pcet_routes[i] if i < len(sr.pcet_routes) else route
+        # A U-flat (n_e 0) rung over its eps blocks the route at every U —
+        # a bare U_L would read as good, so the header names the blocker
+        # instead (gr491369).
+        blocker = max(
+            (rg for rg in pcet.rungs if rg.n_e == 0 and rg.delta_g0 > rg.eps),
+            key=lambda rg: rg.delta_g0 - rg.eps,
+            default=None,
+        )
+        parts: list[str] = []
+        if blocker is not None:
+            parts.append(
+                f"U_L n/a — blocked by {blocker.name} "
+                f"(ΔG0 {blocker.delta_g0:+.3f} eV, U-flat)"
+            )
+        elif stats:
+            parts.append(
+                f"U_L {_fmt_v(stats.get('U_L'))} (one PCET rung per "
+                f"H+ + e-; engine split {_fmt_v(stats.get('U_L_engine'))})"
+            )
+        if stats:
+            parts.append(f"U_opt {_fmt_v(stats.get('U_opt'))}")
+            parts.append(
+                f"span_at_UL {stats['span_at_UL']:.3f} eV"
+                if stats.get("span_at_UL") is not None
+                else "span_at_UL n/a"
+            )
         lines.append("")
         lines.append(
             f"route {i + 1} of {len(sr.routes)}: {route.name}"
-            + (
-                f"  — U_L {_fmt_v(stats.get('U_L'))} (one PCET rung per "
-                f"H+ + e-; engine split {_fmt_v(stats.get('U_L_engine'))}), "
-                f"U_opt {_fmt_v(stats.get('U_opt'))}, span_at_UL "
-                + (
-                    f"{stats['span_at_UL']:.3f} eV"
-                    if stats.get("span_at_UL") is not None
-                    else "n/a"
-                )
-                if stats
-                else ""
-            )
+            + ("  — " + ", ".join(parts) if parts else "")
         )
         if not route.rungs:
             lines.append("  (no rungs)")
@@ -449,7 +465,6 @@ def render_staircase(
                 + (f"  [{st.state}]" if st is not None else "")
             )
         assert best is not None
-        pcet = sr.pcet_routes[i] if i < len(sr.pcet_routes) else route
         lines.append(
             f"  limiting rung at U = {u:+.2f} V: {best[0].name} (ΔG {best[1]:+.3f} eV)"
         )

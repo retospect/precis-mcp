@@ -208,8 +208,9 @@ table at a potential (rows sorted by `SPAN` at U; see the potential lever).
   ease at more negative U; pH-flat on RHE), the limiting rung at U,
   per-route U_L/U_opt/span_at_UL — U_L and the window verdict read each
   H* adsorption + hydrogenation pair as one PCET rung (the engine's
-  split U_L shown beside it), and a U-flat chemical rung counts as
-  viable up to +0.3 eV — the HER competitor's U_L_her + margin
+  split U_L shown beside it), a U-flat chemical rung counts as
+  viable up to +0.3 eV and one past it makes the header read
+  "U_L n/a — blocked by <rung>" instead — the HER competitor's U_L_her + margin
   when `network.her` was on, the DAG-wide U_L, the footing (engine ·
   corrections · network_digest), and a `missing:` line naming what the
   results lack rather than fabricating rungs. `args={'U': -0.3}` re-tilts;

@@ -261,6 +261,27 @@ def test_render_staircase_reports_rungs_limiting_her_and_footing() -> None:
     assert "missing:" not in text
 
 
+def test_render_staircase_marks_a_u_flat_blocker_in_the_header() -> None:
+    """gr491369: a chemical/desorption rung over its eps blocks the route
+    at every U — the header names it instead of a bare U_L."""
+    r = _results()
+    steps = r["che_affine"]["per_route"][0]["steps"]
+    steps[2]["delta_g0"] = 0.8  # nh3_desorb: U-flat, over the 0.3 eV eps
+    sr = routes_from_results(r, engine_version="0.25.0")
+    text = render_staircase(sr, r, u_rhe=-0.30, title="t", ph=0.0)
+    assert "U_L n/a — blocked by nh3_desorb (ΔG0 +0.800 eV, U-flat)" in text
+    # the rung lines and the engine split value still render as provenance
+    assert "nh3_desorb" in text and "U_opt -0.100 V" in text
+
+
+def test_render_staircase_keeps_the_u_l_text_without_a_blocker() -> None:
+    r = _results()  # nh3_desorb ΔG0 0.3 sits exactly at eps — not blocking
+    sr = routes_from_results(r, engine_version="0.25.0")
+    text = render_staircase(sr, r, u_rhe=-0.30, title="t", ph=0.0)
+    assert "— U_L -0.150 V (one PCET rung per H+ + e-; engine split -0.150 V)" in text
+    assert "blocked by" not in text
+
+
 def test_render_staircase_resting_and_mismatch_lines() -> None:
     sr = routes_from_results(_results(), engine_version="0.25.0")
     text = render_staircase(
