@@ -363,8 +363,9 @@ VERSIONS: dict[str, int] = {
     # ruling 12) and the `tape_land` top-plate pad (same doc, Slice 3,
     # ruling 4) — both emitted only when the config asks, so a board
     # without them re-expands byte-identically. All changed the
-    # expansion.
-    "ewod_pad_array": 8,
+    # expansion. Version 9 (2026-10-16, same doc ruling 18):
+    # `sink_grid.top_plate_channel` puts the plate on a switched channel.
+    "ewod_pad_array": 9,
 }
 
 
@@ -1907,8 +1908,8 @@ class _SinkGrid:
     sink_count`` each, the FIRST ``n_driven % sink_count`` shares taking
     one extra -- never a greedy fill-then-spill (72 driven electrodes at
     ``channels_per_sink=64`` is 2 sinks of 36, not one at 64 and one at 8).
-    ``channels_per_sink`` defaults to the whole part (``len(channel_pins)``)
-    and is refused above that -- a sink cannot serve more channels than the
+    ``channels_per_sink`` defaults to the whole part (``len(channel_pins)``,
+    less ``top_plate_channel`` when set) and is refused above that -- a sink cannot serve more channels than the
     part has pins for. The former square-block ``per_tiles`` param is
     REMOVED (forward-only; :func:`_parse_sink_grid` refuses it by name) --
     a spatial block count cannot map onto a channel count."""
@@ -1922,6 +1923,16 @@ class _SinkGrid:
     serial_out_pin: str
     top_plate_pin: str | None
     top_plate_net: str
+    #: The ITO top plate on a SWITCHED channel instead of a fixed rail
+    #: (``top_plate_channel`` key; Reto 2026-10-16, ewod-controller-and-
+    #: hv-supply.md ruling 18): one ``channel_pins`` entry, wired on sink 0
+    #: to ``top_plate_net`` and withheld from electrode assignment on every
+    #: sink (so all sinks stay identical). Requires a driven ``pol_pin``:
+    #: the shared ``{name}_pol`` net inverts the plate channel and every
+    #: pixel channel together, which is the point -- "invert plate and
+    #: pixel to avoid droplet polarization". Exclusive with
+    #: ``top_plate_pin``.
+    top_plate_channel: str | None
     #: Driven control lines, ``{ctl: pin_name}`` from the ``clk_pin`` /
     #: ``le_pin`` / ``bl_pin`` / ``pol_pin`` / ``dir_pin`` keys (ewod-
     #: controller-and-hv-supply.md Slice 2, ruling 12): a line that is
@@ -1987,14 +1998,39 @@ def _parse_sink_grid(params: dict[str, Any], name: str) -> _SinkGrid | None:
             "pin (the part-agnostic design has no other way to know what "
             "this part calls its channel pins)"
         )
-    channels_per_sink = int(cfg.get("channels_per_sink") or len(channel_pins))
+    top_plate_channel = cfg.get("top_plate_channel")
+    if top_plate_channel is not None:
+        top_plate_channel = str(top_plate_channel)
+        if top_plate_channel not in channel_pins:
+            raise ValueError(
+                f"ewod_pad_array: sink_grid.top_plate_channel "
+                f"{top_plate_channel!r} is not one of channel_pins -- the "
+                "top plate rides a switched HV channel of the sink part"
+            )
+        if cfg.get("top_plate_pin"):
+            raise ValueError(
+                "ewod_pad_array: sink_grid sets both top_plate_pin (plate on "
+                "a fixed rail) and top_plate_channel (plate on a switched "
+                "channel) -- pick one"
+            )
+        if cfg.get("pol_pin") is None:
+            raise ValueError(
+                "ewod_pad_array: sink_grid.top_plate_channel needs pol_pin -- "
+                "the plate and the pixels must invert together, so every "
+                "sink's polarity pin rides the shared '<name>_pol' net"
+            )
+    # The plate channel is never an electrode's: withheld on every sink.
+    assignable = [p for p in channel_pins if p != top_plate_channel]
+    channels_per_sink = int(cfg.get("channels_per_sink") or len(assignable))
     if channels_per_sink < 1:
         raise ValueError("ewod_pad_array: sink_grid.channels_per_sink must be >= 1")
-    if channels_per_sink > len(channel_pins):
+    if channels_per_sink > len(assignable):
         raise ValueError(
             f"ewod_pad_array: sink_grid.channels_per_sink ({channels_per_sink}) "
-            f"exceeds channel_pins' own length ({len(channel_pins)}) -- a "
-            "sink cannot serve more channels than the part has pins for"
+            f"exceeds channel_pins' own length ({len(assignable)}"
+            + (", less top_plate_channel" if top_plate_channel else "")
+            + ") -- a sink cannot serve more channels than the part has "
+            "pins for"
         )
     top_plate_pin = cfg.get("top_plate_pin")
     fixed = cfg.get("fixed")
@@ -2049,6 +2085,7 @@ def _parse_sink_grid(params: dict[str, Any], name: str) -> _SinkGrid | None:
         serial_out_pin=serial_out,
         top_plate_pin=str(top_plate_pin) if top_plate_pin else None,
         top_plate_net=str(cfg.get("top_plate_net") or f"{name}_top_plate"),
+        top_plate_channel=top_plate_channel,
         controls=controls,
         power=power,
         fixed=str(fixed) if fixed else None,
@@ -2607,6 +2644,9 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
         base, extra = divmod(n_driven, sink_count) if sink_count else (0, 0)
         prev_out_net: str | None = None
         cursor = 0
+        assignable = [
+            p for p in sink_cfg.channel_pins if p != sink_cfg.top_plate_channel
+        ]
         for i in range(sink_count):
             share_n = base + (1 if i < extra else 0)
             share = chain_order[cursor : cursor + share_n]
@@ -2614,7 +2654,7 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
             sink_refdes = f"{name}_SINK_{i}"
             channel_map: dict[str, str] = {}
             for j, (_r0, _c0, elec_pin) in enumerate(share):
-                ch_pin = sink_cfg.channel_pins[j]
+                ch_pin = assignable[j]
                 channel_map[ch_pin] = elec_pin
                 sink_connections.append(
                     {"net": f"{name}_{elec_pin}", "refdes": sink_refdes, "pin": ch_pin}
@@ -2634,14 +2674,26 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
             # BL/POL/DIR/C/HVGND) are completed store-side from the cached
             # footprint's pin_map (`_pcb_apply`'s declare-all pass); the
             # `undeclared_pad` DRC rule is the safety net when it can't.
+            plate_here = sink_cfg.top_plate_channel is not None and i == 0
             pin_decls: list[dict[str, Any]] = [
                 (
                     {"name": ch_pin}
                     if ch_pin in channel_map
+                    or (plate_here and ch_pin == sink_cfg.top_plate_channel)
                     else {"name": ch_pin, "unused": True}
                 )
                 for ch_pin in sink_cfg.channel_pins
             ]
+            if plate_here:
+                # Ruling 18: the plate is one more HV507 output, so the
+                # sink's POL (bussed below) flips it with the pixels.
+                sink_connections.append(
+                    {
+                        "net": sink_cfg.top_plate_net,
+                        "refdes": sink_refdes,
+                        "pin": str(sink_cfg.top_plate_channel),
+                    }
+                )
             pin_decls.append({"name": sink_cfg.serial_in_pin})
             pin_decls.append({"name": sink_cfg.serial_out_pin})
             if sink_cfg.top_plate_pin:
@@ -2720,7 +2772,11 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
                 # this generator's. Replaces the old `pin_swap_groups`.
                 "supplies": {
                     "role": "pad_driver",
-                    "blocks": [[ch] for ch in sink_cfg.channel_pins],
+                    "blocks": [
+                        [ch]
+                        for ch in sink_cfg.channel_pins
+                        if ch != sink_cfg.top_plate_channel
+                    ],
                 },
             }
             if sink_cfg.part:
@@ -2754,8 +2810,14 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
         if ledger_sinks:
             ledger_sinks["_serial_in_net"] = f"{name}_serial_in"
             ledger_sinks["_serial_out_net"] = prev_out_net
-            if sink_cfg.top_plate_pin:
+            if sink_cfg.top_plate_pin or sink_cfg.top_plate_channel:
                 ledger_sinks["_top_plate_net"] = sink_cfg.top_plate_net
+            if sink_cfg.top_plate_channel:
+                ledger_sinks["_top_plate_channel"] = {
+                    "sink": f"{name}_SINK_0",
+                    "pin": sink_cfg.top_plate_channel,
+                    "polarity_net": f"{name}_pol",
+                }
             if sink_cfg.controls:
                 ledger_sinks["_control_nets"] = {
                     ctl: {"pin": pin, "net": f"{name}_{ctl}"}
@@ -2980,8 +3042,17 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
         },
     }
     drive_voltage_v = params.get("drive_voltage_v")
+    # Ruling 19 (escape nets at working_voltage_v=250) is NOT emitted here:
+    # a class floor binds every layer, so the array's own F.Cu plaza stubs
+    # beside neighbouring electrodes become ERROR-tier clearance and every
+    # put is refused. It waits on per-(net, layer) clearance
+    # (ewod-controller-and-hv-supply.md, ruling 19).
     if drive_voltage_v is not None and (
-        tape_land is not None or (sink_cfg is not None and sink_cfg.top_plate_pin)
+        tape_land is not None
+        or (
+            sink_cfg is not None
+            and (sink_cfg.top_plate_pin or sink_cfg.top_plate_channel)
+        )
     ):
         hv_class = f"ewod_{name}_hv"
         net_classes[hv_class] = {"working_voltage_v": float(drive_voltage_v)}
@@ -3012,6 +3083,11 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
                 "serial_out_pin": sink_cfg.serial_out_pin,
                 "top_plate_pin": sink_cfg.top_plate_pin,
                 "top_plate_net": sink_cfg.top_plate_net,
+                **(
+                    {"top_plate_channel": sink_cfg.top_plate_channel}
+                    if sink_cfg.top_plate_channel
+                    else {}
+                ),
                 "power": sink_cfg.power,
                 **{
                     f"{ctl}_pin": sink_cfg.controls[ctl]

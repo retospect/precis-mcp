@@ -406,10 +406,34 @@ Ruled ~10:2xZ, relayed by the coordinator session witty-forging-bee-d4.
   0.4 mm comes after the router reland. Do not run it before then. This
   settles the ruling half of former open question 2.
 
-**Generator side of rulings 18/19:** it needs no footprints, because the
-generator is part-agnostic. It covers the `sink_grid.top_plate_channel`
-key and `working_voltage_v` on the `ewod_{name}_escape` class. It is
-built in this tree as the follow-on commit.
+**Ruling 18, generator side — SHIPPED 2026-10-16** (worktree
+`ewod-hv-s6`, generator version 9). The new key is
+`sink_grid.top_plate_channel: "<channel pin>"`. It wires that pin on
+sink 0 to `top_plate_net`, and no sink assigns it to an electrode. It
+requires `pol_pin`, so every sink's POL rides the shared `{name}_pol`
+net, and it is refused alongside `top_plate_pin`. The ledger records the
+choice under `sink_grid._top_plate_channel`. The dogfood board still
+ties the plate to VPP and switches when Slice 5 re-authors it.
+
+**Ruling 19, generator side — BLOCKED on per-(net, layer) clearance.**
+Putting `working_voltage_v: 250` on the `ewod_{name}_escape` class sets
+a 0.4 mm ERROR floor on every layer. The array's own F.Cu plaza stubs
+then sit closer than that to neighbouring electrode pads (for example
+`track[ARR1_R0C2] <-> pad[ARR1/R1C2]` on F.Cu). `_pcb_apply`'s invalid-
+board gate then refuses every put that declares a drive voltage: 19 test
+failures on 2026-10-16, across dogfood, the generator and the island
+terminal. The parylene same-footprint WARN does not cover them, because
+the stub is fixed copper, not a pad. A per-net `working_voltage_v` is
+not a substitute: it adds only the WARN-tier pairwise term, and two
+escape nets both at 250 V read as a 0 V difference. The fix is the
+per-(net, layer) clearance the scope list below excludes: 0.4 mm on
+B.Cu, exempt for the F.Cu run under the dielectric. That is engine work
+in `realize.py`, `drc.py` and `rules.py`. **Requirement handed to the
+router redesign spec** (coordinator, 2026-10-16; step 1 of that spec is
+one exact geometry checker shared by DRC and routing): on a parylene-coated
+array, an escape net with `working_voltage_v: 250` gets a 0.4 mm ERROR
+floor on B.Cu, and its F.Cu run under the dielectric is exempt. Nobody
+builds it this wave.
 
 ### Part proposal (ruling 17) — buck and flyback transformer
 

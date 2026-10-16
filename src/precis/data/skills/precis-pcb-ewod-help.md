@@ -160,6 +160,14 @@ instead, never also as `<ctl>_pin` — a pin named twice (control, `power`,
 channel, serial, top-plate) is refused, naming both keys. Unset keys emit
 nothing.
 
+**Top plate on a switched channel.** `top_plate_channel: "<channel pin>"`
+puts the ITO plate on one HV output instead of a fixed rail: sink 0 wires
+that pin to the top-plate net, and no sink assigns it to an electrode
+(`channels_per_sink` defaults to the remaining pins). It requires
+`pol_pin`, so the plate and every pixel invert together on the shared
+`{name}_pol` net (complement drive, no droplet polarization); it is
+refused together with `top_plate_pin`.
+
 ### `tape_land` — copper-tape landing for the ITO top plate
 
 ```python
@@ -179,8 +187,8 @@ during deposition — a coated land is an open circuit).
 ### HV net class
 
 With `drive_voltage_v` set and a top-plate net (a sink's `top_plate_pin`
-or `tape_land`), that net joins an `ewod_{name}_hv` class carrying
-`working_voltage_v` = the drive voltage. Its clearance derives from
+or `top_plate_channel`, or `tape_land`), that net joins an
+`ewod_{name}_hv` class carrying `working_voltage_v` = the drive voltage. Its clearance derives from
 IPC-2221B (coated column) and is an **ERROR** floor, not a warning; add
 other HV nets via `op='class_rules'`. Class keys: [[precis-pcb-route-help]].
 

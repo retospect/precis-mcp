@@ -632,6 +632,103 @@ def test_top_plate_net_lands_in_the_hv_class_when_voltage_is_declared(pcb):
     assert top_plate[0]["net_class"] == "ewod_ARR1_hv"
 
 
+# ── top plate on a switched channel (ewod-controller-and-hv-supply.md
+# ruling 18, Reto 2026-10-16) ─────────────────────────────────────────────
+def _switched_plate_args(**sink_overrides):
+    sink_grid = {
+        **_CONTROL_SINK_GRID,
+        "top_plate_pin": None,
+        "top_plate_channel": "OUT15",
+        **sink_overrides,
+    }
+    return _sink_args(sink_grid=sink_grid, drive_voltage_v=250)
+
+
+def _members(graph, net):
+    (row,) = [n for n in graph["nets"] if n["name"] == net]
+    return {(m["refdes"], m["pin"]) for m in row["members"]}
+
+
+def test_top_plate_rides_a_switched_channel_of_sink_0(pcb):
+    pcb.put(id="ewod-plate-sw", args=_switched_plate_args())
+    ref = pcb.store.get_ref(kind="pcb", id="ewod-plate-sw")
+    assert ref is not None
+    graph = pcb.store.pcb_graph(ref.id)
+    plate = _members(graph, "ARR1_top_plate")
+    assert ("ARR1_SINK_0", "OUT15") in plate
+    # No fixed-rail tie: the plate net touches only that channel (and the
+    # array's own tape land when one is emitted).
+    assert {p for r, p in plate if r.startswith("ARR1_SINK_")} == {"OUT15"}
+    # The plate channel is never an electrode's, on any sink.
+    ledger = pcb.store.pcb_generators_for(ref.id)["ARR1"]["ledger"]["sink_grid"]
+    for refdes, row in ledger.items():
+        if refdes.startswith("ARR1_SINK_"):
+            assert "OUT15" not in row["channels"]
+    assert ledger["_top_plate_channel"] == {
+        "sink": "ARR1_SINK_0",
+        "pin": "OUT15",
+        "polarity_net": "ARR1_pol",
+    }
+    # The plate net carries the drive voltage like the fixed-rail case.
+    plate_row = [n for n in graph["nets"] if n["name"] == "ARR1_top_plate"]
+    assert plate_row[0]["net_class"] == "ewod_ARR1_hv"
+
+
+def test_switched_plate_pin_is_wired_on_sink_0_and_spare_elsewhere():
+    """Sink 0 declares the plate pin wired; every other sink keeps it as an
+    ``unused`` spare; no sink offers it as a pad_driver block, and the
+    default channels_per_sink is the part less the plate channel."""
+    from precis.pcb import generators
+
+    params = _switched_plate_args()["generators"][0]["params"]
+    del params["sink_grid"]["channels_per_sink"]
+    exp = generators.expand("ewod_pad_array", "ARR1", params)
+    sinks = [c for c in exp.components if c["refdes"].startswith("ARR1_SINK_")]
+    assert sinks
+    for comp in sinks:
+        decl = {p["name"]: p for p in comp["pins"]}["OUT15"]
+        assert bool(decl.get("unused")) == (comp["refdes"] != "ARR1_SINK_0")
+        assert ["OUT15"] not in comp["supplies"]["blocks"]
+        assert len(comp["supplies"]["blocks"]) == 15
+    # 32 driven electrodes at 15 assignable channels -> 3 sinks, not 2.
+    assert len(sinks) == 3
+
+
+def test_switched_plate_channels_per_sink_counts_the_withheld_pin(pcb):
+    with pytest.raises(BadInput, match="less top_plate_channel"):
+        pcb.put(id="ewod-bad", args=_switched_plate_args(channels_per_sink=16))
+
+
+def test_switched_plate_shares_the_polarity_net_with_every_pixel_sink(pcb):
+    """'invert plate and pixel to avoid droplet polarization': the sink
+    carrying the plate channel and every sink carrying pixel channels sit
+    on ONE polarity net, so a single POL edge flips all of them."""
+    pcb.put(id="ewod-plate-pol", args=_switched_plate_args())
+    ref = pcb.store.get_ref(kind="pcb", id="ewod-plate-pol")
+    assert ref is not None
+    graph = pcb.store.pcb_graph(ref.id)
+    sinks = {i["refdes"] for i in graph["instances"] if "_SINK_" in i["refdes"]}
+    assert len(sinks) > 1
+    assert _members(graph, "ARR1_pol") == {(s, "POL") for s in sinks}
+
+
+def test_switched_plate_without_pol_pin_is_refused(pcb):
+    args = _switched_plate_args()
+    del args["generators"][0]["params"]["sink_grid"]["pol_pin"]
+    with pytest.raises(BadInput, match="needs pol_pin"):
+        pcb.put(id="ewod-bad", args=args)
+
+
+def test_switched_plate_and_fixed_rail_together_are_refused(pcb):
+    with pytest.raises(BadInput, match="pick one"):
+        pcb.put(id="ewod-bad", args=_switched_plate_args(top_plate_pin="CPLT"))
+
+
+def test_switched_plate_channel_must_be_a_channel_pin(pcb):
+    with pytest.raises(BadInput, match="not one of channel_pins"):
+        pcb.put(id="ewod-bad", args=_switched_plate_args(top_plate_channel="VPP"))
+
+
 def test_hv_sink_put_succeeds_and_check_shows_the_intra_footprint_warn(pcb, store):
     # Needs a REAL cached footprint: the synthesized sink in _sink_args has
     # overlapping made-up pads, so every pair there is a different-pad error.

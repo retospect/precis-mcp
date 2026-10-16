@@ -312,9 +312,11 @@ def test_expansion_version_is_4_so_older_boards_regenerate_without_a_param_chang
     adds the sink control pins as bussed ``{name}_<ctl>`` nets, the
     optional ``tape_land`` top-plate pad and the ``hv`` net class for the
     top-plate net when ``drive_voltage_v`` is declared
-    (ewod-controller-and-hv-supply.md slices 2-4)."""
+    (ewod-controller-and-hv-supply.md slices 2-4); version 9 adds
+    ``sink_grid.top_plate_channel``, the top plate on a switched channel
+    (same doc, ruling 18)."""
     exp = G.expand("ewod_pad_array", "ARR", {"grid": [6, 6]})
-    assert exp.version == 8
+    assert exp.version == 9
     necks, vias = _copper_by_ctype(exp)
     # What version 2 MEANS: two copper rows per driven electrode, and the
     # only B.Cu terminal is the via's own far landing.
