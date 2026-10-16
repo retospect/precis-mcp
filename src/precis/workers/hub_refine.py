@@ -690,8 +690,9 @@ def _claim_hubs_due_for_refine(
 ) -> list[int]:
     """Lock and return up to ``limit`` claim-hub ``ref_id``s due for refine.
 
-    Due-set claim query (see :func:`_is_hub_due`), never-refined first,
-    oldest ``last_refined_at`` next, ``SKIP LOCKED``. The sha-reopen check
+    Due-set claim query (see :func:`_is_hub_due`), hubs under human review
+    (a ``candidate``/``reviewed`` ``nanopub_publish`` row) first, then
+    never-refined first, oldest ``last_refined_at`` next, ``SKIP LOCKED``. The sha-reopen check
     isn't SQL-computable (:func:`taproot.canon.claim_sha` is Python-side
     blake2b), so this scans the whole (~1.2k) canonical claim-hub set,
     computes due-ness in Python, then re-locks just the winning ``limit``
@@ -737,7 +738,12 @@ def _claim_hubs_due_for_refine(
                  SELECT 1 FROM nanopub_publish np
                   WHERE np.claim_ref_id = r.ref_id
                     AND np.state <> 'candidate'
-               ) AS is_signed
+               ) AS is_signed,
+               EXISTS (
+                 SELECT 1 FROM nanopub_publish np
+                  WHERE np.claim_ref_id = r.ref_id
+                    AND np.state IN ('candidate', 'reviewed')
+               ) AS under_review
           FROM refs r
          WHERE r.kind = 'finding'
            AND r.retired_at IS NULL
@@ -762,7 +768,7 @@ def _claim_hubs_due_for_refine(
         },
     ).fetchall()
 
-    candidates: list[tuple[int, str | None]] = []
+    candidates: list[tuple[bool, int, str | None]] = []
     for (
         ref_id,
         title,
@@ -771,6 +777,7 @@ def _claim_hubs_due_for_refine(
         has_coverage,
         has_attempt_lease,
         is_signed,
+        under_review,
     ) in rows:
         if has_attempt_lease:
             # A prior attempt raised mid-loop and left its lease standing —
@@ -790,12 +797,15 @@ def _claim_hubs_due_for_refine(
             title=str(title or ""),
             backstop_h=backstop_h,
         ):
-            candidates.append((int(ref_id), last_refined_at))
+            candidates.append((bool(under_review), int(ref_id), last_refined_at))
 
-    # never-refined first, then oldest last_refined_at, then ref_id for a
-    # deterministic tie-break -- mirrors the old ORDER BY ... NULLS FIRST.
-    candidates.sort(key=lambda item: (item[1] is not None, item[1] or "", item[0]))
-    candidate_ids = [ref_id for ref_id, _ in candidates[:limit]]
+    # hubs with a live candidate/reviewed nanopub row (a human is about to
+    # sign them) first, then never-refined, then oldest last_refined_at,
+    # then ref_id for a deterministic tie-break.
+    candidates.sort(
+        key=lambda item: (not item[0], item[2] is not None, item[2] or "", item[1])
+    )
+    candidate_ids = [ref_id for _, ref_id, _ in candidates[:limit]]
     if not candidate_ids:
         return []
 

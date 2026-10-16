@@ -1984,3 +1984,21 @@ def test_reverify_stamps_a_keep_memoed_pinned_edge_instead_of_skipping(
     assert meta["verified_at"]
     assert meta["verified_claim_sha"] == claim_sha(sentence)
     assert meta["source_handle"] == f"pc{chunk_id}"
+
+
+def test_hub_under_review_drains_ahead_of_the_backlog(store: Any) -> None:
+    """gr493057: a hub with a live ``candidate`` nanopub row is claimed
+    before older/never-refined backlog hubs; ``published`` does not count."""
+    embedder = make_mock_bge_m3()
+    backlog = _seed_hub(store, sentence="A backlog claim about BN nanotube films.")
+    signed = _seed_hub(store, sentence="A signed claim about graphene oxide films.")
+    review = _seed_hub(store, sentence="A claim awaiting review about MoS2 flakes.")
+    _mark_signed(store, signed, state="published")
+    _mark_signed(store, review, state="candidate")
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+        first = run_hub_refine_pass(store, limit=1, embedder=embedder, topk=8)
+    assert first["claimed"] == 1
+    assert _hub_meta(store, review).get("last_refined_at")
+    assert not _hub_meta(store, backlog).get("last_refined_at")
+    assert not _hub_meta(store, signed).get("last_refined_at")
