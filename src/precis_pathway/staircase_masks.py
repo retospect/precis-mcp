@@ -227,6 +227,10 @@ def pcet_route(route: Route) -> Route:
             and r.n_e > 0
             and nxt.n_e == 0
             and nxt.kind == "chemical"
+            # A step into a ``~`` landing is never a PCET follow-on, even
+            # mid-route where its label is "chemical" (Reto 2026-10-16:
+            # the desorption label is terminal-only, masks unchanged).
+            and "~" not in e2[1]
             and e1[1] == e2[0]
             and _n_h_star(e1[1]) > _n_h_star(e1[0])
             and _n_h_star(e2[1]) < _n_h_star(e2[0])

@@ -150,6 +150,47 @@ def test_routes_from_results_builds_typed_routes_and_footing() -> None:
     assert sr.missing == []
 
 
+def test_desorption_label_is_route_terminal_only() -> None:
+    """Reto 2026-10-16 ruling (b): a mid-route edge into a ``~`` species
+    is not labelled desorption; the route-terminal one is."""
+    r = _results(her=False)
+    r["che_affine"]["per_route"] = [
+        {
+            "route": "* -> NO -> *~no -> *~nh3",
+            "steps": [
+                {"edge": "*->NO", "delta_g0": -0.4, "n_e": 0},
+                {"edge": "NO->*~no", "delta_g0": 0.2, "n_e": 0},
+                {"edge": "*~no->*~nh3", "delta_g0": 0.1, "n_e": 0},
+            ],
+        }
+    ]
+    sr = routes_from_results(r, engine_version="0.25.0")
+    kinds = [rung.kind for rung in sr.routes[0].rungs]
+    assert kinds == ["chemical", "chemical", "desorption"]
+
+
+def test_mid_route_tilde_step_is_not_merged_as_pcet() -> None:
+    """The terminal-only label leaves the masks unchanged: a mid-route
+    chemical step into a ``~`` landing never folds into a PCET rung."""
+    from precis_pathway.staircase_masks import pcet_route
+
+    r = _results(her=False)
+    r["che_affine"]["per_route"] = [
+        {
+            "route": "* -> X -> X+H -> *~xh -> *~y",
+            "steps": [
+                {"edge": "*->X", "delta_g0": -0.2, "n_e": 0},
+                {"edge": "X->X+H", "delta_g0": 0.1, "n_e": 1},
+                {"edge": "X+H->*~xh", "delta_g0": 0.1, "n_e": 0},
+                {"edge": "*~xh->*~y", "delta_g0": 0.1, "n_e": 0},
+            ],
+        }
+    ]
+    route = routes_from_results(r, engine_version="0.25.0").routes[0]
+    assert route.rungs[2].kind == "chemical"
+    assert pcet_route(route) == route
+
+
 def test_routes_from_results_flags_a_pre_0250_results() -> None:
     sr = routes_from_results({"substrate": "NO", "nodes": {}})
     assert sr.routes == [] and sr.her is None

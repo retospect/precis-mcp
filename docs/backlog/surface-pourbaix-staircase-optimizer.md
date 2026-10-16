@@ -388,6 +388,23 @@ never mixed in one contract.
   (`DEFAULT_EPS_EV`; Reto: "I like the 0.3 eV thing"), electrochemical
   rungs to 0; `window_objectives.eps_eV` still overrides.
 
+## Rulings 2026-10-16 (Reto, morning queue item 9)
+
+Morning-queue record: "RULED 2026-10-16 (1b labels only; 2b catpath
+ledger NH4+ → PR+bump+wheel; 3a retry cap 2 fresh seeds)".
+
+1. **Desorption label (b):** only a route-terminal edge into a `~`
+   product is labelled desorption; a mid-route `*~x` node is not. Labels
+   only — no energetics, ranking or masking change
+   (`staircase_routes._step_kind`; `pcet_route` still never folds a step
+   into a `~` landing).
+2. **NH3/NH2OH re-reference to NH4+(aq) at pH < 9.25 (b):** engine-side
+   in the catpath ledger, then a version bump and wheel. Engine-side,
+   catpath PR pending.
+3. **Failed anchor scans (a):** retry with its own idem-key generation,
+   capped at 2; Reto: "change seeds each time". A retry follows a scan
+   *failure* only, never a success with bad numbers.
+
 ## Spectator axes (ruled 2026-10-15)
 
 Three tiers, cheapest first.
@@ -470,8 +487,6 @@ separate from the propagated/model-form bands.
 - Structure `view='staircase'` catches every exception from the pathway
   sibling as "not installed"; narrow it, and fix `Hub.sibling()` so the
   `pw_handler.hub = self.hub` backfill can go (B2 review).
-- `staircase_routes._step_kind` labels any `~` product as desorption, not
-  only the final edge; labels only, masks are kind-blind (B2 review).
 - The JS re-tilt and mismatch logic on `/pourbaix` have no test.
 - Failed anchor scans are never re-minted (Part A convention, chosen in B1);
   a retry cap would need its own idem-key generation.

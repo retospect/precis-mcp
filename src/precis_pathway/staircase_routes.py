@@ -110,11 +110,13 @@ def _n_e(x: Any) -> int | None:
     return int(f)
 
 
-def _step_kind(product: str, n_e: float) -> str:
+def _step_kind(product: str, n_e: float, *, terminal: bool) -> str:
     """Rung kind: ``"~"`` in the product name is catpath's clean-slab
-    landing tag (``*~nh3``), so the step into it is a desorption; the rest
-    split on whether they carry proton-electron pairs."""
-    if "~" in product:
+    landing tag (``*~nh3``), so the route-terminal step into it is a
+    desorption (Reto 2026-10-16: a mid-route ``*~x`` node is not); the
+    rest split on whether they carry proton-electron pairs. Labels only —
+    the masks are kind-blind."""
+    if terminal and "~" in product:
         return "desorption"
     return "electrochemical" if n_e != 0 else "chemical"
 
@@ -244,7 +246,7 @@ def routes_from_results(
                         name=edge_name,
                         delta_g0=dg0,
                         n_e=ne,
-                        kind=_step_kind(b, ne),
+                        kind=_step_kind(b, ne, terminal=j + 2 == len(nodes)),
                         sigma=_sigma(r, a, b),
                         **_kinetics(edges_by_name.get(edge_name)),
                     )
