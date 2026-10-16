@@ -51,11 +51,12 @@ _MM_PER_UNIT = 0.254
 
 _API_BASE = "https://easyeda.com/api/products"
 
-# CloudFront fronts easyeda.com and 403s a bare/bot-shaped request. This
-# header set (easyeda2kicad's) clears it; Referer is the *load-bearing*
-# one (spike-verified 2026-08-27, C42163081) — a request missing it 403s
-# even with a normal User-Agent, so don't "clean it up" as dead weight.
-_HEADERS = {
+# CloudFront fronts easyeda.com and 403s a bare/bot-shaped request. The
+# browser-shaped header set (easyeda2kicad's) cleared it (Referer was the
+# load-bearing one, spike 2026-08-27, C42163081), but it spoofs a browser,
+# so it is a workaround gated behind ``pcb.easyeda_browser_headers``
+# (default off). The default is the honest precis User-Agent.
+_BROWSER_HEADERS = {
     "Accept": "application/json, text/javascript, */*; q=0.01",
     "Referer": "https://easyeda.com/",
     "User-Agent": (
@@ -63,6 +64,20 @@ _HEADERS = {
         "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     ),
 }
+
+
+def _request_headers() -> dict[str, str]:
+    """Headers for one EasyEDA request: honest by default, browser-shaped
+    only when ``pcb.easyeda_browser_headers`` is on."""
+    from precis import settings
+    from precis.utils.http import DEFAULT_USER_AGENT
+
+    if settings.get_bool("pcb.easyeda_browser_headers", default=False):
+        return dict(_BROWSER_HEADERS)
+    return {
+        "Accept": _BROWSER_HEADERS["Accept"],
+        "User-Agent": DEFAULT_USER_AGENT,
+    }
 
 
 # ── fetch ───────────────────────────────────────────────────────────────
@@ -89,12 +104,11 @@ def fetch_component(
     from precis.utils.safe_fetch import safe_get
 
     # Headers go on the REQUEST, not just the client: an injected ``client``
-    # (bulk warm, or a test double) would otherwise arrive without the
-    # load-bearing Referer and eat a CloudFront 403 that looks like a bug in
-    # the parser rather than a missing header.
+    # (bulk warm, or a test double) would otherwise arrive without them.
+    headers = _request_headers()
     if client is not None:
         resp = with_backoff(
-            lambda: safe_get(client, url, headers=_HEADERS),
+            lambda: safe_get(client, url, headers=headers),
             service="easyeda",
             policy=EASYEDA_POLICY,
         )
@@ -103,7 +117,7 @@ def fetch_component(
 
         with http_client(timeout=20.0) as opened:
             resp = with_backoff(
-                lambda: safe_get(opened, url, headers=_HEADERS),
+                lambda: safe_get(opened, url, headers=headers),
                 service="easyeda",
                 policy=EASYEDA_POLICY,
             )

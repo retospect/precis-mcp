@@ -288,8 +288,24 @@ def test_fetch_component_success_returns_decoded_json(monkeypatch: pytest.Monkey
 
     assert doc == body
     assert cap["url"] == "https://easyeda.com/api/products/C42163081/components"
-    # The load-bearing Referer header actually rode along on the request.
-    assert cap["headers"].get("Referer") == "https://easyeda.com/"
+    # Default: honest UA, no browser spoofing, no Referer.
+    assert cap["headers"].get("User-Agent") == "precis-mcp/1.0"
+    assert "Referer" not in cap["headers"]
+
+
+def test_fetch_component_browser_headers_setting_restores_spoof(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("PRECIS_EASYEDA_BROWSER_HEADERS", "1")
+    resp = httpx.Response(
+        200,
+        json={"success": True},
+        request=httpx.Request("GET", "https://easyeda.com/api/products/C1/components"),
+    )
+    cap = _patch_safe_get(monkeypatch, resp)
+    easyeda.fetch_component("C1")
+    assert cap["headers"]["Referer"] == "https://easyeda.com/"
+    assert "Chrome/" in cap["headers"]["User-Agent"]
 
 
 def test_fetch_component_404_returns_none(monkeypatch: pytest.MonkeyPatch):

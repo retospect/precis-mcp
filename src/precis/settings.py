@@ -133,6 +133,16 @@ REGISTRY: dict[str, SettingSpec] = {
             "makes sense for a one-shot manual override.",
         ),
         SettingSpec(
+            key="pcb.easyeda_browser_headers",
+            type="bool",
+            env_var="PRECIS_EASYEDA_BROWSER_HEADERS",
+            default=False,
+            doc="Send a spoofed Chrome User-Agent plus Referer on EasyEDA "
+            "footprint fetches (precis.pcb.easyeda). Off (default) sends the "
+            "honest precis User-Agent. On restores the 2026-08 CloudFront "
+            "workaround; EasyEDA may 403 the honest request.",
+        ),
+        SettingSpec(
             key="chem.cir_enabled",
             type="bool",
             env_var="PRECIS_CHEM_CIR_ENABLED",
