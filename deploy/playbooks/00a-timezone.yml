@@ -17,7 +17,7 @@
 # roles/postgres/templates/postgresql.conf.j2).
 #
 # NOTE: already-running daemons keep their old zone until restarted; the next
-# deploy/reboot picks it up. The nightly reboot (42) covers the GPU node.
+# deploy/reboot picks it up. The weekly guarded os-update reboot covers the GPU node.
 
 - name: Timezone — UTC fleet-wide
   hosts: all

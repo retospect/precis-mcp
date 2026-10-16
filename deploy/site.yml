@@ -147,8 +147,9 @@
 - name: "41 — precis EDA toolchain (Freerouting, gateway — ADR 0042)"
   ansible.builtin.import_playbook: playbooks/41-precis-eda.yml
 
-- name: "42 — nightly gentle reboot of the GPU node (the GPU node — gripe 50907)"
-  ansible.builtin.import_playbook: playbooks/42-nightly-reboot.yml
+# Playbook 42 (nightly gentle reboot of the inference hosts) retired
+# 2026-10-16, gr491172: inference hosts now take hardening's weekly guarded
+# os-update-weekly (stops the serving engine, reboots only when idle).
 
 - name: "48 — asa_slack Slack bridge (ADR 0062)"
   ansible.builtin.import_playbook: playbooks/48-asa-slack.yml

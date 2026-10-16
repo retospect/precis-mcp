@@ -1,8 +1,11 @@
 ---
-# 10-hardening.yml — sshd, sudoers, remove deploy key
+# 10-hardening.yml — sshd, sudoers, remove deploy key, weekly OS update, OOM guard
+# No play-level tags: they made `--tags sshd` run the whole role. Every task in
+# roles/hardening/tasks/main.yml carries [hardening, security] plus its own
+# tag (sshd, dgx-dashboard, os-update-weekly, oom-guard, ...), so
+# `--tags sshd` selects only the sshd tasks and `--tags hardening` the role.
 - name: Harden all nodes
   hosts: all
   become: true
   roles:
     - hardening
-  tags: [hardening, sshd, security]

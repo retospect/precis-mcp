@@ -7,6 +7,7 @@
   ansible.builtin.stat:
     path: /Library/Developer/CommandLineTools/usr/bin/git
   register: clt_check
+  tags: [hardening, security]
 
 - name: Install Command Line Tools (macOS)
   when:
@@ -41,6 +42,7 @@
         path: /tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress
         state: absent
       become: true
+  tags: [hardening, security]
 
 # ── macOS power management (headless server mode) ──
 - name: Auto-restart after power failure (macOS)
@@ -48,18 +50,21 @@
   ansible.builtin.command: pmset -a autorestart 1
   become: true
   changed_when: false
+  tags: [hardening, security]
 
 - name: Enable Wake on LAN (macOS)
   when: os_family == "darwin"
   ansible.builtin.command: pmset -a womp 1
   become: true
   changed_when: false
+  tags: [hardening, security]
 
 - name: Prevent sleep (macOS)
   when: os_family == "darwin"
   ansible.builtin.command: pmset -a sleep 0 disksleep 0 displaysleep 5
   become: true
   changed_when: false
+  tags: [hardening, security]
 
 - name: Disable auto-login (macOS)
   when: os_family == "darwin"
@@ -67,12 +72,14 @@
   become: true
   changed_when: false
   failed_when: false
+  tags: [hardening, security]
 
 - name: Mute startup chime (macOS)
   when: os_family == "darwin"
   ansible.builtin.command: nvram StartupMute=%01
   become: true
   changed_when: false
+  tags: [hardening, security]
 
 # ── Ethernet: disable Energy-Efficient Ethernet (EEE) ──
 # EEE throttles the NIC during idle and doesn't always restore cleanly,
@@ -83,6 +90,7 @@
   become: true
   changed_when: false
   failed_when: false
+  tags: [hardening, security]
 
 - name: Disable Wi-Fi (macOS — headless servers use Ethernet only)
   when: os_family == "darwin"
@@ -90,6 +98,7 @@
   become: true
   changed_when: false
   failed_when: false
+  tags: [hardening, security]
 
 # ── Daily 3 AM update + reboot ──
 - name: Ensure /usr/local/bin exists (macOS)
@@ -99,6 +108,7 @@
     state: directory
     mode: "0755"
   become: true
+  tags: [hardening, security]
 
 - name: Deploy daily update-and-reboot script (macOS)
   when: os_family == "darwin"
@@ -146,7 +156,7 @@
       logger -t daily-update "Rebooting"
       /sbin/shutdown -r now
   become: true
-  tags: [reboot_script]
+  tags: [hardening, security, reboot_script]
 
 - name: Schedule daily 3 AM update + reboot (macOS)
   when: os_family == "darwin"
@@ -157,6 +167,7 @@
     job: "/usr/local/bin/daily-update-reboot.sh"
     user: root
   become: true
+  tags: [hardening, security]
 
 # ── Weekly OS update with a guarded reboot (Linux; gr491172) ──
 # Replaces the old daily `apt-get upgrade && shutdown -r now` root cron, which
@@ -165,7 +176,7 @@
 # scripts/host-ops/os-update. A systemd timer, not cron: OnCalendar pins UTC
 # whatever the host timezone. Schedule: hardening_os_update_oncalendar.
 - name: Remove the old daily update + reboot cron (Linux)
-  tags: [os-update]
+  tags: [hardening, security, os-update-weekly]
   when: os_family == "linux"
   ansible.builtin.cron:
     name: "daily 3am update and reboot"
@@ -174,7 +185,7 @@
   become: true
 
 - name: Install host-busy + os-update-weekly guard (Linux)
-  tags: [os-update]
+  tags: [hardening, security, os-update-weekly]
   when: os_family == "linux"
   ansible.builtin.copy:
     src: "{{ item }}"
@@ -184,7 +195,7 @@
   become: true
 
 - name: Render os-update-weekly service + timer (Linux)
-  tags: [os-update]
+  tags: [hardening, security, os-update-weekly]
   when: os_family == "linux"
   ansible.builtin.template:
     src: "os-update-weekly.{{ item }}.j2"
@@ -194,7 +205,7 @@
   become: true
 
 - name: Enable or disable the os-update-weekly timer (Linux)
-  tags: [os-update]
+  tags: [hardening, security, os-update-weekly]
   when: os_family == "linux"
   ansible.builtin.systemd:
     name: os-update-weekly.timer
@@ -203,8 +214,48 @@
     daemon_reload: true
   become: true
 
+# Retire the old nightly-reboot.timer (the removed nightly_reboot role, gripe
+# 50907): inference hosts take the weekly guarded path above instead (gr491172).
+- name: Look for the retired nightly-reboot timer (Linux)
+  tags: [hardening, security, os-update-weekly]
+  when: os_family == "linux"
+  ansible.builtin.stat:
+    path: /etc/systemd/system/nightly-reboot.timer
+  register: nightly_reboot_timer
+
+- name: Stop and disable the retired nightly-reboot timer (Linux)
+  tags: [hardening, security, os-update-weekly]
+  when:
+    - os_family == "linux"
+    - nightly_reboot_timer.stat.exists | default(false)
+  ansible.builtin.systemd:
+    name: nightly-reboot.timer
+    state: stopped
+    enabled: false
+  become: true
+  failed_when: false
+
+- name: Remove the retired nightly-reboot units (Linux)
+  tags: [hardening, security, os-update-weekly]
+  when: os_family == "linux"
+  ansible.builtin.file:
+    path: "/etc/systemd/system/nightly-reboot.{{ item }}"
+    state: absent
+  loop: [timer, service]
+  become: true
+  register: nightly_reboot_removed
+
+- name: Reload systemd after retiring nightly-reboot (Linux)
+  tags: [hardening, security, os-update-weekly]
+  when:
+    - os_family == "linux"
+    - nightly_reboot_removed is changed
+  ansible.builtin.systemd:
+    daemon_reload: true
+  become: true
+
 - name: Configure sshd (macOS)
-  tags: [sshd]
+  tags: [hardening, security, sshd]
   when: os_family == "darwin"
   ansible.builtin.template:
     src: sshd_config.j2
@@ -215,7 +266,7 @@
   notify: restart sshd macos
 
 - name: Configure sshd (Linux)
-  tags: [sshd]
+  tags: [hardening, security, sshd]
   when: os_family == "linux"
   ansible.builtin.template:
     src: sshd_config.j2
@@ -232,7 +283,7 @@
 # un-killable by the kernel OOM killer. Layer 2: earlyoom kills the memory hog
 # early, before thrash locks us out. See docs/runbooks/oom-lockout-hardening.md.
 - name: Ensure ssh.service drop-in dir (Linux)
-  tags: [oom-guard]
+  tags: [hardening, security, oom-guard]
   when: os_family == "linux"
   ansible.builtin.file:
     path: /etc/systemd/system/ssh.service.d
@@ -241,7 +292,7 @@
   become: true
 
 - name: OOM-protect sshd — OOMScoreAdjust drop-in (Linux)
-  tags: [oom-guard]
+  tags: [hardening, security, oom-guard]
   when: os_family == "linux"
   ansible.builtin.template:
     src: ssh-oom.conf.j2
@@ -251,7 +302,7 @@
   notify: reload systemd and restart sshd linux
 
 - name: Install earlyoom (Linux)
-  tags: [oom-guard]
+  tags: [hardening, security, oom-guard]
   when: os_family == "linux"
   ansible.builtin.apt:
     name: earlyoom
@@ -261,7 +312,7 @@
   become: true
 
 - name: Configure earlyoom (Linux)
-  tags: [oom-guard]
+  tags: [hardening, security, oom-guard]
   when: os_family == "linux"
   ansible.builtin.template:
     src: earlyoom.default.j2
@@ -271,7 +322,7 @@
   notify: restart earlyoom
 
 - name: Enable + start earlyoom (Linux)
-  tags: [oom-guard]
+  tags: [hardening, security, oom-guard]
   when: os_family == "linux"
   ansible.builtin.systemd:
     name: earlyoom
@@ -290,6 +341,7 @@
     state: directory
     mode: "0755"
   become: true
+  tags: [hardening, security]
 
 - name: Cap compute worker memory — MemoryMax drop-in (Linux, opt-in)
   when:
@@ -301,6 +353,7 @@
     mode: "0644"
   become: true
   notify: reload systemd and restart precis-worker linux
+  tags: [hardening, security]
 
 # ── Per-unit memory guards + memsnap (Linux, opt-in; see defaults) ─────────
 # Tag oom-guard selects just the OOM pieces (sshd OOMScoreAdjust, earlyoom,
@@ -311,14 +364,14 @@
 # override > placed lane cap > top-level precis_worker_memory_*. The same
 # plan's budget assert runs first, so an over-budget host writes nothing.
 - name: Plan + budget-check this host's lane memory (Linux)
-  tags: [oom-guard]
+  tags: [hardening, security, oom-guard]
   ansible.builtin.include_tasks:
     file: memory_budget.yml
     apply:
-      tags: [oom-guard]
+      tags: [hardening, security, oom-guard]
 
 - name: Ensure precis worker memory-guard drop-in dirs (Linux)
-  tags: [oom-guard]
+  tags: [hardening, security, oom-guard]
   when:
     - os_family == "linux"
     - unit_cfg.memory_high | string | length > 0 or unit_cfg.memory_max | string | length > 0 or unit_cfg.memory_swap_max | string | length > 0
@@ -333,7 +386,7 @@
     label: "{{ unit_cfg.name }}"
 
 - name: Memory-guard drop-in for precis worker units (Linux)
-  tags: [oom-guard]
+  tags: [hardening, security, oom-guard]
   when:
     - os_family == "linux"
     - unit_cfg.memory_high | string | length > 0 or unit_cfg.memory_max | string | length > 0 or unit_cfg.memory_swap_max | string | length > 0
@@ -349,7 +402,7 @@
   notify: reload systemd (hardening)
 
 - name: Ensure memory-guard drop-in dirs for hand-managed units (Linux)
-  tags: [oom-guard]
+  tags: [hardening, security, oom-guard]
   when: os_family == "linux"
   ansible.builtin.file:
     path: "/etc/systemd/system/{{ unit_cfg.name }}.d"
@@ -361,7 +414,7 @@
     loop_var: unit_cfg
 
 - name: Memory-guard drop-in for hand-managed units, no restart (Linux)
-  tags: [oom-guard]
+  tags: [hardening, security, oom-guard]
   when: os_family == "linux"
   ansible.builtin.template:
     src: memory-guard.conf.j2
@@ -374,7 +427,7 @@
   notify: reload systemd (hardening)
 
 - name: memsnap journal snapshot script + timer (Linux, opt-in)
-  tags: [oom-guard]
+  tags: [hardening, security, oom-guard]
   when:
     - os_family == "linux"
     - memsnap_enabled | bool
@@ -415,12 +468,12 @@
 # updates belong to os-update. Stopping the unit also ends any hung apt child
 # in its cgroup.
 - name: Read systemd units (DGX dashboard check)
-  tags: [dgx-dashboard]
+  tags: [hardening, security, dgx-dashboard]
   when: os_family == "linux"
   ansible.builtin.service_facts:
 
 - name: Stop, disable and mask dgx-dashboard-admin (Linux)
-  tags: [dgx-dashboard]
+  tags: [hardening, security, dgx-dashboard]
   when:
     - os_family == "linux"
     - "'dgx-dashboard-admin.service' in ansible_facts.services"
@@ -438,6 +491,7 @@
     mode: "0440"
     validate: "visudo -cf %s"
   become: true
+  tags: [hardening, security]
 
 - name: Remove deploy user SSH authorized_keys (post-setup)
   ansible.builtin.file:
@@ -445,7 +499,7 @@
     state: absent
   become: true
   when: remove_deploy_key | default(false) | bool
-  tags: [remove_deploy_key]
+  tags: [hardening, security, remove_deploy_key]
 
 - name: Lock deploy user (post-setup)
   when: lock_deploy_user | default(false) | bool
@@ -461,4 +515,4 @@
         name: deploy
         shell: /usr/sbin/nologin
       become: true
-  tags: [lock_deploy]
+  tags: [hardening, security, lock_deploy]

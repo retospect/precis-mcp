@@ -15,7 +15,7 @@ c=0
 if command -v docker >/dev/null 2>&1; then
   names=$(docker ps --format "{{.Names}}" 2>/dev/null) || { echo unknown; exit 2; }
   if [[ -n "$names" ]]; then
-    c=$(grep -vcE "^(vllm|n8n|snappymail)$" <<<"$names" || true)
+    c=$(grep -vcE "^(vllm|sglang|n8n|snappymail)$" <<<"$names" || true)
   fi
 fi
 echo $(( n + c ))

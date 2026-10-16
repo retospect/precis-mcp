@@ -5,14 +5,41 @@
 # only when all hold:
 #   * the reboot-required marker exists;
 #   * host-busy reports 0 (no autocatpath seed, no non-service container);
-#   * `precis service reserved` confirms no live service_config reserve.
+#   * `precis service reserved` confirms no live service_config reserve;
+#   * every active serving engine (OS_UPDATE_SERVING_UNITS, default
+#     "vllm sglang") is enabled, so it starts again on boot, and stops
+#     cleanly (`timeout 300 systemctl stop`).
 # Anything else logs "reboot deferred" and leaves the marker for the next
-# scripts/host-ops/os-update. An unreadable reserve counts as set.
+# scripts/host-ops/os-update (an unreadable reserve counts as set); a unit that
+# was stopped for a deferred reboot is started again. The engines are stopped
+# before `shutdown` so they exit cleanly, and the enabled units start on boot;
+# scripts/host-ops/os-update relies on the same (vllm enabled, starts on boot,
+# health-checked after). If `shutdown` itself fails the stopped units are
+# started again and the script exits 1. An EXIT/TERM/INT trap does that
+# restart, so a systemd timeout kill between stop and shutdown restores them too.
 set -euo pipefail
 MARKER="${OS_UPDATE_REBOOT_MARKER:-/var/run/reboot-required}"
 HOST_BUSY="${OS_UPDATE_HOST_BUSY:-/usr/local/sbin/host-busy}"
 PRECIS="${OS_UPDATE_PRECIS:-/opt/precis/venv/bin/precis}"
+SERVING_UNITS="${OS_UPDATE_SERVING_UNITS:-vllm sglang}"
+STOPPED=()
 log() { echo "os-update-weekly: $*"; }
+
+restart_stopped() {
+  local unit
+  for unit in ${STOPPED[@]+"${STOPPED[@]}"}; do
+    systemctl start "$unit" || log "could not start $unit again"
+  done
+}
+
+# Trap body: restore the engines once, then leave (a bare TERM/INT trap would
+# otherwise return into the script and carry on to shutdown).
+on_exit() {
+  local rc=$?
+  trap - EXIT TERM INT
+  restart_stopped
+  exit "$rc"
+}
 
 reserve_clear() {
   local envs dsn host out
@@ -55,5 +82,34 @@ if ! reserve_clear; then
   log "reboot deferred: service_config reserve"
   exit 0
 fi
+
+read -ra serving <<<"$SERVING_UNITS"
+active=()
+for unit in ${serving[@]+"${serving[@]}"}; do
+  systemctl is-active --quiet "$unit" || continue
+  if ! systemctl is-enabled --quiet "$unit"; then
+    log "reboot deferred: $unit is active but not enabled; a reboot would not bring it back"
+    exit 0
+  fi
+  active+=("$unit")
+done
+for unit in ${active[@]+"${active[@]}"}; do
+  log "stopping $unit before the reboot"
+  STOPPED+=("$unit")
+  # Any exit from here to a successful shutdown (stop failure, SIGTERM from
+  # TimeoutStartSec, set -e) restarts the units; the failure paths just exit.
+  trap on_exit EXIT
+  trap 'exit 143' TERM INT
+  if ! timeout 300 systemctl stop "$unit" || systemctl is-active --quiet "$unit"; then
+    log "reboot deferred: could not stop $unit"
+    exit 0
+  fi
+done
+
 log "rebooting: $MARKER present, host idle, no reserve"
-shutdown -r now "weekly OS update"
+if ! shutdown -r now "weekly OS update"; then
+  log "shutdown failed"
+  exit 1
+fi
+# shutdown accepted: leave the engines stopped for a clean exit.
+trap - EXIT TERM INT

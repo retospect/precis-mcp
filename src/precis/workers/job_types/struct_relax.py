@@ -63,7 +63,7 @@ waiting for the watchdog: :func:`kill_container` and :func:`reset_gpu`
 (``nvidia-smi --gpu-reset``) are attempted, and the recorded event/failure
 text is honest about whether the container actually came down — a failed
 removal names the surviving container and the operator escalation
-(``docker rm -f`` / the nightly-reboot last resort, gripe 171381) instead of
+(``docker rm -f`` / a host reboot as the last resort, gripe 171381) instead of
 claiming success it can't back up.
 
 **Pre-run guard.** Before staging a run, :func:`_dispatch` checks for a
@@ -547,7 +547,7 @@ def kill_container(
 def reset_gpu(*, node: str | None = None, container_cmd: str = _CONTAINER_CMD) -> bool:
     """Best-effort ``nvidia-smi --gpu-reset`` on ``node`` (default
     :data:`_NODE`) — the escalation step between force-removing a wedged
-    container (:func:`kill_container`) and the nightly-reboot last resort,
+    container (:func:`kill_container`) and a host reboot as the last resort,
     for a relax that self-aborted on the wall-clock cap (gripe 171381).
 
     Runs locally when this worker *is* ``node``, over ``ssh`` otherwise,
@@ -555,7 +555,7 @@ def reset_gpu(*, node: str | None = None, container_cmd: str = _CONTAINER_CMD) -
     failure is logged and swallowed. ``nvidia-smi --gpu-reset`` commonly
     fails when the GPU is still held by the wedged process or when not
     root — that's expected, hence best-effort; a persistent wedge still
-    needs the nightly reboot. Returns ``True`` iff the reset was issued and
+    needs a host reboot. Returns ``True`` iff the reset was issued and
     reported success."""
     target = node or _NODE
     if target is None:
@@ -1097,7 +1097,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             ctx.record_failure(
                 f"struct_relax: stale container {container_name} from a prior "
                 f"attempt is un-removable on {node} — operator cleanup required "
-                "(docker rm -f, or the nightly reboot) before this job can run",
+                "(docker rm -f, or a host reboot) before this job can run",
                 failure_class="infra",
             )
             return
@@ -1132,7 +1132,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         # GPU-driver-wedged relax — self-abort rather than hang forever (or
         # wait for the 6h stale-container watchdog to reap it). Kill the
         # container first (frees the name for a retry), then attempt a GPU
-        # reset (best-effort escalation before the nightly-reboot last
+        # reset (best-effort escalation before a host reboot as the last
         # resort). Gripe 171381.
         log.warning(
             "struct_relax: relax exceeded %.0fs wall-clock cap — self-aborting",
@@ -1150,7 +1150,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         else:
             container_note = (
                 f"container {container_name} NOT removed — it survives on {node}; "
-                "operator docker rm -f (or the nightly reboot) is required before "
+                "operator docker rm -f (or a host reboot) is required before "
                 "a retry can run"
             )
         gpu_note = (

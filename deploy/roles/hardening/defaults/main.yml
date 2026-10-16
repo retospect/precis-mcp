@@ -2,12 +2,31 @@
 # hardening role defaults.
 
 # ── Weekly OS update with a guarded reboot (Linux; gr491172) ──
-# Off stops and disables the timer. The schedule lives only here: Tuesday
-# 03:00Z, inside the 03:00-04:20Z no-deploy window. The timeout ends a hung
-# apt run (and so any reboot) by 04:15Z.
+# Off stops and disables the timer. The schedule lives only here.
 hardening_os_update_weekly: true
-hardening_os_update_oncalendar: "Tue *-*-* 03:00:00 UTC"
-hardening_os_update_timeout: 75min
+hardening_os_update_day: Tue
+hardening_os_update_stagger_min: 20
+hardening_os_update_stagger_group: linux
+hardening_os_update_max_offset_min: 60
+# Hosts run in sorted-name order, stagger_min apart. With 20min steps and the
+# 60min cap there are four slots (03:00, 03:20, 03:40, 04:00); hosts past the
+# fourth share 04:00 (lower stagger_min for a bigger fleet). A host outside
+# stagger_group, or an inventory without that group, gets 03:00. index = position of inventory_hostname in the sorted stagger group
+# (sorted: stable and independent of --limit); 0 if the host is not in it.
+# offset = min(stagger_min * index, max_offset).
+hardening_os_update_offset_min: >-
+  {{ [hardening_os_update_stagger_min | int
+      * ((groups.get(hardening_os_update_stagger_group, []) | sort).index(inventory_hostname)
+         if inventory_hostname in groups.get(hardening_os_update_stagger_group, []) else 0),
+      hardening_os_update_max_offset_min | int] | min }}
+# Start = 03:00Z + offset on hardening_os_update_day, so 03:00-04:00Z, inside
+# the 03:00-04:20Z no-deploy window (offset 60 -> 04:00). The timeout is
+# (80 - offset - 5) min, so a hung apt run (and any reboot) always ends by
+# 04:15Z: offset 0 -> 75min, offset 60 -> 15min.
+hardening_os_update_oncalendar: >-
+  {{ hardening_os_update_day }} *-*-*
+  {{ '%02d' % (3 + (hardening_os_update_offset_min | int) // 60) }}:{{ '%02d' % ((hardening_os_update_offset_min | int) % 60) }}:00 UTC
+hardening_os_update_timeout: "{{ 75 - (hardening_os_update_offset_min | int) }}min"
 
 # ── Linux OOM lockout guard (the shared compute node) ──────────────────────
 # On a single shared compute node, heavy MACE/NEB + llama + PDF-ingest load has
