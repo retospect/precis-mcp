@@ -425,8 +425,12 @@ terminator resolves that instead of minting overlapping H: hosts within
 bonding reach are bond-closed (`terminate.closed` INFO) unless the bond
 would make a 3- or 4-ring, dangling rim atoms out of reach (and one-bond
 corners poking into the seam end) are trimmed and re-capped
-(`terminate.trimmed` INFO),
-and a clash that can't be resolved (e.g. on an authored interface) fails
+(`terminate.trimmed` INFO). A 3-/4-ring is never closed: when both
+hosts sit on an authored interface (port rim, seam, `bond` endpoint) and
+cannot be trimmed, the deeper-clashing host stays uncapped
+(`terminate.bare` WARN, `topology.terminated.bare`); the validator's
+`small_ring_strain` flags any 3-/4-ring whose angles a ring that size
+cannot carry. A clash that can't be resolved (e.g. on an authored interface) fails
 the build with `terminate.clash`. Parts built to be joined
 should use `"ports-open"`: a join trims the caps off the ports it
 consumes, but a part relaxed with capped rims before the join keeps that

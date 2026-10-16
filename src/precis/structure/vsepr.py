@@ -32,6 +32,14 @@ TWIST_TOL = 20.0
 #: Largest ring size the ``small_ring`` rule flags.
 SMALL_RING_MAX = 4
 
+#: Sane angle windows (deg) at a 3-/4-ring member: the in-ring angle, and
+#: the widest angle a ring bond may make with an exocyclic bond. Outside
+#: either, ``small_ring_strain`` fires — a cyclobutane carbon bent to
+#: 170 degrees is a mis-closed rim, not an intentional strained ring
+#: (gr493214).
+SMALL_RING_ANGLE_WINDOW = {3: (45.0, 75.0), 4: (75.0, 105.0)}
+SMALL_RING_EXO_MAX = 160.0
+
 #: Elements VSEPR/hybridization reasoning applies to. H and the halogens are
 #: always terminal (one bond, no "shape" of their own); metals aren't VSEPR —
 #: their coordination geometry is a different (crystal-field) story.
@@ -247,7 +255,9 @@ def _pi_twist(scene: Scene, adj: dict[str, set[str]]) -> list[ValidationIssue]:
     return findings
 
 
-def _small_ring(scene: Scene, rings: list[list[str]]) -> list[ValidationIssue]:
+def _small_ring(
+    scene: Scene, adj: dict[str, set[str]], rings: list[list[str]]
+) -> list[ValidationIssue]:
     findings: list[ValidationIssue] = []
     for ring in rings:
         # A close-packed metal lattice is full of 3-atom triangles over
@@ -288,8 +298,57 @@ def _small_ring(scene: Scene, rings: list[list[str]]) -> list[ValidationIssue]:
                 severity="warn",
             )
         )
+        strain = _small_ring_strain(scene, adj, ring)
+        if strain is not None:
+            findings.append(strain)
     findings.sort(key=lambda f: sorted(f.atoms))
     return findings
+
+
+def _small_ring_strain(
+    scene: Scene, adj: dict[str, set[str]], ring: list[str]
+) -> ValidationIssue | None:
+    """The worst angle at a 3-/4-ring member outside
+    :data:`SMALL_RING_ANGLE_WINDOW` (in-ring) or past
+    :data:`SMALL_RING_EXO_MAX` (ring bond vs exocyclic bond), or None."""
+    window = SMALL_RING_ANGLE_WINDOW.get(len(ring))
+    if window is None:
+        return None
+    lo, hi = window
+    worst: tuple[float, list[str], float] | None = None  # (excess, atoms, angle)
+    n = len(ring)
+    for k, mid in enumerate(ring):
+        prev, nxt = ring[k - 1], ring[(k + 1) % n]
+        ang = probe.angle(scene, prev, mid, nxt)
+        excess = max(lo - ang, ang - hi, 0.0)
+        if excess and (worst is None or excess > worst[0]):
+            worst = (excess, [prev, mid, nxt], ang)
+        for out in _covalent_neighbors(scene, adj, mid):
+            if out in ring:
+                continue
+            for r in (prev, nxt):
+                ang = probe.angle(scene, r, mid, out)
+                excess = ang - SMALL_RING_EXO_MAX
+                if excess > 0 and (worst is None or excess > worst[0]):
+                    worst = (excess, [r, mid, out], ang)
+    if worst is None:
+        return None
+    _excess, atoms, ang = worst
+    return ValidationIssue(
+        rule="small_ring_strain",
+        atoms=atoms,
+        measured=round(ang, 1),
+        expected=(lo + hi) / 2 if atoms[2] in ring else SMALL_RING_EXO_MAX,
+        suggested_fix=(
+            f"{len(ring)}-ring {'-'.join(ring)}: {'-'.join(atoms)} measures "
+            f"{ang:.1f}°, outside what a {len(ring)}-membered ring can carry "
+            f"(in-ring {lo:.0f}-{hi:.0f}°, exocyclic up to "
+            f"{SMALL_RING_EXO_MAX:.0f}°) — this ring is implausible as built; "
+            "a generator likely closed a bond it should not have. Remove the "
+            "ring bond, or relax with fidelity='geo' if the ring is intended."
+        ),
+        severity="warn",
+    )
 
 
 def _hybridization_conflict(scene: Scene) -> list[ValidationIssue]:
@@ -428,7 +487,7 @@ def advisories(scene: Scene) -> list[ValidationIssue]:
     findings: list[ValidationIssue] = []
     findings += _angle_strain(scene, adj, angle_exempt_rings)
     findings += _pi_twist(scene, adj)
-    findings += _small_ring(scene, small_rings)
+    findings += _small_ring(scene, adj, small_rings)
     findings += _hybridization_conflict(scene)
     findings += _metal_coordination(scene)
     findings += _unmodeled_charge_state(scene)

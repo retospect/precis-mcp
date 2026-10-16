@@ -333,6 +333,55 @@ def test_small_ring_cyclopropane_warns() -> None:
     assert findings[0].expected == 5.0
 
 
+def _cyclobutane(corner: tuple[float, float], exo: tuple[float, float]) -> Scene:
+    """A 4-ring aC1..aC4 (aC1 at ``corner``, the rest on a 1.55 A square)
+    with one exocyclic carbon aC5 on aC2 at ``exo``."""
+    scene = Scene(cell=_molecule_cell())
+    pts = [corner, (1.55, 0.0), (1.55, 1.55), (0.0, 1.55), exo]
+    apply_ops(
+        scene,
+        [{"op": "add_atom", "element": "C", "cart": [x, y, 0.0]} for x, y in pts]
+        + [
+            {"op": "add_bond", "i": f"aC{i}", "j": f"aC{j}", "order": 1}
+            for i, j in ((1, 2), (2, 3), (3, 4), (4, 1), (2, 5))
+        ],
+    )
+    return scene
+
+
+def test_small_ring_strain_square_cyclobutane_is_clean() -> None:
+    # exocyclic C on the square's corner, 135 degrees from both ring bonds
+    scene = _cyclobutane((0.0, 0.0), (2.65, -1.10))
+    findings = vsepr.advisories(scene)
+    assert any(f.rule == "small_ring" for f in findings)
+    assert not any(f.rule == "small_ring_strain" for f in findings)
+
+
+def test_small_ring_strain_flags_a_170_degree_exocyclic_angle() -> None:
+    # st493212's mis-closed rim (gr493214): a ring bond and an exocyclic
+    # bond at one 4-ring member nearly collinear
+    scene = _cyclobutane((0.0, 0.0), (1.82, -1.53))
+    strain = [f for f in vsepr.advisories(scene) if f.rule == "small_ring_strain"]
+    assert len(strain) == 1
+    assert strain[0].atoms == ["aC3", "aC2", "aC5"]
+    assert strain[0].measured == pytest.approx(170.0, abs=0.5)
+    assert strain[0].expected == vsepr.SMALL_RING_EXO_MAX
+
+
+def test_small_ring_strain_flags_a_wide_in_ring_angle() -> None:
+    # aC1 pushed out: the ring angle at aC1 opens far past a 4-ring's
+    scene = _cyclobutane((0.0, -0.9), (2.65, -1.10))
+    strain = [f for f in vsepr.advisories(scene) if f.rule == "small_ring_strain"]
+    assert len(strain) == 1
+    assert strain[0].measured > 105.0 or strain[0].measured < 75.0
+
+
+def test_small_ring_strain_spares_cyclopropane() -> None:
+    assert not any(
+        f.rule == "small_ring_strain" for f in vsepr.advisories(_cyclopropane())
+    )
+
+
 def test_small_ring_six_ring_is_clean() -> None:
     scene = Scene(cell=_molecule_cell())
     n = 6

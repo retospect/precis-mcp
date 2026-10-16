@@ -405,6 +405,38 @@ def test_cap_clash_on_a_pinned_atom_refuses_the_build() -> None:
         )
 
 
+#: st493212's spec (nanobud-review-figs-r2-bud96): the bud's junction pulls
+#: two h_in port-rim carbons three bonds apart into cap-clash reach.
+BUD96 = """hexfold 0.2
+lattice: element=C sigma=1.42
+
+origin h
+h: tube(8,8, len=12)
+b: fullerene(C60)
+b @ h/(6,0,A):0 [9-6]
+"""
+
+
+def test_port_rim_clash_never_closes_a_small_ring() -> None:
+    # both hosts are port-rim atoms (never trimmed); hexfold 0.3.6 closed
+    # them anyway, a 4-ring with a ~170 degree angle (gr493214). Now the
+    # deeper cap goes and that rim carbon stays bare.
+    block = build_hexfold({"spec": BUD96, "fidelity": "stick"})
+    term = block.topology["terminated"]
+    assert _small_rings(block) == set()
+    assert term["closed"] == [] and term["trimmed"] == []
+    assert term["clashes"] == 0
+    assert len(term["bare"]) == 1
+    (host,) = term["bare"]
+    assert block.elements[host] == "C"
+    assert len(_carbon_adjacency(block)[host]) == 2
+    assert host not in term["hosts"]
+    assert any(host in (p.atoms or []) for p in block.ports if p.name == "h_in")
+    findings = block.topology["report"]["findings"]
+    bare = [f for f in findings if f["code"] == "terminate.bare"]
+    assert len(bare) == 1 and bare[0]["severity"] == "WARN"
+
+
 def test_fin_scene_is_capped_by_default() -> None:
     params = {
         "tube": [6, 4],

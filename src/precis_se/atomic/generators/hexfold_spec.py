@@ -484,6 +484,31 @@ def _converging_stubs(
     return out
 
 
+def _deepest_cap_host(
+    coords: np.ndarray,
+    hosts: list[int],
+    positions: list[np.ndarray],
+    pair: tuple[int, int],
+    cap_hosts: set[int],
+) -> int:
+    """Of a clashing pair's ``cap_hosts``, the one whose cap sits closest
+    to the pair's other carbon — the host to leave bare when the pair
+    may be neither bond-closed nor trimmed. Ties go to the lower
+    ordinal."""
+    a, b = pair
+
+    def depth(host: int) -> float:
+        other = b if host == a else a
+        d = [
+            float(np.linalg.norm(np.asarray(p) - coords[other]))
+            for h, p in zip(hosts, positions)
+            if h == host
+        ]
+        return min(d, default=math.inf)
+
+    return min(cap_hosts, key=lambda h: (depth(h), h))
+
+
 def _cap_clash_pairs(
     coords: np.ndarray,
     hosts: list[int],
@@ -661,12 +686,14 @@ def _resolve_edge_caps(
     list[str],
     list[tuple[int, int]],
     float,
+    list[int],
 ]:
     """Resolve cap collisions at converging rims before the H atoms are
     minted (gr486406). Returns the net and coords — atoms may have been
     trimmed and ring-closure bonds added — plus the surviving cap
     hosts/positions, dropped-cap hosts, trimmed atoms' paths, the closed
-    pairs (final ordinals) and the largest polish displacement.
+    pairs (final ordinals), the largest polish displacement and the
+    authored-interface hosts left bare instead of closing a small ring.
 
     Each pass places caps on the current net and collects the carbon
     pairs whose caps collide. In order, closest pair first: (1) a pair
@@ -674,7 +701,9 @@ def _resolve_edge_caps(
     caps, add the C-C bond (a carbon that reaches degree four is
     relabelled sp3) — unless the pair is within ``_SMALL_RING_HOPS``
     bonds, where the bond would make a 3- or 4-ring: then it is re-judged
-    next pass if a closure this pass touched it, else trimmed as in (2);
+    next pass if a closure this pass touched it, else trimmed as in (2),
+    or — every host an authored interface — the host whose cap sits
+    deepest in the clash keeps no cap (never a 3-/4-ring, gr493214);
     (2) a pair out of reach loses its dangling rim atom(s) — trimmed out
     of the net, the newly exposed atoms re-capped on the next pass. A
     one-bond strip corner poking into a convergence
@@ -701,6 +730,7 @@ def _resolve_edge_caps(
     reach = _RING_CLOSE_REACH_SIGMA * work.lattice.sigma_A
     trimmed: list[str] = []
     closed_paths: list[tuple[str, str]] = []
+    bare: set[int] = set()  # protected hosts left uncapped (no 3-/4-ring)
     polish_disp = 0.0
 
     def closed_pairs() -> list[tuple[int, int]]:
@@ -731,6 +761,10 @@ def _resolve_edge_caps(
                     keep.append(k)
             hosts = [hosts[k] for k in keep]
             positions = [positions[k] for k in keep]
+        if bare:
+            keep = [k for k, h in enumerate(hosts) if h not in bare]
+            hosts = [hosts[k] for k in keep]
+            positions = [positions[k] for k in keep]
         pairs = _cap_clash_pairs(xyz, hosts, positions)
         nbrs: list[set[int]] = [set() for _ in work.atoms]
         for i, j, _o in work.bonds:
@@ -750,6 +784,7 @@ def _resolve_edge_caps(
                 trimmed,
                 closed_pairs(),
                 polish_disp,
+                sorted(bare),
             )
         degree = [len(n) for n in nbrs]
         adj = [set(n) for n in nbrs]  # grows with this pass's closures
@@ -785,25 +820,31 @@ def _resolve_edge_caps(
                 small.append((a, b, cap_hosts))
                 continue
             to_trim.update(h for h in cap_hosts if h not in protected)
+        newly_bare: set[int] = set()
         if not new_bonds:
             # a closure moves caps, so small-ring pairs wait for a pass
             # that closed nothing; then the dangling host goes — or, when
             # every host is an authored interface that cannot be trimmed,
-            # the closure stands rather than refusing the build
+            # the host whose cap sits deepest in the clash stays bare: a
+            # 3-/4-ring at a port rim bent one angle to ~170 degrees in
+            # st493212 (gr493214), an uncapped rim carbon is honest
             for a, b, cap_hosts in small:
-                if a in to_trim or b in to_trim:
+                # a bare carbon can still be the target of a neighbour's
+                # cap: that cap's host is then the one to judge
+                if {a, b} & (to_trim | newly_bare):
                     continue
                 free = {h for h in cap_hosts if h not in protected}
                 if free:
                     to_trim |= free
-                elif b not in adj[a] and degree[a] < 4 and degree[b] < 4:
-                    new_bonds.append((a, b))
-                    adj[a].add(b)
-                    adj[b].add(a)
-                    degree[a] += 1
-                    degree[b] += 1
+                else:
+                    newly_bare.add(
+                        _deepest_cap_host(xyz, hosts, positions, (a, b), cap_hosts)
+                    )
+        bare |= newly_bare
         if not new_bonds and not to_trim:
-            break
+            if not newly_bare:
+                break
+            continue  # nothing moved: the next pass re-places without them
         changed: set[int] = set()
         if to_trim:
             freed = {n for t in to_trim for n in nbrs[t]} - to_trim
@@ -814,6 +855,7 @@ def _resolve_edge_caps(
                 p for p in (renum.get(o) for o in pinned) if p is not None
             )
             protected = {r for o in protected if (r := renum.get(o)) is not None}
+            bare = {r for o in bare if (r := renum.get(o)) is not None}
             new_bonds = [
                 (renum[a], renum[b]) for a, b in new_bonds if a in renum and b in renum
             ]
@@ -848,6 +890,9 @@ def _resolve_edge_caps(
         polish_disp = max(polish_disp, disp)
     # stalled or out of passes: re-scan so the refusal names what remains
     hosts, positions = _terminate_open_edges(work, xyz, terminate)
+    keep = [k for k, h in enumerate(hosts) if h not in bare]
+    hosts = [hosts[k] for k in keep]
+    positions = [positions[k] for k in keep]
     pairs = _cap_clash_pairs(xyz, hosts, positions)
     names = "; ".join(
         f"{work.atoms[a].path}~{work.atoms[b].path} ({d:.2f} A)"
@@ -935,7 +980,12 @@ def _block_from_net(
     rows whose converging rims would otherwise mint overlapping
     hydrogens: the bare open edge is honest, a 0.2 Å cap pair is not.
     Dropped caps are reported as ``terminate.dropped`` INFO with their
-    host ordinals, and counted on ``topology["terminated"]["dropped"]``."""
+    host ordinals, and counted on ``topology["terminated"]["dropped"]``.
+
+    A clash on an authored interface whose closure would make a 3- or
+    4-membered ring is never closed (gr493214): one host stays uncapped,
+    reported as ``terminate.bare`` WARN and listed on
+    ``topology["terminated"]["bare"]``."""
     inverse: dict[str, Any] = {}
     coords, envelope = _canonical_frame(
         np.asarray(raw_coords, dtype=float),
@@ -944,6 +994,7 @@ def _block_from_net(
     closed: list[tuple[int, int]] = []
     trimmed: list[str] = []
     h_dropped: list[int] = []  # host ordinals whose caps were dropped
+    bare: list[int] = []  # interface hosts left uncapped, not ring-closed
     polish_disp = 0.0
     if terminate != "none":
         (
@@ -955,6 +1006,7 @@ def _block_from_net(
             trimmed,
             closed,
             polish_disp,
+            bare,
         ) = _resolve_edge_caps(
             net,
             coords,
@@ -989,6 +1041,27 @@ def _block_from_net(
                         data=(
                             ("count", len(h_dropped)),
                             ("hosts", sorted(set(h_dropped))),
+                        ),
+                    ),
+                )
+            )
+        )
+    if bare:
+        report = report.merge(
+            Report(
+                (
+                    Finding(
+                        "terminate.bare",
+                        Severity.WARN,
+                        f"{len(bare)} rim carbon(s) left uncapped: their caps "
+                        "collide on an authored interface (port rim, seam "
+                        "record, bond endpoint) where a closing bond would "
+                        "make a 3- or 4-membered ring, so neither a closure "
+                        "nor a trim applies",
+                        data=(
+                            ("count", len(bare)),
+                            ("hosts", bare),
+                            ("atoms", [str(net.atoms[h].path) for h in bare]),
                         ),
                     ),
                 )
@@ -1162,6 +1235,7 @@ def _block_from_net(
         "trimmed": trimmed,
         "polish_max_disp_A": round(polish_disp, 4),
         "dropped": len(h_dropped),
+        "bare": bare,
         "bond_A": net.lattice.sigma_CH_A,
         "why": "open edges capped after the relax and the judgement so renders, "
         "se reports and a DFT handoff see a closed-shell edge; the report "
@@ -1201,6 +1275,12 @@ def _block_from_net(
             f"; {len(closed)} rim pair(s) bond-closed, "
             f"{len(trimmed)} rim atom(s) trimmed at converging caps"
             if closed or trimmed
+            else ""
+        )
+        + (
+            f"; {len(bare)} rim carbon(s) left uncapped (a closure would make "
+            "a 3-/4-ring)"
+            if bare
             else ""
         )
     )
