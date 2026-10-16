@@ -44,6 +44,8 @@ Derivation (taproot.md, locked decision):
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
@@ -184,6 +186,53 @@ class ComputedEdge:
     #: same way as the attach-time refusal against the pathway's CURRENT
     #: meta. ``None`` when the edge states no barrier or the check passes.
     mismatch_reason: str | None = None
+    #: The nanopub ``precis:evidenceTier`` this edge's standing earns —
+    #: :data:`COMPUTED_TIER` for a live pin,
+    #: :data:`COMPUTED_PROVISIONAL_TIER` when the pathway was superseded by
+    #: a re-dispatch still ``computing`` (the mint uses the current computed
+    #: state and never waits on the running compute), ``None`` when the
+    #: edge does not stand (unpinned, stale or mismatched — the mint gate
+    #: refuses it).
+    evidence_tier: str | None = None
+    #: :func:`pathway_provenance_key` of the pathway's CURRENT meta — the
+    #: ``<key>`` in the artifact's ``urn:precis:pathway:<key>`` source node.
+    provenance_key: str | None = None
+    #: The edge's stated barrier (eV) and uncertainty, when it states one.
+    claimed_barrier: float | None = None
+    claimed_barrier_std: float | None = None
+
+
+#: Evidence tier of a computed edge that stands on its own pin.
+COMPUTED_TIER = "computed"
+#: Evidence tier of a computed edge whose pathway a still-running
+#: re-dispatch superseded: the cited numbers are the current computed
+#: state, the successor has none yet (Reto 2026-10-16, ruling 1a).
+COMPUTED_PROVISIONAL_TIER = "computed-provisional"
+
+
+def pathway_provenance_key(pathway_meta: dict[str, Any]) -> str | None:
+    """Content hash of a pathway's computed inputs and edges — the
+    ``<key>`` of its nanopub source node ``urn:precis:pathway:<key>``
+    (Reto 2026-10-16, ruling 2a).
+
+    sha256 over the canonical JSON of ``meta.content_key`` (itself the sha
+    of the engine token, reaction config and slab — the inputs) and
+    ``meta.graph.links`` (the computed edges with their barriers).
+    Identical content gives the identical key; a recompute that moves a
+    barrier, or new inputs, gives a different one. ``None`` for a pathway
+    with no ``content_key`` (nothing to anchor the inputs)."""
+    content_key = pathway_meta.get("content_key")
+    if not isinstance(content_key, str) or not content_key:
+        return None
+    graph = pathway_meta.get("graph")
+    links = graph.get("links") if isinstance(graph, dict) else None
+    blob = json.dumps(
+        {"inputs": content_key, "links": links if isinstance(links, list) else []},
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -362,11 +411,51 @@ def _fetch_pathway_facts(
             "SELECT ref_id, title, meta FROM refs WHERE ref_id = ANY(%s)",
             (list(ref_ids),),
         ).fetchall()
-    return {row[0]: (row[1], row[2] or {}) for row in rows}
+        facts = {row[0]: (row[1], row[2] or {}) for row in rows}
+        # Successors of superseded pathways ride along: a successor still
+        # `computing` leaves the cited edge standing (provisional tier).
+        successors = {
+            by
+            for _title, meta in facts.values()
+            if meta.get("status") == "superseded"
+            and (by := _successor_id(meta.get("superseded_by"))) is not None
+        } - set(facts)
+        if successors:
+            rows = conn.execute(
+                "SELECT ref_id, title, meta FROM refs WHERE ref_id = ANY(%s)",
+                (list(successors),),
+            ).fetchall()
+            facts.update({row[0]: (row[1], row[2] or {}) for row in rows})
+    return facts
+
+
+def _successor_id(by: Any) -> int | None:
+    """``meta.superseded_by`` as a ref_id, or ``None`` when absent/malformed."""
+    if isinstance(by, int) and not isinstance(by, bool):
+        return by
+    if isinstance(by, str) and by.isdigit():
+        return int(by)
+    return None
+
+
+def _recompute_pending(
+    pathway_meta: dict[str, Any], facts: dict[int, tuple[str, dict[str, Any]]]
+) -> bool:
+    """True when the pathway was superseded by a re-dispatch that is still
+    ``computing`` — its own numbers are then the current computed state."""
+    if pathway_meta.get("status") != "superseded":
+        return False
+    by = _successor_id(pathway_meta.get("superseded_by"))
+    if by is None or by not in facts:
+        return False
+    return facts[by][1].get("status") == "computing"
 
 
 def _computed_stale_reason(
-    pinned_key: str | None, pathway_meta: dict[str, Any]
+    pinned_key: str | None,
+    pathway_meta: dict[str, Any],
+    *,
+    recompute_pending: bool = False,
 ) -> str | None:
     """Why a computed citation no longer stands, or ``None`` when it does.
 
@@ -374,11 +463,14 @@ def _computed_stale_reason(
     ``content_key`` that differs from the pathway's current one means the
     inputs behind the cited numbers changed under the citation. An edge with
     no pin (written before the pin existed, or not via ``attach_evidence``)
-    cannot be checked and reports nothing rather than guessing."""
-    if pathway_meta.get("status") == "superseded":
-        by = pathway_meta.get("superseded_by")
-        if isinstance(by, int) or (isinstance(by, str) and by.isdigit()):
-            by_handle = handle_registry.try_format("pathway", int(by))
+    cannot be checked and reports nothing rather than guessing.
+    ``recompute_pending`` (:func:`_recompute_pending`) waives the
+    superseded arm: a successor still ``computing`` has no numbers yet, so
+    the cited pathway's are the current computed state."""
+    if pathway_meta.get("status") == "superseded" and not recompute_pending:
+        by = _successor_id(pathway_meta.get("superseded_by"))
+        if by is not None:
+            by_handle = handle_registry.try_format("pathway", by)
             return f"superseded by {by_handle or f'ref_id={by}'}"
         return "superseded"
     current = pathway_meta.get("content_key")
@@ -421,6 +513,18 @@ def _build_computed(
         title, pmeta = facts.get(ref_id, (f"<pathway {ref_id}>", {}))
         pinned = meta.get("content_key")
         pinned = pinned if isinstance(pinned, str) else None
+        pending = _recompute_pending(pmeta, facts)
+        stale = _computed_stale_reason(pinned, pmeta, recompute_pending=pending)
+        mismatch = _computed_mismatch(meta, pmeta)
+        provenance_key = pathway_provenance_key(pmeta)
+        tier = None
+        if (
+            pinned is not None
+            and provenance_key is not None
+            and stale is None
+            and mismatch is None
+        ):
+            tier = COMPUTED_PROVISIONAL_TIER if pending else COMPUTED_TIER
         seen[ref_id] = ComputedEdge(
             pathway_ref_id=ref_id,
             title=title or f"<pathway {ref_id}>",
@@ -428,8 +532,12 @@ def _build_computed(
             content_key=pinned,
             support=meta.get("support"),
             caveats=list(meta.get("caveats") or []),
-            stale_reason=_computed_stale_reason(pinned, pmeta),
-            mismatch_reason=_computed_mismatch(meta, pmeta),
+            stale_reason=stale,
+            mismatch_reason=mismatch,
+            evidence_tier=tier,
+            provenance_key=provenance_key,
+            claimed_barrier=num_finite(meta.get(CLAIMED_BARRIER_META_KEY)),
+            claimed_barrier_std=num_finite(meta.get(CLAIMED_BARRIER_STD_META_KEY)),
         )
     return [seen[r] for r in sorted(seen)]
 

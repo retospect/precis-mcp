@@ -1520,3 +1520,136 @@ def test_approve_refuses_a_superseded_pathway_edge(store: Any) -> None:
     with pytest.raises(mint.MintGateError) as exc:
         mint.approve(store, hub, payload=_payload(chunk, sha), interactive=True)
     assert "computed-stale" in {v.gate for v in exc.value.violations}
+
+
+# ── computed evidence rulings (Reto 2026-10-16) ──────────────────────────
+# (1a) a live computed edge grounds a claim, the mint never waits on a
+# running compute, and the tier follows the edge's standing; (2a) the
+# pathway is cited as urn:precis:pathway:<content hash> with
+# precis:evidenceTier; (3a) approve freezes the pin set, so a later
+# recompute leaves the approved payload (and the signed artifact) alone.
+
+_LINKS = [{"source": "A", "target": "B", "barrier": 1.2, "barrier_std": 0.05}]
+
+
+def _computed_only_hub(store: Any, pathway: int) -> int:
+    hub = mint_hub(
+        store,
+        CanonicalClaim(
+            sentence="DFT shows NO dissociation on Pd(111) has a 1.2 eV barrier.",
+            scope={},
+        ),
+    )
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=pathway,
+        role="corroborates",
+        meta={"claimed_barrier": 1.2},
+        check_retraction=False,
+    )
+    return hub
+
+
+def test_computed_only_claim_mints_non_hanging_with_tier(store: Any) -> None:
+    pathway = _seed_pathway(
+        store, slug="rule-rx-aaa111", content_key="sha-r-aaa111", links=_LINKS
+    )
+    hub = _computed_only_hub(store, pathway)
+    bundle = evidence.load_bundle(store, hub)
+    assert [e.evidence_tier for e in bundle.computed] == ["computed"]
+    assert gates.run_mint_gates(store, bundle, {"passages": []}) == []
+
+    row = mint.approve(store, hub, payload={"passages": []}, interactive=True)
+    assert row.state == "reviewed"
+    assert not row.grounding.get("hanging")
+    (pin,) = row.grounding["computed"]
+    assert pin["evidence_tier"] == "computed"
+    assert pin["content_key"] == "sha-r-aaa111"
+
+
+def test_running_recompute_does_not_block_mint(store: Any) -> None:
+    """A re-dispatch still computing supersedes the cited pathway; the mint
+    uses the current computed state (the cited numbers) at the provisional
+    tier instead of waiting. A finished successor still makes it stale."""
+    pathway = _seed_pathway(
+        store, slug="rule-rx-bbb222", content_key="sha-r-bbb222", links=_LINKS
+    )
+    successor = _seed_pathway(
+        store, slug="rule-rx-ccc333", content_key="sha-r-ccc333", status="computing"
+    )
+    hub = _computed_only_hub(store, pathway)
+    _set_pathway_meta(
+        store, pathway, {"status": "superseded", "superseded_by": successor}
+    )
+    bundle = evidence.load_bundle(store, hub)
+    assert [e.evidence_tier for e in bundle.computed] == ["computed-provisional"]
+    assert gates.run_mint_gates(store, bundle, {"passages": []}) == []
+
+    _set_pathway_meta(store, successor, {"status": "ready"})
+    bundle = evidence.load_bundle(store, hub)
+    assert bundle.computed[0].evidence_tier is None
+    slugs = {v.gate for v in gates.run_mint_gates(store, bundle, {"passages": []})}
+    assert "computed-stale" in slugs
+
+
+def test_pathway_provenance_key_is_content_keyed() -> None:
+    from precis.taproot.seniority import pathway_provenance_key
+
+    meta = {"content_key": "sha-x", "graph": {"links": _LINKS}, "status": "ready"}
+    same = {
+        "status": "superseded",  # status is not content
+        "graph": {"links": [dict(reversed(list(_LINKS[0].items())))]},
+        "content_key": "sha-x",
+    }
+    key = pathway_provenance_key(meta)
+    assert key is not None and len(key) == 64
+    assert pathway_provenance_key(same) == key
+    moved = {
+        "content_key": "sha-x",
+        "graph": {"links": [{**_LINKS[0], "barrier": 1.3}]},
+    }
+    assert pathway_provenance_key(moved) != key
+    assert pathway_provenance_key({**meta, "content_key": "sha-y"}) != key
+    assert pathway_provenance_key({"graph": {"links": _LINKS}}) is None
+
+
+def test_approve_freezes_pins_against_a_later_recompute(
+    store: Any, monkeypatch: Any
+) -> None:
+    from precis.taproot.seniority import pathway_provenance_key
+
+    priv, _pub = generate_keypair(2048)
+    monkeypatch.setenv("NANOPUB_BOT_PRIVATE_KEY", priv)
+    pathway = _seed_pathway(
+        store, slug="rule-rx-ddd444", content_key="sha-r-ddd444", links=_LINKS
+    )
+    hub = _computed_only_hub(store, pathway)
+    row = mint.approve(store, hub, payload={"passages": []}, interactive=True)
+    frozen = json.loads(json.dumps(row.grounding))
+    key = pathway_provenance_key(
+        {"content_key": "sha-r-ddd444", "graph": {"links": _LINKS}}
+    )
+    assert frozen["computed"][0]["provenance_key"] == key
+
+    # A later recompute: a fresh pathway finishes and supersedes the cited
+    # one, with a different barrier.
+    successor = _seed_pathway(
+        store,
+        slug="rule-rx-eee555",
+        content_key="sha-r-eee555",
+        links=[{**_LINKS[0], "barrier": 1.6}],
+    )
+    _set_pathway_meta(
+        store, pathway, {"status": "superseded", "superseded_by": successor}
+    )
+    after = store.nanopub_publish_row(hub)
+    assert after is not None and after.grounding == frozen
+
+    signed = mint.sign(store, hub)
+    assert signed.state == "signed"
+    artifact = store.nanopub_artifact(signed.artifact_id)
+    assert artifact is not None
+    trig = artifact.trig_bytes.decode("utf-8")
+    assert f"urn:precis:pathway:{key}" in trig
+    assert "evidenceTier" in trig and '"computed"' in trig

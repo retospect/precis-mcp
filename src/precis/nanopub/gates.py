@@ -337,11 +337,12 @@ def run_mint_gates(
     # key-drifted compute is revoked evidence, and a stated barrier that
     # no longer matches the pathway's own graph fails the magnitude
     # re-check — both refuse rather than signing over them. Runs for
-    # every artifact type: the check reads the hub's live computed edges,
-    # not the payload, so `frozen` does not soften it (a pathway
-    # superseded between approve and sign blocks the sign — the
-    # content-key pin's designed break-visibly property).
-    violations += check_computed(bundle)
+    # every artifact type. At approve it reads the hub's live edges; a
+    # frozen payload that carries the approve-time pin set (`computed`)
+    # is checked on that set instead, so a later recompute cannot change
+    # an approved claim's evidence (Reto 2026-10-16, ruling 3a).
+    frozen_computed = frozen_computed_pins(payload) if frozen else None
+    violations += check_computed(bundle, frozen_pins=frozen_computed)
 
     # Resolved before the sentence lint, not just before the schema arm:
     # the blocking set is scoped by artifact type
@@ -425,13 +426,21 @@ def run_mint_gates(
                 )
             )
     elif artifact_type == "claim":
-        if not passages and not hanging:
+        # A standing computed edge grounds a claim (Reto 2026-10-16,
+        # ruling 1a): a computed-only claim mints non-hanging.
+        computed_grounds = (
+            bool(frozen_computed)
+            if frozen_computed is not None
+            else any(e.evidence_tier for e in bundle.computed)
+        )
+        if not passages and not hanging and not computed_grounds:
             violations.append(
                 GateViolation(
                     "schema-lint",
                     "claim without a grounding quote — no source, no atom. "
                     "Either ground it (quote + snip validated against the "
-                    "paper) or mint explicitly hanging "
+                    "paper, or a standing computed pathway edge) or mint "
+                    "explicitly hanging "
                     "(provenance-unresolved; publish preflight will block "
                     "it until the original-paper hunt lands)",
                 )
@@ -1028,7 +1037,20 @@ def check_contradicts(store: Store, bundle: ev.HubBundle) -> list[GateViolation]
     return out
 
 
-def check_computed(bundle: ev.HubBundle) -> list[GateViolation]:
+def frozen_computed_pins(payload: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """The approve-time computed pin set frozen into ``payload['computed']``
+    (:func:`precis.nanopub.mint.approve`), or ``None`` for a payload frozen
+    before the pin set existed — the gate then falls back to the live
+    edges."""
+    pins = payload.get("computed")
+    if not isinstance(pins, list):
+        return None
+    return [p for p in pins if isinstance(p, dict)]
+
+
+def check_computed(
+    bundle: ev.HubBundle, *, frozen_pins: list[dict[str, Any]] | None = None
+) -> list[GateViolation]:
     """Computed-evidence standing gate: a ``pathway`` evidence edge
     (:attr:`~precis.nanopub.evidence.HubBundle.computed`) refuses mint
     when it no longer stands, exactly the content-key pin's designed
@@ -1058,12 +1080,32 @@ def check_computed(bundle: ev.HubBundle) -> list[GateViolation]:
     Reads the live ``bundle.computed`` — ``stale_reason`` /
     ``mismatch_reason`` are already re-derived against the pathway's
     current ``meta`` at read time, so the same check is correct at
-    approve and at sign (where ``run_mint_gates`` re-runs with
-    ``frozen=True``; the live check is what catches a supersession that
-    lands between the two). A pathway edge is never ``frozen`` — there
-    is no frozen copy of compute results the way a web passage has one;
-    the pin IS the comparison, so ``frozen`` has no arm here."""
+    approve and on a legacy payload at sign.
+
+    ``frozen_pins`` (Reto 2026-10-16, ruling 3a): approve freezes the
+    standing edges' pins into the payload, and sign checks that frozen set
+    instead of the live edges — a later recompute or supersession does not
+    change an approved claim's evidence (the artifact cites the frozen
+    content-keyed URN, which stays verifiable). The frozen arm only
+    refuses a pin that lacks its keys or tier (a hand-edited payload)."""
     out: list[GateViolation] = []
+    if frozen_pins is not None:
+        for pin in frozen_pins:
+            missing = [
+                k
+                for k in ("content_key", "provenance_key", "evidence_tier")
+                if not isinstance(pin.get(k), str) or not pin.get(k)
+            ]
+            if missing:
+                out.append(
+                    GateViolation(
+                        "computed-pin",
+                        f"frozen computed pin for pathway ref "
+                        f"{pin.get('pathway_ref_id')} lacks {', '.join(missing)} "
+                        "— reopen and re-approve to re-freeze the pin set",
+                    )
+                )
+        return out
     for edge in bundle.computed:
         handle = handle_registry.try_format("pathway", edge.pathway_ref_id) or (
             f"pathway ref {edge.pathway_ref_id}"
@@ -1076,6 +1118,16 @@ def check_computed(bundle: ev.HubBundle) -> list[GateViolation]:
                     "pathway citation that cannot be re-checked is not "
                     "citable; re-attach through attach_evidence so the edge "
                     "pins (pathway_ref_id, content_key)",
+                )
+            )
+        elif edge.provenance_key is None:
+            out.append(
+                GateViolation(
+                    "computed-pin",
+                    f"computed evidence {handle} has no current content_key "
+                    "(pathway missing or never keyed) — nothing to cite as "
+                    "urn:precis:pathway:<key>; detach it or attach a keyed "
+                    "pathway",
                 )
             )
         if edge.stale_reason:

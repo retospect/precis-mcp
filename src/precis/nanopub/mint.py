@@ -263,6 +263,11 @@ def approve(
     frozen_payload["passages"] = _freeze_context_sentence(
         store, frozen_payload["passages"]
     )
+    # Only a claim cites computed evidence in its artifact (the live draft
+    # renders it for claims only; a hypothesis refuses it at the gate).
+    frozen_payload["computed"] = (
+        _freeze_computed(bundle) if artifact_type == "claim" else []
+    )
     ok = store.nanopub_approve(
         row.id,
         approved_title=approved,
@@ -294,6 +299,30 @@ def _sync_hub_type_marker(store: Store, hub_ref: Any, artifact_type: str) -> Non
     )
     if touched and current != artifact_type:
         store.stamp_ref_meta(hub_ref.id, {"artifact_type": artifact_type})
+
+
+def _freeze_computed(bundle: evidence.HubBundle) -> list[dict[str, Any]]:
+    """The computed pin set as it stands at approve (Reto 2026-10-16,
+    ruling 3a) — one entry per standing pathway edge, carrying the
+    ``urn:precis:pathway:<provenance_key>`` key and the tier its standing
+    earned. Overwrites any reviewer-submitted ``computed`` list: the live
+    edges, not the editable payload, are the authority. Sign and the
+    artifact read only this set, so a later recompute leaves the approved
+    payload unchanged. The gates already refused any edge that does not
+    stand, so every edge here carries a tier."""
+    return [
+        {
+            "pathway_ref_id": e.pathway_ref_id,
+            "content_key": e.content_key,
+            "provenance_key": e.provenance_key,
+            "evidence_tier": e.evidence_tier,
+            "role": e.relation,
+            "claimed_barrier": e.claimed_barrier,
+            "claimed_barrier_std": e.claimed_barrier_std,
+        }
+        for e in bundle.computed
+        if e.evidence_tier and e.provenance_key
+    ]
 
 
 def _passage_source_key(p: dict[str, Any]) -> str:
@@ -742,6 +771,7 @@ def _mint_input(
         aida_uri=row.aida_uri,
         hub_ref_id=row.claim_ref_id,
         grounding=grounding,
+        computed=assemble.computed_inputs(payload),
         fields=dict(payload.get("fields") or {}),
         conjuncts=conjuncts,
         motivation=payload.get("motivation"),

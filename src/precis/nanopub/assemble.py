@@ -60,6 +60,7 @@ from precis.nanopub.vocab import (
     REPORT,
     SEC_ACCESSION,
 )
+from precis.utils.coerce import num_finite
 
 #: Placeholder namespace for the unsigned draft rendering (slice 1).
 #: Mint uses the nanopub library's dummy namespace instead, which the
@@ -119,6 +120,50 @@ class GroundingInput:
         return doi_source_uri(self.doi) if self.doi else None
 
 
+def pathway_source_uri(provenance_key: str) -> str:
+    """The content-keyed source node a computed pathway is cited by
+    (Reto 2026-10-16, ruling 2a): ``urn:precis:pathway:<key>``, the key
+    being :func:`precis.taproot.seniority.pathway_provenance_key`."""
+    return f"urn:precis:pathway:{provenance_key}"
+
+
+@dataclass(frozen=True, slots=True)
+class ComputedInput:
+    """One frozen computed (``pathway``) citation — the approve-time pin
+    (:func:`precis.nanopub.mint.approve` freezes it into the payload's
+    ``computed`` list), never re-read from the live pathway at mint."""
+
+    provenance_key: str
+    #: ``computed`` | ``computed-provisional`` — the edge's standing at approve.
+    evidence_tier: str
+    role: str = "corroborates"
+    #: The claim's stated barrier (eV) and uncertainty, when the edge states one.
+    claimed_barrier: float | None = None
+    claimed_barrier_std: float | None = None
+
+    @property
+    def source_node(self) -> str:
+        return pathway_source_uri(self.provenance_key)
+
+
+def computed_inputs(payload: dict[str, Any]) -> list[ComputedInput]:
+    """A frozen payload's ``computed`` pin set → artifact inputs (empty for
+    a payload frozen before the pin set existed; malformed entries are
+    skipped — the ``computed-pin`` gate refuses them at sign)."""
+    pins = payload.get("computed")
+    return [
+        ComputedInput(
+            provenance_key=str(p["provenance_key"]),
+            evidence_tier=str(p["evidence_tier"]),
+            role=str(p.get("role") or "corroborates"),
+            claimed_barrier=num_finite(p.get("claimed_barrier")),
+            claimed_barrier_std=num_finite(p.get("claimed_barrier_std")),
+        )
+        for p in (pins if isinstance(pins, list) else [])
+        if isinstance(p, dict) and p.get("provenance_key") and p.get("evidence_tier")
+    ]
+
+
 @dataclass(frozen=True, slots=True)
 class ConjunctInput:
     """One atom of a composite: its AIDA URI (assertion edge) and its
@@ -137,6 +182,8 @@ class MintInput:
     aida_uri: str
     hub_ref_id: int
     grounding: list[GroundingInput] = field(default_factory=list)
+    #: Computed (pathway) evidence — one ``precis:ComputedEvidence`` node each.
+    computed: list[ComputedInput] = field(default_factory=list)
     #: Structured fields; values must be contained in a grounding quote
     #: (gate #5). `quantity` requires `quantity_bound`.
     fields: dict[str, str] = field(default_factory=dict)
@@ -292,6 +339,35 @@ def _provenance(inp: MintInput, ns: Namespace) -> Graph:
                     src_uri,
                     PRECIS["sourceContext"],
                     Literal(ground.context_sentence, lang="en"),
+                )
+            )
+
+    # Computed evidence: the pathway is a content-keyed source, never a
+    # quote — one node per citation (never the flat single-passage shape,
+    # so a computed node cannot collide with a quote's triples).
+    for i, comp in enumerate(inp.computed, start=1):
+        src_uri = URIRef(comp.source_node)
+        node = ns[f"computed{i}"]
+        g.add((assertion, PROV.wasDerivedFrom, src_uri))
+        g.add((assertion, PRECIS["groundedBy"], node))
+        g.add((node, RDF.type, PRECIS["ComputedEvidence"]))
+        g.add((node, PRECIS["fromSource"], src_uri))
+        g.add((node, PRECIS["evidenceRole"], PRECIS[comp.role]))
+        g.add((node, PRECIS["evidenceTier"], Literal(comp.evidence_tier)))
+        if comp.claimed_barrier is not None:
+            g.add(
+                (
+                    node,
+                    PRECIS["statedBarrier"],
+                    Literal(comp.claimed_barrier, datatype=XSD.double),
+                )
+            )
+        if comp.claimed_barrier_std is not None:
+            g.add(
+                (
+                    node,
+                    PRECIS["statedBarrierStd"],
+                    Literal(comp.claimed_barrier_std, datatype=XSD.double),
                 )
             )
 

@@ -209,15 +209,7 @@ failures an extraction agent can avoid up front:
   own evidence or mints as a `precis:Hypothesis` (declarative sentence,
   type carries the epistemic status, `testableBy` names the
   discriminating experiment).
-- **Computed (pathway) evidence must still stand** — a `pw` evidence
-  edge pins `(pathway_ref_id, content_key)`; mint refuses when the
-  pathway was superseded or its content key moved (`computed-stale`),
-  when the edge's stated barrier no longer matches the pathway's own
-  `graph.links` numbers (`computed-mismatch`), or when the edge pins no
-  key at all (`computed-pin`). Remedy: re-attach the superseding
-  pathway, or re-state the claim's barrier to match the current graph.
-  A hypothesis cites no evidence — a computed edge on a hypothesis hub
-  refuses too.
+- Computed (pathway) evidence: see the next section.
 - **One public identifier per passage** — provenance content is the
   source's identifier + quote + snip. A paper is cited by its DOI; an
   `edgar` filing by its SEC accession number (the ref slug; the source
@@ -243,6 +235,26 @@ failures an extraction agent can avoid up front:
   normal shape (canonical + as-downloaded alias for dedup probing) and
   does NOT block minting. Zero anywhere = unmintable until the PDF is
   re-hashed or acquired.
+
+## Mint gates — computed (pathway) evidence
+
+- **Computed evidence must still stand** — a `pw` evidence
+  edge pins `(pathway_ref_id, content_key)`; mint refuses when the
+  pathway was superseded or its content key moved (`computed-stale`),
+  when the edge's stated barrier no longer matches the pathway's own
+  `graph.links` numbers (`computed-mismatch`), or when the edge pins no
+  key at all (`computed-pin`). Remedy: re-attach the superseding
+  pathway, or re-state the claim's barrier to match the current graph.
+  A hypothesis cites no evidence — a computed edge on a hypothesis hub
+  refuses too.
+- **A standing computed edge grounds a claim** — a claim whose only
+  evidence is a live `pw` edge mints non-hanging. A re-dispatch still
+  computing does not block it: the cited numbers are the current
+  computed state, at `precis:evidenceTier "computed-provisional"`
+  (otherwise `"computed"`). The artifact cites the pathway as
+  `urn:precis:pathway:<key>` (sha of its inputs and computed edges).
+  Approve freezes the pin set; a later recompute does not change what
+  sign publishes. To cite the new numbers, reopen and re-approve.
 
 ## Mint gates — quote mechanics
 

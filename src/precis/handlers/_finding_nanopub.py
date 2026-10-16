@@ -134,6 +134,7 @@ def _input_from_payload(
         aida_uri=row.aida_uri or aida_uri(row.approved_title),
         hub_ref_id=row.claim_ref_id,
         grounding=grounding,
+        computed=assemble.computed_inputs(payload),
         fields=dict(payload.get("fields") or {}),
         conjuncts=conjuncts,
         motivation=payload.get("motivation"),
@@ -178,5 +179,18 @@ def _input_from_live(store: Store, bundle: evidence.HubBundle) -> assemble.MintI
         aida_uri=aida_uri(bundle.sentence),
         hub_ref_id=bundle.hub_ref_id,
         grounding=grounding if bundle.artifact_type == "claim" else [],
+        computed=[
+            assemble.ComputedInput(
+                provenance_key=e.provenance_key,
+                evidence_tier=e.evidence_tier,
+                role=e.relation,
+                claimed_barrier=e.claimed_barrier,
+                claimed_barrier_std=e.claimed_barrier_std,
+            )
+            for e in bundle.computed
+            if e.provenance_key and e.evidence_tier
+        ]
+        if bundle.artifact_type == "claim"
+        else [],
         conjuncts=conjuncts,
     )

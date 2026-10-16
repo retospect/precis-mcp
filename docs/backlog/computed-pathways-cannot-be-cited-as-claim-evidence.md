@@ -172,22 +172,27 @@ the edge's stated barrier re-checked against the pathway's CURRENT
 edges refuses (`schema-lint`, mirroring the passages arm — motivation,
 not evidence).
 
-Deliberately unchanged, pending the calls below: a computed edge does
-NOT satisfy the claim schema gate's grounding requirement (a
-computed-only claim still mints only `hanging`), `approve`'s human gate
-is untouched, and the artifact serializes nothing about computed edges —
-a minted claim backed by a pathway still publishes with no provenance
-node for it.
+## Status 2026-10-16 — Reto's rulings, built
 
-Still open — design calls for Reto:
+1. **(a) A live computed edge grounds a claim.** A computed-only claim
+   mints non-hanging. The mint never waits on a running compute: a
+   pathway superseded by a re-dispatch still `computing` stands on its
+   own (current) numbers. `ComputedEdge.evidence_tier` comes from the
+   edge's standing: `computed` (live pin), `computed-provisional`
+   (successor still computing), `None` (unpinned, stale or mismatched;
+   the gate refuses it).
+2. **(a) Content-keyed provenance source.** The artifact cites
+   `urn:precis:pathway:<key>`, where `<key>` is
+   `seniority.pathway_provenance_key`: sha256 over `meta.content_key`
+   (the inputs) plus `meta.graph.links` (the computed edges). Each
+   citation gets a `precis:ComputedEvidence` node with
+   `precis:evidenceTier`, `precis:evidenceRole` and, when the edge
+   states them, `precis:statedBarrier`/`statedBarrierStd`.
+3. **(a) Approve freezes the pin set** into `grounding.computed`
+   (`mint._freeze_computed`). Sign gates and serializes that frozen set,
+   so a later recompute does not change an approved claim's evidence. A
+   payload frozen before this change has no `computed` key and falls back
+   to the live-edge check.
 
-- Does a live computed edge satisfy the claim's grounding requirement
-  (a computed-only claim mints non-hanging), or must a compute-backed
-  claim still carry a grounding passage / mint hanging?
-- What does the artifact assert for computed evidence — the pathway as
-  a provenance source node anchored by its content key (e.g.
-  `urn:precis:pathway:<key>` + `precis:evidenceTier "computed"` + the
-  stated barrier/std literals), or a PROV activity/agent shape?
-- Should `approve` freeze the computed pin set into the payload
-  (`_freeze_source_anchor`-style) so sign checks the frozen set, or is
-  the live-edge re-check the right authority?
+Nothing is open on this item; delete it once the docstring pointers to
+it are repointed.
