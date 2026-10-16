@@ -105,6 +105,66 @@ def test_dispatch_exports_and_skips_pdf_without_latexmk(
     assert "export_dir" in ctx.meta_set
 
 
+def test_dispatch_records_export_override_audit(hub: Hub, monkeypatch: Any) -> None:
+    """gr491602: a bare export is a read and writes no ``ref_events`` rows,
+    but the ``draft_export`` job is the explicit write op — it passes
+    ``record_override=True``, so the ``export_override`` audit row still
+    lands when a cited finding folded clean via an author's override."""
+    import precis.export.compile as _compile
+    from precis.handlers.finding import FindingHandler
+    from precis.store.types import Tag
+    from precis.utils import handle_registry
+    from tests.factories import seed_paper_with_body
+
+    monkeypatch.setattr(_compile, "have_latexmk", lambda: False)
+    _pid, slug = _make_project_and_draft(hub)
+    seed_paper_with_body(hub.live_store, "jobov1")
+    resp = FindingHandler(hub=hub).put(
+        title="Pd/C catalyzes Suzuki coupling at RT",
+        body="claim body",
+        scope={},
+        cited_in="jobov1",
+    )
+    fid = int(resp.body.split("id=")[1].split()[0].rstrip(",.()"))
+    hub.live_store.update_ref(
+        fid,
+        meta_patch={
+            "primary_cite_key": "jobov1",
+            "dead_reason": "unacquirable",
+            "unacquirable_override": {
+                "by": "agent",
+                "at": "2026-08-04T00:00:00+00:00",
+                "note": "print-only 1962 monograph",
+            },
+        },
+    )
+    hub.live_store.add_tag(
+        fid,
+        Tag.closed("STATUS", "dead_chain"),
+        set_by="chase",
+        replace_prefix=True,
+    )
+    fi = handle_registry.format_handle("finding", fid)
+    DraftHandler(hub=hub).put(
+        id=slug,
+        chunk_kind="paragraph",
+        text=f"Claim [{fi}] holds.",
+        at={"last": True},
+    )
+
+    spec = get_job_type("draft_export")
+    ctx = _FakeCtx(store=hub.store, meta={"params": {"draft": slug}})
+    assert spec is not None and spec.dispatch is not None
+    spec.dispatch(ctx, spec)
+
+    assert not ctx.failures, ctx.failures
+    ref = hub.live_store.get_ref(kind="draft", id=slug)
+    assert ref is not None
+    events = hub.live_store.events_for(ref.id, event="export_override")
+    assert len(events) == 1
+    assert events[0].payload["overridden"][0]["finding_ref_id"] == fid
+
+
 def test_dispatch_records_retraction_override_when_flagged(
     hub: Hub, monkeypatch: Any
 ) -> None:

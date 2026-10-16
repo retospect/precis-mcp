@@ -170,6 +170,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
                 target_dir=out_dir,
                 remarkable=True,
                 withheld_figures=withheld,
+                record_override=True,
             )
         except Exception as exc:
             log.warning("remarkable_send: render failed for %s", slug, exc_info=True)

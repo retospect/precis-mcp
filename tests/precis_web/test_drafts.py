@@ -1072,6 +1072,9 @@ def test_export_docx_defaults_to_endnote_fields_and_stamps_name(
     assert r.status_code == 200
     assert seen[-1]["citations"] == "endnote"
     assert seen[-1]["doi_links"] is True and seen[-1]["library_links"] is True
+    # gr491602: the GET is a read — it must not ask the exporter to record
+    # the ref_events override audit row (explicit write ops only).
+    assert "record_override" not in seen[-1]
     assert re.search(
         r'filename="?nt-\d{8}-\d{4}Z\.docx', r.headers["content-disposition"]
     )
@@ -2661,6 +2664,45 @@ def test_draft_pdf_serves_cached(
     assert re.search(
         r'filename="?nt-\d{8}-\d{4}Z\.pdf', r.headers["content-disposition"]
     )
+
+
+def test_pdf_get_does_not_request_override_record(
+    draft_client: TestClient, monkeypatch
+) -> None:
+    """gr491602: the "download PDF" GET is a read — it never passes
+    ``record_override`` to the exporter. Only the explicit write ops (the
+    queued ``draft_export`` / ``remarkable_send`` jobs, the CLI) record the
+    ``export_override`` audit row."""
+    import precis.export.compile as compile_mod
+    import precis.export.latex as latex_mod
+
+    seen: dict[str, object] = {}
+
+    def fake_export(store, ref, *, target_dir, **kw):
+        seen.update(kw)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        return latex_mod.ExportResult(
+            main_tex=target_dir / "main.tex",
+            bib=target_dir / "refs.bib",
+            preamble=target_dir / "preamble.tex",
+            latexmkrc=target_dir / ".latexmkrc",
+            cited_slugs=[],
+            acronyms={},
+            warnings=[],
+        )
+
+    def fake_compile(out_dir, **_kw):
+        pdf = out_dir / "main.pdf"
+        pdf.write_bytes(b"%PDF-1.4 fake\n%%EOF\n")
+        return compile_mod.CompileResult(ok=True, pdf=pdf, returncode=0, log_tail="")
+
+    monkeypatch.setattr(latex_mod, "export_draft", fake_export)
+    monkeypatch.setattr(compile_mod, "have_latexmk", lambda: True)
+    monkeypatch.setattr(compile_mod, "compile_pdf", fake_compile)
+
+    r = draft_client.get("/drafts/nt/pdf")
+    assert r.status_code == 200
+    assert "record_override" not in seen
 
 
 def test_pdf_cache_dir_separates_withheld_builds() -> None:

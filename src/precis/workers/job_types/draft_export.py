@@ -296,6 +296,9 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             claim_appendix=bool(params.get("claim_appendix", True)),
             bib_style=str(params.get("bib_style") or "").strip() or None,
             withheld_figures=withheld,
+            # A queued export job is the explicit write op — it records the
+            # override audit row the read paths (web GETs) skip (gr491602).
+            record_override=True,
         )
     except Exception as exc:
         log.warning("draft_export: render failed for %s", slug, exc_info=True)

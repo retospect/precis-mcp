@@ -331,6 +331,7 @@ def _run_export(args: argparse.Namespace) -> None:
             library_links=not args.no_library_links,
             claim_appendix=not args.no_claim_appendix,
             bib_style=args.bib_style,
+            record_override=True,
         )
     finally:
         store.close()
@@ -410,7 +411,13 @@ def _run_remarkable(args: argparse.Namespace) -> None:
             sys.exit(3)
         out = Path(args.out) if args.out else Path(tempfile.mkdtemp(prefix="rm-send-"))
         title = (ref.title or str(ref.slug or ref.id)).splitlines()[0][:120]
-        result = export_draft(store, ref, target_dir=out, remarkable=True)
+        result = export_draft(
+            store,
+            ref,
+            target_dir=out,
+            remarkable=True,
+            record_override=not args.dry_run,
+        )
         for w in result.warnings:
             print(f"draft remarkable: {w}", file=sys.stderr)
         cres = compile_pdf(result.main_tex.parent)

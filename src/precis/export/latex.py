@@ -3264,6 +3264,7 @@ def _export_poster(
     doi_links: bool,
     library_links: bool,
     withheld_figures: frozenset[str],
+    record_override: bool = False,
 ) -> ExportResult:
     """Render a ``doc_type='poster'`` draft into a compilable A0 project:
     the packaged ``poster.tex`` with the resolved branding profile
@@ -3403,7 +3404,8 @@ def _export_poster(
     main_tex = head + "\n".join(inject) + "\n" + sep + tail
     bib_text = build_bib(store, ctx.cited, ctx.warnings) if ctx.cited else ""
 
-    record_override_event(store, ref, ctx.trust)
+    if record_override:
+        record_override_event(store, ref, ctx.trust)
 
     profile_path = target_dir / "poster_profile.json"
     profile_path.write_text(
@@ -3448,6 +3450,7 @@ def export_draft(
     bib_style: str | None = None,
     withheld_figures: frozenset[str] = frozenset(),
     claim_appendix: bool = True,
+    record_override: bool = False,
 ) -> ExportResult:
     """Render a draft into a compilable LaTeX project under
     ``target_dir``: ``main.tex`` + ``refs.bib`` + a copy of the
@@ -3475,7 +3478,12 @@ def export_draft(
 
     ``withheld_figures`` are ``dc`` handles of uncleared third-party figures
     waived under ``placeholder_figures``: each renders as a framed "withheld
-    pending permission" box (caption kept), never its image."""
+    pending permission" box (caption kept), never its image.
+
+    ``record_override=True`` writes the ``ref_events`` ``export_override``
+    audit row when the export folded finding(s) via an author's override
+    (gr491602 — the export itself is a read; only the explicit write ops —
+    the ``draft_export``/``remarkable_send`` jobs and the CLI — pass it)."""
     from precis.export import guard_exportable, guard_no_secrets
 
     guard_exportable(ref)
@@ -3497,6 +3505,7 @@ def export_draft(
             doi_links=doi_links,
             library_links=library_links,
             withheld_figures=withheld_figures,
+            record_override=record_override,
         )
     patent_mode = doc_type == _PATENT_DOC_TYPE
     if not (bib_style or "").strip():
@@ -3569,8 +3578,10 @@ def export_draft(
     )
     # ``ref_events`` export record (the trust-surfaces override audit) — one row
     # naming every finding this export rendered clean only via an author's
-    # override. No-op (no row) when nothing was overridden.
-    record_override_event(store, ref, rendered.trust)
+    # override. Written only on an explicit record request (gr491602: the
+    # export itself is a read); no-op when nothing was overridden.
+    if record_override:
+        record_override_event(store, ref, rendered.trust)
 
     # Materialise figure images beside main.tex — the body
     # references them as pics/<dc>.<ext> via \includegraphics.

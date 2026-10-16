@@ -506,6 +506,7 @@ def export_docx(
     library_links: bool = True,
     withheld_figures: frozenset[str] = frozenset(),
     claim_appendix: bool = True,
+    record_override: bool = False,
 ) -> DocxResult:
     """Render a draft into ``target_path`` as a ``.docx``. Returns the
     path plus the cited slugs and any resolution warnings.
@@ -524,7 +525,12 @@ def export_docx(
     no effect in patent/endnote mode.
 
     ``claim_appendix=False`` omits the closing "Published claim artifacts"
-    section (otherwise the last section, after References)."""
+    section (otherwise the last section, after References).
+
+    ``record_override=True`` writes the ``ref_events`` ``export_override``
+    audit row when the export folded finding(s) via an author's override
+    (gr491602 — the export itself is a read; only explicit write ops pass
+    it)."""
     from docx import Document
 
     from precis.export import guard_exportable, guard_no_secrets
@@ -668,8 +674,10 @@ def export_docx(
 
     # ``ref_events`` export record (the trust-surfaces override audit) — one row
     # naming every finding this export rendered clean only via an author's
-    # override. No-op (no row) when nothing was overridden.
-    record_override_event(store, ref, ctx.trust)
+    # override. Written only on an explicit record request (gr491602: the
+    # export itself is a read); no-op when nothing was overridden.
+    if record_override:
+        record_override_event(store, ref, ctx.trust)
 
     target_path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(target_path))

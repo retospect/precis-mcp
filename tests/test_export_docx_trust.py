@@ -193,13 +193,16 @@ def test_unsupported_renders_loud_distinct_mark(hub: Hub, tmp_path: Path) -> Non
     assert "source pending" not in text  # distinct from the pending mark
 
 
-# ── AC 3 — override converts unverified→clean + ref_events; unsupported
-# is never suppressed by an override ───────────────────────────────────
+# ── AC 3 — override converts unverified→clean; the ref_events audit row
+# lands only on an explicit record (gr491602); unsupported is never
+# suppressed by an override ────────────────────────────────────────────
 
 
-def test_override_renders_vouched_mark_and_records_ref_event(
+def test_override_renders_vouched_mark_and_writes_nothing_on_read(
     hub: Hub, tmp_path: Path
 ) -> None:
+    """gr491602: the export itself is a read — the override-folded render
+    shows the calm mark but leaves the ``ref_events`` row count unchanged."""
     fid = _finding(
         hub,
         cite_key="ac3over",
@@ -213,7 +216,15 @@ def test_override_renders_vouched_mark_and_records_ref_event(
     )
     ref = _draft_citing(hub, slug="dover", finding_ref_id=fid)
 
+    with hub.live_store.pool.connection() as conn:
+        row = conn.execute("SELECT count(*) FROM ref_events").fetchone()
+        assert row is not None
+        before = row[0]
     text = _export_text(hub.live_store, ref, tmp_path, "over")
+    with hub.live_store.pool.connection() as conn:
+        row = conn.execute("SELECT count(*) FROM ref_events").fetchone()
+        assert row is not None
+        after = row[0]
 
     assert "[1]" in text
     # A legacy override folds to the CALM author-vouched mark, not clean and
@@ -224,6 +235,36 @@ def test_override_renders_vouched_mark_and_records_ref_event(
     assert "unverified" not in text
     assert "UNSUPPORTED" not in text
     assert "Unverified claims" not in text
+
+    # The read wrote nothing — not just no export_override row, no row at all.
+    assert after == before
+    assert hub.live_store.events_for(ref.id, event="export_override") == []
+
+
+def test_override_audit_row_written_on_explicit_record(
+    hub: Hub, tmp_path: Path
+) -> None:
+    """``record_override=True`` — what an explicit write op passes — still
+    records the audit row (the docx web route is a GET, so it never does)."""
+    fid = _finding(
+        hub,
+        cite_key="ac3over2",
+        status="dead_chain",
+        dead_reason="unacquirable",
+        override={
+            "by": "agent",
+            "at": "2026-08-04T00:00:00+00:00",
+            "note": "print-only 1962 monograph",
+        },
+    )
+    ref = _draft_citing(hub, slug="dover2", finding_ref_id=fid)
+
+    export_docx(
+        hub.live_store,
+        ref,
+        target_path=tmp_path / "over.docx",
+        record_override=True,
+    )
 
     events = hub.live_store.events_for(ref.id, event="export_override")
     assert len(events) == 1

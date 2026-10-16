@@ -11,7 +11,8 @@ out of it, in the same shape, so the two output formats never drift:
   claims" list each exporter renders in its own markup;
 * the set of findings rendered clean *only* because of an author's
   override, for the single ``ref_events`` export-record row
-  (the trust-surfaces override audit).
+  (the trust-surfaces override audit — written only when the caller asks
+  for it, gr491602: an export is a read).
 
 Pure bookkeeping — no rendering, no I/O beyond the read-only ``store``
 calls :func:`~precis.taproot.trust.claim_trust` itself makes.
@@ -143,7 +144,10 @@ def record_override_event(store: Store, ref: Any, trust: Any) -> None:
     least one finding rendered via an author's override — i.e. folded to the
     calm ``abstract``/``vouched`` state (§2) — never when nothing was
     overridden (AC 3/6: no row on a plain-clean export). Shared so the docx
-    and latex exporters write the identical event shape."""
+    and latex exporters write the identical event shape. Called only behind
+    the exporters' ``record_override=True`` — the explicit write ops (the
+    ``draft_export``/``remarkable_send`` jobs, the CLI); a bare export is a
+    read and writes nothing (gr491602)."""
     if trust is None or not trust.overridden:
         return
     store.append_event(
