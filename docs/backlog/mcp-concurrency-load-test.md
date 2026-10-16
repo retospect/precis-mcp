@@ -214,14 +214,37 @@ errors in 4726 calls — the same plateau as the earlier runs.
   response serialisation. By verb, `search` owns 91.5% of GIL time — the
   canary's share is ~1%; it is queued, not computed.
 
-So "which work holds the GIL" is answered, and the remedy shrinks: the
-hot work is **query-parameter encoding**, a serialisation detail, not the
-search algorithm. Candidate remedies for a follow-up item, in rough cost
-order — wrap `query_vec` in `pgvector.Vector`/numpy or a pre-rendered
-`[…]` literal so the registered dumper takes it; install psycopg's C
-speedups (`psycopg[c]` binary dumpers); hoist the render so it happens
-once per search instead of twice per query per kind. Any of them is a
-few lines; none touches process topology.
+So "which work holds the GIL" is answered: the hot work was
+**query-parameter encoding**, not the search algorithm.
+
+## MEASURED 2026-10-16 — after binding `query_vec` as `pgvector.Vector`
+
+Fix: `_vec_param` in `_chunks_ops.py` wraps the query embedding in
+`pgvector.Vector` inside `search_chunks_semantic` and
+`search_chunks_fused` (every search leg ends in one of the two), so the
+dumper `register_vector` installs in `pool.configure` takes it. Ranked
+ids and scores are unchanged: `tests/test_search_vec_parity.py` pins a
+golden snapshot recorded on the old code, tolerance 1e-6. Same command
+and py-spy windows as above, on dev (`precis_loadtest`), 240 s at N=32:
+
+| | before (2026-10-15) | after (2026-10-16) |
+|---|---|---|
+| calls/s at N=32 | 19.7 | **37.5** (1.9x) |
+| calls in the 240 s step, errors | 4726, 0 | 8996, 0 |
+| server CPU (of 12 cores) | 1.14 | 1.28 |
+| GIL held (share of wall, `--gil` window) | ~62% (5143/8250) | **~41%** (3352/8250) |
+| share of GIL time under `psycopg/types/array.py` | 58.5% | 0% |
+| `search_chunks_fused` stacks' share of GIL time | ≥58.5% (the dump alone) | 27% |
+| canary p95 at N=32 | — | 1009 ms |
+
+After the fix the GIL profile is flat: the largest leaf is `embed_one`
+at ~7% (the dev harness runs `MockEmbedder`, hashing in Python), then
+psycopg's execute/result machinery at 2-5% per leaf. The server still
+uses ~1.3 cores, so one process is still GIL-bound, but it now does ~1.9x
+the work per GIL-second. Remaining raw-list vector binds, off the hot
+search path: `_nearest_chunk` and `dreamable_region` (`_chunks_ops.py`)
+and `search_tags_semantic` (`_tags_ops.py`). Each would take the same
+`_vec_param` wrap if a profile ever shows it.
 
 ## Prod run (Reto's)
 
@@ -259,8 +282,8 @@ Order and cross-item constraints: `serving-programme-followups.md`.
 
 * ~~**Which work holds the GIL.**~~ **Answered 2026-10-15** (profile
   section above): psycopg's pure-Python array dump of the fused-search
-  `query_vec` — ~59% of GIL time — so "move the hot work out of Python"
-  is a small fix (param encoding), not a large one (the algorithm).
+  `query_vec` — ~59% of GIL time. Fixed 2026-10-16 (`_vec_param`):
+  19.7 → 37.5 calls/s at N=32, GIL held 62% → 41%.
 * **Confirm on prod-shaped data.** This ran against a migrated but nearly
   empty `precis_loadtest`. Row counts change the DB verbs' cost; they do not
   obviously change a GIL ceiling, but the claim should be re-measured against

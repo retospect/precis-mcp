@@ -29,6 +29,7 @@ from contextlib import nullcontext
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from pgvector import Vector
 from psycopg import Connection
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
@@ -87,6 +88,20 @@ _ANN_ITERATIVE_MIN_VERSION = (0, 8, 0)
 #: Process-wide cache of "does the server's pgvector have the iterative-scan
 #: GUCs?" — ``None`` until the first :func:`_prepare_filtered_ann` call.
 _ann_iterative_supported: bool | None = None
+
+
+def _vec_param(query_vec: list[float] | Vector) -> Vector:
+    """Bind a query embedding as one pgvector value, not a float array.
+
+    A plain ``list[float]`` falls to psycopg's generic array dumper, which
+    dispatches a dumper per element in pure Python under the GIL — 59% of
+    serve's GIL time at N=32 (docs/backlog/mcp-concurrency-load-test.md,
+    py-spy section). ``Vector`` takes the dumper ``register_vector``
+    installed in ``pool.configure``: one numpy ``tobytes``. Same float4
+    values reach the server either way (the old ``float8[]::vector`` cast
+    rounds to nearest, as numpy's ``>f4`` does).
+    """
+    return query_vec if isinstance(query_vec, Vector) else Vector(query_vec)
 
 
 def _prepare_filtered_ann(conn: Connection, limit: int) -> None:
@@ -994,11 +1009,12 @@ class ChunkStore:
             outer_where = "WHERE s.dist < %s "
             distance_params = [float(max_distance)]
 
+        qv = _vec_param(query_vec)
         params: list[Any] = [
-            query_vec,
+            qv,
             embedder,
             *where_params,
-            query_vec,
+            qv,
             limit + offset,
             *distance_params,
             offset,
@@ -1199,11 +1215,12 @@ class ChunkStore:
         full_params: list[Any] = []
         full_params.append(q)
         full_params.extend(params)
+        qv = _vec_param(query_vec)
         full_params.append(inner_limit)
-        full_params.append(query_vec)
+        full_params.append(qv)
         full_params.append(embedder)
         full_params.extend(params)
-        full_params.append(query_vec)
+        full_params.append(qv)
         full_params.append(inner_limit)
         if max_distance is not None:
             full_params.append(float(max_distance))
