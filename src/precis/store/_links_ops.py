@@ -898,7 +898,7 @@ class LinksMixin:
         if viewer is _ACTING_VIEWER:
             from precis import profiles
 
-            viewer_login = profiles.acting_login(cast("Store", self))
+            viewer_login = profiles.resolve_viewer(cast("Store", self), viewer)
         else:
             viewer_login = cast("str | None", viewer)
 

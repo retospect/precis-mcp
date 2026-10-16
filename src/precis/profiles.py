@@ -25,6 +25,9 @@ other, not to fence off agents that already hold the shared credential.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput, NotFound
@@ -76,6 +79,65 @@ def visible_to(ref: Ref, login: str | None) -> bool:
     if ref.kind != KIND:
         return True
     return not (ref.owner_login and login and login != ref.owner_login)
+
+
+#: ``viewer=`` default for listing helpers: resolve :func:`acting_login`.
+ACTING: Any = object()
+
+#: The web login a request reads as — set by the web auth middleware for
+#: the whole request, since web reads carry no revision context.
+_VIEWER: ContextVar[str | None] = ContextVar("precis_profile_viewer", default=None)
+
+
+@contextmanager
+def viewing_as(login: str | None) -> Iterator[None]:
+    """Scope every :data:`ACTING` viewer resolution inside to ``login``."""
+    token = _VIEWER.set(login)
+    try:
+        yield
+    finally:
+        _VIEWER.reset(token)
+
+
+def resolve_viewer(store: Store, viewer: object) -> str | None:
+    """A ``viewer=`` argument as a login: a str or ``None`` is taken as
+    given (``None`` = unidentified); anything else (:data:`ACTING` or a
+    caller's own sentinel) resolves the request's :func:`viewing_as`
+    login, else the acting identity."""
+    if viewer is None or isinstance(viewer, str):
+        return viewer
+    return _VIEWER.get() or acting_login(store)
+
+
+def visible_sql(alias: str, login: str | None) -> tuple[str, list[Any]]:
+    """SQL twin of :func:`visible_to` for listing queries (gr490266):
+    ``(fragment, params)`` over the ``refs`` alias ``alias``. Another
+    owner's profile is filtered for an identified ``login``, and a
+    soft-deleted profile never lists for anyone — the trash and tag
+    views have no profile surface; owners manage theirs under
+    ``/account``."""
+    a = alias
+    if login is None:
+        return f"({a}.kind <> 'profile' OR {a}.retired_at IS NULL)", []
+    return (
+        f"({a}.kind <> 'profile' OR ({a}.retired_at IS NULL"
+        f" AND ({a}.owner_login IS NULL OR {a}.owner_login = %s)))",
+        [login],
+    )
+
+
+def hidden_ids(store: Store, refs: Iterable[Ref], viewer: object = ACTING) -> set[int]:
+    """Ids among ``refs`` a link-table renderer must drop (gr490266):
+    profiles :func:`visible_to` hides from ``viewer`` (default the acting
+    identity), plus soft-deleted profiles. Resolves the viewer only when a
+    profile is present, so the common no-profile case costs nothing."""
+    profs = [r for r in refs if r is not None and r.kind == KIND]
+    if not profs:
+        return set()
+    login = resolve_viewer(store, viewer)
+    return {
+        int(r.id) for r in profs if r.retired_at is not None or not visible_to(r, login)
+    }
 
 
 def payload_of(ref: Ref) -> dict[str, Any]:
@@ -312,6 +374,7 @@ def merge_payload(
 
 
 __all__ = [
+    "ACTING",
     "KIND",
     "META_KEY",
     "acting_login",
@@ -319,6 +382,7 @@ __all__ = [
     "build_payload",
     "draft_owner_login",
     "draft_user_default",
+    "hidden_ids",
     "logo_asset",
     "merge_payload",
     "normalize_logos",
@@ -327,6 +391,9 @@ __all__ = [
     "profile_of_ref",
     "profiles_for_owner",
     "resolve_profile_ref",
+    "resolve_viewer",
     "validated_profile",
+    "viewing_as",
+    "visible_sql",
     "visible_to",
 ]

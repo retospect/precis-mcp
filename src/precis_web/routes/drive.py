@@ -336,6 +336,8 @@ _DISCOVER_EXCLUDED = frozenset(
         "python",
         "md",
         "measure",
+        # owner-private (gr490266); owners manage theirs under /account
+        "profile",
     )
 )
 
@@ -654,6 +656,12 @@ async def index(
     kind set with no ``k=`` at all.
     """
     store = get_store(request)
+    from precis_web.auth import current_user
+
+    # the web login this page is for: another owner's profile never lists
+    # (gr490266) — the browse filter lives in recent_refs(viewer=)
+    _user = current_user(request)
+    viewer = _user.login if _user is not None else None
     q = (q or "").strip()
 
     # A query that *is* an identifier (a lone record handle, or a DOI whole
@@ -671,7 +679,10 @@ async def index(
             return RedirectResponse(url=target, status_code=302)
         hit = await asyncio.to_thread(resolve_query_identifier, store, q)
         ambiguous_ids = hit.ambiguous_ref_ids
-        if hit.ref is not None:
+        # A profile handle never redirects (gr490266): its reader is closed
+        # (owners use /account), and a 302 only for a live id is an
+        # existence oracle on other owners' profiles.
+        if hit.ref is not None and hit.ref.kind != "profile":
             return RedirectResponse(
                 url=presenter_for(hit.ref.kind).open_url(hit.ref), status_code=302
             )
@@ -941,6 +952,7 @@ async def index(
             created=(sort == "created"),
             untried=(sort == "untried"),
             downloadable_first=(state == "stub"),
+            viewer=viewer,
         )
         # Exact total for the browse "showing N of K" header + last-page
         # jump — the no-query list is a plain filtered ``refs`` query, so
@@ -967,6 +979,7 @@ async def index(
             unfiled_only=unfiled_only,
             ref_ids=fetch_ref_ids,
             deleted=show_deleted,
+            viewer=viewer,
         )
         total_exact = True
 

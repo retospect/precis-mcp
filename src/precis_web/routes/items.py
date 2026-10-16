@@ -314,6 +314,7 @@ def _recent_rows(
     created: bool = False,
     untried: bool = False,
     downloadable_first: bool = False,
+    viewer: str | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     """The no-query landing: most-recently-*edited* source items, newest
     first (or most recently created when ``created=True``);
@@ -336,7 +337,9 @@ def _recent_rows(
     the ``ref_ids`` allow-list (the ``/drive?cited_by=<draft>`` scope — a
     draft's papers-to-fetch set; an empty list restricts to nothing), and
     ``deleted`` (the "show deleted" toggle — soft-deleted refs instead of live
-    ones). Rows carry no preview (no query) — name, kind, when-edited, badges,
+    ones). ``viewer`` is the web login the page is for: another owner's
+    ``kind='profile'`` row never lists (gr490266, ``recent_refs(viewer=)``).
+    Rows carry no preview (no query) — name, kind, when-edited, badges,
     tags, links, flags. Returns
     ``(rows, has_next)`` via the same over-fetch-one-extra probe as
     :func:`_run_search`.
@@ -357,6 +360,7 @@ def _recent_rows(
         created=created,
         untried=untried,
         downloadable_first=downloadable_first,
+        viewer=viewer,
         limit=_PAGE_SIZE + 1,
         offset=offset,
     )

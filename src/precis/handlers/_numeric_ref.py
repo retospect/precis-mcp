@@ -2610,6 +2610,20 @@ class NumericRefHandler(Handler):
         for link in in_links:
             endpoint_ids.add(link.src_ref_id)
         endpoints = self._fetch_endpoints(endpoint_ids)
+        # Another owner's (or a deleted) profile is no row at all (gr490266).
+        from precis import profiles
+
+        hidden = profiles.hidden_ids(self.store, endpoints.values())
+        if hidden:
+            out_links = [lk for lk in out_links if lk.dst_ref_id not in hidden]
+            in_links = [lk for lk in in_links if lk.src_ref_id not in hidden]
+            if not out_links and not in_links:
+                lines += ["", "(no links)", ""]
+                lines.append(
+                    f"add one with: link(kind={self.kind!r}, id={ref.id}, "
+                    "target='kind:identifier', rel='related-to')"
+                )
+                return Response(body="\n".join(lines), result_count=0)
 
         if of_kind is not None:
             out_links = [

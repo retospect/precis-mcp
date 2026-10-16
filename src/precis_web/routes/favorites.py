@@ -38,6 +38,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from starlette.exceptions import HTTPException
 from starlette.responses import Response
 
+from precis import profiles
 from precis.store._favorites_ops import FavoriteRow
 from precis.users import WebUser
 from precis_web.auth import current_user
@@ -149,7 +150,9 @@ async def toggle(
     redirect = _safe_local_redirect(return_to, "/favorites")
 
     ref = store.fetch_refs_by_ids([ref_id], include_deleted=True).get(ref_id)
-    if ref is None or ref.kind != kind:
+    # Another owner's profile is a missing ref (gr490266) — no write, and
+    # no 404-vs-303 existence oracle.
+    if ref is None or ref.kind != kind or not profiles.visible_to(ref, user.login):
         if request.headers.get("HX-Request") == "true":
             return HTMLResponse(
                 '<span class="text-xs text-slate-400">ref not found</span>',

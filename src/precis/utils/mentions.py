@@ -456,6 +456,11 @@ def _universal_handle_tokens(body: str) -> list[str]:
     return out
 
 
+#: A body that could name a profile (``pf<N>`` / ``profile:<N>``) — gates
+#: the one batched owner check so other bodies cost no extra query.
+_PROFILE_MENTION = re.compile(r"(?i)(?<![a-z0-9])(?:pf\d|profile:)")
+
+
 def resolve_link_targets(
     # store stays Any: tests pass a hand-rolled fake narrower than Store
     # (resolve_handle_target below needs Store.resolve_handle, which the
@@ -498,4 +503,13 @@ def resolve_link_targets(
         if exclude_ref_id is not None and tgt.dst_ref_id == exclude_ref_id:
             continue
         targets.setdefault((tgt.dst_ref_id, tgt.dst_pos), tgt)
+    # A mention never auto-links another owner's profile (gr490266); a
+    # fake store without the batch read skips the check.
+    fetch = getattr(store, "fetch_refs_by_ids", None)
+    if targets and fetch is not None and _PROFILE_MENTION.search(body):
+        from precis import profiles
+
+        refs = fetch(sorted({t.dst_ref_id for t in targets.values()}))
+        hidden = profiles.hidden_ids(store, refs.values())
+        return [t for t in targets.values() if t.dst_ref_id not in hidden]
     return list(targets.values())

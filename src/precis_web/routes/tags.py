@@ -15,7 +15,9 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from precis import profiles
 from precis.store._tags_ops import escape_like
+from precis_web.auth import current_user
 from precis_web.deps import get_store, templates
 from precis_web.ref_urls import ref_url
 
@@ -166,6 +168,12 @@ async def refs_by_tag(
         where_parts.append("r.kind = %s")
         params.append(kind)
     where_parts.append("r.retired_at IS NULL")  # default: hide soft-deleted
+    # Another owner's profile never lists (gr490266): owner-scoped in the
+    # shared WHERE, so the count and the page agree.
+    user = current_user(request)
+    acl_sql, acl_params = profiles.visible_sql("r", user.login if user else None)
+    where_parts.append(acl_sql)
+    params.extend(acl_params)
     where_sql = " AND ".join(where_parts)
     # Tag-carrying call shapes need the ref_tags/tags join; the
     # kind-only pivot reads refs directly. Both the count and the page

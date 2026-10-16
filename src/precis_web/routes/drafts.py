@@ -2152,6 +2152,12 @@ def _is_dc(handle: str) -> bool:
     return bool(p and p[0] == "draft" and p[1])
 
 
+def _is_profile_handle(handle: str) -> bool:
+    """True for a ``pf<N>`` profile handle."""
+    p = handle_registry.parse(handle)
+    return bool(p and p[0] == "profile")
+
+
 def _marks_view(store: Store, marks: dict[str, Any]) -> dict[str, Any]:
     """A client-friendly render of the sticky set: ``pens`` (dc handles) + an
     ``eyes`` list carrying each eye's kind/title/is-draft-chunk so the tray can
@@ -2163,6 +2169,8 @@ def _marks_view(store: Store, marks: dict[str, Any]) -> dict[str, Any]:
     eyes: list[dict[str, Any]] = []
     for h, ext in eyes_map.items():
         p = parsed[h]
+        if p and p[0] == "profile":
+            continue  # owner-private, never a working-set eye (gr490266)
         is_chunk = bool(p and p[1])
         title = ""
         if p and not is_chunk:
@@ -2195,7 +2203,13 @@ async def edit_marks(request: Request, ident: str) -> JSONResponse:
     if ref is None:
         return JSONResponse({"ok": False, "error": "draft not found"}, status_code=404)
     op = str(payload.get("op") or "")
-    handles = [str(h) for h in (payload.get("handles") or []) if str(h).strip()]
+    # A profile has no place in a working set and is owner-private
+    # (gr490266): its handle is never stored, so never titled back.
+    handles = [
+        str(h)
+        for h in (payload.get("handles") or [])
+        if str(h).strip() and not _is_profile_handle(str(h))
+    ]
     on = payload.get("on")
     marks = draft_eyes.load_marks(store, ref.id)
     if op == "clear":

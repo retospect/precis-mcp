@@ -755,7 +755,7 @@ def _hidden_profile_ids(store: Any, ids: set[int]) -> set[int]:
     profs = [r for r in refs.values() if r.kind == profiles.KIND]
     if not profs:
         return set()
-    login = profiles.acting_login(store)
+    login = profiles.resolve_viewer(store, profiles.ACTING)
     return {int(r.id) for r in profs if not profiles.visible_to(r, login)}
 
 

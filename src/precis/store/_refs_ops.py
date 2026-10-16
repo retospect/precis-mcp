@@ -32,7 +32,7 @@ import re
 from collections.abc import Callable, Iterable
 from contextlib import nullcontext
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 from psycopg import Connection, errors
 from psycopg.types.json import Jsonb
@@ -60,11 +60,17 @@ from precis.store.types import ActorSlug, Ref, ResolvedHandle, Tag
 from precis.utils import handle_registry
 from precis.utils.authors import author_row_from_entry, entry_from_author_row
 
+if TYPE_CHECKING:
+    from precis.store import Store
+
 #: "Does this slug name a shipped skill?" — the skill handler registers its
 #: probe here at import (:func:`set_skill_probe`); the store must not import
 #: :mod:`precis.handlers` (import-linter: "store is the bottom layer"). Unset,
 #: a skill read mints and stamps nothing (fail-soft, as with the DB down).
 _SKILL_PROBE: Callable[[str], bool] | None = None
+
+#: ``recent_refs(viewer=)`` default: resolve the acting identity (gr490266).
+_ACTING_VIEWER = object()
 
 
 def set_skill_probe(probe: Callable[[str], bool] | None) -> None:
@@ -2806,6 +2812,7 @@ class RefsMixin:
         unfiled_only: bool = False,
         ref_ids: list[int] | None,
         deleted: bool,
+        viewer: object = None,
     ) -> tuple[list[str], list[Any]]:
         """Shared WHERE clause + params for the ``/drive`` browse — one
         builder feeds both :meth:`recent_refs` (page) and
@@ -2829,12 +2836,25 @@ class RefsMixin:
         mutually exclusive with ``parent_id``, which wins if both set; a
         source kind never carries a parent, so this only ever hides filed
         *artifacts*).
+
+        ``viewer`` owner-scopes ``kind='profile'`` rows
+        (:func:`precis.profiles.visible_sql`, gr490266): another owner's
+        profile and any soft-deleted profile never list. A login or
+        ``None`` (unidentified) is taken as given; anything else resolves
+        the acting identity.
         """
+        from precis import profiles
+
         clauses = [
             "r.kind = ANY(%s)",
             "r.retired_at IS NOT NULL" if deleted else "r.retired_at IS NULL",
         ]
         params: list[Any] = [list(kinds)]
+        if profiles.KIND in kinds:
+            login = profiles.resolve_viewer(cast("Store", self), viewer)
+            frag, frag_params = profiles.visible_sql("r", login)
+            clauses.append(frag)
+            params.extend(frag_params)
         if has_pdf is not None:
             clauses.append(
                 "r.pdf_sha256 IS NOT NULL" if has_pdf else "r.pdf_sha256 IS NULL"
@@ -2889,6 +2909,7 @@ class RefsMixin:
         downloadable_first: bool = False,
         limit: int = 30,
         offset: int = 0,
+        viewer: object = _ACTING_VIEWER,
     ) -> list[Ref]:
         """Most-recently-*edited* refs across a *set* of kinds, newest
         first. Backs the ``/drive`` no-query landing; ordered by
@@ -2940,6 +2961,7 @@ class RefsMixin:
             unfiled_only=unfiled_only,
             ref_ids=ref_ids,
             deleted=deleted,
+            viewer=viewer,
         )
         # Leading ORDER BY term for the "Stubs (to get)" download queue: rank
         # rows that carry a manual download link (DOI/arXiv → LibKey/arXiv PDF,
@@ -3000,6 +3022,7 @@ class RefsMixin:
         unfiled_only: bool = False,
         ref_ids: list[int] | None = None,
         deleted: bool = False,
+        viewer: object = _ACTING_VIEWER,
     ) -> int:
         """Exact total for the ``/drive`` no-query browse — the "of N"
         denominator, via the same ``_recent_refs_where`` filter as
@@ -3019,6 +3042,7 @@ class RefsMixin:
             unfiled_only=unfiled_only,
             ref_ids=ref_ids,
             deleted=deleted,
+            viewer=viewer,
         )
         with self.pool.connection() as conn:
             row = conn.execute(

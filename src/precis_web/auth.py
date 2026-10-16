@@ -61,6 +61,7 @@ from urllib.parse import urlsplit
 from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from precis import profiles
 from precis.users import (
     PepperUnavailable,
     WebUser,
@@ -692,8 +693,12 @@ class BasicAuthMiddleware:
 
         scope.setdefault("state", {})
         scope["state"]["web_user"] = user
+        # The signed-in login is the profile viewer for every store read
+        # this request makes (gr490266): web reads carry no revision
+        # context, so without it listing filters see an unidentified caller.
         if fresh_cookie is None:
-            await self.app(scope, receive, send)
+            with profiles.viewing_as(user.login):
+                await self.app(scope, receive, send)
             return
 
         cookie = fresh_cookie
@@ -711,7 +716,8 @@ class BasicAuthMiddleware:
                 )
             await send(message)
 
-        await self.app(scope, receive, send_with_cookie)
+        with profiles.viewing_as(user.login):
+            await self.app(scope, receive, send_with_cookie)
 
     def _cookie_header(self, scope: Scope, login: str) -> str:
         attrs = (

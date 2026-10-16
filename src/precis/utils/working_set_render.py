@@ -200,6 +200,15 @@ def render_link_rollup(
     ]
     if not edges:
         return ""
+    # Another owner's (or a deleted) profile never rolls up (gr490266).
+    from precis import profiles
+
+    dst_refs = store.fetch_refs_by_ids(list({e.dst_ref_id for e in edges}))
+    hidden = profiles.hidden_ids(store, dst_refs.values())
+    if hidden:
+        edges = [e for e in edges if e.dst_ref_id not in hidden]
+        if not edges:
+            return ""
     # Everything we point at is in-corpus (a link is an FK); name up to the
     # per-section cutoff, the rest fold into that section's tail.
     held = {e.dst_ref_id for e in edges}

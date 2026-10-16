@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from precis import profiles
 from precis.handlers._capped_section import DEFAULT_CHILD_ROW_CAP, render_capped_section
 from precis.response import Response
 from precis.utils import handle_registry
@@ -155,6 +156,13 @@ def render_links_section(
     for link in in_links:
         endpoint_ids.add(link.src_ref_id)
     endpoints = store.fetch_refs_by_ids(endpoint_ids)
+    # Another owner's (or a deleted) profile is no row at all (gr490266).
+    hidden = profiles.hidden_ids(store, endpoints.values())
+    if hidden:
+        out_links = [lk for lk in out_links if lk.dst_ref_id not in hidden]
+        in_links = [lk for lk in in_links if lk.src_ref_id not in hidden]
+        if not out_links and not in_links:
+            return ""
 
     combined = [(lnk, "out") for lnk in out_links] + [(lnk, "in") for lnk in in_links]
 

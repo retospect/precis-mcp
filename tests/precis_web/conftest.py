@@ -1097,6 +1097,7 @@ class FakeStore(_FakeStoreBase):
         downloadable_first=False,
         limit=30,
         offset=0,
+        viewer=None,
     ):
         """Canned recent source refs for the /drive default landing —
         one paper (stub, no pdf) + one web, filtered to requested kinds.
@@ -1169,6 +1170,7 @@ class FakeStore(_FakeStoreBase):
         unfiled_only=False,
         ref_ids=None,
         deleted=False,
+        viewer=None,
     ):
         """Exact count for the /drive browse "of N" header — mirrors
         ``recent_refs``'s filtered set (see ``_recent_src``)."""

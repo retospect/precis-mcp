@@ -92,7 +92,12 @@ class FavoritesMixin:
                 "         WHERE i.ref_id = r.ref_id AND i.id_kind = 'cite_key' "
                 "         ORDER BY i.created_at DESC LIMIT 1) AS slug "
                 "FROM ref_favorites f JOIN refs r ON r.ref_id = f.ref_id "
-                "WHERE f.login = %s ORDER BY f.created_at DESC, f.ref_id DESC",
+                "WHERE f.login = %s"
+                # another owner's profile never lists (gr490266) — a
+                # heart set before the toggle check, or by another path
+                "   AND (r.kind <> 'profile' OR r.owner_login IS NULL"
+                "        OR r.owner_login = f.login) "
+                "ORDER BY f.created_at DESC, f.ref_id DESC",
                 (login,),
             ).fetchall()
         return [
