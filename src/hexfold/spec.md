@@ -561,6 +561,10 @@ rim atoms in cyclic order. Seam faces are the minted defect ring
 (`opening.defects` INFO per opening; `opening.face.open` WARN when a face
 could not close); unmatched boundary atoms stay dangling. A sheet may
 carry several openings and a tube one per end (`sheet | tube | sheet`).
+An opening composes with `fuse` lines, including `fuse{reducer}` (its
+reducer seams and mouths each get a `Net.junctions` strain record); `bond`,
+menu-attach, `seam`, `registry`, `terminate` lines and `len=fit` are
+`opening.combined` / `opening.fit` (ERROR).
 Only `tube(n,n)` (armchair) ports: a zigzag `tube(n,0)` or chiral end is
 `opening.rim.unsupported` (ERROR), never approximated; a host that is not
 a sheet, a port that is not a tube end, or an unknown port is an ERROR

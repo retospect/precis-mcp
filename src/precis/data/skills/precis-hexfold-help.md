@@ -88,9 +88,9 @@ To seat a tube end in a sheet hole solved from the tube's own rim, write
 the opening on the sheet instead of a `fuse`: `a: sheet(20,20) -
 opening(port=t.in)@(10,10,A)` (the line is the join; one per tube end,
 sheet|tube|sheet works). Armchair `tube(n,n)` ports only; zigzag
-`tube(n,0)` or chiral ports are `opening.rim.unsupported` (ERROR); it does
-not combine with fuse/bond/seam lines (`opening.combined`) or `fit`
-(`opening.fit`).
+`tube(n,0)` or chiral ports are `opening.rim.unsupported` (ERROR); it
+composes with fuse and `fuse{reducer}` lines (multi-radius tunnels) but
+not bond/seam/terminate lines (`opening.combined`) or `fit` (`opening.fit`).
 
 ## Iterating: check, then edit
 

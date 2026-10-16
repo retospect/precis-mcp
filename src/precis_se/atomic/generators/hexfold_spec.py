@@ -271,7 +271,7 @@ def build_hexfold(params: dict[str, Any]) -> GeneratedBlock:
     # ``## generated`` could not otherwise tell whether the minted
     # geometry is sane (gr454488 residual 3).
     report = net.report.merge(Report(tuple(geometry_findings(net))))
-    return _block_from_net(
+    block = _block_from_net(
         net,
         stick(net),
         spec=spec,
@@ -279,6 +279,38 @@ def build_hexfold(params: dict[str, Any]) -> GeneratedBlock:
         fidelity=fidelity,
         terminate=terminate_mode(params),
     )
+    if net.junctions:
+        # reducer seams / opening mouths: the tunnel's per-junction strain
+        # read on the stored block (carbon ordinals are unchanged by H caps)
+        from precis_se.atomic.generators.tunnel import tunnel_strain
+
+        stored = list(block.topology["report"]["findings"])
+        n_trim = len((block.topology.get("terminated") or {}).get("trimmed") or ())
+        n_out = len(block.coords)
+        live = [j for j in net.junctions if all(a < n_out for a in j.atoms)]
+        if n_trim or len(live) != len(net.junctions):
+            stored.append(
+                Finding(
+                    "junction.strain.skipped",
+                    Severity.INFO,
+                    f"termination trimmed {n_trim} atoms; junction ordinals stale"
+                    if n_trim
+                    else "junction ordinals outside the stored block",
+                ).to_dict()
+            )
+        else:
+            strain = tunnel_strain(
+                np.asarray(block.coords),
+                np.asarray(block.elements),
+                block.bonds,
+                live,
+                (),
+                net.lattice.sigma_A,
+                names=[j.name for j in live],
+            )
+            stored.extend(f.to_dict() for f in strain if f.code == "junction.strain")
+        block.topology["report"]["findings"] = stored
+    return block
 
 
 #: ``params.terminate`` for every hexfold-family generator: cap every

@@ -59,7 +59,7 @@ from .report import (
     Report,
     Severity,
 )
-from .text import Instance, SiteDefect, Spec, parse
+from .text import Connect, Instance, SiteDefect, Spec, parse
 
 
 @dataclass(frozen=True)
@@ -134,6 +134,19 @@ class SeamRecord:
 
 
 @dataclass(frozen=True)
+class JunctionRecord:
+    """One reducer seam or opening mouth, for the strain read: ``fused`` are
+    the bonded (a, b) ordinal pairs, ``faces`` the minted seam rings and
+    ``atoms`` every ordinal in the zone.  Same attribute names as
+    :class:`hexfold.tunnel.Junction`, so one reader serves both."""
+
+    name: str
+    fused: tuple[tuple[int, int], ...]
+    faces: tuple[tuple[int, ...], ...]
+    atoms: tuple[int, ...]
+
+
+@dataclass(frozen=True)
 class Net:
     atoms: tuple[Atom, ...]
     bonds: tuple[tuple[int, int, int], ...]
@@ -177,6 +190,9 @@ class Net:
     sheet_atoms: tuple[tuple[str, tuple[int, ...]], ...] = ()
     # the same partition as face indices into `rings` (SPEC 18 "sheets")
     sheets: tuple[tuple[str, tuple[int, ...]], ...] = ()
+    # strain-read zones: one per `fuse{reducer}` seam (``reducer:<wide>-><narrow>:
+    # outer|inner``) and per `opening(port=)` mouth (``opening:<sheet>``)
+    junctions: tuple[JunctionRecord, ...] = ()
 
     def authored_dict(self) -> dict[str, Any]:
         """The authored-only sections (SPEC 4/14/18): everything a ``.hx``
@@ -2235,10 +2251,49 @@ def build(
         seam_rims=net.seam_rims,
         sheet_atoms=net.sheet_atoms,
         sheets=net.sheets,
+        junctions=net.junctions,
     )
     if strict and not report.ok:
         raise BuildError(report)
     return net
+
+
+def _reducer_junction(
+    spec: Spec,
+    c: Connect,
+    pairs: list[tuple[int, int]],
+    faces: list[tuple[int, ...]],
+) -> JunctionRecord:
+    """The strain record of one generated fuse of a ``fuse{reducer}``: the
+    ``outer`` one joins the wide tube to the washer's outer rim, the
+    ``inner`` one the washer's hole to the narrow tube."""
+    src_i, dst_i = c.src.split(".")[0], c.dst.split(".")[0]
+    washer = spec.instance(src_i)
+    inner = washer is not None and washer.source == "reducer"
+    other = next(
+        (
+            o
+            for o in spec.connects
+            if o.source == "reducer"
+            and o.span == c.span
+            and (o.src, o.dst) != (c.src, c.dst)
+        ),
+        None,
+    )
+    assert other is not None, "a reducer expands to exactly two fuses"
+    # outer: wide.out -> washer.in (the sibling is washer.hole -> narrow);
+    # inner: washer.hole -> narrow (the sibling starts at the wide end)
+    if inner:
+        wide, narrow = other.src.split(".")[0], dst_i
+    else:
+        wide, narrow = src_i, other.dst.split(".")[0]
+    atoms = sorted({a for pr in pairs for a in pr} | {a for f in faces for a in f})
+    return JunctionRecord(
+        f"reducer:{wide}->{narrow}:{'inner' if inner else 'outer'}",
+        tuple(pairs),
+        tuple(faces),
+        tuple(atoms),
+    )
 
 
 def net_euler(patches: dict[str, Patch]) -> tuple[int, int]:
@@ -4351,6 +4406,7 @@ def _apply_terminate(
         seam_rims=net.seam_rims,
         sheet_atoms=net.sheet_atoms,
         sheets=net.sheets,
+        junctions=net.junctions,
     )
 
 
@@ -4641,6 +4697,7 @@ def _apply_connects(
     consumed_rims: list[tuple[int, ...]] = []
     rings = list(net.rings)
     fused_edges: list[tuple[int, int]] = []
+    junction_recs: list[JunctionRecord] = []
     # trailing bools: (real, kabsch) -- real is True for a real fuse/menu
     # registration, False for a k>=3 seam's placement-only entry; kabsch
     # selects _fuse_transform_kabsch over _fuse_transform (see
@@ -4895,6 +4952,7 @@ def _apply_connects(
             )
             if c.source == "reducer":
                 reducer_rings.setdefault(c.span, Counter()).update(fcensus)
+                junction_recs.append(_reducer_junction(spec, c, new, faces))
             for sz in fcensus:
                 if not 4 <= sz <= 8:
                     findings.append(
@@ -5295,4 +5353,5 @@ def _apply_connects(
         seam_rims=tuple(seam_rims),
         sheet_atoms=sheet_atoms,
         sheets=sheets,
+        junctions=tuple(junction_recs),
     ), spec

@@ -30,7 +30,7 @@ from dataclasses import replace
 
 import numpy as np
 
-from .build import Atom, Net, _compute_sheets
+from .build import Atom, JunctionRecord, Net, _compute_sheets
 from .join import Block
 from .opening import (
     SEAT_SIGMA,
@@ -137,24 +137,87 @@ def build_openings(
             if mine
             else inst
         )
-    base = build_fn(
-        replace(spec, instances=tuple(stripped_insts)), profile=profile, strict=False
-    )
+
+    # fuse chains: the base build places seeds by BFS from `spec.origin`
+    # (default: the instance of the first atom, which is alphabetical, not
+    # listing order).  A sheet that sorts first is joined by no connect, so
+    # the chain would stay at its local seeds and overlap; root
+    # the base at the first fuse connect's source instead (the authored
+    # origin is restored on the result).  One chain per build: a second one
+    # would stay unplaced.
+    def _inst(ref: str) -> str:
+        return ref.split(".")[0].split("/")[0]
+
+    fuse_cs = [c for c in spec.connects if c.verb in ("fuse", "menu")]
+    parent: dict[str, str] = {}
+
+    def find(x: str) -> str:
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for c in fuse_cs:
+        parent[find(_inst(c.src))] = find(_inst(c.dst))
+    n_chains = len({find(x) for x in list(parent)})
+    base_spec = replace(spec, instances=tuple(stripped_insts))
+    if fuse_cs and not spec.origin:
+        base_spec = replace(base_spec, origin=_inst(fuse_cs[0].src))
+    base = build_fn(base_spec, profile=profile, strict=False)
     findings: list[Finding] = list(base.report.findings) + list(extra)
+
+    def out_spec(net: Net) -> Spec:
+        # the expanded spec (reducer washers, generated fuses) with the
+        # authored opening holes put back on their sheets
+        if net.spec is spec or (
+            not base.spec.connects and base.spec.origin == spec.origin
+        ):
+            return spec
+        orig = {i.name: i for i in spec.instances}
+        return replace(
+            base.spec,
+            origin=spec.origin,
+            instances=tuple(
+                replace(i, holes=orig[i.name].holes)
+                if i.name in orig
+                and any(h.port is not None for h in orig[i.name].holes)
+                else i
+                for i in base.spec.instances
+            ),
+        )
 
     def finish(net: Net) -> Net:
         report = profile.apply_all(findings)
-        net = replace(net, report=report, spec=spec)
+        net = replace(net, report=report, spec=out_spec(net))
         if strict and not report.ok:
             raise BuildError(report)
         return net
 
-    if spec.connects or spec.seams or spec.registry or spec.terminate:
+    # fuse lines (authored or reducer-generated) compose with openings: the
+    # base build has already fused them.  Anything else would need its
+    # bookkeeping re-derived across the cut, so it is refused by name.
+    stray = [
+        c
+        for c in base.spec.connects
+        if c.verb != "fuse" and not (c.verb == "menu" and c.menu == "reducer")
+    ]
+    if stray or spec.seams or spec.registry or spec.terminate:
         findings.append(
             _err(
                 "opening.combined",
-                "opening(port=) does not compose with fuse/bond/seam/terminate "
-                "lines yet; build the opening alone",
+                "opening(port=) composes with fuse (and fuse{reducer}) lines "
+                "only, not bond/menu-attach/seam/registry/terminate; build "
+                "the opening without them",
+            )
+        )
+        return finish(base)
+    if n_chains > 1:
+        findings.append(
+            _err(
+                "opening.placement",
+                f"{n_chains} separate fuse chains: one fuse chain per opening "
+                "build; the openings must be the only link between the others",
             )
         )
         return finish(base)
@@ -240,6 +303,9 @@ def build_openings(
     removed: set[int] = set()
     new_bonds: list[tuple[int, int, int]] = []
     new_rings: list[tuple[int, ...]] = []
+    mouths: list[
+        tuple[str, list[tuple[int, int]], list[tuple[int, ...]], set[int]]
+    ] = []
     used_ports: set[str] = set()
     info: list[Finding] = []
 
@@ -398,6 +464,17 @@ def build_openings(
         new_rings += [
             tuple(kept[a] if side == "s" else a for side, a in f) for f in op.faces
         ]
+        mouth_faces = [
+            tuple(kept[a] if side == "s" else a for side, a in f) for f in op.faces
+        ]
+        mouth_pairs = [(kept[h], r) for h, r in op.fused]
+        mouth_atoms = (
+            {a for pr in mouth_pairs for a in pr}
+            | {a for f in mouth_faces for a in f}
+            | {kept[a] for a in op.unbonded_sheet}
+            | set(op.unbonded_rim)
+        )
+        mouths.append((host, mouth_pairs, mouth_faces, mouth_atoms))
         used_ports.add(hole.port)
         # the join merges the two pieces
         for o in range(n_at):
@@ -456,6 +533,35 @@ def build_openings(
         for name, ords in sheet_atoms
     )
     findings += info
+
+    def remap_all(ords: tuple[int, ...]) -> tuple[int, ...] | None:
+        # a bookkeeping entry survives only whole: the removed atoms are
+        # sheet atoms of the cut hole, so an entry that touched one named a
+        # boundary that no longer exists (it is replaced by the mouth's own
+        # junction record); tube-side entries never touch them
+        return tuple(remap[a] for a in ords) if all(a in remap for a in ords) else None
+
+    junctions: list[JunctionRecord] = []
+    for jr in base.junctions:
+        pr = [(remap[a], remap[b]) for a, b in jr.fused if a in remap and b in remap]
+        fc = [q for f in jr.faces if (q := remap_all(f)) is not None]
+        at = tuple(remap[a] for a in jr.atoms if a in remap)
+        junctions.append(JunctionRecord(jr.name, tuple(pr), tuple(fc), at))
+    seen: Counter[str] = Counter()
+    for mhost, mp, mf, ma in mouths:
+        seen[mhost] += 1
+        jname = f"opening:{mhost}" + (f":{seen[mhost]}" if seen[mhost] > 1 else "")
+        junctions.append(
+            JunctionRecord(
+                jname,
+                tuple((remap[a], remap[b]) for a, b in mp),
+                tuple(tuple(remap[a] for a in f) for f in mf),
+                tuple(sorted(remap[a] for a in ma)),
+            )
+        )
+    # dropping a consumed rim that touches a removed atom is safe only
+    # because bond attaches are refused alongside openings
+    consumed = tuple(q for r in base.consumed_rims if (q := remap_all(r)) is not None)
     net = Net(
         atoms=atoms,
         bonds=bonds,
@@ -472,6 +578,9 @@ def build_openings(
         seed_kind="mixed",
         sheet_atoms=sheet_atoms,
         sheets=sheets,
+        consumed_rims=consumed,
+        registry_edges=base.registry_edges,
+        junctions=tuple(junctions),
     )
     return finish(net)
 

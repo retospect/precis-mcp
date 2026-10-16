@@ -362,6 +362,10 @@ _PRE_SEAM_EULER_SNAPSHOT: dict[str, tuple[bool, list[tuple[str, str, int]]]] = {
         True,
         [("euler.chi", "INFO", 1), ("euler.residual", "INFO", 0)],
     ),
+    "tunnel_two_steps.hx": (
+        True,
+        [("euler.chi", "INFO", 0), ("euler.residual", "INFO", 0)],
+    ),
     "tube55.hx": (True, [("euler.chi", "INFO", 0), ("euler.residual", "INFO", 0)]),
     "tube_fuse.hx": (True, [("euler.chi", "INFO", 0), ("euler.residual", "INFO", 0)]),
     "tube_ring_closure.hx": (

@@ -38,7 +38,7 @@ from typing import Any
 
 import numpy as np
 
-from hexfold.build import Net
+from hexfold.build import JunctionRecord, Net
 from hexfold.check import Relaxed, geometry_findings
 from hexfold.report import Finding, Report, Severity
 from hexfold.stick import angle_springs, stick_relax_pinned
@@ -425,9 +425,10 @@ def tunnel_strain(
     coords: np.ndarray,
     elements: Sequence[str] | np.ndarray,
     bonds: Iterable[tuple[int, int, Any, Any]],
-    junctions: Sequence[Junction],
+    junctions: Sequence[Junction | JunctionRecord],
     seam_atoms: Sequence[Sequence[int]],
     sigma: float,
+    names: Sequence[str] | None = None,
 ) -> list[Finding]:
     """Strain read on any coordinate set: one ``junction.strain`` INFO per
     junction (seam-bond and zone-bond lengths, worst face-angle deviation,
@@ -440,7 +441,10 @@ def tunnel_strain(
     so it is the read to re-run on relaxed coordinates (stick now; the
     xtb/MLIP relax of H3 runs on the compute group).  ``bonds`` are
     ``GeneratedBlock.bonds`` tuples ``(i, j, order, kind)``; ``coords``,
-    ``elements`` and ordinals share the stored-block indexing.
+    ``elements`` and ordinals share the stored-block indexing.  ``names``
+    labels the junctions (finding ``where``); the default is the tunnel's
+    ``("low", "high")``.  A junction needs only ``fused``, ``faces`` and
+    ``atoms``, so :class:`hexfold.build.JunctionRecord` reads too.
     """
     xyz = np.asarray(coords, dtype=float)
     is_c = np.asarray(elements) == "C"
@@ -451,7 +455,8 @@ def tunnel_strain(
             cb[i].add(j)
             cb[j].add(i)
     out: list[Finding] = []
-    for tag, jun in zip(("low", "high"), junctions, strict=False):
+    tags = ("low", "high") if names is None else tuple(names)
+    for tag, jun in zip(tags, junctions, strict=False):
         jset = set(jun.atoms)
         degs = [len(cb[a]) for a in jun.atoms]
         seam_bl = [float(np.linalg.norm(xyz[h] - xyz[r])) for h, r in jun.fused]

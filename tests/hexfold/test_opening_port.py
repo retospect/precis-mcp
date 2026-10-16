@@ -91,11 +91,27 @@ def test_two_openings_sheet_tube_sheet() -> None:
     assert _codes(r, Severity.ERROR) == []
 
 
-def test_opening_with_fuse_is_refused() -> None:
+def test_opening_with_fuse_builds_clean() -> None:
     text = ONE + "u: tube(6,6, len=3)\nt.out --fuse k=0--> u.in\n"
     net = build(text, strict=False)
+    assert _codes(net.report, Severity.ERROR) == []
+    assert _components(net) == 1
+    assert [f for f in check(text).findings if f.severity == Severity.ERROR] == []
+    assert [j.name for j in net.junctions] == ["opening:a"]
+    geo = check(text, geometry=True)
+    assert [f for f in geo.findings if f.severity == Severity.ERROR] == []
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "u: tube(6,6, len=3)\nt/(1,1,A) --bond--> u/(1,1,A)\n",
+        "u: tube(6,6, len=3)\nv: tube(6,6, len=3)\nseam s: t.out == u.in == v.in\n",
+    ],
+)
+def test_opening_with_bond_or_seam_is_refused(extra: str) -> None:
+    net = build(ONE + extra, strict=False)
     assert "opening.combined" in _codes(net.report, Severity.ERROR)
-    assert "opening.combined" in {f.code for f in check(text).findings}
 
 
 def test_opening_with_fit_is_refused() -> None:
@@ -155,3 +171,14 @@ def test_canonical_json_round_trip() -> None:
     back = spec_from_dict(doc)
     a = back.instance("a")
     assert a is not None and a.holes[0].port == "t.in"
+
+
+def test_two_disjoint_fuse_chains_are_refused() -> None:
+    text = (
+        ONE
+        + "u: tube(6,6, len=3)\nv: tube(6,6, len=3)\n"
+        + "t.out --fuse k=0--> u.in\nw: tube(6,6, len=3)\nx: tube(6,6, len=3)\n"
+        + "w.out --fuse k=0--> x.in\n"
+    )
+    net = build(text, strict=False)
+    assert "opening.placement" in _codes(net.report, Severity.ERROR)
