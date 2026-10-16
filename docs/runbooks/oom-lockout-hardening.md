@@ -18,8 +18,13 @@
    Linux nodes.
 
 2. **earlyoom kills the hog early** — before the box thrashes far enough to lock
-   us out. `-m 10,5 -s 10,5`: SIGTERM the biggest `--prefer` match when free
-   memory (or swap) drops below 10%, SIGKILL below 5%. `--avoid` protects
+   us out. `-m 10,5`: SIGTERM the biggest `--prefer` match when free memory
+   drops below 10%, SIGKILL below 5%. The `-s` swap leg differs by group:
+   earlyoom fires only when memory AND swap are both under threshold, and on
+   GB10 hosts (the `compute` group) the NVIDIA driver's unified-memory pages
+   can't swap, so RAM exhausts with swap still free — `compute` hosts carry
+   `-s 100,100` (swap condition always satisfied, i.e. off; gr491506) while
+   all other hosts keep `-s 10,5`. `--avoid` protects
    `sshd|systemd|tailscaled|autossh|cron` (never killed → the box stays
    reachable); `--prefer` biases the kill toward the compute hogs
    (`python|precis|llama-server|llama-swap|ollama|marker`). The precis worker

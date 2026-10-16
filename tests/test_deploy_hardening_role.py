@@ -10,6 +10,11 @@
   ConditionPathExists drop-in (masking fails — the package ships the unit as
   a real file in /etc/systemd/system), tagged dgx-dashboard and only where
   the unit exists.
+- gr491506: on GB10 hosts (the compute group) the NVIDIA driver holds
+  unified-memory pages that cannot swap, so RAM exhausts with swap still
+  free — earlyoom's `-s` leg then gates the kill. Compute hosts render
+  `-s 100,100` (the swap condition always satisfied); other hosts keep
+  `-s 10,5`. The earlyoom tasks stay under the oom-guard tag.
 """
 
 from __future__ import annotations
@@ -75,12 +80,16 @@ _FLEET = [
 ]
 
 
-def _resolved_defaults(host: str, group: list[str]) -> dict[str, Any]:
+def _resolved_defaults(
+    host: str,
+    group: list[str],
+    groups: dict[str, list[str]] | None = None,
+) -> dict[str, Any]:
     """Resolve the string defaults through jinja2 the way ansible would."""
     raw = _defaults()
     values = dict(raw)
     env = jinja2.Environment(undefined=jinja2.StrictUndefined)
-    ctx = {"inventory_hostname": host, "groups": {"linux": group}}
+    ctx = {"inventory_hostname": host, "groups": groups or {"linux": group}}
     for _ in range(10):
         ctx_all = {**values, **ctx}
         rendered = {
@@ -380,6 +389,45 @@ def test_guard_apt_failure_does_not_reboot(guard: Any) -> None:
     result, calls = guard(FAKE_APT_RC="100")
     assert result.returncode == 1
     assert "shutdown" not in calls
+
+
+# ── gr491506: earlyoom swap leg off on GB10 compute hosts ──────────────────
+
+_GROUPS = {
+    "linux": ["node-a", "node-b"],
+    "compute": ["node-a"],
+    "serving": ["node-b"],
+}
+
+
+def _earlyoom_args(host: str) -> str:
+    defaults = _resolved_defaults(host, [], _GROUPS)
+    assert defaults["earlyoom_swap_args"].startswith("-s ")
+    return _render_template(
+        "earlyoom.default.j2", earlyoom_args=defaults["earlyoom_args"]
+    )
+
+
+def test_earlyoom_swap_leg_disabled_on_compute_hosts() -> None:
+    rendered = _earlyoom_args("node-a")
+    assert "-m 10,5" in rendered
+    assert "-s 100,100" in rendered
+    assert "-s 10,5" not in rendered
+
+
+def test_earlyoom_swap_leg_kept_off_compute_hosts() -> None:
+    rendered = _earlyoom_args("node-b")
+    assert "-m 10,5" in rendered
+    assert "-s 10,5" in rendered
+    assert "-s 100,100" not in rendered
+
+
+def test_earlyoom_tasks_carry_the_oom_guard_tag() -> None:
+    tasks = [t for t in _tasks() if "earlyoom" in t["name"].lower()]
+    assert len(tasks) == 3
+    for task in tasks:
+        assert "oom-guard" in task["tags"], task["name"]
+        assert 'os_family == "linux"' in str(task["when"]), task["name"]
 
 
 # ── gr489603: sshd sftp Subsystem ──────────────────────────────────────────

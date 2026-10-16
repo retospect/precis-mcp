@@ -39,20 +39,30 @@ hardening_os_update_timeout: "{{ 75 - (hardening_os_update_offset_min | int) }}m
 # See docs/runbooks/oom-lockout-hardening.md.
 
 # earlyoom thresholds + targeting. `-m 10,5` SIGTERMs the biggest --prefer
-# match when free memory drops below 10% (SIGKILL below 5%); `-s 10,5` does the
-# same on free swap. `--avoid` matches are never touched — sshd and the
-# network/tunnel daemons stay up so the box is always reachable. `--prefer`
-# biases the kill toward the compute hogs (the precis worker restarts via
-# systemd Restart=always, so culling it is the recoverable sacrifice).
-# Regexes match the (15-char-truncated) process comm, anchored.
+# match when free memory drops below 10% (SIGKILL below 5%). `--avoid` matches
+# are never touched — sshd and the network/tunnel daemons stay up so the box
+# is always reachable. `--prefer` biases the kill toward the compute hogs (the
+# precis worker restarts via systemd Restart=always, so culling it is the
+# recoverable sacrifice). Regexes match the (15-char-truncated) process comm,
+# anchored.
+#
+# The swap leg (`earlyoom_swap_args`): earlyoom fires only when BOTH memory and
+# free swap are under threshold. On GB10 hosts (the compute group) the NVIDIA
+# driver holds unified-memory pages that cannot swap, so RAM runs out while
+# most of swap stays free — at the gr491506 pollux OOM swap sat at 65% and the
+# swap leg gated the kill. There `-s 100,100` keeps the swap condition always
+# satisfied, so `-m` alone gates. Other hosts keep `-s 10,5`, which still
+# catches swap-thrash before sshd starves.
 #
 # NB: NOT shell-quoted. earlyoom.service runs `ExecStart=/usr/bin/earlyoom
 # $EARLYOOM_ARGS` with no shell, so systemd only word-splits on whitespace and
 # passes any quotes verbatim — wrapping a regex in quotes would make earlyoom
 # match a literal leading quote char. The regexes contain no whitespace, so
 # they stand alone as single arguments unquoted.
+earlyoom_swap_args: >-
+  -s {{ '100,100' if inventory_hostname in groups.get('compute', []) else '10,5' }}
 earlyoom_args: >-
-  -r 3600 -m 10,5 -s 10,5
+  -r 3600 -m 10,5 {{ earlyoom_swap_args }}
   --avoid ^(sshd|systemd|systemd-.*|dbus-daemon|tailscaled|autossh|cron)$
   --prefer ^(python[0-9.]*|precis|llama-server|llama-swap|ollama|marker.*)$
 
