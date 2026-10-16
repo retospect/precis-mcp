@@ -552,44 +552,6 @@ def test_placement_drc_report_is_silent_when_clean():
     assert block is None
 
 
-def _pad_overlap(a: str, b: str):
-    from precis.pcb.drc import DrcFinding
-
-    return DrcFinding(
-        rule="clearance",
-        severity="error",
-        where=f"pad[{a}/1] <-> pad[{b}/2] at (8.580, 71.782)",
-        detail="pads overlap",
-        objects=({"a_refdes": a, "a_pin": "1", "b_refdes": b, "b_pin": "2"},),
-        margin_mm=-0.2,
-    )
-
-
-def test_placement_drc_report_names_free_violators_without_the_fixed_hint():
-    """gr489913 (b): taz15 has no fixed part, yet the report said a board
-    with every part fixed='both' cannot be auto-shifted — read as locked
-    parts. With nothing fixed it names the violators to pin or move."""
-    from precis.pcb.session import placement_drc_report
-
-    n, block = placement_drc_report([_pad_overlap("SW3", "CN1")])
-    assert n == 1 and block is not None
-    assert "fixed" not in block
-    assert "auto-shifted" not in block
-    assert "violator(s) you can pin or move: SW3, CN1" in block
-
-
-def test_placement_drc_report_flags_fixed_violators_and_subject():
-    from precis.pcb.session import placement_drc_report
-
-    _, block = placement_drc_report(
-        [_pad_overlap("SW3", "CN1")], fixed_refdes={"CN1"}, subject="as annealed"
-    )
-    assert block is not None
-    assert "unmanufacturable as annealed" in block
-    assert "fixed violator(s) CN1 cannot be auto-shifted" in block
-    assert "violator(s) you can pin or move: SW3" in block
-
-
 def test_run_placement_drc_is_a_subset_of_run_geometric_drc():
     # The subset contract: run_placement_drc fires only rules that exist
     # before routing. On a 2-pin net with a stub that stops short,

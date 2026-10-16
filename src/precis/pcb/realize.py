@@ -1513,10 +1513,6 @@ class _RouteContext:
     island_terminals: dict[int, tuple[_EndTerminals, _EndTerminals]]
     fixed_copper: list[dict[str, Any]] | None
     edge_min: float
-    #: Plane-net pins whose fixed-copper island already reaches one of
-    #: their net's poured layers (:func:`_plane_served_pins`) — the plane
-    #: fan-out draws no drop via for these.
-    plane_served_pins: frozenset[int] = frozenset()
 
 
 def _route_context(
@@ -1699,16 +1695,14 @@ def _route_context(
     # `body_mask` above: which pins sit in a fixed-copper island is
     # placement- and fixed-copper-derived, not attempt-derived. A pin's
     # other pads (gr339236) follow its fixed-copper terminals.
-    fixed_terminals_by_pin = _island_terminals_by_pin(ir, footprints, fixed_copper)
     island_terminals = _seg_island_terminals(
         ir,
         route_ids,
         _merge_terminals(
-            fixed_terminals_by_pin,
+            _island_terminals_by_pin(ir, footprints, fixed_copper),
             _sibling_pad_terminals_by_pin(ir, footprints, signal_layers),
         ),
     )
-    plane_served_pins = _plane_served_pins(ir, plane_ids, fixed_terminals_by_pin)
     return _RouteContext(
         signal_layers,
         pad_geoms,
@@ -1728,48 +1722,7 @@ def _route_context(
         island_terminals,
         fixed_copper,
         edge_min,
-        plane_served_pins,
     )
-
-
-def _plane_served_pins(
-    ir: PcbIR,
-    plane_ids: list[int],
-    fixed_terminals_by_pin: dict[tuple[str, str], _EndTerminals],
-) -> frozenset[int]:
-    """Pins of plane-promoted nets that AUTHORED fixed copper already
-    carries onto EVERY one of the net's poured layers: the pin's
-    fixed-copper island (:func:`_island_terminals_by_pin` — a fixed via's
-    centre on each layer it spans, a fixed track's endpoints on its own
-    layer) has a terminal on each layer in the net's ``net_plane_layers``
-    mask. Such a pin is already connected to the pour(s) and stitches them;
-    :func:`_plane_fanout` must not drill a second drop via beside the
-    source's own. A pin whose island reaches only SOME of several pours
-    keeps its drop via, which is what ties the rest in. taz15 (2026-10-15):
-    every GND/12V_POWER/PV+ pin of the EasyEDA-routed source reaches its
-    plane through a source via, and the fan-out either stacked a new via
-    on it (via_via_keepout, net stripped) or, with the source via counted
-    as an obstacle, found no legal site and failed the whole net as
-    ``plane_drop_blocked``."""
-    if not fixed_terminals_by_pin or not plane_ids:
-        return frozenset()
-    plane_nets = {int(ir.seg_net[seg_id]) for seg_id in plane_ids}
-    served: set[int] = set()
-    for pid in range(ir.n_pins):
-        net_id = int(ir.pin_net[pid])
-        if net_id not in plane_nets:
-            continue
-        key = (
-            str(ir.instance_refdes[int(ir.pin_instance[pid])]),
-            str(ir.pin_label[pid]),
-        )
-        terminals = fixed_terminals_by_pin.get(key)
-        if not terminals:
-            continue
-        poured = set(plane_layers_of(int(ir.net_plane_layers[net_id])))
-        if poured and poured <= {layer for _terminal, layer in terminals}:
-            served.add(pid)
-    return frozenset(served)
 
 
 def _static_route_grid(
@@ -1800,7 +1753,6 @@ def _static_route_grid(
         ctx.pad_geoms,
         ctx.ink_field,
         ctx.fixed_copper,
-        plane_served_pins=ctx.plane_served_pins,
     )
     return grid, tracks, vias, unrouted, failed_pins
 
@@ -1870,7 +1822,6 @@ def _realize_maze(
     body_mask = ctx.body_mask
     island_terminals = ctx.island_terminals
     edge_min = ctx.edge_min
-    plane_served_pins = ctx.plane_served_pins
     Outcome = tuple[
         list[RealizedTrack],
         list[RealizedVia],
@@ -1909,7 +1860,6 @@ def _realize_maze(
                 net_layers=net_layers,
                 preferred=preferred,
                 accepted=accepted,
-                plane_served_pins=plane_served_pins,
             )
             if accepted is not None:
                 accepted_counts.append(len(accepted))
@@ -1973,7 +1923,6 @@ def _realize_maze(
             fixed_copper,
             island_terminals,
             net_layers,
-            plane_served_pins=plane_served_pins,
         )
         settled = [s for s in order if int(ir.seg_net[s]) not in conflicted]
         attempts(settled + [s for s in order if s not in set(settled)], proposal)
@@ -2499,9 +2448,7 @@ def _stamp_pads(
        gripe 346962's own repro (HV507, 0.8mm pitch, C639448).
     """
     for _point, net, shape, layers in pads:
-        grid.stamp_shape(
-            layers, shape, grid.clearance_mm, net, contest=True, exact=True
-        )
+        grid.stamp_shape(layers, shape, grid.clearance_mm, net, contest=True)
     for _point, net, shape, layers in pads:
         grid.stamp_pad_shape(layers, shape, net, contest=True)
     for point, net, _shape, layers in pads:
@@ -2808,8 +2755,6 @@ def _claim_static(
     pad_geoms: list[PadGeom],
     ink_field: _InkField | None,
     fixed_copper: list[dict[str, Any]] | None,
-    *,
-    plane_served_pins: frozenset[int] = frozenset(),
 ) -> tuple[list[RealizedTrack], list[RealizedVia], list[int], list[int]]:
     """Everything a routing attempt claims before its first search: fixed
     copper, fiducial and mounting-hole keep-outs, pads, and the plane
@@ -2824,14 +2769,7 @@ def _claim_static(
     # they ARE copper, so they get realized (and claimed) first, before
     # any route can be planned through where they sit.
     plane_tracks, plane_vias, plane_failed = _plane_fanout(
-        ir,
-        plane_ids,
-        grid,
-        config,
-        rules_by_net,
-        pad_geoms,
-        ink_field=ink_field,
-        served_pins=plane_served_pins,
+        ir, plane_ids, grid, config, rules_by_net, pad_geoms, ink_field=ink_field
     )
     unrouted: list[int] = []
     # A pin with no legal drop leaves its net's segments unserved. Report
@@ -2972,79 +2910,6 @@ def _seg_request(
         terms,
         kwargs,
     )
-
-
-#: An escape stub, pad centre first (:meth:`maze.OccupancyGrid.escape_stub`),
-#: or ``None`` for an end routed without one.
-_Stub = tuple[Point, ...] | None
-
-
-def _route_with_escape_stubs(
-    grid: maze.OccupancyGrid, req: _SegRequest
-) -> tuple[maze.RoutePath | None, tuple[_Stub, _Stub]]:
-    """Re-search a segment whose plain search failed, offering each pad
-    end's exact-geometry escape stub as an extra terminal (gr489923: a
-    0.3 mm track cannot leave a 0.5 mm-pitch pad on the grid, though it
-    can straight along the pad). Only failed segments retry, so a board
-    that routed before routes identically. An end already substituted
-    onto island copper (``eff_start != start``) gets no stub."""
-    width = req.rules.track_width_mm
-    a = (
-        grid.escape_stub(req.net_id, req.start, req.start_layer, width)
-        if req.eff_start == req.start
-        else None
-    )
-    b = (
-        grid.escape_stub(req.net_id, req.end, req.goal_layer, width)
-        if req.eff_goal == req.end
-        else None
-    )
-    if a is None and b is None:
-        return None, (None, None)
-    kwargs = dict(req.route_kwargs)
-    if a is not None:
-        kwargs["extra_start_terminals"] = (
-            *kwargs["extra_start_terminals"],
-            (a[-1], req.start_layer),
-        )
-    if b is not None:
-        kwargs["extra_goal_terminals"] = (
-            *kwargs["extra_goal_terminals"],
-            (b[-1], req.goal_layer),
-        )
-    path = grid.route(req.net_id, req.eff_start, req.eff_goal, **kwargs)
-    return path, (a, b)
-
-
-def _attach_escape_stubs(
-    path: maze.RoutePath, stubs: tuple[_Stub, _Stub]
-) -> maze.RoutePath:
-    """Join each stub the search actually used back onto ``path``: the
-    search started (ended) exactly on the stub's last point, its anchor,
-    so the stub's copper runs from there to the pad centre on that end's
-    layer. A stub the search did not use is dropped."""
-    a, b = stubs
-    pts = list(path.points)
-
-    def at(p: tuple[float, float, int], q: Point) -> bool:
-        return abs(p[0] - q[0]) < 1e-9 and abs(p[1] - q[1]) < 1e-9
-
-    used = False
-    if a is not None and at(pts[0], a[-1]):
-        pts = [(x, y, pts[0][2]) for x, y in a[:-1]] + pts
-        used = True
-    if b is not None and at(pts[-1], b[-1]):
-        pts += [(x, y, pts[-1][2]) for x, y in reversed(b[:-1])]
-        used = True
-    if not used:
-        return path
-    length = sum(
-        dist((p[0], p[1]), (q[0], q[1]))
-        for p, q in itertools.pairwise(pts)
-        if p[2] == q[2]
-    )
-    attached = path.attached and not (a is not None and at(path.points[0], a[-1]))
-    return maze.RoutePath(path.net_id, tuple(pts), length, attached)
 
 
 def _preferred_fits(
@@ -3198,8 +3063,6 @@ def _negotiate(
     fixed_copper: list[dict[str, Any]] | None,
     island_terminals: dict[int, tuple[_EndTerminals, _EndTerminals]] | None,
     net_layers: dict[int, list[int]] | None,
-    *,
-    plane_served_pins: frozenset[int] = frozenset(),
 ) -> tuple[
     dict[int, _Proposal], set[int], NegotiationReport, tuple[CongestionCell, ...]
 ]:
@@ -3243,7 +3106,6 @@ def _negotiate(
         pad_geoms,
         ink_field,
         fixed_copper,
-        plane_served_pins=plane_served_pins,
     )
     neg = maze.Negotiation(
         spec, pres_fac=maze.NEGOTIATE_PRES_FAC, hist_fac=maze.NEGOTIATE_HIST_FAC
@@ -3374,7 +3236,6 @@ def _route_pass(
     net_layers: dict[int, list[int]] | None = None,
     preferred: dict[int, _Proposal] | None = None,
     accepted: list[int] | None = None,
-    plane_served_pins: frozenset[int] = frozenset(),
 ) -> tuple[
     list[RealizedTrack],
     list[RealizedVia],
@@ -3434,7 +3295,6 @@ def _route_pass(
         pad_geoms,
         ink_field,
         fixed_copper,
-        plane_served_pins=plane_served_pins,
     )
     island_notes: dict[int, str] = {}
 
@@ -3466,9 +3326,6 @@ def _route_pass(
                 accepted.append(seg_id)
         else:
             path = grid.route(net_id, req.eff_start, req.eff_goal, **req.route_kwargs)
-        stubs: tuple[_Stub, _Stub] = (None, None)
-        if path is None and not committed:
-            path, stubs = _route_with_escape_stubs(grid, req)
         if path is None or len(path.points) < 2:
             unrouted.append(seg_id)
             continue
@@ -3494,7 +3351,6 @@ def _route_pass(
                 via_shove_radius_mm=config.via_shove_radius_mm,
                 ink_field=ink_field,
             )
-        path = _attach_escape_stubs(path, stubs)
         grid.stamp_path(path, rules.track_width_mm)
         via_r = (
             grid.core_radius_mm(rules.via_dia_mm)
@@ -4027,13 +3883,8 @@ def _plane_fanout(
     rules_by_net: dict[int, NetRules],
     pad_geoms: list[PadGeom],
     ink_field: _InkField | None = None,
-    served_pins: frozenset[int] = frozenset(),
 ) -> tuple[list[RealizedTrack], list[RealizedVia], list[int]]:
     """Connect every pin of a plane-promoted net DOWN to its plane.
-
-    ``served_pins`` (:func:`_plane_served_pins`) are the pins authored
-    fixed copper already carries onto a poured layer; they get no stub
-    and no drop via here.
 
     ``ink_field`` (:func:`_courtyard_ink_field`), forwarded to
     :func:`_drop_via_site` unchanged, is the plane drop via's own defer-
@@ -4083,17 +3934,7 @@ def _plane_fanout(
     # (gripe 269811 comment 2: two SCL drop vias measured 0.1598mm apart,
     # dia 0.75mm each — copper overlapping by 0.590mm and, worse, their
     # 0.25mm drills overlapping too).
-    # Seeded with the board's AUTHORED vias (``ir.fixed_vias``, every
-    # ``pcb_fixed_copper`` via row), for the same net-blind reason: the
-    # grid's claim of a same-net fixed via is passable to its own net, so
-    # a drop via for a pin whose source routing already has a via right
-    # there landed ON it. taz15 (2026-10-15, an EasyEDA import routed at
-    # source): 12V_POWER and PV+ drop vias 0.23-0.32mm from the source's
-    # own vias, barrels overlapping by 0.28-0.37mm, both nets stripped by
-    # the post-route gate as via_via_keepout.
-    placed_via_sites: list[tuple[float, float, float]] = [
-        (float(v.x), float(v.y), float(v.dia_mm) / 2.0) for v in ir.fixed_vias
-    ]
+    placed_via_sites: list[tuple[float, float, float]] = []
     for net_id, seg_id in sorted(seg_of_net.items()):
         # A net may now be poured on SEVERAL layers at once
         # (net_plane_layers is a bitmask). One drop via per pin still
@@ -4113,8 +3954,6 @@ def _plane_fanout(
         for pid in range(ir.n_pins):
             if int(ir.pin_net[pid]) != net_id:
                 continue
-            if pid in served_pins:
-                continue  # the source's own via already reaches the pour
             point = pin_point(ir, pid)
             if point is None:
                 continue
@@ -4133,20 +3972,6 @@ def _plane_fanout(
             # Silent twice over: the net reports realized, and the stray
             # stub lands on the electrode layer this board forbids.
             pad_layer = _side_layer(ir, int(ir.pin_instance[pid]), outer_layers)
-            if set(plane_layers) == {pad_layer}:
-                # The net's ONLY pour is on this pin's own copper layer:
-                # the land sits inside the fill (planes.plane_pours cuts
-                # antipads around FOREIGN copper only), so the pour reaches
-                # it directly and a drop via would be a hole drilled next
-                # to a pad that is already connected. Before this, every
-                # such pin got a stub plus a zero-span via, and a pin with
-                # no legal via site failed the whole net as
-                # `plane_drop_blocked` — taz15's 3V3 (poured on F.Cu) and
-                # GND (poured on B.Cu), 108 pins, the way the source board
-                # serves them. A net poured on MORE layers keeps its via:
-                # the span from the pad layer to the farthest pour is what
-                # stitches the pours into one net (the note above).
-                continue
             # The span still reaches the FARTHEST poured layer, so a via
             # from a bottom pad crosses (and therefore stitches) every
             # nearer pour on the way — the property the note above relies

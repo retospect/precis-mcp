@@ -214,7 +214,6 @@ from precis.pcb.cost import (
     evaluate_cost,
     gap_capacity_term,
     hardened_penalty,
-    instance_through_hole,
     layer_count_term,
     loop_inductance_term,
     outline_bbox,
@@ -2167,7 +2166,10 @@ class OptimizeEngine:
         #: :meth:`_sides_clear` does not hold for it: taz15-blank's anneal
         #: (job 484766, 2026-10-14) parked top-side SW3 and C20 on the
         #: bottom-side XH headers' pads, 0.000 mm apart on F.Cu.
-        self._through_hole = instance_through_hole(ir)
+        self._through_hole = np.zeros(ir.n_instances, dtype=bool)
+        for pad in ir.footprint_pads:
+            if pad.raw.get("drill") or pad.raw.get("slot"):
+                self._through_hole[pad.instance] = True
         #: Every mounting hole as a STATIC obstacle (gr263082-adjacent
         #: user report: Q3/R1/C1 landing on/under an M4 solder-nut hole) —
         #: a fixed-position, fixed-radius circumscribing polygon
@@ -2809,7 +2811,6 @@ class OptimizeEngine:
                 cfg.cost,
                 poly_a=self._world_courtyard(inst),
                 poly_b=self._world_courtyard(other),
-                through_hole=self._through_hole,
             )
             if t.raw <= 0.0:
                 continue

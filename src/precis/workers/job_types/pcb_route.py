@@ -59,7 +59,6 @@ from __future__ import annotations
 import logging
 import math
 from collections import Counter
-from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from precis.pcb import DANGLING_NET_NOTE
@@ -611,70 +610,6 @@ def _resolve_supply_matching(
     return report, []
 
 
-def _fixed_refdes(ir: PcbIR) -> list[str]:
-    """Refdes of every instance the anneal may not shift (``fixed`` 'xy'
-    or 'both') — the parts a placement refusal must not tell the user to
-    "move" without saying they are pinned (gr489913)."""
-    return [
-        str(ir.instance_refdes[i])
-        for i in range(ir.n_instances)
-        if bool(ir.inst_fixed_xy[i])
-    ]
-
-
-def _moved_refdes(ir: PcbIR, before: tuple[Any, Any, Any]) -> list[str]:
-    """Refdes of every instance moved off the ``(x, y, rot)`` arrays
-    copied before the anneal ran; an unplaced (NaN) pose that stays NaN
-    is not a move."""
-    bx, by, brot = before
-    moved: list[str] = []
-    for i in range(ir.n_instances):
-        pairs = (
-            (bx[i], ir.inst_x[i]),
-            (by[i], ir.inst_y[i]),
-            (brot[i], ir.inst_rot[i]),
-        )
-        for a, b in pairs:
-            a, b = float(a), float(b)
-            if math.isnan(a) and math.isnan(b):
-                continue
-            if math.isnan(a) or math.isnan(b) or abs(a - b) > 1e-6:
-                moved.append(str(ir.instance_refdes[i]))
-                break
-    return moved
-
-
-def _refusal_reason(
-    report: str, moved: Sequence[str], moved_violators: Sequence[str], n_parts: int
-) -> str:
-    """The pre-route gate's refusal text. When a violator is a part this
-    job's anneal moved, the illegal placement is the anneal's output, not
-    what the user stored — saying "the placement is already illegal"
-    there read as a corrupt import (gr489913, taz15 jo484766). A moved
-    part that is not a violator leaves the stored placement at fault."""
-    if moved_violators:
-        what = (
-            f"the ANNEALED placement is illegal (this job's anneal moved "
-            f"{len(moved)} of {n_parts} part(s) off the stored placement, "
-            f"violators among them: {', '.join(moved_violators)}; their "
-            "positions below are the anneal's, not the stored board's)"
-        )
-        fix = (
-            "Pin the parts the anneal should not move or move them, re-run, "
-            "or pass force=True to route anyway"
-        )
-    else:
-        what = "the placement is already illegal"
-        fix = (
-            "Fix the placement (unpin a violator or move it), or pass "
-            "force=True to route anyway"
-        )
-    return (
-        f"pcb_route: refusing to route — {what}; nothing written.\n{report}\n"
-        f"{fix}; the override is recorded in the job summary."
-    )
-
-
 class _LoopGateRefusal(Exception):
     """The pre-route gate's refusal, thrown out of the loop's route
     callable so it can cross ``anneal_route_loop`` — the same refusal the
@@ -1092,12 +1027,6 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     # check that fails closed on the whole job would be worse than the silent
     # gap it replaces. On error it degrades to "no gate result", logged, and
     # routing proceeds exactly as before.
-    # gr489913: the poses before this job's anneal (set by each path just
-    # before it runs) and what the last gate found against them, so a
-    # refusal can say whether a violator is a part the anneal moved.
-    pose_before: list[tuple[Any, Any, Any]] = []
-    last_gate: dict[str, list[str]] = {"moved": [], "moved_violators": []}
-
     def _placement_gate() -> tuple[int, str | None]:
         """The pre-route placement-DRC + invariant-measure gate over the
         CURRENT ``ir`` — one block for every seam the router is about to
@@ -1132,21 +1061,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
                 ],
                 layers=layers,
             )
-            moved = _moved_refdes(ir, pose_before[0]) if pose_before else []
-            moved_set = set(moved)
-            violators = dict.fromkeys(
-                r
-                for f in placement_findings
-                if f.severity == "error"
-                for r in pcb_session.finding_refdes(f)
-            )
-            moved_violators = [r for r in violators if r in moved_set]
-            last_gate.update(moved=moved, moved_violators=moved_violators)
-            return pcb_session.placement_drc_report(
-                placement_findings,
-                fixed_refdes=_fixed_refdes(ir),
-                subject="as annealed" if moved_violators else "as placed",
-            )
+            return pcb_session.placement_drc_report(placement_findings)
         except Exception:
             log.exception("pcb_route: pre-route DRC gate raised; routing anyway")
             return 0, None
@@ -1224,7 +1139,6 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             return outcome
 
         try:
-            pose_before.append((ir.inst_x.copy(), ir.inst_y.copy(), ir.inst_rot.copy()))
             loop_result = anneal_route_loop(
                 ir,
                 config,
@@ -1232,15 +1146,12 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
                 loop=RouteLoopConfig(rounds=loop_rounds, seed=seed),
             )
         except _LoopGateRefusal as exc:
-            # Round 0 routes before any anneal, but the loop's seed /
-            # legalize pass may already have moved parts.
             ctx.record_failure(
-                _refusal_reason(
-                    str(exc),
-                    last_gate["moved"],
-                    last_gate["moved_violators"],
-                    ir.n_instances,
-                ),
+                "pcb_route: refusing to route — the placement is already "
+                f"illegal; nothing written.\n{exc}\n"
+                "Fix the placement (unpin a violator or move it), or pass "
+                "force=True to route anyway; the override is recorded in the "
+                "job summary.",
                 failure_class="input",
             )
             return
@@ -1279,7 +1190,6 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             return
         derived_assignments, pin_swap_overrides = _settled_writebacks()
     else:
-        pose_before.append((ir.inst_x.copy(), ir.inst_y.copy(), ir.inst_rot.copy()))
         result = optimize(ir, config)
         if _post_anneal_collision_check():
             return
@@ -1287,12 +1197,11 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         n_placement_errors, placement_report = _placement_gate()
         if n_placement_errors and not force:
             ctx.record_failure(
-                _refusal_reason(
-                    placement_report or "",
-                    last_gate["moved"],
-                    last_gate["moved_violators"],
-                    ir.n_instances,
-                ),
+                "pcb_route: refusing to route — the placement is already "
+                f"illegal; nothing written.\n{placement_report}\n"
+                "Fix the placement (unpin a violator or move it), or pass "
+                "force=True to route anyway; the override is recorded in the "
+                "job summary.",
                 failure_class="input",
             )
             return

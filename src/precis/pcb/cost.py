@@ -116,8 +116,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-import numpy as np
-
 from precis.pcb import objectives as obj
 from precis.pcb.capabilities import CapabilityRow, capability_for
 from precis.pcb.drc import DEFAULT_COURTYARD_RADIUS_MM
@@ -1165,21 +1163,6 @@ _COURTYARD_JUSTIFICATION = (
 )
 
 
-def instance_through_hole(ir: PcbIR) -> np.ndarray:
-    """bool[n_instances] — True for a part with a drilled pad (a
-    through-hole lead or slot). Its pads stand on BOTH outer layers, so
-    the board is not between it and an opposite-side part: the
-    opposite-side exemption in :func:`courtyard_overlap_pair_term` and
-    ``OptimizeEngine._sides_clear`` does not hold for it (taz15-blank's
-    anneal, job 484766, parked top-side SW3 and C20 on the bottom-side XH
-    headers' pads)."""
-    out = np.zeros(ir.n_instances, dtype=bool)
-    for pad in ir.footprint_pads:
-        if pad.raw.get("drill") or pad.raw.get("slot"):
-            out[pad.instance] = True
-    return out
-
-
 def courtyard_overlap_pair_term(
     ir: PcbIR,
     ia: int,
@@ -1189,7 +1172,6 @@ def courtyard_overlap_pair_term(
     *,
     poly_a: list[tuple[float, float]] | None = None,
     poly_b: list[tuple[float, float]] | None = None,
-    through_hole: np.ndarray | None = None,
 ) -> TermValue:
     """One instance PAIR's ``courtyard_overlap`` :class:`TermValue` — the
     optimizer-visible, GRADED counterpart to the hard overlap rule, and
@@ -1238,18 +1220,7 @@ def courtyard_overlap_pair_term(
     refdes_a = str(ir.instance_refdes[ia])
     refdes_b = str(ir.instance_refdes[ib])
     region = f"{refdes_a}~{refdes_b}"
-    if through_hole is None and bool(ir.inst_bottom[ia]) != bool(ir.inst_bottom[ib]):
-        through_hole = instance_through_hole(ir)
-    if (
-        bool(ir.inst_bottom[ia]) != bool(ir.inst_bottom[ib])
-        and through_hole is not None
-        and not through_hole[ia]
-        and not through_hole[ib]
-    ):
-        # gr489913: a drilled pad pierces the board, so a through-hole part
-        # is priced against the opposite side too — the same exemption
-        # ``OptimizeEngine._sides_clear`` makes for legality (one rule, not
-        # a cost that leaves a THT overlap flat while legality forbids it).
+    if bool(ir.inst_bottom[ia]) != bool(ir.inst_bottom[ib]):
         # Opposite sides of the board: the substrate is between them, so
         # intersecting courtyards are not a collision. The SAME rule
         # ``drc.check_courtyard_overlap`` applies through its
@@ -1340,17 +1311,9 @@ def _courtyard_overlap(ir: PcbIR, level: Level, config: CostConfig) -> list[Term
             x, y = float(ir.inst_x[i]), float(ir.inst_y[i])
             if not (math.isnan(x) or math.isnan(y)):
                 polys[i] = _world_courtyard_polygon(ir, i, x, y)
-    through_hole = instance_through_hole(ir)
     return [
         courtyard_overlap_pair_term(
-            ir,
-            ia,
-            ib,
-            level,
-            config,
-            poly_a=polys.get(ia),
-            poly_b=polys.get(ib),
-            through_hole=through_hole,
+            ir, ia, ib, level, config, poly_a=polys.get(ia), poly_b=polys.get(ib)
         )
         for ia in range(n)
         for ib in range(ia + 1, n)
