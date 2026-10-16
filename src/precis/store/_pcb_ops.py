@@ -116,9 +116,16 @@ def _normalize_supplies(
     return out
 
 
-def _normalize_client_of(raw: Any, component: str, pin: str) -> dict[str, Any]:
+def _normalize_client_of(
+    raw: Any, component: str, pin: str, declared: set[str] | None = None
+) -> dict[str, Any]:
     """A pin's ``client_of``: a role name, or ``{"role", optional
-    "min_voltage_v"}``. Returns the dict form."""
+    "min_voltage_v", optional "members"}``. Returns the dict form.
+
+    ``members`` makes the pin the head of a tuple client (§1c, a
+    differential pair): distinct pin names on this component, headed by
+    ``pin`` itself, each in ``declared`` when that is given. The tuple
+    matches only a same-size supply block, carried as a unit."""
     if isinstance(raw, str):
         raw = {"role": raw}
     if not isinstance(raw, dict):
@@ -140,7 +147,61 @@ def _normalize_client_of(raw: Any, component: str, pin: str) -> dict[str, Any]:
                 "must be a number"
             )
         out["min_voltage_v"] = float(mv)
+    members = raw.get("members")
+    if members is not None:
+        if (
+            not isinstance(members, list)
+            or not members
+            or not all(isinstance(m, str) and m.strip() for m in members)
+        ):
+            raise ValueError(
+                f"component {component}: pin {pin!r} client_of members must be "
+                "a non-empty list of pin names"
+            )
+        names = [m.strip() for m in members]
+        if names[0] != pin or len(set(names)) != len(names):
+            raise ValueError(
+                f"component {component}: pin {pin!r} client_of members must be "
+                f"distinct and headed by {pin!r} itself, got {names!r}"
+            )
+        if declared is not None:
+            missing = [m for m in names if m not in declared]
+            if missing:
+                raise ValueError(
+                    f"component {component}: pin {pin!r} client_of members "
+                    f"name undeclared pin(s) {missing!r}; declare them in 'pins'"
+                )
+        if len(names) > 1:
+            out["members"] = names
     return out
+
+
+def _validate_tuple_clients(pins: list[dict[str, Any]], component: str) -> None:
+    """A tuple client's tail members are carried by its head: refuse a
+    tail that declares its own ``client_of``, or one claimed by two heads."""
+    tails: dict[str, str] = {}
+    for p in pins:
+        co = p.get("client_of")
+        if not isinstance(co, dict) or not isinstance(co.get("members"), list):
+            continue
+        head = str(p.get("name") or "").strip()
+        if not co["members"] or str(co["members"][0]).strip() != head:
+            continue  # `_normalize_client_of` refuses an unheaded list
+        for raw in co["members"][1:]:
+            m = str(raw).strip()
+            if m in tails:
+                raise ValueError(
+                    f"component {component}: pin {m!r} is a client_of member "
+                    f"of both {tails[m]!r} and {head!r}"
+                )
+            tails[m] = head
+    for p in pins:
+        name = str(p.get("name") or "").strip()
+        if name in tails and p.get("client_of") is not None:
+            raise ValueError(
+                f"component {component}: pin {name!r} is a client_of member of "
+                f"{tails[name]!r}; declare client_of on the head pin only"
+            )
 
 
 def _normalize_roles(roles: Any) -> list[tuple[str, float | None, int | None]]:
@@ -1795,6 +1856,8 @@ class PcbMixin:
             ).fetchall()
         ]
         _validate_pin_declarations(existing + pins, component)
+        declared = {str(p.get("name") or "").strip() for p in existing + pins}
+        _validate_tuple_clients(pins, component)
         n = 0
         for p in pins:
             name = str(p.get("name") or "").strip()
@@ -1845,7 +1908,7 @@ class PcbMixin:
             # Slice 6: the pin is a client of a supply role.
             if p.get("client_of") is not None:
                 meta["client_of"] = _normalize_client_of(
-                    p["client_of"], component, name
+                    p["client_of"], component, name, declared
                 )
             try:
                 # A DB pad conflict remains authoritative. Unwind its

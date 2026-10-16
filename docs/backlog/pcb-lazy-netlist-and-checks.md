@@ -528,10 +528,11 @@ connectivity errors fall only on the 20 failed nets.
   needs Slice 7's snapshot; today only wired supply pins permute.
 - Blocks of size > 1: `solve` matches a tuple client (`Client.members`,
   head = `pin`) against a same-size block atomically;
-  `within_block_swappable` permutes the pairing. Left: the stored-graph
-  plumbing still emits single-pin clients — `client_of` has no tuple
-  member syntax and `_matching_model` doesn't build them (the route job
-  was under freeze when the solver half landed 2026-10-15).
+  `within_block_swappable` permutes the pairing. The stored graph carries
+  them (2026-10-16): `client_of: {role, members: [head, ...]}` on the head
+  pin, tail pins declared on the same part and carrying no `client_of` of
+  their own; `_matching_model` builds `Client.members`. Left: the route
+  job's rebind only moves single-pin wired pairs.
 
 ### Slice 7 — lazy netlist: resolved snapshot, prior, firmware export
 

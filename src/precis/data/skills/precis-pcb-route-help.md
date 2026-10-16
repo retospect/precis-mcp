@@ -97,7 +97,8 @@ executor lane (see `precis-job-help`).
 Pin assignment is a matching, not an anneal move. A part declares
 `supplies` (`{"role", "blocks": [[pin], ...], optional "voltage_v"}`) and a
 terminal declares `client_of` (a role name, or `{"role", "min_voltage_v"}`);
-top-level `roles` carry `voltage_v` and `fanout`. Before the optimizer or any
+a pair that must travel together (D+/D-) puts `"members": ["DP", "DM"]` in
+the head pin's `client_of` and matches only a same-size block. Top-level `roles` carry `voltage_v` and `fanout`. Before the optimizer or any
 routing, `op='route'` solves every role as a min-cost Euclidean assignment
 (cross-instance, warm-started from the current wiring) and persists changes
 as derived `pcb_pin_swaps`. More clients than supply blocks fails the job

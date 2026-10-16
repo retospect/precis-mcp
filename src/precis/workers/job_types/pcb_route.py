@@ -397,6 +397,22 @@ def _apply_pin_swap_warm_start(
     return reports
 
 
+def _client_of_member(m: dict[str, Any]) -> pcb_matching.Client | None:
+    """The matcher client a graph member's ``client_of`` declares, or
+    ``None``; a ``members`` list makes it a tuple client headed by the pin."""
+    co = (m.get("meta") or {}).get("client_of")
+    if not co:
+        return None
+    members = co.get("members")
+    return pcb_matching.Client(
+        instance=str(m["refdes"]),
+        pin=str(m["pin"]),
+        role=str(co["role"]),
+        min_voltage_v=co.get("min_voltage_v"),
+        members=tuple(str(x) for x in members) if members else None,
+    )
+
+
 def _matching_model(
     graph: dict[str, Any], warnings: list[str]
 ) -> tuple[
@@ -405,7 +421,7 @@ def _matching_model(
     dict[str, pcb_matching.Role],
 ]:
     """The matcher's inputs from the stored graph: declared ``supplies``,
-    ``client_of`` members and ``roles``, plus the deprecated
+    ``client_of`` members (a ``members`` list = a tuple client) and ``roles``, plus the deprecated
     ``pin_swap_groups`` alias — each declared pin becomes a one-pin block
     of a per-group role (``pin_swap:<refdes>:<k>``) whose clients are the
     far ends of the 2-member nets on those pins. A pin whose net has any
@@ -424,28 +440,12 @@ def _matching_model(
     for net in graph.get("nets") or []:
         for m in net.get("members") or []:
             net_of[(str(m["refdes"]), str(m["pin"]))] = net
-            co = (m.get("meta") or {}).get("client_of")
-            if co:
-                clients.append(
-                    pcb_matching.Client(
-                        instance=str(m["refdes"]),
-                        pin=str(m["pin"]),
-                        role=str(co["role"]),
-                        min_voltage_v=co.get("min_voltage_v"),
-                    )
-                )
+            if client := _client_of_member(m):
+                clients.append(client)
     # A client with no net yet (graph["unconnected"]) still demands a supplier.
     for m in graph.get("unconnected") or []:
-        co = (m.get("meta") or {}).get("client_of")
-        if co:
-            clients.append(
-                pcb_matching.Client(
-                    instance=str(m["refdes"]),
-                    pin=str(m["pin"]),
-                    role=str(co["role"]),
-                    min_voltage_v=co.get("min_voltage_v"),
-                )
-            )
+        if client := _client_of_member(m):
+            clients.append(client)
     client_keys = {(c.instance, c.pin) for c in clients}
     for inst in graph.get("instances") or []:
         refdes = str(inst["refdes"])

@@ -4005,6 +4005,109 @@ def test_put_echoes_supply_roles_and_netlist_summary(pcb):
     ) in body
 
 
+def test_tuple_client_of_reaches_the_matching_model(pcb, store):
+    """§1c: ``client_of.members`` on the head pin makes a tuple client;
+    ``_matching_model`` builds ``Client.members`` and the solve binds the
+    pair to a same-size block member-for-member."""
+    from precis.pcb import matching
+    from precis.workers.job_types import pcb_route
+
+    pcb.put(
+        id="tuple-rt",
+        args={
+            "roles": [{"name": "usb", "fanout": 1}],
+            "components": [
+                {
+                    "refdes": "U1",
+                    "label": "bridge",
+                    "footprint": "X",
+                    "pins": [{"name": "D+"}, {"name": "D-"}],
+                    "supplies": {"role": "usb", "blocks": [["D+", "D-"]]},
+                },
+                {
+                    "refdes": "J1",
+                    "label": "conn",
+                    "footprint": "Y",
+                    "pins": [
+                        {
+                            "name": "DP",
+                            "client_of": {"role": "usb", "members": ["DP", "DM"]},
+                        },
+                        {"name": "DM"},
+                        {"name": "SOLO", "client_of": "usb"},
+                    ],
+                },
+            ],
+            "nets": [{"name": "USB_P"}, {"name": "USB_N"}],
+            "connections": [
+                {"net": "USB_P", "refdes": "J1", "pin": "DP"},
+                {"net": "USB_N", "refdes": "J1", "pin": "DM"},
+            ],
+        },
+    )
+    ref = store.get_ref(kind="pcb", id="tuple-rt")
+    assert ref is not None
+    g = store.pcb_graph(ref.id)
+    metas = {
+        (m["refdes"], m["pin"]): m["meta"] for n in g["nets"] for m in n["members"]
+    }
+    assert metas[("J1", "DP")]["client_of"] == {"role": "usb", "members": ["DP", "DM"]}
+    assert "client_of" not in metas[("J1", "DM")]
+    clients, supplies, roles = pcb_route._matching_model(g, [])
+    by_head = {(c.instance, c.pin): c for c in clients}
+    assert set(by_head) == {("J1", "DP"), ("J1", "SOLO")}
+    assert by_head[("J1", "DP")].members == ("DP", "DM")
+    assert by_head[("J1", "SOLO")].members is None
+    res = matching.solve(clients, supplies, roles, lambda _r, _p: (0.0, 0.0))
+    assert res.assignment[("J1", "DP")] == ("U1", "D+")
+    assert res.assignment[("J1", "DM")] == ("U1", "D-")
+    # the lone single-pin client has no 1-pin block to take
+    assert res.unsupplied == (("J1", "SOLO"),)
+
+
+@pytest.mark.parametrize(
+    ("pins", "match"),
+    [
+        (
+            [
+                {"name": "A", "client_of": {"role": "r", "members": ["B", "A"]}},
+                {"name": "B"},
+            ],
+            "headed by 'A'",
+        ),
+        (
+            [{"name": "A", "client_of": {"role": "r", "members": ["A", "Z"]}}],
+            "undeclared pin",
+        ),
+        (
+            [
+                {"name": "A", "client_of": {"role": "r", "members": ["A", "B"]}},
+                {"name": "B", "client_of": "r"},
+            ],
+            "head pin only",
+        ),
+        (
+            [
+                {"name": "A", "client_of": {"role": "r", "members": ["A", "C"]}},
+                {"name": "B", "client_of": {"role": "r", "members": ["B", "C"]}},
+                {"name": "C"},
+            ],
+            "member of both",
+        ),
+    ],
+)
+def test_tuple_client_of_refuses_bad_members(pcb, pins, match):
+    with pytest.raises(BadInput, match=match):
+        pcb.put(
+            id="tuple-bad",
+            args={
+                "components": [
+                    {"refdes": "J1", "label": "c", "footprint": "Y", "pins": pins}
+                ]
+            },
+        )
+
+
 def test_channel_map_view(pcb):
     def comp(refdes, pins, **kw):
         return {"refdes": refdes, "label": "x", "footprint": "X", "pins": pins, **kw}
