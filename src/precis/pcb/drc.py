@@ -1749,7 +1749,7 @@ def check_via_pad_keepout(
     NEVER reaches a router-PLACED via: that argument above is about a via
     genuinely landing ON a pad's solder land, which stays an error
     regardless of net for anything the ROUTER puts there (see
-    :func:`check_via_via_keepout`'s own net-blind stance, unaffected by
+    :func:`check_via_via_keepout`'s net-blind hole-overlap check, unaffected by
     this, and ``tests/test_pcb_drc.py::
     test_check_via_pad_keepout_fires_on_a_real_realized_via``, which stays
     red on a router-placed via-in-pad). What actually reached this rule
@@ -1948,11 +1948,28 @@ def check_via_pad_keepout(
 # ── via-to-via keep-out (two drilled holes, not a clearance pair) ───────
 
 
+def same_net(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """True iff two copper items both carry a non-empty ``net`` and it is
+    the same net. Unnetted copper never counts as same-net: two items with
+    no net are not known to be one conductor."""
+    a_net, b_net = a.get("net"), b.get("net")
+    return bool(a_net) and a_net == b_net
+
+
+#: JLCPCB "Via Hole-to-Hole Spacing" (gr489914, Reto ruling (a)
+#: 2026-10-16): the minimum drilled-wall to drilled-wall gap between two
+#: via holes. Source: https://jlcpcb.com/capabilities/pcb-capabilities ,
+#: Drilling section, read 2026-10-16 10:00Z as "Via Hole-to-Hole Spacing
+#: 0.2mm" (the same page lists "Pad Hole-to-Hole Spacing 0.45mm" for
+#: plated pad holes). A drill figure, so it is not per copper process.
+JLC_VIA_HOLE_TO_HOLE_MM = 0.2
+
+
 def check_via_via_keepout(
     model: dict[str, Any], capability: CapabilityRow
 ) -> list[DrcFinding]:
     """Two vias must not overlap — COPPER (the plated barrel) and the
-    DRILLED HOLE alike, net-blind, same tier of defect as
+    DRILLED HOLE alike, same tier of defect as
     :func:`check_via_pad_keepout` (that function's own docstring already
     makes the argument this one inherits: :func:`check_clearance`
     deliberately exempts same-net copper because a trace legally lands on
@@ -1966,16 +1983,14 @@ def check_via_via_keepout(
     - **copper-to-copper** (barrel annulus vs. barrel annulus): the SAME
       ``trace_spacing_mm`` jlc_min :func:`check_via_pad_keepout` already
       reads for a via's annulus against independent copper — two via
-      barrels are exactly that, independent copper features, net or no
-      net.
-    - **hole-to-hole** (drilled circle vs. drilled circle): this
-      capability table publishes no hole-to-hole spacing figure, and none
-      is invented here (``capabilities.py``'s own "never carry a figure
-      across" discipline, and this codebase's live-JLC-page verification
-      standard for every OTHER figure in that table — a number this
-      module cannot check against a live page has no business claiming
-      that provenance). The threshold used instead is the physical
-      definition of two DISTINCT holes: their drilled circles must not
+      barrels of different nets are exactly that, independent copper
+      features (same-net pairs: see below).
+    - **hole-overlap** (drilled circle vs. drilled circle, every pair):
+      the capability table carries no hole-to-hole figure, so this net-
+      blind check uses the physical definition of two DISTINCT holes
+      (same-net pairs are additionally held to
+      :data:`JLC_VIA_HOLE_TO_HOLE_MM`, cited from JLC's live page; see
+      below). The threshold: their drilled circles must not
       intersect (required = 0, i.e. centre distance >= the sum of the two
       drill radii). Two holes that overlap at all are, physically,
       already one larger hole or an unintended slot — true regardless of
@@ -2009,6 +2024,17 @@ def check_via_via_keepout(
     grows an intentional same-spot via-stack construct, it needs its own
     marker in the model for this rule to key off, not a same-net/
     same-coordinate heuristic.
+
+    **Same-net pairs are graded on hole spacing, not barrel spacing**
+    (gr489914, Reto ruling 2026-10-16). Two barrels of ONE net touching
+    is no short; what the fab needs is wall between the two drills, so a
+    :func:`same_net` pair is held to :data:`JLC_VIA_HOLE_TO_HOLE_MM`
+    (JLC's published via hole-to-hole minimum) instead of the copper
+    ``trace_spacing_mm`` floor. EasyEDA-style stitching with 0.03-0.08mm
+    of barrel gap and 0.33-0.38mm of hole wall passes. Different-net (and
+    unnetted) pairs keep the copper-to-copper rule. The hole-overlap check
+    below stays net-blind for both, so a doubled same-net via still
+    reports the overlap.
 
     Severity is always ``error`` — like :func:`check_via_pad_keepout`, a
     categorical manufacturing defect, not a margin the ``house_default``
@@ -2050,8 +2076,27 @@ def check_via_via_keepout(
                 },
             )
 
-            copper_gap = center - (a_dia / 2.0 + b_dia / 2.0)
-            if copper_gap < copper_required - _EPS:
+            hole_gap = center - (a_drill / 2.0 + b_drill / 2.0)
+            if same_net(via_a, via_b):
+                if hole_gap < JLC_VIA_HOLE_TO_HOLE_MM - _EPS:
+                    findings.append(
+                        DrcFinding(
+                            rule="via_via_keepout",
+                            severity="error",
+                            where=where,
+                            detail=(
+                                f"same-net via holes leave {hole_gap:.3f}mm of "
+                                f"wall, needs {JLC_VIA_HOLE_TO_HOLE_MM:.3f}mm "
+                                "(JLC via hole-to-hole spacing)"
+                            ),
+                            objects=objects,
+                            margin_mm=hole_gap - JLC_VIA_HOLE_TO_HOLE_MM,
+                        )
+                    )
+                copper_gap = None
+            else:
+                copper_gap = center - (a_dia / 2.0 + b_dia / 2.0)
+            if copper_gap is not None and copper_gap < copper_required - _EPS:
                 findings.append(
                     DrcFinding(
                         rule="via_via_keepout",
@@ -2061,14 +2106,13 @@ def check_via_via_keepout(
                             f"via barrels clear each other by {copper_gap:.3f}mm, "
                             f"needs {copper_required:.3f}mm (JLC min {field}, "
                             f"{capability.process}) — independent via copper "
-                            "regardless of net"
+                            "on different nets"
                         ),
                         objects=objects,
                         margin_mm=copper_gap - copper_required,
                     )
                 )
 
-            hole_gap = center - (a_drill / 2.0 + b_drill / 2.0)
             if hole_gap < -_EPS:
                 findings.append(
                     DrcFinding(

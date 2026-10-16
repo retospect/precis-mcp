@@ -1271,14 +1271,12 @@ def _model_with_two_vias(
     return {"layers": ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"], "copper": [via_a, via_b]}
 
 
-def test_check_via_via_keepout_fires_on_copper_overlap_same_net():
-    """Same net is completely invisible to check_clearance -- the exact
-    gap this rule exists to close, mirroring check_via_pad_keepout's own
-    'they have a courtyard too' case."""
+def test_check_via_via_keepout_fires_on_copper_overlap_different_net():
+    """Different-net barrels are graded copper-to-copper on the
+    ``trace_spacing_mm`` floor (gr489914 kept this rule for them)."""
     # centres 0.55mm apart, dia 0.6mm -> copper gap -0.05mm (below the
     # 4-layer jlc_min of 0.09mm); drill 0.2mm -> hole gap 0.35mm (clear).
-    model = _model_with_two_vias(0.55)
-    assert drc.check_clearance(model, _CAP4) == []
+    model = _model_with_two_vias(0.55, net_b="SIG_B")
     findings = drc.check_via_via_keepout(model, _CAP4)
     assert len(findings) == 1
     f = findings[0]
@@ -1290,13 +1288,68 @@ def test_check_via_via_keepout_fires_on_copper_overlap_same_net():
     assert "barrel" in f.detail.lower()
 
 
+# JLCPCB "Via Hole-to-Hole Spacing 0.2mm", read 2026-10-16 10:00Z from
+# https://jlcpcb.com/capabilities/pcb-capabilities (Drilling section).
+_JLC_VIA_HOLE_TO_HOLE_MM = 0.2
+
+
+def test_jlc_via_hole_to_hole_constant_matches_the_cited_figure():
+    assert drc.JLC_VIA_HOLE_TO_HOLE_MM == _JLC_VIA_HOLE_TO_HOLE_MM
+
+
+def test_check_via_via_keepout_same_net_at_jlc_hole_minimum_passes():
+    """gr489914: a same-net pair is graded on hole wall, not barrel gap.
+    Barrels overlap (copper gap -0.2mm) but the drills leave exactly
+    JLC's 0.2mm of wall -- the stitched pair the fab builds."""
+    drill = 0.2
+    center = drill + _JLC_VIA_HOLE_TO_HOLE_MM  # hole gap == 0.2mm
+    model = _model_with_two_vias(center, dia_mm=0.6, drill_mm=drill)
+    assert drc.check_clearance(model, _CAP4) == []
+    assert drc.check_via_via_keepout(model, _CAP4) == []
+
+
+def test_check_via_via_keepout_same_net_below_jlc_hole_minimum_fires():
+    drill = 0.2
+    center = drill + _JLC_VIA_HOLE_TO_HOLE_MM - 0.01  # hole gap 0.19mm
+    model = _model_with_two_vias(center, dia_mm=0.6, drill_mm=drill)
+    findings = drc.check_via_via_keepout(model, _CAP4)
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.rule == "via_via_keepout" and f.severity == "error"
+    assert f.margin_mm == pytest.approx(-0.01, abs=1e-9)
+    assert "hole-to-hole" in f.detail
+
+
+def test_check_via_via_keepout_same_net_stacked_via_still_reports_overlap():
+    """The doubled taz15 via (gr489914): same net, same centre. Fails
+    the hole spacing AND the net-blind hole-overlap check."""
+    model = _model_with_two_vias(0.0, dia_mm=0.6, drill_mm=0.3)
+    findings = drc.check_via_via_keepout(model, _CAP4)
+    assert len(findings) == 2
+    assert any("overlap" in f.detail for f in findings)
+
+
+def test_check_via_via_keepout_unnetted_pair_keeps_copper_rule():
+    model = _model_with_two_vias(0.55, net_a="", net_b="")
+    findings = drc.check_via_via_keepout(model, _CAP4)
+    assert len(findings) == 1 and "barrel" in findings[0].detail.lower()
+
+
+def test_same_net_requires_a_non_empty_shared_net():
+    assert drc.same_net({"net": "GND"}, {"net": "GND"})
+    assert not drc.same_net({"net": "GND"}, {"net": "VCC"})
+    assert not drc.same_net({"net": ""}, {"net": ""})
+    assert not drc.same_net({}, {"net": None})
+
+
 def test_check_via_via_keepout_fires_on_both_copper_and_hole_overlap():
     """Two SEPARATE findings when both geometries collide -- copper and
     drill are different questions with different thresholds (module
     docstring)."""
     # centres 0.15mm apart: copper gap -0.45mm, hole gap -0.05mm -- both
-    # margins violated.
-    model = _model_with_two_vias(0.15)
+    # margins violated. Different nets: same-net pairs skip the copper
+    # margin (gr489914).
+    model = _model_with_two_vias(0.15, net_b="SIG_B")
     findings = drc.check_via_via_keepout(model, _CAP4)
     assert len(findings) == 2
     assert {f.severity for f in findings} == {"error"}
@@ -1313,7 +1366,7 @@ def test_check_via_via_keepout_a_hole_violation_always_implies_a_copper_one():
     negative the copper margin is too. Asserted here as the property it
     is, not assumed."""
     for gap in (0.01, 0.1, 0.19, 0.24):
-        model = _model_with_two_vias(gap, dia_mm=0.6, drill_mm=0.25)
+        model = _model_with_two_vias(gap, dia_mm=0.6, drill_mm=0.25, net_b="SIG_B")
         findings = drc.check_via_via_keepout(model, _CAP4)
         by_kind = {
             ("hole" if "hole" in f.detail.lower() else "copper") for f in findings
@@ -1325,7 +1378,7 @@ def test_check_via_via_keepout_a_hole_violation_always_implies_a_copper_one():
 def test_check_via_via_keepout_fires_regardless_of_net():
     model = _model_with_two_vias(0.15, net_a="SIG_A", net_b="SIG_B")
     findings = drc.check_via_via_keepout(model, _CAP4)
-    assert len(findings) == 2  # same numbers as the same-net case above
+    assert len(findings) == 2  # copper AND hole, as in the case above
 
 
 def test_check_via_via_keepout_quiet_when_clear():
@@ -1417,7 +1470,7 @@ def test_check_via_via_keepout_fires_on_a_real_realized_via():
     )
     assert drc.check_clearance(model, _CAP4) == []  # same net -- invisible to clearance
     findings = drc.check_via_via_keepout(model, _CAP4)
-    assert len(findings) == 2  # copper AND hole, both collide at 0.2mm apart
+    assert len(findings) == 2  # hole spacing AND hole overlap (same net, gr489914)
     assert {f.severity for f in findings} == {"error"}
 
 
