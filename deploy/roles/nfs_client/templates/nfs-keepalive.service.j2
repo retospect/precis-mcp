@@ -1,0 +1,7 @@
+# {{ ansible_managed }}
+[Unit]
+Description=NFS keepalive — statfs {{ shared_mount }} so the transport never idle-drops (gr489397)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/timeout 20 /usr/bin/stat -f {{ shared_mount }}

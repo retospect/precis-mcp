@@ -82,6 +82,62 @@
     msg: "NFS canary file not found at {{ shared_mount }}/.nfs-canary — NFS mount may have failed"
   when: not nfs_canary.stat.exists
 
+# ── nfs-keepalive (Linux): hold the transport open against the server ──
+# The NFS server's macOS 26.4 nfsd never FINs a client-closed transport; a
+# Linux client that idle-drops (sunrpc ~5 min) ends up in FIN-WAIT-2 and the
+# hard mount hangs every access in D-state (gr489397). A 60 s statfs keeps
+# the transport busy under the idle timeout, so it never closes and the
+# missing FIN never matters.
+#
+# The interim fix was a TRANSIENT systemd-run unit of the same name — every
+# reboot cleared it, and a client re-wedged in exactly that gap (gr489397).
+# Unit names collide, so stop (tolerating "not loaded") and reset-failed
+# BEFORE the file-backed units land, else the loaded transient copy shadows
+# them.
+- name: Stop any transient nfs-keepalive units (Linux)
+  ansible.builtin.command: systemctl stop nfs-keepalive.timer nfs-keepalive.service
+  become: true
+  when: os_family == "linux"
+  register: nfs_keepalive_stop
+  changed_when: false
+  failed_when:
+    - nfs_keepalive_stop.rc != 0
+    - '"not loaded" not in nfs_keepalive_stop.stderr'
+
+- name: Clear failed nfs-keepalive units (Linux)
+  ansible.builtin.command: systemctl reset-failed nfs-keepalive.timer nfs-keepalive.service
+  become: true
+  when: os_family == "linux"
+  register: nfs_keepalive_reset
+  changed_when: false
+  failed_when:
+    - nfs_keepalive_reset.rc != 0
+    - '"not loaded" not in nfs_keepalive_reset.stderr'
+
+- name: Reload systemd after clearing transient nfs-keepalive (Linux)
+  ansible.builtin.systemd:
+    daemon_reload: true
+  become: true
+  when: os_family == "linux"
+
+- name: Install nfs-keepalive service + timer (Linux)
+  ansible.builtin.template:
+    src: "nfs-keepalive.{{ item }}.j2"
+    dest: "/etc/systemd/system/nfs-keepalive.{{ item }}"
+    mode: "0644"
+  loop: [service, timer]
+  become: true
+  when: os_family == "linux"
+
+- name: Enable + start nfs-keepalive.timer (Linux)
+  ansible.builtin.systemd:
+    name: nfs-keepalive.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  become: true
+  when: os_family == "linux"
+
 - name: Symlink legacy shared_mount path (macOS)
   ansible.builtin.include_tasks: "{{ role_path }}/../../tasks/legacy_mount_symlink.yml"
   vars:

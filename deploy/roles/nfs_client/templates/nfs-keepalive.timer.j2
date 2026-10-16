@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+[Unit]
+Description=NFS keepalive every 60 s — server nfsd leaks CLOSE_WAIT (gr489397)
+
+[Timer]
+OnBootSec=60s
+OnUnitActiveSec=60s
+
+[Install]
+WantedBy=timers.target
