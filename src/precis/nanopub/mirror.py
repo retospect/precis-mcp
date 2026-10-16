@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import re
 import time
 from collections.abc import Callable
@@ -41,6 +42,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote
 
 from precis.alert_ids import RULES_BY_ID
+from precis.pcb._http import Policy, backoff_delay
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -65,7 +67,12 @@ AIDA_PREFIX = "http://purl.org/aida/"
 NPX = "http://purl.org/nanopub/x/"
 
 #: Politeness delay between artifact fetches (public infrastructure).
-FETCH_DELAY_S = 0.05
+#: 1 req/s — the registry is volunteer-run; a backlog drains over several
+#: passes rather than hammering it (gr493222).
+FETCH_DELAY_S = 1.0
+
+#: Jittered backoff between mirror hosts when one fails over to the next.
+FAILOVER_POLICY = Policy(base=2.0, cap=30.0)
 
 #: A fetch function: url -> body bytes. Injectable for tests; the
 #: default routes through safe_fetch.
@@ -110,11 +117,19 @@ def _default_fetch(url: str) -> bytes:
     return resp.content
 
 
-def list_registry_codes(*, fetch: Fetch | None = None) -> tuple[list[str], str]:
+def list_registry_codes(
+    *,
+    fetch: Fetch | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    rng: random.Random | None = None,
+) -> tuple[list[str], str]:
     """The registry's full artifact-code list (one flat array — no
-    paging). Returns ``(codes, host_used)``; tries each mirror in turn."""
+    paging). Returns ``(codes, host_used)``; tries each mirror in turn,
+    with jittered exponential backoff before each failover."""
     last_error: Exception | None = None
-    for host in MIRROR_HOSTS:
+    for i, host in enumerate(MIRROR_HOSTS):
+        if i:
+            sleep(backoff_delay(i - 1, FAILOVER_POLICY, rng))
         try:
             body = (fetch or _default_fetch)(f"{host}/nanopubs.json")
             codes = json.loads(body)
@@ -274,6 +289,7 @@ def sync(
     limit: int = 1000,
     fetch: Fetch | None = None,
     delay_s: float = FETCH_DELAY_S,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> SyncResult:
     """One bounded sync pass: list → PK diff → fetch/verify/index the
     first ``limit`` missing codes. One bad artifact never kills the pass."""
@@ -292,7 +308,7 @@ def sync(
             log.exception("mirror: fetch/index of %s failed", code)
             failed += 1
         if delay_s:
-            time.sleep(delay_s)
+            sleep(delay_s)
     return SyncResult(
         listed=len(codes),
         already=len(have),

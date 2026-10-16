@@ -1746,7 +1746,7 @@ class TestTryCore:
         assert out is not None
         assert out.event == "no_oa_version"
 
-    def test_fetch_ok_sends_browser_ua(
+    def test_fetch_ok_sends_honest_ua(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         seen: dict[str, Any] = {}
@@ -1765,8 +1765,9 @@ class TestTryCore:
         assert out is not None
         assert out.event == "fetch_ok"
         assert out.payload["host_type"] == "core"
-        # CORE downloads carry a browser UA to clear repo Cloudflare gates.
-        assert "Mozilla" in seen["headers"]["User-Agent"]
+        # gr493222: CORE downloads identify us honestly; no spoofed browser UA.
+        ua = seen["headers"]["User-Agent"]
+        assert ua.startswith("precis-mcp/") and "Mozilla" not in ua
 
     def test_api_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         def _boom(doi: str, *, api_key: str) -> list[str]:

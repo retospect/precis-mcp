@@ -34,7 +34,8 @@ log = logging.getLogger(__name__)
 
 #: Per-pass fetch cap — the steady-state delta is tiny; this only
 #: matters if the cadence is enabled before the initial pull finished.
-PASS_LIMIT = int(os.environ.get("PRECIS_MIRROR_PASS_LIMIT", "1000"))
+#: 200 x the 1 s politeness delay keeps a backlog pass near four minutes.
+PASS_LIMIT = int(os.environ.get("PRECIS_MIRROR_PASS_LIMIT", "200"))
 
 
 def run_mirror_pass(store: Store) -> BatchResult:

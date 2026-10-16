@@ -498,7 +498,8 @@ def default_fetch(email: str = "") -> FetchFn:
 
     timeout = httpx.Timeout(_API_TIMEOUT_S, connect=_API_CONNECT_TIMEOUT_S)
     throttle = _HostThrottle(1.0)
-    ua = f"precis-mcp/8.0 (mailto:{email or 'noreply@example.com'})"
+    # No real contact -> no mailto at all; never a made-up address.
+    ua = f"precis-mcp/8.0 (mailto:{email})" if email else "precis-mcp/8.0"
 
     def _fetch(url: str) -> HttpResult:
         throttle.wait(urlparse(url).netloc)

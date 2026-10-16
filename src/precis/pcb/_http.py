@@ -162,6 +162,14 @@ def _delay(attempt: int, policy: Policy, rng: random.Random) -> float:
     return rng.uniform(0.0, ceiling)
 
 
+def backoff_delay(
+    attempt: int, policy: Policy = DEFAULT_POLICY, rng: random.Random | None = None
+) -> float:
+    """Public face of the full-jitter delay, for callers that fail over
+    between hosts and so cannot wrap one response in :func:`with_backoff`."""
+    return _delay(attempt, policy, rng or random.Random())
+
+
 def _body_prefix(resp: httpx.Response) -> str | None:
     """Bounded prefix of a failing response body — the shape of the
     complaint (validation error, HTML error page, ...) without the

@@ -148,14 +148,6 @@ _OPENALEX_CONTENT_CREDIT_COST = 100
 # content fetches' worth of daily credits remain. 20 × 100 credits = 2000.
 _OPENALEX_MIN_FETCHES_DEFAULT = 20
 
-# Browser-ish UA for hosts that Cloudflare-gate non-browser agents
-# (CORE's API + many institutional repositories answer the default
-# httpx / precis UA with an "error 1010" interstitial).
-_BROWSER_UA = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-)
-
 # The retry-window predicate matches any ``fetcher:%`` source rather
 # than one canonical provider: the window must arm after whichever
 # provider actually ran. Keying it on a single provider that may be
@@ -1807,7 +1799,7 @@ def _try_core(
     Returns ``None`` (silent fall-through) without a key or DOI.
     Searches CORE for the DOI and downloads the first repository
     ``downloadUrl`` that passes the ``%PDF-`` guard — repositories
-    bot-block unevenly, so a browser UA is sent and candidates are
+    bot-block unevenly, so candidates (sent with the honest precis UA) are
     tried in turn.
     """
     if not api_key or not stub.doi or not _DOI_RE.match(stub.doi):
@@ -1833,7 +1825,7 @@ def _try_core(
         inbox_dir=inbox_dir,
         host_type="core",
         t0=t0,
-        extra_headers={"User-Agent": _BROWSER_UA},
+        extra_headers={"User-Agent": _user_agent_header()},
     )
 
 
@@ -1852,7 +1844,7 @@ def _download_first(
     (publisher patterns aside, which inline this). Returns ``fetch_ok``
     on the first good PDF, else ``fetch_failed`` with the per-URL
     errors so the cascade falls through. ``extra_headers`` (e.g. a
-    browser UA for repository hosts) is forwarded to every candidate.
+    custom UA for repository hosts) is forwarded to every candidate.
     """
     filename = _stub_filename(stub) + ".pdf"
     target = inbox_dir / filename
@@ -2958,7 +2950,7 @@ def _query_core_fulltext_urls(doi: str, *, api_key: str) -> list[str]:
 
     Only results whose own ``doi`` equals the query DOI are kept (CORE
     fuzzy-matches, so a bare topical hit must not be mistaken for the
-    paper). A browser UA dodges CORE's Cloudflare UA gate.
+    paper).
 
     Looks at the repository ``downloadUrl`` (a PDF bitstream) first, then the
     ``fullText`` link — but a ``fullText`` URL that clearly renders as
@@ -2969,7 +2961,7 @@ def _query_core_fulltext_urls(doi: str, *, api_key: str) -> list[str]:
     name reflects the output: full-text links, not guaranteed-PDF ones.
     """
     params: dict[str, str | int] = {"q": f'doi:"{doi}"', "limit": 5}
-    headers = {"Authorization": f"Bearer {api_key}", "User-Agent": _BROWSER_UA}
+    headers = {"Authorization": f"Bearer {api_key}", "User-Agent": _user_agent_header()}
     with http_client(timeout=_API_TIMEOUT_S, headers=headers) as client:
         resp = client.get(_CORE_SEARCH_BASE, params=params)
         resp.raise_for_status()
@@ -3152,15 +3144,14 @@ def _download_pdf(
 # Polite UA — publishers (PeerJ, arXiv) sometimes 403 the default
 # httpx UA. Identify ourselves and include the contact env when
 # present so an annoyed sysadmin can ping us rather than blocking.
-_USER_AGENT = (
-    "precis-mcp/8.0 (+https://github.com/retostamm/precis-mcp; mailto:{email})"
-)
+_USER_AGENT = "precis-mcp/8.0 (+https://github.com/retostamm/precis-mcp{contact})"
 
 
 def _user_agent_header(email: str | None = None) -> str:
-    return _USER_AGENT.format(
-        email=email or settings.get_str("contact.polite_email") or "noreply@example.com"
-    )
+    """Honest UA. With no configured contact the mailto is omitted — a
+    made-up address would be worse than none."""
+    contact = email or settings.get_str("contact.polite_email")
+    return _USER_AGENT.format(contact=f"; mailto:{contact}" if contact else "")
 
 
 def _download_headers() -> dict[str, str]:
