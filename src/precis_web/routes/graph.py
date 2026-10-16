@@ -54,14 +54,17 @@ relations bucketed under the fisheye ring headings
 follows — the heading order a browser panel renders in. The rest of the
 liaison contract (td470556) is JSON-only, see :func:`_json_contract`:
 edges carry ``link_id`` and stored chunk endpoints, depth-2 edges read
-``dir: "cross"``, retired endpoints come back as tombstones
-(``retired: true``), ``meta.native_targets`` names the follow-up ``get``,
-and each group is a ``{total, returned, next}`` window of
-:data:`PANEL_GROUP_ROWS` rows (``?group=<heading>&offset=N`` continues).
+``dir: "cross"``, ref-level self-loops read ``dir: "self"`` and edges
+between two hop-1 nodes ``dir: "cross"`` (``intra_edges``), retired
+endpoints come back as tombstones (``retired: true``),
+``meta.native_targets`` names the follow-up ``get``, and each group is a
+``{total, returned, next}`` window of :data:`PANEL_GROUP_ROWS` rows
+(``?group=<heading>&offset=N`` continues).
 
 Errors are JSON too (``{"error": ...}``) on ``.json`` — 404 for a missing
-ref, 400 for a bad argument — not the HTML error page the ``PrecisError``
-handler renders, since the consumer is a fetch, not a tab. The HTML routes
+ref, 410 for a retired one, 400 for a bad argument — not the HTML error
+page the ``PrecisError`` handler renders, since the consumer is a fetch,
+not a tab. The HTML routes
 render the shared error template / a small fragment instead.
 """
 
@@ -306,13 +309,16 @@ def _neighbourhood(
     cap: int,
     include_retired: bool = False,
     link_ids: bool = False,
+    intra_edges: bool = False,
     viewer: str | None = None,
 ) -> dict[str, Any]:
     """The one read all three surfaces share — same filters in, same
     nodes/edges out. ``include_retired`` (the outline view) keeps retired
-    endpoints as tombstones. ``viewer`` is the signed-in login the store's
-    profile owner filter keys on (gr490266) — passed explicitly because
-    these routes read outside any revision context."""
+    endpoints as tombstones. ``intra_edges`` (the ``.json`` contract,
+    td470556) adds self-loops and hop-1 ↔ hop-1 edges. ``viewer`` is the
+    signed-in login the store's profile owner filter keys on (gr490266) —
+    passed explicitly because these routes read outside any revision
+    context."""
     return store.neighbourhood(
         kind,
         ref_id,
@@ -325,6 +331,7 @@ def _neighbourhood(
         cap=cap,
         include_retired=include_retired,
         link_ids=link_ids,
+        intra_edges=intra_edges,
         viewer=viewer,
     )
 
@@ -613,12 +620,17 @@ async def neighbourhood_json(
             cap=cap,
             include_retired=True,
             link_ids=True,
+            intra_edges=True,
             viewer=_viewer(request),
         )
     except NotFound as exc:
         return JSONResponse({"error": str(exc)}, status_code=404)
     except BadInput as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
+    if data["focus"].get("retired"):
+        return JSONResponse(
+            {"error": f"{kind} ref {ref_id} is retired"}, status_code=410
+        )
     base = f"/graph/{kind}/{ref_id}.json"
     return JSONResponse(
         _json_contract(data, base=base, qs=qs, group=group, offset=offset)
@@ -641,6 +653,11 @@ def _json_contract(
       :data:`MAX_CAP` reach (``truncated`` then stays true).
     - Depth-2 edges join two non-focus nodes and read ``dir: "cross"``;
       ``src``/``dst`` keep the stored direction.
+    - ``intra_edges`` (td470556): ref-level self-loops read
+      ``dir: "self"`` and edges between two hop-1 nodes ``dir: "cross"``
+      from the store; they are emitted only when both endpoints survive
+      the window (the focus counts as returned) and are never windowed or
+      counted themselves.
     - ``meta.native_targets`` maps every handle in ``src``/``dst`` (and the
       focus) to its typed id and the ``get`` selector that reads it.
     """
@@ -649,7 +666,7 @@ def _json_contract(
     focus_h = _handle(focus["kind"], focus["id"])
     by_group: dict[str, list[dict[str, Any]]] = {}
     for e in data["edges"]:
-        if not e.get("hop"):
+        if not e.get("hop") and e["dir"] in ("in", "out"):
             by_group.setdefault(ring_group(e["rel"]) or OTHER_GROUP, []).append(e)
 
     groups = ring_groups(data["counts"])
@@ -679,13 +696,17 @@ def _json_contract(
     far1 = {e["dst"] if e["dir"] == "out" else e["src"] for e in kept}
     kept_ids = {id(e) for e in kept}
     edges = []
+    ring: list[dict[str, Any]] = []
     for e in data["edges"]:
         if not e.get("hop"):
-            if id(e) in kept_ids:
+            if e["dir"] in ("self", "cross"):
+                ring.append(e)
+            elif id(e) in kept_ids:
                 edges.append(e)
         elif e["src"] in far1 or e["dst"] in far1:
             edges.append({**e, "dir": "cross"})
-    named = {h for e in edges for h in (e["src"], e["dst"])}
+    named = {focus_h} | {h for e in edges for h in (e["src"], e["dst"])}
+    edges.extend(e for e in ring if e["src"] in named and e["dst"] in named)
     targets = {
         h: _native_target(n["kind"], n["id"]) for h, n in nodes.items() if h in named
     }

@@ -7,8 +7,9 @@ bucketing by ``refeye.ring_group``, query-param plumbing, JSON errors and
 the round-trip count — not the store's own semantics
 (``tests/test_link_crud.py::TestNeighbourhood``) — and the liaison
 contract's JSON-only additions (td470556): ``link_id`` + chunk endpoints,
-``dir: "cross"``, tombstones, ``meta.native_targets`` and the per-group
-``{total, returned, next}`` windows.
+``dir: "cross"``/``"self"`` on non-focus edges, tombstones,
+``meta.native_targets``, the per-group ``{total, returned, next}``
+windows and 410 on a retired focus.
 """
 
 from __future__ import annotations
@@ -92,10 +93,16 @@ def _h(kind: str, ref_id: int) -> str:
 
 
 def _store_view(store: Store, focus: int, **kw: Any) -> dict[str, Any]:
-    """What the route returns from the store below every cap: tombstones
-    and link ids on, depth-2 edges re-read as ``cross``."""
+    """What the route returns from the store below every cap: tombstones,
+    link ids and intra edges on, depth-2 edges re-read as ``cross``."""
     exp = store.neighbourhood(
-        "paper", focus, cap=DEFAULT_CAP, include_retired=True, link_ids=True, **kw
+        "paper",
+        focus,
+        cap=DEFAULT_CAP,
+        include_retired=True,
+        link_ids=True,
+        intra_edges=True,
+        **kw,
     )
     for e in exp["edges"]:
         if e.get("hop"):
@@ -314,16 +321,16 @@ def test_round_trips(
     fixture_graph: dict[str, int],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Focus row + one hop-1 statement (+ one for hop 2), nothing per node
-    or per edge; the inverse map is warmed first so its one-off read does
-    not count."""
+    """Focus row + one hop-1 statement + one intra-edges statement (+ one
+    for hop 2), nothing per node or per edge; the inverse map is warmed
+    first so its one-off read does not count."""
     focus = fixture_graph["focus"]
     store.inverse_relation("cites")
     with _query_counter(monkeypatch, store) as c1:
         assert graph_client.get(f"/graph/paper/{focus}.json").status_code == 200
     with _query_counter(monkeypatch, store) as c2:
         assert graph_client.get(f"/graph/paper/{focus}.json?depth=2").status_code == 200
-    assert (c1["n"], c2["n"]) == (2, 3), (c1["sql"], c2["sql"])
+    assert (c1["n"], c2["n"]) == (3, 4), (c1["sql"], c2["sql"])
 
 
 def test_edges_carry_link_and_chunk_ids(graph_client: TestClient, store: Store) -> None:
@@ -371,6 +378,78 @@ def test_retired_endpoint_is_a_tombstone(
     assert node["retired"] is True
     assert any(e["dst"] == _h("memory", old) for e in body["edges"])
     assert body["counts"]["supersedes"] == {"memory": 1}
+
+
+def test_retired_focus_is_410(
+    graph_client: TestClient, store: Store, fixture_graph: dict[str, int]
+) -> None:
+    focus = fixture_graph["focus"]
+    assert graph_client.get(f"/graph/paper/{focus}.json").status_code == 200
+    store.retire_ref(focus)
+    r = graph_client.get(f"/graph/paper/{focus}.json")
+    assert r.status_code == 410
+    assert "retired" in r.json()["error"]
+
+
+def test_intra_edges_and_self_loops(
+    graph_client: TestClient, store: Store, fixture_graph: dict[str, int]
+) -> None:
+    """A link between two hop-1 nodes comes back ``dir: "cross"`` in
+    stored direction, and a chunk-level self-link (the only self-link the
+    schema admits) ``dir: "self"``. Neither is counted in ``counts`` or
+    fills a group window."""
+    focus, cited, goal = (fixture_graph[k] for k in ("focus", "cited", "goal"))
+    cross = store.add_link(src_ref_id=cited, dst_ref_id=goal, relation="cites")
+    store.chunks.insert_chunks(
+        focus, [ChunkInsert(ord=i, text=f"block {i}", meta={}) for i in range(2)]
+    )
+    loop = store.add_link(
+        src_ref_id=focus,
+        dst_ref_id=focus,
+        src_pos=0,
+        dst_pos=1,
+        relation="see-also",
+    )
+    body = graph_client.get(f"/graph/paper/{focus}.json").json()
+    fh = _h("paper", focus)
+    ring = [e for e in body["edges"] if e["dir"] in ("self", "cross")]
+    assert {(e["src"], e["dst"], e["rel"], e["dir"]) for e in ring} == {
+        (_h("paper", cited), _h("memory", goal), "cites", "cross"),
+        (fh, fh, "see-also", "self"),
+    }
+    assert {e["link_id"] for e in ring} == {cross.id, loop.id}
+    # intra edges add no node, no count bucket, no group row
+    assert body["counts"] == store.neighbourhood("paper", focus)["counts"]
+    assert sum(g["total"] for g in body["groups"]) == sum(
+        n for kinds in body["counts"].values() for n in kinds.values()
+    )
+    assert {n["id"] for n in body["nodes"]} == {
+        fixture_graph[k] for k in ("cited", "citer", "note", "goal", "old")
+    }
+    assert set(body["meta"]["native_targets"]) >= {fh, _h("memory", goal)}
+
+
+def test_intra_edges_rels_inverse_parity(
+    graph_client: TestClient, store: Store
+) -> None:
+    """``rels=`` admits a ring edge whose stored slug or its inverse is
+    listed — ``rels=cited-by`` keeps a stored ``cites`` between two kept
+    hop-1 nodes; a list covering neither slug drops it."""
+    focus = _paper(store, "hub2021")
+    a = _memory(store, "a")
+    b = _memory(store, "b")
+    store.add_link(src_ref_id=focus, dst_ref_id=a, relation="related-to")
+    store.add_link(src_ref_id=focus, dst_ref_id=b, relation="related-to")
+    store.add_link(src_ref_id=a, dst_ref_id=b, relation="cites")
+    body = graph_client.get(
+        f"/graph/paper/{focus}.json?rels=related-to,cited-by"
+    ).json()
+    ring = [e for e in body["edges"] if e["dir"] == "cross"]
+    assert [(e["src"], e["dst"], e["rel"]) for e in ring] == [
+        (_h("memory", a), _h("memory", b), "cites")
+    ]
+    gone = graph_client.get(f"/graph/paper/{focus}.json?rels=related-to").json()
+    assert all(e["dir"] != "cross" for e in gone["edges"])
 
 
 def test_native_targets_cover_every_endpoint(
@@ -522,3 +601,34 @@ def test_profile_visible_to_its_owner(
     assert node["label"] == "SecretPalette"
     assert any(live in (e["src"], e["dst"]) for e in body["edges"])
     assert live in body["meta"]["native_targets"]
+
+
+def test_intra_edges_stay_owner_filtered(
+    authed_graph_client: TestClient,
+    store: Store,
+    profile_graph: dict[str, Any],
+) -> None:
+    """A hop-1 ↔ hop-1 edge is emitted only when both endpoints are in
+    the returned set: another owner's profile never joins it (gr490266),
+    so no ``dir: "cross"`` edge can name it for the wrong viewer — and
+    the same edge does appear for the owner."""
+    mem = store.insert_ref(kind="memory", slug=None, title="visible").id
+    store.add_link(
+        src_ref_id=profile_graph["todo"], dst_ref_id=mem, relation="related-to"
+    )
+    store.add_link(
+        src_ref_id=mem, dst_ref_id=profile_graph["live"], relation="related-to"
+    )
+    other = authed_graph_client.get(
+        f"/graph/todo/{profile_graph['todo']}.json", headers=_basic("alice", "pw")
+    )
+    assert other.status_code == 200
+    assert "SecretPalette" not in other.text
+    assert not [e for e in other.json()["edges"] if e["dir"] in ("self", "cross")]
+    owner = authed_graph_client.get(
+        f"/graph/todo/{profile_graph['todo']}.json", headers=_basic("reto", "pw")
+    ).json()
+    ring = [e for e in owner["edges"] if e["dir"] == "cross"]
+    assert [(e["src"], e["dst"], e["rel"]) for e in ring] == [
+        (_h("memory", mem), _h("profile", profile_graph["live"]), "related-to")
+    ]

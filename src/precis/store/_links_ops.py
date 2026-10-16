@@ -280,6 +280,25 @@ SELECT * FROM (
 """
 
 
+# ``neighbourhood(intra_edges=True)``: the stored links the anchored walk
+# skips — every link whose ref-level endpoints are both already in the
+# kept hop-1 set (hop-1 ↔ hop-1, including the chunk-level self-loops the
+# schema admits on a kept node), plus the focus's own self-loops. No refs
+# join: endpoint eligibility is the kept set itself, so the owner/kind/
+# date/trust filters and ``cap`` that admitted it apply unchanged.
+_INTRA_SQL = """
+SELECT l.src_ref_id, l.dst_ref_id, l.relation,
+       l.trust_origin || ' · ' || l.trust_confidence,
+       l.link_id, l.src_chunk_id, l.dst_chunk_id
+  FROM links l
+ WHERE ((l.src_ref_id = ANY(%(ids)s::bigint[])
+         AND l.dst_ref_id = ANY(%(ids)s::bigint[]))
+        OR (l.src_ref_id = %(focus)s AND l.dst_ref_id = %(focus)s))
+   AND (%(rels)s::text[] IS NULL OR l.relation = ANY(%(rels)s::text[]))
+ ORDER BY l.link_id
+"""
+
+
 #: :meth:`LinksMixin.link_path` bounds: the "path depth 4" ruling
 #: (``web-graph-navigation.md`` decisions, 2026-10-06) and the visited-node
 #: budget past which the search reports ``budget_hit`` instead of going on.
@@ -803,6 +822,7 @@ class LinksMixin:
         cap: int = 200,
         include_retired: bool = False,
         link_ids: bool = False,
+        intra_edges: bool = False,
         viewer: str | object | None = _ACTING_VIEWER,
     ) -> dict[str, Any]:
         """The ref-level link neighbourhood of one ref, as plain data.
@@ -864,6 +884,18 @@ class LinksMixin:
           ``dst_chunk_id`` (nullable) to every edge, so parallel chunk
           links stay distinguishable — the graph JSON route's contract
           (td470556); off by default, same statement either way.
+        - ``intra_edges`` also returns the links the anchored walk skips:
+          edges between two kept hop-1 nodes and ref-level self-loops
+          (``src_ref_id = dst_ref_id`` — the schema admits those only at
+          chunk level). They carry ``dir`` ``"self"`` when ``src = dst``,
+          ``"cross"`` otherwise, ``rel`` the stored slug; ``rels=``
+          matches a stored slug or its inverse. An edge is eligible only
+          when both endpoints are already in the returned set (the focus
+          counts), so the owner/kind/date/trust filters and ``cap`` that
+          admitted them apply unchanged — another owner's profile can
+          never be an intra-edge endpoint (gr490266). Never counted in
+          ``counts``. One extra round trip; the graph JSON route is the
+          consumer (td470556).
         - ``cap`` bounds hop-1 nodes: when more exist the first ``cap``
           (newest links first) come back with ``truncated: True`` and
           ``counts`` still covering every matching edge.
@@ -873,7 +905,8 @@ class LinksMixin:
           edges/nodes are also returned, tagged ``hop: 2``.
 
         Round trips: one for the focus, one (hop 1), one (hop 2) [+ one for
-        ``trust``] [+ one on first call per process for the inverse map].
+        ``trust``] [+ one for ``intra_edges``] [+ one on first call per
+        process for the inverse map].
         """
         if depth not in (1, 2):
             raise BadInput(f"depth must be 1 or 2, got {depth!r}")
@@ -1029,6 +1062,39 @@ class LinksMixin:
                         edges.append(e)
             elif depth == 2:
                 result["counts2"] = {}
+            if intra_edges:
+                rels_x: list[str] | None = None
+                if rels is not None:
+                    both = {**inv_map, **{v: k for k, v in inv_map.items()}}
+                    expanded = set(rels)
+                    for rel in rels:
+                        inv = both.get(rel)
+                        if inv:
+                            expanded.add(inv)
+                    rels_x = sorted(expanded)
+
+                def _kh(i: int) -> str:
+                    return _h(kind, i) if i == ref_id else _h(seen[i], i)
+
+                for r in conn.execute(
+                    _INTRA_SQL,
+                    {"ids": sorted(seen), "focus": ref_id, "rels": rels_x},
+                ):
+                    src, dst = int(r[0]), int(r[1])
+                    ie: dict[str, Any] = {
+                        "src": _kh(src),
+                        "dst": _kh(dst),
+                        "rel": r[2],
+                        "dir": "self" if src == dst else "cross",
+                        "trust": r[3],
+                    }
+                    if link_ids:
+                        ie.update(
+                            link_id=int(r[4]),
+                            src_chunk_id=r[5],
+                            dst_chunk_id=r[6],
+                        )
+                    edges.append(ie)
         return result
 
     def _nbh_trust_filter(
