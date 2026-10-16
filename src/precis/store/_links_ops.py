@@ -227,6 +227,9 @@ def _linked_refs_where(
 # with the full edge count, then up to ``lim`` edge rows ('r'), newest first.
 # Layout: (tag, anchor, far, dir, rel, kind, title, state, n, retired,
 # far trust, link trust) — the trust pair is 'origin · confidence' (0214).
+#: ``neighbourhood(viewer=)`` default: resolve the acting identity.
+_ACTING_VIEWER = object()
+
 _NBH_SQL = """
 WITH inv(slug, inv) AS (
   SELECT * FROM unnest(%(slugs)s::text[], %(invs)s::text[])
@@ -256,6 +259,8 @@ e AS (
     FROM x JOIN refs r ON r.ref_id = x.far
    WHERE (%(ret_ok)s::bool OR r.retired_at IS NULL)
      AND NOT (x.far = ANY(%(excl)s::bigint[]))
+     AND (%(viewer)s::text IS NULL OR r.kind <> 'profile'
+          OR r.owner_login IS NULL OR r.owner_login = %(viewer)s::text)
      AND (%(rels)s::text[] IS NULL OR x.rel = ANY(%(rels)s::text[]))
      AND (%(kinds)s::text[] IS NULL OR r.kind = ANY(%(kinds)s::text[]))
      AND (%(since)s::timestamptz IS NULL OR r.created_at >= %(since)s::timestamptz)
@@ -798,8 +803,16 @@ class LinksMixin:
         cap: int = 200,
         include_retired: bool = False,
         link_ids: bool = False,
+        viewer: str | object | None = _ACTING_VIEWER,
     ) -> dict[str, Any]:
         """The ref-level link neighbourhood of one ref, as plain data.
+
+        Profile owner filter (gr490266): ``viewer`` is the web login the
+        result is for — default the acting identity
+        (:func:`precis.profiles.acting_login`); ``None`` = unidentified,
+        no filter. Another owner's ``kind='profile'`` row is a missing
+        focus (``NotFound``) and never a node, edge, tombstone or count —
+        filtered in the SQL, so ``cap``/``counts``/hop 2 stay exact.
 
         Shape (shared by the web graph route and the agent walk)::
 
@@ -882,6 +895,13 @@ class LinksMixin:
         def _h(k: str, i: int) -> str:
             return handle_registry.try_format(k, i) or f"{k}:{i}"
 
+        if viewer is _ACTING_VIEWER:
+            from precis import profiles
+
+            viewer_login = profiles.acting_login(cast("Store", self))
+        else:
+            viewer_login = cast("str | None", viewer)
+
         def _run(
             conn: Connection,
             anchors: list[int],
@@ -899,6 +919,7 @@ class LinksMixin:
                 "until": until,
                 "lim": limit,
                 "ret_ok": include_retired,
+                "viewer": viewer_login,
             }
             data: list[tuple[Any, ...]] = []
             counts: dict[str, dict[str, int]] = {}
@@ -918,11 +939,17 @@ class LinksMixin:
                 "   JOIN tags t ON t.tag_id = rt.tag_id"
                 "   WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'"
                 "   ORDER BY t.value LIMIT 1), 'live'),"
-                " trust_origin || ' · ' || trust_confidence"
+                " trust_origin || ' · ' || trust_confidence,"
+                " owner_login"
                 " FROM refs r WHERE ref_id = %s AND kind = %s",
                 (ref_id, kind),
             ).fetchone()
-            if frow is None:
+            if frow is None or (
+                kind == "profile"
+                and viewer_login
+                and frow[4]
+                and frow[4] != viewer_login
+            ):
                 raise NotFound(f"no {kind} ref with id {ref_id}")
             filter_trust = trust_v is not None and trust_v != "any"
             data1, counts1 = _run(

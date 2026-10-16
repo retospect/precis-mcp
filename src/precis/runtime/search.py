@@ -991,6 +991,12 @@ class SearchMixin(RuntimeShape):
             limit=page_size * 5,
         )
         refs = [r for r in raw if r.kind in allowed_kinds]
+        if any(r.kind == "profile" for r in refs):
+            # owner-private rows (gr490266): drop other owners' profiles
+            from precis import profiles
+
+            login = profiles.acting_login(store)
+            refs = [r for r in refs if profiles.visible_to(r, login)]
         if folder_scope is not None:
             refs = [r for r in refs if r.id in folder_scope]
         refs = refs[:page_size]

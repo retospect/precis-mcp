@@ -744,6 +744,21 @@ def _render_claims_group(
     return entries
 
 
+def _hidden_profile_ids(store: Any, ids: set[int]) -> set[int]:
+    """The ``kind='profile'`` ids among ``ids`` the acting identity may not
+    read (owner-only, gr490266); one batched read, empty when none."""
+    if not ids:
+        return set()
+    from precis import profiles
+
+    refs = store.fetch_refs_by_ids(sorted(ids), include_deleted=True)
+    profs = [r for r in refs.values() if r.kind == profiles.KIND]
+    if not profs:
+        return set()
+    login = profiles.acting_login(store)
+    return {int(r.id) for r in profs if not profiles.visible_to(r, login)}
+
+
 def render_reference_ring(
     store: Store,
     target: _Chunk,
@@ -796,6 +811,12 @@ def collect_ring(
         # ref-level (whole-draft) notes too. (Chunk-id scoping of inbound edges
         # is a refinement — links_for projects pos, not chunk_id.)
         inbound.add(int(link.src_ref_id))
+
+    # Another owner's profile never rides the ring (gr490266) — a text
+    # mention or a link made before the link-target check could name one.
+    for rid in _hidden_profile_ids(store, set(outbound) | inbound):
+        outbound.pop(rid, None)
+        inbound.discard(rid)
 
     # ── claims: [pub_id] cites that resolve to a live TAPROOT:claim hub ───
     # — a separate mining pass, since resolve_link_targets

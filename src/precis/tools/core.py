@@ -1339,6 +1339,17 @@ def put(
     # Declared at the verb level so strict-schema MCP clients don't strip
     # it — the whole checklist put path was otherwise unreachable over MCP.
     items: list[dict[str, Any]] | None = None,
+    # profile (see precis-profile-help): put(kind='profile', name=…,
+    # palette={role: '#RRGGBB'}, fonts=…, logos=[…], sponsor_line=…,
+    # default=…, owner=<login>). owner= is checked by ProfileHandler: a
+    # caller with a user identity may only name their own login.
+    name: str | None = None,
+    palette: dict[str, Any] | None = None,
+    fonts: dict[str, Any] | None = None,
+    logos: list[Any] | None = None,
+    sponsor_line: str | None = None,
+    owner: str | None = None,
+    default: bool | None = None,
 ) -> str:
     """Write or annotate. Creates new refs; for region rewrites use `edit`.
 
@@ -1475,6 +1486,13 @@ def put(
             "series": series,
             "size": size,
             "items": items,
+            "name": name,
+            "palette": palette,
+            "fonts": fonts,
+            "logos": logos,
+            "sponsor_line": sponsor_line,
+            "owner": owner,
+            "default": default,
             "ops": ops,
         },
     )
@@ -1674,6 +1692,15 @@ def edit(
     note_kind: str | None = None,
     re: str | None = None,
     about: Any = None,
+    # profile (see precis-profile-help): palette/fonts merge per key, the
+    # rest replace. owner= is checked by ProfileHandler — a caller with a
+    # user identity may only name their own login. name= is shared above.
+    palette: dict[str, Any] | None = None,
+    fonts: dict[str, Any] | None = None,
+    logos: list[Any] | None = None,
+    sponsor_line: str | None = None,
+    owner: str | None = None,
+    default: bool | None = None,
     # every kind (local-mesh-upkeep §2b): why this edit was made. Recorded
     # on the ref's or link's revisions row; dispatch consumes it, so no
     # handler declares it. Omitted → "edit(kind='<kind>')".
@@ -1767,6 +1794,12 @@ def edit(
         "note_kind": note_kind,
         "re": re,
         "about": about,
+        "palette": palette,
+        "fonts": fonts,
+        "logos": logos,
+        "sponsor_line": sponsor_line,
+        "owner": owner,
+        "default": default,
         "reason": reason,
     }
     # ``args=`` and ``meta=`` ride the ``__extras__`` channel (the same

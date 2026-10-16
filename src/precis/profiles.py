@@ -68,6 +68,16 @@ def acting_login(store: Store) -> str | None:
     return user.login if user is not None else None
 
 
+def visible_to(ref: Ref, login: str | None) -> bool:
+    """Owner-only read for callers outside the handler (gr490266): a
+    profile row owned by someone other than an identified ``login`` is
+    invisible. Non-profile refs and unidentified callers pass — the same
+    rule as ``ProfileHandler._check_read``."""
+    if ref.kind != KIND:
+        return True
+    return not (ref.owner_login and login and login != ref.owner_login)
+
+
 def payload_of(ref: Ref) -> dict[str, Any]:
     """The stored profile payload (``meta['profile']``), ``{}`` if absent."""
     meta = ref.meta or {}
@@ -106,20 +116,25 @@ def owner_default(store: Store, login: str) -> Ref | None:
 
 def resolve_profile_ref(store: Store, ident: Any, *, owner: str | None) -> Ref | None:
     """Resolve a profile selector — numeric id, ``pf<N>`` handle, or a
-    profile *name* (scoped to ``owner``'s profiles when known) — to a
-    live ref. ``None`` when nothing matches."""
+    profile *name* — to a live ref. ``None`` when nothing matches.
+
+    With ``owner`` known every path is owner-scoped (gr490266): an id or
+    handle naming another owner's row (or an unowned one) resolves to
+    ``None`` exactly like a missing id, and a name searches only
+    ``owner``'s profiles. ``owner=None`` keeps the unscoped lookup — the
+    unidentified-caller behaviour :func:`acting_login` documents."""
     s = str(ident).strip()
     if not s:
         return None
     if s.lower().startswith("pf") and s[2:].isdigit():
         s = s[2:]
     if s.isdigit():
-        return store.get_ref(kind=KIND, id=int(s))
-    if owner:
-        for ref in profiles_for_owner(store, owner):
-            if payload_of(ref).get("name") == s or ref.title == s:
-                return ref
-    for ref in all_profiles(store):
+        ref = store.get_ref(kind=KIND, id=int(s))
+        if ref is not None and owner and ref.owner_login != owner:
+            return None
+        return ref
+    pool = profiles_for_owner(store, owner) if owner else all_profiles(store)
+    for ref in pool:
         if payload_of(ref).get("name") == s or ref.title == s:
             return ref
     return None
@@ -160,7 +175,11 @@ def draft_user_default(store: Store, ref: Any) -> dict[str, Any] | None:
     selector = poster.get("profile") if isinstance(poster, dict) else None
     owner = draft_owner_login(store, ref)
     if selector:
-        prof = resolve_profile_ref(store, selector, owner=owner)
+        # Scope to the draft's owner; an unowned draft scopes to the
+        # acting user when one is identified, so an identified caller can
+        # never pull another owner's palette/logos into the PDF.
+        scope = owner or acting_login(store)
+        prof = resolve_profile_ref(store, selector, owner=scope)
         if prof is None:
             raise NotFound(
                 f"draft {ref.public_id}: poster profile {selector!r} not found",
@@ -309,4 +328,5 @@ __all__ = [
     "profiles_for_owner",
     "resolve_profile_ref",
     "validated_profile",
+    "visible_to",
 ]

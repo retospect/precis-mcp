@@ -77,11 +77,13 @@ from urllib.parse import quote
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from precis import profiles
 from precis.errors import BadInput, NotFound
 from precis.store._links_ops import PATH_MAX_DEPTH
 from precis.store.types import FINDING_TRUST_TIERS
 from precis.utils import handle_registry
 from precis.utils.refeye import RING_GROUPS, resolve_up, ring_group
+from precis_web.auth import current_user
 from precis_web.deps import get_store, templates
 from precis_web.graph_filters import csv_list, parse_kind_filter
 from precis_web.graph_peek import peek_cards
@@ -304,10 +306,13 @@ def _neighbourhood(
     cap: int,
     include_retired: bool = False,
     link_ids: bool = False,
+    viewer: str | None = None,
 ) -> dict[str, Any]:
     """The one read all three surfaces share — same filters in, same
     nodes/edges out. ``include_retired`` (the outline view) keeps retired
-    endpoints as tombstones."""
+    endpoints as tombstones. ``viewer`` is the signed-in login the store's
+    profile owner filter keys on (gr490266) — passed explicitly because
+    these routes read outside any revision context."""
     return store.neighbourhood(
         kind,
         ref_id,
@@ -320,7 +325,18 @@ def _neighbourhood(
         cap=cap,
         include_retired=include_retired,
         link_ids=link_ids,
+        viewer=viewer,
     )
+
+
+def _viewer(request: Request) -> str | None:
+    """The signed-in web login the profile owner check keys on."""
+    user = current_user(request)
+    return user.login if user is not None else None
+
+
+def _visible(ref: Any, viewer: str | None) -> bool:
+    return profiles.visible_to(ref, viewer)
 
 
 _ENDPOINT_RE = re.compile(r"^([a-z][a-z0-9-]*)[/:](\d+)$")
@@ -392,6 +408,7 @@ def _came_from(
     raw_trail: list[tuple[str, int]],
     here: tuple[str, int],
     trail: list[dict[str, Any]],
+    viewer: str | None = None,
 ) -> dict[str, Any] | None:
     """The previous focus for the came-from slot (item 8): the trail
     cookie's last entry before this visit, as a ref card plus the
@@ -420,7 +437,7 @@ def _came_from(
             }
         else:
             ref = store.get_ref(kind=prev[0], id=prev[1], include_deleted=False)
-            if ref is None:
+            if ref is None or not _visible(ref, viewer):
                 return None
             card = _card(ref)
     edge = next(
@@ -443,11 +460,18 @@ def _came_from(
     }
 
 
-def _trail_cards(store: Store, trail: list[tuple[str, int]]) -> list[dict[str, Any]]:
+def _trail_cards(
+    store: Store, trail: list[tuple[str, int]], viewer: str | None = None
+) -> list[dict[str, Any]]:
     """The trail as ref cards, one batched read; retired or vanished refs
-    (and a kind that no longer matches the id) drop out."""
+    (and a kind that no longer matches the id) drop out, as does another
+    owner's profile — the cookie is client-held (gr490266)."""
     refs = store.fetch_refs_by_ids([i for _, i in trail], include_deleted=False)
-    return [_card(refs[i]) for k, i in trail if i in refs and refs[i].kind == k]
+    return [
+        _card(refs[i])
+        for k, i in trail
+        if i in refs and refs[i].kind == k and _visible(refs[i], viewer)
+    ]
 
 
 @router.get("/path", response_class=HTMLResponse)
@@ -468,6 +492,7 @@ async def graph_path(
     missing or retired one a 404. With neither endpoint given the page is
     the empty form."""
     store = get_store(request)
+    viewer = _viewer(request)
     ctx: dict[str, Any] = {
         "from_": from_,
         "to": to,
@@ -475,7 +500,7 @@ async def graph_path(
         "rels": rels,
         "max_depth": PATH_MAX_DEPTH,
         "asked": False,
-        "trail": _trail_cards(store, _read_trail(request)),
+        "trail": _trail_cards(store, _read_trail(request), viewer),
     }
     if not from_.strip() and not to.strip():
         return templates.TemplateResponse(request, "graph/path.html.j2", ctx)
@@ -488,7 +513,7 @@ async def graph_path(
         refs = []
         for k, i in ends:
             ref = store.get_ref(kind=k, id=i)
-            if ref is None:
+            if ref is None or not _visible(ref, viewer):
                 raise NotFound(f"no live {k} ref with id {i}")
             refs.append(ref)
         found = store.link_path(
@@ -509,8 +534,12 @@ async def graph_path(
             status_code=400,
         )
     steps: list[dict[str, Any]] = []
+    by_id = store.fetch_refs_by_ids(found["ids"] or [])
+    if any(not _visible(r, viewer) for r in by_id.values()):
+        # a route through another owner's profile is not shown at all —
+        # the viewer gets the same "no path" answer (gr490266)
+        found = {**found, "ids": None, "links": []}
     if found["ids"] is not None:
-        by_id = store.fetch_refs_by_ids(found["ids"])
         cards = [_card(by_id[i]) for i in found["ids"]]
         for i, (s, _d, rel) in enumerate(found["links"]):
             forward = s == found["ids"][i]
@@ -584,6 +613,7 @@ async def neighbourhood_json(
             cap=cap,
             include_retired=True,
             link_ids=True,
+            viewer=_viewer(request),
         )
     except NotFound as exc:
         return JSONResponse({"error": str(exc)}, status_code=404)
@@ -858,6 +888,7 @@ async def graph_focus(
     :data:`MAX_CAP` max, as the JSON's. The filter form is a plain GET;
     the chips are the same URL one value narrower."""
     store = get_store(request)
+    viewer = _viewer(request)
     try:
         if not 1 <= cap <= MAX_CAP:
             raise BadInput(f"cap must be between 1 and {MAX_CAP}, got {cap!r}")
@@ -879,6 +910,7 @@ async def graph_focus(
             depth=depth if depth is not None else 2,
             cap=cap,
             include_retired=f.view == "outline",
+            viewer=viewer,
         )
     except NotFound as exc:
         return templates.TemplateResponse(
@@ -897,8 +929,8 @@ async def graph_focus(
     focus_h = _handle(kind, ref_id)
     page = f"/graph/{kind}/{ref_id}"
     raw_trail = _read_trail(request)
-    trail = _trail_cards(store, _advance_trail(raw_trail, (kind, ref_id)))
-    came_from = _came_from(store, data, raw_trail, (kind, ref_id), trail)
+    trail = _trail_cards(store, _advance_trail(raw_trail, (kind, ref_id)), viewer)
+    came_from = _came_from(store, data, raw_trail, (kind, ref_id), trail, viewer)
     focus_ref = store.get_ref(kind=kind, id=ref_id, include_deleted=True)
     up = resolve_up(
         store,
@@ -906,13 +938,18 @@ async def graph_focus(
         ref_id,
         parent_id=focus_ref.parent_id if focus_ref is not None else None,
     )
+    up_target = up["target"]
+    if up_target is not None and not _visible(up_target, viewer):
+        up_target = None
     zoom_out = {
-        "target": _card(up["target"]) if up["target"] is not None else None,
+        "target": _card(up_target) if up_target is not None else None,
         "rel": up["rel"],
         "dir": up["dir"],
-        "others": [_card(r) for r in up["others"]],
+        "others": [_card(r) for r in up["others"] if _visible(r, viewer)],
         "more": up["n_others"] - len(up["others"]),
-        "reason": up["reason"],
+        "reason": up["reason"]
+        if up_target is not None or up["target"] is None
+        else "no live up link",
     }
     qs = f.qs()
     json_qs = f.qs(remove=[("view", f.view)]) if f.view else qs
@@ -1016,7 +1053,9 @@ async def neighbourhood_panel(
         f = _parse_filters(
             rels=rels, kinds=kinds, since=since, until=until, trust=trust
         )
-        data = _neighbourhood(store, kind, ref_id, f, depth=1, cap=MAX_CAP)
+        data = _neighbourhood(
+            store, kind, ref_id, f, depth=1, cap=MAX_CAP, viewer=_viewer(request)
+        )
     except NotFound:
         return HTMLResponse(
             '<p class="text-xs text-slate-400">ref not found.</p>',

@@ -929,11 +929,37 @@ async def new_draft(
     # Poster branding: the picker preselects the owner's default
     # kind='profile'; the choice pins meta.workspace.poster.profile —
     # the first rung of the export resolution order (slice 6).
+    # The submitted value must name one of the requester's own profiles
+    # (gr490266): a forged id/name for another owner's profile is refused,
+    # and the resolved numeric id is what gets pinned.
     profile_sel = profile.strip()
     if doctype == "poster" and profile_sel:
-        workspace["poster"] = {
-            "profile": int(profile_sel) if profile_sel.isdigit() else profile_sel
-        }
+        from precis import profiles
+
+        user = current_user(request)
+        owned = (
+            profiles.resolve_profile_ref(
+                get_store(request), profile_sel, owner=user.login
+            )
+            if user is not None
+            else None
+        )
+        if owned is None:
+            return templates.TemplateResponse(
+                request,
+                "error.html.j2",
+                {
+                    "title": "New draft error",
+                    "detail": (
+                        f"Branding profile {profile_sel!r} is not one of your "
+                        "profiles. Pick one from the list, or create it under "
+                        "/account."
+                    ),
+                    "status": 400,
+                },
+                status_code=400,
+            )
+        workspace["poster"] = {"profile": int(owned.id)}
     # The brief is the planner's standing ``## Project context`` — the
     # document-type register/voice guidance only. The user's description is
     # the *ask*, so it rides as the todo body below (and cascades to child

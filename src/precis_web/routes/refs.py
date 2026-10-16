@@ -117,7 +117,13 @@ _PAGE_SIZE = 50
 
 
 def _require_kind(kind: str, request: Request) -> None:
-    """Accept registered kinds, including optional handlers absent at boot."""
+    """Accept registered kinds, including optional handlers absent at boot.
+
+    ``profile`` is refused (gr490266): the generic browser lists, renders
+    and undeletes rows with no owner check, and profiles are owner-private
+    — each user manages their own under ``/account``."""
+    if kind == "profile":
+        raise NotFound("profiles are managed under /account")
     if kind in _REFS_BROWSABLE_KINDS:
         return
     with get_store(request).pool.connection() as conn:
@@ -2548,7 +2554,8 @@ async def consolidated(
         # Preserve the operator's ordering for kinds we didn't recognise
         # so a future-added kind shows up when its checkbox is added.
         for k in requested:
-            if k not in selected and k not in _CONSOLIDATED_KINDS:
+            # profile is owner-private and this listing is unscoped (gr490266)
+            if k not in selected and k not in _CONSOLIDATED_KINDS and k != "profile":
                 selected.append(k)
     else:
         selected = list(_DEFAULT_REFS_KINDS)
@@ -2846,6 +2853,9 @@ async def detail(
     request: Request, kind: str, ref_id: int
 ) -> HTMLResponse | RedirectResponse:
     """Read-only reader for every stored kind, independent of browse menus."""
+    if kind == "profile":
+        # owner-private (gr490266) — see _require_kind
+        raise NotFound("profiles are managed under /account")
     store = get_store(request)
     refs = store.fetch_refs_by_ids([ref_id], include_deleted=False)
     ref = refs.get(ref_id)

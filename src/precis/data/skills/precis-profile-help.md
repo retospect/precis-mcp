@@ -47,9 +47,11 @@ delete(kind='profile', id=pf7)
 `edit` merges `palette`/`fonts` per key and replaces the other fields.
 
 **ACL — owner-only.** Profiles are private to their `owner` login: a
-call carrying another user's identity can't read or write them. Calls
-with no user identity (fleet `agent`, CLI) pass — the guard separates
-users, not the deployment's own agents.
+call carrying another user's identity can't read or write them — through
+`get`, `eye`, `get(id=…, q=…)`, `search` (including `view='count'`;
+`view='meta'`/`'tags'` are refused for a signed-in user), `tag`, `link`,
+`edit` or `delete`. Calls with no user identity (fleet `agent`, CLI)
+pass — the guard separates users, not the deployment's own agents.
 
 ## Validation
 
@@ -77,5 +79,8 @@ A `doc_type='poster'` export resolves its branding in order:
    that created the draft, not the first byline author);
 3. the neutral product palette.
 
-A `profile` selector that resolves to nothing fails the export —
-fix the pointer rather than shipping wrong branding.
+The selector resolves only among the draft owner's profiles (an unowned
+draft: the signed-in user's); an id, `pf<N>` or name belonging to
+another owner counts as not found. A `profile` selector that resolves
+to nothing fails the export — fix the pointer rather than shipping
+wrong branding.

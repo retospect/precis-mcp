@@ -143,6 +143,26 @@ class TestTagsView:
         assert "area:expired" not in body
 
 
+class TestProfileIntrospectACL:
+    """gr490266: kind='profile' meta/tags inventories span every owner."""
+
+    @pytest.mark.parametrize("view", ["meta", "tags"])
+    def test_identified_user_refused_unidentified_ok(
+        self, runtime_with_store: PrecisRuntime, store: Store, view: str
+    ) -> None:
+        from precis.store.revision_context import revision_context
+        from precis.users import hash_password
+
+        store.create_web_user(login="alice", abbrev="al", password=hash_password("pw"))
+        _mk(store, "profile", {"k": 1}, tags=("area:x",))
+        args = {"kind": "profile", "view": view}
+        with revision_context(actor="user:al"):
+            body = runtime_with_store.dispatch("search", args)
+        assert "not available on kind='profile'" in body
+        body = runtime_with_store.dispatch("search", args)
+        assert "not available on kind='profile'" not in body
+
+
 class TestIntrospectErrors:
     def test_requires_single_kind(self, runtime_with_store: PrecisRuntime) -> None:
         body = runtime_with_store.dispatch(

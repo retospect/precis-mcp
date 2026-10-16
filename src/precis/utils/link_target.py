@@ -64,6 +64,22 @@ class LinkTarget:
 def parse_link_target(
     target: str, *, store: Store, include_retired: bool = False
 ) -> LinkTarget:
+    """:func:`_parse_link_target` plus the profile owner check
+    (gr490266): a target naming another owner's ``kind='profile'`` row is
+    ``NotFound`` for an identified caller, so no link can point a user's
+    ref (and its eye/links renders) at someone else's private profile."""
+    from precis import profiles
+
+    resolved = _parse_link_target(target, store=store, include_retired=include_retired)
+    ref = store.get_ref(kind=profiles.KIND, id=resolved.ref_id, include_deleted=True)
+    if ref is not None and not profiles.visible_to(ref, profiles.acting_login(store)):
+        raise NotFound(f"link target {target!r} not found")
+    return resolved
+
+
+def _parse_link_target(
+    target: str, *, store: Store, include_retired: bool = False
+) -> LinkTarget:
     """Resolve ``'kind:identifier[~selector]'`` to a :class:`LinkTarget`.
 
     A handle/slug that points at a merged/superseded ref transparently

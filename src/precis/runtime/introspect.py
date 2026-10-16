@@ -73,6 +73,18 @@ class IntrospectionMixin(RuntimeShape):
             )
         if self.store is None:
             raise Unsupported(f"view='{view}' needs a store-backed deployment")
+        if kind_s == "profile":
+            # Owner-only read (gr490266): the inventory aggregates every
+            # owner's rows and samples meta values (palette, logos), so an
+            # identified user may not run it across other owners' profiles.
+            from precis import profiles
+
+            if profiles.acting_login(self.store) is not None:
+                raise BadInput(
+                    f"view='{view}' is not available on kind='profile' for a "
+                    "signed-in user — it spans every owner's profiles",
+                    next="get(kind='profile') lists your own profiles",
+                )
         raw_extras = args.get("__extras__")
         extras = raw_extras if isinstance(raw_extras, dict) else {}
         bad = next(

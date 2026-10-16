@@ -3079,3 +3079,62 @@ def test_convert_cites_unknown_dc_404(convert_client: TestClient) -> None:
         "/drafts/no-such-draft/cites/convert", json={"dc": "dc999999"}
     )
     assert r.status_code == 404
+
+
+# ── /drafts/new poster profile ACL (gr490266) ──────────────────────
+
+
+@pytest.fixture
+def poster_acl(monkeypatch):
+    """Sign in as alice; ``resolve_profile_ref`` knows only alice's pf7."""
+    monkeypatch.setattr(
+        "precis_web.routes.drafts.current_user",
+        lambda request: SimpleNamespace(login="alice"),
+    )
+
+    def _fake(store, ident, *, owner):
+        if owner == "alice" and str(ident) in ("7", "pf7", "mine"):
+            return SimpleNamespace(id=7)
+        return None
+
+    monkeypatch.setattr("precis.profiles.resolve_profile_ref", _fake)
+
+
+def _post_poster(client: TestClient, profile: str):
+    return client.post(
+        "/drafts/new",
+        data={
+            "title": "Poster",
+            "doctype": "poster",
+            "summary": "A poster.",
+            "profile": profile,
+        },
+        follow_redirects=False,
+    )
+
+
+def test_new_draft_poster_cross_owner_profile_refused(
+    draft_client: TestClient, draft_runtime: FakeRuntime, poster_acl
+) -> None:
+    r = _post_poster(draft_client, "9")
+    assert r.status_code == 400
+    assert draft_runtime.calls == []
+
+
+@pytest.mark.parametrize("sel", ["7", "pf7", "mine"])
+def test_new_draft_poster_own_profile_pins_numeric_id(
+    draft_client: TestClient, draft_runtime: FakeRuntime, poster_acl, sel: str
+) -> None:
+    _post_poster(draft_client, sel)
+    verb, args = draft_runtime.calls[0]
+    assert verb == "put" and args["kind"] == "todo"
+    assert args["meta"]["workspace"]["poster"] == {"profile": 7}
+
+
+def test_new_draft_poster_profile_without_user_refused(
+    draft_client: TestClient, draft_runtime: FakeRuntime, monkeypatch
+) -> None:
+    monkeypatch.setattr("precis_web.routes.drafts.current_user", lambda request: None)
+    r = _post_poster(draft_client, "7")
+    assert r.status_code == 400
+    assert draft_runtime.calls == []

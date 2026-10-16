@@ -13,6 +13,7 @@ contract's JSON-only additions (td470556): ``link_id`` + chunk endpoints,
 
 from __future__ import annotations
 
+import base64
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -25,8 +26,10 @@ pytest.importorskip("fastapi")
 
 from fastapi.testclient import TestClient
 
+from precis.handlers.profile import ProfileHandler
 from precis.store import ChunkInsert
 from precis.store.store import Store
+from precis.users import hash_password
 from precis.utils import handle_registry
 from precis.utils.refeye import ring_group
 from precis_web.app import create_app
@@ -429,3 +432,93 @@ def test_group_params_reject(
         f"/graph/paper/{focus}.json?rels=serves&group=Notes%20%26%20links"
     ).json()
     assert body["edges"] == [] and body["groups"] == []
+
+
+# --- profile owner scoping (gr490266) ---------------------------------------
+
+
+@pytest.fixture
+def authed_graph_client(runtime_with_store, tmp_path) -> TestClient:
+    cfg = WebConfig(corpus_dir=tmp_path, auth_required=True)
+    return TestClient(create_app(runtime=runtime_with_store, web_config=cfg))
+
+
+def _basic(login: str, password: str) -> dict[str, str]:
+    raw = base64.b64encode(f"{login}:{password}".encode()).decode()
+    return {"Authorization": f"Basic {raw}"}
+
+
+@pytest.fixture
+def profile_graph(store: Store) -> dict[str, Any]:
+    """reto's live profile ('SecretPalette') and a retired one
+    ('RetiredPalette') both linked to a todo any signed-in user can see."""
+    store.create_web_user(login="reto", abbrev="rs", password=hash_password("pw"))
+    store.create_web_user(login="alice", abbrev="al", password=hash_password("pw"))
+    store.upsert_kinds([ProfileHandler.spec])
+    live = store.insert_ref(
+        kind="profile",
+        slug=None,
+        title="SecretPalette",
+        meta={"profile": {"name": "SecretPalette"}},
+        owner_login="reto",
+    )
+    dead = store.insert_ref(
+        kind="profile",
+        slug=None,
+        title="RetiredPalette",
+        meta={"profile": {"name": "RetiredPalette"}},
+        owner_login="reto",
+    )
+    todo = store.insert_ref(kind="todo", slug=None, title="Hub")
+    store.add_link(src_ref_id=todo.id, dst_ref_id=live.id, relation="related-to")
+    store.add_link(src_ref_id=todo.id, dst_ref_id=dead.id, relation="related-to")
+    store.retire_ref(dead.id)
+    return {"live": live.id, "dead": dead.id, "todo": todo.id}
+
+
+def test_profile_root_hidden_from_other_owner(
+    authed_graph_client: TestClient, profile_graph: dict[str, Any]
+) -> None:
+    r = authed_graph_client.get(
+        f"/graph/profile/{profile_graph['live']}.json", headers=_basic("alice", "pw")
+    )
+    assert r.status_code == 404
+    assert "SecretPalette" not in r.text
+
+
+def test_profile_redacted_from_other_owners_ring(
+    authed_graph_client: TestClient, profile_graph: dict[str, Any]
+) -> None:
+    r = authed_graph_client.get(
+        f"/graph/todo/{profile_graph['todo']}.json", headers=_basic("alice", "pw")
+    )
+    assert r.status_code == 200
+    assert "SecretPalette" not in r.text
+    assert "RetiredPalette" not in r.text
+    hidden = {
+        _h("profile", profile_graph["live"]),
+        _h("profile", profile_graph["dead"]),
+    }
+    body = r.json()
+    assert not hidden & {_h(n["kind"], n["id"]) for n in body["nodes"]}
+    assert not hidden & {h for e in body["edges"] for h in (e["src"], e["dst"])}
+    assert not hidden & set(body["meta"]["native_targets"])
+
+
+def test_profile_visible_to_its_owner(
+    authed_graph_client: TestClient, profile_graph: dict[str, Any]
+) -> None:
+    hdr = _basic("reto", "pw")
+    live = _h("profile", profile_graph["live"])
+    root = authed_graph_client.get(
+        f"/graph/profile/{profile_graph['live']}.json", headers=hdr
+    )
+    assert root.status_code == 200
+    assert "SecretPalette" in root.text
+    body = authed_graph_client.get(
+        f"/graph/todo/{profile_graph['todo']}.json", headers=hdr
+    ).json()
+    (node,) = [n for n in body["nodes"] if n["id"] == profile_graph["live"]]
+    assert node["label"] == "SecretPalette"
+    assert any(live in (e["src"], e["dst"]) for e in body["edges"])
+    assert live in body["meta"]["native_targets"]

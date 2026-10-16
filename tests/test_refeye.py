@@ -839,3 +839,50 @@ def test_ring_touch_caps_at_attention_walk_cap(hub: Hub, plan: PlanHandler) -> N
             (paper_ids,),
         ).fetchone()
     assert row is not None and row[0] == ATTENTION_WALK_CAP
+
+
+def _section_mentioning_profile(hub: Hub, plan: PlanHandler):
+    """reto's private profile 'SecretPalette' mentioned from a plan section,
+    plus web users reto/rs and alice/al. Returns (store, sec_chunk, chunks)."""
+    from precis.handlers.profile import ProfileHandler
+    from precis.users import hash_password
+
+    store = hub.live_store
+    for login, abbrev in (("reto", "rs"), ("alice", "al")):
+        store.create_web_user(login=login, abbrev=abbrev, password=hash_password("pw"))
+    store.upsert_kinds([ProfileHandler.spec])
+    pid = store.insert_ref(
+        kind="profile",
+        slug=None,
+        title="SecretPalette",
+        meta={"profile": {"name": "SecretPalette"}},
+        owner_login="reto",
+    ).id
+    proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
+    plan.put(id="p", title="Root", project=proj)
+    sec = _handles(plan.put(id="p", text="A section", at={"last": True}).body)[0]
+    sec_chunk = store.drafts.get_draft_chunk(sec, kind="plan")
+    assert sec_chunk is not None
+    chunks = store.drafts.reading_order(sec_chunk.ref_id, kind="plan")
+    # 'profile' is not a linkified mention kind, so the ring can only reach
+    # it through an inbound edge.
+    store.add_link(src_ref_id=pid, dst_ref_id=sec_chunk.ref_id, relation="related-to")
+    return store, sec_chunk, chunks
+
+
+def test_ring_hides_other_owners_profile(hub: Hub, plan: PlanHandler) -> None:
+    from precis.store.revision_context import revision_context
+
+    store, sec_chunk, chunks = _section_mentioning_profile(hub, plan)
+    with revision_context(actor="user:al"):
+        ring = render_reference_ring(store, sec_chunk, chunks)
+    assert "SecretPalette" not in ring
+
+
+def test_ring_shows_own_profile_to_owner(hub: Hub, plan: PlanHandler) -> None:
+    from precis.store.revision_context import revision_context
+
+    store, sec_chunk, chunks = _section_mentioning_profile(hub, plan)
+    with revision_context(actor="user:rs"):
+        ring = render_reference_ring(store, sec_chunk, chunks)
+    assert "SecretPalette" in ring

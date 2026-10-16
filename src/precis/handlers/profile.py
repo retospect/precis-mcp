@@ -17,7 +17,8 @@ Surface (see ``precis-profile-help``):
   merge per key, everything else replaces — and re-validates.
 - ``get(kind='profile')`` lists the acting user's profiles (all of them
   when no user identity is present); ``get(id=N|'pf<N>'|'<name>')``
-  renders one.
+  renders one. ``eye``/``find_in_ref``/``search``/``tag``/``link`` apply
+  the same owner check (gr490266).
 - ``delete`` soft-retires.
 
 Owner-only read + owner-checked write (ruling 3): when the call carries
@@ -36,6 +37,7 @@ from precis.errors import BadInput, NotFound
 from precis.handlers._numeric_ref import NumericRefHandler
 from precis.protocol import KindSpec
 from precis.response import Response
+from precis.store import Tag
 from precis.store.types import Ref
 from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
@@ -111,6 +113,13 @@ class ProfileHandler(NumericRefHandler):
             s = s[2:]
         ref: Ref | None
         if s.isdigit():
+            # Owner check before the live check: a retired foreign row
+            # must read NotFound, not Gone (no existence oracle).
+            any_ref = self.store.get_ref(
+                kind=self.kind, id=int(s), include_deleted=True
+            )
+            if any_ref is not None:
+                self._check_read(any_ref)
             ref = self._resolve_live_ref(int(s))
         else:
             pool = (
@@ -133,6 +142,154 @@ class ProfileHandler(NumericRefHandler):
                 )
         self._check_read(ref)
         return ref
+
+    # ── inherited verbs, owner-guarded (gr490266) ─────────────────────
+    # NumericRefHandler's eye / find_in_ref / search / tag / link resolve
+    # ids themselves and never reach _check_read/_check_write; each one
+    # re-enters through _resolve_ref so an identified non-owner gets the
+    # same NotFound get() gives.
+
+    def _owned_ids(self, id: Any, *, write: bool) -> list[int]:
+        if id is None or id == []:
+            raise BadInput(
+                "this verb requires id=",
+                next="pass id=N|'pf<N>'|'<name>' — get(kind='profile') lists yours",
+            )
+        ids = id if isinstance(id, list) else [id]
+        out: list[int] = []
+        for one in ids:
+            ref = self._resolve_ref(one)
+            if write:
+                self._check_write(ref)
+            out.append(int(ref.id))
+        return out
+
+    def eye(
+        self,
+        *,
+        id: Any = None,
+        extent: Any = "fisheye",
+        q: str | None = None,
+        ring: Any = None,
+    ) -> Response:
+        (rid,) = self._owned_ids(id, write=False)
+        return super().eye(id=rid, extent=extent, q=q, ring=ring)
+
+    def find_in_ref(
+        self,
+        *,
+        id: Any = None,
+        q: Any = None,
+        view: Any = None,
+        context: Any = None,
+    ) -> Response:
+        (rid,) = self._owned_ids(id, write=False)
+        return super().find_in_ref(id=rid, q=q, view=view, context=context)
+
+    def search(
+        self,
+        *,
+        q: str | None = None,
+        tags: list[str] | None = None,
+        link: str | None = None,
+        view: str | None = None,
+        page_size: int = 10,
+        page: int = 1,
+        include_ref_ids: list[int] | None = None,
+        **kw: Any,
+    ) -> Response:
+        """Owner-only read on every search shape: an identified caller's
+        hits are restricted to their own profile ids (an empty owned set
+        matches nothing). The ranked path and ``view='count'`` take the
+        id filter; the q-less tag listing is answered here from the
+        owner-scoped ``list_refs``; a q-less ``link=`` listing pages the
+        link table unscoped, so it is refused (pass ``q=`` with it)."""
+        login = profiles.acting_login(self.store)
+        has_q = bool(q and q.strip())
+        if login is not None:
+            owned = [r.id for r in profiles.profiles_for_owner(self.store, login)]
+            include_ref_ids = (
+                owned
+                if include_ref_ids is None
+                else [i for i in include_ref_ids if i in set(owned)]
+            )
+            if view is None and link is not None and str(link).strip():
+                raise BadInput(
+                    "search(kind='profile', link=…) is not available to a "
+                    "signed-in user",
+                    next="search(kind='profile', q='<name>') or "
+                    "get(kind='profile') to list yours",
+                )
+            if view is None and (has_q or tags):
+                return self._owned_listing(
+                    login, q=q, tags=tags, page_size=page_size, page=page
+                )
+        return super().search(
+            q=q,
+            tags=tags,
+            link=link,
+            view=view,
+            page_size=page_size,
+            page=page,
+            include_ref_ids=include_ref_ids,
+            **kw,
+        )
+
+    def _owned_listing(
+        self,
+        login: str,
+        *,
+        q: str | None,
+        tags: list[str] | None,
+        page_size: int,
+        page: int,
+    ) -> Response:
+        """An identified caller's search, answered from their own rows
+        only: ``tags=`` via the owner-scoped ``list_refs``, ``q=`` as a
+        case-insensitive substring of name/title/sponsor line. The base
+        ranked path's header totals count every owner's matches, so it
+        is not used here (gr490266)."""
+        normalized = Tag.normalize_filter(tags or [], kind=self.kind)
+        refs = self.store.list_refs(
+            kind=self.kind,
+            tags=normalized or None,
+            owner_login=login,
+            limit=200,
+            order_by="updated_desc",
+        )
+        needle = (q or "").strip().lower()
+        if needle:
+            refs = [
+                r
+                for r in refs
+                if any(
+                    needle in str(v or "").lower()
+                    for v in (
+                        r.title,
+                        profiles.payload_of(r).get("name"),
+                        profiles.payload_of(r).get("sponsor_line"),
+                    )
+                )
+            ]
+        offset = max(0, (int(page) - 1) * int(page_size))
+        window = refs[offset : offset + int(page_size)]
+        if not window:
+            what = f"matching {q!r}" if needle else f"tagged {normalized}"
+            return Response(body=f"no profile entries {what}")
+        return self._profile_table(window)
+
+    def tag(self, **kw: Any) -> Response:
+        return super().tag(**self._owned_write_kw(kw))
+
+    def link(self, **kw: Any) -> Response:
+        return super().link(**self._owned_write_kw(kw))
+
+    def _owned_write_kw(self, kw: dict[str, Any]) -> dict[str, Any]:
+        """``kw`` with ``id`` resolved to owner-checked numeric id(s),
+        keeping a list a list (``batch_ids`` callers)."""
+        id = kw.get("id")
+        ids = self._owned_ids(id, write=True)
+        return {**kw, "id": ids if isinstance(id, list) else ids[0]}
 
     # ── get ───────────────────────────────────────────────────────────
 
@@ -192,6 +349,9 @@ class ProfileHandler(NumericRefHandler):
                 ]
             )
             return Response(body=body)
+        return self._profile_table(refs)
+
+    def _profile_table(self, refs: list[Ref]) -> Response:
         rows = []
         for r in refs:
             p = profiles.payload_of(r)

@@ -221,3 +221,231 @@ def test_draft_user_default_order(handler, users) -> None:
         profiles.draft_user_default(
             handler.store, _Draft({"workspace": {"poster": {"profile": "gone"}}})
         )
+
+
+# ── cross-owner ACL on every path (gr490266) ───────────────────────
+
+
+@pytest.mark.parametrize("form", ["id", "handle", "name"])
+def test_resolve_profile_ref_owner_scoped(handler, form) -> None:
+    pid = _mk(handler)
+    ident = {"id": pid, "handle": f"pf{pid}", "name": "lab"}[form]
+    assert profiles.resolve_profile_ref(handler.store, ident, owner="alice") is None
+    ref = profiles.resolve_profile_ref(handler.store, ident, owner="reto")
+    assert ref is not None and ref.id == pid
+
+
+class _ACLDraft:
+    def __init__(self, meta, owner_login=None):
+        self.meta = meta
+        self.owner_login = owner_login
+        self.id = 987654321  # no draft-of owner row
+        self.public_id = "dr0"
+
+
+@pytest.mark.parametrize("form", ["id", "handle", "name"])
+def test_draft_user_default_cross_owner_refused(handler, form) -> None:
+    pid = _mk(handler)
+    sel = {"id": pid, "handle": f"pf{pid}", "name": "lab"}[form]
+    meta = {"workspace": {"poster": {"profile": sel}}}
+    with pytest.raises(NotFound):
+        profiles.draft_user_default(handler.store, _ACLDraft(meta, "alice"))
+    out = profiles.draft_user_default(handler.store, _ACLDraft(meta, "reto"))
+    assert out is not None and out["name"] == "lab"
+
+
+def test_draft_user_default_unowned_draft_scopes_to_acting_user(handler) -> None:
+    pid = _mk(handler)
+    meta = {"workspace": {"poster": {"profile": pid}}}
+    d = _ACLDraft(meta, None)
+    with revision_context(actor="user:al"):
+        with pytest.raises(NotFound):
+            profiles.draft_user_default(handler.store, d)
+    with revision_context(actor="user:rs"):
+        out = profiles.draft_user_default(handler.store, d)
+    assert out is not None and out["name"] == "lab"
+
+
+def test_tag_cross_owner_refused(handler, users) -> None:
+    pid = _mk(handler)
+    with revision_context(actor="user:al"):
+        with pytest.raises(NotFound):
+            handler.tag(id=pid, add=["topic:x"])
+    assert not any("topic:x" in str(t) for t in users.tags_for(pid))
+    with revision_context(actor="user:rs"):
+        handler.tag(id=pid, add=["topic:x"])
+    assert any("topic:x" in str(t) for t in users.tags_for(pid))
+
+
+def test_tag_list_form_cross_owner_refused(handler, users) -> None:
+    # profile takes no id=[...] batch; the owner gets BadInput, a
+    # non-owner must still get the ACL NotFound (no existence leak).
+    pid = _mk(handler)
+    with revision_context(actor="user:al"):
+        with pytest.raises(NotFound):
+            handler.tag(id=[pid], add=["topic:x"])
+    assert not any("topic:x" in str(t) for t in users.tags_for(pid))
+    with revision_context(actor="user:rs"):
+        with pytest.raises(BadInput, match="does not take id"):
+            handler.tag(id=[pid], add=["topic:x"])
+
+
+def test_link_cross_owner_refused(handler) -> None:
+    pid = _mk(handler)
+    other = _mk(handler, name="other")
+    with revision_context(actor="user:al"):
+        with pytest.raises(NotFound):
+            handler.link(id=pid, target=f"profile:{other}")
+    with revision_context(actor="user:rs"):
+        assert handler.link(id=pid, target=f"profile:{other}").body
+
+
+def test_link_list_form_cross_owner_refused(handler) -> None:
+    pid = _mk(handler)
+    other = _mk(handler, name="other")
+    with revision_context(actor="user:al"):
+        with pytest.raises(NotFound):
+            handler.link(id=[pid], target=f"profile:{other}")
+    with revision_context(actor="user:rs"):
+        with pytest.raises(BadInput, match="does not take id"):
+            handler.link(id=[pid], target=f"profile:{other}")
+
+
+def test_eye_cross_owner_refused(handler) -> None:
+    pid = _mk(handler)
+    with revision_context(actor="user:al"):
+        with pytest.raises(NotFound):
+            handler.eye(id=pid)
+    with revision_context(actor="user:rs"):
+        assert handler.eye(id=pid).body
+
+
+def test_find_in_ref_cross_owner_refused(handler) -> None:
+    pid = _mk(handler)
+    with revision_context(actor="user:al"):
+        with pytest.raises(NotFound):
+            handler.find_in_ref(id=pid, q="lab")
+    with revision_context(actor="user:rs"):
+        try:
+            handler.find_in_ref(id=pid, q="lab")
+        except NotFound:
+            pytest.fail("owner must not get NotFound")
+        except Exception:
+            pass
+
+
+def test_search_hides_other_owners_profiles(handler) -> None:
+    pid = _mk(handler)
+    with revision_context(actor="user:al"):
+        assert f"pf{pid}" not in handler.search(q="lab").body
+        assert "0" in handler.search(view="count").body
+    with revision_context(actor="user:rs"):
+        assert f"pf{pid}" in handler.search(q="lab").body
+        assert "1" in handler.search(view="count").body
+
+
+def test_search_tags_only_hides_other_owners_profiles(handler) -> None:
+    # tags-only (no q) goes through _list_by_tags, a separate listing path
+    pid = _mk(handler)
+    handler.tag(id=pid, add=["topic:x"])
+    with revision_context(actor="user:al"):
+        assert f"pf{pid}" not in handler.search(tags=["topic:x"]).body
+    with revision_context(actor="user:rs"):
+        assert f"pf{pid}" in handler.search(tags=["topic:x"]).body
+
+
+def _sweep_runtime(users):
+    from precis.config import PrecisConfig
+    from precis.dispatch import boot
+    from precis.runtime import PrecisRuntime
+
+    return PrecisRuntime(config=PrecisConfig(), hub=boot(store=users))
+
+
+def test_cross_kind_tags_only_sweep_never_admits_profile(users, handler) -> None:
+    # profile is not search-hits-capable, so no kind= spelling reaches it:
+    # explicit list is refused, '*' omits it (the sweep filter below is
+    # defence in depth should that ever change).
+    pid = _mk(handler)
+    handler.tag(id=pid, add=["topic:x"])
+    rt = _sweep_runtime(users)
+    with revision_context(actor="user:rs"):
+        out = rt.dispatch("search", {"kind": "profile,memory", "tags": ["topic:x"]})
+        assert "do not support cross-kind search: ['profile']" in out
+        assert f"pf{pid}" not in rt.dispatch(
+            "search", {"kind": "*", "tags": ["topic:x"]}
+        )
+
+
+def test_cross_kind_tags_only_sweep_filters_other_owners_profiles(
+    users, handler, monkeypatch
+) -> None:
+    # Force profile into the eligible set to exercise the sweep's owner
+    # filter (_dispatch_cross_kind_tags_only).
+    pid = _mk(handler)
+    handler.tag(id=pid, add=["topic:x"])
+    rt = _sweep_runtime(users)
+    real = rt._cross_kind_kinds
+    monkeypatch.setattr(rt, "_cross_kind_kinds", lambda: [*real(), "profile"])
+    args = {"kind": "profile,memory", "tags": ["topic:x"]}
+    # the sweep renders rows as ``profile:<id>`` (not the pf handle)
+    with revision_context(actor="user:al"):
+        assert f"profile:{pid}" not in rt.dispatch("search", dict(args))
+    with revision_context(actor="user:rs"):
+        assert f"profile:{pid}" in rt.dispatch("search", dict(args))
+
+
+def test_search_link_only_refused_for_identified_caller(handler, users) -> None:
+    # q-less link= pages the link table unscoped, so a signed-in user is
+    # refused (fail closed); the unidentified caller keeps the listing.
+    pid = _mk(handler)
+    other = users.insert_ref(kind="profile", slug=None, title="anchor", meta={})
+    handler.link(id=pid, target=f"profile:{other.id}")
+    for actor in ("user:al", "user:rs"):
+        with revision_context(actor=actor):
+            with pytest.raises(BadInput, match="not available to a"):
+                handler.search(link=f"profile:{other.id}")
+    assert "BadInput" not in handler.search(link=f"profile:{other.id}").body
+
+
+# ── gr490266 review fixes: link target, Gone oracle, search totals ──
+
+
+def test_link_target_to_foreign_profile_is_notfound(handler, users) -> None:
+    from precis.utils.link_target import parse_link_target
+
+    pid = _mk(handler)
+    with revision_context(actor="user:al"):
+        with pytest.raises(NotFound):
+            parse_link_target(f"pf{pid}", store=users)
+    with revision_context(actor="user:rs"):
+        assert parse_link_target(f"pf{pid}", store=users).ref_id == pid
+    # unidentified (agent) caller resolves
+    assert parse_link_target(f"pf{pid}", store=users).ref_id == pid
+
+
+def test_retired_foreign_profile_is_notfound_not_gone(handler, users) -> None:
+    pid = _mk(handler)
+    users.retire_ref(pid)
+    with revision_context(actor="user:al"):
+        with pytest.raises(NotFound) as exc:
+            handler.get(id=pid)
+    assert type(exc.value) is NotFound
+    assert not isinstance(exc.value, Gone)
+    with revision_context(actor="user:rs"):
+        with pytest.raises(Gone):
+            handler.get(id=pid)
+
+
+def test_ranked_search_is_owner_scoped(handler) -> None:
+    a = _mk(handler, name="lab")
+    b = _mk(handler, name="lab2")
+    with revision_context(actor="user:al"):
+        body = handler.search(q="lab").body
+    assert f"pf{a}" not in body and f"pf{b}" not in body
+    assert "2" not in body
+    with revision_context(actor="user:rs"):
+        body = handler.search(q="lab").body
+        only = handler.search(q="lab2").body
+    assert f"pf{a}" in body and f"pf{b}" in body
+    assert f"pf{b}" in only and f"pf{a}" not in only

@@ -4,6 +4,7 @@ browser with every handle linked to its own focus page."""
 
 from __future__ import annotations
 
+import base64
 from typing import Any
 
 import pytest
@@ -12,6 +13,9 @@ pytest.importorskip("fastapi")
 
 from fastapi.testclient import TestClient
 
+from precis.handlers.profile import ProfileHandler
+from precis.users import hash_password
+from precis.utils import handle_registry
 from precis_web.app import create_app
 from precis_web.config import WebConfig
 from precis_web.routes.eye import linkify_handles
@@ -198,3 +202,66 @@ def test_linkify_handles_links_only_real_handles() -> None:
     assert 'href="/eye/mao18' not in out and 'href="/eye/mx20' not in out
     assert 'href="/eye/sk:precis-get-help?' in out
     assert linkify_handles("<b>") == "&lt;b&gt;"
+
+
+# ── gr490266: /eye must not leak another owner's profile ─────────────
+
+
+@pytest.fixture
+def authed_client(runtime_with_store: Any) -> TestClient:
+    """Basic gate on, so the signed-in user reaches the handler as
+    ``user:<abbrev>`` (the plain ``client`` runs auth-off, anonymous)."""
+    cfg = WebConfig(corpus_dir=None, auth_required=True)
+    return TestClient(create_app(runtime=runtime_with_store, web_config=cfg))
+
+
+def _basic(login: str, password: str) -> dict[str, str]:
+    raw = base64.b64encode(f"{login}:{password}".encode()).decode()
+    return {"Authorization": f"Basic {raw}"}
+
+
+def _seed_reto_profile(store: Any) -> Any:
+    store.create_web_user(login="reto", abbrev="rs", password=hash_password("pw"))
+    store.create_web_user(login="alice", abbrev="al", password=hash_password("pw"))
+    store.upsert_kinds([ProfileHandler.spec])
+    return store.insert_ref(
+        kind="profile",
+        slug=None,
+        title="SecretPalette",
+        meta={"profile": {"name": "SecretPalette"}},
+        owner_login="reto",
+    )
+
+
+def test_eye_profile_is_hidden_from_another_owner(
+    authed_client: TestClient, store: Any
+) -> None:
+    prof = _seed_reto_profile(store)
+    r = authed_client.get(f"/eye/pf{prof.id}", headers=_basic("alice", "pw"))
+    assert r.status_code == 404
+    assert "SecretPalette" not in r.text
+
+
+def test_eye_profile_is_visible_to_its_owner(
+    authed_client: TestClient, store: Any
+) -> None:
+    prof = _seed_reto_profile(store)
+    r = authed_client.get(f"/eye/pf{prof.id}", headers=_basic("reto", "pw"))
+    assert r.status_code == 200
+    assert "SecretPalette" in r.text
+
+
+def test_eye_hub_ring_hides_other_owners_profile(
+    authed_client: TestClient, store: Any
+) -> None:
+    prof = _seed_reto_profile(store)
+    hub = store.insert_ref(kind="todo", slug=None, title="Ring hub")
+    store.add_link(src_ref_id=hub.id, dst_ref_id=prof.id, relation="related-to")
+    url = f"/eye/{handle_registry.format_handle('todo', hub.id)}"
+    r = authed_client.get(url, headers=_basic("alice", "pw"))
+    assert r.status_code == 200
+    assert "Ring hub" in r.text
+    assert "SecretPalette" not in r.text
+    r = authed_client.get(url, headers=_basic("reto", "pw"))
+    assert r.status_code == 200
+    assert "SecretPalette" in r.text

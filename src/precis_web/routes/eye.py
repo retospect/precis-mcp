@@ -39,10 +39,12 @@ from urllib.parse import quote
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from precis import profiles
 from precis.handlers._eye import EYE_LADDER, is_eye_view
 from precis.utils import handle_registry
 from precis.utils.eye_render import _TREE_KINDS
 from precis.utils.refeye import resolve_up
+from precis_web.auth import current_user
 from precis_web.deps import await_dispatch, get_store, templates, timed_response
 from precis_web.graph_filters import parse_kind_filter, parse_space_filter
 from precis_web.ref_urls import ref_url
@@ -277,11 +279,15 @@ def _up_link(
     if is_chunk:
         return {"reason": "a chunk handle; zoom out from its record"}
     ref = store.get_ref(kind=kind, id=pk)
-    if ref is None:
+    # Another owner's profile is a missing ref here too (gr490266): no
+    # up link, no title — on the focus itself or on an up target.
+    user = current_user(request)
+    login = user.login if user is not None else None
+    if ref is None or not profiles.visible_to(ref, login):
         return None
     up = resolve_up(store, kind, pk, parent_id=ref.parent_id)
-    if up["target"] is None:
-        return {"reason": up["reason"]}
+    if up["target"] is None or not profiles.visible_to(up["target"], login):
+        return {"reason": up["reason"] or "no live up link"}
 
     def _card(r: Any) -> dict[str, str]:
         h = handle_registry.format_handle(r.kind, int(r.id))
@@ -294,7 +300,7 @@ def _up_link(
     return {
         **_card(up["target"]),
         "rel": up["rel"],
-        "others": [_card(r) for r in up["others"]],
+        "others": [_card(r) for r in up["others"] if profiles.visible_to(r, login)],
         "more": up["n_others"] - len(up["others"]),
     }
 

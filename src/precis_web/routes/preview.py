@@ -72,6 +72,7 @@ _NUMERIC_KINDS_FALLBACK: frozenset[str] = frozenset(
         "concept",
         "taxon",
         "llm",
+        "profile",
     }
 )
 
@@ -186,7 +187,8 @@ def _fetch_preview_rows(store, numeric_id: int, ord_for_quote: int | None):
     """Blocking title + body-chunk lookup (run via ``asyncio.to_thread``)."""
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT title, retired_at IS NOT NULL FROM refs WHERE ref_id = %s",
+            "SELECT title, retired_at IS NOT NULL, kind, owner_login"
+            " FROM refs WHERE ref_id = %s",
             (numeric_id,),
         ).fetchone()
         if ord_for_quote is not None:
@@ -201,6 +203,18 @@ def _fetch_preview_rows(store, numeric_id: int, ord_for_quote: int | None):
                 (numeric_id,),
             ).fetchone()
     return row, body_row
+
+
+def _profile_visible(request: Request, kind: str, owner: str | None) -> bool:
+    """Owner-only read (gr490266): another owner's ``kind='profile'`` row
+    previews as missing. Keyed on the row's real kind — the numeric fast
+    path reads by bare ``ref_id``, whatever kind the URL names."""
+    if kind != "profile" or not owner:
+        return True
+    from precis_web.auth import current_user
+
+    user = current_user(request)
+    return user is None or user.login == owner
 
 
 @router.get("/preview/{kind}/{ref_id}", response_class=HTMLResponse)
@@ -238,7 +252,7 @@ async def preview(
     row, body_row = await asyncio.to_thread(
         _fetch_preview_rows, store, numeric_id, ord_for_quote
     )
-    if row is None:
+    if row is None or not _profile_visible(request, row[2], row[3]):
         return templates.TemplateResponse(
             request,
             "preview/popover.html.j2",
