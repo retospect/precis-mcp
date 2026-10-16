@@ -1,9 +1,15 @@
 #!/bin/bash
 # {{ ansible_managed }}
-# Starts {{ db_exporter.binary }} with its DSN read from the precis secret
-# store at start. The value never touches disk, the plist or the process args.
+# Starts {{ db_exporter.binary }} with its DSN read from the root-only env file
+# {{ db_exporters_env_file }}. The value is never in this script, the plist or
+# the process args. The file is parsed line by line, not sourced.
 set -euo pipefail
-dsn="$({{ db_exporters_precis_bin }} secret get {{ db_exporter.secret }})"
-[ -n "$dsn" ] || { echo "{{ db_exporter.binary }}: empty DSN secret {{ db_exporter.secret }}" >&2; exit 1; }
+dsn=""
+while IFS= read -r line || [ -n "$line" ]; do
+  case "$line" in
+    "{{ db_exporter.dsn_env }}="*) dsn="${line#*=}" ;;
+  esac
+done < "{{ db_exporters_env_file }}"
+[ -n "$dsn" ] || { echo "{{ db_exporter.binary }}: no {{ db_exporter.dsn_env }} in {{ db_exporters_env_file }}" >&2; exit 1; }
 export {{ db_exporter.dsn_env }}="$dsn"
 exec {{ db_exporters_bin_dir }}/{{ db_exporter.binary }} --web.listen-address={{ db_exporters_listen_host }}:{{ db_exporter.port }}

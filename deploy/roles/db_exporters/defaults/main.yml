@@ -4,19 +4,25 @@
 # (service_unit role). The monitoring role scrapes them only when
 # monitoring_db_exporters is true; flip it after both targets answer.
 #
-# The DSNs are NOT in the repo or the ansible vault: each lives in the precis
-# secret store (`precis secret set NAME --prompt`) and the unit's launcher
-# reads it at start with `precis secret get`, so a rotation needs only a
-# unit restart, no deploy. Needs the precis venv on the DB node (playbook 20).
-db_exporters_precis_bin: "{{ precis_worker_venv | default('/opt/precis/venv') }}/bin/precis"
-db_exporters_run_as: deploy
+# The DSNs are NOT in the repo. They live in the (gitignored) ansible vault as
+# the two vars below; Ansible resolves them on the control side and renders
+# them into a root-only env file on the DB node, which each launcher reads at
+# start. The DB node has no precis CLI and gets none (the data group stays
+# free of worker lanes), so nothing here uses the CLI. A rotation is: change
+# the vault var, re-run 18a (the changed env file restarts both units).
+db_exporters_run_as: root # must read the root-only (0600) env file
 db_exporters_bin_dir: /usr/local/bin
 
-# Secret-store names. OPEN: confirm these are the names the DSNs were stored
-# under before the first run; a wrong name fails the launcher, pg_up stays 0
-# and PostgresDown pages.
-db_exporters_pg_dsn_secret: PRECIS_PG_EXPORTER_DSN
-db_exporters_pgbouncer_dsn_secret: PRECIS_PGBOUNCER_EXPORTER_DSN
+# Vault var names holding the two DSNs (see
+# inventory.example/group_vars/all/vault.yml.example). The postgres DSN is a
+# libpq URL; the pgbouncer one connects to database `pgbouncer` on the
+# pgbouncer port as a `stats_users` member.
+db_exporters_pg_dsn_var: vault_pg_exporter_dsn
+db_exporters_pgbouncer_dsn_var: vault_pgbouncer_exporter_dsn
+
+# Root-only env file the launchers read (owner root, mode 0600).
+db_exporters_env_dir: /etc/precis
+db_exporters_env_file: "{{ db_exporters_env_dir }}/db-exporters.env"
 
 # Login the DSNs use (documentation only; the role never reads it).
 # OPEN (Reto): pgbouncer.ini.j2 already lists prometheus_reader in stats_users

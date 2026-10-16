@@ -20,6 +20,9 @@ vault_pg_agent_rw_pass: "CHANGEME"
 vault_pg_agent_ro_pass: "CHANGEME"
 vault_pg_pgboss_pass: "CHANGEME"
 vault_pg_prometheus_pass: "CHANGEME"
+# db_exporters DSNs (read-only monitoring login; see roles/db_exporters)
+vault_pg_exporter_dsn: "postgresql://CHANGEME:CHANGEME@localhost:5432/postgres?sslmode=disable"
+vault_pgbouncer_exporter_dsn: "postgres://CHANGEME:CHANGEME@localhost:6432/pgbouncer?sslmode=disable"
 vault_pg_admin_pass: "CHANGEME"
 
 # Tailscale

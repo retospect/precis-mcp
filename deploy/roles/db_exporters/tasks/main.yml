@@ -16,20 +16,12 @@
         unit: postgres-exporter
         version: "{{ db_exporters_pg_version }}"
         port: "{{ db_exporters_pg_port }}"
-        secret: "{{ db_exporters_pg_dsn_secret }}"
         dsn_env: DATA_SOURCE_NAME
       - binary: pgbouncer_exporter
         unit: pgbouncer-exporter
         version: "{{ db_exporters_pgbouncer_version }}"
         port: "{{ db_exporters_pgbouncer_port }}"
-        secret: "{{ db_exporters_pgbouncer_dsn_secret }}"
         dsn_env: PGBOUNCER_EXPORTER_CONNECTION_STRING
-
-- name: Require the precis CLI (the launcher reads each DSN through it)
-  ansible.builtin.stat:
-    path: "{{ db_exporters_precis_bin }}"
-  register: _db_exporters_precis
-  failed_when: not _db_exporters_precis.stat.exists
 
 - name: Download the exporter releases
   ansible.builtin.get_url:
@@ -82,7 +74,41 @@
     label: "{{ item.binary }}"
   become: true
 
-- name: Render the launchers (no secret value in them)
+- name: Create the env file directory
+  ansible.builtin.file:
+    path: "{{ db_exporters_env_dir }}"
+    state: directory
+    owner: root
+    mode: "0755"
+  become: true
+
+- name: DSN vault vars are set and not placeholders
+  ansible.builtin.assert:
+    that:
+      - lookup('vars', item, default='') | length > 0
+      - "'CHANGEME' not in lookup('vars', item, default='')"
+    fail_msg: "vault var {{ item }} is unset, empty or still CHANGEME"
+    quiet: true
+  loop:
+    - "{{ db_exporters_pg_dsn_var }}"
+    - "{{ db_exporters_pgbouncer_dsn_var }}"
+  no_log: true
+
+# The DSNs resolve here, on the control side, from the vault vars; the file on
+# the DB node is the only place they land. no_log: nothing prints a value.
+- name: Render the root-only DSN env file
+  ansible.builtin.template:
+    src: db-exporters.env.j2
+    dest: "{{ db_exporters_env_file }}"
+    owner: root
+    group: "{{ 'wheel' if os_family == 'darwin' else 'root' }}"
+    mode: "0600"
+  become: true
+  no_log: true
+  diff: false
+  register: _db_exporters_env
+
+- name: Render the launchers (no secret value in them; they read the env file)
   ansible.builtin.template:
     src: launcher.sh.j2
     dest: "{{ db_exporters_bin_dir }}/precis-{{ db_exporter.unit }}-launch"
@@ -105,19 +131,19 @@
     service_unit_name: "{{ db_exporter.unit }}"
     service_unit_run_as: "{{ db_exporters_run_as }}"
     service_unit_exec: "{{ db_exporters_bin_dir }}/precis-{{ db_exporter.unit }}-launch"
-    service_unit_env: "{{ precis_shared_env | default({}) }}"
+    service_unit_env: {} # the exporters need none of the shared API keys
     service_unit_schedule:
       mode: keepalive
 
 # service_unit restarts only when its own unit file changes; a new binary or a
-# changed launcher (bind address, port, secret name) needs a restart too.
+# changed launcher (bind address, port) or DSN env file needs a restart too.
 - name: Restart a unit whose binary changed (macOS)
   ansible.builtin.command: "launchctl kickstart -k system/com.precis.{{ item.item.unit }}"
   loop: "{{ _db_exporters_unpack.results }}"
   loop_control:
     index_var: _i
     label: "{{ item.item.unit }}"
-  when: os_family == "darwin" and (item is changed or _db_exporters_launchers.results[_i] is changed)
+  when: os_family == "darwin" and (item is changed or _db_exporters_launchers.results[_i] is changed or _db_exporters_env is changed)
   become: true
 
 - name: Restart a unit whose binary changed (Linux)
@@ -128,7 +154,7 @@
   loop_control:
     index_var: _i
     label: "{{ item.item.unit }}"
-  when: os_family == "linux" and (item is changed or _db_exporters_launchers.results[_i] is changed)
+  when: os_family == "linux" and (item is changed or _db_exporters_launchers.results[_i] is changed or _db_exporters_env is changed)
   become: true
 
 - name: Wait for both exporters to listen
