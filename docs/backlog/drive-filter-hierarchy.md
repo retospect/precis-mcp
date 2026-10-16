@@ -1,12 +1,13 @@
 ---
-status: draft
+status: in-progress
 pillar: platform
 ---
 # Drive Return and Showcase
 
 Remaining approved behavior: **Return** uses personal viewing history;
 **Showcase** uses a curated collection, including emerging discoveries.
-Storage, sharing and schema choices below remain a proposal for owner review.
+Storage, sharing and schema choices below were approved by Reto on 2026-10-16
+(see Owner rulings).
 Discover and the shared searchable kind/filter picker are described in
 `src/precis_web/__init__.py`; their completed implementation spec is retired.
 Reuse that picker, visible search/active chips/reset, URL facets and saved-kind
@@ -59,8 +60,7 @@ table/column changes, historical attribution or production backfill:
 | `web_collection_members` | PK `(collection_id, ref_id)`; both FKs; `added_at timestamptz NOT NULL` | Both FKs ON DELETE CASCADE; index `(collection_id, added_at DESC, ref_id DESC)`; duplicate add preserves original added time. |
 
 Recommend **private, owner-readable/writable Showcase for this slice**, with no
-sharing endpoint, public link or visibility flag. This is a sharing proposal
-for review, not a claim Reto selected private sharing. Other users cannot list
+sharing endpoint, public link or visibility flag (ruling 2). Other users cannot list
 or change its membership; foreign collection ids return 404. Collection privacy
 does not change existing corpus access. No new MCP verbs/surfaces in this slice.
 
@@ -165,14 +165,40 @@ Alternatives: event JSON avoids DDL but lacks user FK/indexed latest-state and
 isolated deletion and exposes history through global audit readers; user tags/
 folders/graph edges reuse storage but lack the collection/isolation contract or
 change item placement. A new-table migration still needs owner review and the
-normal migration `/go` gate; no number reserved or SQL authored in this task.
+normal migration `/go` gate (migration 0223, slice 1).
 No full suite, production/backfill/deploy or source/UI change at storage review.
 
-## Questions for communicator
+## Owner rulings (Reto, 2026-10-16 ~11:05Z, morning-queue 14)
 
-1. Return/Showcase owner review: personal-open storage/lifecycle and curated
-   collection membership/sharing/API. A real nanobuds/demo handle will ground
-   later dogfood when available; preferences themselves are approved.
+Relayed by the coordinator (witty-forging-bee-d4). These settle the storage
+review above; the proposal is now the contract.
+
+1. **Three tables, one migration.** "Yes: three tables, in ONE forward-only
+   migration."
+2. **Showcase is private per user.** "Showcase is private per user (we want
+   to go there more)." No sharing endpoint, public link or visibility flag.
+3. **Latest-open only, no expiry.** "Yes: latest-open only, no expiry.
+   History could be made navigable from the item later."
+4. **Agent pollution accepted for now.** "Accept agent pollution for now",
+   with a follow-up to separate "my stuff" from "my agent's stuff" soon
+   (agents are far more active than Reto): `drive-my-vs-agent-stuff.md`.
+5. **Order.** "Store plus migration first, then the open beacon, then
+   browse."
+
+## Slices
+
+1. **Store and migration.** Migration `0223_drive_return_showcase.sql`
+   (the three tables above) and `store/_drive_state_ops.py`
+   (`record_open`, `forget_open`, `clear_history`, `ensure_showcase`,
+   `add_member`, `remove_member`, scoped reads), each read and write keyed
+   by the authenticated `web_users.id`. Tests:
+   `tests/test_drive_state_store.py`.
+2. **Open beacon.** `precis_web/view_history.py`, the detail-only template
+   marker, `POST /drive/opened`, and named cases 2–3 above.
+3. **Browse.** `task=return|showcase` scoping on `/drive`, the history and
+   showcase mutation routes, and named cases 1 and 4–7 above.
+
+A real nanobuds/demo handle will ground later dogfood when available.
 
 Integration acceptance example: recover a known design such as the unicycle
 from a fresh session, deep link and saved selection; deployed SHA and actual
