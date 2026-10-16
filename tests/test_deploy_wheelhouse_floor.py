@@ -7,10 +7,16 @@ BEFORE the ``precis-mcp[catalyst]`` pip install runs.
 wheelhouse is empty, and the ``catalyst`` extra's floor
 (``autocatpath>=0.29.0`` — not on PyPI, release-gated) then resolves
 nothing or a too-old wheel. The fix's guard: find the wheels, refuse when
-none satisfies the floor, name play 44's wheel push in the message.
+none satisfies the floor, name the seed route in the message — play 44's
+wheel push on the Linux compute node; on darwin plugin hosts play 44
+can't reach them (the autocatpath role is linux-only), so the message
+names the same play's ``wheelhouse_seed`` re-run with ``-e
+autocatpath_wheel=``, which ``scripts/deploy`` drives (gr491948).
 
 Structure test only — ansible-side version semantics (`version` test)
-were verified live during development.
+were verified live during development. The refusal ``msg`` is rendered
+with plain jinja2 for the per-OS route assertions (it carries no
+ansible-only filters).
 """
 
 from __future__ import annotations
@@ -18,6 +24,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import jinja2
 import yaml
 
 _ROLES = Path(__file__).resolve().parent.parent / "deploy" / "roles"
@@ -59,6 +66,47 @@ def test_each_catalyst_installer_guards_the_wheelhouse_floor() -> None:
         assert "'version'" in when and "'>='" in when
         msg = refuse["ansible.builtin.fail"]["msg"]
         assert "44" in msg and "autocatpath_wheel" in msg
+
+
+def _refuse_task(path: Path) -> dict[str, Any]:
+    return next(
+        t
+        for t in _tasks(path)
+        if "wheelhouse cannot satisfy the catalyst floor" in t.get("name", "")
+    )
+
+
+def _render_msg(task: dict[str, Any], os_family: str) -> str:
+    env = jinja2.Environment(undefined=jinja2.ChainableUndefined)
+    return env.from_string(task["ansible.builtin.fail"]["msg"]).render(
+        os_family=os_family
+    )
+
+
+def test_refusal_message_names_the_darwin_seed_route() -> None:
+    """gr491948: on darwin plugin hosts the play-44 hint is a dead end — the
+    autocatpath role's first task asserts linux, so its wheel tasks never
+    run there. The rendered darwin message must name the route that works:
+    re-run the same play with ``-e autocatpath_wheel=`` (the wheelhouse_seed
+    include lands it), which ``scripts/deploy`` fills from the catpath
+    checkout."""
+    for path in _INSTALLERS:
+        rendered = _render_msg(_refuse_task(path), "darwin")
+        assert "autocatpath_wheel=" in rendered, path.name
+        assert "scripts/deploy" in rendered, path.name
+        # No actionable play-44 push on darwin — that's the hint that
+        # stranded melchior.
+        assert "44-autocatpath.yml" not in rendered, path.name
+        assert "--limit" not in rendered, path.name
+
+
+def test_refusal_message_keeps_play44_on_linux() -> None:
+    """provision.yml's refusal also fires on linux plugin hosts; there the
+    play-44 wheel push remains the documented route."""
+    provision = _ROLES / "precis_worker" / "tasks" / "provision.yml"
+    rendered = _render_msg(_refuse_task(provision), "linux")
+    assert "44-autocatpath.yml" in rendered
+    assert "autocatpath_wheel=" in rendered
 
 
 def test_floor_matches_the_pyproject_pin() -> None:

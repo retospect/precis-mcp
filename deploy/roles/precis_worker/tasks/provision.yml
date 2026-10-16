@@ -120,7 +120,10 @@
 # install below then resolves no autocatpath (its floor, >=0.29.0 per
 # pyproject, is not on PyPI) and either fails cryptically or picks a too-old
 # wheel. Assert the seeded wheelhouse actually satisfies the floor BEFORE
-# the pip install, and name the fix (play 44's wheel push).
+# the pip install, and name the fix — play 44's wheel push on the Linux
+# compute node; on darwin plugin hosts play 44 can't reach them (the
+# autocatpath role is linux-only), so the message names this play's own
+# wheelhouse_seed re-run, which scripts/deploy drives (gr491948).
 - name: Find autocatpath wheels in the wheelhouse (autocatpath_plugin hosts only)
   when: inventory_hostname in (precis_capabilities.autocatpath_plugin | default([]))
   ansible.builtin.find:
@@ -146,10 +149,20 @@
       {{ autocatpath_wheelhouse | default('/opt/precis/wheels') }} holds no
       autocatpath wheel >= {{ autocatpath_min_version | default('0.29.0') }},
       but the `catalyst` extra this host installs requires it (not on PyPI;
-      release-gated). Push it first with play 44's wheel push:
+      release-gated).
+      {%- if os_family == 'darwin' %}
+      Re-run THIS play with `-e
+      autocatpath_wheel=<path-to-autocatpath-X.Y.Z-*.whl>` — the
+      wheelhouse_seed include above lands the wheel before this check, and
+      scripts/deploy resolves or builds it from the catpath checkout on its
+      own. Play 44's wheel push cannot seed this host: the autocatpath role
+      targets the Linux compute node only.
+      {%- else %}
+      Push it first with play 44's wheel push:
       `scripts/host-ops/play playbooks/44-autocatpath.yml -e
-      autocatpath_wheel=<path-to-autocatpath-X.Y.Z-*.whl> --limit <this host>`
-      — then re-run this play (gr489600).
+      autocatpath_wheel=<path-to-autocatpath-X.Y.Z-*.whl> --limit <this
+      host>` — then re-run this play.
+      {%- endif %} (gr489600, gr491948)
 
 - name: Install precis-mcp[paper,pourbaix] into worker venv
   # Installing from git+https because the worker subcommand only lives in
