@@ -1,0 +1,11 @@
+---
+# 18a-db-exporters.yml — postgres_exporter :9187 + pgbouncer_exporter :9127 on
+# the DB node. Run after 20-precis-worker (the launcher reads the DSNs through
+# the precis CLI) and before 08-monitoring renders the scrape jobs. Then set
+# monitoring_db_exporters: true in the private inventory and re-run 08.
+- name: Configure the DB exporters
+  hosts: data
+  become: true
+  roles:
+    - db_exporters
+  tags: [db_exporters, monitoring]

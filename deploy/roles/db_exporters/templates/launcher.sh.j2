@@ -1,0 +1,9 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Starts {{ db_exporter.binary }} with its DSN read from the precis secret
+# store at start. The value never touches disk, the plist or the process args.
+set -euo pipefail
+dsn="$({{ db_exporters_precis_bin }} secret get {{ db_exporter.secret }})"
+[ -n "$dsn" ] || { echo "{{ db_exporter.binary }}: empty DSN secret {{ db_exporter.secret }}" >&2; exit 1; }
+export {{ db_exporter.dsn_env }}="$dsn"
+exec {{ db_exporters_bin_dir }}/{{ db_exporter.binary }} --web.listen-address={{ db_exporters_listen_host }}:{{ db_exporter.port }}

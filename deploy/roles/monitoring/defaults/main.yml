@@ -15,8 +15,10 @@ monitoring_config_dir: "{{ '/etc/prometheus' if os_family == 'linux' else '/usr/
 # Scrape the DB node's postgres_exporter (:9187) and pgbouncer_exporter
 # (:9127) and load the rules only their metrics feed (PostgresDown). Off by
 # default: with no exporters running, both targets would be always-down and
-# NodeDown/PostgresDown would fire forever (gr465126, ruling D2a). Set true
-# only when the DB node runs both exporters.
+# NodeDown/PostgresDown would fire forever (gr465126, ruling D2a). The
+# db_exporters role (playbook 18a, tag db_exporters) installs both on the DB
+# node; set true in the private inventory once `pg_up` is 1 and both targets
+# answer.
 monitoring_db_exporters: false
 
 # Alertmanager runs only where there is a Linux package for it and a

@@ -139,7 +139,8 @@ all:
     # PRECIS_OPS_ALERT_TARGET must be in precis_shared_env for the receiver.
     # monitoring_db_exporters: true adds the postgres_exporter :9187 /
     # pgbouncer_exporter :9127 scrape jobs and PostgresDown; default false,
-    # set it only when the DB node runs both exporters.
+    # set it after playbook 18a (role db_exporters) runs both exporters on
+    # the DB node and their targets answer.
     monitoring:
       hosts:
         node-gpu:

@@ -109,6 +109,12 @@
 - name: "20b — precis worker (collapsed, --profile all, every host)"
   ansible.builtin.import_playbook: playbooks/20b-precis-worker-collapsed.yml
 
+# DB-node exporters read their DSNs through the precis CLI, so they follow 20b
+# (the venv). 08 only renders the scrape jobs and cares about the
+# monitoring_db_exporters flag, not whether the exporters are up yet.
+- name: "18a — postgres_exporter + pgbouncer_exporter (DB node)"
+  ansible.builtin.import_playbook: playbooks/18a-db-exporters.yml
+
 # Dedicated agent worker lane (gateway group) — gr247125, nursery:dispatch-
 # stall flapping: a second tiny worker running `--only job_claude_inproc
 # --only job_inproc` so the planner (job_claude_inproc's plan_tick — the

@@ -1,0 +1,46 @@
+---
+# db_exporters — postgres_exporter (:9187) and pgbouncer_exporter (:9127) on
+# the DB node (postgres_host). Both run as precis service units
+# (service_unit role). The monitoring role scrapes them only when
+# monitoring_db_exporters is true; flip it after both targets answer.
+#
+# The DSNs are NOT in the repo or the ansible vault: each lives in the precis
+# secret store (`precis secret set NAME --prompt`) and the unit's launcher
+# reads it at start with `precis secret get`, so a rotation needs only a
+# unit restart, no deploy. Needs the precis venv on the DB node (playbook 20).
+db_exporters_precis_bin: "{{ precis_worker_venv | default('/opt/precis/venv') }}/bin/precis"
+db_exporters_run_as: deploy
+db_exporters_bin_dir: /usr/local/bin
+
+# Secret-store names. OPEN: confirm these are the names the DSNs were stored
+# under before the first run; a wrong name fails the launcher, pg_up stays 0
+# and PostgresDown pages.
+db_exporters_pg_dsn_secret: PRECIS_PG_EXPORTER_DSN
+db_exporters_pgbouncer_dsn_secret: PRECIS_PGBOUNCER_EXPORTER_DSN
+
+# Login the DSNs use (documentation only; the role never reads it).
+# OPEN (Reto): pgbouncer.ini.j2 already lists prometheus_reader in stats_users
+# and the example vault names vault_pg_prometheus_pass, but nothing in this
+# tree creates the Postgres role; it needs pg_monitor.
+db_exporters_login: prometheus_reader
+
+# Bind address for both exporters. Empty = all interfaces (the monitoring
+# host scrapes hostvars[postgres_host].ansible_host). OPEN (Reto): tailnet only?
+db_exporters_listen_host: ""
+db_exporters_pg_port: 9187
+db_exporters_pgbouncer_port: 9127
+
+# Pinned upstream release tarballs (homebrew-core has no formula for either;
+# the DB node is macOS). Bump version and checksums together.
+db_exporters_release_url: https://github.com/prometheus-community
+db_exporters_pg_version: "0.20.1"
+db_exporters_pgbouncer_version: "0.12.1"
+db_exporters_checksums:
+  postgres_exporter:
+    darwin-arm64: "sha256:4dd2b9e7ac658556dd2cb143ac472a87ff540ffc2b482d5311ff0ef47b11413c"
+    linux-amd64: "sha256:89d4f7e7920cad48fdc3133f789556ef5253c330a9f5fdace3bdb6344c0a8b5a"
+    linux-arm64: "sha256:d5d86fb98bb1f26b088d1a6fda07fd6b6f035cb5d40492f75ec3bfebb5ddfe9d"
+  pgbouncer_exporter:
+    darwin-arm64: "sha256:9eca132c7668066eef013310bb6df2bff00d0b73b8b40fb48be7f147ca9e1785"
+    linux-amd64: "sha256:fa391b513d3a3f03843a6e0d64e711fda1f057dc43133db5c1b130ba38767857"
+    linux-arm64: "sha256:0abb808ae8e251126c854ebdce382993876df629b34c0401816d3818db92c700"

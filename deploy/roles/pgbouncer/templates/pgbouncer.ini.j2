@@ -28,6 +28,9 @@ server_idle_timeout = 600
 log_connections = 0
 log_disconnections = 0
 stats_period = 60
+; gr492114: pgbouncer_exporter's driver sends extra_float_digits, which pgbouncer
+; otherwise rejects. Takes effect on the next pgbouncer restart (play 02).
+ignore_startup_parameters = extra_float_digits
 admin_users = {{ 'deploy' if os_family == 'darwin' else 'postgres' }}
 ; td458386: read-only console (SHOW POOLS/STATS/CLIENTS; no PAUSE/KILL/RELOAD)
 ; for roles that are already in userlist.txt — admin_users above has no

@@ -47,9 +47,9 @@ gr346534, soft-deleted)
   `PRECIS_OPS_ALERT_TARGET` in `precis_shared_env`, run playbooks 18 then 08
   there (08 keeps a backup of the hand-edited `prometheus.yml`; the DB
   scrape jobs and PostgresDown sit behind `monitoring_db_exporters`, default
-  off, so set it true on the `monitoring` host only once the DB node runs
-  both exporters — otherwise NodeDown/PostgresDown fire on always-down
-  targets).
+  off; playbook 18a (role `db_exporters`) runs both exporters on the DB node,
+  and the flag flips true in the private inventory once their targets answer
+  — before that NodeDown/PostgresDown fire on always-down targets).
 - Accepted trade-off (Reto 2026-10-04): these alerts are silent while Postgres
   or asa_bot is down, PostgresDown included.
 - Done and verified on prod earlier: the doctor filer fix (tick 464516), the
@@ -114,10 +114,9 @@ gr346534, soft-deleted)
    is the OTS batch 7 re-stamp). It ranks below 1–4 because the alerts still
    fire; what is missing is the tracker binding, so nothing goes silent.
 6. **backlog/db-exporters-role.md** (gr492114; option (b) of gr465126) —
-   run postgres_exporter and pgbouncer_exporter on the DB node so
-   `monitoring_db_exporters` can flip true. The DSN is in the precis
-   secret store (Reto 2026-10-16), so a builder can start; ranks last because the gate (5691792fa, branch
-   `db-exporters-gate`) stops the false NodeDown/PostgresDown once it lands.
+   the role shipped; what is left is the deploy-time steps and open points
+   in that item (secret names, login, bind address, flag flip). Ranks last
+   because the gate already stops the false NodeDown/PostgresDown.
 
 ## Horizon
 

@@ -1,0 +1,141 @@
+---
+# postgres_exporter + pgbouncer_exporter on the DB node. See defaults/main.yml.
+
+- name: db_exporters runs on the postgres_host node only
+  ansible.builtin.assert:
+    that: inventory_hostname == postgres_host
+    fail_msg: "db_exporters targets postgres_host ({{ postgres_host }}), not {{ inventory_hostname }}"
+    quiet: true
+
+- name: Resolve the release platform and exporter table
+  ansible.builtin.set_fact:
+    _db_exporters_platform: >-
+      {{ 'darwin' if os_family == 'darwin' else 'linux' }}-{{ 'arm64' if ansible_architecture in ['arm64', 'aarch64'] else 'amd64' }}
+    _db_exporters:
+      - binary: postgres_exporter
+        unit: postgres-exporter
+        version: "{{ db_exporters_pg_version }}"
+        port: "{{ db_exporters_pg_port }}"
+        secret: "{{ db_exporters_pg_dsn_secret }}"
+        dsn_env: DATA_SOURCE_NAME
+      - binary: pgbouncer_exporter
+        unit: pgbouncer-exporter
+        version: "{{ db_exporters_pgbouncer_version }}"
+        port: "{{ db_exporters_pgbouncer_port }}"
+        secret: "{{ db_exporters_pgbouncer_dsn_secret }}"
+        dsn_env: PGBOUNCER_EXPORTER_CONNECTION_STRING
+
+- name: Require the precis CLI (the launcher reads each DSN through it)
+  ansible.builtin.stat:
+    path: "{{ db_exporters_precis_bin }}"
+  register: _db_exporters_precis
+  failed_when: not _db_exporters_precis.stat.exists
+
+- name: Download the exporter releases
+  ansible.builtin.get_url:
+    url: "{{ db_exporters_release_url }}/{{ item.binary }}/releases/download/v{{ item.version }}/{{ item.binary }}-{{ item.version }}.{{ _db_exporters_platform }}.tar.gz"
+    dest: "/tmp/{{ item.binary }}-{{ item.version }}.{{ _db_exporters_platform }}.tar.gz"
+    checksum: "{{ db_exporters_checksums[item.binary][_db_exporters_platform] }}"
+    mode: "0644"
+  loop: "{{ _db_exporters }}"
+  loop_control:
+    label: "{{ item.binary }} {{ item.version }}"
+
+# Plain tar, not ansible's unarchive: that module needs GNU tar and macOS ships
+# bsdtar (see playbook 33). The versioned marker makes `creates:` re-run the
+# unpack on a version bump and skip it otherwise.
+- name: Unpack the exporter binaries
+  ansible.builtin.command:
+    argv:
+      - tar
+      - -xzf
+      - "/tmp/{{ item.binary }}-{{ item.version }}.{{ _db_exporters_platform }}.tar.gz"
+      - -C
+      - "{{ db_exporters_bin_dir }}"
+      - --strip-components=1
+      - "{{ item.binary }}-{{ item.version }}.{{ _db_exporters_platform }}/{{ item.binary }}"
+    creates: "{{ db_exporters_bin_dir }}/.{{ item.binary }}-{{ item.version }}.installed"
+  loop: "{{ _db_exporters }}"
+  loop_control:
+    label: "{{ item.binary }}"
+  become: true
+  register: _db_exporters_unpack
+
+- name: Own the exporter binaries by root
+  ansible.builtin.file:
+    path: "{{ db_exporters_bin_dir }}/{{ item.binary }}"
+    owner: root
+    mode: "0755"
+  loop: "{{ _db_exporters }}"
+  loop_control:
+    label: "{{ item.binary }}"
+  become: true
+
+- name: Mark the installed versions
+  ansible.builtin.copy:
+    content: "{{ item.version }}\n"
+    dest: "{{ db_exporters_bin_dir }}/.{{ item.binary }}-{{ item.version }}.installed"
+    mode: "0644"
+    force: false
+  loop: "{{ _db_exporters }}"
+  loop_control:
+    label: "{{ item.binary }}"
+  become: true
+
+- name: Render the launchers (no secret value in them)
+  ansible.builtin.template:
+    src: launcher.sh.j2
+    dest: "{{ db_exporters_bin_dir }}/precis-{{ db_exporter.unit }}-launch"
+    mode: "0755"
+  loop: "{{ _db_exporters }}"
+  loop_control:
+    loop_var: db_exporter
+    label: "{{ db_exporter.unit }}"
+  become: true
+  register: _db_exporters_launchers
+
+- name: Render + load each exporter unit
+  ansible.builtin.include_role:
+    name: service_unit
+  loop: "{{ _db_exporters }}"
+  loop_control:
+    loop_var: db_exporter
+    label: "{{ db_exporter.unit }}"
+  vars:
+    service_unit_name: "{{ db_exporter.unit }}"
+    service_unit_run_as: "{{ db_exporters_run_as }}"
+    service_unit_exec: "{{ db_exporters_bin_dir }}/precis-{{ db_exporter.unit }}-launch"
+    service_unit_env: "{{ precis_shared_env | default({}) }}"
+    service_unit_schedule:
+      mode: keepalive
+
+# service_unit restarts only when its own unit file changes; a new binary or a
+# changed launcher (bind address, port, secret name) needs a restart too.
+- name: Restart a unit whose binary changed (macOS)
+  ansible.builtin.command: "launchctl kickstart -k system/com.precis.{{ item.item.unit }}"
+  loop: "{{ _db_exporters_unpack.results }}"
+  loop_control:
+    index_var: _i
+    label: "{{ item.item.unit }}"
+  when: os_family == "darwin" and (item is changed or _db_exporters_launchers.results[_i] is changed)
+  become: true
+
+- name: Restart a unit whose binary changed (Linux)
+  ansible.builtin.systemd:
+    name: "precis-{{ item.item.unit }}"
+    state: restarted
+  loop: "{{ _db_exporters_unpack.results }}"
+  loop_control:
+    index_var: _i
+    label: "{{ item.item.unit }}"
+  when: os_family == "linux" and (item is changed or _db_exporters_launchers.results[_i] is changed)
+  become: true
+
+- name: Wait for both exporters to listen
+  ansible.builtin.wait_for:
+    port: "{{ item }}"
+    host: 127.0.0.1
+    timeout: 60
+  loop:
+    - "{{ db_exporters_pg_port }}"
+    - "{{ db_exporters_pgbouncer_port }}"
