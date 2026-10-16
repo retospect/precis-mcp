@@ -43,13 +43,25 @@ DOCS = "cccc333300000000000000000000000000000000"
 OLDER = "dddd444400000000000000000000000000000000"
 
 
-def _exact_response(
-    sha: str,
+def _exact_suite(
     runs: list[dict[str, Any]],
     *,
-    more_suites: bool = False,
-    more_runs: bool = False,
-) -> str:
+    run_id: int = 42,
+    attempt: int = 1,
+    path: str | None = ".github/workflows/check.yml",
+) -> dict[str, Any]:
+    """One check suite bound to a workflow run, as the exact query returns it."""
+    return {
+        "workflowRun": {
+            "databaseId": run_id,
+            "runAttempt": attempt,
+            "file": {"path": path} if path is not None else None,
+        },
+        "checkRuns": {"pageInfo": {"hasNextPage": False}, "nodes": runs},
+    }
+
+
+def _exact_graph(sha: str, suites: list[dict[str, Any]]) -> str:
     return json.dumps(
         {
             "data": {
@@ -57,20 +69,8 @@ def _exact_response(
                     "object": {
                         "oid": sha,
                         "checkSuites": {
-                            "pageInfo": {"hasNextPage": more_suites},
-                            "nodes": [
-                                {
-                                    "workflowRun": {
-                                        "databaseId": 42,
-                                        "runAttempt": 1,
-                                        "file": {"path": ".github/workflows/check.yml"},
-                                    },
-                                    "checkRuns": {
-                                        "pageInfo": {"hasNextPage": more_runs},
-                                        "nodes": runs,
-                                    },
-                                }
-                            ],
+                            "pageInfo": {"hasNextPage": False},
+                            "nodes": suites,
                         },
                     }
                 }
@@ -79,19 +79,41 @@ def _exact_response(
     )
 
 
-def _exact_jobs(runs: list[dict[str, Any]]) -> str:
+def _exact_response(
+    sha: str,
+    runs: list[dict[str, Any]],
+    *,
+    more_suites: bool = False,
+    more_runs: bool = False,
+) -> str:
+    suite = _exact_suite(runs)
+    suite["checkRuns"]["pageInfo"]["hasNextPage"] = more_runs
+    graph = json.loads(_exact_graph(sha, [suite]))
+    graph["data"]["repository"]["object"]["checkSuites"]["pageInfo"]["hasNextPage"] = (
+        more_suites
+    )
+    return json.dumps(graph)
+
+
+def _exact_jobs(
+    runs: list[dict[str, Any]], *, run_id: int = 42, sha: str = GATED
+) -> str:
     jobs = [
         {
             "name": r["name"],
             "status": str(r["status"]).lower(),
             "conclusion": str(r["conclusion"]).lower(),
             "completed_at": r["completedAt"],
-            "head_sha": GATED,
-            "run_id": 42,
+            "head_sha": sha,
+            "run_id": run_id,
         }
         for r in runs
     ]
     return json.dumps({"total_count": len(jobs), "jobs": jobs})
+
+
+def _completed(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [{**r, "status": "COMPLETED"} for r in runs]
 
 
 def test_exact_verdict_reads_second_parent_object_and_age_once(
@@ -299,6 +321,109 @@ def test_exact_certificate_refuses_rerun_started_during_job_read(
     facts = mod.exact_verdict(GATED)
     assert facts["candidate"] == ""
     assert facts["candidate_state"] == "unreadable"
+
+
+def test_exact_verdict_ignores_a_cancelled_sibling_suite(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr492454: the release head is also a main commit, so the sha carries
+    two check.yml suites — the release run (green, higher id) and the
+    superseded main push the concurrency group cancelled. The chosen run is
+    green; the cancelled sibling is not the verdict."""
+    mod = _load()
+    green = _completed(_shards())
+    cancelled = _completed(_shards("CANCELLED"))
+    graph = _exact_graph(
+        GATED,
+        [_exact_suite(cancelled, run_id=42), _exact_suite(green, run_id=43)],
+    )
+    monkeypatch.setattr(
+        mod,
+        "_run",
+        lambda *a: graph if a[2] == "graphql" else _exact_jobs(green, run_id=43),
+    )
+    facts = mod.exact_verdict(GATED)
+    assert facts["candidate_state"] == "found"
+    assert facts["candidate"] == GATED
+    assert facts["certificate"]["run_id"] == 43
+
+
+def test_exact_verdict_red_chosen_run_is_not_rescued_by_a_green_sibling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same scoping cuts the other way: a green main suite must not
+    rescue a red release run the gate actually selected."""
+    mod = _load()
+    green = _completed(_shards())
+    red = _completed(_shards())
+    red[0]["conclusion"] = "FAILURE"
+    graph = _exact_graph(
+        GATED, [_exact_suite(green, run_id=42), _exact_suite(red, run_id=43)]
+    )
+    monkeypatch.setattr(
+        mod,
+        "_run",
+        lambda *a: graph if a[2] == "graphql" else _exact_jobs(red, run_id=43),
+    )
+    facts = mod.exact_verdict(GATED)
+    assert facts["candidate"] == ""
+    assert facts["candidate_state"] == "release_not_green"
+    assert "certificate" not in facts
+
+
+def test_exact_verdict_cancelled_chosen_run_is_not_green(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load()
+    cancelled = _completed(_shards("CANCELLED"))
+    graph = _exact_graph(GATED, [_exact_suite(cancelled, run_id=43)])
+    monkeypatch.setattr(mod, "_run", lambda *a: graph)
+    facts = mod.exact_verdict(GATED)
+    assert facts["candidate"] == ""
+    assert facts["candidate_state"] == "release_not_green"
+
+
+def test_exact_verdict_no_check_yml_suite_is_not_green(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Green runs from another workflow (the nightly) do not count: no
+    check.yml run means no chosen run, hence not green."""
+    mod = _load()
+    green = _completed(_shards())
+    graph = _exact_graph(
+        GATED,
+        [_exact_suite(green, run_id=43, path=".github/workflows/nightly.yml")],
+    )
+    monkeypatch.setattr(mod, "_run", lambda *a: graph)
+    facts = mod.exact_verdict(GATED)
+    assert facts["candidate"] == ""
+    assert facts["candidate_state"] == "release_not_green"
+
+
+def test_exact_verdict_rerun_attempt_judges_only_the_latest_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A re-run leaves the cancelled attempt's suite beside the fresh one
+    under the same run id; the certificate binds the later attempt, so the
+    stale suite must not poison it."""
+    mod = _load()
+    cancelled = _completed(_shards("CANCELLED"))
+    green = _completed(_shards())
+    graph = _exact_graph(
+        GATED,
+        [
+            _exact_suite(cancelled, run_id=43, attempt=1),
+            _exact_suite(green, run_id=43, attempt=2),
+        ],
+    )
+    monkeypatch.setattr(
+        mod,
+        "_run",
+        lambda *a: graph if a[2] == "graphql" else _exact_jobs(green, run_id=43),
+    )
+    facts = mod.exact_verdict(GATED)
+    assert facts["candidate_state"] == "found"
+    assert facts["certificate"]["attempt"] == 2
 
 
 def _load() -> ModuleType:

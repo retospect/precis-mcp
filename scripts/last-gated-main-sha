@@ -136,6 +136,11 @@ def exact_verdict(sha: str) -> dict[str, Any]:
     rerun needs a full rerun, since it cannot certify the complete job set.
     A nullable workflow file cannot identify a certificate source; skip it
     without discarding another suite's fully identified, verified run.
+
+    The green check reads only the chosen run's own check suite: a release
+    head is also a main commit, so the sha can carry a second check.yml
+    suite whose superseded push run was concurrency-cancelled. Another
+    run's cancelled suite is not this run's verdict (gr492454).
     """
     facts: dict[str, Any] = {
         "candidate": "",
@@ -168,27 +173,37 @@ def exact_verdict(sha: str) -> dict[str, Any]:
             return facts
         if any(s["checkRuns"]["pageInfo"]["hasNextPage"] for s in suites["nodes"]):
             return facts
-        runs = _runs_of(node)
     except (ValueError, KeyError, TypeError, AttributeError):
         return facts
     facts["candidate_state"] = "release_not_green"
-    relevant = [
-        r
-        for r in runs
-        if r.get("name") == "lint" or str(r.get("name", "")).startswith("test-linux")
-    ]
-    if not is_green(runs) or any(r.get("status") != "COMPLETED" for r in relevant):
-        return facts
     try:
         intended = [
-            s["workflowRun"]
+            s
             for s in suites["nodes"]
             if ((s.get("workflowRun") or {}).get("file") or {}).get("path")
             == ".github/workflows/check.yml"
         ]
-        run = max(intended, key=lambda r: int(r["databaseId"]))
+        chosen = max(
+            intended,
+            key=lambda s: (
+                int(s["workflowRun"]["databaseId"]),
+                int(s["workflowRun"]["runAttempt"]),
+            ),
+        )
+        run = chosen["workflowRun"]
         run_id, attempt = int(run["databaseId"]), int(run["runAttempt"])
         if run_id <= 0 or attempt <= 0:
+            return facts
+        runs = _suite_runs(intended, run_id, attempt)
+        relevant = [
+            r
+            for r in runs
+            if r.get("name") == "lint"
+            or str(r.get("name", "")).startswith("test-linux")
+        ]
+        if not is_green(runs) or any(
+            r.get("status") != "COMPLETED" for r in relevant
+        ):
             return facts
         result = _run(
             "gh",
@@ -279,6 +294,32 @@ def _runs_of(node: Any) -> list[Run]:
         for run in ((suite or {}).get("checkRuns") or {}).get("nodes") or []:
             if isinstance(run, dict):
                 runs.append(run)
+    return runs
+
+
+def _suite_runs(suites: list[Any], run_id: int, attempt: int) -> list[Run]:
+    """Check-runs of the suites bound to workflow run `run_id` at `attempt`.
+
+    Sibling suites on the sha — a superseded main push, a nightly, an
+    earlier attempt of the same run — are excluded: they are not the run
+    the gate certifies.
+    """
+    runs: list[Run] = []
+    for suite in suites:
+        wr = (suite or {}).get("workflowRun") or {}
+        try:
+            bound = (
+                int(wr.get("databaseId") or 0) == run_id
+                and int(wr.get("runAttempt") or 0) == attempt
+            )
+        except (TypeError, ValueError):
+            continue
+        if bound:
+            runs.extend(
+                r
+                for r in ((suite.get("checkRuns") or {}).get("nodes")) or []
+                if isinstance(r, dict)
+            )
     return runs
 
 
