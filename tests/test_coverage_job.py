@@ -560,6 +560,9 @@ def test_dispatch_passes_the_injected_slab_through(
         }
 
     monkeypatch.setattr(runner, "run_coverage_scan_subprocess", _fake_scan)
+    # the expected keys below hash with_defaults(CONFIG) (no mixtures); pin
+    # the engine probe so an installed mixtures-capable engine can't add them
+    monkeypatch.setattr(runner, "coverage_mixtures_supported", lambda: False)
     ctx = _FakeCtx(store=store, params={"config": CONFIG, "slab_extxyz": extxyz})
     coverage_job._dispatch(ctx, coverage_job.SPEC)
 
@@ -1004,6 +1007,7 @@ def test_dispatch_resolves_structure_ref_when_no_slab_given(
         }
 
     monkeypatch.setattr(runner, "run_coverage_scan_subprocess", _fake_scan)
+    monkeypatch.setattr(runner, "coverage_mixtures_supported", lambda: False)
     ctx = _FakeCtx(store=store, params={"config": CONFIG, "structure_ref": ref.id})
     coverage_job._dispatch(ctx, coverage_job.SPEC)
 

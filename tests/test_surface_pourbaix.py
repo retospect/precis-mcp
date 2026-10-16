@@ -484,6 +484,19 @@ def test_mixture_sweep_winner_carries_counts_and_pool_keeps_splits_apart() -> No
     assert any(s.get("counts") == {"NO": 1, "H": 1} for s in out["skipped_detached"])
 
 
+def test_render_text_names_detached_configurations() -> None:
+    # gr491459: "8 anchor(s)" for 10 scan points read as a clean result; the
+    # summary must say which configurations were dropped as detached
+    out = sp.sweep({"m": _mixed_payload()}, grid=16, point_u_rhe=-1.0)
+    text = sp.render_text(out)
+    assert "Dropped 1 detached configuration(s)" in text
+    assert "NO*(1)+H*(1) on m" in text
+    out["skipped_detached"] = [{"model": "mace:medium", "adsorbate": "NH2", "n": 9}]
+    assert "NH2*(9) on mace:medium" in sp.render_text(out)
+    out["skipped_detached"] = []
+    assert "detached" not in sp.render_text(out)
+
+
 def test_anchor_spread_names_a_mixture_by_its_counts() -> None:
     spread = sp.anchor_spread(
         {

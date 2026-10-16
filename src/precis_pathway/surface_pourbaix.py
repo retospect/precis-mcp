@@ -961,6 +961,22 @@ def render_text(sweep_out: dict[str, Any]) -> str:
         lines.append(
             f"At U = {pt['U_RHE']:+.2f} V_RHE the resting termination is the {term}."
         )
+    skipped = sweep_out.get("skipped_detached") or []
+    if skipped:
+
+        def _skip(s: dict[str, Any]) -> str:
+            counts = s.get("counts")
+            who = (
+                "+".join(f"{k}*({v})" for k, v in counts.items())
+                if counts
+                else f"{s['adsorbate']}*({s['n']})"
+            )
+            return f"{who} on {s['model']}"
+
+        lines.append(
+            f"Dropped {len(skipped)} detached configuration(s), not counted as "
+            "anchors: " + ", ".join(_skip(s) for s in skipped) + "."
+        )
     for b in sweep_out["boundaries"]:
 
         def _name(k: dict[str, Any] | None) -> str:
