@@ -431,6 +431,47 @@ def test_dispatch_event_records_the_coverage_snap(
     assert "requested [0.25, 0.5, 0.75, 1.0], snapped to 9 top sites" in event
 
 
+def test_dispatch_event_leaves_an_injected_slab_unsnapped(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An injected slab's sites are the engine's to count: the 3x3 label
+    cell says 9, a relaxed slab may expose 3 (gr491178), so the event shows
+    the request as sent and hands the snap to the engine's warnings."""
+
+    def _fake_scan(
+        config: dict[str, Any], model_index: int, **kw: Any
+    ) -> dict[str, Any]:
+        return {
+            "model": "emt",
+            "model_index": model_index,
+            "coverage": _coverage("emt", -0.02),
+            "engine_version": "0.26.0",
+            "corrections": None,
+        }
+
+    monkeypatch.setattr(runner, "run_coverage_scan_subprocess", _fake_scan)
+    slab = "2\nLattice\nPd 0 0 0\nPd 1 1 1\n"
+    cell3 = {**CONFIG, "slab": {**CONFIG["slab"], "size": [3, 3, 4]}}
+    asked = {**cell3, "coverage": {"coverages": [0.25, 1.0]}}
+    ctx = _FakeCtx(store=store, params={"config": asked, "slab_extxyz": slab})
+    coverage_job._dispatch(ctx, coverage_job.SPEC)
+    assert ctx.status == "succeeded", ctx.failure
+    event = ctx.chunks[0][1]
+    assert "coverages=[0.25, 1]" in event
+    assert "top sites" not in event
+    assert "(as sent; the engine snaps these to the injected slab's sites)" in event
+
+    # Defaulted coverages: with_defaults pre-snaps them to the label cell
+    # and that list is what the engine receives, so the line shows it as
+    # sent, never as an achieved snap.
+    ctx = _FakeCtx(store=store, params={"config": cell3, "slab_extxyz": slab})
+    coverage_job._dispatch(ctx, coverage_job.SPEC)
+    event = ctx.chunks[0][1]
+    sent = coverage_job.with_defaults(cell3)["coverage"]["coverages"]
+    assert f"coverages=[{', '.join(f'{t:g}' for t in sent)}]" in event
+    assert "top sites" not in event and "(as sent;" in event
+
+
 def test_dispatch_refuses_out_of_scope_params_before_any_compute(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

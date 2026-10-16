@@ -477,19 +477,27 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         or runner.coverage_anchor_key(config, slab_key=slab_key)
     )
     cov = config["coverage"]
-    n_top = slab_top_sites(config)
-    achieved = representable_coverages(cov["coverages"], n_top)
     requested = (params["config"].get("coverage") or {}).get("coverages")
     requested = list(DEFAULT_COVERAGES) if requested is None else requested
+    if slab_extxyz:
+        # slab_top_sites reads config.slab.size; an injected slab's site
+        # count is the engine's to find (a relaxed slab can expose fewer
+        # sites than its label cell, gr491178), so the line shows what is
+        # sent and leaves the snap to the engine.
+        achieved = cov["coverages"]
+        snap_note = " (as sent; the engine snaps these to the injected slab's sites)"
+    else:
+        n_top = slab_top_sites(config)
+        achieved = representable_coverages(cov["coverages"], n_top)
+        snap_note = (
+            f" (requested {requested}, snapped to {n_top} top sites)"
+            if achieved != requested
+            else ""
+        )
     achieved_text = (
         f"[{', '.join(f'{t:g}' for t in achieved)}]"
         if isinstance(achieved, list)
         else repr(achieved)
-    )
-    snap_note = (
-        f" (requested {requested}, snapped to {n_top} top sites)"
-        if achieved != requested
-        else ""
     )
     if structure_ref is not None:
         slab_note = f" slab=st{structure_ref}"
