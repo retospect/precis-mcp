@@ -29,3 +29,6 @@ ClientAliveCountMax 2
 # Forwarding
 AllowTcpForwarding yes
 X11Forwarding no
+
+# SFTP: OpenSSH 9+ scp uses it by default (gr489603)
+Subsystem sftp {{ '/usr/lib/openssh/sftp-server' if os_family == 'linux' else '/usr/libexec/sftp-server' }}

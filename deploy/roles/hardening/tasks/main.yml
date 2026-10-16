@@ -169,6 +169,7 @@
   become: true
 
 - name: Configure sshd (macOS)
+  tags: [sshd]
   when: os_family == "darwin"
   ansible.builtin.template:
     src: sshd_config.j2
@@ -179,6 +180,7 @@
   notify: restart sshd macos
 
 - name: Configure sshd (Linux)
+  tags: [sshd]
   when: os_family == "linux"
   ansible.builtin.template:
     src: sshd_config.j2
