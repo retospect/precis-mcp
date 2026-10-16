@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+# Weekly apt upgrade with a guarded reboot (gr491172); see the script header.
+[Unit]
+Description=Weekly OS update, reboot only when idle and unreserved
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/os-update-weekly
+# Ends a hung apt run (gr489996) before the 04:20Z end of the no-deploy window.
+TimeoutStartSec={{ hardening_os_update_timeout }}

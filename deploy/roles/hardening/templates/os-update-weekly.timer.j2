@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Weekly OS update (gr491172)
+
+[Timer]
+OnCalendar={{ hardening_os_update_oncalendar }}
+# A missed window waits for next week; never fire outside the no-deploy window.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

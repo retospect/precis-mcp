@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Weekly unattended OS update with a guarded reboot (gr491172; Reto ruling
+# 2026-10-16). Runs from os-update-weekly.timer inside the 03:00-04:20Z
+# no-deploy window. apt-get update + upgrade always run; the reboot happens
+# only when all hold:
+#   * the reboot-required marker exists;
+#   * host-busy reports 0 (no autocatpath seed, no non-service container);
+#   * `precis service reserved` confirms no live service_config reserve.
+# Anything else logs "reboot deferred" and leaves the marker for the next
+# scripts/host-ops/os-update. An unreadable reserve counts as set.
+set -euo pipefail
+MARKER="${OS_UPDATE_REBOOT_MARKER:-/var/run/reboot-required}"
+HOST_BUSY="${OS_UPDATE_HOST_BUSY:-/usr/local/sbin/host-busy}"
+PRECIS="${OS_UPDATE_PRECIS:-/opt/precis/venv/bin/precis}"
+log() { echo "os-update-weekly: $*"; }
+
+reserve_clear() {
+  local envs dsn host out
+  envs=$(systemctl show precis-worker -p Environment --value 2>/dev/null || true)
+  dsn=$(tr ' ' '\n' <<<"$envs" | sed -n 's/^PRECIS_DATABASE_URL=//p')
+  host=$(tr ' ' '\n' <<<"$envs" | sed -n 's/^PRECIS_HOST_NAME=//p')
+  if [[ -z "$dsn" || ! -x "$PRECIS" ]]; then
+    log "reserve unreadable (no precis-worker DSN or precis CLI)"
+    return 1
+  fi
+  local -a envv=(PGPASSFILE=/home/deploy/.pgpass)
+  if [[ -n "$host" ]]; then envv+=("PRECIS_HOST_NAME=$host"); fi
+  if ! out=$(sudo -u deploy -H env "${envv[@]}" \
+      "$PRECIS" service reserved --database-url "$dsn" 2>&1); then
+    log "reserve set or unreadable: ${out:-no output}"
+    return 1
+  fi
+  [[ "$out" == "reserve: none on "* ]] || { log "reserve unreadable: $out"; return 1; }
+}
+
+export DEBIAN_FRONTEND=noninteractive
+APT=(apt-get -qq -o DPkg::Lock::Timeout=600
+     -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
+log "apt-get update + upgrade"
+if ! "${APT[@]}" update || ! "${APT[@]}" -y upgrade; then
+  log "apt failed; no reboot"
+  exit 1
+fi
+
+if [[ ! -e "$MARKER" ]]; then
+  log "no reboot required"
+  exit 0
+fi
+busy=$("$HOST_BUSY" || true)
+if [[ "$busy" != 0 ]]; then
+  log "reboot deferred: host busy (${busy:-unknown} compute process(es)/container(s))"
+  exit 0
+fi
+if ! reserve_clear; then
+  log "reboot deferred: service_config reserve"
+  exit 0
+fi
+log "rebooting: $MARKER present, host idle, no reserve"
+shutdown -r now "weekly OS update"

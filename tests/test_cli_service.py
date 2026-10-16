@@ -10,7 +10,13 @@ import argparse
 import pytest
 
 from precis.cli.main import _build_parser
-from precis.cli.service import _cmd_prio, _cmd_release, _cmd_reserve, _cmd_seed
+from precis.cli.service import (
+    _cmd_prio,
+    _cmd_release,
+    _cmd_reserve,
+    _cmd_reserved,
+    _cmd_seed,
+)
 from precis.workers.service_config import list_service_config, set_service_prio
 
 # ---------------------------------------------------------------------------
@@ -146,6 +152,52 @@ def test_cmd_release_removes_row(store, capsys) -> None:
 def test_cmd_release_no_row_reports_cleanly(store, capsys) -> None:
     _cmd_release(store, _release_ns())
     assert "no reserve row" in capsys.readouterr().out
+
+
+def test_reserved_subcommand_registered():
+    args = _build_parser().parse_args(["service", "reserved", "--host", "melchior"])
+    assert args.service_cmd == "reserved"
+    assert args.host == "melchior"
+    assert args.all is False
+
+
+def test_cmd_reserved_none_prints_and_returns(store, capsys) -> None:
+    _cmd_reserved(store, _release_ns())
+    assert capsys.readouterr().out.strip() == "reserve: none on melchior"
+
+
+def test_cmd_reserved_exits_3_when_reserved(store, capsys) -> None:
+    _cmd_reserve(store, _reserve_ns())
+    capsys.readouterr()
+    with pytest.raises(SystemExit) as exc:
+        _cmd_reserved(store, _release_ns())
+    assert exc.value.code == 3
+    assert capsys.readouterr().out.strip() == "reserve: active on melchior"
+
+
+def test_cmd_reserved_wildcard_reserve_applies_to_host(store) -> None:
+    _cmd_reserve(store, _reserve_ns(all=True))
+    with pytest.raises(SystemExit) as exc:
+        _cmd_reserved(store, _release_ns())
+    assert exc.value.code == 3
+
+
+def test_cmd_reserved_released_or_expired_is_none(store, capsys) -> None:
+    _cmd_reserve(store, _reserve_ns())
+    _cmd_release(store, _release_ns())
+    capsys.readouterr()
+    _cmd_reserved(store, _release_ns())
+    assert "reserve: none on melchior" in capsys.readouterr().out
+
+    _cmd_reserve(store, _reserve_ns())
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE service_config SET expires_at = now() - interval '1 minute' "
+            "WHERE host = 'melchior' AND service = 'reserve'"
+        )
+    capsys.readouterr()
+    _cmd_reserved(store, _release_ns())
+    assert "reserve: none on melchior" in capsys.readouterr().out
 
 
 def test_cmd_reserve_hours_bounds_enforced(store) -> None:

@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Print how many compute processes (autocatpath seeds) plus non-service
+# containers run on this host; 0 means idle. Prints "unknown" and exits 2 when
+# pgrep is missing or docker is installed but `docker ps` fails, so callers
+# fail closed.
+# One source for two callers (gr491172): scripts/host-ops/os-update pipes it
+# over ssh, and the hardening role installs it as /usr/local/sbin/host-busy for
+# the weekly os-update guard.
+set -euo pipefail
+command -v pgrep >/dev/null 2>&1 || { echo unknown; exit 2; }
+# [p] bracket: the pattern must not match a `bash -c` line that carries it
+# (plain "precis_pathway.runner" counted 2 on an idle host, 2026-10-15).
+n=$(pgrep -fc "python.* -m [p]recis_pathway[.]runner" || true)
+c=0
+if command -v docker >/dev/null 2>&1; then
+  names=$(docker ps --format "{{.Names}}" 2>/dev/null) || { echo unknown; exit 2; }
+  if [[ -n "$names" ]]; then
+    c=$(grep -vcE "^(vllm|n8n|snappymail)$" <<<"$names" || true)
+  fi
+fi
+echo $(( n + c ))

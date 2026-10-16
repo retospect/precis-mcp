@@ -158,14 +158,49 @@
     user: root
   become: true
 
-- name: Schedule daily 3 AM update + reboot (Linux)
+# ── Weekly OS update with a guarded reboot (Linux; gr491172) ──
+# Replaces the old daily `apt-get upgrade && shutdown -r now` root cron, which
+# rebooted mid-compute. The guard script reboots only when the marker exists,
+# host-busy reads 0 and no service_config reserve is set; else it defers to
+# scripts/host-ops/os-update. A systemd timer, not cron: OnCalendar pins UTC
+# whatever the host timezone. Schedule: hardening_os_update_oncalendar.
+- name: Remove the old daily update + reboot cron (Linux)
+  tags: [os-update]
   when: os_family == "linux"
   ansible.builtin.cron:
     name: "daily 3am update and reboot"
-    minute: "0"
-    hour: "3"
-    job: "apt-get update -qq && apt-get upgrade -y -qq && /sbin/shutdown -r now"
     user: root
+    state: absent
+  become: true
+
+- name: Install host-busy + os-update-weekly guard (Linux)
+  tags: [os-update]
+  when: os_family == "linux"
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/usr/local/sbin/{{ item }}"
+    mode: "0755"
+  loop: [host-busy, os-update-weekly]
+  become: true
+
+- name: Render os-update-weekly service + timer (Linux)
+  tags: [os-update]
+  when: os_family == "linux"
+  ansible.builtin.template:
+    src: "os-update-weekly.{{ item }}.j2"
+    dest: "/etc/systemd/system/os-update-weekly.{{ item }}"
+    mode: "0644"
+  loop: [service, timer]
+  become: true
+
+- name: Enable or disable the os-update-weekly timer (Linux)
+  tags: [os-update]
+  when: os_family == "linux"
+  ansible.builtin.systemd:
+    name: os-update-weekly.timer
+    enabled: "{{ hardening_os_update_weekly | bool }}"
+    state: "{{ 'started' if hardening_os_update_weekly | bool else 'stopped' }}"
+    daemon_reload: true
   become: true
 
 - name: Configure sshd (macOS)

@@ -81,19 +81,17 @@ say "1/7 reserve: no new heavy (ssh_node/claude_docker) claims for 6 h"
 run precis_cli reserve --host "$HOST" --hours 6 --actor "$ACTOR"
 
 say "2/7 drain: wait for autocatpath seeds and job containers to finish (<= ${DRAIN_MIN} min)"
+# One busy check for this script and the weekly guard the hardening role
+# installs (gr491172): piped over ssh, so it needs nothing deployed first.
+HOST_BUSY="$(dirname "${BASH_SOURCE[0]}")/../../deploy/roles/hardening/files/host-busy"
 busy() {
-  # shellcheck disable=SC2016  # the script body runs on the remote host
-  "${SSH[@]}" "$HOST" '
-    # [p] bracket: the pattern must not match this ssh bash -c line itself
-    # (plain "precis_pathway.runner" counted 2 on an idle spark, 2026-10-15).
-    n=$(pgrep -fc "python.* -m [p]recis_pathway[.]runner" || true)
-    c=$(docker ps --format "{{.Names}}" 2>/dev/null | grep -vcE "^(vllm|n8n|snappymail)$" || true)
-    echo $(( n + c ))'
+  "${SSH[@]}" "$HOST" 'bash -s' <"$HOST_BUSY" || true
 }
 if (( ! DRY )); then
   deadline=$(( $(date +%s) + DRAIN_MIN * 60 ))
   while :; do
     b=$(busy); [[ "$b" == 0 ]] && break
+    [[ "$b" =~ ^[0-9]+$ ]] || { say "host-busy unreadable (${b:-no output}); fix ssh/docker access and rerun"; exit 1; }
     if (( $(date +%s) > deadline )); then
       (( FORCE )) || { say "still $b compute process(es)/container(s) after ${DRAIN_MIN} min; rerun with --force-drain or wait"; exit 1; }
       say "forcing reboot with $b still running (--force-drain)"; break

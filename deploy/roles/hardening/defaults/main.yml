@@ -1,6 +1,14 @@
 ---
 # hardening role defaults.
-#
+
+# ── Weekly OS update with a guarded reboot (Linux; gr491172) ──
+# Off stops and disables the timer. The schedule lives only here: Tuesday
+# 03:00Z, inside the 03:00-04:20Z no-deploy window. The timeout ends a hung
+# apt run (and so any reboot) by 04:15Z.
+hardening_os_update_weekly: true
+hardening_os_update_oncalendar: "Tue *-*-* 03:00:00 UTC"
+hardening_os_update_timeout: 75min
+
 # ── Linux OOM lockout guard (the shared compute node) ──────────────────────
 # On a single shared compute node, heavy MACE/NEB + llama + PDF-ingest load has
 # repeatedly thrashed the box into swap, starving sshd so it stops answering

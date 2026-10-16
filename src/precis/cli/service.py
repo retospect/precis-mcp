@@ -39,6 +39,7 @@ from precis.workers.service_config import (
     clear_reserve,
     clear_service_config,
     list_service_config,
+    reserve_active,
     seed_service_prio,
     set_reserve,
     set_service_model,
@@ -129,6 +130,17 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         "--all", action="store_true", help="Release the '*' (all-hosts) reserve."
     )
     rl.add_argument("--database-url", default=None, help="Postgres DSN override.")
+
+    rd = ssub.add_parser(
+        "reserved",
+        help="Exit 0 and print 'reserve: none on <host>' when the host has no "
+        "live reserve; exit 3 when it does (reboot guards).",
+    )
+    rd.add_argument("--host", default=None, help="Host to check (default: this host).")
+    rd.add_argument(
+        "--all", action="store_true", help="Check only the '*' (all-hosts) reserve."
+    )
+    rd.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
 
 def _refuse_reserve_service(name: str) -> None:
@@ -263,6 +275,17 @@ def _cmd_release(store: Store, args: argparse.Namespace) -> None:
         print(f"service_config: no reserve row for {host}")
 
 
+def _cmd_reserved(store: Store, args: argparse.Namespace) -> None:
+    host = _reserve_target_host(args)
+    # reserve_active already folds in the '*' wildcard row.
+    with store.pool.connection() as conn:
+        active = reserve_active(conn, host)
+    if active:
+        print(f"reserve: active on {host}")
+        raise SystemExit(3)
+    print(f"reserve: none on {host}")
+
+
 def run(args: argparse.Namespace) -> None:
     """Dispatch ``precis service <cmd>``."""
     store = Store.connect(resolve_dsn(args.database_url))
@@ -281,6 +304,8 @@ def run(args: argparse.Namespace) -> None:
             _cmd_reserve(store, args)
         elif args.service_cmd == "release":
             _cmd_release(store, args)
+        elif args.service_cmd == "reserved":
+            _cmd_reserved(store, args)
         else:  # pragma: no cover — argparse `required=True` guards this
             raise SystemExit(f"unknown service subcommand: {args.service_cmd!r}")
     finally:
