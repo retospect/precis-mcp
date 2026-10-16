@@ -163,10 +163,8 @@ def test_upload_not_retried_on_read_timeout_but_retried_on_connect(creds):
     assert len(attempts) == 2
 
 
-@pytest.mark.parametrize(("seconds", "digits"), [(False, 13), (True, 10)])
-def test_signing_timestamp_modes(monkeypatch, creds, seconds, digits):
-    monkeypatch.setattr(jlc_api, "TIMESTAMP_SECONDS", seconds)
-    assert len(jlc_api.signing_timestamp()) == digits
+def test_signing_timestamp_is_seconds(creds):
+    assert len(jlc_api.signing_timestamp()) == 10
     seen: list[str] = []
 
     def send(method, path, headers, body):
@@ -176,8 +174,18 @@ def test_signing_timestamp_modes(monkeypatch, creds, seconds, digits):
         return httpx.Response(200, json={"code": 200, "data": {}})
 
     jlc_api.JlcApiClient(send=send).component_info("C1")
-    assert len(seen[0]) == digits
+    assert len(seen[0]) == 10
+    assert not hasattr(jlc_api, "TIMESTAMP_SECONDS")
 
 
-def test_timestamp_default_is_milliseconds():
-    assert jlc_api.TIMESTAMP_SECONDS is False
+def test_order_client_signs_seconds(creds):
+    seen: list[str] = []
+
+    def send(method, path, headers, body):
+        m = re.search(r'timestamp="(\d+)"', headers["Authorization"])
+        assert m is not None
+        seen.append(m[1])
+        return httpx.Response(200, json={"code": 200, "data": {}})
+
+    jlc_order.JlcOrderClient(send=send).order_detail("B1")
+    assert len(seen[0]) == 10

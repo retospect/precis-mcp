@@ -3,7 +3,8 @@
 Prod ``parts`` was filled from the yaqwsx/jlcparts ``source-db-v2`` dump, but
 that dump has no C-number below ~6.37M (upstream's walk lost the low range),
 so JLCPCB Basic parts (C25804, C1525, …) were missing, and the Open API
-(:mod:`precis.pcb.jlc_api`) answers HTTP 500 on every call (gr464537). This
+(:mod:`precis.pcb.jlc_api`) answered HTTP 500 on every call until the 2026-10-16
+ms-to-seconds signing fix (gr464537). This
 module tops up the *library* (~1.6k Basic + Preferred rows) from the
 credential-less listing endpoint behind jlcpcb.com's parts-library page:
 ``GET`` an XSRF cookie, then ``POST`` the paged list with the token echoed in
@@ -42,6 +43,7 @@ from precis.pcb._http import (
     with_backoff,
 )
 from precis.utils.coerce import to_int
+from precis.utils.rate_limit import acquire
 
 if TYPE_CHECKING:
     import httpx
@@ -97,11 +99,20 @@ def reset_live_cache() -> None:
 class _WebPoster:
     """Real transport: XSRF handshake once, then POSTs via ``safe_stream``."""
 
-    def __init__(self, *, timeout: float = 30.0, policy: Policy = BULK_POLICY) -> None:
+    def __init__(
+        self,
+        *,
+        timeout: float = 30.0,
+        policy: Policy = BULK_POLICY,
+        pace: Callable[[str], object] = acquire,
+    ) -> None:
         from precis.utils.http import http_client
 
         self._client = http_client(timeout=timeout)
         self._policy = policy
+        #: Fleet-wide pacing (``external_rate_limits`` row ``jlcpcb-web``),
+        #: taken before every wire attempt, retries included.
+        self._pace = pace
         self._token: str | None = None
 
     def close(self) -> None:
@@ -111,8 +122,12 @@ class _WebPoster:
         if self._token is None:
             from precis.utils.safe_fetch import safe_get
 
+            def _handshake() -> httpx.Response:
+                self._pace(_SERVICE)
+                return safe_get(self._client, f"{HOST}{XSRF_PATH}")
+
             resp = with_backoff(
-                lambda: safe_get(self._client, f"{HOST}{XSRF_PATH}"),
+                _handshake,
                 service=_SERVICE,
                 policy=self._policy,
             )
@@ -136,6 +151,7 @@ class _WebPoster:
         payload = json.dumps(body, separators=(",", ":"), sort_keys=True)
 
         def _thunk() -> httpx.Response:
+            self._pace(_SERVICE)
             with safe_stream(
                 self._client,
                 "POST",

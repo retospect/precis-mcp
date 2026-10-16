@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import json
 
 import httpx
 import pytest
@@ -183,7 +184,8 @@ def test_credentials_available_gate(monkeypatch):
 def test_component_info_happy_path(creds):
     def fake_send(method, path, headers, body):
         assert method == "POST"
-        assert path == jlc_api.COMPONENT_INFO_PATH
+        assert path == jlc_api.COMPONENT_DETAIL_PATH
+        assert json.loads(body) == {"componentCodes": ["C25804"]}
         assert "Authorization" in headers
         assert headers["Authorization"].startswith("JOP ")
         return httpx.Response(
@@ -209,6 +211,38 @@ def test_component_info_happy_path(creds):
     assert row["lcsc"] == "C25804"
     assert row["stock"] == 500000
     assert row["basic"] is True
+
+
+def test_component_info_uses_detail_endpoint_and_matches_code(creds):
+    """Code lookup goes to getComponentDetailByCode with ``componentCodes``
+    (getComponentInfos ignores the filter), and a non-matching row is not
+    returned as the answer."""
+    seen: list[tuple[str, dict]] = []
+
+    def fake_send(method, path, headers, body):
+        seen.append((path, json.loads(body)))
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "componentDetailResponseVOList": [
+                        {"componentCode": "C1002", "stockCount": 9},
+                        {"componentCode": "C2128", "stockCount": 7},
+                    ]
+                }
+            },
+        )
+
+    client = jlc_api.JlcApiClient(send=fake_send, sleep=_noop_sleep)
+    row = client.component_info("C2128")
+    assert seen == [
+        (
+            "/overseas/openapi/component/getComponentDetailByCode",
+            {"componentCodes": ["C2128"]},
+        )
+    ]
+    assert row is not None and row["lcsc"] == "C2128" and row["stock"] == 7
+    assert client.component_info("C9999") is None
 
 
 def test_iter_components_paginates_and_exposes_cursor(creds):

@@ -29,8 +29,9 @@ even when the API walk is dark. The dump lacks the low C-number range and the
 Open API has answered HTTP 500 (gr464537).
 
 Since 2026-10-14 the Open API walk is an OPPORTUNISTIC leg, not a dependency
-(gr481902): ``getComponentInfos`` has answered HTTP 500 to every call since
-at least 2026-10-01, and the unfiltered listing enumerates the same ~7.27M-row
+(gr481902): ``getComponentInfos`` answered HTTP 500 to every call from
+at least 2026-10-01 until 2026-10-16, when the cause turned out to be the
+millisecond signing timestamp (now seconds), and the unfiltered listing enumerates the same ~7.27M-row
 assemblable catalog — so the pass runs a bounded, page-checkpointed
 **listing walk** (:func:`precis.pcb.jlc_library.walk_listing`,
 :data:`LIST_PAGE_SETTING_KEY`) as its daily catalog coverage and the Open API

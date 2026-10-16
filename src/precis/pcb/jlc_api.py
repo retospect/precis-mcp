@@ -46,6 +46,7 @@ from precis.pcb._http import (
     with_backoff,
 )
 from precis.utils.coerce import to_int
+from precis.utils.rate_limit import acquire
 
 if TYPE_CHECKING:
     import httpx
@@ -62,9 +63,12 @@ log = logging.getLogger(__name__)
 #: The Open API host. Fixed, never agent-supplied — see module docstring.
 HOST = "https://open.jlcpcb.com"
 
-#: Both single-lookup and bulk enumeration hit this one endpoint — a single
-#: C-number filter for the former, a ``lastKey`` cursor walk for the latter.
+#: Bulk enumeration only: a ``lastKey`` cursor walk.
 COMPONENT_INFO_PATH = "/overseas/openapi/component/getComponentInfos"
+#: Lookup by LCSC code. ``getComponentInfos`` is the paged bulk walk and
+#: ignores a ``componentCodes`` filter (the first row came back C1002 for a
+#: C2128 probe); this endpoint takes ``{"componentCodes": ["C2040"]}``.
+COMPONENT_DETAIL_PATH = "/overseas/openapi/component/getComponentDetailByCode"
 
 #: Secret names in the vault (``precis.secrets`` — NOT env vars, NOT the
 #: deploy template).
@@ -74,17 +78,20 @@ SECRET_KEY_SECRET = "JLCPCB_SECRET_KEY"
 
 _REQUEST_TIMEOUT_S = 30.0
 
-#: Signing timestamp unit. JLC's signature docs
-#: (api.jlcpcb.com/docs/api-request-signature) say seconds; the spike-verified
-#: client has always sent milliseconds. Default stays ms until a verified live
-#: call proves seconds (gr493051) — then flip this one constant.
-TIMESTAMP_SECONDS = False
+#: ``external_rate_limits`` row pacing the Open API (jlc_api + jlc_order).
+_RATE_PROVIDER = "jlcpcb"
 
 
 def signing_timestamp() -> str:
-    """Now as the ``timestamp`` signing field, in :data:`TIMESTAMP_SECONDS`' unit."""
-    now = time.time()
-    return str(int(now) if TIMESTAMP_SECONDS else int(now * 1000))
+    """Now as the ``timestamp`` signing field, in **seconds**.
+
+    JLC's signature docs (api.jlcpcb.com/docs/api-request-signature) say
+    seconds. The client sent milliseconds until 2026-10-16, which JLC
+    answers with HTTP 500 "unknown error" -- the "outage since 10-07"
+    (gr464537, gr481902, gr493051). Verified live 2026-10-16 19:21Z: ms ->
+    500, seconds -> 200 with componentInfos. No opt-out.
+    """
+    return str(int(time.time()))
 
 
 class JlcPermissionError(VendorError):
@@ -178,7 +185,14 @@ def _extract_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
     """Pull the component list out of a response envelope, tolerant of the
     wrapper-key variations common to this API family (``data``/``result``
     nesting one level around the actual list)."""
-    for key in ("componentInfos", "list", "rows", "data", "result"):
+    for key in (
+        "componentInfos",
+        "componentDetailResponseVOList",
+        "list",
+        "rows",
+        "data",
+        "result",
+    ):
         val = data.get(key)
         if isinstance(val, list):
             return val
@@ -246,7 +260,9 @@ def normalize_api_row(row: dict[str, Any]) -> dict[str, Any] | None:
         or str(row.get("componentLibraryType") or "").strip().lower() == "base",
         "stock": to_int(row.get("stockCount") or row.get("stock")) or 0,
         "price": row.get("componentPrices") or row.get("price"),
-        "package": row.get("componentSpecificationEn") or row.get("package"),
+        "package": row.get("componentSpecificationEn")
+        or row.get("componentSpecification")
+        or row.get("package"),
         "height_mm": None,  # not carried by this endpoint; the footprint
         # cache / dump remain the source for physical dimensions.
         "params": None,
@@ -272,12 +288,16 @@ class JlcApiClient:
         send: SendFn | None = None,
         sleep: Callable[[float], None] = time.sleep,
         now: Callable[[], float] = time.monotonic,
+        pace: Callable[[str], object] = acquire,
     ) -> None:
         self._store = store
         self._creds = _load_credentials(store=store)
         self._send = send or _default_send
         self._sleep = sleep
         self._now = now
+        #: Fleet-wide pacing (``external_rate_limits`` row ``jlcpcb``), taken
+        #: before every wire attempt, retries included. Injected in tests.
+        self._pace = pace
         #: Resume cursor for :meth:`iter_components`, updated after every
         #: page — a caller that stops the walk early reads this to
         #: checkpoint. ``None`` until the first page comes back.
@@ -300,9 +320,14 @@ class JlcApiClient:
         from :meth:`_call` so :mod:`precis.pcb.jlc_order`'s upload path —
         which signs a ``meta`` form field instead of the JSON body — gets
         the identical retry/permission behaviour instead of a copy."""
+
+        def _paced() -> httpx.Response:
+            self._pace(_RATE_PROVIDER)
+            return thunk()
+
         try:
             return with_backoff(
-                thunk,
+                _paced,
                 service="jlcpcb",
                 policy=policy,
                 sleep=self._sleep,
@@ -387,12 +412,14 @@ class JlcApiClient:
         if self._creds is None:
             return None
         data = self._call(
-            COMPONENT_INFO_PATH, {"componentCodes": [lcsc]}, policy=DEFAULT_POLICY
+            COMPONENT_DETAIL_PATH, {"componentCodes": [lcsc]}, policy=DEFAULT_POLICY
         )
-        rows = _extract_rows(data)
-        if not rows:
-            return None
-        return normalize_api_row(rows[0])
+        want = _lcsc_number(lcsc)
+        for raw in _extract_rows(data):
+            norm = normalize_api_row(raw)
+            if norm is not None and norm["lcsc"] == want:
+                return norm
+        return None
 
     def iter_components(
         self, *, since_key: str | None = None, page_size: int = 100
@@ -443,6 +470,7 @@ class JlcApiClient:
 __all__ = [
     "ACCESS_KEY_SECRET",
     "APP_ID_SECRET",
+    "COMPONENT_DETAIL_PATH",
     "COMPONENT_INFO_PATH",
     "HOST",
     "SECRET_KEY_SECRET",

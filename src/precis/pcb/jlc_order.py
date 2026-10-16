@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any
 
 from precis.pcb import jlc_api
 from precis.pcb._http import DEFAULT_POLICY, VendorError
+from precis.utils.rate_limit import acquire
 
 if TYPE_CHECKING:
     import httpx
@@ -244,8 +245,9 @@ class JlcOrderClient(jlc_api.JlcApiClient):
         upload: UploadFn | None = None,
         sleep: Callable[[float], None] = time.sleep,
         now: Callable[[], float] = time.monotonic,
+        pace: Callable[[str], object] = acquire,
     ) -> None:
-        super().__init__(store=store, send=send, sleep=sleep, now=now)
+        super().__init__(store=store, send=send, sleep=sleep, now=now, pace=pace)
         self._upload = upload or _default_upload
 
     def quote(self, request: dict[str, Any]) -> dict[str, Any]:
