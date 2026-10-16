@@ -23,7 +23,7 @@ ExecStart=/usr/bin/{{ sglang_container_cmd }} run --rm --name {{ sglang_service_
     {{ sglang_image }} \
     python3 -m sglang.launch_server \
     --model-path /model \
-    --served-model-name {{ sglang_served_model_names | join(' ') }} \
+    --served-model-name {{ sglang_served_model_names | first }} \
     --host {{ sglang_bind_addr }} \
     --port {{ sglang_port }} \
     --mem-fraction-static {{ sglang_mem_fraction_static }} \

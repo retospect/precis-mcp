@@ -67,12 +67,14 @@ gpt-oss 120B MXFP4 (defaults):
 
 ```yaml
 sglang_model_dir: /srv/models/gpt-oss-120b
-sglang_served_model_names: [gpt-oss-120b, openai/gpt-oss-120b]
+sglang_served_model_names: [openai/gpt-oss-120b]
 sglang_reasoning_parser: gpt-oss
 sglang_tool_call_parser: gpt-oss
 sglang_tiktoken_dir: /srv/models/tiktoken
 ```
 
-A different model changes the name(s), both parsers (drop them for a
+Only the first item of `sglang_served_model_names` is passed —
+`--served-model-name` takes a single value; a second token crash-loops the
+container. A different model changes the name, both parsers (drop them for a
 non-reasoning/non-harmony model — empty string omits the flag), and
 `sglang_tiktoken_dir: ""` (no harmony vocab mount).

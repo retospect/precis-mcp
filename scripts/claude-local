@@ -11,7 +11,7 @@
 # a SEPARATE claude process: dispatch it from a Claude session via Bash (in a
 # worktree), or run it as a tmux worker. It is not a per-subagent switch.
 #
-# Env: CLAUDE_LOCAL_MODEL (default gpt-oss-120b, the vLLM --served-model-name),
+# Env: CLAUDE_LOCAL_MODEL (default openai/gpt-oss-120b, the --served-model-name),
 #      CLAUDE_LOCAL_PORT (default 8000), NODE_HOST_CASTOR (bypass the overlay).
 # Needs castor's vLLM to run with --max-model-len well above 16k; a Claude
 # Code turn with CLAUDE.md plus tool schemas does not fit in 16k
@@ -20,7 +20,7 @@ set -euo pipefail
 . "$(dirname "$0")/lib/node-host.sh"
 addr="$(resolve_node_host castor)"
 case "$addr" in *:*) addr="[$addr]" ;; esac
-model="${CLAUDE_LOCAL_MODEL:-gpt-oss-120b}"
+model="${CLAUDE_LOCAL_MODEL:-openai/gpt-oss-120b}"
 port="${CLAUDE_LOCAL_PORT:-8000}"
 
 if ! curl -fsS -m 5 "http://$addr:$port/health" >/dev/null 2>&1; then

@@ -33,12 +33,14 @@ sglang_port: 8000
 # ── Model (gpt-oss 120B MXFP4 defaults) ──
 # Host directory holding the weights (HF format); mounted read-only at /model.
 sglang_model_dir: /srv/models/gpt-oss-120b
-# Names the model answers to (`--served-model-name` takes a list). precis
-# routes by its llm card name (`openai/gpt-oss-120b`, resource_slots
-# `llm:openai/gpt-oss-120b`) — a call naming a card id that isn't served
-# 404s (seen on the vLLM stack 2026-10-12).
+# Name the model answers to. `--served-model-name` takes ONE value — a
+# second token renders as a positional and crash-loops the container
+# ("unrecognized arguments"). The list stays only as an override surface;
+# the unit renders `| first`. precis routes by its llm card name
+# (`openai/gpt-oss-120b`, resource_slots `llm:openai/gpt-oss-120b`) — a call
+# naming a card id that isn't served 404s (seen on the vLLM stack
+# 2026-10-12).
 sglang_served_model_names:
-  - gpt-oss-120b
   - openai/gpt-oss-120b
 # --reasoning-parser / --tool-call-parser values (gpt-oss for both).
 sglang_reasoning_parser: gpt-oss
