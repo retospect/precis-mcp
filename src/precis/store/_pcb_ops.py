@@ -984,9 +984,10 @@ class PcbMixin:
         ``roles``, ``note``, ``pins`` (``[{name, pad?, tags?,
         description?, note?}]``). Placement-constraint keys ride the
         instance's ``meta``: ``group``/``group_offset``,
-        ``pattern``/``pattern_instance``, ``edge_mate``, and the soft pin
+        ``pattern``/``pattern_instance``, ``edge_mate``. The soft pin
         ``max_travel_mm`` (mm a placer may move the part from its stored
-        pose; rotation held). A *net* dict: ``name`` (req),
+        pose; rotation held) is a ``pcb_instances`` column since migration
+        0219, not a meta key. A *net* dict: ``name`` (req),
         ``net_class``/``class``, ``est_current_a``/``current``,
         ``width_mm``/``width``, ``note``, and the 0171 spec annotations
         ``working_voltage_v``/``voltage``, ``edge_rate_v_per_ns``/
@@ -2267,11 +2268,13 @@ class PcbMixin:
         c: dict[str, Any],
     ) -> int:
         # Placement-constraint fields ride `meta` (jsonb) rather than
-        # columns: `group`/`group_offset` (rigid super-footprint),
-        # `pattern`/`pattern_instance` (repeated-tile identity) and
-        # `max_travel_mm` (the soft pin) are read back verbatim by
-        # `pcb_graph`, which hoists them onto the instance dict for
-        # `precis.pcb.ir.from_graph` to parse.
+        # columns: `group`/`group_offset` (rigid super-footprint) and
+        # `pattern`/`pattern_instance` (repeated-tile identity) are read
+        # back verbatim by `pcb_graph`, which hoists them onto the instance
+        # dict for `precis.pcb.ir.from_graph` to parse. `max_travel_mm`
+        # (the soft pin) is the exception: migration 0219 made it a column
+        # (with fixed_side / room_id / group_fixed), and `pcb_graph` hoists
+        # it back under the same key.
         meta = {
             k: c[k]
             for k in (
@@ -2280,16 +2283,16 @@ class PcbMixin:
                 "pattern",
                 "pattern_instance",
                 "edge_mate",
-                "max_travel_mm",
             )
             if c.get(k) is not None
         }
+        max_travel = c.get("max_travel_mm")
         row = conn.execute(
             """
             INSERT INTO pcb_instances
                 (ref_id, board_id, component_id, refdes, x, y, rot, layer,
-                 fixed, roles, note, meta)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 fixed, roles, note, meta, max_travel_mm)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING instance_id
             """,
             (
@@ -2305,6 +2308,7 @@ class PcbMixin:
                 list(c.get("roles") or []),
                 c.get("note"),
                 Jsonb(meta),
+                float(max_travel) if max_travel is not None else None,
             ),
         ).fetchone()
         assert row is not None
@@ -2733,6 +2737,11 @@ class PcbMixin:
                     "roles": list(r[10] or []),
                     "note": r[11],
                     "height_mm": r[12],
+                    # Lock columns (0219) for the TOC / view='placement'.
+                    "max_travel_mm": r[15],
+                    "fixed_side": bool(r[16]),
+                    "group_fixed": bool(r[17]),
+                    "room_id": r[18],
                     # The import's catalog identity (`epro._component_
                     # identity` -> `c.meta["part"]`) and the local-vs-
                     # catalog footprint verdict (i.meta) hoisted — the
@@ -2751,7 +2760,11 @@ class PcbMixin:
                 for r in conn.execute(
                     "SELECT i.instance_id, i.refdes, c.label, c.part_lcsc, "
                     "       c.footprint, i.layer, i.x, i.y, i.rot, i.fixed, "
-                    "       i.roles, i.note, c.height_mm, i.meta, c.meta "
+                    "       i.roles, i.note, c.height_mm, i.meta, c.meta, "
+                    "       i.max_travel_mm, i.fixed_side, i.group_fixed, "
+                    "       (SELECT rf.feature_id FROM pcb_features rf "
+                    "         WHERE rf.feature_id = i.room_id "
+                    "           AND rf.retired_at IS NULL) "
                     "FROM pcb_instances i JOIN pcb_components c "
                     "  ON c.component_id = i.component_id "
                     "WHERE i.ref_id = %s AND i.retired_at IS NULL "
@@ -2963,6 +2976,12 @@ class PcbMixin:
                     # `_parse_instance_groups` reads. Absent keys stay
                     # absent (no `None` placeholders) so a group-less
                     # design's graph is byte-identical to before.
+                    # Lock columns (0219): hoisted only when set, so a
+                    # lock-free design's graph is byte-identical.
+                    **({"max_travel_mm": r[16]} if r[16] is not None else {}),
+                    **({"fixed_side": True} if r[17] else {}),
+                    **({"group_fixed": True} if r[18] else {}),
+                    **({"room_id": int(r[19])} if r[19] is not None else {}),
                     **{
                         k: (r[12] or {})[k]
                         for k in (
@@ -2971,7 +2990,6 @@ class PcbMixin:
                             "pattern",
                             "pattern_instance",
                             "edge_mate",
-                            "max_travel_mm",
                             # "match"/"differ"/"uncached" — the local-vs-
                             # catalog footprint verdict `pcb_apply` stamps
                             # (see `_pcb_footprint_refs_by_components`),
@@ -3034,7 +3052,11 @@ class PcbMixin:
                     # -> false, matching `extended_part`'s documented
                     # "unknown is never silently promoted to a fee".
                     "       COALESCE(NOT pt.basic, false), i.meta, c.footprint, "
-                    "       c.meta, pt.description "
+                    "       c.meta, pt.description, i.max_travel_mm, "
+                    "       i.fixed_side, i.group_fixed, "
+                    "       (SELECT rf.feature_id FROM pcb_features rf "
+                    "         WHERE rf.feature_id = i.room_id "
+                    "           AND rf.retired_at IS NULL) "
                     "FROM pcb_instances i JOIN pcb_components c "
                     "  ON c.component_id = i.component_id "
                     "  LEFT JOIN parts pt ON pt.lcsc = c.part_lcsc "
@@ -3644,6 +3666,10 @@ class PcbMixin:
         layer: str | None = None,
         fixed: str | None = _UNSET,
         meta: dict[str, Any] | None = None,
+        max_travel_mm: float | None = _UNSET,
+        fixed_side: bool | None = None,
+        group_fixed: bool | None = None,
+        room_id: int | None = _UNSET,
         conn: Connection | None = None,
     ) -> bool:
         """The inline move/rotate/(un)lock editor. Unlike
@@ -3655,9 +3681,11 @@ class PcbMixin:
         distinct from omitting it (leave the lock alone). ``layer``
         (``top``/``bottom``) is the side — an EasyEDA ``--update`` carries
         a flip as an edit like any other. ``meta`` merges a patch into the
-        instance's jsonb; a ``None`` value DELETES the key (``meta - 'k'``),
-        which is how ``max_travel_mm`` is cleared — the soft pin lives on
-        instance meta, same as ``group``/``edge_mate``. Reuses ``conn``
+        instance's jsonb; a ``None`` value DELETES the key (``meta - 'k'``).
+        The lock columns (migration 0219) are real columns: ``max_travel_mm``
+        (the soft pin, mm) and ``room_id`` use the ``_UNSET`` sentinel —
+        omit to leave, ``None`` to clear; ``fixed_side`` / ``group_fixed``
+        are booleans, ``None`` = leave alone. Reuses ``conn``
         inside an existing transaction. Returns whether a live instance was
         found and updated."""
         sets: list[str] = []
@@ -3677,6 +3705,18 @@ class PcbMixin:
         if fixed is not _UNSET:
             sets.append("fixed = %s")
             params.append(fixed)
+        if max_travel_mm is not _UNSET:
+            sets.append("max_travel_mm = %s")
+            params.append(None if max_travel_mm is None else float(max_travel_mm))
+        if fixed_side is not None:
+            sets.append("fixed_side = %s")
+            params.append(bool(fixed_side))
+        if group_fixed is not None:
+            sets.append("group_fixed = %s")
+            params.append(bool(group_fixed))
+        if room_id is not _UNSET:
+            sets.append("room_id = %s")
+            params.append(None if room_id is None else int(room_id))
         if meta is not None:
             sets.append("meta = (meta - %s::text[]) || %s::jsonb")
             params.append([k for k, v in meta.items() if v is None])
@@ -4279,6 +4319,7 @@ class PcbMixin:
         layer_name: str,
         net_name: str,
         *,
+        priority: int | None = None,
         conn: Connection | None = None,
     ) -> int:
         """Author a plane assignment (``pcb_planes``) — the inline "assign
@@ -4299,14 +4340,23 @@ class PcbMixin:
         promotes it to authored in place — a human claiming a spot the
         optimizer merely guessed at. The reverse (derived silently
         clobbering authored) must never happen — see
-        :meth:`pcb_planes_replace_derived`."""
+        :meth:`pcb_planes_replace_derived`.
+
+        ``priority`` (0219; higher pours first) is written when given; an
+        omitted one leaves an existing row's priority alone (new rows get
+        the column default 0)."""
         if conn is not None:
-            return self._pcb_assign_plane(conn, ref_id, layer_name, net_name)
+            return self._pcb_assign_plane(conn, ref_id, layer_name, net_name, priority)
         with self._pcb_tx() as c:
-            return self._pcb_assign_plane(c, ref_id, layer_name, net_name)
+            return self._pcb_assign_plane(c, ref_id, layer_name, net_name, priority)
 
     def _pcb_assign_plane(
-        self, conn: Connection, ref_id: int, layer_name: str, net_name: str
+        self,
+        conn: Connection,
+        ref_id: int,
+        layer_name: str,
+        net_name: str,
+        priority: int | None = None,
     ) -> int:
         board_id = self._pcb_ensure_board(conn, ref_id)
         net = conn.execute(
@@ -4318,13 +4368,21 @@ class PcbMixin:
             return 0
         row = conn.execute(
             """
-            INSERT INTO pcb_planes (board_id, layer, net_id, meta)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO pcb_planes (board_id, layer, net_id, meta, priority)
+            VALUES (%s, %s, %s, %s, COALESCE(%s, 0))
             ON CONFLICT (board_id, layer, net_id) WHERE retired_at IS NULL
-            DO UPDATE SET meta = pcb_planes.meta || EXCLUDED.meta
+            DO UPDATE SET meta = pcb_planes.meta || EXCLUDED.meta,
+                          priority = COALESCE(%s, pcb_planes.priority)
             RETURNING plane_id
             """,
-            (board_id, layer_name, int(net[0]), Jsonb({"source": "authored"})),
+            (
+                board_id,
+                layer_name,
+                int(net[0]),
+                Jsonb({"source": "authored"}),
+                priority,
+                priority,
+            ),
         ).fetchone()
         return int(row[0]) if row is not None else 0
 
@@ -4347,9 +4405,12 @@ class PcbMixin:
                     "net": r[1],
                     "region_hint": r[2],
                     "source": r[3] or "authored",
+                    "region": r[4],
+                    "priority": int(r[5] or 0),
                 }
                 for r in conn.execute(
-                    "SELECT pl.layer, n.name, pl.region_hint, pl.meta->>'source' "
+                    "SELECT pl.layer, n.name, pl.region_hint, pl.meta->>'source', "
+                    "       pl.region, pl.priority "
                     "FROM pcb_planes pl "
                     "JOIN pcb_boards b ON b.board_id = pl.board_id "
                     "JOIN pcb_nets n ON n.net_id = pl.net_id "
@@ -4360,7 +4421,7 @@ class PcbMixin:
             ]
 
     def pcb_planes_replace_derived(
-        self, ref_id: int, board_id: int, assignments: dict[str, str]
+        self, ref_id: int, board_id: int, assignments: dict[str, Any]
     ) -> int:
         """Optimizer-derived plane write-back — the ``pcb_route`` job's
         checkpoint for :meth:`precis.pcb.ir.PcbIR.promote_plane` state
@@ -4379,8 +4440,10 @@ class PcbMixin:
         ``source`` field, so an authored net's decision is never silently
         shadowed by a derived one.
 
-        ``assignments`` is ``{net_name: layer_name}``. Returns nets
-        attempted (not necessarily inserted)."""
+        ``assignments`` is ``{net_name: layer_name}``; a value may also be
+        a dict ``{"layer": ..., "region": <polygon|None>, "priority": int}``
+        (0219 columns; defaults NULL / 0). Returns nets attempted (not
+        necessarily inserted)."""
         with self._pcb_tx() as conn:
             conn.execute(
                 "UPDATE pcb_planes SET retired_at = now() "
@@ -4389,7 +4452,13 @@ class PcbMixin:
                 (board_id,),
             )
             n = 0
-            for net_name, layer_name in assignments.items():
+            for net_name, spec in assignments.items():
+                if isinstance(spec, dict):
+                    layer_name = spec["layer"]
+                    region = spec.get("region")
+                    priority = int(spec.get("priority") or 0)
+                else:
+                    layer_name, region, priority = spec, None, 0
                 net = conn.execute(
                     "SELECT net_id FROM pcb_nets WHERE ref_id = %s AND name = %s "
                     "AND retired_at IS NULL",
@@ -4399,12 +4468,20 @@ class PcbMixin:
                     continue
                 conn.execute(
                     """
-                    INSERT INTO pcb_planes (board_id, layer, net_id, meta)
-                    VALUES (%s, %s, %s, %s)
+                    INSERT INTO pcb_planes
+                        (board_id, layer, net_id, meta, region, priority)
+                    VALUES (%s, %s, %s, %s, %s, %s)
                     ON CONFLICT (board_id, layer, net_id) WHERE retired_at IS NULL
                     DO NOTHING
                     """,
-                    (board_id, layer_name, int(net[0]), Jsonb({"source": "derived"})),
+                    (
+                        board_id,
+                        layer_name,
+                        int(net[0]),
+                        Jsonb({"source": "derived"}),
+                        Jsonb(region) if region is not None else None,
+                        priority,
+                    ),
                 )
                 n += 1
         return n

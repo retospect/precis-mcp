@@ -366,6 +366,24 @@ instance, enforced in SQL), this IS the authorized edit path. Any of
 `x`/`y`/`rot`/`fixed` may be given; omit `fixed` to leave the lock alone,
 pass `fixed=None` to explicitly clear it. `rot` is degrees (alias `rot_deg`); a unit string (`"1.5 rad"`) works too.
 
+**Lock levels.** A part is `locked` (`fixed` set), `leash N mm`
+(`max_travel_mm`) or `free` (the default; an imported board is free unless
+you say otherwise). `op='move'` also sets:
+
+- `side='top'|'bottom'` — moves the part to that side; its pads mirror.
+  Refused on a through-hole part.
+- `fixed_side=true|false` — side lock. A side-locked part refuses `side=`
+  unless the same call passes `fixed_side=false`.
+- `group_fixed=true|false` — the part's group moves only as a unit.
+- `room_id=<feature id>` — binds the part to a `ftype='room'` feature on
+  the same board; `null` clears it.
+
+These are stored and shown (board TOC and `view='placement'` print the
+lock level plus `side-locked` / `group-fixed` / `room N`) but the placer
+does not read `fixed_side`, `group_fixed` or `room_id` yet; today's placer
+never flips a part. `view='planes'` prints each plane's region (`whole
+board` until derived regions land) and priority.
+
 A move is refused when the part's new pose would break a rule the placer
 also enforces. The error names the rule and what it hit:
 `courtyard_overlap with B`, `courtyard_hole with hole @ (30, 30)`, or

@@ -239,6 +239,7 @@ _OTHER_VIEWS = (
     "pinout-preview",
     "notes",
     "availability",
+    "placement",
 )
 _VIEWS = (
     *_PROBE_VIEWS,
@@ -321,6 +322,11 @@ def _availability_lifecycle(row: dict[str, Any], live_outcome: str | None) -> st
 #: A pre-existing finding the group move makes more negative than this is a
 #: new fault, not a standing one.
 _GROUP_MOVE_MARGIN_EPS_MM = 1e-4
+#: ``op='move'`` kwargs that are ``pcb_instances`` columns (not pose, not
+#: ``fixed``): the rigid-group path writes poses only, so these go on after.
+_MOVE_COLUMN_KEYS = frozenset(
+    {"layer", "max_travel_mm", "fixed_side", "group_fixed", "room_id"}
+)
 _MOVES_EXAMPLE = (
     "args={'op':'move','moves':[{'refdes':'U1','x':10,'y':5},"
     "{'refdes':'U2','x':20,'y':5,'rot':90}]}"
@@ -617,6 +623,10 @@ class PcbHandler(Handler):
                 "rot_deg",
                 "fixed",
                 "max_travel_mm",
+                "fixed_side",
+                "group_fixed",
+                "room_id",
+                "priority",
                 "snap",
                 "net",
                 "a",
@@ -826,6 +836,15 @@ class PcbHandler(Handler):
         ttl = (title or slug).strip() or slug
 
         self._reject_non_electrical(nets)
+        for comp in components:
+            if isinstance(comp, dict) and comp.get("max_travel_mm") is not None:
+                try:
+                    self._parse_max_travel(comp["max_travel_mm"])
+                except BadInput as exc:
+                    raise BadInput(
+                        f"component {comp.get('refdes')!r}: {exc}",
+                        next="max_travel_mm: a number of mm >= 0, or omit it",
+                    ) from None
 
         try:
             # One transaction spans pcb_apply + the net_classes upsert (both
@@ -1670,36 +1689,29 @@ class PcbHandler(Handler):
         if "fixed" in args:
             kwargs["fixed"] = args["fixed"]
         if "max_travel_mm" in args:
-            pin = args["max_travel_mm"]
-            if pin is None:
-                # explicit null clears the soft pin (meta - 'max_travel_mm')
-                kwargs["meta"] = {"max_travel_mm": None}
-            else:
-                try:
-                    pin_mm = float(pin)
-                except (TypeError, ValueError):
-                    raise BadInput(
-                        f"pcb: max_travel_mm must be a number of mm >= 0 (got {pin!r})"
-                    ) from None
-                if not math.isfinite(pin_mm) or pin_mm < 0:
-                    raise BadInput(
-                        f"pcb: max_travel_mm must be a number of mm >= 0 "
-                        f"(got {pin!r}); null clears the pin"
-                    )
-                kwargs["meta"] = {"max_travel_mm": pin_mm}
+            # explicit null clears the soft pin (the column -> NULL)
+            kwargs["max_travel_mm"] = self._parse_max_travel(args["max_travel_mm"])
+        kwargs.update(self._move_lock_kwargs(ref, refdes, args))
         if not kwargs:
             raise BadInput(
-                "op='move' needs at least one of x / y / rot / fixed / max_travel_mm",
+                "op='move' needs at least one of x / y / rot / fixed / "
+                "max_travel_mm / side / fixed_side / group_fixed / room_id",
                 next="args={'op':'move','refdes':'U1','fixed':'xy'}",
             )
-        if {"x", "y", "rot"} & kwargs.keys():
-            group_body = self._move_poses(ref, [(refdes, kwargs)], single_form=True)
+        if {"x", "y", "rot"} & kwargs.keys() or "layer" in kwargs:
+            group_body = (
+                self._move_poses(ref, [(refdes, kwargs)], single_form=True)
+                if {"x", "y", "rot"} & kwargs.keys()
+                else None
+            )
             if group_body is not None:
                 # the rigid-group path writes poses via pcb_move_groups,
-                # which carries `fixed` as `lock` but has no meta arm —
-                # the soft pin (or any instance-meta patch) applies here.
-                if kwargs.get("meta") is not None:
-                    self.store.pcb_move_instance(ref.id, refdes, meta=kwargs["meta"])
+                # which carries `fixed` as `lock` but has no arm for the
+                # lock columns — the soft pin, side and the other columns
+                # apply here.
+                extra = {k: v for k, v in kwargs.items() if k in _MOVE_COLUMN_KEYS}
+                if extra:
+                    self.store.pcb_move_instance(ref.id, refdes, **extra)
                 return Response(body=group_body)
             standing = self._refuse_illegal_pose(ref, refdes, kwargs)
         else:
@@ -1714,6 +1726,135 @@ class PcbHandler(Handler):
                 "move did not add: " + "; ".join(standing[:5])
             )
         return Response(body=body)
+
+    @staticmethod
+    def _parse_max_travel(pin: Any) -> float | None:
+        """The soft pin as mm: a finite number >= 0, or ``None`` (clear)."""
+        if pin is None:
+            return None
+        if isinstance(pin, bool):
+            raise BadInput(
+                f"pcb: max_travel_mm must be a number of mm >= 0 (got {pin!r})"
+            )
+        try:
+            pin_mm = float(pin)
+        except (TypeError, ValueError):
+            raise BadInput(
+                f"pcb: max_travel_mm must be a number of mm >= 0 (got {pin!r})"
+            ) from None
+        if not math.isfinite(pin_mm) or pin_mm < 0:
+            raise BadInput(
+                f"pcb: max_travel_mm must be a number of mm >= 0 "
+                f"(got {pin!r}); null clears the pin"
+            )
+        return pin_mm
+
+    def _move_lock_kwargs(
+        self, ref: Any, refdes: str, args: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Validate ``op='move'``'s side / lock arguments (``side``,
+        ``fixed_side``, ``group_fixed``, ``room_id``) and return the
+        ``pcb_move_instance`` kwargs they map to (``layer`` for ``side``).
+        Raises before anything is written."""
+        out: dict[str, Any] = {}
+        for key in ("fixed_side", "group_fixed"):
+            if key in args:
+                if not isinstance(args[key], bool):
+                    raise BadInput(
+                        f"pcb: {key} must be a boolean, true or false "
+                        f"(got {args[key]!r})"
+                    )
+                out[key] = args[key]
+        if "side" in args:
+            side = args["side"]
+            if side not in ("top", "bottom"):
+                raise BadInput(f"pcb: side must be 'top' or 'bottom' (got {side!r})")
+            out["layer"] = side
+        if "room_id" in args:
+            room = args["room_id"]
+            if room is None:
+                out["room_id"] = None
+            else:
+                if isinstance(room, bool) or not isinstance(room, int):
+                    raise BadInput(
+                        f"pcb: room_id must be an integer feature id or null "
+                        f"(got {room!r})"
+                    )
+                feature = next(
+                    (
+                        f
+                        for f in self.store.pcb_features_list(ref.id)
+                        if f["feature_id"] == room
+                    ),
+                    None,
+                )
+                if feature is None:
+                    raise BadInput(f"pcb: no live feature {room} on this board")
+                if feature["ftype"] != "room":
+                    raise BadInput(
+                        f"pcb: feature {room} is a {feature['ftype']!r}, not a room"
+                    )
+                out["room_id"] = room
+        if "side" in args:
+            inst = next(
+                (
+                    i
+                    for i in self.store.pcb_load(ref.id)["instances"]
+                    if i["refdes"] == refdes
+                ),
+                None,
+            )
+            if inst is None:
+                raise NotFound(f"pcb instance {refdes!r} not found in {ref.slug!r}")
+            if self._is_through_hole(ref, inst):
+                raise BadInput(
+                    f"pcb: {refdes} is a through-hole part (its footprint has "
+                    "drilled pads, which exist on both sides); side= only "
+                    "applies to surface-mount parts"
+                )
+            gens = self.store.pcb_generators_for(ref.id)
+            gi: dict[str, Any] = next(
+                (
+                    i
+                    for i in self.store.pcb_graph(ref.id)["instances"]
+                    if i["refdes"] == refdes
+                ),
+                {},
+            )
+            in_generator = any(
+                refdes == g.get("refdes") or refdes.startswith(n + "_")
+                for n, g in gens.items()
+            )
+            if gi.get("group") or in_generator:
+                raise BadInput(
+                    f"pcb: {refdes} belongs to a "
+                    f"{'generator' if in_generator else 'rigid'} group; a group "
+                    "side flip is not supported yet (pcb-stackup-regions slice 5)"
+                )
+            unlocking = out.get("fixed_side") is False
+            if (
+                inst["fixed_side"]
+                and not unlocking
+                and str(inst["layer"] or "top") != args["side"]
+            ):
+                raise BadInput(
+                    f"pcb: {refdes} is side-locked (fixed_side=true); pass "
+                    "fixed_side=false to unlock it"
+                )
+        return out
+
+    def _is_through_hole(self, ref: Any, inst: dict[str, Any]) -> bool:
+        """True when the instance's footprint (the design-local row, else
+        the cached catalog one — the order :func:`pcb_session.
+        footprints_by_refdes` uses) has a drilled pad. A part with no
+        footprint on file reads as surface-mount: nothing to refuse on."""
+        fp = None
+        name = inst.get("footprint")
+        if name:
+            fp = self.store.pcb_local_footprints_for(ref.id).get(str(name))
+        if fp is None and inst.get("part_lcsc"):
+            fp = self.store.pcb_footprints_for(ref.id).get(str(inst["part_lcsc"]))
+        return any(pad.get("drill") for pad in (fp or {}).get("pads") or [])
 
     def _move_poses(
         self,
@@ -2107,6 +2248,25 @@ class PcbHandler(Handler):
             return []  # unplaced: a rotation alone has no geometry to judge
         rot = float(pose.get("rot", ir.inst_rot[idx]))
         engine = pcb_optimize.OptimizeEngine(ir, pcb_optimize.OptimizeConfig())
+        after_engine = engine
+        new_layer = pose.get("layer")
+        if new_layer is not None and (new_layer == "bottom") != bool(
+            ir.inst_bottom[idx]
+        ):
+            # A side flip: judge the new pose over a board where this part
+            # sits on the new layer (its courtyard/keep-outs mirror there).
+            flipped = {
+                **graph,
+                "instances": [
+                    {**i, "layer": new_layer} if i["refdes"] == refdes else i
+                    for i in graph["instances"]
+                ],
+            }
+            ir_after = self._build_ir(ref.id, flipped, with_fixed_copper=True)
+            ir_after.outline = ir.outline
+            after_engine = pcb_optimize.OptimizeEngine(
+                ir_after, pcb_optimize.OptimizeConfig()
+            )
         old_x, old_y = float(ir.inst_x[idx]), float(ir.inst_y[idx])
         old_rot = float(ir.inst_rot[idx])
         before_side: list[tuple[tuple[Any, int, str], tuple[float, float, float]]] = []
@@ -2119,7 +2279,7 @@ class PcbHandler(Handler):
             )
         problems, standing = _pose_delta(
             before_side,
-            [((engine, idx, refdes), (x, y, 0.0 if math.isnan(rot) else rot))],
+            [((after_engine, idx, refdes), (x, y, 0.0 if math.isnan(rot) else rot))],
             skip={},
         )
         if problems:
@@ -2208,7 +2368,12 @@ class PcbHandler(Handler):
                 "reassign it or pick a different layer",
                 options=[n for n in layer_names if n != layer],
             )
-        plane_id = self.store.pcb_assign_plane(ref.id, layer, net)
+        priority = args.get("priority")
+        if priority is not None and (
+            isinstance(priority, bool) or not isinstance(priority, int)
+        ):
+            raise BadInput(f"pcb: priority must be an integer (got {priority!r})")
+        plane_id = self.store.pcb_assign_plane(ref.id, layer, net, priority=priority)
         if not plane_id:
             raise NotFound(f"net {net!r} not found in {ref.slug!r}")
         return Response(
@@ -2980,6 +3145,8 @@ class PcbHandler(Handler):
             return self._render_footprints_view(ref_id)
         if view == "availability":
             return self._render_availability(ref_id)
+        if view == "placement":
+            return self._render_placement(ref_id)
         if view == "notes":
             return self._render_notes(ref_id)
         if view == "links":
@@ -4534,12 +4701,32 @@ class PcbHandler(Handler):
                 "'net':'GND'})"
             )
         table_rows = [
-            {"layer": r["layer"], "net": r["net"], "source": r["source"]} for r in rows
+            {
+                "layer": r["layer"],
+                "net": r["net"],
+                "source": r["source"],
+                "region": self._region_text(r.get("region")),
+                "priority": r.get("priority", 0),
+            }
+            for r in rows
         ]
         return Response(
             body=f"# planes — {len(rows)} assignment(s)\n"
-            + render_agent_table(table_rows, schema=["layer", "net", "source"])
+            + render_agent_table(
+                table_rows,
+                schema=["layer", "net", "source", "region", "priority"],
+            )
         )
+
+    @staticmethod
+    def _region_text(region: Any) -> str:
+        """``whole board`` for NULL, else ``polygon N pts``."""
+        if region is None:
+            return "whole board"
+        pts = region.get("points") if isinstance(region, dict) else region
+        if isinstance(pts, list):
+            return f"polygon {len(pts)} pts"
+        return "polygon"
 
     def _client_channel_rows(
         self, ref_id: int
@@ -6639,6 +6826,47 @@ class PcbHandler(Handler):
             + render_agent_table(rows, schema=["design", "title"])
         )
 
+    @staticmethod
+    def _lock_level(i: dict[str, Any]) -> str:
+        """``locked`` (``fixed`` set) / ``leash N mm`` / ``free``."""
+        if i.get("fixed"):
+            return "locked"
+        if i.get("max_travel_mm") is not None:
+            return f"leash {i['max_travel_mm']:g} mm"
+        return "free"
+
+    @staticmethod
+    def _lock_flags(i: dict[str, Any]) -> str:
+        flags = []
+        if i.get("fixed_side"):
+            flags.append("side-locked")
+        if i.get("group_fixed"):
+            flags.append("group-fixed")
+        if i.get("room_id") is not None:
+            flags.append(f"room {i['room_id']}")
+        return ",".join(flags) or "—"
+
+    def _render_placement(self, ref_id: int) -> Response:
+        """``view='placement'`` — per part: pose, side, lock level and the
+        lock flags (``side-locked`` / ``group-fixed`` / ``room N``)."""
+        design = self.store.pcb_load(ref_id)
+        rows = [
+            {
+                "refdes": i["refdes"],
+                "pose": self._pose(i),
+                "side": i["layer"],
+                "lock": self._lock_level(i),
+                "flags": self._lock_flags(i),
+            }
+            for i in design["instances"]
+        ]
+        return Response(
+            body=f"# placement — {len(rows)} part(s)\n"
+            + render_agent_table(
+                rows, schema=["refdes", "pose", "side", "lock", "flags"]
+            )
+        )
+
     def _toc(self, design: dict[str, Any]) -> str:
         parts = []
         board = design.get("board")
@@ -6661,13 +6889,20 @@ class PcbHandler(Handler):
             }
             for i in design["instances"]
         ]
-        parts.append(
-            "## parts\n"
-            + render_agent_table(
-                irows,
-                schema=["refdes", "part", "lcsc", "layer", "pose", "fixed", "roles"],
-            )
-        )
+        schema = ["refdes", "part", "lcsc", "layer", "pose", "fixed", "roles"]
+        if any(
+            i.get("max_travel_mm") is not None
+            or i.get("fixed_side")
+            or i.get("group_fixed")
+            or i.get("room_id") is not None
+            for i in design["instances"]
+        ):
+            # Only a board that uses the 0219 locks pays for the columns.
+            for row, i in zip(irows, design["instances"], strict=True):
+                row["lock"] = self._lock_level(i)
+                row["flags"] = self._lock_flags(i)
+            schema += ["lock", "flags"]
+        parts.append("## parts\n" + render_agent_table(irows, schema=schema))
         nrows = [
             {
                 "net": n["name"],

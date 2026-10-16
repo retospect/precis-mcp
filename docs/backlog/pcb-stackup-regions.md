@@ -133,6 +133,10 @@ Owning files: `src/precis/pcb/realize.py`, `src/precis/pcb/drc.py`,
 
 ### Slice 2 — lock and region columns (schema; lands via `/go`)
 
+**BUILT, awaiting `/go`** — branch `stackup-locks-migration`, migration
+`0219_pcb_locks_regions.sql`. Delete this slice when it is on main.
+`docs/reference/schema.md` is generated from prod; regenerate after deploy.
+
 One forward-only migration, next free number at build time (main's highest
 was 0218 on 2026-10-16; re-check `origin/main`):
 
@@ -215,6 +219,10 @@ placement)`: for each power net with no whole-board plane, its region on its
 layer is the dilated concave hull of its pins' legal drop-via sites, trimmed
 to the outline and to other regions; priority by pin count. Every area no
 region claims pours GND. Written through the existing `store._pcb_ops.pcb_planes_replace_derived` path (authored rows stay locked against it); no authored-region op.
+**Idempotency gap to close here:** `session.content_hash` hashes planes as
+`(layer, net, region_hint)`; slice 2 left it alone. Once regions change
+the pour, hash `region` and `priority` instead (a job re-run with a new
+region must not reuse a cached result).
 Import carries each fill polygon (taz15's 3V3/GND fills round-trip).
 DRC `pour_fragmented` (components per (net, layer) > 1 after stitching).
 
