@@ -41,3 +41,26 @@ def paper_identifier(
         if alias.get("arxiv"):
             return f"arxiv:{str(alias['arxiv']).strip()}"
     return ""
+
+
+def merged_cite_numbers(nums: list[int]) -> str:
+    """The bracket text for a merged citation run: ``[n]`` for one paper,
+    ``[1, 2]`` for a short list, a run of ≥3 consecutive numbers collapsing
+    to ``[1–3]`` — what biblatex's numeric-comp prints for the merged
+    ``\\cite{…}`` that ``export/latex.py::_merge_adjacent_cites`` builds.
+    Shared by the docx plain mark (:func:`export.docx._flush_cites`) and the
+    cached display of an EndNote grouped-citation field
+    (:func:`export.endnote.add_citation_field`), which have no biblatex to
+    do the compression for them. ``nums`` must be sorted ascending."""
+    parts: list[str] = []
+    i = 0
+    while i < len(nums):
+        j = i
+        while j + 1 < len(nums) and nums[j + 1] == nums[j] + 1:
+            j += 1
+        if j - i >= 2:
+            parts.append(f"{nums[i]}–{nums[j]}")
+        else:
+            parts.extend(str(n) for n in nums[i : j + 1])
+        i = j + 1
+    return "[" + ", ".join(parts) + "]"

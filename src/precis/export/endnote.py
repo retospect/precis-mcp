@@ -26,20 +26,47 @@ is itself well-formed.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
+from precis.export._cite_ids import merged_cite_numbers
 from precis.utils.authors import author_display
 from precis.utils.text import esc
 
 #: EndNote ``ref-type`` codes (name, numeric code), verified against a real
-#: EndNote-authored field (Journal Article = 17). The others are the standard
-#: EndNote type codes; a cited precis ref maps by kind, defaulting to journal.
+#: EndNote-authored field (Journal Article = 17) and the standard EndNote
+#: XML type list. A paper maps by its biblatex ``entry_type``
+#: (:func:`precis.export.latex.paper_bib_type`); ``patent`` / ``datasheet``
+#: kinds map directly. Anything unlisted keeps the journal default.
 _REF_TYPES: dict[str, tuple[str, int]] = {
-    "paper": ("Journal Article", 17),
-    "patent": ("Patent", 25),
+    "article": ("Journal Article", 17),
     "book": ("Book", 6),
-    "report": ("Report", 10),
+    "incollection": ("Book Section", 5),
+    "inproceedings": ("Conference Proceedings", 10),
+    "report": ("Report", 27),
+    "thesis": ("Thesis", 32),
+    "online": ("Electronic Article", 43),
+    "patent": ("Patent", 25),
+    "datasheet": ("Generic", 13),
 }
+
+#: Canonical biblatex style (:data:`precis.export.latex._BIB_STYLES` value)
+#: → the EndNote output-style name written into ``EN.Layout``, so
+#: "Update Citations and Bibliography" reformats in the same family.
+#: Names are EndNote builtins; every supported bib style is numeric.
+_ENDNOTE_STYLES: dict[str, str] = {
+    "numeric-comp": "Numbered",
+    "chem-rsc": "Numbered",
+    "chem-acs": "ACS",
+    "nature": "Nature",
+}
+
+
+def endnote_style(bib_style: str) -> str:
+    """The EndNote output-style name for a canonical biblatex ``bib_style``
+    (already through :func:`precis.export.latex.resolve_bib_style`)."""
+    return _ENDNOTE_STYLES.get(bib_style, "Numbered")
+
 
 #: A single synthetic "traveling library" id shared by every emitted record.
 #: EndNote keys a source on ``(db-id, rec-number)`` but formats from the
@@ -50,76 +77,67 @@ _DB_ID = "precismcp0traveling0library000000000"
 _TIMESTAMP = "1700000000"  # fixed → deterministic export bytes
 
 
+def _sortable_name(a: Any) -> str:
+    """One author as ``Family, Given`` — EndNote's canonical parse order.
+    A bare comma-less ``{"name": "Given Family"}`` is reordered on a
+    last-token-family heuristic so one export doesn't mix name orders
+    (stored ``Family, Given`` names and single-token names pass through)."""
+    name = author_display(a, order="sortable")
+    if name and "," not in name and " " in name:
+        rest, last = name.rsplit(" ", 1)
+        name = f"{last}, {rest}"
+    return name
+
+
 def _author_list(authors: list[dict[str, Any]] | None) -> list[str]:
-    """Each author as EndNote's ``<author>`` string. Prefer ``Family, Given``
-    (EndNote's canonical parse order); fall back to the display name."""
-    out: list[str] = []
-    for a in authors or []:
-        name = author_display(a, order="sortable")  # "Family, Given"
-        if name:
-            out.append(name)
-    return out
+    """Each author as EndNote's ``<author>`` string — ``Family, Given``
+    via :func:`_sortable_name`."""
+    return [name for a in authors or [] if (name := _sortable_name(a))]
 
 
 def _first_family(authors: list[dict[str, Any]] | None) -> str:
-    """The lead author's family name (best effort) for the cached in-text
-    display stub — ``author_display`` sortable form is ``Family, Given`` so
-    the family is the head; a bare ``{"name"}`` falls back to the last token."""
+    """The lead author's family name (best effort) for the ``<Author>``
+    stub — ``_sortable_name``'s ``Family, Given`` makes the family the
+    head; a single-token name is returned whole."""
     for a in authors or []:
         if isinstance(a, dict) and (a.get("family") or "").strip():
             return str(a["family"]).strip()
-        disp = author_display(a, order="sortable")
+        disp = _sortable_name(a)
         if disp:
-            return disp.split(",")[0].strip() or disp.split()[-1]
+            return disp.split(",")[0].strip() or disp
     return ""
-
-
-def _display_inner(authors: list[dict[str, Any]] | None, year: int | None) -> str:
-    """The inside of the cached in-text stub — ``Nasibulin et al. 2007``."""
-    first = _first_family(authors)
-    yr = str(year) if year else ""
-    if first and len(authors or []) > 1:
-        first += " et al."
-    return " ".join(x for x in (first, yr) if x) or "citation"
-
-
-def _display_text(authors: list[dict[str, Any]] | None, year: int | None) -> str:
-    """Cached in-text mark shown until EndNote reformats — an author-year
-    stub like ``(Nasibulin 2007)`` (EndNote overwrites it on update)."""
-    return f"({_display_inner(authors, year)})"
-
-
-def _group_display_text(cites: list[tuple[dict[str, Any], str | None]]) -> str:
-    """Cached field-result text for a grouped citation — EndNote's
-    author-year cache writes ``(A 2000; B 2001)``; regenerated on update
-    either way, so it only needs to look right until then."""
-    if len(cites) == 1:
-        source, _notes = cites[0]
-        return _display_text(source.get("authors"), source.get("year"))
-    inner = "; ".join(
-        _display_inner(source.get("authors"), source.get("year"))
-        for source, _notes in cites
-    )
-    return f"({inner})"
 
 
 #: cap on an embedded cited-passage note so one field's XML stays sane.
 _NOTE_MAX_CHARS = 4000
 
 
+#: Crossref/ingest markup embedded in titles — ``C<sub>20</sub>`` — stripped
+#: to text for the record (the field data would print the literal tags).
+_TAG = re.compile(r"<[A-Za-z][^>]*>|</[A-Za-z][^>]*>")
+
+
+def _strip_markup(text: Any) -> str:
+    return _TAG.sub("", str(text or ""))
+
+
 def build_record(source: dict[str, Any], notes: str | None = None) -> str:
     """One EndNote ``<record>…</record>`` from a resolved source dict
-    (``kind``, ``tag``, ``rec_number``, ``authors``, ``title``, ``year``,
-    ``journal``, ``volume``, ``number``, ``pages``, ``doi``, ``url``). Absent fields are omitted.
+    (``kind``, ``tag``, ``rec_number`` = the corpus ref id, ``bib_type``,
+    ``authors``, ``title``, ``year``, ``journal``, ``volume``, ``number``,
+    ``pages``, ``doi``, ``url``). Absent fields are omitted.
 
     ``notes`` (the cited passage from a ``pc<id>`` chunk citation) is embedded
     as ``<research-notes>`` — EndNote's *Research Notes* field — so the author
     sees the exact cited text on the citation. (Caveat: EndNote drops
     Research Notes when a traveling library is imported into a real library;
     the passage is present in the field data regardless.)"""
-    name, code = _REF_TYPES.get(source.get("kind", "paper"), _REF_TYPES["paper"])
+    name, code = _REF_TYPES.get(
+        source.get("bib_type") or source.get("kind") or "article",
+        _REF_TYPES["article"],
+    )
     # Same venue precedence as the .bib/.docx exporters.
-    venue = (
+    venue = _strip_markup(
         source.get("venue") or source.get("journal") or source.get("container_title")
     )
     rec = source["rec_number"]
@@ -134,7 +152,7 @@ def build_record(source: dict[str, Any], notes: str | None = None) -> str:
     if authors:
         inner = "".join(f"<author>{esc(a)}</author>" for a in authors)
         parts.append(f"<contributors><authors>{inner}</authors></contributors>")
-    titles = [f"<title>{esc(source.get('title'))}</title>"]
+    titles = [f"<title>{esc(_strip_markup(source.get('title')))}</title>"]
     if venue:
         titles.append(f"<secondary-title>{esc(venue)}</secondary-title>")
     parts.append("<titles>" + "".join(titles) + "</titles>")
@@ -168,42 +186,45 @@ def build_record(source: dict[str, Any], notes: str | None = None) -> str:
     return "".join(parts)
 
 
-def _cite_element(source: dict[str, Any], notes: str | None = None) -> str:
+def _cite_element(source: dict[str, Any], notes: str | None, cite_number: int) -> str:
     """One ``<Cite>…</Cite>`` element — author/year/RecNum stub + the full
     traveling-library ``<record>`` for ``source``. ``notes`` is the cited
     passage (``pc<id>`` chunk citation) → the record's
-    ``<research-notes>``."""
+    ``<research-notes>``. ``cite_number`` is the 1-based citation number —
+    the cached ``<DisplayText>`` shows ``[n]``, matching the numbered
+    bibliography the export always emits."""
     first_family = _first_family(source.get("authors"))
     year = source.get("year")
-    display = _display_text(source.get("authors"), year)
     rec = source["rec_number"]
     return (
         "<Cite>"
         f"<Author>{esc(first_family)}</Author>"
         f"<Year>{esc(year) if year else ''}</Year>"
         f"<RecNum>{rec}</RecNum>"
-        f"<DisplayText>{esc(display)}</DisplayText>"
+        f"<DisplayText>[{cite_number}]</DisplayText>"
         f"{build_record(source, notes)}"
         "</Cite>"
     )
 
 
-def citation_payload(source: dict[str, Any], notes: str | None = None) -> str:
+def citation_payload(
+    source: dict[str, Any], notes: str | None = None, cite_number: int = 1
+) -> str:
     """The full ``<EndNote><Cite>…</Cite></EndNote>`` instruction payload for
     one in-text citation of ``source``."""
-    return "<EndNote>" + _cite_element(source, notes) + "</EndNote>"
+    return "<EndNote>" + _cite_element(source, notes, cite_number) + "</EndNote>"
 
 
 def citation_group_payload(
-    cites: list[tuple[dict[str, Any], str | None]],
+    cites: list[tuple[dict[str, Any], str | None, int]],
 ) -> str:
     """The ``<EndNote>…</EndNote>`` instruction payload for a citation run —
-    one ``<Cite>`` element per ``(source, notes)`` pair in a single wrapper,
-    exactly how EndNote itself writes a grouped citation
+    one ``<Cite>`` element per ``(source, notes, cite_number)`` triple in a
+    single wrapper, exactly how EndNote itself writes a grouped citation
     (``ADDIN EN.CITE <EndNote><Cite>…</Cite><Cite>…</Cite></EndNote>``)."""
     return (
         "<EndNote>"
-        + "".join(_cite_element(source, notes) for source, notes in cites)
+        + "".join(_cite_element(source, notes, n) for source, notes, n in cites)
         + "</EndNote>"
     )
 
@@ -256,21 +277,23 @@ def _cached_run(text: str) -> Any:
 
 
 def add_citation_field(
-    paragraph: Any, cites: list[tuple[dict[str, Any], str | None]]
+    paragraph: Any, cites: list[tuple[dict[str, Any], str | None, int]]
 ) -> None:
     """Append ONE ``ADDIN EN.CITE`` complex field to ``paragraph`` — the
-    in-text citation. ``cites`` carries one ``(source, notes)`` pair per
-    cited reference: a run of adjacent citations emits a single field with
-    several ``<Cite>`` elements, exactly as EndNote itself writes a grouped
-    citation (one cite → one ``<Cite>``). Shape mirrors a real EndNote
-    field: begin · instrText · separate · cached display · end. Each
-    ``notes`` embeds the cited passage into its record's Research Notes."""
+    in-text citation. ``cites`` carries one ``(source, notes, cite_number)``
+    triple per cited reference: a run of adjacent citations emits a single
+    field with several ``<Cite>`` elements, exactly as EndNote itself writes
+    a grouped citation (one cite → one ``<Cite>``). Shape mirrors a real
+    EndNote field: begin · instrText · separate · cached display · end — the
+    cached display is the merged numeric mark (``[1, 2]`` / ``[1–3]``)
+    matching the numbered bibliography. Each ``notes`` embeds the cited
+    passage into its record's Research Notes."""
     p = paragraph._p
     payload = citation_group_payload(cites)
     p.append(_fld_char("begin"))
     p.append(_instr_text(" ADDIN EN.CITE " + payload))
     p.append(_fld_char("separate"))
-    p.append(_cached_run(_group_display_text(cites)))
+    p.append(_cached_run(merged_cite_numbers(sorted(n for _s, _n, n in cites))))
     p.append(_fld_char("end"))
 
 

@@ -1840,7 +1840,7 @@ def test_docx_without_seeded_title_chunk_prints_ref_title_first(
     paras = docx.Document(str(out)).paragraphs
     texts = [p.text for p in paras]
     assert texts[0] == "Nanobuds" and paras[0].style.name == "Title"
-    assert texts.index("Abstract") < texts.index("The abstract.")
+    assert "The abstract." in texts  # no synthetic "Abstract" heading
     intro = next(p for p in paras if p.text.endswith("Introduction"))
     assert intro.text == "1 Introduction" and intro.style.name == "Heading 1"
 
@@ -2110,7 +2110,7 @@ def test_references_section_renders_sub_and_italic_runs(tmp_path: Path) -> None:
     assert any(r.italic and r.text == "Carbon" for r in p.runs)
 
 
-def test_title_page_has_date_line_and_abstract_heading(
+def test_title_page_has_date_line_no_abstract_heading(
     draft: DraftHandler, hub: Hub, tmp_path: Path
 ) -> None:
     from datetime import UTC, datetime
@@ -2127,12 +2127,10 @@ def test_title_page_has_date_line_and_abstract_heading(
     today = datetime.now(UTC)
     date_line = f"{today:%B} {today.day}, {today.year}"
     assert texts[1] == date_line  # right under the title (no byline here)
-    i = texts.index("Abstract")
-    assert texts[i + 1] == "The abstract."
-    assert texts[0] == "Paper" and i == 2
-    assert next(p for p in paras if p.text == "Abstract").style.name.startswith(
-        "Heading"
-    )
+    # No synthetic "Abstract" heading — the PDF has none (gr491601 L4).
+    assert "Abstract" not in texts
+    assert texts.index("The abstract.") == 2
+    assert texts[0] == "Paper"
 
 
 def test_nested_layout_numbers_sections_from_one(
@@ -2179,3 +2177,200 @@ def test_nested_layout_numbers_sections_from_one(
     assert "See section 1.1." in texts
     head = next(p for p in paras if p.text == "1.1 Scope")
     assert head.style.name == "Heading 2"
+
+
+def test_endnote_field_record_quality(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    """gr491600: RecNum carries the corpus ref id (stable across exports),
+    the cached in-text display is numeric ``[n]`` matching the numbered
+    bibliography, EN.Layout names the mapped output style, and
+    EN.Libraries lists resolved ref ids only."""
+    import zipfile
+
+    store = hub.live_store
+    _seed_paper(store, "q1", "Quality paper", 2001)
+    pref = store.get_ref(kind="paper", id="q1")
+    assert pref is not None
+    pid = int(
+        TodoHandler(hub=hub)
+        .put(text="proj")
+        .body.split("id=")[1]
+        .split()[0]
+        .rstrip(",.()")
+    )
+    draft.put(id="rq", title="T", project=pid)
+    draft.put(
+        id="rq", chunk_kind="paragraph", text="Claim [§q1] holds.", at={"last": True}
+    )
+    ref = store.get_ref(kind="draft", id="rq")
+    out = tmp_path / "rq.docx"
+    export_docx(store, ref, target_path=out, citations="endnote")
+    with zipfile.ZipFile(out) as z:
+        body = z.read("word/document.xml").decode("utf-8")
+        settings = z.read("word/settings.xml").decode("utf-8")
+    assert f"&lt;RecNum&gt;{pref.id}&lt;/RecNum&gt;" in body
+    assert f"&lt;rec-number&gt;{pref.id}&lt;/rec-number&gt;" in body
+    assert "&lt;DisplayText&gt;[1]&lt;/DisplayText&gt;" in body
+    assert "Style&gt;Numbered" in settings  # numeric-comp → EndNote "Numbered"
+    assert f"&lt;item&gt;{pref.id}&lt;/item&gt;" in settings
+
+
+def test_endnote_missing_year_warns(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    """A cited paper with no year still exports (empty ``<Year/>``) but
+    reports a warning instead of failing silently."""
+    store = hub.live_store
+    store.insert_ref(kind="paper", slug="noyr", title="Yearless", provider="manual")
+    pid = int(
+        TodoHandler(hub=hub)
+        .put(text="proj")
+        .body.split("id=")[1]
+        .split()[0]
+        .rstrip(",.()")
+    )
+    draft.put(id="ny", title="T", project=pid)
+    draft.put(
+        id="ny", chunk_kind="paragraph", text="Ref [§noyr] here.", at={"last": True}
+    )
+    ref = store.get_ref(kind="draft", id="ny")
+    res = export_docx(store, ref, target_path=tmp_path / "ny.docx", citations="endnote")
+    assert any("noyr" in w and "year" in w for w in res.warnings)
+
+
+def test_heading_and_table_header_citations_number(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    """gr491601 L2: heading text and table header cells go through the
+    inline grammar — a citation inside them numbers against the shared
+    bibliography (it used to print literally and stay unnumbered)."""
+    store = hub.live_store
+    _seed_paper(store, "h1", "Heading paper", 2001)
+    pid = int(
+        TodoHandler(hub=hub)
+        .put(text="proj")
+        .body.split("id=")[1]
+        .split()[0]
+        .rstrip(",.()")
+    )
+    draft.put(id="hh", title="T", project=pid)
+    draft.put(
+        id="hh", chunk_kind="heading", text="Results from [§h1]", at={"last": True}
+    )
+    draft.put(
+        id="hh",
+        chunk_kind="table",
+        table={"header": ["Metric [§h1]", "Value"], "rows": [["x", "1"]]},
+        at={"last": True},
+    )
+    ref = store.get_ref(kind="draft", id="hh")
+    out = tmp_path / "hh.docx"
+    res = export_docx(store, ref, target_path=out)
+    assert res.cited_slugs == ["h1"]
+    doc = docx.Document(str(out))
+    heading = next(p for p in doc.paragraphs if "Results" in p.text)
+    assert "[1]" in heading.text
+    hdr_cell = doc.tables[0].rows[0].cells[0].paragraphs[0]
+    assert "[1]" in hdr_cell.text
+    assert "Heading paper" in "\n".join(p.text for p in doc.paragraphs)
+
+
+def test_no_spurious_abstract_heading(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    """gr491601 L4: prose between title and first heading gets NO
+    "Abstract" heading — the PDF has none."""
+    pid = int(
+        TodoHandler(hub=hub)
+        .put(text="proj")
+        .body.split("id=")[1]
+        .split()[0]
+        .rstrip(",.()")
+    )
+    draft.put(id="ab", title="My Title", project=pid)
+    draft.put(
+        id="ab", chunk_kind="paragraph", text="Abstract body text.", at={"last": True}
+    )
+    ref = hub.live_store.get_ref(kind="draft", id="ab")
+    out = tmp_path / "ab.docx"
+    export_docx(hub.live_store, ref, target_path=out)
+    doc = docx.Document(str(out))
+    assert "Abstract" not in [p.text for p in doc.paragraphs]
+    assert "Abstract body text." in [p.text for p in doc.paragraphs]
+
+
+def test_abbrev_long_form_containing_short_collapses_once(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    """gr491599 H3: an authored ``long (SHORT)`` whose long form contains
+    another defined short collapses to the single span — the inner short
+    must not be consumed first and double the expansion."""
+    pid = int(
+        TodoHandler(hub=hub)
+        .put(text="proj")
+        .body.split("id=")[1]
+        .split()[0]
+        .rstrip(",.()")
+    )
+    draft.put(id="fc", title="T", project=pid)
+    draft.put(
+        id="fc",
+        chunk_kind="term",
+        text="carbon nanobud",
+        meta={"short": "CNB"},
+    )
+    draft.put(
+        id="fc",
+        chunk_kind="term",
+        text="functionalized CNB",
+        meta={"short": "FCNB"},
+    )
+    draft.put(
+        id="fc",
+        chunk_kind="paragraph",
+        text="A functionalized CNB (FCNB) grows. CNB films too.",
+        at={"last": True},
+    )
+    ref = hub.live_store.get_ref(kind="draft", id="fc")
+    out = tmp_path / "fc.docx"
+    export_docx(hub.live_store, ref, target_path=out)
+    body = next(p.text for p in docx.Document(str(out)).paragraphs if "grows" in p.text)
+    # The authored span collapses once; the later bare "CNB" is its own
+    # first use and expands like the PDF does.
+    assert body == "A functionalized CNB (FCNB) grows. Carbon nanobud (CNB) films too."
+
+
+def test_abbrev_definitions_inside_bold_expand(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    """gr491599 L3: a first use inside **bold** still expands (the PDF
+    defines inside bold too), not a skipped span."""
+    pid = int(
+        TodoHandler(hub=hub)
+        .put(text="proj")
+        .body.split("id=")[1]
+        .split()[0]
+        .rstrip(",.()")
+    )
+    draft.put(id="bd", title="T", project=pid)
+    draft.put(
+        id="bd",
+        chunk_kind="term",
+        text="metal-organic framework",
+        meta={"short": "MOF"},
+    )
+    draft.put(
+        id="bd",
+        chunk_kind="paragraph",
+        text="Uptake in **MOF films** is high.",
+        at={"last": True},
+    )
+    ref = hub.live_store.get_ref(kind="draft", id="bd")
+    out = tmp_path / "bd.docx"
+    export_docx(hub.live_store, ref, target_path=out)
+    doc = docx.Document(str(out))
+    para = next(p for p in doc.paragraphs if "Uptake" in p.text)
+    assert "metal-organic framework" in para.text
+    bold = [r.text for r in para.runs if r.bold]
+    assert bold == ["metal-organic framework (MOF)", " films"]

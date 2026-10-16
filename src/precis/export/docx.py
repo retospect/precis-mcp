@@ -36,7 +36,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from precis.export._cite_ids import paper_identifier
+from precis.export._cite_ids import merged_cite_numbers, paper_identifier
 from precis.export._data_package import (
     SECTION_TITLE as _DATA_PACKAGE_SECTION_TITLE,
 )
@@ -538,8 +538,8 @@ def export_docx(
     guard_exportable(ref)
     guard_no_secrets(store, ref)
     target_path = Path(target_path)
+    ws = Workspace.from_meta(getattr(ref, "meta", None))
     if doc_type is None:
-        ws = Workspace.from_meta(getattr(ref, "meta", None))
         doc_type = ws.doc_type if ws else ""
     chunks = store.drafts.reading_order(ref.id)
     handles = {c.handle for c in chunks}
@@ -583,23 +583,15 @@ def export_docx(
     title_dc = _title_heading_dc(chunks, getattr(ref, "title", None))
     shift = _depth_shift(chunks, title_dc)
     title_done = False
-    abstract_pending = False  # next body paragraph opens the abstract
     if title_dc is None:
         doc.add_heading(getattr(ref, "title", None) or "", level=0)
         _render_byline(doc, byline)
         _render_date(doc)
         title_done = True
-        abstract_pending = True
     for c in chunks:
         kind = c.chunk_kind
         if kind in ("ulist", "olist"):
             continue  # structural container — its items carry the prose
-        if abstract_pending and kind != "term":
-            abstract_pending = False
-            if kind == "paragraph":
-                # Prose between the title and the first heading is the
-                # abstract; give it the heading the PDF prints.
-                doc.add_heading("Abstract", level=1)
         if kind == "item":
             base, level = "List Bullet", 0
             pid = c.parent_chunk_id
@@ -626,12 +618,18 @@ def export_docx(
                 _render_byline(doc, byline)
                 _render_date(doc)
                 title_done = True
-                abstract_pending = True
                 continue
-            # section / subsection / subsubsection, like LaTeX's depth map
+            # section / subsection / subsubsection, like LaTeX's depth map.
+            # Heading text goes through the same inline grammar as prose —
+            # citations inside it number against the shared bibliography,
+            # like the PDF (they used to print literally and stay
+            # unnumbered, shifting numbering against the PDF).
             level = min(max(int(c.depth) - shift, 0) + 1, _MAX_HEADING_LEVEL)
             number = ctx.xref[c.dc][1] if c.dc in ctx.numbered_headings else ""
-            doc.add_heading(f"{number} {c.text}" if number else c.text, level=level)
+            p = doc.add_heading("", level=level)
+            if number:
+                p.add_run(f"{number} ")
+            _render_inline(c.text, ctx, p)
             continue
         if kind == "code":
             p = doc.add_paragraph()
@@ -666,11 +664,19 @@ def export_docx(
         # Last section, after References, so it deletes as one block.
         _append_published_claims(doc, ctx)
     if ctx.endnote and ctx.cited:
-        from precis.export.endnote import install_document_vars
+        from precis.export.endnote import endnote_style, install_document_vars
+        from precis.export.latex import resolve_bib_style
 
-        install_document_vars(
-            doc, list(range(1, len(ctx.cited) + 1)), style="Annotated"
-        )
+        # EN.Libraries lists only the refs that actually resolved (an
+        # unresolved slug prints its plain [n] stub and never lands a
+        # record); record ids are corpus ref ids (M3), not cite order.
+        rec_ids = [
+            ctx.resolved[s]["rec_number"] for s in ctx.cited if s in ctx.resolved
+        ]
+        bib_style, style_warn = resolve_bib_style(ws.style if ws else "")
+        if style_warn:
+            ctx.warnings.append(style_warn)
+        install_document_vars(doc, rec_ids, style=endnote_style(bib_style))
 
     # ``ref_events`` export record (the trust-surfaces override audit) — one row
     # naming every finding this export rendered clean only via an author's
@@ -814,7 +820,11 @@ def _render_table(doc: Any, chunk: Any, ctx: _Ctx) -> None:
         pass
     for cell, text in zip(table.rows[0].cells, header):
         para = cell.paragraphs[0]
-        para.add_run(text).bold = True
+        # Header cells use the same inline grammar as body cells — a
+        # citation in a column header numbers like the PDF's.
+        _render_inline(text, ctx, para)
+        for run in para.runs:
+            run.bold = True
     for row in rows:
         cells = table.add_row().cells
         for j in range(ncols):
@@ -946,9 +956,17 @@ def _render_gap(text: str, ctx: _Ctx, paragraph: Any) -> None:
             r = paragraph.add_run(m.group("sup")[5:-6])
             r.font.superscript = True
         elif m.group("bold") is not None:
-            paragraph.add_run(m.group("bold")[2:-2]).bold = True
+            # Definitions inside bold resolve too — the PDF defines inside
+            # the bold as well (L3); style the emitted runs after.
+            n_runs = len(paragraph.runs)
+            _emit_text(m.group("bold")[2:-2], ctx, paragraph)
+            for r in paragraph.runs[n_runs:]:
+                r.bold = True
         elif m.group("italic") is not None:
-            paragraph.add_run(m.group("italic")[1:-1]).italic = True
+            n_runs = len(paragraph.runs)
+            _emit_text(m.group("italic")[1:-1], ctx, paragraph)
+            for r in paragraph.runs[n_runs:]:
+                r.italic = True
         last = m.end()
     if last < len(text):
         _emit_text(text[last:], ctx, paragraph)
@@ -969,10 +987,55 @@ def _emit_text(text: str, ctx: _Ctx, paragraph: Any) -> None:
     if pat is None:
         paragraph.add_run(text)
         return
+    # Pre-pass (mirrors ``export/latex.py::_glsify``): stash authored
+    # ``long (SHORT)`` spans so a short INSIDE the long form can't be
+    # consumed first — that would leave no long text for the collapse and
+    # double the expansion ("functionalized CNB (FCNB)"). Longest long
+    # form first, as in latex.
+    stashed: list[tuple[str, str, str]] = []  # (short, span_text, plural_s)
+    for short in sorted(ctx.abbrevs, key=lambda s: -len(ctx.abbrevs[s].strip())):
+        long = ctx.abbrevs[short].strip()
+        base = long[:-1] if long.lower().endswith("s") else long
+        if not base:
+            continue
+
+        def _stash(m: re.Match[str], short: str = short) -> str:
+            stashed.append((short, m.group(0), m.group(1) or ""))
+            return f"\x03{len(stashed) - 1}\x03"
+
+        text = re.sub(
+            r"(?<![\w-])" + re.escape(base) + r"s?\s*\(" + re.escape(short) + r"(s)?\)",
+            _stash,
+            text,
+            flags=re.IGNORECASE,
+        )
+    combined = re.compile(r"\x03(\d+)\x03|" + pat.pattern)
     last = 0
-    for m in pat.finditer(text):
+    for m in combined.finditer(text):
         pre = text[last : m.start()]
-        short, plural = m.group(1), m.group(2)
+        if m.group(1) is not None:
+            # The authored spelled-out span. Already-introduced short →
+            # keep the prose verbatim (like \gls's stashed branch); first
+            # use → emit the normalized registry expansion (what \gls
+            # prints), plural ``s`` carried over, and count the use.
+            short, span, plural = stashed[int(m.group(1))]
+            end = m.end()
+            ctx.used_acr.add(short)
+            if pre:
+                paragraph.add_run(pre)
+            if short in ctx.seen_acr:
+                paragraph.add_run(span)
+            else:
+                ctx.seen_acr.add(short)
+                long = ctx.abbrevs[short].strip()
+                if plural and not long.lower().endswith("s"):
+                    long += "s"
+                if long and _at_sentence_start(paragraph):
+                    long = long[0].upper() + long[1:]
+                paragraph.add_run(f"{long} ({short}{plural})")
+            last = end
+            continue
+        short, plural = m.group(2), m.group(3)
         end = m.end()
         ctx.used_acr.add(short)
         if short in ctx.seen_acr:
@@ -1514,26 +1577,6 @@ def _cite(
     ctx.cite_run.append((slug, n, chunk_id))
 
 
-def _merged_cite_text(nums: list[int]) -> str:
-    """The bracket text for a merged citation run: ``[n]`` for one paper,
-    ``[1, 2]`` for a short list, a run of ≥3 consecutive numbers collapsing
-    to ``[1–3]`` — what biblatex's numeric-comp prints for the merged
-    ``\\cite{…}`` that ``export/latex.py::_merge_adjacent_cites`` builds.
-    docx has no biblatex, so the compression is computed here."""
-    parts: list[str] = []
-    i = 0
-    while i < len(nums):
-        j = i
-        while j + 1 < len(nums) and nums[j + 1] == nums[j] + 1:
-            j += 1
-        if j - i >= 2:
-            parts.append(f"{nums[i]}–{nums[j]}")
-        else:
-            parts.extend(str(n) for n in nums[i : j + 1])
-        i = j + 1
-    return "[" + ", ".join(parts) + "]"
-
-
 def _flush_cites(ctx: _Ctx, paragraph: Any) -> None:
     """Emit the buffered adjacent-citation run, then clear it — one merged
     superscript mark + one link group in plain mode, or ONE ``ADDIN
@@ -1556,18 +1599,17 @@ def _flush_cites(ctx: _Ctx, paragraph: Any) -> None:
         return
     # biblatex sorts the keys of a merged cite before printing it.
     nums = sorted(n for _slug, n, _cid in deduped)
-    paragraph.add_run(_merged_cite_text(nums)).font.superscript = True
+    paragraph.add_run(merged_cite_numbers(nums)).font.superscript = True
     for slug, _n, _cid in deduped:
         _cite_link_group(slug, ctx, paragraph)
 
 
-def _resolve_source(
-    store: RefLookupStore, slug: str, rec_number: int
-) -> dict[str, Any] | None:
+def _resolve_source(store: RefLookupStore, slug: str) -> dict[str, Any] | None:
     """Resolve a cited slug to the structured record EndNote embeds — the
     SAME paper/patent/datasheet lookup the plain path and the ``.bib`` path
     use, so the docx, PDF and EndNote outputs cite the identical resolved
-    source."""
+    source. ``rec_number`` is the corpus ref id (not the per-export citation
+    number): a re-export keeps each paper's EndNote identity stable."""
     pref = (
         store.get_ref(kind="paper", id=slug)
         or store.get_ref(kind="patent", id=slug)
@@ -1590,7 +1632,8 @@ def _resolve_source(
     return {
         "kind": pref.kind,
         "tag": slug,
-        "rec_number": rec_number,
+        "rec_number": pref.id,
+        "bib_type": paper_bib_type(meta) if pref.kind == "paper" else "",
         "authors": pref.authors,
         "title": pref.title or slug,
         "year": pref.year,
@@ -1619,15 +1662,17 @@ def _cite_endnote(
     paper carry the passage each one actually pointed at."""
     from precis.export.endnote import add_citation_field
 
-    cites: list[tuple[dict[str, Any], str | None]] = []
+    cites: list[tuple[dict[str, Any], str | None, int]] = []
     for slug, n, chunk_id in run:
         source = ctx.resolved.get(slug)
         if source is None:
-            source = _resolve_source(ctx.store, slug, n)
+            source = _resolve_source(ctx.store, slug)
             if source is None:
                 ctx.warnings.append(f"cite {slug!r}: no paper in corpus — plain marker")
                 paragraph.add_run(f"[{n}]").font.superscript = True
                 continue
+            if not source.get("year"):
+                ctx.warnings.append(f"cite {slug!r}: no year — empty <Year/>")
             ctx.resolved[slug] = source
         notes: str | None = None
         if chunk_id is not None and ctx.store is not None:
@@ -1635,7 +1680,7 @@ def _cite_endnote(
                 notes = ctx.store.chunks.chunk_text_by_id(chunk_id)
             except Exception:  # pragma: no cover — chunk fetch best-effort
                 notes = None
-        cites.append((source, notes))
+        cites.append((source, notes, n))
     if cites:
         add_citation_field(paragraph, cites)
 
