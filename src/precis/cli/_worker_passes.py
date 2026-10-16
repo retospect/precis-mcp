@@ -603,6 +603,7 @@ def build_ref_passes(
     # node-targeted batch, not something every system worker should
     # pick up. See workers/llm_summarize.py.
     from precis.workers.llm_summarize import (
+        SUMMARIZE_DISPATCH_MAX_TOKENS,
         SUMMARIZER_NAME,
         LlmConfig,
         run_llm_summarize_pass,
@@ -626,6 +627,11 @@ def build_ref_passes(
             source="llm_summarize",
             log_call=True,
             log_blobs=False,
+            # Headroom for a reasoning model's thinking: the LlmConfig default
+            # of 220 was spent entirely on reasoning by local glm (empty
+            # completion, finish_reason=length). The gist itself stays short;
+            # this only raises the cap.
+            max_tokens=SUMMARIZE_DISPATCH_MAX_TOKENS,
         )
 
         def _llm_summarize_pass(batch_size: int) -> _BatchResult:

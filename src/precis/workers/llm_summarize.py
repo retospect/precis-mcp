@@ -224,6 +224,15 @@ _BRIEF_MAX_WORDS = 15
 # names so every existing caller/test keeps working unchanged.
 
 
+#: Completion cap the worker's router client pins for a summary call. The
+#: ``LlmConfig`` default (220) is fine for a non-reasoning model but a
+#: reasoning one (local glm) spends all of it thinking and returns empty
+#: content with ``finish_reason=length`` (gr489474). The gist stays short;
+#: this is headroom. A pinned cap wins over a chain rung's ``max_tokens``, so
+#: keep it at or above the largest rung value in ``llm.op.llm_summarize``.
+SUMMARIZE_DISPATCH_MAX_TOKENS = 1600
+
+
 @dataclass(frozen=True)
 class LlmConfig:
     """Connection + sampling config, resolved from the environment.
@@ -1918,6 +1927,7 @@ def _truthy(value: str | None) -> bool:
 __all__ = [
     "GIST_REPAIR_ATTEMPTS",
     "SUMMARIZER_NAME",
+    "SUMMARIZE_DISPATCH_MAX_TOKENS",
     "EmptySummaryError",
     "GistRejectedError",
     "LlmClient",

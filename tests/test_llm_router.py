@@ -5664,3 +5664,155 @@ def test_parse_chain_rungs_rejects_bad_max_tokens() -> None:
         )
         assert rungs == []
         assert bad is not None and "max_tokens" in bad[0]
+
+
+def test_failover_rung_timeout_applies_and_loses_to_a_caller_pin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rung's ``timeout_s`` fills an unset request timeout (the castor
+    gpt-oss rung needs ~60 s, not the SMALL 30 s cap); a caller pin wins;
+    a rung with none leaves the request untouched (gr489474)."""
+    seen: list[float | None] = []
+
+    def _record(req: LlmRequest, *, model: str) -> Any:
+        seen.append(req.timeout_s)
+        return _ok("ok")
+
+    monkeypatch.setitem(router._PROVIDERS, Transport.LOCAL, _RunFn(_record))
+    FailoverProvider([Rung(Transport.LOCAL, model="m", timeout_s=60.0)]).run(
+        LlmRequest(tier=Tier.SMALL, prompt="x"), model="m"
+    )
+    FailoverProvider([Rung(Transport.LOCAL, model="m", timeout_s=60.0)]).run(
+        LlmRequest(tier=Tier.SMALL, prompt="x", timeout_s=5.0), model="m"
+    )
+    FailoverProvider([Rung(Transport.LOCAL, model="m")]).run(
+        LlmRequest(tier=Tier.SMALL, prompt="x"), model="m"
+    )
+    assert seen == [60.0, 5.0, None]
+
+
+def test_dispatch_local_rung_timeout_beats_small_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End to end: a rung ``timeout_s`` of 60 reaches the local client past
+    the SMALL-tier 30 s cap; a rung without one keeps the cap."""
+    from precis.utils.llm.router import _SMALL_LOCAL_TIMEOUT_S
+
+    seen: dict[str, object] = {}
+    _local_capture_client(monkeypatch, seen)
+    req = LlmRequest(tier=Tier.SMALL, prompt="x")
+    FailoverProvider([Rung(Transport.LOCAL, model="m", timeout_s=60.0)]).run(
+        req, model="m"
+    )
+    assert seen["timeout"] == 60.0
+    FailoverProvider([Rung(Transport.LOCAL, model="m")]).run(req, model="m")
+    assert seen["timeout"] == _SMALL_LOCAL_TIMEOUT_S
+
+
+def test_parse_chain_rungs_maps_and_validates_timeout_s() -> None:
+    rungs, bad = router.parse_chain_rungs(
+        [{"transport": "local", "model": "m", "timeout_s": 60}]
+    )
+    assert bad is None
+    assert rungs[0].timeout_s == 60.0
+    for bad_val in (0, -5, "60", True):
+        rungs, bad = router.parse_chain_rungs(
+            [{"transport": "local", "model": "m", "timeout_s": bad_val}]
+        )
+        assert rungs == []
+        assert bad is not None and "timeout_s" in bad[0]
+
+
+def _empty_length(model: str = "m") -> LlmResult:
+    return LlmResult(
+        text="",
+        cost_usd=None,
+        turns_used=None,
+        model=model,
+        tier=Tier.SMALL,
+        stop_reason="length",
+    )
+
+
+def test_failover_empty_length_completion_falls_through(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty completion with finish_reason=length is a rung failure, so the
+    ladder moves to the next rung instead of returning ``""`` (gr489474)."""
+    primary = _FakeProv(_empty_length())
+    fallback = _FakeProv(_ok("answer"))
+    monkeypatch.setitem(router._PROVIDERS, Transport.LOCAL, primary)
+    monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_COMPAT, fallback)
+
+    prov = FailoverProvider([Rung(Transport.LOCAL), Rung(Transport.OPENAI_COMPAT)])
+    out = prov.run(LlmRequest(tier=Tier.SMALL, prompt="x", log_call=False), model="m")
+    assert out.text == "answer"
+    assert primary.calls == 1 and fallback.calls == 1
+
+
+def test_failover_empty_stop_and_nonempty_length_are_not_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for text, stop in (("", "stop"), ("partial", "length")):
+        res = LlmResult(
+            text=text,
+            cost_usd=None,
+            turns_used=None,
+            model="m",
+            tier=Tier.SMALL,
+            stop_reason=stop,
+        )
+        primary = _FakeProv(res)
+        fallback = _FakeProv(_ok("answer"))
+        monkeypatch.setitem(router._PROVIDERS, Transport.LOCAL, primary)
+        monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_COMPAT, fallback)
+        prov = FailoverProvider([Rung(Transport.LOCAL), Rung(Transport.OPENAI_COMPAT)])
+        out = prov.run(
+            LlmRequest(tier=Tier.SMALL, prompt="x", log_call=False), model="m"
+        )
+        assert out.text == text
+        assert fallback.calls == 0
+
+
+def test_failover_logs_each_failed_rung_to_the_call_log(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every rung the ladder walks past writes an errored llm_call_log row with
+    its reason; the final result is left to ``route`` (no double row)."""
+    recorded = _capture_route_log(monkeypatch)
+    monkeypatch.setitem(router._PROVIDERS, Transport.LOCAL, _FakeProv(_err("boom")))
+    monkeypatch.setitem(
+        router._PROVIDERS, Transport.OPENAI_COMPAT, _FakeProv(_empty_length("g"))
+    )
+    monkeypatch.setitem(
+        router._PROVIDERS, Transport.OPENAI_TOOLS, _FakeProv(_ok("fine"))
+    )
+    prov = FailoverProvider(
+        [
+            Rung(Transport.LOCAL),
+            Rung(Transport.OPENAI_COMPAT),
+            Rung(Transport.OPENAI_TOOLS),
+        ]
+    )
+    out = prov.run(LlmRequest(tier=Tier.SMALL, prompt="x", source="s"), model="m")
+    assert out.text == "fine"
+    assert [(r.transport, r.errored) for r in recorded] == [
+        ("local", True),
+        ("openai_compat", True),
+    ]
+    assert recorded[0].error == "boom"
+    assert "finish_reason=length" in (recorded[1].error or "")
+
+
+def test_failover_does_not_log_the_last_failed_rung(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded = _capture_route_log(monkeypatch)
+    monkeypatch.setitem(router._PROVIDERS, Transport.LOCAL, _FakeProv(_err("a")))
+    monkeypatch.setitem(
+        router._PROVIDERS, Transport.OPENAI_COMPAT, _FakeProv(_err("b"))
+    )
+    prov = FailoverProvider([Rung(Transport.LOCAL), Rung(Transport.OPENAI_COMPAT)])
+    out = prov.run(LlmRequest(tier=Tier.SMALL, prompt="x"), model="m")
+    assert out.error == "b"
+    assert [r.error for r in recorded] == ["a"]

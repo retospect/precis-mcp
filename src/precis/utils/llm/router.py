@@ -1512,6 +1512,13 @@ class Rung:
     measured result is ``finish_reason=length`` and empty content, every
     call (2026-10-14, chase:verify eval). A local rung for such a model
     carries ``"max_tokens"`` in its chain dict to give the answer room.
+
+    ``timeout_s`` is this rung's wall-clock cap, with the same precedence as
+    ``max_tokens`` (a caller-pinned ``req.timeout_s`` wins). ``None`` keeps
+    today's behaviour — on the local wire the SMALL tier's
+    ``_SMALL_LOCAL_TIMEOUT_S`` cap. It exists because a big local model (the
+    castor gpt-oss-120b rung) legitimately needs ~60 s, which that 30 s cap
+    cut off every time (gr489474).
     """
 
     transport: Transport
@@ -1519,12 +1526,30 @@ class Rung:
     label: str = ""
     bare: bool = False
     max_tokens: int | None = None
+    timeout_s: float | None = None
 
 
 #: A quality gate on an error-free result: return ``True`` to accept, ``False``
 #: to fall through to the next rung. ``None`` (the default) accepts any
 #: error-free result — i.e. failover is transport-error-only.
 AcceptFn = Callable[[LlmResult], bool]
+
+
+def _empty_length_is_failure(res: LlmResult) -> LlmResult:
+    """An empty completion that stopped on the length cap is a failed call: a
+    reasoning model spent its whole ``max_tokens`` thinking and left no answer
+    (glm at 220 tokens, gr489474). Mark it an error so the ladder falls through
+    instead of returning ``""`` as if it were an answer."""
+    if (
+        res.error is None
+        and not (res.text or "").strip()
+        and res.data is None
+        and res.stop_reason in {"length", "max_tokens"}
+    ):
+        return _replace(
+            res, error=f"empty completion (finish_reason={res.stop_reason})"
+        )
+    return res
 
 
 class FailoverProvider:
@@ -1559,14 +1584,17 @@ class FailoverProvider:
         for i, rung in enumerate(self._rungs):
             # A rung's `max_tokens` applies only when the caller left the cap
             # unset — a pinned request cap is a correctness constraint.
-            call_req = (
-                _replace(req, max_tokens=rung.max_tokens)
-                if rung.max_tokens is not None and req.max_tokens is None
-                else req
-            )
+            call_req = req
+            if rung.max_tokens is not None and req.max_tokens is None:
+                call_req = _replace(call_req, max_tokens=rung.max_tokens)
+            if rung.timeout_s is not None and req.timeout_s is None:
+                call_req = _replace(call_req, timeout_s=rung.timeout_s)
+            started = time.monotonic()
             last = _classified(
-                provider_for(rung.transport, bare=rung.bare).run(
-                    call_req, model=rung.model or model
+                _empty_length_is_failure(
+                    provider_for(rung.transport, bare=rung.bare).run(
+                        call_req, model=rung.model or model
+                    )
                 )
             )
             # Stamp the rung that actually ran. Done per-iteration (not once at
@@ -1603,6 +1631,17 @@ class FailoverProvider:
                 )
                 if last.reason_class == "content":
                     return last
+                if i < len(self._rungs) - 1:
+                    # A rung we are walking past would otherwise leave no
+                    # trace beyond the warning above. The final rung's result
+                    # is logged by the caller (`route`), so only intermediate
+                    # failures are written here (gr489474).
+                    _record_dispatch(
+                        call_req,
+                        last,
+                        transport=rung.transport,
+                        duration_ms=int((time.monotonic() - started) * 1000),
+                    )
         assert last is not None  # rungs is non-empty
         return last
 
@@ -1674,7 +1713,8 @@ def resolve_chain(tier: Tier, *, tools_needed: bool, backend: Backend) -> list[R
     (:func:`~precis.utils.llm.live_config.chain_override`) is a list of rung
     dicts (``{"placement": "cloud"|"local", "model": <str>, "transport":
     <str>, "bare": <bool>, "max_tokens": <int>}``, ``bare`` optional default
-    ``False``, ``max_tokens`` optional positive int — see :class:`Rung`)
+    ``False``, ``max_tokens``
+    and ``timeout_s`` optional positive numbers — see :class:`Rung`)
     mapped onto :class:`Rung` in order, ``placement`` carried
     through as the label. Any malformed rung degrades the *whole* chain back
     to :func:`_default_chain` — never partial — logged once.
@@ -1770,6 +1810,13 @@ def parse_chain_rungs(
             not isinstance(mt_raw, int) or isinstance(mt_raw, bool) or mt_raw <= 0
         ):
             return [], ("has a non-positive-integer max_tokens", i, mt_raw)
+        to_raw = raw.get("timeout_s")
+        if to_raw is not None and (
+            not isinstance(to_raw, (int, float))
+            or isinstance(to_raw, bool)
+            or to_raw <= 0
+        ):
+            return [], ("has a non-positive-number timeout_s", i, to_raw)
         rungs.append(
             Rung(
                 transport,
@@ -1777,6 +1824,7 @@ def parse_chain_rungs(
                 label=placement if placement else "chain",
                 bare=bare_raw,
                 max_tokens=mt_raw,
+                timeout_s=float(to_raw) if to_raw is not None else None,
             )
         )
     return rungs, None

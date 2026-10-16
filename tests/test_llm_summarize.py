@@ -1727,3 +1727,18 @@ def test_fetch_cited_identifiers_collects_own_and_linked_refs(store: Any) -> Non
         conn.commit()
         got = fetch_cited_identifiers(conn, [cid])
     assert got[cid] == {"arxiv:2301.12345", "doi:10.1/abc"}
+
+
+def test_summarize_dispatch_cap_gives_reasoning_headroom() -> None:
+    """The worker's router client pins a cap above the 220 LlmConfig default,
+    so a reasoning model isn't starved into an empty length-capped completion
+    (gr489474), and the worker actually passes it."""
+    import inspect
+
+    from precis.cli import _worker_passes
+    from precis.workers.llm_summarize import SUMMARIZE_DISPATCH_MAX_TOKENS, LlmConfig
+
+    assert LlmConfig.max_tokens < SUMMARIZE_DISPATCH_MAX_TOKENS
+    assert "max_tokens=SUMMARIZE_DISPATCH_MAX_TOKENS" in inspect.getsource(
+        _worker_passes
+    )
