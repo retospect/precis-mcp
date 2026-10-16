@@ -1660,7 +1660,12 @@ class DispatchMixin(RuntimeShape):
         # ``view='meta'`` = per-kind meta-key inventory, ``view='tags'`` =
         # per-kind tag axis/value counts — the reads agents used to make
         # through raw refs/ref_tags SQL.
-        if verb == "search" and str(args.get("view") or "").strip() in (
+        # An id-less ``get(kind=K, view='meta'|'tags')`` is the same
+        # question asked on the wrong verb (gr492452) — serve it here
+        # instead of each numeric-ref handler rejecting the view.
+        if (verb == "search" or (verb == "get" and args.get("id") is None)) and str(
+            args.get("view") or ""
+        ).strip() in (
             "meta",
             "tags",
         ):

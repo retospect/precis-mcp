@@ -266,6 +266,20 @@ def test_get_batch_view_through_dispatch(
     assert "batch, view='raw'" in body and "[error" not in body
 
 
+def test_get_batch_comments_through_dispatch(
+    runtime_with_store: PrecisRuntime, hub: Hub
+) -> None:
+    # gr492451: the full MCP path, not just the handler, for the
+    # gripe-only ``comments`` view over a batch.
+    handler, ids = _gripes(hub, 2)
+    handler.put(id=ids[1], text="note on second")
+    body = runtime_with_store.dispatch(
+        "get", {"kind": "gripe", "id": ids, "view": "comments"}
+    )
+    assert "batch, view='comments'" in body and "[error" not in body
+    assert "note on second" in body
+
+
 # ── link fan-in (``id=[...]``) ──────────────────────────────────────
 
 

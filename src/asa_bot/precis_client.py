@@ -188,10 +188,12 @@ class PrecisClient:
         """
         try:
             await asyncio.wait_for(self.request("tools/list", {}), timeout=5)
-            # gripe ``/open`` is a pure-SQL tag-filtered list view (no
-            # embedder call) — the cheapest way to force the store path.
+            # A one-id batch get is a single primary-key lookup that
+            # renders a one-line "not found" block (no list render, no
+            # embedder) — it still forces the store path. The old
+            # ``/open`` list probe was 58% of all tool_calls (gr492453).
             blob = await asyncio.wait_for(
-                self.call_tool("get", {"kind": "gripe", "id": "/open"}),
+                self.call_tool("get", {"kind": "gripe", "id": [1]}),
                 timeout=10,
             )
         except Exception as e:

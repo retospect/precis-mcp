@@ -42,6 +42,21 @@ def test_healthy_precis_pings_true():
     assert asyncio.run(client.ping()) is True
 
 
+def test_ping_probes_one_id_not_the_gripe_list():
+    # gr492453: the 30s probe must not render the open-gripe list.
+    calls: list[dict] = []
+
+    def handler(method, params):
+        if method == "tools/list":
+            return {"tools": [{"name": "get"}]}
+        calls.append(params["arguments"])
+        return _tool_text("# 1 gripe (batch)\n\ngr1  not found")
+
+    client = _client_with_fake_request(handler)
+    assert asyncio.run(client.ping()) is True
+    assert calls == [{"kind": "gripe", "id": [1]}]
+
+
 def test_storeless_precis_pings_false():
     # The degraded-server signature: DB kind reported as unknown.
     def handler(method, params):

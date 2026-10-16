@@ -181,3 +181,27 @@ class TestIntrospectErrors:
             "search", {"kind": "nonsense", "view": "tags"}
         )
         assert "unknown kind" in body
+
+
+class TestGetMetaView:
+    """gr492452: an id-less ``get(kind=K, view='meta')`` reuses the shared
+    inventory instead of the per-handler "unknown view" rejection."""
+
+    @pytest.mark.parametrize("kind", ["job", "pathway", "quest"])
+    def test_get_meta_matches_search(
+        self, runtime_with_store: PrecisRuntime, store: Store, kind: str
+    ) -> None:
+        ref = store.insert_ref(
+            kind=kind,
+            slug=f"probe-{kind}" if kind == "pathway" else None,
+            title="t",
+            meta={"probe_key": 1},
+        )
+        assert ref.kind == kind
+        via_get = runtime_with_store.dispatch("get", {"kind": kind, "view": "meta"})
+        via_search = runtime_with_store.dispatch(
+            "search", {"kind": kind, "view": "meta"}
+        )
+        assert f"# meta keys in use — {kind} (1 live ref)" in via_get
+        assert "probe_key  number  1" in via_get
+        assert via_get == via_search
