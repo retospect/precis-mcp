@@ -26,6 +26,7 @@ _VARS = {
         "n1": {"ansible_host": "203.0.113.11"},
     },
     "monitoring_alertmanager_enabled": True,
+    "monitoring_db_exporters": True,
     "monitoring_alertmanager_port": 9093,
     "monitoring_alertmanager_group_by": ["alertname", "instance"],
     "monitoring_alertmanager_group_wait": "30s",

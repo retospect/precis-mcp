@@ -12,6 +12,13 @@
 
 monitoring_config_dir: "{{ '/etc/prometheus' if os_family == 'linux' else '/usr/local/etc/prometheus' }}"
 
+# Scrape the DB node's postgres_exporter (:9187) and pgbouncer_exporter
+# (:9127) and load the rules only their metrics feed (PostgresDown). Off by
+# default: with no exporters running, both targets would be always-down and
+# NodeDown/PostgresDown would fire forever (gr465126, ruling D2a). Set true
+# only when the DB node runs both exporters.
+monitoring_db_exporters: false
+
 # Alertmanager runs only where there is a Linux package for it and a
 # receiver to hand to. Override per host to turn it off.
 monitoring_alertmanager_enabled: "{{ os_family == 'linux' }}"

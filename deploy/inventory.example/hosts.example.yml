@@ -137,6 +137,9 @@ all:
     # alert receiver runs from /opt/precis/venv); never the DB node. Empty or
     # absent = no rule is evaluated anywhere, so every alert rule is dead.
     # PRECIS_OPS_ALERT_TARGET must be in precis_shared_env for the receiver.
+    # monitoring_db_exporters: true adds the postgres_exporter :9187 /
+    # pgbouncer_exporter :9127 scrape jobs and PostgresDown; default false,
+    # set it only when the DB node runs both exporters.
     monitoring:
       hosts:
         node-gpu:

@@ -25,6 +25,7 @@ _UP0 = 'precis_colima_docker_fs_up{profile="default"} 0'
 
 def _render(path: Path, **ctx: object) -> str:
     env = jinja2.Environment(undefined=jinja2.ChainableUndefined)
+    env.filters["bool"] = bool
     return env.from_string(path.read_text(encoding="utf-8")).render(**ctx)
 
 

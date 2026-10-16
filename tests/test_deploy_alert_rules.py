@@ -32,6 +32,7 @@ _HOSTVARS = {
 
 def _rules(groups: dict[str, list[str]]) -> dict[str, dict]:
     env = jinja2.Environment(undefined=jinja2.ChainableUndefined)
+    env.filters["bool"] = bool
     text = env.from_string(_TEMPLATE.read_text(encoding="utf-8")).render(
         groups=groups, hostvars=_HOSTVARS, ansible_managed="x"
     )

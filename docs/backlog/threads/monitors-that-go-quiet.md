@@ -45,8 +45,11 @@ gr346534, soft-deleted)
   playbook 08. Nothing is deployed. Activation needs the orchestrator: add a
   Linux node to `monitoring` in the private inventory, put
   `PRECIS_OPS_ALERT_TARGET` in `precis_shared_env`, run playbooks 18 then 08
-  there (08 keeps a backup of the hand-edited `prometheus.yml`; diff its scrape
-  jobs first, because a new always-down target fires NodeDown).
+  there (08 keeps a backup of the hand-edited `prometheus.yml`; the DB
+  scrape jobs and PostgresDown sit behind `monitoring_db_exporters`, default
+  off, so set it true on the `monitoring` host only once the DB node runs
+  both exporters — otherwise NodeDown/PostgresDown fire on always-down
+  targets).
 - Accepted trade-off (Reto 2026-10-04): these alerts are silent while Postgres
   or asa_bot is down, PostgresDown included.
 - Done and verified on prod earlier: the doctor filer fix (tick 464516), the

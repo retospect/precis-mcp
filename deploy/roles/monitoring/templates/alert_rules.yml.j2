@@ -62,7 +62,7 @@ groups:
           severity: warning
         annotations:
           summary: "{% raw %}colima docker-fs metric file not refreshed for 15m on {{ $labels.instance }}{% endraw %}"
-
+{% if monitoring_db_exporters | bool %}
       - alert: PostgresDown
         expr: pg_up == 0
         for: 2m
@@ -70,7 +70,7 @@ groups:
           severity: critical
         annotations:
           summary: "PostgreSQL is down on the data node"
-
+{% endif %}
       # Mount health, two failure shapes per mount (2026-09-30: /mnt/cluster hung
       # on every client for days, nothing alerted):
       #  - full/empty: avail == 0 (the *FullOrEmpty rules; statfs still answers).

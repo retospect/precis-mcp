@@ -24,7 +24,7 @@ scrape_configs:
 {% for host in groups['all'] %}
           - '{{ hostvars[host]["ansible_host"] }}:9100'
 {% endfor %}
-
+{% if monitoring_db_exporters | bool %}
   - job_name: postgres
     static_configs:
       - targets: ['{{ hostvars[postgres_host]["ansible_host"] }}:9187']
@@ -32,3 +32,4 @@ scrape_configs:
   - job_name: pgbouncer
     static_configs:
       - targets: ['{{ hostvars[postgres_host]["ansible_host"] }}:9127']
+{%- endif %}
