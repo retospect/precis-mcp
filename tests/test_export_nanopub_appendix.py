@@ -40,7 +40,10 @@ def _export_tex(hub: Hub, ref: Any, tmp_path: Path, name: str) -> str:
 def _export_docx_text(hub: Hub, ref: Any, tmp_path: Path, name: str) -> str:
     out = tmp_path / f"{name}.docx"
     docx.export_docx(hub.live_store, ref, target_path=out)
-    return "\n".join(p.text for p in docx_lib.Document(str(out)).paragraphs)
+    d = docx_lib.Document(str(out))
+    # The claims section is a table (gr493200): include its cell text.
+    cells = [c.text for t in d.tables for r in t.rows for c in r.cells]
+    return "\n".join([*(p.text for p in d.paragraphs), *cells])
 
 
 def test_signed_hub_cite_gets_appendix_entry_latex(

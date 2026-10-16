@@ -47,6 +47,7 @@ from pylatexenc.latexencode import (
     get_builtin_uni2latex_dict,
 )
 
+from precis.export._back_matter import ordered_blocks
 from precis.export._cite_ids import paper_identifier
 from precis.export._data_package import (
     SECTION_TITLE as _DATA_PACKAGE_SECTION_TITLE,
@@ -613,6 +614,9 @@ class RenderResult:
     #: (draft-pathway-figures-data-package.md) — collected in reading order,
     #: one entry per such figure. Empty when the draft has none.
     data_package: list[DataPackageFigure] = field(default_factory=list)
+    #: finding ref id -> cite keys that finding's cite sites emitted in the
+    #: body (see :attr:`_Ctx.claim_cites`).
+    claim_cites: dict[int, list[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -899,6 +903,10 @@ class _Ctx:
     store: Any = None
     legacy_to_dc: dict[str, str] = field(default_factory=dict)  # ¶base58 → dc
     cited: list[str] = field(default_factory=list)
+    #: finding ref id -> cite keys its cite sites emitted (only keys already
+    #: in ``cited``; recording never registers one), for the
+    #: published-claims section's "Sources".
+    claim_cites: dict[int, list[str]] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     #: Read cache for the pin lint (:func:`precis.nanopub.pin_lint.warn_export`).
     pin_ctx: Any = None
@@ -1077,6 +1085,12 @@ def _render_reference(m: re.Match[str], ctx: _Ctx) -> str:
         kind, raw_id = m.group("kind"), m.group("id")
         if kind == "paper":
             return _cite(raw_id, ctx)
+        if kind not in mentions.LINKIFY_KINDS and not handle_registry.is_known_kind(
+            kind
+        ):
+            # ``doi:10.1002/…`` etc. is prose, not a precis kind — keep it
+            # (gr493193); a real kind (think:/plan:/…) stays dropped.
+            return _encode_unicode(_latex_escape(m.group(0)))
         return ""  # bare memory:/think:/… — not citeable, drop
     if m.group("bare_conv") is not None:
         return ""
@@ -1271,6 +1285,8 @@ def _render_finding_cite(tgt: str, pin: str | None, ctx: _Ctx) -> str:
             ctx.warnings.append(
                 f"pin on {tgt} ignored — pins only apply to a Taproot claim hub cite"
             )
+    seen = ctx.claim_cites.setdefault(pk, [])
+    rendered_keys = keys
     if ctx.footnote_refs and fc.is_hub and fc.evidence is not None:
         # The rich footnote carries the trust state on its own Issues line
         # (and its internal ctx.trust.resolve keeps the end-matter list /
@@ -1281,6 +1297,10 @@ def _render_finding_cite(tgt: str, pin: str | None, ctx: _Ctx) -> str:
         # cited, never what the evidence graph holds.
         return _hub_footnote(pk, fc.evidence, ctx)
     rendered = _cite_keys(keys, ctx) + _trust_mark_latex(ctx, pk)
+    for k in rendered_keys:
+        base = _resolve_si_slug(k, ctx)[0]
+        if base in ctx.cited and base not in seen:
+            seen.append(base)
     if not keys and op is None:
         ctx.warnings.append(
             f"cite [{tgt}]: no citable source "
@@ -2328,6 +2348,7 @@ def render_body(
         figures=ctx.figures,
         trust=ctx.trust,
         data_package=ctx.data_package,
+        claim_cites=ctx.claim_cites,
     )
 
 
@@ -2998,23 +3019,42 @@ def build_unverified_claims_section(trust: Any) -> str:
     return "\n".join(lines)
 
 
-def build_published_claims_section(store: Any, trust: Any) -> str:
+def build_published_claims_section(
+    store: Any, trust: Any, claim_cites: dict[int, list[str]] | None = None
+) -> str:
     """An unnumbered "Published claim artifacts" end-matter section — one
     entry per cited claim hub whose nanopub publish row is minted
     (signed/anchored/published): the frozen AIDA sentence, the trusty
     URI, and the shared status wording. Empty string when nothing cited
     is minted, so nanopub-free drafts export byte-identically. Entries
     come from :func:`precis.export._nanopub_appendix.published_claim_entries`,
-    shared with the docx exporter."""
+    shared with the docx exporter.
+
+    One ``itemize`` bullet per claim: sentence, ``Sources`` (a ``\\cite`` of
+    the keys the claim's cite sites already put in the body — ``claim_cites``
+    from the render pass; never a key the body didn't cite, so
+    ``refs.bib`` is unchanged by this section), the artifact URL and status.
+    Unlike the docx table there is no "cited in" part: the LaTeX render
+    pass tracks no section numbers (``\\cref`` numbers them at compile
+    time)."""
     entries = published_claim_entries(store, trust)
     if not entries:
         return ""
-    lines = ["\\appendix", f"\\section{{{_NANOPUB_SECTION_TITLE}}}", ""]
+    claim_cites = claim_cites or {}
+    lines = [
+        "\\appendix",
+        f"\\section{{{_NANOPUB_SECTION_TITLE}}}",
+        "",
+        "\\begin{itemize}",
+    ]
     for e in entries:
-        lines.append(
-            f"\\par\\noindent ``{_tex(e.sentence)}''\\\\"
-            f"\\url{{{e.trusty_uri}}} --- {_tex(e.status_text)}"
-        )
+        parts = [f"``{_tex(e.sentence)}''"]
+        keys = claim_cites.get(e.fid, [])
+        if keys:
+            parts.append(f"Sources: \\cite{{{','.join(keys)}}}")
+        parts.append(f"\\url{{{e.trusty_uri}}} --- {_tex(e.status_text)}")
+        lines.append("\\item " + "; ".join(parts))
+    lines.append("\\end{itemize}")
     return "\n".join(lines)
 
 
@@ -3105,9 +3145,10 @@ def assemble_document(
     (:func:`build_unverified_claims_section`/
     :func:`build_published_claims_section`/
     :func:`build_data_package_section`) are optional pre-rendered blocks
-    placed in that order before the bibliography (``published_section``
-    goes after it, as an appendix) — each empty-means-absent
-    (AC 6: an all-clean draft's output is unchanged).
+    placed in :data:`~precis.export._back_matter.BACK_MATTER_ORDER`
+    (unverified, data package, bibliography, glossaries, published, sources
+    appendix) — each empty-means-absent (AC 6: an all-clean draft's output
+    is unchanged).
 
     ``extra_preamble`` injects right after the checked-in preamble (same
     slot as the reMarkable geometry) — :func:`export_draft` passes
@@ -3139,19 +3180,21 @@ def assemble_document(
         "",
         body.rstrip(),
         "",
-        "\\printglossaries",
     ]
-    if unverified_section:
-        parts += ["", unverified_section]
-    if data_package_section:
-        parts += ["", data_package_section]
-    if not patent_mode:
-        parts.append("\\printbibliography")
-    if published_section:
-        # after the bibliography, as an appendix: deletable as one block
-        parts += ["", published_section]
-    if appendix:
-        parts += ["", appendix]
+    # Back matter in the one order both exporters share
+    # (``export/_back_matter.py``); absent blocks are ``None``.
+    back: dict[str, str | None] = {
+        "unverified": unverified_section or None,
+        "data_package": data_package_section or None,
+        "references": None if patent_mode else "\\printbibliography",
+        "acronyms": "\\printglossaries",
+        "published": published_section or None,
+        "sources": appendix or None,
+    }
+    for _name, block in ordered_blocks(back):
+        # ``\printglossaries``/``\printbibliography`` stay tight to the
+        # body or each other; the optional prose sections get a blank line.
+        parts += [block] if block.startswith("\\print") else ["", block]
     parts += ["\\end{document}", ""]
     return "\n".join(parts)
 
@@ -3559,7 +3602,9 @@ def export_draft(
 
     unverified_tex = build_unverified_claims_section(rendered.trust)
     published_tex = (
-        build_published_claims_section(store, rendered.trust) if claim_appendix else ""
+        build_published_claims_section(store, rendered.trust, rendered.claim_cites)
+        if claim_appendix
+        else ""
     )
     data_package_tex = build_data_package_section(rendered.data_package)
     main_tex = assemble_document(

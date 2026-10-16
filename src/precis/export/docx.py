@@ -31,11 +31,13 @@ from __future__ import annotations
 
 import html
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from precis.export._back_matter import ordered_blocks
 from precis.export._cite_ids import merged_cite_numbers, paper_identifier
 from precis.export._data_package import (
     SECTION_TITLE as _DATA_PACKAGE_SECTION_TITLE,
@@ -87,7 +89,11 @@ from precis.store.si_links import SI_PDF_ROLE, cite_target_for
 from precis.utils import handle_registry
 from precis.utils.authors import build_byline
 from precis.utils.draft_markup import DRAFT_CITE_PATTERN
-from precis.utils.mentions import COMPUTED_EVIDENCE_KINDS, parse_pin_suffix
+from precis.utils.mentions import (
+    COMPUTED_EVIDENCE_KINDS,
+    LINKIFY_KINDS,
+    parse_pin_suffix,
+)
 from precis.utils.paper_links import doi_url, uol_url
 from precis.utils.workspace import Workspace
 
@@ -229,6 +235,8 @@ class _Ctx:
     _si_slug_cache: dict[str, tuple[str, bool]] = field(
         default_factory=dict, repr=False
     )
+    #: Memo for :func:`_bare_handle_text` (handle → display text).
+    _bare_handle_cache: dict[str, str] = field(default_factory=dict, repr=False)
     #: Trust-mark bookkeeping (the trust-surfaces export marking), mirrors
     #: ``export/latex.py``'s ``_Ctx.trust`` — set in ``__post_init__``.
     trust: Any = None
@@ -255,6 +263,15 @@ class _Ctx:
     #: ``dc`` handles of uncleared third-party figures waived under
     #: ``placeholder_figures``: rendered as a bordered notice, never embedded.
     withheld_figures: frozenset[str] = frozenset()
+    #: Number of the last numbered heading the walk passed (``""`` before
+    #: the first) — where a finding cite lands, for the published-claims
+    #: table's "Cited in" column.
+    cur_section: str = ""
+    #: finding ref id -> bibliography slugs its cite sites printed
+    #: (registered in ``cited`` by :func:`_cite`; never added to here) and
+    #: the section numbers they were cited under, both in first-seen order.
+    claim_cites: dict[int, list[str]] = field(default_factory=dict)
+    claim_sections: dict[int, list[str]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.trust is None and self.store is not None:
@@ -626,6 +643,8 @@ def export_docx(
             # unnumbered, shifting numbering against the PDF).
             level = min(max(int(c.depth) - shift, 0) + 1, _MAX_HEADING_LEVEL)
             number = ctx.xref[c.dc][1] if c.dc in ctx.numbered_headings else ""
+            if number:
+                ctx.cur_section = number
             p = doc.add_heading("", level=level)
             if number:
                 p.add_run(f"{number} ")
@@ -651,18 +670,21 @@ def export_docx(
         p = doc.add_paragraph()
         _render_inline(c.text, ctx, p)
 
-    _append_acronyms(doc, ctx)
-    # "Unverified claims" end-matter (trust-surfaces marking), before
-    # the bibliography/end — no-op when nothing was marked. Independent of
-    # patent_mode: a finding cite renders (and can be marked) either way.
-    _append_unverified_claims(doc, ctx)
-    _append_data_package(doc, ctx.data_package)
+    # Back matter in the one order both exporters share
+    # (``export/_back_matter.py``); a block that does not apply is left out.
+    # A patent specification cites prior art in-text: no References list.
+    # Each _append_* is a no-op when its block is empty.
+    back: dict[str, Callable[[], None]] = {
+        "unverified": lambda: _append_unverified_claims(doc, ctx),
+        "data_package": lambda: _append_data_package(doc, ctx.data_package),
+        "acronyms": lambda: _append_acronyms(doc, ctx),
+    }
     if not ctx.patent_mode:
-        # A patent specification cites prior art in-text — no References list.
-        _append_references(doc, ctx)
+        back["references"] = lambda: _append_references(doc, ctx)
     if claim_appendix:
-        # Last section, after References, so it deletes as one block.
-        _append_published_claims(doc, ctx)
+        back["published"] = lambda: _append_published_claims(doc, ctx)
+    for _name, append in ordered_blocks(back):
+        append()
     if ctx.endnote and ctx.cited:
         from precis.export.endnote import endnote_style, install_document_vars
         from precis.export.latex import resolve_bib_style
@@ -972,6 +994,38 @@ def _render_gap(text: str, ctx: _Ctx, paragraph: Any) -> None:
         _emit_text(text[last:], ctx, paragraph)
 
 
+#: A bare (unbracketed) internal handle token in prose — two-letter kind code
+#: + a 4+-digit id. Not inside a URL/DOI/path (no ``/``, ``.``, ``:``,
+#: ``~``, ``-`` right before it) and 4+ digits so chemistry like ``co2`` / ``pt111``
+#: never matches; :func:`_bare_handle_text` still checks the registry.
+_BARE_HANDLE = re.compile(r"(?<![\w/.:~-])[a-z]{2}\d{4,}(?![\w~]|[-.]\d)")
+
+
+def _bare_handle_text(token: str, ctx: _Ctx) -> str:
+    """A bare handle token → reader text: the record's title when the store
+    resolves it, else its kind name (``draft``, ``todo``) with a warning.
+    A token the handle registry doesn't parse is prose and stays as is."""
+    parsed = handle_registry.parse(token)
+    if parsed is None:
+        return token
+    if token in ctx._bare_handle_cache:
+        return ctx._bare_handle_cache[token]
+    kind, is_chunk, pk = parsed
+    title = ""
+    fetch = getattr(ctx.store, "fetch_refs_by_ids", None)
+    if not is_chunk and callable(fetch):
+        try:
+            ref = fetch([pk]).get(pk)
+        except Exception:  # pragma: no cover — store hiccup → kind name
+            ref = None
+        title = str(getattr(ref, "title", None) or "").strip()
+    if not title:
+        title = kind
+        ctx.warnings.append(f"bare handle {token!r} in prose rendered as {kind!r}")
+    ctx._bare_handle_cache[token] = title
+    return title
+
+
 def _emit_text(text: str, ctx: _Ctx, paragraph: Any) -> None:
     """Plain prose → runs, with **render-time first-use expansion** of
     known abbreviations: the first occurrence (in reading order) of a
@@ -981,8 +1035,12 @@ def _emit_text(text: str, ctx: _Ctx, paragraph: Any) -> None:
     A trailing ``s`` (plural) is preserved on the short.
 
     An author-escaped ``\\$`` (the lint's advice for literal money
-    dollars) renders as the bare ``$`` — Word has no escape syntax."""
+    dollars) renders as the bare ``$`` — Word has no escape syntax.
+
+    A bare internal handle in prose (``dr173020's``, ``td459589/…``)
+    renders as its record's title (gr493181), see :func:`_bare_handle_text`."""
     text = text.replace("\\$", "$")
+    text = _BARE_HANDLE.sub(lambda m: _bare_handle_text(m.group(0), ctx), text)
     pat = ctx.short_pattern()
     if pat is None:
         paragraph.add_run(text)
@@ -1153,8 +1211,15 @@ def _render_reference(m: re.Match[str], ctx: _Ctx, paragraph: Any) -> None:
         _render_target(m.group("bare"), None, ctx, paragraph, pin=m.group("pin"))
         return
     if m.group("ref") is not None:
-        if m.group("kind") == "paper":
+        kind = m.group("kind")
+        if kind == "paper":
             _cite(m.group("id"), ctx, paragraph)
+        elif kind not in LINKIFY_KINDS and not handle_registry.is_known_kind(kind):
+            # ``doi:10.1002/…`` etc. is prose, not a precis kind — keep it
+            # (gr493193); a real kind (think:/plan:/…) stays dropped.
+            ctx.last_cite = None
+            _flush_cites(ctx, paragraph)
+            paragraph.add_run(m.group(0))
         return  # bare memory:/think:/… — not citeable
     if m.group("bare_conv") is not None:
         return
@@ -1322,8 +1387,10 @@ def _render_target(
                 _cite(slug, ctx, paragraph, chunk_id=chunk_id, si=via_si)
             return
         if kind == "finding":
-            for slug in _finding_cite_keys_pinned(tgt, pin, ctx):
+            slugs = _finding_cite_keys_pinned(tgt, pin, ctx)
+            for slug in slugs:
                 _cite(slug, ctx, paragraph)
+            _record_claim_cite(ctx, pk, slugs)
             n_runs = len(paragraph.runs)
             _render_trust_mark(ctx, pk, paragraph)
             if len(paragraph.runs) > n_runs:
@@ -1365,6 +1432,22 @@ def _render_target(
         _flush_cites(ctx, paragraph)
         paragraph.add_run(surface or tgt)
         return
+
+
+def _record_claim_cite(ctx: _Ctx, pk: int, slugs: list[str]) -> None:
+    """Remember which bibliography slugs / section a finding cite site
+    printed, for the published-claims table. Only slugs :func:`_cite`
+    already registered in ``ctx.cited`` are kept: recording must never
+    mint a citation (patent mode registers none, so it records none)."""
+    seen = ctx.claim_cites.setdefault(pk, [])
+    for slug in slugs:
+        base = _resolve_si_slug(slug.split("~", 1)[0], ctx)[0]
+        if base in ctx.cited and base not in seen:
+            seen.append(base)
+    if ctx.cur_section:
+        secs = ctx.claim_sections.setdefault(pk, [])
+        if ctx.cur_section not in secs:
+            secs.append(ctx.cur_section)
 
 
 def _at_sentence_start(paragraph: Any) -> bool:
@@ -1556,8 +1639,8 @@ def _cite(
             render_paper_inline_citation(ref) if ref is not None else slug
         )
         return
-    # A supplementary-information record cites as its parent paper; the plain
-    # marker gains " (SI)". EndNote fields cite the parent only (no postnote).
+    # A supplementary-information record cites as its parent paper; the
+    # marker gains " (SI)" (an EndNote field carries it as <Suffix>).
     slug, resolved_si = _resolve_si_slug(slug, ctx)
     si = si or resolved_si
     n = ctx.cite_number(slug)  # registers the paper (idempotent)
@@ -1565,11 +1648,14 @@ def _cite(
         return  # consecutive cite to the same paper — one mark for the run
     ctx.last_cite = slug
     ctx.last_cite_si = si
-    if si and not ctx.endnote:
+    if si:
         # An "(SI)" postnote cite never joins a merge run — mirrors LaTeX,
         # where ``\cite[SI]{…}`` is excluded from ``_ADJ_CITES``: flush the
         # pending run, then print its own mark.
         _flush_cites(ctx, paragraph)
+        if ctx.endnote:
+            _cite_endnote([(slug, n, chunk_id)], ctx, paragraph, suffix=" (SI)")
+            return
         paragraph.add_run(f"[{n}]").font.superscript = True
         paragraph.add_run(" (SI)").font.superscript = True
         _cite_link_group(slug, ctx, paragraph)
@@ -1649,7 +1735,10 @@ def _resolve_source(store: RefLookupStore, slug: str) -> dict[str, Any] | None:
 
 
 def _cite_endnote(
-    run: list[tuple[str, int, int | None]], ctx: _Ctx, paragraph: Any
+    run: list[tuple[str, int, int | None]],
+    ctx: _Ctx,
+    paragraph: Any,
+    suffix: str = "",
 ) -> None:
     """Emit ONE native EndNote ``ADDIN EN.CITE`` field for a citation run —
     one ``<Cite>`` element per ``(slug, n, chunk_id)`` entry, as EndNote
@@ -1659,7 +1748,8 @@ def _cite_endnote(
     A ``pc<id>`` chunk citation (``chunk_id`` set) embeds that chunk's text as
     the field's traveling note — so the exact cited passage rides along in
     EndNote. Per-citation, not per-paper: different cite sites of the same
-    paper carry the passage each one actually pointed at."""
+    paper carry the passage each one actually pointed at. ``suffix`` is a
+    single SI cite's ``" (SI)"`` postnote (gr491600 L5)."""
     from precis.export.endnote import add_citation_field
 
     cites: list[tuple[dict[str, Any], str | None, int]] = []
@@ -1669,7 +1759,7 @@ def _cite_endnote(
             source = _resolve_source(ctx.store, slug)
             if source is None:
                 ctx.warnings.append(f"cite {slug!r}: no paper in corpus — plain marker")
-                paragraph.add_run(f"[{n}]").font.superscript = True
+                paragraph.add_run(f"[{n}]{suffix}").font.superscript = True
                 continue
             if not source.get("year"):
                 ctx.warnings.append(f"cite {slug!r}: no year — empty <Year/>")
@@ -1682,7 +1772,7 @@ def _cite_endnote(
                 notes = None
         cites.append((source, notes, n))
     if cites:
-        add_citation_field(paragraph, cites)
+        add_citation_field(paragraph, cites, suffix)
 
 
 # ── references + glossary sections ────────────────────────────────
@@ -1998,11 +2088,28 @@ def _append_published_claims(doc: Any, ctx: _Ctx) -> None:
     if not entries:
         return
     doc.add_heading(_NANOPUB_SECTION_TITLE, level=1)
+    table = doc.add_table(rows=1, cols=4)
+    try:  # built-in style; absent in some templates -> no style
+        table.style = "Table Grid"
+    except Exception:  # pragma: no cover — template without the style
+        pass
+    for cell, head in zip(
+        table.rows[0].cells, ("Claim", "Sources", "Cited in", "Artifact"), strict=True
+    ):
+        cell.paragraphs[0].add_run(head).bold = True
     for e in entries:
-        p = doc.add_paragraph()
-        p.add_run(f"“{e.sentence}”").bold = True
-        p = doc.add_paragraph()
-        p.add_run(f"{e.trusty_uri} — {e.status_text}")
+        # Numbers come from slugs the body already cited (never registers
+        # one), so the bibliography is identical with or without this table.
+        nums = sorted(
+            ctx.cited.index(s) + 1
+            for s in ctx.claim_cites.get(e.fid, [])
+            if s in ctx.cited
+        )
+        cells = table.add_row().cells
+        cells[0].paragraphs[0].add_run(f"“{e.sentence}”")
+        cells[1].paragraphs[0].add_run(merged_cite_numbers(nums) if nums else "")
+        cells[2].paragraphs[0].add_run(", ".join(ctx.claim_sections.get(e.fid, [])))
+        cells[3].paragraphs[0].add_run(f"{e.trusty_uri} — {e.status_text}")
 
 
 def _append_data_package(doc: Any, entries: list[DataPackageFigure]) -> None:

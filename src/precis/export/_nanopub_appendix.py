@@ -33,8 +33,11 @@ SECTION_TITLE = "Published claim artifacts"
 class PublishedClaimEntry:
     """One appendix entry: the frozen claim sentence, the artifact's
     trusty URI, and the shared status wording (``published <date>`` vs
-    the visually distinct ``signed/anchored <date> — under embargo``)."""
+    the visually distinct ``signed/anchored <date> — under embargo``).
+    ``fid`` is the hub's finding ref id, the key under which the exporters
+    record where the claim was cited."""
 
+    fid: int  # the claim hub's finding ref id — exporters join their per-claim records on it
     sentence: str
     trusty_uri: str
     status_text: str
@@ -59,6 +62,7 @@ def published_claim_entries(store: Any, trust: Any) -> list[PublishedClaimEntry]
             continue
         entries.append(
             PublishedClaimEntry(
+                fid=fid,
                 sentence=row.approved_title or f"claim fi{fid}",
                 trusty_uri=str(row.trusty_uri),
                 status_text=_status_text(store, row),

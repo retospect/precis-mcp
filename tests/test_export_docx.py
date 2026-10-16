@@ -5,6 +5,7 @@ validity check (a corrupt part would fail to re-open)."""
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -2374,3 +2375,135 @@ def test_abbrev_definitions_inside_bold_expand(
     assert "metal-organic framework" in para.text
     bold = [r.text for r in para.runs if r.bold]
     assert bold == ["metal-organic framework (MOF)", " films"]
+
+
+def test_endnote_si_cite_carries_suffix(monkeypatch) -> None:
+    """An SI cite in endnote mode gets its own field: ``<Suffix> (SI)</Suffix>``
+    before ``<DisplayText>``, DisplayText and the cached text ``[n] (SI)``."""
+    import docx as _docx
+    from lxml import etree
+
+    from precis.export import docx as dx
+
+    ctx = _si_docx_ctx(monkeypatch, with_parent=True)
+    ctx.endnote = True
+    monkeypatch.setattr(
+        dx,
+        "_resolve_source",
+        lambda _s, slug: {
+            "rec_number": 1,
+            "title": "Parent",
+            "authors": ["Doe, J."],
+            "year": 2024,
+            "slug": slug,
+        },
+    )
+    para = _docx.Document().add_paragraph()
+    dx._cite("parent24si", ctx, para)
+    dx._flush_cites(ctx, para)
+    assert ctx.cited == ["parent24"]
+    w = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+    instrs = [e.text or "" for e in para._p.iter(w + "instrText")]
+    assert len(instrs) == 1
+    assert instrs[0].strip().startswith("ADDIN EN.CITE <EndNote>")
+    payload = instrs[0].strip()[len("ADDIN EN.CITE ") :]
+    cite = etree.fromstring(payload.encode("utf-8"))[0]
+    assert cite.findtext("Suffix") == " (SI)"
+    assert cite.findtext("DisplayText") == "[1] (SI)"
+    tags = [c.tag for c in cite]
+    assert tags.index("Suffix") < tags.index("DisplayText")
+    texts = [e.text for e in para._p.iter(w + "t")]
+    assert "[1] (SI)" in texts
+
+
+def test_si_cite_plain_mode_keeps_si_note(monkeypatch) -> None:
+    import docx as _docx
+
+    from precis.export import docx as dx
+
+    ctx = _si_docx_ctx(monkeypatch, with_parent=True)
+    assert not ctx.endnote
+    para = _docx.Document().add_paragraph()
+    dx._cite("parent24si", ctx, para)
+    assert para.text == "[1] (SI)"
+
+
+def test_bare_handles_in_prose_are_replaced() -> None:
+    """gr493181: ``dr173020``-style tokens never reach the reader — resolved
+    to the record title, else the kind name plus a warning. DOIs and
+    chemistry tokens stay."""
+    from types import SimpleNamespace
+
+    from precis.export import docx as dx
+
+    refs = {173020: SimpleNamespace(meta={}, title="Carbon Nanobuds Review")}
+    ctx = dx._Ctx(
+        store=_FindingFake(refs),
+        known_handles=set(),
+        doi_links=False,
+        library_links=False,
+        library_label="x",
+        library_search_url="x",
+    )
+    doi = "10.1002/j.2168-0159.2014.tb00055.x"
+    out = _render_text(
+        f"Read dr173020's draft and td459589/catpath; see {doi} and co2 on pt111.",
+        ctx,
+    )
+    assert "Carbon Nanobuds Review's draft" in out
+    assert "todo/catpath" in out
+    assert doi in out
+    assert "co2" in out and "pt111" in out
+    assert not re.search(r"\b[a-z]{2}\d{4,}\b", out.replace(doi, ""))
+    assert any("td459589" in w for w in ctx.warnings)
+
+
+def _back_matter_headings(draft: DraftHandler, hub: Hub, tmp_path: Path) -> list[str]:
+    _seed_paper(hub.live_store, "bm1", "Back matter paper", 2020)
+    pid = _new_draft_project(hub)
+    draft.put(id="dbm", title="T", project=pid)
+    draft.put(
+        id="dbm", chunk_kind="term", text="carbon nanotube", meta={"short": "CNT"}
+    )
+    draft.put(
+        id="dbm",
+        chunk_kind="paragraph",
+        text="We study CNT [§bm1] here.",
+        at={"last": True},
+    )
+    ref = hub.live_store.get_ref(kind="draft", id="dbm")
+    out = tmp_path / "dbm.docx"
+    export_docx(hub.live_store, ref, target_path=out)
+    return [
+        p.text
+        for p in docx.Document(str(out)).paragraphs
+        if p.style is not None and p.style.name.startswith("Heading")
+    ]
+
+
+def test_docx_references_before_acronyms(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    heads = _back_matter_headings(draft, hub, tmp_path)
+    assert heads.index("References") < heads.index("Acronyms")
+
+
+def test_docx_back_matter_follows_shared_constant(
+    draft: DraftHandler, hub: Hub, tmp_path: Path, monkeypatch
+) -> None:
+    from precis.export import _back_matter
+
+    monkeypatch.setattr(
+        _back_matter,
+        "BACK_MATTER_ORDER",
+        (
+            "acronyms",
+            "references",
+            "unverified",
+            "data_package",
+            "published",
+            "sources",
+        ),
+    )
+    heads = _back_matter_headings(draft, hub, tmp_path)
+    assert heads.index("Acronyms") < heads.index("References")

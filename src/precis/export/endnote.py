@@ -186,13 +186,17 @@ def build_record(source: dict[str, Any], notes: str | None = None) -> str:
     return "".join(parts)
 
 
-def _cite_element(source: dict[str, Any], notes: str | None, cite_number: int) -> str:
+def _cite_element(
+    source: dict[str, Any], notes: str | None, cite_number: int, suffix: str = ""
+) -> str:
     """One ``<Cite>…</Cite>`` element — author/year/RecNum stub + the full
     traveling-library ``<record>`` for ``source``. ``notes`` is the cited
     passage (``pc<id>`` chunk citation) → the record's
     ``<research-notes>``. ``cite_number`` is the 1-based citation number —
     the cached ``<DisplayText>`` shows ``[n]``, matching the numbered
-    bibliography the export always emits."""
+    bibliography the export always emits. ``suffix`` (the ``" (SI)"``
+    postnote, gr491600 L5) is EndNote's per-citation ``<Suffix>``, which
+    sits before ``<DisplayText>`` and outside the ``<record>``."""
     first_family = _first_family(source.get("authors"))
     year = source.get("year")
     rec = source["rec_number"]
@@ -201,7 +205,8 @@ def _cite_element(source: dict[str, Any], notes: str | None, cite_number: int) -
         f"<Author>{esc(first_family)}</Author>"
         f"<Year>{esc(year) if year else ''}</Year>"
         f"<RecNum>{rec}</RecNum>"
-        f"<DisplayText>[{cite_number}]</DisplayText>"
+        + (f"<Suffix>{esc(suffix)}</Suffix>" if suffix else "")
+        + f"<DisplayText>[{cite_number}]{esc(suffix)}</DisplayText>"
         f"{build_record(source, notes)}"
         "</Cite>"
     )
@@ -216,15 +221,17 @@ def citation_payload(
 
 
 def citation_group_payload(
-    cites: list[tuple[dict[str, Any], str | None, int]],
+    cites: list[tuple[dict[str, Any], str | None, int]], suffix: str = ""
 ) -> str:
     """The ``<EndNote>…</EndNote>`` instruction payload for a citation run —
     one ``<Cite>`` element per ``(source, notes, cite_number)`` triple in a
     single wrapper, exactly how EndNote itself writes a grouped citation
-    (``ADDIN EN.CITE <EndNote><Cite>…</Cite><Cite>…</Cite></EndNote>``)."""
+    (``ADDIN EN.CITE <EndNote><Cite>…</Cite><Cite>…</Cite></EndNote>``).
+    ``suffix`` applies to every ``<Cite>``; callers pass it only for a
+    single-cite ``(SI)`` field."""
     return (
         "<EndNote>"
-        + "".join(_cite_element(source, notes, n) for source, notes, n in cites)
+        + "".join(_cite_element(s, notes, n, suffix) for s, notes, n in cites)
         + "</EndNote>"
     )
 
@@ -277,7 +284,9 @@ def _cached_run(text: str) -> Any:
 
 
 def add_citation_field(
-    paragraph: Any, cites: list[tuple[dict[str, Any], str | None, int]]
+    paragraph: Any,
+    cites: list[tuple[dict[str, Any], str | None, int]],
+    suffix: str = "",
 ) -> None:
     """Append ONE ``ADDIN EN.CITE`` complex field to ``paragraph`` — the
     in-text citation. ``cites`` carries one ``(source, notes, cite_number)``
@@ -287,13 +296,15 @@ def add_citation_field(
     EndNote field: begin · instrText · separate · cached display · end — the
     cached display is the merged numeric mark (``[1, 2]`` / ``[1–3]``)
     matching the numbered bibliography. Each ``notes`` embeds the cited
-    passage into its record's Research Notes."""
+    passage into its record's Research Notes. ``suffix`` is a single SI
+    cite's ``" (SI)"`` postnote — ``<Suffix>`` plus the cached text."""
     p = paragraph._p
-    payload = citation_group_payload(cites)
+    payload = citation_group_payload(cites, suffix)
     p.append(_fld_char("begin"))
     p.append(_instr_text(" ADDIN EN.CITE " + payload))
     p.append(_fld_char("separate"))
-    p.append(_cached_run(merged_cite_numbers(sorted(n for _s, _n, n in cites))))
+    mark = merged_cite_numbers(sorted(n for _s, _n, n in cites))
+    p.append(_cached_run(mark + suffix))
     p.append(_fld_char("end"))
 
 
