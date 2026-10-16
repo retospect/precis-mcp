@@ -157,8 +157,10 @@ review, VERIFIED by Reto 2026-10-14 — review-queue
    source via already serves (gr489924, fixed); the last
    net is gr489175. `taz15-blank` from scratch: 138/151 as imported
    (GND/3V3 traced, no outer pours), 139/151 with GND→B.Cu and
-   3V3→F.Cu declared — 8 of the rest are CN4's 0.5 mm-pitch escapes
-   (gr489923), 2 drop-via sites (GND/PV+), 2 search budget. The
+   3V3→F.Cu declared, **149/151** since the maze escapes fine-pitch
+   pads along an exact-geometry stub (gr489923: CN4's 7 nets, MCU_BOOT,
+   and the 2 search-budget nets freed with them); the last 2 are
+   drop-via sites (GND/PV+). The
    source's 7 `via_via_keepout` errors still need `force=True` on
    `taz15` (gr489914; the doubled via is deduped at import).
 2. ~~The real board's design-rule table is dropped at import~~ — **DONE

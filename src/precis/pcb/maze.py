@@ -68,6 +68,21 @@ question folded into :meth:`OccupancyGrid.route`'s via-candidate mask
 (:meth:`OccupancyGrid._pad_keepout_mask`), not an exception carved into
 the clearance one — the same relationship :func:`precis.pcb.drc.
 check_connectivity` has to :func:`precis.pcb.drc.check_clearance`.
+
+**A fine-pitch pad escapes by exact geometry, not by the grid.** The
+one cell of discretisation slack above costs a whole pitch of room, and
+at 0.5 mm pad pitch that is more than there is: a 0.3 mm track centred
+on a 0.3 mm pad clears 0.2 mm-away neighbours by 0.2 mm against a
+0.152 mm rule, 0.048 mm of slack against a ~0.1 mm cell, so the pad
+reads as walled in on every alignment (gr489923, taz15 CN4). The
+legal exit is straight out along the pad's own long axis.
+:meth:`OccupancyGrid.escape_stub` proves that stub with exact distances
+to every recorded pad shape and routed track (``_pad_shapes``/
+``_segs``), checks every other claim (fixed copper, keep-outs, vias)
+conservatively on the cells, and hands the search the first passable
+cell past the pad as an extra start or goal. Exact-recorded claims are
+tracked per cell in ``_exact``: a cell whose current claim came from a
+recorded pad or track holds that owner there, any other claim clears it.
 """
 
 from __future__ import annotations
@@ -131,6 +146,13 @@ WINDOW_MARGIN_MM = 5.0
 #: under one obstacle needs one.
 OWN_VIA_PAIR_RETRIES = 3
 WINDOW_SPAN_FRACTION = 0.5
+
+#: How far past a pad's own end :meth:`OccupancyGrid.escape_stub` looks
+#: for a passable cell. A fine-pitch field's clearance halo ends a
+#: clearance plus a query disk past the pad (~0.5 mm at 0.1 mm pitch);
+#: anything that needs much more is a pad boxed in by other copper, which
+#: a longer stub would only push into.
+ESCAPE_STUB_MAX_MM = 2.0
 
 #: Memory bound for :func:`grid_for` when a design-rule pitch cap asks
 #: for a fine grid on a large board: 4000 x 4000 x 4 layers of int32
@@ -406,6 +428,71 @@ def _dist_to_polygon_edges(
     return best
 
 
+def _pt_seg_dist(
+    px: float, py: float, a: tuple[float, float], b: tuple[float, float]
+) -> float:
+    """Distance from ``(px, py)`` to segment ``a``-``b``."""
+    ex, ey = b[0] - a[0], b[1] - a[1]
+    len2 = ex * ex + ey * ey
+    t = 0.0 if len2 < 1e-18 else ((px - a[0]) * ex + (py - a[1]) * ey) / len2
+    t = min(1.0, max(0.0, t))
+    return math.hypot(px - (a[0] + t * ex), py - (a[1] + t * ey))
+
+
+def _seg_seg_dist(
+    a: tuple[float, float],
+    b: tuple[float, float],
+    c: tuple[float, float],
+    d: tuple[float, float],
+) -> float:
+    """Distance between segments ``a``-``b`` and ``c``-``d`` (0 if they
+    cross; touching and collinear overlap fall out of the endpoint terms)."""
+
+    def orient(
+        p: tuple[float, float], q: tuple[float, float], r: tuple[float, float]
+    ) -> float:
+        return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+
+    if orient(a, b, c) * orient(a, b, d) < 0 and orient(c, d, a) * orient(c, d, b) < 0:
+        return 0.0
+    return min(
+        _pt_seg_dist(a[0], a[1], c, d),
+        _pt_seg_dist(b[0], b[1], c, d),
+        _pt_seg_dist(c[0], c[1], a, b),
+        _pt_seg_dist(d[0], d[1], a, b),
+    )
+
+
+def _seg_shape_dist(
+    a: tuple[float, float], b: tuple[float, float], shape: PadShape
+) -> float:
+    """Distance from segment ``a``-``b`` to a pad's copper: exact for a
+    rect or circle, against the enclosing circle for a polygon (the
+    conservative side)."""
+    if shape.kind == "rect":
+        x0, x1 = shape.x - shape.w_mm / 2.0, shape.x + shape.w_mm / 2.0
+        y0, y1 = shape.y - shape.h_mm / 2.0, shape.y + shape.h_mm / 2.0
+        for px, py in (a, b):
+            if x0 <= px <= x1 and y0 <= py <= y1:
+                return 0.0
+        corners = ((x0, y0), (x1, y0), (x1, y1), (x0, y1))
+        return min(
+            _seg_seg_dist(a, b, corners[i], corners[(i + 1) % 4]) for i in range(4)
+        )
+    radius = (
+        max(shape.w_mm, shape.h_mm) / 2.0
+        if shape.kind == "circle"
+        else shape.enclosing_radius_mm
+    )
+    return _pt_seg_dist(shape.x, shape.y, a, b) - radius
+
+
+def _polyline_mm(points: Sequence[tuple[float, float]]) -> float:
+    return sum(
+        math.hypot(q[0] - p[0], q[1] - p[1]) for p, q in itertools.pairwise(points)
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class PadShape:
     """A pad's TRUE footprint, in board coordinates, for
@@ -491,6 +578,18 @@ class OccupancyGrid:
         }
         self._owner = np.full((spec.n_layers, spec.ny, spec.nx), FREE, dtype=np.int32)
         self._flat = self._owner.reshape(-1)
+        #: Per cell: the owner whose claim here is recorded exactly (a
+        #: shaped pad in ``_pad_shapes`` or a track in ``_segs``), else
+        #: FREE. A cell with ``_exact != _owner`` holds copper only the
+        #: grid knows about; :meth:`escape_stub` treats it conservatively.
+        self._exact = np.full_like(self._owner, FREE)
+        #: Every :meth:`stamp_pad_shape` pad: ``(shape, net, layers)``,
+        #: and its index by ``(net, x, y)`` for :meth:`escape_stub`.
+        self._pad_shapes: list[tuple[PadShape, int, tuple[int, ...]]] = []
+        self._pad_index: dict[tuple[int, float, float], int] = {}
+        #: Every :meth:`stamp_path` span: ``(net, layer, ax, ay, bx, by,
+        #: half_width)``; a via point is a zero-length span per layer.
+        self._segs: list[tuple[int, int, float, float, float, float, float]] = []
         #: Per net: flat cell index -> the EXACT centreline coordinate that
         #: claimed it. These are the legal attach points for that net's next
         #: connection. Kept separate from ``_owner`` because ``_owner`` also
@@ -598,13 +697,16 @@ class OccupancyGrid:
         net_id: int,
         *,
         contest: bool = False,
+        exact: bool = False,
     ) -> None:
         """Claim every cell whose centre is within ``radius_mm`` of
         ``(x, y)`` on each of ``layers``. With ``contest=True`` a cell
         already owned by a DIFFERENT net becomes :data:`CONTESTED`
         (passable by nobody) instead of being overwritten — the correct
         resolution for two pads whose keep-outs overlap. A net with a
-        class clearance above ``clearance_mm`` claims its extra on top."""
+        class clearance above ``clearance_mm`` claims its extra on top.
+        ``exact=True`` only when the caller records this copper exactly
+        (:meth:`stamp_path`); see :meth:`_write_claim`."""
         spec = self.spec
         radius_mm += self.extra_mm(net_id)
         r_cells = math.ceil(radius_mm / spec.pitch)
@@ -629,13 +731,48 @@ class OccupancyGrid:
             inside = np.zeros_like(inside)
             inside[iy_hit, ix_hit] = True
         for layer in layers:
-            window = self._owner[layer, lo_y : hi_y + 1, lo_x : hi_x + 1]
+            self._write_claim(
+                layer, slice(lo_y, hi_y + 1), slice(lo_x, hi_x + 1), inside,
+                net_id, contest=contest, exact=exact,
+            )  # fmt: skip
+
+    def _write_claim(
+        self,
+        layer: int,
+        ys: slice,
+        xs: slice,
+        inside: np.ndarray,
+        net_id: int,
+        *,
+        contest: bool,
+        exact: bool,
+    ) -> None:
+        """The one place a claim is written. ``_owner`` as documented on
+        :meth:`stamp_disk`; ``_exact`` follows: a non-exact claim clears
+        it, an exact one sets it to the cell's new owner only where the
+        claim it replaces (or contests) was itself exact or FREE — a cell
+        that ever held grid-only copper (any net's) stays non-exact, so
+        :meth:`escape_stub` never trusts the exact records past it."""
+        window = self._owner[layer, ys, xs]
+        ex = self._exact[layer, ys, xs]
+        if not exact:
             if contest:
                 clash = inside & (window != FREE) & (window != net_id)
                 window[inside] = net_id
                 window[clash] = CONTESTED
             else:
                 window[inside] = net_id
+            ex[inside] = FREE
+            return
+        # FREE cells read as known (both arrays FREE); a cell of this net's
+        # own grid-only copper does not, or a later stub would trust it.
+        known = ex == window
+        clash = inside & (window != FREE) & (window != net_id) if contest else None
+        window[inside] = net_id
+        if clash is not None:
+            window[clash] = CONTESTED
+        ex[inside & known] = window[inside & known]
+        ex[inside & ~known] = FREE
 
     def stamp_pad(
         self,
@@ -691,6 +828,7 @@ class OccupancyGrid:
         net_id: int,
         *,
         contest: bool = False,
+        exact: bool = False,
     ) -> None:
         """The shape-aware sibling of :meth:`stamp_disk` (gripe 346962):
         claim every cell whose centre lies within ``margin_mm`` of
@@ -760,13 +898,10 @@ class OccupancyGrid:
                 return  # the shape's own centre cell isn't even in this window
             inside[iy_hit, ix_hit] = True
         for layer in layer_list:
-            window = self._owner[layer, lo_y : hi_y + 1, lo_x : hi_x + 1]
-            if contest:
-                clash = inside & (window != FREE) & (window != net_id)
-                window[inside] = net_id
-                window[clash] = CONTESTED
-            else:
-                window[inside] = net_id
+            self._write_claim(
+                layer, slice(lo_y, hi_y + 1), slice(lo_x, hi_x + 1), inside,
+                net_id, contest=contest, exact=exact,
+            )  # fmt: skip
 
     def stamp_pad_shape(
         self,
@@ -783,9 +918,15 @@ class OccupancyGrid:
         pad in :attr:`pads` regardless of whether its CLAIM is a circle,
         a rect or a polygon (see :attr:`PadShape.enclosing_radius_mm`'s
         own docstring for why that record stays the conservative circle
-        even here)."""
-        self.stamp_shape(layers, shape, 0.0, net_id, contest=contest)
+        even here). The shape itself is recorded in ``_pad_shapes`` for
+        :meth:`escape_stub`'s exact distances, so its cells are exact."""
+        layer_t = tuple(layers)
+        self.stamp_shape(layer_t, shape, 0.0, net_id, contest=contest, exact=True)
         self._pads.append((shape.x, shape.y, shape.enclosing_radius_mm))
+        self._pad_index.setdefault(
+            (int(net_id), shape.x, shape.y), len(self._pad_shapes)
+        )
+        self._pad_shapes.append((shape, int(net_id), layer_t))
 
     def claim_centre(
         self, layers: Iterable[int], x: float, y: float, net_id: int
@@ -968,10 +1109,21 @@ class OccupancyGrid:
         """Claim a routed path's corridor. Sampling every point of the
         (already collinear-merged) polyline is not enough — merged runs
         skip intermediate cells — so each span is re-sampled at half-pitch
-        steps before stamping (:func:`path_samples`)."""
+        steps before stamping (:func:`path_samples`). The centreline is
+        recorded in ``_segs`` too, so its cells are exact."""
         radius = self.core_radius_mm(width_mm)
         for px, py, lo, hi in path_samples(path, self.spec.pitch / 2.0):
-            self.stamp_disk(range(lo, hi + 1), px, py, radius, path.net_id)
+            self.stamp_disk(range(lo, hi + 1), px, py, radius, path.net_id, exact=True)
+        net, half_w = int(path.net_id), width_mm / 2.0
+        for a, b in itertools.pairwise(path.points):
+            if a[2] == b[2]:
+                self._segs.append((net, a[2], a[0], a[1], b[0], b[1], half_w))
+                continue
+            for layer in range(min(a[2], b[2]), max(a[2], b[2]) + 1):
+                self._segs.append((net, layer, a[0], a[1], a[0], a[1], half_w))
+        if len(path.points) == 1:
+            px, py, layer = path.points[0]
+            self._segs.append((net, layer, px, py, px, py, half_w))
         self.register_attach(path)
 
     def register_attach(self, path: RoutePath) -> None:
@@ -1051,6 +1203,156 @@ class OccupancyGrid:
                 bool(start_exempt),
                 bool(goal_exempt),
             )
+        )
+
+    # -- fine-pitch escape ---------------------------------------------
+    def escape_stub(
+        self, net_id: int, point: tuple[float, float], layer: int, width_mm: float
+    ) -> tuple[tuple[float, float], ...] | None:
+        """A legal straight exit from ``net_id``'s rect pad centred at
+        ``point`` on ``layer``: ``(centre, axis point, cell centre)``, or
+        ``None`` (module docstring, "A fine-pitch pad escapes by exact
+        geometry").
+
+        The stub runs from the pad centre along the pad's long axis
+        (either way; all four for a square pad) to the first point whose
+        nearest cell :meth:`route` may use, then jogs at most half a cell
+        sideways onto that cell's centre — the jog sits inside the cell's
+        own one cell of query slack, exactly like :func:`precis.pcb.
+        realize._snap_to_pads`' snap. The axis run itself must clear every
+        recorded foreign pad shape and routed track by the exact rule
+        (half-width plus clearance plus both nets' extras), and must have
+        no grid-only foreign claim (``_exact``) within its half-width plus
+        one cell. The shorter of the legal directions wins."""
+        idx = self._pad_index.get((int(net_id), point[0], point[1]))
+        if idx is None:
+            return None
+        shape, _net, pad_layers = self._pad_shapes[idx]
+        if shape.kind != "rect" or layer not in pad_layers:
+            return None
+        hw = width_mm / 2.0
+        if shape.h_mm > shape.w_mm:
+            dirs: tuple[tuple[int, int], ...] = ((0, 1), (0, -1))
+            reach = shape.h_mm / 2.0
+        elif shape.w_mm > shape.h_mm:
+            dirs = ((1, 0), (-1, 0))
+            reach = shape.w_mm / 2.0
+        else:
+            dirs = ((0, 1), (0, -1), (1, 0), (-1, 0))
+            reach = shape.w_mm / 2.0
+        span = reach + ESCAPE_STUB_MAX_MM + self.spec.pitch
+        need0 = hw + self.clearance_mm + self.extra_mm(net_id)
+        margin = span + need0 + self._max_extra()
+        x, y = point
+        pads = [
+            (s, need0 + self.extra_mm(m))
+            for s, m, lays in self._pad_shapes
+            if m != net_id
+            and layer in lays
+            and abs(s.x - x) <= margin + max(s.w_mm, s.h_mm, s.enclosing_radius_mm)
+            and abs(s.y - y) <= margin + max(s.w_mm, s.h_mm, s.enclosing_radius_mm)
+        ]
+        segs = [
+            ((ax, ay), (bx, by), need0 + self.extra_mm(m) + shw)
+            for m, lay, ax, ay, bx, by, shw in self._segs
+            if m != net_id
+            and lay == layer
+            and min(ax, bx) - shw <= x + margin
+            and max(ax, bx) + shw >= x - margin
+            and min(ay, by) - shw <= y + margin
+            and max(ay, by) + shw >= y - margin
+        ]
+        best: tuple[tuple[float, float], ...] | None = None
+        for d in dirs:
+            stub = self._stub_along(net_id, point, layer, hw, d, reach, pads, segs)
+            if stub is not None and (
+                best is None or _polyline_mm(stub) < _polyline_mm(best)
+            ):
+                best = stub
+        return best
+
+    def _max_extra(self) -> float:
+        return max(self._net_extra.values(), default=0.0)
+
+    def _stub_along(
+        self,
+        net_id: int,
+        point: tuple[float, float],
+        layer: int,
+        hw: float,
+        d: tuple[int, int],
+        reach: float,
+        pads: list[tuple[PadShape, float]],
+        segs: list[tuple[tuple[float, float], tuple[float, float], float]],
+    ) -> tuple[tuple[float, float], ...] | None:
+        """:meth:`escape_stub` in one direction ``d``. Every test is
+        monotone in the stub's length, so the first failure ends the walk."""
+        spec = self.spec
+        extra = self.extra_mm(net_id)
+        r_cells = math.ceil((hw + extra) / spec.pitch) + 1
+        half = _disk_half_chords(r_cells)
+        x, y = point
+        t = reach
+        while t <= reach + ESCAPE_STUB_MAX_MM + 1e-9:
+            cx = round((x + d[0] * t - spec.x0) / spec.pitch)
+            cy = round((y + d[1] * t - spec.y0) / spec.pitch)
+            if not (0 <= cx < spec.nx and 0 <= cy < spec.ny):
+                return None
+            ex, ey = spec.to_point(cx, cy)
+            j = (ex, y) if d[0] else (x, ey)
+            if (j[0] - x) * d[0] + (j[1] - y) * d[1] > 0.0:
+                if not self._stub_clear(
+                    net_id, layer, point, j, hw + extra, pads, segs
+                ):
+                    return None
+                if not _disk_hits_foreign(
+                    self._owner, layer, cy, cx, r_cells, half, int(net_id)
+                ):
+                    if math.hypot(ex - j[0], ey - j[1]) < 1e-9:
+                        return (point, j)
+                    return (point, j, (ex, ey))
+            t += spec.pitch / 2.0
+        return None
+
+    def _stub_clear(
+        self,
+        net_id: int,
+        layer: int,
+        a: tuple[float, float],
+        b: tuple[float, float],
+        reach_mm: float,
+        pads: list[tuple[PadShape, float]],
+        segs: list[tuple[tuple[float, float], tuple[float, float], float]],
+    ) -> bool:
+        """May ``net_id``'s copper run ``a``-``b`` on ``layer``? ``pads``
+        and ``segs`` carry each foreign item's required centreline
+        distance; ``reach_mm`` (half-width plus extra) plus one cell is
+        the radius no grid-only foreign claim may sit within."""
+        for shape, need in pads:
+            if _seg_shape_dist(a, b, shape) < need - 1e-9:
+                return False
+        for c, e, need in segs:
+            if _seg_seg_dist(a, b, c, e) < need - 1e-9:
+                return False
+        spec = self.spec
+        r = reach_mm + spec.pitch
+        lo_x = max(0, math.floor((min(a[0], b[0]) - r - spec.x0) / spec.pitch))
+        hi_x = min(spec.nx - 1, math.ceil((max(a[0], b[0]) + r - spec.x0) / spec.pitch))
+        lo_y = max(0, math.floor((min(a[1], b[1]) - r - spec.y0) / spec.pitch))
+        hi_y = min(spec.ny - 1, math.ceil((max(a[1], b[1]) + r - spec.y0) / spec.pitch))
+        if lo_x > hi_x or lo_y > hi_y:
+            return True
+        own = self._owner[layer, lo_y : hi_y + 1, lo_x : hi_x + 1]
+        ex = self._exact[layer, lo_y : hi_y + 1, lo_x : hi_x + 1]
+        grid_only = (own != FREE) & (own != net_id) & (ex != own)
+        if not grid_only.any():
+            return True
+        iy, ix = np.nonzero(grid_only)
+        px = spec.x0 + (ix + lo_x) * spec.pitch
+        py = spec.y0 + (iy + lo_y) * spec.pitch
+        return all(
+            _pt_seg_dist(float(qx), float(qy), a, b) > r + 1e-9
+            for qx, qy in zip(px, py, strict=True)
         )
 
     # -- the search ----------------------------------------------------

@@ -2499,7 +2499,9 @@ def _stamp_pads(
        gripe 346962's own repro (HV507, 0.8mm pitch, C639448).
     """
     for _point, net, shape, layers in pads:
-        grid.stamp_shape(layers, shape, grid.clearance_mm, net, contest=True)
+        grid.stamp_shape(
+            layers, shape, grid.clearance_mm, net, contest=True, exact=True
+        )
     for _point, net, shape, layers in pads:
         grid.stamp_pad_shape(layers, shape, net, contest=True)
     for point, net, _shape, layers in pads:
@@ -2972,6 +2974,79 @@ def _seg_request(
     )
 
 
+#: An escape stub, pad centre first (:meth:`maze.OccupancyGrid.escape_stub`),
+#: or ``None`` for an end routed without one.
+_Stub = tuple[Point, ...] | None
+
+
+def _route_with_escape_stubs(
+    grid: maze.OccupancyGrid, req: _SegRequest
+) -> tuple[maze.RoutePath | None, tuple[_Stub, _Stub]]:
+    """Re-search a segment whose plain search failed, offering each pad
+    end's exact-geometry escape stub as an extra terminal (gr489923: a
+    0.3 mm track cannot leave a 0.5 mm-pitch pad on the grid, though it
+    can straight along the pad). Only failed segments retry, so a board
+    that routed before routes identically. An end already substituted
+    onto island copper (``eff_start != start``) gets no stub."""
+    width = req.rules.track_width_mm
+    a = (
+        grid.escape_stub(req.net_id, req.start, req.start_layer, width)
+        if req.eff_start == req.start
+        else None
+    )
+    b = (
+        grid.escape_stub(req.net_id, req.end, req.goal_layer, width)
+        if req.eff_goal == req.end
+        else None
+    )
+    if a is None and b is None:
+        return None, (None, None)
+    kwargs = dict(req.route_kwargs)
+    if a is not None:
+        kwargs["extra_start_terminals"] = (
+            *kwargs["extra_start_terminals"],
+            (a[-1], req.start_layer),
+        )
+    if b is not None:
+        kwargs["extra_goal_terminals"] = (
+            *kwargs["extra_goal_terminals"],
+            (b[-1], req.goal_layer),
+        )
+    path = grid.route(req.net_id, req.eff_start, req.eff_goal, **kwargs)
+    return path, (a, b)
+
+
+def _attach_escape_stubs(
+    path: maze.RoutePath, stubs: tuple[_Stub, _Stub]
+) -> maze.RoutePath:
+    """Join each stub the search actually used back onto ``path``: the
+    search started (ended) exactly on the stub's last point, its anchor,
+    so the stub's copper runs from there to the pad centre on that end's
+    layer. A stub the search did not use is dropped."""
+    a, b = stubs
+    pts = list(path.points)
+
+    def at(p: tuple[float, float, int], q: Point) -> bool:
+        return abs(p[0] - q[0]) < 1e-9 and abs(p[1] - q[1]) < 1e-9
+
+    used = False
+    if a is not None and at(pts[0], a[-1]):
+        pts = [(x, y, pts[0][2]) for x, y in a[:-1]] + pts
+        used = True
+    if b is not None and at(pts[-1], b[-1]):
+        pts += [(x, y, pts[-1][2]) for x, y in reversed(b[:-1])]
+        used = True
+    if not used:
+        return path
+    length = sum(
+        dist((p[0], p[1]), (q[0], q[1]))
+        for p, q in itertools.pairwise(pts)
+        if p[2] == q[2]
+    )
+    attached = path.attached and not (a is not None and at(path.points[0], a[-1]))
+    return maze.RoutePath(path.net_id, tuple(pts), length, attached)
+
+
 def _preferred_fits(
     grid: maze.OccupancyGrid, path: maze.RoutePath, req: _SegRequest
 ) -> bool:
@@ -3391,6 +3466,9 @@ def _route_pass(
                 accepted.append(seg_id)
         else:
             path = grid.route(net_id, req.eff_start, req.eff_goal, **req.route_kwargs)
+        stubs: tuple[_Stub, _Stub] = (None, None)
+        if path is None and not committed:
+            path, stubs = _route_with_escape_stubs(grid, req)
         if path is None or len(path.points) < 2:
             unrouted.append(seg_id)
             continue
@@ -3416,6 +3494,7 @@ def _route_pass(
                 via_shove_radius_mm=config.via_shove_radius_mm,
                 ink_field=ink_field,
             )
+        path = _attach_escape_stubs(path, stubs)
         grid.stamp_path(path, rules.track_width_mm)
         via_r = (
             grid.core_radius_mm(rules.via_dia_mm)
