@@ -117,7 +117,7 @@
     tasks_from: wheelhouse_seed
 
 # gr489600: a fresh compute host's wheelhouse is EMPTY — the `,catalyst`
-# install below then resolves no autocatpath (its floor, >=0.28.0 per
+# install below then resolves no autocatpath (its floor, >=0.29.0 per
 # pyproject, is not on PyPI) and either fails cryptically or picks a too-old
 # wheel. Assert the seeded wheelhouse actually satisfies the floor BEFORE
 # the pip install, and name the fix (play 44's wheel push).
@@ -139,12 +139,12 @@
       (_precis_worker_acp_wheels.files | default([])
         | map(attribute='path') | map('basename')
         | map('regex_replace', '^autocatpath-([0-9][^-]*)-.*$', '\\1')
-        | select('version', autocatpath_min_version | default('0.28.0'), '>=')
+        | select('version', autocatpath_min_version | default('0.29.0'), '>=')
         | list | length) == 0
   ansible.builtin.fail:
     msg: >-
       {{ autocatpath_wheelhouse | default('/opt/precis/wheels') }} holds no
-      autocatpath wheel >= {{ autocatpath_min_version | default('0.28.0') }},
+      autocatpath wheel >= {{ autocatpath_min_version | default('0.29.0') }},
       but the `catalyst` extra this host installs requires it (not on PyPI;
       release-gated). Push it first with play 44's wheel push:
       `scripts/host-ops/play playbooks/44-autocatpath.yml -e
