@@ -2150,6 +2150,46 @@ def test_health_panel_reruns_hosts_alive_live(store) -> None:
     assert row["status"] == "ok"
 
 
+def test_health_panel_keeps_snapshot_verdict_for_gated_classify(store) -> None:
+    """gr489780: the eval's "backlog drained" verdict for chunks_classified
+    survives the panel's live re-probe, which sees only the raw ROLE3 marker
+    age (no ROLE3 tag in this store, so the raw probe reads stale)."""
+    health_digest._store_checks_snapshot(
+        store, [health_digest._idle_classify_pool_empty_check()]
+    )
+    with store.pool.connection() as conn:
+        live = health_digest._freshness_layer1(conn)
+    raw = next(c for c in live if c.name == "chunks_classified")
+    assert raw.status != "ok"
+    panel = health_digest.health_panel(store)
+    row = next(
+        c for c in panel["checks"] if c["id"] == "watchdog:discovery/chunks_classified"
+    )
+    assert row["status"] == "ok" and row["live"] is False
+    assert "backlog drained" in row["detail"]
+
+
+def test_health_panel_live_ok_refreshes_gated_classify(store) -> None:
+    """gr489780: a fresh ROLE3 tag still lets the live probe refresh a stale
+    snapshot row to ok — only a raw stale is held back."""
+    health_digest._store_checks_snapshot(
+        store,
+        [
+            CheckResult(
+                "discovery", "chunks_classified", "stale", "role3 stale", "warn", 20.0
+            )
+        ],
+    )
+    paper = _seed_paper(store, hours_ago=1)
+    _seed_chunk(store, paper, ord=0, hours_ago=0.1)
+    store.add_tag(paper, Tag.closed("ROLE3", "own"), pos=0)
+    panel = health_digest.health_panel(store)
+    row = next(
+        c for c in panel["checks"] if c["id"] == "watchdog:discovery/chunks_classified"
+    )
+    assert row["status"] == "ok" and row["live"] is True
+
+
 def test_health_panel_names_open_critical_alerts(store) -> None:
     """gr489194: the panel names each open critical alert, not just a count."""
     from precis.alerts import raise_alert

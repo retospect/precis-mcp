@@ -2734,6 +2734,15 @@ def _conn_or_pool(store: Store, conn: Any | None) -> Iterator[Any]:
 #: Open critical alerts the panel names by id (the count covers the rest).
 _PANEL_CRITICAL_CAP = 10
 
+#: :data:`_FRESHNESS_CHECKS` whose verdict :func:`_layer1_checks` overrides
+#: (``chunks_classified``: the ``service_config`` gate and the eligible-pool
+#: probe). :func:`health_panel`'s live re-probe sees only the raw marker age,
+#: so it may refresh these rows to ``ok`` but never overwrite the snapshot's
+#: verdict with a raw ``stale``. A pool that refills mid-hour therefore
+#: reads ``ok`` on the panel until the next eval (at most one cadence).
+#: With no snapshot row yet, the raw live reading is shown.
+_EVAL_GATED_FRESHNESS = frozenset({"chunks_classified"})
+
 
 def health_panel(store: Store, conn: Any | None = None) -> dict[str, Any]:
     """The per-subsystem health read — agent (``id='/health'``) and web
@@ -2786,6 +2795,11 @@ def health_panel(store: Store, conn: Any | None = None) -> dict[str, Any]:
         idx = by_id.get(row["id"])
         if idx is None:
             checks.append(row)
+        elif c.name in _EVAL_GATED_FRESHNESS and c.status != "ok":
+            # gr489780: the raw marker age is only half this check; the
+            # eval's gate/pool override lives in the snapshot row, so a
+            # live "stale" must not overwrite its "backlog drained".
+            continue
         else:
             checks[idx] = row
 
