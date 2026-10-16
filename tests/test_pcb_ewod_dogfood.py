@@ -528,6 +528,7 @@ def test_dogfood_drc_view_findings_are_all_the_documented_side_gap(pcb, store):
 
     ref = store.get_ref(kind="pcb", id=slug)
     assert ref is not None
+    pcb._drc_run(ref.id, store.pcb_load(ref.id), record=True)  # view is read-only
     run_id, _findings = store.pcb_drc_findings_latest(ref.id)
     assert run_id is not None, "the DRC run must be recorded — 'no rows' is not clean"
 
@@ -1200,6 +1201,7 @@ def test_dogfood_route_op_routes_real_geometry_and_reports_the_escape_gap(pcb, s
     drc = pcb.get(id=slug, view="drc")
     assert "(pads-only DRC — no routed copper yet)" not in drc.body
     assert "error(s)" in drc.body
+    pcb._drc_run(ref.id, store.pcb_load(ref.id), record=True)  # view is read-only
 
     # gr449483: route-status and DRC's `connectivity` rule must agree, as a
     # SET identity on the same run — a count match could hide one realized

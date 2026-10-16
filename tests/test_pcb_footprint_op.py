@@ -261,6 +261,10 @@ def test_op_footprint_fill_clears_synthesized_footprint_drc_finding(pcb, monkeyp
 
     before = pcb.get(id="ewod-no-footprints-2", view="drc")
     assert "synthesized_footprint" in before.body
+    # The view is read-only (gr491591): record the run so the next view's
+    # delta names the finding as gone.
+    ref = pcb.store.get_ref(kind="pcb", id="ewod-no-footprints-2")
+    pcb._drc_run(ref.id, pcb.store.pcb_load(ref.id), record=True)
 
     def fake(lcsc: str) -> dict | None:
         if lcsc == _HV507_LCSC:

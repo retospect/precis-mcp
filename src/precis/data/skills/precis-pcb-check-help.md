@@ -2,7 +2,7 @@
 id: precis-pcb-check-help
 family: pcb
 title: precis — the PCB check surface (view='check', phases, finding delta, ERC)
-summary: one check surface for a pcb design — view='check' filters findings by rule/severity/phase; the board phase (netlist/placed/routed/fab) gates which rules run and tiers severities; op='phase' records the authored claim; ERC rules (pin_conflict, no_driver, over_voltage, rail_crossing, no_decoupling, over_current) join the geometric DRC on the same table; every run persists and deltas against the previous run of the same phase
+summary: one check surface for a pcb design — view='check' filters findings by rule/severity/phase; the board phase (netlist/placed/routed/fab) gates which rules run and tiers severities; op='phase' records the authored claim; ERC rules (pin_conflict, no_driver, over_voltage, rail_crossing, no_decoupling, over_current) join the geometric DRC on the same table; the get views are read-only and delta against the last recorded run of the same phase; put op='check' records a run
 answers:
   - how do I check a pcb design — DRC, netlist checks, ERC?
   - how do I see only errors, or only one rule's findings?
@@ -60,15 +60,20 @@ Every finding carries a stable `id` (12 hex chars): a content hash over
 `(rule, participants, layer)` — the two nets of a clearance hit, the pad
 and the via of a keep-out — never over coordinates or list position, so
 the same pair at a different margin after a nudge is the SAME finding.
-Each check/drc call is a recorded run (clean runs too) and the head
-reports the delta against the previous run **of the same phase** on that
-board: `vs run b13770b5: 3 new, 127 still (2 worse), 5 gone` — new and
+`view='check'`, `view='drc'` and `view='gerber'` are read-only: they
+compute the run and write nothing (Reto 2026-10-16). To record one — the
+durable run `netlist_drc_clean`, review and checklists read — call
+`put(kind='pcb', id='<slug>', args={'op':'check'})` (takes the same
+`phase`/`severity`/`rule` args; `op='review'` records one too). A read's
+head says `unrecorded run`; a recorded run (clean runs too) shows its id.
+Either way the head reports the delta against the last recorded run
+**of the same phase** on that board: `vs run b13770b5: 3 new, 127 still (2 worse), 5 gone` — new and
 gone counted separately, never netted, because a move that fixes three
 and creates three is not "no change". The table's `delta` column reads
 `new` / `still` / `still, worse (was -0.090)` / `still, better (was …)`;
 a `## gone since run …` list names what went, by id. The first run at a
 phase says "none to compare against" rather than calling everything new.
-Findings persist in `pcb_drc_findings` with `finding_key`, `margin_mm`
+A recorded run's findings persist in `pcb_drc_findings` with `finding_key`, `margin_mm`
 and `first_seen_at` (the lifetime start — surviving a clean run in
 between, so "broken again" reads `new` while keeping its original
 first-seen).

@@ -90,7 +90,7 @@ def test_check_same_finding_todo_at_placed_error_at_fab(pcb: PcbHandler) -> None
 def test_check_delta_second_run_reports_all_still(pcb: PcbHandler) -> None:
     """An unchanged design run twice: ``0 new, N still, 0 resolved``."""
     pcb.put(id="chk-delta", args=_mini_design())
-    first = pcb.get(id="chk-delta", view="check").body
+    first = pcb.put(id="chk-delta", args={"op": "check"}).body
     assert "none to compare against" in first
     second = pcb.get(id="chk-delta", view="check").body
     m = re.search(
@@ -285,9 +285,9 @@ def test_phase_scoped_run_never_steals_the_full_runs_baseline(
     'everything resolved' and the next full run's as 'new'. Baselines
     are keyed per-phase via ``meta['drc_runs_by_phase']``."""
     pcb.put(id="chk-baseline", args=_mini_design())
-    first = pcb.get(id="chk-baseline", view="check").body
+    first = pcb.put(id="chk-baseline", args={"op": "check"}).body
     assert "none to compare against" in first
-    pcb.get(id="chk-baseline", view="check", args={"phase": "netlist"})
+    pcb.put(id="chk-baseline", args={"op": "check", "phase": "netlist"})
     second = pcb.get(id="chk-baseline", view="check").body
     m = re.search(
         r"vs run \w+: (\d+) new, (\d+) still(?: \(\d+ worse\))?, (\d+) resolved",
@@ -365,9 +365,14 @@ def test_view_drc_byte_identical_for_unchanged_fixture(pcb: PcbHandler) -> None:
     rendered (run ids masked, the body itself byte-for-byte)."""
     pcb.put(id="chk-drc-same", args=_mini_design())
     body = pcb.get(id="chk-drc-same", view="drc").body
-    normalized = re.sub(r"run [0-9a-f]{8}", "run XXXXXXXX", body)
-    expected = re.sub(r"run [0-9a-f]{8}", "run XXXXXXXX", _DRC_GOLDEN.strip("\n"))
-    assert normalized == expected
+    # Read-only (gr491591): the head says ``unrecorded run`` and the body
+    # ends with the record-hint tail.
+    expected = _DRC_GOLDEN.strip("\n").replace("run XXXXXXXX", "unrecorded run")
+    expected += (
+        "\n\nThis view records nothing; the delta is against the last recorded "
+        "run. To record one: put(kind='pcb', id='chk-drc-same', args={'op':'check'})"
+    )
+    assert body == expected
 
 
 def test_check_netlist_collapses_unrouted_rows(pcb: PcbHandler, store: Any) -> None:
@@ -377,7 +382,7 @@ def test_check_netlist_collapses_unrouted_rows(pcb: PcbHandler, store: Any) -> N
     in the run — the next netlist run reports them ``still``, never
     ``gone`` — and ``args.rule='unrouted'`` expands them."""
     pcb.put(id="chk-unrouted", args=_mini_design())
-    body = pcb.get(id="chk-unrouted", view="check", args={"phase": "netlist"}).body
+    body = pcb.put(id="chk-unrouted", args={"op": "check", "phase": "netlist"}).body
     assert "3 net(s) unrouted — expected before routing" in body
     rows = [ln for ln in body.splitlines() if "\t" in ln]
     assert not any(ln.split("\t")[2] == "unrouted" for ln in rows), body
@@ -391,7 +396,7 @@ def test_check_netlist_collapses_unrouted_rows(pcb: PcbHandler, store: Any) -> N
     ).body
     assert "\ttodo\tunrouted\t" in expanded
     # The persisted run keeps the rows: a second netlist eval counts them
-    # 'still' — never 'gone'.
+    # 'still' — never 'gone'. The first (recording) run above is the baseline.
     second = pcb.get(id="chk-unrouted", view="check", args={"phase": "netlist"}).body
     m = re.search(
         r"vs run \w+: (\d+) new, (\d+) still(?: \(\d+ worse\))?, (\d+) resolved",

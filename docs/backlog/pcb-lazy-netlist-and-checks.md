@@ -276,6 +276,14 @@ stays as a preset filter for continuity.
   the shipped finding ids (`precis.pcb.drc.finding_key`) — hard dependency. `pcb_drc_findings`
   persists rows per `run_id` but has no identity column; the layer can
   only say which complaints are new once findings persist with identity.
+- **A read records nothing** (Reto 2026-10-16, gr491591 option (a)).
+  `get` `view='check'`/`'drc'`/`'gerber'` compute the run and delta it
+  against the last *recorded* run of the phase, but write no
+  `pcb_drc_runs`/`pcb_drc_findings` rows. A run is recorded only on an
+  explicit request: `put(args={'op':'check'})` (or `op='review'`, which
+  runs the check before queuing its job). There is no post-change check
+  job yet; if one is added it records through the same `record=True`
+  path (`PcbHandler._drc_run`).
 
 ### 1g-bis. A fourth oracle obligation: an approximation's soundness must match the predicate's polarity
 

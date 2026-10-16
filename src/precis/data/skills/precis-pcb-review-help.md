@@ -19,8 +19,8 @@ kinds: [pcb, checklist, job]
 
 `put(kind='pcb', id=<slug>, args={'op':'review'})` does two things:
 
-1. Runs the check surface fresh — the same persisted run `view='check'`
-   makes (geometric DRC + ERC, at the design's phase).
+1. Runs the check surface fresh and records it — the run `view='check'`
+   shows without recording (geometric DRC + ERC, at the design's phase).
 2. Queues one `pcb_review` job over the `pcb-tapeout` **judgment** items
    whose status is `not checked` or `stale (…)`. When nothing is queued it
    says so and mints no job.
@@ -34,9 +34,9 @@ quest board's **Review** button sends the same `put`.
 Each item gets one fresh-context call: the reviewer did not design the
 board or extract its facts. Its evidence block:
 
-- the latest persisted check run (by id) — fix `netlist` ERC findings
-  first (`view='check', args={'phase':'netlist'}`), since the review
-  reads them;
+- the check run it just recorded (by id) — fix `netlist` ERC findings
+  first (`view='check', args={'phase':'netlist'}` shows them), since the
+  review reads them;
 - every part with its datasheet facts (`get(kind='part', id='C…',
   view='facts')`): per pin domain, levels and current, required
   externals, strap/address tables — or `no datasheet facts for C…`;

@@ -140,7 +140,7 @@ items:
     severity: blocking
     decidability: tool
     prevents: "Any of the 15 encoded geometric/connectivity rules (clearance, annular ring, courtyard, silk, etc.) is violated on the fabricated board."
-    body: "Checker: the latest persisted geometric DRC run (get(kind='pcb', id=..., view='drc') writes it). Status is pass when that run has zero unwaived error findings; warnings spend house margin but do not block. Evidence is the run id and the per-rule error breakdown. Not run until a DRC run exists."
+    body: "Checker: the latest persisted geometric DRC run (put(kind='pcb', id=..., args={'op':'check'}) records it; the get views write nothing). Status is pass when that run has zero unwaived error findings; warnings spend house margin but do not block. Evidence is the run id and the per-rule error breakdown. Not run until a DRC run exists."
   - name: all-nets-routed
     phase: layout
     severity: blocking

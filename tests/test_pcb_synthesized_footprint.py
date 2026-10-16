@@ -211,6 +211,8 @@ def test_drc_view_reports_exactly_one_synthesized_footprint_finding(pcb):
 
     ref = pcb.store.get_ref(kind="pcb", id=slug)
     assert ref is not None
+    pcb._drc_run(ref.id, pcb.store.pcb_load(ref.id), record=True)  # view is read-only
+    pcb._drc_run(ref.id, pcb.store.pcb_load(ref.id), record=True)  # view is read-only
     _run_id, findings = pcb.store.pcb_drc_findings_latest(ref.id)
     synth = [f for f in findings if f["rule"] == "synthesized_footprint"]
     assert len(synth) == 1

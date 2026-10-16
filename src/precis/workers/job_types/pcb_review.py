@@ -14,7 +14,7 @@ re-enter the queue, and a ``not checkable`` note keyed on the target
 fingerprint + input revisions skips its item until one of them moves.
 
 The fresh check-surface run is NOT this job's: ``put(kind='pcb',
-args={'op':'review'})`` runs ``view='check'`` (persisted) before it mints
+args={'op':'review'})`` records ``view='check'``'s run before it mints
 the job, because that run lives in the handler layer workers may not
 import. The evidence quotes the latest persisted run by id.
 

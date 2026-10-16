@@ -39,7 +39,9 @@ def _check_drc(store: Any, ref_id: int) -> ToolResult:
     if run_id is None:
         return ToolResult(
             None,
-            reason="no DRC run recorded — get(kind='pcb', id=..., view='drc')",
+            reason=(
+                "no DRC run recorded — put(kind='pcb', id=..., args={'op':'check'})"
+            ),
         )
     live = [f for f in findings if not f.get("waived_by")]
     errors = [f for f in live if f["severity"] == "error"]

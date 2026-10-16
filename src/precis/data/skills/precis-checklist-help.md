@@ -69,7 +69,7 @@ order (pcb: schematic → netlist → layout → fab):
 | `stale (target changed)` | the design changed within the verdict's scope | re-check only this item |
 | `stale (target changed: U7 gone)` | an anchor you named no longer exists | re-check; anchor to what replaced it |
 | `stale (input changed: X)` | an input the verdict recorded (a policy/rule/fact revision) moved | re-derive against the new revision |
-| `not run (…)` | a tool checker has nothing to read yet | run the checker named in the reason (e.g. `view='drc'`) |
+| `not run (…)` | a tool checker has nothing to read yet | run the checker named in the reason (e.g. pcb `args={'op':'check'}`) |
 
 Below the table, the **argument** section lists the item threads: open
 questions first (`[OPEN]`), and `about` anchors that do not resolve on
@@ -213,7 +213,7 @@ auto_check mechanism: [[precis-auto-todo-help]].
    with one member; argue and waive the deliberate ones) and declared
    proximity intents.
 3. `layout` — `drc-clean` and `all-nets-routed` (tool; run
-   `get(kind='pcb', id=..., view='drc')` first) plus footprint,
+   `put(kind='pcb', id=..., args={'op':'check'})` first) plus footprint,
    polarity silk, mechanical fit, return paths, clocks, thermals,
    residual soft measures, jig-ready test pads.
 4. `fab` — stackup vs what JLC builds, BOM lifecycle (re-check before

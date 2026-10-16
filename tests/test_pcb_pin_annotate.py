@@ -487,7 +487,7 @@ def test_over_current_fires_and_clears(pcb: PcbHandler) -> None:
         },
     )
     pcb.put(id=slug, args={"nets": [{"name": "HV", "current": 3.0}]})
-    body = pcb.get(id=slug, view="check").body
+    body = pcb.put(id=slug, args={"op": "check"}).body
     assert "over_current" in body
     assert "rated 1 A max" in body
     # Re-annotate the rating up — the finding clears (the `gone` delta

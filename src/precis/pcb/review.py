@@ -29,8 +29,8 @@ none), and the nets. The model answers strict JSON:
   those moves — still zero model calls on an unchanged design.
 
 The fresh check run itself is the caller's: ``put(args={'op':'review'})``
-runs ``view='check'`` (persisted) before it enqueues the job, because
-the check surface lives in the handler layer the worker may not import.
+records ``view='check'``'s run (``record=True``) before it enqueues
+the job, because the check surface lives in the handler layer the worker may not import.
 The job quotes that run by id.
 """
 

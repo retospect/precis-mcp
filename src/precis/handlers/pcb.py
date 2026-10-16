@@ -280,6 +280,7 @@ _OPS = (
     *_ORDER_OPS,
     "datasheets",
     "review",
+    "check",
 )
 
 #: ``view='availability'``: catalog rows older than this (or absent) are
@@ -390,9 +391,11 @@ def _pose_delta(
 
 
 class _DrcRun(NamedTuple):
-    """What :meth:`PcbHandler._drc_run` hands its two callers."""
+    """What :meth:`PcbHandler._drc_run` hands its callers. ``run_id`` is
+    ``None`` for a read (gr491591: ``view='check'``/``'drc'``/``'gerber'``
+    record nothing); only a ``record=True`` run has an id."""
 
-    run_id: str
+    run_id: str | None
     findings: list[pcb_drc.DrcFinding]
     pads_only: bool
     delta: pcb_drc.FindingDelta
@@ -404,6 +407,18 @@ _DRC_GONE_SHOWN = 40
 
 #: ``view='drc'`` adds a severity x rule tally line from this many findings.
 _DRC_SUMMARY_MIN = 10
+
+
+def _drc_run_label(run_id: str | None) -> str:
+    """``run 1a2b3c4d`` for a recorded run, ``unrecorded run`` for a read."""
+    return f"run {run_id[:8]}" if run_id else "unrecorded run"
+
+
+#: The tail a read-only check view appends (gr491591, Reto 2026-10-16).
+_DRC_RECORD_HINT = (
+    "\n\nThis view records nothing; the delta is against the last recorded "
+    "run. To record one: put(kind='pcb', id='{slug}', args={{'op':'check'}})"
+)
 
 
 def _drc_delta_line(delta: pcb_drc.FindingDelta) -> str:
@@ -1324,6 +1339,11 @@ class PcbHandler(Handler):
             return self._op_order(ref, args)
         if op == "review":
             return self._op_review(ref, args)
+        if op == "check":
+            # gr491591: the one explicit way to RECORD a check run — the
+            # get views compute the same run and write nothing.
+            check_args = {k: v for k, v in args.items() if k != "op"}
+            return self._render_check(ref.id, check_args, record=True)
         if op == "datasheets":
             n, nf = self._queue_datasheets(ref.id, force=bool(args.get("force")))
             return Response(
@@ -1530,6 +1550,7 @@ class PcbHandler(Handler):
             eval_phase=self._design_phase(design),
             eval_phase_claimed=False,
             erc=True,
+            record=True,
         )
         check_line = (
             "check: nothing the rules at this phase can check"
@@ -4912,10 +4933,11 @@ class PcbHandler(Handler):
         drc`) — the L5 check. Superseded ``eyes.drc_lite`` (graph-shape
         sanity only, no geometry); the graph-feasibility half of DRC
         (``ir.py``, L0-L4) stays inside the optimizer, not this view.
-        Every call is itself a DRC "run" — findings are persisted to
-        ``pcb_drc_findings`` under a fresh ``run_id`` so
-        ``netlist_drc_clean`` and a human reviewer can both read the same
-        durable record afterward.
+        Read-only (gr491591, Reto 2026-10-16): the view computes the run
+        and diffs it against the last recorded one, but writes nothing.
+        A durable run — what ``netlist_drc_clean`` and a reviewer read
+        afterward — is recorded only by ``put(args={'op':'check'})`` (or
+        ``op='review'``).
 
         **Runs whenever there is REAL pad geometry, not only after a
         route (round 4, docs/backlog/pcb-ewod-multitile.md's decisions
@@ -4982,7 +5004,9 @@ class PcbHandler(Handler):
         run_id, findings, pads_only, delta = ran
         n_error = sum(1 for f in findings if f.severity == "error")
         n_warn = len(findings) - n_error
-        head = f"# DRC — run {run_id[:8]} — {n_error} error(s), {n_warn} warn(s)"
+        head = (
+            f"# DRC — {_drc_run_label(run_id)} — {n_error} error(s), {n_warn} warn(s)"
+        )
         head += "\n" + _drc_delta_line(delta)
         n_synth = sum(1 for f in findings if f.rule == "synthesized_footprint")
         if n_synth:
@@ -4997,7 +5021,7 @@ class PcbHandler(Handler):
             # (e.g. every net is unrouted by construction) — is never
             # mistaken for a full pass over realized copper.
             head += "\n(pads-only DRC — no routed copper yet)"
-        gone = _drc_gone_block(delta)
+        gone = _drc_gone_block(delta) + self._drc_record_hint(ref_id, run_id)
         if not findings:
             return Response(body=head + "\n— no findings ✓" + gone)
         if len(findings) >= _DRC_SUMMARY_MIN:
@@ -5049,7 +5073,11 @@ class PcbHandler(Handler):
         )
 
     def _render_check(
-        self, ref_id: int, args: dict[str, Any] | None = None
+        self,
+        ref_id: int,
+        args: dict[str, Any] | None = None,
+        *,
+        record: bool = False,
     ) -> Response:
         """The ONE check surface (pcb-lazy-netlist-and-checks.md §1g, Slice
         8) — geometric, netlist and ERC rules report on the same finding
@@ -5071,9 +5099,12 @@ class PcbHandler(Handler):
         collapse to one head line — expected state, not a finding
         (gr485271); ``args.rule='unrouted'`` expands them.
 
-        The run persists like every check run, so ``new / still /
-        resolved`` below is against the board's previous run by
-        ``finding_key`` — the same identity ``view='drc'`` reports."""
+        Read-only (gr491591, Reto 2026-10-16): the view writes no
+        ``pcb_drc_runs``/``pcb_drc_findings`` rows; ``new / still /
+        resolved`` below is against the board's last RECORDED run by
+        ``finding_key`` — the same identity ``view='drc'`` reports.
+        ``record=True`` is ``put(args={'op':'check'})``: the same run,
+        persisted as the new baseline."""
         args = args or {}
         phase_arg = str(args.get("phase") or "").strip().lower()
         if phase_arg and phase_arg not in pcb_drc.PHASES:
@@ -5101,6 +5132,7 @@ class PcbHandler(Handler):
             eval_phase=phase,
             eval_phase_claimed=bool(phase_arg),
             erc=True,
+            record=record,
         )
         if ran is None:
             return Response(
@@ -5147,7 +5179,7 @@ class PcbHandler(Handler):
             else ("authored" if authored in pcb_drc.PHASES else "derived")
         )
         head = (
-            f"# check — run {run_id[:8]} — phase {phase} ({phase_src}) — "
+            f"# check — {_drc_run_label(run_id)} — phase {phase} ({phase_src}) — "
             f"{n_error} error(s), {n_warn} warn(s)"
             + (f", {n_todo} todo" if n_todo else "")
         )
@@ -5194,7 +5226,7 @@ class PcbHandler(Handler):
                 "no finding in this run",
                 options=sorted(all_rules),
             )
-        gone = _drc_gone_block(delta)
+        gone = _drc_gone_block(delta) + self._drc_record_hint(ref_id, run_id)
         if not findings:
             return Response(body=head + "\n— no findings ✓" + gone)
         shown = [
@@ -5341,29 +5373,44 @@ class PcbHandler(Handler):
             routed=any(k != "unrouted" for k in (design.get("route_status") or {})),
         )
 
+    def _drc_record_hint(self, ref_id: int, run_id: str | None) -> str:
+        """The record-a-run pointer under a read-only check view; empty
+        when the run was recorded."""
+        if run_id is not None:
+            return ""
+        ref = self.store.get_ref(kind="pcb", id=ref_id)
+        slug = ref.slug if ref is not None and ref.slug else "slug"
+        return _DRC_RECORD_HINT.format(slug=slug)
+
     def _drc_record(
         self,
         board_id: int,
         findings: list[pcb_drc.DrcFinding],
         pads_only: bool,
         phase: str | None = None,
+        *,
+        record: bool = False,
     ) -> _DrcRun:
-        """Persist one run and diff it against the previous — the tail of
-        :meth:`_drc_run` shared by every phase-scoped branch.
+        """Diff one run against the last recorded one and, with
+        ``record``, persist it — the tail of :meth:`_drc_run` shared by
+        every phase-scoped branch. Without ``record`` nothing is written
+        and ``run_id`` is ``None`` (gr491591: a get is read-only).
 
         ``phase`` keys the delta BASELINE: the run diffs only against the
         previous run of the same phase and becomes that phase's baseline —
         a ``netlist`` eval's zero copper findings must never read to the
         next full run as "everything resolved"."""
         prev_run_id, prev_rows = self.store.pcb_drc_previous_run(board_id, phase=phase)
-        run_id = uuid.uuid4().hex
-        self.store.pcb_write_drc_findings(
-            board_id,
-            run_id,
-            [f.to_row() for f in findings],
-            pads_only=pads_only,
-            phase=phase,
-        )
+        run_id: str | None = None
+        if record:
+            run_id = uuid.uuid4().hex
+            self.store.pcb_write_drc_findings(
+                board_id,
+                run_id,
+                [f.to_row() for f in findings],
+                pads_only=pads_only,
+                phase=phase,
+            )
         delta = pcb_drc.delta_against(prev_run_id, prev_rows, findings)
         return _DrcRun(run_id, list(findings), pads_only, delta)
 
@@ -5417,10 +5464,13 @@ class PcbHandler(Handler):
         eval_phase: str | None = None,
         eval_phase_claimed: bool = True,
         erc: bool = False,
+        record: bool = False,
     ) -> _DrcRun | None:
         """One check-surface run over ``design`` (which must have a board):
-        the findings persisted under a fresh ``run_id`` (a ``pcb_drc_runs``
-        row even when clean), plus the delta against the board's previous
+        with ``record`` the findings persist under a fresh ``run_id`` (a
+        ``pcb_drc_runs`` row even when clean) — only the explicit paths
+        pass it (``op='check'``, ``op='review'``; gr491591, Reto
+        2026-10-16) — plus the delta against the board's last recorded
         run (:func:`precis.pcb.drc.delta_against`, by ``finding_key``).
         ``None`` when there is nothing real to check — no realized copper
         and every placed pad a synthesized bound.
@@ -5511,10 +5561,12 @@ class PcbHandler(Handler):
             # are exactly what runs.
             if erc:
                 findings += self._erc_findings(design, graph, pads)
-            # A claimed netlist eval ALWAYS records its run — even with
-            # zero findings the row is the phase's fresh baseline and the
-            # answer "0 findings at netlist", never "nothing could run".
-            return self._drc_record(board_id, findings, True, phase="netlist")
+            # A claimed netlist eval ALWAYS answers with a run — even with
+            # zero findings it is "0 findings at netlist" (and, recorded,
+            # the phase's fresh baseline), never "nothing could run".
+            return self._drc_record(
+                board_id, findings, True, phase="netlist", record=record
+            )
 
         copper = (
             [] if claimed_phase == "placed" else self.store.pcb_copper_list(board_id)
@@ -5565,12 +5617,16 @@ class PcbHandler(Handler):
                 findings += self._erc_findings(design, graph, pads)
             if not findings:
                 # ``view='drc'`` keeps its "no realized copper yet" answer;
-                # a check run (an explicit phase eval) still writes the row
+                # a check run (an explicit phase eval) still returns a run
                 # — a run that ran clean is a verdict, not an absence.
                 if eval_phase is None:
                     return None
-                return self._drc_record(board_id, findings, True, phase=phase)
-            return self._drc_record(board_id, findings, True, phase=phase)
+                return self._drc_record(
+                    board_id, findings, True, phase=phase, record=record
+                )
+            return self._drc_record(
+                board_id, findings, True, phase=phase, record=record
+            )
         pads_only = not copper
 
         ref = self.store.get_ref(kind="pcb", id=ref_id)
@@ -5673,7 +5729,9 @@ class PcbHandler(Handler):
             findings += self._erc_findings(design, graph, pads)
         # Read the previous run BEFORE writing this one — it is what this
         # run is compared against; afterwards it would be this run itself.
-        return self._drc_record(board_id, findings, pads_only, phase=phase)
+        return self._drc_record(
+            board_id, findings, pads_only, phase=phase, record=record
+        )
 
     def _validity_findings(self, ref_id: int) -> list[pcb_drc.DrcFinding]:
         """The findings of the geometric-validity rules on the board as
@@ -5950,7 +6008,7 @@ class PcbHandler(Handler):
                 shown = ", ".join(unchecked[:8]) + (" …" if len(unchecked) > 8 else "")
                 return (
                     f"⚠️  DRC: not fully checked — {len(unchecked)} "
-                    f"footprint(s) uncached ({shown}) — run {run_id[:8]}"
+                    f"footprint(s) uncached ({shown}) — {_drc_run_label(run_id)}"
                     f"{scope}",
                     0,
                 )
@@ -5960,7 +6018,7 @@ class PcbHandler(Handler):
                 if pcb_drc.severity_at(f.rule, f.severity, "fab") == "warn"
             )
             return (
-                f"DRC: 0 errors, {n_warn} warn(s) — run {run_id[:8]}{scope} ✓",
+                f"DRC: 0 errors, {n_warn} warn(s) — {_drc_run_label(run_id)}{scope} ✓",
                 0,
             )
         by_rule: dict[str, int] = {}
@@ -5971,7 +6029,7 @@ class PcbHandler(Handler):
             bar,
             f"██  DRC FAILED — {len(errors)} ERROR(S){scope}",
             "██  THIS BOARD IS NOT MANUFACTURABLE AS EXPORTED. DO NOT SEND IT TO A FAB.",
-            f"██  run {run_id[:8]} · "
+            f"██  {_drc_run_label(run_id)} · "
             + " · ".join(
                 f"{rule} {n}"
                 for rule, n in sorted(by_rule.items(), key=lambda kv: -kv[1])

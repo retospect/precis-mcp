@@ -435,7 +435,7 @@ def test_drc_view_before_any_route_run_and_with_no_cached_footprint_bails(pcb, s
     # clean pass) instead of "no realized copper yet" pretending the board
     # has nothing to say.
     pcb.put(id="sensor-node", args=_DESIGN)
-    drc = pcb.get(id="sensor-node", view="drc")
+    drc = _drc_view_recorded(pcb, store, "sensor-node")
     assert "undeclared_pad" in drc.body
     assert "CANNOT be checked" in drc.body
     # …and the only findings are flag-based ones (synthesized bound,
@@ -3636,6 +3636,17 @@ def _drc_rows(store, slug):
     return store.pcb_drc_findings_latest(ref.id)
 
 
+def _drc_view_recorded(pcb, store, slug):
+    """``get(view='drc')`` is read-only (gr491591): read it first (the delta
+    is against the last RECORDED run), then record the same run so the
+    persisted rows exist. Returns the view's response."""
+    resp = pcb.get(id=slug, view="drc")
+    ref = store.get_ref(kind="pcb", id=slug)
+    assert ref is not None
+    pcb._drc_run(ref.id, store.pcb_load(ref.id), record=True)
+    return resp
+
+
 def _by_rule(rows):
     return {r["rule"]: r for r in rows}
 
@@ -3654,7 +3665,7 @@ def test_drc_view_findings_carry_stable_ids_and_report_new_still_gone(pcb, store
     # (gr489912) — identity, not severity, is what this test pins.
     _put_standing(pcb, store, slug, _two_real_pads(0.0, 0.0, 1.2, 0.0))
 
-    first = pcb.get(id=slug, view="drc").body
+    first = _drc_view_recorded(pcb, store, slug).body
     assert "error(s)" in first and "none to compare against" in first
     run1, rows1 = _drc_rows(store, slug)
     assert run1 is not None
@@ -3672,7 +3683,7 @@ def test_drc_view_findings_carry_stable_ids_and_report_new_still_gone(pcb, store
     assert all(r["finding_key"] in first for r in rows1)
     assert "{id\tseverity\trule\twhere\tmargin_mm\tdetail}" in first
 
-    second = pcb.get(id=slug, view="drc").body
+    second = _drc_view_recorded(pcb, store, slug).body
     run2, rows2 = _drc_rows(store, slug)
     assert run2 != run1
     assert sorted(r["finding_key"] for r in rows2) == keys1
@@ -3683,7 +3694,7 @@ def test_drc_view_findings_carry_stable_ids_and_report_new_still_gone(pcb, store
 
     # Nudge A away from B: same participants, better margin -> still.
     _move_a(pcb, slug, -0.1, 0.0)
-    third = pcb.get(id=slug, view="drc").body
+    third = _drc_view_recorded(pcb, store, slug).body
     assert "{id\tseverity\trule\twhere\tmargin_mm\tdelta\tdetail}" in third
     assert f"vs run {run2[:8]}: 0 new, {len(rows1)} still, 0 gone" in third
     overlap_line = next(ln for ln in third.splitlines() if ln.startswith(overlap_key))
@@ -3696,7 +3707,7 @@ def test_drc_view_findings_carry_stable_ids_and_report_new_still_gone(pcb, store
 
     # Move clear: the overlap is GONE and named by id; unrouted is still.
     _move_a(pcb, slug, 20.0, 20.0)
-    fourth = pcb.get(id=slug, view="drc").body
+    fourth = _drc_view_recorded(pcb, store, slug).body
     assert f"vs run {run3[:8]}: 0 new, {n_standing} still, 1 gone" in fourth
     assert f"## gone since run {run3[:8]} (1)" in fourth
     m3 = _by_rule(rows3)["courtyard_overlap"]["margin_mm"]
@@ -3711,7 +3722,7 @@ def test_drc_view_findings_carry_stable_ids_and_report_new_still_gone(pcb, store
     # first_seen_at — broken again, not still broken.
     ref = store.get_ref(kind="pcb", id=slug)
     store.pcb_set_pose(ref.id, {"A": (0.0, 0.0, 0.0)})
-    fifth = pcb.get(id=slug, view="drc").body
+    fifth = _drc_view_recorded(pcb, store, slug).body
     assert f"vs run {run4[:8]}: 1 new, {n_standing} still, 0 gone" in fifth
     overlap_line = next(ln for ln in fifth.splitlines() if ln.startswith(overlap_key))
     assert "\tnew\t" in overlap_line
@@ -3730,12 +3741,12 @@ def test_drc_view_counts_new_and_gone_separately_never_netted(pcb, store):
     design["components"].append({**design["components"][0], "refdes": "C", "x": 10.0})
     design["connections"].append({"net": "N1", "refdes": "C", "pin": "1"})
     _put_standing(pcb, store, slug, design)
-    pcb.get(id=slug, view="drc")
+    _drc_view_recorded(pcb, store, slug)
     run1, rows1 = _drc_rows(store, slug)
     assert "courtyard_overlap" in {r["rule"] for r in rows1}
     ref = store.get_ref(kind="pcb", id=slug)
     store.pcb_set_pose(ref.id, {"A": (8.8, 0.0, 0.0)})
-    body = pcb.get(id=slug, view="drc").body
+    body = _drc_view_recorded(pcb, store, slug).body
     _run2, rows2 = _drc_rows(store, slug)
     assert len(rows2) == len(rows1)
     assert f"vs run {run1[:8]}: 1 new, {len(rows1) - 1} still, 1 gone" in body
@@ -3759,7 +3770,7 @@ def test_drc_clean_run_is_recorded_as_a_verdict_not_an_absence(pcb, store):
     store.pcb_write_drc_findings(board_id, "clean-run", [])
     assert store.pcb_drc_findings_latest(ref.id) == ("clean-run", [])
     assert store.pcb_drc_previous_run(board_id) == ("clean-run", [])
-    body = pcb.get(id=slug, view="drc").body
+    body = _drc_view_recorded(pcb, store, slug).body
     _run, rows = store.pcb_drc_findings_latest(ref.id)
     assert rows
     assert f"vs run clean-ru: {len(rows)} new, 0 still, 0 gone" in body

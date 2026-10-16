@@ -454,7 +454,9 @@ def test_the_fab_svg_carries_every_film_including_the_declared_ground_planes(
     # deliverable, and it asserted nothing, because an absent run and a
     # clean run are the same empty list. The check that was supposed to
     # catch the trap fell into it.
+    # Since gr491591 the view is read-only: record the run explicitly.
     drc_view = pcb.get(id="fabrender", view="drc")
+    pcb._drc_run(ref.id, store.pcb_load(ref.id), record=True)
     run_id, findings = store.pcb_drc_findings_latest(ref.id)
     assert run_id is not None, (
         "no DRC run was recorded even after view='drc' — a missing run and "

@@ -307,7 +307,7 @@ get(
 )  # coarse H/V via estimate (NOT real routing) + pins a class "layers" lock strands
 get(
     kind="pcb", id="s", view="drc"
-)  # geometric DRC: findings with stable ids + new/still/gone vs the previous run
+)  # geometric DRC: findings with stable ids + new/still/gone vs the last recorded run
 get(
     kind="pcb", id="s", view="check",
     args={"phase": "fab"},
@@ -556,8 +556,8 @@ and the `features` array + `view='mechanical'` CAD-enclosure bridge.
 
 Every finding carries a stable `id` (12 hex chars) hashed over
 `(rule, participants, layer)` — a nudge at a different margin is the SAME
-finding. Each check/drc call is a recorded run (clean runs too); the head
-deltas against the previous run of the same phase: `3 new, 127 still
+finding. check/drc views are read-only; `args={'op':'check'}` records a
+run. The head deltas against the last recorded run of that phase: `3 new, 127 still
 (2 worse), 5 gone`. Table `delta` column: `new`/`still`/`still, worse`.
 Full contract: **[[precis-pcb-check-help]]**.
 

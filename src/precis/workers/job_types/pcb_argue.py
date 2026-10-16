@@ -22,7 +22,7 @@ The playbook, verbatim:
   clearance, via keep-outs, courtyard overlap, outline containment, the
   same check the place/route jobs gate on), the LAST persisted full
   geometric DRC run (:meth:`Store.pcb_drc_findings_latest` — what
-  ``view='drc'`` most recently measured over routed copper, named by its
+  ``op='check'`` most recently recorded over routed copper, named by its
   run_id so the answer can say how fresh it is), the authored measures'
   verdicts (:func:`precis.pcb.eyes.evaluate_measures`), and
   centre-to-centre distances between every pair of parts the argument
@@ -242,8 +242,8 @@ def _machinery(
     Two DRC sources, both worker-legal: a FRESH placement DRC run (the
     same check the place/route jobs run before routing — pad/copper
     clearance, via keep-outs, courtyard overlap, outline containment),
-    and the LAST persisted full geometric run (``view='drc'``'s own
-    numbers over routed copper — a run this job does not re-create, named
+    and the LAST persisted full geometric run (the last recorded
+    ``op='check'`` numbers over routed copper — a run this job does not re-create, named
     by run_id so the answer quotes its freshness). A machinery gap is
     itself evidence: "not checked" is a sayable answer, a silent empty
     list is not."""
