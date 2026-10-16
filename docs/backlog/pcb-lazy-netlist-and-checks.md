@@ -500,9 +500,6 @@ pins the vertex).
   `test_diagonal_escape_neck_anchor_is_a_real_vertex_of_the_electrode_polygon`
   pins and bump the generator version. Not done: it is fab-margin
   hardening, not a fix for a measured defect.
-- **(e) prod:** re-run `ewod-dogfood-2` with a new seed (`op='route'`
-  dedups on `(design, op, content-hash, CODE_VERSION)`); `realized` count
-  must equal the connected count in `view='drc'`.
 
 ### Slice 6 — supply/client roles and the matching solver
 
@@ -516,7 +513,11 @@ Euclidean assignment over the wired pairs, cross-instance
 (`PcbIR.permute_pin_nets`), persisted through `pcb_pin_swaps`. The EWOD
 generator emits `supplies`/`client_of` (version 7); `pin_swap_groups` is a
 deprecated alias for one release. `MoveKind.PIN_SWAP` and the
-crossing-count matcher are gone.
+crossing-count matcher are gone. Measured on prod r39, 2026-10-16
+(`dogfood-ewod-match-r39`, the `ewod-dogfood-6` generator at version 7,
+seed 11, same placement): `warm_start='radial'` realized 24 of 55,
+the matcher 35 of 55 (357 mm assigned vs 403 mm generated), and DRC
+connectivity errors fall only on the 20 failed nets.
 
 **Open:**
 - Cost is Euclidean only: add the `gap_capacity_term` congestion penalty
@@ -531,8 +532,6 @@ crossing-count matcher are gone.
   plumbing still emits single-pin clients — `client_of` has no tuple
   member syntax and `_matching_model` doesn't build them (the route job
   was under freeze when the solver half landed 2026-10-15).
-- Measure on dogfood (cluster `pcb_route`): matcher vs radial realized
-  count on `ewod-dogfood-2`.
 
 ### Slice 7 — lazy netlist: resolved snapshot, prior, firmware export
 
