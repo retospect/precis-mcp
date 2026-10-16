@@ -39,3 +39,6 @@ Reto's commit.
   UPDATE or DELETE without a WHERE clause or over the row cap.
 - Routing around a permission refusal: report it to the coordinator.
 
+
+## fleet-wave approve
+A row in $FLEET_STATE/approvals/<tree>.tsv counts only when Reto typed `FLEET_COORDINATOR_TREE=$PWD scripts/fleet-wave approve <tree> <sha>` himself in the coordinator window; nobody types or relays it for him. Builders check with `fleet-wave approved <tree> <sha>`.
