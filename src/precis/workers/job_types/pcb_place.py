@@ -31,6 +31,7 @@ import math
 from typing import TYPE_CHECKING, Any
 
 from precis.pcb import realize as pcb_realize
+from precis.pcb import resolved as pcb_resolved
 from precis.pcb import session as pcb_session
 from precis.pcb.capabilities import capability_for
 from precis.pcb.optimize import MoveKind as _MK
@@ -161,7 +162,14 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     snap = bool(params.get("snap") or False)
     groups = bool(params.get("groups") or False)
 
-    graph = ctx.store.pcb_graph(pcb_ref_id)
+    # The effective netlist (Slice 7): the latest resolved snapshot over
+    # the authored graph, so placement's ratsnest is built against the
+    # SAME netlist pcb_route realizes copper for. Read-only: only the
+    # route job resolves and writes a snapshot.
+    graph = pcb_resolved.apply(
+        ctx.store.pcb_graph(pcb_ref_id),
+        ctx.store.pcb_netlist_snapshot_latest(pcb_ref_id),
+    )
     if not graph.get("instances"):
         ctx.record_failure(
             f"pcb_place: design (ref_id={pcb_ref_id}) has no instances to place",
@@ -218,18 +226,6 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         layer_idx = layer_name_to_idx.get(plane["layer"])
         if net_id is not None and layer_idx is not None:
             ir.promote_plane(net_id, layer_idx)
-
-    # Same discipline for a persisted pin swap (docs/backlog/
-    # pcb-engine-plan.md "PIN_SWAP is not persisted"): PcbIR.swap_pins() is
-    # L0 state the IR never persists on its own, so placement's ratsnest
-    # must be built against the SAME netlist pcb_route will later realize
-    # copper for -- otherwise the two jobs would optimize/route two
-    # different boards. Read-only here too: `_PLACE_ONLY_SCHEDULE` has no
-    # PIN_SWAP weight, so this job can never propose a new swap, and it
-    # never calls pcb_pin_swaps_replace_derived -- only the job that can
-    # change a thing may persist it.
-    ir_pin_swaps = ctx.store.pcb_pin_swaps_list(pcb_ref_id)
-    pcb_session.apply_pin_swap_overrides(ir, ir_pin_swaps)
 
     # Authored proximity/separation intent (put(args={'measures':[...]})),
     # resolved to the pair-distance cost terms `optimize.py`'s anneal can

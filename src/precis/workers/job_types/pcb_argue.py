@@ -63,6 +63,7 @@ from typing import TYPE_CHECKING, Any
 
 from precis.pcb import argue
 from precis.pcb import eyes as pcb_eyes
+from precis.pcb import resolved as pcb_resolved
 from precis.pcb import selectables as pcb_selectables
 from precis.pcb import session as pcb_session
 from precis.utils.notes import NoteSpec, open_questions
@@ -456,7 +457,12 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     slug = str(ref.slug or pcb_ref_id)
     title = str(ref.title or slug)
     design = store.pcb_load(pcb_ref_id)
-    graph = store.pcb_graph(pcb_ref_id)
+    # The effective netlist (Slice 7): the latest resolved snapshot
+    # over the authored graph, as every pcb reader builds from.
+    graph = pcb_resolved.apply(
+        store.pcb_graph(pcb_ref_id),
+        store.pcb_netlist_snapshot_latest(pcb_ref_id),
+    )
 
     notes = [
         NoteSpec(

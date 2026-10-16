@@ -14,6 +14,7 @@ from precis.dispatch import Hub
 from precis.handlers.pcb import PcbHandler
 from precis.pcb.snapshot import (
     TABLES,
+    _upgrade_legacy,
     export_query,
     export_snapshot,
     load_snapshot,
@@ -145,14 +146,20 @@ def _fixture():
                     "meta": {"source": "authored"},
                 }
             ],
-            "pcb_pin_swaps": [
+            "pcb_netlist_snapshots": [
                 {
-                    "swap_id": 1,
+                    "snapshot_id": 1,
                     "board_id": 1,
-                    "net_id": 1,
-                    "instance_id": 1,
-                    "component_id": 1,
-                    "pin_id": 1,
+                    "content_hash": None,
+                    "pins": [
+                        {
+                            "refdes": "J1",
+                            "pin": "CLK",
+                            "net": "CLOCK",
+                            "declared": "CLOCK",
+                        }
+                    ],
+                    "prior": [],
                     "meta": {"source": "derived"},
                 }
             ],
@@ -359,10 +366,9 @@ def test_exact_ewod_copy_matches_snapshot_and_stored_route_summary(store):
     )
     with store.pool.connection() as conn:
         _, params = load_snapshot(conn, fixture, "ewod-dogfood-6-replay")
-        assert (
-            export_snapshot(conn, "ewod-dogfood-6-replay", route_params=params)
-            == fixture
-        )
+        assert export_snapshot(
+            conn, "ewod-dogfood-6-replay", route_params=params
+        ) == _upgrade_legacy(fixture)
         assert (
             conn.execute("SELECT count(*) FROM refs WHERE kind='job'").fetchone()[0]
             == 0

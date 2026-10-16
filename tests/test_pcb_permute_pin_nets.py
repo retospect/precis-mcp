@@ -1,18 +1,22 @@
-"""PcbIR.permute_pin_nets: cross-instance net moves + their persistence replay."""
+"""Cross-instance net moves through a resolved netlist snapshot
+(``pcb.resolved.apply``), and ``swap_pins`` staying same-instance."""
 
 from __future__ import annotations
 
 import numpy as np
 import pytest
 
-from precis.pcb import DEFAULT_STACKUP
+from precis.pcb import DEFAULT_STACKUP, resolved
 from precis.pcb.ir import from_graph
-from precis.pcb.session import apply_pin_swap_overrides
 
 
 def _ir():
+    return from_graph(_graph(), stackup=DEFAULT_STACKUP)
+
+
+def _graph():
     members = [("S0", "H1"), ("S0", "H2"), ("S1", "H1"), ("S1", "H2")]
-    graph = {
+    return {
         "instances": [
             {"refdes": "S0", "x": 0.0, "y": 0.0},
             {"refdes": "S1", "x": 20.0, "y": 0.0},
@@ -31,7 +35,6 @@ def _ir():
             for i in range(4)
         ],
     }
-    return from_graph(graph, stackup=DEFAULT_STACKUP)
 
 
 def _pin(ir, refdes, label):
@@ -60,70 +63,40 @@ def _check_consistent(ir):
     assert got == {k: sorted(v) for k, v in expect.items()}
 
 
-def _target(ir):
-    return {
-        _pin(ir, "S0", "H1"): _net(ir, "N2"),
-        _pin(ir, "S1", "H1"): _net(ir, "N0"),
-    }
-
-
-def test_permute_moves_net_across_instances():
-    ir = _ir()
-    _check_consistent(ir)
-    ir.dirty_l2[:] = False
-    tgt = _target(ir)
-    ir.permute_pin_nets(tgt)
-    for p, n in tgt.items():
-        assert int(ir.pin_net[p]) == n
-    _check_consistent(ir)
-    assert ir.dirty_l2.any()
-
-
-def test_permute_rejects_non_permutation_without_mutating():
-    ir = _ir()
-    before = (
-        ir.pin_net.copy(),
-        ir.seg_pin_a.copy(),
-        ir.seg_pin_b.copy(),
-        {k: list(v) for k, v in ir._segs_of_instance.items()},
-    )
-    bad = {_pin(ir, "S0", "H1"): _net(ir, "N3"), _pin(ir, "S1", "H1"): _net(ir, "N0")}
-    with pytest.raises(ValueError):
-        ir.permute_pin_nets(bad)
-    assert np.array_equal(ir.pin_net, before[0])
-    assert np.array_equal(ir.seg_pin_a, before[1])
-    assert np.array_equal(ir.seg_pin_b, before[2])
-    assert ir._segs_of_instance == before[3]
-
-
 def test_swap_pins_still_refuses_cross_instance():
     ir = _ir()
     with pytest.raises(ValueError):
         ir.swap_pins(_pin(ir, "S0", "H1"), _pin(ir, "S1", "H1"))
 
 
-def test_overrides_replay_cross_instance_permutation():
+def _applied(entries):
+    """A fresh IR built from the graph with a netlist snapshot laid over
+    it (the replacement for replaying pin-swap override rows)."""
+    graph = _graph()
+    declared = resolved.declared_pin_nets(graph)
+    snapshot = {
+        "pins": [
+            {"refdes": r, "pin": p, "net": net, "declared": declared[(r, p)]}
+            for (r, p), net in entries.items()
+        ]
+    }
+    return from_graph(resolved.apply(graph, snapshot), stackup=DEFAULT_STACKUP)
+
+
+def test_snapshot_replays_cross_instance_permutation():
     ref = _ir()
-    ref.permute_pin_nets(_target(ref))
-    rows = [
-        {"refdes": "S0", "pin": "H1", "net": "N2"},
-        {"refdes": "S1", "pin": "H1", "net": "N0"},
-    ]
-    fresh = _ir()
-    apply_pin_swap_overrides(fresh, rows)
-    assert np.array_equal(fresh.pin_net, ref.pin_net)
+    fresh = _applied({("S0", "H1"): "N2", ("S1", "H1"): "N0"})
+    # pin ids are the authored ones; only the two moved pins differ
+    assert int(fresh.pin_net[_pin(fresh, "S0", "H1")]) == _net(fresh, "N2")
+    assert int(fresh.pin_net[_pin(fresh, "S1", "H1")]) == _net(fresh, "N0")
+    moved = {_pin(ref, "S0", "H1"), _pin(ref, "S1", "H1")}
+    keep = [p for p in range(ref.n_pins) if p not in moved]
+    assert np.array_equal(fresh.pin_net[keep], ref.pin_net[keep])
     _check_consistent(fresh)
 
 
-def test_overrides_same_instance_swap_still_works():
-    fresh = _ir()
-    apply_pin_swap_overrides(
-        fresh,
-        [
-            {"refdes": "S0", "pin": "H1", "net": "N1"},
-            {"refdes": "S0", "pin": "H2", "net": "N0"},
-        ],
-    )
+def test_snapshot_same_instance_swap_still_works():
+    fresh = _applied({("S0", "H1"): "N1", ("S0", "H2"): "N0"})
     assert int(fresh.pin_net[_pin(fresh, "S0", "H1")]) == _net(fresh, "N1")
     assert int(fresh.pin_net[_pin(fresh, "S0", "H2")]) == _net(fresh, "N0")
     _check_consistent(fresh)

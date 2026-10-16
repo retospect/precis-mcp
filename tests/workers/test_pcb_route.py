@@ -16,8 +16,10 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.handlers.pcb import PcbHandler
+from precis.pcb import resolved as pcb_resolved
 from precis.pcb import session as pcb_session
 from precis.store import Store
+from precis.store._pcb_ops import _SNAPSHOT_KEEP
 from precis.workers.auto_check_evaluators import route_complete
 from precis.workers.job_types import pcb_route
 
@@ -121,6 +123,21 @@ def _seed(store: Store, slug: str, args: dict[str, Any]) -> int:
     ref = store.get_ref(kind="pcb", id=slug)
     assert ref is not None
     return int(ref.id)
+
+
+def _snap(store: Store, ref_id: int) -> dict[tuple[str, str], dict[str, Any]]:
+    """The latest netlist snapshot's pins keyed by ``(refdes, pin)``."""
+    snapshot = store.pcb_netlist_snapshot_latest(ref_id)
+    assert snapshot is not None, "route wrote no netlist snapshot"
+    return {(e["refdes"], e["pin"]): e for e in snapshot["pins"]}
+
+
+def _authored_members(store: Store, ref_id: int) -> dict[str, set[tuple[str, str]]]:
+    """``pcb_netconns`` as net -> {(refdes, pin)}: the authored intent."""
+    return {
+        n["name"]: {(m["refdes"], m["pin"]) for m in n["members"]}
+        for n in store.pcb_graph(ref_id)["nets"]
+    }
 
 
 @pytest.mark.parametrize("negotiate", [-1, 101])
@@ -846,10 +863,9 @@ def test_pcb_route_persists_optimizer_derived_pin_swap(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The anneal's ``swap_pins`` result must survive the job — persisted
-    as a DERIVED override, never as a rewrite of the authored netlist
-    itself (``pcb_netconns`` stays exactly what was authored; the override
-    is layered on top, mirroring ``pcb_planes``'s authored/derived split,
-    gr267526)."""
+    in the netlist snapshot (pins bound off their declared net), never as a
+    rewrite of the authored netlist itself (``pcb_netconns`` stays exactly
+    what was authored; the snapshot is laid over it)."""
     real_optimize = pcb_route.optimize
 
     def _force_swap(ir: Any, config: Any) -> Any:
@@ -863,18 +879,16 @@ def test_pcb_route_persists_optimizer_derived_pin_swap(
     _route(ctx)
     assert not ctx.failures
 
-    swaps = {(r["refdes"], r["pin"]): r for r in store.pcb_pin_swaps_list(ref_id)}
-    assert swaps[("U0", "right")]["net"] == "B"
-    assert swaps[("U0", "left")]["net"] == "A"
-    assert all(r["source"] == "derived" for r in swaps.values())
+    snap = _snap(store, ref_id)
+    assert snap[("U0", "right")]["net"] == "B"
+    assert snap[("U0", "right")]["declared"] == "A"
+    assert snap[("U0", "left")]["net"] == "A"
+    assert snap[("U0", "left")]["declared"] == "B"
+    assert not any(e.get("solver_created") for e in snap.values())
 
     # pcb_netconns — the authored netlist — is untouched: still U0.right on
-    # A and U0.left on B. The override lives ONLY in pcb_pin_swaps.
-    graph = store.pcb_graph(ref_id)
-    members = {
-        n["name"]: {(m["refdes"], m["pin"]) for m in n["members"]}
-        for n in graph["nets"]
-    }
+    # A and U0.left on B. The assignment lives ONLY in the snapshot.
+    members = _authored_members(store, ref_id)
     assert members["A"] == {("U0", "right"), ("U1", "1")}
     assert members["B"] == {("U0", "left"), ("U2", "1")}
 
@@ -898,7 +912,7 @@ def test_pcb_route_reapplies_persisted_pin_swap_on_fresh_ir(
     ctx1 = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 1})
     _route(ctx1)
     assert not ctx1.failures
-    assert store.pcb_pin_swaps_list(ref_id)
+    assert _snap(store, ref_id)[("U0", "right")]["net"] == "B"
 
     seen: dict[str, str] = {}
 
@@ -941,7 +955,7 @@ def test_pcb_place_reapplies_persisted_pin_swap(
     route_ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 1})
     _route(route_ctx)
     assert not route_ctx.failures
-    assert store.pcb_pin_swaps_list(ref_id)
+    assert _snap(store, ref_id)[("U0", "right")]["net"] == "B"
 
     seen: dict[str, str] = {}
     real_place_optimize = pcb_place.optimize
@@ -1034,54 +1048,14 @@ def test_pcb_route_pin_swap_group_feed_settles_a_real_swap(store: Store) -> None
     _route(ctx)
     assert not ctx.failures
 
-    swaps = {(r["refdes"], r["pin"]): r for r in store.pcb_pin_swaps_list(ref_id)}
-    assert swaps, "the real anneal never found the feed-supplied swap"
-    assert swaps[("U0", "right")]["net"] == "B"
-    assert swaps[("U0", "left")]["net"] == "A"
-    assert all(r["source"] == "derived" for r in swaps.values())
+    snap = _snap(store, ref_id)
+    moved = {k: e for k, e in snap.items() if e["net"] != e["declared"]}
+    assert moved, "the real anneal never found the feed-supplied swap"
+    assert snap[("U0", "right")]["net"] == "B"
+    assert snap[("U0", "left")]["net"] == "A"
 
     summary = ctx.summaries[-1][1]
-    assert f"{len(swaps)} pin swap(s) settled" in summary
-
-
-def test_pcb_route_never_touches_an_authored_pin_swap(store: Store) -> None:
-    """No authoring verb exists yet for ``op='pin_swap'`` (out of this
-    change's scope), but the discipline is wired ahead of it: an
-    ``authored`` row (seeded directly here, standing in for a future
-    authoring call — both endpoints of the swap, the shape a real
-    authoring call would produce) must survive a route run byte-for-byte,
-    exactly like
-    :func:`test_pcb_route_never_touches_an_authored_plane_assignment`."""
-    ref_id = _seed(store, "route-pinswap-authored", _PIN_SWAP_DESIGN)
-    board_id = store.pcb_ensure_board(ref_id)
-    n = store.pcb_pin_swaps_replace_derived(
-        ref_id,
-        board_id,
-        [
-            {"refdes": "U0", "pin": "right", "net": "B"},
-            {"refdes": "U0", "pin": "left", "net": "A"},
-        ],
-    )
-    assert n == 2
-    with store.tx() as conn:
-        conn.execute(
-            'UPDATE pcb_pin_swaps SET meta = meta || \'{"source": "authored"}\' '
-            "WHERE board_id = %s",
-            (board_id,),
-        )
-
-    before = store.pcb_pin_swaps_list(ref_id)
-    assert before == [
-        {"refdes": "U0", "pin": "left", "net": "A", "source": "authored"},
-        {"refdes": "U0", "pin": "right", "net": "B", "source": "authored"},
-    ]
-
-    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 200, "seed": 1})
-    _route(ctx)
-    assert not ctx.failures
-
-    after = store.pcb_pin_swaps_list(ref_id)
-    assert after == before  # untouched: still authored, still swapped
+    assert f"{len(moved)} pin(s) bound off their declared net" in summary
 
 
 def test_routed_net_is_never_failed_by_a_placement_chord_crossing(
@@ -1438,7 +1412,7 @@ def test_pcb_route_leaves_the_board_untouched_when_the_post_route_gate_raises(
     assert "post-route DRC gate raised" in ctx.summaries[-1][1]
 
 
-# ── sketch restore ORDER: pin swaps first, then the layer/side sketch ────
+# ── sketch restore ORDER: effective netlist first, then the layer/side sketch ─
 def _segment_for_pins(ir: Any, refdes: str, pin: str) -> int:
     pid = next(
         p
@@ -1457,17 +1431,24 @@ def _fresh_pin_swap_ir(store: Store, ref_id: int) -> Any:
     return pcb_session.build_ir(store.pcb_graph(ref_id))
 
 
+def _snapshot_of(ir: Any, graph: dict[str, Any]) -> dict[str, Any]:
+    """The snapshot a route run settling in ``ir`` would persist."""
+    declared = pcb_resolved.declared_pin_nets(graph)
+    return {"pins": pcb_resolved.snapshot_pins(ir, declared)}
+
+
 def test_sketch_restore_after_pin_swap_matches_what_was_written(
     store: Store,
 ) -> None:
     """The persisted sketch is keyed by the POST-swap IR's segment endpoint
-    pins, so the job must re-apply swaps BEFORE the sketch. In the job's
-    order every segment on a swapped pin comes back with its layer/side;
-    in the old order they all miss their key and stay UNSET."""
+    pins, so the IR must be built from the effective (snapshot-applied)
+    graph. Built that way every segment on a swapped pin comes back with
+    its layer/side; built from the authored graph alone they miss their
+    key."""
     ref_id = _seed(store, "route-sketch-order", _PIN_SWAP_DESIGN)
+    graph = store.pcb_graph(ref_id)
 
     ir = _fresh_pin_swap_ir(store, ref_id)
-    baseline = ir.pin_net.copy()
     _swap_u0_pins(ir)
     layer = pcb_session.signal_layers(ir)[-1]
     written: dict[str, tuple[int, int]] = {}
@@ -1478,8 +1459,8 @@ def test_sketch_restore_after_pin_swap_matches_what_was_written(
         written[pcb_session.segment_key(ir, seg)] = (layer, 1)
     assert len(written) == 2
     sketch = pcb_session.extract_sketch(ir)
-    swaps = pcb_session.pin_swap_diff(ir, baseline)
-    assert swaps
+    snapshot = _snapshot_of(ir, graph)
+    assert any(e["net"] != e["declared"] for e in snapshot["pins"])
 
     def _restored(ir2: Any) -> dict[str, tuple[int, int]]:
         return {
@@ -1490,8 +1471,7 @@ def test_sketch_restore_after_pin_swap_matches_what_was_written(
             for s in range(ir2.n_segments)
         }
 
-    good = _fresh_pin_swap_ir(store, ref_id)
-    pcb_session.apply_pin_swap_overrides(good, swaps)
+    good = pcb_session.build_ir(pcb_resolved.apply(graph, snapshot))
     assert pcb_session.apply_route_overrides(good, sketch) == 0
     got = _restored(good)
     for key, want in written.items():
@@ -1499,7 +1479,6 @@ def test_sketch_restore_after_pin_swap_matches_what_was_written(
 
     old = _fresh_pin_swap_ir(store, ref_id)
     assert pcb_session.apply_route_overrides(old, sketch) > 0
-    pcb_session.apply_pin_swap_overrides(old, swaps)
     assert any(_restored(old).get(k) != v for k, v in written.items())
 
 
@@ -1522,13 +1501,13 @@ def test_pcb_route_second_run_starts_where_the_first_ended(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Run 2's ``cost_before`` equals run 1's ``cost_after``: the stored
-    sketch + swaps rebuild exactly the state run 1 settled in."""
+    sketch + netlist snapshot rebuild exactly the state run 1 settled in."""
     res1 = _capture_optimize(monkeypatch, force_swap=True)
     ref_id = _seed(store, "route-resume-cost", _PIN_SWAP_DESIGN)
     ctx1 = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 1})
     _route(ctx1)
     assert not ctx1.failures
-    assert store.pcb_pin_swaps_list(ref_id)
+    assert _snap(store, ref_id)[("U0", "right")]["net"] == "B"
 
     res2 = _capture_optimize(monkeypatch, force_swap=False)
     ctx2 = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 1})
@@ -1570,12 +1549,12 @@ def test_pcb_route_is_deterministic_from_the_same_seeded_state(
 # ── sketch SVG view: same restore order as the job ───────────────────────
 def _persist_swapped_sketch(store: Store, slug: str) -> tuple[int, dict[str, int]]:
     """Seed ``_PIN_SWAP_DESIGN``, then persist what a route run that swapped
-    U0's pins would have: the derived swap plus a layer-assigned sketch keyed
+    U0's pins would have: the netlist snapshot plus a layer-assigned sketch keyed
     by the POST-swap endpoint pins. Returns ``(ref_id, written)`` where
     ``written`` maps segment key -> layer for the two U0 segments."""
     ref_id = _seed(store, slug, _PIN_SWAP_DESIGN)
+    graph = store.pcb_graph(ref_id)
     ir = _fresh_pin_swap_ir(store, ref_id)
-    baseline = ir.pin_net.copy()
     _swap_u0_pins(ir)
     layer = pcb_session.signal_layers(ir)[-1]
     written: dict[str, int] = {}
@@ -1585,8 +1564,12 @@ def _persist_swapped_sketch(store: Store, slug: str) -> tuple[int, dict[str, int
         written[pcb_session.segment_key(ir, seg)] = layer
     board_id = store.pcb_ensure_board(ref_id)
     store.pcb_routes_write(ref_id, board_id, pcb_session.extract_sketch(ir))
-    store.pcb_pin_swaps_replace_derived(
-        ref_id, board_id, pcb_session.pin_swap_diff(ir, baseline)
+    store.pcb_netlist_snapshot_write(
+        board_id,
+        content_hash=pcb_session.content_hash(graph, {}),
+        pins=_snapshot_of(ir, graph)["pins"],
+        prior=[],
+        meta={"source": "test"},
     )
     return ref_id, written
 
@@ -1611,7 +1594,7 @@ def test_svg_sketch_view_restores_pin_swaps_before_the_layer_sketch(
     """Swapped-pin segments must render with their stored layer, not UNSET
     (the read-side twin of the job's ordering bug)."""
     ref_id, written = _persist_swapped_sketch(store, "svg-sketch-swap")
-    assert store.pcb_pin_swaps_list(ref_id)
+    assert _snap(store, ref_id)[("U0", "right")]["net"] == "B"
     seen = _capture_sketch_ir(monkeypatch)
 
     resp = PcbHandler(hub=Hub(store=store)).get(
@@ -1699,7 +1682,7 @@ def test_pcb_route_fails_input_when_clients_outnumber_supplies(
     reason, failure_class = ctx.failures[0]
     assert failure_class == "input"
     assert "6 pad_driver clients unsupplied" in reason
-    assert store.pcb_pin_swaps_list(ref_id) == []
+    assert store.pcb_netlist_snapshot_latest(ref_id) is None
 
 
 _TWO_SINK_DESIGN = {
@@ -1766,22 +1749,18 @@ def test_pcb_route_matching_moves_a_net_across_sinks_and_persists_it(
     _route(ctx)
     assert not ctx.failures
 
-    swaps = {(r["refdes"], r["pin"]): r for r in store.pcb_pin_swaps_list(ref_id)}
-    assert swaps[("S1", "1")]["net"] == "B"
-    assert swaps[("S2", "1")]["net"] == "A"
-    assert all(r["source"] == "derived" for r in swaps.values())
+    snap = _snap(store, ref_id)
+    assert (snap[("S1", "1")]["net"], snap[("S1", "1")]["declared"]) == ("B", "A")
+    assert (snap[("S2", "1")]["net"], snap[("S2", "1")]["declared"]) == ("A", "B")
+    assert not any(e.get("solver_created") for e in snap.values())
 
-    # The authored netlist is untouched; a fresh IR + the persisted rows
-    # replays the matched wiring (S1 now drives E1, S2 drives E2).
+    # The authored netlist is untouched; a fresh IR built from the graph
+    # with the snapshot laid over it replays the matched wiring (S1 now
+    # drives E1, S2 drives E2).
     graph = store.pcb_graph(ref_id)
-    members = {
-        n["name"]: {(m["refdes"], m["pin"]) for m in n["members"]}
-        for n in graph["nets"]
-    }
-    assert members["A"] == {("S1", "1"), ("E2", "1")}
-    ir = pcb_session.build_ir(graph)
-    assert _pin_nets(ir, "S1") == {"1": "A"}
-    pcb_session.apply_pin_swap_overrides(ir, store.pcb_pin_swaps_list(ref_id))
+    assert _authored_members(store, ref_id)["A"] == {("S1", "1"), ("E2", "1")}
+    assert _pin_nets(pcb_session.build_ir(graph), "S1") == {"1": "A"}
+    ir = PcbHandler(hub=Hub(store=store))._build_ir(ref_id, graph)
     assert _pin_nets(ir, "S1") == {"1": "B"}
     assert _pin_nets(ir, "S2") == {"1": "A"}
     assert _pin_nets(ir, "E1") == {"1": "B"}
@@ -1793,11 +1772,16 @@ def test_supply_matching_is_pure_and_reports_cost(store: Store) -> None:
     results = []
     for _ in range(2):
         ir = pcb_session.build_ir(graph)
-        report, unsupplied = pcb_route._resolve_supply_matching(ir, graph, {}, [], [])
+        before = ir.pin_net.tolist()
+        report, unsupplied, rebind, prior = pcb_route._resolve_supply_matching(
+            ir, graph, {}, [], []
+        )
         assert unsupplied == []
-        results.append((ir.pin_net.tolist(), report))
+        assert ir.pin_net.tolist() == before  # the solve never mutates the IR
+        results.append((report, rebind, prior))
     assert results[0] == results[1]
-    (entry,) = results[0][1]
+    assert results[0][1] == {("S1", "1"): "B", ("S2", "1"): "A"}
+    (entry,) = results[0][0]
     assert entry["role"] == "drv" and entry["method"] == "match"
     assert entry["clients"] == 2
     # 5 + 5 mm after matching vs 2 * hypot(20, 5) before.
@@ -1846,7 +1830,234 @@ def test_pin_swap_groups_alias_warns_and_matches(store: Store) -> None:
     graph = store.pcb_graph(ref_id)
     ir = pcb_session.build_ir(graph)
     warnings: list[str] = []
-    report, unsupplied = pcb_route._resolve_supply_matching(ir, graph, {}, [], warnings)
+    report, unsupplied, _rebind, _prior = pcb_route._resolve_supply_matching(
+        ir, graph, {}, [], warnings
+    )
     assert unsupplied == []
     assert any("pin_swap_groups on S1 is deprecated" in w for w in warnings)
     assert [e["role"] for e in report] == ["pin_swap:S1:0"]
+
+
+# ── Slice 7 acceptance: the netlist snapshot ─────────────────────────────
+def _route_job(store: Store, ref_id: int, seed: int = 1, iters: int = 50) -> _FakeCtx:
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": iters, "seed": seed})
+    _route(ctx)
+    assert not ctx.failures, ctx.failures
+    return ctx
+
+
+def _prior(store: Store, ref_id: int) -> list[list[str]]:
+    snapshot = store.pcb_netlist_snapshot_latest(ref_id)
+    assert snapshot is not None
+    return snapshot["prior"]
+
+
+def _pins(store: Store, ref_id: int) -> list[dict[str, Any]]:
+    snapshot = store.pcb_netlist_snapshot_latest(ref_id)
+    assert snapshot is not None
+    return snapshot["pins"]
+
+
+_SPARE_SUPPLY_DESIGN: dict[str, Any] = {
+    "components": [
+        {
+            "refdes": "S1",
+            "label": "drv",
+            "x": -30.0,
+            "y": 0.0,
+            "fixed": "both",
+            "pins": [{"name": "1"}],
+            "supplies": {"role": "drv", "blocks": [["1"]]},
+        },
+        {
+            "refdes": "S2",
+            "label": "drv",
+            "x": 10.0,
+            "y": 0.0,
+            "fixed": "both",
+            "pins": [{"name": "1"}],
+            "supplies": {"role": "drv", "blocks": [["1"]]},
+        },
+        {
+            "refdes": "E1",
+            "label": "pad",
+            "x": 10.0,
+            "y": 5.0,
+            "fixed": "both",
+            "pins": [{"name": "1", "client_of": "drv"}],
+        },
+    ],
+    "nets": [{"name": "A", "class": "signal"}],
+    # S2 is a netless spare right under the client; the declared supplier
+    # S1 is 40 mm away.
+    "connections": [
+        {"net": "A", "refdes": "S1", "pin": "1"},
+        {"net": "A", "refdes": "E1", "pin": "1"},
+    ],
+}
+
+
+def test_snapshot_holds_one_entry_per_ir_pin_including_netless(store: Store) -> None:
+    ref_id = _seed(store, "snap-full", _SPARE_SUPPLY_DESIGN)
+    _route_job(store, ref_id)
+    graph = store.pcb_graph(ref_id)
+    declared = pcb_resolved.declared_pin_nets(graph)
+    ir = pcb_session.build_ir(graph)
+    pins = _pins(store, ref_id)
+    assert len(pins) == ir.n_pins == len(declared) == 3
+    assert {(e["refdes"], e["pin"]) for e in pins} == set(declared)
+    for e in pins:
+        assert e["declared"] == declared[(e["refdes"], e["pin"])]
+    # the netless spare is listed too (declared None); S1.1 ends netless
+    assert any(e["net"] is None for e in pins)
+    assert any(e["declared"] is None for e in pins)
+
+
+def test_pruning_keeps_the_migrated_pcb_pin_swaps_snapshot(store: Store) -> None:
+    """Migration 0221's snapshot holds the dropped pcb_pin_swaps rows
+    verbatim; the per-board prune to the newest few never deletes it."""
+    ref_id = _seed(store, "snap-prune", _SPARE_SUPPLY_DESIGN)
+    board_id = int(store.pcb_graph(ref_id)["board"]["board_id"])
+    legacy = {"source": "pcb_pin_swaps", "swap_rows": 1, "unmapped": [{"swap_id": 7}]}
+    store.pcb_netlist_snapshot_write(
+        board_id, content_hash="", pins=[], prior=[], meta=legacy
+    )
+    for k in range(_SNAPSHOT_KEEP + 3):
+        store.pcb_netlist_snapshot_write(
+            board_id, content_hash=str(k), pins=[], prior=[]
+        )
+    with store.tx() as conn:
+        rows = conn.execute(
+            "SELECT meta FROM pcb_netlist_snapshots WHERE board_id = %s "
+            "ORDER BY snapshot_id",
+            (board_id,),
+        ).fetchall()
+    assert len(rows) == _SNAPSHOT_KEEP + 1
+    assert rows[0][0] == legacy
+    latest = store.pcb_netlist_snapshot_latest(ref_id)
+    assert latest is not None
+    assert latest["content_hash"] == str(_SNAPSHOT_KEEP + 2)
+
+
+def _move_instance(store: Store, ref_id: int, refdes: str, x: float, y: float) -> None:
+    with store.tx() as conn:
+        conn.execute(
+            "UPDATE pcb_instances SET x = %s, y = %s "
+            "WHERE ref_id = %s AND refdes = %s AND retired_at IS NULL",
+            (x, y, ref_id, refdes),
+        )
+
+
+def test_solver_created_spare_takes_the_client_net_and_is_regenerated(
+    store: Store,
+) -> None:
+    ref_id = _seed(store, "snap-spare", _SPARE_SUPPLY_DESIGN)
+    authored = _authored_members(store, ref_id)
+    assert authored == {"A": {("S1", "1"), ("E1", "1")}}
+    _route_job(store, ref_id)
+
+    snap = _snap(store, ref_id)
+    assert snap[("S2", "1")]["net"] == "A"
+    assert snap[("S2", "1")]["declared"] is None
+    assert snap[("S2", "1")]["solver_created"] is True
+    assert snap[("S1", "1")]["net"] is None
+    assert snap[("S1", "1")]["declared"] == "A"
+    assert not snap[("S1", "1")].get("solver_created")
+    assert snap[("E1", "1")]["net"] == "A"
+    # never written back to pcb_netconns
+    assert _authored_members(store, ref_id) == authored
+    with store.pool.connection() as conn:
+        n = conn.execute(
+            "SELECT count(*) FROM pcb_netconns k "
+            "JOIN pcb_instances i ON i.instance_id = k.instance_id "
+            "WHERE i.ref_id = %s AND i.refdes = 'S2'",
+            (ref_id,),
+        ).fetchone()
+    assert n is not None and int(n[0]) == 0
+
+    # Geometry changes: the client now sits next to S1. The re-solve
+    # recomputes the entry rather than carrying the old one.
+    _move_instance(store, ref_id, "E1", -30.0, 5.0)
+    _route_job(store, ref_id)
+    snap2 = _snap(store, ref_id)
+    assert snap2[("S1", "1")]["net"] == "A"
+    assert snap2[("S2", "1")]["net"] is None
+    assert not any(e.get("solver_created") for e in snap2.values())
+    assert _authored_members(store, ref_id) == authored
+
+
+def test_unchanged_intent_and_prior_give_identical_snapshot_pins(
+    store: Store,
+) -> None:
+    runs = []
+    for slug in ("snap-det-a", "snap-det-b"):
+        ref_id = _seed(store, slug, _TWO_SINK_DESIGN)
+        _route_job(store, ref_id, seed=3)
+        runs.append(_pins(store, ref_id))
+    assert runs[0] == runs[1]
+    assert runs[0], "vacuous: no pins"
+    # and re-routing the same board (prior = the first run's assignment)
+    # settles on the same pins
+    ref_id = _seed(store, "snap-det-c", _TWO_SINK_DESIGN)
+    _route_job(store, ref_id, seed=3)
+    first = _pins(store, ref_id)
+    _route_job(store, ref_id, seed=3)
+    assert _pins(store, ref_id) == first
+
+
+def test_snapshot_prior_is_the_binding_the_run_started_from(store: Store) -> None:
+    ref_id = _seed(store, "snap-prior", _TWO_SINK_DESIGN)
+    _route_job(store, ref_id)
+    # first run: the declared (crossed) wiring - E2 on S1, E1 on S2
+    assert _prior(store, ref_id) == [["E1", "1", "S2", "1"], ["E2", "1", "S1", "1"]]
+    _route_job(store, ref_id)
+    # second run started from the first run's matched assignment
+    assert _prior(store, ref_id) == [["E1", "1", "S1", "1"], ["E2", "1", "S2", "1"]]
+
+
+def test_channel_map_follows_the_snapshot_and_changes_only_with_it(
+    store: Store,
+) -> None:
+    ref_id = _seed(store, "snap-chmap", _TWO_SINK_DESIGN)
+    handler = PcbHandler(hub=Hub(store=store))
+
+    def body() -> str:
+        return handler.get(id="snap-chmap", view="channel-map").body
+
+    before = body()
+    assert "drv,E1/1,B,S2/1" in before and "drv,E2/1,A,S1/1" in before
+    assert body() == before
+    _route_job(store, ref_id)
+    after = body()
+    assert after != before
+    assert "drv,E1/1,B,S1/1" in after and "drv,E2/1,A,S2/1" in after
+    assert body() == after
+    # a second route that does not change the assignment leaves it as is
+    _route_job(store, ref_id)
+    assert body() == after
+
+
+def test_netless_client_stays_unbound_with_a_per_pin_warning(store: Store) -> None:
+    design = {
+        **_SPARE_SUPPLY_DESIGN,
+        "components": [
+            *_SPARE_SUPPLY_DESIGN["components"],
+            {
+                "refdes": "E2",
+                "label": "pad",
+                "x": 12.0,
+                "y": 5.0,
+                "fixed": "both",
+                "pins": [{"name": "1", "client_of": "drv"}],
+            },
+        ],
+    }
+    ref_id = _seed(store, "snap-netless-client", design)
+    graph = store.pcb_graph(ref_id)
+    warnings: list[str] = []
+    ir = pcb_session.build_ir(graph)
+    pcb_route._resolve_supply_matching(ir, graph, {}, [], warnings)
+    assert (
+        "match: drv client E2.1 has no net, left unbound; declare a net for it"
+        in warnings
+    )

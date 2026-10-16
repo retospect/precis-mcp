@@ -126,6 +126,7 @@ from precis.pcb import length_ratio as pcb_length_ratio
 from precis.pcb import matching as pcb_matching
 from precis.pcb import optimize as pcb_optimize
 from precis.pcb import realize as pcb_realize
+from precis.pcb import resolved as pcb_resolved
 from precis.pcb import review as pcb_review
 from precis.pcb import route as pcb_route
 from precis.pcb import selectables as pcb_selectables
@@ -1156,7 +1157,7 @@ class PcbHandler(Handler):
         With ``legal_only`` the anneal's poses are judged by
         :meth:`_refuse_illegal_placement` first and nothing is written
         when any conflicts."""
-        graph = pcb_session.sorted_graph(self.store.pcb_graph(ref_id))
+        graph = pcb_session.sorted_graph(self._effective_graph(ref_id))
         res = place.autoplace(
             graph["instances"],
             graph["nets"],
@@ -1516,7 +1517,8 @@ class PcbHandler(Handler):
         session_state = {
             "features": self.store.pcb_features_list(ref.id),
             "routes": self.store.pcb_routes_get(ref.id),
-            "pin_swaps": self.store.pcb_pin_swaps_list(ref.id),
+            # The resolved netlist snapshot is job-written (Slice 7): like
+            # derived pin swaps before it, it never enters the digest.
             "planes": self.store.pcb_planes_list(ref.id),
             "measures": self.store.pcb_measures_list(ref.id),
             # `pcb_fixed_copper_list` is keyed by board_id, not ref_id --
@@ -3158,7 +3160,7 @@ class PcbHandler(Handler):
             if ref is None:
                 raise NotFound(f"pcb id={ref_id} not found")
             return render_links_view(self.store, ref, sense="pcb")
-        graph = pcb_session.sorted_graph(self.store.pcb_graph(ref_id))
+        graph = pcb_session.sorted_graph(self._effective_graph(ref_id))
         if view in ("crossings", "ratsnest", "feasibility"):
             placed = {
                 i["refdes"]: (float(i["x"]), float(i["y"]))
@@ -3328,12 +3330,25 @@ class PcbHandler(Handler):
         return fabric
 
     # ── exporters ──────────────────────────────────────
+    def _effective_graph(self, ref_id: int) -> dict[str, Any]:
+        """The design's EFFECTIVE netlist: the authored graph with the
+        latest resolved snapshot laid over it (Slice 7). Every reader that
+        names which pin carries which net (pads, ERC, ratsnest, exports)
+        takes this, so it agrees with the routed copper. Idempotent:
+        :meth:`_build_ir` applying the snapshot again changes nothing."""
+        return pcb_resolved.apply(
+            self.store.pcb_graph(ref_id),
+            self.store.pcb_netlist_snapshot_latest(ref_id),
+        )
+
     def _export_model(self, ref_id: int) -> dict[str, Any]:
         """The normalised export IR (placement detail + net membership),
         plus ``board_features`` — the instances that are etched copper, not
-        parts, which the BOM/CPL writers leave out."""
+        parts, which the BOM/CPL writers leave out. Net membership is the
+        effective netlist (the latest resolved snapshot over the authored
+        graph), so the exported netlist matches the routed copper."""
         model = pcb_export.export_model(
-            self.store.pcb_load(ref_id), self.store.pcb_graph(ref_id)
+            self.store.pcb_load(ref_id), self._effective_graph(ref_id)
         )
         model["board_features"] = pcb_export.board_feature_refdes(
             model["instances"], self.store.pcb_local_footprints_for(ref_id)
@@ -3400,13 +3415,12 @@ class PcbHandler(Handler):
         the ratsnest, the SVG previews and the place/route ops all measure
         the same board the gerber writer exports.
 
-        Persisted pin swaps ride along too (``pcb_pin_swaps`` — the route
-        job's settled ``PIN_SWAP`` decisions, written back per run). Until
-        ``op='route'`` fed ``pin_swap_groups`` (docs/backlog/
-        pcb-ewod-multitile.md ruling 6, 2026-09-19) no swap ever
-        persisted, so a view that skipped them measured the same board;
-        the first real swaps made DRC/gerber/ratsnest disagree with the
-        routed copper about which sink pin carries which electrode.
+        The IR is built from the EFFECTIVE netlist: the authored graph
+        with the latest resolved snapshot laid over it
+        (``pcb_netlist_snapshots``, :func:`precis.pcb.resolved.apply`,
+        pcb-lazy-netlist-and-checks Slice 7). A view that read the
+        authored nets alone would disagree with the routed copper about
+        which supply pin carries which electrode.
 
         ``with_fixed_copper`` adds the authored vias the placer keeps solder
         lands off (``pcb_place``'s own hydration) — for a pose check.
@@ -3415,7 +3429,7 @@ class PcbHandler(Handler):
         at its new pose before anything is written)."""
         board_id = (graph.get("board") or {}).get("board_id")
         ir = pcb_session.build_ir(
-            graph,
+            pcb_resolved.apply(graph, self.store.pcb_netlist_snapshot_latest(ref_id)),
             mounting_holes=pcb_session.mounting_holes_from_features(
                 self.store.pcb_features_list(ref_id)
             ),
@@ -3429,7 +3443,6 @@ class PcbHandler(Handler):
                 else None
             ),
         )
-        pcb_session.apply_pin_swap_overrides(ir, self.store.pcb_pin_swaps_list(ref_id))
         return ir
 
     def _layer_lock_lines(self, ref_id: int, graph: dict[str, Any]) -> str:
@@ -3913,7 +3926,7 @@ class PcbHandler(Handler):
 
         footprints = self.store.pcb_footprints_for(ref_id)
         local_footprints = self.store.pcb_local_footprints_for(ref_id)
-        graph = self.store.pcb_graph(ref_id)
+        graph = self._effective_graph(ref_id)
         ir = self._build_ir(ref_id, graph)
         pin_to_net = {
             (m["refdes"], m["pin"]): net["name"]
@@ -4585,8 +4598,8 @@ class PcbHandler(Handler):
         The build costs seconds on a real board, so the rendered text is
         cached per ref in ``self._capacity_map_cache`` keyed on the
         board's ``content_hash`` — the digest is built from exactly the
-        rows the map reads (graph, features, pin_swaps, planes,
-        fixed_copper), so a changed board always rebuilds and an
+        rows the map reads (graph, features, the latest netlist snapshot,
+        planes, fixed_copper), so a changed board always rebuilds and an
         unchanged board's repeat reads are free. Routes are not passed
         at all: the map describes the pre-route static grid, so neither
         realized copper nor authored route topology can stale it."""
@@ -4602,14 +4615,14 @@ class PcbHandler(Handler):
                 else []
             )
             features = self.store.pcb_features_list(ref_id)
-            pin_swaps = self.store.pcb_pin_swaps_list(ref_id)
+            resolved = self.store.pcb_netlist_snapshot_latest(ref_id)
+            graph = pcb_resolved.apply(graph, resolved)
             planes = self.store.pcb_planes_list(ref_id)
             key = pcb_session.content_hash(
                 graph,
-                {},
+                {"netlist_snapshot": resolved and resolved["snapshot_id"]},
                 session_state={
                     "features": features,
-                    "pin_swaps": pin_swaps,
                     "planes": planes,
                     "fixed_copper": fixed,
                 },
@@ -4625,7 +4638,6 @@ class PcbHandler(Handler):
                 local_footprints_by_name=self.store.pcb_local_footprints_for(ref_id),
                 fixed_copper=fixed,
             )
-            pcb_session.apply_pin_swap_overrides(ir, pin_swaps)
             name_to_net = {str(ir.net_name[n]): n for n in range(ir.n_nets)}
             layer_idx = {
                 str(layer.get("name")): i for i, layer in enumerate(ir.stackup)
@@ -5740,7 +5752,7 @@ class PcbHandler(Handler):
             and str(i.get("refdes")) not in footprints
         ]
 
-        graph = self.store.pcb_graph(ref_id)
+        graph = self._effective_graph(ref_id)
         board_id = int(board["board_id"])
         authored_phase = str((board.get("meta") or {}).get("phase") or "")
         if authored_phase not in pcb_drc.PHASES:
@@ -6304,12 +6316,10 @@ class PcbHandler(Handler):
                     body="no parts on this design yet — nothing to sketch\n\n"
                     "Next: put(kind='pcb', id='slug', args={'components':[...]})"
                 )
+            # `_build_ir` lays the resolved snapshot over the graph, as the
+            # pcb_route job does: stored sketch keys are endpoint pins of
+            # the effective netlist.
             ir = self._build_ir(ref_id, graph)
-            # Same order as the pcb_route job: stored sketch keys are
-            # endpoint pins of the POST-swap IR.
-            pcb_session.apply_pin_swap_overrides(
-                ir, self.store.pcb_pin_swaps_list(ref_id)
-            )
             unmatched = pcb_session.apply_route_overrides(
                 ir, self.store.pcb_routes_get(ref_id)
             )

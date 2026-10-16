@@ -98,16 +98,28 @@ Pin assignment is a matching, not an anneal move. A part declares
 `supplies` (`{"role", "blocks": [[pin], ...], optional "voltage_v"}`) and a
 terminal declares `client_of` (a role name, or `{"role", "min_voltage_v"}`);
 a pair that must travel together (D+/D-) puts `"members": ["DP", "DM"]` in
-the head pin's `client_of` and matches only a same-size block. Top-level `roles` carry `voltage_v` and `fanout`. Before the optimizer or any
-routing, `op='route'` solves every role as a min-cost Euclidean assignment
-(cross-instance, warm-started from the current wiring) and persists changes
-as derived `pcb_pin_swaps`. More clients than supply blocks fails the job
-`input` with e.g. "6 pad_driver clients unsupplied" and writes nothing.
+the head pin's `client_of` and matches only a same-size block. Top-level
+`roles` carry `voltage_v` and `fanout`. Before the optimizer or any routing,
+`op='route'` solves every role as a min-cost Euclidean assignment
+(cross-instance, warm-started from the last route's binding) over the
+clients whose pins each have their own declared net and the supply blocks
+that are netless or on such a net. A netless spare channel may take a
+client's net. A client with no declared net stays unbound: name its net yourself (the
+job warns "declare a net for it").
+More clients than supply blocks fails the job `input` with e.g.
+"6 pad_driver clients unsupplied" and writes nothing.
 `pin_swap_groups` on a component is a deprecated alias (warned in the job
 summary). `warm_start` defaults to `"distance"` (that matching);
 `"radial"` keeps the old per-instance angular path.
+
+The authored netlist is never rewritten. Each route stores a resolved
+netlist snapshot: every pin with its effective net and declared net, the
+prior binding it started from, and the intent's content hash. A spare pin
+that took a net is marked `solver_created`. Every view (DRC, gerber,
+export, channel-map) reads the latest snapshot over the authored netlist;
+an entry whose pin you have since rewired is ignored until the next route.
 `last_route.warm_start` lists per role `{role, method: "match", clients,
-cost_mm, prior_cost_mm}`.
+cost_mm, prior_cost_mm, changed}`.
 
 A net is named after its constrained end, and a supply pin is a free end
 (the matcher may move it). `put` refuses a net you touch whose members are
@@ -116,9 +128,9 @@ client electrode) or tag the clients `client_of` and let the matcher bind them.
 
 `get(kind="pcb", id=s, view="channel-map")` lists which supply terminal each
 client is wired to now: `role,client,net,supplier` rows (`REFDES/PIN`; empty
-supplier = unbound), or `args={"format": "json"}`. It is read off the current
-assignment, swaps included, and regenerated on every read; it stores
-nothing. `view='check'` raises an `unsupplied_client` error per client that
+supplier = unbound), or `args={"format": "json"}`. It is read off the latest
+snapshot's assignment on every read and changes only when a route
+changes the assignment; it stores nothing. `view='check'` raises an `unsupplied_client` error per client that
 no supplier terminal can serve (the same capacity and voltage gate the route
 job applies).
 
