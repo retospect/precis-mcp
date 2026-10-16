@@ -173,20 +173,81 @@ def test_dispatch_mints_one_scan_per_neb_candidate_and_skips_retick(
     assert len(handler.puts) == 1
 
 
-def test_dispatch_failed_scan_is_not_reminted(
+def _jobs_by_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, tuple[int, str]]:
+    """A stateful idem-key → (job id, status) table behind
+    ``_find_job_by_idem_key``, so a test can fail jobs between ticks."""
+    jobs: dict[str, tuple[int, str]] = {}
+    monkeypatch.setattr(
+        "precis.quest.compute._find_job_by_idem_key",
+        lambda _store, key: jobs.get(key),
+    )
+    return jobs
+
+
+def test_dispatch_retries_a_failed_scan_with_a_fresh_seed_and_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Part A convention: a job carrying the idem key in ANY status —
-    including failed — blocks re-minting."""
+    """Reto 2026-10-16 ruling 3a: a failed scan retries as a NEW job —
+    its own seed, generation and idem key, never a dedupe hit."""
     candidate = _candidate(meta={"geom_hash_c": "g", "tier": "verify"})
     store, handler, _existing, _links = _harness(monkeypatch, FLAGGED, [candidate])
     hub = SimpleNamespace(handler_for=lambda _kind: handler)
-    monkeypatch.setattr(
-        "precis.quest.compute._find_job_by_idem_key",
-        lambda *_: (66, "failed"),
-    )
+    jobs = _jobs_by_key(monkeypatch)
+
+    anchors.dispatch_surface_anchors(store, 9, hub=hub)
+    first = handler.puts[0]
+    assert "seed" not in first["params"]
+    assert "retry_generation" not in first["params"]
+    jobs[_put_idem_key(first)] = (701, "failed")
+
+    anchors.dispatch_surface_anchors(store, 9, hub=hub)
+    assert len(handler.puts) == 2
+    retry = handler.puts[1]
+    assert retry["params"]["retry_generation"] == 1
+    assert retry["params"]["seed"] == 1
+    assert _put_idem_key(retry) != _put_idem_key(first)
+
+
+def test_dispatch_retry_cap_holds_across_ticks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """At most two retries, each with a different seed; once the second
+    retry fails, later ticks mint nothing."""
+    candidate = _candidate(meta={"geom_hash_c": "g", "tier": "verify"})
+    store, handler, _existing, _links = _harness(monkeypatch, FLAGGED, [candidate])
+    hub = SimpleNamespace(handler_for=lambda _kind: handler)
+    jobs = _jobs_by_key(monkeypatch)
+
+    for _tick in range(6):
+        anchors.dispatch_surface_anchors(store, 9, hub=hub)
+        for i, put in enumerate(handler.puts):
+            jobs[_put_idem_key(put)] = (701 + i, "failed")
+
+    assert len(handler.puts) == 1 + anchors.MAX_SCAN_RETRIES == 3
+    seeds = [put["params"].get("seed") for put in handler.puts]
+    assert seeds == [None, 1, 2]
+    assert len({_put_idem_key(put) for put in handler.puts}) == 3
     assert anchors.dispatch_surface_anchors(store, 9, hub=hub) == []
-    assert handler.puts == []
+    assert len(handler.puts) == 3
+
+
+def test_dispatch_never_retries_a_succeeded_or_live_scan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only FAILURE retries: a succeeded scan (whatever its numbers) and
+    a scan still running both block a re-mint."""
+    for status in ("succeeded", "running", "queued", "cancelled"):
+        candidate = _candidate(meta={"geom_hash_c": "g", "tier": "verify"})
+        store, handler, _existing, _links = _harness(monkeypatch, FLAGGED, [candidate])
+        hub = SimpleNamespace(handler_for=lambda _kind, h=handler: h)
+        jobs = _jobs_by_key(monkeypatch)
+        anchors.dispatch_surface_anchors(store, 9, hub=hub)
+        jobs[_put_idem_key(handler.puts[0])] = (701, status)
+        for _tick in range(3):
+            anchors.dispatch_surface_anchors(store, 9, hub=hub)
+        assert len(handler.puts) == 1, status
 
 
 def test_dispatch_front_membership_anchors_ahead_of_promotion(
@@ -456,6 +517,31 @@ def test_harvest_clean_surface_and_no_point(
     assert note == "surface anchors for [st42]: sweep: 0 boundary(ies)"
     assert stamps[0][1]["resting_termination_at_point"] is None
     assert stamps[0][1]["needs_anchor_top"] is None
+
+
+def test_harvest_follows_the_retry_chain_and_stamps_generation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A retry that succeeded is harvested, and the stamp records its
+    generation and seed."""
+    candidate = _candidate(meta={"geom_hash_c": "g"})
+    store, stamps, _e = _harvest_harness(monkeypatch, candidate)
+    built = anchors._request(FLAGGED, candidate)
+    assert built is not None
+    params, base_key = built
+    retry_key = anchors._idem_key(
+        candidate.id, "g", anchors._generation_params(params, 1)
+    )
+    jobs = {base_key: (70, "failed"), retry_key: (71, "succeeded")}
+    monkeypatch.setattr(
+        "precis.quest.compute._find_job_by_idem_key",
+        lambda _store, key: jobs.get(key),
+    )
+    assert anchors.harvest_surface_anchors(store, 9, candidate) is not None
+    ((_rid, values),) = stamps
+    assert values["anchors_job_id"] == 71
+    assert values["anchors_retry_generation"] == 1
+    assert values["anchors_seed"] == 1
 
 
 def test_harvest_ignores_unsucceeded_and_flagless(

@@ -17,9 +17,11 @@ module defaults apply.
 
 Dispatch mirrors the Part A pattern: content-addressed on the candidate
 geometry (``geom_hash_c``), the reaction config, the engine token and the
-operating inputs, so a re-tick never mints a duplicate and a failed scan
-is never re-minted — the Part A convention: ``_find_job_by_idem_key``
-sees jobs of ANY status, and a human re-arms by changing the basis.
+operating inputs, so a re-tick never mints a duplicate:
+``_find_job_by_idem_key`` sees jobs of ANY status. A failed scan is
+re-minted at most ``MAX_SCAN_RETRIES`` times, each retry with a fresh
+seed and its own idem key (Reto 2026-10-16); after that a human re-arms
+by changing the basis.
 
 **Mint rule.** A candidate earns a scan when it has completed at least
 the ``neb`` fidelity level (``meta.tier`` or
@@ -78,6 +80,14 @@ log = logging.getLogger(__name__)
 #: import it (``tests/test_plugin_import_boundary.py``); the same rule
 #: ``precis.quest.compute`` follows for ``autocatpath_seed``.
 SCAN_JOB_TYPE = "surface_coverage_scan"
+
+#: Re-mints after a FAILED scan (Reto 2026-10-16, ruling 3a: retry
+#: capped at 2, "change seeds each time"). Generation 0 is the first
+#: scan and keeps its original key; retry ``g`` carries
+#: ``retry_generation=g`` and ``seed=g`` in its params, which folds into
+#: its idem key, so a retry is a new job, never a dedupe hit. A succeeded
+#: scan, whatever its numbers, is never retried.
+MAX_SCAN_RETRIES = 2
 
 
 def _params_reason(params: dict[str, Any]) -> str | None:
@@ -165,6 +175,35 @@ def _idem_key(candidate_id: int, geometry: str, params: dict[str, Any]) -> str:
     return f"surface_coverage_scan:{candidate_id}:{token}"
 
 
+def _generation_params(params: dict[str, Any], generation: int) -> dict[str, Any]:
+    """Scan params for retry ``generation`` — generation 0 is ``params``
+    unchanged (its idem key predates retries); each retry stamps its
+    generation and a fresh seed."""
+    if generation == 0:
+        return params
+    return {**params, "retry_generation": generation, "seed": generation}
+
+
+def _resolve_scan(
+    store: Any, candidate_id: int, geometry: str, params: dict[str, Any]
+) -> tuple[int, dict[str, Any], str, tuple[int, str | None] | None]:
+    """Walk the retry chain to the scan that stands for this anchor set:
+    ``(generation, params, idem_key, found)``. ``found`` is ``None`` when
+    that generation is still to mint; otherwise it is the newest job —
+    live, succeeded, or failed with the cap reached (``generation ==
+    MAX_SCAN_RETRIES``). Only a ``failed`` status advances the chain."""
+    from precis.quest.compute import _find_job_by_idem_key
+
+    generation = 0
+    while True:
+        gen_params = _generation_params(params, generation)
+        key = _idem_key(candidate_id, geometry, gen_params)
+        found = _find_job_by_idem_key(store, key)
+        if found is None or found[1] != "failed" or generation >= MAX_SCAN_RETRIES:
+            return generation, gen_params, key, found
+        generation += 1
+
+
 def _reached_neb(meta: dict[str, Any] | None) -> bool:
     """The candidate's highest completed rung is at least ``neb`` —
     ``meta.tier`` (the ladder stamp) or the pre-ladder
@@ -221,9 +260,8 @@ def dispatch_surface_anchors(store: Any, quest_id: int, *, hub: Any) -> list[str
     Eligible = reached at least the ``neb`` rung OR on the current merged
     front (see the module docstring). Idempotent on (geometry hash,
     anchor basis): ``_find_job_by_idem_key`` sees every status, so a
-    re-tick never duplicates and a failed scan is not re-minted — the
-    Part A convention."""
-    from precis.quest.compute import _find_job_by_idem_key
+    re-tick never duplicates. A failed scan is re-minted with a fresh seed
+    up to ``MAX_SCAN_RETRIES`` times (:func:`_resolve_scan`)."""
     from precis.quest.gaps import _live_servers
 
     quest = store.fetch_refs_by_ids({quest_id}).get(quest_id)
@@ -247,8 +285,14 @@ def dispatch_surface_anchors(store: Any, quest_id: int, *, hub: Any) -> list[str
                 "has no geometry hash"
             )
             continue
-        params, idem_key = built
-        if _find_job_by_idem_key(store, idem_key) is not None:
+        params, _base_key = built
+        geometry = str((candidate.meta or {}).get("geom_hash_c"))
+        _generation, params, idem_key, found = _resolve_scan(
+            store, candidate.id, geometry, params
+        )
+        if found is not None:
+            # Live, succeeded, or failed with the retry cap spent — the
+            # capped case stays silent: a note here would repeat each tick.
             continue
         if not _reached_neb(candidate.meta):
             if not _measured(candidate.meta):
@@ -488,9 +532,9 @@ def _dispatch_anchor_proposals(
     store: Any, quest_id: int, quest_meta: dict[str, Any], job_handler: Any
 ) -> list[str]:
     """Mint the anchor-placement scans ``propose_anchor_scans`` ranks —
-    the proposal params fold into the idem key, so a repeat proposal (and
-    a failed one, per the Part A convention) is never re-minted."""
-    from precis.quest.compute import _find_job_by_idem_key
+    the proposal params fold into the idem key, so a repeat proposal is
+    never re-minted; a failed one retries like a baseline scan
+    (:func:`_resolve_scan`)."""
     from precis.quest.window_objectives import propose_anchor_scans
 
     try:
@@ -518,8 +562,10 @@ def _dispatch_anchor_proposals(
         if params is None:
             continue
         geometry = str((ref.meta or {}).get("geom_hash_c"))
-        idem_key = _idem_key(cid, geometry, params)
-        if _find_job_by_idem_key(store, idem_key) is not None:
+        _generation, params, idem_key, found = _resolve_scan(
+            store, cid, geometry, params
+        )
+        if found is not None:
             continue
         bad = _params_reason(params)
         if bad is not None:
@@ -740,7 +786,6 @@ def harvest_surface_anchors(
     ``quest_meta`` lets the per-tick caller (``harvest_measures``) hand down
     the quest meta it already fetched rather than paying one fetch per
     candidate; standalone callers may omit it."""
-    from precis.quest.compute import _find_job_by_idem_key
     from precis.quest.logbook import MEASURED_BY, append_entry
 
     if quest_meta is None:
@@ -751,8 +796,11 @@ def harvest_surface_anchors(
     built = _request(quest_meta, candidate)
     if built is None:
         return None
-    _params, idem_key = built
-    found = _find_job_by_idem_key(store, idem_key)
+    params, _base_key = built
+    geometry = str((candidate.meta or {}).get("geom_hash_c"))
+    generation, gen_params, _key, found = _resolve_scan(
+        store, candidate.id, geometry, params
+    )
     if found is None:
         return None
     job_id, status = found
@@ -767,6 +815,8 @@ def harvest_surface_anchors(
     values = {
         "anchors_job_id": job_id,
         "anchor_key": meta.get("anchor_key"),
+        "anchors_retry_generation": generation,
+        "anchors_seed": gen_params.get("seed"),
         "anchors_footing": {
             "model": meta.get("model"),
             "engine_version": meta.get("engine_version"),

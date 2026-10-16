@@ -488,8 +488,6 @@ separate from the propagated/model-form bands.
   sibling as "not installed"; narrow it, and fix `Hub.sibling()` so the
   `pw_handler.hub = self.hub` backfill can go (B2 review).
 - The JS re-tilt and mismatch logic on `/pourbaix` have no test.
-- Failed anchor scans are never re-minted (Part A convention, chosen in B1);
-  a retry cap would need its own idem-key generation.
 
 ## Explicitly NOT in scope
 
