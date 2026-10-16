@@ -1053,14 +1053,15 @@ def router_copper_conflicts(
     if not router_rows:
         return {}
     from precis.pcb import drc as pcb_drc
+    from precis.pcb import gerber as pcb_gerber
     from precis.pcb import realize as pcb_realize
 
     layers = [str(layer.get("name")) for layer in ir.stackup]
-    pads = [
-        p
-        for p in pcb_realize.pads_for_ir(ir, layers, footprints)
-        if str(p.get("refdes")) in members
-    ]
+    all_pads = pcb_realize.pads_for_ir(ir, layers, footprints)
+    pads = [p for p in all_pads if str(p.get("refdes")) in members]
+    # Coating is a board fact: a moved driver group without the electrode
+    # array still sits on the parylene-coated board.
+    coated = pcb_gerber.declares_parylene_coat({"pads": all_pads})
     model = {
         "layers": layers,
         "pads": pads,
@@ -1070,7 +1071,7 @@ def router_copper_conflicts(
         ],
     }
     findings = [
-        *pcb_drc.check_clearance(model, fab_caps),
+        *pcb_drc.check_clearance(model, fab_caps, coated=coated),
         *pcb_drc.check_via_pad_keepout(model, fab_caps),
         *pcb_drc.check_via_via_keepout(model, fab_caps),
     ]

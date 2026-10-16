@@ -282,9 +282,13 @@ def _fp_pad(refdes: str, pin: str, net: str, x: float) -> dict[str, Any]:
     }
 
 
-def _pad_pair_model(ref_a: str, ref_b: str, gap: float) -> dict[str, Any]:
+def _pad_pair_model(
+    ref_a: str, ref_b: str, gap: float, *, parylene: bool = True
+) -> dict[str, Any]:
     # 0.4mm-wide pads: centres 0.4 + gap apart leaves `gap` edge to edge.
-    return {
+    # A field-wide mask_open region is how an EWOD board declares the
+    # parylene coat (drc.declares_parylene_coat, the fab-notes predicate).
+    model: dict[str, Any] = {
         "layers": ["F.Cu"],
         "copper": [],
         "pads": [
@@ -292,6 +296,11 @@ def _pad_pair_model(ref_a: str, ref_b: str, gap: float) -> dict[str, Any]:
             _fp_pad(ref_b, "2", "GND", 0.4 + gap),
         ],
     }
+    if parylene:
+        model["mask_open_regions"] = [
+            {"layer": "F.Mask", "poly": [[-5, -5], [5, -5], [5, 5], [-5, 5]]}
+        ]
+    return model
 
 
 def _hv_floor_rules(floor: float = 0.4) -> dict[str, NetRules]:
@@ -319,9 +328,36 @@ def test_same_footprint_pads_below_class_floor_are_a_warn_fixed_by_part():
     assert "fixed by the part" in f.detail
 
 
-def test_different_footprint_pads_below_class_floor_stay_an_error():
+def test_same_footprint_pads_below_class_floor_without_parylene_stay_an_error():
+    # Reto 2026-10-16: the relaxation is a parylene-coated-board rule only.
     findings = drc.check_clearance(
-        _pad_pair_model("U1", "U2", 0.2), _CAP4, net_rules=_hv_floor_rules()
+        _pad_pair_model("U1", "U1", 0.2, parylene=False),
+        _CAP4,
+        net_rules=_hv_floor_rules(),
+    )
+    assert len(findings) == 1
+    assert findings[0].severity == "error"
+    assert "fixed by the part" not in findings[0].detail
+
+
+def test_explicit_coated_overrides_a_filtered_model_that_lost_the_electrodes():
+    # A moved driver group's model holds only its own pads; the caller
+    # passes the full board's coating answer.
+    findings = drc.check_clearance(
+        _pad_pair_model("U1", "U1", 0.2, parylene=False),
+        _CAP4,
+        net_rules=_hv_floor_rules(),
+        coated=True,
+    )
+    assert [f.severity for f in findings] == ["warn"]
+
+
+@pytest.mark.parametrize("parylene", [True, False])
+def test_different_footprint_pads_below_class_floor_stay_an_error(parylene):
+    findings = drc.check_clearance(
+        _pad_pair_model("U1", "U2", 0.2, parylene=parylene),
+        _CAP4,
+        net_rules=_hv_floor_rules(),
     )
     assert len(findings) == 1
     assert findings[0].severity == "error"

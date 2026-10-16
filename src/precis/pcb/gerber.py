@@ -461,6 +461,19 @@ def soldermask_gerber(model: dict[str, Any], side: str) -> str:
     return _assemble(f"Soldermask,{'Top' if side == 'top' else 'Bot'}", apertures, body)
 
 
+def declares_parylene_coat(model: dict[str, Any]) -> bool:
+    """The board takes the parylene conformal coat: it carries an EWOD
+    array (a ``role: 'electrode'`` pad or a field-wide ``mask_open``
+    region). The one predicate both the fab-notes parylene process order
+    (:func:`fab_notes_txt`) and the intra-footprint clearance relaxation
+    in :func:`precis.pcb.drc.check_clearance` read, so the warn applies
+    exactly where the fab is told to coat."""
+    pads = model.get("pads") or []
+    return any(p.get("role") == "electrode" for p in pads) or bool(
+        model.get("mask_open_regions")
+    )
+
+
 def fab_notes_txt(model: dict[str, Any]) -> str | None:
     """The ``<name>-fab-notes.txt`` rider in the fab bundle — the assembly
     notes a gerber cannot carry (pcb-ewod-multitile.md's "fab-notes text
@@ -480,9 +493,7 @@ def fab_notes_txt(model: dict[str, Any]) -> str | None:
       deposition.
     """
     pads = model.get("pads") or []
-    ewod = any(p.get("role") == "electrode" for p in pads) or bool(
-        model.get("mask_open_regions")
-    )
+    ewod = declares_parylene_coat(model)
     tape_lands = sorted(
         {str(p.get("refdes") or "?") for p in pads if p.get("role") == "tape_land"}
     )

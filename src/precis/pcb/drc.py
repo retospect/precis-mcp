@@ -145,6 +145,7 @@ from precis.pcb.capabilities import CapabilityRow, conductor_spacing_mm
 from precis.pcb.catalog import parse_passive_description
 from precis.pcb.geom import _orient, dist_point_to_segment
 from precis.pcb.geom import dist as _dist
+from precis.pcb.gerber import declares_parylene_coat
 from precis.pcb.ir import COURTYARD_MITRE_LIMIT
 from precis.pcb.rules import NetRules
 from precis.pcb.silk import SilkPlacement
@@ -890,6 +891,7 @@ def check_clearance(
     *,
     net_rules: dict[str, NetRules] | None = None,
     net_voltages: dict[str, float] | None = None,
+    coated: bool | None = None,
 ) -> list[DrcFinding]:
     """Copper-to-copper clearance, different nets — the class-rule check
     (module docstring: "class" = fab process, per JLC's own naming, read
@@ -934,7 +936,13 @@ def check_clearance(
     Coating: ``coated=False`` (the B2 column, the larger requirement).
     Nothing in the schema records whether a board is conformal-coated, so
     the uncoated figure is the honest default rather than a guess that
-    relaxes a safety rule."""
+    relaxes a safety rule.
+
+    The ``coated`` PARAMETER is a separate thing: it only gates the
+    intra-footprint class-floor WARN (Reto 2026-10-16, parylene-coated
+    boards only). ``None`` derives it from ``model`` via
+    :func:`precis.pcb.gerber.declares_parylene_coat`; a caller handing in
+    a FILTERED pad set passes the full board's answer instead."""
     field = "trace_spacing_mm"
     jlc_min = capability.jlc_min[field]
     house = capability.house_default.get(field)
@@ -979,6 +987,7 @@ def check_clearance(
         # the worst spacing any annotated pair could demand, or the term
         # silently never fires on the pairs it exists for.
         query_radius = max(query_radius, _max_voltage_spacing_mm(net_voltages))
+    parylene = declares_parylene_coat(model) if coated is None else coated
     pairs = clearance_pairs_indexed(model, required_mm=query_radius)
     findings: list[DrcFinding] = []
     for i, j, gap, layer in pairs:
@@ -1025,12 +1034,13 @@ def check_clearance(
                 floor = max(floor, *floors)
         # Two pads of ONE footprint sit at the part's vendor-fixed pitch
         # (a 0.65mm-pitch HV sink's VPP and DIOB lands): placement and
-        # routing cannot widen that gap, so a class floor above the fab
-        # minimum between them is a WARN, not a put-blocking error. The
-        # fab minimum itself stays an error, and pads of DIFFERENT
-        # footprints keep the full class floor.
+        # routing cannot widen that gap. On a parylene-coated board (Reto
+        # 2026-10-16) a class floor above the fab minimum between them is
+        # a WARN, not a put-blocking error. Uncoated boards, the fab
+        # minimum itself, and pads of DIFFERENT footprints stay errors.
         if (
-            floor > jlc_min
+            parylene
+            and floor > jlc_min
             and jlc_min - _TIER_EPS <= gap < floor - _TIER_EPS
             and _same_footprint_pads(a, b)
         ):
@@ -1138,12 +1148,11 @@ def _part_fixed_clearance_finding(
     floor: float,
     layer: str,
 ) -> DrcFinding:
-    """The WARN :func:`check_clearance` emits for a pad pair inside one
-    footprint that is below its net-class floor but at or above the fab
-    minimum: names the footprint, both pads, the actual and required
-    clearance, and that the pitch is fixed by the part. Default chosen
-    pending Reto (2026-10-16); an error plus a per-footprint waiver is
-    the possible follow-up."""
+    """The WARN :func:`check_clearance` emits on a parylene-coated board
+    for a pad pair inside one footprint that is below its net-class floor
+    but at or above the fab minimum: names the footprint, both pads, the
+    actual and required clearance, and that the pitch is fixed by the
+    part. Reto 2026-10-16: "Special rule for parylene coated pcbs."."""
     near_a, near_b = _nearest_xy(a, b)
     return DrcFinding(
         rule="clearance",
