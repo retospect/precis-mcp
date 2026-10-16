@@ -33,7 +33,14 @@ from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING, Any
 
 from precis.pcb import catalog
-from precis.pcb._http import BULK_POLICY, Policy, VendorError, with_backoff
+from precis.pcb._http import (
+    BULK_POLICY,
+    TRACE_ID_HEADER,
+    Policy,
+    VendorError,
+    check_envelope,
+    with_backoff,
+)
 from precis.utils.coerce import to_int
 
 if TYPE_CHECKING:
@@ -145,12 +152,15 @@ class _WebPoster:
                 _SERVICE,
                 f"HTTP {resp.status_code} from {LIST_PATH}",
                 status=resp.status_code,
+                trace_id=resp.headers.get(TRACE_ID_HEADER),
             )
         try:
             data = resp.json()
         except ValueError as exc:
             raise VendorError(_SERVICE, f"non-JSON response from {LIST_PATH}") from exc
-        return data if isinstance(data, dict) else {}
+        if not isinstance(data, dict):
+            return {}
+        return check_envelope(_SERVICE, data, resp, LIST_PATH)
 
 
 def walk_listing(

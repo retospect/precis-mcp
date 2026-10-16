@@ -39,8 +39,10 @@ from precis import secrets
 from precis.pcb._http import (
     BULK_POLICY,
     DEFAULT_POLICY,
+    TRACE_ID_HEADER,
     Policy,
     VendorError,
+    check_envelope,
     with_backoff,
 )
 from precis.utils.coerce import to_int
@@ -71,6 +73,18 @@ ACCESS_KEY_SECRET = "JLCPCB_ACCESS_KEY"
 SECRET_KEY_SECRET = "JLCPCB_SECRET_KEY"
 
 _REQUEST_TIMEOUT_S = 30.0
+
+#: Signing timestamp unit. JLC's signature docs
+#: (api.jlcpcb.com/docs/api-request-signature) say seconds; the spike-verified
+#: client has always sent milliseconds. Default stays ms until a verified live
+#: call proves seconds (gr493051) — then flip this one constant.
+TIMESTAMP_SECONDS = False
+
+
+def signing_timestamp() -> str:
+    """Now as the ``timestamp`` signing field, in :data:`TIMESTAMP_SECONDS`' unit."""
+    now = time.time()
+    return str(int(now) if TIMESTAMP_SECONDS else int(now * 1000))
 
 
 class JlcPermissionError(VendorError):
@@ -275,7 +289,11 @@ class JlcApiClient:
         return self._creds is not None
 
     def _roundtrip(
-        self, thunk: Callable[[], httpx.Response], *, policy: Policy
+        self,
+        thunk: Callable[[], httpx.Response],
+        *,
+        policy: Policy,
+        idempotent: bool = True,
     ) -> httpx.Response:
         """Run one prepared send through :func:`with_backoff`; translate a
         403 into :class:`JlcPermissionError` (see module docstring). Split
@@ -289,6 +307,7 @@ class JlcApiClient:
                 policy=policy,
                 sleep=self._sleep,
                 now=self._now,
+                idempotent=idempotent,
             )
         except VendorError as exc:
             if exc.status == 403:
@@ -314,15 +333,23 @@ class JlcApiClient:
                 "jlcpcb",
                 f"HTTP {resp.status_code} from {path}",
                 status=resp.status_code,
+                trace_id=resp.headers.get(TRACE_ID_HEADER),
             )
         try:
             data = resp.json()
         except ValueError as exc:
             raise VendorError("jlcpcb", f"non-JSON response from {path}") from exc
-        return data if isinstance(data, dict) else {}
+        if not isinstance(data, dict):
+            return {}
+        return check_envelope("jlcpcb", data, resp, path)
 
     def _call(
-        self, path: str, payload: dict[str, Any], *, policy: Policy
+        self,
+        path: str,
+        payload: dict[str, Any],
+        *,
+        policy: Policy,
+        idempotent: bool = True,
     ) -> dict[str, Any]:
         """Sign + send one JSON POST through :func:`with_backoff`; return
         the decoded body. Raises :class:`JlcPermissionError` on 403 (see
@@ -334,7 +361,7 @@ class JlcApiClient:
         body = json.dumps(payload, separators=(",", ":"), sort_keys=True)
 
         def _thunk() -> httpx.Response:
-            timestamp = str(int(time.time() * 1000))
+            timestamp = signing_timestamp()
             nonce = uuid.uuid4().hex
             headers = {
                 "Content-Type": "application/json",
@@ -349,7 +376,8 @@ class JlcApiClient:
             }
             return self._send("POST", path, headers, body)
 
-        return self._finish(self._roundtrip(_thunk, policy=policy), path)
+        resp = self._roundtrip(_thunk, policy=policy, idempotent=idempotent)
+        return self._finish(resp, path)
 
     def component_info(self, lcsc: str) -> dict[str, Any] | None:
         """One C-number's live existence/stock/price/basic-vs-extended —

@@ -26,7 +26,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import httpx
@@ -56,12 +56,23 @@ class VendorError(Exception):
         status: int | None = None,
         body: str | None = None,
         url: str | None = None,
+        code: str | int | None = None,
+        trace_id: str | None = None,
     ):
         self.service = service
         self.status = status
         self.body = body
         self.url = url
+        #: The vendor's business ``code`` from a 200 body, when that is
+        #: what failed (JLC answers 200 with ``success: false``).
+        self.code = code
+        #: The vendor's request id (JLC: ``J-Trace-ID``) — what support asks for.
+        self.trace_id = trace_id
         message = f"{service}: {detail}"
+        if code is not None:
+            message += f" code={code}"
+        if trace_id:
+            message += f" trace_id={trace_id}"
         if url:
             message += f" [{url}]"
         if body:
@@ -186,6 +197,57 @@ def _retry_after(resp: httpx.Response) -> float | None:
     return secs if 0.0 <= secs <= 900.0 else None
 
 
+def _is_connect_phase(exc: BaseException) -> bool:
+    """True when the request cannot have reached the server (no connection,
+    or no pooled connection), so re-sending cannot duplicate anything."""
+    import httpx
+
+    return isinstance(
+        exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
+    )
+
+
+#: JLC's response header naming the request, for support tickets.
+TRACE_ID_HEADER = "J-Trace-ID"
+
+
+def _code_ok(code: Any) -> bool:
+    """Lenient success test: 0/200 in any numeric spelling ("200.0",
+    "000000") or the words ok/success; anything else is a failure."""
+    text = str(code).strip().lower()
+    if text in ("ok", "success"):
+        return True
+    try:
+        return int(float(text)) in (0, 200)
+    except ValueError:
+        return False
+
+
+def check_envelope(
+    service: str, data: dict[str, Any], resp: httpx.Response, path: str
+) -> dict[str, Any]:
+    """Raise :class:`VendorError` (with code + trace id) when a 200 body
+    carries a failed business envelope: ``success`` false, or — with no
+    ``success`` field — a ``code`` other than 0/200. A body with neither
+    field is passed through (not every endpoint wraps)."""
+    success = data.get("success")
+    code = data.get("code")
+    failed = success is False or (
+        success is None and code is not None and not _code_ok(code)
+    )
+    if failed:
+        msg = data.get("message") or data.get("msg") or "no message"
+        raise VendorError(
+            service,
+            f"business failure from {path}: {str(msg)[:200]}",
+            status=resp.status_code,
+            code=code,
+            trace_id=resp.headers.get(TRACE_ID_HEADER),
+            url=path,
+        )
+    return data
+
+
 def with_backoff(
     send: Callable[[], httpx.Response],
     *,
@@ -195,6 +257,7 @@ def with_backoff(
     now: Callable[[], float] = time.monotonic,
     rng: random.Random | None = None,
     wall: Callable[[], datetime] = lambda: datetime.now(UTC),
+    idempotent: bool = True,
 ) -> httpx.Response:
     """Call ``send()`` under the politeness rules; return the final response.
 
@@ -204,6 +267,12 @@ def with_backoff(
     :class:`VendorUnavailable` when retries are exhausted or the breaker is
     open. A non-retryable non-fatal status (a 404, say) is *returned* — the
     caller knows what its own 404 means; we do not.
+
+    ``idempotent=False`` is for POSTs that create something (an order, an
+    upload): only connect-phase errors (the request never reached the
+    server) and 429 (rejected unprocessed) are retried. A read timeout or a
+    5xx may follow a server-side commit, so those raise :class:`VendorError`
+    at once rather than risk a duplicate.
     """
     import httpx
 
@@ -246,6 +315,14 @@ def with_backoff(
         try:
             resp = send()
         except httpx.HTTPError as exc:
+            if not idempotent and not _is_connect_phase(exc):
+                _trip(circuit, policy, now)
+                raise VendorError(
+                    service,
+                    "transport error after the request may have been sent, "
+                    "not retried (non-idempotent; check the account for a "
+                    f"created order before re-sending): {exc}",
+                ) from exc
             last_detail = f"transport error: {exc}"
             last_status = None
             last_body = None
@@ -278,10 +355,23 @@ def with_backoff(
             last_status = resp.status_code
             last_body = _body_prefix(resp)
             last_url = _url_of(resp)
+            if not idempotent and resp.status_code != 429:
+                _trip(circuit, policy, now)
+                raise VendorError(
+                    service,
+                    f"HTTP {resp.status_code}, not retried (non-idempotent; "
+                    "the server may have committed — check the account for "
+                    "a created order before re-sending)",
+                    status=resp.status_code,
+                    body=last_body,
+                    url=last_url,
+                    trace_id=resp.headers.get(TRACE_ID_HEADER),
+                )
             hinted = _retry_after(resp)
             if hinted is not None and attempt < policy.attempts - 1:
                 _trip(circuit, policy, now)
-                sleep(hinted)
+                # Clamp: a LIVE caller must not block for the server's 900 s.
+                sleep(min(hinted, policy.cap))
                 continue
 
         _trip(circuit, policy, now)
@@ -336,9 +426,11 @@ __all__ = [
     "EASYEDA_POLICY",
     "FATAL_STATUSES",
     "RETRY_STATUSES",
+    "TRACE_ID_HEADER",
     "Policy",
     "VendorError",
     "VendorUnavailable",
+    "check_envelope",
     "reset_circuit",
     "with_backoff",
 ]

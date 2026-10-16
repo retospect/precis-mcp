@@ -278,7 +278,7 @@ class JlcOrderClient(jlc_api.JlcApiClient):
         meta_json = json.dumps(meta or {}, separators=(",", ":"), sort_keys=True)
 
         def _thunk() -> httpx.Response:
-            timestamp = str(int(time.time() * 1000))
+            timestamp = jlc_api.signing_timestamp()
             nonce = uuid.uuid4().hex
             headers = {
                 "Authorization": jlc_api._authorization_header(
@@ -292,7 +292,7 @@ class JlcOrderClient(jlc_api.JlcApiClient):
             }
             return self._upload(GERBER_UPLOAD_PATH, headers, meta_json, filename, blob)
 
-        resp = self._roundtrip(_thunk, policy=DEFAULT_POLICY)
+        resp = self._roundtrip(_thunk, policy=DEFAULT_POLICY, idempotent=False)
         file_key = _extract_file_key(self._finish(resp, GERBER_UPLOAD_PATH))
         if not file_key:
             raise VendorError(
@@ -313,7 +313,13 @@ class JlcOrderClient(jlc_api.JlcApiClient):
                 "create_order refused: pass confirm='add-to-cart' verbatim "
                 "— there is no cart endpoint, this call creates the order",
             )
-        return self._call(ORDER_CREATE_PATH, request, policy=DEFAULT_POLICY)
+        # Non-idempotent: a retry after a read timeout/5xx could create a
+        # second unpaid order. Chosen over an existence check because the
+        # Open API has no lookup by request (order/detail needs the batchNum
+        # that create returns, which a lost response never delivered).
+        return self._call(
+            ORDER_CREATE_PATH, request, policy=DEFAULT_POLICY, idempotent=False
+        )
 
 
 __all__ = [
