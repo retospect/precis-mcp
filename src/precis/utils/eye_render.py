@@ -63,6 +63,7 @@ import weakref
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from precis.errors import NotFound
 from precis.utils import handle_registry
 from precis.utils.refeye import RING_GROUP_KIND_RANK, RING_GROUPS, ring_group
 from precis.workers.working_set import Extent
@@ -834,13 +835,14 @@ def _first_hop(
     the collected form of :func:`_link_neighbors`, shared with the second
     hop, which walks out from exactly these neighbours. ``ring`` narrows
     the neighbours kept; ``RING_GROUP_KIND_RANK`` then orders each label
-    block (Roadmap lists sub-quests before papers)."""
-    links = store.links_for(ref_id, direction="both")
-    by_label = _bucket_edges(
-        store,
-        ref_id,
-        [(int(lk.src_ref_id), int(lk.dst_ref_id), lk.relation) for lk in links],
-    )
+    block (Roadmap lists sub-quests before papers).
+
+    The edges come from :meth:`Store.neighbourhood` (the web graph panel's
+    read), so both surfaces see one neighbour set: retired far ends and
+    self-links dropped, an inbound edge's relation read through the
+    ``relations.inverse_slug`` map. The ring keeps its own per-label cap,
+    so the read is uncapped here; it is walked oldest link first."""
+    by_label = _bucket_edges(store, ref_id, _neighbourhood_edges(store, ref_id))
     if not by_label:
         return {}, {}
     refs = store.fetch_refs_by_ids({o for oids in by_label.values() for o in oids})
@@ -862,6 +864,42 @@ def _first_hop(
                 key=lambda o: pri.get(str(getattr(refs[o], "kind", "")), len(rank))
             )
     return live, refs
+
+
+#: ``cap`` for the ring's :meth:`Store.neighbourhood` read: past any real
+#: ref's link count (the ring caps per label at render time), inside int4.
+_NBH_UNCAPPED = 1_000_000
+
+
+def _neighbourhood_edges(store: Store, ref_id: int) -> list[tuple[int, int, Any]]:
+    """``ref_id``'s live first-hop edges as stored ``(src, dst, relation)``,
+    oldest link first, read through :meth:`Store.neighbourhood`.
+
+    ``neighbourhood`` presents an inbound edge under its inverse slug; the
+    inverse map is an involution, so mapping it back gives the stored slug
+    that :func:`_bucket_edges` labels from this side."""
+    focus = store.fetch_refs_by_ids({ref_id}).get(ref_id)
+    if focus is None:
+        return []
+    try:
+        nbh = store.neighbourhood(str(focus.kind), ref_id, cap=_NBH_UNCAPPED)
+    except NotFound:
+        return []
+    far_of = {
+        handle_registry.try_format(n["kind"], n["id"]) or f"{n['kind']}:{n['id']}": n[
+            "id"
+        ]
+        for n in nbh["nodes"]
+    }
+    inverses, _symmetric = _relation_reading(store)
+    edges: list[tuple[int, int, Any]] = []
+    for e in reversed(nbh["edges"]):
+        if e["dir"] == "out":
+            edges.append((ref_id, int(far_of[e["dst"]]), e["rel"]))
+        else:
+            rel = inverses.get(e["rel"], e["rel"])
+            edges.append((int(far_of[e["src"]]), ref_id, rel))
+    return edges
 
 
 def _live(refs: dict[int, Any], oid: int) -> bool:

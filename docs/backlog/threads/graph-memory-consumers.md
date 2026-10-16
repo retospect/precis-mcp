@@ -3,7 +3,7 @@
 ## Resume
 
 - **Pillar:** memory-graph
-- **Next:** Rewire `utils/eye_render.py::_first_hop` onto `Store.neighbourhood` (Do next 1). Recall, walk and keep shipped and passed the prod dogfood 2026-10-15 (memory-recall-walk-keep deleted on ship): `search(kind='memory', view='index')`, `get(view='fisheye+1hop+recall')`, the mirror's legacy/unexported reports. The production cutover and host bootstrap are active: root me474312, namespace repo-dev-harness-20261007. AGENTS carries the shared policy and bootstrap locator; CLAUDE links to it. Preserve the original pointer and immutable recovery evidence.
+- **Next:** Do next 3 (memory-native-authoring); the `_first_hop` rewire shipped 2026-10-15 with byte-identical rings. Recall, walk and keep shipped and passed the prod dogfood 2026-10-15 (memory-recall-walk-keep deleted on ship): `search(kind='memory', view='index')`, `get(view='fisheye+1hop+recall')`, the mirror's legacy/unexported reports. The production cutover and host bootstrap are active: root me474312, namespace repo-dev-harness-20261007. AGENTS carries the shared policy and bootstrap locator; CLAUDE links to it. Preserve the original pointer and immutable recovery evidence.
 - **Blocked by:** Nothing. Preserve 146 legacy nodes/356 links; title-only retire supersedes refresh. Native CLI export is deferred; immutable input, full production readback and locked legacy backup satisfy recovery.
 - **Unblocks:** One link neighbourhood for every render: the MCP rings, the web panel and focus page cannot disagree about what is linked.
 - **Acceptance:** after the rewire, `tests/test_eye_render.py` and `tests/test_finding.py` stay green and the memory/finding 1-hop render is unchanged on their fixtures; check `scripts/main-ci-status` and prod's sha (`get(kind='skill', id='precis-status')`) before any live step.
@@ -82,15 +82,11 @@ and the R17 ruling keeps files and graph coexisting. Kept for the record.
 
 ## Do next
 
-1. **Rewire `eye_render._first_hop` onto `Store.neighbourhood`** — the
-   follow-up recall-walk-keep slice 1a filed (2026-10-07) and never built.
-   `_first_hop` still calls `store.links_for(direction='both')` and applies
-   its own grouping; the web graph route uses `neighbourhood`. Move the
-   ring data onto `neighbourhood(depth=1)` so the MCP rings and the web
-   panel share one inverse rule and one cap. Touches every link kind's
-   render (`finding` included): `tests/test_eye_render.py`,
-   `tests/test_finding.py`. Also open from that item: the mirror
-   acceptance test rewrites the tracked
+1. **Open from the `_first_hop` rewire:** the ring now reads
+   `Store.neighbourhood` (one neighbour set and inverse map with the web
+   panel) but keeps its own per-label cap and reads uncapped; adopting
+   `neighbourhood`'s 200-node cap would change hub renders, so it needs a
+   ruling. The mirror acceptance test rewrites the tracked
    `.scratch/memory-mirror-acceptance.json` on every run (revert it before
    committing); a change there touches an attested test (me481899).
 2. **memory-file-mirror** — SHIPPED and deployed, backlog doc deleted
