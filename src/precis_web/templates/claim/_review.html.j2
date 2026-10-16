@@ -275,6 +275,10 @@
       {# ── one action, labelled by the state's transition ── #}
       <section class="rounded-lg border border-slate-200 bg-white p-4 space-y-3 text-sm">
         <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-400">Action</h3>
+        <form method="post" action="/nanopub/fi{{ hub_ref_id }}/refine-now">
+          <button class="px-3 py-1.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-100 text-xs"
+                  title="Run the evidence-refine pass (verify, method-gap, reground) over this claim now">Refine now</button>
+        </form>
         {% if np.action == 'approve' %}
         <form method="post" action="/nanopub/fi{{ hub_ref_id }}/approve" class="space-y-2">
           {% if np.approve_error %}
@@ -435,6 +439,10 @@
     </h3>
     <p class="text-xs text-slate-600">An evidence edge links a paper passage to this claim as support.
       Every new edge starts withheld, and a claim with any withheld edge cannot be published.</p>
+    <form method="post" action="/nanopub/fi{{ hub_ref_id }}/refine-now">
+      <button class="px-3 py-1.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-100 text-xs"
+              title="Run the evidence-refine pass (verify, method-gap, reground) over this claim now">Refine now</button>
+    </form>
     <p class="text-xs text-slate-600">Two ways to release an edge: the automatic verification sweep
       (<span class="font-mono">precis taproot verify-edges</span>, which re-reads the passage against the
       claim and stamps it verified; run it to release edges now, otherwise it happens on the next

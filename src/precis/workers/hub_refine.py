@@ -686,7 +686,13 @@ def _is_hub_due(
 
 
 def _claim_hubs_due_for_refine(
-    conn: Connection, store: Store, *, limit: int, backstop_h: float
+    conn: Connection,
+    store: Store,
+    *,
+    limit: int,
+    backstop_h: float,
+    only_hub: int | None = None,
+    dry_run: bool = False,
 ) -> list[int]:
     """Lock and return up to ``limit`` claim-hub ``ref_id``s due for refine.
 
@@ -714,6 +720,12 @@ def _claim_hubs_due_for_refine(
     predicate :func:`_is_composite_hub` checks per-hub, deliberately
     re-derived rather than shared (module docstring's "cross-task seam"
     note).
+
+    ``only_hub`` is the refine-now door (:func:`refine_hub_now`): the scan
+    narrows to that one hub and due-ness is waived, but every other gate
+    (claim hub, not composite, no standing attempt lease, row lock) still
+    applies. ``dry_run`` returns the ids that would be claimed and writes
+    nothing (no lease, no tag pop).
     """
     rows = conn.execute(
         f"""
@@ -750,6 +762,7 @@ def _claim_hubs_due_for_refine(
            AND {_CLAIM_HUB_SQL}
            AND {_NOT_HYPOTHESIS_SQL}
            AND {_WIDENABLE_SQL}
+           AND (%(only_hub)s::bigint IS NULL OR r.ref_id = %(only_hub)s::bigint)
            AND NOT EXISTS (
                  SELECT 1 FROM links l
                   JOIN refs a ON a.ref_id = l.src_ref_id
@@ -763,6 +776,7 @@ def _claim_hubs_due_for_refine(
             "due_ns": _DUE_NS,
             "due_value": _DUE_VALUE,
             "attempt_ns": _ATTEMPT_NS,
+            "only_hub": only_hub,
             **CLAIM_HUB_PREDICATE_PARAMS,
             **NOT_HYPOTHESIS_PREDICATE_PARAMS,
         },
@@ -787,7 +801,7 @@ def _claim_hubs_due_for_refine(
         meta = dict(meta or {})
         last_refined_at = meta.get(_META_LAST_REFINED_AT)
         last_refined_sha = meta.get(_META_LAST_REFINED_SHA)
-        if _is_hub_due(
+        if only_hub is not None or _is_hub_due(
             is_due_tagged=bool(is_due_tagged),
             has_coverage=bool(has_coverage),
             last_refined_at=last_refined_at,
@@ -815,6 +829,8 @@ def _claim_hubs_due_for_refine(
     ).fetchall()
     priority = {ref_id: i for i, ref_id in enumerate(candidate_ids)}
     locked_ids = sorted((int(r[0]) for r in locked_rows), key=lambda rid: priority[rid])
+    if dry_run:
+        return locked_ids
 
     for ref_id in locked_ids:
         store.add_tag(
@@ -4392,6 +4408,8 @@ def run_hub_refine_pass(
     topk: int | None = None,
     min_sim: float | None = None,
     reground: RegroundConfig | None = None,
+    only_hub: int | None = None,
+    dry_run: bool = False,
 ) -> dict[str, int]:
     """One pass: claim due hubs, discover + verify + attach corroborators.
 
@@ -4442,9 +4460,16 @@ def run_hub_refine_pass(
 
     with store.pool.connection() as conn:
         hub_ids = _claim_hubs_due_for_refine(
-            conn, store, limit=resolved_limit, backstop_h=resolved_backstop_h
+            conn,
+            store,
+            limit=resolved_limit,
+            backstop_h=resolved_backstop_h,
+            only_hub=only_hub,
+            dry_run=dry_run,
         )
         conn.commit()
+    if dry_run:
+        return {"claimed": 0, "ok": 0, "failed": 0, "eligible": len(hub_ids)}
 
     claimed = len(hub_ids)
     ok = 0
@@ -4530,6 +4555,31 @@ def run_hub_refine_pass(
     return result
 
 
+def refine_hub_now(
+    store: Store, hub_ref_id: int, *, embedder: Any | None, dry_run: bool = False
+) -> dict[str, int]:
+    """The per-hub "refine now" door (gr493058): one synchronous
+    :func:`run_hub_refine_pass` over ``hub_ref_id`` alone, due-ness waived.
+
+    Same gates as the cadence: claim-hub/composite filters, the standing
+    :data:`_ATTEMPT_NS` lease (a hub mid-attempt or cooling down returns
+    ``claimed=0``), the verifier/method-gap budgets and
+    ``PRECIS_TAPROOT_REGROUND`` gating. It is a one-hub pass, so it counts
+    against nothing else. ``dry_run`` reports ``eligible`` (0/1) and writes
+    nothing. Returns the pass's counter dict; raises ``BadInput`` with no
+    embedder (the pass would otherwise report a misleading ``claimed=0``).
+    """
+    from precis.errors import BadInput
+
+    if embedder is None:
+        raise BadInput(
+            "refine-now needs an embedder (set config.embedder / PRECIS_EMBEDDER_URL)"
+        )
+    return run_hub_refine_pass(
+        store, limit=1, embedder=embedder, only_hub=int(hub_ref_id), dry_run=dry_run
+    )
+
+
 __all__ = [
     "DEPTH_ABSTRACT_OK",
     "DEPTH_BODY_REQUIRED",
@@ -4551,6 +4601,7 @@ __all__ = [
     "is_front_matter",
     "judge_edge_strict",
     "prune_interlock_open",
+    "refine_hub_now",
     "reground_one_hub",
     "repair_hub_intent",
     "run_hub_refine_pass",

@@ -362,6 +362,43 @@ async def nanopub_sign(
     return _back_to_hub(hub_id)
 
 
+@router.post("/nanopub/fi{hub_id}/refine-now", response_model=None)
+async def nanopub_refine_now(request: Request, hub_id: int) -> Response:
+    """Run the hub_refine pass over this one hub now (gr493058) — the
+    same door as ``precis taproot refine-hub`` and
+    ``edit(kind='finding', args={'refine': 'now'})``. Respects the attempt
+    lease: a hub mid-attempt answers 409, not a silent no-op."""
+    from starlette.concurrency import run_in_threadpool
+
+    from precis.workers.hub_refine import refine_hub_now
+
+    store = get_store(request)
+    from precis.errors import BadInput
+
+    try:
+        result = await run_in_threadpool(
+            refine_hub_now, store, hub_id, embedder=get_embedder(request)
+        )
+    except BadInput as exc:
+        return _error(request, "Refine not started", str(exc), 503)
+    if result.get("failed"):
+        return _error(
+            request,
+            "Refine failed",
+            "the refine pass raised for this claim; see the worker log",
+            500,
+        )
+    if not result.get("claimed"):
+        return _error(
+            request,
+            "Refine not started",
+            "not a claim hub, composite, or a refine attempt is already "
+            "running or cooling down — try again in a few minutes",
+            409,
+        )
+    return _back_to_hub(hub_id)
+
+
 @router.post("/nanopub/fi{hub_id}/reopen", response_model=None)
 async def nanopub_reopen(request: Request, hub_id: int) -> Response:
     store = get_store(request)

@@ -1562,6 +1562,9 @@ def edit(
     # already exist above — these are the same names, edit's sharpen door.
     testable_by: str | None = None,
     motivation: str | None = None,
+    # finding-specific (claim hub, gr493058): refine='now' runs the
+    # hub_refine pass over this one hub synchronously (dry_run= previews).
+    refine: str | None = None,
     # draft (see precis-draft-help): reorder/reparent a chunk by intent,
     # move={before|after|into:'¶handle'} / {first|last:true}. No text.
     move: dict[str, Any] | None = None,
@@ -1759,6 +1762,7 @@ def edit(
         "pick_candidate": pick_candidate,
         "testable_by": testable_by,
         "motivation": motivation,
+        "refine": refine,
         "move": move,
         "base_sha": base_sha,
         "not_abbrev": not_abbrev,

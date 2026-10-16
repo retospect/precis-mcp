@@ -1520,6 +1520,7 @@ class FindingHandler(NumericRefHandler):
         motivation: str | None = None,
         meta: dict[str, Any] | None = None,
         dry_run: bool | str | None = None,
+        refine: str | None = None,
         **_kw: Any,
     ) -> Response:
         """Resolve a ``STATUS:multi_candidate`` finding by picking one cite,
@@ -1541,7 +1542,27 @@ class FindingHandler(NumericRefHandler):
         ``_finding_hypothesis.update_hypothesis``) — the state machine lives
         there since it only ever touches ``self.store``/``self.kind``, not
         any other handler state.
+
+        ``refine='now'`` (hub only, exclusive with every other kwarg except
+        ``dry_run``) runs the hub_refine pass over that one hub synchronously
+        (:func:`precis.workers.hub_refine.refine_hub_now`) and reports the
+        pass counters; the attempt lease and regrounding gates apply.
         """
+        if refine is not None:
+            if any(
+                v is not None
+                for v in (
+                    pick_candidate,
+                    title,
+                    unacquirable_note,
+                    unacquirable_mode,
+                    testable_by,
+                    motivation,
+                    meta,
+                )
+            ):
+                raise BadInput("refine='now' is exclusive with the other edit kwargs")
+            return self._refine_now(id, refine, dry_run)
         return _finding_edit.edit(
             self.store,
             kind=self.kind,
@@ -1555,6 +1576,35 @@ class FindingHandler(NumericRefHandler):
             meta=meta,
             dry_run=dry_run,
         )
+
+    def _refine_now(
+        self, id: int | str | None, refine: str, dry_run: bool | str | None
+    ) -> Response:
+        from precis.taproot.authoring import resolve_hub_ref_id
+        from precis.workers.hub_refine import refine_hub_now
+
+        if str(refine).strip().lower() != "now":
+            raise BadInput("refine= accepts only 'now'")
+        if id is None:
+            raise BadInput("refine='now' needs id=<claim hub>")
+        hub_id = resolve_hub_ref_id(self.store, id)
+        dry = str(dry_run).strip().lower() in ("1", "true", "yes")
+        result = refine_hub_now(
+            self.store,
+            hub_id,
+            embedder=getattr(self.hub, "embedder", None),
+            dry_run=dry,
+        )
+        body = " ".join(f"{k}={v}" for k, v in result.items())
+        note = ""
+        if result.get("failed"):
+            note = " — the refine raised; see the worker log (attempt lease stands)"
+        elif not dry and not result.get("claimed"):
+            note = (
+                " — not claimed: not a claim hub, composite, or an attempt "
+                "lease is standing (retry after the cooldown)"
+            )
+        return Response(body=f"refine fi{hub_id}: {body}{note}")
 
     # ──────────────────────────────────────────────────────────────────
     # cite — explicitly not supported

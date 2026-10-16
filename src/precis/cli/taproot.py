@@ -257,6 +257,22 @@ def add_parser(subparsers: Any) -> None:
         "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
     )
 
+    rh = tsub.add_parser(
+        "refine-hub",
+        help="Run the hub_refine pass (all arms, same gates and attempt "
+        "lease) over ONE claim hub now, due-ness waived; prints the pass "
+        "counters (gr493058).",
+    )
+    rh.add_argument("--hub", required=True, help="Claim hub (fi<id> or ref_id).")
+    rh.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report whether the hub is claimable; write nothing.",
+    )
+    rh.add_argument(
+        "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
+    )
+
     ve = tsub.add_parser(
         "verify-edges",
         help="Verify withheld/unverified evidence edges against their pinned "
@@ -2223,12 +2239,62 @@ def _run_numeral_audit(args: argparse.Namespace) -> None:
         store.close()
 
 
+def _run_refine_hub(args: argparse.Namespace) -> None:
+    """``precis taproot refine-hub`` -- :func:`workers.hub_refine.refine_hub_now`."""
+    from precis.config import load_config
+    from precis.errors import BadInput
+    from precis.runtime import build_runtime
+    from precis.taproot.authoring import resolve_hub_ref_id
+    from precis.workers.hub_refine import refine_hub_now
+
+    cfg = load_config()
+    dsn = resolve_dsn(args.database_url)
+    if dsn:
+        cfg = cfg.model_copy(update={"database_url": dsn})
+    runtime = build_runtime(cfg, interactive=False)
+    store = runtime.store
+    if store is None:
+        print("taproot refine-hub: no database configured", file=sys.stderr)
+        sys.exit(2)
+    try:
+        token = args.hub.strip()
+        hub = resolve_hub_ref_id(store, int(token) if token.isdigit() else token)
+    except BadInput as exc:
+        print(f"taproot refine-hub: error: {exc}", file=sys.stderr)
+        sys.exit(2)
+    try:
+        result = refine_hub_now(
+            store,
+            hub,
+            embedder=getattr(runtime.hub, "embedder", None),
+            dry_run=bool(args.dry_run),
+        )
+    except BadInput as exc:
+        print(f"taproot refine-hub: error: {exc}", file=sys.stderr)
+        sys.exit(2)
+    print(
+        f"taproot refine-hub: fi{hub} "
+        + " ".join(f"{k}={v}" for k, v in result.items())
+    )
+    if not args.dry_run and result.get("claimed") == 0:
+        print(
+            "taproot refine-hub: not claimed (not a claim hub, composite, or "
+            "an attempt lease is standing)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if result.get("failed"):
+        sys.exit(1)
+
+
 def run(args: argparse.Namespace) -> None:
     """Execute ``precis taproot <taproot_cmd>``."""
     if args.taproot_cmd == "mint":
         _run_mint(args)
     elif args.taproot_cmd == "refine":
         _run_refine(args)
+    elif args.taproot_cmd == "refine-hub":
+        _run_refine_hub(args)
     elif args.taproot_cmd == "merge":
         _run_merge(args)
     elif args.taproot_cmd == "backfill":
