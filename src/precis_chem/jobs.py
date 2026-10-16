@@ -41,7 +41,6 @@ import logging
 import os
 import subprocess
 from dataclasses import replace
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -595,21 +594,18 @@ def _steer_pending(
         key = steer.steer_key(s, graph)
         entry = cache.get(key)
         if entry is None or s == redo:
-            scores = steer.steer(s, graph)  # one routed call per candidate
+            # one routed call per candidate in the pre-rank's top LLM_TOP_K
+            scores = steer.steer(s, graph)
             if not any(x.score is not None for x in scores):
                 err = scores[0].error if scores else "no candidates"
                 kept = "previous ranking kept" if entry else "left uncached"
+                asked = sum(1 for x in scores if not x.below_fold)
                 lines.append(
-                    f"steer '{s}': all {len(scores)} candidate(s) unscored "
+                    f"steer '{s}': all {asked} candidate(s) sent to the LLM unscored "
                     f"({err}) — {kept}, a re-run retries"
                 )
                 continue
-            entry = {
-                "strategy": s,
-                "prompt": steer.PROMPT_VERSION,
-                "scores": [x.to_json() for x in scores],
-                "at": datetime.now(UTC).isoformat(),
-            }
+            entry = steer.cache_entry(s, scores)
             cache[key] = entry
         scores = [steer.SteerScore.from_json(x) for x in entry.get("scores") or []]
         best = next((x for x in scores if x.score is not None), None)

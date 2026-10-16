@@ -60,7 +60,10 @@ the rerank runs (a steer-only job, or inline without a route node).
 miss it prints the exact `put` to run. AiZynth returns several routes, and
 precis keeps the top route plus up to 9 alternatives. Each route is
 scored 0–10 by an LLM for how well it fits your plain-language strategy,
-and the scores come back with rationales, best first. This changes only
+and the scores come back with rationales, best first. A deterministic
+pre-rank (hazards, steps, protecting groups, unsolved steps) orders all
+routes first and drops none; the LLM scores only its top 5, the rest are
+listed unscored. `view='steer'` shows both the pre-rank and final order. This changes only
 the ranking. It does not check feasibility, and it does not make the
 engine search differently. The scores are cached per strategy;
 `put(..., strategy='…', refresh=True)` asks again and keeps the old

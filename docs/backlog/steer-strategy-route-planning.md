@@ -45,8 +45,9 @@ itself.
 - The IR keeps alternatives. `RouteGraph.alternatives` holds up to 9
   lower-ranked routes. `parse_aizynth_trees` fills it from `trees.json`,
   and the retrosynth job attaches it when `route.json` wins.
-- The rerank makes one routed call per candidate route (at most 10), at
-  Tier.MEDIUM with a $0.05 cap per route. Only `put(strategy=…)` runs it
+- The rerank makes one routed call per scored route (the top
+  `LLM_TOP_K=5` of the slice 5 pre-rank order), at Tier.MEDIUM with a
+  $0.05 cap per route. Only `put(strategy=…)` runs it
   (in the job, or inline without a route node);
   `get(kind='route', id=…, view='steer', q='<strategy>')` reads the cache
   and never calls the model (gr491367). It shows the routes best first,
@@ -64,7 +65,7 @@ Acceptance:
    stored without alternatives still parses.
 2. [x] `view='steer'` refuses an empty strategy or one longer than 500
    characters, and the error suggests a fix.
-3. [x] Each candidate route gets its own LLM call through the model router.
+3. [x] Each scored route gets its own LLM call through the model router.
    No API key is used directly.
 4. [x] Asking again with the same strategy is served from the cache and
    makes no new call.
@@ -120,6 +121,34 @@ Acceptance:
 3. [ ] Dogfood once the new image is built and deployed: request
    `max_routes=20`, check the route keeps >9 candidates and a steer rerank
    sees them. **Blocked on castor image build + deploy.**
+
+### Slice 5: deterministic pre-rank (SHIPPED 2026-10-16, gr491450)
+
+`steer.prerank()` orders all candidates by penalty before any LLM call:
+`PRERANK_WEIGHTS` over hazard (species in `FLAGGED_SPECIES`, rdkit SMARTS
+in `HAZARD_ALERTS`), step count, `longest_seq`, unsolved steps and
+protecting-group steps. It never drops a route. The LLM scores only the top
+`LLM_TOP_K=5` of that order; the rest are listed unscored ("not LLM-scored
+(below the pre-rank top 5)"). The cache entry records both orders
+(`prerank` = engine-rank list, `scores` = final order) plus the weights and
+`prerank_version`; `steer_key` includes `PRERANK_VERSION` and the weights, so
+older caches miss and a put re-ranks. `view='steer'` shows a "pre-rank
+order" line and a per-route "pre-rank #N: penalty …" line; the route page's
+strategy pick shows its pre-rank line. Computed on the put/job path only.
+
+Data gaps: no GHS data in-repo (an AI4Green `hazard_codes.db` is mentioned
+in `reaction-kind-and-synthesis-cost.md`), so hazard is the small local
+tables. No price source, so the cost weight is 0 (neutral).
+
+Acceptance:
+
+1. [x] Pre-rank is deterministic.
+2. [x] It never drops a route.
+3. [x] A route with a flagged hazard sorts below a safer one.
+4. [x] The LLM runs on the put/job path only; the view stays read-only.
+5. [x] `view='steer'` shows both the pre-rank and the final order.
+6. [ ] Dogfood on prod after deploy: check the pre-rank order is sensible
+   and the top 5 cap cuts cost. **Blocked on deploy.**
 
 ### Slice 4: strategy-guided search (paper's full method)
 

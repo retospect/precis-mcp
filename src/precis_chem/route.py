@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import os
 import re
-from datetime import UTC, datetime
 from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
@@ -287,12 +286,9 @@ class RouteHandler(Handler):
             ref = self.store.get_ref(kind="route", id=ref_id)
             meta = (ref.meta if ref is not None else None) or {}
             cache = dict(meta.get("steer") or {})
-            cache[steer.steer_key(strategy, graph)] = {
-                "strategy": strategy,
-                "prompt": steer.PROMPT_VERSION,
-                "scores": [s.to_json() for s in scores],
-                "at": datetime.now(UTC).isoformat(),
-            }
+            cache[steer.steer_key(strategy, graph)] = steer.cache_entry(
+                strategy, scores
+            )
             self.store.stamp_ref_meta(ref_id, {"steer": cache})
         return (
             f"strategy '{strategy}' reranked in-process (no route node).\n\n"

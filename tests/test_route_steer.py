@@ -9,6 +9,7 @@ No model is called: every test injects a fake ``ask`` / patches
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -515,6 +516,91 @@ def test_route_page_leads_with_strategy_pick(
     h.steer_ask = _raising_ask
     assert "cached" in h.get(id="amide", view="steer", q="fastest chloride route").body
     assert len(calls) == 3  # the get made no new call
+
+
+# ── deterministic pre-rank (gr491450) ──────────────────────────────────
+
+
+def _one_step(reactant: str, *, n_steps: int = 1) -> RouteGraph:
+    steps = [
+        RouteStep(
+            id=i + 1, product="CC(=O)NC", reactants=[reactant, "CN"], in_stock=True
+        )
+        for i in range(n_steps)
+    ]
+    return RouteGraph(
+        target="CC(=O)NC",
+        engine="stub",
+        engine_version="0",
+        steps=steps,
+        solved=True,
+    )
+
+
+def test_prerank_is_deterministic_and_keeps_every_route() -> None:
+    first = [p.to_json() for p in steer.prerank(_graph())]
+    second = [p.to_json() for p in steer.prerank(_graph())]
+    assert first == second
+    assert sorted(p["engine_rank"] for p in first) == [1, 2, 3]
+    assert [p["position"] for p in first] == [1, 2, 3]
+
+
+def test_prerank_high_hazard_sorts_below_equivalent_safer_route() -> None:
+    for reactant, name in (("c1ccccc1", "benzene"), ("O=C(Cl)Cl", "phosgene")):
+        g = replace(_one_step(reactant), alternatives=[_one_step("CC(=O)O")])
+        by_engine = {p.engine_rank: p for p in steer.prerank(g)}
+        assert by_engine[1].position == 2 and by_engine[2].position == 1
+        assert name in by_engine[1].factors["hazards"]
+        assert by_engine[2].factors["hazards"] == []
+
+
+def test_steer_scores_only_top_k_and_never_drops_a_route() -> None:
+    # Engine route k has 9-k steps, so the pre-rank order is 9, 8, ..., 1.
+    routes = [_one_step("CC(=O)O", n_steps=9 - k) for k in range(9)]
+    g = replace(routes[0], alternatives=routes[1:])
+    calls: list[str] = []
+
+    def ask(prompt: str) -> tuple[str, str | None]:
+        calls.append(prompt)
+        return "SCORE: 5\nRATIONALE: same.", None
+
+    scores = steer.steer("fewest steps", g, ask=ask)
+    assert len(calls) == steer.LLM_TOP_K
+    assert sorted(s.engine_rank for s in scores) == list(range(1, 10))
+    scored = [s for s in scores if s.score is not None]
+    folded = [s for s in scores if s.below_fold]
+    assert len(scored) == steer.LLM_TOP_K
+    assert len(folded) == 9 - steer.LLM_TOP_K
+    assert all(s.score is None and s.error is None for s in folded)
+    assert scores[: len(scored)] == scored  # below-fold routes come last
+    positions = [s.pre.position for s in folded if s.pre]
+    assert positions == sorted(positions)
+    assert all(s.pre.position > steer.LLM_TOP_K for s in folded if s.pre)
+
+
+def test_model_only_called_on_put_path_prerank_cached_both_orders(
+    route_store: Store,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The put asks the model; neither view='steer' nor the plain page does.
+    The cache holds the pre-rank order next to the final one."""
+    monkeypatch.setattr(StubEngine, "plan", lambda self, t, **kw: _graph())
+    h = RouteHandler(hub=Hub(store=route_store))
+    calls: list[str] = []
+    h.steer_ask = _fake_ask(calls)
+    h.put(id="amide", target="CC(=O)NC", engine="stub", strategy="avoid acid chlorides")
+    assert len(calls) == 3
+
+    [entry] = (_route_meta(route_store, "amide").get("steer") or {}).values()
+    assert entry["prerank"] == [1, 3, 2]
+    assert [s["engine_rank"] for s in entry["scores"]] == [1, 2, 3]
+
+    h.steer_ask = _raising_ask
+    monkeypatch.setattr(steer, "router_ask", _raising_ask)
+    body = h.get(id="amide", view="steer", q="avoid acid chlorides").body
+    assert "pre-rank order" in body and "#1, #3, #2" in body
+    assert "pre-rank #3:" in body and "acyl halide" in body
+    assert "amide" in h.get(id="amide").body  # plain page: no model call
 
 
 def _route_meta(store: Store, id: str) -> dict[str, Any]:
