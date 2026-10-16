@@ -27,7 +27,10 @@ venv into a typed, actionable error instead of an ImportError.
 
 from __future__ import annotations
 
+import http.client
+import json
 import logging
+import random
 import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
@@ -130,14 +133,94 @@ def request_with_deadline(
         raise httpx_mod.ReadTimeout(str(exc)) from exc
 
 
+def _status_of(exc: BaseException) -> int | None:
+    """HTTP status carried by ``exc``, or ``None`` when it has none.
+
+    The ``semanticscholar`` library raises its own types instead of
+    exposing the response (its ``ApiRequester`` maps 400/404/500/504 to
+    exception classes, 403 to ``PermissionError`` and 429 to
+    ``ConnectionRefusedError``); httpx and ``requests`` carry the response
+    on the exception. Only the S2 mapping needs the type-based table.
+    """
+    response = getattr(exc, "response", None)
+    code = getattr(response, "status_code", None)
+    if isinstance(code, int):
+        return code
+    try:
+        from semanticscholar import SemanticScholarException as s2x
+    except ImportError:  # pragma: no cover - optional dependency
+        return None
+    if isinstance(exc, s2x.ServerErrorException):
+        return 504 if isinstance(exc, s2x.GatewayTimeoutException) else 500
+    if isinstance(exc, s2x.ObjectNotFoundException):
+        return 404
+    if isinstance(exc, s2x.BadQueryParametersException):
+        return 400
+    if isinstance(exc, PermissionError):
+        return 403
+    if isinstance(exc, ConnectionRefusedError):
+        return 429
+    return None
+
+
+def _is_transport_error(exc: BaseException) -> bool:
+    """Connection/timeout failures in httpx, ``requests`` or the stdlib."""
+    httpx = require_httpx()
+    if isinstance(
+        exc,
+        (
+            httpx.TransportError,
+            ConnectionError,
+            TimeoutError,
+            http.client.IncompleteRead,
+            # A gateway error page (HTML/empty body) makes the S2 library's
+            # ``r.json()`` raise before it can map 500/504 to its own type.
+            json.JSONDecodeError,
+        ),
+    ):
+        return True
+    try:
+        from requests import exceptions as rex
+    except ImportError:  # pragma: no cover - requests ships with habanero
+        return False
+    return isinstance(
+        exc,
+        (
+            rex.ConnectionError,
+            rex.Timeout,
+            rex.ChunkedEncodingError,
+            rex.ContentDecodingError,
+        ),
+    )
+
+
+def is_retryable_external_error(exc: BaseException) -> bool:
+    """True for transport errors and HTTP 429/5xx; everything else (4xx
+    client errors, programming errors such as ``TypeError``, unknown
+    exceptions) is permanent and must surface immediately."""
+    status = _status_of(exc)
+    if status is not None:
+        return status == 429 or 500 <= status < 600
+    return _is_transport_error(exc)
+
+
 def external_retry(
     *,
     attempts: int = 5,
     wait_min_s: float = 1.0,
     wait_max_s: float = 60.0,
+    sleep: Callable[[float], None] | None = None,
+    uniform: Callable[[float, float], float] = random.uniform,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Shared tenacity retry decorator for outbound external-API calls
-    (S2, Crossref, ...): exponential backoff, five attempts, reraise.
+    (S2, Crossref, ...): full-jitter exponential backoff, five attempts,
+    reraise.
+
+    Only transport errors and HTTP 429/5xx are retried
+    (:func:`is_retryable_external_error`); a 4xx or a programming error
+    propagates on the first attempt. The wait before retry ``n`` is
+    ``uniform(0, min(wait_max_s, wait_min_s * 2**n))`` (full jitter).
+    ``sleep``/``uniform`` are test seams.
 
     Two drain hooks are added so a backoff sleep can't outlive the worker's
     SIGTERM drain budget (a sleep that outlives the drain window gets the
@@ -159,12 +242,22 @@ def external_retry(
         def __call__(self, retry_state: RetryCallState) -> bool:
             return not drain_requested()
 
+    class _retryable(tenacity.retry_base):
+        def __call__(self, retry_state: RetryCallState) -> bool:
+            outcome = retry_state.outcome
+            exc = outcome.exception() if outcome is not None else None
+            return exc is not None and is_retryable_external_error(exc)
+
+    def _full_jitter(retry_state: RetryCallState) -> float:
+        cap = min(wait_max_s, wait_min_s * 2 ** (retry_state.attempt_number - 1))
+        return uniform(0.0, cap)
+
     return tenacity.retry(
-        wait=tenacity.wait_exponential(min=wait_min_s, max=wait_max_s),
+        wait=_full_jitter,
         stop=tenacity.stop_after_attempt(attempts),
-        retry=tenacity.retry_if_exception_type(Exception) & _not_draining(),
+        retry=_retryable() & _not_draining(),
         reraise=True,
-        sleep=_drain_aware_sleep,
+        sleep=sleep if sleep is not None else _drain_aware_sleep,
     )
 
 
@@ -230,6 +323,7 @@ __all__ = [
     "DEFAULT_USER_AGENT",
     "external_retry",
     "http_client",
+    "is_retryable_external_error",
     "request_with_deadline",
     "require_httpx",
     "retry_transient",
