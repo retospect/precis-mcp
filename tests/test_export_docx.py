@@ -729,6 +729,89 @@ def test_endnote_pc_citation_embeds_cited_passage(
     docx.Document(str(out))  # validity
 
 
+def test_adjacent_citations_merge_one_endnote_field(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    """A run of directly adjacent citations becomes ONE ``ADDIN EN.CITE``
+    field carrying several ``<Cite>`` elements — exactly how EndNote itself
+    writes a grouped citation (gr491598). Spaced-apart cites keep their own
+    fields, and a single cite stays one ``<Cite>``."""
+    import zipfile
+
+    store = hub.live_store
+    _seed_paper(store, "p1", "Paper one", 2001)
+    _seed_paper(store, "p2", "Paper two", 2002)
+    _seed_paper(store, "p3", "Paper three", 2003)
+    _seed_paper(store, "p4", "Paper four", 2004)
+    pid = int(
+        TodoHandler(hub=hub)
+        .put(text="proj")
+        .body.split("id=")[1]
+        .split()[0]
+        .rstrip(",.()")
+    )
+    draft.put(id="adj", title="T", project=pid)
+    for text in (
+        "Merged [§p1][§p2] pair.",
+        "Spaced [§p1] [§p2] apart.",
+        "Solo [§p4]",
+    ):
+        draft.put(id="adj", chunk_kind="paragraph", text=text, at={"last": True})
+    ref = store.get_ref(kind="draft", id="adj")
+    out = tmp_path / "adj.docx"
+    export_docx(store, ref, target_path=out, citations="endnote")
+    body = zipfile.ZipFile(out).read("word/document.xml").decode("utf-8")
+    # Fields: 1 merged (2 cites) + 2 spaced singles + 1 solo = 4.
+    assert body.count(" ADDIN EN.CITE ") == 4
+    # <Cite> elements: 2 + 1 + 1 + 1 = 5, the merged field carrying two
+    # back-to-back.
+    assert body.count("&lt;Cite&gt;") == 5
+    assert "&lt;/Cite&gt;&lt;Cite&gt;" in body
+    docx.Document(str(out))  # validity
+
+
+def test_adjacent_citations_merge_plain_mark(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    """Plain (non-field) mode renders the same adjacent run merged —
+    ``[1, 2]``, a run of ≥3 consecutive numbers ``[1–3]`` — mirroring
+    ``export/latex.py::_merge_adjacent_cites`` (biblatex numeric-comp).
+    Whitespace-separated cites stay separate; a single cite is unchanged."""
+    store = hub.live_store
+    _seed_paper(store, "p1", "Paper one", 2001)
+    _seed_paper(store, "p2", "Paper two", 2002)
+    _seed_paper(store, "p3", "Paper three", 2003)
+    _seed_paper(store, "p4", "Paper four", 2004)
+    pid = int(
+        TodoHandler(hub=hub)
+        .put(text="proj")
+        .body.split("id=")[1]
+        .split()[0]
+        .rstrip(",.()")
+    )
+    draft.put(id="pm", title="T", project=pid)
+    for text in (
+        "Pair [§p1][§p2] here.",
+        "Triple [§p1][§p2][§p3] run.",
+        "Spaced [§p1] [§p2] apart.",
+        "Solo [§p4]",
+    ):
+        draft.put(id="pm", chunk_kind="paragraph", text=text, at={"last": True})
+    ref = store.get_ref(kind="draft", id="pm")
+    out = tmp_path / "pm.docx"
+    res = export_docx(store, ref, target_path=out)
+    assert res.cited_slugs == ["p1", "p2", "p3", "p4"]
+    paras = [p.text for p in docx.Document(str(out)).paragraphs]
+    pair = next(t for t in paras if t.startswith("Pair"))
+    assert "[1, 2]" in pair and "[1]" not in pair
+    triple = next(t for t in paras if t.startswith("Triple"))
+    assert "[1–3]" in triple
+    spaced = next(t for t in paras if t.startswith("Spaced"))
+    assert "[1] [2]" in spaced and "[1, 2]" not in spaced
+    solo = next(t for t in paras if t.startswith("Solo"))
+    assert solo == "Solo [4]"
+
+
 def test_omml_converter_returns_none_on_empty() -> None:
     pytest.importorskip("latex2mathml")
     from precis.export.omml import latex_to_omml
@@ -1502,6 +1585,7 @@ def test_si_cite_without_parent_falls_back_with_warning_docx(monkeypatch) -> Non
     ctx = _si_docx_ctx(monkeypatch, with_parent=False)
     para = docx.Document().add_paragraph()
     dx._cite("parent24si", ctx, para)
+    dx._flush_cites(ctx, para)
     assert ctx.cited == ["parent24si"]
     assert para.text == "[1]"
     assert any("no live parent" in w for w in ctx.warnings)
@@ -1597,7 +1681,7 @@ def test_conjunction_hub_cites_union_of_conjunct_sources(monkeypatch) -> None:
         library_search_url="x",
     )
     out = _render_text("claim [fi7].", ctx)
-    assert out == "claim [1][2]."
+    assert out == "claim [1, 2]."  # adjacent cites merge, like the PDF
     assert ctx.cited == ["a21", "b22"]
 
 
@@ -1652,6 +1736,7 @@ def test_si_cite_via_alias_shares_the_parents_number(monkeypatch) -> None:
     )
     para = _docx.Document().add_paragraph()
     dx._cite("parent24alias", ctx, para)
+    dx._flush_cites(ctx, para)
     para.add_run(" and ")
     dx._cite("parent24si", ctx, para)
     assert ctx.cited == ["parent24"]

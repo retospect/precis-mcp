@@ -99,5 +99,6 @@ def test_default_mode_still_numbers_citations() -> None:
     assert ctx.patent_mode is False
     para = _Para()
     dx._cite("smith2015", ctx, para)
+    dx._flush_cites(ctx, para)
     assert para.runs == ["[1]"]  # numbered marker, registered for References
     assert ctx.cited == ["smith2015"]

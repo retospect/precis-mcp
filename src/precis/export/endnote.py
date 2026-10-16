@@ -74,15 +74,33 @@ def _first_family(authors: list[dict[str, Any]] | None) -> str:
     return ""
 
 
-def _display_text(authors: list[dict[str, Any]] | None, year: int | None) -> str:
-    """Cached in-text mark shown until EndNote reformats — an author-year
-    stub like ``(Nasibulin 2007)`` (EndNote overwrites it on update)."""
+def _display_inner(authors: list[dict[str, Any]] | None, year: int | None) -> str:
+    """The inside of the cached in-text stub — ``Nasibulin et al. 2007``."""
     first = _first_family(authors)
     yr = str(year) if year else ""
     if first and len(authors or []) > 1:
         first += " et al."
-    inside = " ".join(x for x in (first, yr) if x) or "citation"
-    return f"({inside})"
+    return " ".join(x for x in (first, yr) if x) or "citation"
+
+
+def _display_text(authors: list[dict[str, Any]] | None, year: int | None) -> str:
+    """Cached in-text mark shown until EndNote reformats — an author-year
+    stub like ``(Nasibulin 2007)`` (EndNote overwrites it on update)."""
+    return f"({_display_inner(authors, year)})"
+
+
+def _group_display_text(cites: list[tuple[dict[str, Any], str | None]]) -> str:
+    """Cached field-result text for a grouped citation — EndNote's
+    author-year cache writes ``(A 2000; B 2001)``; regenerated on update
+    either way, so it only needs to look right until then."""
+    if len(cites) == 1:
+        source, _notes = cites[0]
+        return _display_text(source.get("authors"), source.get("year"))
+    inner = "; ".join(
+        _display_inner(source.get("authors"), source.get("year"))
+        for source, _notes in cites
+    )
+    return f"({inner})"
 
 
 #: cap on an embedded cited-passage note so one field's XML stays sane.
@@ -150,22 +168,43 @@ def build_record(source: dict[str, Any], notes: str | None = None) -> str:
     return "".join(parts)
 
 
-def citation_payload(source: dict[str, Any], notes: str | None = None) -> str:
-    """The full ``<EndNote><Cite>…</Cite></EndNote>`` instruction payload for
-    one in-text citation of ``source``. ``notes`` is the cited passage
-    (``pc<id>`` chunk citation) → the record's ``<research-notes>``."""
+def _cite_element(source: dict[str, Any], notes: str | None = None) -> str:
+    """One ``<Cite>…</Cite>`` element — author/year/RecNum stub + the full
+    traveling-library ``<record>`` for ``source``. ``notes`` is the cited
+    passage (``pc<id>`` chunk citation) → the record's
+    ``<research-notes>``."""
     first_family = _first_family(source.get("authors"))
     year = source.get("year")
     display = _display_text(source.get("authors"), year)
     rec = source["rec_number"]
     return (
-        "<EndNote><Cite>"
+        "<Cite>"
         f"<Author>{esc(first_family)}</Author>"
         f"<Year>{esc(year) if year else ''}</Year>"
         f"<RecNum>{rec}</RecNum>"
         f"<DisplayText>{esc(display)}</DisplayText>"
         f"{build_record(source, notes)}"
-        "</Cite></EndNote>"
+        "</Cite>"
+    )
+
+
+def citation_payload(source: dict[str, Any], notes: str | None = None) -> str:
+    """The full ``<EndNote><Cite>…</Cite></EndNote>`` instruction payload for
+    one in-text citation of ``source``."""
+    return "<EndNote>" + _cite_element(source, notes) + "</EndNote>"
+
+
+def citation_group_payload(
+    cites: list[tuple[dict[str, Any], str | None]],
+) -> str:
+    """The ``<EndNote>…</EndNote>`` instruction payload for a citation run —
+    one ``<Cite>`` element per ``(source, notes)`` pair in a single wrapper,
+    exactly how EndNote itself writes a grouped citation
+    (``ADDIN EN.CITE <EndNote><Cite>…</Cite><Cite>…</Cite></EndNote>``)."""
+    return (
+        "<EndNote>"
+        + "".join(_cite_element(source, notes) for source, notes in cites)
+        + "</EndNote>"
     )
 
 
@@ -217,18 +256,21 @@ def _cached_run(text: str) -> Any:
 
 
 def add_citation_field(
-    paragraph: Any, source: dict[str, Any], notes: str | None = None
+    paragraph: Any, cites: list[tuple[dict[str, Any], str | None]]
 ) -> None:
-    """Append an ``ADDIN EN.CITE`` complex field to ``paragraph`` — the
-    in-text citation. Shape mirrors a real EndNote field: begin · instrText ·
-    separate · cached ``(Author Year)`` display · end. ``notes`` embeds the
-    cited passage into the record's Research Notes."""
+    """Append ONE ``ADDIN EN.CITE`` complex field to ``paragraph`` — the
+    in-text citation. ``cites`` carries one ``(source, notes)`` pair per
+    cited reference: a run of adjacent citations emits a single field with
+    several ``<Cite>`` elements, exactly as EndNote itself writes a grouped
+    citation (one cite → one ``<Cite>``). Shape mirrors a real EndNote
+    field: begin · instrText · separate · cached display · end. Each
+    ``notes`` embeds the cited passage into its record's Research Notes."""
     p = paragraph._p
-    payload = citation_payload(source, notes)
+    payload = citation_group_payload(cites)
     p.append(_fld_char("begin"))
     p.append(_instr_text(" ADDIN EN.CITE " + payload))
     p.append(_fld_char("separate"))
-    p.append(_cached_run(_display_text(source.get("authors"), source.get("year"))))
+    p.append(_cached_run(_group_display_text(cites)))
     p.append(_fld_char("end"))
 
 

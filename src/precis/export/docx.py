@@ -182,6 +182,13 @@ class _Ctx:
     used_acr: set[str] = field(default_factory=set)  # for the acronyms list
     last_cite: str | None = None  # paper of the immediately-preceding mark
     last_cite_si: bool = False  # ...and whether that mark carried "(SI)"
+    #: Buffered run of *directly adjacent* citations (``(slug, n,
+    #: chunk_id)``, ``n`` already registered) pending one merged mark /
+    #: one EndNote field — the docx counterpart of
+    #: ``export/latex.py::_merge_adjacent_cites``. A ref match with an
+    #: EMPTY gap before it extends the run; anything else flushes it
+    #: (:func:`_flush_cites`).
+    cite_run: list[tuple[str, int, int | None]] = field(default_factory=list)
     #: Set by :func:`_finding_cite_keys_pinned` when a finding cite had no
     #: citable source; :func:`_render_inline` reads and clears it to pull the
     #: space before the dropped mark off the preceding run (mirrors
@@ -835,6 +842,7 @@ def _render_inline(text: str, ctx: _Ctx, paragraph: Any) -> None:
     if dropped and tail[:1] in _CLOSING_PUNCT:
         _rstrip_last_run(paragraph)
     _render_gap(tail, ctx, paragraph)
+    _flush_cites(ctx, paragraph)
 
 
 #: ``$_{zz}$`` / ``$^2$`` — a math span that is only a sub/superscript, the
@@ -900,6 +908,9 @@ _SPAN = re.compile(
 def _render_gap(text: str, ctx: _Ctx, paragraph: Any) -> None:
     if not text:
         return
+    # Any gap content ends a run of adjacent citations (mirrors LaTeX's
+    # ``_ADJ_CITES``, which only merges separatorless ``\cite{…}``).
+    _flush_cites(ctx, paragraph)
     # Real prose between two citations breaks the consecutive-cite run;
     # whitespace-only (``[§a~3] [§a~9]``) does not, so those still collapse.
     if text.strip():
@@ -1197,6 +1208,7 @@ def _render_trust_mark(ctx: _Ctx, finding_ref_id: int, paragraph: Any) -> None:
         return
     from docx.shared import RGBColor
 
+    _flush_cites(ctx, paragraph)  # the mark lands after the cite group
     if state.label == "unsupported":
         run = paragraph.add_run(f" {UNSUPPORTED_MARK_TEXT}")
         run.bold = True
@@ -1253,6 +1265,7 @@ def _render_target(
             # (or the literal handle) as plain text instead of dropping the
             # citation (mirrors export/latex.py's ``_render_target``).
             ctx.last_cite = None
+            _flush_cites(ctx, paragraph)
             paragraph.add_run(surface or tgt)
             return
         # draft cross-ref / other record handle → not a citation.
@@ -1274,9 +1287,11 @@ def _render_target(
             return
         if handle not in ctx.known_handles:
             ctx.warnings.append(f"cross-ref ¶{handle}: no such live chunk — downgraded")
+        _flush_cites(ctx, paragraph)
         paragraph.add_run(surface or f"¶{handle}")
         return
     if tgt.startswith(("http://", "https://")):
+        _flush_cites(ctx, paragraph)
         paragraph.add_run(surface or tgt)
         return
 
@@ -1297,9 +1312,11 @@ def _render_xref(dc: str, surface: str | None, ctx: _Ctx, paragraph: Any) -> Non
     downgraded to its surface/handle with a warning, like LaTeX."""
     if ctx.dc_handles and dc not in ctx.dc_handles:
         ctx.warnings.append(f"cross-ref {dc}: no such live chunk — downgraded")
+        _flush_cites(ctx, paragraph)
         paragraph.add_run(surface or dc)
         return
     if surface:
+        _flush_cites(ctx, paragraph)
         paragraph.add_run(surface)
         return
     num = ctx.eq_numbers.get(dc)
@@ -1317,6 +1334,7 @@ def _render_xref(dc: str, surface: str | None, ctx: _Ctx, paragraph: Any) -> Non
             label = f"{noun} {number}"
     else:
         return  # front matter / glossary: no number to print
+    _flush_cites(ctx, paragraph)
     paragraph.add_run(label)
 
 
@@ -1328,6 +1346,7 @@ def _inline_source_cite(
     (WYSIWYG); otherwise a patent formats to its citation string and a paper
     to a light ``(Author, Year)``. See ``docs/backlog/patent-authoring-loop.md``."""
     ctx.last_cite = None
+    _flush_cites(ctx, paragraph)
     if surface:
         paragraph.add_run(surface)
         return
@@ -1438,10 +1457,12 @@ def _cite(
     chunk_id: int | None = None,
     si: bool = False,
 ) -> None:
-    """Emit a numbered citation marker — a superscript ``[n]`` keyed on the
-    **paper**. The numbered **References** section at the document end
-    (:func:`_append_references`) carries the resolved entry, so entry ``n``
-    backs every in-text ``[n]``.
+    """Buffer a numbered citation marker — a superscript ``[n]`` keyed on
+    the **paper** — into the current adjacent-citation run
+    (:data:`_Ctx.cite_run`); :func:`_flush_cites` emits the run as ONE mark
+    (``[1, 2]`` / ``[1–3]``) or ONE EndNote field. The numbered
+    **References** section at the document end (:func:`_append_references`)
+    carries the resolved entry, so entry ``n`` backs every in-text ``[n]``.
 
     Citations key on the paper, not the chunk: ``a~3``, ``a~9``, ``a~23``
     all reference paper ``a`` → mark ``[n]`` with the same ``n`` each time.
@@ -1456,6 +1477,7 @@ def _cite(
     if ctx.patent_mode:
         # A patent specification has no References section — cite in-text.
         ctx.last_cite = None
+        _flush_cites(ctx, paragraph)
         ref = (
             ctx.store.get_ref(kind="paper", id=slug) if ctx.store is not None else None
         )
@@ -1472,14 +1494,63 @@ def _cite(
         return  # consecutive cite to the same paper — one mark for the run
     ctx.last_cite = slug
     ctx.last_cite_si = si
-    if ctx.endnote:
-        _cite_endnote(slug, n, ctx, paragraph, chunk_id)
-        return
-    run = paragraph.add_run(f"[{n}]")
-    run.font.superscript = True
-    if si:
+    if si and not ctx.endnote:
+        # An "(SI)" postnote cite never joins a merge run — mirrors LaTeX,
+        # where ``\cite[SI]{…}`` is excluded from ``_ADJ_CITES``: flush the
+        # pending run, then print its own mark.
+        _flush_cites(ctx, paragraph)
+        paragraph.add_run(f"[{n}]").font.superscript = True
         paragraph.add_run(" (SI)").font.superscript = True
-    _cite_link_group(slug, ctx, paragraph)
+        _cite_link_group(slug, ctx, paragraph)
+        return
+    ctx.cite_run.append((slug, n, chunk_id))
+
+
+def _merged_cite_text(nums: list[int]) -> str:
+    """The bracket text for a merged citation run: ``[n]`` for one paper,
+    ``[1, 2]`` for a short list, a run of ≥3 consecutive numbers collapsing
+    to ``[1–3]`` — what biblatex's numeric-comp prints for the merged
+    ``\\cite{…}`` that ``export/latex.py::_merge_adjacent_cites`` builds.
+    docx has no biblatex, so the compression is computed here."""
+    parts: list[str] = []
+    i = 0
+    while i < len(nums):
+        j = i
+        while j + 1 < len(nums) and nums[j + 1] == nums[j] + 1:
+            j += 1
+        if j - i >= 2:
+            parts.append(f"{nums[i]}–{nums[j]}")
+        else:
+            parts.extend(str(n) for n in nums[i : j + 1])
+        i = j + 1
+    return "[" + ", ".join(parts) + "]"
+
+
+def _flush_cites(ctx: _Ctx, paragraph: Any) -> None:
+    """Emit the buffered adjacent-citation run, then clear it — one merged
+    superscript mark + one link group in plain mode, or ONE ``ADDIN
+    EN.CITE`` field carrying several ``<Cite>`` elements in EndNote mode
+    (both mirror ``export/latex.py::_merge_adjacent_cites``: directly
+    adjacent cites collapse, a doubled slug dedupes, and a merged run
+    carries the links of every paper in it). No-op on an empty run."""
+    run = ctx.cite_run
+    ctx.cite_run = []
+    if not run:
+        return
+    deduped: list[tuple[str, int, int | None]] = []
+    seen: set[str] = set()
+    for item in run:
+        if item[0] not in seen:
+            seen.add(item[0])
+            deduped.append(item)
+    if ctx.endnote:
+        _cite_endnote(deduped, ctx, paragraph)
+        return
+    # biblatex sorts the keys of a merged cite before printing it.
+    nums = sorted(n for _slug, n, _cid in deduped)
+    paragraph.add_run(_merged_cite_text(nums)).font.superscript = True
+    for slug, _n, _cid in deduped:
+        _cite_link_group(slug, ctx, paragraph)
 
 
 def _resolve_source(
@@ -1527,10 +1598,12 @@ def _resolve_source(
 
 
 def _cite_endnote(
-    slug: str, n: int, ctx: _Ctx, paragraph: Any, chunk_id: int | None = None
+    run: list[tuple[str, int, int | None]], ctx: _Ctx, paragraph: Any
 ) -> None:
-    """Emit a native EndNote ``ADDIN EN.CITE`` field for one citation. An
-    unresolved slug degrades to a plain superscript marker (nothing lost).
+    """Emit ONE native EndNote ``ADDIN EN.CITE`` field for a citation run —
+    one ``<Cite>`` element per ``(slug, n, chunk_id)`` entry, as EndNote
+    itself writes a grouped citation. An unresolved slug degrades to a
+    plain superscript marker (nothing lost).
 
     A ``pc<id>`` chunk citation (``chunk_id`` set) embeds that chunk's text as
     the field's traveling note — so the exact cited passage rides along in
@@ -1538,21 +1611,25 @@ def _cite_endnote(
     paper carry the passage each one actually pointed at."""
     from precis.export.endnote import add_citation_field
 
-    source = ctx.resolved.get(slug)
-    if source is None:
-        source = _resolve_source(ctx.store, slug, n)
+    cites: list[tuple[dict[str, Any], str | None]] = []
+    for slug, n, chunk_id in run:
+        source = ctx.resolved.get(slug)
         if source is None:
-            ctx.warnings.append(f"cite {slug!r}: no paper in corpus — plain marker")
-            paragraph.add_run(f"[{n}]").font.superscript = True
-            return
-        ctx.resolved[slug] = source
-    notes: str | None = None
-    if chunk_id is not None and ctx.store is not None:
-        try:
-            notes = ctx.store.chunks.chunk_text_by_id(chunk_id)
-        except Exception:  # pragma: no cover — chunk fetch best-effort
-            notes = None
-    add_citation_field(paragraph, source, notes=notes)
+            source = _resolve_source(ctx.store, slug, n)
+            if source is None:
+                ctx.warnings.append(f"cite {slug!r}: no paper in corpus — plain marker")
+                paragraph.add_run(f"[{n}]").font.superscript = True
+                continue
+            ctx.resolved[slug] = source
+        notes: str | None = None
+        if chunk_id is not None and ctx.store is not None:
+            try:
+                notes = ctx.store.chunks.chunk_text_by_id(chunk_id)
+            except Exception:  # pragma: no cover — chunk fetch best-effort
+                notes = None
+        cites.append((source, notes))
+    if cites:
+        add_citation_field(paragraph, cites)
 
 
 # ── references + glossary sections ────────────────────────────────
