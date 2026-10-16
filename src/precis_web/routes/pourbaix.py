@@ -5,8 +5,9 @@ linked reaction-staircase panel (slices 2+3).
   or slug). For a quest handle (``qu<id>``/id) the page draws ONE candidate
   surface at a time — a Pourbaix map is a per-surface object (gr486821):
   ``?surface=<handle|slug|id>`` picks it, defaulting to the quest's
-  best-ranked candidate (leaderboard order); the other surfaces are listed
-  as links to their own ``/pourbaix/<handle>`` pages, and ``?view=compare``
+  best-ranked candidate (leaderboard order); the other surfaces ride one
+  ``<select>`` in a JS-free GET form whose hidden inputs carry the bank
+  state, and ``?view=compare``
   is the explicit secondary view that draws them all, labelled a
   comparison. The map object is the one ``view='pourbaix'`` renders as
   text (:mod:`precis.quest.pourbaix_map`, reached here through the
@@ -561,7 +562,6 @@ def _quest_surfaces(store: Store, quest_ref: Any) -> list[dict[str, Any]]:
     for e in ranked:
         ref = e["ref"]
         handle = str(e["handle"])
-        quoted = quote(handle, safe="")
         out.append(
             {
                 "ref": ref,
@@ -571,8 +571,7 @@ def _quest_surfaces(store: Store, quest_ref: Any) -> list[dict[str, Any]]:
                 else "",
                 "band": band.get(handle, ""),
                 "has_maps": bool(e["maps"]),
-                "page_url": f"/pourbaix/{quoted}",
-                "select_url": f"?surface={quoted}",
+                "slug": getattr(ref, "slug", None) or "",
             }
         )
     return out
@@ -639,6 +638,14 @@ def _link_state(
     if raw_reset is not None and raw_reset not in ("0", "1"):
         ignored.append("reset")
     return u, ph, raw_reset != "0", ignored
+
+
+def _bank_param(v: float, digits: int) -> str:
+    """A slider value formatted as the page script writes it in the
+    address bar (``String(+v.toFixed(digits))``) — the hidden picker
+    inputs use the same spelling so a no-JS submit round-trips."""
+    s = f"{v:.{digits}f}".rstrip("0").rstrip(".")
+    return "0" if s in ("", "-0") else s
 
 
 @router.get("/pourbaix/{handle}/states")
@@ -723,9 +730,11 @@ async def pourbaix_detail(request: Request, handle: str) -> HTMLResponse:
     compare = False
     selected: dict[str, Any] | None = None
     surface_notice: str | None = None
+    picker_hidden: list[tuple[str, str]] = []
+    picker_pathway: str | None = None
     if kind == "quest":
-        # one surface at a time (gr486821): the ranked picker lists them
-        # all; ?surface= picks the drawn one, ?view=compare is the
+        # one surface at a time (gr486821): the picker's <select> lists
+        # them all; ?surface= picks the drawn one, ?view=compare is the
         # labelled cross-surface comparison.
         surfaces = _quest_surfaces(store, ref)
         compare = request.query_params.get("view") == "compare"
@@ -733,6 +742,17 @@ async def pourbaix_detail(request: Request, handle: str) -> HTMLResponse:
             surfaces, request.query_params.get("surface")
         )
         drawn = surfaces if compare else ([selected] if selected else [])
+        # the picker's GET form works without JS: hidden inputs carry the
+        # deep-link state the picker links carried (a slider on its
+        # default stays out, same rule as the script's bankParams); the
+        # script re-stamps them live as the sliders move
+        if abs(u0 - u_def) > 1e-9:
+            picker_hidden.append(("u", _bank_param(u0, 3)))
+        if abs(ph0 - ph_def) > 1e-9:
+            picker_hidden.append(("ph", _bank_param(ph0, 1)))
+        if not reset_on:
+            picker_hidden.append(("reset", "0"))
+        picker_pathway = request.query_params.get("pathway") or None
         subject = {
             "kind": "quest",
             "handle": handle_registry.try_format("quest", ref.id) or f"qu{ref.id}",
@@ -765,6 +785,8 @@ async def pourbaix_detail(request: Request, handle: str) -> HTMLResponse:
                 "entries": entries,
                 "surfaces": surfaces,
                 "selected_handle": selected["handle"] if selected else None,
+                "picker_hidden": picker_hidden,
+                "picker_pathway": picker_pathway,
                 "compare": compare,
                 "surface_notice": surface_notice,
                 "bulk_note": pourbaix_map.BULK_LAYER_NOTE,

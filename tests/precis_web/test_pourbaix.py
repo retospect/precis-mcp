@@ -381,9 +381,9 @@ def test_pourbaix_quest_page_maps_candidates(
     r = pb_client.get(f"/pourbaix/qu{qid}")
     assert r.status_code == 200
     assert f"st{sid}" in r.text and "<svg" in r.text
-    # one surface → drawn directly; the picker still lists it
+    # one surface → drawn directly; the picker still lists it, selected
     assert r.text.count('class="pbx-entry') == 1
-    assert f"?surface=st{sid}" in r.text
+    assert f'<option value="st{sid}" selected>' in r.text
 
 
 def _quest_with_two_surfaces(runtime_with_store) -> tuple[int, int, int]:
@@ -413,11 +413,18 @@ def test_pourbaix_quest_page_draws_one_surface_best_ranked(
     assert text.count('class="pbx-entry') == 1
     assert 'href="/structure/pd_b"' in text
     assert 'href="/structure/pd_a"' not in text
-    # the picker lists every surface best-ranked first, each linking to
-    # its own /pourbaix/<handle> page plus an on-page draw link
-    assert text.index(f">st{sid_b}<") < text.index(f">st{sid_a}<")
-    assert f"/pourbaix/st{sid_a}" in text and f"/pourbaix/st{sid_b}" in text
-    assert f"?surface=st{sid_a}" in text and f"?surface=st{sid_b}" in text
+    # the picker is ONE <select> in a GET form: one <option> per
+    # candidate in leaderboard order, labelled with rank, handle and
+    # slug, the drawn one marked selected
+    assert text.count('name="surface"') == 1
+    opts = re.findall(r'<option value="(st\d+)"([^>]*)>([^<]*)</option>', text)
+    assert [o[0] for o in opts] == [f"st{sid_b}", f"st{sid_a}"]
+    assert "selected" in opts[0][1] and "selected" not in opts[1][1]
+    assert opts[0][2].startswith("#1") and "pd_b" in opts[0][2]
+    assert opts[1][2].startswith("#2") and "pd_a" in opts[1][2]
+    # the old per-surface link list is gone
+    assert 'href="?surface=' not in text
+    assert "<ol" not in text
 
 
 def test_pourbaix_quest_page_surface_param_selects(
@@ -477,6 +484,7 @@ def test_pourbaix_structure_page_has_no_surface_picker(
     assert r.status_code == 200
     assert "compare all on one page" not in r.text
     assert "?surface=" not in r.text
+    assert 'name="surface"' not in r.text
 
 
 def test_map_svg_draws_regions_bands_and_bulk_overlay() -> None:
@@ -678,13 +686,39 @@ def test_pourbaix_link_pathway_param_picks_the_staircase(
     assert "no_reduce" not in text
 
 
-def test_pourbaix_picker_links_are_marked_to_carry_the_bank_state(
+def test_pourbaix_picker_form_carries_the_deep_link_state(
     pb_client: TestClient, runtime_with_store
 ) -> None:
-    qid, sid_a, _sid_b = _quest_with_two_surfaces(runtime_with_store)
-    text = pb_client.get(f"/pourbaix/qu{qid}").text
-    assert f'href="?surface=st{sid_a}" class="pbx-carry' in text
+    """The picker's GET form works without JS: its hidden inputs carry
+    the u/ph/reset bank state and the ?pathway= pick — the same params
+    the per-surface links carried — and ?view=compare stays a link."""
+    store = runtime_with_store.store
+    qid, sid_a, sid_b = _quest_with_two_surfaces(runtime_with_store)
+    pw = _pathway(store, "pw_keep", _pathway_results())
+    store.add_link(
+        src_ref_id=sid_b, dst_ref_id=pw.id, relation="related-to", set_by="system"
+    )
+    text = pb_client.get(
+        f"/pourbaix/qu{qid}?surface=st{sid_b}&u=-0.315&ph=7.5&reset=0&pathway=pw_keep"
+    ).text
+    form = re.search(r'<form[^>]*method="get"[^>]*>', text)
+    assert form is not None
+    assert 'type="submit"' in text
+    assert 'name="u" value="-0.315"' in text
+    assert 'name="ph" value="7.5"' in text
+    assert 'name="reset" value="0"' in text
+    assert 'name="pathway" value="pw_keep"' in text
+    # the script re-stamps the hidden inputs as the sliders move
+    assert 'id="pbx-surface-hidden"' in text
+    # ?view=compare stays reachable beside the select
     assert 'href="?view=compare" class="pbx-carry' in text
+    # sliders on their defaults keep the params out, same rule the
+    # picker links used
+    text = pb_client.get(f"/pourbaix/qu{qid}").text
+    assert 'name="u"' not in text
+    assert 'name="ph"' not in text
+    assert 'name="reset"' not in text
+    assert 'name="pathway"' not in text
 
 
 # ── gr488208: cold render — batched reads, identical output ──────────────

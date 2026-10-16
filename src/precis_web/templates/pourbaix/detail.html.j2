@@ -29,9 +29,11 @@
 
 {% if subject.kind == 'quest' %}
 {# The surface picker (gr486821): a Pourbaix map is a per-surface object —
-   the page draws one candidate at a time (?surface=), the list links each
-   surface to its own /pourbaix/<handle> page; ?view=compare is the
-   labelled cross-surface secondary view. #}
+   the page draws one candidate at a time (?surface=) picked by ONE
+   <select> in a GET form — no JS needed, the hidden inputs carry the
+   bank state and the ?pathway= pick, and the script re-stamps them as
+   the sliders move; ?view=compare is the labelled cross-surface
+   secondary view. #}
 <div class="mb-4 rounded border border-slate-200 bg-white p-3 text-xs">
   <div class="mb-1 font-medium text-slate-700">
     {{ surfaces | length }} candidate surface{{ 's' if surfaces | length != 1 }}
@@ -46,18 +48,22 @@
   {% if surface_notice %}
   <p class="mb-1 rounded bg-amber-50 px-2 py-1 text-amber-800">{{ surface_notice }}</p>
   {% endif %}
-  <ol class="list-decimal space-y-0.5 pl-5 text-slate-700">
-  {% for s in surfaces %}
-    <li>
-      <a href="{{ s.page_url }}" class="font-mono text-sky-700 hover:underline">{{ s.handle }}</a>
-      <a href="{{ s.select_url }}" class="pbx-carry text-sky-700 hover:underline">draw</a>
-      {% if s.handle == selected_handle %}<span class="text-slate-400">← shown</span>{% endif %}
-      {% if s.band %}<span class="rounded bg-slate-100 px-1 text-slate-500">{{ s.band }}</span>{% endif %}
-      {% if s.title %}<span class="text-slate-600">{{ s.title }}</span>{% endif %}
-      {% if not s.has_maps %}<span class="text-slate-400">· no anchors</span>{% endif %}
-    </li>
-  {% endfor %}
-  </ol>
+  {% if surfaces %}
+  <form method="get" action="{{ request.url.path }}" class="flex flex-wrap items-center gap-2">
+    <label for="pbx-surface-pick" class="text-slate-600">draw surface</label>
+    <select id="pbx-surface-pick" name="surface" class="max-w-full font-mono"
+            onchange="this.form.submit()">
+      {% for s in surfaces %}
+      <option value="{{ s.handle }}"{% if s.handle == selected_handle %} selected{% endif %}>#{{ loop.index }} · {{ s.handle }}{% if s.slug %} · {{ s.slug }}{% endif %}{% if s.title %} — {{ s.title }}{% endif %}{% if s.band %} · {{ s.band }}{% endif %}{% if not s.has_maps %} · no anchors{% endif %}</option>
+      {% endfor %}
+    </select>
+    <span id="pbx-surface-hidden">
+      {% for k, v in picker_hidden %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endfor %}
+    </span>
+    {% if picker_pathway %}<input type="hidden" name="pathway" value="{{ picker_pathway }}">{% endif %}
+    <button type="submit" class="rounded border border-slate-300 px-2 py-0.5 text-slate-700 hover:bg-slate-50">Go</button>
+  </form>
+  {% endif %}
 </div>
 {% endif %}
 
@@ -425,10 +431,11 @@ band — viable but not guaranteed (dashed); each in its route's colour">
   }
   // ── deep links: the bank's state (U, pH, reset toggle) rides the query
   // string. Every change rewrites the address bar with
-  // history.replaceState (no reload, no history entries) and re-stamps
+  // history.replaceState (no reload, no history entries), re-stamps
   // the picker links (.pbx-carry keep the page's own params; the pathway
-  // link .pbx-carry-pw gets the U/pH the pathway page reads). A slider
-  // on its server default stays out of the URL. ──
+  // link .pbx-carry-pw gets the U/pH the pathway page reads) and rewrites
+  // the surface picker's hidden inputs so its no-JS GET submit carries
+  // the same state. A slider on its server default stays out of the URL. ──
   const near = (a, b) => Math.abs(a - b) < 1e-9;
   function bankParams() {
     const out = [];
@@ -454,6 +461,21 @@ band — viable but not guaranteed (dashed); each in its route's colour">
       a.dataset.base = a.dataset.base || a.getAttribute('href');
       a.setAttribute('href', withBank(a.dataset.base, ['u', 'ph']));
     });
+    // the surface picker's GET form works without JS; here its hidden
+    // inputs just track the sliders so a submit carries the live state
+    // (the server rendered the same inputs on load). ?pathway= rides its
+    // own input outside this span.
+    const hid = document.getElementById('pbx-surface-hidden');
+    if (hid) {
+      hid.textContent = '';
+      bankParams().forEach(([k, v]) => {
+        const i = document.createElement('input');
+        i.type = 'hidden';
+        i.name = k;
+        i.value = v;
+        hid.appendChild(i);
+      });
+    }
     if (!rewriteBar) return;
     try {
       history.replaceState(null, '', withBank(window.location.href, ['u', 'ph', 'reset']));
