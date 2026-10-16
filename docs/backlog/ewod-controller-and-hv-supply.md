@@ -457,20 +457,59 @@ Rejected: C5382958 (LPR6235-123QMRC). Its 1:50 ratio is too high, its
 secondary DCR is 200 Ω, and only 181 are in stock. No 1:5–1:12
 photoflash-type transformer was found in JLC stock.
 
-**VERIFY at intake:**
-- LCSC lists the `…PMRC` suffix, but the datasheet table lists `…PML_`.
-  Confirm that the R and L variants are electrically the same part.
-- The datasheet states no winding-to-winding voltage rating (k = 0.95,
-  not a safety-isolated part). The circuit is non-isolated, but the
-  windings sit up to ~250 V apart. Confirm with Coilcraft or the drawing.
-- No Basic-tier part was found for either role, so both pay JLC's
-  extended-part loading fee.
+**Resolved at intake (Coilcraft Doc 752R, `perplexity-reasoning:492679`):**
+- `PMR` is matte tin over nickel over silver; `PML` is the older
+  silver-palladium-platinum glass-frit termination. Electrical values
+  are the same (25 µH, 1:20). The final `C` is the 7" reel, 350 pcs.
+- Winding-to-winding insulation is **300 Vrms for one minute**. That is
+  functional insulation, not a safety rating. With ~250 V DC (≈ 354 V
+  peak for an AC reading) across the windings the margin is about 1.6x
+  on the Vrms figure, which is why the output ceiling and the HV clamp
+  are required (ruling 20).
+- Still open: both parts pay JLC's extended-part loading fee (no
+  Basic-tier part exists for either role).
 
-The **flyback controller** is not covered by ruling 17 and stays open.
-JLC stocks LT8300 (no-opto, TSOT-23-5) and LT3484 (photoflash) only in
-the tens of units, at $7–10. A current-mode PWM controller with an
-external 60 V FET (UC384x class) is the cheap route. Pick it at Slice 6
-intake.
+The **flyback controller** is not covered by ruling 17. The UC384x class
+is dropped (ruling 20): UVLO start 8.4 V / stop 7.6 V, so it cannot
+start from 5 V (`perplexity-reasoning:492683`). The controller pick is
+held, see ruling 20.
+
+### Ruling 20 — flyback build, reopened by Reto 2026-10-16
+
+Reto chose to build the flyback on the board at ~16:25Z 2026-10-16: "Yes
+build it now" (via the fleet coordinator). At ~16:3xZ he reopened the
+component choices, via the fleet coordinator: "pick the FET; maybe a
+proper DAC for a gentle ramp; skip the full module; is TPS61170+multiplier
+really simpler?" A decision table with C-numbers comes from the
+coordinator's decision agent for Reto to approve. Nothing below marked
+held is decided.
+
+**Settled:**
+- Transformer: LPR6235-253PMRC (C19191684), facts above.
+- UC384x fallback dropped (cannot start from 5 V).
+- The XP Power A025P-5 bring-up module is dropped ("skip the full
+  module"). Off-the-shelf HV modules run $100-300 and none is stocked by
+  LCSC (`perplexity-research:492685`).
+- Switching frequency stays under the transformer's 580 kHz SRF.
+- Input is the 20 V PD rail per rulings 15/17 (D ≈ 0.38). 5 V is also
+  feasible (D ≈ 0.71).
+
+**Reto decides (pending decision table):**
+- Controller (LM3478, LCSC C115907, SOIC-8, is the candidate). Datasheet
+  fact, TI LM3478 table "Electrical Characteristics": Dmax is 100% and
+  the datasheet gives no limit because "the part does not permit less
+  than 100% maximum duty cycle operation". D ≈ 0.38 and 0.71 both fit.
+  Gate drive equals VIN below 7.2 V and is 7.2 V above it; VIN is
+  2.97-40 V. Current-mode, so duty above 50% needs slope compensation.
+- Topology: flyback versus TPS61170 plus a Cockcroft-Walton multiplier
+  (no magnetics).
+- External FET (60-100 V logic-level) and its C-number.
+- ≥ 400 V ultrafast output diode, output capacitor.
+- Hardware output ceiling (about 270 V from the series divider) and the
+  TVS/zener clamp on the HV rail.
+- Voltage set and control: ATmega PWM through an RC into FB, wired so it
+  can only lower Vout, versus a DAC for a gentle ramp.
+- Switching frequency inside 150-250 kHz.
 
 ## Defect A — a generated package does not declare all its pins
 
@@ -636,8 +675,8 @@ with the fabric count no worse than the HEAD re-measure (prerequisite).
 BLOCKED on footprint intake** (Slice 4 has shipped). Parts: the flyback
 transformer (LPR6235-253PMRC C19191684 proposed, ruling 17; the open
 VERIFY items are listed there), a current-mode flyback controller plus a
-≥ 60 V N-FET with a primary current-sense resistor (controller not yet
-picked), a ≥ 400 V ultrafast output diode, ≥ 400 V output capacitance
+≥ 60 V N-FET with a primary current-sense resistor (controller and FET
+held, ruling 20: Reto decides), a ≥ 400 V ultrafast output diode, ≥ 400 V output capacitance
 (film, or a ceramic bank derated for DC bias), and an RCD or Zener clamp
 on the primary for the leakage spike. Regulation is closed-loop from the
 feedback divider. The divider's top leg is 3–4 resistors in series, and
@@ -739,7 +778,7 @@ id — import the OpenDrop paper and cite it there too).
    the fabric still routes at 2.25 mm pitch is measured on the harness
    after the router reland, not before. If F.Cu electrode adjacency must
    stay exempt, this needs per-(net, layer) clearance.
-2. **Flyback controller part** — open (see the ruling-17 part proposal).
+2. **Flyback parts and control** — held, ruling 20 ("Reto decides, pending decision table").
 
 (Former questions settled: the top plate goes on a switched channel
 (ruling 18), and the full-wave versus half-wave ladder question went
