@@ -10,7 +10,7 @@ prio: high
 Companion to `pcb-ewod-multitile.md` (the array generator; rulings 1–11
 live there). This item holds rulings **12–15** (Reto, 2026-09-24),
 rulings **16–19** (Reto, 2026-10-16) and the
-two defects Reto found reviewing `ewod-dogfood-2` in the prod web view the
+two defects Reto found reviewing `ewod-dogfood-6` in the prod web view the
 same day. Ruling 12 **supersedes ruling 9** (Teensy 4.0 + 74HCT245); ruling
 14 **supersedes design-review item 6** (external boost + HV-in connector).
 
@@ -45,7 +45,7 @@ campaign burned several rounds chasing numbers produced by stale code.
 
 ## Motivation / why
 
-`ewod-dogfood-2` today is an array + sink + temp sensor with no controller,
+`ewod-dogfood-6` today is an array + sink + temp sensor with no controller,
 no power entry that survives a PD contract, and an external HV supply it
 was never going to get. Ruling 9 chose a 3.3 V controller that then needed
 a level shifter; a 5 V controller deletes that part. A single USB-C port
@@ -69,11 +69,12 @@ footprint (`footprints` block on `put(kind='pcb')`, the same path ruling 9
 planned for the Teensy). Working numbers, all `SOURCE NEEDED` against the
 vendor drawing before the footprint lands: body 33 × 18 mm; 2 × 12
 through-hole pins at 2.54 mm along the long edges; a 6-pin programming
-header (DTR/RXI/TXO/VCC/CTS/GND order) on one short edge; 4 inner pads
-A4–A7. Import the SparkFun Pro Mini 5 V/16 MHz schematic + board drawing
-(the de-facto reference) as a `datasheet`/`web` ref and cite it from the
-footprint's `note`. Clones differ in the A4–A7 pad positions — VERIFY on
-the unit actually bought.
+header (DTR/TXO/RXI/VCC/CTS/GND order, from the vendor .brd nets,
+web:492682) on one short edge; 4 inner pads A4–A7. Intake done
+2026-10-16: `SPARKFUN_PRO_MINI_328_5V` (34 pads, 17.78 × 33.02 mm) is on
+`ewod-dogfood-6`, citing web:492682 (.brd) and web:492681 (schematic PDF,
+empty text extraction). VERIFY on the unit actually bought: the TXO/RXI
+silkscreen order on P2/P3 and the A4–A7 positions (clones differ).
 
 **`sink_grid` control pins** — today only `serial_in_pin`/`serial_out_pin`
 are parametrised (`generators.py::_SinkGrid`); the HV507 also has CLK, LE,
@@ -659,7 +660,7 @@ an HV-vs-GND gap of 0.3 mm is a DRC **error**, 0.45 mm clean; a class with
 is refused (table top band); existing electrode-gap class behaviour
 (WARN threshold only) unchanged.
 
-**Slice 5 — controller + USB-C power on `ewod-dogfood-2`. BLOCKED on
+**Slice 5 — controller + USB-C power on `ewod-dogfood-6`. BLOCKED on
 footprint intake.** Pro Mini LOCAL footprint (verified drawing); `op=
 'footprint'` intake for: USB-C 16-pin receptacle, CH224K (ruling 17),
 the buck (AP63205WU-7 C2071056 proposed, ruling 17), CH340N (ruling 17),
@@ -671,7 +672,7 @@ controller, the buck input and the divider; the bridge's VCC is on the
 netlist assertions above; board places and routes on the offline harness
 with the fabric count no worse than the HEAD re-measure (prerequisite).
 
-**Slice 6 — flyback HV stage on `ewod-dogfood-2` (rulings 15/16).
+**Slice 6 — flyback HV stage on `ewod-dogfood-6` (rulings 15/16).
 BLOCKED on footprint intake** (Slice 4 has shipped). Parts: the flyback
 transformer (LPR6235-253PMRC C19191684 proposed, ruling 17; the open
 VERIFY items are listed there), a current-mode flyback controller plus a
@@ -698,7 +699,7 @@ bleeder connects the 250 V node to GND (netlist assertion); no VBUS or
 20 V net touches the secondary side except through the transformer
 (netlist assertion); fab notes state the discharge time to < 50 V.
 
-**Slice 7 — prod acceptance after deploy.** Re-apply `ewod-dogfood-2`,
+**Slice 7 — prod acceptance after deploy.** Re-apply `ewod-dogfood-6`,
 `op='route'`, `view='drc'`, `view='gerber'`; the "Read first" note
 retires; J_INSTR re-checked.
 *Accept:* `unrouted` on prod equals the offline harness within the
@@ -729,7 +730,7 @@ a B.Cu pad without a via (the gr346744 signature) — else file it as new.
    net is emitted, exported and connected (Slice 3).
 4. A 0.4 mm class binds the router per-net and DRC at error tier, derived
    from `working_voltage_v` (Slice 4).
-5. `ewod-dogfood-2` carries Pro Mini + USB-C PD + buck + bridge + flyback
+5. `ewod-dogfood-6` carries Pro Mini + USB-C PD + buck + bridge + flyback
    HV stage with the netlist traps asserted (Slices 5–6).
 6. Prod matches the offline harness after deploy (Slice 7).
 
