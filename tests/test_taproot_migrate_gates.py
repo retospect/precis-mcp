@@ -195,6 +195,37 @@ def test_number_tokens_fold_approximation_prefix() -> None:
     assert _number_bearing_tokens("~10 kHz") == _number_bearing_tokens("10 kHz")
 
 
+def test_number_tokens_split_glued_equals_approx_paren() -> None:
+    """gr492663: values glued to "=", "≈" or "(" are their own tokens."""
+    assert _number_bearing_tokens("P=5") == ["5"]
+    assert _number_bearing_tokens("θ≈19°") == ["19"]
+    assert _number_bearing_tokens("(n=3)") == ["3"]
+    assert _number_bearing_tokens("see (19 nm) here") == ["19"]
+    assert _number_bearing_tokens("SWNC with P=5 (θ≈19°) is") == ["5", "19"]
+
+
+def test_number_tokens_glue_split_leaves_other_cases_alone() -> None:
+    assert _number_bearing_tokens("see https://x.org/a?id=123&v=4 now") == []
+    assert _number_bearing_tokens("MOF-5 and ZIF-8") == []
+    assert _number_bearing_tokens("Ni(100) surface") == ["100"]
+
+
+def test_number_terms_pairs_and_labels_unchanged() -> None:
+    from precis.taproot.coverage import _number_terms
+
+    assert _number_terms("a (10,0) tube") == ["(10,0)"]
+    assert _number_terms("a [2+2] cycloaddition") == []
+
+
+def test_number_terms_glued_values() -> None:
+    from precis.taproot.coverage import _number_terms
+
+    assert _number_terms("most abundant SWNC with P=5 (θ≈19°) is nanohorn") == [
+        "5",
+        "19",
+    ]
+
+
 def test_number_tokens_digit_substring_hole_stays_closed() -> None:
     """The original P0-2 defense: a dropped "9" must not hide in "409"."""
     assert "9" not in _number_bearing_tokens("a 409 nm shift")

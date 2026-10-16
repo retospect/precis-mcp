@@ -415,6 +415,9 @@ _EG_PAREN_RE = re.compile(r"\((?:e\.g\.|i\.e\.)[^)]*\)", re.IGNORECASE)
 #: sound splits that generalize the list away (fi176435).
 _NUMBER_TOKEN_RE = re.compile(r"^[~±]?\d")
 _NUMBER_TOKEN_STRIP = ".,;:()[]{}\"'"
+#: Glue characters between a symbol and its value ("P=5", "θ≈19°", "(n=3)"):
+#: replaced by a space before tokenizing so the value is its own token.
+_NUMBER_GLUE_RE = re.compile(r"[=≈(]")
 
 #: Unicode notation folding for number comparison (100-hub prod run,
 #: 2026-08-15): claude-haiku normalizes "10^4-10^6" to "10⁴–10⁶" and
@@ -576,18 +579,31 @@ def _number_bearing_tokens(text: str) -> list[str]:
     yields "13" and the range "10^4-10^6" yields both bounds — matching
     what an extractor legitimately writes as "13 residues" or "10⁴–10⁶".
     A letter-leading token is never split: "MOF-5" stays a catalog name,
-    not a measurement (fi176435's exclusion is preserved)."""
-    tokens = []
-    for raw in _normalize_number_text(text).split():
-        core = raw.strip(_NUMBER_TOKEN_STRIP)
-        if not core or not _NUMBER_TOKEN_RE.match(core):
+    not a measurement (fi176435's exclusion is preserved). ``=``, ``≈`` and
+    ``(`` also separate tokens, so "P=5", "θ≈19°" and "(n=3)" yield their
+    values."""
+    tokens: list[str] = []
+    for word in _normalize_number_text(text).split():
+        if "://" in word:  # URL query strings ("?id=123&v=4") are not measurements
             continue
-        for part in core.split("-"):
-            part = part.strip(_NUMBER_TOKEN_STRIP)
-            if part and _NUMBER_TOKEN_RE.match(part):
-                # Fold the approximation prefix: "near 10 kHz" rendered as
-                # "~10 kHz" is the same measurement, not an invented one.
-                tokens.append(part.lstrip("~±").casefold())
+        for raw in _NUMBER_GLUE_RE.sub(" ", word).split():
+            tokens.extend(_number_parts(raw))
+    return tokens
+
+
+def _number_parts(raw: str) -> list[str]:
+    """Number tokens of one glue-free whitespace word (see
+    :func:`_number_bearing_tokens`)."""
+    tokens: list[str] = []
+    core = raw.strip(_NUMBER_TOKEN_STRIP)
+    if not core or not _NUMBER_TOKEN_RE.match(core):
+        return tokens
+    for part in core.split("-"):
+        part = part.strip(_NUMBER_TOKEN_STRIP)
+        if part and _NUMBER_TOKEN_RE.match(part):
+            # Fold the approximation prefix: "near 10 kHz" rendered as
+            # "~10 kHz" is the same measurement, not an invented one.
+            tokens.append(part.lstrip("~±").casefold())
     return tokens
 
 
