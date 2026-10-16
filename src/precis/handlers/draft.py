@@ -1972,6 +1972,7 @@ class DraftHandler(Handler):
         base_sha: str | None = None,
         authors: list[dict[str, Any]] | str | None = None,
         not_abbrev: list[str] | str | None = None,
+        is_abbrev: list[str] | str | None = None,
         sub: dict[str, Any] | str | None = None,
         apply: bool = False,
         permission: dict[str, Any] | None = None,
@@ -2076,13 +2077,26 @@ class DraftHandler(Handler):
                 body=f"set {n} author{'s' if n != 1 else ''} on {ref.slug or ref.id}{note}"
             )
         # ``not_abbrev`` is a draft-level op (silence the undefined-abbrev
-        # hint) — id may be the slug or any ¶handle in the draft.
+        # hint + drop the token's inline-detected pair) — id may be the
+        # slug or any ¶handle in the draft.
         if not_abbrev:
             _reject_dry_run("not_abbrev")
             tokens = [not_abbrev] if isinstance(not_abbrev, str) else list(not_abbrev)
             ref = self._resolve_draft_any(id)
             self.store.drafts.add_abbrev_ignore(ref.id, tokens)
             return Response(body=f"marked not-an-abbrev: {', '.join(tokens)}")
+        # ``is_abbrev`` is the inverse — drop tokens from
+        # ``meta.abbrev_ignore`` when a silenced token turns out to be a
+        # real abbreviation after all (gr491597).
+        if is_abbrev:
+            _reject_dry_run("is_abbrev")
+            tokens = [is_abbrev] if isinstance(is_abbrev, str) else list(is_abbrev)
+            ref = self._resolve_draft_any(id)
+            removed, absent = self.store.drafts.remove_abbrev_ignore(ref.id, tokens)
+            body = f"unmarked not-an-abbrev: {', '.join(removed) or 'none'}"
+            if absent:
+                body += f" (not on the ignore list: {', '.join(absent)})"
+            return Response(body=body)
         # ``authoring`` is a draft-level op (paper-writing pipeline rung 3e,
         # the per-document auto-author toggle) — id is the slug (or any
         # handle in the draft), not a single chunk. When on, the grounded
@@ -2498,8 +2512,8 @@ class DraftHandler(Handler):
             "edit(kind='draft') requires text= (rewrite), move= (reorder/reparent), "
             "style= (set a heading's section style), word_target= (set a heading's "
             "word limit), authors= (set the byline + affiliations), sub= (regex "
-            "substitute across a draft/section), or not_abbrev= (silence the "
-            "abbrev hint)",
+            "substitute across a draft/section), not_abbrev= (silence the "
+            "abbrev hint), or is_abbrev= (un-silence it)",
             next="edit(kind='draft', id='dc<chunk_id>', text='…')",
         )
 
@@ -2626,8 +2640,9 @@ class DraftHandler(Handler):
         ¶handle (a chunk in it), refusing a machine-owned target
         (:meth:`_refuse_if_machine_owned`). Used by every draft-level
         mutating op (``title=``/``authors=``/``not_abbrev=``/
-        ``authoring=``/``scaffold=``, and whole-draft :meth:`delete`) —
-        all mutating, so every caller wants the guard."""
+        ``is_abbrev=``/``authoring=``/``scaffold=``, and whole-draft
+        :meth:`delete`) — all mutating, so every caller wants the
+        guard."""
         s = str(id or "").strip()
         if _is_draft_chunk_handle(s):
             chunk = self.store.drafts.get_draft_chunk(s)

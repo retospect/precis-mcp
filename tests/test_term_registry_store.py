@@ -404,3 +404,97 @@ def test_defined_abbrevs_drops_ignored_tokens(draft: DraftHandler, hub: Hub) -> 
     assert "FTIR" in hub.live_store.drafts.defined_abbrevs(ref_id)
     hub.live_store.drafts.add_abbrev_ignore(ref_id, ["FTIR"])
     assert "FTIR" not in hub.live_store.drafts.defined_abbrevs(ref_id)
+
+
+def test_abbrev_ignore_never_silences_term_chunks(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """gr491597: ``meta.abbrev_ignore`` scopes to inline-detected pairs
+    and the undefined-abbrev hint — never to an explicit ``term`` chunk
+    (dr448178's whole glossary was silenced by a stale ignore list, so
+    its export had no definitions at all)."""
+    ref_id = _mk(hub, draft)
+    draft.put(
+        id="nt",
+        chunk_kind="term",
+        text="Perdew-Burke-Ernzerhof",
+        meta={"short": "PBE"},
+    )
+    hub.live_store.drafts.add_abbrev_ignore(ref_id, ["PBE"])
+    assert (
+        hub.live_store.drafts.defined_abbrevs(ref_id)["PBE"] == "Perdew-Burke-Ernzerhof"
+    )
+    # Same scope on the reader-hover surface: the term leaf still wins.
+    assert (
+        hub.live_store.drafts.defined_terms(ref_id)["PBE"]["definition"]
+        == "Perdew-Burke-Ernzerhof"
+    )
+
+
+def test_defined_terms_drops_ignored_inline_pair(draft: DraftHandler, hub: Hub) -> None:
+    """The ignore list reaches ``defined_terms``'s inline pairs too (same
+    scope as ``defined_abbrevs``): a silenced token must not hover-resolve
+    off its Schwartz-Hearst hit."""
+    ref_id = _mk(hub, draft)
+    title_h = hub.live_store.drafts.reading_order(ref_id)[0].handle
+    draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text="We use Fourier Transform Infrared (FTIR) here.",
+        at={"after": "¶" + title_h},
+    )
+    assert "FTIR" in hub.live_store.drafts.defined_terms(ref_id)
+    hub.live_store.drafts.add_abbrev_ignore(ref_id, ["FTIR"])
+    assert "FTIR" not in hub.live_store.drafts.defined_terms(ref_id)
+
+
+def test_is_abbrev_unsilences_inline_pair_and_hint(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """``edit(is_abbrev=)`` removes tokens from ``meta.abbrev_ignore`` —
+    the inverse of ``not_abbrev=`` (gr491597): the inline pair is
+    detected again, and a silenced-but-undefined token resumes
+    hinting."""
+    ref_id = _mk(hub, draft)
+    title_h = hub.live_store.drafts.reading_order(ref_id)[0].handle
+    draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text="We use Fourier Transform Infrared (FTIR) here.",
+        at={"after": "¶" + title_h},
+    )
+    draft.edit(id="nt", not_abbrev=["FTIR"])
+    assert "FTIR" not in hub.live_store.drafts.defined_abbrevs(ref_id)
+    r = draft.edit(id="nt", is_abbrev=["FTIR"])
+    assert "FTIR" in r.body
+    assert "FTIR" in hub.live_store.drafts.defined_abbrevs(ref_id)
+
+    # Hint round-trip on a never-defined token: silence, then un-silence.
+    draft.edit(id="nt", not_abbrev=["MOF"])
+    r2 = draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text="Grown on a MOF substrate.",
+        at={"last": True},
+    )
+    assert "undefined abbreviation" not in r2.body
+    draft.edit(id="nt", is_abbrev=["MOF"])
+    r3 = draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text="The MOF held at 1 bar.",
+        at={"last": True},
+    )
+    assert "undefined abbreviation" in r3.body and "MOF" in r3.body
+
+
+def test_is_abbrev_absent_token_is_a_noted_noop(draft: DraftHandler, hub: Hub) -> None:
+    """Removing a token that was never ignored writes nothing and says
+    so — the response must not claim a silence was lifted (and a mixed
+    call removes only what was there)."""
+    ref_id = _mk(hub, draft)
+    r = draft.edit(id="nt", is_abbrev=["PBE"])
+    assert "not on the ignore list" in r.body and "PBE" in r.body
+    hub.live_store.drafts.add_abbrev_ignore(ref_id, ["FTIR"])
+    r2 = draft.edit(id="nt", is_abbrev=["FTIR", "PBE"])
+    assert "FTIR" in r2.body and "not on the ignore list: PBE" in r2.body

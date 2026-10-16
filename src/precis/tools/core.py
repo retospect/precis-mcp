@@ -1570,8 +1570,10 @@ def edit(
     # if the chunk changed since, so concurrent editors don't clobber.
     base_sha: str | None = None,
     # draft abbreviations: mark token(s) as NOT an abbreviation (chem
-    # formula, model name, …) to silence the undefined-abbrev write hint.
+    # formula, model name, …) to silence the undefined-abbrev write hint;
+    # is_abbrev= is the inverse — un-silences them.
     not_abbrev: list[str] | None = None,
+    is_abbrev: list[str] | None = None,
     # draft regex substitute (see precis-draft-help "Search a draft"):
     # sub={'find':…,'replace':…,'flags':…} (or a 's/find/replace/'
     # string) rewrites every match across the id= scope (a draft slug or a
@@ -1760,6 +1762,7 @@ def edit(
         "move": move,
         "base_sha": base_sha,
         "not_abbrev": not_abbrev,
+        "is_abbrev": is_abbrev,
         "sub": sub,
         "authors": authors,
         "authoring": authoring,

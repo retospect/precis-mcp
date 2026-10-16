@@ -401,13 +401,29 @@ class _AbbrevMixin:
                 "AND ord >= 0 AND retired_at IS NULL",
                 (ref_id,),
             ).fetchone()
+            mrow = conn.execute(
+                "SELECT meta->'abbrev_ignore' FROM refs WHERE ref_id = %s",
+                (ref_id,),
+            ).fetchone()
+            # A token the author silenced via ``add_abbrev_ignore`` (a false
+            # Schwartz-Hearst hit) is not an abbreviation of this draft — it
+            # drops *inline-detected* pairs only (and the undefined-abbrev
+            # hint), never an explicit ``term`` chunk (gr491597: dr448178's
+            # whole glossary was silenced by a stale ignore list).
+            ignored = {str(t) for t in mrow[0]} if mrow and mrow[0] else set()
             # Inline pairs first; explicit term chunks overwrite them. The
             # Schwartz-Hearst scan is regex over the *whole* concatenated
             # prose — multi-second on a huge draft (1M+ chars). Above the
             # cap, skip it: the abbreviation highlight is a reader nicety,
             # and explicit ``term`` chunks (below) still give the glossary.
             if prow and prow[0] and len(prow[0]) <= _ABBREV_INLINE_SCAN_CAP:
-                out.update(_sh_find(prow[0]))
+                out.update(
+                    {
+                        short: long
+                        for short, long in _sh_find(prow[0]).items()
+                        if short not in ignored
+                    }
+                )
             for short, long in conn.execute(
                 "SELECT meta->>'short', text FROM chunks WHERE ref_id = %s "
                 "AND chunk_kind = 'term' AND retired_at IS NULL",
@@ -415,15 +431,6 @@ class _AbbrevMixin:
             ).fetchall():
                 if short and (long or "").strip():
                     out[str(short)] = strip_trailing_aside(str(long).strip())
-            # A token the author silenced via ``add_abbrev_ignore`` (a false
-            # Schwartz-Hearst hit) is not an abbreviation of this draft.
-            mrow = conn.execute(
-                "SELECT meta->'abbrev_ignore' FROM refs WHERE ref_id = %s",
-                (ref_id,),
-            ).fetchone()
-            if mrow and mrow[0]:
-                for tok in mrow[0]:
-                    out.pop(str(tok), None)
         # ``X`` and ``Xs`` with the same meaning are one abbreviation (the
         # exporter absorbs a plural ``s``): keep only ``X``.
         for short in [k for k in out if k.endswith("s") and k[:-1] in out]:
@@ -449,11 +456,18 @@ class _AbbrevMixin:
                 "AND ord >= 0 AND retired_at IS NULL",
                 (ref_id,),
             ).fetchone()
+            mrow = conn.execute(
+                "SELECT meta->'abbrev_ignore' FROM refs WHERE ref_id = %s",
+                (ref_id,),
+            ).fetchone()
+            # Same scope as ``defined_abbrevs``: the ignore list drops
+            # inline-detected pairs only, never an explicit term leaf.
+            ignored = {str(t) for t in mrow[0]} if mrow and mrow[0] else set()
             # Inline pairs first; explicit term leaves overwrite them (same
             # precedence + huge-draft cap as ``defined_abbrevs``).
             if prow and prow[0] and len(prow[0]) <= _ABBREV_INLINE_SCAN_CAP:
                 for short, long in _sh_find(prow[0]).items():
-                    if short and (long or "").strip():
+                    if short and (long or "").strip() and short not in ignored:
                         out[str(short)] = {"definition": str(long).strip()}
             for meta, text in conn.execute(
                 "SELECT meta, text FROM chunks WHERE ref_id = %s "
@@ -528,6 +542,34 @@ class _AbbrevMixin:
                 "%s::jsonb, true) WHERE ref_id = %s",
                 (Jsonb(merged), ref_id),
             )
+
+    def remove_abbrev_ignore(
+        self, ref_id: int, tokens: list[str]
+    ) -> tuple[list[str], list[str]]:
+        """Remove ``tokens`` from ``refs.meta.abbrev_ignore`` — the inverse
+        of :meth:`add_abbrev_ignore`, for a silenced token that IS an
+        abbreviation after all (gr491597: the ignore valve had no off
+        ramp). Returns ``(removed, absent)`` — tokens taken off the list
+        and tokens that weren't on it, so the caller can report the
+        no-op instead of claiming a silence was lifted."""
+        clean = [str(t).strip() for t in (tokens or []) if str(t).strip()]
+        if not clean:
+            return ([], [])
+        with self.tx() as conn:
+            row = conn.execute(
+                "SELECT meta->'abbrev_ignore' FROM refs WHERE ref_id = %s",
+                (ref_id,),
+            ).fetchone()
+            existing = {str(t) for t in row[0]} if row and row[0] else set()
+            removed = sorted(existing & set(clean))
+            if not removed:
+                return ([], sorted(set(clean) - existing))
+            conn.execute(
+                "UPDATE refs SET meta = jsonb_set(meta, '{abbrev_ignore}', "
+                "%s::jsonb, true) WHERE ref_id = %s",
+                (Jsonb(sorted(existing - set(clean))), ref_id),
+            )
+        return (removed, sorted(set(clean) - existing))
 
 
 class DraftStore(_AbbrevMixin):

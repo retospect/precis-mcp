@@ -412,7 +412,12 @@ put(
 )  # define it — filed under an auto-created Glossary heading
 edit(
     kind="draft", id="<slug>", not_abbrev=["CO2"]
-)  # OR: mark not-an-abbreviation, silences the hint
+)  # OR: mark not-an-abbreviation — silences the hint and skips its
+  # inline-detected pair (a term chunk you filed still defines it)
+edit(
+    kind="draft", id="<slug>", is_abbrev=["CO2"]
+)  # inverse: un-silence a wrongly-ignored token (removing an absent
+  # token is a no-op; the response says so)
 ```
 
 The term call **is** what "define an abbreviation" means here, not an

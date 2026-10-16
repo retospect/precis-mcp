@@ -67,7 +67,8 @@ call)
 | `word_target=` | a heading's word budget `{'min':…,'max':…}`; `{}` clears |
 | `args={'char_target':…}` | same shape, counted in characters (spaces included) |
 | `style=` | stamp a heading with a section-style skill |
-| `not_abbrev=` | silence the undefined-abbreviation hint for given tokens |
+| `not_abbrev=` | silence the undefined-abbreviation hint + inline-pair detection for given tokens |
+| `is_abbrev=` | inverse of `not_abbrev=` — take tokens off the ignore list (absent ones are a noted no-op) |
 | `origin=` / `permission=` | a figure's provenance + clearance paper-trail |
 
 Structural ops (`move`/`table`/`authors`) have no diff and reject

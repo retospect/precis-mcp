@@ -272,8 +272,9 @@ shared grammar — `move=` (reorder/reparent a chunk), `cell=` (a table
 chunk's cell), `sub=` (regex substitute, dry-run by default), `review=`
 (record a human sign-off), `authoring=` (let review personas edit inline),
 `authors=` (set the byline), `word_target=` (a heading's length budget),
-`style=` (a heading's section style), `not_abbrev=` (silence an
-abbreviation hint) — all documented in `precis-draft-help`, not here.
+`style=` (a heading's section style), `not_abbrev=`/`is_abbrev=` (silence /
+un-silence an abbreviation hint) — all documented in `precis-draft-help`,
+not here.
 
 `meta=` merges kind-supported keys into the ref's meta dict: a memory's
 `hook` (see `precis-memory-help`), pres's BibTeX attribution fields
