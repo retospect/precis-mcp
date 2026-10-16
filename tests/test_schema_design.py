@@ -266,7 +266,12 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         "pcb_net_classes.rules",
         "pcb_netconns.meta",
         "pcb_nets.meta",
-        "pcb_pin_swaps.meta",
+        # 0221: resolved netlist snapshot (pcb-lazy-netlist-and-checks
+        # Slice 7) — pins/prior are the whole effective (pin, net) set and
+        # the prior assignment, read back whole by the resolve overlay.
+        "pcb_netlist_snapshots.meta",
+        "pcb_netlist_snapshots.pins",
+        "pcb_netlist_snapshots.prior",
         "pcb_pins.meta",
         "pcb_planes.meta",
         # 0219: fill region polygon, superseding region_hint — read back
