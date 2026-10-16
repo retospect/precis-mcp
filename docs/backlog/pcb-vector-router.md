@@ -528,6 +528,32 @@ Exit: taz15-blank ≥ 149/151 (CN4_40/42/56/58/60/67/74, MCU_BOOT realized),
 ewod replay not worse; post-pass wall time reported per board (target
 ≤ 10 % of the maze's). gr489923 and gr491588 closed with the table.
 
+Carried from gr491588 / gr489923 (stub measurements; Reto 2026-10-16 ruling:
+the last-pass stub idea "will not be built", gr491588 stays open for this
+slice):
+
+- **Trigger.** The walled-in test is not specific to taz15. In
+  router-lane-fix's `804d4d7dc` experiment (branch only) nano's USB-C
+  0.5 mm-pitch pads also had no passable grid cell, so a stub gated on
+  "walled in" still fired there (nano seed 1: 34/30, 37, 9, against the
+  floors 35/29, 36, 9). The post-pass therefore fires on nano; slice 3
+  reports the fire count per board (nano, taz15-blank, esp32c3 seeds, ewod).
+- **Order.** The post-pass runs after the maze has placed everything, so it
+  cannot move earlier nets. What it can still move is silk, labels and pours
+  placed after routing (Risks table; 63 firings in the stub run moved two
+  clearance warns nowhere near a stub). Exit must show `silk_missing` and
+  `clearance` warns at or under the floors, not only routed/failed.
+- **Noise.** Nano swings about ±2 nets on small routing changes (gr491588).
+  Reto decides: is the floor judged on seed 1 alone, or on a stated seed set
+  with the worst seed as the gate.
+- **Fixture.** The source of the failing pad geometry is gr489923: CN4
+  `CONN-SMD_APCI0136-P001A`, 69 pads 0.3 × 1.55 mm in two staggered rows at
+  0.5 mm pitch, pad gap 0.2 mm; a 0.3 mm track along the pad axis clears a
+  neighbour by 0.2 mm > 0.152 mm, so a legal exit exists. Repro:
+  `scripts/pcb-snapshot export-prod taz15-blank`; load;
+  `UPDATE pcb_instances SET fixed='both'`; `pcb_route._dispatch iters=1`.
+  Backup branch `rlf-full-backup` holds the stub experiment.
+
 Owning files: `src/precis/pcb/vroute.py`, `realize.py`, `tests/test_pcb_vroute.py`.
 
 ### Slice 4 — vector fallback for every maze failure

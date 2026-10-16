@@ -110,6 +110,11 @@ gr346534, soft-deleted)
    gr472019 and gr476100; the router tracker binding shipped, what is left
    is the OTS batch 7 re-stamp). It ranks below 1–4 because the alerts still
    fire; what is missing is the tracker binding, so nothing goes silent.
+6. **backlog/db-exporters-role.md** (gr492114; option (b) of gr465126) —
+   run postgres_exporter and pgbouncer_exporter on the DB node so
+   `monitoring_db_exporters` can flip true. Needs a vault DSN from Reto
+   before a builder starts; ranks last because the gate (5691792fa, branch
+   `db-exporters-gate`) stops the false NodeDown/PostgresDown once it lands.
 
 ## Horizon
 

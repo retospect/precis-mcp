@@ -159,7 +159,8 @@ review, VERIFIED by Reto 2026-10-14 — review-queue
    (GND/3V3 traced, no outer pours), 139/151 with GND→B.Cu and
    3V3→F.Cu declared — 8 of the rest are CN4's 0.5 mm-pitch escapes
    (gr489923; the escape stub that took this to 149/151 is held
-   because it changes routing across the nano board, gr491588),
+   because it changes routing across the nano board, gr491588; both close
+   with `backlog/pcb-vector-router.md` slice 3, which replaces the stub),
    2 drop-via sites (GND/PV+), 2 search budget. The
    source's 7 `via_via_keepout` errors still need `force=True` on
    `taz15` (gr489914; the doubled via is deduped at import).

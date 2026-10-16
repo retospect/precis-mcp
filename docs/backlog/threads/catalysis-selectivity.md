@@ -233,6 +233,14 @@ Reto: gr482121 backfill of the 559 overwritten `pw-*` structure refs.
    thermo-only margins do not.
 6. **backlog/pathway-kinetics-promotion-gate.md** — where barriers are
    spent; needs 5's `U_sel` to pick the decisive edges.
+7. **backlog/mixed-coverage-precis-wiring-residue.md** (gr489475) — the
+   NO+H mixed-coverage scan is wired and pinned; the post-deploy check
+   (`mixtures=NO+H` in the job_event, mixed points in coverage.json) has not
+   run. Cheap, and it gates closing gr489475.
+8. **backlog/crowded-surface-experiment.md** (gr482313, gr489182) — Reto's
+   crowded-surface ask; ranked after 7 and after the catpath 0.30.0 re-run
+   (spectator mode, NH2/NOH template fix), because the dilute-vs-1 ML table
+   it starts from is uncertain until then.
 
 ## Horizon
 
@@ -270,6 +278,9 @@ Reto: gr482121 backfill of the 559 overwritten `pw-*` structure refs.
    ported from the CatMAP/CatmapInterface.jl stack, plus a CatMAP parity
    export. Ranked last: Do-next 5–6 define the window and the decisive
    edges it would make U-dependent, and Horizon 1 supplies the barriers.
+6. **backlog/quest-batch-coverage-scan.md** (gr491442) — a quest-tier op to
+   scan a named list of candidates × models; convenience over the documented
+   per-candidate put recipe, so it ranks below the experiments that use it.
 
 ## Parked
 
