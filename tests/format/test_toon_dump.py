@@ -24,6 +24,7 @@ from __future__ import annotations
 import math
 from typing import Any, cast
 
+import numpy as np
 import pytest
 
 from precis.format.toon import dump
@@ -220,6 +221,14 @@ class TestSeparatorOverride:
         # a cell containing a tab is *not* quoted any more.
         out = dump([{"a": "x,y", "b": "x\ty"}], sep=",")
         assert out == '{a,b}\n"x,y",x\ty'
+
+
+class TestNumpyScalars:
+    def test_numpy_scalars_render_as_plain_numbers(self):
+        # gr491375: round(np.float64) stays np.float64, whose numpy-2 repr
+        # leaked into the pcb_route cost table as ``np.float64(0.2)``.
+        out = dump([{"f": np.float64(0.2), "i": np.int64(3), "b": np.bool_(True)}])
+        assert out == "{f\ti\tb}\n0.2\t3\ttrue"
 
 
 class TestErrors:

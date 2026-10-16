@@ -223,6 +223,10 @@ def _encode_cell(value: Any, sep: str) -> str:
     """Render a single cell value to its serialised string form."""
     if value is None:
         return ""
+    if type(value).__module__ == "numpy" and hasattr(value, "item"):
+        # A numpy scalar (np.float64 subclasses float, so its numpy-2 repr
+        # ``np.float64(0.2)`` would reach the cell; gr491375).
+        value = value.item()
     if value is True:
         return "true"
     if value is False:

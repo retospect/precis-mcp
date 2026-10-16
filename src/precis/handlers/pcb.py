@@ -913,8 +913,74 @@ class PcbHandler(Handler):
                 if facts_queued
                 else ""
             )
+            + self._put_echo(ref.id)
             + self._toc(design)
         )
+
+    def _put_echo(self, ref_id: int) -> str:
+        """What the put left stored that the TOC does not show: the §1b
+        supply roles (declared ``roles``, each part's ``supplies``, a client
+        count from pins' ``client_of``) and a one-line netlist summary —
+        so the caller sees the effect without a second get (gr491374)."""
+        g = self.store.pcb_graph(ref_id)
+        suppliers: dict[str, list[str]] = {}
+        for inst in g["instances"]:
+            for s in inst.get("supplies") or []:
+                n_blocks = len(s.get("blocks") or [])
+                suppliers.setdefault(str(s.get("role")), []).append(
+                    f"{inst['refdes']}({n_blocks} block(s))"
+                )
+        clients: collections.Counter[str] = collections.Counter()
+        pins = [m for n in g["nets"] for m in n["members"]] + g["unconnected"]
+        for p in {(p["refdes"], p["pin"]): p for p in pins}.values():
+            client_of = (p.get("meta") or {}).get("client_of")
+            if isinstance(client_of, dict) and client_of.get("role"):
+                clients[str(client_of["role"])] += 1
+        roles = g["roles"]
+        out = ""
+        names = sorted(set(roles) | set(suppliers) | set(clients))
+        if names:
+            rows = [
+                {
+                    "role": name,
+                    "voltage_v": (
+                        "undeclared"
+                        if name not in roles
+                        else "—"
+                        if roles[name]["voltage_v"] is None
+                        else f"{roles[name]['voltage_v']:g}"
+                    ),
+                    "fanout": (
+                        "—"
+                        if roles.get(name, {}).get("fanout") is None
+                        else str(roles[name]["fanout"])
+                    ),
+                    "supplied_by": ",".join(suppliers.get(name, [])) or "—",
+                    "clients": str(clients[name]),
+                }
+                for name in names
+            ]
+            out += (
+                "## supply roles\n"
+                + render_agent_table(
+                    rows,
+                    schema=["role", "voltage_v", "fanout", "supplied_by", "clients"],
+                )
+                + "\n"
+            )
+        marked = sum(
+            pcb_drc._pin_marker(p) in ("nc", "unused") for p in g["unconnected"]
+        )
+        by_class = collections.Counter(n["net_class"] or "—" for n in g["nets"])
+        classes = ", ".join(f"{c}:{k}" for c, k in sorted(by_class.items()))
+        out += (
+            f"## netlist: {len(g['nets'])} net(s)"
+            + (f" (by class {classes})" if classes else "")
+            + f", {len(g['unconnected'])} netless pin(s)"
+            + (f" ({marked} marked nc/unused)" if marked else "")
+            + "\n"
+        )
+        return out
 
     def _queue_datasheets(self, ref_id: int, *, force: bool = False) -> tuple[int, int]:
         """Enqueue a ``datasheet_pull`` job per C-number on the board that has

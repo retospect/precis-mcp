@@ -3955,6 +3955,56 @@ def test_roles_supplies_client_of_round_trip(pcb, store):
     }
 
 
+def test_put_echoes_supply_roles_and_netlist_summary(pcb):
+    """gr491374: the put response shows the stored roles, each part's
+    supplies, the client count per role and a netlist summary."""
+    body = pcb.put(
+        id="roles-echo",
+        args={
+            "roles": [{"name": "pad_driver", "voltage_v": 300, "fanout": 4}],
+            "components": [
+                {
+                    "refdes": "U1",
+                    "label": "drv",
+                    "footprint": "X",
+                    "pins": [{"name": "A"}, {"name": "B"}, {"name": "C"}],
+                    "supplies": {"role": "pad_driver", "blocks": [["A"], ["B"]]},
+                },
+                {
+                    "refdes": "P1",
+                    "label": "pad",
+                    "footprint": "Y",
+                    "pins": [
+                        {"name": "1", "client_of": "pad_driver"},
+                        {"name": "2", "client_of": "pad_driver"},
+                        {"name": "3", "client_of": "hv_bias"},
+                        {"name": "4", "nc": True},
+                    ],
+                },
+            ],
+            "nets": [{"name": "N1", "net_class": "hv"}, {"name": "N2"}],
+            "connections": [
+                {"net": "N1", "refdes": "U1", "pin": "A"},
+                {"net": "N1", "refdes": "P1", "pin": "1"},
+                {"net": "N2", "refdes": "U1", "pin": "B"},
+                {"net": "N2", "refdes": "P1", "pin": "2"},
+            ],
+        },
+    ).body
+    assert "## supply roles" in body
+    rows = {
+        line.split("\t")[0]: line.split("\t")
+        for line in body.split("## supply roles\n", 1)[1].splitlines()[1:3]
+    }
+    # P1.3 is netless, so the client count reads unconnected pins too.
+    assert rows["pad_driver"] == ["pad_driver", "300", "4", "U1(2 block(s))", "2"]
+    assert rows["hv_bias"] == ["hv_bias", "undeclared", "—", "—", "1"]
+    assert (
+        "## netlist: 2 net(s) (by class hv:1, —:1), "
+        "3 netless pin(s) (1 marked nc/unused)"
+    ) in body
+
+
 def test_channel_map_view(pcb):
     def comp(refdes, pins, **kw):
         return {"refdes": refdes, "label": "x", "footprint": "X", "pins": pins, **kw}
