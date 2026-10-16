@@ -569,7 +569,14 @@ def test_pcb_route_persists_optimizer_derived_plane_promotion(
 
     rows = store.pcb_planes_list(ref_id)
     assert rows == [
-        {"layer": "In1.Cu", "net": "N1", "region_hint": None, "source": "derived"}
+        {
+            "layer": "In1.Cu",
+            "net": "N1",
+            "region_hint": None,
+            "region": None,
+            "priority": 0,
+            "source": "derived",
+        }
     ]
 
     handler = PcbHandler(hub=Hub(store=store))
@@ -589,7 +596,14 @@ def test_pcb_route_never_touches_an_authored_plane_assignment(store: Store) -> N
 
     before = store.pcb_planes_list(ref_id)
     assert before == [
-        {"layer": "In1.Cu", "net": "N1", "region_hint": None, "source": "authored"}
+        {
+            "layer": "In1.Cu",
+            "net": "N1",
+            "region_hint": None,
+            "region": None,
+            "priority": 0,
+            "source": "authored",
+        }
     ]
 
     ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 200, "seed": 1})
@@ -642,7 +656,14 @@ def test_pcb_route_locks_an_authored_plane_through_the_anneal(store: Store) -> N
 
     planes = store.pcb_planes_list(ref_id)
     assert planes == [
-        {"layer": "In1.Cu", "net": "N1", "region_hint": None, "source": "authored"}
+        {
+            "layer": "In1.Cu",
+            "net": "N1",
+            "region_hint": None,
+            "region": None,
+            "priority": 0,
+            "source": "authored",
+        }
     ], "the authored row itself must survive, same discipline as the sibling test above"
 
     board_id = store.pcb_ensure_board(ref_id)
