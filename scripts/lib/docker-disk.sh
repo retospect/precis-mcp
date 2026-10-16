@@ -1,17 +1,20 @@
 # shellcheck shell=bash
 # scripts/lib/docker-disk.sh — free-space preflight for the docker VM disk.
-# Sourced by scripts/test (and, once wired, scripts/ship).
+# Sourced by scripts/test and scripts/ship.
 #
 # Why: on 2026-10-03 the colima VM disk reached 98% (90 GB build cache, ~40
 # idle containers). The uv cache then hit ENOSPC mid-run, so lint, gates and
 # scripts/test died with no test output — which reads as a red gate. A run
 # that cannot finish should refuse up front, in seconds, with the cause named.
 #
-# docker_free_gb          prints the integer GB free on the docker root fs
-#                         inside the VM, or nothing when it cannot be read.
+# docker_free_gb          prints the integer GB free on the docker root fs inside
+#                         the VM, or "failed: <reason>" (return 1) when it cannot
+#                         be read. A real 0 prints "0"; a failure never does.
 # docker_disk_preflight W returns 3 (message on stderr) when free space is under
-#                         PRECIS_DOCKER_MIN_FREE_GB (default 10); warns and
-#                         returns 0 on an unknown value, never refusing on it.
+#                         PRECIS_DOCKER_MIN_FREE_GB (default 10) AND when the
+#                         probe fails ("disk probe failed: <reason>"): a gate that
+#                         cannot tell whether the disk is full must not start one,
+#                         and must not call it full either (gr493188).
 #                         PRECIS_DOCKER_DISK_CHECK=0 skips the check.
 #
 # Probe (measured on the colima host, 2026-10-03): `docker run --rm
@@ -19,15 +22,26 @@
 # overlay root is backed by the docker root fs, so `/` there reports exactly
 # the disk that fills; no pull and no bind mount, so it works against any
 # daemon (colima, Docker Desktop, remote context). Fallback when no local
-# image answers: `colima ssh -- df -Pk /var/lib/docker` (~0.35 s). Every probe
-# is alarm-bounded (PRECIS_DOCKER_DISK_TIMEOUT, default 10 s) so a wedged
-# daemon can never hang the caller. macOS bash 3.2 compatible.
+# image answers: `colima ssh -- df -Pk /var/lib/docker` (~0.35 s). Each attempt
+# is bounded (PRECIS_DOCKER_DISK_TIMEOUT, default 10 s) and the whole probe by
+# PRECIS_DOCKER_DISK_TOTAL_TIMEOUT (default 25 s), so a wedged daemon can never
+# hang the caller. macOS bash 3.2 compatible.
 
-# _docker_disk_bounded <cmd...> — run under perl's alarm (macOS ships no
-# `timeout`; perl is on both platforms). No perl: run unbounded.
+# _docker_disk_bounded <seconds> <cmd...> — run in its own process group under
+# a perl deadline (macOS ships no `timeout`). On expiry the whole group is
+# killed, so a grandchild (colima's ssh) cannot hold the caller's $(...) pipe
+# open past the bound; exits 142. No perl: run unbounded.
 _docker_disk_bounded() {
+    local secs="$1"
+    shift
     if command -v perl >/dev/null 2>&1; then
-        perl -e 'alarm shift; exec @ARGV' "${PRECIS_DOCKER_DISK_TIMEOUT:-10}" "$@"
+        perl -e '
+            my $t = shift; my $p = fork();
+            if (!$p) { setpgrp(0, 0); exec @ARGV or exit 127 }
+            $SIG{ALRM} = sub { kill "KILL", -$p; waitpid($p, 0); exit 142 };
+            alarm $t; waitpid($p, 0);
+            exit($? & 127 ? 128 + ($? & 127) : $? >> 8);
+        ' "$secs" "$@"
     else
         "$@"
     fi
@@ -40,33 +54,66 @@ _docker_df_avail_gb() {
 }
 
 docker_free_gb() {
-    local out gb img rc
+    local out gb img rc per per_try total deadline left why=""
+    per="${PRECIS_DOCKER_DISK_TIMEOUT:-10}"
+    total="${PRECIS_DOCKER_DISK_TOTAL_TIMEOUT:-25}"
+    # 0 would mean "no alarm" to perl, i.e. no bound: treat it as unset.
+    case "$per" in '' | 0 | *[!0-9]*) per=10 ;; esac
+    case "$total" in '' | 0 | *[!0-9]*) total=25 ;; esac
+    deadline=$((SECONDS + total))
     if command -v docker >/dev/null 2>&1; then
         for img in "${PRECIS_DOCKER_DISK_IMAGE:-}" precis-dev:latest alpine:latest \
             debian:bookworm-slim; do
             [ -n "$img" ] || continue
+            case "$img" in
+                -*) # docker run reads it as a flag and prints its usage text
+                    why="${why:+$why; }image '$img' looks like a flag"
+                    continue
+                    ;;
+            esac
+            left=$((deadline - SECONDS))
+            if [ "$left" -le 0 ]; then
+                why="${why:+$why; }overall ${total}s probe bound hit"
+                break
+            fi
+            per_try="$per"
+            [ "$left" -lt "$per" ] && per_try="$left"
             rc=0
-            out="$(_docker_disk_bounded docker run --rm --pull=never --entrypoint df \
-                "$img" -Pk / 2>/dev/null)" || rc=$?
-            # 142 = SIGALRM: the daemon is wedged, so another image won't help.
-            [ "$rc" = 142 ] && break
-            [ "$rc" = 0 ] || continue
+            out="$(_docker_disk_bounded "$per_try" docker run --rm --pull=never \
+                --entrypoint df "$img" -Pk / </dev/null 2>/dev/null)" || rc=$?
+            # 142 = our deadline: the daemon is wedged, another image won't help.
+            if [ "$rc" = 142 ]; then
+                why="${why:+$why; }docker run timed out after ${per_try}s"
+                break
+            fi
+            if [ "$rc" != 0 ]; then
+                why="${why:+$why; }docker run $img exited $rc"
+                continue
+            fi
             gb="$(printf '%s\n' "$out" | _docker_df_avail_gb)"
             if [ -n "$gb" ]; then
                 printf '%s\n' "$gb"
                 return 0
             fi
+            why="${why:+$why; }docker run $img gave no df row"
         done
+    else
+        why="docker not on PATH"
     fi
-    if command -v colima >/dev/null 2>&1; then
-        out="$(_docker_disk_bounded colima ssh -- df -Pk /var/lib/docker 2>/dev/null)" || out=""
+    left=$((deadline - SECONDS))
+    if command -v colima >/dev/null 2>&1 && [ "$left" -gt 0 ]; then
+        per_try="$per"
+        [ "$left" -lt "$per" ] && per_try="$left"
+        out="$(_docker_disk_bounded "$per_try" colima ssh -- df -Pk /var/lib/docker </dev/null 2>/dev/null)" || out=""
         gb="$(printf '%s\n' "$out" | _docker_df_avail_gb)"
         if [ -n "$gb" ]; then
             printf '%s\n' "$gb"
             return 0
         fi
+        why="${why:+$why; }colima ssh df gave no answer"
     fi
-    return 0
+    printf 'failed: %s\n' "${why:-no probe available}"
+    return 1
 }
 
 docker_disk_preflight() {
@@ -74,11 +121,13 @@ docker_disk_preflight() {
     [ "${PRECIS_DOCKER_DISK_CHECK:-1}" = "0" ] && return 0
     min="${PRECIS_DOCKER_MIN_FREE_GB:-10}"
     case "$min" in '' | *[!0-9]*) min=10 ;; esac
-    free="$(docker_free_gb)"
-    if [ -z "$free" ]; then
-        echo "WARNING: ${who}: could not read the docker VM's free disk space; proceeding without the check" >&2
-        return 0
-    fi
+    free="$(docker_free_gb)" || true
+    case "$free" in
+        '' | failed:*)
+            echo "${who}: disk probe failed: ${free#failed: }; this is not a disk-full verdict. Re-run, or PRECIS_DOCKER_DISK_CHECK=0 to skip the probe" >&2
+            return 3
+            ;;
+    esac
     if [ "$free" -lt "$min" ]; then
         echo "${who}: docker VM disk has ${free} GB free; run scripts/reap-test-dbs, or ask the orchestrator to prune; do not re-run" >&2
         return 3

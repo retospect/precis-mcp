@@ -40,7 +40,8 @@ _FAKE_DOCKER = r"""#!/usr/bin/env bash
 #   up|run|down|...  compose verbs
 #   prune|<args>     `docker builder prune -f <flag> <size>`
 # Knobs:
-#   FAKE_DF_MODE      ok (default) | fail | hang   -- the df probe's behaviour
+#   FAKE_DF_MODE      ok (default) | fail | usage | slowfail | hang
+#                     -- the df probe's behaviour (usage = docker's flag error)
 #   FAKE_DF_FREE_KB   Available column the probe reports
 #   FAKE_PRUNE_FLAG   the keep-flag `builder prune --help` advertises ('' = none)
 set -u
@@ -50,6 +51,12 @@ case "${args[0]:-}" in
     echo "df|${args[*]}" >> "$FAKE_DOCKER_LOG"
     case "${FAKE_DF_MODE:-ok}" in
       fail) exit 1 ;;
+      usage)
+        echo "unknown shorthand flag" >&2
+        echo "Run 'docker run --help' for more information" >&2
+        exit 125
+        ;;
+      slowfail) sleep 2; exit 1 ;;
       hang) exec sleep 30 ;;
     esac
     printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
@@ -203,23 +210,70 @@ def test_typecheck_is_guarded_too(tmp_path: Path) -> None:
     assert _compose_calls(_log(tmp_path)) == []
 
 
-def test_unknown_free_space_warns_and_proceeds(tmp_path: Path) -> None:
+def test_unreadable_free_space_blocks_naming_the_probe_failure(tmp_path: Path) -> None:
     proc = _run_test(tmp_path, FAKE_DF_MODE="fail")
-    assert proc.returncode == 0, proc.stderr
-    assert "could not read the docker VM's free disk space" in proc.stderr
-    assert [ln.split("|")[0] for ln in _compose_calls(_log(tmp_path))] == ["up", "run"]
+    assert proc.returncode == 3, proc.stderr
+    assert "scripts/test: disk probe failed: " in proc.stderr
+    assert "exited 1" in proc.stderr
+    assert "GB free" not in proc.stderr
+    assert _compose_calls(_log(tmp_path)) == []
 
 
-def test_hung_probe_is_bounded_then_proceeds(tmp_path: Path) -> None:
+def test_docker_usage_error_reports_failed_not_zero_gb(tmp_path: Path) -> None:
+    """gr493188: a `docker run` usage error (exit 125) is a probe failure."""
+    proc = _run_test(tmp_path, FAKE_DF_MODE="usage")
+    assert proc.returncode == 3, proc.stderr
+    assert "disk probe failed: " in proc.stderr
+    assert "exited 125" in proc.stderr
+    assert "0 GB" not in proc.stderr
+
+
+def test_real_zero_gb_still_blocks_as_a_disk_full(tmp_path: Path) -> None:
+    proc = _run_test(tmp_path, FAKE_DF_FREE_KB="0")
+    assert proc.returncode == 3
+    assert "docker VM disk has 0 GB free" in proc.stderr
+    assert "probe failed" not in proc.stderr
+
+
+def test_hung_probe_is_bounded_then_blocks_as_failed(tmp_path: Path) -> None:
     t0 = time.monotonic()
     proc = _run_test(
         tmp_path, FAKE_DF_MODE="hang", PRECIS_DOCKER_DISK_TIMEOUT="1", timeout=25
     )
-    assert proc.returncode == 0, proc.stderr
-    assert "could not read" in proc.stderr
+    assert proc.returncode == 3, proc.stderr
+    assert "disk probe failed: " in proc.stderr
+    assert "timed out" in proc.stderr
     assert time.monotonic() - t0 < 15
     # A wedged daemon ends the docker leg after ONE alarm, not one per image.
     assert len([ln for ln in _log(tmp_path) if ln.startswith("df|")]) == 1
+
+
+def test_zero_timeout_is_not_an_unbounded_probe(tmp_path: Path) -> None:
+    t0 = time.monotonic()
+    proc = _run_test(
+        tmp_path, FAKE_DF_MODE="hang", PRECIS_DOCKER_DISK_TIMEOUT="0", timeout=40
+    )
+    assert proc.returncode == 3, proc.stderr
+    assert "timed out" in proc.stderr
+    assert time.monotonic() - t0 < 20
+
+
+def test_overall_bound_caps_the_whole_image_loop(tmp_path: Path) -> None:
+    """Each attempt is slow but under its own bound; the total bound still ends it."""
+    t0 = time.monotonic()
+    proc = _run_test(
+        tmp_path,
+        FAKE_DF_MODE="slowfail",
+        PRECIS_DOCKER_DISK_TIMEOUT="10",
+        PRECIS_DOCKER_DISK_TOTAL_TIMEOUT="3",
+        timeout=25,
+    )
+    assert proc.returncode == 3, proc.stderr
+    assert "disk probe failed: " in proc.stderr
+    # The second attempt gets only the 1 s left of the 3 s total, then times out.
+    assert "timed out after 1s" in proc.stderr
+    assert time.monotonic() - t0 < 12
+    assert len([ln for ln in _log(tmp_path) if ln.startswith("df|")]) == 2
 
 
 def test_colima_fallback_answers_when_docker_probe_cannot(tmp_path: Path) -> None:
