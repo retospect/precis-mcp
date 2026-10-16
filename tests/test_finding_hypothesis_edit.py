@@ -197,3 +197,108 @@ def test_sharpen_does_not_support_dry_run(store: Store) -> None:
     hub_id = _mint_hypothesis(store)
     with pytest.raises(BadInput, match="dry_run"):
         _handler(store).edit(id=hub_id, testable_by="x", dry_run=True)
+
+
+def _approved_row(store: Store, hub_id: int) -> Any:
+    payload = store.fetch_refs_by_ids([hub_id])[hub_id].meta[META_PROPOSED_PAYLOAD]
+    row = store.nanopub_create_publish_row(hub_id, artifact_type="hypothesis")
+    assert store.nanopub_approve(
+        row.id,
+        approved_title=_SENTENCE,
+        claim_sha="ab" * 8,
+        aida_uri="http://purl.org/aida/test.",
+        grounding=payload,
+    )
+    return row
+
+
+def _insert_artifact(store: Store, hub_id: int, publish_id: int) -> int:
+    return store.nanopub_insert_artifact(
+        publish_id=publish_id,
+        claim_ref_id=hub_id,
+        artifact_type="hypothesis",
+        trig_bytes=b"@prefix : <x> .",
+        trusty_uri=f"https://w3id.org/np/RA{publish_id}-{hub_id}",
+        aida_uri="http://purl.org/aida/test.",
+        claim_sha="ab" * 8,
+        signer="0000-0000-0000-0000",
+        key_fingerprint="fp",
+        dois=[],
+    )
+
+
+def test_reopened_signed_row_is_editable_and_resignable(store: Store) -> None:
+    """gr492688: reopen orphans the signed artifact; the hub is editable
+    again, and a fresh approve+sign re-freezes it on the new artifact."""
+    hub_id = _mint_hypothesis(store)
+    row = _approved_row(store, hub_id)
+    art = _insert_artifact(store, hub_id, row.id)
+    assert store.nanopub_record_signed(
+        row.id,
+        trusty_uri="https://w3id.org/np/RAold",
+        artifact_id=art,
+        dependency_codes={},
+    )
+    with pytest.raises(BadInput, match="signed bytes"):
+        _handler(store).edit(id=hub_id, testable_by="too late")
+
+    assert store.nanopub_reopen(row.id)
+    _handler(store).edit(id=hub_id, testable_by="sharper test")
+    updated = store.nanopub_publish_row(hub_id)
+    assert updated is not None and updated.state == "candidate"
+
+    # Re-approve and re-sign: the new artifact is newer than the row's
+    # last write, so the guard freezes the hub again.
+    _approved_row_again = store.nanopub_approve(
+        row.id,
+        approved_title=_SENTENCE,
+        claim_sha="cd" * 8,
+        aida_uri="http://purl.org/aida/test.",
+        grounding={},
+    )
+    assert _approved_row_again
+    art2 = store.nanopub_insert_artifact(
+        publish_id=row.id,
+        claim_ref_id=hub_id,
+        artifact_type="hypothesis",
+        trig_bytes=b"@prefix : <y> .",
+        trusty_uri="https://w3id.org/np/RAnew",
+        aida_uri="http://purl.org/aida/test.",
+        claim_sha="cd" * 8,
+        signer="0000-0000-0000-0000",
+        key_fingerprint="fp",
+        dois=[],
+    )
+    # In-flight signing (artifact committed, row still 'reviewed') is frozen.
+    with pytest.raises(BadInput, match="signed bytes"):
+        _handler(store).edit(id=hub_id, testable_by="racing the signer")
+    assert store.nanopub_record_signed(
+        row.id,
+        trusty_uri="https://w3id.org/np/RAnew",
+        artifact_id=art2,
+        dependency_codes={},
+    )
+    with pytest.raises(BadInput, match="signed bytes"):
+        _handler(store).edit(id=hub_id, testable_by="too late again")
+
+
+def test_topo_reviewed_flip_with_bound_artifact_stays_frozen(store: Store) -> None:
+    """signed -> reviewed (dependency re-mint) keeps artifact_id and bumps
+    updated_at; the bound artifact must still freeze the hub."""
+    hub_id = _mint_hypothesis(store)
+    row = _approved_row(store, hub_id)
+    art = _insert_artifact(store, hub_id, row.id)
+    assert store.nanopub_record_signed(
+        row.id,
+        trusty_uri="https://w3id.org/np/RAold",
+        artifact_id=art,
+        dependency_codes={},
+    )
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE nanopub_publish SET state = 'reviewed', updated_at = now() "
+            "WHERE id = %s",
+            (row.id,),
+        )
+    with pytest.raises(BadInput, match="signed bytes"):
+        _handler(store).edit(id=hub_id, testable_by="no")

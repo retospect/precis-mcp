@@ -173,8 +173,13 @@ def require_unsigned(conn: Any, hub_ref_id: int) -> None:
     artifacts = {
         r[0]
         for r in conn.execute(
-            "SELECT DISTINCT publish_id FROM nanopub_artifacts "
-            "WHERE publish_id = ANY(%s)",
+            "SELECT DISTINCT a.publish_id FROM nanopub_artifacts a "
+            "JOIN nanopub_publish p ON p.id = a.publish_id "
+            # Frozen: the bound artifact, or one signed after the row's last
+            # write (in-flight sign). Reopen nulls artifact_id and bumps
+            # updated_at, orphaning the old bytes (gr492688).
+            "WHERE a.publish_id = ANY(%s) "
+            "AND (a.id = p.artifact_id OR a.created_at >= p.updated_at)",
             ([r[0] for r in rows],),
         ).fetchall()
     }
