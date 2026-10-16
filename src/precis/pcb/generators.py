@@ -2175,11 +2175,34 @@ def _parse_tape_land(
             f"'W', got {cfg.get('edge')!r}"
         )
     width = float(cfg.get("width_mm") or 5.0)
-    offset = float(cfg.get("offset_mm") or 0.0)
+    # With drive_voltage_v declared the strip carries the hv class's
+    # creepage floor (the same IPC-2221B B4 lookup resolve_net_rules
+    # derives for it). The strip's inner edge sits 1.5*gap + offset from
+    # the outermost electrode edge (electrodes end gap/2 inside the
+    # pitch grid, the mask boundary is gap outside it), so the default
+    # offset grows until that gap meets the floor and an explicit offset
+    # below it is refused: this geometry is the generator's own, so the
+    # intra-footprint warn must never be the only guard here.
+    min_offset = 0.0
+    drive_voltage_v = params.get("drive_voltage_v")
+    if drive_voltage_v is not None:
+        hv_floor = conductor_spacing_mm(
+            float(drive_voltage_v), layer="external", coated=True
+        )
+        min_offset = max(0.0, hv_floor - 1.5 * float(sizing["gap"]))
+    raw_offset = cfg.get("offset_mm")
+    offset = min_offset if raw_offset is None else float(raw_offset)
     if width <= 0 or offset < 0:
         raise ValueError(
             f"ewod_pad_array: tape_land needs width_mm > 0 and "
             f"offset_mm >= 0 (got width_mm={width}, offset_mm={offset})"
+        )
+    if offset < min_offset - 1e-9:
+        raise ValueError(
+            f"ewod_pad_array: tape_land.offset_mm={offset} puts the strip "
+            f"{1.5 * float(sizing['gap']) + offset:.3f}mm from the electrodes, "
+            f"below the {drive_voltage_v}V creepage floor; use offset_mm >= "
+            f"{min_offset:.3f}"
         )
     # "The array edge" is the same boundary the field-wide mask_open
     # feature already draws — `cols*pitch/2 + gap` — so offset_mm=0 lands

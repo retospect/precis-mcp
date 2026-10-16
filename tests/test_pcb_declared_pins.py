@@ -468,8 +468,11 @@ def test_ring_sink_declares_all_80_pads(pcb, store) -> None:
         _ring_footprint,
     )
 
+    # x_half=9.0, not 8.5: _ring_design declares drive_voltage_v=250, and at
+    # the seed pose an 8.5mm ring puts the VPP land 0.392mm from the col-7
+    # escape via — a cross-footprint pair under the 0.4mm hv floor.
     store.part_footprint_put(
-        _RING_LCSC, _ring_footprint(_RING_PINS, per_side=20, x_half=8.5, y_half=11.5)
+        _RING_LCSC, _ring_footprint(_RING_PINS, per_side=20, x_half=9.0, y_half=11.5)
     )
     pcb.put(id="d-ring", args=_ring_design())
     ref = store.get_ref(kind="pcb", id="d-ring")

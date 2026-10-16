@@ -632,6 +632,58 @@ def test_top_plate_net_lands_in_the_hv_class_when_voltage_is_declared(pcb):
     assert top_plate[0]["net_class"] == "ewod_ARR1_hv"
 
 
+def test_hv_sink_put_succeeds_and_check_shows_the_intra_footprint_warn(pcb, store):
+    # Needs a REAL cached footprint: the synthesized sink in _sink_args has
+    # overlapping made-up pads, so every pair there is a different-pad error.
+    from tests.test_pcb_island_terminal_polygon import (
+        _RING_LCSC,
+        _RING_PINS,
+        _ring_design,
+        _ring_footprint,
+    )
+
+    # x_half=9.0, not 8.5: at the seed pose the east ring's VPP land sits
+    # 0.392mm from the col-7 escape via, and that cross-footprint pair is
+    # held to the 0.4mm hv floor (an error — see test_pcb_drc.py).
+    store.part_footprint_put(
+        _RING_LCSC, _ring_footprint(_RING_PINS, per_side=20, x_half=9.0, y_half=11.5)
+    )
+    design = _ring_design()  # carries drive_voltage_v=250
+    pcb.put(id="ewod-hv-chk", args=design)
+    resp = pcb.get(id="ewod-hv-chk", view="check")
+    assert "fixed by the part" in resp.body
+
+
+def test_tape_land_explicit_offset_below_the_creepage_floor_is_refused(pcb):
+    # default gap 0.10mm -> 1.5*gap = 0.15mm < the 250V 0.4mm floor.
+    with pytest.raises(BadInput, match="creepage floor"):
+        pcb.put(
+            id="ewod-bad",
+            args=_array_args(
+                grid=[6, 6],
+                drive_voltage_v=250,
+                tape_land={"edge": "N", "offset_mm": 0},
+            ),
+        )
+
+
+def test_tape_land_default_offset_clears_the_electrodes_by_the_floor(pcb):
+    from precis.pcb.capabilities import conductor_spacing_mm
+
+    pcb.put(
+        id="ewod-tape-hv",
+        args=_array_args(grid=[6, 6], drive_voltage_v=250, tape_land={"edge": "N"}),
+    )
+    ref = pcb.store.get_ref(kind="pcb", id="ewod-tape-hv")
+    assert ref is not None
+    land = pcb.store.pcb_generators_for(ref.id)["ARR1"]["ledger"]["tape_land"]
+    pitch, gap, rows = 2.25, 0.10, 6  # generator defaults
+    electrode_edge = rows * pitch / 2.0 - gap / 2.0
+    inner_edge = land["y"] - land["h"] / 2.0
+    floor = conductor_spacing_mm(250.0, layer="external", coated=True)
+    assert inner_edge - electrode_edge >= floor - 1e-6
+
+
 def test_class_rules_refuses_a_voltage_past_the_table(pcb):
     pcb.put(id="ewod-hv", args=_array_args(grid=[3, 3]))
     with pytest.raises(BadInput, match="top band"):

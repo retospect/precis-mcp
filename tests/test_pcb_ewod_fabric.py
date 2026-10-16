@@ -308,9 +308,13 @@ def test_expansion_version_is_4_so_older_boards_regenerate_without_a_param_chang
     and ``test_pcb_generator_version_tripwire`` pin both); version 6
     declares every channel pin on a sink, the unwired ones ``unused``
     (pcb-lazy-netlist-and-checks.md Slice 2); version 7 emits `supplies`
-    and `client_of` in place of `pin_swap_groups` (Slice 6)."""
+    and `client_of` in place of `pin_swap_groups` (Slice 6); version 8
+    adds the sink control pins as bussed ``{name}_<ctl>`` nets, the
+    optional ``tape_land`` top-plate pad and the ``hv`` net class for the
+    top-plate net when ``drive_voltage_v`` is declared
+    (ewod-controller-and-hv-supply.md slices 2-4)."""
     exp = G.expand("ewod_pad_array", "ARR", {"grid": [6, 6]})
-    assert exp.version == 7
+    assert exp.version == 8
     necks, vias = _copper_by_ctype(exp)
     # What version 2 MEANS: two copper rows per driven electrode, and the
     # only B.Cu terminal is the via's own far landing.

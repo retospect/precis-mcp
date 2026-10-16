@@ -1023,6 +1023,19 @@ def check_clearance(
             ]
             if floors:
                 floor = max(floor, *floors)
+        # Two pads of ONE footprint sit at the part's vendor-fixed pitch
+        # (a 0.65mm-pitch HV sink's VPP and DIOB lands): placement and
+        # routing cannot widen that gap, so a class floor above the fab
+        # minimum between them is a WARN, not a put-blocking error. The
+        # fab minimum itself stays an error, and pads of DIFFERENT
+        # footprints keep the full class floor.
+        if (
+            floor > jlc_min
+            and jlc_min - _TIER_EPS <= gap < floor - _TIER_EPS
+            and _same_footprint_pads(a, b)
+        ):
+            findings.append(_part_fixed_clearance_finding(a, b, gap, floor, layer))
+            continue
         result = _two_tier(gap, floor, required)
         if result is None:
             continue
@@ -1106,6 +1119,52 @@ def check_clearance(
             )
         )
     return findings
+
+
+def _same_footprint_pads(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """Both items are pads of the same placed part (same refdes)."""
+    return (
+        a.get("ctype") == "pad"
+        and b.get("ctype") == "pad"
+        and bool(a.get("refdes"))
+        and a.get("refdes") == b.get("refdes")
+    )
+
+
+def _part_fixed_clearance_finding(
+    a: dict[str, Any],
+    b: dict[str, Any],
+    gap: float,
+    floor: float,
+    layer: str,
+) -> DrcFinding:
+    """The WARN :func:`check_clearance` emits for a pad pair inside one
+    footprint that is below its net-class floor but at or above the fab
+    minimum: names the footprint, both pads, the actual and required
+    clearance, and that the pitch is fixed by the part. Default chosen
+    pending Reto (2026-10-16); an error plus a per-footprint waiver is
+    the possible follow-up."""
+    near_a, near_b = _nearest_xy(a, b)
+    return DrcFinding(
+        rule="clearance",
+        severity="warn",
+        where=f"{_clearance_label(a)} <-> {_clearance_label(b)} on {layer}",
+        detail=(
+            f"footprint {a.get('refdes')}: pads {a.get('pin')} and "
+            f"{b.get('pin')} are {gap:.3f}mm apart, below the net-class "
+            f"floor {floor:.3f}mm (min_clearance_mm) — the pad pitch is "
+            "fixed by the part, so placement and routing cannot meet it; "
+            "check that the part's own voltage rating covers this pair"
+        )
+        + (
+            f" — nearest points ({near_a[0]:.3f}, {near_a[1]:.3f}) / "
+            f"({near_b[0]:.3f}, {near_b[1]:.3f})"
+            if near_a and near_b
+            else ""
+        ),
+        objects=(_clearance_object(a, near_a), _clearance_object(b, near_b)),
+        margin_mm=gap - floor,
+    )
 
 
 def _outer_layers(model: dict[str, Any]) -> frozenset[str]:

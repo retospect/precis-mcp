@@ -267,6 +267,80 @@ def test_electrode_gap_class_stays_warn_only():
     assert findings[0].severity == "warn"
 
 
+# ── intra-footprint class-floor shortfall is a WARN (fixed pad pitch) ────
+def _fp_pad(refdes: str, pin: str, net: str, x: float) -> dict[str, Any]:
+    return {
+        "layer": "F.Cu",
+        "shape": "rect",
+        "x": x,
+        "y": 0.0,
+        "w": 0.4,
+        "h": 0.4,
+        "net": net,
+        "refdes": refdes,
+        "pin": pin,
+    }
+
+
+def _pad_pair_model(ref_a: str, ref_b: str, gap: float) -> dict[str, Any]:
+    # 0.4mm-wide pads: centres 0.4 + gap apart leaves `gap` edge to edge.
+    return {
+        "layers": ["F.Cu"],
+        "copper": [],
+        "pads": [
+            _fp_pad(ref_a, "1", "HV250", 0.0),
+            _fp_pad(ref_b, "2", "GND", 0.4 + gap),
+        ],
+    }
+
+
+def _hv_floor_rules(floor: float = 0.4) -> dict[str, NetRules]:
+    return {
+        # resolve_net_rules raises clearance_mm to the floor too; the STRtree
+        # prune radius is keyed on clearance_mm only.
+        "HV250": NetRules(
+            track_width_mm=0.2, clearance_mm=floor, min_clearance_mm=floor
+        ),
+        "GND": NetRules(track_width_mm=0.2, clearance_mm=0.15),
+    }
+
+
+def test_same_footprint_pads_below_class_floor_are_a_warn_fixed_by_part():
+    findings = drc.check_clearance(
+        _pad_pair_model("U1", "U1", 0.2), _CAP4, net_rules=_hv_floor_rules()
+    )
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.rule == "clearance" and f.severity == "warn"
+    assert "footprint U1" in f.detail
+    assert "pads 1 and 2" in f.detail
+    assert "0.200mm apart" in f.detail
+    assert "floor 0.400mm" in f.detail
+    assert "fixed by the part" in f.detail
+
+
+def test_different_footprint_pads_below_class_floor_stay_an_error():
+    findings = drc.check_clearance(
+        _pad_pair_model("U1", "U2", 0.2), _CAP4, net_rules=_hv_floor_rules()
+    )
+    assert len(findings) == 1
+    assert findings[0].severity == "error"
+    assert "fixed by the part" not in findings[0].detail
+
+
+def test_same_footprint_pads_below_jlc_min_stay_an_error():
+    jlc_min = _CAP4.jlc_min["trace_spacing_mm"]
+    assert jlc_min is not None
+    findings = drc.check_clearance(
+        _pad_pair_model("U1", "U1", jlc_min - 0.03),
+        _CAP4,
+        net_rules=_hv_floor_rules(),
+    )
+    assert len(findings) == 1
+    assert findings[0].severity == "error"
+    assert "fixed by the part" not in findings[0].detail
+
+
 # ── pour antipads (gripe 269908: a pour's ``holes`` must not be dropped,
 # turning a real antipad into phantom solid copper for clearance) ───────
 
