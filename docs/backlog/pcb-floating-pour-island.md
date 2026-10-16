@@ -1,6 +1,6 @@
 ---
 status: draft
-title: A pour can emit an island with none of its net's copper in it, and nothing removes it
+title: A pour can emit an island with none of its net's copper in it, and nothing ties it to its net
 prio: medium
 pillar: 3d-design
 ---
@@ -31,21 +31,36 @@ tools call this "island removal" and most enable it by default.
 this net at all`. The stitcher tries to jumper it like any other fragment
 and fails — which is the right behaviour for a piece it cannot anchor.
 
+## Ruling (Reto, 2026-10-16)
+
+**Stitch the island to its net; do not drop it.** The copper is already
+there and it shields. Drop an island only when no via site can reach a
+same-net plane, and report that drop. This replaces the earlier "drop, the
+tool default" lean (survey: `/tmp/gripe-fleet/w6/pcb-stackup-plan.md` Q5;
+umbrella item [pcb-stackup-regions](pcb-stackup-regions.md)).
+
 ## In scope
 
-1. **Decide the policy, then apply it once.** Either drop a bare fragment
-   from the emitted pours, or keep it and stitch it deliberately. Dropping
-   is what other tools default to; keeping it means finding an anchor,
-   which is what already failed.
+1. **Stitch each bare fragment with vias to a same-net plane.** At least one
+   via per island; a large island gets more, spaced at the stage-1
+   `stitch_pitch_mm` of `_stitch_plane_fragments`, so a big plate is tied
+   down along its extent, not at one corner. A via site is legal when it lies inside the island, clears
+   foreign copper, and its barrel lands in the same net's pour on another
+   layer. Reuse stage 2's site search; a bare fragment is a fragment with
+   zero anchors, so it gets the same targeted-via treatment, not a separate
+   mechanism.
 
 2. **Do it after stitching, not during pouring.** `plane_pours` cannot know
    whether a fragment will end up with copper in it — `_stitch_plane_fragments`
-   runs later and may put a jumper via inside one. The prune belongs after
-   that pass, where `bare_fragments` is already known.
+   runs later and may put a jumper via inside one. The island pass belongs
+   after that pass, where `bare_fragments` is already known.
 
-3. **Say what was removed.** Silently deleting copper from a board is the
-   kind of change that is invisible until someone measures the finished
-   gerbers. A `RealizeResult` field or a route-row note, not nothing.
+3. **Drop only what cannot be reached, and say so.** An island with no
+   legal via site to a same-net plane is removed from the emitted pours.
+   Each drop is recorded (net, layer, area, centroid) in a `RealizeResult`
+   field and the route-row note — silently deleting copper is invisible
+   until someone measures the finished gerbers. Stitched islands are
+   counted too (islands stitched, vias added).
 
 ## Explicitly NOT in scope
 
@@ -55,25 +70,28 @@ and fails — which is the right behaviour for a piece it cannot anchor.
 - **`MIN_FRAGMENT_MM2`.** That filter drops fragments by AREA, and this
   island survived it — a big island with nothing in it is still bare. The
   two tests are independent, not a tuning of each other.
+- **Same-layer jumpers for islands.** `_try_plane_jumper` joins fragments
+  that already carry net copper; an island needs a via down to a plane, not
+  a trace over a spare layer.
 
 ## Acceptance criteria
 
 - The 40mm fixture's `pcb_routes` row for `GND` no longer carries a
-  `floating copper —` note, and the reason is that the island is gone (or
-  connected), not that the report was suppressed.
-- A fixture with a deliberately bare island asserts the chosen policy
-  directly on the emitted gerber model, not on the realizer's own count.
+  `floating copper —` note, and the reason is that the island is stitched
+  (it now holds at least one GND via that lands in a GND pour on another
+  layer), not that the report was suppressed.
+- A fixture with a deliberately bare island that has a reachable plane
+  asserts, on the emitted gerber model, that the island copper is still
+  present and holds a same-net via; a large island in the same fixture
+  gets more than one via, spaced at the stitch pitch.
+- A fixture where no via site reaches a same-net plane asserts the island
+  is gone from the emitted copper and the drop is reported with net, layer
+  and area.
 - No net loses copper that carried a via, trace or pad.
 
 ## Target + blast radius
 
 `src/precis/pcb/realize.py` (`_realize_maze`'s pour/stitch ordering,
-`_stitch_one_net`'s `bare_fragments`), possibly `planes.py`. Changes the
-emitted copper of any board with a fragmented plane.
-
-## Open questions
-
-- **OPEN — drop, or keep and warn?** Dropping is the tool default and the
-  smaller board. Keeping is the conservative option for a design where the
-  island was deliberate (a shield plate a human poured on purpose), which
-  this engine has no way to express today.
+`_stitch_plane_fragments`, `_stitch_one_net`'s `bare_fragments`), possibly
+`planes.py`. Adds vias to any board with a bare plane fragment; removes
+copper only where no stitch is possible.

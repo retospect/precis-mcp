@@ -157,6 +157,12 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
    + 1.0 = 1.375 mm) leaves less than the ~1.75 mm a below-box refdes needs.
    Fixed 2026-10-03: `silk.refdes_label_slot_mm` (text height + 2 ×
    clearance + inset) sets the furniture margin's floor.
+0a. **backlog/pcb-stackup-regions.md** — `in-progress/high`, filed
+   2026-10-16 with Reto's rulings. Slice 0 (pour-reaches-pad predicate in
+   `realize._plane_fanout`) fixes the red `test_pcb_fab_render_all_layers[3]`
+   GND regression and is being relanded by `router-lane-fix`; slice 1
+   (via-to-plane measured on four boards) waits on it — same function.
+   Slice 2 is a migration and lands via `/go`.
 1. **backlog/pcb-always-valid-board-invariant.md** — built 2026-10-02,
    deployed in R16 (the "undeployed" and "do not re-route until it deploys"
    notes below are history as of round 6): the route job DRCs its own router copper and strips a
@@ -318,7 +324,8 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
    valid" claim.
 3. **backlog/pcb-layer-preferred-direction.md** +
    **backlog/pcb-congestion-driven-spread.md** — the two escape-yield
-   levers that are not defects. The sink's pads have been real since
+   levers that are not defects. The direction half moves into
+   pcb-stackup-regions slice 3 (a stackup `direction` key). The sink's pads have been real since
    2026-10-01; re-measure escape yield before tuning either, because every
    number they were ranked on was taken against synthesized bounds.
 4. **backlog/pcb-missing-constraint-classes.md** +
@@ -373,7 +380,8 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
     two ways a stored board is silently invalid: a pour island with none of
     its net's copper, a stackup edit that strands a net-class layer lock
     until route time. Wait on 1, where "stored board is valid" becomes a
-    gate.
+    gate. Island policy ruled 2026-10-16: stitch to the net's plane, drop
+    only when unreachable (pcb-stackup-regions' rulings).
 15. **backlog/component-followons.md** — `idea`; comparator/violator query,
     price-break costing on the shipped component kind. Waits on nothing; no
     pcb item depends on it.
