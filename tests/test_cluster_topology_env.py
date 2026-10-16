@@ -44,7 +44,29 @@ all:
           ansible_host: 203.0.113.20
         node-gpu2:
           ansible_host: 203.0.113.21
+    agent_sandbox_hosts:
+      hosts:
+        node-gpu:
+        node-gpu2:
 """
+
+_HOSTS_NO_SANDBOX = _HOSTS[: _HOSTS.index("    agent_sandbox_hosts:")]
+
+#: Every surface name the session MCP's put path reads that the gateway/worker
+#: env renders from topology (gr489468, gr491879). A full topology emits
+#: exactly this set; a new gateway/worker surface var lands here too.
+_SURFACE_VARS = {
+    "PRECIS_AUTOCATPATH_ROUTE_NODE",
+    "PRECIS_AUTOCATPATH_VERIFY_WALL_SECONDS",
+    "PRECIS_AUTOCATPATH_SEED_CPUSET",
+    "PRECIS_CHEM_ENABLED",
+    "PRECIS_CHEM_ROUTE_NODE",
+    "PRECIS_BIO_ENABLED",
+    "PRECIS_FOLD_NODE",
+    "PRECIS_DFT_NODE",
+    "PRECIS_SANDBOX_HOSTS",
+    "PRECIS_STRUCTURE_PREFLIGHT",
+}
 
 _TOPOLOGY_FULL = """\
 precis_capabilities:
@@ -80,21 +102,21 @@ precis_capabilities:
 """
 
 
-def _overlay(tmp_path: Path, topology: str) -> Path:
+def _overlay(tmp_path: Path, topology: str, hosts: str = _HOSTS) -> Path:
     inv = tmp_path / "inventory"
     gvars = inv / "group_vars" / "all"
     gvars.mkdir(parents=True)
-    (inv / "hosts.yml").write_text(_HOSTS, encoding="utf-8")
+    (inv / "hosts.yml").write_text(hosts, encoding="utf-8")
     (gvars / "topology.yml").write_text(topology, encoding="utf-8")
     return inv / "hosts.yml"
 
 
 def _env_lines(
-    tmp_path: Path, topology: str | None
+    tmp_path: Path, topology: str | None, hosts: str = _HOSTS
 ) -> subprocess.CompletedProcess[str]:
     env = {**os.environ}
     if topology is not None:
-        env["CLUSTER_INVENTORY"] = str(_overlay(tmp_path, topology))
+        env["CLUSTER_INVENTORY"] = str(_overlay(tmp_path, topology, hosts))
     else:
         env["CLUSTER_INVENTORY"] = str(tmp_path / "missing-hosts.yml")
     return subprocess.run(
@@ -123,6 +145,22 @@ def test_full_topology_renders_the_web_plist_surface(tmp_path: Path) -> None:
     assert "PRECIS_AUTOCATPATH_VERIFY_WALL_SECONDS=64800" in lines
     assert "PRECIS_AUTOCATPATH_SEED_CPUSET=0-4,10-14" in lines
     assert "PRECIS_DFT_NODE=node-gpu2" in lines
+    # the whole agent_sandbox_hosts group, like the worker unit's join(',')
+    assert "PRECIS_SANDBOX_HOSTS=node-gpu,node-gpu2" in lines
+    assert "PRECIS_STRUCTURE_PREFLIGHT=1" in lines
+
+
+def test_full_topology_emits_every_surface_var(tmp_path: Path) -> None:
+    proc = _env_lines(tmp_path, _TOPOLOGY_FULL)
+    assert proc.returncode == 0, proc.stderr
+    names = {line.split("=", 1)[0] for line in proc.stdout.splitlines()}
+    assert names == _SURFACE_VARS
+
+
+def test_empty_sandbox_group_omits_the_allowlist(tmp_path: Path) -> None:
+    proc = _env_lines(tmp_path, _TOPOLOGY_FULL, _HOSTS_NO_SANDBOX)
+    assert proc.returncode == 0, proc.stderr
+    assert "PRECIS_SANDBOX_HOSTS" not in proc.stdout
 
 
 def test_missing_caps_omit_their_env_cleanly(tmp_path: Path) -> None:

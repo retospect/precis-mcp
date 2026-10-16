@@ -9,7 +9,8 @@
 # same `route`/`protein`/`pathway` mint surface as precis-web, but its env was
 # hand-listed, so put(kind='route', engine='aizynth') was refused there while
 # the gateway worked (gr489468). It sources this file from the resolved REPO
-# checkout — the installed copy lives outside the repo.
+# checkout — the installed copy lives outside the repo. It also carries the
+# put-path names the worker unit renders (PRECIS_SANDBOX_HOSTS, gr491879).
 #
 # Usage:  . "$(dirname "$0")/lib/cluster-topology.sh"
 #   capability_nodes chem_route    → "node-gpu" / "node-a,node-b" ("" if undeclared)
@@ -156,5 +157,14 @@ topology_surface_env() {
         [ -n "$bio_fold" ] && printf 'PRECIS_FOLD_NODE=%s\n' "${bio_fold%%,*}"
     fi
     [ -n "$dft" ] && printf 'PRECIS_DFT_NODE=%s\n' "${dft%%,*}"
+    # sandbox_run's submit allowlist, as precis-worker.service.j2 renders it
+    # from the `agent_sandbox_hosts` inventory group; unset fails closed
+    # (gr491879). Direct `hosts:` members only — a group built from
+    # `children:` would render short here where ansible expands it.
+    v="$(inventory_group_hosts agent_sandbox_hosts | paste -sd, -)"
+    [ -n "$v" ] && printf 'PRECIS_SANDBOX_HOSTS=%s\n' "$v"
+    # The plist's constant flag: structure put/edit and the autocatpath
+    # dispatch gate run preflight only when it is set.
+    printf 'PRECIS_STRUCTURE_PREFLIGHT=1\n'
     return 0
 }
