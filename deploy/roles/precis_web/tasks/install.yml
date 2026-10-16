@@ -152,12 +152,12 @@
       (_precis_web_acp_wheels.files | default([])
         | map(attribute='path') | map('basename')
         | map('regex_replace', '^autocatpath-([0-9][^-]*)-.*$', '\\1')
-        | select('version', autocatpath_min_version | default('0.25.0'), '>=')
+        | select('version', autocatpath_min_version | default('0.28.0'), '>=')
         | list | length) == 0
   ansible.builtin.fail:
     msg: >-
       {{ autocatpath_wheelhouse | default('/opt/precis/wheels') }} holds no
-      autocatpath wheel >= {{ autocatpath_min_version | default('0.25.0') }},
+      autocatpath wheel >= {{ autocatpath_min_version | default('0.28.0') }},
       but the `catalyst` extra this host installs requires it (not on PyPI;
       release-gated). Push it first with play 44's wheel push:
       `scripts/host-ops/play playbooks/44-autocatpath.yml -e

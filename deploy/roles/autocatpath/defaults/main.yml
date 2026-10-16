@@ -37,11 +37,11 @@ autocatpath_worker_home: /var/lib/precis
 # wheel pins the venv to its exact version over any newer published pin.
 autocatpath_wheelhouse: /opt/precis/wheels
 # The catalyst extra's autocatpath floor (pyproject `catalyst =
-# ["autocatpath>=0.25.0"]`; bump BOTH when the pin moves). The wheelhouse
+# ["autocatpath>=0.28.0"]`; bump BOTH when the pin moves). The wheelhouse
 # floor check in precis_worker/provision.yml + precis_web/install.yml
 # refuses the install when no wheel at this version sits in the wheelhouse
 # (gr489600 — a fresh host's empty wheelhouse used to fail cryptically).
-autocatpath_min_version: "0.25.0"
+autocatpath_min_version: "0.28.0"
 # Optional controller-side wheel to push into the wheelhouse this run:
 #   ansible-playbook playbooks/44-autocatpath.yml \
 #     -e autocatpath_wheel=$HOME/catpath/dist/autocatpath-0.18.0-py3-none-any.whl
