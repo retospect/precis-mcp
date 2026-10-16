@@ -46,6 +46,7 @@ REPORTER_FIELDS: tuple[str, ...] = (
     "attach",
     "exceptions",
     "via",
+    "done_state",
 )
 #: Fields only the coordinator edits; a report never touches them.
 COORDINATOR_FIELDS: tuple[str, ...] = ("assigned", "slice", "note")
@@ -68,8 +69,10 @@ _DEAD_PATCH: dict[str, Any] = {
 }
 
 #: A `.claude/purpose` first line of the form ``<tree> at <sha>: …`` marks
-#: the row as finished-with-tip (the session wrote its done line); the
-#: fisheye lists it under READY.
+#: the row as finished-with-tip (the session wrote its done line). The sha
+#: is the BRANCH head; ship squash-merges it to a new sha, so the fisheye
+#: lists it under READY only when the collector's ``done_state`` says the
+#: work is on origin/main ('landed'), else under SHIPPING or WAITING.
 DONE_RE = re.compile(r"^\S+\s+at\s+([0-9a-f]{7,40})\b")
 
 
@@ -125,6 +128,7 @@ def _agent_fields(row: dict[str, Any], host: str, codes: list[str]) -> dict[str,
         "attach": row.get("attach") or None,
         "exceptions": sorted(set(codes)),
         "via": row.get("via") or None,
+        "done_state": row.get("done_state") or None,
     }
 
 

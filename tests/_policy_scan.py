@@ -48,26 +48,38 @@ def walk_files(
     path (relative to ``root``) has a component in ``skip_dirs``. Sorted.
 
     A missing ``root`` is an empty list (the caller decides whether that is
-    vacuous); an ``OSError`` mid-walk is :class:`ScanIncomplete`.
+    vacuous); an ``OSError`` mid-walk is :class:`ScanIncomplete`. One
+    exception: a ``FileNotFoundError`` mid-walk means a sibling test's
+    scratch dir (``test_fleet_codex`` scratches under ``.claude/``) was
+    deleted while ``rglob`` was inside it — not evidence, so the walk
+    retries once before reporting the abort.
     """
-    try:
-        if not root.is_dir():
-            return []
-        return sorted(
-            p
-            for p in root.rglob(pattern)
-            if p.is_file()
-            and not any(part in skip_dirs for part in p.relative_to(root).parts)
-        )
-    except OSError as exc:
-        raise ScanIncomplete(exc, f"walking {root}") from exc
+    for attempt in (1, 2):
+        try:
+            if not root.is_dir():
+                return []
+            return sorted(
+                p
+                for p in root.rglob(pattern)
+                if p.is_file()
+                and not any(part in skip_dirs for part in p.relative_to(root).parts)
+            )
+        except FileNotFoundError as exc:
+            if attempt == 2:
+                raise ScanIncomplete(exc, f"walking {root}") from exc
+        except OSError as exc:
+            raise ScanIncomplete(exc, f"walking {root}") from exc
+    raise AssertionError("unreachable")
 
 
 def read_text(path: Path, *, errors: str = "strict") -> str:
     """``path.read_text(encoding="utf-8")`` with an ``OSError`` turned into
     :class:`ScanIncomplete`. ``UnicodeDecodeError`` propagates: it says the
-    file is not text, which the caller may legitimately skip."""
+    file is not text, which the caller may legitimately skip. A walked file
+    that vanished before its read holds no lines to scan — reads as empty."""
     try:
         return path.read_text(encoding="utf-8", errors=errors)
+    except FileNotFoundError:
+        return ""
     except OSError as exc:
         raise ScanIncomplete(exc, f"reading {path}") from exc

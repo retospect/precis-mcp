@@ -293,19 +293,26 @@ def test_fisheye_blocks_and_filters(h: FleetHandler) -> None:
     assert "proj/main" not in h.get(host="nowhere").body
 
 
+def _section(lines: list[str], title: str, before: str) -> list[str]:
+    return lines[lines.index(title) + 1 : lines.index(before)]
+
+
 def test_done_purpose_marks_ready_and_shows_in_agents(h: FleetHandler) -> None:
     send(
         h,
         rep(
             [
-                row(purpose="main at 93f5ef461: landed the fleet push slice"),
+                row(
+                    purpose="main at 93f5ef461: landed the fleet push slice",
+                    done_state="landed",
+                ),
                 row(tree="side", purpose="still working on it"),
             ]
         ),
     )
     out = h.get().body
     lines = out.splitlines()
-    ready = lines[lines.index("READY") + 1 : lines.index("AGENTS")]
+    ready = _section(lines, "READY", "SHIPPING")
     assert ready == [
         f"  claude@{HOST}/proj/main · main:3 · done@93f5ef461"
         "   attach: tmux attach -t main:3"
@@ -317,6 +324,52 @@ def test_done_purpose_marks_ready_and_shows_in_agents(h: FleetHandler) -> None:
     # The finish line is rewritten by the next report, not sticky.
     send(h, rep([row(), row(tree="side", purpose="still working on it")]))
     assert "READY\n  none" in h.get().body
+
+
+def test_done_purpose_unlanded_is_shipping_not_ready(h: FleetHandler) -> None:
+    """gr492450: a branch-head sha that has not squash-landed is not READY —
+    mid-CI (--remote) and unverifiable (no done_state) both read SHIPPING."""
+    send(
+        h,
+        rep(
+            [
+                row(purpose="main at 93f5ef461: ship running", done_state="shipping"),
+                row(tree="old", purpose="old at abc1234: stale reporter"),
+            ]
+        ),
+    )
+    lines = h.get().body.splitlines()
+    assert _section(lines, "READY", "SHIPPING") == ["  none"]
+    assert _section(lines, "SHIPPING", "WAITING") == [
+        f"  claude@{HOST}/proj/main · main:3 · done@93f5ef461"
+        "   attach: tmux attach -t main:3",
+        f"  claude@{HOST}/proj/old · main:3 · done@abc1234"
+        "   attach: tmux attach -t main:3",
+    ]
+    assert _section(lines, "WAITING", "AGENTS") == ["  none"]
+
+
+def test_done_purpose_held_for_go_is_waiting(h: FleetHandler) -> None:
+    """A migration/safe_fetch commit can't take ship; the collector marks it
+    waiting on the release owner's /go."""
+    send(
+        h,
+        rep(
+            [
+                row(
+                    purpose="main at 85a66d89f: add column (unlanded: migration)",
+                    done_state="waiting",
+                )
+            ]
+        ),
+    )
+    lines = h.get().body.splitlines()
+    assert _section(lines, "READY", "SHIPPING") == ["  none"]
+    assert _section(lines, "SHIPPING", "WAITING") == ["  none"]
+    assert _section(lines, "WAITING", "AGENTS") == [
+        f"  claude@{HOST}/proj/main · main:3 · done@85a66d89f"
+        "   attach: tmux attach -t main:3"
+    ]
 
 
 def test_stale_host_marks_agents_and_lists_exception(h: FleetHandler) -> None:

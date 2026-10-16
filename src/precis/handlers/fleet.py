@@ -10,7 +10,8 @@ owns ``assigned`` / ``slice`` / ``note``. Not embedded, not searchable.
       only, never dead-marks or clobbers host quota/exceptions_hash
     - edit(kind='fleet', id=…, mode='replace', args={'assigned': …}) —
       coordinator-owned fields only
-    - get(kind='fleet')            — the fisheye (EXCEPTIONS / READY / AGENTS / QUOTA)
+    - get(kind='fleet')            — the fisheye (EXCEPTIONS / READY /
+      SHIPPING / WAITING / AGENTS / QUOTA)
     - get(kind='fleet', id=key|fl123) — one row
 
 Write logic lives in :mod:`precis.fleet`.
@@ -76,7 +77,8 @@ class FleetHandler(NumericRefHandler):
             "context fill, exceptions, attach line) and one per host (report "
             "time, quota). Collectors push with put(mode='report'); the "
             "coordinator sets assigned/slice/note with edit(mode='replace'). "
-            "get(kind='fleet') renders EXCEPTIONS / READY / AGENTS / QUOTA; "
+            "get(kind='fleet') renders EXCEPTIONS / READY / SHIPPING / "
+            "WAITING / AGENTS / QUOTA; "
             "args={'project','host'} filter. Not embedded, not searchable."
         ),
         supports_get=True,
@@ -305,18 +307,25 @@ class FleetHandler(NumericRefHandler):
         if not n_exc:
             lines.append("  none")
 
-        lines.append("READY")
-        n_ready = 0
-        for m in agents:
-            done = fleet.done_sha(m.get("purpose"))
-            if not done:
-                continue
-            tgt = f" · {m['tmux']}" if m.get("tmux") else ""
-            tail = f"   attach: {m['attach']}" if m.get("attach") else ""
-            lines.append(f"  {_who(m)}{tgt} · done@{done}{tail}")
-            n_ready += 1
-        if not n_ready:
-            lines.append("  none")
+        def done_block(title: str, rows: list[dict[str, Any]]) -> None:
+            lines.append(title)
+            for m in rows:
+                done = fleet.done_sha(m.get("purpose"))
+                tgt = f" · {m['tmux']}" if m.get("tmux") else ""
+                tail = f"   attach: {m['attach']}" if m.get("attach") else ""
+                lines.append(f"  {_who(m)}{tgt} · done@{done}{tail}")
+            if not rows:
+                lines.append("  none")
+
+        dones = [m for m in agents if fleet.done_sha(m.get("purpose"))]
+        # done_state comes from the collector's git check; absent (old
+        # reporter, unverifiable sha) reads as SHIPPING, never READY.
+        done_block("READY", [m for m in dones if m.get("done_state") == "landed"])
+        done_block(
+            "SHIPPING",
+            [m for m in dones if m.get("done_state") not in ("landed", "waiting")],
+        )
+        done_block("WAITING", [m for m in dones if m.get("done_state") == "waiting"])
 
         lines.append("AGENTS")
         for m in agents:

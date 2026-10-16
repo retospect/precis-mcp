@@ -23,7 +23,7 @@ Live state of the agent fleet. Not embedded, not searchable.
 ## Read
 
 ```
-get(kind='fleet')                              # EXCEPTIONS / READY / AGENTS / QUOTA
+get(kind='fleet')                    # EXCEPTIONS / READY / SHIPPING / WAITING / AGENTS / QUOTA
 get(kind='fleet', args={'project': 'precis-mcp', 'host': 'melchior'})
 get(kind='fleet', id='claude:melchior:precis-mcp:main')   # one row by key
 get(kind='fleet', id='fl123')                  # one row by handle
@@ -37,15 +37,19 @@ transcript's usage against the per-model window. A host that has not
 reported for over 3 minutes marks all its agents `STALE` and appears under
 EXCEPTIONS.
 
-READY lists trees whose `.claude/purpose` first line reads `<tree> at
-<sha>: …` — a session that wrote its done line; the AGENTS line ends
-`· done@<sha>` for those.
+A `.claude/purpose` first line of `<tree> at <sha>: …` is a session's
+done line; the AGENTS line ends `· done@<sha>` for those. The sha is the
+branch head and ship squash-merges it to a new sha, so READY lists the
+row only once the collector sees its work on origin/main (patch-id of
+the branch diff, subject match as fallback). Before that it sits under
+SHIPPING (mid-CI) or WAITING (a migration/safe_fetch commit held for
+/go). Rows from a collector too old to check read SHIPPING, never READY.
 
 ## Rows
 
 | type | key | fields |
 |---|---|---|
-| agent | `vendor:host:project:tree` | reporter-owned: `branch purpose state last_active ctx_pct dirty ahead behind pane tmux window_name attach exceptions via`; coordinator-owned: `assigned slice note` |
+| agent | `vendor:host:project:tree` | reporter-owned: `branch purpose state last_active ctx_pct dirty ahead behind pane tmux window_name attach exceptions via done_state`; coordinator-owned: `assigned slice note` |
 | host | `host:<host>` | `reported_at quota reporter_version exceptions_hash` |
 
 State: `working idle asking waiting dead`. One row per vendor per tree. A

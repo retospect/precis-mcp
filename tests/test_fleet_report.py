@@ -147,6 +147,68 @@ def pane_line(e, command="claude", activity=None) -> str:
     return f"main\t3\tproj-tree\t%7\t123\t{command}\t{e.repo.resolve()}\t{activity}\n"
 
 
+def git_in(e, *args: str) -> str:
+    r = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(e.repo),
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            *args,
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    )
+    return r.stdout.strip()
+
+
+def _commit_changes(e, changes: dict[str, str], subject: str) -> None:
+    for name, text in changes.items():
+        p = e.repo / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+    git_in(e, "add", "--", *changes)
+    git_in(e, "commit", "-qm", subject)
+
+
+def done_branch(e, changes: dict[str, str], subject: str = "feat: x") -> str:
+    """A scratch branch off main carrying `changes`; returns its head sha —
+    the shape a builder's done@<sha> has."""
+    git_in(e, "checkout", "-qb", "done-work")
+    _commit_changes(e, changes, subject)
+    sha = git_in(e, "rev-parse", "HEAD")
+    git_in(e, "checkout", "-q", "main")
+    return sha
+
+
+def squash_to_origin_main(e, changes: dict[str, str], subject: str) -> str:
+    """The landed twin: `changes` as ONE commit on main, with
+    refs/remotes/origin/main pointed at it (what ship's squash-merge leaves:
+    same diff, new sha)."""
+    git_in(e, "checkout", "-qb", "landed-sim", "main")
+    _commit_changes(e, changes, subject)
+    sha = git_in(e, "rev-parse", "HEAD")
+    git_in(e, "checkout", "-q", "main")
+    git_in(e, "update-ref", "refs/remotes/origin/main", sha)
+    return sha
+
+
+def unlanded_origin_main(e) -> None:
+    """origin/main exists but holds nothing past local main."""
+    git_in(e, "update-ref", "refs/remotes/origin/main", "main")
+
+
+def done_purpose(e, sha: str, note: str = "did the slice") -> None:
+    (e.repo / ".claude" / "purpose").write_text(
+        f"proj at {sha}: {note}\n", encoding="utf-8"
+    )
+
+
 def test_claude_idle_and_context(env):
     write_jsonl(
         env.transcript_dir / "a.jsonl",
@@ -502,26 +564,87 @@ def test_text_output_blocks(env):
 
 
 def test_text_output_ready_line_and_tmux_target(env):
-    (env.repo / ".claude" / "purpose").write_text(
-        "proj at 93f5ef461: landed the slice\n", encoding="utf-8"
-    )
+    changes = {"x.txt": "x\n"}
+    sha = done_branch(env, changes, "feat: landed the slice")[:9]
+    squash_to_origin_main(env, changes, "feat: landed the slice")
+    done_purpose(env, sha, "landed the slice")
     write_jsonl(
         env.transcript_dir / "a.jsonl", [assistant([{"type": "text"}], "end_turn", 5)]
     )
     env.panes.write_text(pane_line(env), encoding="utf-8")
     out = run_script(env)
     lines = out.splitlines()
-    ready = lines[lines.index("READY") + 1 : lines.index("AGENTS")]
+    ready = lines[lines.index("READY") + 1 : lines.index("SHIPPING")]
     assert len(ready) == 1
     assert re.match(
-        r"  claude@\S+/proj/proj main:3 · done@93f5ef461"
+        rf"  claude@\S+/proj/proj main:3 · done@{sha}"
         r"   attach: tmux attach -t main:3",
         ready[0],
     )
     assert re.search(
-        r"claude@\S+/proj/proj main:3 · idle · \d+m · proj at 93f5ef461: landed the slice · 60% · done@93f5ef461",
+        rf"claude@\S+/proj/proj main:3 · idle · \d+m · proj at {sha}: "
+        rf"landed the slice · 60% · done@{sha}",
         out,
     )
+
+
+def test_done_branch_head_not_on_main_is_shipping(env):
+    """gr492450: done@ names the branch head; a squash-merge mints a new sha,
+    so an unlanded branch must NOT list under READY."""
+    sha = done_branch(env, {"x.txt": "x\n"}, "feat: add x")[:9]
+    unlanded_origin_main(env)
+    done_purpose(env, sha)
+    write_jsonl(
+        env.transcript_dir / "a.jsonl", [assistant([{"type": "text"}], "end_turn", 5)]
+    )
+    assert report(env)["rows"][0]["done_state"] == "shipping"
+    lines = run_script(env).splitlines()
+    ready = lines[lines.index("READY") + 1 : lines.index("SHIPPING")]
+    assert ready == ["  none"]
+    ship = lines[lines.index("SHIPPING") + 1 : lines.index("WAITING")]
+    assert len(ship) == 1 and f"done@{sha}" in ship[0]
+
+
+def test_done_squash_landed_is_ready_via_patch_id(env):
+    """Same diff, different sha: the squash's patch-id equals the branch
+    diff's, so READY without the sha being an ancestor of origin/main."""
+    changes = {"x.txt": "x\n", "sub/y.txt": "y\n"}
+    sha = done_branch(env, changes, "feat: add x and y")[:9]
+    squash_to_origin_main(env, changes, "feat: add x and y")
+    done_purpose(env, sha)
+    write_jsonl(
+        env.transcript_dir / "a.jsonl", [assistant([{"type": "text"}], "end_turn", 5)]
+    )
+    assert report(env)["rows"][0]["done_state"] == "landed"
+    out = run_script(env)
+    assert re.search(rf"READY\n  \S+ · done@{sha}", out)
+
+
+def test_done_landed_by_subject_when_the_diff_drifted(env):
+    """Fallback: a conflict-resolved squash keeps the subject but not the
+    patch-id."""
+    sha = done_branch(env, {"x.txt": "x\n"}, "feat(scope): add x")[:9]
+    squash_to_origin_main(env, {"x.txt": "x resolved\n"}, "feat(scope): add x")
+    done_purpose(env, sha)
+    write_jsonl(
+        env.transcript_dir / "a.jsonl", [assistant([{"type": "text"}], "end_turn", 5)]
+    )
+    assert report(env)["rows"][0]["done_state"] == "landed"
+
+
+def test_done_migration_commit_waits_for_go(env):
+    """A branch diff touching migrations never takes ship: WAITING for the
+    release owner's /go, not SHIPPING."""
+    sha = done_branch(env, {"src/precis/migrations/099_x.sql": "select 1;\n"})[:9]
+    unlanded_origin_main(env)
+    done_purpose(env, sha, "add column (unlanded: migration)")
+    write_jsonl(
+        env.transcript_dir / "a.jsonl", [assistant([{"type": "text"}], "end_turn", 5)]
+    )
+    assert report(env)["rows"][0]["done_state"] == "waiting"
+    lines = run_script(env).splitlines()
+    wait = lines[lines.index("WAITING") + 1 : lines.index("AGENTS")]
+    assert len(wait) == 1 and f"done@{sha}" in wait[0]
 
 
 def test_last_active_is_iso_utc_and_matches_quiet(env):

@@ -5,7 +5,8 @@ Step 1 of docs/backlog/fleet-coordination-via-precis.md. No DB, no precis
 writes: it reads tmux, git worktrees, Claude transcripts
 (`~/.claude/projects/<cwd with non-alphanumerics -> '-'>/*.jsonl`) and Codex
 rollouts (`$CODEX_HOME/sessions/**/rollout-*.jsonl`), then prints a compact
-fisheye (EXCEPTIONS / READY / AGENTS / QUOTA) or `--json`.
+fisheye (EXCEPTIONS / READY / SHIPPING / WAITING / AGENTS / QUOTA) or
+`--json`.
 
 State per row: working | idle | waiting | dead | unknown. `dead` means the
 worktree lock's pid is gone, or no tmux pane exists while the transcript says
@@ -88,7 +89,7 @@ CLAUDE_MODEL_WINDOWS = {
 }
 DEAD_SILENT_MIN = 5.0
 RECENT_WORKING_S = 120
-REPORT_VERSION = 1
+REPORT_VERSION = 2
 DEFAULT_MCP_URL = "http://127.0.0.1:8765/mcp"
 TAIL_BYTES = 262_144
 
@@ -620,6 +621,7 @@ def collect(
     # Quota is per account: take the newest rollout anywhere, even one whose
     # cwd is not a worktree (an editor session in $HOME still reports it).
     newest_codex = max(codex.values(), key=lambda s: s["mtime"], default=None)
+    annotate_done(rows)
     return {
         "host": host,
         "version": REPORT_VERSION,
@@ -659,6 +661,164 @@ def exceptions(rows: list[dict], quiet_min: float, ctx_max: float = 60.0) -> lis
 #: `.claude/purpose` "<tree> at <sha>: …" marks a finished tip (mirrors
 #: precis.fleet.DONE_RE; the script must stay import-free).
 DONE_RE = re.compile(r"^\S+\s+at\s+([0-9a-f]{7,40})\b")
+#: done@ names the BRANCH head; `scripts/ship` squash-merges it to a new
+#: sha on main, so the sha itself is never an ancestor. "Landed" is
+#: decided by patch-id equality of the whole branch diff
+#: (`git diff <merge-base> <sha>`) against origin/main's recent commits,
+#: with an exact commit-subject match as the fallback (a conflict-resolved
+#: squash changes the diff but keeps the subject). The lookback bounds the
+#: scan; the fleet lands far fewer commits a day.
+DONE_LOOKBACK = 300
+#: A done@ branch whose diff touches these never takes `scripts/ship`
+#: (scripts/qgo-guard): it waits on the release owner's /go, so its row
+#: reads WAITING rather than SHIPPING.
+DONE_WAIT_RE = re.compile(r"migrations/|safe_fetch\.py$")
+#: An explicit "did not land" note in the purpose line means WAITING even
+#: when the branch objects are gone and the diff can't be checked.
+DONE_WAIT_PURPOSE_RE = re.compile(r"unlanded|awaiting /go", re.I)
+#: origin/main is refetched only while a done@ row exists, and at most
+#: this often (FETCH_HEAD's mtime is the stamp; a failed fetch retries on
+#: the next report).
+DONE_FETCH_S = 120
+
+
+def _git_ok(path: str, *args: str) -> bool:
+    """`git -C path <args>` exits 0 (output not needed)."""
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(path), *args],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    except (OSError, ValueError):
+        return False
+    return r.returncode == 0
+
+
+def _patch_id(path: str, *diff_args: str) -> str | None:
+    """Stable patch-id of `git -C path <diff_args>`; None on empty/failed."""
+    diff = run("git", "-C", str(path), *diff_args)
+    if not diff or not diff.strip():
+        return None
+    try:
+        r = subprocess.run(
+            ["git", "patch-id", "--stable"],
+            input=diff,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+    except (OSError, ValueError):
+        return None
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    return r.stdout.split()[0]
+
+
+def _main_pids(path: str) -> set[str]:
+    """patch-ids of origin/main's last DONE_LOOKBACK commits (one pipeline;
+    empty commits drop out)."""
+    log = run(
+        "git",
+        "-C",
+        str(path),
+        "log",
+        "-p",
+        f"--max-count={DONE_LOOKBACK}",
+        "origin/main",
+    )
+    if not log:
+        return set()
+    try:
+        r = subprocess.run(
+            ["git", "patch-id", "--stable"],
+            input=log,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+    except (OSError, ValueError):
+        return set()
+    return {ln.split()[0] for ln in r.stdout.splitlines() if ln.strip()}
+
+
+def _main_snapshot(path: str) -> dict:
+    """origin/main's recent subjects and patch-ids (empty when unfetched)."""
+    subs = git(
+        path, "log", f"--max-count={DONE_LOOKBACK}", "--format=%s", "origin/main"
+    )
+    return {"subjects": set((subs or "").splitlines()), "pids": _main_pids(path)}
+
+
+def _maybe_fetch_main(path: str) -> None:
+    """Best-effort `git fetch origin main`, throttled by FETCH_HEAD's mtime
+    so a dead remote costs one ConnectTimeout, not a stale READY forever."""
+    common = git(path, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    if common:
+        try:
+            if now_ts() - (Path(common) / "FETCH_HEAD").stat().st_mtime < DONE_FETCH_S:
+                return
+        except OSError:
+            pass
+    try:
+        subprocess.run(
+            ["git", "-C", str(path), "fetch", "-q", "origin", "main"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=15,
+            env={
+                **os.environ,
+                "GIT_TERMINAL_PROMPT": "0",
+                "GIT_SSH_COMMAND": "ssh -o BatchMode=yes -o ConnectTimeout=5",
+            },
+        )
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        pass
+
+
+def done_state(path: str, purpose: str, snap: dict) -> str | None:
+    """'landed' | 'waiting' | 'shipping' for a done@<sha> purpose line."""
+    m = DONE_RE.match(purpose or "")
+    if not m:
+        return None
+    sha = m.group(1)
+    if _git_ok(path, "merge-base", "--is-ancestor", sha, "origin/main"):
+        return "landed"  # a direct merge/fast-forward kept the sha
+    base = git(path, "merge-base", "origin/main", sha)
+    if base is None:  # unknown sha or unfetched origin/main
+        return "waiting" if DONE_WAIT_PURPOSE_RE.search(purpose) else "shipping"
+    if _patch_id(path, "diff", base, sha) in snap["pids"]:
+        return "landed"  # the squash carries the identical diff
+    subject = git(path, "log", "-1", "--format=%s", sha)
+    if subject and subject in snap["subjects"]:
+        return "landed"  # resolved-squash fallback (DONE_LOOKBACK comment)
+    names = git(path, "diff", "--name-only", base, sha) or ""
+    if DONE_WAIT_RE.search(names) or DONE_WAIT_PURPOSE_RE.search(purpose):
+        return "waiting"
+    return "shipping"
+
+
+def annotate_done(rows: list[dict], fetch: bool = True) -> None:
+    """Set ``done_state`` on each row whose purpose carries done@<sha>.
+    The origin/main snapshot is taken once per repo (common dir)."""
+    snaps: dict[str, dict] = {}
+    for r in rows:
+        if not DONE_RE.match(r.get("purpose") or ""):
+            continue
+        path = r["path"]
+        common = (
+            git(path, "rev-parse", "--path-format=absolute", "--git-common-dir") or path
+        )
+        if common not in snaps:
+            if fetch:
+                _maybe_fetch_main(path)
+            snaps[common] = _main_snapshot(path)
+        r["done_state"] = done_state(path, r["purpose"], snaps[common])
 
 
 def render(rep: dict) -> str:
@@ -677,14 +837,23 @@ def render(rep: dict) -> str:
         lines.append(f"  {e['who']}  {e['reason']}{tail}")
     if not rep["exceptions"]:
         lines.append("  none")
-    ready = [r for r in rep["rows"] if DONE_RE.match(r["purpose"] or "")]
-    lines.append("READY")
-    for r in ready:
-        sha = DONE_RE.match(r["purpose"]).group(1)
-        tail = f"   attach: {r['attach']}" if r["attach"] else ""
-        lines.append(f"  {who(r)} · done@{sha}{tail}")
-    if not ready:
-        lines.append("  none")
+    dones = [r for r in rep["rows"] if DONE_RE.match(r["purpose"] or "")]
+
+    def done_block(title: str, rows: list[dict]) -> None:
+        lines.append(title)
+        for r in rows:
+            sha = DONE_RE.match(r["purpose"]).group(1)
+            tail = f"   attach: {r['attach']}" if r["attach"] else ""
+            lines.append(f"  {who(r)} · done@{sha}{tail}")
+        if not rows:
+            lines.append("  none")
+
+    done_block("READY", [r for r in dones if r.get("done_state") == "landed"])
+    done_block(
+        "SHIPPING",
+        [r for r in dones if r.get("done_state") not in ("landed", "waiting")],
+    )
+    done_block("WAITING", [r for r in dones if r.get("done_state") == "waiting"])
     lines.append("AGENTS")
     for r in rep["rows"]:
         q = f"{r['quiet_min']:.0f}m" if r["quiet_min"] is not None else "-"
@@ -829,6 +998,7 @@ def hook_report(
         else None,
         "via": "hook",
     }
+    annotate_done([row], fetch=False)  # hooks stay off the network
     rep = {
         "host": row["host"],
         "version": REPORT_VERSION,

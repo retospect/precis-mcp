@@ -203,9 +203,12 @@ and that headless volume is within each plan's terms.
     (working/idle/asking/waiting/dead), `last_active` (UTC, the transcript
     time, not a derived "quiet N min"), `ctx_pct`, `dirty`, `ahead`,
     `behind`, `pane`, `tmux` (session:window), `window_name`, `attach`,
-    `exceptions` (list of codes). A `purpose` of the form
+    `exceptions` (list of codes), `done_state` (landed/shipping/waiting —
+    the collector's git check on the `done@` sha). A `purpose` of the form
     `<tree> at <sha>: …` marks the row finished-with-tip: the fisheye
-    shows `done@<sha>` on the AGENTS line and lists the row under READY.
+    shows `done@<sha>` on the AGENTS line and lists the row under READY
+    only once its work is on origin/main (SHIPPING while mid-CI,
+    WAITING when held for /go — gr492450).
     The reporter sends explicit `null` for a vanished `pane`/`attach`
     (`meta || patch` merges top level only and cannot delete a key).
     Coordinator-owned fields (`assigned`, `slice`, `note`) are never
@@ -270,7 +273,8 @@ older 200k; `--claude-window` overrides) and a live pane footer
 (`Context: Nk / Mk tokens (P%)`, `N% ctx`, `Context N% left`) wins over
 transcript usage; agent rows carry `tmux` (`session:window`) and
 `window_name`, and a `<tree> at <sha>: …` purpose marks the row
-finished-with-tip (READY section, `done@<sha>` in AGENTS).
+finished-with-tip (`done@<sha>` in AGENTS; READY once the collector's
+`done_state` check sees the work on origin/main, else SHIPPING/WAITING).
 
 **Session-hook push (2026-10-15, gr486948):** `scripts/fleet-report
 --hook --push` lets a session report only itself — a one-row *partial*
