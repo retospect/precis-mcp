@@ -708,8 +708,10 @@ removed as met — the transport move it waited on happened 09-29)
    zigzag `(6k,0)`; the armchair half is open. Delivers caps for
    armchair-rim parts, and the valve rotor is a lid pair, so the valve
    test piece waits on it.
-3. **`spec.md` §28.3 `opening(port=)` + `junction(3)`** — solve a host hole
-   from a target rim, then opening + fuse as a tee. Delivers the tilted
+3. **`spec.md` §28.3 `junction(3)` + zigzag `opening(port=)`** — armchair
+   `opening(port=)` landed (solves a sheet hole from a `tube(n,n)` rim,
+   spec §11.4); left: zigzag `(n,0)` and chiral rims, then opening + fuse
+   as a tee. Delivers the tilted
    pill (`geom.join.angle`) and the first branching topology. Also what a
    sheet-with-a-hole needs before a non-zigzag tube can protrude from it:
    the `hex(k)` ↔ `(6,0)` route already works (`examples/pillar.hx`,

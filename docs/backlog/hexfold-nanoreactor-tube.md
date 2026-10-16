@@ -41,6 +41,9 @@ stored block. Grammar special case kept in
 `hexfold/examples/tunnel_reservoirs.hx`.
 
 Still needed from hexfold (ranked):
+- **Zigzag `(n,0)` rims for `opening(port=)`**: armchair `tube(n,n)` ports
+  build today; zigzag and chiral ports are refused as
+  `opening.rim.unsupported`.
 - **H2: several radii along the tube**, via existing joins/cones, with
   an optional outer Y-junction where a radius change would otherwise
   strain the wall — the catalysis staging wants diameter steps as the

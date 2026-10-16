@@ -24,12 +24,20 @@ from .report import ParseError
 Span = tuple[int, int]
 
 
+#: ``Hole.ring`` sentinel of an ``opening(port=...)`` surgery (-1 notch,
+#: -2 path3, <= -10 hex(k))
+OPENING_RING = -3
+
+
 @dataclass(frozen=True)
 class Hole:
     ring: int
     site: Site
     dir: int | None = None  # dir from site toward the ring centre
     source: str | None = None  # menu that generated this hole (None = authored)
+    # ``opening(port=X)``: ring is OPENING_RING and ``port`` names the tube
+    # end whose rim the opening solver seats in a sheet hole (SPEC 11.4)
+    port: str | None = None
 
 
 @dataclass(frozen=True)
@@ -124,7 +132,8 @@ _PRIM_RE = re.compile(
     rf"(?P<rest>.*)$"
 )
 _HOLE_RE = re.compile(
-    rf"-\s*(?P<what>pentagon|hexagon|notch|path3|hex\(\s*\d+\s*\)|\d+)"
+    rf"-\s*(?P<what>pentagon|hexagon|notch|path3|hex\(\s*\d+\s*\)|\d+|"
+    rf"opening\(\s*port\s*=\s*[\w.]+\s*\))"
     rf"\s*@(?P<site>{_SITE})(?:\s*:\s*d?(?P<dir>\d))?"
 )
 _DEF_RE = re.compile(
@@ -406,6 +415,16 @@ def parse(text: str) -> Spec:
             for mh in _HOLE_RE.finditer(rest2):
                 w = mh["what"]
                 hm = re.fullmatch(r"hex\(\s*(\d+)\s*\)", w)
+                om = re.fullmatch(r"opening\(\s*port\s*=\s*([\w.]+)\s*\)", w)
+                if om:
+                    holes.append(
+                        Hole(
+                            OPENING_RING,
+                            Site.parse(mh["site"]),
+                            port=om.group(1),
+                        )
+                    )
+                    continue
                 code = (
                     -(10 + int(hm.group(1)))
                     if hm
@@ -477,12 +496,14 @@ def _fmt_params(inst: Instance) -> str:
 def _hole_ring_code(raw: object) -> int:
     if isinstance(raw, str) and raw.startswith("hex("):
         return -(10 + int(raw[4:-1]))
-    if raw in ("notch", "path3"):
-        return {"notch": -1, "path3": -2}[raw]
+    if raw in ("notch", "path3", "opening"):
+        return {"notch": -1, "path3": -2, "opening": OPENING_RING}[raw]
     return int(str(raw))
 
 
 def _hole_text(h: Hole) -> str:
+    if h.ring == OPENING_RING and h.port is not None:
+        return f"- opening(port={h.port})@{h.site}"
     if h.ring <= -10:
         name = f"hex({-10 - h.ring})"
     else:
@@ -578,12 +599,18 @@ def spec_from_dict(d: dict) -> Spec:
     instances = []
     for name, idata in sorted(d.get("instances", {}).items()):
         params = tuple(sorted((k, str(v)) for k, v in idata.get("params", {}).items()))
+        for h in idata.get("holes", []):
+            if h.get("ring") == "opening" and not h.get("port"):
+                raise ParseError(
+                    f"instance {name!r}: hole ring 'opening' needs a 'port'"
+                )
         holes = tuple(
             Hole(
                 _hole_ring_code(h["ring"]),
                 Site.parse(h["site"]),
                 int(h["dir"]) if h.get("dir") is not None else None,
                 source=h.get("source"),
+                port=h.get("port"),
             )
             for h in idata.get("holes", [])
         )

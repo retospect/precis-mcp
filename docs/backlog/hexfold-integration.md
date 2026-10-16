@@ -96,7 +96,8 @@ development, with the boundary kept clean for a later pip re-export.
    rim mints six pentagons, both as seam rings. First instance:
    `valve_shell.hx` / `valve_shell_lidded.hx`, (12,0) necks, a (24,0)
    bulge with two C2 wall holes, 4.7 Å radial gap to the `lid_pillbox.hx`
-   (12,0) rotor. **Next slice** = `opening(port=)`, then the rest of
+   (12,0) rotor. **Armchair `opening(port=)` landed** (zigzag rims
+   remain); next is `junction(3)`, then the rest of
    §28.3 (the cosmetic canonical-frame symmetry sources stay deferred
    behind it, ruled 2026-09-18).
 6. [ ] Smooth mapper: `precis-surface-kernel.md` holds the ticks for

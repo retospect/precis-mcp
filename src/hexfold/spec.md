@@ -549,6 +549,23 @@ The same cut on a `cap(6k,0)` flat lid instead of an open sheet gives the
 radius-changing washer (§7, §28.3): a `hex(r)` hole seats the narrower
 neck while the lid's own rim seats the wider bulge.
 
+`- opening(port=<inst>.<end>)@<site>` (sheet hosts, armchair rims first)
+solves the hole from the target tube rim instead of fixing its radius: the
+line *is* the join, no `fuse` is written. The compiler builds sheet and
+tube apart, places the tube rigidly (rim axis along the sheet normal, rim
+centroid over `<site>`, dangling plane one sigma past the sheet plane;
+for a tube already placed by an earlier opening it moves the sheet
+instead), scans twist and cut scale (`hexfold.opening`), cuts the sheet
+atoms inside the rim outline, and pairs the sheet-boundary atoms to the
+rim atoms in cyclic order. Seam faces are the minted defect ring
+(`opening.defects` INFO per opening; `opening.face.open` WARN when a face
+could not close); unmatched boundary atoms stay dangling. A sheet may
+carry several openings and a tube one per end (`sheet | tube | sheet`).
+Only `tube(n,n)` (armchair) ports: a zigzag `tube(n,0)` or chiral end is
+`opening.rim.unsupported` (ERROR), never approximated; a host that is not
+a sheet, a port that is not a tube end, or an unknown port is an ERROR
+too. Seed geometry only, relax via stick.
+
 Thin hosts are a hard error, not a residual: if a hole's rim walk
 revisits a vertex under the tube identification the opening spans the
 circumference, and if the new rim shares a vertex with a pre-existing
@@ -1379,7 +1396,8 @@ drive the order: the box (step 3) and the rotary ratchet valve
    ((12,0) necks, a (24,0) bulge with two C2 wall holes). The *tapered*
    (collar-driven, no discrete washer step) variant is the smooth-layer
    follow-up (steps 5/6 below), not this slice. **`opening(port=)`**
-   (solve a host hole from the target rim; a C5 rim on the C6 lattice meets
+   (solve a host hole from the target rim — armchair `tube(n,n)` rims built,
+   §11.4; zigzag and chiral rims open; a C5 rim on the C6 lattice meets
    only through an asymmetric seam → the **tilted pill**, `geom.join.angle`);
    **`junction(3)`** = opening + fuse (tee); **elbow + closure → genus-1
    torus** (one 5-7 pair per elbow; the first real `registry.closure`

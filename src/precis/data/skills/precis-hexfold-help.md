@@ -84,6 +84,14 @@ t.out --fuse k=0--> c.in
 edges instead of a seam; `seam <name>: A.r == B.r == C.r` is the k ≥ 3
 form. The verb-first spelling `fuse P --> Q` is not a statement.
 
+To seat a tube end in a sheet hole solved from the tube's own rim, write
+the opening on the sheet instead of a `fuse`: `a: sheet(20,20) -
+opening(port=t.in)@(10,10,A)` (the line is the join; one per tube end,
+sheet|tube|sheet works). Armchair `tube(n,n)` ports only; zigzag
+`tube(n,0)` or chiral ports are `opening.rim.unsupported` (ERROR); it does
+not combine with fuse/bond/seam lines (`opening.combined`) or `fit`
+(`opening.fit`).
+
 ## Iterating: check, then edit
 
 `fidelity="check"` on a `put` still creates the (empty) design row, and a

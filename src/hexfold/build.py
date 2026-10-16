@@ -216,8 +216,9 @@ class Net:
                 idata["holes"] = [
                     {
                         "dir": h.dir,
-                        "ring": "notch" if h.ring == -1 else h.ring,
+                        "ring": {-1: "notch", -3: "opening"}.get(h.ring, h.ring),
                         "site": str(h.site),
+                        **({"port": h.port} if h.port is not None else {}),
                         **({"source": h.source} if h.source is not None else {}),
                     }
                     for h in inst.holes
@@ -1904,6 +1905,13 @@ def build(
                 snap_findings + [Finding("reducer.ends", Severity.ERROR, str(exc))]
             )
         ) from exc
+
+    # opening(port=...) holes (SPEC 11.4): the opening solver joins the
+    # built parts geometrically, so build the spec without them first
+    if any(h.port is not None for i in spec.instances for h in i.holes):
+        from .opening_join import build_openings
+
+        return build_openings(spec, profile, strict, snap_findings, build)
 
     # len=fit (SPEC section 8): the smallest integer len for which the
     # whole spec builds with no ERROR findings.  len is in whole
