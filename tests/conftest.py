@@ -64,6 +64,7 @@ offender; it's disabled session-wide via ``PRECIS_ORACLE_AUTO_REINGEST``.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -376,10 +377,31 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
 
 
+def _load_shard_pins() -> tuple[int, dict[str, int]]:
+    """``(n, {nodeid: 0-based shard})`` from tests/shard_weights.json, the
+    time-balanced pins for the slow tests (scripts/shard-weights regenerates
+    it). Missing file → no pins."""
+    path = Path(__file__).parent / "shard_weights.json"
+    if not path.exists():
+        return 0, {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return int(data["n"]), {k: int(v) for k, v in data["pinned"].items()}
+
+
+_SHARD_PIN_N, _SHARD_PINS = _load_shard_pins()
+
+
 def shard_index(nodeid: str, n: int) -> int:
-    """0-based shard for ``nodeid`` under an ``n``-way split. crc32, not
-    ``hash()``: Python salts str hashes per process, and xdist workers each
-    collect independently — every process must agree on the partition."""
+    """0-based shard for ``nodeid`` under an ``n``-way split. Slow tests are
+    pinned by shard_weights.json (only when ``n`` matches the table's N);
+    every other id is crc32, not ``hash()``: Python salts str hashes per
+    process, and xdist workers each collect independently — every process
+    must agree on the partition. Each id maps to exactly one shard, so the
+    shards partition the suite whatever the pins say."""
+    if n == _SHARD_PIN_N:
+        pinned = _SHARD_PINS.get(nodeid)
+        if pinned is not None:
+            return pinned
     return zlib.crc32(nodeid.encode("utf-8")) % n
 
 
@@ -411,7 +433,7 @@ def pytest_configure(config: pytest.Config) -> None:
         "(gr261537) and, since this marker's cluster grew, the ship gate "
         "itself (`scripts/ship --slow` or PRECIS_GATE_SLOW=1 restores the "
         "full set). The marked cluster is still run on every push by "
-        "check.yml's 12 Linux shards, which carry no -m filter, and by the "
+        "check.yml's 6 Linux shards, which carry no -m filter, and by the "
         "nightly matrix. See docs/conventions/testing.md.",
     )
     config.addinivalue_line(

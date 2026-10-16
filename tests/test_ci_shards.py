@@ -34,12 +34,24 @@ def test_workflow_shard_count_is_spelled_consistently() -> None:
     assert f"--shard ${{{{ matrix.shard }}}}/{n}" in WORKFLOW
 
 
-def test_nightly_plus_one_gate_fits_the_cap() -> None:
+def test_nightly_plus_two_gates_fit_the_cap() -> None:
     n = _shards()
     gate = 2 + n  # plan + lint + shards
-    m = re.search(r"max-parallel: \$\{\{ [^}]*&& (\d+) \|\| (\d+) \}\}", WORKFLOW)
-    assert m, "test-linux needs a nightly max-parallel"
-    nightly_linux, gate_linux = int(m.group(1)), int(m.group(2))
-    assert gate_linux >= n
-    nightly_peak = 1 + 1 + 1 + 4 + nightly_linux  # plan, lint, coverage-db, test-other
-    assert nightly_peak + gate <= CAP
+    nightly = 1 + 1 + 1 + 4 + 2 * n  # plan, lint, coverage-db, test-other, 2 pythons
+    assert nightly + 2 * gate <= CAP
+
+
+def test_pinned_weights_match_the_shard_count_and_partition() -> None:
+    from tests.conftest import _SHARD_PIN_N, _SHARD_PINS
+
+    n = _shards()
+    assert n == _SHARD_PIN_N, (
+        "regenerate tests/shard_weights.json (scripts/shard-weights)"
+    )
+    assert all(0 <= v < n for v in _SHARD_PINS.values())
+    ids = list(_SHARD_PINS) + [f"tests/test_new.py::test_{i}" for i in range(500)]
+    assert all(0 <= shard_index(t, n) < n for t in ids)
+    for t, v in _SHARD_PINS.items():
+        assert shard_index(t, n) == v
+    # a different N ignores the pins and still covers every id once
+    assert {shard_index(t, 5) for t in ids} == set(range(5))

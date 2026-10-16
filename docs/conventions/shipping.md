@@ -61,7 +61,7 @@ Work you won't use: `scripts/take-agent --discard <agent-tree>`.
 `scripts/ship --quick` lands the tree on `main` (lint only), then
 `scripts/release` drives `scripts/round`: open a round if none is open,
 `round cut --sha S` pushes `release/r<N>` at S = `origin/main`, check.yml
-runs the full gate (lint + 12 shards, never cancelled) on that exact head,
+runs the full gate (lint + 6 shards, never cancelled) on that exact head,
 and `round deploy` deploys it `--pinned` and moves `gated`/`prod`. Exit 3
 leaves runtime proof to the session: verify boot shas and the session MCP,
 then `round deploy --confirm-runtime S --runtime-evidence …` tags

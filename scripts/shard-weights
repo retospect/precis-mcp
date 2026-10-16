@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+"""Regenerate tests/shard_weights.json from a pytest junit-xml full-suite run.
+
+    scripts/test --bg --junitxml=.scratch/junit.xml -q    # full suite
+    scripts/shard-weights .scratch/junit.xml
+
+Tests that took >= HEAVY seconds are pinned to shards by greedy
+longest-first packing on top of the crc32 load of all the light tests;
+everything else (and any test added later) keeps hashing, so the partition
+stays exact (tests/conftest.py shard_index). Re-run when a shard drifts
+past ~30 min in check.yml.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+import xml.etree.ElementTree as ET
+import zlib
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+OUT = ROOT / "tests" / "shard_weights.json"
+N = 6
+HEAVY = 1.0
+
+
+def nodeid(classname: str, name: str) -> str | None:
+    parts = classname.split(".")
+    for i in range(len(parts), 0, -1):
+        path = Path(*parts[:i]).with_suffix(".py")
+        if (ROOT / path).exists():
+            return "::".join([str(path), *parts[i:], name])
+    return None
+
+
+def main(argv: list[str]) -> int:
+    times: dict[str, float] = {}
+    for tc in ET.parse(argv[1]).getroot().iter("testcase"):
+        nid = nodeid(tc.get("classname", ""), tc.get("name", ""))
+        if nid:
+            times[nid] = times.get(nid, 0.0) + float(tc.get("time", 0))
+    load = [0.0] * N
+    heavy: list[tuple[float, str]] = []
+    for nid, t in times.items():
+        if t >= HEAVY:
+            heavy.append((t, nid))
+        else:
+            load[zlib.crc32(nid.encode("utf-8")) % N] += t
+    pinned: dict[str, int] = {}
+    for t, nid in sorted(heavy, key=lambda x: (-x[0], x[1])):
+        k = min(range(N), key=lambda i: (load[i], i))
+        load[k] += t
+        pinned[nid] = k
+    OUT.write_text(
+        json.dumps({"n": N, "pinned": dict(sorted(pinned.items()))}, indent=0) + "\n",
+        encoding="utf-8",
+    )
+    print("estimated shard load (junit-minutes):", [round(x / 60, 1) for x in load])
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

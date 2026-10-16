@@ -96,9 +96,9 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# check.yml's test-linux gate shape: shard: [1..12] and `pytest --shard K/12`.
+# check.yml's test-linux gate shape: shard: [1..6] and `pytest --shard K/6`.
 # tests/test_last_gated_main_sha.py pins this against the workflow.
-GATE_SHARDS = 12
+GATE_SHARDS = 6
 
 # How far back to look: by commit date, capped by commit count. Sized to the
 # real commit rate (368 on main in 48 h), not to "a burst".

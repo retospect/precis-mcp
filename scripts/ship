@@ -1419,7 +1419,7 @@ _release_after_landing() {
 # ── 3b. remote gate (--remote): push ci/<branch>, wait for check.yml ─────
 # The branch (already synced with origin/main by the loop below) goes to the
 # throwaway ref ci/<branch>; check.yml triggers on ci/** pushes and runs the
-# gate shape (lint · mypy · 12 shards of Linux+db 3.13; a docs-only diff gets
+# gate shape (lint · mypy · 6 shards of Linux+db 3.13; a docs-only diff gets
 # the fast-set docs lane instead of the shards; 3.12 + macOS + Windows are
 # nightly-only) on exactly
 # the tree the CAS push below will make main. A force-push retry to the same
@@ -1433,7 +1433,7 @@ remote_gate_wait() {
     sha="$(git rev-parse HEAD)"
     t0="$(date +%s)"
     deadline=$(( t0 + 60 * ${PRECIS_REMOTE_CI_TIMEOUT_MIN:-150} ))
-    say "remote gate — pushing ci/${BRANCH}, waiting for check.yml on ${sha:0:8} (gate shape: lint + 12 shards, ~90 min green; docs-only diffs ~5 min)"
+    say "remote gate — pushing ci/${BRANCH}, waiting for check.yml on ${sha:0:8} (gate shape: lint + 6 shards, ~90 min green; docs-only diffs ~5 min)"
     git push -q -f origin "HEAD:refs/heads/ci/${BRANCH}" \
         || { echo "✖ could not push ci/${BRANCH}" >&2; return 1; }
     while :; do
@@ -1857,7 +1857,7 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
             # gate's wall clock — the 2026-09-25 full gate spent 90+ of its 128
             # minutes on the last ~5% of the run with five of six xdist workers
             # idle, which is what made /go unable to win a CAS race against a
-            # qland burst. Deselecting it is safe because check.yml's 12 Linux
+            # qland burst. Deselecting it is safe because check.yml's 6 Linux
             # shards carry NO -m filter, so every push to main and every
             # ci/<branch> gate still runs the whole cluster, as does the
             # nightly full matrix. The trade, taken deliberately: a pcb/se
