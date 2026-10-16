@@ -27,12 +27,15 @@ from precis import settings
 from precis.errors import BadInput, Upstream
 from precis.handlers._cache_base import CacheBackedHandler, FetchResult
 from precis.handlers._chem_resolve import (
+    CIR_POLICY,
+    OPSIN_POLICY,
     Fetch,
     Resolution,
     cas_checksum_ok,
     http_fetch,
     is_cas,
     normalise_query,
+    polite_fetch,
     resolve,
 )
 from precis.protocol import KindSpec
@@ -114,11 +117,13 @@ class ChemHandler(CacheBackedHandler):
             res = resolve(
                 key,
                 http_fetch(),
-                http_fetch(timeout_s=8.0, attempts=1) if cir_enabled else None,
+                polite_fetch("CIR", CIR_POLICY, timeout_s=8.0) if cir_enabled else None,
                 cir_enabled=cir_enabled,
                 opsin_enabled=opsin_enabled,
                 opsin_fetch=(
-                    http_fetch(timeout_s=8.0, attempts=1) if opsin_enabled else None
+                    polite_fetch("OPSIN", OPSIN_POLICY, cache=True)
+                    if opsin_enabled
+                    else None
                 ),
             )
         if res.status == "fault":

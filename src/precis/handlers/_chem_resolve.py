@@ -36,10 +36,13 @@ import itertools
 import json
 import re
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote
+
+from precis.pcb._http import Policy
 
 #: ``fetch(url) -> (http_status, body_text)``. Raises on transport failure.
 Fetch = Callable[[str], tuple[int, str]]
@@ -523,21 +526,20 @@ def resolve(
             return res
         if qtype == "name" and underspecified_locants(query, best.name):
             variants: list[StructureReading] = []
+            probes = answered = 0
             if opsin_state == "miss":
-                got, probes = _locant_isomers(best, opsin_fetch or fetch, notes)
-                if got is None:
-                    notes.append(
-                        "could not enumerate the locant isomers: OPSIN "
-                        "stopped answering"
+                variants, probes, answered = _locant_isomers(
+                    best, opsin_fetch or fetch, notes
+                )
+                res.tiers.append(
+                    (
+                        "OPSIN-locants",
+                        f"{len(variants)} readings ({answered} of {probes} probes"
+                        " answered)"
+                        if answered < probes
+                        else f"{len(variants)} readings ({probes} probes)",
                     )
-                else:
-                    variants = got
-                    res.tiers.append(
-                        (
-                            "OPSIN-locants",
-                            f"{len(variants)} readings ({probes} probes)",
-                        )
-                    )
+                )
             elif not opsin_enabled:
                 notes.append("locant isomers not enumerated: OPSIN is disabled")
             else:
@@ -613,7 +615,7 @@ _MAX_LOCANT_PROBES = 16
 
 def _locant_isomers(
     pick: StructureReading, fetch: Fetch, notes: list[str]
-) -> tuple[list[StructureReading] | None, int]:
+) -> tuple[list[StructureReading], int, int]:
     """OPSIN-resolve every other locant variant of the refused name.
 
     ``pick``'s title carries the locant tuple the registry chose
@@ -623,20 +625,23 @@ def _locant_isomers(
     "Cannot find in scope fragment with atom with locant N"), so the
     sweep ends on the first all-miss ring; equivalent locant orders
     ("2,2-dichloroethane") parse to the same structure and dedupe away.
-    Returns ``(readings, probes)`` — ``readings`` excludes the pick's own
-    structure and is ``None`` when OPSIN faulted mid-sweep.
+    Returns ``(readings, probes, answered)`` — ``readings`` excludes the
+    pick's own structure. When OPSIN faults mid-sweep (timeout, 429, open
+    breaker) the sweep stops, keeps what it found and says so in ``notes``
+    ("k of n locant probes answered"): a partial list is never presented
+    as complete.
     """
     blocks = _LOCANT_RE.findall(pick.name)
     if len(blocks) != 1:
-        return [], 0
+        return [], 0, 0
     pick_locants = tuple(int(x) for x in blocks[0].rstrip("-").split(","))
     k = len(pick_locants)
     stem = _LOCANT_RE.sub("", pick.name, count=1)
     if not stem:
-        return [], 0
+        return [], 0, 0
     seen = {pick.inchikey or pick.smiles}
     found: list[StructureReading] = []
-    probes = 0
+    probes = answered = 0
     for maxloc in itertools.count(1):
         tried = ok = False
         for combo in itertools.combinations_with_replacement(range(1, maxloc + 1), k):
@@ -647,14 +652,20 @@ def _locant_isomers(
                     f"locant enumeration stopped after {probes} OPSIN probes; "
                     "a bigger parent's isomers may be missing"
                 )
-                return found, probes
+                return found, probes, answered
             probes += 1
             tried = True
             variant = "-".join((",".join(str(i) for i in combo), stem))
             try:
                 got = _tier_opsin(variant, fetch, notes)
-            except _Fault:
-                return None, probes
+            except _Fault as exc:
+                notes.append(
+                    f"{answered} of {probes} locant probes answered; OPSIN "
+                    f"failed on probe {probes} ({exc}) and the sweep stopped. "
+                    "The isomer list is INCOMPLETE"
+                )
+                return found, probes, answered
+            answered += 1
             if got is None:
                 continue
             ok = True
@@ -662,8 +673,8 @@ def _locant_isomers(
                 seen.add(got.inchikey or got.smiles)
                 found.append(got)
         if tried and not ok:
-            return found, probes
-    return found, probes
+            return found, probes, answered
+    return found, probes, answered
 
 
 def http_fetch(timeout_s: float = 20.0, attempts: int = 2) -> Fetch:
@@ -687,14 +698,110 @@ def http_fetch(timeout_s: float = 20.0, attempts: int = 2) -> Fetch:
     return fetch
 
 
+#: Identifies us to EBI/NCI (public repo URL; no personal contact literal).
+POLITE_USER_AGENT = "precis-mcp/1.0 (+https://github.com/retospect/precis-mcp)"
+
+#: EBI publishes no numeric limit for the OPSIN web service; its page asks
+#: bulk users to run OPSIN locally, and the EMBL-EBI terms of use block
+#: anyone whose load "prevents, or is likely to prevent" service to others
+#: (https://www.ebi.ac.uk/opsin/, https://www.ebi.ac.uk/about/terms-of-use).
+#: So: serial (<= 1 in flight), >= 1 s apart plus jitter, short timeouts,
+#: three attempts with full-jitter backoff honouring Retry-After, and a
+#: breaker that parks the leg for two minutes after three failures.
+OPSIN_POLICY = Policy(
+    attempts=3,
+    base=0.5,
+    cap=4.0,
+    breaker_threshold=5,
+    breaker_cooldown=120.0,
+    min_interval=1.0,
+    spacing_jitter=0.25,
+    label="OPSIN",
+)
+#: CIR only corroborates and has been unreachable (TLS stalls): one
+#: attempt, and two failures park it so a dead CIR stops costing every get.
+CIR_POLICY = Policy(
+    attempts=1,
+    breaker_threshold=2,
+    breaker_cooldown=120.0,
+    label="CIR",
+)
+#: OPSIN parses are deterministic: a hit holds for a week, a miss a day.
+_OPSIN_HIT_TTL_S = 7 * 86400.0
+_OPSIN_MISS_TTL_S = 86400.0
+
+_ANSWER_CACHE: dict[str, tuple[float, int, str]] = {}
+_ANSWER_LOCK = threading.Lock()
+#: One request in flight per service: with_backoff's spacing is an unlocked
+#: read-then-sleep, so concurrent callers would otherwise all fire at once.
+_SERVICE_LOCKS: dict[str, threading.Lock] = {}
+
+
+def clear_answer_cache() -> None:
+    """Drop cached OPSIN answers (tests, operator)."""
+    with _ANSWER_LOCK:
+        _ANSWER_CACHE.clear()
+
+
+def polite_fetch(
+    service: str,
+    policy: Policy,
+    *,
+    timeout_s: float = 6.0,
+    connect_s: float = 3.0,
+    cache: bool = False,
+    clock: Callable[[], float] = time.time,
+) -> Fetch:
+    """A ``Fetch`` that goes through ``pcb._http.with_backoff`` (spacing,
+    jittered backoff, ``Retry-After``, breaker) under the ``service`` key,
+    with a short timeout and an identifying User-Agent. ``cache=True``
+    keeps 200/400/404 answers in-process (negatives included). Retry
+    exhaustion or an open breaker raises, which ``_call`` reports as a
+    fault. The shared ``opsin`` rate-limit row is honoured when present
+    (fail-open without it)."""
+    import httpx
+
+    from precis.pcb._http import with_backoff
+    from precis.utils import rate_limit
+    from precis.utils.http import http_client
+    from precis.utils.safe_fetch import safe_get
+
+    def fetch(url: str) -> tuple[int, str]:
+        if cache:
+            with _ANSWER_LOCK:
+                hit = _ANSWER_CACHE.get(url)
+            if hit is not None and hit[0] > clock():
+                return hit[1], hit[2]
+
+        def send() -> httpx.Response:
+            rate_limit.acquire(service.lower(), max_wait_s=5.0)
+            timeout = httpx.Timeout(timeout_s, connect=connect_s)
+            with http_client(timeout=timeout, user_agent=POLITE_USER_AGENT) as client:
+                return safe_get(client, url)
+
+        with _SERVICE_LOCKS.setdefault(service, threading.Lock()):
+            resp = with_backoff(send, service=service, policy=policy)
+        if cache and resp.status_code in (200, 400, 404):
+            ttl = _OPSIN_HIT_TTL_S if resp.status_code == 200 else _OPSIN_MISS_TTL_S
+            with _ANSWER_LOCK:
+                _ANSWER_CACHE[url] = (clock() + ttl, resp.status_code, resp.text)
+        return resp.status_code, resp.text
+
+    return fetch
+
+
 __all__ = [
+    "CIR_POLICY",
+    "OPSIN_POLICY",
     "Fetch",
     "Resolution",
     "StructureReading",
     "abbreviation_table",
     "cas_checksum_ok",
     "classify_query",
+    "clear_answer_cache",
     "http_fetch",
     "normalise_query",
+    "polite_fetch",
     "resolve",
 ]

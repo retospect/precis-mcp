@@ -296,7 +296,10 @@ def test_locant_enumeration_aborts_on_opsin_fault() -> None:
     res = cr.resolve("dichloroethane", Replay(routes), cir_enabled=False)
     assert res.status == "ambiguous"
     assert [c.name for c in res.candidates] == ["1,1-Dichloroethane"]
-    assert any("could not enumerate" in n for n in res.notes)
+    assert any(
+        "0 of 1 locant probes answered" in n and "INCOMPLETE" in n for n in res.notes
+    )
+    assert any(t == "OPSIN-locants" and "answered" in o for t, o in res.tiers)
 
 
 def test_locant_refusal_stays_fast_offline() -> None:
@@ -477,7 +480,7 @@ def test_handler_cir_off_via_env_never_calls_it(
     assert not any("cactus" in url for url in fetch.calls)
 
 
-def test_short_legs_keep_their_8s_timeout(
+def test_cir_leg_keeps_its_8s_timeout_and_opsin_is_cached(
     chem: ChemHandler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     made: list[dict[str, Any]] = []
@@ -486,14 +489,19 @@ def test_short_legs_keep_their_8s_timeout(
         made.append(kwargs)
         return Replay(_aspirin_routes())
 
+    def fake_polite(service: str, policy: Any, **kwargs: Any) -> cr.Fetch:
+        made.append({"service": service, **kwargs})
+        return Replay(_aspirin_routes())
+
     monkeypatch.delenv("PRECIS_CHEM_CIR_ENABLED", raising=False)
     monkeypatch.delenv("PRECIS_CHEM_OPSIN_ENABLED", raising=False)
     monkeypatch.setattr("precis.handlers.chem.http_fetch", fake_http_fetch)
+    monkeypatch.setattr("precis.handlers.chem.polite_fetch", fake_polite)
     chem.get(id="aspirin")
     assert made == [
         {},
-        {"timeout_s": 8.0, "attempts": 1},
-        {"timeout_s": 8.0, "attempts": 1},
+        {"service": "CIR", "timeout_s": 8.0},
+        {"service": "OPSIN", "cache": True},
     ]
 
 
@@ -506,11 +514,17 @@ def test_handler_cir_off_builds_no_cir_fetcher(
         made.append(kwargs)
         return Replay(_aspirin_routes())
 
+    def fake_polite(service: str, policy: Any, **kwargs: Any) -> cr.Fetch:
+        made.append({"service": service, **kwargs})
+        return Replay(_aspirin_routes())
+
     monkeypatch.setenv("PRECIS_CHEM_CIR_ENABLED", "0")
     monkeypatch.delenv("PRECIS_CHEM_OPSIN_ENABLED", raising=False)
     monkeypatch.setattr("precis.handlers.chem.http_fetch", fake_http_fetch)
+    monkeypatch.setattr("precis.handlers.chem.polite_fetch", fake_polite)
     chem.get(id="aspirin")
-    assert made == [{}, {"timeout_s": 8.0, "attempts": 1}]
+    assert made[0] == {}
+    assert len(made) == 2
 
 
 def test_handler_opsin_off_builds_no_opsin_fetcher(
@@ -522,8 +536,14 @@ def test_handler_opsin_off_builds_no_opsin_fetcher(
         made.append(kwargs)
         return Replay(_aspirin_routes())
 
+    def fake_polite(service: str, policy: Any, **kwargs: Any) -> cr.Fetch:
+        made.append({"service": service, **kwargs})
+        return Replay(_aspirin_routes())
+
     monkeypatch.delenv("PRECIS_CHEM_CIR_ENABLED", raising=False)
     monkeypatch.setenv("PRECIS_CHEM_OPSIN_ENABLED", "0")
     monkeypatch.setattr("precis.handlers.chem.http_fetch", fake_http_fetch)
+    monkeypatch.setattr("precis.handlers.chem.polite_fetch", fake_polite)
     chem.get(id="aspirin")
-    assert made == [{}, {"timeout_s": 8.0, "attempts": 1}]
+    assert made[0] == {}
+    assert len(made) == 2
