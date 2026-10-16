@@ -5,7 +5,7 @@ BEFORE the ``precis-mcp[catalyst]`` pip install runs.
 ``precis_web`` install on an autocatpath_plugin host) installs with
 ``--no-sources --find-links /opt/precis/wheels``. A fresh compute host's
 wheelhouse is empty, and the ``catalyst`` extra's floor
-(``autocatpath>=0.29.0`` — not on PyPI, release-gated) then resolves
+(``autocatpath>=0.30.0`` — not on PyPI, release-gated) then resolves
 nothing or a too-old wheel. The fix's guard: find the wheels, refuse when
 none satisfies the floor, name the seed route in the message — play 44's
 wheel push on the Linux compute node; on darwin plugin hosts play 44
