@@ -6,8 +6,10 @@
   check scripts/host-ops/os-update also runs) and no service_config reserve.
 - gr489603: the templated sshd_config carries an sftp Subsystem with the
   right sftp-server path per OS family, and both sshd tasks are tagged.
-- gr489996: dgx-dashboard-admin.service is stopped, disabled and masked,
-  tagged dgx-dashboard and only where the unit exists.
+- gr489996: dgx-dashboard-admin.service is stopped, disabled and gated on a
+  ConditionPathExists drop-in (masking fails — the package ships the unit as
+  a real file in /etc/systemd/system), tagged dgx-dashboard and only where
+  the unit exists.
 """
 
 from __future__ import annotations
@@ -436,18 +438,34 @@ def test_role_shell_scripts_pass_shellcheck() -> None:
 # ── gr489996: dgx-dashboard-admin ──────────────────────────────────────────
 
 
-def test_dgx_dashboard_admin_masked_only_where_the_unit_exists() -> None:
+def test_dgx_dashboard_admin_disabled_only_where_the_unit_exists() -> None:
     tasks = [t for t in _tasks() if "dgx-dashboard" in t.get("tags", [])]
-    assert len(tasks) == 2
-    facts, mask = tasks
+    assert len(tasks) == 4
+    facts, dropin_dir, dropin, systemd = tasks
     assert "ansible.builtin.service_facts" in facts
-    assert mask["ansible.builtin.systemd"] == {
+    assert dropin_dir["ansible.builtin.file"] == {
+        "path": "/etc/systemd/system/dgx-dashboard-admin.service.d",
+        "state": "directory",
+        "mode": "0755",
+    }
+    assert dropin["ansible.builtin.copy"] == {
+        "dest": "/etc/systemd/system/dgx-dashboard-admin.service.d/50-precis-disabled.conf",
+        "mode": "0644",
+        "content": "[Unit]\n"
+        "ConditionPathExists=/etc/precis/dgx-dashboard-admin.enable\n",
+    }
+    assert systemd["ansible.builtin.systemd"] == {
         "name": "dgx-dashboard-admin.service",
         "state": "stopped",
         "enabled": False,
-        "masked": True,
+        "daemon_reload": True,
     }
-    assert "'dgx-dashboard-admin.service' in ansible_facts.services" in mask["when"]
+    # Never mask: the package ships the unit as a real file in
+    # /etc/systemd/system, so the mask symlink cannot be created.
+    assert "masked" not in systemd["ansible.builtin.systemd"]
+    guard = "'dgx-dashboard-admin.service' in ansible_facts.services"
+    for task in tasks[1:]:
+        assert guard in task["when"], task["name"]
     for task in tasks:
         assert 'os_family == "linux"' in str(task["when"]), task["name"]
     # Only the privileged helper: the dashboard UI unit stays up.
@@ -479,7 +497,9 @@ def test_tag_map_selects_only_own_tasks() -> None:
         },
         "dgx-dashboard": {
             "Read systemd units (DGX dashboard check)",
-            "Stop, disable and mask dgx-dashboard-admin (Linux)",
+            "Ensure dgx-dashboard-admin.service drop-in dir (Linux)",
+            "Gate dgx-dashboard-admin on an enable flag (Linux)",
+            "Stop and disable dgx-dashboard-admin (Linux)",
         },
         "os-update-weekly": {
             "Remove the old daily update + reboot cron (Linux)",

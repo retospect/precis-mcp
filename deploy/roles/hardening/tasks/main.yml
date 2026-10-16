@@ -463,16 +463,43 @@
 # ── DGX Dashboard privileged helper (Linux; gr489996) ──
 # dgx-dashboard-admin.service is the root D-Bus helper behind the dashboard's
 # update and reboot buttons. Its `apt update` runs hang in CLOSE-WAIT and hold
-# the apt lists lock for days. Masking it kills those buttons only; the
-# dashboard UI and telemetry (dgx-dashboard.service) keep running, and OS
-# updates belong to os-update. Stopping the unit also ends any hung apt child
-# in its cgroup.
+# the apt lists lock for days. The package ships the unit as a real file in
+# /etc/systemd/system, so masking fails ("File ... already exists") — a
+# ConditionPathExists drop-in does the job instead: a false condition skips
+# D-Bus activation and Restart=always, and it survives package upgrades.
+# Stopping the unit also ends any hung apt child in its cgroup; the dashboard
+# UI and telemetry (dgx-dashboard.service) keep running, and OS updates
+# belong to os-update.
 - name: Read systemd units (DGX dashboard check)
   tags: [hardening, security, dgx-dashboard]
   when: os_family == "linux"
   ansible.builtin.service_facts:
 
-- name: Stop, disable and mask dgx-dashboard-admin (Linux)
+- name: Ensure dgx-dashboard-admin.service drop-in dir (Linux)
+  tags: [hardening, security, dgx-dashboard]
+  when:
+    - os_family == "linux"
+    - "'dgx-dashboard-admin.service' in ansible_facts.services"
+  ansible.builtin.file:
+    path: /etc/systemd/system/dgx-dashboard-admin.service.d
+    state: directory
+    mode: "0755"
+  become: true
+
+- name: Gate dgx-dashboard-admin on an enable flag (Linux)
+  tags: [hardening, security, dgx-dashboard]
+  when:
+    - os_family == "linux"
+    - "'dgx-dashboard-admin.service' in ansible_facts.services"
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/dgx-dashboard-admin.service.d/50-precis-disabled.conf
+    mode: "0644"
+    content: |
+      [Unit]
+      ConditionPathExists=/etc/precis/dgx-dashboard-admin.enable
+  become: true
+
+- name: Stop and disable dgx-dashboard-admin (Linux)
   tags: [hardening, security, dgx-dashboard]
   when:
     - os_family == "linux"
@@ -481,7 +508,7 @@
     name: dgx-dashboard-admin.service
     state: stopped
     enabled: false
-    masked: true
+    daemon_reload: true
   become: true
 
 - name: Deploy sudoers drop-in for deploy user
