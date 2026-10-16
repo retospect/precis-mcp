@@ -37,6 +37,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from precis.export import progress
 from precis.export._back_matter import ordered_blocks
 from precis.export._cite_ids import merged_cite_numbers, paper_identifier
 from precis.export._data_package import (
@@ -62,6 +63,7 @@ from precis.export._patent_cite import (
     render_paper_inline_citation,
     render_patent_citation,
 )
+from precis.export._ref_cache import RefLookupMemo
 from precis.export._trust_marks import (
     UNSUPPORTED_MARK_TEXT,
     mark_text,
@@ -565,7 +567,7 @@ def export_docx(
     cfg = load_config()
     xref, numbered_headings = _xref_numbers(chunks, getattr(ref, "title", None))
     ctx = _Ctx(
-        store=store,
+        store=RefLookupMemo(store),
         known_handles=handles,
         xref=xref,
         numbered_headings=numbered_headings,
@@ -605,7 +607,9 @@ def export_docx(
         _render_byline(doc, byline)
         _render_date(doc)
         title_done = True
-    for c in chunks:
+    progress.report("rendering", 0, len(chunks))
+    for n_done, c in enumerate(chunks):
+        progress.report("rendering", n_done, len(chunks))
         kind = c.chunk_kind
         if kind in ("ulist", "olist"):
             continue  # structural container — its items carry the prose
@@ -674,6 +678,7 @@ def export_docx(
     # (``export/_back_matter.py``); a block that does not apply is left out.
     # A patent specification cites prior art in-text: no References list.
     # Each _append_* is a no-op when its block is empty.
+    progress.report("references and back matter")
     back: dict[str, Callable[[], None]] = {
         "unverified": lambda: _append_unverified_claims(doc, ctx),
         "data_package": lambda: _append_data_package(doc, ctx.data_package),
@@ -707,6 +712,7 @@ def export_docx(
     if record_override:
         record_override_event(store, ref, ctx.trust)
 
+    progress.report("saving .docx")
     target_path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(target_path))
 

@@ -102,6 +102,7 @@ from precis.draft.scaffolds import DOC_TYPES as _DOC_TYPES  # noqa: F401
 from precis.draft.scaffolds import SCAFFOLDS as _SCAFFOLDS
 from precis.draft.scaffolds import SECTION_STYLES as _SECTION_STYLES
 from precis.errors import BadInput
+from precis.export import progress
 from precis.export._data_package import collect_entry
 from precis.export.preflight import draft_export_preflight
 from precis.handlers._prio_tag import PRIO_TAG_TO_INT
@@ -2073,6 +2074,7 @@ async def pdf(request: Request, ident: str) -> Response:
                 },
                 status_code=503,
             )
+        progress.report("exporting LaTeX project")
         export_draft(
             store,
             ref,
@@ -2083,6 +2085,7 @@ async def pdf(request: Request, ident: str) -> Response:
             library_links=links,
             claim_appendix=claims,
         )
+        progress.report("compiling PDF (latexmk)")
         result = compile_pdf(cache_dir)
         if not result.ok:
             return templates.TemplateResponse(
@@ -2100,6 +2103,70 @@ async def pdf(request: Request, ident: str) -> Response:
                 status_code=500,
             )
     return FileResponse(pdf_path, media_type="application/pdf", filename=filename)
+
+
+@router.post("/drafts/{ident}/export/start")
+async def export_start_route(request: Request, ident: str) -> Response:
+    """Start a background ``.docx`` / PDF build and return its job token.
+
+    ``?fmt=docx|pdf`` plus the same query the direct download takes
+    (``sources``, ``citations``, overrides…). The page polls
+    :func:`export_status_route`, then fetches the file from
+    :func:`export_download_route`. See :mod:`precis_web.export_jobs`."""
+    from urllib.parse import parse_qsl
+
+    from precis_web import export_jobs
+
+    store = get_store(request)
+    if _draft_ref(store, ident) is None:
+        return JSONResponse({"ok": False, "error": "draft not found"}, status_code=404)
+    pairs = parse_qsl(request.url.query, keep_blank_values=True)
+    fmt = next((v for k, v in pairs if k == "fmt"), "docx")
+    handler = {"docx": export_docx_route, "pdf": pdf}.get(fmt)
+    if handler is None:
+        return JSONResponse(
+            {"ok": False, "error": f"unknown fmt {fmt!r}"}, status_code=400
+        )
+    query = urlencode([(k, v) for k, v in pairs if k != "fmt"]).encode("latin-1")
+    job = export_jobs.start(request, ident, fmt, handler, query)
+    return JSONResponse(
+        {
+            "ok": True,
+            "token": job.token,
+            "fallback": f"{_async_url(ident, fmt)}{'?' + query.decode('latin-1') if query else ''}",
+        }
+    )
+
+
+def _async_url(ident: str, fmt: str) -> str:
+    return f"/drafts/{ident}/" + ("export.docx" if fmt == "docx" else "pdf")
+
+
+@router.get("/drafts/{ident}/export/status/{token}")
+async def export_status_route(request: Request, ident: str, token: str) -> Response:
+    """Progress of a background export: ``state`` (running / done / blocked /
+    error), ``stage``, ``done`` / ``total`` / ``pct`` where countable."""
+    from precis_web import export_jobs
+
+    job = export_jobs.get(token, ident)
+    if job is None:
+        return JSONResponse(
+            {"state": "error", "error": "unknown or expired export"}, status_code=404
+        )
+    return JSONResponse(job.snapshot())
+
+
+@router.get("/drafts/{ident}/export/download/{token}")
+async def export_download_route(request: Request, ident: str, token: str) -> Response:
+    """Serve the finished background export (the same file the direct
+    route would have streamed)."""
+    from precis_web import export_jobs
+
+    job = export_jobs.get(token, ident)
+    if job is None or job.state != "done" or not isinstance(job.response, FileResponse):
+        return RedirectResponse(url=f"/drafts/{ident}", status_code=303)
+    r = job.response
+    return FileResponse(r.path, filename=r.filename, media_type=r.media_type)
 
 
 _RENDER_LOCKS: dict[int, threading.Lock] = {}

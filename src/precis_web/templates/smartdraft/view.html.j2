@@ -1037,6 +1037,44 @@
              // export gates are draft-level, not per-format, so all three
              // overrides ride on all of them — sources appendix, retraction
              // override, and the image-less-figure placeholder waiver.
+             // Slow downloads (.docx, PDF) build in a background job so the
+             // page shows a progress bar instead of a hung link
+             // (precis_web/export_jobs.py). A gated export ("blocked") or a
+             // failed start falls through to the plain GET, which renders the
+             // gate page / error exactly as before.
+             exportJob: null,
+             async startExport(fmt, extra) {
+               if (this.exportJob && this.exportJob.state === 'running') return;
+               const q = this.exportQuery(extra);
+               const direct = '/drafts/{{ ident }}/' + (fmt === 'docx' ? 'export.docx' : 'pdf') + q;
+               this.exportJob = {state: 'running', stage: 'starting…', pct: null, fmt: fmt, error: ''};
+               try {
+                 const r = await fetch('/drafts/{{ ident }}/export/start' + (q ? q + '&' : '?') + 'fmt=' + fmt, {method: 'POST'});
+                 const j = await r.json();
+                 if (!j.ok) throw new Error(j.error || 'start failed');
+                 let failures = 0;
+                 while (true) {
+                   await new Promise((res) => setTimeout(res, 700));
+                   let s;
+                   try {
+                     s = await (await fetch('/drafts/{{ ident }}/export/status/' + j.token)).json();
+                   } catch (e) {
+                     if (++failures > 5) throw e;  // transient proxy blip: keep polling
+                     continue;
+                   }
+                   this.exportJob = Object.assign({fmt: fmt}, s);
+                   if (s.state === 'done') {
+                     this.exportJob = null;
+                     window.location = '/drafts/{{ ident }}/export/download/' + j.token;
+                     return;
+                   }
+                   if (s.state === 'blocked') { window.location = direct; return; }
+                   if (s.state === 'error') return;
+                 }
+               } catch (e) {
+                 this.exportJob = {state: 'error', error: String(e), fmt: fmt};
+               }
+             },
              exportQuery(extra) {
                const p = new URLSearchParams();
                if (this.withSources) p.set('sources', '1');
@@ -1140,12 +1178,15 @@
         <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
           <a :href="'/drafts/{{ ident }}/export.docx' + exportQuery()"
              class="text-slate-500 underline hover:text-slate-800"
+             @click.prevent="startExport('docx')"
              title="EndNote Cite While You Write fields (travelling library); Word without EndNote still shows the [n] text"
              x-text="withSources ? 'download .docx+zip' : 'download .docx'">download .docx</a>
           <a :href="'/drafts/{{ ident }}/export.docx' + exportQuery({citations: 'plain'})"
              class="text-slate-400 underline hover:text-slate-800"
+             @click.prevent="startExport('docx', {citations: 'plain'})"
              title="plain [n] markers and a References section, no EndNote fields">plain .docx</a>
           <a :href="'/drafts/{{ ident }}/pdf' + exportQuery()"
+             @click.prevent="startExport('pdf')"
              class="text-slate-500 underline hover:text-slate-800">download PDF</a>
           <form method="post" action="/drafts/{{ ident }}/export.pdf" class="inline">
             <input type="hidden" name="sources" :value="withSources ? '1' : ''">
@@ -1154,6 +1195,23 @@
             <button type="submit" class="text-slate-500 underline hover:text-slate-800"
                     title="start a background job that persists the PDF into the project workspace">export →project</button>
           </form>
+          <div x-show="exportJob" x-cloak data-export-progress
+               class="basis-full text-slate-500" role="status" aria-live="polite">
+            <template x-if="exportJob && exportJob.state === 'error'">
+              <span class="text-rose-600" x-text="'export failed: ' + exportJob.error"></span>
+            </template>
+            <template x-if="exportJob && exportJob.state !== 'error'">
+              <span class="flex items-center gap-2">
+                <span x-text="'building ' + (exportJob.fmt === 'pdf' ? 'PDF' : '.docx') + '… ' + (exportJob.stage || '')"></span>
+                <span class="inline-block h-1.5 w-40 overflow-hidden rounded bg-slate-200">
+                  <span class="block h-full bg-slate-500 transition-all"
+                        :class="exportJob.pct == null ? 'animate-pulse w-full' : ''"
+                        :style="exportJob.pct == null ? '' : 'width:' + exportJob.pct + '%'"></span>
+                </span>
+                <span x-show="exportJob.pct != null" x-text="exportJob.pct + '%'"></span>
+              </span>
+            </template>
+          </div>
           <a href="/drafts/{{ ident }}/papers.zip"
              class="text-slate-500 underline hover:text-slate-800"
              title="zip the cited paper/datasheet PDFs + a manifest">download papers</a>
