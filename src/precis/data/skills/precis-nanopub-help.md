@@ -210,6 +210,10 @@ failures an extraction agent can avoid up front:
   type carries the epistemic status, `testableBy` names the
   discriminating experiment).
 - Computed (pathway) evidence: see the next section.
+- **Definition-only grounding is not evidence** — an evidence edge
+  whose only grounding is a definition refuses mint
+  (`definition-only-evidence`). Remedy: attach a sourced or verified
+  grounding.
 - **One public identifier per passage** — provenance content is the
   source's identifier + quote + snip. A paper is cited by its DOI; an
   `edgar` filing by its SEC accession number (the ref slug; the source

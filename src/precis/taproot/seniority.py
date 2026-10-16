@@ -52,6 +52,7 @@ from typing import Any
 
 from precis.errors import BadInput
 from precis.store.protocols import PoolStore
+from precis.taproot import eligibility
 from precis.taproot.canon import TAPROOT_CLAIM, TAPROOT_NAMESPACE
 from precis.taproot.hub import (
     CLAIMED_BARRIER_META_KEY,
@@ -236,6 +237,18 @@ def pathway_provenance_key(pathway_meta: dict[str, Any]) -> str | None:
 
 
 @dataclass(frozen=True)
+class IneligibleEdge:
+    """One evidence edge :func:`precis.taproot.eligibility.evidence_use`
+    refused; :attr:`rule` is the named reason."""
+
+    src_ref_id: int
+    relation: str
+    rule: str
+    #: The source ref's kind (paper/patent/...), for its handle.
+    src_kind: str = "paper"
+
+
+@dataclass(frozen=True)
 class HubEvidence:
     """A claim hub's evidence, split by derived seniority."""
 
@@ -260,6 +273,10 @@ class HubEvidence:
     #: the seniority split, the coverage note and the print set (a pathway
     #: has no cite_key), so no paper-shaped consumer sees it by accident.
     computed: list[ComputedEdge] = field(default_factory=list)
+    #: Evidence rows the shared eligibility predicate refused (definition-only
+    #: grounding today) — kept out of support/contradict edges and grounding,
+    #: surfaced so the nanopub mint gate can name them.
+    ineligible: list[IneligibleEdge] = field(default_factory=list)
 
 
 def _is_claim_hub(store: PoolStore, ref_id: int) -> bool:
@@ -859,10 +876,19 @@ def derive_evidence(
     contradict_edges: dict[int, dict[str, Any]] = {}
     computed_rows: list[tuple[int, str, dict[str, Any]]] = []
     grounding: list[GroundingRef] = []
+    ineligible: list[IneligibleEdge] = []
     seen_grounding: set[tuple[int, str]] = set()
     for src_ref_id, src_chunk_id, relation, meta, kind in _fetch_evidence_rows(
         store, hub_ref_id
     ):
+        use = eligibility.evidence_use(
+            relation, eligibility.edge_groundings(relation, src_chunk_id, meta)
+        )
+        if not use.eligible:
+            ineligible.append(
+                IneligibleEdge(src_ref_id, relation, use.rule or "", kind)
+            )
+            continue
         if kind in _COMPUTED_SRC_KINDS:
             computed_rows.append((src_ref_id, relation, meta))
             continue
@@ -915,6 +941,7 @@ def derive_evidence(
         grounding=grounding,
         sole_derivative=sole_derivative,
         computed=_build_computed(computed_rows, pathway_facts),
+        ineligible=ineligible,
     )
 
 
@@ -1012,6 +1039,7 @@ def derive_evidence_bulk(
     contradict_by_hub: dict[int, dict[int, dict[str, Any]]] = {}
     computed_by_hub: dict[int, list[tuple[int, str, dict[str, Any]]]] = {}
     grounding_by_hub: dict[int, list[GroundingRef]] = {}
+    ineligible_by_hub: dict[int, list[IneligibleEdge]] = {}
     all_paper_ids: set[int] = set()
     all_pathway_ids: set[int] = set()
     for hub_id in ids:
@@ -1019,10 +1047,19 @@ def derive_evidence_bulk(
         contradict_edges: dict[int, dict[str, Any]] = {}
         computed_rows: list[tuple[int, str, dict[str, Any]]] = []
         grounding: list[GroundingRef] = []
+        ineligible: list[IneligibleEdge] = []
         seen_grounding: set[tuple[int, str]] = set()
         for src_ref_id, src_chunk_id, relation, meta, kind in rows_by_hub.get(
             hub_id, []
         ):
+            use = eligibility.evidence_use(
+                relation, eligibility.edge_groundings(relation, src_chunk_id, meta)
+            )
+            if not use.eligible:
+                ineligible.append(
+                    IneligibleEdge(src_ref_id, relation, use.rule or "", kind)
+                )
+                continue
             if kind in _COMPUTED_SRC_KINDS:
                 computed_rows.append((src_ref_id, relation, meta))
                 all_pathway_ids.add(src_ref_id)
@@ -1040,6 +1077,7 @@ def derive_evidence_bulk(
         contradict_by_hub[hub_id] = contradict_edges
         computed_by_hub[hub_id] = computed_rows
         grounding_by_hub[hub_id] = grounding
+        ineligible_by_hub[hub_id] = ineligible
 
     originators_by_hub = _find_originators_bulk(
         store, {h: list(s) for h, s in support_by_hub.items()}
@@ -1089,6 +1127,7 @@ def derive_evidence_bulk(
             grounding=grounding_by_hub[hub_id],
             sole_derivative=sole_derivative,
             computed=_build_computed(computed_by_hub[hub_id], pathway_facts),
+            ineligible=ineligible_by_hub[hub_id],
         )
     return out
 
@@ -1100,6 +1139,7 @@ __all__ = [
     "EvidenceEdge",
     "GroundingRef",
     "HubEvidence",
+    "IneligibleEdge",
     "conjunct_atoms_bulk",
     "derive_conjuncts",
     "derive_evidence",

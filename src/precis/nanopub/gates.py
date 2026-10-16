@@ -41,6 +41,7 @@ from precis.errors import BadInput
 from precis.nanopub import evidence as ev
 from precis.nanopub import snip as sniplib
 from precis.nanopub.vocab import QUANTITY_BOUNDS
+from precis.taproot import eligibility
 from precis.taproot.canon import NONEMPIRICAL_ARTIFACT_TYPES
 from precis.taproot.hub import human_rejected
 from precis.taproot.notation import lint_notation
@@ -343,6 +344,11 @@ def run_mint_gates(
     # an approved claim's evidence (Reto 2026-10-16, ruling 3a).
     frozen_computed = frozen_computed_pins(payload) if frozen else None
     violations += check_computed(bundle, frozen_pins=frozen_computed)
+
+    # Definition-only evidence: the shared eligibility predicate refused the
+    # edge (graph-node-trust-state slice 2a), so it cannot back a published
+    # claim. Runs for every artifact type.
+    violations += check_definition_only_evidence(bundle)
 
     # Resolved before the sentence lint, not just before the schema arm:
     # the blocking set is scoped by artifact type
@@ -1150,6 +1156,28 @@ def check_computed(
                     "that actually computed it",
                 )
             )
+    return out
+
+
+def check_definition_only_evidence(bundle: ev.HubBundle) -> list[GateViolation]:
+    """One ``definition-only-evidence`` violation per evidence edge the
+    shared predicate (:func:`precis.taproot.eligibility.evidence_use`)
+    refused for definition-only grounding."""
+    out: list[GateViolation] = []
+    for edge in bundle.ineligible_evidence:
+        if edge.rule != eligibility.RULE_DEFINITION_ONLY:
+            continue
+        handle = handle_registry.try_format(edge.src_kind, edge.src_ref_id) or (
+            f"ref {edge.src_ref_id}"
+        )
+        out.append(
+            GateViolation(
+                "definition-only-evidence",
+                eligibility.definition_only_message(
+                    f"{edge.relation} edge from {handle}"
+                ),
+            )
+        )
     return out
 
 

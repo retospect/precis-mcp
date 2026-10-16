@@ -393,6 +393,33 @@ never /qgo (migration). Strict mode stays off until items 1–6.
 **2. Shared evidence-exclusion predicate and defined grounding.
 GATED IF SCHEMA.**
 
+**Split, Reto 2026-10-16 ~11:05Z** (relayed by the coordinator,
+morning-queue 13): “split. 2a = classing + predicate + 3 consumers, no
+schema. 2b = defined-grounding storage + admit act, with schema.
+Questions 1-5 go back to Reto when 2b starts.”
+
+- **2a — BUILT (tree `trust-2a`).** No schema change. What it ships and
+  the classing it chose for question 4 are under “Slice 2a as built” below.
+- **2b — WAITING for Reto.** Defined-grounding storage, the authenticated
+  Reto-only review, link-time refusal of definition-only evidential edges,
+  the “definition (who, UTC date)” rendering and the term/concept admit
+  act. It is a migration, so it lands through /go, never /qgo. These
+  questions go to Reto when 2b starts:
+  1. Multi-grounding storage: (a) a table, (b) meta, or (c)
+     `revisions.trust_acts`.
+  2. Authenticated Reto-only review capability: (a) an ingress, or (b) a
+     DB role.
+  3. Which sha a review certificate binds (0185's content sha covers
+     timeline chunks).
+  4. Which relations are structural and which evidential today (is-a,
+     measured-by and synonym-of are unregistered). 2a chose a classing;
+     Reto confirms or amends it.
+  5. Slice 1's lock/trigger overhead measurement and strict activation
+     have not been run.
+
+The bullets below are the full slice-2 contract. Those not marked done in
+“Slice 2a as built” belong to 2b.
+
 - Extend existing target/SHA registry and `reviews/revisions` to the
   supported graph entities, typed source pins and source-revision
   dependencies; pin trust-metadata hash behavior so approvals do not
@@ -428,6 +455,44 @@ GATED IF SCHEMA.**
   Existing eligible evidence remains eligible, refines still carries no
   support, stale target/source review fails, and every act survives retries.
 - Independent Codex review before this slice lands; no model run required.
+
+#### Slice 2a as built (tree `trust-2a`, 2026-10-16)
+
+`precis.taproot.eligibility` holds the relation classing and the one
+shared predicate (`evidence_use`). It has no storage:
+`edge_groundings` derives typed groundings read-only from existing link
+fields. `verified_by` + `verified_claim_sha` give verified; a chunk pin or
+`source_handle` gives sourced; `motivated-by` gives motivated. Nothing
+yields `defined` until 2b stores it, so production behaviour is unchanged
+today and the wiring is ready.
+
+- **Classing (question 4, 2a's choice, for Reto to confirm).** Structural:
+  `specialises`, `part-of`, `represents`, `realized-by`, `made-of`,
+  `qualifies`, `instance-of`. These are the inventory's structural family
+  plus `instance-of`. Evidential: `establishes`, `corroborates`,
+  `contradicts`, `refines`. Support: `establishes`/`corroborates` only.
+  `refines` is evidential but advisory, and `contradicts` is
+  counter-evidence. Inverse spellings resolve through the store's inverse
+  map. Everything else is "other" and carries no support. is-a,
+  measured-by and synonym-of stay unregistered; none were added.
+- **Predicate.** Not evidential means not eligible. A definition-only edge,
+  or a definition-only endpoint, is refused with the named rule
+  `definition-only-grounding`; a trusted endpoint never upgrades a loose
+  edge. A definition alongside a sourced/verified grounding does not
+  disqualify. Callers keep their own stronger rules: hypothesis exclusion,
+  `support == "no"`, verification and staleness.
+- **Consumers.** Taproot support counting (`seniority` evidence
+  derivations; refused edges land in `HubEvidence.ineligible`). The nanopub
+  mint gate (`definition-only-evidence` violation, shared by
+  preflight/approve/publish). The draft cite nudge
+  (`taproot.lookup.hubs_grounded_by_paper`, read by
+  `draft.lint.pc_cite_claim_hub_hint`). The repo has no separate
+  `cite-findings-only` check; that nudge is the code that steers prose to
+  `[fi]` hubs.
+- **Left to 2b:** link-time refusal of a definition-only evidential edge,
+  "definition (who, UTC date)" rendering, node-level groundings fed to the
+  endpoint arguments, the authenticated Reto-only review, stale-certificate
+  tests and the admit act. Each needs stored defined groundings.
 
 **3. Default read/traversal filtering with hidden counts.**
 

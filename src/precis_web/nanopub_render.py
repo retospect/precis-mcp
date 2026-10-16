@@ -521,6 +521,10 @@ _MINT_GATES: list[tuple[str, str]] = [
         "computed-mismatch",
         "a claimed barrier still matches the pathway's own numbers",
     ),
+    (
+        "definition-only-evidence",
+        "no evidence edge rests on definition-only grounding",
+    ),
     ("rejected-memo", "the sentence is not a previously rejected claim string"),
 ]
 

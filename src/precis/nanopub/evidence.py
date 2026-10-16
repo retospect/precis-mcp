@@ -572,6 +572,10 @@ class HubBundle:
     #: is the open admissibility question in
     #: docs/backlog/computed-pathways-cannot-be-cited-as-claim-evidence.md.
     computed: list[seniority.ComputedEdge] = field(default_factory=list)
+    #: Evidence edges the shared eligibility predicate refused
+    #: (:mod:`precis.taproot.eligibility`); the mint gate names the
+    #: definition-only ones (``definition-only-evidence``).
+    ineligible_evidence: list[seniority.IneligibleEdge] = field(default_factory=list)
 
 
 def load_bundle(store: Store, hub_ref_id: int) -> HubBundle:
@@ -691,6 +695,7 @@ def load_bundle(store: Store, hub_ref_id: int) -> HubBundle:
         acquiring=store.has_tag(hub_ref_id, _STATUS_NAMESPACE, _STATUS_ACQUIRING),
         primary_source_unheld=bool((hub_ref.meta or {}).get(PRIMARY_UNHELD_META_KEY)),
         computed=list(evidence.computed),
+        ineligible_evidence=list(evidence.ineligible),
     )
 
 

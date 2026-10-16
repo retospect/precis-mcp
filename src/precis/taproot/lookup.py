@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from precis.taproot import eligibility
 from precis.taproot.canon import TAPROOT_CLAIM, TAPROOT_NAMESPACE
 from precis.taproot.hub import HUB_ROLES
 
@@ -50,7 +51,8 @@ def hubs_grounded_by_paper(
     with store.pool.connection() as conn:
         rows = conn.execute(
             f"""
-            SELECT r.ref_id, ri.id_value, r.title, l.relation
+            SELECT r.ref_id, ri.id_value, r.title, l.relation,
+                   l.src_chunk_id, l.meta
             FROM links l
             JOIN refs r ON r.ref_id = l.dst_ref_id
             JOIN ref_tags rt ON rt.ref_id = r.ref_id
@@ -74,7 +76,12 @@ def hubs_grounded_by_paper(
 
     seen: set[int] = set()
     out: list[dict[str, Any]] = []
-    for hub_ref_id, pub_id, title, relation in rows:
+    for hub_ref_id, pub_id, title, relation, src_chunk_id, meta in rows:
+        # Shared eligibility predicate: a definition-only edge must not steer
+        # a writer to cite this hub. ``contradicts`` rows stay (eligible).
+        groundings = eligibility.edge_groundings(relation, src_chunk_id, meta)
+        if not eligibility.evidence_use(relation, groundings).eligible:
+            continue
         if hub_ref_id in seen:
             continue
         seen.add(hub_ref_id)

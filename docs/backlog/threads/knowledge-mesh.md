@@ -86,9 +86,11 @@ graph-health-metrics, five parked gripes, and the seam with
    findings fixed 2026-10-15 (non-verb writers, paper doors, lock order);
    landing by /qland per Reto's 2026-10-15 ruling, strict mode off. The
    item's slice-1 list holds what is left: writer closure, carry on copy,
-   capability, the measured gate and the strict switch. Slice 2 (the
-   shared evidence predicate and defined grounding) is next and is not
-   started.
+   capability, the measured gate and the strict switch. Slice 2 was split
+   by Reto on 2026-10-16. 2a (relation classing, the shared evidence
+   predicate and its three consumers, no schema) is built on tree
+   `trust-2a`. 2b (defined-grounding storage and the admit act, a /go
+   migration) waits until its five questions go to Reto.
 
 0b. **[Corpus quantitative extraction](../corpus-quantitative-extraction.md)**
    — assigned here by Reto 2026-10-12 (chat): sourced numbers from papers,
