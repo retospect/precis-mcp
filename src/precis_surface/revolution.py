@@ -364,7 +364,8 @@ def authored_meridian(
     snapped to a table or replaced by a catenoid. An arc whose centre lies
     farther from the axis than the arc is concave (``K < 0``, sign -1, the
     sheet-to-tube fillet); nearer, convex (sign +1, a cap). ``rows`` is
-    empty: placing defect rows on this surface is the next stage.
+    empty: the S2 census (``precis_se.atomic.generators.authored_foot.census``)
+    places them.
     ``max_curvature_sum`` is the largest ``k1 + k2`` over the convex arcs,
     the number the curvature bound is checked against (as in
     :func:`drum_meridian`); every arc's signed curvatures, concave ones

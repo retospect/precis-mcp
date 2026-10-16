@@ -56,15 +56,46 @@ the tiling by how closely it follows that surface, with no trade-off knob.
      surface (mean, 95th percentile, max per region), and bond spread.
    - First use: run it on today's hero5 and on `hexa-smooth-drum-v2`, to
      put numbers on "non-ideal".
-2. **Defects from the surface (S2).**
-   - For each annulus, the integrated Gaussian curvature fixes the defect
-     charge (Gauss–Bonnet). A sheet→tube fillet carries −2π, which is 6
-     heptagons, spread over rows where the curvature accumulates.
-   - Output is authored-defect lists (gr459928's format, Horizon 11's
-     "solving").
-   - Defects are C_k symmetric on each row.
-   - Straight parts are exact `(n, m)` tubes (as in
-     smooth-drum-engineered-mode.md).
+2. **Defects from the surface (S2), census built** (Reto 2026-10-16:
+   "tiling any smooth surface places the defects").
+   - `authored_foot.census(meridian, order, tubes)` takes any
+     `revolution.authored_meridian` (flat, fillet, cylinder, cap, frustum
+     pieces). Each band's charge is `6 (cos h_start − cos h_end)` in units
+     of π/3, with `h` the meridian heading: a sheet→tube fillet is −6 (6
+     heptagons), a hemispherical cap +6. An arc whose heading crosses a
+     multiple of π is split into one band of each sign.
+   - Each band's charge splits into C_k rows of one ring. Each row sits at
+     its charge midpoint, as a `revolution.DefectRow`.
+     Cylinders are named as exact `(n, m)` tubes, checked to 1e-6 Å and
+     against `k | gcd(n, m)`.
+   - A charge that is not a whole number of C_k rows is reported as
+     `Annulus.misfit` and the census as `tileable=False`. It is not
+     snapped. Example: a 20° cone carries 2.05 per bend.
+   - `Census.defect_list()` writes gr459928's `heptagon@(site)` lines, one
+     per defect with each row's C_k orbit written out. The site is the
+     defect's point on the authored surface, `(r Å, z Å, azimuth °)`,
+     because no lattice exists before tiling.
+   - Gauss–Bonnet fixes only the net charge. 5/7 dislocation pairs change
+     a tube's chirality, not its curvature, so the census does not see
+     them.
+   - `plan_foot` runs the census first. The 3+3 build realises only the
+     foot census (sheet → two C_3 heptagon rows → `(n,0)` tube) and
+     refuses any other census by name. The three anchors reproduce
+     byte-identically: sha256 of the positions is unchanged, pinned in
+     `tests/hexfold/data/foot_anchors.json`. The census row radii can be
+     compared with where the build puts its outer row: (12,0) R = 8 has
+     its census row 0 at r 7.41 Å and the built rim at 7.65 Å. Building
+     any other census (a cap, a reducer frustum) is S3 work.
+   - Acceptance, met: a filleted frustum between two tube radii,
+     (12,12)→(6,6), balances pentagons and heptagons (Euler). A flat step
+     is 6+6 at C_6 and a 30° cone 3+3 at C_3.
+   - Acceptance, open: the census step should match claude-hexfold-tube's
+     coaxial 5/7 reducer (`fuse{reducer}`) on P = H, on C_6 extra
+     dislocation pairs and on the bond bars. The test xfails until the
+     reducer lands on main
+     (`test_the_census_step_matches_the_coaxial_5_7_reducer`).
+   - The (18,0) crumple is out of scope. The census path does not change
+     its build.
 3. **Tile and pin (S3).**
    - Build the hexfold net from S2, seed it on the surface, then relax it
      with a strong normal tether.

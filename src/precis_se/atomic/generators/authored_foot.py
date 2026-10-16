@@ -9,6 +9,12 @@ sheet meets a ``cap(6k,0)`` frustum, three where the frustum meets the
 tube — relaxed by :func:`hexfold.stick.stick` under the opt-in normal
 tether toward :func:`precis_surface.deviation.surface_foot`.
 
+**Defects come from the surface (S2).** :func:`census` integrates the
+Gaussian curvature of any authored meridian band by band (Gauss–Bonnet)
+and splits each band's charge into C_k rows of pentagons or heptagons;
+cylinders are exact ``(n, m)`` tubes.  :func:`plan_foot` runs it first
+and builds only the census its 3+3 foot realises.
+
 **k is chosen by measurement, not by formula.** The frustum width ``k``
 is the only free integer. The S3 sweep (reviews/hexfold-toolkit.md, "S3
 planner") found the narrowest frustum that builds wins on (6,0), (9,0),
@@ -51,6 +57,7 @@ from __future__ import annotations
 
 import dataclasses
 import functools
+import itertools
 import json
 import math
 from collections.abc import Callable, Mapping, Sequence
@@ -132,6 +139,10 @@ class FootPlan:
     positions: np.ndarray  # relaxed, in the build's frame (features along -z)
     centre: tuple[float, float]
     rows: tuple[FootRow, ...]  # every candidate tried, in k order
+    # the surface's Gauss–Bonnet census the build realised (S2): the
+    # per-annulus rows, against which ``FootRow.rim_r`` shows where the
+    # 3+3 build put the outer row
+    census: Census | None = None
 
     @property
     def chosen(self) -> FootRow:
@@ -180,6 +191,195 @@ def foot_meridian(n: int, radius: float) -> rv.Meridian:
         rt + radius + _FLAT_A,
         [("line", _FLAT_A), ("arc", radius, -90.0), ("line", _WALL_A)],
     )
+
+
+# --- S2: defects from the surface (Gauss–Bonnet census) -------------------
+
+_TUBE_TOL_A = 1e-6  # a cylinder piece is an exact (n, m) tube to this
+_CHARGE_TOL = 1e-6  # an annulus charge is a whole number of defects to this
+_RING_WORD = {5: "pentagon", 7: "heptagon"}
+
+
+@dataclass(frozen=True)
+class Annulus:
+    """The band one meridian piece sweeps, with its Gauss–Bonnet charge.
+
+    ``charge`` is the band's integrated Gaussian curvature in units of
+    pi/3, ``6 (cos h_start - cos h_end)`` with ``h`` the meridian heading:
+    one pentagon is +1, one heptagon -1.  An arc whose heading crosses a
+    multiple of pi changes curvature sign there and is split into two bands
+    of the same ``segment``.  ``rows`` holds the C_k rows of one ring each,
+    each placed at its charge midpoint, the heading where the band's
+    cumulative charge reaches (j + 1/2) rows; it is empty when
+    the charge is not a whole number of C_k rows, and ``misfit`` says why
+    (the surface is reported, never snapped).  A cylinder carries the exact
+    ``(n, m)`` tube it is."""
+
+    segment: str
+    kind: str
+    charge: float
+    rows: tuple[rv.DefectRow, ...] = ()
+    tube: tuple[int, int] | None = None
+    misfit: str | None = None
+
+    @property
+    def ring(self) -> int:
+        """5 (pentagons), 7 (heptagons), or 6 for a band with no charge."""
+        if abs(self.charge) < 0.5:
+            return 6
+        return 5 if self.charge > 0 else 7
+
+    @property
+    def defects(self) -> int:
+        """Whole defects in the band; 0 for a misfit, which places none."""
+        return 0 if self.misfit else round(abs(self.charge))
+
+
+@dataclass(frozen=True)
+class Census:
+    """Where an authored surface of revolution needs its defects: one
+    :class:`Annulus` per meridian band, in meridian order, rows ``C_order``
+    symmetric."""
+
+    order: int
+    annuli: tuple[Annulus, ...]
+
+    @property
+    def pentagons(self) -> int:
+        return sum(a.defects for a in self.annuli if a.ring == 5)
+
+    @property
+    def heptagons(self) -> int:
+        return sum(a.defects for a in self.annuli if a.ring == 7)
+
+    @property
+    def tileable(self) -> bool:
+        return all(a.misfit is None for a in self.annuli)
+
+    def defect_list(self) -> tuple[str, ...]:
+        """The census as authored defects, gr459928's ``<ring>@(<site>)``
+        lines, one per defect with each row's C_k orbit written out.  No
+        lattice exists before tiling, so the site is the defect's point on
+        the authored surface, ``(r Å, z Å, azimuth °)``; the cut direction
+        and the row's phase are the tiler's."""
+        return tuple(
+            f"{_RING_WORD[a.ring]}@({row.r:.3f},{row.z:.3f},{360.0 * i / self.order:g})"
+            for a in self.annuli
+            for row in a.rows
+            for i in range(self.order)
+        )
+
+
+def _band(seg: rv.Segment, h0: float, h1: float, order: int, base: int) -> Annulus:
+    """One arc band whose heading runs ``h0 -> h1`` without crossing a
+    multiple of pi (so ``cos h`` and the charge are monotone along it)."""
+    if seg.arc is None:
+        raise ValueError(f"{seg.name}: a band needs an arc piece")
+    cr, cz, rho, _, _ = seg.arc
+    turn = 1.0 if h1 > h0 else -1.0
+    charge = 6.0 * (math.cos(h0) - math.cos(h1))
+    per = charge / order
+    if abs(charge - round(charge)) > _CHARGE_TOL:
+        return Annulus(
+            seg.name,
+            seg.kind,
+            charge,
+            misfit=f"charge {charge:.4f} is not a whole number of defects",
+        )
+    if abs(per - round(per)) > _CHARGE_TOL:
+        return Annulus(
+            seg.name,
+            seg.kind,
+            charge,
+            misfit=f"{round(abs(charge))} defects do not split into C_{order} rows",
+        )
+    rows = []
+    n_rows = abs(round(per))
+    for j in range(n_rows):
+        # the heading where the band's charge reaches (j + 1/2) rows
+        target = math.cos(h0) - (j + 0.5) * (charge / n_rows) / 6.0
+        lo, hi = h0, h1
+        for _ in range(80):
+            mid = 0.5 * (lo + hi)
+            if (math.cos(mid) - target) * (math.cos(h0) - target) > 0.0:
+                lo = mid
+            else:
+                hi = mid
+        h = 0.5 * (lo + hi)
+        phi = h - turn * math.pi / 2.0
+        rows.append(
+            rv.DefectRow(
+                segment=seg.name,
+                k=base + j,
+                sign=1 if charge > 0 else -1,
+                r=cr + rho * math.cos(phi),
+                z=cz + rho * math.sin(phi),
+                # the surface normal's tilt from the axis: 0 on the sheet,
+                # 90 on a tube wall
+                tilt_deg=math.degrees(math.atan2(abs(math.sin(h)), -math.cos(h))),
+            )
+        )
+    return Annulus(seg.name, seg.kind, charge, rows=tuple(rows))
+
+
+def census(
+    meridian: rv.Meridian,
+    order: int,
+    tubes: Sequence[tuple[int, int]] = (),
+) -> Census:
+    """Gauss–Bonnet defect census of an authored surface of revolution
+    (docs/backlog/hexfold-ideal-surface-then-tile.md, S2).
+
+    Each band's integrated Gaussian curvature fixes its net defect charge;
+    the charge is split into ``C_order`` rows of one ring each.  Lines carry
+    none.  ``tubes`` names the exact ``(n, m)`` of each cylinder piece in
+    meridian order; a cylinder whose radius is not that tube's, or a tube
+    whose ``gcd(n, m)`` the order does not divide (hexfold's
+    ``port.symmetry``), is a ``ValueError``.  Gauss–Bonnet fixes only the
+    net charge: 5/7 dislocation pairs, which change a tube's chirality and
+    not the curvature, are outside the census."""
+    if order < 1:
+        raise ValueError(f"order must be >= 1; got {order}")
+    cyl = [s for s in meridian.segments if s.kind == "cylinder"]
+    if len(tubes) != len(cyl):
+        raise ValueError(
+            f"{len(cyl)} cylinder pieces need {len(cyl)} (n, m) tubes; got {len(tubes)}"
+        )
+    tube_of = dict(zip((s.name for s in cyl), tubes, strict=True))
+    annuli: list[Annulus] = []
+    base = 0
+    for seg in meridian.segments:
+        if seg.arc is None:
+            tube = tube_of.get(seg.name)
+            if tube is not None:
+                n, m = tube
+                want = tube_radius(n, m)
+                if abs(seg.start[0] - want) > _TUBE_TOL_A:
+                    raise ValueError(
+                        f"{seg.name}: r = {seg.start[0]:.6f} Å is not the ({n},{m}) "
+                        f"tube's {want:.6f} Å"
+                    )
+                if math.gcd(n, m) % order:
+                    raise ValueError(
+                        f"{seg.name}: C_{order} rows need {order} | gcd({n},{m})"
+                    )
+            annuli.append(Annulus(seg.name, seg.kind, 0.0, tube=tube))
+            continue
+        _, _, _, phi0, phi1 = seg.arc
+        turn = phi1 - phi0
+        h0 = phi0 + math.copysign(math.pi / 2.0, turn)
+        h1 = h0 + turn
+        lo, hi = min(h0, h1) + 1e-9, max(h0, h1) - 1e-9
+        cuts = [
+            k * math.pi
+            for k in range(math.floor(lo / math.pi) + 1, math.ceil(hi / math.pi))
+        ]
+        hs = [h0, *(cuts if turn > 0 else cuts[::-1]), h1]
+        for a, b in itertools.pairwise(hs):
+            band = _band(seg, a, b, order, base)
+            base += len(band.rows)
+            annuli.append(band)
+    return Census(order, tuple(annuli))
 
 
 def angle_stats(
@@ -328,6 +528,11 @@ def plan_foot(
 ) -> FootPlan:
     """Tile the authored foot (sheet → fillet ``radius`` → (n,0) tube).
 
+    The surface's :func:`census` comes first: Gauss–Bonnet puts -2 pi in
+    the fillet, six heptagons, which the 3+3 build realises as two C_3 rows
+    at its two fuse seams; a census of any other shape is refused by name
+    (:func:`_foot_census`).  ``FootPlan.census`` keeps it.
+
     Tries ``candidates`` (default: even k from :func:`k_min` to k_min + 6),
     keeps the candidate that meets every bar with the smallest ring-ideal
     angle max, else the smallest bar excess, a row without ERROR findings
@@ -335,6 +540,8 @@ def plan_foot(
     bar missed and no ERROR finding on its tethered coordinates."""
     if radius <= 0.0:
         raise ValueError(f"fillet radius must be positive; got {radius}")
+    surface = census(foot_meridian(n, radius), 3, [(n, 0)])
+    _foot_census(surface)
     ks = (
         candidates
         if candidates is not None
@@ -350,8 +557,34 @@ def plan_foot(
     )
     row, pos, centre, text = best
     return FootPlan(
-        n=n, radius=radius, k=row.k, text=text, positions=pos, centre=centre, rows=rows
+        n=n,
+        radius=radius,
+        k=row.k,
+        text=text,
+        positions=pos,
+        centre=centre,
+        rows=rows,
+        census=surface,
     )
+
+
+def _foot_census(c: Census) -> None:
+    """Refuse a census the 3+3 foot cannot realise: it builds a flat sheet,
+    one concave band of two C_3 heptagon rows (the two fuse seams) and an
+    ``(n, 0)`` tube, nothing else."""
+    shape = [(a.kind, a.ring, len(a.rows)) for a in c.annuli]
+    tube = c.annuli[-1].tube if c.annuli else None
+    if (
+        c.order != 3
+        or not c.tileable
+        or shape != [("flat", 6, 0), ("fillet", 7, 2), ("cylinder", 6, 0)]
+        or tube is None
+        or tube[1] != 0
+    ):
+        raise ValueError(
+            f"the 3+3 foot builds sheet -> two C_3 heptagon rows -> (n,0) tube; "
+            f"census is C_{c.order} {shape}"
+        )
 
 
 # --- scenes: several authored feet on one sheet (S4) ----------------------
