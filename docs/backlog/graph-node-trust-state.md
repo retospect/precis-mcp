@@ -411,9 +411,11 @@ Questions 1-5 go back to Reto when 2b starts.”
      DB role.
   3. Which sha a review certificate binds (0185's content sha covers
      timeline chunks).
-  4. Which relations are structural and which evidential today (is-a,
-     measured-by and synonym-of are unregistered). 2a chose a classing;
-     Reto confirms or amends it.
+  4. RULED (Reto, 2026-10-16 ~15:55Z, via the fleet coordinator: "approved
+     as proposed"): structural = specialises, part-of, represents,
+     realized-by, made-of, qualifies, instance-of; evidential = establishes,
+     corroborates, contradicts, refines; is-a, measured-by and synonym-of
+     stay unregistered.
   5. Slice 1's lock/trigger overhead measurement and strict activation
      have not been run.
 

@@ -115,8 +115,8 @@ gr346534, soft-deleted)
    fire; what is missing is the tracker binding, so nothing goes silent.
 6. **backlog/db-exporters-role.md** (gr492114; option (b) of gr465126) —
    run postgres_exporter and pgbouncer_exporter on the DB node so
-   `monitoring_db_exporters` can flip true. Needs a vault DSN from Reto
-   before a builder starts; ranks last because the gate (5691792fa, branch
+   `monitoring_db_exporters` can flip true. The DSN is in the precis
+   secret store (Reto 2026-10-16), so a builder can start; ranks last because the gate (5691792fa, branch
    `db-exporters-gate`) stops the false NodeDown/PostgresDown once it lands.
 
 ## Horizon

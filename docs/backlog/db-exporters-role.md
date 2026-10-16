@@ -12,11 +12,13 @@ Option (a) shipped in 5691792fa (`feat(deploy): monitoring_db_exporters
 gates DB scrapes + PostgresDown`, branch `db-exporters-gate`; verify it is
 on main before building). This item is only what that commit leaves open.
 
-## Prerequisite (blocks the build)
+## Prerequisite
 
-**Needs a vault DSN from Reto.** A read-only monitoring login for the
-exporters, supplied by Reto into the ansible vault. A builder cannot mint
-it: prod DB credentials are not the builder's to create. The example vault
+**DSN: in the precis secret store** (Reto, 2026-10-16 ~15:55Z, via the
+fleet coordinator). The read-only monitoring DSN for the exporters already
+lives there; the build reads it from the secret store into the rendered
+config and never copies the value into the repo. A builder still cannot mint
+new prod DB credentials. The example vault
 already names `vault_pg_prometheus_pass`
 (`deploy/inventory.example/group_vars/all/vault.yml.example`) and
 `pgbouncer.ini.j2` already lists `prometheus_reader` in `stats_users`;
@@ -83,7 +85,7 @@ flipping the var.
 
 ## Open questions / decisions log
 
-- Reto decides: supply the vault DSN and name the login (prerequisite).
+- Reto decides: name the login, if the secret-store DSN does not already fix it.
 - Reto decides: packaged binaries (apt, as `node_exporter` does on Linux) or
   a pinned release download. Check the DB node's OS family first; the
   `pgbouncer` role has a macOS branch, so the node may be darwin.
