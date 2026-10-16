@@ -53,9 +53,9 @@ class TestExternalRetry:
         @http.external_retry(attempts=5, wait_min_s=0.001, wait_max_s=0.001)
         def flaky() -> None:
             calls["n"] += 1
-            raise RuntimeError("boom")
+            raise ConnectionError("boom")
 
-        with pytest.raises(RuntimeError):
+        with pytest.raises(ConnectionError):
             flaky()
         assert calls["n"] == 1
 
@@ -65,9 +65,9 @@ class TestExternalRetry:
         @http.external_retry(attempts=3, wait_min_s=0.001, wait_max_s=0.001)
         def flaky() -> None:
             calls["n"] += 1
-            raise RuntimeError("boom")
+            raise ConnectionError("boom")
 
-        with pytest.raises(RuntimeError):
+        with pytest.raises(ConnectionError):
             flaky()
         assert calls["n"] == 3
 
@@ -82,9 +82,9 @@ class TestExternalRetry:
                 # the retry predicate must see it before deciding on a
                 # second attempt.
                 request_drain()
-            raise RuntimeError("boom")
+            raise ConnectionError("boom")
 
-        with pytest.raises(RuntimeError):
+        with pytest.raises(ConnectionError):
             flaky()
         assert calls["n"] == 1
 
