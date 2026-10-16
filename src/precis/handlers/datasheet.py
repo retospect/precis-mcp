@@ -116,6 +116,14 @@ class DatasheetHandler(PaperHandler):
         views=_DATASHEET_VIEWS,
     )
 
+    # put() is a datasheet pull, not a paper acquire: its own args keys
+    # (``path`` is accepted only to refuse it with a hint), the rest
+    # inherited from PaperHandler.
+    ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
+        **PaperHandler.ARGS_KEYS,
+        "put": frozenset({"url", "part", "path"}),
+    }
+
     def __init__(self, *, hub: Hub) -> None:
         super().__init__(hub=hub)
         self.hub = hub
