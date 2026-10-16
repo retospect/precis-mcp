@@ -144,6 +144,17 @@ REGISTRY: dict[str, SettingSpec] = {
             "CIR TLS outage (gr489605).",
         ),
         SettingSpec(
+            key="chem.opsin_enabled",
+            type="bool",
+            env_var="PRECIS_CHEM_OPSIN_ENABLED",
+            default=True,
+            doc="Query OPSIN (EBI) as the chem resolver's systematic-name "
+            "tier (precis.handlers._chem_resolve). Off skips the leg: "
+            "systematic names then resolve via PubChem/CIR only. Built "
+            "for OPSIN's TLS stalls in the 2026-10 outage window "
+            "(gr489605).",
+        ),
+        SettingSpec(
             key="si.attention_enabled",
             type="bool",
             env_var="PRECIS_SI_ATTENTION",

@@ -44,7 +44,9 @@ this drifts as keys are added, code doesn't): `budget.hourly_usd`,
 (DB-only, no env — a one-shot manual override), `contact.crossref_mailto`,
 `contact.polite_email`, `contact.edgar_user_agent`,
 `contact.wikipedia_ua`, `chem.cir_enabled` (bool, off = chem resolves
-PubChem-only with an "uncorroborated" note — the CIR-outage switch).
+PubChem-only with an "uncorroborated" note — the CIR-outage switch),
+`chem.opsin_enabled` (bool, off = chem skips the OPSIN leg — the
+OPSIN-stall switch).
 
 ## What never moves here
 

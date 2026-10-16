@@ -12,6 +12,8 @@ Tiers, first answer wins:
 2. **OPSIN** (EBI web service) — systematic IUPAC names. A parse is
    deterministic, so an OPSIN hit is never ambiguous. Skipped for CAS
    numbers. Runs remote because the image has no JVM.
+   ``resolve(opsin_enabled=False)`` skips this leg outright (an OPSIN
+   TLS stall costs its connect timeout on every lookup otherwise).
 3. **PubChem PUG REST** — trivial names, trade names, CAS numbers.
    PubChem silently picks one record for an underspecified name
    ("dichloroethane" → the 1,1-isomer), so a PubChem hit is
@@ -410,12 +412,16 @@ def resolve(
     cir_fetch: Fetch | None = None,
     *,
     cir_enabled: bool = True,
+    opsin_enabled: bool = True,
+    opsin_fetch: Fetch | None = None,
 ) -> Resolution:
     """Resolve ``raw_query`` through the tiers. Never raises on upstream
     trouble: faults land in ``tiers``, and ``status='fault'`` only when
     PubChem itself failed to answer. ``cir_fetch`` lets the caller give
     the corroborating CIR leg a shorter timeout; ``cir_enabled=False``
-    skips the CIR leg outright (PubChem-only mode for a CIR outage)."""
+    skips the CIR leg outright (PubChem-only mode for a CIR outage).
+    ``opsin_enabled=False`` skips the OPSIN leg the same way, and
+    ``opsin_fetch`` gives the OPSIN leg its own shorter timeout."""
     query = normalise_query(raw_query)
     qtype = classify_query(query)
     res = Resolution(query=query, query_type=qtype, status="not_found")
@@ -458,14 +464,16 @@ def resolve(
         res.tiers.append((tier, "hit" if got else "miss"))
         return got
 
-    if qtype == "name":
-        opsin = run("OPSIN", lambda: _tier_opsin(query, fetch, notes))
+    if qtype != "name":
+        res.tiers.append(("OPSIN", "skipped (CAS number)"))
+    elif not opsin_enabled:
+        res.tiers.append(("OPSIN", "skipped (disabled)"))
+    else:
+        opsin = run("OPSIN", lambda: _tier_opsin(query, opsin_fetch or fetch, notes))
         if opsin is not None:
             res.candidates = [opsin]
             res.status = "resolved"
             return res
-    else:
-        res.tiers.append(("OPSIN", "skipped (CAS number)"))
 
     pubchem = _dedupe(run("PubChem", lambda: _tier_pubchem(query, fetch, notes)) or [])
     pubchem_faulted = res.tiers[-1][1].startswith("fault")
@@ -526,8 +534,12 @@ def resolve(
         res.status = "fault"
     else:
         res.status = "not_found"
-        if not cir_enabled:
+        if not cir_enabled and not opsin_enabled:
+            notes.append("PubChem found nothing; OPSIN and CIR are disabled")
+        elif not cir_enabled:
             notes.append("OPSIN and PubChem found nothing; CIR is disabled")
+        elif not opsin_enabled:
+            notes.append("PubChem found nothing; OPSIN is disabled")
         elif faulted:
             notes.append("CIR was unreachable; OPSIN and PubChem found nothing")
     return res

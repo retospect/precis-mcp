@@ -375,6 +375,35 @@ def test_cir_leg_uses_its_own_fetcher() -> None:
     assert cir.calls == [_cir("aspirin")]
 
 
+def test_opsin_leg_uses_its_own_fetcher() -> None:
+    main = Replay({k: v for k, v in _aspirin_routes().items() if "ebi.ac.uk" not in k})
+    opsin = Replay({_opsin("aspirin"): (404, _fx("opsin_failure.json"))})
+    res = cr.resolve("aspirin", main, opsin_fetch=opsin)
+    assert res.status == "resolved"
+    assert opsin.calls == [_opsin("aspirin")]
+
+
+def test_opsin_disabled_skips_to_pubchem() -> None:
+    fetch = Replay(_aspirin_routes())
+    res = cr.resolve("aspirin", fetch, opsin_enabled=False)
+    assert res.status == "resolved"
+    assert res.answer is not None
+    assert res.answer.source == "PubChem CID 2244"
+    assert ("OPSIN", "skipped (disabled)") in res.tiers
+    assert not any("ebi.ac.uk" in url for url in fetch.calls)
+
+
+def test_handler_opsin_off_via_env_never_calls_it(
+    chem: ChemHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fetch = Replay(_aspirin_routes())
+    chem.fetch = fetch
+    monkeypatch.setenv("PRECIS_CHEM_OPSIN_ENABLED", "0")
+    body = chem.get(id="aspirin").body
+    assert "OPSIN: skipped (disabled)" in body
+    assert not any("ebi.ac.uk" in url for url in fetch.calls)
+
+
 def test_handler_renders_underspecified_refusal(chem: ChemHandler) -> None:
     chem.fetch = _dce_cir_down()
     body = chem.get(id="dichloroethane").body
@@ -394,7 +423,7 @@ def test_handler_cir_off_via_env_never_calls_it(
     assert not any("cactus" in url for url in fetch.calls)
 
 
-def test_cir_leg_keeps_its_8s_timeout(
+def test_short_legs_keep_their_8s_timeout(
     chem: ChemHandler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     made: list[dict[str, Any]] = []
@@ -404,9 +433,14 @@ def test_cir_leg_keeps_its_8s_timeout(
         return Replay(_aspirin_routes())
 
     monkeypatch.delenv("PRECIS_CHEM_CIR_ENABLED", raising=False)
+    monkeypatch.delenv("PRECIS_CHEM_OPSIN_ENABLED", raising=False)
     monkeypatch.setattr("precis.handlers.chem.http_fetch", fake_http_fetch)
     chem.get(id="aspirin")
-    assert made == [{}, {"timeout_s": 8.0, "attempts": 1}]
+    assert made == [
+        {},
+        {"timeout_s": 8.0, "attempts": 1},
+        {"timeout_s": 8.0, "attempts": 1},
+    ]
 
 
 def test_handler_cir_off_builds_no_cir_fetcher(
@@ -419,6 +453,23 @@ def test_handler_cir_off_builds_no_cir_fetcher(
         return Replay(_aspirin_routes())
 
     monkeypatch.setenv("PRECIS_CHEM_CIR_ENABLED", "0")
+    monkeypatch.delenv("PRECIS_CHEM_OPSIN_ENABLED", raising=False)
     monkeypatch.setattr("precis.handlers.chem.http_fetch", fake_http_fetch)
     chem.get(id="aspirin")
-    assert made == [{}]
+    assert made == [{}, {"timeout_s": 8.0, "attempts": 1}]
+
+
+def test_handler_opsin_off_builds_no_opsin_fetcher(
+    chem: ChemHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    made: list[dict[str, Any]] = []
+
+    def fake_http_fetch(**kwargs: Any) -> cr.Fetch:
+        made.append(kwargs)
+        return Replay(_aspirin_routes())
+
+    monkeypatch.delenv("PRECIS_CHEM_CIR_ENABLED", raising=False)
+    monkeypatch.setenv("PRECIS_CHEM_OPSIN_ENABLED", "0")
+    monkeypatch.setattr("precis.handlers.chem.http_fetch", fake_http_fetch)
+    chem.get(id="aspirin")
+    assert made == [{}, {"timeout_s": 8.0, "attempts": 1}]

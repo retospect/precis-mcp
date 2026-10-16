@@ -53,6 +53,9 @@ The resolver tries these sources in order and stops at the first answer:
    Matching ignores case.
 2. **OPSIN.** It parses systematic IUPAC names. A successful parse has
    only one meaning, so it is never ambiguous. CAS numbers skip it.
+   It can be switched off with the `chem.opsin_enabled` setting when
+   the service stalls; like `chem.cir_enabled`, the lookup then skips
+   the leg instead of waiting out its connect timeout.
 3. **PubChem.** It covers trivial names, trade names and CAS numbers.
 4. **NCI/CADD CIR.** It is used when PubChem has no record. When PubChem
    does answer, CIR checks that answer. It can be switched off with the
@@ -95,7 +98,9 @@ cross-checks: when it is unreachable or switched off
 (`chem.cir_enabled`), the answer stands and carries
 `note: uncorroborated: CIR unavailable` — check the `name:` line before
 relying on it. `not corroborated: CIR gave no answer` means CIR was up
-but had no record. A CAS number with a
+but had no record. `chem.opsin_enabled` switches the OPSIN leg off the
+same way: systematic names then resolve from PubChem/CIR alone, and the
+`tiers` line says `OPSIN: skipped (disabled)`. A CAS number with a
 bad check digit is refused before any lookup.
 
 The structured answer is stored in the cache meta as `smiles`,

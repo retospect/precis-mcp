@@ -5,7 +5,10 @@ tiers in :mod:`precis.handlers._chem_resolve` (abbreviation table → OPSIN
 → PubChem, cross-checked against NCI/CIR) and caches the answer 30 days.
 The CIR leg can be switched off fleet-wide with the ``chem.cir_enabled``
 setting (env ``PRECIS_CHEM_CIR_ENABLED``) for a CIR outage: answers then
-resolve from PubChem alone and carry an "uncorroborated" note.
+resolve from PubChem alone and carry an "uncorroborated" note. The OPSIN
+leg likewise honours ``chem.opsin_enabled`` (env
+``PRECIS_CHEM_OPSIN_ENABLED``) — both legs run on a short-timeout,
+no-connect-retry fetcher because each stalls on TLS handshakes.
 Every answer names its source; an ambiguous identifier is refused with
 the candidate structures listed, and that refusal is cached too. A
 lookup where nothing answered and a source faulted raises ``Upstream``
@@ -96,16 +99,27 @@ class ChemHandler(CacheBackedHandler):
         # CIR only corroborates, and it was unreachable from prod at r38
         # (TLS handshake timeouts): short timeout, no connect retry.
         # chem.cir_enabled skips the leg outright — a dead CIR still
-        # costs its connect timeout on every lookup.
+        # costs its connect timeout on every lookup. OPSIN stalls the
+        # same way (r40 dogfood, gr489605): same short leg, same switch.
         cir_enabled = settings.get_bool("chem.cir_enabled") is not False
+        opsin_enabled = settings.get_bool("chem.opsin_enabled") is not False
         if self.fetch is not None:
-            res = resolve(key, self.fetch, cir_enabled=cir_enabled)
+            res = resolve(
+                key,
+                self.fetch,
+                cir_enabled=cir_enabled,
+                opsin_enabled=opsin_enabled,
+            )
         else:
             res = resolve(
                 key,
                 http_fetch(),
                 http_fetch(timeout_s=8.0, attempts=1) if cir_enabled else None,
                 cir_enabled=cir_enabled,
+                opsin_enabled=opsin_enabled,
+                opsin_fetch=(
+                    http_fetch(timeout_s=8.0, attempts=1) if opsin_enabled else None
+                ),
             )
         if res.status == "fault":
             raise Upstream(
