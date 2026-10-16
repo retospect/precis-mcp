@@ -1,0 +1,12 @@
+{# The "Eye navigation" link back to ``/eye/<handle>`` — the reverse of
+   the eye focus page's "open in its reader" (gr492464). Included once at
+   the top of ``<main>`` in base.html.j2 so it sits in the same spot on
+   every kind's native detail page; ``eye_handle`` is set by the
+   ``eye_link`` context processor (precis_web/eye_nav.py) only on detail
+   routes — everywhere else this renders nothing. #}
+{% if eye_handle %}
+<p class="mb-3 text-xs text-slate-500">
+  <a href="/eye/{{ eye_handle | urlencode }}" class="underline">Eye navigation</a>
+  · <span class="font-mono">{{ eye_handle }}</span>
+</p>
+{% endif %}

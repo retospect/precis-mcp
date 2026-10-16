@@ -2667,7 +2667,7 @@ def test_draft_pdf_serves_cached(
 
 
 def test_pdf_get_does_not_request_override_record(
-    draft_client: TestClient, monkeypatch
+    draft_client: TestClient, monkeypatch, tmp_path
 ) -> None:
     """gr491602: the "download PDF" GET is a read — it never passes
     ``record_override`` to the exporter. Only the explicit write ops (the
@@ -2675,6 +2675,14 @@ def test_pdf_get_does_not_request_override_record(
     ``export_override`` audit row."""
     import precis.export.compile as compile_mod
     import precis.export.latex as latex_mod
+    from precis_web.routes import drafts as drafts_mod
+
+    # The fake compile writes main.pdf into the cache dir — patch it to a
+    # per-test tmp dir so the fake PDF doesn't leak into the shared
+    # tempfile cache and flip the no-latexmk tests to a cached 200.
+    monkeypatch.setattr(
+        drafts_mod, "_pdf_cache_dir", lambda ref_id, version, **_kw: tmp_path
+    )
 
     seen: dict[str, object] = {}
 

@@ -163,9 +163,15 @@ def _make_jinja_env() -> jinja2.Environment:
 #: counts (``nav_needs_you`` / ``nav_alerts``) so the badges stay live on
 #: whatever page is rendered, without each route threading them in. It is
 #: fully defensive (degrades to zero on any error), so it never 500s a page.
+#: ``eye_link`` does the same for ``eye_handle`` — the "Eye navigation"
+#: back-link only on routes that serve one ref's native detail page
+#: (gr492464; see precis_web.eye_nav for which those are).
+from precis_web.eye_nav import eye_link
 from precis_web.nav import nav_badges
 
-templates = Jinja2Templates(env=_make_jinja_env(), context_processors=[nav_badges])
+templates = Jinja2Templates(
+    env=_make_jinja_env(), context_processors=[nav_badges, eye_link]
+)
 
 log = logging.getLogger(__name__)
 
