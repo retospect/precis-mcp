@@ -154,8 +154,17 @@ def test_polygon_pad_corner_is_touched_by_a_stub_the_inscribed_circle_misses(
 
     # (c) with the OLD inscribed-circle-only touch test (`_pad_poly`
     # forced to report no polygon, same as every pad had before this
-    # fix), the SAME model misses both -- the fixture bites.
+    # fix), the SAME model misses both -- the fixture bites. The pad's
+    # `shape` also flips to "rect" for this arm: `_pad_primitives` reads a
+    # `shape == "polygon"` pad whose outline won't resolve (`_pad_poly`
+    # -> None) as "cannot represent exactly" and substitutes the
+    # CIRCUMSCRIBED disk `hypot(w, h)/2`, not the inscribed one the
+    # pre-`_pad_primitives` loops used for every pad -- the right call for
+    # a genuinely degenerate outline, but it would swallow this fixture's
+    # corner stub and break the old-world comparison. Same w/h, same
+    # inscribed disk.
     monkeypatch.setattr(pcb_connectivity, "_pad_poly", lambda pad: None)
+    model["pads"][0]["shape"] = "rect"
     old_terminals = pcb_connectivity.fixed_copper_pin_terminals(model)
     assert key not in old_terminals
     old_pairs = pcb_connectivity.connected_pin_pairs(model)
@@ -302,11 +311,19 @@ def _ring_design() -> dict[str, Any]:
 
 
 def _ring_seed(pcb, slug: str) -> str:
+    """A fresh board per arm: re-seeding an existing slug extends it, so a
+    second arm would otherwise re-route the first arm's routed board and
+    its re-place would start from the first arm's sink pose, not the
+    seed's.
+
+    The footprint deliberately does NOT go into ``part_footprints`` here
+    (see the caller): that cache is catalogue-wide, so a seed running
+    after it would expand ``ARR1_SINK_0`` against the REAL ring pads —
+    and judged-DRC refuses that seed outright, the 250V hv class's 0.4mm
+    ``min_clearance_mm`` floor holding against the ring's 0.3mm pad gaps
+    around VPP and against a plaza via. Both arms must expand under the
+    same synthesized bound the pre-footprint seed gets."""
     pcb.put(id=slug, args=_ring_design())
-    pcb.store.part_footprint_put(
-        _RING_LCSC,
-        _ring_footprint(_RING_PINS, per_side=20, x_half=8.5, y_half=11.5),
-    )
     return slug
 
 
@@ -316,10 +333,6 @@ def pcb(store):
 
 
 def _route_and_count(pcb, store, slug: str) -> tuple[dict[str, str], int, int]:
-    # A fresh board per call: re-seeding an existing slug extends it, so a
-    # second arm would re-route the first arm's routed board and its
-    # re-place would start from the first arm's sink pose, not the seed's.
-    slug = _ring_seed(pcb, slug)
     ref = store.get_ref(kind="pcb", id=slug)
     assert ref is not None
     resp = pcb.put(id=slug, args={"op": "route", "seed": 1})
@@ -376,6 +389,41 @@ def test_ring_sink_route_op_realizes_more_escape_nets_with_polygon_touch(
     the OLD circle-only test offers none at all (the exact gr339236
     symptom), the fix offers all of them (whether the router's own
     occupancy search then finds a path is independent, per (2) below)."""
+    # Both seeds run BEFORE the footprint enters the catalogue-wide cache
+    # (_ring_seed's docstring): put-time expansion then sees the same
+    # synthesized bound in both arms, while the route below — the place
+    # `pads_for_ir` actually reads pad geometry — still gets the real ring
+    # footprint.
+    _ring_seed(pcb, "ewod-ring-circle")
+    _ring_seed(pcb, "ewod-ring-poly")
+    pcb.store.part_footprint_put(
+        _RING_LCSC,
+        _ring_footprint(_RING_PINS, per_side=20, x_half=8.5, y_half=11.5),
+    )
+    real_pad_primitives = pcb_connectivity._pad_primitives
+
+    def _inscribed_primitives(
+        model: dict[str, Any], start_group: int
+    ) -> tuple[list[Any], dict[int, Any], list[Any], list[list[int]]]:
+        # Same relocation as the square-pad fixture above: under the
+        # `_pad_poly` -> None patch a `shape == "polygon"` pad takes
+        # `_pad_primitives`' CIRCUMSCRIBED-disk fallback (meant for a
+        # genuinely unresolvable outline), not the inscribed disk the
+        # pre-`_pad_primitives` loops used for EVERY pad. Presenting
+        # those pads as "rect" -- same w/h, hence the same inscribed disk
+        # -- restores the old circle-only world this arm reproduces.
+        return real_pad_primitives(
+            {
+                **model,
+                "pads": [
+                    {**pad, "shape": "rect"} if pad.get("shape") == "polygon" else pad
+                    for pad in model.get("pads") or []
+                ],
+            },
+            start_group,
+        )
+
+    monkeypatch.setattr(pcb_connectivity, "_pad_primitives", _inscribed_primitives)
     monkeypatch.setattr(pcb_connectivity, "_pad_poly", lambda pad: None)
     before, before_pins, before_offered = _route_and_count(
         pcb, store, "ewod-ring-circle"
