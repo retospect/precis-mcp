@@ -212,14 +212,9 @@ def test_the_census_step_matches_the_coaxial_5_7_reducer() -> None:
     symmetric 5/7 dislocation pairs (Gauss–Bonnet does not see them), and
     its relaxed bonds sit inside the S3 bond bars."""
     net = build(_REDUCER, strict=False)
-    found = [f for f in net.report.findings if f.code == "reducer.rings"]
-    if not found:
-        pytest.xfail(
-            "pending claude-hexfold-tube slice 1: the coaxial 5/7 reducer "
-            "(fuse{reducer}, finding reducer.rings) is not on main yet"
-        )
+    (found,) = [f for f in net.report.findings if f.code == "reducer.rings"]
     assert not net.report.errors()
-    d = dict(found[0].data)
+    d = dict(found.data)
     c = af.census(_frustum((12, 12), (6, 6), 90.0), 6, [(12, 12), (6, 6)])
     band = _between_tubes(c)
     p = sum(a.defects for a in band if a.ring == 5)

@@ -89,11 +89,14 @@ the tiling by how closely it follows that surface, with no trade-off knob.
    - Acceptance, met: a filleted frustum between two tube radii,
      (12,12)→(6,6), balances pentagons and heptagons (Euler). A flat step
      is 6+6 at C_6 and a 30° cone 3+3 at C_3.
-   - Acceptance, open: the census step should match claude-hexfold-tube's
-     coaxial 5/7 reducer (`fuse{reducer}`) on P = H, on C_6 extra
-     dislocation pairs and on the bond bars. The test xfails until the
-     reducer lands on main
+   - Acceptance, met: the census step matches hexfold's coaxial 5/7
+     reducer (`fuse{reducer}`, d73585015) for (12,12)→(6,6)
      (`test_the_census_step_matches_the_coaxial_5_7_reducer`).
+     - Both balance: the census has 6P/6H, the reducer 12P/12H.
+     - The reducer's extra 6+6 are C_6 symmetric 5/7 dislocation pairs,
+       which the census does not see.
+     - The reducer's relaxed bonds between three-coordinated atoms are
+       1.413–1.457 Å, inside the S3 bars.
    - The (18,0) crumple is out of scope. The census path does not change
      its build.
 3. **Tile and pin (S3).**
