@@ -72,6 +72,7 @@ from precis.export._patent_cite import (
     render_paper_inline_citation,
     render_patent_citation,
 )
+from precis.export._provenance_strip import record_title, strip_provenance_handles
 from precis.export._trust_marks import (
     UNSUPPORTED_MARK_TEXT,
     mark_text,
@@ -2113,6 +2114,9 @@ def _render_inline(text: str, ctx: _Ctx) -> str:
     LaTeX-escape + markdownify the gaps between them. Single pass, mirrors
     the web linkifier so the two never diverge."""
     text = preprocess_draft_inline(text)
+    text = strip_provenance_handles(
+        text, title_for=lambda h: record_title(h, ctx.store)
+    )
     pin_lint.warn_export(ctx, text)
     out: list[str] = []
     last = 0
