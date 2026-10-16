@@ -783,6 +783,39 @@ def test_notify_critical_alert_queues_message_when_target_set(
     assert row[3] == "true"
 
 
+def test_ops_post_body_stamps_divider_and_timestamp() -> None:
+    """The posted payload opens with a rule line and a ``<t:epoch:f>``
+    timestamp so successive posts read as separate reports (gr491339)."""
+    from datetime import UTC, datetime
+
+    stamped = datetime(2026, 10, 16, 9, 30, tzinfo=UTC)
+    out = alerts_mod._ops_post_body("the report body", now=stamped)
+    head, sep, rest = out.partition("\n\n")
+    assert sep == "\n\n" and rest == "the report body"
+    rule, ts = head.split("\n")
+    assert rule == alerts_mod.OPS_POST_DIVIDER
+    assert ts == f"<t:{int(stamped.timestamp())}:f>"
+
+
+def test_queue_ops_message_stores_wrapped_body(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The queued message_body chunk itself carries divider + timestamp —
+    asa_bot posts the chunk verbatim, so the wrap must land here."""
+    monkeypatch.setenv("PRECIS_OPS_ALERT_TARGET", "discord/1/2/3")
+    assert alerts_mod.queue_ops_message(store, "t", "payload text") is True
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT c.text FROM chunks c JOIN refs r USING(ref_id) "
+            "WHERE r.kind='message' AND c.chunk_kind='message_body' "
+            "ORDER BY c.chunk_id DESC LIMIT 1"
+        ).fetchone()
+    assert row is not None
+    text = row[0]
+    assert text.startswith(alerts_mod.OPS_POST_DIVIDER + "\n<t:")
+    assert text.endswith(":f>\n\npayload text")
+
+
 def test_notify_critical_alert_is_dark_without_target(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

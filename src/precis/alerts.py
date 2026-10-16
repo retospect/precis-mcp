@@ -777,6 +777,24 @@ def _ops_alert_target() -> str:
     return os.environ.get(OPS_ALERT_TARGET_ENV, "")
 
 
+#: Rule line heading every ops-channel post (gr491339). Discord has no
+#: horizontal rule and collapses consecutive same-author posts under one
+#: header, so successive doctor-report/alert pushes run together; a short
+#: box-drawing rule marks where each post starts.
+OPS_POST_DIVIDER = "─" * 24
+
+
+def _ops_post_body(body: str, *, now: datetime | None = None) -> str:
+    """Return ``body`` headed by the divider and a Discord timestamp line.
+
+    ``<t:epoch:f>`` renders in the reader's locale from a UTC epoch
+    stamped at queue time. Kept pure so the payload shape is unit-testable
+    without a store.
+    """
+    epoch = int((now or datetime.now(UTC)).timestamp())
+    return f"{OPS_POST_DIVIDER}\n<t:{epoch}:f>\n\n{body}"
+
+
 def queue_ops_message(
     store: Store,
     title: str,
@@ -793,6 +811,10 @@ def queue_ops_message(
     asa_bot (the one process holding a Discord socket) then posts it.
     Returns ``True`` if a push was queued, ``False`` if no target is
     configured (the default — dark until an operator wires the channel).
+    The stored body is wrapped by :func:`_ops_post_body` — divider +
+    ``<t:epoch:f>`` timestamp — so consecutive posts in the channel read
+    as separate reports (gr491339).
+
     Never raises by default: a failed push must not break the caller's pass.
     A caller that must know the push landed (the Alertmanager receiver, whose
     non-2xx makes Alertmanager retry) passes ``raise_on_error=True``.
@@ -824,7 +846,13 @@ def queue_ops_message(
             )
             store.chunks.insert_chunks(
                 ref.id,
-                [ChunkInsert(ord=0, text=body, meta={"chunk_kind": "message_body"})],
+                [
+                    ChunkInsert(
+                        ord=0,
+                        text=_ops_post_body(body),
+                        meta={"chunk_kind": "message_body"},
+                    )
+                ],
                 conn=conn,
             )
             conn.execute(
@@ -866,6 +894,7 @@ __all__ = [
     "ACKED_SQL",
     "ALERT_RERAISE_THROTTLE_ENV",
     "OPS_ALERT_TARGET_ENV",
+    "OPS_POST_DIVIDER",
     "SEVERITIES",
     "STATE_OPEN",
     "STATE_RESOLVED",
