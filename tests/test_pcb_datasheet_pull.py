@@ -490,3 +490,122 @@ def test_transient_failures_retry_after_a_day_permanent_ones_do_not(pcb, store):
         assert pcb_datasheets.is_transient(r)
     for r in ("no_url", "http_404", "too_large", "fetch_refused", "ingest_empty"):
         assert not pcb_datasheets.is_transient(r)
+
+
+# ── put(kind='datasheet') and lookup-time queueing (gr492689) ────────────
+
+
+@pytest.fixture
+def ds_handler(store):
+    from precis.handlers.datasheet import DatasheetHandler
+
+    return DatasheetHandler(hub=Hub(store=store))
+
+
+@pytest.fixture
+def public_url(monkeypatch):
+    """Skip the put-time DNS check for a fake host (the refusal tests use the
+    real guard on a literal loopback address)."""
+    monkeypatch.setattr(
+        "precis.handlers.datasheet.assert_public_http_url", lambda u: None
+    )
+
+
+def _job_params(store) -> list[dict[str, Any]]:
+    with store.pool.connection() as conn:
+        return [
+            r[0]
+            for r in conn.execute(
+                "SELECT meta->'params' FROM refs WHERE kind = 'job' "
+                "AND meta->>'job_type' = 'datasheet_pull' ORDER BY ref_id"
+            ).fetchall()
+        ]
+
+
+def test_put_url_queues_a_pull_and_the_pull_links_it_to_the_part(
+    store, ds_handler, public_url, no_jlc, serve, fake_ingest
+):
+    url = "https://x.test/lpr6235.pdf"
+    store.parts_import([_catalog_row(19191684, None)])
+    resp = ds_handler.put(args={"url": url, "part": "c19191684"})
+    assert "queued for part:C19191684" in resp.body
+    assert _job_params(store) == [{"lcsc": "C19191684", "url": url}]
+    again = ds_handler.put(args={"url": url, "part": "C19191684"})
+    assert "already queued" in again.body
+    rec = dp.pull(store, "C19191684", url)  # what the job runs
+    assert rec["status"] == "ok"
+    assert serve["asked"] == [url]
+    state = pcb_datasheets.datasheet_state(store, "C19191684")
+    assert state["datasheet"] is not None
+
+
+def test_put_resolves_an_mpn_and_rejects_an_unknown_one(store, ds_handler, public_url):
+    from precis.errors import BadInput
+
+    store.parts_import([_catalog_row(25900, None)])
+    ds_handler.put(args={"url": "https://x.test/a.pdf", "part": "acme25900"})
+    assert _job_params(store)[0]["lcsc"] == "C25900"
+    with pytest.raises(BadInput, match="no catalog row"):
+        ds_handler.put(args={"url": "https://x.test/a.pdf", "part": "NOPE-1"})
+
+
+def test_put_for_a_part_not_in_the_catalog_mints_nothing(
+    store, ds_handler, public_url, monkeypatch
+):
+    from precis.errors import NotFound
+
+    monkeypatch.setattr(
+        "precis.handlers.datasheet.jlc_library.live_lookup", lambda s, c: None
+    )
+    with pytest.raises(NotFound, match="not in the catalog"):
+        ds_handler.put(args={"url": "https://x.test/a.pdf", "part": "C99999999"})
+    assert _job_params(store) == []
+    assert store.part_ref_id("C99999999") is None
+
+
+def test_put_refuses_loopback_url_without_queueing(store, ds_handler):
+    from precis.errors import BadInput
+
+    with pytest.raises(BadInput, match="url refused"):
+        ds_handler.put(args={"url": "http://127.0.0.1:9/x.pdf", "part": "C25900"})
+    assert _job_params(store) == []
+
+
+def test_put_refuses_local_path_and_missing_fields(ds_handler):
+    from precis.errors import BadInput
+
+    with pytest.raises(BadInput, match="not a local path"):
+        ds_handler.put(args={"path": "/tmp/x.pdf", "part": "C25900"})
+    with pytest.raises(BadInput, match="needs url= and part="):
+        ds_handler.put(args={"url": "https://x.test/a.pdf"})
+
+
+def test_agent_url_not_a_pdf_or_too_big_is_a_recorded_failure(
+    store, no_jlc, serve, fake_ingest, monkeypatch
+):
+    serve["body"] = b"<html>403</html>"
+    rec = dp.pull(store, "C25900", "https://x.test/a.pdf")
+    assert (rec["status"], rec["reason"]) == ("failed", "not_pdf")
+    serve["body"] = _PDF
+    monkeypatch.setattr(dp, "MAX_BYTES", 100)
+    assert dp.pull(store, "C25900", "https://x.test/a.pdf")["reason"] == "too_large"
+    assert fake_ingest == []
+
+
+def test_agent_url_to_loopback_is_refused_by_the_pull(store, no_jlc, fake_ingest):
+    rec = dp.pull(store, "C25900", "http://127.0.0.1:9/x.pdf")
+    assert (rec["status"], rec["reason"]) == ("failed", "fetch_refused")
+
+
+def test_part_lookup_queues_the_pull_once_before_any_design(
+    store, no_jlc, serve, fake_ingest
+):
+    part = PartHandler(hub=Hub(store=store))
+    store.parts_import([_catalog_row(25900, "https://x.test/a.pdf")])
+    part.get(id="C25900")
+    part.get(id="C25900")
+    assert _jobs(store) == [("C25900", "datasheet_pull:C25900")]
+    dp.pull(store, "C25900")
+    assert pcb_datasheets.datasheet_state(store, "C25900")["datasheet"] is not None
+    part.get(id="C25900")  # attached: no further job
+    assert len(_jobs(store)) == 1

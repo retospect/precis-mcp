@@ -74,6 +74,7 @@ from precis.pcb._http import VendorError
 from precis.pcb.catalog import min_unit_price
 from precis.pcb.datasheet_facts import part_facts, render_facts
 from precis.pcb.datasheets import datasheet_state
+from precis.pcb.datasheets import enqueue_one as queue_pull
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.utils import handle_registry
@@ -97,8 +98,8 @@ def _datasheet_line(state: dict[str, Any]) -> str:
     pull = state["pull"]
     if pull is None:
         return (
-            "datasheet: not pulled yet (a pcb design that uses this part "
-            "queues the pull)"
+            "datasheet: not pulled yet (looking the part up queues the pull; "
+            "or put(kind='datasheet', args={'url': …, 'part': …}))"
         )
     if pull.get("status") == "failed":
         line = f"datasheet: pull failed, reason {pull.get('reason')}"
@@ -151,6 +152,7 @@ class PartHandler(Handler):
         if hub.store is None:
             raise InitError("part: store required")
         self.store = hub.store
+        self.hub = hub
         #: Test seams — ``live_lookup``: ``(store, lcsc) -> normalized row |
         #: None``; ``live_search``: ``(store, q, page_size=) -> rows``.
         #: Both default to the real endpoint (:mod:`precis.pcb.jlc_library`).
@@ -237,6 +239,9 @@ class PartHandler(Handler):
             else:
                 gone = f"{lcsc} is no longer in the catalog (as of the last refresh); "
             body = f"# {lcsc} — {ref.title}\n{gone}its ref and links remain."
+        if row is not None and catalog.lcsc_id(lcsc) is not None:
+            # datasheets come before a design uses the part (gr492689)
+            queue_pull(self.store, self.hub.sibling("job"), lcsc)
         body += "\n" + _datasheet_line(datasheet_state(self.store, lcsc))
         if ref is not None:
             # the section arrives with its own leading blank line

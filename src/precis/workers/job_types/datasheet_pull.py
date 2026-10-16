@@ -68,9 +68,7 @@ PARAMS_SCHEMA: dict[str, Any] = {
     "oneOf": [
         {
             "required": ["lcsc"],
-            "not": {
-                "anyOf": [{"required": ["component_ref_id"]}, {"required": ["url"]}]
-            },
+            "not": {"required": ["component_ref_id"]},
         },
         {"required": ["component_ref_id", "url"], "not": {"required": ["lcsc"]}},
     ],
@@ -244,13 +242,14 @@ def _body_chunks(store: Store, ref_id: int) -> int:
     return int(row[0]) if row is not None else 0
 
 
-def pull(store: Store, lcsc: str) -> dict[str, Any]:
+def pull(store: Store, lcsc: str, url: str | None = None) -> dict[str, Any]:
     """Run one pull and record its outcome on the part ref; returns the
-    record. Deterministic failures are returned, not raised."""
+    record. Deterministic failures are returned, not raised. ``url`` is an
+    agent-supplied datasheet URL (``put(kind='datasheet')``) that replaces
+    the JLC/catalog lookup; the download is the same ``safe_stream`` one."""
     lcsc = lcsc.strip().upper()
-    url: str | None = None
     try:
-        url = _resolve_url(store, lcsc)
+        url = url or _resolve_url(store, lcsc)
         with tempfile.TemporaryDirectory(prefix="datasheet-pull-") as tmp:
             path = Path(tmp) / "datasheet.pdf"
             final_url, sha = _download(url, path)
@@ -351,7 +350,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             f"datasheet_pull: {lcsc!r} is not an LCSC C-number", failure_class="infra"
         )
         return
-    record = pull(ctx.store, lcsc)
+    record = pull(ctx.store, lcsc, str(params["url"]) if params.get("url") else None)
     ctx.append_chunk(
         "job_summary",
         f"datasheet_pull {lcsc}: {record['status']}"

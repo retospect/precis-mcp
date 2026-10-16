@@ -15,6 +15,7 @@ args={'op': 'datasheets', 'force': True})`` re-queues it.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -292,6 +293,39 @@ def enqueue_pulls(
             "datasheet_pull: enqueue for pcb %s failed", pcb_ref_id, exc_info=True
         )
     return queued
+
+
+def enqueue_one(
+    store: Store, job: Any, lcsc: str, *, url: str | None = None, force: bool = False
+) -> bool:
+    """Queue one ``datasheet_pull`` for ``lcsc`` ahead of any design (part
+    lookup, ``put(kind='datasheet')``); parent is the part's lazy ref. With
+    ``url`` the pull fetches that agent-supplied address instead of the
+    catalog's. Without it the pull is skipped when the part already has a
+    datasheet or a recorded attempt (:func:`_needs_pull`). Returns whether a
+    job was newly queued; never raises (a lookup must not fail on it)."""
+    key = lcsc.strip().upper()
+    try:
+        if url is None and not _needs_pull(datasheet_state(store, key), force):
+            return False
+        part_id = store.ensure_part_ref(key, uncatalogued_ok=url is not None)
+        idem = idem_key(key)
+        if url is not None:
+            idem += ":" + hashlib.sha256(url.encode()).hexdigest()[:10]
+        params: dict[str, Any] = {"lcsc": key}
+        if url is not None:
+            params["url"] = url
+        resp = job.put(
+            job_type=JOB_TYPE,
+            executor="job_inproc",
+            parent_id=part_id,
+            params=params,
+            idem_key=idem,
+        )
+        return not getattr(resp, "reused", False)
+    except Exception:
+        log.warning("datasheet_pull: enqueue for %s failed", key, exc_info=True)
+        return False
 
 
 def enqueue_facts(store: Store, job: Any, pcb_ref_id: int) -> int:

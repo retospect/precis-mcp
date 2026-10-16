@@ -12,9 +12,12 @@ from a paper are declared, not duplicated:
 * **One kind for the whole electronics-doc family** — app-notes / errata /
   reference-manuals ride along via a ``meta`` sub-type; we do **not** mint a
   new kind per genre.
-* No ``put`` here yet — a datasheet is acquired by *lazy ingest* from a
-  part's ``datasheet_url`` (Slice 3); ``supports_put=False`` ⇒ the base
-  handler raises ``Unsupported``.
+* ``put(args={'url', 'part'})`` queues a ``datasheet_pull`` for an
+  agent-found PDF URL (the pull job downloads through ``safe_stream``);
+  ``get(kind='part')`` queues the catalog's own URL ahead of any design.
+  A local-path put is deliberately absent: the pull runs on a worker that
+  cannot see an agent's sandbox, and ingesting inline would run Marker in
+  the request.
 
 Everything else (``get`` overview + chunk rendering, ``search`` /
 ``search_hits``, ``edit`` metadata repair, ``tag`` / ``link``) is the paper
@@ -30,12 +33,17 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
+from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.handlers.paper import PaperHandler
+from precis.pcb import jlc_library
+from precis.pcb._http import VendorError
+from precis.pcb.datasheets import enqueue_one
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.utils.edit_resolve import normalize_dry_run
 from precis.utils.link_tag_ops import apply_link_ops
+from precis.utils.safe_fetch import SsrfBlocked, assert_public_http_url
 
 # Reader views a datasheet supports — paper's enum minus the bibliographic
 # citation-export formats (a datasheet is cited as a part's evidence, not a
@@ -98,7 +106,7 @@ class DatasheetHandler(PaperHandler):
         supports_get=True,
         supports_search=True,
         supports_search_hits=True,
-        supports_put=False,
+        supports_put=True,
         supports_edit=True,
         supports_tag=True,
         supports_link=True,
@@ -107,6 +115,89 @@ class DatasheetHandler(PaperHandler):
         corpus_role="evidence",
         views=_DATASHEET_VIEWS,
     )
+
+    def __init__(self, *, hub: Hub) -> None:
+        super().__init__(hub=hub)
+        self.hub = hub
+
+    def put(
+        self,
+        *,
+        args: dict[str, Any] | None = None,
+        **kw: Any,
+    ) -> Response:
+        """Queue the fetch of a datasheet PDF for a part.
+
+        ``put(kind='datasheet', args={'url': 'https://…/x.pdf', 'part':
+        'C19191684'})``. ``part`` is an LCSC C-number, or a manufacturer part
+        number matching exactly one catalog row. The URL is agent-supplied:
+        it is checked against the SSRF guard here (private/loopback is
+        refused at once) and fetched again, pinned, by the job, which also
+        enforces ``%PDF`` magic and the 50 MB cap and records the outcome on
+        ``get(kind='part', id=<C-number>)``.
+        """
+        extras = args or {}
+        url = str(extras.get("url") or kw.get("url") or "").strip()
+        part = str(extras.get("part") or kw.get("part") or "").strip()
+        if extras.get("path") or kw.get("path"):
+            raise BadInput(
+                "put(kind='datasheet') takes a url, not a local path: the pull "
+                "runs on a worker that cannot read your sandbox",
+                next="host the PDF and pass args={'url': …, 'part': 'C…'}, or "
+                "ask an operator to drop it in <inbox>/datasheets/",
+            )
+        if not url or not part:
+            raise BadInput(
+                "put(kind='datasheet') needs url= and part=",
+                next="put(kind='datasheet', args={'url': 'https://…/x.pdf', "
+                "'part': 'C19191684'})",
+            )
+        try:
+            assert_public_http_url(url)
+        except SsrfBlocked as exc:
+            raise BadInput(f"url refused: {exc}") from exc
+        except OSError as exc:  # DNS failure/timeout: not a verdict on the URL
+            raise BadInput(f"url could not be resolved: {exc}") from exc
+        lcsc = self._resolve_part(part)
+        queued = enqueue_one(self.store, self.hub.sibling("job"), lcsc, url=url)
+        note = "queued" if queued else "already queued for this url"
+        return Response(
+            body=f"datasheet pull {note} for part:{lcsc}. Outcome: "
+            f"get(kind='part', id='{lcsc}') (datasheet line)."
+        )
+
+    def _resolve_part(self, part: str) -> str:
+        from precis.pcb.catalog import lcsc_id
+
+        lcsc = lcsc_id(part)
+        if lcsc is not None:
+            if self.store.part_row(lcsc) is None:
+                # same catalog-miss fallback as get(kind='part'): the dump
+                # lacks the Extended range; a hit is upserted by the lookup
+                try:
+                    found = jlc_library.live_lookup(self.store, lcsc) is not None
+                except VendorError:
+                    found = False
+                if not found:
+                    raise NotFound(
+                        f"part {lcsc} not in the catalog",
+                        next="check the C-number: search(kind='part', q='…')",
+                    )
+            return lcsc
+        with self.store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT lcsc FROM parts WHERE lower(mfr_part) = lower(%s) "
+                "ORDER BY lcsc LIMIT 3",
+                (part,),
+            ).fetchall()
+        if len(rows) != 1:
+            raise BadInput(
+                f"part {part!r}: "
+                + ("no catalog row has that mpn" if not rows else "several match")
+                + "; pass the LCSC C-number",
+                next="search(kind='part', q=<mpn>) for the C-number",
+            )
+        return str(rows[0][0])
 
     def accepted_views(self, *, id: Any = None) -> list[str]:
         return list(_DATASHEET_VIEWS)

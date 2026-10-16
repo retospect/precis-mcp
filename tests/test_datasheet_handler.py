@@ -30,9 +30,11 @@ def test_datasheet_subclasses_paper_for_dry_reuse() -> None:
     assert issubclass(DatasheetHandler, PaperHandler)
 
 
-def test_datasheet_has_no_put_and_no_citation_export_views(hub: Hub) -> None:
-    # A datasheet is acquired by ingesting a PDF, not by minting a stub.
-    assert DatasheetHandler.spec.supports_put is False
+def test_datasheet_put_is_a_url_pull_and_has_no_citation_export_views(
+    hub: Hub,
+) -> None:
+    # put queues a URL pull (gr492689); it never mints a stub.
+    assert DatasheetHandler.spec.supports_put is True
     # Reading verbs are inherited.
     assert DatasheetHandler.spec.supports_get is True
     assert DatasheetHandler.spec.supports_search is True

@@ -17,7 +17,7 @@ kinds: [datasheet, pcb, part]
 
 A `datasheet` is a component document (electronics sibling of `paper`),
 ingested the same way — embed / keywords / TOC / semantic search for free.
-It's **evidence, read-only** (`supports_put=False`) — you mine it for the
+It's **evidence** (you attach a PDF by URL, below; you don't author it) — you mine it for the
 facts a `pcb` design needs, you don't author it.
 
 ## Read one — `get` / `search`
@@ -45,10 +45,25 @@ are scoped out of `search(kind='paper')` and vice-versa.
 
 ## Where a datasheet comes from
 
-A datasheet for each C-number a `pcb` design uses is pulled and linked
-automatically (a `datasheet_pull` job, queued by the put); when it fails,
-`get(kind='part', id='C…')` gives the reason. Otherwise an operator drops the
-PDF — ask one if it's missing (`docs/runbooks/datasheet-ops.md`). Set
+A datasheet is pulled and linked automatically (a `datasheet_pull` job) when
+a part is looked up (`get(kind='part', id='C…')`) or a `pcb` design uses its
+C-number, so it exists before the part is chosen. When the pull fails,
+`get(kind='part', id='C…')` gives the reason.
+
+**You found the PDF yourself** (the catalog has no URL, or its URL is
+blocked): hand it over by URL.
+
+```python
+put(kind='datasheet', args={'url': 'https://…/x.pdf', 'part': 'C19191684'})
+```
+
+`part` is a C-number, or an mpn that matches one catalog row. The put checks
+the URL against the SSRF guard (private/loopback/non-http is refused
+immediately) and queues a pull; the job downloads through `safe_stream`,
+requires `%PDF` and at most 50 MB, ingests, and links `datasheet-of` the
+part. The outcome shows on the `datasheet:` line of `get(kind='part')`. A
+local sandbox path is not accepted (the worker cannot read it); host the
+file or ask an operator to drop it (`docs/runbooks/datasheet-ops.md`). Set
 vendor/subtype/part; they flow into the exported citation, and `part_lcsc`
 also links the datasheet `datasheet-of` the part (its ref is minted on first
 use, [[precis-part-select-help]]):
