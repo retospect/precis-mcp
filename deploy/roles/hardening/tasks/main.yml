@@ -407,6 +407,30 @@
         state: started
         daemon_reload: true
 
+# ── DGX Dashboard privileged helper (Linux; gr489996) ──
+# dgx-dashboard-admin.service is the root D-Bus helper behind the dashboard's
+# update and reboot buttons. Its `apt update` runs hang in CLOSE-WAIT and hold
+# the apt lists lock for days. Masking it kills those buttons only; the
+# dashboard UI and telemetry (dgx-dashboard.service) keep running, and OS
+# updates belong to os-update. Stopping the unit also ends any hung apt child
+# in its cgroup.
+- name: Read systemd units (DGX dashboard check)
+  tags: [dgx-dashboard]
+  when: os_family == "linux"
+  ansible.builtin.service_facts:
+
+- name: Stop, disable and mask dgx-dashboard-admin (Linux)
+  tags: [dgx-dashboard]
+  when:
+    - os_family == "linux"
+    - "'dgx-dashboard-admin.service' in ansible_facts.services"
+  ansible.builtin.systemd:
+    name: dgx-dashboard-admin.service
+    state: stopped
+    enabled: false
+    masked: true
+  become: true
+
 - name: Deploy sudoers drop-in for deploy user
   ansible.builtin.template:
     src: sudoers_deploy.j2

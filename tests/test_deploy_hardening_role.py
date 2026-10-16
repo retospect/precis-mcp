@@ -6,6 +6,8 @@
   check scripts/host-ops/os-update also runs) and no service_config reserve.
 - gr489603: the templated sshd_config carries an sftp Subsystem with the
   right sftp-server path per OS family, and both sshd tasks are tagged.
+- gr489996: dgx-dashboard-admin.service is stopped, disabled and masked,
+  tagged dgx-dashboard and only where the unit exists.
 """
 
 from __future__ import annotations
@@ -246,3 +248,25 @@ def test_role_shell_scripts_pass_shellcheck() -> None:
             check=False,
         )
         assert result.returncode == 0, result.stdout + result.stderr
+
+
+# ── gr489996: dgx-dashboard-admin ──────────────────────────────────────────
+
+
+def test_dgx_dashboard_admin_masked_only_where_the_unit_exists() -> None:
+    tasks = [t for t in _tasks() if "dgx-dashboard" in t.get("tags", [])]
+    assert len(tasks) == 2
+    facts, mask = tasks
+    assert "ansible.builtin.service_facts" in facts
+    assert mask["ansible.builtin.systemd"] == {
+        "name": "dgx-dashboard-admin.service",
+        "state": "stopped",
+        "enabled": False,
+        "masked": True,
+    }
+    assert "'dgx-dashboard-admin.service' in ansible_facts.services" in mask["when"]
+    for task in tasks:
+        assert 'os_family == "linux"' in str(task["when"]), task["name"]
+    # Only the privileged helper: the dashboard UI unit stays up.
+    text = (_ROLE / "tasks" / "main.yml").read_text(encoding="utf-8")
+    assert "name: dgx-dashboard.service" not in text
