@@ -3002,11 +3002,15 @@ def check_silk_printability(
 
 
 #: Float-noise tolerance for the 45-degree direction test — the DRC-side
-#: twin of :data:`precis.pcb.realize._OCTILINEAR_EPS_MM` (kept as a local
-#: constant: this module deliberately imports no realizer). A genuinely
-#: octilinear segment misses by rounding only (~1e-14 at board scale);
-#: an off-angle emitter misses by whole hundredths of a millimetre.
-_OCTILINEAR_EPS_MM = 1e-6
+#: counterpart of :data:`precis.pcb.realize._OCTILINEAR_EPS_MM`, which stays
+#: at 1e-6 for router output; wider here for imports (kept as a local
+#: constant: this module deliberately imports no realizer). A segment the
+#: router drew misses by rounding only (~1e-14 at board scale); one
+#: imported from a 6-decimal source file misses by up to ~8e-5 mm
+#: (taz15-r2: 555 segments below 1.5e-14, 100 between 1e-6 and 7.7e-5,
+#: none in 7.7e-5..1e-4, then genuine off-angle runs from 1.0e-4 up;
+#: gr492988). 1e-4 mm = 0.1 um, far below any fab's resolution.
+_OCTILINEAR_EPS_MM = 1e-4
 
 
 def check_octilinear(model: dict[str, Any]) -> list[DrcFinding]:
@@ -3168,6 +3172,19 @@ def check_connectivity(model: dict[str, Any]) -> list[DrcFinding]:
         for island in net_islands(model)
         if island.net in copper_nets
     ]
+
+
+def nets_routed_by_copper(model: dict[str, Any]) -> set[str]:
+    """Nets that carry copper whose copper plus pads is ONE connected
+    piece: already routed, whoever drew it (the router, or fixed source
+    copper imported with ``--copper fixed``; gr492989). A net with no
+    copper, or with copper in several pieces, is not in the set."""
+    from precis.pcb.connectivity import net_islands
+
+    split = {island.net for island in net_islands(model)}
+    return {
+        str(item["net"]) for item in model.get("copper") or [] if item.get("net")
+    } - split
 
 
 def check_unrouted(
@@ -4523,6 +4540,7 @@ __all__ = [
     "derive_phase",
     "finding_identity",
     "finding_key",
+    "nets_routed_by_copper",
     "process_for_stackup",
     "run_geometric_drc",
     "run_placement_drc",

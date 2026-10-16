@@ -873,8 +873,9 @@ def test_drc_view_runs_the_full_pass_once_the_fabric_is_real_copper(pcb):
     router bookkeeping status is unrelated to whether the NET's copper
     exists — a fanout-1 net with a fixed-copper via landing has nothing
     left for a router to draw, see docs/backlog/pcb-pre-place-route-
-    blocks.md's router-posture note) — a real, correctly-reported status,
-    not a defect. The rule-level clearance/annular-ring/via-keepout
+    blocks.md's router-posture note). gr492989: such a net is therefore
+    NOT an ``unrouted`` finding — its fixed copper already joins its
+    pads, whatever the ``pcb_routes`` bookkeeping says. The rule-level clearance/annular-ring/via-keepout
     coverage against REAL generator copper lives in
     ``test_pcb_ewod_generator_drc.py``, driving ``precis.pcb.drc``
     directly; this test stays the handler-path smoke + contract check."""
@@ -882,7 +883,7 @@ def test_drc_view_runs_the_full_pass_once_the_fabric_is_real_copper(pcb):
     resp = pcb.get(id="ewod-gen-1", view="drc")
     assert "no realized copper yet" not in resp.body
     assert "(pads-only DRC — no routed copper yet)" not in resp.body
-    assert "unrouted" in resp.body
+    assert "has no route" not in resp.body
 
 
 def test_electrode_nets_get_a_dedicated_gap_net_class(pcb):

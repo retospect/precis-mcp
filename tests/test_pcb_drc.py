@@ -2510,6 +2510,35 @@ def test_check_octilinear_quiet_on_axis_diagonal_and_arcs():
     assert drc.check_octilinear(model) == []
 
 
+def test_check_octilinear_tolerates_six_decimal_source_rounding():
+    """gr492988: a KiCad-imported 45-degree run (taz15-r2) has coordinates
+    rounded to 6 decimals and misses |dx| == |dy| by up to ~8e-5 mm; that
+    is a diagonal, while a 1.0e-4 mm miss is not."""
+    near = _track("A", "F.Cu", (33.098892, 12.878892), (36.505159, 16.285185))
+    off = _track("A", "F.Cu", (0.0, 0.0), (5.0, 5.0002))
+    assert drc.check_octilinear({"layers": ["F.Cu"], "copper": [near]}) == []
+    assert len(drc.check_octilinear({"layers": ["F.Cu"], "copper": [off]})) == 1
+
+
+def test_nets_routed_by_copper_counts_any_connected_copper():
+    """gr492989: a net whose copper joins all its pads is routed, whoever
+    drew it; a net with no copper, or a gap between its pads, is not."""
+    pads = [
+        _fp_pad("R1", "1", "N", 0.0),
+        _fp_pad("R2", "1", "N", 3.0),
+        _fp_pad("R3", "1", "M", 0.0),
+    ]
+    joined = {
+        "layers": ["F.Cu"],
+        "pads": pads,
+        "copper": [_track("N", "F.Cu", (0.0, 0.0), (3.0, 0.0))],
+    }
+    assert "N" in drc.nets_routed_by_copper(joined)
+    gap = {**joined, "copper": [_track("N", "F.Cu", (0.0, 0.0), (1.0, 0.0))]}
+    assert "N" not in drc.nets_routed_by_copper(gap)
+    assert "M" not in drc.nets_routed_by_copper(joined)
+
+
 def test_clearance_finding_names_the_layer_the_pair_met_on():
     """gr345858: a through via's row carries a nominal ``layer`` (F.Cu)
     whatever it spans, so a via against a BOTTOM-side pad used to be

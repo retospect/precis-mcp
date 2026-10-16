@@ -5904,6 +5904,14 @@ class PcbHandler(Handler):
         courtyards, courtyard_bottom, net_rules, net_voltages = self._drc_rule_inputs(
             design, courtyard_local, capability
         )
+        # Fixed source copper routes a net with no ``pcb_routes`` row
+        # (gr492989): judge "unrouted" by the copper, not the status alone.
+        route_status = self.store.pcb_route_status(ref_id)
+        routed_by_copper = (
+            pcb_drc.nets_routed_by_copper(model)
+            if any(r["status"] != "realized" for r in route_status)
+            else set()
+        )
         findings = pcb_drc.run_geometric_drc(
             model,
             capability=capability,
@@ -5914,8 +5922,8 @@ class PcbHandler(Handler):
             net_voltages=net_voltages,
             unrouted=[
                 {"net": r["name"], "note": r.get("note")}
-                for r in self.store.pcb_route_status(ref_id)
-                if r["status"] != "realized"
+                for r in route_status
+                if r["status"] != "realized" and r["name"] not in routed_by_copper
             ],
             census=silk_census,
             holes=[
