@@ -39,8 +39,10 @@ Note from the user: `$ARGUMENTS`
    and only once. A peer that messages "qlanded <sha>" instead of marking is
    fine — the sha is on main either way.
 
-3. **Read the candidate.** When `pending` is empty, or the stragglers are
-   `eta` and what has landed is worth a deploy:
+3. **Read the candidate.** As soon as the release owner is free to cut. Do
+   not wait for `pending`, an `eta`, or a fix that is still in flight;
+   whatever is not green on main at the cut rides the next release (Reto
+   2026-10-16, §Don't wait in `docs/conventions/shipping.md`):
    ```
    scripts/round gate
    ```

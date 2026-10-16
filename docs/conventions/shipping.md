@@ -76,6 +76,14 @@ both is still `scripts/ship --mutate --full` + `scripts/deploy <.ship-sha>
 --pinned`, now off the `/go` path. Exit-code table: `.claude/commands/go.md`
 step 7.
 
+**Don't wait (Reto 2026-10-16).** When the release owner is ready to cut,
+it cuts. No release waits for a red fix, a straggler's `eta`, a planning
+pass or a ruling still in discussion. Cut at the newest all-green main sha;
+if main is red on a commit that is not ready, revert that commit (it
+relands later) or cut at the last green sha, whichever is faster. Never
+weaken a test or ratchet to make the cut. Work that misses the cut rides
+the next release.
+
 ## /qland — pytest-ungated burst-land
 
 `scripts/ship --quick`: refuse a dirty tree → sync → **drift guard** (warns when
