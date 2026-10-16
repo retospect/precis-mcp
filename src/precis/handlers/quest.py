@@ -142,6 +142,7 @@ _REACTION_CONFIG_KEYS: frozenset[str] = frozenset(
         "corrections",
         "coverage",
         "kinetics",
+        "spectators",
     }
 )
 

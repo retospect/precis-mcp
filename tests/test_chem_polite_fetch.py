@@ -46,9 +46,10 @@ def rig(monkeypatch: pytest.MonkeyPatch) -> Any:
         responses: list[httpx.Response | Exception] = []
         calls: list[dict[str, Any]] = []
         acquired: list[str] = []
+        clock: Any = None
 
     rig = Rig()
-    rig.clock = clock  # type: ignore[attr-defined]
+    rig.clock = clock
     rig.responses = []
     rig.calls = []
     rig.acquired = []
