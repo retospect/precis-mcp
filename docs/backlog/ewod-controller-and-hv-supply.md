@@ -1,18 +1,19 @@
 ---
 status: ready
 pillar: 3d-design
-title: EWOD dogfood board — Arduino Pro Mini controller, USB-C power + programming, on-board 250 V flyback supply from the 5 V rail (rulings 12–21) + two prod-review defects
+title: EWOD dogfood board — Arduino Pro Mini controller, USB-C power + programming, on-board 250 V flyback supply from the 5 V rail (rulings 12–22) + two prod-review defects
 prio: high
 ---
 
-# EWOD dogfood board — controller, USB-C power, on-board 250 V supply (rulings 12–21) + two prod-review defects
+# EWOD dogfood board — controller, USB-C power, on-board 250 V supply (rulings 12–22) + two prod-review defects
 
-> **Ruling 21 (Reto, approved ~18:10Z 2026-10-16) supersedes the 20 V HV
-> input.** The 250 V flyback runs from the **5 V buck rail**, not 20 V VBUS,
-> and is **off by default** (the Mini enables and kills it). Every 20 V
-> statement about the HV stage below carries a "Superseded by ruling 21"
-> note. Whether the 20 V PD contract is still needed is an open question
-> for Reto (Open questions 3).
+> **Ruling 22 (Reto, approved ~20:10Z 2026-10-16) drops the 20 V USB-PD
+> contract.** The board is a default-5 V Type-C sink: no CH224K, no buck,
+> VBUS → PTC → optional load switch → the 5 V rail. Every 20 V, PD, CH224K
+> or buck passage below is **superseded by ruling 22** (see that ruling at
+> the end of Ruling 21's section). Ruling 21 (approved ~18:10Z) already moved
+> the 250 V flyback onto the 5 V rail; it is **off by default** (the Mini
+> enables and kills it).
 
 Companion to `pcb-ewod-multitile.md` (the array generator; rulings 1–11
 live there). This item holds rulings **12–15** (Reto, 2026-09-24),
@@ -53,11 +54,11 @@ campaign burned several rounds chasing numbers produced by stale code.
 ## Motivation / why
 
 `ewod-dogfood-6` today is an array + sink + temp sensor with no controller,
-no power entry that survives a PD contract, and an external HV supply it
+no protected power entry, and an external HV supply it
 was never going to get. Ruling 9 chose a 3.3 V controller that then needed
 a level shifter; a 5 V controller deletes that part. A single USB-C port
-that programs the board and negotiates 20 V removes a second connector and
-makes the HV stage small. And two things the generator emits are wrong or
+that programs and powers the board (5 V, ruling 22) removes a second
+connector. And two things the generator emits are wrong or
 missing in a way that blinds DRC/router (Defect A) or leaves the top plate
 unconnectable (Defect B).
 
@@ -101,13 +102,19 @@ a blocker**: the 9×9 / 1024-pad multitile roadmap (two or more chained
 HV507s, 128+ bits per frame, capacitive sensing on an ADC line) is where
 the Teensy argument returns. Record it; do not act on it.
 
-**TRAP — RAW pin.** The Pro Mini's RAW input feeds an on-board LDO rated
-well below 20 V (SparkFun: 5–12 V recommended; `SOURCE NEEDED`, same
-schematic import). With PD at 20 V, **VBUS must never reach RAW.** Feed
-the Mini's VCC (5 V) pin from the buck and leave RAW unconnected — assert
-in the netlist test that no net joins VBUS to any Mini pin.
+~~**TRAP — RAW pin.** The Pro Mini's RAW input feeds an on-board LDO rated
+well below 20 V; with PD at 20 V, VBUS must never reach RAW.~~
+**Removed 2026-10-16 by ruling 22:** VBUS is 5 V, so the 20 V trap is gone.
+The Mini's VCC pin is fed from the 5 V rail and RAW is left unconnected by
+convention.
 
 ## Ruling 13 — USB-C: power, PD negotiation to 20 V, and programming
+
+> **Superseded 2026-10-16 by ruling 22 (PD dropped).** The 20 V contract,
+> the CH224K, the PD VBUS divider and LED, the wide-Vin buck and the
+> bring-up sequencing below are history. What survives: one USB-C port for
+> power and programming, the CH340N bridge on the 5 V rail, and the
+> DTR auto-reset wiring. CC1/CC2 are now bare 5.1 kΩ pull-downs.
 
 Reto: "can we pd and get 20 V and would it be easier" → **yes for the HV
 stage, roughly a wash on part count; do it.**
@@ -152,15 +159,18 @@ stage, roughly a wash on part count; do it.**
   firmware choice later.~~ **Superseded 2026-10-16 by ruling 21:** the HV
   stage is OFF by default (FA/SD pulled up) and the Mini enables and kills
   it; it never runs wide-Vin.
-- **TRAP — the USB-serial bridge (CH340N, ruling 17) is powered from the
-  5 V buck rail, NOT VBUS.** Reference designs tie bridge VCC to VBUS;
-  here VBUS is 20 V after negotiation and destroys the bridge. D+/D− are
+- **The USB-serial bridge (CH340N, ruling 17) is powered from the 5 V
+  rail.** ~~Reference designs tie bridge VCC to VBUS; here VBUS is 20 V after
+  negotiation and destroys the bridge.~~ *(Superseded by ruling 22: VBUS is
+  5 V; the rail still comes through the PTC.)* D+/D− are
   unaffected by the contract (PD runs on CC). The bridge's DTR goes to the
   Mini's DTR/RESET through the standard 100 nF cap for auto-reset upload;
   bridge TX/RX/DTR land on the Mini's 6-pin programming header pins, which
   the on-board bridge replaces.
 
 ## Ruling 14 — on-board 250 V supply: Cockcroft-Walton ladder from the 20 V rail
+
+> *All 20 V figures here are also superseded by ruling 22.*
 
 > **SUPERSEDED 2026-09-24 by ruling 15 — the topology is a FLYBACK.**
 > Reto, on being shown the two facts that emerged after ruling 14 was
@@ -171,6 +181,8 @@ stage, roughly a wash on part count; do it.**
 > 250 V output net — read those parts forward.
 
 ## Ruling 15 — the 250 V supply is a flyback from the 20 V PD rail
+
+> **Superseded by ruling 22:** there is no 20 V PD rail; VIN is the 5 V rail.
 
 > **Input rail superseded 2026-10-16 by ruling 21:** the flyback topology
 > stands, but VIN is the **5 V buck rail**, not the 20 V PD rail (reason
@@ -414,7 +426,7 @@ Ruled ~10:2xZ, relayed by the coordinator session witty-forging-bee-d4.
   slice 6 as a flyback". Slice 6 still described the Cockcroft-Walton
   ladder that ruling 15 had replaced. It is rewritten below.
 - **Ruling 17 — parts.** Reto: "CH224K for the PD sink, CH340N for the USB
-  bridge". The buck converter and the flyback transformer were left to
+  bridge" *(the CH224K half is superseded by ruling 22)*. The buck converter and the flyback transformer were left to
   the builder, picked from JLC stock. The proposal is below. This lifts
   the "no C-numbers in this document" rule for those two parts only.
 - **Ruling 18 — the top plate goes on a switched channel.** Reto picked
@@ -466,8 +478,8 @@ and the LCSC product pages. Re-check it at footprint intake.
 
 | Role | Part | LCSC | Stock | JLC tier | Why |
 |---|---|---|---|---|---|
-| Buck 20 → 5 V | Diodes **AP63205WU-7** | **C2071056** | 43,955 | Extended | Fixed 5 V output, so no divider. Vin 3.8–32 V (abs max 35 V; 40 V for 400 ms), 2 A, 1.1 MHz. Datasheet: "the regulator enters low dropout mode by holding Q1 on for multiple clock cycles… The effective duty cycle is approximately 100%". It therefore passes vSafe5V through before the PD contract (ruling 13 sequencing). Package TSOT-23-6, plus L, bootstrap cap, input cap and output cap. |
-| Buck fallback | TI LMR51420XDDCR | C5246146 | 8,385 | Extended | Vin 4.5–36 V, 2 A, 98 % max duty; frequency drops in dropout. Needs a feedback divider. Its 4.5 V minimum Vin is tight against vSafe5V's 4.75 V floor. |
+| ~~Buck 20 → 5 V~~ **deleted, ruling 22** | Diodes **AP63205WU-7** | **C2071056** | 43,955 | Extended | Fixed 5 V output, so no divider. Vin 3.8–32 V (abs max 35 V; 40 V for 400 ms), 2 A, 1.1 MHz. Datasheet: "the regulator enters low dropout mode by holding Q1 on for multiple clock cycles… The effective duty cycle is approximately 100%". It therefore passes vSafe5V through before the PD contract (ruling 13 sequencing). Package TSOT-23-6, plus L, bootstrap cap, input cap and output cap. |
+| ~~Buck fallback~~ **deleted, ruling 22** | TI LMR51420XDDCR | C5246146 | 8,385 | Extended | Vin 4.5–36 V, 2 A, 98 % max duty; frequency drops in dropout. Needs a feedback divider. Its 4.5 V minimum Vin is tight against vSafe5V's 4.75 V floor. |
 | Flyback transformer | Coilcraft **LPR6235-253PMRC** | **C19191684** | 2,914 | Extended | Coupled inductor sold for flyback and step-up use (Coilcraft Doc 752NR-1). **1:20, Lp 25 µH ±20 %, Isat 0.7 A, DCR 0.20 Ω / 72 Ω, SRF 580 kHz**, 6 × 6 × 3.5 mm SMD. At 20 V in, 250 V out needs D ≈ 0.38 (`Vout = n·Vin·D/(1−D)`). The switch sees ≈ 20 + 250/20 = 32.5 V plus the leakage spike, so a 60 V FET suffices. At 0.6 A peak and 200 kHz in DCM it delivers ≈ 0.9 W, which covers the 1 W budget; the operating point is ~90 mW. |
 | Transformer fallback | Coilcraft LPR6235-253LML (1:10, 25 µH, Isat 1.3 A, same datasheet) | not found in JLC stock | — | — | D ≈ 0.56 at 20 V. More current headroom than the 1:20, but more switch stress. |
 
@@ -476,10 +488,10 @@ and the LCSC product pages. Re-check it at footprint intake.
 > "0.6 A peak … ≈ 0.9 W" are for a 20 V input. At VIN = 5 V the guaranteed
 > output is 0.45–0.65 W (open risk in ruling 21), and the switch sees
 > ≈ 5 V plus the clamped leakage spike (clamp drain to VIN). The fallback
-> row (1:10, D ≈ 0.56 at 20 V) is likewise a 20 V figure. The buck row stays
-> only while the 20 V PD contract is kept (Open questions 3): the Mini, the
-> HV507 and the CH340N need a 5 V rail either way, and the same rail now
-> also feeds the HV stage.
+> row (1:10, D ≈ 0.56 at 20 V) is likewise a 20 V figure. The buck rows are
+> deleted by ruling 22 (no 20 V contract, so no buck): the Mini, the HV507,
+> the CH340N and the HV stage take the 5 V rail straight from VBUS through
+> the ruling 22 PTC and optional load switch.
 
 The ratio is 1:20, not the ~1:5 that ruling 15 sketched. 1:5 is the
 minimum ratio that reaches 250 V. A higher ratio lowers duty and switch
@@ -579,9 +591,59 @@ drive equals VIN below 7.2 V; VIN 2.97–40 V; current-mode, so duty above
    unknown; measure at bring-up and add a cap if the ripple needs it.
 4. **Minimum load.** The bleeder value (4 × 1 MΩ) is tuned at bring-up
    against the DCM no-load behaviour.
-5. **20 V PD contract.** With the HV on the 5 V rail, nothing on the board
-   needs 20 V. Reto to decide whether the contract is still wanted (Open
-   questions 3).
+5. ~~**20 V PD contract.**~~ Decided by ruling 22 below: dropped.
+6. **Power budget on USB 5 V** (added by ruling 22): the whole board must
+   fit about 1.3 W (roughly 300 mA at 5 V). Re-check against the 0.45–0.65 W
+   guaranteed HV output in risk 1 at bring-up.
+
+### Ruling 22 — drop the 20 V USB-PD contract; 5 V Type-C sink (Reto, ~20:10Z 2026-10-16)
+
+Reto approved it as proposed, ~20:10Z 2026-10-16, via the coordinator
+witty-forging-bee-d4. It decides Open question 3 and **supersedes** every
+20 V passage above and below: rulings 13 (PD negotiation, CH224K, bring-up
+sequencing), 15 (20 V rail), 17 (buck, CH224K picks), the Pro Mini RAW-pin
+20 V trap, and Slice 5's 20 V sequencing. Rulings 12, 14 and 16–21 stand
+otherwise. The 5 V rail is unchanged for the Mini, the HV507 VDD, the
+CH340N and the HV stage (ruling 21).
+
+- **Deleted:** the 20 V PD contract, the CH224K and its CFG straps, the PD
+  VBUS divider and PD-failed LED, and the AP63205 buck (C2071056) with its
+  inductor, bootstrap and caps. The LMR51420 buck fallback goes too.
+- **CC1 and CC2** each get a 5.1 kΩ pull-down to GND. The board is a
+  default-5 V Type-C sink and draws up to 900 mA (USB 2.0 rule) from any
+  source; the budget below stays well under that.
+- **VBUS entry:** VBUS → PTC resettable fuse → optional soft-start load
+  switch → the 5 V rail, with a TVS from VBUS to GND ahead of the fuse. The
+  load switch limits the inrush at plug-in so the rail does not spike. It is
+  optional: leave it DNP and bridge it with a 0 Ω jumper if bring-up shows
+  the PTC and bulk cap are enough.
+- **Budget:** about 1.3 W for the HV stage plus logic, roughly 300 mA at
+  5 V.
+- **VBUS and RAW:** VBUS is 5 V now, so the 20 V RAW-pin trap is gone. RAW is
+  still left unconnected; the rail feeds the Mini's VCC pin.
+- **Footprints:** the 11 footprints cached for ruling 21 are unchanged.
+
+**VBUS-entry part picks** (stock read from the precis part search,
+2026-10-16; re-check at footprint intake). All three are JLC
+Extended. **Datasheet status: NOT attached.** The prod `datasheet` kind in
+this build refuses `put` (`[error:Unsupported] datasheet does not support
+put`), and the only other route (a `datasheet_pull` job) needs a part ref
+minted by a link or a pcb edit, which this brief did not grant. Per the
+datasheet-first rule these are **candidates until a pull lands**; the
+URLs below are the catalog's `datasheet_url` for each part.
+
+| Role | Part | LCSC | Stock | Key ratings | Datasheet |
+|---|---|---|---|---|---|
+| PTC fuse | BHFUSE **BSMD1206-050-6V** | **C883122** | 47,907 | 1206, hold 0.5 A, trip 1 A, 6 V max, 100 A max fault, 150 mΩ min / 700 mΩ max | [LCSC PDF](https://www.lcsc.com/datasheet/lcsc_datasheet_2305121423_BHFUSE-BSMD1206-050-6V_C883122.pdf), pull pending |
+| VBUS TVS | MDD **SMF5.0A** | **C193402** | 557,643 | SOD-123FL, unidirectional, 5 V standoff, 6.4 V min breakdown, 9.2 V clamp at 21.7 A, 200 W (10/1000 µs), 400 µA leakage | [LCSC PDF](https://www.lcsc.com/datasheet/lcsc_datasheet_2308231016_MDD-Microdiode-Semiconductor-SMF5-0A_C193402.pdf), pull pending |
+| Load switch (optional) | TI **TPS22918DBVR** | **C131941** | 60,734 | SOT-23-6, 1–5.5 V, 2 A, 53 mΩ, active-high, CT pin sets the turn-on slew | [LCSC PDF](https://www.lcsc.com/datasheet/lcsc_datasheet_2303021300_Texas-Instruments-TPS22918DBVR_C131941.pdf), pull pending |
+| PTC alternate | nSMD050 | C69688 | 22,290 | 1206, hold 0.5 A, 6 V | not fetched |
+| TVS alternate | MDD-class SMF5.0A | C169426 | 51,916 | SOD-123FL, same family footprint | not fetched |
+
+The fuse hold current (0.5 A) sits above the ~300 mA budget and below the
+USB 2.0 900 mA limit; the 6 V rating clears VBUS at 5.25 V. The TPS22918's
+turn-on time at its CT pin is set at bring-up; its 2 A rating covers the
+fuse trip current.
 
 **Sources.** TI `lm3478.pdf` and `tps61170.pdf`; Microchip `22039d.pdf`
 (MCP4725); Coilcraft LPR6235 datasheet
@@ -736,16 +798,17 @@ an HV-vs-GND gap of 0.3 mm is a DRC **error**, 0.45 mm clean; a class with
 is refused (table top band); existing electrode-gap class behaviour
 (WARN threshold only) unchanged.
 
-**Slice 5 — controller + USB-C power on `ewod-dogfood-6`. BLOCKED on
-footprint intake.** Pro Mini LOCAL footprint (verified drawing); `op=
-'footprint'` intake for: USB-C 16-pin receptacle, CH224K (ruling 17),
-the buck (AP63205WU-7 C2071056 proposed, ruling 17), CH340N (ruling 17),
-ESD array, LEDs. C-numbers for the CH224K, CH340N, ESD array and LEDs
-are chosen at intake. Netlist per rulings 12/13; tests assert VBUS reaches only the PD
-controller, the buck input and the divider (ruling 21: the HV stage no
-longer reads VBUS, and if Reto drops the 20 V contract, Open questions 3,
-the PD controller and this clause go with it); the bridge's VCC is on the
-5 V rail; RAW is unconnected.
+**Slice 5 — controller + USB-C 5 V power on `ewod-dogfood-6` (ruling 22).
+BLOCKED on footprint intake.** Pro Mini LOCAL footprint (verified drawing);
+`op='footprint'` intake for: USB-C 16-pin receptacle, the VBUS PTC fuse,
+VBUS TVS and optional load switch (ruling 22 table), CH340N (ruling 17),
+ESD array, LEDs. C-numbers for the CH340N, ESD array and LEDs are chosen at
+intake. There is no PD controller and no buck (ruling 22). Netlist per
+rulings 12/22: CC1 and CC2 each carry a 5.1 kΩ pull-down to GND; VBUS
+reaches the 5 V rail only through the PTC (then the optional load switch),
+with the TVS from VBUS to GND; the bridge's VCC is on the 5 V rail. The
+Mini's RAW stays unconnected by convention (the rail feeds its VCC pin
+directly), and the netlist test keeps asserting it.
 *Accept:* `view='footprints'` shows no synthesized pin on any new part;
 netlist assertions above; board places and routes on the offline harness
 with the fabric count no worse than the HEAD re-measure (prerequisite).
@@ -758,7 +821,8 @@ B5819W primary clamp (drain to VIN), LPR6235-253PMRC transformer, US1MF
 output diode, 3 × 100 nF / 500 V output caps, the 3 × 1SMA4763A HV clamp,
 the 5 × 1 MΩ / 33.2 kΩ divider with a 4 × 1 MΩ bleeder, the MCP4725A0T
 voltage-set DAC and the FA/SD enable gate. C-numbers are in the ruling 21
-table. VIN is the **5 V buck rail**, not VBUS. The stage is **off by
+table. VIN is the **5 V rail** (VBUS through the ruling 22 PTC and
+optional load switch), not a 20 V rail. The stage is **off by
 default**: FA/SD is pulled up by 10 kΩ and the Mini releases it (ruling
 21), so ruling 15's "standalone" and ruling 13's "default-on enable" are
 superseded. The divider's top leg is 5 series resistors, and its bottom
@@ -792,7 +856,7 @@ a B.Cu pad without a via (the gr346744 signature) — else file it as new.
 
 ## Explicitly NOT in scope
 
-- Firmware (frame timing, complement drive, PD status handling) — the
+- Firmware (frame timing, complement drive) — the
   kind ships copper and metadata.
 - Multitile controller scaling (Teensy return), capacitive sensing path,
   DropBot-style feedback — recorded as the known ceiling only.
@@ -802,9 +866,9 @@ a B.Cu pad without a via (the gr346744 signature) — else file it as new.
   the dielectric but 0.4 mm on B.Cu) — Open question, not built here.
 - Rewriting `pcb-usb-c-pd-nano-testboard.md` beyond marking its blocker 3
   stale.
-- Choosing C-numbers in this document, except the buck and flyback
-  transformer proposal that ruling 17 asks for and the HV decision table
-  of ruling 21 (approved by Reto).
+- Choosing C-numbers in this document, except the flyback transformer
+  proposal that ruling 17 asks for, the HV decision table of ruling 21
+  (approved by Reto) and the VBUS-entry picks of ruling 22.
 
 ## Acceptance criteria (summary — detail per slice above)
 
@@ -815,8 +879,9 @@ a B.Cu pad without a via (the gr346744 signature) — else file it as new.
    net is emitted, exported and connected (Slice 3).
 4. A 0.4 mm class binds the router per-net and DRC at error tier, derived
    from `working_voltage_v` (Slice 4).
-5. `ewod-dogfood-6` carries Pro Mini + USB-C PD + buck + bridge + flyback
-   HV stage from the 5 V rail with the netlist traps asserted (Slices 5–6).
+5. `ewod-dogfood-6` carries Pro Mini + USB-C 5 V sink (ruling 22) + bridge
+   + flyback HV stage from the 5 V rail with the netlist traps asserted
+   (Slices 5–6).
 6. Prod matches the offline harness after deploy (Slice 7).
 
 ## Target + blast radius
@@ -847,7 +912,7 @@ thickness/voltage, survey-grade); IPC-2221B B1/B2/B4 rows already in
 HV507 datasheet DS20005845A (V_IH, VDD, VPP quiescent, pin functions incl.
 `C`, DIR); SparkFun Pro Mini 5 V/16 MHz schematic + drawing (pinout, RAW
 LDO limit); WCH CH224K datasheet (CFG selection, behaviour when the
-requested PDO is absent); USB PD power rules (which sources offer 20 V);
+requested PDO is absent; moot after ruling 22, which drops the CH224K);
 ATmega328P safe-operating area (16 MHz vs VCC); parylene C ε_r and
 dielectric strength (a primary, not the survey); a power-electronics
 reference for the CW droop/ripple formulas; the chosen ladder capacitor's
@@ -867,12 +932,9 @@ id — import the OpenDrop paper and cite it there too).
 2. ~~**Flyback parts and control** — held, ruling 20.~~ **Decided
    2026-10-16, ruling 21.** The residual risks (power, hipot, MLCC DC bias,
    bleeder tuning) are listed there.
-3. **Is the 20 V PD contract still needed?** Ruling 21 moved the HV stage
-   to the 5 V rail, so no load wants 20 V. Dropping the contract would
-   delete the CH224K, the wide-Vin buck's reason to exist (a 5 V USB
-   source could feed the rail through a load switch or a smaller regulator)
-   and Slice 5's 20 V sequencing. Slice 5 stays as written until Reto
-   answers.
+3. ~~**Is the 20 V PD contract still needed?**~~ **Decided 2026-10-16,
+   ruling 22: no.** The contract, the CH224K and the buck are dropped; the
+   board is a default-5 V Type-C sink.
 
 (Former questions settled: the top plate goes on a switched channel
 (ruling 18), and the full-wave versus half-wave ladder question went
