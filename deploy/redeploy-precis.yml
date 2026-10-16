@@ -1064,9 +1064,10 @@
 # playbook header. Runs on agent_sandbox_hosts plus any Linux host with the
 # unit already installed (gr485861), and asserts the bounced lane runs the
 # deployed build. No-op when neither exists.
-- name: "Deploy the sandbox_run worker lane (agent_sandbox_hosts)"
+- name: "Deploy the sandbox_run worker lane (agent_sandbox_lane)"
   # Tag `sandbox` lets deploy role scoping skip it on web-only / no-code
-  # diffs.
+  # diffs; the step-2f sweep below is the bounce backstop for the hosts it
+  # then leaves unselected (agent_sandbox_lane is never populated).
   ansible.builtin.import_playbook: playbooks/35-precis-worker-sandbox.yml
   tags: [sandbox]
 
@@ -1122,16 +1123,32 @@
       failed_when: false
 
     # The owned set mirrors the lane plays' own host rules — extend it when
-    # a new lane lands (43 on compute:inference, 35 on agent_sandbox_lane,
-    # the group play 35's selection play builds from agent_sandbox_hosts
-    # plus installed units; absent when role scoping skipped play 35, and
-    # the sweep then bounces the sandbox unit itself).
+    # a new lane lands (43 on compute:inference — untagged, so it runs on
+    # every redeploy; 35 on agent_sandbox_lane, the group play 35's
+    # selection play builds from agent_sandbox_hosts plus installed units).
     # A unit listed there is already bounced by its owning play, so the
-    # sweep leaves it alone.
+    # sweep leaves it alone. The sandbox term keys on agent_sandbox_lane
+    # ONLY: play 35 is tag-scoped (`sandbox`), and when role scoping skips
+    # it the group is never populated — counting a declared member as owned
+    # would leave the overlay-named host's unit unbounced on every scoped
+    # deploy (gr485861). The sweep, not the lane play, is then its bounce.
     - name: Worker lane units a lane play owns on this host
       when: os_family == "linux"
       ansible.builtin.set_fact:
         _orphan_lanes_owned: >-
+          {{ (['precis-worker-compute.service']
+              if inventory_hostname in
+                 ((groups['compute'] | default([])) + (groups['inference'] | default([])))
+              else [])
+           + (['precis-worker-sandbox.service']
+              if inventory_hostname in
+                 (groups['agent_sandbox_lane'] | default([]))
+              else []) }}
+        # "Known" = the host sits in SOME owning group (declared or
+        # adopted). A declared member whose lane play was skipped this run
+        # gets its unit restarted below but is NOT drift — the flag keys on
+        # this wider set so a scoped deploy doesn't false-warn on it.
+        _orphan_lanes_known: >-
           {{ (['precis-worker-compute.service']
               if inventory_hostname in
                  ((groups['compute'] | default([])) + (groups['inference'] | default([])))
@@ -1156,6 +1173,14 @@
              | map('regex_replace', ' .*$', '')
              | difference(_orphan_lanes_owned)
              | list }}
+        # Drift worth shouting about: a unit on a host in NO owning group
+        # (not declared, not adopted). A declared host whose lane play was
+        # skipped this run is restarted, not flagged.
+        _orphan_lanes_flagged: >-
+          {{ (_orphan_lane_units.stdout_lines | default([]))
+             | map('regex_replace', ' .*$', '')
+             | difference(_orphan_lanes_known)
+             | list }}
 
     - name: Restart running orphaned lane units onto the deployed venv
       when: os_family == "linux"
@@ -1171,11 +1196,11 @@
     - name: "Flag orphaned worker lanes (installed here, owned by no play)"
       when:
         - os_family == "linux"
-        - _orphan_lanes_all | default([]) | length > 0
+        - _orphan_lanes_flagged | default([]) | length > 0
       ansible.builtin.debug:
         msg: >-
           WARNING {{ inventory_hostname }}: precis-worker-*.service unit(s)
-          {{ _orphan_lanes_all }} are installed here but owned by no lane play
+          {{ _orphan_lanes_flagged }} are installed here but owned by no lane play
           (this host is not in the unit's owning group — e.g. a former
           agent_sandbox_hosts member after the group was emptied). Running
           orphans were restarted onto the deployed venv above. Resolve the

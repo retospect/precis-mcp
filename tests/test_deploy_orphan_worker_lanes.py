@@ -157,15 +157,30 @@ def test_sweep_lists_worker_lane_units() -> None:
 
 
 def test_sweep_owned_set_mirrors_the_lane_plays() -> None:
-    """The owned set is the exclusion list — a unit on it is already bounced
-    by its owning play (43 on compute:inference, 35 on agent_sandbox_hosts).
-    It must name every lane unit those plays install."""
+    """The owned set is the exclusion list — a unit on it was already
+    bounced by its owning play THIS run (43 on compute:inference, 35 on
+    agent_sandbox_lane). It must name every lane unit those plays install.
+    The sandbox term keys on agent_sandbox_lane ALONE: play 35 is
+    tag-scoped, and when role scoping skips it the group is never built —
+    counting the declared group as owned would leave the overlay-named
+    host's unit unbounced on every scoped deploy (gr485861)."""
     owned = _task(_sweep_play(), "Worker lane units a lane play owns on this host")
-    expr = str(owned["ansible.builtin.set_fact"])
-    assert "precis-worker-compute.service" in expr
-    assert "precis-worker-sandbox.service" in expr
-    assert "groups['compute']" in expr and "groups['inference']" in expr
-    assert "groups['agent_sandbox_hosts']" in expr
+    facts = owned["ansible.builtin.set_fact"]
+    owned_expr = str(facts["_orphan_lanes_owned"])
+    known_expr = str(facts["_orphan_lanes_known"])
+    assert "precis-worker-compute.service" in owned_expr
+    assert "precis-worker-sandbox.service" in owned_expr
+    assert "groups['compute']" in owned_expr and "groups['inference']" in owned_expr
+    assert "groups['agent_sandbox_lane']" in owned_expr
+    assert "groups['agent_sandbox_hosts']" not in owned_expr, (
+        "the declared group is not bounce coverage: when --skip-tags "
+        "sandbox keeps play 35 out, its members' units must count as "
+        "unowned so the sweep restarts them"
+    )
+    # The flag's known set is wider: declared ∪ adopted — a declared host
+    # whose lane play was skipped is restarted but is not drift.
+    assert "groups['agent_sandbox_hosts']" in known_expr
+    assert "groups['agent_sandbox_lane']" in known_expr
 
 
 def test_sweep_bounces_only_running_orphans() -> None:
