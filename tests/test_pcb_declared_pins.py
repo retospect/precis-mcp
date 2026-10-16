@@ -468,9 +468,9 @@ def test_ring_sink_declares_all_80_pads(pcb, store) -> None:
         _ring_footprint,
     )
 
-    # x_half=9.0, not 8.5: _ring_design declares drive_voltage_v=250, and at
-    # the seed pose an 8.5mm ring puts the VPP land 0.392mm from the col-7
-    # escape via — a cross-footprint pair under the 0.4mm hv floor.
+    # x_half=9.0 keeps this pin-count test off the HV seed nudge; the 8.5mm
+    # ring (VPP land 0.392mm from the col-7 via at the raw seed, under the
+    # 0.4mm hv floor) is test_hv_ring_sink_seed_clears_the_hv_floor's case.
     store.part_footprint_put(
         _RING_LCSC, _ring_footprint(_RING_PINS, per_side=20, x_half=9.0, y_half=11.5)
     )
@@ -499,6 +499,40 @@ def test_ring_sink_declares_all_80_pads(pcb, store) -> None:
     assert all(
         un[("ARR1_SINK_0", p)]["meta"].get("completed_from_footprint") for p in nc_pins
     )
+
+
+def test_hv_ring_sink_seed_clears_the_hv_floor(pcb, store) -> None:
+    """gr491326: the 8.5mm ring put the raw seed's VPP land 0.392mm from
+    the col-7 escape via, under the parylene-coated 0.4mm hv floor, and
+    the put refused. The seed legaliser now places against the pair's net
+    floor, so the same board puts and its sink carries no clearance or
+    via/pad error."""
+    from tests.test_pcb_island_terminal_polygon import (
+        _RING_LCSC,
+        _RING_PINS,
+        _ring_design,
+        _ring_footprint,
+    )
+
+    store.part_footprint_put(
+        _RING_LCSC, _ring_footprint(_RING_PINS, per_side=20, x_half=8.5, y_half=11.5)
+    )
+    pcb.put(id="d-ring-hv", args=_ring_design())
+    ref = store.get_ref(kind="pcb", id="d-ring-hv")
+    assert ref is not None
+    sink = next(
+        i for i in store.pcb_load(ref.id)["instances"] if i["refdes"] == "ARR1_SINK_0"
+    )
+    # Nudged, not unplaced: a legal pose exists a fraction of a mm away.
+    assert sink["x"] is not None and sink["y"] is not None
+    bad = [
+        f
+        for f in pcb._validity_findings(ref.id)
+        if f.severity == "error"
+        and f.rule in ("clearance", "via_pad_keepout")
+        and "ARR1_SINK_0" in f.where
+    ]
+    assert bad == []
 
 
 def test_join_failed_instance_is_not_completed_and_reports_mismatch(pcb, store) -> None:

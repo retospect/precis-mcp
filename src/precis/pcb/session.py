@@ -165,18 +165,22 @@ def fixed_vias_from_copper(
             continue
         if dia <= 0.0:
             continue
-        out.append(pcb_ir.FixedVia(x=x, y=y, dia_mm=dia))
+        out.append(pcb_ir.FixedVia(x=x, y=y, dia_mm=dia, net=str(row.get("net") or "")))
     return tuple(out)
 
 
 def land_rects_by_instance(
     ir: pcb_ir.PcbIR, footprints: dict[str, dict[str, Any]]
-) -> tuple[np.ndarray, ...]:
-    """:attr:`~precis.pcb.ir.PcbIR.inst_land_rects` for ``ir`` — every pad
-    of each instance's REAL footprint as a footprint-local ``(cx, cy,
-    half_w, half_h)`` row, falling back per instance to the pin-derived
-    rects (:func:`~precis.pcb.ir.instance_land_rects`) where ``footprints``
-    has no row for it.
+) -> tuple[tuple[np.ndarray, ...], tuple[tuple[str, ...], ...]]:
+    """``(rects, nets)``: :attr:`~precis.pcb.ir.PcbIR.inst_land_rects` for
+    ``ir`` — every pad of each instance's REAL footprint as a
+    footprint-local ``(cx, cy, half_w, half_h)`` row, falling back per
+    instance to the pin-derived rects (:func:`~precis.pcb.ir.
+    instance_land_rects`) where ``footprints`` has no row for it — and
+    :attr:`~precis.pcb.ir.PcbIR.inst_land_nets`, each row's net in the same
+    order: the net of the netlist pin the pad's label names, ``""`` for a
+    pad no connected pin names and for every pin-derived fallback row (net
+    unknown).
 
     Read off the RAW footprint pads rather than through
     :func:`precis.pcb.realize.pad_geometry`: that resolves a pad at the
@@ -186,11 +190,23 @@ def land_rects_by_instance(
     place_footprint_pads` applies); an oblique one is covered by a square
     of its longer side, which over-covers and so can only reject."""
     derived = pcb_ir.instance_land_rects(ir)
+    pin_nets: dict[int, dict[str, str]] = {}
+    for pid in range(ir.n_pins):
+        net_id = int(ir.pin_net[pid])
+        if net_id == pcb_ir.NO_NET:
+            continue
+        pin_nets.setdefault(int(ir.pin_instance[pid]), {})[str(ir.pin_label[pid])] = (
+            str(ir.net_name[net_id])
+        )
     out: list[np.ndarray] = []
+    out_nets: list[tuple[str, ...]] = []
     for inst_id in range(ir.n_instances):
         fp = footprints.get(str(ir.instance_refdes[inst_id]))
         pads = (fp or {}).get("pads") or []
+        pin_map = (fp or {}).get("pin_map") or {}
+        by_pin = pin_nets.get(inst_id, {})
         rows: list[tuple[float, float, float, float]] = []
+        nets: list[str] = []
         for pad in pads:
             try:
                 cx, cy = float(pad["x"]), float(pad["y"])
@@ -211,12 +227,14 @@ def land_rects_by_instance(
                 elif not pcb_padplace.pad_axis_aligned(rot):
                     w = h = max(w, h)
             rows.append((cx, cy, w / 2.0, h / 2.0))
-        out.append(
-            np.array(rows, dtype=np.float64).reshape(-1, 4)
-            if rows
-            else derived[inst_id]
-        )
-    return tuple(out)
+            nets.append(by_pin.get(pcb_padplace.pad_label(pad, pin_map) or "", ""))
+        if rows:
+            out.append(np.array(rows, dtype=np.float64).reshape(-1, 4))
+            out_nets.append(tuple(nets))
+        else:
+            out.append(derived[inst_id])
+            out_nets.append(("",) * len(derived[inst_id]))
+    return tuple(out), tuple(out_nets)
 
 
 def build_ir(
@@ -282,7 +300,7 @@ def build_ir(
             local_names_by_refdes=local_footprint_names_by_refdes(graph),
         )
         apply_real_pin_offsets(ir, by_refdes)
-        ir.inst_land_rects = land_rects_by_instance(ir, by_refdes)
+        ir.inst_land_rects, ir.inst_land_nets = land_rects_by_instance(ir, by_refdes)
         derived = footprint_holes(graph, by_refdes)
         # The footprint wins: a legacy part-owned feature for a refdes whose
         # footprint now carries holes would drill the same hole twice.

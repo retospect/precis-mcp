@@ -2532,6 +2532,32 @@ def test_a_land_may_not_sit_on_an_authored_via_but_the_body_may_cover_one():
     assert engine._placement_is_legal([(0, 3.96, 0.0)]) is True
 
 
+@pytest.mark.parametrize(
+    ("via_net", "floors", "legal_from"),
+    [
+        ("E1", {"HV": 0.4}, 4.2),  # foreign net: the pair owes the HV floor
+        ("HV", {"HV": 0.4}, 3.95),  # same net: cannot short, router gap only
+        ("", {"HV": 0.4}, 4.2),  # unnetted via: the land's own floor binds
+        ("E1", {}, 3.95),  # no floors: unchanged
+    ],
+)
+def test_authored_via_gap_owes_the_pairs_net_floor(via_net, floors, legal_from):
+    """gr491326: a land clears a FOREIGN-net authored via by the larger
+    net's ``min_clearance_mm`` (the put judge's ERROR tier), not the flat
+    router clearance; a same-net pair keeps the router clearance. One land
+    centred 3mm left of the origin, 0.5mm half-wide: its edge sits at
+    ``x - 3.5`` and the 0.6mm via's annulus at 0.3."""
+    from precis.pcb.ir import FixedVia
+
+    ir = _via_ir(lands=[(-3.0, 0.0, 0.5, 0.5)], via_xy=(0.0, 0.0))
+    ir.fixed_vias = (FixedVia(x=0.0, y=0.0, dia_mm=0.6, net=via_net),)
+    ir.inst_land_nets = (("HV",), ("HV",))
+    ir.net_clearance_floor_mm = floors
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=3))
+    assert engine._placement_is_legal([(0, legal_from - 0.01, 0.0)]) is False
+    assert engine._placement_is_legal([(0, legal_from + 0.01, 0.0)]) is True
+
+
 def test_authored_via_legality_follows_the_part_through_rotation_and_mirror():
     """The lands travel the same affine path the pads do
     (``rotate_offset``: mirror, then clockwise rotation). A via at

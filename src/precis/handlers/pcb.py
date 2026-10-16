@@ -1222,6 +1222,25 @@ class PcbHandler(Handler):
         graph = self.store.pcb_graph(ref_id)
         ir = self._build_ir(ref_id, graph, with_fixed_copper=True)
         ir.outline = self._move_outline(ref_id)
+        # gr491326: a seed must clear a foreign-net authored via by the
+        # pair's net floor, the ERROR tier the judge applies right after
+        # this: on an HV EWOD board the hv class's min_clearance_mm, which
+        # the generator resolves from the coated (parylene, IPC B4)
+        # column. Same-net pairs owe it nothing.
+        design = self.store.pcb_load(ref_id)
+        board = design["board"]
+        if board is not None:
+            try:
+                capability = capability_for(
+                    pcb_drc.process_for_stackup(board["stackup"])
+                )
+            except ValueError as exc:
+                raise BadInput(f"pcb: {exc}") from exc
+            ir.net_clearance_floor_mm = {
+                name: float(rules.min_clearance_mm)
+                for name, rules in self._clearance_net_rules(design, capability).items()
+                if rules.min_clearance_mm is not None
+            }
         idx = {str(r): i for i, r in enumerate(ir.instance_refdes)}
         seed_set = set(seeded)
         # Per-instance: did ``land_rects_by_instance`` hydrate REAL pads,
@@ -5270,8 +5289,27 @@ class PcbHandler(Handler):
             str(i["refdes"]): padplace.is_bottom_instance(i)
             for i in design["instances"]
         }
+        net_rules = self._clearance_net_rules(design, capability)
+        # §E-1's PAIRWISE voltage term. Only annotated nets are in the map —
+        # a net missing here is "not annotated", never 0 V, and
+        # `check_clearance` reports the difference rather than inventing a
+        # potential (`pcb-missing-constraint-classes.md` §E-1).
+        net_voltages = {
+            str(n["name"]): float(n["working_voltage_v"])
+            for n in design["nets"]
+            if n.get("working_voltage_v") is not None
+        }
+        return courtyards, courtyard_bottom, net_rules, net_voltages
+
+    @staticmethod
+    def _clearance_net_rules(
+        design: dict[str, Any], capability: CapabilityRow
+    ) -> dict[str, NetRules]:
+        """Net name -> resolved :class:`NetRules` for the clearance checks:
+        what :meth:`_drc_rule_inputs` judges by and what
+        :meth:`_legalize_generator_seeds` places seeds against, one source."""
         net_classes = design.get("net_classes") or {}
-        net_rules: dict[str, NetRules] = {
+        return {
             str(n["name"]): resolve_net_rules(
                 str(n.get("net_class") or ""),
                 # Clearance (the only field check_clearance reads off this
@@ -5284,16 +5322,6 @@ class PcbHandler(Handler):
             )
             for n in design["nets"]
         }
-        # §E-1's PAIRWISE voltage term. Only annotated nets are in the map —
-        # a net missing here is "not annotated", never 0 V, and
-        # `check_clearance` reports the difference rather than inventing a
-        # potential (`pcb-missing-constraint-classes.md` §E-1).
-        net_voltages = {
-            str(n["name"]): float(n["working_voltage_v"])
-            for n in design["nets"]
-            if n.get("working_voltage_v") is not None
-        }
-        return courtyards, courtyard_bottom, net_rules, net_voltages
 
     def _design_phase(self, design: dict[str, Any]) -> str:
         """The phase the check surface judges at (Slice 8): the author's

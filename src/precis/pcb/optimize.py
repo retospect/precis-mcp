@@ -2228,6 +2228,47 @@ class OptimizeEngine:
             if len(ir.inst_land_rects) == ir.n_instances
             else instance_land_rects(ir)
         )
+        #: gr491326 — the pair's net clearance floor, as the EXTRA gap a
+        #: land owes a via beyond :data:`_FIXED_VIA_CLEARANCE_MM`: the
+        #: larger of the two nets' :attr:`~precis.pcb.ir.PcbIR.
+        #: net_clearance_floor_mm` minus that constant, never below 0. A
+        #: land on the via's OWN net owes none (same-net copper cannot
+        #: short), so each side also carries a net id (-1: unnetted or
+        #: unknown, never same-net). The extra is folded into the gap
+        #: :meth:`_fixed_via_gap` returns, so every caller's comparison
+        #: against the flat constant judges the pair's real requirement.
+        floors = ir.net_clearance_floor_mm
+        net_ids: dict[str, int] = {}
+
+        def _net_id(name: str) -> int:
+            return net_ids.setdefault(name, len(net_ids)) if name else -1
+
+        def _extra(name: str) -> float:
+            floor = floors.get(name) if name else None
+            return max(0.0, float(floor) - _FIXED_VIA_CLEARANCE_MM) if floor else 0.0
+
+        self._fixed_via_net = np.array(
+            [_net_id(v.net) for v in ir.fixed_vias], dtype=np.int64
+        )
+        self._via_extra = np.array(
+            [_extra(v.net) for v in ir.fixed_vias], dtype=np.float64
+        )
+        land_nets = (
+            ir.inst_land_nets
+            if len(ir.inst_land_nets) == ir.n_instances
+            and len(ir.inst_land_rects) == ir.n_instances
+            else ()
+        )
+        self._land_net: list[np.ndarray] = []
+        self._land_extra: list[np.ndarray] = []
+        for i, rects in enumerate(self._land_rects):
+            names = land_nets[i] if land_nets else ()
+            if len(names) != len(rects):
+                names = ("",) * len(rects)
+            self._land_net.append(np.array([_net_id(n) for n in names], dtype=np.int64))
+            self._land_extra.append(
+                np.array([_extra(n) for n in names], dtype=np.float64)
+            )
         #: Rotation-invariant reach of each instance's lands about its own
         #: origin — :meth:`_fixed_via_gap`'s broad phase. Derived from the
         #: lands themselves rather than reusing :attr:`_keepout_r`, whose
@@ -2882,6 +2923,12 @@ class OptimizeEngine:
         instance has no lands, or it is unplaced. Negative means the
         annulus overlaps a land.
 
+        Net-aware (gr491326): a foreign-net pair's gap is reduced by the
+        pair's floor excess over :data:`_FIXED_VIA_CLEARANCE_MM` (the
+        ``_via_extra``/``_land_extra`` arrays), so ``gap <
+        _FIXED_VIA_CLEARANCE_MM`` means "short of what the put judge will
+        require of this pair"; a same-net pair keeps the raw gap.
+
         Exact, not a bound: each via centre is carried into the
         instance's own footprint frame (the inverse of
         :func:`~precis.pcb.landpattern.rotate_offset`, mirror included —
@@ -2901,11 +2948,19 @@ class OptimizeEngine:
         prot = 0.0 if math.isnan(prot) else prot
         qx = self._via_xy[:, 0] - px
         qy = self._via_xy[:, 1] - py
-        reach = self._land_reach[inst] + self._via_r + _FIXED_VIA_CLEARANCE_MM
+        land_extra = self._land_extra[inst]
+        land_extra_max = float(land_extra.max()) if len(land_extra) else 0.0
+        reach = (
+            self._land_reach[inst]
+            + self._via_r
+            + _FIXED_VIA_CLEARANCE_MM
+            + np.maximum(self._via_extra, land_extra_max)
+        )
         near = qx * qx + qy * qy < reach * reach
         if not near.any():
             return math.inf
         qx, qy, via_r = qx[near], qy[near], self._via_r[near]
+        v_net, via_extra = self._fixed_via_net[near], self._via_extra[near]
         theta = math.radians(prot)
         cos_t, sin_t = math.cos(theta), math.sin(theta)
         lx = qx * cos_t - qy * sin_t
@@ -2918,7 +2973,11 @@ class OptimizeEngine:
         ey = np.maximum(
             np.abs(ly[:, None] - rects[None, :, 1]) - rects[None, :, 3], 0.0
         )
-        return float((np.hypot(ex, ey) - via_r[:, None]).min())
+        land_net = self._land_net[inst]
+        extra = np.maximum(via_extra[:, None], land_extra[None, :])
+        same_net = (v_net[:, None] == land_net[None, :]) & (land_net[None, :] >= 0)
+        extra = np.where(same_net, 0.0, extra)
+        return float((np.hypot(ex, ey) - via_r[:, None] - extra).min())
 
     # -- alignment delta (piggybacks the courtyard grid above) -----------
     def _init_alignment_state(self) -> None:
@@ -3788,7 +3847,14 @@ class OptimizeEngine:
                 conflicts.append(("courtyard_hole", f"hole @ ({hx:g}, {hy:g})"))
         gap = self._fixed_via_gap(inst, x, y, rot)
         if gap < _FIXED_VIA_CLEARANCE_MM:
-            conflicts.append(("via_pad_keepout", f"authored via, gap {gap:.3f}mm"))
+            # `gap` is net-floor-adjusted (_fixed_via_gap), so report the
+            # shortfall, which is right for a flat or an HV pair alike.
+            conflicts.append(
+                (
+                    "via_pad_keepout",
+                    f"authored via, {_FIXED_VIA_CLEARANCE_MM - gap:.3f}mm short",
+                )
+            )
         return conflicts
 
     def pose_conflict_depths(

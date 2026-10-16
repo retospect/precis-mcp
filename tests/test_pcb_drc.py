@@ -364,6 +364,37 @@ def test_different_footprint_pads_below_class_floor_stay_an_error(parylene):
     assert "fixed by the part" not in findings[0].detail
 
 
+def _pad_via_model(via_net: str, gap: float) -> dict[str, Any]:
+    # An HV250 pad (edge at x=0.2) and a 0.6mm via `gap` beyond it, on a
+    # parylene-coated board.
+    return {
+        "layers": ["F.Cu"],
+        "copper": [
+            _via(via_net, "F.Cu", 0.2 + gap + 0.3, 0.0, dia_mm=0.6, drill_mm=0.3)
+        ],
+        "pads": [_fp_pad("U1", "1", "HV250", 0.0)],
+        "mask_open_regions": [
+            {"layer": "F.Mask", "poly": [[-5, -5], [5, -5], [5, 5], [-5, 5]]}
+        ],
+    }
+
+
+def test_same_net_pad_via_below_hv_floor_is_no_finding():
+    # gr491326 ruling: a via on the pad's own net cannot short to it, so
+    # it is not an HV clearance pair; only the fab minimum grades it.
+    model = _pad_via_model("HV250", 0.2)
+    assert drc.check_clearance(model, _CAP4, net_rules=_hv_floor_rules()) == []
+    assert drc.check_via_pad_keepout(model, _CAP4) == []
+
+
+def test_different_net_pad_via_below_hv_floor_stays_an_error():
+    findings = drc.check_clearance(
+        _pad_via_model("GND", 0.2), _CAP4, net_rules=_hv_floor_rules()
+    )
+    assert [f.severity for f in findings] == ["error"]
+    assert "fixed by the part" not in findings[0].detail
+
+
 def test_same_footprint_pads_below_jlc_min_stay_an_error():
     jlc_min = _CAP4.jlc_min["trace_spacing_mm"]
     assert jlc_min is not None

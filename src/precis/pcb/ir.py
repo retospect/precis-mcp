@@ -151,6 +151,10 @@ class FixedVia:
     y: float
     #: Plated annulus (outer) diameter, mm.
     dia_mm: float
+    #: The via's net name, ``""`` when unnetted or unknown. A land on the
+    #: SAME net cannot short to it, so only a foreign-net land owes it
+    #: the pair's net clearance floor (:attr:`PcbIR.net_clearance_floor_mm`).
+    net: str = ""
 
 
 #: Sentinel: a footprint pad no netlist pin of its instance claims
@@ -560,6 +564,17 @@ class PcbIR:
     #: the land the fab flashes: every pad of the footprint, including one
     #: no netlist pin names.
     inst_land_rects: tuple[np.ndarray, ...] = ()
+    #: Per-instance net name of each :attr:`inst_land_rects` row, in the
+    #: same order (``""`` for a land no netlist pin names), or ``()`` when
+    #: no caller hydrated them — every land then reads as net-unknown.
+    inst_land_nets: tuple[tuple[str, ...], ...] = ()
+    #: Net name -> its resolved ``min_clearance_mm`` HARD floor (the
+    #: ERROR tier :func:`precis.pcb.drc.check_clearance` judges at), for
+    #: the nets that declare one. ``{}`` leaves the placer at its flat
+    #: land-to-via clearance. gr491326: without it a seed pose cleared
+    #: an HV array's vias by the router clearance and the put judge then
+    #: refused it at the HV floor.
+    net_clearance_floor_mm: dict[str, float] = field(default_factory=dict)
 
     # -- sizes --------------------------------------------------------
     @property
