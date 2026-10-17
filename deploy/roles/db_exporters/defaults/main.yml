@@ -6,11 +6,11 @@
 #
 # The DSNs are NOT in the repo. They live in the (gitignored) ansible vault as
 # the two vars below; Ansible resolves them on the control side and renders
-# them into a root-only env file on the DB node, which each launcher reads at
+# them into a 0600 env file (owned by db_exporters_run_as) on the DB node, which each launcher reads at
 # start. The DB node has no precis CLI and gets none (the data group stays
 # free of worker lanes), so nothing here uses the CLI. A rotation is: change
 # the vault var, re-run 18a (the changed env file restarts both units).
-db_exporters_run_as: root # must read the root-only (0600) env file
+db_exporters_run_as: deploy # owns the 0600 env file, so it can read it; no root needed
 db_exporters_bin_dir: /usr/local/bin
 
 # Vault var names holding the two DSNs (see
@@ -20,7 +20,7 @@ db_exporters_bin_dir: /usr/local/bin
 db_exporters_pg_dsn_var: vault_pg_exporter_dsn
 db_exporters_pgbouncer_dsn_var: vault_pgbouncer_exporter_dsn
 
-# Root-only env file the launchers read (owner root, mode 0600).
+# Env file the launchers read (owner db_exporters_run_as, mode 0600).
 db_exporters_env_dir: /etc/precis
 db_exporters_env_file: "{{ db_exporters_env_dir }}/db-exporters.env"
 

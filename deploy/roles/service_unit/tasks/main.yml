@@ -76,6 +76,7 @@
   become: true
   changed_when: false
 
+# macOS has no `root` group: root-run units get group wheel (db_exporters).
 # 0640 root:<run_as>, NOT 0644. A launchd plist inlines its whole environment
 # in <EnvironmentVariables>, and several of these carry live credentials
 # (a DSN with a password on older hosts; historically PRECIS_ANKI_PASSWORD on
@@ -93,7 +94,7 @@
     src: launchd.plist.j2
     dest: "/Library/LaunchDaemons/com.precis.{{ service_unit_name }}.plist"
     owner: root
-    group: "{{ service_unit_run_as }}"
+    group: "{{ 'wheel' if service_unit_run_as == 'root' else service_unit_run_as }}"
     mode: "0640"
   become: true
   register: _service_unit_plist

@@ -59,9 +59,9 @@ def _env_task() -> dict:
     return task
 
 
-def test_env_file_is_root_only_0600() -> None:
+def test_env_file_is_owner_only_0600() -> None:
     mod = _env_task()["ansible.builtin.template"]
-    assert mod["owner"] == "root"
+    assert mod["owner"] == "{{ db_exporters_run_as }}"
     assert mod["mode"] == "0600"
     assert mod["dest"] == "{{ db_exporters_env_file }}"
     assert _defaults()["db_exporters_env_file"].startswith(
@@ -110,7 +110,7 @@ def test_launcher_reads_the_env_file_and_inlines_no_secret() -> None:
 
 def test_launchd_unit_has_no_inline_secrets_and_runs_as_the_file_owner() -> None:
     d = _defaults()
-    assert d["db_exporters_run_as"] == "root"  # must read the 0600 file
+    assert d["db_exporters_run_as"] == "deploy"  # owns the 0600 file
     (inc,) = [
         t
         for t in _tasks()
@@ -161,3 +161,14 @@ def test_dsn_precheck_precedes_env_render_and_is_no_log() -> None:
     assert pre < names.index(_env_task()["name"])
     assert _tasks()[pre]["no_log"] is True
     assert _env_task()["diff"] is False
+
+
+def test_service_unit_darwin_plist_group_never_root() -> None:
+    """macOS has no `root` group; a root-run unit must chgrp to wheel."""
+    path = _ROLE.parent / "service_unit" / "tasks" / "main.yml"
+    tasks = yaml.safe_load(path.read_text(encoding="utf-8"))
+    (task,) = [t for t in tasks if "render LaunchDaemon" in t.get("name", "")]
+    group = task["ansible.builtin.template"]["group"]
+    env = jinja2.Environment()
+    for run_as, want in (("root", "wheel"), ("precis", "precis")):
+        assert env.from_string(group).render(service_unit_run_as=run_as) == want

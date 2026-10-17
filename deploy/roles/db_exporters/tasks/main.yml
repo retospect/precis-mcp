@@ -96,12 +96,12 @@
 
 # The DSNs resolve here, on the control side, from the vault vars; the file on
 # the DB node is the only place they land. no_log: nothing prints a value.
-- name: Render the root-only DSN env file
+- name: Render the 0600 DSN env file (owned by the run-as user)
   ansible.builtin.template:
     src: db-exporters.env.j2
     dest: "{{ db_exporters_env_file }}"
-    owner: root
-    group: "{{ 'wheel' if os_family == 'darwin' else 'root' }}"
+    owner: "{{ db_exporters_run_as }}"
+    group: "{{ 'wheel' if os_family == 'darwin' else db_exporters_run_as }}"
     mode: "0600"
   become: true
   no_log: true
