@@ -9,6 +9,7 @@ import httpx
 import pytest
 import requests
 
+from precis.utils import http
 from precis.utils.http import retry_transient
 
 _NEEDS_FCNTL = pytest.mark.skipif(
@@ -113,8 +114,11 @@ def test_logs_one_info_line_with_host(caplog: pytest.LogCaptureFixture) -> None:
 
 @pytest.fixture
 def no_sleep(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Backoff sleeps of the politeness core (jittered); no limiter store."""
     sleeps: list[float] = []
-    monkeypatch.setattr("precis.utils.http.time.sleep", sleeps.append)
+    monkeypatch.setattr("precis.utils.http._default_sleep", sleeps.append)
+    monkeypatch.setattr("precis.utils.rate_limit.require", lambda p, **_: None)
+    http.reset_circuit()
     return sleeps
 
 
@@ -149,24 +153,16 @@ def test_fetch_oa_crossref_leg_retries(
         "https://p.example/a.pdf"
     ]
     assert handler.n == 2
-    assert no_sleep == [3.0]
+    assert len(no_sleep) == 1 and 0.0 <= no_sleep[0] <= 1.0
 
 
 @_NEEDS_FCNTL
-def test_bib_parse_crossref_query_retries_in_its_own_loop_only(
+def test_bib_parse_crossref_query_retries_via_the_core(
     monkeypatch: pytest.MonkeyPatch, no_sleep: list[float]
 ) -> None:
-    # bib_parse's attempt loop owns the connect retry; retry_transient is
-    # not nested inside it, so no 3 s retry_transient sleep happens.
+    # One retry, one jittered core sleep (service crossref-list, base 2 s).
     from precis.workers import bib_parse
 
-    drains: list[float] = []
-
-    def fake_drain(seconds: float) -> bool:
-        drains.append(seconds)
-        return False
-
-    monkeypatch.setattr(bib_parse, "drain_sleep", fake_drain)
     calls = {"n": 0}
 
     def fake_safe_get(client: Any, url: str, **kw: Any) -> httpx.Response:
@@ -179,8 +175,7 @@ def test_bib_parse_crossref_query_retries_in_its_own_loop_only(
     items = bib_parse._crossref_query("Smith 2020 Some title")
     assert items == [{"DOI": "10.1/x"}]
     assert calls["n"] == 2
-    assert no_sleep == []
-    assert drains == [1.0]
+    assert len(no_sleep) == 1 and 0.0 <= no_sleep[0] <= 2.0
 
 
 @_NEEDS_FCNTL
@@ -200,7 +195,7 @@ def test_provenance_doi_validity_retries(
     monkeypatch.setattr("precis.utils.safe_fetch.safe_get", fake_safe_get)
     assert provenance._fetch_doi_validity("10.1/x", mailto=None) == "valid"
     assert calls["n"] == 2
-    assert no_sleep == [3.0]
+    assert len(no_sleep) == 1 and 0.0 <= no_sleep[0] <= 1.0
 
 
 class _FakeCrossref:
@@ -238,7 +233,7 @@ def test_habanero_sites_retry_requests_connect_timeout(
     _FakeCrossref.n = 0
     assert provenance._search_crossref_works(title="t", author=None, mailto=None) == []
     assert _FakeCrossref.n == 2
-    assert no_sleep == [3.0, 3.0, 3.0]
+    assert len(no_sleep) == 3 and all(0.0 <= d <= 2.0 for d in no_sleep)
 
 
 @_NEEDS_FCNTL
@@ -256,7 +251,7 @@ def test_si_discovery_crossref_leg_retries(no_sleep: list[float]) -> None:
     result = si_discovery.discover("10.1/x", fetch)
     cr_url = f"{si_discovery._CROSSREF_API}/10.1/x"
     assert seen[cr_url] == 2
-    assert no_sleep == [3.0]
+    assert len(no_sleep) == 1 and 0.0 <= no_sleep[0] <= 1.0
     # retried -> the leg ends in a 404 miss, not an error:ConnectTimeout miss
     assert not any(
         m["source"] == si_discovery.SOURCE_CROSSREF

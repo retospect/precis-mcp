@@ -65,12 +65,10 @@ from precis.workers._claim import claim_batch
 if TYPE_CHECKING:
     from precis.store.store import Store
 
-from precis.liveness import drain_sleep
 from precis.utils.boilerplate import MARKER_LINE_RE as _MARKER_LINE_RE
 from precis.utils.db_retry import retry_locked
 from precis.utils.llm.json_reply import extract_json_object
 from precis.utils.rate_limit import RateLimited
-from precis.utils.rate_limit import require as require_rate_limit
 from precis.workers import ref_lease
 
 log = logging.getLogger(__name__)
@@ -353,8 +351,6 @@ _DOI_IN_TEXT_RE = re.compile(r"10\.\d{4,9}/\S+")
 
 _CROSSREF_BASE = "https://api.crossref.org/works"
 _CROSSREF_TIMEOUT_S = 20.0
-_CROSSREF_RETRY_MAX_ATTEMPTS = 3
-_CROSSREF_RETRY_BASE_S = 1.0
 
 #: A second Crossref candidate within this fraction of the top candidate's
 #: score is "close enough" to be ambiguous, needing LLM adjudication.
@@ -410,7 +406,7 @@ def _local_doi_match(
 def _crossref_query(raw_text: str, *, mailto: str = "") -> list[dict[str, Any]] | None:
     """Crossref bibliographic query (``query.bibliographic=<raw_text>``),
     up to two candidates, via ``safe_get`` (never raw httpx — SSRF guard).
-    Retries 429/5xx with exponential backoff.
+    Retries 429/5xx and transport errors under the shared politeness core.
 
     Returns the candidate list on success — possibly ``[]``, a genuine
     "Crossref found nothing" answer the caller is free to memoize as
@@ -421,11 +417,12 @@ def _crossref_query(raw_text: str, *, mailto: str = "") -> list[dict[str, Any]] 
     touched — the caller leaves ``match_conf`` NULL instead, so a later
     attempt retries it.
 
-    Each attempt first clears the shared ``crossref`` limiter; a refusal
-    raises :class:`RateLimited` (not ``None``) so the pass can defer the
-    paper unstamped instead of finishing it with unmatched entries.
+    Each attempt first clears the shared ``crossref-list`` limiter; a
+    refusal on the first attempt raises :class:`RateLimited` (not ``None``)
+    so the pass can defer the paper unstamped instead of finishing it with
+    unmatched entries.
     """
-    from precis.utils.http import http_client
+    from precis.utils.http import http_client, polite_user_agent, with_backoff
     from precis.utils.safe_fetch import safe_get
     from precis.utils.stall_capture import maybe_capture
 
@@ -433,38 +430,38 @@ def _crossref_query(raw_text: str, *, mailto: str = "") -> list[dict[str, Any]] 
     if mailto:
         params["mailto"] = mailto
 
-    # No retry_transient here: this loop already retries a connect failure
-    # with backoff, and nesting the two doubles the worst-case hold.
-    with http_client(timeout=_CROSSREF_TIMEOUT_S) as client:
-        for attempt in range(_CROSSREF_RETRY_MAX_ATTEMPTS):
-            require_rate_limit("crossref")
+    with http_client(
+        timeout=_CROSSREF_TIMEOUT_S, user_agent=polite_user_agent(mailto)
+    ) as client:
+
+        def _send() -> Any:
             try:
-                resp = safe_get(client, _CROSSREF_BASE, params=params)
+                return safe_get(client, _CROSSREF_BASE, params=params)
             except Exception as exc:
                 log.warning("bib_parse: crossref request failed: %r", exc)
                 maybe_capture(exc, _CROSSREF_BASE)
-                if attempt + 1 < _CROSSREF_RETRY_MAX_ATTEMPTS:
-                    if drain_sleep(_CROSSREF_RETRY_BASE_S * (2**attempt)):
-                        return None
-                    continue
-                return None
-            if resp.status_code == 429 or resp.status_code >= 500:
-                if attempt + 1 < _CROSSREF_RETRY_MAX_ATTEMPTS:
-                    if drain_sleep(_CROSSREF_RETRY_BASE_S * (2**attempt)):
-                        return None
-                    continue
-                return None
-            if resp.status_code != 200:
-                log.warning("bib_parse: crossref returned status %s", resp.status_code)
-                return None
-            try:
-                data = resp.json()
-            except Exception:
-                log.warning("bib_parse: crossref returned an unparseable body")
-                return None
-            items = ((data or {}).get("message") or {}).get("items") or []
-            return items if isinstance(items, list) else None
-    return None
+                raise
+
+        try:
+            # Service "crossref-list": one shared token per attempt, full
+            # jitter, Retry-After honoured, drain-aware sleep. A first-attempt
+            # limiter refusal raises RateLimited (the pass defers the paper
+            # unstamped); anything after that is a failure -> ``None``.
+            resp = with_backoff(_send, service="crossref-list")
+        except RateLimited:
+            raise
+        except Exception:
+            return None
+    if resp.status_code != 200:
+        log.warning("bib_parse: crossref returned status %s", resp.status_code)
+        return None
+    try:
+        data = resp.json()
+    except Exception:
+        log.warning("bib_parse: crossref returned an unparseable body")
+        return None
+    items = ((data or {}).get("message") or {}).get("items") or []
+    return items if isinstance(items, list) else None
 
 
 def _candidate_summary(item: dict[str, Any]) -> str:

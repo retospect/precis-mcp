@@ -103,7 +103,7 @@ from precis.utils.http import (
     Policy,
     call_with_backoff,
     http_client,
-    retry_transient,
+    polite_user_agent,
 )
 from precis.utils.rate_limit import RateLimited
 from precis.utils.rate_limit import require as require_rate_limit
@@ -1444,20 +1444,20 @@ def _try_arxiv(
             duration_ms=_ms(t0),
         )
 
+    url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
+    filename = _stub_filename(stub) + ".pdf"
+    target = inbox_dir / filename
+    inbox_dir.mkdir(parents=True, exist_ok=True)
     try:
-        require_rate_limit("arxiv")
+        # Service "arxiv": every attempt (not just the first) takes a token
+        # from the shared arxiv limiter and follows its backoff policy.
+        size_bytes = _download_pdf(url, target, service="arxiv")
     except RateLimited:
         return FetchOutcome(
             event="rate_limited",
             payload={"arxiv": arxiv_id, "provider": "arxiv", "limiter": "shared"},
             duration_ms=_ms(t0),
         )
-    url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
-    filename = _stub_filename(stub) + ".pdf"
-    target = inbox_dir / filename
-    inbox_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        size_bytes = _download_pdf(url, target)
     except Exception as exc:
         return FetchOutcome(
             event="fetch_failed",
@@ -1621,7 +1621,11 @@ def _try_openalex_content(
     target = inbox_dir / filename
     inbox_dir.mkdir(parents=True, exist_ok=True)
     try:
-        size_bytes = _download_pdf(_with_api_key(pdf_url, api_key), target)
+        size_bytes = _download_pdf(
+            _with_api_key(pdf_url, api_key), target, service="openalex-content"
+        )
+    except RateLimited:
+        return _local_rate_limited(stub, t0, provider="openalex-content")
     except Exception as exc:
         # httpx folds the *full* request URL — with ``?api_key=…`` — into its
         # error message, so scrub the key before it lands in ``ref_events`` /
@@ -1774,6 +1778,8 @@ def _try_europepmc(
     t0 = time.perf_counter()
     try:
         pmcid = _query_europepmc_oa_pmcid(stub.doi)
+    except RateLimited:
+        return _local_rate_limited(stub, t0, provider="europepmc")
     except Exception as exc:
         return FetchOutcome(
             event="api_error",
@@ -2850,16 +2856,19 @@ def _query_crossref_pdf_links(doi: str, *, email: str) -> list[str]:
     :class:`RateLimited` without calling out when the shared ``crossref``
     limiter refuses.
     """
-    require_rate_limit("crossref")
     url = f"https://api.crossref.org/works/{doi}"
-    with http_client(
-        timeout=_API_TIMEOUT_S, headers={"User-Agent": _user_agent_header(email)}
-    ) as client:
-        resp = retry_transient(
-            lambda: client.get(url, params={"mailto": email}), host=url
-        )
-        resp.raise_for_status()
-        data = resp.json()
+
+    def _fetch() -> Any:
+        with http_client(
+            timeout=_API_TIMEOUT_S, headers={"User-Agent": _user_agent_header(email)}
+        ) as client:
+            resp = client.get(url, params={"mailto": email})
+            resp.raise_for_status()
+            return resp.json()
+
+    # Politeness core, service "crossref": a shared token per attempt,
+    # 429/5xx and transport errors retried with Retry-After.
+    data = call_with_backoff(_fetch, service="crossref")
     links = (data.get("message") or {}).get("link") or []
     out: list[str] = []
     for link in links:
@@ -2905,12 +2914,18 @@ def _query_europepmc_oa_pmcid(doi: str) -> str | None:
     """
     url = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
     params = {"query": f'DOI:"{doi}"', "format": "json", "resultType": "core"}
-    with http_client(
-        timeout=_API_TIMEOUT_S, headers={"User-Agent": _user_agent_header()}
-    ) as client:
-        resp = client.get(url, params=params)
-        resp.raise_for_status()
-        data = resp.json()
+
+    def _search() -> Any:
+        with http_client(
+            timeout=_API_TIMEOUT_S, headers={"User-Agent": _user_agent_header()}
+        ) as client:
+            resp = client.get(url, params=params)
+            resp.raise_for_status()
+            return resp.json()
+
+    # Politeness core, service "europepmc": a shared token per attempt,
+    # 429/5xx and transport errors retried with Retry-After; a 4xx raises.
+    data = call_with_backoff(_search, service="europepmc")
     results = (data.get("resultList") or {}).get("result") or []
     for rec in results:
         if rec.get("isOpenAccess") == "Y" and rec.get("pmcid"):
@@ -3061,7 +3076,11 @@ _DOWNLOAD_POLICY = Policy(attempts=_DOWNLOAD_RETRY_ATTEMPTS, base=1.0, cap=8.0)
 
 
 def _download_pdf(
-    url: str, target: Path, *, extra_headers: dict[str, str] | None = None
+    url: str,
+    target: Path,
+    *,
+    extra_headers: dict[str, str] | None = None,
+    service: str | None = None,
 ) -> int:
     """Stream a PDF to ``target`` and return the byte count.
 
@@ -3096,7 +3115,20 @@ def _download_pdf(
     public hosts, but it can't tell a publisher CDN from an arbitrary
     third party). Elsevier's article API serves the PDF inline (no
     cross-host redirect in practice), so the key stays first-party.
+
+    ``service`` names a registered politeness policy (``arxiv``,
+    ``openalex-content``): every attempt then takes a token from that
+    service's limiter row and follows its backoff/breaker, instead of the
+    per-host default. :class:`RateLimited` propagates for the caller to map
+    to a ``rate_limited`` outcome.
     """
+    if service is not None:
+        return call_with_backoff(
+            lambda: _download_pdf_once(url, target, extra_headers),
+            service=service,
+            url=url,
+            retry_if=_is_transient_download_error,
+        )
     netloc = urlparse(url).netloc.lower()
     return call_with_backoff(
         lambda: _download_pdf_once(url, target, extra_headers),
@@ -3166,17 +3198,13 @@ def _download_pdf_once(
     return size
 
 
-# Polite UA — publishers (PeerJ, arXiv) sometimes 403 the default
-# httpx UA. Identify ourselves and include the contact env when
-# present so an annoyed sysadmin can ping us rather than blocking.
-_USER_AGENT = "precis-mcp/8.0 (+https://github.com/retostamm/precis-mcp{contact})"
-
-
 def _user_agent_header(email: str | None = None) -> str:
-    """Honest UA. With no configured contact the mailto is omitted — a
-    made-up address would be worse than none."""
-    contact = email or settings.get_str("contact.polite_email")
-    return _USER_AGENT.format(contact=f"; mailto:{contact}" if contact else "")
+    """Honest UA for every fetch_oa request: the shared
+    :func:`precis.utils.http.polite_user_agent` (product, project URL, and
+    the polite-pool contact — ``email`` or the ``contact.polite_email``
+    setting, else the maintainer fallback). Publishers (PeerJ, arXiv)
+    sometimes 403 the default httpx UA; this lets a sysadmin ping us."""
+    return polite_user_agent(email)
 
 
 def _download_headers() -> dict[str, str]:

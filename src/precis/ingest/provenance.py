@@ -596,15 +596,23 @@ def _fetch_crossref_message(doi: str, mailto: str | None) -> dict[str, Any] | No
     """
     from habanero import Crossref
 
-    from precis.utils.http import retry_transient
-    from precis.utils.rate_limit import require as require_rate_limit
+    from precis.utils.http import call_with_backoff, polite_user_agent
+    from precis.utils.rate_limit import RateLimited
 
-    cr = Crossref(mailto=mailto) if mailto else Crossref()
-    # Shared crossref limiter: a refusal raises RateLimited before any
-    # request, propagating like other transport errors (-> check_failed).
-    require_rate_limit("crossref")
+    cr = Crossref(
+        **{
+            "ua_string": polite_user_agent(mailto),
+            **({"mailto": mailto} if mailto else {}),
+        }
+    )
     try:
-        result = retry_transient(lambda: cr.works(ids=doi), host="api.crossref.org")
+        # Politeness core, service "crossref": one shared limiter token per
+        # attempt (a refusal raises RateLimited before any request,
+        # propagating like other transport errors -> check_failed); 429/5xx
+        # and transport errors retried with Retry-After; a 404 is not.
+        result = call_with_backoff(lambda: cr.works(ids=doi), service="crossref")
+    except RateLimited:
+        raise
     except Exception as exc:
         response = getattr(exc, "response", None)
         status_code = (
@@ -650,18 +658,23 @@ def _search_crossref_works(
         return []
     from habanero import Crossref
 
-    cr = Crossref(mailto=mailto) if mailto else Crossref()
+    from precis.utils.http import call_with_backoff, polite_user_agent
+
+    cr = Crossref(
+        **{
+            "ua_string": polite_user_agent(mailto),
+            **({"mailto": mailto} if mailto else {}),
+        }
+    )
     kwargs: dict[str, Any] = {"limit": rows}
     if title:
         kwargs["query_bibliographic"] = title
     if author:
         kwargs["query_author"] = author
-    from precis.utils.http import retry_transient
-    from precis.utils.rate_limit import require as require_rate_limit
 
     try:
-        require_rate_limit("crossref")
-        result = retry_transient(lambda: cr.works(**kwargs), host="api.crossref.org")
+        # List/query lane: its own limiter row and a slower backoff base.
+        result = call_with_backoff(lambda: cr.works(**kwargs), service="crossref-list")
     except Exception:
         return []
     if not result or "message" not in result:
@@ -1661,17 +1674,19 @@ def _fetch_doi_validity(doi: str, *, mailto: str | None) -> DoiStatus | None:
     caller must not stamp a ``None`` — that would poison the TTL on an
     answer we never actually got.
     """
-    from precis.utils.http import http_client, retry_transient
-    from precis.utils.rate_limit import require as require_rate_limit
+    from precis.utils.http import http_client, polite_user_agent, with_backoff
     from precis.utils.safe_fetch import safe_get
 
     url = f"{_CROSSREF_WORKS_BASE}/{doi}"
     params = {"mailto": mailto} if mailto else None
     try:
-        require_rate_limit("crossref")
-        with http_client(timeout=_DOI_VALIDATE_TIMEOUT_S) as client:
-            resp = retry_transient(
-                lambda: safe_get(client, url, params=params), host=url
+        with http_client(
+            timeout=_DOI_VALIDATE_TIMEOUT_S, user_agent=polite_user_agent(mailto)
+        ) as client:
+            # A 404 is returned (the DOI is unknown); a 429 that outlasts the
+            # retries raises VendorUnavailable -> None, never "not_found".
+            resp = with_backoff(
+                lambda: safe_get(client, url, params=params), service="crossref"
             )
     except Exception:
         return None

@@ -7,11 +7,12 @@ from typing import Any
 from habanero import Crossref
 
 from precis.utils.deadline import call_with_deadline
-from precis.utils.http import retry_transient
-from precis.utils.rate_limit import require as require_rate_limit
+from precis.utils.http import VendorUnavailable, call_with_backoff, polite_user_agent
+from precis.utils.rate_limit import RateLimited
 
 #: Overall wall-clock bound on the whole ``cr.works`` call (connect,
-#: request, body read, any connect-retry). habanero/requests timeouts are
+#: request, body read, every politeness retry and backoff sleep).
+#: habanero/requests timeouts are
 #: per-phase, so a peer trickling bytes inside each read window can hold
 #: the call open forever — the gr486823 stall class. There is no socket
 #: handle to abort, so a wedged call is simply abandoned (the detached
@@ -31,14 +32,37 @@ def fetch_message(doi: str, mailto: str = "") -> dict[str, Any] | None:
     pass) to get metadata + retraction signal from one fetch instead of
     two.
     """
-    cr = Crossref(mailto=mailto) if mailto else Crossref()
+    # habanero's own UA names only the library (and mailto when given);
+    # ``ua_string`` appends the honest precis one.
+    cr = Crossref(
+        **{
+            "ua_string": polite_user_agent(mailto),
+            **({"mailto": mailto} if mailto else {}),
+        }
+    )
+
+    def _call() -> Any:
+        # Service "crossref": one limiter token per attempt, 429/5xx and
+        # transport errors retried with Retry-After; a 404 is not retried.
+        return call_with_backoff(lambda: cr.works(ids=doi), service="crossref")
+
     try:
+        # ONE deadline over the whole retrying call: a wedged Crossref holds
+        # the caller 60 s, not attempts x 60 s, and abandons one thread.
         result = call_with_deadline(
-            lambda: retry_transient(lambda: cr.works(ids=doi), host="api.crossref.org"),
-            deadline_s=_DEADLINE_S,
-            label=f"crossref works {doi}",
+            _call, deadline_s=_DEADLINE_S, label=f"crossref works {doi}"
         )
-    except Exception:
+    except RateLimited:
+        raise
+    except Exception as exc:
+        # A 429 that outlasted the retries (or an open breaker) is "Crossref
+        # is throttling us", never "no such DOI": surface it on the limiter
+        # path callers already defer on instead of folding it into ``None``.
+        response = getattr(exc, "response", None)
+        if getattr(response, "status_code", None) == 429 or isinstance(
+            exc, VendorUnavailable
+        ):
+            raise RateLimited("crossref") from exc
         return None
     if not result or "message" not in result:
         return None
@@ -57,9 +81,9 @@ def lookup_crossref(doi: str, mailto: str = "") -> dict[str, Any] | None:
 
     Raises:
         precis.utils.rate_limit.RateLimited: the shared crossref limiter
-            refused; deliberately not folded into ``None`` (= not found).
+            refused, or Crossref kept answering 429; deliberately not
+            folded into ``None`` (= not found).
     """
-    require_rate_limit("crossref")
     msg = fetch_message(doi, mailto)
     if msg is None:
         return None

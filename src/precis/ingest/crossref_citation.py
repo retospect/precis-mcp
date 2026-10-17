@@ -15,8 +15,7 @@ import re
 from collections.abc import Callable
 from typing import Any
 
-from precis.utils.http import retry_transient
-from precis.utils.rate_limit import require as require_rate_limit
+from precis.utils.http import polite_user_agent, with_backoff
 
 _CROSSREF_WORKS_URL = "https://api.crossref.org/works"
 _TIMEOUT_S = 15.0
@@ -91,20 +90,25 @@ def _fetch_items(citation: str, mailto: str) -> list[dict[str, Any]]:
     }
     if mailto:
         params["mailto"] = mailto
-    try:
-        require_rate_limit("crossref")
-        with http_client(timeout=_TIMEOUT_S) as client:
-            # Overall deadline covers retries too: per-phase timeouts alone
-            # can't stop a peer trickling bytes forever (gr486823).
-            resp = request_with_deadline(
+
+    def _send() -> Any:
+        # One client per attempt: an expired deadline closes it for good.
+        with http_client(
+            timeout=_TIMEOUT_S, user_agent=polite_user_agent(mailto)
+        ) as client:
+            # Per-attempt deadline: per-phase timeouts alone can't stop a peer
+            # trickling bytes forever (gr486823).
+            return request_with_deadline(
                 client,
                 2 * _TIMEOUT_S,
-                lambda: retry_transient(
-                    lambda: safe_get(client, _CROSSREF_WORKS_URL, params=params),
-                    host="api.crossref.org",
-                ),
+                lambda: safe_get(client, _CROSSREF_WORKS_URL, params=params),
                 label=f"GET {_CROSSREF_WORKS_URL}",
             )
+
+    try:
+        # Service "crossref-list": one shared token per attempt, Retry-After
+        # honoured; an exhausted 429 raises -> ``[]`` like any failure.
+        resp = with_backoff(_send, service="crossref-list")
         if resp.status_code != 200:
             return []
         return list(resp.json()["message"]["items"])

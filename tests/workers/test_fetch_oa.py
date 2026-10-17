@@ -692,7 +692,7 @@ class TestTryUnpaywall:
         monkeypatch.setattr(
             fetch_oa,
             "_download_pdf",
-            lambda url, target: _write_synthetic_pdf(target, size=2048),
+            lambda url, target, **kw: _write_synthetic_pdf(target, size=2048),
         )
         out = _try_unpaywall(_stub(doi="10.1234/x"), inbox_dir=tmp_path, email="a@b")
         assert out is not None
@@ -808,7 +808,7 @@ class TestResolveArxivFromDoi:
         )
         urls: list[str] = []
 
-        def _capture(url: str, target: Path) -> int:
+        def _capture(url: str, target: Path, **_kw: Any) -> int:
             urls.append(url)
             return _write_synthetic_pdf(target, size=256)
 
@@ -855,7 +855,7 @@ class TestTryArxiv:
     ) -> None:
         seen_urls: list[str] = []
 
-        def _capture(url: str, target: Path) -> int:
+        def _capture(url: str, target: Path, **_kw: Any) -> int:
             seen_urls.append(url)
             return _write_synthetic_pdf(target, size=256)
 
@@ -870,12 +870,12 @@ class TestTryArxiv:
     def test_shared_limiter_refusal_skips_download(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(fetch_oa, "require_rate_limit", _refuse)
-        monkeypatch.setattr(
-            fetch_oa,
-            "_download_pdf",
-            lambda url, target: pytest.fail("download fired despite a refusal"),
-        )
+        def _refused(url: str, target: Path, **_kw: Any) -> int:
+            # The core takes the arxiv token before any request and raises.
+            assert _kw.get("service") == "arxiv"
+            raise RateLimited("arxiv")
+
+        monkeypatch.setattr(fetch_oa, "_download_pdf", _refused)
         out = _try_arxiv(_stub(arxiv="2401.12345"), inbox_dir=tmp_path)
         assert out is not None
         assert out.event == "rate_limited"
@@ -921,7 +921,7 @@ class TestTryS2:
         monkeypatch.setattr(
             fetch_oa,
             "_download_pdf",
-            lambda url, target: _write_synthetic_pdf(target, size=512),
+            lambda url, target, **kw: _write_synthetic_pdf(target, size=512),
         )
         out = _try_s2(_stub(doi="10.1234/x"), inbox_dir=tmp_path)
         assert out is not None
@@ -1090,7 +1090,7 @@ class TestTryPublisher:
     ) -> None:
         seen_urls: list[str] = []
 
-        def _capture(url: str, target: Path) -> int:
+        def _capture(url: str, target: Path, **_kw: Any) -> int:
             seen_urls.append(url)
             return _write_synthetic_pdf(target, size=4096)
 
@@ -1905,7 +1905,7 @@ class TestTryCrossref:
         def _no_http(*_: Any, **__: Any) -> Any:
             raise AssertionError("request fired despite a limiter refusal")
 
-        monkeypatch.setattr(fetch_oa, "require_rate_limit", _refuse)
+        monkeypatch.setattr("precis.utils.rate_limit.require", _refuse)
         monkeypatch.setattr(fetch_oa, "http_client", _no_http)
         out = _try_crossref(_stub(doi="10.1234/x"), inbox_dir=tmp_path, email="a@b")
         assert out is not None
@@ -2429,7 +2429,7 @@ class TestRunCascade:
         ref_id = _seed_paper_stub(store, doi="10.1186/s13027-026-00740-z")
         seen_urls: list[str] = []
 
-        def _capture(url: str, target: Path) -> int:
+        def _capture(url: str, target: Path, **_kw: Any) -> int:
             seen_urls.append(url)
             return _write_synthetic_pdf(target, size=256)
 
@@ -2472,7 +2472,7 @@ class TestRunCascade:
         monkeypatch.setattr(
             fetch_oa,
             "_download_pdf",
-            lambda url, target: _write_synthetic_pdf(target, size=256),
+            lambda url, target, **kw: _write_synthetic_pdf(target, size=256),
         )
         run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
 
@@ -2503,7 +2503,7 @@ class TestRunCascade:
         monkeypatch.setattr(
             fetch_oa,
             "_download_pdf",
-            lambda url, target: _write_synthetic_pdf(target, size=128),
+            lambda url, target, **kw: _write_synthetic_pdf(target, size=128),
         )
         run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
         with store.pool.connection() as conn:
@@ -2531,7 +2531,7 @@ class TestRunCascade:
         monkeypatch.setattr(
             fetch_oa,
             "_download_pdf",
-            lambda url, target: _write_synthetic_pdf(target, size=128),
+            lambda url, target, **kw: _write_synthetic_pdf(target, size=128),
         )
         # arXiv + S2 must not be called.
         monkeypatch.setattr(
@@ -2559,7 +2559,7 @@ class TestRunCascade:
 
         seen_urls: list[str] = []
 
-        def _capture(url: str, target: Path) -> int:
+        def _capture(url: str, target: Path, **_kw: Any) -> int:
             seen_urls.append(url)
             return _write_synthetic_pdf(target, size=128)
 
@@ -2584,7 +2584,7 @@ class TestRunCascade:
         monkeypatch.setattr(
             fetch_oa,
             "_download_pdf",
-            lambda url, target: _write_synthetic_pdf(target, size=128),
+            lambda url, target, **kw: _write_synthetic_pdf(target, size=128),
         )
 
         run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
@@ -2668,7 +2668,7 @@ class TestRunCascade:
         monkeypatch.setattr(
             fetch_oa,
             "_download_pdf",
-            lambda url, target: _write_synthetic_pdf(target, size=128),
+            lambda url, target, **kw: _write_synthetic_pdf(target, size=128),
         )
         result = run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
         assert result == {"claimed": 1, "ok": 1, "failed": 0}
@@ -2800,7 +2800,7 @@ class TestRetractionGate:
         monkeypatch.setattr(
             fetch_oa,
             "_download_pdf",
-            lambda url, target: _write_synthetic_pdf(target, size=128),
+            lambda url, target, **kw: _write_synthetic_pdf(target, size=128),
         )
         crossref_msg = {
             "title": ["A perfectly fine paper"],
@@ -2843,7 +2843,7 @@ class TestRetractionGate:
         monkeypatch.setattr(
             fetch_oa,
             "_download_pdf",
-            lambda url, target: _write_synthetic_pdf(target, size=128),
+            lambda url, target, **kw: _write_synthetic_pdf(target, size=128),
         )
         with patch(
             "precis.ingest.provenance._fetch_crossref_message",
@@ -2864,7 +2864,7 @@ class TestRetractionGate:
         monkeypatch.setattr(
             fetch_oa,
             "_download_pdf",
-            lambda url, target: _write_synthetic_pdf(target, size=128),
+            lambda url, target, **kw: _write_synthetic_pdf(target, size=128),
         )
         with patch(
             "precis.ingest.provenance._fetch_crossref_message",
@@ -2902,7 +2902,7 @@ class TestRetractionGate:
         monkeypatch.setattr(
             fetch_oa,
             "_download_pdf",
-            lambda url, target: _write_synthetic_pdf(target, size=128),
+            lambda url, target, **kw: _write_synthetic_pdf(target, size=128),
         )
         crossref_msg = {
             "DOI": f"10.1234/{update_type}-paper",
@@ -3115,7 +3115,7 @@ class TestMarkupRacePrintableOnly:
         monkeypatch.setattr(
             fetch_oa,
             "_download_pdf",
-            lambda url, target: _write_synthetic_pdf(target, size=256),
+            lambda url, target, **kw: _write_synthetic_pdf(target, size=256),
         )
 
         result = run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
@@ -3153,7 +3153,7 @@ class TestMarkupRacePrintableOnly:
         monkeypatch.setattr(
             fetch_oa,
             "_download_pdf",
-            lambda url, target: _write_synthetic_pdf(target, size=256),
+            lambda url, target, **kw: _write_synthetic_pdf(target, size=256),
         )
         run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
 

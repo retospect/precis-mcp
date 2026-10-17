@@ -43,6 +43,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
+from types import SimpleNamespace
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 log = logging.getLogger(__name__)
@@ -151,6 +152,21 @@ class HttpResult:
 
 
 FetchFn = Callable[[str], HttpResult]
+
+
+class _RetryableStatus(Exception):
+    """A 429/5xx :class:`HttpResult`, raised so the politeness core retries it
+    (it reads ``status_code`` and ``Retry-After`` off ``response``)."""
+
+    def __init__(self, result: HttpResult) -> None:
+        super().__init__(f"HTTP {result.status}")
+        self.result = result
+        import httpx
+
+        # httpx.Headers: case-insensitive (``default_fetch`` lowercases keys).
+        self.response = SimpleNamespace(
+            status_code=result.status, headers=httpx.Headers(result.headers)
+        )
 
 
 @dataclass
@@ -419,13 +435,23 @@ def discover(doi: str, fetch: FetchFn) -> DiscoveryResult:
 
     # b. Crossref relation
     component_dois: list[str] = []
-    from precis.utils.http import retry_transient
-    from precis.utils.rate_limit import require as require_rate_limit
+    from precis.utils.http import call_with_backoff
 
     def _crossref_fetch(u: str) -> HttpResult:
-        # Shared crossref limiter; a refusal is recorded as a transport miss.
-        require_rate_limit("crossref")
-        return retry_transient(lambda: fetch(u), host=u)
+        # Politeness core, service "crossref": a shared limiter token per
+        # attempt (a refusal is recorded as a transport miss), 429/5xx and
+        # transport errors retried with Retry-After. A status that outlasts
+        # the retries comes back as the last result, as before.
+        def _once() -> HttpResult:
+            r = fetch(u)
+            if r.status == 429 or 500 <= r.status < 600:
+                raise _RetryableStatus(r)
+            return r
+
+        try:
+            return call_with_backoff(_once, service="crossref")
+        except _RetryableStatus as exc:
+            return exc.result
 
     cr_url = f"{_CROSSREF_API}/{doi}"
     cr = _safe_fetch(
@@ -493,13 +519,12 @@ def default_fetch(email: str = "") -> FetchFn:
     between requests to one host. A 403 comes back as a status, never raises."""
     import httpx
 
-    from precis.utils.http import http_client
+    from precis.utils.http import http_client, polite_user_agent
     from precis.utils.safe_fetch import safe_get
 
     timeout = httpx.Timeout(_API_TIMEOUT_S, connect=_API_CONNECT_TIMEOUT_S)
     throttle = _HostThrottle(1.0)
-    # No real contact -> no mailto at all; never a made-up address.
-    ua = f"precis-mcp/8.0 (mailto:{email})" if email else "precis-mcp/8.0"
+    ua = polite_user_agent(email)
 
     def _fetch(url: str) -> HttpResult:
         throttle.wait(urlparse(url).netloc)

@@ -15,6 +15,7 @@ import sys
 import time
 from typing import Any
 
+import httpx
 import pytest
 
 import precis.utils.rate_limit as rate_limit_mod
@@ -103,18 +104,24 @@ class TestCrossrefQueryDrain:
     def test_drain_returns_none_fast(self, monkeypatch: pytest.MonkeyPatch) -> None:
         request_drain()
 
+        calls = {"n": 0}
+
         def _boom(*_a: Any, **_k: Any) -> Any:
-            raise RuntimeError("network down")
+            calls["n"] += 1
+            raise httpx.ConnectError("network down")
 
         monkeypatch.setattr("precis.utils.safe_fetch.safe_get", _boom)
-        monkeypatch.setattr(bib_parse_mod, "require_rate_limit", lambda p, **_: None)
+        monkeypatch.setattr("precis.utils.rate_limit.require", lambda p, **_: None)
+        http.reset_circuit()
 
         start = time.monotonic()
         result = bib_parse_mod._crossref_query("some raw citation text")
         elapsed = time.monotonic() - start
 
         assert result is None
-        # Undrained, the two backoffs alone (1s + 2s) would dominate this.
+        # Undrained, five attempts and four backoffs would run; draining
+        # stops the retry loop after the first failed attempt.
+        assert calls["n"] == 1
         assert elapsed < 1.0
 
 

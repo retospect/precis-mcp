@@ -124,7 +124,12 @@ class TestCrossrefLookup:
         mock_cr_cls.return_value = mock_cr
 
         lookup_crossref("10.1038/test", mailto="test@example.com")
-        mock_cr_cls.assert_called_once_with(mailto="test@example.com")
+        mock_cr_cls.assert_called_once()
+        kwargs = mock_cr_cls.call_args.kwargs
+        assert kwargs["mailto"] == "test@example.com"
+        # Honest polite UA; a placeholder example.com contact is replaced.
+        assert kwargs["ua_string"].startswith("precis-mcp/")
+        assert "example.com" not in kwargs["ua_string"]
 
 
 class TestCrossrefNormalizeLocators:

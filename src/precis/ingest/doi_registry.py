@@ -27,9 +27,13 @@ import logging
 from typing import Any
 from urllib.parse import quote, urlsplit
 
-from precis.utils.http import http_client, retry_transient
+from precis.utils.http import (
+    VendorError,
+    http_client,
+    polite_user_agent,
+    with_backoff,
+)
 from precis.utils.rate_limit import RateLimited
-from precis.utils.rate_limit import require as require_rate_limit
 from precis.utils.safe_fetch import safe_get
 
 log = logging.getLogger(__name__)
@@ -49,19 +53,30 @@ class RegistryLookupError(RuntimeError):
     """
 
 
-def _get_json(url: str, *, params: dict[str, Any] | None = None) -> Any:
-    """GET ``url`` through the SSRF-pinned client.
+def _get_json(url: str, *, service: str, params: dict[str, Any] | None = None) -> Any:
+    """GET ``url`` through the SSRF-pinned client under the politeness core
+    (``service`` names the limiter row and backoff policy).
 
     Returns the decoded JSON body on 200, ``None`` on 404 (the registry
     answered "no such DOI"). Any other status and every transport
-    failure raise — the caller counts that as a fault, never a miss.
+    failure raise :class:`RegistryLookupError` — the caller counts that
+    as a fault, never a miss. That includes a 429/5xx that outlasted the
+    retries and a limiter refusal.
     """
     host = urlsplit(url).netloc
-    with http_client(timeout=_TIMEOUT_S) as client:
-        resp = retry_transient(
-            lambda: safe_get(client, url, params=params or {}),
-            host=host,
-        )
+    try:
+        with http_client(
+            timeout=_TIMEOUT_S,
+            user_agent=polite_user_agent((params or {}).get("mailto")),
+        ) as client:
+            resp = with_backoff(
+                lambda: safe_get(client, url, params=params or {}), service=service
+            )
+    except RateLimited as exc:
+        # A refusal is "lookup failed", never ``None`` (= registry said 404).
+        raise RegistryLookupError(str(exc)) from exc
+    except VendorError as exc:
+        raise RegistryLookupError(f"{host}: {exc}") from exc
     if resp.status_code == 404:
         return None
     if resp.status_code != 200:
@@ -76,12 +91,9 @@ def _crossref_meta(doi: str, mailto: str = "") -> dict[str, Any] | None:
     from precis.ingest.crossref import _normalize as crossref_normalize
 
     params = {"mailto": mailto} if mailto else None
-    try:
-        require_rate_limit("crossref")
-    except RateLimited as exc:
-        # A refusal is "lookup failed", never ``None`` (= registry said 404).
-        raise RegistryLookupError(str(exc)) from exc
-    data = _get_json(_CROSSREF_WORK + quote(doi, safe=""), params=params)
+    data = _get_json(
+        _CROSSREF_WORK + quote(doi, safe=""), service="crossref", params=params
+    )
     if not isinstance(data, dict):
         return None
     message = data.get("message")
@@ -92,7 +104,7 @@ def _crossref_meta(doi: str, mailto: str = "") -> dict[str, Any] | None:
 
 def _datacite_meta(doi: str) -> dict[str, Any] | None:
     """``GET api.datacite.org/dois/<doi>`` → normalized meta, or ``None``."""
-    data = _get_json(_DATACITE_DOI + quote(doi, safe=""))
+    data = _get_json(_DATACITE_DOI + quote(doi, safe=""), service="datacite")
     if not isinstance(data, dict):
         return None
     inner = data.get("data")

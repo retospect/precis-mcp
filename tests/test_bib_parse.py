@@ -14,9 +14,11 @@ import sys
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
 
 import precis.workers.bib_parse as bib_parse_mod
+from precis.utils import http
 from precis.workers import ref_lease
 from precis.workers.bib_parse import (
     BIB_PARSE_VERSION,
@@ -42,7 +44,7 @@ _NEEDS_FCNTL = pytest.mark.skipif(
 @pytest.fixture(autouse=True)
 def _shared_limiter_grants(monkeypatch: pytest.MonkeyPatch) -> None:
     """Never touch the real shared limiter; refusal tests re-patch it."""
-    monkeypatch.setattr(bib_parse_mod, "require_rate_limit", lambda p, **_: None)
+    monkeypatch.setattr("precis.utils.rate_limit.require", lambda p, **_: None)
 
 
 def _refuse(provider: str, **_: Any) -> None:
@@ -79,6 +81,12 @@ class _FakeResponse:
     def __init__(self, status_code: int, payload: dict[str, Any] | None = None) -> None:
         self.status_code = status_code
         self._payload = payload or {}
+        self.headers: dict[str, str] = {}
+        self.text = ""
+
+    @property
+    def request(self) -> Any:
+        raise RuntimeError("no request attached")
 
     def json(self) -> dict[str, Any]:
         return self._payload
@@ -844,7 +852,7 @@ class TestMatchCrossref:
             return responses.pop(0)
 
         monkeypatch.setattr("precis.utils.safe_fetch.safe_get", fake_safe_get)
-        monkeypatch.setattr(bib_parse_mod, "drain_sleep", lambda *_a: False)
+        monkeypatch.setattr("precis.utils.http._default_sleep", lambda _s: None)
 
         run_bib_parse_match_pass(store, ref_id, client=_FakeClient("{}"))
         doi, _s2_id, _held, _match_conf = _entry_row(store, entry_id)
@@ -863,17 +871,24 @@ class TestMatchCrossref:
             store, ref_id, 1, "A network-flaky citation, Some Journal, 2020."
         )
 
+        calls = {"n": 0}
+        sleeps: list[float] = []
+
         def fake_safe_get(client: Any, url: str, /, **kw: Any) -> Any:
-            raise RuntimeError("connection reset")
+            calls["n"] += 1
+            raise httpx.ConnectError("connection reset")
 
         monkeypatch.setattr("precis.utils.safe_fetch.safe_get", fake_safe_get)
-        monkeypatch.setattr(bib_parse_mod, "drain_sleep", lambda *_a: False)
+        monkeypatch.setattr("precis.utils.http._default_sleep", sleeps.append)
+        http.reset_circuit()
 
         result = run_bib_parse_match_pass(store, ref_id, client=_FakeClient("{}"))
         assert result == {"attempted": 1}
         doi, _s2_id, _held, match_conf = _entry_row(store, entry_id)
         assert doi is None
         assert match_conf is None  # NOT memoized -- eligible for retry
+        # The retry path really ran: 5 attempts, 4 backoff sleeps.
+        assert calls["n"] == 5 and len(sleeps) == 4
 
 
 # ── shared crossref limiter refusal ─────────────────────────────────────
@@ -889,11 +904,11 @@ class TestSharedLimiterRefusal:
         def _no_http(*_a: Any, **_k: Any) -> Any:
             raise AssertionError("safe_get fired despite a limiter refusal")
 
-        monkeypatch.setattr(bib_parse_mod, "require_rate_limit", _refuse)
+        monkeypatch.setattr("precis.utils.rate_limit.require", _refuse)
         monkeypatch.setattr("precis.utils.safe_fetch.safe_get", _no_http)
         with pytest.raises(RateLimited) as exc:
             bib_parse_mod._crossref_query("Some raw citation text")
-        assert exc.value.provider == "crossref"
+        assert exc.value.provider == "crossref-list"
 
     def test_pass_refusal_leaves_paper_unstamped_and_stops_batch(
         self, store: Any, monkeypatch: pytest.MonkeyPatch
@@ -901,7 +916,7 @@ class TestSharedLimiterRefusal:
         def _no_http(*_a: Any, **_k: Any) -> Any:
             raise AssertionError("safe_get fired despite a limiter refusal")
 
-        monkeypatch.setattr(bib_parse_mod, "require_rate_limit", _refuse)
+        monkeypatch.setattr("precis.utils.rate_limit.require", _refuse)
         monkeypatch.setattr("precis.utils.safe_fetch.safe_get", _no_http)
         ref_ids = []
         for i in range(2):
@@ -1100,7 +1115,7 @@ class TestRematchSweep:
         def _no_http(*_a: Any, **_k: Any) -> Any:
             raise AssertionError("safe_get fired despite a limiter refusal")
 
-        monkeypatch.setattr(bib_parse_mod, "require_rate_limit", refuse)
+        monkeypatch.setattr("precis.utils.rate_limit.require", refuse)
         monkeypatch.setattr("precis.utils.safe_fetch.safe_get", _no_http)
 
         out = bib_parse_mod.run_bib_rematch_sweep(store, client=_FakeClient("{}"))

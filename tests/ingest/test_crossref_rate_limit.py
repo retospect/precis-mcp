@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
 
 from precis.ingest import (
@@ -38,19 +39,25 @@ def _no_http(*_: Any, **__: Any) -> Any:
 
 def test_lookup_crossref_acquires_then_fetches(monkeypatch) -> None:
     lim = _Limiter()
-    monkeypatch.setattr(crossref, "require_rate_limit", lim)
-    monkeypatch.setattr(crossref, "fetch_message", lambda doi, mailto="": None)
+    monkeypatch.setattr("precis.utils.rate_limit.require", lim)
+    cr = MagicMock()
+    cr.return_value.works.return_value = None
+    monkeypatch.setattr(crossref, "Crossref", cr)
     assert crossref.lookup_crossref("10.1/x") is None
-    assert lim.calls == ["crossref"]
+    assert lim.calls == ["crossref"]  # one token, taken by the core per attempt
+    cr.return_value.works.assert_called_once()
 
 
 def test_lookup_crossref_refusal_propagates_not_none(monkeypatch) -> None:
     lim = _Limiter(refuse=True)
-    monkeypatch.setattr(crossref, "require_rate_limit", lim)
-    monkeypatch.setattr(crossref, "fetch_message", _no_http)
+    monkeypatch.setattr("precis.utils.rate_limit.require", lim)
+    cr = MagicMock()
+    cr.return_value.works.side_effect = _no_http
+    monkeypatch.setattr(crossref, "Crossref", cr)
     with pytest.raises(RateLimited):
         crossref.lookup_crossref("10.1/x")
     assert lim.calls == ["crossref"]
+    cr.return_value.works.assert_not_called()
 
 
 def test_bounded_lets_refusal_escape_not_a_miss() -> None:
@@ -86,7 +93,7 @@ def test_provenance_search_refusal_returns_empty(monkeypatch) -> None:
     cr = MagicMock()
     monkeypatch.setattr(habanero, "Crossref", cr)
     assert provenance._search_crossref_works(title="t", author=None, mailto=None) == []
-    assert lim.calls == ["crossref"]
+    assert lim.calls == ["crossref-list"]
     cr.return_value.works.assert_not_called()
 
 
@@ -102,8 +109,8 @@ def test_provenance_doi_validity_refusal_returns_none(monkeypatch) -> None:
 
 def test_doi_registry_refusal_is_lookup_error_not_none(monkeypatch) -> None:
     lim = _Limiter(refuse=True)
-    monkeypatch.setattr(doi_registry, "require_rate_limit", lim)
-    monkeypatch.setattr(doi_registry, "_get_json", _no_http)
+    monkeypatch.setattr("precis.utils.rate_limit.require", lim)
+    monkeypatch.setattr(doi_registry, "safe_get", _no_http)
     with pytest.raises(doi_registry.RegistryLookupError):
         doi_registry._crossref_meta("10.1/x")
     assert lim.calls == ["crossref"]
@@ -111,8 +118,12 @@ def test_doi_registry_refusal_is_lookup_error_not_none(monkeypatch) -> None:
 
 def test_doi_registry_acquires_before_get(monkeypatch) -> None:
     lim = _Limiter()
-    monkeypatch.setattr(doi_registry, "require_rate_limit", lim)
-    monkeypatch.setattr(doi_registry, "_get_json", lambda *a, **k: None)
+    monkeypatch.setattr("precis.utils.rate_limit.require", lim)
+    monkeypatch.setattr(
+        doi_registry,
+        "safe_get",
+        lambda c, u, **k: httpx.Response(404, request=httpx.Request("GET", u)),
+    )
     assert doi_registry._crossref_meta("10.1/x") is None
     assert lim.calls == ["crossref"]
 
@@ -121,10 +132,10 @@ def test_citation_refusal_returns_empty(monkeypatch) -> None:
     from precis.utils import safe_fetch
 
     lim = _Limiter(refuse=True)
-    monkeypatch.setattr(crossref_citation, "require_rate_limit", lim)
+    monkeypatch.setattr("precis.utils.rate_limit.require", lim)
     monkeypatch.setattr(safe_fetch, "safe_get", _no_http)
     assert crossref_citation._fetch_items("Smith 2020 Nature", "") == []
-    assert lim.calls == ["crossref"]
+    assert lim.calls == ["crossref-list"]
 
 
 def test_si_discovery_refusal_skips_crossref_get(monkeypatch) -> None:

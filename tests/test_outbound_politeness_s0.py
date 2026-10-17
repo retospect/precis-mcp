@@ -96,12 +96,17 @@ def test_core_request_carries_precis_ua_not_browser(monkeypatch: Any) -> None:
 
 
 @pytest.mark.parametrize("contact", [None, ""])
-def test_fetch_oa_ua_omits_mailto_without_contact(
+def test_fetch_oa_ua_falls_back_to_the_maintainer_contact(
     monkeypatch: Any, contact: str | None
 ) -> None:
+    # S3: the UA is the shared polite_user_agent(), which names the real
+    # fallback contact rather than sending none (never a made-up address).
+    from precis.utils.http import FALLBACK_CONTACT, check_user_agent
+
     _contact(monkeypatch, contact)
     ua = fetch_oa._user_agent_header()
-    assert ua.startswith("precis-mcp/") and "mailto" not in ua
+    assert ua.startswith("precis-mcp/") and f"mailto:{FALLBACK_CONTACT}" in ua
+    assert check_user_agent(ua) == ua
     assert "example.com" not in ua
 
 
@@ -127,7 +132,12 @@ def test_si_discovery_ua_never_fake_mailto(monkeypatch: Any, email: str) -> None
     si_discovery.default_fetch(email)("https://example.org/x")
     ua = seen[0] or ""
     assert "example.com" not in ua and "noreply" not in ua
-    assert ("mailto:me@lab.test" in ua) == bool(email)
+    if email:
+        assert "mailto:me@lab.test" in ua
+    else:
+        from precis.utils.http import check_user_agent
+
+        assert check_user_agent(ua) == ua and "mailto:" in ua
 
 
 def test_openalex_meta_ua_never_fake_mailto() -> None:
