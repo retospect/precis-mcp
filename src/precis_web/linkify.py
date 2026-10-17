@@ -141,11 +141,11 @@ def _render_anchor(
 
 
 # Anchor CSS for the lighter external-link anchor (no hover popover).
-_LINK_CLASS = "text-sky-700 underline decoration-dotted hover:decoration-solid"
+_LINK_CLASS = "text-info-strong underline decoration-dotted hover:decoration-solid"
 
 
 #: Default anchor styling for inline refs (chips override via anchor_cls).
-_ANCHOR_CLS = "text-sky-700 underline decoration-dotted hover:decoration-solid"
+_ANCHOR_CLS = "text-info-strong underline decoration-dotted hover:decoration-solid"
 
 #: Compact-reader styling for a paper citation, split local vs external. A
 #: *local* cite — a paper chunk we hold in the corpus — keeps the familiar
@@ -154,12 +154,14 @@ _ANCHOR_CLS = "text-sky-700 underline decoration-dotted hover:decoration-solid"
 #: citations are grounded in a source they can open. ``local=None`` (every
 #: non-draft call site) means "don't distinguish": local styling, unchanged.
 _CITE_LOCAL_CLS = _ANCHOR_CLS
-_CITE_EXTERNAL_CLS = "text-amber-600 underline decoration-dotted hover:decoration-solid"
+_CITE_EXTERNAL_CLS = "text-warning underline decoration-dotted hover:decoration-solid"
 
 #: A Taproot claim-hub cite — a violet marker so it reads distinctly from a
 #: sky ``§`` paper cite. Hover shows the claim + its evidence; click opens the
 #: ``/claim`` page.
-_CLAIM_ANCHOR_CLS = "text-violet-700 underline decoration-dotted hover:decoration-solid"
+_CLAIM_ANCHOR_CLS = (
+    "text-accent-strong underline decoration-dotted hover:decoration-solid"
+)
 _CLAIM_SIGIL = "◆"
 
 #: A finding cite whose head resolves but ISN'T (yet) a hub — "claim in
@@ -167,7 +169,7 @@ _CLAIM_SIGIL = "◆"
 #: hollow rather than filled — the ◆/◇ pairing reads at a glance as
 #: "landed" vs "still being chased" without a reader needing to hover.
 _CLAIM_PENDING_ANCHOR_CLS = (
-    "text-violet-400 underline decoration-dotted hover:decoration-solid"
+    "text-accent-faint underline decoration-dotted hover:decoration-solid"
 )
 _CLAIM_PENDING_SIGIL = "◇"
 
@@ -179,7 +181,7 @@ _CLAIM_PENDING_SIGIL = "◇"
 #: over both the live ``◆`` and pending ``◇`` renderings (see
 #: :func:`_render_claim_hub`'s precedence check).
 _CLAIM_REFUTED_ANCHOR_CLS = (
-    "text-red-600 underline decoration-dotted hover:decoration-solid"
+    "text-danger underline decoration-dotted hover:decoration-solid"
 )
 _CLAIM_REFUTED_SIGIL = "◆"
 
@@ -196,7 +198,7 @@ _CLAIM_REFUTED_SIGIL = "◆"
 #: hypothesis head out of ``claims`` so the two can never actually collide,
 #: but the precedence is enforced here too, belt-and-suspenders.
 _CLAIM_HYPOTHESIS_ANCHOR_CLS = (
-    "text-fuchsia-700 underline decoration-dotted hover:decoration-solid"
+    "text-fuchsia-strong underline decoration-dotted hover:decoration-solid"
 )
 _CLAIM_HYPOTHESIS_SIGIL = "◈"
 
@@ -285,7 +287,7 @@ def _cite_style(key: str, local: frozenset[str] | None) -> tuple[str, str]:
 #: templates/base.html.j2 — ``once`` means there is no second attempt, so the
 #: placeholder must not be left sitting there claiming to still be loading.
 _POPOVER_PLACEHOLDER = (
-    '<span class="ref-popover-status block px-1 py-1.5 text-xs text-slate-400">'
+    '<span class="ref-popover-status block px-1 py-1.5 text-xs text-fg-faint">'
     "loading…</span>"
 )
 
@@ -430,7 +432,7 @@ def _anchor_html(
         f"{label}</a>"
         f'<template x-teleport="body">'
         f'<span id="{pop_id}" x-ref="card" class="ref-popover w-96 '
-        f"rounded-lg border border-slate-200 bg-white shadow-xl px-2 pb-2 pt-2 "
+        f"rounded-lg border border-line bg-surface shadow-xl px-2 pb-2 pt-2 "
         f'text-sm whitespace-normal max-h-96 overflow-y-auto" '
         f'x-show="hovered" x-cloak :style="popStyle" '
         f'@mouseenter="clearTimeout(closeTimer); hovered = true" '
@@ -451,7 +453,8 @@ def _render_chunk_anchor(handle: str, label: str) -> str:
     flag it visibly instead of emitting a dead-looking live anchor."""
     if not _is_handle(handle):
         return (
-            f'<span style="color:#b91c1c;text-decoration:underline wavy #f87171;'
+            f'<span style="color:rgb(var(--text-danger-strong));'
+            f"text-decoration:underline wavy rgb(var(--text-danger-faint));"
             f'cursor:help" title="unresolved chunk reference — not a valid '
             f'¶handle (must be a 6-char code, not a numeric id)">'
             f"{escape(label)}</span>"
@@ -755,7 +758,7 @@ def _md_inline(escaped: str) -> str:
         kind, body = stash[int(m.group(1))]
         if kind == "math":
             return body  # verbatim $…$ for client-side KaTeX
-        return f'<code class="rounded bg-slate-100 px-1 text-[0.9em]">{body}</code>'
+        return f'<code class="rounded bg-surface-muted px-1 text-[0.9em]">{body}</code>'
 
     return re.sub(r"\x00(\d+)\x00", _restore, s)
 
@@ -1041,7 +1044,7 @@ def linkify_refs(
 def _footnote_marker(n: int) -> str:
     """``[N]`` superscript anchor jumping to the References-panel entry."""
     return (
-        f'<sup class="text-sky-700 ml-0.5">'
+        f'<sup class="text-info-strong ml-0.5">'
         f'<a href="#ref-{n}" class="hover:underline">[{n}]</a></sup>'
     )
 
@@ -1334,8 +1337,8 @@ def _linkify_prose_core(
 
 
 _CHIP_CLS = (
-    "inline-block max-w-[12rem] truncate rounded bg-slate-100 px-1.5 py-0.5 "
-    "text-sky-700 hover:bg-slate-200 align-middle"
+    "inline-block max-w-[12rem] truncate rounded bg-surface-muted px-1.5 py-0.5 "
+    "text-info-strong hover:bg-surface-emphasis align-middle"
 )
 
 
@@ -1369,7 +1372,7 @@ def popover_chip(
     safe_warn = escape(warn)
     return Markup(
         f'<span class="inline-flex items-center gap-0.5">{anchor}'
-        f'<span class="text-rose-600" role="img" title="{safe_warn}" '
+        f'<span class="text-danger" role="img" title="{safe_warn}" '
         f'aria-label="{safe_warn}">&#9650;</span></span>'
     )
 
@@ -1440,12 +1443,12 @@ def _toon_header_cells(cells: list[str]) -> list[str] | None:
 
 
 _TOON_TD = (
-    "border border-slate-200 px-2 py-1 align-top text-slate-700 "
+    "border border-line px-2 py-1 align-top text-fg-secondary "
     "whitespace-pre-wrap break-words"
 )
 _TOON_TH = (
-    "border border-slate-200 bg-slate-50 px-2 py-1 text-left "
-    "font-semibold text-slate-600 whitespace-pre-wrap break-words"
+    "border border-line bg-surface-subtle px-2 py-1 text-left "
+    "font-semibold text-fg-muted whitespace-pre-wrap break-words"
 )
 
 
@@ -1588,10 +1591,10 @@ def render_cloze(text: str) -> Markup:
         if hint:
             title += f" · hint: {escape(hint)}"
         out.append(
-            f'<span class="rounded bg-amber-100 text-amber-900 px-1 '
-            f'border-b border-dotted border-amber-400" title="{title}">'
+            f'<span class="rounded bg-warning-muted text-warning-deep px-1 '
+            f'border-b border-dotted border-warning-emphasis" title="{title}">'
             f"{escape(answer)}"
-            f'<sup class="text-[0.6em] text-amber-500 ml-0.5">c{escape(idx)}</sup>'
+            f'<sup class="text-[0.6em] text-warning-soft ml-0.5">c{escape(idx)}</sup>'
             f"</span>"
         )
         pos = m.end()

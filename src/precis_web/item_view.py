@@ -91,10 +91,10 @@ _PIPELINE_KINDS: frozenset[str] = frozenset(
 #: llm_label`` — see ``workers/stub_rank.py``). ``core`` is the warmest
 #: (directly serves a current interest), ``off`` the coldest (unrelated).
 _LLM_LABEL_BADGE_CLS: dict[str, str] = {
-    "core": "bg-emerald-100 text-emerald-700",
-    "adjacent": "bg-sky-100 text-sky-700",
-    "explore": "bg-amber-100 text-amber-700",
-    "off": "bg-slate-200 text-slate-500",
+    "core": "bg-success-muted text-success-strong",
+    "adjacent": "bg-info-muted text-info-strong",
+    "explore": "bg-warning-muted text-warning-strong",
+    "off": "bg-surface-emphasis text-fg-subtle",
 }
 
 #: Badge color per `pathway` ``meta.status`` — the Drive row's own compute-
@@ -102,10 +102,10 @@ _LLM_LABEL_BADGE_CLS: dict[str, str] = {
 #: ``refs/pathway_detail.html.j2``). A status not in this map (legacy row
 #: predating ``meta.status``) gets no badge.
 _PATHWAY_STATUS_BADGE_CLS: dict[str, str] = {
-    "ready": "bg-emerald-100 text-emerald-700",
-    "computing": "bg-amber-100 text-amber-700",
-    "failed": "bg-rose-100 text-rose-700",
-    "superseded": "bg-slate-200 text-slate-500",
+    "ready": "bg-success-muted text-success-strong",
+    "computing": "bg-warning-muted text-warning-strong",
+    "failed": "bg-danger-muted text-danger-strong",
+    "superseded": "bg-surface-emphasis text-fg-subtle",
 }
 
 #: Namespaces hidden from the per-row tag chips — machine/control tags
@@ -262,7 +262,7 @@ class ItemPresenter:
             badges.append(
                 {
                     "label": "stub",
-                    "cls": "bg-slate-200 text-slate-500",
+                    "cls": "bg-surface-emphasis text-fg-subtle",
                     "title": "awaiting fetch — no PDF yet",
                 }
             )
@@ -270,7 +270,7 @@ class ItemPresenter:
             badges.append(
                 {
                     "label": "pdf",
-                    "cls": "bg-emerald-100 text-emerald-700",
+                    "cls": "bg-success-muted text-success-strong",
                     "title": "PDF stored",
                 }
             )
@@ -278,7 +278,7 @@ class ItemPresenter:
             badges.append(
                 {
                     "label": "chunks",
-                    "cls": "bg-sky-100 text-sky-700",
+                    "cls": "bg-info-muted text-info-strong",
                     "title": "ingested — has body chunks",
                 }
             )
@@ -400,7 +400,7 @@ class SePresenter(ItemPresenter):
             badges.append(
                 {
                     "label": level,
-                    "cls": "bg-indigo-100 text-indigo-700",
+                    "cls": "bg-indigo-muted text-indigo-strong",
                     "title": f"highest IR level reached: {level} (see se-kind.md)",
                 }
             )
@@ -410,7 +410,7 @@ class SePresenter(ItemPresenter):
             badges.append(
                 {
                     "label": f"{n_blocks} {noun}",
-                    "cls": "bg-slate-100 text-slate-600",
+                    "cls": "bg-surface-muted text-fg-muted",
                     "title": f"{n_blocks} live block(s) in the design tree",
                 }
             )
@@ -419,7 +419,7 @@ class SePresenter(ItemPresenter):
             badges.append(
                 {
                     "label": f"{n_bound} bound",
-                    "cls": "bg-teal-100 text-teal-700",
+                    "cls": "bg-teal-muted text-teal-strong",
                     "title": (
                         f"{n_bound} atomic-mode block(s) bound to a structure design"
                     ),
@@ -451,7 +451,7 @@ class StructurePresenter(ItemPresenter):
             badges.append(
                 {
                     "label": f"{n_atoms} atoms",
-                    "cls": "bg-slate-100 text-slate-600",
+                    "cls": "bg-surface-muted text-fg-muted",
                     "title": f"{n_atoms} live atom(s)",
                 }
             )
@@ -460,7 +460,7 @@ class StructurePresenter(ItemPresenter):
             badges.append(
                 {
                     "label": f"{n_runs} runs",
-                    "cls": "bg-slate-100 text-slate-600",
+                    "cls": "bg-surface-muted text-fg-muted",
                     "title": f"{n_runs} relax run(s) recorded",
                 }
             )
@@ -470,7 +470,7 @@ class StructurePresenter(ItemPresenter):
             badges.append(
                 {
                     "label": f"{last_fidelity} {_fmt_num(round(last_energy, 2))} eV",
-                    "cls": "bg-emerald-100 text-emerald-700",
+                    "cls": "bg-success-muted text-success-strong",
                     "title": (
                         f"last successful relax: {last_fidelity} rung, "
                         f"{last_energy:.4f} eV"
@@ -501,7 +501,11 @@ class PcbPresenter(ItemPresenter):
         if isinstance(last_route, dict):
             realized = int(last_route.get("realized") or 0)
             failed = int(last_route.get("failed") or 0)
-            cls = "bg-rose-100 text-rose-700" if failed else "bg-sky-100 text-sky-700"
+            cls = (
+                "bg-danger-muted text-danger-strong"
+                if failed
+                else "bg-info-muted text-info-strong"
+            )
             badges.append(
                 {
                     "label": f"routed {realized}/{realized + failed}",
@@ -515,7 +519,7 @@ class PcbPresenter(ItemPresenter):
             badges.append(
                 {
                     "label": "placed",
-                    "cls": "bg-sky-100 text-sky-700",
+                    "cls": "bg-info-muted text-info-strong",
                     "title": "components placed, not yet routed",
                 }
             )
@@ -554,7 +558,7 @@ class ComponentPresenter(ItemPresenter):
             badges.append(
                 {
                     "label": str(category),
-                    "cls": "bg-slate-100 text-slate-600",
+                    "cls": "bg-surface-muted text-fg-muted",
                     "title": "component category",
                 }
             )
@@ -564,7 +568,7 @@ class ComponentPresenter(ItemPresenter):
             badges.append(
                 {
                     "label": str(thread_size),
-                    "cls": "bg-violet-100 text-violet-700",
+                    "cls": "bg-accent-muted text-accent-strong",
                     "title": f"thread size: {thread_size}",
                 }
             )
@@ -573,7 +577,7 @@ class ComponentPresenter(ItemPresenter):
             badges.append(
                 {
                     "label": f"{drive_type} drive",
-                    "cls": "bg-violet-100 text-violet-700",
+                    "cls": "bg-accent-muted text-accent-strong",
                     "title": f"drive type: {drive_type}",
                 }
             )
@@ -582,7 +586,7 @@ class ComponentPresenter(ItemPresenter):
             badges.append(
                 {
                     "label": f"{head_form} head",
-                    "cls": "bg-violet-100 text-violet-700",
+                    "cls": "bg-accent-muted text-accent-strong",
                     "title": f"head form: {head_form}",
                 }
             )
@@ -612,7 +616,7 @@ class MaterialPresenter(ItemPresenter):
             badges.append(
                 {
                     "label": str(material_class),
-                    "cls": "bg-amber-100 text-amber-700",
+                    "cls": "bg-warning-muted text-warning-strong",
                     "title": "material class",
                 }
             )
@@ -646,7 +650,7 @@ class FigurePresenter(ItemPresenter):
             badges.append(
                 {
                     "label": f"{_fmt_num(w)}×{_fmt_num(h)}",
-                    "cls": "bg-slate-100 text-slate-600",
+                    "cls": "bg-surface-muted text-fg-muted",
                     "title": "canvas size (viewBox)",
                 }
             )

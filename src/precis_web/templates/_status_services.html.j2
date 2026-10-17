@@ -5,7 +5,7 @@
    (load/capability chips) now lives on the Health sub-tab — this tab
    only keeps the host *selector*, which scopes which host's
    ``service_config`` row an edit targets. #}
-<p class="text-sm text-slate-500 mb-3">
+<p class="text-sm text-fg-subtle mb-3">
   Everything the factory runs — one row per pass, job-type, compute
   service, daemon, and serving endpoint — from the ServiceSpec registry,
   joined to its live <code>service_config</code> prio and last activity.
@@ -16,14 +16,14 @@
 {# ── Host selector — edits apply to this host ('*' = all) ─────── #}
 <form method="get" action="/status" class="mb-4 flex items-center gap-2 text-sm">
   <input type="hidden" name="tab" value="services">
-  <label class="text-slate-500">Editing host</label>
+  <label class="text-fg-subtle">Editing host</label>
   <select name="host" onchange="this.form.submit()"
-          class="rounded-md border border-slate-300 text-sm px-2 py-1.5">
+          class="rounded-md border border-line-strong text-sm px-2 py-1.5">
     {% for h in host_options %}
     <option value="{{ h }}" {% if h == selected_host %}selected{% endif %}>{{ '* (all hosts)' if h == '*' else h }}</option>
     {% endfor %}
   </select>
-  <span class="text-xs text-slate-400">prio 0 = off · 1–10 = claim weight · blank = env/profile default ({{ default_prio }})</span>
+  <span class="text-xs text-fg-faint">prio 0 = off · 1–10 = claim weight · blank = env/profile default ({{ default_prio }})</span>
 </form>
 
 {# ── Reserve mode (§B-2, gr162694 #4) — a TTL'd gate on heavy claims for
@@ -32,40 +32,40 @@
      (service_config.set_reserve/clear_reserve), never a raw UPSERT. #}
 <section class="mb-4">
   {% if reserve %}
-  <div class="rounded-lg border border-violet-300 bg-violet-50 px-3 py-2 text-sm flex items-center gap-3"
+  <div class="rounded-lg border border-accent-strong bg-accent-subtle px-3 py-2 text-sm flex items-center gap-3"
        title="Reserve mode blocks new heavy claims on {{ selected_host }} until it expires (service_config pseudo-row, §B-2). Set by {{ reserve.actor or 'unknown' }}.">
-    <span class="text-violet-800">🔒 <strong>{{ selected_host }}</strong> reserved until {{ reserve.expires_at | abs_ts }}</span>
+    <span class="text-accent-deep">🔒 <strong>{{ selected_host }}</strong> reserved until {{ reserve.expires_at | abs_ts }}</span>
     <form method="post" action="/factory/release">
       <input type="hidden" name="host" value="{{ selected_host }}">
-      <button class="rounded bg-violet-700 text-white text-xs px-2 py-1 hover:bg-violet-800 transition">Release now</button>
+      <button class="rounded bg-accent-solid-strong text-on-solid text-xs px-2 py-1 hover:bg-accent-solid-strong transition">Release now</button>
     </form>
   </div>
   {% else %}
-  <form method="post" action="/factory/reserve" class="flex items-center gap-2 text-xs text-slate-500">
+  <form method="post" action="/factory/reserve" class="flex items-center gap-2 text-xs text-fg-subtle">
     <input type="hidden" name="host" value="{{ selected_host }}">
     <span>Reserve {{ selected_host }} for</span>
     <input type="number" name="hours" value="4" min="0.1" max="168" step="0.5"
-           class="w-16 rounded border border-slate-300 px-1 py-0.5">
+           class="w-16 rounded border border-line-strong px-1 py-0.5">
     <span>hours (blocks new heavy claims)</span>
-    <button class="rounded bg-slate-700 text-white px-2 py-1 hover:bg-slate-800 transition">Reserve</button>
+    <button class="rounded bg-solid text-on-solid px-2 py-1 hover:bg-solid-strong transition">Reserve</button>
   </form>
   {% endif %}
 </section>
 
 {# ── LLM placement chains — the Phase B operator editor ── #}
 <section class="mb-6">
-  <div class="rounded-lg border border-slate-200 bg-white p-4 max-w-2xl">
+  <div class="rounded-lg border border-line bg-surface p-4 max-w-2xl">
     <h2 class="text-sm font-semibold mb-2">LLM placement chains (operator)</h2>
 
     <div class="flex items-center gap-2 mb-3">
       {% if llm_chains.cloud_enabled %}
-      <span class="rounded px-1.5 py-0.5 text-[11px] bg-emerald-50 text-emerald-700">cloud ON</span>
+      <span class="rounded px-1.5 py-0.5 text-[11px] bg-success-subtle text-success-strong">cloud ON</span>
       {% else %}
-      <span class="rounded px-1.5 py-0.5 text-[11px] bg-amber-50 text-amber-700">cloud OFF</span>
+      <span class="rounded px-1.5 py-0.5 text-[11px] bg-warning-subtle text-warning-strong">cloud OFF</span>
       {% endif %}
       <form method="post" action="/factory/llm/cloud">
         <input type="hidden" name="enabled" value="{{ 'false' if llm_chains.cloud_enabled else 'true' }}">
-        <button class="rounded bg-slate-200 text-slate-700 text-xs px-3 py-1 hover:bg-slate-300 transition">
+        <button class="rounded bg-surface-emphasis text-fg-secondary text-xs px-3 py-1 hover:bg-surface-strong transition">
           {% if llm_chains.cloud_enabled %}Disable cloud (→ local only){% else %}Enable cloud{% endif %}
         </button>
       </form>
@@ -73,19 +73,19 @@
 
     <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
       {% for t in llm_chains.tiers %}
-      <form method="post" action="/factory/llm/chain" class="rounded border border-slate-200 p-2">
+      <form method="post" action="/factory/llm/chain" class="rounded border border-line p-2">
         <input type="hidden" name="tier" value="{{ t.tier }}">
-        <div class="text-xs font-mono text-slate-600 mb-1">{{ t.tier }}</div>
+        <div class="text-xs font-mono text-fg-muted mb-1">{{ t.tier }}</div>
         <textarea name="chain_json" rows="3"
-                  class="w-full rounded border border-slate-300 text-[11px] font-mono px-1.5 py-1"
+                  class="w-full rounded border border-line-strong text-[11px] font-mono px-1.5 py-1"
                   placeholder='default ladder — paste JSON [{"placement":"cloud","model":"…","transport":"openai_tools"}, …]'>{{ t.chain_json }}</textarea>
-        <button class="mt-1 rounded bg-sky-600 text-white text-xs px-3 py-1 hover:bg-sky-700 transition">
+        <button class="mt-1 rounded bg-info-solid text-on-solid text-xs px-3 py-1 hover:bg-info-solid-strong transition">
           Save
         </button>
       </form>
       {% endfor %}
     </div>
-    <p class="text-[11px] text-slate-400 mt-2">
+    <p class="text-[11px] text-fg-faint mt-2">
       Blank = revert to the default ladder; malformed JSON (not a valid list) is ignored, leaving the prior override untouched.
     </p>
   </div>
@@ -93,9 +93,9 @@
 
 {# ── LLM operations — per-source model routing (Phase 2) ───────── #}
 <section class="mb-6">
-  <div class="rounded-lg border border-slate-200 bg-white p-4">
+  <div class="rounded-lg border border-line bg-surface p-4">
     <h2 class="text-sm font-semibold mb-2">LLM operations (operator)</h2>
-    <p class="text-[11px] text-slate-400 mb-2">
+    <p class="text-[11px] text-fg-faint mb-2">
       One row per LLM call site (<code>source=</code>), registry ∪ excluded ∪
       observed, most-recently-run first. Steerable rows write/clear
       <code>llm.op.&lt;source&gt;</code> — the tier select and the model
@@ -105,9 +105,9 @@
       tier is ignored). Non-steerable rows (router-bypassers, functional
       pins) are read-only.
     </p>
-    <div class="overflow-x-auto rounded-lg border border-slate-200">
+    <div class="overflow-x-auto rounded-lg border border-line">
       <table class="min-w-full text-xs">
-        <thead class="bg-slate-50 text-slate-500">
+        <thead class="bg-surface-subtle text-fg-subtle">
           <tr>
             <th class="text-left font-medium px-3 py-2">operation</th>
             <th class="text-left font-medium px-3 py-2">default</th>
@@ -118,7 +118,7 @@
             <th class="text-left font-medium px-3 py-2">7d calls</th>
           </tr>
         </thead>
-        <tbody class="divide-y divide-slate-100">
+        <tbody class="divide-y divide-line-subtle">
           {% for op in llm_ops.rows %}
           <tr class="align-top">
             <td class="px-3 py-2">
@@ -128,9 +128,9 @@
                    {% endif %}>
                 {{ op.label }}
               </div>
-              <div class="text-[11px] text-slate-400 font-mono">{{ op.source }}</div>
+              <div class="text-[11px] text-fg-faint font-mono">{{ op.source }}</div>
             </td>
-            <td class="px-3 py-2 font-mono text-[11px] text-slate-500">
+            <td class="px-3 py-2 font-mono text-[11px] text-fg-subtle">
               {% if op.default_tier %}{{ op.default_tier }} / {{ op.default_model or '—' }}{% else %}—{% endif %}
             </td>
             <td class="px-3 py-2 font-mono text-[11px]">{{ op.effective }}</td>
@@ -139,7 +139,7 @@
               {% set is_pinned = op.override and op.override.model %}
               <form method="post" action="/factory/llm/op" class="flex items-center gap-1">
                 <input type="hidden" name="source" value="{{ op.source }}">
-                <select name="tier" class="rounded border border-slate-300 text-[11px] px-1 py-0.5"
+                <select name="tier" class="rounded border border-line-strong text-[11px] px-1 py-0.5"
                         onchange="var m=this.form.elements['model']; m.disabled = (this.value !== 'pinned');">
                   <option value="default" {% if not op.override %}selected{% endif %}>default</option>
                   {% for t in ("frontier", "big", "medium", "small") %}
@@ -147,17 +147,17 @@
                   {% endfor %}
                   <option value="pinned" {% if is_pinned %}selected{% endif %}>pinned</option>
                 </select>
-                <select name="model" class="rounded border border-slate-300 text-[11px] px-1 py-0.5"
+                <select name="model" class="rounded border border-line-strong text-[11px] px-1 py-0.5"
                         {% if not is_pinned %}disabled{% endif %}>
                   <option value="">(pick a model)</option>
                   {% for m in llm_ops.models %}
                   <option value="{{ m }}" {% if op.override and op.override.model == m %}selected{% endif %}>{{ m }}</option>
                   {% endfor %}
                 </select>
-                <button class="rounded bg-sky-600 text-white text-[11px] px-2 py-0.5 hover:bg-sky-700 transition">Save</button>
+                <button class="rounded bg-info-solid text-on-solid text-[11px] px-2 py-0.5 hover:bg-info-solid-strong transition">Save</button>
               </form>
               {% else %}
-              <span class="text-[11px] text-amber-700">
+              <span class="text-[11px] text-warning-strong">
                 {{ op.excluded_reason or "not in the steerable registry" }}
               </span>
               {% endif %}
@@ -168,12 +168,12 @@
           </tr>
           {% endfor %}
           {% if not llm_ops.rows %}
-          <tr><td class="px-3 py-2 text-slate-400" colspan="7">No operations observed.</td></tr>
+          <tr><td class="px-3 py-2 text-fg-faint" colspan="7">No operations observed.</td></tr>
           {% endif %}
         </tbody>
       </table>
     </div>
-    <p class="text-[11px] text-slate-400 mt-2">
+    <p class="text-[11px] text-fg-faint mt-2">
       Tier and model are mutually exclusive — picking a capability tier
       ignores the model select (and vice versa); "pinned" with no model
       selected is a no-op (leaves the prior override, if any, untouched).
@@ -185,9 +185,9 @@
 {% for cat in categories %}
 <section class="mb-6">
   <h2 class="text-sm font-semibold mb-2 capitalize">{{ cat.name }}</h2>
-  <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+  <div class="overflow-x-auto rounded-lg border border-line bg-surface">
     <table class="min-w-full text-xs">
-      <thead class="bg-slate-50 text-slate-500">
+      <thead class="bg-surface-subtle text-fg-subtle">
         <tr>
           <th class="text-left font-medium px-3 py-2" title="The ServiceSpec registry key — the --only / service_config.service token.">service</th>
           <th class="text-left font-medium px-3 py-2" title="What sort of runnable this is: pass / job / compute / daemon / serving.">kind</th>
@@ -200,30 +200,30 @@
           <th class="text-left font-medium px-3 py-2" title="Wall-clock next fire for a scheduler_leases cadence; 'every cycle' for a per-tick pass; blank for job-queue executors (data-driven, not scheduled).">next run</th>
         </tr>
       </thead>
-      <tbody class="divide-y divide-slate-100">
+      <tbody class="divide-y divide-line-subtle">
         {% for s in cat.services %}
         <tr class="align-top">
           <td class="px-3 py-2">
             <div class="flex items-center gap-2">
-              <span class="font-mono font-semibold text-slate-800">{{ s.name }}</span>
+              <span class="font-mono font-semibold text-fg">{{ s.name }}</span>
               {% if s.has_agent %}
-              <a href="/env?agent={{ s.name }}" class="text-emerald-700 hover:underline" title="agent env inspector">env↗</a>
+              <a href="/env?agent={{ s.name }}" class="text-success-strong hover:underline" title="agent env inspector">env↗</a>
               {% endif %}
             </div>
-            <div class="text-slate-500 mt-0.5">{{ s.one_line }}</div>
+            <div class="text-fg-subtle mt-0.5">{{ s.one_line }}</div>
           </td>
-          <td class="px-3 py-2 text-slate-600">{{ s.kind }}</td>
-          <td class="px-3 py-2 font-mono text-slate-600">
+          <td class="px-3 py-2 text-fg-muted">{{ s.kind }}</td>
+          <td class="px-3 py-2 font-mono text-fg-muted">
             {{ s.profiles }}
-            {% if s.enable_env %}<div class="text-slate-400">{{ s.enable_env }}</div>{% endif %}
+            {% if s.enable_env %}<div class="text-fg-faint">{{ s.enable_env }}</div>{% endif %}
           </td>
           <td class="px-3 py-2">
             {% if s.requires %}
-            <span class="font-mono text-amber-700">{{ ', '.join(s.requires) }}</span>
+            <span class="font-mono text-warning-strong">{{ ', '.join(s.requires) }}</span>
             {% endif %}
-            {% if s.uses_model %}<span class="text-sky-700">model</span>{% endif %}
-            {% if s.external %}<div class="text-slate-400 font-mono">{{ ', '.join(s.external) }}</div>{% endif %}
-            {% if not s.requires and not s.uses_model and not s.external %}<span class="text-slate-300">—</span>{% endif %}
+            {% if s.uses_model %}<span class="text-info-strong">model</span>{% endif %}
+            {% if s.external %}<div class="text-fg-faint font-mono">{{ ', '.join(s.external) }}</div>{% endif %}
+            {% if not s.requires and not s.uses_model and not s.external %}<span class="text-fg-ghost">—</span>{% endif %}
           </td>
           {# ── editable prio ── #}
           <td class="px-3 py-2">
@@ -233,17 +233,17 @@
               <input type="number" name="prio" min="0" max="10"
                      value="{{ s.prio if s.prio is not none else '' }}"
                      placeholder="{{ default_prio }}"
-                     class="w-14 rounded border {% if s.prio == 0 %}border-rose-300 bg-rose-50{% else %}border-slate-300{% endif %} px-1 py-0.5 text-xs">
-              <button class="rounded bg-slate-700 text-white px-1.5 py-0.5 text-[11px]">set</button>
+                     class="w-14 rounded border {% if s.prio == 0 %}border-danger-strong bg-danger-subtle{% else %}border-line-strong{% endif %} px-1 py-0.5 text-xs">
+              <button class="rounded bg-solid text-on-solid px-1.5 py-0.5 text-[11px]">set</button>
             </form>
             {% if s.prio is not none %}
             <form method="post" action="/factory/clear" class="mt-0.5">
               <input type="hidden" name="host" value="{{ selected_host }}">
               <input type="hidden" name="service" value="{{ s.name }}">
-              <button class="text-[11px] text-slate-400 hover:text-rose-600 hover:underline">clear</button>
+              <button class="text-[11px] text-fg-faint hover:text-danger hover:underline">clear</button>
             </form>
             {% endif %}
-            {% if s.others %}<div class="text-[11px] text-slate-400 mt-0.5">others: {{ s.others }}</div>{% endif %}
+            {% if s.others %}<div class="text-[11px] text-fg-faint mt-0.5">others: {{ s.others }}</div>{% endif %}
           </td>
           {# ── model picker (model-using rows) ── #}
           <td class="px-3 py-2">
@@ -252,7 +252,7 @@
               <input type="hidden" name="host" value="{{ selected_host }}">
               <input type="hidden" name="service" value="{{ s.name }}">
               <select name="model" onchange="this.form.submit()"
-                      class="rounded border border-slate-300 px-1 py-0.5 text-xs max-w-[10rem]">
+                      class="rounded border border-line-strong px-1 py-0.5 text-xs max-w-[10rem]">
                 <option value="" {% if not s.model_pref %}selected{% endif %}>(auto)</option>
                 {% for m in models %}
                 <option value="{{ m }}" {% if m == s.model_pref %}selected{% endif %}>{{ m }}</option>
@@ -263,14 +263,14 @@
               </select>
             </form>
             {% else %}
-            <span class="text-slate-300">—</span>
+            <span class="text-fg-ghost">—</span>
             {% endif %}
           </td>
-          <td class="px-3 py-2 {% if s.last_ok %}text-emerald-700{% else %}text-slate-300{% endif %}"
+          <td class="px-3 py-2 {% if s.last_ok %}text-success-strong{% else %}text-fg-ghost{% endif %}"
               {% if s.last_ok_title %}title="{{ s.last_ok_title }}"{% endif %}>{{ s.last_ok or '—' }}</td>
-          <td class="px-3 py-2 {% if s.last_fail %}text-rose-700{% else %}text-slate-300{% endif %}"
+          <td class="px-3 py-2 {% if s.last_fail %}text-danger-strong{% else %}text-fg-ghost{% endif %}"
               {% if s.last_fail_title %}title="{{ s.last_fail_title }}"{% endif %}>{{ s.last_fail or '—' }}</td>
-          <td class="px-3 py-2 text-slate-600"
+          <td class="px-3 py-2 text-fg-muted"
               {% if s.next_run %}title="{{ s.next_run.title }}"{% endif %}>{{ s.next_run.text if s.next_run else '—' }}</td>
         </tr>
         {% endfor %}
@@ -283,7 +283,7 @@
 {# ── Quests tab — the other substrate: which strivings get attention ── #}
 <section class="mt-8">
   <h2 class="text-sm font-semibold mb-1">Quests</h2>
-  <p class="text-xs text-slate-500 mb-3">
+  <p class="text-xs text-fg-subtle mb-3">
     Same model as services — set a priority, the system allocates
     proportionally — on the striving substrate. Each active quest's usage
     (chars) over the trailing {{ quests.window_days }}-day window against its
@@ -292,12 +292,12 @@
     A quest at 100% is one the allocator skips this round.
   </p>
   {% if not quests.rows %}
-  <p class="text-xs text-slate-500">No active quests.</p>
+  <p class="text-xs text-fg-subtle">No active quests.</p>
   {% else %}
   <div class="overflow-x-auto">
     <table class="min-w-full text-sm">
       <thead>
-        <tr class="text-left text-xs text-slate-500 border-b border-slate-200">
+        <tr class="text-left text-xs text-fg-subtle border-b border-line">
           <th class="py-1 pr-3">quest</th>
           <th class="py-1 pr-3">prio</th>
           <th class="py-1 pr-3">spend ({{ quests.window_days }}d)</th>
@@ -306,24 +306,24 @@
       </thead>
       <tbody>
         {% for q in quests.rows %}
-        <tr class="border-b border-slate-100">
+        <tr class="border-b border-line-subtle">
           <td class="py-1.5 pr-3">
-            <span class="text-slate-800">{{ q.title }}</span>
-            <span class="text-xs text-slate-400 font-mono">qu{{ q.id }}</span>
+            <span class="text-fg">{{ q.title }}</span>
+            <span class="text-xs text-fg-faint font-mono">qu{{ q.id }}</span>
           </td>
           <td class="py-1.5 pr-3 font-mono text-xs">{{ q.prio if q.prio is not none else '—' }}</td>
           <td class="py-1.5 pr-3 font-mono text-xs">{{ '{:,}'.format(q.spend) }} chars</td>
           <td class="py-1.5 pr-3">
             {% if q.pct is not none %}
             <div class="flex items-center gap-2">
-              <div class="flex-1 h-2 rounded bg-slate-100 overflow-hidden">
-                <div class="h-2 {% if q.over %}bg-rose-500{% elif q.pct >= 75 %}bg-amber-500{% else %}bg-emerald-500{% endif %}"
+              <div class="flex-1 h-2 rounded bg-surface-muted overflow-hidden">
+                <div class="h-2 {% if q.over %}bg-danger-solid-soft{% elif q.pct >= 75 %}bg-warning-solid-soft{% else %}bg-success-solid-soft{% endif %}"
                      style="width: {{ q.pct }}%"></div>
               </div>
-              <span class="text-xs {% if q.over %}text-rose-700 font-semibold{% else %}text-slate-500{% endif %}">{{ q.pct }}%</span>
+              <span class="text-xs {% if q.over %}text-danger-strong font-semibold{% else %}text-fg-subtle{% endif %}">{{ q.pct }}%</span>
             </div>
             {% else %}
-            <span class="text-xs text-slate-400">— (no budget share)</span>
+            <span class="text-xs text-fg-faint">— (no budget share)</span>
             {% endif %}
           </td>
         </tr>

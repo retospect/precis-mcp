@@ -12,19 +12,19 @@
     <img src="/static/icons/catpath.svg" alt="" class="h-7 w-7 shrink-0" />
     <span>{{ ref.title }}</span>
   </h1>
-  <p class="mt-2 text-sm text-slate-500 flex flex-wrap items-center gap-x-2 gap-y-1">
+  <p class="mt-2 text-sm text-fg-subtle flex flex-wrap items-center gap-x-2 gap-y-1">
     {% if ref.slug %}<span class="font-mono">{{ ref.slug }}</span>{% else %}<span class="font-mono">#{{ ref.id }}</span>{% endif %}
     {% if status %}
     <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
-      {% if status == 'ready' %}bg-emerald-100 text-emerald-800
-      {% elif status in ('running', 'pending', 'computing') %}bg-amber-100 text-amber-800
-      {% elif status in ('failed', 'error') %}bg-rose-100 text-rose-800
-      {% else %}bg-slate-200 text-slate-700{% endif %}">
+      {% if status == 'ready' %}bg-success-muted text-success-deep
+      {% elif status in ('running', 'pending', 'computing') %}bg-warning-muted text-warning-deep
+      {% elif status in ('failed', 'error') %}bg-danger-muted text-danger-deep
+      {% else %}bg-surface-emphasis text-fg-secondary{% endif %}">
       STATUS:{{ status }}
     </span>
     {% endif %}
     {% if rate_ea is not none %}
-    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-sky-100 text-sky-800">
+    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-info-muted text-info-deep">
       Ea = {{ rate_ea }} eV
     </span>
     {% endif %}
@@ -34,14 +34,14 @@
        labels sensibly. #}
     {% if tier %}
     <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
-      {% if tier == 'verify' %}bg-emerald-100 text-emerald-800
-      {% elif tier == 'neb' %}bg-sky-100 text-sky-800
-      {% else %}bg-slate-100 text-slate-600 border border-slate-300{% endif %}">
+      {% if tier == 'verify' %}bg-success-muted text-success-deep
+      {% elif tier == 'neb' %}bg-info-muted text-info-deep
+      {% else %}bg-surface-muted text-fg-muted border border-line-strong{% endif %}">
       {{ tier }}
     </span>
     {% endif %}
-    {% if autocatpath_version %}<span class="text-slate-400">·</span><span>autocatpath {{ autocatpath_version }}</span>{% endif %}
-    {% if ref.updated %}<span class="text-slate-400">·</span><span>updated {{ ref.updated }}</span>{% endif %}
+    {% if autocatpath_version %}<span class="text-fg-faint">·</span><span>autocatpath {{ autocatpath_version }}</span>{% endif %}
+    {% if ref.updated %}<span class="text-fg-faint">·</span><span>updated {{ ref.updated }}</span>{% endif %}
   </p>
   {# ── cross-tier toggle + delta (item 2) — a "view: screen | verified"
      control linking to this candidate's other-tier pathway (the linked
@@ -49,18 +49,18 @@
      pathway for the same candidate — ``_pathway_tier_sibling``), plus a
      one-line barrier delta when both sides carry one. #}
   {% if tier_toggle %}
-  <p class="mt-1 text-xs text-slate-600 flex flex-wrap items-center gap-x-1.5">
-    <span class="font-semibold text-slate-500">view:</span>
+  <p class="mt-1 text-xs text-fg-muted flex flex-wrap items-center gap-x-1.5">
+    <span class="font-semibold text-fg-subtle">view:</span>
     {% for e in tier_toggle.entries %}
-    {% if not loop.first %}<span class="text-slate-300">|</span>{% endif %}
+    {% if not loop.first %}<span class="text-fg-ghost">|</span>{% endif %}
     {% if e.url %}
-    <a href="{{ e.url }}" class="text-sky-700 hover:underline">{{ e.label }}</a>
+    <a href="{{ e.url }}" class="text-info-strong hover:underline">{{ e.label }}</a>
     {% else %}
-    <span class="font-semibold text-slate-700">{{ e.label }}</span>
+    <span class="font-semibold text-fg-secondary">{{ e.label }}</span>
     {% endif %}
     {% endfor %}
     {% if tier_toggle.delta_text %}
-    <span class="text-slate-300">&middot;</span>
+    <span class="text-fg-ghost">&middot;</span>
     <span>{{ tier_toggle.delta_text }}</span>
     {% endif %}
   </p>
@@ -70,28 +70,28 @@
      (``_pathway_provenance`` resolves whatever it can off the candidate-
      slug naming convention). #}
   {% if provenance and (provenance.candidate or provenance.quest_id is not none or provenance.ran_on or provenance.run_jobs) %}
-  <p class="mt-1 text-xs text-slate-500 flex flex-wrap items-center gap-x-1.5">
+  <p class="mt-1 text-xs text-fg-subtle flex flex-wrap items-center gap-x-1.5">
     {% if provenance.candidate %}
-    <span>candidate <a href="{{ provenance.candidate.url }}" class="text-sky-700 hover:underline">{{ provenance.candidate.title }}</a></span>
+    <span>candidate <a href="{{ provenance.candidate.url }}" class="text-info-strong hover:underline">{{ provenance.candidate.title }}</a></span>
     {% endif %}
     {% if provenance.quest_id is not none %}
-    {% if provenance.candidate %}<span class="text-slate-300">&middot;</span>{% endif %}
-    <span>quest <a href="{{ provenance.quest_url }}" class="text-sky-700 hover:underline">#{{ provenance.quest_id }}</a></span>
+    {% if provenance.candidate %}<span class="text-fg-ghost">&middot;</span>{% endif %}
+    <span>quest <a href="{{ provenance.quest_url }}" class="text-info-strong hover:underline">#{{ provenance.quest_id }}</a></span>
     {% endif %}
     {% if provenance.dossier_url %}
-    <span class="text-slate-300">&middot;</span>
-    <a href="{{ provenance.dossier_url }}" class="text-sky-700 hover:underline">dossier</a>
+    <span class="text-fg-ghost">&middot;</span>
+    <a href="{{ provenance.dossier_url }}" class="text-info-strong hover:underline">dossier</a>
     {% endif %}
     {% if provenance.logbook_url %}
-    <span class="text-slate-300">&middot;</span>
-    <a href="{{ provenance.logbook_url }}" class="text-sky-700 hover:underline">logbook</a>
+    <span class="text-fg-ghost">&middot;</span>
+    <a href="{{ provenance.logbook_url }}" class="text-info-strong hover:underline">logbook</a>
     {% endif %}
     {% for job in provenance.run_jobs %}
-    <span class="text-slate-300">&middot;</span>
-    <a href="{{ job.url }}" class="text-sky-700 hover:underline">run job #{{ job.id }} ({{ job.label }})</a>
+    <span class="text-fg-ghost">&middot;</span>
+    <a href="{{ job.url }}" class="text-info-strong hover:underline">run job #{{ job.id }} ({{ job.label }})</a>
     {% endfor %}
     {% if provenance.ran_on %}
-    <span class="text-slate-300">&middot;</span>
+    <span class="text-fg-ghost">&middot;</span>
     <span>ran on {{ provenance.ran_on }}</span>
     {% endif %}
   </p>
@@ -105,8 +105,8 @@
    ``measures``. Degrades per AC4: no graph -> no diagram (below); no/
    partial ``structure_refs`` -> "no geometry linked" per state; an
    unrecognised measure op -> skipped with a note (``measure_notes``). #}
-<section class="mb-6 rounded-lg border border-sky-200 bg-white p-4">
-  <h2 class="text-sm font-semibold text-slate-700 mb-2">Reaction explorer</h2>
+<section class="mb-6 rounded-lg border border-info bg-surface p-4">
+  <h2 class="text-sm font-semibold text-fg-secondary mb-2">Reaction explorer</h2>
 
   {# ── candidate stepper (item E) — other pathway candidates on the same
      substrate→target reaction, ranked by rate_Ea; only rendered when
@@ -114,11 +114,11 @@
      onchange target carries the CURRENTLY selected state (JS, below) so
      switching candidates doesn't lose the operator's place in the network. #}
   {% if stepper %}
-  <div id="pw-cand-stepper" class="flex items-center gap-2 mb-2 text-xs text-slate-600 flex-wrap">
-    <span class="font-semibold text-slate-700">Candidates (rank #{{ stepper.rank }} of {{ stepper.total }})</span>
+  <div id="pw-cand-stepper" class="flex items-center gap-2 mb-2 text-xs text-fg-muted flex-wrap">
+    <span class="font-semibold text-fg-secondary">Candidates (rank #{{ stepper.rank }} of {{ stepper.total }})</span>
     <a id="pw-cand-prev" href="{% if stepper.prev_ref_id %}/refs/pathway/{{ stepper.prev_ref_id }}{% else %}#{% endif %}"
-       class="rounded border border-slate-300 px-2 py-0.5 hover:bg-slate-100{% if not stepper.prev_ref_id %} opacity-40 pointer-events-none{% endif %}">&larr; prev</a>
-    <select id="pw-cand-select" class="rounded border border-slate-300 px-1 py-0.5 text-[11px]">
+       class="rounded border border-line-strong px-2 py-0.5 hover:bg-surface-muted{% if not stepper.prev_ref_id %} opacity-40 pointer-events-none{% endif %}">&larr; prev</a>
+    <select id="pw-cand-select" class="rounded border border-line-strong px-1 py-0.5 text-[11px]">
       {% for s in stepper.siblings %}
       <option value="/refs/pathway/{{ s.ref_id }}"{% if s.ref_id == ref.id %} selected{% endif %}>
         #{{ loop.index }} &middot; pw {{ s.ref_id }} &middot; Ea={{ '%.3f'|format(s.rate_ea) if s.rate_ea is not none else '—' }} &middot; span={{ '%.3f'|format(s.span) if s.span is not none else '—' }}
@@ -126,7 +126,7 @@
       {% endfor %}
     </select>
     <a id="pw-cand-next" href="{% if stepper.next_ref_id %}/refs/pathway/{{ stepper.next_ref_id }}{% else %}#{% endif %}"
-       class="rounded border border-slate-300 px-2 py-0.5 hover:bg-slate-100{% if not stepper.next_ref_id %} opacity-40 pointer-events-none{% endif %}">next &rarr;</a>
+       class="rounded border border-line-strong px-2 py-0.5 hover:bg-surface-muted{% if not stepper.next_ref_id %} opacity-40 pointer-events-none{% endif %}">next &rarr;</a>
   </div>
   {% endif %}
 
@@ -139,25 +139,25 @@
      catpath computed them; every re-render on slider input is client-side
      (renderDiagram, below) — no server round-trip. #}
   {% if diagram and diagram.has_n_h %}
-  <div id="pw-u-lever" class="mb-2 rounded border border-sky-100 bg-sky-50/60 px-2 py-1.5 text-xs text-slate-600 flex flex-wrap items-center gap-x-3 gap-y-1">
+  <div id="pw-u-lever" class="mb-2 rounded border border-info-subtle bg-info-subtle/60 px-2 py-1.5 text-xs text-fg-muted flex flex-wrap items-center gap-x-3 gap-y-1">
     <label class="flex items-center gap-1.5">
-      <span class="font-semibold text-slate-700">U vs RHE</span>
+      <span class="font-semibold text-fg-secondary">U vs RHE</span>
       <input type="range" id="pw-u-slider" min="-1.5" max="0.5" step="0.01" value="0" class="align-middle w-32">
     </label>
-    <span id="pw-u-readout" class="font-mono text-slate-700"></span>
+    <span id="pw-u-readout" class="font-mono text-fg-secondary"></span>
     <label class="flex items-center gap-1">
       <span>pH</span>
-      <input type="number" id="pw-ph-input" value="0" step="0.1" class="w-14 rounded border border-slate-300 px-1 py-0.5">
+      <input type="number" id="pw-ph-input" value="0" step="0.1" class="w-14 rounded border border-line-strong px-1 py-0.5">
     </label>
     <span>T = {{ '%.2f'|format(results_electro.T) if results_electro.T is not none else '298.15' }} K</span>
     {% if results_electro.U_L is not none %}
     <span>U_L = {{ '%.3f'|format(results_electro.U_L) }} V</span>
-    <button type="button" id="pw-u-snap-ul" class="rounded border border-slate-300 px-1.5 py-0.5 hover:bg-slate-100">&rarr; U_L</button>
+    <button type="button" id="pw-u-snap-ul" class="rounded border border-line-strong px-1.5 py-0.5 hover:bg-surface-muted">&rarr; U_L</button>
     {% endif %}
     {% if results_electro.U_opt is not none %}
     <span>U_opt = {{ '%.3f'|format(results_electro.U_opt) }} V{% if results_electro.U_opt_unbounded is not none %}
-      <span class="pw-uopt-bounded text-amber-700" title="the engine's span minimum lies outside the swept {{ '%+.1f'|format(results_electro.U_window[0]) }}…{{ '%+.1f'|format(results_electro.U_window[1]) }} V window, in gas evolution — bounded to the nearest edge, as the quest ranks it">(bounded; engine {{ '%.2f'|format(results_electro.U_opt_unbounded) }} V)</span>{% endif %}</span>
-    <button type="button" id="pw-u-snap-uopt" data-u="{{ results_electro.U_opt }}" class="rounded border border-slate-300 px-1.5 py-0.5 hover:bg-slate-100">&rarr; U_opt</button>
+      <span class="pw-uopt-bounded text-warning-strong" title="the engine's span minimum lies outside the swept {{ '%+.1f'|format(results_electro.U_window[0]) }}…{{ '%+.1f'|format(results_electro.U_window[1]) }} V window, in gas evolution — bounded to the nearest edge, as the quest ranks it">(bounded; engine {{ '%.2f'|format(results_electro.U_opt_unbounded) }} V)</span>{% endif %}</span>
+    <button type="button" id="pw-u-snap-uopt" data-u="{{ results_electro.U_opt }}" class="rounded border border-line-strong px-1.5 py-0.5 hover:bg-surface-muted">&rarr; U_opt</button>
     {% endif %}
     {% if results_electro.span_at_Uopt is not none %}
     <span>span(U_opt) = {{ '%.3f'|format(results_electro.span_at_Uopt) }} eV</span>
@@ -168,7 +168,7 @@
     <span>P_side = {{ '%.1f'|format(results_electro.P_side * 100) }}%</span>
     {% endif %}
     {% if results_electro.blocked_by %}
-    <span class="text-amber-700">U_L/U_opt/span untrusted &mdash; route barrier blocked by {{ results_electro.blocked_by|join(', ') }}</span>
+    <span class="text-warning-strong">U_L/U_opt/span untrusted &mdash; route barrier blocked by {{ results_electro.blocked_by|join(', ') }}</span>
     {% endif %}
   </div>
   {% endif %}
@@ -184,13 +184,13 @@
      button mirrors the selection into a shareable URL — the whole
      selection already round-trips through the query string (gr486822). #}
   <div class="mb-1 flex items-center gap-2">
-    <div id="pw-selection" class="min-h-[1.25rem] flex-1 text-[11px] text-slate-600" aria-live="polite"></div>
+    <div id="pw-selection" class="min-h-[1.25rem] flex-1 text-[11px] text-fg-muted" aria-live="polite"></div>
     <button type="button" id="pw-copy-link"
-            class="shrink-0 rounded border border-slate-300 px-1.5 py-0.5 text-[11px] text-slate-600 hover:bg-slate-100"
+            class="shrink-0 rounded border border-line-strong px-1.5 py-0.5 text-[11px] text-fg-muted hover:bg-surface-muted"
             title="copy a link that re-opens this exact selection">copy link</button>
   </div>
-  <div id="pw-diagram" class="w-full overflow-x-auto rounded border border-sky-200 bg-slate-50 p-1"></div>
-  <p id="pw-diagram-key" class="mt-1 text-[10px] leading-snug text-slate-500">
+  <div id="pw-diagram" class="scheme-light w-full overflow-x-auto rounded border border-info bg-surface-subtle p-1"></div>
+  <p id="pw-diagram-key" class="mt-1 text-[10px] leading-snug text-fg-subtle">
     <b>Key:</b>
     thick bar = a state's free-energy level (hover for value; shaded band = &plusmn;1&sigma;);
     curve = a reaction step, peak height = barrier E<sub>a</sub>;
@@ -205,29 +205,29 @@
      an operator can tell "still running" from "gave up" from "superseded"
      at a glance instead of a bare empty-diagram message. #}
   <div class="rounded border p-3 text-sm
-    {% if status_banner.status == 'computing' %}border-amber-200 bg-amber-50 text-amber-800
-    {% elif status_banner.status == 'failed' %}border-rose-200 bg-rose-50 text-rose-800
-    {% else %}border-slate-200 bg-slate-50 text-slate-600{% endif %}">
+    {% if status_banner.status == 'computing' %}border-warning bg-warning-subtle text-warning-deep
+    {% elif status_banner.status == 'failed' %}border-danger bg-danger-subtle text-danger-deep
+    {% else %}border-line bg-surface-subtle text-fg-muted{% endif %}">
     {% if status_banner.status == 'computing' %}
     <p>barrier computation in flight/queued{% if status_banner.created_at %} — started {{ status_banner.created_at | ago }}{% endif %}.</p>
     {% elif status_banner.status == 'failed' %}
     <p>compute failed: {{ status_banner.reason }}</p>
     {% else %}
-    <p>superseded by a fresher run{% if status_banner.superseded_url %} — <a href="{{ status_banner.superseded_url }}" class="text-sky-700 hover:underline">pathway #{{ status_banner.superseded_by }}</a>{% endif %}.</p>
+    <p>superseded by a fresher run{% if status_banner.superseded_url %} — <a href="{{ status_banner.superseded_url }}" class="text-info-strong hover:underline">pathway #{{ status_banner.superseded_by }}</a>{% endif %}.</p>
     {% endif %}
     {% if status_banner.candidate %}
     <p class="mt-1 text-xs opacity-75">candidate <a href="{{ status_banner.candidate.url }}" class="underline">{{ status_banner.candidate.title }}</a></p>
     {% endif %}
   </div>
   {% else %}
-  <p class="text-sm text-slate-400 italic">no energetics graph recorded for this pathway yet.</p>
+  <p class="text-sm text-fg-faint italic">no energetics graph recorded for this pathway yet.</p>
   {% endif %}
 
   {# stale/invalid link parameters (gr486822) land here — a one-line
      notice, never an error; filled by applyUrlSelection. Outside the
      diagram guard so a bad ?state= on a graph-less pathway still notes
      itself. #}
-  <p id="pw-link-note" class="hidden mb-2 text-[11px] text-amber-700"></p>
+  <p id="pw-link-note" class="hidden mb-2 text-[11px] text-warning-strong"></p>
 
   {% if state_ids %}
   <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4">
@@ -238,11 +238,11 @@
        the same ``showState(id)``. ── #}
     <div>
       <div class="flex items-center gap-2 mb-1.5 flex-wrap">
-        <h3 class="text-xs font-semibold text-slate-600 uppercase tracking-wide">States</h3>
-        <span class="text-[11px] text-slate-400">{{ n_states_with_geom }}/{{ state_ids | length }} with geometry</span>
+        <h3 class="text-xs font-semibold text-fg-muted uppercase tracking-wide">States</h3>
+        <span class="text-[11px] text-fg-faint">{{ n_states_with_geom }}/{{ state_ids | length }} with geometry</span>
         <div class="ml-auto flex items-center gap-1">
-          <button type="button" id="pw-prev" class="rounded border border-slate-300 px-2 py-0.5 text-[11px] hover:bg-slate-100">&larr; prev</button>
-          <button type="button" id="pw-next" class="rounded border border-slate-300 px-2 py-0.5 text-[11px] hover:bg-slate-100">next &rarr;</button>
+          <button type="button" id="pw-prev" class="rounded border border-line-strong px-2 py-0.5 text-[11px] hover:bg-surface-muted">&larr; prev</button>
+          <button type="button" id="pw-next" class="rounded border border-line-strong px-2 py-0.5 text-[11px] hover:bg-surface-muted">next &rarr;</button>
         </div>
       </div>
       {# ── branch-grouped state list (item C) — one section per owner path
@@ -258,38 +258,38 @@
           {% if sect.leaf %}
           <div class="text-[10px] font-semibold uppercase tracking-wide mb-0.5" style="color: {{ sect.color }}">
             &rarr; {{ sect.leaf }}
-            {% if sect.subtitle %}<span class="ml-1 font-normal normal-case text-slate-400">({{ sect.subtitle }})</span>{% endif %}
+            {% if sect.subtitle %}<span class="ml-1 font-normal normal-case text-fg-faint">({{ sect.subtitle }})</span>{% endif %}
           </div>
           {% endif %}
           <div class="space-y-0.5">
             {% for row in sect.rows %}
             {% set sid = row.id %}
-            <div class="pw-state-node flex items-center gap-2 flex-wrap text-xs rounded px-2 py-1 border border-slate-200 bg-white cursor-pointer hover:bg-sky-50"
+            <div class="pw-state-node flex items-center gap-2 flex-wrap text-xs rounded px-2 py-1 border border-line bg-surface cursor-pointer hover:bg-info-subtle"
                  data-state="{{ sid }}" role="button" tabindex="0">
-              <span class="font-mono text-slate-700">{{ sid }}</span>
+              <span class="font-mono text-fg-secondary">{{ sid }}</span>
               {% if row.annotation %}
-              <span class="text-slate-400 italic">{{ row.annotation }}</span>
+              <span class="text-fg-faint italic">{{ row.annotation }}</span>
               {% endif %}
               {# distinct from "no geometry linked" — this state HAS a graph node
                  but its rel_energy hasn't been computed yet; still clickable. #}
               {% if sid in states_missing_energy %}
-              <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-600 border border-amber-200" title="no computed energy yet for this state — excluded from the diagram">no energy yet</span>
+              <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-warning-subtle text-warning border border-warning" title="no computed energy yet for this state — excluded from the diagram">no energy yet</span>
               {% endif %}
               {% if state_warnings.get(sid) %}
-              <span class="text-[10px] px-1.5 py-0.5 rounded-full border {% if state_warnings[sid] | selectattr('severity', 'equalto', 'bad') | list %}bg-rose-100 text-rose-700 border-rose-200{% else %}bg-amber-50 text-amber-700 border-amber-200{% endif %}"
+              <span class="text-[10px] px-1.5 py-0.5 rounded-full border {% if state_warnings[sid] | selectattr('severity', 'equalto', 'bad') | list %}bg-danger-muted text-danger-strong border-danger{% else %}bg-warning-subtle text-warning-strong border-warning{% endif %}"
                     title="{{ state_warnings[sid] | map(attribute='text') | join('; ') }}">&#9888;</span>
               {% endif %}
               {% if state_geoms.get(sid) %}
-              <span class="ml-auto text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800">geometry</span>
+              <span class="ml-auto text-[10px] px-1.5 py-0.5 rounded-full bg-success-muted text-success-deep">geometry</span>
               {% else %}
-              <span class="ml-auto text-[10px] px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-500">no geometry linked</span>
+              <span class="ml-auto text-[10px] px-1.5 py-0.5 rounded-full bg-surface-emphasis text-fg-subtle">no geometry linked</span>
               {% endif %}
               {# gripe 161576 remainder: what calculator produced this state's
                  numbers — a computed run's model, or an external import's
                  method fingerprint + explicit "external" marker. Absent
                  (never invented) when the linked structure has no run row. #}
               {% if state_calc.get(sid) %}
-              <span class="w-full basis-full text-[10px] text-slate-400 font-mono" title="calculator identity for this state's linked structure">{{ state_calc[sid] }}</span>
+              <span class="w-full basis-full text-[10px] text-fg-faint font-mono" title="calculator identity for this state's linked structure">{{ state_calc[sid] }}</span>
               {% endif %}
             </div>
             {% endfor %}
@@ -304,26 +304,26 @@
          repeats an element in any state carries the unverified chip and
          is drawn dashed on the diagram; a singleton-anchored ``min_distance``
          (e.g. N -> nearest Pd) carries neither and draws solid. ── #}
-      <h3 class="text-xs font-semibold text-slate-600 uppercase tracking-wide mt-3 mb-1">Measures</h3>
+      <h3 class="text-xs font-semibold text-fg-muted uppercase tracking-wide mt-3 mb-1">Measures</h3>
       <div class="space-y-1">
         {% for m in measures %}
-        <div class="text-xs rounded px-2 py-1 border border-slate-200 bg-white" data-measure="{{ m.name }}">
+        <div class="text-xs rounded px-2 py-1 border border-line bg-surface" data-measure="{{ m.name }}">
           <div class="flex items-center gap-2 flex-wrap">
-            <span class="font-semibold text-slate-700">{{ m.name }}</span>
-            <span class="text-[10px] px-1 rounded bg-slate-100 text-slate-500">{{ m.op }}</span>
-            <span class="text-slate-400">{{ m.atoms | join(', ') }}{% if m.element %} &rarr; nearest {{ m.element }}{% endif %}</span>
+            <span class="font-semibold text-fg-secondary">{{ m.name }}</span>
+            <span class="text-[10px] px-1 rounded bg-surface-muted text-fg-subtle">{{ m.op }}</span>
+            <span class="text-fg-faint">{{ m.atoms | join(', ') }}{% if m.element %} &rarr; nearest {{ m.element }}{% endif %}</span>
             {% if not m.trace_ok %}
-            <span class="ml-auto text-[10px] px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-600">no trace &mdash; missing in some state</span>
+            <span class="ml-auto text-[10px] px-1.5 py-0.5 rounded-full bg-surface-emphasis text-fg-muted">no trace &mdash; missing in some state</span>
             {% elif m.verified %}
-            <span class="ml-auto text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800">solid trace &mdash; identity verified</span>
+            <span class="ml-auto text-[10px] px-1.5 py-0.5 rounded-full bg-success-muted text-success-deep">solid trace &mdash; identity verified</span>
             {% else %}
-            <span class="ml-auto text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800"
+            <span class="ml-auto text-[10px] px-1.5 py-0.5 rounded-full bg-warning-muted text-warning-deep"
                   title="an anchor sits on a repeated element — the same label may not be the same physical atom across states">
               &#9888; dashed &mdash; label-order identity &mdash; unverified across states
             </span>
             {% endif %}
           </div>
-          <div class="pw-measure-value mt-1 text-slate-500" data-measure-value="{{ m.name }}">select a state to see its value</div>
+          <div class="pw-measure-value mt-1 text-fg-subtle" data-measure-value="{{ m.name }}">select a state to see its value</div>
         </div>
         {% endfor %}
       </div>
@@ -331,7 +331,7 @@
       {% if measure_notes %}
       <ul class="mt-2 space-y-0.5">
         {% for note in measure_notes %}
-        <li class="text-[11px] text-amber-700">&#9888; {{ note }}</li>
+        <li class="text-[11px] text-warning-strong">&#9888; {{ note }}</li>
         {% endfor %}
       </ul>
       {% endif %}
@@ -339,13 +339,13 @@
 
     {# ── embedded per-state 3D cell viewer ── #}
     <div>
-      <div id="pw-mol" class="relative w-full rounded-lg border border-slate-200 bg-white" style="height: 380px;"></div>
-      <p id="pw-mol-empty" class="text-sm text-slate-400 italic mt-2 hidden">no geometry linked for this state.</p>
-      <p class="text-[11px] text-slate-400 mt-1">
+      <div id="pw-mol" class="relative w-full rounded-lg border border-line bg-surface" style="height: 380px;"></div>
+      <p id="pw-mol-empty" class="text-sm text-fg-faint italic mt-2 hidden">no geometry linked for this state.</p>
+      <p class="text-[11px] text-fg-faint mt-1">
         Drag to rotate &middot; scroll to zoom &middot; click an atom or bond for details.
       </p>
-      <div id="pw-detail" class="mt-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm min-h-[52px]">
-        <span class="text-slate-400 text-xs">Click a state (diagram, list, or stepper) to load its cell; click an atom or bond to inspect it.</span>
+      <div id="pw-detail" class="mt-2 rounded-lg border border-line bg-surface-subtle p-3 text-sm min-h-[52px]">
+        <span class="text-fg-faint text-xs">Click a state (diagram, list, or stepper) to load its cell; click an atom or bond to inspect it.</span>
       </div>
     </div>
   </div>
@@ -354,99 +354,99 @@
 
 {# ── Two-column: meta panel | linked structures ──────────────────────── #}
 <div class="mb-6 grid grid-cols-1 lg:grid-cols-2 gap-4">
-  <section class="rounded-lg border border-slate-200 bg-white p-4">
-    <h2 class="text-sm font-semibold text-slate-700 mb-2">Pathway meta</h2>
-    <dl class="text-sm text-slate-700 space-y-1.5">
+  <section class="rounded-lg border border-line bg-surface p-4">
+    <h2 class="text-sm font-semibold text-fg-secondary mb-2">Pathway meta</h2>
+    <dl class="text-sm text-fg-secondary space-y-1.5">
       <div class="flex gap-2">
-        <dt class="text-slate-400 w-32 shrink-0">Candidate</dt>
+        <dt class="text-fg-faint w-32 shrink-0">Candidate</dt>
         <dd class="min-w-0 break-words">
           {% if candidate %}
-          <a href="{{ candidate.url }}" class="text-sky-700 hover:underline">{{ candidate.title }}</a>
+          <a href="{{ candidate.url }}" class="text-info-strong hover:underline">{{ candidate.title }}</a>
           {% else %}
-          <span class="text-slate-400 italic">none recorded</span>
+          <span class="text-fg-faint italic">none recorded</span>
           {% endif %}
         </dd>
       </div>
       {% if n_structures is not none %}
       <div class="flex gap-2">
-        <dt class="text-slate-400 w-32 shrink-0">Structures</dt>
+        <dt class="text-fg-faint w-32 shrink-0">Structures</dt>
         <dd>{{ n_structures }}</dd>
       </div>
       {% endif %}
       {% if slice_num is not none %}
       <div class="flex gap-2">
-        <dt class="text-slate-400 w-32 shrink-0">Slice</dt>
+        <dt class="text-fg-faint w-32 shrink-0">Slice</dt>
         <dd>{{ slice_num }}</dd>
       </div>
       {% endif %}
       {% if produced_by %}
       <div class="flex gap-2">
-        <dt class="text-slate-400 w-32 shrink-0">Produced by</dt>
+        <dt class="text-fg-faint w-32 shrink-0">Produced by</dt>
         <dd class="font-mono">{{ produced_by }}</dd>
       </div>
       {% endif %}
     </dl>
     {% if has_graph %}
-    <p class="mt-3 text-xs text-slate-400 italic">
+    <p class="mt-3 text-xs text-fg-faint italic">
       a full networkx energetics graph is also stored on this ref (omitted here — large).
     </p>
     {% endif %}
     {% if config_snapshot_yaml %}
     <details class="mt-3">
-      <summary class="text-xs text-slate-500 cursor-pointer hover:text-slate-700">config snapshot (YAML)</summary>
-      <pre class="mt-2 text-xs bg-slate-50 border border-slate-200 rounded p-2 overflow-x-auto whitespace-pre-wrap break-words">{{ config_snapshot_yaml }}</pre>
+      <summary class="text-xs text-fg-subtle cursor-pointer hover:text-fg-secondary">config snapshot (YAML)</summary>
+      <pre class="mt-2 text-xs bg-surface-subtle border border-line rounded p-2 overflow-x-auto whitespace-pre-wrap break-words">{{ config_snapshot_yaml }}</pre>
     </details>
     {% endif %}
   </section>
 
-  <section class="rounded-lg border border-slate-200 bg-white p-4">
-    <h2 class="text-sm font-semibold text-slate-700 mb-2">
-      Linked structures <span class="text-slate-400 font-normal">({{ structures|length }})</span>
+  <section class="rounded-lg border border-line bg-surface p-4">
+    <h2 class="text-sm font-semibold text-fg-secondary mb-2">
+      Linked structures <span class="text-fg-faint font-normal">({{ structures|length }})</span>
     </h2>
     {% if structures %}
     <ul class="space-y-1 text-sm">
       {% for s in structures %}
       <li class="flex items-baseline gap-2">
-        <span class="text-xs px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 font-mono shrink-0">{{ s.label }}</span>
-        <a href="{{ s.url }}" class="text-sky-700 hover:underline break-words">{{ s.title }}</a>
+        <span class="text-xs px-1.5 py-0.5 rounded bg-accent-muted text-accent-strong font-mono shrink-0">{{ s.label }}</span>
+        <a href="{{ s.url }}" class="text-info-strong hover:underline break-words">{{ s.title }}</a>
       </li>
       {% endfor %}
     </ul>
     {% else %}
-    <p class="text-sm text-slate-400 italic">no linked adsorbate/intermediate structures recorded.</p>
+    <p class="text-sm text-fg-faint italic">no linked adsorbate/intermediate structures recorded.</p>
     {% endif %}
   </section>
 </div>
 
 {# ── Energetics summary — defensive reads off meta['results'] ───────── #}
-<section class="mb-6 rounded-lg border border-slate-200 bg-white p-4">
-  <h2 class="text-sm font-semibold text-slate-700 mb-2">Energetics</h2>
+<section class="mb-6 rounded-lg border border-line bg-surface p-4">
+  <h2 class="text-sm font-semibold text-fg-secondary mb-2">Energetics</h2>
   {% if results_summary.substrate or results_summary.target or results_summary.backend or results_summary.energy_reference or results_summary.relaxed_lattice_A or results_summary.n_nodes is not none or results_summary.n_edges is not none %}
-  <dl class="text-sm text-slate-700 grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1.5">
+  <dl class="text-sm text-fg-secondary grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1.5">
     {% if results_summary.substrate %}
-    <div class="flex gap-2"><dt class="text-slate-400 w-32 shrink-0">Substrate</dt><dd class="break-words">{{ results_summary.substrate }}</dd></div>
+    <div class="flex gap-2"><dt class="text-fg-faint w-32 shrink-0">Substrate</dt><dd class="break-words">{{ results_summary.substrate }}</dd></div>
     {% endif %}
     {% if results_summary.target %}
-    <div class="flex gap-2"><dt class="text-slate-400 w-32 shrink-0">Target</dt><dd class="break-words">{{ results_summary.target }}</dd></div>
+    <div class="flex gap-2"><dt class="text-fg-faint w-32 shrink-0">Target</dt><dd class="break-words">{{ results_summary.target }}</dd></div>
     {% endif %}
     {% if results_summary.backend %}
-    <div class="flex gap-2"><dt class="text-slate-400 w-32 shrink-0">Backend</dt><dd class="font-mono">{{ results_summary.backend }}</dd></div>
+    <div class="flex gap-2"><dt class="text-fg-faint w-32 shrink-0">Backend</dt><dd class="font-mono">{{ results_summary.backend }}</dd></div>
     {% endif %}
     {% if results_summary.energy_reference %}
-    <div class="flex gap-2"><dt class="text-slate-400 w-32 shrink-0">Energy ref</dt><dd class="break-words">{{ results_summary.energy_reference }}</dd></div>
+    <div class="flex gap-2"><dt class="text-fg-faint w-32 shrink-0">Energy ref</dt><dd class="break-words">{{ results_summary.energy_reference }}</dd></div>
     {% endif %}
     {% if results_summary.relaxed_lattice_A %}
-    <div class="flex gap-2"><dt class="text-slate-400 w-32 shrink-0">Relaxed lattice</dt><dd>{{ results_summary.relaxed_lattice_A }} &Aring;</dd></div>
+    <div class="flex gap-2"><dt class="text-fg-faint w-32 shrink-0">Relaxed lattice</dt><dd>{{ results_summary.relaxed_lattice_A }} &Aring;</dd></div>
     {% endif %}
     {% if results_summary.n_nodes is not none %}
-    <div class="flex gap-2"><dt class="text-slate-400 w-32 shrink-0">Nodes</dt><dd>{{ results_summary.n_nodes }}</dd></div>
+    <div class="flex gap-2"><dt class="text-fg-faint w-32 shrink-0">Nodes</dt><dd>{{ results_summary.n_nodes }}</dd></div>
     {% endif %}
     {% if results_summary.n_edges is not none %}
-    <div class="flex gap-2"><dt class="text-slate-400 w-32 shrink-0">Edges</dt><dd>{{ results_summary.n_edges }}</dd></div>
+    <div class="flex gap-2"><dt class="text-fg-faint w-32 shrink-0">Edges</dt><dd>{{ results_summary.n_edges }}</dd></div>
     {% endif %}
   </dl>
   {% else %}
-  <p class="text-sm text-slate-400 italic">no computed results recorded yet.</p>
+  <p class="text-sm text-fg-faint italic">no computed results recorded yet.</p>
   {% endif %}
   {# ── Warnings — severity/route-aware sections, not the raw flat list
      (docs/backlog/pathway-conditions-effects-report.md "Warnings" fix 1):
@@ -457,52 +457,52 @@
   {% if results_summary.warnings or ws.blocking or ws.counts %}
   <div class="mt-3 space-y-3">
     <div>
-      <h3 class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Blocking</h3>
+      <h3 class="text-xs font-semibold text-fg-subtle uppercase tracking-wide mb-1">Blocking</h3>
       {% if ws.no_trust_records %}
-      <p class="text-xs text-slate-400 italic">no trust records: pre-trust-schema artifact.</p>
+      <p class="text-xs text-fg-faint italic">no trust records: pre-trust-schema artifact.</p>
       {% elif ws.blocking %}
       <ul class="space-y-1">
         {% for b in ws.blocking %}
-        <li class="text-xs text-rose-800 bg-rose-50 border border-rose-200 rounded px-2 py-1">
+        <li class="text-xs text-danger-deep bg-danger-subtle border border-danger rounded px-2 py-1">
           &#9888; <span class="font-mono">{{ b.step }}</span> seed={{ b.seed }} · {{ b.check }}{% if b.evidence %} ({{ b.evidence }}){% endif %}
-          {% if b.id %}<span class="text-slate-400">[{{ b.id }}]</span>{% endif %}
+          {% if b.id %}<span class="text-fg-faint">[{{ b.id }}]</span>{% endif %}
         </li>
         {% endfor %}
       </ul>
       {% else %}
-      <p class="text-xs text-slate-400 italic">no blocking (fatal, on-route) trust records.</p>
+      <p class="text-xs text-fg-faint italic">no blocking (fatal, on-route) trust records.</p>
       {% endif %}
     </div>
     {% if not ws.no_trust_records %}
     <div>
-      <h3 class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Counts</h3>
+      <h3 class="text-xs font-semibold text-fg-subtle uppercase tracking-wide mb-1">Counts</h3>
       {% if ws.counts %}
-      <ul class="text-xs text-amber-800 space-y-0.5">
+      <ul class="text-xs text-warning-deep space-y-0.5">
         {% for c in ws.counts %}
         <li>{{ c.check }} {{ c.verdict }} {{ c.count }}</li>
         {% endfor %}
       </ul>
       {% else %}
-      <p class="text-xs text-slate-400 italic">none.</p>
+      <p class="text-xs text-fg-faint italic">none.</p>
       {% endif %}
       {% if ws.blocked_by_note %}
-      <p class="text-xs text-slate-400 mt-1">{{ ws.blocked_by_note }}</p>
+      <p class="text-xs text-fg-faint mt-1">{{ ws.blocked_by_note }}</p>
       {% endif %}
     </div>
     {% endif %}
     <div>
-      <h3 class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Messages</h3>
+      <h3 class="text-xs font-semibold text-fg-subtle uppercase tracking-wide mb-1">Messages</h3>
       {% if ws.messages %}
       <ul class="space-y-1">
         {% for m in ws.messages %}
-        <li class="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1">{{ m.n }} &times; {{ m.template }}</li>
+        <li class="text-xs text-warning-deep bg-warning-subtle border border-warning rounded px-2 py-1">{{ m.n }} &times; {{ m.template }}</li>
         {% endfor %}
       </ul>
       {% if ws.messages_more %}
-      <p class="text-xs text-slate-400 mt-1">(+{{ ws.messages_more }} more templates)</p>
+      <p class="text-xs text-fg-faint mt-1">(+{{ ws.messages_more }} more templates)</p>
       {% endif %}
       {% else %}
-      <p class="text-xs text-slate-400 italic">no messages — states/barriers converged and within tolerance.</p>
+      <p class="text-xs text-fg-faint italic">no messages — states/barriers converged and within tolerance.</p>
       {% endif %}
     </div>
   </div>
@@ -514,60 +514,60 @@
    trimmed + verdict synthesised server-side in pathway_kinetics.py).
    Absent on a pathway whose run recorded no kinetics. ─────────────────── #}
 {% if kinetics or kinetics_error %}
-<section class="mb-6 rounded-lg border border-slate-200 bg-white p-4">
+<section class="mb-6 rounded-lg border border-line bg-surface p-4">
   {% if kinetics %}
   <style>
     /* scoped port of the catpath report's kinetics-panel CSS (report.py
        _PAGE_TOP), #kinetics-prefixed so it can't leak into the page;
        list-style/font-weight re-stated where Tailwind's preflight resets
        what the report's plain page inherited */
-    #kinetics h2 { font-size: .875rem; font-weight: 600; color: #334155; margin: 0 0 .5rem; }
-    #kinetics h3 { font-size: .8rem; font-weight: 600; color: #334155; margin: 1rem 0 .3rem; }
-    #kinetics .caption { color: #666; font-size: .75rem; margin-bottom: .75rem; }
+    #kinetics h2 { font-size: .875rem; font-weight: 600; color: rgb(var(--text-fg-secondary)); margin: 0 0 .5rem; }
+    #kinetics h3 { font-size: .8rem; font-weight: 600; color: rgb(var(--text-fg-secondary)); margin: 1rem 0 .3rem; }
+    #kinetics .caption { color: rgb(var(--text-fg-muted)); font-size: .75rem; margin-bottom: .75rem; }
     #kinetics table { border-collapse: collapse; font-size: .8rem; margin: .25rem 0; }
-    #kinetics td, #kinetics th { border: 1px solid #ddd; padding: 3px 8px; text-align: left; }
+    #kinetics td, #kinetics th { border: 1px solid rgb(var(--border-line)); padding: 3px 8px; text-align: left; }
     #kinetics th { font-weight: 600; }
     #kinetics .kbar { display: flex; gap: .5rem; align-items: center; font-size: .8rem; margin: 2px 0; }
     #kinetics .kbar .kname { flex: none; width: 180px; overflow-wrap: anywhere; }
-    #kinetics .kbar .ktrack { flex: none; width: 220px; background: #f0f0f0; border-radius: 2px; height: 12px; }
+    #kinetics .kbar .ktrack { flex: none; width: 220px; background: rgb(var(--bg-surface-muted)); border-radius: 2px; height: 12px; }
     #kinetics .kbar .kfill { display: block; height: 12px; border-radius: 2px; }
-    #kinetics .kbar .kval { font-variant-numeric: tabular-nums; color: #555; }
-    #kinetics .kguard { background: #fff3f0; border: 1px solid #d9822b; color: #7a2e0e; border-radius: 4px; padding: .5rem .7rem; margin: .5rem 0; font-size: .85rem; max-width: 60rem; }
-    #kinetics .term { border-bottom: 1px dotted #999; cursor: help; }
-    #kinetics .verdict { border-radius: 4px; padding: .6rem .8rem; margin: .5rem 0 1rem; max-width: 60rem; border: 1px solid #ccd; background: #f6f8fc; }
-    #kinetics .verdict.ok { border-color: #2f855a; background: #f2f9f5; }
-    #kinetics .verdict.warn { border-color: #b8912b; background: #fdfaf0; }
-    #kinetics .verdict.dead { border-color: #d9822b; background: #fff3f0; }
+    #kinetics .kbar .kval { font-variant-numeric: tabular-nums; color: rgb(var(--text-fg-muted)); }
+    #kinetics .kguard { background: rgb(var(--bg-warning-subtle)); border: 1px solid rgb(var(--border-warning-solid)); color: rgb(var(--text-warning-deep)); border-radius: 4px; padding: .5rem .7rem; margin: .5rem 0; font-size: .85rem; max-width: 60rem; }
+    #kinetics .term { border-bottom: 1px dotted rgb(var(--border-line-heavy)); cursor: help; }
+    #kinetics .verdict { border-radius: 4px; padding: .6rem .8rem; margin: .5rem 0 1rem; max-width: 60rem; border: 1px solid rgb(var(--border-line)); background: rgb(var(--bg-surface-subtle)); }
+    #kinetics .verdict.ok { border-color: rgb(var(--border-success-solid)); background: rgb(var(--bg-success-subtle)); }
+    #kinetics .verdict.warn { border-color: rgb(var(--border-warning-solid)); background: rgb(var(--bg-warning-subtle)); }
+    #kinetics .verdict.dead { border-color: rgb(var(--border-danger-solid)); background: rgb(var(--bg-danger-subtle)); }
     #kinetics .verdict .vhead { font-weight: 600; }
     #kinetics .verdict ul { margin: .35rem 0 0 1.1rem; font-size: .85rem; list-style: disc; }
-    #kinetics .verdict .vcav { margin-top: .4rem; font-size: .8rem; color: #666; }
-    #kinetics .verdict .vrule { margin-top: .45rem; font-size: .72rem; color: #888; }
+    #kinetics .verdict .vcav { margin-top: .4rem; font-size: .8rem; color: rgb(var(--text-fg-muted)); }
+    #kinetics .verdict .vrule { margin-top: .45rem; font-size: .72rem; color: rgb(var(--text-fg-faint)); }
     #kinetics details.kx { margin: .6rem 0; font-size: .85rem; max-width: 60rem; }
-    #kinetics details.kx summary { cursor: pointer; color: #2b6cb0; }
+    #kinetics details.kx summary { cursor: pointer; color: rgb(var(--text-info-strong)); }
     #kinetics details.kx table { font-size: .8rem; }
     #kinetics details.keq h4 { font-size: .85rem; font-weight: 600; margin: .8rem 0 .25rem; }
     /* hand-set HTML math; each equation is one non-wrapping line that
        scrolls sideways rather than folding */
-    #kinetics details.keq .eq { margin: .25rem 0; padding: .15rem .4rem; background: #f8f8f8; border-radius: 3px; white-space: nowrap; overflow-x: auto; font-variant-numeric: tabular-nums; }
-    #kinetics .kwlist { margin: .4rem 0 0 1.1rem; color: #555; list-style: disc; }
+    #kinetics details.keq .eq { margin: .25rem 0; padding: .15rem .4rem; background: rgb(var(--bg-surface-subtle)); border-radius: 3px; white-space: nowrap; overflow-x: auto; font-variant-numeric: tabular-nums; }
+    #kinetics .kwlist { margin: .4rem 0 0 1.1rem; color: rgb(var(--text-fg-muted)); list-style: disc; }
     #kinetics .kwlist li { margin: .15rem 0; overflow-wrap: anywhere; }
   </style>
-  <div id="kinetics" class="text-sm text-slate-700"></div>
+  <div id="kinetics" class="text-sm text-fg-secondary"></div>
   <script type="application/json" id="kinetics-data">{{ kinetics | tojson }}</script>
   {% else %}
-  <h2 class="text-sm font-semibold text-slate-700 mb-2">Kinetics</h2>
-  <p class="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1 inline-block">&#9888; kinetics did not run: {{ kinetics_error }}</p>
+  <h2 class="text-sm font-semibold text-fg-secondary mb-2">Kinetics</h2>
+  <p class="text-xs text-warning-deep bg-warning-subtle border border-warning rounded px-2 py-1 inline-block">&#9888; kinetics did not run: {{ kinetics_error }}</p>
   {% endif %}
 </section>
 {% endif %}
 
 {# ── Body — the pathway_body markdown chunk (methods prose) ─────────── #}
 <section class="mb-6">
-  <h2 class="text-sm font-semibold mb-2 text-slate-700">Methods</h2>
+  <h2 class="text-sm font-semibold mb-2 text-fg-secondary">Methods</h2>
   {% if body_text %}
-  <div class="rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-700 overflow-x-auto">{{ body_text | linkify_toon }}</div>
+  <div class="rounded-lg border border-line bg-surface p-4 text-sm text-fg-secondary overflow-x-auto">{{ body_text | linkify_toon }}</div>
   {% else %}
-  <p class="text-sm text-slate-400 italic">no body chunk recorded for this pathway.</p>
+  <p class="text-sm text-fg-faint italic">no body chunk recorded for this pathway.</p>
   {% endif %}
 </section>
 {% endblock %}
@@ -1477,8 +1477,8 @@
       const on = selectedPath != null && +b.dataset.path === selectedPath;
       b.setAttribute('aria-pressed', on ? 'true' : 'false');
       b.classList.toggle('ring-1', on);
-      b.classList.toggle('ring-sky-400', on);
-      b.classList.toggle('bg-sky-50', on);
+      b.classList.toggle('ring-info-emphasis', on);
+      b.classList.toggle('bg-info-subtle', on);
     });
     updateSelectionReadout();
   }
@@ -1496,7 +1496,7 @@
     paths.forEach((path, pi) => {
       const b = document.createElement('button');
       b.type = 'button';
-      b.className = 'pw-path-btn flex items-center gap-1.5 rounded border border-slate-200 px-1.5 py-0.5 text-[11px] text-slate-600 hover:bg-slate-100';
+      b.className = 'pw-path-btn flex items-center gap-1.5 rounded border border-line px-1.5 py-0.5 text-[11px] text-fg-muted hover:bg-surface-muted';
       b.dataset.path = String(pi);
       b.title = `Path to ${path[path.length - 1]} \u2014 its bars, curves and arrows share this colour. Hover to preview, click to isolate.`;
       b.setAttribute('aria-pressed', 'false');
@@ -1510,7 +1510,7 @@
       host.appendChild(b);
     });
     const hint = document.createElement('span');
-    hint.className = 'text-[10px] text-slate-400 ml-1';
+    hint.className = 'text-[10px] text-fg-faint ml-1';
     hint.textContent = 'click to isolate a path · Esc to clear';
     host.appendChild(hint);
     document.addEventListener('keydown', (ev) => {
@@ -1566,10 +1566,10 @@
       const on = row.getAttribute('data-state') === id;
       // Unified highlight tokens (item 5) — same light-blue family as the
       // diagram's own selected-column background below.
-      row.classList.toggle('bg-sky-50', on);
-      row.classList.toggle('border-sky-200', on);
+      row.classList.toggle('bg-info-subtle', on);
+      row.classList.toggle('border-info', on);
       row.classList.toggle('ring-1', on);
-      row.classList.toggle('ring-sky-200', on);
+      row.classList.toggle('ring-info', on);
       if (on && scroll) { scrollRowInList(row); }
     });
     // Selected-state column background (item 5) — the full-plot-height
@@ -1612,8 +1612,8 @@
   let selDetail = null;
 
   function row(k, v) {
-    return `<div class="flex gap-2"><span class="text-slate-400 w-28 shrink-0">${k}</span>`
-      + `<span class="font-medium text-slate-700">${v}</span></div>`;
+    return `<div class="flex gap-2"><span class="text-fg-faint w-28 shrink-0">${k}</span>`
+      + `<span class="font-medium text-fg-secondary">${v}</span></div>`;
   }
 
   // ── per-atom neighbour lists (server-computed MIC + Pauling bond order,
@@ -1646,15 +1646,15 @@
     const rows = bondsByStrength(a.neighbors);
     if (!rows.length) { return ''; }
     const list = rows.map((nb) => `<div class="flex gap-2 text-[11px]">`
-      + `<span class="font-mono text-slate-600 w-16 shrink-0">${esc(nb.label)}</span>`
-      + `<span class="text-slate-500 w-8 shrink-0">${esc(nb.element)}</span>`
-      + `<span class="text-slate-700 w-16 shrink-0">${nb.d.toFixed(3)} Å</span>`
-      + `<span class="text-slate-500">s ${nb.s.toFixed(2)}</span>`
+      + `<span class="font-mono text-fg-muted w-16 shrink-0">${esc(nb.label)}</span>`
+      + `<span class="text-fg-subtle w-8 shrink-0">${esc(nb.element)}</span>`
+      + `<span class="text-fg-secondary w-16 shrink-0">${nb.d.toFixed(3)} Å</span>`
+      + `<span class="text-fg-subtle">s ${nb.s.toFixed(2)}</span>`
       + `</div>`).join('');
     return `<div class="mt-2">
-        <div class="text-[10px] uppercase tracking-wide text-slate-400 mb-0.5">bonds by strength</div>
+        <div class="text-[10px] uppercase tracking-wide text-fg-faint mb-0.5">bonds by strength</div>
         ${list}
-        <p class="mt-1 text-[10px] text-slate-400">s = exp((R0&minus;d)/0.37) &mdash; Pauling bond order; 1 &asymp; ideal single bond, &lt;0.5 = weak/stretched</p>
+        <p class="mt-1 text-[10px] text-fg-faint">s = exp((R0&minus;d)/0.37) &mdash; Pauling bond order; 1 &asymp; ideal single bond, &lt;0.5 = weak/stretched</p>
       </div>`;
   }
 
@@ -1682,10 +1682,10 @@
     const relationships = neighborSummary(a.neighbors);
     detailEl.innerHTML = `
       <div class="flex items-center gap-2 mb-1.5">
-        <span class="inline-block w-3.5 h-3.5 rounded-full border border-slate-300" style="background:${esc(a.color)};"></span>
-        <span class="font-semibold text-slate-800">${esc(a.element)}</span>
-        <code class="text-xs text-slate-500">${esc(a.label)}</code>
-        <span class="ml-auto text-[10px] uppercase tracking-wide text-slate-400">atom</span>
+        <span class="inline-block w-3.5 h-3.5 rounded-full border border-line-strong" style="background:${esc(a.color)};"></span>
+        <span class="font-semibold text-fg">${esc(a.element)}</span>
+        <code class="text-xs text-fg-subtle">${esc(a.label)}</code>
+        <span class="ml-auto text-[10px] uppercase tracking-wide text-fg-faint">atom</span>
       </div>
       <div class="grid grid-cols-1 gap-0.5 text-xs">
         ${row('fractional', a.frac.map((x) => x.toFixed(4)).join(', '))}
@@ -1703,8 +1703,8 @@
     selDetail = { kind: 'bond', i: b.i, j: b.j };
     detailEl.innerHTML = `
       <div class="flex items-center gap-2 mb-1.5">
-        <span class="font-semibold text-slate-800">${esc(b.i)} — ${esc(b.j)}</span>
-        <span class="ml-auto text-[10px] uppercase tracking-wide text-slate-400">bond</span>
+        <span class="font-semibold text-fg">${esc(b.i)} — ${esc(b.j)}</span>
+        <span class="ml-auto text-[10px] uppercase tracking-wide text-fg-faint">bond</span>
       </div>
       <div class="grid grid-cols-1 gap-0.5 text-xs">
         ${row('length Å', num(b.length))}
@@ -1724,7 +1724,7 @@
       const found = geom.atoms.find((x) => x.label === selDetail.label);
       if (found) { showAtomDetail(found); return; }
       if (detailEl) {
-        detailEl.innerHTML = `<span class="text-slate-400 text-xs">atom ${esc(selDetail.label)} is not present in this state.</span>`;
+        detailEl.innerHTML = `<span class="text-fg-faint text-xs">atom ${esc(selDetail.label)} is not present in this state.</span>`;
       }
       return;
     }
@@ -1735,7 +1735,7 @@
     const aj = geom.atoms.find((x) => x.label === j);
     if (!ai || !aj) {
       if (detailEl) {
-        detailEl.innerHTML = `<span class="text-slate-400 text-xs">bond ${esc(i)} — ${esc(j)}: atom(s) not present in this state.</span>`;
+        detailEl.innerHTML = `<span class="text-fg-faint text-xs">bond ${esc(i)} — ${esc(j)}: atom(s) not present in this state.</span>`;
       }
       return;
     }
@@ -1780,7 +1780,7 @@
     const geom = V.stateGeoms[id];
     if (!geom) {
       if (emptyMsg) { emptyMsg.classList.remove('hidden'); }
-      if (detailEl) { detailEl.innerHTML = '<span class="text-slate-400 text-xs">no geometry linked for this state.</span>'; }
+      if (detailEl) { detailEl.innerHTML = '<span class="text-fg-faint text-xs">no geometry linked for this state.</span>'; }
       molViewer.render();
       return;
     }

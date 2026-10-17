@@ -8,13 +8,13 @@
   <div class="flex items-center gap-3">
     {{ drive_back('structure', 'Structures') }}
     <h1 class="text-lg font-semibold">{{ title }}</h1>
-    <span class="text-xs text-slate-400">{{ slug }} · {% if read_only %}v{{ rev }} of v{{ version }}{% else %}v{{ version }}{% endif %} · {{ viewer.n_atoms }} atom{{ '' if viewer.n_atoms == 1 else 's' }} · pbc {{ pbc | join('/') }}</span>
-    <span id="sv-export" class="text-xs text-slate-500"
+    <span class="text-xs text-fg-faint">{{ slug }} · {% if read_only %}v{{ rev }} of v{{ version }}{% else %}v{{ version }}{% endif %} · {{ viewer.n_atoms }} atom{{ '' if viewer.n_atoms == 1 else 's' }} · pbc {{ pbc | join('/') }}</span>
+    <span id="sv-export" class="text-xs text-fg-subtle"
           title="download the current geometry — xyz is extended XYZ (plain-XYZ readers accept it); PDB for a non-periodic cell, CIF for a periodic one">
       {%- for f in export_fmts %}{{ ' · ' if not loop.first else '' }}<a class="underline" id="sv-export-{{ f }}" href="/structure/{{ slug }}/export.{{ f }}" download>{{ f }}</a>{% endfor -%}
     </span>
     {% if read_only %}
-    <span id="sv-readonly" class="text-[11px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200"
+    <span id="sv-readonly" class="text-[11px] px-1.5 py-0.5 rounded-full bg-warning-muted text-warning-deep border border-warning"
           title="A past revision — the cell as it was at save {{ rev }}. Nothing here can be edited; go to the current version to relax, instruct or apply.">
       read-only · revision {{ rev }} of {{ version }} ·
       <a class="underline" href="/structure/{{ slug }}">current</a>
@@ -29,25 +29,25 @@
        on the page is one tuple, not a template edit. #}
     <div class="relative ml-auto" x-data="{ open: false, pin: false }" @click.outside="pin = false; open = false">
       <button type="button"
-              class="flex h-5 w-5 items-center justify-center rounded-full border border-slate-300 text-[11px] font-semibold text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+              class="flex h-5 w-5 items-center justify-center rounded-full border border-line-strong text-[11px] font-semibold text-fg-subtle hover:bg-surface-muted hover:text-fg-secondary"
               aria-label="What is on this page?"
               @mouseenter="open = true" @mouseleave="if (!pin) open = false"
               @click="pin = !pin; open = pin"
               @focus="open = true" @blur="if (!pin) open = false">?</button>
       <div x-show="open" x-cloak
-           class="absolute right-0 top-6 z-50 w-96 rounded-lg border border-slate-200 bg-white p-3 text-xs shadow-lg"
+           class="absolute right-0 top-6 z-50 w-96 rounded-lg border border-line bg-surface p-3 text-xs shadow-lg"
            @mouseenter="open = true" @mouseleave="if (!pin) open = false">
-        <p class="text-slate-600">One <span class="font-semibold">design</span> — a periodic cell of atoms
+        <p class="text-fg-muted">One <span class="font-semibold">design</span> — a periodic cell of atoms
           you (or an agent) authored as typed ops. Everything below is a view on that one design.</p>
         <dl class="mt-2 space-y-1.5">
           {% for heading, body in page_help %}
           <div>
-            <dt class="font-semibold text-slate-700">{{ heading }}</dt>
-            <dd class="text-slate-500 leading-snug">{{ body }}</dd>
+            <dt class="font-semibold text-fg-secondary">{{ heading }}</dt>
+            <dd class="text-fg-subtle leading-snug">{{ body }}</dd>
           </div>
           {% endfor %}
         </dl>
-        <p class="mt-2 text-[10px] text-slate-400">Click the ? to pin this open.</p>
+        <p class="mt-2 text-[10px] text-fg-faint">Click the ? to pin this open.</p>
       </div>
     </div>
   </div>
@@ -58,34 +58,34 @@
   {# ── left: 3D cell viewer ── #}
   <div>
     <div class="flex items-center gap-2 mb-2">
-      <h2 class="text-sm font-semibold text-slate-700">Cell</h2>
+      <h2 class="text-sm font-semibold text-fg-secondary">Cell</h2>
       {% if pinned_run %}
       {# Arrived from a run page's "show these atoms" link — say which run's
          geometry is on screen, and offer the way back to the default view. #}
-      <span class="text-[11px] text-slate-500">showing
-        <a class="text-emerald-700 hover:underline" href="/structure/{{ slug }}/run/{{ pinned_run }}">r{{ pinned_run }}</a>'s geometry
-        <a class="text-slate-400 hover:text-slate-600" href="/structure/{{ slug }}">(latest)</a></span>
+      <span class="text-[11px] text-fg-subtle">showing
+        <a class="text-success-strong hover:underline" href="/structure/{{ slug }}/run/{{ pinned_run }}">r{{ pinned_run }}</a>'s geometry
+        <a class="text-fg-faint hover:text-fg-muted" href="/structure/{{ slug }}">(latest)</a></span>
       {% endif %}
       {% if viewer.relaxed %}
-      <div class="inline-flex rounded-md border border-slate-300 overflow-hidden text-xs ml-auto">
-        <button type="button" data-mode="initial" class="sv-mode px-2 py-1 hover:bg-slate-100">Input</button>
-        <button type="button" data-mode="relaxed" class="sv-mode px-2 py-1 hover:bg-slate-100 border-l border-slate-300">Relaxed</button>
-        <button type="button" data-mode="overlay" class="sv-mode px-2 py-1 hover:bg-slate-100 border-l border-slate-300">Overlay</button>
+      <div class="inline-flex rounded-md border border-line-strong overflow-hidden text-xs ml-auto">
+        <button type="button" data-mode="initial" class="sv-mode px-2 py-1 hover:bg-surface-muted">Input</button>
+        <button type="button" data-mode="relaxed" class="sv-mode px-2 py-1 hover:bg-surface-muted border-l border-line-strong">Relaxed</button>
+        <button type="button" data-mode="overlay" class="sv-mode px-2 py-1 hover:bg-surface-muted border-l border-line-strong">Overlay</button>
       </div>
       {% else %}
-      <span class="text-xs text-slate-400 ml-auto">input geometry (no relaxed run yet)</span>
+      <span class="text-xs text-fg-faint ml-auto">input geometry (no relaxed run yet)</span>
       {% endif %}
     </div>
-    <div id="mol" class="relative w-full rounded-lg border border-slate-200 bg-white"
+    <div id="mol" class="relative w-full rounded-lg border border-line bg-surface"
          style="height: 460px;"></div>
 
     {# zoom + look-inside controls #}
     <div class="flex items-center gap-4 mt-2">
-      <label class="flex items-center gap-1.5 text-[11px] text-slate-500">
+      <label class="flex items-center gap-1.5 text-[11px] text-fg-subtle">
         Zoom
         <input type="range" id="sv-zoom" min="0.4" max="4" step="0.05" value="1" class="w-24">
       </label>
-      <label class="flex items-center gap-1.5 text-[11px] text-slate-500">
+      <label class="flex items-center gap-1.5 text-[11px] text-fg-subtle">
         Look inside
         <input type="range" id="sv-clip" min="0" max="0.95" step="0.01" value="0" class="w-24">
       </label>
@@ -95,42 +95,42 @@
     {% if viewer.legend %}
     <div class="flex flex-wrap gap-2 mt-2">
       {% for e in viewer.legend %}
-      <span class="sv-hl inline-flex items-center gap-1 text-[11px] text-slate-500 cursor-pointer rounded px-1 hover:bg-amber-50"
+      <span class="sv-hl inline-flex items-center gap-1 text-[11px] text-fg-subtle cursor-pointer rounded px-1 hover:bg-warning-subtle"
             data-atoms="{{ e.labels | join(',') }}">
-        <span class="inline-block w-3 h-3 rounded-full border border-slate-300" style="background: {{ e.color }};"></span>
-        {{ e.element }}<span class="text-slate-400">×{{ e.count }}</span>
+        <span class="inline-block w-3 h-3 rounded-full border border-line-strong" style="background: {{ e.color }};"></span>
+        {{ e.element }}<span class="text-fg-faint">×{{ e.count }}</span>
       </span>
       {% endfor %}
     </div>
     {% endif %}
 
-    <p class="text-[11px] text-slate-400 mt-1">
+    <p class="text-[11px] text-fg-faint mt-1">
       Drag to rotate · scroll to zoom · <b>click an atom or bond</b> for details. The dashed box is the unit cell.
       {% if viewer.relaxed_run_id %}Relaxed geometry from run r{{ viewer.relaxed_run_id }}.{% endif %}
     </p>
 
     {# click-detail panel #}
-    <div id="sv-detail" class="mt-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm min-h-[64px]">
-      <span class="text-slate-400 text-xs">Click an atom or bond in the cell to inspect it.</span>
+    <div id="sv-detail" class="mt-2 rounded-lg border border-line bg-surface-subtle p-3 text-sm min-h-[64px]">
+      <span class="text-fg-faint text-xs">Click an atom or bond in the cell to inspect it.</span>
     </div>
 
     {# "what moved" — hover a row to glow the atom that shifted (input→relaxed).
        Same text→viewer highlight the proposed-ops list will reuse. #}
     {% if viewer.moved %}
-    <details class="mt-2 rounded-lg border border-slate-200 bg-white" open>
-      <summary class="cursor-pointer px-3 py-2 text-xs font-semibold text-slate-600">
-        What moved <span class="font-normal text-slate-400">— {{ viewer.moved | length }} atom{{ '' if viewer.moved | length == 1 else 's' }} shifted, input → relaxed</span>
+    <details class="mt-2 rounded-lg border border-line bg-surface" open>
+      <summary class="cursor-pointer px-3 py-2 text-xs font-semibold text-fg-muted">
+        What moved <span class="font-normal text-fg-faint">— {{ viewer.moved | length }} atom{{ '' if viewer.moved | length == 1 else 's' }} shifted, input → relaxed</span>
       </summary>
       <div class="px-3 pb-2 max-h-40 overflow-y-auto space-y-0.5">
         {% set maxd = viewer.moved[0].delta %}
         {% for m in viewer.moved %}
-        <div class="sv-hl flex items-center gap-2 text-xs rounded px-1 py-0.5 cursor-pointer hover:bg-amber-50"
+        <div class="sv-hl flex items-center gap-2 text-xs rounded px-1 py-0.5 cursor-pointer hover:bg-warning-subtle"
              data-atoms="{{ m.label }}">
-          <code class="text-slate-500 w-16 shrink-0">{{ m.label }}</code>
-          <div class="flex-1 h-1.5 rounded bg-slate-100 overflow-hidden">
-            <div class="h-full bg-amber-400" style="width: {{ (100 * m.delta / maxd) if maxd else 0 }}%;"></div>
+          <code class="text-fg-subtle w-16 shrink-0">{{ m.label }}</code>
+          <div class="flex-1 h-1.5 rounded bg-surface-muted overflow-hidden">
+            <div class="h-full bg-warning-solid-light" style="width: {{ (100 * m.delta / maxd) if maxd else 0 }}%;"></div>
           </div>
-          <span class="tabular-nums text-slate-500 w-16 text-right">{{ '%.3f'|format(m.delta) }} Å</span>
+          <span class="tabular-nums text-fg-subtle w-16 text-right">{{ '%.3f'|format(m.delta) }} Å</span>
         </div>
         {% endfor %}
       </div>
@@ -143,96 +143,96 @@
        script at all. A design saved before the record existed spans one
        position (rev_min == version) and says so. #}
     {% if revision %}
-    <div id="sv-revision" class="mt-3 rounded-lg border border-slate-200 bg-white">
-      <form method="get" action="/structure/{{ slug }}" class="flex items-center gap-2 px-3 py-2 border-b border-slate-100 text-xs">
-        <span class="font-semibold text-slate-700">Revision</span>
+    <div id="sv-revision" class="mt-3 rounded-lg border border-line bg-surface">
+      <form method="get" action="/structure/{{ slug }}" class="flex items-center gap-2 px-3 py-2 border-b border-line-subtle text-xs">
+        <span class="font-semibold text-fg-secondary">Revision</span>
         {% if rev > rev_min %}
-        <a class="text-emerald-700 hover:underline" href="/structure/{{ slug }}?rev={{ rev - 1 }}" title="previous revision">‹ {{ rev - 1 }}</a>
-        {% else %}<span class="text-slate-300">‹</span>{% endif %}
+        <a class="text-success-strong hover:underline" href="/structure/{{ slug }}?rev={{ rev - 1 }}" title="previous revision">‹ {{ rev - 1 }}</a>
+        {% else %}<span class="text-fg-ghost">‹</span>{% endif %}
         <input type="range" name="rev" min="{{ rev_min }}" max="{{ version }}" step="1" value="{{ rev }}"
                class="w-40" title="drag to a revision — the page reloads at that version"
                onchange="this.form.submit()">
         {% if rev < version %}
-        <a class="text-emerald-700 hover:underline" href="/structure/{{ slug }}?rev={{ rev + 1 }}" title="next revision">{{ rev + 1 }} ›</a>
-        {% else %}<span class="text-slate-300">›</span>{% endif %}
-        <span class="tabular-nums text-slate-600">{{ rev }} / {{ version }}</span>
+        <a class="text-success-strong hover:underline" href="/structure/{{ slug }}?rev={{ rev + 1 }}" title="next revision">{{ rev + 1 }} ›</a>
+        {% else %}<span class="text-fg-ghost">›</span>{% endif %}
+        <span class="tabular-nums text-fg-muted">{{ rev }} / {{ version }}</span>
         {% if not has_record %}
-        <span class="text-slate-400">— current, no record</span>
+        <span class="text-fg-faint">— current, no record</span>
         {% elif not read_only %}
-        <span class="text-slate-400">— current</span>
+        <span class="text-fg-faint">— current</span>
         {% endif %}
-        {% if revision.created %}<span class="ml-auto text-[10px] text-slate-400">{{ revision.created }}</span>{% endif %}
+        {% if revision.created %}<span class="ml-auto text-[10px] text-fg-faint">{{ revision.created }}</span>{% endif %}
       </form>
 
       <div class="px-3 py-2 text-xs space-y-1.5">
         {# diff vs N−1 — each row's atoms glow in the cell on hover #}
         {% set d = revision.diff %}
-        <div class="text-[10px] uppercase tracking-wide text-slate-400">Changed since revision {{ rev - 1 }}
+        <div class="text-[10px] uppercase tracking-wide text-fg-faint">Changed since revision {{ rev - 1 }}
           {% if rev == 1 %}<span class="normal-case">(nothing — first save)</span>{% endif %}</div>
         {% if d.empty %}
-          <p class="text-slate-400">No atom or bond differs from the previous version.</p>
+          <p class="text-fg-faint">No atom or bond differs from the previous version.</p>
         {% else %}
           {% if d.atoms_added %}
-          <div class="sv-hl rounded px-1 hover:bg-amber-50 cursor-pointer" data-atoms="{{ d.atoms_added | join(',') }}">
-            <span class="text-emerald-700 font-semibold">+{{ d.atoms_added | length }} atom{{ '' if d.atoms_added | length == 1 else 's' }}</span>
-            <code class="text-slate-500">{{ d.atoms_added | join(' ') }}</code>
+          <div class="sv-hl rounded px-1 hover:bg-warning-subtle cursor-pointer" data-atoms="{{ d.atoms_added | join(',') }}">
+            <span class="text-success-strong font-semibold">+{{ d.atoms_added | length }} atom{{ '' if d.atoms_added | length == 1 else 's' }}</span>
+            <code class="text-fg-subtle">{{ d.atoms_added | join(' ') }}</code>
           </div>
           {% endif %}
           {% if d.atoms_removed %}
           <div class="rounded px-1">
-            <span class="text-red-700 font-semibold">−{{ d.atoms_removed | length }} atom{{ '' if d.atoms_removed | length == 1 else 's' }}</span>
-            <code class="text-slate-500">{{ d.atoms_removed | join(' ') }}</code>
+            <span class="text-danger-strong font-semibold">−{{ d.atoms_removed | length }} atom{{ '' if d.atoms_removed | length == 1 else 's' }}</span>
+            <code class="text-fg-subtle">{{ d.atoms_removed | join(' ') }}</code>
           </div>
           {% endif %}
           {% if d.moved %}
           <div>
-            <span class="text-amber-700 font-semibold">{{ d.moved | length }} moved</span>
-            <span class="text-slate-400">(&gt; 0.05 Å)</span>
+            <span class="text-warning-strong font-semibold">{{ d.moved | length }} moved</span>
+            <span class="text-fg-faint">(&gt; 0.05 Å)</span>
             <div class="mt-0.5 max-h-32 overflow-y-auto space-y-0.5">
               {% for m in d.moved %}
-              <div class="sv-hl flex items-center gap-2 rounded px-1 py-0.5 cursor-pointer hover:bg-amber-50" data-atoms="{{ m.label }}">
-                <code class="text-slate-500 w-16 shrink-0">{{ m.label }}</code>
-                <span class="text-slate-400 w-6">{{ m.element }}</span>
-                <span class="tabular-nums text-slate-600">{{ '%.3f'|format(m.delta) }} Å</span>
+              <div class="sv-hl flex items-center gap-2 rounded px-1 py-0.5 cursor-pointer hover:bg-warning-subtle" data-atoms="{{ m.label }}">
+                <code class="text-fg-subtle w-16 shrink-0">{{ m.label }}</code>
+                <span class="text-fg-faint w-6">{{ m.element }}</span>
+                <span class="tabular-nums text-fg-muted">{{ '%.3f'|format(m.delta) }} Å</span>
               </div>
               {% endfor %}
             </div>
           </div>
           {% endif %}
           {% if d.bonds_added %}
-          <div><span class="text-emerald-700 font-semibold">+{{ d.bonds_added | length }} bond{{ '' if d.bonds_added | length == 1 else 's' }}</span>
-            <code class="text-slate-500">{{ d.bonds_added | join(', ') }}</code></div>
+          <div><span class="text-success-strong font-semibold">+{{ d.bonds_added | length }} bond{{ '' if d.bonds_added | length == 1 else 's' }}</span>
+            <code class="text-fg-subtle">{{ d.bonds_added | join(', ') }}</code></div>
           {% endif %}
           {% if d.bonds_removed %}
-          <div><span class="text-red-700 font-semibold">−{{ d.bonds_removed | length }} bond{{ '' if d.bonds_removed | length == 1 else 's' }}</span>
-            <code class="text-slate-500">{{ d.bonds_removed | join(', ') }}</code></div>
+          <div><span class="text-danger-strong font-semibold">−{{ d.bonds_removed | length }} bond{{ '' if d.bonds_removed | length == 1 else 's' }}</span>
+            <code class="text-fg-subtle">{{ d.bonds_removed | join(', ') }}</code></div>
           {% endif %}
         {% endif %}
 
         {# energy computed ON this version, if any run did #}
-        <div class="pt-1 border-t border-slate-100">
-          <span class="text-[10px] uppercase tracking-wide text-slate-400" title="{{ metric_help.energy }}">Energy on v{{ rev }}</span>
+        <div class="pt-1 border-t border-line-subtle">
+          <span class="text-[10px] uppercase tracking-wide text-fg-faint" title="{{ metric_help.energy }}">Energy on v{{ rev }}</span>
           {% if revision.energy is not none %}
-          <span class="tabular-nums font-medium text-slate-700">{{ '%.4f'|format(revision.energy) }}</span><span class="text-[10px] text-slate-400"> eV</span>
-          <a class="text-emerald-700 hover:underline" href="/structure/{{ slug }}/run/{{ revision.energy_run_id }}">{{ revision.energy_fidelity }} r{{ revision.energy_run_id }}</a>
+          <span class="tabular-nums font-medium text-fg-secondary">{{ '%.4f'|format(revision.energy) }}</span><span class="text-[10px] text-fg-faint"> eV</span>
+          <a class="text-success-strong hover:underline" href="/structure/{{ slug }}/run/{{ revision.energy_run_id }}">{{ revision.energy_fidelity }} r{{ revision.energy_run_id }}</a>
           {% else %}
-          <span class="text-slate-400">— no succeeded run on this version</span>
+          <span class="text-fg-faint">— no succeeded run on this version</span>
           {% endif %}
         </div>
 
         {# the recorded ops — one per line, verbatim #}
-        <div class="pt-1 border-t border-slate-100">
-          <span class="text-[10px] uppercase tracking-wide text-slate-400">Ops</span>
+        <div class="pt-1 border-t border-line-subtle">
+          <span class="text-[10px] uppercase tracking-wide text-fg-faint">Ops</span>
           {% if not revision.has_record %}
-          <span class="text-slate-400">no op record</span>
+          <span class="text-fg-faint">no op record</span>
           {% elif not revision.ops %}
-          <span class="text-slate-400">none recorded (whole-scene save)</span>
+          <span class="text-fg-faint">none recorded (whole-scene save)</span>
           {% else %}
-          <pre id="sv-revision-ops" class="mt-0.5 max-h-40 overflow-auto rounded bg-slate-50 p-2 font-mono text-[11px] text-slate-700 whitespace-pre">{% for line in revision.ops %}{{ line }}
+          <pre id="sv-revision-ops" class="mt-0.5 max-h-40 overflow-auto rounded bg-surface-subtle p-2 font-mono text-[11px] text-fg-secondary whitespace-pre">{% for line in revision.ops %}{{ line }}
 {% endfor %}</pre>
           {% endif %}
           {% if revision.turn %}
-          <div class="mt-0.5 text-slate-500">from turn <code>{{ revision.turn }}</code></div>
+          <div class="mt-0.5 text-fg-subtle">from turn <code>{{ revision.turn }}</code></div>
           {% endif %}
         </div>
       </div>
@@ -243,8 +243,8 @@
   {# ── right: run-cube panel ── #}
   <div id="runs">
     <div class="flex items-center gap-2 mb-2 flex-wrap">
-      <h2 class="text-sm font-semibold text-slate-700">Compute runs
-        <span class="text-xs font-normal text-slate-400" title="{{ run_kind_blurb }}">— one row per relax, newest first</span>
+      <h2 class="text-sm font-semibold text-fg-secondary">Compute runs
+        <span class="text-xs font-normal text-fg-faint" title="{{ run_kind_blurb }}">— one row per relax, newest first</span>
       </h2>
       {# Relax button — default params; an energy rung with no local backend
          dispatches to the GPU node (no todo needed). Each option carries its
@@ -252,17 +252,17 @@
          are choosing from it. Not rendered on a past revision: a relax
          would run on the CURRENT atoms, not the ones on screen. #}
       {% if read_only %}
-      <span class="ml-auto text-[11px] text-slate-400">relax disabled — viewing revision {{ rev }}</span>
+      <span class="ml-auto text-[11px] text-fg-faint">relax disabled — viewing revision {{ rev }}</span>
       {% else %}
       <form method="post" action="/structure/{{ slug }}/relax" class="ml-auto flex items-center gap-1">
         <select name="fidelity"
-                class="rounded border border-slate-300 px-1.5 py-0.5 text-xs bg-white"
+                class="rounded border border-line-strong px-1.5 py-0.5 text-xs bg-surface"
                 title="Which rung to relax at — cheap and rough at the top, slow and correct at the bottom. Hover an option for what it does.">
           <option value="clean" title="{{ rung_info.clean.blurb }}">clean — {{ rung_info.clean.label }}</option>
           <option value="ml" title="{{ rung_info.ml.blurb }}">ml — {{ rung_info.ml.label }}</option>
           <option value="dft" selected title="{{ rung_info.dft.blurb }}">dft — {{ rung_info.dft.label }}</option>
         </select>
-        <button class="rounded bg-emerald-600 text-white text-xs px-2.5 py-0.5 hover:bg-emerald-700 whitespace-nowrap">
+        <button class="rounded bg-success-solid text-on-solid text-xs px-2.5 py-0.5 hover:bg-success-solid-strong whitespace-nowrap">
           Relax ▸
         </button>
       </form>
@@ -275,75 +275,75 @@
     <div id="sv-runs-live" data-slug="{{ slug }}" data-run-count="{{ run_count }}"
          class="space-y-2 mb-2">
       {% for j in pending %}
-      <div class="rounded-lg border border-sky-200 bg-sky-50/50 p-2 flex items-center gap-2 text-xs">
-        <a class="font-mono text-slate-400 hover:text-emerald-700 hover:underline"
+      <div class="rounded-lg border border-info bg-info-subtle/50 p-2 flex items-center gap-2 text-xs">
+        <a class="font-mono text-fg-faint hover:text-success-strong hover:underline"
            href="/refs/job/{{ j.job_id }}" title="Open the job — where it is queued, which node has it, and its log.">job {{ j.job_id }}</a>
-        <span class="font-semibold px-1.5 py-0.5 rounded bg-slate-100 text-slate-700"
+        <span class="font-semibold px-1.5 py-0.5 rounded bg-surface-muted text-fg-secondary"
               title="{{ j.rung_help }}">{{ j.fidelity }} relax</span>
         {% if j.status == 'failed' %}
-          <span class="px-1.5 py-0.5 rounded-full bg-red-100 text-red-800 border border-red-200">failed</span>
+          <span class="px-1.5 py-0.5 rounded-full bg-danger-muted text-danger-deep border border-danger">failed</span>
         {% else %}
-          <span class="px-1.5 py-0.5 rounded-full bg-sky-100 text-sky-800 border border-sky-200">⟳ {{ j.status }}</span>
+          <span class="px-1.5 py-0.5 rounded-full bg-info-muted text-info-deep border border-info">⟳ {{ j.status }}</span>
         {% endif %}
-        <span class="ml-auto text-[10px] text-slate-400">{{ j.created }}</span>
+        <span class="ml-auto text-[10px] text-fg-faint">{{ j.created }}</span>
       </div>
       {% endfor %}
     </div>
 
     {% if not runs %}
-      <p class="text-sm text-slate-500" {% if pending %}style="display:none"{% endif %}>No compute runs yet.</p>
+      <p class="text-sm text-fg-subtle" {% if pending %}style="display:none"{% endif %}>No compute runs yet.</p>
     {% else %}
     <div class="space-y-2">
       {% for r in runs %}
-      <div class="rounded-lg border {% if r.id == viewer.relaxed_run_id %}border-emerald-300 bg-emerald-50/40{% else %}border-slate-200 bg-white{% endif %} p-3">
+      <div class="rounded-lg border {% if r.id == viewer.relaxed_run_id %}border-success-strong bg-success-subtle/40{% else %}border-line bg-surface{% endif %} p-3">
         <div class="flex items-center gap-2 flex-wrap">
           {# The run id is the way in: /structure/{slug}/run/{id} says what the
              rung computes, what the numbers mean, and where they came from. #}
-          <a class="text-xs font-mono text-slate-400 hover:text-emerald-700 hover:underline"
+          <a class="text-xs font-mono text-fg-faint hover:text-success-strong hover:underline"
              href="/structure/{{ slug }}/run/{{ r.id }}"
              title="Open this run — what it did, what the numbers mean, how it settled.">r{{ r.id }}</a>
-          <a class="text-xs font-semibold px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 hover:bg-slate-200"
+          <a class="text-xs font-semibold px-1.5 py-0.5 rounded bg-surface-muted text-fg-secondary hover:bg-surface-emphasis"
              href="/structure/{{ slug }}/run/{{ r.id }}"
              title="{{ r.rung_help }}">{{ r.fidelity }} relax</a>
-          {% if r.model %}<span class="text-[10px] text-slate-400" title="{{ metric_help.model }}">{{ r.model }}</span>{% endif %}
+          {% if r.model %}<span class="text-[10px] text-fg-faint" title="{{ metric_help.model }}">{{ r.model }}</span>{% endif %}
           {% if r.status == 'succeeded' %}
-            <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200"
+            <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-success-muted text-success-deep border border-success"
                   title="{{ metric_help.status }}">succeeded</span>
           {% elif r.status == 'running' %}
-            <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-sky-100 text-sky-800 border border-sky-200"
+            <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-info-muted text-info-deep border border-info"
                   title="{{ metric_help.status }}">running</span>
           {% else %}
-            <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-red-100 text-red-800 border border-red-200"
+            <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-danger-muted text-danger-deep border border-danger"
                   title="{{ metric_help.status }}">{{ r.status }}</span>
           {% endif %}
           {% if r.converged %}
-            <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200"
+            <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-surface-muted text-fg-muted border border-line"
                   title="{{ metric_help.converged }}">converged</span>
           {% endif %}
           {% if r.cached %}
-            <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-indigo-100 text-indigo-800 border border-indigo-200"
+            <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-indigo-muted text-indigo-deep border border-indigo"
                   title="{{ metric_help.cached }}">⚡ reused</span>
           {% endif %}
           {% if r.provenance == 'external' %}
-            <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200"
+            <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-warning-muted text-warning-deep border border-warning"
                   title="{{ metric_help.external }}">imported</span>
           {% endif %}
-          <span class="ml-auto text-[10px] text-slate-400">{{ r.created }}</span>
+          <span class="ml-auto text-[10px] text-fg-faint">{{ r.created }}</span>
         </div>
 
         {# Every number here carries its own gloss — this is the one place on
            the site where a reader meets eV and eV/Å. #}
         <div class="mt-2 grid grid-cols-3 gap-2 text-sm">
           <div>
-            <div class="text-[10px] text-slate-400 uppercase tracking-wide cursor-help" title="{{ metric_help.energy }}">Energy</div>
-            <div class="tabular-nums font-medium">{{ '%.4f'|format(r.energy) if r.energy is not none else '—' }}<span class="text-[10px] text-slate-400"> eV</span></div>
+            <div class="text-[10px] text-fg-faint uppercase tracking-wide cursor-help" title="{{ metric_help.energy }}">Energy</div>
+            <div class="tabular-nums font-medium">{{ '%.4f'|format(r.energy) if r.energy is not none else '—' }}<span class="text-[10px] text-fg-faint"> eV</span></div>
           </div>
           <div>
-            <div class="text-[10px] text-slate-400 uppercase tracking-wide cursor-help" title="{{ metric_help.max_force }}">Max force</div>
-            <div class="tabular-nums">{{ '%.4f'|format(r.max_force) if r.max_force is not none else '—' }}<span class="text-[10px] text-slate-400"> eV/Å</span></div>
+            <div class="text-[10px] text-fg-faint uppercase tracking-wide cursor-help" title="{{ metric_help.max_force }}">Max force</div>
+            <div class="tabular-nums">{{ '%.4f'|format(r.max_force) if r.max_force is not none else '—' }}<span class="text-[10px] text-fg-faint"> eV/Å</span></div>
           </div>
           <div>
-            <div class="text-[10px] text-slate-400 uppercase tracking-wide cursor-help" title="{{ metric_help.steps }}">Steps</div>
+            <div class="text-[10px] text-fg-faint uppercase tracking-wide cursor-help" title="{{ metric_help.steps }}">Steps</div>
             <div class="tabular-nums">{{ r.n_steps }}</div>
           </div>
         </div>
@@ -351,9 +351,9 @@
         {# The cache key + structure sha used to sit here. They are machine
            identity, not something a reader of this page wants — they moved to
            the run page's folded "technical details". #}
-        <div class="mt-2 pt-2 border-t border-slate-100 flex items-center gap-3 text-[10px] text-slate-400">
+        <div class="mt-2 pt-2 border-t border-line-subtle flex items-center gap-3 text-[10px] text-fg-faint">
           <span title="{{ metric_help.on_version }}">on design v{{ r.on_version }}</span>
-          <a class="ml-auto text-emerald-700 hover:underline" href="/structure/{{ slug }}/run/{{ r.id }}">what this run did →</a>
+          <a class="ml-auto text-success-strong hover:underline" href="/structure/{{ slug }}/run/{{ r.id }}">what this run did →</a>
         </div>
       </div>
       {% endfor %}
@@ -364,24 +364,24 @@
 
 {# ── quest context — candidate's quest backlink + pathway compute runs ── #}
 {% if quest_context %}
-<div class="mt-4 text-xs text-slate-500 flex flex-wrap items-center gap-4">
+<div class="mt-4 text-xs text-fg-subtle flex flex-wrap items-center gap-4">
   {% for q in quest_context.quests %}<span>Candidate in quest:
-    <a class="text-emerald-700 hover:underline" href="/refs/quest/{{ q.ref_id }}">{{ q.title }}</a>
+    <a class="text-success-strong hover:underline" href="/refs/quest/{{ q.ref_id }}">{{ q.title }}</a>
   </span>{% endfor %}
   {% if quest_context.pathways %}<span>Pathway runs:
-    {% for pw in quest_context.pathways %}<a class="text-emerald-700 hover:underline" href="/refs/pathway/{{ pw.ref_id }}">#{{ pw.ref_id }} ({{ pw.tier }}{% if pw.barrier is not none %}, {{ '%.2f'|format(pw.barrier) }} eV{% endif %})</a>{% if not loop.last %}, {% endif %}{% endfor %}
+    {% for pw in quest_context.pathways %}<a class="text-success-strong hover:underline" href="/refs/pathway/{{ pw.ref_id }}">#{{ pw.ref_id }} ({{ pw.tier }}{% if pw.barrier is not none %}, {{ '%.2f'|format(pw.barrier) }} eV{% endif %})</a>{% if not loop.last %}, {% endif %}{% endfor %}
   </span>{% endif %}
 </div>
 {% endif %}
 
 {# ── lineage ── #}
 {% if lineage.parents or lineage.children %}
-<div class="mt-4 text-xs text-slate-500 flex flex-wrap items-center gap-4">
+<div class="mt-4 text-xs text-fg-subtle flex flex-wrap items-center gap-4">
   {% if lineage.parents %}<span>Derived from:
-    {% for p in lineage.parents %}<a class="text-emerald-700 hover:underline" href="/structure/{{ p.slug }}">{{ p.slug }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+    {% for p in lineage.parents %}<a class="text-success-strong hover:underline" href="/structure/{{ p.slug }}">{{ p.slug }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
   </span>{% endif %}
   {% if lineage.children %}<span>Derived designs:
-    {% for c in lineage.children %}<a class="text-emerald-700 hover:underline" href="/structure/{{ c.slug }}">{{ c.slug }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+    {% for c in lineage.children %}<a class="text-success-strong hover:underline" href="/structure/{{ c.slug }}">{{ c.slug }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
   </span>{% endif %}
 </div>
 {% endif %}
@@ -389,16 +389,16 @@
 {# ── paper provenance (gr161577) ── #}
 {% if provenance %}
 <div class="mt-4">
-  <h2 class="text-sm font-semibold text-slate-700 mb-2">Provenance
-    <span class="text-xs font-normal text-slate-400">— papers that motivated this design</span>
+  <h2 class="text-sm font-semibold text-fg-secondary mb-2">Provenance
+    <span class="text-xs font-normal text-fg-faint">— papers that motivated this design</span>
   </h2>
   <div class="space-y-1">
     {% for p in provenance %}
-    <div class="flex items-start gap-2 text-xs rounded px-2 py-1 border border-slate-200 bg-white">
-      <span class="text-slate-400 whitespace-nowrap">{{ p.rel }}</span>
-      <a class="text-emerald-700 hover:underline" href="/papers/{{ p.slug }}">{{ p.paper }}</a>
-      {% if p.doi %}<span class="text-slate-400 whitespace-nowrap">doi:{{ p.doi }}</span>{% endif %}
-      {% if p.note %}<span class="text-slate-500 italic">— {{ p.note }}</span>{% endif %}
+    <div class="flex items-start gap-2 text-xs rounded px-2 py-1 border border-line bg-surface">
+      <span class="text-fg-faint whitespace-nowrap">{{ p.rel }}</span>
+      <a class="text-success-strong hover:underline" href="/papers/{{ p.slug }}">{{ p.paper }}</a>
+      {% if p.doi %}<span class="text-fg-faint whitespace-nowrap">doi:{{ p.doi }}</span>{% endif %}
+      {% if p.note %}<span class="text-fg-subtle italic">— {{ p.note }}</span>{% endif %}
     </div>
     {% endfor %}
   </div>
@@ -409,50 +409,50 @@
 
   {# ── further instructions → LLM proposal ── #}
   <div id="instruct">
-    <h2 class="text-sm font-semibold text-slate-700 mb-2">Further instructions
-      <span class="text-xs font-normal text-slate-400">— an LLM proposes edits; you review &amp; apply to a new design</span>
+    <h2 class="text-sm font-semibold text-fg-secondary mb-2">Further instructions
+      <span class="text-xs font-normal text-fg-faint">— an LLM proposes edits; you review &amp; apply to a new design</span>
     </h2>
     {% if read_only %}
     {# A past revision: no instruct form, and no proposal box either — the
        box's poll would render an Apply form against the CURRENT design. #}
-    <p class="text-sm text-slate-500">Read-only — you are viewing revision {{ rev }} of {{ version }}.
-      <a class="text-emerald-700 hover:underline" href="/structure/{{ slug }}#instruct">Go to the current version</a> to propose or apply edits.</p>
+    <p class="text-sm text-fg-subtle">Read-only — you are viewing revision {{ rev }} of {{ version }}.
+      <a class="text-success-strong hover:underline" href="/structure/{{ slug }}#instruct">Go to the current version</a> to propose or apply edits.</p>
     {% else %}
     <form method="post" action="/structure/{{ slug }}/instruct" class="flex gap-2">
       <input name="instruction" required autocomplete="off"
              placeholder="e.g. add an H to cap the undercoordinated Si, then mark the active site"
-             class="flex-1 rounded border border-slate-300 px-2 py-1 text-sm">
-      <button class="rounded bg-slate-700 text-white text-sm px-3 py-1 hover:bg-slate-800 whitespace-nowrap">Propose ▸</button>
+             class="flex-1 rounded border border-line-strong px-2 py-1 text-sm">
+      <button class="rounded bg-solid text-on-solid text-sm px-3 py-1 hover:bg-solid-strong whitespace-nowrap">Propose ▸</button>
     </form>
     <div id="sv-proposal" class="mt-3" data-slug="{{ slug }}">
-      <span class="text-xs text-slate-400">No proposal yet — type an instruction above.</span>
+      <span class="text-xs text-fg-faint">No proposal yet — type an instruction above.</span>
     </div>
     {% endif %}
   </div>
 
   {# ── eyes & measures ── #}
   <div>
-    <h2 class="text-sm font-semibold text-slate-700 mb-2">Eyes &amp; measures
-      <span class="text-xs font-normal text-slate-400">— hover a row to glow its atoms (§6.8/§7)</span>
+    <h2 class="text-sm font-semibold text-fg-secondary mb-2">Eyes &amp; measures
+      <span class="text-xs font-normal text-fg-faint">— hover a row to glow its atoms (§6.8/§7)</span>
     </h2>
     {% if not markers %}
-      <p class="text-sm text-slate-500">None yet. Add one via an instruction ("mark the active site") or an eye/measure op.</p>
+      <p class="text-sm text-fg-subtle">None yet. Add one via an instruction ("mark the active site") or an eye/measure op.</p>
     {% else %}
     <div class="space-y-1">
       {% for m in markers %}
-      <div class="sv-hl flex items-center gap-2 text-xs rounded px-2 py-1 border border-slate-200 bg-white cursor-pointer hover:bg-amber-50"
+      <div class="sv-hl flex items-center gap-2 text-xs rounded px-2 py-1 border border-line bg-surface cursor-pointer hover:bg-warning-subtle"
            data-atoms="{{ m.operands | join(',') }}"
            data-desc="{{ m.label }} [{{ m.kind }}] over {{ m.operands | join(', ') }}{% if m.for %} — {{ m.for }}{% endif %}">
-        <span class="font-semibold text-slate-700">{{ m.label }}</span>
-        <span class="text-[10px] px-1 rounded bg-slate-100 text-slate-500">{{ m.kind }}</span>
-        <span class="text-slate-400">{{ m.operands | join(' ') }}</span>
-        <span class="ml-auto tabular-nums text-slate-600">{{ m.value }}</span>
+        <span class="font-semibold text-fg-secondary">{{ m.label }}</span>
+        <span class="text-[10px] px-1 rounded bg-surface-muted text-fg-subtle">{{ m.kind }}</span>
+        <span class="text-fg-faint">{{ m.operands | join(' ') }}</span>
+        <span class="ml-auto tabular-nums text-fg-muted">{{ m.value }}</span>
         {% if m.verdict %}
           <span class="text-[10px] px-1 rounded-full
-            {%- if m.verdict == 'ok' %} bg-emerald-100 text-emerald-800
-            {%- elif m.verdict == 'warn' %} bg-amber-100 text-amber-800
-            {%- elif m.verdict == 'dangling' %} bg-slate-200 text-slate-600
-            {%- else %} bg-red-100 text-red-800{% endif %}"> {{ m.verdict }}</span>
+            {%- if m.verdict == 'ok' %} bg-success-muted text-success-deep
+            {%- elif m.verdict == 'warn' %} bg-warning-muted text-warning-deep
+            {%- elif m.verdict == 'dangling' %} bg-surface-emphasis text-fg-muted
+            {%- else %} bg-danger-muted text-danger-deep{% endif %}"> {{ m.verdict }}</span>
         {% endif %}
       </div>
       {% endfor %}
@@ -466,7 +466,7 @@
 {{ design_chat(chat, rev, version) }}
 
 {# floating popover — rendered UNDER the pointer #}
-<div id="sv-pop" class="fixed z-50 hidden max-w-xs rounded-md bg-slate-800 text-white text-xs px-2 py-1 shadow-lg pointer-events-none"></div>
+<div id="sv-pop" class="fixed z-50 hidden max-w-xs rounded-md bg-solid-strong text-on-solid text-xs px-2 py-1 shadow-lg pointer-events-none"></div>
 
 {% endblock %}
 
@@ -486,8 +486,8 @@
   const num = (x, d = 3) => (x == null ? '—' : Number(x).toFixed(d));
 
   function row(k, v) {
-    return `<div class="flex gap-2"><span class="text-slate-400 w-28 shrink-0">${k}</span>
-            <span class="font-medium text-slate-700">${v}</span></div>`;
+    return `<div class="flex gap-2"><span class="text-fg-faint w-28 shrink-0">${k}</span>
+            <span class="font-medium text-fg-secondary">${v}</span></div>`;
   }
 
   // The currently selected atom/bond, independent of geometry — re-resolved
@@ -519,7 +519,7 @@
       const found = geom.atoms.find((x) => x.label === selDetail.label);
       if (found) { showAtom(found); return; }
       if (detail) {
-        detail.innerHTML = `<span class="text-slate-400 text-xs">atom ${esc(selDetail.label)} is not present in this geometry.</span>`;
+        detail.innerHTML = `<span class="text-fg-faint text-xs">atom ${esc(selDetail.label)} is not present in this geometry.</span>`;
       }
       return;
     }
@@ -530,7 +530,7 @@
     const aj = geom.atoms.find((x) => x.label === j);
     if (!ai || !aj) {
       if (detail) {
-        detail.innerHTML = `<span class="text-slate-400 text-xs">bond ${esc(i)} — ${esc(j)}: atom(s) not present in this geometry.</span>`;
+        detail.innerHTML = `<span class="text-fg-faint text-xs">bond ${esc(i)} — ${esc(j)}: atom(s) not present in this geometry.</span>`;
       }
       return;
     }
@@ -573,15 +573,15 @@
     const rows = bondsByStrength(a.neighbors);
     if (!rows.length) { return ''; }
     const list = rows.map((nb) => `<div class="flex gap-2 text-[11px]">`
-      + `<span class="font-mono text-slate-600 w-16 shrink-0">${esc(nb.label)}</span>`
-      + `<span class="text-slate-500 w-8 shrink-0">${esc(nb.element)}</span>`
-      + `<span class="text-slate-700 w-16 shrink-0">${nb.d.toFixed(3)} Å</span>`
-      + `<span class="text-slate-500">s ${nb.s.toFixed(2)}</span>`
+      + `<span class="font-mono text-fg-muted w-16 shrink-0">${esc(nb.label)}</span>`
+      + `<span class="text-fg-subtle w-8 shrink-0">${esc(nb.element)}</span>`
+      + `<span class="text-fg-secondary w-16 shrink-0">${nb.d.toFixed(3)} Å</span>`
+      + `<span class="text-fg-subtle">s ${nb.s.toFixed(2)}</span>`
       + `</div>`).join('');
     return `<div class="mt-2">
-        <div class="text-[10px] uppercase tracking-wide text-slate-400 mb-0.5">bonds by strength</div>
+        <div class="text-[10px] uppercase tracking-wide text-fg-faint mb-0.5">bonds by strength</div>
         ${list}
-        <p class="mt-1 text-[10px] text-slate-400">s = exp((R0&minus;d)/0.37) &mdash; Pauling bond order; 1 &asymp; ideal single bond, &lt;0.5 = weak/stretched</p>
+        <p class="mt-1 text-[10px] text-fg-faint">s = exp((R0&minus;d)/0.37) &mdash; Pauling bond order; 1 &asymp; ideal single bond, &lt;0.5 = weak/stretched</p>
       </div>`;
   }
 
@@ -595,10 +595,10 @@
     const relationships = neighborSummary(a.neighbors);
     detail.innerHTML = `
       <div class="flex items-center gap-2 mb-1.5">
-        <span class="inline-block w-3.5 h-3.5 rounded-full border border-slate-300" style="background:${esc(a.color)};"></span>
-        <span class="font-semibold text-slate-800">${esc(a.element)}</span>
-        <code class="text-xs text-slate-500">${esc(a.label)}</code>
-        <span class="ml-auto text-[10px] uppercase tracking-wide text-slate-400">atom</span>
+        <span class="inline-block w-3.5 h-3.5 rounded-full border border-line-strong" style="background:${esc(a.color)};"></span>
+        <span class="font-semibold text-fg">${esc(a.element)}</span>
+        <code class="text-xs text-fg-subtle">${esc(a.label)}</code>
+        <span class="ml-auto text-[10px] uppercase tracking-wide text-fg-faint">atom</span>
       </div>
       <div class="grid grid-cols-1 gap-0.5 text-xs">
         ${row('fractional', a.frac.map((x) => x.toFixed(4)).join(', '))}
@@ -615,8 +615,8 @@
     selDetail = { kind: 'bond', i: b.i, j: b.j };
     detail.innerHTML = `
       <div class="flex items-center gap-2 mb-1.5">
-        <span class="font-semibold text-slate-800">${esc(b.i)} — ${esc(b.j)}</span>
-        <span class="ml-auto text-[10px] uppercase tracking-wide text-slate-400">bond</span>
+        <span class="font-semibold text-fg">${esc(b.i)} — ${esc(b.j)}</span>
+        <span class="ml-auto text-[10px] uppercase tracking-wide text-fg-faint">bond</span>
       </div>
       <div class="grid grid-cols-1 gap-0.5 text-xs">
         ${row('length Å', num(b.length))}
@@ -781,8 +781,8 @@
       viewer.render();
       document.querySelectorAll('.sv-mode').forEach((btn) => {
         const on = btn.getAttribute('data-mode') === mode;
-        btn.classList.toggle('bg-slate-700', on);
-        btn.classList.toggle('text-white', on);
+        btn.classList.toggle('bg-solid', on);
+        btn.classList.toggle('text-on-solid', on);
       });
       // A mode switch removeAllModels()+re-adds but never re-fits (zoomTo runs
       // once), so the camera zoom is already preserved — don't re-assert it or
@@ -868,41 +868,41 @@
 
   function render(d) {
     if (!d || !d.status) {
-      box.innerHTML = '<span class="text-xs text-slate-400">No proposal yet — type an instruction above.</span>';
+      box.innerHTML = '<span class="text-xs text-fg-faint">No proposal yet — type an instruction above.</span>';
       return;
     }
     if (d.status === 'queued' || d.status === 'running') {
-      box.innerHTML = '<span class="text-xs text-slate-500">⟳ proposing… (' + esc(d.status) + ')</span>';
+      box.innerHTML = '<span class="text-xs text-fg-subtle">⟳ proposing… (' + esc(d.status) + ')</span>';
       return;
     }
     const p = d.proposal;
     if (!p) {
-      box.innerHTML = '<span class="text-xs text-red-600">proposal ' + esc(d.status) + ' — see the job log</span>';
+      box.innerHTML = '<span class="text-xs text-danger">proposal ' + esc(d.status) + ' — see the job log</span>';
       return;
     }
     const ops = (p.ops || []).map((op) =>
-      '<div class="sv-hl text-xs font-mono rounded px-2 py-1 border border-slate-200 bg-white cursor-default hover:bg-amber-50" '
+      '<div class="sv-hl text-xs font-mono rounded px-2 py-1 border border-line bg-surface cursor-default hover:bg-warning-subtle" '
       + 'data-atoms="' + esc(opAtoms(op).join(',')) + '" data-desc="' + esc(JSON.stringify(op)) + '">'
       + esc(describe(op)) + '</div>').join('');
     const badge = p.valid
-      ? '<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800">valid</span>'
-      : '<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-red-100 text-red-800">invalid: ' + esc(p.error || '') + '</span>';
+      ? '<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-success-muted text-success-deep">valid</span>'
+      : '<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-danger-muted text-danger-deep">invalid: ' + esc(p.error || '') + '</span>';
     const apply = p.valid
       ? '<form method="post" action="/structure/' + encodeURIComponent(slug) + '/apply" class="flex gap-2 mt-2">'
         + '<input type="hidden" name="job_id" value="' + esc(d.job_id) + '">'
         + '<input name="to" required autocomplete="off" value="' + esc(slug) + '-v2" '
-        + 'class="flex-1 rounded border border-slate-300 px-2 py-1 text-xs" placeholder="new design slug">'
-        + '<button class="rounded bg-emerald-600 text-white text-xs px-3 py-1 hover:bg-emerald-700 whitespace-nowrap">Apply → new design</button>'
+        + 'class="flex-1 rounded border border-line-strong px-2 py-1 text-xs" placeholder="new design slug">'
+        + '<button class="rounded bg-success-solid text-on-solid text-xs px-3 py-1 hover:bg-success-solid-strong whitespace-nowrap">Apply → new design</button>'
         + '</form>'
       : '';
     box.innerHTML =
-      '<div class="rounded-lg border border-slate-200 bg-slate-50 p-3">'
-      + '<div class="flex items-center gap-2 mb-1"><span class="text-xs font-semibold text-slate-700">Proposed ' + (p.ops || []).length + ' op(s)</span>' + badge
-      + '<span class="ml-auto text-[10px] text-slate-400">job r' + esc(d.job_id) + ' · ' + esc(d.created) + '</span></div>'
-      + (p.rationale ? '<p class="text-xs text-slate-500 mb-2">' + esc(p.rationale) + '</p>' : '')
+      '<div class="rounded-lg border border-line bg-surface-subtle p-3">'
+      + '<div class="flex items-center gap-2 mb-1"><span class="text-xs font-semibold text-fg-secondary">Proposed ' + (p.ops || []).length + ' op(s)</span>' + badge
+      + '<span class="ml-auto text-[10px] text-fg-faint">job r' + esc(d.job_id) + ' · ' + esc(d.created) + '</span></div>'
+      + (p.rationale ? '<p class="text-xs text-fg-subtle mb-2">' + esc(p.rationale) + '</p>' : '')
       + '<div class="space-y-1">' + ops + '</div>'
       + apply
-      + '<p class="text-[10px] text-slate-400 mt-1">Hover an op to glow its atoms in the cell.</p>'
+      + '<p class="text-[10px] text-fg-faint mt-1">Hover an op to glow its atoms in the cell.</p>'
       + '</div>';
   }
 
@@ -934,17 +934,17 @@
 
   function rowHtml(j) {
     const pill = j.status === 'failed'
-      ? '<span class="px-1.5 py-0.5 rounded-full bg-red-100 text-red-800 border border-red-200">failed</span>'
-      : '<span class="px-1.5 py-0.5 rounded-full bg-sky-100 text-sky-800 border border-sky-200">⟳ ' + esc(j.status) + '</span>';
+      ? '<span class="px-1.5 py-0.5 rounded-full bg-danger-muted text-danger-deep border border-danger">failed</span>'
+      : '<span class="px-1.5 py-0.5 rounded-full bg-info-muted text-info-deep border border-info">⟳ ' + esc(j.status) + '</span>';
     // Mirrors the server-rendered pending row above — job link + the rung's
     // own gloss as its tooltip, so a polled row explains itself too.
-    return '<div class="rounded-lg border border-sky-200 bg-sky-50/50 p-2 flex items-center gap-2 text-xs">'
-      + '<a class="font-mono text-slate-400 hover:text-emerald-700 hover:underline" href="/refs/job/'
+    return '<div class="rounded-lg border border-info bg-info-subtle/50 p-2 flex items-center gap-2 text-xs">'
+      + '<a class="font-mono text-fg-faint hover:text-success-strong hover:underline" href="/refs/job/'
       + encodeURIComponent(j.job_id) + '">job ' + esc(j.job_id) + '</a>'
-      + '<span class="font-semibold px-1.5 py-0.5 rounded bg-slate-100 text-slate-700" title="'
+      + '<span class="font-semibold px-1.5 py-0.5 rounded bg-surface-muted text-fg-secondary" title="'
       + esc(j.rung_help || '') + '">' + esc(j.fidelity) + ' relax</span>'
       + pill
-      + '<span class="ml-auto text-[10px] text-slate-400">' + esc(j.created) + '</span></div>';
+      + '<span class="ml-auto text-[10px] text-fg-faint">' + esc(j.created) + '</span></div>';
   }
 
   function poll() {

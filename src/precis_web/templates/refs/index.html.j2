@@ -5,58 +5,58 @@
 
 <form method="get" action="/refs/{{ kind }}" class="mb-4 flex flex-wrap items-end gap-2">
   <div class="flex flex-col">
-    <label class="text-xs text-slate-400 mb-0.5">Search</label>
+    <label class="text-xs text-fg-faint mb-0.5">Search</label>
     <input name="q" value="{{ q }}" placeholder="title contains…"
-           class="w-64 rounded-md border border-slate-300 px-3 py-2 text-sm" />
+           class="w-64 rounded-md border border-line-strong px-3 py-2 text-sm" />
   </div>
   <div class="flex flex-col">
-    <label class="text-xs text-slate-400 mb-0.5">Tag</label>
+    <label class="text-xs text-fg-faint mb-0.5">Tag</label>
     <input name="tag" value="{{ tag }}" placeholder="e.g. project:precis"
-           class="w-48 rounded-md border border-slate-300 px-3 py-2 text-sm" />
+           class="w-48 rounded-md border border-line-strong px-3 py-2 text-sm" />
   </div>
   <div class="flex flex-col">
-    <label class="text-xs text-slate-400 mb-0.5">Date</label>
-    <select name="since" class="rounded-md border border-slate-300 px-2 py-2 text-sm">
+    <label class="text-xs text-fg-faint mb-0.5">Date</label>
+    <select name="since" class="rounded-md border border-line-strong px-2 py-2 text-sm">
       {% for key, label in date_presets %}
       <option value="{{ key }}" {% if key == since %}selected{% endif %}>{{ label }}</option>
       {% endfor %}
     </select>
   </div>
   <div class="flex flex-col">
-    <label class="text-xs text-slate-400 mb-0.5">Sort</label>
-    <select name="sort" class="rounded-md border border-slate-300 px-2 py-2 text-sm">
+    <label class="text-xs text-fg-faint mb-0.5">Sort</label>
+    <select name="sort" class="rounded-md border border-line-strong px-2 py-2 text-sm">
       {% for key, label in sort_choices %}
       <option value="{{ key }}" {% if key == sort %}selected{% endif %}>{{ label }}</option>
       {% endfor %}
     </select>
   </div>
-  <button class="rounded-md bg-emerald-600 text-white text-sm px-4 py-2">Apply</button>
+  <button class="rounded-md bg-success-solid text-on-solid text-sm px-4 py-2">Apply</button>
   {% if q or tag or since != 'any' or sort != 'updated_desc' %}
-  <a href="/refs/{{ kind }}" class="text-sm text-slate-500 underline pb-2">clear</a>
+  <a href="/refs/{{ kind }}" class="text-sm text-fg-subtle underline pb-2">clear</a>
   {% endif %}
 </form>
 
 {% if q %}
-<p class="text-xs text-slate-400 mb-2">
+<p class="text-xs text-fg-faint mb-2">
   Ranked by title relevance — date and sort don't apply while searching.
 </p>
 {% endif %}
 
 {% if not rows %}
-  <p class="text-sm text-slate-500">
+  <p class="text-sm text-fg-subtle">
     No {{ kind_label|lower }}{% if q %} match “{{ q }}”{% elif tag %} tagged “{{ tag }}”{% endif %}.
   </p>
 {% else %}
-<ul class="divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white">
+<ul class="divide-y divide-line-subtle rounded-lg border border-line bg-surface">
   {% for r in rows %}
   <li class="px-4 py-3 flex items-start gap-3">
-    <span class="text-xs text-slate-400 w-14 shrink-0 pt-0.5">#{{ r.id }}</span>
+    <span class="text-xs text-fg-faint w-14 shrink-0 pt-0.5">#{{ r.id }}</span>
     <a href="/refs/{{ kind }}/{{ r.id }}"
-       class="text-sm font-medium text-sky-700 hover:underline flex-1 break-words">
+       class="text-sm font-medium text-info-strong hover:underline flex-1 break-words">
       {{ r.display_title }}
     </a>
-    {% if r.slug %}<span class="text-xs font-mono text-slate-400 truncate max-w-xs pt-0.5">{{ r.slug }}</span>{% endif %}
-    <span class="text-xs text-slate-400 w-32 shrink-0 text-right pt-0.5">{{ r.updated }}</span>
+    {% if r.slug %}<span class="text-xs font-mono text-fg-faint truncate max-w-xs pt-0.5">{{ r.slug }}</span>{% endif %}
+    <span class="text-xs text-fg-faint w-32 shrink-0 text-right pt-0.5">{{ r.updated }}</span>
   </li>
   {% endfor %}
 </ul>
@@ -65,12 +65,12 @@
 <div class="mt-4 flex items-center gap-3 text-sm">
   {% if page > 1 %}
   <a href="/refs/{{ kind }}?q={{ q }}&tag={{ tag }}&since={{ since }}&sort={{ sort }}&page={{ page - 1 }}"
-     class="rounded-md border border-slate-300 px-3 py-1 hover:bg-slate-100">&larr; Prev</a>
+     class="rounded-md border border-line-strong px-3 py-1 hover:bg-surface-muted">&larr; Prev</a>
   {% endif %}
-  <span class="text-slate-400">Page {{ page }}</span>
+  <span class="text-fg-faint">Page {{ page }}</span>
   {% if has_next %}
   <a href="/refs/{{ kind }}?q={{ q }}&tag={{ tag }}&since={{ since }}&sort={{ sort }}&page={{ page + 1 }}"
-     class="rounded-md border border-slate-300 px-3 py-1 hover:bg-slate-100">Next &rarr;</a>
+     class="rounded-md border border-line-strong px-3 py-1 hover:bg-surface-muted">Next &rarr;</a>
   {% endif %}
 </div>
 {% endif %}

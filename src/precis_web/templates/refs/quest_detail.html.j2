@@ -15,63 +15,63 @@
     {% endif %}
   </h1>
   {% if criteria %}
-  <p class="mt-1 text-sm text-slate-600 whitespace-pre-wrap">{{ criteria | linkify_refs }}</p>
+  <p class="mt-1 text-sm text-fg-muted whitespace-pre-wrap">{{ criteria | linkify_refs }}</p>
   {% endif %}
-  <p class="mt-2 text-sm text-slate-500 flex flex-wrap items-center gap-x-2 gap-y-1">
+  <p class="mt-2 text-sm text-fg-subtle flex flex-wrap items-center gap-x-2 gap-y-1">
     <span class="font-mono">qu{{ ref.id }}</span>
     <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
-      {% if status == 'active' %}bg-emerald-100 text-emerald-800
-      {% elif status == 'dormant' %}bg-amber-100 text-amber-800
-      {% else %}bg-slate-200 text-slate-700{% endif %}">
+      {% if status == 'active' %}bg-success-muted text-success-deep
+      {% elif status == 'dormant' %}bg-warning-muted text-warning-deep
+      {% else %}bg-surface-emphasis text-fg-secondary{% endif %}">
       STATUS:{{ status }}
     </span>
     {% if ref.prio is not none %}
-    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-sky-100 text-sky-800">
+    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-info-muted text-info-deep">
       PRIO:{{ ref.prio }}
     </span>
     {% endif %}
     <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
-      {% if momentum.label == 'active' %}bg-emerald-100 text-emerald-800
-      {% elif momentum.label == 'warming' %}bg-amber-100 text-amber-800
-      {% elif momentum.label == 'stalled' %}bg-rose-100 text-rose-800
-      {% else %}bg-slate-200 text-slate-700{% endif %}"
+      {% if momentum.label == 'active' %}bg-success-muted text-success-deep
+      {% elif momentum.label == 'warming' %}bg-warning-muted text-warning-deep
+      {% elif momentum.label == 'stalled' %}bg-danger-muted text-danger-deep
+      {% else %}bg-surface-emphasis text-fg-secondary{% endif %}"
       title="{{ momentum.recent_entries }} recent log entr{{ 'y' if momentum.recent_entries == 1 else 'ies' }} · {{ momentum.recent_server_events }} server event{{ '' if momentum.recent_server_events == 1 else 's' }}">
       momentum: {{ momentum.label }}
     </span>
-    <span class="text-slate-400">·</span>
+    <span class="text-fg-faint">·</span>
     <span title="lifetime token spend on this quest — sum of logbook entry costs">tote {{ '%g' | format(tote) }}</span>
-    {% if ref.updated %}<span class="text-slate-400">·</span><span>updated {{ ref.updated }}</span>{% endif %}
+    {% if ref.updated %}<span class="text-fg-faint">·</span><span>updated {{ ref.updated }}</span>{% endif %}
   </p>
 </div>
 
 {# ── Hub nav row ──────────────────────────────────────────────────── #}
 <div class="mb-4 flex flex-wrap items-center gap-2">
   {% if dossier_url %}
-  <a href="{{ dossier_url }}" class="rounded-md border border-slate-300 bg-white text-sm px-3 py-1.5 text-slate-700 hover:bg-slate-50">📓 Dossier</a>
+  <a href="{{ dossier_url }}" class="rounded-md border border-line-strong bg-surface text-sm px-3 py-1.5 text-fg-secondary hover:bg-surface-subtle">📓 Dossier</a>
   {% else %}
-  <span class="rounded-md border border-slate-200 bg-slate-50 text-sm px-3 py-1.5 text-slate-400" title="no dossier yet — a quest tick creates + fills it">📓 Dossier</span>
+  <span class="rounded-md border border-line bg-surface-subtle text-sm px-3 py-1.5 text-fg-faint" title="no dossier yet — a quest tick creates + fills it">📓 Dossier</span>
   {% endif %}
   {% if paper_url %}
-  <a href="{{ paper_url }}" class="rounded-md border border-slate-300 bg-white text-sm px-3 py-1.5 text-slate-700 hover:bg-slate-50">📄 Paper</a>
-  <a href="{{ paper_docx_url }}" class="rounded-md border border-slate-200 bg-white text-xs px-2 py-1.5 text-slate-500 hover:bg-slate-50">.docx</a>
-  <a href="{{ paper_pdf_url }}" class="rounded-md border border-slate-200 bg-white text-xs px-2 py-1.5 text-slate-500 hover:bg-slate-50">.pdf</a>
+  <a href="{{ paper_url }}" class="rounded-md border border-line-strong bg-surface text-sm px-3 py-1.5 text-fg-secondary hover:bg-surface-subtle">📄 Paper</a>
+  <a href="{{ paper_docx_url }}" class="rounded-md border border-line bg-surface text-xs px-2 py-1.5 text-fg-subtle hover:bg-surface-subtle">.docx</a>
+  <a href="{{ paper_pdf_url }}" class="rounded-md border border-line bg-surface text-xs px-2 py-1.5 text-fg-subtle hover:bg-surface-subtle">.pdf</a>
   {% else %}
-  <span class="rounded-md border border-slate-200 bg-slate-50 text-sm px-3 py-1.5 text-slate-400" title="no reader-facing paper yet">📄 Paper</span>
+  <span class="rounded-md border border-line bg-surface-subtle text-sm px-3 py-1.5 text-fg-faint" title="no reader-facing paper yet">📄 Paper</span>
   {% endif %}
-  <a href="#logbook" class="rounded-md border border-slate-300 bg-white text-sm px-3 py-1.5 text-slate-700 hover:bg-slate-50">📜 Full log ({{ log_entry_count }})</a>
-  <a href="/refs/quest/{{ ref.id }}/logbook" class="rounded-md border border-slate-300 bg-white text-sm px-3 py-1.5 text-slate-700 hover:bg-slate-50">📖 full logbook &rarr;</a>
+  <a href="#logbook" class="rounded-md border border-line-strong bg-surface text-sm px-3 py-1.5 text-fg-secondary hover:bg-surface-subtle">📜 Full log ({{ log_entry_count }})</a>
+  <a href="/refs/quest/{{ ref.id }}/logbook" class="rounded-md border border-line-strong bg-surface text-sm px-3 py-1.5 text-fg-secondary hover:bg-surface-subtle">📖 full logbook &rarr;</a>
   {% if board_panel %}
-  <a href="#board" class="rounded-md border border-slate-300 bg-white text-sm px-3 py-1.5 text-slate-700 hover:bg-slate-50">🔌 Boards ({{ board_panel.boards | length }})</a>
+  <a href="#board" class="rounded-md border border-line-strong bg-surface text-sm px-3 py-1.5 text-fg-secondary hover:bg-surface-subtle">🔌 Boards ({{ board_panel.boards | length }})</a>
   {% endif %}
   {% if show_frontier %}
-  <a href="#frontier" class="rounded-md border border-slate-300 bg-white text-sm px-3 py-1.5 text-slate-700 hover:bg-slate-50">🧭 Frontier</a>
+  <a href="#frontier" class="rounded-md border border-line-strong bg-surface text-sm px-3 py-1.5 text-fg-secondary hover:bg-surface-subtle">🧭 Frontier</a>
   {% endif %}
-  <a href="#gaps" class="rounded-md border border-slate-300 bg-white text-sm px-3 py-1.5 text-slate-700 hover:bg-slate-50">🕳️ Gaps</a>
-  <a href="#servers" class="rounded-md border border-slate-300 bg-white text-sm px-3 py-1.5 text-slate-700 hover:bg-slate-50">🔗 Retinue ({{ servers_total }})</a>
+  <a href="#gaps" class="rounded-md border border-line-strong bg-surface text-sm px-3 py-1.5 text-fg-secondary hover:bg-surface-subtle">🕳️ Gaps</a>
+  <a href="#servers" class="rounded-md border border-line-strong bg-surface text-sm px-3 py-1.5 text-fg-secondary hover:bg-surface-subtle">🔗 Retinue ({{ servers_total }})</a>
   {% if last_agentlog_id %}
-  <a href="/agentlogs/{{ last_agentlog_id }}" class="rounded-md border border-slate-300 bg-white text-sm px-3 py-1.5 text-slate-700 hover:bg-slate-50">🔍 spy on last session &rarr;</a>
+  <a href="/agentlogs/{{ last_agentlog_id }}" class="rounded-md border border-line-strong bg-surface text-sm px-3 py-1.5 text-fg-secondary hover:bg-surface-subtle">🔍 spy on last session &rarr;</a>
   {% else %}
-  <span class="rounded-md border border-slate-200 bg-slate-50 text-sm px-3 py-1.5 text-slate-400">🔍 no session logged yet</span>
+  <span class="rounded-md border border-line bg-surface-subtle text-sm px-3 py-1.5 text-fg-faint">🔍 no session logged yet</span>
   {% endif %}
 </div>
 
@@ -79,26 +79,26 @@
 
 {# ── Frontier — hidden on a board quest unless it declares objectives ─ #}
 {% if show_frontier %}
-<section id="frontier" class="mb-6 rounded-lg border border-slate-200 bg-white p-4">
-  <h2 class="text-sm font-semibold text-slate-700 mb-2">Frontier — Pareto candidates</h2>
+<section id="frontier" class="mb-6 rounded-lg border border-line bg-surface p-4">
+  <h2 class="text-sm font-semibold text-fg-secondary mb-2">Frontier — Pareto candidates</h2>
   {% if frontier_axis_keys %}
-  <form method="get" class="mb-2 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+  <form method="get" class="mb-2 flex flex-wrap items-center gap-2 text-xs text-fg-subtle">
     <label class="flex items-center gap-1">x:
-      <select name="fx" class="rounded border border-slate-300 px-1 py-0.5 text-xs">
+      <select name="fx" class="rounded border border-line-strong px-1 py-0.5 text-xs">
         {% for k in frontier_axis_keys %}
         <option value="{{ k }}" {% if k == frontier_x %}selected{% endif %}>{{ k }} ({{ frontier_axis_counts.get(k, 0) }})</option>
         {% endfor %}
       </select>
     </label>
     <label class="flex items-center gap-1">y:
-      <select name="fy" class="rounded border border-slate-300 px-1 py-0.5 text-xs">
+      <select name="fy" class="rounded border border-line-strong px-1 py-0.5 text-xs">
         {% for k in frontier_axis_keys %}
         <option value="{{ k }}" {% if k == frontier_y %}selected{% endif %}>{{ k }} ({{ frontier_axis_counts.get(k, 0) }})</option>
         {% endfor %}
       </select>
     </label>
     <label class="flex items-center gap-1">color:
-      <select name="fz" class="rounded border border-slate-300 px-1 py-0.5 text-xs">
+      <select name="fz" class="rounded border border-line-strong px-1 py-0.5 text-xs">
         <option value="" {% if not frontier_z %}selected{% endif %}>(none)</option>
         {% for k in frontier_axis_keys %}
         <option value="{{ k }}" {% if k == frontier_z %}selected{% endif %}>{{ k }} ({{ frontier_axis_counts.get(k, 0) }})</option>
@@ -106,12 +106,12 @@
       </select>
     </label>
     <label class="flex items-center gap-1">contour:
-      <select name="fc" class="rounded border border-slate-300 px-1 py-0.5 text-xs">
+      <select name="fc" class="rounded border border-line-strong px-1 py-0.5 text-xs">
         <option value="1" {% if frontier_c %}selected{% endif %}>on</option>
         <option value="0" {% if not frontier_c %}selected{% endif %}>off</option>
       </select>
     </label>
-    <button class="rounded-md border border-slate-300 bg-white text-xs px-2 py-1 text-slate-700 hover:bg-slate-50">plot</button>
+    <button class="rounded-md border border-line-strong bg-surface text-xs px-2 py-1 text-fg-secondary hover:bg-surface-subtle">plot</button>
   </form>
   {% endif %}
   {% if frontier_scatter %}
@@ -142,26 +142,26 @@
        stroke-opacity would compound to near-invisible #}
     <g pointer-events="none">
       {% for lp in fs.contour_lines %}
-      <path d="{{ lp }}" fill="none" stroke="#334155" stroke-opacity="0.3" stroke-width="1"/>
+      <path d="{{ lp }}" fill="none" class="stroke-fg-secondary" stroke-opacity="0.3" stroke-width="1"/>
       {% endfor %}
     </g>
     {% endif %}
-    <text x="8" y="14" class="fill-slate-500" style="font-size: 11px;">{{ fs.y_label }}{% if fs.y_better %} <tspan class="fill-slate-400">{{ fs.y_better }}</tspan>{% endif %}</text>
+    <text x="8" y="14" class="fill-fg-subtle" style="font-size: 11px;">{{ fs.y_label }}{% if fs.y_better %} <tspan class="fill-fg-faint">{{ fs.y_better }}</tspan>{% endif %}</text>
     <text x="{{ fs.width - 8 }}" y="{{ fs.height - 6 }}"
-          text-anchor="end" class="fill-slate-500" style="font-size: 11px;">{{ fs.x_label }}{% if fs.x_better %} <tspan class="fill-slate-400">{{ fs.x_better }}</tspan>{% endif %}</text>
+          text-anchor="end" class="fill-fg-subtle" style="font-size: 11px;">{{ fs.x_label }}{% if fs.x_better %} <tspan class="fill-fg-faint">{{ fs.x_better }}</tspan>{% endif %}</text>
     {# axes: faint gridline + tick mark + value per pre-projected tick #}
     {% for t in fs.x_ticks %}
-    <line x1="{{ t.pos }}" y1="{{ fs.pad }}" x2="{{ t.pos }}" y2="{{ fs.height - fs.pad }}" stroke="#e2e8f0" stroke-width="1"/>
-    <line x1="{{ t.pos }}" y1="{{ fs.height - fs.pad }}" x2="{{ t.pos }}" y2="{{ fs.height - fs.pad + 4 }}" stroke="#94a3b8" stroke-width="1"/>
-    <text x="{{ t.pos }}" y="{{ fs.height - fs.pad + 14 }}" text-anchor="middle" class="fill-slate-500" style="font-size: 9px;">{{ t.label }}</text>
+    <line x1="{{ t.pos }}" y1="{{ fs.pad }}" x2="{{ t.pos }}" y2="{{ fs.height - fs.pad }}" class="stroke-line" stroke-width="1"/>
+    <line x1="{{ t.pos }}" y1="{{ fs.height - fs.pad }}" x2="{{ t.pos }}" y2="{{ fs.height - fs.pad + 4 }}" class="stroke-fg-faint" stroke-width="1"/>
+    <text x="{{ t.pos }}" y="{{ fs.height - fs.pad + 14 }}" text-anchor="middle" class="fill-fg-subtle" style="font-size: 9px;">{{ t.label }}</text>
     {% endfor %}
     {% for t in fs.y_ticks %}
-    <line x1="{{ fs.pad }}" y1="{{ t.pos }}" x2="{{ fs.width - fs.pad }}" y2="{{ t.pos }}" stroke="#e2e8f0" stroke-width="1"/>
-    <line x1="{{ fs.pad - 4 }}" y1="{{ t.pos }}" x2="{{ fs.pad }}" y2="{{ t.pos }}" stroke="#94a3b8" stroke-width="1"/>
-    <text x="{{ fs.pad - 6 }}" y="{{ t.pos + 3 }}" text-anchor="end" class="fill-slate-500" style="font-size: 9px;">{{ t.label }}</text>
+    <line x1="{{ fs.pad }}" y1="{{ t.pos }}" x2="{{ fs.width - fs.pad }}" y2="{{ t.pos }}" class="stroke-line" stroke-width="1"/>
+    <line x1="{{ fs.pad - 4 }}" y1="{{ t.pos }}" x2="{{ fs.pad }}" y2="{{ t.pos }}" class="stroke-fg-faint" stroke-width="1"/>
+    <text x="{{ fs.pad - 6 }}" y="{{ t.pos + 3 }}" text-anchor="end" class="fill-fg-subtle" style="font-size: 9px;">{{ t.label }}</text>
     {% endfor %}
-    <line x1="{{ fs.pad }}" y1="{{ fs.height - fs.pad }}" x2="{{ fs.width - fs.pad }}" y2="{{ fs.height - fs.pad }}" stroke="#94a3b8" stroke-width="1"/>
-    <line x1="{{ fs.pad }}" y1="{{ fs.pad }}" x2="{{ fs.pad }}" y2="{{ fs.height - fs.pad }}" stroke="#94a3b8" stroke-width="1"/>
+    <line x1="{{ fs.pad }}" y1="{{ fs.height - fs.pad }}" x2="{{ fs.width - fs.pad }}" y2="{{ fs.height - fs.pad }}" class="stroke-fg-faint" stroke-width="1"/>
+    <line x1="{{ fs.pad }}" y1="{{ fs.pad }}" x2="{{ fs.pad }}" y2="{{ fs.height - fs.pad }}" class="stroke-fg-faint" stroke-width="1"/>
     {# hover crosshair — full-width/height guide lines through the hovered
        point, recoloured to the point's own band colour by the JS below #}
     <line id="fs-cross-h" x1="{{ fs.pad }}" x2="{{ fs.width - fs.pad }}" y1="0" y2="0" stroke-width="1" style="display:none" pointer-events="none"/>
@@ -209,17 +209,17 @@
            stroke="#c2410c" stroke-width="1.5" stroke-dasharray="3,2"/>
       {% else %}
       <circle cx="{{ p.cx }}" cy="{{ p.cy }}" r="5"
-              {% if p.color is defined %}fill="{{ p.color }}"{% else %}class="fill-white"{% endif %}
+              {% if p.color is defined %}fill="{{ p.color }}"{% else %}class="fill-surface"{% endif %}
               stroke="#c2410c" stroke-width="1.5" stroke-dasharray="3,2"/>
       {% endif %}
       {% elif p.on_frontier %}
       <use href="#fs-star" x="{{ p.cx }}" y="{{ p.cy }}"
-           {% if p.color is defined %}fill="{{ p.color }}"{% else %}class="{% if p.converged %}fill-sky-600{% else %}fill-white{% endif %}"{% endif %}
+           {% if p.color is defined %}fill="{{ p.color }}"{% else %}class="{% if p.converged %}fill-info{% else %}fill-surface{% endif %}"{% endif %}
            stroke="{% if p.converged %}#0369a1{% else %}#94a3b8{% endif %}"
            stroke-width="1.5" stroke-dasharray="{% if not p.converged %}2,2{% endif %}"/>
       {% else %}
       <circle cx="{{ p.cx }}" cy="{{ p.cy }}" r="5"
-              {% if p.color is defined %}fill="{{ p.color }}"{% else %}class="{% if p.converged %}fill-sky-600{% else %}fill-white{% endif %}"{% endif %}
+              {% if p.color is defined %}fill="{{ p.color }}"{% else %}class="{% if p.converged %}fill-info{% else %}fill-surface{% endif %}"{% endif %}
               stroke="{% if p.converged %}#0369a1{% else %}#94a3b8{% endif %}"
               stroke-width="1.5" stroke-dasharray="{% if not p.converged %}2,2{% endif %}"/>
       {% endif %}
@@ -227,17 +227,17 @@
     {% if p.open_url %}</a>{% endif %}
     {% endfor %}
   </svg>
-  <div id="fs-tip" class="pointer-events-none absolute z-10 hidden rounded border border-slate-300 bg-white px-2 py-1 text-[11px] leading-snug text-slate-700 shadow-md whitespace-nowrap"></div>
+  <div id="fs-tip" class="pointer-events-none absolute z-10 hidden rounded border border-line-strong bg-surface px-2 py-1 text-[11px] leading-snug text-fg-secondary shadow-md whitespace-nowrap"></div>
   </div>
   {% if fs.z_key %}
-  <div class="flex items-center gap-2 text-xs text-slate-400 mb-1 max-w-3xl">
+  <div class="flex items-center gap-2 text-xs text-fg-faint mb-1 max-w-3xl">
     <span>{{ "%g"|format(fs.z_min) }}</span>
     <div class="h-2 flex-1 rounded" style="background: linear-gradient(to right, {{ fs.z_stops|join(', ') }})"></div>
     <span>{{ "%g"|format(fs.z_max) }}</span>
     <span>{{ fs.z_label }}</span>
   </div>
   {% endif %}
-  <p class="text-xs text-slate-400 mb-3">
+  <p class="text-xs text-fg-faint mb-3">
     star = on the frontier, circle = off it · filled blue = confirmed ·
     hollow/dashed orange = provisional (measured, unconfirmed) ·
     hollow/dashed grey = awaiting sim · hover a point for details
@@ -245,15 +245,15 @@
     {%- if fs.contour_bands %} · background = interpolated {{ fs.z_label }} (trusted points only){% endif %}
   </p>
   {% if frontier_axis_docs %}
-  <details class="text-xs text-slate-600 mb-3 max-w-3xl" open>
-    <summary class="cursor-pointer font-semibold text-slate-700">What the axes mean</summary>
+  <details class="text-xs text-fg-muted mb-3 max-w-3xl" open>
+    <summary class="cursor-pointer font-semibold text-fg-secondary">What the axes mean</summary>
     <dl class="mt-1 space-y-1">
       {% for d in frontier_axis_docs %}
-      <div><dt class="inline font-semibold">{{ d.axis }} · {{ d.label }} <span class="font-mono text-slate-400">{{ d.key }}</span></dt>
+      <div><dt class="inline font-semibold">{{ d.axis }} · {{ d.label }} <span class="font-mono text-fg-faint">{{ d.key }}</span></dt>
       <dd class="inline">— {{ d.text if d.text else "no description yet for this measure." }}</dd></div>
       {% endfor %}
     </dl>
-    <p class="mt-1 text-slate-500">{{ frontier_axis_note }}</p>
+    <p class="mt-1 text-fg-subtle">{{ frontier_axis_note }}</p>
   </details>
   {% endif %}
   <script>
@@ -292,36 +292,36 @@
   </script>
   {% endif %}
   {% if not frontier_scatter and frontier_has_candidates %}
-  <p class="text-xs text-slate-400 italic mb-2">not enough simulated candidates to plot yet.</p>
+  <p class="text-xs text-fg-faint italic mb-2">not enough simulated candidates to plot yet.</p>
   {% endif %}
   {% if frontier_error %}
-  <p class="text-sm text-rose-700 whitespace-pre-wrap">{{ frontier_text | linkify_refs }}</p>
+  <p class="text-sm text-danger-strong whitespace-pre-wrap">{{ frontier_text | linkify_refs }}</p>
   {% elif frontier_text %}
-  <div class="text-xs text-slate-700 overflow-x-auto">{{ frontier_text | linkify_toon }}</div>
+  <div class="text-xs text-fg-secondary overflow-x-auto">{{ frontier_text | linkify_toon }}</div>
   {% else %}
-  <p class="text-sm text-slate-400 italic">no candidate structures serve this quest yet.</p>
+  <p class="text-sm text-fg-faint italic">no candidate structures serve this quest yet.</p>
   {% endif %}
 </section>
 {% endif %}
 
 {# ── Lineage — the `serves` DAG one hop each way ─────────────────── #}
 {% if lineage_parents or lineage_children %}
-<section class="mb-4 rounded-lg border border-slate-200 bg-white p-3">
-  <h2 class="text-sm font-semibold text-slate-700 mb-2">Lineage</h2>
+<section class="mb-4 rounded-lg border border-line bg-surface p-3">
+  <h2 class="text-sm font-semibold text-fg-secondary mb-2">Lineage</h2>
   {% macro lineage_chip(status) %}
   <span class="inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium
-    {% if status == 'active' %}bg-emerald-100 text-emerald-800
-    {% elif status == 'dormant' %}bg-amber-100 text-amber-800
-    {% else %}bg-slate-200 text-slate-700{% endif %}">
+    {% if status == 'active' %}bg-success-muted text-success-deep
+    {% elif status == 'dormant' %}bg-warning-muted text-warning-deep
+    {% else %}bg-surface-emphasis text-fg-secondary{% endif %}">
     STATUS:{{ status }}
   </span>
   {% endmacro %}
   {% if lineage_parents %}
-  <p class="text-sm text-slate-600 flex flex-wrap items-center gap-x-3 gap-y-1 mb-1">
-    <span class="text-xs font-semibold uppercase text-slate-400">Serves &rarr;</span>
+  <p class="text-sm text-fg-muted flex flex-wrap items-center gap-x-3 gap-y-1 mb-1">
+    <span class="text-xs font-semibold uppercase text-fg-faint">Serves &rarr;</span>
     {% for p in lineage_parents %}
-    <a href="/refs/quest/{{ p.id }}" class="inline-flex items-center gap-1.5 text-sky-700 hover:underline">
-      <span class="font-mono text-xs text-slate-400">qu{{ p.id }}</span>
+    <a href="/refs/quest/{{ p.id }}" class="inline-flex items-center gap-1.5 text-info-strong hover:underline">
+      <span class="font-mono text-xs text-fg-faint">qu{{ p.id }}</span>
       <span>{{ p.headline }}</span>
       {{ lineage_chip(p.status) }}
     </a>
@@ -329,11 +329,11 @@
   </p>
   {% endif %}
   {% if lineage_children %}
-  <p class="text-sm text-slate-600 flex flex-wrap items-center gap-x-3 gap-y-1">
-    <span class="text-xs font-semibold uppercase text-slate-400">Sub-quests</span>
+  <p class="text-sm text-fg-muted flex flex-wrap items-center gap-x-3 gap-y-1">
+    <span class="text-xs font-semibold uppercase text-fg-faint">Sub-quests</span>
     {% for c in lineage_children %}
-    <a href="/refs/quest/{{ c.id }}" class="inline-flex items-center gap-1.5 text-sky-700 hover:underline">
-      <span class="font-mono text-xs text-slate-400">qu{{ c.id }}</span>
+    <a href="/refs/quest/{{ c.id }}" class="inline-flex items-center gap-1.5 text-info-strong hover:underline">
+      <span class="font-mono text-xs text-fg-faint">qu{{ c.id }}</span>
       <span>{{ c.headline }}</span>
       {{ lineage_chip(c.status) }}
     </a>
@@ -344,92 +344,92 @@
 {% endif %}
 
 {# ── Happening now ───────────────────────────────────────────────── #}
-<section class="mb-6 rounded-lg border border-sky-200 bg-sky-50 p-3">
-  <h2 class="text-sm font-semibold text-sky-900 mb-1">Happening now</h2>
+<section class="mb-6 rounded-lg border border-info bg-info-subtle p-3">
+  <h2 class="text-sm font-semibold text-info-deep mb-1">Happening now</h2>
   {% if happening_now %}
   <ul class="space-y-1">
     {% for e in happening_now %}
-    <li class="text-sm text-sky-900">
-      <span class="text-xs font-mono text-sky-600">{{ e.stamp }}</span>
-      <span class="ml-1 inline-flex items-center px-1.5 py-0.5 rounded bg-sky-100 text-sky-800 text-xs">{{ e.entry_type }}</span>
-      <span class="ml-1 text-xs text-sky-500">{{ e.by }}</span>
+    <li class="text-sm text-info-deep">
+      <span class="text-xs font-mono text-info">{{ e.stamp }}</span>
+      <span class="ml-1 inline-flex items-center px-1.5 py-0.5 rounded bg-info-muted text-info-deep text-xs">{{ e.entry_type }}</span>
+      <span class="ml-1 text-xs text-info-soft">{{ e.by }}</span>
       <span class="ml-1">{{ e.text.splitlines()[0][:140] if e.text else '' }}</span>
     </li>
     {% endfor %}
   </ul>
   {% else %}
-  <p class="text-sm text-sky-700">no activity logged yet.</p>
+  <p class="text-sm text-info-strong">no activity logged yet.</p>
   {% endif %}
 </section>
 
 {# ── Two-column: Dossier | Logbook tail ──────────────────────────── #}
 <div class="mb-6 grid grid-cols-1 lg:grid-cols-2 gap-4">
-  <section class="rounded-lg border border-slate-200 bg-white p-4">
-    <h2 class="text-sm font-semibold text-slate-700 mb-2">Dossier — living synthesis</h2>
+  <section class="rounded-lg border border-line bg-surface p-4">
+    <h2 class="text-sm font-semibold text-fg-secondary mb-2">Dossier — living synthesis</h2>
     {% if dossier_url %}
-    <a href="{{ dossier_url }}" class="inline-block mb-2 text-sm text-sky-700 hover:underline">Open dossier (draft · fisheye) &rarr;</a>
+    <a href="{{ dossier_url }}" class="inline-block mb-2 text-sm text-info-strong hover:underline">Open dossier (draft · fisheye) &rarr;</a>
     {% endif %}
     {% if dossier_seeded %}
-    <h3 class="text-xs font-semibold uppercase text-slate-400 mb-1">Narrative</h3>
-    <div class="text-sm text-slate-700 mb-3">{{ narrative_text | linkify_toon }}</div>
-    <h3 class="text-xs font-semibold uppercase text-slate-400 mb-1">Ledger</h3>
-    <div class="text-sm text-slate-700">{{ ledger_text | linkify_toon }}</div>
+    <h3 class="text-xs font-semibold uppercase text-fg-faint mb-1">Narrative</h3>
+    <div class="text-sm text-fg-secondary mb-3">{{ narrative_text | linkify_toon }}</div>
+    <h3 class="text-xs font-semibold uppercase text-fg-faint mb-1">Ledger</h3>
+    <div class="text-sm text-fg-secondary">{{ ledger_text | linkify_toon }}</div>
     {% else %}
-    <p class="text-sm text-slate-400 italic">no dossier yet — a quest tick creates + fills it.</p>
+    <p class="text-sm text-fg-faint italic">no dossier yet — a quest tick creates + fills it.</p>
     {% endif %}
   </section>
 
-  <section id="logbook" class="rounded-lg border border-slate-200 bg-white p-4">
-    <h2 class="text-sm font-semibold text-slate-700 mb-2">
+  <section id="logbook" class="rounded-lg border border-line bg-surface p-4">
+    <h2 class="text-sm font-semibold text-fg-secondary mb-2">
       Logbook — last {{ log_tail | length }} of {{ log_entry_count }}
-      <a href="/refs/quest/{{ ref.id }}/logbook" class="ml-2 text-xs font-normal text-sky-700 hover:underline">full logbook &rarr;</a>
+      <a href="/refs/quest/{{ ref.id }}/logbook" class="ml-2 text-xs font-normal text-info-strong hover:underline">full logbook &rarr;</a>
     </h2>
     {% if log_tail %}
     <ol class="space-y-2">
       {% for e in log_tail %}
-      <li class="text-sm border-b border-slate-100 pb-2 last:border-0 last:pb-0">
+      <li class="text-sm border-b border-line-subtle pb-2 last:border-0 last:pb-0">
         <div class="flex items-baseline gap-2 flex-wrap">
-          <span class="inline-flex items-center px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 text-xs">{{ e.entry_type }}</span>
-          <span class="text-xs text-slate-400 font-mono">{{ e.stamp }}</span>
-          <span class="text-xs text-slate-400">{{ e.by }}</span>
-          {% if e.cost %}<span class="text-xs text-slate-400">cost={{ '%g' | format(e.cost) }}</span>{% endif %}
+          <span class="inline-flex items-center px-1.5 py-0.5 rounded bg-accent-muted text-accent-strong text-xs">{{ e.entry_type }}</span>
+          <span class="text-xs text-fg-faint font-mono">{{ e.stamp }}</span>
+          <span class="text-xs text-fg-faint">{{ e.by }}</span>
+          {% if e.cost %}<span class="text-xs text-fg-faint">cost={{ '%g' | format(e.cost) }}</span>{% endif %}
         </div>
-        <p class="text-sm text-slate-700 whitespace-pre-wrap mt-1">{{ e.text | linkify_refs }}</p>
+        <p class="text-sm text-fg-secondary whitespace-pre-wrap mt-1">{{ e.text | linkify_refs }}</p>
       </li>
       {% endfor %}
     </ol>
     {% else %}
-    <p class="text-sm text-slate-400 italic">no logbook entries yet.</p>
+    <p class="text-sm text-fg-faint italic">no logbook entries yet.</p>
     {% endif %}
   </section>
 </div>
 
 {# ── Gaps ─────────────────────────────────────────────────────────── #}
-<section id="gaps" class="mb-6 rounded-lg border border-slate-200 bg-white p-4">
+<section id="gaps" class="mb-6 rounded-lg border border-line bg-surface p-4">
   <div class="flex items-center justify-between mb-2">
-    <h2 class="text-sm font-semibold text-slate-700">Gaps — the exploration queue</h2>
-    <a href="{{ quest_stubs_url }}" class="text-xs text-sky-700 hover:underline">exploration queue — stubs awaiting ingest &rarr;</a>
+    <h2 class="text-sm font-semibold text-fg-secondary">Gaps — the exploration queue</h2>
+    <a href="{{ quest_stubs_url }}" class="text-xs text-info-strong hover:underline">exploration queue — stubs awaiting ingest &rarr;</a>
   </div>
   {% if gaps_error %}
-  <p class="text-sm text-rose-700 whitespace-pre-wrap">{{ gaps_text | linkify_refs }}</p>
+  <p class="text-sm text-danger-strong whitespace-pre-wrap">{{ gaps_text | linkify_refs }}</p>
   {% elif gaps_text %}
-  <div class="text-xs text-slate-700 overflow-x-auto">{{ gaps_text | linkify_toon }}</div>
+  <div class="text-xs text-fg-secondary overflow-x-auto">{{ gaps_text | linkify_toon }}</div>
   {% else %}
-  <p class="text-sm text-slate-400 italic">no gaps — this striving is well-supported.</p>
+  <p class="text-sm text-fg-faint italic">no gaps — this striving is well-supported.</p>
   {% endif %}
 </section>
 
 {# ── Servers-lite footer — counts, replacing the raw handle dump ───── #}
-<section id="servers" class="mb-6 rounded-lg border border-slate-200 bg-slate-50 p-3">
-  <h2 class="text-sm font-semibold text-slate-700 mb-1">Retinue — {{ servers_total }} in this quest's service</h2>
+<section id="servers" class="mb-6 rounded-lg border border-line bg-surface-subtle p-3">
+  <h2 class="text-sm font-semibold text-fg-secondary mb-1">Retinue — {{ servers_total }} in this quest's service</h2>
   {% if servers_lite %}
-  <p class="text-sm text-slate-600">
+  <p class="text-sm text-fg-muted">
     {% for row in servers_lite %}
-    {% if row.url %}<a href="{{ row.url }}" class="text-sky-700 hover:underline">{{ row.count }} {{ row.kind }}{{ '' if row.count == 1 else 's' }}</a>{% else %}<span>{{ row.count }} {{ row.kind }}{{ '' if row.count == 1 else 's' }}</span>{% endif %}{% if not loop.last %} · {% endif %}
+    {% if row.url %}<a href="{{ row.url }}" class="text-info-strong hover:underline">{{ row.count }} {{ row.kind }}{{ '' if row.count == 1 else 's' }}</a>{% else %}<span>{{ row.count }} {{ row.kind }}{{ '' if row.count == 1 else 's' }}</span>{% endif %}{% if not loop.last %} · {% endif %}
     {% endfor %}
   </p>
   {% else %}
-  <p class="text-sm text-slate-400 italic">nothing serves this quest yet — link a project / concept / paper with rel='serves'.</p>
+  <p class="text-sm text-fg-faint italic">nothing serves this quest yet — link a project / concept / paper with rel='serves'.</p>
   {% endif %}
 </section>
 
@@ -439,41 +439,41 @@
     {% if t.deletable %}
     <form method="post" action="/refs/{{ kind }}/{{ ref.id }}/tags" class="inline">
       <input type="hidden" name="remove" value="{{ t.value }}" />
-      <span class="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-slate-100 text-slate-700 border border-slate-200">
+      <span class="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-surface-muted text-fg-secondary border border-line">
         <span class="font-mono">{{ t.value }}</span>
-        <button class="text-slate-400 hover:text-rose-600" title="remove tag">×</button>
+        <button class="text-fg-faint hover:text-danger" title="remove tag">×</button>
       </span>
     </form>
     {% else %}
-    <span class="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-violet-50 text-violet-700 border border-violet-100"
+    <span class="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-accent-subtle text-accent-strong border border-accent-subtle"
           title="closed-vocab tag — remove via tag(kind='{{ kind }}', id={{ ref.id }}, remove=[...])">
       <span class="font-mono">{{ t.label }}</span>
     </span>
     {% endif %}
   {% else %}
-  <span class="text-xs text-slate-400 italic">no tags yet</span>
+  <span class="text-xs text-fg-faint italic">no tags yet</span>
   {% endfor %}
   <form method="post" action="/refs/{{ kind }}/{{ ref.id }}/tags"
         class="inline-flex items-center gap-1 ml-auto">
     <input name="add" placeholder="+ tag (comma-separated)"
-           class="text-xs px-2 py-1 rounded border border-slate-300 w-56" />
-    <button class="text-xs px-2 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700">add</button>
+           class="text-xs px-2 py-1 rounded border border-line-strong w-56" />
+    <button class="text-xs px-2 py-1 rounded bg-success-solid text-on-solid hover:bg-success-solid-strong">add</button>
   </form>
 </div>
 
 {# ── Ask a follow-up — same idiom as the generic detail page ───────── #}
 <section class="mt-6">
-  <h2 class="text-sm font-semibold mb-2 text-slate-700">Discussion</h2>
+  <h2 class="text-sm font-semibold mb-2 text-fg-secondary">Discussion</h2>
   {% if discussions %}
-  <ul class="mb-3 rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
+  <ul class="mb-3 rounded-lg border border-line bg-surface divide-y divide-line-subtle">
     {% for d in discussions %}
     <li class="px-3 py-2 text-sm flex items-center gap-2">
-      <span class="text-slate-400">💬</span>
-      <a href="{{ d.url }}" class="text-sky-700 hover:underline flex-1">{{ d.title }}</a>
+      <span class="text-fg-faint">💬</span>
+      <a href="{{ d.url }}" class="text-info-strong hover:underline flex-1">{{ d.title }}</a>
       {% if d.chunk is not none %}
-      <span class="text-xs font-mono text-slate-400">on ~{{ d.chunk }}</span>
+      <span class="text-xs font-mono text-fg-faint">on ~{{ d.chunk }}</span>
       {% endif %}
-      <span class="text-xs text-slate-400">{{ d.turns }} turn{{ '' if d.turns == 1 else 's' }}</span>
+      <span class="text-xs text-fg-faint">{{ d.turns }} turn{{ '' if d.turns == 1 else 's' }}</span>
     </li>
     {% endfor %}
   </ul>
@@ -481,12 +481,12 @@
   <form method="post" action="/refs/{{ kind }}/{{ ref.id }}/ask" class="space-y-2">
     <textarea name="question" rows="2" required
               placeholder="Ask a follow-up about this quest…"
-              class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"></textarea>
+              class="w-full rounded-md border border-line-strong px-3 py-2 text-sm"></textarea>
     <div class="flex items-center gap-2">
-      <button class="rounded-md bg-sky-600 text-white text-sm px-4 py-2 hover:bg-sky-700">
+      <button class="rounded-md bg-info-solid text-on-solid text-sm px-4 py-2 hover:bg-info-solid-strong">
         Ask &amp; think
       </button>
-      <span class="text-xs text-slate-400">
+      <span class="text-xs text-fg-faint">
         runs an agentic pass (can take ~30–60s); the answer lands in a linked thread
       </span>
     </div>

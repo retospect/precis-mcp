@@ -1,0 +1,481 @@
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
+"""scripts/colour-codemod — move the web UI off hard-coded colours onto the
+semantic palette tokens (the dark-mode codemod).
+
+The palette lives in ``src/precis_web/static/tailwind.src.css`` (one CSS
+variable per token, light and dark values) and ``tailwind.config.js`` maps the
+tokens onto classes. This script rewrites the two kinds of hard-coded colour a
+template can carry (Python modules and static JS that emit HTML get the class
+pass only):
+
+* Tailwind palette classes — ``text-slate-500``, ``hover:bg-emerald-50``,
+  ``border-t-rose-200/60`` — become the token class for the same light colour
+  (``text-fg-subtle``, ``hover:bg-success-subtle``, ``border-t-danger/60``).
+  Variant prefixes and opacity modifiers are kept.
+* Tailwind palette hex values inside a CSS declaration (``color:#94a3b8``,
+  ``border:1px solid #e2e8f0``, ``background:#fff``, ``box-shadow: inset 0 0
+  0 1px #fbbf24``) become ``rgb(var(--<token>))``.
+
+The mapping is context-free (the same input class always maps to the same
+output), so a class a script toggles stays in step with the markup that
+renders it. Context only decides when to *leave* something: an occurrence is
+ambiguous, and left untouched for a human, when
+
+* it is a neutral dark ink (``text-slate-600`` .. ``900``) on a line that also
+  carries a solid fill (``bg-amber-500``, ``bg-slate-700``) — the ink token
+  turns light in dark mode and would vanish on a fill that does not;
+* it is light neutral ink (``text-slate-100``/``200``, or ``300`` beside a dark
+  fill) — text meant for a dark surface;
+* a hex is not a Tailwind palette value, sits outside a CSS declaration (JS
+  colour constants, SVG presentation attributes, canvas/three.js), is a
+  ``fill``/``stroke``, or is a gradient stop (a legend has to match the colour
+  scale a script draws with, whatever the scheme);
+* the hue has no family (``lime``, ``pink`` ...).
+
+Hues fold into families: slate/gray/zinc/neutral/stone -> neutral,
+emerald/green -> success, rose/red -> danger, amber/yellow/orange -> warning,
+sky/blue/cyan -> info, violet/purple -> accent; teal, indigo and fuchsia stay
+categorical families of their own (a page that uses fuchsia beside violet
+means two different things, e.g. hypothesis vs claim cites).
+
+Usage::
+
+    scripts/colour-codemod                 # dry run: per-file counts + leftovers
+    scripts/colour-codemod --write         # apply
+    scripts/colour-codemod --leftovers     # list every untouched occurrence + why
+    scripts/colour-codemod PATH ...        # other files/dirs (default: the
+                                           # templates, src/precis_web/**/*.py
+                                           # and src/precis_web/static/*.js)
+
+Re-running is a no-op on converted text. Review the diff by hand: the script
+keeps light mode identical shade for shade except where hues fold (red ->
+rose, blue -> sky, purple -> violet) and where adjacent shades share a step
+(bg 800/900 -> 700, text 900 -> 800, border 600/700 -> 500,
+neutral bg 500 -> 600, neutral border 400 -> 500, neutral bg/border 900 ->
+800).
+"""
+
+from __future__ import annotations
+
+import argparse
+import re
+import sys
+from collections import Counter
+from collections.abc import Iterator
+from dataclasses import dataclass, field
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+WEB = REPO / "src/precis_web"
+
+FAMILY = {
+    **dict.fromkeys(("slate", "gray", "zinc", "neutral", "stone"), "neutral"),
+    **dict.fromkeys(("emerald", "green"), "success"),
+    **dict.fromkeys(("rose", "red"), "danger"),
+    **dict.fromkeys(("amber", "yellow", "orange"), "warning"),
+    **dict.fromkeys(("sky", "blue", "cyan"), "info"),
+    **dict.fromkeys(("violet", "purple"), "accent"),
+    "teal": "teal",
+    "indigo": "indigo",
+    "fuchsia": "fuchsia",
+}
+ALL_HUES = [
+    "slate",
+    "gray",
+    "zinc",
+    "neutral",
+    "stone",
+    "red",
+    "orange",
+    "amber",
+    "yellow",
+    "lime",
+    "green",
+    "emerald",
+    "teal",
+    "cyan",
+    "sky",
+    "blue",
+    "indigo",
+    "violet",
+    "purple",
+    "fuchsia",
+    "pink",
+    "rose",
+]
+
+# Shade -> token per property kind. "" means the family's DEFAULT token; a
+# missing shade is ambiguous.
+Table = dict[int | str, str]
+FAM_BG: Table = {
+    50: "subtle",
+    100: "muted",
+    200: "emphasis",
+    300: "strong",
+    400: "solid-light",
+    500: "solid-soft",
+    600: "solid",
+    700: "solid-strong",
+    800: "solid-strong",
+    900: "solid-strong",
+}
+FAM_TEXT: Table = {
+    400: "faint",
+    500: "soft",
+    600: "",
+    700: "strong",
+    800: "deep",
+    900: "deep",
+}
+FAM_BORDER: Table = {
+    50: "subtle",
+    100: "subtle",
+    200: "",
+    300: "strong",
+    400: "emphasis",
+    500: "solid",
+    600: "solid",
+    700: "solid",
+}
+NEU_BG: Table = {
+    "white": "surface",
+    50: "surface-subtle",
+    100: "surface-muted",
+    200: "surface-emphasis",
+    300: "surface-strong",
+    500: "solid-soft",
+    600: "solid-soft",
+    700: "solid",
+    800: "solid-strong",
+    900: "solid-strong",
+    "black": "scrim",
+}
+NEU_TEXT: Table = {
+    900: "fg-strong",
+    800: "fg",
+    700: "fg-secondary",
+    600: "fg-muted",
+    500: "fg-subtle",
+    400: "fg-faint",
+    300: "fg-ghost",
+    "white": "on-solid",
+}
+NEU_BORDER: Table = {
+    50: "line-subtle",
+    100: "line-subtle",
+    200: "line",
+    300: "line-strong",
+    400: "line-heavy",
+    500: "line-heavy",
+    600: "line-solid",
+    700: "line-solid",
+    800: "line-solid",
+    900: "line-solid",
+}
+NEUTRAL_STEPS = {"bg": NEU_BG, "text": NEU_TEXT, "border": NEU_BORDER}
+FAMILY_STEPS = {"bg": FAM_BG, "text": FAM_TEXT, "border": FAM_BORDER}
+
+# Utility prefix -> property kind. SVG fill/stroke take the text inks, except
+# that white there is a shape's body (a hollow marker, a node box), so it
+# follows the surface instead of staying white.
+KIND = {
+    "bg": "bg",
+    "text": "text",
+    "fill": "fill",
+    "stroke": "fill",
+    "placeholder": "text",
+    "border": "border",
+    "divide": "border",
+    "ring": "border",
+    "outline": "border",
+}
+
+CLASS_RE = re.compile(
+    r"(?<![\w/-])(?P<variants>(?:[\w-]+:)*)"
+    r"(?P<util>bg|text|fill|stroke|placeholder|divide|ring-offset|ring|outline|decoration"
+    r"|accent|caret|shadow|from|via|to|border(?:-[xytblrse])?)"
+    r"-(?:(?P<hue>" + "|".join(ALL_HUES) + r")-(?P<shade>\d{2,3})|(?P<bw>white|black))"
+    r"(?:/(?P<alpha>\d{1,3}))?(?![\w-])"
+)
+
+# Tailwind v3 hex values for the hues that have a family (plus white/black).
+TW_HEX = {
+    "slate": "f8fafc f1f5f9 e2e8f0 cbd5e1 94a3b8 64748b 475569 334155 1e293b 0f172a",
+    "emerald": "ecfdf5 d1fae5 a7f3d0 6ee7b7 34d399 10b981 059669 047857 065f46 064e3b",
+    "green": "f0fdf4 dcfce7 bbf7d0 86efac 4ade80 22c55e 16a34a 15803d 166534 14532d",
+    "rose": "fff1f2 ffe4e6 fecdd3 fda4af fb7185 f43f5e e11d48 be123c 9f1239 881337",
+    "red": "fef2f2 fee2e2 fecaca fca5a5 f87171 ef4444 dc2626 b91c1c 991b1b 7f1d1d",
+    "amber": "fffbeb fef3c7 fde68a fcd34d fbbf24 f59e0b d97706 b45309 92400e 78350f",
+    "orange": "fff7ed ffedd5 fed7aa fdba74 fb923c f97316 ea580c c2410c 9a3412 7c2d12",
+    "sky": "f0f9ff e0f2fe bae6fd 7dd3fc 38bdf8 0ea5e9 0284c7 0369a1 075985 0c4a6e",
+    "blue": "eff6ff dbeafe bfdbfe 93c5fd 60a5fa 3b82f6 2563eb 1d4ed8 1e40af 1e3a8a",
+    "violet": "f5f3ff ede9fe ddd6fe c4b5fd a78bfa 8b5cf6 7c3aed 6d28d9 5b21b6 4c1d95",
+    "purple": "faf5ff f3e8ff e9d5ff d8b4fe c084fc a855f7 9333ea 7e22ce 6b21a8 581c87",
+    "fuchsia": "fdf4ff fae8ff f5d0fe f0abfc e879f9 d946ef c026d3 a21caf 86198f 701a75",
+    "teal": "f0fdfa ccfbf1 99f6e4 5eead4 2dd4bf 14b8a6 0d9488 0f766e 115e59 134e4a",
+    "indigo": "eef2ff e0e7ff c7d2fe a5b4fc 818cf8 6366f1 4f46e5 4338ca 3730a3 312e81",
+}
+SHADES = (50, 100, 200, 300, 400, 500, 600, 700, 800, 900)
+HEX_TO_HUE: dict[str, tuple[str, int | str]] = {
+    "ffffff": ("white", "white"),
+    "000000": ("black", "black"),
+}
+for _hue, _row in TW_HEX.items():
+    for _shade, _hex in zip(SHADES, _row.split(), strict=True):
+        HEX_TO_HUE.setdefault(_hex, (_hue, _shade))
+
+# A CSS declaration whose value carries a hex: `color:#94a3b8`,
+# `border:1px solid #e2e8f0`. Quotes in the value stop the match, so JS
+# object literals (`color: '#fff'`) are not CSS declarations here.
+DECL_RE = re.compile(
+    r"(?P<prop>(?<![\w-])(?:background-color|background|color|border(?:-(?:top|right|bottom|left))?"
+    r"(?:-color)?|outline(?:-color)?|box-shadow|text-decoration(?:-color)?))\s*:"
+    r"(?P<value>[^;{}\"'\n<>]*)"
+)
+HEX_RE = re.compile(r"(?<![\w&])#(?P<hex>[0-9a-fA-F]{6}|[0-9a-fA-F]{3})(?![\w-])")
+ANY_HEX_RE = re.compile(
+    r"(?<![\w&])#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3,4})(?![\w-])"
+)
+CSS_PROP_KIND = {
+    "color": "text",
+    "text-decoration": "text",
+    "text-decoration-color": "text",
+    "background": "bg",
+    "background-color": "bg",
+}
+
+# A solid fill, as a palette class or as the token it becomes (so a second run
+# still sees the context the first one judged by).
+SOLID_BG_RE = re.compile(
+    r"(?<![\w-])(?:[\w-]+:)*bg-(?:(?:"
+    + "|".join(ALL_HUES)
+    + r")-(?:[4-9]00)|black|scrim"
+    r"|(?:(?:success|danger|warning|info|accent|teal|indigo|fuchsia)-)?solid(?:-light|-soft|-strong)?)"
+    r"(?![\w-])"
+)
+DARK_NEUTRAL_BG_RE = re.compile(
+    r"(?<![\w-])(?:[\w-]+:)*bg-(?:(?:slate|gray|zinc|neutral|stone)-[6-9]00"
+    r"|solid(?:-soft|-strong)?)(?![\w-])"
+)
+TEMPLATE_COMMENT_RE = re.compile(r"\{#.*?#\}|<!--.*?-->", re.S)
+COMMENT_RE = re.compile(r"\{#.*?#\}|<!--.*?-->|/\*.*?\*/", re.S)
+
+
+def token_for(kind: str, hue: str, shade: int | str) -> str | None:
+    """Semantic token for one palette colour, or None when it has no safe home."""
+    if kind == "fill":
+        if hue == "white":
+            return "surface"
+        kind = "text"
+    fam = "neutral" if hue in ("white", "black") else FAMILY.get(hue)
+    if fam is None:
+        return None
+    if fam == "neutral":
+        return NEUTRAL_STEPS[kind].get(shade)
+    step = FAMILY_STEPS[kind].get(shade)
+    if step is None:
+        return None
+    return f"{fam}-{step}" if step else fam
+
+
+@dataclass
+class Result:
+    path: Path
+    text: str
+    classes: int = 0
+    hexes: int = 0
+    left: list[tuple[int, str, str]] = field(default_factory=list)
+
+
+def _line_of(text: str, pos: int) -> tuple[int, str]:
+    start = text.rfind("\n", 0, pos) + 1
+    end = text.find("\n", pos)
+    return text.count("\n", 0, pos) + 1, text[start : end if end >= 0 else len(text)]
+
+
+def _kind(util: str) -> str | None:
+    """`border-t` reads as `border`; `ring-offset` has no namespace."""
+    return KIND.get("border" if util.startswith("border") else util)
+
+
+def _class_reason(m: re.Match[str], line: str) -> str | None:
+    """Why this class occurrence must be left for a human (None: convert it)."""
+    util, hue, shade_v = _parts(m)
+    kind = _kind(util)
+    if kind is None:
+        return f"`{util}-` colours have no token namespace"
+    if token_for(kind, hue, shade_v) is None:
+        return f"no {kind} token for {hue}" + (f"-{shade_v}" if hue != shade_v else "")
+    if kind == "text" and FAMILY.get(hue) == "neutral" and isinstance(shade_v, int):
+        if shade_v >= 600 and SOLID_BG_RE.search(line):
+            return "dark ink beside a solid fill: token would turn light in dark mode"
+        if shade_v == 300 and DARK_NEUTRAL_BG_RE.search(line):
+            return "light ink beside a dark fill"
+    return None
+
+
+def _parts(m: re.Match[str]) -> tuple[str, str, int | str]:
+    """(utility, hue, shade); white/black carry their name as the shade."""
+    if m["bw"]:
+        return m["util"], m["bw"], m["bw"]
+    return m["util"], m["hue"], int(m["shade"])
+
+
+def _convert_class(m: re.Match[str]) -> str:
+    util, hue, shade = _parts(m)
+    token = token_for(_kind(util) or "", hue, shade)
+    assert token is not None
+    return f"{m['variants']}{util}-{token}" + (f"/{m['alpha']}" if m["alpha"] else "")
+
+
+def _hex_token(kind: str, hexv: str) -> str | None:
+    h = hexv.lower()
+    if len(h) == 3:
+        h = "".join(c * 2 for c in h)
+    hit = HEX_TO_HUE.get(h)
+    return token_for(kind, *hit) if hit else None
+
+
+def comment_spans(text: str, css: bool) -> list[tuple[int, int]]:
+    """Jinja and HTML comments (plus /* */ in a .css file: in a template a
+    `/*` also opens JS regexes and `accept="image/*"`, so it is not a fence)."""
+    pattern = COMMENT_RE if css else TEMPLATE_COMMENT_RE
+    return [(m.start(), m.end()) for m in pattern.finditer(text)]
+
+
+def rewrite(path: Path) -> Result:
+    original = path.read_text(encoding="utf-8")
+    res = Result(path, original)
+
+    # Classes convert everywhere, comments included: the mapping is
+    # context-free, so prose that names a class stays true.
+    def on_class(m: re.Match[str]) -> str:
+        lineno, line = _line_of(original, m.start())
+        reason = _class_reason(m, line)
+        if reason:
+            res.left.append((lineno, m.group(0), reason))
+            return m.group(0)
+        res.classes += 1
+        return _convert_class(m)
+
+    after_classes = CLASS_RE.sub(on_class, original)
+    if path.suffix not in (".j2", ".html", ".css"):
+        # Python and static JS build SVG, mermaid, canvas and HTML strings
+        # whose colour syntax the declaration regex cannot judge (mermaid's
+        # `classDef x color:#...` is not CSS), so their hex values are out of
+        # scope; classes only.
+        res.text = after_classes
+        return res
+
+    # The hex pass runs on the class-rewritten text, so its positions (and
+    # leftover line numbers) refer to that text.
+    comments = comment_spans(after_classes, css=path.suffix == ".css")
+    # Position of every hex the declaration pass saw -> None (converted) or
+    # why it stayed; a hex it never saw is outside any CSS declaration.
+    seen: dict[int, str | None] = {}
+
+    def in_comment(pos: int) -> bool:
+        return any(a <= pos < b for a, b in comments)
+
+    def on_decl(m: re.Match[str]) -> str:
+        if in_comment(m.start()):
+            return m.group(0)
+        kind = CSS_PROP_KIND.get(m["prop"], "border")
+        gradient = "gradient(" in m["value"]
+
+        def on_hex(h: re.Match[str]) -> str:
+            pos = m.start("value") + h.start()
+            token = _hex_token(kind, h["hex"])
+            if gradient:
+                seen[pos] = (
+                    "gradient stop: a legend must match the scale a script draws"
+                )
+            elif token is None:
+                seen[pos] = "not a Tailwind palette value"
+            else:
+                seen[pos] = None
+                res.hexes += 1
+                return f"rgb(var(--{kind}-{token}))"
+            return h.group(0)
+
+        return f"{m['prop']}:{HEX_RE.sub(on_hex, m['value'])}"
+
+    res.text = DECL_RE.sub(on_decl, after_classes)
+    for h in ANY_HEX_RE.finditer(after_classes):
+        if in_comment(h.start()):
+            continue
+        why = seen.get(
+            h.start(), "outside a CSS declaration (JS, SVG attribute, canvas)"
+        )
+        if why:
+            lineno, _ = _line_of(after_classes, h.start())
+            res.left.append((lineno, h.group(0), f"hex {why}"))
+    return res
+
+
+def iter_files(paths: list[Path]) -> Iterator[Path]:
+    for p in paths:
+        if p.is_dir():
+            yield from sorted(
+                f for f in p.rglob("*") if f.suffix in (".j2", ".html", ".css")
+            )
+        else:
+            yield p
+
+
+def default_paths() -> list[Path]:
+    """Templates, the Python that renders HTML, and our own static JS (the
+    vendored `*.min.js` bundles carry no Tailwind classes of ours). Static
+    CSS stays out: blocktree-3d-overrides.css colours overlays on the
+    vendored viewer's canvas, which is white in both schemes."""
+    js = [
+        p
+        for p in sorted((WEB / "static").glob("*.js"))
+        if not p.name.endswith(".min.js")
+    ]
+    return [WEB / "templates", *sorted(WEB.rglob("*.py")), *js]
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("paths", nargs="*", type=Path, default=default_paths())
+    ap.add_argument("--write", action="store_true", help="apply the rewrite in place")
+    ap.add_argument(
+        "--leftovers", action="store_true", help="list every untouched occurrence"
+    )
+    args = ap.parse_args(argv)
+
+    totals: Counter[str] = Counter()
+    reasons: Counter[str] = Counter()
+    for path in iter_files(args.paths):
+        res = rewrite(path)
+        rel = (
+            path.resolve().relative_to(REPO)
+            if path.resolve().is_relative_to(REPO)
+            else path
+        )
+        totals["classes"] += res.classes
+        totals["hexes"] += res.hexes
+        totals["left"] += len(res.left)
+        for _, _, why in res.left:
+            reasons[why] += 1
+        if res.classes or res.hexes or res.left:
+            print(
+                f"{rel}: {res.classes} classes, {res.hexes} hex, {len(res.left)} left"
+            )
+        if args.leftovers:
+            for lineno, what, why in res.left:
+                print(f"    {rel}:{lineno}: {what} — {why}")
+        if args.write and res.text != path.read_text(encoding="utf-8"):
+            path.write_text(res.text, encoding="utf-8")
+    print(
+        f"total: {totals['classes']} classes and {totals['hexes']} hex values "
+        f"{'rewritten' if args.write else 'to rewrite'}; {totals['left']} left for a human"
+    )
+    for why, n in reasons.most_common():
+        print(f"  {n:4} {why}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

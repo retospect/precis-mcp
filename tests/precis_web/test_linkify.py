@@ -1062,7 +1062,7 @@ def test_pending_head_renders_hollow_diamond_compact() -> None:
     assert "◇" in out
     assert 'href="/r/finding/123"' in out
     assert 'hx-get="/preview/finding/123"' in out
-    assert "text-violet-400" in out
+    assert "text-accent-faint" in out
     assert 'title="claim in chase — not yet canonical"' in out
     assert "data-claim-head" not in out
     assert "/claim/" not in out
@@ -1119,7 +1119,7 @@ def test_refuted_head_renders_red_diamond_compact() -> None:
     assert "◆" in out
     assert 'href="/r/finding/123"' in out
     assert 'hx-get="/preview/finding/123"' in out
-    assert "text-red-600" in out
+    assert re.search(r"text-danger(?![\w-])", out)
     assert 'title="refuted — see ruling"' in out
     assert "data-claim-head" not in out
     assert "/claim/" not in out
@@ -1144,8 +1144,8 @@ def test_refuted_wins_over_hub_claim() -> None:
             refuted_claims={"fi123": 123},
         )
     )
-    assert "text-red-600" in out
-    assert "text-violet-700" not in out
+    assert re.search(r"text-danger(?![\w-])", out)
+    assert "text-accent-strong" not in out
     assert 'href="/r/finding/123"' in out
     assert "/claim/" not in out
     assert "data-claim-head" not in out
@@ -1162,8 +1162,8 @@ def test_refuted_wins_over_pending_claim() -> None:
             refuted_claims={"fi123": 123},
         )
     )
-    assert "text-red-600" in out
-    assert "text-violet-400" not in out
+    assert re.search(r"text-danger(?![\w-])", out)
+    assert "text-accent-faint" not in out
     assert 'title="refuted — see ruling"' in out
 
 
@@ -1173,7 +1173,7 @@ def test_head_absent_from_refuted_map_stays_generic() -> None:
     prior rendering."""
     out = str(linkify_refs("[fi123]", compact=True, refuted_claims={}))
     assert 'href="/r/finding/123"' in out
-    assert "text-red-600" not in out
+    assert not re.search(r"text-danger(?![\w-])", out)
 
 
 # ── `hypothesis_claims` — the fuchsia ◈ twin (a hub minted as a conjecture,
@@ -1192,7 +1192,7 @@ def test_hypothesis_head_renders_hypothesis_sigil_compact() -> None:
     assert "◈" in out
     assert 'href="/claim/fi123"' in out
     assert 'hx-get="/preview/claim/fi123"' in out
-    assert "text-fuchsia-700" in out
+    assert "text-fuchsia-strong" in out
     assert 'title="hypothesis — motivation, not evidence"' in out
     assert 'data-claim-head="fi123"' in out
 
@@ -1219,8 +1219,8 @@ def test_hypothesis_wins_over_canonical_claim() -> None:
             hypothesis_claims=frozenset({"fi123"}),
         )
     )
-    assert "text-fuchsia-700" in out
-    assert "text-violet-700" not in out
+    assert "text-fuchsia-strong" in out
+    assert "text-accent-strong" not in out
     assert 'href="/claim/fi123"' in out
 
 
@@ -1235,8 +1235,8 @@ def test_refuted_wins_over_hypothesis_claim() -> None:
             refuted_claims={"fi123": 123},
         )
     )
-    assert "text-red-600" in out
-    assert "text-fuchsia-700" not in out
+    assert re.search(r"text-danger(?![\w-])", out)
+    assert "text-fuchsia-strong" not in out
     assert 'href="/r/finding/123"' in out
     assert "/claim/" not in out
 
@@ -1255,7 +1255,7 @@ def test_head_absent_from_hypothesis_map_stays_generic() -> None:
         )
     )
     assert "◈" not in out
-    assert "text-fuchsia-700" not in out
+    assert "text-fuchsia-strong" not in out
     assert "◆" in out
     assert 'href="/claim/fi123"' in out
 

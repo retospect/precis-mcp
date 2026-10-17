@@ -176,7 +176,7 @@ def test_state_adds_llm_label_badge_when_meta_carries_one() -> None:
     badges = p.state(ref, has_chunks=False)
     label_badges = [b for b in badges if b["label"] == "core"]
     assert len(label_badges) == 1
-    assert label_badges[0]["cls"] == "bg-emerald-100 text-emerald-700"
+    assert label_badges[0]["cls"] == "bg-success-muted text-success-strong"
     assert label_badges[0]["title"] == "fits the quest"
 
 
@@ -186,7 +186,7 @@ def test_state_llm_label_badge_falls_back_to_label_without_reason() -> None:
     badges = p.state(ref, has_chunks=False)
     label_badges = [b for b in badges if b["label"] == "off"]
     assert len(label_badges) == 1
-    assert label_badges[0]["cls"] == "bg-slate-200 text-slate-500"
+    assert label_badges[0]["cls"] == "bg-surface-emphasis text-fg-subtle"
     assert label_badges[0]["title"] == "off"
 
 

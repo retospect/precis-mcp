@@ -10,41 +10,41 @@
    matching edge), rows from ``edges`` (the capped window), so a group can
    honestly show "×N" with fewer rows. #}
 {% macro group_inner(g, expanded, kind, ref_id, show_memories, qs) %}
-  <div class="flex items-baseline gap-2 border-b border-slate-100 bg-slate-50/60 px-3 py-1.5">
-    <h3 class="text-xs font-semibold text-slate-600">{{ g.heading }}</h3>
-    <span class="text-[10px] text-slate-400">{{ g.n }} link{{ '' if g.n == 1 else 's' }}</span>
+  <div class="flex items-baseline gap-2 border-b border-line-subtle bg-surface-subtle/60 px-3 py-1.5">
+    <h3 class="text-xs font-semibold text-fg-muted">{{ g.heading }}</h3>
+    <span class="text-[10px] text-fg-faint">{{ g.n }} link{{ '' if g.n == 1 else 's' }}</span>
     {% if not expanded and (g.hidden_rows or g.n > g.rows_total) %}
     <button type="button"
-            class="ml-auto text-[10px] text-sky-700 hover:underline"
+            class="ml-auto text-[10px] text-info-strong hover:underline"
             hx-get="/graph/{{ kind }}/{{ ref_id }}/panel?group={{ g.heading | urlencode }}&memories={{ 1 if show_memories else 0 }}{% if qs %}&{{ qs }}{% endif %}"
             hx-target="#nb-{{ g.slug }}" hx-swap="innerHTML">
       show all {{ g.n }} ▸
     </button>
     {% elif expanded and g.n > g.rows_total %}
-    <span class="ml-auto text-[10px] text-slate-400">{{ g.rows_total }} of {{ g.n }} shown — beyond the node cap; see the JSON</span>
+    <span class="ml-auto text-[10px] text-fg-faint">{{ g.rows_total }} of {{ g.n }} shown — beyond the node cap; see the JSON</span>
     {% endif %}
   </div>
   {% for r in g.rels %}
   <div class="px-3 py-2">
     <div class="flex flex-wrap items-baseline gap-x-2">
-      <span class="text-xs font-mono font-medium text-slate-700">{{ r.rel }}</span>
-      <span class="text-[10px] text-slate-400">{% for k in r.kinds %}{{ k.kind }}&nbsp;×{{ k.n }}{{ ', ' if not loop.last }}{% endfor %}</span>
+      <span class="text-xs font-mono font-medium text-fg-secondary">{{ r.rel }}</span>
+      <span class="text-[10px] text-fg-faint">{% for k in r.kinds %}{{ k.kind }}&nbsp;×{{ k.n }}{{ ', ' if not loop.last }}{% endfor %}</span>
     </div>
     {% for k in r.kinds %}
       {% if k.rows %}
       <ul class="mt-0.5">
         {% for row in k.rows %}
         <li class="flex items-baseline gap-2 py-px text-xs">
-          <span class="w-3 shrink-0 text-slate-400" title="{{ 'outbound' if row.dir == 'out' else 'inbound' }}">{{ '→' if row.dir == 'out' else '←' }}</span>
-          <a href="{{ row.url }}" class="shrink-0 font-mono text-sky-700 hover:underline">{{ row.handle }}</a>
-          <span class="min-w-0 truncate {% if row.state != 'live' %}italic text-slate-400{% else %}text-slate-600{% endif %}" title="{{ row.label }}">{{ row.label }}</span>
-          {% if row.trust %}<span class="shrink-0 text-[10px] font-mono text-slate-400" title="origin · confidence">{{ row.trust }}</span>{% endif %}
-          <a href="{{ row.graph_url }}" class="shrink-0 text-[10px] text-slate-400 hover:text-sky-700" title="focus the graph on it">◦</a>
+          <span class="w-3 shrink-0 text-fg-faint" title="{{ 'outbound' if row.dir == 'out' else 'inbound' }}">{{ '→' if row.dir == 'out' else '←' }}</span>
+          <a href="{{ row.url }}" class="shrink-0 font-mono text-info-strong hover:underline">{{ row.handle }}</a>
+          <span class="min-w-0 truncate {% if row.state != 'live' %}italic text-fg-faint{% else %}text-fg-muted{% endif %}" title="{{ row.label }}">{{ row.label }}</span>
+          {% if row.trust %}<span class="shrink-0 text-[10px] font-mono text-fg-faint" title="origin · confidence">{{ row.trust }}</span>{% endif %}
+          <a href="{{ row.graph_url }}" class="shrink-0 text-[10px] text-fg-faint hover:text-info-strong" title="focus the graph on it">◦</a>
         </li>
         {% endfor %}
       </ul>
       {% elif k.n %}
-      <p class="mt-0.5 text-[11px] italic text-slate-400">{{ k.n }} {{ k.kind }} link{{ 's' if k.n != 1 }} — beyond the node cap; see the JSON</p>
+      <p class="mt-0.5 text-[11px] italic text-fg-faint">{{ k.n }} {{ k.kind }} link{{ 's' if k.n != 1 }} — beyond the node cap; see the JSON</p>
       {% endif %}
     {% endfor %}
   </div>
@@ -55,63 +55,63 @@
   {% for g in groups %}
     {{ group_inner(g, true, kind, ref_id, show_memories, qs) }}
   {% else %}
-    <p class="px-3 py-2 text-xs italic text-slate-400">no group named {{ group_only }}.</p>
+    <p class="px-3 py-2 text-xs italic text-fg-faint">no group named {{ group_only }}.</p>
   {% endfor %}
 {% else %}
 <div class="mb-2 flex flex-wrap items-center gap-x-4 gap-y-1">
   <form action="/graph/{{ kind }}/{{ ref_id }}" method="get"
         hx-get="/graph/{{ kind }}/{{ ref_id }}/panel" hx-target="#graph-panel"
         hx-trigger="change" hx-swap="innerHTML" class="flex flex-wrap items-center gap-3">
-    <span class="text-[10px] uppercase tracking-wide text-slate-400">memories</span>
-    <label class="inline-flex items-center gap-1 text-xs text-slate-600">
+    <span class="text-[10px] uppercase tracking-wide text-fg-faint">memories</span>
+    <label class="inline-flex items-center gap-1 text-xs text-fg-muted">
       <input type="radio" name="memories" value="1" {% if show_memories %}checked{% endif %} /> show
     </label>
-    <label class="inline-flex items-center gap-1 text-xs text-slate-600">
+    <label class="inline-flex items-center gap-1 text-xs text-fg-muted">
       <input type="radio" name="memories" value="0" {% if not show_memories %}checked{% endif %} /> hide
     </label>
-    <span class="text-[10px] uppercase tracking-wide text-slate-400">filter</span>
+    <span class="text-[10px] uppercase tracking-wide text-fg-faint">filter</span>
     <input type="text" name="kinds" value="{{ f.kinds | join(',') }}" placeholder="kinds"
            title="neighbour kinds, comma-separated"
-           class="w-20 rounded border border-slate-200 px-1 py-px font-mono text-[11px]">
+           class="w-20 rounded border border-line px-1 py-px font-mono text-[11px]">
     <input type="text" name="rels" value="{{ f.rels | join(',') }}" placeholder="rels"
            title="relations, comma-separated presented slugs"
-           class="w-24 rounded border border-slate-200 px-1 py-px font-mono text-[11px]">
+           class="w-24 rounded border border-line px-1 py-px font-mono text-[11px]">
     <input type="date" name="since" value="{{ f.since }}" title="linked ref created on/after"
-           class="rounded border border-slate-200 px-1 py-px font-mono text-[11px]">
+           class="rounded border border-line px-1 py-px font-mono text-[11px]">
     <input type="date" name="until" value="{{ f.until }}" title="linked ref created before"
-           class="rounded border border-slate-200 px-1 py-px font-mono text-[11px]">
+           class="rounded border border-line px-1 py-px font-mono text-[11px]">
     <select name="trust" title="finding publication tier (findings only); each row shows its own origin · confidence"
-            class="rounded border border-slate-200 px-1 py-px text-[11px]">
+            class="rounded border border-line px-1 py-px text-[11px]">
       <option value="">finding tier · off</option>
       {% for t in trust_tiers %}
       <option value="{{ t }}" {% if f.trust == t %}selected{% endif %}>finding tier · {{ t }}</option>
       {% endfor %}
     </select>
-    <button type="submit" class="rounded bg-slate-800 px-1.5 py-px text-[11px] text-white hover:bg-slate-700">apply</button>
+    <button type="submit" class="rounded bg-solid-strong px-1.5 py-px text-[11px] text-on-solid hover:bg-solid">apply</button>
   </form>
-  <a href="/graph/{{ kind }}/{{ ref_id }}.json{% if qs %}?{{ qs }}{% endif %}" class="ml-auto text-xs text-slate-400 hover:underline">json</a>
+  <a href="/graph/{{ kind }}/{{ ref_id }}.json{% if qs %}?{{ qs }}{% endif %}" class="ml-auto text-xs text-fg-faint hover:underline">json</a>
 </div>
 {% if chips %}
 <nav class="mb-2 flex flex-wrap items-center gap-1 text-[11px]" aria-label="active filters">
   {% for c in chips %}
   <a href="{{ c.href }}" {% if c.hx %}hx-get="{{ c.hx }}" hx-target="#graph-panel" hx-swap="innerHTML"{% endif %}
-     class="rounded px-1.5 py-0.5 font-mono bg-amber-100 text-amber-800 hover:bg-amber-200" title="remove this filter">{{ c.label }} ×</a>
+     class="rounded px-1.5 py-0.5 font-mono bg-warning-muted text-warning-deep hover:bg-warning-emphasis" title="remove this filter">{{ c.label }} ×</a>
   {% endfor %}
 </nav>
 {% endif %}
 {% if groups %}
 <div class="space-y-3">
   {% for g in groups %}
-  <div id="nb-{{ g.slug }}" class="overflow-hidden rounded-lg border border-slate-200 bg-white">
+  <div id="nb-{{ g.slug }}" class="overflow-hidden rounded-lg border border-line bg-surface">
     {{ group_inner(g, false, kind, ref_id, show_memories, qs) }}
   </div>
   {% endfor %}
 </div>
 {% if truncated %}
-<p class="mt-1 text-[10px] text-slate-400">counts are complete; rows past the node cap are not rendered — the JSON has the full window.</p>
+<p class="mt-1 text-[10px] text-fg-faint">counts are complete; rows past the node cap are not rendered — the JSON has the full window.</p>
 {% endif %}
 {% else %}
-<p class="text-xs italic text-slate-400">
+<p class="text-xs italic text-fg-faint">
   {% if filters_on %}no links match the active filters — remove a chip above.{% else %}no typed links yet{% if not show_memories %} (memories hidden){% endif %}.{% endif %}
 </p>
 {% endif %}

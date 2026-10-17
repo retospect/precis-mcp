@@ -258,6 +258,12 @@ PATH_MAP: list[tuple[str, list[str]]] = [
             "tests/hexfold/test_rebuild_idempotent.py",
         ],
     ),
+    # Web colour ratchet: it walks the template, static CSS/JS and web Python
+    # trees by directory, so no file names it literally.
+    ("src/precis_web/templates/**", ["tests/precis_web/test_colour_ratchet.py"]),
+    ("src/precis_web/static/*.css", ["tests/precis_web/test_colour_ratchet.py"]),
+    ("src/precis_web/static/*.js", ["tests/precis_web/test_colour_ratchet.py"]),
+    ("src/precis_web/**/*.py", ["tests/precis_web/test_colour_ratchet.py"]),
 ]
 
 # Repo prefixes that are never corpus coupling (git internals are not

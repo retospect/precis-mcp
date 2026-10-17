@@ -236,7 +236,7 @@ def test_sources_fragment_matched_row_shows_bracket_marker(client, runtime) -> N
     assert resp.status_code == 200
     assert ">[34]<" in resp.text
     # The positional "1." badge is gone for this (now matched) row.
-    assert '<span class="w-5 shrink-0 text-right text-slate-400">1.</span>' not in (
+    assert '<span class="w-5 shrink-0 text-right text-fg-faint">1.</span>' not in (
         resp.text
     )
 
@@ -311,7 +311,7 @@ def test_sources_fragment_row_ordering_three_buckets(client, runtime) -> None:
     assert i_marker7 < i_marker50 < i_row_a < i_held
     # Row A (unmatched S2 row) keeps its original positional "1." badge —
     # byte-identical to what it would render without any bib entries.
-    assert '<span class="w-5 shrink-0 text-right text-slate-400">1.</span>' in text
+    assert '<span class="w-5 shrink-0 text-right text-fg-faint">1.</span>' in text
 
 
 def test_sources_fragment_one_bib_entry_never_attaches_to_two_rows(
@@ -336,8 +336,8 @@ def test_sources_fragment_one_bib_entry_never_attaches_to_two_rows(
     assert text.count(">[9]<") == 1
     # The other row keeps its plain positional badge instead.
     assert (
-        '<span class="w-5 shrink-0 text-right text-slate-400">1.</span>' in text
-        or '<span class="w-5 shrink-0 text-right text-slate-400">2.</span>' in text
+        '<span class="w-5 shrink-0 text-right text-fg-faint">1.</span>' in text
+        or '<span class="w-5 shrink-0 text-right text-fg-faint">2.</span>' in text
     )
 
 
@@ -501,7 +501,7 @@ def test_fetch_ref_htmx_row_keeps_marker_for_matched_row(client, runtime) -> Non
     )
     assert resp.status_code == 200
     assert ">[34]<" in resp.text
-    assert '<span class="w-5 shrink-0 text-right text-slate-400">3.</span>' not in (
+    assert '<span class="w-5 shrink-0 text-right text-fg-faint">3.</span>' not in (
         resp.text
     )
 

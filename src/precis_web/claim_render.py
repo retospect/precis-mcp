@@ -368,11 +368,10 @@ _TABLE_ROW_CLAMP = 20
 #: (`templates/smartdraft/view.html.j2`) so a rendered grounding-quote table
 #: looks like any other table in the app.
 _TABLE_HEAD_CLASS = (
-    "border-b-2 border-slate-300 px-2 py-1 text-left align-top "
-    "font-semibold text-slate-800"
+    "border-b-2 border-line-strong px-2 py-1 text-left align-top font-semibold text-fg"
 )
 _TABLE_CELL_CLASS = (
-    "border-b border-slate-100 px-2 py-1 align-top text-slate-700 "
+    "border-b border-line-subtle px-2 py-1 align-top text-fg-secondary "
     "whitespace-pre-wrap break-words"
 )
 
@@ -394,7 +393,7 @@ def _table_html(table: dict[str, Any], *, row_limit: int | None = None) -> Marku
     parts: list[str] = ['<table class="w-full border-collapse text-sm">']
     if caption:
         parts.append(
-            '<caption class="mb-1 text-left text-xs text-slate-500 italic">'
+            '<caption class="mb-1 text-left text-xs text-fg-subtle italic">'
             f"{render_markdown(caption)}</caption>"
         )
     parts.append("<thead><tr>")
@@ -411,7 +410,7 @@ def _table_html(table: dict[str, Any], *, row_limit: int | None = None) -> Marku
     parts.append("</tbody></table>")
     if truncated:
         parts.append(
-            f'<p class="mt-1 text-xs text-slate-400 italic">… '
+            f'<p class="mt-1 text-xs text-fg-faint italic">… '
             f"{len(rows) - limit} more row(s) truncated</p>"
         )
     return Markup("".join(parts))

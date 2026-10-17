@@ -2,7 +2,7 @@
 {% block title %}Account{% endblock %}
 {% block content %}
 <h1 class="text-lg font-semibold mb-1">Account</h1>
-<p class="text-sm text-slate-500 mb-5 max-w-2xl">
+<p class="text-sm text-fg-subtle mb-5 max-w-2xl">
   Your own login. Creating, disabling and deleting accounts stays on the host
   (<code>precis users</code>) — every account here is fully authorized, so
   minting one from the browser would let a single stolen credential become
@@ -10,18 +10,18 @@
 </p>
 
 {% if error %}
-<div class="mb-5 rounded-lg border border-rose-200 bg-rose-50 px-4 py-2 text-sm text-rose-700">
+<div class="mb-5 rounded-lg border border-danger bg-danger-subtle px-4 py-2 text-sm text-danger-strong">
   {{ error }}
 </div>
 {% endif %}
 {% if notice %}
-<div class="mb-5 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm text-emerald-700">
+<div class="mb-5 rounded-lg border border-success bg-success-subtle px-4 py-2 text-sm text-success-strong">
   {{ notice }}
 </div>
 {% endif %}
 
 {% if not user %}
-<div class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 max-w-2xl">
+<div class="rounded-lg border border-warning bg-warning-subtle px-4 py-3 text-sm text-warning-deep max-w-2xl">
   <strong>No signed-in user.</strong>
   {% if auth_on %}
   The gate is on but this request carried no identity — that shouldn't happen;
@@ -35,44 +35,44 @@
 {% else %}
 
 {# ── who you are ─────────────────────────────────────────────────── #}
-<div class="rounded-lg border border-slate-200 bg-white px-4 py-3 mb-6 max-w-2xl">
+<div class="rounded-lg border border-line bg-surface px-4 py-3 mb-6 max-w-2xl">
   <div class="flex items-center gap-3">
     <span class="inline-flex items-center justify-center h-9 w-9 rounded-full
-                 bg-slate-800 text-white text-xs font-semibold tracking-wide">
+                 bg-solid-strong text-on-solid text-xs font-semibold tracking-wide">
       {{ user.abbrev | upper }}
     </span>
     <div class="min-w-0">
-      <div class="text-sm font-medium text-slate-800">
+      <div class="text-sm font-medium text-fg">
         {{ user.full_name or user.login }}
       </div>
-      <div class="text-xs text-slate-500 font-mono">
+      <div class="text-xs text-fg-subtle font-mono">
         {{ user.login }}{% if user.email %} · {{ user.email }}{% endif %}
       </div>
       {% if user.orcid %}
       <a href="https://orcid.org/{{ user.orcid }}" target="_blank" rel="noopener"
-         class="text-xs text-emerald-700 font-mono hover:underline">
+         class="text-xs text-success-strong font-mono hover:underline">
         orcid.org/{{ user.orcid }}
       </a>
       {% endif %}
     </div>
-    <div class="ml-auto text-right text-[11px] text-slate-400">
+    <div class="ml-auto text-right text-[11px] text-fg-faint">
       {% if user.last_login_at %}last seen {{ user.last_login_at | ago }}{% endif %}
       {% if not user.enabled %}
-      <div class="text-rose-600 font-medium">disabled</div>
+      <div class="text-danger font-medium">disabled</div>
       {% endif %}
     </div>
   </div>
-  <p class="mt-3 text-[11px] text-slate-400">
-    <strong class="text-slate-500">{{ user.abbrev }}</strong> is your display
+  <p class="mt-3 text-[11px] text-fg-faint">
+    <strong class="text-fg-subtle">{{ user.abbrev }}</strong> is your display
     handle — the short tag that will mark your edits. It's separate from your
     login on purpose, so either can change without the other.
   </p>
 </div>
 
 {# ── password ────────────────────────────────────────────────────── #}
-<h2 class="text-sm font-semibold text-slate-700 mb-2">Change password</h2>
-<div class="rounded-lg border border-slate-200 bg-white px-4 py-4 mb-6 max-w-2xl">
-  <p class="text-xs text-slate-500 mb-3">
+<h2 class="text-sm font-semibold text-fg-secondary mb-2">Change password</h2>
+<div class="rounded-lg border border-line bg-surface px-4 py-4 mb-6 max-w-2xl">
+  <p class="text-xs text-fg-subtle mb-3">
     Saving signs you out: HTTP Basic keeps no session, so your browser is
     holding the old password and will ask for the new one on the next page.
     That's expected. Minimum {{ min_password_length }} characters — length is
@@ -80,29 +80,29 @@
   </p>
   <form method="post" action="/account/password" class="space-y-2">
     <div class="grid grid-cols-[10rem_1fr] items-center gap-2">
-      <label for="current_password" class="text-xs text-slate-600">Current password</label>
+      <label for="current_password" class="text-xs text-fg-muted">Current password</label>
       <input id="current_password" name="current_password" type="password"
              required autocomplete="current-password"
-             class="rounded border border-slate-200 px-2 py-1 text-sm
-                    focus:border-sky-400 focus:outline-none" />
-      <label for="new_password" class="text-xs text-slate-600">New password</label>
+             class="rounded border border-line px-2 py-1 text-sm
+                    focus:border-info-emphasis focus:outline-none" />
+      <label for="new_password" class="text-xs text-fg-muted">New password</label>
       <input id="new_password" name="new_password" type="password"
              required autocomplete="new-password"
              minlength="{{ min_password_length }}"
-             class="rounded border border-slate-200 px-2 py-1 text-sm
-                    focus:border-sky-400 focus:outline-none" />
-      <label for="confirm_password" class="text-xs text-slate-600">Repeat new password</label>
+             class="rounded border border-line px-2 py-1 text-sm
+                    focus:border-info-emphasis focus:outline-none" />
+      <label for="confirm_password" class="text-xs text-fg-muted">Repeat new password</label>
       <input id="confirm_password" name="confirm_password" type="password"
              required autocomplete="new-password"
              minlength="{{ min_password_length }}"
-             class="rounded border border-slate-200 px-2 py-1 text-sm
-                    focus:border-sky-400 focus:outline-none" />
+             class="rounded border border-line px-2 py-1 text-sm
+                    focus:border-info-emphasis focus:outline-none" />
     </div>
     <button type="submit"
-            class="rounded bg-sky-600 text-white text-xs px-3 py-1.5
-                   hover:bg-sky-700 transition">Change password</button>
+            class="rounded bg-info-solid text-on-solid text-xs px-3 py-1.5
+                   hover:bg-info-solid-strong transition">Change password</button>
   </form>
-  <p class="mt-3 text-[11px] text-slate-400">
+  <p class="mt-3 text-[11px] text-fg-faint">
     Forgot it? There is no email reset — Basic auth has no flow to hang one on,
     and adding a public route that mints credentials would undo the point of
     the lock. Someone with shell access runs
@@ -111,49 +111,49 @@
 </div>
 
 {# ── profile ─────────────────────────────────────────────────────── #}
-<h2 class="text-sm font-semibold text-slate-700 mb-2">Profile</h2>
-<div class="rounded-lg border border-slate-200 bg-white px-4 py-4 mb-6 max-w-2xl">
+<h2 class="text-sm font-semibold text-fg-secondary mb-2">Profile</h2>
+<div class="rounded-lg border border-line bg-surface px-4 py-4 mb-6 max-w-2xl">
   <form method="post" action="/account/profile" class="space-y-2">
     <div class="grid grid-cols-[10rem_1fr] items-center gap-2">
-      <label for="full_name" class="text-xs text-slate-600">Full name</label>
+      <label for="full_name" class="text-xs text-fg-muted">Full name</label>
       <input id="full_name" name="full_name" type="text"
              value="{{ user.full_name or '' }}"
-             class="rounded border border-slate-200 px-2 py-1 text-sm
-                    focus:border-sky-400 focus:outline-none" />
-      <label for="email" class="text-xs text-slate-600">Email</label>
+             class="rounded border border-line px-2 py-1 text-sm
+                    focus:border-info-emphasis focus:outline-none" />
+      <label for="email" class="text-xs text-fg-muted">Email</label>
       <input id="email" name="email" type="email" value="{{ user.email or '' }}"
-             class="rounded border border-slate-200 px-2 py-1 text-sm
-                    focus:border-sky-400 focus:outline-none" />
-      <label for="orcid" class="text-xs text-slate-600">ORCID iD</label>
+             class="rounded border border-line px-2 py-1 text-sm
+                    focus:border-info-emphasis focus:outline-none" />
+      <label for="orcid" class="text-xs text-fg-muted">ORCID iD</label>
       <input id="orcid" name="orcid" type="text" value="{{ user.orcid or '' }}"
              placeholder="0000-0002-1825-0097"
-             class="rounded border border-slate-200 px-2 py-1 text-sm font-mono
-                    focus:border-sky-400 focus:outline-none" />
-      <label for="discord_user_id" class="text-xs text-slate-600">Discord user id</label>
+             class="rounded border border-line px-2 py-1 text-sm font-mono
+                    focus:border-info-emphasis focus:outline-none" />
+      <label for="discord_user_id" class="text-xs text-fg-muted">Discord user id</label>
       <input id="discord_user_id" name="discord_user_id" type="text"
              inputmode="numeric" value="{{ user.discord_user_id or '' }}"
              placeholder="123456789012345678"
-             class="rounded border border-slate-200 px-2 py-1 text-sm font-mono
-                    focus:border-sky-400 focus:outline-none" />
+             class="rounded border border-line px-2 py-1 text-sm font-mono
+                    focus:border-info-emphasis focus:outline-none" />
     </div>
     <button type="submit"
-            class="rounded bg-slate-700 text-white text-xs px-3 py-1.5
-                   hover:bg-slate-800 transition">Save</button>
+            class="rounded bg-solid text-on-solid text-xs px-3 py-1.5
+                   hover:bg-solid-strong transition">Save</button>
   </form>
-  <p class="mt-3 text-[11px] text-slate-400">
+  <p class="mt-3 text-[11px] text-fg-faint">
     Name and email are display and notification only — neither authenticates
     anything. Leave a field empty to clear it.
   </p>
-  <p class="mt-2 text-[11px] text-slate-500 border-l-2 border-sky-200 pl-2">
-    <strong class="text-slate-600">The Discord user id tells Asa who you
+  <p class="mt-2 text-[11px] text-fg-subtle border-l-2 border-info pl-2">
+    <strong class="text-fg-muted">The Discord user id tells Asa who you
     are.</strong> It is the numeric id (17-20 digits: in Discord enable
     Developer Mode, right-click your name, <em>Copy User ID</em>), not your
     username. Once set, Asa attributes what you say to this account instead
     of to your Discord display name. One id per account; leave empty to
     unlink.
   </p>
-  <p class="mt-2 text-[11px] text-slate-500 border-l-2 border-emerald-200 pl-2">
-    <strong class="text-slate-600">The ORCID iD is used for signing
+  <p class="mt-2 text-[11px] text-fg-subtle border-l-2 border-success pl-2">
+    <strong class="text-fg-muted">The ORCID iD is used for signing
     nanopubs.</strong> A published claim is attributed to an ORCID, not to a
     login, so the attesting <em>Sign</em> button on a claim page signs under
     the iD stored here and refuses outright when it is empty. The signing key
@@ -167,17 +167,17 @@
 </div>
 
 {# ── podcast ─────────────────────────────────────────────────────── #}
-<h2 class="text-sm font-semibold text-slate-700 mb-2">Private podcast link</h2>
-<div class="rounded-lg border border-slate-200 bg-white px-4 py-4 max-w-2xl">
+<h2 class="text-sm font-semibold text-fg-secondary mb-2">Private podcast link</h2>
+<div class="rounded-lg border border-line bg-surface px-4 py-4 max-w-2xl">
   {% if feed_url %}
-  <p class="text-xs text-slate-600 mb-2">
+  <p class="text-xs text-fg-muted mb-2">
     Paste this into your podcast app — it's your personal subscribe URL, and the
     episode downloads carry the same token so they work off the phone.
   </p>
   <div class="flex items-center gap-2 mb-3">
     <input id="feed-url" readonly value="{{ feed_url }}" onclick="this.select()"
-           class="flex-1 min-w-0 rounded border border-emerald-300 bg-emerald-50
-                  px-2 py-1 text-xs font-mono text-slate-700" />
+           class="flex-1 min-w-0 rounded border border-success-strong bg-success-subtle
+                  px-2 py-1 text-xs font-mono text-fg-secondary" />
     <button type="button"
             onclick="const i=document.getElementById('feed-url');
                      i.select();
@@ -185,23 +185,23 @@
                       :Promise.reject()).catch(()=>document.execCommand('copy'));
                      this.textContent='copied';
                      setTimeout(()=>this.textContent='copy',1500);"
-            class="shrink-0 rounded border border-slate-300 text-xs px-2 py-1
-                   text-slate-600 hover:bg-slate-50 transition">copy</button>
+            class="shrink-0 rounded border border-line-strong text-xs px-2 py-1
+                   text-fg-muted hover:bg-surface-subtle transition">copy</button>
   </div>
-  <p class="text-[11px] text-slate-400 mb-3">
+  <p class="text-[11px] text-fg-faint mb-3">
     Anyone holding this URL can hear your episodes — it authenticates on its own,
     which is the point (podcast apps handle HTTP Basic on enclosure downloads
     inconsistently). Generate a new one to cut off a link you've shared or lost.
   </p>
   {% elif user.has_feed_token %}
-  <p class="text-xs text-amber-700 mb-3">
+  <p class="text-xs text-warning-strong mb-3">
     You have a live feed link, but this server can't read it back to show you —
     it's stored hashed and the vault has no copy (minted before the vault
     existed, or the vault isn't configured here). Generate a new one to get a
     URL you can copy; the old link stops working when you do.
   </p>
   {% else %}
-  <p class="text-xs text-slate-500 mb-3">
+  <p class="text-xs text-fg-subtle mb-3">
     A personal feed URL carrying a token, because podcast apps handle HTTP Basic
     on enclosure downloads inconsistently. Generate one and it stays here for you
     to copy.
@@ -211,8 +211,8 @@
     <form method="post" action="/account/feed-token">
       <input type="hidden" name="action" value="rotate" />
       <button type="submit"
-              class="rounded bg-emerald-600 text-white text-xs px-3 py-1.5
-                     hover:bg-emerald-700 transition">
+              class="rounded bg-success-solid text-on-solid text-xs px-3 py-1.5
+                     hover:bg-success-solid-strong transition">
         {% if user.has_feed_token %}Generate new link{% else %}Generate link{% endif %}
       </button>
     </form>
@@ -220,21 +220,21 @@
     <form method="post" action="/account/feed-token">
       <input type="hidden" name="action" value="revoke" />
       <button type="submit"
-              class="text-xs text-slate-400 hover:text-rose-600 transition">revoke</button>
+              class="text-xs text-fg-faint hover:text-danger transition">revoke</button>
     </form>
     {% endif %}
   </div>
 </div>
 
 {# ── reMarkable ──────────────────────────────────────────────────── #}
-<h2 class="text-sm font-semibold text-slate-700 mt-6 mb-2">reMarkable</h2>
-<div class="rounded-lg border border-slate-200 bg-white px-4 py-4 mb-6 max-w-2xl">
+<h2 class="text-sm font-semibold text-fg-secondary mt-6 mb-2">reMarkable</h2>
+<div class="rounded-lg border border-line bg-surface px-4 py-4 mb-6 max-w-2xl">
   {% if remarkable_paired %}
-  <p class="text-xs text-emerald-700 mb-3">
+  <p class="text-xs text-success-strong mb-3">
     Your tablet is paired — "Send to reMarkable" on a draft uploads to this device.
   </p>
   {% else %}
-  <p class="text-xs text-slate-500 mb-3">
+  <p class="text-xs text-fg-subtle mb-3">
     Pair your reMarkable tablet to send drafts to it straight from the reader.
   </p>
   {% endif %}
@@ -242,42 +242,42 @@
   <form method="post" action="/account/remarkable" class="space-y-2 mb-3">
     <input type="hidden" name="action" value="pair" />
     <div class="grid grid-cols-[10rem_1fr] items-center gap-2">
-      <label for="rm-code" class="text-xs text-slate-600">One-time code</label>
+      <label for="rm-code" class="text-xs text-fg-muted">One-time code</label>
       <input id="rm-code" name="code" type="text" maxlength="8"
              placeholder="8 characters" autocomplete="off"
-             class="rounded border border-slate-200 px-2 py-1 text-sm font-mono
-                    uppercase focus:border-sky-400 focus:outline-none" />
+             class="rounded border border-line px-2 py-1 text-sm font-mono
+                    uppercase focus:border-info-emphasis focus:outline-none" />
     </div>
     <button type="submit"
-            class="rounded bg-sky-600 text-white text-xs px-3 py-1.5
-                   hover:bg-sky-700 transition">Pair</button>
+            class="rounded bg-info-solid text-on-solid text-xs px-3 py-1.5
+                   hover:bg-info-solid-strong transition">Pair</button>
   </form>
-  <p class="text-[11px] text-slate-400 mb-3">
+  <p class="text-[11px] text-fg-faint mb-3">
     Sign in at
     <a href="https://my.remarkable.com/device/apps/connect" target="_blank"
-       rel="noopener" class="underline hover:text-slate-600">
+       rel="noopener" class="underline hover:text-fg-muted">
       my.remarkable.com/device/apps/connect
     </a>, generate a one-time code, and paste it here within a few minutes —
     codes are single-use, so a rejected one just needs a fresh code.
   </p>
 
   <details class="mb-3">
-    <summary class="text-xs text-slate-500 cursor-pointer hover:text-slate-700">
+    <summary class="text-xs text-fg-subtle cursor-pointer hover:text-fg-secondary">
       Advanced: paste a config or token
     </summary>
     <form method="post" action="/account/remarkable" class="mt-2 space-y-2">
       <input type="hidden" name="action" value="save" />
       <textarea name="config" rows="3" placeholder="devicetoken: ..."
-                class="w-full rounded border border-slate-200 px-2 py-1 text-xs
-                       font-mono focus:border-sky-400 focus:outline-none"></textarea>
-      <p class="text-[11px] text-slate-400">
+                class="w-full rounded border border-line px-2 py-1 text-xs
+                       font-mono focus:border-info-emphasis focus:outline-none"></textarea>
+      <p class="text-[11px] text-fg-faint">
         For when the pairing form above has drifted, or the device was
         already paired elsewhere — a full <code>rmapi</code> config body or
         a bare device token both work.
       </p>
       <button type="submit"
-              class="rounded border border-slate-300 text-xs px-3 py-1.5
-                     text-slate-700 hover:bg-slate-50 transition">Save</button>
+              class="rounded border border-line-strong text-xs px-3 py-1.5
+                     text-fg-secondary hover:bg-surface-subtle transition">Save</button>
     </form>
   </details>
 
@@ -285,40 +285,40 @@
   <form method="post" action="/account/remarkable">
     <input type="hidden" name="action" value="unpair" />
     <button type="submit"
-            class="text-xs text-slate-400 hover:text-rose-600 transition">unpair</button>
+            class="text-xs text-fg-faint hover:text-danger transition">unpair</button>
   </form>
   {% endif %}
 </div>
 
 {# ── Anki ─────────────────────────────────────────────────────────── #}
-<h2 class="text-sm font-semibold text-slate-700 mt-6 mb-2">Anki</h2>
-<div class="rounded-lg border border-slate-200 bg-white px-4 py-4 mb-6 max-w-2xl">
+<h2 class="text-sm font-semibold text-fg-secondary mt-6 mb-2">Anki</h2>
+<div class="rounded-lg border border-line bg-surface px-4 py-4 mb-6 max-w-2xl">
   {% if anki_connected %}
-  <p class="text-xs text-emerald-700 mb-3">
+  <p class="text-xs text-success-strong mb-3">
     AnkiWeb connected as {{ anki_email }} — your cloze cards sync to this account.
   </p>
   {% else %}
-  <p class="text-xs text-slate-500 mb-3">Not connected.</p>
+  <p class="text-xs text-fg-subtle mb-3">Not connected.</p>
   {% endif %}
 
   <form method="post" action="/account/anki" class="space-y-2 mb-3">
     <input type="hidden" name="action" value="save" />
     <div class="grid grid-cols-[10rem_1fr] items-center gap-2">
-      <label for="anki-email" class="text-xs text-slate-600">AnkiWeb email</label>
+      <label for="anki-email" class="text-xs text-fg-muted">AnkiWeb email</label>
       <input id="anki-email" name="email" type="email" autocomplete="off"
              value="{{ anki_email or '' }}"
-             class="rounded border border-slate-200 px-2 py-1 text-sm
-                    focus:border-sky-400 focus:outline-none" />
-      <label for="anki-password" class="text-xs text-slate-600">AnkiWeb password</label>
+             class="rounded border border-line px-2 py-1 text-sm
+                    focus:border-info-emphasis focus:outline-none" />
+      <label for="anki-password" class="text-xs text-fg-muted">AnkiWeb password</label>
       <input id="anki-password" name="password" type="password" autocomplete="off"
-             class="rounded border border-slate-200 px-2 py-1 text-sm
-                    focus:border-sky-400 focus:outline-none" />
+             class="rounded border border-line px-2 py-1 text-sm
+                    focus:border-info-emphasis focus:outline-none" />
     </div>
     <button type="submit"
-            class="rounded bg-sky-600 text-white text-xs px-3 py-1.5
-                   hover:bg-sky-700 transition">Save</button>
+            class="rounded bg-info-solid text-on-solid text-xs px-3 py-1.5
+                   hover:bg-info-solid-strong transition">Save</button>
   </form>
-  <p class="text-[11px] text-slate-400 mb-3">
+  <p class="text-[11px] text-fg-faint mb-3">
     precis syncs your <code>anki</code> cards to this AnkiWeb account on a
     schedule; it never uploads a full collection over yours.
   </p>
@@ -327,15 +327,15 @@
   <form method="post" action="/account/anki">
     <input type="hidden" name="action" value="forget" />
     <button type="submit"
-            class="text-xs text-slate-400 hover:text-rose-600 transition">forget</button>
+            class="text-xs text-fg-faint hover:text-danger transition">forget</button>
   </form>
   {% endif %}
 </div>
 
 {# ── Poster branding (kind='profile' default) ─────────────────────── #}
-<h2 class="text-sm font-semibold text-slate-700 mt-6 mb-2">Poster branding</h2>
-<div class="rounded-lg border border-slate-200 bg-white px-4 py-4 mb-6 max-w-2xl">
-  <p class="text-xs text-slate-500 mb-3">
+<h2 class="text-sm font-semibold text-fg-secondary mt-6 mb-2">Poster branding</h2>
+<div class="rounded-lg border border-line bg-surface px-4 py-4 mb-6 max-w-2xl">
+  <p class="text-xs text-fg-subtle mb-3">
     Your default <code>kind='profile'</code> — the palette, font and logo
     strip a <code>doc_type='poster'</code> draft exports under unless the
     poster overrides it. Role colours are validated (contrast floor 4.5:1);
@@ -343,52 +343,52 @@
   </p>
   <form method="post" action="/account/poster-profile" class="space-y-2">
     <div class="grid grid-cols-[10rem_1fr] items-center gap-2">
-      <label for="pp-name" class="text-xs text-slate-600">Profile name</label>
+      <label for="pp-name" class="text-xs text-fg-muted">Profile name</label>
       <input id="pp-name" name="name" autocomplete="off"
              value="{{ (poster_profile or {}).get('name', 'default') }}"
-             class="rounded border border-slate-200 px-2 py-1 text-sm
-                    focus:border-sky-400 focus:outline-none" />
+             class="rounded border border-line px-2 py-1 text-sm
+                    focus:border-info-emphasis focus:outline-none" />
       {% for role in poster_roles %}
-      <label for="pp-{{ role }}" class="text-xs text-slate-600">{{ role }}</label>
+      <label for="pp-{{ role }}" class="text-xs text-fg-muted">{{ role }}</label>
       <input id="pp-{{ role }}" name="role_{{ role }}" type="text"
              autocomplete="off" placeholder="#RRGGBB"
              value="{{ ((poster_profile or {}).get('palette') or {}).get(role, '') }}"
-             class="rounded border border-slate-200 px-2 py-1 text-sm
-                    focus:border-sky-400 focus:outline-none" />
+             class="rounded border border-line px-2 py-1 text-sm
+                    focus:border-info-emphasis focus:outline-none" />
       {% endfor %}
-      <label for="pp-font" class="text-xs text-slate-600">Font</label>
+      <label for="pp-font" class="text-xs text-fg-muted">Font</label>
       <select id="pp-font" name="font_body"
-              class="rounded border border-slate-200 px-2 py-1 text-sm bg-white">
+              class="rounded border border-line px-2 py-1 text-sm bg-surface">
         {% for f in ['lmodern', 'helvet'] %}
         <option value="{{ f }}"{% if ((poster_profile or {}).get('fonts') or {}).get('body') == f %} selected{% endif %}>{{ f }}</option>
         {% endfor %}
       </select>
-      <label for="pp-sponsor" class="text-xs text-slate-600">Sponsor line</label>
+      <label for="pp-sponsor" class="text-xs text-fg-muted">Sponsor line</label>
       <input id="pp-sponsor" name="sponsor_line" autocomplete="off"
              value="{{ (poster_profile or {}).get('sponsor_line', '') }}"
-             class="rounded border border-slate-200 px-2 py-1 text-sm
-                    focus:border-sky-400 focus:outline-none" />
-      <label for="pp-logos" class="text-xs text-slate-600">Logos</label>
+             class="rounded border border-line px-2 py-1 text-sm
+                    focus:border-info-emphasis focus:outline-none" />
+      <label for="pp-logos" class="text-xs text-fg-muted">Logos</label>
       <input id="pp-logos" name="logos" autocomplete="off"
              placeholder="figure ids, comma-separated"
              value="{{ ((poster_profile or {}).get('logos') or []) | map(attribute='figure') | join(', ') }}"
-             class="rounded border border-slate-200 px-2 py-1 text-sm
-                    focus:border-sky-400 focus:outline-none" />
+             class="rounded border border-line px-2 py-1 text-sm
+                    focus:border-info-emphasis focus:outline-none" />
     </div>
     <button type="submit"
-            class="rounded bg-sky-600 text-white text-xs px-3 py-1.5
-                   hover:bg-sky-700 transition">Save</button>
+            class="rounded bg-info-solid text-on-solid text-xs px-3 py-1.5
+                   hover:bg-info-solid-strong transition">Save</button>
   </form>
-  <p class="text-[11px] text-slate-400 mt-3">
+  <p class="text-[11px] text-fg-faint mt-3">
     Every role must carry a valid <code>#RRGGBB</code>; logo ids are
     <code>kind='figure'</code> refs resolved at export.
   </p>
 </div>
 
 {# ── sign out ────────────────────────────────────────────────────── #}
-<h2 class="text-sm font-semibold text-slate-700 mt-6 mb-2">Sign out</h2>
-<div class="rounded-lg border border-slate-200 bg-white px-4 py-4 max-w-2xl">
-  <p class="text-xs text-slate-500 mb-3">
+<h2 class="text-sm font-semibold text-fg-secondary mt-6 mb-2">Sign out</h2>
+<div class="rounded-lg border border-line bg-surface px-4 py-4 max-w-2xl">
+  <p class="text-xs text-fg-subtle mb-3">
     HTTP Basic keeps no session, so there is nothing on the server to end —
     your browser is holding the password and re-sends it on every request.
     This asks it to forget: the next page answers with a fresh challenge, the
@@ -397,9 +397,9 @@
   </p>
   <form method="post" action="/account/logout">
     <button type="submit"
-            class="rounded border border-slate-300 text-xs px-3 py-1.5
-                   text-slate-700 hover:bg-rose-50 hover:border-rose-300
-                   hover:text-rose-700 transition">Sign out</button>
+            class="rounded border border-line-strong text-xs px-3 py-1.5
+                   text-fg-secondary hover:bg-danger-subtle hover:border-danger-strong
+                   hover:text-danger-strong transition">Sign out</button>
   </form>
 </div>
 {% endif %}

@@ -74,7 +74,7 @@ def test_index_is_the_three_pane_tree(client: TestClient, runtime_with_store) ->
     assert 'class="np-title' in resp.text
     assert ".np-title" in resp.text
     # Forest rows carry no trusty/artifact-code preview crowding the title.
-    assert "font-mono text-xs text-slate-400 shrink-0" not in resp.text
+    assert "font-mono text-xs text-fg-faint shrink-0" not in resp.text
     # The old tree URL redirects home.
     tree = client.get("/nanopub/tree", follow_redirects=False)
     assert tree.status_code == 307 and tree.headers["location"] == "/nanopub"

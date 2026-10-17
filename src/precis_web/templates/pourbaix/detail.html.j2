@@ -3,22 +3,22 @@
 {% block content %}
 
 <style>
-  .pbx-rung.pbx-limit td { background: #fef3c7; }
+  .pbx-rung.pbx-limit td { background: rgb(var(--bg-warning-muted)); }
   .pbx-rung td { white-space: nowrap; }
   /* slice 4 rung states at the picked point (gr489471) */
-  .pbx-rung[data-state="electro_uphill"] td { color: #b91c1c; }
-  .pbx-rung[data-state="thermally_blocked"] td { color: #b45309; }
+  .pbx-rung[data-state="electro_uphill"] td { color: rgb(var(--text-danger-strong)); }
+  .pbx-rung[data-state="thermally_blocked"] td { color: rgb(var(--text-warning-strong)); }
   .pbx-rung[data-state="off_map"] td {
-    color: #64748b;
-    background: repeating-linear-gradient(45deg, #f1f5f9 0 4px, #e2e8f0 4px 8px);
+    color: rgb(var(--text-fg-subtle));
+    background: repeating-linear-gradient(45deg, rgb(var(--bg-surface-muted)) 0 4px, rgb(var(--bg-surface-emphasis)) 4px 8px);
   }
   svg.pbx-map.pbx-pickable { cursor: crosshair; touch-action: none; }
-  svg.pbx-map:focus { outline: 2px solid #38bdf8; outline-offset: 2px; }
+  svg.pbx-map:focus { outline: 2px solid rgb(var(--border-info-emphasis)); outline-offset: 2px; }
 </style>
 
 <div class="mb-4">
   <h1 class="text-lg font-semibold">{{ title }}</h1>
-  <p class="text-xs text-slate-500">
+  <p class="text-xs text-fg-subtle">
     Resting-state surface-Pourbaix validity map{% if subject.kind == 'quest' %}
     for one candidate surface of {{ subject.handle }} at a time{% endif %},
     linked to the reaction staircase — one map per footing (anchor_key ·
@@ -34,23 +34,23 @@
    bank state and the ?pathway= pick, and the script re-stamps them as
    the sliders move; ?view=compare is the labelled cross-surface
    secondary view. #}
-<div class="mb-4 rounded border border-slate-200 bg-white p-3 text-xs">
-  <div class="mb-1 font-medium text-slate-700">
+<div class="mb-4 rounded border border-line bg-surface p-3 text-xs">
+  <div class="mb-1 font-medium text-fg-secondary">
     {{ surfaces | length }} candidate surface{{ 's' if surfaces | length != 1 }}
     — best-ranked first
     {% if compare %}
-    · <span class="text-amber-800">comparison: every surface drawn below</span>
-    · <a href="{{ request.url.path }}" class="pbx-carry text-sky-700 hover:underline">back to one surface</a>
+    · <span class="text-warning-deep">comparison: every surface drawn below</span>
+    · <a href="{{ request.url.path }}" class="pbx-carry text-info-strong hover:underline">back to one surface</a>
     {% else %}
-    · <a href="?view=compare" class="pbx-carry text-sky-700 hover:underline">compare all on one page</a>
+    · <a href="?view=compare" class="pbx-carry text-info-strong hover:underline">compare all on one page</a>
     {% endif %}
   </div>
   {% if surface_notice %}
-  <p class="mb-1 rounded bg-amber-50 px-2 py-1 text-amber-800">{{ surface_notice }}</p>
+  <p class="mb-1 rounded bg-warning-subtle px-2 py-1 text-warning-deep">{{ surface_notice }}</p>
   {% endif %}
   {% if surfaces %}
   <form method="get" action="{{ request.url.path }}" class="flex flex-wrap items-center gap-2">
-    <label for="pbx-surface-pick" class="text-slate-600">draw surface</label>
+    <label for="pbx-surface-pick" class="text-fg-muted">draw surface</label>
     <select id="pbx-surface-pick" name="surface" class="max-w-full font-mono"
             onchange="this.form.submit()">
       {% for s in surfaces %}
@@ -61,7 +61,7 @@
       {% for k, v in picker_hidden %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endfor %}
     </span>
     {% if picker_pathway %}<input type="hidden" name="pathway" value="{{ picker_pathway }}">{% endif %}
-    <button type="submit" class="rounded border border-slate-300 px-2 py-0.5 text-slate-700 hover:bg-slate-50">Go</button>
+    <button type="submit" class="rounded border border-line-strong px-2 py-0.5 text-fg-secondary hover:bg-surface-subtle">Go</button>
   </form>
   {% endif %}
 </div>
@@ -77,32 +77,32 @@
    ?reset=0) — the script rewrites the address bar with
    history.replaceState as they change and carries them on every picker
    link; the server renders a linked state on load. #}
-<div id="pbx-bank" class="mb-4 rounded border border-slate-200 bg-white p-3 text-xs">
+<div id="pbx-bank" class="mb-4 rounded border border-line bg-surface p-3 text-xs">
   <div class="flex flex-wrap items-center gap-x-5 gap-y-2">
-    <label class="text-slate-600">U (V vs RHE)
+    <label class="text-fg-muted">U (V vs RHE)
       <input type="range" id="pbx-u" min="{{ u_lo }}" max="{{ u_hi }}" step="0.005"
              value="{{ u0 }}" data-default="{{ u_def }}" data-offgrid="0" class="ml-1 w-48 align-middle">
     </label>
     <span id="pbx-u-read" class="font-mono"></span>
-    <span id="pbx-u-she" class="text-slate-500"></span>
-    <label class="text-slate-600">pH
+    <span id="pbx-u-she" class="text-fg-subtle"></span>
+    <label class="text-fg-muted">pH
       <input type="range" id="pbx-ph" min="0" max="14" step="0.1"
              value="{{ ph0 }}" data-default="{{ ph_def }}" data-offgrid="0" class="ml-1 w-28 align-middle">
     </label>
     <span id="pbx-ph-read" class="font-mono"></span>
-    <label class="text-slate-600">
+    <label class="text-fg-muted">
       <input type="checkbox" id="pbx-reset-toggle"{% if reset_on %} checked{% endif %} class="ml-1 align-middle">
       reset layer
     </label>
-    <span class="text-slate-400" title="guaranteed reset (solid) vs the hysteretic
+    <span class="text-fg-faint" title="guaranteed reset (solid) vs the hysteretic
 band — viable but not guaranteed (dashed); each in its route's colour">
       reset: solid = guaranteed, dashed = hysteretic</span>
-    <span id="pbx-offgrid" class="hidden rounded bg-amber-100 px-2 py-0.5 text-amber-800">
+    <span id="pbx-offgrid" class="hidden rounded bg-warning-muted px-2 py-0.5 text-warning-deep">
       off the computed grid — this axis needs fresh anchors
     </span>
   </div>
   {% if link_ignored %}
-  <p id="pbx-link-note" class="mt-1 text-amber-800">ignored link
+  <p id="pbx-link-note" class="mt-1 text-warning-deep">ignored link
     parameter{{ 's' if link_ignored | length > 1 }} that did not parse:
     {{ link_ignored | join(', ') }} — showing the default for those.</p>
   {% endif %}
@@ -110,32 +110,32 @@ band — viable but not guaranteed (dashed); each in its route's colour">
 
 <div id="pourbaix-panel" class="space-y-6">
 {% if compare %}
-<p class="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
+<p class="rounded border border-warning bg-warning-subtle px-3 py-2 text-xs font-medium text-warning-deep">
   comparison view — every candidate surface of {{ subject.handle }} drawn on
   one page (secondary view; the default page draws one surface at a time)
 </p>
 {% endif %}
 {% for e in entries %}
-  <section class="pbx-entry rounded border border-slate-200 bg-white p-3">
+  <section class="pbx-entry rounded border border-line bg-surface p-3">
     <script type="application/json" class="pbx-ejson">{{ e.pbx | tojson }}</script>
     <div class="mb-2 flex items-baseline gap-2">
-      <a href="{{ e.url }}" class="font-mono text-sm text-sky-700 hover:underline">{{ e.handle }}</a>
-      <span class="text-sm text-slate-700">{{ e.title }}</span>
+      <a href="{{ e.url }}" class="font-mono text-sm text-info-strong hover:underline">{{ e.handle }}</a>
+      <span class="text-sm text-fg-secondary">{{ e.title }}</span>
     </div>
     {% if not e.maps and not e.staircase %}
-    <p class="text-xs text-slate-500">no anchors — no succeeded
+    <p class="text-xs text-fg-subtle">no anchors — no succeeded
       <code>surface_coverage_scan</code> job is tied to this structure — and no
       ready pathway is linked to it.</p>
     {% elif not e.maps %}
-    <p class="text-xs text-slate-500">no anchors — no succeeded
+    <p class="text-xs text-fg-subtle">no anchors — no succeeded
       <code>surface_coverage_scan</code> job is tied to this structure.</p>
     {% endif %}
     {% for m in e.maps %}
     <div class="mb-4">
-      <div class="overflow-auto">{{ m.svg | safe }}</div>
-      <div class="pbx-resting mt-1 text-[11px] font-medium text-slate-700"></div>
+      <div class="scheme-light overflow-auto bg-surface">{{ m.svg | safe }}</div>
+      <div class="pbx-resting mt-1 text-[11px] font-medium text-fg-secondary"></div>
       {% if m.mask_rungs %}
-      <div class="pbx-mask-toggles mt-1 flex flex-wrap gap-x-3 text-[11px] text-slate-600">
+      <div class="pbx-mask-toggles mt-1 flex flex-wrap gap-x-3 text-[11px] text-fg-muted">
         <span>overlays (where each PCET rung of route 1 is viable):</span>
         <label><input type="checkbox" class="pbx-tog-window" checked> window</label>
         {% if m.mask_her %}<label><input type="checkbox" class="pbx-tog-her"> HER wins</label>{% endif %}
@@ -144,17 +144,17 @@ band — viable but not guaranteed (dashed); each in its route's colour">
         {% endfor %}
       </div>
       {% endif %}
-      <div class="mt-1 text-[11px] text-slate-500 space-y-0.5">
+      <div class="mt-1 text-[11px] text-fg-subtle space-y-0.5">
         <div>
           anchor_key <span class="font-mono">{{ m.anchor_key[:16] }}…</span> ·
           models {{ m.models | join(', ') }} ·
           engine {{ m.engine_version or '?' }} ·
-          corrections {% if m.uncorrected %}<span class="text-amber-700">none — uncorrected anchors</span>{% else %}{{ m.corrections }}{% endif %} ·
+          corrections {% if m.uncorrected %}<span class="text-warning-strong">none — uncorrected anchors</span>{% else %}{{ m.corrections }}{% endif %} ·
           σ<sub>e</sub> {{ '%.3f' % m.sigma_e_eV if m.sigma_e_eV is not none else 'unrecorded' }} eV
         </div>
         <div>scan jobs: {% for j in m.scan_jobs %}<span class="font-mono">jo{{ j }}</span>{{ ', ' if not loop.last }}{% endfor %}{% if m.n_anchors is not none %} · {{ m.n_anchors }} anchor(s){% endif %}</div>
         {% for d in m.dropped %}
-        <div class="pbx-dropped text-amber-700">dropped: {{ d }}</div>
+        <div class="pbx-dropped text-warning-strong">dropped: {{ d }}</div>
         {% endfor %}
         {% if m.bulk %}
         <div>bulk layer (uncertain): {{ m.bulk.point.verdict }} at
@@ -163,59 +163,59 @@ band — viable but not guaranteed (dashed); each in its route's colour">
           job <span class="font-mono">jo{{ m.bulk.job_id }}</span></div>
         {% endif %}
         {% if m.incomplete %}
-        <div class="text-amber-700">incomplete: {{ m.incomplete | join('; ') }}</div>
+        <div class="text-warning-strong">incomplete: {{ m.incomplete | join('; ') }}</div>
         {% endif %}
       </div>
     </div>
     {% endfor %}
-    <div class="pbx-mismatch mt-1 hidden text-[11px] font-medium text-amber-700"></div>
+    <div class="pbx-mismatch mt-1 hidden text-[11px] font-medium text-warning-strong"></div>
     {% if e.staircase %}
     {% set sc = e.staircase %}
-    <div class="pbx-staircase mt-3 border-t border-slate-200 pt-2">
+    <div class="pbx-staircase mt-3 border-t border-line pt-2">
       <div class="text-xs">
         reaction staircase —
-        <a href="{{ sc.pathway_url }}" class="pbx-carry-pw font-mono text-sky-700 hover:underline">{{ sc.pathway_handle }}</a>
-        <span class="text-slate-600">{{ sc.title }}</span>
-        <span class="text-slate-400">· ΔG(U) = ΔG0 + n_e·U, n_e = pairs consumed</span>
+        <a href="{{ sc.pathway_url }}" class="pbx-carry-pw font-mono text-info-strong hover:underline">{{ sc.pathway_handle }}</a>
+        <span class="text-fg-muted">{{ sc.title }}</span>
+        <span class="text-fg-faint">· ΔG(U) = ΔG0 + n_e·U, n_e = pairs consumed</span>
       </div>
       {% if sc.pathway_notice %}
-      <div class="mt-1 rounded bg-amber-50 px-2 py-0.5 text-[11px] text-amber-800">{{ sc.pathway_notice }}</div>
+      <div class="mt-1 rounded bg-warning-subtle px-2 py-0.5 text-[11px] text-warning-deep">{{ sc.pathway_notice }}</div>
       {% endif %}
       {% if sc.pathways | length > 1 and not compare %}
-      <div class="pbx-pathways mt-1 text-[11px] text-slate-600">
+      <div class="pbx-pathways mt-1 text-[11px] text-fg-muted">
         {{ sc.pathways | length }} ready pathways, best-ranked first:
         {% for p in sc.pathways %}
-        {% if p.selected %}<span class="font-mono font-medium text-slate-800" title="{{ p.title }}">{{ p.handle }}</span>{% else %}<a
+        {% if p.selected %}<span class="font-mono font-medium text-fg" title="{{ p.title }}">{{ p.handle }}</span>{% else %}<a
           href="?{{ ({'surface': selected_handle, 'pathway': p.handle} if selected_handle else {'pathway': p.handle}) | urlencode }}"
-          class="pbx-carry font-mono text-sky-700 hover:underline" title="{{ p.title }}">{{ p.handle }}</a>{% endif %}{{ ' ·' if not loop.last }}
+          class="pbx-carry font-mono text-info-strong hover:underline" title="{{ p.title }}">{{ p.handle }}</a>{% endif %}{{ ' ·' if not loop.last }}
         {% endfor %}
       </div>
       {% endif %}
       {% if not e.maps %}
-      <div class="mt-1 text-[11px] text-amber-700">no resting map on this
+      <div class="mt-1 text-[11px] text-warning-strong">no resting map on this
         structure — the staircase's starting surface is unverified</div>
       {% endif %}
       {% if sc.states %}
       {# the picked point's verdict — server-rendered first paint of the
          same point_states call /states answers (gr489471) #}
-      <div class="pbx-point mt-1 text-[11px] text-slate-700"
+      <div class="pbx-point mt-1 text-[11px] text-fg-secondary"
            data-states-url="{{ sc.states_url }}">
         <span class="pbx-point-window font-medium">window {{ sc.states.window }}</span>
-        <span class="pbx-point-term text-slate-500">· resting {{ sc.states.termination or 'unmapped' }}, pathway computed on {{ sc.states.assumed }}</span>
+        <span class="pbx-point-term text-fg-subtle">· resting {{ sc.states.termination or 'unmapped' }}, pathway computed on {{ sc.states.assumed }}</span>
         <div class="pbx-point-worst">{% if sc.states.worst %}worst rung (route {{ sc.states.worst.route_index + 1 }}): {{ sc.states.worst.line }}{% endif %}</div>
       </div>
       {% endif %}
       {% for r in sc.routes %}
       <div class="pbx-route mt-2">
-        <div class="text-[11px] font-medium text-slate-700">
+        <div class="text-[11px] font-medium text-fg-secondary">
           route {{ loop.index }}: <span class="font-mono">{{ r.name }}</span>
-          <span class="font-normal text-slate-500">—
+          <span class="font-normal text-fg-subtle">—
             U_L {{ '%+.3f'|format(r.U_L) + ' V' if r.U_L is not none else 'n/a' }},
             U_opt {{ '%+.3f'|format(r.U_opt) + ' V' if r.U_opt is not none else 'n/a' }},
             span_at_UL {{ '%.3f'|format(r.span_at_UL) + ' eV' if r.span_at_UL is not none else 'n/a' }}</span>
         </div>
-        <table class="mt-0.5 text-[11px] font-mono text-slate-700">
-          <thead class="text-slate-400">
+        <table class="mt-0.5 text-[11px] font-mono text-fg-secondary">
+          <thead class="text-fg-faint">
             <tr><th class="pr-3 text-left font-normal">rung</th>
                 <th class="pr-3 text-left font-normal">kind</th>
                 <th class="pr-3 text-left font-normal">n_e</th>
@@ -239,20 +239,20 @@ band — viable but not guaranteed (dashed); each in its route's colour">
           {% endfor %}
           </tbody>
         </table>
-        <div class="pbx-lim text-[11px] text-slate-600"></div>
-        <div class="pbx-reset-verdict text-[11px] text-teal-700"></div>
-        {% if sc.her %}<div class="pbx-her-margin text-[11px] text-slate-600"></div>{% endif %}
+        <div class="pbx-lim text-[11px] text-fg-muted"></div>
+        <div class="pbx-reset-verdict text-[11px] text-teal-strong"></div>
+        {% if sc.her %}<div class="pbx-her-margin text-[11px] text-fg-muted"></div>{% endif %}
       </div>
       {% endfor %}
       {% if sc.her %}
       <div class="pbx-her mt-2">
-        <div class="text-[11px] font-medium text-slate-700">
+        <div class="text-[11px] font-medium text-fg-secondary">
           HER competitor ({{ sc.her.product or 'H2' }}):
           U_L_her {{ '%+.3f'|format(sc.her.U_L_her) + ' V' if sc.her.U_L_her is not none else 'n/a' }}{% if sc.her.dG_H_star is not none %},
           dG_H* {{ '%+.3f'|format(sc.her.dG_H_star) }} eV{% endif %};
-          <span class="pbx-her-lim font-normal text-slate-500"></span>
+          <span class="pbx-her-lim font-normal text-fg-subtle"></span>
         </div>
-        <table class="mt-0.5 text-[11px] font-mono text-slate-700">
+        <table class="mt-0.5 text-[11px] font-mono text-fg-secondary">
           <tbody>
           {% for rg in sc.her.rungs %}
           <tr class="pbx-rung" data-dg0="{{ rg.delta_g0 }}" data-ne="{{ rg.n_e }}"
@@ -269,14 +269,14 @@ band — viable but not guaranteed (dashed); each in its route's colour">
       </div>
       {% endif %}
       {% if sc.missing %}
-      <div class="mt-1 text-[11px] text-amber-700">missing: {{ sc.missing | join('; ') }}</div>
+      <div class="mt-1 text-[11px] text-warning-strong">missing: {{ sc.missing | join('; ') }}</div>
       {% endif %}
     </div>
     {% endif %}
   </section>
 {% endfor %}
 {% if not entries %}
-<p class="text-xs text-slate-500">no candidate structures serve this quest.</p>
+<p class="text-xs text-fg-subtle">no candidate structures serve this quest.</p>
 {% endif %}
 </div>
 

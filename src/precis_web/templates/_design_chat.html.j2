@@ -11,22 +11,22 @@
    name to the hidden ``handles`` field. Vendored assets only, no egress. #}
 {% macro design_chat(chat, rev, rev_current) -%}
 <div id="design-chat" class="mt-6">
-  <h2 class="text-sm font-semibold text-slate-700 mb-2">Design chat
-    <span class="text-xs font-normal text-slate-400">— click a {{ 'component instance' if chat.kind == 'pcb' else ('block' if chat.kind == 'se' else 'atom') }} to mention it, describe the change; {{ 'PCB changes always require explicit Apply' if chat.kind == 'pcb' else 'pure block ops apply as a revision, everything else proposes' }}</span>
+  <h2 class="text-sm font-semibold text-fg-secondary mb-2">Design chat
+    <span class="text-xs font-normal text-fg-faint">— click a {{ 'component instance' if chat.kind == 'pcb' else ('block' if chat.kind == 'se' else 'atom') }} to mention it, describe the change; {{ 'PCB changes always require explicit Apply' if chat.kind == 'pcb' else 'pure block ops apply as a revision, everything else proposes' }}</span>
   </h2>
 
   {% if chat.read_only %}
-  <p id="design-chat-readonly" class="text-xs text-slate-500">Read-only — you are viewing revision {{ rev }} of {{ rev_current }}; chat on
-    <a class="text-emerald-700 hover:underline" href="/{{ chat.kind }}/{{ chat.slug | urlencode }}#design-chat">the current revision</a>.</p>
+  <p id="design-chat-readonly" class="text-xs text-fg-subtle">Read-only — you are viewing revision {{ rev }} of {{ rev_current }}; chat on
+    <a class="text-success-strong hover:underline" href="/{{ chat.kind }}/{{ chat.slug | urlencode }}#design-chat">the current revision</a>.</p>
   {% else %}
 
   {% if chat.chat_error %}
-  <div id="design-chat-error" class="mb-2 rounded border border-red-200 bg-red-50 px-2 py-1 text-xs text-red-800">
+  <div id="design-chat-error" class="mb-2 rounded border border-danger bg-danger-subtle px-2 py-1 text-xs text-danger-deep">
     <span class="font-semibold">turn failed — nothing written:</span> {{ chat.chat_error }}
   </div>
   {% endif %}
   {% if chat.chat_note %}
-  <div id="design-chat-note" class="mb-2 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-800">
+  <div id="design-chat-note" class="mb-2 rounded border border-warning bg-warning-subtle px-2 py-1 text-xs text-warning-deep">
     <span class="font-semibold">no ops — nothing written:</span> {{ chat.chat_note }}
   </div>
   {% endif %}
@@ -34,40 +34,40 @@
   {# ── transcript, oldest → newest ── #}
   <div id="design-chat-transcript" class="space-y-2">
     {% if not chat.turns %}
-    <p class="text-xs text-slate-400">No turns yet.</p>
+    <p class="text-xs text-fg-faint">No turns yet.</p>
     {% endif %}
     {% for t in chat.turns %}
     <div id="chat-turn-{{ t.ord }}" data-turn="{{ t.handle }}"
-         class="rounded-lg border bg-white p-2 text-xs {% if t.ord == chat.chat_turn %}border-emerald-400 ring-1 ring-emerald-200{% else %}border-slate-200{% endif %}">
+         class="rounded-lg border bg-surface p-2 text-xs {% if t.ord == chat.chat_turn %}border-success-emphasis ring-1 ring-success{% else %}border-line{% endif %}">
       <div class="flex items-center gap-2 mb-1">
-        <code class="text-[10px] text-slate-400">~{{ t.ord }}</code>
-        {% if t.handles %}<span class="text-[10px] text-slate-400">@ {{ t.handles | join(', ') }}</span>{% endif %}
-        {% if t.created %}<span class="ml-auto text-[10px] text-slate-400">{{ t.created }}</span>{% endif %}
+        <code class="text-[10px] text-fg-faint">~{{ t.ord }}</code>
+        {% if t.handles %}<span class="text-[10px] text-fg-faint">@ {{ t.handles | join(', ') }}</span>{% endif %}
+        {% if t.created %}<span class="ml-auto text-[10px] text-fg-faint">{{ t.created }}</span>{% endif %}
       </div>
-      <div class="whitespace-pre-wrap"><span class="font-semibold text-slate-700">you:</span> {{ t.message }}</div>
-      <div class="mt-1 whitespace-pre-wrap"><span class="font-semibold text-slate-700">model:</span> {{ t.rationale or '(no rationale)' }}</div>
+      <div class="whitespace-pre-wrap"><span class="font-semibold text-fg-secondary">you:</span> {{ t.message }}</div>
+      <div class="mt-1 whitespace-pre-wrap"><span class="font-semibold text-fg-secondary">model:</span> {{ t.rationale or '(no rationale)' }}</div>
       {% if t.ops %}
-      <pre class="mt-1 max-h-32 overflow-auto rounded bg-slate-50 p-1.5 font-mono text-[11px] text-slate-700 whitespace-pre">{% for op in t.ops %}{{ op.json }}
+      <pre class="mt-1 max-h-32 overflow-auto rounded bg-surface-subtle p-1.5 font-mono text-[11px] text-fg-secondary whitespace-pre">{% for op in t.ops %}{{ op.json }}
 {% endfor %}</pre>
       {% endif %}
-      <div class="mt-1 text-slate-500">
+      <div class="mt-1 text-fg-subtle">
         {% if t.revision %}
-          {% if t.proposal %}proposal · {% endif %}applied as <a class="text-emerald-700 hover:underline" href="/{{ chat.kind }}/{{ chat.slug | urlencode }}?rev={{ t.revision }}">revision {{ t.revision }}</a>
+          {% if t.proposal %}proposal · {% endif %}applied as <a class="text-success-strong hover:underline" href="/{{ chat.kind }}/{{ chat.slug | urlencode }}?rev={{ t.revision }}">revision {{ t.revision }}</a>
         {% elif t.proposal %}
           proposal ·
-          {% if t.valid %}<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800">valid</span>
-          {% else %}<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-red-100 text-red-800">invalid</span> {{ t.error }}{% endif %}
-          {% if chat.pending and chat.pending.ord == t.ord %}<span class="text-slate-400">— awaiting Apply below</span>{% endif %}
+          {% if t.valid %}<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-success-muted text-success-deep">valid</span>
+          {% else %}<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-danger-muted text-danger-deep">invalid</span> {{ t.error }}{% endif %}
+          {% if chat.pending and chat.pending.ord == t.ord %}<span class="text-fg-faint">— awaiting Apply below</span>{% endif %}
         {% elif t.rejected %}
-          <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-red-100 text-red-800">rejected</span> {{ t.error }} <span class="text-slate-400">— nothing written to the design</span>
+          <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-danger-muted text-danger-deep">rejected</span> {{ t.error }} <span class="text-fg-faint">— nothing written to the design</span>
         {% elif t.noop %}
-          <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800">no-op</span> <span class="text-slate-400">cannot be expressed as ops — nothing written to the design</span>
+          <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-warning-muted text-warning-deep">no-op</span> <span class="text-fg-faint">cannot be expressed as ops — nothing written to the design</span>
         {% else %}
           {{ t.outcome }}
         {% endif %}
       </div>
       {% if t.repair %}
-      <div class="mt-1 text-[10px] text-slate-400">first attempt rejected: {{ t.repair }} — one repair round</div>
+      <div class="mt-1 text-[10px] text-fg-faint">first attempt rejected: {{ t.repair }} — one repair round</div>
       {% endif %}
     </div>
     {% endfor %}
@@ -75,20 +75,20 @@
 
   {# ── the pending proposal → human Apply ── #}
   {% if chat.pending %}
-  <div id="design-chat-proposal" class="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+  <div id="design-chat-proposal" class="mt-3 rounded-lg border border-line bg-surface-subtle p-3">
     <div class="flex items-center gap-2 mb-1">
-      <span class="text-xs font-semibold text-slate-700">Proposed {{ chat.pending.ops | length }} op(s)</span>
+      <span class="text-xs font-semibold text-fg-secondary">Proposed {{ chat.pending.ops | length }} op(s)</span>
       {% if chat.pending.valid %}
-      <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800">valid</span>
+      <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-success-muted text-success-deep">valid</span>
       {% else %}
-      <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-red-100 text-red-800">invalid: {{ chat.pending.error }}</span>
+      <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-danger-muted text-danger-deep">invalid: {{ chat.pending.error }}</span>
       {% endif %}
-      <code class="ml-auto text-[10px] text-slate-400">{{ chat.pending.handle }}</code>
+      <code class="ml-auto text-[10px] text-fg-faint">{{ chat.pending.handle }}</code>
     </div>
-    {% if chat.pending.rationale %}<p class="text-xs text-slate-500 mb-2">{{ chat.pending.rationale }}</p>{% endif %}
+    {% if chat.pending.rationale %}<p class="text-xs text-fg-subtle mb-2">{{ chat.pending.rationale }}</p>{% endif %}
     <div class="space-y-1">
       {% for op in chat.pending.ops %}
-      <div class="sv-hl text-xs font-mono rounded px-2 py-1 border border-slate-200 bg-white cursor-default hover:bg-amber-50"
+      <div class="sv-hl text-xs font-mono rounded px-2 py-1 border border-line bg-surface cursor-default hover:bg-warning-subtle"
            {% if op.atoms %}data-atoms="{{ op.atoms }}"{% endif %} data-desc="{{ op.json }}">{{ op.json }}</div>
       {% endfor %}
     </div>
@@ -98,11 +98,11 @@
       <input type="hidden" name="shown" value="{{ chat.context.shown.snapshot }}">
       {% else %}<input type="hidden" name="ops" value="{{ chat.pending.ops_json }}">{% endif %}
       <input type="hidden" name="turn" value="{{ chat.pending.handle }}">
-      <button class="rounded bg-emerald-600 text-white text-xs px-3 py-1 hover:bg-emerald-700 whitespace-nowrap">Apply as a new revision</button>
-      <span class="text-[10px] text-slate-400">{{ 'edits this design in place (version +1) — Fork stays a separate action' if chat.kind == 'structure' else 'writes one revision carrying this turn' }}</span>
+      <button class="rounded bg-success-solid text-on-solid text-xs px-3 py-1 hover:bg-success-solid-strong whitespace-nowrap">Apply as a new revision</button>
+      <span class="text-[10px] text-fg-faint">{{ 'edits this design in place (version +1) — Fork stays a separate action' if chat.kind == 'structure' else 'writes one revision carrying this turn' }}</span>
     </form>
     {% else %}
-    <p class="mt-2 text-[10px] text-slate-400">Not applicable as proposed — ask for a correction in the next turn.</p>
+    <p class="mt-2 text-[10px] text-fg-faint">Not applicable as proposed — ask for a correction in the next turn.</p>
     {% endif %}
   </div>
   {% endif %}
@@ -111,14 +111,14 @@
   <form id="design-chat-form" method="post" action="{{ chat.chat_url }}" class="mt-3">
     <textarea id="design-chat-message" name="message" rows="3" required
               placeholder="{{ 'e.g. lock the selected resistor, or propose moving it to x=10 mm' if chat.kind == 'pcb' else ('e.g. add a block @linker between @tube and @bud' if chat.kind == 'se' else 'e.g. put an O on top of @aPd1, then measure the Pd–O distance') }}"
-              class="w-full rounded border border-slate-300 px-2 py-1 text-sm"></textarea>
+              class="w-full rounded border border-line-strong px-2 py-1 text-sm"></textarea>
     <div class="mt-1 flex items-center gap-2">
       {% if chat.kind == 'pcb' %}<input type="hidden" id="pcb-chat-context" name="context" value="">{% endif %}
       <input type="hidden" id="design-chat-handles" name="handles" value="">
-      <span id="design-chat-chips" class="flex flex-wrap gap-1 text-[10px] text-slate-500"></span>
-      <button class="ml-auto rounded bg-slate-800 text-white text-sm px-3 py-1 hover:bg-slate-900 whitespace-nowrap">Send ▸</button>
+      <span id="design-chat-chips" class="flex flex-wrap gap-1 text-[10px] text-fg-subtle"></span>
+      <button class="ml-auto rounded bg-solid-strong text-on-solid text-sm px-3 py-1 hover:bg-solid-strong whitespace-nowrap">Send ▸</button>
     </div>
-    <p class="mt-1 text-[10px] text-slate-400">One blocking turn (~30 s). The model returns typed ops only — {{ 'one selected instance move in mm/degrees, explicit Apply' if chat.kind == 'pcb' else 'never coordinates, never a tool call' }}.</p>
+    <p class="mt-1 text-[10px] text-fg-faint">One blocking turn (~30 s). The model returns typed ops only — {{ 'one selected instance move in mm/degrees, explicit Apply' if chat.kind == 'pcb' else 'never coordinates, never a tool call' }}.</p>
   </form>
 
   <script>
@@ -133,7 +133,7 @@
       chips.textContent = '';
       names.forEach((n) => {
         const chip = document.createElement('span');
-        chip.className = 'rounded-full bg-slate-100 px-1.5 py-0.5';
+        chip.className = 'rounded-full bg-surface-muted px-1.5 py-0.5';
         chip.textContent = '@' + n;
         chips.appendChild(chip);
       });

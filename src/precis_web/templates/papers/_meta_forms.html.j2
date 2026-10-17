@@ -5,40 +5,40 @@
    abstract, journal, entry_type, entry_type_choices, entry_type_is_known). #}
 
 {% if is_triage %}
-<div class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs">
-  <p class="font-medium text-amber-800">Needs triage — metadata couldn't be recovered automatically.</p>
-  {% if triage_msg %}<p class="mt-1 text-amber-900">{{ triage_msg }}</p>{% endif %}
+<div class="rounded-lg border border-warning-strong bg-warning-subtle p-3 text-xs">
+  <p class="font-medium text-warning-deep">Needs triage — metadata couldn't be recovered automatically.</p>
+  {% if triage_msg %}<p class="mt-1 text-warning-deep">{{ triage_msg }}</p>{% endif %}
   <form method="post" action="/papers/{{ paper.id }}/triage-lookup" class="mt-2 space-y-2">
     <label class="block">
-      <span class="text-amber-700">Paste the paper's real title</span>
+      <span class="text-warning-strong">Paste the paper's real title</span>
       <input name="title" value="{{ prefill.title if prefill else '' }}"
              placeholder="e.g. Ballistic carbon nanotube field-effect transistors"
-             class="w-full rounded border border-amber-300 px-2 py-1" />
+             class="w-full rounded border border-warning-strong px-2 py-1" />
     </label>
-    <button type="submit" class="rounded bg-amber-600 px-3 py-1.5 text-white hover:bg-amber-700">
+    <button type="submit" class="rounded bg-warning-solid px-3 py-1.5 text-on-solid hover:bg-warning-solid-strong">
       Look up on Semantic Scholar
     </button>
   </form>
-  <form method="post" action="/papers/{{ paper.id }}/untriage" class="mt-2 border-t border-amber-200 pt-2">
+  <form method="post" action="/papers/{{ paper.id }}/untriage" class="mt-2 border-t border-warning pt-2">
     <input type="hidden" name="return_to" value="/papers/triage" />
-    <button type="submit" class="rounded border border-amber-400 px-2 py-1 text-amber-800 hover:bg-amber-100">
+    <button type="submit" class="rounded border border-warning-emphasis px-2 py-1 text-warning-deep hover:bg-warning-muted">
       ✓ Looks fine — remove needs-triage
     </button>
   </form>
 </div>
 {% endif %}
 
-<div class="border-t border-slate-100 pt-2 text-xs" x-data="{ editing: {{ 'true' if prefill else 'false' }} }">
+<div class="border-t border-line-subtle pt-2 text-xs" x-data="{ editing: {{ 'true' if prefill else 'false' }} }">
   <div class="flex items-center gap-2">
     <button type="button" @click="editing = !editing"
-            class="rounded border border-slate-300 px-2 py-1 hover:bg-slate-50">
+            class="rounded border border-line-strong px-2 py-1 hover:bg-surface-subtle">
       <span x-show="!editing">✎ Edit metadata</span>
       <span x-show="editing" x-cloak>Cancel</span>
     </button>
     {% if not is_triage %}
     <form method="post" action="/papers/{{ paper.id }}/retriage" class="inline">
       <button type="submit"
-              class="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-amber-800 hover:bg-amber-100"
+              class="rounded border border-warning-strong bg-warning-subtle px-2 py-1 text-warning-deep hover:bg-warning-muted"
               title="re-add needs-triage — send this paper back to the review queue">
         ⚑ Mark for review
       </button>
@@ -48,7 +48,7 @@
           onsubmit="return confirm('Delete paper #{{ paper.id }}? This soft-deletes it (removes it from listings).');">
       <input type="hidden" name="return_to" value="{{ '/papers/triage' if is_triage else '/papers' }}" />
       <button type="submit"
-              class="rounded border border-rose-300 bg-rose-50 px-2 py-1 text-rose-700 hover:bg-rose-100">
+              class="rounded border border-danger-strong bg-danger-subtle px-2 py-1 text-danger-strong hover:bg-danger-muted">
         🗑 Delete paper
       </button>
     </form>
@@ -59,15 +59,15 @@
      the file on disk. #}
   {% if paper.slug %}
   <form method="post" action="/papers/{{ paper.id }}/replace-pdf"
-        enctype="multipart/form-data" class="mt-2 border-t border-slate-100 pt-2"
+        enctype="multipart/form-data" class="mt-2 border-t border-line-subtle pt-2"
         x-data="{ picked: false }">
-    <p class="text-slate-500">Replace PDF <span class="text-slate-400">— upload a good copy of a corrupted file. Swaps the stored PDF only; skips OCR, keeps chunks &amp; metadata.</span></p>
+    <p class="text-fg-subtle">Replace PDF <span class="text-fg-faint">— upload a good copy of a corrupted file. Swaps the stored PDF only; skips OCR, keeps chunks &amp; metadata.</span></p>
     <div class="mt-1 flex items-center gap-2">
       <input type="file" name="file" accept="application/pdf" required
              @change="picked = $event.target.files.length > 0"
-             class="min-w-0 flex-1 text-slate-600 file:mr-2 file:rounded file:border-0 file:bg-slate-100 file:px-2 file:py-1 file:text-slate-700" />
+             class="min-w-0 flex-1 text-fg-muted file:mr-2 file:rounded file:border-0 file:bg-surface-muted file:px-2 file:py-1 file:text-fg-secondary" />
       <button type="submit" :disabled="!picked"
-              class="shrink-0 rounded bg-sky-600 px-3 py-1.5 text-white hover:bg-sky-700 disabled:opacity-40">
+              class="shrink-0 rounded bg-info-solid px-3 py-1.5 text-on-solid hover:bg-info-solid-strong disabled:opacity-40">
         Upload
       </button>
     </div>
@@ -77,61 +77,61 @@
   <form x-show="editing" x-cloak method="post" action="/papers/{{ paper.id }}/edit"
         class="mt-2 space-y-2"
         x-data="{ slug: '{{ slug_default }}', etSel: '{{ entry_type if entry_type_is_known else '__other__' }}' }">
-    <p class="text-slate-500">Leave a field blank to keep its current value. Authors: one per line.</p>
+    <p class="text-fg-subtle">Leave a field blank to keep its current value. Authors: one per line.</p>
     {# Fill only the *empty* fields (title/DOI/arXiv → exact S2 record, else
        title search; a known DOI then overlays the Crossref publisher record —
        see the s2-prefill route docstring). Client-side prefill — nothing is
        saved until you press Save; fields you've already filled are left alone. #}
     <div class="flex flex-wrap items-center gap-2">
       <button type="button" onclick="__paperFillBlanks(this)" data-paper-id="{{ paper.id }}"
-              class="rounded border border-sky-300 bg-sky-50 px-2 py-1 text-sky-800 hover:bg-sky-100">
+              class="rounded border border-info-strong bg-info-subtle px-2 py-1 text-info-deep hover:bg-info-muted">
         ⟲ Fill blanks from Crossref / Semantic Scholar
       </button>
-      <span class="fill-msg text-[10px] text-slate-500"></span>
+      <span class="fill-msg text-[10px] text-fg-subtle"></span>
     </div>
     <label class="block">
-      <span class="text-slate-500">Title</span>
+      <span class="text-fg-subtle">Title</span>
       <input name="title" value="{{ prefill.title if prefill else paper.title }}"
-             class="w-full rounded border border-slate-300 px-2 py-1" />
+             class="w-full rounded border border-line-strong px-2 py-1" />
     </label>
     <div class="grid grid-cols-2 gap-2">
       <label class="block">
-        <span class="text-slate-500">Year</span>
+        <span class="text-fg-subtle">Year</span>
         <input name="year" value="{{ prefill.year if prefill else (paper.year or '') }}" inputmode="numeric"
-               class="w-full rounded border border-slate-300 px-2 py-1" />
+               class="w-full rounded border border-line-strong px-2 py-1" />
       </label>
       <label class="block">
-        <span class="text-slate-500">DOI</span>
+        <span class="text-fg-subtle">DOI</span>
         <input name="doi" value="{{ prefill.doi if prefill else (paper.links.doi or '') }}" placeholder="10.xxxx/yyyy"
-               class="w-full rounded border border-slate-300 px-2 py-1 font-mono" />
+               class="w-full rounded border border-line-strong px-2 py-1 font-mono" />
       </label>
       <label class="block">
-        <span class="text-slate-500">arXiv id</span>
+        <span class="text-fg-subtle">arXiv id</span>
         <input name="arxiv" value="{{ prefill.arxiv if prefill else (paper.links.arxiv or '') }}" placeholder="2501.01234"
-               class="w-full rounded border border-slate-300 px-2 py-1 font-mono" />
+               class="w-full rounded border border-line-strong px-2 py-1 font-mono" />
       </label>
       <label class="block">
-        <span class="text-slate-500">Short handle</span>
+        <span class="text-fg-subtle">Short handle</span>
         <input name="cite_key" x-model="slug" placeholder="e.g. piela07"
-               class="w-full rounded border border-slate-300 px-2 py-1 font-mono" />
+               class="w-full rounded border border-line-strong px-2 py-1 font-mono" />
       </label>
     </div>
     {% if suggested_slug and suggested_slug != slug_default %}
-    <p class="text-slate-400">Suggested handle:
+    <p class="text-fg-faint">Suggested handle:
       <button type="button" @click="slug = '{{ suggested_slug }}'"
-              class="font-mono text-sky-700 underline">{{ suggested_slug }}</button>
+              class="font-mono text-info-strong underline">{{ suggested_slug }}</button>
       (renaming moves the PDF on disk)</p>
     {% endif %}
     <div class="grid grid-cols-2 gap-2">
       <label class="block">
-        <span class="text-slate-500">Journal</span>
+        <span class="text-fg-subtle">Journal</span>
         <input name="journal" value="{{ prefill.journal if prefill else (journal or '') }}"
-               class="w-full rounded border border-slate-300 px-2 py-1" />
+               class="w-full rounded border border-line-strong px-2 py-1" />
       </label>
       <label class="block">
-        <span class="text-slate-500">Document type</span>
+        <span class="text-fg-subtle">Document type</span>
         <select x-model="etSel" :disabled="etSel === '__other__'" name="entry_type"
-                class="w-full rounded border border-slate-300 px-2 py-1">
+                class="w-full rounded border border-line-strong px-2 py-1">
           <option value="">(leave unchanged)</option>
           {% for value, label in entry_type_choices %}
           <option value="{{ value }}">{{ label }}</option>
@@ -141,34 +141,34 @@
         <input x-show="etSel === '__other__'" x-cloak :disabled="etSel !== '__other__'"
                name="entry_type" value="{{ entry_type if not entry_type_is_known else '' }}"
                placeholder="Crossref type, e.g. peer-review"
-               class="mt-1 w-full rounded border border-slate-300 px-2 py-1 font-mono" />
+               class="mt-1 w-full rounded border border-line-strong px-2 py-1 font-mono" />
       </label>
     </div>
     <label class="block">
-      <span class="text-slate-500">Authors (one per line — "Family, Given M. [ORCID iD]", the iD optional)</span>
+      <span class="text-fg-subtle">Authors (one per line — "Family, Given M. [ORCID iD]", the iD optional)</span>
       <textarea name="authors" rows="3" placeholder="Goldsmith, Bryan R. [0000-0002-1825-0097]&#10;Zywucka, N."
-                class="w-full rounded border border-slate-300 px-2 py-1 font-mono">{% if prefill %}{{ prefill.authors }}{% elif author_rows %}{% for a in author_rows -%}
+                class="w-full rounded border border-line-strong px-2 py-1 font-mono">{% if prefill %}{{ prefill.authors }}{% elif author_rows %}{% for a in author_rows -%}
 {{ a.line }}
 {% endfor -%}{% else %}{% for line in author_lines -%}
 {{ line }}
 {% endfor -%}{% endif %}</textarea>
     </label>
     <label class="block">
-      <span class="text-slate-500">Abstract</span>
+      <span class="text-fg-subtle">Abstract</span>
       {# One-click hard-wrap strip (gr349107) — a publisher/PDF-pasted
          abstract carries a newline every ~80 chars; this joins the lines
          of each paragraph into one, client-side only (a blank line still
          starts a new paragraph). Left in the editor for review before
          Save — never auto-applied. #}
       <button type="button" onclick="__paperUnwrapAbstract(this)"
-              class="unwrap-abstract-btn ml-2 rounded border border-slate-300 bg-slate-50 px-1.5 py-0.5 text-[10px] text-slate-600 hover:bg-slate-100"
+              class="unwrap-abstract-btn ml-2 rounded border border-line-strong bg-surface-subtle px-1.5 py-0.5 text-[10px] text-fg-muted hover:bg-surface-muted"
               title="join hard-wrapped lines within each paragraph into one line">
         ⤒ Unwrap
       </button>
       <textarea name="abstract" rows="4"
-                class="w-full rounded border border-slate-300 px-2 py-1">{{ prefill.abstract if prefill else (abstract or '') }}</textarea>
+                class="w-full rounded border border-line-strong px-2 py-1">{{ prefill.abstract if prefill else (abstract or '') }}</textarea>
     </label>
-    <button type="submit" class="rounded bg-emerald-600 px-3 py-1.5 text-white hover:bg-emerald-700">
+    <button type="submit" class="rounded bg-success-solid px-3 py-1.5 text-on-solid hover:bg-success-solid-strong">
       Save changes
     </button>
   </form>
@@ -187,12 +187,12 @@ if (!window.__paperFillBlanks) {
     const pid = btn.getAttribute('data-paper-id');
     if (!form || !pid) return;
     btn.disabled = true;
-    if (msg) { msg.textContent = 'Looking up…'; msg.classList.remove('text-rose-600'); }
+    if (msg) { msg.textContent = 'Looking up…'; msg.classList.remove('text-danger'); }
     try {
       const r = await fetch('/papers/' + pid + '/s2-prefill', { cache: 'no-store' });
       const d = await r.json();
       if (!d.ok) {
-        if (msg) { msg.textContent = d.message || 'No match.'; msg.classList.add('text-rose-600'); }
+        if (msg) { msg.textContent = d.message || 'No match.'; msg.classList.add('text-danger'); }
         btn.disabled = false;
         return;
       }
@@ -214,7 +214,7 @@ if (!window.__paperFillBlanks) {
         ? ('Filled ' + filled + ' blank field(s) — review and Save.')
         : 'Nothing to fill — all fields already set.';
     } catch (e) {
-      if (msg) { msg.textContent = 'Lookup failed.'; msg.classList.add('text-rose-600'); }
+      if (msg) { msg.textContent = 'Lookup failed.'; msg.classList.add('text-danger'); }
     }
     btn.disabled = false;
   };

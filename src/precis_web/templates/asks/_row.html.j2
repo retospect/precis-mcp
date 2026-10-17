@@ -2,18 +2,18 @@
    Expects: a (ask dict from _load_asks), next_path (where the answer
    form returns the operator, e.g. "/asks" or "/needs-you"). #}
 {% set first_line = (a.title or '').split('\n', 1)[0] %}
-<li class="rounded-lg border border-slate-200 bg-white px-4 py-3">
+<li class="rounded-lg border border-line bg-surface px-4 py-3">
   <div class="flex items-baseline gap-2">
-    <a href="/r/todo/{{ a.id }}" class="text-xs text-slate-400 hover:text-emerald-700 w-12 shrink-0 font-mono">#{{ a.id }}</a>
+    <a href="/r/todo/{{ a.id }}" class="text-xs text-fg-faint hover:text-success-strong w-12 shrink-0 font-mono">#{{ a.id }}</a>
     {# A div, not an <a>: linkify_refs emits anchors for handles and URLs in
        the title, and a nested <a> makes the parser close the outer one, so
        the rest of the title spills out as extra flex items and squeezes
        this column to one character wide. #}
-    <div class="min-w-0 flex-1 text-sm font-medium text-slate-800 break-words">
+    <div class="min-w-0 flex-1 text-sm font-medium text-fg break-words">
       {{ first_line | linkify_refs }}
     </div>
     {% if a.history %}
-    <span class="shrink-0 rounded-full bg-amber-100 text-amber-800 text-[10px] font-semibold px-2 py-0.5"
+    <span class="shrink-0 rounded-full bg-warning-muted text-warning-deep text-[10px] font-semibold px-2 py-0.5"
           title="the planner processed your previous answer and came back with a follow-up">
       follow-up #{{ a.history|length + 1 }}
     </span>
@@ -27,28 +27,28 @@
       {% for tag in a.tags %}
       <input type="hidden" name="remove" value="{{ tag }}"/>
       {% endfor %}
-      <button class="text-slate-300 hover:text-rose-600 leading-none text-lg"
+      <button class="text-fg-ghost hover:text-danger leading-none text-lg"
               title="dismiss — close this todo without answering">&times;</button>
     </form>
   </div>
 
   {# Where this ask lives — project › … › parent chain. #}
   {% if a.crumb %}
-  <div class="mt-1 ml-14 text-xs text-slate-400 truncate">
-    {% for c in a.crumb %}<a href="/r/{{ c.kind }}/{{ c.id }}" class="hover:text-emerald-700 hover:underline">{{ c.title }}</a>{% if not loop.last %} <span class="text-slate-300">›</span> {% endif %}{% endfor %}
+  <div class="mt-1 ml-14 text-xs text-fg-faint truncate">
+    {% for c in a.crumb %}<a href="/r/{{ c.kind }}/{{ c.id }}" class="hover:text-success-strong hover:underline">{{ c.title }}</a>{% if not loop.last %} <span class="text-fg-ghost">›</span> {% endif %}{% endfor %}
   </div>
   {% endif %}
 
   {% if a.questions %}
   <div class="mt-2 ml-14 space-y-2">
     {% for q in a.questions %}
-    <div class="text-sm text-slate-700 bg-amber-50 border-l-4 border-amber-300 px-3 py-2 rounded whitespace-pre-line break-words">
+    <div class="text-sm text-fg-secondary bg-warning-subtle border-l-4 border-warning-strong px-3 py-2 rounded whitespace-pre-line break-words">
       {{ q | linkify_refs }}
     </div>
     {% endfor %}
   </div>
   {% else %}
-  <div class="mt-2 ml-14 text-xs text-slate-400">
+  <div class="mt-2 ml-14 text-xs text-fg-faint">
     tagged <span class="font-mono">ask-user</span> (no question text)
   </div>
   {% endif %}
@@ -56,21 +56,21 @@
   {# Reading context — the draft passage the question is about, with its
      surrounding paragraphs, deep-linked into the smartdraft reader. #}
   {% if a.context %}
-  <div class="mt-2 ml-14 rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+  <div class="mt-2 ml-14 rounded-md border border-line bg-surface-subtle px-3 py-2">
     <div class="text-xs mb-1">
-      <span class="text-slate-400">in</span>
-      <a href="{{ a.context.draft.url }}" class="font-medium text-emerald-700 hover:underline">{{ a.context.draft.title }}</a>
-      {% if a.context.section %}<span class="text-slate-400"> · § {{ a.context.section }}</span>{% endif %}
-      {% if a.context.handle %}<span class="ml-1 font-mono text-slate-300">{{ a.context.handle }}</span>{% endif %}
+      <span class="text-fg-faint">in</span>
+      <a href="{{ a.context.draft.url }}" class="font-medium text-success-strong hover:underline">{{ a.context.draft.title }}</a>
+      {% if a.context.section %}<span class="text-fg-faint"> · § {{ a.context.section }}</span>{% endif %}
+      {% if a.context.handle %}<span class="ml-1 font-mono text-fg-ghost">{{ a.context.handle }}</span>{% endif %}
     </div>
     {% if a.context.before %}
-    <p class="text-xs text-slate-400 break-words">{{ a.context.before | linkify_refs }}</p>
+    <p class="text-xs text-fg-faint break-words">{{ a.context.before | linkify_refs }}</p>
     {% endif %}
     {% if a.context.focus %}
-    <p class="text-sm text-slate-700 border-l-2 border-emerald-400 pl-2 my-1 break-words">{{ a.context.focus | linkify_refs }}</p>
+    <p class="text-sm text-fg-secondary border-l-2 border-success-emphasis pl-2 my-1 break-words">{{ a.context.focus | linkify_refs }}</p>
     {% endif %}
     {% if a.context.after %}
-    <p class="text-xs text-slate-400 break-words">{{ a.context.after | linkify_refs }}</p>
+    <p class="text-xs text-fg-faint break-words">{{ a.context.after | linkify_refs }}</p>
     {% endif %}
   </div>
   {% endif %}
@@ -78,15 +78,15 @@
   {# Discussion so far — earlier Q/A rounds on this todo, so a follow-up
      question reads as a thread, not a context-free repeat. #}
   {% if a.history %}
-  <details class="mt-2 ml-14 text-xs text-slate-500">
-    <summary class="cursor-pointer hover:text-slate-700">
+  <details class="mt-2 ml-14 text-xs text-fg-subtle">
+    <summary class="cursor-pointer hover:text-fg-secondary">
       discussion so far ({{ a.history|length }} earlier answer{{ '' if a.history|length == 1 else 's' }})
     </summary>
     <div class="mt-1 space-y-2">
       {% for h in a.history %}
-      <div class="rounded border border-slate-200 bg-white px-2 py-1.5">
-        {% if h.question %}<div class="text-slate-500"><span class="font-semibold">asked:</span> {{ h.question | linkify_refs }}</div>{% endif %}
-        {% if h.answer %}<div class="text-slate-700"><span class="font-semibold">you:</span> {{ h.answer | linkify_refs }}</div>{% endif %}
+      <div class="rounded border border-line bg-surface px-2 py-1.5">
+        {% if h.question %}<div class="text-fg-subtle"><span class="font-semibold">asked:</span> {{ h.question | linkify_refs }}</div>{% endif %}
+        {% if h.answer %}<div class="text-fg-secondary"><span class="font-semibold">you:</span> {{ h.answer | linkify_refs }}</div>{% endif %}
       </div>
       {% endfor %}
     </div>
@@ -100,13 +100,13 @@
     <input type="hidden" name="next" value="{{ next_path | default('/asks') }}"/>
     <textarea name="response" required rows="3"
               placeholder="Type your answer to unlock this todo…"
-              class="w-full rounded-md border border-slate-300 text-sm px-3 py-2 font-mono"></textarea>
+              class="w-full rounded-md border border-line-strong text-sm px-3 py-2 font-mono"></textarea>
     <div class="mt-2 flex items-center justify-between gap-3">
-      <span class="text-[11px] text-slate-400">
+      <span class="text-[11px] text-fg-faint">
         The planner picks your answer up in the background — if it doesn't
         resolve the question, it comes back here as a follow-up.
       </span>
-      <button class="shrink-0 rounded-md bg-emerald-600 text-white text-sm px-4 py-1.5 hover:bg-emerald-700">
+      <button class="shrink-0 rounded-md bg-success-solid text-on-solid text-sm px-4 py-1.5 hover:bg-success-solid-strong">
         Answer &amp; unlock
       </button>
     </div>

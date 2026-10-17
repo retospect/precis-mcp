@@ -5,25 +5,25 @@
 <div class="flex items-center gap-3 mb-4">
   <h1 class="text-lg font-semibold">Gripes</h1>
   {# live (default) vs wontfix vs everything toggle #}
-  <div class="inline-flex rounded-md border border-slate-300 overflow-hidden text-sm">
+  <div class="inline-flex rounded-md border border-line-strong overflow-hidden text-sm">
     <a href="/gripes"
-       class="px-3 py-1 {% if status == 'live' %}bg-violet-600 text-white{% else %}bg-white text-slate-600 hover:bg-slate-50{% endif %}">
+       class="px-3 py-1 {% if status == 'live' %}bg-accent-solid text-on-solid{% else %}bg-surface text-fg-muted hover:bg-surface-subtle{% endif %}">
       live
     </a>
     <a href="/gripes?status=wontfix"
-       class="px-3 py-1 {% if status == 'wontfix' %}bg-violet-600 text-white{% else %}bg-white text-slate-600 hover:bg-slate-50{% endif %}">
+       class="px-3 py-1 {% if status == 'wontfix' %}bg-accent-solid text-on-solid{% else %}bg-surface text-fg-muted hover:bg-surface-subtle{% endif %}">
       wontfix
     </a>
     <a href="/gripes?status=all"
-       class="px-3 py-1 {% if status == 'all' %}bg-violet-600 text-white{% else %}bg-white text-slate-600 hover:bg-slate-50{% endif %}">
+       class="px-3 py-1 {% if status == 'all' %}bg-accent-solid text-on-solid{% else %}bg-surface text-fg-muted hover:bg-surface-subtle{% endif %}">
       all
     </a>
   </div>
-  <span class="text-sm text-slate-500">
+  <span class="text-sm text-fg-subtle">
     <a href="/gripes?status={{ status }}" class="hover:underline">{{ total }} {{ status }}</a>{% if status == 'live' %}{% for g in groups %} · <a href="/gripes?status={{ g.status }}" class="hover:underline">{{ g.count }} {{ g.status }}</a>{% endfor %}{% endif %}
   </span>
   <a href="https://github.com/retospect/precis-mcp/tree/main/docs/backlog" target="_blank" rel="noopener"
-     class="text-sm text-slate-400 hover:text-slate-600 hover:underline">
+     class="text-sm text-fg-faint hover:text-fg-muted hover:underline">
     repo backlog ↗
   </a>
 </div>
@@ -32,19 +32,19 @@
    subject; open=false costs one click and keeps the triage view intact.
    The attribution line the route appends is previewed here so nobody is
    surprised their login lands in the body text. #}
-<details class="mb-5 rounded-md border border-slate-200 bg-white">
-  <summary class="cursor-pointer select-none px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
+<details class="mb-5 rounded-md border border-line bg-surface">
+  <summary class="cursor-pointer select-none px-4 py-2 text-sm font-medium text-fg-secondary hover:bg-surface-subtle">
     File a gripe
   </summary>
-  <form method="post" action="/gripes" class="space-y-2 border-t border-slate-100 px-4 py-3">
+  <form method="post" action="/gripes" class="space-y-2 border-t border-line-subtle px-4 py-3">
     <textarea name="text" rows="4" required
               placeholder="What broke, what you expected, and how to hit it again…"
-              class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"></textarea>
+              class="w-full rounded-md border border-line-strong px-3 py-2 text-sm"></textarea>
     <div class="flex flex-wrap items-center gap-3">
-      <button class="rounded-md bg-violet-600 text-white text-sm px-4 py-2 hover:bg-violet-700">
+      <button class="rounded-md bg-accent-solid text-on-solid text-sm px-4 py-2 hover:bg-accent-solid-strong">
         File gripe
       </button>
-      <span class="text-[12px] text-slate-400">
+      <span class="text-[12px] text-fg-faint">
         Filed as <span class="font-mono">{{ filed_by }}</span> — the body is immutable once
         filed, so corrections go in a comment.
       </span>
@@ -53,7 +53,7 @@
 </details>
 
 {% if not groups %}
-  <div class="rounded-md border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+  <div class="rounded-md border border-success-strong bg-success-subtle px-4 py-3 text-sm text-success-deep">
     {% if status == 'wontfix' %}
     ✓ Nothing marked won't-fix.
     {% elif status == 'all' %}
@@ -73,24 +73,24 @@
    single-status view has one panel, so it starts open. #}
 {% for g in groups %}
 <details class="mb-3 group" data-status="{{ g.status }}"{% if status != 'live' %} open{% endif %}>
-  <summary class="cursor-pointer select-none text-sm font-semibold text-slate-700 py-1 flex items-center gap-2">
-    <span class="text-slate-400 transition group-open:rotate-90">&#9656;</span>
+  <summary class="cursor-pointer select-none text-sm font-semibold text-fg-secondary py-1 flex items-center gap-2">
+    <span class="text-fg-faint transition group-open:rotate-90">&#9656;</span>
     <span class="inline-block rounded border px-1.5 py-0.5 text-[11px] font-medium uppercase {{ g.badge }}">
       {{ g.status }}
     </span>
-    <span class="text-slate-400 font-normal">{{ g.count }}</span>
+    <span class="text-fg-faint font-normal">{{ g.count }}</span>
   </summary>
-  <div class="mt-2 overflow-hidden rounded-md border border-slate-200">
+  <div class="mt-2 overflow-hidden rounded-md border border-line">
     <table class="w-full text-sm">
       <tbody>
         {% for gr in g.gripes %}
-        <tr class="border-t border-slate-100 first:border-t-0 align-top">
-          <td class="px-3 py-2 w-14 text-slate-400 font-mono text-xs">#{{ gr.ref_id }}</td>
+        <tr class="border-t border-line-subtle first:border-t-0 align-top">
+          <td class="px-3 py-2 w-14 text-fg-faint font-mono text-xs">#{{ gr.ref_id }}</td>
           <td class="px-3 py-2">
-            <div class="font-medium text-slate-800">
+            <div class="font-medium text-fg">
               <a href="/gripes/{{ gr.ref_id }}" class="hover:underline">{{ gr.title_preview }}</a>
             </div>
-            <div class="text-[12px] text-slate-400 mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
+            <div class="text-[12px] text-fg-faint mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
               {% if gr.prio %}<span class="font-mono">PRIO:{{ gr.prio }}</span>{% endif %}
               <span>filed {{ gr.created }}</span>
               <span>updated {{ gr.updated }}</span>

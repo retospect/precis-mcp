@@ -20,8 +20,8 @@
           aria-label="{{ 'Remove from favorites' if faved else 'Add to favorites' }}"
           title="{{ 'In your favorites — click to remove' if faved else 'Add to favorites' }}"
           class="rounded border px-1.5 py-0.5 text-sm leading-none transition-colors
-                 {% if faved %}border-rose-300 bg-rose-50 text-rose-600
-                 {% else %}border-slate-200 text-slate-300 hover:text-rose-400 hover:border-rose-200{% endif %}">
+                 {% if faved %}border-danger-strong bg-danger-subtle text-danger
+                 {% else %}border-line text-fg-ghost hover:text-danger-faint hover:border-danger{% endif %}">
     {{ '♥' if faved else '♡' }}
   </button>
 </form>

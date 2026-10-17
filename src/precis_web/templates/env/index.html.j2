@@ -2,137 +2,137 @@
 {% block title %}Env{% endblock %}
 {% block content %}
 <h1 class="text-lg font-semibold mb-1">Agent environment</h1>
-<p class="text-sm text-slate-500 mb-4">
+<p class="text-sm text-fg-subtle mb-4">
   What each agent would run, right now, if it fired this second.
   System prompt, directive prompt, MCP tool surface, env vars, gating
   flags. Pure read-only — picking an agent never invokes it.
 </p>
 
 <form method="get" action="/env" class="mb-4 flex items-center gap-2">
-  <select name="agent" class="rounded-md border border-slate-300 text-sm px-2 py-2">
+  <select name="agent" class="rounded-md border border-line-strong text-sm px-2 py-2">
     <option value="">— pick an agent —</option>
     {% for a in agents %}
     <option value="{{ a.name }}" {% if a.name == selected %}selected{% endif %}>{{ a.label }}</option>
     {% endfor %}
   </select>
-  <button class="rounded-md bg-emerald-600 text-white text-sm px-4 py-2">Show</button>
+  <button class="rounded-md bg-success-solid text-on-solid text-sm px-4 py-2">Show</button>
 </form>
 
 {% if not detail %}
 {# Empty state — list every agent so the operator can scan options. #}
 <ul class="space-y-2">
   {% for a in agents %}
-  <li class="rounded-lg border border-slate-200 bg-white px-4 py-3">
+  <li class="rounded-lg border border-line bg-surface px-4 py-3">
     <a href="/env?agent={{ a.name }}"
-       class="text-sm font-semibold text-emerald-700 hover:underline">{{ a.label }}</a>
-    <p class="text-xs text-slate-500 mt-1">{{ a.one_line }}</p>
+       class="text-sm font-semibold text-success-strong hover:underline">{{ a.label }}</a>
+    <p class="text-xs text-fg-subtle mt-1">{{ a.one_line }}</p>
   </li>
   {% endfor %}
 </ul>
 {% else %}
 {% set s = detail.spec %}
 {% set i = s.introspect %}
-<section class="mb-6 rounded-lg border border-slate-200 bg-white p-4">
-  <h2 class="text-sm font-semibold text-slate-700">{{ s.label }}</h2>
-  <p class="text-xs text-slate-500 mt-1">{{ s.one_line }}</p>
-  <p class="text-xs text-slate-400 mb-3">
+<section class="mb-6 rounded-lg border border-line bg-surface p-4">
+  <h2 class="text-sm font-semibold text-fg-secondary">{{ s.label }}</h2>
+  <p class="text-xs text-fg-subtle mt-1">{{ s.one_line }}</p>
+  <p class="text-xs text-fg-faint mb-3">
     Reading env from <code>{{ detail.plist_path }}</code>
     {% if not detail.plist_found %}
-    <span class="text-rose-600 font-semibold">(NOT FOUND — every env-derived field below will read as unset)</span>
+    <span class="text-danger font-semibold">(NOT FOUND — every env-derived field below will read as unset)</span>
     {% endif %}
     {% if detail.wrapper_path %}
     <br>
     + wrapper script <code>{{ detail.wrapper_path }}</code>
-    {% if not detail.wrapper_found %}<span class="text-rose-600">(NOT FOUND)</span>{% endif %}
+    {% if not detail.wrapper_found %}<span class="text-danger">(NOT FOUND)</span>{% endif %}
     — its <code>export</code> lines layer on top of the plist
     (this is where dream gets its prompt/soul paths).
     {% endif %}
   </p>
   <dl class="grid grid-cols-2 gap-x-6 gap-y-1 text-xs">
-    <dt class="text-slate-500">Model</dt>
-    <dd class="font-mono text-slate-800">{{ detail.model }}</dd>
-    <dt class="text-slate-500">Max turns</dt>
-    <dd class="font-mono text-slate-800">{{ i.max_turns }}</dd>
-    <dt class="text-slate-500">Timeout</dt>
-    <dd class="font-mono text-slate-800">{{ i.timeout_s }}s</dd>
-    <dt class="text-slate-500">Denied tools</dt>
-    <dd class="font-mono text-slate-800">{{ ', '.join(i.disallowed_tools) or '(none)' }}</dd>
+    <dt class="text-fg-subtle">Model</dt>
+    <dd class="font-mono text-fg">{{ detail.model }}</dd>
+    <dt class="text-fg-subtle">Max turns</dt>
+    <dd class="font-mono text-fg">{{ i.max_turns }}</dd>
+    <dt class="text-fg-subtle">Timeout</dt>
+    <dd class="font-mono text-fg">{{ i.timeout_s }}s</dd>
+    <dt class="text-fg-subtle">Denied tools</dt>
+    <dd class="font-mono text-fg">{{ ', '.join(i.disallowed_tools) or '(none)' }}</dd>
   </dl>
 </section>
 
 {% set ac = detail.assembled_context %}
 <section class="mb-6">
   <h2 class="text-sm font-semibold mb-2">Assembled context</h2>
-  <p class="text-xs text-slate-500 mb-2">
+  <p class="text-xs text-fg-subtle mb-2">
     The FULL prompt input this agent assembles — every module's
     text, in order. Each block below collapses independently.
   </p>
 
-  <h3 class="text-xs font-semibold text-slate-600 mt-3 mb-1">Last real</h3>
+  <h3 class="text-xs font-semibold text-fg-muted mt-3 mb-1">Last real</h3>
   {% if ac.last_real %}
-  <p class="text-xs text-slate-400 mb-1">
+  <p class="text-xs text-fg-faint mb-1">
     Captured on <code>{{ ac.last_real.handle }}</code>
     {% if ac.last_real.captured_at %}at {{ ac.last_real.captured_at }}{% endif %}
   </p>
-  <div class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
+  <div class="rounded-lg border border-line bg-surface divide-y divide-line-subtle">
     {% for b in ac.last_real.blocks %}
     <details class="px-3 py-2">
-      <summary class="cursor-pointer text-xs font-mono text-slate-700">
-        {{ b.id }} <span class="text-slate-400 font-sans">({{ b.layer }})</span>
+      <summary class="cursor-pointer text-xs font-mono text-fg-secondary">
+        {{ b.id }} <span class="text-fg-faint font-sans">({{ b.layer }})</span>
       </summary>
-      <pre class="mt-1 whitespace-pre-wrap text-xs text-slate-700 max-h-96 overflow-y-auto">{{ b.text }}</pre>
+      <pre class="mt-1 whitespace-pre-wrap text-xs text-fg-secondary max-h-96 overflow-y-auto">{{ b.text }}</pre>
     </details>
     {% endfor %}
   </div>
   {% else %}
-  <p class="text-xs text-slate-500">{{ ac.last_real_note }}</p>
+  <p class="text-xs text-fg-subtle">{{ ac.last_real_note }}</p>
   {% endif %}
 
-  <h3 class="text-xs font-semibold text-slate-600 mt-4 mb-1">Dry-run (now)</h3>
+  <h3 class="text-xs font-semibold text-fg-muted mt-4 mb-1">Dry-run (now)</h3>
   {% if ac.dry_run %}
-  <p class="text-xs text-slate-400 mb-1">
+  <p class="text-xs text-fg-faint mb-1">
     Assembled just now against <code>{{ ac.dry_run.target_label }}</code> — zero LLM calls.
   </p>
-  <div class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
+  <div class="rounded-lg border border-line bg-surface divide-y divide-line-subtle">
     {% for b in ac.dry_run.blocks %}
     <details class="px-3 py-2">
-      <summary class="cursor-pointer text-xs font-mono text-slate-700">
-        {{ b.id }} <span class="text-slate-400 font-sans">({{ b.layer }})</span>
+      <summary class="cursor-pointer text-xs font-mono text-fg-secondary">
+        {{ b.id }} <span class="text-fg-faint font-sans">({{ b.layer }})</span>
       </summary>
-      <pre class="mt-1 whitespace-pre-wrap text-xs text-slate-700 max-h-96 overflow-y-auto">{{ b.text }}</pre>
+      <pre class="mt-1 whitespace-pre-wrap text-xs text-fg-secondary max-h-96 overflow-y-auto">{{ b.text }}</pre>
     </details>
     {% endfor %}
   </div>
   {% else %}
-  <p class="text-xs text-slate-500">{{ ac.dry_run_note }}</p>
+  <p class="text-xs text-fg-subtle">{{ ac.dry_run_note }}</p>
   {% endif %}
 </section>
 
 <section class="mb-6">
   <h2 class="text-sm font-semibold mb-2">Gating</h2>
-  <ul class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
+  <ul class="rounded-lg border border-line bg-surface divide-y divide-line-subtle">
     {% for key, why in i.gating %}
     <li class="px-4 py-2 text-xs flex items-center gap-2">
-      <span class="font-mono text-slate-700 w-44">{{ key }}</span>
-      <span class="text-slate-500">{{ why }}</span>
+      <span class="font-mono text-fg-secondary w-44">{{ key }}</span>
+      <span class="text-fg-subtle">{{ why }}</span>
     </li>
     {% else %}
-    <li class="px-4 py-2 text-sm text-slate-500">no gating env vars</li>
+    <li class="px-4 py-2 text-sm text-fg-subtle">no gating env vars</li>
     {% endfor %}
   </ul>
 </section>
 
 <section class="mb-6">
   <h2 class="text-sm font-semibold mb-2">Env vars consulted</h2>
-  <ul class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
+  <ul class="rounded-lg border border-line bg-surface divide-y divide-line-subtle">
     {% for row in detail.env_rows %}
     <li class="px-4 py-2 text-xs flex items-center gap-2">
       <span class="font-mono w-56 shrink-0">{{ row.key }}</span>
       {% if row.present %}
-      <span class="text-emerald-700">✓</span>
-      <span class="text-slate-600 font-mono break-all">{{ row.value }}</span>
+      <span class="text-success-strong">✓</span>
+      <span class="text-fg-muted font-mono break-all">{{ row.value }}</span>
       {% else %}
-      <span class="text-rose-600">✗ unset</span>
+      <span class="text-danger">✗ unset</span>
       {% endif %}
     </li>
     {% endfor %}
@@ -142,58 +142,58 @@
 <section class="mb-6">
   <h2 class="text-sm font-semibold mb-2">MCP servers</h2>
   {% if not detail.mcp.exists %}
-  <p class="text-xs text-rose-700">MCP config not found at <code>{{ detail.mcp.path or '(unset)' }}</code></p>
+  <p class="text-xs text-danger-strong">MCP config not found at <code>{{ detail.mcp.path or '(unset)' }}</code></p>
   {% elif detail.mcp.unreadable %}
-  <p class="text-xs text-amber-700">
+  <p class="text-xs text-warning-strong">
     MCP config exists at <code>{{ detail.mcp.path }}</code>
     but the web service (running as <code>deploy</code>) can't read it
     — the agent daemon (running as a different user) *can* read it,
     so this is a permissions gap on the inspection path only, not
     a broken agent.
-    <span class="text-slate-500">({{ detail.mcp.error }})</span>
+    <span class="text-fg-subtle">({{ detail.mcp.error }})</span>
   </p>
   {% elif detail.mcp.error %}
-  <p class="text-xs text-rose-700">MCP config parse failed: {{ detail.mcp.error }}</p>
+  <p class="text-xs text-danger-strong">MCP config parse failed: {{ detail.mcp.error }}</p>
   {% elif not detail.mcp.servers %}
-  <p class="text-xs text-amber-700">MCP config has no <code>mcpServers</code> — the agent runs with zero MCP tools.</p>
+  <p class="text-xs text-warning-strong">MCP config has no <code>mcpServers</code> — the agent runs with zero MCP tools.</p>
   {% else %}
-  <ul class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
+  <ul class="rounded-lg border border-line bg-surface divide-y divide-line-subtle">
     {% for srv in detail.mcp.servers %}
     <li class="px-4 py-2 text-xs">
       <div class="flex items-center gap-2">
-        <span class="font-mono text-slate-800">{{ srv.name }}</span>
-        <span class="text-slate-400">·</span>
-        <span class="text-slate-500">{{ srv.transport }}</span>
+        <span class="font-mono text-fg">{{ srv.name }}</span>
+        <span class="text-fg-faint">·</span>
+        <span class="text-fg-subtle">{{ srv.transport }}</span>
       </div>
       {% if srv.command %}
-      <div class="text-slate-500 mt-0.5">
+      <div class="text-fg-subtle mt-0.5">
         <span class="font-mono">{{ srv.command }} {{ ' '.join(srv.args) }}</span>
       </div>
       {% elif srv.url %}
-      <div class="text-slate-500 mt-0.5"><a href="{{ srv.url }}" class="text-sky-600">{{ srv.url }}</a></div>
+      <div class="text-fg-subtle mt-0.5"><a href="{{ srv.url }}" class="text-info">{{ srv.url }}</a></div>
       {% endif %}
     </li>
     {% endfor %}
   </ul>
-  <p class="text-xs text-slate-400 mt-1">MCP config: <code>{{ detail.mcp.path }}</code></p>
+  <p class="text-xs text-fg-faint mt-1">MCP config: <code>{{ detail.mcp.path }}</code></p>
   {% endif %}
 </section>
 
 {% if i.system_prompt_env %}
 <section class="mb-6">
   <h2 class="text-sm font-semibold mb-2">System prompt
-    <span class="text-xs text-slate-400 font-normal">(from <code>{{ i.system_prompt_env }}</code>)</span>
+    <span class="text-xs text-fg-faint font-normal">(from <code>{{ i.system_prompt_env }}</code>)</span>
   </h2>
   {% if detail.system_prompt.exists and not detail.system_prompt.unreadable %}
-  <p class="text-xs text-slate-400 mb-1">{{ detail.system_prompt.path }} · {{ detail.system_prompt.size }} chars</p>
-  <pre class="rounded-lg border border-slate-200 bg-white p-3 text-xs whitespace-pre-wrap text-slate-700 overflow-x-auto max-h-96 overflow-y-auto">{{ detail.system_prompt.text }}</pre>
+  <p class="text-xs text-fg-faint mb-1">{{ detail.system_prompt.path }} · {{ detail.system_prompt.size }} chars</p>
+  <pre class="rounded-lg border border-line bg-surface p-3 text-xs whitespace-pre-wrap text-fg-secondary overflow-x-auto max-h-96 overflow-y-auto">{{ detail.system_prompt.text }}</pre>
   {% elif detail.system_prompt.unreadable %}
-  <p class="text-xs text-amber-700">
+  <p class="text-xs text-warning-strong">
     Exists at <code>{{ detail.system_prompt.path }}</code> but unreadable by the web user (<code>deploy</code>);
     the agent daemon under its own user reads it fine.
   </p>
   {% else %}
-  <p class="text-xs text-rose-700">Not readable: <code>{{ detail.system_prompt.path or '(unset)' }}</code></p>
+  <p class="text-xs text-danger-strong">Not readable: <code>{{ detail.system_prompt.path or '(unset)' }}</code></p>
   {% endif %}
 </section>
 {% endif %}
@@ -201,18 +201,18 @@
 {% if i.directive_prompt_env %}
 <section class="mb-6">
   <h2 class="text-sm font-semibold mb-2">Directive prompt
-    <span class="text-xs text-slate-400 font-normal">(from <code>{{ i.directive_prompt_env }}</code>)</span>
+    <span class="text-xs text-fg-faint font-normal">(from <code>{{ i.directive_prompt_env }}</code>)</span>
   </h2>
   {% if detail.directive_prompt.exists and not detail.directive_prompt.unreadable %}
-  <p class="text-xs text-slate-400 mb-1">{{ detail.directive_prompt.path }} · {{ detail.directive_prompt.size }} chars</p>
-  <pre class="rounded-lg border border-slate-200 bg-white p-3 text-xs whitespace-pre-wrap text-slate-700 overflow-x-auto max-h-96 overflow-y-auto">{{ detail.directive_prompt.text }}</pre>
+  <p class="text-xs text-fg-faint mb-1">{{ detail.directive_prompt.path }} · {{ detail.directive_prompt.size }} chars</p>
+  <pre class="rounded-lg border border-line bg-surface p-3 text-xs whitespace-pre-wrap text-fg-secondary overflow-x-auto max-h-96 overflow-y-auto">{{ detail.directive_prompt.text }}</pre>
   {% elif detail.directive_prompt.unreadable %}
-  <p class="text-xs text-amber-700">
+  <p class="text-xs text-warning-strong">
     Exists at <code>{{ detail.directive_prompt.path }}</code> but unreadable by the web user (<code>deploy</code>);
     the agent daemon under its own user reads it fine.
   </p>
   {% else %}
-  <p class="text-xs text-rose-700">Not readable: <code>{{ detail.directive_prompt.path or '(unset)' }}</code></p>
+  <p class="text-xs text-danger-strong">Not readable: <code>{{ detail.directive_prompt.path or '(unset)' }}</code></p>
   {% endif %}
 </section>
 {% endif %}

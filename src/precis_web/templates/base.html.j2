@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" class="h-full bg-slate-50">
+<html lang="en" class="h-full bg-canvas">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -34,21 +34,21 @@
      any future one — gets it for free. #}
   <style>
     .pa{position:relative;text-decoration:underline dotted;
-        text-decoration-color:#94a3b8;cursor:help}
+        text-decoration-color:rgb(var(--text-fg-faint));cursor:help}
     .pa>.pa-pop{display:none;position:absolute;bottom:100%;left:0;z-index:50;
         margin-bottom:3px;width:max-content;max-width:18rem;white-space:normal;
-        border-radius:4px;background:#1e293b;color:#fff;
+        border-radius:4px;background:rgb(var(--bg-chrome-raised));color:rgb(var(--text-chrome-strong));
         padding:2px 6px;font-size:11px;font-weight:400;line-height:1.3}
     .pa:hover>.pa-pop,.pa:focus>.pa-pop,.pa:focus-within>.pa-pop{display:block}
     .pa-pop>.pa-def,.pa-pop>.pa-attr,.pa-pop>.pa-link{display:block}
-    .pa-pop>.pa-attr{color:#cbd5e1;font-size:10px}
-    .pa-pop>.pa-link{color:#7dd3fc;margin-top:1px}
+    .pa-pop>.pa-attr{color:rgb(var(--text-chrome-muted));font-size:10px}
+    .pa-pop>.pa-link{color:rgb(var(--text-chrome-link));margin-top:1px}
   </style>
 </head>
-<body class="h-full text-slate-800">
+<body class="h-full text-fg">
   <div class="min-h-full">
     <header data-headroom
-            class="sticky top-0 z-30 bg-slate-900 text-slate-100 transition-transform duration-200 motion-reduce:transition-none motion-reduce:duration-0">
+            class="sticky top-0 z-30 bg-chrome text-chrome transition-transform duration-200 motion-reduce:transition-none motion-reduce:duration-0">
       <div class="mx-auto max-w-6xl px-4">
         {# Nav, by attention priority (the rationalized target information
            architecture; see also precis_web.nav):
@@ -63,9 +63,9 @@
                manifest route (nav.py::nav_badges), just left of Account.
              • Account — your own login (abbrev chip), far right. #}
         <nav class="flex flex-wrap items-center gap-0.5 py-1.5 text-xs">
-          <span class="font-semibold tracking-tight text-emerald-400 mr-2">precis</span>
-          {% set _tab_on = 'bg-slate-700 text-white' %}
-          {% set _tab_off = 'text-slate-300 hover:bg-slate-800 hover:text-white' %}
+          <span class="font-semibold tracking-tight text-chrome-brand mr-2">precis</span>
+          {% set _tab_on = 'bg-chrome-hover text-chrome-strong' %}
+          {% set _tab_off = 'text-chrome-muted hover:bg-chrome-raised hover:text-chrome-strong' %}
 
           {# ── Daily: always-visible daily-driver kinds ──
              Drafts/Papers/Items retired into Drive (WS1a/WS1b/nav
@@ -78,7 +78,7 @@
           </a>
           {% endfor %}
 
-          <span class="mx-1 h-4 w-px bg-slate-700"></span>
+          <span class="mx-1 h-4 w-px bg-chrome-hover"></span>
 
           {# ── Browse ▾: the corpus look-up long tail ──
              WS1b folded Papers-Needed / Oracle / Patents / CFPs / Refs
@@ -102,10 +102,10 @@
               Browse <span class="text-[9px]">▾</span>
             </button>
             <div x-show="open" x-cloak x-transition.opacity
-                 class="absolute left-0 mt-1 z-40 min-w-[9rem] rounded-md border border-slate-700 bg-slate-800 py-1 shadow-lg">
+                 class="absolute left-0 mt-1 z-40 min-w-[9rem] rounded-md border border-chrome bg-chrome-raised py-1 shadow-lg">
               {% for key, label, href in browse %}
               <a href="{{ href }}"
-                 class="block px-3 py-1.5 text-xs font-medium transition {% if active_tab == key %}bg-slate-700 text-white{% else %}text-slate-300 hover:bg-slate-700 hover:text-white{% endif %}">
+                 class="block px-3 py-1.5 text-xs font-medium transition {% if active_tab == key %}bg-chrome-hover text-chrome-strong{% else %}text-chrome-muted hover:bg-chrome-hover hover:text-chrome-strong{% endif %}">
                 {{ label }}
               </a>
               {% endfor %}
@@ -125,24 +125,24 @@
                class="px-2 py-1 rounded text-xs font-medium transition inline-flex items-center {% if active_tab in needs_you_keys %}{{ _tab_on }}{% else %}{{ _tab_off }}{% endif %}">
               Needs you
               {% if nav_needs_you %}
-              <span class="ml-1 inline-flex items-center justify-center rounded-full bg-rose-600 text-white text-[10px] font-semibold leading-none px-1.5 h-[1.1rem] min-w-[1.1rem]">{{ nav_needs_you }}</span>
+              <span class="ml-1 inline-flex items-center justify-center rounded-full bg-danger-solid text-on-solid text-[10px] font-semibold leading-none px-1.5 h-[1.1rem] min-w-[1.1rem]">{{ nav_needs_you }}</span>
               {% endif %}
             </a>
             <a href="/gripes" data-tour="nav-gripes"
                class="px-2 py-1 rounded text-xs font-medium transition inline-flex items-center {% if active_tab == 'gripes' %}{{ _tab_on }}{% else %}{{ _tab_off }}{% endif %}">
               Gripes
               {% if nav_gripes %}
-              <span class="ml-1 inline-flex items-center justify-center rounded-full bg-violet-500 text-white text-[10px] font-semibold leading-none px-1.5 h-[1.1rem] min-w-[1.1rem]">{{ nav_gripes }}</span>
+              <span class="ml-1 inline-flex items-center justify-center rounded-full bg-accent-solid-soft text-on-solid text-[10px] font-semibold leading-none px-1.5 h-[1.1rem] min-w-[1.1rem]">{{ nav_gripes }}</span>
               {% endif %}
             </a>
             <a href="/alerts" data-tour="nav-alerts"
                class="px-2 py-1 rounded text-xs font-medium transition inline-flex items-center {% if active_tab == 'alerts' %}{{ _tab_on }}{% else %}{{ _tab_off }}{% endif %}">
               Alerts
               {% if nav_alerts %}
-              <span class="ml-1 inline-flex items-center justify-center rounded-full bg-amber-500 text-slate-900 text-[10px] font-semibold leading-none px-1.5 h-[1.1rem] min-w-[1.1rem]">{{ nav_alerts }}</span>
+              <span class="ml-1 inline-flex items-center justify-center rounded-full bg-warning-solid-soft text-on-bright text-[10px] font-semibold leading-none px-1.5 h-[1.1rem] min-w-[1.1rem]">{{ nav_alerts }}</span>
               {% endif %}
             </a>
-            <span class="mx-1 h-4 w-px bg-slate-700"></span>
+            <span class="mx-1 h-4 w-px bg-chrome-hover"></span>
             {# Manual — the user-facing how-to (routes/manual.py). Top-level
                and unbadged: it is the thing you go looking for when you do
                NOT know which tab you need, so it must not be inside a
@@ -159,10 +159,10 @@
                 Ops <span class="text-[9px]">▾</span>
               </button>
               <div x-show="open" x-cloak x-transition.opacity
-                   class="absolute right-0 mt-1 z-40 min-w-[9rem] rounded-md border border-slate-700 bg-slate-800 py-1 shadow-lg">
+                   class="absolute right-0 mt-1 z-40 min-w-[9rem] rounded-md border border-chrome bg-chrome-raised py-1 shadow-lg">
                 {% for key, label, href in ops %}
                 <a href="{{ href }}"
-                   class="block px-3 py-1.5 text-xs font-medium transition {% if active_tab == key %}bg-slate-700 text-white{% else %}text-slate-300 hover:bg-slate-700 hover:text-white{% endif %}">
+                   class="block px-3 py-1.5 text-xs font-medium transition {% if active_tab == key %}bg-chrome-hover text-chrome-strong{% else %}text-chrome-muted hover:bg-chrome-hover hover:text-chrome-strong{% endif %}">
                   {{ label }}
                 </a>
                 {% endfor %}
@@ -175,7 +175,7 @@
                the results page. #}
             <form method="get" action="/drive" class="ml-1 flex items-center gap-1">
               <input name="q" data-key="/" placeholder="🔍 search everything…"
-                     class="bg-slate-800 border border-slate-700 text-slate-100 placeholder-slate-400 text-sm px-3 py-1 rounded w-44 focus:w-72 focus:outline-none focus:ring-1 focus:ring-emerald-500 transition-all" />
+                     class="bg-chrome-raised border border-chrome text-chrome placeholder-chrome-faint text-sm px-3 py-1 rounded w-44 focus:w-72 focus:outline-none focus:ring-1 focus:ring-chrome-brand transition-all" />
             </form>
             {# "?" tour launcher — only on a page a tour manifest's route
                matches (nav.py::nav_badges, server-side, no extra fetch).
@@ -184,7 +184,7 @@
             {% if tour_slug %}
             <a href="{{ tour_href }}" data-tour-launch
                title="Take a tour of this page" aria-label="Take a tour of this page"
-               class="ml-1 inline-flex items-center justify-center h-6 w-6 rounded-full text-[10px] font-semibold bg-slate-700 text-slate-200 hover:bg-slate-600 hover:text-white transition">
+               class="ml-1 inline-flex items-center justify-center h-6 w-6 rounded-full text-[10px] font-semibold bg-chrome-hover text-chrome-soft hover:bg-chrome-active hover:text-chrome-strong transition">
               ?
             </a>
             {% endif %}
@@ -194,7 +194,7 @@
                is no identity to abbreviate, so it degrades to a word.
                Roster management stays in `precis users` on the host. #}
             <a href="/account" title="{{ nav_user.login if nav_user else 'Account' }}"
-               class="ml-1 rounded transition {% if nav_user %}inline-flex items-center justify-center h-6 w-6 text-[10px] font-semibold {% if active_tab == 'account' %}bg-emerald-500 text-slate-900{% else %}bg-slate-700 text-slate-200 hover:bg-slate-600 hover:text-white{% endif %}{% else %}px-2 py-1 text-xs font-medium {% if active_tab == 'account' %}{{ _tab_on }}{% else %}{{ _tab_off }}{% endif %}{% endif %}">
+               class="ml-1 rounded transition {% if nav_user %}inline-flex items-center justify-center h-6 w-6 text-[10px] font-semibold {% if active_tab == 'account' %}bg-success-solid-soft text-on-bright{% else %}bg-chrome-hover text-chrome-soft hover:bg-chrome-active hover:text-chrome-strong{% endif %}{% else %}px-2 py-1 text-xs font-medium {% if active_tab == 'account' %}{{ _tab_on }}{% else %}{{ _tab_off }}{% endif %}{% endif %}">
               {{ nav_user.abbrev | upper if nav_user else 'Account' }}
             </a>
           </div>
@@ -422,7 +422,7 @@
         if (!t || !t.classList || !t.classList.contains('ref-popover')) return;
         const seed = t.querySelector('.ref-popover-status');
         if (!seed) return;   // real content already swapped in — leave it
-        seed.className = 'ref-popover-status block px-1 py-1.5 text-xs text-rose-500';
+        seed.className = 'ref-popover-status block px-1 py-1.5 text-xs text-danger-soft';
         seed.textContent = 'preview unavailable — click through to open it';
       }
       document.addEventListener('htmx:responseError', refPopoverFail);

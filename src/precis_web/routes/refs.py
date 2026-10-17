@@ -185,12 +185,12 @@ def _fmt_turn_ts(ts: Any) -> str:
 #: Author dot colours for the transcript, picked deterministically by
 #: author name so the same speaker keeps one colour down a thread.
 _AUTHOR_DOTS: tuple[str, ...] = (
-    "bg-sky-500",
-    "bg-emerald-500",
-    "bg-violet-500",
-    "bg-amber-500",
-    "bg-rose-500",
-    "bg-teal-500",
+    "bg-info-solid-soft",
+    "bg-success-solid-soft",
+    "bg-accent-solid-soft",
+    "bg-warning-solid-soft",
+    "bg-danger-solid-soft",
+    "bg-teal-solid-soft",
 )
 
 

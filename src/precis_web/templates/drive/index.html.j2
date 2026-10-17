@@ -4,7 +4,7 @@
 <div class="mb-3 flex items-start gap-3" x-data="{ open: false, kind: 'draft', doctype: 'paper' }">
   <div class="min-w-0">
     <h1 class="text-lg font-semibold">Drive</h1>
-    <p class="text-sm text-slate-500">
+    <p class="text-sm text-fg-subtle">
       Discover newly created work, including findings and filed items.
       Search across kinds or go straight to a handle or DOI;
       refine the selection with kinds and filters.
@@ -18,11 +18,11 @@
   <div id="open-all-wrap"
        class="ml-auto hidden self-center shrink-0 flex flex-col items-end gap-0.5">
     <button type="button" id="open-all-downloads"
-            class="rounded-md bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-700"
+            class="rounded-md bg-success-solid px-3 py-1.5 text-sm font-medium text-on-solid hover:bg-success-solid-strong"
             title="Open every direct-download link on this page in its own tab, staggered 10-30s apart to go easy on the library servers. Allow pop-ups for this site (one-time) or only the first opens; click again to cancel.">
       Open all downloads ↓
     </button>
-    <span class="text-[10px] leading-tight text-slate-400">
+    <span class="text-[10px] leading-tight text-fg-faint">
       one-time: allow pop-ups for this site so all open
     </span>
   </div>
@@ -31,17 +31,17 @@
      Keeps ml-auto so it stays right-aligned when the download button is hidden. #}
   <div class="ml-auto relative shrink-0" data-tour="drive-new">
     <button type="button" @click="open = !open"
-            class="rounded bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-700">
+            class="rounded bg-info-solid px-3 py-1.5 text-sm font-medium text-on-solid hover:bg-info-solid-strong">
       + New <span class="text-[9px]">▾</span>
     </button>
     <form x-show="open" x-cloak @click.outside="open = false"
           method="post"
           :action="kind === 'draft' ? '/drafts/new' : '/drive/new'"
-          class="absolute right-0 mt-1 w-64 z-20 rounded-lg border border-slate-200 bg-white p-3 shadow-lg space-y-2">
+          class="absolute right-0 mt-1 w-64 z-20 rounded-lg border border-line bg-surface p-3 shadow-lg space-y-2">
       <div>
-        <label class="block text-xs font-medium text-slate-600 mb-1">Kind</label>
+        <label class="block text-xs font-medium text-fg-muted mb-1">Kind</label>
         <select x-model="kind" name="kind"
-                class="w-full rounded border border-slate-300 px-2 py-1.5 text-sm bg-white">
+                class="w-full rounded border border-line-strong px-2 py-1.5 text-sm bg-surface">
           <option value="draft" selected>Draft (document)</option>
           <option value="cad">CAD (3D solid)</option>
           <option value="structure">DFT (atomistic cell)</option>
@@ -52,9 +52,9 @@
       {# Draft genre: only /drafts/new consumes `doctype`; hidden for cad/structure/figure.
          Options come from the same _DOC_TYPES source the /drafts page renders. #}
       <div x-show="kind === 'draft'">
-        <label class="block text-xs font-medium text-slate-600 mb-1">Type</label>
+        <label class="block text-xs font-medium text-fg-muted mb-1">Type</label>
         <select name="doctype" x-model="doctype"
-                class="w-full rounded border border-slate-300 px-2 py-1.5 text-sm bg-white">
+                class="w-full rounded border border-line-strong px-2 py-1.5 text-sm bg-surface">
           {% for d in doctypes %}
           <option value="{{ d.value }}"{% if d.default %} selected{% endif %}>{{ d.label }}</option>
           {% endfor %}
@@ -64,9 +64,9 @@
          kind='profile' — the default is preselected. Writes
          meta.workspace.poster.profile. #}
       <div x-show="kind === 'draft' && doctype === 'poster'" x-cloak>
-        <label class="block text-xs font-medium text-slate-600 mb-1">Branding profile</label>
+        <label class="block text-xs font-medium text-fg-muted mb-1">Branding profile</label>
         <select name="profile"
-                class="w-full rounded border border-slate-300 px-2 py-1.5 text-sm bg-white">
+                class="w-full rounded border border-line-strong px-2 py-1.5 text-sm bg-surface">
           <option value="">(product default)</option>
           {% for p in poster_profiles %}
           <option value="{{ p.id }}"{% if p.default %} selected{% endif %}>{{ p.name }}</option>
@@ -74,29 +74,29 @@
         </select>
       </div>
       <div>
-        <label class="block text-xs font-medium text-slate-600 mb-1">Title <span class="text-rose-500">*</span></label>
+        <label class="block text-xs font-medium text-fg-muted mb-1">Title <span class="text-danger-soft">*</span></label>
         <input name="title" required autocomplete="off" x-init="$el.focus()"
                placeholder="hex pocket block"
-               class="w-full rounded border border-slate-300 px-2 py-1.5 text-sm">
+               class="w-full rounded border border-line-strong px-2 py-1.5 text-sm">
       </div>
       {# Draft description: the writer's initial prompt. Required for drafts
          (a title alone can't drive the planner) — bound via :required so the
          hidden field never blocks a cad/structure/figure/mermaid submit. #}
       <div x-show="kind === 'draft'">
-        <label class="block text-xs font-medium text-slate-600 mb-1">What to write <span class="text-rose-500">*</span></label>
+        <label class="block text-xs font-medium text-fg-muted mb-1">What to write <span class="text-danger-soft">*</span></label>
         <textarea name="summary" rows="3" :required="kind === 'draft'"
                   placeholder="Describe the document to write — this is the writer's prompt. A title alone isn't enough."
-                  class="w-full rounded border border-slate-300 px-2 py-1.5 text-sm"></textarea>
-        <p class="text-[10px] text-slate-400 mt-1">
+                  class="w-full rounded border border-line-strong px-2 py-1.5 text-sm"></textarea>
+        <p class="text-[10px] text-fg-faint mt-1">
           Becomes the writer's initial prompt and starts it writing. Required — you can't write a document from just a title.
         </p>
       </div>
-      <p class="text-[10px] text-slate-400" x-show="kind !== 'draft'">
+      <p class="text-[10px] text-fg-faint" x-show="kind !== 'draft'">
         Lands you in the editor with a starter you can edit by prompt.
       </p>
       <div class="flex justify-end">
         <button type="submit"
-                class="rounded bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-700">
+                class="rounded bg-success-solid px-3 py-1.5 text-sm font-medium text-on-solid hover:bg-success-solid-strong">
           Create ▸
         </button>
       </div>
@@ -105,18 +105,18 @@
 </div>
 
 {% if notice %}
-<div class="rounded-md border border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-800 mb-4">
+<div class="rounded-md border border-warning-strong bg-warning-subtle px-4 py-2 text-sm text-warning-deep mb-4">
   {{ notice }}
 </div>
 {% endif %}
 
 <div class="mb-3 flex flex-wrap items-center gap-3 text-sm">
-  <a href="/drive?task=discover" class="rounded border border-sky-300 bg-sky-50 px-3 py-1 text-sky-800">Discover</a>
-  <span class="text-slate-500">New work across kinds and folders</span>
-  {% if saved_kinds_url %}<a href="{{ saved_kinds_url }}" class="text-sky-700 hover:underline">Use saved kinds</a>{% endif %}
+  <a href="/drive?task=discover" class="rounded border border-info-strong bg-info-subtle px-3 py-1 text-info-deep">Discover</a>
+  <span class="text-fg-subtle">New work across kinds and folders</span>
+  {% if saved_kinds_url %}<a href="{{ saved_kinds_url }}" class="text-info-strong hover:underline">Use saved kinds</a>{% endif %}
 </div>
 {% if using_saved_kinds %}
-<p class="mb-3 text-sm text-slate-600">Using your saved kinds. <a href="/drive?task=discover" class="text-sky-700 underline">Discover across kinds, including findings</a>.</p>
+<p class="mb-3 text-sm text-fg-muted">Using your saved kinds. <a href="/drive?task=discover" class="text-info-strong underline">Discover across kinds, including findings</a>.</p>
 {% endif %}
 
 <form method="get" action="/drive" class="mb-4 space-y-3"
@@ -128,33 +128,33 @@
   <div class="flex flex-wrap items-end gap-2">
     <div class="relative flex-1 min-w-[16rem]" data-tour="drive-search"
          @click.outside="slashOpen = false">
-      <label for="drive-query" class="block text-xs text-slate-500 mb-0.5">Search</label>
+      <label for="drive-query" class="block text-xs text-fg-subtle mb-0.5">Search</label>
       <input id="drive-query" type="search" name="q" value="{{ q }}" autofocus
              placeholder="Search work, a handle or a DOI" @input="onQueryInput()"
              x-ref="q" @keydown="onQueryKey($event)"
              x-init="$el.setSelectionRange($el.value.length, $el.value.length)"
-             class="w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm" />
+             class="w-full rounded-md border border-line-strong px-3 py-1.5 text-sm" />
       {# Slash-command popdown (gr486407): while the query ends in a
          "/token" the debounced submit stays off and this lists the kind
          commands /drive/complete serves — the same roster
          _split_kind_tokens resolves. mousedown.prevent on a row picks
          before the input's blur can swallow the click. #}
       <div x-show="slashOpen" x-cloak
-           class="absolute left-0 right-0 z-30 mt-0.5 max-h-72 overflow-auto rounded-md border border-slate-200 bg-white shadow-lg">
+           class="absolute left-0 right-0 z-30 mt-0.5 max-h-72 overflow-auto rounded-md border border-line bg-surface shadow-lg">
         <template x-for="(s, i) in slashItems" :key="s.insert">
           <button type="button" @mousedown.prevent="pickSlash(s)" @mousemove="slashSel = i"
-                  :class="{ 'bg-sky-50': i === slashSel }"
-                  class="block w-full px-3 py-1.5 text-left text-sm hover:bg-sky-50">
+                  :class="{ 'bg-info-subtle': i === slashSel }"
+                  class="block w-full px-3 py-1.5 text-left text-sm hover:bg-info-subtle">
             <code class="font-medium" x-text="s.insert"></code>
-            <span class="ml-2 text-xs text-slate-500" x-text="s.desc"></span>
+            <span class="ml-2 text-xs text-fg-subtle" x-text="s.desc"></span>
           </button>
         </template>
       </div>
-      <p class="mt-0.5 text-[11px] text-slate-400">Syntax: <code>/draft nano</code> limits to a kind (singular or plural, e.g. <code>/papers</code>) and searches the rest — type <code>/</code> for the command list; a handle or DOI jumps straight to the item. <code>/fav</code> opens <a href="/favorites" class="underline">your favorites</a>.</p>
+      <p class="mt-0.5 text-[11px] text-fg-faint">Syntax: <code>/draft nano</code> limits to a kind (singular or plural, e.g. <code>/papers</code>) and searches the rest — type <code>/</code> for the command list; a handle or DOI jumps straight to the item. <code>/fav</code> opens <a href="/favorites" class="underline">your favorites</a>.</p>
     </div>
     <div>
-      <label for="drive-sort" class="block text-xs text-slate-500 mb-0.5">Sort</label>
-      <select id="drive-sort" name="sort" @change="submitForm()" class="rounded-md border border-slate-300 px-3 py-1.5 text-sm">
+      <label for="drive-sort" class="block text-xs text-fg-subtle mb-0.5">Sort</label>
+      <select id="drive-sort" name="sort" @change="submitForm()" class="rounded-md border border-line-strong px-3 py-1.5 text-sm">
         <option value="created" {% if sort == 'created' %}selected{% endif %}>Newly created</option>
         <option value="modified" {% if sort == 'modified' %}selected{% endif %}>Recently modified</option>
         {% if q %}<option value="relevance" {% if sort == 'relevance' %}selected{% endif %}>Relevance</option>{% endif %}
@@ -162,38 +162,38 @@
         <option value="untried" {% if sort == 'untried' %}selected{% endif %}>Untried downloads first</option>
       </select>
     </div>
-    <button type="submit" class="rounded-md bg-slate-800 text-white px-4 py-1.5 text-sm">Search</button>
-    <a href="/drive?task=discover" class="rounded-md border border-slate-300 px-3 py-1.5 text-sm">Reset</a>
+    <button type="submit" class="rounded-md bg-solid-strong text-on-solid px-4 py-1.5 text-sm">Search</button>
+    <a href="/drive?task=discover" class="rounded-md border border-line-strong px-3 py-1.5 text-sm">Reset</a>
   </div>
 
   <div class="flex flex-wrap items-center gap-1.5 text-xs" aria-label="Active filters" data-tour="drive-tags">
-    <span class="text-slate-500">Active</span>
-    <button type="button" @click="$refs.picker.open = true" data-picker-opener class="rounded border border-sky-200 bg-sky-50 px-2 py-1 text-sky-800"
+    <span class="text-fg-subtle">Active</span>
+    <button type="button" @click="$refs.picker.open = true" data-picker-opener class="rounded border border-info bg-info-subtle px-2 py-1 text-info-deep"
             x-text="isDiscoverySelection() ? 'All discovery kinds (' + kinds.length + ')' : kinds.length + ' selected kinds'">{{ selected_kinds | length }} selected kinds</button>
     <template x-for="kk in (isDiscoverySelection() ? [] : kinds)" :key="kk">
       <button type="button" @click="removeKind(kk)" :aria-label="'Remove kind ' + kk"
-              class="rounded bg-sky-100 px-2 py-1 text-sky-800"><span x-text="kk"></span> ×</button>
+              class="rounded bg-info-muted px-2 py-1 text-info-deep"><span x-text="kk"></span> ×</button>
     </template>
     <template x-for="(t, i) in tags" :key="t">
-      <span class="inline-flex items-center gap-1 rounded bg-violet-100 px-2 py-1 text-violet-800">
+      <span class="inline-flex items-center gap-1 rounded bg-accent-muted px-2 py-1 text-accent-deep">
         <span x-text="t"></span>
         <button type="button" @click="removeTag(i)" :aria-label="'Remove tag ' + t">×</button>
         <input type="hidden" name="tag" :value="t" />
       </span>
     </template>
     {% for facet in active_facets %}
-    <a href="{{ facet.url }}" class="rounded border border-slate-200 px-2 py-1 text-slate-600" aria-label="Remove {{ facet.label }}">{{ facet.label }} ×</a>
+    <a href="{{ facet.url }}" class="rounded border border-line px-2 py-1 text-fg-muted" aria-label="Remove {{ facet.label }}">{{ facet.label }} ×</a>
     {% endfor %}
   </div>
 
   <details x-ref="picker" @toggle="savePicker()" @click.outside="closePicker($event)" @keydown.escape="$refs.picker.open = false"
-           data-picker-persist class="rounded-lg border border-slate-200 bg-white p-3">
-    <summary class="cursor-pointer text-sm font-medium text-sky-800">Kinds and filters</summary>
+           data-picker-persist class="rounded-lg border border-line bg-surface p-3">
+    <summary class="cursor-pointer text-sm font-medium text-info-deep">Kinds and filters</summary>
     <div class="mt-3 grid gap-4 md:grid-cols-2">
       <div>
-        <label for="drive-kind-search" class="block text-xs font-medium text-slate-600">Find a kind</label>
+        <label for="drive-kind-search" class="block text-xs font-medium text-fg-muted">Find a kind</label>
         <input id="drive-kind-search" type="search" x-model="kindQuery" @keydown.enter.prevent
-               placeholder="e.g. finding, structure, paper" class="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm" />
+               placeholder="e.g. finding, structure, paper" class="mt-1 w-full rounded border border-line-strong px-2 py-1 text-sm" />
         <div class="my-2 flex flex-wrap gap-2 text-xs">
           <button type="button" @click="allKinds()" title="Select every kind." class="rounded border px-2 py-1">All</button>
           <button type="button" @click="noKinds()" title="Clear the kind selection." class="rounded border px-2 py-1">None</button>
@@ -205,43 +205,43 @@
         <div class="grid max-h-64 grid-cols-2 gap-1 overflow-auto" aria-label="Kinds">
           {% for bucket, bucket_kinds in kind_buckets.items() %}
           {% if bucket_kinds %}
-          <h3 class="col-span-2 mt-2 text-xs font-medium text-slate-500" title="{{ bucket_help.get(bucket, '') }}"
+          <h3 class="col-span-2 mt-2 text-xs font-medium text-fg-subtle" title="{{ bucket_help.get(bucket, '') }}"
               x-show="{{ bucket_kinds | tojson | forceescape }}.some(kk => matchesKind(kk))">{{ bucket | title }}</h3>
           {% for kk in bucket_kinds %}
-          <label x-show="matchesKind({{ kk | tojson | forceescape }})" title="{{ kind_help.get(kk, '') }}" class="inline-flex items-center gap-2 rounded px-2 py-1 text-sm hover:bg-slate-50">
+          <label x-show="matchesKind({{ kk | tojson | forceescape }})" title="{{ kind_help.get(kk, '') }}" class="inline-flex items-center gap-2 rounded px-2 py-1 text-sm hover:bg-surface-subtle">
             <input type="checkbox" name="k" value="{{ kk }}" x-model="kinds" {% if kk in selected_kinds %}checked{% endif %} data-kind-bucket="{{ bucket }}"
-                   @change="$refs.scope.value = ''" class="rounded border-slate-300" />
+                   @change="$refs.scope.value = ''" class="rounded border-line-strong" />
             <span>{{ kk }}</span>
           </label>
           {% endfor %}
           {% endif %}
           {% endfor %}
         </div>
-        <p x-show="!allKindDefs.some(k => matchesKind(k))" x-cloak class="mt-2 text-xs text-slate-500">No matching kinds. Your selection is unchanged.</p>
+        <p x-show="!allKindDefs.some(k => matchesKind(k))" x-cloak class="mt-2 text-xs text-fg-subtle">No matching kinds. Your selection is unchanged.</p>
       </div>
       <div class="space-y-3">
         <div>
-          <label for="drive-tag-search" title="Narrow to items carrying every tag you add, e.g. DIM:2d or topic:noxrr. Type to get suggestions; Enter adds the typed tag." class="block text-xs font-medium text-slate-600">Find a tag or filter</label>
+          <label for="drive-tag-search" title="Narrow to items carrying every tag you add, e.g. DIM:2d or topic:noxrr. Type to get suggestions; Enter adds the typed tag." class="block text-xs font-medium text-fg-muted">Find a tag or filter</label>
           <input id="drive-tag-search" type="search" x-model="tagQuery" @input.debounce.200ms="suggest()"
                  @keydown.escape="suggestions = []" @keydown.enter.prevent="addTag(tagQuery.trim())"
-                 placeholder="e.g. DIM:2d, MATERIAL:nanobud, topic:noxrr" class="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm" />
-          <div x-show="suggestions.length" x-cloak class="rounded border border-slate-200">
+                 placeholder="e.g. DIM:2d, MATERIAL:nanobud, topic:noxrr" class="mt-1 w-full rounded border border-line-strong px-2 py-1 text-sm" />
+          <div x-show="suggestions.length" x-cloak class="rounded border border-line">
             <template x-for="s in suggestions" :key="s.tag">
-              <button type="button" @click="addTag(s.tag)" x-text="s.label" class="block w-full px-2 py-1 text-left text-xs hover:bg-slate-50"></button>
+              <button type="button" @click="addTag(s.tag)" x-text="s.label" class="block w-full px-2 py-1 text-left text-xs hover:bg-surface-subtle"></button>
             </template>
           </div>
-          <p class="mt-1 text-xs text-slate-500">All selected tags must match. Paper classifications use DIM, MATERIAL and SCALE.</p>
+          <p class="mt-1 text-xs text-fg-subtle">All selected tags must match. Paper classifications use DIM, MATERIAL and SCALE.</p>
         </div>
         <div class="flex flex-wrap gap-3 text-xs">
           <label title="Which items the list shows: everything, only paper stubs still to fetch (PDF missing, has a DOI/arXiv/S2 id, not yet given up on), or soft-deleted items.">Show
-            <select name="state" @change="submitForm()" class="ml-1 rounded border border-slate-300 p-1">
+            <select name="state" @change="submitForm()" class="ml-1 rounded border border-line-strong p-1">
               <option value="all" title="Live items of the selected kinds." {% if state == 'all' %}selected{% endif %}>All</option>
               <option value="stub" title="Papers with no PDF yet that have a DOI, arXiv or Semantic Scholar id, so a download link can be offered. Papers every open-access source already refused are listed separately below as manual retrieval." {% if state == 'stub' %}selected{% endif %}>Stubs (to get)</option>
               <option value="deleted" title="Soft-deleted items, shown for visibility only (no undelete)." {% if state == 'deleted' %}selected{% endif %}>Deleted</option>
             </select>
           </label>
           <label title="Whether an item's body text has been ingested into searchable chunks. Applies across all kinds, not just papers.">Body availability
-            <select name="paper_chunks" @change="submitForm()" class="ml-1 rounded border border-slate-300 p-1">
+            <select name="paper_chunks" @change="submitForm()" class="ml-1 rounded border border-line-strong p-1">
               <option value="both" title="Do not filter on body text." {% if paper_chunks == 'both' %}selected{% endif %}>Any</option>
               <option value="with" title="Only items whose body has been ingested into chunks." {% if paper_chunks == 'with' %}selected{% endif %}>With chunks</option>
               <option value="without" title="Only items with no ingested body yet (awaiting ingest or a PDF)." {% if paper_chunks == 'without' %}selected{% endif %}>Without chunks</option>
@@ -249,18 +249,18 @@
           </label>
         </div>
         <label class="block text-xs" title="Which folder to browse. Top level hides anything filed in a folder; Anywhere lists filed and unfiled items together.">Folder
-          <select name="folder" @change="submitForm()" class="ml-1 rounded border border-slate-300 p-1">
+          <select name="folder" @change="submitForm()" class="ml-1 rounded border border-line-strong p-1">
             <option value="" {% if not folder %}selected{% endif %}>Top level</option>
             <option value="*" {% if folder == '*' %}selected{% endif %}>Anywhere</option>
             {% for f in folder_options %}<option value="{{ f.id }}" {% if folder == f.id | string %}selected{% endif %}>{{ f.label }}</option>{% endfor %}
           </select>
         </label>
         <div class="flex flex-wrap gap-3 text-xs">
-          <label title="Only items created on or after this date (applies to search).">Created since <input type="date" name="since" value="{{ since }}" @change="submitForm()" class="rounded border border-slate-300 p-1" /></label>
-          <label title="Only items created on or before this date (applies to search).">Created until <input type="date" name="until" value="{{ until }}" @change="submitForm()" class="rounded border border-slate-300 p-1" /></label>
+          <label title="Only items created on or after this date (applies to search).">Created since <input type="date" name="since" value="{{ since }}" @change="submitForm()" class="rounded border border-line-strong p-1" /></label>
+          <label title="Only items created on or before this date (applies to search).">Created until <input type="date" name="until" value="{{ until }}" @change="submitForm()" class="rounded border border-line-strong p-1" /></label>
         </div>
-        <p class="text-xs text-slate-500">Dates apply to search. Folder, body availability, Show and citation scope apply to browsing.</p>
-        <a href="/drive?submitted=1&amp;k=todo&amp;tag=level:recurring&amp;sort=recency" class="text-xs text-sky-700 underline">Schedules</a>
+        <p class="text-xs text-fg-subtle">Dates apply to search. Folder, body availability, Show and citation scope apply to browsing.</p>
+        <a href="/drive?submitted=1&amp;k=todo&amp;tag=level:recurring&amp;sort=recency" class="text-xs text-info-strong underline">Schedules</a>
       </div>
     </div>
   </details>
@@ -382,17 +382,17 @@
 
 {% import "_verified_mark.html.j2" as vm %}
 {% macro item_list(items) %}
-<ul class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
+<ul class="rounded-lg border border-line bg-surface divide-y divide-line-subtle">
   {% for row in items %}
-  <li class="px-4 py-3 hover:bg-slate-50" x-data="{ titleHover: false, chunkHover: false }">
+  <li class="px-4 py-3 hover:bg-surface-subtle" x-data="{ titleHover: false, chunkHover: false }">
     <div class="flex items-start gap-3">
       {% if row.thumbnail %}
       <img src="{{ row.thumbnail }}" loading="lazy" alt=""
-           class="mt-0.5 shrink-0 w-12 h-12 rounded object-cover border border-slate-200" />
+           class="mt-0.5 shrink-0 w-12 h-12 rounded object-cover border border-line" />
       {% endif %}
       {# marker group: [kind] [stub|chunks] #}
       <div class="mt-0.5 shrink-0 flex items-center gap-1">
-        <span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500" title="kind">{{ row.kind }}</span>
+        <span class="text-[10px] px-1.5 py-0.5 rounded bg-surface-muted text-fg-subtle" title="kind">{{ row.kind }}</span>
         {% for b in row.state %}
           <span class="text-[10px] px-1.5 py-0.5 rounded {{ b.cls }}" title="{{ b.title }}">{{ b.label }}</span>
         {% endfor %}
@@ -400,14 +400,14 @@
       <div class="min-w-0 flex-1 relative">
         {% set tm = row.title_meta %}
         <span class="relative inline-block" @mouseenter="titleHover=true" @mouseleave="titleHover=false">
-          <a href="{{ row.open_url }}" class="text-sky-700 hover:underline text-sm">{{ row.title }}</a>
+          <a href="{{ row.open_url }}" class="text-info-strong hover:underline text-sm">{{ row.title }}</a>
           {{ vm.verified_mark(tm.reviewed_at, tm.reviewed_by) if tm }}
           {# Title/metadata popover — full (uncapped) title + journal/authors/year,
              only worth a floating box when it says more than the capped row title. #}
           {% if tm and (tm.title != row.title or tm.journal or tm.authors or tm.year) %}
           <div x-show="titleHover" x-cloak
-               class="absolute left-0 top-full mt-1 z-20 w-80 max-w-[90vw] rounded-md border border-slate-200 bg-white p-3 text-xs text-slate-600 shadow-lg">
-            <p class="font-medium text-slate-800">{{ tm.title }}</p>
+               class="absolute left-0 top-full mt-1 z-20 w-80 max-w-[90vw] rounded-md border border-line bg-surface p-3 text-xs text-fg-muted shadow-lg">
+            <p class="font-medium text-fg">{{ tm.title }}</p>
             {% if tm.journal %}<p class="italic mt-0.5">{{ tm.journal }}</p>{% endif %}
             {% if tm.authors %}<p class="mt-0.5">{{ tm.authors | join(', ') }}</p>{% endif %}
             {% if tm.year %}<p class="mt-0.5">{{ tm.year }}</p>{% endif %}
@@ -417,20 +417,20 @@
         {% if row.tags %}
           <span class="ml-1 inline-flex flex-wrap gap-1 align-middle">
             {% for t in row.tags %}
-            <a href="{{ t.href }}" class="text-[10px] px-1.5 py-0.5 rounded bg-violet-50 text-violet-700 hover:bg-violet-100">{{ t.label }}</a>
+            <a href="{{ t.href }}" class="text-[10px] px-1.5 py-0.5 rounded bg-accent-subtle text-accent-strong hover:bg-accent-muted">{{ t.label }}</a>
             {% endfor %}
           </span>
         {% endif %}
         {% if row.preview %}
           <span class="relative block" @mouseenter="chunkHover=true" @mouseleave="chunkHover=false">
-            <p class="text-xs text-slate-500 mt-0.5">{{ row.preview }}</p>
+            <p class="text-xs text-fg-subtle mt-0.5">{{ row.preview }}</p>
             {% if row.chunk_full and row.chunk_full != row.preview %}
             <div x-show="chunkHover" x-cloak
-                 class="absolute left-0 top-full mt-1 z-20 w-96 max-w-[90vw] rounded-md border border-slate-200 bg-white p-3 text-xs text-slate-600 shadow-lg whitespace-pre-line">{{ row.chunk_full }}</div>
+                 class="absolute left-0 top-full mt-1 z-20 w-96 max-w-[90vw] rounded-md border border-line bg-surface p-3 text-xs text-fg-muted shadow-lg whitespace-pre-line">{{ row.chunk_full }}</div>
             {% endif %}
           </span>
         {% elif row.created_at %}
-          <p class="text-xs text-slate-400 mt-0.5">added <span title="{{ row.created_at | abs_ts }}">{{ row.created_at | ago }}</span></p>
+          <p class="text-xs text-fg-faint mt-0.5">added <span title="{{ row.created_at | abs_ts }}">{{ row.created_at | ago }}</span></p>
         {% endif %}
         {# Off-site links (paper rows): "find:" search links (DOI/UoL/Scholar)
            plus direct-download PDFs (LibKey/arXiv). Download links carry
@@ -439,7 +439,7 @@
            data-ref-id lets that same button POST a manual-open attempt
            (/downloads/mark-tried) for every ref it opened a tab for. #}
         {% if row.links %}
-          <p class="text-xs text-slate-400 mt-0.5">
+          <p class="text-xs text-fg-faint mt-0.5">
             find:
             {% for l in row.links %}
               {%- if l.clip -%}
@@ -448,11 +448,11 @@
                  Jinja resolves ``l.copy`` to the dict method (always truthy). #}
               <button type="button" data-v="{{ l.clip }}" title="{{ l.title }}"
                       onclick="navigator.clipboard.writeText(this.dataset.v); this.textContent='✓'; setTimeout(() => { this.textContent='⧉'; }, 900)"
-                      class="text-sky-700 hover:underline">{{ l.label }}</button>
+                      class="text-info-strong hover:underline">{{ l.label }}</button>
               {%- else -%}
               <a href="{{ l.href }}" target="_blank" rel="noopener"
                  {% if l.download %}data-download data-ref-id="{{ row.id }}"{% endif %}
-                 class="{% if l.download %}font-medium text-emerald-700{% else %}text-sky-700{% endif %} hover:underline">{{ l.label }}</a>
+                 class="{% if l.download %}font-medium text-success-strong{% else %}text-info-strong{% endif %} hover:underline">{{ l.label }}</a>
               {%- endif -%}{% if not loop.last %} · {% endif %}
             {% endfor %}
           </p>
@@ -468,26 +468,26 @@
               <input type="hidden" name="kind" value="{{ a.kind }}">
               <input type="hidden" name="id" value="{{ a.id }}">
               <input type="hidden" name="back" value="{{ return_to }}">
-              <select name="target_folder" class="rounded border border-slate-300 text-[11px] max-w-[8rem]">
+              <select name="target_folder" class="rounded border border-line-strong text-[11px] max-w-[8rem]">
                 <option value="">(unfile)</option>
                 {% for f in folder_options %}
                 <option value="{{ f.id }}">{{ f.label }}</option>
                 {% endfor %}
               </select>
-              <button class="text-amber-700 hover:underline">move</button>
+              <button class="text-warning-strong hover:underline">move</button>
             </form>
             {% elif a.type == 'delete' %}
             <form method="post" action="/drive/item/{{ a.kind }}/{{ a.id }}/delete" class="inline"
                   onsubmit="return confirm('Delete this {{ a.kind }}? This cannot easily be undone.');">
               <input type="hidden" name="back" value="{{ return_to }}">
-              <button class="text-rose-700 hover:underline">delete</button>
+              <button class="text-danger-strong hover:underline">delete</button>
             </form>
             {% elif a.type == 'tag' %}
             <form method="post" action="/drive/item/{{ a.kind }}/{{ a.id }}/tag" class="inline-flex items-center gap-1">
               <input type="hidden" name="back" value="{{ return_to }}">
               <input type="text" name="value" placeholder="tag…" autocomplete="off"
-                     class="rounded border border-slate-300 text-[11px] w-20 px-1 py-0.5">
-              <button class="text-violet-700 hover:underline">tag</button>
+                     class="rounded border border-line-strong text-[11px] w-20 px-1 py-0.5">
+              <button class="text-accent-strong hover:underline">tag</button>
             </form>
             {% endif %}
           {% endfor %}
@@ -520,25 +520,25 @@
 {% if prev_url or next_url %}
 <div class="mt-3 flex items-center gap-2 text-xs">
   {% if first_url %}
-  <a href="{{ first_url }}" class="rounded-md border border-slate-300 px-3 py-1 hover:bg-slate-100" title="First page">&laquo; First</a>
+  <a href="{{ first_url }}" class="rounded-md border border-line-strong px-3 py-1 hover:bg-surface-muted" title="First page">&laquo; First</a>
   {% else %}
-  <span class="rounded-md border border-slate-200 px-3 py-1 text-slate-300">&laquo; First</span>
+  <span class="rounded-md border border-line px-3 py-1 text-fg-ghost">&laquo; First</span>
   {% endif %}
   {% if prev_url %}
-  <a href="{{ prev_url }}" class="rounded-md border border-slate-300 px-3 py-1 hover:bg-slate-100">&larr; Prev</a>
+  <a href="{{ prev_url }}" class="rounded-md border border-line-strong px-3 py-1 hover:bg-surface-muted">&larr; Prev</a>
   {% else %}
-  <span class="rounded-md border border-slate-200 px-3 py-1 text-slate-300">&larr; Prev</span>
+  <span class="rounded-md border border-line px-3 py-1 text-fg-ghost">&larr; Prev</span>
   {% endif %}
-  <span class="text-slate-500">Page {{ page }}{% if last_page and page <= last_page %} of {{ last_page }}{% endif %}</span>
+  <span class="text-fg-subtle">Page {{ page }}{% if last_page and page <= last_page %} of {{ last_page }}{% endif %}</span>
   {% if next_url %}
-  <a href="{{ next_url }}" class="rounded-md border border-slate-300 px-3 py-1 hover:bg-slate-100">Next &rarr;</a>
+  <a href="{{ next_url }}" class="rounded-md border border-line-strong px-3 py-1 hover:bg-surface-muted">Next &rarr;</a>
   {% else %}
-  <span class="rounded-md border border-slate-200 px-3 py-1 text-slate-300">Next &rarr;</span>
+  <span class="rounded-md border border-line px-3 py-1 text-fg-ghost">Next &rarr;</span>
   {% endif %}
   {% if last_url %}
-  <a href="{{ last_url }}" class="rounded-md border border-slate-300 px-3 py-1 hover:bg-slate-100" title="Last page">Last &raquo;</a>
+  <a href="{{ last_url }}" class="rounded-md border border-line-strong px-3 py-1 hover:bg-surface-muted" title="Last page">Last &raquo;</a>
   {% else %}
-  <span class="rounded-md border border-slate-200 px-3 py-1 text-slate-300">Last &raquo;</span>
+  <span class="rounded-md border border-line px-3 py-1 text-fg-ghost">Last &raquo;</span>
   {% endif %}
 </div>
 {% endif %}
@@ -548,14 +548,14 @@
 
   {# ── sidebar: the folder tree + create form + drop-zone info ──────── #}
   <aside class="w-60 shrink-0" data-tour="drive-folders">
-    <div class="rounded-md border border-slate-200 overflow-hidden">
-      <div class="px-3 py-2 bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-600">
+    <div class="rounded-md border border-line overflow-hidden">
+      <div class="px-3 py-2 bg-surface-subtle border-b border-line text-xs font-semibold text-fg-muted">
         Folders
       </div>
       <ul class="py-1 text-sm">
         <li>
           <a href="{{ folder_url('') }}"
-             class="block px-3 py-1 {% if current is none %}bg-slate-100 font-medium{% else %}hover:bg-slate-50{% endif %}">
+             class="block px-3 py-1 {% if current is none %}bg-surface-muted font-medium{% else %}hover:bg-surface-subtle{% endif %}">
             🗂 All
           </a>
         </li>
@@ -563,14 +563,14 @@
         <li>
           <a href="{{ folder_url(f.ref_id | string) }}"
              style="padding-left: {{ 0.75 + f.depth * 0.9 }}rem"
-             class="block py-1 pr-3 truncate {% if current and current.ref_id == f.ref_id %}bg-slate-100 font-medium{% else %}hover:bg-slate-50{% endif %}">
+             class="block py-1 pr-3 truncate {% if current and current.ref_id == f.ref_id %}bg-surface-muted font-medium{% else %}hover:bg-surface-subtle{% endif %}">
             📁 {{ f.title }}
-            <span class="text-slate-400 text-xs">{{ f.n_children }}</span>
+            <span class="text-fg-faint text-xs">{{ f.n_children }}</span>
           </a>
         </li>
         {% endfor %}
         {% if not folders %}
-        <li class="px-3 py-1 text-slate-400 text-xs">(no folders yet)</li>
+        <li class="px-3 py-1 text-fg-faint text-xs">(no folders yet)</li>
         {% endif %}
       </ul>
     </div>
@@ -578,27 +578,27 @@
     <form method="post" action="/drive/create" class="mt-3 flex gap-1">
       <input type="hidden" name="parent_id" value="{{ current.ref_id if current else '' }}">
       <input name="name" placeholder="New folder{% if current %} in {{ current.title }}{% endif %}…"
-             class="flex-1 min-w-0 rounded border border-slate-300 px-2 py-1 text-sm">
-      <button class="rounded bg-slate-700 text-white px-2 py-1 text-sm hover:bg-slate-600">＋</button>
+             class="flex-1 min-w-0 rounded border border-line-strong px-2 py-1 text-sm">
+      <button class="rounded bg-solid text-on-solid px-2 py-1 text-sm hover:bg-solid-soft">＋</button>
     </form>
 
     {# Watch-dir drop-zone info (the second items.py:15-19 gap) — where to
        drop files for manual ingest, read live off the watch daemon's plist. #}
-    <div class="mt-4 rounded-md border border-slate-200 overflow-hidden">
-      <div class="px-3 py-2 bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-600">
+    <div class="mt-4 rounded-md border border-line overflow-hidden">
+      <div class="px-3 py-2 bg-surface-subtle border-b border-line text-xs font-semibold text-fg-muted">
         Drop-zones
       </div>
       {% if watch_dir %}
-      <ul class="divide-y divide-slate-100 text-xs">
+      <ul class="divide-y divide-line-subtle text-xs">
         {% for d in dropzones %}
         <li class="px-3 py-2" title="{{ d.description }}">
-          <div class="font-medium text-slate-700">{{ d.label }}</div>
-          <code class="block truncate text-slate-500 select-all" title="{{ d.path }}">{{ d.path }}</code>
+          <div class="font-medium text-fg-secondary">{{ d.label }}</div>
+          <code class="block truncate text-fg-subtle select-all" title="{{ d.path }}">{{ d.path }}</code>
         </li>
         {% endfor %}
       </ul>
       {% else %}
-      <p class="px-3 py-2 text-xs text-slate-400">
+      <p class="px-3 py-2 text-xs text-fg-faint">
         Watch-daemon plist not readable from this host — running outside
         the cluster, or the watch daemon isn't installed here.
       </p>
@@ -611,38 +611,38 @@
 
     {% if current %}
     <div class="flex items-center gap-2 mb-3 text-sm">
-      <nav class="text-slate-500">
+      <nav class="text-fg-subtle">
         <a href="{{ folder_url('') }}" class="hover:underline">Drive</a>
         {% for c in crumbs %}
-        <span class="text-slate-300">/</span>
-        {% if loop.last %}<span class="font-medium text-slate-800">{{ c.title }}</span>
+        <span class="text-fg-ghost">/</span>
+        {% if loop.last %}<span class="font-medium text-fg">{{ c.title }}</span>
         {% else %}<a href="{{ folder_url(c.ref_id | string) }}" class="hover:underline">{{ c.title }}</a>{% endif %}
         {% endfor %}
       </nav>
-      <span class="text-slate-300">·</span>
+      <span class="text-fg-ghost">·</span>
       <form method="post" action="/drive/{{ current.ref_id }}/rename" class="inline-flex gap-1">
         <input name="name" value="{{ current.title }}"
-               class="rounded border border-slate-300 px-2 py-0.5 text-xs w-40">
-        <button class="rounded border border-slate-300 px-2 py-0.5 text-xs hover:bg-slate-50">rename</button>
+               class="rounded border border-line-strong px-2 py-0.5 text-xs w-40">
+        <button class="rounded border border-line-strong px-2 py-0.5 text-xs hover:bg-surface-subtle">rename</button>
       </form>
       <form method="post" action="/drive/{{ current.ref_id }}/delete" class="inline"
             onsubmit="return confirm('Delete folder “{{ current.title }}”? (refused unless empty)');">
-        <button class="rounded border border-rose-300 text-rose-700 px-2 py-0.5 text-xs hover:bg-rose-50">delete</button>
+        <button class="rounded border border-danger-strong text-danger-strong px-2 py-0.5 text-xs hover:bg-danger-subtle">delete</button>
       </form>
     </div>
     {% endif %}
 
     {% if q %}
       {% if not rows %}
-      <p class="text-sm text-slate-500">
-        No matches for <span class="font-medium text-slate-700">{{ q }}</span>{% if since or until %} in that date window{% endif %}.
+      <p class="text-sm text-fg-subtle">
+        No matches for <span class="font-medium text-fg-secondary">{{ q }}</span>{% if since or until %} in that date window{% endif %}.
       </p>
       {% else %}
       {# The lexical denominator, up top — "5 of 50" reads very
          differently from "5 of ~50,000" (Reto). Approximate (≈) since
          the fused ranking that produced `rows` has no cheap exact
          total. #}
-      <p class="text-xs text-slate-500 mb-2">
+      <p class="text-xs text-fg-subtle mb-2">
         Showing {{ rows | length }} of ≈{{ "{:,}".format(result_total or 0) }} match{{ '' if (result_total or 0) == 1 else 'es' }} · one passage per item.
       </p>
       {{ item_list(rows) }}
@@ -651,7 +651,7 @@
     {% else %}
       {# Default landing: the recent list (or stub/deleted/cited_by queue) under the search. #}
       <div class="flex items-center justify-between mb-2">
-        <h2 class="text-sm font-semibold text-slate-600">
+        <h2 class="text-sm font-semibold text-fg-muted">
           {% if cited_by %}Papers to fetch{% if cited_by_title %} — {{ cited_by_title }}{% endif %}
           {% elif state == 'stub' %}Stubs — papers to get
           {% elif state == 'deleted' %}Deleted — soft-deleted refs
@@ -668,7 +668,7 @@
           <form method="post" action="/drive/requeue-stubs" class="shrink-0">
             <input type="hidden" name="back" value="/drive?state=stub" />
             <button type="submit"
-                    class="rounded-md bg-sky-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-700"
+                    class="rounded-md bg-info-solid px-3 py-1.5 text-xs font-medium text-on-solid hover:bg-info-solid-strong"
                     title="Jump the top 25 never-tried DOI stubs to the front of the fetch queue.">
               Fetch next 25 ↑
             </button>
@@ -682,7 +682,7 @@
           <form method="post" action="/drive/fetch-next-batch" class="shrink-0">
             <input type="hidden" name="back" value="/drive?state=stub" />
             <button type="submit"
-                    class="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700"
+                    class="rounded-md bg-success-solid px-3 py-1.5 text-xs font-medium text-on-solid hover:bg-success-solid-strong"
                     title="Run one fetch_oa cascade pass now on the top 25 claimed stubs.">
               Fetch next batch
             </button>
@@ -691,9 +691,9 @@
         {% endif %}
       </div>
       {% if cited_by %}
-      <p class="mb-2 text-xs text-slate-500">
+      <p class="mb-2 text-xs text-fg-subtle">
         Papers this draft cites but the corpus is still missing (0 body blocks) — grab a copy via the find: links, or drop a PDF in the watch-dir below.
-        <a href="/drive" class="ml-1 text-sky-600 hover:underline">clear scope ×</a>
+        <a href="/drive" class="ml-1 text-info hover:underline">clear scope ×</a>
       </p>
       {% endif %}
       {% if recent %}
@@ -707,18 +707,18 @@
         {% elif state == 'stub' %}{% set label = 'stub' if n == 1 else 'stubs' %}
         {% elif state == 'deleted' %}{% set label = 'deleted ref' if n == 1 else 'deleted refs' %}
         {% else %}{% set label = 'item' if n == 1 else 'items' %}{% endif %}
-        <p class="text-xs text-slate-500 mb-2">
+        <p class="text-xs text-fg-subtle mb-2">
           Showing {{ recent | length }} of {{ "{:,}".format(n) }} {{ label }}.
         </p>
         {{ item_list(recent) }}
         {% if state == 'stub' %}
-        <p class="mt-2 text-xs text-slate-400">Use the find: links to track a copy down.</p>
+        <p class="mt-2 text-xs text-fg-faint">Use the find: links to track a copy down.</p>
         {% elif not cited_by and not current %}
-        <p class="mt-2 text-xs text-slate-400">Search above to go deeper.</p>
+        <p class="mt-2 text-xs text-fg-faint">Search above to go deeper.</p>
         {% endif %}
         {{ pager() }}
       {% else %}
-        <p class="text-sm text-slate-400">
+        <p class="text-sm text-fg-faint">
           {% if cited_by %}Nothing to fetch — every paper this draft cites is already in the corpus. 🎉
           {% elif state == 'stub' %}No stubs in the selected kinds — nothing waiting to be fetched.
           {% elif state == 'deleted' %}Nothing deleted in the selected kinds.
@@ -732,20 +732,20 @@
          Only on the stub queue's first page (routes/drive.py). gr453859 #}
       {% if state == 'stub' and manual_total %}
       <section class="mt-8" id="manual-retrieval">
-        <h2 class="text-sm font-semibold text-slate-600">Manual retrieval — no OA copy anywhere</h2>
-        <p class="text-xs text-slate-500 mb-2">
+        <h2 class="text-sm font-semibold text-fg-muted">Manual retrieval — no OA copy anywhere</h2>
+        <p class="text-xs text-fg-subtle mb-2">
           {{ "{:,}".format(manual_total) }} stub{{ '' if manual_total == 1 else 's' }} tried in {{ manual_min_passes }}+ fetch passes with every source reporting no open-access version — not counted above; buy or retrieve by hand. Showing {{ manual_rows | length }}, newest request first; <code>precis stubs --manual</code> has the full list.
         </p>
         <table class="w-full text-xs">
-          <thead class="text-left text-slate-500">
+          <thead class="text-left text-fg-subtle">
             <tr><th class="py-1 pr-3">DOI</th><th class="py-1 pr-3">Title</th><th class="py-1 pr-3">Year</th><th class="py-1 pr-3 text-right">Cites</th><th class="py-1">Requested</th></tr>
           </thead>
           <tbody>
             {% for m in manual_rows %}
-            <tr class="border-t border-slate-100 align-top">
+            <tr class="border-t border-line-subtle align-top">
               <td class="py-1 pr-3 font-mono whitespace-nowrap">
                 {% if m.doi and not m.doi.startswith('arxiv:') and not m.doi.startswith('s2:') %}
-                <a href="https://doi.org/{{ m.doi }}" target="_blank" rel="noopener" class="text-sky-700 hover:underline">{{ m.doi }}</a>
+                <a href="https://doi.org/{{ m.doi }}" target="_blank" rel="noopener" class="text-info-strong hover:underline">{{ m.doi }}</a>
                 {% else %}{{ m.doi }}{% endif %}
               </td>
               <td class="py-1 pr-3"><a href="/papers/{{ m.ref_id }}" class="hover:underline">{{ m.title or m.cite_key }}</a></td>

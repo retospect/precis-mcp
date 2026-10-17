@@ -94,12 +94,12 @@ _STATUS_RANK_SQL = " ".join(
 #: Badge colour per status, distinct from Alerts' severity palette so
 #: the two tabs don't visually blur together.
 _STATUS_BADGE: dict[str, str] = {
-    "open": "bg-slate-100 text-slate-800 border-slate-300",
-    "triaged": "bg-sky-100 text-sky-800 border-sky-300",
-    "ready_for_fix": "bg-amber-100 text-amber-800 border-amber-300",
-    "in_review": "bg-violet-100 text-violet-800 border-violet-300",
-    "done": "bg-emerald-100 text-emerald-800 border-emerald-300",
-    "wontfix": "bg-rose-100 text-rose-800 border-rose-300",
+    "open": "bg-surface-muted text-fg border-line-strong",
+    "triaged": "bg-info-muted text-info-deep border-info-strong",
+    "ready_for_fix": "bg-warning-muted text-warning-deep border-warning-strong",
+    "in_review": "bg-accent-muted text-accent-deep border-accent-strong",
+    "done": "bg-success-muted text-success-deep border-success-strong",
+    "wontfix": "bg-danger-muted text-danger-deep border-danger-strong",
 }
 
 #: Chunk-kind slugs the gripe handler seeds (migration

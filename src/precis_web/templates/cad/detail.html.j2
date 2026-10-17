@@ -7,7 +7,7 @@
   <div class="flex items-center gap-3">
     {{ drive_back('cad', 'CAD') }}
     <h1 class="text-lg font-semibold">{{ title }}</h1>
-    <span class="text-xs text-slate-400">{{ slug }} · {{ n_parts }} part{{ '' if n_parts == 1 else 's' }} · {{ n_nodes }} feature{{ '' if n_nodes == 1 else 's' }}</span>
+    <span class="text-xs text-fg-faint">{{ slug }} · {{ n_parts }} part{{ '' if n_parts == 1 else 's' }} · {{ n_nodes }} feature{{ '' if n_nodes == 1 else 's' }}</span>
   </div>
 </div>
 
@@ -16,60 +16,60 @@
   {# ── left: 3D viewer ── #}
   <div>
     <div class="flex items-center gap-2 mb-2">
-      <h2 class="text-sm font-semibold text-slate-700">Model</h2>
+      <h2 class="text-sm font-semibold text-fg-secondary">Model</h2>
       {% if solid_available %}
-      <div class="inline-flex rounded-md border border-slate-300 overflow-hidden text-xs ml-auto">
-        <button type="button" data-mode="features" class="cad-mode px-2 py-1 hover:bg-slate-100">Features</button>
-        <button type="button" data-mode="solid" class="cad-mode px-2 py-1 hover:bg-slate-100 border-l border-slate-300">Solid</button>
+      <div class="inline-flex rounded-md border border-line-strong overflow-hidden text-xs ml-auto">
+        <button type="button" data-mode="features" class="cad-mode px-2 py-1 hover:bg-surface-muted">Features</button>
+        <button type="button" data-mode="solid" class="cad-mode px-2 py-1 hover:bg-surface-muted border-l border-line-strong">Solid</button>
       </div>
       {% else %}
-      <span class="text-xs text-slate-400 ml-auto">per-feature view · cuts translucent</span>
+      <span class="text-xs text-fg-faint ml-auto">per-feature view · cuts translucent</span>
       {% endif %}
     </div>
-    <div id="mol" class="relative w-full rounded-lg border border-slate-200 bg-white" style="height: 460px;" data-tour="cad-viewport"></div>
+    <div id="mol" class="relative w-full rounded-lg border border-line bg-surface" style="height: 460px;" data-tour="cad-viewport"></div>
 
     {# per-part legend — hover a chip to glow that part's features #}
     {% if legend %}
     <div class="flex flex-wrap gap-2 mt-2">
       {% for e in legend %}
-      <span class="cad-hl inline-flex items-center gap-1 text-[11px] text-slate-500 cursor-grab rounded px-1 hover:bg-amber-50"
+      <span class="cad-hl inline-flex items-center gap-1 text-[11px] text-fg-subtle cursor-grab rounded px-1 hover:bg-warning-subtle"
             data-part="{{ e.component }}" data-drag="{{ e.component }}" draggable="true"
             title="drag into a prompt box to reference this part">
-        <span class="inline-block w-3 h-3 rounded-full border border-slate-300" style="background: {{ e.color }};"></span>
-        {{ e.component }}<span class="text-slate-400">×{{ e.count }}</span>
+        <span class="inline-block w-3 h-3 rounded-full border border-line-strong" style="background: {{ e.color }};"></span>
+        {{ e.component }}<span class="text-fg-faint">×{{ e.count }}</span>
       </span>
       {% endfor %}
     </div>
     {% endif %}
 
-    <p class="text-[11px] text-slate-400 mt-1">
+    <p class="text-[11px] text-fg-faint mt-1">
       Drag to rotate · scroll to zoom · <b>click a feature</b> for details · <b>drag a body</b> (or a chip/feature below) into a prompt box to reference it. Parts are coloured; cut/intersect features are translucent tool volumes.
     </p>
 
     {# click-detail panel #}
-    <div id="cad-detail" class="mt-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm min-h-[64px]">
-      <span class="text-slate-400 text-xs">Click a feature in the model to inspect it.</span>
+    <div id="cad-detail" class="mt-2 rounded-lg border border-line bg-surface-subtle p-3 text-sm min-h-[64px]">
+      <span class="text-fg-faint text-xs">Click a feature in the model to inspect it.</span>
     </div>
 
     {# feature list — hover a row to glow it in the model #}
     {% if nodes %}
-    <details class="mt-2 rounded-lg border border-slate-200 bg-white" open>
-      <summary class="cursor-pointer px-3 py-2 text-xs font-semibold text-slate-600">
-        Features <span class="font-normal text-slate-400">— {{ n_nodes }}</span>
+    <details class="mt-2 rounded-lg border border-line bg-surface" open>
+      <summary class="cursor-pointer px-3 py-2 text-xs font-semibold text-fg-muted">
+        Features <span class="font-normal text-fg-faint">— {{ n_nodes }}</span>
       </summary>
       <div class="px-3 pb-2 max-h-52 overflow-y-auto space-y-0.5">
         {% for n in nodes %}
-        <div class="cad-hl flex items-center gap-2 text-xs rounded px-1 py-0.5 cursor-grab hover:bg-amber-50"
+        <div class="cad-hl flex items-center gap-2 text-xs rounded px-1 py-0.5 cursor-grab hover:bg-warning-subtle"
              data-node="{{ n.name }}" data-drag="{{ n.name }}" draggable="true"
              title="drag into a prompt box to reference this feature">
-          <span class="inline-block w-2.5 h-2.5 rounded-full border border-slate-300 shrink-0" style="background: {{ n.color }};"></span>
-          <code class="text-slate-600 w-24 shrink-0 truncate">{{ n.name }}</code>
+          <span class="inline-block w-2.5 h-2.5 rounded-full border border-line-strong shrink-0" style="background: {{ n.color }};"></span>
+          <code class="text-fg-muted w-24 shrink-0 truncate">{{ n.name }}</code>
           <span class="text-[10px] px-1 rounded
-            {%- if n.op == 'cut' %} bg-red-100 text-red-700
-            {%- elif n.op == 'intersect' %} bg-purple-100 text-purple-700
-            {%- else %} bg-emerald-100 text-emerald-700{% endif %}">{{ n.op }}</span>
-          <code class="text-slate-500 truncate">{{ n.config }}</code>
-          <span class="ml-auto text-slate-400 truncate">{{ n.pose }}</span>
+            {%- if n.op == 'cut' %} bg-danger-muted text-danger-strong
+            {%- elif n.op == 'intersect' %} bg-accent-muted text-accent-strong
+            {%- else %} bg-success-muted text-success-strong{% endif %}">{{ n.op }}</span>
+          <code class="text-fg-subtle truncate">{{ n.config }}</code>
+          <span class="ml-auto text-fg-faint truncate">{{ n.pose }}</span>
         </div>
         {% endfor %}
       </div>
@@ -79,19 +79,19 @@
 
   {# ── right: analysis / export panel ── #}
   <div>
-    <h2 class="text-sm font-semibold text-slate-700 mb-2">Analysis &amp; export
-      <span class="text-xs font-normal text-slate-400">— measured off the analytic IR</span>
+    <h2 class="text-sm font-semibold text-fg-secondary mb-2">Analysis &amp; export
+      <span class="text-xs font-normal text-fg-faint">— measured off the analytic IR</span>
     </h2>
 
-    <div class="rounded-lg border border-slate-200 bg-white p-3 space-y-2">
+    <div class="rounded-lg border border-line bg-surface p-3 space-y-2">
       <div class="grid grid-cols-2 gap-2 text-sm">
         <div>
-          <div class="text-[10px] text-slate-400 uppercase tracking-wide">Bounding box (mm)</div>
-          <div id="an-bbox" class="tabular-nums text-slate-400">computing…</div>
+          <div class="text-[10px] text-fg-faint uppercase tracking-wide">Bounding box (mm)</div>
+          <div id="an-bbox" class="tabular-nums text-fg-faint">computing…</div>
         </div>
         <div>
-          <div class="text-[10px] text-slate-400 uppercase tracking-wide">Volume (mm³)</div>
-          <div id="an-volume" class="tabular-nums text-slate-400">computing…</div>
+          <div class="text-[10px] text-fg-faint uppercase tracking-wide">Volume (mm³)</div>
+          <div id="an-volume" class="tabular-nums text-fg-faint">computing…</div>
         </div>
       </div>
 
@@ -99,29 +99,29 @@
 
       <div id="an-connect" class="text-[11px]"></div>
 
-      <div class="pt-2 border-t border-slate-100">
-        <div class="text-[10px] text-slate-400 uppercase tracking-wide mb-1">Download</div>
+      <div class="pt-2 border-t border-line-subtle">
+        <div class="text-[10px] text-fg-faint uppercase tracking-wide mb-1">Download</div>
         <div class="flex flex-wrap gap-1.5">
           <a href="/cad/{{ slug }}/model.gltf" download="{{ slug }}.glb"
-             class="rounded border border-slate-300 px-2 py-1 text-xs hover:bg-slate-50">glTF</a>
+             class="rounded border border-line-strong px-2 py-1 text-xs hover:bg-surface-subtle">glTF</a>
           <a href="/cad/{{ slug }}/export.scad"
-             class="rounded border border-slate-300 px-2 py-1 text-xs hover:bg-slate-50">OpenSCAD</a>
+             class="rounded border border-line-strong px-2 py-1 text-xs hover:bg-surface-subtle">OpenSCAD</a>
           {% if manifold_available %}
           <a href="/cad/{{ slug }}/export.stl"
-             class="rounded border border-slate-300 px-2 py-1 text-xs hover:bg-slate-50">STL</a>
+             class="rounded border border-line-strong px-2 py-1 text-xs hover:bg-surface-subtle">STL</a>
           <a href="/cad/{{ slug }}/export.3mf"
-             class="rounded border border-slate-300 px-2 py-1 text-xs hover:bg-slate-50">3MF</a>
+             class="rounded border border-line-strong px-2 py-1 text-xs hover:bg-surface-subtle">3MF</a>
           {% else %}
-          <span class="rounded border border-dashed border-slate-200 px-2 py-1 text-xs text-slate-300" title="needs the [cad-export] extra">STL/3MF</span>
+          <span class="rounded border border-dashed border-line px-2 py-1 text-xs text-fg-ghost" title="needs the [cad-export] extra">STL/3MF</span>
           {% endif %}
           {% if step_available %}
           <a href="/cad/{{ slug }}/export.step"
-             class="rounded border border-slate-300 px-2 py-1 text-xs hover:bg-slate-50">STEP</a>
+             class="rounded border border-line-strong px-2 py-1 text-xs hover:bg-surface-subtle">STEP</a>
           {% else %}
-          <span class="rounded border border-dashed border-slate-200 px-2 py-1 text-xs text-slate-300" title="needs the [cad-step] extra">STEP</span>
+          <span class="rounded border border-dashed border-line px-2 py-1 text-xs text-fg-ghost" title="needs the [cad-step] extra">STEP</span>
           {% endif %}
         </div>
-        <p class="text-[10px] text-slate-400 mt-1">STEP is the exact B-rep (parametric/manufacturing grade); STL/3MF are the folded mesh; glTF is the view.</p>
+        <p class="text-[10px] text-fg-faint mt-1">STEP is the exact B-rep (parametric/manufacturing grade); STL/3MF are the folded mesh; glTF is the view.</p>
       </div>
     </div>
   </div>
@@ -129,29 +129,29 @@
 
 {# ── lineage ── #}
 {% if lineage.parents or lineage.children %}
-<div class="mt-4 text-xs text-slate-500 flex flex-wrap items-center gap-4">
+<div class="mt-4 text-xs text-fg-subtle flex flex-wrap items-center gap-4">
   {% if lineage.parents %}<span>Derived from:
-    {% for p in lineage.parents %}<a class="text-emerald-700 hover:underline" href="/cad/{{ p.slug }}">{{ p.slug }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+    {% for p in lineage.parents %}<a class="text-success-strong hover:underline" href="/cad/{{ p.slug }}">{{ p.slug }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
   </span>{% endif %}
   {% if lineage.children %}<span>Derived designs:
-    {% for c in lineage.children %}<a class="text-emerald-700 hover:underline" href="/cad/{{ c.slug }}">{{ c.slug }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+    {% for c in lineage.children %}<a class="text-success-strong hover:underline" href="/cad/{{ c.slug }}">{{ c.slug }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
   </span>{% endif %}
 </div>
 {% endif %}
 
 {# ── further instructions → LLM proposal ── #}
 <div id="instruct" class="mt-6">
-  <h2 class="text-sm font-semibold text-slate-700 mb-2">Further instructions
-    <span class="text-xs font-normal text-slate-400">— an LLM proposes a rewrite; review, then apply in place or save as a new version</span>
+  <h2 class="text-sm font-semibold text-fg-secondary mb-2">Further instructions
+    <span class="text-xs font-normal text-fg-faint">— an LLM proposes a rewrite; review, then apply in place or save as a new version</span>
   </h2>
   <form method="post" action="/cad/{{ slug }}/instruct" class="flex gap-2" data-tour="cad-instruct">
     <input name="instruction" required autocomplete="off"
            placeholder="e.g. add a 6-bolt pattern on a 40mm circle, then widen the plate to r30"
-           class="flex-1 rounded border border-slate-300 px-2 py-1 text-sm">
-    <button class="rounded bg-slate-700 text-white text-sm px-3 py-1 hover:bg-slate-800 whitespace-nowrap">Propose ▸</button>
+           class="flex-1 rounded border border-line-strong px-2 py-1 text-sm">
+    <button class="rounded bg-solid text-on-solid text-sm px-3 py-1 hover:bg-solid-strong whitespace-nowrap">Propose ▸</button>
   </form>
   <div id="cad-proposal" class="mt-3 space-y-3" data-slug="{{ slug }}" data-tour="cad-proposal">
-    <span class="text-xs text-slate-400">No proposal yet — type an instruction above.</span>
+    <span class="text-xs text-fg-faint">No proposal yet — type an instruction above.</span>
   </div>
   {# server-rendered seed so a reload rehydrates outstanding requests instantly #}
   <script type="application/json" id="cad-proposal-init">{{ (proposals or []) | tojson }}</script>
@@ -159,15 +159,15 @@
 
 {# ── discuss → threaded conversation about the model (read-only) ── #}
 <div id="discuss" class="mt-6" data-tour="cad-discuss">
-  <h2 class="text-sm font-semibold text-slate-700 mb-2">Discuss
-    <span class="text-xs font-normal text-slate-400">— ask about the model (connectivity, why it's not functional, how to change it); nothing is applied</span>
+  <h2 class="text-sm font-semibold text-fg-secondary mb-2">Discuss
+    <span class="text-xs font-normal text-fg-faint">— ask about the model (connectivity, why it's not functional, how to change it); nothing is applied</span>
   </h2>
   <div id="cad-thread" class="space-y-2 mb-2" data-slug="{{ slug }}"></div>
   <form method="post" action="/cad/{{ slug }}/discuss" class="flex gap-2">
     <input name="instruction" required autocomplete="off"
            placeholder="e.g. is the hub connected to the rim? why isn't this functional?"
-           class="flex-1 rounded border border-slate-300 px-2 py-1 text-sm">
-    <button class="rounded bg-indigo-600 text-white text-sm px-3 py-1 hover:bg-indigo-700 whitespace-nowrap">Ask ▸</button>
+           class="flex-1 rounded border border-line-strong px-2 py-1 text-sm">
+    <button class="rounded bg-indigo-solid text-on-solid text-sm px-3 py-1 hover:bg-indigo-solid-strong whitespace-nowrap">Ask ▸</button>
   </form>
   <script type="application/json" id="cad-thread-init">{{ (thread or []) | tojson }}</script>
 </div>
@@ -304,8 +304,8 @@ function setMode(mode) {
   if (mode === 'solid') loadSolid(); else buildFeatures();
   document.querySelectorAll('.cad-mode').forEach((btn) => {
     const on = btn.getAttribute('data-mode') === mode;
-    btn.classList.toggle('bg-slate-700', on);
-    btn.classList.toggle('text-white', on);
+    btn.classList.toggle('bg-solid', on);
+    btn.classList.toggle('text-on-solid', on);
   });
 }
 
@@ -403,7 +403,7 @@ window.addEventListener('pointermove', (ev) => {
     dragging = true;
     controls.enabled = false;  // don't rotate while dragging a body out
     pill = document.createElement('div');
-    pill.className = 'fixed z-50 pointer-events-none text-[11px] px-1.5 py-0.5 rounded bg-slate-800 text-white shadow font-mono';
+    pill.className = 'fixed z-50 pointer-events-none text-[11px] px-1.5 py-0.5 rounded bg-solid-strong text-on-solid shadow font-mono';
     pill.textContent = '`' + dragName + '`';
     document.body.appendChild(pill);
   }
@@ -422,17 +422,17 @@ window.addEventListener('pointerup', (ev) => {
 });
 
 function row(k, v) {
-  return '<div class="flex gap-2"><span class="text-slate-400 w-24 shrink-0">' + k +
-         '</span><span class="font-medium text-slate-700">' + v + '</span></div>';
+  return '<div class="flex gap-2"><span class="text-fg-faint w-24 shrink-0">' + k +
+         '</span><span class="font-medium text-fg-secondary">' + v + '</span></div>';
 }
 function showNode(name) {
   const n = nodeByName[name];
   if (!n) return;
   detail.innerHTML =
     '<div class="flex items-center gap-2 mb-1.5">' +
-    '<span class="inline-block w-3.5 h-3.5 rounded-full border border-slate-300" style="background:' + esc(n.color) + ';"></span>' +
-    '<code class="font-semibold text-slate-800">' + esc(n.name) + '</code>' +
-    '<span class="ml-auto text-[10px] uppercase tracking-wide text-slate-400">feature</span></div>' +
+    '<span class="inline-block w-3.5 h-3.5 rounded-full border border-line-strong" style="background:' + esc(n.color) + ';"></span>' +
+    '<code class="font-semibold text-fg">' + esc(n.name) + '</code>' +
+    '<span class="ml-auto text-[10px] uppercase tracking-wide text-fg-faint">feature</span></div>' +
     '<div class="grid grid-cols-1 gap-0.5 text-xs">' +
     row('part', esc(n.component)) + row('op', esc(n.op)) +
     row('config', esc(n.config)) + row('pose', esc(n.pose)) + '</div>';
@@ -473,39 +473,39 @@ setMode('features');
     .then((a) => {
       if (a && a.bbox) {
         bboxEl.textContent = a.bbox.map((x) => +x).join(' × ');
-        bboxEl.classList.remove('text-slate-400');
+        bboxEl.classList.remove('text-fg-faint');
       } else { bboxEl.textContent = '—'; }
       if (a && a.volume != null) {
         volEl.innerHTML = esc(a.volume) +
-          '<span class="text-[10px] text-slate-400"> ±' + esc(a.volume_err) + '%</span>';
-        volEl.classList.remove('text-slate-400');
+          '<span class="text-[10px] text-fg-faint"> ±' + esc(a.volume_err) + '%</span>';
+        volEl.classList.remove('text-fg-faint');
       } else { volEl.textContent = '—'; }
       const warns = (a && a.warnings) || [];
       if (warns.length) {
         warnEl.className = 'space-y-1';
         warnEl.innerHTML = warns.map((w) =>
-          '<div class="text-[11px] px-2 py-1 rounded bg-amber-50 text-amber-800 border border-amber-200">⚠ '
+          '<div class="text-[11px] px-2 py-1 rounded bg-warning-subtle text-warning-deep border border-warning">⚠ '
           + esc(w) + '</div>').join('');
       } else {
-        warnEl.className = 'text-[11px] text-emerald-700';
+        warnEl.className = 'text-[11px] text-success-strong';
         warnEl.textContent = '✓ no inter-part interference';
       }
       // connectivity — is the assembly one connected solid?
       const c = a && a.connectivity;
       if (connEl && c) {
         if (c.connected) {
-          connEl.className = 'text-[11px] text-emerald-700';
+          connEl.className = 'text-[11px] text-success-strong';
           connEl.textContent = '✓ one connected solid (' + c.groups[0].length + ' parts touching)';
         } else {
           const bodies = (c.groups || []).map((g) => g.join('+')).join(' | ');
-          connEl.className = 'text-[11px] px-2 py-1 rounded bg-amber-50 text-amber-800 border border-amber-200';
+          connEl.className = 'text-[11px] px-2 py-1 rounded bg-warning-subtle text-warning-deep border border-warning';
           connEl.innerHTML = '⚠ ' + (c.groups || []).length + ' disconnected bodies: ' + esc(bodies);
         }
       } else if (connEl) { connEl.textContent = ''; }
     })
     .catch(() => {
       bboxEl.textContent = '—'; volEl.textContent = '—';
-      warnEl.className = 'text-[11px] text-slate-400';
+      warnEl.className = 'text-[11px] text-fg-faint';
       warnEl.textContent = 'analysis unavailable';
     });
 })();
@@ -524,48 +524,48 @@ setMode('features');
   // One card per proposal job.
   function card(d) {
     const instr = d.instruction
-      ? '<div class="text-[11px] text-slate-500 mb-1 truncate" title="' + esc(d.instruction) + '">“' + esc(d.instruction) + '”</div>'
+      ? '<div class="text-[11px] text-fg-subtle mb-1 truncate" title="' + esc(d.instruction) + '">“' + esc(d.instruction) + '”</div>'
       : '';
-    const meta = '<span class="ml-auto text-[10px] text-slate-400">job r' + esc(d.job_id) + ' · ' + esc(d.created) + '</span>';
+    const meta = '<span class="ml-auto text-[10px] text-fg-faint">job r' + esc(d.job_id) + ' · ' + esc(d.created) + '</span>';
     if (inFlight(d)) {
-      return '<div class="rounded-lg border border-slate-200 bg-slate-50 p-3">'
-        + '<div class="flex items-center gap-2 mb-1"><span class="text-xs text-slate-500">⟳ proposing… (' + esc(d.status) + ')</span>' + meta + '</div>'
+      return '<div class="rounded-lg border border-line bg-surface-subtle p-3">'
+        + '<div class="flex items-center gap-2 mb-1"><span class="text-xs text-fg-subtle">⟳ proposing… (' + esc(d.status) + ')</span>' + meta + '</div>'
         + instr + '</div>';
     }
     const p = d.proposal;
     if (!p) {
-      const jobLink = '<a href="/r/job/' + esc(d.job_id) + '" class="underline hover:text-red-800">see the job log</a>';
-      return '<div class="rounded-lg border border-red-200 bg-red-50 p-3">'
-        + '<div class="flex items-center gap-2 mb-1"><span class="text-xs text-red-600">proposal ' + esc(d.status) + ' — ' + jobLink + '</span>' + meta + '</div>'
+      const jobLink = '<a href="/r/job/' + esc(d.job_id) + '" class="underline hover:text-danger-deep">see the job log</a>';
+      return '<div class="rounded-lg border border-danger bg-danger-subtle p-3">'
+        + '<div class="flex items-center gap-2 mb-1"><span class="text-xs text-danger">proposal ' + esc(d.status) + ' — ' + jobLink + '</span>' + meta + '</div>'
         + instr + '</div>';
     }
     const badge = p.valid
-      ? '<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800">valid</span>'
-      : '<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-red-100 text-red-800">invalid: ' + esc(p.error || '') + '</span>';
+      ? '<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-success-muted text-success-deep">valid</span>'
+      : '<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-danger-muted text-danger-deep">invalid: ' + esc(p.error || '') + '</span>';
     const applyInPlace = p.valid
       ? '<form method="post" action="/cad/' + encodeURIComponent(slug) + '/apply_in_place" class="mt-2">'
         + '<input type="hidden" name="job_id" value="' + esc(d.job_id) + '">'
-        + '<button class="rounded bg-slate-700 text-white text-xs px-3 py-1 hover:bg-slate-800 whitespace-nowrap">Apply in place</button>'
-        + '<span class="ml-2 text-[10px] text-slate-400">edit this design — no new version</span>'
+        + '<button class="rounded bg-solid text-on-solid text-xs px-3 py-1 hover:bg-solid-strong whitespace-nowrap">Apply in place</button>'
+        + '<span class="ml-2 text-[10px] text-fg-faint">edit this design — no new version</span>'
         + '</form>'
       : '';
     const apply = p.valid
-      ? '<form method="post" action="/cad/' + encodeURIComponent(slug) + '/apply" class="mt-2 space-y-2 pt-2 border-t border-slate-200">'
+      ? '<form method="post" action="/cad/' + encodeURIComponent(slug) + '/apply" class="mt-2 space-y-2 pt-2 border-t border-line">'
         + '<input type="hidden" name="job_id" value="' + esc(d.job_id) + '">'
         + '<div class="flex gap-2">'
         + '<input name="to" required autocomplete="off" value="' + esc(slug) + '-v2" '
-        + 'class="flex-1 rounded border border-slate-300 px-2 py-1 text-xs" placeholder="new design slug">'
-        + '<button class="rounded bg-emerald-600 text-white text-xs px-3 py-1 hover:bg-emerald-700 whitespace-nowrap">Save as new version</button>'
+        + 'class="flex-1 rounded border border-line-strong px-2 py-1 text-xs" placeholder="new design slug">'
+        + '<button class="rounded bg-success-solid text-on-solid text-xs px-3 py-1 hover:bg-success-solid-strong whitespace-nowrap">Save as new version</button>'
         + '</div>'
-        + '<label class="flex items-center gap-1.5 text-[11px] text-slate-500">'
+        + '<label class="flex items-center gap-1.5 text-[11px] text-fg-subtle">'
         + '<input type="checkbox" name="delete_original" value="1"> soft-delete this design after applying</label>'
         + '</form>'
       : '';
-    return '<div class="rounded-lg border border-slate-200 bg-slate-50 p-3">'
-      + '<div class="flex items-center gap-2 mb-1"><span class="text-xs font-semibold text-slate-700">Proposed rewrite</span>' + badge + meta + '</div>'
+    return '<div class="rounded-lg border border-line bg-surface-subtle p-3">'
+      + '<div class="flex items-center gap-2 mb-1"><span class="text-xs font-semibold text-fg-secondary">Proposed rewrite</span>' + badge + meta + '</div>'
       + instr
-      + (p.rationale ? '<p class="text-xs text-slate-500 mb-2">' + esc(p.rationale) + '</p>' : '')
-      + '<pre class="text-[11px] font-mono bg-white border border-slate-200 rounded p-2 overflow-x-auto max-h-60">' + esc(p.source || '') + '</pre>'
+      + (p.rationale ? '<p class="text-xs text-fg-subtle mb-2">' + esc(p.rationale) + '</p>' : '')
+      + '<pre class="text-[11px] font-mono bg-surface border border-line rounded p-2 overflow-x-auto max-h-60">' + esc(p.source || '') + '</pre>'
       + applyInPlace
       + apply
       + '</div>';
@@ -573,7 +573,7 @@ setMode('features');
 
   function render(items) {
     if (!items || !items.length) {
-      box.innerHTML = '<span class="text-xs text-slate-400">No proposal yet — type an instruction above.</span>';
+      box.innerHTML = '<span class="text-xs text-fg-faint">No proposal yet — type an instruction above.</span>';
       return;
     }
     box.innerHTML = items.map(card).join('');
@@ -610,23 +610,23 @@ setMode('features');
   const inFlight = (t) => t && (t.status === 'queued' || t.status === 'running');
 
   function turn(t) {
-    const q = '<div class="text-[11px] text-slate-500"><span class="font-semibold">You:</span> ' + esc(t.instruction) + '</div>';
+    const q = '<div class="text-[11px] text-fg-subtle"><span class="font-semibold">You:</span> ' + esc(t.instruction) + '</div>';
     let a;
     if (inFlight(t)) {
-      a = '<div class="text-[11px] text-slate-400">⟳ thinking… (' + esc(t.status) + ')</div>';
+      a = '<div class="text-[11px] text-fg-faint">⟳ thinking… (' + esc(t.status) + ')</div>';
     } else if (t.answer) {
-      a = '<div class="text-[11px] text-slate-700 whitespace-pre-wrap"><span class="font-semibold text-indigo-700">CAD:</span> ' + esc(t.answer) + '</div>';
+      a = '<div class="text-[11px] text-fg-secondary whitespace-pre-wrap"><span class="font-semibold text-indigo-strong">CAD:</span> ' + esc(t.answer) + '</div>';
     } else {
-      const jobLink = '<a href="/r/job/' + esc(t.job_id) + '" class="underline hover:text-red-800">see the job log</a>';
-      a = '<div class="text-[11px] text-red-600">answer ' + esc(t.status) + ' — ' + jobLink + '</div>';
+      const jobLink = '<a href="/r/job/' + esc(t.job_id) + '" class="underline hover:text-danger-deep">see the job log</a>';
+      a = '<div class="text-[11px] text-danger">answer ' + esc(t.status) + ' — ' + jobLink + '</div>';
     }
-    return '<div class="rounded-lg border border-slate-200 bg-white p-2 space-y-1">' + q + a
-      + '<div class="text-[10px] text-slate-400">job r' + esc(t.job_id) + ' · ' + esc(t.created) + '</div></div>';
+    return '<div class="rounded-lg border border-line bg-surface p-2 space-y-1">' + q + a
+      + '<div class="text-[10px] text-fg-faint">job r' + esc(t.job_id) + ' · ' + esc(t.created) + '</div></div>';
   }
 
   function render(turns) {
     if (!turns || !turns.length) {
-      box.innerHTML = '<span class="text-xs text-slate-400">No discussion yet — ask a question below.</span>';
+      box.innerHTML = '<span class="text-xs text-fg-faint">No discussion yet — ask a question below.</span>';
       return;
     }
     box.innerHTML = turns.map(turn).join('');

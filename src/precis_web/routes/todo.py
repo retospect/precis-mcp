@@ -1205,7 +1205,7 @@ def _linkify_todo_handles(text: str) -> Markup:
     return Markup(
         _TODO_HANDLE_RE.sub(
             lambda m: (
-                '<a class="text-sky-700 hover:underline" '
+                '<a class="text-info-strong hover:underline" '
                 f'href="/todo?focus={m.group(1)[2:]}">{m.group(1)}</a>'
             ),
             str(escape(text)),

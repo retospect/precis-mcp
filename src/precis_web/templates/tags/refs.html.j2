@@ -1,46 +1,46 @@
 {% extends "base.html.j2" %}
 {% block title %}Refs with {{ label }}{% endblock %}
 {% block content %}
-<nav class="text-xs text-slate-500 mb-2">
+<nav class="text-xs text-fg-subtle mb-2">
   <a href="/tags" class="hover:underline">Tags</a>
   <span class="mx-1">/</span>
-  <span class="text-slate-700">refs carrying <code>{{ label }}</code></span>
+  <span class="text-fg-secondary">refs carrying <code>{{ label }}</code></span>
 </nav>
 
 <div class="flex items-center justify-between mb-1">
   <h1 class="text-lg font-semibold">
     {{ total }} ref{{ '' if total == 1 else 's' }} tagged
-    <code class="text-sm bg-slate-100 px-1.5 py-0.5 rounded">{{ label }}</code>
+    <code class="text-sm bg-surface-muted px-1.5 py-0.5 rounded">{{ label }}</code>
   </h1>
-  <a href="/tags" class="text-sm text-slate-500 hover:underline">← all tags</a>
+  <a href="/tags" class="text-sm text-fg-subtle hover:underline">← all tags</a>
 </div>
 
 {% macro numlink(url, label, current=false) %}
   {% if current %}
-  <span class="rounded border border-slate-800 bg-slate-800 px-2.5 py-1 text-white">{{ label }}</span>
+  <span class="rounded border border-line-solid bg-solid-strong px-2.5 py-1 text-on-solid">{{ label }}</span>
   {% else %}
-  <a href="{{ url }}" class="rounded border border-slate-200 px-2.5 py-1 hover:bg-slate-50">{{ label }}</a>
+  <a href="{{ url }}" class="rounded border border-line px-2.5 py-1 hover:bg-surface-subtle">{{ label }}</a>
   {% endif %}
 {% endmacro %}
 
 {% macro pager() %}
 {% if total_pages > 1 %}
 <nav class="flex flex-col gap-2 text-sm my-3" aria-label="Pagination">
-  <span class="text-slate-500">
+  <span class="text-fg-subtle">
     Page {{ page }} of {{ total_pages }}
-    {% if shown %}<span class="text-slate-400">· {{ range_start }}–{{ range_end }} of {{ total }}</span>{% endif %}
+    {% if shown %}<span class="text-fg-faint">· {{ range_start }}–{{ range_end }} of {{ total }}</span>{% endif %}
   </span>
   <div class="flex flex-wrap items-center gap-1.5">
     {% if prev_url %}
     <a href="{{ prev_url }}" rel="prev"
-       class="rounded border border-slate-200 px-2.5 py-1 hover:bg-slate-50">← Prev</a>
+       class="rounded border border-line px-2.5 py-1 hover:bg-surface-subtle">← Prev</a>
     {% else %}
-    <span class="rounded border border-slate-100 px-2.5 py-1 text-slate-300">← Prev</span>
+    <span class="rounded border border-line-subtle px-2.5 py-1 text-fg-ghost">← Prev</span>
     {% endif %}
 
     {% if first_url %}
       {{ numlink(first_url, 1) }}
-      {% if lead_gap %}<span class="px-1 text-slate-400">…</span>{% endif %}
+      {% if lead_gap %}<span class="px-1 text-fg-faint">…</span>{% endif %}
     {% endif %}
 
     {% for p in page_window %}
@@ -48,15 +48,15 @@
     {% endfor %}
 
     {% if last_url %}
-      {% if trail_gap %}<span class="px-1 text-slate-400">…</span>{% endif %}
+      {% if trail_gap %}<span class="px-1 text-fg-faint">…</span>{% endif %}
       {{ numlink(last_url, total_pages) }}
     {% endif %}
 
     {% if next_url %}
     <a href="{{ next_url }}" rel="next"
-       class="rounded border border-slate-200 px-2.5 py-1 hover:bg-slate-50">Next →</a>
+       class="rounded border border-line px-2.5 py-1 hover:bg-surface-subtle">Next →</a>
     {% else %}
-    <span class="rounded border border-slate-100 px-2.5 py-1 text-slate-300">Next →</span>
+    <span class="rounded border border-line-subtle px-2.5 py-1 text-fg-ghost">Next →</span>
     {% endif %}
   </div>
 </nav>
@@ -64,32 +64,32 @@
 {% endmacro %}
 
 {% if not by_kind %}
-<p class="text-sm text-slate-500">
+<p class="text-sm text-fg-subtle">
   {% if page > 1 %}Page {{ page }} is past the end — {{ total }} ref{{ '' if total == 1 else 's' }} total.
-  {% if prev_url %}<a href="{{ prev_url }}" class="text-emerald-700 hover:underline">← back a page</a>{% endif %}
+  {% if prev_url %}<a href="{{ prev_url }}" class="text-success-strong hover:underline">← back a page</a>{% endif %}
   {% else %}No refs carry this tag.{% endif %}
 </p>
 {% else %}
 {{ pager() }}
 <div class="space-y-4">
   {% for kind, refs in by_kind.items() %}
-  <section class="rounded-lg border border-slate-200 bg-white overflow-hidden">
-    <header class="flex items-center justify-between px-3 py-2 bg-slate-50 border-b border-slate-200">
-      <h2 class="text-sm font-semibold text-slate-700">
-        <span class="text-xs font-mono px-1.5 py-0.5 rounded bg-slate-200 text-slate-700">{{ kind }}</span>
-        <span class="ml-1 text-slate-500">{{ refs | length }} ref{{ '' if refs | length == 1 else 's' }}</span>
+  <section class="rounded-lg border border-line bg-surface overflow-hidden">
+    <header class="flex items-center justify-between px-3 py-2 bg-surface-subtle border-b border-line">
+      <h2 class="text-sm font-semibold text-fg-secondary">
+        <span class="text-xs font-mono px-1.5 py-0.5 rounded bg-surface-emphasis text-fg-secondary">{{ kind }}</span>
+        <span class="ml-1 text-fg-subtle">{{ refs | length }} ref{{ '' if refs | length == 1 else 's' }}</span>
       </h2>
     </header>
-    <ul class="divide-y divide-slate-100">
+    <ul class="divide-y divide-line-subtle">
       {% for ref in refs %}
       <li class="px-3 py-1.5 flex items-center gap-3 text-sm">
-        <span class="text-xs text-slate-400 w-12 shrink-0">#{{ ref.id }}</span>
+        <span class="text-xs text-fg-faint w-12 shrink-0">#{{ ref.id }}</span>
         <a href="{{ ref.url }}"
-           class="flex-1 truncate hover:text-emerald-700 {% if ref.deleted %}text-slate-400 line-through{% endif %}">
+           class="flex-1 truncate hover:text-success-strong {% if ref.deleted %}text-fg-faint line-through{% endif %}">
           {{ ref.title }}
         </a>
         {% if ref.deleted %}
-        <span class="text-xs text-rose-500" title="soft-deleted">deleted</span>
+        <span class="text-xs text-danger-soft" title="soft-deleted">deleted</span>
         {% endif %}
       </li>
       {% endfor %}

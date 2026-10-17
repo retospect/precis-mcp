@@ -218,15 +218,15 @@ def test_index_renders_missing_and_verified_dots(
     r = client.get("/secrets")
     assert r.status_code == 200
     # Present + verified -> emerald dot.
-    assert "bg-emerald-500" in r.text
+    assert "bg-success-solid-soft" in r.text
     # Every other known secret is absent -> at least one rose dot.
-    assert "bg-rose-500" in r.text
+    assert "bg-danger-solid-soft" in r.text
     assert "missing" in r.text
     assert "verified" in r.text
     # Cost badges render for known rows — Anthropic's is paid, S2's free.
     assert "paid — usage-billed" in r.text
-    assert "bg-amber-50" in r.text
-    assert "bg-emerald-50" in r.text
+    assert "bg-warning-subtle" in r.text
+    assert "bg-success-subtle" in r.text
 
 
 def test_index_renders_amber_for_bad_probe(
@@ -253,7 +253,7 @@ def test_index_renders_amber_for_bad_probe(
 
     r = client.get("/secrets")
     assert r.status_code == 200
-    assert "bg-amber-500" in r.text
+    assert "bg-warning-solid-soft" in r.text
     # The blurb/get-link surfaces for a not-fully-verified known secret.
     assert "perplexity.ai" in r.text
 
@@ -306,7 +306,7 @@ def test_unknown_vault_extra_present_dot_is_emerald(
     r = client.get("/secrets")
     assert r.status_code == 200
     assert "SOME_UNLISTED_SECRET" in r.text
-    assert "bg-emerald-500" in r.text
+    assert "bg-success-solid-soft" in r.text
 
 
 def test_elsevier_probe_uses_article_retrieval_not_search() -> None:

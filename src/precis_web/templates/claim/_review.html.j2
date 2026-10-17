@@ -7,18 +7,18 @@
    context above); POST doors stay under /nanopub/fi<id>/... (unchanged —
    only the GET page moved), addressed here via the shared `hub_ref_id`. #}
 {% import "_verified_mark.html.j2" as vm %}
-<section id="review" class="mt-6 space-y-4 rounded-lg border border-slate-200 bg-slate-50/60 p-4">
+<section id="review" class="mt-6 space-y-4 rounded-lg border border-line bg-surface-subtle/60 p-4">
   <div class="flex items-start justify-between gap-4">
-    <h2 class="text-sm font-semibold text-slate-700">Review &amp; sign</h2>
+    <h2 class="text-sm font-semibold text-fg-secondary">Review &amp; sign</h2>
     <div class="text-right shrink-0">
       <span class="font-mono text-xs px-2 py-1 rounded
-        {% if np.disputed %}bg-rose-100 text-rose-700
-        {% elif np.state == 'published' %}bg-emerald-100 text-emerald-700
-        {% else %}bg-slate-200 text-slate-700{% endif %}">
+        {% if np.disputed %}bg-danger-muted text-danger-strong
+        {% elif np.state == 'published' %}bg-success-muted text-success-strong
+        {% else %}bg-surface-emphasis text-fg-secondary{% endif %}">
         {% if np.disputed %}◆ blocked (contradicted){% else %}{{ np.state }}{% endif %}
       </span>
       {% if np.frozen %}
-      <div class="text-[11px] text-slate-500 mt-1" title="frozen-ness ladder: reviewed freezes the string; signed/anchored freeze the artifact bytes (append-only, DB-trigger enforced); published is public forever">
+      <div class="text-[11px] text-fg-subtle mt-1" title="frozen-ness ladder: reviewed freezes the string; signed/anchored freeze the artifact bytes (append-only, DB-trigger enforced); published is public forever">
         frozen: {{ np.frozen }}
       </div>
       {% endif %}
@@ -32,74 +32,74 @@
      fallback (the KINDLESS /refs/<id> shape 400s). #}
   {% macro ref_link(kind, ref_id, title) -%}
     {%- if kind == 'finding' -%}
-    <a class="text-emerald-700 hover:underline" href="/claim/fi{{ ref_id }}">{{ title or ('fi' ~ ref_id) }}</a>
+    <a class="text-success-strong hover:underline" href="/claim/fi{{ ref_id }}">{{ title or ('fi' ~ ref_id) }}</a>
     {%- elif kind == 'paper' -%}
-    <a class="text-emerald-700 hover:underline" href="/papers/{{ ref_id }}">{{ title or ('ref ' ~ ref_id) }}</a>
+    <a class="text-success-strong hover:underline" href="/papers/{{ ref_id }}">{{ title or ('ref ' ~ ref_id) }}</a>
     {%- else -%}
-    <a class="text-emerald-700 hover:underline" href="/refs/{{ kind }}/{{ ref_id }}">{{ title or ('ref ' ~ ref_id) }}</a>
+    <a class="text-success-strong hover:underline" href="/refs/{{ kind }}/{{ ref_id }}">{{ title or ('ref ' ~ ref_id) }}</a>
     {%- endif -%}
   {%- endmacro %}
 
   {% if np.disputed %}
-  <div class="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 space-y-3">
-    <h3 class="text-sm font-semibold text-rose-700">◆ Contradicted — adjudication established a conflict</h3>
+  <div class="rounded-lg border border-danger bg-danger-subtle px-4 py-3 space-y-3">
+    <h3 class="text-sm font-semibold text-danger-strong">◆ Contradicted — adjudication established a conflict</h3>
     <ul class="text-sm space-y-1">
       {% for c in np.contradicted %}
       <li>
-        <span class="font-mono text-rose-600">{{ c.direction }}</span>
+        <span class="font-mono text-danger">{{ c.direction }}</span>
         {{ c.kind }} {{ ref_link(c.kind, c.ref_id, c.title) }}
       </li>
       {% endfor %}
     </ul>
-    <p class="text-xs text-rose-700/80">No forward transition while the edge stands —
+    <p class="text-xs text-danger-strong/80">No forward transition while the edge stands —
       visible internally, unpublishable externally; resolved only through adjudication.</p>
   </div>
   {% endif %}
 
   {% if np.source_drift %}
-  <div class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 space-y-1" data-testid="source-drift">
-    <h3 class="text-sm font-semibold text-amber-800">Source changed since approval</h3>
+  <div class="rounded-lg border border-warning bg-warning-subtle px-4 py-3 space-y-1" data-testid="source-drift">
+    <h3 class="text-sm font-semibold text-warning-deep">Source changed since approval</h3>
     <ul class="text-sm space-y-1">
       {% for d in np.source_drift %}
       <li>
         {{ ref_link('web', d.ref_id, d.url) }}
-        <span class="font-mono text-xs text-amber-700">approved {{ d.frozen_sha256[:12] }} · now {{ d.live_sha256[:12] }}</span>
+        <span class="font-mono text-xs text-warning-strong">approved {{ d.frozen_sha256[:12] }} · now {{ d.live_sha256[:12] }}</span>
       </li>
       {% endfor %}
     </ul>
-    <p class="text-xs text-amber-800/80">The page was re-fetched and its content differs from what was approved.
+    <p class="text-xs text-warning-deep/80">The page was re-fetched and its content differs from what was approved.
       Informational only — nothing is blocked or un-approved.</p>
   </div>
   {% endif %}
 
   {% if np.disputes %}
-  <div class="rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 space-y-3">
-    <h3 class="text-sm font-semibold text-sky-700">Open question{{ 's' if np.disputes|length != 1 }} — free to file, never blocking</h3>
+  <div class="rounded-lg border border-info bg-info-subtle px-4 py-3 space-y-3">
+    <h3 class="text-sm font-semibold text-info-strong">Open question{{ 's' if np.disputes|length != 1 }} — free to file, never blocking</h3>
     {% for d in np.disputes %}
     <div class="grid md:grid-cols-2 gap-3 text-sm">
-      <div class="rounded-lg border border-slate-200 bg-white p-3">
-        <div class="text-[11px] uppercase tracking-wide text-slate-400 mb-1">this claim</div>
+      <div class="rounded-lg border border-line bg-surface p-3">
+        <div class="text-[11px] uppercase tracking-wide text-fg-faint mb-1">this claim</div>
         <p>{{ (np.row.approved_title if np.row and np.row.approved_title else np.bundle.sentence) }}</p>
       </div>
-      <div class="rounded-lg border border-slate-200 bg-white p-3">
-        <div class="text-[11px] uppercase tracking-wide text-sky-600 mb-1">
+      <div class="rounded-lg border border-line bg-surface p-3">
+        <div class="text-[11px] uppercase tracking-wide text-info mb-1">
           disputing passage ({{ d.direction }}) — {{ d.kind }} {{ ref_link(d.kind, d.ref_id, d.title) }}
         </div>
         {% if d.passage %}
-        <blockquote class="italic text-slate-600">“{{ d.passage[:600] }}{% if d.passage|length > 600 %}…{% endif %}”</blockquote>
+        <blockquote class="italic text-fg-muted">“{{ d.passage[:600] }}{% if d.passage|length > 600 %}…{% endif %}”</blockquote>
         {% else %}
-        <p class="text-slate-500">No passage pinned on the disputes edge.</p>
+        <p class="text-fg-subtle">No passage pinned on the disputes edge.</p>
         {% endif %}
         {% if d.support %}
-        <p class="mt-2 text-sky-700">Recorded support verdict: {{ d.support }} (advisory)</p>
+        <p class="mt-2 text-info-strong">Recorded support verdict: {{ d.support }} (advisory)</p>
         {% endif %}
         {% if d.support_reason %}
-        <p class="mt-1 text-slate-600">Reason: {{ d.support_reason }}</p>
+        <p class="mt-1 text-fg-muted">Reason: {{ d.support_reason }}</p>
         {% endif %}
       </div>
     </div>
     {% endfor %}
-    <p class="text-xs text-sky-700/80">A question someone should look into — never a demerit
+    <p class="text-xs text-info-strong/80">A question someone should look into — never a demerit
       against either claim, and never blocks publication.</p>
   </div>
   {% endif %}
@@ -109,45 +109,45 @@
      made yet. Advisory in every state — never withholds the approve form. #}
   {% set cc = np.conflict_coverage %}
   {% if cc %}
-  <div class="rounded-lg border {{ 'border-slate-200 bg-slate-50' if cc.fresh else 'border-amber-200 bg-amber-50' }} px-4 py-3 space-y-2 text-sm"
+  <div class="rounded-lg border {{ 'border-line bg-surface-subtle' if cc.fresh else 'border-warning bg-warning-subtle' }} px-4 py-3 space-y-2 text-sm"
        data-conflict-coverage="{{ cc.status }}">
-    <h3 class="text-sm font-semibold {{ 'text-slate-700' if cc.fresh else 'text-amber-700' }}">Conflict search coverage — advisory, never blocking</h3>
+    <h3 class="text-sm font-semibold {{ 'text-fg-secondary' if cc.fresh else 'text-warning-strong' }}">Conflict search coverage — advisory, never blocking</h3>
     {% if cc.status == 'missing' %}
-    <p class="text-amber-800">Not yet swept for opposition. No statement about conflicting evidence can be made
+    <p class="text-warning-deep">Not yet swept for opposition. No statement about conflicting evidence can be made
       — missing results do not mean none exists.</p>
     {% elif cc.status == 'stale-version' %}
-    <p class="text-amber-800">Last swept {{ cc.at }} under method v{{ cc.version }}; the current method is
+    <p class="text-warning-deep">Last swept {{ cc.at }} under method v{{ cc.version }}; the current method is
       v{{ cc.current_version }}. The stored verdicts predate it.</p>
     {% elif cc.status == 'stale-age' %}
-    <p class="text-amber-800">Last swept {{ cc.at }} (method v{{ cc.version }}) — older than {{ cc.fresh_days }} days,
+    <p class="text-warning-deep">Last swept {{ cc.at }} (method v{{ cc.version }}) — older than {{ cc.fresh_days }} days,
       so the corpus has likely grown since.</p>
     {% else %}
-    <p class="text-slate-700">No known conflict beyond the open questions above, as of {{ cc.at }}
+    <p class="text-fg-secondary">No known conflict beyond the open questions above, as of {{ cc.at }}
       (method v{{ cc.version }}): {{ cc.candidates_checked }} candidate passage{{ 's' if cc.candidates_checked != 1 }} verified,
       {{ cc.disputes_filed }} dispute{{ 's' if cc.disputes_filed != 1 }} filed.</p>
     {% endif %}
     {% if cc.status != 'fresh' %}
       {% if cc.resweep_job_id %}
-      <p class="text-xs text-amber-700/80">Re-sweep requested (job {{ cc.resweep_job_id }}); results land in the open questions above once it runs.</p>
+      <p class="text-xs text-warning-strong/80">Re-sweep requested (job {{ cc.resweep_job_id }}); results land in the open questions above once it runs.</p>
       {% else %}
-      <p class="text-xs text-amber-700/80">No re-sweep queued — the <code>conflict_search</code> service is off, or this claim is past review.</p>
+      <p class="text-xs text-warning-strong/80">No re-sweep queued — the <code>conflict_search</code> service is off, or this claim is past review.</p>
       {% endif %}
     {% endif %}
     {% if np.counter_mint %}
-    <div class="rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+    <div class="rounded border border-success bg-success-subtle px-3 py-2 text-xs text-success-deep">
       {% set cm = np.counter_mint %}
       {% if cm.status == 'minted' %}
         Counter-claim landed on
-        <a class="text-emerald-700 hover:underline" href="/claim/fi{{ cm.counter_hub_ref_id }}">fi{{ cm.counter_hub_ref_id }}</a>
+        <a class="text-success-strong hover:underline" href="/claim/fi{{ cm.counter_hub_ref_id }}">fi{{ cm.counter_hub_ref_id }}</a>
         {% if cm.report and cm.report.placement and cm.report.placement.action == 'attach' %}(attached to an existing hub){% else %}(new hub){% endif %}
         — {% if cm.disputes_linked %}a disputes edge joins the pair.{% else %}the pair stayed unlinked (claim-type policy).{% endif %}
       {% elif cm.status == 'already' %}
         This passage already has a counter-hub:
-        <a class="text-emerald-700 hover:underline" href="/claim/fi{{ cm.counter_hub_ref_id }}">fi{{ cm.counter_hub_ref_id }}</a>
+        <a class="text-success-strong hover:underline" href="/claim/fi{{ cm.counter_hub_ref_id }}">fi{{ cm.counter_hub_ref_id }}</a>
         — {% if cm.disputes_linked %}the pair is linked.{% else %}but the pair is NOT linked (claim-type policy).{% endif %}
       {% elif cm.status == 'linked' %}
         The conflicting passage is already a claim hub:
-        <a class="text-emerald-700 hover:underline" href="/claim/fi{{ cm.counter_hub_ref_id }}">fi{{ cm.counter_hub_ref_id }}</a>
+        <a class="text-success-strong hover:underline" href="/claim/fi{{ cm.counter_hub_ref_id }}">fi{{ cm.counter_hub_ref_id }}</a>
         — {% if cm.disputes_linked %}the pair is linked.{% else %}but the pair stayed unlinked (claim-type policy).{% endif %}
       {% elif cm.status == 'unsupported' %}
         The passage licenses no counter-claim{% if cm.report and cm.report.qualify.reason %} — {{ cm.report.qualify.reason }}{% endif %}. Nothing was minted.
@@ -159,29 +159,29 @@
     </div>
     {% endif %}
     {% if np.counter_mint_error %}
-    <div class="rounded border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700 whitespace-pre-wrap">✖ {{ np.counter_mint_error }}</div>
+    <div class="rounded border border-danger bg-danger-subtle px-3 py-2 text-xs text-danger-strong whitespace-pre-wrap">✖ {{ np.counter_mint_error }}</div>
     {% endif %}
     {% if cc.covered %}
     <details class="text-xs">
-      <summary class="cursor-pointer text-slate-500">Passages covered ({{ cc.covered_total }})</summary>
+      <summary class="cursor-pointer text-fg-subtle">Passages covered ({{ cc.covered_total }})</summary>
       <ul class="mt-1 space-y-0.5">
         {% for c in cc.covered %}
         <li>
-          <span class="font-mono {{ 'text-sky-700' if c.verdict == 'disputes' else 'text-slate-400' }}">{{ c.verdict }}</span>
+          <span class="font-mono {{ 'text-info-strong' if c.verdict == 'disputes' else 'text-fg-faint' }}">{{ c.verdict }}</span>
           {{ c.kind }} {{ ref_link(c.kind, c.ref_id, c.title) }}
-          {% if c.handle %}<span class="font-mono text-slate-400">{{ c.handle }}</span>{% endif %}
+          {% if c.handle %}<span class="font-mono text-fg-faint">{{ c.handle }}</span>{% endif %}
           {% if c.counter_hub_ref_id %}
-          · counter-claim <a class="text-emerald-700 hover:underline" href="/claim/fi{{ c.counter_hub_ref_id }}">fi{{ c.counter_hub_ref_id }}</a>
+          · counter-claim <a class="text-success-strong hover:underline" href="/claim/fi{{ c.counter_hub_ref_id }}">fi{{ c.counter_hub_ref_id }}</a>
           {% elif c.verdict == 'disputes' and c.chunk_id and c.kind != 'finding' %}
           <details class="mt-1 ml-4">
-            <summary class="cursor-pointer text-sky-700">mint counter-claim…</summary>
+            <summary class="cursor-pointer text-info-strong">mint counter-claim…</summary>
             <form method="post" action="/nanopub/fi{{ hub_ref_id }}/counter-claim" class="mt-1 space-y-1">
               <input type="hidden" name="chunk" value="pc{{ c.chunk_id }}">
               <input type="text" name="proposed" value="{{ c.opposing or '' }}"
                      placeholder="the opposing claim this passage makes"
-                     class="w-full bg-white text-slate-800 border border-slate-300 rounded p-1 text-xs">
-              <button class="px-2 py-0.5 rounded bg-sky-600 hover:bg-sky-700 text-white text-xs">Mint counter-claim hub</button>
-              <p class="text-[11px] text-slate-500">Review only — for a genuine opposing claim, not a
+                     class="w-full bg-surface text-fg border border-line-strong rounded p-1 text-xs">
+              <button class="px-2 py-0.5 rounded bg-info-solid hover:bg-info-solid-strong text-on-solid text-xs">Mint counter-claim hub</button>
+              <p class="text-[11px] text-fg-subtle">Review only — for a genuine opposing claim, not a
                 scope/caveat mismatch (that is a wording fix on this claim). The mint qualifies the
                 sentence against this exact passage and links the pair with a non-blocking disputes edge.</p>
             </form>
@@ -212,53 +212,53 @@
               stroke-width="1.5"
               {% if e.cls in ('contradicts', 'merkle') %}stroke-dasharray="5 4"{% endif %}/>
         <text x="{{ (e.x1 + e.x2) // 2 + 6 }}" y="{{ (e.y1 + e.y2) // 2 }}"
-              class="fill-slate-500" font-size="10">{{ e.label }}</text>
+              class="fill-fg-subtle" font-size="10">{{ e.label }}</text>
         {% endfor %}
         {% for n in np.graph.nodes %}
         <g class="np-node cursor-pointer" data-id="{{ n.id }}" transform="translate({{ n.x - 100 }},{{ n.y - 28 }})">
-          <rect width="200" height="56" rx="8" fill="#ffffff"
+          <rect width="200" height="56" rx="8" class="fill-surface"
                 stroke="{% if 'contradicts' in n.cls or 'disputed' in n.cls %}#e11d48{% elif 'paper' in n.cls %}#b7791f{% elif 'computed' in n.cls %}#7c3aed{% elif 'atom' in n.cls %}#2b6cb0{% elif 'anchor' in n.cls %}#94a3b8{% else %}#059669{% endif %}"
                 stroke-width="2" {% if 'anchor' in n.cls %}stroke-dasharray="5 3"{% endif %}/>
           {% if 'disputed' in n.cls %}<text x="184" y="16" font-size="12" fill="#e11d48">◆</text>{% endif %}
-          <text x="10" y="22" font-size="11" class="fill-slate-800">{{ n.label }}</text>
-          <text x="10" y="42" font-size="10" class="fill-slate-500">{{ n.sub }}</text>
+          <text x="10" y="22" font-size="11" class="fill-fg">{{ n.label }}</text>
+          <text x="10" y="42" font-size="10" class="fill-fg-subtle">{{ n.sub }}</text>
         </g>
         {% endfor %}
       </svg>
-      <div id="np-detail" class="mt-3 rounded-lg border border-slate-200 bg-white p-4 text-sm">
-        <p class="text-slate-400 text-xs">Select a node.</p>
+      <div id="np-detail" class="mt-3 rounded-lg border border-line bg-surface p-4 text-sm">
+        <p class="text-fg-faint text-xs">Select a node.</p>
       </div>
     </div>
 
     {# ── side panel: the publish row, rendered ── #}
     <div class="lg:col-span-2 space-y-4">
-      <section class="rounded-lg border border-slate-200 bg-white p-4 space-y-2 text-sm">
-        <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-400">Publish row</h3>
+      <section class="rounded-lg border border-line bg-surface p-4 space-y-2 text-sm">
+        <h3 class="text-xs font-semibold uppercase tracking-wide text-fg-faint">Publish row</h3>
         {% if np.row %}
         <table class="text-xs w-full">
           <tbody>
-            <tr><td class="text-slate-400 pr-3 py-0.5 align-top">state</td><td class="font-mono">{{ np.row.state }}</td></tr>
-            <tr><td class="text-slate-400 pr-3 py-0.5 align-top">approved</td><td>{{ np.row.approved_title or '—' }}</td></tr>
+            <tr><td class="text-fg-faint pr-3 py-0.5 align-top">state</td><td class="font-mono">{{ np.row.state }}</td></tr>
+            <tr><td class="text-fg-faint pr-3 py-0.5 align-top">approved</td><td>{{ np.row.approved_title or '—' }}</td></tr>
             {# The AIDA URI is just the approved sentence URL-encoded — the
                row above already shows it readably, so render only a copy
                affordance, never the percent-encoded monster. #}
             {% if np.row.aida_uri %}
-            <tr><td class="text-slate-400 pr-3 py-0.5 align-top">aida</td><td>
-              <button type="button" class="text-emerald-700 hover:underline text-xs"
+            <tr><td class="text-fg-faint pr-3 py-0.5 align-top">aida</td><td>
+              <button type="button" class="text-success-strong hover:underline text-xs"
                       onclick="navigator.clipboard.writeText({{ np.row.aida_uri | tojson }}); this.textContent='copied ✓'">copy URI</button>
             </td></tr>
             {% endif %}
-            <tr><td class="text-slate-400 pr-3 py-0.5 align-top">trusty</td><td class="font-mono break-all">
-              {% if np.row.trusty_uri %}<a class="text-emerald-700 hover:underline" href="/np/{{ np.row.trusty_uri.rsplit('/', 1)[-1] }}">{{ np.row.trusty_uri }}</a>{% else %}—{% endif %}
+            <tr><td class="text-fg-faint pr-3 py-0.5 align-top">trusty</td><td class="font-mono break-all">
+              {% if np.row.trusty_uri %}<a class="text-success-strong hover:underline" href="/np/{{ np.row.trusty_uri.rsplit('/', 1)[-1] }}">{{ np.row.trusty_uri }}</a>{% else %}—{% endif %}
             </td></tr>
-            <tr><td class="text-slate-400 pr-3 py-0.5">batch</td><td class="font-mono">{{ np.row.batch_id or '—' }}{% if np.proof_state %} · proof {{ np.proof_state }}{% endif %}</td></tr>
+            <tr><td class="text-fg-faint pr-3 py-0.5">batch</td><td class="font-mono">{{ np.row.batch_id or '—' }}{% if np.proof_state %} · proof {{ np.proof_state }}{% endif %}</td></tr>
             {% if np.row.published_at %}
             {% set np_code = np.row.trusty_uri.rsplit('/', 1)[-1] if np.row.trusty_uri else None %}
-            <tr><td class="text-slate-400 pr-3 py-0.5 align-top">published</td><td>{{ np.row.published_at.strftime('%Y-%m-%d') }}
+            <tr><td class="text-fg-faint pr-3 py-0.5 align-top">published</td><td>{{ np.row.published_at.strftime('%Y-%m-%d') }}
               {% if np_code %}
-              · <a class="text-emerald-700 hover:underline" href="{{ np.row.trusty_uri }}" target="_blank" rel="noopener">w3id ↗</a>
-              · <a class="text-emerald-700 hover:underline" href="{{ np.row.registry_url.rstrip('/') }}/{{ np_code }}" target="_blank" rel="noopener">registry ↗</a>
-              · <a class="text-emerald-700 hover:underline" href="https://nanodash.knowledgepixels.com/explore?id={{ np.row.trusty_uri | urlencode }}" target="_blank" rel="noopener">nanodash ↗</a>
+              · <a class="text-success-strong hover:underline" href="{{ np.row.trusty_uri }}" target="_blank" rel="noopener">w3id ↗</a>
+              · <a class="text-success-strong hover:underline" href="{{ np.row.registry_url.rstrip('/') }}/{{ np_code }}" target="_blank" rel="noopener">registry ↗</a>
+              · <a class="text-success-strong hover:underline" href="https://nanodash.knowledgepixels.com/explore?id={{ np.row.trusty_uri | urlencode }}" target="_blank" rel="noopener">nanodash ↗</a>
               {% else %}
               → {{ np.row.registry_url }}
               {% endif %}
@@ -267,83 +267,83 @@
           </tbody>
         </table>
         {% else %}
-        <p class="text-slate-500 text-xs">No publish row yet — approving freezes the exact
+        <p class="text-fg-subtle text-xs">No publish row yet — approving freezes the exact
           claim string below and creates one.</p>
         {% endif %}
       </section>
 
       {# ── one action, labelled by the state's transition ── #}
-      <section class="rounded-lg border border-slate-200 bg-white p-4 space-y-3 text-sm">
-        <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-400">Action</h3>
+      <section class="rounded-lg border border-line bg-surface p-4 space-y-3 text-sm">
+        <h3 class="text-xs font-semibold uppercase tracking-wide text-fg-faint">Action</h3>
         <form method="post" action="/nanopub/fi{{ hub_ref_id }}/refine-now">
-          <button class="px-3 py-1.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-100 text-xs"
+          <button class="px-3 py-1.5 rounded border border-line-strong text-fg-muted hover:bg-surface-muted text-xs"
                   title="Run the evidence-refine pass (verify, method-gap, reground) over this claim now">Refine now</button>
         </form>
         {% if np.action == 'approve' %}
         <form method="post" action="/nanopub/fi{{ hub_ref_id }}/approve" class="space-y-2">
           {% if np.approve_error %}
-          <div class="rounded border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700 whitespace-pre-wrap">✖ {{ np.approve_error }}</div>
+          <div class="rounded border border-danger bg-danger-subtle px-3 py-2 text-xs text-danger-strong whitespace-pre-wrap">✖ {{ np.approve_error }}</div>
           {% endif %}
-          <label class="block text-xs text-slate-500">Exact string to freeze (the signature covers this):</label>
-          <textarea name="title" rows="3" class="w-full bg-white text-slate-800 border border-slate-300 rounded p-2 text-sm">{{ np.submitted_title | default(np.bundle.sentence, true) }}</textarea>
-          <label class="block text-xs text-slate-500">Grounding payload — quote + snip per passage, what you attest.
+          <label class="block text-xs text-fg-subtle">Exact string to freeze (the signature covers this):</label>
+          <textarea name="title" rows="3" class="w-full bg-surface text-fg border border-line-strong rounded p-2 text-sm">{{ np.submitted_title | default(np.bundle.sentence, true) }}</textarea>
+          <label class="block text-xs text-fg-subtle">Grounding payload — quote + snip per passage, what you attest.
             Prefilled with a candidate from each grounding chunk; <b>trim the quote to the bare assertion</b> before approving:</label>
-          <textarea name="payload" rows="12" class="w-full bg-white text-slate-800 border border-slate-300 rounded p-2 font-mono text-xs">{{ np.submitted_payload | default(np.suggested_payload, true) }}</textarea>
-          <button class="px-3 py-1.5 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-sm">{{ np.action_label }}</button>
-          <p class="text-[11px] text-slate-500">Every Layer-A mint gate runs now — the queue only holds strings that can mint.</p>
+          <textarea name="payload" rows="12" class="w-full bg-surface text-fg border border-line-strong rounded p-2 font-mono text-xs">{{ np.submitted_payload | default(np.suggested_payload, true) }}</textarea>
+          <button class="px-3 py-1.5 rounded bg-success-solid hover:bg-success-solid-strong text-on-solid text-sm">{{ np.action_label }}</button>
+          <p class="text-[11px] text-fg-subtle">Every Layer-A mint gate runs now — the queue only holds strings that can mint.</p>
         </form>
         {% elif np.action == 'sign' %}
         {% if np.newer_evidence %}
         {# grounding-stale (precis.nanopub.freshness): supporting evidence
            linked after approve froze the grounding — the reviewer never
            saw it. Sign refuses without the checkbox below. #}
-        <div id="np-newer-evidence" class="rounded border border-amber-300 bg-amber-50 p-3 space-y-1.5 text-xs">
-          <p class="font-semibold text-amber-800">
+        <div id="np-newer-evidence" class="rounded border border-warning-strong bg-warning-subtle p-3 space-y-1.5 text-xs">
+          <p class="font-semibold text-warning-deep">
             {{ np.newer_evidence|length }} supporting edge(s) arrived after the grounding froze
             and are not in it:
           </p>
-          <ul class="list-disc pl-4 space-y-0.5 text-slate-700">
+          <ul class="list-disc pl-4 space-y-0.5 text-fg-secondary">
             {% for e in np.newer_evidence %}
             <li title="{{ e.source_title }}">
               {{ e.relation }} ← <span class="font-mono">{{ e.source }}</span>
-              {% if e.chunk_handle %}<span class="font-mono text-slate-400">{{ e.chunk_handle }}</span>{% else %}<span class="text-slate-400">(paper-level)</span>{% endif %}
-              <span class="text-slate-400">· link {{ e.link_id }} · {{ e.created_at }}</span>
+              {% if e.chunk_handle %}<span class="font-mono text-fg-faint">{{ e.chunk_handle }}</span>{% else %}<span class="text-fg-faint">(paper-level)</span>{% endif %}
+              <span class="text-fg-faint">· link {{ e.link_id }} · {{ e.created_at }}</span>
             </li>
             {% endfor %}
           </ul>
-          <p class="text-slate-600">Re-review the grounding (below), or read them and sign anyway.</p>
+          <p class="text-fg-muted">Re-review the grounding (below), or read them and sign anyway.</p>
         </div>
         {% endif %}
         <form method="post" action="/nanopub/fi{{ hub_ref_id }}/sign" class="space-y-2">
           {% if np.newer_evidence %}
-          <label class="flex items-center gap-2 text-xs text-amber-800">
+          <label class="flex items-center gap-2 text-xs text-warning-deep">
             <input type="checkbox" name="accept_newer" value="1">
             Sign anyway — I checked the newer evidence
           </label>
           {% endif %}
-          <label class="flex items-center gap-2 text-xs text-slate-600">
+          <label class="flex items-center gap-2 text-xs text-fg-muted">
             <input type="checkbox" name="attest" value="1">
             sign with the <b>attesting</b> key (your human signature — this is what makes it publishable)
           </label>
-          <button class="px-3 py-1.5 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-sm">{{ np.action_label }}</button>
-          <p class="text-[11px] text-slate-500">The sign button signs for real; unchecked = bot key (machine provenance only).</p>
+          <button class="px-3 py-1.5 rounded bg-success-solid hover:bg-success-solid-strong text-on-solid text-sm">{{ np.action_label }}</button>
+          <p class="text-[11px] text-fg-subtle">The sign button signs for real; unchecked = bot key (machine provenance only).</p>
         </form>
         <form method="post" action="/nanopub/fi{{ hub_ref_id }}/reopen">
-          <button class="px-3 py-1.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-100 text-xs">{% if np.newer_evidence %}Re-review grounding (reopen to candidate){% else %}Reopen (edit the string){% endif %}</button>
+          <button class="px-3 py-1.5 rounded border border-line-strong text-fg-muted hover:bg-surface-muted text-xs">{% if np.newer_evidence %}Re-review grounding (reopen to candidate){% else %}Reopen (edit the string){% endif %}</button>
         </form>
         {% elif np.action == 'reopen' %}
         <form method="post" action="/nanopub/fi{{ hub_ref_id }}/reopen">
-          <button class="px-3 py-1.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-100 text-sm">{{ np.action_label }}</button>
+          <button class="px-3 py-1.5 rounded border border-line-strong text-fg-muted hover:bg-surface-muted text-sm">{{ np.action_label }}</button>
         </form>
-        <p class="text-[11px] text-slate-500">Waiting for the OTS sweep to anchor; reopening discards the pointer
+        <p class="text-[11px] text-fg-subtle">Waiting for the OTS sweep to anchor; reopening discards the pointer
           (the artifact row itself is append-only, forever).</p>
         {% elif np.action == 'publish-cli' %}
-        <p class="text-xs text-slate-600">{{ np.action_label }}:</p>
-        <pre class="bg-slate-100 rounded p-2 text-xs font-mono">precis nanopub publish fi{{ hub_ref_id }} --live</pre>
-        <p class="text-[11px] text-slate-500">Deliberately not a web button — the registry POST propagates
+        <p class="text-xs text-fg-muted">{{ np.action_label }}:</p>
+        <pre class="bg-surface-muted rounded p-2 text-xs font-mono">precis nanopub publish fi{{ hub_ref_id }} --live</pre>
+        <p class="text-[11px] text-fg-subtle">Deliberately not a web button — the registry POST propagates
           across mirrors forever.</p>
         {% else %}
-        <p class="text-xs text-slate-500">{{ np.action_label }}</p>
+        <p class="text-xs text-fg-subtle">{{ np.action_label }}</p>
         {% endif %}
       </section>
 
@@ -354,33 +354,33 @@
          one is still reported (block_reason/merge_error) so a stray
          direct POST never disappears its own refusal. #}
       {% if np.state in ('unminted', 'candidate') or np.merge_plan or np.merge_error %}
-      <section class="rounded-lg border border-slate-200 bg-white p-4 space-y-3 text-sm">
-        <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-400">Nearest claims</h3>
+      <section class="rounded-lg border border-line bg-surface p-4 space-y-3 text-sm">
+        <h3 class="text-xs font-semibold uppercase tracking-wide text-fg-faint">Nearest claims</h3>
 
         {% if np.merge_error %}
-        <div class="rounded border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700 whitespace-pre-wrap">✖ {{ np.merge_error }}</div>
+        <div class="rounded border border-danger bg-danger-subtle px-3 py-2 text-xs text-danger-strong whitespace-pre-wrap">✖ {{ np.merge_error }}</div>
         {% endif %}
 
         {% if np.merge_plan %}
         <div class="rounded-lg border p-3 space-y-2
-          {% if np.merge_plan.can_merge %}border-emerald-200 bg-emerald-50{% else %}border-rose-200 bg-rose-50{% endif %}">
-          <p class="text-xs font-semibold {% if np.merge_plan.can_merge %}text-emerald-700{% else %}text-rose-700{% endif %}">
+          {% if np.merge_plan.can_merge %}border-success bg-success-subtle{% else %}border-danger bg-danger-subtle{% endif %}">
+          <p class="text-xs font-semibold {% if np.merge_plan.can_merge %}text-success-strong{% else %}text-danger-strong{% endif %}">
             Merge plan: fi{{ np.merge_plan.loser_ref_id }} → fi{{ hub_ref_id }}
           </p>
           {% if not np.merge_plan.can_merge %}
-          <p class="text-xs text-rose-700">{{ np.merge_plan.block_reason }}</p>
+          <p class="text-xs text-danger-strong">{{ np.merge_plan.block_reason }}</p>
           {% else %}
           <ul class="text-xs space-y-0.5">
             {% for e in np.merge_plan.edges %}
             <li><span class="font-mono">{{ e.action }}</span> {{ e.relation }} ({{ e.direction }}) ↔ fi{{ e.other_ref_id }}</li>
             {% else %}
-            <li class="text-slate-500">No links on the loser — nothing to repoint.</li>
+            <li class="text-fg-subtle">No links on the loser — nothing to repoint.</li>
             {% endfor %}
           </ul>
           <form method="post" action="/nanopub/fi{{ hub_ref_id }}/merge">
             <input type="hidden" name="loser" value="{{ np.merge_plan.loser_ref_id }}">
             <input type="hidden" name="confirm" value="1">
-            <button class="px-3 py-1.5 rounded bg-rose-600 hover:bg-rose-700 text-white text-xs"
+            <button class="px-3 py-1.5 rounded bg-danger-solid hover:bg-danger-solid-strong text-on-solid text-xs"
                     onclick="return confirm('Collapse fi{{ np.merge_plan.loser_ref_id }} into fi{{ hub_ref_id }}? This deletes redundant links and cannot be undone.')">
               Confirm merge
             </button>
@@ -392,7 +392,7 @@
         {% if np.nearest_lazy %}
         {# Lazy: the ANN + per-row LLM judge is slow (gr473425), so the
            pane renders at once and this placeholder fetches the list. #}
-        <p class="text-xs text-slate-500"
+        <p class="text-xs text-fg-subtle"
            hx-get="/claim/fi{{ hub_ref_id }}/nearest" hx-trigger="load"
            hx-swap="outerHTML" hx-request='{"timeout": 60000}'
            hx-on::response-error="this.textContent='near-duplicate check unavailable'"
@@ -405,21 +405,21 @@
       {% endif %}
 
       {# ── evidence curation: attach a new edge (starts withheld) ── #}
-      <details class="rounded-lg border border-slate-200 bg-white p-4 text-sm">
-        <summary class="cursor-pointer text-xs font-semibold uppercase tracking-wide text-slate-400">Add evidence edge</summary>
+      <details class="rounded-lg border border-line bg-surface p-4 text-sm">
+        <summary class="cursor-pointer text-xs font-semibold uppercase tracking-wide text-fg-faint">Add evidence edge</summary>
         <form method="post" action="/nanopub/fi{{ hub_ref_id }}/evidence/add" class="mt-2 flex flex-wrap items-center gap-2">
           <input name="source" placeholder="pa1234 / pw1234" required
-                 class="bg-white text-slate-800 border border-slate-300 rounded px-2 py-1 text-xs w-40">
+                 class="bg-surface text-fg border border-line-strong rounded px-2 py-1 text-xs w-40">
           <input name="chunk" placeholder="pc5678 (passage, optional)"
-                 class="bg-white text-slate-800 border border-slate-300 rounded px-2 py-1 text-xs w-44">
-          <select name="relation" class="bg-white text-slate-800 border border-slate-300 rounded px-2 py-1 text-xs">
+                 class="bg-surface text-fg border border-line-strong rounded px-2 py-1 text-xs w-44">
+          <select name="relation" class="bg-surface text-fg border border-line-strong rounded px-2 py-1 text-xs">
             <option value="corroborates">corroborates</option>
             <option value="establishes">establishes</option>
             <option value="contradicts">contradicts</option>
           </select>
-          <button class="px-2 py-1 rounded border border-emerald-400 text-emerald-700 hover:bg-emerald-50 text-xs">add</button>
+          <button class="px-2 py-1 rounded border border-success-emphasis text-success-strong hover:bg-success-subtle text-xs">add</button>
         </form>
-        <p class="text-[11px] text-slate-500 mt-1.5">New edges start withheld — sign off above (or let the
+        <p class="text-[11px] text-fg-subtle mt-1.5">New edges start withheld — sign off above (or let the
           refine chase verify them) before publish. A contradicts edge blocks the claim outright.</p>
       </details>
 
@@ -433,36 +433,36 @@
      for an early-stage candidate, so the 2/5 share read as "squeezed
      into the right half while the left half sits empty". #}
   {% if np.withheld %}
-  <section class="rounded-lg border border-amber-300 bg-amber-50 p-4 space-y-3 text-sm">
-    <h3 class="text-xs font-semibold uppercase tracking-wide text-amber-700">
+  <section class="rounded-lg border border-warning-strong bg-warning-subtle p-4 space-y-3 text-sm">
+    <h3 class="text-xs font-semibold uppercase tracking-wide text-warning-strong">
       Withheld evidence edges ({{ np.withheld|length }})
     </h3>
-    <p class="text-xs text-slate-600">An evidence edge links a paper passage to this claim as support.
+    <p class="text-xs text-fg-muted">An evidence edge links a paper passage to this claim as support.
       Every new edge starts withheld, and a claim with any withheld edge cannot be published.</p>
     <form method="post" action="/nanopub/fi{{ hub_ref_id }}/refine-now">
-      <button class="px-3 py-1.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-100 text-xs"
+      <button class="px-3 py-1.5 rounded border border-line-strong text-fg-muted hover:bg-surface-muted text-xs"
               title="Run the evidence-refine pass (verify, method-gap, reground) over this claim now">Refine now</button>
     </form>
-    <p class="text-xs text-slate-600">Two ways to release an edge: the automatic verification sweep
+    <p class="text-xs text-fg-muted">Two ways to release an edge: the automatic verification sweep
       (<span class="font-mono">precis taproot verify-edges</span>, which re-reads the passage against the
       claim and stamps it verified; run it to release edges now, otherwise it happens on the next
       background pass), or your own sign-off on the row below, with a note saying why it is ok.</p>
     {% for w in np.withheld %}
-    <div class="rounded border border-amber-200 bg-white/70 p-2 space-y-1.5">
+    <div class="rounded border border-warning bg-surface/70 p-2 space-y-1.5">
       <p class="text-xs" title="{{ w.paper_title }}">
         {{ w.relation }} ← {{ w.paper_title }} {{ vm.verified_mark(w.reviewed_at, w.reviewed_by) }}
-        {% if w.chunk_handle %}<span class="font-mono text-slate-400">{{ w.chunk_handle }}</span>{% endif %}
+        {% if w.chunk_handle %}<span class="font-mono text-fg-faint">{{ w.chunk_handle }}</span>{% endif %}
       </p>
-      <p class="text-[11px] text-amber-700">Why withheld:
+      <p class="text-[11px] text-warning-strong">Why withheld:
         {% if w.stale %}stale: claim edited after verification{% if w.verified_on %} (verified {{ w.verified_on }}){% endif %}; the sweep must re-check it
         {% elif w.rejected_on %}the sweep judged this passage not supporting the claim ({{ w.rejected_on }}) and will not re-check it unless the claim is edited; remove it or sign it off
         {% else %}never verified: the sweep has not checked this edge yet{% endif %}.</p>
       {% if w.passage %}
-      <blockquote class="italic text-slate-600 text-xs border-l-2 border-amber-200 pl-2">
+      <blockquote class="italic text-fg-muted text-xs border-l-2 border-warning pl-2">
         “{{ w.passage[:600] }}{% if w.passage|length > 600 %}…{% endif %}”
       </blockquote>
       {% else %}
-      <p class="text-slate-400 italic text-xs">no grounding passage pinned</p>
+      <p class="text-fg-faint italic text-xs">no grounding passage pinned</p>
       {% endif %}
       {# flex-wrap: at narrow pane widths the note input + sign off +
          remove buttons overflow/clip the amber-300 card otherwise
@@ -471,12 +471,12 @@
       <div class="flex flex-wrap items-center gap-2">
         <form method="post" action="/nanopub/fi{{ hub_ref_id }}/signoff/{{ w.link_id }}" class="flex flex-wrap items-center gap-2 grow min-w-0">
           <input name="note" placeholder="why it's ok (required)"
-                 class="bg-white text-slate-800 border border-slate-300 rounded px-2 py-1 text-xs w-44">
-          <button class="px-2 py-1 rounded border border-amber-400 text-amber-700 hover:bg-amber-100 text-xs whitespace-nowrap">sign off</button>
+                 class="bg-surface text-fg border border-line-strong rounded px-2 py-1 text-xs w-44">
+          <button class="px-2 py-1 rounded border border-warning-emphasis text-warning-strong hover:bg-warning-muted text-xs whitespace-nowrap">sign off</button>
         </form>
         <form method="post" action="/nanopub/fi{{ hub_ref_id }}/evidence/{{ w.link_id }}/remove"
               onsubmit="return confirm('Remove this evidence edge?')">
-          <button class="px-2 py-1 rounded border border-rose-300 text-rose-600 hover:bg-rose-50 text-xs"
+          <button class="px-2 py-1 rounded border border-danger-strong text-danger hover:bg-danger-subtle text-xs"
                   title="delete this evidence edge from the hub">remove</button>
         </form>
       </div>
@@ -489,18 +489,18 @@
   {% set gates_all = np.gates.mint + np.gates.preflight %}
   {% set gates_passed = gates_all | selectattr('status', 'equalto', 'passed') | list | length %}
   {% set gates_failed = gates_all | selectattr('status', 'equalto', 'failed') | list | length %}
-  <details id="gates" class="rounded-lg border border-slate-200 bg-white p-4 text-sm">
-    <summary class="cursor-pointer text-xs font-semibold uppercase tracking-wide text-slate-400">
+  <details id="gates" class="rounded-lg border border-line bg-surface p-4 text-sm">
+    <summary class="cursor-pointer text-xs font-semibold uppercase tracking-wide text-fg-faint">
       Gates — {{ gates_passed }}/{{ gates_all | length }}
       {{ 'passing (dry-run)' if np.gates.dryrun else 'passed' }}{% if gates_failed %},
-      <span class="text-rose-600">{{ gates_failed }} blocking</span>{% endif %}
+      <span class="text-danger">{{ gates_failed }} blocking</span>{% endif %}
     </summary>
     {% macro gate_row(g) %}
     <li class="text-xs flex gap-1.5
-      {% if g.status == 'passed' %}text-emerald-700
-      {% elif g.status == 'failed' %}text-rose-600
-      {% elif g.status == 'note' %}text-amber-700
-      {% else %}text-slate-400{% endif %}">
+      {% if g.status == 'passed' %}text-success-strong
+      {% elif g.status == 'failed' %}text-danger
+      {% elif g.status == 'note' %}text-warning-strong
+      {% else %}text-fg-faint{% endif %}">
       <span class="shrink-0 w-3 text-center">{{ {'passed': '✓', 'failed': '✖', 'note': '·', 'pending': '○'}[g.status] }}</span>
       <span><span class="font-mono">[{{ g.name }}]</span> {{ g.message or g.desc }}</span>
     </li>
@@ -508,18 +508,18 @@
     <div class="grid md:grid-cols-2 gap-4 mt-3">
       <div>
         {% if np.gates.dryrun %}
-        <h4 class="text-[11px] font-semibold uppercase tracking-wide text-slate-400 mb-1.5"
+        <h4 class="text-[11px] font-semibold uppercase tracking-wide text-fg-faint mb-1.5"
             title="Layer-A mechanical mint validators (pure code, no LLM), rehearsed read-only right now against the live sentence + the prefilled grounding above — exactly what clicking Approve would check. Trim the payload or reword the sentence and reload to re-run.">
           Mint gates — live dry-run</h4>
         {% else %}
-        <h4 class="text-[11px] font-semibold uppercase tracking-wide text-slate-400 mb-1.5"
+        <h4 class="text-[11px] font-semibold uppercase tracking-wide text-fg-faint mb-1.5"
             title="Layer-A mechanical mint validators (pure code, no LLM) — approve runs every one against the exact sentence + payload it freezes, so a claim past candidate cleared them all">
           Mint gates (run at approve)</h4>
         {% endif %}
         <ul class="space-y-1">{% for g in np.gates.mint %}{{ gate_row(g) }}{% endfor %}</ul>
       </div>
       <div>
-        <h4 class="text-[11px] font-semibold uppercase tracking-wide text-slate-400 mb-1.5"
+        <h4 class="text-[11px] font-semibold uppercase tracking-wide text-fg-faint mb-1.5"
             title="Publish-time preflight — what must hold before the registry POST (the one irreversible step); re-checked live on every page load">
           Publish preflight (live)</h4>
         <ul class="space-y-1">{% for g in np.gates.preflight %}{{ gate_row(g) }}{% endfor %}</ul>
@@ -551,12 +551,12 @@
   document.querySelectorAll(".np-node").forEach(n => n.addEventListener("click", () => {
     const d = NP_DETAIL[n.dataset.id];
     if (!d) return;
-    let h = `<div class="text-[11px] uppercase tracking-wide text-slate-400">${npEsc(d.kind)}</div>` +
+    let h = `<div class="text-[11px] uppercase tracking-wide text-fg-faint">${npEsc(d.kind)}</div>` +
             `<h3 class="font-semibold mt-1">${npEsc(d.title)}</h3>` +
             `<table class="text-xs mt-2">` +
-            d.fields.map(([k, v]) => `<tr><td class="text-slate-400 pr-3 py-0.5 align-top whitespace-nowrap">${npEsc(k)}</td><td class="break-all">${npEsc(v)}</td></tr>`).join("") +
+            d.fields.map(([k, v]) => `<tr><td class="text-fg-faint pr-3 py-0.5 align-top whitespace-nowrap">${npEsc(k)}</td><td class="break-all">${npEsc(v)}</td></tr>`).join("") +
             `</table>` +
-            d.links.map(([t, u]) => `<a class="inline-block mt-2 mr-2 text-xs text-emerald-700 hover:underline" href="${npEsc(u)}">${npEsc(t)}</a>`).join("");
+            d.links.map(([t, u]) => `<a class="inline-block mt-2 mr-2 text-xs text-success-strong hover:underline" href="${npEsc(u)}">${npEsc(t)}</a>`).join("");
     npPane.innerHTML = h;
   }));
   })();

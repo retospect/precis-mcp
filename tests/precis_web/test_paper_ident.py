@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Any
@@ -169,15 +170,15 @@ def test_macro_two_line_held_is_sky() -> None:
     assert "Widgets" in html
     assert "Nature" in html
     assert "Ada" in html and "Alan" in html and "…" in html  # first … last
-    assert "text-sky-700" in html
-    assert "text-amber-700" not in html
+    assert "text-info-strong" in html
+    assert "text-warning-strong" not in html
 
 
 def test_macro_not_held_is_amber() -> None:
     head = paper_head(_ref(title="Stub", year=2019), held=False)
     html = _render(head)
-    assert "text-amber-700" in html
-    assert "text-sky-700" not in html
+    assert "text-warning-strong" in html
+    assert "text-info-strong" not in html
 
 
 def test_macro_compact_is_single_span() -> None:
@@ -200,11 +201,11 @@ def test_macro_reviewed_year_badge_is_solid_held() -> None:
         held=True,
     )
     html = _render(head)
-    assert "bg-sky-600" in html
-    assert "text-white" in html
+    assert re.search(r"bg-info-solid(?![\w-])", html)
+    assert "text-on-solid" in html
     assert "Reviewed ✓ 2026-08-20 by reto" in html
     # unreviewed plain-text colour is not also present for this badge.
-    assert "text-sky-700" not in html
+    assert "text-info-strong" not in html
 
 
 def test_macro_reviewed_year_badge_is_solid_external() -> None:
@@ -213,13 +214,13 @@ def test_macro_reviewed_year_badge_is_solid_external() -> None:
         held=False,
     )
     html = _render(head)
-    assert "bg-amber-600" in html
-    assert "text-white" in html
+    assert re.search(r"bg-warning-solid(?![\w-])", html)
+    assert "text-on-solid" in html
 
 
 def test_macro_unreviewed_year_badge_stays_plain_text() -> None:
     head = paper_head(_ref(title="Widgets", year=2020), held=True)
     html = _render(head)
-    assert "text-sky-700" in html
-    assert "bg-sky-600" not in html
+    assert "text-info-strong" in html
+    assert not re.search(r"bg-info-solid(?![\w-])", html)
     assert "Reviewed" not in html

@@ -8,14 +8,14 @@
 <div class="mb-4 flex items-center gap-3">
   {{ drive_back('figure', 'Figures') }}
   <h1 class="text-lg font-semibold">{{ title }}</h1>
-  <span class="text-xs text-slate-400">{{ slug }} · canvas {{ vb_w }}×{{ vb_h }}</span>
+  <span class="text-xs text-fg-faint">{{ slug }} · canvas {{ vb_w }}×{{ vb_h }}</span>
 </div>
 
 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
 
   {# ── left: the canvas ── #}
   <div>
-    <div class="relative rounded border border-slate-200 bg-white overflow-hidden"
+    <div class="relative rounded border border-line bg-surface overflow-hidden"
          style="aspect-ratio: {{ vb_w }} / {{ vb_h }};" data-tour="fig-canvas">
       {# the grid overlay — the shared coordinate frame (10% ticks) #}
       <div class="pointer-events-none absolute inset-0 z-10 opacity-40"
@@ -26,19 +26,19 @@
       {# inline (not <img>) so browser-native animation plays; server-sanitized #}
       <div id="fig-canvas" class="absolute inset-0 z-0">{{ svg | safe }}</div>
     </div>
-    <div class="mt-1 flex items-center gap-2 text-[11px] text-slate-400">
+    <div class="mt-1 flex items-center gap-2 text-[11px] text-fg-faint">
       <span>viewBox {{ viewbox }}</span>
       <span class="ml-auto">grid = 10% of each axis</span>
     </div>
     <div id="fig-lints" class="mt-2 space-y-1 text-[11px]">
       {% for f in findings %}
-      <div class="text-amber-700">⚠ [{{ f.kind }}] {{ f.message }}</div>
+      <div class="text-warning-strong">⚠ [{{ f.kind }}] {{ f.message }}</div>
       {% endfor %}
     </div>
     {# ── element → chunk bindings ── #}
     <div id="fig-bindings" class="mt-2 flex flex-wrap gap-1 text-[11px]{% if not bindings %} hidden{% endif %}">
       {% for b in bindings %}
-      <span class="inline-flex items-center gap-1 rounded bg-sky-50 border border-sky-200 px-1.5 py-0.5 text-sky-800"
+      <span class="inline-flex items-center gap-1 rounded bg-info-subtle border border-info px-1.5 py-0.5 text-info-deep"
             title="{{ b.title }}">
         <span class="font-mono">{{ b.element }}</span>→<span class="font-mono">{{ b.handle }}</span>
       </span>
@@ -51,20 +51,20 @@
     <div data-tour="fig-docs">
       <div class="flex items-center gap-1 mb-1">
         <button id="fig-tab-vocab" type="button"
-                class="px-2 py-0.5 rounded text-xs font-semibold text-slate-700 bg-slate-100">Shared vocabulary</button>
+                class="px-2 py-0.5 rounded text-xs font-semibold text-fg-secondary bg-surface-muted">Shared vocabulary</button>
         <button id="fig-tab-notes" type="button"
-                class="px-2 py-0.5 rounded text-xs text-slate-500 hover:bg-slate-50">Implementation notes</button>
-        <span class="ml-auto text-[10px] text-slate-400">vocab is for you · notes are the model's</span>
+                class="px-2 py-0.5 rounded text-xs text-fg-subtle hover:bg-surface-subtle">Implementation notes</button>
+        <span class="ml-auto text-[10px] text-fg-faint">vocab is for you · notes are the model's</span>
       </div>
-      <pre id="fig-vocab" class="text-xs bg-slate-50 border border-slate-200 rounded p-2 whitespace-pre-wrap max-h-40 overflow-y-auto">{{ vocab or '(empty — the model will describe what the drawing is)' }}</pre>
-      <pre id="fig-notes" class="hidden text-xs bg-slate-50 border border-slate-200 rounded p-2 whitespace-pre-wrap max-h-40 overflow-y-auto">{{ notes or "(empty — the model records ids / structure / conventions here)" }}</pre>
+      <pre id="fig-vocab" class="text-xs bg-surface-subtle border border-line rounded p-2 whitespace-pre-wrap max-h-40 overflow-y-auto">{{ vocab or '(empty — the model will describe what the drawing is)' }}</pre>
+      <pre id="fig-notes" class="hidden text-xs bg-surface-subtle border border-line rounded p-2 whitespace-pre-wrap max-h-40 overflow-y-auto">{{ notes or "(empty — the model records ids / structure / conventions here)" }}</pre>
     </div>
 
     <div class="flex-1 min-h-0">
-      <h2 class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Chat</h2>
+      <h2 class="text-xs font-semibold text-fg-subtle uppercase tracking-wide mb-1">Chat</h2>
       <div id="fig-chat" class="space-y-2 text-xs max-h-96 overflow-y-auto pr-1" data-tour="fig-chat">
         {% for t in turns %}
-        <pre class="bg-slate-50 border border-slate-200 rounded p-2 whitespace-pre-wrap">{{ t }}</pre>
+        <pre class="bg-surface-subtle border border-line rounded p-2 whitespace-pre-wrap">{{ t }}</pre>
         {% endfor %}
       </div>
     </div>
@@ -72,8 +72,8 @@
     <form id="fig-form" class="flex gap-2" data-slug="{{ slug }}" data-tour="fig-prompt">
       <input id="fig-msg" name="message" required autocomplete="off"
              placeholder="e.g. draw a round green face with two eyes…"
-             class="flex-1 rounded border border-slate-300 px-3 py-1.5 text-sm">
-      <button id="fig-send" class="rounded bg-slate-700 text-white px-3 py-1.5 text-sm hover:bg-slate-600">Send ▸</button>
+             class="flex-1 rounded border border-line-strong px-3 py-1.5 text-sm">
+      <button id="fig-send" class="rounded bg-solid text-on-solid px-3 py-1.5 text-sm hover:bg-solid-soft">Send ▸</button>
     </form>
   </div>
 </div>
@@ -96,8 +96,8 @@
   const tabNotes = document.getElementById('fig-tab-notes');
 
   // ── the two doc tabs ──
-  const ON = 'px-2 py-0.5 rounded text-xs font-semibold text-slate-700 bg-slate-100';
-  const OFF = 'px-2 py-0.5 rounded text-xs text-slate-500 hover:bg-slate-50';
+  const ON = 'px-2 py-0.5 rounded text-xs font-semibold text-fg-secondary bg-surface-muted';
+  const OFF = 'px-2 py-0.5 rounded text-xs text-fg-subtle hover:bg-surface-subtle';
   function showTab(which) {
     const v = which === 'vocab';
     vocab.classList.toggle('hidden', !v);
@@ -124,8 +124,8 @@
     e.preventDefault();
     const text = msg.value.trim();
     if (!text) return;
-    bubble('user: ' + text, 'bg-white border-slate-200');
-    const pending = bubble('…thinking', 'bg-slate-50 border-slate-200 text-slate-400');
+    bubble('user: ' + text, 'bg-surface border-line');
+    const pending = bubble('…thinking', 'bg-surface-subtle border-line text-fg-faint');
     msg.value = '';
     send.disabled = true;
 
@@ -136,7 +136,7 @@
       .then((d) => {
         if (d.error) { pending.textContent = 'error: ' + d.error; return; }
         pending.textContent = 'assistant: ' + (d.reply || '(no reply)');
-        pending.className = 'border rounded p-2 whitespace-pre-wrap bg-slate-50 border-slate-200';
+        pending.className = 'border rounded p-2 whitespace-pre-wrap bg-surface-subtle border-line';
         if (d.changed && d.svg) {
           // Inline the server-sanitized SVG so SMIL/CSS animation plays.
           // innerHTML never executes <script>, and sanitize already stripped
@@ -149,7 +149,7 @@
         lints.innerHTML = '';
         (d.findings || []).forEach((f) => {
           const div = document.createElement('div');
-          div.className = 'text-amber-700';
+          div.className = 'text-warning-strong';
           div.textContent = '⚠ [' + f.kind + '] ' + f.message;
           lints.appendChild(div);
         });
@@ -159,7 +159,7 @@
           binds.classList.toggle('hidden', d.bindings.length === 0);
           d.bindings.forEach((b) => {
             const span = document.createElement('span');
-            span.className = 'inline-flex items-center gap-1 rounded bg-sky-50 border border-sky-200 px-1.5 py-0.5 text-sky-800';
+            span.className = 'inline-flex items-center gap-1 rounded bg-info-subtle border border-info px-1.5 py-0.5 text-info-deep';
             span.title = b.title || '';
             const e = document.createElement('span'); e.className = 'font-mono'; e.textContent = b.element;
             const h = document.createElement('span'); h.className = 'font-mono'; h.textContent = b.handle;

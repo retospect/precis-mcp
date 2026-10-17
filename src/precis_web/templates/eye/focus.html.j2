@@ -4,47 +4,47 @@
 <div class="mt-2 mb-3 flex flex-wrap items-baseline justify-between gap-3">
   <div>
     <h1 class="text-lg font-semibold font-mono">{{ handle }}</h1>
-    <p class="text-xs text-slate-500">
+    <p class="text-xs text-fg-subtle">
       <a href="/eye/" class="underline">eye</a>
       {% if reader_url %}· <a href="{{ reader_url }}" class="underline">open in its reader</a>{% endif %}
       · <span class="font-mono">get(id='{{ handle }}', extent='{{ extent }}'{% if q %}, q='{{ q }}'{% endif %}{% if ring %}, args={'ring': {{ ring }}}{% endif %})</span>
     </p>
     {% if up %}
-    <p class="mt-1 text-xs text-slate-500" aria-label="zoom out">
+    <p class="mt-1 text-xs text-fg-subtle" aria-label="zoom out">
       {% if up.href %}
-      <a href="{{ up.href }}" class="rounded border border-slate-200 px-1.5 py-0.5 hover:bg-slate-100"
+      <a href="{{ up.href }}" class="rounded border border-line px-1.5 py-0.5 hover:bg-surface-muted"
          data-zoom-out="{{ up.handle }}" rel="up" title="{{ up.label }}">↑ up</a>
       <span class="font-mono">{{ up.rel }}</span>
       <a href="{{ up.href }}" class="font-mono underline">{{ up.handle }}</a>
       <span>{{ up.label | truncate(60) }}</span>
       {% if up.others %}
-      <span class="text-slate-400">· or</span>
+      <span class="text-fg-faint">· or</span>
       {% for o in up.others %}
       <a href="{{ o.href }}" class="font-mono underline" data-zoom-alt="{{ o.handle }}" title="{{ o.label }}">{{ o.handle }}</a>
       {% endfor %}
-      {% if up.more > 0 %}<span class="text-slate-400">+{{ up.more }} more</span>{% endif %}
+      {% if up.more > 0 %}<span class="text-fg-faint">+{{ up.more }} more</span>{% endif %}
       {% endif %}
       {% else %}
-      <span class="rounded border border-slate-100 px-1.5 py-0.5 text-slate-300" aria-disabled="true"
+      <span class="rounded border border-line-subtle px-1.5 py-0.5 text-fg-ghost" aria-disabled="true"
             title="{{ up.reason }}">↑ up</span>
-      <span class="italic text-slate-400" data-zoom-reason>{{ up.reason }}</span>
+      <span class="italic text-fg-faint" data-zoom-reason>{{ up.reason }}</span>
       {% endif %}
     </p>
     {% endif %}
   </div>
   <nav class="flex flex-wrap gap-1 text-xs" aria-label="extent ladder">
     {% for r in ladder %}
-    <a href="{{ r.href }}" class="rounded px-2 py-0.5 font-mono {% if r.on %}bg-slate-800 text-white{% else %}bg-slate-100 text-slate-700 hover:bg-slate-200{% endif %}">{{ r.label }}</a>
+    <a href="{{ r.href }}" class="rounded px-2 py-0.5 font-mono {% if r.on %}bg-solid-strong text-on-solid{% else %}bg-surface-muted text-fg-secondary hover:bg-surface-emphasis{% endif %}">{{ r.label }}</a>
     {% endfor %}
   </nav>
 </div>
 {% if chips %}
 <nav class="mb-3 flex flex-wrap items-center gap-1 text-xs" aria-label="ring filters">
-  <span class="text-slate-500">ring:</span>
+  <span class="text-fg-subtle">ring:</span>
   {% for c in chips %}
-  <a href="{{ c.href }}" class="rounded px-2 py-0.5 font-mono bg-amber-100 text-amber-800 hover:bg-amber-200" title="remove this filter">{{ c.label }} ×</a>
+  <a href="{{ c.href }}" class="rounded px-2 py-0.5 font-mono bg-warning-muted text-warning-deep hover:bg-warning-emphasis" title="remove this filter">{{ c.label }} ×</a>
   {% endfor %}
 </nav>
 {% endif %}
-<pre class="eye-body whitespace-pre-wrap rounded-lg border {% if is_error %}border-rose-200 bg-rose-50 text-rose-700{% else %}border-slate-200 bg-white text-slate-800{% endif %} p-4 text-sm leading-relaxed">{{ body | safe }}</pre>
+<pre class="eye-body whitespace-pre-wrap rounded-lg border {% if is_error %}border-danger bg-danger-subtle text-danger-strong{% else %}border-line bg-surface text-fg{% endif %} p-4 text-sm leading-relaxed">{{ body | safe }}</pre>
 {% endblock %}

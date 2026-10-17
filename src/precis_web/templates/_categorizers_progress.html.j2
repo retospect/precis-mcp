@@ -16,22 +16,22 @@
    pass has ever run to write its tag. ``error: true`` = the count query itself
    failed (schema drift); rendered as a dash rather than a misleading 0%. #}
 {% for name, row in progress.items() %}
-<span id="lastproc-{{ name }}" hx-swap-oob="true" class="w-24 shrink-0 text-right text-slate-400 tabular-nums" title="last tag written">{% if row.last_minted %}{{ row.last_minted | ago }}{% else %}<span class="text-slate-400">never</span>{% endif %}</span>
+<span id="lastproc-{{ name }}" hx-swap-oob="true" class="w-24 shrink-0 text-right text-fg-faint tabular-nums" title="last tag written">{% if row.last_minted %}{{ row.last_minted | ago }}{% else %}<span class="text-fg-faint">never</span>{% endif %}</span>
 <div id="cov-{{ name }}" hx-swap-oob="true" class="mt-1 pl-32 pr-2">
   {% if row.error %}
-  <span class="text-[11px] text-rose-600">(coverage query failed — see logs)</span>
+  <span class="text-[11px] text-danger">(coverage query failed — see logs)</span>
   {% else %}
   {% set total = row.total|default(0) %}{% set done = row.done|default(0) %}
   {% set pct = ((done / total) * 100) if total > 0 else 100 %}
   {% set pct_pend = (100 - pct) if total > 0 else 0 %}
-  <div class="flex items-center gap-2 text-[11px] text-slate-500">
+  <div class="flex items-center gap-2 text-[11px] text-fg-subtle">
     <span class="w-32 shrink-0 tabular-nums" title="{{ '{:,}'.format(total) }} eligible">{{ '{:,}'.format(done) }} / {{ '{:,}'.format(total) }}</span>
-    <div class="flex-1 h-2 rounded bg-slate-100 overflow-hidden flex" title="done {{ '{:,}'.format(done) }} · pending {{ '{:,}'.format(total - done) }}">
-      <div class="h-2 bg-emerald-500" style="width: {{ '%.1f'|format(pct) }}%"></div>
-      <div class="h-2 bg-sky-500" style="width: {{ '%.1f'|format(pct_pend) }}%"></div>
+    <div class="flex-1 h-2 rounded bg-surface-muted overflow-hidden flex" title="done {{ '{:,}'.format(done) }} · pending {{ '{:,}'.format(total - done) }}">
+      <div class="h-2 bg-success-solid-soft" style="width: {{ '%.1f'|format(pct) }}%"></div>
+      <div class="h-2 bg-info-solid-soft" style="width: {{ '%.1f'|format(pct_pend) }}%"></div>
     </div>
     <span class="w-14 text-right tabular-nums">{{ '%.1f'|format(pct) }}%</span>
-    {% if 'hit_count' in row %}<span class="w-24 text-right text-slate-400 shrink-0 tabular-nums" title="refs carrying topic:{{ name }}">{{ '{:,}'.format(row.hit_count|default(0)) }} hits</span>{% endif %}
+    {% if 'hit_count' in row %}<span class="w-24 text-right text-fg-faint shrink-0 tabular-nums" title="refs carrying topic:{{ name }}">{{ '{:,}'.format(row.hit_count|default(0)) }} hits</span>{% endif %}
   </div>
   {% endif %}
 </div>

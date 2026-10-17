@@ -5,13 +5,13 @@
   <h1 class="text-lg font-semibold">Tags</h1>
   <form method="get" action="/tags" class="flex items-center gap-2">
     <input name="q" value="{{ q }}" placeholder="filter by namespace or value…"
-           class="w-72 rounded-md border border-slate-300 px-3 py-1.5 text-sm" />
-    <button class="rounded-md bg-emerald-600 text-white text-sm px-3 py-1.5">Search</button>
-    {% if q %}<a href="/tags" class="text-sm text-slate-500 underline">clear</a>{% endif %}
+           class="w-72 rounded-md border border-line-strong px-3 py-1.5 text-sm" />
+    <button class="rounded-md bg-success-solid text-on-solid text-sm px-3 py-1.5">Search</button>
+    {% if q %}<a href="/tags" class="text-sm text-fg-subtle underline">clear</a>{% endif %}
   </form>
 </div>
 
-<p class="text-sm text-slate-500 mb-3">
+<p class="text-sm text-fg-subtle mb-3">
   All tags in the cluster, ordered by how many refs carry them.
   Top {{ rows | length }} shown. Click <strong>view refs</strong> on a
   row to see every ref carrying that tag (across every kind);
@@ -21,13 +21,13 @@
 </p>
 
 {% if not rows %}
-<p class="text-sm text-slate-500">
+<p class="text-sm text-fg-subtle">
   No tags match{% if q %} <code>{{ q }}</code>{% endif %}.
 </p>
 {% else %}
-<div class="rounded-lg border border-slate-200 bg-white overflow-hidden">
+<div class="rounded-lg border border-line bg-surface overflow-hidden">
   <table class="min-w-full text-sm">
-    <thead class="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+    <thead class="bg-surface-subtle text-xs uppercase tracking-wide text-fg-subtle">
       <tr>
         <th class="text-left px-3 py-2 w-44">Namespace</th>
         <th class="text-left px-3 py-2">Value</th>
@@ -35,20 +35,20 @@
         <th class="text-left px-3 py-2 w-40">Actions</th>
       </tr>
     </thead>
-    <tbody class="divide-y divide-slate-100">
+    <tbody class="divide-y divide-line-subtle">
       {% for r in rows %}
-      <tr class="hover:bg-slate-50">
+      <tr class="hover:bg-surface-subtle">
         <td class="px-3 py-1.5 text-xs">
-          <span class="px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 font-mono">{{ r.namespace }}</span>
+          <span class="px-1.5 py-0.5 rounded bg-surface-muted text-fg-secondary font-mono">{{ r.namespace }}</span>
         </td>
         <td class="px-3 py-1.5">
-          <code class="text-xs text-slate-700 break-all">{{ r.value }}</code>
+          <code class="text-xs text-fg-secondary break-all">{{ r.value }}</code>
         </td>
-        <td class="px-3 py-1.5 text-right tabular-nums text-slate-600">{{ r.count }}</td>
+        <td class="px-3 py-1.5 text-right tabular-nums text-fg-muted">{{ r.count }}</td>
         <td class="px-3 py-1.5 text-xs">
           <div class="flex items-center gap-3">
             <a href="/tags/refs?namespace={{ r.namespace | urlencode }}&value={{ r.value | urlencode }}"
-               class="text-sky-700 hover:underline">view {{ r.count }} refs →</a>
+               class="text-info-strong hover:underline">view {{ r.count }} refs →</a>
             {% if r.deletable %}
             <form method="post" action="/tags/delete"
                   class="inline"
@@ -56,11 +56,11 @@
               <input type="hidden" name="namespace" value="{{ r.namespace }}" />
               <input type="hidden" name="value" value="{{ r.value }}" />
               <input type="hidden" name="q" value="{{ q }}" />
-              <button class="text-rose-600 hover:text-rose-800"
+              <button class="text-danger hover:text-danger-deep"
                       title="delete this tag from every ref">× delete</button>
             </form>
             {% else %}
-            <span class="text-slate-300" title="closed-vocab tag — use the tag(remove=…) verb per ref">(protected)</span>
+            <span class="text-fg-ghost" title="closed-vocab tag — use the tag(remove=…) verb per ref">(protected)</span>
             {% endif %}
           </div>
         </td>
@@ -73,12 +73,12 @@
   {% set qs = ('q=' + (q | urlencode) + '&') if q else '' %}
   {% if page > 1 %}
   <a href="/tags?{{ qs }}page={{ page - 1 }}"
-     class="rounded-md border border-slate-300 px-3 py-1 hover:bg-slate-100">&larr; Prev</a>
+     class="rounded-md border border-line-strong px-3 py-1 hover:bg-surface-muted">&larr; Prev</a>
   {% endif %}
-  <span class="text-slate-400">Page {{ page }} · {{ rows | length }} rows shown</span>
+  <span class="text-fg-faint">Page {{ page }} · {{ rows | length }} rows shown</span>
   {% if has_next %}
   <a href="/tags?{{ qs }}page={{ page + 1 }}"
-     class="rounded-md border border-slate-300 px-3 py-1 hover:bg-slate-100">Next &rarr;</a>
+     class="rounded-md border border-line-strong px-3 py-1 hover:bg-surface-muted">Next &rarr;</a>
   {% endif %}
 </div>
 {% endif %}

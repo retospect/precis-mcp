@@ -20,32 +20,32 @@
    ``refs.human_verified_*`` columns every other paper-link surface
    reads via ``_verified_mark.html.j2``. #}
 {% import "_verified_mark.html.j2" as vm %}
-<div class="refs-row border-b border-slate-100 py-1.5 text-xs last:border-0">
+<div class="refs-row border-b border-line-subtle py-1.5 text-xs last:border-0">
   <div class="flex items-baseline gap-1.5">
-    {% if row.marker %}<span class="w-8 shrink-0 text-right text-slate-400">[{{ row.marker }}]</span>
-    {% elif row.n %}<span class="w-5 shrink-0 text-right text-slate-400">{{ row.n }}.</span>{% endif %}
+    {% if row.marker %}<span class="w-8 shrink-0 text-right text-fg-faint">[{{ row.marker }}]</span>
+    {% elif row.n %}<span class="w-5 shrink-0 text-right text-fg-faint">{{ row.n }}.</span>{% endif %}
     {% if row.held %}
-    <a href="{{ row.url }}" class="font-medium text-sky-700 hover:underline">{{ row.title }}</a>
+    <a href="{{ row.url }}" class="font-medium text-info-strong hover:underline">{{ row.title }}</a>
     {{ vm.verified_mark(row.reviewed_at, row.reviewed_by) }}
-    {% if row.year %}<span class="text-slate-400">({{ row.year }})</span>{% endif %}
-    <span class="rounded bg-emerald-50 px-1 text-[10px] text-emerald-700" title="held in this corpus">held</span>
+    {% if row.year %}<span class="text-fg-faint">({{ row.year }})</span>{% endif %}
+    <span class="rounded bg-success-subtle px-1 text-[10px] text-success-strong" title="held in this corpus">held</span>
     {% elif row.raw_text %}
-    <span class="font-medium text-slate-800">{{ row.raw_text }}</span>
+    <span class="font-medium text-fg">{{ row.raw_text }}</span>
     {% else %}
-    <span class="font-medium text-slate-800">{{ row.title }}</span>
-    {% if row.year %}<span class="text-slate-400">({{ row.year }})</span>{% endif %}
+    <span class="font-medium text-fg">{{ row.title }}</span>
+    {% if row.year %}<span class="text-fg-faint">({{ row.year }})</span>{% endif %}
     {% endif %}
   </div>
   {% if not row.held %}
   <div class="mt-0.5 flex flex-wrap items-center gap-2 pl-6 text-[11px]">
     {% if row.s2_url %}
-    <a href="{{ row.s2_url }}" target="_blank" rel="noopener" class="text-sky-700 hover:underline">Semantic Scholar</a>
+    <a href="{{ row.s2_url }}" target="_blank" rel="noopener" class="text-info-strong hover:underline">Semantic Scholar</a>
     {% endif %}
     {% if row.doi_url %}
-    <a href="{{ row.doi_url }}" target="_blank" rel="noopener" class="text-sky-700 hover:underline">DOI</a>
+    <a href="{{ row.doi_url }}" target="_blank" rel="noopener" class="text-info-strong hover:underline">DOI</a>
     {% endif %}
     {% if row.scholar_url %}
-    <a href="{{ row.scholar_url }}" target="_blank" rel="noopener" class="text-sky-700 hover:underline">Scholar</a>
+    <a href="{{ row.scholar_url }}" target="_blank" rel="noopener" class="text-info-strong hover:underline">Scholar</a>
     {% endif %}
     {% if row.can_fetch %}
     <form method="post" action="/papers/{{ row.ref_id }}/fetch-ref"
@@ -63,7 +63,7 @@
       <input type="hidden" name="return_to"
              value="/papers/{{ row.ref_id }}?tab={{ 'Sources' if row.direction == 'sources' else 'Cited' }}" />
       <button type="submit"
-              class="rounded border border-sky-300 bg-sky-50 px-2 py-0.5 text-sky-700 hover:bg-sky-100"
+              class="rounded border border-info-strong bg-info-subtle px-2 py-0.5 text-info-strong hover:bg-info-muted"
               title="mint/reuse a fetchable stub and jump the fetch_oa queue">
         Fetch
       </button>

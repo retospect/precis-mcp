@@ -4,13 +4,13 @@
 {% set here = handle %}{% include "graph/_trail.html.j2" %}
 {# Came-from slot (item 8): the previous focus in a fixed place, so a
    refocus does not reshuffle the picture; it also holds ring 1's top slot. #}
-<p class="mt-1 min-h-[1.25rem] text-xs text-slate-500" aria-label="came from">
+<p class="mt-1 min-h-[1.25rem] text-xs text-fg-subtle" aria-label="came from">
   {% if came_from %}
   came from
   <a href="{{ came_from.graph_url }}" class="font-mono underline" data-came-from="{{ came_from.handle }}"
      title="{{ came_from.label }}">{{ came_from.handle }}</a>
   <span>{{ came_from.label | truncate(60) }}</span>
-  {% if came_from.rel %}<span class="font-mono text-amber-700">{{ '→' if came_from.toward_here else '←' }} {{ came_from.rel }}</span>{% else %}<span class="italic text-slate-400">no link in this view</span>{% endif %}
+  {% if came_from.rel %}<span class="font-mono text-warning-strong">{{ '→' if came_from.toward_here else '←' }} {{ came_from.rel }}</span>{% else %}<span class="italic text-fg-faint">no link in this view</span>{% endif %}
   {% endif %}
 </p>
 <div class="mt-2 mb-3 flex flex-wrap items-baseline justify-between gap-3">
@@ -23,79 +23,79 @@
         {% include "_heart.html.j2" %}
       {% endif %}
     </h1>
-    <p class="text-sm text-slate-600">{{ focus_label }}</p>
-    <p class="text-xs text-slate-500">
+    <p class="text-sm text-fg-muted">{{ focus_label }}</p>
+    <p class="text-xs text-fg-subtle">
       <a href="{{ reader_url }}" class="underline">reader</a>
       · <a href="{{ eye_url }}" class="underline">/eye ladder</a>
       · <a href="{{ json_url }}" class="underline">json</a>
       · <a href="{{ view_href }}" class="underline">{{ view_other }} view</a>
     </p>
-    <p class="mt-1 text-xs text-slate-500" aria-label="zoom out">
+    <p class="mt-1 text-xs text-fg-subtle" aria-label="zoom out">
       {% if zoom_out.target %}
-      <a href="{{ zoom_out.target.graph_url }}" class="rounded border border-slate-200 px-1.5 py-0.5 hover:bg-slate-100"
+      <a href="{{ zoom_out.target.graph_url }}" class="rounded border border-line px-1.5 py-0.5 hover:bg-surface-muted"
          data-zoom-out="{{ zoom_out.target.handle }}" rel="up" data-key="U"
          title="{{ zoom_out.target.label }}">↑ zoom out</a>
       <span class="font-mono">{{ zoom_out.rel }}</span>
       <a href="{{ zoom_out.target.graph_url }}" class="font-mono underline">{{ zoom_out.target.handle }}</a>
       <span>{{ zoom_out.target.label | truncate(60) }}</span>
       {% if zoom_out.others %}
-      <span class="text-slate-400">· or</span>
+      <span class="text-fg-faint">· or</span>
       {% for o in zoom_out.others %}
       <a href="{{ o.graph_url }}" class="font-mono underline" data-zoom-alt="{{ o.handle }}" title="{{ o.label }}">{{ o.handle }}</a>
       {% endfor %}
-      {% if zoom_out.more > 0 %}<span class="text-slate-400">+{{ zoom_out.more }} more</span>{% endif %}
+      {% if zoom_out.more > 0 %}<span class="text-fg-faint">+{{ zoom_out.more }} more</span>{% endif %}
       {% endif %}
       {% else %}
-      <span class="rounded border border-slate-100 px-1.5 py-0.5 text-slate-300" aria-disabled="true"
+      <span class="rounded border border-line-subtle px-1.5 py-0.5 text-fg-ghost" aria-disabled="true"
             title="{{ zoom_out.reason }}">↑ zoom out</span>
-      <span class="italic text-slate-400" data-zoom-reason>{{ zoom_out.reason }}</span>
+      <span class="italic text-fg-faint" data-zoom-reason>{{ zoom_out.reason }}</span>
       {% endif %}
     </p>
-    <form method="get" action="/graph/path" class="mt-1 flex items-center gap-1 text-xs text-slate-500" aria-label="path from here">
+    <form method="get" action="/graph/path" class="mt-1 flex items-center gap-1 text-xs text-fg-subtle" aria-label="path from here">
       <input type="hidden" name="from" value="{{ kind }}/{{ ref_id }}">
-      <input type="text" name="to" placeholder="path to… (handle)" class="w-40 rounded border border-slate-200 px-1.5 py-0.5 font-mono">
+      <input type="text" name="to" placeholder="path to… (handle)" class="w-40 rounded border border-line px-1.5 py-0.5 font-mono">
       <button type="submit" class="underline">find path</button>
     </form>
   </div>
-  <p class="text-xs text-slate-500">
+  <p class="text-xs text-fg-subtle">
     {{ n_hop1 }} hop-1 · {{ n_hop2 }} hop-2 · {{ n_edges }} edge{{ '' if n_edges == 1 else 's' }}
     · depth
     {% for d, href in depth_hrefs.items() %}<a href="{{ href }}" data-key="{{ d }}"
-       class="{{ 'font-semibold text-slate-700' if d == depth_now else 'underline' }}">{{ d }}</a>{% endfor %}
-    · cap {{ cap }}{% if truncated %} <span class="text-amber-600">(over cap — count chips)</span>{% endif %}
+       class="{{ 'font-semibold text-fg-secondary' if d == depth_now else 'underline' }}">{{ d }}</a>{% endfor %}
+    · cap {{ cap }}{% if truncated %} <span class="text-warning">(over cap — count chips)</span>{% endif %}
   </p>
 </div>
-<form method="get" class="mb-2 flex flex-wrap items-center gap-2 text-xs text-slate-600" aria-label="graph filters">
+<form method="get" class="mb-2 flex flex-wrap items-center gap-2 text-xs text-fg-muted" aria-label="graph filters">
   <input type="text" name="kinds" value="{{ f.kinds | join(',') }}" placeholder="kinds"
          title="neighbour kinds, comma-separated (e.g. paper,memory)"
-         class="w-28 rounded border border-slate-200 px-1.5 py-0.5 font-mono">
+         class="w-28 rounded border border-line px-1.5 py-0.5 font-mono">
   <input type="text" name="rels" value="{{ f.rels | join(',') }}" placeholder="rels"
          title="relations, comma-separated presented slugs (e.g. cites,cited-by)"
-         class="w-32 rounded border border-slate-200 px-1.5 py-0.5 font-mono">
+         class="w-32 rounded border border-line px-1.5 py-0.5 font-mono">
   <input type="date" name="since" value="{{ f.since }}" title="linked ref created on/after"
-         class="rounded border border-slate-200 px-1.5 py-0.5 font-mono">
+         class="rounded border border-line px-1.5 py-0.5 font-mono">
   <input type="date" name="until" value="{{ f.until }}" title="linked ref created before"
-         class="rounded border border-slate-200 px-1.5 py-0.5 font-mono">
+         class="rounded border border-line px-1.5 py-0.5 font-mono">
   <select name="trust" title="finding publication tier (findings only); each row shows its own origin · confidence"
-          class="rounded border border-slate-200 px-1 py-0.5">
+          class="rounded border border-line px-1 py-0.5">
     <option value="">finding tier · off</option>
     {% for t in trust_tiers %}
     <option value="{{ t }}" {% if f.trust == t %}selected{% endif %}>finding tier · {{ t }}</option>
     {% endfor %}
   </select>
   <select name="depth" title="ring depth"
-          class="rounded border border-slate-200 px-1 py-0.5">
+          class="rounded border border-line px-1 py-0.5">
     <option value="1" {% if f.depth == 1 %}selected{% endif %}>1 hop</option>
     <option value="2" {% if f.depth != 1 %}selected{% endif %}>2 hops</option>
   </select>
   {% if 'cap=' in qs %}<input type="hidden" name="cap" value="{{ cap }}">{% endif %}
   {% if f.view %}<input type="hidden" name="view" value="{{ f.view }}">{% endif %}
-  <button type="submit" class="rounded bg-slate-800 px-2 py-0.5 text-white hover:bg-slate-700">apply</button>
+  <button type="submit" class="rounded bg-solid-strong px-2 py-0.5 text-on-solid hover:bg-solid">apply</button>
 </form>
 {% if chips %}
 <nav class="mb-2 flex flex-wrap items-center gap-1 text-xs" aria-label="active filters">
   {% for c in chips %}
-  <a href="{{ c.href }}" class="rounded px-2 py-0.5 font-mono bg-amber-100 text-amber-800 hover:bg-amber-200" title="remove this filter">{{ c.label }} ×</a>
+  <a href="{{ c.href }}" class="rounded px-2 py-0.5 font-mono bg-warning-muted text-warning-deep hover:bg-warning-emphasis" title="remove this filter">{{ c.label }} ×</a>
   {% endfor %}
 </nav>
 {% endif %}
@@ -108,20 +108,20 @@
   {# Peek (items 8/8b): the hovered or keyboard-focused node's card, copied
      from the embedded #graph-peeks set — no request per hover. #}
   <div x-ref="box" x-show="shown" x-cloak role="status" aria-live="polite"
-       class="pointer-events-none absolute right-2 top-2 z-10 w-80 rounded border border-slate-300 bg-white/95 p-2 text-xs shadow"></div>
-  <div class="rounded-lg border border-slate-200 bg-white p-2 overflow-x-auto">
+       class="pointer-events-none absolute right-2 top-2 z-10 w-80 rounded border border-line-strong bg-surface/95 p-2 text-xs shadow"></div>
+  <div class="rounded-lg border border-line bg-surface p-2 overflow-x-auto">
     {{ svg | safe }}
   </div>
 </div>
 <div id="graph-peeks" hidden>
   {% for p in peeks %}
   <div data-peek-card="{{ p.handle }}">
-    <p class="font-medium text-slate-800">{{ p.hook }}</p>
-    <p class="font-mono text-[10px] text-slate-500">{{ p.kind }} · {{ p.handle }}{% if p.section %} · section:{{ p.section }}{% endif %}</p>
-    {% if p.byline %}<p class="text-slate-600">{{ p.byline }}</p>{% endif %}
-    {% if p.abstract %}<p class="mt-1 text-slate-600">{{ p.abstract }}</p>{% endif %}
-    {% if p.provenance %}<p class="text-slate-600">{{ p.provenance }}</p>{% endif %}
-    {% if p.counts %}<p class="mt-1 font-mono text-[10px] text-slate-500">{% for c in p.counts %}{{ '→' if c.dir == 'out' else '←' }}{{ c.rel }} {{ c.n }}{% if not loop.last %} · {% endif %}{% endfor %}{% if p.more %} · +{{ p.more }}{% endif %}</p>{% endif %}
+    <p class="font-medium text-fg">{{ p.hook }}</p>
+    <p class="font-mono text-[10px] text-fg-subtle">{{ p.kind }} · {{ p.handle }}{% if p.section %} · section:{{ p.section }}{% endif %}</p>
+    {% if p.byline %}<p class="text-fg-muted">{{ p.byline }}</p>{% endif %}
+    {% if p.abstract %}<p class="mt-1 text-fg-muted">{{ p.abstract }}</p>{% endif %}
+    {% if p.provenance %}<p class="text-fg-muted">{{ p.provenance }}</p>{% endif %}
+    {% if p.counts %}<p class="mt-1 font-mono text-[10px] text-fg-subtle">{% for c in p.counts %}{{ '→' if c.dir == 'out' else '←' }}{{ c.rel }} {{ c.n }}{% if not loop.last %} · {% endif %}{% endfor %}{% if p.more %} · +{{ p.more }}{% endif %}</p>{% endif %}
   </div>
   {% endfor %}
 </div>
@@ -165,13 +165,13 @@
 </script>
 {% endif %}
 {% if not n_edges %}
-<p class="mt-2 text-xs italic text-slate-400">
+<p class="mt-2 text-xs italic text-fg-faint">
   {% if filters_on %}no links match the active filters — remove a chip above or
   <a href="{{ clear_url }}" class="underline">clear them all</a>.{% else %}no typed links — the focus stands alone.{% endif %}
 </p>
 {% endif %}
 {% if view != 'outline' %}
-<p class="mt-2 text-[11px] text-slate-500">
+<p class="mt-2 text-[11px] text-fg-subtle">
   rings are hops from the centre; a node's shape is its kind
   ({{ legend | join(' · ') }}; unlisted kinds are circles), an edge's
   label its relation and its arrow the stored direction. Click a node to

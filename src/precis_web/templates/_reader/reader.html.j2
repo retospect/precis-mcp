@@ -20,8 +20,8 @@
    meta_panel, cite_key, pdf_lookup_paths, corpus_dirs, show_refs_tabs. #}
 <style>
   [x-cloak]{display:none!important}
-  .nav-result.active{box-shadow:inset 0 0 0 2px #f59e0b;background:#fffbeb}
-  .nav-kw{font-size:10px;background:#f1f5f9;border-radius:3px;padding:0 4px;color:#475569}
+  .nav-result.active{box-shadow:inset 0 0 0 2px rgb(var(--border-warning-solid));background:rgb(var(--bg-warning-subtle))}
+  .nav-kw{font-size:10px;background:rgb(var(--bg-surface-muted));border-radius:3px;padding:0 4px;color:rgb(var(--text-fg-muted))}
   .nav-clamp{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden}
   .nav-result:hover .nav-clamp{-webkit-line-clamp:unset;overflow:visible}
   #pdf-frame{border:0}
@@ -33,19 +33,19 @@
 
   {# compact header strip — title + canonical handle + sidebar toggle #}
   <div class="flex items-center gap-3 py-2" data-tour="reader-header">
-    <a href="{{ doc.list_url }}" class="text-sm text-slate-500 hover:underline">&larr; {{ doc.list_label }}</a>
+    <a href="{{ doc.list_url }}" class="text-sm text-fg-subtle hover:underline">&larr; {{ doc.list_label }}</a>
     {# tex-scope: a paper/pres title can carry $…$/$$…$$ TeX (KaTeX render,
        base.html.j2). The title="" tooltip stays plain text — attributes
        can't render HTML. #}
     <h1 class="tex-scope truncate text-base font-semibold" title="{{ doc.title }}">{{ doc.title }}</h1>
-    <span class="shrink-0 font-mono text-xs text-slate-400">{{ doc.handle }}{% if doc.slug %} · {{ doc.slug }}{% endif %}</span>
+    <span class="shrink-0 font-mono text-xs text-fg-faint">{{ doc.handle }}{% if doc.slug %} · {{ doc.slug }}{% endif %}</span>
     {% if doc.faved is defined and doc.faved is not none %}
       {# Per-user heart (gr486409); doc.faved is None when auth is off. #}
       {% set fav_kind, fav_id = doc.kind, doc.id %}
       {% include "_heart.html.j2" %}
     {% endif %}
     <button type="button" @click="sidebarOpen = !sidebarOpen"
-            class="ml-auto shrink-0 rounded border border-slate-300 px-2 py-1 text-xs hover:bg-slate-50">
+            class="ml-auto shrink-0 rounded border border-line-strong px-2 py-1 text-xs hover:bg-surface-subtle">
       <span x-text="sidebarOpen ? '⟨ hide panel' : 'show panel ⟩'"></span>
     </button>
   </div>
@@ -53,18 +53,18 @@
   <div class="flex min-h-0 flex-1 gap-3">
     {# ── sidebar ───────────────────────────────────────────────── #}
     <aside x-show="sidebarOpen" :style="'width:' + sidebarW + 'px'"
-           class="flex shrink-0 flex-col overflow-hidden rounded-lg border border-slate-200 bg-white">
+           class="flex shrink-0 flex-col overflow-hidden rounded-lg border border-line bg-surface">
       {# tab strip — Sources/Cited are paper-only (see doc.show_refs_tabs
          note at the top of this file). #}
       {% set _tabs = ['Navigate', 'Jump'] + (['Sources', 'Cited'] if doc.show_refs_tabs else []) + ['Meta'] %}
-      <div class="flex shrink-0 border-b border-slate-200 text-xs font-medium" data-tour="reader-tabs">
+      <div class="flex shrink-0 border-b border-line text-xs font-medium" data-tour="reader-tabs">
         {# single-quoted attribute — ``tojson`` escapes ``'`` but NOT ``"``,
            so a double-quoted attribute is terminated by the array's first
            quote and Alpine sees ``t in [`` (the whole tab strip dies). #}
         <template x-for='t in {{ _tabs | tojson }}' :key="t">
           <button type="button" @click="setTab(t)"
-                  class="flex-1 px-2 py-2 hover:bg-slate-50"
-                  :class="tab === t ? 'border-b-2 border-emerald-500 text-emerald-700' : 'text-slate-500'"
+                  class="flex-1 px-2 py-2 hover:bg-surface-subtle"
+                  :class="tab === t ? 'border-b-2 border-success-solid text-success-strong' : 'text-fg-subtle'"
                   x-text="t"></button>
         </template>
       </div>
@@ -76,7 +76,7 @@
             <template x-for="m in [['semantic','Semantic'],['keyword','Keyword'],['toc','TOC'],['raw','Raw']]" :key="m[0]">
               <button type="button" @click="setMode(m[0])"
                       class="rounded px-2 py-1"
-                      :class="mode === m[0] ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'"
+                      :class="mode === m[0] ? 'bg-solid-strong text-on-solid' : 'bg-surface-muted text-fg-muted hover:bg-surface-emphasis'"
                       x-text="m[1]"></button>
             </template>
           </div>
@@ -84,33 +84,33 @@
           <form x-show="mode === 'semantic' || mode === 'keyword'" @submit.prevent="runSearch()" class="mt-2 flex gap-1">
             <input x-model="q" x-ref="qbox" @input="onQueryInput()"
                    :placeholder="mode === 'semantic' ? 'search meaning…' : 'search words…'"
-                   class="w-full rounded border border-slate-300 px-2 py-1 text-xs" />
+                   class="w-full rounded border border-line-strong px-2 py-1 text-xs" />
             <button type="submit"
-                    class="shrink-0 rounded bg-emerald-600 px-2 py-1 text-xs text-white hover:bg-emerald-700">Go</button>
+                    class="shrink-0 rounded bg-success-solid px-2 py-1 text-xs text-on-solid hover:bg-success-solid-strong">Go</button>
           </form>
 
-          <p x-show="loading" x-cloak class="mt-3 text-xs text-slate-400">searching…</p>
+          <p x-show="loading" x-cloak class="mt-3 text-xs text-fg-faint">searching…</p>
           <p x-show="!loading && searched && !results.length && (mode === 'semantic' || mode === 'keyword')" x-cloak
-             class="mt-3 text-xs text-slate-400">no matches in this document.</p>
+             class="mt-3 text-xs text-fg-faint">no matches in this document.</p>
           <p x-show="(mode === 'semantic' || mode === 'keyword') && !searched && chunksLoaded && !chunks.length" x-cloak
-             class="mt-3 text-xs text-slate-400">no chunks ingested yet.</p>
+             class="mt-3 text-xs text-fg-faint">no chunks ingested yet.</p>
           <p x-show="(mode === 'semantic' || mode === 'keyword') && !searched && chunks.length" x-cloak
-             class="mt-2 text-[10px] text-slate-400"
+             class="mt-2 text-[10px] text-fg-faint"
              x-text="(mode === 'semantic' ? 'summaries' : 'keywords') + ' — click a row to jump; hover to expand'"></p>
 
           <ul x-show="mode === 'semantic' || mode === 'keyword'" class="mt-2 space-y-1.5">
             <template x-for="(r, i) in navRows()" :key="i">
               <li>
                 <button type="button" @click="gotoNav(r, i)"
-                        class="nav-result w-full rounded border border-slate-200 p-2 text-left hover:border-amber-300"
+                        class="nav-result w-full rounded border border-line p-2 text-left hover:border-warning-strong"
                         :class="{'active': activeIdx === i}"
                         :title="'chunk ord ' + r.ord">
-                  <div class="flex items-center justify-between text-[10px] text-slate-400">
+                  <div class="flex items-center justify-between text-[10px] text-fg-faint">
                     <span class="font-mono">#<span x-text="r.ord"></span><template x-if="r.page"> · p<span x-text="r.page"></span></template></span>
                     <span x-show="searched && mode === 'semantic' && r.score !== undefined"
                           :title="'cosine similarity ' + r.score" x-text="'sim ' + r.score"></span>
                   </div>
-                  <p class="nav-clamp mt-0.5 text-xs leading-snug text-slate-700" x-text="glossText(r)"></p>
+                  <p class="nav-clamp mt-0.5 text-xs leading-snug text-fg-secondary" x-text="glossText(r)"></p>
                 </button>
               </li>
             </template>
@@ -118,7 +118,7 @@
 
           <div x-show="mode === 'toc'">
             <div x-show="tocStack.length" x-cloak
-                 class="mt-2 flex flex-wrap items-center gap-1 text-[10px] text-slate-500">
+                 class="mt-2 flex flex-wrap items-center gap-1 text-[10px] text-fg-subtle">
               <button type="button" @click="tocReset()" class="hover:underline">full</button>
               <template x-for="(sc, k) in tocStack" :key="k">
                 <span>›
@@ -127,18 +127,18 @@
                 </span>
               </template>
               <button type="button" @click="tocUp()"
-                      class="ml-auto rounded border border-slate-300 px-1.5 py-0.5 hover:bg-slate-50">↑ up</button>
+                      class="ml-auto rounded border border-line-strong px-1.5 py-0.5 hover:bg-surface-subtle">↑ up</button>
             </div>
-            <p x-show="!toc.length" x-cloak class="mt-3 text-xs text-slate-400">no chunks to outline.</p>
-            <p x-show="toc.length" x-cloak class="mt-2 text-[10px] text-slate-400">click to jump · double-click to drill in</p>
+            <p x-show="!toc.length" x-cloak class="mt-3 text-xs text-fg-faint">no chunks to outline.</p>
+            <p x-show="toc.length" x-cloak class="mt-2 text-[10px] text-fg-faint">click to jump · double-click to drill in</p>
             <ul class="mt-1 space-y-1.5">
               <template x-for="(s, i) in toc" :key="i">
                 <li>
                   <button type="button" @click="onSegClick(s, i)" @dblclick="onSegDblClick(s)"
-                          class="nav-result w-full rounded border border-slate-200 p-2 text-left hover:border-amber-300"
+                          class="nav-result w-full rounded border border-line p-2 text-left hover:border-warning-strong"
                           :class="{'active': activeSeg === i}"
                           :title="'chunks ' + s.lo + (s.hi !== s.lo ? '–' + s.hi : '')">
-                    <div class="flex items-center justify-between text-[10px] text-slate-400">
+                    <div class="flex items-center justify-between text-[10px] text-fg-faint">
                       <span class="font-mono" x-text="s.handle"></span>
                       <span class="flex items-center gap-1">
                         <template x-if="s.hi !== s.lo"><span x-text="s.n + '⧉'" title="double-click to drill in"></span></template>
@@ -162,11 +162,11 @@
              way to browse a chunks-only doc's source text (no PDF to
              fall back on, e.g. heminamino26). #}
           <div x-show="mode === 'raw'">
-            <p x-show="!rawLoaded" x-cloak class="mt-3 text-xs text-slate-400">loading…</p>
+            <p x-show="!rawLoaded" x-cloak class="mt-3 text-xs text-fg-faint">loading…</p>
             <p x-show="rawLoaded && !rawChunks.length" x-cloak
-               class="mt-3 text-xs text-slate-400">no chunks ingested yet.</p>
+               class="mt-3 text-xs text-fg-faint">no chunks ingested yet.</p>
             <p x-show="rawLoaded && rawChunks.length" x-cloak
-               class="mt-2 text-[10px] text-slate-400">verbatim body, reading order — click a row to jump; hover to expand</p>
+               class="mt-2 text-[10px] text-fg-faint">verbatim body, reading order — click a row to jump; hover to expand</p>
             <ul class="mt-1 space-y-1.5">
               <template x-for="(r, i) in rawChunks" :key="i">
                 {# A div, not a button, so the verbatim body is selectable
@@ -176,14 +176,14 @@
                 <li>
                   <div role="button" tabindex="0" @click="gotoRaw(r, i, $event)"
                        @keydown.enter.prevent="gotoRaw(r, i)" @keydown.space.prevent="gotoRaw(r, i)"
-                       class="nav-result w-full cursor-pointer select-text rounded border border-slate-200 p-2 text-left hover:border-amber-300"
+                       class="nav-result w-full cursor-pointer select-text rounded border border-line p-2 text-left hover:border-warning-strong"
                        :class="{'active': activeRawIdx === i}"
                        :title="'chunk ord ' + r.ord">
-                    <div class="flex items-center justify-between text-[10px] text-slate-400">
+                    <div class="flex items-center justify-between text-[10px] text-fg-faint">
                       <span class="font-mono">#<span x-text="r.ord"></span><template x-if="r.page"> · p<span x-text="r.page"></span></template></span>
                       <span class="nav-kw" x-text="r.chunk_kind"></span>
                     </div>
-                    <p class="nav-clamp mt-0.5 text-xs leading-snug text-slate-700 whitespace-pre-wrap" x-text="r.text"></p>
+                    <p class="nav-clamp mt-0.5 text-xs leading-snug text-fg-secondary whitespace-pre-wrap" x-text="r.text"></p>
                   </div>
                 </li>
               </template>
@@ -193,34 +193,34 @@
 
         {# ── Jump: chunk ord / page / verbatim text ─────────────── #}
         <div x-show="tab === 'Jump'" x-cloak class="space-y-3 text-xs">
-          <p x-show="findStatus" x-cloak class="rounded border-l-2 border-amber-400 bg-amber-50 px-2 py-1 text-[10px] text-amber-700" x-text="findStatus"></p>
+          <p x-show="findStatus" x-cloak class="rounded border-l-2 border-warning-emphasis bg-warning-subtle px-2 py-1 text-[10px] text-warning-strong" x-text="findStatus"></p>
           <form @submit.prevent="jumpText()">
-            <label class="block text-slate-500">Find verbatim text</label>
+            <label class="block text-fg-subtle">Find verbatim text</label>
             <div class="mt-1 flex gap-1">
               <input x-model="jtext" placeholder="exact phrase from the document"
-                     class="w-full rounded border border-slate-300 px-2 py-1" />
-              <button class="shrink-0 rounded bg-emerald-600 px-2 py-1 text-white hover:bg-emerald-700">Find</button>
+                     class="w-full rounded border border-line-strong px-2 py-1" />
+              <button class="shrink-0 rounded bg-success-solid px-2 py-1 text-on-solid hover:bg-success-solid-strong">Find</button>
             </div>
           </form>
           <form @submit.prevent="jumpPage()">
-            <label class="block text-slate-500">Go to page</label>
+            <label class="block text-fg-subtle">Go to page</label>
             <div class="mt-1 flex gap-1">
               <input x-model="jpage" type="number" min="1" placeholder="page #"
-                     class="w-full rounded border border-slate-300 px-2 py-1" />
-              <button class="shrink-0 rounded bg-emerald-600 px-2 py-1 text-white hover:bg-emerald-700">Go</button>
+                     class="w-full rounded border border-line-strong px-2 py-1" />
+              <button class="shrink-0 rounded bg-success-solid px-2 py-1 text-on-solid hover:bg-success-solid-strong">Go</button>
             </div>
           </form>
           <form @submit.prevent="jumpOrd()">
-            <label class="block text-slate-500">Go to chunk (ord or TOC handle)</label>
+            <label class="block text-fg-subtle">Go to chunk (ord or TOC handle)</label>
             <div class="mt-1 flex gap-1">
               <input x-model="jord" type="text" placeholder="chunk # or pa123~4..5"
-                     class="w-full rounded border border-slate-300 px-2 py-1" />
-              <button class="shrink-0 rounded bg-emerald-600 px-2 py-1 text-white hover:bg-emerald-700">Go</button>
+                     class="w-full rounded border border-line-strong px-2 py-1" />
+              <button class="shrink-0 rounded bg-success-solid px-2 py-1 text-on-solid hover:bg-success-solid-strong">Go</button>
             </div>
           </form>
-          <div x-show="jumpChunk" x-cloak class="rounded border-l-4 border-amber-400 bg-amber-50 p-2">
-            <div class="font-mono text-[10px] text-amber-700"><template x-if="jumpChunk && jumpChunk.handle"><span x-text="jumpChunk.handle" class="text-amber-800"></span></template> · chunk <span x-text="jumpChunk && jumpChunk.ord"></span><template x-if="jumpChunk && jumpChunk.page"> · p<span x-text="jumpChunk && jumpChunk.page"></span></template></div>
-            <p class="mt-1 text-xs leading-snug text-slate-700" x-text="jumpChunk && jumpChunk.text"></p>
+          <div x-show="jumpChunk" x-cloak class="rounded border-l-4 border-warning-emphasis bg-warning-subtle p-2">
+            <div class="font-mono text-[10px] text-warning-strong"><template x-if="jumpChunk && jumpChunk.handle"><span x-text="jumpChunk.handle" class="text-warning-deep"></span></template> · chunk <span x-text="jumpChunk && jumpChunk.ord"></span><template x-if="jumpChunk && jumpChunk.page"> · p<span x-text="jumpChunk && jumpChunk.page"></span></template></div>
+            <p class="mt-1 text-xs leading-snug text-fg-secondary" x-text="jumpChunk && jumpChunk.text"></p>
           </div>
         </div>
 
@@ -231,10 +231,10 @@
            sidebar tab, so it's lazy-loaded via htmx (setTab(), in
            paper-viewer.js) instead of an Alpine ``x-for`` list. #}
         <div x-show="tab === 'Sources'" x-cloak id="refs-sources-panel" class="text-xs">
-          <p class="text-slate-400">loading…</p>
+          <p class="text-fg-faint">loading…</p>
         </div>
         <div x-show="tab === 'Cited'" x-cloak id="refs-cited-panel" class="text-xs">
-          <p class="text-slate-400">loading…</p>
+          <p class="text-fg-faint">loading…</p>
         </div>
 
         {# ── Meta: kind-specific panel (paper bibliographic / pres attribution) #}
@@ -249,21 +249,21 @@
        PDF viewer doesn't swallow the mousemove). ── #}
     <div x-show="sidebarOpen" @mousedown.prevent="startResize($event)"
          title="drag to resize"
-         class="w-1.5 shrink-0 cursor-col-resize rounded bg-slate-200 hover:bg-emerald-400"
-         :class="{ 'bg-emerald-400': resizing }"></div>
+         class="w-1.5 shrink-0 cursor-col-resize rounded bg-surface-emphasis hover:bg-success-solid-light"
+         :class="{ 'bg-success-solid-light': resizing }"></div>
 
     {# ── main: PDF.js reader ─────────────────────────────────────── #}
-    <section class="min-w-0 flex-1 overflow-hidden rounded-lg border border-slate-200 bg-white" data-tour="reader-pdf">
+    <section class="min-w-0 flex-1 overflow-hidden rounded-lg border border-line bg-surface" data-tour="reader-pdf">
       {% if doc.pdf_on_disk %}
         <iframe id="pdf-frame" class="h-full w-full" :class="{ 'pointer-events-none': resizing }"
                 src="/static/pdfjs/web/viewer.html?file={{ doc.pdf_url | urlencode }}"></iframe>
       {% elif not doc.has_pdf %}
-        <div class="m-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+        <div class="m-4 rounded-lg border border-warning bg-warning-subtle p-4 text-sm text-warning-deep">
           No PDF on disk for this {{ doc.list_label | default('document') }} (it's a stub — queued for fetch).
           The Navigate / Jump panels still work over its ingested chunks (if any).
         </div>
       {% else %}
-        <div class="m-4 rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
+        <div class="m-4 rounded-lg border border-danger bg-danger-subtle p-4 text-sm text-danger-deep">
           <p class="font-medium">This document is held but the file isn't where the server looked.</p>
           {% if doc.cite_key %}
             <p class="mt-1">cite_key: <span class="font-mono break-all">{{ doc.cite_key }}</span></p>
@@ -275,7 +275,7 @@
               <li>(none)</li>
               {% endfor %}
             </ul>
-            <p class="mt-2 text-rose-700">
+            <p class="mt-2 text-danger-strong">
               If the file lives elsewhere, add its root to
               <span class="font-mono">PRECIS_CORPUS_DIR</span> for the web
               process (<span class="font-mono">{{ ':' }}</span>-separated) and restart.

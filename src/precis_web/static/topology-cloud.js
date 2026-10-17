@@ -394,8 +394,8 @@ export function renderTopologyCloud({
 
   const tip = d.createElement("div");
   tip.className =
-    "absolute z-10 hidden rounded border border-slate-300 bg-white px-2 py-1 " +
-    "text-[11px] text-slate-700 shadow pointer-events-none whitespace-pre-line";
+    "absolute z-10 hidden rounded border border-line-strong bg-surface px-2 py-1 " +
+    "text-[11px] text-fg-secondary shadow pointer-events-none whitespace-pre-line";
   container.replaceChildren(svg, tip);
 
   // Position from the CONTAINER's own box, not the event's offsetX/offsetY:

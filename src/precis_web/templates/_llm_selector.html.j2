@@ -24,7 +24,7 @@
      x-data="llmSelectorState('{{ default_tier }}')" x-init="fetchPreview()">
   <span class="llm-tip">
     <select x-model="tier" @change="fetchPreview(); emit()"
-            class="rounded border border-slate-200 px-1 py-0.5 text-slate-600">
+            class="rounded border border-line px-1 py-0.5 text-fg-muted">
       <option value="small">small</option>
       <option value="medium">medium</option>
       <option value="big">big</option>
@@ -34,7 +34,7 @@
   </span>
   <span class="llm-tip">
     <select x-model="placement" @change="fetchPreview(); emit()"
-            class="rounded border border-slate-200 px-1 py-0.5 text-slate-600">
+            class="rounded border border-line px-1 py-0.5 text-fg-muted">
       <option value="">auto</option>
       <option value="local">local</option>
       <option value="cloud">cloud</option>
@@ -44,7 +44,7 @@
   <span class="llm-tip">
     <select x-model="reasoning" @change="fetchPreview(); emit()"
             :disabled="preview && preview.knobs && !preview.knobs.thinking && !preview.knobs.effort"
-            class="rounded border border-slate-200 px-1 py-0.5 text-slate-600 disabled:opacity-40">
+            class="rounded border border-line px-1 py-0.5 text-fg-muted disabled:opacity-40">
       <option value="">default</option>
       <option value="off">off</option>
       <option value="low">low</option>
@@ -59,17 +59,17 @@
            :disabled="preview && preview.knobs && !preview.knobs.temperature"
            @change="fetchPreview(); emit()"
            :placeholder="preview && preview.temp_default != null ? String(preview.temp_default) : 'temp'"
-           class="w-14 rounded border border-slate-200 px-1 py-0.5 text-slate-600 disabled:opacity-40" />
+           class="w-14 rounded border border-line px-1 py-0.5 text-fg-muted disabled:opacity-40" />
     <span class="llm-tip-body"><strong>Temperature</strong><br>sampling randomness; 0 = deterministic<br>empty — model default (shown greyed in the field when known)<br>ignored on routes that don't support it</span>
   </span>
-  <span class="text-slate-500" x-show="preview && !preview.error">→
+  <span class="text-fg-subtle" x-show="preview && !preview.error">→
     <span x-text="preview && preview.model"></span> ·
     <span x-text="preview && preview.placement_effective"></span><template
       x-if="preview && preview.fallbacks && preview.fallbacks.length"><span> · fallback:
       <span x-text="preview.fallbacks.join(', ')"></span></span></template></span>
-  <span class="text-amber-600" x-show="preview && preview.error" x-text="preview && preview.error"></span>
+  <span class="text-warning" x-show="preview && preview.error" x-text="preview && preview.error"></span>
   <template x-for="w in (preview && preview.warnings) || []" :key="w">
-    <span class="text-amber-600" x-text="'⚠ ' + w"></span>
+    <span class="text-warning" x-text="'⚠ ' + w"></span>
   </template>
 </div>
 {# CSS hover tooltips replace plain `title=` (which can't render bold/line
@@ -81,7 +81,7 @@
 .llm-tip .llm-tip-body {
   display: none; position: absolute; top: 100%; left: 0; margin-top: 4px;
   z-index: 50; width: max-content; max-width: 20rem;
-  background: #1e293b; color: #f1f5f9; font-size: 0.75rem; line-height: 1.4;
+  background: rgb(var(--bg-chrome-raised)); color: rgb(var(--text-chrome)); font-size: 0.75rem; line-height: 1.4;
   padding: 6px 9px; border-radius: 6px;
   box-shadow: 0 4px 12px rgb(0 0 0 / 0.25);
   pointer-events: none; white-space: normal;

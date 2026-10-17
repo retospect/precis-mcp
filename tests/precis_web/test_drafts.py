@@ -8,6 +8,7 @@ the change-request POST.
 
 from __future__ import annotations
 
+import re
 from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any, cast
@@ -2431,7 +2432,7 @@ def test_ref_chips_missing_pdf_marker() -> None:
     chips = _ref_chips("see paper:kong24 here", lambda kind, ident: ident == "kong24")
     html = str(chips[0])
     assert "&#9650;" in html  # the red triangle glyph
-    assert "text-rose-600" in html
+    assert re.search(r"text-danger(?![\w-])", html)
     # tooltip is present (apostrophe HTML-escaped, so match the stable prefix)
     assert 'title="PDF missing' in html
     # a present paper (predicate False) gets a plain chip, no marker

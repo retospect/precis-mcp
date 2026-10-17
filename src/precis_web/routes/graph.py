@@ -1079,12 +1079,12 @@ async def neighbourhood_panel(
         )
     except NotFound:
         return HTMLResponse(
-            '<p class="text-xs text-slate-400">ref not found.</p>',
+            '<p class="text-xs text-fg-faint">ref not found.</p>',
             status_code=404,
         )
     except BadInput as exc:
         return HTMLResponse(
-            f'<p class="text-xs text-rose-600">{html.escape(str(exc))}</p>',
+            f'<p class="text-xs text-danger">{html.escape(str(exc))}</p>',
             status_code=400,
         )
     show = _default_show_memories(data) if memories is None else bool(memories)

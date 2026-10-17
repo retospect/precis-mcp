@@ -1588,7 +1588,7 @@ def test_pathway_tier_toggle_and_delta_via_refines_link(client, runtime) -> None
 
     resp = client.get("/refs/pathway/171696")
     assert resp.status_code == 200
-    assert '<span class="font-semibold text-slate-500">view:</span>' in resp.text
+    assert '<span class="font-semibold text-fg-subtle">view:</span>' in resp.text
     assert ">neb<" in resp.text
     assert "verified" in resp.text
     assert "/refs/pathway/171700" in resp.text
@@ -1602,7 +1602,7 @@ def test_pathway_tier_toggle_absent_without_sibling(client, runtime) -> None:
     _seed_pathway(runtime.store, meta={"tier": "verify"}, body_text=None)
     resp = client.get("/refs/pathway/171696")
     assert resp.status_code == 200
-    assert '<span class="font-semibold text-slate-500">view:</span>' not in resp.text
+    assert '<span class="font-semibold text-fg-subtle">view:</span>' not in resp.text
 
 
 # ── Kinetics panel (meta.results.kinetics -> vendored report panel) ─────

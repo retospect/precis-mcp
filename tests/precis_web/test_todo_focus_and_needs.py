@@ -28,7 +28,7 @@ def test_linkify_todo_handles_links_and_escapes() -> None:
 
     out = str(_linkify_todo_handles("td161192 <b>x</b> & td7"))
     assert (
-        '<a class="text-sky-700 hover:underline" href="/todo?focus=161192">td161192</a>'
+        '<a class="text-info-strong hover:underline" href="/todo?focus=161192">td161192</a>'
         in out
     )
     assert 'href="/todo?focus=7">td7</a>' in out

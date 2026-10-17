@@ -1145,7 +1145,7 @@ def test_claim_view_h1_no_prefix_without_tagline(
     h1_end = r.text.index("</h1>")
     h1_html = r.text[h1_start:h1_end]
     assert _CLAIM.sentence in h1_html
-    assert '<span class="text-sky-700">' not in h1_html
+    assert '<span class="text-info-strong">' not in h1_html
 
 
 # ── POST /claim/<head>/tagline — the human edit door ──

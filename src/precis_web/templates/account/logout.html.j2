@@ -6,19 +6,19 @@
 {% block title %}Signed out{% endblock %}
 {% block content %}
 <h1 class="text-lg font-semibold mb-1">Signed out</h1>
-<p class="text-sm text-slate-500 mb-5 max-w-2xl">
+<p class="text-sm text-fg-subtle mb-5 max-w-2xl">
   Your browser was asked to forget the password it was holding
-  {%- if user %} for <code class="text-slate-600">{{ user.login }}</code>{% endif %}.
+  {%- if user %} for <code class="text-fg-muted">{{ user.login }}</code>{% endif %}.
 </p>
 
-<div class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm
-            text-amber-800 max-w-2xl mb-5">
+<div class="rounded-lg border border-warning bg-warning-subtle px-4 py-3 text-sm
+            text-warning-deep max-w-2xl mb-5">
   <strong>If the browser is asking for a password right now, cancel it.</strong>
   That prompt is the sign-out. Typing the password back in signs you straight
   back in, which is also a perfectly good way to leave.
 </div>
 
-<p class="text-xs text-slate-500 max-w-2xl mb-3">
+<p class="text-xs text-fg-subtle max-w-2xl mb-3">
   HTTP Basic has no session for a server to end: the credential lives in the
   browser and is re-sent on every request until the browser decides to drop it.
   All this page can do is answer with a challenge it can't satisfy — every
@@ -27,8 +27,8 @@
   property of Basic auth, not of this server.
 </p>
 
-<p class="text-xs text-slate-500 max-w-2xl">
-  <a href="/account" class="text-sky-700 hover:underline">Sign back in</a>
+<p class="text-xs text-fg-subtle max-w-2xl">
+  <a href="/account" class="text-info-strong hover:underline">Sign back in</a>
   — any page will prompt.
 </p>
 {% endblock %}

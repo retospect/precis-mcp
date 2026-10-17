@@ -155,7 +155,7 @@ async def toggle(
     if ref is None or ref.kind != kind or not profiles.visible_to(ref, user.login):
         if request.headers.get("HX-Request") == "true":
             return HTMLResponse(
-                '<span class="text-xs text-slate-400">ref not found</span>',
+                '<span class="text-xs text-fg-faint">ref not found</span>',
                 status_code=404,
             )
         raise HTTPException(status_code=404, detail=f"{kind} id={ref_id} not found")

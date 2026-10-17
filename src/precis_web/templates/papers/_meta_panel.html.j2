@@ -8,49 +8,49 @@
    keywords) built by papers._render_detail. #}
 <dl class="space-y-1 text-xs">
   {% if si_skipped %}
-  <div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">supplements</dt><dd>
+  <div class="flex gap-2"><dt class="w-20 shrink-0 text-fg-faint">supplements</dt><dd>
     <p>supplement exists, not ingested</p>
     {% for si in si_skipped %}
-    <p><a class="text-teal-700 hover:underline" href="{{ si.url }}" rel="noopener noreferrer">{{ si.filename or si.url }}</a> — {{ si.reason or 'non_pdf' }}</p>
+    <p><a class="text-teal-strong hover:underline" href="{{ si.url }}" rel="noopener noreferrer">{{ si.filename or si.url }}</a> — {{ si.reason or 'non_pdf' }}</p>
     {% endfor %}
   </dd></div>
   {% endif %}
-  <div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">handle</dt><dd class="font-mono">{{ pa_handle }}</dd></div>
-  <div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">id</dt><dd>#{{ paper.id }}</dd></div>
-  {% if paper.slug %}<div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">cite_key</dt><dd class="font-mono">{{ paper.slug }}</dd></div>{% endif %}
-  {% if paper.year %}<div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">year</dt><dd>{{ paper.year }}</dd></div>{% endif %}
-  <div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">chunks</dt><dd>{{ n_chunks }}</dd></div>
-  <div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">pdf</dt><dd>{{ 'on disk' if pdf_on_disk else ('held, missing file' if paper.has_pdf else 'stub (no pdf)') }}</dd></div>
+  <div class="flex gap-2"><dt class="w-20 shrink-0 text-fg-faint">handle</dt><dd class="font-mono">{{ pa_handle }}</dd></div>
+  <div class="flex gap-2"><dt class="w-20 shrink-0 text-fg-faint">id</dt><dd>#{{ paper.id }}</dd></div>
+  {% if paper.slug %}<div class="flex gap-2"><dt class="w-20 shrink-0 text-fg-faint">cite_key</dt><dd class="font-mono">{{ paper.slug }}</dd></div>{% endif %}
+  {% if paper.year %}<div class="flex gap-2"><dt class="w-20 shrink-0 text-fg-faint">year</dt><dd>{{ paper.year }}</dd></div>{% endif %}
+  <div class="flex gap-2"><dt class="w-20 shrink-0 text-fg-faint">chunks</dt><dd>{{ n_chunks }}</dd></div>
+  <div class="flex gap-2"><dt class="w-20 shrink-0 text-fg-faint">pdf</dt><dd>{{ 'on disk' if pdf_on_disk else ('held, missing file' if paper.has_pdf else 'stub (no pdf)') }}</dd></div>
   {# Flat fallback — only when the paper_authors table has no rows yet
      (a paper never edited/enriched under S1). Once rows exist, the
      compact table below (with links) replaces this line. #}
-  {% if authors_display and not author_rows %}<div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">authors</dt><dd>{{ authors_display }}</dd></div>{% endif %}
+  {% if authors_display and not author_rows %}<div class="flex gap-2"><dt class="w-20 shrink-0 text-fg-faint">authors</dt><dd>{{ authors_display }}</dd></div>{% endif %}
   {% if journal %}
   <div class="flex gap-2">
-    <dt class="w-20 shrink-0 text-slate-400">journal</dt>
-    <dd>{{ journal }}{% if issn %} <span class="text-slate-400" title="ISSN">({{ issn }})</span>{% endif %}</dd>
+    <dt class="w-20 shrink-0 text-fg-faint">journal</dt>
+    <dd>{{ journal }}{% if issn %} <span class="text-fg-faint" title="ISSN">({{ issn }})</span>{% endif %}</dd>
   </div>
   {% endif %}
-  {% if entry_type %}<div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">type</dt><dd>{{ entry_type_label }}</dd></div>{% endif %}
-  {% if paper.links.doi_url %}<div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">DOI</dt><dd><a class="text-sky-700 hover:underline" href="{{ paper.links.doi_url }}" target="_blank" rel="noopener">{{ paper.links.doi }}</a></dd></div>{% endif %}
-  {% if paper.links.arxiv_url %}<div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">arXiv</dt><dd><a class="text-sky-700 hover:underline" href="{{ paper.links.arxiv_url }}" target="_blank" rel="noopener">{{ paper.links.arxiv }}</a></dd></div>{% endif %}
+  {% if entry_type %}<div class="flex gap-2"><dt class="w-20 shrink-0 text-fg-faint">type</dt><dd>{{ entry_type_label }}</dd></div>{% endif %}
+  {% if paper.links.doi_url %}<div class="flex gap-2"><dt class="w-20 shrink-0 text-fg-faint">DOI</dt><dd><a class="text-info-strong hover:underline" href="{{ paper.links.doi_url }}" target="_blank" rel="noopener">{{ paper.links.doi }}</a></dd></div>{% endif %}
+  {% if paper.links.arxiv_url %}<div class="flex gap-2"><dt class="w-20 shrink-0 text-fg-faint">arXiv</dt><dd><a class="text-info-strong hover:underline" href="{{ paper.links.arxiv_url }}" target="_blank" rel="noopener">{{ paper.links.arxiv }}</a></dd></div>{% endif %}
   {% for ident in extra_identifiers %}
   <div class="flex gap-2">
-    <dt class="w-20 shrink-0 text-slate-400">{{ ident.label }}</dt>
-    <dd>{% if ident.url %}<a class="text-sky-700 hover:underline" href="{{ ident.url }}" target="_blank" rel="noopener">{{ ident.value }}</a>{% else %}{{ ident.value }}{% endif %}</dd>
+    <dt class="w-20 shrink-0 text-fg-faint">{{ ident.label }}</dt>
+    <dd>{% if ident.url %}<a class="text-info-strong hover:underline" href="{{ ident.url }}" target="_blank" rel="noopener">{{ ident.value }}</a>{% else %}{{ ident.value }}{% endif %}</dd>
   </div>
   {% endfor %}
   {% if s2_citation_count is not none %}
-  <div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">citations</dt><dd>{{ s2_citation_count }} <span class="text-slate-400">(Semantic Scholar)</span></dd></div>
+  <div class="flex gap-2"><dt class="w-20 shrink-0 text-fg-faint">citations</dt><dd>{{ s2_citation_count }} <span class="text-fg-faint">(Semantic Scholar)</span></dd></div>
   {% endif %}
   {% if s2_fields %}
-  <div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">fields</dt><dd>{{ s2_fields | join(', ') }}</dd></div>
+  <div class="flex gap-2"><dt class="w-20 shrink-0 text-fg-faint">fields</dt><dd>{{ s2_fields | join(', ') }}</dd></div>
   {% endif %}
   {# ``is defined`` guard: templates reload from disk before a bounced
      worker re-imports routes, so a mid-deploy render may lack the var —
      an Undefined passes ``is not none`` and then 500s in ``round``. #}
   {% if read_first is defined and read_first is not none %}
-  <div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">read-first</dt><dd>{{ read_first | round(1) }} <span class="text-slate-400">/ 100 (reading priority)</span></dd></div>
+  <div class="flex gap-2"><dt class="w-20 shrink-0 text-fg-faint">read-first</dt><dd>{{ read_first | round(1) }} <span class="text-fg-faint">/ 100 (reading priority)</span></dd></div>
   {% endif %}
 </dl>
 
@@ -60,14 +60,14 @@
    paper that hasn't been through set_paper_authors yet (the flat
    authors_display dd above covers that case). #}
 {% if author_rows %}
-<div class="border-t border-slate-100 pt-2">
-  <p class="text-[11px] uppercase tracking-wide text-slate-400 mb-1">Authors</p>
+<div class="border-t border-line-subtle pt-2">
+  <p class="text-[11px] uppercase tracking-wide text-fg-faint mb-1">Authors</p>
   <table class="w-full text-xs">
-    <tbody class="divide-y divide-slate-100">
+    <tbody class="divide-y divide-line-subtle">
       {% for a in author_rows %}
       {% set display_name = ([a.given, a.middle, a.family] | select | join(' ')) if (a.given or a.family) else a.name_raw %}
       <tr>
-        <td class="pr-2 py-1 text-slate-400 align-top w-5">{{ a.position }}</td>
+        <td class="pr-2 py-1 text-fg-faint align-top w-5">{{ a.position }}</td>
         <td class="pr-2 py-1 align-top">
           {{ display_name }}
           {# ORCID iD icon (gr351776a) — only when the paper_authors row
@@ -87,21 +87,21 @@
           {% endif %}
         </td>
         <td class="pr-2 py-1 align-top">
-          <span class="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600">{{ a.source }}</span>
+          <span class="rounded bg-surface-muted px-1.5 py-0.5 text-[10px] text-fg-muted">{{ a.source }}</span>
         </td>
-        <td class="pr-2 py-1 align-top text-emerald-600" title="{% if a.verified_at %}verified {{ a.verified_at.date().isoformat() }}{% endif %}">
+        <td class="pr-2 py-1 align-top text-success" title="{% if a.verified_at %}verified {{ a.verified_at.date().isoformat() }}{% endif %}">
           {%- if a.verified_at %}✓{% endif -%}
         </td>
         <td class="pr-2 py-1 align-top whitespace-nowrap">
-          {% if a.links.openalex %}<a class="text-sky-700 hover:underline" href="{{ a.links.openalex }}" target="_blank" rel="noopener">OpenAlex</a>{% endif %}
-          {% if a.links.scholar %}<a class="ml-1 text-sky-700 hover:underline" href="{{ a.links.scholar }}" target="_blank" rel="noopener">Scholar</a>{% endif %}
+          {% if a.links.openalex %}<a class="text-info-strong hover:underline" href="{{ a.links.openalex }}" target="_blank" rel="noopener">OpenAlex</a>{% endif %}
+          {% if a.links.scholar %}<a class="ml-1 text-info-strong hover:underline" href="{{ a.links.scholar }}" target="_blank" rel="noopener">Scholar</a>{% endif %}
         </td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
   {% if paper_scholar_url %}
-  <p class="mt-1 text-[10px] text-slate-500">Paper on Scholar: <a class="text-sky-700 hover:underline" href="{{ paper_scholar_url }}" target="_blank" rel="noopener">search</a></p>
+  <p class="mt-1 text-[10px] text-fg-subtle">Paper on Scholar: <a class="text-info-strong hover:underline" href="{{ paper_scholar_url }}" target="_blank" rel="noopener">search</a></p>
   {% endif %}
 </div>
 {% endif %}
@@ -111,46 +111,46 @@
    matching the strongest alert vocabulary this reader uses elsewhere
    (duplicate-identifier resolver / delete button). #}
 {% if retraction %}
-<div class="rounded-lg border border-rose-300 bg-rose-50 p-3 text-xs">
-  <p class="font-medium text-rose-900">⚠ {{ retraction.label }}</p>
-  {% if retraction.reason %}<p class="mt-1 text-rose-800">{{ retraction.reason }}</p>{% endif %}
-  {% if retraction.url %}<a class="mt-1 inline-block text-rose-700 underline" href="{{ retraction.url }}" target="_blank" rel="noopener">notice</a>{% endif %}
+<div class="rounded-lg border border-danger-strong bg-danger-subtle p-3 text-xs">
+  <p class="font-medium text-danger-deep">⚠ {{ retraction.label }}</p>
+  {% if retraction.reason %}<p class="mt-1 text-danger-deep">{{ retraction.reason }}</p>{% endif %}
+  {% if retraction.url %}<a class="mt-1 inline-block text-danger-strong underline" href="{{ retraction.url }}" target="_blank" rel="noopener">notice</a>{% endif %}
 </div>
 {% endif %}
 
 {% if keywords %}
-<div class="border-t border-slate-100 pt-2">
-  <p class="text-[11px] uppercase tracking-wide text-slate-400">Keywords</p>
+<div class="border-t border-line-subtle pt-2">
+  <p class="text-[11px] uppercase tracking-wide text-fg-faint">Keywords</p>
   <div class="mt-1 flex flex-wrap gap-1">
     {% for kw in keywords %}
-    <span class="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600">{{ kw }}</span>
+    <span class="rounded bg-surface-muted px-1.5 py-0.5 text-[10px] text-fg-muted">{{ kw }}</span>
     {% endfor %}
   </div>
 </div>
 {% endif %}
 
 {# ingestion timeline #}
-<div class="flex flex-wrap gap-x-4 gap-y-1 border-t border-slate-100 pt-2 text-[11px] text-slate-500">
-  <span><span class="text-slate-400">ref </span><span title="{{ ingested.ref | abs_ts }}">{{ ingested.ref | ago or '—' }}</span></span>
-  <span><span class="text-slate-400">PDF </span><span title="{{ ingested.pdf | abs_ts }}">{{ ingested.pdf | ago or '—' }}</span></span>
-  <span><span class="text-slate-400">first chunk </span><span title="{{ ingested.first_chunk | abs_ts }}">{{ ingested.first_chunk | ago or '—' }}</span></span>
+<div class="flex flex-wrap gap-x-4 gap-y-1 border-t border-line-subtle pt-2 text-[11px] text-fg-subtle">
+  <span><span class="text-fg-faint">ref </span><span title="{{ ingested.ref | abs_ts }}">{{ ingested.ref | ago or '—' }}</span></span>
+  <span><span class="text-fg-faint">PDF </span><span title="{{ ingested.pdf | abs_ts }}">{{ ingested.pdf | ago or '—' }}</span></span>
+  <span><span class="text-fg-faint">first chunk </span><span title="{{ ingested.first_chunk | abs_ts }}">{{ ingested.first_chunk | ago or '—' }}</span></span>
 </div>
 
 {# "Reviewed" sign-off row (refs.human_verified_at/by) — a compact
    mark-reviewed / undo toggle, distinct from the ``needs-triage`` tag
    below (a review can cover a paper that never needed triage). #}
-<div class="flex items-center gap-2 border-t border-slate-100 pt-2 text-xs">
+<div class="flex items-center gap-2 border-t border-line-subtle pt-2 text-xs">
   {% if is_reviewed %}
-  <span class="rounded border border-emerald-300 bg-emerald-50 px-2 py-1 text-emerald-800">
+  <span class="rounded border border-success-strong bg-success-subtle px-2 py-1 text-success-deep">
     Reviewed ✓ {{ reviewed_at }}{% if reviewed_by %} by {{ reviewed_by }}{% endif %}
   </span>
   <form method="post" action="/papers/{{ paper.id }}/reviewed" class="inline">
-    <button type="submit" class="text-slate-400 hover:text-rose-600" title="undo — clear the review stamp">undo</button>
+    <button type="submit" class="text-fg-faint hover:text-danger" title="undo — clear the review stamp">undo</button>
   </form>
   {% else %}
   <form method="post" action="/papers/{{ paper.id }}/reviewed" class="inline">
     <button type="submit"
-            class="rounded border border-emerald-300 bg-emerald-50 px-2 py-1 text-emerald-800 hover:bg-emerald-100">
+            class="rounded border border-success-strong bg-success-subtle px-2 py-1 text-success-deep hover:bg-success-muted">
       Mark reviewed ✓
     </button>
   </form>
@@ -164,28 +164,28 @@
    note — it NEVER softens a claim to Ⓐ/✍ itself (that's a separate,
    claim-level declaration made on the /claim page). POST /papers/<id>/
    unacquirable (papers.unacquirable). #}
-<div class="border-t border-slate-100 pt-2 text-xs">
+<div class="border-t border-line-subtle pt-2 text-xs">
   {% if unacquirable %}
   <div class="flex flex-wrap items-center gap-2">
-    <span class="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-amber-800">
+    <span class="rounded border border-warning-strong bg-warning-subtle px-2 py-1 text-warning-deep">
       ⊘ unacquirable
     </span>
-    {% if unacquirable.note %}<span class="text-slate-500">{{ unacquirable.note }}</span>{% endif %}
-    {% if unacquirable.by %}<span class="text-[10px] text-slate-400">— {{ unacquirable.by }}</span>{% endif %}
+    {% if unacquirable.note %}<span class="text-fg-subtle">{{ unacquirable.note }}</span>{% endif %}
+    {% if unacquirable.by %}<span class="text-[10px] text-fg-faint">— {{ unacquirable.by }}</span>{% endif %}
     <form method="post" action="/papers/{{ paper.id }}/unacquirable" class="inline">
       <input type="hidden" name="mode" value="clear" />
-      <button type="submit" class="text-slate-400 hover:text-rose-600"
+      <button type="submit" class="text-fg-faint hover:text-danger"
               title="clear the unacquirable declaration">undo</button>
     </form>
   </div>
   {% else %}
   <form method="post" action="/papers/{{ paper.id }}/unacquirable" class="space-y-1">
-    <p class="text-slate-400">Can't get this paper? Declare it — a claim grounded only on unacquirable sources stops reading as clean; to vouch for a specific claim, declare it there instead.</p>
+    <p class="text-fg-faint">Can't get this paper? Declare it — a claim grounded only on unacquirable sources stops reading as clean; to vouch for a specific claim, declare it there instead.</p>
     <input name="note" required autocomplete="off"
            placeholder="why — e.g. paywalled; UoL + ILL + Scholar exhausted"
-           class="w-full rounded border border-slate-300 px-1.5 py-0.5 text-[11px]" />
+           class="w-full rounded border border-line-strong px-1.5 py-0.5 text-[11px]" />
     <button type="submit" name="mode" value="set"
-            class="rounded border border-slate-300 bg-slate-50 px-2 py-1 text-slate-700 hover:bg-slate-100"
+            class="rounded border border-line-strong bg-surface-subtle px-2 py-1 text-fg-secondary hover:bg-surface-muted"
             title="I tried hard to obtain this and could not; the metadata is correct">⊘ Can't get it</button>
   </form>
   {% endif %}
@@ -195,38 +195,38 @@
    included — carry a × that removes them via the tag verb; closed-
    vocab tags (STATUS:*, project:*, …) render inert (remove those
    through the agent tag() verb). An add box mints new OPEN tags. #}
-<div class="flex flex-wrap items-center gap-1 border-t border-slate-100 pt-2">
+<div class="flex flex-wrap items-center gap-1 border-t border-line-subtle pt-2">
   {% for t in tags %}
     {% if t.deletable %}
     <form method="post" action="/papers/{{ paper.id }}/tags" class="inline">
       <input type="hidden" name="remove" value="{{ t.value }}" />
-      <span class="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600">
+      <span class="inline-flex items-center gap-1 rounded bg-surface-muted px-1.5 py-0.5 text-[10px] text-fg-muted">
         {{ t.value }}
-        <button type="submit" class="text-slate-400 hover:text-rose-600" title="remove tag">×</button>
+        <button type="submit" class="text-fg-faint hover:text-danger" title="remove tag">×</button>
       </span>
     </form>
     {% else %}
-    <span class="rounded bg-violet-50 px-1.5 py-0.5 text-[10px] text-violet-700"
+    <span class="rounded bg-accent-subtle px-1.5 py-0.5 text-[10px] text-accent-strong"
           title="closed-vocab tag — remove via tag(kind='paper', id={{ paper.id }}, remove=[…])">{{ t.label }}</span>
     {% endif %}
   {% else %}
-  <span class="text-[10px] italic text-slate-400">no tags yet</span>
+  <span class="text-[10px] italic text-fg-faint">no tags yet</span>
   {% endfor %}
   <form method="post" action="/papers/{{ paper.id }}/tags" class="inline">
     <input type="hidden" name="add" value="read-later" />
     <button type="submit"
-            class="rounded bg-slate-50 px-1.5 py-0.5 text-[10px] text-slate-500 hover:bg-slate-100"
+            class="rounded bg-surface-subtle px-1.5 py-0.5 text-[10px] text-fg-subtle hover:bg-surface-muted"
             title="quick-tag: read-later">+ read later</button>
   </form>
   <form method="post" action="/papers/{{ paper.id }}/tags" class="inline">
     <input type="hidden" name="add" value="starred" />
     <button type="submit"
-            class="rounded bg-slate-50 px-1.5 py-0.5 text-[10px] text-slate-500 hover:bg-slate-100"
+            class="rounded bg-surface-subtle px-1.5 py-0.5 text-[10px] text-fg-subtle hover:bg-surface-muted"
             title="quick-tag: starred">+ starred</button>
   </form>
   <form method="post" action="/papers/{{ paper.id }}/tags" class="inline-flex items-center gap-1">
     <input name="add" placeholder="+ tag"
-           class="w-20 rounded border border-slate-300 px-1.5 py-0.5 text-[10px]" />
+           class="w-20 rounded border border-line-strong px-1.5 py-0.5 text-[10px]" />
   </form>
 </div>
 
@@ -235,23 +235,23 @@
    relation); each source is one clickable row into its canonical page.
    Built by papers._backlinks. #}
 {% if backlinks %}
-<div class="border-t border-slate-100 pt-2">
-  <p class="text-[11px] uppercase tracking-wide text-slate-400">Referenced by</p>
+<div class="border-t border-line-subtle pt-2">
+  <p class="text-[11px] uppercase tracking-wide text-fg-faint">Referenced by</p>
   <div class="mt-1 space-y-1.5">
     {% for g in backlinks %}
     <div>
-      <p class="text-[10px] text-slate-400">
-        <span class="font-mono text-slate-500">{{ g.kind }}</span>
+      <p class="text-[10px] text-fg-faint">
+        <span class="font-mono text-fg-subtle">{{ g.kind }}</span>
         · {{ g.relation }}{% if g.count > 1 %} · {{ g.count }}{% endif %}
       </p>
       <ul class="mt-0.5 space-y-0.5">
         {% for r in g.rows %}
         <li class="truncate">
-          <a class="text-sky-700 hover:underline" href="{{ r.url }}" title="{{ r.title }}">{{ r.title }}</a>
-          <span class="font-mono text-[10px] text-slate-400">{{ r.handle }}</span>{% if r.edges > 1 %}<span class="text-[10px] text-slate-400"> ×{{ r.edges }}</span>{% endif %}
+          <a class="text-info-strong hover:underline" href="{{ r.url }}" title="{{ r.title }}">{{ r.title }}</a>
+          <span class="font-mono text-[10px] text-fg-faint">{{ r.handle }}</span>{% if r.edges > 1 %}<span class="text-[10px] text-fg-faint"> ×{{ r.edges }}</span>{% endif %}
         </li>
         {% endfor %}
-        {% if g.overflow %}<li class="text-[10px] italic text-slate-400">+{{ g.overflow }} more</li>{% endif %}
+        {% if g.overflow %}<li class="text-[10px] italic text-fg-faint">+{{ g.overflow }} more</li>{% endif %}
       </ul>
     </div>
     {% endfor %}
@@ -260,9 +260,9 @@
 {% endif %}
 
 {% if abstract %}
-<div class="border-t border-slate-100 pt-2">
-  <p class="text-[11px] uppercase tracking-wide text-slate-400">Abstract</p>
-  <p class="mt-1 text-xs leading-relaxed text-slate-700">{{ abstract }}</p>
+<div class="border-t border-line-subtle pt-2">
+  <p class="text-[11px] uppercase tracking-wide text-fg-faint">Abstract</p>
+  <p class="mt-1 text-xs leading-relaxed text-fg-secondary">{{ abstract }}</p>
 </div>
 {% endif %}
 

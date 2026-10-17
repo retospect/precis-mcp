@@ -1,3 +1,388 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* The web UI's palette: the one place a colour value lives.
+ *
+ * Every colour the UI paints is a variable below. Light values sit on
+ * :root, dark values under prefers-color-scheme: dark (the browser's
+ * setting; there is no toggle). Values are space-separated RGB channels so
+ * Tailwind's opacity modifiers keep working (`bg-surface/70`).
+ * tailwind.config.js maps them onto semantic classes, one namespace per
+ * property:
+ *   bg-<token>      --bg-<token>      surface ladder, solids, chrome, families
+ *   text-<token>    --text-<token>    fg ladder, on-solid, families
+ *   border-<token>  --border-<token>  line ladder, families (ring-, divide- too)
+ * Templates use those classes, never a palette class (`text-slate-500`) or
+ * a hex; tests/precis_web/test_colour_ratchet.py caps what is left. Hand-
+ * written CSS reads a token as rgb(var(--text-fg)).
+ *
+ * Families: success (emerald), danger (rose; red folded in), warning
+ * (amber), info (sky; blue folded in; links), accent (violet; purple folded
+ * in), plus teal, indigo and fuchsia kept as categorical hues where a page
+ * needs more distinct colours than there are roles (LLM tiers, the nanopub
+ * ladder, hypothesis cites). Steps keep the light palette exact:
+ *   bg      subtle 50, muted 100, emphasis 200, strong 300,
+ *           solid-light 400, solid-soft 500, solid 600, solid-strong 700
+ *   text    faint 400, soft 500, DEFAULT 600, strong 700, deep 800
+ *   border  subtle 100, DEFAULT 200, strong 300, emphasis 400, solid 500
+ * Dark values: tints are the hue's 500 blended over the dark surface
+ * (12-42%), text steps move to the light end of the hue (400..200), and
+ * solids keep their light value so white text on them reads the same in
+ * both schemes. Chrome (the header bar) is dark in both schemes, so its
+ * tokens have no dark override.
+ *
+ * `.scheme-light` pins a subtree to the light values: put it on the box
+ * around a visualisation a script draws in fixed colours chosen for white
+ * (the pathway energy diagram, Pourbaix maps, mermaid renders), together
+ * with a bg- class for the box.
+ * Page text and UI never take it; they move onto tokens instead.
+ *
+ * Rebuild tailwind.css after editing this file or the token lists in
+ * tailwind.config.js (scripts/ship also rebuilds it, unminified):
+ *   npx tailwindcss@3 -c tailwind.config.js \
+ *     -i src/precis_web/static/tailwind.src.css \
+ *     -o src/precis_web/static/tailwind.css
+ */
+:root {
+  color-scheme: light dark;
+}
+
+/* :where keeps it below any text- class on the same box. */
+:where(.scheme-light) {
+  color-scheme: light;
+  color: rgb(var(--text-fg));
+}
+
+:root,
+.scheme-light {
+  /* neutral (slate) */
+  --bg-canvas: 248 250 252; /* #f8fafc page behind the cards (html) */
+  --bg-surface: 255 255 255; /* #ffffff white: cards, inputs, rows */
+  --bg-surface-subtle: 248 250 252; /* #f8fafc slate-50 */
+  --bg-surface-muted: 241 245 249; /* #f1f5f9 slate-100 */
+  --bg-surface-emphasis: 226 232 240; /* #e2e8f0 slate-200 */
+  --bg-surface-strong: 203 213 225; /* #cbd5e1 slate-300 */
+  --bg-solid-soft: 71 85 105; /* #475569 slate-500/600 (hover of solid) */
+  --bg-solid: 51 65 85; /* #334155 slate-700: neutral buttons, white text */
+  --bg-solid-strong: 30 41 59; /* #1e293b slate-800/900: active pills, tooltips */
+  --bg-scrim: 0 0 0; /* #000000 black (overlays, used with /NN) */
+  --bg-chrome: 15 23 42; /* #0f172a header bar, same in both schemes */
+  --bg-chrome-raised: 30 41 59; /* #1e293b header dropdown / search field */
+  --bg-chrome-hover: 51 65 85; /* #334155 header tab hover / active */
+  --bg-chrome-active: 71 85 105; /* #475569 header chip hover */
+  --text-fg-strong: 15 23 42; /* #0f172a slate-900 */
+  --text-fg: 30 41 59; /* #1e293b slate-800: body text */
+  --text-fg-secondary: 51 65 85; /* #334155 slate-700 */
+  --text-fg-muted: 71 85 105; /* #475569 slate-600 */
+  --text-fg-subtle: 100 116 139; /* #64748b slate-500 */
+  --text-fg-faint: 148 163 184; /* #94a3b8 slate-400 */
+  --text-fg-ghost: 203 213 225; /* #cbd5e1 slate-300: separators, disabled */
+  --text-on-solid: 255 255 255; /* #ffffff white on solid fills */
+  --text-on-bright: 15 23 42; /* #0f172a dark ink on bright fills (amber-500 badge) */
+  --text-chrome: 241 245 249; /* #f1f5f9 header text */
+  --text-chrome-strong: 255 255 255; /* #ffffff header active/hover text */
+  --text-chrome-soft: 226 232 240; /* #e2e8f0 header chip text */
+  --text-chrome-muted: 203 213 225; /* #cbd5e1 header idle tab text */
+  --text-chrome-faint: 148 163 184; /* #94a3b8 header placeholder */
+  --text-chrome-brand: 52 211 153; /* #34d399 the precis wordmark */
+  --text-chrome-link: 125 211 252; /* #7dd3fc links on chrome (abbrev popover) */
+  --border-line-subtle: 241 245 249; /* #f1f5f9 slate-100 */
+  --border-line: 226 232 240; /* #e2e8f0 slate-200 (also the bare `border` default) */
+  --border-line-strong: 203 213 225; /* #cbd5e1 slate-300 */
+  --border-line-heavy: 100 116 139; /* #64748b slate-400/500 */
+  --border-line-solid: 30 41 59; /* #1e293b slate-700/800/900 (borders on solid fills) */
+  --border-chrome: 51 65 85; /* #334155 header dividers */
+  --border-chrome-brand: 16 185 129; /* #10b981 header focus ring */
+  /* success (emerald) */
+  --bg-success-subtle: 236 253 245; /* #ecfdf5 50 */
+  --bg-success-muted: 209 250 229; /* #d1fae5 100 */
+  --bg-success-emphasis: 167 243 208; /* #a7f3d0 200 */
+  --bg-success-strong: 110 231 183; /* #6ee7b7 300 */
+  --bg-success-solid-light: 52 211 153; /* #34d399 400 */
+  --bg-success-solid-soft: 16 185 129; /* #10b981 500 */
+  --bg-success-solid: 5 150 105; /* #059669 600 */
+  --bg-success-solid-strong: 4 120 87; /* #047857 700/800 */
+  --text-success-faint: 52 211 153; /* #34d399 400 */
+  --text-success-soft: 16 185 129; /* #10b981 500 */
+  --text-success: 5 150 105; /* #059669 600 */
+  --text-success-strong: 4 120 87; /* #047857 700 */
+  --text-success-deep: 6 95 70; /* #065f46 800/900 */
+  --border-success-subtle: 209 250 229; /* #d1fae5 100 */
+  --border-success: 167 243 208; /* #a7f3d0 200 */
+  --border-success-strong: 110 231 183; /* #6ee7b7 300 */
+  --border-success-emphasis: 52 211 153; /* #34d399 400 */
+  --border-success-solid: 16 185 129; /* #10b981 500/600 */
+  /* danger (rose) */
+  --bg-danger-subtle: 255 241 242; /* #fff1f2 50 */
+  --bg-danger-muted: 255 228 230; /* #ffe4e6 100 */
+  --bg-danger-emphasis: 254 205 211; /* #fecdd3 200 */
+  --bg-danger-strong: 253 164 175; /* #fda4af 300 */
+  --bg-danger-solid-light: 251 113 133; /* #fb7185 400 */
+  --bg-danger-solid-soft: 244 63 94; /* #f43f5e 500 */
+  --bg-danger-solid: 225 29 72; /* #e11d48 600 */
+  --bg-danger-solid-strong: 190 18 60; /* #be123c 700/800 */
+  --text-danger-faint: 251 113 133; /* #fb7185 400 */
+  --text-danger-soft: 244 63 94; /* #f43f5e 500 */
+  --text-danger: 225 29 72; /* #e11d48 600 */
+  --text-danger-strong: 190 18 60; /* #be123c 700 */
+  --text-danger-deep: 159 18 57; /* #9f1239 800/900 */
+  --border-danger-subtle: 255 228 230; /* #ffe4e6 100 */
+  --border-danger: 254 205 211; /* #fecdd3 200 */
+  --border-danger-strong: 253 164 175; /* #fda4af 300 */
+  --border-danger-emphasis: 251 113 133; /* #fb7185 400 */
+  --border-danger-solid: 244 63 94; /* #f43f5e 500/600 */
+  /* warning (amber) */
+  --bg-warning-subtle: 255 251 235; /* #fffbeb 50 */
+  --bg-warning-muted: 254 243 199; /* #fef3c7 100 */
+  --bg-warning-emphasis: 253 230 138; /* #fde68a 200 */
+  --bg-warning-strong: 252 211 77; /* #fcd34d 300 */
+  --bg-warning-solid-light: 251 191 36; /* #fbbf24 400 */
+  --bg-warning-solid-soft: 245 158 11; /* #f59e0b 500 */
+  --bg-warning-solid: 217 119 6; /* #d97706 600 */
+  --bg-warning-solid-strong: 180 83 9; /* #b45309 700/800 */
+  --text-warning-faint: 251 191 36; /* #fbbf24 400 */
+  --text-warning-soft: 245 158 11; /* #f59e0b 500 */
+  --text-warning: 217 119 6; /* #d97706 600 */
+  --text-warning-strong: 180 83 9; /* #b45309 700 */
+  --text-warning-deep: 146 64 14; /* #92400e 800/900 */
+  --border-warning-subtle: 254 243 199; /* #fef3c7 100 */
+  --border-warning: 253 230 138; /* #fde68a 200 */
+  --border-warning-strong: 252 211 77; /* #fcd34d 300 */
+  --border-warning-emphasis: 251 191 36; /* #fbbf24 400 */
+  --border-warning-solid: 245 158 11; /* #f59e0b 500/600 */
+  /* info (sky) */
+  --bg-info-subtle: 240 249 255; /* #f0f9ff 50 */
+  --bg-info-muted: 224 242 254; /* #e0f2fe 100 */
+  --bg-info-emphasis: 186 230 253; /* #bae6fd 200 */
+  --bg-info-strong: 125 211 252; /* #7dd3fc 300 */
+  --bg-info-solid-light: 56 189 248; /* #38bdf8 400 */
+  --bg-info-solid-soft: 14 165 233; /* #0ea5e9 500 */
+  --bg-info-solid: 2 132 199; /* #0284c7 600 */
+  --bg-info-solid-strong: 3 105 161; /* #0369a1 700/800 */
+  --text-info-faint: 56 189 248; /* #38bdf8 400 */
+  --text-info-soft: 14 165 233; /* #0ea5e9 500 */
+  --text-info: 2 132 199; /* #0284c7 600 */
+  --text-info-strong: 3 105 161; /* #0369a1 700 */
+  --text-info-deep: 7 89 133; /* #075985 800/900 */
+  --border-info-subtle: 224 242 254; /* #e0f2fe 100 */
+  --border-info: 186 230 253; /* #bae6fd 200 */
+  --border-info-strong: 125 211 252; /* #7dd3fc 300 */
+  --border-info-emphasis: 56 189 248; /* #38bdf8 400 */
+  --border-info-solid: 14 165 233; /* #0ea5e9 500/600 */
+  /* accent (violet) */
+  --bg-accent-subtle: 245 243 255; /* #f5f3ff 50 */
+  --bg-accent-muted: 237 233 254; /* #ede9fe 100 */
+  --bg-accent-emphasis: 221 214 254; /* #ddd6fe 200 */
+  --bg-accent-strong: 196 181 253; /* #c4b5fd 300 */
+  --bg-accent-solid-light: 167 139 250; /* #a78bfa 400 */
+  --bg-accent-solid-soft: 139 92 246; /* #8b5cf6 500 */
+  --bg-accent-solid: 124 58 237; /* #7c3aed 600 */
+  --bg-accent-solid-strong: 109 40 217; /* #6d28d9 700/800 */
+  --text-accent-faint: 167 139 250; /* #a78bfa 400 */
+  --text-accent-soft: 139 92 246; /* #8b5cf6 500 */
+  --text-accent: 124 58 237; /* #7c3aed 600 */
+  --text-accent-strong: 109 40 217; /* #6d28d9 700 */
+  --text-accent-deep: 91 33 182; /* #5b21b6 800/900 */
+  --border-accent-subtle: 237 233 254; /* #ede9fe 100 */
+  --border-accent: 221 214 254; /* #ddd6fe 200 */
+  --border-accent-strong: 196 181 253; /* #c4b5fd 300 */
+  --border-accent-emphasis: 167 139 250; /* #a78bfa 400 */
+  --border-accent-solid: 139 92 246; /* #8b5cf6 500/600 */
+  /* teal (teal) */
+  --bg-teal-subtle: 240 253 250; /* #f0fdfa 50 */
+  --bg-teal-muted: 204 251 241; /* #ccfbf1 100 */
+  --bg-teal-emphasis: 153 246 228; /* #99f6e4 200 */
+  --bg-teal-strong: 94 234 212; /* #5eead4 300 */
+  --bg-teal-solid-light: 45 212 191; /* #2dd4bf 400 */
+  --bg-teal-solid-soft: 20 184 166; /* #14b8a6 500 */
+  --bg-teal-solid: 13 148 136; /* #0d9488 600 */
+  --bg-teal-solid-strong: 15 118 110; /* #0f766e 700/800 */
+  --text-teal-faint: 45 212 191; /* #2dd4bf 400 */
+  --text-teal-soft: 20 184 166; /* #14b8a6 500 */
+  --text-teal: 13 148 136; /* #0d9488 600 */
+  --text-teal-strong: 15 118 110; /* #0f766e 700 */
+  --text-teal-deep: 17 94 89; /* #115e59 800/900 */
+  --border-teal-subtle: 204 251 241; /* #ccfbf1 100 */
+  --border-teal: 153 246 228; /* #99f6e4 200 */
+  --border-teal-strong: 94 234 212; /* #5eead4 300 */
+  --border-teal-emphasis: 45 212 191; /* #2dd4bf 400 */
+  --border-teal-solid: 20 184 166; /* #14b8a6 500/600 */
+  /* indigo (indigo) */
+  --bg-indigo-subtle: 238 242 255; /* #eef2ff 50 */
+  --bg-indigo-muted: 224 231 255; /* #e0e7ff 100 */
+  --bg-indigo-emphasis: 199 210 254; /* #c7d2fe 200 */
+  --bg-indigo-strong: 165 180 252; /* #a5b4fc 300 */
+  --bg-indigo-solid-light: 129 140 248; /* #818cf8 400 */
+  --bg-indigo-solid-soft: 99 102 241; /* #6366f1 500 */
+  --bg-indigo-solid: 79 70 229; /* #4f46e5 600 */
+  --bg-indigo-solid-strong: 67 56 202; /* #4338ca 700/800 */
+  --text-indigo-faint: 129 140 248; /* #818cf8 400 */
+  --text-indigo-soft: 99 102 241; /* #6366f1 500 */
+  --text-indigo: 79 70 229; /* #4f46e5 600 */
+  --text-indigo-strong: 67 56 202; /* #4338ca 700 */
+  --text-indigo-deep: 55 48 163; /* #3730a3 800/900 */
+  --border-indigo-subtle: 224 231 255; /* #e0e7ff 100 */
+  --border-indigo: 199 210 254; /* #c7d2fe 200 */
+  --border-indigo-strong: 165 180 252; /* #a5b4fc 300 */
+  --border-indigo-emphasis: 129 140 248; /* #818cf8 400 */
+  --border-indigo-solid: 99 102 241; /* #6366f1 500/600 */
+  /* fuchsia (fuchsia) */
+  --bg-fuchsia-subtle: 253 244 255; /* #fdf4ff 50 */
+  --bg-fuchsia-muted: 250 232 255; /* #fae8ff 100 */
+  --bg-fuchsia-emphasis: 245 208 254; /* #f5d0fe 200 */
+  --bg-fuchsia-strong: 240 171 252; /* #f0abfc 300 */
+  --bg-fuchsia-solid-light: 232 121 249; /* #e879f9 400 */
+  --bg-fuchsia-solid-soft: 217 70 239; /* #d946ef 500 */
+  --bg-fuchsia-solid: 192 38 211; /* #c026d3 600 */
+  --bg-fuchsia-solid-strong: 162 28 175; /* #a21caf 700/800 */
+  --text-fuchsia-faint: 232 121 249; /* #e879f9 400 */
+  --text-fuchsia-soft: 217 70 239; /* #d946ef 500 */
+  --text-fuchsia: 192 38 211; /* #c026d3 600 */
+  --text-fuchsia-strong: 162 28 175; /* #a21caf 700 */
+  --text-fuchsia-deep: 134 25 143; /* #86198f 800/900 */
+  --border-fuchsia-subtle: 250 232 255; /* #fae8ff 100 */
+  --border-fuchsia: 245 208 254; /* #f5d0fe 200 */
+  --border-fuchsia-strong: 240 171 252; /* #f0abfc 300 */
+  --border-fuchsia-emphasis: 232 121 249; /* #e879f9 400 */
+  --border-fuchsia-solid: 217 70 239; /* #d946ef 500/600 */
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    /* neutral (slate) */
+    --bg-canvas: 2 6 23; /* #020617 */
+    --bg-surface: 15 23 42; /* #0f172a */
+    --bg-surface-subtle: 22 32 50; /* #162032 */
+    --bg-surface-muted: 30 41 59; /* #1e293b */
+    --bg-surface-emphasis: 51 65 85; /* #334155 */
+    --bg-surface-strong: 71 85 105; /* #475569 */
+    --bg-solid-soft: 100 116 139; /* #64748b */
+    --bg-solid: 71 85 105; /* #475569 */
+    --bg-solid-strong: 91 107 130; /* #5b6b82 */
+    --text-fg-strong: 248 250 252; /* #f8fafc */
+    --text-fg: 226 232 240; /* #e2e8f0 */
+    --text-fg-secondary: 203 213 225; /* #cbd5e1 */
+    --text-fg-muted: 176 188 204; /* #b0bccc */
+    --text-fg-subtle: 148 163 184; /* #94a3b8 */
+    --text-fg-faint: 124 140 162; /* #7c8ca2 */
+    --text-fg-ghost: 112 128 151; /* #708097 */
+    --border-line-subtle: 30 41 59; /* #1e293b */
+    --border-line: 51 65 85; /* #334155 */
+    --border-line-strong: 71 85 105; /* #475569 */
+    --border-line-heavy: 124 140 162; /* #7c8ca2 */
+    --border-line-solid: 91 107 130; /* #5b6b82 */
+    /* success (emerald) */
+    --bg-success-subtle: 15 42 52; /* #0f2a34 */
+    --bg-success-muted: 15 55 59; /* #0f373b */
+    --bg-success-emphasis: 15 72 68; /* #0f4844 */
+    --bg-success-strong: 15 91 79; /* #0f5b4f */
+    --text-success-faint: 34 198 141; /* #22c68d */
+    --text-success-soft: 52 211 153; /* #34d399 */
+    --text-success: 81 221 168; /* #51dda8 */
+    --text-success-strong: 110 231 183; /* #6ee7b7 */
+    --text-success-deep: 167 243 208; /* #a7f3d0 */
+    --border-success-subtle: 15 59 61; /* #0f3b3d */
+    --border-success: 15 80 72; /* #0f5048 */
+    --border-success-strong: 16 104 86; /* #106856 */
+    --border-success-emphasis: 16 136 103; /* #108867 */
+    /* danger (rose) */
+    --bg-danger-subtle: 42 28 48; /* #2a1c30 */
+    --bg-danger-muted: 61 31 52; /* #3d1f34 */
+    --bg-danger-emphasis: 84 35 58; /* #54233a */
+    --bg-danger-strong: 111 40 64; /* #6f2840 */
+    --text-danger-faint: 248 88 114; /* #f85872 */
+    --text-danger-soft: 251 113 133; /* #fb7185 */
+    --text-danger: 252 138 154; /* #fc8a9a */
+    --text-danger-strong: 253 164 175; /* #fda4af */
+    --text-danger-deep: 254 205 211; /* #fecdd3 */
+    --border-danger-subtle: 65 32 53; /* #412035 */
+    --border-danger: 95 37 60; /* #5f253c */
+    --border-danger-strong: 130 43 68; /* #822b44 */
+    --border-danger-emphasis: 175 51 78; /* #af334e */
+    /* warning (amber) */
+    --bg-warning-subtle: 43 39 38; /* #2b2726 */
+    --bg-warning-muted: 61 50 36; /* #3d3224 */
+    --bg-warning-emphasis: 84 64 33; /* #544021 */
+    --bg-warning-strong: 112 80 29; /* #70501d */
+    --text-warning-faint: 248 174 24; /* #f8ae18 */
+    --text-warning-soft: 251 191 36; /* #fbbf24 */
+    --text-warning: 252 201 56; /* #fcc938 */
+    --text-warning-strong: 252 211 77; /* #fcd34d */
+    --text-warning-deep: 253 230 138; /* #fde68a */
+    --border-warning-subtle: 66 53 35; /* #423523 */
+    --border-warning: 96 70 31; /* #60461f */
+    --border-warning-strong: 130 90 26; /* #825a1a */
+    --border-warning-emphasis: 176 118 20; /* #b07614 */
+    /* info (sky) */
+    --bg-info-subtle: 15 40 65; /* #0f2841 */
+    --bg-info-muted: 15 51 80; /* #0f3350 */
+    --bg-info-emphasis: 15 66 99; /* #0f4263 */
+    --bg-info-strong: 15 83 122; /* #0f537a */
+    --text-info-faint: 35 177 240; /* #23b1f0 */
+    --text-info-soft: 56 189 248; /* #38bdf8 */
+    --text-info: 90 200 250; /* #5ac8fa */
+    --text-info-strong: 125 211 252; /* #7dd3fc */
+    --text-info-deep: 186 230 253; /* #bae6fd */
+    --border-info-subtle: 15 54 84; /* #0f3654 */
+    --border-info: 15 73 109; /* #0f496d */
+    --border-info-strong: 14 94 138; /* #0e5e8a */
+    --border-info-emphasis: 14 122 176; /* #0e7ab0 */
+    /* accent (violet) */
+    --bg-accent-subtle: 30 31 66; /* #1e1f42 */
+    --bg-accent-muted: 40 37 83; /* #282553 */
+    --bg-accent-emphasis: 52 44 103; /* #342c67 */
+    --bg-accent-strong: 67 52 128; /* #433480 */
+    --text-accent-faint: 153 116 248; /* #9974f8 */
+    --text-accent-soft: 167 139 250; /* #a78bfa */
+    --text-accent: 182 160 252; /* #b6a0fc */
+    --text-accent-strong: 196 181 253; /* #c4b5fd */
+    --text-accent-deep: 221 214 254; /* #ddd6fe */
+    --border-accent-subtle: 42 38 87; /* #2a2657 */
+    --border-accent: 58 47 113; /* #3a2f71 */
+    --border-accent-strong: 77 58 144; /* #4d3a90 */
+    --border-accent-emphasis: 102 71 185; /* #6647b9 */
+    /* teal (teal) */
+    --bg-teal-subtle: 16 42 57; /* #102a39 */
+    --bg-teal-muted: 16 55 67; /* #103743 */
+    --bg-teal-emphasis: 16 71 79; /* #10474f */
+    --bg-teal-strong: 17 91 94; /* #115b5e */
+    --text-teal-faint: 32 198 178; /* #20c6b2 */
+    --text-teal-soft: 45 212 191; /* #2dd4bf */
+    --text-teal: 70 223 202; /* #46dfca */
+    --text-teal-strong: 94 234 212; /* #5eead4 */
+    --text-teal-deep: 153 246 228; /* #99f6e4 */
+    --border-teal-subtle: 16 58 69; /* #103a45 */
+    --border-teal: 17 79 85; /* #114f55 */
+    --border-teal-strong: 18 104 104; /* #126868 */
+    --border-teal-emphasis: 18 136 129; /* #128881 */
+    /* indigo (indigo) */
+    --bg-indigo-subtle: 25 32 66; /* #192042 */
+    --bg-indigo-muted: 32 39 82; /* #202752 */
+    --bg-indigo-emphasis: 40 47 102; /* #282f66 */
+    --bg-indigo-strong: 50 56 126; /* #32387e */
+    --text-indigo-faint: 114 121 244; /* #7279f4 */
+    --text-indigo-soft: 129 140 248; /* #818cf8 */
+    --text-indigo: 147 160 250; /* #93a0fa */
+    --text-indigo-strong: 165 180 252; /* #a5b4fc */
+    --text-indigo-deep: 199 210 254; /* #c7d2fe */
+    --border-indigo-subtle: 33 40 86; /* #212856 */
+    --border-indigo: 44 51 112; /* #2c3370 */
+    --border-indigo-strong: 57 62 142; /* #393e8e */
+    --border-indigo-emphasis: 74 78 181; /* #4a4eb5 */
+    /* fuchsia (fuchsia) */
+    --bg-fuchsia-subtle: 39 29 66; /* #271d42 */
+    --bg-fuchsia-muted: 55 32 81; /* #372051 */
+    --bg-fuchsia-emphasis: 76 37 101; /* #4c2565 */
+    --bg-fuchsia-strong: 100 43 125; /* #642b7d */
+    --text-fuchsia-faint: 224 96 244; /* #e060f4 */
+    --text-fuchsia-soft: 232 121 249; /* #e879f9 */
+    --text-fuchsia: 236 146 250; /* #ec92fa */
+    --text-fuchsia-strong: 240 171 252; /* #f0abfc */
+    --text-fuchsia-deep: 245 208 254; /* #f5d0fe */
+    --border-fuchsia-subtle: 59 33 85; /* #3b2155 */
+    --border-fuchsia: 86 39 111; /* #56276f */
+    --border-fuchsia-strong: 116 46 140; /* #742e8c */
+    --border-fuchsia-emphasis: 156 56 180; /* #9c38b4 */
+  }
+}

@@ -4,17 +4,17 @@
 <div class="mb-4 flex items-center justify-between">
   <div>
     <h1 class="text-lg font-semibold">Smartdraft</h1>
-    <p class="text-xs text-slate-500">The fisheye-rail reader (experimental, parallel to Drafts).</p>
+    <p class="text-xs text-fg-subtle">The fisheye-rail reader (experimental, parallel to Drafts).</p>
   </div>
-  <span class="text-sm text-slate-500">{{ drafts | length }} draft(s)</span>
+  <span class="text-sm text-fg-subtle">{{ drafts | length }} draft(s)</span>
 </div>
-<ul class="divide-y divide-slate-100 rounded border border-slate-200">
+<ul class="divide-y divide-line-subtle rounded border border-line">
   {% for d in drafts %}
-  <li class="flex items-center justify-between px-3 py-2 hover:bg-slate-50">
-    <a href="/smartdraft/{{ d.slug or d.id }}" class="text-sm font-medium text-sky-700 hover:underline">{{ d.title or ('draft ' ~ d.id) }}</a>
+  <li class="flex items-center justify-between px-3 py-2 hover:bg-surface-subtle">
+    <a href="/smartdraft/{{ d.slug or d.id }}" class="text-sm font-medium text-info-strong hover:underline">{{ d.title or ('draft ' ~ d.id) }}</a>
   </li>
   {% else %}
-  <li class="px-3 py-4 text-sm text-slate-400">No drafts yet.</li>
+  <li class="px-3 py-4 text-sm text-fg-faint">No drafts yet.</li>
   {% endfor %}
 </ul>
 {% endblock %}

@@ -32,26 +32,26 @@
    Put on the outer element, not per-span, so one KaTeX pass covers the
    whole compact line. #}
 <span class="tex-scope break-words">
-  {% if h.year %}<span class="font-semibold {% if h.reviewed %}{{ 'rounded bg-sky-600 px-1 text-white' if h.held else 'rounded bg-amber-600 px-1 text-white' }}{% else %}{{ 'text-sky-700' if h.held else 'text-amber-700' }}{% endif %}"
+  {% if h.year %}<span class="font-semibold {% if h.reviewed %}{{ 'rounded bg-info-solid px-1 text-on-solid' if h.held else 'rounded bg-warning-solid px-1 text-on-solid' }}{% else %}{{ 'text-info-strong' if h.held else 'text-warning-strong' }}{% endif %}"
     {% if h.reviewed %}title="Reviewed ✓ {{ h.reviewed_at }}{% if h.reviewed_by %} by {{ h.reviewed_by }}{% endif %}"{% endif %}>{{ h.year }}</span> {% endif %}
-  <span class="text-slate-700">{{ h.title }}</span> {{ vm.verified_mark(h.reviewed_at, h.reviewed_by) }}
-  {% if h.journal %}<span class="italic text-slate-400"> · {{ h.journal }}</span>{% endif %}
-  {% if h.first_author %}<span class="text-slate-400"> · {{ h.first_author }}{% if h.multi_author %} … {{ h.last_author }}{% endif %}</span>{% endif %}
-  {% if show_handle and h.handle %}<span class="ml-1 font-mono text-[10px] text-slate-400">{{ h.handle }}</span>{% endif %}
+  <span class="text-fg-secondary">{{ h.title }}</span> {{ vm.verified_mark(h.reviewed_at, h.reviewed_by) }}
+  {% if h.journal %}<span class="italic text-fg-faint"> · {{ h.journal }}</span>{% endif %}
+  {% if h.first_author %}<span class="text-fg-faint"> · {{ h.first_author }}{% if h.multi_author %} … {{ h.last_author }}{% endif %}</span>{% endif %}
+  {% if show_handle and h.handle %}<span class="ml-1 font-mono text-[10px] text-fg-faint">{{ h.handle }}</span>{% endif %}
 </span>
 {% else %}
 {# tex-scope: same rationale as the compact variant above — one outer
    element, one KaTeX pass over both lines. #}
 <div class="tex-scope min-w-0">
   <p class="text-sm leading-snug break-words">
-    {% if h.year %}<span class="font-semibold {% if h.reviewed %}{{ 'rounded bg-sky-600 px-1 text-white' if h.held else 'rounded bg-amber-600 px-1 text-white' }}{% else %}{{ 'text-sky-700' if h.held else 'text-amber-700' }}{% endif %}"
+    {% if h.year %}<span class="font-semibold {% if h.reviewed %}{{ 'rounded bg-info-solid px-1 text-on-solid' if h.held else 'rounded bg-warning-solid px-1 text-on-solid' }}{% else %}{{ 'text-info-strong' if h.held else 'text-warning-strong' }}{% endif %}"
       {% if h.reviewed %}title="Reviewed ✓ {{ h.reviewed_at }}{% if h.reviewed_by %} by {{ h.reviewed_by }}{% endif %}"{% endif %}>{{ h.year }}</span> {% endif %}
-    <span class="font-medium text-slate-800">{{ h.title }}</span> {{ vm.verified_mark(h.reviewed_at, h.reviewed_by) }}
-    {% if show_handle and h.handle %}<span class="ml-1 font-mono text-[10px] text-slate-400">{{ h.handle }}</span>{% endif %}
+    <span class="font-medium text-fg">{{ h.title }}</span> {{ vm.verified_mark(h.reviewed_at, h.reviewed_by) }}
+    {% if show_handle and h.handle %}<span class="ml-1 font-mono text-[10px] text-fg-faint">{{ h.handle }}</span>{% endif %}
   </p>
   {% if h.journal or h.first_author %}
-  <p class="text-[11px] text-slate-500 truncate">
-    {% if h.journal %}<span class="italic {{ 'text-sky-600' if h.held else 'text-amber-600' }}">{{ h.journal }}</span>{% if h.first_author %} · {% endif %}{% endif %}
+  <p class="text-[11px] text-fg-subtle truncate">
+    {% if h.journal %}<span class="italic {{ 'text-info' if h.held else 'text-warning' }}">{{ h.journal }}</span>{% if h.first_author %} · {% endif %}{% endif %}
     {% if h.first_author %}{{ h.first_author }}{% if h.multi_author %} … {{ h.last_author }}{% endif %}{% endif %}
   </p>
   {% endif %}

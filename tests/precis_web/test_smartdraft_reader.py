@@ -1332,12 +1332,12 @@ def test_smartdraft_reader_chunk_ids_render_without_debug_flag(
     body = r.text
     # the focus block's id span (view.html.j2's generic full-mode branch)
     assert (
-        '<span class="font-mono text-sky-500 cursor-pointer" title="click to copy" '
+        '<span class="font-mono text-info-soft cursor-pointer" title="click to copy" '
         f"onclick=\"sdCopyDc(event, '{dc1}')\">{dc1}</span>"
     ) in body
     # the non-focus doc-mode neighbour's id span (sd_doc_block, _block.html.j2)
     assert (
-        '<span class="font-mono text-[9px] text-sky-500 cursor-pointer" '
+        '<span class="font-mono text-[9px] text-info-soft cursor-pointer" '
         f'title="click to copy" onclick="sdCopyDc(event, \'{dc2}\')">{dc2} </span>'
     ) in body
 

@@ -292,7 +292,7 @@ def _inline_validate_panel(client, slug, page_html):
     assert frag.status_code == 200
     identity = frag.headers["X-Validation-Identity"]
     marker = (
-        '<summary class="cursor-pointer text-slate-500">validate: checking…</summary>'
+        '<summary class="cursor-pointer text-fg-subtle">validate: checking…</summary>'
     )
     assert marker in page_html
     html = page_html.replace(marker, frag.text, 1).replace(

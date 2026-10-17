@@ -13,7 +13,7 @@
       {% include "_heart.html.j2" %}
     {% endif %}
   </h1>
-  <p class="text-sm text-slate-500">
+  <p class="text-sm text-fg-subtle">
     #{{ ref.id }}
     {% if ref.slug %}· <span class="font-mono">{{ ref.slug }}</span>{% endif %}
     {% if ref.created %}· created {{ ref.created }}{% endif %}
@@ -28,13 +28,13 @@
 <section class="mb-4 rounded-lg border p-3" aria-label="Researcher">
   {% if orcid_meta.identifier %}
   <p>ORCID <a href="{{ orcid_meta.url }}" target="_blank" rel="noopener"
-              class="text-sky-700 hover:underline">{{ orcid_meta.identifier }}</a></p>
+              class="text-info-strong hover:underline">{{ orcid_meta.identifier }}</a></p>
   {% endif %}
   <h2 class="mt-3 font-semibold">Papers in this corpus</h2>
   <ul>
     {% for paper in orcid_meta.papers %}
-    <li><a href="{{ paper.url }}" class="text-sky-700 hover:underline">{{ paper.title }}</a></li>
-    {% else %}<li class="text-sm text-slate-500">No linked papers in this corpus.</li>{% endfor %}
+    <li><a href="{{ paper.url }}" class="text-info-strong hover:underline">{{ paper.title }}</a></li>
+    {% else %}<li class="text-sm text-fg-subtle">No linked papers in this corpus.</li>{% endfor %}
   </ul>
 </section>
 {% endif %}
@@ -48,25 +48,25 @@
     {% if t.deletable %}
     <form method="post" action="/refs/{{ kind }}/{{ ref.id }}/tags" class="inline">
       <input type="hidden" name="remove" value="{{ t.value }}" />
-      <span class="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-slate-100 text-slate-700 border border-slate-200">
+      <span class="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-surface-muted text-fg-secondary border border-line">
         <span class="font-mono">{{ t.value }}</span>
-        <button class="text-slate-400 hover:text-rose-600" title="remove tag">×</button>
+        <button class="text-fg-faint hover:text-danger" title="remove tag">×</button>
       </span>
     </form>
     {% else %}
-    <span class="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-violet-50 text-violet-700 border border-violet-100"
+    <span class="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-accent-subtle text-accent-strong border border-accent-subtle"
           title="closed-vocab tag — remove via tag(kind='{{ kind }}', id={{ ref.id }}, remove=[...])">
       <span class="font-mono">{{ t.label }}</span>
     </span>
     {% endif %}
   {% else %}
-  <span class="text-xs text-slate-400 italic">no tags yet</span>
+  <span class="text-xs text-fg-faint italic">no tags yet</span>
   {% endfor %}
   <form method="post" action="/refs/{{ kind }}/{{ ref.id }}/tags"
         class="inline-flex items-center gap-1 ml-auto">
     <input name="add" placeholder="+ tag (comma-separated)"
-           class="text-xs px-2 py-1 rounded border border-slate-300 w-56" />
-    <button class="text-xs px-2 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700">add</button>
+           class="text-xs px-2 py-1 rounded border border-line-strong w-56" />
+    <button class="text-xs px-2 py-1 rounded bg-success-solid text-on-solid hover:bg-success-solid-strong">add</button>
   </form>
 </div>
 
@@ -75,65 +75,65 @@
    The thumbnail is itself a link to the video (with a play overlay);
    the deep-link in the body below stays as the plain-text fallback. #}
 {% if youtube_meta %}
-<div class="mb-4 rounded-lg border border-slate-200 bg-white overflow-hidden sm:flex">
+<div class="mb-4 rounded-lg border border-line bg-surface overflow-hidden sm:flex">
   <a href="{{ youtube_meta.watch_url }}" target="_blank" rel="noopener"
      class="relative block shrink-0 sm:w-64 group"
      title="Watch on YouTube">
     <img src="{{ youtube_meta.thumbnail_url }}" alt="Video thumbnail"
-         class="w-full h-full object-cover aspect-video bg-slate-100"
+         class="w-full h-full object-cover aspect-video bg-surface-muted"
          loading="lazy" referrerpolicy="no-referrer" />
     <span class="absolute inset-0 flex items-center justify-center">
-      <span class="rounded-full bg-black/60 group-hover:bg-red-600 transition-colors
-                   w-14 h-10 flex items-center justify-center text-white text-xl">▶</span>
+      <span class="rounded-full bg-scrim/60 group-hover:bg-danger-solid transition-colors
+                   w-14 h-10 flex items-center justify-center text-on-solid text-xl">▶</span>
     </span>
   </a>
   <div class="p-4 flex flex-col gap-2 min-w-0">
     <a href="{{ youtube_meta.watch_url }}" target="_blank" rel="noopener"
-       class="inline-flex items-center gap-1.5 self-start rounded-md bg-red-600 text-white
-              text-sm px-3 py-1.5 hover:bg-red-700">
+       class="inline-flex items-center gap-1.5 self-start rounded-md bg-danger-solid text-on-solid
+              text-sm px-3 py-1.5 hover:bg-danger-solid-strong">
       ▶ Watch on YouTube ↗
     </a>
-    <p class="text-xs text-slate-500 space-x-2">
+    <p class="text-xs text-fg-subtle space-x-2">
       {% if youtube_meta.channel_name %}
         {% if youtube_meta.channel_url %}
         <a href="{{ youtube_meta.channel_url }}" target="_blank" rel="noopener"
-           class="text-sky-700 hover:underline">{{ youtube_meta.channel_name }}</a>
+           class="text-info-strong hover:underline">{{ youtube_meta.channel_name }}</a>
         {% else %}<span>{{ youtube_meta.channel_name }}</span>{% endif %}
       {% endif %}
       {% if youtube_meta.duration %}<span>· {{ youtube_meta.duration }}</span>{% endif %}
       {% if youtube_meta.published_at %}<span>· published {{ youtube_meta.published_at }}</span>{% endif %}
     </p>
-    <p class="text-xs text-slate-400 font-mono break-all">{{ youtube_meta.watch_url }}</p>
+    <p class="text-xs text-fg-faint font-mono break-all">{{ youtube_meta.watch_url }}</p>
   </div>
 </div>
 {% endif %}
 
 {% if kind == 'component' and component_supplier_linked %}
-<section class="rounded-lg border border-slate-200 bg-white p-4">
-  <button type="button" class="text-sm text-blue-700 underline"
+<section class="rounded-lg border border-line bg-surface p-4">
+  <button type="button" class="text-sm text-info-strong underline"
           hx-get="/refs/component/{{ ref.id }}/supplier-live"
           hx-target="#component-supplier-live" hx-swap="innerHTML">Load live supplier data</button>
   <div id="component-supplier-live" class="mt-3 text-sm">Supplier data is fetched on demand and is not stored.</div>
 </section>
 {% endif %}
 {% if body_disabled_notice %}
-<div class="mb-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+<div class="mb-3 rounded-lg border border-warning bg-warning-subtle p-3 text-xs text-warning-deep">
   {{ body_disabled_notice }}
 </div>
 {% endif %}
 {% if is_error %}
-<div class="rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800 whitespace-pre-wrap">{{ body | linkify_refs }}</div>
+<div class="rounded-lg border border-danger bg-danger-subtle p-4 text-sm text-danger-deep whitespace-pre-wrap">{{ body | linkify_refs }}</div>
 {% elif kind == "anki" %}
 {# Cloze cards: render {{cN::answer::hint}} deletions as highlighted spans
    rather than leaking the raw double-brace markup at the reader. #}
-<div class="rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-700 overflow-x-auto whitespace-pre-wrap leading-relaxed">{{ body | render_cloze }}</div>
+<div class="rounded-lg border border-line bg-surface p-4 text-sm text-fg-secondary overflow-x-auto whitespace-pre-wrap leading-relaxed">{{ body | render_cloze }}</div>
 {% else %}
 {# Tab-separated runs (TOON ``Next:`` blocks, tab-delimited oracle shares)
    render as aligned tables via ``linkify_toon``; prose stays whitespace-
    preserved + linkified. The container is a plain div (each segment
    carries its own whitespace handling) rather than a <pre>, whose fixed
    tab-stops made the columns invisible. #}
-<div class="rounded-lg border border-slate-200 bg-white p-4 text-xs text-slate-700 overflow-x-auto space-y-1">{{ body | linkify_toon(footnotes, doi_links) }}</div>
+<div class="rounded-lg border border-line bg-surface p-4 text-xs text-fg-secondary overflow-x-auto space-y-1">{{ body | linkify_toon(footnotes, doi_links) }}</div>
 {% endif %}
 
 {% from "graph/_panel_mount.html.j2" import panel_mount %}
@@ -147,8 +147,8 @@
    without leaving the page they clicked. #}
 {% if job_actions %}
 <section class="mt-6" x-data="{ showModel: false }">
-  <h2 class="text-sm font-semibold mb-2 text-slate-700">Actions</h2>
-  <div class="rounded-lg border border-slate-200 bg-white p-4 space-y-3">
+  <h2 class="text-sm font-semibold mb-2 text-fg-secondary">Actions</h2>
+  <div class="rounded-lg border border-line bg-surface p-4 space-y-3">
     <div class="flex flex-wrap items-center gap-2">
       {% if job_actions.can_retry %}
       {# Retry clears the parent todo's child-failed: bubble so dispatch
@@ -158,7 +158,7 @@
             class="inline-flex items-center gap-2">
         {% if job_actions.is_llm_planner %}
         <select name="model"
-                class="text-xs px-2 py-1.5 rounded border border-slate-300 text-slate-700">
+                class="text-xs px-2 py-1.5 rounded border border-line-strong text-fg-secondary">
           <option value="">same model</option>
           {% for m in planner_models() if m.alias in ('small','medium','big','frontier') %}
           <option value="{{ m.alias }}"
@@ -166,16 +166,16 @@
           {% endfor %}
         </select>
         {% endif %}
-        <button class="rounded-md bg-emerald-600 text-white text-sm px-4 py-2 hover:bg-emerald-700">
+        <button class="rounded-md bg-success-solid text-on-solid text-sm px-4 py-2 hover:bg-success-solid-strong">
           ↻ Retry job
         </button>
       </form>
       {% elif job_actions.retryable %}
-      <span class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
+      <span class="text-xs text-warning-strong bg-warning-subtle border border-warning rounded px-2 py-1.5">
         can't re-mint — this job has no todo parent (legacy orphan)
       </span>
       {% else %}
-      <span class="text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded px-2 py-1.5">
+      <span class="text-xs text-fg-subtle bg-surface-subtle border border-line rounded px-2 py-1.5">
         {% if job_actions.status %}STATUS:{{ job_actions.status }}{% else %}not terminal{% endif %} —
         only a failed / cancelled job can be retried
       </span>
@@ -183,19 +183,19 @@
 
       {% if job_actions.has_transcript %}
       <a href="/todo/{{ job_actions.job_id }}/transcript"
-         class="rounded-md border border-slate-300 text-sm px-4 py-2 text-slate-700 hover:bg-slate-50">
+         class="rounded-md border border-line-strong text-sm px-4 py-2 text-fg-secondary hover:bg-surface-subtle">
         📜 View transcript
       </a>
       {% endif %}
 
       {% if job_actions.parent_id %}
       <a href="/todo?focus={{ job_actions.parent_id }}"
-         class="rounded-md border border-slate-300 text-sm px-4 py-2 text-slate-700 hover:bg-slate-50">
+         class="rounded-md border border-line-strong text-sm px-4 py-2 text-fg-secondary hover:bg-surface-subtle">
         ↑ Parent todo #{{ job_actions.parent_id }}
       </a>
       {% endif %}
     </div>
-    <p class="text-xs text-slate-400">
+    <p class="text-xs text-fg-faint">
       Retry clears the parent todo's <span class="font-mono">child-failed:</span>
       bubble so the dispatch worker re-mints a fresh attempt (~1&nbsp;min);
       this failed job stays for forensics. The status &amp; events above
@@ -212,17 +212,17 @@
    for jobs (see the Actions strip above). #}
 {% if discussions is not none %}
 <section class="mt-6">
-  <h2 class="text-sm font-semibold mb-2 text-slate-700">Discussion</h2>
+  <h2 class="text-sm font-semibold mb-2 text-fg-secondary">Discussion</h2>
   {% if discussions %}
-  <ul class="mb-3 rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
+  <ul class="mb-3 rounded-lg border border-line bg-surface divide-y divide-line-subtle">
     {% for d in discussions %}
     <li class="px-3 py-2 text-sm flex items-center gap-2">
-      <span class="text-slate-400">💬</span>
-      <a href="{{ d.url }}" class="text-sky-700 hover:underline flex-1">{{ d.title }}</a>
+      <span class="text-fg-faint">💬</span>
+      <a href="{{ d.url }}" class="text-info-strong hover:underline flex-1">{{ d.title }}</a>
       {% if d.chunk is not none %}
-      <span class="text-xs font-mono text-slate-400">on ~{{ d.chunk }}</span>
+      <span class="text-xs font-mono text-fg-faint">on ~{{ d.chunk }}</span>
       {% endif %}
-      <span class="text-xs text-slate-400">{{ d.turns }} turn{{ '' if d.turns == 1 else 's' }}</span>
+      <span class="text-xs text-fg-faint">{{ d.turns }} turn{{ '' if d.turns == 1 else 's' }}</span>
     </li>
     {% endfor %}
   </ul>
@@ -230,12 +230,12 @@
   <form method="post" action="/refs/{{ kind }}/{{ ref.id }}/ask" class="space-y-2">
     <textarea name="question" rows="2" required
               placeholder="Ask a follow-up about this thought…"
-              class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"></textarea>
+              class="w-full rounded-md border border-line-strong px-3 py-2 text-sm"></textarea>
     <div class="flex items-center gap-2">
-      <button class="rounded-md bg-sky-600 text-white text-sm px-4 py-2 hover:bg-sky-700">
+      <button class="rounded-md bg-info-solid text-on-solid text-sm px-4 py-2 hover:bg-info-solid-strong">
         Ask &amp; think
       </button>
-      <span class="text-xs text-slate-400">
+      <span class="text-xs text-fg-faint">
         runs an agentic pass (can take ~30–60s); the answer lands in a linked thread
       </span>
     </div>
@@ -250,26 +250,26 @@
 {% if references %}
 <section class="mt-6" x-data="{ copied: '', menuOpen: false }" @click.outside="menuOpen = false">
   <div class="flex items-baseline gap-2 mb-2">
-    <h2 class="text-sm font-semibold text-slate-700">
-      References <span class="text-slate-400 font-normal">({{ references|length }})</span>
+    <h2 class="text-sm font-semibold text-fg-secondary">
+      References <span class="text-fg-faint font-normal">({{ references|length }})</span>
     </h2>
     {# Three export modes — plain text, Markdown, BibTeX. The dropdown
        state plus a tiny shared formatter live entirely in Alpine. #}
     <div class="ml-auto relative">
       <button type="button" @click="menuOpen = !menuOpen"
-              class="text-xs px-2 py-1 rounded border border-slate-300 hover:bg-slate-50">
+              class="text-xs px-2 py-1 rounded border border-line-strong hover:bg-surface-subtle">
         <span x-show="!copied">📋 Copy as… ▾</span>
-        <span x-show="copied" x-cloak class="text-emerald-700">✓ copied <span x-text="copied"></span></span>
+        <span x-show="copied" x-cloak class="text-success-strong">✓ copied <span x-text="copied"></span></span>
       </button>
       <div x-show="menuOpen" x-cloak
-           class="absolute right-0 top-full mt-1 w-48 rounded-lg border border-slate-200 bg-white shadow-xl z-20 text-xs">
+           class="absolute right-0 top-full mt-1 w-48 rounded-lg border border-line bg-surface shadow-xl z-20 text-xs">
         <button type="button" @click="copyAs('plain'); menuOpen = false"
-                class="block w-full text-left px-3 py-2 hover:bg-slate-50">Plain text</button>
+                class="block w-full text-left px-3 py-2 hover:bg-surface-subtle">Plain text</button>
         <button type="button" @click="copyAs('markdown'); menuOpen = false"
-                class="block w-full text-left px-3 py-2 hover:bg-slate-50">Markdown</button>
+                class="block w-full text-left px-3 py-2 hover:bg-surface-subtle">Markdown</button>
         <button type="button" @click="copyAs('bibtex'); menuOpen = false"
-                class="block w-full text-left px-3 py-2 hover:bg-slate-50">BibTeX
-          <span class="text-slate-400">(papers only)</span>
+                class="block w-full text-left px-3 py-2 hover:bg-surface-subtle">BibTeX
+          <span class="text-fg-faint">(papers only)</span>
         </button>
       </div>
     </div>
@@ -320,7 +320,7 @@
       }
     }
   </script>
-  <ol class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100 list-decimal pl-8">
+  <ol class="rounded-lg border border-line bg-surface divide-y divide-line-subtle list-decimal pl-8">
     {% for r in references %}
     {# data-ref-line is what the copy button pulls — plain-text cite
        form: "handle — title (kind). preview…". id="ref-N" lets the
@@ -330,71 +330,71 @@
       <div class="flex items-start gap-2">
         {# Verification badge (#191) — colour matches status. #}
         {% if r.status == 'resolved' %}
-          <span class="text-emerald-600 shrink-0" title="resolves cleanly">✓</span>
+          <span class="text-success shrink-0" title="resolves cleanly">✓</span>
         {% elif r.status == 'stub' %}
-          <span class="text-amber-600 shrink-0" title="ref exists but no body chunks yet (e.g. paper stub awaiting fetch)">?</span>
+          <span class="text-warning shrink-0" title="ref exists but no body chunks yet (e.g. paper stub awaiting fetch)">?</span>
         {% elif r.status == 'deleted' %}
-          <span class="text-slate-400 shrink-0" title="soft-deleted">⊘</span>
+          <span class="text-fg-faint shrink-0" title="soft-deleted">⊘</span>
         {% else %}
-          <span class="text-rose-600 shrink-0" title="reference doesn't resolve">✗</span>
+          <span class="text-danger shrink-0" title="reference doesn't resolve">✗</span>
         {% endif %}
-        <a href="{{ r.url }}" class="font-mono text-sky-700 hover:underline shrink-0">{{ r.handle }}</a>
-        <span class="text-slate-400 shrink-0">·</span>
+        <a href="{{ r.url }}" class="font-mono text-info-strong hover:underline shrink-0">{{ r.handle }}</a>
+        <span class="text-fg-faint shrink-0">·</span>
         {% if r.status == 'missing' %}
-        <span class="text-rose-700 italic">{{ r.title }}</span>
+        <span class="text-danger-strong italic">{{ r.title }}</span>
         {% elif r.status == 'deleted' %}
-        <span class="text-slate-400 italic line-through">{{ r.title }}</span>
+        <span class="text-fg-faint italic line-through">{{ r.title }}</span>
         {% elif r.status == 'stub' %}
         {# A paper stub gets the shared header (amber, "not held") + the note;
            other kinds keep the plain title. #}
-        {% if r.head %}<span class="break-words">{{ ph.paper_head(r.head, compact=true) }} <span class="text-slate-400">(stub — awaiting fetch)</span></span>
-        {% else %}<span class="text-amber-700 break-words">{{ r.title }} <span class="text-slate-400">(stub — awaiting fetch)</span></span>{% endif %}
+        {% if r.head %}<span class="break-words">{{ ph.paper_head(r.head, compact=true) }} <span class="text-fg-faint">(stub — awaiting fetch)</span></span>
+        {% else %}<span class="text-warning-strong break-words">{{ r.title }} <span class="text-fg-faint">(stub — awaiting fetch)</span></span>{% endif %}
         {% else %}
         {# Paper refs render through the shared identity header (year · title ·
            venue · first … last); every other kind keeps the plain title. #}
         {% if r.head %}{{ ph.paper_head(r.head, compact=true) }}
-        {% else %}<span class="text-slate-700 break-words">{{ r.title }}</span>{% endif %}
+        {% else %}<span class="text-fg-secondary break-words">{{ r.title }}</span>{% endif %}
         {% endif %}
-        <span class="ml-auto text-slate-400 shrink-0">{{ r.kind }}</span>
+        <span class="ml-auto text-fg-faint shrink-0">{{ r.kind }}</span>
       </div>
       {% if r.preview %}
-      <p class="mt-1 text-slate-600 break-words">{{ r.preview }}</p>
+      <p class="mt-1 text-fg-muted break-words">{{ r.preview }}</p>
       {% endif %}
     </li>
     {% endfor %}
   </ol>
-  <p class="mt-2 text-xs text-slate-400">
+  <p class="mt-2 text-xs text-fg-faint">
     Auto-extracted from this memory's body — inline ``[N]`` markers
     cross-link back to this list.
-    Badges: <span class="text-emerald-600">✓</span> resolves ·
-    <span class="text-amber-600">?</span> stub awaiting fetch ·
-    <span class="text-slate-400">⊘</span> deleted ·
-    <span class="text-rose-600">✗</span> dead.
+    Badges: <span class="text-success">✓</span> resolves ·
+    <span class="text-warning">?</span> stub awaiting fetch ·
+    <span class="text-fg-faint">⊘</span> deleted ·
+    <span class="text-danger">✗</span> dead.
   </p>
 </section>
 {% endif %}
 
 {% if chunks %}
 <section class="mt-6">
-  <h2 class="text-sm font-semibold mb-2 text-slate-700">
-    Chunks <span class="text-slate-400 font-normal">({{ chunks|length }})</span>
+  <h2 class="text-sm font-semibold mb-2 text-fg-secondary">
+    Chunks <span class="text-fg-faint font-normal">({{ chunks|length }})</span>
   </h2>
   <ul class="space-y-3">
     {% for c in chunks %}
-    <li class="rounded-lg border border-slate-200 bg-white">
-      <div class="flex items-baseline gap-2 px-4 py-2 border-b border-slate-100 bg-slate-50/60 rounded-t-lg">
-        <span class="text-xs font-mono text-slate-500">~{{ c.pos }}</span>
-        <span class="text-xs px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 font-medium">{{ c.chunk_kind }}</span>
-        {% if c.slug %}<span class="text-xs font-mono text-slate-400">{{ c.slug }}</span>{% endif %}
+    <li class="rounded-lg border border-line bg-surface">
+      <div class="flex items-baseline gap-2 px-4 py-2 border-b border-line-subtle bg-surface-subtle/60 rounded-t-lg">
+        <span class="text-xs font-mono text-fg-subtle">~{{ c.pos }}</span>
+        <span class="text-xs px-1.5 py-0.5 rounded bg-accent-muted text-accent-strong font-medium">{{ c.chunk_kind }}</span>
+        {% if c.slug %}<span class="text-xs font-mono text-fg-faint">{{ c.slug }}</span>{% endif %}
       </div>
-      <pre class="px-4 py-3 text-sm whitespace-pre-wrap break-words text-slate-800 overflow-x-auto">{{ c.text }}</pre>
+      <pre class="px-4 py-3 text-sm whitespace-pre-wrap break-words text-fg overflow-x-auto">{{ c.text }}</pre>
       {# Ask scoped to this chunk — the answer thread links back to ~pos. #}
       <form method="post" action="/refs/{{ kind }}/{{ ref.id }}/ask"
-            class="flex items-center gap-2 px-4 py-2 border-t border-slate-100">
+            class="flex items-center gap-2 px-4 py-2 border-t border-line-subtle">
         <input type="hidden" name="chunk" value="{{ c.pos }}" />
         <input name="question" placeholder="Ask about ~{{ c.pos }}…"
-               class="flex-1 text-xs px-2 py-1 rounded border border-slate-300" />
-        <button class="text-xs px-2 py-1 rounded bg-sky-600 text-white hover:bg-sky-700">ask</button>
+               class="flex-1 text-xs px-2 py-1 rounded border border-line-strong" />
+        <button class="text-xs px-2 py-1 rounded bg-info-solid text-on-solid hover:bg-info-solid-strong">ask</button>
       </form>
     </li>
     {% endfor %}

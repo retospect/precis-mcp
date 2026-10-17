@@ -1,34 +1,34 @@
 {# Bare fragment swapped into a todo row's "..." panel via htmx. #}
-<div class="w-full mt-1 rounded border border-slate-200 bg-slate-50 p-2 text-xs">
-  <div class="font-medium text-slate-500 mb-1">Attempts (jobs)</div>
+<div class="w-full mt-1 rounded border border-line bg-surface-subtle p-2 text-xs">
+  <div class="font-medium text-fg-subtle mb-1">Attempts (jobs)</div>
   {% if attempts %}
   <ul class="space-y-0.5 mb-2">
     {% for a in attempts %}
-    {% set sc = {'succeeded':'text-emerald-700','done':'text-emerald-700','failed':'text-rose-700','running':'text-amber-700','cancelled':'text-slate-400'} %}
+    {% set sc = {'succeeded':'text-success-strong','done':'text-success-strong','failed':'text-danger-strong','running':'text-warning-strong','cancelled':'text-fg-faint'} %}
     <li>
       <div class="flex items-center gap-2">
-        <span class="text-slate-400">#{{ a.id }}</span>
-        <span class="{{ sc.get(a.status, 'text-sky-700') }}">[{{ a.status }}]</span>
-        <span class="text-slate-600 truncate">{{ a.title }}</span>
+        <span class="text-fg-faint">#{{ a.id }}</span>
+        <span class="{{ sc.get(a.status, 'text-info-strong') }}">[{{ a.status }}]</span>
+        <span class="text-fg-muted truncate">{{ a.title }}</span>
         {# Same relative-in-row / absolute-in-tooltip pairing as the tree. #}
-        <span class="ml-auto shrink-0 text-slate-400 tabular-nums whitespace-nowrap">
+        <span class="ml-auto shrink-0 text-fg-faint tabular-nums whitespace-nowrap">
           {% if a.status_since %}<span title="{{ a.status }} at {{ a.status_since | abs_ts }}">{{ a.status_since | ago }}</span>{% endif %}
-          {% if a.timing %}<span class="text-slate-300">· {{ a.timing }}</span>{% endif %}
+          {% if a.timing %}<span class="text-fg-ghost">· {{ a.timing }}</span>{% endif %}
         </span>
       </div>
       {% if a.result or a.events or a.summary %}
       <details class="ml-6 mt-0.5">
-        <summary class="cursor-pointer text-slate-500 hover:text-slate-700">
+        <summary class="cursor-pointer text-fg-subtle hover:text-fg-secondary">
           {% if a.status == 'failed' %}why it failed{% else %}details{% endif %}
         </summary>
         {% if a.result %}
-        <pre class="mt-1 whitespace-pre-wrap rounded bg-emerald-50 border border-emerald-200 p-2 text-slate-800">{{ a.result }}</pre>
+        <pre class="mt-1 whitespace-pre-wrap rounded bg-success-subtle border border-success p-2 text-fg">{{ a.result }}</pre>
         {% endif %}
         {% for ev in a.events %}
-        <pre class="mt-1 whitespace-pre-wrap rounded bg-rose-50 border border-rose-200 p-2 text-rose-800">{{ ev }}</pre>
+        <pre class="mt-1 whitespace-pre-wrap rounded bg-danger-subtle border border-danger p-2 text-danger-deep">{{ ev }}</pre>
         {% endfor %}
         {% if a.summary %}
-        <pre class="mt-1 whitespace-pre-wrap rounded bg-white border border-slate-200 p-2 text-slate-700">{{ a.summary }}</pre>
+        <pre class="mt-1 whitespace-pre-wrap rounded bg-surface border border-line p-2 text-fg-secondary">{{ a.summary }}</pre>
         {% endif %}
       </details>
       {% endif %}
@@ -36,21 +36,21 @@
     {% endfor %}
   </ul>
   {% else %}
-  <p class="text-slate-400 mb-2">No job attempts.</p>
+  <p class="text-fg-faint mb-2">No job attempts.</p>
   {% endif %}
 
-  <div class="font-medium text-slate-500 mb-1">Event log</div>
+  <div class="font-medium text-fg-subtle mb-1">Event log</div>
   {% if events %}
   <ul class="space-y-0.5">
     {% for e in events %}
     <li class="flex items-center gap-2">
-      <span class="text-slate-400 w-28 shrink-0">{{ e.ts }}</span>
-      <span class="font-mono text-slate-600">{{ e.event }}</span>
-      <span class="text-slate-400">{{ e.source }}</span>
+      <span class="text-fg-faint w-28 shrink-0">{{ e.ts }}</span>
+      <span class="font-mono text-fg-muted">{{ e.event }}</span>
+      <span class="text-fg-faint">{{ e.source }}</span>
     </li>
     {% endfor %}
   </ul>
   {% else %}
-  <p class="text-slate-400">No recorded events yet.</p>
+  <p class="text-fg-faint">No recorded events yet.</p>
   {% endif %}
 </div>

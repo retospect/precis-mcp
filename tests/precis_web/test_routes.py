@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 
 import pytest
@@ -6068,7 +6069,7 @@ def test_nav_badge_counts_on_every_page(client) -> None:
     assert "Needs you" in resp.text
     assert "Browse" in resp.text
     # Rose attention badge carrying the combined count.
-    assert "bg-rose-600" in resp.text
+    assert re.search(r"bg-danger-solid(?![\w-])", resp.text)
 
 
 def test_ask_value_strips_prefix() -> None:

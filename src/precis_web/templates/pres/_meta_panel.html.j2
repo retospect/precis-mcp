@@ -5,37 +5,37 @@
    ``gotoPage(n)`` to drive the PDF viewer. Context: ref, attribution,
    bibtex, slides (built by pres.detail). #}
 <form method="post" action="/pres/{{ ref.id }}/edit" class="space-y-2">
-  <h2 class="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Attribution</h2>
+  <h2 class="mb-1 text-xs font-semibold uppercase tracking-wide text-fg-subtle">Attribution</h2>
 
   <label class="block">
-    <span class="text-xs text-slate-500">Title</span>
+    <span class="text-xs text-fg-subtle">Title</span>
     <input name="title" value="{{ ref.title }}"
-           class="w-full rounded border border-slate-300 px-2 py-1"/>
+           class="w-full rounded border border-line-strong px-2 py-1"/>
   </label>
 
   <label class="block">
-    <span class="text-xs text-slate-500">Authors (one per line)</span>
+    <span class="text-xs text-fg-subtle">Authors (one per line)</span>
     <textarea name="authors" rows="3"
-              class="w-full rounded border border-slate-300 px-2 py-1 font-mono text-xs"
+              class="w-full rounded border border-line-strong px-2 py-1 font-mono text-xs"
               placeholder="Payne, M. C.">{{ attribution.authors }}</textarea>
   </label>
 
   <label class="block">
-    <span class="text-xs text-slate-500">Venue / howpublished</span>
+    <span class="text-xs text-fg-subtle">Venue / howpublished</span>
     <input name="venue" value="{{ attribution.venue }}"
            placeholder="CASTEP Workshop, Durham"
-           class="w-full rounded border border-slate-300 px-2 py-1"/>
+           class="w-full rounded border border-line-strong px-2 py-1"/>
   </label>
 
   <div class="flex gap-2">
     <label class="block flex-1">
-      <span class="text-xs text-slate-500">Date</span>
+      <span class="text-xs text-fg-subtle">Date</span>
       <input name="date" value="{{ attribution.date }}" placeholder="2001-12-06 or 2001"
-             class="w-full rounded border border-slate-300 px-2 py-1"/>
+             class="w-full rounded border border-line-strong px-2 py-1"/>
     </label>
     <label class="block w-36">
-      <span class="text-xs text-slate-500">BibTeX type</span>
-      <select name="bibtex_type" class="w-full rounded border border-slate-300 px-2 py-1">
+      <span class="text-xs text-fg-subtle">BibTeX type</span>
+      <select name="bibtex_type" class="w-full rounded border border-line-strong px-2 py-1">
         {% for t in ['misc', 'unpublished', 'inproceedings'] %}
         <option value="{{ t }}" {% if attribution.bibtex_type == t %}selected{% endif %}>{{ t }}</option>
         {% endfor %}
@@ -44,49 +44,49 @@
   </div>
 
   <label class="block">
-    <span class="text-xs text-slate-500">URL</span>
+    <span class="text-xs text-fg-subtle">URL</span>
     <input name="url" value="{{ attribution.url }}"
-           class="w-full rounded border border-slate-300 px-2 py-1"/>
+           class="w-full rounded border border-line-strong px-2 py-1"/>
   </label>
 
   <label class="block">
-    <span class="text-xs text-slate-500">Note</span>
+    <span class="text-xs text-fg-subtle">Note</span>
     <input name="note" value="{{ attribution.note }}" placeholder="Lecture 1"
-           class="w-full rounded border border-slate-300 px-2 py-1"/>
+           class="w-full rounded border border-line-strong px-2 py-1"/>
   </label>
 
   <button type="submit"
-          class="rounded bg-slate-800 px-3 py-1.5 text-sm text-white hover:bg-slate-700">Save</button>
+          class="rounded bg-solid-strong px-3 py-1.5 text-sm text-on-solid hover:bg-solid">Save</button>
 </form>
 
 {# BibTeX preview (copy target) #}
-<div class="border-t border-slate-100 pt-2">
+<div class="border-t border-line-subtle pt-2">
   <div class="mb-1 flex items-center gap-2">
-    <h2 class="text-xs font-semibold uppercase tracking-wide text-slate-500">BibTeX</h2>
+    <h2 class="text-xs font-semibold uppercase tracking-wide text-fg-subtle">BibTeX</h2>
     <a href="/pres/{{ ref.id }}/bibtex" target="_blank"
-       class="text-xs text-blue-600 hover:underline">open raw</a>
+       class="text-xs text-info hover:underline">open raw</a>
   </div>
-  <pre class="overflow-x-auto rounded bg-slate-50 p-2 font-mono text-[11px] leading-snug text-slate-700">{{ bibtex }}</pre>
+  <pre class="overflow-x-auto rounded bg-surface-subtle p-2 font-mono text-[11px] leading-snug text-fg-secondary">{{ bibtex }}</pre>
 </div>
 
 {# Clickable slide list — jumps the PDF to the slide's page via the
    shared paperDoc scope. #}
-<div class="border-t border-slate-100 pt-2">
-  <h2 class="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
+<div class="border-t border-line-subtle pt-2">
+  <h2 class="mb-1 text-xs font-semibold uppercase tracking-wide text-fg-subtle">
     Slides ({{ slides | length }})
   </h2>
   <ol class="space-y-0.5">
     {% for s in slides %}
     <li>
       <button type="button" @click="gotoPage({{ s.pos + 1 }})"
-              class="flex w-full gap-2 rounded px-1 py-0.5 text-left text-sm hover:bg-amber-50"
+              class="flex w-full gap-2 rounded px-1 py-0.5 text-left text-sm hover:bg-warning-subtle"
               title="jump to slide {{ s.pos }}">
-        <span class="w-6 shrink-0 text-right font-mono text-xs text-slate-400">{{ s.pos }}</span>
+        <span class="w-6 shrink-0 text-right font-mono text-xs text-fg-faint">{{ s.pos }}</span>
         <span class="truncate">{{ s.title }}</span>
       </button>
     </li>
     {% else %}
-    <li class="text-slate-400">no slides</li>
+    <li class="text-fg-faint">no slides</li>
     {% endfor %}
   </ol>
 </div>

@@ -160,7 +160,7 @@ function connectionsTouching(connections, path) {
 // setting ``textContent``.
 function showError(container, message) {
   const p = document.createElement("p");
-  p.className = "text-sm text-red-600 p-3";
+  p.className = "text-sm text-danger p-3";
   p.textContent = message;
   container.replaceChildren(p);
 }
@@ -181,7 +181,7 @@ function showViewerFallback(viewerEl, err, { reload = false, message = null } = 
   const webgl = _isWebglError(err);
   const box = document.createElement("div");
   box.id = "bt3d-fallback";
-  box.className = "p-3 text-sm text-slate-700 space-y-2 overflow-auto";
+  box.className = "p-3 text-sm text-fg-secondary space-y-2 overflow-auto";
   box.style.height = "100%";
   const msg = document.createElement("p");
   msg.id = "bt3d-fallback-message";
@@ -199,7 +199,7 @@ function showViewerFallback(viewerEl, err, { reload = false, message = null } = 
     const btn = document.createElement("button");
     btn.type = "button";
     btn.id = "bt3d-fallback-reload";
-    btn.className = "px-3 py-1 rounded border border-slate-300 hover:bg-slate-100";
+    btn.className = "px-3 py-1 rounded border border-line-strong hover:bg-surface-muted";
     btn.textContent = "reload the 3D view";
     btn.addEventListener("click", () => window.location.reload());
     box.appendChild(btn);
@@ -210,14 +210,14 @@ function showViewerFallback(viewerEl, err, { reload = false, message = null } = 
     img.id = "bt3d-fallback-img";
     img.src = svgUrl;
     img.alt = "2D view of the design";
-    img.className = "max-w-full border border-slate-200 rounded";
+    img.className = "max-w-full border border-line rounded";
     box.appendChild(img);
   }
   const url2d = viewerEl.dataset["2dUrl"];
   if (url2d) {
     const a = document.createElement("a");
     a.href = url2d;
-    a.className = "block text-xs text-blue-600 hover:underline";
+    a.className = "block text-xs text-info hover:underline";
     a.textContent = "2D view →";
     box.appendChild(a);
   }
@@ -1490,22 +1490,22 @@ export async function blocktreeViewer3D({
     pickEls.rows.textContent = "";
     for (const row of body.levels || []) {
       const tr = document.createElement("tr");
-      tr.className = "border-t border-slate-100";
+      tr.className = "border-t border-line-subtle";
       const level = document.createElement("td");
-      level.className = "py-0.5 pr-2 text-slate-400 whitespace-nowrap";
+      level.className = "py-0.5 pr-2 text-fg-faint whitespace-nowrap";
       level.textContent = row.level;
       const label = document.createElement("td");
-      label.className = "py-0.5 pr-2 text-slate-700";
+      label.className = "py-0.5 pr-2 text-fg-secondary";
       label.textContent = row.label;
       const token = document.createElement("td");
-      token.className = "py-0.5 pr-2 font-mono text-slate-500 whitespace-nowrap";
+      token.className = "py-0.5 pr-2 font-mono text-fg-subtle whitespace-nowrap";
       token.textContent = row.token;
       const act = document.createElement("td");
       act.className = "py-0.5 text-right";
       if (typeof onCiteToken === "function") {
         const btn = document.createElement("button");
         btn.type = "button";
-        btn.className = "px-2 rounded border border-slate-300 hover:bg-slate-100";
+        btn.className = "px-2 rounded border border-line-strong hover:bg-surface-muted";
         btn.textContent = "cite";
         btn.addEventListener("click", () => onCiteToken(row.token));
         act.appendChild(btn);

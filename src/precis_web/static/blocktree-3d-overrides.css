@@ -36,10 +36,13 @@
  * chat below the shell were unreachable, with no scrollbar) and blocked
  * text selection everywhere. Undo both for the page, and keep
  * user-select:none on the shell alone so an orbit drag cannot start a
- * text selection. */
+ * text selection. The same rule paints the body with its own white
+ * (--tcv-bg-color), which under a dark scheme left the page's light ink on
+ * white; repaint it with the page surface (still white in light mode). */
 body {
   overflow: visible;
   user-select: auto;
+  background-color: rgb(var(--bg-surface));
 }
 #bt3d-viewer {
   user-select: none;

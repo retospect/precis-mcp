@@ -54,28 +54,28 @@
   <button type="button" @click="open = !open"
           title="{{ rollup.done }}/{{ rollup.total }} prose blocks human-reviewed{% if complete %} — review-complete{% endif %}"
           class="sd-badge-rollup rounded border px-1.5 py-0.5 font-semibold{% if complete %} complete{% endif %}">{{ rollup.done }}/{{ rollup.total }}{% if complete %} ✓{% endif %}</button>
-  <div x-show="open" x-cloak class="sd-review-menu absolute right-0 z-30 mt-1 w-80 rounded border border-slate-200 bg-white p-2 text-left shadow-lg">
-    <div class="mb-1 font-semibold text-slate-600">Review — {{ rollup.done }}/{{ rollup.total }}{% if complete %} · review-complete{% endif %}</div>
+  <div x-show="open" x-cloak class="sd-review-menu absolute right-0 z-30 mt-1 w-80 rounded border border-line bg-surface p-2 text-left shadow-lg">
+    <div class="mb-1 font-semibold text-fg-muted">Review — {{ rollup.done }}/{{ rollup.total }}{% if complete %} · review-complete{% endif %}</div>
     <table class="mb-2 w-full">
       {% for checker, c in checker_counts.items() %}
-      <tr><td class="pr-2 text-slate-500">{{ checker }}</td><td class="pr-1">{{ c.current }} ✓</td><td class="pr-1">{{ c.stale }} ⚠</td><td>{{ c.never }} –</td></tr>
+      <tr><td class="pr-2 text-fg-subtle">{{ checker }}</td><td class="pr-1">{{ c.current }} ✓</td><td class="pr-1">{{ c.stale }} ⚠</td><td>{{ c.never }} –</td></tr>
       {% endfor %}
     </table>
-    <div class="mb-1 border-t border-slate-100 pt-1">
+    <div class="mb-1 border-t border-line-subtle pt-1">
       <a href="/console?verb=get&args_text={{ ('kind=draft id=' ~ ident ~ ' view=citations') | urlencode }}"
-         target="_blank" rel="noopener" class="text-sky-700 hover:underline">
+         target="_blank" rel="noopener" class="text-info-strong hover:underline">
         hub: {{ hub_stats.hub_grounded }}/{{ hub_stats.hub_total }} grounded · to-fetch {{ hub_stats.lifecycle.get('to-fetch', 0) }} ·
         to-re-ground {{ hub_stats.lifecycle.get('to-re-ground', 0) }} · to-promote {{ hub_stats.lifecycle.get('to-promote', 0) }} · done {{ hub_stats.lifecycle.get('done', 0) }}
       </a>
     </div>
-    <div class="mb-1 border-t border-slate-100 pt-1 text-slate-500">
+    <div class="mb-1 border-t border-line-subtle pt-1 text-fg-subtle">
       {{ shape_stats.total_words }} words over {{ shape_stats.n_sections }} section(s){% if shape_stats.flagged %} — {{ shape_stats.flagged | length }} off target{% endif %}.
-      {% for f in shape_stats.flagged %}<div class="text-amber-700">{{ f.title }}: {{ f.verdict }} ({% if f.unit == 'chars' %}{{ f.chars }} chars{% else %}{{ f.words }} words{% endif %})</div>{% endfor %}
-      <div class="italic text-slate-400">{{ shape_stats.scaffold_note }}</div>
+      {% for f in shape_stats.flagged %}<div class="text-warning-strong">{{ f.title }}: {{ f.verdict }} ({% if f.unit == 'chars' %}{{ f.chars }} chars{% else %}{{ f.words }} words{% endif %})</div>{% endfor %}
+      <div class="italic text-fg-faint">{{ shape_stats.scaffold_note }}</div>
     </div>
-    <div class="flex items-center gap-3 border-t border-slate-100 pt-1">
-      <button type="button" @click="open = false" onclick="sdReviewAllOutstanding()" class="text-sky-700 hover:underline">run outstanding checks</button>
-      <button type="button" @click="open = false" onclick="sdReviewToc()" class="text-sky-700 hover:underline">run toc review</button>
+    <div class="flex items-center gap-3 border-t border-line-subtle pt-1">
+      <button type="button" @click="open = false" onclick="sdReviewAllOutstanding()" class="text-info-strong hover:underline">run outstanding checks</button>
+      <button type="button" @click="open = false" onclick="sdReviewToc()" class="text-info-strong hover:underline">run toc review</button>
     </div>
   </div>
 </div>
@@ -153,23 +153,23 @@
   details.sd-sec > summary.sd-sum::-webkit-details-marker { display: none; }
   .sd-sum, .sd-row { display: flex; align-items: flex-start; gap: .25rem;
     padding-top: .125rem; padding-bottom: .125rem; padding-right: .5rem; }
-  .sd-sum:hover, .sd-row:hover { background: #f8fafc; }          /* slate-50 */
-  .sd-focus { background: #fffbeb; box-shadow: inset 0 0 0 1px #fbbf24; } /* amber-50 + ring-400 */
-  .sd-hit { background: #e0f2fe; }                               /* sky-100 */
-  .sd-shared { background: #ecfdf5; }                            /* emerald-50 */
-  .sd-hot { background: #f0f9ff; }                               /* sky-50 */
+  .sd-sum:hover, .sd-row:hover { background: rgb(var(--bg-surface-subtle)); }          /* slate-50 */
+  .sd-focus { background: rgb(var(--bg-warning-subtle)); box-shadow: inset 0 0 0 1px rgb(var(--border-warning-emphasis)); } /* amber-50 + ring-400 */
+  .sd-hit { background: rgb(var(--bg-info-muted)); }                               /* sky-100 */
+  .sd-shared { background: rgb(var(--bg-success-subtle)); }                            /* emerald-50 */
+  .sd-hot { background: rgb(var(--bg-info-subtle)); }                               /* sky-50 */
   .sd-tw { flex-shrink: 0; margin-top: .125rem; width: .5rem; font-size: 9px;
-    color: #94a3b8; transition: transform .1s; }
+    color: rgb(var(--text-fg-faint)); transition: transform .1s; }
   details.sd-sec[open] > summary.sd-sum .sd-tw { transform: rotate(90deg); }
   .sd-htext, .sd-btext { min-width: 0; flex: 1 1 0%; overflow: hidden;
     text-overflow: ellipsis; white-space: nowrap; }
-  .sd-htext { font-weight: 600; color: #1e293b; }               /* slate-800 */
-  .sd-htext:hover { color: #0369a1; }                           /* sky-700 */
-  .sd-btext { color: #475569; }                                 /* slate-600 */
-  .sd-collapse { display: block; padding: .125rem .5rem; color: #cbd5e1; }
-  .sd-collapse:hover { background: #f8fafc; color: #64748b; }
+  .sd-htext { font-weight: 600; color: rgb(var(--text-fg)); }               /* slate-800 */
+  .sd-htext:hover { color: rgb(var(--text-info-strong)); }                           /* sky-700 */
+  .sd-btext { color: rgb(var(--text-fg-muted)); }                                 /* slate-600 */
+  .sd-collapse { display: block; padding: .125rem .5rem; color: rgb(var(--text-fg-ghost)); }
+  .sd-collapse:hover { background: rgb(var(--bg-surface-subtle)); color: rgb(var(--text-fg-subtle)); }
   .sd-badge { flex-shrink: 0; font-size: 10px; }
-  .sd-dc { font-family: ui-monospace, monospace; font-size: 9px; color: #0ea5e9; }
+  .sd-dc { font-family: ui-monospace, monospace; font-size: 9px; color: rgb(var(--text-info-soft)); }
   /* Per-block review indicator — a
      4-state dot: grey = checks outstanding, hollow-blue = machine-green
      (awaiting human), emerald = human-approved, amber = human-approved but
@@ -187,56 +187,56 @@
      loudest-last. */
   .sd-review { cursor: pointer; }
   .sd-review-dot { line-height: 1; font-size: 13px; vertical-align: middle; }
-  .sd-review-dot.empty { color: #cbd5e1; }    /* slate-300 */
-  .sd-review-dot.machine { color: #38bdf8; }  /* sky-400 — hollow/machine-green */
-  .sd-review-dot.human { color: #059669; }    /* emerald-600 */
-  .sd-review-dot.dirty { color: #d97706; }    /* amber-600 */
+  .sd-review-dot.empty { color: rgb(var(--text-fg-ghost)); }    /* slate-300 */
+  .sd-review-dot.machine { color: rgb(var(--text-info-faint)); }  /* sky-400 — hollow/machine-green */
+  .sd-review-dot.human { color: rgb(var(--text-success)); }    /* emerald-600 */
+  .sd-review-dot.dirty { color: rgb(var(--text-warning)); }    /* amber-600 */
   /* Softer-than-⚠ overlays, quietest first so a louder co-applied overlay
      (integrity/unsupported, further down) wins by source order. */
-  .sd-review-dot.sd-trust-abstract::after { content: "Ⓐ"; color: #dc2626; }  /* abstract-only — red circled A (red per Reto; not bold, so it reads lighter than the ‼ contradiction mark) */
-  .sd-review-dot.sd-trust-vouched::after { content: "✍"; color: #64748b; }  /* author-vouched — calm slate-500 */
-  .sd-review-dot.sd-trust-unverified::after { content: "?"; color: #d97706; font-weight: 700; }  /* amber-600 */
-  .sd-review-dot.sd-integrity::after { content: "!"; color: #dc2626; font-weight: 700; }
-  .sd-review-dot.sd-trust-unsupported::after { content: "‼"; color: #dc2626; font-weight: 700; }
+  .sd-review-dot.sd-trust-abstract::after { content: "Ⓐ"; color: rgb(var(--text-danger)); }  /* abstract-only — red circled A (red per Reto; not bold, so it reads lighter than the ‼ contradiction mark) */
+  .sd-review-dot.sd-trust-vouched::after { content: "✍"; color: rgb(var(--text-fg-subtle)); }  /* author-vouched — calm slate-500 */
+  .sd-review-dot.sd-trust-unverified::after { content: "?"; color: rgb(var(--text-warning)); font-weight: 700; }  /* amber-600 */
+  .sd-review-dot.sd-integrity::after { content: "!"; color: rgb(var(--text-danger)); font-weight: 700; }
+  .sd-review-dot.sd-trust-unsupported::after { content: "‼"; color: rgb(var(--text-danger)); font-weight: 700; }
   .sd-review-menu { white-space: normal; }
   /* Toolbar rollup badge (item 8) — N/M, emerald "review-complete" at N=M>0. */
-  .sd-badge-rollup { border: 1px solid #e2e8f0; color: #64748b; }         /* slate-200/500 */
-  .sd-badge-rollup.complete { border-color: #6ee7b7; background: #ecfdf5; color: #047857; } /* emerald-300/50/700 */
+  .sd-badge-rollup { border: 1px solid rgb(var(--border-line)); color: rgb(var(--text-fg-subtle)); }         /* slate-200/500 */
+  .sd-badge-rollup.complete { border-color: rgb(var(--border-success-strong)); background: rgb(var(--bg-success-subtle)); color: rgb(var(--text-success-strong)); } /* emerald-300/50/700 */
   /* Spritz reader (RSVP, key: R): the current word gets a green box + a red
      ORP pivot letter, decorated in place over the real text; auto-scroll keeps
      it centred. #rsvp-hud is the fixed control-hint pill. */
-  .rsvp-cur { background: #dcfce7; border-radius: 2px;
-    box-shadow: inset 0 -0.18em 0 #22c55e; padding: 0 1px; }   /* emerald-100 + green-500 bar */
-  .rsvp-orp { color: #dc2626; font-weight: 700; }              /* red-600 pivot */
+  .rsvp-cur { background: rgb(var(--bg-success-muted)); border-radius: 2px;
+    box-shadow: inset 0 -0.18em 0 rgb(var(--border-success-solid)); padding: 0 1px; }   /* emerald-100 + green-500 bar */
+  .rsvp-orp { color: rgb(var(--text-danger)); font-weight: 700; }              /* red-600 pivot */
   #rsvp-hud { position: fixed; left: 50%; bottom: 1rem; transform: translateX(-50%);
     z-index: 60; padding: .35rem .8rem; border-radius: 9999px; font-size: 11px;
-    background: rgba(15, 23, 42, .92); color: #e2e8f0; white-space: nowrap;
+    background: rgb(var(--bg-chrome) / .92); color: rgb(var(--text-chrome-soft)); white-space: nowrap;
     box-shadow: 0 4px 14px rgba(0, 0, 0, .25); pointer-events: none; }
   /* Per-paragraph grounding provenance (a corpus cite / a chased finding /
      nothing) — a subtle left border in the middle reading pane, a small
      dot in the left TOC. Colours: emerald/amber/rose, matching the
      existing sd-focus amber-400 idiom above. */
-  .sd-prov-sourced { border-left: 3px solid #16a34a; }
-  .sd-prov-pending { border-left: 3px solid #d97706; }
-  .sd-prov-unsourced { border-left: 3px solid #dc2626; }
+  .sd-prov-sourced { border-left: 3px solid rgb(var(--border-success-solid)); }
+  .sd-prov-pending { border-left: 3px solid rgb(var(--border-warning-solid)); }
+  .sd-prov-unsourced { border-left: 3px solid rgb(var(--border-danger-solid)); }
   /* Machine-authored provenance (grounded-authoring reviewer edits): the
      classic reader's amber left marker, as an INNER stripe — not a
      border-left, which the sd-prov-* grounding colour already owns (a
      machine-authored paragraph can also be unsourced; both must show). */
-  .sd-authored { box-shadow: inset 4px 0 0 0 #fcd34d; }   /* amber-300 */
+  .sd-authored { box-shadow: inset 4px 0 0 0 rgb(var(--border-warning-strong)); }   /* amber-300 */
   .sd-dot { display: inline-block; width: .4rem; height: .4rem; flex-shrink: 0;
     border-radius: 9999px; margin: .25rem .1rem 0 0; }
-  .sd-dot-sourced { background: #16a34a; }
-  .sd-dot-pending { background: #d97706; }
-  .sd-dot-unsourced { background: #dc2626; }
+  .sd-dot-sourced { background: rgb(var(--bg-success-solid)); }
+  .sd-dot-pending { background: rgb(var(--bg-warning-solid)); }
+  .sd-dot-unsourced { background: rgb(var(--bg-danger-solid)); }
   /* Diamond ↔ Claims-rail sync:
      hovering either the prose ◆ or its rail chip highlights BOTH — every
      element sharing the same data-claim-head. sd-claim-flash is the
      one-shot "there it is" pulse a click's scroll-to-counterpart adds. */
-  .sd-claim-hl { background: #ede9fe; box-shadow: inset 0 0 0 1px #a78bfa; border-radius: .2rem; } /* violet-100 + violet-400 ring */
+  .sd-claim-hl { background: rgb(var(--bg-accent-muted)); box-shadow: inset 0 0 0 1px rgb(var(--border-accent-emphasis)); border-radius: .2rem; } /* violet-100 + violet-400 ring */
   .sd-claim-flash { animation: sd-claim-pulse .9s ease-out; border-radius: .2rem; }
   @keyframes sd-claim-pulse {
-    0% { background: #c4b5fd; }   /* violet-300 */
+    0% { background: rgb(var(--bg-accent-strong)); }   /* violet-300 */
     100% { background: transparent; }
   }
 </style>
@@ -279,7 +279,7 @@
 <div class="mb-2" x-data="sdHeader()">
 
   <div class="flex items-center gap-2">
-    <button @click="toggle()" class="shrink-0 text-slate-400 hover:text-slate-700"
+    <button @click="toggle()" class="shrink-0 text-fg-faint hover:text-fg-secondary"
             :title="open ? 'hide document metadata' : 'show document metadata'"
             x-text="open ? '▾' : '▸'">▸</button>
 
@@ -289,22 +289,22 @@
     <h1 x-show="!editing" id="sd-title" class="min-w-0 truncate text-base font-semibold"
         @dblclick="startEdit()">{{ ref.title }}</h1>
     <button x-show="!editing" @click="startEdit()"
-            class="shrink-0 text-[11px] text-slate-300 hover:text-sky-700"
+            class="shrink-0 text-[11px] text-fg-ghost hover:text-info-strong"
             title="rename this draft (writes both the ref title and the document's title heading)">✎</button>
     <form x-show="editing" x-cloak @submit.prevent="save()" class="flex min-w-0 flex-1 items-center gap-1">
       <input x-ref="titleBox" x-model="draftTitle" @keydown.escape="editing = false"
-             class="min-w-0 flex-1 rounded border border-sky-400 px-2 py-0.5 text-base font-semibold focus:outline-none">
-      <button type="submit" class="shrink-0 rounded bg-sky-600 px-2 py-0.5 text-[11px] font-semibold text-white">save</button>
+             class="min-w-0 flex-1 rounded border border-info-emphasis px-2 py-0.5 text-base font-semibold focus:outline-none">
+      <button type="submit" class="shrink-0 rounded bg-info-solid px-2 py-0.5 text-[11px] font-semibold text-on-solid">save</button>
       <button type="button" @click="editing = false"
-              class="shrink-0 text-[11px] text-slate-400 hover:text-slate-700">cancel</button>
+              class="shrink-0 text-[11px] text-fg-faint hover:text-fg-secondary">cancel</button>
     </form>
-    <span x-show="err" x-cloak x-text="err" class="shrink-0 text-[11px] text-rose-600"></span>
+    <span x-show="err" x-cloak x-text="err" class="shrink-0 text-[11px] text-danger"></span>
 
     {# Only what's actually set — a bare draft still reads as one clean line. #}
-    <div class="ml-1 flex shrink-0 items-center gap-2 text-[11px] text-slate-500">
-      {% if cur_doctype %}<span class="rounded bg-slate-100 px-1.5 py-0.5">{{ cur_doctype }}</span>{% endif %}
+    <div class="ml-1 flex shrink-0 items-center gap-2 text-[11px] text-fg-subtle">
+      {% if cur_doctype %}<span class="rounded bg-surface-muted px-1.5 py-0.5">{{ cur_doctype }}</span>{% endif %}
       {% if concern_count %}
-      <button @click="openTo()" class="rounded bg-amber-100 px-1.5 py-0.5 font-semibold text-amber-800 hover:bg-amber-200"
+      <button @click="openTo()" class="rounded bg-warning-muted px-1.5 py-0.5 font-semibold text-warning-deep hover:bg-warning-emphasis"
               title="findings filed against this document — open the metadata panel">⚑ {{ concern_count }}</button>
       {% endif %}
       {% if ref.updated_at %}
@@ -312,38 +312,38 @@
       {% endif %}
     </div>
 
-    <div class="ml-auto flex shrink-0 items-center gap-3 text-[11px] text-slate-500">
+    <div class="ml-auto flex shrink-0 items-center gap-3 text-[11px] text-fg-subtle">
       <span title="paragraph grounding: 🟢 sourced (cites a corpus paper/patent) · 🟡 pending (cites a finding — source still being chased) · 🔴 unsourced (no citation). ⚪ review pending (the small dot beside a heading/paragraph — no check has run on that block yet) is a separate, per-block review state; hover it for details.">🟢 sourced · 🟡 pending · 🔴 unsourced · ⚪ review pending</span>
       {{ sd_review_badge(ident, rollup, checker_counts, hub_stats, shape_stats) }}
-      <a href="/nanopub?draft=dr{{ ref.id }}" class="hover:text-slate-800"
+      <a href="/nanopub?draft=dr{{ ref.id }}" class="hover:text-fg"
          title="the /nanopub workbench, scoped to the claim hubs this draft cites — review &amp; sign what's left">review claims</a>
-      <a href="{{ slink(to_debug=(not debug)) }}" class="{% if debug %}text-sky-700{% else %}hover:text-slate-800{% endif %}" title="show chunk ids (debug)">ids</a>
+      <a href="{{ slink(to_debug=(not debug)) }}" class="{% if debug %}text-info-strong{% else %}hover:text-fg{% endif %}" title="show chunk ids (debug)">ids</a>
     </div>
   </div>
 
-  <div x-show="open" x-cloak class="mt-2 rounded border border-slate-200 bg-white p-3 text-xs">
+  <div x-show="open" x-cloak class="mt-2 rounded border border-line bg-surface p-3 text-xs">
     <div class="grid grid-cols-1 gap-x-6 gap-y-3 md:grid-cols-3">
 
       <div>
-        <div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Identity</div>
+        <div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-fg-faint">Identity</div>
         <table class="w-full">
-          <tr><td class="pr-2 align-top text-slate-500">handle</td>
-              <td class="font-mono text-slate-700">{{ ref.slug or ref.id }}</td></tr>
-          <tr><td class="pr-2 align-top text-slate-500">ref</td>
-              <td class="font-mono text-slate-700">{{ ref.kind }}:{{ ref.id }}</td></tr>
+          <tr><td class="pr-2 align-top text-fg-subtle">handle</td>
+              <td class="font-mono text-fg-secondary">{{ ref.slug or ref.id }}</td></tr>
+          <tr><td class="pr-2 align-top text-fg-subtle">ref</td>
+              <td class="font-mono text-fg-secondary">{{ ref.kind }}:{{ ref.id }}</td></tr>
           {% if ref.created_at %}
-          <tr><td class="pr-2 align-top text-slate-500">created</td>
-              <td class="text-slate-700" title="{{ ref.created_at | abs_ts }}">{{ ref.created_at | ago }}</td></tr>
+          <tr><td class="pr-2 align-top text-fg-subtle">created</td>
+              <td class="text-fg-secondary" title="{{ ref.created_at | abs_ts }}">{{ ref.created_at | ago }}</td></tr>
           {% endif %}
           {% if ref.updated_at %}
-          <tr><td class="pr-2 align-top text-slate-500">updated</td>
-              <td class="text-slate-700" title="{{ ref.updated_at | abs_ts }}">{{ ref.updated_at | ago }}</td></tr>
+          <tr><td class="pr-2 align-top text-fg-subtle">updated</td>
+              <td class="text-fg-secondary" title="{{ ref.updated_at | abs_ts }}">{{ ref.updated_at | ago }}</td></tr>
           {% endif %}
         </table>
         {% if ref_tags %}
         <div class="mt-1 flex flex-wrap gap-1">
           {% for t in ref_tags %}
-          <span class="rounded bg-slate-100 px-1 py-0.5 font-mono text-[10px] text-slate-600">{{ t }}</span>
+          <span class="rounded bg-surface-muted px-1 py-0.5 font-mono text-[10px] text-fg-muted">{{ t }}</span>
           {% endfor %}
         </div>
         {% endif %}
@@ -352,13 +352,13 @@
       {# Whole-document edges. Concerns lead (see `_REL_PRIORITY`) — a
          finding filed against the document is the one you'd act on. #}
       <div>
-        <div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Connections</div>
+        <div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-fg-faint">Connections</div>
         {% if ref_conns %}
         <div class="space-y-1">
           {% for g in ref_conns %}
-          <div class="{% if g.relation == 'raises-concern-about' %}rounded bg-amber-50 p-1{% endif %}">
-            <span class="text-slate-500">{{ '←' if g.direction == 'in' else '→' }} {{ g.relation }}</span>
-            <span class="text-slate-400">({{ g.total }})</span>
+          <div class="{% if g.relation == 'raises-concern-about' %}rounded bg-warning-subtle p-1{% endif %}">
+            <span class="text-fg-subtle">{{ '←' if g.direction == 'in' else '→' }} {{ g.relation }}</span>
+            <span class="text-fg-faint">({{ g.total }})</span>
             {# Every edge is here; height is bounded by the box, so a briefing's
                24-paper bibliography scrolls instead of being truncated to a
                count. The odd max-height clips the last row mid-chip on purpose
@@ -372,26 +372,26 @@
           {% endfor %}
         </div>
         {% else %}
-        <div class="text-slate-400">No document-level links.</div>
+        <div class="text-fg-faint">No document-level links.</div>
         {% endif %}
       </div>
 
       {# Every key on the ref. An unknown key renders under its raw name
          (monospace) rather than being dropped — see `_doc_meta`. #}
       <div>
-        <div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Meta</div>
+        <div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-fg-faint">Meta</div>
         {% if doc_meta %}
         <table class="w-full">
           {% for m in doc_meta %}
-          <tr class="{% if m.warn %}text-amber-700{% endif %}">
-            <td class="w-1/3 pr-2 align-top {% if m.raw %}font-mono text-[10px] {% endif %}text-slate-500">{{ m.label }}</td>
-            <td class="align-top break-words {% if m.warn %}font-semibold{% else %}text-slate-700{% endif %}"
+          <tr class="{% if m.warn %}text-warning-strong{% endif %}">
+            <td class="w-1/3 pr-2 align-top {% if m.raw %}font-mono text-[10px] {% endif %}text-fg-subtle">{{ m.label }}</td>
+            <td class="align-top break-words {% if m.warn %}font-semibold{% else %}text-fg-secondary{% endif %}"
                 title="{{ m.value }}">{{ m.value | truncate(160) }}</td>
           </tr>
           {% endfor %}
         </table>
         {% else %}
-        <div class="text-slate-400">No metadata stamped.</div>
+        <div class="text-fg-faint">No metadata stamped.</div>
         {% endif %}
       </div>
     </div>
@@ -465,16 +465,16 @@
 
   {# ── LEFT: fisheye TOC nav (sticky sidebar; the middle flows so its
        hover-preview popovers aren't clipped by an overflow container) ── #}
-  <div class="sticky top-2 self-start rounded border border-slate-200 bg-white" data-tour="sd-toc">
+  <div class="sticky top-2 self-start rounded border border-line bg-surface" data-tour="sd-toc">
     {# header: search + signal toggles + fisheye/full + results view #}
-    <div class="space-y-1.5 border-b border-slate-100 p-2">
+    <div class="space-y-1.5 border-b border-line-subtle p-2">
       <form method="get" action="/smartdraft/{{ ident }}">
         <input type="hidden" name="focus" value="{{ focus_dc }}">
         <input type="hidden" name="relevance" value="{{ '1' if relevance else '0' }}">
         <input type="hidden" name="sig" value="{{ active_sig }}">
         <input type="hidden" name="sview" value="{{ sview }}">
         <input name="q" value="{{ q }}" placeholder="search…" autocomplete="off"
-               class="w-full rounded border border-slate-200 px-2 py-1 text-xs focus:border-sky-400 focus:outline-none">
+               class="w-full rounded border border-line px-2 py-1 text-xs focus:border-info-emphasis focus:outline-none">
       </form>
       <div class="flex items-center gap-1">
         {% for s in [('v','verbatim text'),('k','keywords'),('t','tags'),('s','semantic (embedding)')] %}
@@ -482,20 +482,20 @@
         {% set nsig = (active_sig|replace(s[0],'')) if on else (active_sig ~ s[0]) %}
         <a href="{{ slink(to_sig=nsig) }}" title="{{ s[1] }} — click to toggle"
            class="inline-flex h-6 w-6 items-center justify-center rounded-full border text-[11px] font-semibold
-                  {% if on %}border-sky-500 bg-sky-600 text-white{% else %}border-slate-200 text-slate-300 hover:text-slate-500{% endif %}">{{ s[0]|upper }}</a>
+                  {% if on %}border-info-solid bg-info-solid text-on-solid{% else %}border-line text-fg-ghost hover:text-fg-subtle{% endif %}">{{ s[0]|upper }}</a>
         {% endfor %}
         <a href="{{ slink(to_rel=(not relevance)) }}" title="fisheye vs full document" data-tour="sd-view-toggle"
-           class="ml-auto rounded border border-slate-200 px-1.5 py-0.5 text-[11px] {% if relevance %}bg-sky-600 text-white{% else %}text-slate-500{% endif %}">{{ '🔍' if relevance else '📄' }}</a>
+           class="ml-auto rounded border border-line px-1.5 py-0.5 text-[11px] {% if relevance %}bg-info-solid text-on-solid{% else %}text-fg-subtle{% endif %}">{{ '🔍' if relevance else '📄' }}</a>
       </div>
       {% if q %}
-      <div class="flex items-center gap-2 text-[10px] text-slate-500">
+      <div class="flex items-center gap-2 text-[10px] text-fg-subtle">
         <span>{{ hits | length }} hit{{ 's' if hits | length != 1 }}</span>
-        <a href="{{ slink(to_view='list') }}" class="{% if sview == 'list' %}font-semibold text-sky-700{% else %}hover:text-slate-700{% endif %}">list</a>
-        <a href="{{ slink(to_view='toc') }}" class="{% if sview == 'toc' %}font-semibold text-sky-700{% else %}hover:text-slate-700{% endif %}">in-toc</a>
-        <a href="{{ slink(to_q='') }}" class="ml-auto hover:text-rose-600">clear</a>
+        <a href="{{ slink(to_view='list') }}" class="{% if sview == 'list' %}font-semibold text-info-strong{% else %}hover:text-fg-secondary{% endif %}">list</a>
+        <a href="{{ slink(to_view='toc') }}" class="{% if sview == 'toc' %}font-semibold text-info-strong{% else %}hover:text-fg-secondary{% endif %}">in-toc</a>
+        <a href="{{ slink(to_q='') }}" class="ml-auto hover:text-danger">clear</a>
       </div>
       {% if sem_degraded and 's' in active_sig %}
-      <div class="text-[10px] text-amber-600" title="the web embedder returned nothing — semantic search is unavailable right now">⚠ semantic unavailable (embedder warming?) — V/K/T only</div>
+      <div class="text-[10px] text-warning" title="the web embedder returned nothing — semantic search is unavailable right now">⚠ semantic unavailable (embedder warming?) — V/K/T only</div>
       {% endif %}
       {% endif %}
     </div>
@@ -506,17 +506,17 @@
       {% for h in hits %}
       {% set n = h.node %}
       <a href="?focus={{ n.dc }}" data-dc="{{ n.dc }}"
-         class="flex items-center gap-1 px-2 py-1 hover:bg-sky-100 {% if n.dc == focus_dc %}bg-sky-100 ring-1 ring-inset ring-sky-400{% else %}bg-sky-50{% endif %}">
-        {% for b in [('v', h.v, 'V', 'bg-sky-600'), ('k', h.k, 'K', 'bg-teal-600'), ('t', h.t, 'T', 'bg-amber-600')] %}
+         class="flex items-center gap-1 px-2 py-1 hover:bg-info-muted {% if n.dc == focus_dc %}bg-info-muted ring-1 ring-inset ring-info-emphasis{% else %}bg-info-subtle{% endif %}">
+        {% for b in [('v', h.v, 'V', 'bg-info-solid'), ('k', h.k, 'K', 'bg-teal-solid'), ('t', h.t, 'T', 'bg-warning-solid')] %}
           {% if b[1] %}<span title="{{ b[0] }} match{{ '' if b[0] in active_sig else ' (off — not counted)' }}"
-             class="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[9px] font-semibold text-white {% if b[0] in active_sig %}{{ b[3] }}{% else %}bg-slate-300{% endif %}">{{ b[2] }}</span>{% endif %}
+             class="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[9px] font-semibold text-on-solid {% if b[0] in active_sig %}{{ b[3] }}{% else %}bg-surface-strong{% endif %}">{{ b[2] }}</span>{% endif %}
         {% endfor %}
         {% if h.s_rank %}<span title="semantic rank #{{ h.s_rank }}{{ '' if 's' in active_sig else ' (off)' }}"
-           class="inline-flex h-4 shrink-0 items-center justify-center rounded-full px-1 text-[9px] font-semibold text-white {% if 's' in active_sig %}bg-violet-600{% else %}bg-slate-300{% endif %}">S{{ h.s_rank }}</span>{% endif %}
-        <span class="min-w-0 flex-1 truncate text-slate-600">{{ n.summary }}</span>
+           class="inline-flex h-4 shrink-0 items-center justify-center rounded-full px-1 text-[9px] font-semibold text-on-solid {% if 's' in active_sig %}bg-accent-solid{% else %}bg-surface-strong{% endif %}">S{{ h.s_rank }}</span>{% endif %}
+        <span class="min-w-0 flex-1 truncate text-fg-muted">{{ n.summary }}</span>
       </a>
       {% else %}
-      <div class="px-2 py-3 text-slate-400">No matches.</div>
+      <div class="px-2 py-3 text-fg-faint">No matches.</div>
       {% endfor %}
 
       {% else %}
@@ -542,7 +542,7 @@
           {% if sec.children %}{{ loop(sec.children) }}{% endif %}
         {% endif %}
       {% else %}
-        <div class="px-2 py-3 text-slate-400">No chunks yet.</div>
+        <div class="px-2 py-3 text-fg-faint">No chunks yet.</div>
       {% endfor %}
       {% endif %}
     </div>
@@ -551,28 +551,28 @@
   {# ── MIDDLE: the focus + its neighbourhood. NOT an overflow container —
        it flows with the page so linkify hover-preview popovers escape freely
        (an overflow-auto ancestor would clip them at the panel edge). ── #}
-  <div class="rounded border border-slate-200 bg-white">
-    <div class="border-b border-slate-100 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Focus</div>
+  <div class="rounded border border-line bg-surface">
+    <div class="border-b border-line-subtle px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-fg-faint">Focus</div>
     {# ``tex-scope`` (the opt-in KaTeX convention, base.html.j2) marks
        this as a prose container eligible for math rendering — the sanctioned
        overlap point with that slice; nothing else in this file changes. #}
     <div class="space-y-2 p-3 text-sm tex-scope">
       {% for m in view.middle %}
         {% set n = m.node %}
-        {% set hd = 'font-semibold text-slate-900 text-base' if n.is_heading else '' %}
+        {% set hd = 'font-semibold text-fg-strong text-base' if n.is_heading else '' %}
         {% if m.mode == 'full' and n.is_table %}
         {# Table focus: the ⊞ grid editor (shared draft_editors.html.j2,
            gripe 56746) instead of the plain-text editor — a table chunk isn't
            `n.editable` (there's no free-text edit path for it), but it always
            gets the structured grid. #}
         {% set _seed = n.table or {'header': ['Column 1', 'Column 2'], 'rows': [], 'caption': none} %}
-        <div id="mid-focus" class="rounded border border-amber-200 bg-amber-50 p-2{{ ' sd-authored' if authored_idx.get(n.chunk_id) }}" data-tour="sd-focus">
-          <div class="mb-1 flex items-center gap-2 text-[10px] text-amber-700">
-            <span>{{ sd_block.sd_dc_id(n.dc, cls='font-mono text-sky-500', trail='') }} {% if n.locked %}🔒{% endif %}{{ sd_block.sd_authored_chip(authored_idx.get(n.chunk_id)) }}</span>
+        <div id="mid-focus" class="rounded border border-warning bg-warning-subtle p-2{{ ' sd-authored' if authored_idx.get(n.chunk_id) }}" data-tour="sd-focus">
+          <div class="mb-1 flex items-center gap-2 text-[10px] text-warning-strong">
+            <span>{{ sd_block.sd_dc_id(n.dc, cls='font-mono text-info-soft', trail='') }} {% if n.locked %}🔒{% endif %}{{ sd_block.sd_authored_chip(authored_idx.get(n.chunk_id)) }}</span>
             <div class="ml-auto flex items-center gap-2">
               {{ sd_block.sd_review_widget(n, review_by_dc.get(n.dc), ident) }}
               <button onclick="smartPin('{{ n.dc }}')" data-tour="sd-pin"
-                      class="{% if focus_pinned %}font-semibold text-amber-800{% else %}text-slate-400 hover:text-amber-700{% endif %}"
+                      class="{% if focus_pinned %}font-semibold text-warning-deep{% else %}text-fg-faint hover:text-warning-strong{% endif %}"
                       title="pin/unpin this para (key: p)">📌 {{ 'unpin' if focus_pinned else 'pin' }}</button>
             </div>
           </div>
@@ -582,7 +582,7 @@
             {{ sd_block.sd_table(n.table, claims, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}
           </div>
           {% else %}
-          <p class="whitespace-pre-wrap text-slate-800 {{ hd }}{% if n.provenance %} sd-prov-{{ n.provenance }}{% endif %}">{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}</p>
+          <p class="whitespace-pre-wrap text-fg {{ hd }}{% if n.provenance %} sd-prov-{{ n.provenance }}{% endif %}">{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}</p>
           {% endif %}
           {% endcall %}
         </div>
@@ -614,26 +614,26 @@
            moves inside it (a button must sit in the Alpine scope whose
            ``startEdit()`` it calls), which also puts it next to the text it
            edits. #}
-        <div id="mid-focus" class="rounded border border-amber-200 bg-amber-50 p-2{{ ' sd-authored' if authored_idx.get(n.chunk_id) }}" data-tour="sd-focus">
-          <div class="mb-1 flex items-center gap-2 text-[10px] text-amber-700">
-            <span>{{ sd_block.sd_dc_id(n.dc, cls='font-mono text-sky-500', trail='') }} {% if n.locked %}🔒{% endif %}{{ sd_block.sd_authored_chip(authored_idx.get(n.chunk_id)) }}</span>
+        <div id="mid-focus" class="rounded border border-warning bg-warning-subtle p-2{{ ' sd-authored' if authored_idx.get(n.chunk_id) }}" data-tour="sd-focus">
+          <div class="mb-1 flex items-center gap-2 text-[10px] text-warning-strong">
+            <span>{{ sd_block.sd_dc_id(n.dc, cls='font-mono text-info-soft', trail='') }} {% if n.locked %}🔒{% endif %}{{ sd_block.sd_authored_chip(authored_idx.get(n.chunk_id)) }}</span>
             <div class="ml-auto flex items-center gap-2">
               {{ sd_block.sd_review_widget(n, review_by_dc.get(n.dc), ident) }}
               <button onclick="smartPin('{{ n.dc }}')" data-tour="sd-pin"
-                      class="{% if focus_pinned %}font-semibold text-amber-800{% else %}text-slate-400 hover:text-amber-700{% endif %}"
+                      class="{% if focus_pinned %}font-semibold text-warning-deep{% else %}text-fg-faint hover:text-warning-strong{% endif %}"
                       title="pin/unpin this para (key: p)">📌 {{ 'unpin' if focus_pinned else 'pin' }}</button>
             </div>
           </div>
-          <figure class="rounded-md border border-slate-200 bg-white p-2">
+          <figure class="rounded-md border border-line bg-surface p-2">
             {{ draft_figures.figure_media(ident, n.base58, n.figure_render, n.text) }}
             {# The editor lives INSIDE the <figcaption> (not around it) so the
                caption stays a direct child of <figure>, as the element
                requires — the macro's own wrapper <div> is flow content the
                figcaption accepts. #}
-            <figcaption class="mt-1.5 text-sm text-slate-700">
+            <figcaption class="mt-1.5 text-sm text-fg-secondary">
               {% call draft_editors.draft_edit(ident, n.base58, n.sha, true, false, n.text, rows=4, block_keys=false) %}
               <span class="block whitespace-pre-wrap break-words">{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}</span>
-              <button @click="startEdit()" class="mt-0.5 text-[10px] text-slate-400 hover:text-sky-600"
+              <button @click="startEdit()" class="mt-0.5 text-[10px] text-fg-faint hover:text-info"
                       title="edit this figure's caption (key: i)">✎ edit caption</button>
               {% endcall %}
             </figcaption>
@@ -644,33 +644,33 @@
           </figure>
         </div>
         {% elif m.mode == 'full' %}
-        <div id="mid-focus" class="rounded border border-amber-200 bg-amber-50 p-2{{ ' sd-authored' if authored_idx.get(n.chunk_id) }}" data-tour="sd-focus">
+        <div id="mid-focus" class="rounded border border-warning bg-warning-subtle p-2{{ ' sd-authored' if authored_idx.get(n.chunk_id) }}" data-tour="sd-focus">
           {% call draft_editors.draft_edit(ident, n.base58, n.sha, n.editable, n.is_heading, n.text, rows=10) %}
-          <div class="mb-1 flex items-center gap-2 text-[10px] text-amber-700">
-            <span>{{ sd_block.sd_dc_id(n.dc, cls='font-mono text-sky-500', trail='') }} {% if n.locked %}🔒{% endif %}{{ sd_block.sd_authored_chip(authored_idx.get(n.chunk_id)) }}</span>
+          <div class="mb-1 flex items-center gap-2 text-[10px] text-warning-strong">
+            <span>{{ sd_block.sd_dc_id(n.dc, cls='font-mono text-info-soft', trail='') }} {% if n.locked %}🔒{% endif %}{{ sd_block.sd_authored_chip(authored_idx.get(n.chunk_id)) }}</span>
             <div class="ml-auto flex items-center gap-2">
               {{ sd_block.sd_review_widget(n, review_by_dc.get(n.dc), ident) }}
               <button onclick="smartPin('{{ n.dc }}')" data-tour="sd-pin"
-                      class="{% if focus_pinned %}font-semibold text-amber-800{% else %}text-slate-400 hover:text-amber-700{% endif %}"
+                      class="{% if focus_pinned %}font-semibold text-warning-deep{% else %}text-fg-faint hover:text-warning-strong{% endif %}"
                       title="pin/unpin this para (key: p)">📌 {{ 'unpin' if focus_pinned else 'pin' }}</button>
               {% if n.editable %}
-              <button @click="startEdit()" class="text-slate-400 hover:text-slate-700">✎ edit</button>
+              <button @click="startEdit()" class="text-fg-faint hover:text-fg-secondary">✎ edit</button>
               {% endif %}
             </div>
           </div>
           {# rendered view (with links) #}
-          <div class="whitespace-pre-wrap text-slate-800 {{ hd }}{% if n.provenance %} sd-prov-{{ n.provenance }}{% endif %}">{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}</div>
+          <div class="whitespace-pre-wrap text-fg {{ hd }}{% if n.provenance %} sd-prov-{{ n.provenance }}{% endif %}">{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}</div>
           {# tag row (the T search signal) — chips + type-ahead add #}
-          <div class="mt-2 flex flex-wrap items-center gap-1 border-t border-amber-100 pt-1.5 text-[10px]">
-            <span class="text-slate-400">🏷</span>
+          <div class="mt-2 flex flex-wrap items-center gap-1 border-t border-warning-subtle pt-1.5 text-[10px]">
+            <span class="text-fg-faint">🏷</span>
             {% for tag in n.tags %}
-            <span class="inline-flex items-center gap-0.5 rounded bg-teal-100 px-1 text-teal-700">{{ tag }}<button onclick="smartTagRemove('{{ n.dc }}', {{ tag | tojson }})" class="hover:text-rose-600" title="remove tag">&times;</button></span>
+            <span class="inline-flex items-center gap-0.5 rounded bg-teal-muted px-1 text-teal-strong">{{ tag }}<button onclick="smartTagRemove('{{ n.dc }}', {{ tag | tojson }})" class="hover:text-danger" title="remove tag">&times;</button></span>
             {% endfor %}
             <span class="relative" x-data="smartTagInput('{{ n.dc }}')">
               <input x-model="v" @input.debounce.200ms="suggest()" @keydown.enter.prevent="add()" @keydown.escape="items=[]"
-                     placeholder="+tag" class="w-14 rounded border border-slate-200 px-1 py-0.5 focus:w-28 focus:border-teal-400 focus:outline-none">
-              <div x-show="items.length" x-cloak class="absolute left-0 top-full z-50 mt-0.5 min-w-[6rem] rounded border border-slate-200 bg-white shadow-lg">
-                <template x-for="s in items" :key="s"><button type="button" @click="v = s; add()" class="block w-full whitespace-nowrap px-1.5 py-0.5 text-left text-teal-700 hover:bg-teal-50" x-text="s"></button></template>
+                     placeholder="+tag" class="w-14 rounded border border-line px-1 py-0.5 focus:w-28 focus:border-teal-emphasis focus:outline-none">
+              <div x-show="items.length" x-cloak class="absolute left-0 top-full z-50 mt-0.5 min-w-[6rem] rounded border border-line bg-surface shadow-lg">
+                <template x-for="s in items" :key="s"><button type="button" @click="v = s; add()" class="block w-full whitespace-nowrap px-1.5 py-0.5 text-left text-teal-strong hover:bg-teal-subtle" x-text="s"></button></template>
               </div>
             </span>
           </div>
@@ -694,15 +694,15 @@
            show). <div> not <a> for the same nested-anchor reason as the
            doc-mode block above. #}
         {% set _is_tbl = n.is_table and n.table %}
-        <div data-dc="{{ n.dc }}" class="block cursor-pointer{{ '' if _is_tbl else ' whitespace-pre-wrap' }} rounded px-2 py-1 text-slate-500 hover:bg-slate-50 {{ hd }}{% if n.provenance %} sd-prov-{{ n.provenance }}{% endif %}{{ ' sd-authored' if authored_idx.get(n.chunk_id) }}">{{ sd_block.sd_dc_id(n.dc) }}{{ sd_block.sd_authored_chip(authored_idx.get(n.chunk_id)) }}{% if review_by_dc.get(n.dc) %}{{ sd_block.sd_review_widget(n, review_by_dc.get(n.dc), ident) }} {% endif %}{% if _is_tbl %}{{ sd_block.sd_table(n.table, claims, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}{% else %}{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}{% endif %}</div>
+        <div data-dc="{{ n.dc }}" class="block cursor-pointer{{ '' if _is_tbl else ' whitespace-pre-wrap' }} rounded px-2 py-1 text-fg-subtle hover:bg-surface-subtle {{ hd }}{% if n.provenance %} sd-prov-{{ n.provenance }}{% endif %}{{ ' sd-authored' if authored_idx.get(n.chunk_id) }}">{{ sd_block.sd_dc_id(n.dc) }}{{ sd_block.sd_authored_chip(authored_idx.get(n.chunk_id)) }}{% if review_by_dc.get(n.dc) %}{{ sd_block.sd_review_widget(n, review_by_dc.get(n.dc), ident) }} {% endif %}{% if _is_tbl %}{{ sd_block.sd_table(n.table, claims, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}{% else %}{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}{% endif %}</div>
         {% else %}
         {# ±2 neighbour: one-line summary — the dc span sits inside this <a>, so
            sdCopyDc's stopPropagation/preventDefault (see sd_dc_id) matter here:
            without them a click on the id would also navigate the link. #}
-        <a href="{{ qs(n.dc) }}" class="block truncate rounded px-2 py-0.5 text-slate-400 hover:bg-slate-50 {{ hd }}" title="{{ n.text[:400] }}">{{ sd_block.sd_dc_id(n.dc) }}· {{ m.display }}</a>
+        <a href="{{ qs(n.dc) }}" class="block truncate rounded px-2 py-0.5 text-fg-faint hover:bg-surface-subtle {{ hd }}" title="{{ n.text[:400] }}">{{ sd_block.sd_dc_id(n.dc) }}· {{ m.display }}</a>
         {% endif %}
       {% else %}
-        <div class="text-slate-400">Empty draft.</div>
+        <div class="text-fg-faint">Empty draft.</div>
       {% endfor %}
       {# "Relevant elsewhere" is not injected here — it broke the reading
          sequence. Distant-but-relevant chunks light up in the TOC (left) at
@@ -729,34 +729,34 @@
        its upward-opening popovers aren't teleported and an overflow ancestor
        would clip them. ── #}
   <div class="sticky top-2 flex max-h-[calc(100vh-1rem)] flex-col gap-2 self-start">
-    <div id="claim-pane" class="hidden shrink-0 rounded border border-violet-200 bg-violet-50">
-      <div class="flex items-center justify-between border-b border-violet-100 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-violet-600">
+    <div id="claim-pane" class="hidden shrink-0 rounded border border-accent bg-accent-subtle">
+      <div class="flex items-center justify-between border-b border-accent-subtle px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-accent">
         <span>Claim</span>
         <div class="flex items-center gap-2 normal-case tracking-normal">
           <a id="claim-pane-open" href="/claim/" target="_blank" rel="noopener"
-             class="font-normal text-violet-600 hover:underline">open full page ↗</a>
+             class="font-normal text-accent hover:underline">open full page ↗</a>
           <button type="button" id="claim-pane-close" title="close"
-                  class="font-normal text-violet-400 hover:text-violet-700">✕</button>
+                  class="font-normal text-accent-faint hover:text-accent-strong">✕</button>
         </div>
       </div>
       <div id="claim-pane-body" class="max-h-72 overflow-y-auto p-2 text-xs tex-scope"></div>
     </div>
 
-  <div class="flex min-h-0 flex-col rounded border border-slate-200 bg-white" x-data="smartAsk('{{ ident }}', '{{ focus_dc }}')"
+  <div class="flex min-h-0 flex-col rounded border border-line bg-surface" x-data="smartAsk('{{ ident }}', '{{ focus_dc }}')"
        @llm-select="handleLlmSelect($event.detail)">
-    <div class="shrink-0 border-b border-slate-100 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Collaborate</div>
+    <div class="shrink-0 border-b border-line-subtle px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-fg-faint">Collaborate</div>
     <div class="min-h-0 space-y-2 overflow-y-auto p-2 text-xs">
       {% if needs %}
-      <div class="rounded border border-amber-200 bg-amber-50 p-1.5">
-        <div class="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700">Needs · in-flight</div>
+      <div class="rounded border border-warning bg-warning-subtle p-1.5">
+        <div class="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-warning-strong">Needs · in-flight</div>
         {# Per-section cap + scroll, on top of the pane-level scroll — keeps
            any one list from monopolising the shared Collaborate scroller. #}
         <div class="max-h-40 overflow-y-auto">
         {% for w in needs %}
         <div class="flex items-center gap-1 py-0.5 text-[10px]">
           {% if w.asks %}<span title="{{ w.asks | join('; ') }}">✋</span>{% endif %}
-          <a href="/r/todo/{{ w.todo_id }}" target="_blank" rel="noopener" class="min-w-0 flex-1 truncate text-slate-700 hover:underline">{{ w.title }}</a>
-          <span class="shrink-0 rounded px-1 {% if w.blocked %}bg-rose-100 text-rose-700{% else %}bg-slate-200 text-slate-600{% endif %}">{{ w.status }}</span>
+          <a href="/r/todo/{{ w.todo_id }}" target="_blank" rel="noopener" class="min-w-0 flex-1 truncate text-fg-secondary hover:underline">{{ w.title }}</a>
+          <span class="shrink-0 rounded px-1 {% if w.blocked %}bg-danger-muted text-danger-strong{% else %}bg-surface-emphasis text-fg-muted{% endif %}">{{ w.status }}</span>
         </div>
         {% endfor %}
         </div>
@@ -770,8 +770,8 @@
            _anchor_html carries target="_blank", no data-dc) so the writing
            surface stays put. Omitted when the focus cites nothing. #}
       {% if cited_sources %}
-      <div class="rounded border border-slate-200 bg-white p-1.5">
-        <div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Cited sources</div>
+      <div class="rounded border border-line bg-surface p-1.5">
+        <div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-fg-faint">Cited sources</div>
         <div class="flex max-h-32 flex-wrap gap-1 overflow-y-auto">
           {% for c in cited_sources %}{{ c }}{% endfor %}
         </div>
@@ -788,24 +788,24 @@
            outline's "Work in progress" block ever shows it. Omitted
            entirely when the focus has no edges/flags. #}
       {% if links_out or links_in or flags %}
-      <div class="rounded border border-slate-200 bg-white p-1.5">
-        <div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Links</div>
+      <div class="rounded border border-line bg-surface p-1.5">
+        <div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-fg-faint">Links</div>
         <div class="max-h-40 overflow-y-auto">
         {% if links_out %}
         <div class="mb-1 flex flex-wrap items-center gap-1">
-          <span class="text-[10px] text-slate-400" title="this chunk links to →">out</span>
+          <span class="text-[10px] text-fg-faint" title="this chunk links to →">out</span>
           {% for c in links_out %}{{ c }}{% endfor %}
         </div>
         {% endif %}
         {% if links_in %}
         <div class="mb-1 flex flex-wrap items-center gap-1">
-          <span class="text-[10px] text-slate-400" title="← links to this chunk">in</span>
+          <span class="text-[10px] text-fg-faint" title="← links to this chunk">in</span>
           {% for c in links_in %}{{ c }}{% endfor %}
         </div>
         {% endif %}
         {% if flags %}
         <div class="flex flex-wrap items-center gap-1">
-          <span class="text-[10px] text-slate-400" title="anchored change-request todos">flags</span>
+          <span class="text-[10px] text-fg-faint" title="anchored change-request todos">flags</span>
           {% for c in flags %}{{ c }}{% endfor %}
         </div>
         {% endif %}
@@ -816,8 +816,8 @@
       {# Taproot claim hubs cited in this window: the claim sentence + its
          print-visible (★) supporters, linking through to the /claim page. #}
       {% if claims_evidence %}
-      <div class="rounded border border-slate-200 bg-white p-1.5">
-        <div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Claims</div>
+      <div class="rounded border border-line bg-surface p-1.5">
+        <div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-fg-faint">Claims</div>
         {# Chip colour = the hub's nanopub publish-ladder state (candidate →
            reviewed → signed → anchored → publishing → published; rose/struck = a terminal
            mishap). signed=sky / published=emerald match the /nanopub
@@ -825,15 +825,15 @@
            baseline, the rail's original colour). Tooltip carries the state
            + when the hub entered it (publish row updated_at, UTC). #}
         {% set np_chip = {
-          'candidate':  'bg-amber-50 text-amber-700 hover:bg-amber-100',
-          'reviewed':   'bg-indigo-50 text-indigo-700 hover:bg-indigo-100',
-          'signed':     'bg-sky-50 text-sky-700 hover:bg-sky-100',
-          'anchored':   'bg-teal-50 text-teal-700 hover:bg-teal-100',
-          'publishing': 'bg-teal-50 text-teal-700 hover:bg-teal-100',
-          'published':  'bg-emerald-50 text-emerald-700 hover:bg-emerald-100',
-          'rejected':   'bg-rose-50 text-rose-600 hover:bg-rose-100',
-          'retracted':  'bg-rose-50 text-rose-600 hover:bg-rose-100 line-through',
-          'superseded': 'bg-slate-100 text-slate-500 hover:bg-slate-200 line-through',
+          'candidate':  'bg-warning-subtle text-warning-strong hover:bg-warning-muted',
+          'reviewed':   'bg-indigo-subtle text-indigo-strong hover:bg-indigo-muted',
+          'signed':     'bg-info-subtle text-info-strong hover:bg-info-muted',
+          'anchored':   'bg-teal-subtle text-teal-strong hover:bg-teal-muted',
+          'publishing': 'bg-teal-subtle text-teal-strong hover:bg-teal-muted',
+          'published':  'bg-success-subtle text-success-strong hover:bg-success-muted',
+          'rejected':   'bg-danger-subtle text-danger hover:bg-danger-muted',
+          'retracted':  'bg-danger-subtle text-danger hover:bg-danger-muted line-through',
+          'superseded': 'bg-surface-muted text-fg-subtle hover:bg-surface-emphasis line-through',
         } %}
         <div class="flex max-h-40 flex-wrap gap-1 overflow-y-auto">
           {% for entry in claims_evidence %}
@@ -844,17 +844,17 @@
              80-char claim-sentence truncation. `title` stays the full
              sentence either way — the hover always shows the whole claim. #}
           <a href="/claim/{{ entry.head }}" data-claim-head="{{ entry.head }}"
-             class="max-w-[16rem] truncate rounded px-1.5 py-0.5 text-[11px] {{ np_chip.get(entry.publish_state, 'bg-violet-50 text-violet-700 hover:bg-violet-100') }}"
+             class="max-w-[16rem] truncate rounded px-1.5 py-0.5 text-[11px] {{ np_chip.get(entry.publish_state, 'bg-accent-subtle text-accent-strong hover:bg-accent-muted') }}"
              title="{{ entry.claim }}&#10;{{ np_tip }}">{% if entry.tagline %}{{ entry.tagline }}{% else %}{{ entry.claim[:80] }}{% if entry.claim | length > 80 %}…{% endif %}{% endif %}{% if starred %} [{{ starred | join(', ') }}]{% endif %}</a>
           {% endfor %}
         </div>
       </div>
       {% endif %}
 
-      <div class="flex items-center gap-2 text-slate-500">
+      <div class="flex items-center gap-2 text-fg-subtle">
         <span>Pinned: 📌 {{ eye_count }}</span>
-        {% if eye_count %}<button onclick="smartAround()" class="text-[10px] text-sky-600 hover:text-sky-800" title="expand around here — promote every pinned block's reference ring (cited papers, cross-refs, linked notes) into eyes">👁 around here</button><button onclick="smartClearPins()" class="text-[10px] text-slate-400 hover:text-rose-600">unpin all</button>
-        {% else %}<span class="text-[10px] text-slate-400">nothing pinned — the ask works on the current para</span>{% endif %}
+        {% if eye_count %}<button onclick="smartAround()" class="text-[10px] text-info hover:text-info-deep" title="expand around here — promote every pinned block's reference ring (cited papers, cross-refs, linked notes) into eyes">👁 around here</button><button onclick="smartClearPins()" class="text-[10px] text-fg-faint hover:text-danger">unpin all</button>
+        {% else %}<span class="text-[10px] text-fg-faint">nothing pinned — the ask works on the current para</span>{% endif %}
       </div>
 
       {# ── Figure add + clearance (gripe 56668 — ported from the classic
@@ -867,20 +867,20 @@
            save refreshes this panel in place instead of navigating to the
            classic reader (their redirect target). #}
       {% if view.focus %}
-      <div class="rounded border border-slate-200 bg-slate-50 p-1.5">
-        <div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Figure</div>
+      <div class="rounded border border-line bg-surface-subtle p-1.5">
+        <div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-fg-faint">Figure</div>
         {{ draft_figures.figure_upload_form(ident, view.focus.base58) }}
       </div>
       {% endif %}
       {% set fig_nodes = view.nodes | selectattr('is_figure') | list %}
       {% if fig_nodes %}
-      <div class="rounded border border-slate-200 bg-white p-1.5">
-        <div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Figures · clearance</div>
+      <div class="rounded border border-line bg-surface p-1.5">
+        <div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-fg-faint">Figures · clearance</div>
         <div class="max-h-40 overflow-y-auto">
         {% for fn in fig_nodes %}
         <div class="flex items-center gap-1.5 py-0.5 text-[10px]">
           <a href="{{ qs(fn.dc) }}" data-dc="{{ fn.dc }}"
-             class="min-w-0 flex-1 truncate text-slate-600 hover:text-sky-700"
+             class="min-w-0 flex-1 truncate text-fg-muted hover:text-info-strong"
              title="{{ fn.summary }}">{{ fn.summary }}</a>
           {{ draft_figures.clearance_badge(ident, fn.base58, fn.figure_origin, fn.figure_cleared, fn.figure_permission) }}
           {% if fn.figure_has_data_package %}
@@ -898,29 +898,29 @@
            usage site. Computed server-side from the already-loaded node
            set (precis_web.smartdraft.term_occurrences), no DB scan. #}
       {% if view.focus and view.focus.is_term %}
-      <div class="rounded border border-slate-200 bg-white p-1.5">
-        <div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Occurs in {{ term_occurrences | length }} place{{ 's' if term_occurrences | length != 1 else '' }}</div>
+      <div class="rounded border border-line bg-surface p-1.5">
+        <div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-fg-faint">Occurs in {{ term_occurrences | length }} place{{ 's' if term_occurrences | length != 1 else '' }}</div>
         {% if term_occurrences %}
         <div class="max-h-40 overflow-y-auto">
         {% for on in term_occurrences %}
         <a href="{{ qs(on.dc) }}" data-dc="{{ on.dc }}"
-           class="block truncate rounded px-1 py-0.5 text-[10px] text-slate-600 hover:bg-slate-50 hover:text-sky-700"
+           class="block truncate rounded px-1 py-0.5 text-[10px] text-fg-muted hover:bg-surface-subtle hover:text-info-strong"
            title="{{ on.summary }}">{{ on.summary }}</a>
         {% endfor %}
         </div>
         {% else %}
-        <div class="text-[10px] text-slate-400">not yet used elsewhere in this draft</div>
+        <div class="text-[10px] text-fg-faint">not yet used elsewhere in this draft</div>
         {% endif %}
       </div>
       {% endif %}
 
       <textarea x-model="text" rows="3" placeholder="Ask the LLM (works on the pinned context, or the current para if nothing is pinned)…"
                 data-tour="sd-request-box"
-                class="w-full rounded border border-slate-200 px-2 py-1"></textarea>
+                class="w-full rounded border border-line px-2 py-1"></textarea>
       <div class="flex flex-wrap items-center gap-2">
         {{ llm_selector.llm_selector(default_tier='big') }}
-        <span class="text-slate-400" x-show="msg" x-text="msg"></span>
-        <button @click="send()" :disabled="!text.trim()" class="ml-auto rounded bg-slate-800 px-2 py-1 text-white disabled:opacity-40">Send ▸</button>
+        <span class="text-fg-faint" x-show="msg" x-text="msg"></span>
+        <button @click="send()" :disabled="!text.trim()" class="ml-auto rounded bg-solid-strong px-2 py-1 text-on-solid disabled:opacity-40">Send ▸</button>
       </div>
     </div>
 
@@ -936,13 +936,13 @@
          redirects back to its own reader) are intercepted in the submit
          handler below and refreshed in place — fork/delete correctly navigate
          away (new copy / drafts list). #}
-    <div class="shrink-0 border-t border-slate-100" x-data="{ tool: 'export' }">
-      <div class="flex items-center gap-1 border-b border-slate-100 px-2 py-1">
-        <span class="mr-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Tools</span>
+    <div class="shrink-0 border-t border-line-subtle" x-data="{ tool: 'export' }">
+      <div class="flex items-center gap-1 border-b border-line-subtle px-2 py-1">
+        <span class="mr-1 text-[10px] font-semibold uppercase tracking-wide text-fg-faint">Tools</span>
         <template x-for="t in ['export', 'meta', 'actions']" :key="t">
           <button @click="tool = t"
                   class="rounded px-1.5 py-0.5 text-[11px] capitalize"
-                  :class="tool === t ? 'bg-slate-700 text-white' : 'text-slate-500 hover:text-slate-800'"
+                  :class="tool === t ? 'bg-solid text-on-solid' : 'text-fg-subtle hover:text-fg'"
                   x-text="t"></button>
         </template>
       </div>
@@ -1089,7 +1089,7 @@
              }
            }"
            x-init="loadRetraction()">
-        <label class="flex items-center gap-1 text-slate-500"
+        <label class="flex items-center gap-1 text-fg-subtle"
                title="include the referenced papers & datasheets in the export">
           <input type="checkbox" x-model="withSources" class="h-3 w-3"><span>+ sources</span>
         </label>
@@ -1098,11 +1098,11 @@
            tablet. Image-less figures ride through as visible
            placeholders; an uncleared third-party image is withheld (a framed
            box naming the source), never embedded. #}
-        <label class="flex items-center gap-1 text-slate-500"
+        <label class="flex items-center gap-1 text-fg-subtle"
                title="export even when figures have no image yet — image-less figures appear as visible placeholders, and an uncleared third-party image is withheld (caption kept, image replaced by a box naming the source)">
           <input type="checkbox" x-model="placeholderFigures" class="h-3 w-3"><span>allow placeholder figures (image-less, and uncleared third-party withheld)</span>
         </label>
-        <label class="flex items-center gap-1 text-slate-500"
+        <label class="flex items-center gap-1 text-fg-subtle"
                title="what goes to the journal: no doi / library hyperlink runs after each cite mark and no 'Published claim artifacts' appendix">
           <input type="checkbox" x-model="submissionCopy" class="h-3 w-3"><span>submission copy (no cite links, no claim appendix)</span>
         </label>
@@ -1116,13 +1116,13 @@
                so four buckets (papers / missing_doi / unchecked /
                doi_unvalidated) can be click-toggled open into their paper
                list just below, instead of being flat unreachable text. #}
-            <p class="text-slate-400">
+            <p class="text-fg-faint">
               <template x-for="seg in retractionSegments()" :key="seg.key + '.' + seg.text">
                 <span>
                   <span x-text="seg.prefix"></span>
                   <span x-show="seg.clickable"
                         class="cursor-pointer underline decoration-dotted hover:decoration-solid"
-                        :class="expandedBucket === seg.key ? 'text-sky-700' : ''"
+                        :class="expandedBucket === seg.key ? 'text-info-strong' : ''"
                         :data-retraction-toggle="seg.key"
                         @click="toggleBucket(seg.key)"
                         x-text="seg.text"></span>
@@ -1131,17 +1131,17 @@
               </template>
             </p>
             <template x-if="expandedBucket">
-              <div class="max-h-40 overflow-y-auto rounded border border-slate-200 bg-white p-1"
+              <div class="max-h-40 overflow-y-auto rounded border border-line bg-surface p-1"
                    data-retraction-list>
                 <template x-for="p in (retraction[expandedBucket] || [])" :key="p.ref_id">
                   <a :href="'/r/paper/' + p.slug" target="_blank" rel="noopener"
-                     class="block truncate rounded px-1 py-0.5 text-[10px] text-slate-600 hover:bg-slate-50 hover:text-sky-700"
+                     class="block truncate rounded px-1 py-0.5 text-[10px] text-fg-muted hover:bg-surface-subtle hover:text-info-strong"
                      :title="p.title" x-text="p.title || p.slug"></a>
                 </template>
               </div>
             </template>
             <template x-if="retraction.blocks_export">
-              <div class="rounded border border-rose-200 bg-rose-50 px-2 py-1 text-rose-700">
+              <div class="rounded border border-danger bg-danger-subtle px-2 py-1 text-danger-strong">
                 <p class="font-semibold">
                   ⚠ export blocked — retracted citation(s):
                   <span x-text="retraction.retracted.map(p => p.slug).join(', ')"></span>
@@ -1153,7 +1153,7 @@
               </div>
             </template>
             <template x-if="!retraction.blocks_export && retraction.unchecked.length > 0">
-              <p class="text-amber-600">
+              <p class="text-warning">
                 <span x-text="retraction.unchecked.length"></span> of
                 <span x-text="retraction.total"></span> cited papers have never been
                 checked for retraction —
@@ -1164,47 +1164,47 @@
         </template>
         <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
           <button type="button" @click="checkRetraction()" :disabled="retractionChecking"
-                  class="text-slate-500 underline hover:text-slate-800 disabled:opacity-50"
+                  class="text-fg-subtle underline hover:text-fg disabled:opacity-50"
                   title="live-check every cited paper against Crossref for retraction/correction notices (TTL-gated)">
             <span x-text="retractionChecking ? 'checking…' : 'check retractions'"></span>
           </button>
-          <label class="flex items-center gap-1 text-slate-400"
+          <label class="flex items-center gap-1 text-fg-faint"
                  title="ignore the 30-day cache and re-check every cite now">
             <input type="checkbox" x-model="forceRecheck" class="h-3 w-3"><span>force</span>
           </label>
-          <span x-show="retractionError" x-text="retractionError" class="text-rose-600"></span>
+          <span x-show="retractionError" x-text="retractionError" class="text-danger"></span>
         </div>
 
         <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
           <a :href="'/drafts/{{ ident }}/export.docx' + exportQuery()"
-             class="text-slate-500 underline hover:text-slate-800"
+             class="text-fg-subtle underline hover:text-fg"
              @click.prevent="startExport('docx')"
              title="EndNote Cite While You Write fields (travelling library); Word without EndNote still shows the [n] text"
              x-text="withSources ? 'download .docx+zip' : 'download .docx'">download .docx</a>
           <a :href="'/drafts/{{ ident }}/export.docx' + exportQuery({citations: 'plain'})"
-             class="text-slate-400 underline hover:text-slate-800"
+             class="text-fg-faint underline hover:text-fg"
              @click.prevent="startExport('docx', {citations: 'plain'})"
              title="plain [n] markers and a References section, no EndNote fields">plain .docx</a>
           <a :href="'/drafts/{{ ident }}/pdf' + exportQuery()"
              @click.prevent="startExport('pdf')"
-             class="text-slate-500 underline hover:text-slate-800">download PDF</a>
+             class="text-fg-subtle underline hover:text-fg">download PDF</a>
           <form method="post" action="/drafts/{{ ident }}/export.pdf" class="inline">
             <input type="hidden" name="sources" :value="withSources ? '1' : ''">
             <input type="hidden" name="ignore_retractions" :value="overrideRetraction ? '1' : ''">
             <input type="hidden" name="placeholder_figures" :value="placeholderFigures ? '1' : ''">
-            <button type="submit" class="text-slate-500 underline hover:text-slate-800"
+            <button type="submit" class="text-fg-subtle underline hover:text-fg"
                     title="start a background job that persists the PDF into the project workspace">export →project</button>
           </form>
           <div x-show="exportJob" x-cloak data-export-progress
-               class="basis-full text-slate-500" role="status" aria-live="polite">
+               class="basis-full text-fg-subtle" role="status" aria-live="polite">
             <template x-if="exportJob && exportJob.state === 'error'">
-              <span class="text-rose-600" x-text="'export failed: ' + exportJob.error"></span>
+              <span class="text-danger" x-text="'export failed: ' + exportJob.error"></span>
             </template>
             <template x-if="exportJob && exportJob.state !== 'error'">
               <span class="flex items-center gap-2">
                 <span x-text="'building ' + (exportJob.fmt === 'pdf' ? 'PDF' : '.docx') + '… ' + (exportJob.stage || '')"></span>
-                <span class="inline-block h-1.5 w-40 overflow-hidden rounded bg-slate-200">
-                  <span class="block h-full bg-slate-500 transition-all"
+                <span class="inline-block h-1.5 w-40 overflow-hidden rounded bg-surface-emphasis">
+                  <span class="block h-full bg-solid-soft transition-all"
                         :class="exportJob.pct == null ? 'animate-pulse w-full' : ''"
                         :style="exportJob.pct == null ? '' : 'width:' + exportJob.pct + '%'"></span>
                 </span>
@@ -1213,31 +1213,31 @@
             </template>
           </div>
           <a href="/drafts/{{ ident }}/papers.zip"
-             class="text-slate-500 underline hover:text-slate-800"
+             class="text-fg-subtle underline hover:text-fg"
              title="zip the cited paper/datasheet PDFs + a manifest">download papers</a>
           {# Papers this draft cites but the corpus still lacks — the fetch
              worklist, opened in Drive's stub-acquisition surface pre-scoped to
              this draft (routes/drive.py cited_by facet). New tab so the writing
              surface stays put. #}
           <a href="/drive?cited_by={{ ident | urlencode }}" target="_blank" rel="noopener"
-             class="text-slate-500 underline hover:text-slate-800"
+             class="text-fg-subtle underline hover:text-fg"
              title="papers this draft cites but the corpus is missing — the fetch worklist">papers to fetch ▸</a>
           {% if remarkable_ready %}
           <form method="post" action="/drafts/{{ ident }}/remarkable" class="inline">
             <input type="hidden" name="placeholder_figures" :value="placeholderFigures ? '1' : ''">
-            <button type="submit" class="text-slate-500 underline hover:text-slate-800"
+            <button type="submit" class="text-fg-subtle underline hover:text-fg"
                     title="export in reMarkable mode (footnoted references) and send to the tablet">→ reMarkable</button>
           </form>
           <form method="post" action="/drafts/{{ ident }}/remarkable-papers" class="inline">
-            <button type="submit" class="text-slate-500 underline hover:text-slate-800"
+            <button type="submit" class="text-fg-subtle underline hover:text-fg"
                     title="send every cited source PDF on this host to the tablet, into a per-draft folder">papers → reMarkable</button>
           </form>
           <form method="post" action="/drafts/{{ ident }}/remarkable-reading" class="inline">
-            <button type="submit" class="text-slate-500 underline hover:text-slate-800"
+            <button type="submit" class="text-fg-subtle underline hover:text-fg"
                     title="typeset each cited source as a tablet-sized reading edition (body + claims + original) and send it">reading → reMarkable</button>
           </form>
           {% else %}
-          <span class="text-slate-400" title="no device credential found">reMarkable: pair a tablet at <a href="/account" class="underline">/account</a></span>
+          <span class="text-fg-faint" title="no device credential found">reMarkable: pair a tablet at <a href="/account" class="underline">/account</a></span>
           {% endif %}
           {# Job-endpoint outcome line — the fetch()-intercepted forms above
              report here (an enqueue is otherwise invisible, and a 400 was
@@ -1252,52 +1252,52 @@
         {# Author byline editor — one author per line, "Name | Affiliation | ROR". #}
         <div class="relative" x-data="{ au: false }" @click.outside="au = false">
           <button @click="au = !au"
-                  class="text-slate-500 underline hover:text-slate-800"
+                  class="text-fg-subtle underline hover:text-fg"
                   title="edit the author byline + affiliations">authors ▾</button>
           <form x-show="au" x-cloak method="post"
                 action="/drafts/{{ ident }}/authors"
-                class="absolute bottom-full right-0 z-40 mb-1 w-96 space-y-2 rounded border border-slate-200 bg-white p-3 text-left shadow-lg">
+                class="absolute bottom-full right-0 z-40 mb-1 w-96 space-y-2 rounded border border-line bg-surface p-3 text-left shadow-lg">
             <div>
-              <label class="block text-[11px] font-semibold text-slate-600">Authors — one per line</label>
+              <label class="block text-[11px] font-semibold text-fg-muted">Authors — one per line</label>
               <textarea name="authors" rows="4"
                         placeholder="Doe, Jane [0000-0002-1825-0097] | Massachusetts Institute of Technology | https://ror.org/042nb2s44&#10;Roe, John | Caltech&#10;Solo Author"
-                        class="mt-0.5 w-full resize-y rounded border border-slate-200 px-2 py-1 font-mono text-xs leading-snug focus:border-sky-400 focus:outline-none">{{ author_lines }}</textarea>
-              <p class="mt-0.5 text-[10px] text-slate-400"><span class="font-mono">Name [ORCID] | Affiliation | ROR</span> — ORCID, affiliation + ROR optional; a shared ROR collapses to one numbered affiliation. Replaces the whole byline.</p>
+                        class="mt-0.5 w-full resize-y rounded border border-line px-2 py-1 font-mono text-xs leading-snug focus:border-info-emphasis focus:outline-none">{{ author_lines }}</textarea>
+              <p class="mt-0.5 text-[10px] text-fg-faint"><span class="font-mono">Name [ORCID] | Affiliation | ROR</span> — ORCID, affiliation + ROR optional; a shared ROR collapses to one numbered affiliation. Replaces the whole byline.</p>
             </div>
             <div class="flex items-center gap-2">
-              <button class="rounded bg-sky-600 px-2 py-0.5 text-[11px] text-white hover:bg-sky-700">save authors</button>
-              <button type="button" @click="au = false" class="text-[10px] text-slate-400 hover:text-slate-600">cancel</button>
+              <button class="rounded bg-info-solid px-2 py-0.5 text-[11px] text-on-solid hover:bg-info-solid-strong">save authors</button>
+              <button type="button" @click="au = false" class="text-[10px] text-fg-faint hover:text-fg-muted">cancel</button>
             </div>
           </form>
         </div>
         {# Genre (document type) + project context (planner brief). #}
         <div class="relative" x-data="{ gen: false }" @click.outside="gen = false">
           <button @click="gen = !gen"
-                  class="text-slate-500 underline hover:text-slate-800"
+                  class="text-fg-subtle underline hover:text-fg"
                   title="set the document genre + project context">genre{% if cur_doctype %}: {{ cur_doctype }}{% endif %} ▾</button>
           <form x-show="gen" x-cloak method="post"
                 action="/drafts/{{ ident }}/workspace"
-                class="absolute bottom-full right-0 z-40 mb-1 w-80 space-y-2 rounded border border-slate-200 bg-white p-3 text-left shadow-lg">
+                class="absolute bottom-full right-0 z-40 mb-1 w-80 space-y-2 rounded border border-line bg-surface p-3 text-left shadow-lg">
             <div>
-              <label class="block text-[11px] font-semibold text-slate-600">Genre (document type)</label>
+              <label class="block text-[11px] font-semibold text-fg-muted">Genre (document type)</label>
               <select name="doctype"
-                      class="mt-0.5 w-full rounded border border-slate-200 px-2 py-1 text-xs focus:border-sky-400 focus:outline-none">
+                      class="mt-0.5 w-full rounded border border-line px-2 py-1 text-xs focus:border-info-emphasis focus:outline-none">
                 <option value="" {% if not cur_doctype %}selected{% endif %}>— none —</option>
                 {% for d in doctypes %}
                 <option value="{{ d.value }}" {% if cur_doctype == d.value %}selected{% endif %}>{{ d.label }}</option>
                 {% endfor %}
               </select>
-              <p class="mt-0.5 text-[10px] text-slate-400">paper / patent / report / review unlock the per-heading style picker.</p>
+              <p class="mt-0.5 text-[10px] text-fg-faint">paper / patent / report / review unlock the per-heading style picker.</p>
             </div>
             <div>
-              <label class="block text-[11px] font-semibold text-slate-600">Project context (planner brief)</label>
+              <label class="block text-[11px] font-semibold text-fg-muted">Project context (planner brief)</label>
               <textarea name="brief" rows="4"
                         placeholder="Standing guidance injected into every planner tick's ## Project context…"
-                        class="mt-0.5 w-full resize-y rounded border border-slate-200 px-2 py-1 text-xs leading-snug focus:border-sky-400 focus:outline-none">{{ cur_brief }}</textarea>
+                        class="mt-0.5 w-full resize-y rounded border border-line px-2 py-1 text-xs leading-snug focus:border-info-emphasis focus:outline-none">{{ cur_brief }}</textarea>
             </div>
             <div class="flex items-center gap-2">
-              <button class="rounded bg-sky-600 px-2 py-0.5 text-[11px] text-white hover:bg-sky-700">save</button>
-              <button type="button" @click="gen = false" class="text-[10px] text-slate-400 hover:text-slate-600">cancel</button>
+              <button class="rounded bg-info-solid px-2 py-0.5 text-[11px] text-on-solid hover:bg-info-solid-strong">save</button>
+              <button type="button" @click="gen = false" class="text-[10px] text-fg-faint hover:text-fg-muted">cancel</button>
             </div>
           </form>
         </div>
@@ -1309,21 +1309,21 @@
            genre/brief. #}
         <div class="relative" x-data="{ voi: false }" @click.outside="voi = false">
           <button @click="voi = !voi"
-                  class="text-slate-500 underline hover:text-slate-800"
+                  class="text-fg-subtle underline hover:text-fg"
                   title="set the standing voice/style applied to every planner tick">style ▾</button>
           <form x-show="voi" x-cloak method="post"
                 action="/drafts/{{ ident }}/workspace"
-                class="absolute bottom-full right-0 z-40 mb-1 w-80 space-y-2 rounded border border-slate-200 bg-white p-3 text-left shadow-lg">
+                class="absolute bottom-full right-0 z-40 mb-1 w-80 space-y-2 rounded border border-line bg-surface p-3 text-left shadow-lg">
             <div>
-              <label class="block text-[11px] font-semibold text-slate-600">Voice / style</label>
-              <p class="mt-0.5 text-[10px] text-slate-400">The standing writing register applied to every planner tick — separate from genre's project context above.</p>
+              <label class="block text-[11px] font-semibold text-fg-muted">Voice / style</label>
+              <p class="mt-0.5 text-[10px] text-fg-faint">The standing writing register applied to every planner tick — separate from genre's project context above.</p>
               <textarea name="voice" rows="4"
                         placeholder="Voice / style applied to every planner tick — e.g. light-hearted, colloquial, occasional puns"
-                        class="mt-0.5 w-full resize-y rounded border border-slate-200 px-2 py-1 text-xs leading-snug focus:border-sky-400 focus:outline-none">{{ cur_voice }}</textarea>
+                        class="mt-0.5 w-full resize-y rounded border border-line px-2 py-1 text-xs leading-snug focus:border-info-emphasis focus:outline-none">{{ cur_voice }}</textarea>
             </div>
             <div class="flex items-center gap-2">
-              <button class="rounded bg-sky-600 px-2 py-0.5 text-[11px] text-white hover:bg-sky-700">save</button>
-              <button type="button" @click="voi = false" class="text-[10px] text-slate-400 hover:text-slate-600">cancel</button>
+              <button class="rounded bg-info-solid px-2 py-0.5 text-[11px] text-on-solid hover:bg-info-solid-strong">save</button>
+              <button type="button" @click="voi = false" class="text-[10px] text-fg-faint hover:text-fg-muted">cancel</button>
             </div>
           </form>
         </div>
@@ -1332,14 +1332,14 @@
         <form method="post" action="/drafts/{{ ident }}/authoring"
               @submit="if (!{{ 'true' if authoring_enabled else 'false' }} && !confirm('Turn ON auto-authoring? The cites/structure review personas will EDIT this draft — adding grounded, cited prose where a real source supports it and flagging the rest. Every edit re-opens that paragraph for your human sign-off.')) $event.preventDefault()">
           <input type="hidden" name="enabled" value="{{ '0' if authoring_enabled else '1' }}" />
-          <button class="underline {% if authoring_enabled %}text-amber-600 hover:text-amber-800{% else %}text-slate-500 hover:text-slate-800{% endif %}"
+          <button class="underline {% if authoring_enabled %}text-warning hover:text-warning-deep{% else %}text-fg-subtle hover:text-fg{% endif %}"
                   title="{% if authoring_enabled %}auto-author is ON — grounded personas edit the draft; click to turn OFF{% else %}auto-author is OFF — review personas only file findings; click to turn ON{% endif %}">✎ auto-author: {{ 'ON' if authoring_enabled else 'OFF' }}</button>
         </form>
         {# gr348555: a plain-language answer to "will anything happen to this
            draft on its own?" — the auto-author toggle above answers the same
            question but only to someone who already knows what "auto-author"
            means. #}
-        <span class="text-slate-400"
+        <span class="text-fg-faint"
               title="{% if authoring_enabled %}auto-author is ON — the writer personas will pick this draft up on the next pass{% else %}auto-author is OFF — nothing writes to this draft until you turn it on above{% endif %}">
           Writer: {% if authoring_enabled %}will run{% else %}will not run (auto-author off){% endif %}
         </span>
@@ -1352,45 +1352,45 @@
         {# Duplicate this draft into a fresh project (deep-copies every chunk). #}
         <div class="relative" x-data="{ dup: false }" @click.outside="dup = false">
           <button @click="dup = !dup"
-                  class="text-slate-500 underline hover:text-slate-800"
+                  class="text-fg-subtle underline hover:text-fg"
                   title="duplicate this draft into a new project (a review copy)">⧉ duplicate ▾</button>
           <form x-show="dup" x-cloak method="post"
                 action="/drafts/{{ ident }}/fork"
-                class="absolute bottom-full right-0 z-40 mb-1 w-80 space-y-2 rounded border border-slate-200 bg-white p-3 text-left shadow-lg">
-            <p class="text-[11px] text-slate-600">Deep-copies every paragraph + link into a <span class="font-semibold">new</span> draft under a fresh project. The original is untouched; the copy starts fully unreviewed.</p>
+                class="absolute bottom-full right-0 z-40 mb-1 w-80 space-y-2 rounded border border-line bg-surface p-3 text-left shadow-lg">
+            <p class="text-[11px] text-fg-muted">Deep-copies every paragraph + link into a <span class="font-semibold">new</span> draft under a fresh project. The original is untouched; the copy starts fully unreviewed.</p>
             <div>
-              <label class="block text-[11px] font-semibold text-slate-600">New project name</label>
+              <label class="block text-[11px] font-semibold text-fg-muted">New project name</label>
               <input name="project" required autocomplete="off" placeholder="e.g. nanobuds-review"
-                     class="mt-0.5 w-full rounded border border-slate-200 px-2 py-1 text-xs focus:border-sky-400 focus:outline-none" />
-              <p class="mt-0.5 text-[10px] text-slate-400">A fresh strategic project is created to own the copy (or pass <span class="font-mono">todo:N</span> for an existing draft-less one).</p>
+                     class="mt-0.5 w-full rounded border border-line px-2 py-1 text-xs focus:border-info-emphasis focus:outline-none" />
+              <p class="mt-0.5 text-[10px] text-fg-faint">A fresh strategic project is created to own the copy (or pass <span class="font-mono">todo:N</span> for an existing draft-less one).</p>
             </div>
             <div>
-              <label class="block text-[11px] font-semibold text-slate-600">Copy title <span class="font-normal text-slate-400">(optional)</span></label>
+              <label class="block text-[11px] font-semibold text-fg-muted">Copy title <span class="font-normal text-fg-faint">(optional)</span></label>
               <input name="title" autocomplete="off" placeholder="{{ ref.title }} (review copy)"
-                     class="mt-0.5 w-full rounded border border-slate-200 px-2 py-1 text-xs focus:border-sky-400 focus:outline-none" />
+                     class="mt-0.5 w-full rounded border border-line px-2 py-1 text-xs focus:border-info-emphasis focus:outline-none" />
             </div>
             <div class="flex items-center gap-2">
-              <button class="rounded bg-sky-600 px-2 py-0.5 text-[11px] text-white hover:bg-sky-700">duplicate →</button>
-              <button type="button" @click="dup = false" class="text-[10px] text-slate-400 hover:text-slate-600">cancel</button>
+              <button class="rounded bg-info-solid px-2 py-0.5 text-[11px] text-on-solid hover:bg-info-solid-strong">duplicate →</button>
+              <button type="button" @click="dup = false" class="text-[10px] text-fg-faint hover:text-fg-muted">cancel</button>
             </div>
           </form>
         </div>
         {# Delete the whole draft — type-the-name confirm; soft-delete. #}
         <div class="relative" x-data="{ del: false }" @click.outside="del = false">
           <button @click="del = !del"
-                  class="text-rose-500 underline hover:text-rose-700">delete ▾</button>
+                  class="text-danger-soft underline hover:text-danger-strong">delete ▾</button>
           <form x-show="del" x-cloak method="post"
                 action="/drafts/{{ ident }}/delete"
                 @submit="if (!confirm('Delete this draft? It can be recovered by an admin, but disappears from the app.')) $event.preventDefault()"
-                class="absolute bottom-full right-0 z-40 mb-1 w-72 space-y-1.5 rounded border border-rose-300 bg-white p-2 text-left shadow-lg">
-            <p class="text-[11px] text-slate-600">Type the draft name
-              <span class="font-semibold text-slate-800">{{ ref.title }}</span>
+                class="absolute bottom-full right-0 z-40 mb-1 w-72 space-y-1.5 rounded border border-danger-strong bg-surface p-2 text-left shadow-lg">
+            <p class="text-[11px] text-fg-muted">Type the draft name
+              <span class="font-semibold text-fg">{{ ref.title }}</span>
               to delete it (recoverable):</p>
             <input name="confirm" autocomplete="off" placeholder="draft name…"
-                   class="w-full rounded border border-slate-200 px-2 py-1 text-xs focus:border-rose-400 focus:outline-none" />
+                   class="w-full rounded border border-line px-2 py-1 text-xs focus:border-danger-emphasis focus:outline-none" />
             <div class="flex items-center gap-2">
-              <button class="rounded bg-rose-600 px-2 py-0.5 text-[11px] text-white hover:bg-rose-700">delete draft</button>
-              <button type="button" @click="del = false" class="text-[10px] text-slate-400 hover:text-slate-600">cancel</button>
+              <button class="rounded bg-danger-solid px-2 py-0.5 text-[11px] text-on-solid hover:bg-danger-solid-strong">delete draft</button>
+              <button type="button" @click="del = false" class="text-[10px] text-fg-faint hover:text-fg-muted">cancel</button>
             </div>
           </form>
         </div>
@@ -1600,7 +1600,7 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
     const nodes = []; while (walker.nextNode()) nodes.push(walker.currentNode);
     nodes.forEach((n) => {
       const span = document.createElement('span');
-      span.innerHTML = n.nodeValue.replace(re, '<mark class="rounded bg-sky-200 text-inherit">$1</mark>');
+      span.innerHTML = n.nodeValue.replace(re, '<mark class="rounded bg-info-emphasis text-inherit">$1</mark>');
       n.parentNode.replaceChild(span, n);
     });
   }
@@ -1630,7 +1630,7 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
     pane.classList.remove('hidden');
     pane.dataset.head = head;
     if (openLink) openLink.setAttribute('href', '/claim/' + head);
-    body.innerHTML = '<div class="p-2 text-slate-400">Loading…</div>';
+    body.innerHTML = '<div class="p-2 text-fg-faint">Loading…</div>';
     const url = '/preview/claim/' + head;
     if (window.htmx) {
       window.htmx.ajax('GET', url, { target: '#claim-pane-body', swap: 'innerHTML' });
@@ -1810,7 +1810,7 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
         .some((ep) => act === `/drafts/${IDENT}/${ep}`);
       const say = (msg, bad) => {
         const el = document.getElementById('sd-export-status');
-        if (el) { el.textContent = msg; el.className = 'text-[11px] ' + (bad ? 'text-red-600' : 'text-emerald-700'); }
+        if (el) { el.textContent = msg; el.className = 'text-[11px] ' + (bad ? 'text-danger' : 'text-success-strong'); }
       };
       if (jobish) say('working…', false);
       fetch(act, { method: 'POST', body: new FormData(f) })

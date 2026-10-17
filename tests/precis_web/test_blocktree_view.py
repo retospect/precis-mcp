@@ -1352,7 +1352,7 @@ def test_se_validate_panel_shows_bound_structure_validator(
     assert "overlap_frag" in frag.text
     # The digest counts the structure's errors — the page cannot read clean.
     assert "validate: 1 error(s)" in frag.text
-    assert 'class="cursor-pointer text-red-700' in frag.text
+    assert 'class="cursor-pointer text-danger-strong' in frag.text
 
 
 def test_se_view3d_page_does_not_compute_heavy_payloads(

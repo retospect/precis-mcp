@@ -30,14 +30,14 @@
 
   <div class="flex items-baseline justify-between px-1" data-tour="np-ladder">
     <h1 class="text-lg font-semibold">Nanopub claims</h1>
-    <p class="text-xs text-slate-500">
+    <p class="text-xs text-fg-subtle">
       {{ n_nodes }} hub{{ 's' if n_nodes != 1 }}:
       {% for s, c in state_counts %}<span class="whitespace-nowrap cursor-help
-        {%- if s in ('signed', 'anchored', 'publishing') %} text-sky-700
-        {%- elif s == 'published' %} text-emerald-700
-        {%- elif s == 'unminted' %} text-slate-400{% endif %}"
+        {%- if s in ('signed', 'anchored', 'publishing') %} text-info-strong
+        {%- elif s == 'published' %} text-success-strong
+        {%- elif s == 'unminted' %} text-fg-faint{% endif %}"
         title="{{ state_tip(s) }}">{{ c }} {{ s }}</span>{{ ' · ' if not loop.last }}{% endfor %}
-      {% if n_stale %}· <span class="whitespace-nowrap text-amber-600 cursor-help"
+      {% if n_stale %}· <span class="whitespace-nowrap text-warning cursor-help"
         title="Staged candidates that no longer pass the CURRENT mint gates — a blocking lint code landed since, or a live dispute arrived. Dead work; approve will refuse it. See the row badge for why.">{{ n_stale }} stale</span>{% endif %}
       — click a claim to review it in the middle pane, a paper to read it
       on the right. Unpublished is a good terminal state, not a backlog to
@@ -46,7 +46,7 @@
   </div>
 
   {% if nonempirical_weekly %}
-  <p class="px-1 text-xs text-slate-500 cursor-help"
+  <p class="px-1 text-xs text-fg-subtle cursor-help"
     title="report / definition are approve-only exemptions from the epistemic sentence gate (no method token, no evidence verb); they answer to replacement checks instead. Counts are approvals per week (week starting). A count that climbs into the dozens means the exemption is being used as a bypass.">
     non-empirical approvals per week:
     {% for wk, c in nonempirical_weekly.items() %}<span class="whitespace-nowrap">{{ wk }}: {{ c.get('report', 0) }} report{{ 's' if c.get('report', 0) != 1 }}, {{ c.get('definition', 0) }} definition{{ 's' if c.get('definition', 0) != 1 }}</span>{{ ' · ' if not loop.last }}{% endfor %}
@@ -55,21 +55,21 @@
 
   {% if draft_filter %}
   <div class="px-1">
-    <span class="inline-flex items-center gap-1.5 rounded-full bg-sky-100 text-sky-800 text-xs px-2.5 py-1">
+    <span class="inline-flex items-center gap-1.5 rounded-full bg-info-muted text-info-deep text-xs px-2.5 py-1">
       draft {{ draft_filter.label }} — {{ draft_filter.n }} claim{{ 's' if draft_filter.n != 1 }}
-      <a href="/nanopub" class="text-sky-600 hover:text-rose-600" title="clear the draft filter">✕</a>
+      <a href="/nanopub" class="text-info hover:text-danger" title="clear the draft filter">✕</a>
     </span>
   </div>
   {% elif draft_notice %}
   <div class="px-1">
-    <p class="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+    <p class="rounded-md border border-warning bg-warning-subtle px-3 py-2 text-xs text-warning-deep">
       {{ draft_notice }}. <a href="/nanopub" class="underline">clear</a>
     </p>
   </div>
   {% endif %}
 
   {% if stuck %}
-  <div class="rounded-lg border border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-800">
+  <div class="rounded-lg border border-warning-strong bg-warning-subtle px-4 py-2 text-sm text-warning-deep">
     ⚠ {{ stuck|length }} OTS batch{{ 'es' if stuck|length != 1 }} pending past
     threshold:
     {% for b in stuck %}
@@ -81,14 +81,14 @@
   {% endif %}
 
   {% if disputed %}
-  <div class="rounded-lg border border-rose-200 bg-rose-50 px-4 py-2 text-sm text-rose-800">
+  <div class="rounded-lg border border-danger bg-danger-subtle px-4 py-2 text-sm text-danger-deep">
     <span class="font-semibold">◆ Contradicted — adjudicate first (oldest on top):</span>
     {% for r in disputed %}
     <a class="inline-block ml-2 hover:underline" data-pane="np-review"
        href="/nanopub/fi{{ r.ref_id }}" data-src="/claim/fi{{ r.ref_id }}"
        title="{{ r.title }}">
       <span class="font-mono">fi{{ r.ref_id }}</span>{% if r.disputed_since %}
-      <span class="text-rose-500">(since {{ r.disputed_since|utc_date }})</span>{% endif %}</a>{{ " ·" if not loop.last }}
+      <span class="text-danger-soft">(since {{ r.disputed_since|utc_date }})</span>{% endif %}</a>{{ " ·" if not loop.last }}
     {% endfor %}
   </div>
   {% endif %}
@@ -97,11 +97,11 @@
   {% set key = 'blocked' if r.disputed else (r.state or 'unminted') %}
   {% set stale = stale_reasons.get(r.ref_id) %}
   <span class="font-mono text-xs px-1.5 py-0.5 rounded shrink-0 cursor-help
-    {% if r.disputed %}bg-rose-100 text-rose-700
-    {% elif r.state == 'published' %}bg-emerald-100 text-emerald-700
-    {% elif r.state in ('signed', 'anchored', 'publishing') %}bg-sky-100 text-sky-700
-    {% elif r.state %}bg-slate-200 text-slate-700
-    {% else %}bg-slate-100 text-slate-400{% endif %}"
+    {% if r.disputed %}bg-danger-muted text-danger-strong
+    {% elif r.state == 'published' %}bg-success-muted text-success-strong
+    {% elif r.state in ('signed', 'anchored', 'publishing') %}bg-info-muted text-info-strong
+    {% elif r.state %}bg-surface-emphasis text-fg-secondary
+    {% else %}bg-surface-muted text-fg-faint{% endif %}"
     title="{{ state_tip(key) }}{% if r.updated_at %} In this state since {{ r.updated_at|abs_ts }}.{% endif %}">
     {%- if r.disputed %}◆ blocked{% else %}{{ r.state or 'unminted' }}{% endif -%}
   </span>
@@ -110,7 +110,7 @@
      approving it would just be refused, so a reviewer needs to see it's
      dead work rather than find out by clicking approve. #}
   {% if stale %}
-  <span class="font-mono text-xs px-1.5 py-0.5 rounded shrink-0 cursor-help bg-amber-100 text-amber-700"
+  <span class="font-mono text-xs px-1.5 py-0.5 rounded shrink-0 cursor-help bg-warning-muted text-warning-strong"
         title="Re-gated against the current mint gates and no longer passes — {{ stale.label }}. Approve will refuse it; fix the cause or route it back off the queue.">
     stale: {{ stale.label }}
   </span>
@@ -133,17 +133,17 @@
   {% macro node(n, stale_reasons) %}
   <li class="mt-1">
     <details {% if n.children %}open{% endif %} class="group">
-      <summary class="tree-node flex items-center gap-2 cursor-pointer list-none rounded px-2 py-1 hover:bg-slate-100
+      <summary class="tree-node flex items-center gap-2 cursor-pointer list-none rounded px-2 py-1 hover:bg-surface-muted
                {%- if stale_reasons.get(n.row.ref_id) %} opacity-60{% endif %}"
                data-pane="np-review" data-src="/claim/fi{{ n.row.ref_id }}">
         {% if n.children or n.evidence %}
-        <span class="tree-caret text-slate-400 text-xs w-3 group-open:rotate-90 transition-transform">▸</span>
+        <span class="tree-caret text-fg-faint text-xs w-3 group-open:rotate-90 transition-transform">▸</span>
         {% else %}
         <span class="w-3"></span>
         {% endif %}
         {{ state_badge(n.row, stale_reasons) }}
         {% if n.relation %}
-        <span class="text-xs text-slate-400 shrink-0 cursor-help"
+        <span class="text-xs text-fg-faint shrink-0 cursor-help"
               title="{% if n.relation == 'conjunct-of' %}Conjunct atom of the composite claim above — atoms mint and publish first; the composite cites their artifacts, not papers.{% else %}Refines the claim above — a narrower, sharper restatement.{% endif %}">{{ 'conjunct' if n.relation == 'conjunct-of' else n.relation }}</span>
         {% endif %}
         {# href = the workbench deep link (/nanopub/fi<id> — cmd-click /
@@ -152,27 +152,27 @@
            click. data-pane names the destination; there is no target= any
            more, because the panes are divs in this document rather than
            named frames (a named target is exactly what Safari drops). #}
-        <a class="font-mono text-xs text-emerald-700 hover:underline shrink-0"
+        <a class="font-mono text-xs text-success-strong hover:underline shrink-0"
            data-pane="np-review" href="/nanopub/fi{{ n.row.ref_id }}"
            data-src="/claim/fi{{ n.row.ref_id }}">fi{{ n.row.ref_id }}</a>
         {# `tagline` (precis.workers.hub_tagline): the visible np-title
            text when the hub has a 3-6 word human handle set — full title
            stays in `title=` (hover). Absent → exactly the old render. #}
         <span class="np-title text-sm leading-snug min-w-[12rem]" title="{{ n.row.title }}">{{ n.row.tagline or n.row.title }}</span>
-        {% if n.row.drifted %}<span class="text-xs text-amber-600 shrink-0 cursor-help"
+        {% if n.row.drifted %}<span class="text-xs text-warning shrink-0 cursor-help"
               title="The live hub title no longer matches the frozen approved sentence — signing is blocked; reopen and re-approve, or revert the edit.">drifted</span>{% endif %}
       </summary>
       {% if n.evidence or n.children %}
-      <ul class="ml-6 border-l border-slate-200 pl-3">
+      <ul class="ml-6 border-l border-line pl-3">
         {% for e in n.evidence %}
-        <li class="tree-node mt-0.5 flex items-center gap-2 rounded px-2 py-0.5 text-xs text-slate-500 cursor-pointer hover:bg-slate-100"
+        <li class="tree-node mt-0.5 flex items-center gap-2 rounded px-2 py-0.5 text-xs text-fg-subtle cursor-pointer hover:bg-surface-muted"
             {% if e.kind == 'finding' %}data-pane="np-review" data-src="/claim/fi{{ e.ref_id }}"
             {% elif e.kind == 'paper' %}data-pane="np-paper" data-src="/papers/{{ e.ref_id }}"{% endif %}>
           <span class="w-3"></span>
           <span class="font-mono px-1 rounded cursor-help
-            {% if e.relation == 'contradicts' %}bg-rose-50 text-rose-600
-            {% elif e.relation == 'establishes' %}bg-emerald-50 text-emerald-600
-            {% else %}bg-slate-100 text-slate-500{% endif %}"
+            {% if e.relation == 'contradicts' %}bg-danger-subtle text-danger
+            {% elif e.relation == 'establishes' %}bg-success-subtle text-success
+            {% else %}bg-surface-muted text-fg-subtle{% endif %}"
             title="{% if e.relation == 'contradicts' %}This source disputes the claim — publication is blocked until the dispute is adjudicated.{% elif e.relation == 'establishes' %}This source's passage directly asserts the claim — its primary grounding.{% elif e.relation == 'corroborates' %}This source's passage independently supports the claim.{% elif e.relation == 'derived-from' %}The claim was derived from this source, grounded through its pinned passage.{% else %}{{ e.relation }}{% endif %}">{{ e.relation }}</span>
           {% if e.kind == 'finding' %}
           <a class="truncate hover:underline" data-pane="np-review"
@@ -185,7 +185,7 @@
           <a class="truncate hover:underline" href="/refs/{{ e.kind }}/{{ e.ref_id }}"
              title="{{ e.title }}">{{ e.title }}</a>
           {% endif %}
-          <span class="text-slate-400 shrink-0">{{ e.kind }}</span>
+          <span class="text-fg-faint shrink-0">{{ e.kind }}</span>
         </li>
         {% endfor %}
         {% for c in n.children %}{{ node(c, stale_reasons) }}{% endfor %}
@@ -202,17 +202,17 @@
         {% for n in roots %}{{ node(n, stale_reasons) }}{% endfor %}
       </ul>
       {% else %}
-      <p class="text-sm text-slate-500">No claim hubs yet.</p>
+      <p class="text-sm text-fg-subtle">No claim hubs yet.</p>
       {% endif %}
 
       <details class="mt-4 text-sm">
-        <summary class="cursor-pointer text-xs font-semibold uppercase tracking-wide text-slate-400">
+        <summary class="cursor-pointer text-xs font-semibold uppercase tracking-wide text-fg-faint">
           OTS batches{% if batches %} ({{ batches|length }}){% endif %}
         </summary>
         {% if batches %}
         <table class="text-xs mt-2">
           <thead>
-            <tr class="text-left uppercase tracking-wide text-slate-400 border-b border-slate-200">
+            <tr class="text-left uppercase tracking-wide text-fg-faint border-b border-line">
               <th class="py-1.5 pr-4">Batch</th><th class="py-1.5 pr-4">Created</th>
               <th class="py-1.5 pr-4">Leaves</th><th class="py-1.5 pr-4">Proof</th>
               <th class="py-1.5 pr-4">Merkle root</th>
@@ -220,22 +220,22 @@
           </thead>
           <tbody>
             {% for b in batches %}
-            <tr class="border-b border-slate-100">
+            <tr class="border-b border-line-subtle">
               <td class="py-1 pr-4 font-mono">{{ b.id }}</td>
               <td class="py-1 pr-4">{{ b.created_at|utc_date }}</td>
               <td class="py-1 pr-4">{{ b.leaf_count }}</td>
               <td class="py-1 pr-4">
-                <span class="{% if b.proof_state == 'upgraded' %}text-emerald-600{% elif b.proof_state == 'pending' %}text-amber-600{% else %}text-rose-600{% endif %}">
+                <span class="{% if b.proof_state == 'upgraded' %}text-success{% elif b.proof_state == 'pending' %}text-warning{% else %}text-danger{% endif %}">
                   {{ b.proof_state or 'MISSING' }}
                 </span>
               </td>
-              <td class="py-1 pr-4 font-mono text-slate-400">{{ b.merkle_root[:24] }}…</td>
+              <td class="py-1 pr-4 font-mono text-fg-faint">{{ b.merkle_root[:24] }}…</td>
             </tr>
             {% endfor %}
           </tbody>
         </table>
         {% else %}
-        <p class="text-xs text-slate-500 mt-2">No batches — the OTS sweep is dark
+        <p class="text-xs text-fg-subtle mt-2">No batches — the OTS sweep is dark
           (<code>PRECIS_OTS_ENABLED</code>) or nothing signed yet.</p>
         {% endif %}
       </details>
@@ -252,7 +252,7 @@
          refuses. In one document a pane load is an innerHTML swap and a
          click is just a click. #}
       <div id="np-review" role="region" aria-label="claim review"
-           class="w-full h-full overflow-y-auto rounded-lg border border-slate-200 bg-white p-4"
+           class="w-full h-full overflow-y-auto rounded-lg border border-line bg-surface p-4"
            {% if preload_src %}data-preload="{{ preload_src }}"{% endif %}
            data-placeholder="Click a claim on the left — its review page (state, evidence DAG, approve/sign action) loads here."></div>
     </div>
@@ -261,14 +261,14 @@
 
     <div id="pane-paper" class="min-w-0 flex-1" data-tour="np-paper">
       <div id="np-paper" role="region" aria-label="paper reader"
-           class="w-full h-full overflow-hidden rounded-lg border border-slate-200 bg-white px-4"
+           class="w-full h-full overflow-hidden rounded-lg border border-line bg-surface px-4"
            data-placeholder="Click an evidence paper — its reader loads here."></div>
     </div>
   </div>
 </div>
 
 <style>
-  .tree-node.selected { background: #ecfdf5; }
+  .tree-node.selected { background: rgb(var(--bg-success-subtle)); }
   /* No clamp: a review row should show the whole claim sentence, not a
      truncated preview. min-width:0 keeps the flex-shrink behaviour the old
      overflow:hidden gave for free (a flex item's automatic minimum size is
@@ -276,13 +276,13 @@
      wrapping); overflow-wrap lets a long unbroken run still break. */
   .np-title { min-width: 0; overflow-wrap: break-word; }
   .np-loading { opacity: .45; transition: opacity .15s; }
-  .np-hint { font: 13px system-ui; color: #94a3b8; padding: 1.5rem; }
+  .np-hint { font: 13px system-ui; color: rgb(var(--text-fg-faint)); padding: 1.5rem; }
   .np-steps { line-height: 0; }
-  .np-dot { display: inline-block; width: 5px; height: 5px; border-radius: 9999px; background: #cbd5e1; margin-right: 2px; }
-  .np-dot.on { background: #0284c7; }
-  .np-dot.on.pub { background: #059669; }
+  .np-dot { display: inline-block; width: 5px; height: 5px; border-radius: 9999px; background: rgb(var(--bg-surface-strong)); margin-right: 2px; }
+  .np-dot.on { background: rgb(var(--bg-info-solid)); }
+  .np-dot.on.pub { background: rgb(var(--bg-success-solid)); }
   .np-divider { width: 7px; flex: none; cursor: col-resize; border-radius: 4px; margin: 0 1px; }
-  .np-divider:hover, .np-divider.dragging { background: #a7f3d0; }
+  .np-divider:hover, .np-divider.dragging { background: rgb(var(--bg-success-emphasis)); }
 </style>
 {# Loaded once for the whole workbench, not per swap: the paper fragment
    omits its own <script src> in pane mode (see _reader/reader.html.j2), so

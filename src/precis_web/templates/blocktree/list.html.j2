@@ -4,33 +4,33 @@
 
 <div class="flex items-center gap-3 mb-4">
   <h1 class="text-lg font-semibold">{{ kind_label }}</h1>
-  <span class="text-xs text-slate-500">{{ total }} design{{ '' if total == 1 else 's' }}</span>
+  <span class="text-xs text-fg-subtle">{{ total }} design{{ '' if total == 1 else 's' }}</span>
 </div>
 
 {% if not designs %}
-  <p class="text-sm text-slate-500">
+  <p class="text-sm text-fg-subtle">
     No {{ kind }} designs yet. Create one via MCP:
-    <code class="px-1 bg-slate-100 rounded">put(kind='{{ kind }}', id='...', text='{"ops":[...]}')</code>.
+    <code class="px-1 bg-surface-muted rounded">put(kind='{{ kind }}', id='...', text='{"ops":[...]}')</code>.
   </p>
 {% else %}
-<div class="overflow-hidden rounded-lg border border-slate-200 bg-white">
+<div class="overflow-hidden rounded-lg border border-line bg-surface">
   <table class="min-w-full text-sm">
-    <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+    <thead class="bg-surface-subtle text-fg-subtle text-xs uppercase tracking-wide">
       <tr>
         <th class="text-left font-medium px-3 py-2">Design</th>
         <th class="text-right font-medium px-3 py-2">Blocks</th>
         <th class="text-right font-medium px-3 py-2">Updated</th>
       </tr>
     </thead>
-    <tbody class="divide-y divide-slate-100">
+    <tbody class="divide-y divide-line-subtle">
       {% for d in designs %}
-      <tr class="hover:bg-slate-50">
+      <tr class="hover:bg-surface-subtle">
         <td class="px-3 py-2">
-          <a href="/{{ kind }}/{{ d.slug }}" class="text-emerald-700 hover:underline font-medium">{{ d.title }}</a>
-          <div class="text-xs text-slate-400">{{ d.slug }}</div>
+          <a href="/{{ kind }}/{{ d.slug }}" class="text-success-strong hover:underline font-medium">{{ d.title }}</a>
+          <div class="text-xs text-fg-faint">{{ d.slug }}</div>
         </td>
         <td class="px-3 py-2 text-right tabular-nums">{{ d.n_blocks }}</td>
-        <td class="px-3 py-2 text-right text-slate-400 text-xs">{{ d.updated }}</td>
+        <td class="px-3 py-2 text-right text-fg-faint text-xs">{{ d.updated }}</td>
       </tr>
       {% endfor %}
     </tbody>

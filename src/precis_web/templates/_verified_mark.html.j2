@@ -16,6 +16,6 @@
    silently). #}
 {% macro verified_mark(reviewed_at, reviewed_by=None) %}
 {%- if reviewed_at -%}
-<span class="text-emerald-600" title="verified by {{ reviewed_by or 'someone' }} on {{ reviewed_at }}">✓</span>
+<span class="text-success" title="verified by {{ reviewed_by or 'someone' }} on {{ reviewed_at }}">✓</span>
 {%- endif -%}
 {% endmacro %}

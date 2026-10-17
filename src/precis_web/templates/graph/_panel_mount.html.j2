@@ -9,12 +9,12 @@
 {% macro panel_mount(kind, ref_id) %}
 <section class="mt-6" aria-label="Neighbourhood">
   <div class="flex items-baseline gap-2 mb-2">
-    <h2 class="text-sm font-semibold text-slate-700">Neighbourhood</h2>
-    <a href="/graph/{{ kind }}/{{ ref_id }}" class="text-xs text-sky-700 hover:underline">graph ↗</a>
+    <h2 class="text-sm font-semibold text-fg-secondary">Neighbourhood</h2>
+    <a href="/graph/{{ kind }}/{{ ref_id }}" class="text-xs text-info-strong hover:underline">graph ↗</a>
   </div>
   <div id="graph-panel" hx-get="/graph/{{ kind }}/{{ ref_id }}/panel"
        hx-trigger="load" hx-swap="innerHTML">
-    <p class="text-xs text-slate-400">loading neighbourhood…</p>
+    <p class="text-xs text-fg-faint">loading neighbourhood…</p>
   </div>
 </section>
 {% endmacro %}
