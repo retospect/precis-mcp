@@ -47,15 +47,21 @@ whitespace-separated refs (LaTeX's ``\\cref{a,b}``). LaTeX lets cleveref
 count at compile time; docx prints the pre-pass numbers. A legacy ``¶``
 handle is still mapped to its ``dc`` in each backend's reference dispatch,
 which moves with the chunk loop.
+
+Back matter: :func:`back_matter` picks the blocks that apply (no references
+in patent mode, the published-claims appendix only on request) in the one
+shared order; claim-cite bookkeeping, the claims table's source numbers
+and the acronym list's membership are here too. A backend formats each
+block (:meth:`Renderer.back_matter`).
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from precis.export import _abbrev
+from precis.export import _abbrev, _back_matter
 from precis.store.si_links import SI_PDF_ROLE, cite_target_for
 
 
@@ -93,6 +99,10 @@ class Renderer(Protocol):
     def xref(self, sink: Any, xref: Xref) -> None:
         """Format one intra-draft cross-ref: downgraded text, the author's
         surface as a link, or the target's number / name."""
+
+    def back_matter(self, sink: Any, name: str, block: Any) -> None:
+        """Format one back-matter block (:func:`back_matter` picks which
+        and in what order); ``block`` is the backend's own payload."""
 
 
 def term_segments(
@@ -554,3 +564,51 @@ def merge_xref_runs(
                 continue
         out.append(item)
     return out
+
+
+# ── back matter ──────────────────────────────────────────────────
+
+
+def back_matter[T](
+    blocks: Mapping[str, T | None], *, patent: bool, claim_appendix: bool = True
+) -> Iterator[tuple[str, T]]:
+    """The back-matter blocks this export prints, as ``(name, payload)`` in
+    the one shared order (:data:`precis.export._back_matter.BACK_MATTER_ORDER`,
+    read at call time): a patent specification cites in the running text,
+    so it has no references; the published-claims appendix only when asked
+    for; a block whose payload is ``None`` is absent."""
+    kept = {
+        name: payload
+        for name, payload in blocks.items()
+        if not (name == "references" and patent)
+        and not (name == "published" and not claim_appendix)
+    }
+    return _back_matter.ordered_blocks(kept)
+
+
+def record_claim_keys(
+    seen: list[str],
+    keys: Sequence[str],
+    cited: list[str],
+    resolve: Callable[[str], str],
+) -> None:
+    """Remember which bibliography keys a finding's cite site printed, for
+    the published-claims section: each key resolved to the one it was cited
+    under, kept only when the body already cited it (recording never mints
+    a citation, so the bibliography is the same with or without the
+    section), first-seen order."""
+    for key in keys:
+        base = resolve(key)
+        if base in cited and base not in seen:
+            seen.append(base)
+
+
+def claim_source_numbers(keys: Sequence[str], cited: list[str]) -> list[int]:
+    """Reference numbers of a claim's recorded source keys, ascending."""
+    return sorted(cited.index(k) + 1 for k in keys if k in cited)
+
+
+def acronym_list(used: set[str], abbrevs: dict[str, str]) -> list[str]:
+    """The shorts an acronym list carries: every defined short the prose
+    used (headings included), case-insensitively sorted."""
+    return sorted((s for s in used if s in abbrevs), key=str.casefold)

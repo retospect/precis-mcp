@@ -31,14 +31,12 @@ from __future__ import annotations
 
 import html
 import re
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from precis.export import _abbrev, progress, walker
-from precis.export._back_matter import ordered_blocks
 from precis.export._cite_ids import merged_cite_numbers, paper_identifier
 from precis.export._data_package import (
     SECTION_TITLE as _DATA_PACKAGE_SECTION_TITLE,
@@ -584,17 +582,12 @@ def export_docx(
     # A patent specification cites prior art in-text: no References list.
     # Each _append_* is a no-op when its block is empty.
     progress.report("references and back matter")
-    back: dict[str, Callable[[], None]] = {
-        "unverified": lambda: _append_unverified_claims(doc, ctx),
-        "data_package": lambda: _append_data_package(doc, ctx.data_package),
-        "acronyms": lambda: _append_acronyms(doc, ctx),
-    }
-    if not ctx.patent_mode:
-        back["references"] = lambda: _append_references(doc, ctx)
-    if claim_appendix:
-        back["published"] = lambda: _append_published_claims(doc, ctx)
-    for _name, append in ordered_blocks(back):
-        append()
+    back = dict.fromkeys(_DOCX_BACK_MATTER, True)
+    renderer = DocxRenderer(ctx)
+    for name, block in walker.back_matter(
+        back, patent=ctx.patent_mode, claim_appendix=claim_appendix
+    ):
+        renderer.back_matter(doc, name, block)
     if ctx.endnote and ctx.cited:
         from precis.export.endnote import endnote_style, install_document_vars
         from precis.export.latex import resolve_bib_style
@@ -1266,11 +1259,12 @@ def _record_claim_cite(ctx: _Ctx, pk: int, slugs: list[str]) -> None:
     printed, for the published-claims table. Only slugs :func:`_cite`
     already registered in ``ctx.cited`` are kept: recording must never
     mint a citation (patent mode registers none, so it records none)."""
-    seen = ctx.claim_cites.setdefault(pk, [])
-    for slug in slugs:
-        base = _resolve_si_slug(slug.split("~", 1)[0], ctx)[0]
-        if base in ctx.cited and base not in seen:
-            seen.append(base)
+    walker.record_claim_keys(
+        ctx.claim_cites.setdefault(pk, []),
+        slugs,
+        ctx.cited,
+        lambda slug: _resolve_si_slug(slug.split("~", 1)[0], ctx)[0],
+    )
     if ctx.cur_section:
         secs = ctx.claim_sections.setdefault(pk, [])
         if ctx.cur_section not in secs:
@@ -1515,6 +1509,32 @@ class DocxRenderer:
             return  # front matter / glossary / before section 1: nothing to print
         _flush_cites(self.ctx, sink)
         sink.add_run(text)
+
+    def back_matter(self, sink: Any, name: str, block: Any) -> None:
+        """Append one back-matter section to the document (each is a no-op
+        when it has no content)."""
+        ctx = self.ctx
+        if name == "unverified":
+            _append_unverified_claims(sink, ctx)
+        elif name == "data_package":
+            _append_data_package(sink, ctx.data_package)
+        elif name == "references":
+            _append_references(sink, ctx)
+        elif name == "acronyms":
+            _append_acronyms(sink, ctx)
+        elif name == "published":
+            _append_published_claims(sink, ctx)
+
+
+#: The back-matter blocks docx can print (the PDF-only ``sources`` appendix
+#: has no docx counterpart).
+_DOCX_BACK_MATTER = (
+    "unverified",
+    "data_package",
+    "references",
+    "acronyms",
+    "published",
+)
 
 
 def _resolve_source(store: RefLookupStore, slug: str) -> dict[str, Any] | None:
@@ -1878,7 +1898,7 @@ def _append_references(doc: Any, ctx: _Ctx) -> None:
 def _append_acronyms(doc: Any, ctx: _Ctx) -> None:
     """An "Acronyms" list of every abbreviation actually used in the prose
     (auto-built, like the LaTeX glossaries acronym list) — SHORT → long."""
-    used = sorted((s for s in ctx.used_acr if s in ctx.abbrevs), key=str.casefold)
+    used = walker.acronym_list(ctx.used_acr, ctx.abbrevs)
     if not used:
         return
     doc.add_heading("Acronyms", level=1)
@@ -1927,11 +1947,7 @@ def _append_published_claims(doc: Any, ctx: _Ctx) -> None:
     for e in entries:
         # Numbers come from slugs the body already cited (never registers
         # one), so the bibliography is identical with or without this table.
-        nums = sorted(
-            ctx.cited.index(s) + 1
-            for s in ctx.claim_cites.get(e.fid, [])
-            if s in ctx.cited
-        )
+        nums = walker.claim_source_numbers(ctx.claim_cites.get(e.fid, []), ctx.cited)
         cells = table.add_row().cells
         cells[0].paragraphs[0].add_run(f"“{e.sentence}”")
         cells[1].paragraphs[0].add_run(merged_cite_numbers(nums) if nums else "")

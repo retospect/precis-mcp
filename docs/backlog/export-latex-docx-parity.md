@@ -10,8 +10,11 @@ Building in `g-export-parity`, one landing per slice. Slices landed: 1
 (cites, plus the golden baseline and the protocol test, fd0ef1361), 2
 (abbreviations, on the `g-abbrev-parity` expander, 718fe0ac0), 3 (xrefs:
 the numbering pre-pass reads chunk structure only, so no cite is
-renumbered; the golden draft gained xref cases, baseline from main). Next:
-4 (back matter).
+renumbered; the golden draft gained xref cases, baseline from main,
+408281f94), 4 (back matter: which blocks apply, claim-cite bookkeeping,
+claims-table numbers, acronym-list membership). Next: 5 (headings,
+figures, equations, tables, the chunk loops and the legacy-handle mapping;
+see decision 6).
 
 # LaTeX and DOCX export parity
 
@@ -165,6 +168,12 @@ Decisions:
    repeat collapse only with no gap; docx: in-walk run, collapse across
    whitespace). Both rules live side by side in `walker.py`; unifying them
    changes output and needs its own commit.
+6. **Legacy-handle mapping (witty, 2026-10-17):** slice 3 left the
+   `[¶<handle>]` → `dc` mapping in both backends' reference dispatch
+   (`_render_target`). Slice 5 must move it out of BOTH backends into the
+   walker, and slice 5's "no decision logic left in the backends" grep must
+   cover it (`legacy_to_dc` used outside `walker.py`), so it cannot be left
+   behind.
 
 Still open:
 

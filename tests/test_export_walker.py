@@ -23,13 +23,26 @@ _PROTOCOL = sorted(
     if inspect.isfunction(member) and not name.startswith("_")
 )
 
-#: One resolved argument per protocol method.
-_SAMPLES: dict[str, Any] = {
-    "cite_group": walker.CiteGroup(
-        ("smith20", "jones21"), (1, 2), (False, False), (None, None)
+#: Resolved arguments per protocol method, per backend (the back-matter
+#: payload is each backend's own: pre-rendered TeX, or a docx marker).
+_SAMPLES: dict[str, dict[str, tuple[Any, ...]]] = {
+    "cite_group": dict.fromkeys(
+        ("latex", "docx"),
+        (
+            walker.CiteGroup(
+                ("smith20", "jones21"), (1, 2), (False, False), (None, None)
+            ),
+        ),
     ),
-    "term": _abbrev.Use("MOF", mode="first"),
-    "xref": walker.Xref("dc2", None, live=True, label=("section", "1")),
+    "term": dict.fromkeys(("latex", "docx"), (_abbrev.Use("MOF", mode="first"),)),
+    "xref": dict.fromkeys(
+        ("latex", "docx"),
+        (walker.Xref("dc2", None, live=True, label=("section", "1")),),
+    ),
+    "back_matter": {
+        "latex": ("acronyms", "\\printglossaries"),
+        "docx": ("acronyms", True),
+    },
 }
 
 _ABBREVS = {"MOF": "metal-organic framework"}
@@ -42,7 +55,7 @@ def _latex_output(method: str) -> str:
         known_handles=set(),
     )
     sink: list[str] = []
-    getattr(latex.LatexRenderer(ctx), method)(sink, _SAMPLES[method])
+    getattr(latex.LatexRenderer(ctx), method)(sink, *_SAMPLES[method]["latex"])
     return "".join(sink)
 
 
@@ -51,12 +64,14 @@ def _docx_output(method: str) -> str:
         store=None,
         known_handles=set(),
         abbrevs=dict(_ABBREVS),
+        used_acr={"MOF"},
         library_label="x",
         library_search_url="x",
     )
-    para = docx.Document().add_paragraph()
-    getattr(dx.DocxRenderer(ctx), method)(para, _SAMPLES[method])
-    return para.text
+    doc = docx.Document()
+    sink = doc if method == "back_matter" else doc.add_paragraph()
+    getattr(dx.DocxRenderer(ctx), method)(sink, *_SAMPLES[method]["docx"])
+    return "\n".join(p.text for p in doc.paragraphs)
 
 
 def test_protocol_has_methods() -> None:
@@ -79,6 +94,35 @@ def test_both_backends_implement_and_emit(method: str) -> None:
 def test_cite_group_formats_only() -> None:
     assert _latex_output("cite_group") == r"\cite{smith20,jones21}"
     assert _docx_output("cite_group") == "[1, 2]"
+
+
+def test_back_matter_formats_only() -> None:
+    assert _latex_output("back_matter") == r"\printglossaries"
+    assert _docx_output("back_matter") == "Acronyms\nMOF — metal-organic framework"
+
+
+def test_back_matter_blocks_follow_mode_and_order() -> None:
+    blocks: dict[str, str | None] = {
+        n: n for n in ("published", "references", "acronyms", "unverified")
+    }
+    blocks["data_package"] = None
+    names = [n for n, _ in walker.back_matter(blocks, patent=False)]
+    assert names == ["unverified", "references", "acronyms", "published"]
+    patent = [
+        n for n, _ in walker.back_matter(blocks, patent=True, claim_appendix=False)
+    ]
+    assert patent == ["unverified", "acronyms"]
+
+
+def test_claim_keys_never_mint_a_citation() -> None:
+    seen: list[str] = []
+    walker.record_claim_keys(seen, ["b", "x", "a", "b"], ["a", "b"], str.lower)
+    assert seen == ["b", "a"]
+    assert walker.claim_source_numbers(seen, ["a", "b"]) == [1, 2]
+    assert walker.acronym_list({"dft", "MOF", "zz"}, {"MOF": "m", "dft": "d"}) == [
+        "dft",
+        "MOF",
+    ]
 
 
 def test_term_formats_only() -> None:

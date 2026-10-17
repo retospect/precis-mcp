@@ -49,7 +49,6 @@ from pylatexenc.latexencode import (
 )
 
 from precis.export import _abbrev, walker
-from precis.export._back_matter import ordered_blocks
 from precis.export._cite_ids import paper_identifier
 from precis.export._data_package import (
     SECTION_TITLE as _DATA_PACKAGE_SECTION_TITLE,
@@ -1235,10 +1234,9 @@ def _render_finding_cite(tgt: str, pin: str | None, ctx: _Ctx) -> str:
         # cited, never what the evidence graph holds.
         return _hub_footnote(pk, fc.evidence, ctx)
     rendered = _cite_keys(keys, ctx) + _trust_mark_latex(ctx, pk)
-    for k in rendered_keys:
-        base = _resolve_si_slug(k, ctx)[0]
-        if base in ctx.cited and base not in seen:
-            seen.append(base)
+    walker.record_claim_keys(
+        seen, rendered_keys, ctx.cited, lambda k: _resolve_si_slug(k, ctx)[0]
+    )
     if not keys and op is None:
         ctx.warnings.append(
             f"cite [{tgt}]: no citable source "
@@ -1512,6 +1510,13 @@ class LatexRenderer:
             sink.append(f"\\nameref{{chunk:{dc}}}")
         else:
             sink.append(f"\\cref{{chunk:{dc}}}")
+
+    @staticmethod
+    def back_matter(sink: list[str], name: str, block: str) -> None:
+        """One pre-rendered back-matter block into the document's lines."""
+        # ``\printglossaries``/``\printbibliography`` stay tight to the
+        # body or each other; the optional prose sections get a blank line.
+        sink.extend([block] if block.startswith("\\print") else ["", block])
 
 
 def _cite(slug: str, ctx: _Ctx, *, si: bool = False) -> str:
@@ -3125,19 +3130,18 @@ def assemble_document(
         "",
     ]
     # Back matter in the one order both exporters share
-    # (``export/_back_matter.py``); absent blocks are ``None``.
+    # (``export/_back_matter.py``); absent blocks are ``None``, and the
+    # walker decides which apply (no references in patent mode).
     back: dict[str, str | None] = {
         "unverified": unverified_section or None,
         "data_package": data_package_section or None,
-        "references": None if patent_mode else "\\printbibliography",
+        "references": "\\printbibliography",
         "acronyms": "\\printglossaries",
         "published": published_section or None,
         "sources": appendix or None,
     }
-    for _name, block in ordered_blocks(back):
-        # ``\printglossaries``/``\printbibliography`` stay tight to the
-        # body or each other; the optional prose sections get a blank line.
-        parts += [block] if block.startswith("\\print") else ["", block]
+    for name, block in walker.back_matter(back, patent=patent_mode):
+        LatexRenderer.back_matter(parts, name, block)
     parts += ["\\end{document}", ""]
     return "\n".join(parts)
 
