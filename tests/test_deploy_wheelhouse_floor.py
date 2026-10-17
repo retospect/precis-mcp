@@ -5,7 +5,7 @@ BEFORE the ``precis-mcp[catalyst]`` pip install runs.
 ``precis_web`` install on an autocatpath_plugin host) installs with
 ``--no-sources --find-links /opt/precis/wheels``. A fresh compute host's
 wheelhouse is empty, and the ``catalyst`` extra's floor
-(``autocatpath>=0.31.0`` — not on PyPI, release-gated) then resolves
+(``autocatpath>=<floor>`` — not on PyPI, release-gated) then resolves
 nothing or a too-old wheel. The fix's guard: find the wheels, refuse when
 none satisfies the floor, name the seed route in the message — play 44's
 wheel push on the Linux compute node; on darwin plugin hosts play 44
@@ -111,13 +111,25 @@ def test_refusal_message_keeps_play44_on_linux() -> None:
 
 def test_floor_matches_the_pyproject_pin() -> None:
     """autocatpath_min_version must track pyproject's catalyst floor."""
-    defaults = yaml.safe_load(
-        (_ROLES / "autocatpath" / "defaults" / "main.yml").read_text(encoding="utf-8")
+    group_vars = yaml.safe_load(
+        (_ROLES.parent / "group_vars" / "all.yml").read_text(encoding="utf-8")
     )
-    floor = defaults["autocatpath_min_version"]
+    floor = group_vars["autocatpath_min_version"]
     pyproject = (Path(__file__).resolve().parent.parent / "pyproject.toml").read_text(
         encoding="utf-8"
     )
     assert f"autocatpath>={floor}" in pyproject, (
         "pyproject's catalyst floor and autocatpath_min_version drifted apart"
     )
+
+
+def test_floor_has_one_source_and_no_literal_fallbacks() -> None:
+    """The floor is defined once (deploy/group_vars/all.yml); the installers
+    and the autocatpath role defaults must not carry their own copy."""
+    for path in (*_INSTALLERS, _ROLES / "autocatpath" / "defaults" / "main.yml"):
+        text = path.read_text(encoding="utf-8")
+        assert "autocatpath_min_version |" not in text, path.name
+        if path in _INSTALLERS:
+            assert "autocatpath_min_version" in text, path.name
+        else:
+            assert "autocatpath_min_version:" not in text, path.name
