@@ -1,12 +1,14 @@
 ---
-- name: restart prometheus
+- name: restart prometheus (darwin)
+  listen: restart prometheus
   when: os_family == "darwin"
   ansible.builtin.command: /opt/homebrew/bin/brew services restart prometheus
   become: true
 
 # Linux: SIGHUP-style reload would also work, but a restart is the sure way to
 # pick up a changed `alerting:` block, and the scrape gap is one interval.
-- name: restart prometheus
+- name: restart prometheus (linux)
+  listen: restart prometheus
   when: os_family == "linux"
   ansible.builtin.systemd:
     name: prometheus

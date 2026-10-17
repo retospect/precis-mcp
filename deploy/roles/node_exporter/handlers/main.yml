@@ -1,5 +1,6 @@
 ---
-- name: restart node_exporter
+- name: restart node_exporter (darwin)
+  listen: restart node_exporter
   when: os_family == "darwin"
   ansible.builtin.command: /opt/homebrew/bin/brew services restart node_exporter
   become: true
@@ -10,9 +11,10 @@
   # (wait for :9100, scrape-error check) are what actually gate the play.
   failed_when: false
 
-# Same handler name as the brew path: notify picks whichever `when` matches,
-# like the monitoring role's two `restart prometheus` handlers.
-- name: restart node_exporter
+# Distinct names + shared `listen:` topic: Ansible runs only the first handler
+# matching a notified name, but every handler listening on a topic (gr494656).
+- name: restart node_exporter (linux)
+  listen: restart node_exporter
   when: os_family == "linux"
   ansible.builtin.systemd:
     name: prometheus-node-exporter

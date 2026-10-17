@@ -128,14 +128,13 @@ def test_playbook_targets_the_monitoring_group_and_inventory_defines_it() -> Non
 
 
 def test_restart_handlers_exist_for_each_linux_service() -> None:
-    names = {
-        h["name"]
-        for h in yaml.safe_load(
-            (_ROLE / "handlers" / "main.yml").read_text(encoding="utf-8")
-        )
-    }
+    names = set()
+    for h in yaml.safe_load(
+        (_ROLE / "handlers" / "main.yml").read_text(encoding="utf-8")
+    ):
+        names |= {h["name"], h.get("listen", h["name"])}
     assert {
-        "restart prometheus",
+        "restart prometheus (linux)",
         "restart alertmanager",
         "restart alertmanager receiver",
     } <= names

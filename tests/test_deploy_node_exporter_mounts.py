@@ -71,7 +71,7 @@ def test_linux_tasks_render_the_defaults_file_and_restart() -> None:
     linux = [
         h
         for h in handlers
-        if h["name"] == "restart node_exporter"
+        if h.get("listen") == "restart node_exporter"
         and h.get("when") == 'os_family == "linux"'
     ]
     assert linux, "no Linux restart handler for the changed defaults file"
