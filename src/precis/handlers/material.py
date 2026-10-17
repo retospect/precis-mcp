@@ -161,7 +161,10 @@ class MaterialHandler(ValueEntityHandler):
             )
         aliases = (meta or {}).get("aliases")
         if aliases is not None and not isinstance(aliases, list):
-            raise BadInput("meta.aliases must be a list of strings")
+            raise BadInput(
+                "meta.aliases must be a list of strings",
+                next="put(kind='material', id=..., meta={'aliases': ['AA6061-T6']})",
+            )
         existing = self.store.get_ref(kind="material", id=slug)
         ttl = (title or (existing.title if existing is not None else slug)).strip()
         ref, created = self.store.material_entity_upsert(
@@ -232,6 +235,8 @@ class MaterialHandler(ValueEntityHandler):
                 f"{prop['prop_id']} is already registered as "
                 f"value_type={prop['value_type']!r} - value_type={value_type!r} "
                 "conflicts with the registered definition",
+                next="omit value_type= to accept the registered definition, or "
+                "get(kind='material', view='properties') to see it",
             )
         if allowed_values is not None:
             registered = prop.get("allowed_values") or []
@@ -240,6 +245,9 @@ class MaterialHandler(ValueEntityHandler):
                     f"{prop['prop_id']} is already registered with "
                     f"allowed_values={registered!r} - allowed_values="
                     f"{allowed_values!r} conflicts with the registered definition",
+                    next="omit allowed_values= to accept the registered "
+                    "definition, or get(kind='material', view='properties') "
+                    "to see it",
                 )
 
     def _mint_property(
@@ -298,6 +306,10 @@ class MaterialHandler(ValueEntityHandler):
                         f"cannot mint {prop_id!r} as categorical with "
                         f"unit={unit!r} - categorical properties are "
                         "dimensionless, drop unit=",
+                        next=f"put(kind='material', id=<slug>, "
+                        f"property={prop_id!r}, value=..., "
+                        "value_type='categorical', allowed_values=[...]) "
+                        "without unit=",
                     )
                 dimension = "categorical"
                 canonical_unit = None
@@ -307,6 +319,9 @@ class MaterialHandler(ValueEntityHandler):
                         f"cannot mint {prop_id!r} as {value_type} with "
                         f"unit={unit!r} - {value_type} properties are "
                         "dimensionless, drop unit=",
+                        next=f"put(kind='material', id=<slug>, "
+                        f"property={prop_id!r}, value=..., "
+                        f"value_type={value_type!r}) without unit=",
                     )
                 dimension = "dimensionless"
             else:  # quantity / ratio
@@ -325,6 +340,8 @@ class MaterialHandler(ValueEntityHandler):
                 raise BadInput(
                     f"cannot mint {prop_id!r} as boolean with unit={unit!r} - "
                     "boolean properties are dimensionless, drop unit=",
+                    next=f"put(kind='material', id=<slug>, "
+                    f"property={prop_id!r}, value=...) without unit=",
                 )
             inferred_type = "boolean"
             dimension = "dimensionless"
@@ -564,7 +581,10 @@ class MaterialHandler(ValueEntityHandler):
                 "without min=/max=, or search(kind='material', q='...')",
             )
         if maturity is not None and maturity not in _MATURITIES:
-            raise BadInput(f"maturity={maturity!r} must be one of {list(_MATURITIES)}")
+            raise BadInput(
+                f"maturity={maturity!r} must be one of {list(_MATURITIES)}",
+                options=list(_MATURITIES),
+            )
         hits = self.store.material_search_values(
             property_id=property,
             min_val=min_val,

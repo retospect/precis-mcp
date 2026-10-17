@@ -718,3 +718,39 @@ class TestCoreParams:
         sig = inspect.signature(search)
         for name in ("property", "min", "max", "maturity"):
             assert name in sig.parameters, name
+
+
+# ── M3 error contract: next=/options= hints (gr494831) ──────────────
+
+
+class TestErrorHints:
+    def test_bad_maturity_names_the_closed_vocabulary(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="6061-t6", title="Aluminum 6061-T6")
+        h.put(id="6061-t6", property="density", value=2700, unit="kg/m3")
+        with pytest.raises(BadInput) as excinfo:
+            h.search(property="density", maturity="bogus")
+        assert excinfo.value.options == ["commercial", "lab", "speculative"]
+
+    def test_conflicting_value_type_points_at_the_registry(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="6061-t6", title="Aluminum 6061-T6")
+        h.put(id="6061-t6", property="density", value=2700, unit="kg/m3")
+        with pytest.raises(BadInput) as excinfo:
+            h.put(id="6061-t6", property="density", value="1", value_type="boolean")
+        assert "view='properties'" in str(excinfo.value.next)
+
+    def test_categorical_mint_with_unit_shows_the_fixed_call(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="6061-t6", title="Aluminum 6061-T6")
+        with pytest.raises(BadInput) as excinfo:
+            h.put(
+                id="6061-t6",
+                property="finish_color_c",
+                value="red",
+                unit="mm",
+                value_type="categorical",
+                allowed_values=["red", "green"],
+            )
+        assert "put(kind='material'" in str(excinfo.value.next)
+        assert "without unit=" in str(excinfo.value.next)

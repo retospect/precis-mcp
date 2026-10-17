@@ -180,6 +180,36 @@ def test_bad_payload_and_missing_atom_raise(structure):
         structure.get(id="pd_pair", view="atom", args={"atom": "aXx9"})
 
 
+def test_error_hints_carry_a_real_next(structure):
+    """gr494831 M3: a refusal names the fix. A representative raise per
+    surface asserts the hint is a copy-pasteable call (next=) or the
+    closed vocabulary (options=), not prose."""
+    with pytest.raises(BadInput) as excinfo:
+        structure.put(id="nope", text="{not json")
+    assert "put(kind='structure'" in str(excinfo.value.next)
+
+    with pytest.raises(BadInput) as excinfo:
+        structure.edit()
+    assert "get(kind='structure')" in str(excinfo.value.next)
+
+    structure.put(id="pd_pair", text=_PD)
+    with pytest.raises(BadInput) as excinfo:
+        structure.edit(id="pd_pair", ops=[{"element": "O"}])
+    assert "add_atom" in str(excinfo.value.next)
+
+    with pytest.raises(NotFound) as not_found:
+        structure.get(id="pd_pair", view="atom", args={"atom": "aXx9"})
+    assert "view='atoms'" in str(not_found.value.next)
+
+    with pytest.raises(BadInput) as excinfo:
+        structure.get(id="pd_pair", view="line")
+    assert "direction" in str(excinfo.value.next)
+
+    with pytest.raises(BadInput) as excinfo:
+        structure.edit(id="pd_pair", ops=[{"op": "relax", "cell": "bogus"}])
+    assert excinfo.value.options == ["inplane", "full"]
+
+
 def test_delete_retires(structure):
     structure.put(id="pd_pair", text=_PD)
     out = structure.delete(id="pd_pair")

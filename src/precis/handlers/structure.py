@@ -122,7 +122,8 @@ def _atom_arg(args: dict[str, Any], *, alias: str | None = None) -> str:
             return str(v).strip().split("#")[-1]
     named = " or ".join(f"{k}=" for k in keys)
     raise BadInput(
-        f"missing required arg {named} (an atom label, e.g. args={{'atom': 'aPd2'}})"
+        f"missing required arg {named} (an atom label, e.g. args={{'atom': 'aPd2'}})",
+        next="get(kind='structure', id='<slug>', view='atoms') for the live labels",
     )
 
 
@@ -431,6 +432,15 @@ def _ops_establish_cell(ops: Any) -> bool:
     )
 
 
+#: A minimal copy-pasteable ``put`` payload, shared by every raise that
+#: refuses a malformed or cell-less spec so the fix is one call.
+_PUT_EXAMPLE = (
+    "put(kind='structure', id='<slug>', text='"
+    '{"cell":{"a":8.4,"b":8.4,"c":24,"pbc":[true,true,false]},"ops":[]}'
+    "')"
+)
+
+
 def _payload(text: str | None, args: dict[str, Any] | None) -> dict[str, Any]:
     if args:
         return dict(args)
@@ -438,9 +448,14 @@ def _payload(text: str | None, args: dict[str, Any] | None) -> dict[str, Any]:
         try:
             obj = json.loads(text)
         except json.JSONDecodeError as exc:
-            raise BadInput(f"structure payload must be JSON: {exc}") from exc
+            raise BadInput(
+                f"structure payload must be JSON: {exc}", next=_PUT_EXAMPLE
+            ) from exc
         if not isinstance(obj, dict):
-            raise BadInput("structure payload must be a JSON object {cell, ops}")
+            raise BadInput(
+                "structure payload must be a JSON object {cell, ops}",
+                next=_PUT_EXAMPLE,
+            )
         return obj
     return {}
 
@@ -844,7 +859,8 @@ class StructureHandler(Handler):
         else:
             raise BadInput(
                 "put(kind='structure') payload needs a 'cell' (or a "
-                "cell-establishing op like 'slab')"
+                "cell-establishing op like 'slab')",
+                next=_PUT_EXAMPLE,
             )
         relax_ops, import_echo = self._apply_ops_with_imports(scene, ops)
         res = self._run_ops(scene, relax_ops)
@@ -924,7 +940,10 @@ class StructureHandler(Handler):
                 next="edit(kind='structure', id='pd111', ops=[{'op':'add_atom', ...}])",
             )
         if id is None or not str(id).strip():
-            raise BadInput("edit(kind='structure') requires id= (the design slug)")
+            raise BadInput(
+                "edit(kind='structure') requires id= (the design slug)",
+                next="get(kind='structure') to list designs",
+            )
         ref = resolve_live_slug_ref(self.store, kind="structure", id=str(id).strip())
         if self._external_provenance(ref.id) is not None:
             raise BadInput(
@@ -1016,7 +1035,11 @@ class StructureHandler(Handler):
         parent = resolve_live_slug_ref(self.store, kind="structure", id=str(id).strip())
         to_slug = str(to).strip()
         if not to_slug:
-            raise BadInput("derive requires to= (the new design slug)")
+            raise BadInput(
+                "derive requires to= (the new design slug)",
+                next="derive(kind='structure', id=<parent-slug>, "
+                "to='<new-slug>', ops=[...])",
+            )
         if self.store.get_ref(kind="structure", id=to_slug) is not None:
             raise BadInput(
                 f"design {to_slug!r} already exists",
@@ -1025,7 +1048,12 @@ class StructureHandler(Handler):
         scene, _ = self.store.structure_load(parent.id)
         op_list = ops or []
         if any(o.get("op") == "relax" for o in op_list):
-            raise BadInput("derive applies graph/marker ops only (no relax)")
+            raise BadInput(
+                "derive applies graph/marker ops only (no relax)",
+                next="drop the relax op, then relax the derived design with "
+                "edit(kind='structure', id='<new-slug>', "
+                "ops=[{'op':'relax','fidelity':'clean'}])",
+            )
         # Same interception as put/edit so import_fragment works in a derive
         # too (relax was rejected above, so the returned relax tail is empty).
         _relax_tail, import_echo = self._apply_ops_with_imports(scene, op_list)
@@ -1075,26 +1103,40 @@ class StructureHandler(Handler):
         a = args or {}
         src = (source or a.get("source") or "").strip() or None
         if view in ("completion", "completion_digest") and src is not None:
-            raise BadInput("completion reads cannot hydrate external sources")
+            raise BadInput(
+                "completion reads cannot hydrate external sources",
+                next="get(kind='structure', id='<slug>', view='completion') "
+                "without source=",
+            )
         if src is not None:
             query = q if q is not None else a.get("q")
             return self._get_external(source=src, q=query, args=a)
         if id is None or (isinstance(id, str) and id.strip() in ("", "/")):
             if view in ("completion", "completion_digest"):
-                raise BadInput("completion requires a specific structure id")
+                raise BadInput(
+                    "completion requires a specific structure id",
+                    next="get(kind='structure') to list designs, then "
+                    "get(kind='structure', id='<slug>', view='completion')",
+                )
             return self._render_list()
         ref = resolve_live_slug_ref(self.store, kind="structure", id=str(id).strip())
         if view in ("completion", "completion_digest"):
-            from precis.structure.completion_read import read_structure_completion
+            from precis.structure.completion_read import (
+                STRUCTURE_ARGS,
+                read_structure_completion,
+            )
 
             try:
                 body = read_structure_completion(
                     self.store, ref.id, a, digest=view == "completion_digest"
                 )
             except (ValueError, TypeError) as exc:
-                raise BadInput(str(exc)) from exc
+                raise BadInput(str(exc), options=sorted(STRUCTURE_ARGS)) from exc
             if body is None:
-                raise NotFound(f"structure {id!r} no longer exists")
+                raise NotFound(
+                    f"structure {id!r} no longer exists",
+                    next="get(kind='structure') to list live designs",
+                )
             return Response(body=body, ref_id=ref.id)
         if view == "pourbaix":
             # No scene needed — the map reads job meta, not geometry, so it
@@ -1158,7 +1200,9 @@ class StructureHandler(Handler):
                 or not math.isfinite(u_raw)
             ):
                 raise BadInput(
-                    f"args={{'U': {u_raw!r}}}: U must be a finite number (V vs RHE)"
+                    f"args={{'U': {u_raw!r}}}: U must be a finite number (V vs RHE)",
+                    next="get(kind='structure', id='<slug>', view='staircase', "
+                    "args={'U': 0.9})",
                 )
             u = float(u_raw)
         from precis.quest import staircase as sq
@@ -1233,7 +1277,11 @@ class StructureHandler(Handler):
         try:
             adapter_fn = get_adapter(source)
         except ValueError as exc:
-            raise BadInput(str(exc)) from exc
+            raise BadInput(
+                str(exc),
+                next="get(kind='structure', args={'source': 'catalysis-hub', "
+                "'config_id': '<id>'}) — the wired source today",
+            ) from exc
 
         config_id = args.get("config_id")
         if config_id:
@@ -1698,7 +1746,10 @@ class StructureHandler(Handler):
     # ── delete ───────────────────────────────────────────────────────
     def delete(self, *, id: str | int | None = None, **_kw: Any) -> Response:
         if id is None or not str(id).strip():
-            raise BadInput("delete(kind='structure') requires id= (the design slug)")
+            raise BadInput(
+                "delete(kind='structure') requires id= (the design slug)",
+                next="get(kind='structure') to list designs",
+            )
         ref = resolve_live_slug_ref(self.store, kind="structure", id=str(id).strip())
         n = self.store.structure_delete(ref.id)
         return Response(body=f"retired structure {ref.slug} ({n} atom(s))")
@@ -1749,7 +1800,10 @@ class StructureHandler(Handler):
         echo line naming the label mapping, for the caller's response."""
         design = op.get("design")
         if not design:
-            raise BadInput("import_fragment needs 'design' (the source slug)")
+            raise BadInput(
+                "import_fragment needs 'design' (the source slug)",
+                next="ops=[{'op': 'import_fragment', 'design': '<source-slug>'}]",
+            )
         src_ref = self.store.get_ref(kind="structure", id=str(design).strip())
         if src_ref is None:
             roster = ", ".join(
@@ -1821,7 +1875,11 @@ class StructureHandler(Handler):
         echoes: list[str] = []
         for op in ops:
             if not isinstance(op, dict) or "op" not in op:
-                raise BadInput(f"op missing 'op' key: {op!r}")
+                raise BadInput(
+                    f"op missing 'op' key: {op!r}",
+                    next="ops=[{'op': 'add_atom', 'element': 'O', "
+                    "'frac': [0.5, 0.5, 0.6]}]",
+                )
             name = op["op"]
             if name == "relax":
                 relax_ops.append(op)
@@ -1830,7 +1888,11 @@ class StructureHandler(Handler):
                 try:
                     apply_ops(scene, [op])
                 except OpError as exc:
-                    raise BadInput(f"op error: {exc}") from exc
+                    raise BadInput(
+                        f"op error: {exc}",
+                        next="get(kind='skill', id='precis-structure-help') "
+                        "for the op vocabulary",
+                    ) from exc
                 continue
             echoes.append(self._import_fragment(scene, op))
         return relax_ops, ("\n".join(echoes) if echoes else None)
@@ -1851,7 +1913,11 @@ class StructureHandler(Handler):
         try:
             apply_ops(scene, graph_ops)
         except OpError as exc:
-            raise BadInput(f"op error: {exc}") from exc
+            raise BadInput(
+                f"op error: {exc}",
+                next="get(kind='skill', id='precis-structure-help') "
+                "for the op vocabulary",
+            ) from exc
         if not relax_ops:
             return None
         ro = relax_ops[-1]
@@ -1872,7 +1938,9 @@ class StructureHandler(Handler):
             if fidelity == "xtb" and model.lower().replace("_", "-") != "gfn2-xtb":
                 raise BadInput(
                     f"relax model {model!r} does not apply to rung 'xtb' — "
-                    "the rung is GFN2-xTB only (model='gfn2-xtb' or omit)"
+                    "the rung is GFN2-xTB only (model='gfn2-xtb' or omit)",
+                    next="ops=[{'op': 'relax', 'fidelity': 'xtb'}] "
+                    "(model pins to gfn2-xtb)",
                 )
         elif fidelity == "ml":
             model = route_ml_model(scene)
@@ -1889,12 +1957,14 @@ class StructureHandler(Handler):
         if cell_mode is not None and cell_mode not in ("inplane", "full"):
             raise BadInput(
                 f"relax cell mode {cell_mode!r} not understood "
-                "(use 'inplane', 'full', or omit for an atoms-only relax)"
+                "(use 'inplane', 'full', or omit for an atoms-only relax)",
+                options=["inplane", "full"],
             )
         if cell_mode is not None and fidelity in ("clean", "0"):
             raise BadInput(
                 "variable-cell relax (cell=…) needs fidelity='ml'; the 'clean' "
-                "geometry repair has no stress to relax the cell against"
+                "geometry repair has no stress to relax the cell against",
+                next="ops=[{'op': 'relax', 'fidelity': 'ml', 'cell': 'inplane'}]",
             )
         if cell_mode is not None and fidelity == "xtb":
             # Refused here, not left to relax()'s RelaxUnsupported: that
@@ -1903,7 +1973,8 @@ class StructureHandler(Handler):
             # infra on the node.
             raise BadInput(
                 "variable-cell relax (cell=…) needs fidelity='ml'; rung 'xtb' "
-                "relaxes atoms only"
+                "relaxes atoms only",
+                next="ops=[{'op': 'relax', 'fidelity': 'ml', 'cell': 'inplane'}]",
             )
         # Optional DFT-D3 on top of the MLIP. Off by default (the historical
         # behaviour), but load-bearing for anything held together by van der
@@ -1915,7 +1986,8 @@ class StructureHandler(Handler):
         if dispersion and fidelity != "ml":
             raise BadInput(
                 f"dispersion=True needs fidelity='ml'; rung {fidelity!r} has no "
-                "potential to correct"
+                "potential to correct",
+                next="ops=[{'op': 'relax', 'fidelity': 'ml', 'dispersion': true}]",
             )
 
         # Cache-first for the expensive energy rungs. The rung-0
@@ -2246,7 +2318,10 @@ class StructureHandler(Handler):
                 "no compute node configured: neither PRECIS_DFT_NODE nor "
                 "PRECIS_MLIP_NODES is set on this host, so a struct_relax job "
                 "would have nowhere to run — deploy renders them from topology "
-                "(precis_capabilities.dft / .autocatpath)"
+                "(precis_capabilities.dft / .autocatpath)",
+                next="re-run with a locally-computable rung "
+                "(ops=[{'op':'relax','fidelity':'clean'}] always works) — "
+                "the node lists are deploy env this host lacks",
             )
 
         # self.hub is set at registration; a hand-constructed handler (tests)
@@ -2521,7 +2596,8 @@ class StructureHandler(Handler):
             return int(str(run_arg).lstrip("rR"))
         except ValueError:
             raise BadInput(
-                f"run={run_arg!r} is not a run id (try 'r12' or 12)"
+                f"run={run_arg!r} is not a run id (try 'r12' or 12)",
+                next="get(kind='structure', id='<slug>', view='runs') for the run ids",
             ) from None
 
     def _atom_force_line(
@@ -2536,7 +2612,9 @@ class StructureHandler(Handler):
         if resolved is None:
             if run_id is not None:
                 raise NotFound(
-                    f"no run r{run_id} on this structure with forces recorded"
+                    f"no run r{run_id} on this structure with forces recorded",
+                    next="get(kind='structure', id='<slug>', view='runs') "
+                    "for the recorded runs",
                 )
             return None, (
                 "|F|: unavailable (no force-bearing run at the current design "
@@ -2584,7 +2662,11 @@ class StructureHandler(Handler):
         if view == "atom":
             label = _atom_arg(args)
             if label not in scene.atoms:
-                raise NotFound(f"no atom {label!r} in this structure")
+                raise NotFound(
+                    f"no atom {label!r} in this structure",
+                    next="get(kind='structure', id='<slug>', view='atoms') "
+                    "for the live labels",
+                )
             atom = scene.atoms[label]
             nbrs = probe.neighborhood(scene, label, radius=3.5)
             charge_note = "" if atom.charge == 0 else f" · charge={atom.charge:+d}"
@@ -2637,7 +2719,11 @@ class StructureHandler(Handler):
         if view == "neighborhood":
             center = _atom_arg(args, alias="center")
             if center not in scene.atoms:
-                raise NotFound(f"no atom {center!r} in this structure")
+                raise NotFound(
+                    f"no atom {center!r} in this structure",
+                    next="get(kind='structure', id='<slug>', view='atoms') "
+                    "for the live labels",
+                )
             radius = float(args.get("radius", 3.0))
             rows = [
                 {
@@ -2723,7 +2809,11 @@ class StructureHandler(Handler):
             origin = _vec(args, "origin", default=[0.0, 0.0, 0.0])
             direction = _vec(args, "direction", "dir")
             if direction is None:
-                raise BadInput("line needs direction= (a 3-vector, Cartesian Å)")
+                raise BadInput(
+                    "line needs direction= (a 3-vector, Cartesian Å)",
+                    next="get(kind='structure', id='<slug>', view='line', "
+                    "args={'direction': [0, 0, 1]})",
+                )
             radius = float(args.get("radius", 1.5))
             hits = probe.line(scene, origin, direction, radius)
             rows = [
@@ -2745,7 +2835,11 @@ class StructureHandler(Handler):
             point = _vec(args, "point", default=[0.0, 0.0, 0.0])
             normal = _vec(args, "normal", "n")
             if normal is None:
-                raise BadInput("plane needs normal= (a 3-vector, Cartesian)")
+                raise BadInput(
+                    "plane needs normal= (a 3-vector, Cartesian)",
+                    next="get(kind='structure', id='<slug>', view='plane', "
+                    "args={'normal': [0, 0, 1]})",
+                )
             thickness = float(args.get("thickness", 1.0))
             phits = probe.plane(scene, point, normal, thickness)
             rows = [
@@ -2767,14 +2861,23 @@ class StructureHandler(Handler):
                 point = _vec(args, "point", default=[0.0, 0.0, 0.0])
                 normal = _vec(args, "normal", "n")
                 if normal is None:
-                    raise BadInput("bonds_through_plane needs normal=")
+                    raise BadInput(
+                        "bonds_through_plane needs normal=",
+                        next="get(kind='structure', id='<slug>', "
+                        "view='bonds_through_plane', args={'normal': [0, 0, 1]})",
+                    )
                 crossing = probe.bonds_through_plane(scene, point, normal)
                 head = f"# {len(crossing)} bonds cross the plane"
                 acol = "∠normal"
             else:
                 center = _vec(args, "center", "point")
                 if center is None:
-                    raise BadInput("bonds_in_sphere needs center=")
+                    raise BadInput(
+                        "bonds_in_sphere needs center=",
+                        next="get(kind='structure', id='<slug>', "
+                        "view='bonds_in_sphere', "
+                        "args={'center': [0, 0, 0], 'radius': 3.0})",
+                    )
                 radius = float(args.get("radius", 3.0))
                 crossing = probe.bonds_in_sphere(scene, center, radius)
                 head = f"# {len(crossing)} bonds in/crossing the {radius} Å sphere"
@@ -2798,7 +2901,11 @@ class StructureHandler(Handler):
             a = str(args.get("a") or args.get("from") or "").split("#")[-1]
             b = str(args.get("b") or args.get("to") or "").split("#")[-1]
             if a not in scene.atoms or b not in scene.atoms:
-                raise NotFound("path needs a= and b= as live atom labels")
+                raise NotFound(
+                    "path needs a= and b= as live atom labels",
+                    next="get(kind='structure', id='<slug>', view='atoms') "
+                    "for the live labels",
+                )
             chain = probe.path(scene, a, b)
             if chain is None:
                 return Response(body=f"# no bond path {a} → {b} (disconnected)")
@@ -2833,7 +2940,10 @@ class StructureHandler(Handler):
             other = str(args.get("other") or args.get("vs") or "").strip()
             if not other:
                 raise BadInput(
-                    "diff needs other= (another structure slug to compare against)"
+                    "diff needs other= (another structure slug to compare against)",
+                    next="get(kind='structure') to list designs, then "
+                    "get(kind='structure', id='<slug>', view='diff', "
+                    "args={'other': '<slug>'})",
                 )
             oref = resolve_live_slug_ref(self.store, kind="structure", id=other)
             oscene, _ = self.store.structure_load(oref.id)
@@ -2860,7 +2970,11 @@ class StructureHandler(Handler):
         # pov — the §6.6 embodiment readout
         support_raw = args.get("support") or args.get("atom")
         if support_raw is None:
-            raise BadInput("pov needs support= (an atom label or a list of labels)")
+            raise BadInput(
+                "pov needs support= (an atom label or a list of labels)",
+                next="get(kind='structure', id='<slug>', view='pov', "
+                "args={'support': '<label>'})",
+            )
         support = (
             [str(support_raw).split("#")[-1]]
             if isinstance(support_raw, str)
@@ -2868,7 +2982,11 @@ class StructureHandler(Handler):
         )
         missing = [s for s in support if s not in scene.atoms]
         if missing:
-            raise NotFound(f"no such atom(s) in support: {', '.join(missing)}")
+            raise NotFound(
+                f"no such atom(s) in support: {', '.join(missing)}",
+                next="get(kind='structure', id='<slug>', view='atoms') "
+                "for the live labels",
+            )
         reach = float(args.get("reach", 3.0))
         p = probe.pov(scene, support, reach)
         head = (
