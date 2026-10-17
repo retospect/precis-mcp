@@ -26,18 +26,19 @@ opened parent's hull.
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
+from tests._node import needs_node
+
 _REPO = Path(__file__).resolve().parents[1]
 _SCRIPT = _REPO / "scripts" / "topology_cloud_smoke.mjs"
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+@needs_node
 @pytest.mark.skipif(
     sys.platform == "win32",
     reason="node's ESM loader rejects a Windows drive-letter absolute path"

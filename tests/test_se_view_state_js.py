@@ -11,18 +11,19 @@ shared state, and the scrubber no longer drops steps while one is loading.
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
+from tests._node import needs_node
+
 _REPO = Path(__file__).resolve().parents[1]
 _STATIC = _REPO / "src" / "precis_web" / "static"
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+@needs_node
 @pytest.mark.skipif(sys.platform == "win32", reason="node ESM path quirk on Windows")
 def test_shared_view_state_smoke() -> None:
     result = subprocess.run(

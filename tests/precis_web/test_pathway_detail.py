@@ -14,7 +14,6 @@ from __future__ import annotations
 import json
 import math
 import re
-import shutil
 import subprocess
 from contextlib import contextmanager
 from itertools import pairwise
@@ -30,6 +29,7 @@ from precis.structure.cell import Cell
 from precis.structure.elements import covalent_radius
 from precis.structure.scene import Scene
 from precis_web.routes.structure import _geom_payload
+from tests._node import needs_node
 
 from .conftest import make_ref
 
@@ -1702,9 +1702,6 @@ _TEMPLATE = (
     / "pathway_detail.html.j2"
 )
 
-_needs_node = pytest.mark.skipif(
-    shutil.which("node") is None, reason="node is not on PATH"
-)
 
 #: (id, n_H, rel_energy) — the parked-template NO -> NH3 / H2O network the
 #: backlog item's acceptance reads: the N+O dissociation, one supply edge per
@@ -1826,7 +1823,7 @@ def _graph_paths(graph: dict[str, Any]) -> list[list[str]]:
     return _pathway_paths(ids, graph["links"], "NH3")
 
 
-@_needs_node
+@needs_node
 def test_pathway_fold_and_annotations_infer_from_labels_on_parked_graph(
     tmp_path: Path,
 ) -> None:
@@ -1849,7 +1846,7 @@ def test_pathway_fold_and_annotations_infer_from_labels_on_parked_graph(
     assert got[1][1:] == _H2O_ROUTE_TAIL
 
 
-@_needs_node
+@needs_node
 def test_pathway_annotations_coadsorbed_and_landing_states(tmp_path: Path) -> None:
     """Label inference over the coadsorbed / landing-state vocabulary:
     ``* -> NO@N`` is ``+NO ↓``, a landing state's ``~tag`` gas leaves
@@ -1952,7 +1949,7 @@ def _seed_parked(runtime: Any, graph: dict[str, Any]) -> None:
     )
 
 
-@_needs_node
+@needs_node
 def test_pathway_diagram_renders_folded_steps_with_annotations(
     client, runtime, tmp_path: Path
 ) -> None:
@@ -2020,7 +2017,7 @@ def test_pathway_diagram_renders_folded_steps_with_annotations(
     ]
 
 
-@_needs_node
+@needs_node
 def test_pathway_diagram_annotations_survive_explicit_link_fields(
     client, runtime, tmp_path: Path
 ) -> None:
@@ -2082,7 +2079,7 @@ def _typed_link(
     }
 
 
-@_needs_node
+@needs_node
 @pytest.mark.parametrize(
     ("links", "expected"),
     [
@@ -2144,7 +2141,7 @@ def test_pathway_typed_links_keep_chemical_steps(
     assert got == [expected]
 
 
-@_needs_node
+@needs_node
 def test_pathway_typed_desorption_renders_its_own_level(
     client, runtime, tmp_path: Path
 ) -> None:
@@ -2211,7 +2208,7 @@ _HYDRO_ARROW_RE = (
 )
 
 
-@_needs_node
+@needs_node
 def test_pathway_hydrogenation_arrow_tip_lands_on_fed_level_from_upper_right(
     client, runtime, tmp_path: Path
 ) -> None:
@@ -2268,7 +2265,7 @@ def test_pathway_hydrogenation_arrow_tip_lands_on_fed_level_from_upper_right(
     assert svg.count("feeds ") >= len(groups)  # hover title on each arrow
 
 
-@_needs_node
+@needs_node
 def test_pathway_hydrogenation_labels_stack_when_tips_crowd(
     client, runtime, tmp_path: Path
 ) -> None:
@@ -2333,7 +2330,7 @@ def test_pathway_graph_payload_carries_low_confidence_reasons() -> None:
     ]
 
 
-@_needs_node
+@needs_node
 def test_pathway_pw455722_shape_draws_no_grey_dashed_sawtooth(
     client, runtime, tmp_path: Path
 ) -> None:
@@ -2525,7 +2522,7 @@ def test_pathway_detail_copy_link_and_note_rendered(client, runtime) -> None:
     assert "history.replaceState" in resp.text
 
 
-@_needs_node
+@needs_node
 def test_pathway_url_state_round_trip(client, runtime, tmp_path: Path) -> None:
     """Selection -> URL -> restored selection: a state click, a path
     isolation, a U move and a pH entry each rewrite the address bar via
@@ -2569,7 +2566,7 @@ els['pw-copy-link'].handlers.click[0]();
     assert "pH 7" in restored["uReadout"]
 
 
-@_needs_node
+@needs_node
 def test_pathway_url_state_invalid_params_fall_back_with_notice(
     client, runtime, tmp_path: Path
 ) -> None:
@@ -2601,7 +2598,7 @@ def test_pathway_url_state_invalid_params_fall_back_with_notice(
     assert out["noteHidden"] is True
 
 
-@_needs_node
+@needs_node
 def test_pathway_url_state_escapes_state_ids(client, runtime, tmp_path: Path) -> None:
     """A state id with a literal ``+`` (coadsorbed fragments) percent-
     encodes into ``%2B`` — a bare ``+`` decodes as a space and resolves
