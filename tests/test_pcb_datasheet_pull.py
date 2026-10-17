@@ -125,7 +125,10 @@ def serve(monkeypatch):
     @contextmanager
     def fake_stream(client, method, url, /, **kw):
         asked.append(url)
-        yield _FakeResp(state["body"], state["status"], url)
+        resp = _FakeResp(state["body"], state["status"], url)
+        if state.get("ctype"):
+            resp.headers["Content-Type"] = state["ctype"]
+        yield resp
 
     monkeypatch.setattr(dp, "safe_stream", fake_stream)
     state["asked"] = asked
@@ -302,6 +305,42 @@ def test_non_pdf_bytes_fail_not_pdf(store, no_jlc, serve, fake_ingest):
     rec = dp.pull(store, "C25900")
     assert (rec["status"], rec["reason"]) == ("failed", "not_pdf")
     assert fake_ingest == []
+
+
+def test_html_content_type_is_refused_with_reason(store, no_jlc, serve, fake_ingest):
+    serve["body"] = _PDF  # even PDF-looking bytes: the declared type decides
+    serve["ctype"] = "text/html; charset=utf-8"
+    store.parts_import([_catalog_row(25900, "https://x.test/a.pdf")])
+    rec = dp.pull(store, "C25900")
+    assert (rec["status"], rec["reason"]) == ("failed", "not_pdf")
+    assert rec["detail"] == "not a PDF (text/html)"
+    assert serve["asked"] == ["https://x.test/a.pdf"]  # one try, no retry storm
+    assert fake_ingest == []
+
+
+def test_html_body_detail_names_html(store, no_jlc, serve, fake_ingest):
+    serve["body"] = b"<!DOCTYPE html><html>verify you are human</html>"
+    store.parts_import([_catalog_row(25900, "https://x.test/a.pdf")])
+    rec = dp.pull(store, "C25900")
+    assert rec["detail"] == "not a PDF (text/html)"
+
+
+def test_not_pdf_falls_back_to_catalog_url(store, monkeypatch, serve, fake_ingest):
+    store.parts_import([_catalog_row(25900, "https://cat.test/a.pdf")])
+    row = _catalog_row(25900, "https://jlc.test/a.pdf")
+    monkeypatch.setattr(dp, "_jlc_client", lambda s: _FakeJlc(available=True, row=row))
+    bodies = {"https://jlc.test/a.pdf": b"<html>wall</html>"}
+
+    @contextmanager
+    def fake_stream(client, method, url, /, **kw):
+        serve["asked"].append(url)
+        yield _FakeResp(bodies.get(url, _PDF), 200, url)
+
+    monkeypatch.setattr(dp, "safe_stream", fake_stream)
+    rec = dp.pull(store, "C25900")
+    assert rec["status"] == "ok"
+    assert rec["url"] == "https://cat.test/a.pdf"
+    assert serve["asked"] == ["https://jlc.test/a.pdf", "https://cat.test/a.pdf"]
 
 
 def test_http_error_and_size_cap(store, no_jlc, serve, fake_ingest, monkeypatch):

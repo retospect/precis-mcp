@@ -9,7 +9,10 @@ per C-number its board uses that has no datasheet yet). Steps:
    falls through to an existing ``parts.datasheet_url``. No URL either way
    fails ``no_url`` (or ``jlc_api_error:<status|class>`` when the API erred).
 2. **Fetch** through ``safe_stream`` (supplier URLs are external input),
-   capped at 50 MB (``too_large``), ``%PDF`` magic required (``not_pdf``);
+   capped at 50 MB (``too_large``), ``%PDF`` magic required and a ``text/*``
+   Content-Type refused (``not_pdf``, detail ``not a PDF (text/html)``; the
+   catalog URL is tried once when it differs from the JLC one, else the
+   part waits for an operator drop);
    a refused address is ``fetch_refused:<detail>``, an HTTP error
    ``http_<status>``.
 3. **Dedupe by content sha**: a datasheet with that ``pdf_sha256`` already
@@ -111,9 +114,12 @@ def _jlc_client(store: Store) -> JlcApiClient:
     return JlcApiClient(store=store)
 
 
-def _resolve_url(store: Store, lcsc: str) -> str:
+def _resolve_urls(store: Store, lcsc: str) -> list[str]:
+    """Candidate datasheet URLs, best first: the JLC API's, then the catalog's
+    own when it differs (a bot-walled host may serve the other one)."""
     client = _jlc_client(store)
     existing = store.part_row(lcsc)
+    catalog_url = (existing or {}).get("datasheet_url")
     jlc_reason: str | None = None
     if client.available:
         try:
@@ -130,7 +136,10 @@ def _resolve_url(store: Store, lcsc: str) -> str:
                 existing = store.part_row(lcsc)
     url = (existing or {}).get("datasheet_url")
     if isinstance(url, str) and url.strip():
-        return url.strip()
+        urls = [url.strip()]
+        if isinstance(catalog_url, str) and catalog_url.strip() not in urls:
+            urls.append(catalog_url.strip())
+        return urls
     if jlc_reason is not None:
         raise _Failed(jlc_reason)
     raise _Failed(
@@ -139,6 +148,19 @@ def _resolve_url(store: Store, lcsc: str) -> str:
         if client.available
         else "no JLCPCB API credentials and no parts row with a datasheet_url",
     )
+
+
+def _download_any(urls: list[str], dest: Path) -> tuple[str, str]:
+    """Try each candidate once; only a ``not_pdf`` answer moves on to the next
+    (no retries of the same URL, no header tricks)."""
+    for i, candidate in enumerate(urls):
+        try:
+            return _download(candidate, dest)
+        except _Failed as exc:
+            if exc.reason != "not_pdf" or i == len(urls) - 1:
+                raise
+            log.info("datasheet_pull: %s was not a PDF, trying next URL", candidate)
+    raise _Failed("no_url")  # unreachable: urls is never empty
 
 
 def _download(url: str, dest: Path) -> tuple[str, str]:
@@ -160,6 +182,10 @@ def _download(url: str, dest: Path) -> tuple[str, str]:
                 if declared is not None and declared.isdigit():
                     if int(declared) > MAX_BYTES:
                         raise _Failed("too_large", f"Content-Length {declared}")
+                ctype = resp.headers.get("Content-Type", "").split(";")[0].strip()
+                if ctype.lower().startswith("text/"):
+                    # a bot wall / error page: never write it to disk
+                    raise _Failed("not_pdf", f"not a PDF ({ctype.lower()})")
                 final_url = str(resp.url)
                 with dest.open("wb") as fh:
                     for chunk in resp.iter_bytes(chunk_size=_CHUNK):
@@ -190,7 +216,9 @@ def _download(url: str, dest: Path) -> tuple[str, str]:
 
 def _require_pdf(head: bytes) -> None:
     if b"%PDF" not in head[:_MAGIC_WINDOW]:
-        raise _Failed("not_pdf", f"head={head[:8]!r}")
+        if head.lstrip()[:1] == b"<":
+            raise _Failed("not_pdf", "not a PDF (text/html)")
+        raise _Failed("not_pdf", f"not a PDF (head={head[:8]!r})")
 
 
 def _ingest(store: Store, path: Path) -> tuple[int, bool]:
@@ -251,10 +279,11 @@ def pull(store: Store, lcsc: str, url: str | None = None) -> dict[str, Any]:
     lcsc = lcsc.strip().upper()
     prior = _stored_ok(store, lcsc)  # read once, before this pull touches anything
     try:
-        url = url or _resolve_url(store, lcsc)
+        urls = [url] if url else _resolve_urls(store, lcsc)
+        url = urls[0]
         with tempfile.TemporaryDirectory(prefix="datasheet-pull-") as tmp:
             path = Path(tmp) / "datasheet.pdf"
-            final_url, sha = _download(url, path)
+            final_url, sha = _download_any(urls, path)
             ds_id = _existing_by_sha(store, sha)
             if ds_id is None:
                 # A name that cannot collide with a paper stub's cite_key.
