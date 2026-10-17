@@ -23,9 +23,12 @@ Spec
 {"type": "route_complete", "pcb": "sensor-node"}
 ```
 
-``pcb`` names the design by slug (or accepts a bare ref id string/int). A
-design with no nets at all resolves ``False`` (nothing to route is not
-"routed").
+``pcb`` names the design by slug (or accepts a bare ref id string/int).
+The verdict is :func:`precis.pcb.route_state.route_state`'s ``routed``:
+``None`` ("not yet") for a design with no nets or no route run yet,
+``False`` while any net is not realized, ``True`` once every net is. DRC
+findings over realized copper are ``netlist_drc_clean``'s gate, not this
+one.
 """
 
 from __future__ import annotations
@@ -33,6 +36,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput
+from precis.pcb.route_state import route_state
 from precis.utils.slug_ref import resolve_live_slug_ref
 
 if TYPE_CHECKING:
@@ -59,7 +63,4 @@ def _resolve_pcb_ref_id(store: Store, spec: dict[str, Any]) -> int:
 
 def evaluate(store: Store, spec: dict[str, Any], **_kw: Any) -> bool | None:
     ref_id = _resolve_pcb_ref_id(store, spec)
-    rows = store.pcb_route_status(ref_id)
-    if not rows:
-        return False
-    return all(r["status"] == "realized" for r in rows)
+    return route_state(store, ref_id, drc=False).routed

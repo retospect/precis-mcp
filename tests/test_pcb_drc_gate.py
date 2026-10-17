@@ -30,6 +30,9 @@ class _StubStore:
     def pcb_drc_run_stale(self, ref_id: int, run_id: str | None) -> bool:
         return self._stale
 
+    def pcb_route_status(self, ref_id: int) -> list[dict[str, Any]]:
+        return []  # route_state reads the nets too; the DRC verdict ignores them
+
 
 def _store(
     latest: tuple[str | None, list[dict[str, Any]]], stale: bool = False
@@ -61,6 +64,22 @@ def test_false_when_latest_run_has_an_error_finding():
 def test_true_when_latest_run_has_only_warnings():
     findings = [
         {"rule": "trace_width", "severity": "warn", "objects": [], "detail": "…"}
+    ]
+    store = _store(("run1", findings))
+    assert netlist_drc_clean.evaluate(store, {"pcb": 42}) is True
+
+
+def test_true_when_the_only_error_is_waived():
+    """route_state's one rule: a waived error does not block (the checklist's
+    drc-clean item already read it this way)."""
+    findings = [
+        {
+            "rule": "clearance",
+            "severity": "error",
+            "objects": [],
+            "detail": "…",
+            "waived_by": "reto",
+        }
     ]
     store = _store(("run1", findings))
     assert netlist_drc_clean.evaluate(store, {"pcb": 42}) is True

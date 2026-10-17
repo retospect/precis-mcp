@@ -34,6 +34,7 @@ from precis.pcb import optimize as pcb_optimize
 from precis.pcb import padplace
 from precis.pcb import realize as pcb_realize
 from precis.pcb import resolved as pcb_resolved
+from precis.pcb import route_state as pcb_route_state
 from precis.pcb import session as pcb_session
 from precis.pcb import silk as pcb_silk
 from precis.pcb.capabilities import CapabilityRow, capability_for, coating_extent_mm
@@ -357,7 +358,7 @@ def design_phase(design: dict[str, Any]) -> str:
             i.get("x") is not None and i.get("y") is not None
             for i in design["instances"]
         ),
-        routed=any(k != "unrouted" for k in (design.get("route_status") or {})),
+        routed=pcb_route_state.started(design.get("route_status") or {}),
     )
 
 
@@ -537,8 +538,9 @@ def run(
             + pcb_drc.check_unrouted(
                 [
                     {"net": r["name"], "note": r.get("note")}
-                    for r in store.pcb_route_status(ref_id)
-                    if r["status"] != "realized"
+                    for r in pcb_route_state.route_state(
+                        store, ref_id, drc=False
+                    ).pending
                 ]
             )
         )
@@ -666,12 +668,8 @@ def run(
     )
     # Fixed source copper routes a net with no ``pcb_routes`` row
     # (gr492989): judge "unrouted" by the copper, not the status alone.
-    route_status = store.pcb_route_status(ref_id)
-    routed_by_copper = (
-        pcb_drc.nets_routed_by_copper(model)
-        if any(r["status"] != "realized" for r in route_status)
-        else set()
-    )
+    pending = pcb_route_state.route_state(store, ref_id, drc=False).pending
+    routed_by_copper = pcb_drc.nets_routed_by_copper(model) if pending else set()
     findings = pcb_drc.run_geometric_drc(
         model,
         capability=capability,
@@ -682,8 +680,8 @@ def run(
         net_voltages=net_voltages,
         unrouted=[
             {"net": r["name"], "note": r.get("note")}
-            for r in route_status
-            if r["status"] != "realized" and r["name"] not in routed_by_copper
+            for r in pending
+            if r["name"] not in routed_by_copper
         ],
         census=silk_census,
         holes=[

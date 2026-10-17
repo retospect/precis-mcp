@@ -24,6 +24,7 @@ from urllib.parse import quote
 from precis.checklist.status import VERDICTS, compute_statuses
 from precis.pcb import ROUTE_DANGLING, route_summary_status
 from precis.pcb.catalog import min_unit_price
+from precis.pcb.route_state import route_state
 
 log = logging.getLogger(__name__)
 
@@ -110,9 +111,10 @@ def last_job(store: Any, pcb_ref_id: int, job_type: str) -> dict[str, Any] | Non
 
 
 def _route_section(store: Any, ref_id: int, design: dict[str, Any]) -> dict[str, Any]:
+    # The design summary is route_state.summarize over the same rows.
     counts: dict[str, int] = dict(design.get("route_status") or {})
     reasons: collections.Counter[str] = collections.Counter()
-    for net in store.pcb_route_status(ref_id):
+    for net in route_state(store, ref_id, drc=False).nets:
         if route_summary_status(net.get("status"), net.get("note")) != "failed":
             continue
         note = str(net.get("note") or "")

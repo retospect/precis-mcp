@@ -2,12 +2,15 @@
 
 Resolves ``True`` when the design's LATEST persisted geometric-DRC run
 (``pcb_drc_findings``, :mod:`precis.pcb.drc`, written by ``op='check'``)
-carries zero ``severity='error'`` findings. A ``warn`` finding (inside JLC's
+carries zero live ``severity='error'`` findings (a waived error does not
+block — :func:`precis.pcb.route_state.route_state`'s one definition, which
+the checklist's ``drc-clean`` item shares). A ``warn`` finding (inside JLC's
 published minimum but eating into our house margin) does NOT block the
 gate — a warn is manufacturable, just spending headroom, which is exactly
 what the two-tier capability table is FOR (see ``capabilities.py``'s own
 module docstring). ``None`` (leave the leaf open) when no DRC run has ever
-been recorded for this board — "not yet checked" is not "clean".
+been recorded for this board, or the latest predates its last edit —
+"not yet checked" is not "clean".
 
 Feeds the pcb-guided-place-route phase machine's final gate (Slice 10 of
 docs/backlog/pcb-guided-place-route.md), alongside ``placement_legal`` and
@@ -33,6 +36,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput
+from precis.pcb.route_state import route_state
 from precis.utils.slug_ref import resolve_live_slug_ref
 
 if TYPE_CHECKING:
@@ -59,9 +63,6 @@ def _resolve_pcb_ref_id(store: Store, spec: dict[str, Any]) -> int:
 
 def evaluate(store: Store, spec: dict[str, Any], **_kw: Any) -> bool | None:
     ref_id = _resolve_pcb_ref_id(store, spec)
-    run_id, findings = store.pcb_drc_findings_latest(ref_id)
-    if run_id is None:
-        return None  # no DRC run recorded yet — not yet, not a failure
-    if store.pcb_drc_run_stale(ref_id, run_id):
-        return None  # gr492096: the board changed since — stale, re-check
-    return not any(f["severity"] == "error" for f in findings)
+    # None: no DRC run recorded yet, or the board changed since (gr492096)
+    # — not yet, not a failure. A waived error does not block.
+    return route_state(store, ref_id).drc_clean

@@ -41,8 +41,8 @@ Seams (same files, different work — sequence, never merge):
   easyeda's router item (pcb-missing-constraint-classes §E-1) goes before
   ewod's escape-layer leak and escape-corridor rewrite; ewod sequences
   behind by its own choice.
-- `backlog/pcb-guided-place-route.md` — ewod owns the engine slices,
-  easyeda owns slice 9 (JLCPCB ordering); neither reorders the other's.
+- `backlog/pcb-guided-place-route.md` — ewod owns it (layer count as a
+  user call, the one open item).
 - `backlog/pcb-missing-constraint-classes.md` — easyeda owns the router
   half now, ewod owns the HV vocabulary on its Horizon.
 

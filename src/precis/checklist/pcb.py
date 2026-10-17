@@ -4,8 +4,8 @@ targets (checklist-kind.md slice 2, "the tool-item bridges").
 Both halves read the store's durable pcb record and never recompute
 geometry: ``drc-clean`` reads the latest persisted DRC run exactly as the
 ``netlist_drc_clean`` evaluator does, ``all-nets-routed`` reads
-``pcb_routes`` like ``route_complete``, and ``netlist-exceptions-clean``
-reads the connectivity graph (``Store.pcb_graph``) for pins on no net and
+:func:`precis.pcb.route_state.route_state` like ``route_complete``, and
+``netlist-exceptions-clean`` reads the connectivity graph (``Store.pcb_graph``) for pins on no net and
 nets with fewer than two members — the ERC-shaped exceptions the design
 session named. Checkers are keyed by the shipped item NAME
 (``pcb-tapeout.yaml``), so the YAML stays data and the bridge stays the
@@ -20,6 +20,7 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from precis.checklist.status import Fingerprint, ToolResult
+from precis.pcb.route_state import route_state
 
 #: How many offending names a tool result quotes before truncating.
 _EVIDENCE_LIMIT = 20
@@ -76,16 +77,18 @@ def _check_drc(store: Any, ref_id: int) -> ToolResult:
 
 
 def _check_routed(store: Any, ref_id: int) -> ToolResult:
-    rows = store.pcb_route_status(ref_id)
-    if not rows:
+    rs = route_state(store, ref_id, drc=False)
+    if not rs.nets:
         return ToolResult(None, reason="design has no nets")
-    pending = [r["name"] for r in rows if r["status"] != "realized"]
+    pending = [r["name"] for r in rs.pending]
     counts: dict[str, int] = {}
-    for r in rows:
+    for r in rs.nets:
         counts[r["status"]] = counts.get(r["status"], 0) + 1
+    # No route run yet reads "fail", not "not checkable": the item asks
+    # whether the nets are routed, and they are not.
     return ToolResult(
-        "fail" if pending else "pass",
-        {"nets": len(rows), "counts": counts, "pending": pending[:_EVIDENCE_LIMIT]},
+        "pass" if rs.routed else "fail",
+        {"nets": len(rs.nets), "counts": counts, "pending": pending[:_EVIDENCE_LIMIT]},
     )
 
 

@@ -305,10 +305,7 @@ export/fab if this file outgrows itself.
     margin rules, fact shapes, pcb_review). Datasheet-chunk citations
     behind each pin/net spec the re-route trusts.
 12. **backlog/pcb-flexboard.md** — waits on 6; the flex half of "all of them".
-13. **backlog/pcb-guided-place-route.md** slice 9 (JLCPCB ordering) — the
-    workflow's endpoint; gated on a human granting Components/PCB scope in
-    the JLCPCB Open API console.
-14. **backlog/pcb-keepout-does-not-bind.md** — `ftype='keepout'` binds
+13. **backlog/pcb-keepout-does-not-bind.md** — `ftype='keepout'` binds
     nothing in placer, router or DRC. Demoted from Do next 2026-10-02:
     the real board's "keepout" records look like its rule table (Do next
     2). The placer half belongs to ewod-pcb's obstacle-set item; this

@@ -48,11 +48,11 @@ from precis.pcb import (
     DEFAULT_STACKUP,
     PIN_CURRENT_ROLES,
     PIN_ETYPES,
-    route_summary_status,
 )
 from precis.pcb import generators as pcb_generators
 from precis.pcb import geom as pcb_geom
 from precis.pcb import padplace as pcb_padplace
+from precis.pcb import route_state as pcb_route_state
 from precis.pcb.capabilities import capability_for, conductor_spacing_mm
 from precis.store.types import ActorSlug
 from precis.utils.units import parse_angle_deg
@@ -2714,16 +2714,19 @@ class PcbMixin:
             # counts as 'unrouted'. So the headline a caller sees first and
             # the detailed view disagreed in BOTH directions. One rule, two
             # call sites, drifted — this module's standing defect.
-            for st, note in conn.execute(
-                "SELECT rt.status, rt.note "
-                "FROM pcb_nets n "
-                "LEFT JOIN pcb_routes rt "
-                "  ON rt.net_id = n.net_id AND rt.board_id = %s "
-                "WHERE n.ref_id = %s AND n.retired_at IS NULL",
-                (board["board_id"], ref_id),
-            ).fetchall():
-                key = route_summary_status(st, note)
-                route_status[key] = route_status.get(key, 0) + 1
+            route_status = pcb_route_state.summarize(
+                [
+                    {"status": st, "note": note}
+                    for st, note in conn.execute(
+                        "SELECT rt.status, rt.note "
+                        "FROM pcb_nets n "
+                        "LEFT JOIN pcb_routes rt "
+                        "  ON rt.net_id = n.net_id AND rt.board_id = %s "
+                        "WHERE n.ref_id = %s AND n.retired_at IS NULL",
+                        (board["board_id"], ref_id),
+                    ).fetchall()
+                ]
+            )
         return board, net_classes, route_status
 
     # -- read -----------------------------------------------------------

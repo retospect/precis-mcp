@@ -104,7 +104,6 @@ from precis.pcb import (
     padplace,
     place,
     ratsnest,
-    route_summary_status,
 )
 from precis.pcb import catalog as pcb_catalog
 from precis.pcb import connectivity as pcb_connectivity
@@ -130,6 +129,7 @@ from precis.pcb import realize as pcb_realize
 from precis.pcb import resolved as pcb_resolved
 from precis.pcb import review as pcb_review
 from precis.pcb import route as pcb_route
+from precis.pcb import route_state as pcb_route_state
 from precis.pcb import selectables as pcb_selectables
 from precis.pcb import session as pcb_session
 from precis.pcb import silk as pcb_silk
@@ -4307,13 +4307,10 @@ class PcbHandler(Handler):
         dangling <2-member net's ``'realized'`` exemption — see
         ``pcb_route``'s job docstring) is appended so it never reads as an
         actually-routed net."""
-        rows = self.store.pcb_route_status(ref_id)
+        rs = pcb_route_state.route_state(self.store, ref_id, drc=False)
+        rows, counts = rs.nets, rs.counts
         if not rows:
             return Response(body="no nets on this design yet")
-        counts: dict[str, int] = {}
-        for r in rows:
-            key = route_summary_status(r["status"], r.get("note"))
-            counts[key] = counts.get(key, 0) + 1
         try:
             lengths = self._net_length_ratios(ref_id)
         except Exception:  # diagnostic column only; never break route-status
@@ -4397,7 +4394,8 @@ class PcbHandler(Handler):
             # The digest outlived its copper (op='rip' since the run): say
             # what is stored now instead of passing the old run off as it.
             status = collections.Counter(
-                str(r["status"]) for r in self.store.pcb_route_status(ref_id)
+                str(r["status"])
+                for r in pcb_route_state.route_state(self.store, ref_id, drc=False).nets
             )
             head += (
                 f"\n⚠️ STALE — {ripped} net(s) ripped since that run; stored now: "
@@ -6403,12 +6401,10 @@ class PcbHandler(Handler):
                 + render_agent_table(crows, schema=["class", "rules"])
             )
         n_nets = len(design["nets"])
-        route_status = design.get("route_status") or {}
         if n_nets:
-            if route_status:
-                summary = format_route_summary(route_status)
-            else:
-                summary = f"{n_nets} net(s): {n_nets} unrouted"
+            summary = pcb_route_state.summary_line(
+                n_nets, design.get("route_status") or {}
+            )
             parts.append(f"## route status: {summary}")
         return "\n".join(parts)
 

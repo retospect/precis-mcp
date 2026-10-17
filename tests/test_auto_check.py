@@ -980,9 +980,10 @@ def test_route_complete_missing_pcb_spec_rejected() -> None:
         route_complete.evaluate(None, {})  # type: ignore[arg-type]
 
 
-def test_route_complete_false_with_no_routes(store: Store) -> None:
+def test_route_complete_none_with_no_routes(store: Store) -> None:
+    # route_state NOT_STARTED: no route run yet is "not yet", not a failure.
     _seed_pcb(store, "route-none")
-    assert route_complete.evaluate(store, {"pcb": "route-none"}) is False
+    assert route_complete.evaluate(store, {"pcb": "route-none"}) is None
 
 
 def test_route_complete_false_when_any_net_unrealized(store: Store) -> None:
