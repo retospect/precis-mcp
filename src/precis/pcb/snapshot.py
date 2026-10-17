@@ -26,13 +26,15 @@ TABLES = (
     "pcb_boards",
     "pcb_components",
     "pcb_pins",
+    # pcb_features before pcb_instances: instances.room_id (0219) points at
+    # a feature, so load_snapshot must have mapped feature ids first.
+    "pcb_features",
     "pcb_instances",
     "pcb_nets",
     "pcb_netconns",
     "pcb_net_classes",
     "pcb_local_footprints",
     "pcb_generators",
-    "pcb_features",
     "pcb_measures",
     "pcb_routes",
     "pcb_planes",
@@ -58,6 +60,8 @@ IDENTITIES = {
     "pcb_fixed_copper": "fixed_id",
     "pcb_copper": "copper_id",
 }
+#: Columns holding another table's identity under a different name.
+ALIASES = {"room_id": "feature_id"}
 VOLATILE = {"created_at", "updated_at", "generated_at", "fetched_at", "refreshed_at"}
 
 
@@ -277,9 +281,9 @@ def normalize(raw: dict[str, Any]) -> dict[str, Any]:
             for key in list(row):
                 if key in VOLATILE or key == "description_tsv":
                     del row[key]
-                elif key in maps and row[key] is not None:
+                elif ALIASES.get(key, key) in maps and row[key] is not None:
                     try:
-                        row[key] = maps[key][row[key]]
+                        row[key] = maps[ALIASES.get(key, key)][row[key]]
                     except KeyError as exc:
                         raise ValueError(
                             f"external dependency: {key}={row[key]}"
@@ -379,8 +383,9 @@ def load_snapshot(
             for original in fixture["tables"][table]:
                 row = copy.deepcopy(original)
                 old_id = row.pop(key) if key else None
-                for column, mapping in maps.items():
-                    if column in row and row[column] is not None:
+                for column in list(row):
+                    mapping = maps.get(ALIASES.get(column, column))
+                    if mapping is not None and row[column] is not None:
                         row[column] = mapping[row[column]]
                 if table in {"parts", "part_footprints"}:
                     existing = conn.execute(

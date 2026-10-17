@@ -223,6 +223,41 @@ def test_all_surfaces_roundtrip_and_readback(store):
     assert "1 failed" in response.body and "CLOCK" in response.body
 
 
+def test_instance_room_binding_remaps_through_feature_ids(store):
+    # gr493180: room_id names a pcb_features row; a raw copy points the
+    # replayed part at the source DB's feature id, not the copy's room.
+    fixture = _fixture()
+    fixture["tables"]["pcb_features"].append(
+        {
+            "feature_id": 2,
+            "board_id": 1,
+            "ref_id": 1,
+            "ftype": "room",
+            "geom": {"polygon": [[-1, -1], [1, -1], [1, 1], [-1, 1]]},
+        }
+    )
+    fixture["tables"]["pcb_instances"][0]["room_id"] = 2
+    with store.pool.connection() as conn:
+        # Burn feature ids so source and copy allocate different ones.
+        load_snapshot(conn, _fixture(), "snapshot-room-offset")
+        source_id, params = load_snapshot(conn, fixture, "snapshot-room-source")
+        first = export_snapshot(conn, "snapshot-room-source", route_params=params)
+        assert first["tables"]["pcb_instances"][0]["room_id"] == 2
+        copy_id, copy_params = load_snapshot(conn, first, "snapshot-room-copy")
+        assert (
+            export_snapshot(conn, "snapshot-room-copy", route_params=copy_params)
+            == first
+        )
+        for ref_id in (source_id, copy_id):
+            row = conn.execute(
+                "SELECT f.ftype, f.ref_id FROM pcb_instances i "
+                "JOIN pcb_features f ON f.feature_id = i.room_id "
+                "WHERE i.ref_id = %s",
+                (ref_id,),
+            ).fetchone()
+            assert row == ("room", ref_id)
+
+
 def test_existing_slug_refused_without_changes(store):
     with store.pool.connection() as conn:
         _, params = load_snapshot(conn, _fixture(), "snapshot-source")
