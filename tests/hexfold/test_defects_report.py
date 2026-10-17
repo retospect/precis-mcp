@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections import Counter
+
+from hexfold.build import build
 from hexfold.check import check
 from hexfold.defects import Defect, counting_residual, cut_disk, disks_disjoint
 from hexfold.lattice import Lattice, Site
@@ -51,3 +54,42 @@ def test_check_geometry_codes_fire_on_stick() -> None:
 
 
 _C60_SPEC = "hexfold 0.1\norigin c\nc: fullerene(C60)\n"
+
+
+# gr464341 (wontfix, Reto's option-c ruling 2026-10-12): vertex ids order by
+# str(Site), so Patch.faces() starts the rim walk at a different edge when a
+# sheet hole straddles the 9 -> 10 digit boundary, and the k=0 / k=1 fuse
+# phases swap there. Numeric ordering (18bd85545) was reverted by 03c36e89c
+# because it changed 32 golden tests; changing this order needs regenerated
+# goldens through the full gate. Do not "fix" this test to be position
+# independent.
+_STR_ORDER_CLEAN = {(12, 12), (14, 14), (5, 9)}
+_STR_ORDER_FLIPPED = {(5, 10), (9, 12), (19, 10), (9, 9)}
+_SEAM_CLEAN_777 = {6: 696, 7: 3}
+_SEAM_FLIPPED_557 = {5: 3, 6: 690, 7: 6}
+
+
+def _fused_foot_ring_sizes(i: int, j: int, k: int) -> dict[int, int]:
+    net = build(
+        "hexfold 0.2\norigin s\n"
+        f"s: sheet(30,24) - hex(1)@({i},{j},A):0\n"
+        "c: cap(24,0) + 3@(-1,0,A):2 - hex(1)@(-1,0,A):0\n"
+        "t: tube(6,0,len=3)\n"
+        f"s.hole --fuse k={k}--> c.in\n",
+        strict=False,
+    )
+    assert not net.report.errors()
+    return dict(sorted(Counter(len(r) for r in net.rings).items()))
+
+
+def test_vertex_id_order_is_str_not_numeric_gr464341() -> None:
+    for k in (0, 1):
+        clean, flipped = (
+            (_SEAM_CLEAN_777, _SEAM_FLIPPED_557)
+            if k == 0
+            else (_SEAM_FLIPPED_557, _SEAM_CLEAN_777)
+        )
+        for cell in sorted(_STR_ORDER_CLEAN):
+            assert _fused_foot_ring_sizes(*cell, k) == clean, (k, cell)
+        for cell in sorted(_STR_ORDER_FLIPPED):
+            assert _fused_foot_ring_sizes(*cell, k) == flipped, (k, cell)
