@@ -248,9 +248,9 @@ def run_ingest(args: argparse.Namespace) -> None:
     so the LLM sees every workspace file via ``search`` from its
     first query. Mtime-gated, so warm restarts are fast.
     """
+    from precis.cli._common import cli_embedder
     from precis.config import load_config
     from precis.dispatch import Hub
-    from precis.embedder import make_embedder
     from precis.handlers.markdown import MarkdownHandler
     from precis.handlers.plaintext import PlaintextHandler
     from precis.handlers.tex import TexHandler
@@ -294,7 +294,7 @@ def run_ingest(args: argparse.Namespace) -> None:
         "tex": TexHandler,
     }
     try:
-        embedder = make_embedder(cfg.embedder, dim=store.embedding_dim())
+        embedder = cli_embedder(cfg, store, needed=False, prog="precis ingest")
         hub = Hub(store=store, embedder=embedder)
         total_i = total_s = total_f = 0
         per_kind: dict[str, tuple[int, int, int]] = {}
@@ -352,8 +352,8 @@ def run_oracles(args: argparse.Namespace) -> None:
     unless ``--overwrite`` is passed; ``--dry-run`` reports without
     touching the DB.
     """
+    from precis.cli._common import cli_embedder
     from precis.config import load_config
-    from precis.embedder import make_embedder
     from precis.jobs.ingest_oracles import (
         bundled_oracle_dir,
         ingest_directory,
@@ -406,7 +406,7 @@ def run_oracles(args: argparse.Namespace) -> None:
     store = Store.connect(dsn)
     bind_process_store(store)
     try:
-        embedder = make_embedder(cfg.embedder, dim=store.embedding_dim())
+        embedder = cli_embedder(cfg, store, needed=False, prog="precis ingest")
 
         # ``--force`` routes through the gated reconcile so the
         # advisory lock + system-table state stay in sync. The

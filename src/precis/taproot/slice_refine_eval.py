@@ -380,8 +380,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv if argv is not None else sys.argv[1:])
 
-    from precis.cli._common import resolve_dsn
-    from precis.embedder import make_embedder
+    from precis.cli._common import cli_embedder, resolve_dsn
     from precis.store import Store
 
     dsn = args.dsn if args.dsn else resolve_dsn(None)
@@ -389,9 +388,15 @@ def main(argv: list[str] | None = None) -> int:
     try:
         from precis.config import load_config
 
-        embedder_url = args.embedder_url or load_config().embedder_url
-        embedder = make_embedder(
-            args.embedder, dim=store.embedding_dim(), url=embedder_url
+        cfg = load_config()
+        if args.embedder_url:
+            cfg = cfg.model_copy(update={"embedder_url": args.embedder_url})
+        embedder = cli_embedder(
+            cfg,
+            store,
+            needed=True,
+            prog="slice_refine_eval",
+            name=args.embedder,
         )
         # An in-process bge-m3 embedder (url=None) never loads on its own:
         # embed() fast-fails via _raise_if_warming until warmup() (or the

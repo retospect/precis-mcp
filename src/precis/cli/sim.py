@@ -156,9 +156,9 @@ def _run_ingest(args: argparse.Namespace) -> None:
         print(f"sim ingest: {exc}", file=sys.stderr)
         sys.exit(2)
 
+    from precis.cli._common import cli_embedder
     from precis.config import load_config
     from precis.dispatch import Hub
-    from precis.embedder import make_embedder
     from precis.store import Store
 
     cfg = load_config()
@@ -172,7 +172,7 @@ def _run_ingest(args: argparse.Namespace) -> None:
     store = Store.connect(dsn)
     bind_process_store(store)
     try:
-        embedder = make_embedder(cfg.embedder, dim=store.embedding_dim())
+        embedder = cli_embedder(cfg, store, needed=False, prog="precis sim")
         hub = Hub(store=store, embedder=embedder)
         outcome = ingest_sim(
             slug=args.slug,
@@ -233,9 +233,9 @@ def _run_verify(args: argparse.Namespace) -> None:
         print(f"sim verify: {exc}", file=sys.stderr)
         sys.exit(2)
 
+    from precis.cli._common import cli_embedder
     from precis.config import load_config
     from precis.dispatch import Hub
-    from precis.embedder import make_embedder
     from precis.store import Store
 
     cfg = load_config()
@@ -245,7 +245,7 @@ def _run_verify(args: argparse.Namespace) -> None:
     store = Store.connect(dsn)
     bind_process_store(store)
     try:
-        embedder = make_embedder(cfg.embedder, dim=store.embedding_dim())
+        embedder = cli_embedder(cfg, store, needed=False, prog="precis sim")
         hub = Hub(store=store, embedder=embedder)
         outcome = verify_sim(
             slug=args.slug,

@@ -33,7 +33,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from precis.embedder_wire import (
     PATH_EMBED,
@@ -925,10 +925,9 @@ class BoundedConcurrencyEmbedder:
 
 
 #: Fallback ``RemoteEmbedder`` timeout (seconds) used by :func:`make_embedder`
-#: when the caller passes no explicit ``timeout`` — e.g. the bare
-#: ``make_embedder(cfg.embedder, dim=...)`` call sites (``cli/ingest.py``,
-#: ``cli/patent.py``, ``cli/sim.py``, ``cli/perplexity.py``) that don't
-#: thread ``PrecisConfig.embedder_timeout`` through. Read at call time (not
+#: when the caller passes no explicit ``timeout`` — a bare ``make_embedder``
+#: call that doesn't thread ``PrecisConfig.embedder_timeout`` through (CLIs
+#: use :func:`make_embedder_from_config`). Read at call time (not
 #: baked into the signature default) so a test/daemon setting the env after
 #: import still takes effect. embedder-wedge-hardening.md §5: 300s, not the
 #: old 30s — a CPU-host embed batch legitimately takes longer than 30s, and
@@ -986,11 +985,48 @@ def make_embedder(
     )
 
 
+class EmbedderNotConfigured(ValueError):
+    """``embedder='remote'`` was selected but no URL is set.
+
+    The message is one line naming the setting and the fix, fit to print
+    verbatim as a CLI error.
+    """
+
+
+def make_embedder_from_config(
+    cfg: Any, *, dim: int, name: str | None = None
+) -> Embedder:
+    """Build the embedder the way the server does: URL, timeout and retries
+    all from the resolved :class:`~precis.config.PrecisConfig`.
+
+    ``name`` overrides ``cfg.embedder`` (``--embedder`` flags). Raises
+    :class:`EmbedderNotConfigured` when ``remote`` has no
+    ``PRECIS_EMBEDDER_URL`` — a bare ``make_embedder(cfg.embedder, dim=...)``
+    drops the URL and crashed every CLI under a remote-embedder deployment
+    (gripe 495175).
+    """
+    name = name or cfg.embedder
+    if name == "remote" and not cfg.embedder_url:
+        raise EmbedderNotConfigured(
+            "embedder 'remote' has no URL: set PRECIS_EMBEDDER_URL "
+            "(or run with PRECIS_EMBEDDER=mock)"
+        )
+    return make_embedder(
+        name,
+        dim=dim,
+        url=cfg.embedder_url,
+        timeout=cfg.embedder_timeout,
+        max_retries=cfg.embedder_max_retries,
+    )
+
+
 __all__ = [
     "BgeM3Embedder",
     "Embedder",
+    "EmbedderNotConfigured",
     "EmbedderUnavailable",
     "MockEmbedder",
     "RemoteEmbedder",
     "make_embedder",
+    "make_embedder_from_config",
 ]

@@ -1363,10 +1363,11 @@ def run(args: argparse.Namespace) -> None:
         elif args.recall_set is not None:
             import json
 
-            from precis.embedder import make_embedder
+            from precis.cli._common import cli_embedder
 
-            embedder = make_embedder(
-                cfg.embedder, dim=store.embedding_dim(), url=cfg.embedder_url
+            # Recall is measured with vectors; lexical-only would mislead.
+            embedder = cli_embedder(
+                cfg, store, needed=True, prog="precis memory index --recall-set"
             )
             entries = json.loads(Path(args.recall_set).read_text(encoding="utf-8"))
             print(
@@ -1375,11 +1376,14 @@ def run(args: argparse.Namespace) -> None:
                 flush=True,
             )
         elif args.q is not None:
-            from precis.embedder import make_embedder
+            from precis.cli._common import cli_embedder
 
-            embedder = make_embedder(
-                cfg.embedder, dim=store.embedding_dim(), url=cfg.embedder_url
-            )
+            embedder = cli_embedder(cfg, store, needed=False, prog="precis memory")
+            if embedder is None:
+                print(
+                    "precis memory: PRECIS_EMBEDDER_URL unset; lexical search only",
+                    file=sys.stderr,
+                )
             print(
                 render_memory_index(store, q=args.q, k=args.k, embedder=embedder),
                 end="",

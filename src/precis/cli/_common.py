@@ -91,6 +91,31 @@ def connect_router_store(database_url: str | None) -> Store | None:
     return store
 
 
+def cli_embedder(
+    cfg: Any,
+    store: Store,
+    *,
+    needed: bool,
+    prog: str,
+    name: str | None = None,
+) -> Any:
+    """Build the embedder for a CLI entry point, from the resolved config.
+
+    ``needed=False``: the command stores no vectors (the worker embeds), so a
+    missing ``PRECIS_EMBEDDER_URL`` degrades to ``None`` and the command runs.
+    ``needed=True``: print one line naming the setting and exit 2.
+    """
+    from precis.embedder import EmbedderNotConfigured, make_embedder_from_config
+
+    try:
+        return make_embedder_from_config(cfg, dim=store.embedding_dim(), name=name)
+    except EmbedderNotConfigured as exc:
+        if not needed:
+            return None
+        print(f"{prog}: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+
+
 def resolve_dsn(override: str | None, *, cfg: Any = None) -> str:
     """Pick the database DSN: CLI override > config > env.
 

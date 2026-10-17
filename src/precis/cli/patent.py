@@ -379,8 +379,8 @@ def run_list(args: argparse.Namespace) -> None:
 def run_runner(args: argparse.Namespace) -> None:
     """Implements ``precis jobs run-patent-watches``."""
 
+    from precis.cli._common import cli_embedder
     from precis.config import load_config
-    from precis.embedder import make_embedder
     from precis.jobs.patent_watch import (
         DEFAULT_FAIR_USE_LIMIT_GB,
         run_one_pass,
@@ -408,7 +408,7 @@ def run_runner(args: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
             sys.exit(2)
-        embedder = make_embedder(cfg.embedder, dim=store.embedding_dim())
+        embedder = cli_embedder(cfg, store, needed=False, prog="precis jobs")
         ops = OpsClient(
             key=epo_key,
             secret=epo_secret,
@@ -471,8 +471,8 @@ def run_fulltext_sweep_cli(args: argparse.Namespace) -> None:
     patent whose retry timestamp has matured.
     """
 
+    from precis.cli._common import cli_embedder
     from precis.config import load_config
-    from precis.embedder import make_embedder
     from precis.jobs.patent_fulltext_sweep import (
         DEFAULT_SWEEP_LIMIT,
         run_fulltext_sweep,
@@ -501,7 +501,7 @@ def run_fulltext_sweep_cli(args: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
             sys.exit(2)
-        embedder = make_embedder(cfg.embedder, dim=store.embedding_dim())
+        embedder = cli_embedder(cfg, store, needed=False, prog="precis jobs")
         ops = OpsClient(
             key=epo_key,
             secret=epo_secret,
@@ -616,8 +616,8 @@ def run_reingest_cli(args: argparse.Namespace) -> None:
     (docs/backlog/patent-authoring-loop.md).
     """
 
+    from precis.cli._common import cli_embedder
     from precis.config import load_config
-    from precis.embedder import make_embedder
     from precis.jobs.patent_reingest import run_reingest_pass
     from precis.jobs.patent_watch import DEFAULT_FAIR_USE_LIMIT_GB
     from precis.patent.ops import OpsClient
@@ -643,7 +643,7 @@ def run_reingest_cli(args: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
             sys.exit(2)
-        embedder = make_embedder(cfg.embedder, dim=store.embedding_dim())
+        embedder = cli_embedder(cfg, store, needed=False, prog="precis jobs")
         ops = OpsClient(
             key=epo_key,
             secret=epo_secret,

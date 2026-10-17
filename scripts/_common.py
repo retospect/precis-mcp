@@ -51,6 +51,6 @@ def open_store() -> tuple[Any, PrecisConfig]:
 
 def make_embedder_for(store: Any, cfg: PrecisConfig) -> Embedder:
     """Build the active embedder, sized to the store's vector dim."""
-    from precis.embedder import make_embedder
+    from precis.embedder import make_embedder_from_config
 
-    return make_embedder(cfg.embedder, dim=store.embedding_dim())
+    return make_embedder_from_config(cfg, dim=store.embedding_dim())

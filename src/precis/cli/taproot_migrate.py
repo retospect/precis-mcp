@@ -611,7 +611,8 @@ def _file_review_todo(
 
 
 def _run_apply(args: argparse.Namespace) -> None:
-    from precis.embedder import make_embedder
+    from precis.cli._common import cli_embedder
+    from precis.config import load_config
     from precis.store import Store
     from precis.taproot.apply_migrate import apply_dry_run
 
@@ -629,7 +630,13 @@ def _run_apply(args: argparse.Namespace) -> None:
     # budget meter, and this run's spend is gated by the breaker. Writes
     # telemetry only -- claim writes go through apply_dry_run's own doors.
     _bind_llm_telemetry(store)
-    embedder = make_embedder(args.embedder, dim=store.embedding_dim())
+    embedder = cli_embedder(
+        load_config(),
+        store,
+        needed=True,
+        prog="precis taproot-migrate",
+        name=args.embedder,
+    )
     try:
         report = apply_dry_run(
             store,

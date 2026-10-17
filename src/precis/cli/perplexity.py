@@ -70,9 +70,9 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
 
 def run(args: argparse.Namespace) -> None:
     """Implements ``precis jobs import-perplexity``."""
+    from precis.cli._common import cli_embedder
     from precis.config import load_config
     from precis.dispatch import Hub
-    from precis.embedder import make_embedder
     from precis.handlers.perplexity import (
         ResearchHandler,
         ThinkHandler,
@@ -111,7 +111,9 @@ def run(args: argparse.Namespace) -> None:
     dsn = resolve_dsn(args.database_url, cfg=cfg)
     store = Store.connect(dsn)
     try:
-        embedder = make_embedder(cfg.embedder, dim=store.embedding_dim())
+        embedder = cli_embedder(
+            cfg, store, needed=False, prog="precis jobs import-perplexity"
+        )
         handler = handler_cls(hub=Hub(store=store, embedder=embedder))
 
         imported = failed = 0
