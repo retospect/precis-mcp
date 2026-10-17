@@ -1451,7 +1451,7 @@ def test_dogfood_gerber_export_leads_with_a_drc_banner_on_a_red_board(
     assert first[0].startswith("█") and "DRC FAILED" in first[1]
     assert "NOT MANUFACTURABLE" in first[2]
     assert "via_pad_keepout" in red
-    assert "view='drc'" in red
+    assert "view='check'" in red
     assert (tmp_path / f"{slug}-fab.zip").exists()  # it still exports
     # "drills: 0" read as a bundle with no holes; the plaza vias are drilled
     # from the copper list, so the summary counts them separately.

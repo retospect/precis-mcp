@@ -296,7 +296,7 @@ def _availability_lifecycle(row: dict[str, Any], live_outcome: str | None) -> st
     if lc.get("est"):
         tokens.append(f"est {lc['est']}")
     if lc.get("loss"):
-        tokens.append(f"loss {lc['loss']}")
+        tokens.append(f"stock-loss {lc['loss']}")
     if row.get("discontinued"):
         tokens.append("dropped-from-dump")
     if row.get("stock") == 0:
@@ -5157,10 +5157,14 @@ class PcbHandler(Handler):
         if not shown:
             return Response(body=head + "\n— no findings match the filter" + gone)
         shown.sort(key=lambda f: f.severity != "error")
+        row_ids = {
+            id(f): rid
+            for f, rid in zip(findings, pcb_drc.finding_display_ids(findings))
+        }
         findings = shown
         rows = [
             {
-                "id": pcb_drc.finding_key(f),
+                "id": row_ids[id(f)],
                 "severity": f.severity,
                 "rule": f.rule,
                 "where": f.where,
@@ -5253,9 +5257,7 @@ class PcbHandler(Handler):
         # still PERSISTS at its base severity (the findings column's
         # CHECK is error|warn) so the finding_key delta stays stable.
         def _sev(f: pcb_drc.DrcFinding) -> str:
-            if any(isinstance(o, dict) and o.get("not_checked") for o in f.objects):
-                return "info"
-            return pcb_drc.severity_at(f.rule, f.severity, phase)
+            return pcb_drc.display_severity(f, phase)
 
         tiered = [(f, _sev(f)) for f in findings]
         # gr485271: at netlist phase an unrouted net is the EXPECTED
@@ -5355,9 +5357,13 @@ class PcbHandler(Handler):
         shown.sort(
             key=lambda fs: {"error": 0, "warn": 1, "todo": 2, "info": 3}.get(fs[1], 4)
         )
+        row_ids = {
+            id(f): rid
+            for f, rid in zip(findings, pcb_drc.finding_display_ids(findings))
+        }
         rows = [
             {
-                "id": pcb_drc.finding_key(f),
+                "id": row_ids[id(f)],
                 "severity": sev,
                 "rule": f.rule,
                 "where": f.where,
@@ -5663,7 +5669,8 @@ class PcbHandler(Handler):
         Reto's ruling 2026-10-01: a DRC-red board still EXPORTS — refusing
         would take away the bundle a person needs to look at a broken
         board — but it must be impossible to miss. So the fab view runs
-        the same DRC ``view='drc'`` does and leads its response with this:
+        the same check ``view='check'`` answers at ``fab`` (ERC included)
+        and leads its response with this:
         a block banner with the count, the per-rule breakdown and the
         first findings when there are errors, one line when it is clean.
         A DRC that could not run is said out loud too; before this the
@@ -5676,7 +5683,11 @@ class PcbHandler(Handler):
         exact hole ``view='check'``'s phase axis exists to avoid."""
         design = self.store.pcb_load(ref_id)
         try:
-            ran = self._drc_run(ref_id, design, eval_phase="fab")
+            # erc=True: the banner answers the SAME question view='check'
+            # does at phase=fab — geometric AND netlist/ERC findings — so
+            # the two surfaces' error counts come from one run shape
+            # (gr495288: the banner used to skip ERC and undercount).
+            ran = self._drc_run(ref_id, design, eval_phase="fab", erc=True)
         except BadInput as exc:
             return f"⚠️  DRC NOT RUN — {exc}", 0
         if ran is None:
@@ -5688,11 +5699,7 @@ class PcbHandler(Handler):
         run_id, findings, pads_only, _delta, _baseline = ran
         # Judged AT fab — severities tier at fab too, so a netless pin a
         # placed board merely warns about is the error it is at tape-out.
-        errors = [
-            f
-            for f in findings
-            if pcb_drc.severity_at(f.rule, f.severity, "fab") == "error"
-        ]
+        errors = [f for f in findings if pcb_drc.display_severity(f, "fab") == "error"]
         scope = " (pads-only — no routed copper yet)" if pads_only else ""
         if not errors:
             # A board that could not be fully checked never reads clean:
@@ -5716,9 +5723,7 @@ class PcbHandler(Handler):
                     0,
                 )
             n_warn = sum(
-                1
-                for f in findings
-                if pcb_drc.severity_at(f.rule, f.severity, "fab") == "warn"
+                1 for f in findings if pcb_drc.display_severity(f, "fab") == "warn"
             )
             return (
                 f"DRC: 0 errors, {n_warn} warn(s) — {_drc_run_label(run_id)}{scope} ✓",
@@ -5747,7 +5752,10 @@ class PcbHandler(Handler):
         ]
         if len(errors) > _GERBER_BANNER_FINDINGS:
             lines.append(f"  … {len(errors) - _GERBER_BANNER_FINDINGS} more")
-        lines.append(f"Full list: get(kind='pcb', id='{slug}', view='drc')")
+        lines.append(
+            f"Full list: get(kind='pcb', id='{slug}', view='check', "
+            "args={'phase': 'fab'})"
+        )
         return "\n".join(lines), len(errors)
 
     # ── SVG render (pcb-svg-render) ─────────────────────────────────────

@@ -76,12 +76,14 @@ class; a Basic part sits on the line free, an Extended part costs a
 loading fee).
 `lifecycle` is every signal the catalog row carries — `merged→<C-no>` (the
 part was folded into a successor — strongest EOL tell), `alts`, `no-buy`,
-`idle`, `est`, `dropped-from-dump`, `stock 0` — or `ok`. A line with no
+`idle`, `est`, `stock-loss N` (units written off as warehouse loss on the
+vendor listing — the `lossNumber` field), `dropped-from-dump`, `stock 0` —
+or `ok`. A line with no
 LCSC number lists as such; a C-number absent from the catalog says `not in
 catalog` (or `absent from jlcpcb.com` when the live check just ran).
 
 Rows whose catalog data is older than ~6h — or missing — get one **bounded**
-live refresh from the jlcpcb.com listing on the way out (≤12 C-numbers per
+live refresh from the JLCPCB Open API on the way out (≤12 C-numbers per
 call; the head line reports `re-catalogued / absent / failed / skipped`).
 The live listing carries no explicit "EOL" flag, so lifecycle is inferred
 from the signals above + stock. Component `part:`/`part_lcsc:` values take

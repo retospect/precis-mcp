@@ -437,6 +437,29 @@ def delta_against(
     return delta
 
 
+def finding_display_ids(findings: Sequence[DrcFinding]) -> list[str]:
+    """The ``id`` a check view renders for each row: :func:`finding_key`
+    itself when the key is unique in this run, ``<key>#<n>`` when several
+    findings share one (gr495288 — ``(rule, participants, layer)`` is
+    deliberately coordinate-free, so several under-width tracks on one
+    net+layer, or several anonymous router vias, are legitimately the same
+    identity; the suffix is what distinguishes the rows). ``n`` is the
+    instance's rank in the same worst-margin-first order
+    :func:`delta_against` pairs shared-key findings on, so ``#2`` names
+    the instance the delta pairs second. Ids are computed on the run's
+    full finding list, before any severity/rule filter, so a filtered view
+    prints the same suffixes an unfiltered one does."""
+    groups: dict[str, list[int]] = collections.defaultdict(list)
+    for i, f in enumerate(findings):
+        groups[finding_key(f)].append(i)
+    ids = [""] * len(findings)
+    for key, idxs in groups.items():
+        idxs.sort(key=lambda i: _margin_rank(findings[i].margin_mm))
+        for rank, i in enumerate(idxs):
+            ids[i] = key if len(idxs) == 1 else f"{key}#{rank + 1}"
+    return ids
+
+
 def process_for_stackup(stackup: list[dict[str, Any]]) -> str:
     """The capability-table process row for a board's layer COUNT — v1 is
     4-layer-only (backlog decision); 2-layer is kept as a hedge since the
@@ -865,6 +888,19 @@ def _derived_tag(item: dict[str, Any]) -> dict[str, Any]:
     this carries that tag through to the finding. Absent for every other
     caller, so existing finding shapes are unchanged."""
     return {"derived": True} if item.get("derived") else {}
+
+
+def _participant_tags(item: dict[str, Any]) -> dict[str, Any]:
+    """The durable participant keys a copper or pad item carries — a
+    footprint pad's ``refdes``/``pin``, authored copper's ``fixed_id`` —
+    for a finding's ``objects``, so :func:`_object_identity` names the
+    OBJECT the finding is about instead of the ``ctype:net:layer`` class
+    fallback that every instance on one net+layer shares (gr495288: four
+    annular-ring findings on four distinct pads rendered one id). Keys the
+    item lacks are omitted, never null."""
+    return {
+        k: item[k] for k in ("refdes", "pin", "fixed_id") if item.get(k) is not None
+    }
 
 
 def _clearance_object(
@@ -1415,7 +1451,14 @@ def check_trace_width(
                 detail=_margin_detail(
                     "trace width", width, capability, field, severity, margin
                 ),
-                objects=({"net": net, "layer": layer, **_derived_tag(item)},),
+                objects=(
+                    {
+                        "net": net,
+                        "layer": layer,
+                        **_participant_tags(item),
+                        **_derived_tag(item),
+                    },
+                ),
                 margin_mm=margin,
             )
         )
@@ -1599,6 +1642,7 @@ def check_annular_ring(
                         "net": net,
                         "x": item.get("x"),
                         "y": item.get("y"),
+                        **_participant_tags(item),
                         **_derived_tag(item),
                     },
                 ),
@@ -1634,7 +1678,14 @@ def check_annular_ring(
                 detail=_margin_detail(
                     "THT pad annular ring", ring, capability, field, severity, margin
                 ),
-                objects=({"net": net, "x": pad.get("x"), "y": pad.get("y")},),
+                objects=(
+                    {
+                        "net": net,
+                        "x": pad.get("x"),
+                        "y": pad.get("y"),
+                        **_participant_tags(pad),
+                    },
+                ),
                 margin_mm=margin,
             )
         )
@@ -2586,6 +2637,7 @@ def check_board_edge_clearance(
             "net": net,
             "layer": layer,
             "ctype": ctype,
+            **_participant_tags(item),
             **_derived_tag(item),
         }
         if item.get("x") is not None and item.get("y") is not None:
@@ -2696,7 +2748,13 @@ def check_outline_containment(
         outside(
             geom,
             f"{ctype}[{net}] on {layer}",
-            {"net": net, "layer": layer, "ctype": ctype, **_derived_tag(item)},
+            {
+                "net": net,
+                "layer": layer,
+                "ctype": ctype,
+                **_participant_tags(item),
+                **_derived_tag(item),
+            },
         )
 
     for pad in model.get("pads") or []:
@@ -3409,6 +3467,20 @@ def severity_at(rule: str, severity: str, phase: str) -> str:
     ``unconnected_pin``'s warn-before-fab/error-at-fab, already take
     ``phase`` themselves and are not listed here.)"""
     return PHASE_SEVERITY.get(rule, {}).get(phase, severity)
+
+
+def display_severity(f: DrcFinding, phase: str) -> str:
+    """The tier a check surface PRINTS for ``f`` judged at ``phase`` — one
+    function so ``view='check'``'s head count and ``view='gerber'``'s
+    banner count the same findings the same way (gr495288). A CANNOT-check
+    row (an ``objects`` entry marked ``not_checked``) presents as ``info``
+    — "we could not reach a verdict" is honest information, not a
+    warn-tier complaint — and every other row tiers by
+    :func:`severity_at`. The persisted severity keeps the rule's own
+    verdict either way."""
+    if any(isinstance(o, dict) and o.get("not_checked") for o in f.objects):
+        return "info"
+    return severity_at(f.rule, f.severity, phase)
 
 
 # ``PIN_ETYPES`` (the closed §1i pin etype vocabulary) is imported at
@@ -4669,6 +4741,8 @@ __all__ = [
     "clearance_violations_naive",
     "delta_against",
     "derive_phase",
+    "display_severity",
+    "finding_display_ids",
     "finding_identity",
     "finding_key",
     "nets_routed_by_copper",

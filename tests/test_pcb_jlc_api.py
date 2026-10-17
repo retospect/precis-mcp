@@ -410,3 +410,42 @@ def test_normalize_api_row_matches_parts_import_contract():
 
 def test_normalize_api_row_none_without_c_number():
     assert jlc_api.normalize_api_row({"description": "x"}) is None
+
+
+def test_normalize_api_row_reads_detail_endpoint_library_type(creds):
+    """``getComponentDetailByCode`` spells the library class
+    ``libraryType`` — no ``basic``/``preferred``/``componentLibraryType``
+    keys (probed live 2026-10-17, gr495286). Unmapped it normalized every
+    Basic part to ``basic=False``, and :meth:`parts_import` wrote that over
+    the catalog's true flag."""
+    n = jlc_api.normalize_api_row(
+        {"componentCode": "C1525", "libraryType": "base", "stockCount": 24_774_268}
+    )
+    assert n is not None and n["basic"] is True
+    n = jlc_api.normalize_api_row({"componentCode": "C1", "libraryType": "expand"})
+    assert n is not None and n["basic"] is False
+
+
+def test_live_lookup_refresh_keeps_the_catalog_basic_flag(store, creds):
+    """The availability sweep's refresh path end to end: a stale Basic row
+    re-catalogued through ``component_info`` stays Basic (gr495286)."""
+    store.parts_import([{"lcsc": "C1525", "basic": True, "stock": 5}])
+    client, _calls = _walk_client(
+        [
+            {
+                "data": {
+                    "componentDetailResponseVOList": [
+                        {
+                            "componentCode": "C1525",
+                            "libraryType": "base",
+                            "stockCount": 99,
+                        }
+                    ]
+                }
+            }
+        ]
+    )
+    row = jlc_api.live_lookup(store, "C1525", client=client)
+    assert row is not None and row["basic"] is True
+    got = store.part_row("C1525")
+    assert got is not None and got["basic"] is True and got["stock"] == 99

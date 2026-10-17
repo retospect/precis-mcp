@@ -277,6 +277,85 @@ def test_gerber_banner_judges_at_fab_regardless_of_authored_phase(
     assert n_errors > 0
 
 
+def test_check_repeated_finding_key_rows_get_distinct_ids(
+    pcb: PcbHandler, store: Any
+) -> None:
+    """gr495288: two under-width tracks on one net+layer share a
+    ``finding_key`` by design — the rendered ``id`` must still name each
+    row (``<key>#1`` / ``<key>#2``), not repeat one id."""
+    pcb.put(id="chk-ids", args=_mini_design())
+    ref = store.get_ref(kind="pcb", id="chk-ids")
+    board_id = store.pcb_ensure_board(ref.id)
+    net_ids = store.pcb_net_ids(ref.id)
+    # Two tracks on the same net+layer, 0.100mm wide — over the JLC min
+    # (0.090) but under the house default (0.150): two warn findings, one
+    # shared (rule, participants, layer) key.
+    store.pcb_copper_replace(
+        board_id,
+        [
+            {
+                "ctype": "track",
+                "layer": "F.Cu",
+                "net_id": net_ids["SIG"],
+                "route_id": None,
+                "geom": {
+                    "segments": [
+                        {"shape": "line", "start": [0.0, 0.0], "end": [1.0, 0.0]}
+                    ],
+                    "width_mm": 0.1,
+                },
+            },
+            {
+                "ctype": "track",
+                "layer": "F.Cu",
+                "net_id": net_ids["SIG"],
+                "route_id": None,
+                "geom": {
+                    "segments": [
+                        {"shape": "line", "start": [0.0, 2.0], "end": [1.0, 2.0]}
+                    ],
+                    "width_mm": 0.1,
+                },
+            },
+        ],
+    )
+    body = pcb.get(id="chk-ids", view="check").body
+    tw = [ln for ln in body.splitlines() if "\ttrace_width\t" in ln]
+    assert len(tw) == 2, body
+    ids = [ln.split("\t")[0] for ln in tw]
+    assert len(set(ids)) == 2, body
+    assert sorted(i.rsplit("#", 1)[-1] for i in ids) == ["1", "2"], body
+
+
+def test_gerber_banner_error_count_matches_check_at_fab(
+    pcb: PcbHandler, store: Any
+) -> None:
+    """gr495288: the gerber banner and ``view='check'`` count errors from
+    ONE run shape — the banner used to skip the ERC rules and undercount.
+    Here ``over_current`` is an ERC-only finding: a pin rated 0.5 A on a
+    net declared at 2 A."""
+    design = _mini_design()
+    for n in design["nets"]:
+        if n["name"] == "VDD":
+            n["est_current_a"] = 2.0
+    pcb.put(id="chk-banner-erc", args=design)
+    ref = store.get_ref(kind="pcb", id="chk-banner-erc")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE pcb_pins SET meta = meta || %s::jsonb "
+            "WHERE name = 'VDD' AND component_id IN "
+            "(SELECT component_id FROM pcb_components WHERE ref_id = %s)",
+            ('{"max_current_a": 0.5}', ref.id),
+        )
+    body = pcb.get(id="chk-banner-erc", view="check", args={"phase": "fab"}).body
+    assert "over_current" in body, body
+    m = re.search(r"(\d+) error\(s\)", body)
+    assert m, body
+    banner, n_errors = pcb._gerber_drc_banner(ref.id, "chk-banner-erc")
+    assert "DRC FAILED" in banner and "over_current" in banner, banner
+    assert n_errors == int(m.group(1)), (banner, body)
+
+
 def test_phase_scoped_run_never_steals_the_full_runs_baseline(
     pcb: PcbHandler,
 ) -> None:

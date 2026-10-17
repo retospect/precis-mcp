@@ -280,7 +280,15 @@ def normalize_api_row(row: dict[str, Any]) -> dict[str, Any] | None:
         "jlcpcb_assemblable": True,  # every row this endpoint returns is
         "basic": _to_bool(row.get("basic"))
         or _to_bool(row.get("preferred"))
-        or str(row.get("componentLibraryType") or "").strip().lower() == "base",
+        # ``componentLibraryType`` is the bulk-walk/listing spelling;
+        # ``getComponentDetailByCode`` rows call the same field
+        # ``libraryType`` (probed live 2026-10-17: {"libraryType":
+        # "base"}, no basic/preferred keys — without this mapping every
+        # detail refresh wrote basic=false over a true flag, gr495286).
+        or str(row.get("componentLibraryType") or row.get("libraryType") or "")
+        .strip()
+        .lower()
+        == "base",
         "stock": to_int(row.get("stockCount") or row.get("stock")) or 0,
         "price": row.get("componentPrices") or row.get("price"),
         "package": row.get("componentSpecificationEn")

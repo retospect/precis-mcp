@@ -541,8 +541,31 @@ def test_availability_view_renders_lifecycle_signals(store):
     body = pcb.get(id="eol", view="availability").body
     assert "merged→C9001" in body
     assert "alts C111,C222" in body
+    assert "stock-loss 4" in body  # warehouse write-offs, self-explaining
     assert "stock 0" in body
     assert "ext" in body  # library class column
+
+
+def test_availability_lib_survives_a_live_refresh(store, creds):
+    """gr495286: a Basic part's ``lib`` cell must stay ``basic`` after the
+    stale-row live refresh — the detail endpoint spells the class
+    ``libraryType``, which ``normalize_api_row`` used to drop, writing
+    ``basic=False`` over the catalog's flag."""
+    from precis.handlers.pcb import PcbHandler
+
+    store.parts_import([{"lcsc": "C1525", "basic": True, "stock": 5}])
+    _age_row(store, "C1525", days=2)
+    _board(store, "libflag", {"C1": "C1525"})
+    client = _api_client(
+        {"C1525": {"componentCode": "C1525", "libraryType": "base", "stockCount": 42}}
+    )
+    pcb = PcbHandler(
+        hub=Hub(store=store),
+        live_refresh=lambda s, lcs: jlc_api.live_refresh_many(s, lcs, client=client),
+    )
+    body = pcb.get(id="libflag", view="availability").body
+    assert "\tbasic\t" in body
+    assert "\text\t" not in body
 
 
 def test_availability_live_refresh_is_bounded(store, creds):
