@@ -171,6 +171,13 @@ Two guards the builder hits on the first run (se-3d-viewer owner,
   in-scope 4 and 5, acceptance 3 and 4 (computers, `subject_selector`,
   the hard-band error). **Slice C,** after the class lattice: in-scope 6,
   acceptance 5.
+- **[2026-10-17, Reto]** Reactivated by a driver: "we should bring that
+  back". [pocket-from-molecule](pocket-from-molecule.md) slices 1–2 fill
+  slice B (its surface painter registers as the first `COMPUTERS` entries:
+  net partial charge, H-bond donor/acceptor count, electrostatic potential)
+  and slice C (its molecule-derived pocket spec is the first emitted
+  class). Whether B and C still wait on `measures-substrate` and the class
+  lattice is that item's open question 9.
 - **open** — `subject_selector` on `measures` versus a `subject_path` that
   also serves papers (figure/table anchors already use `links.meta.span`);
   the extraction session's `measurement_arg` (position, entity) suggests

@@ -3,7 +3,7 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** Station-path-finder (`nanoreactor-station-path-finder`); the T1 entry slice (`/rxn` ledger, kept rxn records) is in prod.
+- **Next:** Pocket-from-molecule (`pocket-from-molecule`, Reto 2026-10-17), then station-path-finder (`nanoreactor-station-path-finder`); the T1 entry slice (`/rxn` ledger, kept rxn records) is in prod.
 - **Blocked by:** Station-path-finder is a draft: it needs a `ready` pass and slicing first. T2's tunnel scaffold is built (reservoir sheets + opening solver, 2026-10-14); H2/H3 remain.
 - **Unblocks:** The per-station barrier ledger that decides whether the NO → NH3 nanoreactor needs a drive; the reaction movie.
 - **Acceptance:** Each item's own acceptance criteria; the thread ends with the T6 movie of a designed nanoreactor.
@@ -24,7 +24,12 @@ output.
 
 ## Do next
 
-1. **backlog/nanoreactor-station-path-finder.md** — T1. The bare and
+1. **backlog/pocket-from-molecule.md** — Reto 2026-10-17, top rank: the
+   per-station pocket spec (NO attractive pocket, held NH2) and the
+   GFN2 → MLIP → DFT realize loop that turns it into a tube wall. Draft;
+   its open questions (candidate chemistry, overlap with T3/T4) need a
+   `ready` pass first.
+2. **backlog/nanoreactor-station-path-finder.md** — T1. The bare and
    theozyme tiers decide whether a drive is needed, and its station record
    is the contract every later tool reads. Still a draft: it needs a
    `ready` pass and slicing (engine work sits in autocatpath) before a

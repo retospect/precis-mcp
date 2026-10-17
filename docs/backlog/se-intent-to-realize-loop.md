@@ -21,6 +21,11 @@ joinable geometries), `complementarity-solver.md` — but no authoring
 surface takes a declarative region/intent statement and drives the pick →
 join → check loop to convergence.
 
+**First concrete driver:** [pocket-from-molecule](pocket-from-molecule.md)
+(Reto 2026-10-17) — a pocket spec inverted from a posed molecule (NO, held
+NH2) on a nanoreactor tube wall; its slice 4 is this loop's first
+implementation and its slice 5 the GFN2 → MLIP → DFT refinement.
+
 ## Motivation / why
 
 Today's authoring path is op-by-op: an agent or Reto picks a group, places

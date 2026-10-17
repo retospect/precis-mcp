@@ -108,6 +108,8 @@ off that gap until it closes.
    (measurands, selectors, pockets) live on prod and dogfooded (Resume
    state); B waits on
    measures-substrate, C on the class lattice (both knowledge-mesh).
+   Reactivated 2026-10-17 by a driver (Reto: "we should bring that
+   back"): backlog/pocket-from-molecule.md slices 1–2 fill B and C.
 2. **Organic print: backlog/structural-solution-space.md §Slice 4
    bridge** (Reto 2026-10-03). The next build item. Note §14 listed
    O1–O5; O1 shipped 264f412c0, O2–O4 shipped 2026-10-15. Left:
