@@ -22,14 +22,29 @@
   delay: 5
   changed_when: false
 
+# After a restart Prometheus 503s (no JSON body) for ~30-45 s while it
+# replays its WAL; /-/ready only answers 200 once the API serves again.
+- name: Wait for Prometheus
+  ansible.builtin.uri:
+    url: http://127.0.0.1:9090/-/ready
+  register: _monitoring_prom_up
+  until: _monitoring_prom_up.status == 200
+  retries: 12
+  delay: 5
+  changed_when: false
+
 # The proof the whole chain is wired: Prometheus reports the Alertmanager it
-# will notify, and has loaded rules.
+# will notify, and has loaded rules. `is defined` guards the dereference: a
+# non-JSON or error body has no .json/.data.
 - name: Read Prometheus's Alertmanagers
   ansible.builtin.uri:
     url: http://127.0.0.1:9090/api/v1/alertmanagers
     return_content: true
   register: _monitoring_prom_ams
-  until: _monitoring_prom_ams.json.data.activeAlertmanagers | length > 0
+  until:
+    _monitoring_prom_ams.json is defined
+    and _monitoring_prom_ams.json.data is defined
+    and _monitoring_prom_ams.json.data.activeAlertmanagers | length > 0
   retries: 6
   delay: 5
   changed_when: false
@@ -39,7 +54,10 @@
     url: http://127.0.0.1:9090/api/v1/rules
     return_content: true
   register: _monitoring_prom_rules
-  until: _monitoring_prom_rules.json.data.groups | length > 0
+  until:
+    _monitoring_prom_rules.json is defined
+    and _monitoring_prom_rules.json.data is defined
+    and _monitoring_prom_rules.json.data.groups | length > 0
   retries: 6
   delay: 5
   changed_when: false

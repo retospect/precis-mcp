@@ -110,6 +110,10 @@ def test_linux_tasks_deploy_every_piece_and_verify() -> None:
     assert "validate: amtool check-config %s" in linux
     assert "precis-alertmanager-receiver.service.j2" in linux
     assert "/api/v1/alertmanagers" in verify and "/api/v1/rules" in verify
+    # WAL replay makes Prometheus 503 (no JSON) after a restart: wait on
+    # /-/ready first, and never dereference .json unconditionally (gr495696).
+    assert "/-/ready" in verify
+    assert verify.count("is defined") >= 2
     # macOS-only work stays macOS-only (Grafana has no Linux path here).
     assert main.count('when: os_family == "darwin"') >= 5
 
