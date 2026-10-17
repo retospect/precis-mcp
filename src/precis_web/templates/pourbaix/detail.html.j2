@@ -152,7 +152,10 @@ band — viable but not guaranteed (dashed); each in its route's colour">
           corrections {% if m.uncorrected %}<span class="text-amber-700">none — uncorrected anchors</span>{% else %}{{ m.corrections }}{% endif %} ·
           σ<sub>e</sub> {{ '%.3f' % m.sigma_e_eV if m.sigma_e_eV is not none else 'unrecorded' }} eV
         </div>
-        <div>scan jobs: {% for j in m.scan_jobs %}<span class="font-mono">jo{{ j }}</span>{{ ', ' if not loop.last }}{% endfor %}</div>
+        <div>scan jobs: {% for j in m.scan_jobs %}<span class="font-mono">jo{{ j }}</span>{{ ', ' if not loop.last }}{% endfor %}{% if m.n_anchors is not none %} · {{ m.n_anchors }} anchor(s){% endif %}</div>
+        {% for d in m.dropped %}
+        <div class="pbx-dropped text-amber-700">dropped: {{ d }}</div>
+        {% endfor %}
         {% if m.bulk %}
         <div>bulk layer (uncertain): {{ m.bulk.point.verdict }} at
           U_RHE {{ m.bulk.point.U_RHE }} V, pH {{ m.bulk.point.pH }};

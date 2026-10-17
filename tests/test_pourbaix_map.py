@@ -230,6 +230,44 @@ def test_render_map_names_provenance_bands_and_bulk() -> None:
     assert "needs_anchor" in text
 
 
+def test_map_names_every_anchor_the_sweep_dropped() -> None:
+    """gr491459: a sweep that skipped detached configurations, dropped an
+    uncorrected model and left another footing unpooled says so by name in
+    the map and its text — the anchor count alone hides them."""
+    sweep = _sweep({"m": _payload("m", {"H": [-0.02]})})
+    sweep["skipped_detached"] = [
+        {"model": "m", "adsorbate": "NOH", "n": 9},
+        {"model": "m", "adsorbate": "NO", "n": 4, "counts": {"NO": 3, "H": 1}},
+    ]
+    sweep["dropped_uncorrected"] = ["u"]
+    sweep["not_pooled"] = [{"model": "u", "job": 5}, {"model": "f", "job": 6}]
+    m = pm.build_map([_job(9, "m", sweep)])
+    detached, uncorrected, other = m["dropped"]
+    assert detached.startswith("2 detached configuration(s) dropped")
+    assert "NOH*(9) on m" in detached and "NO*(3)+H*(1) on m" in detached
+    assert uncorrected.endswith(": u")
+    assert "f (jo6)" in other and "u (" not in other, (
+        "an uncorrected model is named once, under its own cause"
+    )
+    text = pm.render_map(m)
+    assert text.count("dropped: ") == 3
+    assert "dropped: 2 detached configuration(s)" in text
+    clean = pm.build_map([_job(9, "m", _sweep({"m": _payload("m", {"H": [-0.02]})}))])
+    assert clean["dropped"] == [] and "dropped:" not in pm.render_map(clean)
+
+
+def test_job_summary_and_map_name_a_detached_anchor_alike() -> None:
+    """The scan's job summary and the map text share one label, so the
+    two surfaces cannot drift."""
+    skipped = {"model": "mace:medium", "adsorbate": "NH2", "n": 9}
+    sweep = _sweep({"m": _payload("m", {"H": [-0.02]})})
+    sweep["skipped_detached"] = [skipped]
+    label = pm.detached_label(skipped)
+    assert label == "NH2*(9) on mace:medium"
+    assert label in sp.render_text(sweep)
+    assert label in pm.render_map(pm.build_map([_job(9, "m", sweep)]))
+
+
 # ── store collectors + footing partition ────────────────────────────────
 
 
