@@ -1742,3 +1742,23 @@ def test_summarize_dispatch_cap_gives_reasoning_headroom() -> None:
     assert "max_tokens=SUMMARIZE_DISPATCH_MAX_TOKENS" in inspect.getsource(
         _worker_passes
     )
+
+
+class _FakeResolver:
+    def __init__(self, row):
+        self._row = row
+
+    def concurrency(self, service, *, default=1):
+        assert service == "llm_summarize"
+        return default if self._row is None else self._row
+
+
+def test_resolve_concurrency_precedence(monkeypatch):
+    from precis.workers.llm_summarize import resolve_concurrency
+
+    monkeypatch.delenv("PRECIS_SUMMARIZE_MAX_CONCURRENCY", raising=False)
+    assert resolve_concurrency(_FakeResolver(None), 3) == 3  # NULL -> env
+    assert resolve_concurrency(_FakeResolver(24), 3) == 24  # row wins
+    assert resolve_concurrency(_FakeResolver(99), 3) == 32  # default clamp
+    monkeypatch.setenv("PRECIS_SUMMARIZE_MAX_CONCURRENCY", "8")
+    assert resolve_concurrency(_FakeResolver(24), 3) == 8  # env ceiling

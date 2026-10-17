@@ -179,6 +179,15 @@ def _max_concurrency() -> int:
     return val if val >= 1 else _DEFAULT_MAX_CONCURRENCY
 
 
+def resolve_concurrency(resolver, env_default: int) -> int:
+    """Effective in-pass concurrency: a live ``service_config.concurrency``
+    row value wins; NULL / no row falls back to ``env_default``
+    (``PRECIS_SUMMARIZE_CONCURRENCY``). Clamped to ``[1, _max_concurrency()]``.
+    """
+    live = resolver.concurrency("llm_summarize", default=env_default)
+    return max(1, min(live, _max_concurrency()))
+
+
 #: A ``chunk_claims`` row older than this many minutes is treated as abandoned
 #: (the worker crashed or stalled) and re-claimed oldest-first; it is also the
 #: retry backoff for failures (which keep their claim). A *live* worker

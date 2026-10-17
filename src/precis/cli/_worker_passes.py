@@ -613,6 +613,9 @@ def build_ref_passes(
         LlmConfig,
         run_llm_summarize_pass,
     )
+    from precis.workers.llm_summarize import (
+        resolve_concurrency as _resolve_summarize_concurrency,
+    )
 
     _summarize_cfg = LlmConfig.from_env()
     if _register("llm_summarize"):
@@ -645,7 +648,10 @@ def build_ref_passes(
                 client=_summarize_client,
                 summarizer=SUMMARIZER_NAME,
                 batch_size=min(batch_size, 16),
-                concurrency=_summarize_cfg.concurrency,
+                # Live service_config.concurrency wins; NULL/no row -> env value.
+                concurrency=_resolve_summarize_concurrency(
+                    _svc_resolver, _summarize_cfg.concurrency
+                ),
             )
             return _BatchResult(
                 handler="llm_summarize",
