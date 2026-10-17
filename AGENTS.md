@@ -19,7 +19,8 @@ lifecycle, seams) → the owning package's `__init__.py` docstring →
   `safe_fetch`, `uv`): `docs/conventions/invariants.md`.
 - **Conventions**: `docs/conventions/` (start with `thresholds.md`; prose
   style `llm-facing-prose.md`; code anchors `code-anchors.md`;
-  poster/display TeX `poster-typography.md`).
+  poster/display TeX `poster-typography.md`; MCP handler error contract
+  `mcp-authoring.md`).
 - **Tests and gate shape**: `docs/conventions/testing.md`. Run tests with
   `scripts/test`; never bare `pytest`, `pip` or `mypy`.
 - **Skill evals** (advisory, never a ship gate): `scripts/skill-eval`

@@ -462,6 +462,39 @@
     conflicts across concurrent worktrees. Cut before you add.
   enforcers: []
 
+# --------------------------------------------------------------- mcp-authoring
+- id: mcp-authoring/refusal-names-the-fix
+  file: docs/conventions/mcp-authoring.md
+  section: "The rules"
+  title: "Every handler raise of a precis error carries next= or options=."
+  body: >-
+    A refusal names the fix: one copy-pasteable next= call or the closed
+    options= vocabulary. Existing hintless raises are pinned as a one-way
+    floor keyed file::function::class.
+  enforcers:
+    - path: tests/test_mcp_raise_next_ratchet.py
+      what: "AST floor on hintless handler raises; new ones fail, the baseline only goes down"
+- id: mcp-authoring/unsupported-is-typed
+  file: docs/conventions/mcp-authoring.md
+  section: "The rules"
+  title: "An unsupported (verb, kind) pair is Unsupported with options= and next=."
+  body: >-
+    Enumerated from KindSpec over the live hub, so a new kind or a flipped
+    supports_* flag is covered without editing the test.
+  enforcers:
+    - path: tests/test_unsupported_verb_matrix.py
+      what: "every unsupported pair returns [error:Unsupported] with options and next"
+- id: mcp-authoring/library-faults-are-upstream
+  file: docs/conventions/mcp-authoring.md
+  section: "The rules"
+  title: "Library faults map to Upstream with a retry hint; library text never reaches the agent."
+  body: >-
+    runtime/dispatch.py maps psycopg and httpx faults through _boundary_rows
+    and scrubs driver text out of handler-raised Upstream errors.
+  enforcers:
+    - path: tests/test_dispatch_boundary_map.py
+      what: "one case per boundary row; a row without a case fails"
+
 # ------------------------------------------------------------ poster-typography
 - id: poster-typography/citations-do-not-wrap
   file: docs/conventions/poster-typography.md

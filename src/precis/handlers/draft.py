@@ -501,7 +501,10 @@ class DraftHandler(Handler):
             owner = resolve_live_slug_ref(self.store, kind="draft", id=head)
         chunk = self.store.drafts.get_draft_chunk(sel)
         if chunk is None or int(chunk.ref_id) != int(owner.id):
-            raise NotFound(f"draft chunk {sel!r} not found in draft {head!r}")
+            raise NotFound(
+                f"draft chunk {sel!r} not found in draft {head!r}",
+                next=f"get(kind='draft', id={head!r}, view='toc') lists its chunk handles",
+            )
         return sel
 
     def eye(

@@ -325,18 +325,57 @@ def test_pass_caps_new_gripes(store: Any, monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_non_reject_errors_ignored(store: Any) -> None:
+    # Upstream is another system's weather — never clustered (NotFound,
+    # Gone and Internal are, see test_lookup_and_fault_classes_cluster).
     tag = uuid4().hex[:8]
-    head = f"[error:NotFound] no such ref 'zz{tag}'"
+    head = f"[error:Upstream] no source answered for 'zz{tag}'"
     _seed_calls(
         store,
         verb="get",
         kind=f"zz{tag}",
         head=head,
         sessions=["a", "b", "c"],
-        error_type="NotFound",
+        error_type="Upstream",
     )
     call_errors.run_call_errors_pass(store, skill_texts={})
     assert _cluster_gripes(store, _fp("get", f"zz{tag}", head)) == []
+
+
+@pytest.mark.parametrize(
+    ("error_type", "expected_class"),
+    [("NotFound", "needs-triage"), ("Gone", "needs-triage"), ("Internal", "bug")],
+)
+def test_lookup_and_fault_classes_cluster(
+    store: Any, error_type: str, expected_class: str
+) -> None:
+    tag = uuid4().hex[:8]
+    head = f"[error:{error_type}] thing 'zz{tag}' went wrong"
+    _seed_calls(
+        store,
+        verb="get",
+        kind=f"zz{tag}",
+        head=head,
+        sessions=["a", "b", "c"],
+        error_type=error_type,
+    )
+    call_errors.run_call_errors_pass(store, skill_texts={})
+    fp = call_errors._fingerprint(
+        "get", f"zz{tag}", call_errors.normalize_err_head(head), error_type
+    )
+    filed = _cluster_gripes(store, fp)
+    assert len(filed) == 1
+    assert f"callerr:{expected_class}" in _gripe_tags(store, filed[0][0])
+    assert f"failed with {error_type}" in _gripe_body(store, filed[0][0])
+
+
+def test_fingerprint_separates_error_types_but_keeps_reject_hash() -> None:
+    head = "thing #"
+    assert call_errors._fingerprint("get", "x", head) == call_errors._fingerprint(
+        "get", "x", head, "Unsupported"
+    )
+    assert call_errors._fingerprint("get", "x", head, "NotFound") != (
+        call_errors._fingerprint("get", "x", head, "Internal")
+    )
 
 
 def test_gripe_body_carries_masked_samples_only(store: Any) -> None:

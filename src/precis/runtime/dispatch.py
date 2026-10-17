@@ -39,7 +39,15 @@ from typing import TYPE_CHECKING, Any
 
 import psycopg
 
-from precis.errors import BadInput, Denied, Internal, NotFound, PrecisError, Unsupported
+from precis.errors import (
+    BadInput,
+    Denied,
+    Internal,
+    NotFound,
+    PrecisError,
+    Unsupported,
+    Upstream,
+)
 from precis.protocol import (
     _ALL_VERBS,
     TOLERATES_EXTRA_KWARGS_ATTR,
@@ -666,6 +674,142 @@ def _refuse_agent_secrets(verb: str, args: dict[str, Any], hub: Any = None) -> N
     refuse_secrets(fields)
 
 
+# ── library-exception boundary map (M3, gr494831) ─────────────────────────
+#
+# A transient infrastructure fault is not a precis bug. Each row maps an
+# exception class (first isinstance match wins, most specific first; the
+# ``__cause__``/``__context__`` chain is walked so a wrapped fault still
+# maps) to the Upstream message + retry hint the agent sees. The library's
+# own text never reaches the agent: it can carry SQL fragments, hosts,
+# paths or driver internals (F10). tests/test_dispatch_boundary_map.py has
+# one test per row.
+
+_RETRY_NEXT = "retry the same call once; if it fails again, file a gripe naming it"
+
+
+def _boundary_rows() -> list[tuple[type[BaseException], str, str]]:
+    """``(exception class, agent-facing cause, next)`` rows, most specific
+    first. Built lazily so an absent optional library just drops its rows."""
+    rows: list[tuple[type[BaseException], str, str]] = []
+    try:
+        import psycopg.errors as pge
+        import psycopg_pool
+
+        rows += [
+            (
+                pge.LockNotAvailable,
+                "the database row or table is locked by another writer",
+                _RETRY_NEXT,
+            ),
+            (
+                psycopg_pool.PoolTimeout,
+                "the database connection pool is saturated",
+                _RETRY_NEXT,
+            ),
+            (
+                pge.QueryCanceled,
+                "the database cancelled the query (statement timeout)",
+                "narrow the call (smaller q=/limit) and retry once; "
+                "if it fails again, file a gripe naming it",
+            ),
+            (
+                pge.DeadlockDetected,
+                "the database aborted the call to break a deadlock",
+                _RETRY_NEXT,
+            ),
+            (
+                pge.SerializationFailure,
+                "the database aborted the call on a concurrent update",
+                _RETRY_NEXT,
+            ),
+            (
+                psycopg.OperationalError,
+                "the database connection failed",
+                _RETRY_NEXT,
+            ),
+        ]
+    except ImportError:  # pragma: no cover — psycopg is a hard dependency
+        pass
+    try:
+        import httpx
+
+        rows += [
+            (
+                httpx.TimeoutException,
+                "an upstream service timed out",
+                _RETRY_NEXT,
+            ),
+            (
+                httpx.HTTPStatusError,
+                "an upstream service answered with an error status",
+                _RETRY_NEXT,
+            ),
+            (
+                httpx.TransportError,
+                "an upstream service could not be reached",
+                _RETRY_NEXT,
+            ),
+        ]
+    except ImportError:  # pragma: no cover — httpx is a hard dependency
+        pass
+    rows += [
+        (TimeoutError, "an upstream call timed out", _RETRY_NEXT),
+        (ConnectionError, "an upstream connection failed", _RETRY_NEXT),
+    ]
+    return rows
+
+
+def map_boundary_exception(exc: BaseException) -> Upstream | None:
+    """Map a library exception to ``Upstream`` + retry hint, else ``None``
+    (the caller then falls back to ``Internal``). Walks the cause chain."""
+    rows = _boundary_rows()
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        for cls, cause, nxt in rows:
+            if isinstance(cur, cls):
+                return Upstream(f"{cause} ({type(cur).__name__})", next=nxt)
+        # Explicit ``raise ... from`` links only: ``__context__`` is "raised
+        # while handling", so a handler bug inside a recovery path would
+        # otherwise read as a transient fault and never reach Internal.
+        cur = cur.__cause__
+    return None
+
+
+#: Driver/transport noise that survives into handler-written Upstream text
+#: (``ConnectTimeout: _ssl.c:993``, ``[Errno 61] ...``).
+_LIB_NOISE_RE = re.compile(r"\(_ssl\.c:\d+\)|\[Errno -?\d+\]\s*|_ssl\.c:\d+")
+
+
+def scrub_upstream(err: PrecisError) -> None:
+    """Stop an ``Upstream`` leaking library text.
+
+    Handlers write ``Upstream(f"... {exc}")``. When the error chains to a
+    non-precis exception (``from exc``, or raised inside its ``except``),
+    any ``str(cause)`` of 8+ characters embedded in the message is replaced
+    by the cause's type name, and driver noise is stripped. A missing
+    ``next=`` gets the retry hint only when a library exception is chained
+    (transient); otherwise a neutral gripe hint, since a missing key or a
+    4xx will not heal on retry. No-op for other classes."""
+    if not isinstance(err, Upstream):
+        return
+    lib = err.__cause__ or err.__context__
+    if lib is not None and isinstance(lib, PrecisError):
+        lib = None
+    if lib is not None:
+        text = str(lib).strip()
+        if len(text) >= 8 and text in err.cause:
+            err.cause = err.cause.replace(text, type(lib).__name__)
+    err.cause = _LIB_NOISE_RE.sub("", err.cause).strip()
+    if err.next is None:
+        err.next = (
+            _RETRY_NEXT
+            if lib is not None
+            else "if this persists, file a gripe naming the call and this message"
+        )
+
+
 class DispatchMixin(RuntimeShape):
     """Verb dispatch, kind/handler resolution, and handler invocation."""
 
@@ -742,6 +886,7 @@ class DispatchMixin(RuntimeShape):
                 )
                 return body, False
             except PrecisError as e:
+                scrub_upstream(e)
                 self._maybe_add_skill_hint(e, verb, args)
                 self._maybe_add_schema_drift_hint(e)
                 self._maybe_add_kind_skills_hint(e, verb, args)
@@ -759,11 +904,18 @@ class DispatchMixin(RuntimeShape):
                 # converted to a typed PrecisError (Unavailable,
                 # NotFound, etc.) before reaching this fallback.
                 log.exception("internal error in %s", verb)
+                mapped = map_boundary_exception(e)
+                if mapped is not None:
+                    self._maybe_add_skill_hint(mapped, verb, args)
+                    body = self.render_error(mapped)
+                    self._record_tool_call(verb, args, body, True, started)
+                    return body, True
                 body = self.render_error(
                     Internal(
                         f"internal error in {verb}: {type(e).__name__} "
                         "(see server log)",
-                        next=self._schema_drift_note(e),
+                        next=self._schema_drift_note(e)
+                        or "file a gripe naming this call; it is a server bug",
                     )
                 )
                 self._record_tool_call(verb, args, body, True, started)
@@ -2120,6 +2272,7 @@ class DispatchMixin(RuntimeShape):
                 raise Unsupported(
                     f"{kind} does not support {verb}",
                     options=verbs,
+                    next=f"get(kind='skill', q={kind!r}) lists what {kind} does",
                 )
             next_hints: list[str] = []
             if redirect is not None:
@@ -2444,8 +2597,16 @@ class DispatchMixin(RuntimeShape):
             # final rendered error rather than being lost in the
             # generic ``internal error: ...`` shape.
             if kind_was_defaulted:
+                mapped = map_boundary_exception(exc)
+                if mapped is not None:
+                    mapped.cause = f"(searched kind={kind!r}) {mapped.cause}"
+                    raise mapped from exc
+                log.exception("internal error in defaulted-kind search")
                 raise Internal(
-                    f"(searched kind={kind!r}) internal error: {exc}"
+                    f"(searched kind={kind!r}) internal error: "
+                    f"{type(exc).__name__} (see server log)",
+                    next="pass kind=<one kind> to search one kind; "
+                    "file a gripe naming this call",
                 ) from exc
             raise
 

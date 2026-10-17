@@ -2,8 +2,9 @@
 
 Fired from the daily host-agnostic ``call_errors`` scheduler cadence.
 Reads the last :data:`LOOKBACK_HOURS` of ``tool_calls`` rows that were
-*rejected before real work* (``error_type`` in :data:`_REJECT_CLASSES` —
-``BadInput``/``Unsupported``, the schema/param-validation class),
+failed in a clusterable class (``error_type`` in :data:`_CLUSTER_CLASSES` —
+``BadInput``/``Unsupported`` the schema/param-validation class, plus
+``NotFound``/``Gone`` lookup misses and ``Internal`` faults),
 clusters them by ``(verb, kind, normalised error head)``, and for each
 cluster over threshold (:data:`MIN_CALLS` calls or :data:`MIN_SESSIONS`
 distinct sessions) files ONE gripe — or bumps the live one it already
@@ -28,6 +29,9 @@ Classification is deterministic, ordered, and never guesses:
    key/kind, missing required arg, bad mode/view) with no doc or hint
    signal — the surface itself is the gap.
 4. ``needs-triage`` — nothing fired; a human reads the cluster.
+
+``Internal`` clusters short-circuit to ``bug`` (a server fault is never a
+doc or hint problem).
 
 ``skill`` wins over ``hint`` when both fire: a wrong doc is the root
 cause and the repeat failure follows from it.
@@ -73,6 +77,14 @@ MAX_NEW_GRIPES = 5
 #: verb's real work ran). NotFound/Gone did real lookups; Upstream/
 #: Internal/RateLimited are runtime faults, not call-shape errors.
 _REJECT_CLASSES = ("BadInput", "Unsupported")
+#: Lookup-miss and fault classes clustered alongside the rejects (M3,
+#: gr494831): NotFound/Gone are the agent guessing ids (the error should
+#: carry options), Internal is a server fault every occurrence of which is
+#: a bug or a missing boundary mapping. Upstream/RateLimited stay out —
+#: they are other systems' weather, not a precis defect.
+_LOOKUP_CLASSES = ("NotFound", "Gone")
+_FAULT_CLASSES = ("Internal",)
+_CLUSTER_CLASSES = _REJECT_CLASSES + _LOOKUP_CLASSES + _FAULT_CLASSES
 #: ``refs.meta`` key carrying the cluster fingerprint on a filed gripe.
 META_CLUSTER = "call_cluster"
 META_CLUSTER_CLASS = "call_cluster_class"
@@ -119,6 +131,7 @@ class _Row:
     client: str | None
     session: str
     ts: datetime | None
+    error_type: str = "BadInput"
 
 
 @dataclass(slots=True)
@@ -135,6 +148,7 @@ class Cluster:
     clients: Counter[str] = field(default_factory=Counter)
     samples: list[str] = field(default_factory=list)  # distinct masked arg_sample
     raw_head: str = ""
+    error_type: str = "BadInput"
     first_ts: datetime | None = None
     last_ts: datetime | None = None
     single_line: bool = False
@@ -145,24 +159,32 @@ class Cluster:
     _bytes_single: int = 0
 
 
-def _fingerprint(verb: str, kind: str | None, head: str) -> str:
-    """Stable cluster id — survives ts/ordering drift between runs."""
-    digest = hashlib.sha256(f"{verb}|{kind or ''}|{head}".encode()).hexdigest()
+def _fingerprint(
+    verb: str, kind: str | None, head: str, error_type: str = "BadInput"
+) -> str:
+    """Stable cluster id — survives ts/ordering drift between runs.
+
+    The reject classes hash exactly as before (live gripes keep their
+    fingerprint); the lookup/fault classes add the class so a NotFound and
+    an Internal sharing a head never merge."""
+    extra = "" if error_type in _REJECT_CLASSES else f"|{error_type}"
+    digest = hashlib.sha256(f"{verb}|{kind or ''}|{head}{extra}".encode()).hexdigest()
     return f"{FP_PREFIX}{digest[:16]}"
 
 
 def _cluster(rows: list[_Row]) -> list[Cluster]:
-    out: dict[tuple[str, str | None, str], Cluster] = {}
+    out: dict[tuple[str, str | None, str, str], Cluster] = {}
     for r in rows:
         head = normalize_err_head(r.error_head)
-        key = (r.verb, r.kind, head)
+        key = (r.verb, r.kind, head, r.error_type)
         cl = out.get(key)
         if cl is None:
             cl = out[key] = Cluster(
                 verb=r.verb,
                 kind=r.kind,
                 head=head,
-                fingerprint=_fingerprint(r.verb, r.kind, head),
+                fingerprint=_fingerprint(r.verb, r.kind, head, r.error_type),
+                error_type=r.error_type,
             )
         cl.n += 1
         cl.sessions.add(r.session)
@@ -196,7 +218,7 @@ def _cluster(rows: list[_Row]) -> list[Cluster]:
 # ── scan ──────────────────────────────────────────────────────────────────
 
 _SCAN_SQL = """
-SELECT verb, kind, error_head, arg_sample, result_bytes, client, ts,
+SELECT verb, kind, error_head, arg_sample, result_bytes, client, ts, error_type,
        COALESCE(session_id,
                 'agentlog:' || agentlog_id::text,
                 'day:' || ts::date::text) AS sess
@@ -212,7 +234,7 @@ SELECT verb, kind, error_head, arg_sample, result_bytes, client, ts,
 def _scan(store: Store, lookback_hours: int) -> list[_Row]:
     with store.pool.connection() as conn:
         rows = conn.execute(
-            _SCAN_SQL, (str(lookback_hours), list(_REJECT_CLASSES))
+            _SCAN_SQL, (str(lookback_hours), list(_CLUSTER_CLASSES))
         ).fetchall()
     return [
         _Row(
@@ -224,8 +246,19 @@ def _scan(store: Store, lookback_hours: int) -> list[_Row]:
             client=str(client) if client else None,
             session=str(sess),
             ts=ts,
+            error_type=str(error_type),
         )
-        for verb, kind, error_head, arg_sample, result_bytes, client, ts, sess in rows
+        for (
+            verb,
+            kind,
+            error_head,
+            arg_sample,
+            result_bytes,
+            client,
+            ts,
+            error_type,
+            sess,
+        ) in rows
     ]
 
 
@@ -313,6 +346,8 @@ def classify(cl: Cluster, skill_texts: dict[str, str]) -> tuple[str, str | None,
     is the root cause; the caller repeating it follows from that. Anything
     with no signal is ``needs-triage`` — never a guess.
     """
+    if cl.error_type in _FAULT_CLASSES:
+        return "bug", None, "server fault (Internal) — a bug or an unmapped boundary"
     sid = _documenting_skill(cl, skill_texts)
     if sid is not None:
         return "skill", sid, f"{sid} shows the rejected call shape"
@@ -355,7 +390,10 @@ def _gripe_body(
     last = cl.last_ts.isoformat() if cl.last_ts else "?"
     lines = [
         f"call-errors fingerprint: {cl.fingerprint}",
-        f"{cl.verb}(kind={cl.kind!r}) rejected before real work, repeatedly.",
+        f"{cl.verb}(kind={cl.kind!r}) failed with {cl.error_type}, repeatedly"
+        + (
+            " (rejected before real work)." if cl.error_type in _REJECT_CLASSES else "."
+        ),
         "",
         f"Calls (24h): {cl.n} · distinct sessions: {len(cl.sessions)} "
         f"· first {first} · last {last}",

@@ -1,0 +1,59 @@
+# MCP authoring — the call contract
+
+**A call either does exactly what its ack says or refuses with a next
+step. Misuse that would succeed silently is a bug.**
+
+Applies to every handler behind `get/search/put/edit/delete/tag/link`.
+Origin: the 2026-10-17 misuse audit and gr494831 (umbrella), gr494725.
+
+## The rules
+
+1. **The ack is the effect.** Say what happened, including what it
+   replaced or removed: `STATUS:queued -> STATUS:cancelled`, `deleted
+   memory id=N 'title'`. If the effect is wider than the call looks
+   (whole draft, a displaced closed-axis tag, dropped rels), the ack
+   names it.
+2. **A refusal names the fix.** Every `raise <PrecisError>` in a handler
+   carries `next=` (one copy-pasteable call) or `options=` (the closed
+   vocabulary), or its message already points at `get(kind='skill', ...)`.
+   `next=` is a call that works, not prose ("try again" is not a next).
+3. **Scope by kind.** Ids share one global ref space. A verb on
+   `kind=X` never touches a ref of another kind: resolve it through the
+   kind-scoped lookup first, so a foreign id is `NotFound`/`Gone` with
+   options, not a success message about the wrong object.
+4. **Wider blast radius, explicit door.** Anything that retires a whole
+   document or ends a lifecycle needs its own confirm (`args={'confirm':
+   ...}`) or lifecycle door, not a default path.
+5. **Validate before writing.** Parse tags/args and check preconditions
+   before the first write; a call that raises changed nothing.
+6. **No silent drops.** An accepted kwarg is read; an unread one is
+   refused (dispatcher gate), not ignored.
+7. **Unsupported is typed.** An unsupported (verb, kind) pair is
+   `Unsupported` with `options=` (the supported verbs) and a `next=`.
+8. **Library faults are `Upstream` with a retry hint; library text never
+   reaches the agent.** The dispatcher maps them (below); handlers do not
+   interpolate `{exc}` of a driver or HTTP exception into a message.
+
+## Enforced by
+
+| rule | gate |
+|---|---|
+| 2 | `tests/test_mcp_raise_next_ratchet.py`: one-way floor of hint-less raises, keyed `file::function::Class` in `tests/data/mcp_raise_next_baseline.json`. New raise without `next=`/`options=` fails; a fix that lowers the count fails until the baseline is lowered (`--write`, which refuses to raise). |
+| 7 | `tests/test_unsupported_verb_matrix.py`: enumerates every unsupported (verb, kind) over the live hub. |
+| 8 | `runtime/dispatch.py::_boundary_rows` (psycopg lock/pool/timeout/operational, httpx timeout/status/transport, `TimeoutError`, `ConnectionError`) and `scrub_upstream`; `tests/test_dispatch_boundary_map.py` has a case per row. A new row needs a case or `test_every_row_has_a_case` fails. |
+| 1, 3–6 | per-handler tests; reviewers check the ack against the effect. |
+
+## Adding a hint to a pinned raise
+
+Add `next=`/`options=` at the raise, run the ratchet, then
+`uv run python tests/test_mcp_raise_next_ratchet.py --write` and commit the
+lowered baseline in the same commit. A raise that is truly
+self-describing (`chunk not found` with the id in the message) still
+takes a `next=`: the cheapest honest one is the listing call.
+
+## Observability
+
+`workers/call_errors.py` clusters BadInput, Unsupported, NotFound, Gone
+and Internal from the tool-call ledger (`tool_calls.error_head`) into
+gripes; an Internal cluster is classed `bug` (a server fault or an unmapped
+boundary). Upstream stays out: it is another system's outage.
