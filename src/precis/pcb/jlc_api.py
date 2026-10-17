@@ -216,6 +216,29 @@ def _extract_cursor(data: dict[str, Any]) -> str | None:
     return None
 
 
+_SHAPE_MAX_KEYS = 40
+_SHAPE_MAX_NAME = 48
+
+
+def _key_names(d: dict[str, Any]) -> str:
+    names = [str(k)[:_SHAPE_MAX_NAME] for k in list(d)[:_SHAPE_MAX_KEYS]]
+    return ",".join(names) or "-"
+
+
+def envelope_shape(data: dict[str, Any]) -> str:
+    """Key NAMES of a response envelope, one nested level under ``data`` /
+    ``result`` -- never a value, row, token or header. Logged per page so the
+    first run after a deploy shows the real wire shape (gr494906). Format:
+    ``keys=a,b,data data.keys=x,y`` (a nested level only when that value is
+    a dict)."""
+    parts = [f"keys={_key_names(data)}"]
+    for key in ("data", "result"):
+        val = data.get(key)
+        if isinstance(val, dict):
+            parts.append(f"{key}.keys={_key_names(val)}")
+    return " ".join(parts)
+
+
 def _lcsc_number(raw: Any) -> str | None:
     if raw is None:
         return None
@@ -437,7 +460,9 @@ class JlcApiClient:
             log.info("jlc_api: iter_components skipped — no credentials configured")
             return
         cursor = since_key
+        page = 0
         while True:
+            page += 1
             # First page omits lastKey entirely: a JSON null made prod's
             # getComponentInfos answer HTTP 500 on every call (gr464537,
             # best-guess fix pending a prod probe).
@@ -446,7 +471,25 @@ class JlcApiClient:
                 payload["lastKey"] = cursor
             data = self._call(COMPONENT_INFO_PATH, payload, policy=BULK_POLICY)
             rows = _extract_rows(data)
-            previous, cursor = cursor, _extract_cursor(data)
+            next_cursor = _extract_cursor(data)
+            log.info(
+                "jlc_api: envelope page=%d rows=%d cursor=%s %s",
+                page,
+                len(rows),
+                "yes" if next_cursor else "no",
+                envelope_shape(data),
+            )
+            if page == 1 and since_key is None and not rows and not next_cursor:
+                # A fresh walk whose first page parses to nothing is a parser
+                # or endpoint problem, not the end of the catalog (gr494906);
+                # raise so the pass alerts instead of logging claimed=0. An
+                # empty LATER page (or a resumed walk) stays the normal end.
+                raise VendorError(
+                    "jlcpcb",
+                    f"empty first page from {COMPONENT_INFO_PATH} (HTTP 200, "
+                    f"no rows, no cursor); envelope {envelope_shape(data)}",
+                )
+            previous, cursor = cursor, next_cursor
             self.last_key = cursor
             for raw in rows:
                 norm = normalize_api_row(raw)
