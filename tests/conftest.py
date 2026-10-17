@@ -84,6 +84,7 @@ from precis.dispatch import Hub, boot
 from precis.hints import HintBus
 from precis.runtime import PrecisRuntime
 from precis.store import Migrator, Store
+from tests._node import require_node  # noqa: F401  (fixture for needs_node)
 
 # Test DSN. Default targets the local-dev convention
 # (postgres at host.docker.internal:5432, role + db both

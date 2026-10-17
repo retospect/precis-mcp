@@ -14,7 +14,6 @@ Python-only gate stays green; CI has node and runs it for real.
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -25,6 +24,7 @@ from precis.cad.dsl import parse as parse_shape
 from precis.cad.gltf import _merge
 from precis.cad.scene import parse_source
 from precis.cad.tessellate import node_meshes
+from tests._node import needs_node
 
 _REPO = Path(__file__).resolve().parents[1]
 _SCRIPT = _REPO / "scripts" / "cad_tessellate_parity.mjs"
@@ -87,7 +87,7 @@ def _build_cases() -> dict[str, object]:
     return {"cases": cases}
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+@needs_node
 @pytest.mark.skipif(
     sys.platform == "win32",
     reason="node's ESM loader rejects a Windows drive-letter absolute path"
