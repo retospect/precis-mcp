@@ -216,6 +216,22 @@ _CHUNKS = [
     ),
     _chunk(15, "heading", 2, "Deep part", parent=6),
     _chunk(16, "heading", 4, "Run-in heading", parent=15),
+    _chunk(20, "ulist", 2, "", parent=6),
+    _chunk(21, "item", 3, "First point about MOF [§smith20].", parent=20),
+    _chunk(22, "olist", 3, "", parent=20),
+    _chunk(23, "item", 4, "Nested step **bold**.", parent=22),
+    _chunk(24, "item", 3, "Second point, see [dc21].", parent=20),
+    _chunk(25, "code", 2, "x = 1  # raw $_ \\ kept", parent=6),
+    _chunk(26, "listing", 2, "print('listing')", parent=6),
+    _chunk(27, "aside", 2, "An aside with a cite [§lee22].", parent=6),
+    _chunk(
+        28,
+        "table",
+        2,
+        "| Material | Source |\n|---|---|\n| MOF | [§jones21] |\n| FMOF | none |",
+        parent=6,
+    ),
+    _chunk(29, "paragraph", 2, "$$a + b$$*", parent=6),
     _chunk(12, "heading", 1, "Glossary", parent=1),
     _chunk(13, "term", 2, "metal-organic framework", parent=12, meta={"short": "MOF"}),
     _chunk(17, "heading", 0, "Acknowledgements"),
@@ -232,8 +248,10 @@ class _Row:
 
 
 class _Drafts:
+    chunks: list[Any] = _CHUNKS
+
     def reading_order(self, _ref_id: int) -> list[Any]:
-        return list(_CHUNKS)
+        return list(self.chunks)
 
     def defined_abbrevs(self, _ref_id: int) -> dict[str, str]:
         return dict(_ABBREVS)
@@ -337,6 +355,9 @@ def golden_env(monkeypatch: pytest.MonkeyPatch) -> Any:
             ],
         ),
     )
+    from precis import profiles
+
+    monkeypatch.setattr(profiles, "draft_user_default", lambda _s, _r: None)
     return _GoldenStore()
 
 
@@ -363,6 +384,15 @@ def _check(name: str, actual: str) -> None:
         pytest.fail(f"export {name} changed:\n{diff[:6000]}")
 
 
+def _mode(store: Any, mode: dict[str, Any]) -> dict[str, Any]:
+    """Export kwargs for a mode; ``_untitled`` drops the seeded title chunk
+    (the draft then opens with its first section)."""
+    kw = dict(mode)
+    if kw.pop("_untitled", False):
+        store.drafts.chunks = _CHUNKS[1:]
+    return kw
+
+
 def _meta_block(cited: list[str], warnings: list[str]) -> str:
     return (
         "== cited ==\n"
@@ -378,6 +408,8 @@ _LATEX_MODES: dict[str, dict[str, Any]] = {
     "latex_patent": {"doc_type": "patent"},
     "latex_remarkable": {"remarkable": True},
     "latex_nolinks": {"doi_links": False, "library_links": False},
+    "latex_poster": {"doc_type": "poster"},
+    "latex_untitled": {"_untitled": True},
     "latex_sources": {
         "include_sources": True,
         "retraction_override": [
@@ -392,7 +424,7 @@ def test_latex_export_matches_golden(
     name: str, golden_env: Any, tmp_path: Path
 ) -> None:
     res = latex.export_draft(
-        golden_env, _REF, target_dir=tmp_path, **_LATEX_MODES[name]
+        golden_env, _REF, target_dir=tmp_path, **_mode(golden_env, _LATEX_MODES[name])
     )
     out = (
         "== main.tex ==\n"
@@ -408,6 +440,7 @@ _DOCX_MODES: dict[str, dict[str, Any]] = {
     "docx_plain": {},
     "docx_endnote": {"citations": "endnote"},
     "docx_patent": {"doc_type": "patent"},
+    "docx_untitled": {"_untitled": True},
 }
 
 #: Parts left out of the comparison: core.xml carries save timestamps.
@@ -442,5 +475,7 @@ def _canonical_docx(path: Path) -> str:
 @pytest.mark.parametrize("name", sorted(_DOCX_MODES))
 def test_docx_export_matches_golden(name: str, golden_env: Any, tmp_path: Path) -> None:
     out_path = tmp_path / "golden.docx"
-    res = dx.export_docx(golden_env, _REF, target_path=out_path, **_DOCX_MODES[name])
+    res = dx.export_docx(
+        golden_env, _REF, target_path=out_path, **_mode(golden_env, _DOCX_MODES[name])
+    )
     _check(name, _canonical_docx(out_path) + _meta_block(res.cited_slugs, res.warnings))

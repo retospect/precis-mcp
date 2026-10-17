@@ -53,6 +53,11 @@ in patent mode, the published-claims appendix only on request) in the one
 shared order; claim-cite bookkeeping, the claims table's source numbers
 and the acronym list's membership are here too. A backend formats each
 block (:meth:`Renderer.back_matter`).
+
+The body walk: :func:`walk_body` visits the draft once and calls the
+renderer per chunk (title, anchor, lists, heading, figure, table, code,
+aside, equation, paragraph); the poster genre runs it once per poster
+section with the LaTeX renderer in poster mode.
 """
 
 from __future__ import annotations
@@ -103,6 +108,52 @@ class Renderer(Protocol):
     def back_matter(self, sink: Any, name: str, block: Any) -> None:
         """Format one back-matter block (:func:`back_matter` picks which
         and in what order); ``block`` is the backend's own payload."""
+
+    #: Chunk kinds this backend renders as a code block / an aside box
+    #: (:func:`walk_body`); any other kind falls to ``paragraph``.
+    code_kinds: frozenset[str]
+    aside_kinds: frozenset[str]
+
+    def title(self, sink: Any, chunk: Any | None) -> None:
+        """The draft title: the seeded title chunk, or ``None`` when the
+        draft does not open with one."""
+
+    def anchor(self, sink: Any, chunk: Any) -> None:
+        """A chunk that prints nothing in the body (a Glossary heading or
+        a term) but may still be a cross-ref target."""
+
+    def list_open(self, sink: Any, chunk: Any, kind: str, level: int) -> None:
+        """A list container (``ulist``/``olist``) opens at nesting ``level``."""
+
+    def list_close(self, sink: Any, kind: str) -> None:
+        """The innermost open list container closes."""
+
+    def list_item(self, sink: Any, chunk: Any, kind: str, level: int) -> None:
+        """One list item; ``kind``/``level`` from its list ancestors."""
+
+    def heading(self, sink: Any, chunk: Any, info: HeadingInfo) -> None:
+        """A body heading at ``info.depth`` with its number / back-matter flag."""
+
+    def figure(self, sink: Any, chunk: Any) -> None:
+        """A figure chunk (image or placeholder, caption)."""
+
+    def table(self, sink: Any, chunk: Any) -> None:
+        """A table chunk."""
+
+    def code(self, sink: Any, chunk: Any) -> None:
+        """A verbatim code block."""
+
+    def aside(self, sink: Any, chunk: Any) -> None:
+        """An aside / box."""
+
+    def equation(
+        self, sink: Any, chunk: Any, body: str, number: int | None, starred: bool
+    ) -> None:
+        """A display equation; ``number`` from the pre-pass (``None`` when
+        the backend numbers it itself), ``starred`` = unnumbered."""
+
+    def paragraph(self, sink: Any, chunk: Any) -> None:
+        """A prose paragraph."""
 
 
 def term_segments(
@@ -612,3 +663,130 @@ def acronym_list(used: set[str], abbrevs: dict[str, str]) -> list[str]:
     """The shorts an acronym list carries: every defined short the prose
     used (headings included), case-insensitively sorted."""
     return sorted((s for s in used if s in abbrevs), key=str.casefold)
+
+
+# ── the body walk ────────────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class HeadingInfo:
+    """A body heading as the walker placed it: effective ``depth`` (0 =
+    section; the title lift applied), the ``number`` it displays (``""``
+    when unnumbered or when the backend numbers at compile time), and
+    whether it sits in journal back matter (unnumbered, still in the TOC)."""
+
+    depth: int
+    number: str
+    back_matter: bool
+
+
+def named_headings(
+    chunks: list[Any], depth_of: Callable[[Any], int], back_matter: frozenset[str]
+) -> frozenset[str]:
+    """Headings that print no number — run-in headings deeper than the
+    numbered depths, and back matter — so a cross-ref to one names it."""
+    return (
+        frozenset(
+            c.dc
+            for c in chunks
+            if c.chunk_kind == "heading" and depth_of(c) >= NUMBERED_DEPTHS
+        )
+        | back_matter
+    )
+
+
+def list_kind_level(
+    chunk: Any, kind_by_id: dict[Any, str], parent_by_id: dict[Any, Any]
+) -> tuple[str, int]:
+    """An item's list ``(kind, level)``: the kind (``ulist``/``olist``) of
+    its nearest list container (``ulist`` with none) and how many list
+    containers enclose it."""
+    kind, level = "ulist", 0
+    pid = getattr(chunk, "parent_chunk_id", None)
+    while pid is not None:
+        pk = kind_by_id.get(pid)
+        if pk in ("ulist", "olist"):
+            if level == 0:
+                kind = pk
+            level += 1
+        pid = parent_by_id.get(pid)
+    return kind, level
+
+
+def walk_body(
+    chunks: list[Any],
+    renderer: Any,
+    sink: Any,
+    *,
+    title_dc: str | None,
+    depth_of: Callable[[Any], int],
+    back_matter: frozenset[str],
+    equation_of: Callable[[str | None], tuple[str, bool] | None],
+    numbers: XrefNumbers | None = None,
+    on_chunk: Callable[[int], None] | None = None,
+) -> None:
+    """Visit the draft body once, in reading order, and hand each chunk to
+    the renderer as the method its kind calls for; the renderer only
+    formats. The walker decides: the seeded title chunk (``title``), the
+    draft's own Glossary heading and term chunks (``anchor``: they feed the
+    generated acronym list), list containers opened and closed by depth and
+    each item's ``(kind, level)`` from its ancestors, a heading's depth /
+    number / back-matter flag, and which paragraph is a display equation
+    (``equation_of``) with its pre-pass number. ``renderer.code_kinds`` and
+    ``renderer.aside_kinds`` name the chunk kinds a backend has a block for
+    (docx renders a listing and an aside as an ordinary paragraph: a known
+    divergence, kept byte-identical). ``on_chunk`` reports progress."""
+    # Chunk ids and parents only matter for list items; a caller's lighter
+    # chunk shape (no ids) still walks.
+    kind_by_id = {getattr(c, "chunk_id", None): c.chunk_kind for c in chunks}
+    parent_by_id = {
+        getattr(c, "chunk_id", None): getattr(c, "parent_chunk_id", None)
+        for c in chunks
+    }
+    # Open list containers (migration 0037): a container opens; its `item`
+    # children follow; it closes once we reach a chunk at or above the
+    # container's own depth (i.e. we've left its subtree). The stack
+    # handles nested lists.
+    open_lists: list[tuple[str, int]] = []
+    if title_dc is None:
+        # No seeded title chunk opens the draft: the title comes first.
+        renderer.title(sink, None)
+    for n_done, c in enumerate(chunks):
+        if on_chunk is not None:
+            on_chunk(n_done)
+        depth = depth_of(c)
+        while open_lists and depth <= open_lists[-1][1]:
+            renderer.list_close(sink, open_lists.pop()[0])
+        kind = c.chunk_kind
+        if c.dc == title_dc:
+            renderer.title(sink, c)
+        elif kind == "term" or is_glossary_heading(c):
+            renderer.anchor(sink, c)
+        elif kind in ("ulist", "olist"):
+            renderer.list_open(sink, c, kind, len(open_lists) + 1)
+            open_lists.append((kind, depth))
+        elif kind == "item":
+            lkind, level = list_kind_level(c, kind_by_id, parent_by_id)
+            renderer.list_item(sink, c, lkind, level)
+        elif kind == "table":
+            renderer.table(sink, c)
+        elif kind == "figure":
+            renderer.figure(sink, c)
+        elif kind == "heading":
+            number = ""
+            if numbers is not None and c.dc in numbers.numbered_headings:
+                number = numbers.labels[c.dc][1]
+            renderer.heading(sink, c, HeadingInfo(depth, number, c.dc in back_matter))
+        elif kind in renderer.code_kinds:
+            renderer.code(sink, c)
+        elif kind in renderer.aside_kinds:
+            renderer.aside(sink, c)
+        else:
+            eq = equation_of(c.text)
+            if eq is None:
+                renderer.paragraph(sink, c)
+            else:
+                number_of = numbers.equations.get(c.dc) if numbers else None
+                renderer.equation(sink, c, eq[0], number_of, eq[1])
+    while open_lists:  # close any lists still open at the end
+        renderer.list_close(sink, open_lists.pop()[0])

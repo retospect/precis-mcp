@@ -171,6 +171,40 @@ E = mc^2
 
 \paragraph{Run-in heading}\label{chunk:dc16}
 
+\begin{itemize}
+\item First point about \glstip{mof} \cite{smith20}.\label{chunk:dc21}
+
+\begin{enumerate}
+\item Nested step \textbf{bold}.\label{chunk:dc23}
+
+\end{enumerate}
+\item Second point, see \cref{chunk:dc21}.\label{chunk:dc24}
+
+\end{itemize}
+% label{chunk:dc25}
+\begin{lstlisting}
+x = 1  # raw $_ \ kept
+\end{lstlisting}
+
+% label{chunk:dc26}
+\begin{lstlisting}
+print('listing')
+\end{lstlisting}
+
+\begin{precisaside}\label{chunk:dc27}An aside with a cite \cite{lee22}.\end{precisaside}
+
+\begin{longtable}{>{\raggedright\arraybackslash}p{\dimexpr(\linewidth-\tabcolsep*4)/2\relax}>{\raggedright\arraybackslash}p{\dimexpr(\linewidth-\tabcolsep*4)/2\relax}}
+\toprule
+Material & Source \\
+\midrule\endhead
+\bottomrule\endlastfoot
+\glstip{mof} & \cite{jones21} \\
+\glstip{fmof} & none \\
+\end{longtable}
+\label{chunk:dc28}
+
+\$\$a + b\$\$\label{chunk:dc29}
+
 \phantomsection\label{chunk:dc12}%
 \phantomsection\label{chunk:dc13}%
 \section*{Acknowledgements}\label{chunk:dc17}

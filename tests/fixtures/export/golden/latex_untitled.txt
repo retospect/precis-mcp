@@ -1,0 +1,313 @@
+== main.tex ==
+% precis draft export — standard preamble (ADR 0033 Tier-B).
+%
+% Checked into the repo and copied verbatim into every exported draft.
+% The export engine assembles the rest of the document (title, acronym
+% definitions, body, glossary, bibliography) around this block, so keep
+% it package-setup only — no document content here.
+%
+% Compile with latexmk so biber (bibliography) and makeglossaries
+% (glossary) both run:  latexmk main.tex  (lualatex, per latexmkrc).
+\documentclass[11pt]{article}
+
+% Engine is lualatex (UTF-8 native) — no inputenc. fontenc T1 + lmodern
+% still give the Latin Modern look; unmapped Unicode degrades to a
+% missing-glyph warning rather than a fatal error.
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+
+% CJK glyph coverage. Latin Modern has no CJK glyphs, so a Japanese / Chinese
+% / Korean character (a paper title, a concept name) would otherwise render as
+% a missing-glyph rule under lualatex. fontspec + \newfontfamily give us a CJK
+% face and the exporter wraps detected CJK runs in \cjktext{...}
+% (export/latex.py::_wrap_cjk). \cjktext defaults to identity, so a host with
+% no CJK font still compiles (the glyph just stays missing) — it never throws
+% an undefined-control-sequence error. HaranoAjiMincho ships with TeX Live
+% (also the luatexja default); Noto Serif CJK is the common system fallback.
+\usepackage{fontspec}
+\newcommand{\cjktext}[1]{#1}
+\IfFontExistsTF{HaranoAjiMincho}{%
+  \newfontfamily\cjkfont{HaranoAjiMincho}%
+  \renewcommand{\cjktext}[1]{{\cjkfont #1}}%
+}{\IfFontExistsTF{Noto Serif CJK SC}{%
+  \newfontfamily\cjkfont{Noto Serif CJK SC}%
+  \renewcommand{\cjktext}[1]{{\cjkfont #1}}%
+}{\IfFontExistsTF{Noto Serif CJK JP}{%
+  \newfontfamily\cjkfont{Noto Serif CJK JP}%
+  \renewcommand{\cjktext}[1]{{\cjkfont #1}}%
+}{}}}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}      % >{...}p{} column types for wrapping table cells
+\usepackage{longtable}  % page-breaking data tables (export/latex.py)
+\usepackage{pdfpages}   % \includepdf appendix for the referenced-sources bundle (include_sources)
+\usepackage{listings}
+\usepackage{csquotes}
+
+% Bibliography — biblatex + biber. The export engine writes refs.bib
+% from the cited paper refs (DOI included when known).
+\usepackage[backend=biber,style=numeric-comp,sorting=none]{biblatex}
+
+% Hyperlinks + clever cross-references (intra-draft ¶ refs become
+% \cref{chunk:<handle>} pointing at \label{chunk:<handle>}).
+\usepackage[hidelinks]{hyperref}
+\usepackage{cleveref}
+
+% Numbered display equations (export/latex.py's standalone-equation
+% detection wraps a display-math-only paragraph in \begin{equation}, label
+% inside). Cleveref infers a label's TYPE from the counter active at
+% \label-time, so a bare [dc<id>] cross-ref to that chunk auto-resolves
+% through the existing \cref{chunk:<handle>} mechanism to "Eq. (N)" — no
+% separate \eqref wiring needed.
+\crefname{equation}{Eq.}{Eqs.}
+\Crefname{equation}{Equation}{Equations}
+
+% Author byline + affiliations (export/latex.py build_author_block).
+% authblk turns multiple \author + \affil lines into a numbered
+% author↔affiliation block under \maketitle; a single shared
+% affiliation renders unnumbered.
+\usepackage{authblk}
+\renewcommand\Affilfont{\small\itshape}
+% ORCID iD after an author name: \orcidlink{0000-0002-1825-0097} renders a
+% small "iD" superscript hyperlinked to the orcid.org record. Defined here
+% (not via the orcidlink package, which the render image may lack) so the
+% byline compiles on every TeX Live; \providecommand yields to a real
+% orcidlink.sty if a template loads one.
+\providecommand{\orcidlink}[1]{\href{https://orcid.org/#1}{\textsuperscript{\scriptsize\textsf{iD}}}}
+
+% Glossary / acronyms. `acronym` makes the acronym list; the long-short
+% style means first use expands to the full term and every later use is
+% the abbreviation. The page-number "where it occurs" list is on by
+% default (we do NOT pass nonumberlist), per the export design.
+\usepackage[acronym,toc]{glossaries-extra}
+\setabbreviationstyle[acronym]{long-short}
+% A first use inside parentheses brackets the short, "(long [SHORT], ...)",
+% instead of nesting parentheses: \glsbrk{\gls}{key} (or \Gls, \glspl, ...).
+\newcommand*{\glsbrk}[2]{{\renewcommand*{\glsxtrparen}[1]{{[}##1{]}}#1{#2}}}
+
+% Screen-only abbreviation tooltips (pdfcomment, after hyperref/glossaries).
+% First use of an acronym still expands inline; every LATER use is the bare
+% short wrapped in a non-printing PDF tooltip that reveals the full term on
+% hover — mirroring the web reader's instant popup without touching the
+% printed page. Only later uses are wrapped: a \pdftooltip box can't break
+% across a line and the first-use expansion is multi-word. hyper=false avoids
+% overlapping the glossary link rectangle with the tooltip annotation.
+% Loaded defensively: if pdfcomment is absent the macros degrade to a plain
+% \gls / \glspl, so a draft still compiles (just without the hover). The
+% \newcommand definitions live under a primitive \ifdefined conditional
+% (branches delimited by \else/\fi, NOT absorbed as a macro argument) — a
+% \newcommand nested inside \IfFileExists{}{...}{...} trips "Illegal
+% parameter number" because LaTeX copies the branch through \def\reserved@a,
+% where the bare #1 is no longer a legal parameter.
+\IfFileExists{pdfcomment.sty}{\usepackage{pdfcomment}}{}
+\ifdefined\pdftooltip
+  \newcommand{\glstip}[1]{\pdftooltip{\gls[hyper=false]{#1}}{\glsentrylong{#1}}}
+  \newcommand{\glspltip}[1]{\pdftooltip{\glspl[hyper=false]{#1}}{\glsentrylong{#1}}}
+\else
+  \newcommand{\glstip}[1]{\gls{#1}}
+  \newcommand{\glspltip}[1]{\glspl{#1}}
+\fi
+
+% Code/listing blocks (chunk_kind = listing/code).
+\lstset{basicstyle=\ttfamily\small,breaklines=true,frame=single,
+        columns=fullflexible,keepspaces=true}
+
+% Aside / box chunks render inside this lightweight framed environment.
+\newenvironment{precisaside}{%
+  \par\medskip\noindent\begin{quote}\itshape%
+}{%
+  \end{quote}\medskip%
+}
+
+\usepackage{embedfile}
+
+\addbibresource{refs.bib}
+\makeglossaries
+
+% ── acronyms (auto-generated from defined terms) ──
+\newacronym{fmof}{FMOF}{functionalized MOF}
+\newacronym{mof}{MOF}{metal-organic framework}
+
+\title{Golden Draft}
+\author{Ada Lovelace}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\subsection{Introduction}\label{chunk:dc2}
+
+A \gls{mof} hosts a \gls{fmof}; later \glstip{mof} and \glstip{fmof} uses. Plain \cite{smith20}{\scriptsize \href{https://doi.org/10.1000/golden.1}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,10.1000\%252Fgolden.1}{UL}} and run \cite{smith20,jones21,lee22}{\scriptsize \href{https://doi.org/10.1000/golden.1}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,10.1000\%252Fgolden.1}{UL}\ \href{https://arxiv.org/abs/2101.00002}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,2101.00002}{UL}} end.\label{chunk:dc3}
+
+Collapse \cite{smith20}{\scriptsize \href{https://doi.org/10.1000/golden.1}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,10.1000\%252Fgolden.1}{UL}} \cite{smith20}{\scriptsize \href{https://doi.org/10.1000/golden.1}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,10.1000\%252Fgolden.1}{UL}} and \cite{smith20}{\scriptsize \href{https://doi.org/10.1000/golden.1}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,10.1000\%252Fgolden.1}{UL}} then \cite{jones21,smith20}{\scriptsize \href{https://arxiv.org/abs/2101.00002}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,2101.00002}{UL}\ \href{https://doi.org/10.1000/golden.1}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,10.1000\%252Fgolden.1}{UL}} stop.\label{chunk:dc4}
+
+Handles \cite{smith20,jones21}{\scriptsize \href{https://doi.org/10.1000/golden.1}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,10.1000\%252Fgolden.1}{UL}\ \href{https://arxiv.org/abs/2101.00002}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,2101.00002}{UL}}, SI \cite[SI]{parent24} and \cite[SI]{parent24}, alias \cite{parent24}, then \cite{parent24}\cite[SI]{parent24}\cite{lee22}.\label{chunk:dc5}
+
+\subsection{Claims about \glsfmtshort{fmof} \cite{lee22}}\label{chunk:dc6}\glsadd{fmof}
+
+Finding \cite{smith20}{\scriptsize \href{https://doi.org/10.1000/golden.1}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,10.1000\%252Fgolden.1}{UL}}\textsuperscript{?}[unverified: source pending] hub \cite{jones21,lee22}{\scriptsize \href{https://arxiv.org/abs/2101.00002}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,2101.00002}{UL}}\textsuperscript{?}[unverified: source pending] mixed \cites{lee22}[SI]{parent24}\relax\textsuperscript{?}[unverified: source pending] repeat \cite{smith20}{\scriptsize \href{https://doi.org/10.1000/golden.1}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,10.1000\%252Fgolden.1}{UL}}\textsuperscript{?}[unverified: source pending]; dropped \textsuperscript{?}[unverified: source pending].\label{chunk:dc7}
+
+Prose \cite{lee22} and doi:10.1/x and st12 and \cite{nobody99} and patent \cite{us123}. See \cref{chunk:dc2} and \cref{chunk:dc11}.\label{chunk:dc8}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\linewidth,height=0.42\textheight,keepaspectratio]{pics/dc9.png}
+\caption{A \glstip{mof} figure \cite{jones21}{\scriptsize \href{https://arxiv.org/abs/2101.00002}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,2101.00002}{UL}}.}\label{chunk:dc9}
+\end{figure}
+
+\begin{equation}
+\label{chunk:dc11}
+E = mc^2
+\end{equation}
+
+\Cref{chunk:dc9} opens a sentence. Runs \cref{chunk:dc2,chunk:dc4} merge, \hyperref[chunk:dc2]{the intro} keeps its text, a dead dc999 and a legacy \cref{chunk:dc4} resolve, a run-in \nameref{chunk:dc16} names itself, the end matter \nameref{chunk:dc17} too, and \cref{chunk:dc11}. \Cref{chunk:dc11} starts one.\label{chunk:dc14}
+
+\subsubsection{Deep part}\label{chunk:dc15}
+
+\paragraph{Run-in heading}\label{chunk:dc16}
+
+\begin{itemize}
+\item First point about \glstip{mof} \cite{smith20}{\scriptsize \href{https://doi.org/10.1000/golden.1}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,10.1000\%252Fgolden.1}{UL}}.\label{chunk:dc21}
+
+\begin{enumerate}
+\item Nested step \textbf{bold}.\label{chunk:dc23}
+
+\end{enumerate}
+\item Second point, see \cref{chunk:dc21}.\label{chunk:dc24}
+
+\end{itemize}
+% label{chunk:dc25}
+\begin{lstlisting}
+x = 1  # raw $_ \ kept
+\end{lstlisting}
+
+% label{chunk:dc26}
+\begin{lstlisting}
+print('listing')
+\end{lstlisting}
+
+\begin{precisaside}\label{chunk:dc27}An aside with a cite \cite{lee22}.\end{precisaside}
+
+\begin{longtable}{>{\raggedright\arraybackslash}p{\dimexpr(\linewidth-\tabcolsep*4)/2\relax}>{\raggedright\arraybackslash}p{\dimexpr(\linewidth-\tabcolsep*4)/2\relax}}
+\toprule
+Material & Source \\
+\midrule\endhead
+\bottomrule\endlastfoot
+\glstip{mof} & \cite{jones21}{\scriptsize \href{https://arxiv.org/abs/2101.00002}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,2101.00002}{UL}} \\
+\glstip{fmof} & none \\
+\end{longtable}
+\label{chunk:dc28}
+
+\$\$a + b\$\$\label{chunk:dc29}
+
+\phantomsection\label{chunk:dc12}%
+\phantomsection\label{chunk:dc13}%
+\section*{Acknowledgements}\label{chunk:dc17}
+\addcontentsline{toc}{section}{Acknowledgements}
+
+Thanks to all; see \cref{chunk:dc2}.\label{chunk:dc18}
+
+
+\section*{Unverified claims}
+
+\par\noindent Claim 7 (unverified) {\textemdash} source pending
+\par\noindent Claim 8 (unverified) {\textemdash} source pending
+\par\noindent Claim 9 (unverified) {\textemdash} source pending
+\par\noindent Claim 10 (unverified) {\textemdash} source pending
+
+\clearpage
+\section*{Data package}
+
+A machine-readable copy of this data is embedded in this PDF as \texttt{data-package.json} (extract with \texttt{pdfdetach}) and shipped alongside this export.
+
+\embedfile[mimetype=application/json,desc={Data package (JSON)}]{data-package.json}
+
+\subsection*{A MOF figure [{\textsection}jones21].}
+{\fontsize{7}{8.4}\selectfont
+\begin{verbatim}
+source: pathway pw3 Golden pathway
+generated_at: 2026-10-01T00:00:00Z
+autocatpath_version: -
+precis: 1.0 abc123
+T: 298.15
+mlip.backend: mace
+
+step  dG  
+A     0.12
+B     -0.4
+\end{verbatim}
+}
+\printbibliography
+\printglossaries
+
+\appendix
+\section{Published claim artifacts}
+
+\begin{itemize}
+\item ``MOFs capture CO2.''; Sources: \cite{smith20}; \url{https://w3id.org/np/RAgolden} --- published 2026-01-02
+\end{itemize}
+\end{document}
+== refs.bib ==
+@misc{nobody99,
+  title = {[missing source nobody99]},
+  note = {Auto-stub by precis export; cited slug not in corpus.},
+}
+
+@article{smith20,
+  title = {Amine uptake in {MOFs}},
+  author = {Author1, A. and Second1, B.},
+  year = {2020},
+  doi = {10.1000/golden.1},
+  journaltitle = {J. Golden},
+  volume = {1},
+  pages = {1-10},
+}
+
+@article{jones21,
+  title = {Arxiv-only preprint},
+  author = {Author2, A. and Second2, B.},
+  year = {2021},
+  eprint = {2101.00002},
+  archiveprefix = {arXiv},
+  journaltitle = {J. Golden},
+  volume = {2},
+  pages = {2-11},
+}
+
+@article{lee22,
+  title = {No identifier paper},
+  author = {Author3, A. and Second3, B.},
+  year = {2022},
+  journaltitle = {J. Golden},
+  volume = {3},
+  pages = {3-12},
+}
+
+@article{parent24,
+  title = {Parent paper},
+  author = {Author4, A. and Second4, B.},
+  year = {2024},
+  journaltitle = {J. Golden},
+  volume = {4},
+  pages = {4-13},
+}
+
+@patent{us123,
+  title = {Capture device},
+  year = {2019},
+}
+== cited ==
+smith20
+jones21
+lee22
+parent24
+nobody99
+us123
+== warnings ==
+cite [fi10]: no citable source (conjunction hub without sourced conjuncts)
+cross-ref dc999: no such live chunk — downgraded
+cite 'nobody99': no source in corpus — stub bib entry

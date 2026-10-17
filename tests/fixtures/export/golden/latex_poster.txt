@@ -1,0 +1,291 @@
+== main.tex ==
+% Generic poster scaffold. Content slots are deliberately empty; no assets required.
+% A0 portrait: 84.1 x 118.9 cm. Font scale is 1.13; use sans-serif Latin Modern.
+% Build standalone: tectonic -X compile poster.tex
+% Alternatively: latexmk -lualatex -interaction=nonstopmode -halt-on-error poster.tex
+% Product draft compilation continues to use its existing LuaLaTeX sandbox.
+% Larger print variant: replace the beamerposter options below with
+%   size=custom,orientation=portrait,width=92,height=130,scale=1.13
+% Width/height are centimetres; size=custom is REQUIRED or A0 wins silently.
+% Verify the output: pdfinfo poster.pdf | grep 'Page size'
+% Fit check: tectonic -X compile poster.tex 2>&1 | grep 'Overfull .vbox'
+% A successful compile alone does not prove fit: inspect the log and rendered page.
+% Re-check after changing size, font, header/footer or content. colheight is a
+% measured vertical budget, not an automatic page calculation; tune it to fit.
+% Minipage alignment [s] distributes vfill BETWEEN blocks; [t] does not.
+% The 0.95 inset and 0.330/0.315/0.330 columns preserve the supplied geometry.
+% Branding is separate data: these neutral roles are product defaults only.
+% No institution palettes, logo paths, funder marks or private files belong here.
+\documentclass[final]{beamer}
+\usepackage[size=a0,orientation=portrait,scale=1.13]{beamerposter}
+\usepackage{lmodern}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs,array}
+\usepackage{upgreek}
+\usepackage{multicol}
+\hypersetup{hidelinks,pdfborder={0 0 0},pdftitle={},pdfauthor={}}
+\usetheme{default}
+\usecolortheme{default}
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{headline}{}
+\setbeamertemplate{footline}{}
+
+% Declared colour roles — the neutral product defaults. A validated
+% branding profile redefines each role by injecting
+% \definecolor{<role>}{HTML}{<hex>} ahead of the document body; every rule
+% below names a role, never a hue, so that is the ONLY thing a rebrand
+% touches.
+\definecolor{accent}{HTML}{404040}
+\definecolor{heading}{HTML}{262626}
+\definecolor{band}{HTML}{262626}
+\definecolor{bodytint}{HTML}{F5F5F5}
+\definecolor{citation}{HTML}{4D4D4D}
+\definecolor{measured}{HTML}{333333}
+\definecolor{computed}{HTML}{595959}
+\definecolor{bandtext}{HTML}{FFFFFF}
+\definecolor{bodytext}{HTML}{000000}
+\setbeamercolor{normal text}{fg=bodytext,bg=white}
+\setbeamercolor{block title}{fg=bandtext,bg=heading}
+\setbeamercolor{banner}{fg=bandtext,bg=band}
+\setbeamercolor{block body}{fg=bodytext,bg=bodytint}
+\setbeamercolor{logostrip}{fg=bandtext,bg=white}
+
+% Semantic emphasis — a colour may mean exactly one thing. Content uses
+% these; \hlm marks MEASURED values, \hlc COMPUTED/predicted values,
+% \hl colourless emphasis. (\boldmath is a switch: keep it inside the
+% argument's group — see docs/conventions/poster-typography.md.)
+\newcommand{\hlm}[1]{\textcolor{measured}{\boldmath\textbf{#1}}}
+\newcommand{\hlc}[1]{\textcolor{computed}{\boldmath\textbf{#1}}}
+\newcommand{\hl}[1]{{\boldmath\textbf{#1}}}
+% Citation glue: never wrap away from the cited word (\unskip eats the
+% call-site space, \nobreak\ replaces it unbreakably).
+\newcommand{\src}[1]{\unskip\nobreak\ {\footnotesize\textcolor{citation}{[#1]}}}
+\setbeamerfont{block title}{size=\Large,series=\bfseries}
+\setbeamertemplate{block begin}{%
+  \vskip0.3ex
+  \begin{beamercolorbox}[leftskip=1.2em,rightskip=1.2em,vmode]{block title}%
+    % A cap and descender give every title band the same glyph-based height.
+    \vskip1.0ex\usebeamerfont{block title}%
+    \hyphenpenalty=10000\exhyphenpenalty=10000
+    \vphantom{Ay}\insertblocktitle\vskip0.45ex
+  \end{beamercolorbox}%
+  \begin{beamercolorbox}[leftskip=1.2em,rightskip=1.2em,vmode]{block body}%
+    \vskip0.6ex
+}
+\setbeamertemplate{block end}{\vskip0.8ex\end{beamercolorbox}\vskip0.8ex}
+
+\newlength{\colheight}\setlength{\colheight}{2650pt}
+% Empty slots for future export assembly. No title, author, logo or body content.
+\newcommand{\PosterTitle}{}
+\newcommand{\PosterSubtitle}{}
+\newcommand{\PosterAuthors}{}
+\newcommand{\PosterAffiliations}{}
+\newcommand{\PosterColumnOne}{}
+\newcommand{\PosterColumnTwo}{}
+\newcommand{\PosterColumnThree}{}
+\newcommand{\PosterFooter}{}
+% Logo strip — \PosterStrip stays empty on the bare scaffold; export
+% renews it to a \PosterStripBox call (institution logos, then sponsor
+% logos, then \hfill + the sponsor line), which renders only then.
+\newcommand{\PosterStripBox}[1]{%
+  \vspace*{-\topsep}\begin{center}\begin{minipage}{0.95\textwidth}%
+  \begin{beamercolorbox}[wd=\linewidth,leftskip=1.2em,rightskip=1.2em,vmode]{logostrip}
+    \vskip0.6ex #1\vskip0.6ex
+  \end{beamercolorbox}%
+  \end{minipage}\end{center}\vspace*{-\topsep}\vskip0.8ex}
+\newcommand{\PosterStrip}{}
+
+% ── poster profile: default ──
+\definecolor{accent}{HTML}{404040}
+\definecolor{band}{HTML}{262626}
+\definecolor{bandtext}{HTML}{FFFFFF}
+\definecolor{bodytext}{HTML}{000000}
+\definecolor{bodytint}{HTML}{F5F5F5}
+\definecolor{citation}{HTML}{4D4D4D}
+\definecolor{computed}{HTML}{595959}
+\definecolor{heading}{HTML}{262626}
+\definecolor{measured}{HTML}{333333}
+\usepackage[backend=biber]{biblatex}
+\addbibresource{refs.bib}
+\renewcommand{\PosterTitle}{Golden Draft}
+\renewcommand{\PosterAuthors}{Ada Lovelace}
+\renewcommand{\PosterAffiliations}{}
+\renewcommand{\PosterColumnOne}{\begin{block}{Introduction}
+A \gls{mof} hosts a \gls{fmof}; later \glstip{mof} and \glstip{fmof} uses. Plain \cite{smith20}{\scriptsize \href{https://doi.org/10.1000/golden.1}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,10.1000\%252Fgolden.1}{UL}} and run \cite{smith20,jones21,lee22}{\scriptsize \href{https://doi.org/10.1000/golden.1}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,10.1000\%252Fgolden.1}{UL}\ \href{https://arxiv.org/abs/2101.00002}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,2101.00002}{UL}} end.\label{chunk:dc3}
+
+Collapse \cite{smith20}{\scriptsize \href{https://doi.org/10.1000/golden.1}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,10.1000\%252Fgolden.1}{UL}} \cite{smith20}{\scriptsize \href{https://doi.org/10.1000/golden.1}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,10.1000\%252Fgolden.1}{UL}} and \cite{smith20}{\scriptsize \href{https://doi.org/10.1000/golden.1}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,10.1000\%252Fgolden.1}{UL}} then \cite{jones21,smith20}{\scriptsize \href{https://arxiv.org/abs/2101.00002}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,2101.00002}{UL}\ \href{https://doi.org/10.1000/golden.1}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,10.1000\%252Fgolden.1}{UL}} stop.\label{chunk:dc4}
+
+Handles \cite{smith20,jones21}{\scriptsize \href{https://doi.org/10.1000/golden.1}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,10.1000\%252Fgolden.1}{UL}\ \href{https://arxiv.org/abs/2101.00002}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,2101.00002}{UL}}, SI \cite[SI]{parent24} and \cite[SI]{parent24}, alias \cite{parent24}, then \cite{parent24}\cite[SI]{parent24}\cite{lee22}.\label{chunk:dc5}
+\end{block}
+\begin{block}{Acknowledgements}
+Thanks to all; see \cref{chunk:dc2}.\label{chunk:dc18}
+\end{block}}
+\renewcommand{\PosterColumnTwo}{\begin{block}{Claims about \glsfmtshort{fmof} \cite{lee22}}\glsadd{fmof}
+Finding \cite{smith20}{\scriptsize \href{https://doi.org/10.1000/golden.1}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,10.1000\%252Fgolden.1}{UL}}\textsuperscript{?}[unverified: source pending] hub \cite{jones21,lee22}{\scriptsize \href{https://arxiv.org/abs/2101.00002}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,2101.00002}{UL}}\textsuperscript{?}[unverified: source pending] mixed \cites{lee22}[SI]{parent24}\relax\textsuperscript{?}[unverified: source pending] repeat \cite{smith20}{\scriptsize \href{https://doi.org/10.1000/golden.1}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,10.1000\%252Fgolden.1}{UL}}\textsuperscript{?}[unverified: source pending]; dropped \textsuperscript{?}[unverified: source pending].\label{chunk:dc7}
+
+Prose \cite{lee22} and doi:10.1/x and st12 and \cite{nobody99} and patent \cite{us123}. See \cref{chunk:dc2} and \cref{chunk:dc11}.\label{chunk:dc8}
+
+\begin{center}
+\includegraphics[width=\linewidth,height=0.30\textheight,keepaspectratio]{pics/dc9.png}
+\par{\footnotesize A \glstip{mof} figure \cite{jones21}{\scriptsize \href{https://arxiv.org/abs/2101.00002}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,2101.00002}{UL}}.}\label{chunk:dc9}
+\end{center}
+
+\begin{equation}
+\label{chunk:dc11}
+E = mc^2
+\end{equation}
+
+\Cref{chunk:dc9} opens a sentence. Runs \cref{chunk:dc2,chunk:dc4} merge, \hyperref[chunk:dc2]{the intro} keeps its text, a dead dc999 and a legacy \cref{chunk:dc4} resolve, a run-in \cref{chunk:dc16} names itself, the end matter \cref{chunk:dc17} too, and \cref{chunk:dc11}. \Cref{chunk:dc11} starts one.\label{chunk:dc14}
+
+\par\medskip\phantomsection\label{chunk:dc15}{\bfseries Deep part}\par
+
+\par\medskip\phantomsection\label{chunk:dc16}{\bfseries Run-in heading}\par
+
+\begin{itemize}
+\item First point about \glstip{mof} \cite{smith20}{\scriptsize \href{https://doi.org/10.1000/golden.1}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,10.1000\%252Fgolden.1}{UL}}.\label{chunk:dc21}
+
+\begin{enumerate}
+\item Nested step \textbf{bold}.\label{chunk:dc23}
+
+\end{enumerate}
+\item Second point, see \cref{chunk:dc21}.\label{chunk:dc24}
+
+\end{itemize}
+% label{chunk:dc25}
+\begin{lstlisting}
+x = 1  # raw $_ \ kept
+\end{lstlisting}
+
+% label{chunk:dc26}
+\begin{lstlisting}
+print('listing')
+\end{lstlisting}
+
+\begin{precisaside}\label{chunk:dc27}An aside with a cite \cite{lee22}.\end{precisaside}
+
+\begin{center}
+\begin{tabular}{>{\raggedright\arraybackslash}p{\dimexpr(\linewidth-\tabcolsep*4)/2\relax}>{\raggedright\arraybackslash}p{\dimexpr(\linewidth-\tabcolsep*4)/2\relax}}
+\toprule
+Material & Source \\
+\midrule
+\glstip{mof} & \cite{jones21}{\scriptsize \href{https://arxiv.org/abs/2101.00002}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,2101.00002}{UL}} \\
+\glstip{fmof} & none \\
+\bottomrule
+\end{tabular}
+\end{center}
+\label{chunk:dc28}
+
+\$\$a + b\$\$\label{chunk:dc29}
+\end{block}}
+\renewcommand{\PosterColumnThree}{\begin{block}{Glossary}
+\phantomsection\label{chunk:dc13}%
+\end{block}
+\begin{block}{References}
+\printbibliography
+\end{block}}
+\begin{document}
+\begin{frame}[t]
+\vspace*{1.05cm}
+\vspace*{-\topsep}\begin{center}\begin{minipage}{0.95\textwidth}%
+\begin{beamercolorbox}[wd=\linewidth,leftskip=1.2em,rightskip=1.2em,center,vmode]{banner}
+  \vskip1.45ex
+  {\Huge\bfseries\linespread{0.82}\selectfont\PosterTitle\par}
+  \vskip0.7ex
+  {\LARGE\PosterSubtitle\par}
+  \vskip0.6ex
+  {\Large\PosterAuthors\par}
+  \vskip0.4ex
+  {\normalsize\PosterAffiliations\par}
+  \vskip0.35ex
+\end{beamercolorbox}%
+\end{minipage}\end{center}%
+\vspace*{-\topsep}
+\PosterStrip
+\vskip1.6ex
+\begin{center}\begin{minipage}{0.95\textwidth}
+\begin{columns}[t,totalwidth=\textwidth]
+\begin{column}{0.330\textwidth}
+\begin{minipage}[t][\colheight][s]{\linewidth}
+\PosterColumnOne
+\end{minipage}
+\end{column}
+\begin{column}{0.315\textwidth}
+\begin{minipage}[t][\colheight][s]{\linewidth}
+\PosterColumnTwo
+\end{minipage}
+\end{column}
+\begin{column}{0.330\textwidth}
+\begin{minipage}[t][\colheight][s]{\linewidth}
+\PosterColumnThree
+\end{minipage}
+\end{column}
+\end{columns}
+\end{minipage}\end{center}
+\vskip0.4ex
+\begin{center}\begin{minipage}{0.95\textwidth}
+\PosterFooter
+\end{minipage}\end{center}
+\end{frame}
+\end{document}
+== refs.bib ==
+@misc{nobody99,
+  title = {[missing source nobody99]},
+  note = {Auto-stub by precis export; cited slug not in corpus.},
+}
+
+@article{smith20,
+  title = {Amine uptake in {MOFs}},
+  author = {Author1, A. and Second1, B.},
+  year = {2020},
+  doi = {10.1000/golden.1},
+  journaltitle = {J. Golden},
+  volume = {1},
+  pages = {1-10},
+}
+
+@article{jones21,
+  title = {Arxiv-only preprint},
+  author = {Author2, A. and Second2, B.},
+  year = {2021},
+  eprint = {2101.00002},
+  archiveprefix = {arXiv},
+  journaltitle = {J. Golden},
+  volume = {2},
+  pages = {2-11},
+}
+
+@article{lee22,
+  title = {No identifier paper},
+  author = {Author3, A. and Second3, B.},
+  year = {2022},
+  journaltitle = {J. Golden},
+  volume = {3},
+  pages = {3-12},
+}
+
+@article{parent24,
+  title = {Parent paper},
+  author = {Author4, A. and Second4, B.},
+  year = {2024},
+  journaltitle = {J. Golden},
+  volume = {4},
+  pages = {4-13},
+}
+
+@patent{us123,
+  title = {Capture device},
+  year = {2019},
+}
+== cited ==
+smith20
+jones21
+lee22
+parent24
+nobody99
+us123
+== warnings ==
+cite [fi10]: no citable source (conjunction hub without sourced conjuncts)
+cross-ref dc999: no such live chunk — downgraded
+cite 'nobody99': no source in corpus — stub bib entry

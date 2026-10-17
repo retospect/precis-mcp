@@ -1476,6 +1476,10 @@ def _cite_mark(group: walker.CiteGroup, ctx: _Ctx) -> str:
     return f"{_cite_tex(group)}\x01<{idx}>\x01"
 
 
+#: List container kind → LaTeX environment (migration 0037).
+_LIST_ENV = {"ulist": "itemize", "olist": "enumerate"}
+
+
 class LatexRenderer:
     """The LaTeX :class:`walker.Renderer`: formats resolved values as TeX
     into a ``list[str]`` sink."""
@@ -1510,6 +1514,102 @@ class LatexRenderer:
             sink.append(f"\\nameref{{chunk:{dc}}}")
         else:
             sink.append(f"\\cref{{chunk:{dc}}}")
+
+    code_kinds = frozenset({"listing", "code"})
+    aside_kinds = frozenset({"aside", "box"})
+
+    @staticmethod
+    def _label(c: Any) -> str:
+        return f"\\label{{chunk:{c.dc}}}"
+
+    def title(self, sink: list[str], chunk: Any | None) -> None:
+        """``\\maketitle`` prints the title; the seeded title chunk keeps
+        only its label (a cross-ref to it still resolves)."""
+        if chunk is not None:
+            self.anchor(sink, chunk)
+
+    def anchor(self, sink: list[str], chunk: Any) -> None:
+        # term + Glossary heading don't render as body — but keep an
+        # invisible label so any [¶handle] cross-ref to them still
+        # resolves (to the glossary) rather than dangling.
+        sink.append(f"\\phantomsection{self._label(chunk)}%")
+
+    def list_open(self, sink: list[str], chunk: Any, kind: str, level: int) -> None:
+        # the container carries no prose; its items do
+        sink.append(f"\\begin{{{_LIST_ENV[kind]}}}")
+
+    def list_close(self, sink: list[str], kind: str) -> None:
+        sink.append(f"\\end{{{_LIST_ENV[kind]}}}")
+
+    def list_item(self, sink: list[str], chunk: Any, kind: str, level: int) -> None:
+        body = _render_inline(chunk.text or "", self.ctx)
+        sink += [f"\\item {body}{self._label(chunk)}", ""]
+
+    def table(self, sink: list[str], chunk: Any) -> None:
+        sink += [*_render_table(chunk, self.ctx, self._label(chunk)), ""]
+
+    def figure(self, sink: list[str], chunk: Any) -> None:
+        sink += [*_render_figure(chunk, self.ctx, self._label(chunk)), ""]
+
+    def heading(self, sink: list[str], chunk: Any, info: walker.HeadingInfo) -> None:
+        """``\\section``/``\\subsection``/``\\subsubsection`` by depth (deeper:
+        a run-in ``\\paragraph``); cleveref numbers it at compile time."""
+        ctx = self.ctx
+        title = _render_moving_arg(chunk.text or "", ctx, heading=True)
+        label = self._label(chunk) + _heading_glsadd(ctx)
+        if ctx.poster:
+            # In-block subheading: bold run-in line, never \section —
+            # the beamer block title IS the section heading.
+            sink.append(
+                f"\\par\\medskip\\phantomsection{label}{{\\bfseries {title}}}\\par"
+            )
+        else:
+            cmd = _SECTION_CMD[min(info.depth, len(_SECTION_CMD) - 1)]
+            if info.back_matter and cmd != "paragraph":
+                # unnumbered journal back matter, still listed in the TOC
+                sink.append(f"\\{cmd}*{{{title}}}{label}")
+                sink.append(f"\\addcontentsline{{toc}}{{{cmd}}}{{{title}}}")
+            else:
+                sink.append(f"\\{cmd}{{{title}}}{label}")
+        sink.append("")
+
+    def code(self, sink: list[str], chunk: Any) -> None:
+        # Code is verbatim — no inline rendering / escaping.
+        sink += [
+            f"% {self._label(chunk)[1:]}",
+            "\\begin{lstlisting}",
+            chunk.text or "",
+            "\\end{lstlisting}",
+            "",
+        ]
+
+    def aside(self, sink: list[str], chunk: Any) -> None:
+        body = _render_inline(chunk.text or "", self.ctx)
+        label = self._label(chunk)
+        sink += [f"\\begin{{precisaside}}{label}{body}\\end{{precisaside}}", ""]
+
+    def equation(
+        self,
+        sink: list[str],
+        chunk: Any,
+        body: str,
+        number: int | None,
+        starred: bool,
+    ) -> None:
+        """A numbered ``equation`` (cleveref numbers it; ``number`` unused)."""
+        if not starred:
+            sink += [*_render_equation(body, chunk.dc), ""]
+            return
+        # starred escape hatch: strip the marker, render unnumbered
+        # through the ordinary math path (byte-identical to a plain
+        # $$…$$ paragraph today).
+        rendered = _render_inline(f"$${body}$$", self.ctx)
+        sink += [f"{rendered}{self._label(chunk)}", ""]
+
+    def paragraph(self, sink: list[str], chunk: Any) -> None:
+        # paragraph and friends; the blank line → paragraph break
+        body = _render_inline(chunk.text or "", self.ctx)
+        sink += [f"{body}{self._label(chunk)}", ""]
 
     @staticmethod
     def back_matter(sink: list[str], name: str, block: str) -> None:
@@ -2269,12 +2369,7 @@ def render_body(
         library_label=cfg.library_label,
         library_search_url=cfg.library_search_url,
         withheld_figures=withheld_figures,
-        paragraph_handles=frozenset(
-            c.dc
-            for c in chunks
-            if c.chunk_kind == "heading" and depth_of(c) >= len(_SECTION_CMD) - 1
-        )
-        | back_matter,
+        paragraph_handles=walker.named_headings(chunks, depth_of, back_matter),
     )
     lines = _render_chunk_lines(
         chunks, ctx, depth_of=depth_of, title_dc=title_dc, back_matter=back_matter
@@ -2308,85 +2403,18 @@ def _render_chunk_lines(
     ``ctx.poster`` switches the three emitters that are invalid inside a
     poster column minipage: nested ``heading`` → a bold run-in line,
     ``figure`` → a centred non-float, ``table`` → ``tabular`` (not
-    ``longtable``)."""
+    ``longtable``). The walk and every decision in it are the walker's
+    (:func:`walker.walk_body`); :class:`LatexRenderer` formats."""
     lines: list[str] = []
-    # Open list environments (migration 0037): ulist→itemize, olist→
-    # enumerate. A container opens an env; its `item` children emit \item;
-    # the env closes once we reach a chunk at or above the container's own
-    # depth (i.e. we've left its subtree). The stack handles nested lists.
-    list_stack: list[tuple[str, int]] = []
-    for c in chunks:
-        depth = depth_of(c)
-        while list_stack and depth <= list_stack[-1][1]:
-            lines.append(f"\\end{{{list_stack.pop()[0]}}}")
-        label = f"\\label{{chunk:{c.dc}}}"
-        # term + Glossary heading don't render as body — but keep an
-        # invisible label so any [¶handle] cross-ref to them still
-        # resolves (to the glossary) rather than dangling.
-        is_glossary_heading = (
-            c.chunk_kind == "heading" and (c.text or "").strip().lower() == "glossary"
-        )
-        if c.chunk_kind == "term" or is_glossary_heading or c.dc == title_dc:
-            lines.append(f"\\phantomsection{label}%")
-            continue
-        if c.chunk_kind in ("ulist", "olist"):
-            env = "itemize" if c.chunk_kind == "ulist" else "enumerate"
-            lines.append(f"\\begin{{{env}}}")
-            list_stack.append((env, depth))
-            continue  # the container carries no prose; its items do
-        if c.chunk_kind == "item":
-            body = _render_inline(c.text or "", ctx)
-            lines.append(f"\\item {body}{label}")
-            lines.append("")
-            continue
-        if c.chunk_kind == "table":
-            lines.extend(_render_table(c, ctx, label))
-            lines.append("")
-            continue
-        if c.chunk_kind == "figure":
-            lines.extend(_render_figure(c, ctx, label))
-        elif c.chunk_kind == "heading":
-            title = _render_moving_arg(c.text or "", ctx, heading=True)
-            label += _heading_glsadd(ctx)
-            if ctx.poster:
-                # In-block subheading: bold run-in line, never \section —
-                # the beamer block title IS the section heading.
-                lines.append(
-                    f"\\par\\medskip\\phantomsection{label}{{\\bfseries {title}}}\\par"
-                )
-            else:
-                cmd = _SECTION_CMD[min(depth, len(_SECTION_CMD) - 1)]
-                if c.dc in back_matter and cmd != "paragraph":
-                    # unnumbered journal back matter, still listed in the TOC
-                    lines.append(f"\\{cmd}*{{{title}}}{label}")
-                    lines.append(f"\\addcontentsline{{toc}}{{{cmd}}}{{{title}}}")
-                else:
-                    lines.append(f"\\{cmd}{{{title}}}{label}")
-        elif c.chunk_kind in ("listing", "code"):
-            # Code is verbatim — no inline rendering / escaping.
-            lines.append(f"% {label[1:]}")
-            lines.append("\\begin{lstlisting}")
-            lines.append(c.text or "")
-            lines.append("\\end{lstlisting}")
-        elif c.chunk_kind in ("aside", "box"):
-            body = _render_inline(c.text or "", ctx)
-            lines.append(f"\\begin{{precisaside}}{label}{body}\\end{{precisaside}}")
-        else:  # paragraph and friends
-            eq = _standalone_equation(c.text)
-            if eq is not None and not eq[1]:
-                lines.extend(_render_equation(eq[0], c.dc))
-            elif eq is not None:
-                # starred escape hatch: strip the marker, render unnumbered
-                # through the ordinary math path (byte-identical to a plain
-                # $$…$$ paragraph today).
-                body = _render_inline(f"$${eq[0]}$$", ctx)
-                lines.append(f"{body}{label}")
-            else:
-                body = _render_inline(c.text or "", ctx)
-                lines.append(f"{body}{label}")
-        lines.append("")  # blank line → paragraph break
-    while list_stack:  # close any lists still open at the document end
-        lines.append(f"\\end{{{list_stack.pop()[0]}}}")
+    walker.walk_body(
+        chunks,
+        LatexRenderer(ctx),
+        lines,
+        title_dc=title_dc,
+        depth_of=depth_of,
+        back_matter=back_matter,
+        equation_of=_standalone_equation,
+    )
     return lines
 
 

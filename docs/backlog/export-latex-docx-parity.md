@@ -12,9 +12,13 @@ Building in `g-export-parity`, one landing per slice. Slices landed: 1
 the numbering pre-pass reads chunk structure only, so no cite is
 renumbered; the golden draft gained xref cases, baseline from main,
 408281f94), 4 (back matter: which blocks apply, claim-cite bookkeeping,
-claims-table numbers, acronym-list membership). Next: 5 (headings,
-figures, equations, tables, the chunk loops and the legacy-handle mapping;
-see decision 6).
+claims-table numbers, acronym-list membership, 57fa21c0d), 5a (the chunk
+loops: `walker.walk_body` drives headings, figures, equations, tables,
+lists, code, asides, the title and anchors for both backends and the
+poster; golden gained lists/code/aside/table, poster and untitled modes,
+baseline from main). Next: 5b (legacy-handle mapping per decision 6, poster
+section grouping, the no-decision-logic acceptance test, then this file is
+deleted).
 
 # LaTeX and DOCX export parity
 
@@ -174,6 +178,14 @@ Decisions:
    walker, and slice 5's "no decision logic left in the backends" grep must
    cover it (`legacy_to_dc` used outside `walker.py`), so it cannot be left
    behind.
+7. **Slice 5 protocol (witty, 2026-10-17):** the walker owns the chunk
+   loop and adds `title`, `anchor`, `list_open`, `list_close`, `list_item`,
+   `code` and `aside` to the protocol; it decides list depth/level, skip vs
+   anchor and the title. The protocol test's named no-op allow-list is
+   exactly three docx methods: `anchor` (no phantom label), `list_open`
+   and `list_close` (items are styled from `(kind, level)`, no container
+   element). Poster is a LatexRenderer mode (`ctx.poster`). The acceptance
+   check is a test. Slice 5 may be several commits, each byte-identical.
 
 Still open:
 

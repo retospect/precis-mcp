@@ -1109,6 +1109,271 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 </w:p>
 <w:p>
 <w:pPr>
+<w:pStyle w:val="ListBullet">
+</w:pStyle>
+</w:pPr>
+<w:r>
+<w:t xml:space="preserve">First point about </w:t>
+</w:r>
+<w:r>
+<w:t>MOF</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:vertAlign w:val="superscript">
+</w:vertAlign>
+</w:rPr>
+<w:t>[1]</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:hyperlink r:id="rId9">
+<w:r>
+<w:rPr>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>doi</w:t>
+</w:r>
+</w:hyperlink>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:hyperlink r:id="rId10">
+<w:r>
+<w:rPr>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>UL</w:t>
+</w:r>
+</w:hyperlink>
+<w:r>
+<w:t>.</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:pPr>
+<w:pStyle w:val="ListNumber2">
+</w:pStyle>
+</w:pPr>
+<w:r>
+<w:t xml:space="preserve">Nested step </w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:b>
+</w:b>
+</w:rPr>
+<w:t>bold</w:t>
+</w:r>
+<w:r>
+<w:t>.</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:pPr>
+<w:pStyle w:val="ListBullet">
+</w:pStyle>
+</w:pPr>
+<w:r>
+<w:t xml:space="preserve">Second point, see </w:t>
+</w:r>
+<w:r>
+<w:t>section 2.1</w:t>
+</w:r>
+<w:r>
+<w:t>.</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:rPr>
+<w:rFonts w:ascii="Consolas" w:hAnsi="Consolas">
+</w:rFonts>
+</w:rPr>
+<w:t>x = 1  # raw $_ \ kept</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:t>print('listing')</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:t xml:space="preserve">An aside with a cite </w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:vertAlign w:val="superscript">
+</w:vertAlign>
+</w:rPr>
+<w:t>[3]</w:t>
+</w:r>
+<w:r>
+<w:t>.</w:t>
+</w:r>
+</w:p>
+<w:tbl>
+<w:tblPr>
+<w:tblStyle w:val="TableGrid">
+</w:tblStyle>
+<w:tblW w:type="auto" w:w="0">
+</w:tblW>
+<w:tblLook w:firstColumn="1" w:firstRow="1" w:lastColumn="0" w:lastRow="0" w:noHBand="0" w:noVBand="1" w:val="04A0">
+</w:tblLook>
+</w:tblPr>
+<w:tblGrid>
+<w:gridCol w:w="4680">
+</w:gridCol>
+<w:gridCol w:w="4680">
+</w:gridCol>
+</w:tblGrid>
+<w:tr>
+<w:tc>
+<w:tcPr>
+<w:tcW w:type="dxa" w:w="4680">
+</w:tcW>
+</w:tcPr>
+<w:p>
+<w:r>
+<w:rPr>
+<w:b>
+</w:b>
+</w:rPr>
+<w:t>Material</w:t>
+</w:r>
+</w:p>
+</w:tc>
+<w:tc>
+<w:tcPr>
+<w:tcW w:type="dxa" w:w="4680">
+</w:tcW>
+</w:tcPr>
+<w:p>
+<w:r>
+<w:rPr>
+<w:b>
+</w:b>
+</w:rPr>
+<w:t>Source</w:t>
+</w:r>
+</w:p>
+</w:tc>
+</w:tr>
+<w:tr>
+<w:tc>
+<w:tcPr>
+<w:tcW w:type="dxa" w:w="4680">
+</w:tcW>
+</w:tcPr>
+<w:p>
+<w:r>
+<w:t>MOF</w:t>
+</w:r>
+</w:p>
+</w:tc>
+<w:tc>
+<w:tcPr>
+<w:tcW w:type="dxa" w:w="4680">
+</w:tcW>
+</w:tcPr>
+<w:p>
+<w:r>
+<w:rPr>
+<w:vertAlign w:val="superscript">
+</w:vertAlign>
+</w:rPr>
+<w:t>[2]</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:hyperlink r:id="rId11">
+<w:r>
+<w:rPr>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>doi</w:t>
+</w:r>
+</w:hyperlink>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:hyperlink r:id="rId12">
+<w:r>
+<w:rPr>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>UL</w:t>
+</w:r>
+</w:hyperlink>
+</w:p>
+</w:tc>
+</w:tr>
+<w:tr>
+<w:tc>
+<w:tcPr>
+<w:tcW w:type="dxa" w:w="4680">
+</w:tcW>
+</w:tcPr>
+<w:p>
+<w:r>
+<w:t>FMOF</w:t>
+</w:r>
+</w:p>
+</w:tc>
+<w:tc>
+<w:tcPr>
+<w:tcW w:type="dxa" w:w="4680">
+</w:tcW>
+</w:tcPr>
+<w:p>
+<w:r>
+<w:t>none</w:t>
+</w:r>
+</w:p>
+</w:tc>
+</w:tr>
+</w:tbl>
+<w:p>
+<m:oMath>
+<m:r>
+<m:t xml:space="preserve">a</m:t>
+</m:r>
+<m:r>
+<m:t xml:space="preserve">+</m:t>
+</m:r>
+<m:r>
+<m:t xml:space="preserve">b</m:t>
+</m:r>
+</m:oMath>
+</w:p>
+<w:p>
+<w:pPr>
 <w:pStyle w:val="Heading1">
 </w:pStyle>
 </w:pPr>

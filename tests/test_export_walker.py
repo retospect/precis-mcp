@@ -23,6 +23,24 @@ _PROTOCOL = sorted(
     if inspect.isfunction(member) and not name.startswith("_")
 )
 
+
+def _chunk(kind: str, text: str) -> Any:
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        chunk_id=7,
+        dc="dc7",
+        handle="h7",
+        chunk_kind=kind,
+        depth=1,
+        parent_chunk_id=None,
+        text=text,
+        meta=None,
+    )
+
+
+_TABLE = "| A | B |\n|---|---|\n| 1 | 2 |"
+
 #: Resolved arguments per protocol method, per backend (the back-matter
 #: payload is each backend's own: pre-rendered TeX, or a docx marker).
 _SAMPLES: dict[str, dict[str, tuple[Any, ...]]] = {
@@ -43,6 +61,37 @@ _SAMPLES: dict[str, dict[str, tuple[Any, ...]]] = {
         "latex": ("acronyms", "\\printglossaries"),
         "docx": ("acronyms", True),
     },
+    "title": dict.fromkeys(("latex", "docx"), (_chunk("heading", "Title"),)),
+    "anchor": dict.fromkeys(("latex", "docx"), (_chunk("term", "metal"),)),
+    "list_open": dict.fromkeys(("latex", "docx"), (_chunk("ulist", ""), "ulist", 1)),
+    "list_close": dict.fromkeys(("latex", "docx"), ("olist",)),
+    "list_item": dict.fromkeys(("latex", "docx"), (_chunk("item", "Item"), "olist", 2)),
+    "heading": dict.fromkeys(
+        ("latex", "docx"),
+        (_chunk("heading", "Intro"), walker.HeadingInfo(0, "1", back_matter=False)),
+    ),
+    "figure": dict.fromkeys(("latex", "docx"), (_chunk("figure", "A caption."),)),
+    "table": dict.fromkeys(("latex", "docx"), (_chunk("table", _TABLE),)),
+    "code": dict.fromkeys(("latex", "docx"), (_chunk("code", "x = 1"),)),
+    "aside": dict.fromkeys(("latex", "docx"), (_chunk("aside", "Aside."),)),
+    "equation": dict.fromkeys(
+        ("latex", "docx"), (_chunk("paragraph", "$$x$$"), "x", 1, False)
+    ),
+    "paragraph": dict.fromkeys(("latex", "docx"), (_chunk("paragraph", "Plain."),)),
+}
+
+#: The ONLY renderer methods allowed to emit nothing (witty's ruling,
+#: 2026-10-17); nothing joins this list without a new ruling.
+_INTENTIONAL_NO_OPS: dict[tuple[str, str], str] = {
+    ("docx", "anchor"): "docx has no phantom label",
+    (
+        "docx",
+        "list_open",
+    ): "docx styles each item from (kind, level); no container element",
+    (
+        "docx",
+        "list_close",
+    ): "docx styles each item from (kind, level); no container element",
 }
 
 _ABBREVS = {"MOF": "metal-organic framework"}
@@ -53,25 +102,57 @@ def _latex_output(method: str) -> str:
         keymap=latex._acronym_keymap(_ABBREVS),
         abbrevs=dict(_ABBREVS),
         known_handles=set(),
+        withheld_figures=frozenset({"dc7"}),
     )
     sink: list[str] = []
     getattr(latex.LatexRenderer(ctx), method)(sink, *_SAMPLES[method]["latex"])
     return "".join(sink)
 
 
-def _docx_output(method: str) -> str:
+_BLOCK_METHODS = frozenset(
+    {
+        "back_matter",
+        "title",
+        "anchor",
+        "list_open",
+        "list_close",
+        "list_item",
+        "heading",
+        "figure",
+        "table",
+        "code",
+        "aside",
+        "equation",
+        "paragraph",
+    }
+)
+
+
+def _docx_run(method: str) -> Any:
     ctx = dx._Ctx(
         store=None,
         known_handles=set(),
         abbrevs=dict(_ABBREVS),
         used_acr={"MOF"},
+        withheld_figures=frozenset({"dc7"}),
         library_label="x",
         library_search_url="x",
     )
     doc = docx.Document()
-    sink = doc if method == "back_matter" else doc.add_paragraph()
+    sink = doc if method in _BLOCK_METHODS else doc.add_paragraph()
     getattr(dx.DocxRenderer(ctx), method)(sink, *_SAMPLES[method]["docx"])
-    return "\n".join(p.text for p in doc.paragraphs)
+    return doc
+
+
+def _docx_output(method: str) -> str:
+    return "\n".join(p.text for p in _docx_run(method).paragraphs)
+
+
+def _docx_emits(method: str) -> bool:
+    doc = _docx_run(method)
+    if method not in _BLOCK_METHODS:  # inline: runs in the sink paragraph
+        return any(p.text for p in doc.paragraphs)
+    return len(doc.element.body) > len(docx.Document().element.body)
 
 
 def test_protocol_has_methods() -> None:
@@ -88,7 +169,15 @@ def test_both_backends_implement_and_emit(method: str) -> None:
     for cls in (latex.LatexRenderer, dx.DocxRenderer):
         assert callable(getattr(cls, method, None)), f"{cls.__name__}.{method}"
     assert _latex_output(method)
-    assert _docx_output(method)
+    if ("docx", method) in _INTENTIONAL_NO_OPS:
+        assert not _docx_emits(method), f"docx {method} is listed as a no-op"
+    else:
+        assert _docx_emits(method)
+
+
+def test_no_op_list_names_protocol_methods_only() -> None:
+    assert {m for _b, m in _INTENTIONAL_NO_OPS} <= set(_PROTOCOL)
+    assert all(reason for reason in _INTENTIONAL_NO_OPS.values())
 
 
 def test_cite_group_formats_only() -> None:

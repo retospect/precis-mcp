@@ -980,6 +980,252 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 </w:p>
 <w:p>
 <w:pPr>
+<w:pStyle w:val="ListBullet">
+</w:pStyle>
+</w:pPr>
+<w:r>
+<w:t xml:space="preserve">First point about </w:t>
+</w:r>
+<w:r>
+<w:t>MOF</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="begin">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:instrText xml:space="preserve"> ADDIN EN.CITE &lt;EndNote&gt;&lt;Cite&gt;&lt;Author&gt;Author1&lt;/Author&gt;&lt;Year&gt;2020&lt;/Year&gt;&lt;RecNum&gt;1&lt;/RecNum&gt;&lt;DisplayText&gt;[1]&lt;/DisplayText&gt;&lt;record&gt;&lt;rec-number&gt;1&lt;/rec-number&gt;&lt;foreign-keys&gt;&lt;key app="EN" db-id="precismcp0traveling0library000000000" timestamp="1700000000"&gt;1&lt;/key&gt;&lt;/foreign-keys&gt;&lt;ref-type name="Journal Article"&gt;17&lt;/ref-type&gt;&lt;contributors&gt;&lt;authors&gt;&lt;author&gt;Author1, A.&lt;/author&gt;&lt;author&gt;Second1, B.&lt;/author&gt;&lt;/authors&gt;&lt;/contributors&gt;&lt;titles&gt;&lt;title&gt;Amine uptake in MOFs&lt;/title&gt;&lt;secondary-title&gt;J. Golden&lt;/secondary-title&gt;&lt;/titles&gt;&lt;periodical&gt;&lt;full-title&gt;J. Golden&lt;/full-title&gt;&lt;/periodical&gt;&lt;pages&gt;1-10&lt;/pages&gt;&lt;volume&gt;1&lt;/volume&gt;&lt;dates&gt;&lt;year&gt;2020&lt;/year&gt;&lt;/dates&gt;&lt;electronic-resource-num&gt;10.1000/golden.1&lt;/electronic-resource-num&gt;&lt;urls&gt;&lt;related-urls&gt;&lt;url&gt;https://doi.org/10.1000/golden.1&lt;/url&gt;&lt;/related-urls&gt;&lt;/urls&gt;&lt;/record&gt;&lt;/Cite&gt;&lt;/EndNote&gt;</w:instrText>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="separate">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:rPr>
+<w:noProof>
+</w:noProof>
+</w:rPr>
+<w:t xml:space="preserve">[1]</w:t>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="end">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:t>.</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:pPr>
+<w:pStyle w:val="ListNumber2">
+</w:pStyle>
+</w:pPr>
+<w:r>
+<w:t xml:space="preserve">Nested step </w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:b>
+</w:b>
+</w:rPr>
+<w:t>bold</w:t>
+</w:r>
+<w:r>
+<w:t>.</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:pPr>
+<w:pStyle w:val="ListBullet">
+</w:pStyle>
+</w:pPr>
+<w:r>
+<w:t xml:space="preserve">Second point, see </w:t>
+</w:r>
+<w:r>
+<w:t>section 2.1</w:t>
+</w:r>
+<w:r>
+<w:t>.</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:rPr>
+<w:rFonts w:ascii="Consolas" w:hAnsi="Consolas">
+</w:rFonts>
+</w:rPr>
+<w:t>x = 1  # raw $_ \ kept</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:t>print('listing')</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:t xml:space="preserve">An aside with a cite </w:t>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="begin">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:instrText xml:space="preserve"> ADDIN EN.CITE &lt;EndNote&gt;&lt;Cite&gt;&lt;Author&gt;Author3&lt;/Author&gt;&lt;Year&gt;2022&lt;/Year&gt;&lt;RecNum&gt;3&lt;/RecNum&gt;&lt;DisplayText&gt;[3]&lt;/DisplayText&gt;&lt;record&gt;&lt;rec-number&gt;3&lt;/rec-number&gt;&lt;foreign-keys&gt;&lt;key app="EN" db-id="precismcp0traveling0library000000000" timestamp="1700000000"&gt;3&lt;/key&gt;&lt;/foreign-keys&gt;&lt;ref-type name="Journal Article"&gt;17&lt;/ref-type&gt;&lt;contributors&gt;&lt;authors&gt;&lt;author&gt;Author3, A.&lt;/author&gt;&lt;author&gt;Second3, B.&lt;/author&gt;&lt;/authors&gt;&lt;/contributors&gt;&lt;titles&gt;&lt;title&gt;No identifier paper&lt;/title&gt;&lt;secondary-title&gt;J. Golden&lt;/secondary-title&gt;&lt;/titles&gt;&lt;periodical&gt;&lt;full-title&gt;J. Golden&lt;/full-title&gt;&lt;/periodical&gt;&lt;pages&gt;3-12&lt;/pages&gt;&lt;volume&gt;3&lt;/volume&gt;&lt;dates&gt;&lt;year&gt;2022&lt;/year&gt;&lt;/dates&gt;&lt;urls&gt;&lt;/urls&gt;&lt;/record&gt;&lt;/Cite&gt;&lt;/EndNote&gt;</w:instrText>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="separate">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:rPr>
+<w:noProof>
+</w:noProof>
+</w:rPr>
+<w:t xml:space="preserve">[3]</w:t>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="end">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:t>.</w:t>
+</w:r>
+</w:p>
+<w:tbl>
+<w:tblPr>
+<w:tblStyle w:val="TableGrid">
+</w:tblStyle>
+<w:tblW w:type="auto" w:w="0">
+</w:tblW>
+<w:tblLook w:firstColumn="1" w:firstRow="1" w:lastColumn="0" w:lastRow="0" w:noHBand="0" w:noVBand="1" w:val="04A0">
+</w:tblLook>
+</w:tblPr>
+<w:tblGrid>
+<w:gridCol w:w="4680">
+</w:gridCol>
+<w:gridCol w:w="4680">
+</w:gridCol>
+</w:tblGrid>
+<w:tr>
+<w:tc>
+<w:tcPr>
+<w:tcW w:type="dxa" w:w="4680">
+</w:tcW>
+</w:tcPr>
+<w:p>
+<w:r>
+<w:rPr>
+<w:b>
+</w:b>
+</w:rPr>
+<w:t>Material</w:t>
+</w:r>
+</w:p>
+</w:tc>
+<w:tc>
+<w:tcPr>
+<w:tcW w:type="dxa" w:w="4680">
+</w:tcW>
+</w:tcPr>
+<w:p>
+<w:r>
+<w:rPr>
+<w:b>
+</w:b>
+</w:rPr>
+<w:t>Source</w:t>
+</w:r>
+</w:p>
+</w:tc>
+</w:tr>
+<w:tr>
+<w:tc>
+<w:tcPr>
+<w:tcW w:type="dxa" w:w="4680">
+</w:tcW>
+</w:tcPr>
+<w:p>
+<w:r>
+<w:t>MOF</w:t>
+</w:r>
+</w:p>
+</w:tc>
+<w:tc>
+<w:tcPr>
+<w:tcW w:type="dxa" w:w="4680">
+</w:tcW>
+</w:tcPr>
+<w:p>
+<w:r>
+<w:fldChar w:fldCharType="begin">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:instrText xml:space="preserve"> ADDIN EN.CITE &lt;EndNote&gt;&lt;Cite&gt;&lt;Author&gt;Author2&lt;/Author&gt;&lt;Year&gt;2021&lt;/Year&gt;&lt;RecNum&gt;2&lt;/RecNum&gt;&lt;DisplayText&gt;[2]&lt;/DisplayText&gt;&lt;record&gt;&lt;rec-number&gt;2&lt;/rec-number&gt;&lt;foreign-keys&gt;&lt;key app="EN" db-id="precismcp0traveling0library000000000" timestamp="1700000000"&gt;2&lt;/key&gt;&lt;/foreign-keys&gt;&lt;ref-type name="Journal Article"&gt;17&lt;/ref-type&gt;&lt;contributors&gt;&lt;authors&gt;&lt;author&gt;Author2, A.&lt;/author&gt;&lt;author&gt;Second2, B.&lt;/author&gt;&lt;/authors&gt;&lt;/contributors&gt;&lt;titles&gt;&lt;title&gt;Arxiv-only preprint&lt;/title&gt;&lt;secondary-title&gt;J. Golden&lt;/secondary-title&gt;&lt;/titles&gt;&lt;periodical&gt;&lt;full-title&gt;J. Golden&lt;/full-title&gt;&lt;/periodical&gt;&lt;pages&gt;2-11&lt;/pages&gt;&lt;volume&gt;2&lt;/volume&gt;&lt;dates&gt;&lt;year&gt;2021&lt;/year&gt;&lt;/dates&gt;&lt;urls&gt;&lt;related-urls&gt;&lt;url&gt;https://arxiv.org/abs/2101.00002&lt;/url&gt;&lt;/related-urls&gt;&lt;/urls&gt;&lt;/record&gt;&lt;/Cite&gt;&lt;/EndNote&gt;</w:instrText>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="separate">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:rPr>
+<w:noProof>
+</w:noProof>
+</w:rPr>
+<w:t xml:space="preserve">[2]</w:t>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="end">
+</w:fldChar>
+</w:r>
+</w:p>
+</w:tc>
+</w:tr>
+<w:tr>
+<w:tc>
+<w:tcPr>
+<w:tcW w:type="dxa" w:w="4680">
+</w:tcW>
+</w:tcPr>
+<w:p>
+<w:r>
+<w:t>FMOF</w:t>
+</w:r>
+</w:p>
+</w:tc>
+<w:tc>
+<w:tcPr>
+<w:tcW w:type="dxa" w:w="4680">
+</w:tcW>
+</w:tcPr>
+<w:p>
+<w:r>
+<w:t>none</w:t>
+</w:r>
+</w:p>
+</w:tc>
+</w:tr>
+</w:tbl>
+<w:p>
+<m:oMath>
+<m:r>
+<m:t xml:space="preserve">a</m:t>
+</m:r>
+<m:r>
+<m:t xml:space="preserve">+</m:t>
+</m:r>
+<m:r>
+<m:t xml:space="preserve">b</m:t>
+</m:r>
+</m:oMath>
+</w:p>
+<w:p>
+<w:pPr>
 <w:pStyle w:val="Heading1">
 </w:pStyle>
 </w:pPr>

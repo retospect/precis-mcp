@@ -487,95 +487,28 @@ def export_docx(
     _apply_paper_theme(doc)
     byline = build_byline(getattr(ref, "authors", None))
 
-    # List context (migration 0037): a ulist/olist container owns `item`
-    # children, which render with Word's built-in List Bullet / List Number
-    # styles. The immediate container decides bullet vs number; the count of
-    # list-container ancestors picks the nesting level (1–3).
-    _kind_by_id = {c.chunk_id: c.chunk_kind for c in chunks}
-    _parent_by_id = {c.chunk_id: c.parent_chunk_id for c in chunks}
-
     # The seeded title chunk renders as the doc title (``\maketitle``); a
     # draft that no longer opens with it (abstract moved above, chunk
     # retired) prints the ref title up front so the first real section is
-    # not mistaken for it.
+    # not mistaken for it. The walk and its decisions are the walker's
+    # (:func:`walker.walk_body`); :class:`DocxRenderer` formats.
     title_dc = _title_heading_dc(chunks, getattr(ref, "title", None))
     shift = _depth_shift(chunks, title_dc)
-    title_done = False
-    if title_dc is None:
-        doc.add_heading(getattr(ref, "title", None) or "", level=0)
-        _render_byline(doc, byline)
-        _render_date(doc)
-        title_done = True
+    renderer = DocxRenderer(
+        ctx, store=store, byline=byline, title=getattr(ref, "title", None)
+    )
     progress.report("rendering", 0, len(chunks))
-    for n_done, c in enumerate(chunks):
-        progress.report("rendering", n_done, len(chunks))
-        kind = c.chunk_kind
-        if kind in ("ulist", "olist"):
-            continue  # structural container — its items carry the prose
-        if kind == "item":
-            base, level = "List Bullet", 0
-            pid = c.parent_chunk_id
-            while pid is not None:
-                pk = _kind_by_id.get(pid)
-                if pk in ("ulist", "olist"):
-                    if level == 0:
-                        base = "List Number" if pk == "olist" else "List Bullet"
-                    level += 1
-                pid = _parent_by_id.get(pid)
-            style = base if level <= 1 else f"{base} {min(level, 3)}"
-            p = doc.add_paragraph(style=style)
-            _render_inline(c.text, ctx, p)
-            continue
-        if kind == "term" or _is_glossary_heading(c):
-            # The draft's own Glossary heading + term chunks are the source
-            # of the abbreviation registry, not body: like LaTeX, the
-            # "Acronyms" list is generated at the end from the shorts the
-            # prose actually used.
-            continue
-        if kind == "heading":
-            if not title_done and c.dc == title_dc:
-                doc.add_heading(c.text, level=0)
-                _render_byline(doc, byline)
-                _render_date(doc)
-                title_done = True
-                continue
-            # section / subsection / subsubsection, like LaTeX's depth map.
-            # Heading text goes through the same inline grammar as prose —
-            # citations inside it number against the shared bibliography,
-            # like the PDF (they used to print literally and stay
-            # unnumbered, shifting numbering against the PDF).
-            level = min(max(int(c.depth) - shift, 0) + 1, _MAX_HEADING_LEVEL)
-            number = ctx.xref[c.dc][1] if c.dc in ctx.numbered_headings else ""
-            if number:
-                ctx.cur_section = number
-            p = doc.add_heading("", level=level)
-            if number:
-                p.add_run(f"{number} ")
-            ctx.in_heading = True
-            try:
-                _render_inline(c.text, ctx, p)
-            finally:
-                ctx.in_heading = False
-            continue
-        if kind == "code":
-            p = doc.add_paragraph()
-            run = p.add_run(c.text)
-            run.font.name = "Consolas"
-            continue
-        if kind == "table":
-            _render_table(doc, c, ctx)
-            continue
-        if kind == "figure":
-            _render_figure(doc, store, c, ctx)
-            continue
-        # paragraph (default)
-        eq = _standalone_equation(c.text)
-        if eq is not None:
-            math_body, starred = eq
-            _render_equation(doc, math_body, ctx.eq_numbers.get(c.dc), starred)
-            continue
-        p = doc.add_paragraph()
-        _render_inline(c.text, ctx, p)
+    walker.walk_body(
+        chunks,
+        renderer,
+        doc,
+        title_dc=title_dc,
+        depth_of=lambda c: max(int(c.depth) - shift, 0),
+        back_matter=walker.back_matter_handles(chunks),
+        equation_of=_standalone_equation,
+        numbers=walker.XrefNumbers(ctx.xref, ctx.numbered_headings, ctx.eq_numbers),
+        on_chunk=lambda n: progress.report("rendering", n, len(chunks)),
+    )
 
     # Back matter in the one order both exporters share
     # (``export/_back_matter.py``); a block that does not apply is left out.
@@ -583,7 +516,6 @@ def export_docx(
     # Each _append_* is a no-op when its block is empty.
     progress.report("references and back matter")
     back = dict.fromkeys(_DOCX_BACK_MATTER, True)
-    renderer = DocxRenderer(ctx)
     for name, block in walker.back_matter(
         back, patent=ctx.patent_mode, claim_appendix=claim_appendix
     ):
@@ -1462,10 +1394,98 @@ def _emit_cites(ctx: _Ctx, paragraph: Any, *groups: walker.CiteGroup | None) -> 
 
 class DocxRenderer:
     """The docx :class:`walker.Renderer`: formats resolved values as
-    python-docx runs (or EndNote fields) into a paragraph sink."""
+    python-docx runs (or EndNote fields) into a paragraph sink; the block
+    methods (title … paragraph) take the Document as their sink."""
 
-    def __init__(self, ctx: _Ctx) -> None:
+    #: docx has no code block for a ``listing`` and no aside box: both
+    #: render as an ordinary paragraph (a known divergence from the PDF).
+    code_kinds = frozenset({"code"})
+    aside_kinds: frozenset[str] = frozenset()
+
+    def __init__(
+        self,
+        ctx: _Ctx,
+        *,
+        store: Any = None,
+        byline: dict[str, Any] | None = None,
+        title: str | None = None,
+    ) -> None:
         self.ctx = ctx
+        self.store = store if store is not None else ctx.store
+        self.byline = byline or {"authors": [], "affiliations": []}
+        self.doc_title = title
+
+    def title(self, sink: Any, chunk: Any | None) -> None:
+        """The title page: the title (the seeded chunk's text, else the ref
+        title), the byline and the date."""
+        text = chunk.text if chunk is not None else (self.doc_title or "")
+        sink.add_heading(text, level=0)
+        _render_byline(sink, self.byline)
+        _render_date(sink)
+
+    def anchor(self, sink: Any, chunk: Any) -> None:
+        """Intentional no-op: docx has no phantom label. (The draft's own
+        Glossary heading + term chunks are the source of the abbreviation
+        registry, not body: like LaTeX, the "Acronyms" list is generated at
+        the end from the shorts the prose actually used.)"""
+
+    def list_open(self, sink: Any, chunk: Any, kind: str, level: int) -> None:
+        """Intentional no-op: docx has no container element; each item is
+        styled from its ``(kind, level)`` (:meth:`list_item`)."""
+
+    def list_close(self, sink: Any, kind: str) -> None:
+        """Intentional no-op: docx has no container element to close."""
+
+    def list_item(self, sink: Any, chunk: Any, kind: str, level: int) -> None:
+        """Word's built-in List Bullet / List Number style: the immediate
+        container decides bullet vs number, the nesting level picks the
+        style variant (1–3)."""
+        base = "List Number" if kind == "olist" else "List Bullet"
+        style = base if level <= 1 else f"{base} {min(level, 3)}"
+        _render_inline(chunk.text, self.ctx, sink.add_paragraph(style=style))
+
+    def heading(self, sink: Any, chunk: Any, info: walker.HeadingInfo) -> None:
+        """section / subsection / subsubsection, like LaTeX's depth map.
+        Heading text goes through the same inline grammar as prose —
+        citations inside it number against the shared bibliography, like
+        the PDF (they used to print literally and stay unnumbered, shifting
+        numbering against the PDF)."""
+        ctx = self.ctx
+        level = min(info.depth + 1, _MAX_HEADING_LEVEL)
+        if info.number:
+            ctx.cur_section = info.number
+        p = sink.add_heading("", level=level)
+        if info.number:
+            p.add_run(f"{info.number} ")
+        ctx.in_heading = True
+        try:
+            _render_inline(chunk.text, ctx, p)
+        finally:
+            ctx.in_heading = False
+
+    def figure(self, sink: Any, chunk: Any) -> None:
+        _render_figure(sink, self.store, chunk, self.ctx)
+
+    def table(self, sink: Any, chunk: Any) -> None:
+        _render_table(sink, chunk, self.ctx)
+
+    def code(self, sink: Any, chunk: Any) -> None:
+        run = sink.add_paragraph().add_run(chunk.text)
+        run.font.name = "Consolas"
+
+    def aside(self, sink: Any, chunk: Any) -> None:
+        """No aside box in docx: the walker never calls this
+        (:attr:`aside_kinds` is empty); kept as an ordinary paragraph."""
+        self.paragraph(sink, chunk)
+
+    def equation(
+        self, sink: Any, chunk: Any, body: str, number: int | None, starred: bool
+    ) -> None:
+        _render_equation(sink, body, number, starred)
+
+    def paragraph(self, sink: Any, chunk: Any) -> None:
+        # paragraph (default)
+        _render_inline(chunk.text, self.ctx, sink.add_paragraph())
 
     def cite_group(self, sink: Any, group: walker.CiteGroup) -> None:
         """One superscript mark (``[n]``, ``[1, 2]``, ``[1–3]``; an SI mark

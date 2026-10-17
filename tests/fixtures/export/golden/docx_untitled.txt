@@ -1,0 +1,2071 @@
+== [Content_Types].xml ==
+sha256 58f029a8e112bb31f99276277b530bd2ef422c2d0c20ffd85f242a837bd869a8
+== _rels/.rels ==
+sha256 887452abd23127b28a6e015489dff730b30bf2ef64aa53ce3d9d0007f58e2921
+== customXml/_rels/item1.xml.rels ==
+sha256 063ebdfb492f3221c720768ab6a64a325287ab9c430b47edfe4d61e8870bd10b
+== customXml/item1.xml ==
+sha256 3b323b63cf6821593c4ac38fe77b9c7215ec20a082dd52d6142603bd98aedda2
+== customXml/itemProps1.xml ==
+sha256 70d69093dbcbc62862da21373b740b00ef122777124f4cbd75a8d5855ff38932
+== docProps/app.xml ==
+sha256 354963f871a62036002da5cce819cb615291e6803926031f67cf0b6dc6608ae5
+== docProps/thumbnail.jpeg ==
+sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
+== word/_rels/document.xml.rels ==
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId3" Target="styles.xml" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles">
+</Relationship>
+<Relationship Id="rId4" Target="stylesWithEffects.xml" Type="http://schemas.microsoft.com/office/2007/relationships/stylesWithEffects">
+</Relationship>
+<Relationship Id="rId5" Target="settings.xml" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings">
+</Relationship>
+<Relationship Id="rId6" Target="webSettings.xml" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/webSettings">
+</Relationship>
+<Relationship Id="rId7" Target="fontTable.xml" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/fontTable">
+</Relationship>
+<Relationship Id="rId8" Target="theme/theme1.xml" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme">
+</Relationship>
+<Relationship Id="rId1" Target="../customXml/item1.xml" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/customXml">
+</Relationship>
+<Relationship Id="rId2" Target="numbering.xml" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering">
+</Relationship>
+<Relationship Id="rId9" Target="https://doi.org/10.1000/golden.1" TargetMode="External" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink">
+</Relationship>
+<Relationship Id="rId10" Target="https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL_INST:353UOL_VU1&amp;search_scope=MyInst_and_CI&amp;lang=en&amp;sortby=rank&amp;tab=TAB1&amp;query=any,contains,10.1000%2Fgolden.1" TargetMode="External" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink">
+</Relationship>
+<Relationship Id="rId11" Target="https://arxiv.org/abs/2101.00002" TargetMode="External" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink">
+</Relationship>
+<Relationship Id="rId12" Target="https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL_INST:353UOL_VU1&amp;search_scope=MyInst_and_CI&amp;lang=en&amp;sortby=rank&amp;tab=TAB1&amp;query=any,contains,2101.00002" TargetMode="External" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink">
+</Relationship>
+<Relationship Id="rId13" Target="media/image1.png" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image">
+</Relationship>
+</Relationships>
+== word/document.xml ==
+<w:document xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:mo="http://schemas.microsoft.com/office/mac/office/2008/main" xmlns:mv="urn:schemas-microsoft-com:mac:vml" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:w10="urn:schemas-microsoft-com:office:word" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" xmlns:wne="http://schemas.microsoft.com/office/word/2006/wordml" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:wp14="http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing" xmlns:wpc="http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas" xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup" xmlns:wpi="http://schemas.microsoft.com/office/word/2010/wordprocessingInk" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" mc:Ignorable="w14 wp14">
+<w:body>
+<w:p>
+<w:pPr>
+<w:pStyle w:val="Title">
+</w:pStyle>
+</w:pPr>
+<w:r>
+<w:t>Golden Draft</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:t>Ada Lovelace</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:pPr>
+<w:jc w:val="center">
+</w:jc>
+</w:pPr>
+<w:r>
+<w:t>
+<DATE>
+</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:pPr>
+<w:pStyle w:val="Heading2">
+</w:pStyle>
+</w:pPr>
+<w:r>
+<w:t xml:space="preserve">0.1 </w:t>
+</w:r>
+<w:r>
+<w:t>Introduction</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:t xml:space="preserve">A </w:t>
+</w:r>
+<w:r>
+<w:t>metal-organic framework (MOF)</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> hosts a </w:t>
+</w:r>
+<w:r>
+<w:t>functionalized MOF (FMOF)</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve">; later </w:t>
+</w:r>
+<w:r>
+<w:t>MOF</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> and </w:t>
+</w:r>
+<w:r>
+<w:t>FMOF</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> uses. Plain </w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:vertAlign w:val="superscript">
+</w:vertAlign>
+</w:rPr>
+<w:t>[1]</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:hyperlink r:id="rId9">
+<w:r>
+<w:rPr>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>doi</w:t>
+</w:r>
+</w:hyperlink>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:hyperlink r:id="rId10">
+<w:r>
+<w:rPr>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>UL</w:t>
+</w:r>
+</w:hyperlink>
+<w:r>
+<w:t xml:space="preserve"> and run </w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:vertAlign w:val="superscript">
+</w:vertAlign>
+</w:rPr>
+<w:t>[1–3]</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:hyperlink r:id="rId9">
+<w:r>
+<w:rPr>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>doi</w:t>
+</w:r>
+</w:hyperlink>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:hyperlink r:id="rId10">
+<w:r>
+<w:rPr>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>UL</w:t>
+</w:r>
+</w:hyperlink>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:hyperlink r:id="rId11">
+<w:r>
+<w:rPr>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>doi</w:t>
+</w:r>
+</w:hyperlink>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:hyperlink r:id="rId12">
+<w:r>
+<w:rPr>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>UL</w:t>
+</w:r>
+</w:hyperlink>
+<w:r>
+<w:t xml:space="preserve"> end.</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:t xml:space="preserve">Collapse </w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:vertAlign w:val="superscript">
+</w:vertAlign>
+</w:rPr>
+<w:t>[1]</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:hyperlink r:id="rId9">
+<w:r>
+<w:rPr>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>doi</w:t>
+</w:r>
+</w:hyperlink>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:hyperlink r:id="rId10">
+<w:r>
+<w:rPr>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>UL</w:t>
+</w:r>
+</w:hyperlink>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> and </w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:vertAlign w:val="superscript">
+</w:vertAlign>
+</w:rPr>
+<w:t>[1]</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:hyperlink r:id="rId9">
+<w:r>
+<w:rPr>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>doi</w:t>
+</w:r>
+</w:hyperlink>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:hyperlink r:id="rId10">
+<w:r>
+<w:rPr>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>UL</w:t>
+</w:r>
+</w:hyperlink>
+<w:r>
+<w:t xml:space="preserve"> then </w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:vertAlign w:val="superscript">
+</w:vertAlign>
+</w:rPr>
+<w:t>[1, 2]</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:hyperlink r:id="rId11">
+<w:r>
+<w:rPr>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>doi</w:t>
+</w:r>
+</w:hyperlink>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:hyperlink r:id="rId12">
+<w:r>
+<w:rPr>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>UL</w:t>
+</w:r>
+</w:hyperlink>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:hyperlink r:id="rId9">
+<w:r>
+<w:rPr>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>doi</w:t>
+</w:r>
+</w:hyperlink>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:hyperlink r:id="rId10">
+<w:r>
+<w:rPr>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>UL</w:t>
+</w:r>
+</w:hyperlink>
+<w:r>
+<w:t xml:space="preserve"> stop.</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:t xml:space="preserve">Handles </w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:vertAlign w:val="superscript">
+</w:vertAlign>
+</w:rPr>
+<w:t>[1, 2]</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:hyperlink r:id="rId9">
+<w:r>
+<w:rPr>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>doi</w:t>
+</w:r>
+</w:hyperlink>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:hyperlink r:id="rId10">
+<w:r>
+<w:rPr>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>UL</w:t>
+</w:r>
+</w:hyperlink>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:hyperlink r:id="rId11">
+<w:r>
+<w:rPr>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>doi</w:t>
+</w:r>
+</w:hyperlink>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:hyperlink r:id="rId12">
+<w:r>
+<w:rPr>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>UL</w:t>
+</w:r>
+</w:hyperlink>
+<w:r>
+<w:t xml:space="preserve">, SI </w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:vertAlign w:val="superscript">
+</w:vertAlign>
+</w:rPr>
+<w:t>[4]</w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:vertAlign w:val="superscript">
+</w:vertAlign>
+</w:rPr>
+<w:t xml:space="preserve"> (SI)</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> and </w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:vertAlign w:val="superscript">
+</w:vertAlign>
+</w:rPr>
+<w:t>[4]</w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:vertAlign w:val="superscript">
+</w:vertAlign>
+</w:rPr>
+<w:t xml:space="preserve"> (SI)</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve">, alias </w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:vertAlign w:val="superscript">
+</w:vertAlign>
+</w:rPr>
+<w:t>[4]</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve">, then </w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:vertAlign w:val="superscript">
+</w:vertAlign>
+</w:rPr>
+<w:t>[4]</w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:vertAlign w:val="superscript">
+</w:vertAlign>
+</w:rPr>
+<w:t>[4]</w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:vertAlign w:val="superscript">
+</w:vertAlign>
+</w:rPr>
+<w:t xml:space="preserve"> (SI)</w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:vertAlign w:val="superscript">
+</w:vertAlign>
+</w:rPr>
+<w:t>[3]</w:t>
+</w:r>
+<w:r>
+<w:t>.</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:pPr>
+<w:pStyle w:val="Heading2">
+</w:pStyle>
+</w:pPr>
+<w:r>
+<w:t xml:space="preserve">0.2 </w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve">Claims about </w:t>
+</w:r>
+<w:r>
+<w:t>FMOF</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:vertAlign w:val="superscript">
+</w:vertAlign>
+</w:rPr>
+<w:t>[3]</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:t xml:space="preserve">Finding </w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:vertAlign w:val="superscript">
+</w:vertAlign>
+</w:rPr>
+<w:t>[1]</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:hyperlink r:id="rId9">
+<w:r>
+<w:rPr>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>doi</w:t>
+</w:r>
+</w:hyperlink>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:hyperlink r:id="rId10">
+<w:r>
+<w:rPr>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>UL</w:t>
+</w:r>
+</w:hyperlink>
+<w:r>
+<w:rPr>
+<w:i>
+</w:i>
+<w:color w:val="666666">
+</w:color>
+</w:rPr>
+<w:t xml:space="preserve"> [unverified: source pending]</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> hub </w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:vertAlign w:val="superscript">
+</w:vertAlign>
+</w:rPr>
+<w:t>[2, 3]</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:hyperlink r:id="rId11">
+<w:r>
+<w:rPr>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>doi</w:t>
+</w:r>
+</w:hyperlink>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:hyperlink r:id="rId12">
+<w:r>
+<w:rPr>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>UL</w:t>
+</w:r>
+</w:hyperlink>
+<w:r>
+<w:rPr>
+<w:i>
+</w:i>
+<w:color w:val="666666">
+</w:color>
+</w:rPr>
+<w:t xml:space="preserve"> [unverified: source pending]</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> mixed </w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:vertAlign w:val="superscript">
+</w:vertAlign>
+</w:rPr>
+<w:t>[3]</w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:vertAlign w:val="superscript">
+</w:vertAlign>
+</w:rPr>
+<w:t>[4]</w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:vertAlign w:val="superscript">
+</w:vertAlign>
+</w:rPr>
+<w:t xml:space="preserve"> (SI)</w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:i>
+</w:i>
+<w:color w:val="666666">
+</w:color>
+</w:rPr>
+<w:t xml:space="preserve"> [unverified: source pending]</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> repeat </w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:vertAlign w:val="superscript">
+</w:vertAlign>
+</w:rPr>
+<w:t>[1]</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:hyperlink r:id="rId9">
+<w:r>
+<w:rPr>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>doi</w:t>
+</w:r>
+</w:hyperlink>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:hyperlink r:id="rId10">
+<w:r>
+<w:rPr>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>UL</w:t>
+</w:r>
+</w:hyperlink>
+<w:r>
+<w:rPr>
+<w:i>
+</w:i>
+<w:color w:val="666666">
+</w:color>
+</w:rPr>
+<w:t xml:space="preserve"> [unverified: source pending]</w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:i>
+</w:i>
+<w:color w:val="666666">
+</w:color>
+</w:rPr>
+<w:t xml:space="preserve"> [unverified: source pending]</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve">; dropped </w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:i>
+</w:i>
+<w:color w:val="666666">
+</w:color>
+</w:rPr>
+<w:t xml:space="preserve"> [unverified: source pending]</w:t>
+</w:r>
+<w:r>
+<w:t>.</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:t xml:space="preserve">Prose </w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:vertAlign w:val="superscript">
+</w:vertAlign>
+</w:rPr>
+<w:t>[3]</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> and </w:t>
+</w:r>
+<w:r>
+<w:t>doi:10</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve">.1/x and </w:t>
+</w:r>
+<w:r>
+<w:t>st12</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> and </w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:vertAlign w:val="superscript">
+</w:vertAlign>
+</w:rPr>
+<w:t>[5]</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> and patent </w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:vertAlign w:val="superscript">
+</w:vertAlign>
+</w:rPr>
+<w:t>[6]</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve">. See </w:t>
+</w:r>
+<w:r>
+<w:t>section 0.1</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> and </w:t>
+</w:r>
+<w:r>
+<w:t>Eq. (1)</w:t>
+</w:r>
+<w:r>
+<w:t>.</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:pPr>
+<w:jc w:val="center">
+</w:jc>
+</w:pPr>
+<w:r>
+<w:drawing>
+<wp:inline xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
+<wp:extent cx="5029200" cy="5029200">
+</wp:extent>
+<wp:docPr id="1" name="Picture 1">
+</wp:docPr>
+<wp:cNvGraphicFramePr>
+<a:graphicFrameLocks noChangeAspect="1">
+</a:graphicFrameLocks>
+</wp:cNvGraphicFramePr>
+<a:graphic>
+<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+<pic:pic>
+<pic:nvPicPr>
+<pic:cNvPr id="0" name="image.png">
+</pic:cNvPr>
+<pic:cNvPicPr>
+</pic:cNvPicPr>
+</pic:nvPicPr>
+<pic:blipFill>
+<a:blip r:embed="rId13">
+</a:blip>
+<a:stretch>
+<a:fillRect>
+</a:fillRect>
+</a:stretch>
+</pic:blipFill>
+<pic:spPr>
+<a:xfrm>
+<a:off x="0" y="0">
+</a:off>
+<a:ext cx="5029200" cy="5029200">
+</a:ext>
+</a:xfrm>
+<a:prstGeom prst="rect">
+</a:prstGeom>
+</pic:spPr>
+</pic:pic>
+</a:graphicData>
+</a:graphic>
+</wp:inline>
+</w:drawing>
+</w:r>
+</w:p>
+<w:p>
+<w:pPr>
+<w:jc w:val="center">
+</w:jc>
+</w:pPr>
+<w:r>
+<w:rPr>
+<w:b>
+</w:b>
+</w:rPr>
+<w:t xml:space="preserve">Figure 1: </w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:i>
+</w:i>
+</w:rPr>
+<w:t xml:space="preserve">A </w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:i>
+</w:i>
+</w:rPr>
+<w:t>MOF</w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:i>
+</w:i>
+</w:rPr>
+<w:t xml:space="preserve"> figure </w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:i>
+</w:i>
+<w:vertAlign w:val="superscript">
+</w:vertAlign>
+</w:rPr>
+<w:t>[2]</w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:i>
+</w:i>
+</w:rPr>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:hyperlink r:id="rId11">
+<w:r>
+<w:rPr>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>doi</w:t>
+</w:r>
+</w:hyperlink>
+<w:r>
+<w:rPr>
+<w:i>
+</w:i>
+</w:rPr>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:hyperlink r:id="rId12">
+<w:r>
+<w:rPr>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>UL</w:t>
+</w:r>
+</w:hyperlink>
+<w:r>
+<w:rPr>
+<w:i>
+</w:i>
+</w:rPr>
+<w:t>.</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:pPr>
+<w:tabs>
+<w:tab w:pos="4680" w:val="center">
+</w:tab>
+<w:tab w:pos="9360" w:val="right">
+</w:tab>
+</w:tabs>
+</w:pPr>
+<w:r>
+<w:tab>
+</w:tab>
+</w:r>
+<m:oMath>
+<m:r>
+<m:t xml:space="preserve">E</m:t>
+</m:r>
+<m:r>
+<m:t xml:space="preserve">=</m:t>
+</m:r>
+<m:r>
+<m:t xml:space="preserve">m</m:t>
+</m:r>
+<m:sSup>
+<m:e>
+<m:r>
+<m:t xml:space="preserve">c</m:t>
+</m:r>
+</m:e>
+<m:sup>
+<m:r>
+<m:t xml:space="preserve">2</m:t>
+</m:r>
+</m:sup>
+</m:sSup>
+</m:oMath>
+<w:r>
+<w:tab>
+</w:tab>
+<w:t>(1)</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:t>Fig. 1</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> opens a sentence. Runs </w:t>
+</w:r>
+<w:r>
+<w:t>section 0.1</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:r>
+<w:t>section 0.1</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> merge, </w:t>
+</w:r>
+<w:r>
+<w:t>the intro</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> keeps its text, a dead </w:t>
+</w:r>
+<w:r>
+<w:t>dc999</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> and a legacy </w:t>
+</w:r>
+<w:r>
+<w:t>section 0.1</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> resolve, a run-in </w:t>
+</w:r>
+<w:r>
+<w:t>section 0.2.1</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> names itself, the end matter </w:t>
+</w:r>
+<w:r>
+<w:t>Acknowledgements</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> too, and </w:t>
+</w:r>
+<w:r>
+<w:t>Eq. (1)</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve">. </w:t>
+</w:r>
+<w:r>
+<w:t>Equation (1)</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> starts one.</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:pPr>
+<w:pStyle w:val="Heading3">
+</w:pStyle>
+</w:pPr>
+<w:r>
+<w:t xml:space="preserve">0.2.1 </w:t>
+</w:r>
+<w:r>
+<w:t>Deep part</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:pPr>
+<w:pStyle w:val="Heading4">
+</w:pStyle>
+</w:pPr>
+<w:r>
+<w:t>Run-in heading</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:pPr>
+<w:pStyle w:val="ListBullet">
+</w:pStyle>
+</w:pPr>
+<w:r>
+<w:t xml:space="preserve">First point about </w:t>
+</w:r>
+<w:r>
+<w:t>MOF</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:vertAlign w:val="superscript">
+</w:vertAlign>
+</w:rPr>
+<w:t>[1]</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:hyperlink r:id="rId9">
+<w:r>
+<w:rPr>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>doi</w:t>
+</w:r>
+</w:hyperlink>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:hyperlink r:id="rId10">
+<w:r>
+<w:rPr>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>UL</w:t>
+</w:r>
+</w:hyperlink>
+<w:r>
+<w:t>.</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:pPr>
+<w:pStyle w:val="ListNumber2">
+</w:pStyle>
+</w:pPr>
+<w:r>
+<w:t xml:space="preserve">Nested step </w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:b>
+</w:b>
+</w:rPr>
+<w:t>bold</w:t>
+</w:r>
+<w:r>
+<w:t>.</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:pPr>
+<w:pStyle w:val="ListBullet">
+</w:pStyle>
+</w:pPr>
+<w:r>
+<w:t xml:space="preserve">Second point, see </w:t>
+</w:r>
+<w:r>
+<w:t>section 0.2.1</w:t>
+</w:r>
+<w:r>
+<w:t>.</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:rPr>
+<w:rFonts w:ascii="Consolas" w:hAnsi="Consolas">
+</w:rFonts>
+</w:rPr>
+<w:t>x = 1  # raw $_ \ kept</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:t>print('listing')</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:t xml:space="preserve">An aside with a cite </w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:vertAlign w:val="superscript">
+</w:vertAlign>
+</w:rPr>
+<w:t>[3]</w:t>
+</w:r>
+<w:r>
+<w:t>.</w:t>
+</w:r>
+</w:p>
+<w:tbl>
+<w:tblPr>
+<w:tblStyle w:val="TableGrid">
+</w:tblStyle>
+<w:tblW w:type="auto" w:w="0">
+</w:tblW>
+<w:tblLook w:firstColumn="1" w:firstRow="1" w:lastColumn="0" w:lastRow="0" w:noHBand="0" w:noVBand="1" w:val="04A0">
+</w:tblLook>
+</w:tblPr>
+<w:tblGrid>
+<w:gridCol w:w="4680">
+</w:gridCol>
+<w:gridCol w:w="4680">
+</w:gridCol>
+</w:tblGrid>
+<w:tr>
+<w:tc>
+<w:tcPr>
+<w:tcW w:type="dxa" w:w="4680">
+</w:tcW>
+</w:tcPr>
+<w:p>
+<w:r>
+<w:rPr>
+<w:b>
+</w:b>
+</w:rPr>
+<w:t>Material</w:t>
+</w:r>
+</w:p>
+</w:tc>
+<w:tc>
+<w:tcPr>
+<w:tcW w:type="dxa" w:w="4680">
+</w:tcW>
+</w:tcPr>
+<w:p>
+<w:r>
+<w:rPr>
+<w:b>
+</w:b>
+</w:rPr>
+<w:t>Source</w:t>
+</w:r>
+</w:p>
+</w:tc>
+</w:tr>
+<w:tr>
+<w:tc>
+<w:tcPr>
+<w:tcW w:type="dxa" w:w="4680">
+</w:tcW>
+</w:tcPr>
+<w:p>
+<w:r>
+<w:t>MOF</w:t>
+</w:r>
+</w:p>
+</w:tc>
+<w:tc>
+<w:tcPr>
+<w:tcW w:type="dxa" w:w="4680">
+</w:tcW>
+</w:tcPr>
+<w:p>
+<w:r>
+<w:rPr>
+<w:vertAlign w:val="superscript">
+</w:vertAlign>
+</w:rPr>
+<w:t>[2]</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:hyperlink r:id="rId11">
+<w:r>
+<w:rPr>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>doi</w:t>
+</w:r>
+</w:hyperlink>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:hyperlink r:id="rId12">
+<w:r>
+<w:rPr>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>UL</w:t>
+</w:r>
+</w:hyperlink>
+</w:p>
+</w:tc>
+</w:tr>
+<w:tr>
+<w:tc>
+<w:tcPr>
+<w:tcW w:type="dxa" w:w="4680">
+</w:tcW>
+</w:tcPr>
+<w:p>
+<w:r>
+<w:t>FMOF</w:t>
+</w:r>
+</w:p>
+</w:tc>
+<w:tc>
+<w:tcPr>
+<w:tcW w:type="dxa" w:w="4680">
+</w:tcW>
+</w:tcPr>
+<w:p>
+<w:r>
+<w:t>none</w:t>
+</w:r>
+</w:p>
+</w:tc>
+</w:tr>
+</w:tbl>
+<w:p>
+<m:oMath>
+<m:r>
+<m:t xml:space="preserve">a</m:t>
+</m:r>
+<m:r>
+<m:t xml:space="preserve">+</m:t>
+</m:r>
+<m:r>
+<m:t xml:space="preserve">b</m:t>
+</m:r>
+</m:oMath>
+</w:p>
+<w:p>
+<w:pPr>
+<w:pStyle w:val="Heading1">
+</w:pStyle>
+</w:pPr>
+<w:r>
+<w:t>Acknowledgements</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:t xml:space="preserve">Thanks to all; see </w:t>
+</w:r>
+<w:r>
+<w:t>section 0.1</w:t>
+</w:r>
+<w:r>
+<w:t>.</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:pPr>
+<w:pStyle w:val="Heading1">
+</w:pStyle>
+</w:pPr>
+<w:r>
+<w:t>Unverified claims</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:rPr>
+<w:b>
+</w:b>
+</w:rPr>
+<w:t xml:space="preserve">Claim 7 </w:t>
+</w:r>
+<w:r>
+<w:t>(unverified) — source pending</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:rPr>
+<w:b>
+</w:b>
+</w:rPr>
+<w:t xml:space="preserve">Claim 8 </w:t>
+</w:r>
+<w:r>
+<w:t>(unverified) — source pending</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:rPr>
+<w:b>
+</w:b>
+</w:rPr>
+<w:t xml:space="preserve">Claim 9 </w:t>
+</w:r>
+<w:r>
+<w:t>(unverified) — source pending</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:rPr>
+<w:b>
+</w:b>
+</w:rPr>
+<w:t xml:space="preserve">Claim 10 </w:t>
+</w:r>
+<w:r>
+<w:t>(unverified) — source pending</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:pPr>
+<w:pStyle w:val="Heading1">
+</w:pStyle>
+</w:pPr>
+<w:r>
+<w:t>Data package</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:rPr>
+<w:b>
+</w:b>
+</w:rPr>
+<w:t>A MOF figure [§jones21].</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:rPr>
+<w:rFonts w:ascii="Courier New" w:hAnsi="Courier New">
+</w:rFonts>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>source: pathway pw3 Golden pathway</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:rPr>
+<w:rFonts w:ascii="Courier New" w:hAnsi="Courier New">
+</w:rFonts>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>generated_at: 2026-10-01T00:00:00Z</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:rPr>
+<w:rFonts w:ascii="Courier New" w:hAnsi="Courier New">
+</w:rFonts>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>autocatpath_version: -</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:rPr>
+<w:rFonts w:ascii="Courier New" w:hAnsi="Courier New">
+</w:rFonts>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>precis: 1.0 abc123</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:rPr>
+<w:rFonts w:ascii="Courier New" w:hAnsi="Courier New">
+</w:rFonts>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>T: 298.15</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:rPr>
+<w:rFonts w:ascii="Courier New" w:hAnsi="Courier New">
+</w:rFonts>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>mlip.backend: mace</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:rPr>
+<w:rFonts w:ascii="Courier New" w:hAnsi="Courier New">
+</w:rFonts>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:rPr>
+<w:rFonts w:ascii="Courier New" w:hAnsi="Courier New">
+</w:rFonts>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t xml:space="preserve">step  dG  </w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:rPr>
+<w:rFonts w:ascii="Courier New" w:hAnsi="Courier New">
+</w:rFonts>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>A     0.12</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:rPr>
+<w:rFonts w:ascii="Courier New" w:hAnsi="Courier New">
+</w:rFonts>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>B     -0.4</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:pPr>
+<w:pStyle w:val="Heading1">
+</w:pStyle>
+</w:pPr>
+<w:r>
+<w:t>References</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:rPr>
+<w:b>
+</w:b>
+</w:rPr>
+<w:t xml:space="preserve">[1] </w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve">Author1, A.; Second1, B. (2020). </w:t>
+</w:r>
+<w:r>
+<w:t>Amine uptake in MOFs</w:t>
+</w:r>
+<w:r>
+<w:t>.</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:i>
+</w:i>
+</w:rPr>
+<w:t>J. Golden</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> 1</w:t>
+</w:r>
+<w:r>
+<w:t>, 1-10</w:t>
+</w:r>
+<w:r>
+<w:t>.</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> doi:10.1000/golden.1</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:rPr>
+<w:b>
+</w:b>
+</w:rPr>
+<w:t xml:space="preserve">[2] </w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve">Author2, A.; Second2, B. (2021). </w:t>
+</w:r>
+<w:r>
+<w:t>Arxiv-only preprint</w:t>
+</w:r>
+<w:r>
+<w:t>.</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:i>
+</w:i>
+</w:rPr>
+<w:t>J. Golden</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> 2</w:t>
+</w:r>
+<w:r>
+<w:t>, 2-11</w:t>
+</w:r>
+<w:r>
+<w:t>.</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> arXiv:2101.00002</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:rPr>
+<w:b>
+</w:b>
+</w:rPr>
+<w:t xml:space="preserve">[3] </w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve">Author3, A.; Second3, B. (2022). </w:t>
+</w:r>
+<w:r>
+<w:t>No identifier paper</w:t>
+</w:r>
+<w:r>
+<w:t>.</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:i>
+</w:i>
+</w:rPr>
+<w:t>J. Golden</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> 3</w:t>
+</w:r>
+<w:r>
+<w:t>, 3-12</w:t>
+</w:r>
+<w:r>
+<w:t>.</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:rPr>
+<w:b>
+</w:b>
+</w:rPr>
+<w:t xml:space="preserve">[4] </w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve">Author4, A.; Second4, B. (2024). </w:t>
+</w:r>
+<w:r>
+<w:t>Parent paper</w:t>
+</w:r>
+<w:r>
+<w:t>.</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:i>
+</w:i>
+</w:rPr>
+<w:t>J. Golden</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> 4</w:t>
+</w:r>
+<w:r>
+<w:t>, 4-13</w:t>
+</w:r>
+<w:r>
+<w:t>.</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:rPr>
+<w:b>
+</w:b>
+</w:rPr>
+<w:t xml:space="preserve">[5] </w:t>
+</w:r>
+<w:r>
+<w:t>[missing source nobody99] (cited slug not in corpus)</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:rPr>
+<w:b>
+</w:b>
+</w:rPr>
+<w:t xml:space="preserve">[6] </w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve">(2019). </w:t>
+</w:r>
+<w:r>
+<w:t>Capture device</w:t>
+</w:r>
+<w:r>
+<w:t>.</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:pPr>
+<w:pStyle w:val="Heading1">
+</w:pStyle>
+</w:pPr>
+<w:r>
+<w:t>Acronyms</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:rPr>
+<w:b>
+</w:b>
+</w:rPr>
+<w:t>FMOF</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> — functionalized MOF</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:rPr>
+<w:b>
+</w:b>
+</w:rPr>
+<w:t>MOF</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> — metal-organic framework</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:pPr>
+<w:pStyle w:val="Heading1">
+</w:pStyle>
+</w:pPr>
+<w:r>
+<w:t>Published claim artifacts</w:t>
+</w:r>
+</w:p>
+<w:tbl>
+<w:tblPr>
+<w:tblStyle w:val="TableGrid">
+</w:tblStyle>
+<w:tblW w:type="auto" w:w="0">
+</w:tblW>
+<w:tblLook w:firstColumn="1" w:firstRow="1" w:lastColumn="0" w:lastRow="0" w:noHBand="0" w:noVBand="1" w:val="04A0">
+</w:tblLook>
+</w:tblPr>
+<w:tblGrid>
+<w:gridCol w:w="2340">
+</w:gridCol>
+<w:gridCol w:w="2340">
+</w:gridCol>
+<w:gridCol w:w="2340">
+</w:gridCol>
+<w:gridCol w:w="2340">
+</w:gridCol>
+</w:tblGrid>
+<w:tr>
+<w:tc>
+<w:tcPr>
+<w:tcW w:type="dxa" w:w="2340">
+</w:tcW>
+</w:tcPr>
+<w:p>
+<w:r>
+<w:rPr>
+<w:b>
+</w:b>
+</w:rPr>
+<w:t>Claim</w:t>
+</w:r>
+</w:p>
+</w:tc>
+<w:tc>
+<w:tcPr>
+<w:tcW w:type="dxa" w:w="2340">
+</w:tcW>
+</w:tcPr>
+<w:p>
+<w:r>
+<w:rPr>
+<w:b>
+</w:b>
+</w:rPr>
+<w:t>Sources</w:t>
+</w:r>
+</w:p>
+</w:tc>
+<w:tc>
+<w:tcPr>
+<w:tcW w:type="dxa" w:w="2340">
+</w:tcW>
+</w:tcPr>
+<w:p>
+<w:r>
+<w:rPr>
+<w:b>
+</w:b>
+</w:rPr>
+<w:t>Cited in</w:t>
+</w:r>
+</w:p>
+</w:tc>
+<w:tc>
+<w:tcPr>
+<w:tcW w:type="dxa" w:w="2340">
+</w:tcW>
+</w:tcPr>
+<w:p>
+<w:r>
+<w:rPr>
+<w:b>
+</w:b>
+</w:rPr>
+<w:t>Artifact</w:t>
+</w:r>
+</w:p>
+</w:tc>
+</w:tr>
+<w:tr>
+<w:tc>
+<w:tcPr>
+<w:tcW w:type="dxa" w:w="2340">
+</w:tcW>
+</w:tcPr>
+<w:p>
+<w:r>
+<w:t>“MOFs capture CO2.”</w:t>
+</w:r>
+</w:p>
+</w:tc>
+<w:tc>
+<w:tcPr>
+<w:tcW w:type="dxa" w:w="2340">
+</w:tcW>
+</w:tcPr>
+<w:p>
+<w:r>
+<w:t>[1]</w:t>
+</w:r>
+</w:p>
+</w:tc>
+<w:tc>
+<w:tcPr>
+<w:tcW w:type="dxa" w:w="2340">
+</w:tcW>
+</w:tcPr>
+<w:p>
+<w:r>
+<w:t>0.2</w:t>
+</w:r>
+</w:p>
+</w:tc>
+<w:tc>
+<w:tcPr>
+<w:tcW w:type="dxa" w:w="2340">
+</w:tcW>
+</w:tcPr>
+<w:p>
+<w:r>
+<w:t>https://w3id.org/np/RAgolden — published 2026-01-02</w:t>
+</w:r>
+</w:p>
+</w:tc>
+</w:tr>
+</w:tbl>
+<w:sectPr w:rsidR="00FC693F" w:rsidRPr="0006063C" w:rsidSect="00034616">
+<w:pgSz w:h="15840" w:w="12240">
+</w:pgSz>
+<w:pgMar w:bottom="1440" w:footer="720" w:gutter="0" w:header="720" w:left="1440" w:right="1440" w:top="1440">
+</w:pgMar>
+<w:cols w:space="720">
+</w:cols>
+<w:docGrid w:linePitch="360">
+</w:docGrid>
+</w:sectPr>
+</w:body>
+</w:document>
+== word/fontTable.xml ==
+sha256 ada4b4c453c903f5e93436aad8a5b6ac41c1f495386650164ad7af0a63c5f581
+== word/media/image1.png ==
+sha256 497790947d4666760ce38f3c00e852c71fdb66cae849bae8e9ede352719e1581
+== word/numbering.xml ==
+sha256 32000b3f86ee8be54e8519f55001ac77a2bd8334be8ff76673e980cbdaaab8e5
+== word/settings.xml ==
+<w:settings xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:sl="http://schemas.openxmlformats.org/schemaLibrary/2006/main" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:w10="urn:schemas-microsoft-com:office:word" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" mc:Ignorable="w14">
+<w:zoom w:val="bestFit">
+</w:zoom>
+<w:proofState w:grammar="clean" w:spelling="clean">
+</w:proofState>
+<w:defaultTabStop w:val="720">
+</w:defaultTabStop>
+<w:characterSpacingControl w:val="doNotCompress">
+</w:characterSpacingControl>
+<w:savePreviewPicture>
+</w:savePreviewPicture>
+<w:compat>
+<w:useFELayout>
+</w:useFELayout>
+<w:compatSetting w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="14">
+</w:compatSetting>
+<w:compatSetting w:name="overrideTableStyleFontSizeAndJustification" w:uri="http://schemas.microsoft.com/office/word" w:val="1">
+</w:compatSetting>
+<w:compatSetting w:name="enableOpenTypeFeatures" w:uri="http://schemas.microsoft.com/office/word" w:val="1">
+</w:compatSetting>
+<w:compatSetting w:name="doNotFlipMirrorIndents" w:uri="http://schemas.microsoft.com/office/word" w:val="1">
+</w:compatSetting>
+</w:compat>
+<w:rsids>
+<w:rsidRoot w:val="00B47730">
+</w:rsidRoot>
+<w:rsid w:val="00034616">
+</w:rsid>
+<w:rsid w:val="0006063C">
+</w:rsid>
+<w:rsid w:val="0015074B">
+</w:rsid>
+<w:rsid w:val="0029639D">
+</w:rsid>
+<w:rsid w:val="00326F90">
+</w:rsid>
+<w:rsid w:val="00AA1D8D">
+</w:rsid>
+<w:rsid w:val="00B47730">
+</w:rsid>
+<w:rsid w:val="00CB0664">
+</w:rsid>
+<w:rsid w:val="00FC693F">
+</w:rsid>
+</w:rsids>
+<m:mathPr>
+<m:mathFont m:val="Cambria Math">
+</m:mathFont>
+<m:brkBin m:val="before">
+</m:brkBin>
+<m:brkBinSub m:val="--">
+</m:brkBinSub>
+<m:smallFrac m:val="0">
+</m:smallFrac>
+<m:dispDef>
+</m:dispDef>
+<m:lMargin m:val="0">
+</m:lMargin>
+<m:rMargin m:val="0">
+</m:rMargin>
+<m:defJc m:val="centerGroup">
+</m:defJc>
+<m:wrapIndent m:val="1440">
+</m:wrapIndent>
+<m:intLim m:val="subSup">
+</m:intLim>
+<m:naryLim m:val="undOvr">
+</m:naryLim>
+</m:mathPr>
+<w:themeFontLang w:eastAsia="ja-JP" w:val="en-US">
+</w:themeFontLang>
+<w:clrSchemeMapping w:accent1="accent1" w:accent2="accent2" w:accent3="accent3" w:accent4="accent4" w:accent5="accent5" w:accent6="accent6" w:bg1="light1" w:bg2="light2" w:followedHyperlink="followedHyperlink" w:hyperlink="hyperlink" w:t1="dark1" w:t2="dark2">
+</w:clrSchemeMapping>
+<w:doNotAutoCompressPictures>
+</w:doNotAutoCompressPictures>
+<w:shapeDefaults>
+<o:shapedefaults spidmax="1027" v:ext="edit">
+</o:shapedefaults>
+<o:shapelayout v:ext="edit">
+<o:idmap data="1" v:ext="edit">
+</o:idmap>
+</o:shapelayout>
+</w:shapeDefaults>
+<w:decimalSymbol w:val=".">
+</w:decimalSymbol>
+<w:listSeparator w:val=",">
+</w:listSeparator>
+<w14:docId w14:val="24062061">
+</w14:docId>
+<w14:defaultImageDpi w14:val="300">
+</w14:defaultImageDpi>
+</w:settings>
+== word/styles.xml ==
+sha256 4fbdfa1e7ae0dad85f1e7d386d1d29a4a71a5f0977d8a6d9efe82a2eb2d5a359
+== word/stylesWithEffects.xml ==
+sha256 3994e251cc031b5e83769658f4af62834429eb239f41d5c9d2fd563e8fda9724
+== word/theme/theme1.xml ==
+sha256 0addd180f61ee032bc9dcea1cbeabc10a8a3abaa9fe63f3284fe8b588cf19c4b
+== word/webSettings.xml ==
+sha256 25f133eff1e20d6e024db7bcd6ed68718140bca8f60f0d28c9a3e602905f1a85
+== cited ==
+smith20
+jones21
+lee22
+parent24
+nobody99
+us123
+== warnings ==
+cite [fi10]: no citable source (conjunction hub without sourced conjuncts)
+cross-ref dc999: no such live chunk — downgraded
+cite 'nobody99': no source in corpus — stub reference

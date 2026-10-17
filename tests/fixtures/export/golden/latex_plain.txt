@@ -171,6 +171,40 @@ E = mc^2
 
 \paragraph{Run-in heading}\label{chunk:dc16}
 
+\begin{itemize}
+\item First point about \glstip{mof} \cite{smith20}{\scriptsize \href{https://doi.org/10.1000/golden.1}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,10.1000\%252Fgolden.1}{UL}}.\label{chunk:dc21}
+
+\begin{enumerate}
+\item Nested step \textbf{bold}.\label{chunk:dc23}
+
+\end{enumerate}
+\item Second point, see \cref{chunk:dc21}.\label{chunk:dc24}
+
+\end{itemize}
+% label{chunk:dc25}
+\begin{lstlisting}
+x = 1  # raw $_ \ kept
+\end{lstlisting}
+
+% label{chunk:dc26}
+\begin{lstlisting}
+print('listing')
+\end{lstlisting}
+
+\begin{precisaside}\label{chunk:dc27}An aside with a cite \cite{lee22}.\end{precisaside}
+
+\begin{longtable}{>{\raggedright\arraybackslash}p{\dimexpr(\linewidth-\tabcolsep*4)/2\relax}>{\raggedright\arraybackslash}p{\dimexpr(\linewidth-\tabcolsep*4)/2\relax}}
+\toprule
+Material & Source \\
+\midrule\endhead
+\bottomrule\endlastfoot
+\glstip{mof} & \cite{jones21}{\scriptsize \href{https://arxiv.org/abs/2101.00002}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,2101.00002}{UL}} \\
+\glstip{fmof} & none \\
+\end{longtable}
+\label{chunk:dc28}
+
+\$\$a + b\$\$\label{chunk:dc29}
+
 \phantomsection\label{chunk:dc12}%
 \phantomsection\label{chunk:dc13}%
 \section*{Acknowledgements}\label{chunk:dc17}
