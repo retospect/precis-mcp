@@ -334,8 +334,9 @@ recency); a stored sibling order is YAGNI until a reader needs it.
    (`precis.pcb.review`); pass/fail/n/a land as machine verdicts anchored
    to the named refdes/nets with the quote, `inputs` = `part:<C#>` facts
    revs (resolved by `PcbBridge.input_revision`) + the margin policy when
-   used. `not_checkable` writes a `question` note keyed on item rev +
-   board fingerprint + input revisions, so an unchanged re-run makes zero
+   used. `not_checkable` is recorded as a `not checkable` machine verdict
+   (ruling 1a; migration 0224) with `evidence.reason` and the same
+   anchors/inputs, current until stale, so an unchanged re-run makes zero
    calls. The quest board's Review button sends `op='review'`. NOT
    shipped: recomputing derived facts (slice 6 owns them); the I²C fold
    into `precis-i2c-help` (slice 6).

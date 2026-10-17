@@ -71,7 +71,7 @@
           <dd>
             {% if b.review %}
             {% set v = b.review %}
-            {{ v.verdicts['pass'] }} pass · <span class="{% if v.verdicts['fail'] %}text-rose-700 font-medium{% endif %}">{{ v.verdicts['fail'] }} fail</span> · {{ v.verdicts['n/a'] }} n/a · {{ v.verdicts['waived'] }} waived
+            {{ v.verdicts['pass'] }} pass · <span class="{% if v.verdicts['fail'] %}text-rose-700 font-medium{% endif %}">{{ v.verdicts['fail'] }} fail</span> · {{ v.verdicts['n/a'] }} n/a · {{ v.verdicts['waived'] }} waived · <span class="{% if v.verdicts['not checkable'] %}text-amber-700 font-medium{% endif %}" title="evidence missing (e.g. a part with no datasheet facts) — never a pass">{{ v.verdicts['not checkable'] }} not checkable</span>
             <div class="text-xs text-slate-500">{{ v.not_checked }} not checked · {{ v.stale }} stale · {{ v.machine }} machine / {{ v.human }} human, of {{ v.items }} items</div>
             {% else %}<span class="text-slate-400 italic">unavailable</span>{% endif %}
           </dd>

@@ -208,40 +208,58 @@ def test_margin_bump_reopens_exactly_the_consumers(
     assert model.calls == first + 2
 
 
-def test_not_checkable_writes_a_note_not_a_verdict_and_is_skipped(
+def test_not_checkable_writes_a_verdict_and_is_skipped_until_stale(
     store: Store, board: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    item = "current-budget-per-rail"
     model = _install(
         monkeypatch,
-        {"verdict": "not_checkable", "reason": "no datasheet facts for C1"},
+        {
+            "verdict": "not_checkable",
+            "reason": "no datasheet facts for C1",
+            "anchors": ["R1"],
+            "inputs": ["margin:fixed-derating"],
+        },
     )
-    _run(store, board, item="current-budget-per-rail")
+    _run(store, board, item=item)
     assert model.calls == 1
-    q = review.queue(store, board, item="current-budget-per-rail")
-    assert [st.status for st in q.todo] == ["not checked"]
+    q = review.queue(store, board, item=item)
+    # A current verdict, not a queued item.
+    assert q.todo == []
+    st = next(s for s in q.statuses if s.name == item)
+    assert st.status == "not checkable"
+    assert not st.settled
+    v = st.verdict
+    assert v is not None
+    assert v["verdict"] == "not checkable"
+    assert v["origin"] == "machine"
+    assert v["checked_by"] == review.REVIEWER
+    assert v["evidence"]["reason"] == "no datasheet facts for C1"
+    assert "job" in v["evidence"]
+    assert list(v["anchors"]) == ["R1"]
+    assert v["inputs"] == {"margin:fixed-derating": precis.pcb.PASSIVE_MARGIN_REVISION}
     assert q.checklist is not None
-    notes = store.checklist_notes_list(
-        target_ref_id=board,
-        checklist_id=q.checklist["id"],
-        item_name="current-budget-per-rail",
+    # No question note any more.
+    assert (
+        store.checklist_notes_list(
+            target_ref_id=board, checklist_id=q.checklist["id"], item_name=item
+        )
+        == []
     )
-    assert [n["kind"] for n in notes] == ["question"]
-    assert notes[0]["body"] == "not checkable (no datasheet facts for C1)"
-    assert notes[0]["origin"] == review.REVIEWER
 
-    summary, _ = _run(store, board, item="current-budget-per-rail")
+    summary, _ = _run(store, board, item=item)
     assert model.calls == 1
     assert "1 not checkable" in summary[0]
 
-    # Any input revision moving re-opens it.
+    # An anchored input revision moving makes it stale and re-opens it.
     monkeypatch.setattr(
         precis.pcb, "PASSIVE_MARGIN_REVISION", precis.pcb.PASSIVE_MARGIN_REVISION + 1
     )
-    _run(store, board, item="current-budget-per-rail")
+    _run(store, board, item=item)
     assert model.calls == 2
 
 
-def test_stale_item_answered_not_checkable_is_skipped_next_run(
+def test_stale_item_answered_not_checkable_is_not_requeued_next_run(
     store: Store, board: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     item = "current-budget-per-rail"
@@ -253,7 +271,9 @@ def test_stale_item_answered_not_checkable_is_skipped_next_run(
     model.answer = {"verdict": "not_checkable", "reason": "no facts"}
     _run(store, board, item=item)
     assert model.calls == 2
-    assert review.queue(store, board, item=item).todo[0].status.startswith("stale")
+    q = review.queue(store, board, item=item)
+    assert q.todo == []
+    assert next(s for s in q.statuses if s.name == item).status == "not checkable"
     summary, _ = _run(store, board, item=item)
     assert model.calls == 2
     assert "nothing to review" in summary[0]
@@ -288,20 +308,22 @@ def test_factless_ic_cannot_pass(
 ) -> None:
     # U1 has no part number, so no datasheet facts: a pass naming it, a
     # net it sits on, or the whole board is refused and becomes a
-    # not-checkable note, never a ledger pass.
+    # not-checkable verdict, never a ledger pass.
     item = "current-budget-per-rail"
     _install(monkeypatch, {**_PASS, "anchors": anchors})
     summary, _ = _run(store, board, item=item)
     assert "pass refused" in summary[0]
     q = review.queue(store, board, item=item)
-    assert [st.status for st in q.todo] == ["not checked"]
-    assert q.checklist is not None
-    notes = store.checklist_notes_list(
-        target_ref_id=board, checklist_id=q.checklist["id"], item_name=item
+    assert q.todo == []
+    st = next(x for x in q.statuses if x.name == item)
+    assert st.status == "not checkable"
+    v = st.verdict
+    assert v is not None
+    assert v["verdict"] == "not checkable"
+    assert v["origin"] == "machine"
+    assert v["evidence"]["reason"] == (
+        "pass refused: no datasheet facts for U1 (no part number)"
     )
-    assert [n["body"] for n in notes] == [
-        "not checkable (pass refused: no datasheet facts for U1 (no part number))"
-    ]
 
 
 def test_generic_resistor_with_value_and_package_can_pass(
@@ -369,8 +391,10 @@ def test_limit_bounds_one_run(
     assert "still queued (limit 3)" in summary[0]
 
 
-def test_part_input_resolves_unknown_part_to_none(store: Store, board: int) -> None:
-    assert PcbBridge().input_revision(store, board, "part:C999999999") is None
+def test_part_input_resolves_unknown_part_to_zero(store: Store, board: int) -> None:
+    # No part ref reads as rev 0 (never extracted), so a verdict that found
+    # the part fact-less goes stale once it is pulled and extracted.
+    assert PcbBridge().input_revision(store, board, "part:C999999999") == 0
 
 
 # ── op='review' ───────────────────────────────────────────────────────
@@ -437,3 +461,58 @@ def test_whole_board_fingerprint_ignores_recorded_check_run(
 
     assert store.pcb_move_instance(board, "R1", x=12.5, y=7.25)
     assert bridge.fingerprint(store, board, []).digest != before
+
+
+# ── a part with no ref: verdict records part:<C#> = 0 ─────────────────
+
+
+def test_not_checkable_on_refless_part_goes_stale_once_pulled_and_extracted(
+    store: Store, board: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis.pcb import datasheet_facts as df
+
+    lcsc = "C990011"
+    ref, _created, _counts = store.pcb_apply(
+        slug="rv-refless",
+        title="rv-refless",
+        components=[
+            {
+                "refdes": "U2",
+                "label": "LDO",
+                "part_lcsc": lcsc,
+                "pins": [{"name": "1"}, {"name": "2"}],
+            }
+        ],
+        nets=[{"name": "VCC"}, {"name": "GND"}],
+        connections=[
+            {"net": "VCC", "refdes": "U2", "pin": "1"},
+            {"net": "GND", "refdes": "U2", "pin": "2"},
+        ],
+    )
+    board = int(ref.id)
+    assert store.part_ref_id(lcsc) is None
+    item = "current-budget-per-rail"
+    key = f"part:{lcsc}"
+    _install(monkeypatch, {**_PASS, "anchors": ["U2"], "inputs": []})
+    summary, _ = _run(store, board, item=item)
+    assert "pass refused" in summary[0]
+
+    q = review.queue(store, board, item=item)
+    assert q.todo == []
+    st = next(s for s in q.statuses if s.name == item)
+    assert st.status == "not checkable"
+    assert st.verdict is not None
+    assert st.verdict["inputs"][key] == 0
+
+    # Pulled but not yet extracted: still reads 0, still current.
+    part_id = store.ensure_part_ref(lcsc, uncatalogued_ok=True)
+    q = review.queue(store, board, item=item)
+    assert q.todo == []
+    assert next(s for s in q.statuses if s.name == item).status == "not checkable"
+
+    # Facts extracted: facts_revision > 0 -> stale, queued again.
+    assert df.write_facts(store, part_id, {"packages": {}}, allow_empty=True) > 0
+    q = review.queue(store, board, item=item)
+    st = next(s for s in q.statuses if s.name == item)
+    assert st.status == f"stale (input changed: {key})"
+    assert [t.name for t in q.todo] == [item]

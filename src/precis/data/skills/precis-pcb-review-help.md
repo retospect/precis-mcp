@@ -55,11 +55,14 @@ anchored to the refdes/nets it is about.
   `{reason, quote, job}`. `inputs` records `part:<C#>` (datasheet-facts
   rev) for each anchored part — every part for a whole-board verdict —
   and `margin:fixed-derating` when the reviewer used the margin policy.
-- **not checkable** — no verdict. A `question` note on the item's thread,
-  `not checkable (<what is missing>)`, origin `pcb_review`. It is keyed on
-  the item rev, the board fingerprint and the input revisions: the item
-  is skipped until one of those moves (e.g. a `datasheet_facts` job lands
-  for the missing part), then reviewed again.
+- **not checkable** — a `machine`-origin verdict `not checkable` with
+  `evidence` `{reason: <what is missing>, job}`, the same anchors and
+  `inputs` as a pass/fail. It is never a pass: the status line reads
+  `not checkable`, evidence `missing: <reason>`, and a blocking item
+  holding one keeps tape-out open (INCOMPLETE). It is a current record,
+  so the item is not re-asked until the verdict goes stale like any
+  other (item revised, anchors changed, or an input moves — e.g. a
+  `datasheet_facts` job lands for the missing part), then reviewed again.
 
 Read the result: `get(kind='checklist', id='pcb-tapeout',
 target='pcb:<slug>')`.

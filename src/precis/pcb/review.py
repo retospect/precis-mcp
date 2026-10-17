@@ -22,15 +22,17 @@ none), and the nets. The model answers strict JSON:
   offered input list (``margin:fixed-derating``). A later bump of any of
   them marks exactly this verdict stale. A ``pass`` that reads a part
   with no datasheet facts is refused in code and written as
-  ``not_checkable`` instead (:func:`factless_parts`; Reto 2026-10-16:
+  ``not checkable`` instead (:func:`factless_parts`; Reto 2026-10-16:
   never pass without part facts), except a :func:`generic_passive` R/C/L
   whose value and package are given.
-* ``not_checkable`` → no verdict (a pass by omission is the thing this
-  pass exists to prevent, and the ledger has no "not checkable" value):
-  a ``question`` note on the item's thread, ``not checkable (<why>)``.
-  The note name carries a key over (item rev, target fingerprint, the
-  facts/margin revisions), so the next run skips the item until one of
-  those moves — still zero model calls on an unchanged design.
+* ``not_checkable`` → a ``machine``-origin ``not checkable`` verdict
+  (Reto 2026-10-16 (1a), "so we can see"; migration 0224) with
+  ``evidence.reason`` naming what is missing, the same anchors,
+  fingerprint and consumed ``inputs`` as a pass/fail. It is a current
+  record, never a pass, and keeps a blocking item open for tape-out. It
+  is not re-queued until it goes stale like any verdict (item rev, target
+  fingerprint, or an input revision such as a newly extracted datasheet
+  facts rev), so a re-run on an unchanged design makes no model call.
 
 The job runs the fresh check itself (:func:`precis.pcb.check_run.run`,
 persisted; Reto 2026-10-16 (3a)) once the queue has work, then quotes
@@ -40,7 +42,6 @@ that run by id.
 from __future__ import annotations
 
 import collections
-import hashlib
 import json
 import re
 from collections.abc import Sequence
@@ -48,7 +49,12 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from precis import pcb as _pcb_pkg
-from precis.checklist.status import ItemStatus, bridge_for, compute_statuses
+from precis.checklist.status import (
+    NOT_CHECKABLE,
+    ItemStatus,
+    bridge_for,
+    compute_statuses,
+)
 from precis.pcb import datasheet_facts as ds_facts
 from precis.pcb.catalog import parse_passive_description
 
@@ -58,16 +64,15 @@ if TYPE_CHECKING:
 #: The checklist the pass works (``default_for: [pcb]``).
 CHECKLIST = "pcb-tapeout"
 
-#: ``checked_by`` on every verdict and ``origin`` on every note this
-#: pass writes — what ``op='forget'`` and a reader filter on.
+#: ``checked_by`` on every verdict this pass writes — what ``op='forget'`` and a reader filter on.
 REVIEWER = "pcb_review"
 
 LLM_SOURCE = "pcb-review"
 LLM_MAX_USD = 0.25
 LLM_TIMEOUT_S = 120.0
 
-#: Model answers the parser accepts; ``not_checkable`` never becomes a
-#: ledger verdict.
+#: Model answers the parser accepts; ``not_checkable`` is recorded as the
+#: ledger verdict ``not checkable``.
 ANSWERS = ("pass", "fail", "n/a", "not_checkable")
 
 #: Evidence caps (characters / rows): the block is shared by every item
@@ -100,7 +105,8 @@ class Queue:
 def queue(store: Store, ref_id: int, *, item: str | None = None) -> Queue:
     """The judgment items on ``pcb-tapeout`` that are ``not checked`` or
     ``stale`` for this design. ``reason`` says why the queue is empty when
-    the checklist is missing or not assigned."""
+    the checklist is missing or not assigned. A current ``not checkable``
+    verdict is neither of those, so it is not queued until it goes stale."""
     checklist = store.checklist_get(CHECKLIST)
     if checklist is None:
         return Queue(None, reason=f"checklist {CHECKLIST!r} is not installed")
@@ -126,36 +132,17 @@ def queue(store: Store, ref_id: int, *, item: str | None = None) -> Queue:
     return Queue(checklist, statuses, todo)
 
 
-def pending(
-    store: Store, ref_id: int, q: Queue, revisions: dict[str, Any]
-) -> tuple[list[tuple[ItemStatus, str]], int]:
-    """``(item, not-checkable key)`` pairs that need a model call, and how
-    many queued items were skipped because a ``not checkable`` note at the
-    current key is already on their thread — for ``not checked`` AND
-    ``stale`` items alike (the key carries the item rev, the board
-    fingerprint and every input revision, so it alone decides)."""
-    if q.checklist is None:
-        return [], 0
-    out: list[tuple[ItemStatus, str]] = []
-    skipped = 0
-    for st in q.todo:
-        key = not_checkable_key(store, ref_id, st, revisions)
-        if has_note(store, ref_id, int(q.checklist["id"]), st.name, key):
-            skipped += 1
-            continue
-        out.append((st, key))
-    return out, skipped
-
-
 def input_revisions(store: Store, graph: dict[str, Any]) -> dict[str, Any]:
     """Every input this design's verdicts may consume → its current
     revision: the margin policy and each placed part's datasheet-facts rev
-    (0 = never extracted, so a later extraction marks the verdict stale)."""
+    (0 = never extracted, or no part ref yet, so a later pull or
+    extraction marks the verdict stale)."""
     out: dict[str, Any] = {MARGIN_INPUT: _pcb_pkg.PASSIVE_MARGIN_REVISION}
     for lcsc in sorted(_lcscs(graph)):
         part_ref_id = store.part_ref_id(lcsc)
-        if part_ref_id is not None:
-            out[part_input(lcsc)] = ds_facts.facts_revision(store, part_ref_id)
+        out[part_input(lcsc)] = (
+            0 if part_ref_id is None else ds_facts.facts_revision(store, part_ref_id)
+        )
     return out
 
 
@@ -335,37 +322,6 @@ def ask(*, title: str, st: ItemStatus, evidence_text: str, ref_id: int) -> Answe
     return parse(res.text or "")
 
 
-def not_checkable_key(
-    store: Store, ref_id: int, st: ItemStatus, revisions: dict[str, Any]
-) -> str:
-    """What a ``not checkable`` note is valid for: the item rev, the whole
-    target's fingerprint and every input revision. Any move re-opens it."""
-    bridge = bridge_for("pcb")
-    fp = bridge.fingerprint(store, ref_id, ()).digest if bridge is not None else ""
-    raw = json.dumps(
-        [st.name, st.item["rev"], fp, revisions], sort_keys=True, default=str
-    )
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
-
-
-def note_name(item_name: str, key: str) -> str:
-    return f"not-checkable-{item_name}-{key}"
-
-
-def has_note(
-    store: Store, ref_id: int, checklist_id: int, item_name: str, key: str
-) -> bool:
-    """Whether a live ``not checkable`` note at this key is already on the
-    item's thread (the skip that keeps an unchanged re-run call-free)."""
-    want = note_name(item_name, key)
-    return any(
-        n["name"] == want
-        for n in store.checklist_notes_list(
-            target_ref_id=ref_id, checklist_id=checklist_id, item_name=item_name
-        )
-    )
-
-
 def record(
     store: Store,
     ref_id: int,
@@ -375,10 +331,9 @@ def record(
     answer: Answer,
     revisions: dict[str, Any],
     graph: dict[str, Any],
-    nc_key: str,
     job_ref_id: int | None = None,
 ) -> str:
-    """Write one answer: a machine verdict, or a ``not checkable`` note.
+    """Write one answer as a machine verdict (``not checkable`` included).
     Returns a one-line account for the job summary."""
     bridge = bridge_for("pcb")
     anchors = [
@@ -394,22 +349,14 @@ def record(
                 verdict="not_checkable",
                 reason=f"pass refused: no datasheet facts for {', '.join(factless)}",
             )
-    if answer.verdict == "not_checkable":
-        store.checklist_note_insert(
-            target_ref_id=ref_id,
-            checklist_id=checklist_id,
-            item_name=st.name,
-            name=note_name(st.name, nc_key),
-            kind="question",
-            body=f"not checkable ({answer.reason or 'evidence missing'})",
-            about=anchors,
-            origin=REVIEWER,
-        )
-        return f"{st.name}: not checkable — {answer.reason or 'evidence missing'}"
-
     inputs = _consumed(answer, anchors, revisions, graph)
     fp = bridge.fingerprint(store, ref_id, anchors).digest if bridge else None
-    evidence_out: dict[str, Any] = {"reason": answer.reason, "quote": answer.quote}
+    not_checkable = answer.verdict == "not_checkable"
+    verdict = NOT_CHECKABLE if not_checkable else answer.verdict
+    reason = answer.reason or ("evidence missing" if not_checkable else "")
+    evidence_out: dict[str, Any] = {"reason": reason}
+    if not not_checkable:
+        evidence_out["quote"] = answer.quote
     if job_ref_id is not None:
         evidence_out["job"] = job_ref_id
     store.checklist_verdict_insert(
@@ -417,7 +364,7 @@ def record(
         checklist_id=checklist_id,
         item_name=st.name,
         item_rev=int(st.item["rev"]),
-        verdict=answer.verdict,
+        verdict=verdict,
         evidence=evidence_out,
         fingerprint=fp,
         checked_by=REVIEWER,
@@ -425,6 +372,8 @@ def record(
         origin="machine",
         inputs=inputs,
     )
+    if not_checkable:
+        return f"{st.name}: not checkable — {reason}"
     return f"{st.name}: {answer.verdict}"
 
 
@@ -536,13 +485,9 @@ __all__ = [
     "evidence",
     "factless_parts",
     "generic_passive",
-    "has_note",
     "input_revisions",
-    "not_checkable_key",
-    "note_name",
     "parse",
     "part_input",
-    "pending",
     "prompt",
     "queue",
     "record",

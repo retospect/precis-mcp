@@ -5,13 +5,14 @@ Works the ``pcb-tapeout`` judgment items that are ``not checked`` or
 ``stale`` on the design, one fresh-context model call each, and writes a
 ``machine``-origin verdict anchored to the refdes/nets it names with the
 decisive line quoted — or, when the evidence is missing (a part with no
-datasheet facts), a ``not checkable (…)`` question note on the item's
-thread, never a pass. Queue, evidence, prompt and write live in
+datasheet facts), a ``not checkable`` verdict whose ``evidence.reason``
+says what is missing (Reto 2026-10-16 (1a)), never a pass. Queue, evidence, prompt and write live in
 :mod:`precis.pcb.review`; this module is the job shell.
 
 A re-run on an unchanged design makes no model call: settled items never
-re-enter the queue, and a ``not checkable`` note keyed on the target
-fingerprint + input revisions skips its item until one of them moves.
+re-enter the queue, and a current ``not checkable`` verdict stays out of
+it until it goes stale (item rev, target fingerprint or an input
+revision such as a newly extracted datasheet facts rev).
 
 The job runs the check surface itself (Reto 2026-10-16 (3a)): once the
 queue says there is work, :func:`precis.pcb.check_run.run` judges the
@@ -31,6 +32,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from precis.checklist.status import NOT_CHECKABLE
 from precis.errors import BadInput
 from precis.pcb import check_run, review
 from precis.workers.job_types import JobTypeSpec
@@ -60,7 +62,7 @@ REQUIRES: frozenset[str] = frozenset()
 DESCRIPTION = (
     "Re-check a pcb design against pcb-tapeout: work the not-checked and "
     "stale judgment items (one fresh-context call each), write anchored "
-    "machine verdicts quoting the decisive line, or a 'not checkable' note."
+    "machine verdicts quoting the decisive line, or a 'not checkable' verdict."
 )
 
 _DEFAULT_LIMIT = 15
@@ -90,8 +92,9 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     graph = store.pcb_graph(pcb_ref_id)
     revisions = review.input_revisions(store, graph)
 
-    work, skipped = review.pending(store, pcb_ref_id, q, revisions)
+    work = list(q.todo)
     settled = sum(1 for st in q.statuses if st.settled)
+    skipped = sum(1 for st in q.statuses if st.status == NOT_CHECKABLE)
     if not work:
         ctx.append_chunk(
             "job_summary",
@@ -131,7 +134,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     lines: list[str] = []
     failures: list[str] = []
     cancelled = False
-    for st, key in work:
+    for st in work:
         if ctx.is_cancel_requested():
             cancelled = True
             break
@@ -150,7 +153,6 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
                     answer=answer,
                     revisions=revisions,
                     graph=graph,
-                    nc_key=key,
                     job_ref_id=ctx.ref_id,
                 )
             )
@@ -174,7 +176,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             failure_class="infra",
         )
         return
-    left = len(q.todo) - skipped - len(lines) - len(failures)
+    left = len(q.todo) - len(lines) - len(failures)
     tail = []
     if failures:
         tail.append(f"{len(failures)} failed (retried next run)")

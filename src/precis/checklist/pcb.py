@@ -140,8 +140,8 @@ class PcbBridge:
             # A check run records its run id under ``board.meta`` (the
             # phase baseline pointer); that is bookkeeping, not a design
             # change — ``pcb_review`` runs its own check every job, and a
-            # fingerprint that moved with it would re-open every
-            # ``not checkable`` skip on an unchanged design.
+            # fingerprint that moved with it would turn every current
+            # ``not checkable`` verdict stale on an unchanged design.
             board = dict(graph.get("board") or {})
             meta = {
                 k: v
@@ -185,13 +185,14 @@ class PcbBridge:
     def input_revision(self, store: Any, ref_id: int, name: str) -> Any:
         # ``part:<C#>`` — the part's datasheet-facts rev (slice 7's
         # pcb_review records it per consumed part): a corrected fact
-        # marks every verdict that read it stale. An unknown part is
-        # unresolvable, never a staleness trigger.
+        # marks every verdict that read it stale. A part with no ref yet
+        # reads 0, the same as never extracted, so a verdict that found
+        # it fact-less goes stale once the part is pulled and extracted.
         if name.startswith("part:"):
             from precis.pcb.datasheet_facts import facts_revision
 
             part_ref_id = store.part_ref_id(name[len("part:") :].strip().upper())
-            return None if part_ref_id is None else facts_revision(store, part_ref_id)
+            return 0 if part_ref_id is None else facts_revision(store, part_ref_id)
         return _current_input_revisions().get(name)
 
 

@@ -47,6 +47,7 @@ from dataclasses import dataclass
 from typing import Any, ClassVar
 
 from precis.checklist import ItemStatus, bridge_for, compute_statuses
+from precis.checklist.status import NOT_CHECKABLE, VERDICTS
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
 from precis.format import render_agent_table
@@ -63,7 +64,7 @@ from precis.utils.notes import (
 
 _SEVERITIES: tuple[str, ...] = ("blocking", "advisory")
 _DECIDABILITY: tuple[str, ...] = ("tool", "judgment")
-_VERDICTS: tuple[str, ...] = ("pass", "fail", "n/a", "waived")
+_VERDICTS: tuple[str, ...] = VERDICTS
 _EDIT_OPS: tuple[str, ...] = (
     "add_item",
     "retire_item",
@@ -101,7 +102,10 @@ class ChecklistHandler(Handler):
             "retire_item, verdict, forget, add_note, remove_note, assign, "
             "unassign — op='add_item'/'retire_item' on a shipped item rev "
             "is REJECTED (add a local item or file a gripe instead). "
-            "op='verdict' takes item=, verdict=pass|fail|n/a|waived, "
+            "op='verdict' takes item=, verdict=pass|fail|n/a|waived|"
+            "'not checkable' (the evidence is missing; needs "
+            "evidence={'reason':...}; never a pass, keeps a blocking item "
+            "open), "
             "evidence={...}, anchors=[refdes/net names] (pcb: narrows the "
             "change fingerprint to those sub-objects), origin='machine' "
             "for a disposable verdict, inputs={name: revision} the "
@@ -446,6 +450,12 @@ class ChecklistHandler(Handler):
                 "verdict='waived' requires evidence={'rationale': ...} — a "
                 "waiver is the argued outlet for an item deliberately not met",
                 next="evidence={'rationale': 'why this board does not need it'}",
+            )
+        if verdict == NOT_CHECKABLE and not (evidence or {}).get("reason"):
+            raise BadInput(
+                "verdict='not checkable' requires evidence={'reason': ...} "
+                "naming the evidence that is missing",
+                next="evidence={'reason': 'no datasheet facts for U3 (C2040)'}",
             )
         item_name = str(item).strip()
         try:
@@ -922,11 +932,16 @@ def _summary_line(statuses: list[ItemStatus]) -> str:
         tally[key] = tally.get(key, 0) + 1
     blocking_fail = sum(1 for st in statuses if st.blocking and st.status == "fail")
     blocking_open = sum(1 for st in statuses if st.blocking and not st.settled)
+    blocking_nc = sum(
+        1 for st in statuses if st.blocking and st.status == NOT_CHECKABLE
+    )
     parts = [f"{k} {v}" for k, v in sorted(tally.items())]
     if blocking_fail:
         verdict = f"BLOCKED — {blocking_fail} blocking failure(s)"
     elif blocking_open:
-        verdict = f"INCOMPLETE — {blocking_open} blocking item(s) unsettled"
+        verdict = f"INCOMPLETE — {blocking_open} blocking item(s) unsettled" + (
+            f" ({blocking_nc} not checkable)" if blocking_nc else ""
+        )
     else:
         verdict = "blocking items settled"
     return f"{verdict} · {', '.join(parts)}"
@@ -956,6 +971,8 @@ def _evidence_summary(st: ItemStatus) -> str:
     rationale = ev.get("rationale")
     if rationale:
         return f"rationale: {str(rationale)[:60]}"
+    if st.verdict is not None and st.verdict.get("verdict") == NOT_CHECKABLE:
+        return f"missing: {str(ev.get('reason') or '?')[:80]}"
     return keys[:60]
 
 

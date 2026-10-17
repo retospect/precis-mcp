@@ -229,6 +229,54 @@ class TestVerdict:
                 id="cl", op="verdict", target=target, item="item-one", verdict="maybe"
             )
 
+    def test_not_checkable_requires_a_reason(self, store: Store) -> None:
+        h = _handler(store)
+        h.put(id="cl", items=[_ITEM])
+        target = _make_target(store)
+        for evidence in (None, {}, {"quote": "x"}):
+            with pytest.raises(BadInput):
+                h.edit(
+                    id="cl",
+                    op="verdict",
+                    target=target,
+                    item="item-one",
+                    verdict="not checkable",
+                    evidence=evidence,
+                )
+
+    def test_not_checkable_round_trips_and_keeps_the_gate_open(
+        self, store: Store
+    ) -> None:
+        h = _handler(store)
+        h.put(id="cl", items=[_ITEM])
+        target = _make_target(store)
+        h.edit(id="cl", op="assign", target=target)
+        h.edit(
+            id="cl",
+            op="verdict",
+            target=target,
+            item="item-one",
+            verdict="not checkable",
+            evidence={"reason": "no datasheet facts for U3"},
+            origin="machine",
+        )
+        ref = store.get_ref(kind="paper", id="target-board")
+        checklist = store.checklist_get("cl")
+        assert ref is not None and checklist is not None
+        v = store.checklist_verdict_latest(
+            target_ref_id=ref.id, checklist_id=checklist["id"], item_name="item-one"
+        )
+        assert v is not None
+        assert v["verdict"] == "not checkable"
+        assert v["origin"] == "machine"
+        body = h.get(id="cl", target=target).body
+        assert "not checkable" in body
+        assert "missing: no datasheet facts for U3" in body
+        assert "not checked" not in body and "stale" not in body
+        # Blocking and unsettled: the summary stays INCOMPLETE and says why.
+        assert "INCOMPLETE" in body
+        assert "1 not checkable" in body
+
     def test_second_verdict_is_append_only_old_row_retained(self, store: Store) -> None:
         h = _handler(store)
         h.put(id="cl", items=[_ITEM])

@@ -88,6 +88,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from precis import bom_nudge
+from precis.checklist.status import NOT_CHECKABLE
 from precis.config import load_config
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
@@ -1596,12 +1597,8 @@ class PcbHandler(Handler):
                 f"pcb: {item!r} is not an item on {pcb_review.CHECKLIST}",
                 options=[st.name for st in q.statuses],
             )
-        work, skipped = pcb_review.pending(
-            self.store,
-            ref.id,
-            q,
-            pcb_review.input_revisions(self.store, self.store.pcb_graph(ref.id)),
-        )
+        work = list(q.todo)
+        skipped = sum(1 for st in q.statuses if st.status == NOT_CHECKABLE)
         if not work:
             return Response(
                 body=f"# review {ref.slug} — nothing to review\n"
@@ -1610,7 +1607,7 @@ class PcbHandler(Handler):
             )
         # Idempotent per (design, queue state): re-submitting while the
         # same items are pending collapses onto the in-flight job.
-        queued = sorted(f"{st.name}@{st.item['rev']}:{st.status}" for st, _ in work)
+        queued = sorted(f"{st.name}@{st.item['rev']}:{st.status}" for st in work)
         digest = pcb_session.content_hash(
             self.store.pcb_graph(ref.id), {**params, "queue": queued}
         )

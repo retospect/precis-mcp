@@ -235,6 +235,37 @@ def test_one_board_replaces_frontier(client, runtime, board_quest) -> None:
     assert html.count("return confirm(") == 3
 
 
+def test_not_checkable_verdict_counts_distinctly_and_stays_open(
+    client, runtime, board_quest, monkeypatch
+) -> None:
+    board_quest[:] = [_BOARDS[482130], *_TODOS]
+    nc = {
+        **_VERDICTS[482130],
+        "drc-clean": {
+            "verdict": "not checkable",
+            "item_rev": 1,
+            "origin": "machine",
+            "evidence": {"reason": "no datasheet facts for U1"},
+        },
+    }
+    monkeypatch.setattr(
+        runtime.store,
+        "checklist_verdicts_latest_for_target",
+        lambda *, target_ref_id, checklist_id: nc if target_ref_id == 482130 else {},
+        raising=False,
+    )
+    html = client.get("/refs/quest/97").text
+    assert "1 not checkable</span>" in html
+    assert "0 pass ·" in html
+    # A not-checkable blocking item is current (not "not checked"/"stale")
+    # but unsettled: it does not count as clear for tape-out.
+    assert "1 not checked" in html and "1 stale" in html
+    assert "0/2 blocking items clear" in html
+    # Zero not-checkable reads as zero, not hidden.
+    data = quest_board._checklist_sections(runtime.store, 482131)[0]
+    assert data is not None and data["verdicts"]["not checkable"] == 0
+
+
 def test_two_boards_side_by_side(client, board_quest) -> None:
     board_quest[:] = [_BOARDS[482130], _BOARDS[482131], *_TODOS]
     html = client.get("/refs/quest/97").text

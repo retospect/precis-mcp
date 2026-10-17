@@ -518,6 +518,16 @@ class TestChecklistCleanEvaluator:
         )
         # advisory item still unchecked — never blocks
         assert checklist_clean.evaluate(store, spec) is True
+        # a later "not checkable" on the blocking item re-opens the gate
+        h.edit(
+            id="cl",
+            op="verdict",
+            target="pcb:cl-board",
+            item="judge-me",
+            verdict="not checkable",
+            evidence={"reason": "no datasheet facts for U1"},
+        )
+        assert checklist_clean.evaluate(store, spec) is None
 
     def test_unknown_checklist_is_spec_error(self, store: Store) -> None:
         with pytest.raises(BadInput, match="not found"):

@@ -9,7 +9,11 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-VERDICTS: tuple[str, ...] = ("pass", "fail", "n/a", "waived")
+#: The verdict that records missing evidence (migration 0224, Reto's
+#: ruling 2026-10-16: "so we can see") — a ledger value, never a pass.
+NOT_CHECKABLE = "not checkable"
+
+VERDICTS: tuple[str, ...] = ("pass", "fail", "n/a", "waived", NOT_CHECKABLE)
 
 
 @dataclass(frozen=True)
@@ -74,9 +78,12 @@ class ItemStatus:
 
     @property
     def settled(self) -> bool:
-        """A recorded, current verdict (pass/fail/n/a/waived) — as opposed
-        to not checked, stale, or a checker that could not run."""
-        return self.status in VERDICTS
+        """A recorded, current verdict that answers the item (pass/fail/
+        n/a/waived) — as opposed to not checked, stale, a checker that
+        could not run, or ``not checkable``: that one is current (never
+        re-asked until stale) but answers nothing, so a blocking item
+        that holds it keeps the gate open."""
+        return self.status in VERDICTS and self.status != NOT_CHECKABLE
 
 
 def bridge_for(kind: str) -> KindBridge | None:
@@ -218,6 +225,7 @@ def compute_statuses(
 
 
 __all__ = [
+    "NOT_CHECKABLE",
     "VERDICTS",
     "Fingerprint",
     "ItemStatus",

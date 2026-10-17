@@ -32,7 +32,7 @@ log = logging.getLogger(__name__)
 #: it applies to every pcb by default (``data/checklists/pcb-tapeout.yaml``).
 TAPEOUT_CHECKLIST = "pcb-tapeout"
 
-#: The netlist ERC rules (``PcbHandler._erc_findings``) — they share the
+#: The netlist ERC rules (``check_run.erc_findings``) — they share the
 #: DRC finding list and are told apart only by rule name.
 ERC_RULES = frozenset(
     {
@@ -197,9 +197,7 @@ def _checklist_sections(
         "items": sum(1 for st in statuses if st.source == "ledger"),
     }
     blocking = [st for st in statuses if st.blocking]
-    open_blocking = [
-        st for st in blocking if st.status not in ("pass", "n/a", "waived")
-    ]
+    open_blocking = [st for st in blocking if not st.settled or st.status == "fail"]
     tapeout = {
         "items": len(statuses),
         "blocking": len(blocking),
