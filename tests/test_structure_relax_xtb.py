@@ -5,10 +5,10 @@ C60 − hexagon ball, open rim H-terminated — is the 2026-10-11 reference
 relaxer run (hexfold-corner/s4_xtb.py): six seam C–C bonds at ~1.403 Å
 after a whole-molecule FIRE relax.
 
-Only the real-backend geometry test needs the wheel itself (PyPI has no
-linux-aarch64 wheel, so it skips there unless the wheelhouse build is
-installed); the recording / refusal /
-render tests stub or block the import and run on every platform.
+Only the real-backend tests (the neck geometry, the charged and open-shell
+species) need the wheel itself (PyPI has no linux-aarch64 wheel, so they
+skip there unless the wheelhouse build is installed); the recording /
+refusal / render tests stub or block the import and run on every platform.
 """
 
 from __future__ import annotations
@@ -190,6 +190,114 @@ def test_xtb_run_records_rung_model_and_nonconverged(
     assert run["converged"] is False
     runs_view = structure.get(id="mol", view="runs").body
     assert "xtb" in runs_view and "gfn2-xtb" in runs_view
+
+
+def _diatomic(a: str, b: str, d: float) -> StructScene:
+    """A non-periodic two-atom molecule ``a``–``b`` at ``d`` Å."""
+    scene = StructScene(
+        cell=Cell.from_lengths_angles(20, 20, 20, pbc=(False, False, False))
+    )
+    scene.atoms["a1"] = StructAtom("a1", a, np.array([0.5, 0.5, 0.5]))
+    scene.atoms["a2"] = StructAtom("a2", b, np.array([0.5 + d / 20, 0.5, 0.5]))
+    return scene
+
+
+def _bond(scene: StructScene) -> float:
+    return float(np.linalg.norm(np.diff(_cart(scene, ["a1", "a2"]), axis=0)))
+
+
+class _RecordingTBLite(_StuckTBLite):
+    """A TBLite stand-in that records its constructor kwargs and reports
+    zero forces, so the relax stops after one evaluation."""
+
+    seen: list[dict[str, Any]] = []
+
+    def __init__(self, atoms=None, **kwargs: Any):
+        super().__init__(atoms=atoms)
+        _RecordingTBLite.seen.append(kwargs)
+
+    def calculate(
+        self, atoms=None, properties=("energy",), system_changes=all_changes
+    ) -> None:
+        super().calculate(atoms, properties, system_changes)
+        assert self.atoms is not None
+        self.results["forces"] = np.zeros((len(self.atoms), 3))
+
+
+def test_xtb_charge_and_multiplicity_reach_tblite(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """relax(fidelity='xtb') hands charge and multiplicity to tblite's own
+    parameters; the defaults stay neutral with multiplicity undeclared,
+    which is what every run got before (pocket-from-molecule slice 1)."""
+    _stub_tblite(monkeypatch, _RecordingTBLite)
+    monkeypatch.setattr(_RecordingTBLite, "seen", [])
+    relax(_diatomic("N", "O", 1.15), fidelity="xtb", multiplicity=2, steps=2)
+    relax(_diatomic("N", "O", 1.15), fidelity="xtb", charge=1, steps=2)
+    relax(_dimer(), fidelity="xtb", steps=2)
+    picked = [(kw["charge"], kw["multiplicity"]) for kw in _RecordingTBLite.seen]
+    assert picked == [(0, 2), (1, None), (0, None)]
+    assert all(kw["method"] == "GFN2-xTB" for kw in _RecordingTBLite.seen)
+
+
+def test_xtb_multiplicity_parity_refused() -> None:
+    """NO has 15 electrons, so a singlet cannot exist; the refusal names
+    the lowest multiplicity that fits, before any tblite work."""
+    from precis.structure.relax import check_charge_multiplicity
+
+    with pytest.raises(ValueError, match="lowest is 2"):
+        relax(_diatomic("N", "O", 1.15), fidelity="xtb", multiplicity=1)
+    with pytest.raises(ValueError, match="lowest is 1"):
+        relax(_diatomic("N", "O", 1.15), fidelity="xtb", charge=1, multiplicity=2)
+    with pytest.raises(ValueError, match="integer >= 1"):
+        relax(_diatomic("N", "O", 1.15), fidelity="xtb", multiplicity=0)
+    assert check_charge_multiplicity(["N", "O"], 0, 2) == 15
+    assert check_charge_multiplicity(["O", "H"], -1, 1) == 10
+
+
+def test_charge_and_multiplicity_refused_off_xtb() -> None:
+    """Only GFN2 takes a total charge or a spin; elsewhere it raises."""
+    for rung in ("clean", "emt", "ml"):
+        with pytest.raises(RelaxUnsupported, match="need rung 'xtb'"):
+            relax(_diatomic("N", "O", 1.15), fidelity=rung, multiplicity=2)
+    with pytest.raises(RelaxUnsupported, match="need rung 'xtb'"):
+        relax(_diatomic("O", "H", 0.97), fidelity="geo", charge=-1)
+
+
+def test_xtb_charged_species_hydroxide() -> None:
+    """OH- at charge -1: the GFN2 Mulliken charges sum to -1, the relax
+    converges, and its energy differs from the neutral OH doublet's."""
+    pytest.importorskip("tblite")
+    from precis.structure import export
+    from precis.structure.relax import _xtb_calculator
+
+    anion = _diatomic("O", "H", 1.0)
+    atoms = export._to_ase(anion)
+    atoms.calc = _xtb_calculator(charge=-1)
+    assert float(atoms.get_charges().sum()) == pytest.approx(-1.0, abs=1e-6)
+    res = relax(anion, fidelity="xtb", charge=-1, multiplicity=1, steps=100)
+    assert res.converged is True
+    assert 0.93 < _bond(anion) < 1.02
+    radical = _diatomic("O", "H", 1.0)
+    neutral = relax(radical, fidelity="xtb", multiplicity=2, steps=100)
+    assert neutral.converged is True
+    assert res.energy is not None and neutral.energy is not None
+    assert abs(res.energy - neutral.energy) > 1.0
+
+
+def test_xtb_open_shell_nitric_oxide() -> None:
+    """NO as a doublet relaxes to its N–O bond (1.155 Å at GFN2 on
+    2026-10-17; experiment 1.151 Å), and NO+ (charge +1, singlet; 1.052 Å)
+    comes out shorter, as the removed electron leaves the antibonding pi*
+    orbital."""
+    pytest.importorskip("tblite")
+    no = _diatomic("N", "O", 1.20)
+    res = relax(no, fidelity="xtb", multiplicity=2, steps=100)
+    assert res.converged is True
+    assert _bond(no) == pytest.approx(1.15, abs=0.03)
+    cation = _diatomic("N", "O", 1.20)
+    assert relax(cation, fidelity="xtb", charge=1, multiplicity=1, steps=100).converged
+    assert _bond(cation) < _bond(no) - 0.05
 
 
 def test_xtb_foreign_model_rejected(store: Any) -> None:

@@ -310,6 +310,9 @@ class SeHandler(Handler):
                 "against",
                 "margin",
                 "limit",
+                "charge",
+                "multiplicity",
+                "density",
                 "prefunits",
             }
         ),
@@ -367,7 +370,7 @@ class SeHandler(Handler):
             "declared states. "
             "get lists designs or renders one (view='tree'|'block'|'report'|'catalogue'|'surface_deviation'|"
             "'ports'|'topology'|'chain'|'measures'|'revisions'|'datums'|'pockets'|'validate'|"
-            "'clearance'|'sweep'|'stations'|'pick'|"
+            "'clearance'|'sweep'|'stations'|'pick'|'surface'|"
             "'drc'|'bom'|'interview'|'freedom'|'stability'|'mechanics'|"
             "'literature'|'fret'|'print'|'fab'; block takes "
             "args={'name':...}; surface_deviation takes name and uses a matching exact "
@@ -526,7 +529,11 @@ class SeHandler(Handler):
             "a deterministic (no-LLM) paper-search query from a block's "
             "desc/use/name + connect objective vocabulary (or the whole "
             "design's, with no block named) and runs it against the paper "
-            "corpus. The LLM traverses a block tree, never atoms "
+            "corpus. view='surface' args={'block':...,'charge'?,"
+            "'multiplicity'?,'format'?:'json'} paints a bound molecule's "
+            "vdW surface with GFN2 point-charge ESP, H-bond and polarity "
+            "classes (computed on read; precis-se-regions-help). "
+            "The LLM traverses a block tree, never atoms "
             "directly. "
             "OPTICAL DOMAIN (FRET, precis_se.fret): set_chromophore "
             "block= label= dipole=[x,y,z] (block frame) quantum_yield= "
@@ -597,6 +604,7 @@ class SeHandler(Handler):
             "sweep",
             "stations",
             "pick",
+            "surface",
             "drc",
             "bom",
             "fasten",
@@ -1890,6 +1898,23 @@ class SeHandler(Handler):
             return Response(body=_render_stations(self.store, ref.id, tree, args))
         if v == "pick":
             return Response(body=_render_pick(self.store, tree, args))
+        if v == "surface":
+            from precis_se.properties.surface import render_surface
+
+            name = (args or {}).get("block")
+            if not name or not str(name).strip():
+                raise BadInput(
+                    "get(kind='se', view='surface') requires args={'block': ...}",
+                    next="args={'block': '<structure-bound block>', "
+                    "'charge'?: 0, 'multiplicity'?: 2, 'format'?: 'json'}",
+                )
+            try:
+                node = resolve_block(tree, str(name).strip())
+            except AmbiguousLabel as exc:
+                raise BadInput(str(exc)) from exc
+            if node is None:
+                raise NotFound(_block_not_found(tree, str(name).strip()))
+            return Response(body=render_surface(self.store, node, args or {}))
         if v == "drc":
             body = _render_drc(
                 tree,
@@ -1971,7 +1996,10 @@ class SeHandler(Handler):
             "(args={'block':...,'atom':<ordinal or label>} or "
             "args={'token':'<se:UID#ORD>'}: every level an atom belongs to "
             "— residue, base pair, domain, strand, blocks — each with a "
-            "citable token) | view='drc' "
+            "citable token) | view='surface' (args={'block':...,'charge'?,"
+            "'multiplicity'?,'scale'?,'density'?,'format'?:'text'|'json'}: "
+            "a bound molecule's vdW surface painted with GFN2 ESP, H-bond "
+            "and polarity classes) | view='drc' "
             "(graph tier + DOF "
             "probe) | view='kinematics' (derived axis/angle/arm/tip for "
             "every declared transition's ports — port_pose_overrides, "
@@ -6973,6 +7001,9 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
     "sweep": frozenset(),
     "stations": frozenset({"walker", "cursor", "target"}),
     "pick": frozenset({"block", "atom", "token"}),
+    "surface": frozenset(
+        {"block", "charge", "multiplicity", "scale", "density", "format"}
+    ),
     "drc": frozenset({"state", "previous", "load_cases"}),
     "kinematics": frozenset(),
     "bom": frozenset(),

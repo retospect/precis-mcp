@@ -1,5 +1,5 @@
 ---
-status: draft
+status: in-progress
 title: pocket from molecule — paint a posed molecule's surface with properties, invert it into a region-property pocket spec, realise a tube wall that meets it, refine GFN2 → MLIP → DFT
 pillar: 3d-design
 thread: nanoreactor
@@ -13,6 +13,11 @@ Reto, 2026-10-17. First concrete driver of
 [se-intent-to-realize-loop](se-intent-to-realize-loop.md); it fills
 slices B and C of [se-region-property-layer](se-region-property-layer.md)
 (slices 1–2 below). Umbrella: [nanoreactor-no-nh3](nanoreactor-no-nh3.md).
+
+**Status (2026-10-17):** slice 1 is built (its section below says
+what); its surface settings are provisional until open question 4 is
+answered. Next: slice 2, which needs open questions 8 and 9 answered
+first. Slices 3–5 wait on 2.
 
 ## Use case — the nanoreactor tunnel
 
@@ -57,9 +62,10 @@ Two pocket cases:
   DRC reports `measurand_unchecked` for every non-geometric measure.
 - **GFN2 (tblite).** `src/precis/structure/relax.py::_xtb_calculator`
   builds `TBLite(method="GFN2-xTB", electronic_temperature=1000.0)` and
-  `src/precis/structure/relax.py::_relax_xtb` relaxes on it. It passes
-  no `charge` and no `multiplicity`, so every run today is a neutral
-  closed-shell run. NO and NH2 are doublets.
+  `src/precis/structure/relax.py::_relax_xtb` relaxes on it. Since
+  slice 1 both take `charge` and `multiplicity`, and so does
+  `relax(fidelity='xtb')` (slice 1 below). The structure handler and
+  the `struct_relax` worker still pass the defaults.
 - **MLIP (MACE).** The `ml` rung of
   `src/precis/structure/relax.py::relax` uses MACE.
   `src/precis/structure/relax.py::route_ml_model` routes organic
@@ -84,41 +90,51 @@ Two pocket cases:
   carry geometry and hybridisation, not chemistry.
 - **Gap field.** `src/precis_se/atomic/clearance.py::gap_field` measures
   nearest gaps between two atom clouds.
-- Nothing in the tree samples a molecular surface (no vdW, SAS or SES
-  code).
+- **Molecule surface (slice 1).**
+  `src/precis_se/properties/surface.py::paint_surface` samples a
+  scaled-vdW surface and paints it; there is no SAS or SES code.
 
 ## Slices
 
-### 1. Molecule surface with properties, viewable in the se viewer
+### 1. Molecule surface with properties — built 2026-10-17
 
-**Owning code:** new `src/precis_se/properties/surface.py`;
-`src/precis/structure/relax.py::_xtb_calculator` gains `charge` and
-`multiplicity` arguments; a new `view='surface'` on the se handler
-(`src/precis_se/handler.py`).
+What it does is in the docstrings of
+`src/precis_se/properties/surface.py` (the painter and the read) and
+`src/precis/structure/relax.py::_xtb_calculator` (charge and
+multiplicity), and in skill `precis-se-regions-help` §Paint a
+molecule's surface. In short:
 
-**Input:** an se atomic block bound to a posed structure; the
-molecule's total charge and spin multiplicity (NO: 0 and 2); a vdW
-scale and point density (defaults in open question 4).
+- `relax(fidelity='xtb', charge=, multiplicity=)` hands both to tblite.
+  The default stays neutral with multiplicity undeclared (zero unpaired
+  electrons, what every run got before). A declared multiplicity that
+  does not fit the electron count is refused
+  (`src/precis/structure/relax.py::check_charge_multiplicity`). Other
+  rungs refuse a non-default charge or multiplicity.
+- `get(kind='se', view='surface', args={'block', 'charge'?,
+  'multiplicity'?, 'scale'?, 'density'?, 'format'?})` runs one GFN2
+  single point on read and returns the per-atom table, or with
+  `format='json'` every point: position and normal in the se world
+  frame, owning atom, ESP (V), H-bond class and direction, polarity.
+  The JSON is the payload the se 3D viewer leaf owes rendering; the
+  rendering is se-3d-viewer's (`src/precis_web/blocktree_3d.py`).
+  Omitted charge is the sum of declared atom charges; omitted
+  multiplicity is the lowest the electron count allows, labelled as a
+  default.
+- Per-atom spin population: tblite returns none for non-spin-polarised
+  GFN2, and the read says so.
 
-**Output:** a list of surface points. Each point carries position,
-outward normal, the nearest atom, the electrostatic potential (a
-point-charge sum over GFN2 atomic charges), an H-bond class (`donor` on
-H bonded to N/O, `acceptor` on N/O with a lone pair, `none`) with its
-direction, and a polarity class (`polar` | `nonpolar`). The read also
-reports the method, charge, multiplicity and per-atom spin population
-when tblite returns one. Nothing is stored; a GFN2 single point on a
-small molecule is cheap enough to compute on read.
+Tests: `tests/test_se_molecule_surface.py`,
+`tests/test_structure_relax_xtb.py` (OH- charged, NO and NO+ open-shell
+and charged; the real-backend cases skip without tblite).
 
-**Viewer:** the surface is one extra leaf on the se 3D scene, coloured
-by the chosen property. Rendering is se-3d-viewer's
-(`src/precis_web/blocktree_3d.py`); this slice owes it the point or mesh
-payload.
-
-test: `tests/test_se_molecule_surface.py` (new) — on H2O every point
-lies within 0.05 Å of scale × vdW radius from its nearest atom, the two
-H carry `donor` patches, O carries `acceptor`, ESP is negative near O
-and positive near H; on NO the read records multiplicity 2; with tblite
-absent the view returns `Unsupported`, not a traceback.
+Measured 2026-10-17 (tblite on macOS): NO relaxes to 1.155 Å as a
+doublet, NO+ to 1.052 Å. At 1.15 Å, NO's GFN2 energy is the same
+with zero unpaired electrons (the old default) and as a doublet
+(−185.8907 eV): without spin polarisation the two half-filled pi*
+orbitals carry the same total density either way. Spin-polarised GFN2
+(`spin_polarization=1.0`) lowers it by 0.196 eV. Whether slices 3–5
+turn spin polarisation on for doublets is open question 12; where the
+read can run in prod is open question 13.
 
 ### 2. Pocket spec from surface (case a)
 
@@ -313,6 +329,28 @@ field, skills `precis-se-regions-help` and `precis-se-atomic-help`.
    its station. This item feeds T3/T4 rather than replacing them.
 4. **Surface parameters.** vdW versus SES, the radius scale, probe
    radius, point density, and the default clearance.
+   **PROVISIONAL (builder pick 2026-10-17, not Reto's answer).** Slice 1
+   runs on these until Reto rules; the surface values live in one
+   place, `src/precis_se/properties/surface.py::PROVISIONAL_SETTINGS`,
+   and `scale`/`density` can be overridden per read.
+   - Surface: union of scaled vdW spheres, no SES. It needs no probe,
+     every point sits on one atom's sphere (so its owning atom, and the
+     classes copied from it, are unambiguous), and the slice-1 test is
+     stated against it. SES would mostly smooth crevices a wall atom
+     cannot reach anyway.
+   - Radii: Bondi, the table `src/precis_se/atomic/clearance.py` already
+     measures gaps with, so a surface and a clearance read agree.
+   - Scale 1.0: the contact surface itself. Slice 2 offsets the pocket
+     by its own clearance, so a scale above 1 would count the gap
+     twice.
+   - Probe: none (follows from no SES).
+   - Density 3 points/Å²: about 0.6 Å between points, finer than
+     H-bond geometry, and 123 points on NO, 110 on water, so the JSON
+     payload stays small. At least 12 points per atom.
+   - Clearance (slice 2's default, not yet in code): 0 Å, meaning wall
+     atoms' vdW spheres touch the molecule's. H-bond contacts sit
+     inside that and steric ones near it; slice 2 should revisit this
+     once a wall exists to test against.
 5. **DFT path and settings.** `struct_relax` `dft-*` rungs or
    autocatpath's `dft` config; functional (station-path-finder names a
    range-separated hybrid; GPAW's hybrid support is limited), spin
@@ -347,3 +385,15 @@ field, skills `precis-se-regions-help` and `precis-se-atomic-help`.
     requirement is on the H-addition step (reaction energy and barrier
     for NH2 + H in the pocket versus free), not plain binding energy.
     Exact form open pending literature (papers queued 2026-10-17).
+12. **Spin polarisation for doublets.** Plain GFN2 with a multiplicity
+    only changes occupations (slice 1, measured on NO). tblite's
+    spin-polarised GFN2 gives a spin density and different energies.
+    Turn it on for NO and NH2 in slices 3–5's strain and binding
+    energies, or leave open-shell energetics to the DFT rung?
+13. **Where the surface read runs in prod.** The MCP container is
+    linux-aarch64 and has no tblite (no PyPI wheel; only the compute
+    hosts install the wheelhouse build), so `view='surface'` answers
+    `Unsupported` there today. Options: put the wheelhouse tblite wheel
+    in the MCP image; dispatch the single point as a job and read the
+    stored result; or a cheaper charge model (Gasteiger, EEQ) as a
+    labelled fallback. Deploy-side, so it is Reto's call.

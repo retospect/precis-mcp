@@ -183,6 +183,8 @@ def relax(
     model: str = "mace_mp",
     cell: str | None = None,
     dispersion: bool = False,
+    charge: int = 0,
+    multiplicity: int | None = None,
 ) -> RelaxResult:
     """Relax ``scene`` at the given ``fidelity`` rung (mutates in place).
 
@@ -199,6 +201,12 @@ def relax(
     badly under-bound without it: the MLIP's short receptive field simply does
     not see the attraction. Only rung ``ml`` has a dispersion correction to add;
     asking for one at ``clean``/``emt`` raises rather than being ignored.
+
+    ``charge`` (total, e) and ``multiplicity`` (2S+1, ``None`` = undeclared)
+    reach GFN2 on rung ``xtb`` (:func:`_xtb_calculator`) — an NH2 or NO
+    radical is ``multiplicity=2``. No other rung has a total-charge or spin
+    input (MACE takes neither), so a non-default value elsewhere raises
+    rather than being dropped.
     """
     if cell not in CELL_MODES:
         raise RelaxUnsupported(
@@ -221,6 +229,11 @@ def relax(
             f"dispersion=True needs an MLIP rung (fidelity='ml'); rung "
             f"{fidelity!r} has no potential to correct"
         )
+    if (charge != 0 or multiplicity is not None) and fidelity != "xtb":
+        raise RelaxUnsupported(
+            f"charge/multiplicity need rung 'xtb' (GFN2-xTB); rung {fidelity!r} "
+            "has no total-charge or spin input"
+        )
     if fidelity in ("clean", "0"):
         return _relax_clean(scene, steps=steps, tol=tol)
     if fidelity == "geo":
@@ -228,7 +241,9 @@ def relax(
     if fidelity == "emt":
         return _relax_emt(scene, steps=steps, tol=tol)
     if fidelity == "xtb":
-        return _relax_xtb(scene, steps=steps, tol=tol)
+        return _relax_xtb(
+            scene, steps=steps, tol=tol, charge=charge, multiplicity=multiplicity
+        )
     if fidelity == "ml":
         return _relax_ml(
             scene,
@@ -483,7 +498,60 @@ def _relax_emt(scene: Scene, *, steps: int, tol: float) -> RelaxResult:
     )
 
 
-def _xtb_calculator():
+def _vet_charge_multiplicity(charge: int, multiplicity: int | None) -> None:
+    """Type and range of a total charge (any int) and a multiplicity
+    (``None`` or an int >= 1); ``ValueError`` otherwise."""
+    if isinstance(charge, bool) or not isinstance(charge, int):
+        raise ValueError(f"charge must be an integer (e), got {charge!r}")
+    if multiplicity is not None and (
+        isinstance(multiplicity, bool)
+        or not isinstance(multiplicity, int)
+        or multiplicity < 1
+    ):
+        raise ValueError(
+            f"multiplicity must be an integer >= 1 (2S+1: 1 singlet, 2 "
+            f"doublet, 3 triplet), got {multiplicity!r}"
+        )
+
+
+def check_charge_multiplicity(
+    elements: list[str], charge: int, multiplicity: int | None
+) -> int:
+    """Vet a total ``charge`` and spin ``multiplicity`` (2S+1) against the
+    atoms they describe; return the electron count (sum of Z minus charge).
+
+    ``multiplicity=None`` means "not declared" and skips the parity test
+    (:func:`_xtb_calculator`'s legacy default). A declared multiplicity
+    must match the electron count's parity: an even count takes an odd
+    multiplicity (singlet, triplet), an odd count an even one (NO with 15
+    electrons is a doublet). Core electrons pair up, so the parity of the
+    total count is the parity of GFN2's valence count. Raises
+    ``ValueError`` naming the fix; the xtb backend would otherwise fail
+    deep in the SCF with a bare "not compatible" message."""
+    from ase.data import atomic_numbers
+
+    _vet_charge_multiplicity(charge, multiplicity)
+    unknown = sorted({e for e in elements if e not in atomic_numbers})
+    if unknown:
+        raise ValueError(f"unknown element symbol(s) {unknown}")
+    electrons = sum(atomic_numbers[e] for e in elements) - charge
+    if electrons < 0:
+        raise ValueError(
+            f"charge {charge:+d} removes more electrons than the "
+            f"{electrons + charge} the atoms carry"
+        )
+    if multiplicity is not None and (electrons + multiplicity - 1) % 2:
+        lowest = 1 if electrons % 2 == 0 else 2
+        raise ValueError(
+            f"multiplicity {multiplicity} does not fit {electrons} electrons "
+            f"(charge {charge:+d}): an {'even' if electrons % 2 == 0 else 'odd'} "
+            f"count takes an {'odd' if electrons % 2 == 0 else 'even'} "
+            f"multiplicity — the lowest is {lowest}"
+        )
+    return electrons
+
+
+def _xtb_calculator(*, charge: int = 0, multiplicity: int | None = None):
     """The GFN2-xTB ASE calculator (tblite), or raise RelaxUnsupported.
 
     The import is isolated here so a missing backend gives one clean
@@ -493,7 +561,21 @@ def _xtb_calculator():
     the aarch64 compute hosts take the wheelhouse build from
     ``scripts/build-tblite-wheel`` instead (gr488907). GFN2
     at 1000 K electronic temperature is the recipe the hexfold neck re-runs
-    of 2026-10-11 validated (hexfold-corner/s4_xtb.py)."""
+    of 2026-10-11 validated (hexfold-corner/s4_xtb.py).
+
+    ``charge`` (e) and ``multiplicity`` (2S+1) are handed to tblite as its
+    own ``charge``/``multiplicity`` parameters (tblite runs
+    ``multiplicity - 1`` unpaired electrons). The defaults are what every
+    run before docs/backlog/pocket-from-molecule.md slice 1 got: neutral,
+    and ``multiplicity=None`` so tblite counts unpaired electrons from the
+    atoms' initial magnetic moments, which the scene→ASE bridges never set
+    — zero unpaired electrons: a closed shell for an even count, and for
+    an odd one an equal split that leaves the singly occupied orbital
+    half-filled in each spin channel. Parity against the atoms is
+    the caller's check (:func:`check_charge_multiplicity`), since this
+    function never sees them. The calculator is not spin-polarised, so
+    multiplicity changes the occupations, not a spin density."""
+    _vet_charge_multiplicity(charge, multiplicity)
     try:
         from tblite.ase import TBLite
     except ImportError as exc:
@@ -502,10 +584,23 @@ def _xtb_calculator():
             "'precis-mcp[estimate]'; PyPI has no linux-aarch64 wheel, so "
             "those hosts install the wheelhouse build (scripts/build-tblite-wheel)"
         ) from exc
-    return TBLite(method="GFN2-xTB", electronic_temperature=1000.0, verbosity=0)
+    return TBLite(
+        method="GFN2-xTB",
+        charge=charge,
+        multiplicity=multiplicity,
+        electronic_temperature=1000.0,
+        verbosity=0,
+    )
 
 
-def _relax_xtb(scene: Scene, *, steps: int, tol: float) -> RelaxResult:
+def _relax_xtb(
+    scene: Scene,
+    *,
+    steps: int,
+    tol: float,
+    charge: int = 0,
+    multiplicity: int | None = None,
+) -> RelaxResult:
     """Rung ``xtb``: relax on GFN2-xTB via tblite's ASE calculator.
 
     The relaxer of record for hexfold blocks (Reto 2026-10-11, gr472846):
@@ -523,6 +618,11 @@ def _relax_xtb(scene: Scene, *, steps: int, tol: float) -> RelaxResult:
     (variable-cell requests are refused in :func:`relax` before this
     runs). A missing tblite raises :class:`RelaxUnsupported` naming the
     platform limit (no linux-aarch64 wheel on PyPI).
+
+    ``charge``/``multiplicity`` reach the calculator unchanged
+    (:func:`_xtb_calculator`); a declared multiplicity is first checked
+    against the atoms' electron count (:func:`check_charge_multiplicity`,
+    ``ValueError`` on a parity mismatch).
     """
     if not export.ase_available():
         raise RelaxUnsupported(
@@ -531,6 +631,9 @@ def _relax_xtb(scene: Scene, *, steps: int, tol: float) -> RelaxResult:
     from ase.constraints import FixAtoms
     from ase.optimize import FIRE
 
+    check_charge_multiplicity(
+        [a.element for a in scene.atoms.values()], charge, multiplicity
+    )
     atoms = export._to_ase(scene)
     labels = list(scene.atoms)
     before = np.array([scene.cell.frac_to_cart(scene.atoms[la].frac) for la in labels])
@@ -538,7 +641,7 @@ def _relax_xtb(scene: Scene, *, steps: int, tol: float) -> RelaxResult:
     pinned = [idx for idx, la in enumerate(labels) if scene.atoms[la].fixed]
     if pinned:
         atoms.set_constraint(FixAtoms(indices=pinned))
-    atoms.calc = _xtb_calculator()
+    atoms.calc = _xtb_calculator(charge=charge, multiplicity=multiplicity)
 
     curve: list[float] = []
 

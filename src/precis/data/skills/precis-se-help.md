@@ -304,7 +304,8 @@ literature · fret · links · export · cut · ops`. No `mass` view — mass
 goes via `bom`. `interview` elicits what's missing.
 Atomic-mode views — `mechanics`/`literature`/`topology`/`sites`/
 `catalogue`, and `clearance`'s atomic path (vdW gap, `sweep`, `lining`)
-— are documented in `precis-se-atomic-help`; `view='cut'` is the
+— are documented in `precis-se-atomic-help`; `view='surface'` (a bound
+molecule's GFN2-painted surface) in `precis-se-regions-help`; `view='cut'` is the
 flat-pack file (`precis-se-flatpack-help`).
 
 The default tree shows, beside each structure-bound block, both halves labelled

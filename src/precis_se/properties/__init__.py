@@ -37,6 +37,15 @@ measures are derived from their ``datum``. Until slice B fills
 :data:`COMPUTERS`, DRC's ``measurand_unchecked`` names every measure nothing
 computes. Block names may not contain ``/ @ [ ]``
 (:data:`precis_se.ops.BLOCK_NAME_RESERVED`).
+
+**The molecule painter** (:mod:`precis_se.properties.surface`,
+``view='surface'``; docs/backlog/pocket-from-molecule.md slice 1) samples
+a bound molecule's van der Waals surface and paints each point with a
+GFN2 point-charge ESP, an H-bond class and a polarity class. It computes
+on read and registers no computer yet: slice 2 turns its output into
+pocket regions, and running it on a wall cluster is what fills
+:data:`COMPUTERS`. It is not imported here, so this package stays free
+of the cad and structure imports it needs.
 """
 
 from __future__ import annotations

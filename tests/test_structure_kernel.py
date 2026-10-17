@@ -1025,7 +1025,7 @@ def test_relax_rented_rungs_are_gated(monkeypatch) -> None:
 
     # 'xtb' is a local-backend rung (tblite), present on x86_64 CI via the
     # [estimate] extra — force it absent too, as on the aarch64 nodes.
-    def _no_tblite():
+    def _no_tblite(**_kw):
         raise RelaxUnsupported("no tblite (test)")
 
     monkeypatch.setattr(relax_mod, "_xtb_calculator", _no_tblite)

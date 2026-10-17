@@ -10,6 +10,7 @@ answers:
   - how do I address part of a face, a rim, a seam span or specific atoms in a selector?
   - why does view='drc' report measurand_unchecked?
   - why is my measurand refused or ambiguous?
+  - how do I see where a bound molecule is charged, H-bond donating or accepting, polar or nonpolar?
 applies-to: get/edit/put (kind='se'); search/get (kind='taxon') to find a measurand; read precis-se-help first for the op grammar
 status: active
 tags: design
@@ -166,6 +167,48 @@ get(kind='se', id='rotor', view='ops')        # round-trips measurand + pockets
 `view='pockets'` lists each region and one line per measure: measurand,
 unit, band, strength and the realised value. A design with no pockets
 returns an empty list.
+
+## Paint a molecule's surface — view='surface'
+
+```python
+get(kind='se', id='nano', view='surface',
+    args={'block': 'no', 'multiplicity': 2})          # per-atom table
+get(kind='se', id='nano', view='surface',
+    args={'block': 'no', 'format': 'json'})           # every point
+```
+
+One GFN2-xTB single point on the block's bound molecule, run on every
+read and never stored, then a van der Waals surface painted with:
+
+- **ESP** (V): a point-charge sum over the GFN2 Mulliken charges.
+- **H-bond class**: `donor` on H bonded to N or O (direction X→H),
+  `acceptor` on N or O with a lone pair (valence electrons − formal
+  charge − neighbours ≥ 2; direction away from the neighbours), else
+  `none`. The rule ignores pi delocalisation, so a pyrrole or amide N
+  reads as an acceptor.
+- **Polarity**: `polar` on N, O, F and H bonded to them, else
+  `nonpolar`.
+
+Each point also carries its position and outward normal in the se
+world frame (the block pose applied, Å) and the atom whose sphere it
+lies on. `format='json'` returns them all, the payload for a 3D
+viewer.
+
+- `charge` (e) defaults to the sum of the atoms' declared charges.
+  `multiplicity` (2S+1) defaults to the lowest the electron count
+  allows: NO (15 electrons) reads as a doublet. Pass it for a high-spin
+  ground state (O2 is a triplet). A multiplicity that does not fit the
+  electron count is refused.
+- Surface settings are **provisional**: Bondi radii × 1.0, 3 points/Å²,
+  no probe. `scale` (0.5–3) and `density` (points/Å², up to 20)
+  override them for one read.
+- No per-atom spin population: the GFN2 run is not spin-polarised, and
+  the read says so.
+- Needs tblite in the serving process. Without it the read is
+  `Unsupported`; it is not dispatched to a compute node. The limit is
+  200 atoms, and the structure must be one isolated molecule.
+- Nothing writes a region measure from this yet; that is pocket
+  slice 2.
 
 ## Why view='drc' says measurand_unchecked
 
