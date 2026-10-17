@@ -32,10 +32,9 @@ none), and the nets. The model answers strict JSON:
   facts/margin revisions), so the next run skips the item until one of
   those moves — still zero model calls on an unchanged design.
 
-The fresh check run itself is the caller's: ``put(args={'op':'review'})``
-records ``view='check'``'s run (``record=True``) before it enqueues
-the job, because the check surface lives in the handler layer the worker may not import.
-The job quotes that run by id.
+The job runs the fresh check itself (:func:`precis.pcb.check_run.run`,
+persisted; Reto 2026-10-16 (3a)) once the queue has work, then quotes
+that run by id.
 """
 
 from __future__ import annotations

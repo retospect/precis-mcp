@@ -3565,7 +3565,7 @@ class PcbMixin:
         self, board_id: int, *, phase: str | None = None
     ) -> tuple[str | None, list[dict[str, Any]]]:
         """The latest recorded run on ``board_id`` and its rows — what the
-        run being computed diffs against (``PcbHandler._drc_record`` calls
+        run being computed diffs against (``check_run.record_run`` calls
         this BEFORE any :meth:`pcb_write_drc_findings`; a read writes none). ``(None, [])`` when no run
         has ever been recorded.
 

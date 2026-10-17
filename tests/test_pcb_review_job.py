@@ -376,17 +376,27 @@ def test_part_input_resolves_unknown_part_to_none(store: Store, board: int) -> N
 # ── op='review' ───────────────────────────────────────────────────────
 
 
-def test_op_review_runs_check_and_enqueues_once(store: Store, board: int) -> None:
+def test_op_review_enqueues_once_and_runs_no_check(store: Store, board: int) -> None:
     pcb = PcbHandler(hub=Hub(store=store))
     resp = pcb.put(id="rv-board", args={"op": "review", "limit": 5})
     assert "enqueued" in resp.body
-    assert "check run" in resp.body
-    run_id, _ = store.pcb_drc_findings_latest(board)
-    assert run_id is not None
+    # The job runs the check, not the put.
+    assert store.pcb_drc_findings_latest(board)[0] is None
     # Same queue state → the same idempotency key (no second job).
     again = pcb.put(id="rv-board", args={"op": "review", "limit": 5})
     assert "created job id=" in resp.body
     assert "existing job id=" in again.body
+
+
+def test_job_runs_check_surface_itself(
+    store: Store, board: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install(monkeypatch, _PASS)
+    assert store.pcb_drc_findings_latest(board)[0] is None
+    summaries, failures = _run(store, board, limit=1)
+    assert not failures
+    assert store.pcb_drc_findings_latest(board)[0] is not None
+    assert "check run" in "\n".join(summaries)
 
 
 def test_op_review_settled_item_queues_nothing(
@@ -401,3 +411,29 @@ def test_op_review_settled_item_queues_nothing(
     assert "nothing to review" in resp.body
     with pytest.raises(BadInput, match="not an item"):
         pcb.put(id="rv-board", args={"op": "review", "item": "no-such-item"})
+
+
+# ── whole-board fingerprint vs. recorded check runs ───────────────────
+
+
+def test_whole_board_fingerprint_ignores_recorded_check_run(
+    store: Store, board: int
+) -> None:
+    """A recorded check run stamps ``board.meta['drc_runs_by_phase']``;
+    that is bookkeeping, so the whole-board digest holds. A real design
+    edit (moving a placed instance) still moves it."""
+    from precis.pcb import check_run
+
+    bridge = PcbBridge()
+    before = bridge.fingerprint(store, board, []).digest
+
+    design = store.pcb_load(board)
+    check_run.run(store, board, design, record=True)
+
+    # Non-vacuous: the run really was recorded.
+    recorded = store.pcb_load(board)["board"].get("meta") or {}
+    assert recorded.get("drc_runs_by_phase"), recorded
+    assert bridge.fingerprint(store, board, []).digest == before
+
+    assert store.pcb_move_instance(board, "R1", x=12.5, y=7.25)
+    assert bridge.fingerprint(store, board, []).digest != before

@@ -82,11 +82,10 @@ import json
 import logging
 import math
 import tempfile
-import uuid
 from collections.abc import Callable, Iterable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, ClassVar, NamedTuple
+from typing import Any, ClassVar
 
 from precis import bom_nudge
 from precis.config import load_config
@@ -97,6 +96,7 @@ from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.pcb import (
     PIN_ETYPES,
     argue,
+    check_run,
     eyes,
     format_route_summary,
     format_warm_start,
@@ -108,7 +108,6 @@ from precis.pcb import (
 )
 from precis.pcb import catalog as pcb_catalog
 from precis.pcb import connectivity as pcb_connectivity
-from precis.pcb import cost as pcb_cost
 from precis.pcb import datasheets as pcb_datasheets
 from precis.pcb import drc as pcb_drc
 from precis.pcb import edge_mate as pcb_edge_mate
@@ -135,10 +134,10 @@ from precis.pcb import selectables as pcb_selectables
 from precis.pcb import session as pcb_session
 from precis.pcb import silk as pcb_silk
 from precis.pcb import svg as pcb_svg
-from precis.pcb.capabilities import CapabilityRow, capability_for, coating_extent_mm
+from precis.pcb.capabilities import CapabilityRow, capability_for
 from precis.pcb.footprint import fetch_footprint
-from precis.pcb.landpattern import place_points, rotate_offset
-from precis.pcb.rules import NetRules, resolve_net_rules
+from precis.pcb.landpattern import rotate_offset
+from precis.pcb.rules import NetRules
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
@@ -159,21 +158,7 @@ from precis.utils.units import parse_angle_deg
 log = logging.getLogger(__name__)
 
 
-def _export_date() -> str:
-    """Today, UTC, for the silkscreen title block.
-
-    :func:`precis.pcb.silk.build_title_block` refuses to invent a date and
-    requires the caller to supply one, which is right for a library: a
-    date on a board is a claim about that artwork. The handler is the
-    layer that legitimately holds one — this IS the export, so the export
-    date is a fact it has rather than a guess.
-
-    There is no stored design revision to pair it with (``pcb_boards``
-    carries ``board_id``/``name``/``stackup``/``fold_lines`` and no
-    version or timestamp column), so the block renders name + date and
-    omits the revision rather than fabricating one.
-    """
-    return datetime.now(UTC).date().isoformat()
+_export_date = check_run.export_date
 
 
 #: The "eyes" — analytic, computed-on-read (Slice 4/5).
@@ -399,18 +384,8 @@ def _pose_delta(
     return problems, standing
 
 
-class _DrcRun(NamedTuple):
-    """What :meth:`PcbHandler._drc_run` hands its callers. ``run_id`` is
-    ``None`` for a read (gr491591: ``view='check'``/``'drc'``/``'gerber'``
-    record nothing); only a ``record=True`` run has an id."""
-
-    run_id: str | None
-    findings: list[pcb_drc.DrcFinding]
-    pads_only: bool
-    delta: pcb_drc.FindingDelta
-    #: :meth:`Store.pcb_drc_run_freshness` of ``delta``'s baseline, taken
-    #: BEFORE this run records (recording prunes superseded stamps).
-    baseline: dict[str, Any] | None = None
+#: What :meth:`PcbHandler._drc_run` hands its callers.
+_DrcRun = check_run.DrcRun
 
 
 #: Gone findings listed in full up to this many; past it, a count.
@@ -746,8 +721,8 @@ class PcbHandler(Handler):
             "text box writes (handles REFDES | REFDES.PIN | net:NAME) — "
             "put(kind='job', job_type='pcb_argue', parent_id=<this ref>, "
             "params={'pcb_ref_id':N}) answers every open question in "
-            "place; put(args={'op':'review'}) runs the check and queues a "
-            "pcb_review job over the unchecked/stale pcb-tapeout items "
+            "place; put(args={'op':'review'}) queues a pcb_review job (it runs "
+            "its own fresh check) over the unchecked/stale pcb-tapeout items "
             "(precis-pcb-review-help); "
             "search over names; delete soft-retires; link/unlink "
             "edges to other refs (rel= per precis-relations — e.g. a "
@@ -1581,12 +1556,12 @@ class PcbHandler(Handler):
 
     def _op_review(self, ref: Any, args: dict[str, Any]) -> Response:
         """``put(args={'op':'review', 'item'?, 'limit'?})`` — pcb-datasheet-
-        review slice 7: run the check surface fresh (``view='check'``'s
-        run, persisted, ERC included) and enqueue a ``pcb_review`` job over
-        the ``pcb-tapeout`` judgment items that are not checked or stale.
-        The check runs here because it lives in this layer and the worker
-        may not import it; the job quotes the run by id. Nothing queued →
-        no job: a settled design costs no model call."""
+        review slice 7: enqueue a ``pcb_review`` job over the
+        ``pcb-tapeout`` judgment items that are not checked or stale. The
+        job runs the check surface fresh itself (:mod:`precis.pcb.
+        check_run`, persisted, ERC included) and quotes the run by id; this
+        op runs no check. Nothing queued → no job: a settled design costs
+        no model call."""
         design = self.store.pcb_load(ref.id)
         if design["board"] is None:
             raise BadInput(
@@ -1603,19 +1578,6 @@ class PcbHandler(Handler):
             if not 1 <= limit <= 60:
                 raise BadInput("pcb: review limit must be 1..60 items")
             params["limit"] = limit
-        ran = self._drc_run(
-            ref.id,
-            design,
-            eval_phase=self._design_phase(design),
-            eval_phase_claimed=False,
-            erc=True,
-            record=True,
-        )
-        check_line = (
-            "check: nothing the rules at this phase can check"
-            if ran is None
-            else f"check run {str(ran.run_id)[:12]}: {len(ran.findings)} finding(s)"
-        )
         q = pcb_review.queue(self.store, ref.id, item=item)
         if q.reason is not None:
             raise BadInput(f"pcb: {ref.slug}: {q.reason}")
@@ -1636,7 +1598,7 @@ class PcbHandler(Handler):
         )
         if not work:
             return Response(
-                body=f"# review {ref.slug} — nothing to review\n{check_line}\n"
+                body=f"# review {ref.slug} — nothing to review\n"
                 f"every judgment item is settled ({skipped} not checkable at "
                 "the current inputs); no job queued.\n" + status_next
             )
@@ -1655,7 +1617,8 @@ class PcbHandler(Handler):
         )
         return Response(
             body=f"# review {ref.slug} — enqueued ({len(work)} item(s) not "
-            f"checked or stale)\n{check_line}\n{job_resp.body}\n\n"
+            f"checked or stale)\n{job_resp.body}\n\n"
+            "The job runs a fresh check (DRC + ERC) first and quotes it by id.\n"
             f"{status_next} once the job lands — see precis-pcb-review-help."
         )
 
@@ -3351,11 +3314,9 @@ class PcbHandler(Handler):
         latest resolved snapshot laid over it (Slice 7). Every reader that
         names which pin carries which net (pads, ERC, ratsnest, exports)
         takes this, so it agrees with the routed copper. Idempotent:
-        :meth:`_build_ir` applying the snapshot again changes nothing."""
-        return pcb_resolved.apply(
-            self.store.pcb_graph(ref_id),
-            self.store.pcb_netlist_snapshot_latest(ref_id),
-        )
+        :meth:`_build_ir` applying the snapshot again changes nothing.
+        Delegates to :func:`precis.pcb.check_run.effective_graph`."""
+        return check_run.effective_graph(self.store, ref_id)
 
     def _export_model(self, ref_id: int) -> dict[str, Any]:
         """The normalised export IR (placement detail + net membership),
@@ -3382,30 +3343,9 @@ class PcbHandler(Handler):
         return out
 
     def _outline_from_features(self, ref_id: int) -> list[list[float]] | None:
-        """The board outline, as a plain point polygon — the single
-        parse point every view/export reads (gerber, board/fab SVG, DRC,
-        silk/fiducial furniture) so an ``outline`` feature's optional
-        ``corner_radius_mm`` (fillet + polygonize, see
-        :func:`precis.pcb.geom.rounded_polygon`) applies exactly once and
-        every downstream consumer inherits the rounded corners for free —
-        none of them special-case a radius, they just get more points.
-        ``corner_radius_mm`` absent or ``<= 0`` returns the sharp-corner
-        path unchanged, byte for byte."""
-        for f in self.store.pcb_features_list(ref_id):
-            geom = f.get("geom") or {}
-            if str(f.get("ftype") or "") == "outline" and isinstance(
-                geom.get("path"), list
-            ):
-                path = [[float(p[0]), float(p[1])] for p in geom["path"]]
-                radius = geom.get("corner_radius_mm")
-                if radius is not None and float(radius) > 0:
-                    ring: list[pcb_geom.Point] = [(p[0], p[1]) for p in path]
-                    return [
-                        [p[0], p[1]]
-                        for p in pcb_geom.rounded_polygon(ring, float(radius))
-                    ]
-                return path
-        return None
+        """Delegates to :func:`precis.pcb.check_run.outline_from_features` —
+        the single parse point every view/export reads the outline from."""
+        return check_run.outline_from_features(self.store, ref_id)
 
     def _build_ir(
         self,
@@ -3415,51 +3355,16 @@ class PcbHandler(Handler):
         with_fixed_copper: bool = False,
         fixed_copper: list[dict[str, Any]] | None = None,
     ) -> pcb_ir.PcbIR:
-        """:func:`precis.pcb.session.build_ir` with the board-config
-        features the store knows attached — one wrapper so no view can
-        build an IR that forgot the mounting holes. A hole missing from
-        the IR is invisible to the router's occupancy grid
-        (:func:`precis.pcb.realize._claim_mounting_holes`), which is the
-        ``npth_clearance`` finding family: measured 2026-09-01 as all
-        four nano-fixture corner holes violated, every seed.
-
-        Both footprint caches ride along for the same "no view may build a
-        forgetful IR" reason: they are what turn every pin's position from
-        a landpattern GUESS into the real footprint's own coordinate
-        (:func:`precis.pcb.session.apply_real_pin_offsets`, gripe 338983).
-        Threading them here rather than at each view means ``view='drc'``,
-        the ratsnest, the SVG previews and the place/route ops all measure
-        the same board the gerber writer exports.
-
-        The IR is built from the EFFECTIVE netlist: the authored graph
-        with the latest resolved snapshot laid over it
-        (``pcb_netlist_snapshots``, :func:`precis.pcb.resolved.apply`,
-        pcb-lazy-netlist-and-checks Slice 7). A view that read the
-        authored nets alone would disagree with the routed copper about
-        which supply pin carries which electrode.
-
-        ``with_fixed_copper`` adds the authored vias the placer keeps solder
-        lands off (``pcb_place``'s own hydration) — for a pose check.
-        ``fixed_copper`` supplies that list directly instead (a HYPOTHETICAL
-        board: ``op='move'`` of a generator group judges the carried copper
-        at its new pose before anything is written)."""
-        board_id = (graph.get("board") or {}).get("board_id")
-        ir = pcb_session.build_ir(
-            pcb_resolved.apply(graph, self.store.pcb_netlist_snapshot_latest(ref_id)),
-            mounting_holes=pcb_session.mounting_holes_from_features(
-                self.store.pcb_features_list(ref_id)
-            ),
-            footprints_by_lcsc=self.store.pcb_footprints_for(ref_id),
-            local_footprints_by_name=self.store.pcb_local_footprints_for(ref_id),
-            fixed_copper=(
-                fixed_copper
-                if fixed_copper is not None
-                else self.store.pcb_fixed_copper_list(int(board_id))
-                if with_fixed_copper and board_id is not None
-                else None
-            ),
+        """Delegates to :func:`precis.pcb.check_run.build_ir` — one wrapper
+        so no view can build an IR that forgot the mounting holes,
+        footprint caches or the resolved netlist snapshot."""
+        return check_run.build_ir(
+            self.store,
+            ref_id,
+            graph,
+            with_fixed_copper=with_fixed_copper,
+            fixed_copper=fixed_copper,
         )
-        return ir
 
     def _layer_lock_lines(self, ref_id: int, graph: dict[str, Any]) -> str:
         """``view='feasibility'``'s net-class layer-lock section
@@ -3616,95 +3521,15 @@ class PcbHandler(Handler):
         dict[str, list[tuple[float, float]]],
         dict[str, dict[str, Any]],
     ]:
-        """DRC's pads (the same IR-sourced geometry :meth:`_drc_pads`
-        builds, off ONE ``build_ir`` call here rather than two independent
-        ones) plus each instance's courtyard POLYGON in local-frame
-        coordinates, keyed by refdes, plus the refdes-keyed footprint map
-        the pad build consumed (Slice 2's ``undeclared_pad`` rule needs it
-        to tell "footprint cached, every pad declared" from "footprint
-        never cached — cannot check").
-
-        **The shape is not computed here, and since 2026-08-30 there is
-        only one of it.** :func:`precis.pcb.ir.instance_courtyard_polygon`
-        — the convex hull of the part's own pad outlines, offset outward —
-        is what the placer reserves
-        (``OptimizeEngine._keepout_poly``/``seed_placement``), what
-        ``courtyard_overlap`` and ``outline_containment`` check, and what
-        :mod:`precis.pcb.silk` draws. Three consumers, one definition,
-        which is the whole point of ``docs/backlog/
-        pcb-courtyard-polygon.md``.
-
-        **The three differ only in the CLEARANCE they offset by, and that
-        is a real difference, not drift.** The placer and this view use
-        :data:`~precis.pcb.ir.COURTYARD_CLEARANCE_MM` — how much room a router
-        needs to escape between two land patterns. Silk uses
-        :func:`precis.pcb.silk.silk_clearance_mm`, walked down the fab
-        chain — how far ink must sit from a mask opening it must not
-        touch. Different questions against different standards, answered
-        at different points in the pipeline; what must NOT differ is the
-        shape they are offsets of.
-
-        Before this, a circle stood in for all of it, and a flat
-        :data:`~precis.pcb.drc.DEFAULT_COURTYARD_RADIUS_MM` before that
-        made ``courtyard_overlap`` structurally dormant: smaller than any
-        real part's keep-out, so placement always separated parts further
-        than the check would ever flag — a TO-220's several-millimetre
-        courtyard checked against nothing."""
-        graph = self.store.pcb_graph(ref_id)
-        ir = self._build_ir(ref_id, graph)
-        footprints = pcb_session.footprints_by_refdes(
-            ir,
-            self.store.pcb_footprints_for(ref_id),
-            local_footprints_by_name=self.store.pcb_local_footprints_for(ref_id),
-            local_names_by_refdes=pcb_session.local_footprint_names_by_refdes(graph),
-        )
-        pads = (
-            pcb_realize.pads_for_ir(ir, layers, footprints) if graph.get("nets") else []
-        )
-        polys = pcb_ir.instance_courtyard_polygons(
-            ir,
-            clearance_mm=pcb_ir.COURTYARD_CLEARANCE_MM,
-            fallback_half_extent_mm=pcb_cost.COURTYARD_MIN_SEPARATION_MM / 2.0,
-        )
-        return (
-            pads,
-            {str(ir.instance_refdes[i]): polys[i] for i in range(ir.n_instances)},
-            footprints,
-        )
+        """Delegates to :func:`precis.pcb.check_run.geometry` — DRC's pads,
+        courtyard polygons and the refdes-keyed footprint map."""
+        return check_run.geometry(self.store, ref_id, layers)
 
     def _drc_drills(self, ir: pcb_ir.PcbIR) -> list[dict[str, Any]]:
-        """``model['drills']`` for :func:`precis.pcb.drc.
-        check_npth_clearance` — the IR's mounting holes (``mounting_hole``
-        features plus every instance's footprint holes at its current
-        pose), the mechanical holes that check exists to protect (a screw hole is never a
-        soldered lead, so it is unplated by construction). Before this,
-        ``_render_drc`` never populated ``drills`` at all, so
-        ``check_npth_clearance`` — wired into ``run_geometric_drc`` and
-        reading ``model.get('drills')`` — was structurally incapable of
-        firing regardless of design content, on every board, every seed.
-
-        Field names match BOTH of ``model['drills']``'s existing consumers
-        verbatim — :func:`precis.pcb.drc.check_npth_clearance`'s own
-        ``{"x","y","dia_mm","plated"}`` reads and
-        :func:`precis.pcb.gerber.excellon_files` /
-        :func:`precis.pcb.padplace.place_footprint_pads`'s identical
-        shape for a through-hole component pad's drill — so this never
-        invents a third spelling.
-
-        **A through-hole component pad's own drill is NOT included here**:
-        DRC's pad source (:func:`precis.pcb.realize.pads_for_ir`, the IR
-        path this view deliberately uses so pads and connectivity share
-        ONE source — see :meth:`_render_drc`'s own comment) carries each
-        pad's ``drill``/``slot`` on the pad itself, where the drilled-pad
-        rules already read it (:func:`precis.pcb.drc.check_annular_ring`'s
-        ``_drilled_pad_ring_items``, ``clearance_pairs_indexed``'s
-        "spans every layer" signal). ``check_npth_clearance`` — this
-        list's consumer — only wants the unplated holes anyway. The
-        plated-hole side for the FAB model is :meth:`_pad_drills`."""
-        return [
-            {"x": h.x, "y": h.y, "dia_mm": h.drill_mm, "plated": h.plated}
-            for h in ir.mounting_holes
-        ]
+        """Delegates to :func:`precis.pcb.check_run.drills` (the unplated
+        mounting holes ``check_npth_clearance`` protects; a through-hole
+        pad's own drill is :meth:`_pad_drills`)."""
+        return check_run.drills(ir)
 
     @staticmethod
     def _pad_drills(pads: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -5552,58 +5377,9 @@ class PcbHandler(Handler):
         dict[str, NetRules],
         dict[str, float],
     ]:
-        """``(courtyards, courtyard_bottom, net_rules, net_voltages)`` — the
-        per-design inputs the geometric rules take besides the copper model.
-        Shared by :meth:`_drc_run` and :meth:`_validity_findings` so the two
-        cannot judge a board by different courtyards or class rules."""
-        # The part's own courtyard POLYGON (see :meth:`_drc_geometry`),
-        # placed into board coordinates through the SAME affine path its
-        # pads and its silkscreen travel — a courtyard that rotated by a
-        # different convention would reserve space where the part's own
-        # copper is not, and look plausible doing it. A refdes the IR
-        # somehow didn't carry falls back to the flat
-        # ``DEFAULT_COURTYARD_RADIUS_MM`` square: a safety net, not the
-        # normal path, and deliberately still SOMETHING rather than
-        # nothing, since a part checked against no shape is a part the
-        # rule cannot see.
-        _flat = pcb_drc.DEFAULT_COURTYARD_RADIUS_MM
-        _fallback = [(-_flat, -_flat), (_flat, -_flat), (_flat, _flat), (-_flat, _flat)]
-        courtyards: list[pcb_drc.Courtyard] = [
-            (
-                str(i["refdes"]),
-                place_points(
-                    courtyard_local.get(str(i["refdes"])) or _fallback,
-                    cx=float(i["x"]),
-                    cy=float(i["y"]),
-                    rot_deg=float(i.get("rot") or 0.0),
-                ),
-            )
-            for i in design["instances"]
-            if i["x"] is not None and i["y"] is not None
-        ]
-        # gr341516 — a courtyard reservation says nothing about which side
-        # of the board it sits on; two parts on OPPOSITE sides, one
-        # directly beneath the other (an EWOD sink grid's whole point,
-        # `generators.py`'s own module docstring), are not colliding.
-        # `padplace.is_bottom_instance` is the SAME predicate `_drc_pads`'s
-        # own pad source now reads (`ir.py::from_graph` ->
-        # `PcbIR.inst_bottom`) -- one parse of `pcb_instances.layer`, not a
-        # second one narrower than it.
-        courtyard_bottom = {
-            str(i["refdes"]): padplace.is_bottom_instance(i)
-            for i in design["instances"]
-        }
-        net_rules = self._clearance_net_rules(design, capability)
-        # §E-1's PAIRWISE voltage term. Only annotated nets are in the map —
-        # a net missing here is "not annotated", never 0 V, and
-        # `check_clearance` reports the difference rather than inventing a
-        # potential (`pcb-missing-constraint-classes.md` §E-1).
-        net_voltages = {
-            str(n["name"]): float(n["working_voltage_v"])
-            for n in design["nets"]
-            if n.get("working_voltage_v") is not None
-        }
-        return courtyards, courtyard_bottom, net_rules, net_voltages
+        """Delegates to :func:`precis.pcb.check_run.rule_inputs`; shared by
+        the check run and :meth:`_validity_findings`."""
+        return check_run.rule_inputs(design, courtyard_local, capability)
 
     @staticmethod
     def _clearance_net_rules(
@@ -5615,30 +5391,8 @@ class PcbHandler(Handler):
         return pcb_session.clearance_net_rules(design, capability)
 
     def _design_phase(self, design: dict[str, Any]) -> str:
-        """The phase the check surface judges at (Slice 8): the author's
-        claim (``pcb_boards.meta['phase']`` via ``op='phase'``) when one is
-        recorded, else :func:`precis.pcb.drc.derive_phase`'s read of what
-        exists. ``fab`` can ONLY come from the authored claim — nothing
-        observable distinguishes "all routed" from "tape-out ready"."""
-        board = design.get("board") or {}
-        authored = str((board.get("meta") or {}).get("phase") or "")
-        if authored in pcb_drc.PHASES:
-            return authored
-        return pcb_drc.derive_phase(
-            placed=any(
-                i.get("x") is not None and i.get("y") is not None
-                for i in design["instances"]
-            ),
-            routed=any(k != "unrouted" for k in (design.get("route_status") or {})),
-        )
-
-    def _drc_baseline_freshness(
-        self, board_id: int, run_id: str | None
-    ) -> dict[str, Any] | None:
-        if run_id is None:
-            return None
-        ref_id = self.store.pcb_board_ref_id(board_id)
-        return self.store.pcb_drc_run_freshness(ref_id, run_id)
+        """Delegates to :func:`precis.pcb.check_run.design_phase`."""
+        return check_run.design_phase(design)
 
     def _drc_record_hint(self, ref_id: int, run_id: str | None) -> str:
         """The record-a-run pointer under a read-only check view; empty
@@ -5648,81 +5402,6 @@ class PcbHandler(Handler):
         ref = self.store.get_ref(kind="pcb", id=ref_id)
         slug = ref.slug if ref is not None and ref.slug else "slug"
         return _DRC_RECORD_HINT.format(slug=slug)
-
-    def _drc_record(
-        self,
-        board_id: int,
-        findings: list[pcb_drc.DrcFinding],
-        pads_only: bool,
-        phase: str | None = None,
-        *,
-        record: bool = False,
-    ) -> _DrcRun:
-        """Diff one run against the last recorded one and, with
-        ``record``, persist it — the tail of :meth:`_drc_run` shared by
-        every phase-scoped branch. Without ``record`` nothing is written
-        and ``run_id`` is ``None`` (gr491591: a get is read-only).
-
-        ``phase`` keys the delta BASELINE: the run diffs only against the
-        previous run of the same phase and becomes that phase's baseline —
-        a ``netlist`` eval's zero copper findings must never read to the
-        next full run as "everything resolved"."""
-        prev_run_id, prev_rows = self.store.pcb_drc_previous_run(board_id, phase=phase)
-        baseline = self._drc_baseline_freshness(board_id, prev_run_id)
-        run_id: str | None = None
-        if record:
-            run_id = uuid.uuid4().hex
-            self.store.pcb_write_drc_findings(
-                board_id,
-                run_id,
-                [f.to_row() for f in findings],
-                pads_only=pads_only,
-                phase=phase,
-            )
-        delta = pcb_drc.delta_against(prev_run_id, prev_rows, findings)
-        return _DrcRun(run_id, list(findings), pads_only, delta, baseline)
-
-    def _erc_findings(
-        self,
-        design: dict[str, Any],
-        graph: dict[str, Any],
-        pads: list[dict[str, Any]],
-    ) -> list[pcb_drc.DrcFinding]:
-        """Slice 5's netlist ERC — the §1h rules over the §1i pin
-        semantics, one finding list with the geometric run's. Pin
-        positions come from the pads the run already placed (real
-        footprint geometry where cached), not instance centroids."""
-        roles_by_refdes = {
-            str(i.get("refdes")): list(i.get("roles") or [])
-            for i in design["instances"]
-        }
-        positions = {
-            (str(p["refdes"]), str(p["pin"])): (float(p["x"]), float(p["y"]))
-            for p in pads
-            if p.get("refdes") and p.get("pin") is not None
-        }
-        nets = graph.get("nets") or []
-        return (
-            pcb_drc.check_pin_conflicts(nets)
-            + pcb_drc.check_no_driver(nets)
-            + pcb_drc.check_over_voltage(nets, design.get("net_classes"))
-            + pcb_drc.check_rail_crossing(nets, roles_by_refdes)
-            + pcb_drc.check_no_decoupling(
-                nets, positions, roles_by_refdes=roles_by_refdes
-            )
-            + pcb_drc.check_over_current(nets)
-            + self._unsupplied_client_findings(graph)
-            + pcb_drc.check_passive_rating(
-                nets, graph.get("instances") or [], design.get("net_classes")
-            )
-        )
-
-    @staticmethod
-    def _unsupplied_client_findings(graph: dict[str, Any]) -> list[pcb_drc.DrcFinding]:
-        from precis.workers.job_types import pcb_route as pcb_route_job
-
-        clients, supplies, roles = pcb_route_job._matching_model(graph, [])
-        return pcb_drc.check_unsupplied_client(clients, supplies, roles)
 
     def _drc_run(
         self,
@@ -5734,279 +5413,19 @@ class PcbHandler(Handler):
         erc: bool = False,
         record: bool = False,
     ) -> _DrcRun | None:
-        """One check-surface run over ``design`` (which must have a board):
-        with ``record`` the findings persist under a fresh ``run_id`` (a
-        ``pcb_drc_runs`` row even when clean) — only the explicit paths
-        pass it (``op='check'``, ``op='review'``; gr491591, Reto
-        2026-10-16) — plus the delta against the board's last recorded
-        run (:func:`precis.pcb.drc.delta_against`, by ``finding_key``).
-        ``None`` when there is nothing real to check — no realized copper
-        and every placed pad a synthesized bound.
-
-        ``eval_phase`` is ``view='check'``'s phase axis (Slice 8): the
-        phase to judge AT — ``args.phase``'s explicit override, or the
-        authored ``op='phase'`` claim, or the derived default when neither
-        caller supplies one. ``netlist`` runs only the netlist/flag rules
-        and never touches ``pcb_copper``; ``placed`` is the pads-only run
-        (pad geometry, no copper); ``routed``/``fab`` the full geometric
-        pass. ``view='drc'`` calls this with ``None``: same run it has
-        always done.
-
-        ``eval_phase_claimed=False`` marks ``eval_phase`` as the derived
-        default (``view='check'`` with no ``args.phase``): it tiers
-        severities and keys the delta, but never scopes the run — only an
-        ``args.phase`` or authored claim makes ``placed`` pads-only
-        (gr488909: taz15's 749 imported tracks went unchecked at its
-        derived ``placed``).
-
-        ``erc=True`` adds Slice 5's netlist ERC rules — ``view='check'``
-        passes it (the check surface is the superset); ``view='drc'`` is
-        the preset and does not.
-
-        Split out of :meth:`_render_drc` so ``view='gerber'`` asks the SAME
-        question the DRC view answers before it hands over a fab bundle,
-        rather than a second, narrower one."""
-        board = design["board"]
-        stackup = board["stackup"]
-        try:
-            capability = capability_for(pcb_drc.process_for_stackup(stackup))
-        except ValueError as exc:
-            raise BadInput(f"pcb: {exc}") from exc
-        layer_names = [str(layer.get("name")) for layer in stackup]
-        # Pads come from the IR, which is the SAME source the router and the
-        # realizer use (precis.pcb.landpattern via ir.pin_point). A second
-        # pad source is how this build's recurring defect works — one rule,
-        # two call sites, drifted — and connectivity is precisely the check
-        # that would be fooled by pads in the wrong place.
-        pads, courtyard_local, footprints = self._drc_geometry(ref_id, layer_names)
-
-        # The phase this board is judged at: an explicit ``eval_phase``,
-        # the authored claim, or the derived default — in that order.
-        phase = eval_phase or self._design_phase(design)
-        undeclared_unchecked = [
-            str(i.get("refdes"))
-            for i in design["instances"]
-            if (i.get("part_lcsc") or i.get("footprint"))
-            and str(i.get("refdes")) not in footprints
-        ]
-
-        graph = self._effective_graph(ref_id)
-        board_id = int(board["board_id"])
-        authored_phase = str((board.get("meta") or {}).get("phase") or "")
-        if authored_phase not in pcb_drc.PHASES:
-            authored_phase = ""
-        # The phase a caller CLAIMED — args.phase or the authored
-        # op='phase' value — is what may suppress work ("judge as if at
-        # this phase"). A merely derived phase never hides copper that
-        # exists: a board seeded with tracks but nothing placed still
-        # gets them checked.
-        claimed_phase = (eval_phase if eval_phase_claimed else None) or authored_phase
-        if claimed_phase == "netlist":
-            # Phase gate (Slice 8): netlist phase was ASKED for (args or
-            # an authored claim), so only the rules needing no geometry
-            # and no copper run — ``pcb_copper`` is never even read.
-            # ``unrouted`` joins the set here: its input is
-            # ``pcb_routes`` status (a route row, not copper) and at this
-            # phase it reports as `todo`, a work item. A merely DERIVED
-            # netlist board (nothing placed yet) does not take this
-            # branch — it may still carry seeded copper to check.
-            bail_model = {"layers": layer_names, "pads": pads}
-            findings = (
-                pcb_drc.check_unconnected_pins(graph.get("unconnected"), phase=phase)
-                + pcb_drc.check_undeclared_pads(
-                    bail_model, unchecked=undeclared_unchecked
-                )
-                + pcb_drc.check_synthesized_footprint(bail_model)
-                + pcb_drc.check_unrouted(
-                    [
-                        {"net": r["name"], "note": r.get("note")}
-                        for r in self.store.pcb_route_status(ref_id)
-                        if r["status"] != "realized"
-                    ]
-                )
-            )
-            # The §1h ERC rules are netlist rules — at netlist phase they
-            # are exactly what runs.
-            if erc:
-                findings += self._erc_findings(design, graph, pads)
-            # A claimed netlist eval ALWAYS answers with a run — even with
-            # zero findings it is "0 findings at netlist" (and, recorded,
-            # the phase's fresh baseline), never "nothing could run".
-            return self._drc_record(
-                board_id, findings, True, phase="netlist", record=record
-            )
-
-        copper = (
-            [] if claimed_phase == "placed" else self.store.pcb_copper_list(board_id)
-        )
-        # Round-4 contract change (docs/backlog/pcb-ewod-multitile.md's
-        # decisions log): this used to bail whenever `copper` (router
-        # output) was empty, full stop — but a board whose every net is
-        # fanout-1 (an `ewod_pad_array` standalone board is the motivating
-        # case: the array's escape geometry is footprint-PAD copper, never
-        # something a router touches) then NEVER gets a single
-        # `pcb_copper` row, `op='route'` or not, so `view='drc'` could
-        # never actually run one rule against it — "a check you did not
-        # run is not a check that passed" (repo doctrine). The new rule:
-        # run geometric DRC whenever ANY placed pad is REAL (authored or
-        # cached, `synthesized=False`), even with zero realized copper —
-        # the response says so explicitly (`_pads_only` below) so a
-        # partial (pads-only) pass is never mistaken for a full one. The
-        # bail stays ONLY when every placed pad is a synthesized BOUND
-        # (or there are no pads at all): DRC over a dimensionally-plausible
-        # guess, not real geometry, is meaningless (same reasoning
-        # `gerber.export_fab`'s `SynthesizedPadError` already applies at
-        # export time). This reaches every board in the kind, not just
-        # EWOD ones — an ordinary placed-but-unrouted board with cached
-        # real footprints (e.g. `esp32c3_reference`) now gets pads-only
-        # findings here too, instead of "not yet".
-        has_real_pads = any(not p.get("synthesized") for p in pads)
-        if not copper and not has_real_pads:
-            # No geometry worth checking — but Slice 2's netlist-level
-            # rules need none: a board whose only signal is an unmarked
-            # unconnected pin, a floating `must_terminate`, or an
-            # uncached footprint gets a real run recording exactly that
-            # rather than "no realized copper yet" hiding the only
-            # complaint there is. `check_synthesized_footprint` runs too:
-            # its synthesized/pin_unmatched pad flags also need no real
-            # geometry, and a join-failed or uncached part's
-            # `pin_name_mismatch`/`synthesized_footprint` is exactly the
-            # complaint this bail used to hide.
-            bail_model = {"layers": layer_names, "pads": pads}
-            findings = (
-                pcb_drc.check_unconnected_pins(graph.get("unconnected"), phase=phase)
-                + pcb_drc.check_undeclared_pads(
-                    bail_model, unchecked=undeclared_unchecked
-                )
-                + pcb_drc.check_synthesized_footprint(bail_model)
-            )
-            # Slice 5 ERC — netlist rules, need no geometry either.
-            if erc:
-                findings += self._erc_findings(design, graph, pads)
-            if not findings:
-                # ``view='drc'`` keeps its "no realized copper yet" answer;
-                # a check run (an explicit phase eval) still returns a run
-                # — a run that ran clean is a verdict, not an absence.
-                if eval_phase is None:
-                    return None
-                return self._drc_record(
-                    board_id, findings, True, phase=phase, record=record
-                )
-            return self._drc_record(
-                board_id, findings, True, phase=phase, record=record
-            )
-        pads_only = not copper
-
-        ref = self.store.get_ref(kind="pcb", id=ref_id)
-        slug = ref.slug if ref is not None and ref.slug else str(ref_id)
-        ir = self._build_ir(ref_id, graph)
-        instance_sides = {
-            str(i.get("refdes")): str(i.get("layer") or "top")
-            for i in design["instances"]
-        }
-        vias = [c for c in copper if c.get("ctype") == "via"]
-        outline = self._outline_from_features(ref_id)
-        # `pads` below is REPLACED with `_board_furniture`'s own return, not
-        # merely extended — that call already folds the component pads
-        # passed in here together with the fiducial flashes it mints
-        # (module docstring above: this is the fix for fiducial copper
-        # being invisible to this view). Component pads never travel
-        # through a second path once this line runs.
-        # `furniture_warnings` (fiducial/title-block/S/N-patch drop prose)
-        # is discarded here on purpose: those three are board-level
-        # furniture with no per-instance `SilkPlacement` row to check
-        # against (silk.py's own module docstring — fiducials/title block
-        # sit outside `build_silk`'s per-instance census entirely), so
-        # `run_geometric_drc` has no structured rule for them yet; the
-        # gerber/fab-SVG render paths still surface this same prose to a
-        # human inspecting those artifacts.
-        # `clearance_mm` reused straight off the `capability` row already
-        # resolved above rather than a second `capability_for` call — see
-        # `_furniture_clearance_mm`'s own docstring for why this is the
-        # SAME figure `plane_pours` itself used to cut this board's other
-        # antipads at realize time.
-        pads, silk_draws, _furniture_warnings, silk_census, copper = (
-            self._board_furniture(
-                ir,
-                pads,
-                vias=vias,
-                instance_sides=instance_sides,
-                polarized=self._polarized_refdes(design),
-                copper=copper,
-                outline=outline,
-                layer_names=layer_names,
-                slug=slug,
-                clearance_mm=resolve_net_rules(
-                    "", layer_is_outer=True, fab_caps=capability
-                ).clearance_mm,
-                capability=capability,
-                date=_export_date(),
-            )
-        )
-        model = {
-            "layers": layer_names,
-            "copper": copper,
-            "pads": pads,
-            "drills": self._drc_drills(ir),
-            "silkscreen": silk_draws,
-            "soldermask_expansion_mm": pcb_silk.soldermask_expansion_mm(capability),
-        }
-        courtyards, courtyard_bottom, net_rules, net_voltages = self._drc_rule_inputs(
-            design, courtyard_local, capability
-        )
-        # Fixed source copper routes a net with no ``pcb_routes`` row
-        # (gr492989): judge "unrouted" by the copper, not the status alone.
-        route_status = self.store.pcb_route_status(ref_id)
-        routed_by_copper = (
-            pcb_drc.nets_routed_by_copper(model)
-            if any(r["status"] != "realized" for r in route_status)
-            else set()
-        )
-        findings = pcb_drc.run_geometric_drc(
-            model,
-            capability=capability,
-            outline=outline,
-            courtyards=courtyards,
-            courtyard_bottom=courtyard_bottom,
-            net_rules=net_rules,
-            net_voltages=net_voltages,
-            unrouted=[
-                {"net": r["name"], "note": r.get("note")}
-                for r in route_status
-                if r["status"] != "realized" and r["name"] not in routed_by_copper
-            ],
-            census=silk_census,
-            holes=[
-                (
-                    f"hole @ ({h.x:g}, {h.y:g})",
-                    pcb_optimize.mounting_hole_keepout_polygon(h),
-                    h.part,
-                )
-                for h in ir.mounting_holes
-            ],
-            edge_mates=pcb_edge_mate.records(ir),
-            unconnected=graph.get("unconnected"),
-            phase=phase,
-            courtyard_clearance_mm=pcb_ir.COURTYARD_CLEARANCE_MM,
-            undeclared_unchecked=undeclared_unchecked,
-        )
-        # Parylene-coater size (gr414481): drc.py knows no components, so
-        # the EWOD gate (an `ewod_pad_array` generator) is decided here.
-        findings += pcb_drc.check_coating_extent(
-            outline,
-            ewod_components=[
-                str(n)
-                for n, g in self.store.pcb_generators_for(ref_id).items()
-                if g.get("generator") == "ewod_pad_array"
-            ],
-            extent_mm=coating_extent_mm(),
-        )
-        if erc:
-            findings += self._erc_findings(design, graph, pads)
-        # Read the previous run BEFORE writing this one — it is what this
-        # run is compared against; afterwards it would be this run itself.
-        return self._drc_record(
-            board_id, findings, pads_only, phase=phase, record=record
+        """Delegates to :func:`precis.pcb.check_run.run` — the check
+        surface lives in :mod:`precis.pcb` so the ``pcb_review`` worker
+        runs it itself (it may not import this handler). ``record``
+        persists the run (only ``op='check'``/``op='review'``;
+        gr491591)."""
+        return check_run.run(
+            self.store,
+            ref_id,
+            design,
+            eval_phase=eval_phase,
+            eval_phase_claimed=eval_phase_claimed,
+            erc=erc,
+            record=record,
         )
 
     def _validity_findings(self, ref_id: int) -> list[pcb_drc.DrcFinding]:

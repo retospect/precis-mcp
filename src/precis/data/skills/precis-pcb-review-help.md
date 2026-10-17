@@ -2,7 +2,7 @@
 id: precis-pcb-review-help
 family: pcb
 title: precis — the pcb review pass (op='review', the pcb_review job, pcb-tapeout verdicts)
-summary: put(kind='pcb', args={'op':'review'}) runs the check surface fresh and queues a pcb_review job that works the not-checked and stale pcb-tapeout judgment items, one fresh-context model call each; verdicts are machine-origin, anchored to refdes/nets, quote the decisive line and record the part-fact and margin revisions they read; missing datasheet facts read 'not checkable', never pass; a re-run on an unchanged design makes no model call
+summary: put(kind='pcb', args={'op':'review'}) queues a pcb_review job that runs the check surface fresh, then works the not-checked and stale pcb-tapeout judgment items, one fresh-context model call each; verdicts are machine-origin, anchored to refdes/nets, quote the decisive line and record the part-fact and margin revisions they read; missing datasheet facts read 'not checkable', never pass; a re-run on an unchanged design makes no model call
 answers:
   - how do I review a pcb design against the tapeout checklist?
   - what does the Review button on the quest board do?
@@ -17,13 +17,15 @@ kinds: [pcb, checklist, job]
 
 # precis-pcb-review-help — the review pass
 
-`put(kind='pcb', id=<slug>, args={'op':'review'})` does two things:
+`put(kind='pcb', id=<slug>, args={'op':'review'})` queues one
+`pcb_review` job over the `pcb-tapeout` **judgment** items whose status is
+`not checked` or `stale (…)`. When nothing is queued it says so and mints
+no job (and no check run is written).
 
-1. Runs the check surface fresh and records it — the run `view='check'`
-   shows without recording (geometric DRC + ERC, at the design's phase).
-2. Queues one `pcb_review` job over the `pcb-tapeout` **judgment** items
-   whose status is `not checked` or `stale (…)`. When nothing is queued it
-   says so and mints no job.
+The job itself starts by running the check surface fresh — the same
+persisted run `view='check'` makes (geometric DRC + ERC, at the design's
+phase) — and its summary names it (`check run <id>: N finding(s)`). The put
+runs no check.
 
 `args.item='<name>'` reviews one item; `args.limit=N` (1–60, default 15)
 caps the items one job works, and a re-run continues with the rest. The

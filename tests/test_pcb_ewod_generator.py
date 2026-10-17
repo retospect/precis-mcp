@@ -925,7 +925,7 @@ def test_a_pin_with_no_via_stays_on_the_plain_gap_class(pcb):
 
 # ── parylene-coater extent (gr414481) ───────────────────────────────────
 def test_drc_warns_coating_extent_unknown_on_an_ewod_board(pcb, monkeypatch):
-    monkeypatch.setattr("precis.handlers.pcb.coating_extent_mm", lambda: None)
+    monkeypatch.setattr("precis.pcb.check_run.coating_extent_mm", lambda: None)
     pcb.put(id="ewod-gen-1", args=_array_args(grid=[3, 3]))
     body = pcb.get(id="ewod-gen-1", view="drc").body
     assert "coating_extent_unknown" in body
@@ -935,7 +935,9 @@ def test_drc_warns_coating_extent_unknown_on_an_ewod_board(pcb, monkeypatch):
 def test_drc_with_a_configured_coating_extent_drops_the_unknown_warning(
     pcb, monkeypatch
 ):
-    monkeypatch.setattr("precis.handlers.pcb.coating_extent_mm", lambda: (500.0, 500.0))
+    monkeypatch.setattr(
+        "precis.pcb.check_run.coating_extent_mm", lambda: (500.0, 500.0)
+    )
     pcb.put(id="ewod-gen-1", args=_array_args(grid=[3, 3]))
     body = pcb.get(id="ewod-gen-1", view="drc").body
     assert "coating_extent_unknown" not in body

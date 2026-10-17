@@ -34,8 +34,8 @@ same data:
   ``route`` (``corridor=``/``escape=`` opt-ins) and ``place``
   (``groups=``) queue the job through ``put(args={'op': …})``, the same
   dispatch an agent calls; ``review`` is ``put(args={'op':'review'})``
-  — a fresh ``view='check'`` run (DRC + ERC, recorded) and the
-  ``pcb_review`` job over the not-checked/stale ``pcb-tapeout`` items. The page
+  — the ``pcb_review`` job over the not-checked/stale ``pcb-tapeout``
+  items, which runs its own fresh check (DRC + ERC, recorded) first. The page
   confirms before posting; the route redirects back to ``back`` (a
   ``/refs/quest/`` path only) or renders the handler's error.
 
@@ -478,8 +478,8 @@ def _op_call(
     """(verb, dispatch args) for one panel action. ``route``/``place`` go
     through ``put`` in the MCP's ``args=`` shape (``__extras__``, so the
     handler's ``ARGS_KEYS`` gate applies exactly as for an agent);
-    ``review`` is ``put(args={'op':'review'})`` — a fresh check run plus
-    the ``pcb_review`` job. Raises ``BadInput`` on a malformed corridor."""
+    ``review`` is ``put(args={'op':'review'})`` — the ``pcb_review`` job
+    (which runs its own fresh check first). Raises ``BadInput`` on a malformed corridor."""
     extras: dict[str, Any] = {"op": op}
     if op == "route":
         if corridor is not None and corridor.strip():

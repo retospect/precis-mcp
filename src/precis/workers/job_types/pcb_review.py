@@ -13,10 +13,11 @@ A re-run on an unchanged design makes no model call: settled items never
 re-enter the queue, and a ``not checkable`` note keyed on the target
 fingerprint + input revisions skips its item until one of them moves.
 
-The fresh check-surface run is NOT this job's: ``put(kind='pcb',
-args={'op':'review'})`` records ``view='check'``'s run before it mints
-the job, because that run lives in the handler layer workers may not
-import. The evidence quotes the latest persisted run by id.
+The job runs the check surface itself (Reto 2026-10-16 (3a)): once the
+queue says there is work, :func:`precis.pcb.check_run.run` judges the
+design (DRC + ERC, persisted) and the evidence quotes that run by id.
+The run lives in :mod:`precis.pcb` because a worker may not import the
+handler layer. A re-run with nothing queued writes no run.
 
 Runs under ``job_inproc`` (bounded — ``params.limit`` caps the items one
 run works); the router call is in-process (MEDIUM tier,
@@ -30,7 +31,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from precis.pcb import review
+from precis.errors import BadInput
+from precis.pcb import check_run, review
 from precis.workers.job_types import JobTypeSpec
 
 if TYPE_CHECKING:
@@ -99,6 +101,32 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         return
     work = work[:limit]
 
+    design = store.pcb_load(pcb_ref_id)
+    if design["board"] is None:
+        ctx.record_failure(
+            f"pcb_review: {slug}: the design has no board to check",
+            failure_class="infra",
+        )
+        return
+    try:
+        ran = check_run.run(
+            store,
+            pcb_ref_id,
+            design,
+            eval_phase=check_run.design_phase(design),
+            eval_phase_claimed=False,
+            erc=True,
+            record=True,
+        )
+    except BadInput as exc:
+        ctx.record_failure(f"pcb_review: {slug}: {exc}", failure_class="infra")
+        return
+    check_line = (
+        f"check run {str(ran.run_id)[:12]}: {len(ran.findings)} finding(s)"
+        if ran is not None
+        else "check: nothing the rules at this phase can check"
+    )
+
     evidence_text = review.evidence(store, pcb_ref_id, graph)
     lines: list[str] = []
     failures: list[str] = []
@@ -135,7 +163,9 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             ctx.append_chunk("job_event", f"pcb_review: {st.name} failed: {exc!r}")
 
     if cancelled and not lines:
-        ctx.append_chunk("job_summary", f"{slug}: cancelled before any item\n")
+        ctx.append_chunk(
+            "job_summary", f"{slug}: cancelled before any item\n{check_line}\n"
+        )
         return
     if not lines and failures:
         ctx.record_failure(
@@ -154,7 +184,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         "job_summary",
         f"{slug}: reviewed {len(lines)} item(s)"
         + (f"; {'; '.join(tail)}" if tail else "")
-        + "\n"
+        + f"\n{check_line}\n"
         + "\n".join(f"- {line}" for line in lines)
         + f"\nNext: get(kind='checklist', id='{review.CHECKLIST}', "
         f"target='pcb:{slug}')\n",

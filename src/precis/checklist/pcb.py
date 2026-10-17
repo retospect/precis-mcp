@@ -134,6 +134,18 @@ class PcbBridge:
     ) -> Fingerprint:
         graph = _graph(store, ref_id)
         if not anchors:
+            # A check run records its run id under ``board.meta`` (the
+            # phase baseline pointer); that is bookkeeping, not a design
+            # change — ``pcb_review`` runs its own check every job, and a
+            # fingerprint that moved with it would re-open every
+            # ``not checkable`` skip on an unchanged design.
+            board = dict(graph.get("board") or {})
+            meta = {
+                k: v
+                for k, v in (board.get("meta") or {}).items()
+                if k != "drc_runs_by_phase"
+            }
+            graph = {**graph, "board": {**board, "meta": meta}}
             return Fingerprint(_digest(graph))
         instances = {i["refdes"]: i for i in graph.get("instances") or []}
         nets = {n["name"]: n for n in graph.get("nets") or []}
