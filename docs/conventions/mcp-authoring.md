@@ -33,6 +33,15 @@ Origin: the 2026-10-17 misuse audit and gr494831 (umbrella), gr494725.
 8. **Library faults are `Upstream` with a retry hint; library text never
    reaches the agent.** The dispatcher maps them (below); handlers do not
    interpolate `{exc}` of a driver or HTTP exception into a message.
+9. **One reading: do it and say so. Two readings: refuse.** An alias, a
+   near-miss enum value or an obvious wrong key runs as the canonical
+   call, and the reply's first line names the reading
+   (`handlers/_interpret.py`: `interpreted: view='full' read as
+   view='comments'`). The write is exactly the announced call, nothing
+   wider. Any input with a second plausible reading (`PRIO:3`,
+   `STATUS:closed`) still refuses with `options=`. A call that can spend
+   (a paid API, a rate-limited fetch) is never run on the caller's
+   behalf: the refusal names the exact call and the cost.
 
 ## Enforced by
 
@@ -42,6 +51,7 @@ Origin: the 2026-10-17 misuse audit and gr494831 (umbrella), gr494725.
 | 7 | `tests/test_unsupported_verb_matrix.py`: enumerates every unsupported (verb, kind) over the live hub. |
 | 8 | `runtime/dispatch.py::_boundary_rows` (psycopg lock/pool/timeout/operational, httpx timeout/status/transport, `TimeoutError`, `ConnectionError`) and `scrub_upstream`; `tests/test_dispatch_boundary_map.py` has a case per row. A new row needs a case or `test_every_row_has_a_case` fails. |
 | 1, 3–6 | per-handler tests; reviewers check the ack against the effect. |
+| 9 | per-pattern tests, each with an ambiguous input that still refuses (`tests/test_forgiving_inputs.py`). |
 
 ## Adding a hint to a pinned raise
 

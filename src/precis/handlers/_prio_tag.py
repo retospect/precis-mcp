@@ -23,6 +23,34 @@ PRIO_TAG_TO_INT: dict[str, int] = {
 }
 
 
+#: Near-miss ``PRIO:`` spellings with one reading on the tag scale
+#: (gr494831 step 2; prod 2026-10-15 put(kind='gripe', tags=['PRIO:medium'])).
+#: Numeric values (``PRIO:2``, ``PRIO:p2``) are deliberately absent: callers
+#: mean a 1..5, P0..P4 or the 1..10 column scale, so those keep refusing.
+PRIO_TAG_ALIASES: dict[str, str] = {"PRIO:medium": "PRIO:normal"}
+
+
+def alias_prio_tags(tags: list[str] | None) -> tuple[list[str] | None, list[str]]:
+    """Rewrite :data:`PRIO_TAG_ALIASES` spellings in ``tags`` to canonical.
+
+    Returns ``(tags, readings)``; each reading is one
+    ``'PRIO:medium' read as 'PRIO:normal'`` phrase for the reply's
+    ``interpreted:`` line (:mod:`precis.handlers._interpret`).
+    """
+    if not tags:
+        return tags, []
+    out: list[str] = []
+    readings: list[str] = []
+    for t in tags:
+        canon = PRIO_TAG_ALIASES.get(t.strip()) if isinstance(t, str) else None
+        if canon is None:
+            out.append(t)
+            continue
+        readings.append(f"{t.strip()!r} read as {canon!r}")
+        out.append(canon)
+    return out, readings
+
+
 def validate_prio(prio: int | None) -> int | None:
     """Range-check a ``prio=`` kwarg (1..10) at the handler boundary.
 

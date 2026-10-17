@@ -2025,7 +2025,7 @@ class NumericRefHandler(Handler):
 
     def _append_then_link(
         self,
-        append: Callable[[], Response],
+        append: Callable[[], Response] | None,
         *,
         id: str | int,
         link: str | None,
@@ -2046,6 +2046,10 @@ class NumericRefHandler(Handler):
         is one ``put``, not ``put`` + ``tag`` (gr484232). The writes run
         inside one ``store.atomic()`` unit: a failure on any side rolls
         back the whole call.
+
+        ``append=None`` runs only the edge/tag edits (a forgiven
+        ``put(id=N, link=…)`` with no text, :mod:`precis.handlers.gripe`);
+        the caller guarantees at least one of them is present.
         """
         has_tag_ops = tags is not None or untags is not None
         if link is None and unlink is None and not has_tag_ops:
@@ -2055,6 +2059,7 @@ class NumericRefHandler(Handler):
                     next=f"put(kind={self.kind!r}, id={id}, text=..., "
                     "link='kind:id', rel='...')",
                 )
+            assert append is not None, "edges-only call with no edge or tag op"
             return append()
         if link is not None and unlink is not None:
             raise BadInput(
@@ -2071,11 +2076,13 @@ class NumericRefHandler(Handler):
                 )
             # Append first: a kind's tag guard may read the new comment
             # (gripe's STATUS:done needs a newest ``resolved:`` comment).
-            appended = append()
+            appended = append() if append is not None else None
             if has_tag_ops:
                 # ``tag`` validates add=/remove= itself (an all-empty call
                 # raises there, never silently no-ops).
                 extras.append(self.tag(id=id, add=tags, remove=untags).body)
+        if appended is None:
+            return Response(body="\n".join(extras))
         return Response(body=appended.body + "".join(f"\nAlso {b}" for b in extras))
 
     def _link(

@@ -3654,13 +3654,22 @@ def _maybe_resolve_doi(store: Store, raw: str) -> str:
         # that actually work: mint the paper stub directly, or (per
         # precis-finding-help's acquisition mode) register the claim
         # now with ``wants=``/``provenance=`` instead of ``cited_in=``.
+        #
+        # gr494831 step 2: ``get`` refuses rather than queueing the fetch
+        # itself, because the path can spend. The mint asks Semantic
+        # Scholar and Crossref/DataCite (rate-limited), and the pinned
+        # stub's ``fetch_oa`` cascade ends on the paid OpenAlex Content
+        # leg (~$0.01 a file) on a fetch host holding its key. The hint
+        # names that cost so the caller makes the call.
         raise NotFound(
             f"paper with {scheme.upper()} {base!r} not ingested",
             next=(
                 f"{mint}  "
-                "to mint a stub — the fetcher "
-                "(Unpaywall/arXiv/S2) tries an OA pull next pass; once "
-                "it lands, cite its chunk directly "
+                "to mint a stub — get does not queue it for you, because "
+                "the fetch can cost: the open-access legs "
+                "(Unpaywall/arXiv/S2/…) run first and the paid OpenAlex "
+                "Content leg (~$0.01 a file) runs last where the fetch "
+                "host has its key. Once it lands, cite its chunk directly "
                 "(cited_in='<slug-once-fetched>~0'). To register the "
                 "claim right now instead of waiting: "
                 "put(kind='finding', title='<short claim>', "

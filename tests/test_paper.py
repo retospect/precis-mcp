@@ -204,6 +204,22 @@ class TestResolveDoi:
         assert verb == "put"
         assert kwargs == {"kind": "paper", "doi": "10.9999/nope"}
 
+    def test_unknown_doi_hint_leads_with_mint_and_names_the_spend(
+        self, store: Store
+    ) -> None:
+        """gr494831 step 2: get does not auto-queue the fetch (the cascade
+        can end on the paid OpenAlex Content leg), so the hint opens with
+        the exact mint call and says why it was left to the caller. Nothing
+        is written by the refused get."""
+        before = len(store.list_refs(kind="paper", limit=50))
+        with pytest.raises(NotFound) as exc_info:
+            _maybe_resolve_doi(store, "10.9999/nope")
+        hint = exc_info.value.next
+        assert isinstance(hint, str)
+        assert hint.startswith("put(kind='paper', doi='10.9999/nope')  ")
+        assert "paid OpenAlex Content" in hint
+        assert len(store.list_refs(kind="paper", limit=50)) == before
+
     def test_get_by_doi_end_to_end(self, store: Store, handler: PaperHandler) -> None:
         _seed_paper(store, slug="wang2020state", doi="10.1111/jnc.13915")
         resp = handler.get(id="10.1111/jnc.13915")

@@ -38,13 +38,19 @@ from typing import Any, ClassVar
 
 from precis.errors import BadInput, Gone, NotFound, Unsupported
 from precis.handlers import _comment_timeline as tl
+from precis.handlers._interpret import interpreted
 from precis.handlers._mode_help import require_mode
 from precis.handlers._numeric_ref import (
     _BASE_VIEWS,
     NumericRefHandler,
     plain_listing_view,
 )
-from precis.handlers._prio_tag import PRIO_TAG_TO_INT, split_prio, validate_prio
+from precis.handlers._prio_tag import (
+    PRIO_TAG_TO_INT,
+    alias_prio_tags,
+    split_prio,
+    validate_prio,
+)
 from precis.handlers._request_state import RequestState
 from precis.protocol import ArgsSpec, KindSpec
 from precis.response import Response
@@ -64,6 +70,12 @@ _COMMENT_KIND = "gripe_comment"
 #: pointing at ``view='comments'``, the complete read
 #: (:func:`_comment_timeline.clip_middle`).
 _BODY_HEAD_CHARS = 1500
+
+#: ``get`` view spellings with one reading on this kind (gr494831 step 2;
+#: prod 2026-10-15..17 sent view='full' x6, 'default' x1). ``'full'`` is
+#: the full timeline, which is ``view='comments'``; ``None`` is the default
+#: read. Applied to a single-id get without q= only; the reply names it.
+_VIEW_ALIASES: dict[str, str | None] = {"full": "comments", "default": None}
 
 
 #: A create-time ``prio=`` plumbed from ``put`` into ``_create`` (which the
@@ -174,6 +186,9 @@ class GripeHandler(NumericRefHandler):
         # automated writers cannot rephrase: mask here; agent verb calls are
         # refused at the dispatch boundary (runtime/dispatch.py)
         text = mask_secrets(text)
+        # Near-miss PRIO spellings (PRIO:medium) are read as canonical and
+        # named on the reply's first line (gr494831 step 2).
+        tags, readings = alias_prio_tags(tags)
         # id-presence is what actually dispatches create-vs-comment; an
         # explicit mode= is accepted only as a redundant-but-unambiguous
         # confirmation of that ('create' <-> no id=, 'comment' <-> id=<n>)
@@ -194,6 +209,28 @@ class GripeHandler(NumericRefHandler):
                     f"prio= is not accepted when appending a {self._sense()} comment",
                     next=f"use tag(kind={self.kind!r}, id={id}, prio={prio})",
                 )
+            no_text = text is None or not text.strip()
+            edges = (link, unlink, tags, untags)
+            if no_text and mode is None and any(e is not None for e in edges):
+                # put(id=N, link=…/tags=…) with no text= has one reading:
+                # the edge/tag edit alone (prod 2026-10-15..16: three
+                # link-only comment puts refused). Run exactly that, named.
+                readings.append(
+                    self._edges_only_reading(
+                        id, link=link, unlink=unlink, rel=rel, tags=tags, untags=untags
+                    )
+                )
+                resp = self._append_then_link(
+                    None,
+                    id=id,
+                    link=link,
+                    unlink=unlink,
+                    rel=rel,
+                    tags=tags,
+                    untags=untags,
+                    what="link/tag edit",
+                )
+                return interpreted(resp, readings)
             if text is None or not text.strip():
                 raise BadInput(
                     f"appending a comment to {self._sense()} id={id!r} requires text=",
@@ -203,7 +240,7 @@ class GripeHandler(NumericRefHandler):
             # edge/tag edit in one transaction (comment-then-close is one
             # put, not reject + re-put + tag(); gr484232). The tag edit is
             # this kind's own tag() — the same STATUS guards apply.
-            return self._append_then_link(
+            resp = self._append_then_link(
                 lambda: self._append_comment(id=id, text=text),
                 id=id,
                 link=link,
@@ -213,12 +250,13 @@ class GripeHandler(NumericRefHandler):
                 untags=untags,
                 what=f"{self._sense()} comment",
             )
+            return interpreted(resp, readings)
         # Create path: plumb a create-time ``prio=`` into ``_create`` via a
         # request-scoped slot (``_PUT_PRIO``, as todo does — the base put's
         # signature stays untouched). The ``PRIO:`` tag alias keeps working;
         # the explicit kwarg wins.
         with _PUT_PRIO.bind(validate_prio(prio)):
-            return super().put(
+            resp = super().put(
                 id=id,
                 text=text,
                 # Already validated above (mode='create' or None here — a
@@ -231,6 +269,35 @@ class GripeHandler(NumericRefHandler):
                 unlink=unlink,
                 rel=rel,
             )
+        return interpreted(resp, readings)
+
+    def _edges_only_reading(
+        self,
+        id: str | int,
+        *,
+        link: str | None,
+        unlink: str | None,
+        rel: str | None,
+        tags: list[str] | None,
+        untags: list[str] | None,
+    ) -> str:
+        """``put(kind='gripe', id=N) with no text= read as link(…) + tag(…)``."""
+        calls: list[str] = []
+        target = link if link is not None else unlink
+        if target is not None:
+            remove = ", mode='remove'" if link is None else ""
+            rel_part = f", rel={rel!r}" if rel is not None else ""
+            calls.append(
+                f"link(kind={self.kind!r}, id={id!r}, target={target!r}{remove}{rel_part})"
+            )
+        if tags is not None or untags is not None:
+            ops = [f"add={tags!r}"] if tags is not None else []
+            ops += [f"remove={untags!r}"] if untags is not None else []
+            calls.append(f"tag(kind={self.kind!r}, id={id!r}, {', '.join(ops)})")
+        return (
+            f"put(kind={self.kind!r}, id={id!r}) with no text= read as "
+            + " + ".join(calls)
+        )
 
     def _validate_put_mode(self, *, id: str | int | None, mode: str) -> None:
         """Check an explicit ``put`` ``mode=`` against reality.
@@ -268,8 +335,12 @@ class GripeHandler(NumericRefHandler):
         prio: int | None = None,
         **_kw: Any,
     ) -> Response:
+        # Near-miss PRIO spellings are read as canonical, named in the reply.
+        add, readings = alias_prio_tags(add)
         if isinstance(id, list):
-            return self._tag_batch(id, add=add, remove=remove, prio=prio, **_kw)
+            return interpreted(
+                self._tag_batch(id, add=add, remove=remove, prio=prio, **_kw), readings
+            )
         # ``PRIO:`` → the canonical prio column (which the backlog groomer
         # inherits onto the minted fix_gripe todo, so a human tagging a gripe
         # PRIO:high actually hastens its fix), stripped from the tag set like
@@ -308,8 +379,11 @@ class GripeHandler(NumericRefHandler):
                 # Only a prio write happened — the base tag() would reject an
                 # otherwise-empty call.
                 shown = f"prio={prio}" if prio is not None else "prio=cleared"
-                return Response(body=f"set {shown} on {self._sense()} id={ref_id}")
-        return super().tag(id=id, add=add, remove=remove, **_kw)
+                return interpreted(
+                    Response(body=f"set {shown} on {self._sense()} id={ref_id}"),
+                    readings,
+                )
+        return interpreted(super().tag(id=id, add=add, remove=remove, **_kw), readings)
 
     def _comments(self, ref_id: int, ref: Ref | None = None) -> list[Any]:
         """Visible comments (hidden ones, per ``refs.meta``, are skipped)."""
@@ -527,10 +601,22 @@ class GripeHandler(NumericRefHandler):
             return super().get(id=id, view=view, q=q, **_kw)
         # 'full' is the name agents reach for (surface-review 2026-10-16:
         # 6 errors / 3 sessions); it is the complete read, so alias it.
+        readings: list[str] = []
+        single = id is not None and not (isinstance(id, str) and id.startswith("/"))
+        if view in _VIEW_ALIASES and single and q is None:
+            canon = _VIEW_ALIASES[view]
+            shown = f"view={canon!r}" if canon is not None else "the default view"
+            readings.append(f"view={view!r} read as {shown}")
+            view = canon
         if view in ("comments", "full"):
             ref = self._resolve_live_ref(self._coerce_id(id))
-            return Response(
-                body=self._render_timeline(ref, self.store.tags_for(ref.id), full=True)
+            return interpreted(
+                Response(
+                    body=self._render_timeline(
+                        ref, self.store.tags_for(ref.id), full=True
+                    )
+                ),
+                readings,
             )
         if view is not None and view not in _BASE_VIEWS:
             views = [*_BASE_VIEWS, "comments"]
@@ -544,12 +630,13 @@ class GripeHandler(NumericRefHandler):
                 ),
             )
         try:
-            return super().get(id=id, view=view, q=q, **_kw)
+            resp = super().get(id=id, view=view, q=q, **_kw)
         except Gone:
             # Soft-deleted: keep past closures readable instead of a bare Gone.
             if view is not None or id is None:
                 raise
-            return self._render_tombstone(self._coerce_id(id))
+            resp = self._render_tombstone(self._coerce_id(id))
+        return interpreted(resp, readings)
 
     def _render_one(self, ref: Ref, tags: list[Tag]) -> str:
         return self._render_timeline(ref, tags, full=False)

@@ -79,6 +79,11 @@ Create receipts read committed lifecycle tags because creation may override
 open/active atomically; request defaults misreported parked todos/quests.
 Todo receipts offer start-work only for open, unhalted refs.
 
+**Forgiving inputs (gr494831).** Rule 9 of
+``docs/conventions/mcp-authoring.md``; the announcement is a body prefix,
+not a HintBus tip, because hints dedupe and cap
+(:mod:`precis.handlers._interpret`).
+
 Queryless gripe/todo/quest browse — recency and priority sorts, live-row
 lifecycle defaults, terminal-tag exclusion with exact hidden counts —
 runs on the shared list/count path in :mod:`precis.handlers._numeric_ref`.

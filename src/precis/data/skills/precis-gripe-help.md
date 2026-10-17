@@ -162,6 +162,11 @@ duplicate is one call,
 Tag edits on an append run the same `tag()` validation —
 `STATUS:` is closed-prefix, so removing a `STATUS:` tag without a
 replacement is refused. `prio=` still belongs on `tag()`.
+With no `text=`, `put(kind='gripe', id=42, link='gripe:7')` (or `tags=`)
+runs as the `link()`/`tag()` call alone, and the reply's first line says
+so (`interpreted: … read as link(…)`). `view='full'` is read as
+`view='comments'`, and `PRIO:medium` as `PRIO:normal`, also announced.
+A numeric `PRIO:3` is refused (no single scale); use `prio=3` on `tag()`.
 
 ## Correct or refine an earlier comment
 ## Take back a comment I made

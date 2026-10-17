@@ -47,7 +47,9 @@ DOI suffixes can contain `/`, so DOI + view needs the `view=` kwarg — the
 
 `get` never fetches. A DOI that is not held answers "not ingested" and
 names the next call: `put` mints a stub and the fetch worker pulls an
-open-access PDF on its next pass.
+open-access PDF on its next pass. `get` does not make that call for you
+because the fetch can cost: when no open-access copy exists, the last
+leg is the paid OpenAlex Content API (~$0.01 a file).
 
 ```python
 put(kind="paper", doi="10.1126/sciadv.aeh2779")  # mint stub, queue fetch
