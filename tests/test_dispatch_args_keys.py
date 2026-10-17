@@ -14,7 +14,9 @@ import importlib
 import inspect
 import pkgutil
 import textwrap
+from collections.abc import Callable
 from importlib.metadata import entry_points
+from typing import Any
 
 import pytest
 
@@ -231,8 +233,8 @@ def test_args_view_rejects_undeclared_reads() -> None:
             read()
 
 
-def _literal_args_reads(fn: ast.AST) -> set[str]:
-    """String literals a verb body reads from its ``args`` parameter."""
+def _literal_args_reads(fn: ast.AST, name: str = "args") -> set[str]:
+    """String literals a function body reads from its ``name`` parameter."""
     out: set[str] = set()
     for node in ast.walk(fn):
         if (
@@ -240,7 +242,7 @@ def _literal_args_reads(fn: ast.AST) -> set[str]:
             and isinstance(node.func, ast.Attribute)
             and node.func.attr in ("get", "pop")
             and isinstance(node.func.value, ast.Name)
-            and node.func.value.id == "args"
+            and node.func.value.id == name
             and node.args
             and isinstance(node.args[0], ast.Constant)
             and isinstance(node.args[0].value, str)
@@ -249,7 +251,7 @@ def _literal_args_reads(fn: ast.AST) -> set[str]:
         elif (
             isinstance(node, ast.Subscript)
             and isinstance(node.value, ast.Name)
-            and node.value.id == "args"
+            and node.value.id == name
             and isinstance(node.slice, ast.Constant)
             and isinstance(node.slice.value, str)
         ):
@@ -259,19 +261,72 @@ def _literal_args_reads(fn: ast.AST) -> set[str]:
             and isinstance(node.left, ast.Constant)
             and isinstance(node.left.value, str)
             and any(isinstance(op, ast.In | ast.NotIn) for op in node.ops)
-            and any(
-                isinstance(c, ast.Name) and c.id == "args" for c in node.comparators
-            )
+            and any(isinstance(c, ast.Name) and c.id == name for c in node.comparators)
         ):
             out.add(node.left.value)
+    return out
+
+
+def _fn_node(fn: Callable[..., Any]) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+    try:
+        tree = ast.parse(textwrap.dedent(inspect.getsource(inspect.unwrap(fn))))
+    except (OSError, TypeError):
+        return None
+    node = tree.body[0]
+    return node if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) else None
+
+
+def _reads_following_helpers(
+    cls: type[Handler], fn: Callable[..., Any], name: str, seen: set[object]
+) -> set[str]:
+    """Literal keys read from ``name`` in ``fn`` and in every ``self.m(...)``
+    / module-level helper it hands the whole dict to (``op='order'`` lives in
+    ``_op_order(ref, args)``, not in ``put`` itself)."""
+    node = _fn_node(fn)
+    if node is None or (fn, name) in seen:
+        return set()
+    seen.add((fn, name))
+    out = _literal_args_reads(node, name)
+    module = inspect.getmodule(fn)
+    for call in ast.walk(node):
+        if not isinstance(call, ast.Call):
+            continue
+        func = call.func
+        callee: object = None
+        offset = 0
+        if (
+            isinstance(func, ast.Attribute)
+            and isinstance(func.value, ast.Name)
+            and func.value.id in ("self", "cls")
+        ):
+            callee = inspect.getattr_static(cls, func.attr, None)
+            offset = 0 if isinstance(callee, staticmethod) else 1
+            callee = getattr(callee, "__func__", callee)
+        elif isinstance(func, ast.Name) and module is not None:
+            callee = getattr(module, func.id, None)
+        if not inspect.isfunction(callee):
+            continue
+        params = list(inspect.signature(callee).parameters)
+        passed: list[str] = []
+        for i, a in enumerate(call.args):
+            if isinstance(a, ast.Name) and a.id == name and i + offset < len(params):
+                passed.append(params[i + offset])
+        passed += [
+            kw.arg
+            for kw in call.keywords
+            if kw.arg and isinstance(kw.value, ast.Name) and kw.value.id == name
+        ]
+        for p in passed:
+            out |= _reads_following_helpers(cls, callee, p, seen)
     return out
 
 
 @pytest.mark.parametrize(("kind", "verb"), PASSTHROUGH)
 def test_verb_body_reads_only_declared_keys(kind: str, verb: str) -> None:
     """A literal ``args.get('k')`` / ``args['k']`` / ``'k' in args`` in the
-    verb body must be a declared key (the static half of ``ArgsView``)."""
+    verb body, or in a helper the verb passes the whole dict to, must be a
+    declared key (the static half of ``ArgsView``)."""
     cls = _KIND_CLASS[kind]
-    tree = ast.parse(textwrap.dedent(inspect.getsource(cls.__dict__[verb])))
-    undeclared = _literal_args_reads(tree) - cls.ARGS_KEYS[verb]
+    reads = _reads_following_helpers(cls, cls.__dict__[verb], "args", set())
+    undeclared = reads - cls.ARGS_KEYS[verb]
     assert not undeclared, f"{kind}.{verb} reads undeclared args keys {undeclared}"
