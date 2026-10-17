@@ -807,9 +807,11 @@ VBUS TVS and optional load switch (ruling 22 table), CH340N (ruling 17),
 ESD array, LEDs. Footprints cached 2026-10-17 (part_footprints 13 → 24): USB-C
 C2765186, CH340N C2977777, ESD array C7519 (USBLC6-2SC6), PTC C883122, TVS
 C193402, load switch C131941, transformer C19191684, 0603 5.1 kΩ C23186,
-10 kΩ C25804, 100 nF C14663, LED C12624. The 0603 passives and the LED
-(C23186, C25804, C14663, C12624) are the builder's picks, **proposed, Reto
-decides**; the CH340N and ESD array picks likewise. Alternates C69688/C169426 not cached.
+10 kΩ C25804, 100 nF C14663, LED C12624. **Ruled (Reto, 2026-10-17
+~09:50Z, via the fleet coordinator: "As recommended, yes"):** the 0603
+passives and the LED (5.1 kΩ C23186, 10 kΩ C25804, 100 nF C14663, LED
+C12624), the CH340N C2977777 and the ESD array C7519 are accepted.
+Alternates C69688/C169426 not cached.
 **Pin status (datasheet-first):** CH340N C2977777 footprint pins checked
 against the WCH CH340DS1 datasheet (stored as `datasheet:roberto25`; its
 title metadata is wrong, the chunks are the CH340 sheet): 1 UD+, 2 UD-,
