@@ -1586,7 +1586,11 @@ class FindingHandler(NumericRefHandler):
                     meta,
                 )
             ):
-                raise BadInput("refine='now' is exclusive with the other edit kwargs")
+                raise BadInput(
+                    "refine='now' is exclusive with the other edit kwargs",
+                    next="edit(kind='finding', id='fi<N>', refine='now')  "
+                    "# alone, no other kwargs",
+                )
             return self._refine_now(id, refine, dry_run)
         return _finding_edit.edit(
             self.store,
@@ -1609,9 +1613,15 @@ class FindingHandler(NumericRefHandler):
         from precis.workers.hub_refine import refine_hub_now
 
         if str(refine).strip().lower() != "now":
-            raise BadInput("refine= accepts only 'now'")
+            raise BadInput(
+                "refine= accepts only 'now'",
+                next="edit(kind='finding', id='fi<N>', refine='now')",
+            )
         if id is None:
-            raise BadInput("refine='now' needs id=<claim hub>")
+            raise BadInput(
+                "refine='now' needs id=<claim hub>",
+                next="edit(kind='finding', id='fi<N>', refine='now')",
+            )
         hub_id = resolve_hub_ref_id(self.store, id)
         dry = str(dry_run).strip().lower() in ("1", "true", "yes")
         result = refine_hub_now(

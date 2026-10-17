@@ -2942,3 +2942,38 @@ def test_char_target_wordcount_verdict_and_clear(draft: DraftHandler, hub: Hub) 
 
     draft.edit(id=intro, char_target={})
     assert "char_target" not in _chunk_meta(hub, intro)
+
+
+# ── error contract (gr494831 M3: a refusal names the fix) ────────────
+
+
+def test_delete_unknown_chunk_names_the_toc_listing(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    draft.put(id="nt", title="T", project=_proj(hub))
+    with pytest.raises(NotFound, match="draft chunk 'dc999999' not found") as ei:
+        draft.delete(id="dc999999")
+    assert "view='toc'" in str(ei.value.next)
+    assert "get(kind='draft'" in str(ei.value.next)
+
+
+def test_get_unknown_chunk_names_the_toc_listing(draft: DraftHandler, hub: Hub) -> None:
+    draft.put(id="nt", title="T", project=_proj(hub))
+    with pytest.raises(NotFound, match="draft chunk 'dc999999' not found") as ei:
+        draft.get(id="dc999999")
+    assert "view='toc'" in str(ei.value.next)
+
+
+def test_svg_figure_errors_carry_a_next(draft: DraftHandler, hub: Hub) -> None:
+    draft.put(id="nt", title="T", project=_proj(hub))
+    bad_b64 = base64.b64encode(b"\xff\xfe not utf-8 svg").decode()
+    with pytest.raises(BadInput, match="UTF-8") as ei:
+        draft.put(
+            id="nt",
+            chunk_kind="figure",
+            text="Fig 1. …",
+            image=bad_b64,
+            origin="original",
+            mime="image/svg+xml",
+        )
+    assert "image=" in str(ei.value.next)

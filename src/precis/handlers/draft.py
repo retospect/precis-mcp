@@ -264,14 +264,26 @@ def _sanitize_svg_bytes(raw: bytes) -> bytes:
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
-        raise BadInput("an SVG figure must be UTF-8 text") from exc
+        raise BadInput(
+            "an SVG figure must be UTF-8 text",
+            next="save the SVG as UTF-8 (strip any UTF-16/BOM) and pass it "
+            "base64-encoded in image=",
+        ) from exc
     err = parse_error(text)
     if err is not None:
-        raise BadInput(f"invalid SVG figure: {err}")
+        raise BadInput(
+            f"invalid SVG figure: {err}",
+            next="fix the SVG markup at the error named above, then retry the "
+            "same put(kind='draft', …, image=<b64>)",
+        )
     try:
         return sanitize_svg(text).encode("utf-8")
     except SvgError as exc:  # pragma: no cover — parse_error already guards
-        raise BadInput(f"invalid SVG figure: {exc}") from exc
+        raise BadInput(
+            f"invalid SVG figure: {exc}",
+            next="fix the SVG markup at the error named above, then retry the "
+            "same put(kind='draft', …, image=<b64>)",
+        ) from exc
 
 
 _AUTHORING_ON = frozenset({"on", "true", "1", "yes", "enable", "enabled"})
@@ -321,7 +333,10 @@ def _coerce_word_target(
             next=f"edit(id='dc<heading>', {what}={{'min':200,'max':400}})",
         ) from None
     if lo < 0 or hi < 0:
-        raise BadInput(f"{what} min/max must be non-negative")
+        raise BadInput(
+            f"{what} min/max must be non-negative",
+            next=f"edit(id='dc<heading>', {what}={{'min':200,'max':400}})",
+        )
     if lo > hi:
         raise BadInput(
             f"{what} min={lo} exceeds max={hi}",
@@ -563,7 +578,11 @@ class DraftHandler(Handler):
         if _is_draft_chunk_handle(s):
             only = self.store.drafts.get_draft_chunk(s)
             if only is None or only.retired:
-                raise NotFound(f"draft chunk {s!r} not found")
+                raise NotFound(
+                    f"draft chunk {s!r} not found",
+                    next="get(kind='draft', id='<slug>', view='toc') lists a "
+                    "draft's live dc<id> chunk handles",
+                )
             ref_id = int(only.ref_id)
             root_id: int | None = int(only.chunk_id)
         else:
@@ -573,7 +592,11 @@ class DraftHandler(Handler):
             if sel is not None:
                 only = self.store.drafts.get_draft_chunk(sel)
                 if only is None or only.retired or int(only.ref_id) != ref_id:
-                    raise NotFound(f"draft chunk {sel!r} not found in draft {s!r}")
+                    raise NotFound(
+                        f"draft chunk {sel!r} not found in draft {s!r}",
+                        next=f"get(kind='draft', id={s!r}, view='toc') lists "
+                        "its live chunk handles",
+                    )
                 root_id = int(only.chunk_id)
         chunks = self.store.drafts.reading_order(ref_id)
         display = handle_registry.try_format("draft", ref_id) or str(ref_id)
@@ -583,7 +606,11 @@ class DraftHandler(Handler):
                 None,
             )
             if idx is None:
-                raise NotFound(f"draft chunk {root_id} not found")
+                raise NotFound(
+                    f"draft chunk {root_id} not found",
+                    next="re-list live handles first: get(kind='draft', "
+                    "id='<slug>', view='toc') (the chunk may have been retired)",
+                )
             base = chunks[idx]
             subtree = [base]
             for c in chunks[idx + 1 :]:
@@ -797,7 +824,11 @@ class DraftHandler(Handler):
             if _is_draft_chunk_handle(raw_scope):
                 chunk_ids = self.store.drafts.draft_subtree_chunk_ids(raw_scope)
                 if not chunk_ids:
-                    raise NotFound(f"draft chunk {raw_scope} not found")
+                    raise NotFound(
+                        f"draft chunk {raw_scope} not found",
+                        next="get(kind='draft', id='<slug>', view='toc') lists "
+                        "live chunk handles usable as scope=",
+                    )
                 root = self.store.drafts.get_draft_chunk(raw_scope)
                 scope_ref_id = int(root.ref_id) if root else None
                 where = f"subtree {raw_scope}"
@@ -875,10 +906,18 @@ class DraftHandler(Handler):
         if _is_draft_chunk_handle(raw):
             ids = self.store.drafts.draft_subtree_chunk_ids(raw)
             if not ids:
-                raise NotFound(f"draft chunk {raw} not found")
+                raise NotFound(
+                    f"draft chunk {raw} not found",
+                    next="get(kind='draft', id='<slug>', view='toc') lists "
+                    "live chunk handles usable as scope",
+                )
             root = self.store.drafts.get_draft_chunk(raw)
             if root is None:
-                raise NotFound(f"draft chunk {raw} not found")
+                raise NotFound(
+                    f"draft chunk {raw} not found",
+                    next="get(kind='draft', id='<slug>', view='toc') lists "
+                    "live chunk handles usable as scope",
+                )
             ref_id = int(root.ref_id)
             owner = self.store.get_ref(kind="draft", id=ref_id)
             slug = (owner.slug if owner and owner.slug else None) or str(ref_id)
@@ -1640,7 +1679,10 @@ class DraftHandler(Handler):
         if resp.ref_id is None:  # pragma: no cover - defensive; contract broken
             raise BadInput(
                 f"minted project {raw!r} but its put() returned no ref_id: "
-                f"{resp.body!r}"
+                f"{resp.body!r}",
+                next="a broken todo-mint contract is a server bug, not your "
+                "input — file it: put(kind='gripe', text='draft project mint "
+                "returned no ref_id')",
             )
         return resp.ref_id
 
@@ -1697,7 +1739,11 @@ class DraftHandler(Handler):
                 next="pass the raw image base64-encoded (no data: URI prefix)",
             ) from exc
         if not raw:
-            raise BadInput("image= decoded to empty bytes")
+            raise BadInput(
+                "image= decoded to empty bytes",
+                next="pass the image's bytes base64-encoded in image= "
+                "(e.g. image=base64.b64encode(open(path, 'rb').read()).decode())",
+            )
         # The figure medium axis — an SVG blob (sniffed, or an explicit image/svg+xml from
         # a web upload) is sanitized at rest: strip script / on* / javascript:
         # so a pasted or reused SVG can't smuggle active content.
@@ -1780,7 +1826,11 @@ class DraftHandler(Handler):
             )
         sref = self.store.get_ref(kind="structure", id=src_slug)
         if sref is None:
-            raise NotFound(f"structure {src_slug!r} not found")
+            raise NotFound(
+                f"structure {src_slug!r} not found",
+                next="find a live structure slug: search(kind='structure', "
+                "q='<topic>'), then meta={'view': {'source': 'structure:<slug>'}}",
+            )
         try:
             recipe = view_recipe(
                 src_slug,
@@ -1850,13 +1900,15 @@ class DraftHandler(Handler):
             if len(bound) != 1:
                 raise BadInput(
                     f"se design {design!r} has {len(bound)} structure-bound "
-                    f"blocks; name one with meta['view']['block'] (one of {names})"
+                    f"blocks; name one with meta['view']['block'] (one of {names})",
+                    options=names,
                 )
             block = names[0]
         if not isinstance(block, str) or block not in bound:
             raise BadInput(
                 f"block {block!r} of se design {design!r} is not bound to a "
-                f"structure; structure-bound blocks: {names}"
+                f"structure; structure-bound blocks: {names}",
+                options=names,
             )
         return block, bound[block]
 
@@ -1898,7 +1950,11 @@ class DraftHandler(Handler):
         for p in plots:
             c = self.store.drafts.get_draft_chunk(str(p))
             if c is None:
-                raise NotFound(f"plots target {p!r} not found")
+                raise NotFound(
+                    f"plots target {p!r} not found",
+                    next="get(kind='draft', id='<slug>', view='toc') lists "
+                    "this draft's live chunk handles for plots=",
+                )
             if int(c.ref_id) != ref_id:
                 raise BadInput(
                     f"plots target {p!r} is not a chunk in draft {slug!r}",
@@ -2208,7 +2264,11 @@ class DraftHandler(Handler):
         # store mutators still key on; the agent-facing emit uses ``.dc``.
         _base = self.store.drafts.get_draft_chunk(handle)
         if _base is None:
-            raise NotFound(f"draft chunk {handle!r} not found")
+            raise NotFound(
+                f"draft chunk {handle!r} not found",
+                next="get(kind='draft', id='<slug>', view='toc') lists live "
+                "chunk handles",
+            )
         self._refuse_if_machine_owned(int(_base.ref_id))
         handle = _base.handle
         # dry_run previews the text-mutation paths (find-replace / rewrite,
@@ -2579,7 +2639,11 @@ class DraftHandler(Handler):
         handle = raw
         chunk = self.store.drafts.get_draft_chunk(handle)
         if chunk is None:
-            raise NotFound(f"draft chunk {handle!r} not found")
+            raise NotFound(
+                f"draft chunk {handle!r} not found",
+                next="get(kind='draft', id='<slug>', view='toc') lists live "
+                "chunk handles",
+            )
         self._refuse_if_machine_owned(int(chunk.ref_id))
         self.store.drafts.retire_chunk(chunk.handle, mode=mode)
         self.sync_draft_links(chunk.ref_id)
@@ -2666,17 +2730,29 @@ class DraftHandler(Handler):
         if _is_draft_chunk_handle(s):
             chunk = self.store.drafts.get_draft_chunk(s)
             if chunk is None:
-                raise NotFound(f"draft chunk {s} not found")
+                raise NotFound(
+                    f"draft chunk {s} not found",
+                    next="get(kind='draft', id='<slug>', view='toc') lists a "
+                    "draft's live chunk handles",
+                )
             ref = self.store.get_ref(kind="draft", id=int(chunk.ref_id))
             if ref is None:
-                raise NotFound(f"draft for chunk {s} not found")
+                raise NotFound(
+                    f"draft for chunk {s} not found",
+                    next="get(kind='draft') lists live drafts — the chunk's "
+                    "owning draft is retired or gone",
+                )
         elif s.isdigit():
             # Numeric ref id — the reader addresses drafts this way too
             # (``routes/drafts.py`` ``_draft_ref``), and it's the only
             # handle a slugless draft has.
             ref = self.store.get_ref(kind="draft", id=int(s))
             if ref is None:
-                raise NotFound(f"draft ref id {s} not found")
+                raise NotFound(
+                    f"draft ref id {s} not found",
+                    next="get(kind='draft') lists live drafts (slugs and "
+                    "numeric ref ids)",
+                )
         else:
             ref = resolve_live_slug_ref(self.store, kind="draft", id=s)
         self._refuse_if_machine_owned(ref.id)
@@ -3473,7 +3549,12 @@ class DraftHandler(Handler):
             try:
                 rx = re.compile(pattern_src)
             except re.error as exc:
-                raise BadInput(f"invalid regex {pattern_src!r}: {exc}") from exc
+                raise BadInput(
+                    f"invalid regex {pattern_src!r}: {exc}",
+                    next="fix the regex named above (or edit with a literal "
+                    "find= — no escaping needed): edit(kind='draft', "
+                    "id=<chunk>, find='old', text='new')",
+                ) from exc
             try:
                 new_raw, replace_count = patch_latex_table_text(raw, rx, replacement)
             except re.error as exc:
@@ -3524,7 +3605,10 @@ class DraftHandler(Handler):
             ) from exc
         ref = self.store.get_ref(kind="todo", id=pid)
         if ref is None:
-            raise NotFound(f"project todo {pid} not found")
+            raise NotFound(
+                f"project todo {pid} not found",
+                next="search(kind='todo', view='projects') lists project todos",
+            )
         return ref.id
 
     def _render_by_project(self, project: str | int) -> Response:
@@ -3801,7 +3885,11 @@ class DraftHandler(Handler):
         if root_handle is not None:
             root = self.store.drafts.get_draft_chunk(root_handle)
             if root is None:
-                raise NotFound(f"draft heading {root_handle} not found")
+                raise NotFound(
+                    f"draft heading {root_handle} not found",
+                    next="get(kind='draft', id='<slug>', view='toc') lists "
+                    "live heading handles",
+                )
             if root.chunk_kind != "heading":
                 raise BadInput(
                     f"hygiene scope must be a heading; {root.dc} is a "
@@ -4107,7 +4195,11 @@ class DraftHandler(Handler):
             )
         chunk = self.store.drafts.get_draft_chunk(handle)
         if chunk is None:
-            raise NotFound(f"draft chunk {handle!r} not found")
+            raise NotFound(
+                f"draft chunk {handle!r} not found",
+                next="get(kind='draft', id='<slug>', view='toc') lists live "
+                "chunk handles",
+            )
         events = self.store.drafts.chunk_events(chunk.chunk_id, limit=limit)
         header = f"# {chunk.dc} — history (newest first)"
         if not events:
@@ -4141,7 +4233,11 @@ class DraftHandler(Handler):
         ``edit`` by the reviewer."""
         chunk = self.store.drafts.get_draft_chunk(handle)
         if chunk is None:
-            raise NotFound(f"draft chunk {handle!r} not found")
+            raise NotFound(
+                f"draft chunk {handle!r} not found",
+                next="get(kind='draft', id='<slug>', view='toc') lists live "
+                "chunk handles",
+            )
         props = self.store.drafts.open_proposals(chunk.chunk_id)
         header = f"# {chunk.dc} — proposals  sha:{content_sha(chunk.text)[:12]}"
         if not props:
@@ -4177,7 +4273,9 @@ class DraftHandler(Handler):
             if not rel:
                 raise NotFound(
                     f"draft chunk {handle!r} resolves to nothing "
-                    "(out of range, or no enclosing heading)"
+                    "(out of range, or no enclosing heading)",
+                    next="drop the relative suffix (^ / +N / -B..A) and read "
+                    "the plain handle: get(kind='draft', id='dc<id>')",
                 )
             window = [
                 c
@@ -4195,7 +4293,11 @@ class DraftHandler(Handler):
             core = ("dc" + m.group("cid")) if m.group("cid") else m.group("h")
             chunk = self.store.drafts.get_draft_chunk(core)
             if chunk is None:
-                raise NotFound(f"draft chunk {handle!r} not found")
+                raise NotFound(
+                    f"draft chunk {handle!r} not found",
+                    next="get(kind='draft', id='<slug>', view='toc') lists "
+                    "live chunk handles",
+                )
             window = [chunk]
             if chunk.chunk_kind in ("ulist", "olist"):
                 # A list container carries no prose — rendering it alone
@@ -4322,7 +4424,11 @@ class DraftHandler(Handler):
         if root_handle is not None:
             chunk = self.store.drafts.get_draft_chunk(root_handle)
             if chunk is None:
-                raise NotFound(f"draft heading {root_handle} not found")
+                raise NotFound(
+                    f"draft heading {root_handle} not found",
+                    next="get(kind='draft', id='<slug>', view='toc') lists "
+                    "live heading handles",
+                )
             entries = self.store.drafts.draft_toc(chunk.ref_id, root_handle=root_handle)
             header = f"# TOC under {chunk.dc}: {chunk.text}"
         else:
@@ -4367,7 +4473,11 @@ class DraftHandler(Handler):
         if root_handle is not None:
             root = self.store.drafts.get_draft_chunk(root_handle)
             if root is None:
-                raise NotFound(f"draft heading {root_handle} not found")
+                raise NotFound(
+                    f"draft heading {root_handle} not found",
+                    next="get(kind='draft', id='<slug>', view='toc') lists "
+                    "live heading handles",
+                )
             if root.chunk_kind != "heading":
                 raise BadInput(
                     f"wordcount scope must be a heading; {root.dc} is a "

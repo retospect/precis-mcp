@@ -1056,18 +1056,21 @@ def test_edit_table_latex_sub_invalid_regex_rejected(
     ``BadInput`` rather than propagating the raw ``re.error`` — chunk left
     untouched. This exact refusal is raised from TWO call sites depending
     on routing — ``_edit_latex_table_in_place`` (correct, for a
-    ``sub=``-only selector on a LaTeX-sourced chunk) with no ``next=``,
-    vs. ``find_replace_cells`` on the legacy re-derive path (wrong route,
-    reached if the ``sub is not None`` routing guard mis-fires) which DOES
-    set one ("check the pattern — …") — so asserting ``next is None``
-    pins the route, not just the exception type/message (both routes
-    raise the identically-worded "invalid regex ..." BadInput)."""
+    ``sub=``-only selector on a LaTeX-sourced chunk), vs.
+    ``find_replace_cells`` on the legacy re-derive path (wrong route,
+    reached if the ``sub is not None`` routing guard mis-fires) — so
+    asserting the ``next=`` text pins the route, not just the exception
+    type/message (both routes raise the identically-worded "invalid
+    regex ..." BadInput; since gr494831 M3 both carry a ``next=``, and
+    they differ: ``_edit_latex_table_in_place`` offers the literal-find
+    alternative, the legacy route's says "check the pattern")."""
     tc = _flagged_latex_chunk(draft, hub, _POC_ROLES_LATEX)
     before = hub.live_store.drafts.get_draft_chunk(tc.dc)
     assert before is not None
     with pytest.raises(BadInput, match="invalid regex") as exc:
         draft.edit(id=tc.dc, sub={"find": "(unclosed", "replace": "x"})
-    assert exc.value.next is None
+    assert "no escaping needed" in str(exc.value.next)
+    assert "check the pattern" not in str(exc.value.next)
     after = hub.live_store.drafts.get_draft_chunk(tc.dc)
     assert after is not None
     assert after.text == before.text

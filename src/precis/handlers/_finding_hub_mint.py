@@ -275,7 +275,12 @@ def _attach_to_existing(
     hub_ref_id = placement.hub_ref_id
     if hub_ref_id is None:  # pragma: no cover — defensive; place() always
         # sets hub_ref_id on "attach".
-        raise BadInput("attach placement has no hub_ref_id")
+        raise BadInput(
+            "attach placement has no hub_ref_id",
+            next="a dedup-cascade invariant broke (a server bug, not your "
+            "supporters) — file it: put(kind='gripe', text='hub-mint attach "
+            "placement had no hub_ref_id')",
+        )
     neighbour_sentence = next(
         (cand.claim for cand, _v in judged if cand.hub_ref_id == hub_ref_id), ""
     )

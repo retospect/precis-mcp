@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from precis.dispatch import Hub
-from precis.errors import BadInput
+from precis.errors import BadInput, NotFound
 from precis.handlers.plan import PlanHandler
 from precis.utils import handle_registry as hr
 
@@ -223,3 +223,24 @@ def test_export_refuses_plan(plan: PlanHandler, hub: Hub, tmp_path: Path) -> Non
     ref = hub.live_store.get_ref(kind="plan", id="p1")
     with pytest.raises(BadInput, match="not an exportable deliverable"):
         export_draft(hub.live_store, ref, target_dir=tmp_path)
+
+
+# ── error contract (gr494831 M3: a refusal names the fix) ────────────
+
+
+def test_missing_node_error_names_the_listing(plan: PlanHandler, hub: Hub) -> None:
+    proj = _proj(hub)
+    plan.put(id="p1", title="P", project=proj)
+    with pytest.raises(NotFound, match="plan node 'pe999999' not found") as ei:
+        plan.edit(id="pe999999", text="x")
+    assert "get(kind='plan'" in str(ei.value.next)
+
+
+def test_cursor_to_a_missing_node_names_the_listing(
+    plan: PlanHandler, hub: Hub
+) -> None:
+    proj = _proj(hub)
+    plan.put(id="p1", title="P", project=proj)
+    with pytest.raises(NotFound, match="is not a plan node") as ei:
+        plan.edit(id="p1", cursor="pe999999")
+    assert "get(kind='plan'" in str(ei.value.next)

@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 
 from precis.dispatch import Hub
-from precis.errors import BadInput
+from precis.errors import BadInput, NotFound
 from precis.handlers.draft import DraftHandler
 from precis.store import ChunkInsert
 from precis.store._draft_ops import DraftChunk, content_sha
@@ -557,3 +557,18 @@ def test_mcp_edit_tool_records_review(
         r["chunk_id"]
         for r in hub.live_store.drafts.chunks_requiring_review(ref_id, "human")
     }
+
+
+# ---------------------------------------------------------------------------
+# Error contract (gr494831 M3: a refusal names the fix)
+# ---------------------------------------------------------------------------
+
+
+def test_review_diff_unknown_chunk_names_the_listing(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    proj = _project(hub.live_store)
+    draft.put(id="rv", title="T", project=proj)
+    with pytest.raises(NotFound, match="dc999999") as ei:
+        draft.get(id="dc999999", view="review-diff")
+    assert "view='toc'" in str(ei.value.next)

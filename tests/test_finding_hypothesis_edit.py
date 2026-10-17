@@ -15,7 +15,7 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.errors import BadInput
-from precis.handlers._finding_hypothesis import META_PROPOSED_PAYLOAD
+from precis.handlers._finding_hypothesis import META_PROPOSED_PAYLOAD, update_hypothesis
 from precis.handlers.finding import FindingHandler
 from precis.store import Store
 from tests.workers._helpers import seed_chunk, seed_ref
@@ -131,8 +131,19 @@ def test_sharpen_refused_on_an_ordinary_finding(store: Store) -> None:
     """A plain (non-hypothesis) finding has no testable_by/motivation
     fields — the door rejects, mirroring the ``title=`` non-hub check."""
     ref_id = seed_ref(store, title="an ordinary finding", kind="finding")
-    with pytest.raises(BadInput, match="hypothesis"):
+    with pytest.raises(BadInput, match="hypothesis") as ei:
         _handler(store).edit(id=ref_id, testable_by="anything")
+    # gr494831 M3: the refusal names what the caller can do instead.
+    assert "put(" in str(ei.value.next)
+
+
+def test_update_entry_point_names_the_artifact_type_gate(store: Store) -> None:
+    """update_hypothesis itself refuses a non-hypothesis ref and names the
+    check (gr494831 M3)."""
+    ref_id = seed_ref(store, title="an ordinary finding", kind="finding")
+    with pytest.raises(BadInput, match="not a live hypothesis") as ei:
+        update_hypothesis(store, hub_ref_id=ref_id, testable_by="x", motivation=None)
+    assert "meta.artifact_type" in str(ei.value.next)
 
 
 @pytest.mark.parametrize("state", ["reviewed", "signed", "anchored", "published"])

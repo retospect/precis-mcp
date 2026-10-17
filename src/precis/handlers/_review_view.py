@@ -106,7 +106,11 @@ def render_review_diff_view(store: Store, handle: str) -> Response:
     checker's approved→current diff."""
     chunk = store.drafts.get_draft_chunk(handle)
     if chunk is None:
-        raise NotFound(f"draft chunk {handle!r} not found")
+        raise NotFound(
+            f"draft chunk {handle!r} not found",
+            next="get(kind='draft', id='<slug>', view='toc') lists live chunk "
+            "handles; then get(kind='draft', id='dc<N>', view='review-diff')",
+        )
     statuses = store.drafts.review_status_for_chunk(chunk.chunk_id)
     human = next((s for s in statuses if s.checker == _HUMAN), None)
     header = f"# {chunk.dc} — review-diff (human)"

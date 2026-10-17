@@ -297,6 +297,25 @@ class TestPutHubCascadeAttach:
                 judge_fn=lambda a, b: _verdict("same", 0.95),
             )
 
+    def test_attach_bad_supporter_names_the_fix(self, store) -> None:
+        """gr494831 M3: the supporter-validation refusal names its fix."""
+        existing_sentence = "Pd/C catalyzes Suzuki coupling."
+        existing_hub = mint_hub(
+            store, CanonicalClaim(sentence=existing_sentence, scope={})
+        )
+
+        with pytest.raises(BadInput, match="nothing attached") as ei:
+            _finding_hub_mint.put_hub(
+                store,
+                sentence="Pd on carbon catalyzes the Suzuki reaction.",
+                scope={},
+                supporters=[{"paper": "does-not-exist"}],
+                embedder=object(),
+                block_fn=_block_hit(existing_hub, existing_sentence),
+                judge_fn=lambda a, b: _verdict("same", 0.95),
+            )
+        assert "fix every listed supporter" in str(ei.value.next)
+
     def test_attach_loop_is_one_transaction_mid_loop_exception_rolls_back(
         self, store, monkeypatch: pytest.MonkeyPatch
     ) -> None:

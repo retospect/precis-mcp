@@ -467,7 +467,11 @@ def _rescope_hub(
     old_pub_id = make_pub_id(make_taproot_hub_paper_id(old_title, old_scope))
     if dry_run:
         if not new_title:
-            raise BadInput("edit(kind='finding', title=…) requires a non-empty title")
+            raise BadInput(
+                "edit(kind='finding', title=…) requires a non-empty title",
+                next="edit(kind='finding', id='fi<N>', title='<non-empty claim "
+                "sentence>', meta={'scope': {...}}, dry_run=True)",
+            )
         new_pub_id = make_pub_id(make_taproot_hub_paper_id(new_title, scope))
         with store.pool.connection() as conn:
             owner = conn.execute(
@@ -640,7 +644,7 @@ def _sharpen_hypothesis(
             motivation=motivation,
         )
     except hub.HubFrozenError as exc:
-        raise BadInput(str(exc)) from exc
+        raise BadInput(str(exc), next=_FROZEN_NEXT) from exc
 
 
 def _set_unacquirable_override(
@@ -708,7 +712,11 @@ def _resolve_finding_ref_id(store: Store, *, kind: str, raw_id: int | str) -> in
     if isinstance(raw_id, int):
         ref = store.get_ref(kind=kind, id=raw_id)
         if ref is None:
-            raise BadInput(f"no finding with ref_id={raw_id}")
+            raise BadInput(
+                f"no finding with ref_id={raw_id}",
+                next="search(kind='finding', q='<claim keywords>') finds the "
+                "finding's ref_id",
+            )
         return raw_id
     s = str(raw_id).strip()
     if s.isdigit():
@@ -723,7 +731,11 @@ def _resolve_finding_ref_id(store: Store, *, kind: str, raw_id: int | str) -> in
             (s,),
         ).fetchone()
     if row is None:
-        raise BadInput(f"no finding with pub_id={s!r}")
+        raise BadInput(
+            f"no finding with pub_id={s!r}",
+            next="search(kind='finding', q='<claim keywords>') finds the "
+            "finding — address it by its ref_id",
+        )
     return int(row[0])
 
 

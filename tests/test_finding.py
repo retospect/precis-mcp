@@ -2880,3 +2880,20 @@ class TestDefaultCohortRankFusion:
         # The page stays full of cohort rows — the over-fetch filter must not
         # shrink a page that had ten qualifying matches available.
         assert out.body.count("decoy ") >= 9
+
+
+# ── error contract (gr494831 M3: a refusal names the fix) ────────────
+
+
+def test_refine_now_rejects_other_values_with_next(store) -> None:
+    h = _make_handler(store)
+    with pytest.raises(BadInput, match="refine= accepts only 'now'") as ei:
+        h.edit(id=1, refine="later")
+    assert "edit(kind='finding', id='fi<N>', refine='now')" in str(ei.value.next)
+
+
+def test_edit_unknown_finding_names_the_search(store) -> None:
+    h = _make_handler(store)
+    with pytest.raises(BadInput, match="no finding with ref_id=999999") as ei:
+        h.edit(id=999999, unacquirable_note="print-only")
+    assert "search(kind='finding'" in str(ei.value.next)

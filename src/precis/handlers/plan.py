@@ -286,7 +286,10 @@ class PlanHandler(Handler):
         handle = self._require_chunk_id(id, verb="edit")
         base = self.store.drafts.get_draft_chunk(handle, kind="plan")
         if base is None:
-            raise NotFound(f"plan node {handle!r} not found")
+            raise NotFound(
+                f"plan node {handle!r} not found",
+                next="get(kind='plan', id='<slug>') lists live pe<id> node handles",
+            )
         internal = base.handle
         if move is not None:
             move = self._resolve_move_anchors(move)
@@ -299,7 +302,10 @@ class PlanHandler(Handler):
             return Response(body=f"marked {(c or base).dc} {self._marker(c or base)}")
         if text is not None:
             if not str(text).strip():
-                raise BadInput("edit text= must be non-empty")
+                raise BadInput(
+                    "edit text= must be non-empty",
+                    next="edit(kind='plan', id='pe<id>', text='<new node text>')",
+                )
             c = self.store.drafts.edit_text(
                 internal, str(text), base_sha=base_sha, kind="plan"
             )
@@ -319,10 +325,16 @@ class PlanHandler(Handler):
         if target:
             node = self.store.drafts.get_draft_chunk(target, kind="plan")
             if node is None:
-                raise NotFound(f"cursor target {target!r} is not a plan node")
+                raise NotFound(
+                    f"cursor target {target!r} is not a plan node",
+                    next="get(kind='plan', id='<slug>') lists live pe<id> "
+                    "nodes; cursor='pe<id>'",
+                )
             if int(node.ref_id) != ref.id:
                 raise BadInput(
-                    f"cursor target {target!r} is not a node in plan {ref.slug or ref.id}"
+                    f"cursor target {target!r} is not a node in plan {ref.slug or ref.id}",
+                    next=f"get(kind='plan', id='{ref.slug or ref.id}') lists "
+                    "this plan's nodes — the cursor must point at one of them",
                 )
             target = node.dc  # canonicalise to pe<id>
         # ``meta || {..}`` is merge-only (can't delete a key), so a clear
@@ -345,7 +357,10 @@ class PlanHandler(Handler):
         handle = self._require_chunk_id(id, verb="delete")
         node = self.store.drafts.get_draft_chunk(handle, kind="plan")
         if node is None:
-            raise NotFound(f"plan node {handle!r} not found")
+            raise NotFound(
+                f"plan node {handle!r} not found",
+                next="get(kind='plan', id='<slug>') lists live pe<id> node handles",
+            )
         self.store.drafts.retire_chunk(node.handle, mode=mode, kind="plan")
         return Response(body=f"retired {node.dc}")
 
@@ -363,7 +378,10 @@ class PlanHandler(Handler):
             ) from exc
         ref = self.store.get_ref(kind="todo", id=pid)
         if ref is None:
-            raise NotFound(f"project todo {pid} not found")
+            raise NotFound(
+                f"project todo {pid} not found",
+                next="search(kind='todo', view='projects') lists project todos",
+            )
         return ref.id
 
     def _resolve_plan_any(self, id: str | int | None) -> Any:
@@ -372,10 +390,17 @@ class PlanHandler(Handler):
         if _is_plan_chunk_handle(s):
             node = self.store.drafts.get_draft_chunk(s, kind="plan")
             if node is None:
-                raise NotFound(f"plan node {s} not found")
+                raise NotFound(
+                    f"plan node {s} not found",
+                    next="get(kind='plan', id='<slug>') lists live pe<id> nodes",
+                )
             ref = self.store.get_ref(kind="plan", id=int(node.ref_id))
             if ref is None:
-                raise NotFound(f"plan for node {s} not found")
+                raise NotFound(
+                    f"plan for node {s} not found",
+                    next="get(kind='plan') lists live plans — the node's "
+                    "owning plan is retired or gone",
+                )
             return ref
         return resolve_live_slug_ref(self.store, kind="plan", id=s)
 
@@ -399,7 +424,11 @@ class PlanHandler(Handler):
             if anchor is not None and _is_plan_chunk_handle(str(anchor)):
                 node = self.store.drafts.get_draft_chunk(str(anchor), kind="plan")
                 if node is None:
-                    raise NotFound(f"at: no plan node {anchor!r}")
+                    raise NotFound(
+                        f"at: no plan node {anchor!r}",
+                        next="get(kind='plan', id='<slug>') lists live pe<id> "
+                        "nodes; re-anchor at={'before': 'pe<id>'}",
+                    )
                 out[key] = node.handle
         return out
 
@@ -506,7 +535,9 @@ class PlanHandler(Handler):
             ids = self.store.drafts.draft_relative_chunk_ids(handle, kind="plan")
             if not ids:
                 raise NotFound(
-                    f"plan node {handle!r} resolves to nothing (out of range)"
+                    f"plan node {handle!r} resolves to nothing (out of range)",
+                    next="drop the relative suffix (^ / +N / -B..A) and read "
+                    "the plain node: get(kind='plan', id='pe<id>')",
                 )
             window = [
                 node
@@ -517,7 +548,10 @@ class PlanHandler(Handler):
         else:
             node = self.store.drafts.get_draft_chunk(handle, kind="plan")
             if node is None:
-                raise NotFound(f"plan node {handle!r} not found")
+                raise NotFound(
+                    f"plan node {handle!r} not found",
+                    next="get(kind='plan', id='<slug>') lists live pe<id> nodes",
+                )
             window = [node]
         blocks = [
             f"{self._marker(c)} {c.dc}  sha:{content_sha(c.text)[:12]}\n{c.text}"

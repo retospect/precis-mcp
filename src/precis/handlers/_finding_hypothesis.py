@@ -421,7 +421,11 @@ def update_hypothesis(
             (hub_ref_id,),
         ).fetchone()
         if row is None or (row[0] or {}).get(META_ARTIFACT_TYPE) != ARTIFACT_HYPOTHESIS:
-            raise BadInput(f"fi{hub_ref_id} is not a live hypothesis")
+            raise BadInput(
+                f"fi{hub_ref_id} is not a live hypothesis",
+                next=f"get(kind='finding', id='fi{hub_ref_id}') — only a live "
+                "hypothesis (meta.artifact_type='hypothesis') has a sharpen door",
+            )
         meta = dict(row[0] or {})
         payload = dict(meta.get(META_PROPOSED_PAYLOAD) or {})
 
