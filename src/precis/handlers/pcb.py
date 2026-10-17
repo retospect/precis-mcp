@@ -99,6 +99,7 @@ from precis.pcb import (
     argue,
     eyes,
     format_route_summary,
+    format_warm_start,
     gerber_view,
     padplace,
     place,
@@ -4505,11 +4506,14 @@ class PcbHandler(Handler):
             )
         ref = self.store.get_ref(kind="pcb", id=ref_id)
         body += self._client_state_text(ref_id)
-        loop_meta = (
-            ((ref.meta or {}).get("last_route") or {}).get("loop")
-            if ref is not None
-            else None
+        last_route = (
+            ((ref.meta or {}).get("last_route") or {}) if ref is not None else {}
         )
+        # What the supply/client matching bought per role (gr491373):
+        # the stored warm_start cost pair, same lines the job summary prints.
+        for line in format_warm_start(last_route.get("warm_start")):
+            body += f"\n{line}"
+        loop_meta = last_route.get("loop")
         if loop_meta:
             # The loop run's one-line verdict; the full conflict digest
             # text stays in meta.last_route.loop.digest.

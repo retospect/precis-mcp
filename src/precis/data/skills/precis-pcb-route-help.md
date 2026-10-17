@@ -107,7 +107,8 @@ as derived `pcb_pin_swaps`. More clients than supply blocks fails the job
 summary). `warm_start` defaults to `"distance"` (that matching);
 `"radial"` keeps the old per-instance angular path.
 `last_route.warm_start` lists per role `{role, method: "match", clients,
-cost_mm, prior_cost_mm}`.
+cost_mm, prior_cost_mm}` — the job summary and `view='route-status'` show
+one `pin matching <role>` line per matched role with that cost pair.
 
 A net is named after its constrained end, and a supply pin is a free end
 (the matcher may move it). `put` refuses a net you touch whose members are

@@ -1805,6 +1805,47 @@ def test_supply_matching_is_pure_and_reports_cost(store: Store) -> None:
     assert entry["prior_cost_mm"] == pytest.approx(2 * (20.0**2 + 5.0**2) ** 0.5)
 
 
+def test_pcb_route_summary_and_route_status_show_matching_cost(
+    store: Store,
+) -> None:
+    """gr491373: the matcher's ``cost_mm`` vs ``prior_cost_mm`` pair lands
+    in ``last_route.warm_start`` but was never shown. The job summary and
+    ``view='route-status'`` must print the same per-role line."""
+    ref_id = _seed(store, "route-match-cost", _TWO_SINK_DESIGN)
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 1})
+    _route(ctx)
+    assert not ctx.failures
+
+    line = (
+        "pin matching drv: 2 client(s), 41.23 mm as wired → "
+        "10.00 mm matched (-31.23 mm)"
+    )
+    summary = "\n".join(t for k, t in ctx.summaries if k == "job_summary")
+    assert line in summary
+    resp = PcbHandler(hub=Hub(store=store)).get(
+        id="route-match-cost", view="route-status"
+    )
+    assert line in resp.body
+
+
+def test_pcb_route_summary_omits_matching_cost_without_costs(
+    store: Store,
+) -> None:
+    """No supply/client roles → ``warm_start`` carries no cost pair → no
+    ``pin matching`` line in the summary or ``view='route-status'``."""
+    ref_id = _seed(store, "route-match-none", _DESIGN)
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 1})
+    _route(ctx)
+    assert not ctx.failures
+
+    summary = "\n".join(t for k, t in ctx.summaries if k == "job_summary")
+    assert "pin matching" not in summary
+    resp = PcbHandler(hub=Hub(store=store)).get(
+        id="route-match-none", view="route-status"
+    )
+    assert "pin matching" not in resp.body
+
+
 def test_pin_swap_groups_alias_warns_and_matches(store: Store) -> None:
     design = {
         "components": [

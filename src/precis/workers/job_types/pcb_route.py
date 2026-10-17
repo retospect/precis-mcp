@@ -62,7 +62,7 @@ from collections import Counter
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
-from precis.pcb import DANGLING_NET_NOTE
+from precis.pcb import DANGLING_NET_NOTE, format_warm_start
 from precis.pcb import feedback as pcb_feedback
 from precis.pcb import matching as pcb_matching
 from precis.pcb import pinswap as pcb_pinswap
@@ -1635,6 +1635,11 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             f"{n_new_drc_errors} DRC error(s) vs the board's stored {prior_drc_errors}"
         )
 
+    # What the supply/client matching bought per role (gr491373): the
+    # stored last_route.warm_start cost pair, shown — not just stored.
+    match_summary = "".join(
+        f"\n{line}" for line in format_warm_start(warm_start_report)
+    )
     pin_swap_summary = "\n" + "\n".join(pin_swap_warnings) if pin_swap_warnings else ""
     # A `negotiate=N` run that gains nothing must say WHY (gr469872's
     # follow-up: job 470129 reported the baseline 22/33 and nothing else).
@@ -1692,7 +1697,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         f"{n_placement_errors} pre-route DRC error(s), "
         f"{len(drc_fail)} net(s) stripped by post-route DRC, "
         f"{n_disconnected} net(s) failed as disconnected copper"
-        f"{pin_swap_summary}{loop_line}\n\n" + groups_line + digest_text
+        f"{match_summary}{pin_swap_summary}{loop_line}\n\n" + groups_line + digest_text
     )
 
     if worse:

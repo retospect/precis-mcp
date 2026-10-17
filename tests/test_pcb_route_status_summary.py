@@ -24,7 +24,12 @@ from typing import Any
 
 import pytest
 
-from precis.pcb import DANGLING_NET_NOTE, format_route_summary, route_summary_status
+from precis.pcb import (
+    DANGLING_NET_NOTE,
+    format_route_summary,
+    format_warm_start,
+    route_summary_status,
+)
 from precis.pcb.generators import GeneratorExpansion
 from precis.store import Store
 
@@ -248,3 +253,25 @@ def test_dangling_net_splits_out_of_realized_in_summary_and_detail(
         "3 net(s): 1 routed, 1 unrouted, "
         "1 dangling (fewer than 2 pins, nothing to route)"
     )
+
+
+def test_format_warm_start_renders_match_cost_pairs_only() -> None:
+    """gr491373: ``last_route.warm_start`` match entries render one line
+    per role; the older per-refdes radial/distance rows carry no cost
+    pair and render nothing."""
+    assert format_warm_start(
+        [
+            {
+                "role": "drv",
+                "method": "match",
+                "clients": 2,
+                "cost_mm": 10.0,
+                "prior_cost_mm": 41.23,
+            },
+            {"refdes": "U0", "method": "distance", "distance_mm": 3.5},
+        ]
+    ) == [
+        "pin matching drv: 2 client(s), 41.23 mm as wired → "
+        "10.00 mm matched (-31.23 mm)"
+    ]
+    assert format_warm_start(None) == []

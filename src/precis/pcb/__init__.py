@@ -19,7 +19,9 @@ Euclidean assignment is accepted only at the same Manhattan optimum (four-ULP
 sum tolerance): this preserves the older EWOD routing floor without losing
 the replay gain. Coordinate row ordering was refused after it fell to49/55. The
 anneal's crossing move and authored-baseline swap persistence stay unchanged;
-`last_route.warm_start` records each group's method and distance in mm.
+`last_route.warm_start` records each group's method and distance in mm —
+matched roles also carry `cost_mm`/`prior_cost_mm`, which
+`format_warm_start` renders into the job summary and `view='route-status'`.
 
 Negotiated congestion remains a per-route opt-in, never a global default.
 Its handler and realizer supported the knob before the job params contract
@@ -296,6 +298,46 @@ def format_route_summary(counts: dict[str, int]) -> str:
         else:
             parts.append(f"{n} {k}")
     return f"{total} net(s): {', '.join(parts)}"
+
+
+def format_warm_start(report: list[dict[str, Any]] | None) -> list[str]:
+    """Display lines for ``meta.last_route.warm_start`` — one per matched
+    supply role (gr491373: the matcher stores ``cost_mm`` vs
+    ``prior_cost_mm`` and nothing ever showed it)::
+
+        pin matching drv: 2 client(s), 41.23 mm as wired → 10.00 mm
+        matched (-31.23 mm)
+
+    Entries without both costs — the radial/distance per-refdes warm-start
+    rows (``{refdes, method, distance_mm}``) — render nothing. Shared by
+    the ``pcb_route`` job summary and ``view='route-status'`` so the two
+    cannot drift."""
+    lines: list[str] = []
+    if not isinstance(report, list):
+        # ``refs.meta`` is user-writable verbatim — a hand-authored scalar
+        # ``warm_start`` must not crash ``view='route-status'``.
+        return lines
+    for entry in report:
+        if not isinstance(entry, dict):
+            continue
+        cost, prior = entry.get("cost_mm"), entry.get("prior_cost_mm")
+        if not isinstance(cost, (int, float)) or not isinstance(prior, (int, float)):
+            continue
+        # bool is an int subclass; a True cost must not render as ``1.00 mm``.
+        if isinstance(cost, bool) or isinstance(prior, bool):
+            continue
+        clients = entry.get("clients")
+        lead = (
+            f"{clients} client(s), "
+            if isinstance(clients, int) and not isinstance(clients, bool)
+            else ""
+        )
+        lines.append(
+            f"pin matching {entry.get('role')}: {lead}"
+            f"{prior:.2f} mm as wired → {cost:.2f} mm matched "
+            f"({cost - prior:+.2f} mm)"
+        )
+    return lines
 
 
 #: The v1 default stackup (pcb-guided-place-route Slice 1) — 4-layer rigid
