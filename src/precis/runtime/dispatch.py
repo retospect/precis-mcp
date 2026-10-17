@@ -25,11 +25,13 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import copy
 import functools
 import inspect
 import json
 import logging
 import os
+import random
 import re
 import textwrap
 import time
@@ -810,8 +812,135 @@ def scrub_upstream(err: PrecisError) -> None:
         )
 
 
+# ── transient retry (gr494831 step 1) ──────────────────────────────────
+#
+# A lock timeout, saturated pool or serialization abort usually heals in a
+# moment, so the dispatcher retries the call itself instead of handing the
+# agent a "retry once" chore. What may be replayed:
+#
+# * ``get`` / ``search`` on a local-database kind (``_LOCAL_READ_KINDS``) or
+#   with no kind. Kinds that reach a paid or outside service are excluded:
+#   a replay could bill twice.
+# * ``put(kind='job', idem_key=...)`` — JobHandler.put dedupes on an active
+#   ``meta.idem_key``, so a replay returns the existing ref. Only jobs
+#   dedupe on it; a job that already finished before the replay is the one
+#   accepted gap (backoff is at most ~2.4s).
+# * never ``edit`` / ``delete`` / ``tag`` / ``link``, nor any other ``put``:
+#   a handler may have committed one of several steps before the fault,
+#   and a replay would double-apply it.
+#
+# Attempts total ``_RETRY_ATTEMPTS`` (the first included); backoff is full
+# jitter over a doubling cap, ~2.4s worst-case sleep in all. Each attempt
+# gets a deep copy of the args so a handler mutating nested values cannot
+# change the replay's input.
+
+_RETRY_ATTEMPTS = 3
+_RETRY_BASE_S = 0.4
+_RETRY_VERBS = frozenset({"get", "search"})
+#: Kinds whose get/search only read the local database. Kinds that call a
+#: paid or outside service (perplexity-*, llm, web, websearch, ...) may bill
+#: again on a replay, so they stay out; so does any kind not listed.
+_LOCAL_READ_KINDS = frozenset(
+    {
+        "paper",
+        "memory",
+        "gripe",
+        "todo",
+        "finding",
+        "skill",
+        "job",
+        "draft",
+        "concept",
+        "quest",
+        "fleet",
+        "agentlog",
+        "alert",
+        "checklist",
+        "component",
+        "pcb",
+        "provenance",
+        "tag",
+        "calc",
+        "math",
+    }
+)
+
+
+def _transient_db_classes() -> tuple[type[BaseException], ...]:
+    import psycopg.errors as pge
+    import psycopg_pool
+
+    return (
+        pge.LockNotAvailable,
+        psycopg_pool.PoolTimeout,
+        pge.SerializationFailure,
+        pge.DeadlockDetected,
+    )
+
+
+def _is_transient_db_fault(exc: BaseException) -> bool:
+    """True when ``exc`` or an explicit ``raise ... from`` cause is one of
+    the retryable database faults."""
+    classes = _transient_db_classes()
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, classes):
+            return True
+        cur = cur.__cause__
+    return False
+
+
+def _replay_safe(verb: str, args: dict[str, Any]) -> bool:
+    """May this call be re-run after a transient fault? See the rule above."""
+    kind = args.get("kind")
+    if verb in _RETRY_VERBS:
+        return kind is None or kind in _LOCAL_READ_KINDS
+    return verb == "put" and kind == "job" and bool(args.get("idem_key"))
+
+
+def _retry_sleep(attempt: int) -> None:
+    """Full-jitter backoff before retry number ``attempt`` (1-based)."""
+    time.sleep(random.uniform(0, _RETRY_BASE_S * 2**attempt))
+
+
 class DispatchMixin(RuntimeShape):
     """Verb dispatch, kind/handler resolution, and handler invocation."""
+
+    def _dispatch_with_retry(self, verb: str, args: dict[str, Any]) -> Response:
+        """:meth:`_dispatch_inner` with transient database faults retried.
+
+        A persisting fault surfaces as ``Upstream`` whose text says how many
+        times the call was retried; a replay-unsafe call (see the rule
+        above) is never retried and surfaces through the normal mapping."""
+        safe = _replay_safe(verb, args)
+        attempt = 1
+        while True:
+            try:
+                return self._dispatch_inner(verb, copy.deepcopy(args))
+            except Exception as exc:
+                if not _is_transient_db_fault(exc):
+                    raise
+                if not safe or attempt >= _RETRY_ATTEMPTS:
+                    if attempt == 1:
+                        raise
+                    mapped = map_boundary_exception(exc)
+                    cause = mapped.cause if mapped else "a transient database fault"
+                    raise Upstream(
+                        f"{cause}; retried {attempt - 1} times and it persisted",
+                        next="wait a minute, then retry the call; if it still "
+                        "fails, file a gripe naming it",
+                    ) from exc
+                log.warning(
+                    "transient %s in %s; retry %d/%d",
+                    type(exc).__name__,
+                    verb,
+                    attempt,
+                    _RETRY_ATTEMPTS - 1,
+                )
+                _retry_sleep(attempt)
+                attempt += 1
 
     def dispatch(self, verb: str, args: dict[str, Any]) -> str:
         """Run one verb call. Returns the rendered string for the agent.
@@ -844,7 +973,7 @@ class DispatchMixin(RuntimeShape):
                     )
                 _refuse_envelope_denied_verb(verb)
                 _refuse_agent_secrets(verb, args, self.hub)
-                response = self._dispatch_inner(verb, dict(args))
+                response = self._dispatch_with_retry(verb, args)
                 # Chunk over-large bodies so they don't blow the
                 # MCP stdio frame. On a long-lived runtime (MCP
                 # server / `precis repl`) the pagination cache stashes

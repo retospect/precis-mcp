@@ -39,6 +39,12 @@ _CASES: dict[type[BaseException], BaseException] = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _no_retry_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Transient faults on a get are retried; skip the backoff sleeps."""
+    monkeypatch.setattr(d, "_retry_sleep", lambda _attempt: None)
+
+
 def test_every_row_has_a_case() -> None:
     assert {cls for cls, _c, _n in d._boundary_rows()} == set(_CASES)
 

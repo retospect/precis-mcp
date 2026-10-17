@@ -53,6 +53,7 @@ import hashlib
 import logging
 import re
 from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -568,13 +569,103 @@ def run_call_errors_pass(
     )
 
 
+# ── hint follow-through (gr494831) ────────────────────────────────────────
+#
+# Did the error's hint land? For each failed call in an MCP session, look at
+# the same session's next call to the SAME kind within ``FOLLOW_WINDOW``
+# ledger calls: ``ok`` = it succeeded, ``error`` = it failed again,
+# ``none`` = the session did not retry that kind (gave up or moved on).
+# Read-only; the report is ``scripts/hint-followthrough``.
+
+#: Calls after the failing one that may carry the follow-up.
+FOLLOW_WINDOW = 2
+
+HINT_FOLLOWTHROUGH_SQL = """
+SELECT e.verb, e.kind, e.error_type, e.error_head, f.outcome
+  FROM tool_calls e
+  LEFT JOIN LATERAL (
+        SELECT n.outcome
+          FROM tool_calls n
+         WHERE n.session_id = e.session_id
+           AND n.seq > e.seq AND n.seq <= e.seq + %(win)s
+           AND n.kind IS NOT DISTINCT FROM e.kind
+         ORDER BY n.seq
+         LIMIT 1) f ON true
+ WHERE e.outcome = 'error'
+   AND e.session_id IS NOT NULL
+   AND e.ts >= now() - make_interval(days => %(days)s)
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class FollowThrough:
+    """One failure family's hint follow-through."""
+
+    verb: str
+    kind: str
+    error_type: str
+    head: str  # normalised error head ('' when the row has none)
+    errors: int
+    followed_ok: int
+    followed_error: int
+    no_followup: int
+
+    @property
+    def ok_share(self) -> float:
+        return self.followed_ok / self.errors if self.errors else 0.0
+
+
+def hint_followthrough(
+    conn: Any, *, days: int = 7, min_errors: int = 1
+) -> list[FollowThrough]:
+    """Per ``(verb, kind, error_type, normalised head)``: how often the same
+    session's next call to that kind (within :data:`FOLLOW_WINDOW` calls)
+    succeeded. Families with the most errors first; ``min_errors`` drops
+    the long tail."""
+    rows = conn.execute(
+        HINT_FOLLOWTHROUGH_SQL, {"win": FOLLOW_WINDOW, "days": days}
+    ).fetchall()
+    return aggregate_followthrough(rows, min_errors=min_errors)
+
+
+def aggregate_followthrough(
+    rows: Iterable[tuple[Any, ...]], *, min_errors: int = 1
+) -> list[FollowThrough]:
+    """Group :data:`HINT_FOLLOWTHROUGH_SQL` rows (``verb, kind, error_type,
+    error_head, next_outcome``) into families. The report script feeds it
+    rows parsed from ``scripts/prod-psql --ro`` output."""
+    acc: dict[tuple[str, str, str, str], list[int]] = {}
+    for verb, kind, etype, head, outcome in rows:
+        key = (
+            str(verb),
+            str(kind) if kind is not None else "-",
+            str(etype or "Unknown"),
+            normalize_err_head(head or ""),
+        )
+        slot = acc.setdefault(key, [0, 0, 0, 0])
+        slot[0] += 1
+        slot[1 if outcome == "ok" else 2 if outcome == "error" else 3] += 1
+    out = [
+        FollowThrough(v, k, t, h, n, ok, er, no)
+        for (v, k, t, h), (n, ok, er, no) in acc.items()
+        if n >= min_errors
+    ]
+    out.sort(key=lambda r: (-r.errors, r.verb, r.kind, r.head))
+    return out
+
+
 __all__ = [
+    "FOLLOW_WINDOW",
+    "HINT_FOLLOWTHROUGH_SQL",
     "LOOKBACK_HOURS",
     "MAX_NEW_GRIPES",
     "META_CLUSTER",
     "MIN_CALLS",
     "MIN_SESSIONS",
+    "FollowThrough",
+    "aggregate_followthrough",
     "classify",
+    "hint_followthrough",
     "normalize_err_head",
     "run_call_errors_pass",
 ]

@@ -1,0 +1,85 @@
+#!/usr/bin/env -S uv run python
+"""scripts/hint-followthrough — did the error hint land? (gr494831)
+
+Per (verb, kind, error type, error-head family): of the failed calls made in
+an MCP session, the share whose NEXT call to the same kind in that session,
+within 2 calls, succeeded. Reads the prod ``tool_calls`` ledger read-only
+through ``scripts/prod-psql --ro``. The SQL and grouping live in
+``precis.workers.call_errors`` (``hint_followthrough``), shared with the
+dev-DB test.
+
+    scripts/hint-followthrough [--days 7] [--min-errors 3] [--limit 40]
+
+``ok%`` low = the hint did not help (or the agent gave up: see ``none``).
+Only rows with a session_id count: MCP sessions bound since migration 0209.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+from precis.workers.call_errors import (
+    FOLLOW_WINDOW,
+    HINT_FOLLOWTHROUGH_SQL,
+    aggregate_followthrough,
+)
+
+_ROOT = Path(__file__).resolve().parent.parent
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
+    ap.add_argument("--days", type=int, default=7)
+    ap.add_argument("--min-errors", type=int, default=3)
+    ap.add_argument("--limit", type=int, default=40)
+    ns = ap.parse_args()
+
+    sql = HINT_FOLLOWTHROUGH_SQL.replace("%(win)s", str(int(FOLLOW_WINDOW))).replace(
+        "%(days)s", str(int(ns.days))
+    )
+    env = {**os.environ, "PRECIS_PROD_PSQL_OPTS": "-At"}
+    proc = subprocess.run(
+        [str(_ROOT / "scripts" / "prod-psql"), "--ro", sql],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+        check=False,
+    )
+    if proc.returncode != 0:
+        sys.stderr.write(proc.stderr)
+        return proc.returncode
+    rows = []
+    for line in proc.stdout.splitlines():
+        # psql -At joins with '|'; the head (4th) may contain one, so peel
+        # three fields off the front and the outcome off the back.
+        front = line.split("|", 3)
+        if len(front) != 4 or "|" not in front[3]:
+            continue  # BEGIN / COMMIT markers
+        verb, kind, etype, rest = front
+        head, outcome = rest.rsplit("|", 1)
+        rows.append((verb, kind or None, etype, head, outcome or None))
+    fams = aggregate_followthrough(rows, min_errors=ns.min_errors)
+    total = sum(f.errors for f in fams)
+    ok = sum(f.followed_ok for f in fams)
+    print(
+        f"{ns.days}d, {len(rows)} session-bound errors, {len(fams)} families "
+        f">= {ns.min_errors}; next same-kind call within {FOLLOW_WINDOW} ok: "
+        f"{ok}/{total}"
+    )
+    print(f"{'verb/kind':<26}{'type':<12}{'n':>4}{'ok%':>5}{'ok':>4}{'err':>4}{'none':>5}  head")
+    for f in fams[: ns.limit]:
+        print(
+            f"{f.verb + '/' + f.kind:<26}{f.error_type:<12}{f.errors:>4}"
+            f"{round(100 * f.ok_share):>5}{f.followed_ok:>4}{f.followed_error:>4}"
+            f"{f.no_followup:>5}  {f.head[:70]}"
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
