@@ -630,6 +630,70 @@ def render_memory_index(
     return _render_live_threads(store, loaded, budget_tok, days=days, now=now)
 
 
+def score_recall(
+    store: Store, entries: list[dict[str, Any]], *, k: int = 5, embedder: Any = None
+) -> list[int | None]:
+    """Rank of each entry's ``want`` handle in the ``--q`` render of its
+    ``query`` (1-based; ``None`` when it is not in the top ``k``).
+
+    The question-set scorer of ``docs/backlog/memory-recall-quality.md``: the
+    same :func:`render_memory_index` call a session's recall makes.
+    """
+    ranks: list[int | None] = []
+    for entry in entries:
+        lines = render_memory_index(
+            store, q=entry["query"], k=k, embedder=embedder
+        ).splitlines()
+        handle = f"({entry['want']}"
+        ranks.append(
+            next(
+                (
+                    i
+                    for i, ln in enumerate(lines, 1)
+                    if handle + ")" in ln or handle + "," in ln
+                ),
+                None,
+            )
+        )
+    return ranks
+
+
+def _mirrored_handles(store: Store, handles: list[str]) -> set[str]:
+    """The ``me…`` handles among ``handles`` whose node carries a
+    ``file_mirror`` stamp (imported from a topic file, not written native)."""
+    ids = [int(h[2:]) for h in handles if h[2:].isdigit()]
+    with store.tx() as conn:
+        rows = conn.execute(
+            "SELECT ref_id FROM refs WHERE ref_id = ANY(%s) AND meta ? 'file_mirror'",
+            (ids,),
+        ).fetchall()
+    return {f"me{rid}" for (rid,) in rows}
+
+
+def render_recall_report(
+    store: Store, entries: list[dict[str, Any]], *, k: int = 5, embedder: Any = None
+) -> str:
+    """One ``HIT <rank>``/``MISS -`` line per entry (with the answer node's
+    origin, native or mirror), then a ``RECALL`` total split by origin."""
+    ranks = score_recall(store, entries, k=k, embedder=embedder)
+    mirrored = _mirrored_handles(store, [e["want"] for e in entries])
+    out: list[str] = []
+    tally = {"native": [0, 0], "mirror": [0, 0]}
+    for entry, rank in zip(entries, ranks, strict=True):
+        origin = "mirror" if entry["want"] in mirrored else "native"
+        tally[origin][1] += 1
+        tally[origin][0] += rank is not None
+        verdict = f"HIT  {rank}" if rank is not None else "MISS -"
+        out.append(f"{verdict} {entry['want']} {origin:6} {entry['query']}")
+    hits = sum(r is not None for r in ranks)
+    out.append(
+        f"RECALL {hits}/{len(entries)} at k={k} "
+        f"(native {tally['native'][0]}/{tally['native'][1]}, "
+        f"mirror {tally['mirror'][0]}/{tally['mirror'][1]})"
+    )
+    return "\n".join(out) + "\n"
+
+
 def _thread_lead(handler: Any, ref: Any) -> str:
     """A thread node's one-line state: the ``Left:`` first line, else
     ``meta.hook``, else the first non-empty body line; cut to
@@ -1132,7 +1196,18 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         ),
     )
     idx.add_argument(
-        "--k", type=int, default=5, help="Hits to print with --q (default 5)."
+        "--set",
+        dest="recall_set",
+        default=None,
+        metavar="JSON",
+        help=(
+            "Score a recall question set instead of listing: a JSON list of "
+            "{query, want} (want = the answer me-handle). Prints HIT/MISS per "
+            "entry and a RECALL total at --k, split native/mirror."
+        ),
+    )
+    idx.add_argument(
+        "--k", type=int, default=5, help="Hits to print with --q/--set (default 5)."
     )
     idx.add_argument("--database-url", default=None, help="Postgres DSN override.")
     swp = msub.add_parser(
@@ -1285,10 +1360,26 @@ def run(args: argparse.Namespace) -> None:
                     f"memory sweep: claimed={result.claimed} "
                     f"retired={result.ok} failed={result.failed}"
                 )
+        elif args.recall_set is not None:
+            import json
+
+            from precis.embedder import make_embedder
+
+            embedder = make_embedder(
+                cfg.embedder, dim=store.embedding_dim(), url=cfg.embedder_url
+            )
+            entries = json.loads(Path(args.recall_set).read_text(encoding="utf-8"))
+            print(
+                render_recall_report(store, entries, k=args.k, embedder=embedder),
+                end="",
+                flush=True,
+            )
         elif args.q is not None:
             from precis.embedder import make_embedder
 
-            embedder = make_embedder(cfg.embedder, dim=store.embedding_dim())
+            embedder = make_embedder(
+                cfg.embedder, dim=store.embedding_dim(), url=cfg.embedder_url
+            )
             print(
                 render_memory_index(store, q=args.q, k=args.k, embedder=embedder),
                 end="",
