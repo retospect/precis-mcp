@@ -7,7 +7,8 @@ answers:
   - how do I read a component datasheet as searchable chunks?
   - where does a datasheet ref come from — do I have to upload it myself?
   - what should I pull out of a datasheet and where does it go?
-applies-to: get/search (kind='datasheet'); feeds pcb net-class + measures
+  - how do I attach a datasheet PDF I found to a part?
+applies-to: get/search/put (kind='datasheet'); feeds pcb net-class + measures
 status: active
 tags: [design]
 kinds: [datasheet, pcb, part]
@@ -55,13 +56,18 @@ blocked): hand it over by URL.
 
 ```python
 put(kind='datasheet', args={'url': 'https://…/x.pdf', 'part': 'C19191684'})
+put(kind='datasheet', args={'part': 'C19191684'})   # re-pull the catalog's URL
 ```
 
-`part` is a C-number, or an mpn that matches one catalog row. The put checks
-the URL against the SSRF guard (private/loopback/non-http is refused
-immediately) and queues a pull; the job downloads through `safe_stream`,
-requires `%PDF` and at most 50 MB, ingests, and links `datasheet-of` the
-part. The outcome shows on the `datasheet:` line of `get(kind='part')`. A
+`part` is required: a C-number, or an mpn that matches one catalog row. The
+put checks the URL against the SSRF guard (private/loopback/non-http is
+refused immediately) and queues a pull; the job downloads through
+`safe_stream`, requires `%PDF` and at most 50 MB, ingests, and links
+`datasheet-of` the part. Without `url` the catalog's URL is pulled again,
+even after a failed attempt (a part that already has a datasheet is left
+alone). Either form also queues the part's `datasheet_facts` read (below)
+unless its facts are already extracted or queued. The outcome shows on the
+`datasheet:` line of `get(kind='part')`. A
 local sandbox path is not accepted (the worker cannot read it); host the
 file or ask an operator to drop it (`docs/runbooks/datasheet-ops.md`). Set
 vendor/subtype/part; they flow into the exported citation, and `part_lcsc`
@@ -79,7 +85,8 @@ target='part:<C-number>')`.
 
 ## The fact layer — `view='facts'`
 
-After a pull lands, a `datasheet_facts` job (one BIG-tier read) extracts
+After a pull lands (queued by a `pcb` put or a `datasheet` put), a
+`datasheet_facts` job (one BIG-tier read) extracts
 the part's facts onto the part ref: the pin table per package (number,
 name, function, `etype`, `rail`, `max_voltage_v`, `vih`/`vil`,
 `max_current_a`, `nc`), required externals ("1 µF X5R on IN within 5 mm")

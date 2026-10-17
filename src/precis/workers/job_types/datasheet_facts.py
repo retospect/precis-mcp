@@ -6,7 +6,9 @@ Enqueued next to the pull at put time —
 has (or is pulling) a datasheet, parented on the board, idem
 ``datasheet_facts:<lcsc>``; a facts job that wins the race against its
 pull parks itself (``waiting_pull`` → ``ctx.defer``) rather than recording
-a spurious ``no_datasheet``. It also runs stand-alone:
+a spurious ``no_datasheet``. ``put(kind='datasheet')`` queues the same job
+for one part, parented on the part ref
+(:func:`precis.pcb.datasheets.enqueue_facts_one`). It also runs stand-alone:
 
     put(kind='job', job_type='datasheet_facts', parent_id=<pcb ref>,
         params={'lcsc': 'C5446'})
@@ -64,7 +66,7 @@ REQUIRES: frozenset[str] = frozenset({"claude_bin"})
 DESCRIPTION = (
     "Extract one part's datasheet facts (pin table, required externals, "
     "conditional tables) into refs.meta.datasheet_facts — one BIG-tier "
-    "read, enqueued next to datasheet_pull at pcb put time."
+    "read, enqueued next to datasheet_pull at pcb or datasheet put time."
 )
 
 #: Spend + wall-clock on the single BIG-tier call.

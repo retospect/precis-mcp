@@ -821,7 +821,8 @@ SERVICES: tuple[ServiceSpec, ...] = (
         # conditional tables) into refs.meta.datasheet_facts — one BIG-tier
         # routed call; enqueued at pcb put time next to datasheet_pull
         # (precis.pcb.datasheets.enqueue_facts — a facts job ahead of its
-        # pull parks until the pull lands), or ad-hoc via
+        # pull parks until the pull lands), at put(kind='datasheet') time
+        # (enqueue_facts_one, parented on the part), or ad-hoc via
         # put(kind='job', job_type='datasheet_facts', parent_id=<pcb>).
         name="datasheet_facts",
         label="Datasheet facts (job)",
@@ -830,7 +831,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         uses_model=True,
         cost_sources=("datasheet-facts",),
         one_line="One BIG-tier read of a part's datasheet into its fact "
-        "block — queued with the pull at pcb put time.",
+        "block — queued with the pull at pcb or datasheet put time.",
         doc_skill="precis-datasheet-help",
     ),
     ServiceSpec(

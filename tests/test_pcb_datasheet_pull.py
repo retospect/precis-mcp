@@ -576,8 +576,60 @@ def test_put_refuses_local_path_and_missing_fields(ds_handler):
 
     with pytest.raises(BadInput, match="not a local path"):
         ds_handler.put(args={"path": "/tmp/x.pdf", "part": "C25900"})
-    with pytest.raises(BadInput, match="needs url= and part="):
+    with pytest.raises(BadInput, match="needs part="):
         ds_handler.put(args={"url": "https://x.test/a.pdf"})
+
+
+def test_put_url_feeds_the_facts_extraction_once(store, ds_handler, public_url, no_jlc):
+    store.parts_import([_catalog_row(19191684, None)])
+    resp = ds_handler.put(args={"url": "https://x.test/a.pdf", "part": "C19191684"})
+    assert "facts extraction queued" in resp.body
+    facts = [("C19191684", "datasheet_facts:C19191684")]
+    assert _jobs(store, "datasheet_facts") == facts
+    ds_handler.put(args={"url": "https://x.test/b.pdf", "part": "C19191684"})
+    assert _jobs(store, "datasheet_facts") == facts  # in flight: collapsed
+    part_id = store.part_ref_id("C19191684")
+    with store.pool.connection() as conn:
+        (parent,) = conn.execute(
+            "SELECT parent_id FROM refs WHERE kind = 'job' "
+            "AND meta->>'job_type' = 'datasheet_facts'"
+        ).fetchone()
+    assert parent == part_id
+
+
+def test_put_part_only_requeues_a_failed_catalog_pull(
+    store, ds_handler, no_jlc, serve, fake_ingest
+):
+    store.parts_import([_catalog_row(25900, "https://x.test/a.pdf")])
+    serve["status"] = 503
+    assert dp.pull(store, "C25900")["reason"] == "http_503"
+    resp = ds_handler.put(args={"part": "C25900"})
+    assert "datasheet pull queued for part:C25900" in resp.body
+    assert _job_params(store) == [{"lcsc": "C25900"}]  # the catalog url
+    assert len(_jobs(store, "datasheet_facts")) == 1
+
+
+def test_put_part_only_with_a_datasheet_queues_only_the_facts(
+    store, ds_handler, no_jlc, serve, fake_ingest
+):
+    _ok_pull(store, serve, fake_ingest)
+    resp = ds_handler.put(args={"part": "C25900"})
+    assert "already has datasheet" in resp.body
+    assert _job_params(store) == []
+    assert _jobs(store, "datasheet_facts") == [("C25900", "datasheet_facts:C25900")]
+
+
+def test_put_part_only_after_extraction_queues_nothing(
+    store, ds_handler, no_jlc, serve, fake_ingest
+):
+    _ok_pull(store, serve, fake_ingest)
+    store.update_ref(
+        store.part_ref_id("C25900"),
+        meta_patch={"datasheet_facts": {"extracted_at": "2026-10-17T00:00:00Z"}},
+    )
+    resp = ds_handler.put(args={"part": "C25900"})
+    assert "facts already extracted or queued" in resp.body
+    assert _job_params(store) == [] and _jobs(store, "datasheet_facts") == []
 
 
 def test_agent_url_not_a_pdf_or_too_big_is_a_recorded_failure(

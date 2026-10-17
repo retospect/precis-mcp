@@ -11,7 +11,10 @@ The outcome of an attempt lives on the part ref's ``meta.datasheet_pull``
 survives a later failed pull and carries it as ``last_attempt``), so "no
 datasheet" reads differently from "never tried" (:func:`status_line`).
 A failed pull is not retried by a later put; ``put(kind='pcb',
-args={'op': 'datasheets', 'force': True})`` re-queues it.
+args={'op': 'datasheets', 'force': True})`` re-queues it, and so does
+``put(kind='datasheet', args={'part': …})`` for one part. That put also
+queues the part's ``datasheet_facts`` read (:func:`enqueue_facts_one`), so a
+sheet an agent hands over is extracted before any design uses the part.
 """
 
 from __future__ import annotations
@@ -348,26 +351,47 @@ def enqueue_facts(store: Store, job: Any, pcb_ref_id: int) -> int:
             return 0
         states = datasheet_states(store, lcscs)
         for lcsc in lcscs:
-            state = states[lcsc]
-            has_pull = pull_in_flight(store, lcsc)
-            if state["datasheet"] is None and not has_pull:
-                continue
-            if _facts_extracted(store, state["part_ref_id"]):
-                continue
-            resp = job.put(
-                job_type=FACTS_JOB_TYPE,
-                executor="claude_inproc",
-                parent_id=pcb_ref_id,
-                params={"lcsc": lcsc},
-                idem_key=facts_idem_key(lcsc),
-            )
-            if not getattr(resp, "reused", False):
-                queued += 1
+            queued += _queue_facts(store, job, lcsc, states[lcsc], pcb_ref_id)
     except Exception:
         log.warning(
             "datasheet_facts: enqueue for pcb %s failed", pcb_ref_id, exc_info=True
         )
     return queued
+
+
+def enqueue_facts_one(store: Store, job: Any, lcsc: str) -> bool:
+    """Queue one ``datasheet_facts`` job for ``lcsc`` ahead of any design
+    (``put(kind='datasheet')``), parented on the part's ref; same rules as
+    :func:`enqueue_facts`. Call it after :func:`enqueue_one` so a just-queued
+    pull counts. Returns whether a job was newly queued; never raises."""
+    key = lcsc.strip().upper()
+    try:
+        state = datasheet_state(store, key)
+        if state["part_ref_id"] is None:
+            return False
+        return _queue_facts(store, job, key, state, state["part_ref_id"])
+    except Exception:
+        log.warning("datasheet_facts: enqueue for %s failed", key, exc_info=True)
+        return False
+
+
+def _queue_facts(
+    store: Store, job: Any, lcsc: str, state: dict[str, Any], parent_id: int
+) -> bool:
+    """One facts job when the part has (or is pulling) a datasheet and no
+    extracted block yet."""
+    if state["datasheet"] is None and not pull_in_flight(store, lcsc):
+        return False
+    if _facts_extracted(store, state["part_ref_id"]):
+        return False
+    resp = job.put(
+        job_type=FACTS_JOB_TYPE,
+        executor="claude_inproc",
+        parent_id=parent_id,
+        params={"lcsc": lcsc},
+        idem_key=facts_idem_key(lcsc),
+    )
+    return not getattr(resp, "reused", False)
 
 
 __all__ = [
@@ -377,6 +401,8 @@ __all__ = [
     "datasheet_state",
     "datasheet_states",
     "enqueue_facts",
+    "enqueue_facts_one",
+    "enqueue_one",
     "enqueue_pulls",
     "facts_idem_key",
     "idem_key",

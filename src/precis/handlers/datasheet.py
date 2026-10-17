@@ -12,8 +12,11 @@ from a paper are declared, not duplicated:
 * **One kind for the whole electronics-doc family** — app-notes / errata /
   reference-manuals ride along via a ``meta`` sub-type; we do **not** mint a
   new kind per genre.
-* ``put(args={'url', 'part'})`` queues a ``datasheet_pull`` for an
-  agent-found PDF URL (the pull job downloads through ``safe_stream``);
+* ``put(args={'part', 'url'?})`` queues a ``datasheet_pull`` for an
+  agent-found PDF URL, or without ``url`` re-queues the catalog's own URL
+  (the pull job downloads through ``safe_stream``), and queues the part's
+  ``datasheet_facts`` read; ``part`` is required because the link, the pull
+  record and the fact block all live on the part ref.
   ``get(kind='part')`` queues the catalog's own URL ahead of any design.
   A local-path put is deliberately absent: the pull runs on a worker that
   cannot see an agent's sandbox, and ingesting inline would run Marker in
@@ -38,7 +41,7 @@ from precis.errors import BadInput, NotFound
 from precis.handlers.paper import PaperHandler
 from precis.pcb import jlc_api
 from precis.pcb._http import VendorError
-from precis.pcb.datasheets import enqueue_one
+from precis.pcb.datasheets import datasheet_state, enqueue_facts_one, enqueue_one
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.utils.edit_resolve import normalize_dry_run
@@ -78,7 +81,7 @@ _PAPER_EDIT_FIELDS: tuple[str, ...] = (
 
 
 class DatasheetHandler(PaperHandler):
-    """Read-only component datasheet (evidence role)."""
+    """Component datasheet (evidence role); put queues a pull, never a stub."""
 
     # A datasheet isn't acquired via `precis jobs ingest-bundles` (that's
     # the paper backlog) — it's lazily ingested from a part's
@@ -94,12 +97,15 @@ class DatasheetHandler(PaperHandler):
         kind="datasheet",
         title="Datasheet",
         description=(
-            "Component datasheet — a read-only ingested PDF read "
+            "Component datasheet — an ingested PDF read "
             "in the same two-pane reader as a paper (embeddings / keywords / "
             "TOC / in-doc search), addressable by slug. Evidence role: citable "
             "as a part's source, but scoped out of academic paper search. One "
             "kind for the whole electronics-doc family (app-note / errata via a "
-            "meta sub-type). Link it to a part with link(rel='datasheet-of'). "
+            "meta sub-type). Attach one with put(args={'part': 'C…', 'url': "
+            "'https://…pdf'}) (url optional: the catalog's), which also queues "
+            "the part's fact extraction. Link it to a part with "
+            "link(rel='datasheet-of'). "
             "Use get(view='toc') to read the pinout / sections. "
             "See precis-datasheet-help."
         ),
@@ -134,7 +140,7 @@ class DatasheetHandler(PaperHandler):
         args: dict[str, Any] | None = None,
         **kw: Any,
     ) -> Response:
-        """Queue the fetch of a datasheet PDF for a part.
+        """Queue the fetch of a datasheet PDF for a part, and its fact read.
 
         ``put(kind='datasheet', args={'url': 'https://…/x.pdf', 'part':
         'C19191684'})``. ``part`` is an LCSC C-number, or a manufacturer part
@@ -142,7 +148,10 @@ class DatasheetHandler(PaperHandler):
         it is checked against the SSRF guard here (private/loopback is
         refused at once) and fetched again, pinned, by the job, which also
         enforces ``%PDF`` magic and the 50 MB cap and records the outcome on
-        ``get(kind='part', id=<C-number>)``.
+        ``get(kind='part', id=<C-number>)``. Without ``url`` the catalog's
+        URL is re-pulled (a failed earlier attempt included) unless the part
+        already has a datasheet. Either way the part's ``datasheet_facts``
+        job is queued unless its facts are already extracted or queued.
         """
         extras = args or {}
         url = str(extras.get("url") or kw.get("url") or "").strip()
@@ -154,24 +163,43 @@ class DatasheetHandler(PaperHandler):
                 next="host the PDF and pass args={'url': …, 'part': 'C…'}, or "
                 "ask an operator to drop it in <inbox>/datasheets/",
             )
-        if not url or not part:
+        if not part:
             raise BadInput(
-                "put(kind='datasheet') needs url= and part=",
+                "put(kind='datasheet') needs part= (url= is optional: without "
+                "it the catalog's datasheet URL is pulled)",
                 next="put(kind='datasheet', args={'url': 'https://…/x.pdf', "
                 "'part': 'C19191684'})",
             )
-        try:
-            assert_public_http_url(url)
-        except SsrfBlocked as exc:
-            raise BadInput(f"url refused: {exc}") from exc
-        except OSError as exc:  # DNS failure/timeout: not a verdict on the URL
-            raise BadInput(f"url could not be resolved: {exc}") from exc
+        if url:
+            try:
+                assert_public_http_url(url)
+            except SsrfBlocked as exc:
+                raise BadInput(f"url refused: {exc}") from exc
+            except OSError as exc:  # DNS failure/timeout: not a verdict on the URL
+                raise BadInput(f"url could not be resolved: {exc}") from exc
         lcsc = self._resolve_part(part)
-        queued = enqueue_one(self.store, self.hub.sibling("job"), lcsc, url=url)
-        note = "queued" if queued else "already queued for this url"
+        job = self.hub.sibling("job")
+        if url:
+            queued = enqueue_one(self.store, job, lcsc, url=url)
+            pull = f"datasheet pull {'queued' if queued else 'already queued'} "
+            pull += f"for part:{lcsc}" + ("" if queued else " and this url")
+        elif enqueue_one(self.store, job, lcsc, force=True):
+            pull = f"datasheet pull queued for part:{lcsc} (catalog url)"
+        elif (ds := datasheet_state(self.store, lcsc)["datasheet"]) is not None:
+            pull = (
+                f"part:{lcsc} already has datasheet {ds[1] or ds[0]} "
+                "(pass url= to add another)"
+            )
+        else:
+            pull = f"datasheet pull already queued for part:{lcsc}"
+        facts = (
+            "facts extraction queued"
+            if enqueue_facts_one(self.store, job, lcsc)
+            else "facts already extracted or queued"
+        )
         return Response(
-            body=f"datasheet pull {note} for part:{lcsc}. Outcome: "
-            f"get(kind='part', id='{lcsc}') (datasheet line)."
+            body=f"{pull}; {facts}. Outcome: get(kind='part', id='{lcsc}') "
+            "(datasheet line; view='facts' for the fact block)."
         )
 
     def _resolve_part(self, part: str) -> str:
