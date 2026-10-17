@@ -34,6 +34,7 @@ import html
 import json
 import re
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
@@ -47,6 +48,7 @@ from pylatexenc.latexencode import (
     get_builtin_uni2latex_dict,
 )
 
+from precis.export import _abbrev
 from precis.export._back_matter import ordered_blocks
 from precis.export._cite_ids import paper_identifier
 from precis.export._data_package import (
@@ -767,128 +769,68 @@ def _encode_unicode(escaped: str) -> str:
 
 
 def _glsify(
-    escaped: str,
-    keymap: dict[str, str],
-    seen: set[str] | None = None,
-    abbrevs: dict[str, str] | None = None,
-    at_start: bool = False,
+    text: str, ctx: _Ctx, preceding: str | None, stash: Callable[[str], str]
 ) -> str:
-    """Replace whole-word occurrences of each known abbreviation short
-    with a glossary call (longest-first, word-bounded). Runs on
-    already-escaped prose; shorts are alphanumerics, untouched by
-    escaping.
+    """Abbreviations in *raw* prose → stashed glossary calls; the matching
+    (which occurrence defines, what is left alone) is the docx exporter's,
+    :func:`precis.export._abbrev.expand`. Runs before escaping, so a short
+    or long form with a LaTeX special in it matches like any other.
 
-    A trailing plural ``s`` is absorbed and rendered with the plural
-    form, so a defined ``MOF`` links both ``MOF`` and ``MOFs`` to one
-    entry (longest-first ordering means a literal short ``As`` still
-    wins over ``A``+plural ``s``; irregular plurals need the explicit
-    form).
-
-    ``seen`` threads already-seen keys across the whole render (so
-    document order == glossaries' first-use order): the *first*
-    occurrence renders plain ``\\gls``/``\\glspl`` (full term + short,
-    inline); every *later* occurrence renders ``\\glstip``/``\\glspltip``
-    — the bare short wrapped in a non-printing ``\\pdftooltip`` revealing
-    the full term on hover. Only later uses are wrapped since a
-    pdftooltip box can't break across a line and first-use expansion is
-    multi-word. ``seen`` omitted → every occurrence renders plain (unit
-    tests).
-
-    ``abbrevs`` (``{short: long}``) lets a first use that the prose already
-    spells out as ``long (SHORT)`` / ``long (SHORTs)`` collapse that whole
-    span into the single ``\\gls`` (whose first-use expansion prints the
-    same thing), instead of doubling the expansion. The prose long form
-    matches case-insensitively and may differ from the registry's only by
-    a trailing ``s``. A first-use ``\\gls`` that starts a sentence (the
-    start of ``escaped`` when ``at_start``, or after ``. ``/``? ``/``! ``)
-    renders capitalised (``\\Gls``/``\\Glspl``)."""
-    if not keymap:
-        return escaped
-    shorts = sorted((s for s in keymap if s), key=len, reverse=True)
-    # Pre-pass: a prose ``long (SHORT)`` whose long form itself contains
-    # another registered short (``functionalized CNB (FCNB)``) would have
-    # that inner short consumed first, leaving the main loop's look-back
-    # without its long form. Stash those spans behind ``\x03<n>\x03``
-    # tokens the main loop treats as the first use of SHORT. Longest long
-    # form first so a nested span wins over its prefix.
-    spans: list[tuple[str, str, bool, str]] = []  # (short, key, plural, text)
-    longs: dict[str, str] = {s: (abbrevs or {}).get(s, "").strip() for s in shorts}
-    for short in sorted(
-        (s for s in shorts if longs[s]),
-        key=lambda s: len(longs[s]),
-        reverse=True,
-    ):
-        esc_long = _encode_unicode(_latex_escape(longs[short]))
-        base = esc_long[:-1] if esc_long.lower().endswith("s") else esc_long
-        if not base:
-            continue
-
-        def _stash(m: re.Match[str], short: str = short) -> str:
-            spans.append((short, keymap[short], bool(m.group(1)), m.group(0)))
-            return f"\x03{len(spans) - 1}\x03"
-
-        escaped = re.sub(
-            r"(?<![\w-])" + re.escape(base) + r"s?\s*\(" + re.escape(short) + r"(s)?\)",
-            _stash,
-            escaped,
-            flags=re.IGNORECASE,
-        )
-    pat = re.compile(
-        r"\x03(\d+)\x03|(?<![\w-])("
-        + "|".join(re.escape(s) for s in shorts)
-        + r")(s)?(?![\w-])"
-    )
+    ``ctx.seen_acr`` threads the defined shorts across the whole render
+    (document order == glossaries' first-use order). The first use is
+    plain ``\\gls``/``\\glspl`` (``\\Gls`` at a sentence start); every later
+    use is ``\\glstip``/``\\glspltip`` — the bare short wrapped in a
+    non-printing ``\\pdftooltip`` revealing the full term on hover. Only
+    later uses are wrapped since a pdftooltip box can't break across a
+    line and the first-use expansion is multi-word. A heading's use is
+    ``\\glsfmtshort`` (robust, bookmark-safe, does not count as the first
+    use)."""
+    if not ctx.keymap:
+        return text
+    abbrevs = {s: ctx.abbrevs.get(s, "") for s in ctx.keymap if s}
     out: list[str] = []
-    pos = 0
-    for m in pat.finditer(escaped):
-        pre = escaped[pos : m.start()]
-        end = m.end()
-        stashed = m.group(1) is not None
-        if stashed:
-            short, key, plural_b, span_text = spans[int(m.group(1))]
-            plural = "s" if plural_b else None
-        else:
-            short = m.group(2)
-            key = keymap[short]
-            plural = m.group(3)
-        first = seen is None or key not in seen
-        if stashed and not first:
-            # Already introduced: keep the author's prose span verbatim.
-            out.append(pre)
-            out.append(span_text)
-            pos = end
+    for seg in _abbrev.expand(
+        text, abbrevs, ctx.seen_acr, preceding=preceding, heading=ctx.in_heading
+    ):
+        if isinstance(seg, str):
+            out.append(seg)
             continue
-        if first and seen is not None:
-            seen.add(key)
-        if stashed:
-            cmd = "glspl" if plural else "gls"
-            if re.search(r"[.?!]\s+$", pre) or (
-                at_start and not "".join(out).strip() and not pre.strip()
-            ):
-                cmd = cmd[0].upper() + cmd[1:]
-        elif not first:
-            cmd = "glspltip" if plural else "glstip"
-        else:
-            cmd = "glspl" if plural else "gls"
-            long = (abbrevs or {}).get(short)
-            if long and escaped[end : end + 1] == ")":
-                esc_long = _encode_unicode(_latex_escape(long.strip()))
-                base = esc_long[:-1] if esc_long.lower().endswith("s") else esc_long
-                lm = re.search(
-                    r"(?<![\w-])" + re.escape(base) + r"s?\s*\($", pre, re.IGNORECASE
-                )
-                if base and lm:
-                    pre = pre[: lm.start()]
-                    end += 1
-            if re.search(r"[.?!]\s+$", pre) or (
-                at_start and not "".join(out).strip() and not pre.strip()
-            ):
-                cmd = cmd[0].upper() + cmd[1:]
-        out.append(pre)
-        out.append(f"\\{cmd}{{{key}}}")
-        pos = end
-    out.append(escaped[pos:])
+        if seg.mode == "bare" and ctx.keymap[seg.short] not in ctx.heading_keys:
+            ctx.heading_keys.append(ctx.keymap[seg.short])
+        out.append(stash(_gls_use(seg, ctx.keymap)))
     return "".join(out)
+
+
+def _heading_glsadd(ctx: _Ctx) -> str:
+    """``\\glsadd`` for the shorts the last heading printed bare, emitted
+    after the heading (not inside the moving argument): ``\\glsfmtshort``
+    does not index, and the acronym list should carry every short the
+    reader sees, as the docx list does."""
+    adds = "".join(f"\\glsadd{{{k}}}" for k in ctx.heading_keys)
+    ctx.heading_keys.clear()
+    return adds
+
+
+def _gls_use(use: _abbrev.Use, keymap: dict[str, str]) -> str:
+    """One :class:`~precis.export._abbrev.Use` as a glossary call."""
+    key, pl = keymap[use.short], "pl" if use.plural else ""
+    if use.mode == "bare":
+        return f"\\glsfmtshort{pl}{{{key}}}"
+    if use.mode == "later":
+        return f"\\gls{pl}tip{{{key}}}"
+    if use.mode == "unset":
+        return f"\\glsunset{{{key}}}\\gls{pl}{{{key}}}"
+    if use.pair is not None:
+        sep, kb = _encode_unicode(_latex_escape(use.pair[0])), keymap[use.pair[1]]
+        o, c = ("{[}", "{]}") if use.bracket else ("(", ")")
+        long = "Glsxtrlong" if use.capital else "glsxtrlong"
+        return (
+            f"\\{long}{{{key}}}{sep}\\glsxtrlong{{{kb}}} "
+            f"{o}\\glsxtrshort{{{key}}}{sep}\\glsxtrshort{{{kb}}}{c}"
+            f"\\glsunset{{{key}}}\\glsunset{{{kb}}}"
+        )
+    cmd = ("G" if use.capital else "g") + "ls" + pl
+    return f"\\glsbrk{{\\{cmd}}}{{{key}}}" if use.bracket else f"\\{cmd}{{{key}}}"
 
 
 @dataclass
@@ -911,7 +853,13 @@ class _Ctx:
     warnings: list[str] = field(default_factory=list)
     #: Read cache for the pin lint (:func:`precis.nanopub.pin_lint.warn_export`).
     pin_ctx: Any = None
-    seen_acr: set[str] = field(default_factory=set)  # glossary keys already emitted
+    seen_acr: set[str] = field(default_factory=set)  # shorts already defined
+    #: Rendering a heading / block title: abbreviations print as the bare
+    #: ``\\glsfmtshort`` and are not defined there (gr491599 M2).
+    in_heading: bool = False
+    #: glossary keys the heading being rendered printed bare, for
+    #: :func:`_heading_glsadd`.
+    heading_keys: list[str] = field(default_factory=list)
     abbrevs: dict[str, str] = field(default_factory=dict)  # short → long form
     #: Set by :func:`_render_finding_cite` when a cite mark was dropped for
     #: want of any citable source; :func:`_render_inline` reads and clears it
@@ -999,11 +947,14 @@ class _Ctx:
         return self.doc_type == _PATENT_DOC_TYPE
 
 
-def _render_gap(text: str, ctx: _Ctx, *, chunk_start: bool = False) -> str:
+def _render_gap(text: str, ctx: _Ctx, *, preceding: str | None = None) -> str:
     """Render a non-reference run of prose to LaTeX: math + code stashed
     verbatim, sub/sup → ``\\textsubscript`` / ``\\textsuperscript``,
     ``**bold**`` → ``\\textbf``, ``\\gls`` for known abbreviations,
-    non-ASCII → LaTeX commands, the rest LaTeX-escaped."""
+    non-ASCII → LaTeX commands, the rest LaTeX-escaped. ``preceding`` is
+    the chunk's source text before this run (``""`` at the chunk start,
+    ``None`` unknown), for :func:`_glsify`'s sentence and parenthesis
+    context."""
     if not text:
         return ""
     stash: list[str] = []
@@ -1037,14 +988,15 @@ def _render_gap(text: str, ctx: _Ctx, *, chunk_start: bool = False) -> str:
     s = _HTML_SUP.sub(
         lambda m: _stash(f"\\textsuperscript{{{_latex_escape(m.group(1))}}}"), s
     )
+    # 3b. Abbreviations → \gls (first use) / \glstip tooltip (later uses),
+    #     stashed, on the raw prose (the docx exporter's matcher).
+    s = _glsify(s, ctx, preceding, _stash)
     # 4. Escape the remaining prose, then translate any non-ASCII glyphs.
     s = _encode_unicode(_latex_escape(s))
     # 5. Bold then italic (the * survived escaping — not a LaTeX special).
     #    Bold first so a ``**…**`` run is consumed before single-* italic.
     s = _MD_BOLD.sub(r"\\textbf{\1}", s)
     s = _MD_ITALIC.sub(r"\\emph{\1}", s)
-    # 6. Abbreviations → \gls (first use) / \glstip tooltip (later uses).
-    s = _glsify(s, ctx.keymap, ctx.seen_acr, ctx.abbrevs, chunk_start)
 
     # 6b. Two math spans restored back-to-back would abut as ``…$$…`` — TeX
     #     reads that as a display-math opener ("Display math should end with
@@ -1118,7 +1070,6 @@ def _draft_xref(dc: str, surface: str | None, ctx: _Ctx) -> str:
 
 _CREF_RUN = re.compile(r"\\cref\{([^{}]*)\}\s*\\cref\{([^{}]*)\}")
 _CITE_MARK_END = re.compile(r"\\cite(?:\[[^\]]*\])?\{[^{}]*\}$")
-_SENTENCE_END = re.compile(r"[.?!]\s+$")
 
 
 def _polish_xrefs(s: str) -> str:
@@ -1156,7 +1107,7 @@ def _polish_xrefs(s: str) -> str:
                 pre += " "
                 head += " "
         out.append(pre)
-        if _SENTENCE_END.search(head) or not head.strip():
+        if _abbrev.at_sentence_start(head):
             out.append("\\Cref{")
         else:
             out.append("\\cref{")
@@ -2122,12 +2073,14 @@ def _render_inline(text: str, ctx: _Ctx) -> str:
     last = 0
     prev_ref = ""  # last emitted cite mark, while only it separates us
     dropped_at: int | None = None  # out index of the gap before a dropped cite
+    plain = ""  # source so far, a display link as its surface text
     for m in _COMBINED.finditer(text):
         gap = text[last : m.start()]
         if dropped_at is not None and gap[:1] in (".", ",", ";", ":", "!", "?", ")"):
             out[dropped_at] = out[dropped_at].rstrip(" ")
         dropped_at = None
-        out.append(_render_gap(gap, ctx, chunk_start=not out))
+        out.append(_render_gap(gap, ctx, preceding=plain))
+        plain += gap + (m.group("disp") or m.group(0))
         ctx.dropped_cite = False
         ref = _render_reference(m, ctx)
         if ctx.dropped_cite:
@@ -2149,7 +2102,7 @@ def _render_inline(text: str, ctx: _Ctx) -> str:
     tail = text[last:]
     if dropped_at is not None and tail[:1] in (".", ",", ";", ":", "!", "?", ")"):
         out[dropped_at] = out[dropped_at].rstrip(" ")
-    out.append(_render_gap(tail, ctx, chunk_start=not out))
+    out.append(_render_gap(tail, ctx, preceding=plain))
     s = _merge_adjacent_cites("".join(out), ctx)
     # Directly-adjacent footnote markers print as one number ("23" for 2
     # then 3). Each emitted footnote carries a trailing \x02 sentinel; a
@@ -2410,7 +2363,8 @@ def _render_chunk_lines(
         if c.chunk_kind == "figure":
             lines.extend(_render_figure(c, ctx, label))
         elif c.chunk_kind == "heading":
-            title = _render_moving_arg(c.text or "", ctx)
+            title = _render_moving_arg(c.text or "", ctx, heading=True)
+            label += _heading_glsadd(ctx)
             if ctx.poster:
                 # In-block subheading: bold run-in line, never \section —
                 # the beamer block title IS the section heading.
@@ -2453,19 +2407,18 @@ def _render_chunk_lines(
     return lines
 
 
-def _render_moving_arg(text: str, ctx: _Ctx) -> str:
+def _render_moving_arg(text: str, ctx: _Ctx, *, heading: bool = False) -> str:
     """Render prose destined for a *moving argument* (``\\caption`` /
     ``\\section``): footnote mode is suppressed for the span — a
     ``\\footnote`` there doesn't render (floats) or breaks outright under
     hyperref — so a cite stays a plain ``\\cite`` whose [N] still resolves
-    in the end bibliography."""
-    if not ctx.footnote_refs:
-        return _render_inline(text, ctx)
-    ctx.footnote_refs = False
+    in the end bibliography. ``heading``: abbreviations print bare and are
+    not defined there (:attr:`_Ctx.in_heading`)."""
+    footnotes, ctx.footnote_refs, ctx.in_heading = ctx.footnote_refs, False, heading
     try:
         return _render_inline(text, ctx)
     finally:
-        ctx.footnote_refs = True
+        ctx.footnote_refs, ctx.in_heading = footnotes, False
 
 
 def _render_figure(c: Any, ctx: _Ctx, label: str) -> list[str]:
@@ -2562,12 +2515,20 @@ def build_acronyms(
 ) -> str:
     """``\\newacronym`` lines for every defined abbreviation, keyed by the
     same collision-resolved map the body's ``\\gls`` calls use (so every
-    ``\\gls{key}`` has exactly one matching definition)."""
+    ``\\gls{key}`` has exactly one matching definition). A long form whose
+    plural is not ``+s`` (``spectroscopy``, ``density of states``) gets an
+    explicit ``longplural``, the plural the docx exporter prints."""
     keymap = keymap or _acronym_keymap(abbrevs)
     lines = []
     for short, long in sorted(abbrevs.items()):
+        plural = _abbrev.plural_long(long.strip())
+        opt = (
+            ""
+            if plural == long.strip() + "s"
+            else f"[longplural={{{_encode_unicode(_latex_escape(plural))}}}]"
+        )
         lines.append(
-            f"\\newacronym{{{keymap[short]}}}{{{_latex_escape(short)}}}"
+            f"\\newacronym{opt}{{{keymap[short]}}}{{{_latex_escape(short)}}}"
             f"{{{_encode_unicode(_latex_escape(long))}}}"
         )
     return "\n".join(lines)
@@ -3394,8 +3355,9 @@ def _export_poster(
         col = _poster_column_index(hint, counts)
         counts[col] += 1
         block_lines = "\n".join(lines).strip()
+        title_tex = _render_moving_arg(title, ctx, heading=True)
         block = (
-            f"\\begin{{block}}{{{_render_moving_arg(title, ctx)}}}\n"
+            f"\\begin{{block}}{{{title_tex}}}{_heading_glsadd(ctx)}\n"
             f"{block_lines}\n\\end{{block}}"
         )
         columns[col].append(block)

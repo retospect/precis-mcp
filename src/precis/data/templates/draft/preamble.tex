@@ -84,6 +84,9 @@
 % default (we do NOT pass nonumberlist), per the export design.
 \usepackage[acronym,toc]{glossaries-extra}
 \setabbreviationstyle[acronym]{long-short}
+% A first use inside parentheses brackets the short, "(long [SHORT], ...)",
+% instead of nesting parentheses: \glsbrk{\gls}{key} (or \Gls, \glspl, ...).
+\newcommand*{\glsbrk}[2]{{\renewcommand*{\glsxtrparen}[1]{{[}##1{]}}#1{#2}}}
 
 % Screen-only abbreviation tooltips (pdfcomment, after hyperref/glossaries).
 % First use of an acronym still expands inline; every LATER use is the bare

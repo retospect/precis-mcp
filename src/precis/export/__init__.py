@@ -16,7 +16,11 @@ Inline cite-link group (LaTeX/docx, independent ``doi_links``/
 per-install library-discovery-search hyperlink appended right after each
 citation marker. ``._cite_ids`` holds the shared "DOI, else arXiv id,
 else none" lookup both exporters memoize per export; the pure URL
-builders live in :mod:`precis.utils.paper_links`."""
+builders live in :mod:`precis.utils.paper_links`.
+
+Abbreviation first-use expansion: :mod:`._abbrev` is the one matcher both
+exporters call (which occurrence defines a short, what is left alone);
+each exporter only renders the result (docx text, LaTeX ``\\gls``)."""
 
 from __future__ import annotations
 

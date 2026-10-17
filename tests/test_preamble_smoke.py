@@ -149,6 +149,66 @@ def test_math_unicode_compiles_without_missing_character(tmp_path: Path) -> None
     assert not missing, f"Missing character warning(s) in log: {missing}"
 
 
+def test_abbrev_forms_compile_and_headings_stay_bookmark_safe(tmp_path: Path) -> None:
+    """gr491599: every glossary form the shared expander emits compiles
+    for real — a heading's bare short (no hyperref "Token not allowed",
+    bookmark reads the short), the bracketed first use in parentheses, a
+    jointly defined ``HOMO–LUMO`` pair, an authored long form before
+    ``(SHORT)`` and an irregular ``longplural``."""
+    from precis.export.latex import (
+        _acronym_keymap,
+        _Ctx,
+        _heading_glsadd,
+        _render_inline,
+        _render_moving_arg,
+        _template_text,
+        build_acronyms,
+    )
+
+    abbrevs = {
+        "DFT": "density functional theory",
+        "PBE": "Perdew-Burke-Ernzerhof",
+        "HOMO": "highest occupied molecular orbital",
+        "LUMO": "lowest unoccupied molecular orbital",
+        "XPS": "X-ray photoelectron spectroscopy",
+    }
+    keymap = _acronym_keymap(abbrevs)
+    ctx = _Ctx(keymap=keymap, abbrevs=abbrevs, known_handles=set())
+    heading = _render_moving_arg("DFT Benchmarks", ctx, heading=True)
+    paras = [
+        "The functional choice (DFT, PBE) matters.",
+        "The HOMO–LUMO gap shrinks; XPSs agree.",
+        "**X-ray photoelectron spectroscopy** (XPS) again, then DFT.",
+    ]
+    body = f"\\section{{{heading}}}{_heading_glsadd(ctx)}\n\n" + "\n\n".join(
+        _render_inline(p, ctx) for p in paras
+    )
+    assert r"\glsfmtshort{dft}" in heading
+    main = assemble_document(
+        title="Abbreviation forms smoke",
+        author_block="\\author{precis}",
+        body=body,
+        acronyms=build_acronyms(abbrevs, keymap),
+    )
+    (tmp_path / "main.tex").write_text(main, encoding="utf-8")
+    (tmp_path / "refs.bib").write_text(_BIB, encoding="utf-8")
+    (tmp_path / ".latexmkrc").write_text(_template_text("latexmkrc"), encoding="utf-8")
+    res = compile_pdf(tmp_path, timeout_s=300)
+    assert not res.skipped
+    assert res.ok, f"abbrev smoke compile failed:\n{res.log_tail}"
+    log_text = (tmp_path / "main.log").read_text(errors="replace", encoding="utf-8")
+    assert "Token not allowed" not in log_text
+    assert "Undefined control sequence" not in log_text
+    bookmarks = (tmp_path / "main.out").read_bytes()
+    titles = [
+        _pdf_unescape(m.group(1))[2:].decode("utf-16-be", errors="replace")
+        for m in re.finditer(
+            rb"\\BOOKMARK \[\d\]\[-\]\{section\.\d+\}\{(.*?)\}\{", bookmarks
+        )
+    ]
+    assert "DFT Benchmarks" in titles, titles
+
+
 def _inflated(pdf: bytes) -> bytes:
     """The raw PDF plus every FlateDecode stream inflated — lualatex packs
     annotation dicts into compressed object streams, so the tooltip string

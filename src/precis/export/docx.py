@@ -37,7 +37,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from precis.export import progress
+from precis.export import _abbrev, progress
 from precis.export._back_matter import ordered_blocks
 from precis.export._cite_ids import merged_cite_numbers, paper_identifier
 from precis.export._data_package import (
@@ -192,6 +192,9 @@ class _Ctx:
     pin_ctx: Any = None
     seen_acr: set[str] = field(default_factory=set)  # already expanded once
     used_acr: set[str] = field(default_factory=set)  # for the acronyms list
+    #: Rendering a heading: abbreviations print bare and are not defined
+    #: there (gr491599 M2, same as the PDF).
+    in_heading: bool = False
     last_cite: str | None = None  # paper of the immediately-preceding mark
     last_cite_si: bool = False  # ...and whether that mark carried "(SI)"
     #: Buffered run of *directly adjacent* citations (``(slug, n,
@@ -300,21 +303,6 @@ class _Ctx:
         if slug not in self.cited:
             self.cited.append(slug)
         return self.cited.index(slug) + 1
-
-    _short_re: Any = None
-
-    def short_pattern(self) -> Any:
-        """A compiled regex matching any known short as a whole word
-        (optional trailing ``s`` for plurals), longest-first so ``MOFs``
-        wins over ``MOF``. ``None`` when the draft defines no abbreviations."""
-        if self._short_re is None and self.abbrevs:
-            shorts = sorted(self.abbrevs, key=len, reverse=True)
-            self._short_re = re.compile(
-                r"(?<![\w-])("
-                + "|".join(re.escape(s) for s in shorts)
-                + r")(s?)(?![\w-])"
-            )
-        return self._short_re
 
 
 #: Chunk kinds the main render loop dispatches on their own branch — a
@@ -656,7 +644,11 @@ def export_docx(
             p = doc.add_heading("", level=level)
             if number:
                 p.add_run(f"{number} ")
-            _render_inline(c.text, ctx, p)
+            ctx.in_heading = True
+            try:
+                _render_inline(c.text, ctx, p)
+            finally:
+                ctx.in_heading = False
             continue
         if kind == "code":
             p = doc.add_paragraph()
@@ -1041,9 +1033,9 @@ def _emit_text(text: str, ctx: _Ctx, paragraph: Any) -> None:
     """Plain prose → runs, with **render-time first-use expansion** of
     known abbreviations: the first occurrence (in reading order) of a
     defined short becomes ``Long Form (SHORT)``; later ones stay ``SHORT``.
-    No authoring markup — this mirrors what the LaTeX ``\\gls`` path does,
-    and survives chunk reordering because it's computed here at export.
-    A trailing ``s`` (plural) is preserved on the short.
+    The matching is :func:`precis.export._abbrev.expand`, shared with the
+    LaTeX ``\\gls`` path so the two formats define the same occurrence;
+    it survives chunk reordering because it's computed here at export.
 
     An author-escaped ``\\$`` (the lint's advice for literal money
     dollars) renders as the bare ``$`` — Word has no escape syntax.
@@ -1052,91 +1044,20 @@ def _emit_text(text: str, ctx: _Ctx, paragraph: Any) -> None:
     renders as its record's title (gr493181), see :func:`_bare_handle_text`."""
     text = text.replace("\\$", "$")
     text = _BARE_HANDLE.sub(lambda m: _bare_handle_text(m.group(0), ctx), text)
-    pat = ctx.short_pattern()
-    if pat is None:
-        paragraph.add_run(text)
+    if not text:
         return
-    # Pre-pass (mirrors ``export/latex.py::_glsify``): stash authored
-    # ``long (SHORT)`` spans so a short INSIDE the long form can't be
-    # consumed first — that would leave no long text for the collapse and
-    # double the expansion ("functionalized CNB (FCNB)"). Longest long
-    # form first, as in latex.
-    stashed: list[tuple[str, str, str]] = []  # (short, span_text, plural_s)
-    for short in sorted(ctx.abbrevs, key=lambda s: -len(ctx.abbrevs[s].strip())):
-        long = ctx.abbrevs[short].strip()
-        base = long[:-1] if long.lower().endswith("s") else long
-        if not base:
-            continue
-
-        def _stash(m: re.Match[str], short: str = short) -> str:
-            stashed.append((short, m.group(0), m.group(1) or ""))
-            return f"\x03{len(stashed) - 1}\x03"
-
-        text = re.sub(
-            r"(?<![\w-])" + re.escape(base) + r"s?\s*\(" + re.escape(short) + r"(s)?\)",
-            _stash,
-            text,
-            flags=re.IGNORECASE,
+    segments = _abbrev.expand(
+        text,
+        ctx.abbrevs,
+        ctx.seen_acr,
+        ctx.used_acr,
+        preceding=paragraph.text,
+        heading=ctx.in_heading,
+    )
+    for seg in segments:
+        paragraph.add_run(
+            seg if isinstance(seg, str) else _abbrev.plain(seg, ctx.abbrevs)
         )
-    combined = re.compile(r"\x03(\d+)\x03|" + pat.pattern)
-    last = 0
-    for m in combined.finditer(text):
-        pre = text[last : m.start()]
-        if m.group(1) is not None:
-            # The authored spelled-out span. Already-introduced short →
-            # keep the prose verbatim (like \gls's stashed branch); first
-            # use → emit the normalized registry expansion (what \gls
-            # prints), plural ``s`` carried over, and count the use.
-            short, span, plural = stashed[int(m.group(1))]
-            end = m.end()
-            ctx.used_acr.add(short)
-            if pre:
-                paragraph.add_run(pre)
-            if short in ctx.seen_acr:
-                paragraph.add_run(span)
-            else:
-                ctx.seen_acr.add(short)
-                long = ctx.abbrevs[short].strip()
-                if plural and not long.lower().endswith("s"):
-                    long += "s"
-                if long and _at_sentence_start(paragraph):
-                    long = long[0].upper() + long[1:]
-                paragraph.add_run(f"{long} ({short}{plural})")
-            last = end
-            continue
-        short, plural = m.group(2), m.group(3)
-        end = m.end()
-        ctx.used_acr.add(short)
-        if short in ctx.seen_acr:
-            if pre:
-                paragraph.add_run(pre)
-            paragraph.add_run(f"{short}{plural}")
-            last = end
-            continue
-        ctx.seen_acr.add(short)
-        long = ctx.abbrevs[short].strip()
-        # Prose that already spells it out — ``long (SHORT)`` / ``longs
-        # (SHORTs)`` — collapses into the one expansion instead of doubling
-        # it (mirrors ``export/latex.py::_glsify``): the long form matches
-        # case-insensitively, optionally with a trailing ``s``.
-        if long and text[end : end + 1] == ")":
-            base = long[:-1] if long.lower().endswith("s") else long
-            lm = re.search(
-                r"(?<![\w-])" + re.escape(base) + r"s?\s*\($", pre, re.IGNORECASE
-            )
-            if lm:
-                pre = pre[: lm.start()]
-                end += 1
-        if pre:
-            paragraph.add_run(pre)
-        if plural and not long.lower().endswith("s"):
-            long += "s"  # "carbon nanotube" + CNTs -> "carbon nanotubes (CNTs)"
-        if long and _at_sentence_start(paragraph):
-            long = long[0].upper() + long[1:]  # "Generalized gradient approx…"
-        paragraph.add_run(f"{long} ({short}{plural})")
-        last = end
-    if last < len(text):
-        paragraph.add_run(text[last:])
 
 
 def _render_math(span: str, paragraph: Any) -> None:
@@ -1463,9 +1384,9 @@ def _record_claim_cite(ctx: _Ctx, pk: int, slugs: list[str]) -> None:
 
 def _at_sentence_start(paragraph: Any) -> bool:
     """Is the next run the first word of a sentence (paragraph start, or
-    right after ``. ``/``? ``/``! ``)? Drives first-letter capitalisation."""
-    text = paragraph.text
-    return not text.strip() or re.search(r"[.?!]\s+$", text) is not None
+    right after ``. ``/``? ``/``! `` but not ``e.g. ``)? Drives
+    first-letter capitalisation."""
+    return _abbrev.at_sentence_start(paragraph.text)
 
 
 def _render_xref(dc: str, surface: str | None, ctx: _Ctx, paragraph: Any) -> None:

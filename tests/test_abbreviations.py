@@ -29,6 +29,12 @@ class TestFindPositive:
         text = "Density Functional Theory (DFT) calculations confirm the trend"
         assert find(text) == {"DFT": "Density Functional Theory"}
 
+    def test_comma_locant_stays_in_the_long_form(self) -> None:
+        """gr491599 nit: ``1,8-`` was cut to ``8-``."""
+        text = "We used 1,8-diaminonaphthalene (DAN) as the linker"
+        assert find(text) == {"DAN": "1,8-diaminonaphthalene"}
+        assert find("apples, pears (AP)") == {}
+
     def test_two_word_long_form(self) -> None:
         text = "The Membrane Electrode Assembly (MEA) design follows"
         assert find(text) == {"MEA": "Membrane Electrode Assembly"}

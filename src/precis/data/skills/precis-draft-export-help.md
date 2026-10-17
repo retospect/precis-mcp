@@ -66,7 +66,10 @@ on-by-default switches, `doi_links`/`--no-doi-links` and
 per-install config on `PrecisConfig` (`PRECIS_LIBRARY_SEARCH_URL`,
 `PRECIS_LIBRARY_LABEL`). Every defined abbreviation
 becomes a `\newacronym`, first use full and later `\gls{…}`, with a
-page-number list in the glossary; `[me<id>]`/cross-draft `[dc<id>]` links
+page-number list in the glossary. PDF and Word define the same
+occurrence: headings print the bare short and never define it, URLs and
+DOIs are left alone, `CNB-based` counts as a use, and `et al.`/`e.g.` do
+not capitalise the next word. `[me<id>]`/cross-draft `[dc<id>]` links
 render to nothing (provenance only). The byline becomes an `authblk`
 block under `\maketitle` (ROR hyperlinked). You never write `\cite{}`
 (or the byline) yourself. Citations must resolve (`[fi<id>]` → a hub

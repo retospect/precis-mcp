@@ -35,9 +35,11 @@ import re
 #     opened parentheticals like ``(/path/to/x)``).
 #   - SHORT must contain at least one letter (rejects pure-numeric
 #     ``(2023)`` year citations).
+#   - A comma between digits stays inside a long-form token, so a locant
+#     like ``1,8-diaminonaphthalene`` is not cut to ``8-…``.
 _DEFINITION_RE = re.compile(
     r"""
-    (?P<long>(?:[A-Za-z0-9][\w\-]*\s+){1,8}[A-Za-z0-9][\w\-]*)
+    (?P<long>(?:[A-Za-z0-9](?:[\w\-]|,(?=\d))*\s+){1,8}[A-Za-z0-9](?:[\w\-]|,(?=\d))*)
     \s+\(
     (?P<short>[A-Za-z0-9][A-Za-z0-9\-./]{1,9})
     \)
