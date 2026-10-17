@@ -490,6 +490,11 @@ done
 # before pytest starts, naming the missing module(s) and the fix. One extra
 # `uv run` in the same container — no second container spin-up.
 #
+# check-lock-pins.py (gr494988) is the version-drift sibling: an installed
+# package whose version/git commit differs from uv.lock (image built before the
+# lock moved) warns, naming the stale packages and the rebuild command; it only
+# refuses under PRECIS_STRICT_LOCK_CHECK=1.
+#
 # check-entry-points.py (gr453828) is its sibling for the same stale-baked-venv
 # failure mode: `importlib.metadata.entry_points()` reads the STATIC
 # `entry_points.txt` baked into the venv at image-build time, which the
@@ -516,11 +521,12 @@ run_pytest() {
         tm_args=("${TESTMON_ARGS[@]+"${TESTMON_ARGS[@]}"}")
     fi
     compose run --rm --no-deps -e UV_LINK_MODE=copy -e UV_WITH="$UV_WITH" \
+        -e PRECIS_STRICT_LOCK_CHECK="${PRECIS_STRICT_LOCK_CHECK:-}" \
         "${THREAD_CAP_ENV[@]}" \
         "${TEST_DB_ENV[@]+"${TEST_DB_ENV[@]}"}" "${TESTMON_ENV[@]+"${TESTMON_ENV[@]}"}" \
         "${ARTIFACT_ENV[@]+"${ARTIFACT_ENV[@]}"}" \
         -v "${WORKTREE}":/app precis-dev \
-        bash -lc 'uv run --no-sync ${UV_WITH} bash -c "python3 scripts/lib/check-core-deps.py && python3 scripts/lib/check-entry-points.py --heal && exec python3 -P -m pytest -q --no-header --tb=short -p no:warnings \"\$@\"" _ "$@"' \
+        bash -lc 'uv run --no-sync ${UV_WITH} bash -c "python3 scripts/lib/check-core-deps.py && python3 scripts/lib/check-lock-pins.py && python3 scripts/lib/check-entry-points.py --heal && exec python3 -P -m pytest -q --no-header --tb=short -p no:warnings \"\$@\"" _ "$@"' \
         _ "${NPROC[@]+"${NPROC[@]}"}" "${tm_args[@]+"${tm_args[@]}"}" \
         "${FAST_ARGS[@]+"${FAST_ARGS[@]}"}" "${TESTMON_MARKER_ARGS[@]+"${TESTMON_MARKER_ARGS[@]}"}" \
         "${COV_ARGS[@]+"${COV_ARGS[@]}"}" "$@"
