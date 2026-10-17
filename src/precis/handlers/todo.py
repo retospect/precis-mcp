@@ -1256,6 +1256,16 @@ class TodoHandler(NumericRefHandler):
         check_workspace_compiles(self.store, self._coerce_id(id), add)
         guards.check_executor_tag(add)
         ref_id = self._coerce_id(id)
+        # Atomicity (A6): prio/meta below write on their own connections,
+        # so every check the base ``tag`` would raise on must fire first —
+        # a rejected ``add=`` must not leave a changed prio behind.
+        self._resolve_live_ref(ref_id)
+        for s in add or []:
+            Tag.parse_strict(s, kind=self.kind)
+        for s in remove or []:
+            Tag.parse_strict(s, kind=self.kind)
+        if meta and "schedule" in meta:
+            guards.check_schedule_in_meta(dict(meta))
         if prio is not None:
             self.store.set_prio(ref_id, prio)
         elif clear_prio:

@@ -250,6 +250,7 @@ def _tag_response_body(
     removed_ok: list[Tag],
     removed_noop: list[Tag],
     removed_subsumed: list[Tag] | None = None,
+    displaced: list[tuple[Tag, Tag]] | None = None,
 ) -> str:
     """Compose the ``tag()`` success message (gr192827 item 10b/10c).
 
@@ -285,6 +286,10 @@ def _tag_response_body(
     body = (
         f"{verb} {sense} id={ref_id}" if verb else f"no change to {sense} id={ref_id}"
     )
+    if displaced:
+        # A closed-prefix add replaces the ref's previous value on that
+        # axis; name it so a caller sees what the write overwrote (A7).
+        body += " (replaced " + ", ".join(f"{o} -> {n}" for o, n in displaced) + ")"
     if removed_subsumed:
         subsumed_list = ", ".join(str(t) for t in removed_subsumed)
         body += f" (already cleared by the add=: {subsumed_list})"
@@ -1893,7 +1898,15 @@ class NumericRefHandler(Handler):
         # remove= tag was present here but remove_tag() still reports no
         # row deleted, the add= already cleared it, and the response must
         # say so truthfully rather than "no such tag, unchanged".
-        pre_tags = set(self.store.tags_for(ref_id)) if parsed_remove else set()
+        pre_tags = set(self.store.tags_for(ref_id))
+        parsed_add = self._guard_tag_add(ref_id, parsed_add, pre_tags)
+        displaced = [
+            (old, t)
+            for t in parsed_add
+            if t.namespace == "closed"
+            for old in sorted(pre_tags, key=str)
+            if old.namespace == "closed" and old.prefix == t.prefix and old != t
+        ]
         with self.store.tx() as conn:
             for t in parsed_add:
                 self.store.add_tag(
@@ -1919,8 +1932,20 @@ class NumericRefHandler(Handler):
                 removed_ok=removed_ok,
                 removed_noop=removed_noop,
                 removed_subsumed=removed_subsumed,
+                displaced=displaced,
             )
         )
+
+    def _guard_tag_add(
+        self, ref_id: int, added: list[Tag], pre_tags: set[Tag]
+    ) -> list[Tag]:
+        """Subclass hook: refuse or rewrite ``add=`` before any write.
+
+        Runs after parsing, before the transaction, with the ref's current
+        tags. Raise ``BadInput`` (naming the fix) to refuse; return the
+        list to apply. Default: unchanged.
+        """
+        return added
 
     def _after_tag_mutation(
         self,

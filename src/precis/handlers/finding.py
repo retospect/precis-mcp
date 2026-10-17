@@ -1097,6 +1097,31 @@ class FindingHandler(NumericRefHandler):
     # search_hits — cross-kind merge stream: live claim hubs only
     # ──────────────────────────────────────────────────────────────────
 
+    def _guard_tag_add(
+        self, ref_id: int, added: list[Tag], pre_tags: set[Tag]
+    ) -> list[Tag]:
+        """Refuse a hand-set ``STATUS:established`` (A3).
+
+        ``established`` is the grounded cohort search defaults to; only the
+        chase worker may write it, after it has traced the claim to a
+        primary source. A hand tag would surface an ungrounded claim there.
+        """
+        for t in added:
+            if t.namespace == "closed" and t.prefix == "STATUS":
+                if t.value == "established" and t not in pre_tags:
+                    raise BadInput(
+                        f"finding id={ref_id}: STATUS:established is written "
+                        "by the chase worker, not by hand",
+                        options=["STATUS:tracing", "STATUS:acquiring"],
+                        next=(
+                            "register the source so the worker chases it: "
+                            "get(kind='skill', id='precis-finding-help') "
+                            "(put a finding with its provenance/wants); the "
+                            "worker sets STATUS:established once grounded"
+                        ),
+                    )
+        return added
+
     def search_hits(  # type: ignore[override]
         self,
         *,

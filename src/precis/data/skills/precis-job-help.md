@@ -304,7 +304,13 @@ hierarchy question.
 ```python
 tag(kind="job", id=101, add=["STATUS:cancel_requested"])
 # worker SIGTERMs at the next safe point; final tag is STATUS:cancelled
+# a still-queued (never claimed) job goes straight to STATUS:cancelled
 ```
+
+Agents drive only these `tag` edges: queued -> cancel_requested|cancelled;
+running/submitted/waiting_* -> cancel_requested|failed; cancel_requested ->
+cancelled. Any other STATUS (running, succeeded, queued) is
+worker-owned and refused; re-run a failed job with `mode='retry'`.
 
 ## Re-submit a failed job
 ## Retry a failed job

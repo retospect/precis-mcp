@@ -1061,6 +1061,24 @@ _KIND_STATUS_VALUES: dict[str, frozenset[str]] = {
     # 0065; also guarded in ``QuestHandler.tag`` via ``_LIFECYCLE``,
     # which reads this entry).
     "quest": frozenset({"active", "dormant", "abandoned"}),
+    # Job lifecycle (executors/_common.py WAITING_* + claim/finish). The
+    # tag verb only moves jobs along the agent-allowed edges in
+    # ``JobHandler._AGENT_TRANSITIONS``; this set is the vocabulary.
+    "job": frozenset(
+        {
+            "queued",
+            "submitted",
+            "running",
+            "succeeded",
+            "failed",
+            "cancelled",
+            "cancel_requested",
+            "waiting_children",
+            "waiting_time",
+            "waiting_ask_user",
+            "waiting_manual_kick",
+        }
+    ),
 }
 
 _CLOSED_VOCAB: dict[str, frozenset[str]] = {

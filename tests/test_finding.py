@@ -2689,7 +2689,15 @@ class TestRefutedLifecycle:
             store, title="d-gate does not gate barrier", cite_key="paper-ruling"
         )
         h = _make_handler(store)
-        h.tag(id=ruling_id, add=["STATUS:established"])
+        # established is worker-owned (handler tag refuses it): set via store.
+        from precis.store.types import Tag
+
+        store.add_tag(
+            ruling_id,
+            Tag.closed("STATUS", "established"),
+            set_by="system",
+            replace_prefix=True,
+        )
         h.link(id=hyp_id, target=f"fi{ruling_id}", rel="retracts")
         h.tag(id=hyp_id, add=["STATUS:refuted"])
 

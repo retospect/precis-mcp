@@ -100,7 +100,17 @@ _VERBS: tuple[Verb, ...] = _ALL_VERBS
 #: gate entirely rather than requiring every handler to declare them just
 #: to stay silent. A handler that *does* care about one of these already
 #: declares it explicitly and is unaffected either way.
-_ALWAYS_TOLERATED_TOP_LEVEL_KWARGS = frozenset({"mode", "verdict", "page", "page_size"})
+#: A8: tolerance is per verb — only the wrapper's non-``None`` defaults
+#: (``edit(mode=, verdict=)``, ``link(mode=)``, ``search(page=)``) land in
+#: ``clean`` unprompted. Anywhere else a ``mode``/``verdict``/``page``/
+#: ``page_size`` in ``clean`` was typed by the caller, and a handler that
+#: does not read it now refuses instead of silently dropping it.
+_WRAPPER_DEFAULTED_KWARGS: dict[str, frozenset[str]] = {
+    "edit": frozenset({"mode", "verdict"}),
+    "link": frozenset({"mode"}),
+    "search": frozenset({"page"}),
+}
+_DROPPABLE_TOP_LEVEL_KWARGS = frozenset({"mode", "verdict", "page", "page_size"})
 
 #: ``tools/core.py::edit``'s own non-``None`` default for ``mode=``
 #: (``"find-replace"``, the file-kind idiom) — the specific value
@@ -2347,7 +2357,8 @@ class DispatchMixin(RuntimeShape):
             unknown_top = sorted(
                 k
                 for k in clean
-                if k not in accepted_top and k not in _ALWAYS_TOLERATED_TOP_LEVEL_KWARGS
+                if k not in accepted_top
+                and k not in _WRAPPER_DEFAULTED_KWARGS.get(verb, ())
             )
             if unknown_top:
                 # Core params are top-level on the slim schema; the
@@ -2361,10 +2372,18 @@ class DispatchMixin(RuntimeShape):
                     if "title" in unknown_top and "text" in accepted_top
                     else ""
                 )
+                dropped = [k for k in unknown_top if k in _DROPPABLE_TOP_LEVEL_KWARGS]
                 raise BadInput(
                     f"{verb}(kind={kind!r}) does not accept {unknown_top!r}"
                     f"{hint}; its args= keys are listed below",
                     options=accepted_list,
+                    next=(
+                        f"{dropped} has no effect on {verb}(kind={kind!r}) — "
+                        "drop it (paging/mode belong to search and the verbs "
+                        "that list them)"
+                        if dropped
+                        else None
+                    ),
                 )
 
         # F7: catch handler-signature-required kwargs that the caller

@@ -45,14 +45,24 @@ def _parent_tags(store: Store, parent_id: int) -> set[str]:
     return {str(t) for t in store.tags_for(parent_id)}
 
 
+def _fail(store: Store, job_id: int) -> None:
+    from precis.utils.job_bubble import bubble_job_failure
+
+    store.add_tag(
+        job_id, Tag.closed("STATUS", "failed"), set_by="system", replace_prefix=True
+    )
+    bubble_job_failure(store, job_id)
+
+
 def _fail_first_job(store: Store, jobs: JobHandler, parent_id: int) -> int:
     """Dispatch a tick under ``parent_id`` and mark it failed (bubbles)."""
     run_dispatch_pass(store)
     children = _child_jobs(store, parent_id)
     assert len(children) == 1, "expected exactly one minted tick"
     job_id = children[0]["id"]
-    # Tagging STATUS:failed through the handler fires the failure-bubble.
-    jobs.tag(id=job_id, add=["STATUS:failed"])
+    # STATUS:failed is worker-owned (the handler tag refuses it); fail it the
+    # way the executors do: store tag + failure bubble.
+    _fail(store, job_id)
     assert f"child-failed:{job_id}" in _parent_tags(store, parent_id)
     return job_id
 
@@ -144,7 +154,7 @@ def test_retry_select_requires_llm_parent(
     job = store.insert_ref(
         kind="job", slug=None, title="manual", meta={}, parent_id=rid
     )
-    jobs.tag(id=job.id, add=["STATUS:failed"])
+    _fail(store, job.id)
     with pytest.raises(BadInput, match="no meta.llm_tier"):
         jobs.put(id=job.id, mode="retry", select={"placement": "local"})
 
@@ -182,7 +192,7 @@ def test_retry_model_requires_llm_parent(
     job = store.insert_ref(
         kind="job", slug=None, title="manual", meta={}, parent_id=rid
     )
-    jobs.tag(id=job.id, add=["STATUS:failed"])
+    _fail(store, job.id)
     with pytest.raises(BadInput, match="no meta.llm_tier"):
         jobs.put(id=job.id, mode="retry", model="opus")
     # Bubble still present — the rejected retry made no partial write.

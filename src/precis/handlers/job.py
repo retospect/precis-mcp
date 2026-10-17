@@ -1348,7 +1348,69 @@ class JobHandler(NumericRefHandler):
             )
         )
 
-    # ── tag override: failure bubble to parent todo ──────────────
+    # ── tag override: lifecycle guard ────────────────────────────
+
+    #: Status edges an agent may drive through ``tag`` (``failed`` stays so
+    #: an operator can fail a stuck job; the parent bubble below fires).
+    #: Everything else (running, succeeded, submitted, re-queue) is worker-owned:
+    #: a hand-set value skips reservation release, the parent bubble and
+    #: ``auto_check.child_job_succeeded``, and ``queued`` on a running job
+    #: double-runs it. ``cancel_requested`` on a *queued* job is rewritten
+    #: to ``cancelled``: nothing claims a queued job, so nothing would ever
+    #: finish the request (gr494725).
+    _AGENT_TRANSITIONS: dict[str, frozenset[str]] = {
+        "queued": frozenset({"cancelled", "cancel_requested", "failed"}),
+        "submitted": frozenset({"cancel_requested", "failed"}),
+        "running": frozenset({"cancel_requested", "failed"}),
+        "waiting_children": frozenset({"cancel_requested", "failed"}),
+        "waiting_time": frozenset({"cancel_requested", "failed"}),
+        "waiting_ask_user": frozenset({"cancel_requested", "failed"}),
+        "waiting_manual_kick": frozenset({"cancel_requested", "failed"}),
+        "cancel_requested": frozenset({"cancelled"}),
+        "succeeded": frozenset(),
+        "failed": frozenset(),
+        "cancelled": frozenset(),
+    }
+
+    def _guard_tag_add(
+        self, ref_id: int, added: list[Tag], pre_tags: set[Tag]
+    ) -> list[Tag]:
+        current = next(
+            (
+                t.value
+                for t in pre_tags
+                if t.namespace == "closed" and t.prefix == "STATUS"
+            ),
+            None,
+        )
+        out: list[Tag] = []
+        for t in added:
+            if t.namespace != "closed" or t.prefix != "STATUS" or t.value == current:
+                out.append(t)
+                continue
+            allowed = self._AGENT_TRANSITIONS.get(current or "", None)
+            if allowed is None:  # no status yet: nothing to protect
+                out.append(t)
+                continue
+            if t.value not in allowed:
+                raise BadInput(
+                    f"job id={ref_id} is STATUS:{current}; an agent cannot set "
+                    f"STATUS:{t.value} by hand",
+                    options=sorted(allowed),
+                    next=(
+                        "to stop a job: tag(kind='job', id="
+                        f"{ref_id}, add=['STATUS:cancel_requested']); to re-run "
+                        f"a failed one: put(kind='job', id={ref_id}, mode='retry'). "
+                        "Workers own running/succeeded/failed."
+                        if not allowed
+                        else f"from STATUS:{current} an agent may only tag "
+                        f"{sorted('STATUS:' + v for v in allowed)}"
+                    ),
+                )
+            if current == "queued" and t.value == "cancel_requested":
+                t = Tag.closed("STATUS", "cancelled")
+            out.append(t)
+        return out
 
     def tag(  # type: ignore[override]
         self,
@@ -1359,21 +1421,33 @@ class JobHandler(NumericRefHandler):
         **_kw: Any,
     ) -> Response:
         """Tag a job + bubble ``child-failed:<job_id>`` to the parent todo
-        when STATUS:failed is added.
-
-        Slice-5: a job failure surfaces on the parent so the operator
-        decides next move (re-dispatch, switch executor, ask user).
-        The bubble fires only on the ``STATUS:failed`` add — other
-        status transitions don't surface (a success resolves the
-        parent via ``auto_check.child_job_succeeded`` instead).
-        """
+        when STATUS:failed is added (the parent's owner decides next move)."""
         resp = super().tag(id=id, add=add, remove=remove, **_kw)
         if add and any(a == "STATUS:failed" for a in add):
             from precis.utils.job_bubble import bubble_job_failure
 
-            job_id = self._coerce_id(id)
-            bubble_job_failure(self.store, job_id)
+            bubble_job_failure(self.store, self._coerce_id(id))
         return resp
+
+    def _after_tag_mutation(
+        self,
+        ref_id: int,
+        added: list[Tag],
+        removed: list[Tag],
+        *,
+        conn: Any,
+    ) -> None:
+        if any(
+            t.namespace == "closed" and t.prefix == "STATUS" and t.value == "cancelled"
+            for t in added
+        ):
+            self.store.append_event(
+                ref_id,
+                source="tag-verb",
+                event="cancelled",
+                payload={"by": "agent tag"},
+                conn=conn,
+            )
 
     # ── render: header + status + summary + recent events ──────────
 

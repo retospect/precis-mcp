@@ -1088,7 +1088,7 @@ def test_job_handler_tag_bubbles_status_failed(
 def test_job_handler_tag_other_status_does_not_bubble(
     handler: TodoHandler, store: Store
 ) -> None:
-    """Tagging STATUS:succeeded doesn't add child-failed."""
+    """Tagging STATUS:cancel_requested doesn't add child-failed."""
     from precis.dispatch import Hub
     from precis.handlers.job import JobHandler
 
@@ -1110,7 +1110,7 @@ def test_job_handler_tag_other_status_does_not_bubble(
         set_by="agent",
         replace_prefix=True,
     )
-    job_handler.tag(id=job.id, add=["STATUS:succeeded"])
+    job_handler.tag(id=job.id, add=["STATUS:cancel_requested"])
     parent_tags = {str(t) for t in store.tags_for(rid)}
     assert not any(t.startswith("child-failed:") for t in parent_tags)
 
@@ -1121,18 +1121,16 @@ def test_job_handler_tag_other_status_does_not_bubble(
 def test_content_failure_latches_immediately_and_stays_blocked_past_infra_window(
     handler: TodoHandler, store: Store
 ) -> None:
-    """A content-class failure (``JobHandler.tag(add=['STATUS:failed'])``,
+    """A content-class failure (worker-set STATUS:failed + bubble,
     no ``swept:claim-orphaned``) latches ``child-failed:`` on the very
     first failure — unlike the infra-class bounded-retry path, there is no
     grace window here. Regression guard: even after the infra-class retry
     window (``ORPHAN_RETRY_WINDOW_HOURS``) has fully elapsed, the parent
     must STILL be excluded from dispatch candidacy — a blind timer-based
     "unlatch after N hours" would wrongly re-arm a genuinely broken task."""
-    from precis.handlers.job import JobHandler
     from precis.utils.job_bubble import ORPHAN_RETRY_WINDOW_HOURS
     from precis.workers.dispatch import _candidate_parent_ids
 
-    job_handler = JobHandler(hub=Hub(store=store, embedder=None))
     r = handler.put(
         text="content-broken planner",
         meta={"executor": "claude_inproc", "job_type": "fix_gripe", "params": {}},
@@ -1150,7 +1148,14 @@ def test_content_failure_latches_immediately_and_stays_blocked_past_infra_window
     store.add_tag(
         job.id, Tag.closed("STATUS", "queued"), set_by="agent", replace_prefix=True
     )
-    job_handler.tag(id=job.id, add=["STATUS:failed"])
+    # STATUS:failed is worker-owned (handler tag refuses it): fail it the way
+    # executors do — store tag, then the failure bubble.
+    from precis.utils.job_bubble import bubble_job_failure
+
+    store.add_tag(
+        job.id, Tag.closed("STATUS", "failed"), set_by="system", replace_prefix=True
+    )
+    bubble_job_failure(store, job.id)
 
     job_tags = {str(t) for t in store.tags_for(job.id)}
     assert "swept:claim-orphaned" not in job_tags  # genuinely content-class

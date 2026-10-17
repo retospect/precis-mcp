@@ -249,7 +249,8 @@ def test_tag_status_flip_reports_truthfully(handler: TodoHandler) -> None:
     todo_id = int(r.body.split("id=")[1].split()[0].rstrip(",.()"))
     resp = handler.tag(id=todo_id, add=["STATUS:done"], remove=["STATUS:open"])
     assert resp.body == (
-        f"tagged/untagged todo id={todo_id} (already cleared by the add=: STATUS:open)"
+        f"tagged/untagged todo id={todo_id} (replaced STATUS:open -> STATUS:done) "
+        "(already cleared by the add=: STATUS:open)"
     )
     assert "no such tag" not in resp.body
     tags = {str(t) for t in handler.store.tags_for(todo_id)}
@@ -267,7 +268,8 @@ def test_tag_status_flip_genuine_noop_still_reports_no_such_tag(
     todo_id = int(r.body.split("id=")[1].split()[0].rstrip(",.()"))
     resp = handler.tag(id=todo_id, add=["STATUS:done"], remove=["STATUS:blocked"])
     assert resp.body == (
-        f"tagged todo id={todo_id} (no such tag, unchanged: STATUS:blocked)"
+        f"tagged todo id={todo_id} (replaced STATUS:open -> STATUS:done) "
+        "(no such tag, unchanged: STATUS:blocked)"
     )
     assert "already cleared" not in resp.body
 

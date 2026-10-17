@@ -268,7 +268,16 @@ class TestBubbleNoop:
         ctx = _build_dispatch_context(store, coord_id, "campaign", dict(_COORD_META))
         child_id = ctx.spawn_child("plan_tick", {"model": "haiku"})
 
-        jobs.tag(id=child_id, add=["STATUS:failed"])
+        from precis.utils.job_bubble import bubble_job_failure
+
+        # STATUS:failed is worker-owned: fail it the way executors do.
+        store.add_tag(
+            child_id,
+            Tag.closed("STATUS", "failed"),
+            set_by="system",
+            replace_prefix=True,
+        )
+        bubble_job_failure(store, child_id)
 
         assert "STATUS:failed" in _tags(store, child_id)
         bubble = f"child-failed:{child_id}"
