@@ -9,6 +9,8 @@
       "Bash(scripts/ship:*)",
       "Bash(docker builder prune -f*)",
       "Bash(docker image prune -f)",
+      "Bash(docker builder prune -f)",
+      "Bash(docker rmi)",
       "Bash(scripts/mcp-image-refresh*)",
       "Bash(scripts/deploy:*)",
       "Bash(scripts/dev:*)",
