@@ -409,6 +409,16 @@ class RealizeConfig:
     #: preference, not the ``via_count`` MONEY term" figure that module
     #: documents for :data:`~precis.pcb.maze.VIA_COST_MM` itself.
     via_body_cost_mm: float = maze.VIA_UNDER_BODY_COST_MM
+    #: Keep vias off part-outline silk (gr495393 comment 1, Reto
+    #: 2026-10-17): every via site the router or a fan-out picks stays the
+    #: via-to-silk clearance plus two silk widths off the outline
+    #: :func:`precis.pcb.silk.build_silk` will draw
+    #: (:func:`_claim_silk_keepouts`). **Off by default, pending Reto's
+    #: call:** measured 2026-10-17 it costs the router floors (nano routed
+    #: 35 -> 31, nano r2 35 -> 27, dogfood-6 replay distance/inner 51 ->
+    #: 39); a 0.325 mm margin (no two-width term) and a 0.075 mm one
+    #: (ink only) fail them too. Turning it on is a floor change.
+    silk_via_keepout: bool = False
     #: Corridors-as-cost from a tile-capacity global plan
     #: (:mod:`precis.pcb.globalplan`, slice 1 of
     #: ``docs/backlog/pcb-global-plan-router.md``): ``0.0`` (off) is the
@@ -2307,6 +2317,26 @@ def _diagnose_all(
     return reasons
 
 
+def _claim_silk_keepouts(
+    grid: maze.OccupancyGrid, ir: PcbIR, config: RealizeConfig
+) -> None:
+    """Keep every via this grid places off part-outline silk (gr495393
+    comment 1: vias must not land on the outlines, enforced in via
+    placement rather than by clipping the silk afterwards). The outlines
+    are :func:`precis.pcb.silk.outline_via_keepouts`' — the same
+    :func:`~precis.pcb.silk.part_outlines` rings the silk builder draws,
+    off this IR's outline, sides and capability row — and each becomes a
+    net-blind via keep-out line on the grid
+    (:meth:`~precis.pcb.maze.OccupancyGrid.add_via_keepout_line`), read by
+    the maze search's via mask and every fan-out/stitch site's
+    ``via_clears_pads`` alike. Tracks may still cross outline silk:
+    tented copper under ink is fine, a via annulus is not."""
+    if not config.silk_via_keepout:
+        return
+    for line, margin in pcb_silk.outline_via_keepouts(ir, capability=config.fab_caps):
+        grid.add_via_keepout_line(line, margin)
+
+
 def _claim_fiducial_keepouts(grid: maze.OccupancyGrid, ir: PcbIR) -> None:
     """Claim every corner site a render-time fiducial may occupy — BEFORE
     :func:`_stamp_pads`, so the pad pass's own re-assert wins any overlap
@@ -3045,6 +3075,7 @@ def _claim_static(
     the actual failing terminals, for ``UnroutedReason.pins``."""
     _claim_fixed_copper(grid, ir, fixed_copper)
     _claim_fiducial_keepouts(grid, ir)
+    _claim_silk_keepouts(grid, ir, config)
     _claim_mounting_holes(grid, ir, npth_clearance_mm=_npth_clearance_mm(config))
     _stamp_pads(grid, pads)
     # Plane-served segments are dog-bone stubs, not searched routes — but
@@ -5982,6 +6013,7 @@ def _final_board_grid(
         net_clearance_mm=_net_clearances(rules_by_net, config),
     )
     _claim_fiducial_keepouts(grid, ir)
+    _claim_silk_keepouts(grid, ir, config)
     _claim_mounting_holes(grid, ir, npth_clearance_mm=_npth_clearance_mm(config))
     _stamp_pads(grid, pads)
     for t in tracks:

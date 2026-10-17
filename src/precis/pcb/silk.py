@@ -11,22 +11,19 @@ already applies to copper.
 **Per placed instance, three kinds of silk:**
 
 1. a **reference-designator label** (:mod:`precis.pcb.stroke_font`), sized
-   from ``height_mm``. Default placement (user spec, 2026-09-02 round-5
-   review): the label's rendered BOTTOM edge collinear with the courtyard's
-   own bottom edge, horizontally centred on the box — or, failing that,
-   flush with its left or right edge (:func:`_bottom_edge_candidates`,
-   ``v_align="baseline"``, an alphabet with no descenders makes "bottom of
-   text = bottom of box" literal). Failing all three — usually the part's
-   OWN bottom-row pins, since that is exactly where the courtyard's bottom
-   edge sits — the user's own chosen fallback (same day) HANGS the label
-   below the courtyard instead: same centred/left-flush/right-flush
-   horizontal spots, keyed the same literal way, just anchored outside the
-   box and growing further away from it (:func:`_below_box_candidates`,
-   ``v_align="top"``). Failing all six, RELOCATED onto :data:`_CANDIDATES`'
-   radial ladder (a ring sweep around the part, unchanged) or, failing
-   every candidate spot on that too, DROPPED when it would overlap a pad —
-   "a fab scrapes silk off pads, so text under a pad is silently lost"
-   (task brief). Never emitted blind.
+   from ``height_mm``. **Outside the part's outline** (gr495394, Reto
+   2026-10-17: "label outside white line, say to the bottom left corner of
+   the component. Unless unavailable."): the bottom-left corner by
+   default, then a fixed order of corners and sides
+   (:data:`LABEL_SPOT_ORDER`, :func:`_outline_spot_candidates`), each two
+   clear line widths off the outline; then the radial ladder further out
+   (:data:`_CANDIDATES`, a ring sweep); and only then, as the last resort,
+   INSIDE the outline (:func:`_inside_candidates`), recorded as
+   ``covered`` so :func:`precis.pcb.drc.check_silk_label_covered` says the
+   part will hide it. Failing every spot it is DROPPED — "a fab scrapes
+   silk off pads, so text under a pad is silently lost" (task brief).
+   Never emitted blind. A label never overlaps a pad, a via, another
+   label, or any part's outline (:func:`_label_blocked`).
    **Read from one side, at any part rotation.** Glyph orientation is
    pinned to 0 degrees regardless of the part's own rotation — a label
    never goes vertical or upside-down, so nobody ever turns the board to
@@ -49,11 +46,14 @@ already applies to copper.
    measured table). See :attr:`precis.pcb.ir.PcbIR.pin_w`'s docstring for
    the neighbouring defect class ("every pad the same 0.4mm disc") the
    pad-size term sidesteps.
-   The offset is :func:`silk_clearance_mm`, walked down the fab chain
-   (mask expansion -> silk-to-mask clearance -> half the drawn stroke)
-   from this board's capability row — so the courtyard cannot overlap its
-   own pads by construction, rather than by a margin that happened to be
-   big enough.
+   The offset is walked down the fab chain (:func:`silk_clearance_mm`:
+   mask expansion -> silk-to-mask clearance -> half the drawn stroke) from
+   this board's capability row, plus two line widths of clear board where
+   there is room (:func:`outline_offsets_mm`) — so the outline cannot
+   overlap its own pads by construction. Its final shape is settled for
+   the whole board at once (:func:`part_outlines`): it bends in toward,
+   never across, a close neighbour and the board edge, and an edge-mated
+   part's outline gets one clean gap at the edge (gr495393/gr495293).
 3. a **pin-1 marker** — a **dot** beside pin 1
    (:func:`_pin1_dot_candidates`), placed outside the courtyard next to
    pin 1's own land-pattern offset (or the first declared pin, when no pin
@@ -106,12 +106,13 @@ primitives with somewhere else to go: a refdes candidate and a pin-1 dot
 candidate are now also rejected when they would land outside ``outline``
 or inside its silk-to-edge margin (:func:`_silk_edge_margin_mm`, the same
 ``board_edge_clearance_vcut_mm`` figure :func:`precis.pcb.drc.
-check_board_edge_clearance` grades copper against). The courtyard ring and
-the corner tick are deliberately NOT rejected by it — their footprint is
-the part's own, not a choice among candidates, so there is nothing to
-relocate; :func:`precis.pcb.drc.check_outline_containment` and
-:func:`~precis.pcb.drc.check_silk_edge_clearance` still catch those at
-DRC time.
+check_board_edge_clearance` grades copper against). The courtyard ring
+has no candidates to choose among; since gr495293 it yields to the same
+margin when it is settled (:func:`part_outlines`), and where its floor
+offset still crosses the margin (an edge-mated connector) the stretch past
+it is cut away as one gap. :func:`precis.pcb.drc.check_outline_containment`
+and :func:`~precis.pcb.drc.check_silk_edge_clearance` still check every
+draw at DRC time.
 :class:`SilkResult` carries a structured ``census`` (one
 :class:`SilkPlacement` per courtyard/pin-1/refdes item considered) plus
 ``dropped``/``relocated`` human-readable messages DERIVED from it — never
@@ -133,15 +134,17 @@ Fixed by making ``reserved`` — the SAME board-level obstacle list
 :func:`build_fiducials`/:func:`build_title_block` already feed —
 the ONE obstacle mechanism every check reads, and growing it as this
 function goes: each side's obstacle list starts at ``pads + that side's
-via annuli + the caller's reserved geometry`` and every courtyard/tick/
+via annuli + the caller's reserved geometry`` and every tick/
 refdes-label that survives its own check is folded straight back into
 that SAME list (via :func:`obstacle_from_bbox`, a conservative
 axis-aligned bounding box of what was just drawn — never under-flagging,
 same idiom :func:`_segment_box` already uses) before the NEXT check
-runs. A part's own courtyard is therefore just the first thing on the
-list its own pin-1 tick and label check against, and every part after it
-checks against everything committed so far — one growing set, not a
-per-instance one plus a separate cross-part one.
+runs, so every part after it checks against everything committed so far
+— one growing set, not a per-instance one plus a separate cross-part
+one. Outlines are the exception (gr495393): they are settled before any
+other silk and every mark checks them exactly, so they never join the
+list as solid boxes — a box that once cut a neighbour's outline into
+pieces.
 
 **Order is instance-independent: natural refdes order, not array
 index.** Once avoidance is global, whichever part is processed FIRST
@@ -263,9 +266,19 @@ import functools
 import itertools
 import math
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
+
+from shapely import union_all as _shapely_union_all
+from shapely import voronoi_polygons as _shapely_voronoi_polygons
+from shapely.geometry import LineString as _ShapelyLineString
+from shapely.geometry import MultiPoint as _ShapelyMultiPoint
+from shapely.geometry import Point as _ShapelyPoint
+from shapely.geometry import Polygon as _ShapelyPolygon
+from shapely.geometry.polygon import orient as _shapely_orient
+from shapely.ops import linemerge as _shapely_linemerge
+from shapely.ops import unary_union as _shapely_unary_union
 
 from precis.pcb import stroke_font
 from precis.pcb.capabilities import CapabilityRow, design_value
@@ -275,7 +288,7 @@ from precis.pcb.geom import (
     point_in_polygon,
 )
 from precis.pcb.gerber import DEFAULT_SILK_WIDTH_MM, SOLDERMASK_EXPANSION_MM
-from precis.pcb.ir import PcbIR, instance_courtyard_polygon
+from precis.pcb.ir import COURTYARD_MITRE_LIMIT, PcbIR, instance_courtyard_polygon
 from precis.pcb.landpattern import place_points
 
 Point = tuple[float, float]
@@ -301,17 +314,32 @@ DEFAULT_REFDES_HEIGHT_MM = 1.0
 #: number — a label relocated to a NEW spot becomes an obstacle for every
 #: part processed after it, so the effect is not confined to labels (at
 #: 2x8 the residual finding is a courtyard, not a refdes).
-_REFDES_RINGS = 3
-_REFDES_DIRECTIONS = 12
+#:
+#: **Re-measured 2026-10-17 (gr495393/gr495394), now 4x16.** Outlines grew
+#: two line widths and labels keep two line widths off every outline, so
+#: the room a label needs moved out. Refdes drops on the routed nano / nano
+#: r2 fixtures: 3x12 38/59, 4x12 36/55, 3x16 38/55, 4x16 35/51, 5x16 32/50
+#: (old geometry at 3x12: 36/52). 4x16 is the smallest that is no worse
+#: than before on both; 5x16 floats labels five outline-reaches away.
+_REFDES_RINGS = 4
+_REFDES_DIRECTIONS = 16
+
+#: The most one ladder ring steps out past the one before it, mm. A ring
+#: steps by the outline's own reach, so on a large part ring 4 sat four
+#: part-widths away (83 mm from a 33 mm part's centre), a label nobody
+#: could tie to its part. Measured 2026-10-17 on the nano / nano r2
+#: fixtures: a 5 mm cap drops no more labels than none (35/51); 3 mm
+#: drops 38/53.
+_LADDER_STEP_CAP_MM = 5.0
 
 #: How far off an axis a direction must lean before the text stops being
 #: centred on that axis and starts being pushed to one side of the anchor.
 #: A label offset UP wants its baseline on the anchor and its glyphs
 #: centred horizontally; one offset up-and-right wants to start at the
-#: anchor and run away from the part. At :data:`_REFDES_DIRECTIONS` = 12
-#: the components are 0, 0.5, 0.87 and 1.0, so any deadband in (0, 0.5)
-#: gives the same answer — the value is a readable middle, not a tuned
-#: threshold.
+#: anchor and run away from the part. At :data:`_REFDES_DIRECTIONS` = 16
+#: the components are 0, 0.38, 0.71, 0.92 and 1.0, so any deadband in
+#: (0, 0.38) gives the same answer — the value is a readable middle, not a
+#: tuned threshold.
 _REFDES_ALIGN_DEADBAND = 0.25
 
 
@@ -336,7 +364,9 @@ def _refdes_candidates(
     ``dx``/``dy`` are scaled by the courtyard's reach IN THAT DIRECTION
     plus a gap before use (:func:`_courtyard_support_mm`), and their
     MAGNITUDE is the ring number, so ring 2 sits twice as far out as ring
-    1 — the same meaning the old hand-written ``(0, -2)`` fallback had.
+    1 — the same meaning the old hand-written ``(0, -2)`` fallback had —
+    except that no ring steps more than :data:`_LADDER_STEP_CAP_MM` past
+    the one before it (:func:`_label_candidates`).
 
     Order is: centred first (the common case), then each ring outward,
     and within a ring the directions nearest RIGHT (+x, angle 0) first,
@@ -399,23 +429,13 @@ _CANDIDATES: tuple[tuple[float, float, str, str, str], ...] = _refdes_candidates
 )
 
 
-#: How far the bottom-edge candidates' baseline (and the left/right-flush
-#: candidates' own vertical edge) sit INSIDE the courtyard's own border
-#: line, as a multiple of the drawn stroke width — the "stroke tolerance"
-#: a caller checking "bottom of text == courtyard min(y)" (or "left of
-#: text == courtyard min(x)") has to allow for. An anchor drawn EXACTLY ON
-#: that line is geometrically coincident with the courtyard outline's own
-#: stroke, and :func:`_stroke_crosses_stroke` (the label's own
-#: self-overlap check, applied to every candidate including these)
-#: inflates both by half their own width before testing SAT overlap — two
-#: coincident centrelines are then always within the combined half-widths
-#: of each other, so an un-inset anchor would self-reject on every part,
-#: every time, regardless of any real obstacle. 2x the combined-half-width
-#: threshold (measured: 1.5x already clears it; 2x leaves a real margin
-#: rather than riding the exact boundary) keeps "bottom/left/right of text
-#: = bottom/left/right of box" true to a fraction of a millimetre while
-#: staying a real, non-touching candidate.
-_BOTTOM_EDGE_INSET_STROKES = 2.0
+def _label_gap_mm(stroke_width_mm: float) -> float:
+    """Outline CENTRELINE to a refdes label's text box: half the outline's
+    stroke, :data:`OUTLINE_GAP_STROKES` widths of clear board, and half a
+    glyph stroke (glyph centrelines reach the box edge). gr495394: a label
+    keeps the same two line widths off an outline that two outlines keep
+    off each other."""
+    return (1.0 + OUTLINE_GAP_STROKES) * stroke_width_mm
 
 
 def refdes_label_slot_mm(
@@ -426,105 +446,94 @@ def refdes_label_slot_mm(
 ) -> float:
     """The band between a part's courtyard hull and the nearest
     non-silk obstacle (board furniture) that a refdes label hung ABOVE or
-    BELOW the box needs in order to fit: the label's own text height, a
-    silk clearance on each of its two sides, and the
-    :data:`_BOTTOM_EDGE_INSET_STROKES` gap :func:`_below_box_candidates`
-    leaves between the courtyard line and the glyph cap. A caller keeping
+    BELOW the outline needs in order to fit: the outline's own target
+    offset off the hull (``clearance_mm`` plus :data:`OUTLINE_GAP_STROKES`
+    widths, :func:`outline_offsets_mm`), the label's gap off the outline
+    (:func:`_label_gap_mm`), the label's text height, and a silk clearance
+    beyond it. A caller keeping
     furniture off courtyards (``handlers/pcb.py::_board_furniture``) must
     leave at least this much, else a part with nothing free on its other
     sides loses its label (``silk_missing``) — ewod-dogfood-6's bottom
     sink sat 1.385 mm from a furniture rect against a ~1.75 mm need."""
-    return height_mm + 2.0 * clearance_mm + _BOTTOM_EDGE_INSET_STROKES * stroke_width_mm
-
-
-def _bottom_edge_candidates(
-    box_local: list[Point], stroke_width_mm: float
-) -> tuple[tuple[Point, str, str, str], ...]:
-    """The label CONVENTION (user spec, round-5 review), tried FIRST, before
-    :func:`_below_box_candidates` and before :data:`_CANDIDATES`' radial
-    ladder: the label's rendered bottom edge collinear with the
-    courtyard's own bottom edge, horizontally centred on the box or else
-    flush with its left or right edge. Three fixed ``(local_anchor,
-    h_align, v_align, label)`` candidates, in try order (bottom-center,
-    bottom-left-flush, bottom-right-flush) — a blocked one falls through
-    to the next, and past all three to :func:`_below_box_candidates`
-    (the user's own chosen fallback, tried before the radial ladder; see
-    the call site in :func:`build_silk`).
-
-    Keyed to the courtyard hull's LITERAL ``min(y)``/``min(x)``/``max(x)``
-    — never :func:`_courtyard_support_mm`'s directional support, which is
-    the RIGHT helper for the radial ladder's "how far out" question but
-    the WRONG one here: support diverges from the hull's true edge on an
-    asymmetric courtyard (a connector, a TO-220 tab), so a support-based
-    "bottom" would float off the actual bottom edge exactly where this
-    convention matters most.
-
-    ``v_align="baseline"`` is what makes "bottom of text = bottom of box"
-    (near-)literal: this alphabet (:mod:`precis.pcb.stroke_font`) has no
-    descenders, so a baseline anchored just inside the courtyard's own
-    bottom-edge line (:data:`_BOTTOM_EDGE_INSET_STROKES` — see that
-    constant for why it can't be exactly ON the line) puts the LOWEST ink
-    of every glyph a stroke tolerance above that line, growing upward into
-    the box — never past it, since ``height_mm`` is normally far smaller
-    than the courtyard. ``box_local`` is the courtyard in the BOARD frame
-    relative to the part origin (already rotated/mirrored), same as
-    :data:`_CANDIDATES`, so "bottom" is the board's bottom. Empty for a
-    pinless/courtyard-less instance — nothing to key a bottom edge off."""
-    if not box_local:
-        return ()
-    xs = [p[0] for p in box_local]
-    ys = [p[1] for p in box_local]
-    inset = stroke_width_mm * _BOTTOM_EDGE_INSET_STROKES
-    x0, x1 = min(xs), max(xs)
-    y0 = min(ys) + inset
-    cx = (x0 + x1) / 2.0
     return (
-        ((cx, y0), "center", "baseline", "bottom-center"),
-        ((x0 + inset, y0), "left", "baseline", "bottom-left-flush"),
-        ((x1 - inset, y0), "right", "baseline", "bottom-right-flush"),
+        height_mm
+        + 2.0 * clearance_mm
+        + OUTLINE_GAP_STROKES * stroke_width_mm
+        + _label_gap_mm(stroke_width_mm)
     )
 
 
-def _below_box_candidates(
-    box_local: list[Point], stroke_width_mm: float
+#: A refdes label's spots around its part's outline, in try order
+#: (gr495394, Reto 2026-10-17: "label outside white line, say to the bottom
+#: left corner of the component. Unless unavailable."). Board frame, read
+#: as the board is viewed from the top on either side. A corner spot sits
+#: just outside that side of the outline, flush with the outline's own
+#: left or right edge; a side spot is centred on that side. The skill
+#: precis-pcb-fab-help documents this order; keep the two in step.
+LABEL_SPOT_ORDER: tuple[str, ...] = (
+    "bottom-left",
+    "bottom-right",
+    "top-left",
+    "top-right",
+    "left",
+    "right",
+    "top",
+    "bottom",
+)
+
+
+def _outline_spot_candidates(
+    box_board: list[Point], stroke_width_mm: float
 ) -> tuple[tuple[Point, str, str, str], ...]:
-    """The user's OWN chosen fallback (round-5 review item 2, decided
-    explicitly rather than jumping straight to the radial ladder) for
-    when every :func:`_bottom_edge_candidates` spot is blocked — usually
-    by the part's OWN pads, since the over-box bottom edge sits right
-    where a bottom row of pins lives. Same three horizontal spots (centred
-    / left-flush / right-flush), same literal courtyard ``min(y)``/
-    ``min(x)``/``max(x)`` keying — but the label now HANGS below the
-    courtyard instead of sitting over it: text just under the bottom
-    edge, extending further away from the part.
+    """The :data:`LABEL_SPOT_ORDER` spots as ``(anchor, h_align, v_align,
+    spot)``, relative to the part origin in the board frame, each text box
+    :func:`_label_gap_mm` clear of ``box_board``'s bounding box.
 
-    ``v_align="top"`` (not ``"baseline"``) is the whole difference:
-    :func:`~precis.pcb.stroke_font._v_shift`'s ``"top"`` puts the glyph
-    CAP at the anchor and grows the box DOWNWARD from there (the same
-    primitive :func:`build_title_block` already uses to grow a top-corner
-    block away from the board's own top edge) — anchored on the
-    courtyard's bottom-edge line, offset OUTWARD by the same
-    :data:`_BOTTOM_EDGE_INSET_STROKES` gap the over-box candidates inset
-    INWARD by (so strokes never touch the courtyard's own outline
-    either), that puts the whole label below the part.
-
-    Tried after :func:`_bottom_edge_candidates`'s three and before
-    :data:`_CANDIDATES`' radial ladder (see the call site in
-    :func:`build_silk`). Board frame relative to the part origin, same as
-    both. Empty for a pinless/courtyard-less instance, same as
-    :func:`_bottom_edge_candidates`."""
-    if not box_local:
+    Keyed to the outline's LITERAL bounding box, never
+    :func:`_courtyard_support_mm`'s directional support (the radial
+    ladder's helper): support drifts off the true edge on an asymmetric
+    outline, which is where "flush with the left edge" matters most.
+    ``v_align="top"`` hangs a label below the outline (cap at the anchor,
+    growing down); ``"baseline"`` stands one on top (this alphabet has no
+    descenders, so the baseline is the box's bottom). Empty for a
+    courtyard-less instance."""
+    if not box_board:
         return ()
-    xs = [p[0] for p in box_local]
-    ys = [p[1] for p in box_local]
-    gap = stroke_width_mm * _BOTTOM_EDGE_INSET_STROKES
-    x0, x1 = min(xs), max(xs)
-    y0 = min(ys) - gap
-    cx = (x0 + x1) / 2.0
+    xs = [p[0] for p in box_board]
+    ys = [p[1] for p in box_board]
+    x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+    xc, yc = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+    g = _label_gap_mm(stroke_width_mm)
+    spots = {
+        "bottom-left": ((x0, y0 - g), "left", "top"),
+        "bottom-right": ((x1, y0 - g), "right", "top"),
+        "top-left": ((x0, y1 + g), "left", "baseline"),
+        "top-right": ((x1, y1 + g), "right", "baseline"),
+        "left": ((x0 - g, yc), "right", "middle"),
+        "right": ((x1 + g, yc), "left", "middle"),
+        "top": ((xc, y1 + g), "center", "baseline"),
+        "bottom": ((xc, y0 - g), "center", "top"),
+    }
+    return tuple((*spots[name], name) for name in LABEL_SPOT_ORDER)
+
+
+def _inside_candidates(
+    box_board: list[Point], stroke_width_mm: float
+) -> tuple[tuple[Point, str, str, str], ...]:
+    """The last-resort spots INSIDE the outline (gr495394: allowed only
+    when no outside spot fits, and reported as a label the part will
+    cover): centred, then the bottom-left and bottom-right corners, each
+    :func:`_label_gap_mm` in from the outline's bounding box."""
+    if not box_board:
+        return ()
+    xs = [p[0] for p in box_board]
+    ys = [p[1] for p in box_board]
+    x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+    g = _label_gap_mm(stroke_width_mm)
     return (
-        ((cx, y0), "center", "top", "below-center"),
-        ((x0, y0), "left", "top", "below-left-flush"),
-        ((x1, y0), "right", "top", "below-right-flush"),
+        (((x0 + x1) / 2.0, (y0 + y1) / 2.0), "center", "middle", "inside-center"),
+        ((x0 + g, y0 + g), "left", "baseline", "inside-bottom-left"),
+        ((x1 - g, y0 + g), "right", "baseline", "inside-bottom-right"),
     )
 
 
@@ -592,6 +601,11 @@ class SilkPlacement:
     x_mm: float | None = None
     y_mm: float | None = None
     angle_deg: float = 0.0
+    #: ``kind="refdes"`` only: the label was drawn INSIDE its own part's
+    #: outline because no outside spot was clear (gr495394's last resort),
+    #: so the assembled part will hide it.
+    #: :func:`precis.pcb.drc.check_silk_label_covered` reports each one.
+    covered: bool = False
 
 
 def _prose_from_census(
@@ -1092,11 +1106,11 @@ def _towards(frm: Point, to: Point, dist_mm: float) -> Point:
 
 
 def _pin1_tick(
-    ir: PcbIR, pin1: int, courtyard: list[Point], stroke_width_mm: float
+    pin_xy: Point, courtyard: list[Point], stroke_width_mm: float
 ) -> list[Point]:
     """A small tick cutting whichever courtyard VERTEX sits nearest pin
-    1's own land-pattern offset — a two-segment ``L`` running back along
-    the two edges that meet there.
+    1 (``pin_xy``, in the same frame as ``courtyard``) — a two-segment
+    ``L`` running back along the two edges that meet there.
 
     Sized off the courtyard's own geometry, never an invented mm constant:
     :data:`_PIN1_TICK_EDGE_FRACTION` of the shorter of the two adjacent
@@ -1106,13 +1120,13 @@ def _pin1_tick(
     produced this is the same corner-cut ``L`` as before; on a real hull
     it follows whatever shape the part's own pads make.
 
-    ``courtyard`` is the CLOSED local-frame polygon
-    (:func:`precis.pcb.ir.instance_courtyard_polygon`) — the repeated
-    final point is dropped here so a vertex is not considered twice."""
+    ``courtyard`` is the CLOSED drawn outline (:func:`part_outlines`'
+    ring, board frame) — the repeated final point is dropped here so a
+    vertex is not considered twice."""
     ring = courtyard[:-1] if len(courtyard) > 1 else list(courtyard)
     if len(ring) < 3:
         return []
-    dx, dy = float(ir.pin_dx[pin1]), float(ir.pin_dy[pin1])
+    dx, dy = pin_xy
     k = min(
         range(len(ring)), key=lambda i: math.hypot(ring[i][0] - dx, ring[i][1] - dy)
     )
@@ -1299,6 +1313,386 @@ def _refdes_family(refdes: str) -> str:
     any known family."""
     m = re.match(r"[A-Za-z]+", refdes)
     return m.group(0).upper() if m else refdes.upper()
+
+
+# ─────────────────────────────────────────────────────────────────────
+# part outlines — resolved for the whole board at once, before any other
+# silk, and shared with the router's via keep-out (gr495393).
+# ─────────────────────────────────────────────────────────────────────
+
+#: Clear space a part OUTLINE keeps, in silk stroke widths (gr495393,
+#: Reto 2026-10-17: "the white lines are at least 2 white line widths
+#: apart"). It sizes the outline's breathing room off its own pads
+#: (:func:`outline_offsets_mm`), the spacing between two parts' outlines
+#: (:func:`part_outlines`), a refdes label's distance from any outline, and
+#: the router's via keep-out around outline ink
+#: (:func:`outline_via_keepouts`).
+OUTLINE_GAP_STROKES = 2.0
+
+
+def outline_offsets_mm(
+    capability: CapabilityRow | None, *, stroke_width_mm: float
+) -> tuple[float, float]:
+    """``(floor, target)``: how far a part outline's CENTRELINE sits from
+    its own pads' copper.
+
+    ``target`` is :func:`silk_clearance_mm` plus :data:`OUTLINE_GAP_STROKES`
+    stroke widths: the fab chain's legal clearance with two line widths of
+    clear board on top, where the outline has room for it. ``floor`` is how
+    far in the outline may yield to a neighbouring part or the board edge:
+    never inside the legal clearance, and never with less than two line
+    widths of clear board between its ink and a pad's copper. At JLC
+    4-layer house-default figures both floor terms are 0.375 mm and the
+    target is 0.675 mm."""
+    legal = silk_clearance_mm(capability, stroke_width_mm=stroke_width_mm)
+    gap = OUTLINE_GAP_STROKES * stroke_width_mm
+    return max(legal, gap + stroke_width_mm / 2.0), legal + gap
+
+
+@dataclass(frozen=True, slots=True)
+class PartOutline:
+    """One part's body-outline silk, before obstacle clipping.
+
+    ``ring`` is the closed centreline (first point repeated last) in board
+    coordinates. ``runs`` is what gets drawn: ``[ring]``, or, when even the
+    floor offset crosses the board's silk edge margin (an edge-mated
+    connector), the open run(s) left once that margin is cut away —
+    ``edge_cut`` is then True and a part crossing one edge has exactly one
+    run, i.e. one gap."""
+
+    side: str
+    ring: list[Point]
+    runs: list[list[Point]]
+    edge_cut: bool = False
+    #: Length of ring the board-edge cut left open (mm).
+    edge_open_mm: float = 0.0
+    #: Refdes of earlier-drawn outlines this one overlaps; the stretch
+    #: inside them is left out of ``runs`` (see :func:`part_outlines`).
+    meets: tuple[str, ...] = ()
+    #: Length of ring buried inside those earlier outlines (mm).
+    buried_mm: float = 0.0
+
+
+def _polyline_length(points: Sequence[Point]) -> float:
+    return sum(
+        math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in itertools.pairwise(points)
+    )
+
+
+def _clip_runs(
+    runs: list[list[Point]],
+    *,
+    keep: Any = None,
+    cut: Any = None,
+    min_run_mm: float,
+) -> list[list[Point]]:
+    """``runs`` with every stretch outside ``keep`` or inside ``cut``
+    removed, as open runs no shorter than ``min_run_mm``. A closed run is
+    first rotated to start at a removed vertex, so the stretch crossing its
+    seam is never split in two — a part crossing one board edge keeps one
+    run and one gap."""
+
+    def removed(p: Point) -> bool:
+        pt = _ShapelyPoint(p)
+        return (keep is not None and not keep.covers(pt)) or (
+            cut is not None and cut.covers(pt)
+        )
+
+    out: list[list[Point]] = []
+    for run in runs:
+        pts = list(run)
+        if len(pts) > 2 and pts[0] == pts[-1]:
+            ring = pts[:-1]
+            start = next((i for i, p in enumerate(ring) if removed(p)), 0)
+            ring = ring[start:] + ring[:start]
+            pts = [*ring, ring[0]]
+        line: Any = _ShapelyLineString(pts)
+        if keep is not None:
+            line = line.intersection(keep)
+        if cut is not None:
+            line = line.difference(cut)
+        lines = [
+            g for g in getattr(line, "geoms", [line]) if g.geom_type == "LineString"
+        ]
+        if not lines:
+            continue
+        merged = _shapely_linemerge(lines) if len(lines) > 1 else lines[0]
+        out += [
+            [(float(x), float(y)) for x, y in g.coords]
+            for g in getattr(merged, "geoms", [merged])
+            if g.length >= min_run_mm
+        ]
+    return out
+
+
+#: Spacing of the boundary samples :func:`_hull_cells` splits the board
+#: with. The split between two parallel hull edges sampled this finely is
+#: off the true midline by about ``step**2 / (8 * gap)`` — 2 um at a
+#: 0.8 mm gap — far below a silk stroke.
+_CELL_SAMPLE_MM = 0.1
+
+
+def _hull_cells(hulls: list[tuple[int, Any]], *, margin_mm: float) -> dict[int, Any]:
+    """Each hull's Voronoi cell among ``hulls``: the area closer to it than
+    to any other hull. Built from points sampled along every hull's
+    boundary (:data:`_CELL_SAMPLE_MM`), one Voronoi diagram for all of
+    them, each point's cell unioned into its hull's. A sample shared by two
+    touching hulls goes to the first; overlapping hulls get no clean
+    split, and :func:`part_outlines`' draw-order cut handles them."""
+    owner: dict[tuple[float, float], int] = {}
+    for inst, hull in hulls:
+        boundary = hull.boundary
+        n = max(4, math.ceil(boundary.length / _CELL_SAMPLE_MM))
+        for k in range(n):
+            pt = boundary.interpolate(boundary.length * k / n)
+            owner.setdefault((round(pt.x, 6), round(pt.y, 6)), inst)
+    if len({*owner.values()}) < 2:
+        return {}
+    points = list(owner)
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    envelope = _ShapelyPolygon(
+        [
+            (min(xs) - margin_mm, min(ys) - margin_mm),
+            (max(xs) + margin_mm, min(ys) - margin_mm),
+            (max(xs) + margin_mm, max(ys) + margin_mm),
+            (min(xs) - margin_mm, max(ys) + margin_mm),
+        ]
+    )
+    diagram = _shapely_voronoi_polygons(
+        _ShapelyMultiPoint(points), extend_to=envelope, ordered=True
+    )
+    pieces: dict[int, list[Any]] = {}
+    for point, cell in zip(points, diagram.geoms, strict=True):
+        pieces.setdefault(owner[point], []).append(cell)
+    # Snapped to a micrometre grid: neighbouring Voronoi cells share edges
+    # that float noise otherwise makes GEOS reject as a topology conflict.
+    return {
+        inst: _shapely_union_all([c.buffer(0) for c in cs], grid_size=1e-6)
+        for inst, cs in pieces.items()
+    }
+
+
+def part_outlines(
+    ir: PcbIR,
+    *,
+    capability: CapabilityRow | None,
+    stroke_width_mm: float = DEFAULT_SILK_WIDTH_MM,
+    instance_sides: dict[str, str] | None = None,
+    outline: Sequence[Sequence[float]] | None = None,
+) -> dict[int, PartOutline]:
+    """Every placed part's outline, keyed by instance — the ONE place an
+    outline's shape is decided, read by :func:`build_silk` (which draws it)
+    and by :func:`outline_via_keepouts` (the router's via keep-out,
+    ``RealizeConfig.silk_via_keepout``, off until Reto rules on its cost).
+
+    **Why the outline is resolved here and never clipped by other silk
+    (gr495393).** The fragmented outlines Reto saw on usbc-attiny-dogfood-b
+    were not cut by their own pads — the old hull offset already cleared
+    those. U1 and J2 were cut around one routed via between them; U2 was
+    cut by U1's committed courtyard, folded into the shared obstacle list
+    as a solid bounding box that reached over U2's own outline. Pushing an
+    outline outward cannot fix either cause by itself — it only meets a
+    neighbour sooner — so the shape is settled here, against every other
+    part at once:
+
+    1. Grow the part's own pad hull to the ``target`` offset
+       (:func:`outline_offsets_mm`): two line widths of clear board beyond
+       the legal silk clearance.
+    2. Where a neighbour on the same side is close, yield toward it: each
+       part keeps to its own side of the line equidistant from the two
+       hulls (their Voronoi split, :func:`_hull_cells`), half the outline
+       spacing (``1 + OUTLINE_GAP_STROKES`` stroke widths centreline to
+       centreline) back from it, so the two lines stay two clear line
+       widths apart. When the half-gap cannot hold that spacing but still
+       clears ``floor``, both run ON the split as one shared wall (each
+       still one closed line); below that both stay at ``floor``, and
+       where the later of the two (natural refdes order) then runs inside
+       the earlier it leaves that stretch out, so overlapping parts read
+       as one merged outline (``PartOutline.meets``).
+    3. Yield to the board edge the same way: no further out than the silk
+       edge margin (:func:`_silk_edge_margin_mm`, plus half a stroke).
+    4. Never inside ``floor``. If ``floor`` itself crosses the edge margin
+       (an edge-mated connector), the ring keeps its shape and the stretch
+       past the margin is cut away: one clean gap at the edge instead of a
+       silk_edge_clearance error per segment (gr495293).
+
+    Other silk — refdes labels, pin-1 marks, title block — yields to these
+    rings, never the other way round. Copper the outline still lands on
+    (a via, a foreign pad inside ``floor``) is :func:`build_silk`'s to
+    clip; :func:`outline_via_keepouts` can keep new vias off it in the first
+    place.
+
+    ``instance_sides`` is refdes -> ``'top'``/``'bottom'`` as
+    :func:`build_silk` takes it; ``None`` reads the IR's own
+    :attr:`~precis.pcb.ir.PcbIR.inst_bottom` (the router's view). Uses
+    shapely: a hull clipped to its Voronoi cell is a polygon boolean, and
+    :func:`precis.pcb.ir.instance_courtyard_polygon` already builds the
+    hull with it."""
+    floor, target = outline_offsets_mm(capability, stroke_width_mm=stroke_width_mm)
+    spacing = (1.0 + OUTLINE_GAP_STROKES) * stroke_width_mm
+    pins_of_inst: dict[int, list[int]] = {}
+    for pid in range(ir.n_pins):
+        pins_of_inst.setdefault(int(ir.pin_instance[pid]), []).append(pid)
+
+    hulls: list[tuple[int, str, Any]] = []
+    for inst in range(ir.n_instances):
+        cx, cy = float(ir.inst_x[inst]), float(ir.inst_y[inst])
+        if math.isnan(cx) or math.isnan(cy):
+            continue
+        local = instance_courtyard_polygon(
+            ir, inst, clearance_mm=0.0, pins=pins_of_inst.get(inst, [])
+        )
+        if not local:
+            continue
+        if instance_sides is None:
+            side = "bottom" if bool(ir.inst_bottom[inst]) else "top"
+        else:
+            side = _side_for(instance_sides, str(ir.instance_refdes[inst]))
+        rot = float(ir.inst_rot[inst])
+        world = _place(
+            local,
+            cx=cx,
+            cy=cy,
+            rot=0.0 if math.isnan(rot) else rot,
+            mirror=side == "bottom",
+        )
+        hull = _ShapelyMultiPoint(world).convex_hull
+        hulls.append((inst, side, hull))
+
+    inside = None
+    if outline is not None and len(outline) >= 3:
+        board = _ShapelyPolygon([(float(p[0]), float(p[1])) for p in outline]).buffer(0)
+        inside = board.buffer(
+            -(_silk_edge_margin_mm(capability) + stroke_width_mm / 2.0), join_style=2
+        )
+
+    reach_limit = 2.0 * target + spacing
+    cells: dict[int, Any] = {}
+    for side_name in ("top", "bottom"):
+        cells.update(
+            _hull_cells(
+                [(inst, hull) for inst, side, hull in hulls if side == side_name],
+                margin_mm=reach_limit,
+            )
+        )
+    rings: dict[int, tuple[str, list[Point]]] = {}
+    for inst, side, hull in hulls:
+        grown = hull.buffer(target, join_style=2, mitre_limit=COURTYARD_MITRE_LIMIT)
+        base = hull.buffer(floor, join_style=2, mitre_limit=COURTYARD_MITRE_LIMIT)
+        region = grown if inside is None else grown.intersection(inside)
+        x0, y0, x1, y1 = hull.bounds
+        cuts = []
+        for other, other_side, other_hull in hulls:
+            if other == inst or other_side != side or other not in cells:
+                continue
+            ox0, oy0, ox1, oy1 = other_hull.bounds
+            if (
+                ox0 > x1 + reach_limit
+                or ox1 < x0 - reach_limit
+                or oy0 > y1 + reach_limit
+                or oy1 < y0 - reach_limit
+            ):
+                continue
+            gap = hull.distance(other_hull)
+            if gap >= reach_limit:
+                continue
+            # Half the spacing back from the split where the half-gap
+            # holds it above `floor`; otherwise on the split (shared wall).
+            back = spacing / 2.0 if gap / 2.0 - spacing / 2.0 >= floor else 0.0
+            cell = cells[other]
+            cuts.append(cell.buffer(back, quad_segs=4) if back > 0.0 else cell)
+        if cuts:
+            region = region.difference(_shapely_unary_union(cuts))
+        region = region.union(base)
+        poly = max(
+            getattr(region, "geoms", [region]),
+            key=lambda g: g.intersection(base).area,
+        )
+        exterior = _shapely_orient(_ShapelyPolygon(poly.exterior), 1.0).exterior
+        rings[inst] = (side, [(float(x), float(y)) for x, y in exterior.coords])
+
+    # Draw order is natural refdes order, as everywhere in this module. A
+    # later outline that runs INSIDE an earlier one (parts closer than two
+    # floors, i.e. overlapping) leaves out that stretch, so the two read as
+    # one merged outline instead of crossing boxes. A shared midline wall
+    # is not cut: both rings run exactly along the same split, so each
+    # stays one closed line and the wall prints as one.
+    min_run = stroke_width_mm * _CLIP_MIN_RUN_STROKES
+    order = sorted(rings, key=lambda i: _refdes_sort_key(str(ir.instance_refdes[i])))
+    drawn: list[tuple[int, str, Any]] = []
+    out: dict[int, PartOutline] = {}
+    for inst in order:
+        side, ring = rings[inst]
+        line = _ShapelyLineString(ring)
+        runs, edge_cut, edge_open = [ring], False, 0.0
+        if inside is not None and not inside.covers(line):
+            runs = _clip_runs(runs, keep=inside, min_run_mm=min_run)
+            edge_cut = True
+            edge_open = line.length - sum(_polyline_length(r) for r in runs)
+        area = _ShapelyPolygon(ring).buffer(0)
+        over = [
+            (other, other_area)
+            for other, other_side, other_area in drawn
+            if other_side == side
+            and other_area.distance(line) <= 1.5 * stroke_width_mm
+            and line.intersection(other_area.buffer(-stroke_width_mm)).length
+            > stroke_width_mm
+        ]
+        buried = 0.0
+        if over:
+            earlier = _shapely_unary_union([a for _o, a in over])
+            buried = line.intersection(earlier.buffer(-stroke_width_mm)).length
+            # 1.5 strokes: the cut ends keep half a stroke of clear board
+            # off the earlier outline's ink instead of just touching it.
+            runs = _clip_runs(
+                runs, cut=earlier.buffer(1.5 * stroke_width_mm), min_run_mm=min_run
+            )
+        drawn.append((inst, side, area))
+        out[inst] = PartOutline(
+            side=side,
+            ring=ring,
+            runs=runs,
+            edge_cut=edge_cut,
+            edge_open_mm=edge_open,
+            buried_mm=buried,
+            meets=tuple(str(ir.instance_refdes[o]) for o, _a in over),
+        )
+    return out
+
+
+def outline_via_keepouts(
+    ir: PcbIR,
+    *,
+    capability: CapabilityRow | None,
+    stroke_width_mm: float = DEFAULT_SILK_WIDTH_MM,
+) -> list[tuple[list[Point], float]]:
+    """``(polyline, margin_mm)`` per drawn outline run: a via's COPPER edge
+    must stay ``margin_mm`` off the polyline (gr495393 comment 1, Reto: vias
+    must not land on part-outline silk — enforced where vias are placed,
+    not by clipping silk afterwards).
+
+    ``margin_mm`` is half the stroke (the ink edge), plus the via-to-silk
+    clearance, plus :data:`OUTLINE_GAP_STROKES` stroke widths. The fab
+    publishes no via-to-silk figure; a via's annulus is exposed copper the
+    way a mask opening is, so silk owes it the same
+    ``silk_to_mask_clearance_mm`` (house default first) the outline owes a
+    pad. 0.625 mm at house-default figures. Read off the IR's own outline
+    and sides, so the router sees the rings :func:`build_silk` draws on a
+    board whose silk is built with the same outline and capability row."""
+    via_to_silk = design_value(
+        capability,
+        "silk_to_mask_clearance_mm",
+        fallback=DEFAULT_SILK_TO_MASK_CLEARANCE_MM,
+    )
+    margin = stroke_width_mm / 2.0 + via_to_silk + OUTLINE_GAP_STROKES * stroke_width_mm
+    outlines = part_outlines(
+        ir,
+        capability=capability,
+        stroke_width_mm=stroke_width_mm,
+        outline=ir.outline or None,
+    )
+    return [(run, margin) for _inst, o in sorted(outlines.items()) for run in o.runs]
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -2359,10 +2753,12 @@ def _box_inside_outline(
 
 
 #: One refdes label candidate, resolved to the board: ``(spot, anchor,
-#: corners, h_align, v_align, is_ladder)``. ``corners`` is the text bbox
-#: the acceptance checks and the committed obstacle both use, so the two
-#: can never disagree about where the label is.
-_LabelCandidate = tuple[str, Point, list[Point], str, str, bool]
+#: corners, h_align, v_align, tier)``. ``corners`` is the text bbox the
+#: acceptance checks and the committed obstacle both use, so the two can
+#: never disagree about where the label is. ``tier`` is ``"spot"`` (the
+#: :data:`LABEL_SPOT_ORDER` spots), ``"ladder"`` (the radial ladder, still
+#: outside) or ``"inside"`` (the covered last resort).
+_LabelCandidate = tuple[str, Point, list[Point], str, str, str]
 
 
 def _label_candidates(
@@ -2378,13 +2774,12 @@ def _label_candidates(
     """Every refdes spot for one placed part, in try order, resolved to a
     world anchor and bbox ONCE (an acceptance test and a reorder test built
     from two independently computed boxes is this module's own named
-    recurring defect). Order (user spec, round-5 review; the below-box
-    fallback order is the user's own choice): the bottom-edge convention's
-    three spots (:func:`_bottom_edge_candidates`), then the below-box
-    fallback's three (:func:`_below_box_candidates`), then the radial
-    ladder (:data:`_CANDIDATES`) as the last resort; ``is_ladder`` tags the
-    ladder entries, the only group the tile-bleed reorder in
-    :func:`build_silk` touches.
+    recurring defect). Order (gr495394): the :data:`LABEL_SPOT_ORDER`
+    corners and sides just outside the outline; then the radial ladder
+    (:data:`_CANDIDATES`), further out but still outside; then, as the last
+    resort, the :func:`_inside_candidates` spots the part will cover. A
+    part with no outline (pinless) has nothing to be inside or outside of
+    and walks the ladder from its centre.
 
     ``box_board`` is the courtyard as it sits ON THE BOARD (rotated and
     mirrored, still relative to the part origin), not the part's own
@@ -2393,28 +2788,33 @@ def _label_candidates(
     text back over the part (heater-base-test, 2026-10-02). Two parts with
     the same ``box_board`` therefore get the same offsets, which is what
     lets an aligned group share a spot (:func:`_aligned_label_groups`)."""
-    gap = height_mm * 0.3
-    raw: list[tuple[Point, str, str, str, bool]] = [
-        (*cand, False)
-        for cand in (
-            *_bottom_edge_candidates(box_board, stroke_width_mm),
-            *_below_box_candidates(box_board, stroke_width_mm),
-        )
+    # Never nearer the outline than a label may sit (`_label_gap_mm`): a
+    # ladder rung inside that gap is a candidate the acceptance test can
+    # only reject.
+    gap = max(height_mm * 0.3, _label_gap_mm(stroke_width_mm))
+    raw: list[tuple[Point, str, str, str, str]] = [
+        (*cand, "spot") for cand in _outline_spot_candidates(box_board, stroke_width_mm)
     ]
     for du, dv, h_align, v_align, spot in _CANDIDATES:
+        if (du, dv) == (0.0, 0.0):
+            if not box_board:
+                raw.append(((0.0, 0.0), h_align, v_align, spot, "ladder"))
+            continue
         # Directional, not one scalar radius: an elongated part reaches
         # much further along its own long axis than across it, and the
         # square courtyard this replaced pushed every label out by the
         # larger of the two (see `_courtyard_support_mm`).
-        off = (
-            _courtyard_support_mm(box_board, du, dv) + gap
-            if (du, dv) != (0.0, 0.0)
-            else 0.0
-        )
-        raw.append(((du * off, dv * off), h_align, v_align, spot, True))
+        ring = math.hypot(du, dv)
+        ux, uy = du / ring, dv / ring
+        reach = _courtyard_support_mm(box_board, ux, uy) + gap
+        off = reach + (ring - 1.0) * min(reach, _LADDER_STEP_CAP_MM)
+        raw.append(((ux * off, uy * off), h_align, v_align, spot, "ladder"))
+    raw += [
+        (*cand, "inside") for cand in _inside_candidates(box_board, stroke_width_mm)
+    ]
 
     out: list[_LabelCandidate] = []
-    for board_offset, h_align, v_align, spot, is_ladder in raw:
+    for board_offset, h_align, v_align, spot, tier in raw:
         ax, ay = cx + board_offset[0], cy + board_offset[1]
         if mirror:
             # Bottom-side glyphs mirror about the anchor, which flips which
@@ -2430,14 +2830,14 @@ def _label_candidates(
             h_align=h_align,
             v_align=v_align,
         )
-        out.append((spot, (ax, ay), corners, h_align, v_align, is_ladder))
+        out.append((spot, (ax, ay), corners, h_align, v_align, tier))
     return out
 
 
 def _label_strokes(
     refdes: str, cand: _LabelCandidate, *, mirror: bool, height_mm: float
 ) -> list[list[Point]]:
-    _spot, anchor, _corners, h_align, v_align, _ladder = cand
+    _spot, anchor, _corners, h_align, v_align, _tier = cand
     return stroke_font.layout_text(
         refdes,
         anchor=anchor,
@@ -2449,15 +2849,40 @@ def _label_strokes(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _RingGeom:
+    """One part outline as the label checks read it: its side, the
+    centreline, the filled area it encloses, and the bbox the broad phase
+    reads first."""
+
+    side: str
+    line: Any
+    area: Any
+    bounds: tuple[float, float, float, float]
+
+
+def _ring_geoms(rings: dict[int, tuple[str, list[Point]]]) -> dict[int, _RingGeom]:
+    out: dict[int, _RingGeom] = {}
+    for inst, (side, ring) in rings.items():
+        line = _ShapelyLineString(ring)
+        out[inst] = _RingGeom(
+            side=side,
+            line=line,
+            area=_ShapelyPolygon(ring).buffer(0),
+            bounds=line.bounds,
+        )
+    return out
+
+
 def _label_blocked(
     corners: list[Point],
     strokes_of: Callable[[], list[list[Point]]],
     *,
     inst: int,
     side_name: str,
+    tier: str,
     obstacles: list[dict[str, Any]],
-    own_box_pts: list[Point] | None,
-    courtyard_ring: dict[int, tuple[str, list[Point]]],
+    rings: dict[int, _RingGeom],
     outline_ring: list[Point] | None,
     edge_margin_mm: float,
     stroke_width_mm: float,
@@ -2465,37 +2890,47 @@ def _label_blocked(
     """The ONE refdes acceptance test, shared by the per-part placement and
     the aligned-group spot choice so the two can never disagree about
     whether a spot is clear. ``strokes_of`` lays the text out only once the
-    cheap bbox tests have passed."""
+    cheap bbox tests have passed.
+
+    Against every part outline on this side, placed or not yet (gr495394:
+    a label never overlaps another outline, and keeps
+    :data:`OUTLINE_GAP_STROKES` clear line widths off any outline,
+    :func:`_label_gap_mm`): the text box may not touch or sit inside
+    another part's outline, nor come within the gap of any outline line.
+    Its own outline it must sit outside of, unless ``tier`` is
+    ``"inside"`` (the covered last resort), where it must sit wholly inside
+    instead. Checked on the text BOX, not the glyphs: stricter, and the
+    same box :func:`_outline_spot_candidates` spaces off the outline."""
     if any(_box_overlaps_pad(corners, pad) for pad in obstacles):
         return True
     if outline_ring is not None and not _box_inside_outline(
         corners, outline_ring, edge_margin_mm
     ):
         return True
+    gap = _label_gap_mm(stroke_width_mm) - 1e-9
+    box = _ShapelyPolygon(corners)
+    bx0, by0, bx1, by1 = box.bounds
+    for other, geom in rings.items():
+        if geom.side != side_name:
+            continue
+        gx0, gy0, gx1, gy1 = geom.bounds
+        if other != inst and (
+            gx0 > bx1 + gap or gx1 < bx0 - gap or gy0 > by1 + gap or gy1 < by0 - gap
+        ):
+            continue
+        if box.distance(geom.line) < gap:
+            return True
+        if other != inst or tier != "inside":
+            if box.intersects(geom.area):
+                return True
+        elif not geom.area.contains(box):
+            return True
+    if tier == "inside" and inst not in rings:
+        return True
     strokes = strokes_of()
     # bbox cleared but a real stroke may not have
-    if any(
-        _stroke_overlaps_any_pad(pts, obstacles, stroke_width_mm) for pts in strokes
-    ):
-        return True
-    # The courtyard's hollow interior is legal (the bottom-edge default sits
-    # over it on purpose), but a glyph still can't cross its own courtyard's
-    # border line -- see _stroke_crosses_stroke.
-    if own_box_pts and any(
-        _stroke_crosses_stroke(pts, own_box_pts, stroke_width_mm) for pts in strokes
-    ):
-        return True
-    # Yield to every OTHER part's body outline on this side, placed or not
-    # yet (`courtyard_ring`) -- the same precedence the pin-1 dot follows,
-    # and for the same reason: a label committed early was otherwise free
-    # to sit across a later part's outline and take the whole outline down
-    # with it. Measured on the 40mm fixture: C14's label alone cost R3 its
-    # courtyard AND its pin-1 mark.
     return any(
-        other != inst
-        and other_side == side_name
-        and any(_stroke_crosses_stroke(pts, ring, stroke_width_mm) for pts in strokes)
-        for other, (other_side, ring) in courtyard_ring.items()
+        _stroke_overlaps_any_pad(pts, obstacles, stroke_width_mm) for pts in strokes
     )
 
 
@@ -2678,6 +3113,9 @@ def build_silk(
     # courtyard sits off its own pads, and each pad becomes the mask
     # OPENING every clearance test below actually runs against.
     clearance_mm = silk_clearance_mm(capability, stroke_width_mm=stroke_width_mm)
+    _floor_mm, target_mm = outline_offsets_mm(
+        capability, stroke_width_mm=stroke_width_mm
+    )
     pads = _mask_openings(pads, capability)
 
     # Resolved ONCE, same as `clearance_mm` above: `None` when the caller
@@ -2741,25 +3179,20 @@ def build_silk(
     # precedence whichever order the parts happen to come in: an outline is
     # the larger and far less relocatable mark, and a dot has seven other
     # directions and three distances still to try.
-    courtyard_ring: dict[int, tuple[str, list[Point]]] = {}
-    for other in placed:
-        ring_local = instance_courtyard_polygon(
-            ir, other, clearance_mm=clearance_mm, pins=pins_of_inst.get(other, [])
-        )
-        if not ring_local:
-            continue
-        other_rot = float(ir.inst_rot[other])
-        other_side = _side_for(sides, str(ir.instance_refdes[other]))
-        courtyard_ring[other] = (
-            other_side,
-            _place(
-                ring_local,
-                cx=float(ir.inst_x[other]),
-                cy=float(ir.inst_y[other]),
-                rot=0.0 if math.isnan(other_rot) else other_rot,
-                mirror=other_side == "bottom",
-            ),
-        )
+    #
+    # The rings themselves come from `part_outlines` (gr495393): settled
+    # against every other part and the board edge at once, never clipped
+    # by other silk afterwards.
+    outlines = part_outlines(
+        ir,
+        capability=capability,
+        stroke_width_mm=stroke_width_mm,
+        instance_sides=sides,
+        outline=outline_ring,
+    )
+    courtyard_ring: dict[int, tuple[str, list[Point]]] = {
+        inst: (o.side, o.ring) for inst, o in outlines.items()
+    }
 
     # One label spot per aligned row/column of identical parts, chosen
     # BEFORE the loop. Placement is greedy per part, so without this the
@@ -2781,7 +3214,7 @@ def build_silk(
             (float(ir.inst_x[inst]), float(ir.inst_y[inst])),
             _place(
                 instance_courtyard_polygon(
-                    ir, inst, clearance_mm=clearance_mm, pins=pins_of_inst.get(inst, [])
+                    ir, inst, clearance_mm=target_mm, pins=pins_of_inst.get(inst, [])
                 ),
                 cx=0.0,
                 cy=0.0,
@@ -2790,6 +3223,7 @@ def build_silk(
             ),
         )
     seed_obstacles = {side: list(obs) for side, obs in obstacles_by_side.items()}
+    ring_geoms = _ring_geoms(courtyard_ring)
     for group in _aligned_label_groups(label_shapes):
         group_side = label_shapes[group[0]][0]
         cands = {
@@ -2803,17 +3237,16 @@ def build_silk(
             )
             for m in group
         }
-        for k, (spot, *_rest) in enumerate(cands[group[0]]):
+        for k, (spot, *_rest, tier) in enumerate(cands[group[0]]):
+            if tier == "inside":
+                # A shared spot is a tidiness choice; a covered label is
+                # never chosen for tidiness.
+                break
             boxes: list[list[Point]] = []
             for m in group:
                 cand = cands[m][k]
                 corners = cand[2]
-                if any(
-                    other != m
-                    and other_side == group_side
-                    and convex_polygons_overlap(corners, ring)
-                    for other, (other_side, ring) in courtyard_ring.items()
-                ) or any(convex_polygons_overlap(corners, b) for b in boxes):
+                if any(convex_polygons_overlap(corners, b) for b in boxes):
                     break
                 if _label_blocked(
                     corners,
@@ -2826,11 +3259,11 @@ def build_silk(
                     ),
                     inst=m,
                     side_name=group_side,
+                    tier=tier,
                     obstacles=seed_obstacles[
                         "bottom" if group_side == "bottom" else "top"
                     ],
-                    own_box_pts=courtyard_ring[m][1],
-                    courtyard_ring=courtyard_ring,
+                    rings=ring_geoms,
                     outline_ring=outline_ring,
                     edge_margin_mm=edge_margin_mm,
                     stroke_width_mm=stroke_width_mm,
@@ -2857,38 +3290,69 @@ def build_silk(
 
         pins = pins_of_inst.get(inst, [])
         # Empty for a pinless instance (mounting hole, fiducial) — no land
-        # pattern, so no courtyard, rather than an invented size.
+        # pattern, so no courtyard, rather than an invented size. The
+        # undeformed target-offset polygon: it sizes and keys the pin-1 dot
+        # and label searches, so identical parts get identical offsets
+        # however their neighbours bent their drawn outlines.
         box_local = instance_courtyard_polygon(
-            ir, inst, clearance_mm=clearance_mm, pins=pins
+            ir, inst, clearance_mm=target_mm, pins=pins
         )
 
-        # 1) courtyard/body outline -- checked against everything committed
-        # so far (external pads/vias/reserved AND prior parts' own silk),
-        # but not yet folded into `side_obstacles` itself: the pin-1 tick
-        # below is designed to touch this SAME courtyard's own corner, so
-        # that check must still see the pre-courtyard obstacle set.
+        # 1) courtyard/body outline -- `part_outlines` already settled its
+        # shape against the other parts and the board edge, so it is only
+        # checked against COPPER and board furniture (the seed obstacles:
+        # pads, this side's vias, `reserved`), never against silk committed
+        # by an earlier part (gr495393: that is what cut U2's outline).
+        # Never folded into `side_obstacles`: later silk checks the rings
+        # exactly (`ring_geoms`), and the pin-1 tick below is designed to
+        # touch this SAME outline's own corner.
         courtyard_kept = False
-        courtyard_obstacle: dict[str, Any] | None = None
         box_pts: list[Point] = []
-        if box_local:
-            box_pts = _place(box_local, cx=cx, cy=cy, rot=rot, mirror=mirror)
-            hit = _stroke_hits(box_pts, side_obstacles, stroke_width_mm)
+        part_outline = outlines.get(inst)
+        if box_local and part_outline is not None:
+            box_pts = part_outline.ring
+            hard = seed_obstacles["bottom" if mirror else "top"]
+            hit = None
+            runs: list[list[Point]] = []
+            kept_mm = 0.0
             # A whole outline is not lost to one via. Break it around
             # whatever it meets and keep the rest -- what a real silk
             # generator emits, and what the fab would have trimmed to
             # anyway (`_clip_polyline`). Only a courtyard with too little
             # left to read as an outline still drops.
-            runs, kept_mm, total_mm = (
-                ([box_pts], 1.0, 1.0)
-                if hit is None
-                else _clip_polyline(
-                    box_pts,
-                    _near_obstacles(side_obstacles, box_pts, 2.0 * stroke_width_mm),
+            for run in part_outline.runs:
+                run_hit = _stroke_hits(run, hard, stroke_width_mm)
+                if run_hit is None:
+                    runs.append(run)
+                    kept_mm += _polyline_length(run)
+                    continue
+                hit = hit or run_hit
+                pieces, kept, _total = _clip_polyline(
+                    run,
+                    _near_obstacles(hard, run, 2.0 * stroke_width_mm),
                     stroke_width_mm,
                 )
-            )
-            if hit is not None and (
-                total_mm <= 0 or kept_mm / total_mm < _COURTYARD_MIN_KEPT_FRACTION
+                runs += pieces
+                kept_mm += kept
+            # What the outline draws on a bare board: the ring less the
+            # designed board-edge gap. The share kept is measured against
+            # this, so an edge connector's gap never counts as loss.
+            designed_mm = _polyline_length(box_pts) - part_outline.edge_open_mm
+            causes = []
+            if hit is not None:
+                causes.append(f"overlaps {_obstacle_label(hit)}")
+            if part_outline.meets:
+                causes.append(
+                    "lies on or inside the outline of "
+                    + ", ".join(part_outline.meets)
+                    + " (drawn first)"
+                )
+            if not runs or (
+                causes
+                and (
+                    designed_mm <= 0
+                    or kept_mm / designed_mm < _COURTYARD_MIN_KEPT_FRACTION
+                )
             ):
                 census.append(
                     SilkPlacement(
@@ -2897,10 +3361,14 @@ def build_silk(
                         side=side_name,
                         outcome="dropped",
                         reason=(
-                            "courtyard outline overlaps "
-                            f"{_obstacle_label(hit)}, leaving too little to read "
-                            f"as an outline ({kept_mm:.2f} of {total_mm:.2f}mm) "
-                            "-- dropped"
+                            "courtyard outline "
+                            + (
+                                " and ".join(causes)
+                                if causes
+                                else "lies wholly inside the board's silk edge margin"
+                            )
+                            + f", leaving too little to read as an outline "
+                            f"({kept_mm:.2f} of {designed_mm:.2f}mm) -- dropped"
                         ),
                         stroke_width_mm=stroke_width_mm,
                     )
@@ -2910,26 +3378,35 @@ def build_silk(
                     bucket.append(
                         _draw(run, stroke_width_mm, role="outline", refdes=refdes)
                     )
-                courtyard_obstacle = obstacle_from_bbox(
-                    box_pts, label=f"{refdes} courtyard silk"
-                )
                 courtyard_kept = True
+                notes = []
+                if part_outline.edge_cut:
+                    notes.append(
+                        "courtyard outline opened at the board edge "
+                        f"({part_outline.edge_open_mm:.2f}mm left open to keep "
+                        "silk inside the edge margin)"
+                    )
+                if part_outline.meets:
+                    notes.append(
+                        "courtyard outline leaves out the stretch on or inside "
+                        "the outline of " + ", ".join(part_outline.meets)
+                    )
+                if hit is not None:
+                    notes.append(
+                        f"courtyard outline broken around {_obstacle_label(hit)}"
+                    )
+                if causes:
+                    notes.append(
+                        f"{len(runs)} piece(s) drawn "
+                        f"({kept_mm:.2f} of {designed_mm:.2f}mm kept)"
+                    )
                 census.append(
                     SilkPlacement(
                         refdes=refdes,
                         kind="courtyard",
                         side=side_name,
-                        outcome="placed" if hit is None else "relocated",
-                        reason=(
-                            None
-                            if hit is None
-                            else (
-                                "courtyard outline broken around "
-                                f"{_obstacle_label(hit)} and "
-                                f"{len(runs)} piece(s) drawn "
-                                f"({kept_mm:.2f} of {total_mm:.2f}mm kept)"
-                            )
-                        ),
+                        outcome="relocated" if notes else "placed",
+                        reason="; ".join(notes) or None,
                         stroke_width_mm=stroke_width_mm,
                     )
                 )
@@ -3036,12 +3513,16 @@ def build_silk(
                     continue
                 # Yield to every OTHER part's body outline on this side,
                 # whether or not that part has been processed yet (see
-                # `courtyard_ring`).
+                # `courtyard_ring`): neither on its line nor inside it.
+                dot = _ShapelyPoint(dcx, dcy)
+                reach = dia / 2.0 + stroke_width_mm / 2.0
                 if any(
                     other != inst
-                    and other_side == side_name
-                    and _stroke_crosses_stroke(candidate, ring, dia)
-                    for other, (other_side, ring) in courtyard_ring.items()
+                    and geom.side == side_name
+                    and geom.bounds[0] - reach <= dcx <= geom.bounds[2] + reach
+                    and geom.bounds[1] - reach <= dcy <= geom.bounds[3] + reach
+                    and geom.area.distance(dot) <= reach
+                    for other, geom in ring_geoms.items()
                 ):
                     continue
                 dot_pts, dot_dia = candidate, dia
@@ -3074,12 +3555,14 @@ def build_silk(
                 # mark for the reasons above, but it still says WHICH
                 # corner to a reader who knows to look for it, and that
                 # beats dropping the marker entirely.
-                tick_local = _pin1_tick(ir, pin1, box_local, stroke_width_mm)
-                tick_pts = (
-                    _place(tick_local, cx=cx, cy=cy, rot=rot, mirror=mirror)
-                    if tick_local
-                    else []
-                )
+                pin1_xy = _place(
+                    [(float(ir.pin_dx[pin1]), float(ir.pin_dy[pin1]))],
+                    cx=cx,
+                    cy=cy,
+                    rot=rot,
+                    mirror=mirror,
+                )[0]
+                tick_pts = _pin1_tick(pin1_xy, box_pts, stroke_width_mm)
                 tick_hit = (
                     _stroke_hits(tick_pts, side_obstacles, stroke_width_mm)
                     if tick_pts
@@ -3165,18 +3648,12 @@ def build_silk(
         # where the label sits relative to its footprint still tracks the
         # footprint; the letters themselves never do.
         #
-        # `side_obstacles` still does NOT include this instance's OWN
-        # courtyard here, deliberately: the courtyard is a hollow outline
-        # (four border lines), and its bounding box is a solid-rect
-        # obstacle once folded in (same "conservative, never under-flag"
-        # approximation every other obstacle here uses) -- correct for a
-        # FOREIGN part's courtyard (a component's whole footprint is real
-        # keep-out for someone else's silk) but wrong for THIS part's own
-        # default candidate, which is deliberately allowed to sit over its
-        # own courtyard (the bottom-edge convention's whole point -- see
-        # `_bottom_edge_candidates`). Folded in right after this loop, once
-        # this instance's own label search is done, so every later
-        # instance still treats it as solid.
+        # Spots and their order are gr495394's (`_label_candidates`); every
+        # outline on this side, placed or not yet, is checked exactly
+        # (`_label_blocked` against `ring_geoms`), so a part's outline never
+        # needs folding into `side_obstacles` as a solid bounding box -- a
+        # box that, on a rotated or neighbour-bent outline, blocked label
+        # spots the outline itself leaves free.
         box_board = (
             _place(box_local, cx=0.0, cy=0.0, rot=rot, mirror=mirror)
             if box_local
@@ -3193,34 +3670,16 @@ def build_silk(
         )
         default_spot = candidates[0][0]
         shared_k, shared_spot, group_size = group_spot.get(inst, (-1, "", 0))
-
-        scored: list[tuple[int, _LabelCandidate]] = []
-        for k, cand in enumerate(candidates):
-            spot, _anchor, corners, _h, _v, is_ladder = cand
-            # Tile-neighbour bleed (round-5 review item 3): a candidate
-            # whose bbox overlaps ANY OTHER instance's courtyard is tried
-            # LAST among the radial ladder, never hard-rejected -- a dense
-            # board still needs the label to land SOMEWHERE even when
-            # every legal spot happens to sit over a neighbour's body.
-            # Only the ladder is reordered: the bottom-edge candidates key
-            # off this instance's OWN hull, never a neighbour's, so they
-            # never need deprioritizing. Both convex (the courtyard is a
-            # hull), so `convex_polygons_overlap` is exact, not sampled.
-            bleeds = is_ladder and any(
-                other != inst
-                and other_side == side_name
-                and convex_polygons_overlap(corners, ring)
-                for other, (other_side, ring) in courtyard_ring.items()
-            )
-            # The aligned group's shared spot goes first, ahead of even the
-            # default; the rest keep their order, non-bleeding first. Matched
-            # by index: group members share one candidate list.
-            scored.append((0 if k == shared_k else 1 + bleeds, cand))
-        scored.sort(key=lambda item: item[0])  # stable within each rank
+        # The aligned group's shared spot goes first, ahead of even the
+        # default; the rest keep their order. Matched by index: group
+        # members share one candidate list.
+        scored = sorted(
+            enumerate(candidates), key=lambda item: 0 if item[0] == shared_k else 1
+        )
 
         placed_text = False
-        for _rank, cand in scored:
-            spot, _anchor, corners, _h, _v, _ladder = cand
+        for _k, cand in scored:
+            spot, _anchor, corners, _h, _v, tier = cand
             if _label_blocked(
                 corners,
                 functools.partial(
@@ -3228,9 +3687,9 @@ def build_silk(
                 ),
                 inst=inst,
                 side_name=side_name,
+                tier=tier,
                 obstacles=side_obstacles,
-                own_box_pts=box_pts if courtyard_kept else None,
-                courtyard_ring=courtyard_ring,
+                rings=ring_geoms,
                 outline_ring=outline_ring,
                 edge_margin_mm=edge_margin_mm,
                 stroke_width_mm=stroke_width_mm,
@@ -3244,6 +3703,7 @@ def build_silk(
             placed_text = True
             label_x = min(p[0] for p in corners)
             label_y = min(p[1] for p in corners)
+            covered = tier == "inside"
             if spot != default_spot:
                 shared = (
                     f", the spot its aligned row of {group_size} identical parts shares"
@@ -3253,21 +3713,27 @@ def build_silk(
                     if group_size
                     else ""
                 )
+                reason = (
+                    "refdes label placed INSIDE its own outline -- no spot "
+                    "outside it is clear of pads, vias, outlines and other "
+                    f"labels, so the part will cover it (drawn at {spot})"
+                    if covered
+                    else f"refdes label moved off the default {default_spot} "
+                    "spot to clear a pad, a via, an outline or silk already "
+                    f"committed (drawn at {spot}{shared})"
+                )
                 census.append(
                     SilkPlacement(
                         refdes=refdes,
                         kind="refdes",
                         side=side_name,
                         outcome="relocated",
-                        reason=(
-                            "refdes label moved off the default bottom-edge spot "
-                            "to clear a pad, a via, or silk already committed "
-                            f"(drawn at {spot}{shared})"
-                        ),
+                        reason=reason,
                         stroke_width_mm=stroke_width_mm,
                         height_mm=height_mm,
                         x_mm=label_x,
                         y_mm=label_y,
+                        covered=covered,
                     )
                 )
             else:
@@ -3292,20 +3758,14 @@ def build_silk(
                     side=side_name,
                     outcome="dropped",
                     reason=(
-                        "refdes label dropped -- every candidate placement "
-                        "overlaps a pad, a via, or silk already committed"
+                        "refdes label dropped -- every candidate placement, "
+                        "inside its outline included, overlaps a pad, a via, "
+                        "an outline or silk already committed"
                     ),
                     stroke_width_mm=stroke_width_mm,
                     height_mm=height_mm,
                 )
             )
-
-        # NOW fold this instance's own courtyard in as a solid obstacle
-        # (see the comment above the refdes-label loop) -- every instance
-        # processed after this one, on this side, must treat the whole
-        # footprint as real keep-out.
-        if courtyard_obstacle is not None:
-            side_obstacles.append(courtyard_obstacle)
 
     dropped, relocated = _prose_from_census(census)
     return SilkResult(

@@ -10,6 +10,7 @@ answers:
   - how do I order a board at JLCPCB (view='fab', op='order')?
   - how do I check BOM stock and lifecycle before ordering (view='availability')?
   - how do I hand board outline + heights to a cad enclosure?
+  - where does a part's refdes label go, and why is a silk outline open at the board edge?
 applies-to: get/put (kind='pcb'); see also kind='cad', kind='part'
 status: active
 tags: [design]
@@ -49,6 +50,31 @@ A board with DRC errors still exports, so you can look at it, but the
 response opens with a `DRC FAILED` block naming the error count, the rules
 and the first findings. Do not send that bundle to a fab: fix the board and
 re-export until the first line reads `DRC: 0 errors`.
+
+**Silkscreen is generated, not authored.** Each part gets one closed
+outline drawn two silk line widths clear of its own pads. Close
+neighbours bend their outlines toward each other but keep two line widths
+apart, or share one wall. An edge-mated part whose outline would cross
+the board edge gets one clean gap at the edge. A routed via on an
+outline breaks it there (silk never prints on copper). The refdes label
+goes **outside** the outline, two line widths clear of every outline and
+never on a pad, via or other label.
+Spots are tried in this fixed order, in board orientation (corners sit
+just past that side of the outline, flush with its left or right edge):
+
+1. bottom-left (the default)
+2. bottom-right
+3. top-left
+4. top-right
+5. left
+6. right
+7. top
+8. bottom
+
+Past those it tries spots further out. Only when nothing outside fits
+does it go inside the outline; DRC then warns `silk_label_covered`
+("label will be covered", naming the part). Make room beside that part.
+No spot at all is `silk_missing`.
 
 `view='route'` runs the place↔route hand-off: place → `.dsn` →
 Freerouting → on an incomplete route, re-place (more iters) and re-route,

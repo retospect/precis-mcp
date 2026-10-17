@@ -46,7 +46,7 @@ SEED = 1
 #: stackup pours In1/In2); ``connectivity`` is the 11 of them left with
 #: partial copper (gr488909: the 18 with none are the ``unrouted``
 #: question only, not a second error per net), ``silk_missing`` is
-#: 36 refdes labels with no legal spot, and the warn tier is real margin
+#: 35 refdes labels with no legal spot, and the warn tier is real margin
 #: spend (clearance 0.100 vs required 0.150 mm, board-edge). Zero errors
 #: alone would NOT satisfy the authored requirements here (doc Blockers
 #: §3 residue: the shared router clearance is one value, so per-net
@@ -63,17 +63,20 @@ SEED = 1
 #: — tighten the constant in the same commit. Loosening any floor needs
 #: Reto's ruling. gr489909: seeds 1-8 route 30-37 (mean 34.5) under the
 #: post-PIN_SWAP mix, and 38 was seed luck.
+#:
+#: Tightened 2026-10-17 (gr495393/gr495394): one closed outline per part,
+#: an edge gap for J_USB, labels outside outlines on a 4x16 ladder took
+#: silk_missing 36 -> 35, silk_edge_clearance 1 -> 0 errors and 3 -> 1
+#: warns, outline_containment 1 -> 0.
 BASELINE_DRC_ERRORS_BY_RULE: dict[str, int] = {
     "connectivity": 11,
     "unrouted": 29,
-    "outline_containment": 1,
-    "silk_edge_clearance": 1,
-    "silk_missing": 36,
+    "silk_missing": 35,
 }
 BASELINE_DRC_WARNS_BY_RULE: dict[str, int] = {
     "clearance": 9,
     "board_edge_clearance": 2,
-    "silk_edge_clearance": 3,
+    "silk_edge_clearance": 1,
 }
 BASELINE_DRC_ERRORS = sum(BASELINE_DRC_ERRORS_BY_RULE.values())
 BASELINE_DRC_WARNS = sum(BASELINE_DRC_WARNS_BY_RULE.values())

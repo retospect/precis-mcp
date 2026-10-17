@@ -55,17 +55,17 @@ SEED = 1
 #: measured 35/72, 106 errors, 15 warnings. Zero errors alone would NOT
 #: satisfy the authored requirements (doc Blockers §3: the shared router
 #: clearance is one value, so per-net shortfalls land as warnings).
+#: Tightened 2026-10-17 (gr495393/gr495394): silk_missing 54 -> 51,
+#: silk_edge_clearance 3 -> 0 errors and 1 -> 0 warns,
+#: outline_containment 2 -> 0.
 BASELINE_DRC_ERRORS_BY_RULE: dict[str, int] = {
     "connectivity": 10,
     "unrouted": 37,
-    "outline_containment": 2,
-    "silk_edge_clearance": 3,
-    "silk_missing": 54,
+    "silk_missing": 51,
 }
 BASELINE_DRC_WARNS_BY_RULE: dict[str, int] = {
     "clearance": 11,
     "board_edge_clearance": 3,
-    "silk_edge_clearance": 1,
 }
 BASELINE_DRC_ERRORS = sum(BASELINE_DRC_ERRORS_BY_RULE.values())
 BASELINE_DRC_WARNS = sum(BASELINE_DRC_WARNS_BY_RULE.values())

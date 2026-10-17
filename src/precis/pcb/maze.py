@@ -533,6 +533,14 @@ class OccupancyGrid:
         #: (:meth:`register_via`): the via search keeps a new via off these
         #: as it keeps off pads, net-blind (two holes, same net or not).
         self._vias: list[tuple[float, float, float]] = []
+        #: ``(polyline, margin_mm)`` lines a via's COPPER edge must stay
+        #: ``margin_mm`` off — part-outline silk (gr495393, Reto: vias must
+        #: not land on outline silk; :func:`precis.pcb.silk.
+        #: outline_via_keepouts`). Net-blind and layer-blind like the pad
+        #: keep-out, read by the same two queries.
+        self._via_keepout_lines: list[
+            tuple[tuple[tuple[float, float], ...], float]
+        ] = []
         #: Bumped by :meth:`register_via`, which mutates cached keep-out
         #: masks in place; :meth:`route` asserts it did not move during a
         #: search, so a mid-search registration fails loudly instead of
@@ -919,6 +927,39 @@ class OccupancyGrid:
             )
         )
 
+    def add_via_keepout_line(
+        self, points: Iterable[tuple[float, float]], margin_mm: float
+    ) -> None:
+        """Keep every later via's copper ``margin_mm`` off this polyline
+        (:attr:`_via_keepout_lines`). Cached keep-out masks are dropped:
+        lines are claimed before any search, never during one."""
+        line = tuple((float(x), float(y)) for x, y in points)
+        if len(line) >= 2:
+            self._via_keepout_lines.append((line, float(margin_mm)))
+            self._pad_keepout_cache.clear()
+
+    def _clears_keepout_lines(self, x: float, y: float, via_radius_mm: float) -> bool:
+        for line, margin in self._via_keepout_lines:
+            reach = via_radius_mm + margin
+            for (ax, ay), (bx, by) in itertools.pairwise(line):
+                if (
+                    x < min(ax, bx) - reach
+                    or x > max(ax, bx) + reach
+                    or y < min(ay, by) - reach
+                    or y > max(ay, by) + reach
+                ):
+                    continue
+                ex, ey = bx - ax, by - ay
+                seg2 = ex * ex + ey * ey
+                t = (
+                    0.0
+                    if seg2 < 1e-12
+                    else min(1.0, max(0.0, ((x - ax) * ex + (y - ay) * ey) / seg2))
+                )
+                if math.hypot(x - (ax + t * ex), y - (ay + t * ey)) < reach:
+                    return False
+        return True
+
     def via_clears_pads(self, x: float, y: float, via_radius_mm: float) -> bool:
         """May a via of this (undilated) copper radius be centred at
         ``(x, y)`` without landing on, or crowding, ANY claimed pad —
@@ -950,7 +991,7 @@ class OccupancyGrid:
         for px, py, pr in (*self._pads, *self._vias):
             if math.hypot(x - px, y - py) - via_radius_mm - pr < self.clearance_mm:
                 return False
-        return True
+        return self._clears_keepout_lines(x, y, via_radius_mm)
 
     def register_via(self, x: float, y: float, radius_mm: float) -> None:
         """Record a committed via so later via candidates clear it, net-blind.
@@ -981,6 +1022,9 @@ class OccupancyGrid:
         (``route`` only ORs it into a fresh one)."""
         n = len(self._pads)
         key = (via_radius_mm, n)
+        # Keep-out lines are claimed before any search and clear the
+        # cache themselves (`add_via_keepout_line`), so the pad count
+        # still completes the key.
         hit = self._pad_keepout_cache.get(key)
         if hit is not None:
             return hit
@@ -996,7 +1040,43 @@ class OccupancyGrid:
         mask = np.zeros((self.spec.ny, self.spec.nx), dtype=bool)
         for px, py, pr in (*self._pads, *self._vias):
             self._or_keepout_disk(mask, px, py, via_radius_mm + pr + self.clearance_mm)
+        for line, margin in self._via_keepout_lines:
+            self._or_keepout_band(mask, line, via_radius_mm + margin)
         return mask
+
+    def _or_keepout_band(
+        self,
+        mask: np.ndarray,
+        line: tuple[tuple[float, float], ...],
+        radius_mm: float,
+    ) -> None:
+        """OR into ``mask`` every cell centre STRICTLY within ``radius_mm``
+        of open polyline ``line`` — the vectorised form of
+        :meth:`_clears_keepout_lines`, windowed to the line's bbox."""
+        spec = self.spec
+        xs = [p[0] for p in line]
+        ys = [p[1] for p in line]
+        lo_x = max(0, math.floor((min(xs) - radius_mm - spec.x0) / spec.pitch))
+        hi_x = min(spec.nx - 1, math.ceil((max(xs) + radius_mm - spec.x0) / spec.pitch))
+        lo_y = max(0, math.floor((min(ys) - radius_mm - spec.y0) / spec.pitch))
+        hi_y = min(spec.ny - 1, math.ceil((max(ys) + radius_mm - spec.y0) / spec.pitch))
+        if lo_x > hi_x or lo_y > hi_y:
+            return
+        gx, gy = np.meshgrid(
+            spec.x0 + np.arange(lo_x, hi_x + 1) * spec.pitch,
+            spec.y0 + np.arange(lo_y, hi_y + 1) * spec.pitch,
+        )
+        best = np.full(gx.shape, np.inf)
+        for (ax, ay), (bx, by) in itertools.pairwise(line):
+            ex, ey = bx - ax, by - ay
+            seg2 = ex * ex + ey * ey
+            if seg2 < 1e-12:
+                d = np.hypot(gx - ax, gy - ay)
+            else:
+                t = np.clip(((gx - ax) * ex + (gy - ay) * ey) / seg2, 0.0, 1.0)
+                d = np.hypot(gx - (ax + t * ex), gy - (ay + t * ey))
+            best = np.minimum(best, d)
+        mask[lo_y : hi_y + 1, lo_x : hi_x + 1] |= best < radius_mm
 
     def _or_keepout_disk(
         self, mask: np.ndarray, px: float, py: float, radius_mm: float

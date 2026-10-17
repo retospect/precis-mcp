@@ -19,7 +19,15 @@ from unittest import mock
 
 import pytest
 
-from precis.pcb import DEFAULT_STACKUP, gerber, gerber_view, realize, silk, stroke_font
+from precis.pcb import (
+    DEFAULT_STACKUP,
+    drc,
+    gerber,
+    gerber_view,
+    realize,
+    silk,
+    stroke_font,
+)
 from precis.pcb.capabilities import CapabilityRow, capability_for
 from precis.pcb.geom import convex_polygons_overlap, point_in_polygon
 from precis.pcb.ir import from_graph, instance_courtyard_polygon
@@ -188,6 +196,48 @@ def _refdes_hits_own_silk(draws: list[dict], stroke_width_mm: float) -> bool:
     return False
 
 
+def _spot_boxes(
+    ir, inst: int, refdes: str, *, height_mm: float = 1.0
+) -> dict[str, list[tuple[float, float]]]:
+    """Each :data:`silk.LABEL_SPOT_ORDER` spot's text box for one top-side,
+    unrotated part, in board mm -- where a fixture puts an obstacle to
+    block exactly that spot."""
+    stroke = gerber.DEFAULT_SILK_WIDTH_MM
+    target = silk.outline_offsets_mm(None, stroke_width_mm=stroke)[1]
+    local = instance_courtyard_polygon(
+        ir,
+        inst,
+        clearance_mm=target,
+        pins=[p for p in range(ir.n_pins) if int(ir.pin_instance[p]) == inst],
+    )
+    cx, cy = float(ir.inst_x[inst]), float(ir.inst_y[inst])
+    return {
+        spot: stroke_font.text_bbox_corners(
+            refdes,
+            anchor=(cx + ax, cy + ay),
+            height_mm=height_mm,
+            h_align=h,
+            v_align=v,
+        )
+        for (ax, ay), h, v, spot in silk._outline_spot_candidates(local, stroke)
+    }
+
+
+def _box_centre(box) -> tuple[float, float]:
+    return (
+        (min(p[0] for p in box) + max(p[0] for p in box)) / 2.0,
+        (min(p[1] for p in box) + max(p[1] for p in box)) / 2.0,
+    )
+
+
+def _pad_on(box, *, size: float | None = None) -> dict:
+    """A foreign pad over ``box`` (or a ``size`` square at its centre)."""
+    cx, cy = _box_centre(box)
+    w = size or max(p[0] for p in box) - min(p[0] for p in box)
+    h = size or max(p[1] for p in box) - min(p[1] for p in box)
+    return {"shape": "rect", "x": cx, "y": cy, "w": w, "h": h, "net": "FOREIGN"}
+
+
 # ── basic shape / no-overlap-with-nothing case ────────────────────────────
 def test_build_silk_places_refdes_courtyard_and_pin1_for_a_normal_part():
     ir = from_graph(_graph("U1", 16, x=10.0, y=5.0), stackup=DEFAULT_STACKUP)
@@ -241,33 +291,43 @@ def test_side_routes_to_the_bottom_bucket():
 
 
 # ── refdes lands within its part's extent (the default, centered case) ───
-def test_refdes_text_lands_within_the_part_extent_when_unobstructed():
+def test_refdes_lands_outside_its_outline_when_unobstructed():
+    """gr495394: the default spot is OUTSIDE the outline (bottom-left
+    corner), never over the part that will cover it, and the label keeps
+    two clear line widths off the outline's ink."""
     ir = from_graph(_graph("U2", 16, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
     result = build_silk(ir, pads=[])
     assert not result.relocated and not result.dropped
     refdes_draws = [d for d in result.draws["top"] if d["role"] == "refdes"]
     assert refdes_draws
     outline = next(d for d in result.draws["top"] if d["role"] == "outline")
-    reach = max(
-        abs(p) for seg in outline["segments"] for p in seg["start"] + seg["end"]
-    )
+    ring = [tuple(s["start"]) for s in outline["segments"]]
+    gap = (1.0 + silk.OUTLINE_GAP_STROKES) * gerber.DEFAULT_SILK_WIDTH_MM
     for d in refdes_draws:
         for seg in d["segments"]:
-            for x, y in (seg["start"], seg["end"]):
-                assert abs(x) <= reach + 1e-6
-                assert abs(y) <= reach + 1e-6
+            for pt in (seg["start"], seg["end"]):
+                assert not _point_in_polygon_independent(pt, ring)
+                assert (
+                    min(
+                        _point_to_segment_dist(pt, s["start"], s["end"])
+                        for s in outline["segments"]
+                    )
+                    >= gap - 1e-6
+                )
 
 
 # ── suppression: relocate, then drop ──────────────────────────────────────
-def test_refdes_relocates_when_the_default_center_spot_overlaps_a_pad():
+def test_refdes_relocates_when_the_default_spot_overlaps_a_pad():
     ir = from_graph(_graph("U3", 16, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
-    # a big pad sitting right on the part's centre -- the default candidate
-    # (centered on the part) cannot possibly clear it.
-    pads = [{"shape": "circle", "x": 0.0, "y": 0.0, "w": 3.0, "net": "FOREIGN"}]
+    # a pad sitting on the default (bottom-left) spot -- the label cannot
+    # land there and takes the next spot in the documented order.
+    pads = [_pad_on(_spot_boxes(ir, 0, "U3")["bottom-left"])]
     result = build_silk(ir, pads=pads)
     assert not result.dropped
     assert result.relocated
     assert any("U3" in msg for msg in result.relocated)
+    row = next(c for c in result.census if c.refdes == "U3" and c.kind == "refdes")
+    assert row.reason is not None and "drawn at bottom-right" in row.reason
     refdes_draws = [
         d for d in result.draws["top"] if d["role"] == "refdes" and d["refdes"] == "U3"
     ]
@@ -336,9 +396,9 @@ def _via_as_pad(via: dict) -> dict:
 
 def test_refdes_relocates_or_drops_when_a_via_sits_where_it_would_land():
     ir = from_graph(_graph("U9", 16, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
-    # a through via right on the part's centre -- the default candidate
-    # (centered on the part) cannot possibly clear it.
-    via = {"x": 0.0, "y": 0.0, "dia_mm": 3.0, "drill_mm": 0.3, "span": ["F.Cu", "B.Cu"]}
+    # a through via right on the default (bottom-left) spot.
+    cx, cy = _box_centre(_spot_boxes(ir, 0, "U9")["bottom-left"])
+    via = {"x": cx, "y": cy, "dia_mm": 1.0, "drill_mm": 0.3, "span": ["F.Cu", "B.Cu"]}
     result = build_silk(ir, pads=[], vias=[via])
     assert result.dropped or result.relocated
     assert any("U9" in msg for msg in (*result.dropped, *result.relocated))
@@ -388,15 +448,16 @@ def test_via_blocks_silk_only_on_the_side_its_barrel_reaches():
     )
     ir = from_graph(graph, stackup=DEFAULT_STACKUP)
     # Same span (reaches only the TOP layer, F.Cu -> In1.Cu) sitting under
-    # each instance's default label spot.
+    # each instance's default (bottom-left) label spot.
+    tx, ty = _box_centre(_spot_boxes(ir, 0, "UT")["bottom-left"])
     via_under_top = {
-        "x": 0.0,
-        "y": 0.0,
-        "dia_mm": 3.0,
+        "x": tx,
+        "y": ty,
+        "dia_mm": 1.0,
         "drill_mm": 0.3,
         "span": ["F.Cu", "In1.Cu"],
     }
-    via_under_bottom = {**via_under_top, "x": 20.0, "y": 0.0}
+    via_under_bottom = {**via_under_top, "x": tx + 20.0}
     result = build_silk(
         ir,
         pads=[],
@@ -427,18 +488,24 @@ def test_refdes_never_overlaps_its_own_courtyard_or_pin1_for_a_normal_part():
     assert not _refdes_hits_own_silk(result.draws["top"], gerber.DEFAULT_SILK_WIDTH_MM)
 
 
-def test_refdes_relocates_to_clear_its_own_courtyard_when_the_label_outgrows_the_part():
-    """A small part's courtyard can be smaller than a legible label at a
-    normal ``height_mm`` (the task brief's 0402 case) -- the centered
-    candidate (index 0) then collides with the part's OWN outline, not a
-    foreign pad/via, and the ladder must still walk to a clear spot rather
-    than drawing overlapping ink."""
+def test_a_label_bigger_than_its_part_still_clears_its_own_outline():
+    """A small part's outline can be smaller than a legible label at a
+    normal ``height_mm`` (the task brief's 0402 case). The default spot is
+    outside the outline (gr495394), so the label hangs below the part
+    instead of colliding with the part's OWN outline, and nothing is
+    drawn over it."""
     ir = from_graph(_graph("U1", 2, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
     result = build_silk(ir, pads=[], height_mm=5.0)
     assert not result.dropped
-    assert result.relocated
-    assert any("U1" in msg for msg in result.relocated)
+    row = next(c for c in result.census if c.kind == "refdes")
+    assert row.outcome in ("placed", "relocated") and not row.covered
     assert not _refdes_hits_own_silk(result.draws["top"], gerber.DEFAULT_SILK_WIDTH_MM)
+    outline = next(d for d in result.draws["top"] if d["role"] == "outline")
+    ring = [tuple(s["start"]) for s in outline["segments"]]
+    for d in result.draws["top"]:
+        if d["role"] == "refdes":
+            for seg in d["segments"]:
+                assert not _point_in_polygon_independent(seg["start"], ring)
 
 
 def test_refdes_relocates_or_drops_rather_than_overlap_its_own_pin1_marker():
@@ -509,9 +576,9 @@ def test_a_dense_cluster_never_overlaps_silk_across_different_parts():
 def test_processing_order_is_natural_refdes_order_not_array_order():
     """``ir``'s instance array lists C14 before C1 -- natural-refdes-order
     processing (module docstring) must still let C1 claim the contested
-    spot first: C1 keeps its body outline and its pin-1 mark, while C14 --
-    processed after, once C1's silk is already committed -- is the one
-    that has to give them up.
+    spot first: C1 keeps its body outline and its pin-1 mark whole, while
+    C14 -- drawn after -- is the one whose outline yields where the two
+    overlap.
 
     Stated as "who keeps their marks" rather than the older "C1's label
     stays at candidate 0". That detail stopped holding when the pin-1 dot
@@ -535,12 +602,16 @@ def test_processing_order_is_natural_refdes_order_not_array_order():
     )
     result = build_silk(ir, pads=[], polarized=frozenset({"C1", "C14"}))
     outcome = {(row.refdes, row.kind): row.outcome for row in result.census}
-    # C1 sorts first, so it keeps both marks...
+    reason = {(row.refdes, row.kind): row.reason for row in result.census}
+    # C1 sorts first, so it keeps both marks whole...
     assert outcome[("C1", "courtyard")] == "placed"
     assert outcome[("C1", "pin1")] == "placed"
-    # ...and C14, processed second against C1's committed silk, loses them.
-    assert outcome[("C14", "courtyard")] == "dropped"
-    assert outcome[("C14", "pin1")] == "dropped"
+    # ...and C14, drawn second, is the one that yields: its outline leaves
+    # out the stretch on or inside C1's (gr495393: overlapping parts read
+    # as one merged outline instead of crossing boxes; C1 never yields).
+    assert outcome[("C14", "courtyard")] in ("relocated", "dropped")
+    assert "outline of C1" in str(reason[("C14", "courtyard")])
+    assert "C14" not in str(reason[("C1", "courtyard")])
     # Both labels still print somewhere -- neither part goes unlabelled.
     assert outcome[("C1", "refdes")] in ("placed", "relocated")
     assert outcome[("C14", "refdes")] in ("placed", "relocated")
@@ -706,12 +777,20 @@ def test_courtyard_margin_still_notices_a_genuine_foreign_encroachment():
     ir.pin_dx[1], ir.pin_dy[1] = 0.5, 0.0  # the near pin, big pad
     ir.pin_w[1], ir.pin_h[1] = 1.0, 1.0
     # The part's own copper ends at pin A's outer pad edge; the courtyard
-    # boundary sits one fab chain further out. Derived, not hardcoded: the
+    # boundary sits one fab chain plus two line widths further out (the
+    # outline's target offset, gr495393). Derived, not hardcoded: the
     # chain is the thing under test, and a literal here would pass a
     # courtyard that had quietly stopped tracking it.
     pad_edge = 3.0 + 0.05
-    reach_new = pad_edge + silk_clearance_mm(
-        None, stroke_width_mm=gerber.DEFAULT_SILK_WIDTH_MM
+    reach_new = (
+        pad_edge
+        + silk.outline_offsets_mm(None, stroke_width_mm=gerber.DEFAULT_SILK_WIDTH_MM)[1]
+    )
+    assert silk.outline_offsets_mm(None, stroke_width_mm=gerber.DEFAULT_SILK_WIDTH_MM)[
+        1
+    ] == pytest.approx(
+        silk_clearance_mm(None, stroke_width_mm=gerber.DEFAULT_SILK_WIDTH_MM)
+        + 2.0 * gerber.DEFAULT_SILK_WIDTH_MM
     )
     own_pads = [
         {"shape": "rect", "x": 3.0, "y": 0.0, "w": 0.1, "h": 0.1, "net": "A"},
@@ -925,8 +1004,13 @@ def test_silk_must_clear_the_mask_opening_not_merely_the_bare_copper():
         {"shape": "rect", "x": -1.0, "y": 0.0, "w": 0.4, "h": 0.4, "net": "A"},
         {"shape": "rect", "x": 1.0, "y": 0.0, "w": 0.4, "h": 0.4, "net": "B"},
     ]
-    # The courtyard's top edge, and the band of ink around it.
-    top = 0.2 + silk_clearance_mm(with_mask, stroke_width_mm=stroke)
+    # The courtyard's top edge (the outline's target offset: the chain
+    # plus two line widths, gr495393 -- the same for both rows), and the
+    # band of ink around it.
+    assert silk.outline_offsets_mm(with_mask, stroke_width_mm=stroke) == pytest.approx(
+        silk.outline_offsets_mm(no_mask, stroke_width_mm=stroke)
+    )
+    top = 0.2 + silk.outline_offsets_mm(with_mask, stroke_width_mm=stroke)[1]
     ink_top = top + stroke / 2.0
     # Copper starting 0.01mm above the ink; its 0.05mm opening reaches
     # 0.04mm INTO it.
@@ -1150,7 +1234,17 @@ def test_bottom_side_text_still_mirrors():
     ]
     assert bottom_segs
     bottom_xs = sorted(p[0] for seg in bottom_segs for p in (seg["start"], seg["end"]))
-    assert bottom_xs == pytest.approx([-x for x in reversed(top_xs)], abs=1e-6)
+    # Both labels take the same board-frame spot (the bottom-left corner,
+    # gr495394), so the bottom one is the top one mirrored about the
+    # vertical centreline of that spot's text box.
+    row = next(c for c in top.census if c.kind == "refdes")
+    bottom_row = next(c for c in bottom.census if c.kind == "refdes")
+    assert bottom_row.x_mm == pytest.approx(row.x_mm, abs=1e-6)
+    assert row.x_mm is not None
+    box = stroke_font.text_bbox_corners("U1", anchor=(0.0, 0.0), height_mm=1.0)
+    span = 2.0 * row.x_mm + (max(p[0] for p in box) - min(p[0] for p in box))
+    assert bottom_xs == pytest.approx(sorted(span - x for x in top_xs), abs=1e-6)
+    assert bottom_xs != pytest.approx(top_xs, abs=1e-6)
 
 
 # heater-base-test's R0402 (prod pcb_local_footprints, 2026-10-02).
@@ -2217,16 +2311,12 @@ def test_the_refdes_ladder_starts_centred_and_walks_outward_right_first():
 
 
 def test_census_records_relocated_outcome_with_the_spot_it_settled_on():
-    """A relocated label must say WHERE it went, not just that it moved.
-    The ladder is 37 spots wide since 2026-08-30, so the bare ordinal it
-    used to report ("candidate 17") named nothing a reader could picture
-    -- the ring and bearing do."""
+    """A relocated label must say WHERE it went, not just that it moved:
+    a :data:`silk.LABEL_SPOT_ORDER` spot by name, or a ladder ring and
+    bearing -- never a bare ordinal a reader cannot picture."""
     ir = from_graph(_graph("TP3", 16, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
-    # A tall pad covering the over-box AND below-box bands, plus the
-    # radial ladder's own dead-centre default, forces a genuine ring
-    # position -- narrower obstacles now settle on the below-box
-    # fallback instead (see test_refdes_hangs_below_the_box_...), which
-    # says WHERE it went too, just not with "ring" in the message.
+    # A tall pad covering the whole band below the part (both bottom
+    # corners and the bottom side) moves the label to the top-left corner.
     pads = [
         {"shape": "rect", "x": 0.0, "y": -1.75, "w": 4.0, "h": 4.6, "net": "FOREIGN"}
     ]
@@ -2235,7 +2325,7 @@ def test_census_records_relocated_outcome_with_the_spot_it_settled_on():
         c for c in result.census if c.refdes == "TP3" and c.kind == "refdes"
     )
     assert refdes_row.outcome == "relocated"
-    assert refdes_row.reason is not None and "ring" in refdes_row.reason
+    assert refdes_row.reason is not None and "drawn at top-left" in refdes_row.reason
     assert f"TP3: {refdes_row.reason}" in result.relocated
 
 
@@ -2330,220 +2420,139 @@ def test_pin1_dot_still_places_correctly_for_a_two_pad_part():
     assert not point_in_polygon((dx, dy), poly)
 
 
-def test_refdes_bottom_edge_matches_the_courtyard_bottom_for_a_rectangular_part():
-    """Round-5 review item 2: the default refdes candidate is now
-    bottom-center, not dead-center -- the label's rendered bottom edge
-    collinear with the courtyard's own bottom edge (to a stroke
-    tolerance, ``silk._BOTTOM_EDGE_INSET_STROKES`` -- an exactly-coincident
-    baseline would self-collide with the courtyard's own outline stroke),
-    horizontally centred on a symmetric (rectangular) hull."""
-    ir = from_graph(_graph("U20", 16, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
-    result = build_silk(ir, pads=[])
-    row = next(c for c in result.census if c.kind == "refdes")
-    assert row.outcome == "placed"  # the bottom-edge default, unobstructed
-    poly = instance_courtyard_polygon(
-        ir,
-        0,
-        clearance_mm=silk_clearance_mm(
-            None, stroke_width_mm=gerber.DEFAULT_SILK_WIDTH_MM
-        ),
-        pins=list(range(ir.n_pins)),
+def _label_points(result, refdes: str, side: str = "top") -> list[tuple[float, float]]:
+    return [
+        tuple(pt)
+        for d in result.draws[side]
+        if d["role"] == "refdes" and d["refdes"] == refdes
+        for seg in d["segments"]
+        for pt in (seg["start"], seg["end"])
+    ]
+
+
+def _outline_bbox(result, refdes: str) -> tuple[float, float, float, float]:
+    pts = [
+        pt
+        for d in result.draws["top"]
+        if d["role"] == "outline" and d["refdes"] == refdes
+        for seg in d["segments"]
+        for pt in (seg["start"], seg["end"])
+    ]
+    return (
+        min(p[0] for p in pts),
+        min(p[1] for p in pts),
+        max(p[0] for p in pts),
+        max(p[1] for p in pts),
     )
-    courtyard_min_y = min(p[1] for p in poly)
-    courtyard_x0, courtyard_x1 = min(p[0] for p in poly), max(p[0] for p in poly)
-
-    refdes_draws = [d for d in result.draws["top"] if d["role"] == "refdes"]
-    xs = [
-        pt[0]
-        for d in refdes_draws
-        for seg in d["segments"]
-        for pt in (seg["start"], seg["end"])
-    ]
-    ys = [
-        pt[1]
-        for d in refdes_draws
-        for seg in d["segments"]
-        for pt in (seg["start"], seg["end"])
-    ]
-    # Bottom of text == bottom of box, within a few stroke widths.
-    tolerance = gerber.DEFAULT_SILK_WIDTH_MM * 3.0
-    assert min(ys) == pytest.approx(courtyard_min_y, abs=tolerance)
-    # Horizontally centred on the (symmetric) hull's own centre.
-    centre = (courtyard_x0 + courtyard_x1) / 2.0
-    assert (min(xs) + max(xs)) / 2.0 == pytest.approx(centre, abs=0.5)
 
 
-def test_refdes_bottom_edge_matches_the_courtyard_bottom_for_an_asymmetric_hull():
-    """Same convention, on a hull that is NOT centred on the instance's
-    own origin (a connector/TO-220-shaped part, round-5 review's own
-    example) -- keyed to the courtyard's LITERAL ``min(x)``/``max(x)``,
-    not a support-function reach from the origin, so the horizontal
-    centre tracks the real, off-centre hull rather than assuming
-    symmetry."""
+@pytest.mark.parametrize("shifted", [False, True])
+def test_refdes_default_is_flush_left_below_the_outlines_literal_bottom_left(shifted):
+    """gr495394's default spot, keyed to the outline's LITERAL bounding box
+    (not a support reach from the part origin): the label's box is flush
+    with the outline's left edge and hangs two clear line widths below its
+    bottom edge. ``shifted`` moves one pin column right so the outline is
+    no longer centred on the origin (a connector/TO-220-shaped part)."""
     ir = from_graph(_graph("J1", 8, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
-    # Shift the whole right column further right: still a clean rectangle,
-    # but no longer centred at x=0 -- an asymmetric hull without the
-    # self-intersecting notch a single-pin shift would add.
-    for pid in (4, 5, 6, 7):
-        ir.pin_dx[pid] = float(ir.pin_dx[pid]) + 2.0
-
+    if shifted:
+        for pid in (4, 5, 6, 7):
+            ir.pin_dx[pid] = float(ir.pin_dx[pid]) + 2.0
     result = build_silk(ir, pads=[])
     row = next(c for c in result.census if c.kind == "refdes")
-    assert row.outcome == "placed"
-    poly = instance_courtyard_polygon(
-        ir,
-        0,
-        clearance_mm=silk_clearance_mm(
-            None, stroke_width_mm=gerber.DEFAULT_SILK_WIDTH_MM
-        ),
-        pins=list(range(ir.n_pins)),
+    assert row.outcome == "placed" and not row.covered
+    x0, y0, x1, _y1 = _outline_bbox(result, "J1")
+    if shifted:
+        assert (x0 + x1) / 2.0 != pytest.approx(0.0, abs=0.5)  # genuinely off-centre
+    gap = (1.0 + silk.OUTLINE_GAP_STROKES) * gerber.DEFAULT_SILK_WIDTH_MM
+    # the census anchor is the label box's lower-left corner
+    assert row.x_mm == pytest.approx(x0, abs=1e-6)
+    pts = _label_points(result, "J1")
+    assert max(p[1] for p in pts) <= y0 - gap + 1e-6
+    assert max(p[1] for p in pts) >= y0 - gap - gerber.DEFAULT_SILK_WIDTH_MM
+    assert min(p[0] for p in pts) >= x0 - 1e-6
+    assert min(p[0] for p in pts) < (x0 + x1) / 2.0  # left-flush, not centred
+
+
+def test_a_crowded_label_falls_back_in_the_documented_order():
+    """gr495394's fixed order: bottom-left, bottom-right, top-left,
+    top-right, left, right, top, bottom; past all eight the radial ladder,
+    still outside. Each spot is blocked in turn by a small foreign pad
+    that sits in that spot's box and no other's, and the label must take
+    the next spot of :data:`silk.LABEL_SPOT_ORDER` every time."""
+    assert silk.LABEL_SPOT_ORDER == (
+        "bottom-left",
+        "bottom-right",
+        "top-left",
+        "top-right",
+        "left",
+        "right",
+        "top",
+        "bottom",
     )
-    courtyard_min_y = min(p[1] for p in poly)
-    courtyard_x0, courtyard_x1 = min(p[0] for p in poly), max(p[0] for p in poly)
-    centre = (courtyard_x0 + courtyard_x1) / 2.0
-    assert centre != pytest.approx(0.0, abs=0.5)  # sanity: genuinely off-centre
-
-    refdes_draws = [d for d in result.draws["top"] if d["role"] == "refdes"]
-    xs = [
-        pt[0]
-        for d in refdes_draws
-        for seg in d["segments"]
-        for pt in (seg["start"], seg["end"])
-    ]
-    ys = [
-        pt[1]
-        for d in refdes_draws
-        for seg in d["segments"]
-        for pt in (seg["start"], seg["end"])
-    ]
-    tolerance = gerber.DEFAULT_SILK_WIDTH_MM * 3.0
-    assert min(ys) == pytest.approx(courtyard_min_y, abs=tolerance)
-    assert (min(xs) + max(xs)) / 2.0 == pytest.approx(centre, abs=0.5)
-
-
-def test_refdes_bottom_edge_falls_through_left_then_right_then_the_radial_ladder():
-    """The try order (round-5 review item 2): bottom-center, then
-    bottom-left-flush, then bottom-right-flush, then the user's own
-    below-box fallback (:func:`silk._below_box_candidates` -- see
-    ``test_refdes_hangs_below_the_box_...`` below), then
-    :data:`_CANDIDATES`' existing radial ladder unchanged as the last
-    resort."""
-    ir = from_graph(_graph("U", 16, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
-
-    # Blocks ONLY the narrow centre band -- both flush candidates clear it.
-    centre_blocked = build_silk(
-        ir,
-        pads=[{"shape": "rect", "x": 0.0, "y": -1.9, "w": 0.6, "h": 1.2, "net": "F"}],
-    )
-    row = next(c for c in centre_blocked.census if c.kind == "refdes")
-    assert row.outcome == "relocated"
-    assert row.reason is not None and "bottom-left-flush" in row.reason
-
-    # Blocks the whole bottom band (over- and under-box alike) and the
-    # radial ladder's own dead-centre default -- a genuinely crowded case
-    # that falls all the way through to a real ring position, same as
-    # before this feature.
-    crowded = build_silk(
-        ir,
-        pads=[{"shape": "rect", "x": 0.0, "y": -1.75, "w": 4.0, "h": 4.6, "net": "F"}],
-    )
-    row2 = next(c for c in crowded.census if c.kind == "refdes")
-    assert row2.outcome == "relocated"
-    assert row2.reason is not None and "ring" in row2.reason
+    # A wide, short single-row part (and an R, so no pin-1 dot competes for
+    # the spots): the top and bottom side spots then have room of their own
+    # between the two corner spots.
+    ir = from_graph(_graph("R1", 4, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
+    boxes = _spot_boxes(ir, 0, "R1")
+    # Each blocker: a 0.1 mm pad at the first point of a grid over its own
+    # spot's box whose mask opening touches that box and no other.
+    blockers = {}
+    for spot in silk.LABEL_SPOT_ORDER:
+        box = boxes[spot]
+        bx0, by0 = min(p[0] for p in box), min(p[1] for p in box)
+        bx1, by1 = max(p[0] for p in box), max(p[1] for p in box)
+        for fx, fy in itertools.product((0.1, 0.3, 0.5, 0.7, 0.9), repeat=2):
+            x, y = bx0 + fx * (bx1 - bx0), by0 + fy * (by1 - by0)
+            pad = {"shape": "rect", "x": x, "y": y, "w": 0.1, "h": 0.1, "net": "F"}
+            opening = _mask_openings([pad], None)[0]
+            hit = [s for s, b in boxes.items() if silk._box_overlaps_pad(b, opening)]
+            if hit == [spot]:
+                blockers[spot] = pad
+                break
+        assert spot in blockers, f"fixture: no point blocks {spot} alone"
+    order = silk.LABEL_SPOT_ORDER
+    for k in range(len(order)):
+        result = build_silk(ir, pads=[blockers[s] for s in order[: k + 1]])
+        row = next(c for c in result.census if c.kind == "refdes")
+        assert row.outcome == "relocated" and not row.covered, (k, row)
+        expected = order[k + 1] if k + 1 < len(order) else "ring "
+        assert f"drawn at {expected}" in str(row.reason), (k, row.reason)
+        assert f"R1: {row.reason}" in result.relocated
 
 
-def test_refdes_hangs_below_the_box_when_over_box_candidates_are_blocked_by_its_own_pads():
-    """The user's OWN chosen fallback (round-5 review item 2, follow-up):
-    when a part's real pads block all three over-box candidates -- the
-    common case for a single-row (header/connector) footprint, whose
-    pads sit right along the SAME edge the over-box convention keys off
-    -- the label hangs BELOW the courtyard instead of jumping straight to
-    the radial ladder's coarser ring sweep.
-
-    ``J1`` here is a 4-pin single-row part (``landpattern._family_for``'s
-    ``_ROW`` family, n_pins<=4): its own synthesized pads
-    (:func:`precis.pcb.realize.pads_for_ir`, the SAME real-pad geometry a
-    caller with no cached footprint feeds this module) sit in a strip
-    right along the courtyard's own bottom edge -- exactly the shape that
-    blocks bottom-center/left-flush/right-flush together."""
-    ir = from_graph(_graph("J1", 4, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
-    pads = realize.pads_for_ir(ir, [layer["name"] for layer in DEFAULT_STACKUP])
-    result = build_silk(ir, pads=pads)
+def test_a_boxed_in_label_goes_inside_its_outline_with_a_covered_finding():
+    """gr495394's last resort: with every spot outside the outline blocked,
+    the label goes INSIDE it -- and the census and DRC both say the part
+    will cover it, naming the part. A frame of foreign copper around the
+    outline (clear of the outline's own ink) blocks every outside spot,
+    the radial ladder included."""
+    ir = from_graph(_graph("U1", 16, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
+    bare = build_silk(ir, pads=[])
+    x0, y0, x1, y1 = _outline_bbox(bare, "U1")
+    frame = _furniture_frame([(x0, y0), (x1, y1)], 0.3)
+    result = build_silk(ir, pads=frame)
+    outline_row = next(c for c in result.census if c.kind == "courtyard")
+    assert outline_row.outcome == "placed"  # the frame never touches the outline
     row = next(c for c in result.census if c.kind == "refdes")
-    assert row.outcome == "relocated"
-    assert row.reason is not None and "below-center" in row.reason
-
-    poly = instance_courtyard_polygon(
-        ir,
-        0,
-        clearance_mm=silk_clearance_mm(
-            None, stroke_width_mm=gerber.DEFAULT_SILK_WIDTH_MM
-        ),
-        pins=list(range(ir.n_pins)),
-    )
-    courtyard_min_y = min(p[1] for p in poly)
-    courtyard_x0, courtyard_x1 = min(p[0] for p in poly), max(p[0] for p in poly)
-
-    refdes_draws = [d for d in result.draws["top"] if d["role"] == "refdes"]
-    xs = [
-        pt[0]
-        for d in refdes_draws
-        for seg in d["segments"]
-        for pt in (seg["start"], seg["end"])
-    ]
-    ys = [
-        pt[1]
-        for d in refdes_draws
-        for seg in d["segments"]
-        for pt in (seg["start"], seg["end"])
-    ]
-    # The label's TOP edge (nearest the part) sits just under the
-    # courtyard's own bottom edge, offset by the same stroke-tolerance
-    # gap the over-box candidates inset INWARD by (`_BOTTOM_EDGE_INSET_
-    # STROKES`) -- here applied OUTWARD instead.
-    gap = gerber.DEFAULT_SILK_WIDTH_MM * silk._BOTTOM_EDGE_INSET_STROKES
-    assert max(ys) == pytest.approx(courtyard_min_y - gap, abs=1e-6)
-    assert min(ys) < max(ys)  # it hangs DOWN, away from the part
-    centre = (courtyard_x0 + courtyard_x1) / 2.0
-    assert (min(xs) + max(xs)) / 2.0 == pytest.approx(centre, abs=0.5)
+    assert row.outcome == "relocated" and row.covered
+    assert "INSIDE" in str(row.reason)
+    pts = _label_points(result, "U1")
+    assert pts
+    assert all(x0 < p[0] < x1 and y0 < p[1] < y1 for p in pts)
+    findings = drc.check_silk_label_covered(result.census)
+    assert [f.rule for f in findings] == ["silk_label_covered"]
+    assert findings[0].severity == "warn"
+    assert "U1" in findings[0].where and "label will be covered" in findings[0].detail
+    # An outside label is never reported.
+    assert drc.check_silk_label_covered(bare.census) == []
 
 
-def test_refdes_below_box_falls_through_center_to_left_flush():
-    """Same try order within the below-box fallback itself: below-center
-    first, then below-left-flush -- a via blocking specifically the
-    centred spot (not the flush ones) must relocate one step further,
-    not all the way to the radial ladder."""
-    ir = from_graph(_graph("J1", 4, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
-    pads = realize.pads_for_ir(ir, [layer["name"] for layer in DEFAULT_STACKUP])
-    via = {
-        "x": 0.0,
-        "y": -1.4,
-        "dia_mm": 1.0,
-        "drill_mm": 0.3,
-        "span": ["F.Cu", "B.Cu"],
-    }
-    result = build_silk(ir, pads=pads, vias=[via])
-    row = next(c for c in result.census if c.kind == "refdes")
-    assert row.outcome == "relocated"
-    assert row.reason is not None and "below-left-flush" in row.reason
-
-
-def test_tile_neighbour_bleed_defers_to_a_non_overlapping_candidate():
+def test_a_label_never_lands_over_a_neighbours_outline():
     """Round-5 review item 3 (the nano board's J4 label landing on Q1's
-    body): once the bottom-edge convention and ring 1 are both exhausted,
-    the radial ladder's own angle order does not know that a nearby ring
-    position sits inside a DIFFERENT instance's own courtyard -- the same
-    defect class item 1 closes for the pin-1 dot, here for the refdes
-    label. Two instances packed into a ~0.6mm channel: BIG1 (16 pins)
-    directly below C2 (2 pins), with C2's bottom-edge candidates, all of
-    ring 1, and ring 2's first two candidates blocked by foreign pads --
-    so the ladder's own next candidate in raw angle order (ring 2 at
-    300deg) sits INSIDE BIG1's courtyard (bbox overlap, not a border
-    cross, so the existing hard check misses it -- confirmed against this
-    exact fixture without the reorder fix). The next candidate after it in
-    that same order (ring 2 at 60deg, pointing away from BIG1) does not,
-    and soft ordering must prefer it."""
-    clearance = silk_clearance_mm(None, stroke_width_mm=gerber.DEFAULT_SILK_WIDTH_MM)
+    body), now a hard rule (gr495394): no label box touches or sits inside
+    another part's outline, and every label keeps two clear line widths off
+    every outline's ink. BIG1 sits right below C2 and foreign copper
+    crowds C2's near spots, so C2's label is pushed out toward BIG1."""
     gap_y = 0.6
     big1_y = -(2.69625 + 0.5 + gap_y)
     ir = from_graph(
@@ -2551,45 +2560,38 @@ def test_tile_neighbour_bleed_defers_to_a_non_overlapping_candidate():
         stackup=DEFAULT_STACKUP,
     )
     pads = [
-        # Blocks C2's own bottom-edge candidates and the whole of ring 1.
         {"shape": "rect", "x": 0.0, "y": 0.0, "w": 3.0, "h": 3.0, "net": "F1"},
-        # Blocks ring 2's rightward candidates (0deg/300deg's near
-        # neighbours), leaving 300deg (bleeds into BIG1) as the first
-        # candidate the ladder's own angle order would reach.
         {"shape": "rect", "x": 2.2, "y": 0.0, "w": 2.0, "h": 3.0, "net": "F2"},
     ]
     result = build_silk(ir, pads=pads)
     row = next(c for c in result.census if c.refdes == "C2" and c.kind == "refdes")
     assert row.outcome == "relocated"
-    assert row.reason is not None and "ring 2" in row.reason
-
-    refdes_draws = [
-        d for d in result.draws["top"] if d["role"] == "refdes" and d["refdes"] == "C2"
+    pts = _label_points(result, "C2")
+    assert pts
+    box = [
+        (min(p[0] for p in pts), min(p[1] for p in pts)),
+        (max(p[0] for p in pts), min(p[1] for p in pts)),
+        (max(p[0] for p in pts), max(p[1] for p in pts)),
+        (min(p[0] for p in pts), max(p[1] for p in pts)),
     ]
-    assert refdes_draws
-    xs = [
-        pt[0]
-        for d in refdes_draws
+    gap = (1.0 + silk.OUTLINE_GAP_STROKES) * gerber.DEFAULT_SILK_WIDTH_MM
+    big1_segs = [
+        seg
+        for d in result.draws["top"]
+        if d["role"] == "outline" and d["refdes"] == "BIG1"
         for seg in d["segments"]
-        for pt in (seg["start"], seg["end"])
     ]
-    ys = [
-        pt[1]
-        for d in refdes_draws
-        for seg in d["segments"]
-        for pt in (seg["start"], seg["end"])
-    ]
-    label_box = [
-        (min(xs), min(ys)),
-        (max(xs), min(ys)),
-        (max(xs), max(ys)),
-        (min(xs), max(ys)),
-    ]
-    big1_poly_local = instance_courtyard_polygon(
-        ir, 0, clearance_mm=clearance, pins=list(range(16))
-    )
-    big1_poly_world = [(p[0], p[1] + big1_y) for p in big1_poly_local]
-    assert not convex_polygons_overlap(label_box, big1_poly_world)
+    assert big1_segs
+    big1_ring = [tuple(seg["start"]) for seg in big1_segs]
+    assert not any(_point_in_polygon_independent(c, big1_ring) for c in box)
+    for d in result.draws["top"]:
+        if d["role"] != "outline":
+            continue
+        for seg in d["segments"]:
+            for pt in pts:
+                assert (
+                    _point_to_segment_dist(pt, seg["start"], seg["end"]) >= gap - 1e-6
+                )
 
 
 # ── outline: silk must not print past the board's own cut edge ──────────
@@ -2636,16 +2638,16 @@ def test_silk_edge_margin_mm_reads_house_default_from_a_real_capability_row():
 
 
 def test_refdes_candidate_rejected_outside_the_outline_relocates_to_one_inside():
-    """The default (centred) refdes spot prints past the board's own cut
-    edge here -- without ``outline`` the builder happily draws it there;
-    with ``outline`` that candidate must be rejected and the label either
-    relocates to a candidate that is fully inside the board with the
-    silk-to-edge margin, or is dropped -- never printed off-board."""
-    # Placed near the RIGHT edge, not the left -- the ladder now prefers a
-    # candidate to the right of the part first (side-consistency reorder,
-    # 2026-09-01), so that is the direction that has to leak off-board for
-    # the sanity check below to mean anything.
-    ir = from_graph(_graph("U1", 8, x=19.7, y=5.0), stackup=DEFAULT_STACKUP)
+    """The default (bottom-left, gr495394) refdes spot prints past the
+    board's own cut edge here -- without ``outline`` the builder happily
+    draws it there; with ``outline`` that candidate must be rejected and
+    the label either relocates to a candidate that is fully inside the
+    board with the silk-to-edge margin, or is dropped -- never printed
+    off-board."""
+    # Placed near the BOTTOM edge: the default spot hangs below the part,
+    # so that is the direction that has to leak off-board for the sanity
+    # check below to mean anything.
+    ir = from_graph(_graph("U1", 8, x=10.0, y=2.2), stackup=DEFAULT_STACKUP)
     outline = [(0.0, 0.0), (20.0, 0.0), (20.0, 10.0), (0.0, 10.0)]
 
     unbounded = build_silk(ir, pads=[])
@@ -2654,12 +2656,12 @@ def test_refdes_candidate_rejected_outside_the_outline_relocates_to_one_inside()
         for d in unbounded.draws["top"]
         if d["role"] == "refdes" and d["refdes"] == "U1"
     ]
-    assert unbounded_refdes  # sanity: it draws, centred, with no outline given
-    # ... and it really does print past x=20 -- otherwise the outline below
-    # would prove nothing (the centred candidate has to actually be the one
+    assert unbounded_refdes  # sanity: it draws with no outline given
+    # ... and it really does print past y=0 -- otherwise the outline below
+    # would prove nothing (the default candidate has to actually be the one
     # this test means to reject).
     assert any(
-        pt[0] > 20.0
+        pt[1] < 0.0
         for d in unbounded_refdes
         for seg in d["segments"]
         for pt in (seg["start"], seg["end"])
@@ -2734,10 +2736,15 @@ def _bottom_part_with_furniture(gap: float) -> tuple[Any, Any]:
 def test_refdes_slot_is_derived_from_the_ladders_own_geometry():
     cl = silk_clearance_mm(None, stroke_width_mm=silk.DEFAULT_SILK_WIDTH_MM)
     slot = silk.refdes_label_slot_mm(cl)
+    stroke = silk.DEFAULT_SILK_WIDTH_MM
+    # hull -> outline (chain + two line widths) -> label (two clear widths
+    # plus both half-strokes) -> text height -> one silk clearance
+    target = silk.outline_offsets_mm(None, stroke_width_mm=stroke)[1]
     assert slot == pytest.approx(
-        silk.DEFAULT_REFDES_HEIGHT_MM
-        + 2 * cl
-        + silk._BOTTOM_EDGE_INSET_STROKES * silk.DEFAULT_SILK_WIDTH_MM
+        target
+        + (1.0 + silk.OUTLINE_GAP_STROKES) * stroke
+        + silk.DEFAULT_REFDES_HEIGHT_MM
+        + cl
     )
     # the old furniture margin (clearance + 1.0) is strictly smaller
     assert cl + 1.0 < slot
@@ -2747,12 +2754,12 @@ def test_refdes_label_renders_once_furniture_gap_reaches_the_slot():
     cl = silk_clearance_mm(None, stroke_width_mm=silk.DEFAULT_SILK_WIDTH_MM)
     slot = silk.refdes_label_slot_mm(cl)
     outcomes: dict[float, str] = {}
-    for gap in [1.0 + 0.05 * i for i in range(21)]:
+    for gap in [1.0 + 0.05 * i for i in range(round((slot + 0.2 - 1.0) / 0.05) + 1)]:
         _ring, result = _bottom_part_with_furniture(gap)
         row = next(c for c in result.census if c.refdes == "U1" and c.kind == "refdes")
         outcomes[round(gap, 2)] = row.outcome
     first_ok = min(g for g, o in outcomes.items() if o != "dropped")
-    # the slot is sufficient (measured need 1.70 mm at this fixture) ...
+    # the slot is sufficient ...
     assert first_ok <= slot
     # ... and the old furniture margin (clearance + 1.0) was NOT.
     assert first_ok > cl + 1.0
@@ -2769,3 +2776,245 @@ def test_bottom_part_label_is_drawn_at_the_new_furniture_margin():
     row = next(c for c in result.census if c.refdes == "U1" and c.kind == "refdes")
     assert row.outcome in ("placed", "relocated")
     assert result.draws["bottom"]
+
+
+# ── part outlines: one closed line, two widths clear (gr495393/gr495293) ──
+_W = gerber.DEFAULT_SILK_WIDTH_MM
+
+
+def _outline_lines(result, refdes: str) -> list[list[tuple[float, float]]]:
+    return [
+        [tuple(d["segments"][0]["start"])] + [tuple(s["end"]) for s in d["segments"]]
+        for side in ("top", "bottom")
+        for d in result.draws[side]
+        if d["role"] == "outline" and d["refdes"] == refdes
+    ]
+
+
+def _pad_shape(pad: dict):
+    from shapely.geometry import Point as SPoint
+    from shapely.geometry import Polygon as SPolygon
+
+    if pad.get("poly"):
+        return SPolygon([tuple(p) for p in pad["poly"]])
+    if str(pad.get("shape") or "circle") == "circle":
+        return SPoint(pad["x"], pad["y"]).buffer(pad["w"] / 2.0)
+    w, h = pad["w"], pad.get("h", pad["w"])
+    x, y = pad["x"], pad["y"]
+    return SPolygon(
+        [
+            (x - w / 2, y - h / 2),
+            (x + w / 2, y - h / 2),
+            (x + w / 2, y + h / 2),
+            (x - w / 2, y + h / 2),
+        ]
+    )
+
+
+@pytest.mark.parametrize(
+    ("n_pins", "rot", "side"),
+    [
+        (2, 0.0, "top"),
+        (4, 0.0, "top"),
+        (8, 37.0, "top"),
+        (16, 90.0, "bottom"),
+        (200, 180.0, "top"),
+    ],
+)
+def test_an_outline_is_one_closed_line_two_widths_clear_of_its_pads(n_pins, rot, side):
+    """gr495393 (Reto 2026-10-17): a part's outline is ONE closed line,
+    never clipped into pieces by its own pads, and its ink keeps at least
+    two silk line widths of clear board from every pad's copper. Checked
+    with shapely distances, not silk.py's own overlap predicates."""
+    from shapely.geometry import LineString as SLine
+
+    ir = from_graph(_graph("U1", n_pins, rot=rot), stackup=DEFAULT_STACKUP)
+    pads = realize.pads_for_ir(ir, [layer["name"] for layer in DEFAULT_STACKUP])
+    result = build_silk(ir, pads=pads, instance_sides={"U1": side})
+    row = next(c for c in result.census if c.kind == "courtyard")
+    assert row.outcome == "placed" and row.reason is None
+    (line,) = _outline_lines(result, "U1")
+    assert line[0] == pytest.approx(line[-1])
+    ink = SLine(line)
+    for pad in pads:
+        # centreline to copper >= 2 widths of clear board + half the stroke
+        assert ink.distance(_pad_shape(pad)) >= 2.0 * _W + _W / 2.0 - 1e-6
+    # and where nothing is in the way, the full target: the legal chain
+    # plus two widths
+    floor, target = silk.outline_offsets_mm(None, stroke_width_mm=_W)
+    assert floor >= 2.0 * _W + _W / 2.0
+    assert target == pytest.approx(silk_clearance_mm(None, stroke_width_mm=_W) + 2 * _W)
+    # (pads_for_ir rounds an oblique pad's polygon to 0.1 um)
+    assert min(ink.distance(_pad_shape(p)) for p in pads) == pytest.approx(
+        target, abs=1e-3
+    )
+
+
+def test_close_neighbours_bend_their_outlines_and_keep_two_widths_apart():
+    """Two parts whose target outlines would nearly touch: each yields
+    toward the other, never inside its floor, so both stay one closed line
+    and the two lines keep two clear line widths between their inks."""
+    from shapely.geometry import LineString as SLine
+
+    # hull gap 1.4 mm: the target rings (0.675 mm each) would be 0.05 apart
+    ir = from_graph(
+        _multi(
+            _graph("U1", 8, x=0.0, y=0.0), _graph("U2", 8, x=2.0 + 1.4 + 0.2, y=0.0)
+        ),
+        stackup=DEFAULT_STACKUP,
+    )
+    pads = realize.pads_for_ir(ir, [layer["name"] for layer in DEFAULT_STACKUP])
+    result = build_silk(ir, pads=pads)
+    rows = {c.refdes: c for c in result.census if c.kind == "courtyard"}
+    assert rows["U1"].outcome == rows["U2"].outcome == "placed"
+    (a,), (b,) = _outline_lines(result, "U1"), _outline_lines(result, "U2")
+    assert a[0] == pytest.approx(a[-1]) and b[0] == pytest.approx(b[-1])
+    gap = SLine(a).distance(SLine(b))
+    # (the split is built from boundary samples: ~0.1 um off the midline)
+    assert gap >= (1.0 + silk.OUTLINE_GAP_STROKES) * _W - 1e-3
+    floor, _target = silk.outline_offsets_mm(None, stroke_width_mm=_W)
+    for line, ref in ((a, "U1"), (b, "U2")):
+        own = [p for p in pads if p["refdes"] == ref]
+        assert min(SLine(line).distance(_pad_shape(p)) for p in own) >= floor - 1e-6
+
+
+def _edge_connector(y: float):
+    """A 6-pin single-row part straddling the board's bottom edge (y=0):
+    its pads sit on the board, its outline cannot."""
+    ir = from_graph(_graph("J1", 4, x=10.0, y=y), stackup=DEFAULT_STACKUP)
+    pads = realize.pads_for_ir(ir, [layer["name"] for layer in DEFAULT_STACKUP])
+    return ir, pads
+
+
+def test_an_edge_mounted_outline_gets_exactly_one_clean_gap():
+    """gr495393/gr495293: an outline whose floor crosses the board edge
+    keeps its shape on the board and leaves ONE gap at the edge -- no
+    fragments, no silk_edge_clearance or outline_containment finding."""
+    outline = [(0.0, 0.0), (20.0, 0.0), (20.0, 10.0), (0.0, 10.0)]
+    drc_outline = [list(p) for p in outline]
+    ir, pads = _edge_connector(0.6)
+    result = build_silk(ir, pads=pads, outline=outline)
+    lines = _outline_lines(result, "J1")
+    assert len(lines) == 1, lines
+    (line,) = lines
+    assert line[0] != pytest.approx(line[-1])  # open: one gap
+    row = next(c for c in result.census if c.kind == "courtyard")
+    assert row.outcome == "relocated"
+    assert "opened at the board edge" in str(row.reason)
+    model = {"silkscreen": result.draws}
+    cap = capability_for("4layer")
+    edge = [
+        f
+        for f in drc.check_silk_edge_clearance(model, cap, outline=drc_outline)
+        if "outline" in f.where
+    ]
+    assert edge == []
+    assert [
+        f
+        for f in drc.check_outline_containment(model, outline=drc_outline)
+        if "outline" in f.where
+    ] == []
+    # The gap is the edge's: every kept point is at least the margin inside.
+    margin = silk._silk_edge_margin_mm(cap)
+    assert all(p[1] >= margin + _W / 2.0 - 1e-6 for p in line)
+    # A part well inside the board keeps a closed ring.
+    inner, inner_pads = _edge_connector(5.0)
+    (closed,) = _outline_lines(
+        build_silk(inner, pads=inner_pads, outline=outline), "J1"
+    )
+    assert closed[0] == pytest.approx(closed[-1])
+
+
+def _dogfood_cluster():
+    """usbc-attiny-dogfood-b's U1 (SOIC-8 wide), U2 (SOT-23-5) and J2 as
+    placed on prod 2026-10-17, pads in board mm (rot 0 here, the pads
+    already in board orientation), plus the routed via between U1 and J2
+    (gr495393). The old builder cut U1 and J2 around that via and cut U2
+    around U1's courtyard bounding box."""
+    parts = {
+        "J2": [
+            (18.2746, 18.2779, 1.0, 2.2),
+            (15.7346, 14.6779, 1.0, 2.2),
+            (13.1946, 18.2779, 1.0, 2.2),
+            (10.6546, 14.6779, 1.0, 2.2),
+        ],
+        "U1": [
+            (x, y, 2.25, 0.63)
+            for x in (9.3617, 16.4219)
+            for y in (8.6389, 9.9089, 11.1789, 12.4489)
+        ],
+        "U2": [
+            (6.1728, 8.3736, 0.6, 1.0),
+            (7.1227, 8.3736, 0.6, 1.0),
+            (5.2231, 8.3736, 0.6, 1.0),
+            (7.123, 10.5738, 0.6, 1.0),
+            (5.2228, 10.5738, 0.6, 1.0),
+        ],
+    }
+    origin = {
+        "J2": (14.4646, 16.4779),
+        "U1": (12.8918, 10.5439),
+        "U2": (6.1729, 9.4736),
+    }
+    ir = from_graph(
+        _multi(
+            *[
+                _graph(r, len(p), x=origin[r][0], y=origin[r][1])
+                for r, p in parts.items()
+            ]
+        ),
+        stackup=DEFAULT_STACKUP,
+    )
+    pads = []
+    by_inst: dict[int, int] = {}
+    for pid in range(ir.n_pins):
+        inst = int(ir.pin_instance[pid])
+        refdes = str(ir.instance_refdes[inst])
+        x, y, w, h = parts[refdes][by_inst.get(inst, 0)]
+        by_inst[inst] = by_inst.get(inst, 0) + 1
+        ox, oy = origin[refdes]
+        ir.set_pin_offset(pid, x - ox, y - oy)
+        ir.pin_w[pid], ir.pin_h[pid] = w, h
+        pads.append({"shape": "rect", "x": x, "y": y, "w": w, "h": h, "refdes": refdes})
+    via = {
+        "x": 13.5222,
+        "y": 13.5402,
+        "dia_mm": 0.75,
+        "drill_mm": 0.25,
+        "span": ["F.Cu", "B.Cu"],
+    }
+    return ir, pads, via
+
+
+def test_dogfood_u2_outline_is_no_longer_cut_by_u1s_silk():
+    """The dogfood board's U2 lost a third of its outline to U1's courtyard
+    bounding box. Outlines now never clip each other: U2 is one closed
+    line, and with no via in the way so are U1 and J2."""
+    ir, pads, _via = _dogfood_cluster()
+    result = build_silk(ir, pads=pads)
+    for refdes in ("U1", "U2", "J2"):
+        lines = _outline_lines(result, refdes)
+        assert len(lines) == 1, (refdes, lines)
+        assert lines[0][0] == pytest.approx(lines[0][-1]), refdes
+        row = next(
+            c for c in result.census if c.refdes == refdes and c.kind == "courtyard"
+        )
+        assert row.outcome == "placed", (refdes, row.reason)
+
+
+def test_dogfood_via_still_breaks_only_the_outlines_it_lands_on():
+    """A via already routed onto an outline is copper silk must not print
+    on, so the builder still breaks that outline around it -- and names
+    the via. The router can keep new vias off outlines
+    (``silk.outline_via_keepouts``, ``RealizeConfig.silk_via_keepout``)."""
+    ir, pads, via = _dogfood_cluster()
+    result = build_silk(ir, pads=pads, vias=[via])
+    u2 = next(c for c in result.census if c.refdes == "U2" and c.kind == "courtyard")
+    assert u2.outcome == "placed"
+    for refdes in ("U1", "J2"):
+        row = next(
+            c for c in result.census if c.refdes == refdes and c.kind == "courtyard"
+        )
+        if row.outcome != "placed":
+            assert "broken around via" in str(row.reason), row.reason
+    assert not _draws_hit_any_pad(result.draws["top"], [_via_as_pad(via)])
