@@ -79,7 +79,12 @@
       ansible.builtin.apt:
         name: [podman, uidmap, slirp4netns]
         state: present
+        lock_timeout: 120
       become: true
+      register: _apt_podman
+      until: _apt_podman is succeeded
+      retries: 3
+      delay: 10
       when: (os_family | default('linux')) == 'linux'
 
     # Rootless podman needs subordinate uid/gid ranges for the build

@@ -9,7 +9,12 @@
       - prometheus
       - prometheus-alertmanager
     state: present
+    lock_timeout: 120
   become: true
+  register: _apt_monitoring
+  until: _apt_monitoring is succeeded
+  retries: 3
+  delay: 10
 
 - name: Verify the precis venv exists (the receiver runs from it)
   ansible.builtin.stat:

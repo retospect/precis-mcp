@@ -24,6 +24,10 @@
     name: default-jre-headless
     state: present
   become: true
+  register: _pkg_jre
+  until: _pkg_jre is succeeded
+  retries: 3
+  delay: 10
   tags: [precis-eda, precis]
 
 - name: Ensure EDA artifact dir

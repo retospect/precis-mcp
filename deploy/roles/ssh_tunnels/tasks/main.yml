@@ -14,7 +14,12 @@
   ansible.builtin.apt:
     name: autossh
     state: present
+    lock_timeout: 120
   become: true
+  register: _apt_autossh
+  until: _apt_autossh is succeeded
+  retries: 3
+  delay: 10
 
 - name: Ensure deploy .ssh directory
   ansible.builtin.file:

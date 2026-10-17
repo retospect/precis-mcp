@@ -39,6 +39,10 @@
     name: postgresql-client
     state: present
   become: true
+  register: _pkg_pgclient
+  until: _pkg_pgclient is succeeded
+  retries: 3
+  delay: 10
 
 - name: Deploy .pgpass for deploy user
   ansible.builtin.template:

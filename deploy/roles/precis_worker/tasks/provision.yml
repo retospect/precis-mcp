@@ -390,6 +390,10 @@
     name: libimage-exiftool-perl
     state: present
   become: true
+  register: _pkg_exiftool
+  until: _pkg_exiftool is succeeded
+  retries: 3
+  delay: 10
 
 # launchd hits EX_CONFIG (78) when StandardOutPath can't be created. /var/log
 # on modern macOS only allows root writes, so a deploy-owned daemon can't

@@ -309,7 +309,12 @@
     state: present
     update_cache: true
     cache_valid_time: 3600
+    lock_timeout: 120
   become: true
+  register: _apt_earlyoom
+  until: _apt_earlyoom is succeeded
+  retries: 3
+  delay: 10
 
 - name: Configure earlyoom (Linux)
   tags: [hardening, security, oom-guard]

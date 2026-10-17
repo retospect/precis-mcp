@@ -73,6 +73,10 @@
     name: autofs
     state: present
   become: true
+  register: _pkg_autofs
+  until: _pkg_autofs is succeeded
+  retries: 3
+  delay: 10
   when: os_family == "linux"
 
 - name: Configure auto.nas map for the NAS (Linux)

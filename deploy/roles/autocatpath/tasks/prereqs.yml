@@ -94,11 +94,16 @@
     state: present
     update_cache: true
     cache_valid_time: 3600
+    lock_timeout: 120
   become: true
+  register: _apt_autocatpath_jit
+  until: _apt_autocatpath_jit is succeeded
+  retries: 3
+  delay: 10
   when: autocatpath_jit_precheck.rc != 0
   # Bound it: a deadlocked apt must redden this task, never hang the deploy
-  # (gr256499). 300s is generous for two packages off a warm cache — anything
-  # slower than that is a wedged apt, not a slow one.
+  # (gr256499). 300s is generous for two packages off a warm cache; the apt
+  # retries (gr494680) share this budget, so a wedged apt still fails red.
   timeout: 300
 
 # Only meaningful when we actually installed something: if the pre-check passed

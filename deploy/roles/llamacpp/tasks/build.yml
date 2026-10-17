@@ -25,7 +25,12 @@
     # Skip update_cache if repo metadata is fresh (1h). Avoids blocking when
     # upstream mirrors are transiently flaky.
     cache_valid_time: 3600
+    lock_timeout: 120
   become: true
+  register: _apt_llamacpp_toolchain
+  until: _apt_llamacpp_toolchain is succeeded
+  retries: 3
+  delay: 10
 
 - name: Ensure llamacpp dirs exist
   ansible.builtin.file:

@@ -28,6 +28,10 @@
     name: zstd
     state: present
   become: true
+  register: _pkg_zstd
+  until: _pkg_zstd is succeeded
+  retries: 3
+  delay: 10
 
 - name: Ensure backup directories
   ansible.builtin.file:

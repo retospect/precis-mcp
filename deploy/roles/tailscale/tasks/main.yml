@@ -29,13 +29,23 @@
         filename: tailscale
         state: present
       become: true
+      register: _apt_tailscale_repo
+      until: _apt_tailscale_repo is succeeded
+      retries: 3
+      delay: 10
 
     - name: Install tailscale package
       ansible.builtin.apt:
         name: tailscale
         state: present
         update_cache: true
+        cache_valid_time: 3600
+        lock_timeout: 120
       become: true
+      register: _apt_tailscale
+      until: _apt_tailscale is succeeded
+      retries: 3
+      delay: 10
 
     - name: Enable and start tailscaled
       ansible.builtin.systemd:

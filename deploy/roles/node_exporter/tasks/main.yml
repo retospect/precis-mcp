@@ -13,7 +13,12 @@
   ansible.builtin.apt:
     name: prometheus-node-exporter
     state: present
+    lock_timeout: 120
   become: true
+  register: _apt_node_exporter
+  until: _apt_node_exporter is succeeded
+  retries: 3
+  delay: 10
 
 # The packaged /etc/default ships ARGS="" and a mount-points-exclude that
 # hides /mnt; render it so /mnt/cluster stays visible to the fs collector
