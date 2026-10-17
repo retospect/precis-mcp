@@ -27,7 +27,17 @@ by every live worker (the claim path node-gates on
 ``meta.params.target_node``) yet matches neither sweep above — it
 terminalizes the same way, tagged ``reaped:dead-node-queued``, leaving
 quest loops (``idem_key`` ``quest_tick:*``) to ``quest/loop.py``'s own
-cancel-plus-re-mint arm.
+cancel-plus-re-mint arm. ``_reap_off_lane_pinned`` (gr493226) covers the
+live-host case both of those miss: the node still heartbeats but stopped
+running the job's executor pass (castor went heartbeat-only and its pinned
+seeds sat ~28h). Lane membership is read from ``worker_logs`` per-cycle
+rows for ``job_<executor>`` on the pinned host — ran within 7 days, silent
+past ``PRECIS_OFF_LANE_PIN_SILENCE_S`` (4h), and no live lease on that
+worker process (a blocking dispatch silences its rotation). Queued and
+expired-lease running jobs fail as infra, tagged ``reaped:off-lane-pin``
+with ``meta.error`` naming the node, and raise one
+``sweeper/off-lane-pin:<node>/<executor>`` alert that resolves when the
+pass runs there again. A node that never ran the pass is left alone.
 
 **Transition.** Per orphan: replace ``STATUS:running`` with
 ``STATUS:failed`` (``STATUS:cancelled`` for
@@ -89,12 +99,18 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from precis.alert_ids import RULES_BY_ID
-from precis.alerts import raise_alert, resolve_stale_alerts
+from precis.alerts import (
+    raise_alert,
+    resolve_alert_by_fingerprint,
+    resolve_stale_alerts,
+)
 from precis.store import Store
 from precis.store.types import Tag
 from precis.todo import TERMINAL_TODO_STATUSES
 from precis.utils.job_bubble import bubble_job_failure, remove_child_failed_tags
 from precis.workers.executors._common import (
+    JOB_EVENT_KIND,
+    append_chunk,
     effective_requires,
     job_type_requires,
     release_job_reservation,
@@ -802,6 +818,9 @@ def run_sweeper_pass(store: Store, *, limit: int = 50) -> BatchResult:
     # path (no lease to expire, not STATUS:running) and its idem_key blocks
     # re-mints forever. Same deadness predicate, same terminal shape.
     _reap_dead_node_queued(store, limit=limit)
+    # Live host, executor pass gone (gr493226): a pinned job the host-death
+    # predicate above can't see, because the node still heartbeats.
+    _reap_off_lane_pinned(store, limit=limit)
     # ``unpark`` phase (parked-leaf-recovery) — a DISTINCT pass over
     # ``child-failed:*``-latched todos, unconditional and fleet-wide like
     # the dead-node reap above; called before the generic orphan sweep's
@@ -1325,6 +1344,382 @@ def _reap_dead_node_queued(store: Store, *, limit: int) -> int:
                 exc_info=True,
             )
     return n
+
+
+# ── off-lane pinned reap (gr493226) ───────────────────────────────────
+
+_OFF_LANE_ALERT_SOURCE = RULES_BY_ID["sweeper/off-lane-pin:{host}/{executor}"].rule
+_OFF_LANE_FP_PREFIX = "off-lane-pin:"
+_OFF_LANE_TAG = "reaped:off-lane-pin"
+#: How far back a node must have run the pass to count as having *left* the
+#: lane — the same 7-day history ``conditions._probe_pass_dead`` learns from.
+_OFF_LANE_LOOKBACK_DAYS = 7
+_OFF_LANE_SILENCE_S_DEFAULT = 4 * 3600
+_OFF_LANE_SILENCE_S_FLOOR = 600
+
+
+def _off_lane_silence_s() -> int:
+    """Seconds a node's executor pass must be silent before its pinned jobs
+    are reaped (``PRECIS_OFF_LANE_PIN_SILENCE_S``, default 4h — pass-dead's
+    budget; floor 10 min). The slowest healthy rotation on prod (melchior's
+    agent-profile ``precis-worker``) gapped 2.6h in a week."""
+    raw = os.environ.get("PRECIS_OFF_LANE_PIN_SILENCE_S")
+    try:
+        return (
+            max(_OFF_LANE_SILENCE_S_FLOOR, int(raw))
+            if raw
+            else _OFF_LANE_SILENCE_S_DEFAULT
+        )
+    except ValueError:
+        return _OFF_LANE_SILENCE_S_DEFAULT
+
+
+def executor_pass_handler(executor: str) -> str:
+    """The ``worker_logs`` handler of ``executor``'s drain pass:
+    ``ssh_node`` → ``job_ssh_node``; ``job_inproc`` is already its own."""
+    return executor if executor.startswith("job_") else f"job_{executor}"
+
+
+@dataclass(frozen=True, slots=True)
+class _LaneSighting:
+    """The newest cycle of one executor's pass on one node."""
+
+    last_seen: datetime
+    process: str | None
+    silent: bool
+
+
+def _lane_sighting(
+    conn: Connection, node: str, executor: str, silence_s: int
+) -> _LaneSighting | None:
+    """Newest ``executor`` pass cycle on ``node`` inside the lookback, or
+    ``None`` when the node never ran it. ``runner.run_loop`` logs every
+    registered pass every cycle, idle or not, so silence means the pass is
+    gone from that node (or its rotation is blocked)."""
+    row = conn.execute(
+        """
+        SELECT ts, process, ts < now() - make_interval(secs => %(silence)s)
+          FROM worker_logs
+         WHERE host = %(node)s
+           AND payload->>'handler' = %(handler)s
+           AND ts > now() - make_interval(days => %(lookback)s)
+         ORDER BY ts DESC
+         LIMIT 1
+        """,
+        {
+            "node": node,
+            "handler": executor_pass_handler(executor),
+            "silence": silence_s,
+            "lookback": _OFF_LANE_LOOKBACK_DAYS,
+        },
+    ).fetchone()
+    if row is None:
+        return None
+    return _LaneSighting(last_seen=row[0], process=row[1], silent=bool(row[2]))
+
+
+def _off_lane_since(
+    conn: Connection, node: str, executor: str, silence_s: int
+) -> datetime | None:
+    """When ``node`` last ran ``executor``'s pass, if it has since left the
+    lane; ``None`` when it is in the lane, never was, or is busy.
+
+    Busy: a job leased to the same ``(host, process)`` still holds a live
+    lease. A legacy blocking ``dispatch`` occupies that worker's whole
+    rotation, so its pass goes silent for the run's duration while the
+    node is working, not gone.
+    """
+    seen = _lane_sighting(conn, node, executor, silence_s)
+    if seen is None or not seen.silent:
+        return None
+    busy = conn.execute(
+        """
+        SELECT 1
+          FROM refs r
+          JOIN ref_tags rt ON rt.ref_id = r.ref_id
+          JOIN tags t ON t.tag_id = rt.tag_id
+         WHERE r.kind = 'job'
+           AND r.retired_at IS NULL
+           AND t.namespace = 'STATUS'
+           AND t.value = 'running'
+           AND r.meta->>'lease_host' = %s
+           AND r.meta->>'lease_process' IS NOT DISTINCT FROM %s
+           AND (r.meta->>'lease_until')::timestamptz > now()
+         LIMIT 1
+        """,
+        (node, seen.process),
+    ).fetchone()
+    return None if busy is not None else seen.last_seen
+
+
+#: A pinned job the off-lane arm may examine: queued past the queued grace
+#: (claimed before or not — nothing holds a queued job), or a lease-owning
+#: executor's running job whose lease expired past the running grace (the
+#: generic sweep owns the rest). Quest loops stay with ``quest/loop.py``.
+_PINNED_CANDIDATE_SQL = """
+      FROM refs r
+      JOIN ref_tags rt ON rt.ref_id = r.ref_id
+      JOIN tags t ON t.tag_id = rt.tag_id
+     WHERE r.kind = 'job'
+       AND r.retired_at IS NULL
+       AND t.namespace = 'STATUS'
+       AND (r.meta->'params'->>'target_node') IS NOT NULL
+       AND (r.meta->>'executor') IS NOT NULL
+       AND COALESCE(r.meta->>'idem_key', '') NOT LIKE 'quest_tick:%%'
+       AND (
+            (t.value = 'queued'
+             AND r.created_at < now() - make_interval(secs => %(qgrace)s))
+         OR (t.value = 'running'
+             AND r.meta->>'executor' = ANY(%(lease_owning)s)
+             AND (r.meta->>'lease_until') IS NOT NULL
+             AND (r.meta->>'lease_until')::timestamptz
+                   < now() - make_interval(secs => %(rgrace)s))
+       )
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class _PinnedJob:
+    """One off-lane candidate, identified before the locked transition."""
+
+    ref_id: int
+    status: str
+    target_node: str
+    executor: str
+    meta: dict
+
+
+def _off_lane_reason(job: _PinnedJob, since: datetime, silence_s: int) -> str:
+    handler = executor_pass_handler(job.executor)
+    age_h = (datetime.now(UTC) - since).total_seconds() / 3600.0
+    reason = (
+        f"unclaimable: pinned to target_node={job.target_node}, which has left "
+        f"the {job.executor} lane: no {handler} pass has run there since "
+        f"{since.astimezone(UTC):%Y-%m-%dT%H:%MZ} ({age_h:.1f}h, budget "
+        f"{silence_s / 3600:.1f}h) and every claim path node-gates on the pin. "
+        "Failed as infra so the bounded retry re-derives the pin (gr493226)."
+    )
+    handle = job.meta.get("compute_handle")
+    if job.status == "running" and handle:
+        reason += (
+            f" A detached compute (compute_handle={handle!r}) may still be "
+            f"running on {job.target_node}."
+        )
+    return reason
+
+
+def _transition_off_lane_to_failed(
+    store: Store, job: _PinnedJob, *, silence_s: int, running_grace_s: int
+) -> datetime | None:
+    """Lock the job, re-verify status, pin and lane, terminalize to failed.
+
+    Same terminal shape as the dead-node reaps (``STATUS:failed`` +
+    ``meta.failure_class='infra'`` + :func:`bubble_job_failure`), plus
+    ``meta.error`` and a ``job_event`` chunk naming the node and the silent
+    pass, so the job reads why it died. Tagged ``reaped:off-lane-pin``.
+    Returns the pass's last sighting on success, ``None`` on a lost race
+    (claimed, transitioned, or the node rejoined the lane).
+    """
+    with store.tx() as conn:
+        row = conn.execute(
+            """
+            SELECT r.ref_id
+              FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE r.ref_id = %(ref_id)s
+               AND r.kind = 'job'
+               AND r.retired_at IS NULL
+               AND t.namespace = 'STATUS'
+               AND t.value = %(status)s
+               AND r.meta->'params'->>'target_node' = %(node)s
+               AND r.meta->>'executor' = %(executor)s
+               AND (
+                    t.value = 'queued'
+                 OR (r.meta->>'lease_until')::timestamptz
+                      < now() - make_interval(secs => %(rgrace)s)
+               )
+             FOR UPDATE OF r SKIP LOCKED
+            """,
+            {
+                "ref_id": job.ref_id,
+                "status": job.status,
+                "node": job.target_node,
+                "executor": job.executor,
+                "rgrace": running_grace_s,
+            },
+        ).fetchone()
+        if row is None:
+            return None
+        since = _off_lane_since(conn, job.target_node, job.executor, silence_s)
+        if since is None:
+            return None
+        reason = _off_lane_reason(job, since, silence_s)
+        store.add_tag(
+            job.ref_id,
+            Tag.closed("STATUS", "failed"),
+            set_by="system",
+            replace_prefix=True,
+            conn=conn,
+        )
+        set_meta(conn, job.ref_id, failure_class="infra", error=reason)
+        store.add_tag(job.ref_id, Tag.open(_OFF_LANE_TAG), set_by="system", conn=conn)
+        append_chunk(store, job.ref_id, JOB_EVENT_KIND, reason, conn=conn)
+        store.append_event(
+            job.ref_id,
+            source="sweeper",
+            event="job-reaped",
+            payload={
+                "target_node": job.target_node,
+                "executor": job.executor,
+                "cause": "off-lane-pin",
+                "pass_last_seen": since.isoformat(),
+            },
+            conn=conn,
+        )
+        release_job_reservation(conn, job.ref_id)
+    bubble_job_failure(store, job.ref_id)
+    if job.status == "running":
+        _kill_job_container(job.ref_id, job.meta)
+    return since
+
+
+def _raise_off_lane_alert(
+    store: Store, node: str, executor: str, since: datetime, job_ids: list[int]
+) -> None:
+    handler = executor_pass_handler(executor)
+    shown = ", ".join(f"#{i}" for i in job_ids[:10])
+    if len(job_ids) > 10:
+        shown += f" (+{len(job_ids) - 10} more)"
+    raise_alert(
+        store,
+        source=_OFF_LANE_ALERT_SOURCE,
+        fingerprint=f"{_OFF_LANE_FP_PREFIX}{node}/{executor}",
+        title=f"Jobs pinned to {node} failed: it left the {executor} lane",
+        detail=(
+            f"pinned to a node outside its lane: {handler} last ran on {node} at "
+            f"{since.astimezone(UTC):%Y-%m-%dT%H:%MZ}, so nothing there can claim "
+            f"{executor} work. Failed as infra: {shown}. Restore the node's "
+            "compute worker or move the pin; resolves once the pass runs there."
+        ),
+        severity="warn",
+        subject_ref_id=job_ids[0],
+        extra_meta={"target_node": node, "executor": executor},
+    )
+
+
+def _resolve_rejoined_off_lane_alerts(store: Store, silence_s: int) -> int:
+    """Resolve open off-lane alerts whose node runs the pass again."""
+    rejoined: list[str] = []
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT fingerprint FROM refs WHERE kind = 'alert' "
+            "AND retired_at IS NULL AND resolved_at IS NULL "
+            "AND alert_source = %s AND fingerprint LIKE %s",
+            (_OFF_LANE_ALERT_SOURCE, f"{_OFF_LANE_FP_PREFIX}%"),
+        ).fetchall()
+        for (fp,) in rows:
+            node, _, executor = str(fp)[len(_OFF_LANE_FP_PREFIX) :].rpartition("/")
+            seen = _lane_sighting(conn, node, executor, silence_s)
+            if seen is not None and not seen.silent:
+                rejoined.append(str(fp))
+    for fp in rejoined:
+        resolve_alert_by_fingerprint(
+            store, source=_OFF_LANE_ALERT_SOURCE, fingerprint=fp, resolved_by="sweeper"
+        )
+    return len(rejoined)
+
+
+def _reap_off_lane_pinned(store: Store, *, limit: int) -> int:
+    """Fail pinned jobs whose node has left their executor's lane (gr493226).
+
+    The dead-node reaps call a node dead only when the *host* is down. A
+    host that still heartbeats but no longer runs the job's executor pass
+    (castor went heartbeat-only and its pinned ``autocatpath_seed`` jobs
+    sat ~28h) is invisible to them, and every claim path node-gates on the
+    pin, so nothing else can take the job. Here a node has left the lane
+    when it ran ``job_<executor>`` within the last week, has not for
+    :func:`_off_lane_silence_s`, and no job leased to that worker process
+    holds a live lease (:func:`_off_lane_since`). A node with no history is
+    left alone: it never proved it was in the lane.
+
+    Lane state is probed once per ``(node, executor)`` pair before any job
+    is listed, so ``limit`` only ever counts jobs on off-lane nodes (a
+    deep queue pinned to a healthy node can't hide one). One alert per
+    pair; it resolves when the pass runs on the node again. Per-job
+    wrapped like :func:`_reap_dead_node_orphans`. Returns the count reaped.
+    """
+    silence_s = _off_lane_silence_s()
+    running_grace_s = _dead_node_reap_grace_s()
+    params = {
+        "qgrace": _dead_node_queued_grace_s(),
+        "rgrace": running_grace_s,
+        "lease_owning": sorted(_LEASE_OWNING_EXECUTORS),
+    }
+    with store.pool.connection() as conn:
+        pairs = conn.execute(
+            "SELECT DISTINCT r.meta->'params'->>'target_node', r.meta->>'executor'"
+            + _PINNED_CANDIDATE_SQL,
+            params,
+        ).fetchall()
+        off = [
+            (str(node), str(ex))
+            for node, ex in pairs
+            if _off_lane_since(conn, str(node), str(ex), silence_s) is not None
+        ]
+        rows = []
+        if off:
+            rows = conn.execute(
+                "SELECT r.ref_id, t.value, r.meta->'params'->>'target_node', "
+                "r.meta->>'executor', r.meta"
+                + _PINNED_CANDIDATE_SQL
+                + """ AND (r.meta->'params'->>'target_node', r.meta->>'executor')
+                      IN (SELECT * FROM unnest(%(nodes)s::text[], %(execs)s::text[]))
+                 ORDER BY r.ref_id
+                 LIMIT %(limit)s""",
+                {
+                    **params,
+                    "nodes": [n for n, _ in off],
+                    "execs": [e for _, e in off],
+                    "limit": limit,
+                },
+            ).fetchall()
+    reaped: dict[tuple[str, str], tuple[datetime, list[int]]] = {}
+    for raw_id, status, node, executor, meta in rows:
+        job = _PinnedJob(
+            ref_id=int(raw_id),
+            status=str(status),
+            target_node=str(node),
+            executor=str(executor),
+            meta=dict(meta or {}),
+        )
+        try:
+            since = _transition_off_lane_to_failed(
+                store, job, silence_s=silence_s, running_grace_s=running_grace_s
+            )
+        except Exception:  # pragma: no cover - defensive
+            log.warning(
+                "sweeper: off-lane reap for job #%d raised", job.ref_id, exc_info=True
+            )
+            continue
+        if since is None:
+            continue
+        log.warning(
+            "sweeper: job #%d reaped (%s, pinned to %s which left the %s lane — "
+            "pass last ran %s)",
+            job.ref_id,
+            job.status,
+            job.target_node,
+            job.executor,
+            since.isoformat(),
+        )
+        reaped.setdefault((job.target_node, job.executor), (since, []))[1].append(
+            job.ref_id
+        )
+    for (node, executor), (since, ids) in reaped.items():
+        _raise_off_lane_alert(store, node, executor, since, ids)
+    _resolve_rejoined_off_lane_alerts(store, silence_s)
+    return sum(len(ids) for _, ids in reaped.values())
 
 
 def _kill_job_container(ref_id: int, meta: dict) -> None:

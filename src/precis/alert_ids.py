@@ -603,6 +603,18 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         "sweeper",
     ),
     AlertRule(
+        "sweeper",
+        "off-lane-pin:{host}/{executor}",
+        "Jobs pinned to a node that stopped running their executor's pass "
+        "were failed as unclaimable.",
+        "warn",
+        "sweeper",
+        triage="Check the node's worker units in its host heartbeat; restore "
+        "the compute worker or move the pin (PRECIS_AUTOCATPATH_ROUTE_NODE, "
+        "PRECIS_DFT_NODE). Auto-resolves once the pass runs there again.",
+        budget="PRECIS_OFF_LANE_PIN_SILENCE_S (4h)",
+    ),
+    AlertRule(
         "quest_tick",
         "quest:dry-rest/{quest_id}",
         "A quest tick is resting with nothing runnable (dry rest).",

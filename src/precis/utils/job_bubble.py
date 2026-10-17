@@ -79,13 +79,16 @@ log = logging.getLogger(__name__)
 #: ``meta.failure_class='infra'`` at the source. The bounded retry's
 #: re-mint re-derives ``target_node`` from env/topology at mint time, so
 #: a retry after a node re-homing lands on the live node instead of the
-#: dead pin.
+#: dead pin. ``reaped:off-lane-pin`` (gr493226) is the same argument for a
+#: live host that stopped running the job's executor pass: nothing on that
+#: node can claim or reclaim the job.
 INFRA_FAILURE_TAGS = frozenset(
     {
         "swept:claim-orphaned",
         "infra:child-killed",
         "reaped:dead-node-orphan",
         "reaped:dead-node-queued",
+        "reaped:off-lane-pin",
     }
 )
 

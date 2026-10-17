@@ -199,6 +199,12 @@ capability requirements no live host advertises in `resource_slots`
 (and no `params.target_node` pin falls back on) can never be placed —
 it raises `scheduler/unschedulable:<job ref>` at warn, auto-resolved
 when the job leaves the queue or the capability is advertised again.
+A job pinned by `params.target_node` to a host that still heartbeats
+but no longer runs the executor's drain pass (it left the lane: ran
+`job_<executor>` this week, silent past 4h, nothing leased there) fails
+as infra, tagged `reaped:off-lane-pin`, with `meta.error` naming the
+node; `sweeper/off-lane-pin:<node>/<executor>` opens at warn and
+resolves when the pass runs on that node again.
 
 Parenting is polymorphic (ADR 0044): a job parents on a **todo**
 (intent lane — rotation, `child-failed` bubble, `child_job_succeeded`),
