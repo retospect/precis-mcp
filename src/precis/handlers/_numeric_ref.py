@@ -294,6 +294,19 @@ def _tag_response_body(
     return body
 
 
+#: ``view=`` spellings agents reach for meaning "just the listing" (the
+#: memory kind's ``view='index'``); the hit page is already index-shaped
+#: here, so they fold to the default view (gr492994, gr492996).
+_PLAIN_LISTING_VIEWS = frozenset({"index", "ids"})
+
+
+def plain_listing_view(view: str | None, own_views: Any) -> str | None:
+    """Fold a plain-listing ``view=`` to ``None`` unless the kind owns it."""
+    if view in _PLAIN_LISTING_VIEWS and view not in own_views:
+        return None
+    return view
+
+
 class NumericRefHandler(Handler):
     """Base class for numeric-id ref kinds (memory, todo, gripe, anki, …)."""
 
@@ -682,6 +695,7 @@ class NumericRefHandler(Handler):
         chunk_scope: str | None = None,
         **_kw: Any,
     ) -> Response:
+        view = plain_listing_view(view, self._search_view_names())
         if sort is not None:
             sort = sort.strip().lower()
             if (

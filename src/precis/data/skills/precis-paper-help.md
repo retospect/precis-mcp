@@ -539,6 +539,7 @@ any stub carrying an identifier:
 ```python
 put(kind="paper", doi="10.1038/nature10352")  # best — resolvable id
 put(kind="paper", arxiv="2401.00001", title="…")  # or an arXiv id
+put(kind="paper", doi="10.1038/nature10352", tags=["reading-list"])  # tags= applied to the stub
 put(kind="paper", title="Some Paper With No DOI Yet")  # title-only backlog stub
 ```
 

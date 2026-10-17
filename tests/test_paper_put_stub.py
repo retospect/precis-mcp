@@ -112,3 +112,10 @@ def test_put_args_keys_cover_acquire_knobs() -> None:
     keys = PaperHandler.ARGS_KEYS["put"]
     for name in ("identifier", "doi", "arxiv", "title", "verify", "citation"):
         assert name in keys
+
+
+def test_put_forwards_tags_to_acquire() -> None:
+    """gr492998: put(kind=paper, doi=..., tags=[...]) reaches acquire."""
+    h, cap = _capturing_handler()
+    h.put(doi="10.1038/nature10352", tags=["reading-list"], args={"verify": False})
+    assert cap["tags"] == ["reading-list"]

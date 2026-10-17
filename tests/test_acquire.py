@@ -679,3 +679,12 @@ def test_acquire_enriches_from_s2(
     assert ("doi", "10.1/x") in ids
     assert ("arxiv", "2401.99999") in ids
     assert ("s2", "S2DEADBEEF") in ids
+
+
+def test_acquire_tags_applied_to_minted_stub(
+    handler: PaperHandler, store: Store
+) -> None:
+    """gr492998: tags= on put/acquire lands on the stub (offline)."""
+    r = handler.put(doi="10.1234/tagged-stub", tags=["reading-list"], verify=False)
+    assert "minted stub" in r.body
+    assert "reading-list" in _tags(store, _ref_id(r.body))

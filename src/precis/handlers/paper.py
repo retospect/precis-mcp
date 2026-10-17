@@ -411,6 +411,7 @@ class PaperHandler(Handler):
         id: str | int | None = None,
         mode: str | None = None,
         citation: str | None = None,
+        tags: list[str] | None = None,
         args: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
@@ -467,6 +468,14 @@ class PaperHandler(Handler):
             # profiles; "false"/"0"/"no" must not read truthy.
             verify = verify.strip().lower() not in ("false", "0", "no")
         pdf_url = extras.get("pdf_url", _kw.get("pdf_url"))
+        if tags:
+            if pdf_url is not None or mode is not None:
+                raise BadInput(
+                    "tags= applies only to minting a stub (doi=/arxiv=/title=); "
+                    "tag an existing paper with tag(kind='paper', id=…, add=[…])",
+                )
+            # Validate before minting so a bad tag leaves no stub behind.
+            Tag.normalize_filter(tags, kind="paper")
         if pdf_url is not None:
             return self._queue_pdf_pull(id, pdf_url)
         if mode is not None:
@@ -525,6 +534,7 @@ class PaperHandler(Handler):
             reason=reason,
             context_ref_id=context_ref_id,
             verify=verify,
+            tags=tags,
         )
 
     def _queue_pdf_pull(self, id: str | int | None, pdf_url: Any) -> Response:
@@ -616,6 +626,7 @@ class PaperHandler(Handler):
         reason: str | None = None,
         context_ref_id: int | str | None = None,
         verify: bool = True,
+        tags: list[str] | None = None,
         **_kw: Any,
     ) -> Response:
         """Queue a missing paper for fetch — the shared stub-mint impl.
@@ -917,6 +928,11 @@ class PaperHandler(Handler):
             # stubs instead earn their prio via stub_rank. No-op on a
             # collapse hit onto an already-held paper.
             pinned = self.store.pin_stub_for_fetch(ref_id, conn=conn)
+
+        if tags:
+            # gr492998: ``put(kind='paper', doi=…, tags=[…])`` is the
+            # obvious spelling; tag the stub (minted or already tracked).
+            apply_tag_ops(self.store, "paper", ref_id, tags=tags, untags=None)
 
         state = "minted stub" if created else "already tracked"
         parts = [f"acquire: {state} paper id={ref_id}"]

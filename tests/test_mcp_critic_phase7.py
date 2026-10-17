@@ -476,6 +476,50 @@ class TestMissingKindRecentHint:
         assert "pass kind=" in out
 
 
+# ── bare numeric id infers kind; index view folds (gr492994-97) ──
+
+
+class TestBareIdAndIndexView:
+    def _id(self, out: str) -> int:
+        import re
+
+        m = re.search(r"id=(\d+)", out)
+        assert m is not None
+        return int(m.group(1))
+
+    def test_get_bare_numeric_id_infers_kind(self, runtime: PrecisRuntime) -> None:
+        mid = self._id(
+            runtime.dispatch("put", {"kind": "memory", "text": "inferred-kind probe"})
+        )
+        for raw in (mid, str(mid)):
+            out = runtime.dispatch("get", {"id": raw})
+            assert "missing kind" not in out
+            assert "inferred-kind probe" in out
+
+    def test_get_unknown_bare_id_and_other_verbs_still_need_kind(
+        self, runtime: PrecisRuntime
+    ) -> None:
+        assert "missing kind" in runtime.dispatch("get", {"id": 987654321})
+        assert "missing kind" in runtime.dispatch("delete", {"id": 1})
+
+    def test_gripe_get_index_view_equals_default(self, runtime: PrecisRuntime) -> None:
+        a = self._id(runtime.dispatch("put", {"kind": "gripe", "text": "idx gripe a"}))
+        b = self._id(runtime.dispatch("put", {"kind": "gripe", "text": "idx gripe b"}))
+        default = runtime.dispatch("get", {"kind": "gripe", "id": [a, b]})
+        out = runtime.dispatch("get", {"kind": "gripe", "id": [a, b], "view": "index"})
+        assert "[error" not in out
+        assert out == default
+
+    def test_numeric_ref_search_index_view_folds(self, runtime: PrecisRuntime) -> None:
+        runtime.dispatch("put", {"kind": "gripe", "text": "idxview gripe"})
+        for view in ("index", "ids"):
+            out = runtime.dispatch(
+                "search", {"kind": "gripe", "q": "idxview", "view": view}
+            )
+            assert "[error" not in out
+            assert "idxview gripe" in out
+
+
 # ── sigil-prefixed ids self-identify their kind ─────────────────
 
 

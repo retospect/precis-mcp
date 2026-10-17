@@ -1856,6 +1856,11 @@ class DispatchMixin(RuntimeShape):
         if kind is not None:
             return self._expand_kind_code(str(kind)), False, None
 
+        if verb == "get" and (inferred := self._kind_of_bare_id(args.get("id"))):
+            # gr492997: ref ids are globally unique, so a bare numeric
+            # get(id=N) names its kind unambiguously.
+            return inferred, False, None
+
         if verb != "search":
             raise BadInput(
                 "missing kind=",
@@ -1927,6 +1932,21 @@ class DispatchMixin(RuntimeShape):
         except KeyError:
             return kind
         return resolved if not is_chunk else kind
+
+    def _kind_of_bare_id(self, raw: Any) -> str | None:
+        """Kind of the live ref a bare positive int ``id`` names, else None."""
+        if isinstance(raw, bool):
+            return None
+        if isinstance(raw, str) and raw.strip().isdigit():
+            raw = int(raw)
+        if not isinstance(raw, int) or raw <= 0:
+            return None
+        if self.store is None:
+            return None
+        ref = self.store.fetch_refs_by_ids([raw]).get(raw)
+        if ref is None or ref.kind not in self.hub.kinds:
+            return None
+        return str(ref.kind)
 
     def _missing_kind_hints(self, verb: str) -> list[str]:
         """Recovery hints for a non-``search`` verb called without ``kind=``.

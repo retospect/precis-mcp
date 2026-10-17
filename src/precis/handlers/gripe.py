@@ -39,7 +39,11 @@ from typing import Any, ClassVar
 from precis.errors import BadInput, Gone, NotFound, Unsupported
 from precis.handlers import _comment_timeline as tl
 from precis.handlers._mode_help import require_mode
-from precis.handlers._numeric_ref import _BASE_VIEWS, NumericRefHandler
+from precis.handlers._numeric_ref import (
+    _BASE_VIEWS,
+    NumericRefHandler,
+    plain_listing_view,
+)
 from precis.handlers._prio_tag import PRIO_TAG_TO_INT, split_prio, validate_prio
 from precis.handlers._request_state import RequestState
 from precis.protocol import KindSpec
@@ -514,6 +518,7 @@ class GripeHandler(NumericRefHandler):
         q: str | None = None,
         **_kw: Any,
     ) -> Response:
+        view = plain_listing_view(view, ())
         if (r := self._route_find(id=id, view=view, q=q)) is not None:
             return r
         if isinstance(id, list):

@@ -371,3 +371,17 @@ class TestPosBoundary:
             ).fetchone()
         assert row is not None
         assert row[0] >= 1
+
+
+class TestBareFlagDedup:
+    """gr492995: a bare reserved flag restating a closed value in the same
+    filter is dropped; alone it still raises."""
+
+    def test_bare_flag_beside_closed_form_is_dropped(self) -> None:
+        assert Tag.normalize_filter(["DREAM:speculative", "speculative"]) == [
+            "DREAM:speculative"
+        ]
+
+    def test_bare_flag_alone_still_raises(self) -> None:
+        with pytest.raises(BadInput):
+            Tag.normalize_filter(["speculative"])

@@ -1001,6 +1001,11 @@ class Tag:
         """
         if not tags:
             return None
+        # gr492995: ``tags=['DREAM:speculative', 'speculative']`` — the bare
+        # flag restates a closed value already in the filter; drop it
+        # instead of rejecting the call.
+        given = {t.strip() for t in tags}
+        tags = [t for t in tags if _RESERVED_FLAGS.get(t.strip()) not in given]
         return [str(cls.parse_strict(t, kind=kind)) for t in tags]
 
     def __str__(self) -> str:

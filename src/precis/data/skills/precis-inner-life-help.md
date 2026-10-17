@@ -81,7 +81,7 @@ self has shifted enough that overwriting feels wrong.
 ```python
 search(kind="memory", tags=["internal-thought"])  # all fragments
 search(kind="memory", tags=["internal-state"])  # all state docs (history)
-search(kind="memory", tags=["DREAM:speculative"])  # all dreams
+search(kind="memory", tags=["DREAM:speculative"])  # all dreams (a bare `speculative` beside it is ignored)
 search(kind="memory", tags=["user:asa"])  # everything you own
 search(kind="memory", q="<keyword>", tags=["internal-thought"])  # fragments by keyword
 ```
