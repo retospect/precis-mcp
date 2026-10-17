@@ -9,8 +9,10 @@
 #                                    body, no trailers); 1 + reason on stderr
 #
 # Resolution: MSG (-m) wins; else the branch's non-WIP, non-merge commits since
-# BASE_REF: one → its full message minus trailers; several → the newest's subject
-# plus an "Also:" list of the rest; none → refuse. Both fail before any gate.
+# BASE_REF: one → its full message minus trailers; several → refuse when their
+# type(scope) prefixes disagree (a fix-up test commit must not label a fix; gr495447),
+# else the OLDEST subject plus an "Also:" list of the rest; none → refuse. All
+# fail before any gate.
 # PRECIS_SHIP_SUBJECT_LINT=0 skips the lint (emergencies only).
 
 _SHIP_SUBJECT_RE='^(feat|fix|docs|test|chore|build|refactor|perf|ci|release|revert)(\([a-z0-9/_.-]+\))?!?: [^[:space:]]'
@@ -47,9 +49,24 @@ ship_resolve_msg() {
             1)
                 msg="$(git log -1 --format=%B "${shas[0]}")" ;;
             *)
-                msg="$(git log -1 --format=%s "${shas[0]}")"$'\n\nAlso:'
-                for sha in "${shas[@]:1}"; do
-                    msg+=$'\n'"- $(git log -1 --format=%s "$sha")"
+                # rev-list is newest first: the oldest commit is the last element.
+                local last=$(( ${#shas[@]} - 1 )) prefix first_prefix="" mixed=0 i
+                local -a subjects=()
+                for sha in "${shas[@]}"; do
+                    subj="$(git log -1 --format=%s "$sha")"
+                    subjects+=("$subj")
+                    prefix="${subj%%:*}"
+                    first_prefix="${first_prefix:-$prefix}"
+                    [[ "$prefix" == "$first_prefix" ]] || mixed=1
+                done
+                if (( mixed )) && [[ "${PRECIS_SHIP_SUBJECT_LINT:-1}" != 0 ]]; then
+                    printf "%d commits with different type(scope) prefixes, so the squash subject would mislabel the change (a fix-up commit would win) — pass -m '<type(scope): what changed>'. Subjects:\n" "${#shas[@]}" >&2
+                    printf '  - %s\n' "${subjects[@]}" >&2
+                    return 1
+                fi
+                msg="${subjects[$last]}"$'\n\nAlso:'
+                for (( i = last - 1; i >= 0; i-- )); do
+                    msg+=$'\n'"- ${subjects[$i]}"
                 done ;;
         esac
     fi

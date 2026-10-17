@@ -77,19 +77,35 @@ def test_single_commit_message_reused_without_trailers(tmp_path: Path) -> None:
     assert r.stdout == "fix(ship): derive subject\n\nWhy: placeholders are useless.\n"
 
 
-def test_several_commits_newest_subject_plus_also(tmp_path: Path) -> None:
+def test_several_same_prefix_commits_oldest_subject_plus_also(tmp_path: Path) -> None:
     repo = _repo(
         tmp_path,
         [
-            "feat(a): first",
+            "fix(a): first",
             "wip(branch): end-of-session snapshot",
-            "fix(b): second",
-            "docs(c): third",
+            "fix(a): second",
+            "fix(a): third",
         ],
     )
     r = _resolve(repo)
     assert r.returncode == 0, r.stderr
-    assert r.stdout == "docs(c): third\n\nAlso:\n- fix(b): second\n- feat(a): first\n"
+    assert r.stdout == "fix(a): first\n\nAlso:\n- fix(a): second\n- fix(a): third\n"
+
+
+def test_two_commits_with_different_prefixes_refuse_naming_m(tmp_path: Path) -> None:
+    repo = _repo(
+        tmp_path,
+        ["fix(web): pcb page renders a string DRC status", "test(web): pin escaping"],
+    )
+    r = _resolve(repo)
+    assert r.returncode == 1
+    assert "pass -m '<type(scope): what changed>'" in r.stderr
+    assert "fix(web): pcb page renders a string DRC status" in r.stderr
+    assert r.stdout == ""
+    # -m resolves it.
+    assert (
+        _resolve(repo, "fix(web): pcb page renders a string DRC status").returncode == 0
+    )
 
 
 def test_only_wip_dies(tmp_path: Path) -> None:
