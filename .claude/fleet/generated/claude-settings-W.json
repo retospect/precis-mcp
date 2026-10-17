@@ -1,0 +1,31 @@
+{
+  "_generated": "GENERATED from .claude/fleet/authority.md by scripts/fleet-authority; do not edit.",
+  "permissions": {
+    "allow": [
+      "Bash(scripts/ship --checked:*)",
+      "Bash(scripts/ship --remote:*)",
+      "Bash(scripts/test:*)",
+      "Bash(scripts/prod-psql:*)",
+      "mcp__precis__put",
+      "mcp__precis__edit",
+      "mcp__precis__tag",
+      "mcp__precis__link",
+      "mcp__precis__delete"
+    ],
+    "deny": [
+      "Bash(scripts/release:*)",
+      "Bash(scripts/deploy:*)",
+      "Bash(scripts/round:*)",
+      "Bash(scripts/host-ops/play:*)",
+      "Bash(pkill -f:*)",
+      "Edit(.claude/fleet/authority.md)",
+      "Write(.claude/fleet/authority.md)",
+      "Edit(.claude/fleet/generated/**)",
+      "Write(.claude/fleet/generated/**)",
+      "Edit(.devin/config.json)",
+      "Write(.devin/config.json)",
+      "Edit(~/work/infrastructure/**)",
+      "Write(~/work/infrastructure/**)"
+    ]
+  }
+}

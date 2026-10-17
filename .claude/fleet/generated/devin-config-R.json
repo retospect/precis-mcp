@@ -1,0 +1,24 @@
+{
+  "_generated": "GENERATED from .claude/fleet/authority.md by scripts/fleet-authority; do not edit.",
+  "permissions": {
+    "allow": [],
+    "ask": [],
+    "deny": [
+      "Exec(scripts/ship)",
+      "Exec(scripts/release)",
+      "Exec(scripts/deploy)",
+      "Exec(scripts/round)",
+      "Exec(scripts/host-ops/play)",
+      "Exec(pkill -f)",
+      "mcp__precis__put",
+      "mcp__precis__edit",
+      "mcp__precis__delete",
+      "mcp__precis__tag",
+      "mcp__precis__link",
+      "Write(.claude/fleet/authority.md)",
+      "Write(.claude/fleet/generated/**)",
+      "Write(.devin/config.json)",
+      "Write(~/work/infrastructure/**)"
+    ]
+  }
+}

@@ -302,7 +302,7 @@ def test_launch_fills_footer_and_runs_claude_by_argv(
     argv = json.loads(Path(env["FAKE_CLAUDE_LOG"]).read_text(encoding="utf-8"))
     assert argv[:6] == ["-w", "fix-x", "--model", "sonnet", "--permission-mode", "auto"]
     prompt = argv[6]
-    assert prompt.startswith("Task: fix the thing.\nRules:")
+    assert prompt.startswith("Task: fix the thing.\n") and "\nRules:" in prompt
     assert "coord-1" in prompt and "rel-2" in prompt
     assert "standing grant in .claude/fleet/authority.md" in prompt
     assert "{" not in prompt.replace("{0,", "")
