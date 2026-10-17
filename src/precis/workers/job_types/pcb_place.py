@@ -166,9 +166,12 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     # the authored graph, so placement's ratsnest is built against the
     # SAME netlist pcb_route realizes copper for. Read-only: only the
     # route job resolves and writes a snapshot.
+    # One read of the graph and every surface the idem key hashes
+    # (`load_snapshot`, the same call `_enqueue_op` digests); the resolved
+    # snapshot is job-written, not hashed, so it stays a separate read.
+    design = pcb_session.load_snapshot(ctx.store, pcb_ref_id)
     graph = pcb_resolved.apply(
-        ctx.store.pcb_graph(pcb_ref_id),
-        ctx.store.pcb_netlist_snapshot_latest(pcb_ref_id),
+        design.graph, ctx.store.pcb_netlist_snapshot_latest(pcb_ref_id)
     )
     if not graph.get("instances"):
         ctx.record_failure(
@@ -177,7 +180,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         )
         return
 
-    features = ctx.store.pcb_features_list(pcb_ref_id)
+    features = design.features
     board_id = (graph.get("board") or {}).get("board_id")
     ir = pcb_session.build_ir(
         graph,
@@ -196,11 +199,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         # Authored copper (a generator's plaza vias) the placer must keep
         # every solder land off — without it a part is free to land on a
         # via that existed before placement ran.
-        fixed_copper=(
-            ctx.store.pcb_fixed_copper_list(int(board_id))
-            if board_id is not None
-            else None
-        ),
+        fixed_copper=design.fixed_copper if board_id is not None else None,
     )
 
     # Re-apply persisted plane assignments (authored `op='plane_net'` AND a
@@ -221,7 +220,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     layer_name_to_idx = {
         str(layer.get("name")): i for i, layer in enumerate(ir.stackup)
     }
-    for plane in ctx.store.pcb_planes_list(pcb_ref_id):
+    for plane in design.planes:
         net_id = net_name_to_id.get(plane["net"])
         layer_idx = layer_name_to_idx.get(plane["layer"])
         if net_id is not None and layer_idx is not None:
@@ -235,9 +234,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     # this engine can't express as a two-instance distance bound (a
     # `height`/connectivity metric, a role-based operand, a `gauge`
     # strength) — those stay eyes.py-evaluated only, same as before.
-    measures = resolve_measures(
-        ctx.store.pcb_measures_list(pcb_ref_id), features=features
-    )
+    measures = resolve_measures(design.measures, features=features)
 
     config = OptimizeConfig(
         iters=iters,
@@ -320,11 +317,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     # are measured HERE, on the stored poses the copper was laid against;
     # after the anneal the pads no longer touch it. Copper between parts
     # that stay is kept. Nothing enters the anneal's objective.
-    fixed_rows = (
-        ctx.store.pcb_fixed_copper_list(int(gate_board_id))
-        if gate_board_id is not None
-        else []
-    )
+    fixed_rows = design.fixed_copper
     branches = (
         pcb_session.fixed_copper_branches(
             ir,
@@ -369,7 +362,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             layers = [str(layer.get("name")) for layer in ir.stackup]
             placement_findings += pcb_session.invariant_measure_findings(
                 graph=graph,
-                measures=ctx.store.pcb_measures_list(pcb_ref_id),
+                measures=design.measures,
                 features=features,
                 generators_rows=ctx.store.pcb_generators_for(pcb_ref_id),
                 pads=pcb_realize.pads_for_ir(ir, layers, footprints),

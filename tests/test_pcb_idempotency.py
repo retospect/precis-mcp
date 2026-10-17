@@ -9,9 +9,12 @@ case constructs the raw store-row shapes by hand.
 from __future__ import annotations
 
 import copy
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 from precis.pcb.session import content_hash
+
+if TYPE_CHECKING:
+    from precis.store import Store
 
 _GRAPH = {
     "instances": [
@@ -286,3 +289,101 @@ def test_digest_is_order_independent() -> None:
     assert h_a == h_b
     # Stable across two identical reads too.
     assert h_a == content_hash(_GRAPH, _PARAMS, session_state=state_a)
+
+
+# --- one load_snapshot for the digest and the workers (gr266041) -----------
+
+# Keys `PcbHandler._enqueue_op` hand-listed in `session_state` before
+# `DesignSnapshot.session_state()` replaced the literal.
+_ENQUEUE_OP_SESSION_KEYS = {"features", "routes", "planes", "measures", "fixed_copper"}
+
+
+class _FakeStore:
+    def __init__(self, board_id: int | None) -> None:
+        self.board_id = board_id
+        self.fixed_calls: list[int] = []
+
+    def pcb_graph(self, ref_id: int) -> dict[str, Any]:
+        graph: dict[str, Any] = copy.deepcopy(_GRAPH)
+        board: dict[str, Any] = dict(graph["board"])
+        board["board_id"] = self.board_id
+        graph["board"] = board
+        return graph
+
+    def pcb_features_list(self, ref_id: int) -> list[Any]:
+        return [{"kind": "outline"}]
+
+    def pcb_routes_get(self, ref_id: int) -> dict[str, Any]:
+        return {"GND": {"topology": "pin_side"}}
+
+    def pcb_planes_list(self, ref_id: int) -> list[Any]:
+        return [{"net": "GND", "layer": "In1.Cu", "source": "authored"}]
+
+    def pcb_measures_list(self, ref_id: int) -> list[Any]:
+        return [{"metric": "proximity"}]
+
+    def pcb_fixed_copper_list(self, board_id: int) -> list[Any]:
+        self.fixed_calls.append(board_id)
+        return [{"fixed_id": 1}]
+
+
+def test_session_state_has_exactly_the_keys_enqueue_op_used() -> None:
+    from precis.pcb.session import load_snapshot
+
+    snap = load_snapshot(cast("Store", _FakeStore(board_id=7)), 1)
+    state = snap.session_state()
+    assert set(state) == _ENQUEUE_OP_SESSION_KEYS
+    assert state["fixed_copper"] == [{"fixed_id": 1}]
+    # The digest the snapshot feeds is the one the hand-built dict gave.
+    assert content_hash(snap.graph, _PARAMS, session_state=state) == content_hash(
+        snap.graph,
+        _PARAMS,
+        session_state={
+            "features": [{"kind": "outline"}],
+            "routes": {"GND": {"topology": "pin_side"}},
+            "planes": [{"net": "GND", "layer": "In1.Cu", "source": "authored"}],
+            "measures": [{"metric": "proximity"}],
+            "fixed_copper": [{"fixed_id": 1}],
+        },
+    )
+
+
+def test_load_snapshot_boardless_has_empty_fixed_copper() -> None:
+    from precis.pcb.session import load_snapshot
+
+    store = _FakeStore(board_id=None)
+    snap = load_snapshot(cast("Store", store), 1)
+    assert snap.fixed_copper == []
+    assert store.fixed_calls == []
+
+
+# Direct hashed-surface reads a worker may keep, as {file: {call: reason}}.
+# Empty today: both workers take these surfaces from `load_snapshot`. A new
+# entry must say why the re-read is deliberate (e.g. after the job's own
+# write), or the digest and the worker's inputs drift apart again.
+_DIRECT_READ_ALLOWLIST: dict[str, dict[str, str]] = {}
+
+
+def test_workers_read_hashed_surfaces_through_load_snapshot() -> None:
+    import re
+    from pathlib import Path
+
+    import precis.workers.job_types.pcb_place as place_mod
+    import precis.workers.job_types.pcb_route as route_mod
+
+    direct = re.compile(
+        r"store\.(pcb_(?:graph|features_list|routes_get|planes_list"
+        r"|measures_list|fixed_copper_list))\("
+    )
+    for mod in (route_mod, place_mod):
+        path = Path(mod.__file__ or "")
+        src = path.read_text(encoding="utf-8")
+        assert "load_snapshot(" in src, f"{path.name} must call load_snapshot("
+        allowed = _DIRECT_READ_ALLOWLIST.get(path.name, {})
+        for call in direct.findall(src):
+            assert call in allowed, (
+                f"{path.name} reads store.{call}( directly; take it from "
+                "load_snapshot or add a reasoned _DIRECT_READ_ALLOWLIST entry"
+            )
+        for call, reason in allowed.items():
+            assert reason.strip(), f"allowlist entry {call} needs a reason"

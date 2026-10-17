@@ -809,7 +809,11 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     seed = int(params.get("seed") or 0)
     groups = bool(params.get("groups") or False)
 
-    graph = ctx.store.pcb_graph(pcb_ref_id)
+    # One read of the graph and every surface the idem key hashes
+    # (`load_snapshot`, the same call `_enqueue_op` digests). No re-read
+    # follows this job's own writes below: they are the last thing it does.
+    snap = pcb_session.load_snapshot(ctx.store, pcb_ref_id)
+    graph = snap.graph
     if not graph.get("nets"):
         ctx.record_failure(
             f"pcb_route: design (ref_id={pcb_ref_id}) has no nets to route",
@@ -841,7 +845,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     # and the place job's outline-aware placement quietly re-annealed away
     # here. One rule, two call sites, drifted: the same shape as every
     # other defect this build has produced.
-    features = ctx.store.pcb_features_list(pcb_ref_id)
+    features = snap.features
 
     def _build(g: dict[str, Any]) -> PcbIR:
         return pcb_session.build_ir(
@@ -866,13 +870,13 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             # vias as obstacles exactly as ``pcb_place``'s does — one rule,
             # two call sites again; the realizer further down reads the same
             # rows for the router's grid.
-            fixed_copper=ctx.store.pcb_fixed_copper_list(int(board_id)),
+            fixed_copper=snap.fixed_copper,
         )
 
     ir = _build(graph)
-    routes_by_net = ctx.store.pcb_routes_get(pcb_ref_id)
+    routes_by_net = snap.routes
 
-    fixed_copper = ctx.store.pcb_fixed_copper_list(int(board_id))
+    fixed_copper = snap.fixed_copper
 
     def _footprints(ir: PcbIR) -> dict[str, dict[str, Any]]:
         return pcb_session.footprints_by_refdes(
@@ -930,7 +934,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         str(layer.get("name")): i for i, layer in enumerate(ir.stackup)
     }
     authored_net_names: set[str] = set()
-    for plane in ctx.store.pcb_planes_list(pcb_ref_id):
+    for plane in snap.planes:
         net_id = net_name_to_id.get(plane["net"])
         layer_idx = layer_name_to_idx.get(plane["layer"])
         if net_id is not None and layer_idx is not None:
@@ -950,7 +954,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     # proximity/separation measure had just pulled into shape (one rule,
     # one call site short). `raw_measures` also feeds the invariant gate
     # below (resolve_measures drops `strength='invariant'` rows).
-    raw_measures = ctx.store.pcb_measures_list(pcb_ref_id)
+    raw_measures = snap.measures
     measures = resolve_measures(raw_measures, features=features)
     # part_lcsc -> Store.pcb_footprints_for (LCSC-keyed) -> refdes-keyed,
     # via PcbIR.instance_part_lcsc (the join pcb_graph/from_graph now

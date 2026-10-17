@@ -1386,7 +1386,8 @@ class PcbHandler(Handler):
         milliseconds). Idempotent per (design, op, content-hash): a
         re-submit against unchanged design state + params collapses onto
         the in-flight/prior job rather than minting a duplicate."""
-        graph = self.store.pcb_graph(ref.id)
+        snap = pcb_session.load_snapshot(self.store, ref.id)
+        graph = snap.graph
         stackup = (graph.get("board") or {}).get("stackup") or []
         if len(stackup) != 4:
             raise BadInput(
@@ -1501,29 +1502,16 @@ class PcbHandler(Handler):
                 raise BadInput("pcb: force must be a boolean (True or False)")
             if opts["force"]:
                 params["force"] = True
-        board_id = (graph.get("board") or {}).get("board_id")
         # Raw store rows, verbatim -- `content_hash` itself does the
         # narrowing (job-written-field exclusion, authored-vs-derived
         # filtering) so there is exactly one place that can get it wrong.
-        session_state = {
-            "features": self.store.pcb_features_list(ref.id),
-            "routes": self.store.pcb_routes_get(ref.id),
-            # The resolved netlist snapshot is job-written (Slice 7): like
-            # derived pin swaps before it, it never enters the digest.
-            "planes": self.store.pcb_planes_list(ref.id),
-            "measures": self.store.pcb_measures_list(ref.id),
-            # `pcb_fixed_copper_list` is keyed by board_id, not ref_id --
-            # `graph["board"]["board_id"]` is already in hand from the
-            # `pcb_graph` call above (`_pcb_board_meta`), so this costs no
-            # extra round trip. A board-less design (no `pcb_boards` row
-            # yet) has nothing authored to hash here.
-            "fixed_copper": (
-                self.store.pcb_fixed_copper_list(int(board_id))
-                if board_id is not None
-                else []
-            ),
-        }
-        digest = pcb_session.content_hash(graph, params, session_state=session_state)
+        # The resolved netlist snapshot is job-written (Slice 7): like
+        # derived pin swaps before it, it never enters the digest, so
+        # `load_snapshot` does not carry it. The workers read the same
+        # `load_snapshot`, so the hashed list and the read list are one.
+        digest = pcb_session.content_hash(
+            graph, params, session_state=snap.session_state()
+        )
         idem_key = f"pcb_{op}:{ref.id}:{digest}"
         if op == "route":
             # Route code changes alter the result for an unchanged board;
