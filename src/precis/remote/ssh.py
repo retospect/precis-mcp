@@ -141,7 +141,9 @@ def bounded_process(
             # The session owns the whole group, not just its leader PID.
             try:
                 os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
+            except (ProcessLookupError, PermissionError):
+                # macOS answers EPERM, not ESRCH, when the group holds only
+                # the exited, not-yet-reaped leader; ``wait`` reaps it.
                 pass
             proc.wait()
             if proc.stdin:

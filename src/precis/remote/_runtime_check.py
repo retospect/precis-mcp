@@ -71,7 +71,9 @@ def bounded_command(argv):
     finally:
         try:
             os.killpg(p.pid, signal.SIGKILL)
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
+            # macOS answers EPERM, not ESRCH, when the group holds only the
+            # exited, not-yet-reaped leader; ``wait`` reaps it.
             pass
         p.wait()
         if p.stdout is not None:
