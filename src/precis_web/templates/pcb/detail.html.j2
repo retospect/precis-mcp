@@ -15,14 +15,7 @@
     {% for status, n in route_status.items() %}{{ status }} {{ n }}{% if not loop.last %} · {% endif %}{% endfor %}
   </span>
   {% endif %}
-  {% if drc %}
-  <span class="text-xs text-rose-600">
-    DRC:
-    {% for rule, n in drc.items() %}{{ rule }} {{ n }}{% if not loop.last %} · {% endif %}{% endfor %}
-  </span>
-  {% else %}
-  <span class="text-xs text-emerald-600">DRC: no recorded errors</span>
-  {% endif %}
+  {% include "pcb/_drc_badge.html.j2" %}
 </div>
 
 {% if read_only %}

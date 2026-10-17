@@ -1,0 +1,14 @@
+{#- DRC badge. ``drc`` is a mapping {rule: error count} (empty = clean) or a
+    string status such as "stale, re-check" (precis.pcb.argue.vitals). -#}
+{% if drc is string %}
+<span class="text-xs text-amber-600">DRC: {{ drc }}</span>
+{% elif drc is mapping and drc %}
+<span class="text-xs text-rose-600">
+  DRC:
+  {% for rule, n in drc.items() %}{{ rule }} {{ n }}{% if not loop.last %} · {% endif %}{% endfor %}
+</span>
+{% elif drc %}
+<span class="text-xs text-amber-600">DRC: {{ drc }}</span>
+{% else %}
+<span class="text-xs text-emerald-600">DRC: no recorded errors</span>
+{% endif %}
