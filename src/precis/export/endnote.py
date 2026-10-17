@@ -26,11 +26,13 @@ is itself well-formed.
 
 from __future__ import annotations
 
+import html
 import re
 from typing import Any
 
 from precis.export._cite_ids import merged_cite_numbers
 from precis.utils.authors import author_display
+from precis.utils.draft_markup import strip_markers
 from precis.utils.text import esc
 
 #: EndNote ``ref-type`` codes (name, numeric code), verified against a real
@@ -118,7 +120,21 @@ _TAG = re.compile(r"<[A-Za-z][^>]*>|</[A-Za-z][^>]*>")
 
 
 def _strip_markup(text: Any) -> str:
-    return _TAG.sub("", str(text or ""))
+    """Tags dropped and HTML entities decoded (Crossref's ``&amp;``), so the
+    one :func:`esc` on output is the only escaping EndNote sees."""
+    return html.unescape(_TAG.sub("", str(text or "")))
+
+
+#: A paired ``$…$`` / ``$$…$$`` math span (an escaped ``\$`` is no delimiter).
+_MATH_SPAN = re.compile(r"(?<!\\)\$\$?([^$]+?)\$\$?")
+
+
+def _plain_note(text: str) -> str:
+    """A cited passage as plain text for ``<research-notes>``: tags,
+    entities, draft reference markers (``[fi12>pc34]``) and math
+    delimiters reduced to the words a reader sees (gr491600 M1)."""
+    text = _MATH_SPAN.sub(r"\1", strip_markers(_strip_markup(text)))
+    return re.sub(r"\s+(?=[.,;:)])", "", text).replace("\\$", "$")
 
 
 def build_record(source: dict[str, Any], notes: str | None = None) -> str:
@@ -178,7 +194,7 @@ def build_record(source: dict[str, Any], notes: str | None = None) -> str:
     else:
         parts.append("<urls></urls>")
     if notes:
-        text = notes.strip()
+        text = _plain_note(notes)
         if len(text) > _NOTE_MAX_CHARS:
             text = text[:_NOTE_MAX_CHARS].rstrip() + "…"
         parts.append(f"<research-notes>{esc(text)}</research-notes>")

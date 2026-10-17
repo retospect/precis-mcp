@@ -91,3 +91,15 @@ def test_record_normalizes_name_only_authors() -> None:
     assert "<author>Niyogi, Sandip</author>" in rec
     assert "<author>Smith, Jane</author>" in rec
     assert "<author>WHO</author>" in rec
+
+
+def test_record_decodes_entities_and_cleans_research_notes() -> None:
+    """gr491600 M1: a Crossref entity is decoded before the one escape (no
+    ``&amp;amp;``), and the cited passage in ``<research-notes>`` carries
+    no tags, draft reference markers or math delimiters."""
+    rec = build_record(
+        {"kind": "paper", "rec_number": 1, "title": "Ni &amp; Co C<sub>2</sub>"},
+        notes="A C<sub>20</sub> cage [fi12>pc34] with $E_g$ of 1 eV (see [pa5]).",
+    )
+    assert "<title>Ni &amp; Co C2</title>" in rec
+    assert "<research-notes>A C20 cage with E_g of 1 eV (see).</research-notes>" in rec
