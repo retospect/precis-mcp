@@ -14,7 +14,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
-from precis.errors import Unsupported
+from precis.errors import BadInput, Unsupported
 from precis.response import Response
 
 if TYPE_CHECKING:
@@ -589,8 +589,60 @@ class Handler(ABC):
     def delete(self, **kw: Any) -> Response:
         raise Unsupported(f"{self.spec.kind} does not support delete")
 
-    def tag(self, **kw: Any) -> Response:
-        raise Unsupported(f"{self.spec.kind} does not support tag")
+    def tag(
+        self,
+        *,
+        id: Any = None,
+        add: list[str] | None = None,
+        remove: list[str] | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """The one ref-level tag op, as the verb's default.
+
+        Declaring ``supports_tag=True`` on a refs-backed kind is the
+        whole enablement: the id resolves through
+        :func:`precis.utils.slug_ref.resolve_live_slug_ref` (slug, record
+        handle, or a bare ref_id) and the ops land through the same
+        :func:`~precis.utils.link_tag_ops.apply_tag_ops` /
+        ``format_link_tag_ack`` door every hand-written ``tag`` used —
+        this method is that boilerplate, so kinds like ``pcb``/``se``
+        don't each grow a copy (gr495292/gr495400). Handlers with
+        kind-specific tag semantics (numeric-ref batch ids, per-kind
+        axes, extra verbs inside the same call) override it as before;
+        ``spec.supports('tag')`` stays the gate, so a kind that leaves
+        the flag off never reaches here.
+        """
+        from precis.utils.link_tag_ops import (
+            apply_tag_ops,
+            format_link_tag_ack,
+            require_tag_ops,
+        )
+        from precis.utils.slug_ref import resolve_live_slug_ref
+
+        kind = self.spec.kind
+        if not self.spec.supports("tag"):
+            raise Unsupported(f"{kind} does not support tag")
+        if id is None or isinstance(id, (list, tuple)):
+            raise BadInput(
+                f"tag(kind={kind!r}, id=...) requires a single ref id",
+                next=f"tag(kind={kind!r}, id='<slug>', add=['topic-...'])",
+            )
+        require_tag_ops(kind, add, remove)
+        store = getattr(self, "store", None) or getattr(self.hub, "store", None)
+        if store is None:
+            raise Unsupported(f"{kind} does not support tag — no store bound")
+        ref = resolve_live_slug_ref(store, kind=kind, id=id)
+        n_added, n_removed = apply_tag_ops(store, kind, ref.id, tags=add, untags=remove)
+        return Response(
+            body=format_link_tag_ack(
+                kind=kind,
+                ref_label=str(ref.slug or ref.id),
+                n_links_added=0,
+                n_links_removed=0,
+                n_tags_added=n_added,
+                n_tags_removed=n_removed,
+            )
+        )
 
     def link(self, **kw: Any) -> Response:
         raise Unsupported(f"{self.spec.kind} does not support link")

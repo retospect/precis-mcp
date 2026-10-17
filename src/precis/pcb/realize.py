@@ -2660,16 +2660,20 @@ def _foreign_copper_near_path(
     tracks: list[RealizedTrack],
     vias: list[RealizedVia],
     reach_mm: float,
-) -> bool:
-    """True when another net's routed track or via lies within
-    ``reach_mm`` (+ its own half width / radius) of ``path`` on the
-    path's layers. Conservative on arcs: a track's segment endpoints
-    stand in for its curve."""
+) -> dict[int, set[int]]:
+    """``{blocking net_id: {layers it contests}}`` — every OTHER net's
+    routed track or via lying within ``reach_mm`` (+ its own half width /
+    radius) of ``path`` on the path's layers. Empty dict means no foreign
+    copper near the corridor (the old boolean's ``False``). Conservative
+    on arcs: a track's segment endpoints stand in for its curve. The
+    blockers are returned, not just detected, so a ``'congestion'``
+    verdict can NAME who won the race (gr495293)."""
     runs = [
         ((a[0], a[1]), (b[0], b[1]), a[2])
         for a, b in itertools.pairwise(path.points)
         if a[2] == b[2]
     ]
+    found: dict[int, set[int]] = {}
     for tr in tracks:
         if tr.net_id == net_id:
             continue
@@ -2680,7 +2684,11 @@ def _foreign_copper_near_path(
             reach = reach_mm + tr.width_mm / 2.0
             for a, b, layer in runs:
                 if layer == tr.layer and _seg_seg_dist(a, b, c, d) <= reach:
-                    return True
+                    found.setdefault(int(tr.net_id), set()).add(int(tr.layer))
+                    break
+            else:
+                continue
+            break
     for v in vias:
         if v.net_id == net_id:
             continue
@@ -2690,8 +2698,86 @@ def _foreign_copper_near_path(
                 v.layer_lo <= layer <= v.layer_hi
                 and _seg_point_dist((v.x, v.y), a, b) <= reach
             ):
-                return True
-    return False
+                found.setdefault(int(v.net_id), set()).update(
+                    range(v.layer_lo, v.layer_hi + 1)
+                )
+                break
+    return found
+
+
+def layer_names(ir: PcbIR, indices: Sequence[int]) -> list[str]:
+    """Stackup layer names for routable indices — ``F.Cu``-style names a
+    failure reason can cite instead of a bare stackup index (gr495293:
+    the reason must say WHICH layer)."""
+    return [
+        str(ir.stackup[i].get("name", f"layer{i}"))
+        if 0 <= i < len(ir.stackup)
+        else f"layer{i}"
+        for i in indices
+    ]
+
+
+def _constricting_pad_names(
+    ir: PcbIR,
+    thin_path: maze.RoutePath,
+    net_id: int,
+    pads: list[tuple[Point, int, maze.PadShape, tuple[int, ...]]],
+    width_mm: float,
+    clearance: float,
+    *,
+    max_names: int = 6,
+) -> list[str]:
+    """Which pads pinch the corridor the thin probe found — the blocking
+    participants a ``'width'`` verdict names (gr495293). A pad of a
+    DIFFERENT net whose enclosing circle comes within
+    ``pad_radius + width_mm/2 + clearance`` of the probe path on a shared
+    layer is what the required-width search cannot squeeze past. Pads are
+    labelled ``REFDES.PIN (net)`` by matching their centre back to the
+    pin that minted them; an unpinned footprint pad reads as
+    ``pad@(x,y) (net)``. ``width_mm`` is the REQUIRED width, not the
+    probe's."""
+    runs = [
+        ((a[0], a[1]), (b[0], b[1]), a[2])
+        for a, b in itertools.pairwise(thin_path.points)
+        if a[2] == b[2]
+    ]
+    if not runs:
+        return []
+    pin_label_at: dict[tuple[float, float], str] = {}
+    for pid in range(ir.n_pins):
+        pt = pin_point(ir, pid)
+        if pt is None:
+            continue
+        inst = int(ir.pin_instance[pid])
+        pin_label_at[(round(pt[0], 4), round(pt[1], 4))] = (
+            f"{ir.instance_refdes[inst]}.{ir.pin_label[pid]}"
+        )
+    names: list[str] = []
+    for point, pad_net, shape, pad_layers in pads:
+        if int(pad_net) == net_id:
+            continue  # our own pads are endpoints, not obstacles
+        shared = [r for r in runs if r[2] in pad_layers]
+        if not shared:
+            continue
+        reach = shape.enclosing_radius_mm + width_mm / 2.0 + clearance
+        if not any(
+            _seg_point_dist((shape.x, shape.y), a, b) <= reach
+            for a, b, _layer in shared
+        ):
+            continue
+        centre = (round(float(shape.x), 4), round(float(shape.y), 4))
+        label = pin_label_at.get(centre, f"pad@({shape.x:.2f},{shape.y:.2f})")
+        owner = (
+            str(ir.net_name[pad_net])
+            if 0 <= int(pad_net) < len(ir.net_name)
+            else "unconnected"
+        )
+        entry = f"{label} ({owner})"
+        if entry not in names:
+            names.append(entry)
+        if len(names) >= max_names:
+            break
+    return names
 
 
 def _diagnose_unrouted(
@@ -2776,13 +2862,16 @@ def _diagnose_unrouted(
     )
     clear_exhausted = probe.last_route_exhausted
     if clear_path is not None:
-        if routed_copper is not None and not _foreign_copper_near_path(
-            clear_path,
-            net_id,
-            routed_copper[0],
-            routed_copper[1],
-            rules.track_width_mm / 2.0 + clearance,
-        ):
+        blockers: dict[int, set[int]] = {}
+        if routed_copper is not None:
+            blockers = _foreign_copper_near_path(
+                clear_path,
+                net_id,
+                routed_copper[0],
+                routed_copper[1],
+                rules.track_width_mm / 2.0 + clearance,
+            )
+        if routed_copper is not None and not blockers:
             return UnroutedReason(
                 seg_id,
                 net_id,
@@ -2796,15 +2885,22 @@ def _diagnose_unrouted(
         via_note = (
             f", stitching {n_vias} via(s) at a layer change" if group_extent else ""
         )
+        who = ""
+        if blockers:
+            who = " — contested by " + ", ".join(
+                f"{ir.net_name[n] if 0 <= n < len(ir.net_name) else f'net#{n}'} "
+                f"on {'/'.join(layer_names(ir, sorted(ls)))}"
+                for n, ls in sorted(blockers.items())[:4]
+            )
         return UnroutedReason(
             seg_id,
             net_id,
             "congestion",
             f"a corridor wide enough for this net ({rules.track_width_mm:.3f}mm"
             f"{via_note}) exists between its endpoints once every OTHER net's "
-            "copper is cleared away, so this connection lost a race for it to "
-            "a net that routed first (rip-up/retry already re-tries failures "
-            "first on the next pass)",
+            f"copper is cleared away, so this connection lost a race for it to "
+            f"a net that routed first{who} (rip-up/retry already re-tries "
+            "failures first on the next pass)",
         )
     thin_path = probe.route(
         net_id,
@@ -2840,20 +2936,28 @@ def _diagnose_unrouted(
             if group_extent
             else ""
         )
+        pinchers = _constricting_pad_names(
+            ir, thin_path, net_id, pads, rules.track_width_mm, clearance
+        )
+        pinched = f" — constricted by {', '.join(pinchers)}" if pinchers else ""
         return UnroutedReason(
             seg_id,
             net_id,
             "width",
-            f"a path exists between this connection's endpoints, but this net's "
-            f"required width ({rules.track_width_mm:.3f}mm{via_note}) does not "
-            "fit any corridor along it — the width itself is the blocker, not "
-            "routing order",
+            f"a path exists between this connection's endpoints "
+            f"(on {'/'.join(layer_names(ir, signal_layers))}, "
+            f"corridor ≥{spec.pitch * _PROBE_WIDTH_FRACTION_OF_PITCH:.3f}mm "
+            "wide), but this net's required width "
+            f"({rules.track_width_mm:.3f}mm{via_note}) does not fit any "
+            f"corridor along it — the width itself is the blocker, not "
+            f"routing order{pinched}",
         )
     return UnroutedReason(
         seg_id,
         net_id,
         "no_path",
-        "no path connects this connection's endpoints on the allowed layers at "
+        "no path connects this connection's endpoints on the allowed layers "
+        f"({'/'.join(layer_names(ir, signal_layers))}) at "
         "any width — the endpoint is walled in, not merely too tight",
     )
 

@@ -1477,6 +1477,10 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     for w in rres.warnings:
         detail = {
             "kind": "gap-capacity",
+            # `reason` too, not just `kind` — the per-net note builder only
+            # surfaces `reason` values, so a gap-only failure used to land
+            # 'failed' with note=None (gr495293: opaque route reasons).
+            "reason": "congestion",
             "gap_mm": round(w.gap_mm, 4),
             "capacity": w.capacity,
             "usage": w.usage,
@@ -1665,15 +1669,29 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             # nothing about which mechanism ran out -- and that message is
             # the only place the distinction survives.
             kinds = sorted({str(p["reason"]) for p in problems if p.get("reason")})
-            if kinds:
-                note = f"failed: {', '.join(kinds)}"
-            said = [
-                str(p.get("message", ""))
-                for p in problems
-                if p.get("reason") == "unstitched-plane"
-            ]
-            if said:
-                note = f"{note or 'failed'} — {' '.join(said)}"
+            # The note is the ONLY thing route-status and the check view's
+            # `unrouted` finding ever show — bare kinds ('failed: width')
+            # were gr495293's opaque-reason complaint. Each problem's own
+            # evidence names the blocker: a crossing names the other net
+            # and the layer, an unrouted segment names its endpoint pins
+            # plus the realizer's diagnosis (needed width, corridor,
+            # contested-by), a gap/drc/unstitched/disconnected problem
+            # already carries its sentence.
+            details: list[str] = []
+            for p in problems:
+                if p.get("reason") == "same-layer-crossing":
+                    lname = pcb_realize.layer_names(ir, [int(p.get("layer", -1))])[0]
+                    details.append(f"crosses {p.get('with')} on {lname}")
+                elif p.get("kind") == "unrouted" and p.get("segment"):
+                    details.append(f"{p['segment']}: {p.get('message') or ''}")
+                elif p.get("message"):
+                    details.append(str(p["message"]))
+            note = f"failed: {', '.join(kinds)}" if kinds else "failed"
+            if details:
+                head = [d[:220] for d in details[:3]]
+                note += " — " + "; ".join(head)
+                if len(details) > 3:
+                    note += f" (+{len(details) - 3} more)"
         elif net_id in routed_nets or int(ir.net_plane_layers[net_id]) != 0:
             status = "realized"
             n_realized += 1

@@ -571,6 +571,7 @@ class SeHandler(Handler):
         supports_delete=True,
         supports_search=True,
         supports_search_hits=True,
+        supports_tag=True,
         supports_link=True,
         is_numeric=False,
         id_required=False,
@@ -806,12 +807,21 @@ class SeHandler(Handler):
         title: str | None = None,
         args: dict[str, Any] | None = None,
         ops: list[dict[str, Any]] | None = None,
+        tags: list[str] | None = None,
+        untags: list[str] | None = None,
         **_kw: Any,
     ) -> Response:
         used: dict[Dimension, str | None] = {}
         with capture_used_units(used):
             return self._put_impl(
-                id=id, text=text, title=title, args=args, ops=ops, **_kw
+                id=id,
+                text=text,
+                title=title,
+                args=args,
+                ops=ops,
+                tags=tags,
+                untags=untags,
+                **_kw,
             )
 
     def _put_impl(
@@ -822,6 +832,8 @@ class SeHandler(Handler):
         title: str | None = None,
         args: dict[str, Any] | None = None,
         ops: list[dict[str, Any]] | None = None,
+        tags: list[str] | None = None,
+        untags: list[str] | None = None,
         **_kw: Any,
     ) -> Response:
         if id is None or not str(id).strip():
@@ -928,6 +940,16 @@ class SeHandler(Handler):
                 design_scenarios.set_design_scenario(
                     self.store, ref.id, scenario_id, set_by="se.put", conn=conn
                 )
+            tag_counts: tuple[int, int] | None = None
+            if tags or untags:
+                # D3 shortcut, the same door the tag verb uses — inside
+                # the design's own write transaction so a bad tag rolls
+                # the whole put back (gr495400: tag support for se).
+                from precis.utils.link_tag_ops import apply_tag_ops
+
+                tag_counts = apply_tag_ops(
+                    self.store, "se", ref.id, tags=tags, untags=untags, conn=conn
+                )
         # After the tx, not inside it: the projection is derived, and a
         # link-sync hiccup must not roll back a saved design (cad's sync
         # sits outside its write for the same reason).
@@ -945,6 +967,8 @@ class SeHandler(Handler):
             if pending_jobs:
                 body += "\n\n" + self._run_pending(ref, tree, pending_jobs)
             body += "\n\n" + self._reply_digest(tree, ref.id)
+        if tag_counts is not None:
+            body += f"\n\ntags: +{tag_counts[0]}, -{tag_counts[1]}"
         return Response(body=body)
 
     # ── edit ─────────────────────────────────────────────────────────
@@ -1793,6 +1817,10 @@ class SeHandler(Handler):
             _apply_state_arg(tree, state_map)
         if v in ("", "tree"):
             description = str((ref.meta or {}).get("description") or "").strip()
+            tag_line = ""
+            ref_tags = self.store.tags_for(ref.id)
+            if ref_tags:
+                tag_line = "\ntags: " + " ".join(str(t) for t in ref_tags)
             return Response(
                 body=_render_tree(
                     tree,
@@ -1803,6 +1831,7 @@ class SeHandler(Handler):
                     ),
                     relax_states=se_atomic_render.bound_relax_states(self.store, tree),
                 )
+                + tag_line
             )
         if v in ("block", "surface_deviation"):
             name = (args or {}).get("name")

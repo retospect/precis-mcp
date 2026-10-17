@@ -149,6 +149,7 @@ from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
 from precis.utils.link_tag_ops import (
     apply_link_ops,
+    apply_tag_ops,
     format_link_tag_ack,
     require_link_target,
     validate_link_mode,
@@ -754,6 +755,7 @@ class PcbHandler(Handler):
         supports_search=True,
         supports_search_hits=True,
         supports_delete=True,
+        supports_tag=True,
         supports_link=True,
         is_numeric=False,
         id_required=False,
@@ -787,6 +789,8 @@ class PcbHandler(Handler):
         id: str | int | None = None,
         title: str | None = None,
         args: dict[str, Any] | None = None,
+        tags: list[str] | None = None,
+        untags: list[str] | None = None,
         **_kw: Any,
     ) -> Response:
         """Author a design in batch (components/nets/features/generators/
@@ -819,7 +823,12 @@ class PcbHandler(Handler):
             # enqueue/edit paths from having to reason about a simultaneous
             # components/nets diff.
             ref = resolve_live_slug_ref(self.store, kind="pcb", id=slug)
-            return self._dispatch_op(ref, str(op), args)
+            resp = self._dispatch_op(ref, str(op), args)
+            if tags or untags:
+                resp = dataclasses.replace(
+                    resp, body=resp.body + self._put_tags(ref.id, tags, untags)
+                )
+            return resp
         components = list(args.get("components") or [])
         nets = list(args.get("nets") or [])
         connections = list(args.get("connections") or [])
@@ -851,6 +860,7 @@ class PcbHandler(Handler):
             # a committed design followed by a BadInput implying nothing
             # happened (gr — pcb-guided-place-route Slice 1 review).
             existing = self.store.get_ref(kind="pcb", id=slug)
+            tag_counts: dict[str, Any] = {}
 
             def apply(conn: Any) -> tuple[Any, bool, dict[str, int], int]:
                 seeded: list[str] = []
@@ -881,6 +891,17 @@ class PcbHandler(Handler):
                     )
                     counts["seeds_legalized"] = reposed
                     counts["seeds_unplaced"] = unplaced
+                if tags or untags:
+                    # D3 shortcut, same door as the tag verb — inside the
+                    # judged transaction so a bad tag rolls the write back.
+                    tag_counts["v"] = apply_tag_ops(
+                        self.store,
+                        "pcb",
+                        ref.id,
+                        tags=tags,
+                        untags=untags,
+                        conn=conn,
+                    )
                 return ref, created, counts, n_classes
 
             (ref, created, counts, n_classes), judged = self._judged_mutation(
@@ -912,6 +933,10 @@ class PcbHandler(Handler):
                     + body
                 )
             )
+
+        tag_line = ""
+        if tag_counts.get("v"):
+            tag_line = f"\ntags: +{tag_counts['v'][0]}, -{tag_counts['v'][1]}"
 
         verb = "created" if created else "extended"
         design = self.store.pcb_load(ref.id)
@@ -960,6 +985,7 @@ class PcbHandler(Handler):
             body=head
             + "\n"
             + judged.lines()
+            + (tag_line + "\n" if tag_line else "")
             + "".join(n + "\n" for n in notes)
             + (f"{queued} datasheet pull(s) queued\n" if queued else "")
             + (
@@ -970,6 +996,15 @@ class PcbHandler(Handler):
             + self._put_echo(ref.id)
             + self._toc(design)
         )
+
+    def _put_tags(
+        self, ref_id: int, tags: list[str] | None, untags: list[str] | None
+    ) -> str:
+        """``put(tags=/untags=)`` on the op path — the same D3 shortcut the
+        batch write applies inside its transaction; the op has already
+        committed here, so the ops run in their own."""
+        n_add, n_rm = apply_tag_ops(self.store, "pcb", ref_id, tags=tags, untags=untags)
+        return f"\ntags: +{n_add}, -{n_rm}"
 
     def _put_echo(self, ref_id: int) -> str:
         """What the put left stored that the TOC does not show: the §1b
@@ -1136,6 +1171,9 @@ class PcbHandler(Handler):
             f"# {ref.slug} — {len(design['instances'])} part(s), "
             f"{len(design['nets'])} net(s)"
         )
+        tags = self.store.tags_for(ref.id)
+        if tags:
+            head += "\ntags: " + " ".join(str(t) for t in tags)
         return Response(body=head + "\n" + self._toc(design))
 
     # ── auto-place ─────────────────────────────────────

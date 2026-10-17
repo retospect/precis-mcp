@@ -1236,7 +1236,10 @@ def test_pcb_route_fails_a_routed_net_whose_copper_is_in_two_pieces(
 
     (row,) = store.pcb_route_status(ref_id)
     assert row["status"] == "failed"
-    assert row["note"] == "failed: disconnected"
+    # gr495293: the note names the cause, not just the kind — the reason
+    # token leads and the disconnected-copper evidence follows it.
+    assert (row["note"] or "").startswith("failed: disconnected")
+    assert "disconnected pieces" in (row["note"] or "")
     (problem,) = store.pcb_routes_get(ref_id)["N1"]["fail"]["problems"]
     assert problem["reason"] == "disconnected"
     assert problem["components"] >= 2
@@ -2155,3 +2158,56 @@ def test_netless_client_stays_unbound_with_a_per_pin_warning(store: Store) -> No
         "match: drv client E2.1 has no net, left unbound; declare a net for it"
         in warnings
     )
+
+
+def test_failed_net_note_names_the_blocking_participant(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr495293: ``failed: same-layer-crossing`` alone named nothing — the
+    note must say WHICH net it crosses and on which layer, and an unrouted
+    segment must carry its endpoint pins + diagnosis."""
+    import dataclasses
+
+    real = pcb_route.pcb_realize.realize
+
+    def walled(*args: Any, **kwargs: Any) -> Any:
+        res = real(*args, **kwargs)
+        ir = args[0]
+        return dataclasses.replace(
+            res, tracks=(), vias=(), unrouted=tuple(range(ir.n_segments))
+        )
+
+    def crossing(ir: Any, plane_net_ids: set[int]) -> dict[str, Any]:
+        return {
+            str(ir.net_name[n]): [
+                {
+                    "kind": "same-layer-crossing",
+                    "reason": "same-layer-crossing",
+                    "layer": 0,
+                    "with": "GND",
+                }
+            ]
+            for n in range(ir.n_nets)
+        }
+
+    monkeypatch.setattr(pcb_route.pcb_realize, "realize", walled)
+    monkeypatch.setattr(pcb_route, "_residual_crossings", crossing)
+    ref_id = _seed(store, "route-note-blocker", _DESIGN)
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 500, "seed": 1})
+    _route(ctx)
+
+    (row,) = store.pcb_route_status(ref_id)
+    assert row["status"] == "failed"
+    note = row["note"] or ""
+    assert "same-layer-crossing" in note
+    assert "crosses GND on " in note  # names the net AND the layer name
+
+
+def test_diagnose_unrouted_names_layers_and_constricting_pads() -> None:
+    """The realize-side message must name the layers probed and, for a
+    'width' verdict, the pads constricting the corridor (gr495293)."""
+    import inspect
+
+    src = inspect.getsource(pcb_route.pcb_realize._diagnose_unrouted)
+    assert "layer_names" in src
+    assert "_constricting_pad_names" in src

@@ -777,7 +777,9 @@ def test_floating_fixed_copper_on_a_net_fails_it_as_disconnected(
 
     row = {r["name"]: r for r in store.pcb_route_status(ref_id)}["N1"]
     assert row["status"] == "failed"
-    assert row["note"] == "failed: disconnected"
+    # gr495293: the note names the blocker (piece count + a witness per piece).
+    assert row["note"].startswith("failed: disconnected — copper is in 2 ")
+    assert "(8.000,8.000) on F.Cu" in row["note"]
     (problem,) = store.pcb_routes_get(ref_id)["N1"]["fail"]["problems"]
     assert problem["components"] == 2
     assert "(8.000,8.000) on F.Cu" in problem["message"] or (
