@@ -17,6 +17,16 @@ migration present on `origin/main` or to `baseline/*`; escape hatch
 `scripts/migration-check` (duplicate numbers across sibling branches).
 Migrations and `safe_fetch.py` also take the full gate: `scripts/qgo-guard`
 refuses them on the ungated deploy path (`tests/test_qgo_guard.py`).
+A migration that runs `DROP INDEX` must cite more than `pg_stat` `idx_scan`
+in its header: (1) the foreign keys whose referential-integrity probes use the
+index (a parent DELETE/UPDATE probes the child's FK column), and (2)
+`EXPLAIN` plans of every periodic job that touches the table (retention
+sweepers, GC passes), run against production-sized data. A zero `idx_scan`
+only covers the stats window; jobs that run rarely do not show up in it.
+Evidence: 0200 (`1d28d286c`) dropped the `llm_call_log` hash-column b-tree
+indexes on `idx_scan = 0`; every retention sweep then hit `statement_timeout`
+(mainly the `route_log.gc()` anti-join, which only a plan check would have
+caught) until 0208 (`e1845852a`) recreated the indexes and the `gc()` rewrite.
 
 **Body chunks are append-only.** A `chunks` row with `ord >= 0` and
 `content_sha IS NULL` keeps its embeddings, summaries and keywords by row

@@ -176,6 +176,10 @@ CONTRACT: list[str] = [
     "tests/test_store_mixin_guard.py",
     "tests/test_utc_time_convention.py",
     "tests/test_skill_ingest.py::test_shipped_skill_corpus_has_zero_gate_findings",
+    # DB-free walks that reddened main after --quick bursts (churn 2026-10-17)
+    "tests/test_skill_size.py",
+    "tests/test_pcb_dead_exports.py",
+    "tests/test_startup_skills.py",
     # schema/migration invariants (testmon has no edge to them — glob-driven)
     "tests/test_migration_numbering.py",
     "tests/test_schema_baseline.py",
