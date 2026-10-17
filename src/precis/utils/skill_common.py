@@ -176,6 +176,12 @@ class SkillFrontmatter:
     #: defaults to the slug's name-prefix stem (:func:`skill_family`).
     family: str | None = None
 
+    #: Parent skill in the skill tree (``docs/backlog/file-mirror.md``):
+    #: the mirror-links pass makes this skill ``part-of`` it. Optional;
+    #: absent, ``precis.cli.mirror_links.skill_parents`` applies the
+    #: default rule.
+    parent: str | None = None
+
     #: Any frontmatter keys we don't model explicitly. Preserved so a
     #: skill can carry experimental metadata without the parser
     #: rejecting it; the ingest pipeline can decide what to do with
@@ -213,6 +219,7 @@ _KNOWN_FIELDS: Final[frozenset[str]] = frozenset(
         "tags",
         "kinds",
         "family",
+        "parent",
     }
 )
 

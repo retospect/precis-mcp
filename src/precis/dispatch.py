@@ -810,6 +810,7 @@ def boot(
     store: Store | None = None,
     embedder: Embedder | None = None,
     precis_root: str | None = None,
+    precis_roots: str | None = None,
     python_roots: str | None = None,
     md_roots: str | None = None,
     kinds_disabled: frozenset[str] = frozenset(),
@@ -1193,6 +1194,20 @@ def boot(
         # PRECIS_ROOT, scoped by extension. The whole trio is hidden
         # when no root is configured. Each handler's __init__ raises
         # InitError for a missing / non-existent / non-directory root.
+        # PRECIS_ROOTS adds mirrored roots (``alias/<slug>``); its
+        # ``workspace`` alias stands in for an unset PRECIS_ROOT.
+        from precis.handlers._roots import parse_mirror_roots
+
+        mirrors = parse_mirror_roots(precis_roots)
+        workspace = mirrors.pop("workspace", None)
+        if workspace is not None and workspace.ro:
+            # The workspace is the writable root by definition; a ``:ro``
+            # workspace would mount writable, so it is not mounted at all.
+            log.warning("PRECIS_ROOTS: workspace:ro is not supported - skipped")
+        elif workspace is not None and precis_root:
+            log.warning("PRECIS_ROOTS: workspace alias ignored - PRECIS_ROOT is set")
+        elif workspace is not None:
+            precis_root = str(workspace.path)
         if precis_root:
             from pathlib import Path
 
@@ -1201,9 +1216,9 @@ def boot(
             from precis.handlers.tex import TexHandler
 
             root = Path(precis_root)
-            _gated(MarkdownHandler, root=root)
-            _gated(PlaintextHandler, root=root)
-            _gated(TexHandler, root=root)
+            _gated(MarkdownHandler, root=root, mirrors=mirrors)
+            _gated(PlaintextHandler, root=root, mirrors=mirrors)
+            _gated(TexHandler, root=root, mirrors=mirrors)
         else:
             # PRECIS_ROOT unset — record the file kinds as deferred so
             # the dispatcher (runtime._resolve_handler) returns

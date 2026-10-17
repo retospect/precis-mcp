@@ -84,7 +84,7 @@ name/path.
 | `oracle` | `or7` | Curated wisdom-tradition entry | store |
 | `conv` | `co12` | Past conversation | store |
 | `pres` | `pr5` | Slide deck or unpublished writeup | store |
-| `markdown` | `notes--meeting` | A `.md` file under `PRECIS_ROOT` | `PRECIS_ROOT` |
+| `markdown` | `notes--meeting` | A `.md` file under `PRECIS_ROOT`; where `PRECIS_ROOTS` mounts it, `skills/<slug>` is the read-only mirror of a skill file (tag `mirror:skills`, `part-of` its parent skill via `precis mirror-links`) | `PRECIS_ROOT`, `PRECIS_ROOTS` |
 | `plaintext` | `notes--log` | A `.txt` / `.log` file under `PRECIS_ROOT` | `PRECIS_ROOT` |
 | `tex` | `chapters--intro` | A `.tex` file (section-aware blocks + `/toc`) | `PRECIS_ROOT` |
 | `draft` | `dr3` | Editable, chunk-native document — the living source of a project's write-up; exports to LaTeX/PDF/Word. See `precis-draft-help`. | store |

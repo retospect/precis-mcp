@@ -390,16 +390,16 @@ scripts only — nothing reads the graph at that moment.
      `.claude/settings.json`; `cli/memory.py::_render_live_threads` prints
      only `section:threads` nodes edited in the last 14 days (`--full` keeps
      the every-node list; `render_memory_index` serves `--q` recall).
-  4. Tests: 4a `tests/test_memory_index_retired.py` built. 4b
-     (`test_skill_listing_retired.py`) is blocked on `file-mirror.md`
-     in-scope 1-3: `PRECIS_ROOTS`, the `skills/` markdown alias, `ro`
-     roots and the skill `parent:` key are not on main, so no
-     `markdown:skills/*` refs exist to render from. 4c is
+  4. Tests: 4a `tests/test_memory_index_retired.py` and 4b
+     `tests/test_skill_listing_retired.py` built (4b 2026-10-17: the
+     `child -> parent` skill index from `markdown:skills/*` refs and their
+     `part-of` links equals the shipped root's file walk; plugin skill
+     roots need their own mirror alias). 4c is
      `conventions-as-findings.md`'s.
   5. `precis-memory-help`: the "different system from the harness files"
      sentence is gone (2026-10-16); `SPACE:` and the mirror import have
      their paragraph.
-  Open: 4b (waits on file-mirror), 4c, and AC 5's baseline (next entry).
+  Open: 4c, and AC 5's baseline (next entry).
 - **[AC 5 baseline, measured 2026-10-16 21:58Z on main 6381ff9af]**
   Native 9/10, mirror 9/10 at k=5: AC 5 holds (native ≥ mirror). Both
   miss the same query, "label timestamps with Z, use datetime" →

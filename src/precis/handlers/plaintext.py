@@ -29,7 +29,7 @@ import os
 import re
 import tempfile
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
@@ -39,6 +39,7 @@ from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers._eye import is_eye_view
 from precis.handlers._mode_help import require_mode
 from precis.handlers._readonly_fs import translate_readonly_fs as _translate_readonly_fs
+from precis.handlers._roots import MirrorRoot
 from precis.handlers._slug_ref_shared import reject_chunk_or_path_view
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
@@ -392,7 +393,9 @@ class PlaintextHandler(Handler):
                 return rel_path[: -len(candidate)], rel_path[-len(candidate) :].lower()
         return rel_path, ""
 
-    def _walk_files(self, *, budget_s: float | None = None) -> tuple[list[Path], bool]:
+    def _walk_files(
+        self, *, budget_s: float | None = None, root: Path | None = None
+    ) -> tuple[list[Path], bool]:
         """Collect every file under ``self.root`` whose extension is in
         :attr:`_EXTENSIONS` (case-insensitive).
 
@@ -423,7 +426,8 @@ class PlaintextHandler(Handler):
         exts = tuple(e.lower() for e in self._EXTENSIONS)
         budget = FILE_WALK_BUDGET_S if budget_s is None else budget_s
         deadline = time.monotonic() + budget
-        for dirpath, _dirnames, filenames in os.walk(self.root):
+        root = self.root if root is None else root
+        for dirpath, _dirnames, filenames in os.walk(root):
             # ``>=`` not ``>``: mirrors the boot-time file count so a
             # zero budget (tests) trips on the very first directory.
             if time.monotonic() >= deadline:
@@ -432,7 +436,7 @@ class PlaintextHandler(Handler):
                     "listing is a truncated prefix",
                     self._KIND,
                     budget,
-                    self.root,
+                    root,
                 )
                 return out, True
             for name in filenames:
@@ -441,7 +445,7 @@ class PlaintextHandler(Handler):
                 candidate = Path(dirpath) / name
                 try:
                     resolved = candidate.resolve()
-                    resolved.relative_to(self.root)
+                    resolved.relative_to(root)
                 except (OSError, ValueError):
                     # Broken symlink, traversal escape, or any other
                     # unresolvable path — silently skip.
@@ -449,7 +453,13 @@ class PlaintextHandler(Handler):
                 out.append(candidate)
         return out, False
 
-    def __init__(self, *, hub: Hub, root: Path) -> None:
+    def __init__(
+        self,
+        *,
+        hub: Hub,
+        root: Path,
+        mirrors: Mapping[str, MirrorRoot] | None = None,
+    ) -> None:
         if hub.store is None:
             raise InitError(f"{self._KIND}: store required")
         if not root.exists() or not root.is_dir():
@@ -459,6 +469,51 @@ class PlaintextHandler(Handler):
         self.store = hub.store
         self.embedder = hub.embedder
         self.root = root.resolve()
+        #: ``PRECIS_ROOTS`` mirrors: alias → root. Their refs are slugged
+        #: ``<alias>/<flat slug>`` (``docs/backlog/file-mirror.md``).
+        self.mirrors: dict[str, MirrorRoot] = dict(mirrors or {})
+        self._aliases = frozenset(self.mirrors)
+
+    def _split_alias(self, slug: str) -> tuple[str | None, str]:
+        """``memory/work--foo`` → ``('memory', 'work--foo')``; a slug
+        without a known alias prefix is a workspace slug."""
+        head, sep, tail = slug.partition("/")
+        if sep and head in self.mirrors:
+            return head, tail
+        return None, slug
+
+    def mirror_files(self, alias: str) -> dict[str, Path]:
+        """``{alias/slug: path}`` for every file of one mirrored root."""
+        root = self.mirrors[alias].path
+        paths, _truncated = self._walk_files(root=root)
+        seen: dict[str, str] = {}
+        self._collect_slugs(seen, paths, root=root, alias=alias)
+        return {slug: root / rel for slug, rel in seen.items()}
+
+    def _root_of(self, alias: str | None) -> Path:
+        return self.root if alias is None else self.mirrors[alias].path
+
+    def _refuse_ro(self, slug: str) -> None:
+        """Raise ``Unsupported`` for a write under a read-only mirror."""
+        alias, _flat = self._split_alias(slug)
+        if alias is None:
+            # A ro mirror nested inside PRECIS_ROOT is also reachable by
+            # its flat workspace slug (``docs--x``); refuse that path too.
+            path = self._resolve_path(slug, must_exist=False)
+            alias = next(
+                (
+                    a
+                    for a, m in self.mirrors.items()
+                    if m.ro and path.is_relative_to(m.path)
+                ),
+                None,
+            )
+        if alias is not None and self.mirrors[alias].ro:
+            raise Unsupported(
+                f"{self._KIND} root {alias!r} is read-only: {slug!r} is a mirror",
+                next=f"get(kind='{self._KIND}', id={slug!r}) reads it; "
+                "link/tag it from the graph instead",
+            )
 
     # ── get ────────────────────────────────────────────────────────
 
@@ -481,7 +536,10 @@ class PlaintextHandler(Handler):
 
         find_preflight(kind=self._KIND, id=id, view=view, q=q)
         slug, sel, path_view = _parse_file_id(
-            str(id), extensions=self._EXTENSIONS, views=self._SUPPORTED_VIEWS
+            str(id),
+            extensions=self._EXTENSIONS,
+            views=self._SUPPORTED_VIEWS,
+            aliases=self._aliases,
         )
         if path_view is not None:
             raise BadInput(
@@ -578,7 +636,10 @@ class PlaintextHandler(Handler):
             return self._render_index()
 
         slug, sel, path_view = _parse_file_id(
-            str(id), extensions=self._EXTENSIONS, views=self._SUPPORTED_VIEWS
+            str(id),
+            extensions=self._EXTENSIONS,
+            views=self._SUPPORTED_VIEWS,
+            aliases=self._aliases,
         )
         effective_view = path_view or view
 
@@ -638,6 +699,7 @@ class PlaintextHandler(Handler):
         scope: str | None = None,
         page_size: int = 10,
         mode: str | None = None,
+        tags: list[str] | None = None,
         **_kw: Any,
     ) -> Response:
         if q is None or not q.strip():
@@ -664,6 +726,7 @@ class PlaintextHandler(Handler):
             mode=mode,
             kind=self._KIND,
             scope_ref_id=scope_ref_id,
+            tags=tags,
             limit=page_size,
             max_distance=SEMANTIC_DISTANCE_FLOOR,
         )
@@ -685,7 +748,7 @@ class PlaintextHandler(Handler):
             return Response(body=body)
 
         total = self.store.chunks.count_chunks_lexical(
-            q=q, kind=self._KIND, scope_ref_id=scope_ref_id
+            q=q, kind=self._KIND, scope_ref_id=scope_ref_id, tags=tags
         )
         # Detect a score cliff — unique-literal queries
         # (PROBE_MARKER_ZX7Q-style) produce one dominant hit and a
@@ -843,8 +906,12 @@ class PlaintextHandler(Handler):
                 preferred_ext = ext
                 break
         slug, _sel, _path_view = _parse_file_id(
-            raw_id, extensions=self._EXTENSIONS, views=self._SUPPORTED_VIEWS
+            raw_id,
+            extensions=self._EXTENSIONS,
+            views=self._SUPPORTED_VIEWS,
+            aliases=self._aliases,
         )
+        self._refuse_ro(slug)
         return self._put_create(slug, text, preferred_ext=preferred_ext, tags=tags)
 
     # ── put helpers ────────────────────────────────────────────────
@@ -1354,7 +1421,10 @@ class PlaintextHandler(Handler):
         """
         require_mode(spec=self.spec, verb="edit", mode=mode)
         slug, sel, _path_view = _parse_file_id(
-            str(id), extensions=self._EXTENSIONS, views=self._SUPPORTED_VIEWS
+            str(id),
+            extensions=self._EXTENSIONS,
+            views=self._SUPPORTED_VIEWS,
+            aliases=self._aliases,
         )
         # Gate on file existence *before* dispatching so downstream
         # hints (e.g. "_put_replace: next=get(id='slug/toc') …") never
@@ -1362,6 +1432,7 @@ class PlaintextHandler(Handler):
         # (``work/foo.tex`` → ``work--foo`` when PRECIS_ROOT is already
         # ``work/``). ``append`` legitimately creates-or-appends so we
         # skip the gate for it.
+        self._refuse_ro(slug)
         if mode != "append":
             self._require_existing_file(slug)
         if mode == "append":
@@ -1404,8 +1475,12 @@ class PlaintextHandler(Handler):
           2026-05-02).
         """
         slug, sel, _path_view = _parse_file_id(
-            str(id), extensions=self._EXTENSIONS, views=self._SUPPORTED_VIEWS
+            str(id),
+            extensions=self._EXTENSIONS,
+            views=self._SUPPORTED_VIEWS,
+            aliases=self._aliases,
         )
+        self._refuse_ro(slug)
         if sel is None:
             expected_confirm = f"delete-file-{slug}"
             if confirm != expected_confirm:
@@ -1428,7 +1503,10 @@ class PlaintextHandler(Handler):
     def _resolve_pt_ref(self, id: str | int) -> tuple[str, int]:
         """Coerce an id to (slug, ref_id), ingesting the file if needed."""
         slug, sel, path_view = _parse_file_id(
-            str(id), extensions=self._EXTENSIONS, views=self._SUPPORTED_VIEWS
+            str(id),
+            extensions=self._EXTENSIONS,
+            views=self._SUPPORTED_VIEWS,
+            aliases=self._aliases,
         )
         reject_chunk_or_path_view(
             kind=self._KIND,
@@ -1516,14 +1594,19 @@ class PlaintextHandler(Handler):
         still find it, but audit views can identify it as
         machine-applied.
         """
-        self.store.add_tag(
-            ref.id,
-            Tag.flag(self._WORKSPACE_FLAG),
-            set_by="system",
-        )
+        alias, _flat = self._split_alias(ref.slug or "")
+        if alias is None:
+            self.store.add_tag(ref.id, Tag.flag(self._WORKSPACE_FLAG), set_by="system")
+            return
+        # A mirrored ref scopes by ``mirror:<alias>`` instead; the mirrored
+        # roots are repo-dev guidance (skills, harness memory).
+        self.store.add_tag(ref.id, Tag.open(f"mirror:{alias}"), set_by="system")
+        self.store.add_tag(ref.id, Tag.closed("SPACE", "repo-dev"), set_by="system")
 
     def ensure_ingested(self, slug: str, *, force: bool = False) -> Ref | None:
         path = self._resolve_path(slug, must_exist=False)
+        alias, _flat = self._split_alias(slug)
+        root = self._root_of(alias)
         if not path.exists():
             # ``_resolve_path`` reconstructs a path by pure string
             # transform (split the slug on ``--``, rejoin with ``/``,
@@ -1539,7 +1622,7 @@ class PlaintextHandler(Handler):
             slug_map, _truncated = self._list_file_slugs_on_disk()
             real_rel = slug_map.get(slug)
             if real_rel is not None:
-                path = (self.root / real_rel).resolve()
+                path = (root / real_rel).resolve()
         ref = self.store.get_ref(kind=self._KIND, id=slug)
 
         if not path.exists():
@@ -1568,7 +1651,7 @@ class PlaintextHandler(Handler):
         # Preserve the original extension in meta so the handler can
         # rebuild the real file path even when several extensions map
         # to the same slug shape (e.g. plaintext: .txt vs .log).
-        rel = str(path.relative_to(self.root))
+        rel = str(path.relative_to(root))
         _base, ext = self._strip_ext(rel)
         new_meta = {
             "path": rel,
@@ -1625,9 +1708,22 @@ class PlaintextHandler(Handler):
         """
         seen: dict[str, str] = {}
         paths, truncated = self._walk_files()
+        self._collect_slugs(seen, paths, root=self.root, alias=None)
+        for alias, mirror in self.mirrors.items():
+            m_paths, m_truncated = self._walk_files(root=mirror.path)
+            self._collect_slugs(seen, m_paths, root=mirror.path, alias=alias)
+            truncated = truncated or m_truncated
+        return seen, truncated
+
+    @staticmethod
+    def _collect_slugs(
+        seen: dict[str, str], paths: list[Path], *, root: Path, alias: str | None
+    ) -> None:
+        """Add ``{slug: relpath-under-root}`` for *paths*; mirrored slugs
+        carry the ``<alias>/`` prefix."""
         for path in sorted(paths):
             try:
-                rel = str(path.relative_to(self.root))
+                rel = str(path.relative_to(root))
                 # ``file_slug_from_path`` strips the (one true) extension
                 # itself — pre-stripping via ``_strip_ext`` and handing it
                 # the already-bare base double-strips any further ``.`` in
@@ -1639,8 +1735,7 @@ class PlaintextHandler(Handler):
                 continue
             if not is_valid_file_slug(slug):
                 continue
-            seen[slug] = rel
-        return seen, truncated
+            seen[slug if alias is None else f"{alias}/{slug}"] = rel
 
     def _raise_file_not_found(self, slug: str) -> NotFound:
         """Raise ``NotFound`` for a missing file slug, with fuzzy-match
@@ -2012,7 +2107,9 @@ class PlaintextHandler(Handler):
     def _resolve_path(
         self, slug: str, *, must_exist: bool, preferred_ext: str | None = None
     ) -> Path:
-        if not is_valid_file_slug(slug):
+        alias, flat = self._split_alias(slug)
+        root = self._root_of(alias)
+        if not is_valid_file_slug(flat):
             raise BadInput(
                 f"invalid {self._KIND} slug: {slug!r}",
                 next="slugs are lowercase a-z 0-9 hyphens, segments split by '--'",
@@ -2034,20 +2131,20 @@ class PlaintextHandler(Handler):
             # On first touch with no hint, probe disk for any registered
             # extension and prefer whichever exists. Ties fall back to
             # the default.
-            rel_base = path_from_file_slug(slug, ext="").rstrip(".")
+            rel_base = path_from_file_slug(flat, ext="").rstrip(".")
             for candidate_ext in self._EXTENSIONS:
-                candidate = (self.root / (rel_base + candidate_ext)).resolve()
+                candidate = (root / (rel_base + candidate_ext)).resolve()
                 try:
-                    candidate.relative_to(self.root)
+                    candidate.relative_to(root)
                 except ValueError:
                     continue
                 if candidate.exists():
                     ext = candidate_ext
                     break
-        rel = path_from_file_slug(slug, ext=ext)
-        path = (self.root / rel).resolve()
+        rel = path_from_file_slug(flat, ext=ext)
+        path = (root / rel).resolve()
         try:
-            path.relative_to(self.root)
+            path.relative_to(root)
         except ValueError as exc:
             raise BadInput(
                 f"path traversal not allowed: {slug!r}",
@@ -2092,7 +2189,11 @@ _INT_RE = re.compile(r"^\d+$")
 
 
 def _parse_file_id(
-    raw: str, *, extensions: tuple[str, ...], views: tuple[str, ...] = ()
+    raw: str,
+    *,
+    extensions: tuple[str, ...],
+    views: tuple[str, ...] = (),
+    aliases: frozenset[str] = frozenset(),
 ) -> tuple[str, _BlockSel | None, str | None]:
     """Parse a prose-file id into ``(file_slug, block_sel, view)``.
 
@@ -2119,6 +2220,16 @@ def _parse_file_id(
     silently split into ``slug='tex', view='graphene'`` — the top plan-tick
     confusion pattern for workspace tex/markdown authoring (prod 2026-07-03).
     """
+    head, sep, rest = raw.strip().partition("/")
+    head = head.lower()
+    if sep and head in aliases:
+        # Mirrored root (``PRECIS_ROOTS``): ``<alias>/<id>`` parses the
+        # rest as a root-relative id and keeps the prefix on the slug.
+        # Slugs are lowercase, so ``memory/MEMORY`` names ``MEMORY.md``.
+        inner, inner_sel, inner_view = _parse_file_id(
+            rest, extensions=extensions, views=views
+        )
+        return f"{head}/{inner.lower()}", inner_sel, inner_view
     s = canonicalize_path_id(raw.strip(), extensions=extensions)
     sel: _BlockSel | None = None
     view: str | None = None

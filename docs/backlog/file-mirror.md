@@ -36,58 +36,16 @@ it can carry `links` rows, chunk selectors or a fisheye. This item reuses
 `parse_alias_roots` for the env-var shape and extends `markdown` for the
 storage, so there is one alias-root grammar and one DB-backed prose kind.
 
-## In scope
+## In scope (left)
 
-1. **Multi-root file kinds.** `PRECIS_ROOTS=alias:/abs/path[:ro],…` in the
-   shape `PRECIS_PYTHON_ROOTS` and `PRECIS_MD_ROOTS` already use
-   (`parse_alias_roots`); slugs become `alias/<flattened rel-path>`, where
-   the rel-path part keeps the existing `--` flattening of
-   `file_slug_from_path` (`work/foo.md` under alias `memory` →
-   `memory/work--foo`), so `canonicalize_path_id` gains one `/` split and
-   nothing else. A root flagged `ro` refuses every write verb with
-   `Unsupported`. The single `PRECIS_ROOT` keeps working as alias
-   `workspace`. Every ref under a mirrored root carries the open tag
-   `mirror:<alias>`, which is how searches scope to one root
-   (`tags=['mirror:memory']`; `folder=` is the `folder` kind's placement
-   tree and has nothing to do with roots).
-2. **Two roots registered on the session MCP container:** `skills` →
-   `src/precis/data/skills` (ro) and `memory` → the harness memory dir
-   (ro). The cluster does not see the memory root; that is by design
-   (Mac-local, same as the sandbox).
-3. **Links from the files.** An idempotent pass (`precis mirror-links`,
-   runnable by the same worker that embeds file chunks) mints
-   `related-to` links from two reference forms in memory files — relative
-   markdown links to a sibling file (`[Title](slug.md)`, the form
-   `MEMORY.md`'s ~100 index bullets use) and `[[slug]]` (rare in the live
-   corpus: two uses, both in `MEMORY.md`) — and from skill frontmatter
-   (`kinds:` → the kind's overview skill, `applies_to` verbs,
-   `[[precis-…]]` cross-refs). Tree edges: `part-of` from the `##` section
-   a bullet sits under in `MEMORY.md` (memory), and for skills from a
-   **new optional `parent:` frontmatter key** on `SkillFrontmatter`
-   (`utils/skill_common.py`; today no skill file has one) with a
-   default rule so the tree exists without hand-editing 176 files: a
-   `precis-<kind>-help` skill is `part-of` `precis-overview`, every other
-   skill is `part-of` the `-help` skill whose `kinds:` it shares, else
-   `precis-overview`. `parent:` overrides the rule; the seed authors it for
-   the index skills only. Links carry `meta.source='mirror'` so the pass
-   can remove what a file no longer says.
-4. **Fisheye rings** for the two roots land via the shipped ring table
-   (`utils/refeye.py::RING_GROUPS`; `related-to`, `part-of`).
-5. **Recall measurement** (the AC that makes the later migration
-   decidable), in two halves that must not be confused. Gate half: a
-   synthetic memory tree checked in under `tests/fixtures/file_mirror/`
-   (a `MEMORY.md` index with sectioned bullets, ten topic files in the
-   memory frontmatter shape, three of them cross-linked) and ten
-   questions whose answers live in one topic file each;
-   `search(kind='markdown', q=…, tags=['mirror:memory'])` must return the
-   right file top-3 for at least eight. Report half: the same ten
-   questions run once by hand against Reto's live memory root from his
-   session, the score written into this item's decisions log — that is
-   the number the mirror-vs-native decision reads; it never runs in the
-   gate, because the gate container has no memory root and the live
-   files churn (landed threads are deleted).
-6. **Runtime doc.** `precis-memory-help` gains one paragraph pointing at
-   the mirrored root; `precis-overview` lists the two roots.
+1. **Skills root on the session MCP container:** `PRECIS_ROOTS=skills:
+   <main checkout>/src/precis/data/skills:ro` in
+   `deploy/mcp-http/precis-mcp-http-ensure.sh`. Reto approved the skills
+   root only (2026-10-17); golden installs it after the code rides a
+   release. The first read or `precis mirror-links` run then ingests ~200
+   skill refs into prod. No memory root (decisions log).
+2. **Seed `parent:`** on the index skills where the default rule picks the
+   wrong parent; nothing authors one yet.
 
 ## Explicitly NOT in scope
 
@@ -101,24 +59,10 @@ storage, so there is one alias-root grammar and one DB-backed prose kind.
 
 ## Acceptance criteria
 
-1. With `PRECIS_ROOTS` set, `get(kind='markdown', id='skills/precis-
-   relations')` and `get(kind='markdown', id='memory/MEMORY')` render;
-   `edit`/`put`/`delete` on either raises `Unsupported` naming the
-   read-only root.
-2. `link(kind='finding', id=F, rel='related-to', target='markdown:memory/
-   <topic>~<section>')` succeeds and appears in the finding's `view=
-   'links'`.
-3. After `precis mirror-links` over the synthetic fixture, a topic file
-   with three references (two `[Title](slug.md)`, one `[[slug]]`) has
-   three outbound `related-to` links; deleting one reference and
-   re-running removes exactly that link.
-4. `get(kind='markdown', id='skills/precis-fisheye-help', view=
-   'fisheye+1hop')` shows its `part-of` parent and `related-to`
-   neighbours.
-5. The synthetic recall fixture passes 8/10 in the gate; the live-root
-   score is logged in the decisions log (report half, not a test).
-6. `tests/test_deploy_tree_no_secrets.py` stays green (the memory root path
-   is configuration, never a tracked literal).
+1. With the skills root wired on the session MCP,
+   `get(kind='markdown', id='skills/precis-relations')` renders on prod and
+   `precis mirror-links` reports its links; the gate half of every other AC
+   is green (decisions log, 2026-10-17).
 
 ## Target + blast radius
 
@@ -148,6 +92,33 @@ storage, so there is one alias-root grammar and one DB-backed prose kind.
   node or in the gate container: the harness memory is per machine; each
   developer's session container mounts their own. Hence the two-half
   recall AC.
+- **[built 2026-10-17, in-scope 1]** `PRECIS_ROOTS=alias:/abs/path[:ro],…`
+  (`handlers/_roots.py::parse_mirror_roots`) adds mirrored roots to the
+  markdown/plaintext/tex handlers; slugs are `alias/<flat slug>`, a `:ro`
+  root refuses put/edit/delete with `Unsupported`, and mirrored refs carry
+  `mirror:<alias>` + `SPACE:repo-dev` instead of the `workspace` flag. Alias
+  `workspace` stands in for an unset `PRECIS_ROOT`.
+- **[built 2026-10-17, in-scope 3-6]** `precis mirror-links [--dry-run]`
+  (`cli/mirror_links.py::sync_mirror_links`): `related-to` from relative
+  `.md` links and `[[slug]]` (link regexes reused from `cli/memory_mirror.py`),
+  `part-of` from a `MEMORY.md` bullet to its `##` section chunk; for alias
+  `skills`, `part-of` from `parent:` (new optional `SkillFrontmatter.parent`)
+  or the default rule (`skill_parents`), `related-to` from `[[precis-…]]`,
+  `kinds:` and `applies-to` verbs. Links carry `meta.source='mirror'`; a
+  re-run removes only those. Fisheye needed no change: `related-to` and
+  `part-of` were already ring relations. `search(kind='markdown', tags=…)`
+  now honours `tags=` (it was silently dropped). Gate tests:
+  `tests/test_file_mirror_roots.py`, `test_file_mirror_links.py`,
+  `test_file_mirror_recall.py` (fixture `tests/fixtures/file_mirror/`),
+  `test_skill_listing_retired.py` (memory-native-authoring test 4b).
+- **[decided 2026-10-17, branch-desk relaying Reto]** Skills root only. The
+  harness memory root is not mounted: the memory policy keeps those files
+  as a legacy import source, and the mesh is the record. This drops the
+  live-root report half of in-scope 5; AC 5 of `memory-native-authoring.md`
+  (native 9/10 vs mirror 9/10) already answers native-vs-mirror.
+- **[decided 2026-10-17]** No worker hook for mirror-links: the cluster
+  workers never see a mirrored root, so the pass runs as a CLI where the
+  roots are mounted.
 - **[readiness 2026-09-30, needs-work → folded in]** Four blockers from
   the vet, each now in the text above: `folder='memory'` was not a
   mechanism (→ `mirror:<alias>` tag); `parent:` did not exist on skills

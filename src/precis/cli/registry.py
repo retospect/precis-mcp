@@ -188,6 +188,11 @@ COMMANDS: tuple[Command, ...] = (
         trust="generated",
     ),
     _c(
+        "mirror-links",
+        "mirror_links",
+        "Mint related-to/part-of links between files of PRECIS_ROOTS mirrors.",
+    ),
+    _c(
         "conventions",
         "conventions",
         "Import repo convention rules and their enforcers as graph findings.",

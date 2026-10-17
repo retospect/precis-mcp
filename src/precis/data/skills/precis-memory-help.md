@@ -73,6 +73,11 @@ or `project`) and stamps it as a mirror node (its title becomes the slug, so kee
 the readable line in the hook), and reports any node it still
 cannot render (no title, or another namespace's) as `unexported`.
 
+The harness files are not mounted as a read-only `markdown` root on the
+session server: the graph nodes above are the record, and the files remain a
+legacy import source only. `PRECIS_ROOTS` mirrors the skill files instead
+(`precis-overview`).
+
 **Where to edit.** A memory that has a file is edited in the graph with the anchored
 `edit` once the real mirror import has run for its namespace, and in the file before
 that; the mirror export is how the file catches up. A memory with no file is created

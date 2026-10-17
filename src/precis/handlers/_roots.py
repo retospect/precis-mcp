@@ -14,6 +14,8 @@ and tests are unaffected.
 from __future__ import annotations
 
 import logging
+import re
+from dataclasses import dataclass
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -70,4 +72,54 @@ def parse_alias_roots(raw: str | None, *, env_var: str) -> dict[str, Path]:
             continue
         out[alias] = path
 
+    return out
+
+
+@dataclass(frozen=True, slots=True)
+class MirrorRoot:
+    """One ``PRECIS_ROOTS`` entry: a directory the file kinds mirror.
+
+    ``ro`` roots refuse every file write (put/edit/delete); reads, tags
+    and links still work because those live in the DB, not the file.
+    """
+
+    path: Path
+    ro: bool = False
+
+
+_ALIAS_RE = re.compile(r"^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?$")
+
+
+def parse_mirror_roots(
+    raw: str | None, *, env_var: str = "PRECIS_ROOTS"
+) -> dict[str, MirrorRoot]:
+    """Parse ``alias:/abs/path[:ro],...`` into :class:`MirrorRoot` entries.
+
+    Same grammar and skip rules as :func:`parse_alias_roots`, plus an
+    optional trailing ``:ro`` flag. The alias becomes the slug prefix
+    (``skills/precis-relations``), so it must itself be a slug segment
+    (lowercase a-z 0-9 ``_`` ``-``); other aliases are skipped.
+    """
+    if not raw:
+        return {}
+    out: dict[str, MirrorRoot] = {}
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        ro = False
+        head, sep, flag = entry.rpartition(":")
+        if sep and flag.strip().lower() == "ro" and ":" in head:
+            entry, ro = head, True
+        alias = entry.partition(":")[0].strip()
+        if not _ALIAS_RE.match(alias):
+            log.warning("%s: skipping %r - alias is not a slug segment", env_var, alias)
+            continue
+        if alias in out:
+            log.warning("%s: duplicate alias %r - first wins", env_var, alias)
+            continue
+        # One entry at a time, so the ro flag stays with the path it was
+        # written next to even when an earlier same-alias entry is dropped.
+        for path in parse_alias_roots(entry, env_var=env_var).values():
+            out[alias] = MirrorRoot(path=path, ro=ro)
     return out

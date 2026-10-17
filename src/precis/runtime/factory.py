@@ -202,6 +202,7 @@ def build_runtime(
         store=store,
         embedder=embedder,
         precis_root=config.root,
+        precis_roots=config.roots,
         python_roots=config.python_roots,
         md_roots=config.md_roots,
         kinds_disabled=parse_disabled(config.kinds_disabled),

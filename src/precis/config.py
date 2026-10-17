@@ -233,6 +233,17 @@ class PrecisConfig(BaseSettings):
     double-prefixed and silently no-op'd on every deployment.
     """
 
+    roots: str | None = None
+    """Extra directories the prose-file kinds mirror next to ``root``.
+
+    Format: ``alias1:/abs/path1[:ro],alias2:/abs/path2``, parsed by
+    ``precis.handlers._roots.parse_mirror_roots``. A file under alias
+    ``memory`` at ``work/foo.md`` is addressed ``memory/work--foo``; a
+    ``:ro`` root refuses put/edit/delete. Alias ``workspace`` stands in
+    for ``root`` when ``PRECIS_ROOT`` is unset. Set via ``PRECIS_ROOTS``
+    (``docs/backlog/file-mirror.md``).
+    """
+
     python_roots: str | None = None
     """Python repos exposed to the ``python`` kind.
 
