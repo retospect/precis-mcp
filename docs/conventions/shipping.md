@@ -171,6 +171,20 @@ selecting over `deployed/r<N-1>` was designed and measured (~15–30 min
 static-only on release diffs, tighter once the measured tier feeds it),
 and the soak-vs-verdict wiring is on `docs/backlog/threads/ship-gate-ci.md`.
 
+**Post-deploy: refresh the session MCP image.** The session MCP runs from
+the operator-side `precis-mcp:dev` image, which bakes autocatpath at build
+time; a deploy that moves the `uv.lock` autocatpath pin does not update it
+(gr493148). The release owner runs `scripts/mcp-image-refresh` after such a
+deploy (`--dry-run` first: plan, both versions, installed-script diff, no
+changes). It compares the image's `precis.autocatpath_rev` label with the
+lock pin, prints "up to date" when equal, otherwise runs
+`scripts/build-image precis-dev`, checks the installed ensure script
+(`scripts/mcp-http-install`, diff only: a difference stops it with exit 3 for
+a human `--apply`), then `--recreate` (blue-green) and waits for the new
+colour to answer 401. Not wired into `scripts/release`: it stays a manual,
+opt-in step. The prepare step also logs `autocatpath SKEW` at child start
+when the baked commit is not the pin.
+
 ## /qgo — ungated deploy
 
 qland + deploy that sha **ungated**, then a repair gate only if a slot is

@@ -469,6 +469,12 @@ ENV PRECIS_GIT_LAST_TAG=$PRECIS_GIT_LAST_TAG \
     PRECIS_BUILD_HOST=$PRECIS_BUILD_HOST \
     PRECIS_BUILD_USER=$PRECIS_BUILD_USER
 
+# Labels (not env) so scripts/mcp-image-refresh can read exactly these two
+# values with `docker image inspect --format` without touching the env.
+ARG AUTOCATPATH_REV=unknown
+LABEL precis.autocatpath_rev=$AUTOCATPATH_REV \
+      precis.git_sha=$PRECIS_GIT_SHA
+
 USER precis
 
 # Drop into a shell by default. Override with `--command pytest` etc.

@@ -1,0 +1,208 @@
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
+"""scripts/mcp-image-refresh — rebuild the session MCP's image when it is stale.
+
+The session MCP (precis-mcp-http) runs from the operator-side precis-mcp:dev
+image, whose venv bakes autocatpath at build time (gr493148). Workers get the
+pinned wheel from the wheelhouse; this image does not, so a uv.lock bump leaves
+the MCP on an older engine until the image is rebuilt.
+
+  scripts/mcp-image-refresh              refresh if stale, else "up to date"
+  scripts/mcp-image-refresh --dry-run    print the plan, versions and the
+                                         installed-script diff; change nothing
+
+Steps (stops at the first failure):
+  1. compare the image's `precis.autocatpath_rev` label with the uv.lock pin;
+     equal -> "up to date", exit 0
+  2. if the installed ensure script differs from the repo copy, STOP (exit 3)
+     before building — apply it by hand, never here
+  3. scripts/build-image precis-dev, tag it precis-mcp:dev, re-check the label,
+     scripts/mcp-http-install (check mode only)
+  4. <ensure script> --recreate (blue-green), then poll --status until the
+     backend answers 401 (serving) directly and via the proxy
+
+Reads two labels with `docker image inspect --format`; never the env, never a
+whole inspect. Owned by the release owner, run after a deploy that moved the
+autocatpath pin (docs/conventions/shipping.md).
+"""
+
+from __future__ import annotations
+
+import argparse
+import difflib
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+IMAGE = "precis-mcp:dev"
+BUILD_SERVICE = "precis-dev"  # compose service and the tag it builds
+REV_LABEL = "precis.autocatpath_rev"
+SHA_LABEL = "precis.git_sha"
+REPO_ENSURE = ROOT / "deploy" / "mcp-http" / "precis-mcp-http-ensure.sh"
+EXIT_DIFF = 3
+EXIT_UNHEALTHY = 4
+
+
+def installed_ensure() -> Path:
+    default = (
+        Path.home() / "work/infrastructure/precis-mcp/scripts/precis-mcp-http-ensure.sh"
+    )
+    return Path(os.environ.get("PRECIS_MCP_ENSURE", str(default)))
+
+
+def locked_sha(lock: Path) -> str:
+    """The catpath commit uv.lock pins for autocatpath ('' when not git-sourced)."""
+    text = lock.read_text(encoding="utf-8")
+    m = re.search(
+        r'^name = "autocatpath"\n(?:(?!\[\[).*\n)*?source = .*#([0-9a-f]{7,40})"',
+        text,
+        re.M,
+    )
+    return m.group(1) if m else ""
+
+
+def image_label(image: str, key: str) -> str:
+    """One label value via a narrow --format; '' when absent or the image is missing."""
+    fmt = '{{index .Config.Labels "' + key + '"}}'
+    r = subprocess.run(
+        ["docker", "image", "inspect", "--format", fmt, image],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    out = r.stdout.strip()
+    return "" if r.returncode != 0 or out in ("", "<no value>") else out
+
+
+def is_current(baked: str, pinned: str) -> bool:
+    """Current = the baked rev is the pin (prefix match: labels may be short)."""
+    if not baked or not pinned:
+        return False
+    return baked.startswith(pinned) or pinned.startswith(baked)
+
+
+def ensure_diff(repo: Path, installed: Path) -> str:
+    """Unified diff installed -> repo; '' when identical."""
+    a = (
+        installed.read_text(encoding="utf-8").splitlines(True)
+        if installed.exists()
+        else []
+    )
+    b = repo.read_text(encoding="utf-8").splitlines(True)
+    return "".join(difflib.unified_diff(a, b, str(installed), str(repo)))
+
+
+def run(cmd: list[str]) -> int:
+    print("+ " + " ".join(cmd), flush=True)
+    return subprocess.run(cmd, cwd=ROOT).returncode
+
+
+def serving(status_text: str) -> bool:
+    codes = re.findall(r"\(no token, [^)]*\) -> (\d+)", status_text)
+    return len(codes) >= 2 and all(c == "401" for c in codes)
+
+
+def wait_serving(script: Path, timeout: float, interval: float = 3.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while True:
+        r = subprocess.run(
+            [str(script), "--status"], capture_output=True, text=True, encoding="utf-8"
+        )
+        if serving(r.stdout):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(interval)
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument(
+        "--dry-run", action="store_true", help="print plan and diff; change nothing"
+    )
+    ap.add_argument(
+        "--timeout",
+        type=float,
+        default=180.0,
+        help="seconds to wait for the new colour",
+    )
+    args = ap.parse_args(argv)
+
+    pinned = locked_sha(ROOT / "uv.lock")
+    baked = image_label(IMAGE, REV_LABEL)
+    built = image_label(IMAGE, SHA_LABEL)
+    print(f"autocatpath pin (uv.lock): {pinned or 'none (not git-sourced)'}")
+    print(
+        f"image {IMAGE}: autocatpath {baked or 'unlabelled'}, built from {built[:12] or 'unknown'}"
+    )
+
+    if is_current(baked, pinned):
+        print("up to date")
+        return 0
+
+    installed = installed_ensure()
+    diff = ensure_diff(REPO_ENSURE, installed)
+    plan = [
+        "scripts/build-image precis-dev  (then docker tag precis-dev precis-mcp:dev)",
+        "scripts/mcp-http-install   (diff check only; stops if the installed script differs)",
+        f"{installed} --recreate   (blue-green)",
+        f"{installed} --status   (wait until serving)",
+    ]
+    if args.dry_run:
+        print("plan (dry run, nothing executed):")
+        for i, step in enumerate(plan, 1):
+            print(f"  {i}. {step}")
+        print(
+            "installed ensure script: "
+            + ("in sync" if not diff else "DIFFERS; the real run would stop here")
+        )
+        if diff:
+            sys.stdout.write(diff)
+        return 0
+
+    if not pinned:
+        print(
+            "uv.lock pins no git-sourced autocatpath; nothing to compare. Stopping.",
+            file=sys.stderr,
+        )
+        return 1
+    if diff:
+        print(
+            "STOP: the installed ensure script differs from the repo copy. Review the diff, "
+            "run scripts/mcp-http-install --apply yourself, then re-run this wrapper. "
+            "Nothing was built.",
+            file=sys.stderr,
+        )
+        sys.stdout.write(diff)
+        return EXIT_DIFF
+    if run(["scripts/build-image", BUILD_SERVICE]) != 0:
+        return 1
+    # compose tags the build `precis-dev`; the ensure script runs `precis-mcp:dev`.
+    if run(["docker", "tag", BUILD_SERVICE, IMAGE]) != 0:
+        return 1
+    rebuilt = image_label(IMAGE, REV_LABEL)
+    if not is_current(rebuilt, pinned):
+        print(
+            f"built image carries autocatpath {rebuilt or 'unlabelled'}, not the pin; not recreating",
+            file=sys.stderr,
+        )
+        return 1
+    if run(["scripts/mcp-http-install"]) != 0:
+        return 1
+    if run([str(installed), "--recreate"]) != 0:
+        return 1
+    if not wait_serving(installed, args.timeout):
+        print(
+            f"new backend not serving within {args.timeout:.0f}s; run {installed} --status",
+            file=sys.stderr,
+        )
+        return EXIT_UNHEALTHY
+    print("refreshed: new colour is serving")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

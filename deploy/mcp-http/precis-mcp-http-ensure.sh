@@ -300,10 +300,12 @@ precis-mcp: image '$IMAGE' not found. Build it (also needed after any
 dependency change in pyproject.toml — the image carries the venv, /app
 carries only the source):
 
-  cd $REPO && docker build --target dev \\
-    --build-arg UID=\$(id -u) --build-arg GID=\$(id -g) \\
-    --build-context premodels=docker-image://precis-mcp:premodels \\
-    -t precis-mcp:dev -f docker/Dockerfile .
+  cd $REPO && scripts/build-image precis-dev && docker tag precis-dev ${IMAGE}
+
+(scripts/build-image bakes the autocatpath commit uv.lock pins as
+AUTOCATPATH_REV; a bare \`docker build\` falls back to catpath main, which
+runs ahead of the pin and bakes the wrong engine. After a rebuild, run
+scripts/mcp-image-refresh.)
 EOF
     exit 2
 fi
@@ -543,6 +545,13 @@ if [ "$(cat "$lstamp" 2>/dev/null)" != "$lwant" ]; then
   else
     echo "precis-prepare: dependency sync FAILED (wanted:" $new ") — rebuild the image" >&2
   fi
+fi
+# The sync above skips autocatpath (the image bakes it), so a lock bump never
+# reaches the venv by itself: warn when the baked commit is not the pinned one.
+lockrev="$(sed -n "/^name = \"autocatpath\"\$/,/^source = /s/^source = .*#\([0-9a-f]\{7,40\}\)\".*/\1/p" /app/uv.lock | head -1)"
+haverev="$(cat /opt/venv/lib/python*/site-packages/autocatpath-*.dist-info/direct_url.json 2>/dev/null | sed -n "s/.*\"commit_id\": *\"\([0-9a-f]*\)\".*/\1/p" | head -1)"
+if [ -n "$lockrev" ] && [ "$haverev" != "$lockrev" ]; then
+  echo "precis-prepare: autocatpath SKEW: image has ${haverev:-unknown}, uv.lock pins $lockrev — run scripts/mcp-image-refresh" >&2
 fi
 t2=$SECONDS
 stamp=/opt/venv/.precis-pyproject.sha256
