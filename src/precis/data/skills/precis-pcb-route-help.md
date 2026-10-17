@@ -68,9 +68,13 @@ executor lane (see `precis-job-help`).
   written and the findings listed. `force=True` writes it anyway; a
   forced write that is worse opens its summary with
   `pre-route DRC gate OVERRIDDEN (force=True)`. On a
-  board imported with its source routing as fixed copper, the anneal moves
-  parts off the copper that ends on their pads — pin those parts
-  (`fixed='both'`) or route the stored placement instead of re-placing.
+  board with fixed copper (an import's source routing), moving a part rips
+  up the fixed copper on its pads: those rows are retired and the
+  connections become ordinary unrouted work for `op='route'`. Copper
+  between parts that did not move stays (a locked part never moves);
+  fixed copper left lying on another net's pad is retired too. The
+  summary names the ripped nets. Lock (`fixed='both'`) the parts whose
+  source routing must survive.
 - `op='place'` also accepts `snap` (bool, default `false`): a
   deterministic post-anneal pass that snaps each non-frozen part's centre
   onto a part-scaled grid (its own pin pitch for connectors/headers over

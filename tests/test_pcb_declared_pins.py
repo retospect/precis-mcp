@@ -535,6 +535,62 @@ def test_hv_ring_sink_seed_clears_the_hv_floor(pcb, store) -> None:
     assert bad == []
 
 
+@pytest.mark.parametrize("seed", [1, 2, 3])
+def test_hv_ring_sink_stays_clear_after_place_job(
+    pcb, store, seed: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr491942: the place job's anneal now carries the per-net floors (the
+    worker hydrates PcbIR.net_clearance_floor_mm via
+    pcb_session.net_clearance_floors), so it cannot slide the HV sink back
+    under the 0.4mm coated floor the seed legaliser cleared. The IR handed
+    to the anneal must carry that floor: without it these seeds still
+    moved the sink (2 and 3) and happened to stay clear, so the end-to-end
+    check alone does not discriminate. The engine's rejection at the floor
+    is test_authored_via_gap_owes_the_pairs_net_floor's case."""
+    from precis.workers.job_types import pcb_place as place_job
+    from tests.test_pcb_ewod_dogfood import _drain_one_job
+
+    floors_seen: list[dict[str, float]] = []
+    real_optimize = place_job.optimize
+
+    def spy(ir: Any, config: Any) -> Any:
+        floors_seen.append(dict(ir.net_clearance_floor_mm))
+        return real_optimize(ir, config)
+
+    monkeypatch.setattr(place_job, "optimize", spy)
+    from tests.test_pcb_island_terminal_polygon import (
+        _RING_LCSC,
+        _RING_PINS,
+        _ring_design,
+        _ring_footprint,
+    )
+
+    store.part_footprint_put(
+        _RING_LCSC, _ring_footprint(_RING_PINS, per_side=20, x_half=8.5, y_half=11.5)
+    )
+    slug = f"d-ring-hv-place-{seed}"
+    pcb.put(id=slug, args=_ring_design())
+    ref = store.get_ref(kind="pcb", id=slug)
+    assert ref is not None
+
+    # 300 iters, not the 2000 default: the floor check is on the IR the
+    # anneal receives, and three default-length anneals of this ring cost
+    # ~3 min, enough to push its CI shard past the job timeout.
+    pcb.put(id=slug, args={"op": "place", "seed": seed, "iters": 300})
+    _drain_one_job(store, ref.id)
+    assert floors_seen, "the place job never ran the anneal"
+    assert max(floors_seen[-1].values(), default=0.0) >= 0.4 - 1e-9, floors_seen
+
+    bad = [
+        f
+        for f in pcb._validity_findings(ref.id)
+        if f.severity == "error"
+        and f.rule in ("clearance", "via_pad_keepout")
+        and "ARR1_SINK_0" in f.where
+    ]
+    assert bad == []
+
+
 def test_join_failed_instance_is_not_completed_and_reports_mismatch(pcb, store) -> None:
     """An author pin name matching no footprint label fails the pin/pad
     join for the WHOLE instance (`ir.footprint_pad_set` skips it — the

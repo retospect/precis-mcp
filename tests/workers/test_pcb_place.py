@@ -383,6 +383,199 @@ def test_pcb_place_honors_an_authored_proximity_measure(store: Store) -> None:
     assert dist <= 12.0  # a few mm of the 8mm goal -- not still ~30mm apart
 
 
+def _part(refdes: str, x: float, fixed: str | None = None) -> dict[str, Any]:
+    part: dict[str, Any] = {
+        "refdes": refdes,
+        "label": "r",
+        "x": x,
+        "y": 0.0,
+        "pins": [{"name": "1"}],
+    }
+    if fixed:
+        part["fixed"] = fixed
+    return part
+
+
+def _track(net: str, start: list[float], end: list[float]) -> dict[str, Any]:
+    return {
+        "ctype": "track",
+        "layer": "F.Cu",
+        "net": net,
+        "geom": {
+            "segments": [{"shape": "line", "start": start, "end": end}],
+            "width_mm": 0.2,
+        },
+    }
+
+
+#: gr489911 part 2: U1 (locked) -- N1 track -- R1 (unlocked), and U2 --
+#: N2 track -- U3 (both locked). Moving R1 must rip N1's track only.
+_RIPUP: dict[str, Any] = {
+    "components": [
+        _part("U1", 0.0, "both"),
+        _part("R1", 2.0),
+        _part("U2", 10.0, "both"),
+        _part("U3", 12.0, "both"),
+    ],
+    "nets": [{"name": "N1", "class": "signal"}, {"name": "N2", "class": "signal"}],
+    "connections": [
+        {"net": "N1", "refdes": "U1", "pin": "1"},
+        {"net": "N1", "refdes": "R1", "pin": "1"},
+        {"net": "N2", "refdes": "U2", "pin": "1"},
+        {"net": "N2", "refdes": "U3", "pin": "1"},
+    ],
+}
+
+
+def _seed_ripup(store: Store, slug: str, design: dict[str, Any]) -> tuple[int, int]:
+    ref_id = _seed(store, slug, design)
+    board_id = store.pcb_ensure_board(ref_id)
+    store.pcb_fixed_copper_put(
+        ref_id,
+        board_id,
+        "SRC",
+        "epro",
+        "1",
+        [_track("N1", [0.0, 0.0], [2.0, 0.0]), _track("N2", [10.0, 0.0], [12.0, 0.0])],
+    )
+    return ref_id, board_id
+
+
+def _instances(store: Store, ref_id: int) -> dict[str, tuple[Any, ...]]:
+    return {
+        i["refdes"]: (i["x"], i["y"], i["rot"], i.get("fixed"))
+        for i in store.pcb_graph(ref_id)["instances"]
+    }
+
+
+def test_pcb_place_rips_up_the_fixed_copper_of_a_moved_part(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reto 2026-10-16 (gr489911 part 2): moving an unlocked part rips the
+    fixed copper on its pads, which becomes unrouted work; copper between
+    parts that did not move stays, and locked parts keep pose and lock."""
+    ref_id, board_id = _seed_ripup(store, "place-ripup", _RIPUP)
+    before = _instances(store, ref_id)
+    real_optimize = pcb_place.optimize
+
+    def _shift_r1(ir: Any, config: Any) -> Any:
+        result = real_optimize(ir, config)
+        i = list(ir.instance_refdes).index("R1")
+        ir.inst_x[i], ir.inst_y[i] = 2.0, 6.0
+        return result
+
+    monkeypatch.setattr(pcb_place, "optimize", _shift_r1)
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 1})
+    _dispatch(ctx)
+
+    assert not ctx.failures
+    assert {r["net"] for r in store.pcb_fixed_copper_list(board_id)} == {"N2"}
+    assert "ripped up 1 fixed-copper row(s)" in ctx.summaries[0][1]
+    assert "N1" in ctx.summaries[0][1]
+    after = _instances(store, ref_id)
+    assert after["R1"][:2] == (2.0, 6.0)
+    for refdes in ("U1", "U2", "U3"):
+        assert after[refdes] == before[refdes], refdes
+
+
+def test_pcb_place_rips_up_fixed_copper_left_on_a_foreign_pad(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """prod taz15 after jo489777: the parts had already been moved off their
+    copper, so it touched no pad of its own and lay across foreign pads (172
+    shorts no router can clear). A place job retires such copper even when
+    this run moves nothing."""
+    design = {
+        **_RIPUP,
+        "components": [*_RIPUP["components"], _part("R5", 6.0)],
+        "nets": [*_RIPUP["nets"], {"name": "N5", "class": "signal"}],
+        "connections": [
+            *_RIPUP["connections"],
+            {"net": "N5", "refdes": "R5", "pin": "1"},
+        ],
+    }
+    ref_id, board_id = _seed_ripup(store, "place-stale", design)
+    store.pcb_fixed_copper_put(
+        ref_id, board_id, "STALE", "epro", "1", [_track("N1", [5.0, 0.0], [7.0, 0.0])]
+    )
+    real_optimize = pcb_place.optimize
+
+    def _stay(ir: Any, config: Any) -> Any:
+        x, y, rot = ir.inst_x.copy(), ir.inst_y.copy(), ir.inst_rot.copy()
+        result = real_optimize(ir, config)
+        ir.inst_x[:], ir.inst_y[:], ir.inst_rot[:] = x, y, rot
+        return result
+
+    monkeypatch.setattr(pcb_place, "optimize", _stay)
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 1})
+    _dispatch(ctx)
+
+    assert not ctx.failures
+    kept = store.pcb_fixed_copper_list(board_id)
+    assert sorted(r["generator_name"] for r in kept) == ["SRC", "SRC"]
+
+
+def test_pcb_place_keeps_every_lock_and_locked_pose(store: Store) -> None:
+    """gr491884 (Reto 2026-10-16, "If the part is locked, it should remain
+    locked"): a real anneal never moves a locked part and never changes any
+    part's ``fixed`` flag."""
+    ref_id, _board_id = _seed_ripup(store, "place-locks", _RIPUP)
+    before = _instances(store, ref_id)
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 400, "seed": 3})
+    _dispatch(ctx)
+
+    assert not ctx.failures
+    after = _instances(store, ref_id)
+    assert {r: v[3] for r, v in after.items()} == {r: v[3] for r, v in before.items()}
+    for refdes in ("U1", "U2", "U3"):
+        assert after[refdes] == before[refdes], refdes
+
+
+def test_pcb_place_never_rips_a_live_generators_copper(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A generator's fabric is one unit with its parts: moving a part does
+    not retire single rows of it (the import's source copper is rippable
+    because it has no ``pcb_generators`` row)."""
+    ref_id, board_id = _seed_ripup(store, "place-genkeep", _RIPUP)
+    real_generators_for = store.pcb_generators_for
+    monkeypatch.setattr(
+        store,
+        "pcb_generators_for",
+        lambda rid: {"SRC": {}} if rid == ref_id else real_generators_for(rid),
+    )
+    real_optimize = pcb_place.optimize
+
+    def _shift_r1(ir: Any, config: Any) -> Any:
+        result = real_optimize(ir, config)
+        i = list(ir.instance_refdes).index("R1")
+        ir.inst_x[i], ir.inst_y[i] = 2.0, 6.0
+        return result
+
+    monkeypatch.setattr(pcb_place, "optimize", _shift_r1)
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 1})
+    _dispatch(ctx)
+
+    assert not ctx.failures
+    assert {r["net"] for r in store.pcb_fixed_copper_list(board_id)} == {"N1", "N2"}
+    assert "ripped up" not in ctx.summaries[0][1]
+
+
+def test_pcb_place_objective_does_not_see_fixed_tracks(store: Store) -> None:
+    """No rip-up cost in the placer objective (Reto 2026-10-16): the same
+    seed lands every part on the same pose with and without the fixed
+    tracks — the copper only decides what is ripped afterwards."""
+    with_copper, _ = _seed_ripup(store, "place-obj-a", _RIPUP)
+    without = _seed(store, "place-obj-b", _RIPUP)
+    for ref_id in (with_copper, without):
+        _dispatch(
+            _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 400, "seed": 5})
+        )
+    poses_a = {r: v[:3] for r, v in _instances(store, with_copper).items()}
+    poses_b = {r: v[:3] for r, v in _instances(store, without).items()}
+    assert poses_a == poses_b
+
+
 def test_pcb_place_fails_legibly_on_empty_design(store: Store) -> None:
     handler = PcbHandler(hub=Hub(store=store))
     handler.put(id="place-empty", args={})

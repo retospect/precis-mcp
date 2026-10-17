@@ -616,11 +616,73 @@ def fixed_copper_pin_terminals(
     return out
 
 
+def fixed_copper_branches(
+    model: dict[str, Any],
+) -> list[tuple[frozenset[int], frozenset[str]]]:
+    """``model["copper"]``'s fixed copper split into BRANCHES: pieces that
+    touch each other directly (same net, same layer, or one via barrel),
+    with pads acting as cuts rather than joins. Each branch is its
+    ``model["copper"]`` row indices plus the refdes of every part whose
+    same-net pad it touches.
+
+    The placer's rip-up unit (gr489911, Reto 2026-10-16): "When the
+    placer moves a part, the fixed copper attached to its pads is ripped
+    up ... Fixed copper between parts that did not move stays." A branch
+    is exactly the copper between pads, so a moved decoupling cap rips
+    the GND stubs that end on its own pads and leaves the GND tracks
+    joining two parts that stayed. Unlike :func:`fixed_copper_pin_terminals`'s
+    islands, a pad never merges two branches: through-pad joining would
+    make one moved part on a net take that net's whole routing with it.
+    Measured at the poses the copper was authored against; a branch that
+    touches no pad there is returned with an empty refdes set."""
+    prims, via_groups = _copper_primitives_with_vias(model)
+    n_fixed = len(prims)
+    if n_fixed == 0:
+        return []
+    dsu = _DisjointSet(n_fixed)
+    for members in via_groups.values():
+        for other in members[1:]:
+            dsu.union(members[0], other)
+    first_of_row: dict[int, int] = {}
+    for i, p in enumerate(prims):
+        dsu.union(first_of_row.setdefault(p.group, i), i)
+    by_key: dict[tuple[str, str], list[int]] = {}
+    for i, p in enumerate(prims):
+        by_key.setdefault((p.net, p.layer), []).append(i)
+    for members in by_key.values():
+        for a_i in range(len(members)):
+            pa = prims[members[a_i]]
+            for b_i in range(a_i + 1, len(members)):
+                if _touch_gap(pa, prims[members[b_i]], None, None) <= TOUCH_EPS_MM:
+                    dsu.union(members[a_i], members[b_i])
+
+    pad_prims, pad_polys, pad_keys, _barrels = _pad_primitives(
+        model, start_group=len(model.get("copper") or [])
+    )
+    refdes_by_root: dict[int, set[str]] = {}
+    for k, pad in enumerate(pad_prims):
+        key = pad_keys[k]
+        if key is None:
+            continue
+        for i in by_key.get((pad.net, pad.layer), ()):
+            if _touch_gap(prims[i], pad, None, pad_polys.get(k)) <= TOUCH_EPS_MM:
+                refdes_by_root.setdefault(dsu.find(i), set()).add(str(key[0]))
+
+    rows_by_root: dict[int, set[int]] = {}
+    for i, p in enumerate(prims):
+        rows_by_root.setdefault(dsu.find(i), set()).add(int(p.group))
+    return [
+        (frozenset(rows), frozenset(refdes_by_root.get(root, ())))
+        for root, rows in rows_by_root.items()
+    ]
+
+
 __all__ = [
     "TOUCH_EPS_MM",
     "FixedTerminal",
     "NetIslands",
     "connected_pin_pairs",
+    "fixed_copper_branches",
     "fixed_copper_pin_terminals",
     "net_islands",
 ]

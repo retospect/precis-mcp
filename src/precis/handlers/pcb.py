@@ -1295,11 +1295,9 @@ class PcbHandler(Handler):
                 )
             except ValueError as exc:
                 raise BadInput(f"pcb: {exc}") from exc
-            ir.net_clearance_floor_mm = {
-                name: float(rules.min_clearance_mm)
-                for name, rules in self._clearance_net_rules(design, capability).items()
-                if rules.min_clearance_mm is not None
-            }
+            ir.net_clearance_floor_mm = pcb_session.net_clearance_floors(
+                design, capability
+            )
         idx = {str(r): i for i, r in enumerate(ir.instance_refdes)}
         seed_set = set(seeded)
         # Per-instance: did ``land_rects_by_instance`` hydrate REAL pads,
@@ -5602,20 +5600,7 @@ class PcbHandler(Handler):
         """Net name -> resolved :class:`NetRules` for the clearance checks:
         what :meth:`_drc_rule_inputs` judges by and what
         :meth:`_legalize_generator_seeds` places seeds against, one source."""
-        net_classes = design.get("net_classes") or {}
-        return {
-            str(n["name"]): resolve_net_rules(
-                str(n.get("net_class") or ""),
-                # Clearance (the only field check_clearance reads off this
-                # map) doesn't depend on layer -- an arbitrary True is fine
-                # here; realize.py is the caller that resolves per-layer.
-                layer_is_outer=True,
-                fab_caps=capability,
-                overrides=net_classes.get(n.get("net_class") or ""),
-                current_a=n.get("est_current_a"),
-            )
-            for n in design["nets"]
-        }
+        return pcb_session.clearance_net_rules(design, capability)
 
     def _design_phase(self, design: dict[str, Any]) -> str:
         """The phase the check surface judges at (Slice 8): the author's

@@ -30,6 +30,7 @@ Mixin assumes the concrete Store provides ``self.pool``/``self.tx``/
 from __future__ import annotations
 
 import contextvars
+import logging
 import math
 import time
 from collections.abc import Iterable, Iterator
@@ -55,6 +56,8 @@ from precis.pcb import padplace as pcb_padplace
 from precis.pcb.capabilities import capability_for, conductor_spacing_mm
 from precis.store.types import ActorSlug
 from precis.utils.units import parse_angle_deg
+
+log = logging.getLogger(__name__)
 
 
 def _normalize_supplies(
@@ -3624,6 +3627,7 @@ class PcbMixin:
         pose: dict[str, tuple[float, float, float]],
         *,
         meta: dict[str, Any] | None = None,
+        conn: Connection | None = None,
     ) -> int:
         """Write new ``(x, y, rot)`` for instances by refdes — the joint
         placement+topology optimizer's write-back (``pcb_place``/
@@ -3633,26 +3637,38 @@ class PcbMixin:
         ``fixed='both'`` blocks everything. :meth:`pcb_set_placement`
         stays untouched — its only caller (v1 autoplace/route
         round-trip) never writes rotation, so a coarser blanket guard is
-        honest there. Returns instances with ≥1 axis written."""
+        honest there. Returns instances with ≥1 axis written. Reuses
+        ``conn`` inside an existing transaction."""
+        if conn is not None:
+            return self._pcb_set_pose(conn, ref_id, pose, meta)
+        with self._pcb_tx() as c:
+            return self._pcb_set_pose(c, ref_id, pose, meta)
+
+    def _pcb_set_pose(
+        self,
+        conn: Connection,
+        ref_id: int,
+        pose: dict[str, tuple[float, float, float]],
+        meta: dict[str, Any] | None,
+    ) -> int:
         moved = 0
-        with self._pcb_tx() as conn:
-            for refdes, (x, y, rot) in pose.items():
-                moved += conn.execute(
-                    "UPDATE pcb_instances SET "
-                    "  x = CASE WHEN fixed IS NULL OR fixed NOT IN ('xy', 'both') "
-                    "           THEN %s ELSE x END, "
-                    "  y = CASE WHEN fixed IS NULL OR fixed NOT IN ('xy', 'both') "
-                    "           THEN %s ELSE y END, "
-                    "  rot = CASE WHEN fixed IS NULL OR fixed NOT IN ('rot', 'both') "
-                    "           THEN %s ELSE rot END "
-                    "WHERE ref_id = %s AND refdes = %s AND retired_at IS NULL",
-                    (float(x), float(y), float(rot), ref_id, refdes),
-                ).rowcount
-            if meta is not None:
-                conn.execute(
-                    "UPDATE refs SET meta = meta || %s WHERE ref_id = %s",
-                    (Jsonb(dict(meta)), ref_id),
-                )
+        for refdes, (x, y, rot) in pose.items():
+            moved += conn.execute(
+                "UPDATE pcb_instances SET "
+                "  x = CASE WHEN fixed IS NULL OR fixed NOT IN ('xy', 'both') "
+                "           THEN %s ELSE x END, "
+                "  y = CASE WHEN fixed IS NULL OR fixed NOT IN ('xy', 'both') "
+                "           THEN %s ELSE y END, "
+                "  rot = CASE WHEN fixed IS NULL OR fixed NOT IN ('rot', 'both') "
+                "           THEN %s ELSE rot END "
+                "WHERE ref_id = %s AND refdes = %s AND retired_at IS NULL",
+                (float(x), float(y), float(rot), ref_id, refdes),
+            ).rowcount
+        if meta is not None:
+            conn.execute(
+                "UPDATE refs SET meta = meta || %s WHERE ref_id = %s",
+                (Jsonb(dict(meta)), ref_id),
+            )
         return moved
 
     def pcb_move_instance(
@@ -3729,9 +3745,16 @@ class PcbMixin:
             "WHERE ref_id = %s AND refdes = %s AND retired_at IS NULL"
         )
         if conn is not None:
-            return conn.execute(sql, params).rowcount > 0
-        with self._pcb_tx() as c:
-            return c.execute(sql, params).rowcount > 0
+            hit = conn.execute(sql, params).rowcount > 0
+        else:
+            with self._pcb_tx() as c:
+                hit = c.execute(sql, params).rowcount > 0
+        if hit and fixed is not _UNSET:
+            # gr491884: prod taz15 lost all 10 of its imported locks and no
+            # record shows which call cleared them. This is the only write
+            # path that changes `fixed`, so every change leaves a line.
+            log.info("pcb lock: ref %s %s fixed -> %r", ref_id, refdes, fixed)
+        return hit
 
     def pcb_features_retire(
         self,
@@ -4215,6 +4238,30 @@ class PcbMixin:
             (ref_id, generator_name),
         )
         return cur.rowcount
+
+    def pcb_fixed_copper_retire_ids(
+        self,
+        board_id: int,
+        fixed_ids: list[int],
+        *,
+        conn: Connection | None = None,
+    ) -> int:
+        """Soft-delete the active fixed-copper rows ``fixed_ids`` on one
+        board — the place job's rip-up (gr489911): the copper attached to a
+        part the anneal moved is retired, and its connections become
+        unrouted work. Rows of another board are never touched. Reuses
+        ``conn`` inside an existing transaction."""
+        if not fixed_ids:
+            return 0
+        sql = (
+            "UPDATE pcb_fixed_copper SET retired_at = now() "
+            "WHERE board_id = %s AND fixed_id = ANY(%s) AND retired_at IS NULL"
+        )
+        params = (board_id, [int(f) for f in fixed_ids])
+        if conn is not None:
+            return conn.execute(sql, params).rowcount
+        with self._pcb_tx() as c:
+            return c.execute(sql, params).rowcount
 
     def pcb_rip_route(
         self, ref_id: int, net_name: str, *, conn: Connection | None = None

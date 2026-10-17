@@ -10,7 +10,7 @@ rather than the optimizer's own move-generation logic (that's
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -1891,3 +1891,56 @@ def test_pin_swap_groups_alias_warns_and_matches(store: Store) -> None:
     assert unsupplied == []
     assert any("pin_swap_groups on S1 is deprecated" in w for w in warnings)
     assert [e["role"] for e in report] == ["pin_swap:S1:0"]
+
+
+def test_pcb_route_rips_the_fixed_copper_of_a_part_its_anneal_moves(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr489911 part 2: the route job's anneal is a placer too. A part it
+    moves takes the fixed copper on its pads with it, and the router routes
+    that connection instead of refusing on the copper the part left."""
+    u1, r1 = cast(list[dict[str, Any]], _DESIGN["components"])
+    design = {**_DESIGN, "components": [{**u1, "fixed": "both"}, r1]}
+    ref_id = _seed(store, "route-ripup", design)
+    board_id = store.pcb_ensure_board(ref_id)
+    store.pcb_fixed_copper_put(
+        ref_id,
+        board_id,
+        "SRC",
+        "epro",
+        "1",
+        [
+            {
+                "ctype": "track",
+                "layer": "F.Cu",
+                "net": "N1",
+                "geom": {
+                    "segments": [
+                        {"shape": "line", "start": [0.0, 0.0], "end": [5.0, 0.0]}
+                    ],
+                    "width_mm": 0.2,
+                },
+            }
+        ],
+    )
+    real_optimize = pcb_route.optimize
+
+    def _shift_r1(ir: Any, config: Any) -> Any:
+        result = real_optimize(ir, config)
+        i = list(ir.instance_refdes).index("R1")
+        ir.inst_x[i], ir.inst_y[i] = 5.0, 4.0
+        return result
+
+    monkeypatch.setattr(pcb_route, "optimize", _shift_r1)
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 1})
+    _route(ctx)
+
+    assert not ctx.failures
+    assert store.pcb_fixed_copper_list(board_id) == []
+    assert "ripped up 1 fixed-copper row(s)" in ctx.summaries[-1][1]
+    status = {r["name"]: r["status"] for r in store.pcb_route_status(ref_id)}
+    assert status["N1"] == "realized"
+    poses = {
+        i["refdes"]: (i["x"], i["y"]) for i in store.pcb_graph(ref_id)["instances"]
+    }
+    assert poses == {"U1": (0.0, 0.0), "R1": (5.0, 4.0)}

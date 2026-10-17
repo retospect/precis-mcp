@@ -275,7 +275,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
                 capability = capability_for(_process_for_stackup(ir.stackup))
             except ValueError:
                 capability = None
-        if gate_board_id is not None and capability is not None:
+        if gate_board_id is not None:
             footprints = pcb_session.footprints_by_refdes(
                 ir,
                 ctx.store.pcb_footprints_for(pcb_ref_id),
@@ -287,6 +287,24 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     except Exception:
         log.exception("pcb_place: pre-route DRC gate inputs raised; gate skipped")
         capability = None
+        footprints = None
+    # gr491942: the per-net clearance floors the put judge and the handler's
+    # seed legaliser apply (the coated hv floor on a parylene EWOD board).
+    # Without them the anneal judged every land-to-authored-via pair at the
+    # flat gap, and its legality gate let an HV sink slide back under the
+    # floor its legalised seed had cleared. The anneal's existing hard
+    # rejection (`_fixed_via_gap` inside its proposal legality) does the
+    # rest. A board with no capability row keeps the flat gap, as before.
+    # Resolved on its own, not via the gate's `capability`: a footprint
+    # hydration failure that skips the gate must not drop the floors too.
+    try:
+        floor_capability = capability_for(_process_for_stackup(ir.stackup))
+    except ValueError:
+        floor_capability = None
+    if floor_capability is not None:
+        ir.net_clearance_floor_mm = pcb_session.net_clearance_floors(
+            ctx.store.pcb_load(pcb_ref_id), floor_capability
+        )
     # The "before" count is only a baseline when every part HAD a pose:
     # `placement_drc_findings` skips NaN-pose instances, so a never-placed
     # (or partly placed) board measures ~0 errors before the anneal and a
@@ -300,8 +318,44 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         )
     )
 
+    # gr489911 part 2 (Reto 2026-10-16): a part the anneal moves takes the
+    # fixed copper on its pads with it — those branches are retired and
+    # their connections become unrouted work for op='route'. The branches
+    # are measured HERE, on the stored poses the copper was laid against;
+    # after the anneal the pads no longer touch it. Copper between parts
+    # that stay is kept. Nothing enters the anneal's objective.
+    fixed_rows = (
+        ctx.store.pcb_fixed_copper_list(int(gate_board_id))
+        if gate_board_id is not None
+        else []
+    )
+    branches = (
+        pcb_session.fixed_copper_branches(
+            ir,
+            footprints,
+            pcb_session.rippable_fixed_copper(
+                fixed_rows, set(ctx.store.pcb_generators_for(pcb_ref_id))
+            ),
+        )
+        if fixed_rows and footprints is not None
+        else []
+    )
+    # Copper the stored board already carries as a pad short: broken
+    # whoever moves, so it is ripped like copper of a moved part.
+    shorted_before = (
+        pcb_session.fixed_copper_pad_shorts(
+            ir, footprints or {}, fixed_rows, capability
+        )
+        if branches
+        else set()
+    )
+    pose_before = pcb_session.positions(ir)
+    ripped: set[int] = set()
+    kept_rows = fixed_rows
+
     def _placement_gate() -> tuple[int, str | None] | tuple[None, None]:
-        """``(n_errors, rendered report)`` over the CURRENT ``ir``;
+        """``(n_errors, rendered report)`` over the CURRENT ``ir``, against
+        the fixed copper the write would keep (``kept_rows``);
         ``(None, None)`` when the gate cannot run."""
         if gate_board_id is None or capability is None:
             return None, None
@@ -310,7 +364,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
                 ir,
                 capability=capability,
                 footprints=footprints,
-                fixed_copper=ctx.store.pcb_fixed_copper_list(int(gate_board_id)),
+                fixed_copper=kept_rows,
                 outline=pcb_session.outline_from_features(features),
             )
             # gr345859 §F — violated `strength='invariant'` measures join
@@ -328,6 +382,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
                     if row.get("fixed")
                     else {**row, "derived": True}
                     for row in ctx.store.pcb_copper_list(int(gate_board_id))
+                    if row.get("fixed_id") not in ripped
                 ],
                 layers=layers,
             )
@@ -347,6 +402,21 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         _placement_gate() if fully_placed_before else (None, None)
     )
     result = optimize(ir, config)
+    pose = pcb_session.positions(ir)
+    if branches:
+        moved_parts = {
+            r for r, p in pose.items() if pcb_session.pose_moved(pose_before.get(r), p)
+        }
+        ripped = pcb_session.fixed_copper_ripup(
+            ir,
+            footprints or {},
+            fixed_rows,
+            branches,
+            moved_parts,
+            capability,
+            shorted_before,
+        )
+        kept_rows = [r for r in fixed_rows if r["fixed_id"] not in ripped]
     n_placement_errors, placement_report = _placement_gate()
     worse = (
         errors_before is not None
@@ -371,18 +441,28 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             f"{errors_before}\n{placement_report}"
         )
 
-    pose = pcb_session.positions(ir)
-    moved = ctx.store.pcb_set_pose(
-        pcb_ref_id,
-        pose,
-        meta={
-            "last_place": {
-                "iters": result.iters,
-                "cost_before": round(result.cost_before, 4),
-                "cost_after": round(result.cost_after, 4),
-            }
-        },
-    )
+    # One transaction: a pose write without its rip-up is the 172-short
+    # board this exists to prevent.
+    with ctx.store.tx() as conn:
+        moved = ctx.store.pcb_set_pose(
+            pcb_ref_id,
+            pose,
+            meta={
+                "last_place": {
+                    "iters": result.iters,
+                    "cost_before": round(result.cost_before, 4),
+                    "cost_after": round(result.cost_after, 4),
+                }
+            },
+            conn=conn,
+        )
+        n_ripped = (
+            ctx.store.pcb_fixed_copper_retire_ids(
+                int(gate_board_id), sorted(ripped), conn=conn
+            )
+            if ripped and gate_board_id is not None
+            else 0
+        )
 
     # A hard align the optimizer's snap pass closed is flagged on its row
     # (`meta.snapped`, shown as `detail` by view='measures'); cleared for
@@ -418,6 +498,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             else ""
         )
         + "\n\n"
+        + pcb_session.ripup_note(n_ripped, fixed_rows, ripped)
         + _legalized_note(result.legalized)
         + _soft_pin_note(result.soft_pin_travel_mm)
         + _support_groups_note(result.support_groups)

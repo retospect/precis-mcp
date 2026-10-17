@@ -149,7 +149,13 @@ review, VERIFIED by Reto 2026-10-14 — review-queue
    placement, and prod's taz15 now carries jo489777's annealed poses
    (186 placement errors; the source poses live on `taz15-blank`) —
    gr489911/gr489913 (op='place' now refuses a placement worse than
-   the stored one; pinning parts to their copper is part 2). At the source poses with every part frozen: the
+   the stored one). Part 2 (Reto 2026-10-16): a moved part rips the fixed
+   copper on its pads, in op='place' and in op='route''s single anneal
+   (the loop path does not rip yet). On dev, prod taz15 with its 10
+   locks back: place ripped 787 of 937 rows, 172 → 0 fixed-copper
+   collisions; route then ran (59 realized, 20 failed of 79 routable,
+   forced past 9 outline_containment errors, held by the worse-board
+   guard). At the source poses with every part frozen: the
    categorical `courtyard_overlap` error refused the route on 30 pairs
    the fab built (gr489912, fixed: graded on lands);
    `taz15` with its source copper then routed 146 → **150/151** after

@@ -907,6 +907,25 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             _collision_reason("refusing to route", collisions), failure_class="input"
         )
         return
+    # gr489911 part 2: this job's anneal is a placer too, so a part it moves
+    # takes the fixed copper on its pads with it (pcb_place's rule, one
+    # definition in pcb_session). Branches are measured here, on the stored
+    # poses; the single-anneal path below rips after `optimize`. The loop
+    # path anneals between rounds and does not rip yet — its post-anneal
+    # collision check still refuses a part parked on fixed copper.
+    fixed_copper_stored = fixed_copper
+    branches = (
+        pcb_session.fixed_copper_branches(
+            ir,
+            footprints,
+            pcb_session.rippable_fixed_copper(
+                fixed_copper, set(ctx.store.pcb_generators_for(pcb_ref_id))
+            ),
+        )
+        if fixed_copper
+        else []
+    )
+    ripped: set[int] = set()
 
     # The incumbent board's own floor, measured BEFORE the anneal touches
     # `ir`'s poses — the never-commit-a-worse-board guard (gr480010; job
@@ -1141,6 +1160,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
                     if row.get("fixed")
                     else {**row, "derived": True}
                     for row in ctx.store.pcb_copper_list(int(board_id))
+                    if row.get("fixed_id") not in ripped
                 ],
                 layers=layers,
             )
@@ -1293,6 +1313,19 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     else:
         pose_before.append((ir.inst_x.copy(), ir.inst_y.copy(), ir.inst_rot.copy()))
         result = optimize(ir, config)
+        if branches:
+            ripped = pcb_session.fixed_copper_ripup(
+                ir,
+                footprints,
+                fixed_copper_stored,
+                branches,
+                set(_moved_refdes(ir, pose_before[0])),
+                fab_caps,
+            )
+            # Every gate and the realize below read the kept copper.
+            fixed_copper = [
+                r for r in fixed_copper_stored if r["fixed_id"] not in ripped
+            ]
         if _post_anneal_collision_check():
             return
         derived_assignments, pin_swap_overrides = _settled_writebacks()
@@ -1721,6 +1754,9 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     ctx.store.pcb_pin_swaps_replace_derived(
         pcb_ref_id, int(board_id), pin_swap_overrides
     )
+    # Rip before the pose write: a crash between the two then leaves the old
+    # poses with that copper unrouted (legal), never moved parts on it.
+    n_ripped = ctx.store.pcb_fixed_copper_retire_ids(int(board_id), sorted(ripped))
     ctx.store.pcb_set_pose(pcb_ref_id, pcb_session.positions(ir))
     if result is not None and any(spec.metric == "align" for spec in measures):
         ctx.store.pcb_measures_mark_snapped(pcb_ref_id, result.snapped)
@@ -1896,7 +1932,10 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         {},  # positions already written above; this call is meta-only
         meta={"last_route": last_route},
     )
-    ctx.append_chunk("job_summary", attempt_summary)
+    ctx.append_chunk(
+        "job_summary",
+        pcb_session.ripup_note(n_ripped, fixed_copper_stored, ripped) + attempt_summary,
+    )
     # Reto's ruling (2026-10-01): "it's no good if the wires are not there.
     # You may show it to me but it is failed." So ANY failed net fails the
     # job — after the copper, statuses and summary above are written, so the

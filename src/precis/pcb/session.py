@@ -43,6 +43,7 @@ from precis.pcb import geom as pcb_geom
 from precis.pcb import ir as pcb_ir
 from precis.pcb import padplace as pcb_padplace
 from precis.pcb import pose
+from precis.pcb.rules import resolve_net_rules
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -236,6 +237,48 @@ def land_rects_by_instance(
             out.append(derived[inst_id])
             out_nets.append(("",) * len(derived[inst_id]))
     return tuple(out), tuple(out_nets)
+
+
+def clearance_net_rules(
+    design: dict[str, Any], capability: CapabilityRow
+) -> dict[str, NetRules]:
+    """Net name -> resolved :class:`~precis.pcb.rules.NetRules` for the
+    clearance checks, from a :meth:`~precis.store.Store.pcb_load` design:
+    what the put judge's ``check_clearance`` judges by, what the seed
+    legaliser places against, and (via :func:`net_clearance_floors`) what
+    the place job's anneal keeps lands off authored vias by. One source."""
+    net_classes = design.get("net_classes") or {}
+    return {
+        str(n["name"]): resolve_net_rules(
+            str(n.get("net_class") or ""),
+            # Clearance (the only field check_clearance reads off this
+            # map) doesn't depend on layer -- an arbitrary True is fine
+            # here; realize.py is the caller that resolves per-layer.
+            layer_is_outer=True,
+            fab_caps=capability,
+            overrides=net_classes.get(n.get("net_class") or ""),
+            current_a=n.get("est_current_a"),
+        )
+        for n in design["nets"]
+    }
+
+
+def net_clearance_floors(
+    design: dict[str, Any], capability: CapabilityRow
+) -> dict[str, float]:
+    """:attr:`~precis.pcb.ir.PcbIR.net_clearance_floor_mm` for a design:
+    each net's resolved ``min_clearance_mm`` HARD floor, for the nets that
+    have one (the coated hv floor on a parylene EWOD board). gr491942: the
+    handler's seed legaliser hydrated it but the place job did not, so the
+    anneal judged an HV land against a foreign-net via at the flat gap and
+    could undo the legalised seed. Per NET only; a per-(net, layer) floor
+    model is the vector-router spec's checker step
+    (docs/backlog/pcb-vector-router.md), and this is the seam it replaces."""
+    return {
+        name: float(rules.min_clearance_mm)
+        for name, rules in clearance_net_rules(design, capability).items()
+        if rules.min_clearance_mm is not None
+    }
 
 
 def build_ir(
@@ -952,6 +995,141 @@ def fixed_copper_findings(
         if f.severity == "error"
         and any(o.get("ctype") in ("via", "track") for o in f.objects)
     ]
+
+
+def pose_moved(
+    before: tuple[float, float, float] | None, after: tuple[float, float, float]
+) -> bool:
+    """Whether an anneal (or its legaliser) moved a part between two
+    :func:`positions` entries: a new value on any axis, or a first pose
+    for a part that had none."""
+    if before is None:
+        return True
+    return any(
+        abs(float(a) - float(b)) > 1e-6 for a, b in zip(before, after, strict=True)
+    )
+
+
+def rippable_fixed_copper(
+    fixed_copper: list[dict[str, Any]], generator_names: set[str]
+) -> list[dict[str, Any]]:
+    """The fixed copper a placer may rip up: every row not owned by a live
+    generator (``pcb_generators``). A generator's fabric is one unit with
+    its parts — op='move' carries it rigidly, and a changed expansion
+    retires it whole — so retiring single rows of it would leave a
+    half-fabric the generator still claims. An import's source routing
+    (``__epro_source``) has no generator row and is rippable."""
+    return [r for r in fixed_copper if r.get("generator_name") not in generator_names]
+
+
+def fixed_copper_branches(
+    ir: pcb_ir.PcbIR,
+    footprints: dict[str, dict[str, Any]] | None,
+    fixed_copper: list[dict[str, Any]],
+) -> list[tuple[frozenset[int], frozenset[str]]]:
+    """:func:`precis.pcb.connectivity.fixed_copper_branches` at the IR's
+    CURRENT poses, each branch as ``(fixed_ids, refdes it touches)`` —
+    measured before an anneal, while the copper still meets the pads it
+    was laid against."""
+    from precis.pcb import connectivity as pcb_connectivity
+    from precis.pcb import realize as pcb_realize
+
+    layers = [str(layer.get("name")) for layer in ir.stackup]
+    model = {
+        "layers": layers,
+        "pads": pcb_realize.pads_for_ir(ir, layers, footprints),
+        "copper": [{**row, "net": row.get("net") or ""} for row in fixed_copper],
+    }
+    return [
+        (frozenset(int(fixed_copper[i]["fixed_id"]) for i in rows), refdes)
+        for rows, refdes in pcb_connectivity.fixed_copper_branches(model)
+    ]
+
+
+def fixed_copper_pad_shorts(
+    ir: pcb_ir.PcbIR,
+    footprints: dict[str, dict[str, Any]],
+    fixed_copper: list[dict[str, Any]],
+    capability: CapabilityRow | None,
+) -> set[int]:
+    """``fixed_id`` of every fixed-copper row in a clearance error against
+    a pad at the IR's CURRENT poses — measured on the stored placement,
+    this is copper the board already carries as a short."""
+    if capability is None:
+        return set()
+    return {
+        int(o["fixed_id"])
+        for finding in fixed_copper_findings(ir, footprints, fixed_copper, capability)
+        if any(o.get("ctype") == "pad" for o in finding.objects)
+        for o in finding.objects
+        if o.get("fixed_id") is not None
+    }
+
+
+def fixed_copper_ripup(
+    ir: pcb_ir.PcbIR,
+    footprints: dict[str, dict[str, Any]],
+    fixed_copper: list[dict[str, Any]],
+    branches: list[tuple[frozenset[int], frozenset[str]]],
+    moved: set[str],
+    capability: CapabilityRow | None,
+    shorted_before: set[int] | frozenset[int] = frozenset(),
+) -> set[int]:
+    """The fixed-copper rows a placer write retires (gr489911 part 2, Reto
+    2026-10-16: "When the placer moves a part, the fixed copper attached to
+    its pads is ripped up"): every branch from :func:`fixed_copper_branches`
+    that touched a pad of a part in ``moved``, plus every branch in a
+    clearance error against a pad at the NEW poses when that pad belongs to
+    a moved part, the branch touches no pad at all, or the branch was
+    already shorting a pad on the stored board (``shorted_before``, from
+    :func:`fixed_copper_pad_shorts` before the anneal). The last two are
+    copper an earlier placement pulled its parts off (prod taz15 after
+    jo489777: 172 track-on-foreign-pad shorts), which no router can use or
+    clear. Copper that was legal and sits between parts that stayed is
+    kept. Only rows inside ``branches`` are ever retired, so a caller
+    exempts copper by leaving it out of :func:`fixed_copper_branches`
+    (:func:`rippable_fixed_copper`). Only copper is retired, never a pose
+    or a lock. No rip-up cost exists in the anneal's objective; this runs
+    after it."""
+    ripped: set[int] = set()
+    for ids, refdes in branches:
+        if refdes & moved:
+            ripped |= ids
+    if capability is None:
+        return ripped
+    branch_of = {fid: ids for ids, _refdes in branches for fid in ids}
+    kept = [row for row in fixed_copper if row["fixed_id"] not in ripped]
+    broken = {fid for ids, refdes in branches if not refdes for fid in ids}
+    broken |= {fid for f in shorted_before if f in branch_of for fid in branch_of[f]}
+    for finding in fixed_copper_findings(ir, footprints, kept, capability):
+        pads = [o for o in finding.objects if o.get("ctype") == "pad"]
+        if not pads:
+            continue
+        pad_moved = any(o.get("refdes") in moved for o in pads)
+        for o in finding.objects:
+            fid = o.get("fixed_id")
+            if fid is not None and int(fid) in branch_of:
+                if pad_moved or int(fid) in broken:
+                    ripped |= branch_of[int(fid)]
+    return ripped
+
+
+def ripup_note(
+    n_ripped: int, fixed_copper: list[dict[str, Any]], ripped: set[int]
+) -> str:
+    """A job summary's rip-up line: how many fixed-copper rows the write
+    retired and on which nets, now ordinary unrouted work. Empty when
+    nothing was retired."""
+    if not n_ripped:
+        return ""
+    nets = sorted(
+        {str(r.get("net") or "?") for r in fixed_copper if r["fixed_id"] in ripped}
+    )
+    shown = ", ".join(nets[:12]) + (f" (+{len(nets) - 12})" if len(nets) > 12 else "")
+    return (
+        f"ripped up {n_ripped} fixed-copper row(s) attached to moved parts, "
+        f"{len(nets)} net(s): {shown} — their connections are unrouted work\n\n"
+    )
 
 
 def fixed_via_pad_findings(
