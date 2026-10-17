@@ -72,7 +72,10 @@ All `backlog/<slug>.md`. Not hit by the October paper (reason in brackets).
   (dr173020's DOIs all validate) · `draft-cite-groundwork-prepass` (hold) ·
   `tex-layer2-fixer-fate` · `dossier-paper-handles-emitted-bare-not-bracketed`
   (quest tick prompt, not drafts; still a small live bug).
-- **Export** — `draft-export-panel-per-format-tabs` (the gate fix is
+- **Export** — [export-latex-docx-parity](../export-latex-docx-parity.md)
+  (rank 1, PROPOSED: Reto decides; 8 paired parity fixes, one
+  golden draft through both backends) ·
+  `draft-export-panel-per-format-tabs` (the gate fix is
   deployed; the submission export can pass `doi_links`/`library_links` as job
   params) · `endnote-export-validation` (hits only if submission goes docx +
   EndNote) · `export-glyph-allowlist` (jo461157 compiled with no glyph
