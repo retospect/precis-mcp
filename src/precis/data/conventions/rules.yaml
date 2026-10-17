@@ -1,0 +1,1043 @@
+# Manifest of every rule in docs/conventions/*.md and what mechanically enforces it.
+# enforcers: [] means nothing goes red on a violation (review / honour system).
+# path is a repo-relative file, or "ruff:<RULEID>" for a selected ruff rule.
+
+# ---------------------------------------------------------------- code-anchors
+- id: code-anchors/cite-by-symbol
+  file: docs/conventions/code-anchors.md
+  section: null
+  title: "Cite code in docs by symbol (path.py::Qual.name), never by line number."
+  body: >-
+    A bare file.py:308 reference rots when anything above it moves. Write the
+    repo-relative path plus the dotted qualified name; get it with
+    scripts/coderef anchor file.py:LINE.
+  enforcers: []
+- id: code-anchors/citation-surfaces-only
+  file: docs/conventions/code-anchors.md
+  section: "Rules that keep it from rotting — or nagging"
+  title: "Anchor only in docs/ and the memory index, not in inline code comments."
+  body: >-
+    A :line next to its target moves with it, so nagging comments is noise.
+    Anchors are Python-only, use repo-relative paths, and non-.py references
+    stay bare paths.
+  enforcers: []
+- id: code-anchors/ast-resolution-not-index
+  file: docs/conventions/code-anchors.md
+  section: "Rules that keep it from rotting — or nagging"
+  title: "Resolve anchors with scripts/coderef (ast), not the python-kind index."
+  body: >-
+    The precis python kind is for discovering a symbol the first time;
+    citation checks must be deterministic and must not couple to a running MCP.
+  enforcers: []
+
+# --------------------------------------------------------------- container-ops
+- id: container-ops/wrapper-scripts-only
+  file: docs/conventions/container-ops.md
+  section: "Container-first"
+  title: "Run dev tooling through scripts/dev, scripts/db, scripts/prod-psql, never bare binaries."
+  body: >-
+    A bare local pytest/psql/python hits the wrong database or a Python without
+    the baked extras. scripts/db reaches only the local dev DBs;
+    scripts/prod-psql reaches prod, with --ro as the read guard.
+  enforcers:
+    - path: scripts/hooks/guard-bare-python-tools.py
+      what: "denies bare pytest/pip/mypy and python -m pytest|pip in Bash"
+    - path: scripts/hooks/guard-prod-psql.py
+      what: "PreToolUse guard on psql against prod from Bash"
+- id: container-ops/no-session-set-on-prod-dsn
+  file: docs/conventions/container-ops.md
+  section: "Container-first"
+  title: "Never run a session-level SET/RESET through the prod DSN; use SET LOCAL inside a transaction."
+  body: >-
+    pgbouncer pools by transaction, so a session setting sticks to a shared
+    server connection and every later client inherits it (broke all agent_rw
+    writes fleet-wide on 2026-10-02).
+  enforcers:
+    - path: scripts/prod-psql
+      what: "refuses session-level SET/RESET statements; passes SET LOCAL/TRANSACTION/CONSTRAINTS and UPDATE ... SET"
+- id: container-ops/prod-write-row-cap
+  file: docs/conventions/container-ops.md
+  section: "Container-first"
+  title: "Keep prod UPDATE/DELETE targeted; prod-psql rolls back past PRECIS_PROD_WRITE_MAX_ROWS rows."
+  body: >-
+    A targeted write (one INSERT, or UPDATE/DELETE with a WHERE) is allowed.
+    Statements touching more than the cap (default 100) are rolled back with
+    exit 4.
+  enforcers:
+    - path: tests/test_prod_psql_row_cap.py
+      what: "UPDATE touching 101 rows is rolled back, 3 rows commits"
+- id: container-ops/wide-docker-address-pool
+  file: docs/conventions/container-ops.md
+  section: "One compose project per worktree needs a wide Docker address pool"
+  title: "Widen the Docker default-address-pools once per machine before a many-worktree burst."
+  body: >-
+    Each worktree gate holds its own compose network; stock OrbStack's 30 pools
+    run out and gates die with 'all predefined address pools have been fully
+    subnetted'. Set a /14 pool in docker.json and restart docker between bursts.
+  enforcers: []
+- id: container-ops/no-cd-into-own-worktree
+  file: docs/conventions/container-ops.md
+  section: "Never `cd` into your own worktree"
+  title: "Never prefix commands with cd into your own worktree; run them bare."
+  body: >-
+    The shell already starts in the worktree root after every call. A cd into
+    the primary tree is hard-blocked; reach other trees only via
+    scripts/inflight --json, or an absolute path for non-git ops.
+  enforcers:
+    - path: scripts/hooks/guard-cd-to-primary.py
+      what: "blocks cd into the primary checkout, including with a trailing 2>/dev/null"
+    - path: scripts/hooks/guard-worktree-path.py
+      what: "auto-corrects Edit/Write paths that point outside this worktree"
+- id: container-ops/plain-git-commands
+  file: docs/conventions/container-ops.md
+  section: "Refused shapes and the accepted alternative"
+  title: "Write one plain git command per Bash call; no loops, subshells, -C other-tree or rtk wrapping."
+  body: >-
+    The harness guard fails closed whenever it cannot prove git stays in this
+    worktree. Use RTK_DISABLED=1 git or /usr/bin/git, a static python -c or a
+    written script file, and the Read/Grep tools instead of grep/find mentioning git.
+  enforcers:
+    - path: scripts/hooks/rtk-hook.sh
+      what: "shim leaves git-mentioning commands unrewritten in .claude/worktrees sessions"
+- id: container-ops/deploy-is-opt-in
+  file: docs/conventions/container-ops.md
+  section: "Ship vs deploy — surfacing lag, never auto-deploying"
+  title: "Deploy is an explicit step (scripts/deploy or /go), never a side effect of ship."
+  body: >-
+    Deploy bounces every daemon fleet-wide. scripts/ship only surfaces
+    shipped-but-undeployed lag and never blocks on it or deploys.
+  enforcers: []
+- id: container-ops/deploy-rollback-guard
+  file: docs/conventions/container-ops.md
+  section: "Ship vs deploy — surfacing lag, never auto-deploying"
+  title: "Do not deploy a sha that is a strict ancestor of the deployed marker or origin/main."
+  body: >-
+    A stale worktree once rolled the fleet backward. scripts/deploy refuses
+    such a target; --force-rollback is the sole override.
+  enforcers:
+    - path: tests/test_env_pointers.py
+      what: "pointer helper moves backward only under force (--force-rollback)"
+- id: container-ops/backup-window-no-migration-deploy
+  file: docs/conventions/container-ops.md
+  section: "Ship vs deploy — surfacing lag, never auto-deploying"
+  title: "Do not deploy a migration inside the 03:00-04:20 UTC backup window."
+  body: >-
+    pg_dump holds ACCESS SHARE on every table and migration DDL would hang
+    behind it. Code-only deploys warn and proceed; --ignore-backup-window overrides.
+  enforcers:
+    - path: tests/test_deploy_backup_window.py
+      what: "window logic: refuses migration-adding deploys, warns on code-only"
+- id: container-ops/wheel-smoke-before-deploy
+  file: docs/conventions/container-ops.md
+  section: "Ship vs deploy — surfacing lag, never auto-deploying"
+  title: "Deploy must pass scripts/wheel-smoke (built wheel imports precis_web.app) before touching a host."
+  body: >-
+    Catches a package missing from the wheel build list, which is invisible to
+    every worktree-run test (2026-09-26 outage). PRECIS_DEPLOY_SKIP_WHEEL_SMOKE=1 bypasses.
+  enforcers:
+    - path: scripts/wheel-smoke
+      what: "builds the wheel, installs into a scratch venv, imports precis_web.app without src/ on sys.path"
+- id: container-ops/fleet-wave-tooling
+  file: docs/conventions/container-ops.md
+  section: "Coordinator tooling: builder waves and cluster liveness"
+  title: "Drive builder waves with scripts/fleet-wave and check hosts with scripts/cluster-ping."
+  body: >-
+    fleet-wave launches, peeks, sends lines to and closes tmux builder windows
+    (refusing panes with a dialog open); cluster-ping reports ping and ssh per
+    inventory host and exits 1 on an ssh failure.
+  enforcers:
+    - path: tests/test_fleet_wave.py
+      what: "fleet-wave behaviour including send-line refusal and close semantics"
+
+# ---------------------------------------------------------- corpus-normalization
+- id: corpus-normalization/closed-token-sets
+  file: docs/conventions/corpus-normalization.md
+  section: "1. Character classes lie; closed token sets don't"
+  title: "A rewrite must match a whole token from a closed set, never a character class."
+  body: >-
+    A character class always finds a substring somewhere in real chemistry
+    nomenclature (146 wrong vs 3 right rewrites for ascii-minus-exponent).
+    Require membership in a closed set such as _ACCEPTED_DENOMINATORS.
+  enforcers:
+    - path: tests/test_taproot_notation.py
+      what: "pins ascii-minus-exponent behaviour on material names like Fe-ZSM-5, MOF-74, UiO-66"
+- id: corpus-normalization/dry-run-before-ship
+  file: docs/conventions/corpus-normalization.md
+  section: "2. Mandatory pre-ship procedure"
+  title: "Dry-run a normalizer over the full live corpus and state the wrong:right ratio before shipping."
+  body: >-
+    Print every before/after pair, count, sample, and ship auto-fix only at
+    zero wrong. A valuable rule that cannot reach zero ships detector-only,
+    structurally excluded from --fix.
+  enforcers: []
+- id: corpus-normalization/idempotent-content-preserving
+  file: docs/conventions/corpus-normalization.md
+  section: "3. Two invariants every rewrite rule must hold"
+  title: "Every rewrite rule must be idempotent and content-preserving; test content, not string length."
+  body: >-
+    Running twice equals running once and no assertion, quantity, unit or
+    qualifier is lost. Asserting len(out) >= len(in) is a bug: legitimate
+    respellings (microsiemens to µS) shorten text.
+  enforcers:
+    - path: tests/test_taproot_notation.py
+      what: "idempotence checks on normalize_notation"
+- id: corpus-normalization/co-firing-not-redundant
+  file: docs/conventions/corpus-normalization.md
+  section: "4. A code that co-fires with a high-frequency code is not redundant"
+  title: "Judge a lint code's independence against its co-firing partners' base rate, not raw co-occurrence."
+  body: >-
+    past-tense co-fired on 587 of 588 hubs only because its partners fire on
+    ~93% of the corpus; queued signal is not noise, so do not drop such a code.
+  enforcers: []
+- id: corpus-normalization/probe-interface-on-disagreement
+  file: docs/conventions/corpus-normalization.md
+  section: "5. When two measurements disagree, probe the interface first"
+  title: "When two counts of one corpus disagree, print the function return value on pinned inputs first."
+  body: >-
+    lint_claim_sentence returns 'code: detail' strings; a script that tested
+    membership against the full strings reported 0 vs the true 588.
+  enforcers: []
+
+# --------------------------------------------------------------- dark-switches
+- id: dark-switches/dark-flag-needs-owner
+  file: docs/conventions/dark-switches.md
+  section: null
+  title: "A default-off PRECIS_* flag must have a named activation path; do not leave gated code forgotten."
+  body: >-
+    Shipping code dark behind a flag is deliberate; the failure mode is a flag
+    flipped off and forgotten after the gated code was superseded. Classify
+    each flag (staged, off-by-ruling, orphaned) and delete only on zero callers
+    with no leave-dark note.
+  enforcers: []
+- id: dark-switches/rearm-only-on-ruling
+  file: docs/conventions/dark-switches.md
+  section: null
+  title: "Do not flip a dark or off-by-ruling flag (e.g. backlog_groom prio) without Reto's say."
+  body: >-
+    backlog_groom is off on prod by a 2026-10-02 ruling (service_config prio 0);
+    re-arming is an operator action. Flags staged behind a prerequisite stay
+    dark until it exists.
+  enforcers: []
+
+# ----------------------------------------------------------- discovery-layer-policy
+- id: discovery-layer-policy/render-from-store
+  file: docs/conventions/discovery-layer-policy.md
+  section: "Read-side policy"
+  title: "Render paper TOC from chunks.keywords and cluster at request time; keep no segment rows."
+  body: >-
+    view='toc' reads chunks.keywords through toc_db.render_from_store. Skill
+    kinds use the in-memory toc.render path. Citation-grade quotes come from
+    kind='citation', never a discovery excerpt.
+  enforcers: []
+- id: discovery-layer-policy/keywords-version-bump
+  file: docs/conventions/discovery-layer-policy.md
+  section: "Lazy invalidation discipline"
+  title: "Bump KEYWORDS_VERSION when a change would invalidate stored keywords."
+  body: >-
+    Bump for RAKE candidate generation, abbreviation resolution, KeyBERT/scoring
+    or keywords_meta envelope changes. The worker always stamps the current
+    version; readers trust whatever is stored; a bump re-claims all chunks lazily.
+  enforcers: []
+- id: discovery-layer-policy/skip-noise-chunk-kinds
+  file: docs/conventions/discovery-layer-policy.md
+  section: "Boilerplate skip policy"
+  title: "Skip chunk_kinds that are noise for the artifact (e.g. references) via skip_chunk_kinds."
+  body: >-
+    Bibliographies pollute embeddings and KeyBERT keywords and are skipped;
+    figure captions are meaningful and are not skipped from keyword extraction.
+  enforcers:
+    - path: tests/workers/test_chunk_keywords.py
+      what: "worker skips the configured non-content chunk kinds"
+
+# -------------------------------------------------------------------- env-vars
+- id: env-vars/pick-one-of-three-tiers
+  file: docs/conventions/env-vars.md
+  section: "Adding a new env var — decision flow"
+  title: "Place every new PRECIS_* var in exactly one tier: PrecisConfig, subsystem from_env, or per-call IPC."
+  body: >-
+    Tier 1 for process-wide deploy-time config, Tier 2 for one opt-in
+    subsystem, Tier 3 for per-request parent-to-child hand-off. Between 1 and
+    2, prefer 2 unless the core server needs it at boot.
+  enforcers: []
+- id: env-vars/tier1-via-load-config
+  file: docs/conventions/env-vars.md
+  section: "Tier 1 — core config → `PrecisConfig` (`src/precis/config.py`)"
+  title: "Read Tier-1 config through load_config()/PrecisConfig, not os.environ."
+  body: >-
+    Add a typed PrecisConfig field naming the PRECIS_* var. Raw reads are
+    allowed only in src/precis/cli/** (bootstrap) and a frozen grandfather list.
+  enforcers:
+    - path: tests/test_env_config_policy.py
+      what: "fails on a new raw read of a Tier-1 var under src/precis/ outside cli/ and the grandfather list"
+- id: env-vars/tier2-one-reader
+  file: docs/conventions/env-vars.md
+  section: "Tier 2 — per-subsystem config (`<subsystem>.from_env()` / local reader)"
+  title: "Group subsystem vars behind one from_env() dataclass or local reader; do not scatter os.environ.get."
+  body: >-
+    Keeps opt-in subsystem settings off the always-loaded PrecisConfig.
+    Examples are DreamConfig.from_env and planner_guardrails._env_float.
+  enforcers: []
+- id: env-vars/tier3-raw-at-call-site
+  file: docs/conventions/env-vars.md
+  section: "Tier 3 — per-invocation IPC (read raw at the call site, on purpose)"
+  title: "Read per-invocation IPC vars raw with os.environ.get at the call site, never via frozen config."
+  body: >-
+    PRECIS_CURRENT_TODO, PRECIS_WORKSPACE and similar vary per child call, so a
+    startup-frozen config would be wrong. Keep the read small and commented.
+  enforcers: []
+
+# ------------------------------------------------------------------ invariants
+- id: invariants/forward-only-migrations
+  file: docs/conventions/invariants.md
+  section: null
+  title: "Never edit a sealed migration or baseline/schema.sql; ship a new numbered migration."
+  body: >-
+    The ledger stores a checksum per file, so an edit mismatches on any DB that
+    already applied it. baseline/schema.sql is generated by scripts/bump or
+    precis db dump-schema, never hand-edited.
+  enforcers:
+    - path: scripts/hooks/guard-sealed-migration.py
+      what: "PreToolUse denies Edit/Write to a migration on origin/main or to baseline/*; escape ALLOW_SEALED_MIGRATION_EDIT=1"
+    - path: tests/test_migrate.py
+      what: "test_checksum_drift_refuses: checksum mismatch raises RuntimeError"
+    - path: tests/test_migration_numbering.py
+      what: "duplicate numeric migration prefixes fail (grandfathered collisions frozen)"
+    - path: scripts/migration-check
+      what: "detects duplicate migration numbers across sibling branches"
+    - path: tests/test_schema_baseline.py
+      what: "baseline snapshot staleness is gated"
+- id: invariants/migrations-take-full-gate
+  file: docs/conventions/invariants.md
+  section: null
+  title: "Migrations and safe_fetch.py changes take /go, never /qgo."
+  body: >-
+    scripts/qgo-guard refuses any */migrations/*.sql or safe_fetch.py on the
+    ungated deploy path because prod cannot take those back.
+  enforcers:
+    - path: scripts/qgo-guard
+      what: "refuses the ungated deploy for migration SQL and safe_fetch.py"
+    - path: tests/test_qgo_guard.py
+      what: "pins both what it refuses and what it lets through"
+- id: invariants/body-chunks-append-only
+  file: docs/conventions/invariants.md
+  section: null
+  title: "Never UPDATE body chunk text; DELETE the row and INSERT a new one."
+  body: >-
+    A chunk with ord >= 0 and content_sha IS NULL keeps embeddings, summaries
+    and keywords by row identity, so an in-place text UPDATE strands them.
+    Exceptions are ord < 0 card variants and draft chunks edited via the
+    draft-edit store ops.
+  enforcers:
+    - path: tests/test_chunk_append_only.py
+      what: "chunks_forbid_body_text_update trigger rejects body text UPDATE; allows card, draft and non-text updates"
+- id: invariants/safe-get-for-agent-urls
+  file: docs/conventions/invariants.md
+  section: null
+  title: "Fetch agent-influenced URLs with safe_get/safe_stream, never a raw httpx client following redirects."
+  body: >-
+    safe_fetch re-validates every redirect hop against private, loopback and
+    link-local ranges. A raw httpx client with follow_redirects=True is an
+    SSRF. There is no static ban; reviewers check.
+  enforcers: []
+- id: invariants/uv-for-everything
+  file: docs/conventions/invariants.md
+  section: null
+  title: "Use uv and scripts/test; never bare pip, pytest, mypy or host python."
+  body: >-
+    Dependencies resolve from uv.lock; a bare tool uses an unpinned
+    environment and reports phantom failures on the torch-free host.
+  enforcers:
+    - path: scripts/hooks/guard-bare-python-tools.py
+      what: "hard-blocks bare pytest/pip/mypy and python -m pytest|pip; allows uv run, uvx, scripts/test, ssh"
+    - path: tests/test_guard_bare_python_tools.py
+      what: "parametrized refused/allowed command shapes"
+
+# ------------------------------------------------------------- kind-enablement
+- id: kind-enablement/declare-requires-env
+  file: docs/conventions/kind-enablement.md
+  section: "Declarative posture"
+  title: "Declare required env vars in KindSpec.requires_env; do not gate inline at the boot site."
+  body: >-
+    kind_gate.gate runs before __init__, so a missing var lands on the
+    'Kinds unavailable:' banner with a reason. An inline os.environ guard in
+    dispatch.boot short-circuits before _try and the kind vanishes from the banner.
+  enforcers: []
+- id: kind-enablement/requires-secret-for-credentials
+  file: docs/conventions/kind-enablement.md
+  section: "Secrets: `requires_secret` (vault-resolved credentials)"
+  title: "Declare vault-resolved credentials in requires_secret, not requires_env."
+  body: >-
+    The gate checks each name via secrets.is_available (env then vault) before
+    __init__; an unresolved secret shows as 'missing secret ...' on the banner.
+  enforcers: []
+- id: kind-enablement/init-error-shape
+  file: docs/conventions/kind-enablement.md
+  section: "When `requires_env` isn't enough"
+  title: "Raise InitError('<kind>: <reason>') in __init__ for needs beyond env presence."
+  body: >-
+    A live store, an existing file root or an optional dependency stay in
+    __init__. _try translates InitError/ImportError into a clean banner reason.
+  enforcers:
+    - path: tests/test_kind_gate.py
+      what: "loadability_from_exception translation of InitError/ImportError reasons"
+- id: kind-enablement/plugin-api-version
+  file: docs/conventions/kind-enablement.md
+  section: null
+  title: "Plugins declare KindSpec.plugin_api; bump PLUGIN_API on surface growth and PLUGIN_API_MIN on breaks."
+  body: >-
+    A plugin outside PLUGIN_API_MIN..PLUGIN_API darks with a reason naming
+    which side to upgrade. Plugins pass the same gate as built-in kinds.
+  enforcers:
+    - path: tests/test_dispatch.py
+      what: "every in-tree plugin declares a plugin_api within PLUGIN_API_MIN..PLUGIN_API; out-of-range darks"
+- id: kind-enablement/operator-prohibition-wins
+  file: docs/conventions/kind-enablement.md
+  section: "Prohibition"
+  title: "PRECIS_KINDS_DISABLED wins over env presence: a listed kind never loads."
+  body: >-
+    parse_disabled yields a frozen set threaded through boot into every _try;
+    the gate returns reason 'prohibited' regardless of resource availability.
+  enforcers:
+    - path: tests/test_kind_gate.py
+      what: "prohibited kinds return Loadability(loaded=False, reason='prohibited')"
+
+# ------------------------------------------------------------ llm-facing-prose
+- id: llm-facing-prose/terse-no-warmup
+  file: docs/conventions/llm-facing-prose.md
+  section: "The rule"
+  title: "Write repo-dev docs for the LLM: terse, precise, no warm-up, one sentence per concept."
+  body: >-
+    No filler, summaries, transitions or reassurance. Tables and inline
+    comments beat paragraphs; if a pointer carries the meaning, just point.
+  enforcers: []
+- id: llm-facing-prose/dont-justify-choices
+  file: docs/conventions/llm-facing-prose.md
+  section: "The rule"
+  title: "State what a thing does, not why it beat an alternative; do not name rejected or legacy tools."
+  body: >-
+    Rationale worth keeping lives once, in an ADR or the owning docstring.
+  enforcers: []
+- id: llm-facing-prose/name-internals-in-dev-docs
+  file: docs/conventions/llm-facing-prose.md
+  section: null
+  title: "In dev docs name internals precisely (chunks, workers, migrations); skip the product cut-list."
+  body: >-
+    This convention forks skill-authoring-style.md: for repo-dev docs the
+    internals are the payload, so cutting them deletes the point.
+  enforcers: []
+- id: llm-facing-prose/point-dont-copy
+  file: docs/conventions/llm-facing-prose.md
+  section: "Point, don't copy"
+  title: "Keep each fact at one altitude (router, orientation, reference, rationale); link elsewhere."
+  body: >-
+    Duplication creates N rot sites for one fact; status in the orientation
+    doc or rationale in the router rots.
+  enforcers: []
+- id: llm-facing-prose/present-tense-invariants
+  file: docs/conventions/llm-facing-prose.md
+  section: "Present-tense, invariant-biased"
+  title: "Describe what survives a refactor (seams, contracts), not status or dated history."
+  body: >-
+    Status belongs in the owning package docstring; dated story is git log.
+    There is no CHANGELOG.
+  enforcers: []
+- id: llm-facing-prose/update-doc-same-commit
+  file: docs/conventions/llm-facing-prose.md
+  section: "Freshness contract"
+  title: "Update a doc in the same commit that changes what it describes; embed no verified-at stamps or shas."
+  body: >-
+    Freshness is git log of the doc. A sha in a doc is a churn line that
+    conflicts across concurrent worktrees. Cut before you add.
+  enforcers: []
+
+# ------------------------------------------------------------ poster-typography
+- id: poster-typography/citations-do-not-wrap
+  file: docs/conventions/poster-typography.md
+  section: null
+  title: "Define \\src so a citation cannot wrap away from the word it cites."
+  body: >-
+    Use \unskip\nobreak\ before the bracketed footnotesize citation: unskip eats
+    the typed space and nobreak puts back an unbreakable one.
+  enforcers: []
+- id: poster-typography/band-sizing
+  file: docs/conventions/poster-typography.md
+  section: null
+  title: "Size colour bands with \\vphantom{Ay}, not \\strut; use asymmetric vskips (1.0ex above, 0.45ex below)."
+  body: >-
+    A band sizes to the glyph bounding box; \vphantom gives every line the same
+    ascender and descender. \strut keys to baselineskip and grows every band.
+  enforcers: []
+- id: poster-typography/math-and-units
+  file: docs/conventions/poster-typography.md
+  section: null
+  title: "Set units upright, quantities italic (ISO 80000-2), upgreek \\upmu; wrap \\boldmath in its own group."
+  body: >-
+    \boldmath is a switch, not an argument: \hl must be {{\boldmath\textbf{#1}}}
+    or it bolds all later formulas in the paragraph. A slash range stays
+    unbreakable, as $-3.3/{-3.8}$.
+  enforcers: []
+- id: poster-typography/layout-and-face
+  file: docs/conventions/poster-typography.md
+  section: null
+  title: "Use ragged-right narrow columns with \\hyphenpenalty=10000, and sans type, for distance reading."
+  body: >-
+    Justified p{} columns at poster width open rivers. Serifs only pay off at
+    10-12 pt near reading; at ~2 m, x-height, counter size and tracking matter.
+  enforcers: []
+
+# ------------------------------------------------------- reviewed-non-problems
+- id: reviewed-non-problems/dont-relitigate-adjudicated
+  file: docs/conventions/reviewed-non-problems.md
+  section: null
+  title: "Cite this file and move on when a review re-flags an adjudicated non-problem."
+  body: >-
+    safe_fetch pinning, raw httpx on fixed keyless hosts, the derived-queue
+    core, pool tuning, web XSS posture, test infra and CI shape were judged
+    fine. Re-adjudicate only if the cited code changes shape.
+  enforcers: []
+- id: reviewed-non-problems/no-release-branch
+  file: docs/conventions/reviewed-non-problems.md
+  section: "Rejected designs (dated; the alternative, not just the choice)"
+  title: "Do not add a release branch that merges back; identify releases by .ship-sha and --pinned."
+  body: >-
+    Squash-merging a lagging branch reverts every sibling that landed since and
+    breaks the deploy-lag count. Revisit on a second deploy target or version-pinned consumers.
+  enforcers: []
+- id: reviewed-non-problems/accepted-risks
+  file: docs/conventions/reviewed-non-problems.md
+  section: "Accepted risks (dated; revisit on the named trigger only)"
+  title: "Do not add web auth/CSRF or asa_bot spend caps until the named revisit trigger fires."
+  body: >-
+    Accepted 2026-08-02 for a local single-user tailnet-only app and a
+    trusted-user Discord bot. Trigger for web: reachable beyond the tailnet or a
+    second user; for the bot: untrusted users.
+  enforcers: []
+
+# ------------------------------------------------------------------------- rtk
+- id: rtk/digest-not-evidence-of-absence
+  file: docs/conventions/rtk.md
+  section: "Consequence: filtered, not raw, output"
+  title: "Re-run through rtk proxy (or Read/Grep) before acting on an absence found in digested output."
+  body: >-
+    Bash output is a filtered digest, so a grep can look exhaustive while
+    partial (28 vs 287 packages in uv.lock). Hits are safe to trust; negatives are not.
+  enforcers: []
+- id: rtk/no-blanket-stderr-suppression
+  file: docs/conventions/rtk.md
+  section: "Don't hand-suppress stderr (`2>/dev/null`)"
+  title: "Do not add 2>/dev/null to hide noise; add a rule to .rtk/filters.toml instead."
+  body: >-
+    The redirect discards stderr before rtk sees it, turning failures into
+    silence. Use it only when silence is control flow, e.g. command -v foo || echo missing.
+  enforcers: []
+- id: rtk/background-long-runs-to-log
+  file: docs/conventions/rtk.md
+  section: "Long-running commands (`scripts/test`, `scripts/ship`, `scripts/deploy`)"
+  title: "Run long commands once in the background redirected to a log, then read the log tail."
+  body: >-
+    The harness caps background stdout and kills the task at the cap. No waiter
+    loops or blocking TaskOutput; arm a Monitor with a tight line filter for progress.
+  enforcers:
+    - path: scripts/hooks/guard-piped-exit-code.py
+      what: "blocks piping scripts/ship|deploy|bump into tail/grep/tee (hides the real exit status)"
+- id: rtk/prefix-manually-outside-dev-mac
+  file: docs/conventions/rtk.md
+  section: "No hook outside Reto's dev Mac"
+  title: "In CI and cluster claude -p runs, prefix rtk git / rtk err / rtk summary manually."
+  body: >-
+    The PreToolUse hook is only installed on Reto's dev Mac, so nothing
+    auto-rewrites elsewhere.
+  enforcers: []
+- id: rtk/worktree-git-and-find-gaps
+  file: docs/conventions/rtk.md
+  section: "Known gaps"
+  title: "Use RTK_DISABLED=1 (or an absolute path) for git in worktrees; rtk proxy find for compound finds."
+  body: >-
+    rtk-wrapped git is refused by the worktree isolation guard, and rtk find
+    rejects -not/-exec/-prune. rtk proxy git does not help.
+  enforcers:
+    - path: tests/test_rtk_hook_shim.py
+      what: "scripts/hooks/rtk-hook.sh leaves git-mentioning commands unrewritten under .claude/worktrees"
+
+# -------------------------------------------------------------------- shipping
+- id: shipping/gripe-sha-on-backlog-delete
+  file: docs/conventions/shipping.md
+  section: null
+  title: "When a backlog item ships and its file is deleted, comment the main commit SHA on each linked gripe."
+  body: >-
+    The deleted backlog path is not a resolution pointer; preserve earlier
+    comments. Audit with scripts/gripe-dangling-backlog --comments (advisory).
+  enforcers: []
+- id: shipping/commit-before-ship
+  file: docs/conventions/shipping.md
+  section: "/land — gate on GitHub"
+  title: "Commit edits before ship; it refuses uncommitted work outside .claude/ and never commits for you."
+  body: >-
+    A full-gate ship lands an exactly-tested tree or says it did not. The same
+    dirty-tree refusal covers --quick.
+  enforcers:
+    - path: tests/test_ship_dirty_tree.py
+      what: "ship refuses a dirty tree"
+- id: shipping/conventional-subject
+  file: docs/conventions/shipping.md
+  section: null
+  title: "Squash subject is 'type(scope): what'; ship refuses ship(...)/wip(...) and unprefixed subjects."
+  body: >-
+    scripts/ship reuses the branch's single commit message or takes -m.
+  enforcers:
+    - path: tests/test_ship_subject.py
+      what: "squash-subject resolution and lint; a WIP-only branch dies before any gate work"
+- id: shipping/take-agent-by-fast-forward
+  file: docs/conventions/shipping.md
+  section: "Sync, and agent branches"
+  title: "Take an editing subagent's work with scripts/take-agent; never copy its diff by hand."
+  body: >-
+    take-agent rebases the agent branch onto yours and merges --ff-only, and
+    records it so ship reaps the tree after the land. A hand-copied diff leaves
+    the agent branch unmerged forever. Unwanted work: take-agent --discard.
+  enforcers: []
+- id: shipping/resolve-rebase-conflicts-and-rerun
+  file: docs/conventions/shipping.md
+  section: "Sync, and agent branches"
+  title: "On a sync conflict resolve, git add -A, rebase --continue, then re-run ship."
+  body: >-
+    Ship squashes to one commit on the merge-base then rebases onto
+    origin/main, and refuses to start while a rebase is in progress.
+  enforcers:
+    - path: tests/test_ship_rebase_sync.py
+      what: "sync/squash/rebase behaviour including refusal mid-rebase"
+- id: shipping/release-owner-doesnt-wait
+  file: docs/conventions/shipping.md
+  section: "/go — land, cut a release, gate it, deploy it"
+  title: "Cut the release at the newest all-green main sha; do not wait for fixes, stragglers or rulings."
+  body: >-
+    If main is red on an unready commit, revert it or cut at the last green sha.
+    Never weaken a test or ratchet to make the cut; missed work rides the next release.
+  enforcers: []
+- id: shipping/qland-lint-and-drift-guard
+  file: docs/conventions/shipping.md
+  section: "/qland — pytest-ungated burst-land"
+  title: "Burst-land with --quick, then one /go; do not keep qlanding past 48h of unverified main."
+  body: >-
+    ship --quick refuses a dirty tree, warns when main's last all-green shard
+    matrix is 24h old and refuses at 48h, then runs the pre-qland lint.
+    PRECIS_QLAND_LINT=0 skips lint.
+  enforcers: []
+- id: shipping/checked-lane-selection
+  file: docs/conventions/shipping.md
+  section: "--checked — the qland burst lane with a selected pytest"
+  title: "Prefer ship --checked over bare --quick for bursts; it refuses when the selector answers FULL."
+  body: >-
+    The CONTRACT set always runs plus impacted tests. --checked is refused with
+    --remote, --impacted, --full, --mutate, --release.
+  enforcers:
+    - path: scripts/impacted-tests
+      what: "single diff-to-tests selector; answers FULL for harness changes, which makes ship --checked refuse"
+- id: shipping/qgo-never-for-irreversible
+  file: docs/conventions/shipping.md
+  section: "/qgo — ungated deploy"
+  title: "Never /qgo migration SQL or safe_fetch.py; those take /go."
+  body: >-
+    qgo deploys ungated and may leave prod running broken code until the next
+    pass, which is accepted on a dev cluster except for what prod cannot take back.
+  enforcers:
+    - path: scripts/qgo-guard
+      what: "hard-refuses */migrations/*.sql and safe_fetch.py"
+- id: shipping/read-gate-failure-above-x
+  file: docs/conventions/shipping.md
+  section: "Failure and refs"
+  title: "On a red gate read the failure printed above the ✖, not scripts/ship's summary; fix and re-run."
+  body: >-
+    All paths are idempotent. main, origin/gated, origin/prod and release/r<N>
+    are script-moved refs, never committed to.
+  enforcers: []
+- id: shipping/prod-checkout-override
+  file: docs/conventions/shipping.md
+  section: "Failure and refs"
+  title: "Set PRECIS_PROD_CHECKOUT when deploying from a second checkout so the served prod clone follows."
+  body: >-
+    The derived -prod sibling path may not exist from another checkout; the
+    sync warns and the served clone goes stale. scripts/deploy fails the run
+    naming both shas when the clone resolves but is not at the deployed sha.
+  enforcers:
+    - path: tests/test_env_pointers.py
+      what: "env_prod_checkout_sync behaviour (served prod clone follows the deployed sha)"
+- id: shipping/mark-round-from-your-tree
+  file: docs/conventions/shipping.md
+  section: "Rounds and the fleet"
+  title: "With a round open, mark it with scripts/round in|none|eta; leave deploys to the coordinator."
+  body: >-
+    In a fleet session a question for Reto goes to the review queue, not a stop
+    in the pane. Outside a fleet, /go is its own coordinator.
+  enforcers: []
+- id: shipping/no-deploy-window
+  file: docs/conventions/shipping.md
+  section: "Rounds and the fleet"
+  title: "Deploys wait out 03:00-04:20Z; answer 'after 04:20Z', never a time inside the window."
+  body: >-
+    The ruling covers any deploy, code-only included. scripts/deploy enforces
+    only the migration side mechanically.
+  enforcers: []
+- id: shipping/peer-ping-cadence
+  file: docs/conventions/shipping.md
+  section: "Rounds and the fleet"
+  title: "Ping only pending peers, send no 'gate starting' broadcasts, drop a peer silent for 3+ pings."
+  body: >-
+    Every ping is a billed turn. A peer's 'landed <sha> remote-green, carry it' is the /go trigger.
+  enforcers: []
+
+# ------------------------------------------------------------------ skill-evals
+- id: skill-evals/advisory-never-a-gate
+  file: docs/conventions/skill-evals.md
+  section: null
+  title: "Keep scripts/skill-eval advisory; never wire it into scripts/ship."
+  body: >-
+    A red result is a to-do for the skill author, not a blocked land. Same
+    standing as scripts/mutate-diff.
+  enforcers:
+    - path: tests/test_skill_eval.py
+      what: "test_skill_eval_is_not_a_ship_gate_stage"
+- id: skill-evals/cases-carry-self-checking-fake
+  file: docs/conventions/skill-evals.md
+  section: "What it checks"
+  title: "Every eval case needs a fake transcript that satisfies its own expect/forbid criterion."
+  body: >-
+    One YAML per skill under src/precis/data/skill-evals/. The corpus is
+    self-checking: scripts/skill-eval with no flags is green by construction;
+    a case whose fake fails its criterion is a corpus bug.
+  enforcers:
+    - path: tests/test_skill_eval.py
+      what: "corpus self-check via the fake runner and case schema"
+- id: skill-evals/smallest-criterion-live-check
+  file: docs/conventions/skill-evals.md
+  section: "Adding a case"
+  title: "Write the smallest criterion a misleading skill would fail; run the live runner once on a new case."
+  body: >-
+    The fake proves the criterion is satisfiable; the live run proves the skill
+    as written satisfies it. Live runs are capped (--case-usd, --run-usd) and
+    a logged-out claude means skipped, never a pass.
+  enforcers: []
+
+# ------------------------------------------------------- skill-authoring-style
+- id: skill-authoring-style/contract-not-implementation
+  file: docs/conventions/skill-authoring-style.md
+  section: "The rule"
+  title: "A skill describes the contract, not the implementation; cut what does not help call a verb."
+  body: >-
+    Skills are read by an LLM that has only the seven verbs. One sentence per
+    concept; inline code comments beat trailing prose.
+  enforcers: []
+- id: skill-authoring-style/no-adr-or-backlog-refs
+  file: docs/conventions/skill-authoring-style.md
+  section: "What to cut"
+  title: "Do not reference ADR numbers or docs/backlog/ paths in skill prose."
+  body: >-
+    No ADR file exists in the tree and backlog paths rot on delete-on-ship, so
+    the agent cannot follow them.
+  enforcers:
+    - path: tests/test_skill_prose.py
+      what: "ratchet: adr and backlog checks against a per-file allowlist that only shrinks"
+- id: skill-authoring-style/no-operator-affordances
+  file: docs/conventions/skill-authoring-style.md
+  section: "What to cut"
+  title: "Keep env-var assignments, precis jobs|worker|service CLI lines and raw SQL out of skills."
+  body: >-
+    Those are operator affordances, not agent ones. Exception: a recovery
+    command for a real error the agent will see.
+  enforcers:
+    - path: tests/test_skill_prose.py
+      what: "operator check in the shrinking ratchet"
+- id: skill-authoring-style/fence-verb-calls
+  file: docs/conventions/skill-authoring-style.md
+  section: "Fences and language tags"
+  title: "Put every verb call inside a triple-backtick fence: python for calls, text for outputs, never mixed."
+  body: >-
+    The fence signals reproduce-exactly content; unfenced calls get paraphrased
+    and break syntax.
+  enforcers:
+    - path: tests/test_skill_prose.py
+      what: "unfenced_verb check; the python/text role split is unchecked"
+- id: skill-authoring-style/cut-internal-names
+  file: docs/conventions/skill-authoring-style.md
+  section: "What to cut"
+  title: "Name consequences, not storage tables, workers, algorithms, models or migration files."
+  body: >-
+    Drop ref_segments, segment_toc, bge-m3, RRF, KeyBERT, TOON and the like.
+    Also cut marketing phrases ('by design'), universal verb-contract
+    restatement, migration trivia, UX-rendered affordance descriptions and
+    primitives that mislead at scale.
+  enforcers: []
+- id: skill-authoring-style/drop-decorative-frontmatter
+  file: docs/conventions/skill-authoring-style.md
+  section: "What to cut"
+  title: "Drop front-matter nothing reads (tier, floor, last-updated, status: phase-N)."
+  body: >-
+    utils/skill_common.py::parse_frontmatter is the authoritative field list.
+    Status is the front-matter field, never a '## Status' body section.
+  enforcers: []
+- id: skill-authoring-style/goal-voice-h2
+  file: docs/conventions/skill-authoring-style.md
+  section: "H2 voice"
+  title: "Write H2s as goals that read after 'I want to ...', not nominalisations or bare verbs."
+  body: >-
+    One H2 is one chunk and one embedding. No static gate enforces voice; it is on the author.
+  enforcers: []
+- id: skill-authoring-style/alias-groups
+  file: docs/conventions/skill-authoring-style.md
+  section: "Alias-group H2s (multi-angle headings on one body)"
+  title: "Use 2-3 genuinely different alias H2s on high-traffic sections, at most four; no synonym padding."
+  body: >-
+    Aliases are consecutive H2s sharing one body, each embedded separately.
+    Vary frame, register and intent; meta sections stay singleton.
+  enforcers:
+    - path: tests/test_skill_prose.py
+      what: "alias_overrun: more than four consecutive H2s sharing one body"
+- id: skill-authoring-style/h2-body-fits-chunk
+  file: docs/conventions/skill-authoring-style.md
+  section: "Body length per H2"
+  title: "Keep each H2 body within the embedder chunk budget; split the H2 or cut prose."
+  body: >-
+    Ingest hard-fails when a section overruns the chunk budget. Cut before splitting.
+  enforcers:
+    - path: tests/test_skill_ingest.py
+      what: "skill scan/ingest gate (hard-fail behaviour)"
+- id: skill-authoring-style/frontmatter-axes-and-wikilinks
+  file: docs/conventions/skill-authoring-style.md
+  section: "Cross-reference and classification axes (tags:, kinds:, [[wikilink]])"
+  title: "Use only VALID_TAGS in tags:, registered kinds in kinds: (never []), and resolvable [[slug]] links."
+  body: >-
+    A tag equal to a kind name is rejected; a present-but-empty kinds: and a
+    dangling [[slug]] are hard ingest failures. See-also entries must resolve
+    to a real file stem or a synthesised meta-skill.
+  enforcers:
+    - path: tests/test_skill_common.py
+      what: "VALID_TAGS vocabulary and kinds: [] handling"
+    - path: tests/test_skill_ingest.py
+      what: "dangling wikilink is a hard failure; synthesised slugs are not dangling"
+- id: skill-authoring-style/examples-and-skeleton
+  file: docs/conventions/skill-authoring-style.md
+  section: "Concrete examples vs placeholders"
+  title: "Use a concrete slug when it is the point, <slug> when incidental; follow the reference skeleton."
+  body: >-
+    Eight repeats of one concrete slug bury the lesson. No 'Not yet'
+    negative-laundry sections and no Note/Important/Tip callouts; fix a
+    confusing runtime error instead of papering over it in the skill.
+  enforcers: []
+- id: skill-authoring-style/skill-size-frames
+  file: docs/conventions/skill-authoring-style.md
+  section: null
+  title: "Keep skills within the ~14KB pagination frame; restructure for section access, do not raise the cap."
+  body: >-
+    Oversized skills burn pagination round-trips before the agent reaches the answer.
+  enforcers:
+    - path: tests/test_skill_size.py
+      what: "hard byte cap with allowlist, plus a soft-cap warning"
+
+# --------------------------------------------------------------------- testing
+- id: testing/use-scripts-test
+  file: docs/conventions/testing.md
+  section: "Why not a bare invocation"
+  title: "Run tests through scripts/test, never bare pytest, uv run pytest or scripts/dev pytest."
+  body: >-
+    Host Python is torch-free and reports spurious ModuleNotFoundError;
+    scripts/dev bind-mounts MAIN, so you would test someone else's tree.
+  enforcers:
+    - path: scripts/hooks/guard-bare-python-tools.py
+      what: "denies bare pytest/pip/mypy and python -m pytest in Bash"
+- id: testing/long-runs-bg-await
+  file: docs/conventions/testing.md
+  section: "Long runs: `--bg` then `--await`, never a hand-rolled log poll"
+  title: "For gate-length runs use scripts/test --bg then --await <run-id>; do not tail/grep the log."
+  body: >-
+    A grep that matches nothing is the same silence whether the suite passed,
+    is still running or died.
+  enforcers: []
+- id: testing/narrow-lanes-dont-substitute
+  file: docs/conventions/testing.md
+  section: "What `scripts/test` actually does"
+  title: "Do not treat --impacted or --fast as a substitute for a broad run before shipping."
+  body: >-
+    testmon can miss an indirect dependency and --fast deselects the entire DB
+    suite. Use --slow when the change is in the slow cluster's subsystem.
+  enforcers: []
+- id: testing/raw-sql-needs-real-pg-test
+  file: docs/conventions/testing.md
+  section: "Raw SQL ⇒ a real-PG test — FakeStore is blind to SQL"
+  title: "Any route or handler with raw SQL needs at least one test that runs that SQL on real Postgres."
+  body: >-
+    FakeStore returns canned rows without parsing SQL, hiding wrong
+    paramstyle, a literal % in LIKE, or a renamed column. Add a
+    tests/precis_web/test_<module>_sql.py companion, with adversarial input
+    (%, _, quotes), in the same change.
+  enforcers: []
+- id: testing/changed-lines-must-run
+  file: docs/conventions/testing.md
+  section: "Coverage posture: diff-gated, never %-tracked"
+  title: "Changed src/ lines must be executed by a test (diff-cover at PRECIS_DIFF_COVER_MIN, default 90)."
+  body: >-
+    Enforced on the full-suite ship path, not /go or --impacted. Extend
+    [tool.coverage.report] exclude_also for defensive lines instead of
+    sprinkling pragma: no cover. A zero override needs a reason in the ship message.
+  enforcers:
+    - path: scripts/ship
+      what: "runs diff-cover on the host after the gate and dies below PRECIS_DIFF_COVER_MIN"
+- id: testing/rehome-db-tests-not-delete
+  file: docs/conventions/testing.md
+  section: "Judging effectiveness (instead of a coverage %)"
+  title: "Don't delete tests to go faster; use hub_stateless/runtime_stateless when no DB is needed."
+  body: >-
+    Profile with scripts/test --durations=N. A test that pulls a DB fixture
+    but asserts pure logic pays for Postgres it never uses; re-homing moves it
+    into the --fast set.
+  enforcers: []
+- id: testing/note-what-caught-a-bug
+  file: docs/conventions/testing.md
+  section: "Judging effectiveness (instead of a coverage %)"
+  title: "When a test stops a real defect, note 'caught by test_y' in the fix commit or test docstring."
+  body: >-
+    git log --grep 'caught by' becomes the ground-truth map of which tests earn their runtime.
+  enforcers: []
+- id: testing/measured-budgets
+  file: docs/conventions/testing.md
+  section: "Characterization budgets — assert what you measured, not what you hoped"
+  title: "Assert the measured value plus headroom for discretisation-dependent values; put it in the message."
+  body: >-
+    An aspirational assertion fails on arrival and gets weakened; a measured
+    budget fails only on drift. Pair combinatorial invariants (which cannot
+    fail on bad geometry) with a check that reads the distribution.
+  enforcers: []
+- id: testing/no-float-equality
+  file: docs/conventions/testing.md
+  section: "Characterization budgets — assert what you measured, not what you hoped"
+  title: "Never assert == 0.0 on a computed float in the numeric suites."
+  body: >-
+    A degeneracy test asserting area == 0.0 passed vacuously against triangles
+    of area 9e-23.
+  enforcers: []
+- id: testing/posix-and-encoding-portability
+  file: docs/conventions/testing.md
+  section: "What `scripts/test` actually does"
+  title: "Keep POSIX-only tests win32-guarded and name text-IO encodings; only nightly runs Windows/macOS."
+  body: >-
+    A platform-only break surfaces the next morning off the ship that caused
+    it; posix guards and encoding checks are the compile-time stand-ins.
+  enforcers:
+    - path: tests/test_posix_only_guards.py
+      what: "posix-only test modules must carry a win32 guard"
+    - path: tests/test_text_io_encoding.py
+      what: "text IO and subprocess text=True must name encoding (the half ruff cannot see)"
+    - path: "ruff:PLW1514"
+      what: "unspecified-encoding on Path-bound names"
+- id: testing/main-sha-not-guaranteed-gated
+  file: docs/conventions/testing.md
+  section: "What `scripts/test` actually does"
+  title: "Do not expect a specific main sha to get a CI verdict; to gate a fixed sha cut release/r<N>."
+  body: >-
+    GitHub keeps one pending run per group, so a newer push replaces the older
+    pending run. Release refs get a group per sha and are never replaced.
+  enforcers: []
+
+# ------------------------------------------------------------------ thresholds
+- id: thresholds/schema-stop-and-ask
+  file: docs/conventions/thresholds.md
+  section: "Schema thresholds"
+  title: "Stop and ask before new columns, renames, drops, embedding-dimension or destructive DDL changes."
+  body: >-
+    Migrations are forward-only and defaults are sticky. Before any drop,
+    verify references across tests/, skills, docs/ and recent git history.
+  enforcers: []
+- id: thresholds/api-stop-and-ask
+  file: docs/conventions/thresholds.md
+  section: "API thresholds"
+  title: "Stop and ask before removing a CLI flag, changing an MCP JSON shape, or touching the seven verbs."
+  body: >-
+    Add fields freely, never repurpose or delete. New functionality piggybacks
+    on existing verbs through kind= or mode=. Removals need a deprecation path.
+  enforcers: []
+- id: thresholds/performance-stop-and-ask
+  file: docs/conventions/thresholds.md
+  section: "Performance thresholds"
+  title: "Stop and ask before import-time model loads, sync hot-path network calls, or swapping pgvector."
+  body: >-
+    Imports double startup memory; S2/CrossRef lookups belong in ingest workers,
+    not precis serve search. The vector store is pinned by 0001_initial.sql.
+  enforcers: []
+- id: thresholds/cross-package-stop-and-ask
+  file: docs/conventions/thresholds.md
+  section: "Cross-package thresholds"
+  title: "Stop and ask before raising a minimum upstream pin, adding an optional extra, or merging a package."
+  body: >-
+    Extras are public surface; major bumps get an ADR. Spec package merges in
+    docs/backlog/ and fold rationale into the owning docstring on ship.
+  enforcers: []
+- id: thresholds/ingest-stop-and-ask
+  file: docs/conventions/thresholds.md
+  section: "Ingest thresholds"
+  title: "Stop and ask before changing the pdf_hash algorithm, slug generation or pub_id derivation."
+  body: >-
+    Existing ref_identifiers, user docs and external citations depend on them.
+  enforcers: []
+- id: thresholds/destructive-ops-ask
+  file: docs/conventions/thresholds.md
+  section: "Operational thresholds"
+  title: "Ask before truncating user data files or wiping prod (print row counts); never force-push main."
+  body: >-
+    Filesystem mutations to ~/work/corpus, ~/work/new_papers or ~/.acatome are
+    one-way. Use a feature branch, not a force-push to main.
+  enforcers: []
+- id: thresholds/prod-writes-default-go
+  file: docs/conventions/thresholds.md
+  section: "Prod writes and quest ticks — the default is go"
+  title: "Write to prod without asking when additive/reversible; ask for destructive, outward or >$25 work."
+  body: >-
+    Ruling 2026-10-01. Ask for bulk delete, DB wipe, rewriting user files,
+    migration/safe_fetch deploys, posting/mailing outside precis, or one paid
+    run over $25. Below that the budget breaker is the control.
+  enforcers: []
+- id: thresholds/look-locally-first
+  file: docs/conventions/thresholds.md
+  section: "Prod writes and quest ticks — the default is go"
+  title: "Search the graph (papers, findings, drafts, memories) before fetching from outside."
+  body: >-
+    A local hit is cheaper and already chunked. Report prod writes by handle in
+    the next message or the quest logbook.
+  enforcers: []
+- id: thresholds/when-a-threshold-trips
+  file: docs/conventions/thresholds.md
+  section: "Default behaviour when a threshold trips"
+  title: "On a tripped threshold: stop, state the smallest description of the change, offer 2-4 options, wait."
+  body: >-
+    Record a non-obvious resolution in the owning package docstring.
+  enforcers: []
+
+# ------------------------------------------------------------------------ time
+- id: time/generate-utc
+  file: docs/conventions/time.md
+  section: "The three rules"
+  title: "Generate timestamps in UTC: date -u, datetime.now(UTC), never date.today()/utcnow()/naive now()."
+  body: >-
+    Epoch seconds (date +%s) are fine. Parsing a bare date with date -d or
+    date -j also needs -u or it is off by the local offset.
+  enforcers:
+    - path: tests/test_utc_time_convention.py
+      what: "scans src, tests, scripts, docker, deploy for shell date without -u (epoch excepted) and AST-walks Python for date.today(), naive datetime.now(), utcnow()"
+- id: time/coerce-at-boundary
+  file: docs/conventions/time.md
+  section: "The three rules"
+  title: "Coerce string timestamps with precis_web/timefmt.py::_as_datetime before arithmetic or formatting."
+  body: >-
+    Stored ISO stamps or API headers may be naive or offset-aware; naive input
+    raises TypeError against datetime.now(UTC) and prints the wrong hour.
+  enforcers: []
+- id: time/label-human-timestamps
+  file: docs/conventions/time.md
+  section: "The three rules"
+  title: "End every absolute human-read time with Z or ' UTC'; render via timefmt.abs_ts, not bare strftime."
+  body: >-
+    Relative times need no label. An unlabelled local timestamp looks
+    authoritative and is wrong by an invisible amount.
+  enforcers:
+    - path: tests/test_utc_logging.py
+      what: "logging.Formatter pinned to gmtime"
+    - path: tests/precis_web/test_timefmt.py
+      what: "abs_ts labelling"

@@ -1,0 +1,26 @@
+- id: invariants/forward-only-migrations
+  file: docs/conventions/invariants.md
+  section: "Forward-only migrations"
+  title: Never edit a sealed migration; ship a new one.
+  body: >-
+    Sealed migrations are immutable. Schema changes ship as a new numbered
+    migration.
+  enforcers:
+    - path: tests/test_skill_size.py
+      what: size gate clause one
+    - path: "ruff:PLW1514"
+      what: text IO names an encoding
+- id: invariants/body-chunks-append-only
+  file: docs/conventions/invariants.md
+  section: null
+  title: Body chunks are append-only.
+  body: DELETE + INSERT, never UPDATE.
+  enforcers:
+    - path: tests/test_skill_size.py
+      what: size gate clause two
+- id: invariants/no-enforcer
+  file: docs/conventions/invariants.md
+  section: "Unenforced"
+  title: A rule nothing tests yet.
+  body: Prose only.
+  enforcers: []

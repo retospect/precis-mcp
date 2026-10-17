@@ -187,6 +187,11 @@ COMMANDS: tuple[Command, ...] = (
         # set here rather than in them
         trust="generated",
     ),
+    _c(
+        "conventions",
+        "conventions",
+        "Import repo convention rules and their enforcers as graph findings.",
+    ),
     _c("add", "add", "Ingest a paper (PDF, DOI, or arXiv ID) into the v2 schema."),
     _c(
         "ingest",

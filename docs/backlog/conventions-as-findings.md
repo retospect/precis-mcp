@@ -1,5 +1,5 @@
 ---
-status: idea
+status: in-progress
 pillar: memory-graph
 title: conventions as findings — every docs/conventions rule becomes a finding with a `tests` edge, and the file retires
 ---
@@ -30,3 +30,37 @@ for the findings, `docs/conventions/`.
 test: `tests/test_conventions_retired.py` allowlist shrinks to empty;
 `get(kind='finding', id=F, view='fisheye')` from a gripe reaches the
 convention it violates in one hop.
+
+## Built 2026-10-16 (importer + test 4c; no convention file deleted)
+
+- **Manifest:** `src/precis/data/conventions/rules.yaml`, one entry per
+  rule: id `<file stem>/<rule slug>`, file, section, title, body, and
+  `enforcers` (a repo path or `ruff:<id>`). It holds 108 rules from all 18
+  files: 42 have an enforcer and 66 have none. An enforcer is listed only
+  if it goes red on a violation. Advisory nudges, warn-only hooks,
+  partial-scope checks and tests of a helper rather than its callers were
+  left out.
+- **Importer:** `cli/conventions.py::import_conventions`, run as `precis
+  conventions import [--dry-run] [--sync]`.
+  - It mints one `finding` per rule (`meta.convention_rule`, tags
+    `SPACE:repo-dev` and `convention`) and one per distinct enforcer
+    (`meta.convention_enforcer`, tags `SPACE:repo-dev` and `enforcer`).
+  - The edge runs enforcer `-tests->` rule, because the `tests` relation
+    reads "source tests target" (`store/types.py`, migration 0142). The
+    brief's "edge to the test" is this edge, read from the rule's side.
+  - Re-runs are idempotent: the importer keys on its own meta among
+    importer refs, and a retired importer ref blocks re-minting.
+  - `--sync` rewrites the title and body of importer-owned refs and drops
+    the importer's stale `tests` edges. It never retires anything.
+- **Test 4c:** `tests/test_conventions_retired.py` checks three things.
+  Every convention file is in the manifest; every enforcer path exists
+  (a `ruff:` id needs a selected prefix); and the rules with no inbound
+  `tests` edge equal `_ALLOWLIST` exactly.
+- **Left:** drain `_ALLOWLIST` by writing enforcers. The `related-to`
+  edge to the `CLAUDE.md` one-liner waits for a repo root in the graph
+  (`file-mirror.md` §deltas 2). File retirement is Reto's call, per
+  batch.
+- **Prod import, 2026-10-16 ~22:25Z:** created 151 findings (108 rules,
+  43 enforcers) and 54 `tests` edges; the re-run planned 0. Example:
+  fi493530 (`invariants/body-chunks-append-only`) ← fi493629
+  (`tests/test_chunk_append_only.py`).

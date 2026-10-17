@@ -1,5 +1,5 @@
 ---
-status: draft
+status: in-progress
 title: memory native authoring — harness memory is written and loaded as SPACE:repo-dev graph nodes, with a gate-runnable retirement test per file class
 pillar: memory-graph
 prio: high
@@ -355,7 +355,8 @@ scripts only — nothing reads the graph at that moment.
 - **[open, non-blocking]** Whether `scripts/memory-lint`'s hysteresis
   (20 KB/15 KB) maps to a node count or is dropped once the index is
   graph-side; decide after the first month of native writes.
-- **[found 2026-10-07: the cutover is reverted, by whom is unrecorded]**
+- **[found 2026-10-07, superseded 2026-10-10 — see the 2026-10-16 state entry
+  below: the cutover is reverted, by whom is unrecorded]**
   On Reto's machine `MEMORY.md` is a file index again (14.8 KB, no graph
   marker), `MEMORY.md.pre-cutover` is gone, the hook's cache dir does not
   exist, and `scripts/memory-lint` runs in file mode; the consolidation
@@ -372,3 +373,50 @@ scripts only — nothing reads the graph at that moment.
   the `SPACE:` axis, `meta.hook`, `memory index`, the hook script and
   memory-lint graph mode. The import path for the real content is now the
   mirror (`memory mirror import`), not `precis memory import`.
+- **[state 2026-10-16, checked against main 6381ff9af]** Graph-only memory
+  is live; the 2026-10-07 revert above is history. The harness memory dir
+  was imported through the mirror (namespace `repo-dev-harness-20261007`,
+  140 live nodes, first created 2026-10-08; cut over 2026-10-10) and Reto ruled 2026-10-13
+  that the mesh is the record: the `MEMORY.md` there is a pointer to
+  `SPACE:repo-dev` recall, and the topic files stay on disk only as the
+  import source. Built, by in-scope item:
+  1. `SPACE:` axis — `store/types.py::_CLOSED_VOCAB['SPACE']` and the
+     `_KIND_ALLOWED_AXES` rows; default stamp
+     `handlers/memory.py::MemoryHandler.default_tags_on_create`.
+  2. Native nodes — `cli/memory.py` (`memory import`, kept as the cutover
+     tool); the real content path is
+     `cli/memory_mirror.py::import_mirror` / `::export_mirror`.
+  3. Session-start load — `scripts/hooks/session-start-memory.sh`, wired in
+     `.claude/settings.json`; `cli/memory.py::_render_live_threads` prints
+     only `section:threads` nodes edited in the last 14 days (`--full` keeps
+     the every-node list; `render_memory_index` serves `--q` recall).
+  4. Tests: 4a `tests/test_memory_index_retired.py` built. 4b
+     (`test_skill_listing_retired.py`) is blocked on `file-mirror.md`
+     in-scope 1-3: `PRECIS_ROOTS`, the `skills/` markdown alias, `ro`
+     roots and the skill `parent:` key are not on main, so no
+     `markdown:skills/*` refs exist to render from. 4c is
+     `conventions-as-findings.md`'s.
+  5. `precis-memory-help`: the "different system from the harness files"
+     sentence is gone (2026-10-16); `SPACE:` and the mirror import have
+     their paragraph.
+  Open: 4b (waits on file-mirror), 4c, and AC 5's baseline (next entry).
+- **[AC 5 baseline, measured 2026-10-16 21:58Z on main 6381ff9af]**
+  Native 9/10, mirror 9/10 at k=5: AC 5 holds (native ≥ mirror). Both
+  miss the same query, "label timestamps with Z, use datetime" →
+  `timestamps_utc`. This is the P4 yardstick.
+  - **Method:** `tests/test_memory_recall_native_vs_mirror.py` seeds the
+    24 topics and 10 queries of `tests/test_memory_recall_fixture.py`
+    into the test DB twice, one set at a time. Mirror: topic files with
+    frontmatter `name:` = title, `description:` = hook, plus a
+    `MEMORY.md` of bullets, imported by
+    `cli/memory_mirror.py::import_mirror` (25 nodes, the index root
+    included). Native: `put(kind='memory', tags=['SPACE:repo-dev'],
+    meta={'hook': …})`, no `file_mirror` stamp. Three research-space
+    distractors each time. Score = queries whose expected handle is in
+    the top 5 of `cli/memory.py::render_memory_index(q=…, k=5)`.
+  - **Scope:** lexical leg plus the hash-based test embedder, so this is
+    a floor for prod's hybrid search, not a semantic number. It is not
+    the live-root report half of `file-mirror.md` in-scope 5.
+  - **Reproduce:** `scripts/test
+    tests/test_memory_recall_native_vs_mirror.py -n0 -s` prints
+    `RECALL mirror …` and `RECALL native …` (`-n0`: xdist swallows `-s`).

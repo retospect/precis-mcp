@@ -27,11 +27,11 @@ Server assigns an integer id on create. Its handle is `me<id>`
 (e.g. `me47`).
 
 **There is no slug/filename lookup — `id=` must be an integer (or a
-handle/link-target form that decodes to one).** This is a different
-system from the harness's own local `~/.claude/.../memory/*.md` files,
-which *are* addressed by filename-stem slug (e.g. `backlog_foo`) — that
-slug means nothing here. Passing one to `get`/`delete`/`tag`/`link`
-raises `[error:BadInput] memory id must be an integer, got '<slug>'`.
+handle/link-target form that decodes to one).** A harness topic file's
+filename-stem slug (e.g. `backlog_foo`) is not an id, even for a node
+mirrored from that file (the filename lives in its `file_mirror` meta;
+recall and `view='index'` lines show it after the handle). Passing one
+to `get`/`delete`/`tag`/`link` raises `[error:BadInput] memory id must be an integer, got '<slug>'`.
 If you only have a topic, not the id: `search(kind='memory',
 q='<topic>')` first, then use the integer id from the hit.
 

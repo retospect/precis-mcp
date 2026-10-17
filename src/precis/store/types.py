@@ -1271,7 +1271,7 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
     # Memory space (docs/backlog/memory-native-authoring.md): which corpus a
     # node belongs to. ``research`` is the default stamp on a ``memory``
     # (``MemoryHandler.default_tags_on_create``); ``repo-dev`` marks the
-    # dev-harness memory imported by ``precis memory import``; ``personal``
+    # dev-harness memory (``precis memory mirror import``); ``personal``
     # is registered so the axis is closed (pillar 4, nothing writes it).
     # Code-only like ATTEMPT — no ``data/axes/*.yaml``, no migration. Listed on
     # memory / skill / todo / gripe in ``_KIND_ALLOWED_AXES``; ``finding`` and
