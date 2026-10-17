@@ -3674,7 +3674,7 @@ class PcbHandler(Handler):
         if warns:
             head += "\n" + "\n".join(f"⚠️  {w}" for w in warns)
         # Echo a short preview so the agent sees the shape without re-reading.
-        preview = "\n".join(content.splitlines()[:12])
+        preview = pcb_export.csv_preview(content)
         if view == "bom":
             # Not a column of the file (JLCPCB's BOM upload has fixed
             # headers): the datasheet state of each C-number, beside it.
@@ -3713,6 +3713,13 @@ class PcbHandler(Handler):
                     + " — run autoplace first"
                 )
         if view in ("bom", "cpl"):
+            ex = pcb_export.excluded_features(model)
+            if ex:
+                out.append(
+                    f"{len(ex)} board feature(s) excluded (etched copper, "
+                    f"no pads to solder): {', '.join(ex[:8])}"
+                    + ("…" if len(ex) > 8 else "")
+                )
             ml = pcb_export.missing_lcsc(model)
             if ml:
                 out.append(

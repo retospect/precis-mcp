@@ -132,6 +132,30 @@ def _assembled(model: dict[str, Any]) -> list[dict[str, Any]]:
     return [i for i in model["instances"] if i["refdes"] not in features]
 
 
+def excluded_features(model: dict[str, Any]) -> list[str]:
+    """Refdes the BOM/CPL leave out on purpose (:func:`board_feature_refdes`),
+    in natural order — what the export warning names so an exclusion never
+    reads as a dropped part."""
+    kept = {i["refdes"] for i in _assembled(model)}
+    return sorted(
+        (i["refdes"] for i in model["instances"] if i["refdes"] not in kept),
+        key=_natural_key,
+    )
+
+
+def csv_preview(content: str, limit: int = 40) -> str:
+    """The first ``limit`` lines of an exported CSV for the response body.
+    A cut is always announced with the count left out: a preview that stops
+    mid-table without saying so reads as a complete table (gr495285 — a
+    12-part board's last BOM/CPL row, U2, sat past the old 12-line cut and
+    looked omitted from the file)."""
+    lines = content.splitlines()
+    if len(lines) <= limit:
+        return "\n".join(lines)
+    more = f"… {len(lines) - limit} more line(s) in the file"
+    return "\n".join([*lines[:limit], more])
+
+
 def _natural_key(s: str) -> tuple[str, int, str]:
     """Sort ``R2`` before ``R10`` before ``U1`` — letter prefix, then number."""
     m = re.match(r"^([A-Za-z]*)(\d*)(.*)$", str(s))
@@ -529,6 +553,8 @@ __all__ = [
     "board_feature_refdes",
     "bom_csv",
     "cpl_csv",
+    "csv_preview",
+    "excluded_features",
     "export_model",
     "jlc_rotation",
     "kicad_netlist",
