@@ -42,6 +42,23 @@ in the run summary.
 pinned at density 1 (``simp_optimize(passive=...)``): a loaded face that
 thins to a skin is the classic SIMP artefact.
 
+**The boundary round (gr495400).** ``pitch`` equal to ``min_member / 3``
+is allowed — three elements across a member — but the filter radius
+``min_member / (2 pitch)`` is then exactly the engine's 1.5-element
+floor: ``min_member`` adds no regularisation at that pitch, and the
+solve may legally leave members one voxel wide. ``open(r)`` erases
+anything thinner than ``2r``, so a ``round`` of one voxel can erase —
+or split off — the material carrying the load to the support, and the
+cost of finding out was ~30 minutes of solve (job 495268). At that
+boundary the default round clamps to half a pitch (the largest radius a
+one-voxel member survives), and an explicit ``round``/``open`` above
+half a pitch is refused at enqueue, naming the safe value — the refusal
+costs an op call, not the solve. A solver run also reports its descent:
+the engine's ``progress`` hook, throttled by the job into bounded
+``job_event`` chunks, so a running solve shows iteration k/max_iter and
+an ETA is readable; and the enqueue echo always names the effective
+``round`` (defaulted or given — gr495400's second half).
+
 **Build direction.** The engine's AM filter is ``+z`` only; the bridge
 permutes/flips the domain, loads and supports so the requested axis is
 ``+z`` for the solve and maps the density back. ``build_dir`` defaults
@@ -142,13 +159,26 @@ MIN_MEMBER_FIELD = "min_member"
 BASE_RMIN = 1.5
 #: ``build_frame.origin`` stamped on a SIMP-realized block.
 FRAME_ORIGIN = "simp"
+#: ``SimpRequest.round_source`` when the ``min_member/3`` default landed on
+#: the boundary pitch and was clamped to half a pitch (module docstring,
+#: gr495400) — the value an explicit ``round``/``open`` above is refused.
+ROUND_SOURCE_CLAMPED = "min_member/3 clamped to half a pitch"
+#: The per-iteration hook the engine's ``progress=`` and this bridge's
+#: ``solve_simp``/``run_simp`` take: ``(iteration, max_iter, compliance)``.
+SimpProgress = Callable[[int, int, float], None]
 
 _AXIS_INDEX = {"x": 0, "y": 1, "z": 2}
 
 
 class SimpBridgeError(OpError):
     """A refusal from this module — an :class:`~precis_se.ops.OpError`, so
-    the op walker maps it to ``BadInput`` like every other op refusal."""
+    the op walker maps it to ``BadInput`` like every other op refusal.
+    The optional ``next`` (mcp-authoring: a refusal names the fix) rides
+    to the ``BadInput``'s ``next=`` at the conversion site."""
+
+    def __init__(self, cause: str, *, next: str | None = None) -> None:
+        super().__init__(cause)
+        self.next = next
 
 
 @dataclass(frozen=True)
@@ -175,7 +205,8 @@ class SimpRequest:
     #: filter radius (:meth:`rmin`); ``None`` = the engine's 1.5 elements.
     min_member: float | None = None
     #: How ``round_r`` was chosen: ``"given"``, ``"min_member/3"`` (the
-    #: default when ``min_member`` is set), or ``"off"`` (``round=0``).
+    #: default when ``min_member`` is set), :data:`ROUND_SOURCE_CLAMPED`
+    #: (that default at the boundary pitch), or ``"off"`` (``round=0``).
     round_source: str = "given"
     #: The cavity clearance a manufacture group's fused domain subtracts
     #: its stand-ins with (:func:`precis_se.manufacture.simp_domain`);
@@ -566,13 +597,17 @@ def prepare_simp(
     ``set_load``), a null house pitch with no ``pitch=``, ``volfrac``
     outside ``(0, 1)``, an unknown ``build_dir``/``load_at``/``fixed_at``
     token, ``round`` combined with ``open``/``close``, ``max_iter`` beyond
-    :data:`MAX_ITER_CAP`, a grid beyond :data:`MAX_ELEMENTS``, or a pitch
-    coarser than ``min_member / 3``.
+    :data:`MAX_ITER_CAP`, a grid beyond :data:`MAX_ELEMENTS``, a pitch
+    coarser than ``min_member / 3``, or an explicit ``round``/``open``
+    above half a pitch at the boundary pitch ``min_member / 3``
+    (gr495400).
 
     ``min_member`` (given, or the house :data:`MIN_MEMBER_FIELD`) widens
     the filter radius to ``min_member / (2 pitch)`` elements and, unless
     the caller gave ``round``/``open``/``close``, defaults ``round`` to
-    ``min_member / 3``; ``round=0`` opts out of that default.
+    ``min_member / 3`` — clamped to half a pitch at the boundary pitch,
+    where the filter floor makes a one-voxel member legal output
+    (module docstring); ``round=0`` opts out of that default.
 
     A **manufacture group root** (:func:`precis_se.manufacture.
     is_manufacture_root`) is the fused-domain case: its keep-in is the
@@ -757,6 +792,36 @@ def prepare_simp(
     ):
         round_r = min_member / 3.0
         round_source = "min_member/3"
+    if min_member is not None and pitch >= (min_member / 3.0) / (1.0 + 1e-9):
+        # The boundary pitch (module docstring, gr495400): the filter
+        # radius bottoms out at BASE_RMIN, so a one-voxel-wide member is
+        # legal solver output — and open(r) erases anything thinner than
+        # 2r. Clamp the defaulted round to the largest radius a one-voxel
+        # member survives; refuse an explicit one above it BEFORE the
+        # solve, naming the safe value. (close never erases; it is not
+        # judged here.)
+        if round_source == "min_member/3":
+            assert round_r is not None
+            round_r = 0.5 * pitch
+            round_source = ROUND_SOURCE_CLAMPED
+        for name, r in (("round", round_r), ("open", open_r)):
+            if r is not None and r > 0.5 * pitch * (1.0 + 1e-9):
+                raise SimpBridgeError(
+                    f"realize(simp): {name}={r:g} m at pitch {pitch:g} m == "
+                    f"min_member/3 (min_member {min_member:g} m): the filter "
+                    "adds nothing at this pitch, so the solve may leave "
+                    "members one voxel wide — and open(r) erases anything "
+                    f"thinner than 2r = {2.0 * r:g} m, which can erase or "
+                    "split the material carrying the load to the support "
+                    "(gr495400: the post-solve check caught it once, after "
+                    "~30 min of solve)",
+                    next=(
+                        f"{name}={0.5 * pitch:g} (half the pitch — the largest "
+                        "radius a one-voxel member survives), or a pitch finer "
+                        f"than {min_member / 3.0:g} m so the filter enforces "
+                        "min_member"
+                    ),
+                )
     for name, r in (("round", round_r), ("open", open_r), ("close", close_r)):
         if r is not None and r < 0.5 * pitch:
             raise SimpBridgeError(
@@ -810,7 +875,8 @@ def prepare_simp(
         f"realize({key!r}, strategy='simp'): queued a {JOB_TYPE} job — pitch "
         f"{pitch:g} m over a {shape[0]}x{shape[1]}x{shape[2]} grid{domain_note}, volfrac "
         f"{volfrac:g}, {dir_note}, load at {locations['load_at']!r}, fixed at "
-        f"{locations['fixed_at']!r}, max_iter {max_iter}{_member_note(request)}; "
+        f"{locations['fixed_at']!r}, max_iter {max_iter}{_member_note(request)}"
+        f"{_morphology_note(request)}; "
         f"{key!r} stays "
         f"unrealized until the job lands (advisory tier: the compliance is a "
         "voxel estimate)"
@@ -829,16 +895,35 @@ def _is_zero(raw: Any) -> bool:
 def _member_note(req: SimpRequest) -> str:
     if req.min_member is None:
         return ""
-    if req.round_source == "min_member/3":
-        rounding = f", round {req.round_r:g} m (default min_member/3; round=0 opts out)"
-    elif req.round_source == "off":
-        rounding = ", no rounding (round=0)"
-    else:
-        rounding = ""
     return (
-        f", min_member {req.min_member:g} m (filter radius "
-        f"{req.rmin():.3g} elements){rounding}"
+        f", min_member {req.min_member:g} m (filter radius {req.rmin():.3g} elements)"
     )
+
+
+def _morphology_note(req: SimpRequest) -> str:
+    """The effective morphology segment of the echo — ALWAYS explicit
+    (gr495400's second half: a given ``round=`` vanished from the reply
+    when ``min_member`` was set, and was never mentioned without it)."""
+    if req.round_r is not None:
+        if req.round_source == "min_member/3":
+            src = "default min_member/3; round=0 opts out"
+        elif req.round_source == ROUND_SOURCE_CLAMPED:
+            src = (
+                "default min_member/3 clamped to half the pitch: at pitch "
+                "== min_member/3 the filter adds nothing, and a one-voxel "
+                "member would not survive open(min_member/3)"
+            )
+        else:
+            src = "given"
+        return f", round {req.round_r:g} m ({src})"
+    if req.round_source == "off":
+        return ", no rounding (round=0)"
+    out = ""
+    if req.open_r is not None:
+        out += f", open {req.open_r:g} m"
+    if req.close_r is not None:
+        out += f", close {req.close_r:g} m"
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -949,7 +1034,11 @@ def _check_load_path(
 
 
 def solve_simp(
-    tree: SeTree, req: SimpRequest, *, domain_builder: DomainBuilder | None = None
+    tree: SeTree,
+    req: SimpRequest,
+    *,
+    domain_builder: DomainBuilder | None = None,
+    progress: SimpProgress | None = None,
 ) -> SimpSolve:
     """Voxelise, load, support, solve, and turn the density into a field —
     the store-free half of :func:`run_simp` (module docstring). Raises
@@ -957,7 +1046,10 @@ def solve_simp(
     see (an envelope that voxelises to nothing at this pitch, a passive
     set that eats the volume budget) with the engine's own wording.
     ``domain_builder`` (:data:`DomainBuilder`) replaces the block's own
-    envelope as the keep-in; the default is :func:`envelope_domain`."""
+    envelope as the keep-in; the default is :func:`envelope_domain`.
+    ``progress`` (gr495400) is passed through to the engine, called once
+    per OC iteration as ``(iteration, max_iter, compliance)`` — the
+    ``se_simp`` job throttles it into bounded ``job_event`` chunks."""
     node = tree.blocks.get(req.block)
     if node is None:
         raise SimpBridgeError(f"realize(simp): block {req.block!r} no longer exists")
@@ -1007,6 +1099,7 @@ def solve_simp(
             rmin=req.rmin(),
             build_dir="z+",
             passive=frame.forward_array(passive),
+            progress=progress,
         )
     except ValueError as exc:
         raise SimpBridgeError(f"realize(simp): {exc}") from exc
@@ -1324,19 +1417,31 @@ def realize_simp(
     return SimpOutcome(echo=echo, cad_slug=slug, summary=summary)
 
 
-def run_simp(store: Store, ref_id: int, req: SimpRequest) -> SimpOutcome:
+def run_simp(
+    store: Store,
+    ref_id: int,
+    req: SimpRequest,
+    *,
+    progress: SimpProgress | None = None,
+) -> SimpOutcome:
     """The whole job body, callable in-process: snapshot the design's live
     tree, :func:`solve_simp` on it OUTSIDE any lock (minutes), then
     :func:`realize_simp`, which re-loads under the per-ref lock, checks
     the snapshot is still current and binds. A design edited meanwhile
     is never clobbered: an unrelated edit survives and the bind lands on
     top of it; an edit to the solve's inputs makes the job fail with
-    :class:`SimpStale` and bind nothing."""
+    :class:`SimpStale` and bind nothing. ``progress`` (gr495400) rides to
+    the engine's per-iteration hook."""
     ref = store.get_ref(kind="se", id=ref_id)
     if ref is None:
         raise SimpBridgeError(f"realize(simp): se design ref {ref_id} not found")
     tree = _load_live(store, ref_id, str(ref.slug))
-    solve = solve_simp(tree, req, domain_builder=domain_builder_for(tree, req, store))
+    solve = solve_simp(
+        tree,
+        req,
+        domain_builder=domain_builder_for(tree, req, store),
+        progress=progress,
+    )
     return realize_simp(store, ref_id, req, solve)
 
 
@@ -1374,10 +1479,12 @@ __all__ = [
     "MAX_ITER_CAP",
     "META_KEY",
     "PITCH_FIELD",
+    "ROUND_SOURCE_CLAMPED",
     "DomainBuilder",
     "DomainGrid",
     "SimpBridgeError",
     "SimpOutcome",
+    "SimpProgress",
     "SimpRequest",
     "SimpSolve",
     "SimpStale",

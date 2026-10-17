@@ -123,6 +123,13 @@ off that gap until it closes.
      waits on print 2 being handled. Print 2 is a re-run of the bracket
      with `min_member=0.003`, `max_iter` about 150, owed after r40 is
      live (the se_simp job needs the deploy that carries engine simp/2).
+     Print 2's first dogfood failed as gr495400 (fixed 2026-10-17): at
+     the boundary pitch == min_member/3 the filter adds nothing and the
+     default round == pitch erased a one-voxel load path ~30 min in. The
+     default round now clamps to half a pitch there, an explicit
+     round/open above that is refused at enqueue naming the safe value,
+     jobs emit bounded `iteration k/max_iter` progress, and the enqueue
+     echo always names the effective round.
    Print 1 is the bracket `organic-bracket-1` (job 464356). Printer: Bambu
    Lab X1 Carbon with tree supports; the goal is support-free.
 3. **backlog/flatpack-furniture-generator.md** — builds 1 and 2 shipped

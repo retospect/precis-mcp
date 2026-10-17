@@ -313,7 +313,12 @@ def apply_ops_with_atomic(
                                 tree, op, cad_store_reader=store
                             )
                     except OpError as exc:
-                        raise BadInput(str(exc)) from exc
+                        # SimpBridgeError's `next` (gr495400: the refusal
+                        # names the round that stays connected) survives as
+                        # the BadInput's next=; other refusals carry none.
+                        raise BadInput(
+                            str(exc), next=getattr(exc, "next", None)
+                        ) from exc
                     echoes.append(echo)
                     pending_jobs.append(request)
                     continue

@@ -163,6 +163,29 @@ def test_solid_bar_tip_displacement_matches_fl_over_ea() -> None:
 # --------------------------------------------------------------------------
 
 
+def test_progress_reports_every_iteration_with_the_compliance() -> None:
+    """gr495400: the engine's ``progress`` hook — one call per OC
+    iteration as ``(iteration, max_iter, compliance)`` — is what the
+    ``se_simp`` job throttles into bounded job_event chunks, so a running
+    solve shows k/max_iter and an ETA. It never alters the field."""
+    domain, loads, supports = _cantilever()
+    calls: list[tuple[int, int, float]] = []
+    res = simp_optimize(
+        domain,
+        loads,
+        supports,
+        volfrac=0.4,
+        max_iter=8,
+        progress=lambda k, n, c: calls.append((k, n, c)),
+    )
+    assert [c[0] for c in calls] == list(range(1, res.iterations + 1))
+    assert all(c[1] == 8 for c in calls)
+    assert [c[2] for c in calls] == res.compliance_history[: res.iterations]
+    # no hook: the same problem descends to the identical field
+    bare = simp_optimize(domain, loads, supports, volfrac=0.4, max_iter=8)
+    assert np.array_equal(bare.density, res.density)
+
+
 def test_cantilever_compliance_descends_and_hits_the_volume_target() -> None:
     domain, loads, supports = _cantilever()
     res = simp_optimize(domain, loads, supports, volfrac=0.4)

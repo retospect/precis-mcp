@@ -25,6 +25,7 @@ from precis.dispatch import Hub, _try
 from precis.errors import BadInput
 from precis.store import Store
 from precis.workers import job_types as jt
+from precis.workers.executors._context import DispatchContext
 from precis_se import persist, simp_bridge, simp_job
 from precis_se import printing as se_printing
 from precis_se.handler import SeHandler
@@ -769,3 +770,182 @@ def test_the_solve_uses_the_min_member_filter_radius() -> None:
     assert solve.summary["rmin_elements"] == pytest.approx(2.25)
     assert solve.summary["morphology"] == {}
     assert any("radius rmin=2.25 elements" in n for n in solve.summary["notes"])
+
+
+# --------------------------------------------------------------------------
+# gr495400: the boundary pitch (pitch == min_member/3), the clamped default
+# round, the enqueue-time refusal, and iteration progress
+# --------------------------------------------------------------------------
+
+_BPITCH = 0.001
+_BENVELOPE = "box:w0.012d0.006h0.006"  # 12 x 6 x 6 = 432 elements at 1 mm
+
+
+def _boundary_ops() -> list[dict[str, Any]]:
+    return [
+        {"op": "add_block", "name": "beam", "envelope": _BENVELOPE},
+        {
+            "op": "set_load",
+            "block": "beam",
+            "force": [0.0, 0.0, -10.0],
+            "fixed": True,
+        },
+    ]
+
+
+def _boundary_simp_op(**overrides: Any) -> dict[str, Any]:
+    """The gr495400 shape, scaled down: ``pitch == min_member / 3`` exactly
+    — the boundary where the filter adds nothing and the default
+    ``round = min_member / 3`` costs one voxel."""
+    op: dict[str, Any] = {
+        "op": "realize",
+        "strategy": "simp",
+        "block": "beam",
+        "mode": "fdm/pla",
+        "pitch": _BPITCH,
+        "volfrac": 0.3,
+        "load_at": "x+",
+        "fixed_at": "x-",
+        "min_member": 0.003,
+        "max_iter": 6,
+    }
+    op.update(overrides)
+    return op
+
+
+def test_boundary_round_clamps_and_explicit_radii_are_refused_at_enqueue() -> None:
+    tree = _tree(_boundary_ops())
+    # (b) the defaulted round (min_member/3 == pitch, the prod failure) is
+    # clamped to half a pitch — the largest radius a one-voxel member
+    # survives — and the echo says so
+    echo, req = simp_bridge.prepare_simp(tree, _boundary_simp_op())
+    assert req.round_r == pytest.approx(0.5 * _BPITCH)
+    assert req.round_source == simp_bridge.ROUND_SOURCE_CLAMPED
+    assert f"round {0.5 * _BPITCH:g} m" in echo and "clamped" in echo
+    # (a) an explicit round or open above half a pitch is refused at op
+    # time — before any solve — naming the value that stays connected
+    for morph in ({"round": _BPITCH}, {"open": 0.75 * _BPITCH}):
+        with pytest.raises(simp_bridge.SimpBridgeError) as exc:
+            simp_bridge.prepare_simp(tree, _boundary_simp_op(**morph))
+        assert "one voxel" in str(exc.value)
+        assert exc.value.next is not None
+        assert f"round={0.5 * _BPITCH:g}" in str(exc.value.next) or (
+            f"open={0.5 * _BPITCH:g}" in str(exc.value.next)
+        )
+    # close is additive — it never erases, so the boundary rule ignores it
+    _e, closed = simp_bridge.prepare_simp(tree, _boundary_simp_op(close=_BPITCH))
+    assert closed.close_r == pytest.approx(_BPITCH) and closed.round_r is None
+    # (d) the named round validates and the echo is explicit about it
+    echo2, req2 = simp_bridge.prepare_simp(tree, _boundary_simp_op(round=0.5 * _BPITCH))
+    assert req2.round_r == pytest.approx(0.5 * _BPITCH)
+    assert f"round {0.5 * _BPITCH:g} m (given)" in echo2
+    # a pitch finer than min_member/3 keeps the unclamped default
+    echo3, fine = simp_bridge.prepare_simp(tree, _boundary_simp_op(pitch=0.0008))
+    assert fine.round_r == pytest.approx(0.001)
+    assert fine.round_source == "min_member/3"
+    assert "clamped" not in echo3
+
+
+def test_gr495400_shape_refused_at_put_names_a_working_round(
+    handler: SeHandler, store: Store, register_se_simp: Any
+) -> None:
+    """(a) the prod repro at put: the failing shape is refused where prod
+    spent ~30 min to be told; at the named round the same op enqueues,
+    and the echo carries the explicit round= value (d)."""
+    handler.put(id="simp-gr49", text=json.dumps({"ops": _boundary_ops()}))
+    ref = store.get_ref(kind="se", id="simp-gr49")
+    assert ref is not None
+    with pytest.raises(BadInput, match="one voxel") as exc:
+        handler.edit(id="simp-gr49", ops=[_boundary_simp_op(round=_BPITCH)])
+    assert exc.value.next is not None
+    assert "round=0.0005" in str(exc.value.next)
+    assert _job_params(store, ref.id) == []  # nothing enqueued
+    # at the named round the op validates, enqueues, and echoes round=
+    resp = handler.edit(id="simp-gr49", ops=[_boundary_simp_op(round=0.5 * _BPITCH)])
+    assert "round 0.0005 m (given)" in resp.body
+    params = _job_params(store, ref.id)
+    assert len(params) == 1
+    assert params[0]["round"] == pytest.approx(0.5 * _BPITCH)
+    assert params[0]["round_source"] == "given"
+
+
+def test_the_clamped_and_named_rounds_survive_their_own_morphology(
+    handler: SeHandler, store: Store
+) -> None:
+    """(a)+(b) end to end on the small grid: the clamped default and the
+    named round both solve, keep the load path through the morphology
+    and bind; (c) the per-iteration progress rode along."""
+    handler.put(id="simp-gr49r", text=json.dumps({"ops": _boundary_ops()}))
+    ref = store.get_ref(kind="se", id="simp-gr49r")
+    assert ref is not None
+    tree = _load(handler, "simp-gr49r")
+    _e, clamped = simp_bridge.prepare_simp(tree, _boundary_simp_op())
+    assert clamped.round_source == simp_bridge.ROUND_SOURCE_CLAMPED
+    calls: list[tuple[int, int, float]] = []
+    outcome = simp_bridge.run_simp(
+        store,
+        ref.id,
+        clamped,
+        progress=lambda k, n, c: calls.append((k, n, c)),
+    )
+    assert _load(handler, "simp-gr49r").blocks["beam"].bound == outcome.cad_slug
+    ref = store.get_ref(kind="se", id="simp-gr49r")
+    assert ref is not None
+    summary = ref.meta["simp"]["last"]
+    assert summary["morphology"]["round_source"] == simp_bridge.ROUND_SOURCE_CLAMPED
+    assert summary["morphology"]["round_m"] == pytest.approx(0.5 * _BPITCH)
+    # (c) one progress call per iteration, each carrying that iteration's
+    # compliance (a short OC descent under the AM filter need not fall
+    # monotonically — the long prod run's history oscillated too)
+    assert [c[0] for c in calls] == list(range(1, len(calls) + 1))
+    assert all(c[1] == 6 for c in calls)
+    assert all(c[2] > 0.0 for c in calls)
+    # the named round is equally safe ... and a re-realize binds a sibling
+    tree = _load(handler, "simp-gr49r")
+    _e, named = simp_bridge.prepare_simp(tree, _boundary_simp_op(round=0.5 * _BPITCH))
+    second = simp_bridge.run_simp(store, ref.id, named)
+    assert "bound to new cad design" in second.echo
+
+
+def test_the_job_reports_bounded_iteration_progress(
+    handler: SeHandler, store: Store
+) -> None:
+    """(c) the dispatch wiring: job_event chunks carry k/max_iter plus
+    compliance, bounded to about PROGRESS_EVENT_MAX whatever max_iter."""
+    # the throttle, pure
+    emitted: list[tuple[str, str]] = []
+    hook = simp_job.iteration_progress(lambda k, t: emitted.append((k, t)), "d.b", 150)
+    for k in range(1, 151):
+        hook(k, 150, float(k))
+    assert len(emitted) <= simp_job.PROGRESS_EVENT_MAX + 3
+    assert all(k == "job_event" for k, _t in emitted)
+    assert "iteration 1/150" in emitted[0][1]
+    assert "iteration 150/150" in emitted[-1][1]
+    # the wired dispatch, on the small grid
+    handler.put(id="simp-prog", text=json.dumps({"ops": _boundary_ops()}))
+    ref = store.get_ref(kind="se", id="simp-prog")
+    assert ref is not None
+    tree = _load(handler, "simp-prog")
+    _e, req = simp_bridge.prepare_simp(tree, _boundary_simp_op())
+    params = {"se_ref_id": int(ref.id), "slug": str(ref.slug), **req.to_params()}
+    events: list[tuple[str, Any]] = []
+    ctx = DispatchContext(
+        store=store,
+        ref_id=999,
+        title="simp",
+        meta={"params": params},
+        set_status=lambda s: events.append(("status", s)),
+        append_chunk=lambda k, t: events.append((k, t)),
+        set_meta=lambda **kw: None,
+        record_failure=lambda r, **kw: events.append(("fail", r)),
+        is_cancel_requested=lambda: False,
+    )
+    dispatch = simp_job.SPEC.dispatch
+    assert dispatch is not None
+    dispatch(ctx, simp_job.SPEC)
+    assert not [t for k, t in events if k == "fail"]
+    lines = [t for k, t in events if k == "job_event" and " iteration " in t]
+    assert lines and all("simp-prog.beam" in t for t in lines)
+    assert "iteration 1/6" in lines[0] and "compliance" in lines[0]
+    assert "iteration 6/6" in lines[-1]
+    assert ("status", "succeeded") in events

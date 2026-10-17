@@ -81,7 +81,7 @@ order. Element ``(i, j, k)`` spans nodes ``(i+dx, j+dy, k+dz)`` for
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -866,6 +866,7 @@ def simp_optimize(
     tol: float = 0.01,
     build_dir: str | None = None,
     passive: np.ndarray | None = None,
+    progress: Callable[[int, int, float], None] | None = None,
 ) -> SimpResult:
     """Minimise compliance over a voxel domain at a fixed volume fraction.
 
@@ -887,6 +888,12 @@ def simp_optimize(
     budget, so a passive set larger than ``volfrac`` × the active count is
     refused rather than silently over-filling. Passive elements outside
     the domain are ignored.
+
+    ``progress``, when given, is called once per optimality-criteria
+    iteration as ``progress(iteration, max_iter, compliance)`` — the hook
+    a long-running caller (the ``se_simp`` job) throttles into ETA-grade
+    progress events. It is purely observational and never alters the
+    field (no hand on the engine version).
 
     Refuses loudly rather than guessing: no supports, a load or support node
     that touches no active element, a load that nothing survives, ``volfrac``
@@ -969,6 +976,8 @@ def simp_optimize(
             move = _damp_move(move, step, prev_step)
         prev_step = step
         x = x_next
+        if progress is not None:
+            progress(iterations, max_iter, ev.compliance)
         if change < tol:
             converged = True
             break

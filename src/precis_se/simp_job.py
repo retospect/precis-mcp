@@ -20,6 +20,7 @@ wording; nothing is minted on failure.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from precis.workers.job_types import JobTypeSpec
@@ -78,6 +79,31 @@ DESCRIPTION = (
     "field-leaf design — the enqueued half of realize(strategy='simp')."
 )
 
+#: Progress events per run are bounded to about this many, whatever
+#: ``max_iter`` says (gr495400: a 150-iteration run ran 30+ min with only
+#: the start event) — iteration k/max_iter + compliance, so a running job
+#: shows an ETA; one chunk per iteration would bury the job's body.
+PROGRESS_EVENT_MAX = 20
+
+
+def iteration_progress(
+    emit: Callable[[str, str], None], label: str, max_iter: int
+) -> simp_bridge.SimpProgress:
+    """The throttled ``progress=`` hook for :func:`simp_bridge.run_simp`
+    (gr495400): emits ``se_simp: <label> iteration k/<max_iter> compliance
+    <c>`` as a ``job_event`` chunk on the first, every ``stride``-th and
+    the last iteration — ``stride = max_iter // PROGRESS_EVENT_MAX``."""
+    stride = max(1, max_iter // PROGRESS_EVENT_MAX)
+
+    def _on_iteration(k: int, total: int, compliance: float) -> None:
+        if k == 1 or k % stride == 0 or k == total:
+            emit(
+                "job_event",
+                f"se_simp: {label} iteration {k}/{total} compliance {compliance:.4g}",
+            )
+
+    return _on_iteration
+
 
 def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     params = dict(ctx.meta.get("params") or {})
@@ -93,8 +119,11 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         f"se_simp: {slug}.{request.block} pitch={request.pitch:g} m "
         f"volfrac={request.volfrac:g} build_dir={request.build_dir}",
     )
+    progress = iteration_progress(
+        ctx.append_chunk, f"{slug}.{request.block}", request.max_iter
+    )
     try:
-        outcome = simp_bridge.run_simp(ctx.store, se_ref_id, request)
+        outcome = simp_bridge.run_simp(ctx.store, se_ref_id, request, progress=progress)
     except simp_bridge.SimpBridgeError as exc:
         ctx.record_failure(f"se_simp: {exc}")
         return

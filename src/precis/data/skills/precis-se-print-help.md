@@ -100,13 +100,25 @@ block is bound to — from there it is ordinary geometry (`cut` bores,
   half a pitch.
 - `min_member=` m — thinnest strut: filter radius `min_member/(2·pitch)`
   elements (≥ 1.5), `pitch` above `min_member/3` refused, `round=`
-  defaults to `min_member/3` (`round=0` opts out). Else the house
+  defaults to `min_member/3` (`round=0` opts out). Boundary rule: at
+  `pitch == min_member/3` exactly, the filter radius is the bare
+  1.5-element floor, so the solve may leave members one voxel wide; the
+  default `round` then clamps to half a pitch (the largest radius a
+  one-voxel member survives an `open` at), and an explicit `round=` or
+  `open=` above half a pitch is refused at enqueue with that safe value
+  named — before the solve, not after. Else the house
   `min_member` capability (null in fdm rows); without either, finer
   pitch gives thinner struts, not smoother ones.
 - `max_iter=` — 1..300, default 60; about 150 lets an overhang-filtered
   run converge. An unconverged run is a snapshot, and its notes say so.
+  A real-pitch solve is tens of minutes: the running job's `job_event`
+  chunks report `iteration k/max_iter` with the compliance (bounded to
+  ~20 events), so `get(kind='job', id=...)` shows whether it descends
+  and an ETA is readable off the event timestamps.
 
-When the job lands: the block is bound (`kind='cad'`) and moded, its
+## 1c — `strategy='simp'`: when the job lands
+
+The block is bound (`kind='cad'`) and moded, its
 `build_frame` is pinned with `origin: simp`, and the run summary sits on
 the design's `meta.simp` (`last` + `runs`: inputs hash incl. pitch/
 build_dir/volfrac/engine version, compliance first→last, achieved
