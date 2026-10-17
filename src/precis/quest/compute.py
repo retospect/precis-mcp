@@ -1526,6 +1526,30 @@ def _seed_todo_handled(store: Store, seed_todo_id: int) -> bool:
     return bool(row[0]) if row else True
 
 
+#: Lead of the refusal :func:`dispatch_autocatpath` returns when no route node
+#: has a live ssh_node lane (gr495691). Callers that retry, reset a counter or
+#: re-queue on a dispatch note test it with :func:`is_no_live_lane` and stand down.
+_NO_LIVE_LANE = "every route node has a retired ssh_node lane"
+
+
+def is_no_live_lane(note: object) -> bool:
+    """True when ``note`` is the dispatch refusal for "no live lane left".
+
+    Such a call minted nothing, so a caller must not count it as an attempt:
+    no retry bump, no counter reset, no gripe, no re-queue. The note already
+    carries the ``next:`` hint; surface it once and stop.
+    """
+    return isinstance(note, str) and _NO_LIVE_LANE in note and "refused" in note
+
+
+def _note_no_live_lane(notes: list[str], what: str, refusal: str) -> None:
+    """Record a held dispatch once per pass: the first carries the refusal
+    (with its ``next:``), later ones add nothing, so a quest with hundreds of
+    candidates logs one line, not hundreds."""
+    if not any(_NO_LIVE_LANE in n for n in notes):
+        notes.append(f"{what} held, no live lane: {refusal}")
+
+
 def _live_route_nodes(store: Store, nodes: list[str]) -> tuple[list[str], str]:
     """``nodes`` minus those whose ssh_node lane is retired, plus a refusal.
 
@@ -1555,7 +1579,7 @@ def _live_route_nodes(store: Store, nodes: list[str]) -> tuple[list[str], str]:
         else "next: no other host advertises a gpu slot"
     )
     return [], (
-        f"every route node has a retired ssh_node lane ({why}). {eligible}; "
+        f"{_NO_LIVE_LANE} ({why}). {eligible}; "
         f"or set {_AUTOCATPATH_ROUTE_NODE_ENV} to a node that runs "
         "precis-worker-compute"
     )
@@ -3617,18 +3641,25 @@ def harvest_measures(
                         "(amnesty-eligible, not ruled out)"
                     )
                 else:
-                    dispatch_autocatpath(
+                    anote = dispatch_autocatpath(
                         store,
                         s.id,
                         reaction,
                         hub=hub,
                         tier=_retry_tier(store, cp_job_meta),
                     )
-                    store.stamp_ref_meta(s.id, {"quest_autocatpath_infra_retries": 0})
-                    notes.append(
-                        f"stale-era autocatpath failure for [{handle}] → amnesty "
-                        "re-dispatch via seed/aggregate"
-                    )
+                    if is_no_live_lane(anote):
+                        # Nothing minted: keep the counter where it is (the
+                        # amnesty reset waits for a dispatch that lands).
+                        _note_no_live_lane(notes, "amnesty re-dispatch", anote)
+                    else:
+                        store.stamp_ref_meta(
+                            s.id, {"quest_autocatpath_infra_retries": 0}
+                        )
+                        notes.append(
+                            f"stale-era autocatpath failure for [{handle}] → amnesty "
+                            "re-dispatch via seed/aggregate"
+                        )
             elif cp_job_meta.get("job_type") == "autocatpath_seed":
                 # The `_stuck_seed_failure` fallback — its own WINDOWED counter
                 # (`quest_seed_infra_retries`), deliberately not
@@ -3647,18 +3678,21 @@ def harvest_measures(
                 else:
                     sk_retries = _seed_infra_retry_count(store, s.id)
                     if sk_retries < _MAX_INFRA_RETRIES:
-                        dispatch_autocatpath(
+                        snote = dispatch_autocatpath(
                             store,
                             s.id,
                             reaction,
                             hub=hub,
                             tier=_retry_tier(store, cp_job_meta),
                         )
-                        _bump_seed_infra_retry_count(store, s.id)
-                        notes.append(
-                            f"stuck seed for [{handle}] → re-dispatched "
-                            f"(retry {sk_retries + 1})"
-                        )
+                        if is_no_live_lane(snote):
+                            _note_no_live_lane(notes, "stuck-seed re-dispatch", snote)
+                        else:
+                            _bump_seed_infra_retry_count(store, s.id)
+                            notes.append(
+                                f"stuck seed for [{handle}] → re-dispatched "
+                                f"(retry {sk_retries + 1})"
+                            )
                     elif sk_retries < _MAX_INFRA_RETRIES + 1:
                         _file_infra_gripe(
                             store,
@@ -3689,20 +3723,23 @@ def harvest_measures(
                         "(retry-eligible, not ruled out)"
                     )
                 elif cp_retries < _MAX_INFRA_RETRIES:
-                    dispatch_autocatpath(
+                    cnote = dispatch_autocatpath(
                         store,
                         s.id,
                         reaction,
                         hub=hub,
                         tier=_retry_tier(store, cp_job_meta),
                     )
-                    store.stamp_ref_meta(
-                        s.id, {"quest_autocatpath_infra_retries": cp_retries + 1}
-                    )
-                    notes.append(
-                        f"autocatpath infra failure for [{handle}] → re-dispatched "
-                        f"(retry {cp_retries + 1})"
-                    )
+                    if is_no_live_lane(cnote):
+                        _note_no_live_lane(notes, "autocatpath retry", cnote)
+                    else:
+                        store.stamp_ref_meta(
+                            s.id, {"quest_autocatpath_infra_retries": cp_retries + 1}
+                        )
+                        notes.append(
+                            f"autocatpath infra failure for [{handle}] → "
+                            f"re-dispatched (retry {cp_retries + 1})"
+                        )
                 elif cp_retries < _MAX_INFRA_RETRIES + 1:
                     _file_infra_gripe(
                         store,
@@ -4168,6 +4205,9 @@ def promote_tiers(
                 note = dispatch_autocatpath(
                     store, c.ref_id, reaction, hub=hub, tier=_TIER_NEB
                 )
+                if is_no_live_lane(note):
+                    _note_no_live_lane(notes, "screening→neb promotion", note)
+                    break  # every candidate would refuse the same way
                 promoted_ids.add(c.ref_id)
                 notes.append(f"promoted [{c.handle}] screening→neb: {note}")
 
@@ -4199,6 +4239,9 @@ def promote_tiers(
                 note = dispatch_autocatpath(
                     store, c.ref_id, reaction, hub=hub, tier=_TIER_VERIFY
                 )
+                if is_no_live_lane(note):
+                    _note_no_live_lane(notes, "neb→verify promotion", note)
+                    break
                 promoted_ids.add(c.ref_id)
                 notes.append(f"promoted [{c.handle}] neb→verify: {note}")
 
@@ -4246,6 +4289,9 @@ def promote_tiers(
                 note = dispatch_autocatpath(
                     store, c.ref_id, reaction, hub=hub, tier=tier
                 )
+                if is_no_live_lane(note):
+                    _note_no_live_lane(notes, "restale re-dispatch", note)
+                    break
                 if _find_tier_pathway(store, c.ref_id, tier) == before:
                     # Same content key (engine pin/config/geometry unchanged),
                     # or dispatch skipped: nothing new was minted, so this
@@ -4460,7 +4506,10 @@ def run_compute_step(
                 cnote = dispatch_autocatpath(
                     store, sid, reaction, hub=hub, tier=initial_tier
                 )
-                notes.append(cnote)
+                if is_no_live_lane(cnote):
+                    _note_no_live_lane(notes, "barrier dispatch", cnote)
+                else:
+                    notes.append(cnote)
                 if cnote.startswith("autocatpath["):
                     dispatched += 1
 

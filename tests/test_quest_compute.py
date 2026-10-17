@@ -58,6 +58,13 @@ def _fake_dispatch(payload: dict[str, Any]) -> Any:
     return _d
 
 
+#: What dispatch_autocatpath returns when every route node's ssh_node lane is
+#: retired (gr495691); built from the module's own marker so the two can't drift.
+_NO_LIVE_LANE_NOTE = (
+    f"autocatpath refused for st-x: {compute_mod._NO_LIVE_LANE} (node-a: "
+    "retired). next: other gpu hosts advertised in resource_slots: node-b"
+)
+
 _SPEC = {
     "cell": {"a": 8.4, "b": 8.4, "c": 24.0, "pbc": [True, True, False]},
     "ops": [{"op": "add_atom", "element": "Fe", "frac": [0.0, 0.0, 0.5]}],
@@ -1449,6 +1456,96 @@ class TestHarvest:
         step2 = compute_mod.harvest_measures(store, qid, hub=hub)
         assert step2.ruled_out == 0
         assert len(gripe_calls) == 1  # unchanged
+
+    @staticmethod
+    def _refuse_no_live_lane(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+        """Dispatch stub returning the gr495691 refusal (nothing minted)."""
+        calls: list[int] = []
+
+        def _fake(_s: Any, sid: int, _config: Any, **_kw: Any) -> str:
+            calls.append(sid)
+            return _NO_LIVE_LANE_NOTE
+
+        monkeypatch.setattr(compute_mod, "dispatch_autocatpath", _fake)
+        return calls
+
+    @staticmethod
+    def _gripe_spy(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+        gripes: list[dict[str, Any]] = []
+
+        class _FakeGripeHandler:
+            def __init__(self, *, hub: Any) -> None:
+                self.hub = hub
+
+            def put(self, *, text: str, tags: list[str] | None = None) -> None:
+                gripes.append({"text": text, "tags": tags})
+
+        monkeypatch.setattr("precis.handlers.gripe.GripeHandler", _FakeGripeHandler)
+        return gripes
+
+    def test_aggregate_retry_held_when_no_live_lane_counter_survives(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr495691: a refused re-dispatch minted nothing, so the infra-retry
+        counter neither bumps nor resets, no gripe is filed, and the refusal's
+        ``next:`` reaches the notes once. Repeated harvests loop on nothing."""
+        qid = self._reaction_quest(store)
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert sid is not None
+        # _MAX_INFRA_RETRIES is 1: counter 0 is the retry rung (1 = gripe rung).
+        store.stamp_ref_meta(sid, {"quest_autocatpath_infra_retries": 0})
+        self._failed_autocatpath_aggregate(store, sid)
+        calls = self._refuse_no_live_lane(monkeypatch)
+        gripes = self._gripe_spy(monkeypatch)
+        for _ in range(3):
+            step = compute_mod.harvest_measures(store, qid, hub=object())
+            meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+            assert meta.get("quest_autocatpath_infra_retries") == 0
+            held = [n for n in step.notes if "no live lane" in n]
+            assert len(held) == 1 and "next:" in held[0]
+            assert not any("→ re-dispatched" in n for n in step.notes)
+        assert len(calls) == 3  # one refused attempt per harvest, no more
+        assert gripes == []
+        assert not any(str(t).startswith("ruled-out:") for t in store.tags_for(sid))
+
+    def test_amnesty_held_when_no_live_lane_keeps_counter(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        qid = self._reaction_quest(store)
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.stamp_ref_meta(sid, {"quest_autocatpath_infra_retries": 2})
+        self._failed_autocatpath(store, sid)  # legacy explore job
+        self._refuse_no_live_lane(monkeypatch)
+        gripes = self._gripe_spy(monkeypatch)
+        step = compute_mod.harvest_measures(store, qid, hub=object())
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta.get("quest_autocatpath_infra_retries") == 2  # not reset to 0
+        assert any("no live lane" in n and "next:" in n for n in step.notes)
+        assert not any("amnesty re-dispatch via" in n for n in step.notes)
+        assert gripes == []
+
+    def test_stuck_seed_retry_held_when_no_live_lane_keeps_counter(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        qid = self._reaction_quest(store)
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert sid is not None
+        self._stuck_seed(store, sid)
+        self._refuse_no_live_lane(monkeypatch)
+        gripes = self._gripe_spy(monkeypatch)
+        for _ in range(3):
+            step = compute_mod.harvest_measures(store, qid, hub=object())
+            meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+            assert "quest_seed_infra_retries" not in meta  # never burned
+            assert any("no live lane" in n and "next:" in n for n in step.notes)
+        assert gripes == []
 
     def test_stale_explore_failure_amnesty_redispatches_and_resets_counter(
         self, store: Any, monkeypatch: pytest.MonkeyPatch
@@ -6634,6 +6731,7 @@ class TestDispatchAutocatpath:
         sid = self._candidate(store, qid)
         note = compute_mod.dispatch_autocatpath(store, sid, self._RX)
         assert note.startswith("autocatpath refused")
+        assert compute_mod.is_no_live_lane(note)  # the callers' real marker
         assert retired in note
         assert compute_mod._AUTOCATPATH_ROUTE_NODE_ENV in note
         assert self._seed_jobs(store, sid) == []
@@ -6811,6 +6909,33 @@ class TestReactionCoDispatch:
         assert autocatpath_calls[0][0] == relax_calls[0]
         assert autocatpath_calls[0][1] == self._RX
         assert step.sims_dispatched == 2  # relax + autocatpath
+
+    def test_tick_notes_no_live_lane_refusal_once(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """gr495691: the tick surfaces the refusal (with its ``next:``) once,
+        however many proposals it carried, and counts no barrier dispatch."""
+        self._stub_both(monkeypatch)
+        monkeypatch.setattr(
+            compute_mod,
+            "dispatch_autocatpath",
+            lambda *_a, **_k: _NO_LIVE_LANE_NOTE,
+        )
+        qid = _mk_quest(store, "Lowest-barrier Pd catalyst for NO→NH₃")
+        store.stamp_ref_meta(qid, {"reaction_config": self._RX})
+        spec2 = {
+            **_SPEC,
+            "ops": [{"op": "add_atom", "element": "Pd", "frac": [0, 0, 0.3]}],
+        }
+        step = compute_mod.run_compute_step(
+            store,
+            qid,
+            [{"name": "Pd", "structure": _SPEC}, {"name": "Pd2", "structure": spec2}],
+        )
+        held = [n for n in step.notes if "no live lane" in n]
+        assert len(held) == 1 and "next:" in held[0]
+        assert not any(n.startswith("autocatpath refused") for n in step.notes)
+        assert step.sims_dispatched == step.candidates_created  # relax only
 
     def test_ladder_on_quest_dispatches_screening_tier_first(
         self, store: Any, monkeypatch: Any
@@ -7320,6 +7445,48 @@ class TestTierPromotion:
         store.stamp_ref_meta(qid, {"fidelity_levels": True})  # no reaction_config
         assert compute_mod.promote_tiers(store, qid) == []
         assert calls == []
+
+    def test_promotion_stops_quietly_when_no_live_lane(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """gr495691: a refused promotion is not a promotion: one note with the
+        ``next:``, the loop stops (no per-candidate spam), nothing counted."""
+        calls: list[int] = []
+
+        def _refuse(_store: Any, sid: int, _cfg: dict, **_kw: Any) -> str:
+            calls.append(sid)
+            return _NO_LIVE_LANE_NOTE
+
+        monkeypatch.setattr(compute_mod, "dispatch_autocatpath", _refuse)
+        qid = self._quest(store, fidelity_promote_neb=3, fidelity_promote_verify=0)
+        store.stamp_ref_meta(
+            qid, {"rubric_objectives": [{"key": "U_L_abs", "sense": "min"}]}
+        )
+        for i, name in enumerate(("a", "bb", "ccc")):
+            self._screening_candidate(store, qid, name, 0.1 * i)
+        notes = compute_mod.promote_tiers(store, qid)
+        assert len(calls) == 1
+        assert len(notes) == 1
+        assert "no live lane" in notes[0] and "next:" in notes[0]
+        assert not any("promoted [" in n for n in notes)
+
+    def test_restale_stops_quietly_when_no_live_lane(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        calls: list[int] = []
+
+        def _refuse(_store: Any, sid: int, _cfg: dict, **_kw: Any) -> str:
+            calls.append(sid)
+            return _NO_LIVE_LANE_NOTE
+
+        monkeypatch.setattr(compute_mod, "dispatch_autocatpath", _refuse)
+        qid = self._restale_quest(store, fidelity_restale_cap=5)
+        self._stale_candidate(store, qid, "bb", 0.0, basis=self._NEW)
+        self._stale_candidate(store, qid, "a", 0.1)
+        self._stale_candidate(store, qid, "ccc", 0.2)
+        notes = compute_mod.promote_tiers(store, qid)
+        assert len(calls) == 1
+        assert len(notes) == 1 and "no live lane" in notes[0]
 
     def test_promotes_up_to_cap_ranked_best_first(
         self, store: Any, monkeypatch: Any

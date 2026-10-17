@@ -123,6 +123,7 @@ from precis.quest.compute import (
     _candidate_struct_ids,
     _quest_reaction_config,
     dispatch_autocatpath,
+    is_no_live_lane,
 )
 from precis.quest.tick import quest_loop_enabled
 from precis.utils.env import env_int
@@ -973,6 +974,7 @@ def _reconcile_orphaned_pathways(
     """
     reaction = _quest_reaction_config(store, quest_id)
     failed = redispatched = 0
+    lane_held = False
     for sid in _candidate_struct_ids(store, quest_id):
         try:
             with store.pool.connection() as conn:
@@ -1018,11 +1020,29 @@ def _reconcile_orphaned_pathways(
                         pathway_id,
                     )
             elif state == "wrongful_kill":
-                if redispatched >= _MAX_PATHWAY_REDISPATCH_PER_PASS or reaction is None:
+                if (
+                    redispatched >= _MAX_PATHWAY_REDISPATCH_PER_PASS
+                    or reaction is None
+                    or lane_held
+                ):
                     continue
                 try:
                     tier = pmeta.get("tier") or _TIER_NEB
-                    dispatch_autocatpath(store, sid, reaction, hub=hub, tier=tier)
+                    dnote = dispatch_autocatpath(
+                        store, sid, reaction, hub=hub, tier=tier
+                    )
+                    if is_no_live_lane(dnote):
+                        # Nothing minted and nothing to count: one log line
+                        # per pass; later pathways still get their failed
+                        # stamp, but no further re-dispatch is tried.
+                        if not lane_held:
+                            log.info(
+                                "reconcile_quest_loops: quest %s re-dispatch held: %s",
+                                quest_id,
+                                dnote,
+                            )
+                        lane_held = True
+                        continue
                     redispatched += 1
                     log.info(
                         "reconcile_quest_loops: pathway %d (quest %s, "

@@ -1393,6 +1393,34 @@ class TestReconcileOrphanedPathways(_PathwayTreeMixin):
         # harvest) owns moving it forward, not the orphan sweep itself.
         assert _pathway_meta(store, pw)["status"] == "computing"
 
+    def test_wrongful_kill_held_when_no_live_lane(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        """gr495691: a refused re-dispatch is not counted as one, and the quest's
+        other wrongful kills are not retried this pass (refused once)."""
+        q = _mk_quest(store, "A striving")
+        store.update_ref(q, meta_patch={"reaction_config": {"substrate": "NO"}})
+        calls: list[int] = []
+
+        def _refuse(_store: Any, sid: int, *_a: Any, **_kw: Any) -> str:
+            calls.append(sid)
+            return (
+                f"autocatpath refused for st-x: {compute_mod._NO_LIVE_LANE} "
+                "(node-a: retired). next: node-b"
+            )
+
+        monkeypatch.setattr(loop_mod, "dispatch_autocatpath", _refuse)
+        for _ in range(2):
+            sid = self._candidate(store, q)
+            pw = self._pathway(store, sid)
+            agg = self._agg_todo(store, sid, pw)
+            self._seed(store, agg, pathway_id=pw, job_statuses=["cancelled"])
+
+        failed, redispatched = loop_mod._reconcile_orphaned_pathways(store, q, hub=None)
+
+        assert (failed, redispatched) == (0, 0)
+        assert len(calls) == 1
+
     def test_wrongful_kill_skipped_without_reaction_config(
         self, store: Store, monkeypatch: Any
     ) -> None:
