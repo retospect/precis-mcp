@@ -100,6 +100,9 @@ Code: workers `src/precis/workers/`, ingest `src/precis/ingest/`, web UI
   with `scripts/inflight --json`. → `docs/conventions/container-ops.md`
 - Text IO names `encoding="utf-8"` (ruff PLW1514 + AST-walk test; also
   `subprocess(..., text=True)`).
+- MCP handler errors: a call does what its ack says or refuses with a next
+  step; raises carry `next=`/`options=` (ratchet-pinned), library faults map
+  to Upstream with a retry hint. → `docs/conventions/mcp-authoring.md`
 - **Timestamps are UTC, labelled `Z`/`UTC`** — `date -u`, `datetime.now(UTC)`,
   never `date.today()`/`utcnow()` (`date +%s` is fine). →
   `docs/conventions/time.md`
