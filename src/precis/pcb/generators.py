@@ -94,21 +94,22 @@ whose 14 ``via_pad_keepout`` errors were all knowable before the router
 started. Reto's ruling: placement is the placer's job, and a lock is the
 exception for a part whose pose is a MECHANICAL constraint (nuts, screw
 holes, alignment pins, connectors). Sinks now emit no lock by default;
-:attr:`_SinkGrid.fixed` restores one per call. The centroid survives as
-the annealer's SEED, so the escape-locality argument still shapes the
-starting point — it just no longer overrides the search.
+:attr:`_SinkGrid.fixed` restores one per call. From version 3 to 9 the
+centroid survived as the annealer's SEED, so the escape-locality argument
+still shaped the starting point without overriding the search; version 10
+below moved that seed onto the vias.
 
 **Version 10 (2026-10-17, gr481705) — the seed centres on the vias.** The
 electrode centroid is not the via field's centre: the 3x3 plaza lattice
 (rows/cols 1, 4, 7 of an 8x8 field) shifts the via field's centre toward
 the high side (0.76 mm per axis on ``ewod-dogfood-6``, pitch 2.25 mm,
-seed 0.94 mm off it), so the centroid seed put one
-pad row of the 80-QFP sink across the outer via column (14
-``invariant:no_via_in_pad`` hits on a fresh or ``regenerate`` put). The
-seed is now the midpoint of the share's via bounding box: a centrally
-symmetric footprint whose pad ring encloses the via field gets equal
-margin on opposite sides, which is the best a part-agnostic expansion can
-do. The put-time legaliser still judges it against the real lands.
+seed 0.94 mm off it), so the centroid seed put one pad row of the 80-QFP
+sink across the outer via column (14 ``invariant:no_via_in_pad`` hits on
+a fresh or ``regenerate`` put). The seed is now the midpoint of the
+share's via bounding box: a centrally symmetric footprint whose pad ring
+encloses the via field gets equal margin on opposite sides, which is the
+best a part-agnostic expansion can do. The put-time legaliser still
+judges it against the real lands.
 
 The ARRAY instance keeps ``fixed='both'``, and that asymmetry is
 deliberate: its authored plaza copper is emitted into ``pcb_fixed_copper``
@@ -1966,8 +1967,8 @@ class _SinkGrid:
     #: placer's job and a lock is the exception, reserved for a part
     #: whose pose is a MECHANICAL constraint (a nut, a screw hole, an
     #: alignment pin, a board-edge connector) rather than a routing
-    #: preference. A sink's emitted ``x``/``y`` -- the centroid of its
-    #: own share of electrodes -- is a seed either way.
+    #: preference. A sink's emitted ``x``/``y`` -- the centre of its own
+    #: share's plaza-via bounding box (version 10) -- is a seed either way.
     fixed: str | None
 
 
@@ -2764,8 +2765,8 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
                 # should always be done with the placer. Sometimes we keep
                 # a thing fixed -- nuts, screw holes, alignment pins,
                 # connectors -- but most of it should move"). The via-box
-                # centre above still expresses the escape-locality argument the
-                # spec's own "regular grid of HV switches directly under
+                # centre above still expresses the escape-locality argument
+                # the spec's own "regular grid of HV switches directly under
                 # the array" language makes, but as a STARTING POINT the
                 # annealer may leave, not a position it is forbidden to
                 # improve on. `fixed='both'` stood here until version 3
