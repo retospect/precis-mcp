@@ -1,8 +1,10 @@
 ---
-status: ready
+status: draft
 pillar: platform
 prio: high
 ---
+
+Status 2026-10-17: only gr451356 is left, blocked on Reto's ruling for where mating direction comes from (feaf147d0).
 
 # Stranded fix_gripe branches — what is left after the 2026-10-01 landing
 

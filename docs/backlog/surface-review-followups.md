@@ -1,9 +1,11 @@
 ---
-status: ready
+status: in-progress
 title: surface-review follow-ups — resume pointer for pass #1's findings
 pillar: platform
 prio: high
 ---
+
+Status 2026-10-17: every pass-1 item shipped. This file now points at the OVERDUE surface-review pass #2 (was due 2026-10-13); run it and record its findings here.
 
 # surface-review pass #1 — what's left, in order
 

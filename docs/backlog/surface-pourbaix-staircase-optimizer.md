@@ -1,10 +1,12 @@
 ---
-status: ready
+status: in-progress
 title: a surface-Pourbaix validity map and linked reaction staircase drive slab search by where and why each candidate's operating window is lost
 pillar: 3d-design
 prio: high
 owner: catalysis session
 ---
+
+Status 2026-10-17: slices 1-7 shipped; slice 8 (Fe-doped Pd end to end) needs its own ready spec. Reto decides: the Nov-2026 paper-date collision under qu459585.
 
 # Surface-Pourbaix validity map + reaction staircase as a catalyst optimizer
 

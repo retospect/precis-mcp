@@ -1,7 +1,9 @@
 ---
-status: ready
+status: in-progress
 pillar: platform
 ---
+
+OPS-ONLY (2026-10-17): Reto runs these rotations by hand; never auto-pick this for a builder. All four rotations are still owed and the credentials are leaked, so it's urgent. The agent_rw rotation needs a parked-planner pause window.
 
 # Rotate agent_rw, OPENROUTER_API_KEY, Claude OAuth token, anki password
 

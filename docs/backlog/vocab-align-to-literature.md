@@ -1,7 +1,9 @@
 ---
-status: ready
+status: in-progress
 pillar: memory-graph
 ---
+
+Status 2026-10-17: compound→composite and the tier-1 glosses shipped; the remaining renames (rung tiers, brick→SBU, CiTO, envelope, tier-3 names) are independent and want one spec each. Reto decides: the CiTO go-ahead and the tier-3 names.
 
 # Align coined vocabulary to literature standard
 

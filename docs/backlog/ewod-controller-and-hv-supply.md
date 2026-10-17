@@ -1,9 +1,11 @@
 ---
-status: ready
+status: in-progress
 pillar: 3d-design
 title: EWOD dogfood board — Arduino Pro Mini controller, USB-C power + programming, on-board 250 V flyback supply from the 5 V rail (rulings 12–22) + two prod-review defects
 prio: high
 ---
+
+Status 2026-10-17: slices 1-4 shipped; slices 5-6 wait on footprint intake after r44; slice 7 follows 5-6.
 
 # EWOD dogfood board — controller, USB-C power, on-board 250 V supply (rulings 12–22) + two prod-review defects
 

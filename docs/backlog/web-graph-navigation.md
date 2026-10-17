@@ -1,9 +1,11 @@
 ---
-status: ready
+status: canonical
 title: web graph navigation — neighbourhood panel, graph focus page, paths, trail
 pillar: memory-graph
 prio: normal
 ---
+
+Status 2026-10-17: slices 1-9 and 8b shipped; left is a hand check of the j/k keyboard handler on prod.
 
 # Web graph navigation — how a human walks the graph
 

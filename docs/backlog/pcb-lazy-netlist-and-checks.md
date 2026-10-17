@@ -1,10 +1,12 @@
 ---
-status: ready
+status: in-progress
 title: pcb — lazy netlist (supply/client roles, matching solver), one check surface (DRC+ERC), and fabric defects folded in as slices
 prio: high
 model: opus
 pillar: 3d-design
 ---
+
+Status 2026-10-17: slices 1, 2, 5, 6, 8 and the slice-7 channel map shipped; slice 7's pcb_netlist_snapshots migration (0221) waits on the release owner's /go.
 
 # pcb — lazy netlist, one check surface, fabric defects
 
