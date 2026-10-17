@@ -73,6 +73,27 @@ def test_url_query_value_still_scanned() -> None:
     assert [h.kind for h in hits] == ["high-entropy token"]
 
 
+def test_filesystem_path_segment_not_masked() -> None:
+    # macOS temp dirs: a random 28-char segment inside a long path.
+    path = "/private/var/folders/zz/aB3dE5gH7jK9mN1pQ3sT5vX7yZ0/T/pytest-of-u/x.py"
+    assert find_secrets(path) == []
+    assert mask_secrets(f"watching {path}", warn=False) == f"watching {path}"
+
+
+def test_real_token_still_masked_next_to_a_path() -> None:
+    tok = _B
+    assert [h.kind for h in find_secrets(f"/tmp/x {tok}")] == ["high-entropy token"]
+    assert [h.kind for h in find_secrets(f"key={tok}")] == ["high-entropy token"]
+    assert "high-entropy token" in mask_secrets(f"/tmp/x {tok}", warn=False)
+
+
+def test_slash_leading_base64_and_attached_token_still_masked() -> None:
+    b64 = "/" + _B[:10] + "/" + _B[10:] + "+"
+    assert [h.kind for h in find_secrets(b64)] == ["high-entropy token"]
+    tok = _B
+    assert [h.kind for h in find_secrets(f"/a/b/{tok}")] == ["high-entropy token"]
+
+
 def test_excerpt_is_masked() -> None:
     (f,) = find_secrets("tok " + "gh" + "p_" + _B)
     assert f.excerpt_masked == "ghp_…"

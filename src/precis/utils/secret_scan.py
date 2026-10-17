@@ -141,6 +141,14 @@ def _password_literal(value: str) -> bool:
 
 
 def _generic_candidate(tok: str) -> bool:
+    segs = [p for p in tok.split("/") if p]
+    if tok.startswith("/") and "+" not in tok and len(segs) >= 3 and segs[0].isalpha():
+        # Filesystem path (``/private/var/folders/<random>/T/...``): ``/`` is
+        # in the token charset, so a macOS temp dir reads as one long
+        # high-entropy run. Judge each segment alone; a real token needs 32+
+        # characters between slashes. Base64 (``+``, few or odd-rooted
+        # segments) is still judged whole.
+        return any(len(seg) >= 32 and _generic_candidate(seg) for seg in segs)
     if _UUID.match(tok) or _HEX.match(tok):  # git sha, uuid, sha256/md5 digest
         return False
     if not (

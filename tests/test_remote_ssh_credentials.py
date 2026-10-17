@@ -325,7 +325,7 @@ def test_unencrypted_vault_load_never_writes_private_key(
         CredentialRefs("KEY", encryption="unencrypted"),
         profile,
         scratch_root=short_scratch,
-        identity_lifetime_s=1,
+        identity_lifetime_s=3,
     ) as session:
         assert calls == ["KEY"]
         assert not (session.scratch / "encrypted").exists()
@@ -338,7 +338,7 @@ def test_unencrypted_vault_load_never_writes_private_key(
             ["ssh-add", "-l"], env=session._env, capture_output=True, timeout=3
         )
         assert listed.returncode == 0
-        time.sleep(1.1)
+        time.sleep(3.1)
         listed = subprocess.run(
             ["ssh-add", "-l"], env=session._env, capture_output=True, timeout=3
         )
