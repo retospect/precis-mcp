@@ -884,24 +884,33 @@ def test_pourbaix_quest_page_query_count_is_flat_in_surfaces(
     assert counts[0] < 80, counts
 
 
-def test_pourbaix_quest_page_cold_render_bound(runtime_with_store, tmp_path) -> None:
-    """A fresh app's first render of a 239-surface quest stays well under
-    the pre-gr488208 cost (0.86 s locally, 3.4 s at 1 ms per query).
-    Generous: it catches an N+1 regression, it is not a benchmark."""
-    import time
-
+def test_pourbaix_quest_page_cold_render_bound(
+    runtime_with_store, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fresh app's first render of a 239-surface quest issues a bounded
+    number of SQL statements. This was a 5 s wall bound; wall time flaked on
+    loaded runners (gr493799), so it counts statements instead: the pre-
+    gr488208 render issued ~4 per candidate (1,017 here), the batched one a
+    few dozen regardless of surface count."""
     qid, _ = _many_surface_quest(runtime_with_store, 239)
     client = TestClient(
         create_app(
             runtime=runtime_with_store, web_config=WebConfig(corpus_dir=tmp_path)
         )
     )
+    import time
+
+    counter = _QueryCounter(monkeypatch)
     t0 = time.perf_counter()
     r = client.get(f"/pourbaix/qu{qid}")
     elapsed = time.perf_counter() - t0
+    monkeypatch.undo()
     assert r.status_code == 200
     assert r.text.count('class="pbx-entry') == 1
-    assert elapsed < 5.0, f"cold render took {elapsed:.2f}s"
+    assert counter.n < 150, counter.n
+    # Secondary sanity floor, 3x the old 5 s bound: the count above is the
+    # regression guard; this only catches a gross slowdown it cannot see.
+    assert elapsed < 15.0, f"cold render took {elapsed:.2f}s"
 
 
 def test_pourbaix_quest_page_batched_equals_per_structure(

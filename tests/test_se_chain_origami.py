@@ -8,7 +8,9 @@ pins:
 - ``layout_chain`` under 2 s, and its children's ``[start, end]`` unit
   ranges **tiling each helix exactly** — the seam
   ``se-nucleic-realize-export`` reads;
-- ``view='drc'`` under 5 s with no ``overlap_budget_exceeded``;
+- ``view='drc'`` with no ``overlap_budget_exceeded`` and no segment pair
+  reaching the kernel (the count is the guard; a loose 15 s wall bound is
+  secondary: gr493799);
 - **zero** ``precis_se.validate.cad_relate.clearance`` calls where both
   names are segments — the wholesale segment↔segment exclusion, measured by
   monkeypatching the kernel entry point rather than inferred from a timing.
@@ -302,7 +304,18 @@ def test_drc_view_is_fast_and_never_clears_two_segments(
     started = time.perf_counter()
     drc_body = handler.get(id="rect", view="drc").body
     drc_elapsed = time.perf_counter() - started
-    assert drc_elapsed < 5.0, f"view='drc' took {drc_elapsed:.2f} s"
+    # Secondary sanity floor, 3x the old 5 s bound; the pair count below is
+    # the regression guard (gr493799).
+    assert drc_elapsed < 15.0, f"view='drc' took {drc_elapsed:.2f} s"
+    # Load-independent stand-in for the old ``< 5 s`` wall bound (gr493799):
+    # the DRC view is slow exactly when segment<->segment pairs reach the
+    # kernel clearance query (18,336 candidates), so assert none did.
+    tree = persist.load_tree(store, _ref_id(store, "rect"))
+    segments = {
+        name for name, node in tree.blocks.items() if chain_role(node) == SEGMENT_ROLE
+    }
+    drc_segment_pairs = [(a, b) for a, b in calls if a in segments and b in segments]
+    assert drc_segment_pairs == [], drc_segment_pairs[:5]
     assert "overlap_budget_exceeded" not in drc_body
     # A correct origami on lattice spacing reports nothing actionable: the
     # header counts errors and warnings, and both are zero (the design's
@@ -326,10 +339,6 @@ def test_drc_view_is_fast_and_never_clears_two_segments(
     # 192 segments × 2 ports would otherwise be 384 rows of noise.
     assert "unconnected_port" not in validate_body
 
-    tree = persist.load_tree(store, _ref_id(store, "rect"))
-    segments = {
-        name for name, node in tree.blocks.items() if chain_role(node) == SEGMENT_ROLE
-    }
     assert len(segments) == 192
     segment_pairs = [(a, b) for a, b in calls if a in segments and b in segments]
     assert segment_pairs == [], segment_pairs[:5]
