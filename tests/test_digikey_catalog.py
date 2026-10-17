@@ -396,13 +396,18 @@ def _unavailable(*_a, **_k):
 
 @pytest.mark.parametrize("status", [500, 403])
 def test_ladder_parametric_non_400_reraises(adapter, monkeypatch, status):
+    monkeypatch.setattr("precis.utils.http._default_sleep", lambda _s: None)
+
     def respond(body):
         if "ParameterFilterRequest" in body.get("FilterOptionsRequest", {}):
             return httpx.Response(status, json={"detail": "boom"})
         return httpx.Response(200, json={"Products": [_product("SCREW (M4X12)")]})
 
     result, bodies = _ladder_quote(adapter, monkeypatch, respond)
-    assert len(bodies) == 1  # no keyword rung attempted
+    # No keyword rung attempted: only the parametric request, re-sent once by
+    # the politeness core for a 5xx (a 403 is fatal, sent once).
+    assert len(bodies) == (2 if status == 500 else 1)
+    assert all("ParameterFilterRequest" in b["FilterOptionsRequest"] for b in bodies)
     assert result.quotes == []
     assert f"HTTP {status} at search" in result.outcomes[0].error
 

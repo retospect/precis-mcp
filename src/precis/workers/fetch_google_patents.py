@@ -62,7 +62,6 @@ log = logging.getLogger(__name__)
 
 
 _GP_BASE_URL: str = "https://patents.google.com/patent"
-_USER_AGENT: str = "precis-mcp/1.0 (+patents.google.com fallback)"
 
 #: Per-pass cap. The worker idle-sleeps when nothing is due, so a low
 #: cap keeps the wall-clock per cycle bounded without leaving work
@@ -380,7 +379,10 @@ class GpFetchOutcome:
     """One patent's outcome from a Google Patents fetch."""
 
     slug: str
-    status: str  # 'fetched' | 'not-found' | 'parse-error' | 'http-error' | 'skipped'
+    #: 'fetched' | 'not-found' | 'parse-error' | 'http-error' | 'skipped' |
+    #: 'deferred' (our own breaker/limiter cooldown: nothing recorded, the
+    #: patent is re-queued for the next pass with its retry counter intact)
+    status: str
     blocks_added: int = 0
     error: str | None = None
     bytes_fetched: int = 0
@@ -397,24 +399,58 @@ def _build_url(cite_key: str) -> str:
     return f"{_GP_BASE_URL}/{cite_key.upper()}/en"
 
 
+#: ``VendorUnavailable`` messages that mean *our* cooldown (breaker already
+#: open at entry, or the shared limiter refusing a retry), not a failure of
+#: this fetch. ``circuit opened after`` (this call tripped it) is a real one.
+_OWN_COOLDOWN_MARKERS: tuple[str, ...] = (
+    "circuit open (",
+    "refused, cooling down",
+    "limiter refused",
+)
+
+
+def _is_own_cooldown(exc: Exception) -> bool:
+    text = str(exc)
+    return any(m in text for m in _OWN_COOLDOWN_MARKERS)
+
+
 def _fetch_one(slug: str) -> tuple[str, str | None, int]:
     """Fetch the HTML for ``slug``. Returns (status, html_or_None, byte_count).
 
-    status is one of: 'ok' / 'not-found' / 'http-error'. We don't surface
+    status is one of: 'ok' / 'not-found' / 'http-error' / 'deferred'. We don't surface
     the raw HTTP code — callers want the outcome bucket.
     """
     import httpx
 
-    from precis.utils.http import http_client
+    from precis.utils.http import (
+        VendorError,
+        VendorUnavailable,
+        http_client,
+        polite_user_agent,
+        with_backoff,
+    )
+    from precis.utils.rate_limit import RateLimited
     from precis.utils.safe_fetch import safe_get
 
     url = _build_url(slug)
-    headers = {"User-Agent": _USER_AGENT, "Accept": "text/html"}
+    headers = {"User-Agent": polite_user_agent(), "Accept": "text/html"}
     try:
         with http_client(timeout=30.0, headers=headers, user_agent=None) as client:
-            resp = safe_get(client, url)
+            # Politeness core: limiter token per attempt, jittered backoff on
+            # 429/5xx + Retry-After, breaker. A 404 comes back as a response;
+            # an exhausted 429 raises and is an http-error (retried later by
+            # the patent-level schedule), never "not-found".
+            resp = with_backoff(lambda: safe_get(client, url), service="google-patents")
     except httpx.HTTPError as exc:
         return "http-error", f"transport: {exc}", 0
+    except RateLimited as exc:
+        return "deferred", f"limiter: {exc}", 0
+    except VendorUnavailable as exc:
+        if _is_own_cooldown(exc):
+            return "deferred", f"cooldown: {exc}", 0
+        return "http-error", f"upstream: {exc}", 0
+    except VendorError as exc:
+        return "http-error", f"upstream: {exc}", 0
 
     if resp.status_code == 404:
         return "not-found", None, len(resp.content)
@@ -582,6 +618,16 @@ def _fetch_and_ingest(
         )
         log.info(
             "fetch_google_patents[%s]: 404 on patents.google.com", candidate.cite_key
+        )
+        return outcome
+
+    if status == "deferred":
+        # Our own cooldown: leave gp_retry_count / gp_retry_at untouched so
+        # the patent is simply claimed again on a later pass.
+        outcome.status = "deferred"
+        outcome.error = html_or_err
+        log.info(
+            "fetch_google_patents[%s]: deferred (%s)", candidate.cite_key, html_or_err
         )
         return outcome
 
@@ -766,6 +812,8 @@ def run_gp_fetch_pass(
             continue
         if outcome.status in ("fetched", "not-found", "skipped"):
             ok += 1
+        elif outcome.status == "deferred":
+            continue  # neither done nor failed; re-queued untouched
         else:
             failed += 1
 

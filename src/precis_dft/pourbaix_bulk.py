@@ -141,15 +141,23 @@ ION_REFERENCE_URL = "https://contribs-api.materialsproject.org/contributions/"
 ION_REFERENCE_FIELDS = "identifier,formula,data"
 
 
-def fetch_ion_reference_data(api_key: str) -> list[dict[str, Any]]:
+def fetch_ion_reference_data(
+    api_key: str, *, user_agent: str | None = None
+) -> list[dict[str, Any]]:
     """Fetch MP's ion_ref_data project over its supported Contribs REST API.
 
     This is the exact endpoint and field selection used by mp-api's
     ``MPRester.get_ion_reference_data``; using httpx avoids importing its
     optional MPContribs client (whose transitive Pint bounds conflict with
     the ``[estimate]`` extra). Results are paginated and schema-checked.
+    ``user_agent`` (the caller's honest polite UA; this subtree imports
+    nothing from ``precis``) is sent when given.
     """
     import httpx
+
+    headers = {"x-api-key": api_key}
+    if user_agent:
+        headers["User-Agent"] = user_agent
 
     records: list[dict[str, Any]] = []
     total_pages: int | None = None
@@ -162,7 +170,7 @@ def fetch_ion_reference_data(api_key: str) -> list[dict[str, Any]]:
                 "_fields": ION_REFERENCE_FIELDS,
                 "page": page,
             },
-            headers={"x-api-key": api_key},
+            headers=headers,
             timeout=30.0,
         )
         response.raise_for_status()
@@ -677,12 +685,15 @@ def render_text(result: Mapping[str, Any]) -> str:
 # ── MP fetch + compact serialisation ──────────────────────────────────
 
 
-def fetch_entries(api_key: str, chemsys_str: str) -> list[Any]:
+def fetch_entries(
+    api_key: str, chemsys_str: str, *, user_agent: str | None = None
+) -> list[Any]:
     """Pourbaix entries for one chemsys from the Materials Project — one
-    ``get_pourbaix_entries`` call (MP adds O and H itself)."""
+    ``get_pourbaix_entries`` call (MP adds O and H itself). ``user_agent``
+    applies to the ion-reference REST fetch only; mp-api sets its own."""
     from mp_api.client import MPRester
 
-    ion_reference_data = fetch_ion_reference_data(api_key)
+    ion_reference_data = fetch_ion_reference_data(api_key, user_agent=user_agent)
 
     class _MPResterWithIonReferenceData(MPRester):
         """Use the supported REST-fetched references in the mp-api workflow."""

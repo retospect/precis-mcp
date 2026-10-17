@@ -16,8 +16,9 @@ from typing import Any
 import httpx
 
 from precis.secrets import get_secret
-from precis.supply._http import protect_request_logs
+from precis.supply._http import polite_send, protect_request_logs
 from precis.supply.base import StockQuote, SupplierError, now
+from precis.utils.http import polite_user_agent
 
 _URL = "https://api.element14.com/catalog/products"
 _STORES = {"ie.farnell.com": "IE", "uk.farnell.com": "GB", "de.farnell.com": "DE"}
@@ -48,19 +49,25 @@ class FarnellAdapter:
         self, designation: str, *, limit: int, group: str
     ) -> list[dict[str, Any]]:
         protect_request_logs()
-        response = httpx.get(
-            _URL,
-            params={
-                "versionNumber": "1.4",
-                "term": "any:" + designation,
-                "storeInfo.id": self.store,
-                "resultsSettings.offset": 0,
-                "resultsSettings.numberOfResults": min(max(limit, 1), 50),
-                "resultsSettings.responseGroup": group,
-                "callInfo.responseDataFormat": "json",
-                "callInfo.apiKey": get_secret("PRECIS_FARNELL_API_KEY"),
-            },
-            timeout=3,
+        params: dict[str, Any] = {
+            "versionNumber": "1.4",
+            "term": "any:" + designation,
+            "storeInfo.id": self.store,
+            "resultsSettings.offset": 0,
+            "resultsSettings.numberOfResults": min(max(limit, 1), 50),
+            "resultsSettings.responseGroup": group,
+            "callInfo.responseDataFormat": "json",
+            "callInfo.apiKey": get_secret("PRECIS_FARNELL_API_KEY"),
+        }
+        response = polite_send(
+            lambda: httpx.get(
+                _URL,
+                params=params,
+                headers={"User-Agent": polite_user_agent()},
+                timeout=3,
+            ),
+            service="farnell",
+            stage="search",
         )
         if response.is_error:
             raise SupplierError("search", response.status_code)

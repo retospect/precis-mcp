@@ -22,11 +22,15 @@ log = logging.getLogger(__name__)
 class SupplierError(RuntimeError):
     """Safe adapter diagnostic; never includes request or credential data."""
 
-    def __init__(self, stage: str, status: int, detail: str = "") -> None:
+    def __init__(
+        self, stage: str, status: int | None, detail: str = "", *, reason: str = ""
+    ) -> None:
         self.stage = stage
+        #: ``None`` when there was no HTTP answer (transport error, breaker
+        #: open); ``reason`` then carries the message.
         self.status = status
         self.detail = detail
-        super().__init__(f"HTTP {status} at {stage}")
+        super().__init__(reason or f"HTTP {status} at {stage}")
 
 
 @dataclass(frozen=True)

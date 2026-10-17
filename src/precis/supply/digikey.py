@@ -39,8 +39,10 @@ from typing import Any
 import httpx
 
 from precis.secrets import get_secret
+from precis.supply._http import polite_send
 from precis.supply.base import StockQuote, SupplierError, now
 from precis.supply.catalog import metric_parameters, validate_filters
+from precis.utils.http import polite_user_agent
 
 _TOKEN_URL = "https://api.digikey.com/v1/oauth2/token"
 _SEARCH_URL = "https://api.digikey.com/products/v4/search/keyword"
@@ -142,14 +144,21 @@ class DigiKeyAdapter:
             if self._token and time.monotonic() < self._expires_at:
                 return self._token
             client_id, secret = self._credentials()
-            response = httpx.post(
-                _TOKEN_URL,
-                data={
-                    "client_id": client_id,
-                    "client_secret": secret,
-                    "grant_type": "client_credentials",
-                },
-                timeout=_TIMEOUT_S,
+            # Client-credentials grant: idempotent, retry-safe.
+            response = polite_send(
+                lambda: httpx.post(
+                    _TOKEN_URL,
+                    data={
+                        "client_id": client_id,
+                        "client_secret": secret,
+                        "grant_type": "client_credentials",
+                    },
+                    headers={"User-Agent": polite_user_agent()},
+                    timeout=_TIMEOUT_S,
+                ),
+                service="digikey",
+                stage="token",
+                detail=lambda r: self._detail(r, "token"),
             )
             self._check_status(response, "token")
             payload = response.json()
@@ -164,6 +173,7 @@ class DigiKeyAdapter:
     def _headers(self, *, currency: str | None = None) -> dict[str, str]:
         client_id, _ = self._credentials()
         return {
+            "User-Agent": polite_user_agent(),
             "Authorization": f"Bearer {self._access_token()}",
             "X-DIGIKEY-Client-Id": client_id or "",
             "X-DIGIKEY-Locale-Site": self.site,
@@ -175,7 +185,13 @@ class DigiKeyAdapter:
         """Uncached category list/detail, with its retrieval UTC stamp."""
         validate_filters(category_id, None)
         url = _CATEGORIES_URL + (f"/{category_id}" if category_id is not None else "")
-        response = httpx.get(url, headers=self._headers(), timeout=_TIMEOUT_S)
+        headers = self._headers()
+        response = polite_send(
+            lambda: httpx.get(url, headers=headers, timeout=_TIMEOUT_S),
+            service="digikey",
+            stage="categories",
+            detail=lambda r: self._detail(r, "categories"),
+        )
         self._check_status(response, "categories")
         payload = response.json()
         entries = (
@@ -220,13 +236,20 @@ class DigiKeyAdapter:
             else:
                 filters["CategoryFilter"] = [{"Id": str(category_id)}]
             body["FilterOptionsRequest"] = filters
-        response = httpx.post(
-            _SEARCH_URL,
-            json=body,
-            headers=self._headers(currency=currency),
-            timeout=_PARAMETRIC_TIMEOUT_S
+        headers = self._headers(currency=currency)
+        timeout = (
+            _PARAMETRIC_TIMEOUT_S
             if parameters or (category_id is not None and not designation)
-            else _TIMEOUT_S,
+            else _TIMEOUT_S
+        )
+        # Keyword search is a POST by shape, read-only by effect.
+        response = polite_send(
+            lambda: httpx.post(
+                _SEARCH_URL, json=body, headers=headers, timeout=timeout
+            ),
+            service="digikey",
+            stage="search",
+            detail=lambda r: self._detail(r, "search"),
         )
         self._check_status(response, "search")
         payload: dict[str, Any] = response.json()
@@ -404,16 +427,20 @@ class DigiKeyAdapter:
         }
 
     @staticmethod
+    def _detail(response: httpx.Response, stage: str) -> str:
+        """Vendor validation message for a 4xx (never for the token stage)."""
+        if stage != "token" and 400 <= response.status_code < 500:
+            return _error_detail(response)
+        return ""
+
+    @staticmethod
     def _check_status(response: httpx.Response, stage: str) -> None:
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
-            detail = (
-                _error_detail(response)
-                if stage != "token" and 400 <= response.status_code < 500
-                else ""
-            )
-            raise SupplierError(stage, response.status_code, detail) from exc
+            raise SupplierError(
+                stage, response.status_code, DigiKeyAdapter._detail(response, stage)
+            ) from exc
 
     @staticmethod
     def _one(

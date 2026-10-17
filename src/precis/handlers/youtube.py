@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import re
 from contextvars import ContextVar
+from dataclasses import replace
 from typing import Any, ClassVar
 from urllib.parse import parse_qs, urlparse
 
@@ -22,6 +23,7 @@ from precis.handlers._cache_base import CacheBackedHandler, FetchResult
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store.types import ChunkInsert
+from precis.utils.http import Policy, call_with_backoff, policy_for
 from precis.utils.next_block import render_next_section
 from precis.utils.optional_deps import require_optional
 
@@ -51,6 +53,17 @@ _LANG_PREF: ContextVar[tuple[str, ...]] = ContextVar(
     "precis.youtube._lang_pref", default=("en",)
 )
 
+
+def _yt_policy(service: str, *, attempts: int = 2, cap: float = 10.0) -> Policy:
+    """Bounded interactive policy: a live agent call must not sit in long
+    backoff. The scrape gets its own ``service`` so exhausted best-effort
+    scrapes cannot open the breaker that guards transcript fetches (both
+    share the ``host:www.youtube.com`` limiter row)."""
+    return replace(policy_for(service), attempts=attempts, cap=cap, limiter_wait_s=5.0)
+
+
+#: Limiter-row key source for the transcript client (which owns its own HTTP).
+_YT_HOST_URL = "https://www.youtube.com/"
 
 _YT_BASE_ATTRIBUTION = (
     "Source: YouTube. Transcript © the video's uploader or YouTube "
@@ -193,7 +206,16 @@ class YouTubeHandler(CacheBackedHandler):
 
         api = yt.YouTubeTranscriptApi()
         try:
-            snippets = api.fetch(video_id, languages=languages)
+            # Politeness core (host row host:www.youtube.com, 1/s): limiter
+            # token per attempt; retries only transport errors / HTTP 429/5xx
+            # surfaced by the client. Domain errors (disabled, no transcript,
+            # unavailable) are not retryable and propagate unchanged.
+            snippets = call_with_backoff(
+                lambda: api.fetch(video_id, languages=languages),
+                service="youtube",
+                policy=_yt_policy("youtube"),
+                url=_YT_HOST_URL,
+            )
         except TranscriptsDisabled as exc:
             raise NotFound(
                 f"transcripts are disabled for video {video_id}",
@@ -289,7 +311,13 @@ def _list_languages(video_id: str) -> Response:
     """
     yt = require_optional("youtube_transcript_api")
     try:
-        transcripts = list(yt.YouTubeTranscriptApi().list(video_id))
+        api = yt.YouTubeTranscriptApi()
+        transcripts = call_with_backoff(
+            lambda: list(api.list(video_id)),
+            service="youtube",
+            policy=_yt_policy("youtube"),
+            url=_YT_HOST_URL,
+        )
     except Exception as exc:
         raise Upstream(f"YouTube API error: {exc}") from exc
 
@@ -421,6 +449,7 @@ def _scrape_watch_page_meta(video_id: str) -> dict[str, Any]:
     try:
         import httpx
 
+        from precis.utils.http import polite_user_agent, with_backoff
         from precis.utils.safe_fetch import pinning_transport, safe_get
     except ImportError:
         return {}
@@ -432,10 +461,19 @@ def _scrape_watch_page_meta(video_id: str) -> dict[str, Any]:
         with httpx.Client(
             follow_redirects=False,
             timeout=8.0,
-            headers={"User-Agent": "precis-mcp/1.0 (+youtube watch-page scraper)"},
+            headers={"User-Agent": polite_user_agent()},
             transport=pinning_transport(),
         ) as client:
-            resp = safe_get(client, url)
+            # Politeness core, host-keyed (host:www.youtube.com, 1/s): limiter
+            # token per attempt, backoff on 429/5xx + Retry-After. The scrape
+            # is best-effort, so any failure (incl. exhausted retries, open
+            # breaker) still lands in the ``return {}`` below.
+            resp = with_backoff(
+                lambda: safe_get(client, url),
+                service="youtube-scrape",
+                policy=_yt_policy("youtube-scrape", cap=5.0),
+                url=url,
+            )
     except Exception:
         log.warning("youtube: watch-page scrape failed for %s", video_id, exc_info=True)
         return {}

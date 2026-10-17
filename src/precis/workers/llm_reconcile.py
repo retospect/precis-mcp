@@ -122,12 +122,19 @@ def fetch_openrouter_models(
     Best-effort: returns ``None`` on any failure (network, non-200, bad JSON) so
     the caller degrades to "unknown" rather than clobbering good facts.
     """
-    from precis.utils.http import http_client
+    from precis.utils.http import http_client, polite_user_agent, with_backoff
     from precis.utils.safe_fetch import safe_get
 
     try:
-        with http_client(timeout=timeout, user_agent=None) as client:
-            resp = safe_get(client, OPENROUTER_MODELS_URL)
+        with http_client(timeout=timeout, user_agent=polite_user_agent()) as client:
+            # Politeness core on the host:openrouter.ai row: backoff on
+            # 429/5xx honouring Retry-After; exhaustion lands in the
+            # best-effort ``None`` below.
+            resp = with_backoff(
+                lambda: safe_get(client, OPENROUTER_MODELS_URL),
+                service="openrouter",
+                url=OPENROUTER_MODELS_URL,
+            )
             resp.raise_for_status()
             data = resp.json().get("data", [])
     except Exception:  # pragma: no cover — network/parse variance
@@ -173,13 +180,15 @@ def fetch_openrouter_endpoints(
     endpoints rather than blanking them. An empty list (a real "no endpoints")
     is distinct from ``None`` (a fetch failure).
     """
-    from precis.utils.http import http_client
+    from precis.utils.http import http_client, polite_user_agent, with_backoff
     from precis.utils.safe_fetch import safe_get
 
     url = OPENROUTER_ENDPOINTS_URL_TMPL.format(slug=slug)
     try:
-        with http_client(timeout=timeout, user_agent=None) as client:
-            resp = safe_get(client, url)
+        with http_client(timeout=timeout, user_agent=polite_user_agent()) as client:
+            resp = with_backoff(
+                lambda: safe_get(client, url), service="openrouter", url=url
+            )
             resp.raise_for_status()
             data = resp.json().get("data") or {}
     except Exception:  # pragma: no cover — network/parse variance

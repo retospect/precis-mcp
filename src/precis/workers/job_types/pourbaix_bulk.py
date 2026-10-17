@@ -361,15 +361,27 @@ def find_cached_entries(store: Any, key: str) -> tuple[int, list[Any]] | None:
 
 
 def _mp_version(api_key: str) -> str:
+    from precis.utils.http import call_with_backoff
     from precis_dft.pourbaix_bulk import database_version
 
-    return database_version(api_key)
+    # Politeness core (limiter row ``materialsproject``): retries transport
+    # errors and HTTP 429/5xx the client surfaces; MPRestError etc. pass.
+    return call_with_backoff(
+        lambda: database_version(api_key), service="materialsproject"
+    )
 
 
 def _mp_fetch(api_key: str, chemsys: str) -> list[Any]:
+    from precis.utils.http import call_with_backoff, polite_user_agent
     from precis_dft.pourbaix_bulk import fetch_entries
 
-    return fetch_entries(api_key, chemsys)
+    # One limiter token per whole-fetch attempt (mp-api issues its own
+    # requests inside); the ion-reference REST call carries the polite UA.
+    ua = polite_user_agent()
+    return call_with_backoff(
+        lambda: fetch_entries(api_key, chemsys, user_agent=ua),
+        service="materialsproject",
+    )
 
 
 MP_VERSION: Callable[[str], str] = _mp_version

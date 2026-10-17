@@ -327,6 +327,34 @@ def test_pass_http_error_bumps_backoff_and_retries(
     assert out2["claimed"] == 0
 
 
+def test_pass_deferred_leaves_retry_counter_and_schedule_untouched(
+    store: Store, gp_enabled: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Our own breaker/limiter cooldown is not an upstream failure: it
+    records nothing, so the patent is claimed again next pass and no
+    ``gp_retry_count`` slot is spent toward ``gp-http-gave-up``."""
+    _seed_patent(store, cite_key="us20240000009a1", status_tag="awaiting-fulltext")
+
+    def _fake_fetch(slug: str) -> tuple[str, str | None, int]:
+        return "deferred", "cooldown: circuit open (8 consecutive failures)", 0
+
+    monkeypatch.setattr(gp, "_fetch_one", _fake_fetch)
+
+    out = run_gp_fetch_pass(store, limit=5, now=_NOW)
+    assert out == {"claimed": 1, "ok": 0, "failed": 0}
+
+    ref = store.get_ref(kind="patent", id="us20240000009a1")
+    assert ref is not None
+    meta = ref.meta or {}
+    assert "gp_retry_count" not in meta and "gp_retry_at" not in meta
+    assert "gp_status" not in meta
+    tag_values = {t.value for t in store.tags_for(ref.id) if t.namespace == "open"}
+    assert GP_ATTEMPTED_TAG not in tag_values
+
+    # Re-queued: the very next pass claims it again.
+    assert run_gp_fetch_pass(store, limit=5, now=_NOW)["claimed"] == 1
+
+
 def test_pass_http_error_gives_up_after_max_retries(
     store: Store, gp_enabled: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:

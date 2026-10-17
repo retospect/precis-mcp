@@ -350,7 +350,9 @@ def test_fetch_entries_supplies_rest_records_to_mp_api_builder(
             assert self.get_ion_reference_data() == ion_records
             return [marker]
 
-    monkeypatch.setattr(engine, "fetch_ion_reference_data", lambda _key: ion_records)
+    monkeypatch.setattr(
+        engine, "fetch_ion_reference_data", lambda _key, **_kw: ion_records
+    )
     monkeypatch.setattr(mp_client, "MPRester", FakeMPRester)
     assert engine.fetch_entries("dummy-key", "Cu") == [marker]
 

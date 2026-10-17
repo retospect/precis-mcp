@@ -34,6 +34,7 @@ Catalysis-Hub's own DFT convention; energies are never converted to SI here.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -302,7 +303,12 @@ def fetch_config(
             "pip install --force-reinstall 'precis-mcp'"
         ) from exc
 
-    from ...utils.http import http_client
+    from ...utils.http import (
+        http_client,
+        policy_for,
+        polite_user_agent,
+        with_backoff,
+    )
     from ...utils.safe_fetch import safe_get
 
     clauses = []
@@ -313,8 +319,20 @@ def fetch_config(
     filter_expr = ", ".join(clauses)
     query = _REACTIONS_QUERY.format(first=int(first), filter_expr=filter_expr)
 
-    with http_client(timeout=30.0, user_agent=None) as client:
-        resp: httpx.Response = safe_get(client, url, params={"query": query})
+    with http_client(timeout=30.0, user_agent=polite_user_agent()) as client:
+        # Read-only GraphQL query (idempotent): politeness core on the
+        # host:<netloc> row — limiter token per attempt, backoff on 429/5xx
+        # + Retry-After. Exhaustion raises VendorUnavailable (a 4xx other
+        # than 429 still reaches raise_for_status below).
+        resp: httpx.Response = with_backoff(
+            lambda: safe_get(client, url, params={"query": query}),
+            service="catalysis-hub",
+            # Interactive import: bounded, not the 5-try / 60 s default.
+            policy=replace(
+                policy_for("catalysis-hub"), attempts=2, cap=10.0, limiter_wait_s=5.0
+            ),
+            url=url,
+        )
         resp.raise_for_status()
         payload = resp.json()
 

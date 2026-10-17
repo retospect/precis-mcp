@@ -76,12 +76,6 @@ _BACKOFF_CAP_MIN = 1440
 #: bound instead, so a dead feed errors + backs off rather than hangs.
 _FEED_TIMEOUT_S = 20.0
 
-#: UA for feed fetches. Mirrors the ``web`` handler's default so outlets
-#: that 403 unknown agents keep serving us (feedparser sent its own UA).
-_FEED_USER_AGENT = (
-    "Mozilla/5.0 (compatible; precis-mcp/2.0; +https://github.com/retospect/precis-mcp)"
-)
-
 #: Feed parser: ``(url, *, etag=None, modified=None) -> parsed feed`` with
 #: ``.entries`` and (on a conditional GET) ``.status`` (304 = unchanged) +
 #: ``.etag`` / ``.modified`` validators to persist for next poll.
@@ -425,7 +419,12 @@ def _default_parse_feed(
     subset of its result the caller reads: ``.status`` (304 short-circuit),
     ``.entries``, and the ``.etag`` / ``.modified`` validators to persist.
     """
-    from precis.utils.http import http_client
+    from precis.utils.http import (
+        http_client,
+        netloc_provider,
+        polite_user_agent,
+        with_backoff,
+    )
     from precis.utils.optional_deps import require_optional
     from precis.utils.safe_fetch import safe_get
 
@@ -434,7 +433,7 @@ def _default_parse_feed(
     # Conditional GET: echo the validators feedparser would have sent so an
     # unchanged feed answers 304 (no body re-download).
     headers = {
-        "User-Agent": _FEED_USER_AGENT,
+        "User-Agent": polite_user_agent(),
         "Accept": (
             "application/rss+xml, application/atom+xml, "
             "application/xml;q=0.9, */*;q=0.8"
@@ -450,7 +449,15 @@ def _default_parse_feed(
     with http_client(
         timeout=_FEED_TIMEOUT_S, headers=headers, user_agent=None
     ) as client:
-        resp = safe_get(client, url)
+        # Host-keyed politeness core: limiter token per attempt, backoff on
+        # 429/5xx + Retry-After. 304 and other 4xx come back as responses.
+        # Service name is the host so one dead feed cannot trip the breaker
+        # for every other feed.
+        resp = with_backoff(
+            lambda: safe_get(client, url),
+            service=netloc_provider(url) or "news-feed",
+            url=url,
+        )
 
     if resp.status_code == 304:
         return SimpleNamespace(status=304, entries=[], etag=etag, modified=modified)

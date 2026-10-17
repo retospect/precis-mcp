@@ -235,6 +235,9 @@ def test_transport_outcomes(
 
 
 class _Response:
+    status_code = 200
+    headers: dict[str, str] = {}
+
     def __init__(self, payload: dict[str, Any]) -> None:
         self._payload = payload
 

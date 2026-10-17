@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -32,6 +33,7 @@ from typing import TYPE_CHECKING
 import httpx
 
 from precis.secrets import get_secret, is_available
+from precis.utils.http import polite_user_agent
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -508,6 +510,64 @@ _PROBES: dict[str, ProbeFn] = {
 #: TTL papers over the wait afterward).
 _PROBE_TIMEOUT_S = 6.0
 
+#: At most this many probes in flight at once, so opening the page (or a
+#: force-refresh) does not hit a dozen vendors in the same instant.
+_MAX_CONCURRENT_PROBES = 3
+
+#: A probe target is not re-probed within this many seconds, even on
+#: ``force`` — a refresh storm re-serves the last result instead of hammering
+#: the vendor. A changed credential bypasses it (the user just edited it).
+_MIN_PROBE_INTERVAL_S = 30.0
+
+# Seam for tests: the per-target interval reads this, never ``time`` directly.
+_clock: Callable[[], float] = time.monotonic
+
+#: group -> (monotonic time of the last real probe, credential fingerprint,
+#: result). The fingerprint is a process-local hash; secrets are never stored.
+_probed: dict[str, tuple[float, int, CheckResult]] = {}
+
+#: Count of real (network) probes run; ``get_results`` stamps ``checked_at``
+#: only when this moved, so a refresh served from the interval cache keeps
+#: the honest time of the last real probe.
+_probe_runs: list[int] = [0]
+
+
+_slots: asyncio.Semaphore | None = None
+_slots_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _probe_slots() -> asyncio.Semaphore:
+    """The shared concurrency bound, (re)created per running event loop so
+    importing never needs a loop and a new loop never inherits a stale one."""
+    global _slots, _slots_loop
+    loop = asyncio.get_running_loop()
+    if _slots is None or _slots_loop is not loop:
+        _slots = asyncio.Semaphore(_MAX_CONCURRENT_PROBES)
+        _slots_loop = loop
+    return _slots
+
+
+async def _probe_group(
+    group: str, client: httpx.AsyncClient, values: dict[str, str]
+) -> CheckResult:
+    """:func:`_safe_probe` with the per-target minimum interval: a target
+    probed less than :data:`_MIN_PROBE_INTERVAL_S` ago with the same
+    credentials re-serves its last result."""
+    fn = _PROBES[group]
+    fingerprint = hash((fn, tuple(sorted(values.items()))))
+    prior = _probed.get(group)
+    now = _clock()
+    if (
+        prior is not None
+        and prior[1] == fingerprint
+        and 0 <= now - prior[0] < _MIN_PROBE_INTERVAL_S
+    ):
+        return prior[2]
+    result = await _safe_probe(fn, client, values)
+    _probe_runs[0] += 1
+    _probed[group] = (_clock(), fingerprint, result)
+    return result
+
 
 async def _safe_probe(
     fn: ProbeFn, client: httpx.AsyncClient, values: dict[str, str]
@@ -519,7 +579,8 @@ async def _safe_probe(
     error can echo back request details.
     """
     try:
-        return await fn(client, values)
+        async with _probe_slots():
+            return await fn(client, values)
     except httpx.TimeoutException:
         return CheckResult("unknown", "timeout — could not verify")
     except Exception as exc:  # deliberately broad, see docstring above
@@ -545,7 +606,9 @@ async def run_checks(store: Store) -> dict[str, CheckResult]:
     # Fixed provider endpoints only (see module docstring) — not agent- or
     # user-supplied, so plain httpx is fine here; safe_fetch is for the
     # agent-supplied-URL surface.
-    async with httpx.AsyncClient(timeout=_PROBE_TIMEOUT_S) as client:
+    async with httpx.AsyncClient(
+        timeout=_PROBE_TIMEOUT_S, headers={"User-Agent": polite_user_agent()}
+    ) as client:
         for group, names in _PROBE_GROUP_MEMBERS.items():
             present = [n for n in names if is_available(n, store=store)]
             if not present:
@@ -561,7 +624,7 @@ async def run_checks(store: Store) -> dict[str, CheckResult]:
             values = {n: get_secret(n, store=store) or "" for n in names}
             group_order.append(group)
             group_names[group] = names
-            coros.append(_safe_probe(_PROBES[group], client, values))
+            coros.append(_probe_group(group, client, values))
 
         outcomes = await asyncio.gather(*coros) if coros else []
 
@@ -611,10 +674,12 @@ async def get_results(
             and (now - _checked_at).total_seconds() < max_age_s
         ):
             return _last
+        runs_before = _probe_runs[0]
         results = await run_checks(store)
         _last.clear()
         _last.update(results)
-        _checked_at = now
+        if _probe_runs[0] != runs_before or _checked_at is None:
+            _checked_at = now
         return _last
 
 

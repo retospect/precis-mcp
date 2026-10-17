@@ -17,8 +17,9 @@ from typing import Any
 import httpx
 
 from precis.secrets import get_secret
-from precis.supply._http import protect_request_logs
+from precis.supply._http import polite_send, protect_request_logs
 from precis.supply.base import StockQuote, SupplierError, now
+from precis.utils.http import polite_user_agent
 
 _URL = "https://api.mouser.com/api/v1/search/keyword"
 
@@ -77,19 +78,27 @@ class MouserAdapter:
 
     def _parts(self, designation: str, *, limit: int) -> list[dict[str, Any]]:
         protect_request_logs()
-        response = httpx.post(
-            _URL,
-            params={"apiKey": get_secret("PRECIS_MOUSER_API_KEY")},
-            json={
-                "SearchByKeywordRequest": {
-                    "keyword": designation,
-                    "records": min(max(limit, 1), 50),
-                    "startingRecord": 0,
-                    "searchOptions": "None",
-                    "searchWithYourSignUpLanguage": "false",
-                }
-            },
-            timeout=3,
+        key = get_secret("PRECIS_MOUSER_API_KEY")
+        body = {
+            "SearchByKeywordRequest": {
+                "keyword": designation,
+                "records": min(max(limit, 1), 50),
+                "startingRecord": 0,
+                "searchOptions": "None",
+                "searchWithYourSignUpLanguage": "false",
+            }
+        }
+        # A keyword search: a POST by shape, read-only by effect (retry-safe).
+        response = polite_send(
+            lambda: httpx.post(
+                _URL,
+                params={"apiKey": key},
+                json=body,
+                headers={"User-Agent": polite_user_agent()},
+                timeout=3,
+            ),
+            service="mouser",
+            stage="search",
         )
         if response.is_error:
             raise SupplierError("search", response.status_code)
