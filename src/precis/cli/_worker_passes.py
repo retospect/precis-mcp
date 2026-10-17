@@ -326,10 +326,15 @@ def build_ref_passes(
             return embedder
 
         def _conflict_search_pass(batch_size: int) -> _ConflictSearchBatchResult:
+            # Do NOT forward the loop ``batch_size`` (``--batch-size``,
+            # default 32): it overrode PRECIS_CONFLICT_SEARCH_HUBS_PER_PASS
+            # (default 4), so each pass swept 32 hubs × ~7 serial LLM calls
+            # and held the worker loop ~1 h (gr493236). The pass's own knob
+            # and its wall-clock deadline govern; same trap as chase_trigger.
             r = run_conflict_search_pass(
                 store,
                 embedder=_conflict_search_get_embedder(),
-                limit=batch_size,
+                limit=None,
             )
             # hub_tagline's exact {claimed, ok, failed} accounting:
             # claimed = every hub this pass's claim-and-lease picked

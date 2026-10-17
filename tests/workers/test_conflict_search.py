@@ -518,6 +518,7 @@ def test_no_embedder_degrades_to_a_no_op(store: Any) -> None:
         "disputes_filed": 0,
         "llm_errors": 0,
         "skipped": 0,
+        "deferred": 0,
     }
 
 
@@ -1318,3 +1319,137 @@ def test_cohort_order_knob_defaults_dense_and_env_falls_back(
         cohort_order="dense",
     )
     assert swept == ["Dense claim under env."]
+
+
+# ── gr493236: the standing pass is wall-clock bounded ───────────────────
+
+
+class _FakeClock:
+    """A monotonic clock the negate stub advances — the pass's elapsed-time
+    reads see exactly the hub durations the test scripts."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _slow_negate(clock: _FakeClock, seconds: float, swept: list[str]) -> Any:
+    def fn(sentence: str, scope: dict[str, Any]) -> dict[str, Any] | None:
+        swept.append(sentence)
+        clock.now += seconds
+        return {"paraphrases": []}
+
+    return fn
+
+
+def test_pass_deadline_hands_back_unreached_hubs(store: Any) -> None:
+    """A 150 s hub against a 240 s budget: the second hub would end past
+    the deadline, so it and the third are released unstamped — not held
+    behind the lease, not counted as failed — and the next pass takes them."""
+    embedder = make_mock_bge_m3()
+    hubs = [_seed_hub(store, f"Deadline claim {i}.") for i in range(3)]
+    clock = _FakeClock()
+    swept: list[str] = []
+
+    result = run_conflict_search_pass(
+        store,
+        embedder=embedder,
+        negate_fn=_slow_negate(clock, 150.0, swept),
+        verify_fn=_never_verify,
+        cohort_order="ref_id",
+        deadline_s=240.0,
+        clock=clock,
+    )
+    assert swept == ["Deadline claim 0."]
+    assert result["hubs_claimed"] == 1
+    assert result["hubs_swept"] == 1
+    assert result["deferred"] == 2
+    for hub in hubs[1:]:
+        meta = _hub_meta(store, hub)
+        assert meta.get("conflict_search_claimed_at") is None
+        assert "conflict_search" not in meta
+
+    # Handed back, not leased: the next pass (deadline off) takes both now,
+    # without waiting out the lease TTL.
+    swept.clear()
+    result2 = run_conflict_search_pass(
+        store,
+        embedder=embedder,
+        negate_fn=_slow_negate(clock, 150.0, swept),
+        verify_fn=_never_verify,
+        cohort_order="ref_id",
+        deadline_s=0,
+        clock=clock,
+    )
+    assert swept == ["Deadline claim 1.", "Deadline claim 2."]
+    assert result2["hubs_swept"] == 2
+    assert result2["deferred"] == 0
+
+
+def test_pass_overrun_warns_naming_the_slow_hub(
+    store: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The first hub always runs (every pass progresses); one that alone
+    outlasts the budget is finished, stamped, and named in a WARNING."""
+    embedder = make_mock_bge_m3()
+    hub = _seed_hub(store, "Overrun claim.")
+    clock = _FakeClock()
+    with caplog.at_level("WARNING", logger="precis.workers.conflict_search"):
+        result = run_conflict_search_pass(
+            store,
+            embedder=embedder,
+            negate_fn=_slow_negate(clock, 400.0, []),
+            verify_fn=_never_verify,
+            deadline_s=240.0,
+            clock=clock,
+        )
+    assert result["hubs_swept"] == 1
+    assert _hub_meta(store, hub)["conflict_search"]["version"] == (
+        CONFLICT_SEARCH_VERSION
+    )
+    overrun = [
+        r.getMessage()
+        for r in caplog.records
+        if "past its 240s deadline" in r.getMessage()
+    ]
+    assert len(overrun) == 1
+    assert f"hub {hub} took 400s" in overrun[0]
+
+
+def test_live_llm_hooks_carry_the_call_timeout(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without injected stubs, negate AND verify reach the router with
+    ``timeout_s`` pinned — no call is left to a transport default."""
+    from types import SimpleNamespace
+
+    import precis.workers._chase_llm as chase_llm
+    import precis.workers.conflict_search as cs
+
+    embedder = make_mock_bge_m3()
+    _seed_hub(store)
+    _seed_paper_chunk(
+        store, embedder, cite_key="timed", text="Pd/C fails at room temperature."
+    )
+    monkeypatch.setenv("PRECIS_CONFLICT_SEARCH_CALL_TIMEOUT_S", "42")
+    seen: list[tuple[str, float | None]] = []
+
+    def fake_route(req: Any) -> Any:
+        seen.append((req.source, req.timeout_s))
+        data = (
+            {"paraphrases": []}
+            if req.source == "conflict_search:negate"
+            else {"supports": "no", "contradicts": False, "caveats": []}
+        )
+        return SimpleNamespace(error=None, data=data, request_hash=None)
+
+    monkeypatch.setattr(cs, "route", fake_route)
+    monkeypatch.setattr(chase_llm, "route", fake_route)
+
+    result = run_conflict_search_pass(store, embedder=embedder)
+    assert result["hubs_swept"] == 1
+    assert ("conflict_search:negate", 42.0) in seen
+    assert ("chase:verify", 42.0) in seen
+    assert all(t == 42.0 for _src, t in seen)

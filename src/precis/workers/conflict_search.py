@@ -112,6 +112,19 @@ sitting — or a re-sweep surfacing the same chunk — mints nothing twice;
 the pair edge itself is idempotent on ``links``' endpoint+relation
 unique index.
 
+**The standing pass is wall-clock bounded** (gr493236). Each hub is ~7
+serial LLM calls (~15 s each on prod), and the worker loop is strictly
+serial, so the pass must not decide its own length by hub count alone:
+with the loop's ``--batch-size`` 32 leaking in as ``limit`` it ran ~1 h
+per pass and tripped the dead-worker alert. Three layers: the wiring
+uses :func:`_hubs_per_pass`, never the loop batch size; the pass stops
+starting hubs at :func:`_pass_deadline_s` and hands the rest back
+unstamped (finishing a hub it started — a half-verified hub would be
+stamped as covered); every negate/verify call carries
+:func:`_call_timeout_s`. The loop's ``PRECIS_REF_PASS_DEADLINE_S``
+abandon (``uses_external`` on the service row) is the backstop for a
+call that ignores its timeout.
+
 Re-derives its own discovery wiring rather than importing
 ``hub_refine``'s underscore-private helpers (a deliberate spec decision,
 docs/backlog/claim-conflict-search.md item 1's boundary note). Shared
@@ -131,9 +144,11 @@ import json
 import logging
 import os
 import statistics
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from typing import Any, Literal
 
 from precis.errors import BadInput, NotFound
@@ -166,6 +181,7 @@ from precis.taproot.directed import (
 from precis.taproot.hub import HUB_ROLES, link_claims
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
+from precis.utils.env import env_float
 from precis.utils.llm.router import LlmRequest, Tier, route
 from precis.utils.relations import validate_relation
 from precis.workers._chase_llm import _verify_support_with_caveats
@@ -249,6 +265,30 @@ _EXCLUDE_RELATIONS: tuple[str, ...] = tuple(sorted(HUB_ROLES | {"disputes"}))
 
 #: Chunk kinds searched per query string.
 _SEARCH_KINDS: tuple[str, ...] = ("paper", "patent", "finding")
+
+#: Wall-clock budget (seconds) of one standing pass (gr493236). A hub is
+#: started only while the pass's elapsed time plus its slowest hub so far
+#: fits the budget (the first hub always runs, so every pass progresses);
+#: claimed hubs it can't reach get their lease back unstamped. Under the
+#: worker loop's ``PRECIS_REF_PASS_DEADLINE_S`` (300 s), so the loop's own
+#: abandon is the backstop for a wedged call, never the normal exit.
+_DEFAULT_PASS_DEADLINE_S = 240.0
+
+#: Wall clock (seconds) pinned on every negate/verify LLM call. Measured
+#: 2026-10-17 on prod: chase:verify p95 25 s, max 60 s; negate max 17 s.
+_DEFAULT_CALL_TIMEOUT_S = 90.0
+
+
+def _pass_deadline_s() -> float:
+    return env_float(
+        "PRECIS_CONFLICT_SEARCH_PASS_DEADLINE_S", _DEFAULT_PASS_DEADLINE_S, lo=0.0
+    )
+
+
+def _call_timeout_s() -> float:
+    return env_float(
+        "PRECIS_CONFLICT_SEARCH_CALL_TIMEOUT_S", _DEFAULT_CALL_TIMEOUT_S, lo=1.0
+    )
 
 
 def _hubs_per_pass() -> int:
@@ -525,16 +565,24 @@ Respond with EXACTLY ONE JSON object, nothing else:
 NegateFn = Callable[[str, dict[str, Any]], "dict[str, Any] | None"]
 
 
-def negate_claim(sentence: str, scope: dict[str, Any]) -> dict[str, Any] | None:
+def negate_claim(
+    sentence: str, scope: dict[str, Any], *, timeout_s: float | None = None
+) -> dict[str, Any] | None:
     """One MEDIUM-tier negated-paraphrase proposal. Returns the parsed JSON
     dict, or ``None`` on dispatch failure — the caller treats that as
     transient and retries the hub next pass without stamping the
-    watermark."""
+    watermark. ``timeout_s`` is the call's wall clock (default
+    :func:`_call_timeout_s`)."""
     prompt = _PROMPT_NEGATE.format(
         sentence=sentence, scope_json=json.dumps(scope, sort_keys=True)
     )
     res = route(
-        LlmRequest(tier=Tier.MEDIUM, prompt=prompt, source="conflict_search:negate")
+        LlmRequest(
+            tier=Tier.MEDIUM,
+            prompt=prompt,
+            source="conflict_search:negate",
+            timeout_s=_call_timeout_s() if timeout_s is None else timeout_s,
+        )
     )
     if res.error:
         log.warning("conflict_search: negate hook failed: %s", res.error)
@@ -1014,9 +1062,19 @@ def run_conflict_search_pass(
     negate_fn: NegateFn | None = None,
     verify_fn: VerifyFn | None = None,
     cohort_order: str | None = None,
+    deadline_s: float | None = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, int]:
     """Run one ``conflict_search`` pass: claim up to ``limit`` due claim
     hubs (default :func:`_hubs_per_pass`) and sweep each for opposition.
+
+    ``deadline_s`` (default :func:`_pass_deadline_s`; ``<= 0`` disables)
+    bounds the pass's wall clock: a hub after the first is started only
+    if the elapsed time plus the slowest hub so far fits it, and every
+    hub not reached is handed back (lease cleared, watermark untouched)
+    and counted in ``deferred``. A pass that still overran (one hub slower
+    than any before it) logs a WARNING naming that hub. ``clock`` is the
+    test seam for the elapsed-time reads.
 
     ``cohort_order`` is the backfill ordering knob
     (:data:`COHORT_ORDERS`): the spec's ``dense`` first (default via
@@ -1032,14 +1090,15 @@ def run_conflict_search_pass(
     for nothing.
 
     Returns ``{hubs_claimed, hubs_swept, candidates_checked,
-    disputes_filed, llm_errors, skipped}`` — ``hubs_claimed`` is every hub
-    picked up by this pass's claim-and-lease (the ``BatchResult.claimed``
-    equivalent, so ``hubs_claimed == hubs_swept + (hubs_claimed -
-    hubs_swept)`` keeps the wiring's ``claimed == ok + failed`` invariant,
-    mirroring ``hub_tagline``'s ``{claimed, ok, failed}`` shape);
-    ``hubs_swept`` is every hub that reached a completed, stamped sweep;
-    ``skipped`` counts a hub that vanished (deleted) between claim and
-    processing.
+    disputes_filed, llm_errors, skipped, deferred}`` — ``hubs_claimed`` is
+    every hub this pass's claim-and-lease picked up and kept (the
+    ``BatchResult.claimed`` equivalent, so ``hubs_claimed == hubs_swept +
+    (hubs_claimed - hubs_swept)`` keeps the wiring's ``claimed == ok +
+    failed`` invariant, mirroring ``hub_tagline``'s ``{claimed, ok,
+    failed}`` shape); ``hubs_swept`` is every hub that reached a
+    completed, stamped sweep; ``skipped`` counts a hub that vanished
+    (deleted) between claim and processing; ``deferred`` counts hubs
+    claimed then handed back at the deadline (not in ``hubs_claimed``).
     """
     result = {
         "hubs_claimed": 0,
@@ -1048,22 +1107,39 @@ def run_conflict_search_pass(
         "disputes_filed": 0,
         "llm_errors": 0,
         "skipped": 0,
+        "deferred": 0,
     }
     if embedder is None:
         log.warning("conflict_search: embedder unavailable -- pass no-ops this cycle")
         return result
 
     hubs_limit = limit if limit is not None else _hubs_per_pass()
-    negate = negate_fn or negate_claim
-    verify = verify_fn or _verify_support_with_caveats
+    negate, verify = _llm_seams(negate_fn, verify_fn)
     topk = _topk()
     verify_budget = _verify_budget()
     order = cohort_order if cohort_order in COHORT_ORDERS else _cohort_order()
+    deadline = _pass_deadline_s() if deadline_s is None else deadline_s
 
+    started = clock()
     claimed_hubs = _claim_hubs(store, limit=hubs_limit, order=order)
-    result["hubs_claimed"] = len(claimed_hubs)
+    slowest_s, slowest_hub = 0.0, 0
 
-    for hub_ref_id, title, meta in claimed_hubs:
+    for i, (hub_ref_id, title, meta) in enumerate(claimed_hubs):
+        if deadline > 0 and i > 0 and clock() - started + slowest_s > deadline:
+            rest = [h[0] for h in claimed_hubs[i:]]
+            _release_leases(store, rest)
+            result["deferred"] = len(rest)
+            log.info(
+                "conflict_search: %.0fs pass deadline reached after %d hub(s) "
+                "(slowest %.0fs); handed back %d claimed hub(s)",
+                deadline,
+                i,
+                slowest_s,
+                len(rest),
+            )
+            break
+        result["hubs_claimed"] += 1
+        hub_started = clock()
         outcome = _sweep_hub(
             store,
             embedder,
@@ -1075,6 +1151,9 @@ def run_conflict_search_pass(
             topk=topk,
             verify_budget=verify_budget,
         )
+        hub_s = clock() - hub_started
+        if hub_s > slowest_s:
+            slowest_s, slowest_hub = hub_s, hub_ref_id
         result["candidates_checked"] += outcome.checked
         result["disputes_filed"] += outcome.disputes_filed
         result["llm_errors"] += outcome.llm_errors
@@ -1083,7 +1162,45 @@ def run_conflict_search_pass(
         elif outcome.vanished:
             result["skipped"] += 1
 
+    elapsed = clock() - started
+    if deadline > 0 and elapsed > deadline:
+        log.warning(
+            "conflict_search: pass ran %.0fs, past its %.0fs deadline; slowest "
+            "hub %d took %.0fs (%d verify calls this pass, %d llm errors)",
+            elapsed,
+            deadline,
+            slowest_hub,
+            slowest_s,
+            result["candidates_checked"],
+            result["llm_errors"],
+        )
     return result
+
+
+def _llm_seams(
+    negate_fn: NegateFn | None, verify_fn: VerifyFn | None
+) -> tuple[NegateFn, VerifyFn]:
+    """The negate/verify hooks a sweep calls: an injected stub as given,
+    else the live hooks with :func:`_call_timeout_s` pinned on every call
+    (:func:`negate_claim` defaults to it; the shared verifier's default
+    stays the transport's, so it is bound here)."""
+    verify: VerifyFn = verify_fn or partial(
+        _verify_support_with_caveats, timeout_s=_call_timeout_s()
+    )
+    return negate_fn or negate_claim, verify
+
+
+def _release_leases(store: Store, hub_ref_ids: list[int]) -> None:
+    """Hand claimed-but-unswept hubs back: clear the lease, leave the
+    watermark, so the next pass (or a ``conflict_sweep`` job) takes them
+    now rather than after :data:`_CLAIM_TTL_MIN`."""
+    for hub_ref_id in hub_ref_ids:
+        try:
+            store.update_ref(
+                hub_ref_id, meta_patch={"conflict_search_claimed_at": None}
+            )
+        except NotFound:
+            continue
 
 
 # ── one named hub (the job type's door) ──────────────────────────────────
@@ -1118,14 +1235,15 @@ def sweep_one_hub(
     if claimed is None:
         return None
     title, meta = claimed
+    negate, verify = _llm_seams(negate_fn, verify_fn)
     return _sweep_hub(
         store,
         embedder,
         hub_ref_id=hub_ref_id,
         title=title,
         meta=meta,
-        negate_fn=negate_fn or negate_claim,
-        verify_fn=verify_fn or _verify_support_with_caveats,
+        negate_fn=negate,
+        verify_fn=verify,
         topk=_topk(),
         verify_budget=_verify_budget(),
     )

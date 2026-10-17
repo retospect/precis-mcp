@@ -1002,6 +1002,9 @@ SERVICES: tuple[ServiceSpec, ...] = (
         ref_pass=True,
         enable_env="PRECIS_CONFLICT_SEARCH_ENABLED",
         uses_model=True,
+        # Blocking LLM calls: ``uses_external`` puts the pass under the
+        # worker loop's PRECIS_REF_PASS_DEADLINE_S bound (gr493236).
+        uses_external=("anthropic",),
         cost_sources=("conflict_search",),
         one_line=(
             "Negated-paraphrase ANN sweep — every claim hub hunts opposing "
