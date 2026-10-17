@@ -1187,28 +1187,27 @@ class StructureHandler(Handler):
             handle_registry.try_format("pathway", int(pw.id)) or f"pathway:{pw.id}"
         )
         try:
-            # the pathway kind is slug-keyed — a bare ref_id would hit its
-            # cite_key lookup, never the ref table
             pw_handler = self.hub.sibling("pathway")
-            if getattr(pw_handler, "hub", None) is None:
-                # sibling() lazy-builds without _register_with — .hub unset
-                pw_handler.hub = self.hub
-            # omit U entirely when no quest/point is recorded — the pathway
-            # side then falls back to its own operating point (args={'U':
-            # None} is a caller bug it rejects)
-            body = pw_handler.get(
-                id=str(pw.slug or pw.id),
-                view="staircase",
-                args={**({"U": u} if u is not None else {}), **fwd},
-            ).body
-        except BadInput:
-            raise  # a bad pH/point is the caller's, not a missing plugin
-        except Exception as exc:  # plugin absent or init-guard tripped
+        except (KeyError, ImportError, InitError) as exc:
+            # plugin absent (no entry point / its import fails) or its
+            # init guard tripped
             log.debug("structure %s: pathway sibling unavailable (%s)", ref.id, exc)
             body = (
                 f"(staircase render unavailable — the pathway kind is not "
                 f"installed here; best linked pathway is {pw_handle})"
             )
+        else:
+            # the pathway kind is slug-keyed — a bare ref_id would hit its
+            # cite_key lookup, never the ref table. Omit U entirely when no
+            # quest/point is recorded — the pathway side then falls back to
+            # its own operating point (args={'U': None} is a caller bug it
+            # rejects). A failure inside the render is the render's, not a
+            # missing plugin: it propagates.
+            body = pw_handler.get(
+                id=str(pw.slug or pw.id),
+                view="staircase",
+                args={**({"U": u} if u is not None else {}), **fwd},
+            ).body
         return Response(
             body=(
                 f"# reaction staircase — {handle} {head}\n"

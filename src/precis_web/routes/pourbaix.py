@@ -422,14 +422,19 @@ def _candidate_ctx(
     u_marker: float | None = None,
     ph: float = 0.0,
     pathway: str | None = None,
+    raw_maps: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    """One drawn surface. ``raw_maps`` takes maps the caller already built
+    (the quest page builds them from its batched scan read) so they are
+    never built twice."""
     from precis.quest import staircase as sq
     from precis_pathway import pourbaix_map
     from precis_pathway import staircase_states as ss
 
     handle = handle_registry.try_format("structure", int(ref.id)) or f"st{ref.id}"
     staircase, sr, pw = _staircase_ctx(store, ref, pathway=pathway)
-    raw_maps = pourbaix_map.maps_for_structure(store, ref)
+    if raw_maps is None:
+        raw_maps = pourbaix_map.maps_for_structure(store, ref)
     pw_coads = (
         ss.pathway_coads(store, pw.meta or {}, ref.meta or {})
         if pw is not None
@@ -531,16 +536,18 @@ def _u_window(entries: list[dict[str, Any]], u0: float) -> tuple[float, float]:
 def _quest_surfaces(store: Store, quest_ref: Any) -> list[dict[str, Any]]:
     """The quest's candidate surfaces, best-ranked first.
 
-    :func:`precis.quest.pourbaix_map.quest_maps` supplies the live
-    ``serves`` structures plus their maps; the leaderboard order
-    (frontier → dominated → provisional → awaiting, the primary objective
-    inside a band — the same order ``view='leaderboard'`` prints)
-    supplies the ranking. A failed frontier read degrades to link order:
-    ranking must not 500 the page."""
+    :func:`precis.quest.pourbaix_map.quest_scans` supplies the live
+    ``serves`` structures plus their scan rows — no maps: the picker needs
+    only ``has_maps``, and the page builds maps for the drawn surfaces
+    alone, once, from the ``jobs`` carried here (gr488208). The
+    leaderboard order (frontier → dominated → provisional → awaiting, the
+    primary objective inside a band — the same order ``view='leaderboard'``
+    prints) supplies the ranking. A failed frontier read degrades to link
+    order: ranking must not 500 the page."""
     from precis.quest import frontier as frontier_mod
     from precis_pathway import pourbaix_map
 
-    entries = pourbaix_map.quest_maps(store, quest_ref)
+    entries = pourbaix_map.quest_scans(store, quest_ref)
     order: list[str] = []
     band: dict[str, str] = {}
     try:
@@ -570,7 +577,8 @@ def _quest_surfaces(store: Store, quest_ref: Any) -> list[dict[str, Any]]:
                 if getattr(ref, "title", None)
                 else "",
                 "band": band.get(handle, ""),
-                "has_maps": bool(e["maps"]),
+                "has_maps": bool(e["jobs"]),
+                "jobs": e["jobs"],
                 "slug": getattr(ref, "slug", None) or "",
             }
         )
@@ -768,8 +776,24 @@ async def pourbaix_detail(request: Request, handle: str) -> HTMLResponse:
     # ?pathway= picks the staircase's pathway on the one drawn surface; the
     # comparison view keeps every surface on its own best pathway
     pathway = None if compare else request.query_params.get("pathway")
+    # quest surfaces carry their batched scan rows: build each drawn
+    # surface's maps from them, once (a structure page reads its own)
+    verdicts = pourbaix_map.bulk_verdicts(
+        store, [s["ref"] for s in drawn if "jobs" in s]
+    )
     entries = [
-        _candidate_ctx(store, s["ref"], u_marker=u0, ph=ph0, pathway=pathway)
+        _candidate_ctx(
+            store,
+            s["ref"],
+            u_marker=u0,
+            ph=ph0,
+            pathway=pathway,
+            raw_maps=pourbaix_map.maps_for_structure(
+                store, s["ref"], jobs=s["jobs"], verdicts=verdicts
+            )
+            if "jobs" in s
+            else None,
+        )
         for s in drawn
     ]
     u_lo, u_hi = _u_window(entries, u0)

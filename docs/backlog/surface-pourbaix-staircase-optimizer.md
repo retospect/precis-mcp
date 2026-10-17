@@ -482,15 +482,6 @@ band, never the nominal line; the two bands are never averaged.
 blend). On `/pourbaix` the hysteretic band draws as its own layer,
 separate from the propagated/model-form bands.
 
-## Follow-ups from wave review (2026-10-13, non-blocking)
-
-- `/pourbaix` quest page builds each candidate's maps twice (`quest_maps`
-  then `_candidate_ctx`); pass the precomputed maps through (B2 review).
-- Structure `view='staircase'` catches every exception from the pathway
-  sibling as "not installed"; narrow it, and fix `Hub.sibling()` so the
-  `pw_handler.hub = self.hub` backfill can go (B2 review).
-- The JS re-tilt and mismatch logic on `/pourbaix` have no test.
-
 ## Explicitly NOT in scope
 
 - Slice 8: ordered, not scheduled; needs its own `ready`.

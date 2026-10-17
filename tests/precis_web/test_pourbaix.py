@@ -10,6 +10,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
+import subprocess
 from typing import Any
 
 import pytest
@@ -590,6 +592,181 @@ def test_pourbaix_page_draws_reset_layer_and_ships_rung_margins(
     assert "data-rmargin" in text and "m_e" in text
 
 
+# ── the page script's re-tilt and mismatch rules, run under node ─────────
+
+_needs_node = pytest.mark.skipif(
+    shutil.which("node") is None, reason="node is not on PATH"
+)
+
+#: Loads the served page's DOM-free ``pbx-pure`` block and evaluates the
+#: re-tilt per route over ``us`` and the coads mismatch per case.
+_NODE_PURE_JS = """
+const api = new Function(%(block)s
+  + '; return {pbxRetilt, pbxMismatch, regionAt};')();
+const c = %(cases)s;
+console.log(JSON.stringify({
+  retilt: c.routes.map((rungs) => c.us.map((u) => api.pbxRetilt(rungs, u))),
+  mismatch: c.mismatch.map(([regs, u, coads]) =>
+    api.pbxMismatch(api.regionAt(regs, u), coads)),
+}));
+"""
+
+
+def _run_pure(tmp_path: Any, page: str, cases: dict[str, Any]) -> Any:
+    block = page[page.index("// pbx-pure:begin") : page.index("// pbx-pure:end")]
+    script = tmp_path / "pbx_pure.js"
+    script.write_text(
+        _NODE_PURE_JS % {"block": json.dumps(block), "cases": json.dumps(cases)},
+        encoding="utf-8",
+    )
+    out = subprocess.run(
+        ["node", str(script)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+        timeout=60,
+    )
+    return json.loads(out.stdout)
+
+
+def _served_routes(page: str) -> list[list[dict[str, Any]]]:
+    """Each route table's rungs as the page script reads them."""
+    out = []
+    for table in re.findall(r'<div class="pbx-route mt-2">(.*?)</table>', page, re.S):
+        rows = []
+        for tag in re.findall(r'<tr class="pbx-rung"[^>]*>', table):
+            rm = _attr(tag, "data-rmargin")
+            rows.append(
+                {
+                    "name": _attr(tag, "data-name"),
+                    "dg0": float(_attr(tag, "data-dg0")),
+                    "ne": float(_attr(tag, "data-ne")),
+                    "eps": float(_attr(tag, "data-eps")),
+                    "margin": float(rm) if rm else None,
+                }
+            )
+        out.append(rows)
+    return out
+
+
+@_needs_node
+@pytest.mark.parametrize("results", [_pathway_results, _reset_results])
+def test_page_retilt_matches_reset_contour(
+    pb_client: TestClient, runtime_with_store, tmp_path: Any, results: Any
+) -> None:
+    """The slider's live re-tilt (ΔG(U), limiting rung, reset verdict) on
+    the served rungs agrees with ``reset_contour`` at every U. Hysteretic
+    needs EVERY rung viable: on ``_pathway_results`` between −0.15 and 0 V
+    no_reduce is uphill while the least-slack rung (nh3_desorb) is viable,
+    which the script once called hysteretic."""
+    import numpy as np
+
+    from precis_pathway import reset_contour
+    from precis_pathway import staircase_masks as sm
+    from precis_pathway.staircase_routes import routes_for_pathway
+
+    store = runtime_with_store.store
+    sid = _seed_structure(runtime_with_store)
+    pw = _pathway(store, "pw_js", results())
+    store.add_link(
+        src_ref_id=sid, dst_ref_id=pw.id, relation="related-to", set_by="system"
+    )
+    page = pb_client.get(f"/pourbaix/st{sid}").text
+    us = [round(-0.495 + 0.03 * k, 3) for k in range(34)]
+    served = _served_routes(page)
+    got = _run_pure(tmp_path, page, {"routes": served, "us": us, "mismatch": []})
+    sr = routes_for_pathway(store, pw)
+    assert len(served) == len(sr.routes) > 0
+    resting = sm.RestingMap.full(np.array(us), np.array([0.0, 14.0]))
+    seen = set()
+    for route, per_u in zip(sr.routes, got["retilt"], strict=True):
+        c = reset_contour.reset_contour(resting, route)
+        for j, (u, v) in enumerate(zip(us, per_u, strict=True)):
+            dgs = [float(r.delta_g(u)) for r in route.rungs]
+            assert v["dgs"] == pytest.approx(dgs)
+            assert v["lim"]["name"] == route.rungs[int(np.argmax(dgs))].name
+            want = (
+                "guaranteed"
+                if c.reset_ok[0, j]
+                else "hysteretic"
+                if c.hysteretic[0, j]
+                else "outside"
+            )
+            assert v["reset"]["verdict"] == want, (u, v)
+            assert v["reset"]["s"] == pytest.approx(float(c.margin[0, j]))
+            if want != "outside":
+                assert v["reset"]["name"] == c.limiting[0, j]
+            else:
+                assert not route.rungs[
+                    [r.name for r in route.rungs].index(v["reset"]["name"])
+                ].viable(u)
+            seen.add(want)
+    assert seen >= {"hysteretic", "outside"}
+
+
+@_needs_node
+def test_page_mismatch_matches_staircase_mismatch(
+    pb_client: TestClient, runtime_with_store, tmp_path: Any
+) -> None:
+    """The live coads verdict agrees with ``staircase.mismatch`` on the
+    served map's regions and on hand-built ones (fractional n truncates
+    like the Python ``int``; no region covering U never mismatches)."""
+    from precis.quest import staircase as sq
+    from precis_pathway import pourbaix_map
+
+    store = runtime_with_store.store
+    sid, _pw = _linked(runtime_with_store)
+    page = pb_client.get(f"/pourbaix/st{sid}").text
+    island = re.search(
+        r'<script type="application/json" class="pbx-ejson">(.*?)</script>',
+        page,
+        re.S,
+    )
+    assert island is not None
+    served = json.loads(island.group(1))["maps"][0]["regions"]
+    m = pourbaix_map.maps_for_structure(store, store.get_ref(kind="structure", id=sid))[
+        0
+    ]
+    py_regions = m["regions"]
+    assert [r["range"] for r in served] == [r["U_RHE_range"] for r in py_regions]
+    coads_cases: list[dict[str, int]] = [{}, {"O": 1}, {"H": 1, "O": 1}]
+    coads_cases += [sq.region_coads(r) for r in py_regions if sq.region_coads(r)]
+    cases, want = [], []
+    for u in (-0.45, -0.2, 0.0, 0.2, 0.45, 2.0):
+        for coads in coads_cases:
+            cases.append([served, u, coads])
+            region = sq.resting_region(m, u)
+            hit = sq.mismatch(region, coads, u=u, label=None)
+            want.append(None if hit is None else sq.assumed_label(coads))
+    hand: list[dict[str, Any]] = [
+        {"range": [-1.0, 0.0], "termination": {"adsorbate": "H", "n": 2.6}},
+        {"range": [0.0, 1.0], "termination": None},
+    ]
+    for u, coads, expect in (
+        (-0.5, {"H": 2}, None),
+        (-0.5, {"H": 3}, "H×3"),
+        (0.5, {}, None),
+        (0.5, {"H": 1}, "H×1"),
+        (2.0, {"H": 1}, None),
+    ):
+        region = next(
+            (
+                {"termination": r["termination"]}
+                for r in hand
+                if r["range"][0] <= u <= r["range"][1]
+            ),
+            None,
+        )
+        hit = sq.mismatch(region, coads, u=u, label=None)
+        assert (None if hit is None else sq.assumed_label(coads)) == expect
+        cases.append([hand, u, coads])
+        want.append(expect)
+    got = _run_pure(tmp_path, page, {"routes": [], "us": [], "mismatch": cases})
+    assert got["mismatch"] == want
+    assert any(w is None for w in want) and any(w is not None for w in want)
+
+
 # ── deep links: panel state in the URL ───────────────────────────────────
 
 
@@ -949,6 +1126,43 @@ def test_pourbaix_quest_page_batched_equals_per_structure(
     assert batched == per_structure
     assert "<svg" in batched[0] and "pbx-staircase" in batched[0]
     assert batched[2].count('class="pbx-entry') == len(sids)
+
+
+def test_pourbaix_quest_page_builds_maps_for_drawn_surfaces_once(
+    pb_client: TestClient, runtime_with_store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr488208: the quest page built every candidate's maps for the picker
+    (which needs only has-anchors) and then the drawn surface's again, with
+    a fresh scan read. Now only drawn surfaces get maps, each built once
+    from the batched scan read."""
+    from precis.quest import pourbaix_map as pm
+
+    store = runtime_with_store.store
+    qid, sids = _many_surface_quest(runtime_with_store, 6)
+    extra = _seed_structure(runtime_with_store, f"pbc_{qid}_anch_x")
+    store.add_link(src_ref_id=extra, dst_ref_id=qid, relation="serves")
+    built: list[int] = []
+    real_build = pm.build_map
+
+    def _build(jobs: list[dict[str, Any]], **kw: Any) -> dict[str, Any]:
+        built.append(len(jobs))
+        return real_build(jobs, **kw)
+
+    def _no_per_structure_read(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("per-structure scan read on the quest page")
+
+    monkeypatch.setattr(pm, "build_map", _build)
+    monkeypatch.setattr(pm, "scan_jobs", _no_per_structure_read)
+    one = pb_client.get(f"/pourbaix/qu{qid}?surface=st{extra}")
+    assert one.status_code == 200 and "<svg" in one.text
+    assert built == [1]  # 3 anchored surfaces, one drawn, one footing
+    built.clear()
+    plain = pb_client.get(f"/pourbaix/qu{qid}?surface=st{sids[0]}")
+    assert plain.status_code == 200 and "no anchors" in plain.text
+    assert built == []
+    every = pb_client.get(f"/pourbaix/qu{qid}?view=compare")
+    assert every.status_code == 200
+    assert built == [1, 1, 1]
 
 
 def test_pourbaix_quest_page_reflects_a_new_scan_on_the_next_render(

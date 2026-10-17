@@ -531,34 +531,60 @@ def maps_for_structure(
     return [build_map(group, bulk=bulk) for group in groups.values()]
 
 
-def quest_maps(store: Any, quest_ref: Any) -> list[dict[str, Any]]:
-    """``[{ref, handle, maps}]`` per live structure serving the quest —
-    candidates without scans come back with an empty ``maps`` list rather
-    than dropped, so the view can say "no anchors" by name. Scans and bulk
-    verdicts are read for every candidate at once (gr488208: a quest
-    carries hundreds)."""
+def quest_scans(store: Any, quest_ref: Any) -> list[dict[str, Any]]:
+    """``[{ref, handle, jobs}]`` per live structure serving the quest, the
+    :func:`scan_jobs` rows read for every candidate at once (gr488208: a
+    quest carries hundreds). No map is built: a caller that draws one
+    surface builds that surface's maps from its ``jobs`` and needs only
+    ``bool(jobs)`` (has anchors) for the rest — a structure has a map iff
+    it has a succeeded scan."""
     from precis.quest.gaps import _live_servers
 
     servers = [
         s for s in _live_servers(store, int(quest_ref.id)) if s.kind == "structure"
     ]
     jobs = scan_jobs_many(store, [int(s.id) for s in servers])
-    job_ids = {
-        jid
-        for s in servers
-        if isinstance(jid := (s.meta or {}).get("pourbaix_job_id"), int)
-    }
-    verdicts = store.fetch_refs_by_ids(job_ids) if job_ids else {}
     return [
         {
             "ref": srv,
             "handle": handle_registry.try_format("structure", srv.id)
             or f"structure:{srv.id}",
-            "maps": maps_for_structure(
-                store, srv, jobs=jobs[int(srv.id)], verdicts=verdicts
-            ),
+            "jobs": jobs[int(srv.id)],
         }
         for srv in servers
+    ]
+
+
+def bulk_verdicts(store: Any, refs: list[Any]) -> dict[int, Any]:
+    """``{pourbaix job id: job ref}`` for the candidates' harvested bulk
+    verdicts in one read — the ``verdicts=`` input of
+    :func:`maps_for_structure`."""
+    job_ids = {
+        jid
+        for s in refs
+        if isinstance(
+            jid := (getattr(s, "meta", None) or {}).get("pourbaix_job_id"), int
+        )
+    }
+    return dict(store.fetch_refs_by_ids(job_ids)) if job_ids else {}
+
+
+def quest_maps(store: Any, quest_ref: Any) -> list[dict[str, Any]]:
+    """``[{ref, handle, maps}]`` per live structure serving the quest —
+    candidates without scans come back with an empty ``maps`` list rather
+    than dropped, so the view can say "no anchors" by name. Scans and bulk
+    verdicts are read for every candidate at once (gr488208)."""
+    entries = quest_scans(store, quest_ref)
+    verdicts = bulk_verdicts(store, [e["ref"] for e in entries])
+    return [
+        {
+            "ref": e["ref"],
+            "handle": e["handle"],
+            "maps": maps_for_structure(
+                store, e["ref"], jobs=e["jobs"], verdicts=verdicts
+            ),
+        }
+        for e in entries
     ]
 
 
