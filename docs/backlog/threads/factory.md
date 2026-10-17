@@ -1,10 +1,14 @@
+---
+roster: active
+pillar: platform
+effort: medium
+---
 # factory
 
 ## Resume
 
-- **Pillar:** platform
-- **Next:** When activated, make agent-declared halts stop being terminal-silent.
-- **Blocked by:** No declared active owner.
+- **Next:** Make agent-declared halts stop being terminal-silent (Do next 1).
+- **Blocked by:** Nothing; active from 2026-10-17 (Reto: already landing).
 - **Unblocks:** Reliable autonomous execution lanes.
 - **Acceptance:** Use [halt-classes-and-outage-breaker](../halt-classes-and-outage-breaker.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
 - **Worktree:** `factory`
@@ -13,7 +17,7 @@
 
 ## Thread context
 
-Current declared activity: [fleet roster](../../../.claude/fleet/threads.tsv); dated allocation decisions below are historical.
+Current declared activity: the `roster:` front matter above; dated allocation decisions below are historical.
 
 **Status:** ends when the agent execution lanes never silently starve or
 halt, spend is bounded, and a crashed run is recoverable — the platform
@@ -25,7 +29,7 @@ first (terminal-silent halts; the starved lanes and rescue passes shipped
 quality-of-life and container items.
 **Last reviewed:** 2026-10-02 (fix lane dropped)
 **Worktree:** `factory`
-**Allocation decision (historical):** no — opens at the next session restart if Reto names it.
+**Allocation decision:** active — Reto 2026-10-17 (already landing).
 
 ## Do next
 

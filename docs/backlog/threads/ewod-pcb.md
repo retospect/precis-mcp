@@ -1,8 +1,12 @@
+---
+roster: active
+pillar: 3d-design
+effort: medium
+---
 # ewod pcb
 
 ## Resume
 
-- **Pillar:** 3d-design
 - **Next:** Reto ruled "fixed" on 2026-10-12 (chat): nothing beyond the netlist is fixed. Pin swaps are free, placement is free (the driver and parts may move), and the board outline may grow; no hand-routing of any net ("there are infinite solutions, we need one; don't constrain the problem"). The local escape repair build is withdrawn (td472840 comment 1; the item is deleted). So: (1) re-put the ARR1 generators entry and re-route `ewod-dogfood-6` on prod with the landed distance warm start and pin swaps enabled (replay 51/55 inner vs 42/55 radial, mx456/mx457, against prod's current 45/55, job 472111); (2) if that is short of 55/55, a placement pass that may enlarge the outline until every net routes. The levers evidence stays as the record: driver rotations 0°/180° collided with the then-fixed vias (mx458–mx463), connected In2 plaza-row exits regressed 51 → 50/55 (mx464), removal controls 51/49/49 (mx465–mx467). EasyEDA export work ([pcb-easyeda-round-trip](pcb-easyeda-round-trip.md#resume)) is sequenced behind this routing work, not parked. Historical handoffs below remain historical.
 - **Blocked by:** Nothing from Reto; the coordinator owns deployment. No provider/model/compute/manufacture/service work. Historical handoffs below do not renew programme holds.
 - **Unblocks:** Reproducible routing progress and trustworthy labels on the dogfood EWOD board.

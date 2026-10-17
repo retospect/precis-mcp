@@ -83,6 +83,7 @@ _PILLAR_ORDER = [
     "3d-design",
     "local-compute",
     "personal",
+    "operations",
     "quests",
     "platform",
 ]
@@ -236,7 +237,6 @@ def write_generated(target: Path, title: str, rows: list[str]) -> bool:
 
 
 RESUME_FIELDS = (
-    "Pillar",
     "Next",
     "Blocked by",
     "Unblocks",
@@ -246,29 +246,35 @@ RESUME_FIELDS = (
     "Detail",
 )
 
+# Thread front matter: the fleet roster lives in each thread file (no
+# separate table). `design-review` is optional and only ever `yes`.
+ROSTER_VALUES = ("active", "dormant")
+EFFORT_VALUES = ("low", "medium", "high")
+
 
 def thread_priorities(root: Path) -> list[str]:
     """Render declared activity; reject ambiguous or unreachable entry points.
 
-    Resume fields stay with ranked work so owners update one handoff. The
-    fleet roster owns activity; generated views never infer live processes.
+    Resume fields stay with ranked work so owners update one handoff. Each
+    thread file's front matter (`roster`, `pillar`, `effort`) declares
+    activity; generated views never infer live processes.
     """
     directory = root / "docs/backlog/threads"
-    active: set[str] = set()
-    for line in (
-        (root / ".claude/fleet/threads.tsv").read_text(encoding="utf-8").splitlines()
-    ):
-        if not line.strip() or line.startswith("#"):
-            continue
-        slug = line.split("\t")[0]
-        if slug in active or not (directory / f"{slug}.md").is_file():
-            raise ValueError(f"fleet target missing or duplicated: {slug}")
-        active.add(slug)
     entries = []
     for path in sorted(directory.glob("*.md")):
         if path.name in ("README.md", "INDEX.md", "PRIORITIES.md"):
             continue
-        text = path.read_text(encoding="utf-8")
+        fm, text = front_matter(path.read_text(encoding="utf-8"))
+        roster = fm.get("roster", "")
+        if roster not in ROSTER_VALUES:
+            raise ValueError(f"{path.name}: roster must be active or dormant")
+        pillar = fm.get("pillar", "")
+        if pillar not in _PILLAR_ORDER:
+            raise ValueError(f"{path.name}: unknown pillar {pillar!r}")
+        if fm.get("effort", "") not in EFFORT_VALUES:
+            raise ValueError(f"{path.name}: effort must be low, medium or high")
+        if fm.get("design-review", "yes") != "yes":
+            raise ValueError(f"{path.name}: design-review is yes or absent")
         blocks = re.findall(r"^## Resume\n(.*?)(?=^## |\Z)", text, re.M | re.S)
         if len(blocks) != 1:
             raise ValueError(f"{path.name}: expected one Resume section")
@@ -279,8 +285,6 @@ def thread_priorities(root: Path) -> list[str]:
             raise ValueError(f"{path.name}: expected Resume fields {RESUME_FIELDS}")
         if len(block.split()) > 350:
             raise ValueError(f"{path.name}: Resume exceeds 350 words")
-        if values["Pillar"] not in _PILLAR_ORDER:
-            raise ValueError(f"{path.name}: unknown pillar")
         for target in re.findall(r"\]\(([^)]+)\)", block):
             if "://" in target:
                 continue
@@ -298,8 +302,7 @@ def thread_priorities(root: Path) -> list[str]:
                 }
                 if anchor not in anchors:
                     raise ValueError(f"{path.name}: missing Resume anchor {target}")
-        state = "active" if path.stem in active else "dormant"
-        cells = [f"[{path.stem}]({path.name}#resume)", values["Pillar"], state]
+        cells = [f"[{path.stem}]({path.name}#resume)", pillar, roster]
         # The table lives beside the thread, so relative file links keep
         # their base but fragment-only links must name the source thread.
         cells.extend(
@@ -308,14 +311,15 @@ def thread_priorities(root: Path) -> list[str]:
         )
         entries.append(
             (
-                state != "active",
-                _PILLAR_ORDER.index(values["Pillar"]),
+                roster != "active",
+                _PILLAR_ORDER.index(pillar),
                 path.stem,
                 "| " + " | ".join(c.replace("|", "\\|") for c in cells) + " |",
             )
         )
     return [
-        "Activity is declared by `.claude/fleet/threads.tsv`, not observed live. "
+        "Activity is declared by each thread's `roster:` front matter, not "
+        "observed live. "
         "Check `scripts/inflight` before resuming. Owners maintain Resume fields; "
         "this table does not re-rank threads.",
         "",

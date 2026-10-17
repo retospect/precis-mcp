@@ -1,8 +1,12 @@
+---
+roster: active
+pillar: 3d-design
+effort: high
+---
 # nanobuds paper
 
 ## Resume
 
-- **Pillar:** 3d-design
 - **Next:** once the docx fix (2026-10-10, below) is deployed, export both formats from the web UI (tick "submission copy" for the journal PDF) and read them; Reto's manual pass over the citations, starting with the 14 WEAK sentences the 2026-10-10 audit left open (listed below); ingest full text for the six 1993/1986/1996 definitional stubs pa477139–pa477144 or accept them as metadata-only cites.
 - **Blocked by:** the deploy of the docx fix (sections/cross-refs/title block in Word); nothing on figure rights (the five reproduced figures are cleared; the two image-less placeholders dc3015723 and dc3015730 were dropped); hero figure remains unchanged while hexfold's spec-driven shapes are pending; anchored-hub edits go through `precis nanopub supersede` (door shipped 0043fdb7e for anchored, unpublished predecessors), then the normal sign and publish flow.
 - **Unblocks:** A submission-ready October preprint.

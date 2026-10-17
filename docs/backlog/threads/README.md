@@ -24,13 +24,12 @@ second backlog, which is the failure mode it exists to prevent.
 ## Resume entry point
 
 Start with [PRIORITIES.md](PRIORITIES.md); run `scripts/docs-index`
-if missing or stale. Declared activity lives only in
-`.claude/fleet/threads.tsv`; verify live work with `scripts/inflight`.
+if missing or stale. Declared activity lives only in each thread file's
+front matter; verify live work with `scripts/inflight`.
 
 Each thread starts with one `## Resume` section, at most 350 words, with
-one bullet for each field: `Pillar`, `Next`, `Blocked by`, `Unblocks`,
-`Acceptance`, `Worktree`, `Builds`, `Detail`. Use a closed pillar value
-from the backlog contract. Use clickable relative links with stable item
+one bullet for each field: `Next`, `Blocked by`, `Unblocks`,
+`Acceptance`, `Worktree`, `Builds`, `Detail`. Use clickable relative links with stable item
 names for dependencies. Keep estimates in builds; explicitly say when
 unknown. Check current deployment before repeating a handoff's operation.
 Update Resume at the four thread moments below, then regenerate the table.
@@ -39,11 +38,46 @@ are loaded only when needed. Existing detailed records remain during this
 migration; move durable instructions to runbooks and preserve decisions
 in their owning items/docstrings before removing shipped history.
 
+## Roster front matter
+
+Each thread file opens with a front-matter block. It is the fleet roster:
+there is no separate table.
+
+```yaml
+---
+roster: active
+pillar: operations
+effort: medium
+design-review: yes
+---
+```
+
+- `roster` — `active` (the fleet allocates a session) or `dormant`.
+- `pillar` — a closed value from `scripts/backlog-lint` `PILLARS`.
+- `effort` — `low`, `medium` or `high`, the session's `/effort` level.
+- `design-review` — optional, only `yes`: design-bearing changes get the
+  orchestrator's review before they land, because a plausible-but-wrong
+  method would pass the gate.
+- No trailing comments on these lines; the readers are line-based.
+
+The active set is
+`grep -l '^roster: active' docs/backlog/threads/*.md`. `scripts/fleet up`
+opens one window per active file, and `scripts/docs-index` renders the
+roster into PRIORITIES.md and rejects a file whose fields are missing or
+out of range. The model is chosen at launch (`PRECIS_FLEET_MODEL`, default
+Sonnet) and never written here. Changing the active set is a roster change:
+edit the front matter and record the ruling in `docs/roadmap.md`.
+
 ## Shape
 
 One file per thread: `docs/backlog/threads/<slug>.md`.
 
 ```markdown
+---
+roster: active
+pillar: <pillar>
+effort: medium
+---
 # <thread name>
 
 **Status:** ends when <the end state, one sentence; point at the spec or
@@ -131,6 +165,11 @@ Four moments, and not otherwise:
   produces a stale handoff.
 - **Finding out a rank was wrong** — including from a dogfood. Re-rank
   and say in the why-line what changed your mind.
+
+Gripe waves are the execution model (Reto, 2026-10-17). A wave's close
+writes the gripe ids it fixed or filed into the owning thread file, in
+the same commit as the close: shipped ids leave Do next, new ones go in
+at their rank.
 
 A change that adds or removes a seam between threads updates `INDEX.md`
 in the same commit.

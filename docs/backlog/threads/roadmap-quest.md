@@ -1,9 +1,13 @@
+---
+roster: dormant
+pillar: quests
+effort: high
+---
 # bootstrap roadmap quest
 
 ## Resume
 
-- **Pillar:** quests
-- **Next:** While parked, verify the recorded post-deploy cap (R16 is deployed) and the tick-remint wait; build role-choice skip only after organizer reopen.
+- **Next:** Dormant from 2026-10-17 (Reto: parked). While parked, verify the recorded post-deploy cap (R16 is deployed) and the tick-remint wait; build role-choice skip only after organizer reopen.
 - **Blocked by:** Tier-3 park forbids new slices until reopen; cap verification is unblocked (prod R16), and successful S2 escalation needs a worker tick.
 - **Unblocks:** Bounded research spend and an unattended quest loop.
 - **Acceptance:** Follow [the latest handoff](#thread-context): observe supply_outside_failed and ledger_ops applied before closing their items; act before reopen only on the recorded fail signals.

@@ -1,10 +1,15 @@
+---
+roster: active
+pillar: operations
+effort: high
+design-review: yes
+---
 # ship-gate-ci
 
 ## Resume
 
-- **Pillar:** platform
-- **Next:** Do next 1 (confirm the prod-as-second-parent test); slices (a)–(c) of the release-branch-rounds item are all on main (item deleted 2026-10-07) (`scripts/round` tags `deployed/r<N>` and merges back; tags r6–r16 exist on origin).
-- **Blocked by:** Nothing; verify the prod-as-second-parent test exists before retiring Do next 1.
+- **Next:** Do next 1, CI runner starvation (gr495187: main runs wait ~70 min for shards); then Do next 2 (confirm the prod-as-second-parent test); slices (a)–(c) of the release-branch-rounds item are all on main (item deleted 2026-10-07) (`scripts/round` tags `deployed/r<N>` and merges back; tags r6–r16 exist on origin).
+- **Blocked by:** Nothing; verify the prod-as-second-parent test exists before retiring Do next 2.
 - **Unblocks:** Verified release deployments for every thread.
 - **Acceptance:** Use the [release-cycle runbook](../../runbooks/release-cycle.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
 - **Worktree:** `ship-gate-ci`
@@ -13,16 +18,16 @@
 
 ## Thread context
 
-Current declared activity: [fleet roster](../../../.claude/fleet/threads.tsv); dated allocation decisions below are historical.
+Current declared activity: the `roster:` front matter above; dated allocation decisions below are historical.
 
 **Status:** ends when the ship gate, CI lanes and worktree reaper never
 hold the fleet hostage, never read a policy crash as a violation, and never
 delete a live session's tree — the path every pillar's work ships through
-(`docs/roadmap.md` platform bucket). Today twenty filed items have no owner;
+(`docs/roadmap.md` Pillar 5 Operations). Today twenty filed items have no owner;
 the order is data loss first (live-worktree deletion), then fleet-wide
 stalls (slot and lock holds, hangs), then verdict honesty (red that reads as
 green or the reverse), then tuning and residue.
-**Last reviewed:** 2026-10-04
+**Last reviewed:** 2026-10-17
 **Worktree:** `ship-gate-ci`
 **Allocation decision (historical):** yes — Reto 2026-10-03 ("push should not break build"; set off as p1).
 **Resume:** 2026-10-04 07:30Z. Everything this thread built is on main;
@@ -63,13 +68,18 @@ nightly — the diff-cover verdict is still open.
 
 ## Do next
 
-1. **Release rounds (was backlog/release-branch-rounds.md, deleted 2026-10-07 as
+1. **gr495187** — CI runner starvation: main runs wait ~70 min for shard
+   runners, so main goes without a verdict and release gating waits on it;
+   every other item here ships through that queue. gr492653's adaptive
+   shard count is the nearest lever.
+
+2. **Release rounds (was backlog/release-branch-rounds.md, deleted 2026-10-07 as
    shipped)**: slice (a) `round cut` + `release/**` CI (06247b684), slice (b)
    `ship --release` (2026-10-04), slice (c) `round gate`/`deploy` on the
    release head with the `deployed/r<N>` tag and merge-back (`scripts/round`;
    tags `deployed/r6`–`r16` on origin). Left here: confirm the
    prod-as-second-parent test exists under `tests/`; if not, add it.
-2. **release-candidate-verdicts** (item deleted 2026-10-12, all settled) — p1 (Reto 2026-10-03). Main's
+3. **release-candidate-verdicts** (item deleted 2026-10-12, all settled) — p1 (Reto 2026-10-03). Main's
    CI runs cancel each other at ~8 qlands/hour, so main has no verdicts and
    the drift guard is blind (25-commit walk); the round's local full gate
    holds the ship lock. All four slices shipped 2026-10-03 (hygiene tests
@@ -92,7 +102,7 @@ nightly — the diff-cover verdict is still open.
    started (a pending run replaced by a newer push, as designed). Ruled
    2026-10-12 (Reto): the max candidate age stays 6 h
    (`DEFAULT_MAX_CANDIDATE_HOURS` in `scripts/round`); nothing open.
-3. **backlog/reaper-removed-live-session-worktree.md** — auto-reap deleted
+4. **backlog/reaper-removed-live-session-worktree.md** — auto-reap deleted
    live sessions' trees; fixes 1–3, the grace/purpose guards and the
    two-sessions-in-one-tree process-table check shipped,
    the harness kill/SessionEnd coupling (proposal 4) is open. Its sibling
@@ -110,21 +120,17 @@ nightly — the diff-cover verdict is still open.
    project down at exit (ae5084ae3), and colima's docker pools were widened
    from ~31 to 256 networks (Reto, review-queue ship-gate-ci-2, done by
    the orchestrator 19:01Z).
-4. **backlog/deploy-renders-only-precis-roles.md** — `scripts/deploy` never
+5. **backlog/deploy-renders-only-precis-roles.md** — `scripts/deploy` never
    renders backups, monitoring or pgbouncer roles; a B2 sync fix sat
    unrendered for 7 weeks. Draft, Reto picks (i)/(ii)/(iii).
-5. **backlog/orphaned-test-runs-hold-gate-slots-forever.md** — a subagent
+6. **backlog/orphaned-test-runs-hold-gate-slots-forever.md** — a subagent
    exiting without reaping `scripts/test` holds a slot forever, starving the
    2-slot gate for every tree.
-6. **backlog/gate-hang-diagnosis.md** — py-spy cannot run inside the gate
-   container; the tooling that makes 5 diagnosable.
-7. **backlog/local-gate-red-on-green-main-token-budget.md** — gating CI is
+7. **backlog/gate-hang-diagnosis.md** — py-spy cannot run inside the gate
+   container; the tooling that makes 6 diagnosable.
+8. **backlog/local-gate-red-on-green-main-token-budget.md** — gating CI is
    3.13-only but prod runs 3.12; nightly red on a green main.
 
-8. **backlog/tool-description-budgets.md** — PROPOSED, direction approved
-   2026-10-17; build after M1-M3 (gr494831). core.py verb descriptions sit at
-   966-971 of 1024 bytes (get, tag); six budget fixes in 14 days. Slice 1
-   (cap test into `CODE_HYGIENE`) can go first; the rest waits on the refusals.
 
 ## Horizon
 

@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: idea
 pillar: personal
 ---
 

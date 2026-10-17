@@ -1,9 +1,13 @@
+---
+roster: dormant
+pillar: 3d-design
+effort: medium
+---
 # se nucleic chain
 
 ## Resume
 
-- **Pillar:** 3d-design
-- **Next:** Continue DNA wrap-around-part once hexfold integration is available.
+- **Next:** Dormant from 2026-10-17 (Reto): no commit since 2026-10-03. Continue DNA wrap-around-part once hexfold integration is available.
 - **Blocked by:** [Hexfold integration](hexfold-toolkit.md#resume).
 - **Unblocks:** DNA scaffolds around designed carbon parts.
 - **Acceptance:** Use [se-chain-wrap-around-part](../se-chain-wrap-around-part.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.

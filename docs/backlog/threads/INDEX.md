@@ -8,7 +8,7 @@ another consumes. Update it at the same four moments as a thread file.
 
 ## Pillars
 
-Four pillars sit above the programme layer, text in `docs/roadmap.md`.
+Five pillars sit above the programme layer, text in `docs/roadmap.md`.
 Each programme below serves one or more:
 
 - **memory-graph** — `knowledge` (knowledge-mesh owns the substrate) +
@@ -17,16 +17,23 @@ Each programme below serves one or more:
   `draft-authoring` (drafts, export, tex layer).
 - **3d-design** — `pcb` + `se` + `chemistry` (incl. `catalysis-selectivity`) + `multiscale-design-core` + `se-machine-design` + `pcb-platform`.
 - **local-compute** — `local-compute` (owns local model
-  serving: the summariser and the single-spark model, and what they do) +
-  `serving` (owns the MCP ceiling and the eval spine).
+  serving: the summariser and the single-spark model, and what they do).
 - **personal-integration** — HELD; no programme yet.
-- **platform** — `plugin-split` + `monitors-that-go-quiet` + `factory` +
-  `ship-gate-ci` · `deploy-fleet-ops` · `security-hardening`; serves all four indirectly (nothing ships without it).
+- **operations** — `deploy-fleet-ops` · `security-hardening` ·
+  `monitors-that-go-quiet` · `ship-gate-ci` · `serving` (`serving-programme`
+  owns the MCP ceiling and the eval spine; `session-mcp-shared-server` owns
+  the shared server); keeps the cluster, the gate and the deploy path
+  working for every pillar.
+- **platform** (bucket) — `plugin-split` + `factory` + `agent-surface` (MCP
+  effectiveness: errors that carry the fix, misuse guards, description
+  budgets, Drive); serves every pillar indirectly.
 
 ## Activity and next actions
 
 [Generated priority table](PRIORITIES.md) — declared activity comes only from
-`.claude/fleet/threads.tsv`; it is not a live-session check. Run
+each thread file's `roster:` front matter
+(`grep -l '^roster: active' docs/backlog/threads/*.md`); it is not a
+live-session check. Run
 `scripts/docs-index` if missing or stale. Read a thread's Resume
 first, then its current item; load other threads only for dependencies.
 
@@ -202,15 +209,18 @@ Waits:
 - nanobuds Horizon 2 (approve/sign pass) sits in Reto's nanopub queue
   (td345830–td345836) with six other batches.
 
-## platform — split, deploy, monitors
+## platform and operations — split, deploy, monitors, agent surface
 
 Threads: `plugin-split.md` · `monitors-that-go-quiet.md` · `factory.md`
 (also ranks plan_tick health, the todo planner: plan-tick-health,
 plan-tick-context-cut; agent execution lanes, budget and crash recovery) ·
 `ship-gate-ci.md` (gate, CI lanes and worktree reaper) ·
 `deploy-fleet-ops.md` (deploy script and fleet residue) ·
-`security-hardening.md` (credentials, role and sandbox boundaries). The last three were created 2026-10-02 from the unowned
-platform items; code-debt, db-schema and docs-audit items stay unthreaded.
+`security-hardening.md` (credentials, role and sandbox boundaries) ·
+`agent-surface.md` (what an MCP call says and refuses; created 2026-10-17).
+Monitors, ship-gate-ci, deploy-fleet-ops and security-hardening serve the
+operations pillar; plugin-split, factory and agent-surface the platform
+bucket. Code-debt, db-schema and docs-audit items stay unthreaded.
 
 Seams:
 - `ship-gate-ci` ↔ `monitors-that-go-quiet` —
@@ -219,7 +229,7 @@ Seams:
 - `deploy-fleet-ops` ↔ `session-mcp-shared-server` — both touch
   `scripts/deploy` and the ensure script (`backlog/mcps-venv-deploy-gaps.md`);
   shared-server owns the MCP's deploy shape, deploy-fleet-ops the script.
-  `ship-gate-ci` Do-next 3 and `deploy-fleet-ops` share the live render tree.
+  `ship-gate-ci` Do-next 4 and `deploy-fleet-ops` share the live render tree.
 - `security-hardening` ↔ `session-mcp-shared-server` —
   `backlog/db-role-enforce-pgbouncer.md` and the shared-server's role
   isolation (Horizon 1) are one boundary.

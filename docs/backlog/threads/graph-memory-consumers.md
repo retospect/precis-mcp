@@ -1,10 +1,14 @@
+---
+roster: dormant
+pillar: memory-graph
+effort: high
+---
 # graph memory consumers
 
 ## Resume
 
-- **Pillar:** memory-graph
-- **Next:** Do next 3 (memory-native-authoring); the `_first_hop` rewire shipped 2026-10-15 with byte-identical rings. Recall, walk and keep shipped and passed the prod dogfood 2026-10-15 (memory-recall-walk-keep deleted on ship): `search(kind='memory', view='index')`, `get(view='fisheye+1hop+recall')`, the mirror's legacy/unexported reports. The production cutover and host bootstrap are active: root me474312, namespace repo-dev-harness-20261007. AGENTS carries the shared policy and bootstrap locator; CLAUDE links to it. Preserve the original pointer and immutable recovery evidence.
-- **Blocked by:** Nothing. Preserve 146 legacy nodes/356 links; title-only retire supersedes refresh. Native CLI export is deferred; immutable input, full production readback and locked legacy backup satisfy recovery.
+- **Next:** Dormant from 2026-10-17 (Reto): P1 winds down to maintenance once memory P4 lands (queued). Do next 3 (memory-native-authoring); the `_first_hop` rewire shipped 2026-10-15 with byte-identical rings. Recall, walk and keep shipped and passed the prod dogfood 2026-10-15 (memory-recall-walk-keep deleted on ship): `search(kind='memory', view='index')`, `get(view='fisheye+1hop+recall')`, the mirror's legacy/unexported reports. The production cutover and host bootstrap are active: root me474312, namespace repo-dev-harness-20261007. AGENTS carries the shared policy and bootstrap locator; CLAUDE links to it. Preserve the original pointer and immutable recovery evidence.
+- **Blocked by:** Nothing. The cutover is complete: `MEMORY.md` points at the mesh root memory node (since 2026-10-13), and Reto's 2026-10-07 ruling closed the revert-cause question. Preserve 146 legacy nodes/356 links; title-only retire supersedes refresh. Native CLI export is deferred; immutable input, full production readback and locked legacy backup satisfy recovery.
 - **Unblocks:** One link neighbourhood for every render: the MCP rings, the web panel and focus page cannot disagree about what is linked.
 - **Acceptance:** after the rewire, `tests/test_eye_render.py` and `tests/test_finding.py` stay green and the memory/finding 1-hop render is unchanged on their fixtures; check `scripts/main-ci-status` and prod's sha (`get(kind='skill', id='precis-status')`) before any live step.
 - **Worktree:** `memory-graph`
@@ -30,11 +34,11 @@ its provenance; scratch preparation filled 32 names (me472973), and the
 synthetic dev rehearsal passed (fi472896). No real-copy import has run.
 
 - **Pre-flight 2026-10-07 (read-only on prod):** the 146 legacy nodes carry the 2026-10-03/04 index bullet titles and `meta.slug`, not file names; only 5 match a current file by title or slug, and a body-shingle comparison against the current topic files also pairs only 5 cleanly (the files were rewritten since). `--legacy refresh` therefore adopts almost nothing; the honest round-7 run is `--legacy retire` (Reto's stated fallback, "retire or rewrite, fine") unless Reto wants the 5 adopted first. Needs his confirmation via the coordinator before the run. Prod dogfood of slices 1-3 done 2026-10-07 on fc8ad08f7: index render, fisheye+1hop+recall with the SPACE filter, anchored-edit dry run all pass; recall is lexical-leaning (a paraphrase missed the target in the top 5), measure again after the real import. The anchored-edit dogfood is done (td470292, R15).
-- The revert-cause precondition is still open (Reto 2026-10-07): Mac-side forensics are exhausted (no version history in the memory dir, no consolidation-log entry between 2026-10-03 and 10-07, no transcript); places left to look are the melchior-side Codex transcripts and fleet inbox from 2026-10-03/04. The spec's decisions log proposes a self-recording, self-detecting re-cut as the fallback, which needs Reto's go. **Handoff 2026-10-07 15:25Z (session exited on Reto's order):** everything is on main (slice 5 = afa814bd9); the round-7 cutover owner is the melchior Codex graph-memory agent. The import reads Reto's harness memory dir on the Mac (`~/.claude/projects/-Users-reto-work-projects-code-precis-mcp/memory/`), so it runs from the Mac or from a copy of that dir; 33 of its 147 files lack a `name:` or `description:` and the importer refuses them, so fix that frontmatter first (name = file stem, description = the index hook). Command shape: `precis memory mirror import <dir> --namespace <ns> --legacy retire` (or `refresh` first for the 5 matching nodes), against prod with the overlay DSN.
+- Historical (closed): the revert-cause precondition, superseded by Reto's 2026-10-07 ruling and the completed cutover. At the time: Mac-side forensics are exhausted (no version history in the memory dir, no consolidation-log entry between 2026-10-03 and 10-07, no transcript); places left to look are the melchior-side Codex transcripts and fleet inbox from 2026-10-03/04. The spec's decisions log proposes a self-recording, self-detecting re-cut as the fallback, which needs Reto's go. **Handoff 2026-10-07 15:25Z (session exited on Reto's order):** everything is on main (slice 5 = afa814bd9); the round-7 cutover owner is the melchior Codex graph-memory agent. The import reads Reto's harness memory dir on the Mac (`~/.claude/projects/-Users-reto-work-projects-code-precis-mcp/memory/`), so it runs from the Mac or from a copy of that dir; 33 of its 147 files lack a `name:` or `description:` and the importer refuses them, so fix that frontmatter first (name = file stem, description = the index hook). Command shape: `precis memory mirror import <dir> --namespace <ns> --legacy retire` (or `refresh` first for the 5 matching nodes), against prod with the overlay DSN.
 
 ## Thread context
 
-Current declared activity: [fleet roster](../../../.claude/fleet/threads.tsv); dated allocation decisions below are historical.
+Current declared activity: the `roster:` front matter above; dated allocation decisions below are historical.
 
 **Status:** ends when an agent never leaves the graph to do its work — no
 temp file for a proposal, no SQL for a write check, no guessing which

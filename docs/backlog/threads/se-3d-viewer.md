@@ -1,8 +1,12 @@
+---
+roster: active
+pillar: 3d-design
+effort: medium
+---
 # se 3D viewer
 
 ## Resume
 
-- **Pillar:** 3d-design
 - **Next:** The print dialog when writer scale lands, otherwise fastener_insertion_path.
 - **Blocked by:** [se-machine-design](se-machine-design.md#resume)’s writer scale for the print dialog.
 - **Unblocks:** A human inspection surface for machine designs.

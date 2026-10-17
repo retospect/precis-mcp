@@ -5,13 +5,14 @@
 # window at index 1 that walks Reto through what the sessions need from him.
 # The orchestrator session (`/fleet`) runs this; nothing here lands or
 # deploys. State is derived from tmux at call time; the only stored input is
-# `.claude/fleet/threads.tsv` (slug, effort, design-review flag, model), which
-# follows the active set in `docs/roadmap.md`.
+# the front matter of `docs/backlog/threads/<slug>.md` (`roster: active`,
+# `effort:`, optional `design-review: yes`), the declared active set that
+# `docs/roadmap.md` links.
 #
 #   scripts/fleet up [--stagger N] [slug…]   create every missing window (idempotent)
 #       With slugs: only those threads' windows (other thread windows untouched; the
-#       review window and the MCP wait still run, both idempotent). A slug not in
-#       threads.tsv exits 2 naming it, before anything is created.
+#       review window and the MCP wait still run, both idempotent). A slug that is
+#       not an active thread exits 2 naming it, before anything is created.
 #   scripts/fleet status             window · index · ctx% · busy/idle/dialog
 #   scripts/fleet say <file> [win…]  send one message; skips open dialogs
 #   scripts/fleet say -m "<text>" [win…]   same, inline text (no file)
@@ -45,8 +46,8 @@
 #       nothing (a first start seeds silently). Also drains the held queue.
 #       PRECIS_FLEET_WATCH_TICK 15 s, PRECIS_FLEET_CTX_FLOOR 30
 #   scripts/fleet effort             send each window its /effort level
-#   scripts/fleet model <slug>       the model `up` starts that thread on (its row, else
-#       sonnet; PRECIS_FLEET_MODEL overrides every row)
+#   scripts/fleet model <slug>       the model `up` starts that thread on: sonnet, or
+#       PRECIS_FLEET_MODEL for every thread (model is a launch-time choice)
 #   scripts/fleet watch-ctx          the old ctx-only watcher (kept; `watch` supersedes it)
 #   scripts/fleet queue-dir          print the review-queue directory
 #
@@ -60,7 +61,7 @@ set -euo pipefail
 common=$(git rev-parse --path-format=absolute --git-common-dir)
 root=$(dirname "$common")
 conf="$(git rev-parse --show-toplevel)/.claude/fleet"
-table="$conf/threads.tsv"
+threads_dir="$(git rev-parse --show-toplevel)/docs/backlog/threads"
 # Outside any worktree, so a reaped tree cannot take the queue with it.
 state="${PRECIS_FLEET_STATE:-$HOME/.claude/projects/$(printf '%s' "$root" | tr '/.' '--')}"
 # Review queue and notes sit in a gitignored, non-dot dir of the main checkout:
@@ -73,15 +74,27 @@ held="$state/fleet-queue"
 model="${PRECIS_FLEET_MODEL:-opus}"
 
 tmux() { command tmux ${PRECIS_FLEET_TMUX_SOCKET:+-L "$PRECIS_FLEET_TMUX_SOCKET"} "$@"; }
-threads() { grep -v -e '^#' -e '^[[:space:]]*$' "$table"; }
-windows() { tmux list-windows -F '#{window_name}'; }
-# Model for a thread window: PRECIS_FLEET_MODEL overrides every row, else the
-# row's fourth column, else sonnet (missing or empty column).
-thread_model() {
-  [ -z "${PRECIS_FLEET_MODEL:-}" ] || { printf '%s\n' "$PRECIS_FLEET_MODEL"; return; }
-  local m; m=$(threads | awk -F'\t' -v s="$1" '$1 == s { print $4; exit }')
-  printf '%s\n' "${m:-sonnet}"
+# One tab-separated line per active thread: slug, effort, design-review (yes|no),
+# read from each thread file's front matter (the block between the first two
+# `---` lines).
+threads() {
+  local f
+  for f in "$threads_dir"/*.md; do
+    [ -e "$f" ] || continue
+    awk -v slug="$(basename "$f" .md)" '
+      NR == 1 && $0 != "---" { exit }
+      NR > 1 && $0 == "---" {
+        if (r == "active") printf "%s\t%s\t%s\n", slug, (e ? e : "medium"), (d ? d : "no")
+        exit
+      }
+      /^roster:/ { r = $2 } /^effort:/ { e = $2 } /^design-review:/ { d = $2 }
+    ' "$f"
+  done
 }
+windows() { tmux list-windows -F '#{window_name}'; }
+# Model for a thread window: chosen at launch, PRECIS_FLEET_MODEL for every
+# thread, else sonnet. Thread files carry no model.
+thread_model() { printf '%s\n' "${PRECIS_FLEET_MODEL:-sonnet}"; }
 has_window() { windows | grep -q -x -- "$1"; }
 # Every dialog marker this build shows; status, send, dialogs and the drain all key on it.
 dialog_re='Enter to select|Do you want to|Do you trust the files'
@@ -156,7 +169,7 @@ wait_mcp() {
   done
 }
 
-# One thread window, as `up` makes it: boot prompt, the row's model, the
+# One thread window, as `up` makes it: boot prompt, the launch model, the
 # stagger left to the caller. Returns 1 (and prints `exists:`) when it is there.
 up_thread() { # up_thread <slug>
   local slug=$1
@@ -184,7 +197,7 @@ cmd_up() {
   # Named slugs are checked against the table before anything is created.
   for s in $slugs; do
     threads | cut -f1 | grep -q -x -F -- "$s" ||
-      { echo "scripts/fleet up: no such thread in $table: $s" >&2; exit 2; }
+      { echo "scripts/fleet up: no active thread in $threads_dir: $s" >&2; exit 2; }
   done
   wait_mcp
   mkdir -p "$queue/open" "$queue/answered" "$reviews"
@@ -198,7 +211,7 @@ cmd_up() {
     echo "created: review"
   fi
   if [ -z "$slugs" ]; then
-    threads | while IFS=$'\t' read -r slug _effort _review _model; do
+    threads | while IFS=$'\t' read -r slug _effort _review; do
       up_thread "$slug" || continue
       sleep "$stagger"
     done
@@ -848,7 +861,7 @@ cmd_effort() {
   # `/effort` saves its level as the default for new sessions, last write
   # wins: send medium first so the saved default ends on high.
   for level in medium high; do
-    threads | while IFS=$'\t' read -r slug effort _review _model; do
+    threads | while IFS=$'\t' read -r slug effort _review; do
       [ "$effort" = "$level" ] || continue
       has_window "$slug" && send "$slug" "/effort $level"
     done

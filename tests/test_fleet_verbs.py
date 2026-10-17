@@ -215,16 +215,25 @@ exec "$REAL_TMUX" "$@"
 """
 
 
+def _thread(repo: Path, slug: str, roster: str, effort: str) -> None:
+    """A thread file whose front matter is the fleet roster entry."""
+    directory = repo / "docs" / "backlog" / "threads"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"{slug}.md").write_text(
+        f"---\nroster: {roster}\npillar: platform\neffort: {effort}\n---\n# {slug}\n",
+        encoding="utf-8",
+    )
+
+
 @pytest.fixture
 def fleet(tmp_path: Path) -> Iterator[Fleet]:
     repo = tmp_path / "repo"
     (repo / "scripts").mkdir(parents=True)
     (repo / ".claude" / "fleet").mkdir(parents=True)
     shutil.copy2(REPO / "scripts" / "fleet", repo / "scripts" / "fleet")
-    (repo / ".claude" / "fleet" / "threads.tsv").write_text(
-        "# slug\teffort\tdesign-review\nalpha\thigh\tno\nbeta\tmedium\tno\n",
-        encoding="utf-8",
-    )
+    _thread(repo, "alpha", "active", "high")
+    _thread(repo, "beta", "active", "medium")
+    _thread(repo, "gamma", "dormant", "medium")
     _git(repo, "init", "-q", "-b", "main")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "init")
@@ -734,33 +743,13 @@ def test_refs_fetch_failure_is_a_stderr_note_not_an_error(fleet: Fleet) -> None:
 # --- model -----------------------------------------------------------------
 
 
-def _table(fleet: Fleet, rows: str) -> None:
-    (fleet.repo / ".claude" / "fleet" / "threads.tsv").write_text(
-        "# slug\teffort\tdesign-review\tmodel\n" + rows, encoding="utf-8"
-    )
-
-
-def test_model_column_decides_and_missing_or_empty_is_sonnet(fleet: Fleet) -> None:
-    _table(
-        fleet,
-        "alpha\thigh\tno\topus\nbeta\tmedium\tno\n"
-        "gamma\tmedium\tno\t\ndelta\thigh\tno\tsonnet\n",
-    )
+def test_model_defaults_to_sonnet_for_every_thread(fleet: Fleet) -> None:
     fleet.env.pop("PRECIS_FLEET_MODEL", None)
-    got = {
-        s: fleet.run("model", s).stdout.strip()
-        for s in ("alpha", "beta", "gamma", "delta")
-    }
-    assert got == {
-        "alpha": "opus",
-        "beta": "sonnet",
-        "gamma": "sonnet",
-        "delta": "sonnet",
-    }
+    got = {s: fleet.run("model", s).stdout.strip() for s in ("alpha", "beta")}
+    assert got == {"alpha": "sonnet", "beta": "sonnet"}
 
 
-def test_model_env_overrides_every_row(fleet: Fleet) -> None:
-    _table(fleet, "alpha\thigh\tno\topus\nbeta\tmedium\tno\n")
+def test_model_env_overrides_every_thread(fleet: Fleet) -> None:
     fleet.env["PRECIS_FLEET_MODEL"] = "haiku"
     assert fleet.run("model", "alpha").stdout.strip() == "haiku"
     assert fleet.run("model", "beta").stdout.strip() == "haiku"
@@ -797,6 +786,14 @@ def test_up_without_slugs_creates_every_thread_window(fleet: Fleet) -> None:
     assert "created: alpha" in cp.stdout and "created: beta" in cp.stdout
     assert "created: review" in cp.stdout
     assert {"alpha", "beta", "review"} <= _window_names(fleet)
+    assert "gamma" not in _window_names(fleet)  # roster: dormant
+
+
+def test_up_with_a_dormant_slug_refuses(fleet: Fleet) -> None:
+    _up_ready(fleet)
+    cp = fleet.run("up", "--stagger", "0", "gamma")
+    assert cp.returncode == 2
+    assert "gamma" in cp.stderr
 
 
 def test_up_with_a_slug_creates_only_that_thread_window(fleet: Fleet) -> None:

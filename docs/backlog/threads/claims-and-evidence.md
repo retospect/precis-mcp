@@ -1,8 +1,12 @@
+---
+roster: active
+pillar: memory-graph
+effort: high
+---
 # claims and evidence — one identity per claim, every edge checked
 
 ## Resume
 
-- **Pillar:** memory-graph
 - **Next:** Check the D1 watch, then run the reword sweep (dry run, then `--apply` in `--limit 800 --after-ref-id N` batches); round 6 is deployed (prod R16, status review 2026-10-07).
 - **Blocked by:** Nothing for the sweep; remaining human decisions are listed under Do next.
 - **Unblocks:** Grounded claims and evidence for both research tracks.
@@ -13,7 +17,7 @@
 
 ## Thread context
 
-Current declared activity: [fleet roster](../../../.claude/fleet/threads.tsv); dated allocation decisions below are historical.
+Current declared activity: the `roster:` front matter above; dated allocation decisions below are historical.
 
 **Status:** ends when every claim has one identity, every evidence edge is
 checked against its source, contradictions are ruled on, and the hub corpus is

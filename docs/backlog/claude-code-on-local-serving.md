@@ -17,8 +17,8 @@ Castor serves gpt-oss 120B on vLLM (32 slots) and nothing routes to it
 Anthropic-format endpoint via `ANTHROPIC_BASE_URL`; vLLM speaks the OpenAI
 format, so one translating proxy makes castor a zero-marginal-cost backend
 for the Sonnet-class fleet roles (coder, tidy, test-runner, documenter,
-worker sessions). The Opus design-review threads in
-`.claude/fleet/threads.tsv` and the main loop stay on Claude.
+worker sessions). The `design-review: yes` threads
+(`docs/backlog/threads/*.md` front matter) and the main loop stay on Claude.
 
 ## In scope
 

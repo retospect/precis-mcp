@@ -1,8 +1,13 @@
+---
+roster: active
+pillar: 3d-design
+effort: high
+design-review: yes
+---
 # catalysis-selectivity
 
 ## Resume
 
-- **Pillar:** 3d-design
 - **Next:** SPSO wave A LANDED 2026-10-13 (main 01b36dba7 slices 2/4/5 + gr482107/gr482121; catpath v0.25.0 f88e45f; pin bump 75a6ab85b, rides r33 with the agent-image rebuild); wave B: B2 staircase panel (slice 3) LANDED 2026-10-13, B3 window/Shapley/HER objectives (slice 6) and B1 anchors rung (meta.surface_anchors) LANDED 2026-10-13 — wave B complete; after r33: re-mint the clean Pd(111) scan on 0.25.0 (corrected anchors) and confirm the ssh_node lane.
   Wave A is done (A1/A2 engine 0.25.0, A3 slice 2, A4 slices 4+5, A5 slice-1 proof jo482106 + θ→0 vs pw455722, all in the SPSO doc). Wave B = quest wiring, in flight. Then the Pourbaix gate's R15
   proof, preserving failed before-job 468292, gate rule-out/lift,
@@ -28,7 +33,7 @@
 
 ## Thread context
 
-Current declared activity: [fleet roster](../../../.claude/fleet/threads.tsv); dated allocation decisions below are historical.
+Current declared activity: the `roster:` front matter above; dated allocation decisions below are historical.
 
 **Status:** ends when a pathway answers "does the move toward the target
 win at every fork, thermodynamically and kinetically, and over which

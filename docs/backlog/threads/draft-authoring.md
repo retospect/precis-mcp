@@ -1,10 +1,14 @@
+---
+roster: active
+pillar: memory-graph
+effort: medium
+---
 # draft authoring — drafts, export and the tex layer
 
 ## Resume
 
-- **Pillar:** memory-graph
-- **Next:** Re-triage Horizon against the October paper after figure clearance; Do next has no open local item.
-- **Blocked by:** Figure gate owned by [nanobuds-paper](nanobuds-paper.md#resume).
+- **Next:** Support Reto's citation pass on the October preprint (target 2026-10-24, Reto) once release r46 deploys the export fix; then re-triage Horizon. Do next has no open local item.
+- **Blocked by:** The r46 deploy of the export fix; the citation pass is owned by [nanobuds-paper](nanobuds-paper.md#resume).
 - **Unblocks:** Reliable authoring and export for the monthly paper.
 - **Acceptance:** Follow the linked specs and verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
 - **Worktree:** `draft-authoring`
@@ -13,7 +17,7 @@
 
 ## Thread context
 
-Current declared activity: [fleet roster](../../../.claude/fleet/threads.tsv); dated allocation decisions below are historical.
+Current declared activity: the `roster:` front matter above; dated allocation decisions below are historical.
 
 **Status:** ends when a draft can be written, linted and exported to every
 format without a human working around the tool. Do-next is ordered by what

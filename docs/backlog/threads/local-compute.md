@@ -1,8 +1,12 @@
+---
+roster: active
+pillar: local-compute
+effort: medium
+---
 # local compute
 
 ## Resume
 
-- **Pillar:** local-compute
 - **Next:** Reto deploys `49a-sglang.yml` on castor (replacing the hand-run `sglang-trial` container, `docker rm -f sglang-trial` first — port 8000 conflict) and lands this branch (`local_serving` bounded wait + remote spill + rung `max_tokens`). Then apply the staged settings writes in the 2026-10-14 thread block — `llm.op.llm_summarize`, `llm.chain.small`, and (Reto's call, eval below) `llm.chain.medium` — and read `/placement` after 24 h.
 - **Blocked by:** Reto's deploy + settings writes (above). NAS role shares (local-compute-12) still await Reto. Meluxina: the LLM tunnel key (local-compute-16) is deprioritised; the storage question is answered in Do next 2b (bytes are not the constraint, inodes are).
 - **Unblocks:** Local serving for [knowledge-mesh](knowledge-mesh.md#resume) and graph maintenance.
@@ -13,7 +17,7 @@
 
 ## Thread context
 
-Current declared activity: [fleet roster](../../../.claude/fleet/threads.tsv); dated allocation decisions below are historical.
+Current declared activity: the `roster:` front matter above; dated allocation decisions below are historical.
 
 **Castor serving, 2026-10-11 (Reto):** model picked by ruling: **gpt-oss 120B** (vLLM), skipping the km-8 quality gate. castor serves it via `49-vllm.yml` (`vllm.service`, port 8000, `--max-num-seqs 64`, gpu-memory-utilization 0.70 until castor leaves the science lanes, then 0.80). Tool calling verified from melchior over the LAN. Card lm162513 carries a `source="static"` `served_by` (max_parallel 32) and prod `resource_slots` has `castor | llm:openai/gpt-oss-120b | 32`. No chain routes to it yet. The overlay does not yet carry the `vllm_serving` group; the run used a layered extra inventory. Castor exclusive (autocatpath/aizynth → pollux, compute/sandbox units stopped) is ruled and queued for the round-24 deploy with the coordinator. Stale DeepSeek-V4-Flash `served_by` (dead castor :8080) and its caspar slot row removed.
 

@@ -9,7 +9,6 @@ index	name	model	effort	threads	summary
 7	printed-materials	gpt-6-astra	high	se-machine-design	Develop printable structural parts and compare physical tests with predictions.
 8	se-print	gpt-6.1-sol	medium	se-machine-design	Normalize SE print scale, units, metadata and printability checks.
 9	hexfold	gpt-6-astra	high	hexfold-toolkit	Tile smooth surfaces with hex carbon and develop Y instrumentation.
-10	drive-ux	gpt-6.1-sol	high		Hierarchicalize Drive filters using Reto's concepts.
 11	paper	gpt-6-astra	high	nanobuds-paper	Advance nanobuds evidence, manuscript and export under existing holds.
 12	catalysis	gpt-6-astra	high	catalysis-selectivity	Advance complete-network selectivity research with existing experiment holds.
 13	chemistry	gpt-6.1-sol	high	chemistry	Maintain chemistry and DFT execution shared by research programmes.

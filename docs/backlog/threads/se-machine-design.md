@@ -1,10 +1,14 @@
+---
+roster: active
+pillar: 3d-design
+effort: high
+---
 # se machine design
 
 ## Resume
 
-- **Pillar:** 3d-design
 - **Next:** O5 + declared flat faces (Do next 2), then the pcb-se-binding rough box (Do next 6; "rough box yes" is the standing default, Reto 2026-10-12). O2–O4 shipped 2026-10-15 (`min_member=`, default rounding, stall-damped OC moves); print 2 (a re-run of the bracket with `min_member=0.003` and `max_iter` about 150) is owed after r40 is live.
-- **Blocked by:** Nothing. Reto deprioritised this thread on 2026-10-12; the load-test numbers (solver predicts 0.04 mm at 1 kg, 0.08 mm at 2 kg; needs a dial gauge or a load that visibly moves it) and the first Print files click are still owed, with no date.
+- **Blocked by:** Nothing. Active again from 2026-10-17 (Reto: "we should bring that back"): `pocket-from-molecule` drives region-property layer B/C. Still owed from the 2026-10-12 deprioritisation: the load-test numbers (solver predicts 0.04 mm at 1 kg, 0.08 mm at 2 kg; needs a dial gauge or a load that visibly moves it) and the first Print files click are still owed, with no date.
 - **Unblocks:** Intent-based machine design with charge, field and optical properties.
 - **Acceptance:** Scaled print files shipped (`?scale=`, `-x<factor>` name, `precis:scale_factor`, `.json` descriptor, checks at printed size); the atom-model floor and `models` list wait on [printable-atomic-models](../printable-atomic-models.md). Preserve the already dogfooded region slice A.
 - **Worktree:** `se-machine-design`
@@ -13,7 +17,7 @@
 
 ## Thread context
 
-Current declared activity: [fleet roster](../../../.claude/fleet/threads.tsv); dated allocation decisions below are historical.
+Current declared activity: the `roster:` front matter above; dated allocation decisions below are historical.
 
 **Status:** ends when an se design carries the non-geometric layer
 (per-region properties: hydrophobic, charge, field, optical) and a

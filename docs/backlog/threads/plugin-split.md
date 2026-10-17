@@ -1,8 +1,12 @@
+---
+roster: active
+pillar: platform
+effort: medium
+---
 # plugin split
 
 ## Resume
 
-- **Pillar:** platform
 - **Next:** Check pending publishers; resume module moves when the agreed hold lifts.
 - **Blocked by:** Module hold expired 2026-10-16; publisher correction belongs to Reto.
 - **Unblocks:** Packaging for the November catpath paper.

@@ -1,10 +1,14 @@
+---
+roster: active
+pillar: operations
+effort: medium
+---
 # security-hardening
 
 ## Resume
 
-- **Pillar:** platform
-- **Next:** When activated, verify credential-rotation scope and coordinate the required cluster pause.
-- **Blocked by:** No declared active owner; confirm current credential state without exposing secrets.
+- **Next:** Read-only check of which leaked credentials are still live, printing no secret; then a rotation window with Reto (Do next 1).
+- **Blocked by:** Nothing for the check; the rotation needs Reto's window and a cluster pause for agent_rw.
 - **Unblocks:** Enforced credential, role and sandbox boundaries.
 - **Acceptance:** Use [rotate-credentials](../rotate-credentials.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
 - **Worktree:** `security-hardening`
@@ -13,24 +17,26 @@
 
 ## Thread context
 
-Current declared activity: [fleet roster](../../../.claude/fleet/threads.tsv); dated allocation decisions below are historical.
+Current declared activity: the `roster:` front matter above; dated allocation decisions below are historical.
 
 **Status:** ends when no credential that has leaked is still live, no
 untrusted input reaches a privileged agent unscanned, and the role and
 sandbox boundaries hold under the real pool and profiles — what lets agents
 and a public web surface run without a blast radius (`docs/roadmap.md`
-platform bucket). Today seven filed items have no owner; the order is a live
-leak first, then boundaries that are inert today, then dependency and
+Pillar 5 Operations). This thread owns `backlog/rotate-credentials.md`. The
+order is a live leak first, then boundaries that are inert today, then dependency and
 residual items.
-**Last reviewed:** 2026-10-02
+**Last reviewed:** 2026-10-17
 **Worktree:** `security-hardening`
-**Allocation decision (historical):** no — opens at the next session restart if Reto names it.
+**Allocation decision:** active — Reto 2026-10-17 (Pillar 5 Operations).
 
 ## Do next
 
-1. **backlog/rotate-credentials.md** — leaked agent_rw, OpenRouter key,
-   OAuth token and anki password are live today; needs a deliberate cluster
-   pause for agent_rw, so it is also a coordination item.
+1. **backlog/rotate-credentials.md** — first a read-only check of which of
+   the leaked credentials (agent_rw, OpenRouter key, OAuth token, anki
+   password) are still live, without printing any secret; then a rotation
+   window agreed with Reto, since agent_rw needs a deliberate cluster pause.
+   A live leaked credential outranks every boundary below.
 2. **backlog/agent-deny-lists-are-profile-dependent.md** — the dream-agent
    tool deny-list is inert under the command MCP profile; a boundary that
    reads as enforced and is not.

@@ -1,6 +1,6 @@
 ---
 status: idea
-pillar: memory-graph
+pillar: platform
 ---
 # Draft section cross-references cannot render page numbers
 

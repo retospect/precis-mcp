@@ -1,8 +1,12 @@
+---
+roster: dormant
+pillar: 3d-design
+effort: medium
+---
 # multiscale design core
 
 ## Resume
 
-- **Pillar:** 3d-design
 - **Next:** pattern-groups (design-state-core shipped in r37, post-deploy
   check passed 2026-10-15).
 - **Blocked by:** No declared active owner.
@@ -14,7 +18,7 @@
 
 ## Thread context
 
-Current declared activity: [fleet roster](../../../.claude/fleet/threads.tsv); dated allocation decisions below are historical.
+Current declared activity: the `roster:` front matter above; dated allocation decisions below are historical.
 
 **Status:** ends when the shared design substrate the se/hexfold/pcb/cad
 kinds stand on exists — design-state-core, pattern groups, complementarity,
@@ -49,11 +53,10 @@ notation-robustness rerun moved to backlog/claude-code-on-local-serving.md.)
    was blocked on has shipped (se-machine-design's cad-sdf item, deleted;
    field leaf + `realize(strategy='simp')` bridge); sequenced here by
    choice.
-4. **backlog/drive-characteristic-scale.md** — blocked on a ruling.
-5. **backlog/class-lattice-similarity-spaces-and-laws.md** — owned by
+4. **backlog/class-lattice-similarity-spaces-and-laws.md** — owned by
    term-taxonomy; consumed here for pocket specs. Seam, not a duplicate
    rank — see below.
-6. **backlog/njit-hot-loops.md** — numba kernels for the shared geometry
+5. **backlog/njit-hot-loops.md** — numba kernels for the shared geometry
    loops (structure pair-MIC, hexfold stick relax shipped 2026-10-01); open:
    prod-data parity check (Reto), chain relax, pcb coupling pairs (pcb
    thread owns), serve warm-up.

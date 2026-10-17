@@ -18,22 +18,23 @@ Note from the user: `$ARGUMENTS`
 
 ## Procedure
 
-1. **Check the table against the roadmap.** `.claude/fleet/threads.tsv`
-   must list exactly the active set in `docs/roadmap.md` §"Active and
-   dormant threads". If they differ, the roadmap wins: fix the table, say
-   what changed. A new row's effort is `high` when the thread's Do-next 1 is
-   a design call, a correctness risk or shared infrastructure, else
-   `medium`; `design-review` is `yes` where a plausible-but-wrong method
+1. **Check the roster against the roadmap.** The roster is each thread
+   file's front matter (`docs/backlog/threads/README.md` §"Roster front
+   matter"); `grep -l '^roster: active' docs/backlog/threads/*.md` must
+   list exactly the active set the latest `docs/roadmap.md` ruling names.
+   If they differ, the roadmap wins: fix the front matter, say what
+   changed. A newly active thread's `effort` is `high` when its Do-next 1
+   is a design call, a correctness risk or shared infrastructure, else
+   `medium`; `design-review: yes` goes where a plausible-but-wrong method
    would pass the gate (routing methods, geometry constructions, network
-   completeness). `model` is `sonnet` by default, `opus` only where the
-   thread's work is design judgment the gate cannot check (the same threads
-   that carry that correctness risk). The orchestrator's design review is
-   what lets thread sessions run the cheaper model.
+   completeness). The model is a launch-time choice, Sonnet by default
+   (`PRECIS_FLEET_MODEL` overrides it for a launch); the orchestrator's
+   design review is what lets thread sessions run the cheaper model.
 
 2. **Bring it up.** `scripts/fleet up`. It creates only the windows that
    are missing, so after a crash it restores the dead ones and leaves the
    live ones alone. `scripts/fleet up <slug>…` creates only the named
-   threads' windows (a slug missing from `threads.tsv` exits 2 before
+   threads' windows (a slug that is not `roster: active` exits 2 before
    anything is created); the review window and MCP wait still run, both
    idempotent. Each thread session starts with "Resume the work on
    <slug>", which makes it read its thread file and, where a tree is dirty,

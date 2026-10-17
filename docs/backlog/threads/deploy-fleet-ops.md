@@ -1,10 +1,14 @@
+---
+roster: active
+pillar: operations
+effort: medium
+---
 # deploy-fleet-ops
 
 ## Resume
 
-- **Pillar:** platform
-- **Next:** When activated, audit the vault-truncation blast radius before lower-ranked deploy work.
-- **Blocked by:** No declared active owner; verify the incident premise against deployed state.
+- **Next:** Audit the vault-truncation blast radius before lower-ranked deploy work (Do next 1).
+- **Blocked by:** Nothing; verify the incident premise against deployed state.
 - **Unblocks:** Deployments without silent partial configuration.
 - **Acceptance:** Use [melchior-vault-truncation-blast-radius](../melchior-vault-truncation-blast-radius.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
 - **Worktree:** `unified-yawning-rossum` (the deploy session)
@@ -13,17 +17,17 @@
 
 ## Thread context
 
-Current declared activity: [fleet roster](../../../.claude/fleet/threads.tsv); dated allocation decisions below are historical.
+Current declared activity: the `roster:` front matter above; dated allocation decisions below are historical.
 
 **Status:** ends when a deploy is verifiable, concurrent-safe and leaves no
 stale daemon, secret hole or untracked cluster residue behind — the path that
-puts every pillar's code on the fleet (`docs/roadmap.md` platform bucket).
+puts every pillar's code on the fleet (`docs/roadmap.md` Pillar 5 Operations).
 Today thirteen filed items have no owner; the order is what a deploy can
 silently get wrong (secrets, lock, assertions) first, then build and node
 residue, then batched ops and flip steps.
 **Last reviewed:** 2026-10-02
 **Worktree:** `unified-yawning-rossum` (the deploy session)
-**Allocation decision (historical):** no — opens at the next session restart if Reto names it.
+**Allocation decision:** active — Reto 2026-10-17 (Pillar 5 Operations).
 
 ## Do next
 
@@ -38,6 +42,10 @@ residue, then batched ops and flip steps.
    unreachable role edits and colliding render targets before they ship.
 5. **backlog/deploy-drain-wait-is-a-silent-noop.md** — the drain is fixed;
    the residual is re-reading historical job deaths around deploys.
+6. **Fleet authority v2** — `.claude/fleet/authority.md` v2 and its
+   generator, which may land in parallel from the coordinator's tree; it
+   names who may deploy, so once it lands this thread keeps the deploy
+   roles in it current.
 
 ## Horizon
 
@@ -73,6 +81,6 @@ residue, then batched ops and flip steps.
 `session-mcp-shared-server` shares `scripts/deploy` and the ensure script
 (its Horizon 3, `backlog/mcps-venv-deploy-gaps.md`); that thread owns the
 MCP server's deploy shape, this one the script and fleet. `ship-gate-ci` shares the live render tree
-with its Do-next 3. `local-backup-pickup`, `catpath-wheel-version-reuse` and
+with its Do-next 4. `local-backup-pickup`, `catpath-wheel-version-reuse` and
 `april-corpus-nas-migration` were cut from this cluster (personal, chemistry,
 ingest-and-fetch).

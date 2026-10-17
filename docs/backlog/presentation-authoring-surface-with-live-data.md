@@ -1,6 +1,6 @@
 ---
 status: idea
-pillar: memory-graph
+pillar: platform
 ---
 # Presentation/poster authoring surface with live data binding
 

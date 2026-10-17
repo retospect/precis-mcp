@@ -1,8 +1,12 @@
+---
+roster: active
+pillar: 3d-design
+effort: medium
+---
 # chemistry
 
 ## Resume
 
-- **Pillar:** 3d-design
 - **Next:** Tick qu164903: Reto ruled 2026-10-07 (via chat-interface) that the re-mint of the 23 failed verify seeds is NOT a re-run, so chemistry may tick; then the timed MPI GPAW run.
 - **Blocked by:** Nothing for the tick. Catalysis items 25 (re-runs) and 23 (hydride pilot) stay held; the surface-Pourbaix optimizer that 23 waits on got its q3 ruling 2026-10-12 (oxide corrections on bulk references only, surface anchors uncorrected, oxide boundaries a labelled uncertain layer) and a viewer ask (the layered map; see the item's slices).
 - **Unblocks:** Healthy pathway engine output for [catalysis](catalysis-selectivity.md#resume).
@@ -13,7 +17,7 @@
 
 ## Thread context
 
-Current declared activity: [fleet roster](../../../.claude/fleet/threads.tsv); dated allocation decisions below are historical.
+Current declared activity: the `roster:` front matter above; dated allocation decisions below are historical.
 
 **Status:** ends when precis can propose, compute and cite a reaction
 pathway and its conditions for a quest, with catalysis (autocatpath, the

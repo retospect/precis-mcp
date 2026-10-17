@@ -1,8 +1,12 @@
+---
+roster: active
+pillar: memory-graph
+effort: medium
+---
 # ingest and fetch — acquisition and extraction fidelity
 
 ## Resume
 
-- **Pillar:** memory-graph
 - **Next:** item 3’s still-bodiless policy pass and close td461154; then the stub-queue policy decision (item 8 — mint outpaces fetch ~7:1, queue 8,085). Fixes for gr483930 (S2 acquire), gr484234 (DOI addressing) and the embed_batch lock-contention head are committed in `worktree-ingest-fix` (40a8b1cb2, 72b9ea243, 9b4adcdf8), awaiting the release owner — verify post-deploy error rates per item 9.
 - **Blocked by:** Nothing from deployment; safe_fetch fallback remains at the orchestrator’s gate.
 - **Unblocks:** Evidence acquisition for [catalysis](catalysis-selectivity.md#resume).
@@ -13,7 +17,7 @@
 
 ## Thread context
 
-Current declared activity: [fleet roster](../../../.claude/fleet/threads.tsv); dated allocation decisions below are historical.
+Current declared activity: the `roster:` front matter above; dated allocation decisions below are historical.
 
 **Status:** ends when a paper that precis holds is either faithfully
 extracted or visibly counted as not extracted — no silent character loss, no

@@ -21,7 +21,8 @@ Peers are down in the weeds — one short question each, never a task.
   the active set, the retirement rules, the review log at the bottom.
 - `docs/backlog/threads/INDEX.md` §Pillars and generated `PRIORITIES.md`
   (run `scripts/docs-index` if missing or stale); activity comes
-  only from `.claude/fleet/threads.tsv`.
+  only from each thread file's `roster:` front matter
+  (`grep -l '^roster: active' docs/backlog/threads/*.md`).
 - `scripts/inflight` — which threads actually have a session today; a
   mismatch with the fleet roster’s declared active set is a finding, not a fix.
 - `get(kind='quest', id=459585, view='tree')` — the paper cadence: is this

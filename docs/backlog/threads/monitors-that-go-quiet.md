@@ -1,8 +1,12 @@
+---
+roster: active
+pillar: operations
+effort: medium
+---
 # monitors that go quiet
 
 ## Resume
 
-- **Pillar:** platform
 - **Next:** Alert delivery is built (branch awaiting the orchestrator's gate); once it lands, deploy playbook 08 to the `monitoring` group and 18 to every node, then confirm a rule reaches the ops channel. Then [ranked work](#do-next).
 - **Blocked by:** Waits are in [the latest handoff](#thread-context).
 - **Unblocks:** Alerts that reach the user when shared infrastructure fails.

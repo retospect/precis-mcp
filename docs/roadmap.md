@@ -53,6 +53,13 @@ receive equal research allocation. Dependencies and live regressions rank
 the next build within each programme; explicit holds still apply. Personal
 integration remains held; plugin-split keeps its agreed dated sequence.
 
+Reto, 2026-10-17: Pillar 1 winds down to maintenance once memory P4 and
+conventions-as-findings land; Pillar 2's intent → realize loop is active,
+driven by `pocket-from-molecule`; Pillar 5 (Operations) takes the deploy,
+security, monitoring, gate and serving threads, all active. Gripe waves
+remain the execution model. The November catpath paper and castor
+medium-tier routing are open decisions; their threads keep their rank.
+
 Pillars describe enduring outcomes; programmes coordinate related threads;
 threads own the next build and its acceptance. Read only the owning thread
 and linked spec for a task. The [programme review](backlog/parallel-programme-cycle.md)
@@ -68,7 +75,9 @@ maps current next steps and blockers; these are the durable ownership seams:
 | SE print normalization | [Machine design](backlog/threads/se-machine-design.md), [viewer](backlog/threads/se-3d-viewer.md) | Correct printed scale and metadata, with checks at the size actually printed. |
 | Smooth carbon surfaces + Y instrumentation | [Hexfold](backlog/threads/hexfold-toolkit.md) | Tile an authored surface, verify relaxed geometry, then integrate a typed instrumentation leg. |
 | Paper + catalysis | [Nanobuds paper](backlog/threads/nanobuds-paper.md), [catalysis](backlog/threads/catalysis-selectivity.md) | Export with evidence pins; compare complete reaction networks under the existing research holds. |
-| Drive hierarchy | Coordinator with the web owner; [spec](backlog/drive-filter-hierarchy.md) | A new user finds a known object through a bounded set of visible choices. |
+| Pocket from molecule (intent → realize) | [Nanoreactor](backlog/threads/nanoreactor.md), [machine design](backlog/threads/se-machine-design.md) | Paint a posed molecule's surface with properties, invert it into a region-property pocket spec and realise a wall that meets it. |
+| Operations | [Deploy](backlog/threads/deploy-fleet-ops.md), [security](backlog/threads/security-hardening.md), [monitors](backlog/threads/monitors-that-go-quiet.md), [ship gate](backlog/threads/ship-gate-ci.md), [serving](backlog/threads/serving-programme.md), [session MCP](backlog/threads/session-mcp-shared-server.md) | A deploy, a gate verdict and an alert each arrive on time and say what they did; no leaked credential stays live. |
+| Agent surface + Drive | [Agent surface](backlog/threads/agent-surface.md); [Drive spec](backlog/drive-filter-hierarchy.md) | A misused call refuses with its fix; a new user finds a known object through a bounded set of visible choices. |
 
 Every programme uses the [build/release/dogfood cycle](runbooks/release-cycle.md).
 Each task has its own branch and worktree; integration and release work also
@@ -124,6 +133,10 @@ import, and the hook; `MEMORY.md` has been a pointer to the mesh root
 memory node since 2026-10-13. Open: `backlog/memory-native-authoring.md` as
 the primary write path, then skills into the mesh. One write path (the
 graph); files are derived.
+Wind-down (Reto, 2026-10-17): once memory P4 (queued) and
+conventions-as-findings land, this pillar moves to maintenance, and
+`knowledge-mesh.md` and `graph-memory-consumers.md` are dormant from that
+ruling. Skills and conventions into the mesh stays the plan of record.
 
 **Surfaces.** Agent: an agent never leaves the graph for SQL or a temp
 file to do its work. Human: a curated view — from a node Reto reaches its
@@ -167,6 +180,9 @@ parked 2026-09-12, unparked to the horizon only). Pockets as defined
 classes and pick-and-join as a membership query are
 `backlog/class-lattice-similarity-spaces-and-laws.md` (owned by
 knowledge-mesh, consumed here) and `backlog/se-intent-to-realize-loop.md`.
+The intent → realize loop is active (Reto, 2026-10-17), driven by
+`backlog/pocket-from-molecule.md` through `nanoreactor.md` (owner) and
+`se-machine-design.md` (region-property layers B and C).
 
 **Chemistry is part of design** (Reto, 2026-10-01). Molecules and
 reactions are children of the same design as the parts they move: the
@@ -180,14 +196,16 @@ by the catalysis quests.
 thermodynamically and kinetically, over a U/pH window, on a complete
 network; plus the explorer's one-step-per-change diagram) ·
 `hexfold-toolkit.md` · `se-3d-viewer.md` ·
-`se-nucleic-chain.md` · `ewod-pcb.md` (also owns the general PCB items —
+`se-nucleic-chain.md` (dormant 2026-10-17: blocked on hexfold
+integration) · `ewod-pcb.md` (also owns the general PCB items —
 "pcb stuff is on the ewod worker") · `pcb-easyeda-round-trip.md` ·
 `nanobuds-paper.md` · `se-machine-design.md` (the se owner, activated
 2026-10-01 — it carries the property layer and the intent loop the
-north-star spec needs) · `chemistry.md` (created and activated
-2026-10-01, catalysis first). Additional ranked threads: `multiscale-design-core.md` ·
-`pcb-platform.md` · `nanoreactor.md` (dormant, 2026-10-04: the
-instrumented NO→NH₃ carbon nanoreactor and its T0–T6 design toolchain).
+north-star spec needs; reactivated 2026-10-17) · `chemistry.md`
+(created and activated 2026-10-01, catalysis first) · `pcb-platform.md`
+(active 2026-10-17) · `nanoreactor.md` (active 2026-10-17: the
+instrumented NO→NH₃ carbon nanoreactor, its T0–T6 design toolchain and
+`pocket-from-molecule`). Dormant: `multiscale-design-core.md`.
 
 **Surfaces.** Agent: a design reads out as a replayable op list and an
 intent statement is authorable. Human: click any block and read its pose,
@@ -240,13 +258,9 @@ account id for it goes in this repo; coordinates live in the gitignored
 overlay.
 
 **Threads.** `local-compute.md` (owns local serving: the summariser
-and the single-spark model, and what they do) · `session-mcp-shared-server.md`
-(the platform blocker every thread owner named; since 2026-10-01 the shared
-server is supervised, serves the deployed sha and reads secrets from files —
-open: a container recreate strands interactive sessions, embedder capacity,
-per-session DB roles). Additional ranked threads:
-`serving-programme.md` (the MCP ceiling and the eval spine; Reto 2026-10-01 —
-nothing hits the ~28 calls/s ceiling at ~15 sessions).
+and the single-spark model, and what they do). The MCP serving threads
+(`session-mcp-shared-server.md`, `serving-programme.md`) moved to Pillar 5
+on 2026-10-17. Castor medium-tier routing is an open decision.
 
 **Surfaces.** One console row answers busy or idle per tier
 (`get(kind='llm', id='/placement')` for the share;
@@ -277,9 +291,38 @@ Moved out 2026-10-01: web-basic-auth-users → platform, chem-name-lookup-verb
 → chemistry, ms-teams-paper-feed → ingest-and-fetch; remarkable-pairing
 closed (shipped dark; pairing is Reto's).
 
+## Pillar 5 — Operations (sysadmin) (B)
+
+**Goal.** The cluster, the ship gate and the deploy path run without a
+human working around them: every deploy is verifiable, every main sha gets
+a verdict without waiting on runners, every alert reaches Reto, and no
+leaked credential stays live.
+
+**Allocation** (Reto, 2026-10-17). All six threads are active. Deploys and
+releases stay with the coordinator; the threads build and verify.
+
+**Where it stands.** Release rounds (`release/r<N>`, `scripts/round`) and
+the `--checked` lane are on main. CI runner starvation is the top gate
+problem: main runs wait ~70 min for shard runners (gr495187). The leaked
+credentials in `backlog/rotate-credentials.md` are not yet rotated. Alert
+delivery is built and awaits a deploy. One `precis serve` tops out near
+28 calls/s. The fleet authority work (`.claude/fleet/authority.md` v2 and
+its generator) may land in parallel.
+
+**Threads.** `deploy-fleet-ops.md` (deploy script, fleet residue, fleet
+authority) · `security-hardening.md` (owns `rotate-credentials`; role and
+sandbox boundaries) · `monitors-that-go-quiet.md` (signals that lie or go
+silent) · `ship-gate-ci.md` (gate, CI lanes, reaper; CI runner starvation
+first) · `serving-programme.md` (the MCP ceiling and the eval spine) ·
+`session-mcp-shared-server.md` (the shared MCP server: supervision,
+restarts, per-session DB roles).
+
+**Surfaces.** A deploy, a gate verdict and an alert each say what they
+did, addressable by sha, failure id and host.
+
 ## Surfaces — the perpendicular axis
 
-User experience is not a fifth pillar; it is the consumer half of each
+User experience is not a pillar; it is the consumer half of each
 pillar, with two surfaces (agents over MCP, Reto over the web), judged per
 pillar by the surface lines above. Shared invariants:
 
@@ -296,18 +339,24 @@ measured surface error rate in `backlog/mcp-surface-economy.md`, plus the
 14-day `surface-review` pass. Human surface = Reto's own friction filed as
 gripes; `precis_web` has no usage instrumentation and none is planned for
 one user. Surface work is ranked inside the pillar thread that owns the
-object. Cross-kind Drive is a coordinated web task in
-`backlog/drive-filter-hierarchy.md`; Reto approved task entry points and a
-shared searchable picker. Storage/API details remain in owning-spec review.
+object. The cross-kind MCP contract (errors that carry the fix as
+`next=`/`options=`, guards against silent misuse, tool-description
+budgets) and the Drive items are ranked in `threads/agent-surface.md`
+(created 2026-10-17; owns gr494831's family and
+`backlog/tool-description-budgets.md`). Reto approved Drive task entry
+points and a shared searchable picker
+(`backlog/drive-filter-hierarchy.md`). Storage/API details remain in owning-spec review.
 
 ## Where an item says which pillar it serves
 
 Every `docs/backlog/*.md` carries `pillar:` in its front matter and the
-generated `docs/backlog/INDEX.md` groups by it. Two values are buckets
-rather than pillars: `quests` (A — the quest content, campaigns and the
-quest-loop machinery) and `platform` (B — deploy, gate, CI, MCP server
-infrastructure, monitors, refactor debt: what every pillar stands on).
-`scripts/backlog-lint` enforces the set.
+generated `docs/backlog/INDEX.md` groups by it. Pillar values:
+`memory-graph`, `3d-design`, `local-compute`, `personal`, `operations`
+(deploy, gate, CI, MCP serving, monitors, credentials). Two values are
+buckets rather than pillars: `quests` (A — the quest content, campaigns
+and the quest-loop machinery) and `platform` (B — the package split, agent
+execution lanes, the cross-kind agent and web surface, refactor debt).
+`scripts/backlog-lint` and `scripts/docs-index` enforce the set.
 
 ## Active and dormant threads
 
@@ -318,8 +367,10 @@ The roster declares intent; `scripts/inflight` checks live sessions and trees. O
 which active one it replaces, or Reto widens the set.
 
 Declared activity and next actions are in the [generated priority table](backlog/threads/PRIORITIES.md).
-The sole roster is `.claude/fleet/threads.tsv`; change it when the declared
-active set changes. Run `scripts/docs-index` if the table is missing
+The roster is each thread file's front matter (`roster: active|dormant`,
+`pillar:`, `effort:`; `threads/README.md`). The active set is
+`grep -l '^roster: active' docs/backlog/threads/*.md`; change the front
+matter when a ruling changes the active set, and record the ruling below. Run `scripts/docs-index` if the table is missing
 or stale. Live session/worktree state is checked separately with `scripts/inflight`.
 
 ## Retirement
@@ -350,6 +401,29 @@ than leaving it.
 
 Newest first; one line per pass (`/pillar-review` writes it).
 
+- 2026-10-17 — Reto's roadmap rulings (coordinator window), not a full
+  pass. The roster moves into thread front matter; the separate roster
+  table is retired and model choice moves to launch time (Sonnet by
+  default). New Pillar 5 Operations: deploy-fleet-ops, security-hardening
+  (owns rotate-credentials; first a read-only liveness check, then a
+  rotation window with Reto), monitors-that-go-quiet, ship-gate-ci (CI
+  runner starvation first, gr495187), serving-programme and
+  session-mcp-shared-server, all active. New thread agent-surface
+  (platform, active): MCP effectiveness, gr494831's family,
+  tool-description-budgets and five Drive items. Dormant:
+  se-nucleic-chain (no commit since 2026-10-03; blocked on hexfold
+  integration), roadmap-quest (parked), knowledge-mesh and
+  graph-memory-consumers (P1 winds down to maintenance after memory P4 and
+  conventions-as-findings; skills and conventions into the mesh stays the
+  plan of record). Active: pcb-platform and factory (already landing),
+  nanoreactor (owns pocket-from-molecule), se-machine-design ("we should
+  bring that back"), nanobuds-paper, draft-authoring (October preprint
+  target 2026-10-24, Reto's citation pass after r46 deploys the export
+  fix). P2 intent → realize is active, driven by pocket-from-molecule.
+  Gripe waves stay the execution model; a wave close writes its gripe ids
+  into the owning thread file. Open: the November catpath paper and castor
+  medium-tier routing (ranks unchanged). reading-prep-loop back to idea
+  (P4 on hold).
 - 2026-10-17 housekeeping pass (no-pillar items, expired snoozes, drive-ux,
   stale where-it-stands lines); full review decisions pending.
 - 2026-10-12 — Reto's focus rulings (chat), not a full pass. Active set:

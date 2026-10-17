@@ -53,8 +53,8 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
    lint excludes partially-open items that merely *mention* something shipped.)
    The dark-factory workstream is active.
    **Thread files and the active set.** The active roster is
-   `.claude/fleet/threads.tsv` (`docs/roadmap.md` only links its generated
-   view); `scripts/inflight` shows which have a session. Inflight has no
+   `grep -l '^roster: active' docs/backlog/threads/*.md` (`docs/roadmap.md`
+   only links its generated view); `scripts/inflight` shows which have a session. Inflight has no
    thread column — match a tree to a thread by its purpose line and say the
    match is inferred. Flag both mismatches (active with no session, dormant
    with one). Then, for every

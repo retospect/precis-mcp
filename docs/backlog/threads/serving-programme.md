@@ -1,10 +1,14 @@
+---
+roster: active
+pillar: operations
+effort: medium
+---
 # serving programme
 
 ## Resume
 
-- **Pillar:** local-compute
-- **Next:** When reactivated, collect the N=32 profile before choosing process topology.
-- **Blocked by:** Dormant by decision until session count approaches the serving ceiling.
+- **Next:** Collect the N=32 profile before choosing process topology (Do next 1).
+- **Blocked by:** Nothing; active under Pillar 5 Operations from 2026-10-17.
 - **Unblocks:** Measured MCP capacity and the evaluation spine.
 - **Acceptance:** Use [mcp-concurrency-load-test](../mcp-concurrency-load-test.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
 - **Worktree:** `serving-programme`
@@ -13,7 +17,7 @@
 
 ## Thread context
 
-Current declared activity: [fleet roster](../../../.claude/fleet/threads.tsv); dated allocation decisions below are historical.
+Current declared activity: the `roster:` front matter above; dated allocation decisions below are historical.
 
 **Status:** ends when the fleet serves ~24 sessions from a measured MCP
 ceiling (multi-process precis serve behind a balancer) with reproducible
@@ -27,8 +31,7 @@ serve tier and the eval spine.
 pillar review 2026-09-30 added the seam, embedder-capacity-ownership as a
 wait, and five orphan gripes)
 **Worktree:** `serving-programme`
-**Allocation decision (historical):** no — dormant on Reto's word 2026-10-01; reopens when the
-session count nears the ~28 calls/s serve ceiling.
+**Allocation decision:** active — Reto 2026-10-17 (Pillar 5 Operations); dormant 2026-10-01 to 2026-10-17.
 
 ## Do next
 

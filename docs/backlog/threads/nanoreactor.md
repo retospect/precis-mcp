@@ -1,8 +1,12 @@
+---
+roster: active
+pillar: 3d-design
+effort: medium
+---
 # nanoreactor
 
 ## Resume
 
-- **Pillar:** 3d-design
 - **Next:** Pocket-from-molecule (`pocket-from-molecule`, Reto 2026-10-17), then station-path-finder (`nanoreactor-station-path-finder`); the T1 entry slice (`/rxn` ledger, kept rxn records) is in prod.
 - **Blocked by:** Station-path-finder is a draft: it needs a `ready` pass and slicing first. T2's tunnel scaffold is built (reservoir sheets + opening solver, 2026-10-14); H2/H3 remain.
 - **Unblocks:** The per-station barrier ledger that decides whether the NO → NH3 nanoreactor needs a drive; the reaction movie.
@@ -21,6 +25,7 @@ fits; the T1 entry slice (`/rxn` web ledger, kept rxn equation sets) is
 in prod. Order follows the data: each tool consumes the previous one's
 output.
 **Worktree:** `nanoreactor`
+**Allocation decision:** active — Reto 2026-10-17; owns `pocket-from-molecule`, the driver of Pillar 2's intent → realize loop.
 
 ## Do next
 
