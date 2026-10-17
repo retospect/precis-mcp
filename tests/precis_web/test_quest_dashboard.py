@@ -177,6 +177,34 @@ def test_quest_detail_panels_render_with_data(client, runtime, monkeypatch) -> N
     assert "low-mastery: served concept at mastery 0.20" in resp.text
 
 
+def test_quest_hub_links_serving_structures_to_pourbaix(
+    client, runtime, monkeypatch
+) -> None:
+    """Each structure serving the quest gets a link to its surface-Pourbaix
+    map (/pourbaix/<handle>) beside its /refs/structure link (gr495720)."""
+    servers = [
+        SimpleNamespace(id=7, kind="structure", retired_at=None, title="Fe-N4 slab"),
+        SimpleNamespace(id=9, kind="structure", retired_at=None, title="Cu-N4 slab"),
+        SimpleNamespace(id=1, kind="todo", retired_at=None, title="Build the rig"),
+    ]
+    monkeypatch.setattr("precis.quest.gaps._live_servers", lambda s, qid: list(servers))
+    resp = client.get("/refs/quest/97")
+    assert resp.status_code == 200
+    assert "Pourbaix maps" in resp.text
+    assert 'href="/pourbaix/st7"' in resp.text
+    assert 'href="/pourbaix/st9"' in resp.text
+    assert 'href="/refs/structure/7"' in resp.text
+    assert "Fe-N4 slab" in resp.text
+    # a non-structure server contributes no pourbaix link
+    assert "/pourbaix/td1" not in resp.text
+
+
+def test_quest_hub_no_structure_servers_no_pourbaix_row(client, runtime) -> None:
+    resp = client.get("/refs/quest/97")
+    assert resp.status_code == 200
+    assert "Pourbaix maps" not in resp.text
+
+
 def test_quest_detail_tag_chips_closed_vs_open(client, runtime, monkeypatch) -> None:
     """A closed tag renders as its real ``PREFIX:value`` and is inert; an
     open tag renders bare and gets a × removal form. Guards the namespace

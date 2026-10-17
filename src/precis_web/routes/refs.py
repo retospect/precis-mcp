@@ -788,6 +788,21 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
         for k, n in sorted(by_kind.items(), key=lambda kv: (-kv[1], kv[0]))
     ]
 
+    # Serving structures each get a link to their surface-Pourbaix map —
+    # /pourbaix/<handle> resolves st<N> or a registered structure slug.
+    structure_rows = [
+        {
+            "handle": handle_registry.try_format("structure", s.id) or f"st{s.id}",
+            "title": (s.title or f"structure {s.id}").splitlines()[0],
+            "url": f"/refs/structure/{s.id}",
+            "pourbaix_url": (
+                f"/pourbaix/{handle_registry.try_format('structure', s.id) or f'st{s.id}'}"
+            ),
+        }
+        for s in live_servers
+        if s.kind == "structure"
+    ]
+
     return templates.TemplateResponse(
         request,
         "refs/quest_detail.html.j2",
@@ -833,6 +848,7 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
             "gaps_error": gaps_error,
             "servers_lite": servers_lite,
             "servers_total": len(live_servers),
+            "structure_rows": structure_rows,
             "quest_tag": quest_tag,
             "quest_stubs_url": quest_stubs_url,
             "discussions": _followup_discussions(store, qid),

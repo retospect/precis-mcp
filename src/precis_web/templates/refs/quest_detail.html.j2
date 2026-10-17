@@ -431,6 +431,15 @@
   {% else %}
   <p class="text-sm text-fg-faint italic">nothing serves this quest yet — link a project / concept / paper with rel='serves'.</p>
   {% endif %}
+  {% if structure_rows %}
+  <p class="text-sm text-fg-muted mt-1">
+    <span class="text-xs font-semibold uppercase text-fg-faint">Pourbaix maps</span>
+    {% for s in structure_rows %}
+    <a href="{{ s.pourbaix_url }}" class="font-mono text-xs text-info-strong hover:underline">{{ s.handle }}</a>
+    <a href="{{ s.url }}" class="text-info-strong hover:underline">{{ s.title }}</a>{% if not loop.last %} · {% endif %}
+    {% endfor %}
+  </p>
+  {% endif %}
 </section>
 
 {# ── Tag strip (same idiom every browsable kind gets) ────────────── #}
