@@ -25,22 +25,15 @@ Details and remote-only stragglers: /tmp/gripe-fleet/morning-queue.md
 
 ## Left
 
-1. **Salvage (8, 2 done)** — lift the idea, redo by hand, in the owning thread:
-   - ewod-pcb / pcb-easyeda-round-trip: `gripe_451276` (the router still
-     treats a pin's second pad as a foreign obstacle), `gripe_451356`
-     (substring package match false-flags; where mating direction comes from
-     is undecided).
-   - ingest-and-fetch: `gripe_453859` (lift the re-arm guard and
-     `--needs-manual`; share one pass definition with the landed 453862),
-     `gripe_453860` (keep the journal and census, drop the auto-heal — it
-     fans out ~914 refs on its first pass).
-   - se-3d-viewer: `gripe_458084` (counter, prev/next links and banner stay on
-     the loaded revision after an in-place step).
-   - monitors-that-go-quiet: `gripe_248866` (a child process inherits the
-     heartbeat's macOS TCC grant — answered in the gripe's comment 2 — so
-     its subprocess probe is a false green; the interpreter list duplicates
-     deploy's). `gripe_452203` and `gripe_454480` are done: both were
-     redone by hand on main (52a6ed3ed, and gr454480 on 2026-10-02).
+1. **Salvage (1 left)** — `gripe_451356` (ewod-pcb / pcb-easyeda-round-trip:
+   substring package match false-flags; where mating direction comes from is
+   undecided — waits on that ruling). The other seven were redone by hand on
+   main and their gripes closed: gr451276 (43448c0b3, pads as router
+   obstacles of their own net), gr453859 (8379c61ae), gr453860 (93d8b431a,
+   428f9b14c — the heal that shipped is the bounded one, not the ~914-ref
+   fan-out), gr458084 (46d66f11b, ca868ca55), gr248866 (per-process
+   attestation, verified 2026-10-03), gr452203, gr454480. Audit 2026-10-17:
+   the bundle was not found at that path on Reto's Mac.
 2. **Optional (2)** — `gripe_180306` (hub reconcile sweep: a feature, one LLM
    call per candidate pair; the reported pair is already merged; a cheaper
    design is waiting on Reto under knowledge-mesh), `gripe_451269` (one docs
