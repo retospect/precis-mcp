@@ -52,9 +52,13 @@ set in
 with the env pin kept for the other tiers. Measured 2026-10-05..10-10:
 11 coadsorbed successes ran 4.6–8.7 h; seed-2 cells of td322478 died
 twice at the 28800 s pin's 9 h bound while still band-splitting
-(al480803). Pin raised to 64800 s (~2× the measured max); the code floor
-for an unset/malformed pin is the same 64800, never the 90-min general
-default.
+(al480803). Pin raised to 64800 s (~2× the measured max), then to 86400 s
+(the clamp ceiling, 25 h deadline) on 2026-10-17 (gr493237, Reto ruling:
+raise, no per-candidate retry policy): the q164903cand-* verify seeds kept
+dying at the bound — 7 solo at 9 h, 3 at 19 h (3-way GPU contention on
+castor before the dark-host defer fix), one solo still running at 14.1 h
+when OOM-killed. The code floor for an unset/malformed pin is the same
+86400, never the 90-min general default.
 
 Not built yet (verdict §8 asked for the first; the second is a gap found
 while building the hold):

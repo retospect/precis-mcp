@@ -1099,11 +1099,10 @@ _AUTOCATPATH_WALL_SECONDS_ENV = "PRECIS_AUTOCATPATH_WALL_SECONDS"
 #: unset → the verify floor below.
 _AUTOCATPATH_VERIFY_WALL_SECONDS_ENV = "PRECIS_AUTOCATPATH_VERIFY_WALL_SECONDS"
 
-#: Floor (s) for the verify-tier wall hint when its env pin is unset —
-#: ~2 × the 8.7 h max observed coadsorbed-seed success (see
-#: :func:`_autocatpath_wall_seconds`). The general default is never enough:
-#: every measured verify run needs >4 h.
-_DEFAULT_VERIFY_WALL_SECONDS = 64800
+#: Floor (s) for the verify-tier wall hint when its env pin is unset — 24 h,
+#: the clamp ceiling (gr493237; evidence in :func:`_autocatpath_wall_seconds`).
+#: The general default is never enough: every measured verify run needs >4 h.
+_DEFAULT_VERIFY_WALL_SECONDS = 86400
 
 
 #: Interim GB10 unified-memory guard (gr491506): the fixed
@@ -1175,7 +1174,13 @@ def _autocatpath_wall_seconds(tier: str | None = None) -> int:
     seeds killed at the 2.5 h lease while the successes took 1.9–2.25 h;
     the 2026-10-13 read had 11 coadsorbed successes at 4.6–8.7 h and seed-2
     cells of td322478 killed twice at the 9 h bound while still band-
-    splitting (al480803). Size the pin at ~2 × the measured max — an unset
+    splitting (al480803). The 2026-10-17 read (gr493237) showed the success
+    tail is censored by the wall itself: 20 verify successes at 4.6–8.9 h,
+    but 7 solo seeds died at the 9 h bound, one solo seed was still running
+    at 14.1 h when OOM-killed, and three seeds sharing castor's one GPU
+    3-way died at the 19 h bound (64800 s + margin). Reto ruled to raise the
+    wall rather than retry or abandon per candidate, so the pin sits at the
+    86 400 s clamp ceiling (deadline 25 h) — an unset
     or malformed verify pin therefore floors at
     ``max(general value, _DEFAULT_VERIFY_WALL_SECONDS)`` rather than the
     90-min general default, which is a guaranteed deadline kill for this

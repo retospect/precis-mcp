@@ -1651,6 +1651,29 @@ class TestHarvest:
         assert meta.get("quest_seed_infra_retries") == 1
         assert not any("timed out" in n for n in step.notes)
 
+    @pytest.mark.parametrize(
+        ("ran_wall", "redispatched"), [(64800, True), (86400, False)]
+    )
+    def test_verify_seed_killed_at_old_floor_is_released_by_default(
+        self,
+        store: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        ran_wall: int,
+        redispatched: bool,
+    ) -> None:
+        """gr493237: the q164903cand-* verify seeds killed at the 64800 s
+        wall are held for a longer one. With no pin, the default verify wall
+        (86400 s) releases them; a seed killed at the new wall stays held."""
+        qid, sid, calls, gripes = self._timeout_harness(
+            store, monkeypatch, ran_wall=ran_wall
+        )
+        monkeypatch.setattr(compute_mod, "_retry_tier", lambda *_a: "verify")
+        step = compute_mod.harvest_measures(store, qid, hub=object())
+        assert gripes == []
+        assert calls == ([sid] if redispatched else [])
+        held = [n for n in step.notes if "timed out at the verify wall" in n]
+        assert bool(held) is not redispatched
+
     def test_timeout_seed_that_ran_unreserved_retries_at_same_wall(
         self, store: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -6459,14 +6482,29 @@ class TestDispatchAutocatpath:
         assert jmeta["params"]["resources"]["wall_seconds"] == (
             compute_mod._DEFAULT_VERIFY_WALL_SECONDS
         )
-        # a general pin above the floor wins
+        # the floor is the clamp ceiling (gr493237): a large general pin
+        # cannot push past it, and cannot pull the verify wall below it
         monkeypatch.setenv(compute_mod._AUTOCATPATH_WALL_SECONDS_ENV, "80000")
-        assert compute_mod._autocatpath_wall_seconds("verify") == 80_000
+        assert compute_mod._autocatpath_wall_seconds("verify") == 86_400
         # clamp; a malformed verify pin falls back to the floor
         monkeypatch.setenv(compute_mod._AUTOCATPATH_VERIFY_WALL_SECONDS_ENV, "999999")
         assert compute_mod._autocatpath_wall_seconds("verify") == 86_400
         monkeypatch.setenv(compute_mod._AUTOCATPATH_VERIFY_WALL_SECONDS_ENV, "x")
-        assert compute_mod._autocatpath_wall_seconds("verify") == 80_000
+        assert compute_mod._autocatpath_wall_seconds("verify") == 86_400
+
+    def test_verify_floor_clears_the_censored_seed_tail(self) -> None:
+        """gr493237: q164903cand-* verify seeds died at every bound so far —
+        7 solo at 9 h, one solo still running at 14.1 h when OOM-killed,
+        three 3-way-contended at 19 h. The floor sits at the 24 h clamp
+        ceiling, so its ssh_node deadline (wall + margin) is 25 h."""
+        from precis.workers.executors import ssh_node
+
+        assert compute_mod._DEFAULT_VERIFY_WALL_SECONDS == 86_400
+        params = {
+            "resources": {"wall_seconds": compute_mod._DEFAULT_VERIFY_WALL_SECONDS}
+        }
+        assert ssh_node._wall_bound_seconds({"params": params}) == 90_000
+        assert ssh_node._lease_seconds({"params": params}) == 90_000
 
     def test_unrouted_job_leaves_device_unset(
         self, store: Any, monkeypatch: Any

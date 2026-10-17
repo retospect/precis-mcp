@@ -142,7 +142,7 @@ def test_full_topology_renders_the_web_plist_surface(tmp_path: Path) -> None:
     # autocatpath keeps the WHOLE list (the plist `join(',')`), and carries
     # the optional tunables from tracked deploy/group_vars/all.yml
     assert "PRECIS_AUTOCATPATH_ROUTE_NODE=node-gpu,node-gpu2" in lines
-    assert "PRECIS_AUTOCATPATH_VERIFY_WALL_SECONDS=64800" in lines
+    assert "PRECIS_AUTOCATPATH_VERIFY_WALL_SECONDS=86400" in lines
     assert "PRECIS_AUTOCATPATH_SEED_CPUSET=0-4,10-14" in lines
     assert "PRECIS_DFT_NODE=node-gpu2" in lines
     # the whole agent_sandbox_hosts group, like the worker unit's join(',')

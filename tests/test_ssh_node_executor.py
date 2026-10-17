@@ -7,6 +7,7 @@ without that plugin installed.
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Any
 
@@ -1188,6 +1189,70 @@ def test_poll_past_deadline_calls_kill_hook_when_present(
     assert result == {"claimed": 0, "ok": 1, "failed": 0}
     assert killed == [(rid, "remote-pid-kill")]
     assert _status(store, rid) == "failed"
+
+
+def test_verify_seed_survives_19h_and_is_killed_past_its_wall(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr493237: verify seeds 489188/489256/489258 were killed at 19 h
+    (64800 s wall + margin). At the default verify wall a seed 19 h in is
+    still polled; one past wall + margin still hits the kill hook and fails
+    as ``timeout``."""
+    from precis.quest import compute
+
+    monkeypatch.delenv(compute._AUTOCATPATH_WALL_SECONDS_ENV, raising=False)
+    monkeypatch.delenv(compute._AUTOCATPATH_VERIFY_WALL_SECONDS_ENV, raising=False)
+    params = {
+        "resources": {"wall_seconds": compute._autocatpath_wall_seconds("verify")}
+    }
+    bound = ssh_node._wall_bound_seconds({"params": params})
+    assert bound == 86_400 + ssh_node._LEASE_MARGIN_S
+
+    polled: list[Any] = []
+    killed: list[tuple[Any, Any]] = []
+
+    def _poll(ctx: Any, handle: Any) -> bool:
+        polled.append(handle)
+        return False
+
+    def _kill(ctx: Any, handle: Any) -> None:
+        killed.append((ctx.ref_id, handle))
+
+    monkeypatch.setattr(
+        ssh_node,
+        "get_job_type",
+        lambda name: JobTypeSpec(
+            name="fake_relax",
+            params_schema={"type": "object"},
+            compatible_executors=frozenset({"ssh_node"}),
+            requires=frozenset(),
+            description="fake verify seed",
+            run=lambda *a, **k: "noop",
+            submit=lambda c, s: None,
+            poll=_poll,
+            kill=_kill,
+        ),
+    )
+    alive = _mk_running_job(store, lease_offset_s=3600, compute_handle="seed-19h")
+    over = _mk_running_job(store, lease_offset_s=3600, compute_handle="seed-over")
+    now = time.time()
+    with store.pool.connection() as conn:
+        for rid, started in ((alive, now - 19 * 3600), (over, now - bound - 5)):
+            conn.execute(
+                "UPDATE refs SET meta = meta || jsonb_build_object("
+                "'params', %s::jsonb, 'deadline', %s::float) WHERE ref_id = %s",
+                (json.dumps(params), started + bound, rid),
+            )
+        conn.commit()
+
+    result = ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert result == {"claimed": 0, "ok": 1, "failed": 0}
+    assert polled == ["seed-19h"]
+    assert _status(store, alive) == "running"
+    assert killed == [(over, "seed-over")]
+    assert _status(store, over) == "failed"
+    assert _meta(store, over)["failure_class"] == "timeout"
 
 
 # ── §B-2 piece 5: operator kill backstop (`precis jobs kill`) ──────
