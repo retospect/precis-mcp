@@ -388,6 +388,15 @@ def build_tunnel_reservoirs(params: dict[str, Any]) -> GeneratedBlock:
     # terminator trimmed is gone from the block: fit on the survivors and
     # move the site and junction records onto stored ordinals.
     remap = surviving_ordinals(net, block)
+    import sys as _s  # DIAG-TEMP
+
+    _tr = block.topology.get("terminated", {}).get("trimmed", [])  # DIAG-TEMP
+    for _j in tun.junctions:  # DIAG-TEMP
+        for _f in _j.faces:  # DIAG-TEMP
+            if not any(o in remap for o in _f):  # DIAG-TEMP
+                raise AssertionError(
+                    f"DIAG empty face {_f} n_atoms={len(net.atoms)} kept={len(remap)} trimmed={len(_tr)} sample={list(_tr)[:5]!r} types={[type(x).__name__ for x in list(_tr)[:2]]} paths={[repr(a.path) for a in net.atoms[:3]]} plat={_s.platform}"
+                )  # DIAG-TEMP
     kept = sorted(remap, key=remap.__getitem__)
     design = np.hstack([pos[kept], np.ones((len(kept), 1))])
     xf, *_ = np.linalg.lstsq(design, block.coords[: len(kept)], rcond=None)

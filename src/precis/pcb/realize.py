@@ -3242,7 +3242,9 @@ def _negotiate(
             # run for minutes. A partial iteration's proposals are still
             # usable, since the commit re-checks every one; ``conflicted``
             # stays the last full iteration's set.
-            if time.monotonic() > deadline:
+            if (
+                time.monotonic() >= deadline
+            ):  # >=: a coarse clock may not tick past a zero budget
                 out_of_time = True
                 break
             neg.rip_net(net_id)

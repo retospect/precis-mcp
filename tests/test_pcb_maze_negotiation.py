@@ -9,7 +9,6 @@ itself have walked may be committed.
 
 from __future__ import annotations
 
-import sys
 from types import SimpleNamespace
 from typing import Any
 
@@ -29,11 +28,6 @@ from precis.pcb.maze import (
 )
 from precis.pcb.optimize import OptimizeConfig, optimize
 from precis.pcb.realize import RealizeConfig, realize
-
-_COARSE_CLOCK = pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="Windows time.monotonic() ticks ~15ms: a zero budget is not strictly exceeded (realize._negotiate uses monotonic() > deadline)",
-)
 
 
 def _spec(nx: int = 80, ny: int = 80, n_layers: int = 1) -> GridSpec:
@@ -367,7 +361,6 @@ def test_an_exhausted_search_keeps_its_previous_proposal(monkeypatch):
     assert len(seen["proposal"]) == 6  # type: ignore[arg-type]
 
 
-@_COARSE_CLOCK
 def test_negotiation_stops_at_its_wall_clock_budget(monkeypatch):
     real_pass = realize_mod._route_pass
 
