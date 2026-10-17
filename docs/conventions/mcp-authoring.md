@@ -51,6 +51,18 @@ lowered baseline in the same commit. A raise that is truly
 self-describing (`chunk not found` with the id in the message) still
 takes a `next=`: the cheapest honest one is the listing call.
 
+### `# no-next:` pragma (approved exemption)
+
+Only a raise with no useful hint may skip `next=`: put `# no-next:
+<category> — <reason>` on its first line or the line directly above.
+`terminal` = no caller action changes the outcome (clock read, a hard
+invariant the caller cannot influence); `internal` = server bug or broken
+invariant, already reads as Internal. Reason >= 4 words; other categories
+fail. Exempt counts are a ceiling in `tests/data/mcp_raise_next_exempt.json`:
+adding a pragma fails until that file is bumped in the same diff, removing one
+until it is lowered. Burn-down builders add pragmas only for genuine terminal
+or internal cases and list each one in the commit body.
+
 ## Observability
 
 `workers/call_errors.py` clusters BadInput, Unsupported, NotFound, Gone
