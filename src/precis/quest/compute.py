@@ -3830,6 +3830,7 @@ def redispatch_candidates(
     hub: Any | None = None,
     include_ruled_out: bool = False,
     dry_run: bool = False,
+    only: Sequence[int] | None = None,
 ) -> str:
     """Re-dispatch a autocatpath barrier eval for every candidate of a quest.
 
@@ -3847,29 +3848,52 @@ def redispatch_candidates(
     candidates per rung so the spend is visible; ``dry_run=True`` returns
     that count without dispatching (before dedup — a candidate whose
     content key is unchanged would collapse onto its existing job).
+
+    ``only`` restricts the re-run to those structure ids (a batch walked down
+    a ranking). An id that is not a candidate of the quest refuses the whole
+    call by name rather than being dropped; a dry run then also lists each
+    ``st<id> → rung`` it would mint.
     """
     reaction = _quest_reaction_config(store, quest_id)
     if reaction is None:
         return f"redispatch skipped: quest {quest_id} has no reaction_config"
     sids = _candidate_struct_ids(store, quest_id)
+    if only is not None:
+        missing = sorted(set(only) - set(sids))
+        if missing:
+            return (
+                f"redispatch refused: not candidates of quest {quest_id}: "
+                + ", ".join(f"st{m}" for m in missing)
+            )
+        sids = list(dict.fromkeys(only))  # the caller's ranking order
     refs = store.fetch_refs_by_ids(set(sids))
     plan: list[tuple[int, str]] = []
+    ruled_out: list[int] = []
     for sid in sids:
         if not include_ruled_out and any(
             str(t).startswith("ruled-out:") for t in store.tags_for(sid)
         ):
+            ruled_out.append(sid)
             continue
         plan.append((sid, _redispatch_tier(store, quest_id, refs.get(sid))))
+    skipped = (
+        "; skipped (ruled out): " + ", ".join(f"st{s}" for s in ruled_out)
+        if only is not None and ruled_out
+        else ""
+    )
 
     def _per_rung(tiers: list[str]) -> str:
         counts = {t: tiers.count(t) for t in _TIERS if t in tiers}
         return ", ".join(f"{t} {c}" for t, c in counts.items()) or "none"
 
     if dry_run:
-        return (
+        head = (
             f"would re-dispatch {len(plan)} candidate(s): "
-            f"{_per_rung([t for _, t in plan])}"
+            f"{_per_rung([t for _, t in plan])}{skipped}"
         )
+        if only is None:
+            return head
+        return "\n".join([head, *(f"  st{sid} → {tier}" for sid, tier in plan)])
     hub = hub or _hub_for(store)
     dispatched: list[str] = []
     for sid, tier in plan:
@@ -3878,7 +3902,7 @@ def redispatch_candidates(
             dispatched.append(tier)
     return (
         f"re-dispatched {len(dispatched)} candidate(s) on the deployed engine "
-        f"({_per_rung(dispatched)})"
+        f"({_per_rung(dispatched)}){skipped}"
     )
 
 

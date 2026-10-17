@@ -185,10 +185,16 @@ def add_parser(subparsers: Any) -> None:
         help="Also re-evaluate candidates ruled out on now-suspect stale barriers.",
     )
     rd.add_argument(
+        "--only",
+        default=None,
+        help="Comma-separated structure ids (336035 or st336035): re-run only "
+        "those candidates — a batch walked down a ranking.",
+    )
+    rd.add_argument(
         "--dry-run",
         action="store_true",
-        help="Print how many candidates would re-run at each ladder rung; "
-        "dispatch nothing.",
+        help="Print how many candidates would re-run at each ladder rung "
+        "(with --only, each candidate's rung too); dispatch nothing.",
     )
     rd.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
@@ -732,12 +738,27 @@ def _cmd_figure(store: Store, args: argparse.Namespace) -> None:
 
 
 def _cmd_redispatch(store: Store, args: argparse.Namespace) -> None:
+    import sys
+
     from precis.dispatch import Hub
     from precis.quest.compute import redispatch_candidates
 
+    only: list[int] | None = None
+    if args.only is not None:
+        tokens = [t.strip().lower().removeprefix("st") for t in args.only.split(",")]
+        tokens = [t for t in tokens if t]
+        if not tokens or not all(t.isdigit() for t in tokens):
+            print(
+                f"quest redispatch: --only wants structure ids like 336035 or "
+                f"st336035, comma-separated; got {args.only!r}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        only = [int(t) for t in tokens]
     note = redispatch_candidates(
         store,
         args.id,
+        only=only,
         hub=None if args.dry_run else Hub(store=store),
         include_ruled_out=args.include_ruled_out,
         dry_run=args.dry_run,

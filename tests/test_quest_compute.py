@@ -6093,6 +6093,53 @@ class TestDispatchAutocatpath:
         assert tp(store, screened, compute_mod._TIER_SCREENING) is not None
         assert tp(store, screened, compute_mod._TIER_NEB) is None
 
+    def test_redispatch_only_restricts_to_named_candidates(self, store: Any) -> None:
+        """`only=` re-runs just the named candidates (a ranked batch); the dry
+        run lists each st<id> -> rung; a non-candidate id is refused by name."""
+        qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
+        store.stamp_ref_meta(qid, {"reaction_config": self._RX})
+        spec2 = {
+            "cell": {"a": 8.4, "b": 8.4, "c": 24.0, "pbc": [True, True, False]},
+            "ops": [{"op": "add_atom", "element": "Ni", "frac": [0.0, 0.0, 0.5]}],
+        }
+        first = compute_mod.ensure_candidate(
+            store, qid, {"name": "first", "structure": _SPEC}
+        )
+        second = compute_mod.ensure_candidate(
+            store, qid, {"name": "second", "structure": spec2}
+        )
+        assert first is not None and second is not None
+
+        dry = compute_mod.redispatch_candidates(store, qid, dry_run=True, only=[first])
+        assert dry.splitlines() == [
+            "would re-dispatch 1 candidate(s): neb 1",
+            f"  st{first} → neb",
+        ]
+        assert self._agg_todo_ids(store, first) == []
+
+        both = compute_mod.redispatch_candidates(
+            store, qid, dry_run=True, only=[second, first]
+        )
+        assert both.splitlines()[1:] == [f"  st{second} → neb", f"  st{first} → neb"]
+
+        from precis.store import Tag
+
+        store.add_tag(second, Tag.open("ruled-out:preflight"), set_by="system")
+        skipped = compute_mod.redispatch_candidates(
+            store, qid, dry_run=True, only=[first, second]
+        )
+        assert skipped.splitlines()[0].endswith(f"; skipped (ruled out): st{second}")
+        store.remove_tag(second, Tag.open("ruled-out:preflight"))
+
+        refused = compute_mod.redispatch_candidates(store, qid, only=[first, 999999])
+        assert "refused" in refused and "st999999" in refused
+        assert self._agg_todo_ids(store, first) == []
+
+        note = compute_mod.redispatch_candidates(store, qid, only=[first])
+        assert "re-dispatched 1 candidate" in note
+        assert len(self._agg_todo_ids(store, first)) == 1
+        assert self._agg_todo_ids(store, second) == []
+
     def test_redispatch_tier_without_a_completed_rung_uses_the_entry_rung(
         self, store: Any
     ) -> None:
