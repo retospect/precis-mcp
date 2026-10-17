@@ -25,7 +25,16 @@ import time
 from typing import Any
 
 from precis.errors import BadInput, NotFound, Upstream
-from precis.utils.http import http_client, request_with_deadline, require_httpx
+from precis.utils.http import (
+    VendorError,
+    VendorUnavailable,
+    http_client,
+    polite_user_agent,
+    request_with_deadline,
+    require_httpx,
+    with_backoff,
+)
+from precis.utils.rate_limit import RateLimited
 
 # Public API + OAuth token endpoints. The *public* token endpoint is on
 # the main orcid.org host; the data lives on pub.orcid.org/v3.0.
@@ -38,7 +47,6 @@ _TIMEOUT_S = 30.0
 #: read window held an SSL recv ~15 min and stalled the worker loop.
 #: ``request_with_deadline`` abandons the call past this bound.
 _DEADLINE_S = 2 * _TIMEOUT_S
-_USER_AGENT = "precis-mcp/1.0 (+https://orcid.org)"
 
 # An ORCID iD is 16 digits in 4 groups of 4, last char may be 'X'
 # (ISO 7064 checksum). Accept bare, dashed, ``orcid:``-prefixed, and
@@ -145,23 +153,33 @@ def _get_token() -> str:
     httpx = require_httpx()
     try:
         with http_client(timeout=_TIMEOUT_S, user_agent=None) as client:
+            # One overall deadline around the whole backoff call, not per
+            # attempt; the polite core takes a limiter token per attempt.
             resp = request_with_deadline(
                 client,
                 _DEADLINE_S,
-                lambda: client.post(
-                    _TOKEN_URL,
-                    data={
-                        "client_id": cid,
-                        "client_secret": secret,
-                        "grant_type": "client_credentials",
-                        "scope": "/read-public",
-                    },
-                    headers={"Accept": "application/json"},
+                lambda: with_backoff(
+                    lambda: client.post(
+                        _TOKEN_URL,
+                        data={
+                            "client_id": cid,
+                            "client_secret": secret,
+                            "grant_type": "client_credentials",
+                            "scope": "/read-public",
+                        },
+                        headers={
+                            "Accept": "application/json",
+                            "User-Agent": polite_user_agent(),
+                        },
+                    ),
+                    service="orcid",
                 ),
                 label=f"POST {_TOKEN_URL}",
             )
     except httpx.HTTPError as exc:
         raise Upstream(f"ORCID token transport error: {exc}") from exc
+    except (VendorError, RateLimited) as exc:
+        raise Upstream(f"ORCID token request failed: {exc}") from exc
     if resp.status_code != 200:
         raise Upstream(
             f"ORCID token request failed (HTTP {resp.status_code}): {resp.text[:200]}",
@@ -188,28 +206,36 @@ def _api_get(path: str) -> dict[str, Any]:
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/json",
-        "User-Agent": _USER_AGENT,
+        "User-Agent": polite_user_agent(),
     }
     try:
         with http_client(timeout=_TIMEOUT_S, user_agent=None) as client:
             resp = request_with_deadline(
                 client,
                 _DEADLINE_S,
-                lambda: client.get(url, headers=headers),
+                lambda: with_backoff(
+                    lambda: client.get(url, headers=headers), service="orcid"
+                ),
                 label=f"GET {url}",
             )
     except httpx.HTTPError as exc:
         raise Upstream(f"ORCID transport error: {exc}") from exc
+    except VendorError as exc:
+        if exc.status == 401:
+            # Token may have been revoked mid-flight — drop the cache so the
+            # next call re-mints, then surface the failure.
+            _token_cache.clear()
+            raise Upstream("ORCID rejected the bearer token (HTTP 401)") from exc
+        if isinstance(exc, VendorUnavailable):
+            raise Upstream(f"ORCID unavailable for {path}: {exc}") from exc
+        raise Upstream(f"ORCID refused {path}: {exc}") from exc
+    except RateLimited as exc:
+        raise Upstream(f"ORCID rate-limited for {path}: {exc}") from exc
     if resp.status_code == 404:
         raise NotFound(
             f"ORCID has no record at {path}",
             next="verify the iD on https://orcid.org",
         )
-    if resp.status_code == 401:
-        # Token may have been revoked mid-flight — drop the cache so the
-        # next call re-mints, then surface the failure.
-        _token_cache.clear()
-        raise Upstream("ORCID rejected the bearer token (HTTP 401)")
     if resp.status_code != 200:
         raise Upstream(f"ORCID HTTP {resp.status_code} for {path}: {resp.text[:200]}")
     try:

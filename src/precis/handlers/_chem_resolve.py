@@ -677,22 +677,42 @@ def _locant_isomers(
     return found, probes, answered
 
 
-def http_fetch(timeout_s: float = 20.0, attempts: int = 2) -> Fetch:
-    """Production fetcher: SSRF-pinned ``safe_get`` per call. The query
-    is agent-supplied and rides the URL path; the hosts are fixed.
-    ``attempts`` counts connect-phase retries (``retry_transient``)."""
-    from urllib.parse import urlsplit
+def http_fetch(timeout_s: float = 20.0, attempts: int = 3) -> Fetch:
+    """Production fetcher for PubChem: SSRF-pinned ``safe_get`` per call,
+    through the politeness core under service ``pubchem`` (limiter token per
+    attempt, jittered backoff on 429/5xx and transport errors, Retry-After,
+    breaker). The query is agent-supplied and rides the URL path; the hosts
+    are fixed. This is an interactive path: ``attempts`` is the total tries
+    (1 disables retry), sleeps are capped at 8 s and a limiter wait at 5 s.
+    A connect-phase stall is offered to ``stall_capture`` as before."""
+    from dataclasses import replace
 
-    from precis.utils.http import http_client, retry_transient
+    from precis.utils.http import (
+        _is_handshake_failure,
+        http_client,
+        policy_for,
+        polite_user_agent,
+        with_backoff,
+    )
     from precis.utils.safe_fetch import safe_get
+    from precis.utils.stall_capture import maybe_capture
+
+    policy = replace(
+        policy_for("pubchem"), attempts=attempts, cap=8.0, limiter_wait_s=5.0
+    )
+    host = "pubchem.ncbi.nlm.nih.gov"
 
     def fetch(url: str) -> tuple[int, str]:
-        with http_client(timeout=timeout_s) as client:
-            resp = retry_transient(
-                lambda: safe_get(client, url),
-                host=urlsplit(url).netloc,
-                attempts=attempts,
-            )
+        def send() -> Any:
+            try:
+                return safe_get(client, url)
+            except Exception as exc:
+                if _is_handshake_failure(exc):
+                    maybe_capture(exc, host)
+                raise
+
+        with http_client(timeout=timeout_s, user_agent=polite_user_agent()) as client:
+            resp = with_backoff(send, service="pubchem", policy=policy)
         return resp.status_code, resp.text
 
     return fetch
