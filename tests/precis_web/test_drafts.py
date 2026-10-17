@@ -806,7 +806,10 @@ def test_delete_draft_with_matching_name_soft_deletes(
     )
     assert r.status_code == 303
     assert r.headers["location"] == "/drafts"
-    assert ("delete", {"kind": "draft", "id": "nt"}) in draft_runtime.calls
+    assert (
+        "delete",
+        {"kind": "draft", "id": "nt", "confirm": "delete-draft-nt"},
+    ) in draft_runtime.calls
 
 
 def test_delete_draft_accepts_slug_too(
@@ -817,7 +820,10 @@ def test_delete_draft_accepts_slug_too(
     )
     assert r.status_code == 303
     assert r.headers["location"] == "/drafts"
-    assert ("delete", {"kind": "draft", "id": "nt"}) in draft_runtime.calls
+    assert (
+        "delete",
+        {"kind": "draft", "id": "nt", "confirm": "delete-draft-nt"},
+    ) in draft_runtime.calls
 
 
 def test_delete_draft_wrong_name_does_nothing(

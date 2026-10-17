@@ -1417,10 +1417,14 @@ async def delete_item(
     every other write route uses — a clean stop, not a crash."""
     redirect = _safe_local_redirect(back, "/drive")
     handler_id: str | int = int(ref_id) if ref_id.isdigit() else ref_id
+    args: dict[str, Any] = {"kind": kind, "id": handler_id}
+    if kind == "draft":
+        # the row's delete button is the explicit act; the verb wants a typed confirm
+        args["confirm"] = f"delete-draft-{ref_id}"
     return await redirect_or_error(
         request,
         "delete",
-        {"kind": kind, "id": handler_id},
+        args,
         redirect=redirect,
         error_title="Delete",
     )

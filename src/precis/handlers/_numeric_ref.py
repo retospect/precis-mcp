@@ -2342,6 +2342,24 @@ class NumericRefHandler(Handler):
                 next=f"delete(kind={self.kind!r}, id=N)",
             )
         ref_id = self._coerce_id(id)
+        try:
+            self._resolve_live_ref(ref_id)
+        except NotFound:
+            # ids are one global sequence: name the ref's real kind so a
+            # mixed-up id reads as a kind mix-up, not a missing row.
+            other = self.store.fetch_refs_by_ids([ref_id], include_deleted=False)
+            actual = other.get(ref_id)
+            if actual is not None and actual.kind != self.kind:
+                raise NotFound(
+                    f"{self._sense()} id={ref_id} not found - that id is a "
+                    f"live {actual.kind!r} ref, nothing was deleted",
+                    next=(
+                        f"get(kind={actual.kind!r}, id={ref_id}) to inspect it, "
+                        f"or search(kind={self.kind!r}, q='...') for the "
+                        "right id"
+                    ),
+                ) from None
+            raise
         self.store.retire_ref(ref_id)
         return Response(body=f"deleted {self._sense()} id={ref_id}")
 

@@ -626,7 +626,15 @@ def test_delete_ref_level_id_soft_deletes_whole_draft(
 
     ref_id = hub.live_store.get_ref(kind="draft", id="nt").id  # type: ignore[union-attr]
 
-    r = draft.delete(id="nt")
+    # whole-draft delete is confirm-gated like file kinds (gr494831 A4)
+    with pytest.raises(BadInput) as ei:
+        draft.delete(id="nt")
+    assert "confirm='delete-draft-nt'" in str(ei.value.next)
+    with pytest.raises(BadInput):
+        draft.delete(id="nt", confirm="delete-draft-other")
+    assert hub.live_store.get_ref(kind="draft", id="nt") is not None
+
+    r = draft.delete(id="nt", confirm="delete-draft-nt")
     assert "deleted draft" in r.body
     # ref soft-deleted…
     assert hub.live_store.get_ref(kind="draft", id="nt") is None

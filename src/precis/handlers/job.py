@@ -1166,6 +1166,31 @@ class JobHandler(NumericRefHandler):
 
     # ── retry: re-run a failed job via the parent todo ─────────────
 
+    def _delete(self, id: str | int | None) -> Response:
+        """Refuse to retire a live job: its worker keeps the reservation
+        and executor, so the row would vanish while work still runs."""
+        if id is not None:
+            job_id = self._coerce_id(id)
+            # a missing / other-kind id falls through to the base refusal
+            live = self.store.get_ref(kind=self.kind, id=job_id) is not None
+            status = _status_of(self.store.tags_for(job_id)) if live else None
+            if status is not None and status not in _TERMINAL_STATUSES:
+                raise BadInput(
+                    f"job id={job_id} is STATUS:{status}; deleting a "
+                    "non-terminal job leaves its worker running",
+                    next=(
+                        # a queued job is never claimed, so cancel_requested
+                        # would strand it (gr494725): cancel it directly
+                        f"tag(kind='job', id={job_id}, add=['STATUS:cancelled']) "
+                        "- a queued job was never claimed; then delete"
+                        if status == "queued"
+                        else f"tag(kind='job', id={job_id}, "
+                        "add=['STATUS:cancel_requested']) to stop it, then "
+                        "delete once it is STATUS:cancelled"
+                    ),
+                )
+        return super()._delete(id)
+
     def _retry_job(
         self,
         *,

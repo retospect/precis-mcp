@@ -2524,6 +2524,7 @@ class DraftHandler(Handler):
         *,
         id: str | int | None = None,
         mode: str | None = None,
+        confirm: str | None = None,
         **_kw: Any,
     ) -> Response:
         """Soft-delete, at whichever granularity ``id`` addresses.
@@ -2533,7 +2534,8 @@ class DraftHandler(Handler):
         A **ref-level** address (the draft's slug, or its numeric ref id)
         retires the whole document — ref ``retired_at`` plus every chunk,
         in one transaction (``store.drafts.retire_draft``), the same
-        atomic op behind the reader's type-the-name delete button. The
+        atomic op behind the reader's type-the-name delete button, and like
+        file kinds it needs ``confirm='delete-draft-<slug>'``. The
         owning project todo is left intact: this deletes the document, not
         the project. Both granularities refuse a machine-owned body
         (:meth:`_refuse_if_machine_owned`).
@@ -2551,8 +2553,20 @@ class DraftHandler(Handler):
             )
         if not _is_draft_chunk_handle(raw):
             ref = self._resolve_draft_any(raw)  # refuses a machine-owned body
-            retired = self.store.drafts.retire_draft(ref.id)
             label = ref.slug or ref.id
+            expected = f"delete-draft-{label}"
+            if confirm not in (expected, f"delete-draft-{ref.id}"):
+                raise BadInput(
+                    f"delete on a whole draft ({label}) retires every chunk; "
+                    f"pass confirm={expected!r} to proceed, or address one "
+                    "chunk with id='dc<chunk_id>'",
+                    next=(
+                        f"delete(kind='draft', id={raw!r}, "
+                        f"confirm={expected!r}) to remove the whole draft, or "
+                        "delete(kind='draft', id='dc42') for one chunk"
+                    ),
+                )
+            retired = self.store.drafts.retire_draft(ref.id)
             return Response(
                 body=f"deleted draft {label} ({retired} chunks retired) — "
                 "recoverable; the owning project todo is untouched"

@@ -1839,7 +1839,13 @@ async def delete_draft(
     # Ref-level ``delete`` verb: the same atomic retire_draft, plus the
     # machine-owned-body refusal (gr343752).
     body, is_error = await await_dispatch(
-        request, "delete", {"kind": "draft", "id": ref.slug or str(ref.id)}
+        request,
+        "delete",
+        {
+            "kind": "draft",
+            "id": ref.slug or str(ref.id),
+            "confirm": f"delete-draft-{ref.slug or ref.id}",
+        },
     )
     if is_error:
         return templates.TemplateResponse(
