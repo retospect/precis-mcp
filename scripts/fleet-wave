@@ -106,7 +106,10 @@ class Fleet:
     def __init__(self, args: argparse.Namespace) -> None:
         self.session: str = args.session or os.environ.get("FLEET_TMUX_SESSION", "")
         self.socket: str = args.socket or os.environ.get("FLEET_TMUX_SOCKET", "")
-        self.model: str = args.model or os.environ.get("FLEET_MODEL", "opus")
+        # Explicit choice only: the "opus" default is a claude alias, which
+        # devin-tree would reject, so Devin launches pass --model only when set.
+        self.model_set: str = args.model or os.environ.get("FLEET_MODEL", "")
+        self.model: str = self.model_set or "opus"
         self.repo = Path(
             git("rev-parse", "--show-toplevel", cwd=Path.cwd()).strip() or "."
         )
@@ -577,6 +580,8 @@ def cmd_launch(f: Fleet, a: argparse.Namespace) -> int:
         ]
         if f.session:
             argv += ["--session", f.session]
+        if f.model_set:
+            argv += ["--model", f.model_set]
         if a.dry_run:
             print(" ".join(argv))
             return 0

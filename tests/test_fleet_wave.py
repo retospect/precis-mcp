@@ -323,6 +323,35 @@ def test_launch_fills_footer_and_runs_claude_by_argv(
     assert "codex flags for tier W: --sandbox workspace-write" in proc.stdout
 
 
+def _devin_dry_run(env: dict[str, str], tmp_path: Path, *global_args: str) -> list[str]:
+    _windows(env, {})
+    brief = tmp_path / "brief.txt"
+    brief.write_text("Task: x.\n", encoding="utf-8")
+    env = {**env, "FLEET_COORDINATOR": "c", "FLEET_RELEASE_OWNER": "r",
+           "FLEET_APPROVAL": "approved"}  # fmt: skip
+    proc = _run(env, *global_args, "launch", "d-x", "--brief", str(brief),
+                "--tier", "qland", "--devin", "--dry-run")  # fmt: skip
+    assert proc.returncode == 0, proc.stderr
+    line = next(ln for ln in proc.stdout.splitlines() if "devin-tree" in ln)
+    return line.split()
+
+
+def test_devin_launch_passes_model_when_set(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    argv = _devin_dry_run(env, tmp_path, "--model", "swe-2")
+    assert argv[argv.index("--model") + 1] == "swe-2"
+    env2 = {**env, "FLEET_MODEL": "swe-3"}
+    argv = _devin_dry_run(env2, tmp_path)
+    assert argv[argv.index("--model") + 1] == "swe-3"
+
+
+def test_devin_launch_omits_model_when_unset(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    assert "--model" not in _devin_dry_run(env, tmp_path)
+
+
 def test_launch_legacy_footers_behind_env_flag(
     env: dict[str, str], tmp_path: Path
 ) -> None:
