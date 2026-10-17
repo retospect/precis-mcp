@@ -7,6 +7,7 @@ That's intentional: they double as a packaging smoke test.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,11 @@ import pytest
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.handlers.skill import SkillHandler
+
+_NEEDS_SIGHUP = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-only: precis.install_watchdog reads signal.SIGHUP at import",
+)
 
 
 @pytest.fixture
@@ -1954,6 +1960,7 @@ def test_serve_logs_have_outcome(
 # ── precis-status: previous-exit breadcrumb (gr341515) ─────────────────
 
 
+@_NEEDS_SIGHUP
 def test_status_silent_when_no_prior_breadcrumb(
     skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1966,6 +1973,7 @@ def test_status_silent_when_no_prior_breadcrumb(
     assert "previous server exited" not in out.body
 
 
+@_NEEDS_SIGHUP
 def test_status_surfaces_install_swapped_breadcrumb(
     skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1991,6 +1999,7 @@ def test_status_surfaces_install_swapped_breadcrumb(
     )
 
 
+@_NEEDS_SIGHUP
 def test_status_surfaces_crash_breadcrumb_with_detail(
     skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2012,6 +2021,7 @@ def test_status_surfaces_crash_breadcrumb_with_detail(
     assert "ValueError: boom" in out.body
 
 
+@_NEEDS_SIGHUP
 def test_status_surfaces_normal_exit_breadcrumb(
     skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2026,6 +2036,7 @@ def test_status_surfaces_normal_exit_breadcrumb(
     assert "previous server exited 2026-09-14T23:00:00Z — exited normally" in out.body
 
 
+@_NEEDS_SIGHUP
 def test_status_breadcrumb_is_consumed_not_repeated(
     skill: SkillHandler, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -2106,6 +2117,7 @@ def test_toc_other_bucket_is_small(skill: SkillHandler) -> None:
     assert m is None or int(m.group(1)) <= 15, m.group(0) if m else None
 
 
+@_NEEDS_SIGHUP
 def test_status_names_kinds_that_failed_their_gate(
     skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2132,6 +2144,7 @@ def test_status_names_kinds_that_failed_their_gate(
     assert "route (" not in body
 
 
+@_NEEDS_SIGHUP
 def test_status_renders_dark_switches_table(
     skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
 ) -> None:

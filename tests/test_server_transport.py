@@ -10,12 +10,18 @@ narrowly (not through the full MCP tool-dispatch surface).
 
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from precis import server
+
+_NEEDS_SIGHUP = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-only: precis.install_watchdog reads signal.SIGHUP at import",
+)
 
 # ── pure token check ────────────────────────────────────────────────
 
@@ -118,6 +124,7 @@ def _no_nas_attest(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+@_NEEDS_SIGHUP
 def test_main_stdio_default_calls_mcp_run_stdio_unchanged(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -139,6 +146,7 @@ def test_main_stdio_default_calls_mcp_run_stdio_unchanged(
     assert calls == [("stdio",)]
 
 
+@_NEEDS_SIGHUP
 def test_main_network_transport_requires_a_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -151,6 +159,7 @@ def test_main_network_transport_requires_a_token(
         server.main(transport="streamable-http")
 
 
+@_NEEDS_SIGHUP
 def test_main_network_transport_dispatches_with_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -173,6 +182,7 @@ def test_main_network_transport_dispatches_with_token(
     }
 
 
+@_NEEDS_SIGHUP
 def test_main_network_transport_passes_an_inherited_fd_through(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -223,6 +233,7 @@ def test_run_network_transport_serves_on_the_inherited_socket(
         listener.close()
 
 
+@_NEEDS_SIGHUP
 def test_main_network_transport_falls_back_to_env_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -240,6 +251,7 @@ def test_main_network_transport_falls_back_to_env_token(
     assert captured["token"] == "from-env"
 
 
+@_NEEDS_SIGHUP
 def test_main_rejects_unknown_transport(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(server, "_log_version_banner", lambda: None)
     monkeypatch.setattr(server, "_init_runtime", lambda: SimpleNamespace(store=None))

@@ -6,6 +6,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -15,6 +16,11 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-only: fake tmux is a #!/bin/sh script (WinError 193)",
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "fleet-report"

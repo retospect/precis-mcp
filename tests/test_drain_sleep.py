@@ -11,6 +11,7 @@ early on drain and stop retrying once draining. Pure unit tests — no DB;
 
 from __future__ import annotations
 
+import sys
 import time
 from typing import Any
 
@@ -20,6 +21,11 @@ import precis.utils.rate_limit as rate_limit_mod
 import precis.workers.bib_parse as bib_parse_mod
 from precis.liveness import drain_sleep, request_drain
 from precis.utils import http
+
+_NEEDS_FCNTL = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-only: precis.utils.stall_capture (crossref limiter) imports fcntl",
+)
 
 # ── liveness.drain_sleep ────────────────────────────────────────────────
 
@@ -93,6 +99,7 @@ class TestExternalRetry:
 
 
 class TestCrossrefQueryDrain:
+    @_NEEDS_FCNTL
     def test_drain_returns_none_fast(self, monkeypatch: pytest.MonkeyPatch) -> None:
         request_drain()
 

@@ -5,10 +5,16 @@ from __future__ import annotations
 import importlib.util
 import json
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
+
+_NEEDS_FCNTL = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-only: scripts/hooks/codex-efficiency.py imports fcntl at tick time",
+)
 
 HOOK = Path(__file__).resolve().parents[1] / "scripts/hooks/codex-efficiency.py"
 spec = importlib.util.spec_from_file_location("codex_efficiency", HOOK)
@@ -47,6 +53,7 @@ def test_missing_rtk_passes_through(monkeypatch: pytest.MonkeyPatch) -> None:
     assert hook.rewrite("git status", {}) is None
 
 
+@_NEEDS_FCNTL
 def test_git_rewrite_preserves_other_tool_arguments(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -89,6 +96,7 @@ def test_unrelated_project_gets_no_context() -> None:
     )
 
 
+@_NEEDS_FCNTL
 def test_reminders_are_bounded_and_metrics_contain_no_text(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -108,6 +116,7 @@ def test_reminders_are_bounded_and_metrics_contain_no_text(
     assert '"large_results": 2' in text
 
 
+@_NEEDS_FCNTL
 def test_lifecycle_records_invocations_without_unsupported_context(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -136,6 +145,7 @@ def test_lifecycle_records_invocations_without_unsupported_context(
     }
 
 
+@_NEEDS_FCNTL
 def test_source_navigation_reminder_is_advisory_and_rate_limited(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -10,6 +10,10 @@ import pytest
 
 from precis.remote.ssh import RemoteError, SshProfile, bounded_process
 
+_NEEDS_KILLPG = pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX-only: os.killpg is absent on Windows"
+)
+
 
 def profile() -> SshProfile:
     blob = b"\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x20" + b"x" * 32
@@ -32,6 +36,7 @@ def test_profile_rejects_missing_or_invalid_pins() -> None:
         )
 
 
+@_NEEDS_KILLPG
 def test_transport_timeout_and_output_cap(tmp_path: Path) -> None:
     with pytest.raises(RemoteError, match="transport_timeout"):
         bounded_process(
@@ -67,6 +72,7 @@ def test_transport_timeout_and_output_cap(tmp_path: Path) -> None:
     assert "payload" not in repr(result)
 
 
+@_NEEDS_KILLPG
 def test_sensitive_stdin_is_bounded_without_disk(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

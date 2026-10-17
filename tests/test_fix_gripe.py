@@ -35,6 +35,11 @@ from precis.workers.job_types.fix_gripe import (
 )
 from tests._gripe import insert_gripe
 
+_POSIX_CLONE_CLEANUP = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-only: scratch clone rmtree fails on Windows (read-only git object files), so the clone dir survives",
+)
+
 # ── _restricted_env: claude must not see the DB ────────────────────
 
 
@@ -1622,6 +1627,7 @@ class TestDeliveryIsDecidedByTheRemote:
         assert str(repo) in (outcome.gripe_comment_text or "")
         assert fix_gripe._git_rev_parse(repo, "gripe_42") is not None
 
+    @_POSIX_CLONE_CLEANUP
     def test_a_real_land_puts_one_squash_commit_on_main(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

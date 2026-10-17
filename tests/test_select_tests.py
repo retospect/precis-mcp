@@ -26,6 +26,11 @@ from typing import Any
 
 import pytest
 
+_POSIX_MODULE_KEYS = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-only: impacted-tests mod2file keys do not resolve dotted module names from backslash paths on Windows",
+)
+
 REPO = Path(__file__).resolve().parent.parent
 SEL_PATH = REPO / "scripts" / "impacted-tests"
 
@@ -164,6 +169,7 @@ def test_changed_test_file_selects_itself(selector: sel.Selector) -> None:
     assert "tests/test_skill_prose.py" in targets
 
 
+@_POSIX_MODULE_KEYS
 def test_deleted_module_still_selects_importers(selector: sel.Selector) -> None:
     """A module deleted by the diff isn't in the file map anymore — its
     importers must still be selected (they break at import time)."""

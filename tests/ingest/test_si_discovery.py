@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -11,6 +12,11 @@ import pytest
 
 from precis.ingest import si_discovery as sd
 from precis.ingest.si_discovery import HttpResult, SiCandidate, discover
+
+_NEEDS_FCNTL = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-only: precis.utils.stall_capture (crossref limiter) imports fcntl",
+)
 
 DOI = "10.1021/acscatal.3c01963"
 
@@ -326,6 +332,7 @@ def test_discover_nothing_found_is_empty_not_error() -> None:
     assert res.candidates == []
 
 
+@_NEEDS_FCNTL
 def test_discover_source_exception_is_recorded_and_others_run() -> None:
     def fetch(url: str) -> HttpResult:
         if "figshare" in url:

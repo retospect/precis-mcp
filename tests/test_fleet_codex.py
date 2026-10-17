@@ -12,6 +12,10 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX-only: scripts/fleet-codex imports fcntl"
+)
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "fleet-codex"
 THREAD = "01900000-0000-7000-8000-000000000001"

@@ -192,6 +192,8 @@ class _Rig:
 
 @pytest.fixture
 def rig(tmp_path: Path) -> _Rig:
+    if sys.platform == "win32":
+        pytest.skip("POSIX-only: the rig's fake systemctl/ps are #!/bin/sh scripts")
     return _Rig(tmp_path)
 
 

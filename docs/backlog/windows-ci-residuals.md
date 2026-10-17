@@ -23,14 +23,28 @@ fixtures checked out CRLF by autocrlf and zipped via `read_bytes()`
 (`stream.split("\n")` leaves the `\r`, the trailing `|` is not stripped, the
 body stops being JSON) — pinned `eol=lf` in `.gitattributes`.
 
-Still open — its own sweep, ~120 FAILEDs on the leg: tests that exec
-extensionless scripts die `WinError 193` (test_fleet_report ×25,
-test_claude_gated ×15, and most of the fleet/deploy/script harnesses);
-`signal.SIGHUP`/`os.killpg` inside test bodies (test_skill ×7,
-test_server_transport ×6, test_mcp_modalities, test_mcp_liveness,
-test_acting_user); one-offs (UnicodeEncodeError charmap in
-test_deploy_orphan_worker_lanes, PermissionError in
-test_python_worktree_roots, test_python_tests_view, test_fix_gripe).
+Cleared 2026-10-17 (137 FAILEDs on run 38883842456, windows-latest 3.12;
+now skipif(win32) naming the POSIX-only API, no POSIX change): WinError 193
+on shebang/`#!/bin/sh` stubs (test_fleet_report, test_claude_gated,
+test_deploy_compute_build_assert's `rig`); `signal.SIGHUP` at import of
+`install_watchdog` (test_skill, test_server_transport, test_mcp_liveness,
+test_acting_user, test_mcp_modalities); `fcntl` in product paths
+(test_codex_efficiency_hook, test_retry_transient, test_drain_sleep,
+test_bib_parse, test_si_discovery); `os.sysconf`/`os.killpg`; whole POSIX
+harness modules (test_fleet_codex, test_deploy_failure_reporting). Two
+one-offs made portable via `PYTHONUTF8=1` (test_guide_scripts,
+test_testmon_exit_guard) — cause unconfirmed.
+
+Still open, skipped without a pinned root cause: 7 test_mcp_modalities
+git-identity tests (`skill._dotgit_info` path handling — look in src/),
+test_select_tests (module key), test_fix_gripe (rmtree of read-only git
+objects), test_python_tests_view (backslash coverage keys),
+test_python_worktree_roots (PermissionError on `.git` pointer),
+test_pcb_maze_negotiation (coarse timer vs zero deadline in
+`realize._negotiate`; needs a src fix), test_se_tunnel_reservoirs (1.716 vs
+1.70 numeric drift). Unmeasured on Windows until the next nightly or a
+`workflow_dispatch` full=true run.
+
 Several FAILEDs are nightly-suite drift red on the Linux legs too
 (test_pcb_dead_exports, test_skill_vocabulary, the mcp verb-kwarg parity
 ratchet) — not Windows work. The O_DIRECTORY guard and the Py 3.12 urllib

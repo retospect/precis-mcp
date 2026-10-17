@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from typing import Any
 
 import httpx
@@ -9,6 +10,11 @@ import pytest
 import requests
 
 from precis.utils.http import retry_transient
+
+_NEEDS_FCNTL = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-only: precis.utils.stall_capture (crossref limiter) imports fcntl",
+)
 
 
 class _Flaky:
@@ -29,6 +35,7 @@ def _ct() -> httpx.ConnectTimeout:
     return httpx.ConnectTimeout("_ssl.c:989: The handshake operation timed out")
 
 
+@_NEEDS_FCNTL
 def test_retries_once_on_connect_timeout_then_succeeds() -> None:
     sleeps: list[float] = []
     fn = _Flaky(_ct())
@@ -37,6 +44,7 @@ def test_retries_once_on_connect_timeout_then_succeeds() -> None:
     assert sleeps == [3.0]
 
 
+@_NEEDS_FCNTL
 def test_retries_on_connect_error_and_requests_connect_timeout() -> None:
     for exc in (httpx.ConnectError("refused"), requests.exceptions.ConnectTimeout()):
         fn = _Flaky(exc)
@@ -44,6 +52,7 @@ def test_retries_on_connect_error_and_requests_connect_timeout() -> None:
         assert fn.calls == 2
 
 
+@_NEEDS_FCNTL
 def test_gives_up_after_two_attempts_and_reraises() -> None:
     sleeps: list[float] = []
     fn = _Flaky(_ct(), _ct(), _ct())
@@ -53,6 +62,7 @@ def test_gives_up_after_two_attempts_and_reraises() -> None:
     assert sleeps == [3.0]
 
 
+@_NEEDS_FCNTL
 def test_custom_backoff_is_used() -> None:
     sleeps: list[float] = []
     fn = _Flaky(_ct(), _ct())
@@ -80,6 +90,7 @@ def test_does_not_retry_http_status_error() -> None:
     assert fn.calls == 1
 
 
+@_NEEDS_FCNTL
 def test_logs_one_info_line_with_host(caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level("INFO", logger="precis.utils.http")
     retry_transient(
@@ -119,6 +130,7 @@ class _FlakyTransportHandler:
         return httpx.Response(200, json=self.body, request=request)
 
 
+@_NEEDS_FCNTL
 def test_fetch_oa_crossref_leg_retries(
     monkeypatch: pytest.MonkeyPatch, no_sleep: list[float]
 ) -> None:
@@ -140,6 +152,7 @@ def test_fetch_oa_crossref_leg_retries(
     assert no_sleep == [3.0]
 
 
+@_NEEDS_FCNTL
 def test_bib_parse_crossref_query_retries_in_its_own_loop_only(
     monkeypatch: pytest.MonkeyPatch, no_sleep: list[float]
 ) -> None:
@@ -170,6 +183,7 @@ def test_bib_parse_crossref_query_retries_in_its_own_loop_only(
     assert drains == [1.0]
 
 
+@_NEEDS_FCNTL
 def test_provenance_doi_validity_retries(
     monkeypatch: pytest.MonkeyPatch, no_sleep: list[float]
 ) -> None:
@@ -202,6 +216,7 @@ class _FakeCrossref:
         return {"message": {"DOI": "10.1/x", "items": []}}
 
 
+@_NEEDS_FCNTL
 def test_habanero_sites_retry_requests_connect_timeout(
     monkeypatch: pytest.MonkeyPatch, no_sleep: list[float]
 ) -> None:
@@ -226,6 +241,7 @@ def test_habanero_sites_retry_requests_connect_timeout(
     assert no_sleep == [3.0, 3.0, 3.0]
 
 
+@_NEEDS_FCNTL
 def test_si_discovery_crossref_leg_retries(no_sleep: list[float]) -> None:
     from precis.ingest import si_discovery
 

@@ -15,6 +15,10 @@ from types import SimpleNamespace
 
 import pytest
 
+_NEEDS_SYSCONF = pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX-only: os.sysconf is absent on Windows"
+)
+
 _PATH = Path(__file__).resolve().parents[1] / "scripts" / "mcp_loadtest" / "harness.py"
 
 
@@ -71,12 +75,14 @@ def test_tool_error_without_envelope():
 # --- CPU meters ------------------------------------------------------------
 
 
+@_NEEDS_SYSCONF
 def test_cpu_meter_first_read_and_missing_pid_are_unobservable():
     m = h.CpuMeter(2**22 + 12345)  # above pid_max on Linux; no /proc on macOS
     assert m.read() == -1.0
     assert m.read() == -1.0
 
 
+@_NEEDS_SYSCONF
 def test_multi_cpu_meter_sums_and_any_unreadable_is_unobservable():
     m = h.MultiCpuMeter([1, 2])
     vals = iter([0.5, 0.7])

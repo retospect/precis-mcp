@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -28,6 +29,11 @@ from tests.test_deploy_render_worktree import (
     _make_fake_bin,
     _run_deploy,
     build_fixture,
+)
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-only: drives scripts/deploy via bash and fake shell stubs",
 )
 
 

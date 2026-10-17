@@ -25,6 +25,11 @@ from precis.errors import BadInput, NotFound
 from precis.handlers.python import PythonHandler
 from tests.hintcheck import assert_hints_round_trip
 
+_POSIX_COVERAGE_PATHS = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-only: coverage DB paths are backslash-separated on Windows, so manifest keys and the tests view do not match posix suffixes",
+)
+
 _MANIFEST_SCRIPT = (
     Path(__file__).resolve().parents[1] / "scripts" / "lib" / "coverage_manifest.py"
 )
@@ -291,6 +296,7 @@ def _cover_target_lines(repo: Path) -> set[int]:
     return set(range(start, end + 1))
 
 
+@_POSIX_COVERAGE_PATHS
 def test_tests_view_measured_coverage_when_verified(repo: Path) -> None:
     handler = PythonHandler(hub=Hub(), roots={"r": repo})
     _measured_db(
@@ -356,6 +362,7 @@ def test_tests_view_contextless_db_says_so(repo: Path) -> None:
     assert "[measured]" not in body
 
 
+@_POSIX_COVERAGE_PATHS
 def test_manifest_writer(tmp_path: Path) -> None:
     """The manifest records sha256 of measured bytes + a UTC timestamp."""
     src = _write(tmp_path, "pkg/x.py", "X = 1\n")

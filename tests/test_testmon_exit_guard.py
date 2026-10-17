@@ -11,6 +11,7 @@ workaround is needed here).
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 from types import ModuleType
 
@@ -307,6 +308,7 @@ def test_main_prints_traceback_tail_and_log_path_and_signals_crash(
         capture_output=True,
         text=True,
         encoding="utf-8",
+        env={**os.environ, "PYTHONUTF8": "1"},
         check=False,
     )
 

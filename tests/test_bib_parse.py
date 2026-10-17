@@ -10,6 +10,7 @@ matcher tests additionally monkeypatch
 
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
 from typing import Any
 
@@ -31,6 +32,11 @@ from precis.workers.bib_parse import (
     run_bib_parse_pass,
 )
 from tests.workers._helpers import seed_chunk, seed_ref
+
+_NEEDS_FCNTL = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-only: precis.utils.stall_capture (crossref limiter) imports fcntl",
+)
 
 
 @pytest.fixture(autouse=True)
@@ -874,6 +880,7 @@ class TestMatchCrossref:
 
 
 class TestSharedLimiterRefusal:
+    @_NEEDS_FCNTL
     def test_crossref_query_raises_without_calling_safe_get(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

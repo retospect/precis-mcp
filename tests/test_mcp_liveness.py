@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import ast
 import socket
+import sys
 import threading
 import time
 from collections.abc import Iterator
@@ -28,6 +29,11 @@ from precis.mcp_liveness import (
     probe,
     record_wedge_kill,
     run_liveness_loop,
+)
+
+_NEEDS_SIGHUP = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-only: precis.install_watchdog reads signal.SIGHUP at import",
 )
 
 _POLICY = LivenessPolicy(
@@ -94,6 +100,7 @@ def test_cooldown_is_capped() -> None:
     assert detector._cooldown_s() == 1200.0
 
 
+@_NEEDS_SIGHUP
 def test_breadcrumb_path_is_install_watchdogs(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -107,6 +114,7 @@ def test_breadcrumb_path_is_install_watchdogs(
     assert breadcrumb_path() == _breadcrumb_path()
 
 
+@_NEEDS_SIGHUP
 def test_wedge_kill_shows_on_the_next_precis_status(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import re
+import sys
 from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any
@@ -26,6 +27,11 @@ from precis.store.revision_context import (
 )
 from precis.store.types import ChunkInsert
 from precis.users import hash_password
+
+_NEEDS_SIGHUP = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-only: precis.install_watchdog reads signal.SIGHUP at import",
+)
 
 
 @pytest.fixture(autouse=True)
@@ -155,6 +161,7 @@ def test_storeless_server_stays_agent() -> None:
     assert process_actor() is None
 
 
+@_NEEDS_SIGHUP
 def test_server_main_passes_its_transport(monkeypatch: pytest.MonkeyPatch) -> None:
     """``precis serve`` hands the transport through, so only stdio honours it."""
     import precis.acting_user as acting_user

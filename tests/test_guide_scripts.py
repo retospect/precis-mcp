@@ -26,6 +26,7 @@ manually per the spec's smoke path.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -915,6 +916,7 @@ def test_guide_narrate_rejects_unknown_voice() -> None:
         capture_output=True,
         text=True,
         encoding="utf-8",
+        env={**os.environ, "PYTHONUTF8": "1"},
         check=False,
     )
     assert result.returncode == 1

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,11 @@ from precis.handlers._python_worktrees import (
     parse_worktrees_spec,
 )
 from precis.handlers.python import PythonHandler
+
+_POSIX_GITFILE_WRITE = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-only: Windows refuses writing the linked worktree's read-only .git pointer file (PermissionError)",
+)
 
 HOST = "/hostprefix"
 
@@ -170,6 +176,7 @@ def test_gitdir_and_parse_helpers(env):
     assert parse_worktrees_spec("wt:/nonexistent") is None
 
 
+@_POSIX_GITFILE_WRITE
 def test_provenance_uses_gitdir(env):
     main, wts, tmp = env
     # Real linked worktree whose .git file points at a host path we remap.

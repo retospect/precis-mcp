@@ -29,6 +29,11 @@ from precis.utils.claude_agent import (
     call_claude_agent,
 )
 
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-only: fake claude is a shebang shell script (WinError 193)",
+)
+
 FAKE_CLAUDE = """\
 import json, os, sys
 
