@@ -13,11 +13,13 @@ store — only the outbound S2 HTTP call is mocked.
 
 from __future__ import annotations
 
+import httpx
 import pytest
 
 from precis.dispatch import Hub
 from precis.handlers.semanticscholar import SemanticScholarHandler, _format_paper
 from precis.store import Store
+from precis.utils.http import reset_circuit
 
 
 def test_format_paper_full_record() -> None:
@@ -757,21 +759,16 @@ def test_walk_author_papers_backoff_retries_a_429_mid_walk(
     """A 429 hit on the SECOND page (mid-walk) is retried with
     exponential backoff instead of aborting the whole walk."""
     sleeps: list[float] = []
-    monkeypatch.setattr("precis.handlers.semanticscholar.time.sleep", sleeps.append)
+    monkeypatch.setattr("precis.utils.http._default_sleep", sleeps.append)
+    monkeypatch.setattr("precis.utils.rate_limit.require", lambda *a, **k: None)
+    reset_circuit()
 
-    class _FakeResp:
-        def __init__(self, status_code: int, payload: dict | None = None) -> None:
-            self.status_code = status_code
-            self._payload = payload
-            self.text = "rate limited" if status_code == 429 else ""
-
-        def json(self) -> dict:
-            assert self._payload is not None
-            return self._payload
+    def _FakeResp(status_code: int, payload: dict | None = None) -> httpx.Response:
+        return httpx.Response(status_code, json=payload)
 
     calls = {"n": 0}
 
-    def fake_raw(url: str, params: dict) -> _FakeResp:
+    def fake_raw(url: str, params: dict) -> httpx.Response:
         calls["n"] += 1
         offset = params["offset"]
         if offset == 0:
@@ -786,7 +783,7 @@ def test_walk_author_papers_backoff_retries_a_429_mid_walk(
     body = "\n\n".join(b.text for b in result.body_blocks)
 
     assert calls["n"] == 3
-    assert sleeps == [1.0]
+    assert len(sleeps) == 1 and 0.0 <= sleeps[0] <= 2.0  # full jitter, base 2 s
     assert result.meta["result_count"] == 2
     # 3 actual HTTP calls total (page 1, page 2's 429, page 2's retry) —
     # 1 of those 3 was a retry (gr356740: the render names the request
@@ -811,21 +808,19 @@ def test_s2_get_json_backoff_raises_after_5_consecutive_429s(
     # can't blame it for a neighbour's lingering backend (gr475521).
     s2handler = SemanticScholarHandler.__new__(SemanticScholarHandler)
     sleeps: list[float] = []
-    monkeypatch.setattr("precis.handlers.semanticscholar.time.sleep", sleeps.append)
+    monkeypatch.setattr("precis.utils.http._default_sleep", sleeps.append)
+    monkeypatch.setattr("precis.utils.rate_limit.require", lambda *a, **k: None)
+    reset_circuit()
 
-    class _FakeResp:
-        status_code = 429
-        text = "rate limited"
-
-        def json(self) -> dict:
-            raise AssertionError("a 429 must never be JSON-parsed")
-
-    monkeypatch.setattr(s2handler, "_s2_raw_get", lambda url, params: _FakeResp())
+    monkeypatch.setattr(
+        s2handler, "_s2_raw_get", lambda url, params: httpx.Response(429)
+    )
 
     with pytest.raises(Upstream, match="retries exhausted"):
         s2handler._s2_get_json_backoff("http://example/author/x/papers", {})
 
-    assert sleeps == [1.0, 2.0, 4.0, 8.0]
+    assert len(sleeps) == 4
+    assert all(0.0 <= w <= min(60.0, 2.0 * 2**n) for n, w in enumerate(sleeps))
 
 
 def test_get_complete_kwarg_threads_to_a_distinct_cache_row(

@@ -89,6 +89,8 @@ _TRANSIENT_ERRORS = frozenset(
         "PoolTimeout",
         # Shared-limiter refusal (si_discovery's Crossref leg): not a verdict.
         "RateLimited",
+        # Per-host breaker open after repeated transport failures (http core).
+        "VendorUnavailable",
     }
 )
 

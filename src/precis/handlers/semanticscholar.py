@@ -40,7 +40,6 @@ from __future__ import annotations
 
 import logging
 import re
-import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -52,7 +51,14 @@ from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store.types import ChunkInsert
 from precis.utils import handle_registry
-from precis.utils.http import http_client, require_httpx
+from precis.utils.http import (
+    VendorError,
+    VendorUnavailable,
+    http_client,
+    require_httpx,
+    with_backoff,
+)
+from precis.utils.rate_limit import RateLimited
 from precis.utils.slug import slug_from_text
 
 if TYPE_CHECKING:
@@ -164,11 +170,6 @@ _AUTHOR_COMPLETE_PAGE_LIMIT = 100
 #: the author actually has — one ``get()`` must never turn into an
 #: unbounded fetch.
 _AUTHOR_COMPLETE_HARD_CAP = 2000
-
-#: Retry budget for a 429 hit mid-``complete=True`` walk (exponential
-#: backoff: 1s, 2s, 4s, 8s between the 5 attempts).
-_AUTHOR_BACKOFF_ATTEMPTS = 5
-_AUTHOR_BACKOFF_BASE_S = 1.0
 
 #: Title truncation for the compact author-papers table (gr346833).
 _AUTHOR_TITLE_TRUNCATE = 70
@@ -870,12 +871,13 @@ class SemanticScholarHandler(CacheBackedHandler):
     def _s2_get_json_backoff(
         self, url: str, params: dict[str, Any]
     ) -> tuple[dict[str, Any], int]:
-        """Like :meth:`_s2_get_json`, but retries an HTTP 429 with
-        exponential backoff (:data:`_AUTHOR_BACKOFF_BASE_S` doubling,
-        :data:`_AUTHOR_BACKOFF_ATTEMPTS` attempts) instead of raising
-        immediately — the 5th (last) consecutive 429 raises rather than
-        sleeping again, with a "retries exhausted" message distinct from
-        :meth:`_s2_parse_response`'s generic 429 message.
+        """Like :meth:`_s2_get_json`, but runs under the shared politeness
+        core (:func:`precis.utils.http.with_backoff`, service ``s2``): one
+        ``s2`` limiter token per attempt, full-jitter backoff on 429/5xx,
+        ``Retry-After`` honoured and parked on the shared row, a breaker.
+        The last consecutive 429 raises ``Upstream`` with a "retries
+        exhausted" message distinct from :meth:`_s2_parse_response`'s
+        generic 429 message.
 
         Returns ``(json, attempts)`` — ``attempts`` is how many actual
         HTTP calls this one page needed (1 when no 429 was hit, more
@@ -887,18 +889,31 @@ class SemanticScholarHandler(CacheBackedHandler):
         tier's ~1 req/s ceiling than the other (single-call) fetch paths,
         which keep the immediate-raise behaviour of :meth:`_s2_get_json`.
         """
-        last_attempt = _AUTHOR_BACKOFF_ATTEMPTS - 1
-        for attempt in range(_AUTHOR_BACKOFF_ATTEMPTS):
-            resp = self._s2_raw_get(url, params)
-            if resp.status_code == 429:
-                if attempt == last_attempt:
-                    raise Upstream(
-                        "Semantic Scholar rate-limited (HTTP 429): retries exhausted"
-                    )
-                time.sleep(_AUTHOR_BACKOFF_BASE_S * (2**attempt))
-                continue
-            return self._s2_parse_response(resp), attempt + 1
-        raise AssertionError("unreachable")  # loop always returns/raises above
+        attempts = 0
+
+        def send() -> Any:
+            nonlocal attempts
+            attempts += 1
+            return self._s2_raw_get(url, params)
+
+        try:
+            resp = with_backoff(send, service="s2")
+        except RateLimited as exc:  # shared limiter refused a token
+            raise Upstream(f"Semantic Scholar paced out: {exc}") from exc
+        except VendorUnavailable as exc:  # budget spent, breaker open, draining
+            if exc.status == 429:
+                raise Upstream(
+                    "Semantic Scholar rate-limited (HTTP 429): retries exhausted"
+                ) from exc
+            raise Upstream(f"Semantic Scholar unavailable: {exc}") from exc
+        except VendorError as exc:  # 401/403: auth, never retried
+            if exc.status == 401:
+                raise Upstream(
+                    "Semantic Scholar rejected the API key (HTTP 401). "
+                    "Check SEMANTIC_SCHOLAR_API_KEY.",
+                ) from exc
+            raise Upstream(f"Semantic Scholar HTTP {exc.status}") from exc
+        return self._s2_parse_response(resp), attempts
 
     @staticmethod
     def _s2_raw_get(url: str, params: dict[str, Any]) -> Any:

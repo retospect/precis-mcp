@@ -281,7 +281,7 @@ class TestLifecycle:
 
 
 class TestS2Wiring:
-    @patch("precis.ingest.citations.acquire_rate_limit")
+    @patch("precis.utils.rate_limit.require")
     # citations builds its client via ingest.semantic_scholar._client
     @patch("precis.ingest.semantic_scholar.SemanticScholar")
     def test_citations_acquires_s2_before_fetch(
@@ -297,7 +297,7 @@ class TestS2Wiring:
 
         assert mock_acquire.call_count >= 2  # references + citations
         for call in mock_acquire.call_args_list:
-            assert call.args == ("s2",)
+            assert call.args == ("s2",)  # the core takes the s2 row per attempt
 
 
 class TestRequire:

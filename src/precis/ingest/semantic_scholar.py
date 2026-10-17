@@ -1,4 +1,4 @@
-"""Semantic Scholar metadata lookup with tenacity retry."""
+"""Semantic Scholar metadata lookup with shared politeness backoff."""
 
 from __future__ import annotations
 
@@ -9,8 +9,7 @@ from typing import Any
 
 from semanticscholar import SemanticScholar
 
-from precis.utils.http import external_retry
-from precis.utils.rate_limit import acquire as acquire_rate_limit
+from precis.utils.http import call_with_backoff
 
 
 def _client(api_key: str = "") -> SemanticScholar:
@@ -19,7 +18,7 @@ def _client(api_key: str = "") -> SemanticScholar:
     Key = explicit ``api_key`` or the vault's ``SEMANTIC_SCHOLAR_API_KEY``
     (missing/unreachable vault -> keyless). ``retry=False`` switches off the
     lib's own tenacity loop (10 attempts on 429) so it cannot nest inside
-    :func:`precis.utils.http.external_retry` (gr459597).
+    :func:`precis.utils.http.call_with_backoff` (gr459597).
     """
     key = api_key
     if not key:
@@ -82,11 +81,9 @@ def lookup_s2(title: str, api_key: str = "", limit: int = 3) -> dict[str, Any] |
     return _normalize(paper)
 
 
-@external_retry()
 def _search_with_retry(sch: SemanticScholar, title: str, limit: int) -> Any:
-    """Search S2 with exponential backoff on 429."""
-    acquire_rate_limit("s2")
-    return sch.search_paper(title, limit=limit)
+    """Search S2 with shared backoff on 429."""
+    return call_with_backoff(lambda: sch.search_paper(title, limit=limit), service="s2")
 
 
 def search_s2_papers(
@@ -123,17 +120,19 @@ def search_s2_papers(
 _RATE_LIMITED = object()
 
 
-@external_retry()
 def _search_fast_fail(sch: SemanticScholar, query: str, limit: int) -> Any:
     """Like :func:`_search_with_retry` but a 429 (the lib raises
     ``ConnectionRefusedError``) returns :data:`_RATE_LIMITED` at once instead
     of backoff-looping: free-text lit-search is best-effort and must not stall
     a quest tick / hub_refine pass (gr459597). Other errors still retry."""
-    acquire_rate_limit("s2")
-    try:
-        return sch.search_paper(query, limit=limit)
-    except ConnectionRefusedError:
-        return _RATE_LIMITED
+
+    def _call() -> Any:
+        try:
+            return sch.search_paper(query, limit=limit)
+        except ConnectionRefusedError:
+            return _RATE_LIMITED
+
+    return call_with_backoff(_call, service="s2")
 
 
 #: S2's batch endpoint (``POST /paper/batch``) caps at 500 ids per call
@@ -195,13 +194,13 @@ def get_papers_batch(ids: list[str], api_key: str = "") -> list[dict[str, Any] |
     return out
 
 
-@external_retry()
 def _get_papers_with_retry(
     sch: SemanticScholar, paper_ids: list[str]
 ) -> tuple[list[Any], list[str]]:
-    """Batch-get with exponential backoff on 429."""
-    acquire_rate_limit("s2")
-    return sch.get_papers(paper_ids, return_not_found=True)
+    """Batch-get with shared backoff on 429."""
+    return call_with_backoff(
+        lambda: sch.get_papers(paper_ids, return_not_found=True), service="s2"
+    )
 
 
 def _id_keys_for_paper(paper: Any) -> set[str]:
@@ -279,11 +278,9 @@ def get_paper_by_id(
     return dict(out) if out is not None else None
 
 
-@external_retry()
 def _get_with_retry(sch: SemanticScholar, paper_id: str) -> Any:
-    """Get paper with exponential backoff on 429."""
-    acquire_rate_limit("s2")
-    return sch.get_paper(paper_id)
+    """Get paper with shared backoff on 429."""
+    return call_with_backoff(lambda: sch.get_paper(paper_id), service="s2")
 
 
 def _normalize(paper: Any) -> dict[str, Any]:

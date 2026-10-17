@@ -67,7 +67,8 @@ def test_search_cache_second_query_no_second_call(
     _FakeSch.calls = 0
     fake = _FakeSch(items=[SimpleNamespace(title="T", paperId="p1")])
     monkeypatch.setattr(s2mod, "_client", lambda api_key="": fake)
-    monkeypatch.setattr(s2mod, "acquire_rate_limit", lambda name: None)
+    monkeypatch.setattr("precis.utils.http._take_token", lambda *a, **k: None)
+    monkeypatch.setattr("precis.utils.http._default_sleep", lambda s: None)
     a = s2mod.search_s2_papers("Foo  Bar", limit=2)
     b = s2mod.search_s2_papers("foo bar", limit=2)
     assert a == b and a[0]["title"] == "T"
@@ -80,7 +81,8 @@ def test_search_429_returns_empty_fast_and_uncached(
     _FakeSch.calls = 0
     fake = _FakeSch(exc=ConnectionRefusedError("429"))
     monkeypatch.setattr(s2mod, "_client", lambda api_key="": fake)
-    monkeypatch.setattr(s2mod, "acquire_rate_limit", lambda name: None)
+    monkeypatch.setattr("precis.utils.http._take_token", lambda *a, **k: None)
+    monkeypatch.setattr("precis.utils.http._default_sleep", lambda s: None)
     assert s2mod.search_s2_papers("q") == []
     assert _FakeSch.calls == 1  # no backoff loop
     assert not s2mod._cache
@@ -128,15 +130,16 @@ class _GetFakeSch:
 
 def _wire_get_fake(monkeypatch: pytest.MonkeyPatch, fake: _GetFakeSch) -> None:
     monkeypatch.setattr(s2mod, "_client", lambda api_key="": fake)
-    # Bypass the tenacity wrapper — its retry classification is covered
-    # by external_retry's own tests; here we pin the classification of
+    # Bypass the backoff wrapper — its retry classification is covered
+    # by call_with_backoff's own tests; here we pin the classification of
     # the exception it finally reraises.
     monkeypatch.setattr(
         s2mod,
         "_get_with_retry",
         lambda sch, paper_id: sch.get_paper(paper_id),
     )
-    monkeypatch.setattr(s2mod, "acquire_rate_limit", lambda name: None)
+    monkeypatch.setattr("precis.utils.http._take_token", lambda *a, **k: None)
+    monkeypatch.setattr("precis.utils.http._default_sleep", lambda s: None)
 
 
 def test_get_paper_by_id_propagate_returns_meta_on_hit(

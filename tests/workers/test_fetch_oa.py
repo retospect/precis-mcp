@@ -935,6 +935,12 @@ class TestTryS2:
 
 
 class TestDownloadRetry:
+    @pytest.fixture(autouse=True)
+    def _fresh_breakers(self) -> None:
+        from precis.utils.http import reset_circuit
+
+        reset_circuit()
+
     def test_transient_predicate_classification(self) -> None:
         # Transport-class (retryable): timeouts / connect / read errors —
         # httpx surfaces an SSL handshake timeout as ConnectTimeout, a
@@ -965,7 +971,7 @@ class TestDownloadRetry:
         # lands the PDF on a later attempt (the reported arXiv incident).
         import contextlib
 
-        monkeypatch.setattr("time.sleep", lambda *a, **k: None)  # no real backoff wait
+        monkeypatch.setattr("precis.utils.http._default_sleep", lambda *a, **k: None)
         calls = {"n": 0}
 
         @contextlib.contextmanager
@@ -1004,7 +1010,7 @@ class TestDownloadRetry:
         # then reraise so the cascade falls through to the next leg promptly.
         import contextlib
 
-        monkeypatch.setattr("time.sleep", lambda *a, **k: None)
+        monkeypatch.setattr("precis.utils.http._default_sleep", lambda *a, **k: None)
         calls = {"n": 0}
         req = httpx.Request("GET", "https://arxiv.org/pdf/x.pdf")
 

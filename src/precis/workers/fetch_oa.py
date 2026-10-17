@@ -81,13 +81,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlsplit
+from urllib.parse import urlparse, urlsplit
 
 import httpx
 from psycopg import Connection
 from tenacity import (
     retry,
-    retry_if_exception,
     retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
@@ -100,7 +99,12 @@ from precis.alerts import raise_alert as _raise_alert
 from precis.alerts import resolve_stale_alerts as _resolve_alerts
 from precis.ingest.fetch_sidecar import read_sidecar, sidecar_path, write_sidecar
 from precis.store._stub_predicate import stub_predicate_sql
-from precis.utils.http import http_client, retry_transient
+from precis.utils.http import (
+    Policy,
+    call_with_backoff,
+    http_client,
+    retry_transient,
+)
 from precis.utils.rate_limit import RateLimited
 from precis.utils.rate_limit import require as require_rate_limit
 from precis.workers import activity
@@ -3049,16 +3053,23 @@ def _is_transient_download_error(exc: BaseException) -> bool:
     return isinstance(exc, httpx.TransportError)
 
 
-@retry(
-    wait=wait_exponential(min=1, max=8),
-    stop=stop_after_attempt(_DOWNLOAD_RETRY_ATTEMPTS),
-    retry=retry_if_exception(_is_transient_download_error),
-    reraise=True,
-)
+#: Backoff shape for one in-pass PDF download (three tries, waits capped at
+#: 8 s). The limiter row and the breaker come from the call's ``url=``:
+#: ``host:<netloc>`` per publisher host, so each host is paced and a 429's
+#: Retry-After parks only that host's row.
+_DOWNLOAD_POLICY = Policy(attempts=_DOWNLOAD_RETRY_ATTEMPTS, base=1.0, cap=8.0)
+
+
 def _download_pdf(
     url: str, target: Path, *, extra_headers: dict[str, str] | None = None
 ) -> int:
     """Stream a PDF to ``target`` and return the byte count.
+
+    Runs under the shared politeness core
+    (:func:`precis.utils.http.call_with_backoff`): one ``host:<netloc>``
+    limiter token per attempt, full-jitter backoff, and a 429/503
+    ``Retry-After`` parks that host's limiter row. The limiter fails open
+    (logged) when its store is unreachable.
 
     Retries in-pass on a transport-class failure (see
     :func:`_is_transient_download_error`) so a single handshake/connect
@@ -3086,6 +3097,20 @@ def _download_pdf(
     third party). Elsevier's article API serves the PDF inline (no
     cross-host redirect in practice), so the key stays first-party.
     """
+    netloc = urlparse(url).netloc.lower()
+    return call_with_backoff(
+        lambda: _download_pdf_once(url, target, extra_headers),
+        service=f"pdf:{netloc}",
+        policy=_DOWNLOAD_POLICY,
+        url=url,
+        retry_if=_is_transient_download_error,
+    )
+
+
+def _download_pdf_once(
+    url: str, target: Path, extra_headers: dict[str, str] | None
+) -> int:
+    """One download attempt for :func:`_download_pdf`."""
     from precis.utils.http import http_client
     from precis.utils.safe_fetch import safe_stream
 

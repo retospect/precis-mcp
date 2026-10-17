@@ -7,8 +7,7 @@ from typing import Any
 from semanticscholar import SemanticScholar
 
 from precis.ingest.semantic_scholar import _client
-from precis.utils.http import external_retry
-from precis.utils.rate_limit import acquire as acquire_rate_limit
+from precis.utils.http import call_with_backoff
 
 
 def citations(paper_id: str, api_key: str = "") -> dict[str, list[dict[str, Any]]]:
@@ -61,7 +60,6 @@ def _shape_neighbor(item: Any) -> dict[str, Any]:
     }
 
 
-@external_retry()
 def _get_references(sch: SemanticScholar, paper_id: str) -> list[dict[str, Any]]:
     """Get papers this paper cites.
 
@@ -69,26 +67,29 @@ def _get_references(sch: SemanticScholar, paper_id: str) -> list[dict[str, Any]]
     make a transient error indistinguishable from a truly reference-less
     paper, and callers persist/stamp the result as truth.
     """
-    acquire_rate_limit("s2")
-    paper = sch.get_paper(
-        paper_id,
-        fields=["references.title", "references.externalIds", "references.year"],
+    paper = call_with_backoff(
+        lambda: sch.get_paper(
+            paper_id,
+            fields=["references.title", "references.externalIds", "references.year"],
+        ),
+        service="s2",
     )
     if not paper or not hasattr(paper, "references") or not paper.references:
         return []
     return [_shape_neighbor(r) for r in paper.references]
 
 
-@external_retry()
 def _get_citations(sch: SemanticScholar, paper_id: str) -> list[dict[str, Any]]:
     """Get papers that cite this paper.
 
     Raises after the retry budget on S2 failure — see ``_get_references``.
     """
-    acquire_rate_limit("s2")
-    paper = sch.get_paper(
-        paper_id,
-        fields=["citations.title", "citations.externalIds", "citations.year"],
+    paper = call_with_backoff(
+        lambda: sch.get_paper(
+            paper_id,
+            fields=["citations.title", "citations.externalIds", "citations.year"],
+        ),
+        service="s2",
     )
     if not paper or not hasattr(paper, "citations") or not paper.citations:
         return []
@@ -126,7 +127,6 @@ _BATCH_FIELDS = [
 _BATCH_CHUNK_SIZE = 500
 
 
-@external_retry()
 def _get_papers_batch(sch: SemanticScholar, s2_ids: list[str]) -> list[Any]:
     """POST /paper/batch for one chunk (<=500 ids).
 
@@ -134,8 +134,9 @@ def _get_papers_batch(sch: SemanticScholar, s2_ids: list[str]) -> list[Any]:
     transient batch failure must stay distinguishable from a batch that
     genuinely resolved nothing.
     """
-    acquire_rate_limit("s2")
-    return sch.get_papers(s2_ids, fields=_BATCH_FIELDS)
+    return call_with_backoff(
+        lambda: sch.get_papers(s2_ids, fields=_BATCH_FIELDS), service="s2"
+    )
 
 
 def _build_match_index(input_ids: list[str]) -> dict[str, str]:
@@ -172,22 +173,23 @@ def _lookup_input_id(paper: Any, index: dict[str, str]) -> str | None:
     return None
 
 
-@external_retry()
 def _paginated_references(sch: SemanticScholar, paper_id: str) -> list[dict[str, Any]]:
     """The truncation-fallback path: unlike ``get_paper``'s nested-field
     fetch (also capped at the same 10MB/9999 aggregate), the dedicated
     paginated endpoint pages through up to 9999 results a page at a time, so
     it recovers references a truncated batch response dropped."""
-    acquire_rate_limit("s2")
-    results = sch.get_paper_references(
-        paper_id,
-        fields=[
-            "citedPaper.title",
-            "citedPaper.externalIds",
-            "citedPaper.year",
-            "citedPaper.paperId",
-        ],
-        limit=1000,
+    results = call_with_backoff(
+        lambda: sch.get_paper_references(
+            paper_id,
+            fields=[
+                "citedPaper.title",
+                "citedPaper.externalIds",
+                "citedPaper.year",
+                "citedPaper.paperId",
+            ],
+            limit=1000,
+        ),
+        service="s2",
     )
     return [
         _shape_neighbor(item.paper)
@@ -196,20 +198,21 @@ def _paginated_references(sch: SemanticScholar, paper_id: str) -> list[dict[str,
     ]
 
 
-@external_retry()
 def _paginated_citations(sch: SemanticScholar, paper_id: str) -> list[dict[str, Any]]:
     """The truncation-fallback path for cited-by — see
     ``_paginated_references``."""
-    acquire_rate_limit("s2")
-    results = sch.get_paper_citations(
-        paper_id,
-        fields=[
-            "citingPaper.title",
-            "citingPaper.externalIds",
-            "citingPaper.year",
-            "citingPaper.paperId",
-        ],
-        limit=1000,
+    results = call_with_backoff(
+        lambda: sch.get_paper_citations(
+            paper_id,
+            fields=[
+                "citingPaper.title",
+                "citingPaper.externalIds",
+                "citingPaper.year",
+                "citingPaper.paperId",
+            ],
+            limit=1000,
+        ),
+        service="s2",
     )
     return [
         _shape_neighbor(item.paper)
