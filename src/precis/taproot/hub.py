@@ -138,8 +138,7 @@ EVIDENCE_SRC_KINDS: frozenset[str] = frozenset(
 )
 
 #: A second, SEPARATE evidence-source set for a ``pathway`` src
-#: (docs/backlog/computed-pathways-cannot-be-cited-as-claim-evidence.md) —
-#: deliberately never folded into :data:`EVIDENCE_SRC_KINDS`. That set is
+#: — deliberately never folded into :data:`EVIDENCE_SRC_KINDS`. That set is
 #: pinned by ``tests/test_kind_totality.py`` against the corpus_role
 #: derivation and re-exported to :mod:`precis.taproot.seniority`'s
 #: citation-graph originator derivation, which walks ``cites`` edges among
@@ -924,8 +923,7 @@ def _pathway_trust_summary(meta: dict[str, Any]) -> dict[str, Any]:
 
 #: Edge-``meta`` keys a caller uses to state the claim's measured
 #: magnitude for the magnitude re-check — the compute analogue of
-#: ``reground._validate_quote`` (docs/backlog/computed-pathways-cannot-
-#: be-cited-as-claim-evidence.md): there is no text to quote, so the
+#: ``reground._validate_quote``: there is no text to quote, so the
 #: claim's stated barrier (eV) is re-read against the pathway's own
 #: ``meta['graph']['links']`` numbers instead. ``claimed_barrier`` opts
 #: the check in (a pathway attach without it is not magnitude-checked —
@@ -1004,8 +1002,7 @@ def _pathway_evidence_meta(
     """Validate a ``pathway`` src is citable evidence for a claim hub and
     return the edge ``meta`` to merge in.
 
-    Policy (docs/backlog/computed-pathways-cannot-be-cited-as-claim-
-    evidence.md): a computed pathway becomes citable evidence once its own
+    Policy: a computed pathway becomes citable evidence once its own
     trust summary says the barrier is available, at an explicitly weaker
     tier than a measurement. Raises :class:`BadInput` naming the
     missing/false field otherwise:
@@ -1223,8 +1220,7 @@ def attach_evidence(
         src_kind_box["kind"] = src.kind
 
         if src.kind in PATHWAY_EVIDENCE_KINDS:
-            # Compute evidence (docs/backlog/computed-pathways-cannot-be-
-            # cited-as-claim-evidence.md) — a wholly separate branch from
+            # Compute evidence — a wholly separate branch from
             # the paper/patent path below: no text chunk to ground at, no
             # DOI to check retraction against (the check_retraction gate
             # below already excludes any non-"paper" kind), and the caveat

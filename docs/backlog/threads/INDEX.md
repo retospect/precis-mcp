@@ -159,7 +159,7 @@ Seams:
   its in-scope 2.
 - `backlog/curation-gate.md` — both park on it; owned by serving.
 - Part refs (shipped 2026-10-02, `precis.handlers.part` docstring) —
-  ewod-pcb's `pcb-datasheet-autopull.md` gets `datasheet-of` for free:
+  ewod-pcb's datasheet autopull (shipped) gets `datasheet-of` for free:
   setting `part_lcsc` on the pulled datasheet writes the edge too, and
   `datasheet-facts-mesh.md` (knowledge-mesh Horizon 16) hangs the
   extracted facts on the part ref.
@@ -227,8 +227,7 @@ Seams:
 - `scripts/deploy` — plugin-split's gr457894 (restart on installed-file
   change) and the deploy session's render-tree lock are the same script;
   no thread owns deploy, so gr457894 is ranked in plugin-split.
-- `scripts/main-ci-status` / check.yml — `backlog/main-stays-gated.md`
-  (monitors thread) gates every other thread's "is main green"
+- `scripts/main-ci-status` / check.yml — the monitors thread gates every other thread's "is main green"
   answer — and as of 2026-09-30 it answers: the stale-verdict read,
   the main-push lane range (now starting at the last sha with a real shard
   verdict), and a ruff+mypy pre-qland lint all landed. Every thread that qlands

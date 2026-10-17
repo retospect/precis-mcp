@@ -5946,9 +5946,7 @@ class TestDispatchAutocatpath:
         """A re-dispatch that mints a new pathway (content-key change)
         IS the fresher evaluation of the same reaction — the pinned
         ``ready`` pathway's own content_key never moves, so the mint
-        stamps it superseded for the read-side stale check to see
-        (docs/backlog/computed-pathways-cannot-be-cited-as-claim-
-        evidence.md)."""
+        stamps it superseded for the read-side stale check to see."""
         qid = _mk_quest(store, "A striving")
         sid = self._candidate(store, qid)
         monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "0.1.1")

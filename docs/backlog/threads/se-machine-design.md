@@ -98,9 +98,7 @@ off that gap until it closes.
 - **BOM consolidation nudge shipped** (2026-10-12, bl-bom-nudge): the
   `## Consolidation` footer on both bom views, `spec_roles` on the
   component registry (migration 0205), `kept-distinct` suppression and the
-  house `standard_parts.json`. One open question survives in
-  `backlog/bom-consolidation-nudge.md` (circuit tolerance without asking
-  a human).
+  house `standard_parts.json`.
 
 ## Do next
 

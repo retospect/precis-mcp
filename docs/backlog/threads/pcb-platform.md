@@ -122,7 +122,6 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
   the above.
 - **backlog/pcb-layer-preferred-direction.md** — ewod-pcb Horizon 3.
 - **backlog/pcb-footprint-pad-layer-unvalidated.md** — ewod-pcb Horizon 4.
-- **backlog/pcb-tapeout-checklist-seed-items.md** — ewod-pcb Horizon 6.
 
 ## No action needed — ranked in pcb-easyeda-round-trip
 

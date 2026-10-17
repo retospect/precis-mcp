@@ -1060,8 +1060,7 @@ def check_computed(
     """Computed-evidence standing gate: a ``pathway`` evidence edge
     (:attr:`~precis.nanopub.evidence.HubBundle.computed`) refuses mint
     when it no longer stands, exactly the content-key pin's designed
-    behavior (docs/backlog/computed-pathways-cannot-be-cited-as-claim-
-    evidence.md — a claim pinned to ``(pathway_ref_id, content_key)``
+    behavior (a claim pinned to ``(pathway_ref_id, content_key)``
     breaks visibly when its evidence is invalidated, and the publish
     boundary is where breaking must refuse, not merely render).
 

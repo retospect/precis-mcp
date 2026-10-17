@@ -1,4 +1,4 @@
-"""The BOM consolidation nudge (bom-consolidation-nudge.md): the
+"""The BOM consolidation nudge (see precis-component-help): the
 ``## Consolidation`` footer on ``get(kind='component', view='bom')`` and
 ``get(kind='pcb', view='bom')`` — attribute-role grouping, the LLM-verdict
 line, tool lines, ``kept-distinct`` suppression, house-set proposals and

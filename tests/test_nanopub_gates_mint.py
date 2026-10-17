@@ -1340,7 +1340,7 @@ def test_advisory_lint_is_exactly_the_nonblocking_half() -> None:
 
 
 # ── computed (pathway) evidence gate ──────────────────────────────────
-# docs/backlog/computed-pathways-cannot-be-cited-as-claim-evidence.md —
+# Computed-pathway evidence:
 # the admissibility rubric's blocking half: a pathway citation whose pin
 # moved, whose stated barrier no longer matches, or that carries no pin
 # refuses mint. Runs on the live bundle at approve AND at sign — a

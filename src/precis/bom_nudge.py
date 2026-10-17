@@ -1,6 +1,6 @@
 """The BOM consolidation nudge — "x and y are similar, can they be
 combined?" asked on both bom views, answered by the human
-(docs/backlog/bom-consolidation-nudge.md, ruled 2026-10-06).
+(ruled 2026-10-06; see ``precis-component-help``).
 
 Not a rewrite and not a skill: a **footer** on ``view='bom'`` of the
 ``component`` kind (assembly-tree rollup) and the ``pcb`` kind (the JLCPCB

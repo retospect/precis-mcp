@@ -38,8 +38,7 @@ Derivation (taproot.md, locked decision):
    walk or the coverage note, which are statements about a citation graph a
    compute artifact is not part of. Each :class:`ComputedEdge` re-checks its
    pinned ``content_key`` against the pathway's current ``meta`` and names a
-   stale citation (docs/backlog/computed-pathways-cannot-be-cited-as-claim-
-   evidence.md).
+   stale citation.
 """
 
 from __future__ import annotations

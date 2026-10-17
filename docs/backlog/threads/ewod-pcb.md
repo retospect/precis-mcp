@@ -200,20 +200,13 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
    progressive and an unplaced design has no geometry to violate. Folds in
    backlog/pcb-placement-must-be-valid-before-routing.md (same defect,
    narrower): implement one, not both.
-2. **backlog/pcb-datasheet-autopull.md** — Reto's ask (2026-10-02): a
-   part a board uses gets its datasheet pulled, ingested and linked
-   `datasheet-of`, in a worker lane through `safe_fetch`. Prod has 0
-   `parts` rows and 0 datasheets, so the pull resolves the URL from the
-   C-number itself. Ranked above the escape items because three other
-   threads wait on it (claims-and-evidence citations, knowledge-mesh's
-   datasheet nodes, gr458878 pin provenance) and nothing here blocks it.
-   The mesh half is knowledge-mesh's; its shape is in review item
-   ewod-pcb-2. SHIPPED and deployed (2b3c62811, in R16); the backlog file was deleted 2026-10-07; still unchecked: the first prod pull's chunk quality. Built: the `datasheet_pull` job (job_inproc),
-   the put/EasyEDA-import trigger, `get(kind='part')` reasons. First on
-   deploy: put a board in prod and read `get(kind='part')` for a C-number;
-   JLC's component API is erroring (gr464537), so expect `jlc_api_error:500`
-   until a datasheet_url exists in `parts`. What is left is in the backlog
-   item.
+2. **Datasheet autopull — first prod pull's chunk quality.** Shipped
+   (2b3c62811, in R16): the `datasheet_pull` job (job_inproc), the
+   put/EasyEDA-import trigger, `get(kind='part')` reasons. Unchecked: put a
+   board in prod, read `get(kind='part')` for a C-number and judge the
+   ingested chunks. JLC's component API is erroring (gr464537), so expect
+   `jlc_api_error:500` until a datasheet_url exists in `parts`. The mesh
+   half is knowledge-mesh's (review item ewod-pcb-2).
 3. **backlog/pcb-risk-is-a-max-so-any-money-term-is-a-free-tiebreaker.md** —
    **de-escalated by 1's ruling.** risk() is a MAX over margin terms, so any
    MONEY term is a free tie-breaker against every non-maximal constraint (a
@@ -347,13 +340,13 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
    ledger the seed items below instantiate (first instance: pcb
    pre-tapeout). Ranked beside its seed companion, not above 5: a ledger
    over unenforceable constraints is theatre either way.
-6. **backlog/pcb-tapeout-checklist-seed-items.md** — the pre-fab gate; waits
-   on 4 and 5, a checklist over unenforceable constraints is theatre. Its
-   `drc-clean` item is half-served: `view='gerber'` now runs DRC and leads
-   its response with a `DRC FAILED` block (Reto, 2026-10-01: banner, not
-   refusal — he wants the bundle of a broken board to debug from). The
-   banner informs and does not gate; the item records what a refusal
-   with an override would add if a red bundle is ever uploaded anyway.
+6. **Pre-tapeout gate — seed items shipped** (df19f1bee, 97b07bd96;
+   `src/precis/data/checklists/pcb-tapeout.yaml`). Residual: `drc-clean`
+   is half-served — `view='gerber'` runs DRC and leads its response with a
+   `DRC FAILED` block (Reto, 2026-10-01: banner, not refusal — he wants the
+   bundle of a broken board to debug from). The banner informs and does not
+   gate; a refusal with an override is the unbuilt addition if a red bundle
+   is ever uploaded anyway.
 7. Three copper-routing inefficiencies on ewod-dogfood-2
    (a bottom-layer retrace that buys nothing, one plaza escape that
    crosses the whole field and comes back, a pin swap that lengthens

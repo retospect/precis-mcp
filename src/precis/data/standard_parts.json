@@ -1,5 +1,5 @@
 {
-  "comment": "The house set for the BOM consolidation nudge (docs/backlog/bom-consolidation-nudge.md, slice 3): when a group has a member already in this set, the nudge proposes that one. Keys are class ids (component_categories.category_id); each entry constrains named role attributes — E6 resistor values in the two stocked packages, a small ISO 4762 socket-cap ladder, a ceramic-capacitor set. Numeric entries are in the spec's canonical unit (ohm / F / mm) and match with the nudge's SI-suffix parser, so '10k' == 10000.",
+  "comment": "The house set for the BOM consolidation nudge (slice 3): when a group has a member already in this set, the nudge proposes that one. Keys are class ids (component_categories.category_id); each entry constrains named role attributes — E6 resistor values in the two stocked packages, a small ISO 4762 socket-cap ladder, a ceramic-capacitor set. Numeric entries are in the spec's canonical unit (ohm / F / mm) and match with the nudge's SI-suffix parser, so '10k' == 10000.",
   "classes": {
     "resistor": {
       "package": ["0603", "0805"],

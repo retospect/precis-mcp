@@ -63,8 +63,7 @@ _STATUS_ACQUIRING = "acquiring"
 #: reads them for standing (:func:`precis.nanopub.gates.check_computed`);
 #: what a compute-backed nanopub's ARTIFACT asserts (provenance shape,
 #: whether a computed edge alone satisfies the grounding requirement) is
-#: the open admissibility question in
-#: docs/backlog/computed-pathways-cannot-be-cited-as-claim-evidence.md.
+#: settled by the freeze-on-approve pin set (``mint._freeze_computed``).
 _EVIDENCE_KINDS = ("paper", "patent", "pathway")
 
 #: ``refs.meta`` key declaring "this hub's primary source is not in the
@@ -569,8 +568,7 @@ class HubBundle:
     #: this list for standing (:func:`precis.nanopub.gates.check_computed`
     #: — a stale pin or magnitude mismatch refuses); whether the artifact
     #: itself serializes them (provenance shape, grounding sufficiency)
-    #: is the open admissibility question in
-    #: docs/backlog/computed-pathways-cannot-be-cited-as-claim-evidence.md.
+    #: is settled by the freeze-on-approve pin set (``mint._freeze_computed``).
     computed: list[seniority.ComputedEdge] = field(default_factory=list)
     #: Evidence edges the shared eligibility predicate refused
     #: (:mod:`precis.taproot.eligibility`); the mint gate names the

@@ -742,8 +742,8 @@ def test_attach_evidence_prophetic_caveat_not_duplicated(store: Any) -> None:
 
 
 # ── attach_evidence — computed pathway sources ──────────────────────────
-# (docs/backlog/computed-pathways-cannot-be-cited-as-claim-evidence.md
-# slice 1: a pathway attaches as weaker-tier evidence once its own trust
+# (slice 1:
+# a pathway attaches as weaker-tier evidence once its own trust
 # summary says the barrier is available.)
 
 

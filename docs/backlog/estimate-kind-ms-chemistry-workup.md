@@ -45,8 +45,7 @@ thing, never picks a method.
 Results cache by hash(inputs, method versions) and mint an `es` ref with a
 universal handle → citable in dossiers, linkable `derived-from → st…`.
 Requires registering a handle code (plugins currently register **none** —
-`handle_registry.PLUGIN_GROUP` exists unused; same gap as
-`computed-pathways-cannot-be-cited-as-claim-evidence.md`).
+`handle_registry.PLUGIN_GROUP` exists unused).
 
 Default panel = every ms-tier row eagerly + drill-down hints inline (the
 `precis_pathway/toon_views.py` pattern). Two rows pay for the kind alone:
@@ -120,6 +119,4 @@ One router skill `precis-estimate-help` (question-shape → view), following
 
 ## Companions
 
-`quest-dossier-dialectic.md` (the consumer of `[es…]` cites),
-`computed-pathways-cannot-be-cited-as-claim-evidence.md` (handle-code +
-evidence-edge sibling).
+`quest-dossier-dialectic.md` (the consumer of `[es…]` cites).

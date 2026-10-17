@@ -79,8 +79,8 @@ bodies; prune/demote serves for settled questions. Known companion defect:
 (`handle_registry.PLUGIN_GROUP`, currently unused by every plugin) and mint
 stable step ids as (structure × network edge label, e.g. `NH2_H→NH3`) —
 identity already unique in `src/precis/utils/reaction_graph.py`, just not
-addressable. Evidence edges per
-`computed-pathways-cannot-be-cited-as-claim-evidence.md`. Add a
+addressable. Evidence edges attach via
+`taproot/hub.py::attach_evidence` (`pathway` src). Add a
 microkinetics digest view (Eyring rates, steady-state coverages, per-step
 residence times over the network — scipy+networkx, no new deps) so the
 dossier can argue "the slow step is [step], τ ≈ …, sites occupied".

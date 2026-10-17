@@ -31,8 +31,7 @@ never edited.
 
 Fence (deliberate, load-bearing): sim-based rulings settle *internal*
 hypotheses only — they never ground nanopub evidence (that stays
-papers/patents/EDGAR/datasheets; docs/backlog/
-computed-pathways-cannot-be-cited-as-claim-evidence.md). Structurally: the
+papers/patents/EDGAR/datasheets). Structurally: the
 ruling gets **no STATUS tag** (it never enters the default finding-search
 cohort) and ``tests`` is not an evidence relation.
 """

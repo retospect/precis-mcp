@@ -830,8 +830,8 @@ CADENCES: tuple[Cadence, ...] = (
         run=_run_graph_garden_mint,
     ),
     # gr484070: mine the tool_calls ledger for rejected-before-work call
-    # clusters and file/bump one gripe each (docs/backlog/
-    # call-error-gripes.md). Host-agnostic, daily, off the exact day
+    # clusters and file/bump one gripe each.
+    # Host-agnostic, daily, off the exact day
     # boundary (+47m) like the other daily sweeps. No `eligible` check:
     # pure local SQL + gripe writes, nothing to gate on. The pass's own
     # per-run cap (MAX_NEW_GRIPES) is the flood control. spends=False.

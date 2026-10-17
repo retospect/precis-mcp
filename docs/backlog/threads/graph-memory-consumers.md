@@ -176,7 +176,7 @@ how an agent reaches the graph; `fisheye-*` is how it moves within it):
   **backlog/patent-search-parity.md** — kinds the facet cannot see.
 - **backlog/search-notation-symmetric-fold-index.md** ·
   **backlog/search-future-filters.md** · **backlog/good-search-coordinator.md**
-- **backlog/skill-index-build-once-vs-shed.md** · **backlog/vocab-compaction.md**
+- **backlog/vocab-compaction.md**
   — triage first; order inside the group is provisional.
 
 1. **backlog/quest-graph-as-dossier.md** — Reto 2026-10-01: a quest's

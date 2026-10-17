@@ -82,7 +82,8 @@ synthesis knowledge base needs — a single "yield: 72%" field would be the lie.
 `taproot.hub.EVIDENCE_SRC_KINDS` is `{paper, patent, edgar, datasheet}`, and
 computed artefacts cannot ground claims at all — prod-measured, every link
 touching a `pathway` ref is `related-to`, zero evidence edges
-(`computed-pathways-cannot-be-cited-as-claim-evidence.md`). A synthesis kind
+(at spec time; a `pathway` src now attaches as weaker-tier evidence via
+`taproot/hub.py::attach_evidence`). A synthesis kind
 modelled as a *computed* artefact walks straight into that wall.
 
 Modelled as a **sourced-value store** it does not. `material`'s

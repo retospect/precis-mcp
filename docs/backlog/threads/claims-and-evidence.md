@@ -105,10 +105,7 @@ Note: backfill is live, so once deployed, newly minted causal claims split. The 
    the CURRENT hub sentence and skips an edge that is the sole support for a
    clause of a citing draft sentence (dr173020: 100 votes = 53 bad · 25
    redundant · 21 needed; review item `nanobuds-paper-21`, awaiting Reto) ·
-   `taproot-inbound-grounding` · `computed-pathways-cannot-be-cited-as-
-   claim-evidence` (code parts + the mint-gate half of the
-   compute-admissibility rubric shipped 2026-10-15 — open: artifact/
-   grounding-sufficiency calls, listed in the item).
+   `taproot-inbound-grounding`.
 5. **Composite + publication, last** — `taproot-compound-migration` (L;
    blocked on `reground.py`'s embedding-ranking TODO; blocks
    `claim-publication-nanopub-ots`) → `claim-publication-nanopub-ots` ·

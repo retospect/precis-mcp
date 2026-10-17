@@ -1567,7 +1567,7 @@ def test_grounding_relation_distinguishes_support_from_contradiction(
 
 
 # ── computed (pathway) evidence ────────────────────────────────────────
-# docs/backlog/computed-pathways-cannot-be-cited-as-claim-evidence.md: the
+# Computed-pathway evidence: the
 # write door accepts a pathway src, so the read path must surface it — in
 # its own `computed` group, outside the paper seniority split.
 
