@@ -154,7 +154,7 @@ from precis.pcb.ir import (
     plane_layers_of,
     routable_layers,
 )
-from precis.pcb.planes import plane_pours
+from precis.pcb.planes import PourQuality, plane_pours, pour_quality
 from precis.pcb.rules import (
     PAD_LAYER,
     NetRules,
@@ -418,6 +418,23 @@ class RealizeConfig:
     #: (default 5.0 when unset). Anything else / empty = off; the plain
     #: passes still run after, so it can cost time, never nets.
     escape: str = ""
+    #: Per-layer route cost, ``(layer name, multiplier)`` pairs: every
+    #: maze step on that layer costs ``multiplier`` times the base step
+    #: (:meth:`~precis.pcb.maze.OccupancyGrid.route`'s ``layer_cost``).
+    #: Empty = every layer 1.0, today's search. pcb-stackup-regions
+    #: rulings: an inner GND plane that may carry a trace (In1) at about
+    #: 2-3x, tuned from slice 1's table. A multiplier below 1.0 is
+    #: refused, since the search heuristic assumes no step is cheaper than
+    #: the base.
+    layer_route_cost: tuple[tuple[str, float], ...] = ()
+
+    def __post_init__(self) -> None:
+        for name, mult in self.layer_route_cost:
+            if isinstance(mult, bool) or not 1.0 <= float(mult) < math.inf:
+                raise ValueError(
+                    f"layer_route_cost for {name!r} is {mult}; a layer may cost "
+                    "more than the base step, never less (minimum 1.0, finite)"
+                )
 
 
 @dataclass(frozen=True, slots=True)
@@ -932,6 +949,12 @@ class RealizeResult:
     #: provenance included. Empty whenever ``negotiate_iterations`` was 0
     #: or no net was left unrouted for the loop to contest.
     congestion_cells: tuple[CongestionCell, ...] = ()
+    #: How whole each plane net's fill is, per (net, layer): pieces,
+    #: largest piece's area share, narrowest neck
+    #: (:func:`precis.pcb.planes.pour_quality`, pcb-stackup-regions slice
+    #: 1). Measured on the final pours, after stitching. Empty for
+    #: ``router='tangent'`` and for a board with no planes.
+    pour_quality: tuple[PourQuality, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -2796,6 +2819,20 @@ def _diagnose_unrouted(
     )
 
 
+def _layer_cost(ir: PcbIR, config: RealizeConfig) -> dict[int, float] | None:
+    """:attr:`RealizeConfig.layer_route_cost` by stackup index; ``None``
+    when unset. A name the stackup lacks is ignored (a cost tuned for a
+    four-layer board must not fail a two-layer one)."""
+    if not config.layer_route_cost:
+        return None
+    index = {str(layer.get("name")): i for i, layer in enumerate(ir.stackup)}
+    return {
+        index[name]: float(mult)
+        for name, mult in config.layer_route_cost
+        if name in index
+    }
+
+
 def _claim_static(
     ir: PcbIR,
     plane_ids: list[int],
@@ -2951,6 +2988,7 @@ def _seg_request(
             if config.preferred_directions
             else None
         ),
+        "layer_cost": _layer_cost(ir, config),
         "extra_start_terminals": tuple((t.point, layer) for t, layer in extra_a),
         "extra_goal_terminals": tuple((t.point, layer) for t, layer in extra_b),
     }
@@ -3956,6 +3994,11 @@ def _plane_fanout(
     fixed copper already carries onto a poured layer; they get no stub
     and no drop via here.
 
+    Two passes (pcb-stackup-regions slice 1): every pin's site is found
+    and reserved on the grid first, then each pin releases its own
+    reservation and places its stub and via, so pin order no longer
+    decides which neighbour loses its site.
+
     ``ink_field`` (:func:`_courtyard_ink_field`), forwarded to
     :func:`_drop_via_site` unchanged, is the plane drop via's own defer-
     to-silk-softly preference -- see this section's module note.
@@ -4018,6 +4061,7 @@ def _plane_fanout(
     placed_via_sites: list[tuple[float, float, float]] = [
         (float(v.x), float(v.y), float(v.dia_mm) / 2.0) for v in ir.fixed_vias
     ]
+    pending: list[_FanoutPin] = []
     for net_id, seg_id in sorted(seg_of_net.items()):
         # A net may now be poured on SEVERAL layers at once
         # (net_plane_layers is a bitmask). One drop via per pin still
@@ -4101,81 +4145,220 @@ def _plane_fanout(
             # numbers for the same pad.
             geom = pad_geoms[pid]
             pad_radius = math.hypot(geom.w_mm, geom.h_mm) / 2.0
-            stub_end = _drop_via_site(
-                grid,
-                point,
-                (ux, uy),
-                net_id,
-                rules,
-                config,
-                range(lo, hi + 1),
-                pad_layer,
-                pad_radius,
-                placed_via_sites,
-                _outline_clip(
-                    ir,
-                    _board_edge_min_mm(config) + (rules.via_dia_mm or 0.0) / 2.0,
-                ),
-                ink_field=ink_field,
-            )
-            if stub_end is None:
-                if not pour_reaches_pad:
-                    failed.append(pid)
-                continue
-            tracks += [
-                RealizedTrack(
+            pending.append(
+                _FanoutPin(
+                    pid,
+                    net_id,
                     seg_id,
-                    net_id,
+                    point,
+                    (ux, uy),
                     pad_layer,
-                    (
-                        {
-                            "shape": "line",
-                            "start": list(point),
-                            "end": list(stub_end),
-                        },
+                    lo,
+                    hi,
+                    pad_radius,
+                    rules,
+                    pour_reaches_pad,
+                    _outline_clip(
+                        ir,
+                        _board_edge_min_mm(config) + (rules.via_dia_mm or 0.0) / 2.0,
                     ),
-                    dist(point, stub_end),
-                    None,
-                    rules.track_width_mm,
-                    is_dogbone=True,
-                )
-            ]
-            grid.stamp_path(
-                maze.RoutePath(
-                    net_id,
-                    (
-                        (point[0], point[1], pad_layer),
-                        (stub_end[0], stub_end[1], pad_layer),
-                    ),
-                    dist(point, stub_end),
-                ),
-                rules.track_width_mm,
-            )
-            assert rules.via_dia_mm is not None and rules.via_drill_mm is not None, (
-                "_drop_via_site returns None when either is unresolved"
-            )
-            grid.stamp_disk(
-                range(lo, hi + 1),
-                stub_end[0],
-                stub_end[1],
-                grid.core_radius_mm(rules.via_dia_mm),
-                net_id,
-            )
-            vias.append(
-                RealizedVia(
-                    seg_id=seg_id,
-                    net_id=net_id,
-                    x=stub_end[0],
-                    y=stub_end[1],
-                    dia_mm=rules.via_dia_mm,
-                    drill_mm=rules.via_drill_mm,
-                    layer_lo=lo,
-                    layer_hi=hi,
-                    endpoint="a",
                 )
             )
-            placed_via_sites.append((stub_end[0], stub_end[1], rules.via_dia_mm / 2.0))
+
+    def site_for(
+        pin: _FanoutPin, others: list[tuple[float, float, float]]
+    ) -> Point | None:
+        return _drop_via_site(
+            grid,
+            pin.point,
+            pin.direction,
+            pin.net_id,
+            pin.rules,
+            config,
+            range(pin.lo, pin.hi + 1),
+            pin.pad_layer,
+            pin.pad_radius,
+            placed_via_sites + others,
+            pin.edge_clip,
+            ink_field=ink_field,
+        )
+
+    # Pass 1 — reserve. Every pin's preferred site (stub and via) is held
+    # on the grid under its own sentinel before any pin draws copper, the
+    # way `_claim_fiducial_keepouts` holds fiducial sites: a pin placed
+    # early can no longer run its stub or drop its via across the site a
+    # later neighbour needed (pcb-stackup-regions slice 1). Reserved sites
+    # also join the via-to-via spacing check, so two reservations are as
+    # far apart as two real drop vias.
+    token_base = int(ir.n_nets) + int(ir.n_pins) + _DROP_RESERVE_NET_OFFSET
+    held: dict[int, tuple[np.ndarray, tuple[float, float, float]]] = {}
+
+    def reserve(pin: _FanoutPin, site: Point) -> None:
+        assert pin.rules.via_dia_mm is not None
+        token = token_base + pin.pid
+        cells = [
+            grid.reserve_disk(
+                range(pin.lo, pin.hi + 1),
+                site[0],
+                site[1],
+                # `stamp_disk` adds the net's class-clearance extra; the
+                # hold covers what the pin will really claim.
+                grid.core_radius_mm(pin.rules.via_dia_mm) + grid.extra_mm(pin.net_id),
+                token,
+            )
+        ]
+        stub_r = grid.core_radius_mm(pin.rules.track_width_mm) + grid.extra_mm(
+            pin.net_id
+        )
+        n = max(1, int(dist(pin.point, site) / (grid.spec.pitch / 2.0)))
+        for k in range(1, n):
+            cells.append(
+                grid.reserve_disk(
+                    (pin.pad_layer,),
+                    pin.point[0] + (site[0] - pin.point[0]) * k / n,
+                    pin.point[1] + (site[1] - pin.point[1]) * k / n,
+                    stub_r,
+                    token,
+                )
+            )
+        held[pin.pid] = (
+            np.concatenate(cells),
+            (site[0], site[1], pin.rules.via_dia_mm / 2.0),
+        )
+
+    def release(pid: int) -> tuple[float, float, float] | None:
+        entry = held.pop(pid, None)
+        if entry is None:
+            return None
+        grid.release(entry[0], token_base + pid)
+        return entry[1]
+
+    def reserved_sites() -> list[tuple[float, float, float]]:
+        return [site for _cells, site in held.values()]
+
+    for pin in pending:
+        site = site_for(pin, reserved_sites())
+        if site is not None:
+            reserve(pin, site)
+
+    # Pass 2 — place, releasing each pin's reservation just before its own
+    # search. A pin the reservations starve gets one retry with every
+    # remaining reservation lifted; those pins are re-reserved at their
+    # sites afterwards (only cells still free), so the hold can cost a
+    # pin its preferred site but never its drop.
+    for i, pin in enumerate(pending):
+        release(pin.pid)
+        stub_end = site_for(pin, reserved_sites())
+        if stub_end is None and held:
+            lifted = {q: release(q) for q in list(held)}
+            stub_end = site_for(pin, [])
+            if stub_end is not None:
+                _place_drop(pin, stub_end, grid, tracks, vias, placed_via_sites)
+            for later in pending[i + 1 :]:
+                old = lifted.get(later.pid)
+                if old is not None:
+                    reserve(later, (old[0], old[1]))
+            if stub_end is None and not pin.pour_reaches_pad:
+                failed.append(pin.pid)
+            continue
+        if stub_end is None:
+            if not pin.pour_reaches_pad:
+                failed.append(pin.pid)
+            continue
+        _place_drop(pin, stub_end, grid, tracks, vias, placed_via_sites)
     return tracks, vias, failed
+
+
+#: Sentinel-net offset for the plane fan-out's drop-site reservations
+#: (``n_nets + n_pins + _DROP_RESERVE_NET_OFFSET + pid``), above the
+#: fiducial, mounting-hole and unclaimed-pad bands so no two claim families
+#: share an id.
+_DROP_RESERVE_NET_OFFSET = 1 << 20
+
+
+@dataclass(frozen=True, slots=True)
+class _FanoutPin:
+    """One plane pin's drop-via request, resolved by :func:`_plane_fanout`
+    before any pin places copper."""
+
+    pid: int
+    net_id: int
+    seg_id: int
+    point: Point
+    direction: tuple[float, float]
+    pad_layer: int
+    lo: int
+    hi: int
+    pad_radius: float
+    rules: NetRules
+    pour_reaches_pad: bool
+    edge_clip: tuple[float, float, float, float] | None
+
+
+def _place_drop(
+    pin: _FanoutPin,
+    stub_end: Point,
+    grid: maze.OccupancyGrid,
+    tracks: list[RealizedTrack],
+    vias: list[RealizedVia],
+    placed_via_sites: list[tuple[float, float, float]],
+) -> None:
+    """Draw and claim one pin's stub and drop via at ``stub_end``."""
+    rules = pin.rules
+    point, pad_layer, lo, hi = pin.point, pin.pad_layer, pin.lo, pin.hi
+    tracks.append(
+        RealizedTrack(
+            pin.seg_id,
+            pin.net_id,
+            pad_layer,
+            (
+                {
+                    "shape": "line",
+                    "start": list(point),
+                    "end": list(stub_end),
+                },
+            ),
+            dist(point, stub_end),
+            None,
+            rules.track_width_mm,
+            is_dogbone=True,
+        )
+    )
+    grid.stamp_path(
+        maze.RoutePath(
+            pin.net_id,
+            (
+                (point[0], point[1], pad_layer),
+                (stub_end[0], stub_end[1], pad_layer),
+            ),
+            dist(point, stub_end),
+        ),
+        rules.track_width_mm,
+    )
+    assert rules.via_dia_mm is not None and rules.via_drill_mm is not None, (
+        "_drop_via_site returns None when either is unresolved"
+    )
+    grid.stamp_disk(
+        range(lo, hi + 1),
+        stub_end[0],
+        stub_end[1],
+        grid.core_radius_mm(rules.via_dia_mm),
+        pin.net_id,
+    )
+    vias.append(
+        RealizedVia(
+            seg_id=pin.seg_id,
+            net_id=pin.net_id,
+            x=stub_end[0],
+            y=stub_end[1],
+            dia_mm=rules.via_dia_mm,
+            drill_mm=rules.via_drill_mm,
+            layer_lo=lo,
+            layer_hi=hi,
+            endpoint="a",
+        )
+    )
+    placed_via_sites.append((stub_end[0], stub_end[1], rules.via_dia_mm / 2.0))
 
 
 #: How far out from a pad a drop via may be pushed to find clear copper,
@@ -6498,6 +6681,7 @@ def realize(
             negotiation=negotiation,
             class_layer_drops=tuple(class_layer_drops(ir.stackup, config.class_rules)),
             congestion_cells=congestion,
+            pour_quality=tuple(pour_quality(pours)),
         )
     if config.router != "tangent":
         raise ValueError(

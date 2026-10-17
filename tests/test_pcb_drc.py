@@ -2904,3 +2904,84 @@ def test_annular_ring_oblique_slot_measured_on_the_rotated_outline():
     pads = _slot_pads(2.4, 0.6, pad_rot=45.0)
     findings = drc.check_annular_ring({"layers": ["F.Cu", "B.Cu"], "pads": pads}, _CAP4)
     assert len(findings) == 1 and findings[0].severity == "error"
+
+
+# ── pour_reaches_pad (pcb-stackup-regions slice 1) ───────────────────
+
+
+def _gnd_pad(
+    x: float = 5.0, y: float = 5.0, *, layer: str = "F.Cu", drill: float | None = None
+) -> dict[str, Any]:
+    pad: dict[str, Any] = {
+        "refdes": "U1",
+        "pin": "3",
+        "net": "GND",
+        "layer": layer,
+        "shape": "rect",
+        "x": x,
+        "y": y,
+        "w": 1.0,
+        "h": 1.0,
+    }
+    if drill is not None:
+        pad["drill"] = drill
+    return pad
+
+
+def _gnd_pour_item(layer: str, *, hole: bool) -> dict[str, Any]:
+    holes = [[[3.5, 3.5], [6.5, 3.5], [6.5, 6.5], [3.5, 6.5]]] if hole else []
+    return {
+        "ctype": "pour",
+        "net": "GND",
+        "layer": layer,
+        "polygon": [[0, 0], [10, 0], [10, 10], [0, 10]],
+        "holes": holes,
+    }
+
+
+def _pour_model(pad: dict[str, Any], copper: list[dict[str, Any]]) -> dict[str, Any]:
+    layers = ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"]
+    return {"layers": layers, "pads": [pad], "copper": copper}
+
+
+def test_pour_reaches_pad_fires_on_a_pad_walled_in_by_its_own_pour():
+    model = _pour_model(_gnd_pad(), [_gnd_pour_item("F.Cu", hole=True)])
+    findings = drc.check_pour_reaches_pad(model)
+    assert [f.rule for f in findings] == ["pour_reaches_pad"]
+    assert findings[0].severity == "error"
+    assert "U1.3" in findings[0].where
+
+
+def test_pour_reaches_pad_quiet_when_the_pour_covers_the_pad():
+    model = _pour_model(_gnd_pad(), [_gnd_pour_item("F.Cu", hole=False)])
+    assert drc.check_pour_reaches_pad(model) == []
+
+
+def test_pour_reaches_pad_quiet_when_a_same_net_track_touches_the_pad():
+    stub = _track("GND", "F.Cu", (5.0, 5.0), (5.0, 8.0))
+    model = _pour_model(_gnd_pad(), [_gnd_pour_item("F.Cu", hole=True), stub])
+    assert drc.check_pour_reaches_pad(model) == []
+
+
+def test_pour_reaches_pad_quiet_when_an_abutting_same_net_pad_reaches_the_pour():
+    # Pad A (4.5-5.5) sits in the hole; pad B (5.5-6.5) abuts A and meets the
+    # pour at the hole's edge (x=6.5), so A is connected through B.
+    model = _pour_model(_gnd_pad(), [_gnd_pour_item("F.Cu", hole=True)])
+    model["pads"].append({**_gnd_pad(x=6.0), "pin": "4"})
+    assert drc.check_pour_reaches_pad(model) == []
+
+
+def test_pour_reaches_pad_quiet_when_the_net_has_no_pour_on_the_pads_layer():
+    model = _pour_model(_gnd_pad(), [_gnd_pour_item("B.Cu", hole=True)])
+    assert drc.check_pour_reaches_pad(model) == []
+
+
+def test_pour_reaches_pad_drilled_pad_is_reached_by_an_inner_pour():
+    model = _pour_model(_gnd_pad(drill=0.6), [_gnd_pour_item("In1.Cu", hole=False)])
+    assert drc.check_pour_reaches_pad(model) == []
+
+
+def test_pour_reaches_pad_is_part_of_run_geometric_drc():
+    model = _pour_model(_gnd_pad(), [_gnd_pour_item("F.Cu", hole=True)])
+    findings = drc.run_geometric_drc(model, capability=_CAP4, outline=_EDGE_OUTLINE)
+    assert sum(f.rule == "pour_reaches_pad" for f in findings) == 1

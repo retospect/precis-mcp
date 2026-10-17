@@ -67,6 +67,8 @@ for exactly this pairing.
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Any
 
 # shapely ships no py.typed marker here — same suppression drc.py carries,
@@ -298,6 +300,121 @@ def cut_antipads(
     return out
 
 
+#: The widest neck :func:`pour_quality` looks for, in mm. A pour whose
+#: narrowest waist is wider than this is reported as ``None`` (no neck):
+#: past a few millimetres the return path is not the problem a neck figure
+#: is there to show, and every extra probe is a whole-polygon buffer.
+NECK_PROBE_MAX_MM = 2.0
+#: Coarse step of the neck scan, then bisected to :data:`NECK_REFINE_STEPS`
+#: halvings. Splitting under erosion is not monotone (a piece that split
+#: off can erode away again), so a pure bisection over the whole range can
+#: miss a waist; a coarse scan finds the first split and the bisection
+#: refines it to about 0.003 mm.
+NECK_PROBE_STEP_MM = 0.1
+NECK_REFINE_STEPS = 5
+
+
+@dataclass(frozen=True, slots=True)
+class PourQuality:
+    """How whole one net's fill is on one layer (pcb-stackup-regions slice 1).
+
+    ``fragments`` counts the separate pieces of copper on this layer alone
+    (stitching vias and other layers can still join them into one net —
+    :func:`precis.pcb.connectivity.net_islands` answers that).
+    ``largest_share`` is the largest piece's area over the layer's total
+    poured area, 1.0 for a single piece. ``min_neck_mm`` is the narrowest
+    waist found in any piece: the erosion diameter at which a piece first
+    splits in two, ``None`` when no piece splits below
+    :data:`NECK_PROBE_MAX_MM`."""
+
+    net: str
+    layer: str
+    fragments: int
+    area_mm2: float
+    largest_share: float
+    min_neck_mm: float | None
+
+    def phrase(self) -> str:
+        """One clause for a note or a view line."""
+        neck = (
+            f"neck >{NECK_PROBE_MAX_MM:g}mm"
+            if self.min_neck_mm is None
+            else f"neck {self.min_neck_mm:.2f}mm"
+        )
+        return (
+            f"{self.layer} {self.fragments} piece(s), "
+            f"largest {self.largest_share:.0%}, {neck}"
+        )
+
+
+def _splits(poly: Polygon, r: float) -> bool:
+    eroded = poly.buffer(-r, quad_segs=_BUFFER_QUAD_SEGS)
+    return sum(1 for p in _as_polygons(eroded) if p.area >= MIN_FRAGMENT_MM2) > 1
+
+
+def _neck_mm(poly: Polygon) -> float | None:
+    """Erosion DIAMETER at which ``poly`` first splits, or ``None``."""
+    lo = 0.0
+    r = NECK_PROBE_STEP_MM
+    while r <= NECK_PROBE_MAX_MM / 2.0 + 1e-9:
+        if _splits(poly, r):
+            hi = r
+            for _ in range(NECK_REFINE_STEPS):
+                mid = (lo + hi) / 2.0
+                if _splits(poly, mid):
+                    hi = mid
+                else:
+                    lo = mid
+            return 2.0 * hi
+        lo = r
+        r += NECK_PROBE_STEP_MM
+    return None
+
+
+def pour_quality(pours: Iterable[dict[str, Any]]) -> list[PourQuality]:
+    """One :class:`PourQuality` per (net, layer) in ``pours`` (the
+    ``ctype='pour'`` items :func:`plane_pours` emits, one per fragment),
+    sorted by net then layer."""
+    by_key: dict[tuple[str, str], list[Polygon]] = {}
+    for pour in pours:
+        poly = _copper_item_polygon({**pour, "ctype": "pour"})
+        if poly is None or poly.is_empty:
+            continue
+        if not poly.is_valid:
+            poly = poly.buffer(0)
+        frags = [p for p in _as_polygons(poly) if p.area >= MIN_FRAGMENT_MM2]
+        if frags:
+            key = (str(pour.get("net", "")), str(pour.get("layer", "")))
+            by_key.setdefault(key, []).extend(frags)
+    out: list[PourQuality] = []
+    for (net, layer), frags in sorted(by_key.items()):
+        areas = [f.area for f in frags]
+        total = sum(areas)
+        necks = [n for n in (_neck_mm(f) for f in frags) if n is not None]
+        out.append(
+            PourQuality(
+                net=net,
+                layer=layer,
+                fragments=len(frags),
+                area_mm2=total,
+                largest_share=max(areas) / total if total > 0 else 0.0,
+                min_neck_mm=min(necks) if necks else None,
+            )
+        )
+    return out
+
+
+def pour_notes(quality: Iterable[PourQuality]) -> dict[str, str]:
+    """Net name -> one ``pcb_routes.note`` clause covering every layer the
+    net pours on, e.g. ``"pour: In1.Cu 1 piece(s), largest 100%, neck
+    0.42mm"``."""
+    notes: dict[str, str] = {}
+    for q in quality:
+        earlier = notes.get(q.net)
+        notes[q.net] = f"{earlier}, {q.phrase()}" if earlier else f"pour: {q.phrase()}"
+    return notes
+
+
 def point_in_pour(pour: dict[str, Any], x: float, y: float) -> bool:
     """Is ``(x, y)`` on this pour's copper? Exterior ring minus holes.
 
@@ -331,4 +448,11 @@ def _in_ring(ring: list[list[float]], x: float, y: float) -> bool:
     return inside
 
 
-__all__ = ["MIN_FRAGMENT_MM2", "cut_antipads", "plane_pours", "point_in_pour"]
+__all__ = [
+    "MIN_FRAGMENT_MM2",
+    "PourQuality",
+    "cut_antipads",
+    "plane_pours",
+    "point_in_pour",
+    "pour_quality",
+]

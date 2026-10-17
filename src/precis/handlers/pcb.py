@@ -125,6 +125,7 @@ from precis.pcb import layer_lock as pcb_layer_lock
 from precis.pcb import length_ratio as pcb_length_ratio
 from precis.pcb import matching as pcb_matching
 from precis.pcb import optimize as pcb_optimize
+from precis.pcb import planes as pcb_planes
 from precis.pcb import realize as pcb_realize
 from precis.pcb import review as pcb_review
 from precis.pcb import route as pcb_route
@@ -612,6 +613,7 @@ class PcbHandler(Handler):
                 "warm_start",
                 "negotiate",
                 "corridor",
+                "layer_cost",
                 "escape",
                 "groups",
                 "loop",
@@ -1484,6 +1486,21 @@ class PcbHandler(Handler):
             if opts["escape"] != "plaza":
                 raise BadInput("pcb: escape must be 'plaza' when set")
             params["escape"] = "plaza"
+        # Per-layer route cost (RealizeConfig.layer_route_cost,
+        # pcb-stackup-regions slice 1): {layer name: multiplier >= 1}.
+        if op == "route" and opts.get("layer_cost") is not None:
+            layer_cost = opts["layer_cost"]
+            if not isinstance(layer_cost, dict) or not all(
+                isinstance(v, int | float)
+                and not isinstance(v, bool)
+                and 1 <= v < math.inf
+                for v in layer_cost.values()
+            ):
+                raise BadInput(
+                    "pcb: layer_cost must map layer names to finite multipliers >= 1, "
+                    "e.g. {'In1.Cu': 2.5}"
+                )
+            params["layer_cost"] = {str(k): float(v) for k, v in layer_cost.items()}
         # Opt-in route -> penalise -> anneal -> route outer loop
         # (optimize.anneal_route_loop); off unless asked for.
         if op == "route" and opts.get("loop") is not None:
@@ -4710,13 +4727,45 @@ class PcbHandler(Handler):
             }
             for r in rows
         ]
-        return Response(
-            body=f"# planes — {len(rows)} assignment(s)\n"
-            + render_agent_table(
-                table_rows,
-                schema=["layer", "net", "source", "region", "priority"],
-            )
+        body = f"# planes — {len(rows)} assignment(s)\n" + render_agent_table(
+            table_rows, schema=["layer", "net", "source", "region", "priority"]
         )
+        # Pour quality on the stored pours (pcb-stackup-regions slice 1):
+        # pieces per (net, layer), the largest piece's area share and the
+        # narrowest neck, so a cut-up plane shows before the DRC does.
+        board = self.store.pcb_load(ref_id)["board"]
+        pours = (
+            [
+                row
+                for row in self.store.pcb_copper_list(int(board["board_id"]))
+                if row.get("ctype") == "pour" and not row.get("fixed")
+            ]
+            if board is not None
+            else []
+        )
+        quality = pcb_planes.pour_quality(pours)
+        if quality:
+            body += "\n\n## pour quality\n" + render_agent_table(
+                [
+                    {
+                        "net": q.net,
+                        "layer": q.layer,
+                        "pieces": q.fragments,
+                        "largest": f"{q.largest_share:.0%}",
+                        "neck_mm": (
+                            f">{pcb_planes.NECK_PROBE_MAX_MM:g}"
+                            if q.min_neck_mm is None
+                            else f"{q.min_neck_mm:.2f}"
+                        ),
+                        "area_mm2": f"{q.area_mm2:.0f}",
+                    }
+                    for q in quality
+                ],
+                schema=["net", "layer", "pieces", "largest", "neck_mm", "area_mm2"],
+            )
+        else:
+            body += "\n\nno pours stored yet — run op='route' to pour the planes"
+        return Response(body=body)
 
     @staticmethod
     def _region_text(region: Any) -> str:

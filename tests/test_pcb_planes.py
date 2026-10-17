@@ -18,9 +18,10 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
 from shapely.geometry import Point, Polygon
 
-from precis.pcb.planes import cut_antipads, plane_pours
+from precis.pcb.planes import cut_antipads, plane_pours, pour_notes, pour_quality
 
 #: A plain 40x40mm square board, inset by 0.5mm edge clearance elsewhere --
 #: big enough that a ~2mm fiducial ring is a small feature inside it, not
@@ -185,3 +186,79 @@ def test_cut_antipads_returns_input_unchanged_with_no_pours_or_no_blockers():
     no_blockers = cut_antipads([pour], [], clearance_mm=_CLEARANCE_MM)
     assert no_blockers == [pour]
     assert no_blockers[0] is pour
+
+
+# ── pour_quality (pcb-stackup-regions slice 1) ───────────────────────────
+
+
+def _rect_pour(
+    x0: float, y0: float, x1: float, y1: float, *, net: str = "GND", layer: str = "F.Cu"
+) -> dict[str, Any]:
+    return {
+        "ctype": "pour",
+        "net": net,
+        "layer": layer,
+        "polygon": [[x0, y0], [x1, y0], [x1, y1], [x0, y1]],
+        "holes": [],
+    }
+
+
+def test_pour_quality_one_rectangle_is_whole_with_no_neck():
+    (q,) = pour_quality([_rect_pour(0, 0, 10, 5)])
+    assert (q.net, q.layer) == ("GND", "F.Cu")
+    assert q.fragments == 1
+    assert q.largest_share == 1.0
+    assert q.area_mm2 == pytest.approx(50.0)
+    assert q.min_neck_mm is None
+
+
+def test_pour_quality_two_disjoint_rectangles_report_the_larger_share():
+    big, small = _rect_pour(0, 0, 10, 10), _rect_pour(20, 0, 25, 4)
+    (q,) = pour_quality([big, small])
+    assert q.fragments == 2
+    assert q.area_mm2 == pytest.approx(120.0)
+    assert q.largest_share == pytest.approx(100.0 / 120.0)
+
+
+def test_pour_quality_dumbbell_reports_the_bridge_width_as_the_neck():
+    dumbbell = {
+        "ctype": "pour",
+        "net": "GND",
+        "layer": "F.Cu",
+        "polygon": [
+            [0, 0],
+            [4, 0],
+            [4, 1.75],
+            [8, 1.75],
+            [8, 0],
+            [12, 0],
+            [12, 4],
+            [8, 4],
+            [8, 2.25],
+            [4, 2.25],
+            [4, 4],
+            [0, 4],
+        ],
+        "holes": [],
+    }
+    (q,) = pour_quality([dumbbell])
+    assert q.fragments == 1
+    assert q.min_neck_mm == pytest.approx(0.5, abs=0.05)
+
+
+def test_pour_quality_keys_are_separate_and_sorted_by_net_then_layer():
+    pours = [
+        _rect_pour(0, 0, 5, 5, net="GND", layer="In1.Cu"),
+        _rect_pour(0, 0, 5, 5, net="VCC", layer="F.Cu"),
+        _rect_pour(0, 0, 5, 5, net="GND", layer="F.Cu"),
+    ]
+    got = [(q.net, q.layer) for q in pour_quality(pours)]
+    assert got == [("GND", "F.Cu"), ("GND", "In1.Cu"), ("VCC", "F.Cu")]
+
+
+def test_pour_notes_join_every_layer_of_a_net_into_one_clause():
+    pours = [_rect_pour(0, 0, 10, 5), _rect_pour(0, 0, 10, 5, layer="In1.Cu")]
+    notes = pour_notes(pour_quality(pours))
+    assert list(notes) == ["GND"]
+    assert notes["GND"].startswith("pour: F.Cu 1 piece(s)")
+    assert "In1.Cu 1 piece(s)" in notes["GND"] and "neck >2mm" in notes["GND"]

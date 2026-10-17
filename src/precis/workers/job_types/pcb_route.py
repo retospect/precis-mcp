@@ -66,6 +66,7 @@ from precis.pcb import DANGLING_NET_NOTE
 from precis.pcb import feedback as pcb_feedback
 from precis.pcb import matching as pcb_matching
 from precis.pcb import pinswap as pcb_pinswap
+from precis.pcb import planes as pcb_planes
 from precis.pcb import realize as pcb_realize
 from precis.pcb import session as pcb_session
 from precis.pcb.capabilities import capability_for
@@ -138,6 +139,13 @@ PARAMS_SCHEMA: dict[str, Any] = {
         # Angular escape assignment for dense pad rows (globalplan
         # slice 2): absent = the ordinary search.
         "escape": {"type": "string", "enum": ["plaza"]},
+        # Per-layer route cost, {layer name: multiplier >= 1}
+        # (RealizeConfig.layer_route_cost; pcb-stackup-regions slice 1):
+        # absent = every layer at the base step.
+        "layer_cost": {
+            "type": "object",
+            "additionalProperties": {"type": "number", "minimum": 1},
+        },
         # The route -> penalise -> anneal -> route outer loop
         # (optimize.anneal_route_loop): 0 = the single anneal+realize
         # (default), 1..LOOP_MAX_ROUNDS = that many budgeted rounds.
@@ -1004,6 +1012,10 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         negotiate_iterations=negotiate,
         corridor_penalty=float(params.get("corridor") or 0.0),
         escape=str(params.get("escape") or ""),
+        layer_route_cost=tuple(
+            (str(name), float(mult))
+            for name, mult in sorted((params.get("layer_cost") or {}).items())
+        ),
     )
     # `footprints` (the same refdes-keyed pad geometry PIN_SWAP's feed
     # above also used) was resolved earlier, before the anneal — see that
@@ -1448,6 +1460,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     # exists to avoid. It still gets said, as a note.
     unstitched_fail: dict[str, list[dict[str, Any]]] = {}
     unstitched_note: dict[str, str] = {}
+    pour_note = pcb_planes.pour_notes(rres.pour_quality)
     for u in rres.unstitched:
         if u.fragments - u.bare_fragments > 1:
             unstitched_fail.setdefault(u.net, []).append(
@@ -1591,6 +1604,10 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             # not become one — but the note is the only place this is ever
             # said, so silence here would lose the single report of it.
             note = f"floating copper — {unstitched_note[net_name]}"
+        if net_name in pour_note:
+            # Pour quality (pcb-stackup-regions slice 1): additive, like
+            # the floating-copper note, and never a status change.
+            note = f"{note}; {pour_note[net_name]}" if note else pour_note[net_name]
         rows[net_name] = {
             **entry,
             "status": status,

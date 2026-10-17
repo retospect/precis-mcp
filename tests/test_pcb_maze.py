@@ -796,3 +796,107 @@ def test_drop_between_vias_straightens_a_down_up_pair():
     )
     assert collapsed.vias == ()
     assert collapsed.length_mm == pytest.approx(2.0)
+
+
+# ── reserve_disk / release (pcb-stackup-regions slice 1) ─────────────────
+_RESERVE_TOKEN = 1 << 22
+
+
+def test_reserve_disk_claims_only_free_cells_and_blocks_a_real_net():
+    grid = OccupancyGrid(_spec(), clearance_mm=0.05)
+    grid.stamp_disk((0,), 3.0, 3.0, 0.15, 3)
+    held_by_3 = (grid.owner[0] == 3).sum()
+    before = grid.owner.copy()
+    cells = grid.reserve_disk((0, 1), 3.0, 3.0, 0.6, _RESERVE_TOKEN)
+    assert cells.size > 0
+    assert (grid.owner[0] == 3).sum() == held_by_3, "net 3's cells must stay net 3"
+    assert (grid.owner == _RESERVE_TOKEN).sum() == cells.size
+    assert not (grid.owner[before == 3] == _RESERVE_TOKEN).any()
+    assert not grid.disk_is_free((0, 1), 3.0, 3.0, 0.3, 5)
+
+
+def test_release_frees_exactly_the_reserved_cells():
+    grid = OccupancyGrid(_spec(), clearance_mm=0.05)
+    grid.stamp_disk((0,), 3.0, 3.0, 0.15, 3)
+    before = grid.owner.copy()
+    cells = grid.reserve_disk((0, 1), 3.0, 3.0, 0.6, _RESERVE_TOKEN)
+    grid.release(cells, _RESERVE_TOKEN)
+    assert (grid.owner == before).all()
+    assert (grid.owner == _RESERVE_TOKEN).sum() == 0
+    assert (grid.owner[0] == 3).sum() > 0
+
+
+def test_release_leaves_cells_that_changed_hands_alone():
+    grid = OccupancyGrid(_spec(), clearance_mm=0.05)
+    cells = grid.reserve_disk((0,), 3.0, 3.0, 0.4, _RESERVE_TOKEN)
+    grid.stamp_disk((0,), 3.0, 3.0, 0.1, 7)
+    grid.release(cells, _RESERVE_TOKEN)
+    assert (grid.owner[0] == 7).sum() > 0
+
+
+# ── layer_cost ───────────────────────────────────────────────────────────
+def _layers_used(path) -> set[int]:
+    return {layer for _x, _y, layer in path.points}
+
+
+def test_layer_cost_steers_the_route_off_the_expensive_layer():
+    spec = _spec(n_layers=2)
+    grid = OccupancyGrid(spec, clearance_mm=0.05)
+    off_l1 = grid.route(
+        2,
+        (0.5, 3.0),
+        (5.5, 3.0),
+        layer_cost={1: 10.0},
+        layers=[0, 1],
+        width_mm=0.1,
+        via_dia_mm=0.3,
+    )
+    off_l0 = grid.route(
+        2,
+        (0.5, 3.0),
+        (5.5, 3.0),
+        layer_cost={0: 10.0},
+        layers=[0, 1],
+        width_mm=0.1,
+        via_dia_mm=0.3,
+    )
+    assert off_l1 is not None and off_l0 is not None
+    assert 1 not in _layers_used(off_l1)
+    # The pins sit on layer 0, so layer 0 appears only at the two ends,
+    # where the via drops straight away: no layer-0 copper in between.
+    ends = {(0.5, 3.0), (5.5, 3.0)}
+    assert {(x, y) for x, y, layer in off_l0.points if layer == 0} <= ends
+    assert 1 in _layers_used(off_l0)
+
+
+def test_layer_cost_of_one_is_the_unpriced_route():
+    spec = _spec(n_layers=2)
+    grid = OccupancyGrid(spec, clearance_mm=0.05)
+    plain = grid.route(
+        2, (0.5, 0.5), (5.5, 3.0), layers=[0, 1], width_mm=0.1, via_dia_mm=0.3
+    )
+    priced = grid.route(
+        2,
+        (0.5, 0.5),
+        (5.5, 3.0),
+        layer_cost={0: 1.0},
+        layers=[0, 1],
+        width_mm=0.1,
+        via_dia_mm=0.3,
+    )
+    assert plain is not None and priced is not None
+    assert plain.points == priced.points
+
+
+# ── RealizeConfig.layer_route_cost ───────────────────────────────────────
+def test_layer_route_cost_below_one_is_refused():
+    with pytest.raises(ValueError, match="layer_route_cost"):
+        RealizeConfig(layer_route_cost=(("In1.Cu", 0.5),))
+    with pytest.raises(ValueError, match="layer_route_cost"):
+        RealizeConfig(layer_route_cost=(("In1.Cu", math.inf),))
+
+
+def test_layer_route_cost_at_or_above_one_is_accepted():
+    cfg = RealizeConfig(layer_route_cost=(("In1.Cu", 2.5),))
+    assert cfg.layer_route_cost == (("In1.Cu", 2.5),)
+    RealizeConfig(layer_route_cost=(("In1.Cu", 1.0),))

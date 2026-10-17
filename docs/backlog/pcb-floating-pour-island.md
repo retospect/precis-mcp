@@ -89,6 +89,13 @@ umbrella item [pcb-stackup-regions](pcb-stackup-regions.md)).
   and area.
 - No net loses copper that carried a via, trace or pad.
 
+Related evidence: gr492108. Plane nets that stay split into separate
+components after stitching (taz15-blank PV+ 2, GND 5 when poured; nano V5
+15), measured in
+[pcb-stackup-regions](pcb-stackup-regions.md) slice 1's table. These are
+pieces carrying copper, not bare islands, so this item or slice 4 needs
+to say which one owns them.
+
 ## Target + blast radius
 
 `src/precis/pcb/realize.py` (`_realize_maze`'s pour/stitch ordering,

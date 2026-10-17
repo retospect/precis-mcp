@@ -77,34 +77,26 @@ Each slice lands alone. Slices 0 and 1 both edit `realize._plane_fanout`:
 **slice 1 starts only after slice 0 is on main.** Slice 2 carries a
 migration and lands via `/go`, never `/qland`/`/qgo`.
 
-### Slice 0 — pour-reaches-pad predicate (GND stub regression)
+### Slice 0 — GND stub regression (shipped in 647be4789)
 
-**IN PROGRESS — lane `claude-router-lane-fix` (worktree `router-lane-fix`)
-is relanding it.** Do not start a second copy.
+Shipped differently from the predicate first specced here. 647be4789
+(router-lane-fix) does not compute `pad ∩ local pour` before the fan-out.
+Instead `_plane_fanout` offers the stub and drop via to every plane pin
+that has a legal site, including a pin whose net pours only on its own
+pad layer, and `_prune_redundant_drop_vias` removes, after pouring, each
+stub+via whose pad centre the filled pour contains. Only a pin with no
+legal site trusts the pour; the post-pour connectivity check reports the
+net if the fill then misses the pad. Pins whose authored fixed copper
+already reaches every poured layer (`_plane_served_pins`) get no via.
+fab-render seed 3 is green again; nano seed 1 stays at 35/29/36/9.
 
-`realize._plane_fanout`: skip the stub + via only when the pad polygon
-overlaps the pour computed locally with that pad as own-net
-(`pad ∩ (outline-inset − foreign copper dilated by clearance) ≠ ∅`, on a
-window around the pad); `point_in_pour` on the pad centre is not enough.
-Otherwise keep the stub, and a via only when another poured layer exists.
-Generator-owned nets (EWOD electrode field) skip the predicate and say so in
-the report — a per-pin recompute there is too costly.
-
-Acceptance criteria:
-- `tests/test_pcb_fab_render_all_layers.py` green on all five seeds with
-  `KNOWN_OPEN_DRC_ERRORS` unchanged.
-- `tests/test_pcb_fixed_copper_route.py` (2bf9dc75e's test) still green;
-  taz15 pins inside the open fill still get no via.
-- New unit test in `tests/test_pcb_planes.py`: a GND pad between two
-  foreign pads at clearance pitch gets a stub; a GND pad alone in a fill
-  gets none.
-
-Owning files: `src/precis/pcb/realize.py`, `src/precis/pcb/planes.py`,
-`tests/test_pcb_planes.py`.
+Left for slice 1: a permanent DRC rule that names a pad relying on the
+pour that the pour does not touch (`pour_reaches_pad`), since the prune
+asks about the pad centre and the no-site fallback asks nothing.
 
 ### Slice 1 — via-to-plane, measured across four boards
 
-Waits on slice 0 (same function). Pre-claim every plane-net pin's
+Slice 0 is on main (647be4789). Pre-claim every plane-net pin's
 `_drop_via_site` candidates on the grid before signal routing, the way
 `realize._claim_fiducial_keepouts` claims fiducial sites; release per pin
 once its via is placed. Add `pour_reaches_pad` as a permanent DRC rule (a
@@ -126,6 +118,41 @@ Acceptance criteria:
   per board) is written into this item.
 - `pour_reaches_pad` fires on a fixture with a walled-in pad and is silent
   on the five fab-render seeds.
+
+**Measured 2026-10-16 (stackup-s1, before = 647be4789 main, after =
+drop-site reservation + pour_quality + pour_reaches_pad).** Before and
+after are identical on every row: the reservation changed no via and no
+routed count on these boards. Fragments are pour pieces per net@layer;
+islands are `net_islands` components.
+
+| board | seed | routed/failed | vias | fragments | islands | pour_reaches_pad |
+|---|---|---|---|---|---|---|
+| esp32c3 | 1 | 11/0 | 29 | GND@F 3, VCC3V3@B 1 | 1, 1 | 0 |
+| esp32c3 | 2 | 11/0 | 31 | 1, 1 | 1, 1 | 0 |
+| esp32c3 | 3 | 11/0 | 33 | 1, 1 | 1, 1 | 0 |
+| esp32c3 | 4 | 11/0 | 32 | 1, 1 | 1, 1 | 0 |
+| esp32c3 | 5 | 11/0 | 32 | GND@F 3, VCC3V3@B 1 | 1, 1 | 0 |
+| nano (as tested) | 1 | 35/29 (silk 36, warns 9) | 92 | no pours | — | 0 |
+| nano, GND→In1 + V5→In2 declared | 1 | 34/30 | 104 | V5@In2 1, no GND pour | **V5 15** | 0 |
+| ewod replay, closed | 0 | 31/24 | 55 | no pours | — | 0 |
+| ewod replay, In2 open | 0 | 51/4 | 80 | no pours | — | 0 |
+| taz15-blank as stored (PV+ In1, 12V_POWER In2) | 0 | 66/13 | 136 | 12V 1, PV+ 2 | 12V 1, **PV+ 2** | 0 |
+| taz15-blank + GND→B, 3V3→F | 0 | 64/15 | 143 | 12V 1, PV+ 1, GND 1, 3V3@F 12 | **GND 5, PV+ 2**, 3V3 1, 12V 1 | 0 |
+
+**Floor NOT met — known pre-existing failure.** "Every plane net is one
+component" fails before and after alike, in three cases: taz15-blank as
+stored, PV+ in 2 pieces; taz15-blank with GND/3V3 poured, GND in 5;
+nano with GND→In1 and V5→In2 declared, V5 in 15. The drop-site
+reservation does not touch it. The fix is stitching work:
+[pcb-floating-pour-island](pcb-floating-pour-island.md) or slice 4
+(gr492108). Slice 1 landed on the coordinator's ruling
+(2026-10-16): no row regressed.
+The floor is vacuous on nano and the ewod replay as tested: they pour
+nothing (no `pcb_planes` rows; ewod has no GND net). Prod taz15-blank
+carries PV+/12V_POWER planes, not the GND/3V3/12V `pour_nets` this item
+assumed. Slice 4 measures on boards that actually have planes. esp32c3's extra GND F.Cu pieces are floating copper, already
+reported in the route note. In1 cost not tuned: no board here routes on
+In1, so `layer_cost` stays opt-in.
 
 Owning files: `src/precis/pcb/realize.py`, `src/precis/pcb/drc.py`,
 `src/precis/pcb/maze.py` (grid claims), `src/precis/handlers/pcb.py`

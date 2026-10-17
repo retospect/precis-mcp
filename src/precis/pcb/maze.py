@@ -637,6 +637,50 @@ class OccupancyGrid:
             else:
                 window[inside] = net_id
 
+    def reserve_disk(
+        self,
+        layers: Iterable[int],
+        x: float,
+        y: float,
+        radius_mm: float,
+        token: int,
+    ) -> np.ndarray:
+        """Claim the FREE cells of a disk for ``token`` (a sentinel above
+        every real net, foreign to all of them) and return their flat
+        indices for :meth:`release`. Cells someone already owns are left
+        alone, so a reservation never displaces copper and releasing it
+        never frees anything it did not take. Used to hold a plane pin's
+        drop-via site while the other pins of the fan-out place theirs
+        (:func:`precis.pcb.realize._plane_fanout`)."""
+        spec = self.spec
+        r_cells = math.ceil(radius_mm / spec.pitch)
+        cx, cy = spec.to_cell(x, y)
+        lo_x, hi_x = max(0, cx - r_cells), min(spec.nx - 1, cx + r_cells)
+        lo_y, hi_y = max(0, cy - r_cells), min(spec.ny - 1, cy + r_cells)
+        if lo_x > hi_x or lo_y > hi_y:
+            return np.zeros(0, dtype=np.int64)
+        ix = np.arange(lo_x, hi_x + 1)
+        iy = np.arange(lo_y, hi_y + 1)
+        dx = spec.x0 + ix * spec.pitch - x
+        dy = spec.y0 + iy * spec.pitch - y
+        inside = (dy[:, None] ** 2 + dx[None, :] ** 2) <= radius_mm**2
+        rows, cols = np.nonzero(inside)
+        plane = spec.ny * spec.nx
+        taken: list[np.ndarray] = []
+        for layer in layers:
+            idx = layer * plane + (rows + lo_y) * spec.nx + (cols + lo_x)
+            idx = idx[self._flat[idx] == FREE]
+            self._flat[idx] = token
+            taken.append(idx.astype(np.int64))
+        return np.concatenate(taken) if taken else np.zeros(0, dtype=np.int64)
+
+    def release(self, cells: np.ndarray, token: int) -> None:
+        """Undo :meth:`reserve_disk`: free the cells still held by
+        ``token``."""
+        if cells.size:
+            held = cells[self._flat[cells] == token]
+            self._flat[held] = FREE
+
     def stamp_pad(
         self,
         layers: Iterable[int],
@@ -1089,6 +1133,7 @@ class OccupancyGrid:
         via_body_cost_mm: float = 0.0,
         max_expansions: int = MAX_EXPANSIONS,
         layer_prefs: dict[int, str] | None = None,
+        layer_cost: Mapping[int, float] | None = None,
         extra_start_terminals: Sequence[tuple[tuple[float, float], int]] = (),
         extra_goal_terminals: Sequence[tuple[tuple[float, float], int]] = (),
         negotiation: Negotiation | None = None,
@@ -1135,6 +1180,7 @@ class OccupancyGrid:
             "via_body_cost_mm": via_body_cost_mm,
             "max_expansions": max_expansions,
             "layer_prefs": layer_prefs,
+            "layer_cost": layer_cost,
             "extra_start_terminals": extra_start_terminals,
             "extra_goal_terminals": extra_goal_terminals,
             "negotiation": negotiation,
@@ -1254,6 +1300,7 @@ class OccupancyGrid:
         via_body_cost_mm: float = 0.0,
         max_expansions: int = MAX_EXPANSIONS,
         layer_prefs: dict[int, str] | None = None,
+        layer_cost: Mapping[int, float] | None = None,
         extra_start_terminals: Sequence[tuple[tuple[float, float], int]] = (),
         extra_goal_terminals: Sequence[tuple[tuple[float, float], int]] = (),
         negotiation: Negotiation | None = None,
@@ -1278,6 +1325,14 @@ class OccupancyGrid:
         overestimate a path that turns out to avoid every body cell,
         breaking A*'s admissibility guarantee for a search that is
         supposed to stay optimal-under-weighting, not just fast.
+
+        ``layer_cost`` (layer index -> multiplier, absent = 1.0) scales
+        every step on that layer: an inner plane layer that may carry a
+        trace at a price (pcb-stackup-regions: In1 at about 2-3x). A
+        multiplier below 1.0 would let ``heuristic`` overestimate, so
+        callers keep them at or above 1.0
+        (:attr:`precis.pcb.realize.RealizeConfig.layer_route_cost`
+        refuses less).
 
         ``start_layer``/``goal_layer`` let the two ends sit on DIFFERENT
         pad layers — a bottom-mounted pin's pad is not on the same copper
@@ -1516,11 +1571,14 @@ class OccupancyGrid:
         step_cost = np.zeros((spec.n_layers, n_steps), dtype=np.float64)
         for layer in allowed:
             pref = None if layer_prefs is None else layer_prefs.get(layer)
+            mult = 1.0 if layer_cost is None else float(layer_cost.get(layer, 1.0))
             for k, (dx, dy, weight) in enumerate(_STEPS):
                 step_dx[layer, k] = dx
                 step_dy[layer, k] = dy
                 step_off[layer, k] = dy * nx + dx
-                step_cost[layer, k] = pitch * weight * _step_penalty(pref, dx, dy)
+                step_cost[layer, k] = (
+                    pitch * weight * _step_penalty(pref, dx, dy) * mult
+                )
         body = self._body_mask
         no_mask = np.zeros((1, 1), dtype=np.bool_)
         no_corridor = np.zeros((1, 1, 1), dtype=np.bool_)

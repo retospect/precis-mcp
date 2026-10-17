@@ -3187,6 +3187,135 @@ def nets_routed_by_copper(model: dict[str, Any]) -> set[str]:
     } - split
 
 
+#: How close a pour or same-net track/via must come to a pad to count as
+#: touching it, in mm — float noise on a buffered ring, not a tolerance.
+_POUR_TOUCH_EPS_MM = 1e-6
+
+
+def _touches_any(land: BaseGeometry, geoms: Iterable[BaseGeometry]) -> bool:
+    """Does any of ``geoms`` come within :data:`_POUR_TOUCH_EPS_MM` of
+    ``land``? A bounding-box test first, so a board-wide pour list costs
+    one exact distance per nearby piece, not one per piece."""
+    x0, y0, x1, y1 = land.bounds
+    eps = _POUR_TOUCH_EPS_MM
+    for geom in geoms:
+        gx0, gy0, gx1, gy1 = geom.bounds
+        if gx0 > x1 + eps or gx1 < x0 - eps or gy0 > y1 + eps or gy1 < y0 - eps:
+            continue
+        if land.distance(geom) <= eps:
+            return True
+    return False
+
+
+def check_pour_reaches_pad(model: dict[str, Any]) -> list[DrcFinding]:
+    """A pad left to its net's pour must actually be touched by that pour.
+
+    The plane fan-out (:func:`precis.pcb.realize._plane_fanout`) and the
+    drop-via prune (``_prune_redundant_drop_vias``) both let a pad rely on
+    the fill instead of a stub and via. The fill is cut around every foreign
+    pad and track, so among fine-pitch neighbours a pad can sit in a hole
+    the fill never reaches (pcb-stackup-regions slice 0: the fab-render
+    board, seed 3, lost one GND pad this way). This rule names that pad.
+
+    Fires for a pad whose net is poured on one of the pad's layers (every
+    layer for a drilled pad) when no same-net pour on those layers touches
+    the pad and no same-net track or via touches it either. A pad with no
+    pour on its layers is the ``unrouted``/``connectivity`` question, not
+    this one."""
+    all_layers = [str(name) for name in model.get("layers") or []]
+    pours: dict[tuple[str, str], list[BaseGeometry]] = {}
+    others: dict[tuple[str, str], list[BaseGeometry]] = {}
+    for item in model.get("copper") or []:
+        net = str(item.get("net", ""))
+        if not net:
+            continue
+        ctype = item.get("ctype")
+        if ctype == "pour":
+            poly = _copper_item_polygon(item)
+            if poly is not None and not poly.is_empty:
+                pours.setdefault((net, str(item.get("layer", ""))), []).append(poly)
+        elif ctype in ("via", "track"):
+            geom = _copper_item_polygon(item)
+            if geom is None or geom.is_empty:
+                continue
+            layers = (
+                _via_layer_names(item, all_layers)
+                if ctype == "via"
+                else [str(item.get("layer", ""))]
+            )
+            for layer in layers:
+                others.setdefault((net, layer), []).append(geom)
+    if not pours:
+        return []
+    pads = _tagged_pads(model)
+    lands: list[tuple[BaseGeometry | None, list[str]]] = []
+    for pad in pads:
+        layer = str(pad.get("layer", ""))
+        pad_layers = (
+            [layer, *(n for n in all_layers if n != layer)]
+            if pad.get("drill")
+            else [layer]
+        )
+        lands.append((_copper_item_polygon(pad), pad_layers))
+    # A same-net pad abutting this one (a split land, a pad run) is
+    # connecting copper too: the pour reaching the neighbour reaches both.
+    pad_geoms: dict[tuple[str, str], list[tuple[int, BaseGeometry]]] = {}
+    for i, (pad, (land, pad_layers)) in enumerate(zip(pads, lands, strict=True)):
+        net = str(pad.get("net", ""))
+        if net and land is not None and not land.is_empty:
+            for layer in pad_layers:
+                pad_geoms.setdefault((net, layer), []).append((i, land))
+    out: list[DrcFinding] = []
+    for i, (pad, (land, pad_layers)) in enumerate(zip(pads, lands, strict=True)):
+        net = str(pad.get("net", ""))
+        if not net or land is None or land.is_empty:
+            continue
+        poured = [lyr for lyr in pad_layers if (net, lyr) in pours]
+        if not poured:
+            continue
+        if _touches_any(land, (p for lyr in poured for p in pours[(net, lyr)])):
+            continue
+        if _touches_any(
+            land, (g for lyr in pad_layers for g in others.get((net, lyr), []))
+        ):
+            continue
+        if _touches_any(
+            land,
+            (
+                g
+                for lyr in pad_layers
+                for j, g in pad_geoms.get((net, lyr), [])
+                if j != i
+            ),
+        ):
+            continue
+        name = f"{pad.get('refdes', '?')}.{pad.get('pin', '?')}"
+        out.append(
+            DrcFinding(
+                rule="pour_reaches_pad",
+                severity="error",
+                where=f"pad {name}",
+                detail=(
+                    f"pad {name} (net {net}) has no track or via and relies on "
+                    f"the {net} pour on {', '.join(poured)}, but the pour does not "
+                    "touch it (foreign copper's clearance walls it in); it needs "
+                    "a stub and drop via"
+                ),
+                objects=(
+                    {
+                        "net": net,
+                        "refdes": pad.get("refdes"),
+                        "pin": pad.get("pin"),
+                        "x": pad.get("x"),
+                        "y": pad.get("y"),
+                        "layers": poured,
+                    },
+                ),
+            )
+        )
+    return out
+
+
 def check_unrouted(
     unrouted: list[dict[str, Any]] | None,
 ) -> list[DrcFinding]:
@@ -3562,6 +3691,7 @@ def run_geometric_drc(
     findings += check_outline_containment(model, outline=outline, courtyards=courtyards)
     findings += check_edge_mating(edge_mates, outline=outline)
     findings += check_connectivity(model)
+    findings += check_pour_reaches_pad(model)
     findings += check_unrouted(unrouted)
     findings += check_unconnected_pins(unconnected, phase=phase)
     findings += check_undeclared_pads(model, unchecked=undeclared_unchecked)
@@ -4523,6 +4653,7 @@ __all__ = [
     "check_over_current",
     "check_over_voltage",
     "check_pin_conflicts",
+    "check_pour_reaches_pad",
     "check_rail_crossing",
     "check_silk_edge_clearance",
     "check_silk_missing",
