@@ -698,6 +698,8 @@ def _prune_dangling(conn: Any, loaded: set[str]) -> int:
                 "{present} AND NOT EXISTS (SELECT 1 FROM {p} p WHERE {m})"
             ).format(present=present, p=sql.Identifier(rt), m=match)
             if nullable:
+                if t == "links":
+                    changed += _drop_links_collapsing_on_null(conn, cols, rt, rcols)
                 sets = sql.SQL(", ").join(
                     sql.SQL("{} = NULL").format(sql.Identifier(cc)) for cc in cols
                 )
@@ -711,6 +713,57 @@ def _prune_dangling(conn: Any, loaded: set[str]) -> int:
         if not changed:
             break
     return total
+
+
+_LINK_KEY = ("src_ref_id", "src_chunk_id", "dst_ref_id", "dst_chunk_id", "relation")
+
+
+def _drop_links_collapsing_on_null(
+    conn: Any, cols: list[str], rt: str, rcols: list[str]
+) -> int:
+    """Delete dangling links that nulling ``cols`` would collapse onto another
+    link under links_endpoints_relation_idx (NULLS NOT DISTINCT): rows that
+    already hold the nulled key, or a lower link_id that is also dangling."""
+    from psycopg import sql
+
+    same = sql.SQL(" AND ").join(
+        sql.SQL("o.{k} IS NOT DISTINCT FROM c.{k}").format(k=sql.Identifier(k))
+        for k in _LINK_KEY
+        if k not in cols
+    )
+    nulled = sql.SQL(" AND ").join(
+        sql.SQL("o.{} IS NULL").format(sql.Identifier(k)) for k in cols
+    )
+
+    def dangling(alias: str) -> Any:
+        return sql.SQL(" AND ").join(
+            sql.SQL("p.{} = {}.{}").format(
+                sql.Identifier(rc), sql.SQL(alias), sql.Identifier(cc)
+            )
+            for cc, rc in zip(cols, rcols, strict=True)
+        )
+
+    o_present = sql.SQL(" AND ").join(
+        sql.SQL("o.{} IS NOT NULL").format(sql.Identifier(k)) for k in cols
+    )
+    stmt = sql.SQL(
+        "DELETE FROM links c WHERE {present_c} "
+        "AND NOT EXISTS (SELECT 1 FROM {p} p WHERE {m}) "
+        "AND EXISTS (SELECT 1 FROM links o WHERE o.link_id <> c.link_id AND {same} "
+        "AND ({nulled} OR ({present_o} AND o.link_id < c.link_id "
+        "AND NOT EXISTS (SELECT 1 FROM {p} p WHERE {om}))))"
+    ).format(
+        present_c=sql.SQL(" AND ").join(
+            sql.SQL("c.{} IS NOT NULL").format(sql.Identifier(k)) for k in cols
+        ),
+        p=sql.Identifier(rt),
+        m=dangling("c"),
+        same=same,
+        nulled=nulled,
+        present_o=o_present,
+        om=dangling("o"),
+    )
+    return int(conn.execute(stmt).rowcount)
 
 
 def _bump_sequences(conn: Any, tables: list[str]) -> None:

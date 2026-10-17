@@ -333,6 +333,53 @@ def test_dangling_fks_are_pruned(store: Store, tmp_path: Path) -> None:
     assert counts["refs"] == 1 and counts["links"] == 0 and counts["_pruned"] == 1
 
 
+def test_prune_dedups_links_that_collapse_when_chunks_are_nulled(
+    store: Store, tmp_path: Path
+) -> None:
+    """Links differing only by pruned chunk ids used to raise a unique
+    violation on links_endpoints_relation_idx when the prune nulled them."""
+    assert store.dsn is not None
+    slice_path = tmp_path / "slice.jsonl"
+    meta = {
+        "version": seed.SLICE_VERSION,
+        "tree": ["refs", "links"],
+        "lookups": [],
+    }
+
+    def link(i: int, dst_chunk: int | None, rel: str) -> dict[str, Any]:
+        return {
+            "t": "links",
+            "r": {
+                "link_id": i,
+                "src_ref_id": 920001,
+                "dst_ref_id": 920002,
+                "dst_chunk_id": dst_chunk,
+                "relation": rel,
+                "set_by": "agent",
+            },
+        }
+
+    lines: list[dict[str, Any]] = [
+        {"_meta": meta},
+        {"t": "refs", "r": {"ref_id": 920001, "kind": "memory", "title": "a"}},
+        {"t": "refs", "r": {"ref_id": 920002, "kind": "memory", "title": "b"}},
+        link(920001, 777001, "cites"),  # two dangling twins -> one survivor
+        link(920002, 777002, "cites"),
+        link(920003, None, "related-to"),  # already-null row + a dangling twin
+        link(920004, 777003, "related-to"),
+    ]
+    slice_path.write_text(
+        "".join(json.dumps(x) + "\n" for x in lines), encoding="utf-8"
+    )
+    counts = seed.load_slice(store.dsn, slice_path, migrate=False)
+    assert counts["links"] == 2, counts
+    with psycopg.connect(store.dsn) as conn:
+        got = conn.execute(
+            "SELECT link_id, dst_chunk_id FROM links ORDER BY link_id"
+        ).fetchall()
+    assert got == [(920001, None), (920003, None)]
+
+
 @pytest.mark.parametrize("bad", [{"version": 99}, {}])
 def test_read_slice_refuses_an_unknown_version(
     tmp_path: Path, bad: dict[str, Any]
