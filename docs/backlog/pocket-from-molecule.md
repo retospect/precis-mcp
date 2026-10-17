@@ -174,6 +174,13 @@ station window and clearance.
   measure whose band requires at least the strain energy as
   stabilisation.
 
+**Requirement (Reto 2026-10-17, question 11):** the band is on the
+H-addition step, not plain binding: NH2 + H in the pocket must be
+downhill and low-barrier versus free (reaction energy and barrier, both
+compared with the free case). Exact form open pending literature
+(papers queued 2026-10-17); the binding-energy measure above is a
+placeholder until then.
+
 test: `tests/test_se_held_shape_pocket.py` (new) — NH3 minus one H
 gives a positive GFN2 strain energy; the vacancy direction is within 1°
 of the removed N–H; the pocket carries the keep-open region and the
@@ -189,6 +196,12 @@ loop; a cluster-cut helper beside
 
 **Input:** a pocket spec from slice 2 or 3; a candidate set (open
 question 2); an iteration cap.
+
+**Candidates (Reto 2026-10-17, question 2):** per station, choose R
+groups (hydroxyl/cyclodextrin-like hydrophilic, alkyl hydrophobic) and
+their positions on a wall-tethered carbon-ring scaffold with CH2
+separators. N/B substitution and pore-rim termination are alternatives,
+not v1-required.
 
 **Steps:** for each candidate wall, cut a cluster (wall atoms within a
 radius of the pocket, dangling bonds H-capped), place the molecule in
@@ -281,10 +294,23 @@ field, skills `precis-se-regions-help` and `precis-se-atomic-help`.
    somewhere: N/B substitution, pore-rim termination (OH, NH2,
    carbonyl), or pendants (nanoreactor-no-nh3 §T4). Which ones are in
    v1, and who generates them?
+   **Answered (wall chemistry).** Reto 2026-10-17: attach functional
+   groups to the inside of the tube: hydrophilic "sugar" bits (hydroxyl,
+   cyclodextrin-like) and hydrophobic "oil" bits (alkyl). Scaffold: a
+   carbon ring held inside the tube, inward-facing active groups on CH2
+   separators, e.g. CH2-CH(R)-CH(anchor-to-wall)-CH2-CH(R)-CH2-…,
+   anchored to the wall at some positions and carrying R pendants at
+   others. Design-and-simulate only; no synthesis route yet. N/B
+   substitution and pore-rim termination stay as alternatives, not
+   v1-required. Consequence: slice 4 (see there).
 3. **Overlap with T3/T4.** nanoreactor-no-nh3 plans T3 (a field stack
    in z, θ from station records) and T4 (pendant designer). Does this
    item replace T3 for the first stations, feed it, or sit beside it?
    Station records already promise ESP cubes and H-bond topology.
+   **Partly answered.** Reto 2026-10-17: a stack of tethered rings
+   along z is the long-run form of the T3 field stack
+   (nanoreactor-no-nh3), each ring defining what the molecule sees at
+   its station. This item feeds T3/T4 rather than replacing them.
 4. **Surface parameters.** vdW versus SES, the radius scale, probe
    radius, point density, and the default clearance.
 5. **DFT path and settings.** `struct_relax` `dft-*` rungs or
@@ -315,3 +341,9 @@ field, skills `precis-se-regions-help` and `precis-se-atomic-help`.
     as binding of the held fragment, or as the margin between held and
     relaxed NH2 in the same pocket (ts-stabilizing-pocket's differential
     form)?
+    **Answered (requirement).** Reto 2026-10-17: the pocket should
+    mechanochemically entice addition of the missing H: the held,
+    strained NH2 should make H uptake downhill and low-barrier. The
+    requirement is on the H-addition step (reaction energy and barrier
+    for NH2 + H in the pocket versus free), not plain binding energy.
+    Exact form open pending literature (papers queued 2026-10-17).

@@ -27,8 +27,8 @@ output.
 1. **backlog/pocket-from-molecule.md** — Reto 2026-10-17, top rank: the
    per-station pocket spec (NO attractive pocket, held NH2) and the
    GFN2 → MLIP → DFT realize loop that turns it into a tube wall. Draft;
-   its open questions (candidate chemistry, overlap with T3/T4) need a
-   `ready` pass first.
+   Q2 (tethered-ring wall chemistry) and Q11 (H-addition
+   requirement) answered 2026-10-17; the rest need a `ready` pass first.
 2. **backlog/nanoreactor-station-path-finder.md** — T1. The bare and
    theozyme tiers decide whether a drive is needed, and its station record
    is the contract every later tool reads. Still a draft: it needs a
