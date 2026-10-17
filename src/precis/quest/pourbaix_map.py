@@ -396,6 +396,55 @@ def _snap_edges(regions: list[dict[str, Any]], bnds: list[dict[str, Any]]) -> No
         lo_r["U_RHE_range"][1] = hi_r["U_RHE_range"][0] = edge
 
 
+def detached_label(s: dict[str, Any]) -> str:
+    """One ``che_sweep.skipped_detached`` entry as text — ``NOH*(9) on
+    mace:medium``, or ``NO*(3)+H*(1) on …`` for a co-adsorbed mixture."""
+    counts = s.get("counts")
+    who = (
+        "+".join(f"{k}*({v})" for k, v in counts.items())
+        if isinstance(counts, dict) and counts
+        else f"{s.get('adsorbate')}*({s.get('n')})"
+    )
+    return f"{who} on {s.get('model')}"
+
+
+def dropped_notes(sweep: dict[str, Any]) -> list[str]:
+    """What the stored sweep left out, one line per cause (gr491459): the
+    configurations that relaxed detached (not terminations, so not
+    anchors), the models dropped as uncorrected (gr486949) and the models
+    on another correction footing (gr489162). ``[]`` when nothing was
+    left out — a reader of the anchor count sees the rest by name."""
+    out: list[str] = []
+    detached = [s for s in sweep.get("skipped_detached") or [] if isinstance(s, dict)]
+    if detached:
+        out.append(
+            f"{len(detached)} detached configuration(s) dropped, not counted "
+            "as anchors: " + ", ".join(detached_label(s) for s in detached)
+        )
+    uncorrected = [str(m) for m in sweep.get("dropped_uncorrected") or []]
+    if uncorrected:
+        out.append(
+            "model(s) dropped as uncorrected (scanned without the correction "
+            "set the kept models applied): " + ", ".join(uncorrected)
+        )
+    other = [
+        r
+        for r in sweep.get("not_pooled") or []
+        if isinstance(r, dict) and str(r.get("model")) not in uncorrected
+    ]
+    if other:
+        out.append(
+            "model(s) not pooled (another correction footing): "
+            + ", ".join(
+                f"{r.get('model')} ({_job_handle(int(r['job']))})"
+                if isinstance(r.get("job"), int)
+                else str(r.get("model"))
+                for r in other
+            )
+        )
+    return out
+
+
 def build_map(
     jobs: list[dict[str, Any]],
     *,
@@ -480,6 +529,7 @@ def build_map(
         "sigma_e_eV": sweep.get("sigma_e_eV"),
         "n_models": n_models,
         "n_anchors": len(sweep.get("anchors") or []),
+        "dropped": dropped_notes(sweep),
         "regions": _regions(sweep, jobs, uncorrected) if sweep.get("envelope") else [],
         "boundaries": boundaries,
         "needs_anchor": [dict(b) for b in sweep.get("needs_anchor") or []],
@@ -605,6 +655,8 @@ def render_map(m: dict[str, Any]) -> str:
             f"pH-flat on RHE; the SHE view tilts {float(m.get('prefac_V_per_pH') or 0.0592):.3f} V/pH "
             f"(labelled at pH {m.get('pH')}). {m.get('n_anchors')} anchor(s)."
         )
+    for note in m.get("dropped") or []:
+        lines.append(f"dropped: {note}.")
     if m.get("regions"):
         lines.append("validity regions (resting termination per U interval):")
         for r in m["regions"]:
@@ -726,6 +778,8 @@ __all__ = [
     "build_map",
     "bulk_layer",
     "bulk_verdict",
+    "detached_label",
+    "dropped_notes",
     "maps_for_structure",
     "quest_maps",
     "render_map",

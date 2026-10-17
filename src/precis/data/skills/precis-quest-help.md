@@ -248,7 +248,9 @@ candidate structure that serves the quest: the stored `surface_coverage_scan`
 sweeps folded into validity regions per U interval (two bands per boundary —
 propagated and model-form, never summed), the bulk Pourbaix verdict as a
 labelled uncertain overlay, one map per footing (partitioned, never
-blended), and the `needs_anchor` ranking. Candidates without scans are
+blended), the `needs_anchor` ranking, and a `dropped:` line per cause for
+anchors the sweep left out (detached configurations, uncorrected or
+other-footing models). Candidates without scans are
 listed as `no anchors`. Same map on a structure
 (`view='pourbaix'` on `kind='structure'`) and as an SVG page at
 `/pourbaix/<handle>`.

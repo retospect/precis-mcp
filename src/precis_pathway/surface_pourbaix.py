@@ -963,19 +963,11 @@ def render_text(sweep_out: dict[str, Any]) -> str:
         )
     skipped = sweep_out.get("skipped_detached") or []
     if skipped:
-
-        def _skip(s: dict[str, Any]) -> str:
-            counts = s.get("counts")
-            who = (
-                "+".join(f"{k}*({v})" for k, v in counts.items())
-                if counts
-                else f"{s['adsorbate']}*({s['n']})"
-            )
-            return f"{who} on {s['model']}"
+        from precis.quest.pourbaix_map import detached_label
 
         lines.append(
             f"Dropped {len(skipped)} detached configuration(s), not counted as "
-            "anchors: " + ", ".join(_skip(s) for s in skipped) + "."
+            "anchors: " + ", ".join(detached_label(s) for s in skipped) + "."
         )
     for b in sweep_out["boundaries"]:
 

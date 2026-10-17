@@ -87,7 +87,11 @@ def pb_client(runtime_with_store, tmp_path) -> TestClient:
 
 
 def _seed_structure(
-    runtime_with_store, slug: str = "pd_map", *, with_scan: bool = True
+    runtime_with_store,
+    slug: str = "pd_map",
+    *,
+    with_scan: bool = True,
+    sweep: dict[str, Any] | None = None,
 ) -> int:
     hub = runtime_with_store.hub
     store = runtime_with_store.store
@@ -118,7 +122,7 @@ def _seed_structure(
                 "model": "m",
                 "engine_version": "0.24.0",
                 "corrections": None,
-                "che_sweep": _sweep(),
+                "che_sweep": _sweep() if sweep is None else sweep,
             },
         )
         store.add_tag(
@@ -151,6 +155,27 @@ def test_pourbaix_structure_page_shows_map_provenance_and_incomplete(
     # one model → the model-form band is absent and the page says incomplete
     assert "incomplete:" in text and "model-form" in text
     assert "uncorrected anchors" in text
+
+
+def test_pourbaix_structure_page_names_the_dropped_anchors(
+    pb_client: TestClient, runtime_with_store
+) -> None:
+    """gr491459: a sweep that skipped detached configurations says so on
+    the page beside the anchor count; a sweep that dropped nothing shows
+    no dropped line."""
+    sid = _seed_structure(runtime_with_store)
+    r = pb_client.get(f"/pourbaix/st{sid}")
+    assert "1 anchor(s)" in r.text and "pbx-dropped" not in r.text
+    sweep = _sweep()
+    sweep["skipped_detached"] = [
+        {"model": "m", "adsorbate": "NOH", "n": 9},
+        {"model": "m", "adsorbate": "NH2", "n": 9},
+    ]
+    sid = _seed_structure(runtime_with_store, "pd_detached", sweep=sweep)
+    text = pb_client.get(f"/pourbaix/st{sid}").text
+    assert "pbx-dropped" in text
+    assert "2 detached configuration(s) dropped" in text
+    assert "NOH*(9) on m" in text and "NH2*(9) on m" in text
 
 
 def test_pourbaix_structure_page_no_anchors(

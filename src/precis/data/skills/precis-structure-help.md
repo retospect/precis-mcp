@@ -602,8 +602,10 @@ parenting the job on it or on a todo under it): validity regions per U
 interval, every boundary with its propagated and model-form bands kept
 apart, plus the bulk Pourbaix verdict as a labelled uncertain overlay. One
 map per footing (anchor_key · engine · correction set — partitioned, never
-blended). `no anchors` until a scan lands; the same map as an SVG page at
-`/pourbaix/<handle>`.
+blended). A `dropped:` line names what the sweep left out of its anchor
+count: configurations that relaxed detached, models dropped as
+uncorrected, models on another correction footing. `no anchors` until a
+scan lands; the same map as an SVG page at `/pourbaix/<handle>`.
 
 ### The reaction staircase — `get(view='staircase')`
 

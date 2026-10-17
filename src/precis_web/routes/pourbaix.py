@@ -110,6 +110,8 @@ def _map_ctx(
         "scan_jobs": m.get("scan_jobs") or [],
         "sigma_e_eV": m.get("sigma_e_eV"),
         "incomplete": m.get("incomplete") or [],
+        "n_anchors": m.get("n_anchors"),
+        "dropped": m.get("dropped") or [],
         "u_window": m.get("U_RHE_window"),
         "bulk": m.get("bulk"),
         "regions": [
