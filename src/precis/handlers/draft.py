@@ -483,6 +483,27 @@ class DraftHandler(Handler):
 
     # ── get ──────────────────────────────────────────────────────────
 
+    def _chunk_of_selector(self, s: str) -> str:
+        """``<draft>~dc<N>`` → ``dc<N>``, checking the chunk belongs to that
+        draft. Canonical ``kind:identifier[~selector]`` form; the one parser
+        behind plain ``get`` and the eye ladder (gr495026)."""
+        head, _, sel = s.partition("~")
+        sel = sel.strip()
+        if not head.strip() or not _is_draft_chunk_handle(sel):
+            raise BadInput(
+                f"unknown draft selector {sel!r} in id={s!r}",
+                next="selector must be a chunk handle: get(kind='draft', id='dc<N>')",
+            )
+        head = head.strip()
+        m = re.fullmatch(r"dr(\d+)", head)
+        owner = self.store.get_ref(kind="draft", id=int(m.group(1))) if m else None
+        if owner is None:
+            owner = resolve_live_slug_ref(self.store, kind="draft", id=head)
+        chunk = self.store.drafts.get_draft_chunk(sel)
+        if chunk is None or int(chunk.ref_id) != int(owner.id):
+            raise NotFound(f"draft chunk {sel!r} not found in draft {head!r}")
+        return sel
+
     def eye(
         self,
         *,
@@ -496,6 +517,8 @@ class DraftHandler(Handler):
         parser decodes) renders directly, since the tree renderer resolves
         it itself. A whole draft has no eye — the shared path says so."""
         s = str(id or "").strip()
+        if "~" in s and _is_draft_chunk_handle(s.partition("~")[2]) and ".." not in s:
+            s = self._chunk_of_selector(s)
         if _is_draft_chunk_handle(s) and handle_registry.parse(s) is None:
             if ".." in s:
                 raise BadInput(
@@ -503,7 +526,7 @@ class DraftHandler(Handler):
                     next="drop the -B..A suffix, or omit extent= to read the window",
                 )
             return Response(body=eye_body(self.store, s, extent, q=q, ring=ring))
-        return super().eye(id=id, extent=extent, q=q, ring=ring)
+        return super().eye(id=s or id, extent=extent, q=q, ring=ring)
 
     def find_in_ref(
         self,
@@ -606,28 +629,7 @@ class DraftHandler(Handler):
             return self._render_list()
         s = str(id).strip()
         if "~" in s:
-            # Canonical ``kind:identifier[~selector]`` form: ``<draft>~dc<N>``.
-            # The selector must be a chunk handle inside that draft; the
-            # chunk then renders exactly as ``id='dc<N>'`` does.
-            head, _, sel = s.partition("~")
-            sel = sel.strip()
-            if not head.strip() or not _is_draft_chunk_handle(sel):
-                raise BadInput(
-                    f"unknown draft selector {sel!r} in id={s!r}",
-                    next="selector must be a chunk handle: "
-                    "get(kind='draft', id='dc<N>')",
-                )
-            head = head.strip()
-            m = re.fullmatch(r"dr(\d+)", head)
-            owner = self.store.get_ref(kind="draft", id=int(m.group(1))) if m else None
-            if owner is None:
-                owner = resolve_live_slug_ref(self.store, kind="draft", id=head)
-            chunk = self.store.drafts.get_draft_chunk(sel)
-            if chunk is None or int(chunk.ref_id) != int(owner.id):
-                raise NotFound(
-                    f"draft chunk {sel!r} not found in draft {head.strip()!r}"
-                )
-            s = sel
+            s = self._chunk_of_selector(s)
         if _is_draft_chunk_handle(s):
             # Turn-taking persona threads eye — render this node at a focus
             # extent (``extent=`` on the MCP door, a ladder label on
