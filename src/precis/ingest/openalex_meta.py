@@ -41,7 +41,7 @@ log = logging.getLogger(__name__)
 
 _OPENALEX_WORKS = "https://api.openalex.org/works"
 _TIMEOUT_S = 30.0
-_UA = "precis-mcp/8.0 (+https://github.com/retostamm/precis-mcp; mailto:{email})"
+_UA = "precis-mcp/8.0 (+https://github.com/retostamm/precis-mcp{contact})"
 
 #: Bump when the shape of the ``meta.openalex`` block changes so a backfill
 #: sweep (``meta->openalex->>'v' != current``) can re-claim the corpus.
@@ -49,7 +49,8 @@ ENRICH_VERSION = 1
 
 
 def _ua(email: str) -> str:
-    return _UA.format(email=email or "noreply@example.com")
+    """Honest UA; no contact configured -> no mailto, never a made-up one."""
+    return _UA.format(contact=f"; mailto:{email}" if email else "")
 
 
 def fetch_openalex_work(

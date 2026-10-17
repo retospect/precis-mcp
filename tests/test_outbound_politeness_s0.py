@@ -26,9 +26,9 @@ def test_sync_sleeps_the_default_delay_between_artifacts(monkeypatch: Any) -> No
     monkeypatch.setattr(
         mirror, "ingest_one", lambda *a, **k: SimpleNamespace(verified=True)
     )
-    store = SimpleNamespace(mirror_codes=lambda: set())
+    store: Any = SimpleNamespace(mirror_codes=lambda: set())
     slept: list[float] = []
-    res = mirror.sync(store, limit=10, sleep=slept.append)  # type: ignore[arg-type]
+    res = mirror.sync(store, limit=10, sleep=slept.append)
     assert res.fetched == 3
     assert slept == [mirror.FETCH_DELAY_S] * 3
     assert all(s >= 1.0 for s in slept)
@@ -85,7 +85,8 @@ def test_core_request_carries_precis_ua_not_browser(monkeypatch: Any) -> None:
                     200, json={"results": []}, request=httpx.Request("GET", url)
                 )
 
-            client.get = get  # type: ignore[assignment]
+            loose: Any = client
+            loose.get = get
             yield client
 
     monkeypatch.setattr(fetch_oa, "http_client", spy)
@@ -127,3 +128,11 @@ def test_si_discovery_ua_never_fake_mailto(monkeypatch: Any, email: str) -> None
     ua = seen[0] or ""
     assert "example.com" not in ua and "noreply" not in ua
     assert ("mailto:me@lab.test" in ua) == bool(email)
+
+
+def test_openalex_meta_ua_never_fake_mailto() -> None:
+    from precis.ingest import openalex_meta
+
+    assert "mailto" not in openalex_meta._ua("")
+    assert "example.com" not in openalex_meta._ua("")
+    assert "mailto:me@lab.test" in openalex_meta._ua("me@lab.test")
