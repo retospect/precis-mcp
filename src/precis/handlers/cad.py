@@ -81,7 +81,7 @@ from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.format import render_agent_table
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
-from precis.protocol import Handler, KindSpec
+from precis.protocol import ArgsSpec, Handler, KindSpec
 from precis.response import Response
 from precis.store._cad_ops import cad_source_sha
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
@@ -368,8 +368,8 @@ def _convert_state_value(name: str, kind: str, value: Any) -> Any:
 class CadHandler(Handler):
     #: args= keys each verb reads out of ``args`` (gr475332); dispatch
     #: rejects any other key. Keep in step with the verb bodies.
-    ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
-        "get": frozenset(
+    ARGS: ClassVar[dict[str, ArgsSpec]] = {
+        "get": ArgsSpec(
             {
                 "a",
                 "b",

@@ -41,7 +41,7 @@ from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
-from precis.protocol import Handler, KindSpec, tolerates_extra_kwargs
+from precis.protocol import ArgsSpec, Handler, KindSpec, tolerates_extra_kwargs
 from precis.response import Response
 from precis.store import Store
 from precis.utils import handle_registry
@@ -66,8 +66,8 @@ _SLUG_LEN_DEFAULT = 4
 class RandomHandler(Handler):
     #: args= keys each verb reads out of ``args`` (gr475332); dispatch
     #: rejects any other key. Keep in step with the verb bodies.
-    ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
-        "get": frozenset({"len", "alphabet"}),
+    ARGS: ClassVar[dict[str, ArgsSpec]] = {
+        "get": ArgsSpec({"len", "alphabet"}),
     }
 
     #: generates values; stores nothing: the agent-write secret gate (dispatch) skips this kind.

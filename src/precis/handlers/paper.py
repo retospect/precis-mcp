@@ -59,7 +59,7 @@ from precis.handlers._slug_ref_shared import (
 )
 from precis.ingest.cards import rewrite_cards
 from precis.ingest.text_chunker import CHUNKER_VERSION as _PAPER_CHUNKER_VERSION
-from precis.protocol import Handler, KindSpec
+from precis.protocol import ArgsSpec, Handler, KindSpec
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref, Store, Tag
 from precis.store._identifiers_ops import detect_identifier_scheme
@@ -309,13 +309,13 @@ class PaperHandler(Handler):
     #: concrete id scans the paper's chunks; ``id=None`` keeps its older
     #: meaning (delegate to ``search``).
     supports_find_in_ref = True
-    ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
+    ARGS: ClassVar[dict[str, ArgsSpec]] = {
         # Every acquire knob — ``args={'doi': …, 'verify': False}`` is the
         # spelling the slim schema pushes (kind-specific fields ride
         # args=), and acquire's own BadInput hint names verify=/title=.
         # Rejecting them made the advertised recovery path uncallable
         # (gr483930 / gr484234).
-        "put": frozenset(
+        "put": ArgsSpec(
             {
                 "pdf_url",
                 "identifier",
@@ -330,7 +330,7 @@ class PaperHandler(Handler):
             }
         ),
         # edit takes ``args`` only for subclass hooks (_edit_args); none here.
-        "edit": frozenset(),
+        "edit": ArgsSpec(),
     }
 
     stamps_recall = True

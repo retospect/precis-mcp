@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 from abc import ABC
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
@@ -264,6 +265,76 @@ class KindSpec:
         return getattr(self, f"supports_{verb}")
 
 
+class UndeclaredArgsKey(KeyError):
+    """A handler read an ``args=`` key its :class:`ArgsSpec` does not declare."""
+
+
+class ArgsSpec:
+    """The ``args=`` keys one verb reads, declared once.
+
+    ``Handler.ARGS[verb]`` holds one spec; the class's ``ARGS_KEYS`` (what
+    dispatch gates on and what error messages list) is derived from it, so
+    the two cannot drift. Dispatch hands the handler an :class:`ArgsView`
+    over the caller's dict, so a handler that reads a key it never declared
+    raises instead of silently seeing ``None``.
+
+    Build from names (``ArgsSpec({"a", "b"})``) or from ``{name: type}``;
+    the types document the key and are not enforced.
+    """
+
+    __slots__ = ("keys", "types")
+
+    def __init__(self, keys: Iterable[str] | Mapping[str, Any] = ()) -> None:
+        self.keys: frozenset[str] = frozenset(keys)
+        self.types: Mapping[str, Any] = dict(keys) if isinstance(keys, Mapping) else {}
+
+    def view(self, args: Mapping[str, Any], label: str = "args") -> ArgsView:
+        return ArgsView(args, self.keys, label)
+
+
+class ArgsView(dict[str, Any]):
+    """The caller's ``args=`` dict, readable only through declared keys.
+
+    Reading (``[]``, ``get``, ``in``, ``pop``) an undeclared key raises
+    :class:`UndeclaredArgsKey`; iteration, ``len`` and ``dict(view)`` see
+    the real contents.
+    """
+
+    def __init__(
+        self, data: Mapping[str, Any], declared: frozenset[str], label: str = "args"
+    ) -> None:
+        super().__init__(data)
+        self._declared = declared
+        self._label = label
+
+    def _check(self, key: object) -> None:
+        if key not in self._declared:
+            raise UndeclaredArgsKey(
+                f"{self._label} read of undeclared key {key!r}; add it to the "
+                f"handler's ARGS spec (declared: {sorted(self._declared)})"
+            )
+
+    def __getitem__(self, key: str) -> Any:
+        self._check(key)
+        return super().__getitem__(key)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        self._check(key)
+        return super().get(key, default)
+
+    def __contains__(self, key: object) -> bool:
+        self._check(key)
+        return super().__contains__(key)
+
+    def pop(self, key: str, *default: Any) -> Any:
+        self._check(key)
+        return super().pop(key, *default)
+
+    def setdefault(self, key: str, default: Any = None) -> Any:
+        self._check(key)
+        return super().setdefault(key, default)
+
+
 class Handler(ABC):
     """Base for all handlers.
 
@@ -336,7 +407,17 @@ class Handler(ABC):
     #: reads out of ``args``; dispatch rejects anything else with a
     #: ``BadInput`` naming these (gr475332). A verb absent here is not
     #: validated.
+    #:
+    #: Derived: a subclass declares ``ARGS`` (verb -> :class:`ArgsSpec`) and
+    #: ``__init_subclass__`` fills ``ARGS_KEYS`` from it; one without
+    #: ``ARGS`` inherits its parent's.
     ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {}
+    ARGS: ClassVar[dict[str, ArgsSpec]] = {}
+
+    def __init_subclass__(cls, **kw: Any) -> None:
+        super().__init_subclass__(**kw)
+        if "ARGS" in cls.__dict__:
+            cls.ARGS_KEYS = {verb: spec.keys for verb, spec in cls.ARGS.items()}
 
     #: Extra ``search(sort=…)`` values this handler accepts beyond the
     #: generic vocabulary. The surface check in ``tools/core.py`` unions

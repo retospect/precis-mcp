@@ -35,7 +35,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from precis.dispatch import Hub
 from precis.errors import BadInput
-from precis.protocol import Handler, KindSpec
+from precis.protocol import ArgsSpec, Handler, KindSpec
 from precis.response import Response
 
 Clock = Callable[[], datetime]
@@ -48,8 +48,8 @@ _NEXT_CONVERT = "get(kind='time', q='now', args={'to': 'Asia/Tokyo'})"
 class TimeHandler(Handler):
     #: args= keys each verb reads out of ``args`` (gr475332); dispatch
     #: rejects any other key. Keep in step with the verb bodies.
-    ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
-        "get": frozenset({"from", "to", "format"}),
+    ARGS: ClassVar[dict[str, ArgsSpec]] = {
+        "get": ArgsSpec({"from", "to", "format"}),
     }
 
     #: clock/timestamp arithmetic; stores nothing: the agent-write secret gate (dispatch) skips this kind.

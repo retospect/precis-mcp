@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput
 from precis.handlers._mode_help import require_mode
-from precis.protocol import Handler, KindSpec
+from precis.protocol import ArgsSpec, Handler, KindSpec
 from precis.response import Response
 from precis.store.types import ChunkInsert
 from precis.utils import handle_registry
@@ -119,8 +119,8 @@ def _lookup(store: Any, ident: str) -> Any:
 class PathwayHandler(Handler):
     #: args= keys each verb reads out of ``args`` (gr475332); dispatch
     #: rejects any other key. Keep in step with :func:`_point_args`.
-    ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
-        "get": frozenset({"U", "pH", "point"}),
+    ARGS: ClassVar[dict[str, ArgsSpec]] = {
+        "get": ArgsSpec({"U", "pH", "point"}),
     }
 
     spec: ClassVar[KindSpec] = KindSpec(

@@ -41,7 +41,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from precis.errors import BadInput
 from precis.handlers.paper import PaperHandler
-from precis.protocol import KindSpec
+from precis.protocol import ArgsSpec, KindSpec
 
 if TYPE_CHECKING:
     from precis.response import Response
@@ -112,8 +112,8 @@ class CfpHandler(PaperHandler):
     # (workers/cfp_watch.py); ``deadline``/``opens_on`` are the typed
     # dates the kind exists for (gr462088 slice 1). All live in
     # ``refs.meta``.
-    ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
-        "edit": frozenset({"source_url", "deadline", "opens_on"}),
+    ARGS: ClassVar[dict[str, ArgsSpec]] = {
+        "edit": ArgsSpec({"source_url", "deadline", "opens_on"}),
     }
 
     #: Queryless ``search(kind='cfp')`` sorts by deadline — a call's

@@ -9,15 +9,17 @@ rejects anything else with the same ``BadInput`` shape as paper.
 
 from __future__ import annotations
 
+import ast
 import importlib
 import inspect
 import pkgutil
+import textwrap
 from importlib.metadata import entry_points
 
 import pytest
 
 import precis.handlers as handlers_pkg
-from precis.protocol import Handler
+from precis.protocol import ArgsSpec, Handler, UndeclaredArgsKey
 from precis.runtime import PrecisRuntime
 
 #: (kind, verb) for every in-repo handler verb that declares ``args``.
@@ -200,3 +202,76 @@ def test_unknown_args_key_no_comment_hint_off_comment_door(
     )
     assert "[error:BadInput]" in out, out
     assert "to comment:" not in out, out
+
+
+def test_args_keys_derive_from_args_spec() -> None:
+    """Every ``ARGS_KEYS`` is built from the class's ``ARGS`` specs; none is
+    a hand-written frozenset that can drift from them."""
+    for kind, cls in _KIND_CLASS.items():
+        if "ARGS" in cls.__dict__:
+            assert {v: s.keys for v, s in cls.ARGS.items()} == cls.ARGS_KEYS, kind
+        else:
+            assert "ARGS_KEYS" not in cls.__dict__, f"{kind}: ARGS_KEYS without ARGS"
+
+
+def test_args_view_rejects_undeclared_reads() -> None:
+    view = ArgsSpec({"a": int, "b": str}).view({"a": 1}, "x.get args=")
+    assert view["a"] == 1
+    assert view.get("b") is None
+    assert "b" not in view
+    assert dict(view) == {"a": 1}
+    for read in (
+        lambda: view["c"],
+        lambda: view.get("c"),
+        lambda: "c" in view,
+        lambda: view.pop("c", None),
+        lambda: view.setdefault("c", 1),
+    ):
+        with pytest.raises(UndeclaredArgsKey):
+            read()
+
+
+def _literal_args_reads(fn: ast.AST) -> set[str]:
+    """String literals a verb body reads from its ``args`` parameter."""
+    out: set[str] = set()
+    for node in ast.walk(fn):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in ("get", "pop")
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "args"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ):
+            out.add(node.args[0].value)
+        elif (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "args"
+            and isinstance(node.slice, ast.Constant)
+            and isinstance(node.slice.value, str)
+        ):
+            out.add(node.slice.value)
+        elif (
+            isinstance(node, ast.Compare)
+            and isinstance(node.left, ast.Constant)
+            and isinstance(node.left.value, str)
+            and any(isinstance(op, ast.In | ast.NotIn) for op in node.ops)
+            and any(
+                isinstance(c, ast.Name) and c.id == "args" for c in node.comparators
+            )
+        ):
+            out.add(node.left.value)
+    return out
+
+
+@pytest.mark.parametrize(("kind", "verb"), PASSTHROUGH)
+def test_verb_body_reads_only_declared_keys(kind: str, verb: str) -> None:
+    """A literal ``args.get('k')`` / ``args['k']`` / ``'k' in args`` in the
+    verb body must be a declared key (the static half of ``ArgsView``)."""
+    cls = _KIND_CLASS[kind]
+    tree = ast.parse(textwrap.dedent(inspect.getsource(cls.__dict__[verb])))
+    undeclared = _literal_args_reads(tree) - cls.ARGS_KEYS[verb]
+    assert not undeclared, f"{kind}.{verb} reads undeclared args keys {undeclared}"

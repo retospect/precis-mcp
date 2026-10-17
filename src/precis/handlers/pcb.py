@@ -138,7 +138,7 @@ from precis.pcb.capabilities import CapabilityRow, capability_for
 from precis.pcb.footprint import fetch_footprint
 from precis.pcb.landpattern import rotate_offset
 from precis.pcb.rules import NetRules
-from precis.protocol import Handler, KindSpec
+from precis.protocol import ArgsSpec, Handler, KindSpec
 from precis.response import Response
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
 from precis.store._pcb_ops import (
@@ -570,8 +570,8 @@ class JudgeReport:
 class PcbHandler(Handler):
     #: args= keys each verb reads out of ``args`` (gr475332); dispatch
     #: rejects any other key. Keep in step with the verb bodies.
-    ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
-        "put": frozenset(
+    ARGS: ClassVar[dict[str, ArgsSpec]] = {
+        "put": ArgsSpec(
             {
                 "op",
                 "components",
@@ -626,7 +626,7 @@ class PcbHandler(Handler):
                 "limit",
             }
         ),
-        "get": frozenset(
+        "get": ArgsSpec(
             {
                 "a",
                 "b",

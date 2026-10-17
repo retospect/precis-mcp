@@ -67,7 +67,7 @@ from precis.handlers._prio_tag import PRIO_TAG_TO_INT, split_prio, validate_prio
 from precis.handlers._request_state import RequestState
 from precis.handlers._tag_redirect import redirect_long_tag_values
 from precis.handlers.plaintext import _require_find_and_text
-from precis.protocol import KindSpec
+from precis.protocol import ArgsSpec, KindSpec
 from precis.response import Response
 from precis.store import Ref, Tag
 from precis.store.types import TODO_BODY_KIND, ChunkInsert
@@ -260,9 +260,9 @@ class TodoHandler(NumericRefHandler):
     owns_under = True
     #: args= keys each verb reads out of ``args`` (gr475332); dispatch
     #: rejects any other key. Keep in step with the verb bodies.
-    ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
-        "search": frozenset({"under"}),
-        "delete": tl.DELETE_ARGS_KEYS,
+    ARGS: ClassVar[dict[str, ArgsSpec]] = {
+        "search": ArgsSpec({"under"}),
+        "delete": ArgsSpec(tl.DELETE_ARGS_KEYS),
     }
     #: ``put(id=N, text=...)`` appends a comment (the unknown-args= refusal
     #: points at it, gr478557).

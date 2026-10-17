@@ -42,7 +42,7 @@ from precis.handlers.paper import PaperHandler
 from precis.pcb import jlc_api
 from precis.pcb._http import VendorError
 from precis.pcb.datasheets import datasheet_state, enqueue_facts_one, enqueue_one
-from precis.protocol import KindSpec
+from precis.protocol import ArgsSpec, KindSpec
 from precis.response import Response
 from precis.utils.edit_resolve import normalize_dry_run
 from precis.utils.link_tag_ops import apply_link_ops
@@ -125,9 +125,9 @@ class DatasheetHandler(PaperHandler):
     # put() is a datasheet pull, not a paper acquire: its own args keys
     # (``path`` is accepted only to refuse it with a hint), the rest
     # inherited from PaperHandler.
-    ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
-        **PaperHandler.ARGS_KEYS,
-        "put": frozenset({"url", "part", "path"}),
+    ARGS: ClassVar[dict[str, ArgsSpec]] = {
+        **PaperHandler.ARGS,
+        "put": ArgsSpec({"url", "part", "path"}),
     }
 
     def __init__(self, *, hub: Hub) -> None:

@@ -56,7 +56,7 @@ from precis.errors import BadInput, Internal, NotFound, Unsupported
 from precis.format import render_agent_table
 from precis.handlers._placement import RESERVED_PARENT_REL, place_ref
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
-from precis.protocol import Handler, KindSpec
+from precis.protocol import ArgsSpec, Handler, KindSpec
 from precis.response import Response
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
 from precis.structure import (
@@ -706,10 +706,10 @@ def card_text(title: str, scene: Scene, description: str = "") -> str:
 class StructureHandler(Handler):
     #: args= keys each verb reads out of ``args`` (gr475332); dispatch
     #: rejects any other key. Keep in step with the verb bodies.
-    ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
-        "put": frozenset({"cell", "ops", "description"}),
-        "edit": frozenset({"ops"}),
-        "get": frozenset(
+    ARGS: ClassVar[dict[str, ArgsSpec]] = {
+        "put": ArgsSpec({"cell", "ops", "description"}),
+        "edit": ArgsSpec({"ops"}),
+        "get": ArgsSpec(
             {
                 "source",
                 "q",

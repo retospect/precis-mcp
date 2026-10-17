@@ -46,7 +46,7 @@ from precis.handlers._slug_ref_shared import (
     render_slug_ref_list,
     resolve_live_slug_ref,
 )
-from precis.protocol import Handler, KindSpec
+from precis.protocol import ArgsSpec, Handler, KindSpec
 from precis.response import Response
 from precis.store import Ref
 from precis.store._draft_ops import content_sha
@@ -336,9 +336,9 @@ class DraftHandler(Handler):
 
     #: args= keys each verb reads out of ``args`` (gr475332); dispatch
     #: rejects any other key. Keep in step with the verb bodies.
-    ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
-        "get": frozenset({"limit"}),
-        "edit": frozenset({"char_target"}),
+    ARGS: ClassVar[dict[str, ArgsSpec]] = {
+        "get": ArgsSpec({"limit"}),
+        "edit": ArgsSpec({"char_target"}),
     }
 
     spec: ClassVar[KindSpec] = KindSpec(

@@ -49,7 +49,7 @@ from precis.handlers._mode_help import require_mode
 from precis.handlers._numeric_ref import _BASE_VIEWS, NumericRefHandler
 from precis.handlers._prio_tag import PRIO_TAG_TO_INT, split_prio, validate_prio
 from precis.handlers._request_state import RequestState
-from precis.protocol import KindSpec
+from precis.protocol import ArgsSpec, KindSpec
 from precis.quest import weave_tick as _weave_tick
 from precis.quest.logbook import (
     BY_VALUES as _BY_VALUES,
@@ -579,8 +579,8 @@ _PUT_PRIO: RequestState[int | None] = RequestState("precis_quest_put_prio", None
 class QuestHandler(NumericRefHandler):
     #: args= keys each verb reads out of ``args`` (gr475332); dispatch
     #: rejects any other key. Keep in step with the verb bodies.
-    ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
-        "get": frozenset({"budget"}),
+    ARGS: ClassVar[dict[str, ArgsSpec]] = {
+        "get": ArgsSpec({"budget"}),
     }
 
     spec: ClassVar[KindSpec] = KindSpec(

@@ -123,7 +123,7 @@ from precis.design import states as design_states
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.format import render_agent_table
-from precis.protocol import Handler, KindSpec
+from precis.protocol import ArgsSpec, Handler, KindSpec
 from precis.response import Response
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
 from precis.utils.embed_query import embed_query
@@ -279,8 +279,8 @@ class SeHandler(Handler):
     #: rejects any other key. ``get`` is the union of ``_VIEW_ARGS`` (a test
     #: pins that); ``put`` mirrors ``_PUT_PAYLOAD_KEYS``; ``edit`` reads only
     #: ``ops`` from its payload.
-    ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
-        "get": frozenset(
+    ARGS: ClassVar[dict[str, ArgsSpec]] = {
+        "get": ArgsSpec(
             {
                 "state",
                 "name",
@@ -313,8 +313,8 @@ class SeHandler(Handler):
                 "prefunits",
             }
         ),
-        "put": frozenset({"description", "ops", "scenario", "prefunits"}),
-        "edit": frozenset({"ops", "prefunits"}),
+        "put": ArgsSpec({"description", "ops", "scenario", "prefunits"}),
+        "edit": ArgsSpec({"ops", "prefunits"}),
     }
 
     spec: ClassVar[KindSpec] = KindSpec(

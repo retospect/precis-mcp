@@ -58,7 +58,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from precis.errors import BadInput, NotFound, Unsupported, Upstream
 from precis.handlers._cache_base import CacheBackedHandler, FetchResult
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
-from precis.protocol import KindSpec
+from precis.protocol import ArgsSpec, KindSpec
 from precis.response import Response
 from precis.store.types import ChunkInsert
 from precis.structure import OpError, apply_ops
@@ -207,8 +207,8 @@ class EstimateHandler(CacheBackedHandler):
 
     #: args= keys each verb reads out of ``args`` (gr475332); dispatch
     #: rejects any other key. Keep in step with ``_get_structure``.
-    ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
-        "get": frozenset({"ops", "quest", "against"}),
+    ARGS: ClassVar[dict[str, ArgsSpec]] = {
+        "get": ArgsSpec({"ops", "quest", "against"}),
     }
 
     provider: ClassVar[str] = "estimate"

@@ -43,6 +43,7 @@ from precis.errors import BadInput, Denied, Internal, NotFound, PrecisError, Uns
 from precis.protocol import (
     _ALL_VERBS,
     TOLERATES_EXTRA_KWARGS_ATTR,
+    ArgsView,
     Handler,
     Verb,
 )
@@ -2287,7 +2288,13 @@ class DispatchMixin(RuntimeShape):
                             f"its args= keys are listed below",
                             options=_typed_kwargs(type(handler), verb, declared),
                         )
-                args["args"] = dict(extras)
+                # Reads go through ``ArgsView``: a key the handler never
+                # declared raises instead of reading back as None.
+                args["args"] = (
+                    ArgsView(extras, declared, f"{kind}.{verb} args=")
+                    if declared is not None
+                    else dict(extras)
+                )
             else:
                 unknown = self._unknown_extras(method, extras)
                 if unknown:

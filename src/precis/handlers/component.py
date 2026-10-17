@@ -90,7 +90,7 @@ from precis.handlers._value_entity import (
 from precis.handlers._value_entity import (
     fmt_conditions as _fmt_conditions,
 )
-from precis.protocol import KindSpec
+from precis.protocol import ArgsSpec, KindSpec
 from precis.response import Response
 from precis.store._component_ops import (
     ComponentCategoryRow,
@@ -130,9 +130,9 @@ _VIEWS: tuple[str, ...] = (
 class ComponentHandler(ValueEntityHandler):
     #: args= keys each verb reads out of ``args`` (gr475332); dispatch
     #: rejects any other key. Keep in step with the verb bodies.
-    ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
-        "put": frozenset({"supplier_part_number"}),
-        "get": frozenset({"category_id", "parameters"}),
+    ARGS: ClassVar[dict[str, ArgsSpec]] = {
+        "put": ArgsSpec({"supplier_part_number"}),
+        "get": ArgsSpec({"category_id", "parameters"}),
     }
 
     spec: ClassVar[KindSpec] = KindSpec(

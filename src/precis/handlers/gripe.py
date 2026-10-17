@@ -46,7 +46,7 @@ from precis.handlers._numeric_ref import (
 )
 from precis.handlers._prio_tag import PRIO_TAG_TO_INT, split_prio, validate_prio
 from precis.handlers._request_state import RequestState
-from precis.protocol import KindSpec
+from precis.protocol import ArgsSpec, KindSpec
 from precis.response import Response
 from precis.store import Tag
 from precis.store.types import Ref
@@ -103,8 +103,8 @@ class GripeHandler(NumericRefHandler):
     )
 
     #: args= keys each verb reads out of ``args`` (gr475332).
-    ARGS_KEYS: ClassVar[dict[str, frozenset[str]]] = {
-        "delete": tl.DELETE_ARGS_KEYS,
+    ARGS: ClassVar[dict[str, ArgsSpec]] = {
+        "delete": ArgsSpec(tl.DELETE_ARGS_KEYS),
     }
     #: ``put(id=N, text=...)`` appends a comment (the unknown-args= refusal
     #: points at it, gr478557).
