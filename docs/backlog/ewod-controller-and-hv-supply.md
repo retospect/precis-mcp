@@ -636,11 +636,11 @@ URLs below are the catalog's `datasheet_url` for each part.
 
 | Role | Part | LCSC | Stock | Key ratings | Datasheet |
 |---|---|---|---|---|---|
-| PTC fuse | BHFUSE **BSMD1206-050-6V** | **C883122** | 47,907 | 1206, hold 0.5 A, trip 1 A, 6 V max, 100 A max fault, 150 mΩ min / 700 mΩ max | [LCSC PDF](https://www.lcsc.com/datasheet/lcsc_datasheet_2305121423_BHFUSE-BSMD1206-050-6V_C883122.pdf), pull pending |
-| VBUS TVS | MDD **SMF5.0A** | **C193402** | 557,643 | SOD-123FL, unidirectional, 5 V standoff, 6.4 V min breakdown, 9.2 V clamp at 21.7 A, 200 W (10/1000 µs), 400 µA leakage | [LCSC PDF](https://www.lcsc.com/datasheet/lcsc_datasheet_2308231016_MDD-Microdiode-Semiconductor-SMF5-0A_C193402.pdf), pull pending |
-| Load switch (optional) | TI **TPS22918DBVR** | **C131941** | 60,734 | SOT-23-6, 1–5.5 V, 2 A, 53 mΩ, active-high, CT pin sets the turn-on slew | [LCSC PDF](https://www.lcsc.com/datasheet/lcsc_datasheet_2303021300_Texas-Instruments-TPS22918DBVR_C131941.pdf), pull pending |
-| PTC alternate | nSMD050 | C69688 | 22,290 | 1206, hold 0.5 A, 6 V | not fetched |
-| TVS alternate | MDD-class SMF5.0A | C169426 | 51,916 | SOD-123FL, same family footprint | not fetched |
+| PTC fuse | BHFUSE **BSMD1206-050-6V** | **C883122** | 47,907 | 1206, hold 0.5 A, trip 1 A, 6 V max, 100 A max fault, 150 mΩ min / 700 mΩ max | [LCSC PDF](https://www.lcsc.com/datasheet/lcsc_datasheet_2305121423_BHFUSE-BSMD1206-050-6V_C883122.pdf); `put(kind='datasheet')` pull failed 2026-10-17 (`not_pdf`: LCSC serves HTML to the worker), operator drop needed |
+| VBUS TVS | MDD **SMF5.0A** | **C193402** | 557,643 | SOD-123FL, unidirectional, 5 V standoff, 6.4 V min breakdown, 9.2 V clamp at 21.7 A, 200 W (10/1000 µs), 400 µA leakage | [LCSC PDF](https://www.lcsc.com/datasheet/lcsc_datasheet_2308231016_MDD-Microdiode-Semiconductor-SMF5-0A_C193402.pdf); `put(kind='datasheet')` pull failed 2026-10-17 (`not_pdf`: LCSC serves HTML to the worker), operator drop needed |
+| Load switch (optional) | TI **TPS22918DBVR** | **C131941** | 60,734 | SOT-23-6, 1–5.5 V, 2 A, 53 mΩ, active-high, CT pin sets the turn-on slew | pulled from `ti.com/lit/ds/symlink/tps22918.pdf` (the LCSC URL returned HTML): `get(kind='datasheet', id='instruments26')` |
+| PTC alternate | nSMD050 | C69688 | 22,290 | 1206, hold 0.5 A, 6 V | pull failed 2026-10-17 (`not_pdf`, LCSC HTML), operator drop needed |
+| TVS alternate | MDD-class SMF5.0A | C169426 | 51,916 | SOD-123FL, same family footprint | pull failed 2026-10-17 (`not_pdf`, LCSC HTML), operator drop needed |
 
 The fuse hold current (0.5 A) sits above the ~300 mA budget and below the
 USB 2.0 900 mA limit; the 6 V rating clears VBUS at 5.25 V. The TPS22918's
@@ -804,8 +804,12 @@ is refused (table top band); existing electrode-gap class behaviour
 BLOCKED on footprint intake.** Pro Mini LOCAL footprint (verified drawing);
 `op='footprint'` intake for: USB-C 16-pin receptacle, the VBUS PTC fuse,
 VBUS TVS and optional load switch (ruling 22 table), CH340N (ruling 17),
-ESD array, LEDs. C-numbers for the CH340N, ESD array and LEDs are chosen at
-intake. There is no PD controller and no buck (ruling 22). Netlist per
+ESD array, LEDs. Footprints cached 2026-10-17 (part_footprints 13 → 24): USB-C
+C2765186, CH340N C2977777, ESD array C7519 (USBLC6-2SC6), PTC C883122, TVS
+C193402, load switch C131941, transformer C19191684, 0603 5.1 kΩ C23186,
+10 kΩ C25804, 100 nF C14663, LED C12624. The 0603 passives and the LED
+(C23186, C25804, C14663, C12624) are the builder's picks, **proposed, Reto
+decides**; the CH340N and ESD array picks likewise. Alternates C69688/C169426 not cached. There is no PD controller and no buck (ruling 22). Netlist per
 rulings 12/22: CC1 and CC2 each carry a 5.1 kΩ pull-down to GND; VBUS
 reaches the 5 V rail only through the PTC (then the optional load switch),
 with the TVS from VBUS to GND; the bridge's VCC is on the 5 V rail. The
