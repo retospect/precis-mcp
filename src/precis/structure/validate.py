@@ -240,7 +240,7 @@ def validate(scene: Scene) -> list[ValidationIssue]:
 #: Bump when ``validate``'s rules or :mod:`vsepr`'s advisory tier change
 #: such that a memoised result could differ from a fresh run — the same
 #: roll-forward contract as ``cache.RELAX_CODE_VERSION``.
-VALIDATE_CODE_VERSION = "1"
+VALIDATE_CODE_VERSION = "2"
 
 #: ``findings_cached`` LRU bound — far beyond any realistic working set of
 #: distinct structures one process re-renders.

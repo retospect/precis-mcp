@@ -429,8 +429,8 @@ corners poking into the seam end) are trimmed and re-capped
 hosts sit on an authored interface (port rim, seam, `bond` endpoint) and
 cannot be trimmed, the deeper-clashing host stays uncapped
 (`terminate.bare` WARN, `topology.terminated.bare`); the validator's
-`small_ring_strain` flags any 3-/4-ring whose angles a ring that size
-cannot carry. A clash that can't be resolved (e.g. on an authored interface) fails
+`small_ring_strain` is an ERROR (it fails the design rollup and se `propose`)
+for any 3-/4-ring whose angles a ring that size cannot carry. A clash that can't be resolved (e.g. on an authored interface) fails
 the build with `terminate.clash`. Parts built to be joined
 should use `"ports-open"`: a join trims the caps off the ports it
 consumes, but a part relaxed with capped rims before the join keeps that

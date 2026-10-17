@@ -3,10 +3,14 @@
 Hybridization inference, VSEPR angle strain, π-bond twist, small-ring strain,
 and hybridization conflicts. Never part of the hard-reject gate
 (:func:`validate.validate`) — a finding here means "strained/inconsistent,
-look at it", not "impossible": a pre-relax geometry has bad angles by design,
-and an intentionally strained ring (epoxide, cyclopropane) is legal
-chemistry. Pure reads over the Scene, same findings shape as validate.py
-(:class:`validate.ValidationIssue`, ``severity="warn"``).
+look at it", not "impossible". The one exception is ``small_ring_strain``,
+which carries ``severity="error"`` (gr493242): a 3-/4-ring outside the angle
+windows below is a mis-closed ring, and the findings consumers
+(``findings_cached``, the se design rollup, se ``propose``) block on it.
+Otherwise a pre-relax geometry has bad angles by design, and an
+intentionally strained ring (epoxide, cyclopropane) is legal chemistry.
+Pure reads over the Scene, same findings shape as validate.py
+(:class:`validate.ValidationIssue`, ``severity="warn"`` except as above).
 
 Unit enclave (package docstring): Å/degree-native; angle checks are degrees,
 any length checks are Å — never SI. ``precis_se`` (atomic mode) imports
@@ -347,7 +351,7 @@ def _small_ring_strain(
             "a generator likely closed a bond it should not have. Remove the "
             "ring bond, or relax with fidelity='geo' if the ring is intended."
         ),
-        severity="warn",
+        severity="error",
     )
 
 

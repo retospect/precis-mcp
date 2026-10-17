@@ -7,12 +7,16 @@ with ``pbc=(False, False, False)``, atoms placed by exact Cartesian geometry
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import numpy as np
 import pytest
 
 from precis.structure import Scene, apply_ops, validate, vsepr
 from precis.structure.cell import Cell
-from precis.structure.scene import Bond
+from precis.structure.scene import Atom, Bond
+from precis.structure.validate import findings_cached
 
 
 def _molecule_cell() -> Cell:
@@ -366,6 +370,7 @@ def test_small_ring_strain_flags_a_170_degree_exocyclic_angle() -> None:
     assert strain[0].atoms == ["aC3", "aC2", "aC5"]
     assert strain[0].measured == pytest.approx(170.0, abs=0.5)
     assert strain[0].expected == vsepr.SMALL_RING_EXO_MAX
+    assert strain[0].severity == "error"
 
 
 def test_small_ring_strain_flags_a_wide_in_ring_angle() -> None:
@@ -543,3 +548,32 @@ def test_validate_gate_never_sees_advisory_findings() -> None:
     findings = vsepr.advisories(scene)
     assert findings
     assert all(f.severity == "warn" for f in findings)
+
+
+def _st493212_ring_scene() -> Scene:
+    """The mis-closed 4-ring of st493212 (nanobud-review-figs-r2-bud96,
+    hexfold 0.3.6 before 6f9ea7d89): the ring atoms and their bonded
+    neighbours at their exact prod fractional coordinates (gr493242)."""
+    path = Path(__file__).parent / "fixtures" / "st493212_ring_strain.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    scene = Scene(cell=Cell(np.array(data["lattice"], dtype=float), (False,) * 3))
+    for label, element, fa, fb, fc, hyb in data["atoms"]:
+        scene.atoms[label] = Atom(
+            label=label,
+            element=element,
+            frac=np.array([fa, fb, fc]),
+            hybridization=hyb,
+        )
+    for i, j, order, kind, prov in data["bonds"]:
+        scene.bonds.append(Bond(i=i, j=j, order=order, kind=kind, provenance=prov))
+    return scene
+
+
+def test_small_ring_strain_is_an_error_on_the_st493212_ring() -> None:
+    scene = _st493212_ring_scene()
+    strain = [f for f in vsepr.advisories(scene) if f.rule == "small_ring_strain"]
+    assert len(strain) == 1
+    assert strain[0].severity == "error"
+    # the validator's error tier, as every findings consumer reads it
+    errors = [f for f in findings_cached(scene) if f.severity == "error"]
+    assert [f.rule for f in errors] == ["small_ring_strain"]

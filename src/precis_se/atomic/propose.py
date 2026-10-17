@@ -33,7 +33,8 @@ gated through the same machinery a real fragment would face —
 :func:`precis.structure.validate.validate` (hard-reject: overlap,
 over-coordination, implausible bonds — any ``error`` finding fails the
 proposal), :func:`precis.structure.vsepr.advisories` (warn-tier VSEPR/ring/
-hybridization findings — never fail the proposal, only annotate it), the
+hybridization findings — only annotate the proposal, except the
+error-severity ``small_ring_strain``, which fails it), the
 port→atom map itself (every mapped port must resolve on the target block,
 every mapped atom must exist in the just-built scratch scene, and a port's
 declared ``expected_element`` must match — the exact gate
@@ -506,7 +507,12 @@ def dry_run(
                 [],
             )
 
-    errors = [f for f in structure_validate(scene) if f.severity == "error"]
+    advisories = list(structure_advisories(scene))
+    # small_ring_strain is an error-severity advisory (gr493242): reject it
+    # here too, or the bound structure would fail the design rollup later.
+    errors = [
+        f for f in [*structure_validate(scene), *advisories] if f.severity == "error"
+    ]
     if errors:
         detail = "; ".join(
             f"{f.rule} on {f.atoms}: measured {f.measured:g} vs expected {f.expected:g}"
@@ -516,8 +522,7 @@ def dry_run(
         return f"structure validate: {detail}{more}", []
 
     warnings = [
-        f"vsepr {f.rule} ({', '.join(f.atoms)}): {f.suggested_fix}"
-        for f in structure_advisories(scene)
+        f"vsepr {f.rule} ({', '.join(f.atoms)}): {f.suggested_fix}" for f in advisories
     ]
     fit_warning = _envelope_fit_warnings(tree, node, scene)
     if fit_warning:
