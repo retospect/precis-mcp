@@ -532,3 +532,28 @@ class TestSearch:
         h = _handler(store)
         resp = h.search(q="nonexistent-xyz")
         assert "no checklist matches" in resp.body
+
+
+# ── error contract: a refusal names the fix (gr494831 M3) ────────────────
+
+
+class TestErrorContract:
+    def test_missing_checklist_names_the_next_call(self, store: Store) -> None:
+        h = _handler(store)
+        with pytest.raises(NotFound, match="not found") as excinfo:
+            h.get(id="no-such-checklist")
+        assert "get(kind='checklist')" in (excinfo.value.next or "")
+
+    def test_unknown_edit_op_lists_the_op_vocabulary(self, store: Store) -> None:
+        h = _handler(store)
+        h.put(id="cl", items=[])
+        with pytest.raises(BadInput, match="op=") as excinfo:
+            h.edit(id="cl", op="explode")
+        assert "add_item" in (excinfo.value.options or [])
+
+    def test_missing_target_names_the_target_shape(self, store: Store) -> None:
+        h = _handler(store)
+        h.put(id="cl", items=[])
+        with pytest.raises(BadInput, match="target=") as excinfo:
+            h.edit(id="cl", op="assign")
+        assert "target='pcb:" in (excinfo.value.next or "")

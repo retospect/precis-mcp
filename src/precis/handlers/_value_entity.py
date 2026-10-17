@@ -145,7 +145,10 @@ class ValueEntityHandler(Handler):
                 next=self._VE_CREATE_HINT.format(slug=repr(slug)),
             )
         if conditions is not None and not isinstance(conditions, dict):
-            raise BadInput(f"put(kind={kind!r}) conditions= must be a dict")
+            raise BadInput(
+                f"put(kind={kind!r}) conditions= must be a dict",
+                next="conditions={'temperature': '25 C'}",
+            )
 
         self._validate_type_args(value_type, allowed_values)
 
@@ -223,6 +226,7 @@ class ValueEntityHandler(Handler):
         if value_type is not None and value_type not in _VALUE_TYPES:
             raise BadInput(
                 f"value_type={value_type!r} must be one of {list(_VALUE_TYPES)}",
+                options=list(_VALUE_TYPES),
             )
         if allowed_values is not None and value_type != "categorical":
             raise BadInput(
@@ -280,6 +284,10 @@ class ValueEntityHandler(Handler):
             raise BadInput(
                 f"{row_id} is a {value_type} {noun} - value_low=/value_high= "
                 f"apply only to numeric (quantity/ratio) {plural}",
+                next=(
+                    f"put(kind={cls._VE_KIND!r}, id=<slug>, {noun}={row_id!r}, "
+                    "value=...) without value_low=/value_high="
+                ),
             )
 
         if value_type in ("quantity", "ratio"):
@@ -290,19 +298,28 @@ class ValueEntityHandler(Handler):
             ):
                 raise BadInput(
                     f"value_low={value_low!r} must be <= value_high={value_high!r}",
+                    next="swap value_low=/value_high= or pass the right bounds",
                 )
             if value is not None:
                 if isinstance(value, bool):
                     raise BadInput(
                         f"{row_id} is a {value_type} {noun} - value= must be "
-                        f"numeric, got {value!r}"
+                        f"numeric, got {value!r}",
+                        next=(
+                            f"put(kind={cls._VE_KIND!r}, id=<slug>, "
+                            f"{noun}={row_id!r}, value=<number>)"
+                        ),
                     )
                 try:
                     num = float(value)
                 except (TypeError, ValueError):
                     raise BadInput(
                         f"{row_id} is a {value_type} {noun} - value= must be "
-                        f"numeric, got {value!r}"
+                        f"numeric, got {value!r}",
+                        next=(
+                            f"put(kind={cls._VE_KIND!r}, id=<slug>, "
+                            f"{noun}={row_id!r}, value=<number>)"
+                        ),
                     ) from None
             elif value_low is not None and value_high is not None:
                 num = (float(value_low) + float(value_high)) / 2
@@ -310,10 +327,18 @@ class ValueEntityHandler(Handler):
                 raise BadInput(
                     f"put(kind={cls._VE_KIND!r}, {noun}={row_id!r}) needs "
                     "value=, or both value_low= and value_high=",
+                    next=(
+                        f"put(kind={cls._VE_KIND!r}, id=<slug>, {noun}={row_id!r}, "
+                        "value_low=<low>, value_high=<high>)"
+                    ),
                 )
             else:
                 raise BadInput(
                     f"put(kind={cls._VE_KIND!r}, {noun}={row_id!r}) needs value=",
+                    next=(
+                        f"put(kind={cls._VE_KIND!r}, id=<slug>, {noun}={row_id!r}, "
+                        "value=<number>)"
+                    ),
                 )
             out: dict[str, Any] = {"value_num": num}
             if value_low is not None:
@@ -324,12 +349,17 @@ class ValueEntityHandler(Handler):
         if value is None:
             raise BadInput(
                 f"put(kind={cls._VE_KIND!r}, {noun}={row_id!r}) needs value=",
+                next=(
+                    f"put(kind={cls._VE_KIND!r}, id=<slug>, {noun}={row_id!r}, "
+                    "value=...)"
+                ),
             )
         if value_type == "boolean":
             b = coerce_bool(value)
             if b is None:
                 raise BadInput(
-                    f"{row_id} is boolean - value= must be true/false, got {value!r}"
+                    f"{row_id} is boolean - value= must be true/false, got {value!r}",
+                    options=["true", "false"],
                 )
             return {"value_bool": b}
         if value_type == "categorical":
@@ -368,6 +398,7 @@ class ValueEntityHandler(Handler):
                 raise BadInput(
                     "chunk= is only meaningful with a ref source= "
                     "('paper:<slug>' / a handle), not a bare source_url",
+                    next="drop chunk=, or pass source='paper:<slug>' instead of a URL",
                 )
             return None, None, s
         target = parse_link_target(s, store=self.store)
@@ -376,6 +407,8 @@ class ValueEntityHandler(Handler):
                 f"source={source!r} resolves to kind={target.kind!r}; "
                 f"{kind} sources must be one of {list(_SOURCE_KINDS)}, or "
                 "a bare http(s) URL",
+                next="search(kind='paper', q='...') to find a source ref",
+                options=list(_SOURCE_KINDS),
             )
         source_chunk: str | None = None
         if chunk is not None:

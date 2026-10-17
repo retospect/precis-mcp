@@ -466,11 +466,17 @@ class MeasureHandler(Handler):
             )
         model = (meta or {}).get("model")
         if model is not None and (not isinstance(model, str) or not model.strip()):
-            raise BadInput("meta.model must be a non-empty model id string")
+            raise BadInput(
+                "meta.model must be a non-empty model id string",
+                next="meta={'model': '<model id>'}",
+            )
         version = (meta or {}).get("version", "0")
         named = (meta or {}).get("actor")
         if named is not None and (not isinstance(named, str) or not named.strip()):
-            raise BadInput("meta.actor must be a non-empty name, e.g. 'reto'")
+            raise BadInput(
+                "meta.actor must be a non-empty name, e.g. 'reto'",
+                next="meta={'actor': 'reto'} with review='human'",
+            )
 
         ctx = current_revision_context()
         actor = (ctx.actor if ctx else None) or current_background_actor() or "agent"
@@ -552,7 +558,10 @@ class MeasureHandler(Handler):
                 next="search(kind='measure', property='measurand/bond-length', min=1.4, unit='Å')",
             )
         if min is not None and max is not None and min > max:
-            raise BadInput(f"min={min} is above max={max}")
+            raise BadInput(
+                f"min={min} is above max={max}",
+                next="swap min=/max=, or drop one bound",
+            )
         conditions, text = parse_query(q)
         if taxon_id is None and not conditions and not text:
             raise BadInput(

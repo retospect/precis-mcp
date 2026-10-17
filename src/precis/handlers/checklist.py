@@ -176,7 +176,13 @@ class ChecklistHandler(Handler):
                 ),
             )
         if items is not None and not isinstance(items, list):
-            raise BadInput("put(kind='checklist') items= must be a list of dicts")
+            raise BadInput(
+                "put(kind='checklist') items= must be a list of dicts",
+                next=(
+                    "put(kind='checklist', id=<name>, items=[{'name': "
+                    "'item-one', 'prevents': 'what breaks if skipped'}])"
+                ),
+            )
         payloads = [_validate_item_payload(raw) for raw in (items or [])]
         kinds = _validate_kinds(default_for)
 
@@ -237,14 +243,21 @@ class ChecklistHandler(Handler):
         **_kw: Any,
     ) -> Response:
         if id is None or not str(id).strip():
-            raise BadInput("edit(kind='checklist') requires id=<name>")
+            raise BadInput(
+                "edit(kind='checklist') requires id=<name>",
+                next="search(kind='checklist', q='<name>') to find it",
+            )
         checklist_name = str(id).strip()
         checklist = self.store.checklist_get(checklist_name)
         if checklist is None:
-            raise NotFound(f"checklist {checklist_name!r} not found")
+            raise NotFound(
+                f"checklist {checklist_name!r} not found",
+                next="get(kind='checklist') lists all names",
+            )
         if op not in _EDIT_OPS:
             raise BadInput(
-                f"edit(kind='checklist') op={op!r} must be one of {list(_EDIT_OPS)}"
+                f"edit(kind='checklist') op={op!r} must be one of {list(_EDIT_OPS)}",
+                options=list(_EDIT_OPS),
             )
         if op == "add_item":
             return self._edit_add_item(
@@ -295,7 +308,10 @@ class ChecklistHandler(Handler):
             return self._edit_assign(checklist, target=target)
         if op == "unassign":
             return self._edit_unassign(checklist, target=target)
-        raise BadInput(f"unhandled op {op!r}")  # pragma: no cover — guarded above
+        raise BadInput(  # pragma: no cover — guarded above
+            f"unhandled op {op!r}",
+            options=list(_EDIT_OPS),
+        )
 
     def _reject_if_shipped(
         self, checklist: dict[str, Any], item_name: str
@@ -331,19 +347,29 @@ class ChecklistHandler(Handler):
         body: str | None,
     ) -> Response:
         if item is None or not str(item).strip():
-            raise BadInput("edit(kind='checklist', op='add_item') requires item=<name>")
+            raise BadInput(
+                "edit(kind='checklist', op='add_item') requires item=<name>",
+                next=(
+                    f"edit(kind='checklist', id={checklist['name']!r}, "
+                    "op='add_item', item='<item-name>', prevents=...)"
+                ),
+            )
         item_name = str(item).strip()
         current = self._reject_if_shipped(checklist, item_name)
 
         resolved_severity = severity or (current["severity"] if current else "advisory")
         if resolved_severity not in _SEVERITIES:
-            raise BadInput(f"severity={severity!r} must be one of {list(_SEVERITIES)}")
+            raise BadInput(
+                f"severity={severity!r} must be one of {list(_SEVERITIES)}",
+                options=list(_SEVERITIES),
+            )
         resolved_decidability = decidability or (
             current["decidability"] if current else "judgment"
         )
         if resolved_decidability not in _DECIDABILITY:
             raise BadInput(
-                f"decidability={decidability!r} must be one of {list(_DECIDABILITY)}"
+                f"decidability={decidability!r} must be one of {list(_DECIDABILITY)}",
+                options=list(_DECIDABILITY),
             )
         resolved_prevents = prevents or (current["prevents"] if current else None)
         if not resolved_prevents or not str(resolved_prevents).strip():
@@ -394,7 +420,8 @@ class ChecklistHandler(Handler):
     ) -> Response:
         if item is None or not str(item).strip():
             raise BadInput(
-                "edit(kind='checklist', op='retire_item') requires item=<name>"
+                "edit(kind='checklist', op='retire_item') requires item=<name>",
+                next=f"get(kind='checklist', id={checklist['name']!r}) lists live items",
             )
         item_name = str(item).strip()
         self._reject_if_shipped(checklist, item_name)
@@ -403,7 +430,8 @@ class ChecklistHandler(Handler):
         )
         if not removed:
             raise NotFound(
-                f"item {item_name!r} has no live rev on checklist {checklist['name']!r}"
+                f"item {item_name!r} has no live rev on checklist {checklist['name']!r}",
+                next=f"get(kind='checklist', id={checklist['name']!r}) lists live items",
             )
         return Response(body=f"retired {checklist['name']}.{item_name}")
 
@@ -422,19 +450,27 @@ class ChecklistHandler(Handler):
         origin: str = "user",
     ) -> Response:
         if item is None or not str(item).strip():
-            raise BadInput("edit(kind='checklist', op='verdict') requires item=<name>")
+            raise BadInput(
+                "edit(kind='checklist', op='verdict') requires item=<name>",
+                next=f"get(kind='checklist', id={checklist['name']!r}) lists live items",
+            )
         if verdict not in _VERDICTS:
             raise BadInput(
                 f"edit(kind='checklist', op='verdict') verdict={verdict!r} "
-                f"must be one of {list(_VERDICTS)}"
+                f"must be one of {list(_VERDICTS)}",
+                options=list(_VERDICTS),
             )
         if evidence is not None and not isinstance(evidence, dict):
-            raise BadInput("evidence= must be a dict")
+            raise BadInput(
+                "evidence= must be a dict",
+                next="evidence={'reason': 'what was observed'}",
+            )
         if inputs is not None and not isinstance(inputs, dict):
             raise BadInput(
                 "inputs= must be a dict {input-name: revision} — the "
                 "consumed inputs a re-derivation staleness-check compares, "
-                "e.g. {'margin:fixed-derating': 1}"
+                "e.g. {'margin:fixed-derating': 1}",
+                next="inputs={'margin:fixed-derating': 1}",
             )
         # The op's shared ``origin`` kwarg defaults to 'user' (the notes
         # vocabulary); a verdict's lifecycle class is human|machine.
@@ -443,7 +479,8 @@ class ChecklistHandler(Handler):
             raise BadInput(
                 f"op='verdict' origin={origin!r} must be 'human' or "
                 "'machine' — machine verdicts are disposable "
-                "(op='forget' drops them), human ones are kept"
+                "(op='forget' drops them), human ones are kept",
+                options=["human", "machine"],
             )
         if verdict == "waived" and not (evidence or {}).get("rationale"):
             raise BadInput(
@@ -461,12 +498,16 @@ class ChecklistHandler(Handler):
         try:
             anchor_list = validate_about(anchors)
         except NoteError as exc:
-            raise BadInput(f"anchors= {exc}") from exc
+            raise BadInput(
+                f"anchors= {exc}",
+                next="anchors=['U3', 'VCC'] — refdes/net names as they appear on the target",
+            ) from exc
         ref = self._resolve_target(target)
         current = self.store.checklist_item_current(checklist["id"], item_name)
         if current is None:
             raise NotFound(
-                f"item {item_name!r} has no live rev on checklist {checklist['name']!r}"
+                f"item {item_name!r} has no live rev on checklist {checklist['name']!r}",
+                next=f"get(kind='checklist', id={checklist['name']!r}) lists live items",
             )
         fp = str(fingerprint).strip() if fingerprint else None
         note = ""
@@ -485,7 +526,8 @@ class ChecklistHandler(Handler):
         elif anchor_list and bridge is None:
             raise BadInput(
                 f"anchors= needs a kind with a fingerprint bridge (pcb); "
-                f"{ref.kind} has none — supply an opaque fingerprint= instead"
+                f"{ref.kind} has none — supply an opaque fingerprint= instead",
+                next="fingerprint='<digest>' — anchors= resolves only via a kind's bridge",
             )
         self.store.checklist_verdict_insert(
             target_ref_id=ref.id,
@@ -567,24 +609,43 @@ class ChecklistHandler(Handler):
     ) -> Response:
         if name is None or not str(name).strip():
             raise BadInput(
-                "edit(kind='checklist', op='add_note') requires name=<note-name>"
+                "edit(kind='checklist', op='add_note') requires name=<note-name>",
+                next=(
+                    f"edit(kind='checklist', id={checklist['name']!r}, "
+                    "op='add_note', name='<note-name>', note_kind='question', "
+                    "body=...)"
+                ),
             )
         if note_kind not in NOTE_KINDS:
-            raise BadInput(f"note_kind={note_kind!r} must be one of {list(NOTE_KINDS)}")
+            raise BadInput(
+                f"note_kind={note_kind!r} must be one of {list(NOTE_KINDS)}",
+                options=list(NOTE_KINDS),
+            )
         if body is None or not str(body).strip():
-            raise BadInput("edit(kind='checklist', op='add_note') requires body=")
+            raise BadInput(
+                "edit(kind='checklist', op='add_note') requires body=",
+                next=(
+                    f"edit(kind='checklist', id={checklist['name']!r}, "
+                    "op='add_note', name=..., note_kind='question', "
+                    "body='<the note text>')"
+                ),
+            )
         ref = self._resolve_target(target)
         item_name = str(item).strip() if item else None
         if item_name is not None:
             if self.store.checklist_item_current(checklist["id"], item_name) is None:
                 raise NotFound(
                     f"item {item_name!r} has no live rev on checklist "
-                    f"{checklist['name']!r}"
+                    f"{checklist['name']!r}",
+                    next=f"get(kind='checklist', id={checklist['name']!r}) lists live items",
                 )
         try:
             about_list = validate_about(about)
         except NoteError as exc:
-            raise BadInput(str(exc)) from exc
+            raise BadInput(
+                str(exc),
+                next="about=['<item-name>' or an anchor name] — a list of strings",
+            ) from exc
         note_id = self.store.checklist_note_insert(
             target_ref_id=ref.id,
             checklist_id=checklist["id"],
@@ -609,14 +670,24 @@ class ChecklistHandler(Handler):
     ) -> Response:
         if name is None or not str(name).strip():
             raise BadInput(
-                "edit(kind='checklist', op='remove_note') requires name=<note-name>"
+                "edit(kind='checklist', op='remove_note') requires name=<note-name>",
+                next=(
+                    f"edit(kind='checklist', id={checklist['name']!r}, "
+                    "op='remove_note', name='<note-name>', target='<kind>:<id>')"
+                ),
             )
         ref = self._resolve_target(target)
         removed = self.store.checklist_note_remove(
             target_ref_id=ref.id, checklist_id=checklist["id"], name=str(name).strip()
         )
         if not removed:
-            raise NotFound(f"no live note {name!r} on {checklist['name']!r}")
+            raise NotFound(
+                f"no live note {name!r} on {checklist['name']!r}",
+                next=(
+                    f"get(kind='checklist', id={checklist['name']!r}, "
+                    f"target='{ref.kind}:{ref.label}') lists its notes"
+                ),
+            )
         return Response(body=f"removed note {name!r} from {checklist['name']}")
 
     def _edit_assign(
@@ -644,7 +715,11 @@ class ChecklistHandler(Handler):
                     next="record n/a or waived verdicts (with rationale) instead",
                 )
             raise NotFound(
-                f"{checklist['name']!r} is not assigned to {ref.kind}:{ref.label}"
+                f"{checklist['name']!r} is not assigned to {ref.kind}:{ref.label}",
+                next=(
+                    f"edit(kind='checklist', id={checklist['name']!r}, "
+                    f"op='assign', target='{ref.kind}:{ref.label}') creates it"
+                ),
             )
         return Response(
             body=f"unassigned {checklist['name']} from {ref.kind}:{ref.label}"
@@ -671,7 +746,10 @@ class ChecklistHandler(Handler):
         name = str(id).strip()
         checklist = self.store.checklist_get(name)
         if checklist is None:
-            raise NotFound(f"checklist {name!r} not found")
+            raise NotFound(
+                f"checklist {name!r} not found",
+                next="get(kind='checklist') lists all names",
+            )
         if target is None:
             return self._render_definition(checklist)
         ref = self._resolve_target(target)
@@ -908,17 +986,24 @@ class ChecklistHandler(Handler):
                 except ValueError:
                     ref = None
             if ref is None:
-                raise NotFound(f"target {t!r} not found")
+                raise NotFound(
+                    f"target {t!r} not found",
+                    next=f"search(kind={kind!r}, q='<name>') to find the ref",
+                )
             return _Target(id=ref.id, kind=ref.kind, label=ref.slug or str(ref.id))
         try:
             ref_id = int(t)
         except ValueError as exc:
             raise BadInput(
-                f"target={target!r} must be '<kind>:<id>' or a bare ref id"
+                f"target={target!r} must be '<kind>:<id>' or a bare ref id",
+                next="target='pcb:my-board'",
             ) from exc
         resolved = self.store.checklist_resolve_ref_any_kind(ref_id)
         if resolved is None:
-            raise NotFound(f"target ref {ref_id} not found")
+            raise NotFound(
+                f"target ref {ref_id} not found",
+                next="target='<kind>:<id>' names the ref's kind explicitly",
+            )
         rid, kind, _title = resolved
         return _Target(id=rid, kind=kind, label=str(rid))
 
@@ -983,7 +1068,10 @@ def _validate_kinds(raw: Any) -> list[str]:
     if not isinstance(items, list) or not all(
         isinstance(k, str) and k.strip() for k in items
     ):
-        raise BadInput("default_for= must be a list of ref kind slugs, e.g. ['pcb']")
+        raise BadInput(
+            "default_for= must be a list of ref kind slugs, e.g. ['pcb']",
+            next="default_for=['pcb']",
+        )
     return [k.strip() for k in items]
 
 
@@ -991,10 +1079,16 @@ def _validate_item_payload(raw: Any) -> dict[str, Any]:
     """Vet one ``put(items=[...])`` element. Mandatory ``prevents`` is the
     cargo-cult filter (design doc: "no failure statement, no item")."""
     if not isinstance(raw, dict):
-        raise BadInput("put(kind='checklist') items= entries must be dicts")
+        raise BadInput(
+            "put(kind='checklist') items= entries must be dicts",
+            next="items=[{'name': 'item-one', 'prevents': 'what breaks if skipped'}]",
+        )
     name = str(raw.get("name") or "").strip()
     if not name:
-        raise BadInput("put(kind='checklist') each item requires name=")
+        raise BadInput(
+            "put(kind='checklist') each item requires name=",
+            next="items=[{'name': '<item-name>', 'prevents': ...}]",
+        )
     prevents = raw.get("prevents")
     if not prevents or not str(prevents).strip():
         raise BadInput(
@@ -1007,11 +1101,15 @@ def _validate_item_payload(raw: Any) -> dict[str, Any]:
         )
     severity = raw.get("severity") or "advisory"
     if severity not in _SEVERITIES:
-        raise BadInput(f"severity={severity!r} must be one of {list(_SEVERITIES)}")
+        raise BadInput(
+            f"severity={severity!r} must be one of {list(_SEVERITIES)}",
+            options=list(_SEVERITIES),
+        )
     decidability = raw.get("decidability") or "judgment"
     if decidability not in _DECIDABILITY:
         raise BadInput(
-            f"decidability={decidability!r} must be one of {list(_DECIDABILITY)}"
+            f"decidability={decidability!r} must be one of {list(_DECIDABILITY)}",
+            options=list(_DECIDABILITY),
         )
     return {
         "name": name,

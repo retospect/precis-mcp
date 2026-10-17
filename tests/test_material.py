@@ -182,6 +182,28 @@ class TestKindScopedCheck:
             h.put(id="6061-t6", property="density", value=100, unit="kg/m3")
 
 
+# ── error contract: a refusal names the fix (gr494831 M3) ────────────
+
+
+class TestValueErrorContract:
+    def test_non_numeric_value_rejected_with_next_call(self, store: Any) -> None:
+        """``_value_entity._route_value``: the refusal names the corrected put."""
+        h = _handler(store)
+        h.put(id="6061-t6", title="Aluminum 6061-T6")
+        h.put(id="6061-t6", property="fake_metric", value=2700)
+        with pytest.raises(BadInput, match="must be numeric") as excinfo:
+            h.put(id="6061-t6", property="fake_metric", value="heavy")
+        assert "put(kind='material'" in (excinfo.value.next or "")
+
+    def test_reversed_band_rejected_with_next_call(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="6061-t6", title="Aluminum 6061-T6")
+        h.put(id="6061-t6", property="fake_metric", value=2700)
+        with pytest.raises(BadInput, match="must be <=") as excinfo:
+            h.put(id="6061-t6", property="fake_metric", value_low=10, value_high=1)
+        assert "value_low" in (excinfo.value.next or "")
+
+
 # ── proposed-tier mint (AC #4) ───────────────────────────────────────
 
 

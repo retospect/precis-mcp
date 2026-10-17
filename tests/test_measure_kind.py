@@ -1672,6 +1672,15 @@ class TestReviewHandler:
         with pytest.raises(NotFound, match="not found"):
             h.edit(id=999999, review="model", meta={"model": "m"})
 
+    def test_bad_review_meta_names_the_fix(self, h: MeasureHandler) -> None:
+        """gr494831 M3: the append-only-review refusals carry ``next=``."""
+        with pytest.raises(BadInput, match="non-empty model id") as excinfo:
+            h.edit(id=1, review="model", meta={"model": 5})
+        assert "meta={'model'" in (excinfo.value.next or "")
+        with pytest.raises(BadInput, match="non-empty name") as excinfo:
+            h.edit(id=1, review="human", meta={"actor": ""})
+        assert "meta={'actor'" in (excinfo.value.next or "")
+
 
 def test_search_text_matches_measurand_and_literal_not_just_subject(
     store: Store, w: dict[str, Any]
