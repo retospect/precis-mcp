@@ -94,6 +94,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
@@ -1450,6 +1451,39 @@ def _off_lane_since(
         (node, seen.process),
     ).fetchone()
     return None if busy is not None else seen.last_seen
+
+
+def retired_lane_nodes(
+    store: Store, nodes: Sequence[str], executor: str = "ssh_node"
+) -> dict[str, str]:
+    """The subset of ``nodes`` whose ``executor`` lane is retired, with why.
+
+    Placement's view of the lane state the off-lane reap already uses, so a
+    job is never minted onto a node the sweeper would fail it on: a node is
+    retired when ``service_config`` switches its ``job_<executor>`` pass off
+    (host row or ``'*'``, prio 0), or when :func:`_off_lane_since` finds it
+    ran the pass within the week and has since gone silent. A node with no
+    history is not retired: it never proved it was in the lane.
+    """
+    handler = executor_pass_handler(executor)
+    silence_s = _off_lane_silence_s()
+    out: dict[str, str] = {}
+    with store.pool.connection() as conn:
+        off_rows = conn.execute(
+            "SELECT host FROM service_config WHERE service = %s AND prio = 0",
+            (handler,),
+        ).fetchall()
+        switched_off = {str(r[0]) for r in off_rows}
+        for node in nodes:
+            if node in switched_off or "*" in switched_off:
+                out[node] = f"{handler} is switched off in service_config"
+                continue
+            since = _off_lane_since(conn, node, executor, silence_s)
+            if since is not None:
+                out[node] = (
+                    f"no {handler} pass has run there since {since:%Y-%m-%dT%H:%MZ}"
+                )
+    return out
 
 
 #: A pinned job the off-lane arm may examine: queued past the queued grace

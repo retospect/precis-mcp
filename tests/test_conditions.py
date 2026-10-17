@@ -267,6 +267,40 @@ def test_pass_dead_still_expects_crashed_or_unparked_unit(
     assert any(handler in f.key for f in _probe_pass_dead(store))
 
 
+def test_pass_dead_reports_retired_lane_when_unit_is_not_installed(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr495419: a lane retired by host-lanes has no unit file; the finding
+    says so (no restart heal) instead of calling the handler dead."""
+    handler = _uniq("retired")
+    monkeypatch.setenv("PRECIS_COND_PASS_DEAD_BUDGET_S", "3600")
+    monkeypatch.setenv("PRECIS_COND_PASS_DEAD_MIN_ROWS", "5")
+    lane = "precis-worker-compute"
+    _seed_pass_logs(store, handler, n=10, last_age_s=4 * 3600, process=lane)
+    # Unit listing fresh, lists only the heartbeat worker: lane retired.
+    _seed_heartbeat(
+        store,
+        meta={
+            "worker_units": _unit_snapshot(_PROC, active="active", enabled="enabled")
+        },
+    )
+    (found,) = [f for f in _probe_pass_dead(store) if handler in f.key]
+    assert found.detail.startswith("lane retired")
+    assert found.heal is None
+
+    # Unit still installed (crashed): stays a dead handler with its heal.
+    snap = _unit_snapshot(lane, active="failed", enabled="enabled")
+    _seed_heartbeat(store, meta={"worker_units": snap})
+    (found,) = [f for f in _probe_pass_dead(store) if handler in f.key]
+    assert "dead handler" in found.detail
+    assert found.heal is not None
+
+    # No unit evidence at all: unknown, never "retired".
+    _seed_heartbeat(store)
+    (found,) = [f for f in _probe_pass_dead(store) if handler in f.key]
+    assert "dead handler" in found.detail
+
+
 @pytest.mark.parametrize(
     "snapshot",
     [

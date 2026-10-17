@@ -217,6 +217,37 @@ def _parked_workers(store: Store) -> set[tuple[str, str]]:
     return parked
 
 
+def _fresh_unit_lists(store: Store) -> dict[str, dict[str, object]]:
+    """Installed-unit maps from fresh, well-formed heartbeat snapshots.
+
+    A host-lanes retirement removes the lane's unit file, so its process is
+    absent here while the host's other workers keep the heartbeat fresh.
+    Absence is evidence only from a fresh snapshot that lists at least one
+    unit (the heartbeat worker's own); anything else is unknown and left out.
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT host, meta->'worker_units' FROM host_heartbeat "
+            "WHERE ts > now() - make_interval(mins => %s) "
+            "AND meta ? 'worker_units'",
+            (_HOST_FRESH_MIN,),
+        ).fetchall()
+    now = datetime.now(UTC)
+    out: dict[str, dict[str, object]] = {}
+    for host, snapshot in rows:
+        if not isinstance(snapshot, dict):
+            continue
+        try:
+            observed = datetime.fromisoformat(snapshot["observed_at"])
+            age_s = (now - observed).total_seconds()
+        except (KeyError, TypeError, ValueError):
+            continue
+        units = snapshot.get("units")
+        if 0 <= age_s < _HOST_FRESH_MIN * 60 and (isinstance(units, dict) and units):
+            out[str(host)] = units
+    return out
+
+
 def _probe_pass_dead(store: Store) -> list[ConditionFinding]:
     budget_s = _env_f("PRECIS_COND_PASS_DEAD_BUDGET_S", 4 * 3600.0)
     # ≥ ~1 row/hour over 7d — excludes one-off/manual handlers so a
@@ -229,6 +260,7 @@ def _probe_pass_dead(store: Store) -> list[ConditionFinding]:
         ).fetchall()
     disabled = _disabled_services(store)
     parked = _parked_workers(store)
+    installed = _fresh_unit_lists(store)
     out: list[ConditionFinding] = []
     for host, process, handler, silent_h in rows:
         if (str(host), str(process)) in parked:
@@ -236,6 +268,26 @@ def _probe_pass_dead(store: Store) -> list[ConditionFinding]:
         service = _handler_service(str(handler))
         if (str(host), service) in disabled or ("*", service) in disabled:
             continue  # switched off on purpose — not a death
+        if (
+            str(process).startswith("precis-worker")
+            and str(host) in installed
+            and str(process) not in installed[str(host)]
+        ):
+            # The lane's unit is gone from a fresh unit listing: retired on
+            # purpose (host-lanes). Report that; a restart has no unit to
+            # restart (gr495419).
+            out.append(
+                ConditionFinding(
+                    key=f"pass-dead:{host}/{process}/{handler}",
+                    detail=(
+                        f"lane retired: {process} is not installed on {host} "
+                        f"(fresh unit listing), so handler '{handler}' has been "
+                        f"silent {float(silent_h):.1f}h by design, not a dead "
+                        "handler. Clears when its 7d history ages out"
+                    ),
+                )
+            )
+            continue
         out.append(
             ConditionFinding(
                 key=f"pass-dead:{host}/{process}/{handler}",

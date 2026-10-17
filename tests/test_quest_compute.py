@@ -11,10 +11,12 @@ against real PG (the ``store`` fixture).
 from __future__ import annotations
 
 import importlib.metadata
+import json
 import math
 import re
 from types import SimpleNamespace
 from typing import Any
+from uuid import uuid4
 
 import pytest
 
@@ -6590,6 +6592,87 @@ class TestDispatchAutocatpath:
             for _id, j in self._seed_jobs(store, sid)
         ]
         assert targets == ["spark", "castor", "spark"]
+
+    @staticmethod
+    def _ssh_node_pass_log(store: Any, node: str, *, age_hours: float) -> None:
+        """One ``job_ssh_node`` cycle row, as ``runner.run_loop`` logs it."""
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO worker_logs (ts, host, process, level, message, payload) "
+                "VALUES (now() - make_interval(secs => %s), %s, "
+                "'precis-worker-compute', 'INFO', 'cycle', %s::jsonb)",
+                (age_hours * 3600, node, json.dumps({"handler": "job_ssh_node"})),
+            )
+            conn.commit()
+
+    def test_retired_lane_node_gets_no_seeds(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """gr495691: a node that ran job_ssh_node within the week and went
+        silent (lane retired) is skipped; seeds round-robin over the rest."""
+        live, retired = f"live-{uuid4().hex[:6]}", f"gone-{uuid4().hex[:6]}"
+        self._ssh_node_pass_log(store, live, age_hours=0.01)
+        self._ssh_node_pass_log(store, retired, age_hours=30)
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, f"{retired},{live}")
+        qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
+        sid = self._candidate(store, qid)
+        note = compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        assert note.startswith("autocatpath[")
+        targets = {
+            (j.get("params") or {})["target_node"]
+            for _id, j in self._seed_jobs(store, sid)
+        }
+        assert targets == {live}
+
+    def test_no_live_lane_refuses_with_next_and_mints_nothing(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        retired = f"gone-{uuid4().hex[:6]}"
+        self._ssh_node_pass_log(store, retired, age_hours=30)
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, retired)
+        qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
+        sid = self._candidate(store, qid)
+        note = compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        assert note.startswith("autocatpath refused")
+        assert retired in note
+        assert compute_mod._AUTOCATPATH_ROUTE_NODE_ENV in note
+        assert self._seed_jobs(store, sid) == []
+
+    def test_service_config_off_lane_is_retired(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        node = f"off-{uuid4().hex[:6]}"
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO service_config (host, service, prio) "
+                "VALUES (%s, 'job_ssh_node', 0)",
+                (node,),
+            )
+            conn.commit()
+        try:
+            monkeypatch.setenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, node)
+            qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
+            sid = self._candidate(store, qid)
+            note = compute_mod.dispatch_autocatpath(store, sid, self._RX)
+            assert "switched off in service_config" in note
+        finally:
+            with store.pool.connection() as conn:
+                conn.execute("DELETE FROM service_config WHERE host = %s", (node,))
+                conn.commit()
+
+    def test_redispatch_refuses_when_no_live_lane_even_on_dry_run(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        retired = f"gone-{uuid4().hex[:6]}"
+        self._ssh_node_pass_log(store, retired, age_hours=30)
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, retired)
+        qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
+        self._candidate(store, qid)
+        store.stamp_ref_meta(qid, {"reaction_config": self._RX})
+        for dry in (True, False):
+            note = compute_mod.redispatch_candidates(store, qid, dry_run=dry)
+            assert note.startswith("redispatch refused"), note
+            assert retired in note
 
     def test_null_route_raises_on_multihost_cluster_without_gpu(
         self, store: Any, monkeypatch: Any

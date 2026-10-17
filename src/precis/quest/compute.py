@@ -1526,6 +1526,41 @@ def _seed_todo_handled(store: Store, seed_todo_id: int) -> bool:
     return bool(row[0]) if row else True
 
 
+def _live_route_nodes(store: Store, nodes: list[str]) -> tuple[list[str], str]:
+    """``nodes`` minus those whose ssh_node lane is retired, plus a refusal.
+
+    The refusal (empty when a live node remains) names each retired node
+    with why, the eligible nodes the heartbeat advertises with a ``gpu``
+    slot, and the setting to change. Reads the same lane state the
+    off-lane reap does (:func:`precis.workers.sweeper.retired_lane_nodes`).
+    """
+    from precis.workers.sweeper import retired_lane_nodes
+
+    retired = retired_lane_nodes(store, nodes)
+    live = [n for n in nodes if n not in retired]
+    if live:
+        return live, ""
+    why = "; ".join(f"{n}: {r}" for n, r in retired.items())
+    advertised = sorted(
+        {
+            s.host
+            for s in store.all_resource_slots()
+            if s.resource == "gpu" and s.capacity > 0
+        }
+        - set(retired)
+    )
+    eligible = (
+        f"next: other gpu hosts advertised in resource_slots: {', '.join(advertised)}"
+        if advertised
+        else "next: no other host advertises a gpu slot"
+    )
+    return [], (
+        f"every route node has a retired ssh_node lane ({why}). {eligible}; "
+        f"or set {_AUTOCATPATH_ROUTE_NODE_ENV} to a node that runs "
+        "precis-worker-compute"
+    )
+
+
 def dispatch_autocatpath(
     store: Store,
     structure_ref_id: int,
@@ -1697,6 +1732,13 @@ def dispatch_autocatpath(
                 f"Set {_AUTOCATPATH_ROUTE_NODE_ENV} or fix the GPU host's "
                 "heartbeat/resource_slots."
             )
+    if nodes:
+        # Retired ssh_node lanes get nothing: a seed pinned there is only
+        # swept as infra (gr495691). Fewer nodes round-robin over the rest;
+        # none left refuses before anything is minted.
+        nodes, refusal = _live_route_nodes(store, nodes)
+        if refusal:
+            return f"autocatpath refused for {ref.slug}: {refusal}"
     # `node` stays the routed/unrouted discriminator (backend + device policy)
     # and pins the cheap aggregate; the per-seed target is assigned in the
     # mint loop below.
@@ -3891,6 +3933,25 @@ def redispatch_candidates(
         counts = {t: tiers.count(t) for t in _TIERS if t in tiers}
         return ", ".join(f"{t} {c}" for t, c in counts.items()) or "none"
 
+    if plan:
+        # Refuse up front (also on a dry run) when no live node could take a
+        # seed, rather than minting jobs the sweeper fails (gr495691).
+        env_nodes = [
+            n.strip()
+            for n in (os.environ.get(_AUTOCATPATH_ROUTE_NODE_ENV) or "").split(",")
+            if n.strip()
+        ]
+        route = env_nodes or sorted(
+            {
+                s.host
+                for s in store.all_resource_slots()
+                if s.resource == "gpu" and s.capacity > 0
+            }
+        )
+        if route:
+            _live, refusal = _live_route_nodes(store, route)
+            if refusal:
+                return f"redispatch refused: {refusal}"
     if dry_run:
         head = (
             f"would re-dispatch {len(plan)} candidate(s): "
