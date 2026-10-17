@@ -1055,3 +1055,120 @@ def test_graph_mode_dup_prefix_ignores_non_threads_and_dateless_titles(
     out = _run(lint_repo, home, cache=cache, nodes=nodes).stdout
 
     assert "dup thread prefix" not in out, out
+
+
+# ---------------------------------------------------------------------------
+# --bands: one recency band per node (docs/backlog/context-memory-hierarchy.md
+# S1). ACTIVE = updated or accessed < 7 d, or a thread with open-work words;
+# SPENT = check 2's landed-thread oracle (threads only); else SETTLED.
+# ---------------------------------------------------------------------------
+
+
+def _band_row(
+    handle: str, section: str, updated: str, hub: str, accessed: str = ""
+) -> str:
+    return (
+        f"{handle}\t{section}\t{updated}\t10\t10\t1\t0\t0\t{hub}\t0\t{accessed}"
+        f"\t{hub}\t\t0\t\n"
+    )
+
+
+def _band_setup(nodes: Path, sha: str) -> None:
+    old = _days_ago(30)
+    landed = f"state: SHIPPED. commit {sha} landed in main.\n"
+    bodies = {
+        "me10": ("Fresh thread", "Left: land the parser.\n"),
+        "me11": ("Landed campaign", landed),
+        "me12": ("Fixed trap", landed),
+        "me13": ("Recalled runbook", "Run the drill.\n"),
+        "me14": ("Open thread", f"Shipped {sha}; NEXT slice pending.\n"),
+        "me15": ("Quiet gotcha", "The pool resets at midnight.\n"),
+    }
+    for h, (title, body) in bodies.items():
+        (nodes / f"{h}.md").write_text(f"# {title}\n\n{body}", encoding="utf-8")
+    (nodes / "_sections.tsv").write_text(
+        _band_row("me10", "threads", _today(), "me1")
+        + _band_row("me11", "threads", old, "me1")
+        + _band_row("me12", "gotchas", old, "me2")
+        + _band_row("me13", "runbooks", old, "me2", accessed=_days_ago(2))
+        + _band_row("me14", "threads", old, "me1")
+        + _band_row("me15", "gotchas", old, "me2", accessed=_days_ago(20)),
+        encoding="utf-8",
+    )
+
+
+def _band_lines(out: str) -> list[str]:
+    start = out.index("— bands")
+    return [ln.strip() for ln in out[start:].splitlines()[1:] if ln.strip()]
+
+
+def test_bands_report_one_band_per_node_grouped_by_hub(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    home, _mem, cache, nodes = graph_setup
+    _band_setup(nodes, _landed_sha(lint_repo))
+
+    res = _run(lint_repo, home, cache=cache, nodes=nodes, args=("--bands",))
+
+    assert res.returncode == 0
+    lines = _band_lines(res.stdout)
+    hub1 = lines.index("hub me1")
+    hub2 = lines.index("hub me2")
+    # Within a hub: ACTIVE first, then SETTLED, SPENT last.
+    assert lines[hub1 + 1 : hub1 + 4] == [
+        "ACTIVE  me10 (Fresh thread)",
+        "ACTIVE  me14 (Open thread)",
+        "SPENT   me11 (Landed campaign)",
+    ], res.stdout
+    # A gotcha citing a landed sha is SETTLED, never SPENT; a recent recall
+    # makes a node ACTIVE.
+    assert lines[hub2 + 1 : hub2 + 4] == [
+        "ACTIVE  me13 (Recalled runbook)",
+        "SETTLED me12 (Fixed trap)",
+        "SETTLED me15 (Quiet gotcha)",
+    ], res.stdout
+    assert "bands: 3 ACTIVE · 2 SETTLED · 1 SPENT" in res.stdout, res.stdout
+
+
+def test_bands_report_is_opt_in_and_not_a_hygiene_issue(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    home, _mem, cache, nodes = graph_setup
+    _band_setup(nodes, _landed_sha(lint_repo))
+
+    plain = _run(lint_repo, home, cache=cache, nodes=nodes).stdout
+    banded = _run(lint_repo, home, cache=cache, nodes=nodes, args=("--bands",)).stdout
+
+    assert "— bands" not in plain, plain
+    # The band section adds lines, not findings: the hygiene count is unchanged.
+    count = [ln for ln in plain.splitlines() if ln.startswith("memory-lint: ")][-1]
+    assert count in banded, banded
+
+
+def test_bands_short_manifest_and_no_hub_group_under_dash(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    # A pre-hub 3-column manifest: no hub, no access date; old → SETTLED.
+    home, _mem, cache, nodes = graph_setup
+    (nodes / "me10.md").write_text("# Alpha\n\nbody\n", encoding="utf-8")
+    (nodes / "_sections.tsv").write_text(
+        f"me10\tgotchas\t{_days_ago(30)}\n", encoding="utf-8"
+    )
+
+    res = _run(lint_repo, home, cache=cache, nodes=nodes, args=("--bands",))
+
+    assert res.returncode == 0
+    assert _band_lines(res.stdout)[:2] == ["hub -", "SETTLED me10 (Alpha)"], res.stdout
+    assert "bands: 0 ACTIVE · 1 SETTLED · 0 SPENT" in res.stdout, res.stdout
+
+
+def test_bands_without_a_manifest_says_so(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    home, _mem, cache, nodes = graph_setup
+    (nodes / "me10.md").write_text("# Alpha\n\nbody\n", encoding="utf-8")
+
+    res = _run(lint_repo, home, cache=cache, nodes=nodes, args=("--bands",))
+
+    assert res.returncode == 0
+    assert "bands: no node manifest" in res.stdout, res.stdout

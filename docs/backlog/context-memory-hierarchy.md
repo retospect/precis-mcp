@@ -8,6 +8,63 @@ prio: normal
 
 Grouped 2026-09-26 from 3 items that are sub-parts of one deliverable (each keeps its own section below; the originals are in the history). Split a section back out only when it becomes independently shippable.
 
+## Vet against main and slice plan (2026-10-17, memory plan P3)
+
+The sections below were written before the 2026-10-10 graph cutover. Memory
+is now `SPACE:repo-dev` memory nodes under a root and seven `section:index`
+hubs; the harness `MEMORY.md` is a pointer, and session start prints only
+the live threads (`cli/memory.py::_render_live_threads`). What that changes,
+part by part:
+
+**Context hierarchy, checked against main e2499c938:**
+
+| piece | state on main |
+|---|---|
+| L2 memory cluster notes | built: the hubs, `part-of` edges, `scripts/memory-lint` check 8's hub columns |
+| unplaced-leaf check | built as check 8 "no hub" (a node not `part-of` any hub) |
+| check 2 (SPENT oracle) | alive: graph mode scans the manifest's `threads` nodes |
+| recency signals | scattered: check 2 (landed), check 7 (retire candidates), check 8 (cold > 60 d), check 9 (stale thread ≥ 14 d), the ≤ 14 d live-thread render |
+| band emitter | missing: no check names a band per node |
+| band placement in a hub | missing: nothing orders a hub's members by band |
+| `rtk.md` §Long-running commands | built |
+| `.claude/skills/conventions/SKILL.md` | missing |
+| CLAUDE.md / AGENTS.md router collapse | not done: CLAUDE.md still has 5 `→ docs/conventions/…` arrows; AGENTS.md's Conventions bullet still names three leaves |
+| P1 (user-level memory files) | superseded by the cutover: hubs replace the five `##` groups and the cluster notes |
+| P2 one resident block | ruled 2026-09-30, not built; edits CLAUDE.md |
+
+Slices, in build order:
+
+1. **S1 — band report: built.** `scripts/memory-lint --bands` (its
+   header and the `landed_body` oracle shared with check 2). Open work
+   and SPENT are threads-only: check 2 found that runbooks and gotchas
+   cite landed shas as durable knowledge. The AC5 recall test is unchanged
+   (S1 touches no search path).
+2. **S2 — band placement in hub renders.** Order a hub's members ACTIVE,
+   SETTLED, SPENT in its fisheye and in `memory index --full`. The server
+   has no git checkout, so SPENT cannot be computed there; S2 places
+   ACTIVE by time and leaves SPENT to the lint. Touches
+   `utils/refeye.py` ordering, so the recall test must be re-run.
+3. **S3 — conventions index skill.** P0's first bullet as written (approved
+   2026-09-14). Reto decides whether it is still wanted now that
+   `conventions-as-findings.md` turns rules into findings: the skill's
+   description adds about 40 tok to every session's skill listing.
+4. **S4 — router collapse + P2 resident block.** Edits CLAUDE.md, so a
+   session that may edit CLAUDE.md builds it. Reto decides where the block
+   lives (P2 left that to the builder; the cutover moved the measured
+   preamble from CLAUDE.md + MEMORY.md to CLAUDE.md + the live-thread
+   render, so the budget line needs re-stating).
+
+**Agent-tag-scoped sticky memories:** buildable once Reto decides the
+open question. Today `src/asa_bot/preamble.py::_fetch_stickies` searches
+`sticky:thread:<conv>`, `sticky:thread`, `sticky:global` with no agent
+filter, and `build()` already takes `platform`, so the agent name enters
+there (builder's call). Reto decides: shared pins are the untagged set, an
+explicit `agent:shared` tag, or both; and whether to build before a second
+persona exists (asa Discord and asa_slack are one persona today).
+
+**Soul store:** deferred by its own verdict; nothing to build until two of
+its three adoption criteria hold.
+
 ## Context hierarchy — resident core, discovered DAG
 
 _Grouped 2026-09-26; was `context-hierarchy-dag`, status draft._
@@ -15,8 +72,7 @@ _Grouped 2026-09-26; was `context-hierarchy-dag`, status draft._
 Reto approved the two-level shape for conventions (2026-09-14) and then
 widened it: n levels if practical, memory included, plus a recency structure,
 combined with skills and the identity/"soul" layer. This item is the
-resulting plan. Not started — the session that produced it shipped only these
-two backlog files.
+resulting plan. Current state per piece: the vet table above.
 
 ### Motivation / why
 

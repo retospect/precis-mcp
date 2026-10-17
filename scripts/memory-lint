@@ -81,6 +81,8 @@
 #      manifest's supersedes column is the truth); (b) two or more live
 #      threads nodes sharing a title prefix (text before the first
 #      date/timestamp — one node per campaign, gr485358).
+#   (--bands only, graph mode) recency band per node — ACTIVE, SETTLED or
+#      SPENT, grouped by hub; a report, not findings (context-memory-hierarchy).
 #   6. sibling-repo path currency (always runs; internally weekly-gated, self-
 #      stamping) — deliberately NOT part of check 5's in-repo path scan: that
 #      scan explicitly skips external `~/work/<name>` paths as "legitimately
@@ -93,7 +95,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 CURRENCY=0
-for _a in "$@"; do [[ "$_a" == "--currency" ]] && CURRENCY=1; done
+BANDS=0
+for _a in "$@"; do
+    [[ "$_a" == "--currency" ]] && CURRENCY=1
+    [[ "$_a" == "--bands" ]] && BANDS=1
+done
 
 MAIN_ROOT="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
 MEMDIR="$HOME/.claude/projects/${MAIN_ROOT//\//-}/memory"
@@ -263,18 +269,23 @@ else
     fi
     threads=$(grep -oE '\([a-z0-9_-]+\.md\)' "$INDEX" 2>/dev/null | tr -d '()' | sort -u || true)
 fi
+# The landed oracle, shared with the --bands report's SPENT band: no open-work
+# words, at least one cited sha, and every cited sha in main.
+landed_body() {   # landed_body <path>
+    local shas s
+    if grep -qiE "$open_re" "$1"; then return 1; fi      # open-work words → keep
+    shas=$(grep -oiE '\b[0-9a-f]{7,40}\b' "$1" | grep -iE '[a-f]' | sort -u || true)  # need a letter
+    [[ -n "$shas" ]] || return 1
+    while IFS= read -r s; do
+        [[ -z "$s" ]] && continue
+        [[ "$(sha_state "$s")" == 1 ]] || return 1
+    done <<< "$shas"
+    return 0
+}
 while IFS= read -r b; do
     [[ -z "$b" ]] && continue
     tf="$SCAN_DIR/$b"; [[ -f "$tf" ]] || continue
-    if grep -qiE "$open_re" "$tf"; then continue; fi     # open-work words → keep
-    shas=$(grep -oiE '\b[0-9a-f]{7,40}\b' "$tf" | grep -iE '[a-f]' | sort -u || true)  # need a letter
-    [[ -z "$shas" ]] && continue
-    landed=1
-    while IFS= read -r s; do
-        [[ -z "$s" ]] && continue
-        [[ "$(sha_state "$s")" == 1 ]] || { landed=0; break; }
-    done <<< "$shas"
-    if (( landed )); then
+    if landed_body "$tf"; then
         if (( GRAPH )); then
             echo "  landed thread → $(label_of "$b" "$tf") — verify, then delete(kind='memory', id='${b%.md}')"
         else
@@ -447,6 +458,49 @@ if (( GRAPH )) && [[ -n "$MANIFEST" && -n "$SCAN_DIR" ]]; then
         done | awk -F'\t' '{ n[$1]++; hs[$1] = hs[$1] ", " $2 }
                 END { for (p in n) if (n[p] > 1) print p "\t" substr(hs[p], 3) }'
     )
+fi
+
+# Bands (--bands, graph mode, manifest + node bodies): one recency band per
+# node, grouped by hub — docs/backlog/context-memory-hierarchy.md S1. ACTIVE:
+# edited or recalled < 7 days ago, or a threads node with open-work words.
+# SPENT: a threads node landed_body() flags (the check 2 oracle). Else SETTLED.
+# Open work and SPENT are threads-only: runbooks and gotchas cite landed shas
+# as durable knowledge (check 2's note above). A report, not findings.
+if (( BANDS )) && [[ -z "$MANIFEST" ]]; then
+    if (( GRAPH )); then
+        echo "  bands: no node manifest — scripts/hooks/session-start-memory.sh writes it"
+    else
+        echo "  bands: no node manifest — bands need graph mode (file mode has none)"
+    fi
+elif (( BANDS )); then
+    echo "— bands (ACTIVE: edited/recalled < 7 d or open thread · SETTLED · SPENT: landed thread) —"
+    band_now=$(date +%s)
+    # (awk fills empty columns with "-": tab is IFS whitespace, so `read` would
+    # merge them)
+    band_rows=$(while IFS=$'\t' read -r h sec upd hubh acc; do
+        [[ -n "$h" && "$sec" != index ]] || continue
+        tf="$SCAN_DIR/$h.md"
+        band=SETTLED
+        for d in "$upd" "$acc"; do
+            [[ "$d" != - ]] || continue        # GNU date parses a bare "-" as now
+            d_e=$(epoch_of "$d" || true)
+            if [[ -n "$d_e" ]] && (( (band_now - d_e) / 86400 < 7 )); then band=ACTIVE; fi
+        done
+        if [[ "$band" != ACTIVE && "$sec" == threads && -f "$tf" ]]; then
+            if grep -qiE "$open_re" "$tf"; then band=ACTIVE
+            elif landed_body "$tf"; then band=SPENT; fi
+        fi
+        case "$band" in ACTIVE) r=0 ;; SETTLED) r=1 ;; *) r=2 ;; esac
+        printf '%s\t%s\t%s\t%s\n' "$hubh" "$r" "$band" "$h"
+    done < <(awk -F'\t' -v OFS='\t' 'function f(i) { return (NF < i || $i == "") ? "-" : $i }
+        { print $1, f(2), f(3), f(9), f(11) }' "$MANIFEST") | sort -s -t$'\t' -k1,1 -k2,2n)
+    cur_hub=""
+    while IFS=$'\t' read -r hubh _r band h; do
+        [[ -n "$h" ]] || continue
+        [[ "$hubh" == "$cur_hub" ]] || { echo "  hub $hubh"; cur_hub=$hubh; }
+        printf '    %-7s %s\n' "$band" "$(label_of "$h.md" "$SCAN_DIR/$h.md")"
+    done <<< "$band_rows"
+    echo "  bands: $(grep -c $'\tACTIVE\t' <<< "$band_rows" || true) ACTIVE · $(grep -c $'\tSETTLED\t' <<< "$band_rows" || true) SETTLED · $(grep -c $'\tSPENT\t' <<< "$band_rows" || true) SPENT"
 fi
 
 if (( problems == 0 )) && (( GRAPH )); then
