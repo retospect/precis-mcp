@@ -1158,6 +1158,111 @@ def test_dispatch_is_silent_when_an_older_engine_was_never_asked(
     assert "mixtures" not in event
 
 
+def _seeded_dispatch(
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    params: dict[str, Any],
+    *,
+    supported: bool = True,
+) -> tuple[_FakeCtx, dict[str, Any]]:
+    seen: dict[str, Any] = {}
+
+    def _fake_scan(cfg: dict[str, Any], model_index: int, **kw: Any) -> dict[str, Any]:
+        seen.update(config=cfg, kw=kw)
+        cov = _coverage("emt", -0.02)
+        if kw.get("seed") is not None:
+            cov["seed"] = kw["seed"]
+        return {
+            "model": "emt",
+            "model_index": model_index,
+            "coverage": cov,
+            "engine_version": "0.30.0",
+            "corrections": None,
+        }
+
+    monkeypatch.setattr(runner, "run_coverage_scan_subprocess", _fake_scan)
+    monkeypatch.setattr(runner, "coverage_mixtures_supported", lambda: False)
+    monkeypatch.setattr(runner, "coverage_seed_supported", lambda: supported)
+    ctx = _FakeCtx(store=store, params=params)
+    coverage_job._dispatch(ctx, coverage_job.SPEC)
+    assert ctx.status == "succeeded", ctx.failure
+    return ctx, seen
+
+
+def test_dispatch_sends_each_retry_generations_seed_to_the_engine(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr492112: a re-minted scan (``surface_anchors`` retry generation g
+    carries ``params.seed = g``) reaches the engine with its own seed, so
+    the retries are different draws; the seed lands in the job meta and the
+    event line, and the anchor key ignores it (retries pool under one)."""
+    from precis.quest import surface_anchors
+
+    base = {"config": CONFIG}
+    sent: list[Any] = []
+    keys: set[str] = set()
+    for generation in range(surface_anchors.MAX_SCAN_RETRIES + 1):
+        params = surface_anchors._generation_params(dict(base), generation)
+        ctx, seen = _seeded_dispatch(store, monkeypatch, params)
+        sent.append(seen["kw"].get("seed"))
+        assert ctx.meta_updates["seed"] == seen["kw"].get("seed")
+        keys.add(ctx.meta_updates["anchor_key"])
+        if generation:
+            assert f" seed={generation}" in ctx.chunks[0][1]
+        else:
+            assert "seed" not in seen["kw"], "generation 0 stays the unseeded scan"
+            assert "seed" not in ctx.chunks[0][1]
+    assert sent == [None, 1, 2]
+    assert len(set(sent)) == len(sent), "every retry is a different draw"
+    assert len(keys) == 1, "the seed is not part of the anchor key"
+
+
+def test_dispatch_names_a_seed_an_older_engine_cannot_take(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An engine whose scan reads no seed gets none (it would raise on the
+    keyword); the event says the retry repeats the unseeded draw and the
+    meta records no seed."""
+    ctx, seen = _seeded_dispatch(
+        store, monkeypatch, {"config": CONFIG, "seed": 2}, supported=False
+    )
+    assert "seed" not in seen["kw"]
+    assert ctx.meta_updates["seed"] is None
+    assert "seed=2 dropped" in ctx.chunks[0][1]
+
+
+def test_run_coverage_scan_passes_the_seed_to_the_engine_scan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The child's ``run_coverage_scan`` hands ``seed`` to
+    ``autocatpath.coverage.scan`` as its keyword and sends none when
+    unseeded (an older scan takes no such keyword)."""
+    import autocatpath.coverage
+
+    calls: list[dict[str, Any]] = []
+
+    def _scan(cfg: Any, log: Any = print, **kw: Any) -> dict[str, Any]:
+        calls.append(kw)
+        return {"model": "emt", **({"seed": kw["seed"]} if "seed" in kw else {})}
+
+    monkeypatch.setattr(autocatpath.coverage, "scan", _scan)
+    cfg = coverage_job.with_defaults(CONFIG)
+    seeded = runner.run_coverage_scan(cfg, 0, seed=7, log=lambda *a, **k: None)
+    runner.run_coverage_scan(cfg, 0, log=lambda *a, **k: None)
+    assert calls == [{"seed": 7}, {}]
+    assert seeded["coverage"]["seed"] == 7
+
+
+def test_runner_seed_support_matches_the_engine_scan_signature() -> None:
+    import inspect
+
+    from autocatpath.coverage import scan
+
+    assert runner.coverage_seed_supported() == (
+        "seed" in inspect.signature(scan).parameters
+    )
+
+
 def test_runner_mixtures_support_matches_the_engine_config_fields() -> None:
     import dataclasses
 

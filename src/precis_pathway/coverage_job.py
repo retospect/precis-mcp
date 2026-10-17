@@ -11,8 +11,10 @@ once per slab. The job then:
 
 1. stamps the anchor footing onto its meta — ``anchor_key`` (slab +
    adsorbates + coverages + conditions + engine version; the model is NOT
-   in the key so several models pool under one), ``model``,
-   ``engine_version``, ``corrections`` (the correction set the engine ran
+   in the key so several models pool under one), ``model``, ``seed``
+   (the draw ``params.seed`` sent to ``scan(seed=)`` — a retry's fresh
+   start, gr492112; ``None`` unseeded or on an engine that takes none;
+   never in the key), ``engine_version``, ``corrections`` (the correction set the engine ran
    with, ``None`` on an engine that records none) — so every anchor says
    what it was measured on (slice-1 acceptance: one footing);
 2. pools this scan with every earlier succeeded scan on the same
@@ -133,6 +135,10 @@ _PARAMS_SCHEMA: dict[str, Any] = {
         # exported (with its FixAtoms) at put time. Mutually exclusive
         # with slab_extxyz on a put.
         "structure_ref": {"type": ["integer", "null"]},
+        # The engine's random draw (site order + adsorbate rattle) — a
+        # retry's fresh seed (surface_anchors: seed = retry generation).
+        # null → the unseeded scan. Never part of the anchor key.
+        "seed": {"type": ["integer", "null"]},
     },
     "required": ["config"],
     "additionalProperties": True,
@@ -515,11 +521,29 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         )
     else:
         mix_note = ""
+    # A retry's fresh draw (gr492112): surface_anchors stamps seed=g on
+    # retry generation g. It rides scan(seed=), not the config, so the
+    # anchor key above is the same for every generation.
+    asked_seed = params.get("seed")
+    seed = (
+        int(asked_seed)
+        if asked_seed is not None and runner.coverage_seed_supported()
+        else None
+    )
+    if seed is not None:
+        seed_note = f" seed={seed}"
+    elif asked_seed is not None:
+        seed_note = (
+            f" seed={asked_seed} dropped (engine {runner.__version__}'s scan "
+            "takes no seed: this retry repeats the unseeded draw)"
+        )
+    else:
+        seed_note = ""
     ctx.append_chunk(
         "job_event",
         f"{NAME}: {config.get('name', '?')} model#{model_index} "
         f"adsorbates={cov['adsorbates']} "
-        f"coverages={achieved_text}{snap_note}{slab_note}{mix_note} "
+        f"coverages={achieved_text}{snap_note}{slab_note}{mix_note}{seed_note} "
         f"key={anchor_key[:12]}…",
     )
     try:
@@ -527,6 +551,8 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             "force_backend": params.get("force_backend"),
             "slab_extxyz": slab_extxyz,
         }
+        if seed is not None:
+            kw["seed"] = seed
         if timeout_s > 0:
             kw["timeout"] = timeout_s
         if cpuset:
@@ -597,6 +623,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         anchor_key=anchor_key,
         model=model,
         model_index=model_index,
+        seed=seed,
         engine_version=result["engine_version"],
         corrections=result.get("corrections"),
         slab_source=coverage.get("slab_source"),

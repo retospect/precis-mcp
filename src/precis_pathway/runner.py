@@ -822,6 +822,7 @@ def run_coverage_scan(
     *,
     force_backend: str | None = None,
     slab_extxyz: str | None = None,
+    seed: int | None = None,
     log: Any = print,
 ) -> CoverageScanResult:
     """Run catpath's ab-initio-thermodynamics coverage scan
@@ -848,6 +849,15 @@ def run_coverage_scan(
     2026-10-07), so a 0.24.0 anchor is uncorrected whatever the config says
     and must be keyed as such — ``None`` until the engine applies and
     records them (the catpath brief's ask 2).
+
+    ``seed`` goes to ``scan(seed=...)`` as a keyword, never into the
+    config: one ``default_rng(seed)`` drives the engine's site order and
+    adsorbate rattle (engine >= 0.30.0, which records it as
+    ``coverage.json['seed']``), and keeping it out of the config keeps it
+    out of :func:`coverage_anchor_key`, so the retries of one anchor set
+    pool under one key (gr492112). ``None`` sends no keyword: the unseeded
+    scan, and the only call an older engine accepts — the caller gates on
+    :func:`coverage_seed_supported`.
     """
     from autocatpath.calculators import resolve_backend
     from autocatpath.coverage import scan
@@ -865,7 +875,7 @@ def run_coverage_scan(
     prepared = _stamp_slab(cfg, slab_extxyz)
     c = copy.deepcopy(prepared.cfg)
     c.mlip.backend, c.mlip.model, c.mlip.models = resolved, model, []
-    data = scan(c, log=log)
+    data = scan(c, log=log) if seed is None else scan(c, log=log, seed=seed)
     corrections = data.get("corrections")
     return {
         "model": str(
@@ -890,20 +900,22 @@ def run_coverage_scan_subprocess(
     *,
     force_backend: str | None = None,
     slab_extxyz: str | None = None,
+    seed: int | None = None,
     timeout: int = _DEFAULT_COVERAGE_TIMEOUT_S,
     cpuset: str | None = None,
 ) -> CoverageScanResult:
     """:func:`run_coverage_scan` in a fresh, killable child — the same
     ``python -m precis_pathway.runner`` entrypoint and isolation argument as
     :func:`run_seed_partial_subprocess` (gr191351: never load MACE/CUDA in
-    the long-lived worker). ``slab_extxyz`` rides the request envelope the
-    same way the seed child's does."""
+    the long-lived worker). ``slab_extxyz`` and ``seed`` ride the request
+    envelope the same way the seed child's do."""
     request = {
         "mode": "coverage",
         "config": config,
         "model_index": model_index,
         "force_backend": force_backend,
         "slab_extxyz": slab_extxyz,
+        "seed": seed,
     }
     result = _run_request_subprocess(
         request,
@@ -1504,6 +1516,18 @@ def coverage_mixtures_supported() -> bool:
     return "mixtures" in {f.name for f in dataclasses.fields(CoverageConfig)}
 
 
+def coverage_seed_supported() -> bool:
+    """Whether the installed engine's scan takes ``seed`` (gr492112) —
+    feature-detected on ``scan``'s signature, the keyword
+    :func:`run_coverage_scan` passes; an older scan raises ``TypeError``
+    on it, so the request side must not send it there."""
+    import inspect
+
+    from autocatpath.coverage import scan
+
+    return "seed" in inspect.signature(scan).parameters
+
+
 def _import_kinetics() -> Any:
     """The ``autocatpath.kinetics`` module, or ``None`` when the deployed
     engine predates it (the module shipped in engine 0.15.0; the fleet's
@@ -1795,6 +1819,7 @@ def _subprocess_main(argv: list[str]) -> int:
                     int(req.get("model_index", 0)),
                     force_backend=req.get("force_backend"),
                     slab_extxyz=req.get("slab_extxyz"),
+                    seed=req.get("seed"),
                     log=lambda *a, **k: print(*a, **k),
                 )
             )
