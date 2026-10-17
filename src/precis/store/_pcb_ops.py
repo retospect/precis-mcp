@@ -4626,6 +4626,8 @@ class PcbMixin:
         stackup: list[dict[str, Any]],
         *,
         conn: Connection | None = None,
+        preset: str | None = None,
+        sides: str | None = None,
     ) -> None:
         """Replace a board's layer stackup — the write half of
         ``put(args={'op':'stackup'})``, the counterpart to the
@@ -4640,20 +4642,41 @@ class PcbMixin:
 
         Reuses ``conn`` when called inside an existing transaction — see
         :meth:`pcb_assign_plane` for why the ``.epro2`` import needs the
-        design, the stackup and the planes to land together."""
+        design, the stackup and the planes to land together.
+
+        ``preset`` (``op='stackup', preset=``; pcb-stackup-regions slice 3)
+        records the preset name and its ``sides`` on ``pcb_boards.meta``
+        (``stackup_preset``, ``placement_sides``) so ``view='stackup'`` can
+        name it; a stackup written without one drops the preset label."""
         if conn is not None:
-            self._pcb_set_stackup(conn, board_id, stackup)
+            self._pcb_set_stackup(conn, board_id, stackup, preset, sides)
             return
         with self._pcb_tx() as c:
-            self._pcb_set_stackup(c, board_id, stackup)
+            self._pcb_set_stackup(c, board_id, stackup, preset, sides)
 
     def _pcb_set_stackup(
-        self, conn: Connection, board_id: int, stackup: list[dict[str, Any]]
+        self,
+        conn: Connection,
+        board_id: int,
+        stackup: list[dict[str, Any]],
+        preset: str | None = None,
+        sides: str | None = None,
     ) -> None:
+        if preset is None:
+            conn.execute(
+                "UPDATE pcb_boards SET stackup = %s, meta = meta - 'stackup_preset' "
+                "WHERE board_id = %s AND retired_at IS NULL",
+                (Jsonb(stackup), board_id),
+            )
+            return
         conn.execute(
-            "UPDATE pcb_boards SET stackup = %s "
+            "UPDATE pcb_boards SET stackup = %s, meta = meta || %s::jsonb "
             "WHERE board_id = %s AND retired_at IS NULL",
-            (Jsonb(stackup), board_id),
+            (
+                Jsonb(stackup),
+                Jsonb({"stackup_preset": preset, "placement_sides": sides or "both"}),
+                board_id,
+            ),
         )
 
     def pcb_measures_list(self, ref_id: int) -> list[dict[str, Any]]:

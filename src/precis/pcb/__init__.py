@@ -340,33 +340,108 @@ def format_warm_start(report: list[dict[str, Any]] | None) -> list[str]:
     return lines
 
 
-#: The v1 default stackup (pcb-guided-place-route Slice 1) — 4-layer rigid
-#: FR-4, SIG/GND/PWR/SIG. Roles only (no material/thickness_mm) in v1; the
-#: schema (``pcb_boards.stackup``) is shaped to carry dielectric detail
-#: later. This is the single Python-side source of truth; migration
-#: 0138_pcb_boards_routes.sql inlines the same JSON literal for backfill —
-#: keep the two in sync by eye.
+#: Route cost of In1.Cu in the hybrid preset, as a multiple of the base maze
+#: step (pcb-stackup-regions rulings: "about 2-3x", "high cost does not need
+#: to be massively high"). Slice 1's table could not tune it (no board there
+#: routed on In1), so this is the middle of the ruled band.
+HYBRID_IN1_ROUTE_COST = 2.5
+
+#: The net the stackup presets fill with and plane on. ``op='stackup',
+#: preset=, ground=`` substitutes another name for a board whose ground net
+#: is called something else.
+PRESET_GROUND_NET = "GND"
+
+#: Named stackups ``put(args={'op':'stackup','preset':...})`` writes
+#: (pcb-stackup-regions slice 3, Reto's rulings 2026-10-16):
 #:
-#: **``role`` alone answers two questions, and a layer here only ever
-#: gets ONE of them** (F.Cu/B.Cu: may be routed, never poured; In1.Cu/
-#: In2.Cu: may be poured, never routed) — that split is exactly what
-#: keeps this fixed default backward compatible, not a hard limit of the
-#: engine. :func:`precis.pcb.ir.layer_is_routable`/:func:`~precis.pcb.ir.
+#: - ``4l-two-sided`` — the hybrid (ruled the default; see
+#:   :data:`DEFAULT_STACKUP` for why it is not yet). F.Cu/B.Cu
+#:   signal with a GND ``fill``; In1.Cu a GND plane that also routes at
+#:   :data:`HYBRID_IN1_ROUTE_COST`; In2.Cu carries derived power regions
+#:   (``power_regions``) with GND filling whatever no region claims. Sides
+#:   on (slice 5 reads the board's ``placement_sides``).
+#: - ``4l-top-only`` — the same copper, parts on the top side only.
+#: - ``2l`` — two signal layers, each with a GND fill.
+#:
+#: ``direction`` gives each routable layer its axis (h/v alternating down the
+#: stack, so a via between neighbours always hands off between axes).
+STACKUP_PRESETS: dict[str, list[dict[str, Any]]] = {
+    "4l-two-sided": [
+        {"name": "F.Cu", "role": "signal", "direction": "h", "fill": "GND"},
+        {
+            "name": "In1.Cu",
+            "role": "plane",
+            "plane_net": "GND",
+            "routable": True,
+            "direction": "h",
+            "route_cost": HYBRID_IN1_ROUTE_COST,
+        },
+        {
+            "name": "In2.Cu",
+            "role": "plane",
+            "direction": "v",
+            "fill": "GND",
+            "power_regions": True,
+        },
+        {"name": "B.Cu", "role": "signal", "direction": "v", "fill": "GND"},
+    ],
+    "2l": [
+        {"name": "F.Cu", "role": "signal", "direction": "h", "fill": "GND"},
+        {"name": "B.Cu", "role": "signal", "direction": "v", "fill": "GND"},
+    ],
+}
+STACKUP_PRESETS["4l-top-only"] = [dict(e) for e in STACKUP_PRESETS["4l-two-sided"]]
+
+#: Which board sides a preset places parts on (``pcb_boards.meta
+#: ['placement_sides']``; slice 5's side flip reads it).
+PRESET_SIDES: dict[str, str] = {
+    "4l-two-sided": "both",
+    "4l-top-only": "top",
+    "2l": "both",
+}
+
+
+def stackup_preset(
+    name: str, *, ground: str = PRESET_GROUND_NET
+) -> list[dict[str, Any]]:
+    """A fresh copy of preset ``name`` with its ground net renamed to
+    ``ground``. Raises ``KeyError`` for an unknown name."""
+    out = []
+    for entry in STACKUP_PRESETS[name]:
+        e = dict(entry)
+        for key in ("plane_net", "fill"):
+            if e.get(key) == PRESET_GROUND_NET:
+                e[key] = ground
+        out.append(e)
+    return out
+
+
+#: The default stackup every board is born with — still the v1 SIG/GND/
+#: PWR/SIG literal migration 0138 inlined for its backfill (keep the two in
+#: sync by eye). pcb-stackup-regions slice 3 rules the ``4l-two-sided``
+#: hybrid the default, but switching was measured on the nano board first
+#: and lost routed nets against its one-way floor (the table in the spec),
+#: so the switch waits on Reto; the hybrid is ``op='stackup',
+#: preset='4l-two-sided'`` meanwhile. On this legacy stackup In1's
+#: ``plane_net`` is a declaration ``op='stackup'`` mirrors into
+#: ``pcb_planes`` — the router does not pour it without a row (gr495287;
+#: :func:`precis.pcb.planes.resolve_assignments`).
+#:
+#: **``role`` answers two questions; the explicit flags split them.**
+#: :func:`precis.pcb.ir.layer_is_routable`/:func:`~precis.pcb.ir.
 #: layer_is_pourable` answer "may this layer carry a routed trace" and
 #: "may the AUTOMATIC annealer choose this layer to pour on its own" as
-#: two INDEPENDENT questions: a stackup author who wants the standard
-#: 4-layer arrangement a real board actually uses (signal traces flowing
-#: AROUND a GND/PWR copper fill on the SAME outer layer, plus routed
-#: inner layers) sets an explicit ``"routable": True``/``"pourable":
-#: True`` on a layer to add the OTHER capability without losing the one
-#: ``role`` already implies — see those two functions' docstrings. A
-#: human ``op='plane_net'`` instruction is honoured on any stackup layer
-#: regardless of either flag (:func:`~precis.pcb.ir.layer_is_pourable`'s
-#: own docstring); only the automatic annealer's own guesses are gated.
-#: A third entry key, ``pour_nets``, records net(s) an import found
-#: carried by a board-covering fill on a signal layer (gr486958) — the
-#: import assigns exactly one such net through ``pcb_planes`` exactly
-#: like ``op='plane_net'``; several on one layer are recorded only.
+#: two INDEPENDENT questions, falling back to ``role`` when the key is
+#: absent. A human ``op='plane_net'`` instruction is honoured on any layer
+#: regardless of either flag; only the annealer's own guesses are gated.
+#:
+#: The other entry keys (:data:`precis.pcb.ir.STACKUP_LAYER_KEYS`):
+#: ``plane_net`` (the layer's whole-board plane), ``fill`` (the net that
+#: pours whatever area no plane or region claims, after routing),
+#: ``power_regions`` (derive power-net regions here,
+#: :func:`precis.pcb.planes.derive_regions`), ``direction``, ``reference``,
+#: ``route_cost``, and ``pour_nets`` — net(s) an import found carried by a
+#: board-covering fill on a signal layer (gr486958).
 DEFAULT_STACKUP: list[dict[str, Any]] = [
     {"name": "F.Cu", "role": "signal"},
     {"name": "In1.Cu", "role": "plane", "plane_net": "GND"},

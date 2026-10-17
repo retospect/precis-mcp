@@ -5750,6 +5750,9 @@ def _ir_state_snapshot(ir: PcbIR) -> dict[str, Any]:
         "via_layer_span": ir.via_layer_span.copy(),
         "outline": list(ir.outline) if ir.outline else None,
         "stackup": [dict(layer) for layer in ir.stackup],
+        # The region/priority of each plane bit travels with the bit: a
+        # restored bit without it would pour the whole board.
+        "plane_regions": dict(ir.plane_regions),
     }
 
 
@@ -5759,12 +5762,13 @@ def _ir_state_restore(ir: PcbIR, snap: dict[str, Any]) -> None:
     (finer-grained accounting is the engine's, and the engine is
     rebuilt after a restore anyway)."""
     for field_name, value in snap.items():
-        if field_name in ("outline", "stackup"):
+        if field_name in ("outline", "stackup", "plane_regions"):
             continue
         arr = getattr(ir, field_name)
         arr[:] = value
     ir.outline = list(snap["outline"]) if snap["outline"] else None
     ir.stackup = [dict(layer) for layer in snap["stackup"]]
+    ir.plane_regions = dict(snap.get("plane_regions") or {})
     for mask in (ir.dirty_l1, ir.dirty_l2, ir.dirty_l3, ir.dirty_l4, ir.dirty_l5):
         mask[:] = True
 

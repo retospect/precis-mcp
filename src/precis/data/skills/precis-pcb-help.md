@@ -214,8 +214,10 @@ Field notes:
   4-layer rigid FR-4 stackup `F.Cu`/`In1.Cu(GND)`/`In2.Cu`/`B.Cu`) on first
   `put` — the netlist≠board hedge for future multi-board work; v1 is one
   board per design. That default has only TWO routing layers (both inner
-  layers are planes); change it with `put(args={'op':'stackup', ...})` —
-  see [[precis-pcb-route-help]]. On a board whose front is spoken for,
+  layers are planes, and In1's GND pours only once a `pcb_planes` row says
+  so); change it with `put(args={'op':'stackup', ...})`, or
+  `args={'op':'stackup','preset':'4l-two-sided'}` for the hybrid that pours
+  every layer — see [[precis-pcb-route-help]]. On a board whose front is spoken for,
   opening an inner signal layer is usually the difference between routing
   and not.
 - **`nets[].domain`** — only `'electrical'` (the default) is accepted

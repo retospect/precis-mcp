@@ -65,6 +65,7 @@ from typing import TYPE_CHECKING, Any
 from precis.pcb import DANGLING_NET_NOTE, format_warm_start
 from precis.pcb import feedback as pcb_feedback
 from precis.pcb import matching as pcb_matching
+from precis.pcb import maze as pcb_maze
 from precis.pcb import pinswap as pcb_pinswap
 from precis.pcb import planes as pcb_planes
 from precis.pcb import realize as pcb_realize
@@ -117,7 +118,10 @@ log = logging.getLogger(__name__)
 #     or more DRC errors) is not committed (gr480010).
 # 9 = supply/client matching assigns pins before routing; PIN_SWAP anneal
 #     move removed (pcb-lazy-netlist-and-checks Slice 6).
-CODE_VERSION = 9
+# 10 = stackup plane_net/fill pour without a pcb_planes row, derived power
+#      regions, stackup direction/route_cost, bare islands dropped after
+#      stitching (pcb-stackup-regions slices 3-4).
+CODE_VERSION = 10
 
 PARAMS_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -147,6 +151,9 @@ PARAMS_SCHEMA: dict[str, Any] = {
             "type": "object",
             "additionalProperties": {"type": "number", "minimum": 1},
         },
+        # Cross-grain step multiplier (RealizeConfig.off_axis_penalty;
+        # pcb-stackup-regions slice 3): absent = maze.OFF_AXIS_PENALTY.
+        "off_axis": {"type": "number", "minimum": 1},
         # The route -> penalise -> anneal -> route outer loop
         # (optimize.anneal_route_loop): 0 = the single anneal+realize
         # (default), 1..LOOP_MAX_ROUNDS = that many budgeted rounds.
@@ -929,26 +936,40 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     # all (79 PLANE_PROMOTE proposals over 3000 iterations, all rejected
     # on cost), so an unlocked authored net's PLANE_DEMOTE is accepted
     # immediately and permanently, every run.
-    net_name_to_id = {str(ir.net_name[n]): n for n in range(ir.n_nets)}
-    layer_name_to_idx = {
-        str(layer.get("name")): i for i, layer in enumerate(ir.stackup)
-    }
-    authored_net_names: set[str] = set()
-    for plane in snap.planes:
-        net_id = net_name_to_id.get(plane["net"])
-        layer_idx = layer_name_to_idx.get(plane["layer"])
-        if net_id is not None and layer_idx is not None:
-            ir.promote_plane(net_id, layer_idx)
-        if plane.get("source", "authored") != "derived":
-            authored_net_names.add(plane["net"])
+    #
+    # The stackup's own `plane_net` and `fill` declarations are applied the
+    # same way and locked like authored rows (pcb-stackup-regions slices
+    # 3-4; gr495287: the default stackup's In1 GND was never read, so GND
+    # routed as traces and In1 stayed empty).
+    applied = pcb_session.apply_plane_assignments(ir, snap.planes)
+    authored_net_names = set(applied.locked_names)
+    # Only locked nets are (see the comment above) -- a derived assignment
+    # (this run's own prior write-back) must stay fully explorable, which
+    # is the whole distinction `meta.source` exists to carry.
+    locked_plane_nets = applied.locked
+    # A prior run's derived power regions are a warm start only: they are
+    # re-derived for the settled placement right before realize.
+    region_notes: list[str] = []
 
-    # Only AUTHORED nets are locked (see the comment above) -- a derived
-    # assignment (this run's own prior write-back) must stay fully
-    # explorable, which is the whole distinction `meta.source` exists to
-    # carry.
-    locked_plane_nets = frozenset(
-        net_name_to_id[name] for name in authored_net_names if name in net_name_to_id
-    )
+    def _apply_derived_regions(ir_: PcbIR) -> None:
+        """Re-derive the power regions for ``ir_``'s current placement
+        (:func:`precis.pcb.realize.derive_power_regions`; pcb-stackup-
+        regions slice 4). Every unlocked net poured inside a region is
+        demoted first, so a net whose region no longer fits routes as
+        traces; deterministic in the placement, so deriving twice for one
+        placement gives the same regions."""
+        stale = {
+            net
+            for (net, _layer), (region, _prio) in ir_.plane_regions.items()
+            if region is not None and net not in locked_plane_nets
+        }
+        for n in sorted(stale):
+            ir_.demote_plane(n)
+        regions, notes = pcb_realize.derive_power_regions(ir_, realize_config)
+        for n, layer, region in regions:
+            ir_.promote_plane(n, layer, region=region.region, priority=region.priority)
+        region_notes[:] = notes
+
     # Same authored-measure enforcement as pcb_place's anneal — without
     # this, the route job's re-place pass would silently undo whatever a
     # proximity/separation measure had just pulled into shape (one rule,
@@ -1103,12 +1124,13 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             (str(name), float(mult))
             for name, mult in sorted((params.get("layer_cost") or {}).items())
         ),
+        off_axis_penalty=float(params.get("off_axis") or pcb_maze.OFF_AXIS_PENALTY),
     )
     # `footprints` (the same refdes-keyed pad geometry PIN_SWAP's feed
     # above also used) was resolved earlier, before the anneal — see that
     # block's own comment for why.
 
-    def _settled_writebacks() -> dict[str, str]:
+    def _settled_writebacks() -> dict[str, Any]:
         """The anneal's settled plane decisions, diffed for
         write-back — read off the CURRENT ``ir``: the single path's
         post-anneal state, or the loop's restored best round."""
@@ -1132,12 +1154,22 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         # store-side change (multi-layer fill for one net is carried entirely
         # by the AUTHORED path — see `handlers/pcb.py::_op_plane_net`, called
         # once per desired layer, each landing its own `pcb_planes` row).
-        derived = {
-            str(ir.net_name[n]): str(ir.stackup[layer]["name"])
-            for n in range(ir.n_nets)
-            if str(ir.net_name[n]) not in authored_net_names
-            for layer in plane_layers_of(int(ir.net_plane_layers[n]))
-        }
+        #
+        # A derived power region (pcb-stackup-regions slice 4) rides the
+        # same row as its region and priority.
+        derived: dict[str, Any] = {}
+        for n in range(ir.n_nets):
+            name = str(ir.net_name[n])
+            if name in authored_net_names:
+                continue
+            for layer in plane_layers_of(int(ir.net_plane_layers[n])):
+                layer_name = str(ir.stackup[layer]["name"])
+                region, priority = ir.plane_regions.get((n, layer), (None, 0))
+                derived[name] = (
+                    {"layer": layer_name, "region": region, "priority": priority}
+                    if region is not None or priority
+                    else layer_name
+                )
         return derived
 
     def _post_anneal_collision_check() -> bool:
@@ -1274,6 +1306,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         n_nets_total = len({int(ir.seg_net[s]) for s in range(ir.n_segments)})
 
         def _route_once(ir_: PcbIR) -> RouteOutcome:
+            _apply_derived_regions(ir_)
             n_err, report = _placement_gate()
             round_gates.append((n_err, report))
             round_states.append(_ir_state_snapshot(ir_))
@@ -1363,6 +1396,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             )
         if _post_anneal_collision_check():
             return
+        _apply_derived_regions(ir)
         derived_assignments = _settled_writebacks()
     else:
         pose_before.append((ir.inst_x.copy(), ir.inst_y.copy(), ir.inst_rot.copy()))
@@ -1382,6 +1416,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             ]
         if _post_anneal_collision_check():
             return
+        _apply_derived_regions(ir)
         derived_assignments = _settled_writebacks()
         n_placement_errors, placement_report = _placement_gate()
         if n_placement_errors and not force:
@@ -1552,6 +1587,21 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     unstitched_fail: dict[str, list[dict[str, Any]]] = {}
     unstitched_note: dict[str, str] = {}
     pour_note = pcb_planes.pour_notes(rres.pour_quality)
+    # Pour pieces nothing could reach, removed after stitching
+    # (pcb-floating-pour-island: drop only what cannot be stitched, and say
+    # so — silently deleted copper is invisible until someone measures the
+    # gerbers).
+    dropped_by_net: dict[str, list[str]] = {}
+    for gone in rres.dropped_islands:
+        dropped_by_net.setdefault(gone.net, []).append(gone.phrase())
+    for net_name, pieces in dropped_by_net.items():
+        clause = (
+            f"dropped {len(pieces)} unreachable island(s): {'; '.join(pieces[:6])}"
+            + (f" (+{len(pieces) - 6} more)" if len(pieces) > 6 else "")
+        )
+        pour_note[net_name] = (
+            f"{pour_note[net_name]}; {clause}" if net_name in pour_note else clause
+        )
     for u in rres.unstitched:
         if u.fragments - u.bare_fragments > 1:
             unstitched_fail.setdefault(u.net, []).append(
@@ -1754,6 +1804,17 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     # refused (gr472108): say so, or a "no gain" reads as a routing result.
     for drop in rres.class_layer_drops:
         pin_swap_summary += f"\nwarning: {drop}"
+    # Plane assignments the stackup declares but cannot pour, and power
+    # nets left without a derived region (pcb-stackup-regions slices 3-4).
+    for note in applied.notes:
+        pin_swap_summary += f"\nplanes: {note}"
+    for note in region_notes:
+        pin_swap_summary += f"\nregions: {note}"
+    if rres.dropped_islands:
+        pin_swap_summary += (
+            f"\nplanes: dropped {len(rres.dropped_islands)} unreachable pour "
+            "island(s) after stitching (see each net's note)"
+        )
     if unmatched_sketch:
         pin_swap_summary += (
             f"\nwarning: {unmatched_sketch} stored layer/side sketch "

@@ -159,57 +159,49 @@ Owning files: `src/precis/pcb/realize.py`, `src/precis/pcb/drc.py`,
 `src/precis/pcb/maze.py` (grid claims), `src/precis/handlers/pcb.py`
 (`view='planes'`), `tests/test_pcb_planes.py`, `tests/test_pcb_drc*.py`.
 
-### Slice 2 — lock and region columns (schema; lands via `/go`)
+### Slice 2 — lock and region columns
 
-**Shipped 2125d4e62** (migration `0219_pcb_locks_regions.sql`); spec below
-is the record, delete this slice when slice 3 starts.
-`docs/reference/schema.md` is generated from prod; regenerate after deploy.
-
-One forward-only migration, next free number at build time (main's highest
-was 0218 on 2026-10-16; re-check `origin/main`):
-
-- `pcb_instances.fixed_side boolean NOT NULL DEFAULT false`.
-- `pcb_instances.max_travel_mm double precision NULL` (null = free;
-  `CHECK (max_travel_mm IS NULL OR max_travel_mm >= 0)`), backfilled from
-  today's instance `meta->'max_travel_mm'` leash; `ir.from_graph` reads the
-  column, and the meta key is no longer written.
-- `pcb_instances.room_id` → the room's `pcb_features` row (`ON DELETE SET
-  NULL`); if `pcb_features.ftype` is CHECK-constrained, admit `'room'` in
-  the same migration.
-- `pcb_instances.group_fixed boolean NOT NULL DEFAULT false` (the group
-  moves only as a unit, never member by member).
-- `pcb_planes.region jsonb NULL` (null = whole board) and
-  `pcb_planes.priority int NOT NULL DEFAULT 0`. The existing
-  `region_hint jsonb` from 0138 is either migrated into `region` or
-  documented as superseded in the same migration.
-
-Storage and views only — **no placer or router behaviour changes**. Today's
-placer never flips a part, so `fixed_side` is trivially honoured; the leash
-reads the column with the same semantics as the meta key.
-
-Put surface: `op='move'` accepts `side='top'|'bottom'` (through the existing
-`store._pcb_ops.pcb_move_instance(layer=)`) and `fixed_side=true|false`;
-`max_travel_mm` writes the column (explicit null clears it). Validation in
-`handlers/pcb.py` refuses a bad side, a negative leash, a `room_id` that is
-not a room feature on the same board, and `side=` on a through-hole part.
-Views: the board TOC and `view='placement'` print side and lock set per
-part (`locked` / `leash N mm` / `free`, plus `side-locked`); `view='planes'`
-prints region and priority.
-
-Acceptance criteria:
-- Migration applies on a dev DB copy with existing boards; every
-  meta leash survives as the column value (asserted in a migration test).
-- `op='move' side='bottom'` mirrors the part's pads (store round-trip) and
-  `fixed_side=true` reads back; each refusal above has a test.
-- The nano and esp32c3 place/route runs are bit-for-bit unchanged.
-- Ships through `/go` (qgo-guard refuses migrations elsewhere).
-
-Owning files: `src/precis/migrations/<next>_pcb_locks_regions.sql`,
-`src/precis/store/_pcb_ops.py`, `src/precis/pcb/ir.py`,
-`src/precis/handlers/pcb.py`, `docs/reference/schema.md` (regenerated),
-skill `precis-pcb-route-help` (lock levels), tests beside each.
+Shipped 2125d4e62 (migration `0219_pcb_locks_regions.sql`: `pcb_instances`
+`fixed_side`/`max_travel_mm`/`room_id`/`group_fixed`, `pcb_planes.region`/
+`priority`). `git show 2125d4e62` is the record.
 
 ### Slice 3 — stackup spec keys, hybrid default, presets
+
+**Built 2026-10-17, unlanded (g-stackup-plane, overnight commit-only),
+except the default switch.** Keys `direction`/`reference`/`route_cost`
+plus `fill` and `power_regions` (the hybrid needs a way to say "GND fill"
+and "power regions here"); `maze`/`globalplan` read `direction`; off-axis
+multiplier is the route param `off_axis`, per-layer cost the stackup's
+`route_cost` (run param `layer_cost` overrides); `op='stackup', preset=`
+(`ground=` renames GND) with the preset and its sides on
+`pcb_boards.meta`. **`DEFAULT_STACKUP` is NOT switched**: the measurement
+below loses nano nets against its one-way floor, so the hybrid is the
+`4l-two-sided` preset until Reto rules. For the same reason a LEGACY
+stackup's `plane_net` without a row still pours nothing (gr495287's
+half); a preset's does. Measured on nano, nano-r2 and esp32c3 (seed 1,
+place+route through the jobs; `A` = legacy default as stored, the floor
+baseline):
+
+| board | stackup | routed/failed | vias | DRC errors | notable warns |
+|---|---|---|---|---|---|
+| nano | A legacy, no plane rows | 35/29 | 92 | 78 | clearance 9 |
+| nano | B legacy + In1 GND poured (gr495287 alone) | **38/26** | 130 | 74 | silk_edge_clearance **6 > floor 3** |
+| nano | C In1 GND plane, routable 2.5x | 35/29 | 124 | 78 | clearance 10 > floor 9 |
+| nano | D C + GND fills | 32/32 | 202 | 79 | clearance **286** |
+| nano | E full hybrid (D + In2 regions) | **31/33** | 122 | 85 | clearance 9 |
+| nano | F hybrid, In1 not routable | 34/30 | 238 | 74 | clearance 271 |
+| nano | G fills, In1 not routable, no regions | **37/27** | 261 | 80 | clearance 287 |
+| nano-r2 | A / B / C | 35/37, 35/37, 32/40 | 104/114/101 | 106/107/110 | — |
+| nano-r2 | D, E, F, G | route refused: anneal parks C_AVCC 0.04 mm outside the outline | — | — | — |
+| esp32c3 | A / C | 11/0, 11/0 | 21 / 37 | 0 / 0 | — |
+| esp32c3 | D / E | 11/0, 11/0 | 72 / 72 | 0 / 0 | clearance 71 |
+
+Read: In1 routable costs nano 3 nets (B 38 → C 35); fills cost 3 more and
+regions 1 more. The fills' clearance warns are pours cut at the router's
+clearance (0.100 mm) under the 0.150 mm house tier — fix before any
+default switch. Not measured: taz15 (prod export), EWOD replay (no GND
+net, so no fill or plane changes), usbc-attiny-dogfood-b (prod; needs
+`op='stackup', preset='4l-two-sided'` to pour all four layers).
 
 Add `direction` (`'h'|'v'|'d'|'any'|<angle_deg>`) and `reference` (layer
 name; default the nearest layer whose pour covers most of the board) to
@@ -237,6 +229,21 @@ Owning files: `src/precis/pcb/__init__.py` (`DEFAULT_STACKUP`),
 [pcb-layer-preferred-direction](pcb-layer-preferred-direction.md).
 
 ### Slice 4 — derived pour regions
+
+**Built 2026-10-17, unlanded (g-stackup-plane), no migration** (0219's
+columns carry region/priority; `content_hash` is code). `plane_pours`
+takes `PourSpec`s (region, priority; several nets per layer; a stackup
+`fill` at priority -1 takes what is left); `derive_regions` +
+`realize.derive_power_regions` (concave hull of the net's pins dilated by
+two drop-via steps, priority = pin count, a net that does not fit routes
+as traces), re-derived per route right before realize and written back as
+derived rows; the fan-out searches only inside a net's region; the
+`op='plane_net'` guard is one net per region; `view='planes'` lists every
+effective pour (rows, `stackup`, `fill`, regions) with priority and area;
+DRC `pour_fragmented` (warn). Islands: a pour piece no via, track, pad or
+fixed copper reaches after the last stitch round is dropped and named in
+the net's route note (pcb-floating-pour-island). Left: import does not yet
+carry each fill polygon as a region row (taz15 mixed layers).
 
 Needs slice 2's columns. `planes.plane_pours` takes regions: pour = region ∩
 outline-inset − foreign copper, highest priority first, lower-priority

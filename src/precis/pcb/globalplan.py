@@ -671,16 +671,21 @@ class PlanResult:
     assignment: dict[int, int] = field(default_factory=dict)
 
 
-def _off_axis(pref: str | None, dx: int) -> float:
-    """Step multiplier for a tile edge along +x (``dx`` true) or +y."""
+def _off_axis(
+    pref: str | None, dx: int, off_axis: float = maze.OFF_AXIS_PENALTY
+) -> float:
+    """Step multiplier for a tile edge along +x (``dx`` true) or +y.
+    ``off_axis`` is the board's cross-grain multiplier (pcb-stackup-regions
+    slice 3); ``pref`` comes from the stackup's ``direction`` via
+    :func:`precis.pcb.realize._layer_preferences`."""
     if pref == maze.PREF_H:
-        return 1.0 if dx else maze.OFF_AXIS_PENALTY
+        return 1.0 if dx else off_axis
     if pref == maze.PREF_V:
-        return maze.OFF_AXIS_PENALTY if dx else 1.0
+        return off_axis if dx else 1.0
     if pref == maze.PREF_DIAG:
         # A 4-adjacency tile graph has no diagonal edges; both axes pay
         # the "not what this layer is for" price uniformly.
-        return maze.DIAGONAL_PENALTY
+        return min(maze.DIAGONAL_PENALTY, off_axis)
     return 1.0
 
 
@@ -695,6 +700,7 @@ def plan_routes(
     pres_growth: float = PRES_GROWTH,
     hist_fac: float = HIST_FAC,
     via_cost_mm: float = maze.VIA_COST_MM,
+    off_axis_penalty: float = maze.OFF_AXIS_PENALTY,
 ) -> PlanResult:
     """PathFinder over the tile graph. Iteration 0 routes every net; later
     iterations rip up and re-route only the nets that ended the previous
@@ -738,10 +744,16 @@ def plan_routes(
     pres = pres_fac0
     pref = {li: (layer_prefs or {}).get(layer) for li, layer in enumerate(graph.layers)}
     cost_x = np.array(
-        [graph.tile_mm * _off_axis(pref[li], True) for li in range(len(graph.layers))]
+        [
+            graph.tile_mm * _off_axis(pref[li], True, off_axis_penalty)
+            for li in range(len(graph.layers))
+        ]
     )
     cost_y = np.array(
-        [graph.tile_mm * _off_axis(pref[li], False) for li in range(len(graph.layers))]
+        [
+            graph.tile_mm * _off_axis(pref[li], False, off_axis_penalty)
+            for li in range(len(graph.layers))
+        ]
     )
 
     def ux(li: int, ty: int, tx: int) -> int:
@@ -1536,6 +1548,7 @@ def corridor_attempt(
             if config.preferred_directions
             else None
         ),
+        off_axis_penalty=config.off_axis_penalty,
     )
     if not plan.paths:
         return None

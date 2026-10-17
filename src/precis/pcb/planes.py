@@ -75,7 +75,8 @@ from typing import Any
 # same reason. Boolean geometry on real polygons is what this module is,
 # and hand-rolling it would be a second, worse implementation of a
 # dependency the project already takes.
-from shapely.geometry import MultiPolygon, Polygon
+from shapely import concave_hull
+from shapely.geometry import MultiPoint, MultiPolygon, Point, Polygon
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import unary_union
 
@@ -102,6 +103,16 @@ def _as_polygons(geom: BaseGeometry) -> list[Polygon]:
     if isinstance(geom, MultiPolygon):
         return list(geom.geoms)
     return []
+
+
+def _polygonal(geom: BaseGeometry) -> BaseGeometry:
+    """``geom`` with any non-areal members of a collection dropped (an
+    intersection of two polygons can come back as a collection carrying a
+    touching edge or point)."""
+    if isinstance(geom, Polygon | MultiPolygon):
+        return geom
+    parts = [g for g in getattr(geom, "geoms", []) if isinstance(g, Polygon)]
+    return unary_union(parts) if parts else Polygon()
 
 
 def _ring(coords: Any) -> list[list[float]]:
@@ -133,14 +144,73 @@ def _pour_item(frag: Polygon, layer_name: str, net: str) -> dict[str, Any]:
     return item
 
 
+#: Pour priority of a stackup ``fill`` (pcb-stackup-regions slice 3/4):
+#: below every plane (default 0) and every derived region (priority = pin
+#: count, so >= 2), so a fill takes only the area nothing else claims —
+#: Reto's "any copper area with no assigned net region pours GND".
+FILL_PRIORITY = -1
+
+
+@dataclass(frozen=True, slots=True)
+class PourSpec:
+    """One net to pour on one layer (pcb-stackup-regions slice 4).
+
+    ``region`` is the fill region (:func:`region_polygon` reads it), ``None``
+    for the whole board. Higher ``priority`` pours first; a lower one is
+    cleared around everything poured before it on the same layer, by
+    ``clearance_mm`` (KiCad/TopoR zone semantics). Several nets share a layer
+    when their regions leave each other room."""
+
+    layer: int
+    net: str
+    region: Any = None
+    priority: int = 0
+
+
+def region_polygon(region: Any) -> Polygon | None:
+    """A stored fill region as a shapely polygon, or ``None`` for the whole
+    board. Accepts a bare ring (``[[x, y], ...]``) or ``{"points": ring,
+    "holes": [ring, ...]}`` — the shapes ``pcb_planes.region`` carries."""
+    if region is None:
+        return None
+    if isinstance(region, dict):
+        ring = region.get("points") or []
+        holes = region.get("holes") or []
+    else:
+        ring, holes = region, []
+    if len(ring) < 3:
+        return None
+    poly = Polygon(
+        [(float(p[0]), float(p[1])) for p in ring],
+        [[(float(p[0]), float(p[1])) for p in h] for h in holes if len(h) >= 3],
+    )
+    if not poly.is_valid:
+        fixed = poly.buffer(0)
+        parts = _as_polygons(fixed)
+        if not parts:
+            return None
+        poly = max(parts, key=lambda p: p.area)
+    return poly
+
+
+def region_json(poly: Polygon) -> dict[str, Any]:
+    """The ``pcb_planes.region`` shape of a polygon (exterior + holes)."""
+    out: dict[str, Any] = {"points": _ring(poly.exterior.coords)}
+    holes = [_ring(r.coords) for r in poly.interiors]
+    if holes:
+        out["holes"] = holes
+    return out
+
+
 def plane_pours(
     *,
     outline: list[list[float]],
     layers: list[str],
-    plane_nets: dict[int, str],
+    plane_nets: dict[int, str] | None = None,
     copper: list[dict[str, Any]],
     clearance_mm: float,
     edge_clearance_mm: float,
+    specs: list[PourSpec] | None = None,
 ) -> list[dict[str, Any]]:
     """One ``ctype='pour'`` item per connected fragment of each plane.
 
@@ -152,11 +222,26 @@ def plane_pours(
     :mod:`precis.pcb.session` keeps). ``copper`` is the already-realized
     tracks and vias in :mod:`precis.pcb.gerber` model shape.
 
+    ``specs`` (pcb-stackup-regions slice 4) is the general form: several
+    nets per layer, each with a region and a priority (:class:`PourSpec`).
+    Per layer, highest priority first (ties keep the order given): pour =
+    region ∩ outline-inset − foreign copper − everything already poured on
+    the layer, grown by ``clearance_mm``. Once a WHOLE-BOARD spec has poured
+    on a layer, later specs there are skipped: it left them nothing but the
+    rings around its own antipads, and a net that the board says is not
+    poured must not come out as via-sized slivers. ``plane_nets`` is the
+    one-whole-board-net-per-layer special case and pours byte-identically.
+
     Emitted items carry ``polygon`` (the exterior ring) and, when the pour
     has any, ``holes`` — a foreign via through a plane leaves a real hole,
     and an exterior-only pour would claim copper where an antipad is.
     """
-    if not outline or len(outline) < 3:
+    if specs is None:
+        specs = [
+            PourSpec(layer_idx, net)
+            for layer_idx, net in sorted((plane_nets or {}).items())
+        ]
+    if not outline or len(outline) < 3 or not specs:
         return []
     board = Polygon([(float(p[0]), float(p[1])) for p in outline])
     if not board.is_valid:
@@ -167,33 +252,54 @@ def plane_pours(
     if region0.is_empty:
         return []
 
+    by_layer: dict[int, list[PourSpec]] = {}
+    for spec in specs:
+        if 0 <= spec.layer < len(layers):
+            by_layer.setdefault(spec.layer, []).append(spec)
+
     out: list[dict[str, Any]] = []
-    for layer_idx, net in sorted(plane_nets.items()):
-        if not (0 <= layer_idx < len(layers)):
-            continue
+    for layer_idx in sorted(by_layer):
         layer_name = layers[layer_idx]
-        blockers: list[BaseGeometry] = []
-        for item in copper:
-            if str(item.get("net", "")) == net:
-                continue  # own-net copper is the connection, not an obstacle
-            if item.get("ctype") == "via":
-                # A barrel is an obstacle on every layer it passes through,
-                # which is exactly the case a "layer" key would miss — the
-                # prior regression RealizedVia's docstring names.
-                if layer_name not in _via_layer_names(item, layers):
+        claimed: list[BaseGeometry] = []
+        whole_board_done = False
+        for spec in sorted(by_layer[layer_idx], key=lambda s: -s.priority):
+            if whole_board_done:
+                continue
+            net = spec.net
+            blockers: list[BaseGeometry] = []
+            for item in copper:
+                if str(item.get("net", "")) == net:
+                    continue  # own-net copper is the connection, not an obstacle
+                if item.get("ctype") == "via":
+                    # A barrel is an obstacle on every layer it passes
+                    # through, which is exactly the case a "layer" key would
+                    # miss — the prior regression RealizedVia's docstring
+                    # names.
+                    if layer_name not in _via_layer_names(item, layers):
+                        continue
+                elif str(item.get("layer", "")) != layer_name:
                     continue
-            elif str(item.get("layer", "")) != layer_name:
-                continue
-            poly = _copper_item_polygon(item)
-            if poly is not None and not poly.is_empty:
-                blockers.append(poly.buffer(clearance_mm, quad_segs=_BUFFER_QUAD_SEGS))
-        region = region0
-        if blockers:
-            region = region.difference(unary_union(blockers))
-        for frag in _as_polygons(region):
-            if frag.area < MIN_FRAGMENT_MM2:
-                continue
-            out.append(_pour_item(frag, layer_name, net))
+                poly = _copper_item_polygon(item)
+                if poly is not None and not poly.is_empty:
+                    blockers.append(
+                        poly.buffer(clearance_mm, quad_segs=_BUFFER_QUAD_SEGS)
+                    )
+            # Mitred, not round: a round offset's facets undershoot the
+            # clearance at every convex corner by the chord's sagitta, which
+            # the clearance check measures as a shortfall between two pours.
+            blockers += [c.buffer(clearance_mm, join_style=2) for c in claimed]
+            region = region0
+            area = region_polygon(spec.region)
+            if area is not None:
+                region = _polygonal(region.intersection(area))
+            if blockers:
+                region = region.difference(unary_union(blockers))
+            kept = [f for f in _as_polygons(region) if f.area >= MIN_FRAGMENT_MM2]
+            for frag in kept:
+                out.append(_pour_item(frag, layer_name, net))
+            claimed.extend(kept)
+            if spec.region is None and kept:
+                whole_board_done = True
     return out
 
 
@@ -415,6 +521,221 @@ def pour_notes(quality: Iterable[PourQuality]) -> dict[str, str]:
     return notes
 
 
+#: Stackup keys added by pcb-stackup-regions slice 3; a stackup carrying
+#: any of them is read with the slice-3 semantics
+#: (:func:`resolve_assignments`).
+SLICE3_STACKUP_KEYS = frozenset(
+    {"fill", "power_regions", "direction", "route_cost", "reference"}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class PlaneAssignment:
+    """One effective (layer, net) pour the router will make — a
+    ``pcb_planes`` row (``source`` ``authored``/``derived``), or a stackup
+    declaration with no row: a layer's ``plane_net`` (``stackup``) or its
+    ``fill`` (``fill``, at :data:`FILL_PRIORITY`)."""
+
+    layer: str
+    net: str
+    source: str
+    region: Any = None
+    priority: int = 0
+
+    @property
+    def locked(self) -> bool:
+        """An instruction the anneal must not demote: everything except the
+        anneal's own derived write-back."""
+        return self.source != "derived"
+
+
+def resolve_assignments(
+    stackup: list[dict[str, Any]],
+    rows: Iterable[dict[str, Any]],
+    net_names: Iterable[str],
+) -> tuple[list[PlaneAssignment], list[str]]:
+    """The board's effective plane assignments and a note per stackup
+    declaration that pours nothing.
+
+    ``rows`` are :meth:`precis.store.Store.pcb_planes_list` rows, kept as
+    they are. On a stackup that speaks the slice-3 keys (a preset, or any
+    layer carrying ``fill``/``power_regions``/``direction``/``route_cost``/
+    ``reference``), a ``plane_net`` with no row for that net on its layer
+    becomes a whole-board ``stackup`` assignment (gr495287: the default
+    stackup's In1.Cu GND was a declaration the router never read, so a
+    fresh board routed GND as traces and left In1 empty). A LEGACY stackup
+    keeps its old meaning — ``op='stackup'`` mirrors the key into a row,
+    and without one the router pours nothing, with a note: honouring it
+    there changes every board born on the old default, which the nano
+    measurement showed trips its one-way floors, so that switch is Reto's
+    (pcb-stackup-regions slice 3 table). A ``fill`` becomes
+    a whole-board assignment at :data:`FILL_PRIORITY`, cleared around every
+    plane and region on its layer (gr495395: every copper layer pours, GND
+    where nothing else claims it). A declaration is skipped, with a note,
+    when its net does not exist or another net already has a whole-board
+    row on that layer (one sheet; the row is the explicit instruction)."""
+    known = set(net_names)
+    out = [
+        PlaneAssignment(
+            layer=str(r["layer"]),
+            net=str(r["net"]),
+            source=str(r.get("source") or "authored"),
+            region=r.get("region"),
+            priority=int(r.get("priority") or 0),
+        )
+        for r in rows
+    ]
+    notes: list[str] = []
+    honour_planes = any(key in e for e in stackup for key in SLICE3_STACKUP_KEYS)
+    for entry in stackup:
+        name = str(entry.get("name"))
+        for key, source, priority in (
+            ("plane_net", "stackup", 0),
+            ("fill", "fill", FILL_PRIORITY),
+        ):
+            net = entry.get(key)
+            if not net:
+                continue
+            net = str(net)
+            on_layer = [a for a in out if a.layer == name]
+            if key == "plane_net" and not honour_planes:
+                if not any(a.net == net for a in on_layer):
+                    notes.append(
+                        f"{name}={net} (plane_net) declared in this legacy "
+                        "stackup with no assignment row — the router will not "
+                        "pour it; op='plane_net' or a stackup preset does"
+                    )
+                continue
+            if net not in known:
+                notes.append(
+                    f"{name}={net} ({key}): no such net — the router will not pour it"
+                )
+                continue
+            if any(a.net == net for a in on_layer):
+                continue
+            blocking = [
+                a
+                for a in on_layer
+                if a.region is None and a.net != net and a.priority >= priority
+            ]
+            if blocking:
+                notes.append(
+                    f"{name}={net} ({key}): {blocking[0].net} ({blocking[0].source}) "
+                    "already pours the whole layer — the router will not pour it"
+                )
+                continue
+            out.append(PlaneAssignment(name, net, source, None, priority))
+    return out, notes
+
+
+#: Net classes :func:`derive_regions`' caller treats as power nets.
+POWER_NET_CLASSES = frozenset({"power", "pwr"})
+
+
+@dataclass(frozen=True, slots=True)
+class DerivedRegion:
+    """One power net's derived fill region (:func:`derive_regions`)."""
+
+    net: str
+    region: dict[str, Any]
+    priority: int
+    area_mm2: float
+
+
+#: :func:`derive_regions`' concave-hull ratio (shapely: 0 most concave, 1
+#: the convex hull). A power net's pins cluster around its loads; a hull
+#: that hugs them leaves the rest of the layer to the other regions and
+#: the fill.
+REGION_HULL_RATIO = 0.3
+
+
+def derive_regions(
+    net_pins: dict[str, list[tuple[float, float]]],
+    *,
+    outline: list[list[float]],
+    edge_clearance_mm: float,
+    clearance_mm: float,
+    reach_mm: float | dict[str, float],
+) -> tuple[list[DerivedRegion], list[str]]:
+    """Fill regions for power nets on one layer (pcb-stackup-regions slice
+    4; Reto: regions are derived, never drawn).
+
+    Each net's region is the concave hull of its pins dilated by
+    ``reach_mm`` (how far from its pad a drop via may land; one figure, or
+    one per net), trimmed to the
+    outline inset by ``edge_clearance_mm`` and to the regions already taken,
+    grown by ``clearance_mm``. Nets go in pin-count order (most first, name
+    on a tie), and the pin count is the priority. A net is given a region
+    only when every pin's whole drop-via reach (inside the board) lies in
+    it, as ONE polygon: a pin outside its region would drop a via into
+    another net's copper, and a region in two pieces would pour a split
+    plane. Such a net gets no region and routes as traces; the second return
+    names it and why. A net with fewer than two pins needs no plane."""
+    notes: list[str] = []
+    if not outline or len(outline) < 3:
+        return [], notes
+    board = Polygon([(float(p[0]), float(p[1])) for p in outline])
+    if not board.is_valid:
+        board = board.buffer(0)
+    inset = board.buffer(
+        -abs(edge_clearance_mm), quad_segs=_BUFFER_QUAD_SEGS, join_style=2
+    )
+    if inset.is_empty:
+        return [], notes
+    order = sorted(
+        (n for n, pts in net_pins.items() if len(pts) >= 2),
+        key=lambda n: (-len(net_pins[n]), n),
+    )
+    taken: list[BaseGeometry] = []
+    out: list[DerivedRegion] = []
+    for net in order:
+        reach = float(reach_mm[net] if isinstance(reach_mm, dict) else reach_mm)
+        pts = MultiPoint([(float(x), float(y)) for x, y in net_pins[net]])
+        hull = concave_hull(pts, ratio=REGION_HULL_RATIO)
+        area = _polygonal(
+            hull.buffer(reach, quad_segs=_BUFFER_QUAD_SEGS).intersection(inset)
+        )
+        if taken:
+            area = area.difference(
+                unary_union(taken).buffer(clearance_mm, join_style=2)
+            )
+        parts = [p for p in _as_polygons(area) if p.area >= MIN_FRAGMENT_MM2]
+        if len(parts) != 1:
+            notes.append(
+                f"{net}: no region — "
+                + (
+                    "nothing left after the regions above"
+                    if not parts
+                    else f"its region would be {len(parts)} pieces"
+                )
+            )
+            continue
+        poly = parts[0]
+        # A pin's reach disc, clipped to the board, must sit inside the
+        # region. Both circles are faceted (16 segments a quarter), at
+        # different angles, so the slack is the facets' sagitta.
+        grown = poly.buffer(reach * (1.0 - math.cos(math.pi / 64.0)) * 2.0 + 1e-3)
+        outside = [
+            (x, y)
+            for x, y in net_pins[net]
+            if not grown.contains(
+                Point(float(x), float(y))
+                .buffer(reach, quad_segs=_BUFFER_QUAD_SEGS)
+                .intersection(inset)
+            )
+        ]
+        if outside:
+            x, y = outside[0]
+            notes.append(
+                f"{net}: no region — {len(outside)} pin(s) (first at "
+                f"({x:.1f}, {y:.1f})) reach outside what the regions above left"
+            )
+            continue
+        taken.append(poly)
+        out.append(DerivedRegion(net, region_json(poly), len(net_pins[net]), poly.area))
+    return out, notes
+
+
 def point_in_pour(pour: dict[str, Any], x: float, y: float) -> bool:
     """Is ``(x, y)`` on this pour's copper? Exterior ring minus holes.
 
@@ -449,10 +770,19 @@ def _in_ring(ring: list[list[float]], x: float, y: float) -> bool:
 
 
 __all__ = [
+    "FILL_PRIORITY",
     "MIN_FRAGMENT_MM2",
+    "POWER_NET_CLASSES",
+    "DerivedRegion",
+    "PlaneAssignment",
     "PourQuality",
+    "PourSpec",
     "cut_antipads",
+    "derive_regions",
     "plane_pours",
     "point_in_pour",
     "pour_quality",
+    "region_json",
+    "region_polygon",
+    "resolve_assignments",
 ]

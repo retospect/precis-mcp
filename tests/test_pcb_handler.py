@@ -2322,10 +2322,24 @@ def test_stackup_view_default_4_layer(pcb):
     for layer in ("F.Cu", "In1.Cu", "In2.Cu", "B.Cu"):
         assert layer in resp.body
     assert "router skips: none" in resp.body
-    # In1.Cu declares plane_net=GND with no assignment row — dead until
-    # op='plane_net' lands; the view flags it rather than imply a pour.
+    # In1.Cu declares plane_net=GND with no assignment row — dead on a
+    # legacy stackup until op='plane_net' or a preset lands; the view flags
+    # it rather than imply a pour.
     assert "In1.Cu=GND" in resp.body
     assert "will not pour" in resp.body
+
+
+def test_stackup_view_preset_board_pours_every_layer(pcb):
+    """gr495395: on the hybrid preset every copper layer pours — In1.Cu's
+    GND plane and a GND fill on the rest are what the router skips."""
+    pcb.put(id="stackup-gnd", args=_DESIGN)
+    pcb.put(id="stackup-gnd", args={"op": "stackup", "preset": "4l-two-sided"})
+    body = pcb.get(id="stackup-gnd", view="stackup").body
+    assert "GND (In1.Cu, authored)" in body
+    for layer in ("F.Cu", "In2.Cu", "B.Cu"):
+        assert f"GND ({layer}, fill)" in body
+    planes = pcb.get(id="stackup-gnd", view="planes").body
+    assert "fill" in planes and "In2.Cu" in planes
 
 
 def test_stackup_view_4_layer_with_planes(pcb):

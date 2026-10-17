@@ -188,17 +188,24 @@ PREF_V = "v"
 PREF_DIAG = "d"
 
 
-def _step_penalty(pref: str | None, dx: int, dy: int) -> float:
-    """Cost multiplier for one grid step on a layer with this preference."""
+def _step_penalty(
+    pref: str | None, dx: int, dy: int, off_axis: float = OFF_AXIS_PENALTY
+) -> float:
+    """Cost multiplier for one grid step on a layer with this preference.
+    ``off_axis`` is the cross-grain multiplier (a board parameter since
+    pcb-stackup-regions slice 3, :data:`OFF_AXIS_PENALTY` by default); the
+    diagonal-on-an-axis-layer price stays :data:`DIAGONAL_PENALTY`, capped
+    at ``off_axis`` so a gentler board never prices a diagonal above a
+    full cross-grain step."""
     if pref is None:
         return 1.0
     diagonal = dx != 0 and dy != 0
     if pref == PREF_DIAG:
-        return 1.0 if diagonal else OFF_AXIS_PENALTY
+        return 1.0 if diagonal else off_axis
     on_axis = (dy == 0) if pref == PREF_H else (dx == 0)
     if on_axis:
         return 1.0
-    return DIAGONAL_PENALTY if diagonal else OFF_AXIS_PENALTY
+    return min(DIAGONAL_PENALTY, off_axis) if diagonal else off_axis
 
 
 def preferred_directions(layers: list[int]) -> dict[int, str]:
@@ -1138,6 +1145,7 @@ class OccupancyGrid:
         extra_goal_terminals: Sequence[tuple[tuple[float, float], int]] = (),
         negotiation: Negotiation | None = None,
         mask: np.ndarray | None = None,
+        off_axis_penalty: float = OFF_AXIS_PENALTY,
     ) -> RoutePath | None:
         """Search a window around the endpoints first, then the whole grid.
 
@@ -1185,6 +1193,7 @@ class OccupancyGrid:
             "extra_goal_terminals": extra_goal_terminals,
             "negotiation": negotiation,
             "mask": mask,
+            "off_axis_penalty": off_axis_penalty,
         }
         self.last_route_own_via_pair = False
 
@@ -1305,6 +1314,7 @@ class OccupancyGrid:
         extra_goal_terminals: Sequence[tuple[tuple[float, float], int]] = (),
         negotiation: Negotiation | None = None,
         mask: np.ndarray | None = None,
+        off_axis_penalty: float = OFF_AXIS_PENALTY,
     ) -> RoutePath | None:
         """Weighted-A* from ``start`` to ``goal`` for a trace of
         ``width_mm``, through cells this net's centreline may legally
@@ -1577,7 +1587,10 @@ class OccupancyGrid:
                 step_dy[layer, k] = dy
                 step_off[layer, k] = dy * nx + dx
                 step_cost[layer, k] = (
-                    pitch * weight * _step_penalty(pref, dx, dy) * mult
+                    pitch
+                    * weight
+                    * _step_penalty(pref, dx, dy, off_axis_penalty)
+                    * mult
                 )
         body = self._body_mask
         no_mask = np.zeros((1, 1), dtype=np.bool_)

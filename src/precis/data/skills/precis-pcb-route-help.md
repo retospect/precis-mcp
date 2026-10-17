@@ -325,6 +325,20 @@ having changed nothing else.
   board-covering fill already carries on a still-routable layer (imports
   set it from the source's pour zones). One named net assigns like
   `plane_net`; several are recorded only — one sheet cannot pour two.
+- `fill`: the net that pours whatever area no plane or region claims on
+  that layer, after routing (GND on the hybrid). Resolved at route time,
+  never written to `pcb_planes` — drop the key to turn the layer's fill off.
+- `power_regions: true`: derive a fill region per power-class net (class
+  `power`/`pwr`) on this layer from its pins, highest pin count first;
+  the fill takes the rest. A net whose pins do not all fit its region
+  routes as traces, and the job summary says why (`regions:` lines).
+- `direction`: `h`/`v`/`d`/`any` or an angle in degrees — the layer's
+  preferred axis (cross-grain steps cost `off_axis`, default 1.6x; route
+  param `off_axis=` changes it). Unset layers alternate h/v by index.
+- `route_cost`: a step on this layer costs this multiple (>= 1) of the
+  base step; route param `layer_cost=` overrides per run.
+- `reference`: the layer a trace returns its current through (default: the
+  nearest poured layer); informational until a return-path cost lands.
 - First and last layers must be `F.Cu` and `B.Cu` — a bottom-side part's
   pads, the Gerber file map and the escape-layer rule all resolve those
   two by name. 2 or 4 layers today (the DRC capability table has rows for
@@ -334,15 +348,30 @@ having changed nothing else.
 - Refused if it would drop a layer that still carries copper or a plane
   assignment — `op='rip'` first if you mean it.
 
+## Apply a stackup preset and read the stackup back
+
+`args={"op": "stackup", "preset": "4l-two-sided"}` writes the
+hybrid — F.Cu/B.Cu signal with a GND fill, In1.Cu a GND plane that also
+routes at 2.5x, In2.Cu power regions with GND filling the rest — so every
+copper layer pours. `4l-top-only` is the same copper with parts on top
+only; `2l` is two signal layers with GND fills. `ground="VSS"` renames the
+preset's GND. New boards are still born on the legacy default above; on
+it, In1's `plane_net` pours only once `op='plane_net'` (or a preset)
+writes the row.
+
 Read it back with `get(kind="pcb", id="s", view="stackup")` — one row per
 layer in stack order: `role` (`signal`/`plane`, or `mixed` when the layer
-both routes and pours), the plane's net with its assignment `src`
-(`authored`/`derived`; `stackup-declared` marks a `plane_net` key that
-never reached `pcb_planes`, so the router will NOT pour it), `routable`/
-`pourable` as the router's own predicates answer them, and any stored
-physical keys (copper weight, dielectric). Its last line names the nets
-the router skips — a pour carries them, so their pads via down instead of
-routing end-to-end. `view='planes'` is the assignment table alone.
+both routes and pours), the plane's net with its `src` (`authored`/
+`derived`, or `stackup` for a preset's own `plane_net`), the `fill`, and
+`dir`/`cost`/`regions`/`ref` columns when the stackup carries them;
+`routable`/`pourable` as the router's own predicates answer them, and any
+stored physical keys. The header names the preset. Its last line names
+the nets the router skips — a pour carries them, so their pads via down
+instead of routing end-to-end — and notes any declaration that pours
+nothing. `view='planes'` lists every effective pour (rows, `stackup`,
+`fill`, derived regions) with region, priority and area, then pour quality
+per (net, layer). A pour piece nothing could stitch to its net is dropped
+after routing and named in the net's route note.
 
 **A stackup is half the change.** Opening a layer does not make any net
 use it: a net class that locks `"layers"` (and the EWOD generator's

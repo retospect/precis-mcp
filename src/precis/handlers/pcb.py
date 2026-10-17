@@ -98,6 +98,9 @@ from precis.format import render_agent_table
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.pcb import (
     PIN_ETYPES,
+    PRESET_GROUND_NET,
+    PRESET_SIDES,
+    STACKUP_PRESETS,
     argue,
     check_run,
     eyes,
@@ -107,6 +110,7 @@ from precis.pcb import (
     padplace,
     place,
     ratsnest,
+    stackup_preset,
 )
 from precis.pcb import catalog as pcb_catalog
 from precis.pcb import connectivity as pcb_connectivity
@@ -636,6 +640,7 @@ class PcbHandler(Handler):
                 "negotiate",
                 "corridor",
                 "layer_cost",
+                "off_axis",
                 "escape",
                 "groups",
                 "loop",
@@ -660,6 +665,9 @@ class PcbHandler(Handler):
                 "name",
                 "rules",
                 "layers",
+                # op='stackup' presets (pcb-stackup-regions slice 3).
+                "preset",
+                "ground",
                 "part",
                 "parts",
                 "footprint",
@@ -1583,6 +1591,20 @@ class PcbHandler(Handler):
                     "e.g. {'In1.Cu': 2.5}"
                 )
             params["layer_cost"] = {str(k): float(v) for k, v in layer_cost.items()}
+        # Cross-grain step multiplier (RealizeConfig.off_axis_penalty,
+        # pcb-stackup-regions slice 3); absent = maze.OFF_AXIS_PENALTY.
+        if op == "route" and opts.get("off_axis") is not None:
+            off_axis = opts["off_axis"]
+            if (
+                not isinstance(off_axis, int | float)
+                or isinstance(off_axis, bool)
+                or not 1 <= off_axis < math.inf
+            ):
+                raise BadInput(
+                    "pcb: off_axis must be a finite multiplier >= 1, e.g. 1.6",
+                    next="put(args={'op':'route','off_axis':1.3})",
+                )
+            params["off_axis"] = float(off_axis)
         # Opt-in route -> penalise -> anneal -> route outer loop
         # (optimize.anneal_route_loop); off unless asked for.
         if op == "route" and opts.get("loop") is not None:
@@ -2417,18 +2439,22 @@ class PcbHandler(Handler):
                 f"layer {layer!r} is not in this board's stackup",
                 options=layer_names,
             )
-        # A layer is ONE sheet of copper, so two nets cannot both be poured
-        # on it — a hard constraint, not a price. Without this, a second
-        # op='plane_net' on the same layer was accepted, and
-        # planes.plane_pours' "lowest net id wins" tie-break then silently
-        # dropped one of them: the caller's instruction was stored, agreed
-        # to, and never appeared on the board. Same failure the annealer's
-        # one-net-per-plane-layer fix closed on the derived side.
+        # One net per REGION of a layer (pcb-stackup-regions slice 4): an
+        # authored plane covers the whole board, so it cannot share a
+        # layer with another net's whole-board plane — a hard constraint,
+        # not a price. Without this, a second op='plane_net' on the same
+        # layer was accepted, and planes.plane_pours' "lowest net id wins"
+        # tie-break then silently dropped one of them: the caller's
+        # instruction was stored, agreed to, and never appeared on the
+        # board. A row with a region (a derived power region, an imported
+        # fill) shares the layer by priority and is no conflict.
         conflict = next(
             (
                 row
                 for row in self.store.pcb_planes_list(ref.id)
-                if row["layer"] == layer and row["net"] != net
+                if row["layer"] == layer
+                and row["net"] != net
+                and row.get("region") is None
             ),
             None,
         )
@@ -2595,13 +2621,38 @@ class PcbHandler(Handler):
         read the BOARD's stackup, so nothing downstream changes shape
         here; a fact that was engine policy becomes design data.
 
-        Concretely: ``DEFAULT_STACKUP`` makes In1.Cu/In2.Cu planes, so
-        B.Cu is the only layer a 4-layer board can route on today. An
-        author who wants two routing layers and keeps the ground plane
-        says so — ``In1.Cu`` plane/GND, ``In2.Cu`` signal — instead of
-        waiting for the engine to change its mind.
+        Concretely: the old default made In1.Cu/In2.Cu pure planes, so only
+        F.Cu/B.Cu routed. An author who wants a different split says so —
+        ``In1.Cu`` plane/GND, ``In2.Cu`` signal — instead of waiting for the
+        engine to change its mind.
+
+        ``preset=`` (pcb-stackup-regions slice 3) writes a named stackup
+        (:data:`precis.pcb.STACKUP_PRESETS`: ``4l-two-sided``, the hybrid
+        default; ``4l-top-only``; ``2l``) instead of ``layers``; ``ground=``
+        renames its GND for a board whose ground net is called otherwise.
         """
         layers = args.get("layers")
+        preset = args.get("preset")
+        preset_name: str | None = None
+        if preset is not None:
+            preset_name = str(preset).strip()
+            if layers is not None:
+                raise BadInput(
+                    "op='stackup': give preset= or layers=, not both",
+                    next=f"args={{'op':'stackup','preset':'{preset_name}'}}",
+                )
+            if preset_name not in STACKUP_PRESETS:
+                raise BadInput(
+                    f"op='stackup': unknown preset {preset_name!r}",
+                    options=sorted(STACKUP_PRESETS),
+                )
+            ground = str(args.get("ground") or PRESET_GROUND_NET).strip()
+            layers = stackup_preset(preset_name, ground=ground)
+        elif args.get("ground") is not None:
+            raise BadInput(
+                "op='stackup': ground= renames a preset's ground net; it needs preset=",
+                next="args={'op':'stackup','preset':'4l-two-sided','ground':'VSS'}",
+            )
         try:
             stackup = pcb_ir.validate_stackup(layers)
             # Layer COUNT is the capability table's question, not the
@@ -2689,14 +2740,37 @@ class PcbHandler(Handler):
             for layer, net in declared.items()
             if net not in known
         ]
+        # A `fill` is resolved at route time from the stackup (never mirrored
+        # into pcb_planes, so dropping the key turns the fill off), but a
+        # fill naming no net is the same author error as a plane_net.
+        missing += [
+            f"{e['name']}: fill names no net {e['fill']!r}"
+            for e in stackup
+            if e.get("fill") and str(e["fill"]) not in known
+        ]
         if missing:
             raise BadInput(
                 "stackup: " + "; ".join(missing) + " — author the nets before "
-                "declaring a plane_net for them, or omit the key",
-                next=f"get(kind='pcb', id='{ref.slug}', view='nets')",
+                "declaring a plane_net or fill for them, or omit the key"
+                + (
+                    "; a preset's ground net is renamed with ground="
+                    if preset_name
+                    else ""
+                ),
+                next=(
+                    f"put(args={{'op':'stackup','preset':'{preset_name}',"
+                    "'ground':'<your ground net>'})"
+                    if preset_name
+                    else f"get(kind='pcb', id='{ref.slug}')"
+                ),
             )
 
-        self.store.pcb_set_stackup(board_id, stackup)
+        self.store.pcb_set_stackup(
+            board_id,
+            stackup,
+            preset=preset_name,
+            sides=PRESET_SIDES.get(preset_name or ""),
+        )
         # The `known` check above is a READ, so a concurrent retire of one
         # of these nets can still land between it and this loop. Re-checked
         # on the return value rather than trusted: 0 means the assignment
@@ -2716,7 +2790,9 @@ class PcbHandler(Handler):
                 )
         routable = [e["name"] for e in stackup if pcb_ir.layer_is_routable(e)]
         return Response(
-            body=f"# {ref.slug} stackup set — {len(stackup)} layers\n"
+            body=f"# {ref.slug} stackup set — {len(stackup)} layers"
+            + (f" (preset {preset_name})" if preset_name else "")
+            + "\n"
             + "\n".join(
                 f"- {e['name']}: "
                 + ", ".join(
@@ -2727,6 +2803,14 @@ class PcbHandler(Handler):
                             "routable" if pcb_ir.layer_is_routable(e) else None,
                             "pourable" if pcb_ir.layer_is_pourable(e) else None,
                             f"plane={e['plane_net']}" if "plane_net" in e else None,
+                            f"fill={e['fill']}" if "fill" in e else None,
+                            "power regions" if e.get("power_regions") else None,
+                            f"dir={e['direction']}" if "direction" in e else None,
+                            (
+                                f"cost={e['route_cost']:g}x"
+                                if "route_cost" in e
+                                else None
+                            ),
                             (
                                 f"pours={','.join(str(n) for n in e['pour_nets'])}"
                                 if e.get("pour_nets")
@@ -4732,15 +4816,7 @@ class PcbHandler(Handler):
                 local_footprints_by_name=self.store.pcb_local_footprints_for(ref_id),
                 fixed_copper=fixed,
             )
-            name_to_net = {str(ir.net_name[n]): n for n in range(ir.n_nets)}
-            layer_idx = {
-                str(layer.get("name")): i for i, layer in enumerate(ir.stackup)
-            }
-            for plane in planes:
-                net_id = name_to_net.get(plane["net"])
-                li = layer_idx.get(plane["layer"])
-                if net_id is not None and li is not None:
-                    ir.promote_plane(net_id, li)
+            pcb_session.apply_plane_assignments(ir, planes)
             footprints = pcb_session.footprints_by_refdes(
                 ir,
                 self.store.pcb_footprints_for(ref_id),
@@ -4798,31 +4874,55 @@ class PcbHandler(Handler):
         ``op='plane_net'`` instruction (``authored``) apart from the
         anneal's own settled decision (``derived``, written back by the
         ``pcb_route`` job, gr267526) — an authored row is never touched
-        by a later route run; a derived one is replaced each run."""
+        by a later route run; a derived one is replaced each run.
+
+        The table is every EFFECTIVE assignment the router will pour
+        (:func:`precis.pcb.planes.resolve_assignments`, pcb-stackup-regions
+        slices 3-4): the rows, plus the stackup's own ``plane_net``
+        (``stackup``) and ``fill`` (``fill``) declarations, each with its
+        region, priority and region area; a declaration that pours nothing
+        gets a note. The pour-quality table then covers every stored pour,
+        every layer (gr495395)."""
         rows = self.store.pcb_planes_list(ref_id)
-        if not rows:
+        design = self.store.pcb_load(ref_id)
+        board = design["board"]
+        assignments, notes = pcb_planes.resolve_assignments(
+            list((board or {}).get("stackup") or []),
+            rows,
+            [str(n["name"]) for n in design["nets"]],
+        )
+        if not assignments:
             return Response(
-                body="no plane assignments yet\n\nNext: put(kind='pcb', "
-                "id='slug', args={'op':'plane_net','layer':'In1.Cu',"
-                "'net':'GND'})"
+                body="no plane assignments yet"
+                + "".join(f"\nnote: {n}" for n in notes)
+                + "\n\nNext: put(kind='pcb', id='slug', args={'op':'stackup',"
+                "'preset':'4l-two-sided'}) or args={'op':'plane_net',"
+                "'layer':'In1.Cu','net':'GND'}"
             )
+
+        def area_text(region: Any) -> str:
+            poly = pcb_planes.region_polygon(region)
+            return "—" if poly is None else f"{poly.area:.0f}"
+
         table_rows = [
             {
-                "layer": r["layer"],
-                "net": r["net"],
-                "source": r["source"],
-                "region": self._region_text(r.get("region")),
-                "priority": r.get("priority", 0),
+                "layer": a.layer,
+                "net": a.net,
+                "source": a.source,
+                "region": self._region_text(a.region),
+                "priority": a.priority,
+                "area_mm2": area_text(a.region),
             }
-            for r in rows
+            for a in sorted(assignments, key=lambda a: (a.layer, -a.priority, a.net))
         ]
-        body = f"# planes — {len(rows)} assignment(s)\n" + render_agent_table(
-            table_rows, schema=["layer", "net", "source", "region", "priority"]
+        body = f"# planes — {len(assignments)} assignment(s)\n" + render_agent_table(
+            table_rows,
+            schema=["layer", "net", "source", "region", "priority", "area_mm2"],
         )
+        body += "".join(f"\nnote: {n}" for n in notes)
         # Pour quality on the stored pours (pcb-stackup-regions slice 1):
         # pieces per (net, layer), the largest piece's area share and the
         # narrowest neck, so a cut-up plane shows before the DRC does.
-        board = self.store.pcb_load(ref_id)["board"]
         pours = (
             [
                 row
@@ -4858,12 +4958,15 @@ class PcbHandler(Handler):
 
     @staticmethod
     def _region_text(region: Any) -> str:
-        """``whole board`` for NULL, else ``polygon N pts``."""
+        """``whole board`` for NULL, else ``polygon N pts`` (``+K holes``)."""
         if region is None:
             return "whole board"
         pts = region.get("points") if isinstance(region, dict) else region
+        holes = region.get("holes") if isinstance(region, dict) else None
         if isinstance(pts, list):
-            return f"polygon {len(pts)} pts"
+            return f"polygon {len(pts)} pts" + (
+                f" +{len(holes)} holes" if holes else ""
+            )
         return "polygon"
 
     def _client_channel_rows(
@@ -4981,26 +5084,28 @@ class PcbHandler(Handler):
         ``routable``/``pourable`` come from
         :func:`precis.pcb.ir.layer_is_routable`/``layer_is_pourable``,
         not the stored ``role`` — a ``routable: true`` plane layer shows
-        ``yes``; both yes renders ``mixed``. ``plane`` is the live
-        ``pcb_planes`` assignment for the layer (``src`` =
-        authored/derived); a stackup entry's own ``plane_net`` key with
-        no assignment row shows ``src=stackup-declared`` — that key is a
-        declaration ``op='stackup'`` mirrors into ``pcb_planes`` at write
-        time, and a board stamped before that fix (every board is born on
-        ``DEFAULT_STACKUP``, which declares In1.Cu/GND) carries it dead.
+        ``yes``; both yes renders ``mixed``. ``plane`` is the layer's
+        effective plane (:func:`precis.pcb.planes.resolve_assignments`):
+        a live ``pcb_planes`` row (``src`` = authored/derived), else the
+        entry's own ``plane_net`` (``src=stackup``) — which the router
+        pours without a row since pcb-stackup-regions slice 3 (gr495287:
+        it used to be a dead declaration on every board born on the old
+        default). ``fill``, ``dir``, ``cost`` and ``regions`` columns
+        appear only when some layer carries the key, so an older board's
+        table reads as it did; the header names the preset, if any.
 
-        The closing line names the nets the router will skip — pour
+        The closing line names the nets the router will skip — a pour
         carries them, their pads drop to it by via instead of routing
-        end-to-end. It is the ``pcb_planes`` read, which is exactly what
-        the ``pcb_route`` job re-applies into ``ir.net_plane_layers``;
-        declared-but-unassigned plane_nets are listed separately so the
-        view never reports a skip the router will not make. The same
-        discipline covers ``pour_nets`` (gr486958 — fills the source
-        carries a net by, on still-signal layers): the ``pours`` column
-        shows the record per layer, and recorded nets with no assignment
-        row get a note saying the router still routes them — several
-        pour nets on one sheet are recorded but assigned to none, so a
-        mixed layer must not read as more skipped than it is."""
+        end-to-end. It is the same resolution the ``pcb_route`` job
+        applies into ``ir.net_plane_layers``; a declaration that pours
+        nothing (no such net, or another net's whole-board plane on the
+        layer) gets a note so the view never reports a skip the router
+        will not make. The same discipline covers ``pour_nets`` (gr486958
+        — fills the source carries a net by, on still-signal layers): the
+        ``pours`` column shows the record per layer, and recorded nets
+        with no assignment row get a note saying the router still routes
+        them — several pour nets on one sheet are recorded but assigned to
+        none, so a mixed layer must not read as more skipped than it is."""
         design = self.store.pcb_load(ref_id)
         board = design.get("board") or {}
         stackup = list(board.get("stackup") or [])
@@ -5010,67 +5115,85 @@ class PcbHandler(Handler):
                 "put(kind='pcb', id='slug', args={'op':'stackup','layers':[...]})"
             )
         planes = self.store.pcb_planes_list(ref_id)
-        by_layer: dict[str, list[dict[str, Any]]] = {}
-        for p in planes:
-            by_layer.setdefault(str(p["layer"]), []).append(p)
+        assignments, notes = pcb_planes.resolve_assignments(
+            stackup, planes, [str(n["name"]) for n in design["nets"]]
+        )
+        by_layer: dict[str, list[Any]] = {}
+        for a in assignments:
+            if a.source != "fill":
+                by_layer.setdefault(a.layer, []).append(a)
         # Physical columns (copper weight, dielectric, …) are render-only:
         # ``validate_stackup`` admits none today, but a stored row may
         # carry them (the ``pcb_boards.stackup`` jsonb is shaped for it),
         # so show whatever keys exist rather than a fixed schema.
         extra = sorted({k for e in stackup for k in e} - pcb_ir.STACKUP_LAYER_KEYS)
-        # `pour_nets` is a KNOWN key, so `extra` never surfaces it — it
-        # gets a `pours` column only when some layer carries it, keeping
-        # a pour-free board's table exactly as it was.
+        # Known keys get a column only when some layer carries them,
+        # keeping a board without them reading exactly as it did.
+        has = {k: any(k in e for e in stackup) for k in pcb_ir.STACKUP_LAYER_KEYS}
         has_pours = any(e.get("pour_nets") for e in stackup)
         schema = ["layer", "role", "plane", "src"]
+        if has["fill"]:
+            schema.append("fill")
         if has_pours:
             schema.append("pours")
-        schema += ["routable", "pourable", *extra]
+        schema += ["routable", "pourable"]
+        for key, col in (
+            ("direction", "dir"),
+            ("route_cost", "cost"),
+            ("power_regions", "regions"),
+            ("reference", "ref"),
+        ):
+            # The reference has a default (the nearest poured layer), so it
+            # shows wherever the stackup speaks the slice-3 keys at all.
+            if has[key] or (key == "reference" and has["direction"]):
+                schema.append(col)
+        schema += extra
         rows = []
-        for entry in stackup:
+        for i, entry in enumerate(stackup):
             name = str(entry.get("name"))
             routable = pcb_ir.layer_is_routable(entry)
             pourable = pcb_ir.layer_is_pourable(entry)
             role = "mixed" if routable and pourable else str(entry.get("role") or "—")
             assigned = by_layer.get(name) or []
-            declared = str(entry.get("plane_net") or "")
             recorded = [str(n) for n in entry.get("pour_nets") or []]
             row = {
                 "layer": name,
                 "role": role,
-                "plane": (",".join(str(r["net"]) for r in assigned) or declared or "—"),
-                "src": (
-                    ",".join(str(r["source"]) for r in assigned)
-                    or ("stackup-declared" if declared else "—")
-                ),
+                "plane": ",".join(a.net for a in assigned) or "—",
+                "src": ",".join(a.source for a in assigned) or "—",
+                "fill": str(entry.get("fill") or "—"),
                 "pours": ",".join(recorded) if recorded else "—",
                 "routable": "yes" if routable else "no",
                 "pourable": "yes" if pourable else "no",
+                "dir": str(entry.get("direction", "—")),
+                "cost": f"{pcb_ir.layer_route_cost(entry):g}x",
+                "regions": "power" if entry.get("power_regions") else "—",
+                "ref": str(pcb_ir.reference_layer(stackup, i) or "—"),
             }
             row.update({k: entry.get(k, "—") for k in extra})
             rows.append(row)
-        head = f"# stackup — {board.get('name', 'main')}, {len(stackup)} layer(s)\n"
+        meta = board.get("meta") or {}
+        preset = meta.get("stackup_preset")
+        head = (
+            f"# stackup — {board.get('name', 'main')}, {len(stackup)} layer(s)"
+            + (
+                f", preset {preset} (sides: {meta.get('placement_sides', 'both')})"
+                if preset
+                else ""
+            )
+            + "\n"
+        )
         skip = ", ".join(
-            f"{r['net']} ({r['layer']}, {r['source']})"
-            for r in sorted(planes, key=lambda r: (str(r["net"]), str(r["layer"])))
+            f"{a.net} ({a.layer}, {a.source})"
+            for a in sorted(assignments, key=lambda a: (a.net, a.layer))
         )
         skip_line = (
             "router skips (a plane/pour carries them): " + skip
             if skip
             else "router skips: none — every net routes as traces"
         )
-        dead = [
-            f"{e['name']}={e['plane_net']}"
-            for e in stackup
-            if e.get("plane_net") and str(e["name"]) not in by_layer
-        ]
-        if dead:
-            skip_line += (
-                "\nnote: "
-                + ", ".join(sorted(dead))
-                + " declared in the stackup but no assignment row — the "
-                "router will not pour it"
-            )
+        if notes:
+            skip_line += "\nnote: " + "; ".join(notes)
         # Recorded but unassigned pour nets: the router reads pcb_planes
         # rows, so a pour_nets entry without one is still routed — the
         # mixed case (several nets on one sheet, assigned to none) lands
@@ -5079,7 +5202,7 @@ class PcbHandler(Handler):
         unassigned_pours = []
         for e in stackup:
             recorded = [str(n) for n in e.get("pour_nets") or []]
-            live = {str(r["net"]) for r in by_layer.get(str(e.get("name"))) or []}
+            live = {a.net for a in assignments if a.layer == str(e.get("name"))}
             missing = [n for n in recorded if n not in live]
             if missing:
                 unassigned_pours.append(f"{e['name']} pour_nets={','.join(missing)}")
@@ -6670,7 +6793,10 @@ class PcbHandler(Handler):
 
     def _stackup_summary(self, stackup: Any) -> str:
         """``4 layers: F.Cu/In1.Cu(GND)/In2.Cu/B.Cu`` — the plane_net (if
-        any) parenthesised after its layer name."""
+        any) parenthesised after its layer name — then, when the stackup
+        has them (pcb-stackup-regions slice 3), the layers each ``fill``
+        net pours and where power regions are derived, e.g. ``, GND fill
+        on F.Cu/In2.Cu/B.Cu, power regions on In2.Cu``."""
         layers = list(stackup or [])
         names = [
             f"{layer.get('name')}({layer['plane_net']})"
@@ -6678,7 +6804,17 @@ class PcbHandler(Handler):
             else str(layer.get("name"))
             for layer in layers
         ]
-        return f"{len(layers)} layers: {'/'.join(names)}"
+        out = f"{len(layers)} layers: {'/'.join(names)}"
+        fills: dict[str, list[str]] = {}
+        for layer in layers:
+            if layer.get("fill"):
+                fills.setdefault(str(layer["fill"]), []).append(str(layer.get("name")))
+        for net, on in fills.items():
+            out += f", {net} fill on {'/'.join(on)}"
+        regions = [str(e.get("name")) for e in layers if e.get("power_regions")]
+        if regions:
+            out += f", power regions on {'/'.join(regions)}"
+        return out
 
     def _pose(self, i: dict[str, Any]) -> str:
         if i["x"] is None or i["y"] is None:

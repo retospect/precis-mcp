@@ -216,15 +216,10 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     # job cannot change a plane assignment (no PLANE_* move in its
     # schedule), it must never write back to pcb_planes — only the job that
     # can change a thing may persist it (pcb_route.py's job, not this one).
-    net_name_to_id = {str(ir.net_name[n]): n for n in range(ir.n_nets)}
-    layer_name_to_idx = {
-        str(layer.get("name")): i for i, layer in enumerate(ir.stackup)
-    }
-    for plane in design.planes:
-        net_id = net_name_to_id.get(plane["net"])
-        layer_idx = layer_name_to_idx.get(plane["layer"])
-        if net_id is not None and layer_idx is not None:
-            ir.promote_plane(net_id, layer_idx)
+    # The stackup's own plane_net/fill declarations ride the same call
+    # (pcb_session.apply_plane_assignments), so placement and routing agree
+    # on which nets are planes.
+    pcb_session.apply_plane_assignments(ir, design.planes)
 
     # Authored proximity/separation intent (put(args={'measures':[...]})),
     # resolved to the pair-distance cost terms `optimize.py`'s anneal can

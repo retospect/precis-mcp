@@ -301,6 +301,69 @@ def test_op_stackup_pour_nets_rejects(pcb):
         )
 
 
+_GND_DESIGN: dict[str, Any] = {
+    **_DESIGN,
+    "nets": [{"name": "GND"}, {"name": "N2"}],
+    "connections": [
+        {"net": "GND", "refdes": "U1", "pin": "A"},
+        {"net": "GND", "refdes": "R1", "pin": "1"},
+        {"net": "N2", "refdes": "U1", "pin": "B"},
+        {"net": "N2", "refdes": "R1", "pin": "2"},
+    ],
+}
+
+
+@pytest.mark.parametrize(
+    ("preset", "sides", "layers"),
+    [
+        ("4l-two-sided", "both", 4),
+        ("4l-top-only", "top", 4),
+        ("2l", "both", 2),
+    ],
+)
+def test_op_stackup_preset_round_trips_through_the_view(
+    pcb, store, preset, sides, layers
+):
+    """pcb-stackup-regions slice 3: each preset writes its stackup, the
+    view names it with its sides, and the fills show as what the router
+    skips (GND pours on every filled layer)."""
+    slug = f"stk-preset-{preset}"
+    pcb.put(id=slug, args=_GND_DESIGN)
+    resp = pcb.put(id=slug, args={"op": "stackup", "preset": preset})
+    assert f"(preset {preset})" in resp.body
+    ref = store.get_ref(kind="pcb", id=slug)
+    assert ref is not None
+    stored = store.pcb_graph(ref.id)["board"]["stackup"]
+    assert stored == pcb_ir.validate_stackup(stored)
+    assert len(stored) == layers
+    body = pcb.get(id=slug, view="stackup").body
+    assert f"preset {preset} (sides: {sides})" in body
+    assert "GND (F.Cu, fill)" in body and "GND (B.Cu, fill)" in body
+    planes = pcb.get(id=slug, view="planes").body
+    assert "fill" in planes and "area_mm2" in planes
+    # Writing layers by hand drops the preset label.
+    pcb.put(id=slug, args={"op": "stackup", "layers": stored})
+    assert "preset" not in pcb.get(id=slug, view="stackup").body.splitlines()[0]
+
+
+def test_op_stackup_preset_refusals(pcb):
+    pcb.put(id="stk-preset-bad", args=_DESIGN)
+    with pytest.raises(BadInput, match="unknown preset"):
+        pcb.put(id="stk-preset-bad", args={"op": "stackup", "preset": "6l"})
+    with pytest.raises(BadInput, match="not both"):
+        pcb.put(
+            id="stk-preset-bad",
+            args={"op": "stackup", "preset": "2l", "layers": _TWO_SIGNAL},
+        )
+    # _DESIGN has no GND: the preset's plane/fill name no net.
+    with pytest.raises(BadInput, match="ground="):
+        pcb.put(id="stk-preset-bad", args={"op": "stackup", "preset": "2l"})
+    resp = pcb.put(
+        id="stk-preset-bad", args={"op": "stackup", "preset": "2l", "ground": "N1"}
+    )
+    assert "fill=N1" in resp.body
+
+
 def test_op_stackup_is_listed_in_the_unknown_op_error(pcb):
     """The op surface is discoverable — an LLM that guesses a wrong op
     name is told the real list, including this one."""

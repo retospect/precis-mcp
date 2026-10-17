@@ -575,6 +575,14 @@ class PcbIR:
     #: an HV array's vias by the router clearance and the put judge then
     #: refused it at the HV floor.
     net_clearance_floor_mm: dict[str, float] = field(default_factory=dict)
+    #: ``(net_id, layer) -> (region, priority)`` for a plane bit that is not
+    #: a whole-board pour at priority 0 (pcb-stackup-regions slice 4): a
+    #: derived power region, or a stackup ``fill`` at
+    #: :data:`precis.pcb.planes.FILL_PRIORITY`. ``region`` is the
+    #: ``pcb_planes.region`` shape (``None`` = whole board). A bit with no
+    #: entry pours the whole board at priority 0, as every plane did before.
+    #: Written only through :meth:`promote_plane`/:meth:`demote_plane`.
+    plane_regions: dict[tuple[int, int], tuple[Any, int]] = field(default_factory=dict)
 
     # -- sizes --------------------------------------------------------
     @property
@@ -656,7 +664,14 @@ class PcbIR:
         self.dirty_l4[seg_id] = True
         self.dirty_l5[seg_id] = True
 
-    def promote_plane(self, net_id: int, layer: int) -> None:
+    def promote_plane(
+        self,
+        net_id: int,
+        layer: int,
+        *,
+        region: Any = None,
+        priority: int = 0,
+    ) -> None:
         """L1 mutator: ADD ``layer`` to ``net_id``'s plane-role layer set
         (OR the bit into :attr:`net_plane_layers`) — a layer-*role*
         decision (backlog: roles are emergent, not hardcoded). Calling
@@ -665,7 +680,11 @@ class PcbIR:
         :meth:`demote_plane` to remove one, or all). Its own segments
         stop being routed traces (they dog-bone fan out instead), so
         they're dirtied at L1/L4/L5 same as a layer reassignment; L3 is
-        untouched (no component moved)."""
+        untouched (no component moved).
+
+        ``region``/``priority`` (pcb-stackup-regions slice 4) restrict the
+        pour on this layer (:attr:`plane_regions`); the defaults, a
+        whole-board pour at priority 0, store nothing."""
         if not (0 <= layer < self.n_layers):
             raise ValueError(
                 f"layer {layer} out of range for a {self.n_layers}-layer stackup"
@@ -673,6 +692,10 @@ class PcbIR:
         self.net_plane_layers[net_id] = np.uint16(
             int(self.net_plane_layers[net_id]) | (1 << layer)
         )
+        if region is None and priority == 0:
+            self.plane_regions.pop((net_id, layer), None)
+        else:
+            self.plane_regions[(net_id, layer)] = (region, int(priority))
         for seg_id in np.flatnonzero(self.seg_net == net_id):
             self.dirty_l1[seg_id] = True
             self.dirty_l4[seg_id] = True
@@ -686,10 +709,13 @@ class PcbIR:
         footprint either way."""
         if layer is None:
             self.net_plane_layers[net_id] = np.uint16(0)
+            for key in [k for k in self.plane_regions if k[0] == net_id]:
+                del self.plane_regions[key]
         else:
             self.net_plane_layers[net_id] = np.uint16(
                 int(self.net_plane_layers[net_id]) & ~(1 << layer)
             )
+            self.plane_regions.pop((net_id, layer), None)
         for seg_id in np.flatnonzero(self.seg_net == net_id):
             self.dirty_l1[seg_id] = True
             self.dirty_l4[seg_id] = True
@@ -1495,8 +1521,74 @@ def layer_is_pourable(layer: dict[str, Any]) -> bool:
 #: class of silent miss ``handlers/pcb.py::_op_plane_net``'s
 #: one-net-per-layer guard exists to stop.
 STACKUP_LAYER_KEYS = frozenset(
-    {"name", "role", "routable", "pourable", "plane_net", "pour_nets"}
+    {
+        "name",
+        "role",
+        "routable",
+        "pourable",
+        "plane_net",
+        "pour_nets",
+        # pcb-stackup-regions slice 3
+        "direction",
+        "reference",
+        "route_cost",
+        "fill",
+        "power_regions",
+    }
 )
+
+#: ``direction`` tokens a stackup layer may carry besides a numeric angle:
+#: horizontal, vertical, diagonal, or no preferred axis at all.
+STACKUP_DIRECTIONS = ("h", "v", "d", "any")
+
+
+def direction_token(direction: Any) -> str | None:
+    """The maze preference token (``'h'``/``'v'``/``'d'``) for a stackup
+    ``direction`` value, ``None`` for ``'any'``. A numeric angle (degrees,
+    0 = +x) snaps to the nearest axis the octilinear router has: 0/180 →
+    ``'h'``, 90 → ``'v'``, 45/135 → ``'d'``."""
+    if isinstance(direction, bool):
+        raise ValueError(f"direction {direction!r} is not an axis")
+    if isinstance(direction, int | float):
+        a = float(direction) % 180.0
+        best = min(
+            (abs(a - t), tok)
+            for t, tok in ((0, "h"), (45, "d"), (90, "v"), (135, "d"), (180, "h"))
+        )
+        return best[1]
+    tok = str(direction)
+    if tok not in STACKUP_DIRECTIONS:
+        raise ValueError(
+            f"direction {direction!r} is not one of {list(STACKUP_DIRECTIONS)} or an angle"
+        )
+    return None if tok == "any" else tok
+
+
+def layer_route_cost(layer: dict[str, Any]) -> float:
+    """The stackup layer's route-cost multiplier (``route_cost``), 1.0 when
+    unset."""
+    return float(layer.get("route_cost", 1.0))
+
+
+def reference_layer(stackup: list[dict[str, Any]], index: int) -> str | None:
+    """The layer a trace on ``stackup[index]`` returns its current through:
+    the entry's explicit ``reference`` when set, else the nearest OTHER
+    layer that pours a whole-board net (``plane_net``, else ``fill``), the
+    lower index on a tie. ``None`` when no layer pours. Feeds only a soft
+    cost (pcb-stackup-regions slice 8), never a refusal."""
+    explicit = stackup[index].get("reference")
+    if explicit:
+        return str(explicit)
+    poured = [
+        i
+        for i, e in enumerate(stackup)
+        if i != index and (e.get("plane_net") or e.get("fill"))
+    ]
+    if not poured:
+        return None
+    best = min(poured, key=lambda i: (abs(i - index), i))
+    return str(stackup[best].get("name"))
+
 
 #: The two outer copper layers, by NAME. Index decides identity
 #: everywhere inside the engine (this module's own "layers are integer
@@ -1609,7 +1701,70 @@ def validate_stackup(layers: Any) -> list[dict[str, Any]]:
                 "be set — a plane's net goes in plane_net; pour_nets records "
                 "a fill carried on a signal layer"
             )
+        if "direction" in entry:
+            raw_dir = entry["direction"]
+            try:
+                direction_token(raw_dir)
+            except ValueError as exc:
+                raise ValueError(f"stackup[{i}] ({name}): {exc}") from None
+            clean["direction"] = (
+                float(raw_dir) if isinstance(raw_dir, int | float) else str(raw_dir)
+            )
+        if "route_cost" in entry:
+            cost = entry["route_cost"]
+            if (
+                isinstance(cost, bool)
+                or not isinstance(cost, int | float)
+                or not 1.0 <= float(cost) < math.inf
+            ):
+                raise ValueError(
+                    f"stackup[{i}] ({name}): route_cost must be a number >= 1.0 "
+                    f"(a multiple of the base step), got {cost!r}"
+                )
+            clean["route_cost"] = float(cost)
+        if "fill" in entry and entry["fill"] is not None:
+            fill = str(entry["fill"]).strip()
+            if not fill:
+                raise ValueError(
+                    f"stackup[{i}] ({name}): fill must name a net, or be omitted "
+                    "(omit it to leave the layer unfilled)"
+                )
+            if "plane_net" in clean:
+                raise ValueError(
+                    f"stackup[{i}] ({name}): plane_net and fill cannot both be "
+                    "set — a whole-board plane leaves no area for a fill"
+                )
+            clean["fill"] = fill
+        if "power_regions" in entry:
+            if not isinstance(entry["power_regions"], bool):
+                raise ValueError(
+                    f"stackup[{i}] ({name}): power_regions must be true or "
+                    f"false, got {entry['power_regions']!r}"
+                )
+            if entry["power_regions"]:
+                if "plane_net" in clean:
+                    raise ValueError(
+                        f"stackup[{i}] ({name}): plane_net and power_regions "
+                        "cannot both be set — a whole-board plane leaves no "
+                        "area for a region"
+                    )
+                clean["power_regions"] = True
+        if "reference" in entry:
+            ref_name = str(entry["reference"] or "").strip()
+            if not ref_name:
+                raise ValueError(
+                    f"stackup[{i}] ({name}): reference must name a layer, or be omitted"
+                )
+            clean["reference"] = ref_name
         out.append(clean)
+    names = {e["name"] for e in out}
+    for i, e in enumerate(out):
+        target = e.get("reference")
+        if target is not None and (target not in names or target == e["name"]):
+            raise ValueError(
+                f"stackup[{i}] ({e['name']}): reference {target!r} must name "
+                "another layer of this stackup"
+            )
     outer = (out[0]["name"], out[-1]["name"])
     if outer != OUTER_LAYER_NAMES:
         raise ValueError(

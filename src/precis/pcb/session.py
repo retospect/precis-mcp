@@ -664,6 +664,54 @@ def apply_real_pin_offsets(
     return changed
 
 
+@dataclass(frozen=True)
+class AppliedPlanes:
+    """What :func:`apply_plane_assignments` put on the IR."""
+
+    #: Every effective assignment (:func:`precis.pcb.planes.
+    #: resolve_assignments`), rows and stackup declarations alike.
+    assignments: list[Any]
+    #: A note per stackup declaration that pours nothing.
+    notes: list[str]
+    #: Net ids the anneal must not demote: every assignment but the
+    #: anneal's own derived write-back.
+    locked: frozenset[int]
+    #: Net names carrying such a locked assignment — excluded from the
+    #: derived write-back.
+    locked_names: frozenset[str]
+
+
+def apply_plane_assignments(
+    ir: pcb_ir.PcbIR, rows: list[dict[str, Any]]
+) -> AppliedPlanes:
+    """Promote every effective plane assignment onto a fresh IR: the
+    ``pcb_planes`` rows plus the stackup's own ``plane_net``/``fill``
+    declarations (pcb-stackup-regions slices 3-4), each with its region
+    and priority. ``promote_plane`` is L1 state the IR never persists, so
+    every job that builds an IR re-applies it here — one call for the
+    route job, the place job and the capacity map, so the three cannot
+    disagree on which nets are planes (gr495287 was the stackup half of
+    exactly that drift)."""
+    from precis.pcb import planes as pcb_planes
+
+    names = [str(ir.net_name[n]) for n in range(ir.n_nets)]
+    assignments, notes = pcb_planes.resolve_assignments(ir.stackup, rows, names)
+    net_id = {name: n for n, name in enumerate(names)}
+    layer_idx = {str(layer.get("name")): i for i, layer in enumerate(ir.stackup)}
+    locked: set[int] = set()
+    locked_names: set[str] = set()
+    for a in assignments:
+        n = net_id.get(a.net)
+        li = layer_idx.get(a.layer)
+        if n is None or li is None:
+            continue
+        ir.promote_plane(n, li, region=a.region, priority=a.priority)
+        if a.locked:
+            locked.add(n)
+            locked_names.add(a.net)
+    return AppliedPlanes(assignments, notes, frozenset(locked), frozenset(locked_names))
+
+
 def signal_layers(ir: pcb_ir.PcbIR) -> list[int]:
     """The stackup indices that may carry a routed trace — a thin
     delegate to :func:`precis.pcb.ir.routable_layers` (the single answer
@@ -1690,8 +1738,22 @@ def content_hash(
             for p in state.get("pin_swaps") or []
             if p.get("source", "authored") == "authored"
         )
+        # `region` and `priority` change the pour (pcb-stackup-regions
+        # slice 4), so a re-run with a new region must not reuse a cached
+        # result. `region` replaced `region_hint` (0219 copied it across;
+        # no writer ever set the old column), and priority joins the tuple
+        # only when set, so a pre-region row keeps its digest.
         planes = sorted(
-            (p.get("layer"), p.get("net"), p.get("region_hint"))
+            (
+                (
+                    p.get("layer"),
+                    p.get("net"),
+                    json.dumps(p.get("region"), sort_keys=True)
+                    if p.get("region") is not None
+                    else None,
+                )
+                + ((int(p["priority"]),) if p.get("priority") else ())
+            )
             for p in state.get("planes") or []
             if p.get("source", "authored") == "authored"
         )

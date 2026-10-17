@@ -345,6 +345,59 @@ def net_islands(model: dict[str, Any]) -> list[NetIslands]:
     ``unrouted`` question, and answering it from this side would report the
     same defect twice with two different names.
     """
+    built = _net_components(model)
+    if built is None:
+        return []
+    prims, dsu = built
+    per_net: dict[str, dict[int, tuple[float, float, str]]] = {}
+    for i, p in enumerate(prims):
+        per_net.setdefault(p.net, {}).setdefault(dsu.find(i), (p.a[0], p.a[1], p.layer))
+
+    out = [
+        NetIslands(net, len(roots), tuple(roots.values()))
+        for net, roots in sorted(per_net.items())
+        if len(roots) > 1
+    ]
+    return out
+
+
+def pour_components(model: dict[str, Any]) -> dict[tuple[str, str], int]:
+    """``(net, layer) -> how many distinct electrical components that
+    net's pours on that layer belong to`` (pcb-stackup-regions slice 4's
+    ``pour_fragmented``). Pieces joined through vias, tracks or pads count
+    as one; a piece holding none of its net's primitives is a component of
+    its own (floating copper :func:`net_islands` cannot see, since a pour
+    is a joiner there, never a node)."""
+    pours = [
+        item for item in (model.get("copper") or []) if item.get("ctype") == "pour"
+    ]
+    if not pours:
+        return {}
+    built = _net_components(model)
+    prims, dsu = built if built is not None else ([], _DisjointSet(0))
+    roots: dict[tuple[str, str], set[Any]] = {}
+    for k, pour in enumerate(pours):
+        net, layer = str(pour.get("net", "")), str(pour.get("layer", ""))
+        member = next(
+            (
+                i
+                for i, p in enumerate(prims)
+                if p.net == net
+                and p.layer == layer
+                and point_in_pour(pour, p.a[0], p.a[1])
+            ),
+            None,
+        )
+        roots.setdefault((net, layer), set()).add(
+            dsu.find(member) if member is not None else ("bare", k)
+        )
+    return {key: len(r) for key, r in roots.items()}
+
+
+def _net_components(model: dict[str, Any]) -> tuple[list[_Prim], _DisjointSet] | None:
+    """Every copper and pad primitive of ``model`` and the union-find that
+    joins them (via barrels, pad barrels, same-pin pads, pour containment,
+    touching same-layer primitives); ``None`` when there are none."""
     prims, via_groups = _copper_primitives_with_vias(model)
     pad_offset = len(prims)
     pad_prims, pad_polys_raw, pad_keys, pad_barrels = _pad_primitives(
@@ -353,7 +406,7 @@ def net_islands(model: dict[str, Any]) -> list[NetIslands]:
     prims += pad_prims
     pad_polys = {pad_offset + k: v for k, v in pad_polys_raw.items()}
     if not prims:
-        return []
+        return None
 
     dsu = _DisjointSet(len(prims))
     # A via barrel connects its own layers. Nothing about the geometry says
@@ -402,17 +455,7 @@ def net_islands(model: dict[str, Any]) -> list[NetIslands]:
                 )
                 if gap <= TOUCH_EPS_MM:
                     dsu.union(members[a_i], members[b_i])
-
-    per_net: dict[str, dict[int, tuple[float, float, str]]] = {}
-    for i, p in enumerate(prims):
-        per_net.setdefault(p.net, {}).setdefault(dsu.find(i), (p.a[0], p.a[1], p.layer))
-
-    out = [
-        NetIslands(net, len(roots), tuple(roots.values()))
-        for net, roots in sorted(per_net.items())
-        if len(roots) > 1
-    ]
-    return out
+    return prims, dsu
 
 
 def connected_pin_pairs(model: dict[str, Any]) -> set[frozenset[tuple[str, str]]]:

@@ -146,15 +146,26 @@ from precis.pcb.ir import (
     NO_PIN,
     FootprintPad,
     PcbIR,
+    direction_token,
     footprint_pad_set,
     instance_courtyard_polygon,
     layer_is_routable,
+    layer_route_cost,
     nearest_other_instance,
     pin_point,
     plane_layers_of,
     routable_layers,
 )
-from precis.pcb.planes import PourQuality, plane_pours, pour_quality
+from precis.pcb.planes import (
+    POWER_NET_CLASSES,
+    DerivedRegion,
+    PourQuality,
+    PourSpec,
+    derive_regions,
+    plane_pours,
+    pour_quality,
+    region_polygon,
+)
 from precis.pcb.rules import (
     PAD_LAYER,
     NetRules,
@@ -427,6 +438,12 @@ class RealizeConfig:
     #: refused, since the search heuristic assumes no step is cheaper than
     #: the base.
     layer_route_cost: tuple[tuple[str, float], ...] = ()
+    #: The cross-grain step multiplier on a layer with a preferred
+    #: direction (:func:`precis.pcb.maze._step_penalty`) — a board
+    #: parameter since pcb-stackup-regions slice 3 (``pcb_route``'s
+    #: ``off_axis`` param). Default :data:`precis.pcb.maze.OFF_AXIS_PENALTY`;
+    #: below 1.0 is refused for the same heuristic reason as a layer cost.
+    off_axis_penalty: float = maze.OFF_AXIS_PENALTY
 
     def __post_init__(self) -> None:
         for name, mult in self.layer_route_cost:
@@ -435,6 +452,12 @@ class RealizeConfig:
                     f"layer_route_cost for {name!r} is {mult}; a layer may cost "
                     "more than the base step, never less (minimum 1.0, finite)"
                 )
+        off = self.off_axis_penalty
+        if isinstance(off, bool) or not 1.0 <= float(off) < math.inf:
+            raise ValueError(
+                f"off_axis_penalty is {off}; a cross-grain step may cost more "
+                "than an on-axis one, never less (minimum 1.0, finite)"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -955,6 +978,11 @@ class RealizeResult:
     #: 1). Measured on the final pours, after stitching. Empty for
     #: ``router='tangent'`` and for a board with no planes.
     pour_quality: tuple[PourQuality, ...] = ()
+    #: Pour pieces removed after stitching because none of their net's
+    #: copper reached them and no via or jumper could
+    #: (:func:`_drop_bare_islands`, pcb-floating-pour-island). Reported per
+    #: net in the route note; never silent.
+    dropped_islands: tuple[DroppedIsland, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1151,10 +1179,26 @@ def _layer_preferences(ir: PcbIR, signal_layers: list[int]) -> dict[int, str]:
     so In1.Cu — the first INNER routable layer — gets 'H' and In2.Cu gets
     'V' regardless of how many outer layers are also routable. Two calls
     into a pure, order-preserving function and a dict merge; no change to
-    :mod:`precis.pcb.maze` itself."""
+    :mod:`precis.pcb.maze` itself.
+
+    **The stackup's own ``direction`` wins** (pcb-stackup-regions slice 3):
+    a layer that names one gets that axis (:func:`precis.pcb.ir.
+    direction_token`), ``'any'`` removes its preference so no step on it
+    pays the off-axis price; the index-order cycle above is only the
+    fallback for a layer that names none."""
     outer = [layer for layer in signal_layers if layer_is_outer(ir, layer)]
     inner = [layer for layer in signal_layers if not layer_is_outer(ir, layer)]
-    return {**maze.preferred_directions(outer), **maze.preferred_directions(inner)}
+    prefs = {**maze.preferred_directions(outer), **maze.preferred_directions(inner)}
+    for layer in signal_layers:
+        entry = ir.stackup[layer] if 0 <= layer < len(ir.stackup) else {}
+        if "direction" not in entry:
+            continue
+        token = direction_token(entry["direction"])
+        if token is None:
+            prefs.pop(layer, None)
+        else:
+            prefs[layer] = token
+    return prefs
 
 
 def class_layer_drops(
@@ -2963,17 +3007,22 @@ def _diagnose_unrouted(
 
 
 def _layer_cost(ir: PcbIR, config: RealizeConfig) -> dict[int, float] | None:
-    """:attr:`RealizeConfig.layer_route_cost` by stackup index; ``None``
-    when unset. A name the stackup lacks is ignored (a cost tuned for a
-    four-layer board must not fail a two-layer one)."""
-    if not config.layer_route_cost:
-        return None
-    index = {str(layer.get("name")): i for i, layer in enumerate(ir.stackup)}
-    return {
-        index[name]: float(mult)
-        for name, mult in config.layer_route_cost
-        if name in index
+    """Per-layer route cost by stackup index: each layer's own stackup
+    ``route_cost`` (pcb-stackup-regions slice 3, the board parameter), with
+    :attr:`RealizeConfig.layer_route_cost` (a per-run override) winning by
+    name. ``None`` when every layer costs 1.0. A name the stackup lacks is
+    ignored (a cost tuned for a four-layer board must not fail a two-layer
+    one)."""
+    costs = {
+        i: layer_route_cost(layer)
+        for i, layer in enumerate(ir.stackup)
+        if layer_route_cost(layer) != 1.0
     }
+    index = {str(layer.get("name")): i for i, layer in enumerate(ir.stackup)}
+    for name, mult in config.layer_route_cost:
+        if name in index:
+            costs[index[name]] = float(mult)
+    return costs or None
 
 
 def _claim_static(
@@ -3132,6 +3181,7 @@ def _seg_request(
             else None
         ),
         "layer_cost": _layer_cost(ir, config),
+        "off_axis_penalty": config.off_axis_penalty,
         "extra_start_terminals": tuple((t.point, layer) for t, layer in extra_a),
         "extra_goal_terminals": tuple((t.point, layer) for t, layer in extra_b),
     }
@@ -3855,6 +3905,86 @@ def _prune_redundant_drop_vias(
     return kept_tracks, kept_vias
 
 
+#: How many of :func:`_drop_via_site`'s nominal steps a derived power
+#: region must cover around each of its net's pads
+#: (:func:`derive_power_regions`). Two: the first step is where nearly every
+#: drop via lands, the second absorbs a neighbour having taken it.
+REGION_REACH_STEPS = 2
+
+
+def derive_power_regions(
+    ir: PcbIR, config: RealizeConfig
+) -> tuple[list[tuple[int, int, DerivedRegion]], list[str]]:
+    """Derived power regions for this placement (pcb-stackup-regions slice
+    4): ``[(net_id, layer, region)]`` plus a note per power net left
+    without one. The IR side of :func:`precis.pcb.planes.derive_regions`.
+
+    The region layer is the first stackup layer marked ``power_regions``
+    (the hybrid's In2.Cu). Candidates are nets whose class is a power class
+    (:data:`precis.pcb.planes.POWER_NET_CLASSES`) and that pour nowhere yet
+    — a net with a plane (authored, stackup or the anneal's) keeps it.
+
+    The reach is :data:`REGION_REACH_STEPS` of :func:`_drop_via_site`'s
+    nominal step (pad radius + via radius + clearance, at least the stub)
+    for the net's largest pad. The fan-out searches only inside the region
+    for such a net (:func:`_plane_fanout`), so a pin whose near sites are
+    all taken looks further out within it, and failing that is a stranded
+    pin the rescue pass routes — never a via dropped outside its region.
+    The edge inset is the pour rim's (:func:`_realize_maze`)."""
+    layers = [i for i, e in enumerate(ir.stackup) if e.get("power_regions")]
+    if not layers or not ir.outline:
+        return [], []
+    layer = layers[0]
+    # A whole-board plane on the region layer (an authored op='plane_net',
+    # or the anneal's) is an instruction that the layer is that net's:
+    # carving regions out of it would contradict it. A fill is not one.
+    for n in range(ir.n_nets):
+        if int(ir.net_plane_layers[n]) & (1 << layer):
+            region, priority = ir.plane_regions.get((n, layer), (None, 0))
+            if region is None and priority >= 0:
+                return [], [
+                    f"{ir.stackup[layer].get('name')} pours {ir.net_name[n]} "
+                    "over the whole board, so no power regions were derived there"
+                ]
+    rules_by_net = {
+        n: _resolve_track_rules(ir, n, PAD_LAYER, config) for n in range(ir.n_nets)
+    }
+    if not rules_by_net:
+        return [], []
+    clearance = max(_net_clearances(rules_by_net, config).values())
+    net_pins: dict[str, list[tuple[float, float]]] = {}
+    reach: dict[str, float] = {}
+    for n in range(ir.n_nets):
+        if str(ir.net_class[n]).lower() not in POWER_NET_CLASSES:
+            continue
+        if int(ir.net_plane_layers[n]) != 0:
+            continue
+        pids = [int(p) for p in np.flatnonzero(ir.pin_net == n)]
+        pts = [p for pid in pids if (p := pin_point(ir, pid)) is not None]
+        if len(pts) < 2:
+            continue
+        name = str(ir.net_name[n])
+        net_pins[name] = [(float(x), float(y)) for x, y in pts]
+        via_r = float(rules_by_net[n].via_dia_mm or 0.0) / 2.0
+        pad_r = max(
+            math.hypot(float(ir.pin_w[pid]), float(ir.pin_h[pid])) / 2.0 for pid in pids
+        )
+        reach[name] = REGION_REACH_STEPS * max(
+            config.dogbone_stub_mm, pad_r + via_r + clearance
+        )
+    if not net_pins:
+        return [], []
+    regions, notes = derive_regions(
+        net_pins,
+        outline=[[float(p[0]), float(p[1])] for p in ir.outline],
+        edge_clearance_mm=max(clearance, _board_edge_min_mm(config)) + 0.01,
+        clearance_mm=clearance,
+        reach_mm=reach,
+    )
+    by_name = {str(ir.net_name[n]): n for n in range(ir.n_nets)}
+    return [(by_name[r.net], layer, r) for r in regions], notes
+
+
 def _pour_planes(
     ir: PcbIR,
     tracks: list[RealizedTrack],
@@ -3894,23 +4024,22 @@ def _pour_planes(
     pass cannot see is one it draws straight through.
     """
     layer_names = [str(layer.get("name")) for layer in ir.stackup]
-    # A plane LAYER carries one net (optimize._gen_plane_promote enforces
-    # it) — but one NET may now carry several layers (net_plane_layers is
-    # a bitmask, module docstring), so this is keyed by layer, not net:
-    # a net's name can legally appear as the value for several different
-    # layer_idx keys at once, one dict entry per poured sheet of copper.
-    # If an externally-authored IR ever contradicts the one-net-per-layer
-    # half of that rule, the LOWEST net id wins for that layer —
-    # deterministically, so two runs of the same board pour the same
-    # copper. Every other net on that layer then shows up as disconnected
-    # in check_connectivity rather than as a plausible board, which is the
-    # reporting direction that gets the contradiction fixed.
-    plane_nets: dict[int, str] = {}
+    # One spec per (net, poured layer) — net_plane_layers is a bitmask, so
+    # a net may pour several layers, and since pcb-stackup-regions slice 4
+    # a layer may carry several nets: each bit's region and priority ride
+    # :attr:`PcbIR.plane_regions` (absent = whole board, priority 0).
+    # Specs go in net-id order, so on a layer two WHOLE-BOARD nets at one
+    # priority still resolve as they always did — the LOWEST net id pours,
+    # deterministically, and the other shows up as disconnected in
+    # check_connectivity rather than as a plausible board (the reporting
+    # direction that gets the contradiction fixed).
+    specs: list[PourSpec] = []
     for n in range(ir.n_nets):
         for layer_idx in plane_layers_of(int(ir.net_plane_layers[n])):
-            plane_nets.setdefault(layer_idx, str(ir.net_name[n]))
+            region, priority = ir.plane_regions.get((n, layer_idx), (None, 0))
+            specs.append(PourSpec(layer_idx, str(ir.net_name[n]), region, priority))
     pours: list[dict[str, Any]] = []
-    if plane_nets and ir.outline:
+    if specs and ir.outline:
         interim = RealizeResult(tuple(tracks), tuple(vias), ())
         copper = (
             to_gerber_model(interim, ir, layers=layer_names, outline=[])["copper"]
@@ -3926,7 +4055,7 @@ def _pour_planes(
         pours = plane_pours(
             outline=[[float(p[0]), float(p[1])] for p in ir.outline],
             layers=layer_names,
-            plane_nets=plane_nets,
+            specs=specs,
             copper=copper,
             clearance_mm=clearance,
             edge_clearance_mm=edge_inset,
@@ -4207,6 +4336,7 @@ def _plane_fanout(
         (float(v.x), float(v.y), float(v.dia_mm) / 2.0) for v in ir.fixed_vias
     ]
     pending: list[_FanoutPin] = []
+    region_areas = _region_areas(ir, rules_by_net)
     for net_id, seg_id in sorted(seg_of_net.items()):
         # A net may now be poured on SEVERAL layers at once
         # (net_plane_layers is a bitmask). One drop via per pin still
@@ -4307,6 +4437,7 @@ def _plane_fanout(
                         ir,
                         _board_edge_min_mm(config) + (rules.via_dia_mm or 0.0) / 2.0,
                     ),
+                    region_areas.get(net_id),
                 )
             )
 
@@ -4326,6 +4457,7 @@ def _plane_fanout(
             placed_via_sites + others,
             pin.edge_clip,
             ink_field=ink_field,
+            inside=pin.region_area,
         )
 
     # Pass 1 — reserve. Every pin's preferred site (stub and via) is held
@@ -4438,6 +4570,22 @@ class _FanoutPin:
     rules: NetRules
     pour_reaches_pad: bool
     edge_clip: tuple[float, float, float, float] | None
+    #: The net's derived region shrunk by the via radius, or ``None``
+    #: (:func:`_drop_via_site`'s ``inside``).
+    region_area: Any = None
+
+
+def _region_areas(ir: PcbIR, rules_by_net: dict[int, NetRules]) -> dict[int, Any]:
+    """Net id -> its derived region (:attr:`PcbIR.plane_regions`) shrunk by
+    its via radius, for every net poured inside a region."""
+    out: dict[int, Any] = {}
+    for (net_id, _layer), (region, _priority) in ir.plane_regions.items():
+        poly = region_polygon(region)
+        if poly is None:
+            continue
+        via_r = float(rules_by_net[net_id].via_dia_mm or 0.0) / 2.0
+        out[net_id] = poly.buffer(-via_r)
+    return out
 
 
 def _place_drop(
@@ -4585,8 +4733,13 @@ def _drop_via_site(
     placed_via_sites: list[tuple[float, float, float]],
     edge_clip: tuple[float, float, float, float] | None = None,
     ink_field: _InkField | None = None,
+    inside: Any = None,
 ) -> Point | None:
     """Where this pin's drop via can legally sit, or ``None``.
+
+    ``inside`` (a shapely polygon, pcb-stackup-regions slice 4) confines
+    the via centre to the net's derived region, already shrunk by the via
+    radius: a via outside it would land in another net's pour.
 
     ``pad_layer`` is the copper the STUB is drawn on — the pin's own side
     (:func:`_side_layer`), which is what :func:`_plane_fanout` draws and
@@ -4693,6 +4846,8 @@ def _drop_via_site(
                 edge_clip[0] <= site[0] <= edge_clip[2]
                 and edge_clip[1] <= site[1] <= edge_clip[3]
             ):
+                continue
+            if inside is not None and not inside.contains(_ShapelyPoint(*site)):
                 continue
             if not grid.disk_is_free(layers, site[0], site[1], via_r, net_id):
                 continue
@@ -5616,6 +5771,177 @@ def _stitch_one_net(
             )
         )
     return new_vias, new_tracks, remaining, bare_pieces, message
+
+
+@dataclass(frozen=True, slots=True)
+class DroppedIsland:
+    """A poured piece removed after stitching because nothing of its net
+    reaches it and no via or jumper could (pcb-floating-pour-island: stitch,
+    drop only what cannot be reached, and say so)."""
+
+    net: str
+    layer: str
+    area_mm2: float
+    centroid: tuple[float, float]
+
+    def phrase(self) -> str:
+        return (
+            f"{self.layer} {self.area_mm2:.2f}mm2 at "
+            f"({self.centroid[0]:.1f}, {self.centroid[1]:.1f})"
+        )
+
+
+def _drop_bare_islands(
+    ir: PcbIR,
+    tracks: list[RealizedTrack],
+    vias: list[RealizedVia],
+    pours: list[dict[str, Any]],
+    pads: list[dict[str, Any]],
+    fixed_copper: list[dict[str, Any]] | None = None,
+) -> tuple[list[dict[str, Any]], list[DroppedIsland]]:
+    """Remove every pour piece the stitching passes left with none of its
+    net's copper in reach: no via, track or pad in the piece, nor in any
+    piece a via or track joins it to. Run after the last stitch round, so
+    whatever is still bare had every via site and jumper tried.
+
+    Anchors are counted generously, never short: every pad of the net
+    (``pads``, :func:`pads_for_ir`'s whole footprint pad set, so a second
+    land of one pin counts), and every point of the net's authored fixed
+    copper (via centres, track vertices), counts
+    on EVERY layer (a through-hole barrel joins them all; an SMD pad over
+    an inner piece only keeps a piece that is then reported, not dropped).
+    Dropping copper that carries a real connection would break a net;
+    keeping a floating piece only leaves the report standing."""
+    layer_index = {str(layer.get("name")): i for i, layer in enumerate(ir.stackup)}
+    by_net: dict[str, list[int]] = {}
+    for k, pour in enumerate(pours):
+        by_net.setdefault(str(pour.get("net", "")), []).append(k)
+    net_ids = {str(ir.net_name[n]): n for n in range(ir.n_nets)}
+    drop: set[int] = set()
+    dropped: list[DroppedIsland] = []
+    for net, idxs in by_net.items():
+        net_id = net_ids.get(net)
+        if net_id is None:
+            continue
+        frags = [
+            (
+                k,
+                layer_index.get(str(pours[k].get("layer", "")), -1),
+                _pour_polygon(pours[k]),
+            )
+            for k in idxs
+        ]
+        net_vias = [v for v in vias if v.net_id == net_id]
+        n_frag = len(frags)
+        dsu = _UnionFind(n_frag + len(net_vias))
+        anchored: set[int] = set()
+        for j, v in enumerate(net_vias):
+            for i, (_k, layer, poly) in enumerate(frags):
+                if v.layer_lo <= layer <= v.layer_hi and _touches(poly, v.x, v.y):
+                    dsu.union(n_frag + j, i)
+        for t in tracks:
+            if t.net_id != net_id:
+                continue
+            ends = [
+                (float(seg[e][0]), float(seg[e][1]))
+                for seg in t.segments
+                for e in ("start", "end")
+            ]
+            hit = [
+                i
+                for i, (_k, layer, poly) in enumerate(frags)
+                if layer == t.layer and any(_touches(poly, x, y) for x, y in ends)
+            ]
+            anchored.update(hit)
+            for other in hit[1:]:
+                dsu.union(hit[0], other)
+        # (x, y, reach): a pad anchors a piece its land overlaps, not only
+        # one holding its centre.
+        anchors: list[tuple[float, float, float]] = [
+            (
+                float(pad["x"]),
+                float(pad["y"]),
+                math.hypot(float(pad.get("w") or 0.0), float(pad.get("h") or 0.0))
+                / 2.0,
+            )
+            for pad in pads
+            if str(pad.get("net") or "") == net
+        ]
+        fixed_polys: list[Any] = []
+        for item in fixed_copper or []:
+            if str(item.get("net") or "") != net:
+                continue
+            if item.get("x") is not None and item.get("y") is not None:
+                r = float(item.get("dia_mm") or 0.0) / 2.0
+                anchors.append((float(item["x"]), float(item["y"]), r))
+            for seg in item.get("segments") or []:
+                for e in ("start", "end", "mid"):
+                    if seg.get(e) is not None:
+                        anchors.append((float(seg[e][0]), float(seg[e][1]), 0.0))
+            if item.get("polygon"):
+                fixed_polys.append(_pour_polygon(item))
+        for i, (_k, _layer, poly) in enumerate(frags):
+            if poly.is_empty:
+                continue
+            if any(
+                poly.distance(_ShapelyPoint(x, y)) <= r for x, y, r in anchors
+            ) or any(poly.intersects(fp) for fp in fixed_polys if not fp.is_empty):
+                anchored.add(i)
+        roots = {dsu.find(i) for i in anchored} | {
+            dsu.find(n_frag + j) for j in range(len(net_vias))
+        }
+        for i, (k, _layer, poly) in enumerate(frags):
+            if dsu.find(i) in roots or poly.is_empty:
+                continue
+            drop.add(k)
+            c = poly.centroid
+            dropped.append(
+                DroppedIsland(
+                    net,
+                    str(pours[k].get("layer", "")),
+                    float(poly.area),
+                    (float(c.x), float(c.y)),
+                )
+            )
+    if not drop:
+        return pours, []
+    return [p for k, p in enumerate(pours) if k not in drop], dropped
+
+
+def _without_dropped(
+    unstitched: list[UnstitchedNet], dropped: list[DroppedIsland]
+) -> list[UnstitchedNet]:
+    """``unstitched`` with each net's dropped bare pieces taken off its
+    piece and bare counts (a dropped piece is no longer copper), and a net
+    left in one piece no longer reported. The stitcher's own message stays,
+    with the drop appended."""
+    if not dropped:
+        return unstitched
+    per_net: dict[str, int] = {}
+    for d in dropped:
+        per_net[d.net] = per_net.get(d.net, 0) + 1
+    out: list[UnstitchedNet] = []
+    for u in unstitched:
+        n = per_net.get(u.net, 0)
+        # A bare piece holds no via or trace, so it is one component of its
+        # own; never take off more than the stitcher counted bare.
+        gone = min(n, u.bare_fragments)
+        if not n:
+            out.append(u)
+            continue
+        fragments = u.fragments - gone
+        if fragments <= 1:
+            continue
+        out.append(
+            UnstitchedNet(
+                u.net_id,
+                u.net,
+                fragments,
+                u.bare_fragments - gone,
+                f"{u.message} {n} unreachable bare piece(s) were then dropped.",
+            )
+        )
+    return out
 
 
 #: How many of a stranded pin's nearest same-net drop vias the rescue tries.
@@ -7006,6 +7332,15 @@ def realize(
             negotiation,
             congestion,
         ) = _realize_maze(ir, route_ids, config, footprints, fixed_copper)
+        pours, dropped = _drop_bare_islands(
+            ir,
+            tracks,
+            vias,
+            pours,
+            pads_for_ir(ir, [str(e.get("name")) for e in ir.stackup], footprints),
+            fixed_copper,
+        )
+        unstitched = _without_dropped(unstitched, dropped)
         warnings = _gap_usage(ir, route_ids, config)
         return RealizeResult(
             tuple(tracks),
@@ -7021,6 +7356,7 @@ def realize(
             class_layer_drops=tuple(class_layer_drops(ir.stackup, config.class_rules)),
             congestion_cells=congestion,
             pour_quality=tuple(pour_quality(pours)),
+            dropped_islands=tuple(dropped),
         )
     if config.router != "tangent":
         raise ValueError(

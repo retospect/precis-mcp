@@ -127,8 +127,15 @@ Not done, still open:
   components (F.Cu pads; nearest same-net via 1.7–18 mm away). Not
   diagnosed past "the fan-out reports no blocked pin and the pad is still
   its own component".
-- Bare islands are reported, not dropped (the task brief: report, do not
-  silently delete); the drop-on-unreachable clause above is unimplemented.
+- Drop-on-unreachable: built 2026-10-17 with pcb-stackup-regions slice 4
+  (g-stackup-plane, unlanded). `realize._drop_bare_islands` runs after the
+  last stitch round and removes a piece only when no via, track, pad (any
+  footprint land, counted on every layer) or fixed copper of its net
+  reaches it or any piece joined to it; each drop is in
+  `RealizeResult.dropped_islands` and the net's route note (net, layer,
+  area, centroid). Still open: the fixture asserting a large island gets
+  several vias at the stitch pitch, and the unreachable-drop fixture on the
+  emitted gerber model.
 
 ## Target + blast radius
 

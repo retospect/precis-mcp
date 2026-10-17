@@ -3232,6 +3232,31 @@ def check_connectivity(model: dict[str, Any]) -> list[DrcFinding]:
     ]
 
 
+def check_pour_fragmented(model: dict[str, Any]) -> list[DrcFinding]:
+    """A net's pours on one layer belong to more than one electrical
+    component after stitching (pcb-stackup-regions slice 4): pieces no via,
+    track or pad joins to the rest, floating pieces included. A warning —
+    the net may still reach every pin through other layers, which is
+    ``connectivity``'s question; this one says the fill itself is cut."""
+    from precis.pcb.connectivity import pour_components
+
+    return [
+        DrcFinding(
+            rule="pour_fragmented",
+            severity="warn",
+            where=f"pour {net} on {layer}",
+            detail=(
+                f"net {net}'s pour on {layer} is {n} separate electrical "
+                "pieces after stitching; each piece needs a via, track or pad "
+                "joining it to the rest of the net"
+            ),
+            objects=({"net": net, "layer": layer, "components": n},),
+        )
+        for (net, layer), n in sorted(pour_components(model).items())
+        if n > 1
+    ]
+
+
 def nets_routed_by_copper(model: dict[str, Any]) -> set[str]:
     """Nets that carry copper whose copper plus pads is ONE connected
     piece: already routed, whoever drew it (the router, or fixed source
@@ -3763,6 +3788,7 @@ def run_geometric_drc(
     findings += check_outline_containment(model, outline=outline, courtyards=courtyards)
     findings += check_edge_mating(edge_mates, outline=outline)
     findings += check_connectivity(model)
+    findings += check_pour_fragmented(model)
     findings += check_pour_reaches_pad(model)
     findings += check_unrouted(unrouted)
     findings += check_unconnected_pins(unconnected, phase=phase)
