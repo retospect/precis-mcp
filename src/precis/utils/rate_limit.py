@@ -229,7 +229,64 @@ def _next_wait(n: int, avail: float, refill_per_sec: float, remaining: float) ->
     return max(0.0, min(jittered, remaining, _MAX_POLL_INTERVAL_S))
 
 
-def acquire(provider: str, *, n: int = 1, max_wait_s: float = 30.0) -> bool:
+#: Most ``host:<netloc>`` rows :data:`_SEED_SQL` will create; past it a
+#: new host runs unpaced (fail-open) instead of growing the table without
+#: bound from agent-supplied URLs.
+MAX_SEEDED_HOST_ROWS = 500
+
+#: Seed a missing row (the ``host:<netloc>`` default from
+#: :mod:`precis.utils.http`). ``DO NOTHING`` so a migration-seeded or
+#: hand-tuned row always wins.
+_SEED_SQL = """
+INSERT INTO external_rate_limits (provider, capacity, refill_per_sec, tokens, daily_cap)
+SELECT %s, %s, %s, %s, NULL
+ WHERE (SELECT count(*) FROM external_rate_limits WHERE provider LIKE 'host:%%') < %s
+ON CONFLICT (provider) DO NOTHING
+"""
+
+#: Park a row for a server's Retry-After: drive its tokens negative so the
+#: refill takes ``seconds`` to bring them back to zero, for every host.
+#: ``LEAST`` keeps an already-longer park.
+_PARK_SQL = """
+UPDATE external_rate_limits
+   SET tokens = LEAST(
+           LEAST(capacity, tokens + refill_per_sec * EXTRACT(EPOCH FROM (now() - last_refill))),
+           -refill_per_sec * %s),
+       last_refill = now()
+ WHERE provider = %s AND refill_per_sec > 0
+"""
+
+#: Seconds between two fail-open warnings for one provider, so a dead
+#: limiter store is visible in the logs without flooding them.
+_FAIL_OPEN_WARN_EVERY_S = 300.0
+_fail_open_warned: dict[str, float] = {}
+
+
+def _warn_fail_open(provider: str, what: str) -> None:
+    """Log that the limiter store failed and ``provider`` ran unpaced:
+    WARNING at most once per :data:`_FAIL_OPEN_WARN_EVERY_S` per provider,
+    DEBUG (with the traceback) every time."""
+    log.debug("rate_limit: %s(%r) failed; failing open", what, provider, exc_info=True)
+    now = time.monotonic()
+    last = _fail_open_warned.get(provider)
+    if last is not None and now - last < _FAIL_OPEN_WARN_EVERY_S:
+        return
+    _fail_open_warned[provider] = now
+    log.warning(
+        "rate_limit: limiter store unavailable for %r (%s); failing open, "
+        "calls are unpaced across hosts",
+        provider,
+        what,
+    )
+
+
+def acquire(
+    provider: str,
+    *,
+    n: int = 1,
+    max_wait_s: float = 30.0,
+    seed_row: tuple[int, float] | None = None,
+) -> bool:
     """Block (bounded by ``max_wait_s``) until ``n`` tokens for ``provider``
     are granted under the shared cross-host limiter, then return ``True``.
 
@@ -242,6 +299,9 @@ def acquire(provider: str, *, n: int = 1, max_wait_s: float = 30.0) -> bool:
     draining mid-poll (gr204611 — a token-bucket wait must not outlive
     the SIGTERM drain budget) — the caller proceeds and relies on its
     existing tenacity backoff either way.
+
+    ``seed_row=(capacity, refill_per_sec)`` inserts the provider's row on
+    first use instead of failing open for a missing row.
     """
     if not _rate_limit_enabled():
         return True
@@ -256,7 +316,15 @@ def acquire(provider: str, *, n: int = 1, max_wait_s: float = 30.0) -> bool:
                 return True
             state = conn.execute(_SELECT_STATE_SQL, (provider,)).fetchone()
             if state is None:
-                return True  # unknown provider -> fail open
+                if seed_row is None:
+                    return True  # unknown provider -> fail open
+                capacity, refill = seed_row
+                conn.execute(
+                    _SEED_SQL,
+                    (provider, capacity, refill, capacity, MAX_SEEDED_HOST_ROWS),
+                )
+                seed_row = None  # seed once; a second miss fails open
+                continue
             _capacity, refill_per_sec, daily_cap, avail, used_today = state
             if daily_cap is not None and used_today + n > daily_cap:
                 return False  # quota exhausted -> don't spin, refuse now
@@ -269,12 +337,7 @@ def acquire(provider: str, *, n: int = 1, max_wait_s: float = 30.0) -> bool:
                 # path is itself drain-gated (precis.utils.http.external_retry).
                 return False
     except Exception:
-        log.debug(
-            "rate_limit: acquire(%r, n=%d) failed; failing open",
-            provider,
-            n,
-            exc_info=True,
-        )
+        _warn_fail_open(provider, "acquire")
         return True
 
 
@@ -288,13 +351,34 @@ class RateLimited(Exception):
         self.provider = provider
 
 
-def require(provider: str, *, n: int = 1, max_wait_s: float = 30.0) -> None:
+def require(
+    provider: str,
+    *,
+    n: int = 1,
+    max_wait_s: float = 30.0,
+    seed_row: tuple[int, float] | None = None,
+) -> None:
     """:func:`acquire`, raising :class:`RateLimited` instead of returning
     ``False``. For quota-lane providers, where firing the request anyway
     would breach the hard daily cap. Fails open exactly like :func:`acquire`.
     """
-    if not acquire(provider, n=n, max_wait_s=max_wait_s):
+    if not acquire(provider, n=n, max_wait_s=max_wait_s, seed_row=seed_row):
         raise RateLimited(provider)
 
 
-__all__ = ["RateLimited", "acquire", "close", "require"]
+def park(provider: str, seconds: float) -> None:
+    """Hold ``provider``'s row for ``seconds`` (a server's Retry-After), so
+    every host waits, not just the one that got the 429. No-op for a
+    missing row; fails open (logged) like :func:`acquire`."""
+    if not _rate_limit_enabled() or seconds <= 0:
+        return
+    try:
+        conn = _get_conn()
+        if conn is None:
+            return
+        conn.execute(_PARK_SQL, (float(seconds), provider))
+    except Exception:
+        _warn_fail_open(provider, "park")
+
+
+__all__ = ["RateLimited", "acquire", "close", "park", "require"]

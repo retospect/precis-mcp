@@ -129,10 +129,6 @@ _KNOWN_UNWIRED: dict[str, str] = {
         "gerber-preflight oracle docs/backlog/pcb-guided-place-route.md "
         "plans around; no preflight caller yet"
     ),
-    "src/precis/pcb/_http.py::reset_circuit": (
-        "own docstring: 'for tests, and for an operator retrying by hand' "
-        "-- an ops tool, never code-called"
-    ),
     "src/precis/pcb/mech2d.py::export_mechanical": (
         "b898944ce (gr451662): the EWOD cut-sheet export, deliberately its "
         "own call outside export_fab; no handler view or CLI wires it yet"

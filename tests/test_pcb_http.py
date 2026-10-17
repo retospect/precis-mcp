@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -161,7 +162,9 @@ def test_retry_after_seconds_is_honoured():
     assert clock.sleep_calls == [2.0]
 
 
-def test_retry_after_absurd_value_is_ignored():
+def test_retry_after_absurd_value_is_clamped_to_cap():
+    """gr493222: an absurd Retry-After is clamped, not ignored — the sleep
+    is ``policy.cap``."""
     clock = FakeClock()
     calls = []
     policy = Policy(attempts=3, base=1.0, cap=5.0, breaker_threshold=100)
@@ -169,7 +172,6 @@ def test_retry_after_absurd_value_is_ignored():
     def send():
         calls.append(1)
         if len(calls) == 1:
-            # Way outside the 0-900s sanity window — must not be honoured.
             return _resp(429, {"Retry-After": "999999"})
         return _resp(200)
 
@@ -183,16 +185,16 @@ def test_retry_after_absurd_value_is_ignored():
     )
     assert resp.status_code == 200
     assert len(calls) == 2
-    assert len(clock.sleep_calls) == 1
-    # Fell back to the bounded jittered backoff, not the absurd header value.
-    assert clock.sleep_calls[0] <= policy.cap
-    assert clock.sleep_calls[0] != 999999.0
+    assert clock.sleep_calls == [policy.cap]
 
 
-def test_retry_after_http_date_form_is_ignored():
+def test_retry_after_http_date_form_is_honoured():
+    """gr493222: the HTTP-date form of Retry-After is honoured (relative to
+    the injected ``wall`` clock)."""
     clock = FakeClock()
     calls = []
     policy = Policy(attempts=3, base=1.0, cap=5.0, breaker_threshold=100)
+    wall_now = datetime(2026, 10, 21, 7, 27, 57, tzinfo=UTC)
 
     def send():
         calls.append(1)
@@ -207,11 +209,11 @@ def test_retry_after_http_date_form_is_ignored():
         sleep=clock.sleep,
         now=clock.now,
         rng=_fixed_rng(),
+        wall=lambda: wall_now,
     )
     assert resp.status_code == 200
     assert len(calls) == 2
-    assert len(clock.sleep_calls) == 1
-    assert clock.sleep_calls[0] <= policy.cap
+    assert clock.sleep_calls == [3.0]
 
 
 # ── circuit breaker: opens, stays open through cooldown, half-opens ──────
