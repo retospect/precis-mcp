@@ -809,7 +809,19 @@ C2765186, CH340N C2977777, ESD array C7519 (USBLC6-2SC6), PTC C883122, TVS
 C193402, load switch C131941, transformer C19191684, 0603 5.1 kΩ C23186,
 10 kΩ C25804, 100 nF C14663, LED C12624. The 0603 passives and the LED
 (C23186, C25804, C14663, C12624) are the builder's picks, **proposed, Reto
-decides**; the CH340N and ESD array picks likewise. Alternates C69688/C169426 not cached. There is no PD controller and no buck (ruling 22). Netlist per
+decides**; the CH340N and ESD array picks likewise. Alternates C69688/C169426 not cached.
+**Pin status (datasheet-first):** CH340N C2977777 footprint pins checked
+against the WCH CH340DS1 datasheet (stored as `datasheet:roberto25`; its
+title metadata is wrong, the chunks are the CH340 sheet): 1 UD+, 2 UD-,
+3 GND, 4 RTS#, 5 VCC, 6 TXD, 7 RXD, 8 V3, all eight match the SOP-8
+column. USB-C C2765186 is **pins unverified**: no datasheet stored (the
+Shouhan PDF is an operator drop). Its footprint pins (A1B12/B1A12 GND,
+A4B9/B4A9 VBUS, A5 CC1, B5 CC2, A6/B6 Dp, A7/B7 Dn, A8/B8 SBU, 13/14 EH)
+follow the generic Type-C pinout only. **Operator PDF drop for Reto**
+(LCSC returns HTML; no manufacturer URL reachable): BHFUSE BSMD1206-050-6V
+(C883122), TECHFUSE nSMD050 (C69688), MDD SMF5.0A (C193402; Verical copy
+returned 403), Jingdao SMF5.0A (C169426), Shouhan TYPE-C 16PIN 2MD(073)
+(C2765186). There is no PD controller and no buck (ruling 22). Netlist per
 rulings 12/22: CC1 and CC2 each carry a 5.1 kΩ pull-down to GND; VBUS
 reaches the 5 V rail only through the PTC (then the optional load switch),
 with the TVS from VBUS to GND; the bridge's VCC is on the 5 V rail. The
