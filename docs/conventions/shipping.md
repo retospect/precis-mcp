@@ -177,13 +177,23 @@ time; a deploy that moves the `uv.lock` autocatpath pin does not update it
 (gr493148). The release owner runs `scripts/mcp-image-refresh` after such a
 deploy (`--dry-run` first: plan, both versions, installed-script diff, no
 changes). It compares the image's `precis.autocatpath_rev` label with the
-lock pin, prints "up to date" when equal, otherwise runs
-`scripts/build-image precis-dev`, checks the installed ensure script
-(`scripts/mcp-http-install`, diff only: a difference stops it with exit 3 for
-a human `--apply`), then `--recreate` (blue-green) and waits for the new
-colour to answer 401. Not wired into `scripts/release`: it stays a manual,
-opt-in step. The prepare step also logs `autocatpath SKEW` at child start
-when the baked commit is not the pin.
+lock pin and the installed ensure script with the repo copy; "up to date"
+when both match. Otherwise (before building anything) it decides on the
+installed script: byte-identical to a past revision of
+`deploy/mcp-http/precis-mcp-http-ensure.sh` in git history means no local
+edits, so it auto-applies (`scripts/mcp-http-install --apply`, which backs up
+the old copy). A script matching **no** revision (local edits, or missing) is
+the one human stop (as is a dirty repo copy or unreadable git history): exit 3,
+nothing built or changed, diff content never printed (hashes and line counts
+only). The installed file is re-checked just before the apply. After a stale-image
+`scripts/build-image precis-dev` and the apply, it runs `--recreate`
+(blue-green) and waits up to `--timeout` (180s) for the new colour to answer
+401 on both probes, else exit 4. `--dry-run` prints the plan and the
+decision (auto-apply or refuse) and changes nothing. Not wired into
+`scripts/release` or `scripts/deploy` (the repo copy compared is the
+checkout's HEAD, so the release owner runs it from the deployed sha). The
+prepare step also logs `autocatpath SKEW` at child start when the baked
+commit is not the pin.
 
 ## /qgo — ungated deploy
 

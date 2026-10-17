@@ -7,28 +7,39 @@ pinned wheel from the wheelhouse; this image does not, so a uv.lock bump leaves
 the MCP on an older engine until the image is rebuilt.
 
   scripts/mcp-image-refresh              refresh if stale, else "up to date"
-  scripts/mcp-image-refresh --dry-run    print the plan, versions and the
-                                         installed-script diff; change nothing
+  scripts/mcp-image-refresh --dry-run    print the plan, the install decision
+                                         and the diff; change nothing
 
 Steps (stops at the first failure):
-  1. compare the image's `precis.autocatpath_rev` label with the uv.lock pin;
-     equal -> "up to date", exit 0
-  2. if the installed ensure script differs from the repo copy, STOP (exit 3)
-     before building — apply it by hand, never here
-  3. scripts/build-image precis-dev, tag it precis-mcp:dev, re-check the label,
-     scripts/mcp-http-install (check mode only)
-  4. <ensure script> --recreate (blue-green), then poll --status until the
-     backend answers 401 (serving) directly and via the proxy
+  1. compare the image's `precis.autocatpath_rev` label with the uv.lock pin
+     and decide what to do with the installed ensure script (step 2). Image
+     current AND script in sync -> "up to date", exit 0
+  2. install decision, taken before anything is built or changed:
+       in sync    -> nothing to install
+       auto-apply -> the installed file is byte-identical to some revision of
+                     deploy/mcp-http/precis-mcp-http-ensure.sh in this repo's
+                     git history, i.e. no local edits; the repo copy is newer
+       refuse     -> the installed file matches NO revision (local edits) or is
+                     missing: STOP (exit 3), change nothing. The only human stop.
+  3. image stale: scripts/build-image precis-dev, tag it precis-mcp:dev,
+     re-check the label
+  4. auto-apply: scripts/mcp-http-install --apply (backs up the old copy)
+  5. <ensure script> --recreate (blue-green), then poll --status until the
+     backend answers 401 (serving) directly and via the proxy, within
+     --timeout; else exit 4
 
 Reads two labels with `docker image inspect --format`; never the env, never a
 whole inspect. Owned by the release owner, run after a deploy that moved the
-autocatpath pin (docs/conventions/shipping.md).
+autocatpath pin or the ensure script (docs/conventions/shipping.md). Not wired
+into scripts/deploy: the repo copy compared is this checkout's HEAD, so the run
+belongs to whoever holds the deployed sha.
 """
 
 from __future__ import annotations
 
 import argparse
 import difflib
+import hashlib
 import os
 import re
 import subprocess
@@ -41,7 +52,8 @@ IMAGE = "precis-mcp:dev"
 BUILD_SERVICE = "precis-dev"  # compose service and the tag it builds
 REV_LABEL = "precis.autocatpath_rev"
 SHA_LABEL = "precis.git_sha"
-REPO_ENSURE = ROOT / "deploy" / "mcp-http" / "precis-mcp-http-ensure.sh"
+REPO_ENSURE_REL = "deploy/mcp-http/precis-mcp-http-ensure.sh"
+REPO_ENSURE = ROOT / REPO_ENSURE_REL
 EXIT_DIFF = 3
 EXIT_UNHEALTHY = 4
 
@@ -95,6 +107,65 @@ def ensure_diff(repo: Path, installed: Path) -> str:
     return "".join(difflib.unified_diff(a, b, str(installed), str(repo)))
 
 
+def diff_summary(repo: Path, installed: Path) -> str:
+    """Hashes and changed-line counts only: the installed file may hold secrets."""
+    diff = ensure_diff(repo, installed)
+    plus = sum(1 for ln in diff.splitlines() if ln.startswith("+") and ln[:3] != "+++")
+    minus = sum(1 for ln in diff.splitlines() if ln.startswith("-") and ln[:3] != "---")
+    have = (
+        hashlib.sha256(installed.read_bytes()).hexdigest()[:8]
+        if installed.exists()
+        else "missing"
+    )
+    want = hashlib.sha256(repo.read_bytes()).hexdigest()[:8]
+    return f"installed {have} -> repo {want}: +{plus}/-{minus} lines (content not printed)\n"
+
+
+def repo_copy_clean(rel: str = REPO_ENSURE_REL) -> bool:
+    """True when the repo copy has no uncommitted edits (else --apply would ship them)."""
+    try:
+        r = subprocess.run(["git", "diff", "--quiet", "HEAD", "--", rel], cwd=ROOT)
+    except OSError:
+        return False
+    return r.returncode == 0
+
+
+def history_hashes(rel: str = REPO_ENSURE_REL) -> set[str]:
+    """sha256 of every committed revision of the repo ensure script (HEAD history).
+
+    Empty when git cannot answer (missing binary, shallow or non-git tree)."""
+    try:
+        r = subprocess.run(
+            ["git", "rev-list", "HEAD", "--", rel],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+    except OSError:
+        return set()
+    if r.returncode != 0:
+        return set()
+    out: set[str] = set()
+    for rev in r.stdout.split():
+        blob = subprocess.run(
+            ["git", "show", f"{rev}:{rel}"], cwd=ROOT, capture_output=True
+        )
+        if blob.returncode == 0:
+            out.add(hashlib.sha256(blob.stdout).hexdigest())
+    return out
+
+
+def install_decision(repo: Path, installed: Path, history: set[str]) -> str:
+    """'in-sync' | 'auto-apply' | 'refuse' for the installed ensure script."""
+    if not installed.exists():
+        return "refuse"
+    have = hashlib.sha256(installed.read_bytes()).hexdigest()
+    if have == hashlib.sha256(repo.read_bytes()).hexdigest():
+        return "in-sync"
+    return "auto-apply" if have in history else "refuse"
+
+
 def run(cmd: list[str]) -> int:
     print("+ " + " ".join(cmd), flush=True)
     return subprocess.run(cmd, cwd=ROOT).returncode
@@ -118,10 +189,21 @@ def wait_serving(script: Path, timeout: float, interval: float = 3.0) -> bool:
         time.sleep(interval)
 
 
+_VERDICT = {
+    "in-sync": "installed ensure script: in sync",
+    "auto-apply": "installed ensure script: a past repo revision (no local edits); "
+    "decision AUTO-APPLY",
+    "refuse": "installed ensure script: matches NO repo revision (local edit) or is "
+    "missing; decision REFUSE, the real run stops here (exit 3)",
+}
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument(
-        "--dry-run", action="store_true", help="print plan and diff; change nothing"
+        "--dry-run",
+        action="store_true",
+        help="print plan, decision and diff; change nothing",
     )
     ap.add_argument(
         "--timeout",
@@ -139,64 +221,90 @@ def main(argv: list[str] | None = None) -> int:
         f"image {IMAGE}: autocatpath {baked or 'unlabelled'}, built from {built[:12] or 'unknown'}"
     )
 
-    if is_current(baked, pinned):
+    installed = installed_ensure()
+    stale = not is_current(baked, pinned)
+    history = history_hashes()
+    decision = install_decision(REPO_ENSURE, installed, history)
+    reason = "local edits matching no revision of the repo script, or missing"
+    if decision == "auto-apply" and not repo_copy_clean():
+        decision, reason = "refuse", "the repo copy has uncommitted edits"
+    elif decision == "refuse" and not history:
+        reason = (
+            "git history of the repo script is unreadable (shallow or non-git tree?)"
+        )
+    if not stale and decision == "in-sync":
         print("up to date")
         return 0
 
-    installed = installed_ensure()
-    diff = ensure_diff(REPO_ENSURE, installed)
-    plan = [
-        "scripts/build-image precis-dev  (then docker tag precis-dev precis-mcp:dev)",
-        "scripts/mcp-http-install   (diff check only; stops if the installed script differs)",
+    diff = "" if decision == "in-sync" else diff_summary(REPO_ENSURE, installed)
+    plan: list[str] = []
+    if stale:
+        plan.append(
+            "scripts/build-image precis-dev  (then docker tag precis-dev precis-mcp:dev)"
+        )
+    if decision == "auto-apply":
+        plan.append("scripts/mcp-http-install --apply   (backs up the installed copy)")
+    plan += [
         f"{installed} --recreate   (blue-green)",
-        f"{installed} --status   (wait until serving)",
+        f"{installed} --status   (wait up to {args.timeout:.0f}s for 401 on both probes)",
     ]
     if args.dry_run:
         print("plan (dry run, nothing executed):")
-        for i, step in enumerate(plan, 1):
-            print(f"  {i}. {step}")
-        print(
-            "installed ensure script: "
-            + ("in sync" if not diff else "DIFFERS; the real run would stop here")
-        )
+        if decision == "refuse":
+            print("  (none: refused)")
+        else:
+            for i, step in enumerate(plan, 1):
+                print(f"  {i}. {step}")
+        print(_VERDICT[decision])
         if diff:
             sys.stdout.write(diff)
         return 0
 
-    if not pinned:
+    if stale and not pinned:
         print(
             "uv.lock pins no git-sourced autocatpath; nothing to compare. Stopping.",
             file=sys.stderr,
         )
         return 1
-    if diff:
+    if decision == "refuse":
         print(
-            "STOP: the installed ensure script differs from the repo copy. Review the diff, "
-            "run scripts/mcp-http-install --apply yourself, then re-run this wrapper. "
-            "Nothing was built.",
+            f"STOP: not installing {installed}: {reason}. Inspect it yourself "
+            "(diff against the repo copy); if you accept losing any edits run "
+            "scripts/mcp-http-install --apply, then re-run. Nothing was built or changed.",
             file=sys.stderr,
         )
         sys.stdout.write(diff)
         return EXIT_DIFF
-    if run(["scripts/build-image", BUILD_SERVICE]) != 0:
-        return 1
-    # compose tags the build `precis-dev`; the ensure script runs `precis-mcp:dev`.
-    if run(["docker", "tag", BUILD_SERVICE, IMAGE]) != 0:
-        return 1
-    rebuilt = image_label(IMAGE, REV_LABEL)
-    if not is_current(rebuilt, pinned):
-        print(
-            f"built image carries autocatpath {rebuilt or 'unlabelled'}, not the pin; not recreating",
-            file=sys.stderr,
-        )
-        return 1
-    if run(["scripts/mcp-http-install"]) != 0:
-        return 1
+    if stale:
+        if run(["scripts/build-image", BUILD_SERVICE]) != 0:
+            return 1
+        # compose tags the build `precis-dev`; the ensure script runs `precis-mcp:dev`.
+        if run(["docker", "tag", BUILD_SERVICE, IMAGE]) != 0:
+            return 1
+        rebuilt = image_label(IMAGE, REV_LABEL)
+        if not is_current(rebuilt, pinned):
+            print(
+                f"built image carries autocatpath {rebuilt or 'unlabelled'}, not the pin; not recreating",
+                file=sys.stderr,
+            )
+            return 1
+    if decision == "auto-apply":
+        # the build can take minutes: re-check the installed file before overwriting it
+        if install_decision(REPO_ENSURE, installed, history) != "auto-apply":
+            print(
+                f"STOP: {installed} changed during the build; not installing.",
+                file=sys.stderr,
+            )
+            return EXIT_DIFF
+        if run(["scripts/mcp-http-install", "--apply"]) != 0:
+            return 1
     if run([str(installed), "--recreate"]) != 0:
         return 1
     if not wait_serving(installed, args.timeout):
         print(
-            f"new backend not serving within {args.timeout:.0f}s; run {installed} --status",
+            f"new backend not serving (no 401 from both probes) within "
+            f"{args.timeout:.0f}s; the old colour may still be up. Run "
+            f"{installed} --status and check docker logs.",
             file=sys.stderr,
         )
         return EXIT_UNHEALTHY
