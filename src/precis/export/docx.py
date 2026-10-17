@@ -62,6 +62,10 @@ from precis.export._patent_cite import (
     render_paper_inline_citation,
     render_patent_citation,
 )
+from precis.export._provenance_strip import (
+    is_provenance_only,
+    strip_provenance_handles,
+)
 from precis.export._trust_marks import (
     UNSUPPORTED_MARK_TEXT,
     mark_text,
@@ -862,6 +866,7 @@ def _render_inline(text: str, ctx: _Ctx, paragraph: Any) -> None:
     markdown/sub-sup/math run formatting."""
     text = _SCRIPT_ONLY_MATH_SPAN.sub(_script_only_to_html, text)
     text = preprocess_draft_inline(text)
+    text = strip_provenance_handles(text, title_for=lambda h: _bare_handle_text(h, ctx))
     pin_lint.warn_export(ctx, text)
     # A new chunk/caption/cell never continues the previous one's cite run:
     # without this reset, a paragraph opening with the same paper the last
@@ -1408,7 +1413,7 @@ def _render_target(
             return
         # draft cross-ref / other record handle → not a citation.
         ctx.last_cite = None
-        if kind == "draft" and is_chunk:
+        if not is_provenance_only(kind, is_chunk):
             _render_xref(tgt, surface, ctx, paragraph)
         return
     # Any non-citation content breaks a run of consecutive citations.
