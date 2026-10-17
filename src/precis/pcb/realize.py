@@ -2031,6 +2031,45 @@ def _realize_maze(
         npth_clearance_mm=_npth_clearance_mm(config),
     )
     tracks, vias = _prune_redundant_drop_vias(ir, tracks, vias, pours)
+    # A plane pin the fan-out found no site for gets a routed connection to
+    # a neighbouring drop via; the pour is carved again around what it adds.
+    rescue_tracks, rescue_vias, rescued = _rescue_plane_pins(
+        ir,
+        tracks,
+        vias,
+        pours,
+        plane_failed_pins,
+        spec=spec,
+        clearance=clearance,
+        pads=pads,
+        rules_by_net=rules_by_net,
+        config=config,
+    )
+    if rescued:
+        tracks = tracks + rescue_tracks
+        vias = vias + rescue_vias
+        rescued_set = set(rescued)
+        plane_failed_pins = [p for p in plane_failed_pins if p not in rescued_set]
+        still = {int(ir.pin_net[p]) for p in plane_failed_pins}
+        fully = {int(ir.pin_net[p]) for p in rescued} - still
+        plane_seg_set = set(plane_ids)
+        unrouted = [
+            s_
+            for s_ in unrouted
+            if not (s_ in plane_seg_set and int(ir.seg_net[s_]) in fully)
+        ]
+        pours, extra_unrouted = _pour_planes(
+            ir,
+            tracks,
+            vias,
+            unrouted,
+            plane_ids,
+            ctx.clearance_max,
+            max(ctx.clearance_max, edge_min) + 0.01,
+            footprints,
+            fixed_copper,
+            npth_clearance_mm=_npth_clearance_mm(config),
+        )
     # Deliberate stitching vias, AFTER pouring -- this pass needs the
     # finished pour polygons to know what it is joining (module docstring's
     # "Plane fragment stitching" note, gripe 270637).
@@ -5059,6 +5098,7 @@ def _stitch_one_net(
     track_width_by_layer: dict[int, float],
     foreign_pours: dict[int, list[Any]],
     net_tracks: list[RealizedTrack],
+    floor_width_by_layer: dict[int, float] | None = None,
 ) -> tuple[list[RealizedVia], list[RealizedTrack], int, int, str]:
     """One net's stitching attempt, both stages of the module docstring.
 
@@ -5341,18 +5381,26 @@ def _stitch_one_net(
                     placed_here = True
                     break
         if not placed_here and jumpers < config.max_plane_jumpers_per_net:
-            jumper = _try_plane_jumper(
-                net_id,
-                frags[i],
-                frags[j],
-                grid=grid,
-                via_dia_mm=via_dia_mm,
-                via_drill_mm=via_drill_mm,
-                via_is_legal=via_is_legal,
-                track_width_by_layer=track_width_by_layer,
-                foreign_pours=foreign_pours,
-                config=config,
-            )
+            jumper = None
+            for widths in (track_width_by_layer, floor_width_by_layer):
+                if widths is None or (
+                    widths is floor_width_by_layer and widths == track_width_by_layer
+                ):
+                    continue
+                jumper = _try_plane_jumper(
+                    net_id,
+                    frags[i],
+                    frags[j],
+                    grid=grid,
+                    via_dia_mm=via_dia_mm,
+                    via_drill_mm=via_drill_mm,
+                    via_is_legal=via_is_legal,
+                    track_width_by_layer=widths,
+                    foreign_pours=foreign_pours,
+                    config=config,
+                )
+                if jumper is not None:
+                    break
             if jumper is not None:
                 jumper_vias, jumper_track = jumper
                 for v in jumper_vias:
@@ -5408,10 +5456,28 @@ def _stitch_one_net(
             dsu.find(n_frags + k) for k in range(len(existing_vias))
         }
         bare_pieces = len({dsu.find(i) for i in range(n_frags)} - roots_with_copper)
+        # Name the reason each bare piece stayed unjoined: no via fits in it,
+        # or a site exists but no legal jumper reaches the rest of the net.
+        bare_why: list[str] = []
+        for i, (layer, poly) in enumerate(frags):
+            if dsu.find(i) in roots_with_copper:
+                continue
+            sites = _snapped_sites_in(poly, grid.spec, via_r)
+            bare_why.append(
+                f"{poly.area:.2f}mm2 on layer {layer} at "
+                f"({poly.centroid.x:.1f}, {poly.centroid.y:.1f}): "
+                + (
+                    "no via site fits inside it"
+                    if not sites
+                    else f"{len(sites)} via site(s) fit but no legal via or "
+                    "jumper to the rest of the net"
+                )
+            )
         bare_note = (
             f" {bare_pieces} of those piece(s) hold NO via or trace of this "
             "net at all — floating poured copper, not an electrical split, "
-            "and invisible to the connectivity checker for that reason."
+            "and invisible to the connectivity checker for that reason"
+            f" ({'; '.join(bare_why)})."
             if bare_pieces
             else ""
         )
@@ -5446,6 +5512,188 @@ def _stitch_one_net(
             )
         )
     return new_vias, new_tracks, remaining, bare_pieces, message
+
+
+#: How many of a stranded pin's nearest same-net drop vias the rescue tries.
+_RESCUE_TARGETS = 4
+
+
+def _pour_polygons(
+    ir: PcbIR, pours: list[dict[str, Any]]
+) -> list[tuple[str, int, Any]]:
+    """Every non-empty pour as ``(net name, layer index, polygon)``."""
+    layer_index = {str(layer.get("name")): i for i, layer in enumerate(ir.stackup)}
+    out: list[tuple[str, int, Any]] = []
+    for pour in pours:
+        idx = layer_index.get(str(pour.get("layer", "")))
+        if idx is None:
+            continue
+        poly = _pour_polygon(pour)
+        if not poly.is_empty:
+            out.append((str(pour.get("net", "")), idx, poly))
+    return out
+
+
+def _final_board_grid(
+    ir: PcbIR,
+    tracks: list[RealizedTrack],
+    vias: list[RealizedVia],
+    spec: maze.GridSpec,
+    clearance: float,
+    pads: list[tuple[Point, int, maze.PadShape, tuple[int, ...]]],
+    rules_by_net: dict[int, NetRules],
+    config: RealizeConfig,
+) -> maze.OccupancyGrid:
+    """A FRESH scratch grid stamped from the finished tracks, vias and pads:
+    the real final board (pours are never stamped)."""
+    grid = maze.OccupancyGrid(
+        spec,
+        clearance_mm=clearance,
+        net_clearance_mm=_net_clearances(rules_by_net, config),
+    )
+    _claim_fiducial_keepouts(grid, ir)
+    _claim_mounting_holes(grid, ir, npth_clearance_mm=_npth_clearance_mm(config))
+    _stamp_pads(grid, pads)
+    for t in tracks:
+        _stamp_realized_track(grid, t)
+    for v in vias:
+        grid.stamp_disk(
+            range(v.layer_lo, v.layer_hi + 1),
+            v.x,
+            v.y,
+            grid.core_radius_mm(v.dia_mm),
+            v.net_id,
+        )
+    return grid
+
+
+def _rescue_plane_pins(
+    ir: PcbIR,
+    tracks: list[RealizedTrack],
+    vias: list[RealizedVia],
+    pours: list[dict[str, Any]],
+    failed_pins: list[int],
+    *,
+    spec: maze.GridSpec,
+    clearance: float,
+    pads: list[tuple[Point, int, maze.PadShape, tuple[int, ...]]],
+    rules_by_net: dict[int, NetRules],
+    config: RealizeConfig,
+) -> tuple[list[RealizedTrack], list[RealizedVia], list[int]]:
+    """Give a plane pin that found no drop-via site a ROUTED connection to
+    one of its own net's drop vias that already reaches the pour (gr492108:
+    nano V5's 15 pieces were exactly these pins).
+
+    The fan-out only looks ``_DROP_SEARCH_STEPS`` stubs out from the pad. A
+    pin walled in beyond that can still have a legal trace to a drop via
+    further away, which the maze router finds on the final board. The trace
+    may change layer; the re-pour that follows carves the planes around
+    whatever it adds. Returns the new tracks and vias and the pins rescued;
+    a pin with no reachable same-net drop stays failed and keeps its
+    ``plane_drop_blocked`` reason."""
+    if not failed_pins or not pours:
+        return [], [], []
+    pour_polys = _pour_polygons(ir, pours)
+    grid = _final_board_grid(
+        ir, tracks, vias, spec, clearance, pads, rules_by_net, config
+    )
+    all_layers = range(len(ir.stackup))
+    signal = list(routable_layers(ir))
+    floor_width = resolve_net_rules(
+        "", layer_is_outer=True, fab_caps=config.fab_caps
+    ).track_width_mm
+    new_tracks: list[RealizedTrack] = []
+    new_vias: list[RealizedVia] = []
+    rescued: list[int] = []
+    for pid in failed_pins:
+        net_id = int(ir.pin_net[pid])
+        rules = rules_by_net[net_id]
+        point = pin_point(ir, pid)
+        if point is None or rules.via_dia_mm is None or rules.via_drill_mm is None:
+            continue
+        pad_layer = _side_layer(ir, int(ir.pin_instance[pid]), all_layers)
+        net_name = str(ir.net_name[net_id])
+        foreign_pours: dict[int, list[Any]] = {}
+        for n, i, poly in pour_polys:
+            if n != net_name:
+                foreign_pours.setdefault(i, []).append(poly)
+        widths = sorted({rules.track_width_mm, floor_width}, reverse=True)
+        polys = [(i, poly) for n, i, poly in pour_polys if n == net_name]
+        targets = sorted(
+            (
+                v
+                for v in [*vias, *new_vias]
+                if v.net_id == net_id
+                and any(
+                    v.layer_lo <= i <= v.layer_hi and _touches(poly, v.x, v.y)
+                    for i, poly in polys
+                )
+            ),
+            key=lambda v: dist(point, (v.x, v.y)),
+        )[:_RESCUE_TARGETS]
+        # The net's own width first; a power class's current-sized width often
+        # fits no corridor out of a crowded pad, so the fab floor is the
+        # fallback (a single-pin tie to the plane, not a power trunk).
+        for width in widths:
+            if pid in rescued:
+                break
+            for v in targets:
+                goal_layer = next(
+                    (layer for layer in (v.layer_lo, v.layer_hi) if layer in signal),
+                    None,
+                )
+                if goal_layer is None:
+                    continue
+                path = grid.route(
+                    net_id,
+                    point,
+                    (v.x, v.y),
+                    layers=signal,
+                    width_mm=width,
+                    via_dia_mm=rules.via_dia_mm,
+                    start_layer=pad_layer,
+                    goal_layer=goal_layer,
+                    attach=False,
+                    max_expansions=config.max_expansions,
+                )
+                if path is None or len(path.points) < 2:
+                    continue
+                # A via may cross a foreign plane (the re-pour cuts its
+                # antipad), but a TRACK on a layer another net pours would
+                # slice that plane, so it is refused here as the jumper does.
+                if any(
+                    not _clears_foreign_pours(
+                        _ShapelyLineString(
+                            [(x, y) for x, y, lyr in path.points if lyr == layer]
+                        ).buffer(width / 2.0 + clearance, quad_segs=_JUMPER_QUAD_SEGS),
+                        range(layer, layer + 1),
+                        foreign_pours,
+                    )
+                    for layer in {int(p[2]) for p in path.points}
+                    if sum(1 for p in path.points if int(p[2]) == layer) >= 2
+                ):
+                    continue
+                grid.stamp_path(path, width)
+                via_core = grid.core_radius_mm(rules.via_dia_mm)
+                for vx, vy, lo, hi in path.vias:
+                    grid.stamp_disk(range(lo, hi + 1), vx, vy, via_core, net_id)
+                    new_vias.append(
+                        RealizedVia(
+                            seg_id=_STITCH_SEG_ID,
+                            net_id=net_id,
+                            x=vx,
+                            y=vy,
+                            dia_mm=rules.via_dia_mm,
+                            drill_mm=rules.via_drill_mm,
+                            layer_lo=lo,
+                            layer_hi=hi,
+                            endpoint="a",
+                        )
+                    )
+                new_tracks += _tracks_from_path(_STITCH_SEG_ID, net_id, path, width)
+                rescued.append(pid)
+                break
+    return new_tracks, new_vias, rescued
 
 
 def _stitch_plane_fragments(
@@ -5521,38 +5769,13 @@ def _stitch_plane_fragments(
     plane_net_ids = [n for n in range(ir.n_nets) if int(ir.net_plane_layers[n]) != 0]
     if not plane_net_ids or not pours:
         return [], [], []
-    layer_names = [str(layer.get("name")) for layer in ir.stackup]
-    layer_index = {name: i for i, name in enumerate(layer_names)}
     # Every pour's polygon, once — the per-net `foreign_pours` views below
     # are filtered from this list rather than rebuilt, so a board with many
     # planes does not pay to re-triangulate the same rings per net.
-    pour_polys: list[tuple[str, int, Any]] = []
-    for pour in pours:
-        idx = layer_index.get(str(pour.get("layer", "")))
-        if idx is None:
-            continue
-        poly = _pour_polygon(pour)
-        if not poly.is_empty:
-            pour_polys.append((str(pour.get("net", "")), idx, poly))
-
-    grid = maze.OccupancyGrid(
-        spec,
-        clearance_mm=clearance,
-        net_clearance_mm=_net_clearances(rules_by_net, config),
+    pour_polys = _pour_polygons(ir, pours)
+    grid = _final_board_grid(
+        ir, tracks, vias, spec, clearance, pads, rules_by_net, config
     )
-    _claim_fiducial_keepouts(grid, ir)
-    _claim_mounting_holes(grid, ir, npth_clearance_mm=_npth_clearance_mm(config))
-    _stamp_pads(grid, pads)
-    for t in tracks:
-        _stamp_realized_track(grid, t)
-    for v in vias:
-        grid.stamp_disk(
-            range(v.layer_lo, v.layer_hi + 1),
-            v.x,
-            v.y,
-            grid.core_radius_mm(v.dia_mm),
-            v.net_id,
-        )
     placed_via_sites: list[tuple[float, float, float]] = [
         (v.x, v.y, v.dia_mm / 2.0) for v in vias
     ]
@@ -5588,6 +5811,15 @@ def _stitch_plane_fragments(
             layer: _resolve_track_rules(ir, net_id, layer, config).track_width_mm
             for layer in routable_layers(ir)
         }
+        # A power class's current-sized width often fits no corridor between
+        # two fragments; the jumper retries at the fab floor before giving up.
+        floor_width = resolve_net_rules(
+            "", layer_is_outer=True, fab_caps=config.fab_caps
+        ).track_width_mm
+        floor_width_by_layer = {
+            layer: min(width, floor_width)
+            for layer, width in track_width_by_layer.items()
+        }
         net_vias, net_tracks, remaining, bare, message = _stitch_one_net(
             net_id,
             net_name,
@@ -5600,6 +5832,7 @@ def _stitch_plane_fragments(
             track_width_by_layer,
             foreign_pours,
             [t for t in tracks if t.net_id == net_id],
+            floor_width_by_layer,
         )
         extra_vias += net_vias
         extra_tracks += net_tracks

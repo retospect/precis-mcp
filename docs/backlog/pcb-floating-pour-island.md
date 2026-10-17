@@ -96,6 +96,40 @@ components after stitching (taz15-blank PV+ 2, GND 5 when poured; nano V5
 pieces carrying copper, not bare islands, so this item or slice 4 needs
 to say which one owns them.
 
+## Measured 2026-10-17 (pour-stitch, gr492108)
+
+Shipped: `_rescue_plane_pins` (a plane pin the fan-out found no drop site
+for gets a routed trace, net width then fab-floor width, to the nearest
+same-net drop via that touches the pour; pour re-carved), the jumper's
+fab-floor width retry, and a named reason per bare piece in
+`UnstitchedNet.message` (area, centroid, "no via site fits" vs "no legal
+via or jumper"). Harness: seed 0/1 as in the stackup-regions slice 1 table.
+`net_islands` components per plane net:
+
+| board | routed/failed before → after | plane nets before → after |
+|---|---|---|
+| taz15-blank as stored | 66/13 → 67/12 | PV+ 2 → **1**, 12V 1 → 1 |
+| taz15-blank + GND→B, 3V3→F | 64/15 → 64/15 | PV+ 2 → 2, GND 5 → 5, 3V3 1, 12V 1 |
+| nano, GND→In1 + V5→In2 | 34/30 → 34/30 (DRC errors 75 → 73) | V5 15 → **4**, GND 33 → **2** |
+| nano as tested (no pours) | 35/29, silk 36, warns 9 → same | — |
+| esp32c3 seed 1 | 11/0 → 11/0 | GND 1, VCC3V3 1 |
+
+Not done, still open:
+- A rescue trace is refused on any layer another net pours, so on taz15 + GND/3V3
+  (F.Cu 3V3, B.Cu GND, the only routable layers) PV+ stays 2: the
+  unguarded version reached PV+ 1 and 65/14 but cut the foreign planes.
+- taz15-blank PV+ keeps one bare 8.19 mm² In1 piece (`pour_quality`: 2
+  fragments): a via site fits, but no legal via or jumper reaches the net.
+  taz15 + GND/3V3: 3V3 is 12 bare F.Cu pieces, the largest 5190 mm², with
+  no spare unpoured layer for a jumper.
+- taz15 + GND/3V3 GND stays 5 components (F.Cu pads at (6.1, 94.6),
+  (19.0, 43.8), (16.0, 43.8), (9.7, 9.9), (54.2, 20.0)); nano V5 4 and GND 2
+  components (F.Cu pads; nearest same-net via 1.7–18 mm away). Not
+  diagnosed past "the fan-out reports no blocked pin and the pad is still
+  its own component".
+- Bare islands are reported, not dropped (the task brief: report, do not
+  silently delete); the drop-on-unreachable clause above is unimplemented.
+
 ## Target + blast radius
 
 `src/precis/pcb/realize.py` (`_realize_maze`'s pour/stitch ordering,

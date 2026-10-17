@@ -145,7 +145,8 @@ stored, PV+ in 2 pieces; taz15-blank with GND/3V3 poured, GND in 5;
 nano with GND→In1 and V5→In2 declared, V5 in 15. The drop-site
 reservation does not touch it. The fix is stitching work:
 [pcb-floating-pour-island](pcb-floating-pour-island.md) or slice 4
-(gr492108). Slice 1 landed on the coordinator's ruling
+(gr492108; partly fixed 2026-10-17 by pour-stitch, remaining counts in
+[pcb-floating-pour-island](pcb-floating-pour-island.md) "Measured"). Slice 1 landed on the coordinator's ruling
 (2026-10-16): no row regressed.
 The floor is vacuous on nano and the ewod replay as tested: they pour
 nothing (no `pcb_planes` rows; ewod has no GND net). Prod taz15-blank

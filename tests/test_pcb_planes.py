@@ -262,3 +262,90 @@ def test_pour_notes_join_every_layer_of_a_net_into_one_clause():
     assert list(notes) == ["GND"]
     assert notes["GND"].startswith("pour: F.Cu 1 piece(s)")
     assert "In1.Cu 1 piece(s)" in notes["GND"] and "neck >2mm" in notes["GND"]
+
+
+def test_walled_in_plane_pin_is_rescued_by_a_routed_trace_at_fab_floor_width():
+    """gr492108: GND is poured on In1.Cu with a 2.0mm class track width. U1
+    drops a via in open board; U2 sits at (-4, 0) inside a ring of seven
+    other-net pads (R=2.4mm, one pad missing) so ``_plane_fanout`` finds no
+    stub+via site. A routed trace can still leave through the opening, but
+    only at a narrower width than the net's 2.0mm. ``_rescue_plane_pins`` must
+    route it to U1's drop via: no ``plane_drop_blocked`` for U2, a GND track
+    touching U2's pad, and the net in one connected component."""
+    import math
+
+    from precis.pcb import DEFAULT_STACKUP
+    from precis.pcb import session as pcb_session
+    from precis.pcb.capabilities import capability_for
+    from precis.pcb.connectivity import net_islands
+    from precis.pcb.ir import from_graph, pin_point
+    from precis.pcb.realize import RealizeConfig, realize
+
+    cx, ring_r, ring_n = -4.0, 2.4, 8
+    instances: list[dict[str, Any]] = [
+        {"refdes": "U1", "x": 12.0, "y": 0.0},
+        {"refdes": "U2", "x": cx, "y": 0.0},
+    ]
+    nets: list[dict[str, Any]] = [
+        {
+            "name": "GND",
+            "net_class": "ground",
+            "domain": "electrical",
+            "members": [{"refdes": "U1", "pin": "1"}, {"refdes": "U2", "pin": "1"}],
+        }
+    ]
+    for i in range(1, ring_n):  # i == 0 omitted: the opening
+        a = math.radians((i + 0.5) * 360.0 / ring_n)
+        instances.append(
+            {
+                "refdes": f"R{i}",
+                "x": cx + ring_r * math.cos(a),
+                "y": ring_r * math.sin(a),
+            }
+        )
+        instances.append(
+            {"refdes": f"Q{i}", "x": cx + (i - ring_n / 2) * 2.0, "y": 8.0}
+        )
+        nets.append(
+            {
+                "name": f"S{i}",
+                "members": [
+                    {"refdes": f"R{i}", "pin": "1"},
+                    {"refdes": f"Q{i}", "pin": "1"},
+                ],
+            }
+        )
+    outline = [[-15.0, -12.0], [20.0, -12.0], [20.0, 12.0], [-15.0, 12.0]]
+    ir = from_graph(
+        {"instances": instances, "nets": nets}, stackup=DEFAULT_STACKUP, outline=outline
+    )
+    ir.promote_plane(0, 1)  # In1.Cu
+    config = RealizeConfig(
+        router="maze",
+        fab_caps=capability_for("4layer"),
+        class_rules={"ground": {"track_width_mm": 2.0}},
+    )
+    res = realize(ir, config=config)
+
+    blocked = [r for r in res.unrouted_reasons if r.kind == "plane_drop_blocked"]
+    assert not blocked, [(r.message, r.pins) for r in blocked]
+
+    u2 = next(p for p in range(ir.n_pins) if int(ir.pin_instance[p]) == 1)
+    pt_u2 = pin_point(ir, u2)
+    assert pt_u2 is not None
+    px, py = pt_u2
+    touching = [
+        t
+        for t in res.tracks
+        if t.net_id == 0
+        and any(
+            math.hypot(pt[0] - px, pt[1] - py) < 0.05  # grid-snapped start
+            for s in t.segments
+            for pt in (s["start"], s["end"])
+        )
+    ]
+    assert touching, "no GND track reaches U2's pad"
+    assert all(t.width_mm < 2.0 for t in touching), [t.width_mm for t in touching]
+
+    model = pcb_session._routed_model(ir, res, footprints=None, fixed_copper=None)
+    assert [i for i in net_islands(model) if i.net == "GND"] == []
