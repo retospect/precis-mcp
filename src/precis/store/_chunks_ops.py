@@ -26,6 +26,7 @@ from __future__ import annotations
 import os
 import random
 from contextlib import nullcontext
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -85,6 +86,13 @@ _ANN_MAX_SCAN_TUPLES = 200_000
 #: First pgvector release with ``hnsw.iterative_scan`` / ``hnsw.max_scan_tuples``.
 _ANN_ITERATIVE_MIN_VERSION = (0, 8, 0)
 
+#: Server-side deadline (ms) for the next ANN search on this context, set by
+#: the cross-kind fan-out so an abandoned kind's scan is cancelled by Postgres
+#: instead of running on after the client gave up (gr495190). ``None`` = none.
+ANN_STATEMENT_TIMEOUT_MS: ContextVar[int | None] = ContextVar(
+    "precis_ann_statement_timeout_ms", default=None
+)
+
 #: Process-wide cache of "does the server's pgvector have the iterative-scan
 #: GUCs?" — ``None`` until the first :func:`_prepare_filtered_ann` call.
 _ann_iterative_supported: bool | None = None
@@ -128,6 +136,14 @@ def _prepare_filtered_ann(conn: Connection, limit: int) -> None:
     connection would COMMIT on exit and discard the ``SET LOCAL``.)
     """
     global _ann_iterative_supported
+    timeout_ms = ANN_STATEMENT_TIMEOUT_MS.get()
+    if timeout_ms is not None:
+        # SET LOCAL semantics (is_local=true), like the GUCs below: pgbouncer
+        # transaction mode must not see it leak to another client.
+        conn.execute(
+            "SELECT set_config('statement_timeout', %s, true)",
+            (str(max(int(timeout_ms), 1)),),
+        )
     if _ann_iterative_supported is None:
         row = conn.execute(
             "SELECT extversion FROM pg_extension WHERE extname = 'vector'"

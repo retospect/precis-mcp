@@ -21,7 +21,11 @@ and the plain fan-out) for free. See
 
 from __future__ import annotations
 
+import contextvars
 import logging
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -36,6 +40,7 @@ from precis.runtime._shared import (
     UNCITED_UNSUPPORTED_KINDS as _UNCITED_UNSUPPORTED_KINDS,
 )
 from precis.runtime._shared import RuntimeShape
+from precis.store._chunks_ops import ANN_STATEMENT_TIMEOUT_MS
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
 from precis.store.types import Tag
 from precis.utils import handle_registry
@@ -46,6 +51,30 @@ from precis.utils.search_merge import (
 )
 
 log = logging.getLogger(__name__)
+
+#: Cross-kind fan-out bounds (gr495190). Workers stay well under the DB pool
+#: (default 10) so a wildcard search can't starve other requests. Held at 2
+#: until the server-side cancel (ANN_STATEMENT_TIMEOUT_MS) is seen working on
+#: prod; raise it then.
+CROSS_KIND_MAX_WORKERS = 2
+#: Wall-clock budget for the whole fan-out, not per kind.
+CROSS_KIND_DEADLINE_S = 30.0
+
+_cross_kind_pool: ThreadPoolExecutor | None = None
+_cross_kind_pool_lock = threading.Lock()
+
+
+def _cross_kind_executor() -> ThreadPoolExecutor:
+    """Process-wide fan-out executor: one cap on DB connections held by
+    cross-kind searches, including stragglers that outlive their deadline."""
+    global _cross_kind_pool
+    with _cross_kind_pool_lock:
+        if _cross_kind_pool is None:
+            _cross_kind_pool = ThreadPoolExecutor(
+                max_workers=CROSS_KIND_MAX_WORKERS, thread_name_prefix="cross-kind"
+            )
+        return _cross_kind_pool
+
 
 #: gr249198: ``MockEmbedder`` never raises, so the existing
 #: ``semantic_degraded`` paths below — which key off catching
@@ -747,12 +776,12 @@ class SearchMixin(RuntimeShape):
         streams: list[list[SearchHit]] = []
         per_kind_counts: list[tuple[str, int]] = []
         errored: dict[str, Exception] = {}
+        fanned = self._cross_kind_fan_out(kinds, base_kwargs)
         for k in kinds:
-            handler = self.hub.handler_for(k)
-            if handler is None:
+            if k not in fanned:
                 per_kind_counts.append((k, 0))
                 continue
-            hits_or_exc = self._cross_kind_invoke_search_hits(handler, k, base_kwargs)
+            hits_or_exc = fanned[k]
             if isinstance(hits_or_exc, Exception):
                 errored[k] = hits_or_exc
                 per_kind_counts.append((k, 0))
@@ -1072,6 +1101,69 @@ class SearchMixin(RuntimeShape):
             )
         label = f"{ref.title!r} (folder:{ref.id})"
         return store.folder_subtree_ids(ref.id), label
+
+    def _cross_kind_fan_out(
+        self, kinds: list[str], base_kwargs: dict[str, Any]
+    ) -> dict[str, list[SearchHit] | Exception]:
+        """Run every kind's ``search_hits`` on at most
+        :data:`CROSS_KIND_MAX_WORKERS` threads, giving up on stragglers
+        after :data:`CROSS_KIND_DEADLINE_S` seconds in total.
+
+        gr495190: the fan-out used to be a serial loop, and one kind's
+        filtered HNSW scan alone takes 10-30 s on prod (the global index
+        is almost all papers), so 34 kinds ran past 120 s. A kind that
+        misses the deadline comes back as a ``TimeoutError`` value, so the
+        caller names it in the "errored, omitted" footer instead of
+        reading it as zero matches. Kinds without a handler are absent
+        from the result. Threads cannot be killed: a straggler finishes in
+        the background, but the process-wide executor caps how many can
+        exist across all searches.
+        """
+        from concurrent.futures import wait
+
+        from precis.store.pool import _PINNED
+
+        jobs = [(k, h) for k in kinds if (h := self.hub.handler_for(k)) is not None]
+        out: dict[str, list[SearchHit] | Exception] = {}
+        if not jobs:
+            return out
+
+        def run(handler: Handler, k: str) -> list[SearchHit] | Exception:
+            # A worker must not share a pinned (atomic-scope) connection.
+            _PINNED.set(None)
+            remaining_ms = int((deadline_at - time.monotonic()) * 1000)
+            if remaining_ms <= 0:
+                return TimeoutError("fan-out deadline passed before start")
+            # Postgres cancels the ANN scan at the deadline; the client-side
+            # wait alone would leave it running.
+            ANN_STATEMENT_TIMEOUT_MS.set(remaining_ms)
+            return self._cross_kind_invoke_search_hits(handler, k, base_kwargs)
+
+        deadline_at = time.monotonic() + CROSS_KIND_DEADLINE_S
+        pool = _cross_kind_executor()
+        futures = {
+            k: pool.submit(contextvars.copy_context().run, run, h, k) for k, h in jobs
+        }
+        wait(futures.values(), timeout=CROSS_KIND_DEADLINE_S)
+        for k, fut in futures.items():
+            if fut.done():
+                try:
+                    out[k] = fut.result()
+                except Exception as exc:
+                    log.exception("cross-kind search_hits crashed for %s", k)
+                    out[k] = exc
+            else:
+                # Queued work is dropped; a running straggler finishes in the
+                # background but holds one of the shared workers, so stragglers
+                # across all searches stay at CROSS_KIND_MAX_WORKERS.
+                fut.cancel()
+                log.error(
+                    "cross-kind search_hits for %s exceeded %.0fs; omitted",
+                    k,
+                    CROSS_KIND_DEADLINE_S,
+                )
+                out[k] = TimeoutError(f"no answer within {CROSS_KIND_DEADLINE_S:.0f}s")
+        return out
 
     def _cross_kind_invoke_search_hits(
         self,
