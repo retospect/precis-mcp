@@ -329,8 +329,8 @@ def test_sinks_are_emitted_unlocked_so_the_placer_owns_their_position():
     """Ruling 2026-09-29 (Reto): "placement should always be done with the
     placer. Sometimes we keep a thing fixed -- nuts, screw holes,
     alignment pins, connectors -- but most of it should move." A sink is
-    not one of those; its emitted pose is the centroid of its own
-    electrode share, which is a SEED.
+    not one of those; its emitted pose is the centre of its own share's
+    plaza-via box (version 10), which is a SEED.
 
     Version 2 emitted ``fixed='both'`` here, and on prod board
     ``pb345846`` that locked ``ARR1_SINK_0``'s solder lands on top of the
