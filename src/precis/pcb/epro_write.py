@@ -1808,7 +1808,9 @@ class EproExport:
     stats: dict[str, int] = field(default_factory=dict)
 
 
-def _safe_stem(slug: str) -> str:
+def safe_stem(slug: str) -> str:
+    """``slug`` as a filename stem: anything but ``[A-Za-z0-9._-]`` becomes
+    ``_``. Also the download filename the web UI sends."""
     return "".join(c if c.isalnum() or c in "-_." else "_" for c in slug) or "board"
 
 
@@ -2299,7 +2301,7 @@ def epro_files(
             f"{'…' if len(dropped_nets) > 8 else ''}"
         )
 
-    stem = _safe_stem(slug)
+    stem = safe_stem(slug)
     manifest = {
         "title": slug,
         "cbb_project": False,
@@ -2366,6 +2368,7 @@ __all__ = [
     "epro_files",
     "frame_for",
     "loose_drills",
+    "safe_stem",
     "sorted_copper",
     "to_epro_xy",
     "to_footprint_xy",

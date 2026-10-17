@@ -28,7 +28,7 @@ orchestrator's round-1 diff review, 2026-10-02. It is not a regression
   `dir`, it resolves the path (`resolve()`, symlinks followed) and refuses
   it with BadInput unless it lies under the export root (the corpus
   `pcb/` dir or the temp dir).
-- Sanitise the filename stem (the epro writer's `_safe_stem` is the
+- Sanitise the filename stem (the epro writer's `safe_stem` is the
   model) instead of trusting the slug.
 
 ## Explicitly NOT in scope

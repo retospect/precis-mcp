@@ -9,6 +9,7 @@ handler-level test covers ``view='epro'`` over a live store.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import math
@@ -20,9 +21,9 @@ from typing import Any
 import pytest
 
 from precis.dispatch import Hub
-from precis.errors import BadInput
+from precis.errors import BadInput, NotFound
 from precis.handlers.pcb import PcbHandler
-from precis.pcb import epro, epro_write, padplace
+from precis.pcb import epro, epro_verify, epro_write, padplace
 from precis.pcb.gerber import SynthesizedPadError
 
 _LAYERS = ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"]
@@ -2706,3 +2707,209 @@ def _shape_failures_vs_source(src_blob: bytes, out_blob: bytes) -> list[str]:
     for f in fails:
         uniq[f] = uniq.get(f, 0) + 1
     return sorted(f if n == 1 else f"{f}  (x{n})" for f, n in uniq.items())
+
+
+# ── verify: the export re-read and diffed against its model (gr495289) ───
+def _verify(model, blob=None):
+    ex = _export(model)
+    data = epro_write.zip_epro(ex.files) if blob is None else blob
+    return epro_verify.verify_export(model, data, stats=ex.stats)
+
+
+def test_verify_passes_a_clean_export_with_copper():
+    v = _verify(_model(copper=_copper()))
+    assert not v.fails, v.render()
+    text = v.render()
+    for line in (
+        "parts 9 -> 9",
+        "pads 25 in the model, 25 written -> 25 read",
+        "copper segments 5 in the model, 5 written -> 5 read",
+        "vias 2 in the model, 2 written -> 2 read",
+        "outline 4 vertices",
+    ):
+        assert line in text
+    assert text.endswith("verify: 15 ok, 0 FAIL")
+
+
+def test_verify_shifts_into_the_readers_frame_for_an_offset_outline():
+    """The reader's origin is the outline's corner; a native board whose
+    outline starts elsewhere must not fail every position check."""
+    insts = [{**i, "x": i["x"] + 5.0, "y": i["y"] + 7.0} for i in _INSTANCES]
+    model = _model(insts, outline=[[5.0, 7.0], [35.0, 7.0], [35.0, 27.0], [5.0, 27.0]])
+    v = _verify(model)
+    assert not v.fails, v.render()
+
+
+def test_verify_fails_a_part_the_file_does_not_place_where_the_board_does():
+    model = _model()
+    ex = _export(model)
+    blob = epro_write.zip_epro(ex.files)
+    moved = {**model, "instances": [dict(i) for i in model["instances"]]}
+    moved["instances"][0]["x"] += 0.01
+    v = epro_verify.verify_export(moved, blob, stats=ex.stats)
+    assert [f for f in v.fails if f.startswith("part positions worst")] == [
+        "part positions worst 9.999 um"
+    ], v.render()
+
+
+def test_verify_fails_a_pad_whose_net_did_not_survive():
+    model = _model()
+    ex = _export(model)
+    blob = epro_write.zip_epro(ex.files)
+    renamed = {**model, "pads": [dict(p) for p in model["pads"]]}
+    for p in renamed["pads"]:
+        if p["refdes"] == "R2" and p["net"] == "N_R2":
+            p["net"] = "N_OTHER"
+    v = epro_verify.verify_export(renamed, blob, stats=ex.stats)
+    assert any(
+        f.startswith("pad nets: 1 differ — R2.1 N_OTHER -> N_R2") for f in v.fails
+    )
+
+
+def test_verify_fails_copper_lost_from_the_file():
+    """A LINE missing from the written stream: fewer read back than the
+    writer says it wrote."""
+    model = _model(copper=_copper())
+    ex = _export(model)
+    files = dict(ex.files)
+    member = next(n for n in files if n.endswith(".epru"))
+    lines = files[member].split("\n")
+    drop = next(k for k, ln in enumerate(lines) if ln.startswith('{"type":"LINE"'))
+    files[member] = "\n".join(lines[:drop] + lines[drop + 1 :])
+    v = epro_verify.verify_export(model, epro_write.zip_epro(files), stats=ex.stats)
+    assert any(
+        f.startswith("copper segments 5 in the model, 5 written -> 4 read")
+        for f in v.fails
+    ), v.render()
+
+
+def test_verify_reports_an_unreadable_file_instead_of_raising():
+    v = _verify(_model(), blob=b"not a zip")
+    assert v.ok == []
+    assert v.fails[0].startswith("the file does not read back through the importer")
+
+
+def test_handler_epro_verify_passes_on_a_native_board(pcb, tmp_path):
+    slug = _seed(pcb)
+    body = pcb.get(
+        id=slug, view="epro", args={"dir": str(tmp_path), "verify": True}
+    ).body
+    data = (tmp_path / "eprotest.epro2").read_bytes()
+    assert f"sha256: {hashlib.sha256(data).hexdigest()}" in body
+    assert "## verify" in body
+    assert "parts 2 -> 2" in body
+    assert "pour zones 1 written -> 1 read" in body  # the In1.Cu GND plane
+    assert "\nFAIL " not in body, body
+    assert "verify: 15 ok, 0 FAIL" in body
+
+
+def test_handler_epro_without_verify_points_at_it(pcb, tmp_path):
+    slug = _seed(pcb)
+    body = pcb.get(id=slug, view="epro", args={"dir": str(tmp_path)}).body
+    assert "args={'verify': true} re-reads it" in body
+    assert "## verify" not in body
+
+
+def test_handler_epro_verify_passes_on_an_imported_board(pcb, store, tmp_path):
+    """The committed fixture imported, exported and verified: its fixed
+    copper (lines, an arc, a via) and its pour ride the same check."""
+    from precis.ingest import pcb_epro
+
+    fixture = pathlib.Path(__file__).parent / "fixtures" / "pcb_epro_tiny"
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name in ("project2.json", "board.epru"):
+            zf.writestr(name, (fixture / name).read_bytes())
+    pcb_epro.import_epro(store, buf.getvalue(), slug="tiny-verify", title="Tiny V")
+    body = pcb.get(
+        id="tiny-verify", view="epro", args={"dir": str(tmp_path), "verify": True}
+    ).body
+    assert "copper segments 8 in the model, 8 written -> 8 read" in body
+    assert "vias 1 in the model, 1 written -> 1 read" in body
+    assert "\nFAIL " not in body, body
+    assert "verify: 15 ok, 0 FAIL" in body
+
+
+# ── fetch + re-import (gr495289, Reto's rulings 1a / 2a) ─────────────────
+def test_epro_view_names_the_download_path_for_these_bytes(pcb, tmp_path):
+    slug = _seed(pcb)
+    body = pcb.get(id=slug, view="epro", args={"dir": str(tmp_path)}).body
+    sha = hashlib.sha256((tmp_path / "eprotest.epro2").read_bytes()).hexdigest()
+    assert f"/pcb/eprotest/export.epro2?sha={sha[:16]}\n" in body
+    build = pcb.epro_build(pcb.store.get_ref(kind="pcb", id=slug).id)
+    assert build is not None and build.sha256 == sha
+    assert build.filename == "eprotest.epro2"
+
+
+def test_import_epro_dry_run_writes_nothing(pcb):
+    _seed(pcb)
+    body = pcb.put(
+        id="eprotest-copy", args={"op": "import_epro", "source": "export:eprotest"}
+    ).body
+    assert "would import 2 component(s)" in body
+    assert "dry run — nothing was written" in body
+    assert pcb.store.get_ref(kind="pcb", id="eprotest-copy") is None
+
+
+def test_import_epro_re_imports_the_export_into_a_new_board(pcb):
+    slug = _seed(pcb)
+    body = pcb.put(
+        id="eprotest-copy",
+        args={"op": "import_epro", "source": "export:eprotest", "dry_run": False},
+    ).body
+    assert "imported 2 component(s)" in body, body
+    build = pcb.epro_build(pcb.store.get_ref(kind="pcb", id=slug).id)
+    assert build is not None and f"source sha256: {build.sha256}" in body
+    src = {i["refdes"]: i for i in pcb.store.pcb_graph(_ref_id(pcb, slug))["instances"]}
+    copy_id = _ref_id(pcb, "eprotest-copy")
+    got = {i["refdes"]: i for i in pcb.store.pcb_graph(copy_id)["instances"]}
+    assert set(got) == set(src) == {"U1", "C1"}
+    for r, inst in src.items():
+        assert abs(got[r]["x"] - inst["x"]) < _TOL_MM
+        assert abs(got[r]["y"] - inst["y"]) < _TOL_MM
+        assert got[r]["layer"] == inst["layer"]
+    nets = {n["name"] for n in pcb.store.pcb_graph(copy_id)["nets"]}
+    assert {"VCC3V3", "GND"} <= nets
+    # the copy is a board in its own right: it exports and verifies clean
+    again = pcb.get(id="eprotest-copy", view="epro", args={"verify": True}).body
+    assert "\nFAIL " not in again, again
+
+
+def _ref_id(pcb, slug: str) -> int:
+    ref = pcb.store.get_ref(kind="pcb", id=slug)
+    assert ref is not None
+    return int(ref.id)
+
+
+def test_import_epro_refuses_a_taken_slug(pcb):
+    _seed(pcb)
+    pcb.put(
+        id="eprotest-copy",
+        args={"op": "import_epro", "source": "export:eprotest", "dry_run": False},
+    )
+    with pytest.raises(BadInput) as exc:
+        pcb.put(
+            id="eprotest-copy",
+            args={"op": "import_epro", "source": "export:eprotest", "dry_run": False},
+        )
+    assert exc.value.next and "eprotest-copy-2" in exc.value.next
+
+
+@pytest.mark.parametrize(
+    ("target", "source", "match"),
+    [
+        ("x-copy", "eprotest", "needs source='export:<board slug>'"),
+        ("x-copy", "export:", "needs source='export:<board slug>'"),
+        ("eprotest", "export:eprotest", "writes a NEW board"),
+    ],
+)
+def test_import_epro_refuses_a_bad_source(pcb, target, source, match):
+    _seed(pcb)
+    with pytest.raises(BadInput, match=match) as exc:
+        pcb.put(id=target, args={"op": "import_epro", "source": source})
+    assert exc.value.next
+
+
+def test_import_epro_unknown_source_board_is_not_found(pcb):
+    with pytest.raises(NotFound):
+        pcb.put(id="x-copy", args={"op": "import_epro", "source": "export:nope"})

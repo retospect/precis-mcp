@@ -77,11 +77,13 @@ from __future__ import annotations
 import collections
 import csv
 import dataclasses
+import hashlib
 import io
 import json
 import logging
 import math
 import tempfile
+import urllib.parse
 from collections.abc import Callable, Iterable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -111,6 +113,7 @@ from precis.pcb import connectivity as pcb_connectivity
 from precis.pcb import datasheets as pcb_datasheets
 from precis.pcb import drc as pcb_drc
 from precis.pcb import edge_mate as pcb_edge_mate
+from precis.pcb import epro_verify as pcb_epro_verify
 from precis.pcb import epro_write as pcb_epro_write
 from precis.pcb import export as pcb_export
 from precis.pcb import furniture as pcb_furniture
@@ -264,11 +267,16 @@ _FOOTPRINT_OPS = ("footprint",)
 #: Cheap request-building plus bounded HTTP, not worker compute — inline
 #: like ``footprint``, guarded by ``dry_run``/``confirm='add-to-cart'``.
 _ORDER_OPS = ("order",)
+#: gr495289 (Reto's ruling: option 2a) — re-import a board's OWN ``.epro2``
+#: export into a new preview slug, server-side. Addresses a slug that does
+#: not exist yet, so ``put`` routes it before the existing-design lookup.
+_IMPORT_OPS = ("import_epro",)
 _OPS = (
     *_JOB_OPS,
     *_INLINE_EDIT_OPS,
     *_FOOTPRINT_OPS,
     *_ORDER_OPS,
+    *_IMPORT_OPS,
     "datasheets",
     "review",
     "check",
@@ -569,6 +577,41 @@ class JudgeReport:
         return "".join(out)
 
 
+#: Hex digits of the sha256 a download path carries — enough that a stale
+#: link cannot match a changed board by accident, short enough to paste.
+EPRO_SHA_PREFIX = 16
+
+
+@dataclasses.dataclass(frozen=True)
+class EproBuild:
+    """One in-memory ``.epro2`` export (:meth:`PcbHandler.epro_build`):
+    ``model``/``warnings`` from ``_fab_model``, the writer's ``exported``
+    result, and the zipped ``blob``."""
+
+    slug: str
+    model: dict[str, Any]
+    warnings: list[str]
+    exported: pcb_epro_write.EproExport
+    blob: bytes
+
+    @property
+    def sha256(self) -> str:
+        return hashlib.sha256(self.blob).hexdigest()
+
+    @property
+    def filename(self) -> str:
+        return f"{pcb_epro_write.safe_stem(self.slug)}.epro2"
+
+    def download_path(self, *, allow_synthesized: bool = False) -> str:
+        """The web UI route that rebuilds these bytes; its ``sha`` makes a
+        link to a since-edited board answer 409 instead of a different
+        file."""
+        query = f"sha={self.sha256[:EPRO_SHA_PREFIX]}"
+        if allow_synthesized:
+            query += "&allow_synthesized=1"
+        return f"/pcb/{urllib.parse.quote(self.slug, safe='')}/export.epro2?{query}"
+
+
 class PcbHandler(Handler):
     #: args= keys each verb reads out of ``args`` (gr475332); dispatch
     #: rejects any other key. Keep in step with the verb bodies.
@@ -653,6 +696,7 @@ class PcbHandler(Handler):
                 "net",
                 "dir",
                 "allow_synthesized",
+                "verify",
                 "max_passes",
                 "iters",
                 "level",
@@ -721,8 +765,11 @@ class PcbHandler(Handler):
             "'gerber' is the full manufacturable bundle (gerbers+Excellon, "
             "zipped) and 'fab' is that zip plus JLC-format BOM+CPL in one "
             "dir; view='epro' writes an EasyEDA Pro .epro2 (outline, "
-            "parts, pads, nets; no copper yet, no schematic; not yet opened "
-            "in EasyEDA Pro); view='route' runs "
+            "parts, pads, nets, copper, pours; no schematic; "
+            "args={'verify':true} re-reads it and diffs it against the "
+            "board; put(id=<new slug>, args={'op':'import_epro','source':"
+            "'export:<slug>'}) re-imports it, dry run by default); "
+            "view='route' runs "
             "the demoted Freerouting escape hatch), all with args={...}; "
             "put(args={'op':'place'}) / args={'op':'route'} ENQUEUE a worker "
             "job (never inline; idempotent per design+op+content-hash) — "
@@ -822,6 +869,8 @@ class PcbHandler(Handler):
             # `autoplace` alias below, which historically did) — keeps the
             # enqueue/edit paths from having to reason about a simultaneous
             # components/nets diff.
+            if op in _IMPORT_OPS:
+                return self._op_import_epro(slug, args)
             ref = resolve_live_slug_ref(self.store, kind="pcb", id=slug)
             resp = self._dispatch_op(ref, str(op), args)
             if tags or untags:
@@ -4146,19 +4195,20 @@ class PcbHandler(Handler):
             ) from exc
         return pcb_gerber.zip_fab(files), warnings, files, model
 
-    def _render_epro(self, ref_id: int, args: dict[str, Any]) -> Response:
-        """Write an EasyEDA Pro ``.epro2`` (:mod:`precis.pcb.epro_write`)
-        off :meth:`_fab_model` — parts, pads, nets and the outline, so a
-        colleague can open the board and keep working. Refuses synthesized
-        pads unless ``args={'allow_synthesized': true}``."""
+    def epro_build(
+        self, ref_id: int, *, allow_synthesized: bool = False
+    ) -> EproBuild | None:
+        """The ``.epro2`` bytes for a board, in memory — ``None`` when it has
+        no board yet. The one build :meth:`_render_epro` (the MCP view),
+        ``op='import_epro'`` and the web UI's ``GET /pcb/{slug}/export.epro2``
+        all share: the writer is deterministic, so the same board state
+        gives the same bytes and sha256 on every surface, with nothing
+        stored (docs/backlog/pcb-epro-mcp-roundtrip.md, Reto's ruling)."""
         ref = self.store.get_ref(kind="pcb", id=ref_id)
         slug = ref.slug if ref is not None and ref.slug else str(ref_id)
         built = self._fab_model(ref_id, slug=slug)
         if built is None:
-            return Response(
-                body="no board yet\n\nNext: put(kind='pcb', id='slug', "
-                "args={'components':[...],'nets':[...]}) to create the design."
-            )
+            return None
         model, warnings = built
         # The verbatim passthroughs the import stored on the ref: the rule
         # table (meta.epro_rules) and the geometry-free board records
@@ -4194,18 +4244,155 @@ class PcbHandler(Handler):
             model["footprint_holes"] = holes_by_refdes
         try:
             exported = pcb_epro_write.epro_files(
-                model,
-                slug=slug,
-                allow_synthesized=bool(args.get("allow_synthesized")),
+                model, slug=slug, allow_synthesized=allow_synthesized
             )
         except pcb_gerber.SynthesizedPadError as exc:
             raise BadInput(
                 f"pcb: {exc} Use view='svg' args={{'level':'fab'}} to inspect "
-                "the board without exporting it."
+                "the board without exporting it.",
+                next=f"put(kind='pcb', id='{slug}', args={{'op':'footprint', "
+                "'parts':[...]}}) caches the real footprints",
             ) from exc
         except ValueError as exc:  # a name the record separator cannot carry
-            raise BadInput(f"pcb: cannot write .epro2: {exc}") from exc
-        blob = pcb_epro_write.zip_epro(exported.files)
+            raise BadInput(
+                f"pcb: cannot write .epro2: {exc}",
+                next=f"rename the net or part the message names: "
+                f"put(kind='pcb', id='{slug}', args={{'nets':[...]}})",
+            ) from exc
+        return EproBuild(
+            slug=slug,
+            model=model,
+            warnings=warnings,
+            exported=exported,
+            blob=pcb_epro_write.zip_epro(exported.files),
+        )
+
+    def _op_import_epro(self, slug: str, args: dict[str, Any]) -> Response:
+        """``put(id=<new slug>, args={'op':'import_epro',
+        'source':'export:<board>'})`` — rebuild ``<board>``'s ``.epro2``
+        server-side (:meth:`epro_build`) and run the CLI's own importer
+        (:func:`precis.ingest.pcb_epro.import_epro`) on those bytes into a
+        new preview slug. A dry run unless ``'dry_run': False``.
+
+        Reto's ruling (gr495289, option 2a): the only source is precis's
+        own export, so no caller-supplied bytes or URLs reach the reader —
+        no base64, no fetch, no upload. Real ``.epro2`` files stay on the
+        CLI. Never ``--update``: the target must be a new slug, and a
+        synthesized-pad board is refused (its bounds would import as real
+        footprints)."""
+        from precis.ingest.pcb_epro import EproImportError, import_epro
+        from precis.pcb import copper_report
+        from precis.pcb.epro import EproError
+
+        source = str(args.get("source") or "").strip()
+        src_slug = source.removeprefix("export:").strip()
+        example = (
+            f"put(kind='pcb', id='{slug}', args={{'op':'import_epro', "
+            "'source':'export:<existing board slug>'}})"
+        )
+        if not source.startswith("export:") or not src_slug:
+            raise BadInput(
+                f"op='import_epro' needs source='export:<board slug>', got {source!r}",
+                next=example,
+                options=["export:<board slug>"],
+            )
+        if src_slug == slug:
+            raise BadInput(
+                f"op='import_epro' writes a NEW board; id={slug!r} is its source",
+                next=f"put(kind='pcb', id='{slug}-reimport', args={{'op':'import_epro', "
+                f"'source':'export:{src_slug}'}})",
+            )
+        src_ref = resolve_live_slug_ref(self.store, kind="pcb", id=src_slug)
+        build = self.epro_build(int(src_ref.id))
+        if build is None:
+            raise BadInput(
+                f"pcb {src_slug!r} has no board yet; there is nothing to export",
+                next=f"get(kind='pcb', id='{src_slug}') shows what it holds",
+            )
+        dry_run = args.get("dry_run") is not False
+        try:
+            result = import_epro(
+                self.store,
+                build.blob,
+                slug=slug,
+                title=f"{build.slug} re-import",
+                source_name=f"export:{build.slug}",
+                dry_run=dry_run,
+            )
+        except EproError as exc:
+            raise BadInput(
+                f"the export of {src_slug!r} does not read back: {exc}",
+                next=f"get(kind='pcb', id='{src_slug}', view='epro', "
+                "args={'verify': True}) names what the file loses",
+            ) from exc
+        except EproImportError as exc:
+            # A taken slug or a board precis cannot hold (e.g. its layer
+            # count); the importer's own message names which.
+            raise BadInput(
+                f"op='import_epro': {exc}",
+                next=f"a taken slug needs a new id=, e.g. put(kind='pcb', "
+                f"id='{slug}-2', args={{'op':'import_epro', "
+                f"'source':'export:{src_slug}'}})",
+            ) from exc
+
+        queued = facts = 0
+        if not dry_run and result.ref_id:
+            # The import writes through pcb_apply, not this put's batch
+            # path, so it queues the datasheet work itself (as the CLI does).
+            queued, facts = self._queue_datasheets(result.ref_id)
+        s = result.stats
+        verb = "would import" if dry_run else "imported"
+        lines = [
+            f"# import_epro export:{build.slug} → {slug}: {verb} "
+            f"{s['components']} component(s), {s['footprints']} footprint(s), "
+            f"{s['nets']} net(s), {s['connections']} connection(s), "
+            f"{s['mounting_holes']} mounting hole(s)",
+            f"source sha256: {build.sha256} (the bytes view='epro' writes)",
+            "stackup: " + ", ".join(str(layer.get("name")) for layer in result.stackup),
+        ]
+        if result.planes:
+            lines.append(
+                "planes: "
+                + ", ".join(f"{k}={v}" for k, v in sorted(result.planes.items()))
+            )
+        # Every warning, never a count standing in for them: each is a thing
+        # the re-imported board does NOT carry.
+        lines += [f"⚠️  {w}" for w in result.warnings]
+        if result.copper is not None:
+            lines += copper_report.render(result.copper)
+        if queued or facts:
+            lines.append(
+                f"{queued} datasheet pull(s), {facts} facts extraction(s) queued"
+            )
+        if dry_run:
+            lines.append(
+                "dry run — nothing was written. Next: the same put with "
+                "'dry_run': False writes it."
+            )
+        else:
+            lines.append(
+                f"Next: get(kind='pcb', id='{slug}'). Locked parts stay locked; "
+                "op='route' re-places the unlocked ones first."
+            )
+        return Response(body="\n".join(lines))
+
+    def _render_epro(self, ref_id: int, args: dict[str, Any]) -> Response:
+        """Write an EasyEDA Pro ``.epro2`` (:mod:`precis.pcb.epro_write`)
+        off :meth:`_fab_model` — parts, pads, nets and the outline, so a
+        colleague can open the board and keep working. Refuses synthesized
+        pads unless ``args={'allow_synthesized': true}``. ``args={'verify':
+        true}`` appends :func:`precis.pcb.epro_verify.verify_export`'s diff
+        of the written bytes against the model. The response names the web
+        UI download path, which rebuilds the same bytes on request."""
+        allow_synthesized = bool(args.get("allow_synthesized"))
+        build = self.epro_build(ref_id, allow_synthesized=allow_synthesized)
+        if build is None:
+            return Response(
+                body="no board yet\n\nNext: put(kind='pcb', id='slug', "
+                "args={'components':[...],'nets':[...]}) to create the design."
+            )
+        slug, model, warnings = build.slug, build.model, build.warnings
+        exported, blob = build.exported, build.blob
 
         raw_dir = args.get("dir")
         out_dir = Path(str(raw_dir)).expanduser() if raw_dir else self._export_dir(slug)
@@ -4229,6 +4416,9 @@ class PcbHandler(Handler):
         head = (
             f"# exported {slug} → EPRO2 (EasyEDA Pro)\n{path}  "
             f"({len(blob):,} bytes zipped)\n"
+            f"sha256: {build.sha256}\n"
+            f"download (web UI, a human's browser): "
+            f"{build.download_path(allow_synthesized=allow_synthesized)}\n"
             f"components: {st['components']}  pads: {st['pads']}  "
             f"nets: {st['nets']}\n"
             "No schematic is included, on purpose: Pro will report the import "
@@ -4260,6 +4450,20 @@ class PcbHandler(Handler):
         notes = [*exported.warnings, *fab_notes]
         if notes:
             head += "\n" + "\n".join(f"⚠️  {w}" for w in notes)
+        if args.get("verify"):
+            # The file stays on the serving host, so the round trip an
+            # agent can run is this one: the same bytes back through the
+            # importer's reader, diffed against the model (gr495289).
+            verdict = pcb_epro_verify.verify_export(model, blob, stats=st)
+            head += "\n\n" + verdict.render()
+        else:
+            head += (
+                "\nThe file is on the server, not readable through the MCP; "
+                "args={'verify': true} re-reads it and diffs it against the board, "
+                f"and put(kind='pcb', id='<new-slug>', args={{'op': 'import_epro', "
+                f"'source': 'export:{slug}'}}) re-imports it (a dry run unless "
+                "'dry_run': False)."
+            )
         listing = "\n".join(sorted(exported.files))
         return Response(body=head + "\n\n```\n" + listing + "\n```")
 

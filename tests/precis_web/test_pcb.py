@@ -595,3 +595,109 @@ def test_pcb_post_auth_and_cross_origin_refused_before_handler(
         runtime_with_store.hub.live_store, "count_web_users", lambda **_: 1
     )
     assert secured.post(path, data={}).status_code == 401
+
+
+# ── GET /pcb/{slug}/export.epro2 (gr495289, Reto's ruling 1a) ────────────
+
+_EPRO_PADS = {
+    "pads": [
+        {"number": n, "shape": "RECT", "x": x, "y": 0.0, "w": 0.4, "h": 0.4}
+        for n, x in (("1", -0.5), ("2", 0.5))
+    ],
+    "pin_map": {"1": {"name": "1", "tags": []}, "2": {"name": "2", "tags": []}},
+}
+
+
+def _seed_placed(runtime_with_store, slug: str) -> None:
+    from precis.handlers.pcb import PcbHandler
+
+    store = runtime_with_store.hub.store
+    PcbHandler(hub=runtime_with_store.hub).put(
+        id=slug,
+        args={
+            "components": [
+                {
+                    "refdes": f"R{k}",
+                    "label": "10k",
+                    "part": "C25744",
+                    "x": 5.0 + 6.0 * k,
+                    "y": 8.0,
+                    "pins": [{"name": "1"}, {"name": "2"}],
+                }
+                for k in (1, 2)
+            ],
+            "nets": [{"name": "SIG"}, {"name": "GND", "class": "ground"}],
+            "connections": [
+                {"net": "SIG", "refdes": "R1", "pin": "1"},
+                {"net": "SIG", "refdes": "R2", "pin": "1"},
+                {"net": "GND", "refdes": "R1", "pin": "2"},
+                {"net": "GND", "refdes": "R2", "pin": "2"},
+            ],
+            "features": [
+                {
+                    "ftype": "outline",
+                    "geom": {"path": [[0, 0], [24, 0], [24, 16], [0, 16]]},
+                }
+            ],
+        },
+    )
+    store.part_footprint_put("C25744", _EPRO_PADS)
+
+
+def test_epro_download_is_the_mcp_views_bytes(
+    pcb_client, runtime_with_store, tmp_path
+) -> None:
+    import hashlib
+
+    from precis.handlers.pcb import PcbHandler
+
+    _seed_placed(runtime_with_store, "web_epro")
+    handler = PcbHandler(hub=runtime_with_store.hub)
+    body = handler.get(id="web_epro", view="epro", args={"dir": str(tmp_path)}).body
+    path = next(
+        line.split(": ", 1)[1]
+        for line in body.splitlines()
+        if line.startswith("download")
+    )
+    r = pcb_client.get(path)
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"] == "application/zip"
+    assert r.headers["content-disposition"] == 'attachment; filename="web_epro.epro2"'
+    assert f"sha256: {hashlib.sha256(r.content).hexdigest()}" in body
+    # the same bytes without the sha guard, and the board page links it
+    assert pcb_client.get("/pcb/web_epro/export.epro2").content == r.content
+    assert "/pcb/web_epro/export.epro2" in pcb_client.get("/pcb/web_epro").text
+
+
+def test_epro_download_refuses_a_link_to_an_edited_board(
+    pcb_client, runtime_with_store
+) -> None:
+    from precis.handlers.pcb import PcbHandler
+
+    _seed_placed(runtime_with_store, "web_epro_edit")
+    handler = PcbHandler(hub=runtime_with_store.hub)
+    ref = runtime_with_store.hub.store.get_ref(kind="pcb", id="web_epro_edit")
+    before = handler.epro_build(ref.id)
+    assert before is not None
+    assert pcb_client.get(before.download_path()).status_code == 200
+    # locking a part changes the COMPONENT record, so the bytes change
+    handler.put(
+        id="web_epro_edit", args={"op": "move", "refdes": "R1", "fixed": "both"}
+    )
+    after = handler.epro_build(ref.id)
+    assert after is not None and after.sha256 != before.sha256
+    assert pcb_client.get(before.download_path()).status_code == 409
+    assert pcb_client.get(after.download_path()).status_code == 200
+
+
+def test_epro_download_refuses_a_stale_sha(pcb_client, runtime_with_store) -> None:
+    _seed_placed(runtime_with_store, "web_epro_stale")
+    r = pcb_client.get("/pcb/web_epro_stale/export.epro2?sha=<b>0000</b>")
+    assert r.status_code == 409
+    assert "run view='epro' again" in r.text
+    assert "<b>" not in r.text
+    assert r.headers["content-type"].startswith("text/plain")
+
+
+def test_epro_download_404(pcb_client) -> None:
+    assert pcb_client.get("/pcb/nope/export.epro2").status_code == 404

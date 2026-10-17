@@ -54,7 +54,9 @@ hand-authored pads), and the pattern playbooks [[precis-decoupling-help]],
 accepted source LINE/ARC track and ordinary through via as authored fixed
 copper by default. Arc centres, handedness, nets and layers survive;
 `view='svg'` shows the source routing. This does not infer a route sketch
-or certify the source DRC. Real files stay local; no native file-import op.
+or certify the source DRC. Real files stay local: the only MCP import is
+a board's own export, `put(id='<new slug>', args={'op':'import_epro',
+'source':'export:<slug>'})` ([[precis-pcb-fab-help]]).
 `--dry-run` writes nothing. `--copper none` retains measurement-only intake;
 partial `--update` defaults to none and refuses fixed (changed copper may
 not match the deliberately retained netlist/outline). `--update` keeps the

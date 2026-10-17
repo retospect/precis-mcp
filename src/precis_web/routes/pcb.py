@@ -12,6 +12,10 @@ same data:
   so its layer-toggle legend script keeps working).
 * ``GET  /pcb/{slug}/schematic.svg`` — the net-label schematic
   (:mod:`precis.pcb.schematic` — placement-free, renders from day one).
+* ``GET  /pcb/{slug}/export.epro2`` — the EasyEDA Pro file, rebuilt on
+  request by the MCP view's own ``PcbHandler.epro_build`` (deterministic
+  bytes, nothing stored); ``?sha=`` from the MCP response turns a stale
+  link into a 409.
 * ``POST /pcb/{slug}/note`` — argue with the design
   (docs/backlog/pcb-argue-with-design.md). The page's one text box
   accumulates handles as the user clicks the board render (the fab SVG
@@ -348,6 +352,57 @@ async def pcb_board_svg(
             status_code=422, content="board not renderable yet (place + route it first)"
         )
     return _svg_response(resp.body)
+
+
+@router.get("/pcb/{slug}/export.epro2")
+async def pcb_export_epro(
+    request: Request,
+    slug: str,
+    sha: str | None = None,
+    allow_synthesized: bool = False,
+) -> RawResponse:
+    """The board as an EasyEDA Pro ``.epro2`` download, rebuilt on request
+    by the same :meth:`PcbHandler.epro_build` ``view='epro'`` runs — no file
+    is stored or read from disk (gr495289, Reto's ruling: option 1a).
+    ``sha`` is the prefix the MCP response printed; a board edited since
+    then rebuilds to different bytes and answers 409 rather than handing
+    over a file the agent never saw."""
+    store = get_store(request)
+    try:
+        ref = resolve_live_slug_ref(store, kind="pcb", id=slug)
+    except NotFound:
+        return RawResponse(
+            status_code=404, content="not found", media_type="text/plain"
+        )
+    try:
+        build = await asyncio.to_thread(
+            _handler(store).epro_build, ref.id, allow_synthesized=allow_synthesized
+        )
+    except BadInput as exc:
+        return RawResponse(status_code=422, content=str(exc), media_type="text/plain")
+    if build is None:
+        return RawResponse(
+            status_code=422, content="no board yet", media_type="text/plain"
+        )
+    want = (sha or "").strip().lower()
+    if want and not build.sha256.startswith(want):
+        # The asked-for value is not echoed: it is caller text.
+        return RawResponse(
+            status_code=409,
+            content=(
+                "the board changed since that export; run view='epro' again "
+                "for the current link"
+            ),
+            media_type="text/plain",
+        )
+    return RawResponse(
+        content=build.blob,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{build.filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @router.get("/pcb/{slug}/schematic.svg")

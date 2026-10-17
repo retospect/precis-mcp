@@ -2,9 +2,11 @@
 id: precis-pcb-fab-help
 family: pcb
 title: precis — export and order a pcb design (fab package, JLCPCB, enclosure)
-summary: take a routed pcb design to fabrication — the export views (bom/cpl/netlist/dsn/mechanical/route/gerber), view='fab' writing the JLCPCB order package, op='order' dry-running or placing the JLCPCB order, view='availability' sweeping BOM stock/lifecycle, and the features array + CAD-enclosure bridge. Covers gerber export, pick-and-place CPL, Specctra DSN, Freerouting, JLCPCB ordering, EOL checks, enclosure hand-off.
+summary: take a routed pcb design to fabrication — the export views (bom/cpl/netlist/dsn/mechanical/route/gerber/epro), view='epro' writing an EasyEDA Pro .epro2 and verifying it reads back, view='fab' writing the JLCPCB order package, op='order' dry-running or placing the JLCPCB order, view='availability' sweeping BOM stock/lifecycle, and the features array + CAD-enclosure bridge. Covers gerber export, pick-and-place CPL, Specctra DSN, Freerouting, JLCPCB ordering, EOL checks, enclosure hand-off.
 answers:
   - how do I export gerbers / a BOM / a CPL / a DSN from a pcb design?
+  - how do I export a board to EasyEDA Pro and check the file is right?
+  - how do I download or re-import a board's .epro2 export?
   - how do I order a board at JLCPCB (view='fab', op='order')?
   - how do I check BOM stock and lifecycle before ordering (view='availability')?
   - how do I hand board outline + heights to a cad enclosure?
@@ -18,8 +20,11 @@ kinds: [pcb]
 
 Downstream of authoring ([[precis-pcb-help]]) and place/route
 ([[precis-pcb-route-help]]): export is the only place the design leaves
-the graph. Artifacts land under `<PRECIS_CORPUS_DIR>/pcb/<slug>/`
-(override with `args={'dir':'…'}`).
+the graph. Artifacts land under `<PRECIS_CORPUS_DIR>/pcb/<slug>/`, or
+the server's temp dir when that is unset (override with
+`args={'dir':'…'}`). That path is on the serving host: the MCP returns the
+path, not the file. BOM and CPL responses inline a preview; gerber and
+fab do not. epro names a web UI download path (below).
 
 ## Export the design — `get(view=…)`
 
@@ -63,6 +68,46 @@ member with a one-sentence LLM verdict and its cited inputs; a
 pair and prints the reason (pcb component types aren't refs, so the
 link-door `rel='kept-distinct'` is the component kind's form). See
 [[precis-component-help]] for the attribute-role model.
+
+## Hand the board to EasyEDA Pro — `view='epro'`
+
+```python
+get(kind="pcb", id="s", view="epro")  # writes {slug}.epro2
+get(kind="pcb", id="s", view="epro", args={"verify": True})  # + diff
+```
+
+The file carries the board only: outline, parts with their footprints,
+pads, nets, tracks, vias, pour zones, silk strokes and editable
+designators (Pro draws them in its own font). It has no schematic, on
+purpose: Pro reports a clean import with no schematic pages; do not run
+"Update PCB from schematic" there, it rewrites the netlist. Every dropped
+item is a `⚠️` line in the response (an unplaced part, a pad with no
+placed part, a blind via written through-hole). Synthesized pads refuse
+the export unless `args={'allow_synthesized': True}`.
+
+`args={'verify': True}` re-reads the written bytes through the
+importer's own reader and diffs them against the board: parts (position,
+rotation, side, LCSC), pads (position, net, shape, size, drill), net
+declarations, track segments, vias, pour count, outline, and an imported
+board's rule table. Positions pass within 0.5 um. It ends `verify: N ok,
+0 FAIL`; any `FAIL` line names what the file does not carry.
+
+The response's `sha256:` identifies the exact bytes, and its `download`
+line is a web UI path (`/pcb/<slug>/export.epro2?sha=…`) for a human's
+browser: it rebuilds the same bytes on request, and answers 409 once the
+board has changed. Agents cannot fetch web UI paths (401); hand the path
+to the human. The board page links the same download.
+
+Re-import a board's own export into a new board, server-side:
+
+```python
+put(kind="pcb", id="s-copy", args={"op": "import_epro", "source": "export:s"})
+```
+
+It is a dry run (counts, stackup, every warning) unless `'dry_run':
+False`. The target slug must be new. The source can only be an existing
+board's export: a real `.epro2` file is imported with the CLI
+(`precis pcb import-epro`, see [[precis-pcb-help]]).
 
 ## Check the BOM is still buyable — `view='availability'` (the EOL sweep)
 

@@ -247,7 +247,11 @@ review, VERIFIED by Reto 2026-10-14 — review-queue
    write to any agent-supplied `dir`. Cheap and mechanical, and it closes
    a write-anywhere path on the shared server, so it ranks above the
    design work in Horizon. Filed from the orchestrator's round-1 review.
-6. **backlog/pcb-realize-silk-version-stamp.md** — nothing versions
+6. **backlog/pcb-epro-mcp-roundtrip.md** (gr495289) — verify, the
+   download route and `op='import_epro'` are built per Reto's rulings;
+   left: real-board export timing, and gerber/fab downloads (needs a go).
+   Below 5: nothing here writes outside the export root.
+7. **backlog/pcb-realize-silk-version-stamp.md** — nothing versions
    realized copper, so a router change is invisible on stored boards.
    Needed before any router change goes default-on (negotiation's R3).
    The router half is this thread's; the silk half is ewod-pcb's.

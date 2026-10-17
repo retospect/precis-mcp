@@ -44,6 +44,7 @@
 <div class="mb-6 rounded border border-line bg-surface p-2">
   <h2 class="mb-1 px-1 text-sm font-semibold text-fg-secondary">Board
     <span class="font-normal text-xs text-fg-faint">click a pad, part or track to drop its handle into the argument below</span>
+    <a href="/pcb/{{ slug | urlencode }}/export.epro2" class="font-normal text-xs text-fg-faint underline hover:text-fg-secondary">download .epro2 (EasyEDA Pro)</a>
   </h2>
   <div class="overflow-auto">
     <object id="pcb-board-object" type="image/svg+xml" data="/pcb/{{ slug | urlencode }}/board.svg?shown={{ pcb_context.shown.snapshot | urlencode }}"
