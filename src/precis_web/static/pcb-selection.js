@@ -11,6 +11,7 @@
   const object = el('pcb-board-object'), choice = el('pcb-object-choice');
   const form = el('design-chat-form'), hidden = el('pcb-chat-context');
   const identity = el('pcb-selection-identity'), status = el('pcb-selection-status');
+  const factsBox = el('pcb-selection-facts');
   const copy = el('pcb-copy-selection'), send = form.querySelector('button');
   const toComponent = el('pcb-select-component'), toNet = el('pcb-select-net');
   // Bottom to top, as the SVG overlay paints them: the top kind under the
@@ -68,6 +69,29 @@
       default: return o.key;
     }
   };
+  // The same PcbFacts.describe text the hover tooltip shows, plus the part's
+  // LCSC page link when it has a stored C-number (none: no link at all).
+  const factsTarget = (o) => {
+    switch (o.kind) {
+      case 'pad': return o.refdes ? {kind: 'pad', refdes: o.refdes, pad: o.pin, net: o.net} : (o.net ? {kind: 'net', net: o.net} : null);
+      case 'instance': return {kind: 'part', refdes: o.refdes};
+      case 'net': return {kind: 'net', net: o.name};
+      case 'via': return o.net ? {kind: 'net', net: o.net} : null;
+      default: return null;
+    }
+  };
+  const showFacts = (o) => {
+    factsBox.textContent = '';
+    const t = window.PcbFacts && factsTarget(o);
+    if (!t) return;
+    const d = window.PcbFacts.describe(window.PcbFacts.load(svgDoc), t);
+    if (d.text) factsBox.append(d.text);
+    if (d.url) {
+      const a = document.createElement('a');
+      a.href = d.url; a.textContent = d.lcsc; a.target = '_blank'; a.rel = 'noopener noreferrer';
+      factsBox.append(' · LCSC ', a);
+    }
+  };
   const highlight = (key) => {
     if (!svgDoc) return;
     svgDoc.querySelectorAll('.pcb-select .pcb-selected').forEach((n) => n.classList.remove('pcb-selected'));
@@ -77,6 +101,7 @@
   };
   const clear = (message = 'Select a board object.') => {
     selected = null; choice.value = ''; hidden.value = ''; identity.textContent = '';
+    factsBox.textContent = '';
     copy.disabled = send.disabled = toComponent.disabled = toNet.disabled = true;
     status.textContent = message;
     highlight(null);
@@ -103,6 +128,7 @@
     selected = o;
     if ([...choice.options].some((opt) => opt.value === key)) choice.value = key;
     identity.textContent = describe(o);
+    showFacts(o);
     hidden.value = JSON.stringify({...manifest.context, selected: [o]});
     copy.disabled = false; send.disabled = false;
     const instanceId = o.kind === 'pad' ? o.instance_id : (o.kind === 'silk' && o.anchor.kind === 'instance' ? o.anchor.instance_id : null);

@@ -694,13 +694,40 @@ def _selection_attrs(flash: Flash, manifest: dict[str, Any] | None) -> str:
     )
 
 
+def _hover_attrs(refdes: str | None, pin: str | None, net: str | None) -> str:
+    """The ``data-pcb-part`` / ``-pad`` / ``-net`` identity the board page's
+    tooltip JS reads (gr495389), with the leading space; each only when the
+    gerber named it. Independent of any selection manifest."""
+    out = ""
+    if refdes:
+        out += f' data-pcb-part="{esc(refdes, quote=True)}"'
+        if pin:
+            out += f' data-pcb-pad="{esc(pin, quote=True)}"'
+    if net:
+        out += f' data-pcb-net="{esc(net, quote=True)}"'
+    return out
+
+
+def _flash_hover(flash: Flash) -> str:
+    return _hover_attrs(flash.refdes, flash.pin, flash.net)
+
+
 def _flash_svg(
     flash: Flash, colour: str, title: str, manifest: dict[str, Any] | None = None
 ) -> str:
     tag, attrs = _flash_geometry(flash)
     handle = _handle_attr(_flash_handle(flash))
     sel = _selection_attrs(flash, manifest)
-    return f'<{tag} {attrs} fill="{colour}"{handle}{sel}><title>{title}</title></{tag}>'
+    hover = _flash_hover(flash)
+    failed = ""
+    if flash.net and flash.net in ((manifest or {}).get("hover") or {}).get(
+        "failed", ()
+    ):
+        failed = ' class="pcb-failed" data-pcb-failed="1"'
+    return (
+        f'<{tag} {attrs} fill="{colour}"{handle}{sel}{hover}{failed}>'
+        f"<title>{title}</title></{tag}>"
+    )
 
 
 def _flash_mask_shape(flash: Flash) -> str:
@@ -723,7 +750,7 @@ def _flash_hit_target(
     separate paths just to hang a tooltip off each one."""
     tag, attrs = _flash_geometry(flash)
     handle = _handle_attr(_flash_handle(flash))
-    sel = _selection_attrs(flash, manifest)
+    sel = _selection_attrs(flash, manifest) + _flash_hover(flash)
     return (
         f'<{tag} {attrs} fill="#fff" fill-opacity="0.01"{handle}{sel}>'
         f"<title>{title}</title></{tag}>"
@@ -938,6 +965,44 @@ def _part_body_els(arts: dict[str, LayerArt]) -> list[str]:
     return out
 
 
+def _ratsnest_els(arts: dict[str, LayerArt], nets: set[str]) -> list[str]:
+    """Straight airwires for the nets the router has not realized: the MST
+    (:func:`precis.pcb.ratsnest._mst_edges`) over each net's pad positions as
+    the gerber drew them (one point per refdes.pin), in board mm. Each wire is
+    a thin dashed line plus a wide invisible one so it is hoverable. Which nets
+    count is the caller's: the board page passes :func:`route_state`'s pending
+    set, never a second computation (gr495391)."""
+    from precis.pcb.ratsnest import _mst_edges
+
+    pads: dict[str, dict[str, tuple[float, float]]] = {}
+    for key, art in sorted(arts.items()):
+        if not key.endswith("_Cu"):
+            continue
+        for f in art.flashes:
+            if f.net in nets and f.refdes and f.pin:
+                pads.setdefault(f.net, {}).setdefault(f"{f.refdes}.{f.pin}", (f.x, f.y))
+    out = ['<g id="ratsnest" class="ratsnest">']
+    for net in sorted(pads):
+        members = sorted(pads[net].items())
+        for _a, _b, p1, p2 in _mst_edges(members):
+            net_attr = esc(net, quote=True)
+            coords = (
+                f'x1="{p1[0]:.4f}" y1="{p1[1]:.4f}" x2="{p2[0]:.4f}" y2="{p2[1]:.4f}"'
+            )
+            out.append(
+                f'<line {coords} stroke="#ef4444" stroke-width="0.12" '
+                f'stroke-dasharray="0.4 0.3" data-pcb-net="{net_attr}" '
+                'data-pcb-ratsnest="1"/>'
+            )
+            out.append(
+                f'<line {coords} stroke="#ef4444" stroke-opacity="0.01" '
+                f'stroke-width="0.6" data-pcb-net="{net_attr}" '
+                'data-pcb-ratsnest="1"/>'
+            )
+    out.append("</g>")
+    return out
+
+
 def _hit_els(objects: list[Any]) -> list[str]:
     """The invisible click-target overlay for a selection catalogue — see
     :mod:`precis.pcb.selectables`. Objects arrive already ordered bottom to
@@ -1098,7 +1163,8 @@ def render_fab_svg(
                 body.append(
                     f'<path d="{_path_d(s.points)}" fill="none" stroke="{colour}" '
                     f'stroke-width="{s.width:.4f}" stroke-linecap="round" '
-                    f'stroke-linejoin="round"{_handle_attr(_net_handle(s.net))}>'
+                    f'stroke-linejoin="round"{_handle_attr(_net_handle(s.net))}'
+                    f"{_hover_attrs(None, None, s.net)}>"
                     f"<title>{_stroke_title(key, s)}</title></path>"
                 )
             for f in art.flashes:
@@ -1139,6 +1205,17 @@ def render_fab_svg(
             )
         body.append("</g>")
 
+    hover = (selection_manifest or {}).get("hover") or {}
+    rs_nets = set(hover.get("unrouted") or ())
+    if rs_nets:
+        body.extend(_ratsnest_els(arts, rs_nets))
+    hover_meta = ""
+    if hover.get("facts") is not None:
+        hover_meta = (
+            '<metadata id="pcb-facts">'
+            + esc(json.dumps(hover["facts"], sort_keys=True))
+            + "</metadata>\n"
+        )
     selection_meta = selection_css = ""
     if selection_manifest is not None and selection_manifest.get("objects") is not None:
         objects = selection_manifest["objects"]
@@ -1170,7 +1247,20 @@ def render_fab_svg(
             f'<text x="32" y="{ty + 2}">{label}</text>'
             "</g>"
         )
-    legend_h = 20 * len(keys) + 12
+    if rs_nets:
+        ty = 18 + len(keys) * 20
+        rows.append(
+            '<g class="legend-row on" data-layer="ratsnest" '
+            "onclick=\"(function(g){g.classList.toggle('off');"
+            "document.documentElement.classList.toggle('rs-off');})"
+            '(this)">'
+            f'<rect x="8" y="{ty - 11}" width="152" height="18" class="hit"/>'
+            f'<rect x="12" y="{ty - 8}" width="12" height="12" fill="#ef4444" '
+            'class="swatch"/>'
+            f'<text x="32" y="{ty + 2}">Ratsnest</text>'
+            "</g>"
+        )
+    legend_h = 20 * len(rows) + 12
 
     # The whole document is in PIXELS, not millimetres, and the board is
     # scaled into it. Working in mm would be tidier for the geometry and
@@ -1199,12 +1289,14 @@ def render_fab_svg(
 <title>{esc(title, quote=True)} — rendered from gerbers</title>
 <style>
   .layer.off {{ display: none; }}
+  .rs-off .ratsnest {{ display: none; }}
+  svg:not(.rs-off) .pcb-failed {{ fill: #ef4444; }}
   .legend {{ font: 11px ui-monospace, monospace; fill: #d8d8d8; }}
   .legend .hit {{ fill: transparent; cursor: pointer; }}
   .legend-row.off text {{ fill: #6a6a6a; }}
   .legend-row.off .swatch {{ fill-opacity: 0.25; }}
 {selection_css}</style>
-{selection_meta}<rect x="0" y="0" width="{doc_w:.1f}" height="{doc_h:.1f}" fill="{_BOARD_BG}"/>
+{selection_meta}{hover_meta}<rect x="0" y="0" width="{doc_w:.1f}" height="{doc_h:.1f}" fill="{_BOARD_BG}"/>
 <g transform="translate({_LEGEND_GUTTER_PX + -x0 * px:.4f},{y1 * px:.4f}) scale({px:.6f},-{px:.6f})">
 {chr(10).join(body)}
 </g>

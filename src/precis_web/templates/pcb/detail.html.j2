@@ -39,6 +39,7 @@
   <label>Object <select id="pcb-object-choice"><option value="">Select…</option>
     <optgroup label="Components">{% for item in pcb_instances %}<option value="{{ item.key }}">{{ item.refdes }} · instance {{ item.instance_id }}</option>{% endfor %}</optgroup>
   </select></label>
+  <p id="pcb-selection-facts" class="text-sm"></p>
   <pre id="pcb-selection-identity"></pre>
   <button type="button" id="pcb-copy-selection" disabled>Copy selection</button>
   <button type="button" id="pcb-select-component" disabled>Select component</button>
@@ -92,6 +93,8 @@
   </div>
 </div>
 
+<script src="/static/pcb-facts.js" defer></script>
+<script src="/static/pcb-hover.js" defer></script>
 <script src="/static/pcb-selection.js" defer></script>
 {% endif %}
 {{ design_chat(chat, rev, rev_current) }}

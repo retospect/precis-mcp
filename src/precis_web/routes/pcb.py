@@ -66,7 +66,7 @@ from precis.errors import BadInput, NotFound
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.handlers.pcb import PcbHandler
 from precis.pcb import argue
-from precis_web import design_chat, design_turn, pcb_design, quest_board
+from precis_web import design_chat, design_turn, pcb_design, pcb_hover, quest_board
 from precis_web.deps import (
     await_dispatch,
     get_store,
@@ -326,7 +326,12 @@ async def pcb_board_svg(
             view = pcb_design.capture_view(store, ref, conn=conn)
             if shown is not None and shown != view.token:
                 return RawResponse(status_code=409, content="shown PCB changed; reload")
-            manifest = None if shown is None else pcb_design.selection_manifest(view)
+            manifest = None
+            if shown is not None:
+                manifest = {
+                    **pcb_design.selection_manifest(view),
+                    "hover": pcb_hover.hover_facts(store, view),
+                }
             if manifest is None:
                 resp = _handler(store).get(
                     id=ref.slug, view="svg", args={"level": "fab"}
