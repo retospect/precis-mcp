@@ -695,6 +695,47 @@ coverage_from_container() {
         | tar -C "$WORKTREE" --no-same-owner -xf - || true
 }
 
+# Amend ONLY what ruff --fix/format changed into the shipped commit (gr495021).
+# The tree is clean when the gate starts (1a refuses dirt outside .claude/, the
+# WIP commit takes .claude/), so anything dirty afterwards is ruff's or the
+# session's. ruff rewrites tracked Python files in place (' M' *.py/*.pyi);
+# any other path — an untracked scratch file, a non-Python edit, a delete —
+# is a mid-gate edit that must not ride into the commit, so die naming it and
+# amend nothing (the working tree is left exactly as found).
+amend_ruff_fixes() {
+    local line st p out fix=() other=()
+    # -z: NUL-separated, paths unquoted (non-ASCII safe); a rename/copy entry
+    # is followed by its origin path as an extra field, consumed below.
+    out="$(mktemp)"
+    git status --porcelain -z --untracked-files=all > "$out" \
+        || { rm -f "$out"; die "git status failed — cannot tell what ruff changed; not amending"; }
+    while IFS= read -r -d '' line; do
+        [[ -n "$line" ]] || continue
+        st="${line:0:2}"
+        p="${line:3}"
+        if [[ "${st:0:1}" == [RC] || "${st:1:1}" == [RC] ]]; then
+            IFS= read -r -d '' _orig || true
+        fi
+        [[ "$p" == .claude/* ]] && continue
+        if [[ "$st" == " M" && ( "$p" == *.py || "$p" == *.pyi ) ]]; then
+            fix+=("$p")
+        else
+            other+=("$p")
+        fi
+    done < "$out"
+    rm -f "$out"
+    if (( ${#other[@]} )); then
+        die "paths changed while the gate ran that ruff does not touch — refusing to amend them into the shipped commit:
+$(printf '    %s\n' "${other[@]}")
+Nothing was amended or reset. Commit or discard them, then re-run scripts/ship."
+    fi
+    if (( ${#fix[@]} )); then
+        git add -- "${fix[@]}"
+        git commit -q --amend --no-edit
+        say "amended ruff auto-fixes into the branch (${#fix[@]} file(s))"
+    fi
+}
+
 # Run one gate command in the chosen gate. Warm: sync worktree in → (carry the
 # testmon map in for impacted mode) → exec → sync ruff fixes back (always, even
 # on a red gate, so the fixes stay staged for the human) → carry the updated
@@ -1772,11 +1813,7 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
             fi
             run_gate "$QLAND_CMD" \
                 || die "pre-qland lint is RED — not shipping. This is the class of failure that reddens the NEXT tree's gate, so it does not get deferred (deliberate override: PRECIS_QLAND_LINT=0). Fix it and re-run scripts/ship --quick."
-            if [[ -n "$(git status --porcelain)" ]]; then
-                git add -A
-                git commit -q --amend --no-edit
-                say "amended ruff auto-fixes into the branch"
-            fi
+            amend_ruff_fixes
             QLAND_LINT_RAN=1
         fi
         if [[ "$RELEASE" == 1 ]]; then
@@ -1908,11 +1945,7 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
             || die "gate is RED — not shipping. Fix the failure above and re-run scripts/ship."
     fi
 
-    if [[ -n "$(git status --porcelain)" ]]; then
-        git add -A
-        git commit -q --amend --no-edit
-        say "amended ruff auto-fixes into the branch"
-    fi
+    amend_ruff_fixes
 
     # ── diff-coverage gate (full path only, post-amend so HEAD's line
     # numbers match the ruff-normalised source the suite actually ran) ────
