@@ -167,7 +167,7 @@ def test_content_hash_ignores_escape_when_unset():
 
 
 @pytest.mark.slow
-def test_plaza_escape_on_the_qfp_member():
+def test_plaza_escape_on_the_qfp_member(tmp_path):
     """The plaza member's plain result is 53/55 (warm "distance"). The
     opt-in must never score worse — the plain fallback always runs."""
     import time
@@ -190,9 +190,8 @@ def test_plaza_escape_on_the_qfp_member():
     seconds = time.monotonic() - t0
     routed = built.ir.n_segments - len(rres.unrouted)
     import json
-    from pathlib import Path
 
-    Path(".scratch/plaza-qfp-report.json").write_text(
+    (tmp_path / "plaza-qfp-report.json").write_text(
         json.dumps(
             {
                 "routed": routed,
@@ -216,7 +215,7 @@ def test_plaza_escape_on_the_qfp_member():
 
 
 @pytest.mark.slow
-def test_plaza_escape_on_the_ewod_replay(store):
+def test_plaza_escape_on_the_ewod_replay(store, tmp_path):
     """Same floor on the dogfood-6 replay: plain routes 51/55; the
     escape opt-in may cost time but never nets."""
     import time
@@ -245,9 +244,8 @@ def test_plaza_escape_on_the_ewod_replay(store):
     unrouted = sorted(str(ir.net_name[int(ir.seg_net[s])]) for s in rres.unrouted)
     routed = ir.n_segments - len(rres.unrouted)
     import json
-    from pathlib import Path
 
-    Path(".scratch/plaza-ewod-report.json").write_text(
+    (tmp_path / "plaza-ewod-report.json").write_text(
         json.dumps(
             {
                 "routed": routed,
