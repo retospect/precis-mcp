@@ -64,3 +64,39 @@ convention it violates in one hop.
   43 enforcers) and 54 `tests` edges; the re-run planned 0. Example:
   fi493530 (`invariants/body-chunks-append-only`) ← fi493629
   (`tests/test_chunk_append_only.py`).
+
+## Enforcer wave 2026-10-17 (66 → 51 unenforced)
+
+Fifteen rules gained real enforcers (manifest `enforcers:` set, allowlist
+entries deleted): skill-authoring-style (3), code-anchors (2),
+poster-typography (2), safe-get, kind-enablement (2), deploy-is-opt-in,
+raw-sql companion, rtk stderr, take-agent, no-float-equality. Each new test
+file carries a permanent negative test that feeds its checker a synthetic
+violation. Existing offenders are ratcheted one-way (docs `file.py:NNN` 87,
+doc shas 13, `2>/dev/null` 359, 18 grandfathered precis_web SQL modules, 5
+persona `last-updated:` lines, 15 internal-name mentions); fixing one means
+lowering the number.
+
+Partial checks exist but are not linked (a partial check is not an enforcer
+of the whole rule): update-doc-same-commit (sha half), math-and-units and
+layout-and-face (the `\boldmath` group and `\hyphenpenalty` halves),
+api-stop-and-ask (`tests/test_tool_registry.py` pins the verbs only),
+schema-stop-and-ask, qland-lint-and-drift-guard (no test of the 24h/48h
+thresholds: a real gap).
+
+Judgement-only, stay allowlisted (51), grouped by why:
+
+- Authoring voice, no regex separates good from bad: llm-facing-prose (6),
+  skill-authoring goal-voice-h2 and contract-not-implementation,
+  poster-typography band/ISO-units/face details, code-anchors
+  citation-surfaces-only (86 legitimate `Sym` pointers in src comments).
+- Agent or operator behaviour, no code path: shipping read-gate-failure,
+  mark-round, peer-ping-cadence, release-owner, no-deploy-window,
+  gripe-sha-on-backlog-delete; all thresholds/* (9); rtk digest and
+  prefix rules; testing long-runs, narrow-lanes, note-what-caught,
+  main-sha-not-gated, rehome-db-tests, measured-budgets; skill-evals;
+  corpus-normalization (3); reviewed-non-problems (3); dark-switches (2);
+  discovery-layer-policy (2); container-ops wide-docker-address-pool
+  (per-machine daemon setting).
+- Design calls: env-vars (3: tier choice; 33 vars are read raw in 2+ files,
+  so a per-var check starts red), time/coerce-at-boundary (heuristic).

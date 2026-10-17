@@ -63,12 +63,16 @@ from pathlib import Path
 
 
 def repo_root() -> Path:
-    out = subprocess.run(
-        ["git", "rev-parse", "--show-toplevel"],
-        capture_output=True,
-        text=True, encoding="utf-8",
-        check=True,
-    ).stdout.strip()
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True, encoding="utf-8",
+            check=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        # No git (test container): the script lives in <root>/scripts/.
+        return Path(__file__).resolve().parent.parent
     return Path(out)
 
 
