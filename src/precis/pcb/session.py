@@ -695,9 +695,10 @@ def apply_route_overrides(
     changed under it) is skipped — never an error, since the optimizer
     will just re-decide it fresh — but COUNTED: the return value is how
     many stored entries matched no segment, and a nonzero count logs a
-    warning. The stored keys come from the POST-pin-swap IR, so callers
-    must run :func:`apply_pin_swap_overrides` first; a silent skip here
-    is how the wrong order hid."""
+    warning. The stored keys come from the IR of the EFFECTIVE netlist,
+    so callers must build from :func:`precis.pcb.resolved.apply` (the
+    latest resolved snapshot over the authored graph); a silent skip here
+    is how a wrong netlist hid."""
     seg_by_key = {segment_key(ir, s): s for s in range(ir.n_segments)}
     unmatched = 0
     for row in routes_by_net.values():
@@ -719,123 +720,11 @@ def apply_route_overrides(
     if unmatched:
         log.warning(
             "pcb: %d stored sketch entr%s matched no segment (stale netlist, "
-            "or pin swaps not applied first)",
+            "or the resolved snapshot not applied)",
             unmatched,
             "y" if unmatched == 1 else "ies",
         )
     return unmatched
-
-
-def apply_pin_swap_overrides(ir: pcb_ir.PcbIR, overrides: list[dict[str, Any]]) -> None:
-    """Re-apply a design's previously-PERSISTED pin<->net overrides
-    (``pcb_pin_swaps``, docs/backlog/pcb-engine-plan.md "PIN_SWAP is not
-    persisted") onto a freshly-built IR. ``PcbIR.swap_pins`` operates on
-    IR-local pin ints that are meaningless across a rebuild (the same
-    reason :func:`segment_key` exists for segments), so each override is
-    matched by durable identity (``refdes``/``pin`` name, via
-    :func:`_pin_key`) instead.
-
-    A fresh ``build_ir`` always starts from ``pcb_netconns``'s authored
-    wiring (the override's baseline), so re-applying an override is
-    "find whichever OTHER pin on this instance currently holds the target
-    net, and swap with it" — the same fixed-pivot transposition
-    :mod:`precis.pcb.pinswap` already uses, just driven by the persisted
-    target instead of a fresh min-cost solve. An override naming a pin
-    that no longer exists, a net that no longer resolves, or an instance
-    whose OTHER pins no longer carry the target net at all (the netlist
-    changed under it) is silently skipped — never an error, since a fresh
-    optimizer run is free to re-decide it; :meth:`PcbIR.swap_pins`'s own
-    equal-rotation-degree guard is honoured the same way (``ValueError``
-    from a genuinely stale override is swallowed, not raised).
-
-    The entries are first tried as ONE batch via
-    :meth:`PcbIR.permute_pin_nets`: the min-cost matching may move a net
-    from one supplier instance to another, and every changed pin is
-    persisted, so the changed set is closed under the permutation (its
-    current nets equal its target nets as multisets). When it is not, or
-    the batch is refused, the per-entry same-instance search above runs."""
-    pin_by_key: dict[str, int] = {}
-    for p in range(ir.n_pins):
-        inst = int(ir.pin_instance[p])
-        pin_by_key[_pin_key(str(ir.instance_refdes[inst]), str(ir.pin_label[p]))] = p
-    net_name_to_id = {str(ir.net_name[n]): n for n in range(ir.n_nets)}
-    resolved: list[tuple[int, int]] = []
-    for entry in overrides:
-        pin_id = pin_by_key.get(
-            _pin_key(str(entry.get("refdes", "")), str(entry.get("pin", "")))
-        )
-        target_net = net_name_to_id.get(str(entry.get("net", "")))
-        if pin_id is None or target_net is None:
-            continue
-        resolved.append((pin_id, target_net))
-    pending = {p: n for p, n in resolved if int(ir.pin_net[p]) != n}
-    if len(pending) > 1 and sorted(int(ir.pin_net[p]) for p in pending) == sorted(
-        pending.values()
-    ):
-        try:
-            ir.permute_pin_nets(pending)
-            return
-        except ValueError:
-            pass
-    for pin_id, target_net in resolved:
-        if int(ir.pin_net[pin_id]) == target_net:
-            continue
-        inst = int(ir.pin_instance[pin_id])
-        partner = next(
-            (
-                p
-                for p in range(ir.n_pins)
-                if int(ir.pin_instance[p]) == inst and int(ir.pin_net[p]) == target_net
-            ),
-            None,
-        )
-        if partner is None:
-            continue
-        try:
-            ir.swap_pins(pin_id, partner)
-        except ValueError:
-            continue
-
-
-def pin_swap_diff(ir: pcb_ir.PcbIR, baseline_pin_net: Any) -> list[dict[str, Any]]:
-    """Every physical pin whose settled net (``ir.pin_net``, after an
-    anneal) differs from ``baseline_pin_net`` (a copy of ``ir.pin_net``
-    taken right after :func:`build_ir`, i.e. ``pcb_netconns``'s authored
-    wiring) — the derived pin-swap write-back's raw material, mirroring
-    how the plane write-back reads the anneal's FINAL ``net_plane_layer``
-    state rather than replaying its move history. Each entry is durably
-    keyed (``refdes``/``pin``/settled ``net`` name), ready for
-    :meth:`~precis.store._pcb_ops.PcbMixin.pcb_pin_swaps_replace_derived`
-    once the caller has excluded any pin already covered by an authored
-    override."""
-    out: list[dict[str, Any]] = []
-    for p in range(ir.n_pins):
-        settled_net = int(ir.pin_net[p])
-        if settled_net == int(baseline_pin_net[p]):
-            continue
-        inst = int(ir.pin_instance[p])
-        out.append(
-            {
-                "refdes": str(ir.instance_refdes[inst]),
-                "pin": str(ir.pin_label[p]),
-                # `pcb_ir.NO_NET` is -1, a LIVE numpy index -- `ir.net_name
-                # [-1]` doesn't raise, it silently wraps to the LAST real
-                # net's name. A swap that moves a pin OFF onto NO_NET
-                # (there is no such move today, but nothing prevents one)
-                # would otherwise get written back as a real connection to
-                # whatever net happens to sit last in the array. Same
-                # convention `precis.pcb.realize.pads_for_ir` settled on
-                # for the identical sentinel-collision hazard: an empty
-                # net name, matching `connectivity._pad_primitives`'s own
-                # "empty net name is skipped" rule.
-                "net": (
-                    ""
-                    if settled_net == pcb_ir.NO_NET
-                    else str(ir.net_name[settled_net])
-                ),
-            }
-        )
-    return out
 
 
 def extract_sketch(ir: pcb_ir.PcbIR) -> dict[str, dict[str, Any]]:
@@ -1660,10 +1549,11 @@ def content_hash(
     ``session_state`` (gr266041) covers the six extra store surfaces
     :mod:`precis.workers.job_types.pcb_place`/``pcb_route`` read that
     ``graph``/``params`` don't: features (outline/mounting holes),
-    route-topology overrides, pin swaps, plane assignments, measures, and
+    route-topology overrides, authored pin swaps (none exist: the key is
+    kept so digests keep their shape), plane assignments, measures, and
     fixed copper. Callers (:meth:`PcbHandler._enqueue_op`) hand in the RAW
     store rows (``Store.pcb_features_list``/``pcb_routes_get``/
-    ``pcb_pin_swaps_list``/``pcb_planes_list``/``pcb_measures_list``/
+    ``pcb_planes_list``/``pcb_measures_list``/
     ``pcb_fixed_copper_list``, verbatim) — the narrowing to a stable,
     human-authored projection happens HERE, not at the call site, so
     there is exactly one place that can get it wrong.
@@ -1675,11 +1565,11 @@ def content_hash(
       ``pcb_route`` run persists back (:meth:`Store.pcb_routes_write`).
       Only ``topology`` (the human/``pin_side`` override) is hashed per
       net.
-    - any ``pcb_planes_list``/``pcb_pin_swaps_list`` row whose
-      ``source`` is ``'derived'`` — optimizer write-back
-      (:meth:`Store.pcb_planes_replace_derived`/
-      :meth:`Store.pcb_pin_swaps_replace_derived`). Only ``source ==
-      'authored'`` rows are hashed.
+    - any ``pcb_planes_list`` row whose ``source`` is ``'derived'`` —
+      optimizer write-back (:meth:`Store.pcb_planes_replace_derived`).
+      Only ``source == 'authored'`` rows are hashed. The resolved netlist
+      snapshot (``pcb_netlist_snapshots``) is job-written the same way and
+      is never passed in.
 
     Hashing the job-written side of either surface would repeat this
     function's own ``route_status``/``board_id`` hazard one layer down:
@@ -1696,7 +1586,6 @@ def content_hash(
         {
             "features": Store.pcb_features_list(ref_id),
             "routes": Store.pcb_routes_get(ref_id),
-            "pin_swaps": Store.pcb_pin_swaps_list(ref_id),
             "planes": Store.pcb_planes_list(ref_id),
             "measures": Store.pcb_measures_list(ref_id),
             "fixed_copper": Store.pcb_fixed_copper_list(board_id),
@@ -1877,7 +1766,6 @@ def polarized_refdes(design: dict[str, Any]) -> frozenset[str]:
 
 
 __all__ = [
-    "apply_pin_swap_overrides",
     "apply_real_pin_offsets",
     "apply_route_overrides",
     "build_ir",
@@ -1890,7 +1778,6 @@ __all__ = [
     "local_footprint_names_by_refdes",
     "mounting_holes_from_features",
     "outline_from_features",
-    "pin_swap_diff",
     "polarized_refdes",
     "positions",
     "segment_key",

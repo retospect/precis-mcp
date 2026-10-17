@@ -68,6 +68,7 @@ from precis.pcb import matching as pcb_matching
 from precis.pcb import pinswap as pcb_pinswap
 from precis.pcb import planes as pcb_planes
 from precis.pcb import realize as pcb_realize
+from precis.pcb import resolved as pcb_resolved
 from precis.pcb import session as pcb_session
 from precis.pcb.capabilities import capability_for
 from precis.pcb.cost import outline_bbox
@@ -405,6 +406,11 @@ def _apply_pin_swap_warm_start(
     return reports
 
 
+def _pins_of(c: pcb_matching.Client) -> tuple[str, ...]:
+    """A client's member pins: the tuple, or its single pin."""
+    return c.members if c.members is not None else (c.pin,)
+
+
 def _client_of_member(m: dict[str, Any]) -> pcb_matching.Client | None:
     """The matcher client a graph member's ``client_of`` declares, or
     ``None``; a ``members`` list makes it a tuple client headed by the pin."""
@@ -505,74 +511,115 @@ def _matching_model(
 
 def _resolve_supply_matching(
     ir: PcbIR,
-    graph: dict[str, Any],
+    authored: dict[str, Any],
     footprints: dict[str, dict[str, Any]],
     fixed_copper: list[dict[str, Any]],
     warnings: list[str],
     method: str = "distance",
-) -> tuple[list[dict[str, Any]], list[str]]:
+) -> tuple[
+    list[dict[str, Any]],
+    list[str],
+    dict[pcb_resolved.Pin, str | None] | None,
+    dict[pcb_resolved.Pin, pcb_resolved.Pin],
+]:
     """Supply/client matching before any routing (pcb-lazy-netlist-and-
-    checks Slice 6): ``(report, unsupplied_findings)``.
+    checks Slices 6+7): ``(report, unsupplied_findings, rebind, prior)``.
 
     Gate first: every client against every declared supply block; any
-    unsupplied client returns its findings with ``ir`` untouched (the
-    caller fails the job ``input``). Then, for ``method='distance'``, the
-    min-cost Euclidean solve over the currently wired pairs (a client whose
-    2-member net's other end is a supply pin of its role, against exactly
-    those wired supply pins), warm-started from the current wiring and
-    applied with :meth:`PcbIR.permute_pin_nets` — cross-instance. A client
-    is positioned at its unique fixed-copper via terminal, else at its own
-    pin. ``method='radial'`` keeps the legacy per-instance angular warm
-    start. Settled results reach ``pcb_pin_swaps`` through the ordinary
-    ``pin_swap_diff`` write-back."""
-    clients, supplies, roles = _matching_model(graph, warnings)
+    unsupplied client returns its findings and nothing else (the caller
+    fails the job ``input``). ``method='radial'`` keeps the legacy
+    per-instance angular warm start, applied to ``ir`` in place.
+
+    ``method='distance'`` solves on the AUTHORED netlist: a client whose
+    every member pin has a declared net of its own (no second same-role
+    client on it) is a candidate; a supply block is available when each
+    of its pins is netless or declared on a candidate's net of that role.
+    The min-cost Euclidean solve over those (``prior`` = the client ->
+    supplier binding ``ir`` carries now, from the last snapshot) yields
+    ``rebind``: every available supply pin of a solved role unbound, then
+    each assigned one moved onto its client's declared net. A netless
+    spare channel can take a client net this way (Reto 2026-10-16 ruling
+    2a); the snapshot marks it ``solver_created``. A client with no
+    declared net stays unbound, with a warning. A client is positioned at
+    its unique fixed-copper via terminal, else at its own pin; every pin
+    position comes from ``ir`` (netless pins are in it too). ``rebind`` is
+    ``None`` when nothing was solved."""
+    clients, supplies, roles = _matching_model(authored, warnings)
     if clients:
         try:
             gate = pcb_matching.solve(
                 clients, supplies, roles, lambda _r, _p: (0.0, 0.0)
             )
         except ValueError as exc:
-            return [], [str(exc)]
+            return [], [str(exc)], None, {}
         if gate.unsupplied:
-            return [], list(gate.findings)
+            return [], list(gate.findings), None, {}
         warnings.extend(gate.findings)
     if method == "radial":
-        groups = _resolve_pin_swap_groups(ir, graph, warnings)
-        return _apply_pin_swap_warm_start(
-            ir, groups, footprints, fixed_copper, "radial"
-        ), []
+        groups = _resolve_pin_swap_groups(ir, authored, warnings)
+        return (
+            _apply_pin_swap_warm_start(ir, groups, footprints, fixed_copper, "radial"),
+            [],
+            None,
+            {},
+        )
     if not clients:
-        return [], []
+        return [], [], None, {}
 
-    pin_id: dict[tuple[str, str], int] = {}
-    net_pins: dict[int, list[int]] = {}
+    declared = pcb_resolved.declared_pin_nets(authored)
+    pin_id: dict[pcb_resolved.Pin, int] = {}
+    effective: dict[pcb_resolved.Pin, str | None] = {}
     for p in range(ir.n_pins):
         key = (str(ir.instance_refdes[int(ir.pin_instance[p])]), str(ir.pin_label[p]))
         pin_id[key] = p
-        net = int(ir.pin_net[p])
-        if net >= 0:
-            net_pins.setdefault(net, []).append(p)
-    key_of = {p: k for k, p in pin_id.items()}
-    supply_role = {
-        (s.instance, b[0]): s.role for s in supplies for b in s.blocks if len(b) == 1
-    }
-    wired: list[pcb_matching.Client] = []
-    prior: dict[tuple[str, str], tuple[str, str]] = {}
+        n = int(ir.pin_net[p])
+        effective[key] = None if n < 0 else str(ir.net_name[n])
+
+    per_net = Counter(
+        (declared.get((c.instance, p)), c.role) for c in clients for p in _pins_of(c)
+    )
+    candidates: list[pcb_matching.Client] = []
+    netless: dict[str, list[str]] = {}
     for c in clients:
-        cid = pin_id.get((c.instance, c.pin))
-        if cid is None or int(ir.pin_net[cid]) < 0:
-            continue
-        members = net_pins.get(int(ir.pin_net[cid]), [])
-        if len(members) != 2:
-            continue
-        other = key_of[next(m for m in members if m != cid)]
-        if supply_role.get(other) == c.role:
-            wired.append(c)
-            prior[(c.instance, c.pin)] = other
-    if not wired:
-        return [], []
-    allowed = set(prior.values())
-    wired_keys = {(c.instance, c.pin) for c in wired}
+        nets = [declared.get((c.instance, p)) for p in _pins_of(c)]
+        if any(n is None for n in nets):
+            netless.setdefault(c.role, []).append(f"{c.instance}.{c.pin}")
+        elif all(per_net[(n, c.role)] == 1 for n in nets):
+            candidates.append(c)
+        else:
+            warnings.append(
+                f"match: {c.instance}.{c.pin} shares its net with another "
+                f"{c.role} client; left as last routed"
+            )
+    # The author names a client's net at design time; the solve never
+    # mints one (Reto 2026-10-16).
+    for role, names in sorted(netless.items()):
+        warnings.extend(
+            f"match: {role} client {name} has no net, left unbound; "
+            "declare a net for it"
+            for name in names
+        )
+    if not candidates:
+        return [], [], None, {}
+    cand_nets: dict[str, set[str]] = {}
+    for c in candidates:
+        for pn in _pins_of(c):
+            net = declared[(c.instance, pn)]
+            assert net is not None
+            cand_nets.setdefault(c.role, set()).add(net)
+    available: dict[str, set[pcb_resolved.Pin]] = {}
+    for sup in supplies:
+        nets_ok = cand_nets.get(sup.role, set())
+        for block in sup.blocks:
+            keys = [(sup.instance, p) for p in block]
+            if all(
+                k in declared and (declared[k] is None or declared[k] in nets_ok)
+                for k in keys
+            ):
+                available.setdefault(sup.role, set()).update(keys)
+    allowed = set().union(*available.values()) if available else set()
+    prior = pcb_resolved.prior_assignment(candidates, supplies, effective)
+    client_keys = {(c.instance, p) for c in candidates for p in _pins_of(c)}
     terminals = pcb_realize._island_terminals_by_pin(ir, footprints, fixed_copper)
 
     def position(refdes: str, pin: str) -> tuple[float, float] | None:
@@ -580,43 +627,60 @@ def _resolve_supply_matching(
         pid = pin_id.get(key)
         if pid is None:
             return None
-        if key in wired_keys:
+        if key in client_keys:
             points = {t.point for t, _ in terminals.get(key, ()) if t.kind == "via"}
             if len(points) == 1:
                 return next(iter(points))
         return pin_point(ir, pid)
 
-    def dist(a: tuple[str, str], b: tuple[str, str]) -> float:
+    def dist(a: pcb_resolved.Pin, b: pcb_resolved.Pin) -> float:
         pa, pb = position(*a), position(*b)
         if pa is None or pb is None:
             return 0.0
         return math.hypot(pa[0] - pb[0], pa[1] - pb[1])
 
     result = pcb_matching.solve(
-        wired, supplies, roles, position, prior=prior, allowed_suppliers=allowed
+        candidates, supplies, roles, position, prior=prior, allowed_suppliers=allowed
     )
+    rebind: dict[pcb_resolved.Pin, str | None] = {}
     report: list[dict[str, Any]] = []
-    for role in sorted({c.role for c in wired}):
-        rc = [(c.instance, c.pin) for c in wired if c.role == role]
+    for role in sorted({c.role for c in candidates}):
+        rc = [
+            (c.instance, p) for c in candidates if c.role == role for p in _pins_of(c)
+        ]
         if any(k in result.unsupplied for k in rc):
-            warnings.append(f"match: role {role} left as wired (unsupplied clients)")
+            warnings.append(
+                f"match: role {role} left as last routed (unsupplied clients)"
+            )
             continue
-        target = {pin_id[result.assignment[k]]: int(ir.pin_net[pin_id[k]]) for k in rc}
-        try:
-            ir.permute_pin_nets(target)
-        except ValueError as exc:
-            warnings.append(f"match: role {role} left as wired ({exc})")
+        target: dict[pcb_resolved.Pin, str | None] = dict.fromkeys(
+            available.get(role, ()), None
+        )
+        clash = False
+        for k in rc:
+            s_pin = result.assignment[k]
+            if target.get(s_pin) not in (None, declared[k]):
+                clash = True
+            target[s_pin] = declared[k]
+        if clash:
+            warnings.append(
+                f"match: role {role} left as last routed (a supplier pin was "
+                "assigned clients on different nets)"
+            )
             continue
+        rebind.update(target)
+        priced = [k for k in rc if k in prior]
         report.append(
             {
                 "role": role,
                 "method": "match",
                 "clients": len(rc),
                 "cost_mm": math.fsum(dist(k, result.assignment[k]) for k in rc),
-                "prior_cost_mm": math.fsum(dist(k, prior[k]) for k in rc),
+                "prior_cost_mm": math.fsum(dist(k, prior[k]) for k in priced),
+                "changed": sum(1 for k in rc if prior.get(k) != result.assignment[k]),
             }
         )
-    return report, []
+    return report, [], (rebind or None), prior
 
 
 def _fixed_refdes(ir: PcbIR) -> list[str]:
@@ -760,6 +824,14 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             failure_class="infra",
         )
         return
+    # Slice 7: the stored graph is the intent; the latest resolved
+    # snapshot laid over it is the board as last routed, and this run's
+    # prior. The solve below rebinds from the intent, never from a patch.
+    authored = graph
+    declared = pcb_resolved.declared_pin_nets(authored)
+    graph = pcb_resolved.apply(
+        authored, ctx.store.pcb_netlist_snapshot_latest(pcb_ref_id)
+    )
 
     # The board outline, same as ``pcb_place`` already fetches it. This job
     # used to call ``build_ir(graph)`` with no outline at all, so its anneal
@@ -770,60 +842,73 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     # here. One rule, two call sites, drifted: the same shape as every
     # other defect this build has produced.
     features = ctx.store.pcb_features_list(pcb_ref_id)
-    ir = pcb_session.build_ir(
-        graph,
-        outline=pcb_session.outline_from_features(features),
-        # Mounting holes ride the same hydration for the same reason as
-        # the outline note above: a hole this IR doesn't carry is one the
-        # realizer's occupancy grid never claims, and _render_drc then
-        # checks the routed copper against holes the router couldn't see
-        # (the npth_clearance family, round-3 review item 4).
-        mounting_holes=pcb_session.mounting_holes_from_features(features),
-        # Real per-pin positions where a footprint is cached/authored
-        # (gripe 338983). Without this the maze router is asked to connect
-        # SYNTHESIZED land-pattern coordinates while the gerber writer
-        # flashes the real ones — copper that lands nowhere near its pad on
-        # any part whose label no package family recognizes (every
-        # generator-emitted component, e.g. an `ewod_pad_array`'s escape
-        # vias).
-        footprints_by_lcsc=ctx.store.pcb_footprints_for(pcb_ref_id),
-        local_footprints_by_name=ctx.store.pcb_local_footprints_for(pcb_ref_id),
-        # This job RE-PLACES the board, so its anneal needs the authored
-        # vias as obstacles exactly as ``pcb_place``'s does — one rule,
-        # two call sites again; the realizer further down reads the same
-        # rows for the router's grid.
-        fixed_copper=ctx.store.pcb_fixed_copper_list(int(board_id)),
-    )
+
+    def _build(g: dict[str, Any]) -> PcbIR:
+        return pcb_session.build_ir(
+            g,
+            outline=pcb_session.outline_from_features(features),
+            # Mounting holes ride the same hydration for the same reason as
+            # the outline note above: a hole this IR doesn't carry is one the
+            # realizer's occupancy grid never claims, and _render_drc then
+            # checks the routed copper against holes the router couldn't see
+            # (the npth_clearance family, round-3 review item 4).
+            mounting_holes=pcb_session.mounting_holes_from_features(features),
+            # Real per-pin positions where a footprint is cached/authored
+            # (gripe 338983). Without this the maze router is asked to connect
+            # SYNTHESIZED land-pattern coordinates while the gerber writer
+            # flashes the real ones — copper that lands nowhere near its pad on
+            # any part whose label no package family recognizes (every
+            # generator-emitted component, e.g. an `ewod_pad_array`'s escape
+            # vias).
+            footprints_by_lcsc=ctx.store.pcb_footprints_for(pcb_ref_id),
+            local_footprints_by_name=ctx.store.pcb_local_footprints_for(pcb_ref_id),
+            # This job RE-PLACES the board, so its anneal needs the authored
+            # vias as obstacles exactly as ``pcb_place``'s does — one rule,
+            # two call sites again; the realizer further down reads the same
+            # rows for the router's grid.
+            fixed_copper=ctx.store.pcb_fixed_copper_list(int(board_id)),
+        )
+
+    ir = _build(graph)
     routes_by_net = ctx.store.pcb_routes_get(pcb_ref_id)
 
-    # ``ir.pin_net`` right after a fresh build IS ``pcb_netconns``'s
-    # authored wiring — the baseline every persisted pin-swap override is
-    # measured against below (docs/backlog/pcb-engine-plan.md "PIN_SWAP is
-    # not persisted"). Captured BEFORE re-applying any existing override
-    # (next block), since that re-application is exactly what would make
-    # this copy indistinguishable from the post-optimize settled state.
-    baseline_pin_net = ir.pin_net.copy()
+    fixed_copper = ctx.store.pcb_fixed_copper_list(int(board_id))
 
-    # Re-apply BOTH a (currently hypothetical -- no authoring verb exists
-    # yet) authored pin-swap override and a prior pcb_route run's derived
-    # write-back onto the fresh IR, same discipline as the route-overrides
-    # and plane re-application just above/below: PcbIR.swap_pins() is L0
-    # state the IR never persists on its own, so a fresh build must
-    # re-derive it every run. Skipping this is worse than not persisting
-    # at all -- the copper and the netlist would then disagree in the
-    # OTHER direction (persisted swap says one thing, the freshly-built,
-    # un-swapped IR realizes another).
-    pin_swaps = ctx.store.pcb_pin_swaps_list(pcb_ref_id)
-    pcb_session.apply_pin_swap_overrides(ir, pin_swaps)
-    # Sketch AFTER the swaps: stored segment keys are endpoint pins of the
-    # POST-swap IR (``extract_sketch``), so on the un-swapped build every
-    # segment touching a swapped pin missed and kept an UNSET layer.
+    def _footprints(ir: PcbIR) -> dict[str, dict[str, Any]]:
+        return pcb_session.footprints_by_refdes(
+            ir,
+            ctx.store.pcb_footprints_for(pcb_ref_id),
+            local_footprints_by_name=ctx.store.pcb_local_footprints_for(pcb_ref_id),
+            local_names_by_refdes=pcb_session.local_footprint_names_by_refdes(graph),
+        )
+
+    pin_swap_warnings: list[str] = []
+    # Match supply/client pins before the optimizer or any routing, off the
+    # board as last routed (the prior). Shorter paths through fixed-copper
+    # corridors beat fewer airwire crossings on the replay. A changed
+    # assignment rebinds the intent and rebuilds the IR from it, so every
+    # step below (sketch, planes, anneal, router) sees one netlist.
+    warm_start_report, unsupplied, rebind, match_prior = _resolve_supply_matching(
+        ir, authored, _footprints(ir), fixed_copper, pin_swap_warnings, warm_start
+    )
+    if unsupplied:
+        ctx.record_failure(
+            "pcb_route: refusing to route - "
+            + "; ".join(unsupplied)
+            + ". Add suppliers (or fewer clients) for the role, then route again.",
+            failure_class="input",
+        )
+        return
+    if rebind is not None:
+        # Over the board as last routed: a role the solve skipped keeps
+        # its prior binding instead of falling back to the intent.
+        rebound = pcb_resolved.rebind(graph, rebind)
+        if pcb_resolved.declared_pin_nets(rebound) != pcb_resolved.declared_pin_nets(
+            graph
+        ):
+            graph = rebound
+            ir = _build(graph)
     unmatched_sketch = pcb_session.apply_route_overrides(ir, routes_by_net)
-    authored_pin_keys = {
-        (row["refdes"], row["pin"])
-        for row in pin_swaps
-        if row.get("source", "authored") != "derived"
-    }
 
     # Re-apply BOTH authored (op='plane_net') and optimizer-derived
     # (a prior pcb_route run's write-back, gr267526) plane assignments —
@@ -887,12 +972,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     # consumer) because `_resolve_pin_swap_groups` below needs the exact
     # same cached pad geometry to give PIN_SWAP real footprint offsets —
     # one fetch, two consumers, not a second round-trip.
-    footprints = pcb_session.footprints_by_refdes(
-        ir,
-        ctx.store.pcb_footprints_for(pcb_ref_id),
-        local_footprints_by_name=ctx.store.pcb_local_footprints_for(pcb_ref_id),
-        local_names_by_refdes=pcb_session.local_footprint_names_by_refdes(graph),
-    )
+    footprints = _footprints(ir)
     try:
         fab_caps = capability_for(_process_for_stackup(ir.stackup))
     except ValueError as exc:
@@ -900,7 +980,6 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         return
     # Fixed copper through another net's pad is a short the router cannot
     # remove — refuse before spending the anneal, and write nothing.
-    fixed_copper = ctx.store.pcb_fixed_copper_list(int(board_id))
     collisions = _fixed_copper_collisions(ir, footprints, fixed_copper, fab_caps)
     if collisions:
         ctx.record_failure(
@@ -973,21 +1052,6 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             "error half is disabled for this run"
         )
 
-    pin_swap_warnings: list[str] = []
-    # Match supply/client pins before the optimizer or any routing. Shorter
-    # paths through fixed-copper corridors beat fewer airwire crossings on
-    # the replay. The settled diff still uses the authored baseline.
-    warm_start_report, unsupplied = _resolve_supply_matching(
-        ir, graph, footprints, fixed_copper, pin_swap_warnings, warm_start
-    )
-    if unsupplied:
-        ctx.record_failure(
-            "pcb_route: refusing to route - "
-            + "; ".join(unsupplied)
-            + ". Add suppliers (or fewer clients) for the role, then route again.",
-            failure_class="input",
-        )
-        return
     force = bool(params.get("force", False))
     expansion_caps: ExpansionCaps | None = None
     if loop_rounds:
@@ -1040,8 +1104,8 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     # above also used) was resolved earlier, before the anneal — see that
     # block's own comment for why.
 
-    def _settled_writebacks() -> tuple[dict[str, str], list[dict[str, Any]]]:
-        """The anneal's settled plane + pin-swap decisions, diffed for
+    def _settled_writebacks() -> dict[str, str]:
+        """The anneal's settled plane decisions, diffed for
         write-back — read off the CURRENT ``ir``: the single path's
         post-anneal state, or the loop's restored best round."""
         # Write back the anneal's settled plane decisions (gr267526: this used
@@ -1070,21 +1134,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             if str(ir.net_name[n]) not in authored_net_names
             for layer in plane_layers_of(int(ir.net_plane_layers[n]))
         }
-        # Write back the anneal's settled pin-swap decisions (pcb-engine-plan
-        # "PIN_SWAP is not persisted": previously `ir.swap_pins` genuinely
-        # mutated pin->net during search and nothing ever wrote the result
-        # back, so the stored netlist and the stored copper would describe two
-        # different boards the moment this job ended). Diffed against the
-        # RAW netconn baseline captured above (not the warm-started state), so
-        # a pin already at its authored net writes nothing; only pins already
-        # covered by an authored override are excluded from the write, same
-        # "never overwrite an authored row" discipline as the plane path.
-        swaps = [
-            entry
-            for entry in pcb_session.pin_swap_diff(ir, baseline_pin_net)
-            if (entry["refdes"], entry["pin"]) not in authored_pin_keys
-        ]
-        return derived, swaps
+        return derived
 
     def _post_anneal_collision_check() -> bool:
         """The anneal moves unfrozen parts, so check again before any
@@ -1309,7 +1359,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             )
         if _post_anneal_collision_check():
             return
-        derived_assignments, pin_swap_overrides = _settled_writebacks()
+        derived_assignments = _settled_writebacks()
     else:
         pose_before.append((ir.inst_x.copy(), ir.inst_y.copy(), ir.inst_rot.copy()))
         result = optimize(ir, config)
@@ -1328,7 +1378,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             ]
         if _post_anneal_collision_check():
             return
-        derived_assignments, pin_swap_overrides = _settled_writebacks()
+        derived_assignments = _settled_writebacks()
         n_placement_errors, placement_report = _placement_gate()
         if n_placement_errors and not force:
             ctx.record_failure(
@@ -1720,13 +1770,15 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     groups_line = ""
     if result is not None and result.support_groups:
         groups_line = f"support groups: {'; '.join(result.support_groups)}\n"
+    snapshot_pins = pcb_resolved.snapshot_pins(ir, declared)
+    n_rebound = sum(1 for e in snapshot_pins if e["net"] != e["declared"])
     attempt_summary = (
         f"{placement_summary}"
         f"routed {len(rows)} net(s): {n_realized} realized, "
         f"{n_failed} failed, {n_dangling} dangling (<2-member, nothing to "
         f"route), {len(rres.vias)} via(s) placed, "
         f"{len(rres.warnings)} congestion warning(s), "
-        f"{len(pin_swap_overrides)} pin swap(s) settled, "
+        f"{n_rebound} pin(s) bound off their declared net, "
         f"{n_placement_errors} pre-route DRC error(s), "
         f"{len(drc_fail)} net(s) stripped by post-route DRC, "
         f"{n_disconnected} net(s) failed as disconnected copper"
@@ -1744,15 +1796,19 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         ctx.record_failure(refusal, failure_class="non-convergence")
         return
 
-    # The anneal's settled planes, pin swaps and poses are written only
+    # The anneal's settled planes, netlist snapshot and poses are written only
     # now, after realize, the post-route gate AND the worse-board guard
     # have all passed: written earlier, a raise or a refusal left the
     # previous run's copper under parts that had already moved — a board
     # worse than the one the job started from. On any refusal above, the
     # stored board is untouched.
     ctx.store.pcb_planes_replace_derived(pcb_ref_id, int(board_id), derived_assignments)
-    ctx.store.pcb_pin_swaps_replace_derived(
-        pcb_ref_id, int(board_id), pin_swap_overrides
+    ctx.store.pcb_netlist_snapshot_write(
+        int(board_id),
+        content_hash=pcb_session.content_hash(authored, {}),
+        pins=snapshot_pins,
+        prior=pcb_resolved.encode_prior(match_prior),
+        meta={"source": "pcb_route", "warm_start": warm_start},
     )
     # Rip before the pose write: a crash between the two then leaves the old
     # poses with that copper unrouted (legal), never moved parts on it.

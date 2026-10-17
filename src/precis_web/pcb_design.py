@@ -122,7 +122,6 @@ def capture_view(store: Any, ref: Any, *, conn: Connection) -> PcbView:
         "pcb_routes",
         "pcb_planes",
         "pcb_copper",
-        "pcb_pin_swaps",
         "pcb_fixed_copper",
     ):
         row = conn.execute(

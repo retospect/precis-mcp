@@ -16,7 +16,7 @@ from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.pcb import PcbHandler
 from precis.pcb import generators as pcb_generators
-from precis.pcb import pinswap, realize, session
+from precis.pcb import pinswap, realize, resolved, session
 from precis.pcb.capabilities import capability_for
 from precis.pcb.drc import process_for_stackup
 from precis.pcb.snapshot import load_snapshot, read_snapshot
@@ -39,14 +39,13 @@ def _hydrate(store):
     cached = store.pcb_footprints_for(ref_id)
     fixed = store.pcb_fixed_copper_list(graph["board"]["board_id"])
     ir = session.build_ir(
-        graph,
+        resolved.apply(graph, store.pcb_netlist_snapshot_latest(ref_id)),
         outline=session.outline_from_features(features),
         mounting_holes=session.mounting_holes_from_features(features),
         footprints_by_lcsc=cached,
         local_footprints_by_name=local,
         fixed_copper=fixed,
     )
-    session.apply_pin_swap_overrides(ir, store.pcb_pin_swaps_list(ref_id))
     session.apply_route_overrides(ir, store.pcb_routes_get(ref_id))
     footprints = session.footprints_by_refdes(
         ir,
@@ -259,7 +258,11 @@ def test_route_op_distance_warm_start_replay(store):
     assert entry["method"] == "match"
     assert 0 < entry["cost_mm"] <= entry["prior_cost_mm"] + 1e-6
     assert last["realized"] >= 51
-    assert store.pcb_pin_swaps_list(ref.id)
+    snapshot = store.pcb_netlist_snapshot_latest(ref.id)
+    assert snapshot is not None
+    # The job's solved swaps persist as pins whose net differs from the
+    # authored one (the old pcb_pin_swaps rows).
+    assert any(p["net"] != p["declared"] for p in snapshot["pins"])
 
 
 def test_route_op_warm_start_flag_replay(store, monkeypatch):
@@ -543,7 +546,7 @@ def test_supply_matching_is_no_worse_than_radial_and_pure(store):
 
     matched, matched_again, radial = (copy.deepcopy(ir0) for _ in range(3))
     for ir in (matched, matched_again):
-        report, unsupplied = pcb_route._resolve_supply_matching(
+        report, unsupplied, _rebind, _prior = pcb_route._resolve_supply_matching(
             ir, graph, footprints, fixed, []
         )
         assert not unsupplied and report
@@ -552,3 +555,73 @@ def test_supply_matching_is_no_worse_than_radial_and_pure(store):
     )
     assert np.array_equal(matched.pin_net, matched_again.pin_net)
     assert total(matched) <= total(radial) + 1e-6
+
+
+@pytest.mark.slow
+def test_supply_matching_nudge_with_prior_changes_at_most_one_assignment(store):
+    """Slice 7 acceptance: after a first route (its rebound graph is the
+    effective netlist, so its client -> supplier binding is the prior), a
+    0.1 mm nudge of the supply driver changes <= 1 assignment; and two
+    solves of identical input give identical rebinds."""
+    import copy
+
+    _, graph, features, footprints, fixed, _ = _hydrate(store)
+    ref = store.get_ref(kind="pcb", id="ewod-dogfood-6-escape-regression")
+    assert ref is not None
+    cached = store.pcb_footprints_for(ref.id)
+    local = store.pcb_local_footprints_for(ref.id)
+
+    def build(g):
+        return session.build_ir(
+            g,
+            outline=session.outline_from_features(features),
+            mounting_holes=session.mounting_holes_from_features(features),
+            footprints_by_lcsc=cached,
+            local_footprints_by_name=local,
+            fixed_copper=fixed,
+        )
+
+    def solve(g, ir):
+        _, unsupplied, rebind, _ = pcb_route._resolve_supply_matching(
+            ir, g, footprints, fixed, []
+        )
+        assert not unsupplied and rebind
+        return rebind
+
+    def bindings(g, rebind):
+        declared = resolved.declared_pin_nets(g)
+        clients, _, _ = pcb_route._matching_model(g, [])
+        by_net = {
+            declared[(c.instance, p)]: (c.instance, p)
+            for c in clients
+            for p in pcb_route._pins_of(c)
+            if declared.get((c.instance, p)) is not None
+        }
+        return {by_net[n]: s for s, n in rebind.items() if n in by_net}
+
+    authored = copy.deepcopy(graph)
+    ir0 = build(resolved.apply(authored, store.pcb_netlist_snapshot_latest(ref.id)))
+    first = solve(authored, ir0)
+    assert first == solve(authored, build(resolved.apply(authored, None)))
+    again = solve(authored, build(resolved.apply(authored, None)))
+    assert first == again  # deterministic from identical input
+
+    # the supply side (declared `supplies`, or the fixture's deprecated
+    # `pin_swap_groups` alias, which `_matching_model` turns into supplies)
+    _, supplies, _ = pcb_route._matching_model(authored, [])
+    drivers = sorted({s.instance for s in supplies})
+    assert drivers
+    effective = resolved.rebind(authored, first)
+    nudged = copy.deepcopy(authored)
+    moved = next(i for i in nudged["instances"] if i["refdes"] == drivers[0])
+    moved["x"] = float(moved["x"]) + 0.1
+    nudged_effective = resolved.rebind(nudged, first)
+    assert nudged_effective != effective
+    second = solve(nudged, build(nudged_effective))
+    before, after = bindings(authored, first), bindings(nudged, second)
+    changed = sum(1 for k in before if before[k] != after.get(k))
+    assert before
+    assert changed <= 1, (
+        f"{changed} of {len(before)} assignments changed "
+        f"(nudged {moved['refdes']} of {len(drivers)} driver(s))"
+    )

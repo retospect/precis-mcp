@@ -59,6 +59,10 @@ from precis.utils.units import parse_angle_deg
 
 log = logging.getLogger(__name__)
 
+#: Resolved netlist snapshots kept per board (newest first); older ones
+#: are derived history nothing reads.
+_SNAPSHOT_KEEP = 5
+
 
 def _normalize_supplies(
     raw: Any, component: str, declared: set[str] | None
@@ -764,11 +768,15 @@ _REVISION_PARTS: tuple[tuple[str, str, str, str], ...] = (
         "t.plane_id",
         "b.ref_id = %(ref)s AND t.retired_at IS NULL",
     ),
+    # The effective netlist: the newest snapshot's pins only, so pruning old
+    # snapshots (or a re-route that resolves to the same pins) leaves the
+    # revision unchanged.
     (
-        "t",
-        "pcb_pin_swaps t JOIN pcb_boards b ON b.board_id = t.board_id",
-        "t.swap_id",
-        "b.ref_id = %(ref)s AND t.retired_at IS NULL",
+        "t.pins",
+        "pcb_netlist_snapshots t JOIN pcb_boards b ON b.board_id = t.board_id",
+        "t.snapshot_id",
+        "b.ref_id = %(ref)s AND t.snapshot_id = (SELECT max(s.snapshot_id) "
+        "FROM pcb_netlist_snapshots s WHERE s.board_id = t.board_id)",
     ),
     (
         "ROW(t.lcsc, t.pads, t.pin_map, t.courtyard, t.centroid, t.holes, "
@@ -925,7 +933,7 @@ class PcbMixin:
                 elif table in {
                     "pcb_routes",
                     "pcb_planes",
-                    "pcb_pin_swaps",
+                    "pcb_netlist_snapshots",
                     "pcb_copper",
                 }:
                     where = (
@@ -4533,120 +4541,68 @@ class PcbMixin:
                 n += 1
         return n
 
-    def pcb_pin_swaps_list(self, ref_id: int) -> list[dict[str, Any]]:
-        """Every live pin<->net override for a design (docs/backlog/
-        pcb-engine-plan.md "PIN_SWAP is not persisted") — both a future
-        human-``authored`` override (no authoring verb yet; ``source``
-        discipline wired ahead of it, same shape as
-        :meth:`pcb_planes_list`) and optimizer-``derived`` rows
-        (:meth:`pcb_pin_swaps_replace_derived`). ``pcb_netconns`` itself
-        never changes — this is the override layered on top, resolved by
-        durable identity (refdes+pin name, not the ephemeral IR-local pin
-        int) so a caller can re-apply it onto a freshly-built IR
-        (:mod:`precis.pcb.session`).
-
-        ``source`` defaults ``'authored'`` for a row with no
-        ``meta.source``, same safe direction as :meth:`pcb_planes_list`."""
+    def pcb_netlist_snapshot_latest(self, ref_id: int) -> dict[str, Any] | None:
+        """The design's latest resolved netlist snapshot
+        (``pcb_netlist_snapshots``, pcb-lazy-netlist-and-checks Slice 7):
+        ``{snapshot_id, content_hash, pins, prior, meta, created_at}``, or
+        ``None`` before the first resolve. ``pins`` is the full effective
+        ``(pin, net)`` set (:func:`precis.pcb.resolved.snapshot_pins`);
+        readers lay it over the authored graph with
+        :func:`precis.pcb.resolved.apply`."""
         with self._pcb_conn() as conn:
-            return [
-                {
-                    "refdes": r[0],
-                    "pin": r[1],
-                    "net": r[2],
-                    "source": r[3] or "authored",
-                }
-                for r in conn.execute(
-                    "SELECT i.refdes, p.name, n.name, sw.meta->>'source' "
-                    "FROM pcb_pin_swaps sw "
-                    "JOIN pcb_boards b ON b.board_id = sw.board_id "
-                    "JOIN pcb_instances i ON i.instance_id = sw.instance_id "
-                    "JOIN pcb_pins p ON p.pin_id = sw.pin_id "
-                    "JOIN pcb_nets n ON n.net_id = sw.net_id "
-                    "WHERE b.ref_id = %s AND sw.retired_at IS NULL "
-                    "ORDER BY i.refdes, p.name",
-                    (ref_id,),
-                ).fetchall()
-            ]
+            r = conn.execute(
+                "SELECT s.snapshot_id, s.content_hash, s.pins, s.prior, s.meta, "
+                "s.created_at FROM pcb_netlist_snapshots s "
+                "JOIN pcb_boards b ON b.board_id = s.board_id "
+                "WHERE b.ref_id = %s AND b.retired_at IS NULL "
+                "ORDER BY s.snapshot_id DESC LIMIT 1",
+                (ref_id,),
+            ).fetchone()
+        if r is None:
+            return None
+        return {
+            "snapshot_id": int(r[0]),
+            "content_hash": r[1],
+            "pins": list(r[2] or []),
+            "prior": list(r[3] or []),
+            "meta": dict(r[4] or {}),
+            "created_at": r[5],
+        }
 
-    def pcb_pin_swaps_replace_derived(
-        self, ref_id: int, board_id: int, overrides: list[dict[str, Any]]
+    def pcb_netlist_snapshot_write(
+        self,
+        board_id: int,
+        *,
+        content_hash: str,
+        pins: list[dict[str, Any]],
+        prior: list[list[str]],
+        meta: dict[str, Any] | None = None,
     ) -> int:
-        """Optimizer-derived pin-swap write-back — the ``pcb_route`` job's
-        checkpoint for :meth:`precis.pcb.ir.PcbIR.swap_pins` state
-        (docs/backlog/pcb-engine-plan.md "PIN_SWAP is not persisted":
-        previously dropped, so a genuinely-beneficial swap reverted to
-        ``pcb_netconns``'s original wiring once the job ended, leaving
-        persisted netlist and persisted copper describing two different
-        boards).
-
-        Provenance-scoped **replace**, same DELETE(retire)+INSERT cascade
-        as :meth:`pcb_planes_replace_derived`: retires every existing
-        ``source='derived'`` row, inserts fresh. **Never touches
-        ``source='authored'``** — the retire filters on it, and the
-        insert is guarded by ``ON CONFLICT ... DO NOTHING`` on the live
-        physical-pin key; the caller
-        (:mod:`precis.workers.job_types.pcb_route`) must still exclude
-        authored pins from ``overrides`` via :meth:`pcb_pin_swaps_list`'s
-        ``source`` field.
-
-        ``overrides`` is ``[{"refdes", "pin", "net"}, ...]`` — the settled
-        net name each pin now carries. An unresolvable ``(refdes, pin)``
-        or ``net`` is silently skipped (netlist changed under it), never
-        an error. Returns overrides attempted (not necessarily
-        inserted)."""
+        """Append one resolve's snapshot and prune the board to its
+        :data:`_SNAPSHOT_KEEP` newest. Derived and regenerable: a resolve
+        appends, nothing edits a row. The snapshot migration 0221 wrote
+        from ``pcb_pin_swaps`` (``meta.source = 'pcb_pin_swaps'``) is kept
+        regardless: it holds the dropped table's rows verbatim. Returns the
+        new ``snapshot_id``."""
         with self._pcb_tx() as conn:
+            row = conn.execute(
+                "INSERT INTO pcb_netlist_snapshots "
+                "(board_id, content_hash, pins, prior, meta) "
+                "VALUES (%s, %s, %s, %s, %s) RETURNING snapshot_id",
+                (board_id, content_hash, Jsonb(pins), Jsonb(prior), Jsonb(meta or {})),
+            ).fetchone()
+            assert row is not None
             conn.execute(
-                "UPDATE pcb_pin_swaps SET retired_at = now() "
-                "WHERE board_id = %s AND retired_at IS NULL "
-                "AND coalesce(meta->>'source', 'authored') = 'derived'",
-                (board_id,),
+                "DELETE FROM pcb_netlist_snapshots WHERE board_id = %s "
+                # The migration-0221 row is the only record of the dropped
+                # pcb_pin_swaps rows (meta.unmapped): never pruned.
+                "AND meta->>'source' IS DISTINCT FROM 'pcb_pin_swaps' "
+                "AND snapshot_id NOT IN (SELECT snapshot_id FROM "
+                "pcb_netlist_snapshots WHERE board_id = %s "
+                "ORDER BY snapshot_id DESC LIMIT %s)",
+                (board_id, board_id, _SNAPSHOT_KEEP),
             )
-            n = 0
-            for entry in overrides:
-                pin_row = conn.execute(
-                    """
-                    SELECT i.instance_id, p.pin_id, i.component_id
-                    FROM pcb_instances i
-                    JOIN pcb_pins p
-                        ON p.component_id = i.component_id AND p.retired_at IS NULL
-                    WHERE i.ref_id = %s AND i.retired_at IS NULL
-                      AND i.refdes = %s AND p.name = %s
-                    """,
-                    (ref_id, entry.get("refdes"), entry.get("pin")),
-                ).fetchone()
-                if pin_row is None:
-                    continue
-                net = conn.execute(
-                    "SELECT net_id FROM pcb_nets WHERE ref_id = %s AND name = %s "
-                    "AND retired_at IS NULL",
-                    (ref_id, entry.get("net")),
-                ).fetchone()
-                if net is None:
-                    continue
-                instance_id, pin_id, component_id = (
-                    int(pin_row[0]),
-                    int(pin_row[1]),
-                    int(pin_row[2]),
-                )
-                conn.execute(
-                    """
-                    INSERT INTO pcb_pin_swaps
-                        (board_id, instance_id, pin_id, component_id, net_id, meta)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (instance_id, pin_id) WHERE retired_at IS NULL
-                    DO NOTHING
-                    """,
-                    (
-                        board_id,
-                        instance_id,
-                        pin_id,
-                        component_id,
-                        int(net[0]),
-                        Jsonb({"source": "derived"}),
-                    ),
-                )
-                n += 1
-        return n
+        return int(row[0])
 
     def pcb_set_class_rules(
         self,

@@ -36,7 +36,7 @@ TABLES = (
     "pcb_measures",
     "pcb_routes",
     "pcb_planes",
-    "pcb_pin_swaps",
+    "pcb_netlist_snapshots",
     "pcb_fixed_copper",
     "pcb_copper",
     "parts",
@@ -54,7 +54,7 @@ IDENTITIES = {
     "pcb_measures": "measure_id",
     "pcb_routes": "route_id",
     "pcb_planes": "plane_id",
-    "pcb_pin_swaps": "swap_id",
+    "pcb_netlist_snapshots": "snapshot_id",
     "pcb_fixed_copper": "fixed_id",
     "pcb_copper": "copper_id",
 }
@@ -70,7 +70,12 @@ def export_query(slug: str) -> str:
             where = "component_id IN (SELECT component_id FROM pcb_components WHERE ref_id=s.ref_id)"
         elif table == "pcb_netconns":
             where = "net_id IN (SELECT net_id FROM pcb_nets WHERE ref_id=s.ref_id)"
-        elif table in {"pcb_routes", "pcb_planes", "pcb_pin_swaps", "pcb_copper"}:
+        elif table in {
+            "pcb_routes",
+            "pcb_planes",
+            "pcb_netlist_snapshots",
+            "pcb_copper",
+        }:
             where = (
                 "board_id IN (SELECT board_id FROM pcb_boards WHERE ref_id=s.ref_id)"
             )
@@ -154,9 +159,110 @@ def route_config(tables: dict[str, Any], params: dict[str, Any]) -> dict[str, An
     }
 
 
+def _upgrade_legacy(fixture: dict[str, Any]) -> dict[str, Any]:
+    """Accept a v1 fixture captured before 0221 (``pcb_pin_swaps``).
+
+    Its swap rows become ONE ``pcb_netlist_snapshots`` row holding the full
+    effective pin set, the same semantics as the migration's SQL.
+    """
+    tables = fixture.get("tables", {})
+    if "pcb_pin_swaps" not in tables or "pcb_netlist_snapshots" in tables:
+        return fixture
+    fixture = copy.deepcopy(fixture)
+    tables = fixture["tables"]
+    all_swaps = tables.pop("pcb_pin_swaps")
+    swaps = [r for r in all_swaps if not r.get("retired_at")]
+    retired_swaps = [r for r in all_swaps if r.get("retired_at")]
+    nets = {
+        r["net_id"]: r["name"] for r in tables["pcb_nets"] if not r.get("retired_at")
+    }
+    refdes = {
+        r["instance_id"]: r["refdes"]
+        for r in tables["pcb_instances"]
+        if not r.get("retired_at")
+    }
+    pin_names = {
+        r["pin_id"]: r["name"] for r in tables["pcb_pins"] if not r.get("retired_at")
+    }
+    declared = {
+        (c["instance_id"], c["pin_id"]): nets[c["net_id"]]
+        for c in tables["pcb_netconns"]
+        if c["net_id"] in nets
+    }
+    swapped = {(r["instance_id"], r["pin_id"]): nets.get(r["net_id"]) for r in swaps}
+    pins = []
+    for key in declared.keys() | swapped.keys():
+        if key[0] not in refdes or key[1] not in pin_names:
+            continue
+        decl = declared.get(key)
+        net = swapped.get(key) or decl
+        entry = {
+            "refdes": refdes[key[0]],
+            "pin": pin_names[key[1]],
+            "net": net,
+            "declared": decl,
+        }
+        if decl is None and net is not None:
+            entry["solver_created"] = True
+        pins.append(entry)
+    pins.sort(key=lambda e: (e["refdes"], e["pin"]))
+    every_net = {r["net_id"]: r["name"] for r in tables["pcb_nets"]}
+    every_refdes = {r["instance_id"]: r["refdes"] for r in tables["pcb_instances"]}
+    every_pin = {r["pin_id"]: r["name"] for r in tables["pcb_pins"]}
+
+    def _verbatim(r: dict[str, Any], *, retired: bool) -> dict[str, Any]:
+        out = {
+            "swap_id": r["swap_id"],
+            "instance_id": r["instance_id"],
+            "refdes": every_refdes.get(r["instance_id"]),
+            "pin_id": r["pin_id"],
+            "pin": every_pin.get(r["pin_id"]),
+            "net_id": r["net_id"],
+            "net": every_net.get(r["net_id"]),
+            "meta": r.get("meta", {}),
+            "created_at": r.get("created_at"),
+        }
+        if retired:
+            out["retired_at"] = r["retired_at"]
+        return out
+
+    # live rows naming a retired instance/pin/net: carried, never applied
+    unmapped = [
+        _verbatim(r, retired=False)
+        for r in sorted(swaps, key=lambda r: r["swap_id"])
+        if r["net_id"] not in nets
+        or r["instance_id"] not in refdes
+        or r["pin_id"] not in pin_names
+    ]
+    retired = [
+        _verbatim(r, retired=True)
+        for r in sorted(retired_swaps, key=lambda r: r["swap_id"])
+    ]
+    rows = []
+    if all_swaps:
+        rows.append(
+            {
+                "snapshot_id": 1,
+                "board_id": tables["pcb_boards"][0]["board_id"],
+                "content_hash": None,
+                "pins": pins,
+                "prior": [],
+                "meta": {
+                    "source": "pcb_pin_swaps",
+                    "swap_rows": len(swaps),
+                    "unmapped": unmapped,
+                    "retired_rows": len(retired),
+                    "retired": retired,
+                },
+            }
+        )
+    tables["pcb_netlist_snapshots"] = rows
+    return fixture
+
+
 def normalize(raw: dict[str, Any]) -> dict[str, Any]:
     """Canonicalize relational identity only; never alter nested routing data."""
-    result = copy.deepcopy(raw)
+    result = copy.deepcopy(_upgrade_legacy(raw))
     tables = result["tables"]
     if set(tables) != set(TABLES) or len(tables["pcb_boards"]) != 1:
         raise ValueError(
@@ -211,6 +317,7 @@ def load_snapshot(
     Re-export with the returned params: no jobs are cloned/enqueued. Shared cached
     geometry must match source presence/absence and row data, never overwritten.
     """
+    fixture = _upgrade_legacy(fixture)
     if (
         not slug
         or fixture.get("format") != "precis-pcb-replay"

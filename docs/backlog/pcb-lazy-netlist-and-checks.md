@@ -542,15 +542,14 @@ connectivity errors fall only on the 20 failed nets.
   (`solve(penalty=)` is the seam).
 - Rip-up-and-reassign: on failed nets, re-solve with winners frozen,
   bounded by `route_passes`.
-- Matching onto `unused` spare channels (a netless pin gaining a net)
-  needs Slice 7's snapshot; today only wired supply pins permute.
 - Blocks of size > 1: `solve` matches a tuple client (`Client.members`,
   head = `pin`) against a same-size block atomically;
   `within_block_swappable` permutes the pairing. The stored graph carries
   them (2026-10-16): `client_of: {role, members: [head, ...]}` on the head
   pin, tail pins declared on the same part and carrying no `client_of` of
-  their own; `_matching_model` builds `Client.members`. Left: the route
-  job's rebind only moves single-pin wired pairs.
+  their own; `_matching_model` builds `Client.members`, and Slice 7's
+  rebind moves each member pin onto its own declared net. Left: no board
+  has routed a pair yet.
 
 ### Slice 7 — lazy netlist: resolved snapshot, prior, firmware export
 
@@ -559,13 +558,40 @@ connectivity errors fall only on the 20 failed nets.
 the `unsupplied_client` error on `view='check'` (`drc.check_unsupplied_client`,
 the route job's capacity/voltage gate). `route-status` prints
 `clients: N (a bound, b unresolved, c unmatched)` with the pins
-(`PcbHandler._client_state_text`). Open below.
+(`PcbHandler._client_state_text`).
 
-- `pcb_netlist_snapshots` (derived, per `resolve`): the effective
-  `(pin, net)` set, the prior it was solved from, the `content_hash` of
-  the intent. `_build_ir` reads the latest snapshot; `pcb_pin_swaps` is
-  migrated into it and dropped (forward-only: a new migration, baseline
-  regen via `scripts/bump`).
+**Shipped 2026-10-16 (unlanded, migration 0221, awaiting /go):**
+`pcb_netlist_snapshots` replaces `pcb_pin_swaps` (migrated: one snapshot
+per board from netconns + live swaps, `content_hash` NULL, then dropped).
+Each route job appends a snapshot: the full effective `(pin, net)` set,
+each pin's `declared` net, the prior (client → supplier binding the run
+started from) and `content_hash` of the authored graph; 5 kept per board.
+`pcb/resolved.py`: `apply` lays the latest snapshot over the authored
+graph (an entry applies only while its pin's declared net is unchanged),
+`rebind` moves pins between nets keeping the authored pin order
+(`graph["pin_order"]`, honoured by `ir.from_graph`, so synthesized land
+patterns do not move). Every reader builds from that effective graph:
+`PcbHandler._build_ir` (DRC, gerber, channel-map, ratsnest, sketch), the
+capacity map, the export model (BOM/CPL/netlist), `pcb_place`. The route
+job solves on the authored netlist, not a replayed patch: candidates are
+clients whose pins each have their own declared net; available supply
+blocks are netless or on a candidate net of their role.
+
+Rulings (Reto 2026-10-16, relayed by witty-forging-bee-d4: "approve
+slice 7, 1a, 2a"):
+- (1a) the snapshot stores the FULL effective `(pin, net)` set, netless
+  pins included: "One place to see all the things".
+- (2a) the solve may give a netless spare supply pin a declared client
+  net; that is how unused spare channels get matched. Those entries are
+  `solver_created` in the snapshot, live only there (never written to
+  `pcb_netconns`), and are regenerated on every re-solve.
+- (2a scope, Reto same day: "that's an llm design time thing") netless
+  client → the author names the net; the solve warns and leaves it
+  unbound. The solver never mints a net.
+
+Open:
+- Baseline `schema.sql` still has `pcb_pin_swaps`; it regenerates at the
+  next `scripts/bump` (release time).
 - Net naming rule: `_pcb_apply` refuses a touched net whose 2+ members are
   all supply pins, checked on every net whose membership the apply
   changed (shipped, `_pcb_check_free_ended_nets`). `channel_map` binds a

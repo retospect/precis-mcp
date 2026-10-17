@@ -14,7 +14,8 @@ from typing import Any
 
 from precis.pcb import DEFAULT_STACKUP
 from precis.pcb.ir import from_graph
-from precis.pcb.session import build_ir, footprints_by_refdes, pin_swap_diff
+from precis.pcb.resolved import declared_pin_nets, snapshot_pins
+from precis.pcb.session import build_ir, footprints_by_refdes
 
 _FP = {"pads": [{"number": "1", "x": 0.0, "y": 0.0, "w": 1.0, "shape": "RECT"}]}
 
@@ -70,7 +71,7 @@ def test_footprints_by_refdes_is_a_pure_remap_not_a_size_computation():
     assert out["C1"] == {"pads": []}
 
 
-# ── pin_swap_diff must not let NO_NET (-1) wrap-index into net_name ─────
+# ── snapshot_pins must not let NO_NET (-1) wrap-index into net_name ─────
 # (found while wiring `part_lcsc` through this same module, and reported
 # by a sibling agent as the identical sentinel-collision defect it hit in
 # `realize.pads_for_ir` and `maze.FREE`: `NO_NET == -1` is also a valid
@@ -95,20 +96,21 @@ def _no_net_swap_graph():
     }
 
 
-def test_pin_swap_diff_reports_empty_net_not_a_wrapped_last_net_name():
+def test_snapshot_pins_reports_no_net_not_a_wrapped_last_net_name():
     ir = from_graph(_no_net_swap_graph(), stackup=DEFAULT_STACKUP)
     pin_a = next(p for p in range(ir.n_pins) if str(ir.pin_label[p]) == "A")
     pin_b = next(p for p in range(ir.n_pins) if str(ir.pin_label[p]) == "B")
-    baseline = ir.pin_net.copy()
     ir.swap_pins(pin_a, pin_b)  # NET_A's pin now sits at NO_NET, and vice versa
 
-    diff = pin_swap_diff(ir, baseline)
-    by_pin = {d["pin"]: d for d in diff}
-    assert by_pin["A"]["net"] == "", (
-        "pin A moved OFF its net onto NO_NET -- must read back as an empty "
-        "net, never a real (wrong) net name"
+    declared = declared_pin_nets(_no_net_swap_graph())
+    by_pin = {d["pin"]: d for d in snapshot_pins(ir, declared)}
+    assert by_pin["A"]["net"] is None, (
+        "pin A moved OFF its net onto NO_NET -- must read back as no net, "
+        "never a real (wrong) net name"
     )
     assert by_pin["B"]["net"] == "NET_A"
+    assert by_pin["B"]["declared"] is None and by_pin["B"]["solver_created"]
+    assert by_pin["C"]["net"] == "NET_LAST"
 
 
 # ── real per-pin POSITIONS (gripe 338983) ────────────────────────────────

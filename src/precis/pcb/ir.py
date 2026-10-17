@@ -46,7 +46,7 @@ connectivity (:attr:`PcbIR.via_net` ``>= 0``); a keepout connects nothing
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Any
@@ -821,45 +821,6 @@ class PcbIR:
                             keep.append(seg_id)
                 self._segs_of_instance[inst] = sorted(keep)
 
-    def permute_pin_nets(self, target: Mapping[int, int]) -> None:
-        """L0 mutator: make every pin in ``target`` carry the net it maps to,
-        across instances if need be (the min-cost matching of the pin-swap
-        anneal can move a net from one supplier instance to another).
-        ``target`` must be a permutation of the nets those pins carry now
-        (equal multisets) among pins of equal rotation-CSR degree, else
-        ``ValueError`` with nothing mutated. Applied as transpositions in
-        sorted pin-id order, each via :meth:`_swap_pin_nets`."""
-        pins = sorted(int(p) for p in target)
-        want = {p: int(target[p]) for p in pins}
-        cur = {p: int(self.pin_net[p]) for p in pins}
-        if sorted(cur.values()) != sorted(want.values()):
-            raise ValueError(
-                "permute_pin_nets target is not a permutation of the current nets"
-            )
-        deg = np.diff(self.rotation_index)
-        # Plan on a scratch copy of the net assignment so a degree mismatch
-        # is found before the first mutation.
-        plan: list[tuple[int, int]] = []
-        sim = dict(cur)
-        for p in pins:
-            if sim[p] == want[p]:
-                continue
-            q = next(
-                (r for r in pins if r > p and sim[r] == want[p] and sim[r] != want[r]),
-                None,
-            )
-            if q is None:
-                q = next(r for r in pins if r > p and sim[r] == want[p])
-            if int(deg[p]) != int(deg[q]):
-                raise ValueError(
-                    f"permute_pin_nets requires equal rotation-CSR degree "
-                    f"(pin {p} has {int(deg[p])}, pin {q} has {int(deg[q])})"
-                )
-            sim[p], sim[q] = sim[q], sim[p]
-            plan.append((p, q))
-        for p, q in plan:
-            self._swap_pin_nets(p, q)
-
     def set_pin_offset(self, pin_id: int, dx: float, dy: float) -> None:
         """L3 mutator: replace one pin's SYNTHESIZED land-pattern offset
         with the REAL footprint's own per-pin coordinate (footprint-local
@@ -1234,6 +1195,22 @@ def from_graph(
     seg_pin_a: list[int] = []
     seg_pin_b: list[int] = []
 
+    # A graph rebound by a resolved netlist snapshot (`pcb.resolved.rebind`)
+    # carries the AUTHORED pin creation order: pins are created in it first,
+    # so a net moving between pins leaves every synthesized land pattern
+    # where the authored graph put it. The net loop then sets `pin_net`.
+    pin_order = graph.get("pin_order")
+    if pin_order:
+        rows_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+        for net in graph.get("nets") or []:
+            for m in net.get("members") or []:
+                rows_by_key[(m["refdes"], m.get("pin") or "1")] = m
+        for u in graph.get("unconnected") or []:
+            rows_by_key[(u["refdes"], u["pin"])] = u
+        for refdes, pin in pin_order:
+            if (refdes, pin) in rows_by_key:
+                _pin(refdes, pin, NO_NET, rows_by_key[(refdes, pin)])
+
     for net in graph.get("nets") or []:
         net_id = len(net_name)
         net_name.append(net["name"])
@@ -1253,6 +1230,8 @@ def from_graph(
         seen_pins: set[int] = set()
         for m in members:
             pid = _pin(m["refdes"], m.get("pin") or "1", net_id, m)
+            if pin_net[pid] == NO_NET:
+                pin_net[pid] = net_id
             # A net listing the same (refdes, pin) twice used to produce a
             # segment from a pin to ITSELF, which is not a connection and
             # which the MST below cannot key unambiguously anyway.
