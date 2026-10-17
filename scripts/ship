@@ -964,6 +964,36 @@ _sync_local_main() {
     fi
 }
 
+# Stray-file guard: scratch files and debris have leaked through ship onto
+# main (ship-pgbouncer-tag.log, tests/test_zz_*.py probes, a bare
+# `assert False` probe that turned main red, a sed `-e` backup). Refuse
+# BEFORE any gate when this branch ADDS such a path or a bare `assert False`
+# line, naming it. Only additions count (--diff-filter=A, added lines), so
+# files already tracked on main never trip it.
+_refuse_stray_adds() {
+    local base added bad="" f asserts
+    base="$(git merge-base origin/main HEAD)"
+    added="$(git diff --name-only --no-renames --diff-filter=A "$base" HEAD)"
+    while IFS= read -r f; do
+        [[ -n "$f" ]] || continue
+        case "$f" in
+            tests/test_zz_*) bad+="    $f  (scratch test: tests/test_zz_*)"$'\n' ;;
+            *-e)             bad+="    $f  (sed -i backup debris: *-e)"$'\n' ;;
+            *.orig)          bad+="    $f  (merge/patch leftover: *.orig)"$'\n' ;;
+            */*)             ;;
+            *.log)           bad+="    $f  (root-level log: *.log)"$'\n' ;;
+        esac
+    done <<< "$added"
+    asserts="$(git diff -U0 --no-renames "$base" HEAD -- '*.py' \
+        | awk '/^\+\+\+ /{ f = substr($0, 7); next }
+               /^\+[[:space:]]*assert False[[:space:]]*(#.*)?$/ { print "    " f "  (bare `assert False` line)" }' \
+        | sort -u)"
+    [[ -n "$asserts" ]] && bad+="$asserts"$'\n'
+    [[ -n "$bad" ]] || return 0
+    die "this branch adds stray files or debug probes — remove them (git rm / edit), commit, re-run:
+${bad%$'\n'}"
+}
+
 # Stale-mint guard (gr489414): refuse BEFORE any gate when this branch adds
 # a migration whose number is not its ledger dir's next free number on
 # origin/main. The in-lock collision guard only sees numbers minted while
@@ -1607,6 +1637,7 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
     # branch minted that origin/main already has (or that leaves a gap/below-
     # max insert) dies here in every tier, before lint/CI burn time on it.
     [[ "$RELEASE" != 1 ]] && _refuse_stale_migration_mint
+    _refuse_stray_adds
     if [[ "$attempt" == 1 && "$REMOTE" == 1 && "$RELEASE" != 1 ]]; then
         _set_remote_budget
     fi
