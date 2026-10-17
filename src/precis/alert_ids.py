@@ -659,6 +659,17 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         triage="Read the alert detail (auth/permission vs transport); fallback "
         "is `precis pcb refresh-parts --from-sqlite`.",
     ),
+    AlertRule(
+        "memory_recall",
+        "recall-dropped",
+        "The weekly P4 memory recall score dropped below the last recorded "
+        "one (total or a native/mirror split).",
+        "warn",
+        "scheduler",
+        triage="Read app_settings['memory_recall:last'] for the misses, then "
+        "`precis memory index --set` for the per-query HIT/MISS table; fix "
+        "the regressed titles/hooks or the index path, then resolve.",
+    ),
 )
 
 RULES_BY_ID: dict[str, AlertRule] = {r.id: r for r in ALERT_RULES}

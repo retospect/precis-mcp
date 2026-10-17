@@ -27,11 +27,13 @@ Topic = tuple[str, str, str, str]
 
 #: The P4 question set (``docs/backlog/memory-recall-quality.md``): real
 #: recall queries, each with its prod answer node's handle and that node's
-#: title + hook snapshot. ``precis memory index --set`` scores it on prod.
+#: title + hook snapshot. Packaged in ``precis.data`` so the weekly
+#: ``memory_recall`` cadence and ``precis memory index --set`` score the
+#: same file.
 RECALL_SET = json.loads(
-    (Path(__file__).parent / "fixtures" / "memory_recall_set.json").read_text(
-        encoding="utf-8"
-    )
+    (
+        Path(__file__).parents[1] / "src" / "precis" / "data" / "memory_recall_set.json"
+    ).read_text(encoding="utf-8")
 )
 #: One-way floor for the question set at k=K per seed mode, measured
 #: 2026-10-17 on the title + hook snapshots (3/36 each: the hash test

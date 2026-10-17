@@ -670,28 +670,66 @@ def _mirrored_handles(store: Store, handles: list[str]) -> set[str]:
     return {f"me{rid}" for (rid,) in rows}
 
 
+def recall_report_rows(
+    store: Store, entries: list[dict[str, Any]], *, k: int = 5, embedder: Any = None
+) -> list[tuple[dict[str, Any], int | None, str]]:
+    """``(entry, rank, origin)`` per question — the data the ``--set`` report
+    prints and the weekly ``memory_recall`` cadence records. ``origin`` is
+    ``"mirror"`` when the answer node carries a ``file_mirror`` stamp,
+    ``"native"`` otherwise."""
+    ranks = score_recall(store, entries, k=k, embedder=embedder)
+    mirrored = _mirrored_handles(store, [e["want"] for e in entries])
+    return [
+        (entry, rank, "mirror" if entry["want"] in mirrored else "native")
+        for entry, rank in zip(entries, ranks, strict=True)
+    ]
+
+
 def render_recall_report(
     store: Store, entries: list[dict[str, Any]], *, k: int = 5, embedder: Any = None
 ) -> str:
     """One ``HIT <rank>``/``MISS -`` line per entry (with the answer node's
     origin, native or mirror), then a ``RECALL`` total split by origin."""
-    ranks = score_recall(store, entries, k=k, embedder=embedder)
-    mirrored = _mirrored_handles(store, [e["want"] for e in entries])
+    rows = recall_report_rows(store, entries, k=k, embedder=embedder)
     out: list[str] = []
     tally = {"native": [0, 0], "mirror": [0, 0]}
-    for entry, rank in zip(entries, ranks, strict=True):
-        origin = "mirror" if entry["want"] in mirrored else "native"
+    for entry, rank, origin in rows:
         tally[origin][1] += 1
         tally[origin][0] += rank is not None
         verdict = f"HIT  {rank}" if rank is not None else "MISS -"
         out.append(f"{verdict} {entry['want']} {origin:6} {entry['query']}")
-    hits = sum(r is not None for r in ranks)
+    hits = sum(r is not None for _e, r, _o in rows)
     out.append(
-        f"RECALL {hits}/{len(entries)} at k={k} "
+        f"RECALL {hits}/{len(rows)} at k={k} "
         f"(native {tally['native'][0]}/{tally['native'][1]}, "
         f"mirror {tally['mirror'][0]}/{tally['mirror'][1]})"
     )
     return "\n".join(out) + "\n"
+
+
+#: Packaged P4 question set (``docs/backlog/memory-recall-quality.md``) —
+#: in ``precis.data`` so a deployed worker (an installed package, no
+#: ``tests/`` tree) reads the same set ``precis memory index --set``
+#: scores by hand and the ``memory_recall`` cadence scores weekly.
+RECALL_SET_RESOURCE = "memory_recall_set.json"
+
+
+def load_recall_set(path: str | Path | None = None) -> list[dict[str, Any]]:
+    """A recall question set as a list of ``{query, want, ...}`` dicts —
+    the packaged P4 set when ``path`` is ``None`` (bare ``--set``, and the
+    ``memory_recall`` cadence), else the JSON file at ``path``."""
+    import json
+    from importlib import resources
+
+    if path is None:
+        raw = (
+            resources.files("precis.data")
+            .joinpath(RECALL_SET_RESOURCE)
+            .read_text(encoding="utf-8")
+        )
+    else:
+        raw = Path(path).read_text(encoding="utf-8")
+    return json.loads(raw)
 
 
 def _thread_lead(handler: Any, ref: Any) -> str:
@@ -1198,12 +1236,16 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
     idx.add_argument(
         "--set",
         dest="recall_set",
+        nargs="?",
+        const="",
         default=None,
         metavar="JSON",
         help=(
             "Score a recall question set instead of listing: a JSON list of "
             "{query, want} (want = the answer me-handle). Prints HIT/MISS per "
-            "entry and a RECALL total at --k, split native/mirror."
+            "entry and a RECALL total at --k, split native/mirror. Bare "
+            "--set scores the packaged P4 set (precis.data "
+            "memory_recall_set.json)."
         ),
     )
     idx.add_argument(
@@ -1361,15 +1403,13 @@ def run(args: argparse.Namespace) -> None:
                     f"retired={result.ok} failed={result.failed}"
                 )
         elif args.recall_set is not None:
-            import json
-
             from precis.cli._common import cli_embedder
 
             # Recall is measured with vectors; lexical-only would mislead.
             embedder = cli_embedder(
                 cfg, store, needed=True, prog="precis memory index --recall-set"
             )
-            entries = json.loads(Path(args.recall_set).read_text(encoding="utf-8"))
+            entries = load_recall_set(args.recall_set or None)
             print(
                 render_recall_report(store, entries, k=args.k, embedder=embedder),
                 end="",

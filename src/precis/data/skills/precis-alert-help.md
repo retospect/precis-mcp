@@ -193,6 +193,7 @@ rule any producer can emit, grouped by source. The families:
 | `nursery:<category>` | nursery (per minute, SQL) | spin loops, stale claims, dead/restarting workers, dark hosts, dispatch and embed-lane stalls |
 | `review:empty:<reviewer>` · `review:tool-starved:<reviewer>` | LLM reviewer pass | silent-empty / tool-starved pass (config or credential failure shape) |
 | `disk_check` · `quota_check:auth` · `budget` · `budget:quota` | per-host passes, the LLM breaker | disk under threshold, expired OAuth, spend cap / quota window hit |
+| `memory_recall` (`recall-dropped`) | weekly `memory_recall` cadence | k=5 recall on the packaged P4 question set fell below the last recorded score (`app_settings['memory_recall:last']`) |
 | `nanopub_ots` · `nanopub-demote` · `nanopub_mirror` · `watch:*` · `ingest:*` · `inject_scan` · `llm_reconcile:drift` · `scheduler` · `quest_tick` · `admit:oversize` · `fetch_oa:*` · `orcid_enrich` | their owning pass | one or two conditions each — see `/rules` |
 
 The producer surface is generic (`precis.alerts.raise_alert`); a new

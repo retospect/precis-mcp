@@ -14,7 +14,7 @@ which is `chunk_embeddings` ANN recall.
 
 ## Question set
 
-`tests/fixtures/memory_recall_set.json`: one entry per real case, each a
+`src/precis/data/memory_recall_set.json`: one entry per real case, each a
 task query a session would type at task start, the prod answer node
 (`want`, a `me…` handle), that node's title + hook as a snapshot, where the
 case came from (`source`: a gripe, the fleet ledgers, or a fact sessions
@@ -34,14 +34,21 @@ mistake, add its first recall query and the node.
 
 ## Recall score
 
-Two scorers, one entry format:
+Three scorers, one entry format:
 
-- **Prod (the number that counts).** `scripts/prod-precis memory index --set
-  tests/fixtures/memory_recall_set.json` prints `HIT <rank>` / `MISS -` per
-  entry with the answer node's origin (native write or file-mirror import),
-  then `RECALL h/n at k=5 (native …, mirror …)`. Same path as a session's
-  recall: `render_memory_index` → `MemoryHandler.search(view='index')`, hybrid
-  with the remote embedder.
+- **Prod (the number that counts).** `scripts/prod-precis memory index --set`
+  prints `HIT <rank>` / `MISS -` per entry with the answer node's origin
+  (native write or file-mirror import), then `RECALL h/n at k=5 (native …,
+  mirror …)` — bare `--set` scores the packaged set, `--set <path>` a JSON
+  file. Same path as a session's recall: `render_memory_index` →
+  `MemoryHandler.search(view='index')`, hybrid with the remote embedder.
+- **Weekly (the durable check).** The `memory_recall` scheduler cadence
+  (`workers/scheduler.py` → `workers/memory_recall.py`) scores the same set
+  weekly, records the k=5 score (total + native/mirror split) in
+  `app_settings['memory_recall:last']`, and raises a WARN
+  `memory_recall/recall-dropped` alert when the score drops below the last
+  recorded one. The set lives in `precis.data` so the deployed worker reads
+  the same file the CLI scores.
 - **Test (the floor).** `tests/test_memory_recall_native_vs_mirror.py::
   test_recall_set_holds_its_floor` seeds each answer node's snapshot (title +
   hook; the hook doubles as body) plus the 24 AC5 topics into a test DB,

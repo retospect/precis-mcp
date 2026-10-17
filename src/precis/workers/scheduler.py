@@ -483,6 +483,26 @@ def _run_memory_thread_sweep(store: Store, batch_size: int) -> None:
     )
 
 
+def _run_memory_recall(store: Store, batch_size: int) -> None:
+    """One P4 recall-set score (docs/backlog/memory-recall-quality.md),
+    fired from the weekly host-agnostic ``memory_recall`` cadence — any
+    live worker can win it, same shape as ``cfp_watch``, except the
+    ``eligible`` gate below keeps hosts that cannot build the configured
+    embedder from claiming a fire they would only fail. ``batch_size``
+    is unused — the pass scores the whole packaged question set each
+    fire. See workers/memory_recall.py; SQL + the remote embedder only,
+    no LLM."""
+    from precis.workers.memory_recall import run_memory_recall_pass
+
+    result = run_memory_recall_pass(store)
+    log.info(
+        "scheduler: memory_recall inner result claimed=%d ok=%d failed=%d",
+        result.claimed,
+        result.ok,
+        result.failed,
+    )
+
+
 def _run_nanopub_stale_sweep(store: Store, batch_size: int) -> None:
     """One nanopub candidate re-gate sweep (gr279770's sweep half), fired
     from the daily host-agnostic ``nanopub_stale_sweep`` cadence.
@@ -588,6 +608,18 @@ def _anki_sync_eligible() -> bool:
         bool(load_config().anki_enabled)
         and importlib.util.find_spec("anki") is not None
     )
+
+
+def _memory_recall_eligible() -> bool:
+    """Only a host whose config can build a recall embedder may win the
+    ``memory_recall`` lease — a ``remote``-embedder host without
+    ``PRECIS_EMBEDDER_URL`` would claim the fire and then fail it
+    (:class:`~precis.embedder.EmbedderNotConfigured`), so it skips before
+    the claim and leaves the fire for a capable host."""
+    from precis.config import load_config
+
+    cfg = load_config()
+    return cfg.embedder != "remote" or bool(cfg.embedder_url)
 
 
 def _dream_resolve_interval(store: Store) -> int:
@@ -850,6 +882,19 @@ CADENCES: tuple[Cadence, ...] = (
         name="memory_thread_sweep",
         interval_s=24 * 3600 + 43 * 60,
         run=_run_memory_thread_sweep,
+    ),
+    # docs/backlog/memory-recall-quality.md made durable: score the P4
+    # recall question set weekly, record the k=5 score (native/mirror
+    # split) in app_settings, and raise a WARN alert when it drops below
+    # the last recorded run. Host-agnostic, off the exact week like
+    # cfp_watch (+17m so their fires don't land together). `eligible`
+    # keeps embedder-less hosts from claiming a fire they'd only fail.
+    # spends=False: the embedder HTTP call is local, no LLM.
+    Cadence(
+        name="memory_recall",
+        interval_s=7 * 24 * 3600 + 17 * 60,
+        run=_run_memory_recall,
+        eligible=_memory_recall_eligible,
     ),
 )
 
