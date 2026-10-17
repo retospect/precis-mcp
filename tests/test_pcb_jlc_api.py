@@ -283,6 +283,96 @@ def test_iter_components_resumes_from_since_key(creds):
     assert list(client.iter_components(since_key="resume-here")) == []
 
 
+def _walk_client(pages):
+    calls: list[str] = []
+
+    def fake_send(method, path, headers, body):
+        calls.append(body)
+        return httpx.Response(200, json=pages[len(calls) - 1])
+
+    return jlc_api.JlcApiClient(send=fake_send, sleep=_noop_sleep), calls
+
+
+def test_iter_components_parses_list_and_cursor_nested_under_data_result(creds):
+    pages = [
+        {"data": {"result": {"list": [{"componentCode": "C1", "stockCount": 1}]}}},
+    ]
+    pages[0]["data"]["result"]["lastKey"] = "page2"
+    pages.append({"result": {"data": {"rows": [{"componentCode": "C2"}]}}})
+    client, calls = _walk_client(pages)
+    rows = list(client.iter_components())
+    assert [r["lcsc"] for r in rows] == ["C1", "C2"]
+    assert '"lastKey":"page2"' in calls[1]
+
+
+def test_iter_components_empty_first_page_is_a_failure(creds):
+    client, _ = _walk_client([{"code": 200, "message": "ok", "data": {"total": 0}}])
+    with pytest.raises(VendorError, match="empty first page"):
+        list(client.iter_components())
+    assert client.last_key is None
+
+
+def test_iter_components_empty_later_page_is_the_normal_end(creds):
+    client, calls = _walk_client(
+        [
+            {"componentInfos": [{"componentCode": "C1"}], "lastKey": "p2"},
+            {"componentInfos": []},
+        ]
+    )
+    assert [r["lcsc"] for r in client.iter_components()] == ["C1"]
+    assert len(calls) == 2
+
+
+def test_iter_components_single_page_catalog_without_cursor_is_not_a_failure(creds):
+    client, _ = _walk_client([{"componentInfos": [{"componentCode": "C1"}]}])
+    assert [r["lcsc"] for r in client.iter_components()] == ["C1"]
+
+
+def test_iter_components_empty_first_page_with_cursor_is_not_a_failure(creds):
+    client, calls = _walk_client(
+        [{"componentInfos": [], "lastKey": "p2"}, {"componentInfos": []}]
+    )
+    assert list(client.iter_components()) == []
+    assert len(calls) == 2
+
+
+def test_iter_components_empty_resumed_page_is_the_normal_end(creds):
+    client, _ = _walk_client([{"componentInfos": []}])
+    assert list(client.iter_components(since_key="resume")) == []
+
+
+def test_envelope_log_emits_key_names_only(creds, caplog):
+    secret_value = "VALUE-must-not-be-logged"
+    page = {
+        "componentInfos": [{"componentCode": "C1", "mfr": secret_value}],
+        "token": secret_value,
+        "data": {"inner": secret_value, "nested": {"deep": secret_value}},
+    }
+    client, _ = _walk_client([page])
+    with caplog.at_level("INFO", logger=jlc_api.log.name):
+        list(client.iter_components())
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    assert "keys=componentInfos,token,data" in text
+    assert "data.keys=inner,nested" in text
+    assert "deep" not in text
+    assert secret_value not in text
+
+
+def test_parts_refresh_pass_alerts_on_empty_first_page(creds, store):
+    from precis.alerts import open_alert_severity
+    from precis.workers.parts_refresh import CURSOR_SETTING_KEY, run_parts_refresh_pass
+
+    client, _ = _walk_client([{"unexpected": {"shape": 1}}])
+    result = run_parts_refresh_pass(store, client=client)
+    assert result["failed"] == 1 and result["claimed"] == 0
+    assert "empty first page" in result["error"]
+    assert store.get_setting(CURSOR_SETTING_KEY) in (None, "")
+    assert (
+        open_alert_severity(store, source="parts_refresh", fingerprint="jlcpcb-api")
+        is not None
+    )
+
+
 # ── normalize_api_row matches the parts_import column contract ──────────
 
 
