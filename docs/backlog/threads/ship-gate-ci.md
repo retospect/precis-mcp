@@ -121,6 +121,11 @@ nightly — the diff-cover verdict is still open.
 7. **backlog/local-gate-red-on-green-main-token-budget.md** — gating CI is
    3.13-only but prod runs 3.12; nightly red on a green main.
 
+8. **backlog/tool-description-budgets.md** — PROPOSED, Reto decides. core.py
+   verb descriptions sit at 966-971 of 1024 bytes (get, tag); six budget
+   fixes in 14 days. Slice 1 (per-kind report, test into `CODE_HYGIENE`)
+   stops `--quick` reddening main; ranked last because it is a proposal.
+
 ## Horizon
 
 1. **backlog/session-prefix-and-fleet-context-cost.md** — a 105-137k
