@@ -74,7 +74,7 @@ def test_real_agent_unlock_ttl_and_cleanup(
         CredentialRefs("KEY", "PHRASE"),
         profile,
         scratch_root=root,
-        identity_lifetime_s=1,
+        identity_lifetime_s=30,
     ) as session:
         assert not (session.scratch / "encrypted").exists()
         assert (session.scratch.stat().st_mode & 0o777) == 0o700
@@ -84,10 +84,23 @@ def test_real_agent_unlock_ttl_and_cleanup(
             ["ssh-add", "-l"], env=session._env, scratch=session.scratch, timeout_s=3
         )
         assert listed.returncode == 0
-        time.sleep(1.1)
-        expired = bounded_process(
-            ["ssh-add", "-l"], env=session._env, scratch=session.scratch, timeout_s=3
-        )
+        # Poll for expiry with a deadline — a fixed sleep races the agent's
+        # own expiry on a loaded runner (gr495749).
+        deadline = time.monotonic() + 45.0
+        while True:
+            expired = bounded_process(
+                ["ssh-add", "-l"],
+                env=session._env,
+                scratch=session.scratch,
+                timeout_s=3,
+            )
+            if expired.returncode == 1:
+                break
+            assert time.monotonic() < deadline, (
+                "identity never expired within the deadline "
+                f"(identity_lifetime_s=30, now {time.monotonic():.1f})"
+            )
+            time.sleep(1.0)
         assert expired.returncode == 1
     assert list(root.iterdir()) == []
     assert PHRASE not in caplog.text and key not in caplog.text

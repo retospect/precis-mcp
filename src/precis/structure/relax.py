@@ -36,6 +36,7 @@ in Å; never converted to SI here.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from functools import lru_cache
 
@@ -576,6 +577,12 @@ def _xtb_calculator(*, charge: int = 0, multiplicity: int | None = None):
     function never sees them. The calculator is not spin-polarised, so
     multiplicity changes the occupations, not a spin density."""
     _vet_charge_multiplicity(charge, multiplicity)
+    # gr495146: tblite's Fortran runtime segfaulted inside its
+    # handle_calculation_error callback under macOS xdist workers — macOS
+    # OpenMP worker threads start with a ~512 KB stack (Linux: ~8 MB),
+    # too small for the callback path. Floor OMP_STACKSIZE before the
+    # first TBLite instantiation; setdefault keeps operator overrides.
+    os.environ.setdefault("OMP_STACKSIZE", "1G")
     try:
         from tblite.ase import TBLite
     except ImportError as exc:
