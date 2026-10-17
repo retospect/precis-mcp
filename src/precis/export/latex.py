@@ -48,7 +48,7 @@ from pylatexenc.latexencode import (
     get_builtin_uni2latex_dict,
 )
 
-from precis.export import _abbrev
+from precis.export import _abbrev, walker
 from precis.export._back_matter import ordered_blocks
 from precis.export._cite_ids import paper_identifier
 from precis.export._data_package import (
@@ -82,7 +82,6 @@ from precis.export._trust_marks import (
     unverified_claims_entries,
 )
 from precis.nanopub import pin_lint
-from precis.store.si_links import SI_PDF_ROLE, cite_target_for
 from precis.utils import handle_registry, mentions
 from precis.utils.authors import build_byline
 from precis.utils.draft_markup import DRAFT_CITE_PATTERN
@@ -912,6 +911,14 @@ class _Ctx:
     #: Parent slugs that were cited from a supplementary-information record
     #: (the cite site renders ``\cite[SI]{parent}``), in first-cited order.
     si_cited: list[str] = field(default_factory=list)
+    #: Cite marks emitted so far; the ``\x01<i>\x01`` sentinel after each
+    #: ``\cite`` names its entry, so :func:`_merge_adjacent_cites` can hand
+    #: the walker resolved groups. Equal marks share one index, so a repeated
+    #: mark renders to an identical string (:class:`walker.RepeatGuard`).
+    _cite_marks: list[walker.CiteGroup] = field(default_factory=list, repr=False)
+    _cite_mark_ids: dict[walker.CiteGroup, int] = field(
+        default_factory=dict, repr=False
+    )
     #: Trust-mark bookkeeping (the trust-surfaces export marking) — set in
     #: ``__post_init__`` from ``store`` so every existing call site that
     #: only ever passed ``store=`` keeps working unchanged.
@@ -1121,17 +1128,8 @@ def _handle_cite(tgt: str, ctx: _Ctx) -> tuple[str | None, bool]:
     is_si)``, via the one resolver. ``(None, False)`` if it doesn't resolve to
     a live paper. ``is_si`` is True when the handle sits in a supplementary
     record and the key is its parent's."""
-    if ctx.store is None:
-        return None, False
-    try:
-        resolved = ctx.store.resolve_handle(tgt)
-    except Exception:  # pragma: no cover — store hiccup
-        return None, False
-    if resolved is None:
-        return None, False
-    # An SI ref cites as its parent paper (si-attachments ruling 3).
-    parent = getattr(resolved, "cite_public_id", None)
-    return (parent or resolved.public_id), bool(parent and parent != resolved.public_id)
+    hit = walker.resolve_cite_handle(ctx.store, tgt)
+    return (None, False) if hit is None else (hit[0], hit[2])
 
 
 def _handle_cite_key(tgt: str, ctx: _Ctx) -> str | None:
@@ -1140,32 +1138,15 @@ def _handle_cite_key(tgt: str, ctx: _Ctx) -> str | None:
 
 
 def _resolve_si_slug(slug: str, ctx: _Ctx) -> tuple[str, bool]:
-    """A bare cite slug → ``(slug_to_cite, is_si)``. A supplementary-info
-    record resolves to its parent's slug (``is_si`` True); an SI record with no
-    live parent keeps its own slug and warns. Memoised per export."""
-    if ctx.store is None:
-        return slug, False
-    if slug in ctx._si_slug_cache:
-        return ctx._si_slug_cache[slug]
-    result = (slug, False)
-    get_ref = getattr(ctx.store, "get_ref", None)
-    ref = get_ref(kind="paper", id=slug) if callable(get_ref) else None
-    # Canonical key: a ref can hold several cite_key aliases; cite and bib it
-    # under the one slug the store returns for it, so aliases merge.
-    own = getattr(ref, "slug", None)
-    if isinstance(own, str) and own:
-        result = (own, False)
-    if ref is not None and getattr(ref, "pdf_role", None) == SI_PDF_ROLE:
-        target, is_si = cite_target_for(ctx.store, ref, ctx._cite_target_cache)
-        if is_si and target.slug:
-            result = (str(target.slug), True)
-        else:
-            ctx.warnings.append(
-                f"cite {slug!r}: supplementary record has no live parent paper"
-                " - cited under its own entry"
-            )
-    ctx._si_slug_cache[slug] = result
-    return result
+    """A bare cite slug → ``(slug_to_cite, is_si)``
+    (:func:`walker.resolve_si_slug`, memoised on ``ctx``)."""
+    return walker.resolve_si_slug(
+        slug,
+        ctx.store,
+        si_cache=ctx._si_slug_cache,
+        target_cache=ctx._cite_target_cache,
+        warnings=ctx.warnings,
+    )
 
 
 def _conjunct_cite_keys(store: Any, hub_ref_id: int) -> list[str]:
@@ -1463,10 +1444,44 @@ def _cite_link_group(bases: list[str], ctx: _Ctx) -> str:
     return "{\\scriptsize " + "\\ ".join(parts) + "}"
 
 
-def _cite_marker(keys: list[str]) -> str:
-    """Private sentinel standing in for the link group after a ``\\cite``;
-    :func:`_merge_adjacent_cites` resolves it (merged runs get ONE group)."""
-    return "\x01<" + ",".join(keys) + ">\x01"
+def _cite_tex(group: walker.CiteGroup) -> str:
+    """The biblatex command for one resolved mark: ``\\cite{a,b}``;
+    ``\\cite[SI]{parent}`` for a single SI key; the multicite
+    ``\\cites{a}[SI]{parent}\\relax`` when only some keys are SI (``\\relax``
+    ends the argument scan, else biblatex swallows a following link group
+    as one more key)."""
+    keys = group.keys
+    if len(keys) == 1:
+        return f"\\cite[SI]{{{keys[0]}}}" if group.si[0] else f"\\cite{{{keys[0]}}}"
+    if any(group.si):
+        body = "".join(
+            f"[SI]{{{k}}}" if si else f"{{{k}}}"
+            for k, si in zip(keys, group.si, strict=True)
+        )
+        return f"\\cites{body}\\relax"
+    return f"\\cite{{{','.join(keys)}}}"
+
+
+def _cite_mark(group: walker.CiteGroup, ctx: _Ctx) -> str:
+    """The mark's TeX plus a private sentinel naming it; the paragraph's
+    :func:`_merge_adjacent_cites` turns it into the final grouped mark and
+    its link group."""
+    idx = ctx._cite_mark_ids.get(group)
+    if idx is None:
+        idx = ctx._cite_mark_ids[group] = len(ctx._cite_marks)
+        ctx._cite_marks.append(group)
+    return f"{_cite_tex(group)}\x01<{idx}>\x01"
+
+
+class LatexRenderer:
+    """The LaTeX :class:`walker.Renderer`: formats resolved values as TeX
+    into a ``list[str]`` sink."""
+
+    def __init__(self, ctx: _Ctx) -> None:
+        self.ctx = ctx
+
+    def cite_group(self, sink: list[str], group: walker.CiteGroup) -> None:
+        sink.append(_cite_tex(group) + _cite_link_group(list(group.keys), self.ctx))
 
 
 def _cite(slug: str, ctx: _Ctx, *, si: bool = False) -> str:
@@ -1487,14 +1502,8 @@ def _cite(slug: str, ctx: _Ctx, *, si: bool = False) -> str:
             base, "paper", _slug_chunk_excerpt(base, chunk_ord, ctx), ctx
         )
     base, resolved_si = _resolve_si_slug(base, ctx)
-    si = si or resolved_si
-    if base not in ctx.cited:
-        ctx.cited.append(base)
-    if si:
-        if base not in ctx.si_cited:
-            ctx.si_cited.append(base)
-        return f"\\cite[SI]{{{base}}}" + _cite_marker([base])
-    return f"\\cite{{{base}}}" + _cite_marker([base])
+    group = walker.register_group([(base, si or resolved_si)], ctx.cited, ctx.si_cited)
+    return _cite_mark(group, ctx)
 
 
 def _cite_keys(keys: list[str], ctx: _Ctx) -> str:
@@ -1523,22 +1532,10 @@ def _cite_keys(keys: list[str], ctx: _Ctx) -> str:
     if ctx.patent_mode or ctx.footnote_refs:
         return "".join(_cite(k, ctx) for k in keys)
     # Supplement keys cite as their parent; duplicates collapse.
-    resolved = [_resolve_si_slug(k, ctx) for k in keys]
-    keys = list(dict.fromkeys(k for k, _si in resolved))
-    if len(keys) == 1:
-        return _cite(keys[0], ctx, si=all(si for _k, si in resolved))
-    si_flag = {k: all(s for kk, s in resolved if kk == k) for k in keys}
-    for k in keys:
-        if k not in ctx.cited:
-            ctx.cited.append(k)
-        if si_flag[k] and k not in ctx.si_cited:
-            ctx.si_cited.append(k)
-    if any(si_flag.values()):
-        body = "".join(f"[SI]{{{k}}}" if si_flag[k] else f"{{{k}}}" for k in keys)
-        # \relax ends the multicite's argument scan; without it biblatex
-        # swallows a following {link group} as one more cite key.
-        return f"\\cites{body}\\relax" + _cite_marker(keys)
-    return f"\\cite{{{','.join(keys)}}}" + _cite_marker(keys)
+    pairs = walker.key_group(keys, lambda k: _resolve_si_slug(k, ctx))
+    if len(pairs) == 1:
+        return _cite(pairs[0][0], ctx, si=pairs[0][1])
+    return _cite_mark(walker.register_group(pairs, ctx.cited, ctx.si_cited), ctx)
 
 
 #: Longest excerpt (chars) quoted into a reMarkable footnote before it's
@@ -1588,8 +1585,7 @@ def _source_footnote(slug: str, kind: str, excerpt: str, ctx: _Ctx) -> str:
     which the preamble numbers in citation order) + the referenced chunk
     excerpt when the ref addresses a specific chunk."""
     base = slug.split("~", 1)[0]
-    if base not in ctx.cited:
-        ctx.cited.append(base)
+    walker.register(ctx.cited, base)
     ref = ctx.store.get_ref(kind=kind, id=base) if ctx.store is not None else None
     if kind == "patent":
         line = _tex(render_patent_citation(getattr(ref, "meta", None), base))
@@ -2029,8 +2025,7 @@ def _hub_paper_cite_key(paper_ref_id: int, ctx: _Ctx) -> str | None:
     if not aliases:
         return None
     key = str(aliases[0])
-    if key not in ctx.cited:
-        ctx.cited.append(key)
+    walker.register(ctx.cited, key)
     return key
 
 
@@ -2040,24 +2035,29 @@ def _hub_paper_cite_key(paper_ref_id: int, ctx: _Ctx) -> str | None:
 #: adjacency comes from folding a multi-key ``\\cite{a,b}`` through the
 #: one-key-per-bracket grammar; cites the author spaced apart keep their
 #: separator and are left alone. ``\\cite[SI]{…}`` never matches.
-_ADJ_CITES = re.compile(r"(?:\\cite\{[^}]*\}\x01<[^\x01]*>\x01)+")
-_CITE_ITEM = re.compile(r"\\cite\{([^}]*)\}\x01<([^\x01]*)>\x01")
-_CITE_MARKER = re.compile(r"\x01<([^\x01]*)>\x01")
+#: The grouping itself is :func:`walker.merge_adjacent`.
+_CITE_MARKER = re.compile(r"\x01<(\d+)>\x01")
 
 
 def _merge_adjacent_cites(s: str, ctx: _Ctx) -> str:
-    def repl(m: re.Match[str]) -> str:
-        items = _CITE_ITEM.findall(m.group(0))
-        cite_keys = [k for ck, _lk in items for k in ck.split(",") if k]
-        link_keys = [k for _ck, lk in items for k in lk.split(",") if k]
-        cite_keys = list(dict.fromkeys(cite_keys))
-        link_keys = list(dict.fromkeys(link_keys))
-        return "\\cite{" + ",".join(cite_keys) + "}" + _cite_link_group(link_keys, ctx)
-
-    s = _ADJ_CITES.sub(repl, s)
-    return _CITE_MARKER.sub(
-        lambda m: _cite_link_group([k for k in m.group(1).split(",") if k], ctx), s
-    )
+    """Resolve the paragraph's cite sentinels: hand the walker the marks in
+    order (each mark's TeX sits directly before its sentinel) and render the
+    groups it returns, each with its link group."""
+    items: list[str | walker.CiteGroup] = []
+    last = 0
+    for m in _CITE_MARKER.finditer(s):
+        group = ctx._cite_marks[int(m.group(1))]
+        items += [s[last : m.start() - len(_cite_tex(group))], group]
+        last = m.end()
+    items.append(s[last:])
+    out: list[str] = []
+    renderer = LatexRenderer(ctx)
+    for item in walker.merge_adjacent(items):
+        if isinstance(item, str):
+            out.append(item)
+        else:
+            renderer.cite_group(out, item)
+    return "".join(out)
 
 
 def _render_inline(text: str, ctx: _Ctx) -> str:
@@ -2071,7 +2071,7 @@ def _render_inline(text: str, ctx: _Ctx) -> str:
     pin_lint.warn_export(ctx, text)
     out: list[str] = []
     last = 0
-    prev_ref = ""  # last emitted cite mark, while only it separates us
+    repeat = walker.RepeatGuard()  # last emitted cite mark, while only it separates us
     dropped_at: int | None = None  # out index of the gap before a dropped cite
     plain = ""  # source so far, a display link as its surface text
     for m in _COMBINED.finditer(text):
@@ -2088,15 +2088,8 @@ def _render_inline(text: str, ctx: _Ctx) -> str:
             ctx.dropped_cite = False
         # Consecutive marks resolving to the same cite (``[fi1][fi2]`` both
         # → one paper) collapse to one cite + one link run.
-        if gap:
-            prev_ref = ""
-        if ref.startswith("\\cite"):
-            if ref == prev_ref:
-                ref = ""
-            else:
-                prev_ref = ref
-        elif ref:
-            prev_ref = ""
+        if not repeat.admit(ref, gap=gap, is_cite=ref.startswith("\\cite")):
+            ref = ""
         out.append(ref)
         last = m.end()
     tail = text[last:]

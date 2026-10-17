@@ -1,0 +1,213 @@
+== main.tex ==
+% precis draft export — standard preamble (ADR 0033 Tier-B).
+%
+% Checked into the repo and copied verbatim into every exported draft.
+% The export engine assembles the rest of the document (title, acronym
+% definitions, body, glossary, bibliography) around this block, so keep
+% it package-setup only — no document content here.
+%
+% Compile with latexmk so biber (bibliography) and makeglossaries
+% (glossary) both run:  latexmk main.tex  (lualatex, per latexmkrc).
+\documentclass[11pt]{article}
+
+% Engine is lualatex (UTF-8 native) — no inputenc. fontenc T1 + lmodern
+% still give the Latin Modern look; unmapped Unicode degrades to a
+% missing-glyph warning rather than a fatal error.
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+
+% CJK glyph coverage. Latin Modern has no CJK glyphs, so a Japanese / Chinese
+% / Korean character (a paper title, a concept name) would otherwise render as
+% a missing-glyph rule under lualatex. fontspec + \newfontfamily give us a CJK
+% face and the exporter wraps detected CJK runs in \cjktext{...}
+% (export/latex.py::_wrap_cjk). \cjktext defaults to identity, so a host with
+% no CJK font still compiles (the glyph just stays missing) — it never throws
+% an undefined-control-sequence error. HaranoAjiMincho ships with TeX Live
+% (also the luatexja default); Noto Serif CJK is the common system fallback.
+\usepackage{fontspec}
+\newcommand{\cjktext}[1]{#1}
+\IfFontExistsTF{HaranoAjiMincho}{%
+  \newfontfamily\cjkfont{HaranoAjiMincho}%
+  \renewcommand{\cjktext}[1]{{\cjkfont #1}}%
+}{\IfFontExistsTF{Noto Serif CJK SC}{%
+  \newfontfamily\cjkfont{Noto Serif CJK SC}%
+  \renewcommand{\cjktext}[1]{{\cjkfont #1}}%
+}{\IfFontExistsTF{Noto Serif CJK JP}{%
+  \newfontfamily\cjkfont{Noto Serif CJK JP}%
+  \renewcommand{\cjktext}[1]{{\cjkfont #1}}%
+}{}}}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}      % >{...}p{} column types for wrapping table cells
+\usepackage{longtable}  % page-breaking data tables (export/latex.py)
+\usepackage{pdfpages}   % \includepdf appendix for the referenced-sources bundle (include_sources)
+\usepackage{listings}
+\usepackage{csquotes}
+
+% Bibliography — biblatex + biber. The export engine writes refs.bib
+% from the cited paper refs (DOI included when known).
+\usepackage[backend=biber,style=numeric-comp,sorting=none]{biblatex}
+
+% Hyperlinks + clever cross-references (intra-draft ¶ refs become
+% \cref{chunk:<handle>} pointing at \label{chunk:<handle>}).
+\usepackage[hidelinks]{hyperref}
+\usepackage{cleveref}
+
+% Numbered display equations (export/latex.py's standalone-equation
+% detection wraps a display-math-only paragraph in \begin{equation}, label
+% inside). Cleveref infers a label's TYPE from the counter active at
+% \label-time, so a bare [dc<id>] cross-ref to that chunk auto-resolves
+% through the existing \cref{chunk:<handle>} mechanism to "Eq. (N)" — no
+% separate \eqref wiring needed.
+\crefname{equation}{Eq.}{Eqs.}
+\Crefname{equation}{Equation}{Equations}
+
+% Author byline + affiliations (export/latex.py build_author_block).
+% authblk turns multiple \author + \affil lines into a numbered
+% author↔affiliation block under \maketitle; a single shared
+% affiliation renders unnumbered.
+\usepackage{authblk}
+\renewcommand\Affilfont{\small\itshape}
+% ORCID iD after an author name: \orcidlink{0000-0002-1825-0097} renders a
+% small "iD" superscript hyperlinked to the orcid.org record. Defined here
+% (not via the orcidlink package, which the render image may lack) so the
+% byline compiles on every TeX Live; \providecommand yields to a real
+% orcidlink.sty if a template loads one.
+\providecommand{\orcidlink}[1]{\href{https://orcid.org/#1}{\textsuperscript{\scriptsize\textsf{iD}}}}
+
+% Glossary / acronyms. `acronym` makes the acronym list; the long-short
+% style means first use expands to the full term and every later use is
+% the abbreviation. The page-number "where it occurs" list is on by
+% default (we do NOT pass nonumberlist), per the export design.
+\usepackage[acronym,toc]{glossaries-extra}
+\setabbreviationstyle[acronym]{long-short}
+% A first use inside parentheses brackets the short, "(long [SHORT], ...)",
+% instead of nesting parentheses: \glsbrk{\gls}{key} (or \Gls, \glspl, ...).
+\newcommand*{\glsbrk}[2]{{\renewcommand*{\glsxtrparen}[1]{{[}##1{]}}#1{#2}}}
+
+% Screen-only abbreviation tooltips (pdfcomment, after hyperref/glossaries).
+% First use of an acronym still expands inline; every LATER use is the bare
+% short wrapped in a non-printing PDF tooltip that reveals the full term on
+% hover — mirroring the web reader's instant popup without touching the
+% printed page. Only later uses are wrapped: a \pdftooltip box can't break
+% across a line and the first-use expansion is multi-word. hyper=false avoids
+% overlapping the glossary link rectangle with the tooltip annotation.
+% Loaded defensively: if pdfcomment is absent the macros degrade to a plain
+% \gls / \glspl, so a draft still compiles (just without the hover). The
+% \newcommand definitions live under a primitive \ifdefined conditional
+% (branches delimited by \else/\fi, NOT absorbed as a macro argument) — a
+% \newcommand nested inside \IfFileExists{}{...}{...} trips "Illegal
+% parameter number" because LaTeX copies the branch through \def\reserved@a,
+% where the bare #1 is no longer a legal parameter.
+\IfFileExists{pdfcomment.sty}{\usepackage{pdfcomment}}{}
+\ifdefined\pdftooltip
+  \newcommand{\glstip}[1]{\pdftooltip{\gls[hyper=false]{#1}}{\glsentrylong{#1}}}
+  \newcommand{\glspltip}[1]{\pdftooltip{\glspl[hyper=false]{#1}}{\glsentrylong{#1}}}
+\else
+  \newcommand{\glstip}[1]{\gls{#1}}
+  \newcommand{\glspltip}[1]{\glspl{#1}}
+\fi
+
+% Code/listing blocks (chunk_kind = listing/code).
+\lstset{basicstyle=\ttfamily\small,breaklines=true,frame=single,
+        columns=fullflexible,keepspaces=true}
+
+% Aside / box chunks render inside this lightweight framed environment.
+\newenvironment{precisaside}{%
+  \par\medskip\noindent\begin{quote}\itshape%
+}{%
+  \end{quote}\medskip%
+}
+
+\usepackage{embedfile}
+
+\makeglossaries
+
+% ── acronyms (auto-generated from defined terms) ──
+\newacronym{fmof}{FMOF}{functionalized MOF}
+\newacronym{mof}{MOF}{metal-organic framework}
+
+\title{Golden Draft}
+\author{Ada Lovelace}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\phantomsection\label{chunk:dc1}%
+\section{Introduction}\label{chunk:dc2}
+
+A \gls{mof} hosts a \gls{fmof}; later \glstip{mof} and \glstip{fmof} uses. Plain {\textquotedblleft}Amine uptake in MOFs{\textquotedblright} and run {\textquotedblleft}Amine uptake in MOFs{\textquotedblright}{\textquotedblleft}Arxiv-only preprint{\textquotedblright}{\textquotedblleft}No identifier paper{\textquotedblright} end.\label{chunk:dc3}
+
+Collapse {\textquotedblleft}Amine uptake in MOFs{\textquotedblright} {\textquotedblleft}Amine uptake in MOFs{\textquotedblright} and {\textquotedblleft}Amine uptake in MOFs{\textquotedblright}{\textquotedblleft}Amine uptake in MOFs{\textquotedblright} then {\textquotedblleft}Arxiv-only preprint{\textquotedblright}{\textquotedblleft}Amine uptake in MOFs{\textquotedblright}{\textquotedblleft}Arxiv-only preprint{\textquotedblright} stop.\label{chunk:dc4}
+
+Handles {\textquotedblleft}Amine uptake in MOFs{\textquotedblright}{\textquotedblleft}Arxiv-only preprint{\textquotedblright}, SI {\textquotedblleft}Parent paper{\textquotedblright} and {\textquotedblleft}Supplement{\textquotedblright}, alias {\textquotedblleft}Parent paper{\textquotedblright}, then {\textquotedblleft}Parent paper{\textquotedblright}{\textquotedblleft}Supplement{\textquotedblright}{\textquotedblleft}Supplement{\textquotedblright}{\textquotedblleft}No identifier paper{\textquotedblright}.\label{chunk:dc5}
+
+\section{Claims about \glsfmtshort{fmof} {\textquotedblleft}No identifier paper{\textquotedblright}}\label{chunk:dc6}\glsadd{fmof}
+
+Finding {\textquotedblleft}Amine uptake in MOFs{\textquotedblright}\textsuperscript{?}[unverified: source pending] hub {\textquotedblleft}Arxiv-only preprint{\textquotedblright}{\textquotedblleft}No identifier paper{\textquotedblright}\textsuperscript{?}[unverified: source pending] mixed {\textquotedblleft}No identifier paper{\textquotedblright}{\textquotedblleft}Supplement{\textquotedblright}\textsuperscript{?}[unverified: source pending] repeat {\textquotedblleft}Amine uptake in MOFs{\textquotedblright}\textsuperscript{?}[unverified: source pending]{\textquotedblleft}Amine uptake in MOFs{\textquotedblright}\textsuperscript{?}[unverified: source pending]; dropped \textsuperscript{?}[unverified: source pending].\label{chunk:dc7}
+
+Prose {\textquotedblleft}No identifier paper{\textquotedblright} and doi:10.1/x and st12 and nobody99 and patent Patent No. US123. See \cref{chunk:dc2} and \cref{chunk:dc11}.\label{chunk:dc8}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\linewidth,height=0.42\textheight,keepaspectratio]{pics/dc9.png}
+\caption{A \glstip{mof} figure {\textquotedblleft}Arxiv-only preprint{\textquotedblright}.}\label{chunk:dc9}
+\end{figure}
+
+\begin{equation}
+\label{chunk:dc11}
+E = mc^2
+\end{equation}
+
+\phantomsection\label{chunk:dc12}%
+\phantomsection\label{chunk:dc13}%
+
+
+\section*{Unverified claims}
+
+\par\noindent Claim 7 (unverified) {\textemdash} source pending
+\par\noindent Claim 8 (unverified) {\textemdash} source pending
+\par\noindent Claim 9 (unverified) {\textemdash} source pending
+\par\noindent Claim 10 (unverified) {\textemdash} source pending
+
+\clearpage
+\section*{Data package}
+
+A machine-readable copy of this data is embedded in this PDF as \texttt{data-package.json} (extract with \texttt{pdfdetach}) and shipped alongside this export.
+
+\embedfile[mimetype=application/json,desc={Data package (JSON)}]{data-package.json}
+
+\subsection*{A MOF figure [{\textsection}jones21].}
+{\fontsize{7}{8.4}\selectfont
+\begin{verbatim}
+source: pathway pw3 Golden pathway
+generated_at: 2026-10-01T00:00:00Z
+autocatpath_version: -
+precis: 1.0 abc123
+T: 298.15
+mlip.backend: mace
+
+step  dG  
+A     0.12
+B     -0.4
+\end{verbatim}
+}
+\printglossaries
+
+\appendix
+\section{Published claim artifacts}
+
+\begin{itemize}
+\item ``MOFs capture CO2.''; \url{https://w3id.org/np/RAgolden} --- published 2026-01-02
+\end{itemize}
+\end{document}
+== refs.bib ==
+== cited ==
+
+== warnings ==
+cite [fi10]: no citable source (conjunction hub without sourced conjuncts)

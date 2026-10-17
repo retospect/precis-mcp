@@ -37,7 +37,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from precis.export import _abbrev, progress
+from precis.export import _abbrev, progress, walker
 from precis.export._back_matter import ordered_blocks
 from precis.export._cite_ids import merged_cite_numbers, paper_identifier
 from precis.export._data_package import (
@@ -91,7 +91,6 @@ from precis.export.latex import (
     preprocess_draft_inline,
 )
 from precis.nanopub import pin_lint
-from precis.store.si_links import SI_PDF_ROLE, cite_target_for
 from precis.utils import handle_registry
 from precis.utils.authors import build_byline
 from precis.utils.draft_markup import DRAFT_CITE_PATTERN
@@ -195,15 +194,12 @@ class _Ctx:
     #: Rendering a heading: abbreviations print bare and are not defined
     #: there (gr491599 M2, same as the PDF).
     in_heading: bool = False
-    last_cite: str | None = None  # paper of the immediately-preceding mark
-    last_cite_si: bool = False  # ...and whether that mark carried "(SI)"
-    #: Buffered run of *directly adjacent* citations (``(slug, n,
-    #: chunk_id)``, ``n`` already registered) pending one merged mark /
-    #: one EndNote field — the docx counterpart of
-    #: ``export/latex.py::_merge_adjacent_cites``. A ref match with an
-    #: EMPTY gap before it extends the run; anything else flushes it
+    #: Buffered run of *directly adjacent* citations pending one merged mark /
+    #: one EndNote field, plus the same-paper collapse state — the walker's
+    #: docx grouping (:class:`walker.CiteRun`). A ref match with an EMPTY gap
+    #: before it extends the run; anything else flushes it
     #: (:func:`_flush_cites`).
-    cite_run: list[tuple[str, int, int | None]] = field(default_factory=list)
+    cite_run: walker.CiteRun = field(default_factory=walker.CiteRun)
     #: Set by :func:`_finding_cite_keys_pinned` when a finding cite had no
     #: citable source; :func:`_render_inline` reads and clears it to pull the
     #: space before the dropped mark off the preceding run (mirrors
@@ -300,9 +296,7 @@ class _Ctx:
 
     def cite_number(self, slug: str) -> int:
         """1-based reference number for a slug (stable insertion order)."""
-        if slug not in self.cited:
-            self.cited.append(slug)
-        return self.cited.index(slug) + 1
+        return walker.register(self.cited, slug)
 
 
 #: Chunk kinds the main render loop dispatches on their own branch — a
@@ -869,7 +863,7 @@ def _render_inline(text: str, ctx: _Ctx, paragraph: Any) -> None:
     # A new chunk/caption/cell never continues the previous one's cite run:
     # without this reset, a paragraph opening with the same paper the last
     # one closed on lost its mark entirely.
-    ctx.last_cite = None
+    ctx.cite_run.interrupt()
     last = 0
     dropped = False  # the previous reference was a cite dropped for no source
     for m in _COMBINED.finditer(text):
@@ -952,12 +946,10 @@ def _render_gap(text: str, ctx: _Ctx, paragraph: Any) -> None:
     if not text:
         return
     # Any gap content ends a run of adjacent citations (mirrors LaTeX's
-    # ``_ADJ_CITES``, which only merges separatorless ``\cite{…}``).
-    _flush_cites(ctx, paragraph)
+    # ``walker.merge_adjacent``, which only merges separatorless marks).
     # Real prose between two citations breaks the consecutive-cite run;
     # whitespace-only (``[§a~3] [§a~9]``) does not, so those still collapse.
-    if text.strip():
-        ctx.last_cite = None
+    _emit_cites(ctx, paragraph, ctx.cite_run.gap(text))
     last = 0
     for m in _SPAN.finditer(text):
         if m.start() > last:
@@ -1149,7 +1141,7 @@ def _render_reference(m: re.Match[str], ctx: _Ctx, paragraph: Any) -> None:
         elif kind not in LINKIFY_KINDS and not handle_registry.is_known_kind(kind):
             # ``doi:10.1002/…`` etc. is prose, not a precis kind — keep it
             # (gr493193); a real kind (think:/plan:/…) stays dropped.
-            ctx.last_cite = None
+            ctx.cite_run.interrupt()
             _flush_cites(ctx, paragraph)
             paragraph.add_run(m.group(0))
         return  # bare memory:/think:/… — not citeable
@@ -1174,21 +1166,7 @@ def _handle_cite_key(tgt: str, ctx: _Ctx) -> tuple[str, int | None] | None:
 def _handle_cite_si(tgt: str, ctx: _Ctx) -> tuple[str, int | None, bool] | None:
     """:func:`_handle_cite_key` plus whether the handle sits in a
     supplementary-information record (the key is then its parent's)."""
-    if ctx.store is None:
-        return None
-    try:
-        resolved = ctx.store.resolve_handle(tgt)
-    except Exception:  # pragma: no cover — store hiccup
-        return None
-    if resolved is None or not resolved.public_id:
-        return None
-    # An SI ref cites as its parent paper (si-attachments ruling 3).
-    parent = getattr(resolved, "cite_public_id", None)
-    return (
-        parent or resolved.public_id,
-        resolved.chunk_id,
-        bool(parent and parent != resolved.public_id),
-    )
+    return walker.resolve_cite_handle(ctx.store, tgt)
 
 
 def _finding_cite_keys_pinned(tgt: str, pin: str | None, ctx: _Ctx) -> list[str]:
@@ -1334,17 +1312,17 @@ def _render_target(
             # not a bibliography entry, so write the authored display text
             # (or the literal handle) as plain text instead of dropping the
             # citation (mirrors export/latex.py's ``_render_target``).
-            ctx.last_cite = None
+            ctx.cite_run.interrupt()
             _flush_cites(ctx, paragraph)
             paragraph.add_run(surface or tgt)
             return
         # draft cross-ref / other record handle → not a citation.
-        ctx.last_cite = None
+        ctx.cite_run.interrupt()
         if not is_provenance_only(kind, is_chunk):
             _render_xref(tgt, surface, ctx, paragraph)
         return
     # Any non-citation content breaks a run of consecutive citations.
-    ctx.last_cite = None
+    ctx.cite_run.interrupt()
     if tgt.startswith("¶"):
         handle = tgt[1:]
         dc = ctx.legacy_to_dc.get(handle)
@@ -1431,7 +1409,7 @@ def _inline_source_cite(
     marker / no References section). A display-link's authored text wins
     (WYSIWYG); otherwise a patent formats to its citation string and a paper
     to a light ``(Author, Year)``. See ``docs/backlog/patent-authoring-loop.md``."""
-    ctx.last_cite = None
+    ctx.cite_run.interrupt()
     _flush_cites(ctx, paragraph)
     if surface:
         paragraph.add_run(surface)
@@ -1510,30 +1488,15 @@ def _cite_link_group(slug: str, ctx: _Ctx, paragraph: Any) -> None:
 def _resolve_si_slug(slug: str, ctx: _Ctx) -> tuple[str, bool]:
     """A bare cite slug -> ``(slug_to_cite, is_si)``; mirrors
     :func:`precis.export.latex._resolve_si_slug` (an SI record cites as its
-    parent; with no live parent it keeps its own slug and warns)."""
-    if ctx.store is None:
-        return slug, False
-    if slug in ctx._si_slug_cache:
-        return ctx._si_slug_cache[slug]
-    result = (slug, False)
-    get_ref = getattr(ctx.store, "get_ref", None)
-    ref = get_ref(kind="paper", id=slug) if callable(get_ref) else None
-    # Canonical key: a ref can hold several cite_key aliases; number and list
-    # it under the one slug the store returns, so aliases merge into one entry.
-    own = getattr(ref, "slug", None)
-    if isinstance(own, str) and own:
-        result = (own, False)
-    if ref is not None and getattr(ref, "pdf_role", None) == SI_PDF_ROLE:
-        target, is_si = cite_target_for(ctx.store, ref, ctx._cite_target_cache)
-        if is_si and target.slug:
-            result = (str(target.slug), True)
-        else:
-            ctx.warnings.append(
-                f"cite {slug!r}: supplementary record has no live parent paper"
-                " - cited under its own entry"
-            )
-    ctx._si_slug_cache[slug] = result
-    return result
+    parent; with no live parent it keeps its own slug and warns), via the
+    shared :func:`walker.resolve_si_slug`."""
+    return walker.resolve_si_slug(
+        slug,
+        ctx.store,
+        si_cache=ctx._si_slug_cache,
+        target_cache=ctx._cite_target_cache,
+        warnings=ctx.warnings,
+    )
 
 
 def _cite(
@@ -1562,7 +1525,7 @@ def _cite(
     slug = slug.split("~", 1)[0]  # the paper, not the cited chunk
     if ctx.patent_mode:
         # A patent specification has no References section — cite in-text.
-        ctx.last_cite = None
+        ctx.cite_run.interrupt()
         _flush_cites(ctx, paragraph)
         ref = (
             ctx.store.get_ref(kind="paper", id=slug) if ctx.store is not None else None
@@ -1574,52 +1537,56 @@ def _cite(
     # A supplementary-information record cites as its parent paper; the
     # marker gains " (SI)" (an EndNote field carries it as <Suffix>).
     slug, resolved_si = _resolve_si_slug(slug, ctx)
-    si = si or resolved_si
     n = ctx.cite_number(slug)  # registers the paper (idempotent)
-    if ctx.last_cite == slug and ctx.last_cite_si == si:
-        return  # consecutive cite to the same paper — one mark for the run
-    ctx.last_cite = slug
-    ctx.last_cite_si = si
-    if si:
-        # An "(SI)" postnote cite never joins a merge run — mirrors LaTeX,
-        # where ``\cite[SI]{…}`` is excluded from ``_ADJ_CITES``: flush the
-        # pending run, then print its own mark.
-        _flush_cites(ctx, paragraph)
-        if ctx.endnote:
-            _cite_endnote([(slug, n, chunk_id)], ctx, paragraph, suffix=" (SI)")
-            return
-        paragraph.add_run(f"[{n}]").font.superscript = True
-        paragraph.add_run(" (SI)").font.superscript = True
-        _cite_link_group(slug, ctx, paragraph)
-        return
-    ctx.cite_run.append((slug, n, chunk_id))
+    # Consecutive cites to the same paper give one mark for the run; an
+    # "(SI)" postnote cite never joins a merge run (mirrors LaTeX, where
+    # ``\cite[SI]{…}`` is never merged): it flushes the pending run, then
+    # prints its own mark (:class:`walker.CiteRun`).
+    _emit_cites(
+        ctx,
+        paragraph,
+        *ctx.cite_run.add(slug, n, si=si or resolved_si, chunk_id=chunk_id),
+    )
 
 
 def _flush_cites(ctx: _Ctx, paragraph: Any) -> None:
     """Emit the buffered adjacent-citation run, then clear it — one merged
     superscript mark + one link group in plain mode, or ONE ``ADDIN
     EN.CITE`` field carrying several ``<Cite>`` elements in EndNote mode
-    (both mirror ``export/latex.py::_merge_adjacent_cites``: directly
-    adjacent cites collapse, a doubled slug dedupes, and a merged run
-    carries the links of every paper in it). No-op on an empty run."""
-    run = ctx.cite_run
-    ctx.cite_run = []
-    if not run:
-        return
-    deduped: list[tuple[str, int, int | None]] = []
-    seen: set[str] = set()
-    for item in run:
-        if item[0] not in seen:
-            seen.add(item[0])
-            deduped.append(item)
-    if ctx.endnote:
-        _cite_endnote(deduped, ctx, paragraph)
-        return
-    # biblatex sorts the keys of a merged cite before printing it.
-    nums = sorted(n for _slug, n, _cid in deduped)
-    paragraph.add_run(merged_cite_numbers(nums)).font.superscript = True
-    for slug, _n, _cid in deduped:
-        _cite_link_group(slug, ctx, paragraph)
+    (both mirror LaTeX's ``walker.merge_adjacent``: directly adjacent cites
+    collapse, a doubled slug dedupes, and a merged run carries the links of
+    every paper in it). No-op on an empty run."""
+    _emit_cites(ctx, paragraph, ctx.cite_run.flush())
+
+
+def _emit_cites(ctx: _Ctx, paragraph: Any, *groups: walker.CiteGroup | None) -> None:
+    renderer = DocxRenderer(ctx)
+    for group in groups:
+        if group is not None:
+            renderer.cite_group(paragraph, group)
+
+
+class DocxRenderer:
+    """The docx :class:`walker.Renderer`: formats resolved values as
+    python-docx runs (or EndNote fields) into a paragraph sink."""
+
+    def __init__(self, ctx: _Ctx) -> None:
+        self.ctx = ctx
+
+    def cite_group(self, sink: Any, group: walker.CiteGroup) -> None:
+        """One superscript mark (``[n]``, ``[1, 2]``, ``[1–3]``; an SI mark
+        ``[n] (SI)``) plus each paper's link runs, or ONE EndNote field."""
+        ctx, si = self.ctx, any(group.si)
+        if ctx.endnote:
+            entries = list(zip(group.keys, group.numbers, group.chunk_ids, strict=True))
+            _cite_endnote(entries, ctx, sink, suffix=" (SI)" if si else "")
+            return
+        # biblatex sorts the keys of a merged cite before printing it.
+        sink.add_run(merged_cite_numbers(sorted(group.numbers))).font.superscript = True
+        if si:
+            sink.add_run(" (SI)").font.superscript = True
+        for slug in group.keys:
+            _cite_link_group(slug, ctx, sink)
 
 
 def _resolve_source(store: RefLookupStore, slug: str) -> dict[str, Any] | None:

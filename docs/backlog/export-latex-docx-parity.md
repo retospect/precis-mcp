@@ -6,7 +6,9 @@ prio: normal
 ---
 
 APPROVED by Reto 2026-10-17 (spec stands as written, Stage B included).
-Building in `g-export-parity`, one landing per slice. Slices landed: none.
+Building in `g-export-parity`, one landing per slice. Slices landed: 1
+(cites, plus the golden baseline and the protocol test). Next: 2
+(abbreviations; `g-abbrev-parity` is on main as 15cbd4c5b).
 
 # LaTeX and DOCX export parity
 
@@ -139,17 +141,36 @@ Decisions:
 3. **Slice order (same ruling):** cites, abbreviations, xrefs, back matter,
    headings/figures/equations/tables; abbreviations after `g-abbrev-parity`,
    absorbing its expander.
+4. **Safety net (coordinator, Reto seen, 2026-10-17):** dr173020 is dropped
+   from the per-commit net (no prod data from a builder tree, and no prod
+   content in this public repo). The checked-in synthetic golden draft
+   (`tests/test_export_golden.py`, fake store, baseline captured from the
+   unmodified exporters) covers SI resolution, aliases, adjacent run merge
+   with dedupe, same-paper collapse, patent / reMarkable footnote / EndNote
+   modes, nested abbreviation long forms and every `BACK_MATTER_ORDER`
+   section. The coordinator compares dr173020 through the prod export job
+   before and after the release. The fixture questions are settled with it: fake
+   store; c14n of the per-draft docx parts (relationship ids kept), other
+   parts by hash, `docProps/core.xml` and the date line excluded.
+5. **Slice 1 shape (same ruling):** the chunk loops stay in the backends
+   until slice 5; `latex.py::_merge_adjacent_cites` moved in slice 1 (the
+   walker groups, the renderer formats). Its name and string signature
+   stay because the unmodified tests call it. A cite number is the key's
+   first use in reading order and nothing prints one earlier, so cites need
+   no separate pre-pass; the forward-reference pre-pass arrives with xrefs.
+   The backends still group differently (LaTeX: merge after the paragraph,
+   repeat collapse only with no gap; docx: in-walk run, collapse across
+   whitespace). Both rules live side by side in `walker.py`; unifying them
+   changes output and needs its own commit.
 
-Still open (none blocks starting slice 1):
+Still open:
 
-- The golden fixture draft: built through `DraftHandler` (needs the DB fixture,
-  as `tests/test_export_docx.py` does) or from a fake store (as
-  `tests/test_export_back_matter.py` does)? Proposal: whichever the shared
-  render entry points accept; the baseline files are captured from it.
-- How the docx comparison canonicalizes XML (python-docx part blobs through
-  `lxml` c14n is the proposal; relationship ids and timestamps in
-  `docProps/core.xml` are excluded).
+- `scripts/test` does not forward `PRECIS_UPDATE_EXPORT_GOLDEN` yet (a
+  harness change forces the full gate, so it was split off slice 1); add it
+  to the `ARTIFACT_ENV` list in a later slice that already takes a full gate.
+
 - Modes the walker must carry: patent (`doc_type='patent'`, in-text prior art),
-  `footnote_refs` (reMarkable) and `citations='endnote'`. Proposal: all three
-  are walker flags the renderer receives, with the fixture covering plain and
-  patent, and the endnote and footnote modes covered by the existing tests.
+  `footnote_refs` (reMarkable) and `citations='endnote'`. After slice 1 the
+  grouping and numbering are walker decisions for every mode; the mode
+  dispatch (which branch a cite takes) is still a ctx flag each backend reads,
+  and moves with the chunk loop in slice 5. The golden draft covers all three.
