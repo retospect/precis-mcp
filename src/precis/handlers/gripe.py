@@ -19,7 +19,7 @@ Surface (see ``precis-gripe-help``):
   comment (same middle cut)
   (older ones as one-liners; per-kind policy in
   :mod:`_comment_timeline`) alongside header / tags.
-  ``view='comments'`` returns the full body + the full timeline;
+  ``view='comments'`` (alias ``'full'``) returns the full body + the full timeline;
   ``log`` stays audit events. ``delete(id=N, args={'comment': K})`` hides one.
 - ``search`` queries chunks (body + comments) and groups hits by
   gripe, so a search term that only appears in a comment surfaces
@@ -525,7 +525,9 @@ class GripeHandler(NumericRefHandler):
             # Batch form: the base class renders it (summary-shaped) or
             # refuses the view= combination.
             return super().get(id=id, view=view, q=q, **_kw)
-        if view == "comments":
+        # 'full' is the name agents reach for (surface-review 2026-10-16:
+        # 6 errors / 3 sessions); it is the complete read, so alias it.
+        if view in ("comments", "full"):
             ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(
                 body=self._render_timeline(ref, self.store.tags_for(ref.id), full=True)
@@ -535,7 +537,11 @@ class GripeHandler(NumericRefHandler):
             raise Unsupported(
                 f"unknown view {view!r} for kind='gripe'",
                 options=views,
-                next="get(kind='gripe', id=<id>, view='comments') for the full timeline",
+                next=(
+                    "get(kind='gripe', id=<id>, view='comments') — full body + every "
+                    "comment; the plain get already shows tags, body head and the "
+                    "newest comment"
+                ),
             )
         try:
             return super().get(id=id, view=view, q=q, **_kw)

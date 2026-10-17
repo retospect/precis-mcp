@@ -166,6 +166,37 @@ the log whether it is still the right call to leave it off.
 Newest first. One line per pass: date, window, corpus size, headline, what
 shipped, what was filed.
 
+- **2026-10-16** — Ad-hoc 6 h pass (08:31–14:31Z), first with `--devin`.
+  37,364 events / 252 sessions (local 24,473 over 160 files · Devin 6,843
+  over 20 sessions · ledger 2,486 · llmlog 3,562), 305 candidates, 54 cards +
+  36 random. Headline: **58% of the ledger was one bot probe** — the asa
+  Discord + Slack bots' 30 s `get(kind='gripe', id='/open')` liveness ping
+  (1,434 rows, the entire `render_obesity get|gripe` top row); the miner now
+  drops it (ledger 2,486 → 1,058), other ledger consumers still count it
+  (gr492453). Real friction, none of it errors: gripe reading is N singleton
+  gets, often doubled plain-then-`view='comments'` (197 reformulations / 12
+  sessions, 6 of 36 random cards; batch get refuses `comments`, gr492451);
+  `view='meta'` is the first move for raw meta and is refused on
+  job/pathway/quest, then agents psql `refs` (gr492452; the pathway kind's
+  67% error rate is mostly this). Devin sampled windows were shell-first —
+  zero precis verbs in both random Devin cards. Shipped: gripe
+  `view='full'` aliases `comments` and the unknown-view hint says what the
+  plain get already shows (paper stub mints retried 5× with `tags=`;
+  b4f8f4590 made paper put accept them, landed alongside);
+  `precis-job-compute-help` marks `sandbox_run` `target_node`/`resources`
+  required with a minimal example (2 BadInput retries after reading it);
+  `precis-se-help` states `view='block'` needs `args={'name':…}`. Evidence
+  appended to `mcp-surface-economy.md` (#2 counts re-confirmed; schema.md
+  pointer present but unreachable for checkout-less cluster agents; new
+  job-by-subject shape). Not filed, n=2 each: prod web UI URL absent from
+  skills (only in repo-dev memory); ad-hoc SQL column guesses. Detector
+  false positives worth fixing in the miner: `skill_taught_wrong` counts a
+  legitimate NotFound and attributes to whichever skill was read last;
+  `session_digest` drops assistant text; `exec_class zero` counts
+  empty-capture rows. `PRECIS_FRICTION_REFLECT` stays off — this pass again
+  inferred soft friction (the double fetch, the meta detour) that a
+  self-report would have named directly, but the dedup lane is still
+  unbuilt.
 - **2026-09-29** — First pass, and the one that built the toolkit. Window 5d,
   390,590 events (local 64,767 over 305 files · ledger 34,625 · llmlog
   289,119 · jobs 2,079), 235 candidates, 45 cards + 12 random. Headline: the

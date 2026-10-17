@@ -565,8 +565,21 @@ def _sql_ts_literal(since: datetime) -> str:
     return since.astimezone(UTC).isoformat(sep=" ")
 
 
+#: The asa bots' liveness probe (``asa_bot.precis_client.ping``: a
+#: ``get(kind='gripe', id='/open')`` every 30 s per bot) is not agent use.
+#: Left in, it was 1,434 of 2,486 ledger rows in a 6 h window and the whole
+#: ``render_obesity get|gripe`` signal (surface-review 2026-10-16).
+_LEDGER_EXCLUDE_PROBES = (
+    "NOT (coalesce(client, '') LIKE 'asa-bot/%' AND verb = 'get' "
+    "AND kind = 'gripe' AND arg_sample->>'id' = '/open')"
+)
+
+
 def _ledger_sql(since: datetime | None) -> str:
-    where = f" WHERE ts >= '{_sql_ts_literal(since)}'" if since else ""
+    conds = [_LEDGER_EXCLUDE_PROBES]
+    if since:
+        conds.insert(0, f"ts >= '{_sql_ts_literal(since)}'")
+    where = " WHERE " + " AND ".join(conds)
     return f"SELECT {', '.join(_LEDGER_COLUMNS)} FROM tool_calls{where} ORDER BY ts;"
 
 

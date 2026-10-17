@@ -123,6 +123,7 @@ uid, including the block half of `'block.port'` (`connect a='#41.bore'`);
 an ambiguous label's error lists every matching uid. The label is what
 gets stored either way. (A block name may not be `'uid:…'` or contain `'#'`, `'/'`, `'@'`, `'['` or `']'` —
 the last four delimit region selectors, `precis-se-regions-help`.)
+Read one block with `get(kind='se', id='<design>', view='block', args={'name': '<label or #uid>'})` — `name` is required.
 
 ## Ops — blocks and ports
 

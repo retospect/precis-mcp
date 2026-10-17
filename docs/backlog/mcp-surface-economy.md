@@ -51,6 +51,24 @@ cohort*, which is what every batch pass does.
 > slice → `nanopub-mcp-surface-gaps.md` §0) with corpus-audit GROUP BYs the
 > rest. `mcp-tool-ledger.md` will make future detours continuously visible.
 
+### Re-measured 2026-10-16 — surface-review pass #2 (6 h window)
+
+Local + Devin + prod ledger, 08:31–14:31Z, ledger figures after dropping the
+asa bots' liveness probe. **#2 counts/facets: still confirmed** — `refs` was
+the top psql detour target (121 queries / 20 sessions, mostly job/pathway
+`meta->>'status'`, `lease_host`, `failure_class`); `worker_logs` 23 queries /
+6 sessions, the heaviest bytes per call, wanting `DISTINCT pass` and
+per-host counts that the read-only worker_logs view lacks. **Schema
+discoverability: fix present, not effective** — `information_schema` 73
+queries / 15 sessions; `docs/reference/schema.md` is fresh and
+`precis-status-help` points at it, but cluster agents have no checkout, so a
+repo file is unreachable for them; it needs an MCP-served form. **New shape,
+job-by-subject:** 3 of 36 random-arm cards found a quest's or pcb's jobs by
+free-text `search(kind='job', q='quest 164903')` plus re-fetches; a `jobs`
+view on quest/pcb/route (or a `ref=` filter on job search) would collapse
+it. Raw-meta reads (`view='meta'`) and the gripe batch read were filed as
+gripes.
+
 ### Measured against a real window — surface-review pass #1, 2026-09-29
 
 First `/surface-review` pass (5 days: 390,590 events across local transcripts,
