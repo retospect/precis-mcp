@@ -232,7 +232,11 @@ class YouTubeHandler(CacheBackedHandler):
                 next="verify the URL; the video may be private, deleted, or region-blocked",
             ) from exc
         except Exception as exc:
-            raise Upstream(f"YouTube API error: {exc}") from exc
+            raise Upstream(
+                f"YouTube API error: {exc}",
+                next=f"retry the same call; if it persists, inspect "
+                f"get(kind='youtube', id='{video_id}', view='languages')",
+            ) from exc
 
         text = "\n".join(s.text for s in snippets).strip()
         # Best-effort scrape of the watch page for channel / title /
@@ -319,7 +323,10 @@ def _list_languages(video_id: str) -> Response:
             url=_YT_HOST_URL,
         )
     except Exception as exc:
-        raise Upstream(f"YouTube API error: {exc}") from exc
+        raise Upstream(
+            f"YouTube API error: {exc}",
+            next="retry the same call shortly; YouTube may be throttling",
+        ) from exc
 
     lines = [f"Available transcripts for {video_id}:"]
     for t in transcripts:

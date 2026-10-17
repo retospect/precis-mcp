@@ -546,3 +546,18 @@ class TestStatusAndRubricViews:
         body = h.get(id=qid, view="rubric").body
         assert "faradaic_efficiency max" in body
         assert "span_at_Uopt min (optional)" in body
+
+
+def test_operating_conditions_refusal_names_the_meta_shape() -> None:
+    """M3 burn-down (gr494831): meta.operating_conditions errors carry next=."""
+    import pytest
+
+    from precis.errors import BadInput
+    from precis.handlers.quest import _check_operating_conditions
+
+    with pytest.raises(BadInput, match="finite numbers") as exc:
+        _check_operating_conditions(
+            {"operating_conditions": {"U_RHE": "high", "pH": 7}}
+        )
+    assert exc.value.next is not None
+    assert "operating_conditions" in str(exc.value.next)

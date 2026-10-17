@@ -683,3 +683,14 @@ def test_logs_job_never_claimed_raises(jobs: JobHandler, store: Store) -> None:
     ref = store.insert_ref(kind="job", slug=None, title="queued", meta={})
     with pytest.raises(BadInput, match="never claimed"):
         jobs.get(id=f"/logs?job={ref.id}")
+
+
+def test_validate_params_integer_names_the_retry() -> None:
+    """M3 burn-down (gr494831): a params type miss names the corrected shape."""
+    from precis.handlers.job import _validate_params
+
+    schema = {"properties": {"hold_hours": {"type": "integer"}}, "required": []}
+    with pytest.raises(BadInput, match="must be an integer") as exc:
+        _validate_params({"hold_hours": "3"}, schema, job_type="demo")
+    assert exc.value.next is not None
+    assert "params={'hold_hours': 1}" in str(exc.value.next)

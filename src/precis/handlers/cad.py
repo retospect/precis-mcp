@@ -271,7 +271,10 @@ def _vec(args: dict[str, Any], key: str, *, lengths: bool = True) -> Vec3:
         try:
             return vec3(float(raw[0]), float(raw[1]), float(raw[2]))
         except (TypeError, ValueError):
-            raise BadInput(f"args.{key} must be three numbers") from None
+            raise BadInput(
+                f"args.{key} must be three numbers",
+                next=f"get(kind='cad', id='<slug>', view='ray', args={{'{key}': [0, 0, 1]}})",
+            ) from None
     return vec3(
         *(
             parse_quantity(raw[i], "length", arg_name=f"args.{key}.{_AXES[i]}")
@@ -469,7 +472,11 @@ class CadHandler(Handler):
         try:
             spec = parse_source(text)
         except SceneError as exc:
-            raise BadInput(f"cad source error: {exc}") from exc
+            raise BadInput(
+                f"cad source error: {exc}",
+                next="fix the line the parser named, then retry the same call; "
+                "grammar: get(kind='skill', id='precis-cad-help')",
+            ) from exc
         spec.field_loader = self.store.field_loader()
         nodes = []
         for node in spec.nodes:
@@ -536,7 +543,11 @@ class CadHandler(Handler):
         try:
             return expand_instances(spec, self._resolve, state)
         except SceneError as exc:
-            raise BadInput(f"cad design error: {exc}") from exc
+            raise BadInput(
+                f"cad design error: {exc}",
+                next="fix the node the error names, then retry the same call; "
+                "grammar: get(kind='skill', id='precis-cad-help')",
+            ) from exc
 
     @staticmethod
     def _state_arg(args: dict[str, Any], spec: SceneSpec) -> dict[str, Any] | None:
@@ -919,13 +930,20 @@ class CadHandler(Handler):
             )
         spec = self._parse_design(str(text))
         if not spec.nodes:
-            raise BadInput("cad design has no nodes")
+            raise BadInput(
+                "cad design has no nodes",
+                next="put(kind='cad', id='flange', text='plate add cyl:r25mmh8mm')",
+            )
         # Build eagerly so a bad config / geometry surfaces on put.
         built = self._expand(spec, own_slug=slug)
         try:
             design = build_design(built)
         except Exception as exc:  # kernel build error
-            raise BadInput(f"cad build error: {exc}") from exc
+            raise BadInput(
+                f"cad build error: {exc}",
+                next="fix the geometry or node the kernel named, then retry "
+                "the same put",
+            ) from exc
 
         ttl = (title or slug).strip() or slug
         ref, created, n = self.store.cad_save(
@@ -979,22 +997,37 @@ class CadHandler(Handler):
         parent = resolve_live_slug_ref(self.store, kind="cad", id=str(id).strip())
         to_slug = str(to).strip()
         if not to_slug:
-            raise BadInput("derive requires to= (the new design slug)")
+            raise BadInput(
+                "derive requires to= (the new design slug)",
+                next="retry the same derive call with to='<new-slug>' filled in",
+            )
         if self.store.get_ref(kind="cad", id=to_slug) is not None:
             raise BadInput(
                 f"design {to_slug!r} already exists",
                 next="pick a fresh slug for the derived design",
             )
         if text is None or not str(text).strip():
-            raise BadInput("derive requires text= (the new design source)")
+            raise BadInput(
+                "derive requires text= (the new design source)",
+                next="retry the same derive call with text= holding the new "
+                "design's source; grammar: get(kind='skill', id='precis-cad-help')",
+            )
         spec = self._parse_design(str(text))
         if not spec.nodes:
-            raise BadInput("derived cad design has no nodes")
+            raise BadInput(
+                "derived cad design has no nodes",
+                next="add at least one node to the source, e.g. "
+                "'plate add cyl:r25mmh8mm', then retry the same derive",
+            )
         built = self._expand(spec, own_slug=to_slug)
         try:
             design = build_design(built)
         except Exception as exc:  # kernel build error
-            raise BadInput(f"cad build error: {exc}") from exc
+            raise BadInput(
+                f"cad build error: {exc}",
+                next="fix the geometry or node the kernel named, then retry "
+                "the same derive",
+            ) from exc
 
         ttl = (title or to_slug).strip() or to_slug
         ref, _created, n = self.store.cad_save(
@@ -1231,14 +1264,22 @@ class CadHandler(Handler):
         try:
             mesh = _solid_mesh(built, pitch=pitch)
         except ExportError as exc:
-            raise BadInput(str(exc)) from exc
+            raise BadInput(
+                str(exc),
+                next="inspect the design with get(kind='cad', id='<slug>'), then "
+                "retry with a coarser args={'pitch': '0.5mm'}",
+            ) from exc
         policy = {
             "weights": dict(_PRINTABILITY_FLAT_WEIGHTS),
             "sweep_deg": float(args.get("sweep_deg", _PRINTABILITY_SWEEP_DEG_DEFAULT)),
         }
         cands: list[BuildCandidate] = orient(mesh, rules, policy, [])
         if not cands:  # pragma: no cover - candidates() always yields >= 6
-            raise BadInput("view='printability' found no orientation candidates")
+            raise BadInput(
+                "view='printability' found no orientation candidates",
+                next="file a gripe — orient() contracts >= 6 candidates per "
+                "mesh; this is a server-side break",
+            )
 
         chosen = cands[0]
         chosen_note = ""
@@ -1461,7 +1502,11 @@ class CadHandler(Handler):
                 else export_mesh(spec, out, fmt=fmt, pitch=pitch, title=slug)
             )
         except ExportError as exc:
-            raise BadInput(str(exc)) from exc
+            raise BadInput(
+                str(exc),
+                next="inspect the design with get(kind='cad', id='<slug>'), then "
+                "retry with a coarser args={'pitch': '0.5mm'} or another fmt=",
+            ) from exc
         size = path.stat().st_size
         if fmt == "step":
             kernel = "OpenCASCADE B-rep"
@@ -1521,7 +1566,11 @@ class CadHandler(Handler):
             ] + [(j.component, j.kind, j.limits) for j in joints_of(spec)]
             driven = {c.driven: c for c in couples_of(spec)}
         except SceneError as exc:  # pragma: no cover - malformed stored meta
-            raise BadInput(f"cad design error: {exc}") from exc
+            raise BadInput(
+                f"cad design error: {exc}",
+                next="file a gripe — put validates design meta on write; "
+                "stored meta failing to re-parse is a server-side break",
+            ) from exc
         if not joints:
             raise BadInput(
                 "this design declares no joints — nothing to sweep",
@@ -1535,7 +1584,11 @@ class CadHandler(Handler):
             names = [j[0] for j in joints]
             joints = [j for j in joints if j[0] == str(only)]
             if not joints:
-                raise BadInput(f"no joint {only!r} in this design — joints: {names}")
+                raise BadInput(
+                    f"no joint {only!r} in this design — joints: {names}",
+                    options=[str(n) for n in names],
+                    next="omit args.joint to sweep every joint at once",
+                )
         n = max(_SWEEP_N_MIN, min(_SWEEP_N_MAX, int(args.get("n", _SWEEP_N_DEFAULT))))
 
         couples = couples_of(spec)
@@ -1689,7 +1742,11 @@ class CadHandler(Handler):
     # ── delete ───────────────────────────────────────────────────────
     def delete(self, *, id: str | int | None = None, **_kw: Any) -> Response:
         if id is None or not str(id).strip():
-            raise BadInput("delete(kind='cad') requires id= (the design slug)")
+            raise BadInput(
+                "delete(kind='cad') requires id= (the design slug)",
+                next="search(kind='cad', q='<name>') for the slug, then "
+                "delete(kind='cad', id='<slug>')",
+            )
         ref = resolve_live_slug_ref(self.store, kind="cad", id=str(id).strip())
         n = self.store.cad_delete(ref.id)
         return Response(body=f"retired cad design {ref.slug} ({n} chunk(s))")
@@ -1908,7 +1965,11 @@ class CadHandler(Handler):
     def _render_node(self, chunk_id: int) -> Response:
         rec = self.store.cad_node(chunk_id)
         if rec is None:
-            raise NotFound(f"cad node ca{chunk_id} not found")
+            raise NotFound(
+                f"cad node ca{chunk_id} not found",
+                next="get(kind='cad', id='<design-slug>') lists the current "
+                "node handles",
+            )
         _ref_id, name, meta = rec
         handle = handle_registry.format_handle("cad", chunk_id, chunk=True)
         payload = {"handle": handle, "name": name, **meta}

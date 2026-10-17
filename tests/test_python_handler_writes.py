@@ -1133,3 +1133,13 @@ def test_replace_identical_body_under_package_root_via_line_range(
         text=unchanged,
     )
     assert "qualname preserved" in out.body
+
+
+def test_expected_root_without_alias_names_the_scoped_get(
+    handler: PythonHandler,
+) -> None:
+    """M3 burn-down (gr494831): expected_root without an alias carries next=."""
+    with pytest.raises(BadInput, match="expected_root requires") as exc:
+        handler.get(expected_root="/anywhere")
+    assert exc.value.next is not None
+    assert "get(kind='python', id='<repo-alias>')" in str(exc.value.next)

@@ -418,3 +418,23 @@ class TestScrapeWatchPageMeta:
         meta = yt_mod._scrape_watch_page_meta("dQw4w9WgXcQ")
         # Only watch_url should be present (the rest weren't parseable).
         assert meta == {"watch_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"}
+
+
+def test_generic_upstream_error_names_languages_view(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M3 burn-down (gr494831): an unexpected YT failure carries next=."""
+    import sys
+
+    class Bad(_StubApi):
+        def fetch(self, video_id: str, languages: list[str]) -> Any:
+            raise RuntimeError("yt boom")
+
+    monkeypatch.setattr(
+        sys.modules["youtube_transcript_api"], "YouTubeTranscriptApi", Bad
+    )
+    h = YouTubeHandler(hub=Hub(store=store))
+    with pytest.raises(Upstream, match="YouTube API error") as exc:
+        h.get(id="dQw4w9WgXcQ")
+    assert exc.value.next is not None
+    assert "view='languages'" in str(exc.value.next)

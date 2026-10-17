@@ -437,3 +437,13 @@ def test_unknown_view_raises_bad_input(handler: RandomHandler) -> None:
 
     with pytest.raises(BadInput, match="unknown random view"):
         handler.get(view="bogus")
+
+
+def test_bad_slug_len_names_a_working_call(handler: RandomHandler) -> None:
+    """M3 burn-down (gr494831): a bad len= refuses with next=."""
+    from precis.errors import BadInput
+
+    with pytest.raises(BadInput, match="must be an integer") as exc:
+        handler.get(view="slug", args={"len": "eight"})
+    assert exc.value.next is not None
+    assert "get(kind='random', view='slug'" in str(exc.value.next)

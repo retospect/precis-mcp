@@ -135,7 +135,11 @@ class MakeHandler(Handler):
         if _is_make_chunk_handle(s):
             node = self.store.drafts.get_draft_chunk(s, kind="make")
             if node is None:
-                raise NotFound(f"make step {s!r} not found")
+                raise NotFound(
+                    f"make step {s!r} not found",
+                    next="get(kind='make', id='<tree-slug>') lists the current "
+                    "step handles",
+                )
             meta = {k: v for k, v in (node.meta or {}).items() if v is not None}
             body = f"{node.dc} [{meta.pop('status', 'open')}] {node.text}"
             if meta:
@@ -303,7 +307,11 @@ class MakeHandler(Handler):
         handle = self._require_step(id, verb="edit")
         base = self.store.drafts.get_draft_chunk(handle, kind="make")
         if base is None:
-            raise NotFound(f"make step {handle!r} not found")
+            raise NotFound(
+                f"make step {handle!r} not found",
+                next="get(kind='make', id='<tree-slug>') lists the current "
+                "step handles",
+            )
         internal = base.handle
         if move is not None:
             resolved = self._resolve_at_anchors(move)
@@ -313,12 +321,19 @@ class MakeHandler(Handler):
         if status is not None:
             st = str(status).strip()
             if st and st not in _VALID_STATUS:
-                raise BadInput(f"status must be one of {list(_VALID_STATUS)}")
+                raise BadInput(
+                    f"status must be one of {list(_VALID_STATUS)}",
+                    options=list(_VALID_STATUS),
+                    next=f"edit(kind='make', id='mk<id>', status={_VALID_STATUS[0]!r})",
+                )
             self.store.drafts.patch_chunk_meta(internal, {"status": st or None})
             return Response(body=f"marked {base.dc} [{st or 'open'}]")
         if text is not None:
             if not str(text).strip():
-                raise BadInput("edit text= must be non-empty")
+                raise BadInput(
+                    "edit text= must be non-empty",
+                    next="edit(kind='make', id='mk<id>', text='<new step text>')",
+                )
             c = self.store.drafts.edit_text(
                 internal, str(text), base_sha=base_sha, kind="make"
             )
@@ -336,7 +351,11 @@ class MakeHandler(Handler):
         if _is_make_chunk_handle(s):
             node = self.store.drafts.get_draft_chunk(s, kind="make")
             if node is None:
-                raise NotFound(f"make step {s!r} not found")
+                raise NotFound(
+                    f"make step {s!r} not found",
+                    next="get(kind='make', id='<tree-slug>') lists the current "
+                    "step handles",
+                )
             self.store.drafts.retire_chunk(node.handle, mode=mode, kind="make")
             return Response(body=f"retired {node.dc}")
         ref = resolve_live_slug_ref(self.store, kind="make", id=s)
@@ -364,6 +383,10 @@ class MakeHandler(Handler):
             if anchor is not None and _is_make_chunk_handle(str(anchor)):
                 node = self.store.drafts.get_draft_chunk(str(anchor), kind="make")
                 if node is None:
-                    raise NotFound(f"at: no make step {anchor!r}")
+                    raise NotFound(
+                        f"at: no make step {anchor!r}",
+                        next="get(kind='make', id='<tree-slug>') lists the "
+                        "current step handles",
+                    )
                 out[key] = node.handle
         return out

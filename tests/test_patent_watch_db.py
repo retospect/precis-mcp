@@ -190,3 +190,11 @@ class TestDelete:
         db.create(store, name="case", cql="cpc=B01J27/24")
         db.delete(store, "  CASE  ")
         assert db.get_by_name(store, "case") is None
+
+
+def test_record_pass_on_gone_watch_names_the_recheck(store: Store) -> None:
+    """M3 burn-down (gr494831): a deleted-mid-pass watch carries next=."""
+    with pytest.raises(NotFound) as exc:
+        db.record_pass(store, watch_id=424242, new_pn=[])
+    assert exc.value.next is not None
+    assert "deleted concurrently" in str(exc.value.next)

@@ -182,7 +182,10 @@ class EdgarHandler(Handler):
                 ) from e
             ref = self.store.get_ref(kind="edgar", id=result.slug)
             if ref is None:
-                raise NotFound(f"filing {slug!r} ingest succeeded but ref missing")
+                raise NotFound(
+                    f"filing {slug!r} ingest succeeded but ref missing",
+                    next="file a gripe — the ingest ack lied about the ref",
+                )
 
         if chunk is not None:
             return self._render_chunks(ref, chunk)
@@ -390,7 +393,9 @@ class EdgarHandler(Handler):
             subs = parse_submissions(self.client.submissions(cik_digits))
         except EdgarError as e:
             raise NotFound(
-                f"could not fetch submissions for CIK {cik_digits}: {e}"
+                f"could not fetch submissions for CIK {cik_digits}: {e}",
+                next="check the CIK is SEC-known digits and SEC is reachable, "
+                "then retry the same get",
             ) from e
         if not subs.filings:
             return Response(body=f"no filings on record for CIK {cik_digits}")

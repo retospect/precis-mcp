@@ -497,3 +497,11 @@ def test_via_is_reporter_owned(h: FleetHandler) -> None:
     send(h, rep([row()]))
     with pytest.raises(BadInput, match="reporter-owned"):
         h.edit(id=KEY, via="hook")
+
+
+def test_edit_unknown_kwarg_names_the_coordinator_fields(h: FleetHandler) -> None:
+    """M3 burn-down (gr494831): an unsupported edit kwarg refuses with next=."""
+    with pytest.raises(BadInput, match="does not accept") as exc:
+        h.edit(id=1, bogus=1)
+    assert exc.value.next is not None
+    assert "assigned" in str(exc.value.next)

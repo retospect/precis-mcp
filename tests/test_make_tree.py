@@ -181,3 +181,28 @@ def test_printed_joint_across_different_print_steps_is_flagged(make, cad):
     cad.link(id="printed_leaf", target=s2, rel="made-by", mode="remove")
     cad.link(id="printed_leaf", target=s1, rel="made-by")
     assert "print-in-place" not in cad.get(id="printed_tray", view="links").body
+
+
+def test_unknown_step_handle_names_the_tree_get(make):
+    """M3 burn-down (gr494831): an unknown mk handle carries next=."""
+    import pytest
+
+    from precis.errors import NotFound
+
+    with pytest.raises(NotFound) as exc:
+        make.get(id="mk99999999")
+    assert exc.value.next is not None
+    assert "get(kind='make'" in str(exc.value.next)
+
+
+def test_unknown_step_in_move_anchor_names_the_tree_get(make):
+    make.put(id="plan", title="plan")
+    import pytest
+
+    from precis.errors import NotFound
+
+    (step,) = _step_handles(make.put(id="plan", text="droit").body)
+    with pytest.raises(NotFound, match="no make step") as exc:
+        make.edit(id=step, move={"after": "mk99999999"})
+    assert exc.value.next is not None
+    assert "get(kind='make'" in str(exc.value.next)

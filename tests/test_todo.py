@@ -450,3 +450,26 @@ def test_create_ack_states_minter_latency_only_for_executor_todos(
     assert "executor=claude_inproc" in ex.body
     assert "minter picks this up on its next pass" in ex.body
     assert "job-minted" in ex.body
+
+
+def test_search_under_without_doable_names_the_combo(handler: TodoHandler) -> None:
+    """M3 burn-down (gr494831): under= without view='doable' refuses."""
+    import pytest
+
+    from precis.errors import BadInput
+
+    with pytest.raises(BadInput, match="requires view='doable'") as exc:
+        handler.search(under=1)
+    assert exc.value.next is not None
+    assert "view='doable'" in str(exc.value.next)
+
+
+def test_delete_without_id_names_search_then_delete(handler: TodoHandler) -> None:
+    import pytest
+
+    from precis.errors import BadInput
+
+    with pytest.raises(BadInput, match="requires id=") as exc:
+        handler.delete()
+    assert exc.value.next is not None
+    assert "delete(kind='todo', id=" in str(exc.value.next)

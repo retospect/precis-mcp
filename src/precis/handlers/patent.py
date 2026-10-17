@@ -275,7 +275,10 @@ class PatentHandler(Handler):
             ref = self.store.get_ref(kind="patent", id=result.slug)
             if ref is None:
                 # Should be unreachable — ingest commits before returning.
-                raise NotFound(f"patent {slug!r} ingest succeeded but ref missing")
+                raise NotFound(
+                    f"patent {slug!r} ingest succeeded but ref missing",
+                    next="file a gripe — the ingest ack lied about the ref",
+                )
 
         if chunk is not None:
             return self._render_chunks(ref, chunk)

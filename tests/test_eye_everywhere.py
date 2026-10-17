@@ -365,3 +365,16 @@ def test_every_kind_renders_or_refuses_with_a_reason(
     assert len(cause) > 40 and ":" in cause, (kind, cause)
     if kind in _TREE_KINDS:
         assert "section" in cause
+
+
+def test_missing_chunk_ord_names_the_record_get(store: Any, hub: Any) -> None:
+    """M3 burn-down (gr494831): a ~ord miss carries next= to the record get."""
+    from precis.errors import NotFound
+    from precis.handlers.memory import MemoryHandler
+    from tests.conftest import id_of
+
+    mid = id_of(MemoryHandler(hub=hub).put(text="eye next= probe").body)
+    with pytest.raises(NotFound) as exc:
+        eye_handle(store, kind="memory", id=f"me{mid}~99")
+    assert exc.value.next is not None
+    assert f"get(kind='memory', id='me{mid}')" in str(exc.value.next)

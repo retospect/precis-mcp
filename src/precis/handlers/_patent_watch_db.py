@@ -246,7 +246,11 @@ def record_pass(
             (new_pn, watch_id),
         )
     if cur.rowcount == 0:
-        raise NotFound(f"patent_watch id={watch_id} no longer exists")
+        raise NotFound(
+            f"patent_watch id={watch_id} no longer exists",
+            next="the watch was deleted concurrently; re-list watches, then "
+            "retry only if it is still there",
+        )
 
 
 def delete(store: Store, name: str) -> None:

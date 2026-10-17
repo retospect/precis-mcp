@@ -2195,3 +2195,13 @@ def test_fleet_utilisation_renders_seeded_pass_durations(store) -> None:
     assert skill_mod._render_fleet_utilisation(None) == [
         "_stateless build — no worker_logs to read_"
     ]
+
+
+def test_chunks_for_toc_unknown_skill_names_the_toc(skill: SkillHandler) -> None:
+    """M3 burn-down (gr494831): an unknown skill slug carries next= to toc."""
+    from precis.errors import NotFound
+
+    with pytest.raises(NotFound) as exc:
+        skill.chunks_for_toc("no-such-skill-xyz")
+    assert exc.value.next is not None
+    assert "get(kind='skill', id='toc')" in str(exc.value.next)

@@ -197,3 +197,15 @@ class TestConvPutRejected:
         _seed_conv(store, "thread-1")
         with pytest.raises(BadInput, match="requires target="):
             conv.link(id="thread-1")
+
+
+def test_append_to_retired_conv_names_a_fresh_slug(
+    conv: ConversationHandler, store: Store
+) -> None:
+    """M3 burn-down (gr494831): appending to a retired conv carries next=."""
+    rid = _seed_conv(store, "dead-thread")
+    store.retire_ref(rid)
+    with pytest.raises(BadInput, match="retired conversation") as exc:
+        conv.put(id="dead-thread", text="bump", author="alice")
+    assert exc.value.next is not None
+    assert "fresh slug" in str(exc.value.next)

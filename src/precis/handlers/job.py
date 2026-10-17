@@ -1000,7 +1000,11 @@ class JobHandler(NumericRefHandler):
                 params=params,
             )
             if err is not None:
-                raise BadInput(err)
+                raise BadInput(
+                    err,
+                    next="fix what the message names, then retry the same put; "
+                    "job submit contract: get(kind='skill', id='precis-job-help')",
+                )
 
         # Idempotency check moves inside the write transaction below,
         # serialized via ``pg_advisory_xact_lock``. The lookup here
@@ -2161,15 +2165,21 @@ def _validate_params(
         expected = prop_schema.get("type")
         if expected == "integer" and not isinstance(value, int):
             raise BadInput(
-                f"params.{key} must be an integer (got {type(value).__name__})"
+                f"params.{key} must be an integer (got {type(value).__name__})",
+                next=f"retry with params.{key} as a JSON integer "
+                f"(params={{{key!r}: 1}})",
             )
         if expected == "string" and not isinstance(value, str):
             raise BadInput(
-                f"params.{key} must be a string (got {type(value).__name__})"
+                f"params.{key} must be a string (got {type(value).__name__})",
+                next=f"retry with params.{key} as a JSON string "
+                f"(params={{{key!r}: 'value'}})",
             )
         if expected == "object" and not isinstance(value, dict):
             raise BadInput(
-                f"params.{key} must be an object (got {type(value).__name__})"
+                f"params.{key} must be an object (got {type(value).__name__})",
+                next=f"retry with params.{key} as a JSON object "
+                f"(params={{{key!r}: {{'k': 'v'}}}})",
             )
 
 

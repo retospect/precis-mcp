@@ -137,3 +137,12 @@ def test_bot_stamps_failed_when_no_channel() -> None:
     asyncio.run(bot._post_message_ref({"ref_id": 9, "target": "discord/1/2/3"}))
     (s,) = _stamps(p)
     assert s["status"] == "failed" and "no channel" in s["error"]
+
+
+def test_stamp_non_numeric_id_names_the_put_form(hub: Hub, store: Store) -> None:
+    """M3 burn-down (gr494831): a non-numeric id refuses with next=."""
+    h, _rid = _queue(hub, store)
+    with pytest.raises(BadInput) as exc:
+        h.put(id="not-a-number", status="sent")
+    assert exc.value.next is not None
+    assert "put(kind='message', id=" in str(exc.value.next)

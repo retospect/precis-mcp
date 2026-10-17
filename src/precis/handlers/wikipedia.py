@@ -171,7 +171,11 @@ class WikipediaHandler(CacheBackedHandler):
                     return _no_results(key, lang)
                 article = self._fetch_extract(client, api, title)
         except SsrfBlocked as exc:
-            raise Upstream(f"wikipedia fetch refused: {exc}") from exc
+            raise Upstream(
+                f"wikipedia fetch refused: {exc}",
+                next="file a gripe — the api host is fixed and public; "
+                "the fetch guard misfired",
+            ) from exc
         except httpx.HTTPError as exc:
             raise Upstream(
                 f"wikipedia transport error: {exc}",
@@ -220,7 +224,10 @@ class WikipediaHandler(CacheBackedHandler):
         }
         resp = safe_get(client, api, params=params)
         if resp.status_code != 200:
-            raise Upstream(f"wikipedia search HTTP {resp.status_code}")
+            raise Upstream(
+                f"wikipedia search HTTP {resp.status_code}",
+                next="retry the same call shortly; Wikipedia's API may be down",
+            )
         return _pick_title(resp.json())
 
     def _fetch_extract(
@@ -241,7 +248,10 @@ class WikipediaHandler(CacheBackedHandler):
         }
         resp = safe_get(client, api, params=params)
         if resp.status_code != 200:
-            raise Upstream(f"wikipedia extract HTTP {resp.status_code}")
+            raise Upstream(
+                f"wikipedia extract HTTP {resp.status_code}",
+                next="retry the same call shortly; Wikipedia's API may be down",
+            )
         return _parse_extract(resp.json(), fallback_title=title)
 
     # ── render: append source URL + cache footer ──────────────────────

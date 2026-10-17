@@ -978,9 +978,16 @@ class MemoryHandler(NumericRefHandler):
                 (ref_id,),
             ).fetchone()
             if row is None:
-                raise NotFound(f"memory {ref_id} not found")
+                raise NotFound(
+                    f"memory {ref_id} not found",
+                    next="search(kind='memory', q='<topic>') for the live id",
+                )
             if row[1] is not None:
-                raise Gone(f"memory {ref_id} has been deleted")
+                raise Gone(
+                    f"memory {ref_id} has been deleted",
+                    next="search(kind='memory', q='<topic>') for a live memory "
+                    "on the topic",
+                )
             old_body = self.store.chunks.replace_body_chunk(
                 ref_id,
                 new_text,

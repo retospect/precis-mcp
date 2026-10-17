@@ -167,6 +167,8 @@ class FleetHandler(NumericRefHandler):
             raise BadInput(
                 f"edit(kind='fleet') does not accept {sorted(_kw)!r}; "
                 "it takes only assigned, slice, note",
+                next="edit(kind='fleet', id=<key|fl123>, assigned='...', "
+                "slice='...', note='...')",
             )
         if id is None:
             raise BadInput(
@@ -188,6 +190,8 @@ class FleetHandler(NumericRefHandler):
             raise BadInput(
                 f"{ref.title!r} is not an agent row; only agent rows take "
                 "coordinator fields",
+                next="get(kind='fleet') lists the rows and their types; "
+                "pick an agent row",
             )
         self.store.update_ref(ref.id, meta_patch=patch)
         return Response(body=f"updated {', '.join(sorted(patch))} on {ref.title}")

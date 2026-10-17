@@ -3,7 +3,7 @@
 import pytest
 
 from precis.dispatch import Hub
-from precis.errors import BadInput
+from precis.errors import BadInput, NotFound
 from precis.handlers.gripe import GripeHandler
 
 
@@ -78,6 +78,24 @@ def test_create_already_closed_refused(hub: Hub) -> None:
     h = GripeHandler(hub=hub)
     with pytest.raises(BadInput):
         h.put(text="born closed", tags=["STATUS:done"])
+
+
+def test_delete_without_id_names_the_delete_call(hub: Hub) -> None:
+    """M3 burn-down (gr494831): delete without id= refuses with next=."""
+    h = GripeHandler(hub=hub)
+    with pytest.raises(BadInput, match="requires id=") as exc:
+        h.delete()
+    assert exc.value.next is not None
+    assert "delete(kind='gripe', id=" in str(exc.value.next)
+
+
+def test_unknown_gripe_tombstone_names_search(hub: Hub) -> None:
+    """get on an id that never existed (even soft-deleted) carries next=."""
+    h = GripeHandler(hub=hub)
+    with pytest.raises(NotFound) as exc:
+        h._render_tombstone(99999)
+    assert exc.value.next is not None
+    assert "search(kind='gripe'" in str(exc.value.next)
 
 
 def test_hidden_resolved_comment_does_not_count(hub: Hub) -> None:

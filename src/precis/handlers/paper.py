@@ -473,6 +473,7 @@ class PaperHandler(Handler):
                 raise BadInput(
                     "tags= applies only to minting a stub (doi=/arxiv=/title=); "
                     "tag an existing paper with tag(kind='paper', id=…, add=[…])",
+                    next="tag(kind='paper', id='<slug-or-paN>', add=['<tag>'])",
                 )
             # Validate before minting so a bad tag leaves no stub behind.
             Tag.normalize_filter(tags, kind="paper")
@@ -1852,7 +1853,15 @@ class PaperHandler(Handler):
         )
         child, parent = refs.get(child_id), refs.get(parent_id)
         if child is None or parent is None:
-            raise NotFound(f"{self.spec.kind} not found")
+            raise NotFound(
+                f"{self.spec.kind} not found (child id={child_id} or "
+                f"parent id={parent_id} no longer resolves)",
+                next=(
+                    f"get(kind='{self.spec.kind}', id={child_id}) and "
+                    f"get(kind='{self.spec.kind}', id={parent_id}) to see "
+                    "which is gone, then retry with the live pair"
+                ),
+            )
         child_h = child.slug or f"pa{child_id}"
         parent_h = parent.slug or f"pa{parent_id}"
         if parent.pdf_role == SI_PDF_ROLE:
@@ -2047,7 +2056,13 @@ class PaperHandler(Handler):
         """
         old = self.store.fetch_refs_by_ids([ref_id], include_deleted=False).get(ref_id)
         if old is None:
-            raise NotFound(f"{self.spec.kind} id={ref_id} not found")
+            raise NotFound(
+                f"{self.spec.kind} id={ref_id} not found",
+                next=(
+                    f"search(kind='{self.spec.kind}', q='<title words>') for the "
+                    "current slug, then retry with it"
+                ),
+            )
         old_ids = self.store.identifiers_for_refs([ref_id]).get(ref_id, {})
         for scheme, value in (("doi", doi), ("arxiv", arxiv)):
             if not value or not str(value).strip():

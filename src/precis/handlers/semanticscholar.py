@@ -899,20 +899,33 @@ class SemanticScholarHandler(CacheBackedHandler):
         try:
             resp = with_backoff(send, service="s2")
         except RateLimited as exc:  # shared limiter refused a token
-            raise Upstream(f"Semantic Scholar paced out: {exc}") from exc
+            raise Upstream(
+                f"Semantic Scholar paced out: {exc}",
+                next="retry the same call in a minute — the shared limiter "
+                "re-admits as the outage clears",
+            ) from exc
         except VendorUnavailable as exc:  # budget spent, breaker open, draining
             if exc.status == 429:
                 raise Upstream(
-                    "Semantic Scholar rate-limited (HTTP 429): retries exhausted"
+                    "Semantic Scholar rate-limited (HTTP 429): retries exhausted",
+                    next="retry the same call later, or set "
+                    "SEMANTIC_SCHOLAR_API_KEY for the partner tier",
                 ) from exc
-            raise Upstream(f"Semantic Scholar unavailable: {exc}") from exc
+            raise Upstream(
+                f"Semantic Scholar unavailable: {exc}",
+                next="retry the same call shortly; S2 is having an outage",
+            ) from exc
         except VendorError as exc:  # 401/403: auth, never retried
             if exc.status == 401:
                 raise Upstream(
                     "Semantic Scholar rejected the API key (HTTP 401). "
                     "Check SEMANTIC_SCHOLAR_API_KEY.",
+                    next="fix SEMANTIC_SCHOLAR_API_KEY, then retry the same call",
                 ) from exc
-            raise Upstream(f"Semantic Scholar HTTP {exc.status}") from exc
+            raise Upstream(
+                f"Semantic Scholar HTTP {exc.status}",
+                next="retry the same call shortly; S2 may be degraded",
+            ) from exc
         return self._s2_parse_response(resp), attempts
 
     @staticmethod
@@ -933,7 +946,10 @@ class SemanticScholarHandler(CacheBackedHandler):
             with http_client(timeout=30.0, headers=headers) as client:
                 return client.get(url, params=params)
         except httpx.HTTPError as exc:
-            raise Upstream(f"Semantic Scholar transport error: {exc}") from exc
+            raise Upstream(
+                f"Semantic Scholar transport error: {exc}",
+                next="check network reachability, then retry the same call",
+            ) from exc
 
     @staticmethod
     def _s2_parse_response(resp: Any) -> dict[str, Any]:
@@ -943,26 +959,36 @@ class SemanticScholarHandler(CacheBackedHandler):
                 "Semantic Scholar rate-limited (HTTP 429); the public tier "
                 "is ~1 req/s. Set SEMANTIC_SCHOLAR_API_KEY for the partner "
                 "tier or retry later.",
+                next="set SEMANTIC_SCHOLAR_API_KEY for the partner tier, or "
+                "retry the same call later",
             )
         if resp.status_code == 401:
             raise Upstream(
                 "Semantic Scholar rejected the API key (HTTP 401). "
                 "Check SEMANTIC_SCHOLAR_API_KEY.",
+                next="fix SEMANTIC_SCHOLAR_API_KEY, then retry the same call",
             )
         if resp.status_code == 404:
             raise Upstream(
                 "Semantic Scholar has no record for that paper id (HTTP 404). "
                 "Check the DOI / arXiv / S2 id you passed after refs:/cites:.",
+                next="search(kind='paper', q='<title words>') for the right "
+                "DOI/id, then retry with it",
             )
         if resp.status_code != 200:
             raise Upstream(
-                f"Semantic Scholar HTTP {resp.status_code}: {resp.text[:200]}"
+                f"Semantic Scholar HTTP {resp.status_code}: {resp.text[:200]}",
+                next="retry the same call shortly; S2 may be degraded",
             )
 
         try:
             return resp.json()
         except Exception as exc:
-            raise Upstream(f"Semantic Scholar returned non-JSON: {exc}") from exc
+            raise Upstream(
+                f"Semantic Scholar returned non-JSON: {exc}",
+                next="retry the same call; if it repeats, file a gripe — S2 "
+                "changed its response shape",
+            ) from exc
 
     @staticmethod
     def _s2_get_json(url: str, params: dict[str, Any]) -> dict[str, Any]:

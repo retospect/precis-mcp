@@ -144,3 +144,12 @@ def test_batch_ack(hub: Hub, store: Store) -> None:
     b, _ = raise_alert(store, source="s", fingerprint="fp:b2", title="two")
     AlertHandler(hub=hub).tag(id=[a, b], add=["ack:1h"])
     assert not ({a, b} & _open_ids(store))
+
+
+def test_bad_ack_names_the_tag_call(hub: Hub, store: Store) -> None:
+    """M3 burn-down (gr494831): a malformed ack refuses with next=."""
+    aid, _ = raise_alert(store, source="s", fingerprint="fp:next", title="cond")
+    with pytest.raises(BadInput) as exc:
+        AlertHandler(hub=hub).tag(id=aid, add=["ack:soon"])
+    assert exc.value.next is not None
+    assert "tag(kind='alert', id=" in str(exc.value.next)

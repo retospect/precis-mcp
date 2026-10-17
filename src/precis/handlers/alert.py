@@ -117,13 +117,19 @@ def _parse_ack(tag: str) -> timedelta:
     """``ack:6h`` → 6 hours; anything else refuses with the accepted forms."""
     m = _ACK_RE.fullmatch(tag.strip().lower())
     if m is None:
-        raise BadInput(f"bad ack duration {tag!r}. {_ACK_FORMS}")
+        raise BadInput(
+            f"bad ack duration {tag!r}. {_ACK_FORMS}",
+            next="tag(kind='alert', id=<id>, add=['ack:6h'])",
+        )
     try:
         ttl = timedelta(**{_ACK_UNITS[m.group(2)]: int(m.group(1))})
     except OverflowError:
         ttl = _ACK_MAX + _ACK_MAX
     if ttl <= timedelta(0) or ttl > _ACK_MAX:
-        raise BadInput(f"ack duration {tag!r} out of range. {_ACK_FORMS}")
+        raise BadInput(
+            f"ack duration {tag!r} out of range. {_ACK_FORMS}",
+            next="tag(kind='alert', id=<id>, add=['ack:6h'])",
+        )
     return ttl
 
 
@@ -661,9 +667,17 @@ class AlertHandler(NumericRefHandler):
         if not acks and not unacks:
             return super().tag(id=id, add=add, remove=remove, **kw)
         if len(acks) > 1:
-            raise BadInput(f"one ack per call, got {acks}. {_ACK_FORMS}")
+            raise BadInput(
+                f"one ack per call, got {acks}. {_ACK_FORMS}",
+                next=f"tag each ack in its own call, e.g. tag(kind='alert', "
+                f"id=<id>, add=[{acks[0]!r}])",
+            )
         if acks and unacks:
-            raise BadInput(f"add=['ack:…'] and remove=['ack'] together. {_ACK_FORMS}")
+            raise BadInput(
+                f"add=['ack:…'] and remove=['ack'] together. {_ACK_FORMS}",
+                next="two calls: tag(kind='alert', id=<id>, add=['ack:6h']) and "
+                "tag(kind='alert', id=<id>, remove=['ack'])",
+            )
         ttl = _parse_ack(acks[0]) if acks else None
         ids = id if isinstance(id, list) else [id]
         ref_ids = [self._coerce_id(i) for i in ids]
@@ -671,7 +685,9 @@ class AlertHandler(NumericRefHandler):
             self._resolve_live_ref(ref_id)
             if not _is_open(self.store, ref_id):
                 raise BadInput(
-                    f"alert {ref_id} is not open; only an open alert takes an ack"
+                    f"alert {ref_id} is not open; only an open alert takes an ack",
+                    next=f"re-check the alert's state with "
+                    f"get(kind='alert', id={ref_id}) before retrying",
                 )
         rest_add = [s for s in add or [] if not _is_ack(s)]
         rest_remove = [s for s in remove or [] if not _is_ack(s)]
@@ -687,7 +703,11 @@ class AlertHandler(NumericRefHandler):
                 continue
             until = datetime.now(UTC) + ttl
             if not ack_alert(self.store, ref_id, until=until, acked_by="agent"):
-                raise BadInput(f"alert {ref_id} is no longer open; not acked")
+                raise BadInput(
+                    f"alert {ref_id} is no longer open; not acked",
+                    next=f"it was resolved concurrently; re-check with "
+                    f"get(kind='alert', id={ref_id}) before retrying",
+                )
             lines.append(
                 f"alert {ref_id}: acked until {until.strftime('%Y-%m-%d %H:%M')}Z "
                 f"({acks[0]}); it stays open (marked acked on /open) and is left "

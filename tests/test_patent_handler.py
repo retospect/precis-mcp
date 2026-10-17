@@ -625,3 +625,24 @@ class TestClaimsView:
         handler.get(id="EP1234567B1")
         body = handler.get(id="ep1234567b1", view="description").body
         assert "**Claim" not in body
+
+
+def test_ingested_but_ref_missing_names_a_gripe(
+    handler: PatentHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M3 burn-down (gr494831): the ingest-ack/ref mismatch carries next=."""
+    import types
+
+    import precis.handlers.patent as patent_mod
+
+    monkeypatch.setattr(
+        patent_mod,
+        "ingest_patent",
+        lambda *a, **k: types.SimpleNamespace(slug="ep0000000b1"),
+    )
+    from precis.errors import NotFound
+
+    with pytest.raises(NotFound, match="ingest succeeded") as exc:
+        handler.get(id="ep0000000b1")
+    assert exc.value.next is not None
+    assert "file a gripe" in str(exc.value.next)

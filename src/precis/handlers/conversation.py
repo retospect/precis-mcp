@@ -376,7 +376,10 @@ class ConversationHandler(Handler):
             )
             ref = self.store.get_ref(kind="conv", id=slug, include_deleted=True, conn=c)
             if ref is not None and ref.retired_at is not None:
-                raise BadInput("cannot append to a retired conversation")
+                raise BadInput(
+                    "cannot append to a retired conversation",
+                    next="pick a fresh slug for the new conversation instead",
+                )
             ids = sorted(
                 {r for r in (ref.id if ref else None, related_ref_id) if r is not None}
             )
@@ -401,10 +404,17 @@ class ConversationHandler(Handler):
                 (slug,),
             ).fetchone()
             if binding is None or binding[0] != ref.id:
-                raise BadInput("conversation binding changed; retry after reload")
+                raise BadInput(
+                    "conversation binding changed; retry after reload",
+                    next="re-read the conversation state, then let its owner "
+                    "retry the append",
+                )
             current = self.store.get_ref(kind="conv", id=ref.id, conn=c)
             if current is None:
-                raise BadInput("conversation retired during append")
+                raise BadInput(
+                    "conversation retired during append",
+                    next="start a fresh conversation under a new slug",
+                )
             if before_append is not None:
                 before_append(c)
             existing = self.store.chunks.list_chunks_for_ref(ref.id, conn=c)

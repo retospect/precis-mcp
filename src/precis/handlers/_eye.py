@@ -96,8 +96,10 @@ def _chunk_handle_for_ord(store: Store, kind: str, ref_id: int, ord_: int) -> st
             (ref_id, ord_),
         ).fetchone()
     if row is None:
+        rec = handle_registry.format_handle(kind, ref_id)
         raise NotFound(
-            f"{kind} chunk ~{ord_} not found on {handle_registry.format_handle(kind, ref_id)}"
+            f"{kind} chunk ~{ord_} not found on {rec}",
+            next=f"get(kind='{kind}', id='{rec}') lists the current chunk ords",
         )
     return handle_registry.format_handle(kind, int(row[0]), chunk=True)
 
@@ -150,7 +152,11 @@ def eye_handle(store: Store, *, kind: str, id: str | int | None) -> str:
     parsed = handle_registry.parse(base)
     if parsed is not None and parsed[0] == kind and parsed[1] and not sep:
         if store.resolve_handle(base) is None:
-            raise NotFound(f"no live {kind} chunk {base!r}")
+            raise NotFound(
+                f"no live {kind} chunk {base!r}",
+                next=f"get(kind='{kind}', id='<record>') lists the current "
+                "chunk handles",
+            )
         return handle_registry.normalize(base)
     ref_id = _resolve_ref_id(store, kind, base)
     if sep:

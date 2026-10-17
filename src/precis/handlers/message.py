@@ -308,10 +308,18 @@ class MessageHandler(NumericRefHandler):
         try:
             ref_id = int(id)
         except (TypeError, ValueError):
-            raise BadInput(f"message id must be numeric, got {id!r}") from None
+            raise BadInput(
+                f"message id must be numeric, got {id!r}",
+                next="put(kind='message', id=<N>, status='sent') with the "
+                "integer id from the queued ack",
+            ) from None
         ref = self.store.get_ref(kind=self.kind, id=ref_id)
         if ref is None:
-            raise BadInput(f"no message with id={ref_id}")
+            raise BadInput(
+                f"no message with id={ref_id}",
+                next=f"get(kind='message', id={ref_id}) to confirm; the stamp "
+                "applies only to a queued message",
+            )
         updates: dict[str, Any] = {"status": status}
         if status == "failed":
             updates["error"] = (error or "unknown")[:500]

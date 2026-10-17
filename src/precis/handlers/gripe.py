@@ -425,7 +425,10 @@ class GripeHandler(NumericRefHandler):
         """Read-only view of a soft-deleted gripe: title, last STATUS, last comment."""
         ref = self.store.get_ref(kind=self.kind, id=ref_id, include_deleted=True)
         if ref is None:
-            raise NotFound(f"{self._sense()} id={ref_id} not found")
+            raise NotFound(
+                f"{self._sense()} id={ref_id} not found",
+                next=f"search(kind='{self.kind}', q='<keywords>') for the live id",
+            )
         statuses = [
             str(t) for t in self.store.tags_for(ref_id) if str(t).startswith("STATUS:")
         ]
@@ -554,7 +557,13 @@ class GripeHandler(NumericRefHandler):
         **_kw: Any,
     ) -> Response:
         if id is None:
-            raise BadInput(f"delete(kind={self.kind!r}) requires id=")
+            raise BadInput(
+                f"delete(kind={self.kind!r}) requires id=",
+                next=(
+                    f"search(kind='{self.kind}', q='<keywords>') for the id, then "
+                    f"delete(kind={self.kind!r}, id=<N>)"
+                ),
+            )
         if args and "comment" in args:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return tl.delete_comment(

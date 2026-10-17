@@ -131,3 +131,23 @@ def test_spec_surface() -> None:
     assert spec.supports_get and spec.supports_search and spec.supports_search_hits
     assert spec.supports_tag and spec.supports_link
     assert not spec.is_numeric
+
+
+def test_search_http_failure_names_retry(
+    store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M3 burn-down (gr494831): a Wikipedia non-200 names the retry."""
+    import types
+
+    import precis.utils.safe_fetch as safe_fetch
+    from precis.dispatch import Hub
+    from precis.errors import Upstream
+
+    monkeypatch.setattr(
+        safe_fetch, "safe_get", lambda *a, **k: types.SimpleNamespace(status_code=503)
+    )
+    h = WikipediaHandler(hub=Hub(store=store))
+    with pytest.raises(Upstream, match="wikipedia search HTTP 503") as exc:
+        h._resolve_title(None, "https://en.wikipedia.org/w/api.php", "attention")
+    assert exc.value.next is not None
+    assert "retry the same call" in str(exc.value.next)

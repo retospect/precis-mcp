@@ -281,16 +281,25 @@ def _check_operating_conditions(meta: dict[str, Any]) -> None:
         )
 
     if not number(value["U_RHE"]) or not number(value["pH"]):
-        raise BadInput("meta.operating_conditions U_RHE and pH must be finite numbers")
+        raise BadInput(
+            "meta.operating_conditions U_RHE and pH must be finite numbers",
+            next="meta={'operating_conditions': {'U_RHE': -0.2, 'pH': 7}}",
+        )
     if "ion_conc_M" in value and (
         not number(value["ion_conc_M"]) or not 0 < value["ion_conc_M"] <= 10
     ):
-        raise BadInput("meta.operating_conditions.ion_conc_M must be in (0, 10]")
+        raise BadInput(
+            "meta.operating_conditions.ion_conc_M must be in (0, 10]",
+            next="meta={'operating_conditions': {'U_RHE': -0.2, 'pH': 7, "
+            "'ion_conc_M': 1e-6}}",
+        )
     if "window" in value:
         window = value["window"]
         if not isinstance(window, dict) or not window or set(window) - {"U_RHE", "pH"}:
             raise BadInput(
-                "meta.operating_conditions.window must contain U_RHE and/or pH spans"
+                "meta.operating_conditions.window must contain U_RHE and/or pH spans",
+                next="meta={'operating_conditions': {'U_RHE': -0.2, 'pH': 7, "
+                "'window': {'U_RHE': [-0.4, 0]}}}",
             )
         for axis, span in window.items():
             if (
@@ -300,7 +309,9 @@ def _check_operating_conditions(meta: dict[str, Any]) -> None:
                 or span[0] > span[1]
             ):
                 raise BadInput(
-                    f"meta.operating_conditions.window.{axis} must be a finite [lo, hi] span"
+                    f"meta.operating_conditions.window.{axis} must be a finite "
+                    "[lo, hi] span",
+                    next=f"'window': {{'{axis}': [-0.4, 0]}} (lo <= hi, both finite)",
                 )
 
 
@@ -475,7 +486,8 @@ def _budget_arg(args: dict[str, Any] | None) -> int:
     raw = args["budget"]
     if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
         raise BadInput(
-            f"args={{'budget': {raw!r}}}: budget must be a positive int (tokens)"
+            f"args={{'budget': {raw!r}}}: budget must be a positive int (tokens)",
+            next="args={'budget': 2500}",
         )
     return raw
 

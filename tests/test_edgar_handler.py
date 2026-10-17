@@ -229,3 +229,15 @@ class TestDiff:
         handler.get(id="0000320193-23-000106")
         resp = handler.get(id="0000320193-23-000106", view="diff")
         assert "no prior filing" in resp.body.lower()
+
+
+def test_company_list_fetch_failure_names_the_retry(hub: Hub, raw_root: Path) -> None:
+    """M3 burn-down (gr494831): a failed submissions fetch carries next=."""
+    client = FakeEdgarClient(
+        raises={("submissions", str(int(CIK))): EdgarRateLimited("EDGAR 429")}
+    )
+    h = EdgarHandler(hub=hub, client=client, raw_root=raw_root)
+    with pytest.raises(NotFound, match="could not fetch") as exc:
+        h._render_company_list(cik=CIK)
+    assert exc.value.next is not None
+    assert "then retry" in str(exc.value.next)

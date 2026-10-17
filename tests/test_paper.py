@@ -2102,3 +2102,23 @@ class TestPaperEditDoiWarning:
         assert "note: doi changed" in resp.body
         ids = store.identifiers_for_refs([ref_id])[ref_id]
         assert ids["doi"] == "10.2/new"  # the edit itself still landed
+
+
+# ---------------------------------------------------------------------------
+# next= hints on refusals (M3 / gr494831 burn-down)
+# ---------------------------------------------------------------------------
+
+
+def test_put_tags_on_existing_paper_names_tag_call(
+    store: Store, handler: PaperHandler
+) -> None:
+    """``tags=`` with a pdf_url/mode action refuses with next= naming tag()."""
+    _seed_paper(store)
+    with pytest.raises(BadInput, match="tags= applies only") as exc:
+        handler.put(
+            id="wang2020state",
+            tags=["t"],
+            args={"pdf_url": "https://example.org/x.pdf"},
+        )
+    assert exc.value.next is not None
+    assert "tag(kind='paper'" in str(exc.value.next)

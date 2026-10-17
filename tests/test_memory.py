@@ -455,6 +455,18 @@ def test_runtime_unknown_memory_renders_error(
     assert "next:" in out
 
 
+def test_write_body_on_deleted_memory_names_search(
+    handler: MemoryHandler,
+) -> None:
+    """M3 burn-down (gr494831): edit mid-delete refuses Gone with next=."""
+    replica_id = id_of(handler.put(text="transient memory").body)
+    handler.delete(id=replica_id)
+    with pytest.raises(Gone) as exc:
+        handler._write_body(replica_id, "after delete", new_title=None, meta_patch={})
+    assert exc.value.next is not None
+    assert "search(kind='memory'" in str(exc.value.next)
+
+
 # ---------------------------------------------------------------------------
 # meta={'hook': ...} — the index line of a SPACE:repo-dev memory
 # ---------------------------------------------------------------------------

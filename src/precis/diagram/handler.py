@@ -85,11 +85,17 @@ class DiagramHandler(Handler):
     def _validate_source(self, text: str) -> str:
         err = self.LANG.parse_error(text)
         if err is not None:
-            raise BadInput(f"invalid {self.LANG.medium} source: {err}")
+            raise BadInput(
+                f"invalid {self.LANG.medium} source: {err}",
+                next="fix the syntax the parser named, then retry the same call",
+            )
         try:
             return self.LANG.sanitize(text)
         except Exception as exc:  # pragma: no cover — parse_error guards
-            raise BadInput(f"invalid {self.LANG.medium} source: {exc}") from exc
+            raise BadInput(
+                f"invalid {self.LANG.medium} source: {exc}",
+                next="fix the part of the source named above, then retry the same call",
+            ) from exc
 
     def _docs(self, ref_id: int) -> tuple[Any | None, Any | None, Any | None]:
         source = vocab = notes = None
@@ -105,14 +111,25 @@ class DiagramHandler(Handler):
     def _resolve_any(self, id: str | int | None) -> Any:
         s = str(id or "").strip()
         if not s:
-            raise BadInput(f"edit(kind='{self.LANG.kind}') requires id=")
+            raise BadInput(
+                f"edit(kind='{self.LANG.kind}') requires id=",
+                next=f"search(kind='{self.LANG.kind}') for the slug, then pass id=",
+            )
         if self._is_node_handle(s):
             node = self.store.drafts.get_draft_chunk(s, kind=self.LANG.kind)
             if node is None:
-                raise NotFound(f"{self.LANG.kind} node {s} not found")
+                raise NotFound(
+                    f"{self.LANG.kind} node {s} not found",
+                    next=f"get(kind='{self.LANG.kind}', id='<slug>') lists the "
+                    "current node handles",
+                )
             ref = self.store.get_ref(kind=self.LANG.kind, id=int(node.ref_id))
             if ref is None:
-                raise NotFound(f"{self.LANG.kind} for node {s} not found")
+                raise NotFound(
+                    f"{self.LANG.kind} for node {s} not found",
+                    next=f"get(kind='{self.LANG.kind}') for the live list — the "
+                    "owning diagram may have been deleted",
+                )
             return ref
         return resolve_live_slug_ref(self.store, kind=self.LANG.kind, id=s)
 
@@ -128,7 +145,10 @@ class DiagramHandler(Handler):
             ) from exc
         ref = self.store.get_ref(kind="todo", id=pid)
         if ref is None:
-            raise NotFound(f"project todo {pid} not found")
+            raise NotFound(
+                f"project todo {pid} not found",
+                next="search(kind='todo', q='<project name>') for the id",
+            )
         return ref.id
 
     def _set_doc(
@@ -185,7 +205,11 @@ class DiagramHandler(Handler):
     def _render_node(self, handle: str) -> Response:
         node = self.store.drafts.get_draft_chunk(handle, kind=self.LANG.kind)
         if node is None:
-            raise NotFound(f"{self.LANG.kind} node {handle!r} not found")
+            raise NotFound(
+                f"{self.LANG.kind} node {handle!r} not found",
+                next=f"get(kind='{self.LANG.kind}', id='<slug>') lists the "
+                "current node handles",
+            )
         return Response(body=f"{node.dc}  [{node.chunk_kind}]\n{node.text}")
 
     def _render(self, slug: str, ref: Any) -> Response:
@@ -327,7 +351,11 @@ class DiagramHandler(Handler):
 
         if viewbox is not None:
             if not self._supports_bounds():
-                raise BadInput(f"{lang.kind} has no viewBox to set")
+                raise BadInput(
+                    f"{lang.kind} has no viewBox to set",
+                    next=f"edit(kind='{lang.kind}', id='<slug>', text='…') instead — "
+                    "the source declares the canvas",
+                )
             box = self._parse_bounds_arg(viewbox)
             if box is None:
                 raise BadInput(
@@ -341,7 +369,10 @@ class DiagramHandler(Handler):
 
         if vocab is not None:
             if not str(vocab).strip():
-                raise BadInput("edit vocab= must be non-empty")
+                raise BadInput(
+                    "edit vocab= must be non-empty",
+                    next=f"edit(kind='{lang.kind}', id='<slug>', vocab='<vocabulary text>')",
+                )
             self._set_doc(
                 ref.id, vocab_chunk, lang.vocab_kind, str(vocab), base_sha, index=True
             )
@@ -349,7 +380,10 @@ class DiagramHandler(Handler):
 
         if notes is not None:
             if not str(notes).strip():
-                raise BadInput("edit notes= must be non-empty")
+                raise BadInput(
+                    "edit notes= must be non-empty",
+                    next=f"edit(kind='{lang.kind}', id='<slug>', notes='<note text>')",
+                )
             self._set_doc(
                 ref.id, notes_chunk, lang.notes_kind, str(notes), base_sha, index=False
             )
@@ -390,7 +424,11 @@ class DiagramHandler(Handler):
 
     def delete(self, *, id: str | int | None = None, **_kw: Any) -> Response:
         if id is None or not str(id).strip():
-            raise BadInput(f"delete(kind='{self.LANG.kind}') requires id=")
+            raise BadInput(
+                f"delete(kind='{self.LANG.kind}') requires id=",
+                next=f"search(kind='{self.LANG.kind}') for the slug, then "
+                f"delete(kind='{self.LANG.kind}', id='<slug>')",
+            )
         ref = resolve_live_slug_ref(self.store, kind=self.LANG.kind, id=str(id).strip())
         self.store.retire_ref(ref.id)
         return Response(body=f"retired {self.LANG.kind} {ref.slug}")

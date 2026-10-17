@@ -1647,7 +1647,10 @@ class SkillHandler(Handler):
         slug = str(ref)
         text = _load_skill(slug)
         if text is None:
-            raise NotFound(f"skill {slug!r} not found")
+            raise NotFound(
+                f"skill {slug!r} not found",
+                next="get(kind='skill', id='toc') lists every skill slug",
+            )
 
         chunks = chunk_by_h2(text)
         chunks_text = tuple(c.text for c in chunks)

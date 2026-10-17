@@ -514,3 +514,15 @@ def test_turn_edits_source_and_reconciles_links(store, mh, diagram) -> None:
     assert "ship[Ship]" in res.svg  # TurnResult.svg holds the source
     got = {(b["element"], b["handle"]) for b in store.drafts.element_bindings(node)}
     assert got == {("intake", h)}
+
+
+def test_delete_without_id_names_the_search_then_delete(mh) -> None:
+    """M3 burn-down (gr494831): delete without id= refuses with next=."""
+    import pytest
+
+    from precis.errors import BadInput
+
+    with pytest.raises(BadInput, match="requires id=") as exc:
+        mh.delete()
+    assert exc.value.next is not None
+    assert "delete(kind='mermaid', id=" in str(exc.value.next)

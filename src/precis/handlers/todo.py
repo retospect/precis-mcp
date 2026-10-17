@@ -446,13 +446,20 @@ class TodoHandler(NumericRefHandler):
             )
         if under is not None:
             if view != "doable":
-                raise BadInput("under= requires view='doable' on todo search")
+                raise BadInput(
+                    "under= requires view='doable' on todo search",
+                    next="search(kind='todo', view='doable', under='<todo id>')",
+                )
             if (
                 args is not None
                 and "under" in args
                 and str(args["under"]) != str(under)
             ):
-                raise BadInput("under= and args.under disagree")
+                raise BadInput(
+                    "under= and args.under disagree",
+                    next="pass under= once, either as the kwarg or inside args=, "
+                    "with the same todo id",
+                )
             args = {**(args or {}), "under": under}
         if view is not None:
             try:
@@ -1491,7 +1498,11 @@ class TodoHandler(NumericRefHandler):
         **_kw: Any,
     ) -> Response:
         if id is None:
-            raise BadInput(f"delete(kind={self.kind!r}) requires id=")
+            raise BadInput(
+                f"delete(kind={self.kind!r}) requires id=",
+                next=f"search(kind='{self.kind}', q='<keywords>') for the id, "
+                f"then delete(kind={self.kind!r}, id=<N>)",
+            )
         if args:
             if "comment" not in args:
                 raise BadInput(

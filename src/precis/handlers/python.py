@@ -357,7 +357,11 @@ class PythonHandler(Handler):
     ) -> Response:
         if expected_root is not None:
             if id in (None, "", "/"):
-                raise BadInput("expected_root requires an explicit alias id")
+                raise BadInput(
+                    "expected_root requires an explicit alias id",
+                    next="get(kind='python', id='<repo-alias>') — the index "
+                    "view alone cannot be scoped",
+                )
             self._check_expected_root(_parse_id(str(id)).alias, expected_root)
 
         # Index — no id, or "/" sentinel.
@@ -517,7 +521,10 @@ class PythonHandler(Handler):
 
         if expected_root is not None:
             if not scope:
-                raise BadInput("expected_root requires an explicit alias scope")
+                raise BadInput(
+                    "expected_root requires an explicit alias scope",
+                    next=f"search(kind='python', q={q!r}, scope='<repo-alias>')",
+                )
             alias = scope.split("::", 1)[0].split("/", 1)[0]
             self._check_expected_root(alias, expected_root)
         roots = self._roots_for_scope(scope)
@@ -1377,7 +1384,11 @@ class PythonHandler(Handler):
         NotFound if either is missing."""
         idx = self.cache.get(root)
         if parsed.file is None:
-            raise BadInput("missing file path in id")
+            raise BadInput(
+                "missing file path in id",
+                next="name the file: get(kind='python', "
+                "id='<repo-alias>/path/to/file.py')",
+            )
         mod = idx.file(parsed.file)
         if mod is None:
             raise NotFound(
@@ -1411,7 +1422,11 @@ class PythonHandler(Handler):
 
         # File address (with optional selector).
         if parsed.file is None:
-            raise BadInput("replace/delete requires a file path or qualname")
+            raise BadInput(
+                "replace/delete requires a file path or qualname",
+                next="pass a file path or qualname in id= — find it with "
+                "search(kind='python', q='<name>')",
+            )
         mod = idx.file(parsed.file)
         if mod is None:
             raise NotFound(

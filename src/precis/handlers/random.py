@@ -187,12 +187,15 @@ class RandomHandler(Handler):
             length = int(length)
         except (TypeError, ValueError):
             raise BadInput(
-                f"random slug 'len' must be an integer, got {length!r}"
+                f"random slug 'len' must be an integer, got {length!r}",
+                next="get(kind='random', view='slug', args={'len': 8})",
             ) from None
         if length < _SLUG_LEN_MIN or length > _SLUG_LEN_MAX:
             raise BadInput(
                 f"random slug 'len' must be in "
-                f"[{_SLUG_LEN_MIN}, {_SLUG_LEN_MAX}], got {length}"
+                f"[{_SLUG_LEN_MIN}, {_SLUG_LEN_MAX}], got {length}",
+                next=f"get(kind='random', view='slug', "
+                f"args={{'len': {_SLUG_LEN_DEFAULT}}})",
             )
         alphabet_arg = args.get("alphabet", "crockford")
         if isinstance(alphabet_arg, str) and alphabet_arg in _ALPHABETS:
@@ -205,13 +208,17 @@ class RandomHandler(Handler):
             if len(set(alphabet)) < 2:
                 raise BadInput(
                     "random slug custom alphabet must contain at least 2 "
-                    f"distinct characters, got {alphabet!r}"
+                    f"distinct characters, got {alphabet!r}",
+                    next="get(kind='random', view='slug', "
+                    "args={'alphabet': 'crockford'})",
                 )
         else:
             raise BadInput(
                 f"random slug 'alphabet' must be one of "
                 f"{sorted(_ALPHABETS)} or a string of length ≥ 2, "
-                f"got {alphabet_arg!r}"
+                f"got {alphabet_arg!r}",
+                options=sorted(_ALPHABETS),
+                next="get(kind='random', view='slug', args={'alphabet': 'crockford'})",
             )
         slug = "".join(secrets.choice(alphabet) for _ in range(length))
         # Broad usability pass 2026-05-30 (#9): the bare-token shape

@@ -804,3 +804,27 @@ def test_put_surfaces_awkward_mantissa_warning(cad):
     assert "⚠ units:" in resp.body and "3 nm" in resp.body
     quiet = cad.put(id="ok", text="plate add cyl:r3mmh12mm")
     assert "⚠ units:" not in quiet.body
+
+
+def test_delete_without_slug_names_the_delete_call(cad):
+    """M3 burn-down (gr494831): delete without id= refuses with next=."""
+    import pytest
+
+    from precis.errors import BadInput
+
+    with pytest.raises(BadInput, match="requires id=") as exc:
+        cad.delete()
+    assert exc.value.next is not None
+    assert "delete(kind='cad', id=" in str(exc.value.next)
+
+
+def test_empty_design_names_a_working_put(cad):
+    """A design with no nodes refuses with next= naming a working put."""
+    import pytest
+
+    from precis.errors import BadInput
+
+    with pytest.raises(BadInput, match="no nodes") as exc:
+        cad.put(id="empty", text="# just a comment\n")
+    assert exc.value.next is not None
+    assert "put(kind='cad'" in str(exc.value.next)

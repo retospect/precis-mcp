@@ -937,3 +937,18 @@ def test_doi_lookup_404_is_a_clean_not_found(
     resp = s2handler.get(id="10.9999/nonexistent")
     assert "no record" in resp.body.lower()
     assert "404" in resp.body
+
+
+def test_s2_error_raises_carry_next() -> None:
+    """M3 burn-down (gr494831): S2 refusals name the recovery step."""
+    from precis.errors import Upstream
+
+    with pytest.raises(Upstream) as exc:
+        SemanticScholarHandler._s2_parse_response(_FakeResp(429))
+    assert exc.value.next is not None
+    assert "SEMANTIC_SCHOLAR_API_KEY" in str(exc.value.next)
+
+    with pytest.raises(Upstream) as exc:
+        SemanticScholarHandler._s2_parse_response(_FakeResp(404))
+    assert exc.value.next is not None
+    assert "search(kind='paper'" in str(exc.value.next)
