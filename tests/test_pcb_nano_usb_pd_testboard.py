@@ -58,6 +58,11 @@ SEED = 1
 #: that no-op draw reproduces 38 routed at ``SEED`` exactly; over seeds
 #: 1-8 the new mix leaves 6 of 8 placements legal (old: 2 of 8) and
 #: routes 30-37 (mean 34.5) where the old mix routed 38 and 35.
+#:
+#: One-way floors: raising routed, or lowering a failure count, is routine
+#: — tighten the constant in the same commit. Loosening any floor needs
+#: Reto's ruling. gr489909: seeds 1-8 route 30-37 (mean 34.5) under the
+#: post-PIN_SWAP mix, and 38 was seed luck.
 BASELINE_DRC_ERRORS_BY_RULE: dict[str, int] = {
     "connectivity": 11,
     "unrouted": 29,
@@ -316,9 +321,17 @@ def test_nano_board_place_route_drc_baseline(store: Store) -> None:
             f"{str(f.get('detail'))[:120]}"
         )
 
-    assert routed == BASELINE_ROUTED
-    assert failed == BASELINE_FAILED
-    assert dict(errors_by_rule) == BASELINE_DRC_ERRORS_BY_RULE
-    assert dict(warns_by_rule) == BASELINE_DRC_WARNS_BY_RULE
-    assert n_errors == BASELINE_DRC_ERRORS
-    assert n_warns == BASELINE_DRC_WARNS
+    assert routed >= BASELINE_ROUTED, f"routed {routed} < floor {BASELINE_ROUTED}"
+    assert failed <= BASELINE_FAILED, f"failed {failed} > floor {BASELINE_FAILED}"
+    for rule, count in errors_by_rule.items():
+        floor = BASELINE_DRC_ERRORS_BY_RULE.get(rule, 0)
+        assert count <= floor, f"error rule {rule!r}: {count} > floor {floor}"
+    for rule, count in warns_by_rule.items():
+        floor = BASELINE_DRC_WARNS_BY_RULE.get(rule, 0)
+        assert count <= floor, f"warn rule {rule!r}: {count} > floor {floor}"
+    assert n_errors <= BASELINE_DRC_ERRORS, (
+        f"errors {n_errors} > floor {BASELINE_DRC_ERRORS}"
+    )
+    assert n_warns <= BASELINE_DRC_WARNS, (
+        f"warns {n_warns} > floor {BASELINE_DRC_WARNS}"
+    )
