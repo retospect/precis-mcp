@@ -263,10 +263,23 @@ class EdgarClient:
                 raise
 
     def _get(self, url: str, *, params: dict[str, str] | None = None) -> bytes:
-        from precis.utils.http import http_client, require_httpx
+        from precis.utils.http import (
+            VendorError,
+            VendorUnavailable,
+            http_client,
+            require_httpx,
+            with_backoff,
+        )
+        from precis.utils.rate_limit import RateLimited
 
         httpx = require_httpx()
-        self._bucket.acquire()
+
+        def send() -> Any:
+            # The per-process bucket (10 req/s) stays, one token per
+            # attempt; the core adds the shared ``sec`` limiter row on top.
+            self._bucket.acquire()
+            return client.get(url, params=params)
+
         try:
             with http_client(
                 timeout=self._timeout,
@@ -276,9 +289,28 @@ class EdgarClient:
                 follow_redirects=True,
                 user_agent=self._user_agent,
             ) as client:
-                resp = client.get(url, params=params)
+                resp = with_backoff(send, service="sec")
         except httpx.HTTPError as exc:
             raise EdgarError(f"EDGAR transport error: {exc}") from exc
+        except VendorUnavailable as exc:
+            cause = exc.__cause__
+            if isinstance(cause, httpx.HTTPError):
+                raise EdgarError(f"EDGAR transport error: {cause}") from exc
+            if exc.status == 429:
+                raise EdgarRateLimited(
+                    f"EDGAR 429 (throttled/blocked): {(exc.body or '')[:200]}"
+                ) from exc
+            if exc.status is not None:
+                raise EdgarHttpError(exc.status, exc.body or "") from exc
+            if "circuit open" in str(exc) or "refused" in str(exc):
+                raise EdgarRateLimited(f"EDGAR backing off: {exc}") from exc
+            raise EdgarError(f"EDGAR unavailable: {exc}") from exc
+        except VendorError as exc:
+            raise EdgarRateLimited(
+                f"EDGAR {exc.status} (throttled/blocked): {exc}"
+            ) from exc
+        except RateLimited as exc:
+            raise EdgarRateLimited(f"EDGAR {exc}") from exc
         return _check_response(resp)
 
 
