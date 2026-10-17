@@ -325,6 +325,15 @@ def test_facts_view_without_facts(store):
         h.get(id="C5446", view="bogus")
 
 
+def test_facts_view_without_id_carries_next(store):
+    """gr494831 M3: a hint-less raise is a bug; the facts-view-without-id
+    BadInput must name a copy-pasteable recovery call."""
+    h = PartHandler(hub=Hub(store=store))
+    with pytest.raises(BadInput, match="requires id=") as ei:
+        h.get(view="facts")
+    assert ei.value.next and "get(kind='part', id='C" in str(ei.value.next)
+
+
 # ── the datasheet_facts extraction job ───────────────────────────────
 
 import json

@@ -87,7 +87,10 @@ class ChemHandler(CacheBackedHandler):
                 next="get(kind='chem', id='aspirin')",
             )
         if len(key) > 300:
-            raise BadInput("chem identifier longer than 300 characters")
+            raise BadInput(
+                "chem identifier longer than 300 characters",
+                next="use a shorter name or CAS number: get(kind='chem', id='aspirin')",
+            )
         if is_cas(key) and not cas_checksum_ok(key):
             raise BadInput(
                 f"{key!r} looks like a CAS number but fails its check digit",

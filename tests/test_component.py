@@ -1033,3 +1033,195 @@ class TestBom:
         h.put(id="enclosure", contains="component:bracket", qty=1)
         with pytest.raises(BadInput):
             h.get(id="enclosure", view="bom", spec="totally-unregistered-spec")
+
+
+# ── gr494831 M3: raises carry next= (one representative per pinned site) ──
+
+
+class TestNextHints:
+    """Each representative raise must carry a copy-pasteable ``next=``."""
+
+    def test_put_bad_mode_carries_next(self, store: Any) -> None:
+        h = _handler(store)
+        with pytest.raises(BadInput, match="mode must be omitted") as ei:
+            h.put(id="x", mode="bogus")
+        assert ei.value.next and "put(kind='component'" in str(ei.value.next)
+
+    def test_supplier_link_no_id_carries_next(self, store: Any) -> None:
+        h = _handler(store)
+        with pytest.raises(BadInput, match="requires an existing component id") as ei:
+            h.put(mode="supplier-link", source="digikey")
+        assert ei.value.next and "mode='supplier-link'" in str(ei.value.next)
+
+    def test_supplier_link_bad_args_carries_next(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="m6-a2-bolt", title="M6 bolt", category="fastener")
+        with pytest.raises(BadInput, match="supplier_part_number only") as ei:
+            h.put(
+                id="m6-a2-bolt",
+                mode="supplier-link",
+                source="digikey",
+                args={"bogus": 1},
+            )
+        assert ei.value.next and "supplier_part_number" in str(ei.value.next)
+
+    def test_supplier_link_missing_component_carries_next(self, store: Any) -> None:
+        h = _handler(store)
+        with pytest.raises(NotFound, match="requires an existing component") as ei:
+            h.put(
+                id="no-such-component",
+                mode="supplier-link",
+                source="digikey",
+            )
+        assert ei.value.next and "put(kind='component'" in str(ei.value.next)
+
+    def test_supplier_link_bad_part_number_type_carries_next(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="m6-a2-bolt", title="M6 bolt", category="fastener")
+        with pytest.raises(BadInput, match="nonempty string") as ei:
+            h.put(
+                id="m6-a2-bolt",
+                mode="supplier-link",
+                source="digikey",
+                args={"supplier_part_number": 123},
+            )
+        assert ei.value.next and "supplier_part_number" in str(ei.value.next)
+
+    def test_supplier_link_no_mpn_or_part_number_carries_next(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="m6-a2-bolt", title="M6 bolt", category="fastener")
+        with pytest.raises(BadInput, match="recorded MPN or confirmed") as ei:
+            h.put(
+                id="m6-a2-bolt",
+                mode="supplier-link",
+                source="digikey",
+            )
+        assert ei.value.next and "supplier_part_number" in str(ei.value.next)
+
+    def test_put_entity_bad_aliases_carries_next(self, store: Any) -> None:
+        h = _handler(store)
+        with pytest.raises(BadInput, match="meta.aliases must be a list") as ei:
+            h.put(id="x", title="X", category="fastener", meta={"aliases": "M6"})
+        assert ei.value.next and "aliases" in str(ei.value.next)
+
+    def test_check_type_consistency_value_type_carries_next(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="m6-a2-bolt", title="M6 bolt", category="fastener")
+        h.put(id="m6-a2-bolt", spec="mass", value=0.01, unit="kg")
+        with pytest.raises(BadInput, match="conflicts with the registered") as ei:
+            h.put(
+                id="m6-a2-bolt",
+                spec="mass",
+                value=0.01,
+                unit="kg",
+                value_type="boolean",
+            )
+        assert ei.value.next and "drop value_type=" in str(ei.value.next)
+
+    def test_check_type_consistency_allowed_values_carries_next(
+        self, store: Any
+    ) -> None:
+        h = _handler(store)
+        h.put(id="m6-a2-bolt", title="M6 bolt", category="fastener")
+        h.put(
+            id="m6-a2-bolt",
+            spec="new_cat_spec_xyz",
+            value="A2",
+            value_type="categorical",
+            allowed_values=["A2", "A4"],
+        )
+        with pytest.raises(BadInput, match="conflicts with the registered") as ei:
+            h.put(
+                id="m6-a2-bolt",
+                spec="new_cat_spec_xyz",
+                value="A2",
+                value_type="categorical",
+                allowed_values=["A2", "A4", "B7"],
+            )
+        assert ei.value.next and "drop allowed_values=" in str(ei.value.next)
+
+    def test_mint_spec_categorical_with_unit_carries_next(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="m6-a2-bolt", title="M6 bolt", category="fastener")
+        with pytest.raises(BadInput, match="categorical specs are dimensionless") as ei:
+            h.put(
+                id="m6-a2-bolt",
+                spec="another_cat_spec_xyz",
+                value="A2",
+                unit="kg",
+                value_type="categorical",
+                allowed_values=["A2", "A4"],
+            )
+        assert ei.value.next and "omit unit=" in str(ei.value.next)
+
+    def test_mint_spec_boolean_explicit_with_unit_carries_next(
+        self, store: Any
+    ) -> None:
+        h = _handler(store)
+        h.put(id="m6-a2-bolt", title="M6 bolt", category="fastener")
+        with pytest.raises(BadInput, match="boolean specs are dimensionless") as ei:
+            h.put(
+                id="m6-a2-bolt",
+                spec="plated",
+                value=True,
+                unit="kg",
+                value_type="boolean",
+            )
+        assert ei.value.next and "omit unit=" in str(ei.value.next)
+
+    def test_mint_spec_boolean_inferred_with_unit_carries_next(
+        self, store: Any
+    ) -> None:
+        h = _handler(store)
+        h.put(id="m6-a2-bolt", title="M6 bolt", category="fastener")
+        with pytest.raises(BadInput, match="boolean specs are dimensionless") as ei:
+            h.put(id="m6-a2-bolt", spec="plated", value=True, unit="kg")
+        assert ei.value.next and "omit unit=" in str(ei.value.next)
+
+    def test_render_stock_bad_args_carries_next(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="m6-a2-bolt", title="M6 bolt", category="fastener")
+        with pytest.raises(
+            BadInput, match="accept only category_id and parameters"
+        ) as ei:
+            h.get(id="m6-a2-bolt", view="stock", args={"bogus": 1})
+        assert ei.value.next and "view='stock'" in str(ei.value.next)
+
+    def test_render_stock_bad_filters_carries_next(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="m6-a2-bolt", title="M6 bolt", category="fastener")
+        with pytest.raises(BadInput) as ei:
+            h.get(
+                id="m6-a2-bolt",
+                view="stock",
+                args={"category_id": -1},
+            )
+        assert ei.value.next and "view='stock'" in str(ei.value.next)
+
+    def test_render_supplier_categories_bad_id_carries_next(self, store: Any) -> None:
+        h = _handler(store)
+        with pytest.raises(BadInput, match="positive integer") as ei:
+            h.get(view="supplier-categories", id="not-an-int")
+        assert ei.value.next and "supplier-categories" in str(ei.value.next)
+
+    def test_render_bom_unknown_spec_carries_next(self, store: Any) -> None:
+        h = _handler(store)
+        _mint(h, "enclosure")
+        with pytest.raises(BadInput, match="unknown spec") as ei:
+            h.get(id="enclosure", view="bom", spec="no-such-spec")
+        assert ei.value.next and "view='specs'" in str(ei.value.next)
+
+    def test_search_values_bad_maturity_carries_next(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="m6-a2-bolt", title="M6 bolt", category="fastener")
+        h.put(id="m6-a2-bolt", spec="mass", value=0.01, unit="kg")
+        with pytest.raises(BadInput, match="must be one of") as ei:
+            h.search(spec="mass", maturity="bogus")
+        assert ei.value.next and "search(kind='component'" in str(ei.value.next)
+        assert ei.value.options and "lab" in ei.value.options
+
+    def test_supplier_link_mode_no_source_carries_next(self, store: Any) -> None:
+        h = _handler(store)
+        with pytest.raises(BadInput, match="requires a supplier source") as ei:
+            h.put(id="m6-a2-bolt", mode="supplier-link")
+        assert ei.value.next and "source='digikey'" in str(ei.value.next)

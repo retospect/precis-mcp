@@ -180,7 +180,8 @@ class PartHandler(Handler):
                 )
             if id is None or not str(id).strip():
                 raise BadInput(
-                    "get(kind='part', view='facts') requires id= (an LCSC C-number)"
+                    "get(kind='part', view='facts') requires id= (an LCSC C-number)",
+                    next="get(kind='part', id='C25804', view='facts')",
                 )
             lcsc = catalog.lcsc_id(id) or str(id).strip().upper()
             return Response(body=render_facts(part_facts(self.store, lcsc), lcsc=lcsc))

@@ -343,13 +343,26 @@ class RxnHandler(Handler):
             rxn_smiles is not None
             or any(key in effective for key in _SMILES_IDENTITY_KEYS)
         ):
-            raise BadInput("keep an equation set separately from a SMILES reaction")
+            raise BadInput(
+                "keep an equation set separately from a SMILES reaction",
+                next="put(kind='rxn', id=<slug>, meta={'energetics': {'q': ...}}) "
+                "for the equation set, or put(kind='rxn', id=<slug>, "
+                "rxn_smiles='...') for the reaction — not both",
+            )
         if meta is not None and "energetics" in meta:
             inputs = meta["energetics"]
             if not isinstance(inputs, dict) or set(inputs) - {"q", "T", "n_electrons"}:
-                raise BadInput("meta.energetics accepts only q, T and n_electrons")
+                raise BadInput(
+                    "meta.energetics accepts only q, T and n_electrons",
+                    next="put(kind='rxn', id=<slug>, meta={'energetics': "
+                    "{'q': '<equations>', 'T': 298.15, 'n_electrons': 5}})",
+                )
             if not isinstance(inputs.get("q"), str):
-                raise BadInput("meta.energetics needs q='<equation set>'")
+                raise BadInput(
+                    "meta.energetics needs q='<equation set>'",
+                    next="put(kind='rxn', id=<slug>, meta={'energetics': "
+                    "{'q': 'NO + 5/2 H2 -> NH3 + H2O', 'T': 298.15}})",
+                )
             result = render_energetics(**inputs)
             temperature = inputs.get("T")
             normalized = {
@@ -531,11 +544,17 @@ class RxnHandler(Handler):
             )
         if value_type is not None and value_type not in _VALUE_TYPES:
             raise BadInput(
-                f"value_type={value_type!r} must be one of {list(_VALUE_TYPES)}"
+                f"value_type={value_type!r} must be one of {list(_VALUE_TYPES)}",
+                options=list(_VALUE_TYPES),
+                next=f"put(kind='rxn', id={slug!r}, property={property!r}, "
+                "value=..., value_type='quantity')",
             )
         if allowed_values is not None and value_type != "categorical":
             raise BadInput(
-                "allowed_values= is only valid with value_type='categorical'"
+                "allowed_values= is only valid with value_type='categorical'",
+                next=f"put(kind='rxn', id={slug!r}, property={property!r}, "
+                "value=..., value_type='categorical', "
+                "allowed_values=['a', 'b'])",
             )
 
         prop = self.store.rxn_property_get(property)
@@ -551,7 +570,10 @@ class RxnHandler(Handler):
             raise BadInput(
                 f"{prop['prop_id']} is already registered as "
                 f"value_type={prop['value_type']!r} - value_type={value_type!r} "
-                "conflicts with the registered definition"
+                "conflicts with the registered definition",
+                next=f"drop value_type= (it is registered as "
+                f"{prop['value_type']!r}), or get(kind='rxn', view='properties') "
+                "to pick a different property",
             )
 
         self._check_unit(prop, unit)
@@ -640,12 +662,17 @@ class RxnHandler(Handler):
         if vt == "categorical" and not allowed_values:
             raise BadInput(
                 f"minting {prop_id!r} as categorical requires a non-empty "
-                "allowed_values= list"
+                "allowed_values= list",
+                next=f"put(kind='rxn', id=<slug>, property={prop_id!r}, "
+                "value=<cat>, value_type='categorical', "
+                "allowed_values=['a', 'b'])",
             )
         if vt in ("categorical", "boolean", "text") and canonical_unit is not None:
             raise BadInput(
                 f"cannot mint {prop_id!r} as {vt} with unit={unit!r} - "
-                f"{vt} properties are dimensionless, drop unit="
+                f"{vt} properties are dimensionless, drop unit=",
+                next=f"put(kind='rxn', id=<slug>, property={prop_id!r}, "
+                "value=<value>)  # omit unit=, it is dimensionless",
             )
         dimension = (
             "categorical"
@@ -672,7 +699,9 @@ class RxnHandler(Handler):
         given = str(unit).strip()
         if canonical is None:
             raise BadInput(
-                f"{prop['prop_id']} is dimensionless - drop unit= (got {given!r})"
+                f"{prop['prop_id']} is dimensionless - drop unit= (got {given!r})",
+                next=f"put(kind='rxn', id=<slug>, property={prop['prop_id']!r}, "
+                "value=<value>)  # omit unit=, it is dimensionless",
             )
         if given != canonical:
             raise BadInput(
@@ -693,17 +722,27 @@ class RxnHandler(Handler):
         vt = prop["value_type"]
         prop_id = prop["prop_id"]
         if value is None:
-            raise BadInput(f"put(kind='rxn') property={prop_id!r} requires value=")
+            raise BadInput(
+                f"put(kind='rxn') property={prop_id!r} requires value=",
+                next=f"put(kind='rxn', id=<slug>, property={prop_id!r}, "
+                "value=<value>, unit=<canonical unit or omit>)",
+            )
         if vt == "boolean":
             if not isinstance(value, bool):
-                raise BadInput(f"{prop_id} is boolean - value= must be true/false")
+                raise BadInput(
+                    f"{prop_id} is boolean - value= must be true/false",
+                    next=f"put(kind='rxn', id=<slug>, property={prop_id!r}, "
+                    "value=true)",
+                )
             return {"value_bool": value}
         if vt in ("categorical", "text"):
             text = str(value)
             allowed = prop.get("allowed_values")
             if vt == "categorical" and allowed and text not in allowed:
                 raise BadInput(
-                    f"{prop_id} value {text!r} is not in allowed_values={allowed!r}"
+                    f"{prop_id} value {text!r} is not in allowed_values={allowed!r}",
+                    next=f"put(kind='rxn', id=<slug>, property={prop_id!r}, "
+                    f"value={allowed[0]!r})  # one of {allowed!r}",
                 )
             return {"value_text": text}
         # quantity / ratio
@@ -712,7 +751,9 @@ class RxnHandler(Handler):
                 num = float(value)
             except (TypeError, ValueError) as exc:
                 raise BadInput(
-                    f"{prop_id} is {vt} - value= must be numeric, got {value!r}"
+                    f"{prop_id} is {vt} - value= must be numeric, got {value!r}",
+                    next=f"put(kind='rxn', id=<slug>, property={prop_id!r}, "
+                    "value=<number>)",
                 ) from exc
         else:
             num = float(value)
@@ -720,12 +761,16 @@ class RxnHandler(Handler):
         if (value_low is None) != (value_high is None):
             raise BadInput(
                 "value_low= and value_high= must be given together (a band), "
-                "or neither (a point value)"
+                "or neither (a point value)",
+                next=f"put(kind='rxn', id=<slug>, property={prop_id!r}, "
+                "value=<point>)  # or value_low=…, value_high=… together",
             )
         if value_low is not None and value_high is not None:
             if value_low > value_high:
                 raise BadInput(
-                    f"value_low={value_low} is above value_high={value_high}"
+                    f"value_low={value_low} is above value_high={value_high}",
+                    next=f"put(kind='rxn', id=<slug>, property={prop_id!r}, "
+                    "value_low=<lower>, value_high=<higher>)",
                 )
             out["value_low"] = float(value_low)
             out["value_high"] = float(value_high)
@@ -750,13 +795,15 @@ class RxnHandler(Handler):
         if s.lower().startswith(("http://", "https://")):
             if chunk is not None:
                 raise BadInput(
-                    "chunk= is only meaningful with a ref source=, not a URL"
+                    "chunk= is only meaningful with a ref source=, not a URL",
+                    next="drop chunk= for a URL source, or use source='paper:<slug>' "
+                    "with chunk='pc123'",
                 )
             return None, None, s
         if ":" not in s:
             raise BadInput(
                 f"source={s!r} must be '<kind>:<slug>' or a URL",
-                next="source='paper:my-paper-slug'",
+                next="source='paper:<slug>'",
             )
         kind, _, ident = s.partition(":")
         kind = kind.strip()
@@ -768,7 +815,11 @@ class RxnHandler(Handler):
             )
         ref = self.store.get_ref(kind=kind, id=ident.strip())
         if ref is None:
-            raise NotFound(f"source {s!r} not found")
+            raise NotFound(
+                f"source {s!r} not found",
+                next=f"search(kind='{kind}', q='…') to find the {kind}, or "
+                "drop source= for an ungrounded value",
+            )
         return ref.id, (str(chunk).strip() if chunk is not None else None), None
 
     # ── get ──────────────────────────────────────────────────────────
@@ -788,7 +839,11 @@ class RxnHandler(Handler):
             if q is None and id is not None:
                 inputs = _kept_inputs(self._read_ref(id))
                 if inputs is None:
-                    raise BadInput("this rxn has no kept equation inputs; supply q=")
+                    raise BadInput(
+                        "this rxn has no kept equation inputs; supply q=",
+                        next="get(kind='rxn', view='energetics', q='NO + 5/2 H2 -> "
+                        "NH3 + H2O', args={'T': 298.15, 'n_electrons': 5})",
+                    )
                 return render_energetics(
                     inputs["q"],
                     T=T if T is not None else inputs.get("T"),
@@ -824,7 +879,11 @@ class RxnHandler(Handler):
         if ref is None and ident.isdigit():
             ref = self.store.get_ref(kind="rxn", id=int(ident))
         if ref is None:
-            raise NotFound(f"rxn {ident!r} not found")
+            raise NotFound(
+                f"rxn {ident!r} not found",
+                next="search(kind='rxn', q='…') to find one, or get(kind='rxn') "
+                "to list reactions",
+            )
         return ref
 
     def _render_classify(self, *, id: Any, q: str | None) -> Response:
@@ -840,7 +899,11 @@ class RxnHandler(Handler):
             stored = ref.meta or {}
             smiles = stored.get("rxn_smiles") or stored.get("rxn_smiles_raw") or ""
             if not smiles:
-                raise BadInput(f"rxn {id!r} has no reaction SMILES to classify")
+                raise BadInput(
+                    f"rxn {id!r} has no reaction SMILES to classify",
+                    next=f"put(kind='rxn', id={id!r}, rxn_smiles='A.B>>C') to "
+                    "store one, or get(kind='rxn', view='classify', q='A.B>>C')",
+                )
             head = f"# classify rxn {ref.slug or ref.id} {fmt_smiles(smiles)}"
         else:
             raise BadInput(
@@ -850,9 +913,17 @@ class RxnHandler(Handler):
         try:
             result = classify(smiles)
         except ClassifierUnavailable as exc:
-            raise BadInput(str(exc)) from exc
+            raise BadInput(
+                str(exc),
+                next="install the [chem] extra (rdkit) to classify reactions",
+            ) from exc
         except ValueError as exc:
-            raise BadInput(f"not a usable reaction SMILES: {exc}") from exc
+            raise BadInput(
+                f"not a usable reaction SMILES: {exc}",
+                next="expected 'reactants>>products' or "
+                "'reactants>agents>products', each a '.'-joined list of "
+                "parseable SMILES",
+            ) from exc
         lines = [head, result.render()]
         if result.note and result.best is not None:
             lines.append(f"note: {result.note}")
@@ -1188,7 +1259,11 @@ class RxnHandler(Handler):
                 next="get(kind='rxn', view='properties') to see the registry",
             )
         if maturity is not None and maturity not in _MATURITIES:
-            raise BadInput(f"maturity={maturity!r} must be one of {list(_MATURITIES)}")
+            raise BadInput(
+                f"maturity={maturity!r} must be one of {list(_MATURITIES)}",
+                options=list(_MATURITIES),
+                next=f"search(kind='rxn', property={property_id!r}, maturity='lab')",
+            )
         rows = self.store.rxn_search_values(
             property_id=property_id,
             min_val=min_val,

@@ -124,3 +124,12 @@ def test_datasheet_empty_list_names_datasheet_not_paper(store: Store) -> None:
     assert "no datasheets ingested yet" in resp.body
     assert "ingest-bundles" not in resp.body
     assert "datasheets/" in resp.body
+
+
+def test_datasheet_put_ssrf_refusal_carries_next(store: Store) -> None:
+    """gr494831 M3: a hint-less raise is a bug; the SSRF refusal must name
+    a copy-pasteable recovery call."""
+    handler = DatasheetHandler(hub=Hub(store=store))
+    with pytest.raises(BadInput, match="url refused") as ei:
+        handler.put(args={"url": "http://127.0.0.1/x.pdf", "part": "C19191684"})
+    assert ei.value.next and "put(kind='datasheet'" in str(ei.value.next)

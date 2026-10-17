@@ -174,9 +174,19 @@ class DatasheetHandler(PaperHandler):
             try:
                 assert_public_http_url(url)
             except SsrfBlocked as exc:
-                raise BadInput(f"url refused: {exc}") from exc
+                raise BadInput(
+                    f"url refused: {exc}",
+                    next="use a public http(s) URL: "
+                    "put(kind='datasheet', args={'url': 'https://…/x.pdf', "
+                    "'part': 'C19191684'})",
+                ) from exc
             except OSError as exc:  # DNS failure/timeout: not a verdict on the URL
-                raise BadInput(f"url could not be resolved: {exc}") from exc
+                raise BadInput(
+                    f"url could not be resolved: {exc}",
+                    next="retry with a reachable host: "
+                    "put(kind='datasheet', args={'url': 'https://…/x.pdf', "
+                    "'part': 'C19191684'})",
+                ) from exc
         lcsc = self._resolve_part(part)
         job = self.hub.sibling("job")
         if url:

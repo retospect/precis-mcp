@@ -373,6 +373,15 @@ def test_handler_rejects_bad_cas(chem: ChemHandler) -> None:
         chem.get(id="50-78-3")
 
 
+def test_oversize_identifier_refusal_carries_next(chem: ChemHandler) -> None:
+    """gr494831 M3: a hint-less raise is a bug; the oversize-identifier
+    BadInput must name a copy-pasteable recovery call."""
+    chem.fetch = Replay({})
+    with pytest.raises(BadInput, match="longer than 300") as ei:
+        chem.get(id="x" * 301)
+    assert ei.value.next and "get(kind='chem'" in str(ei.value.next)
+
+
 # ── r38 dogfood: CIR unreachable from prod ───────────────────────────
 
 

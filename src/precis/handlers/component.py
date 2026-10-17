@@ -225,12 +225,16 @@ class ComponentHandler(ValueEntityHandler):
                 or size is not None
             ):
                 raise BadInput(
-                    "supplier-link requires a supplier source and no spec/series/size"
+                    "supplier-link requires a supplier source and no spec/series/size",
+                    next="put(kind='component', mode='supplier-link', id=<slug>, "
+                    "source='digikey', args={'supplier_part_number': '...'})",
                 )
             return self._put_supplier_link(id=id, source=source, args=args)
         if mode is not None:
             raise BadInput(
-                "component mode must be omitted or 'supplier-link'; API data import is not supported"
+                "component mode must be omitted or 'supplier-link'; API data import is not supported",
+                next="put(kind='component', id=<slug>, title='...', "
+                "category='...')  # omit mode=, or mode='supplier-link'",
             )
         if series is not None or size is not None:
             return self._mint_from_series(
@@ -295,37 +299,65 @@ class ComponentHandler(ValueEntityHandler):
         from precis.supply.live import identity_link, supplier_adapter
 
         if id is None:
-            raise BadInput("supplier-link requires an existing component id")
+            raise BadInput(
+                "supplier-link requires an existing component id",
+                next="put(kind='component', mode='supplier-link', id=<slug>, "
+                "source='digikey', args={'supplier_part_number': '...'})",
+            )
         if args is not None and (
             not isinstance(args, dict) or set(args) - {"supplier_part_number"}
         ):
-            raise BadInput("supplier-link args accept supplier_part_number only")
+            raise BadInput(
+                "supplier-link args accept supplier_part_number only",
+                next="put(kind='component', mode='supplier-link', id=<slug>, "
+                "source='digikey', args={'supplier_part_number': '...'})",
+            )
         ref = self.store.get_ref(kind="component", id=str(id).strip())
         if ref is None:
-            raise NotFound("supplier-link requires an existing component")
+            raise NotFound(
+                "supplier-link requires an existing component",
+                next=f"put(kind='component', id={str(id).strip()!r}, title='...', "
+                "category='...') to create it first",
+            )
         confirmed = (args or {}).get("supplier_part_number")
         if confirmed is not None and (
             not isinstance(confirmed, str) or not confirmed.strip()
         ):
-            raise BadInput("supplier_part_number must be a nonempty string")
+            raise BadInput(
+                "supplier_part_number must be a nonempty string",
+                next="put(kind='component', mode='supplier-link', id=<slug>, "
+                "source='digikey', args={'supplier_part_number': '<part no.>'})",
+            )
         mpn = str(
             (ref.meta or {}).get("mpn") or (ref.meta or {}).get("designation") or ""
         ).strip()
         if not mpn and not confirmed:
             raise BadInput(
-                "supplier-link needs recorded MPN or confirmed supplier part number"
+                "supplier-link needs recorded MPN or confirmed supplier part number",
+                next="put(kind='component', mode='supplier-link', id=<slug>, "
+                "source='digikey', args={'supplier_part_number': '<part no.>'})",
             )
         adapter = supplier_adapter(source)
         try:
             why = adapter.configured()
             if why:
-                raise BadInput(why)
+                raise BadInput(
+                    why,
+                    next="configure the supplier adapter credentials, then "
+                    "put(kind='component', mode='supplier-link', id=<slug>, "
+                    "source='digikey')",
+                )
             record = adapter.record(mpn, supplier_part_number=confirmed)
             link = identity_link(source, record, now())
         except Exception as exc:
             from precis.supply.live import safe_error
 
-            raise BadInput(f"supplier link refused: {safe_error(exc)}") from None
+            raise BadInput(
+                f"supplier link refused: {safe_error(exc)}",
+                next="check the supplier_part_number and credentials, then retry "
+                "put(kind='component', mode='supplier-link', id=<slug>, "
+                "source='digikey')",
+            ) from None
         changed = self.store.component_supplier_link(ref.id, link)
         note = "no datasheet URL supplied"
         if link["datasheet_url"]:
@@ -366,7 +398,11 @@ class ComponentHandler(ValueEntityHandler):
             )
         aliases = (meta or {}).get("aliases")
         if aliases is not None and not isinstance(aliases, list):
-            raise BadInput("meta.aliases must be a list of strings")
+            raise BadInput(
+                "meta.aliases must be a list of strings",
+                next="put(kind='component', id=<slug>, meta={'aliases': "
+                "['M6-1.0', 'M6x1']})",
+            )
 
         existing = self.store.get_ref(kind="component", id=slug)
         if existing is None and not category:
@@ -853,6 +889,9 @@ class ComponentHandler(ValueEntityHandler):
                 f"value_type={spec_row['value_type']!r} - "
                 f"value_type={value_type!r} conflicts with the registered "
                 "definition",
+                next=f"drop value_type= (it is registered as "
+                f"{spec_row['value_type']!r}), or get(kind='component', "
+                "view='specs') to pick a different spec",
             )
         if allowed_values is not None:
             registered = spec_row.get("allowed_values") or []
@@ -861,6 +900,9 @@ class ComponentHandler(ValueEntityHandler):
                     f"{spec_row['spec_id']} is already registered with "
                     f"allowed_values={registered!r} - allowed_values="
                     f"{allowed_values!r} conflicts with the registered definition",
+                    next=f"drop allowed_values= (it is registered as "
+                    f"{registered!r}), or get(kind='component', view='specs') "
+                    "to pick a different spec",
                 )
 
     def _check_applicability(
@@ -932,6 +974,9 @@ class ComponentHandler(ValueEntityHandler):
                         f"cannot mint {spec_id!r} as categorical with "
                         f"unit={unit!r} - categorical specs are "
                         "dimensionless, drop unit=",
+                        next=f"put(kind='component', id=<slug>, spec={spec_id!r}, "
+                        "value=<cat>, value_type='categorical', "
+                        "allowed_values=['a', 'b'])  # omit unit=",
                     )
                 dimension = "categorical"
                 canonical_unit = None
@@ -941,6 +986,8 @@ class ComponentHandler(ValueEntityHandler):
                         f"cannot mint {spec_id!r} as {value_type} with "
                         f"unit={unit!r} - {value_type} specs are "
                         "dimensionless, drop unit=",
+                        next=f"put(kind='component', id=<slug>, spec={spec_id!r}, "
+                        f"value=<value>, value_type={value_type!r})  # omit unit=",
                     )
                 dimension = "dimensionless"
             else:  # quantity / ratio
@@ -960,6 +1007,8 @@ class ComponentHandler(ValueEntityHandler):
                 raise BadInput(
                     f"cannot mint {spec_id!r} as boolean with unit={unit!r} - "
                     "boolean specs are dimensionless, drop unit=",
+                    next=f"put(kind='component', id=<slug>, spec={spec_id!r}, "
+                    "value=true)  # omit unit=",
                 )
             inferred_type = "boolean"
             dimension = "dimensionless"
@@ -1090,7 +1139,9 @@ class ComponentHandler(ValueEntityHandler):
                 validate_filters(category_id, None)
             except ValueError as exc:
                 raise BadInput(
-                    "supplier category id must be a positive integer"
+                    "supplier category id must be a positive integer",
+                    next="get(kind='component', view='supplier-categories', "
+                    "id=<positive int>, q=<optional name>)",
                 ) from exc
         adapter = DigiKeyAdapter()
         why = adapter.configured()
@@ -1283,14 +1334,24 @@ class ComponentHandler(ValueEntityHandler):
         if args is not None and (
             not isinstance(args, dict) or set(args) - {"category_id", "parameters"}
         ):
-            raise BadInput("stock args accept only category_id and parameters")
+            raise BadInput(
+                "stock args accept only category_id and parameters",
+                next="get(kind='component', id=<slug>, view='stock', "
+                "args={'category_id': <id>, 'parameters': {'<param id>': "
+                "['<value id>']}})",
+            )
         filters = {
             key: value for key, value in (args or {}).items() if value is not None
         }
         try:
             validate_filters(filters.get("category_id"), filters.get("parameters"))
         except ValueError as exc:
-            raise BadInput(str(exc)) from exc
+            raise BadInput(
+                str(exc),
+                next="get(kind='component', id=<slug>, view='stock', "
+                "args={'category_id': <positive int>, 'parameters': "
+                "{'<param id>': ['<value id>']}})",
+            ) from exc
         series_id = str(meta.get("series") or "")
         size = str(meta.get("size") or "")
         designation = str(meta.get("designation") or "")
@@ -1662,7 +1723,11 @@ class ComponentHandler(ValueEntityHandler):
                 "without min=/max=, or search(kind='component', q='...')",
             )
         if maturity is not None and maturity not in _MATURITIES:
-            raise BadInput(f"maturity={maturity!r} must be one of {list(_MATURITIES)}")
+            raise BadInput(
+                f"maturity={maturity!r} must be one of {list(_MATURITIES)}",
+                options=list(_MATURITIES),
+                next=f"search(kind='component', spec={spec!r}, maturity='lab')",
+            )
         hits = self.store.component_search_values(
             spec_id=spec,
             min_val=min_val,

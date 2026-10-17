@@ -946,3 +946,263 @@ class TestPropertyRowMapping:
         assert p["value_type"] == "quantity"
         assert p["allowed_values"] is None
         assert p["status"] == "core"
+
+
+# ── gr494831 M3: raises carry next= (one representative per pinned site) ──
+
+
+class TestNextHints:
+    """Each representative raise must carry a copy-pasteable ``next=``."""
+
+    def test_route_value_missing_value_carries_next(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="fischer-etoac", rxn_smiles=_FISCHER)
+        with pytest.raises(BadInput, match="requires value=") as ei:
+            h.put(id="fischer-etoac", property="yield")
+        assert ei.value.next and "put(kind='rxn'" in str(ei.value.next)
+
+    def test_route_value_non_numeric_carries_next(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="fischer-etoac", rxn_smiles=_FISCHER)
+        with pytest.raises(BadInput, match="must be numeric") as ei:
+            h.put(id="fischer-etoac", property="yield", value="not-a-number")
+        assert ei.value.next and "put(kind='rxn'" in str(ei.value.next)
+
+    def test_route_value_band_half_given_carries_next(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="fischer-etoac", rxn_smiles=_FISCHER)
+        with pytest.raises(BadInput, match="must be given together") as ei:
+            h.put(id="fischer-etoac", property="yield", value=80, value_low=70)
+        assert ei.value.next and "put(kind='rxn'" in str(ei.value.next)
+
+    def test_route_value_band_inverted_carries_next(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="fischer-etoac", rxn_smiles=_FISCHER)
+        with pytest.raises(BadInput, match="above value_high") as ei:
+            h.put(
+                id="fischer-etoac",
+                property="yield",
+                value=80,
+                value_low=90,
+                value_high=70,
+            )
+        assert ei.value.next and "put(kind='rxn'" in str(ei.value.next)
+
+    def test_route_value_boolean_wrong_type_carries_next(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="fischer-etoac", rxn_smiles=_FISCHER)
+        h.put(
+            id="fischer-etoac",
+            property="is_published",
+            value=True,
+            value_type="boolean",
+        )
+        with pytest.raises(BadInput, match="must be true/false") as ei:
+            h.put(id="fischer-etoac", property="is_published", value="yes")
+        assert ei.value.next and "put(kind='rxn'" in str(ei.value.next)
+
+    def test_route_value_categorical_not_allowed_carries_next(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="fischer-etoac", rxn_smiles=_FISCHER)
+        h.put(
+            id="fischer-etoac",
+            property="workup",
+            value="aqueous",
+            value_type="categorical",
+            allowed_values=["aqueous", "chromatography"],
+        )
+        with pytest.raises(BadInput, match="not in allowed_values") as ei:
+            h.put(id="fischer-etoac", property="workup", value="filtration")
+        assert ei.value.next and "put(kind='rxn'" in str(ei.value.next)
+
+    def test_check_unit_dimensionless_with_unit_carries_next(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="fischer-etoac", rxn_smiles=_FISCHER)
+        h.put(
+            id="fischer-etoac",
+            property="is_published",
+            value=True,
+            value_type="boolean",
+        )
+        with pytest.raises(BadInput, match="drop unit=") as ei:
+            h.put(id="fischer-etoac", property="is_published", value=True, unit="%")
+        assert ei.value.next and "put(kind='rxn'" in str(ei.value.next)
+
+    def test_check_unit_wrong_unit_carries_next(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="fischer-etoac", rxn_smiles=_FISCHER)
+        with pytest.raises(BadInput, match="does no unit conversion") as ei:
+            h.put(id="fischer-etoac", property="yield", value=80, unit="kg")
+        assert ei.value.next and "convert to" in str(ei.value.next)
+
+    def test_mint_property_categorical_without_allowed_carries_next(
+        self, store: Any
+    ) -> None:
+        h = _handler(store)
+        h.put(id="fischer-etoac", rxn_smiles=_FISCHER)
+        with pytest.raises(BadInput, match="categorical requires") as ei:
+            h.put(
+                id="fischer-etoac",
+                property="new_cat_prop_xyz",
+                value="aqueous",
+                value_type="categorical",
+            )
+        assert ei.value.next and "put(kind='rxn'" in str(ei.value.next)
+
+    def test_put_value_bad_value_type_carries_next(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="fischer-etoac", rxn_smiles=_FISCHER)
+        with pytest.raises(BadInput, match="must be one of") as ei:
+            h.put(
+                id="fischer-etoac",
+                property="yield",
+                value=80,
+                value_type="bogus",
+            )
+        assert ei.value.next and "put(kind='rxn'" in str(ei.value.next)
+        assert ei.value.options and "quantity" in ei.value.options
+
+    def test_put_value_allowed_without_categorical_carries_next(
+        self, store: Any
+    ) -> None:
+        h = _handler(store)
+        h.put(id="fischer-etoac", rxn_smiles=_FISCHER)
+        with pytest.raises(
+            BadInput, match="only valid with value_type='categorical'"
+        ) as ei:
+            h.put(
+                id="fischer-etoac",
+                property="yield",
+                value=80,
+                allowed_values=["a"],
+            )
+        assert ei.value.next and "put(kind='rxn'" in str(ei.value.next)
+
+    def test_put_value_conflicting_value_type_carries_next(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="fischer-etoac", rxn_smiles=_FISCHER)
+        h.put(id="fischer-etoac", property="yield", value=80)
+        with pytest.raises(BadInput, match="conflicts with the registered") as ei:
+            h.put(
+                id="fischer-etoac",
+                property="yield",
+                value=True,
+                value_type="boolean",
+            )
+        assert ei.value.next and "drop value_type=" in str(ei.value.next)
+
+    def test_put_entity_energetics_with_smiles_carries_next(self, store: Any) -> None:
+        h = _handler(store)
+        with pytest.raises(BadInput, match="separately from a SMILES") as ei:
+            h.put(
+                id="rxn-e",
+                rxn_smiles=_FISCHER,
+                meta={"energetics": {"q": "NO + 5/2 H2 -> NH3 + H2O"}},
+            )
+        assert ei.value.next and "put(kind='rxn'" in str(ei.value.next)
+
+    def test_put_entity_bad_energetics_keys_carries_next(self, store: Any) -> None:
+        h = _handler(store)
+        with pytest.raises(BadInput, match="accepts only q, T and n_electrons") as ei:
+            h.put(id="rxn-e", meta={"energetics": {"bogus": 1}})
+        assert ei.value.next and "put(kind='rxn'" in str(ei.value.next)
+
+    def test_put_entity_energetics_missing_q_carries_next(self, store: Any) -> None:
+        h = _handler(store)
+        with pytest.raises(BadInput, match="needs q=") as ei:
+            h.put(id="rxn-e", meta={"energetics": {"T": 298.15}})
+        assert ei.value.next and "put(kind='rxn'" in str(ei.value.next)
+
+    def test_read_ref_not_found_carries_next(self, store: Any) -> None:
+        h = _handler(store)
+        with pytest.raises(NotFound, match="not found") as ei:
+            h.get(id="no-such-rxn")
+        assert ei.value.next and "search(kind='rxn'" in str(ei.value.next)
+
+    def test_get_energetics_no_kept_inputs_carries_next(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="fischer-etoac", rxn_smiles=_FISCHER)
+        with pytest.raises(BadInput, match="no kept equation inputs") as ei:
+            h.get(id="fischer-etoac", view="energetics")
+        assert ei.value.next and "get(kind='rxn', view='energetics'" in str(
+            ei.value.next
+        )
+
+    def test_render_classify_needs_q_or_id_carries_next(self, store: Any) -> None:
+        h = _handler(store)
+        with pytest.raises(BadInput, match="needs q=") as ei:
+            h.get(view="classify")
+        assert ei.value.next and "get(kind='rxn', view='classify'" in str(ei.value.next)
+
+    def test_resolve_source_chunk_with_url_carries_next(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="fischer-etoac", rxn_smiles=_FISCHER)
+        with pytest.raises(BadInput, match="chunk= is only meaningful") as ei:
+            h.put(
+                id="fischer-etoac",
+                property="yield",
+                value=80,
+                source="https://example.com/paper.pdf",
+                chunk="pc1",
+            )
+        assert ei.value.next and "drop chunk=" in str(ei.value.next)
+
+    def test_resolve_source_no_colon_carries_next(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="fischer-etoac", rxn_smiles=_FISCHER)
+        with pytest.raises(BadInput, match="must be '<kind>:<slug>'") as ei:
+            h.put(
+                id="fischer-etoac",
+                property="yield",
+                value=80,
+                source="just-a-slug",
+            )
+        assert ei.value.next and "source='paper:" in str(ei.value.next)
+
+    def test_resolve_source_bad_kind_carries_next(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="fischer-etoac", rxn_smiles=_FISCHER)
+        with pytest.raises(BadInput, match="cannot ground a reaction") as ei:
+            h.put(
+                id="fischer-etoac",
+                property="yield",
+                value=80,
+                source="component:some-slug",
+            )
+        assert ei.value.next and "source='paper:" in str(ei.value.next)
+
+    def test_resolve_source_not_found_carries_next(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="fischer-etoac", rxn_smiles=_FISCHER)
+        with pytest.raises(NotFound, match="not found") as ei:
+            h.put(
+                id="fischer-etoac",
+                property="yield",
+                value=80,
+                source="paper:no-such-paper",
+            )
+        assert ei.value.next and "search(kind='paper'" in str(ei.value.next)
+
+    def test_search_values_bad_maturity_carries_next(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="fischer-etoac", rxn_smiles=_FISCHER)
+        h.put(id="fischer-etoac", property="yield", value=80)
+        with pytest.raises(BadInput, match="must be one of") as ei:
+            h.search(property="yield", maturity="bogus")
+        assert ei.value.next and "search(kind='rxn'" in str(ei.value.next)
+        assert ei.value.options and "lab" in ei.value.options
+
+    def test_mint_property_dimensionless_with_unit_carries_next(
+        self, store: Any
+    ) -> None:
+        h = _handler(store)
+        h.put(id="fischer-etoac", rxn_smiles=_FISCHER)
+        with pytest.raises(BadInput, match="dimensionless, drop unit=") as ei:
+            h.put(
+                id="fischer-etoac",
+                property="new_bool",
+                value=True,
+                value_type="boolean",
+                unit="kg",
+            )
+        assert ei.value.next and "put(kind='rxn'" in str(ei.value.next)
