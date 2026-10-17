@@ -96,13 +96,17 @@ controller, and avoids a full PD stack.
   Four rails means three bucks, which is a real area cost (see §Open
   questions). Populating a subset — say 20 V and 5 V only — is a sane first
   build; the footprints can stay on the board unstuffed.
-- **Switched high-side outputs** (current brief): resolve the device/driver
-  circuit at netlist review. The older logic-level N-channel low-side,
-  direct gate-pulldown sketch is not a validated high-side design. Preserve
-  the intended 20 V / 5 A output envelope, off-during-reset requirement and
-  thermal-copper requirement when selecting real footprints; do not imply
-  a package or direct MCU gate drive is proven. Decide flyback protection
-  once loads are known — inductive loads need it.
+- **Switched high-side outputs** (resolved, slice 2): a P-FET per channel
+  (source on VBUS, drain on OUTn) held off by a 10 k gate-source resistor
+  with a 12 V zener clamp, switched on by an N-FET level shifter on Nano
+  D4..D7 through a 1 k series resistor (|Vsg| ~4.5 V at a 5 V VBUS, 12 V
+  clamped at 20 V). A 100 k pulldown on the
+  level-shifter gate keeps each channel off while the MCU pin floats. The
+  20 V / 5 A envelope and thermal copper are kept; the flyback footprint
+  stays (decide once loads are known — inductive loads need it). A P-FET
+  sink power switch, driven by STUSB4500 VBUS_EN_SNK, separates the
+  connector side (VBUS_RAW) from the switched VBUS. No P-FET / N-FET MPN is
+  selected (see §Authored state).
 - **LEDs**: one per rail actually present (5 V, 9 V, 15 V, 20 V), plus
   two error indicators driven off the PDO-inspection table above
   ("cable not 5 A-capable", "source lacks requested PDO").
@@ -208,39 +212,50 @@ applies it to the test DB, places and routes it with the shipped pipeline
 (`op='place'`/`op='route'`, seed 1, default iters), and pins the DRC and
 route counts as the baseline the anneal item measures against.
 
-Measured baseline (seed 1, default 4-layer stackup — F.Cu/B.Cu routable,
-In1/In2 planes): **38/64 nets routed, 26 failed** (congestion-dominated,
-some `same-layer-crossing`/`width` reasons). DRC: **89 errors**
-(`connectivity` 26, `unrouted` 26 — both tiers count the same failed
-nets — `silk_missing` 35, `outline_containment` 1, `silk_edge_clearance`
-1) and **15 warnings** (`clearance` 10 at 0.100 mm vs 0.150 mm required,
-`board_edge_clearance` 2, `silk_edge_clearance` 3). The pin is the honest
+Two boards. The original (`nano_usb_pd_testboard.py`, exact pins in
+`test_pcb_nano_usb_pd_testboard.py`) stays unchanged as the **router
+regression fixture**: its floors guard the router, not the design.
+**r2** (`nano_usb_pd_testboard_r2.py`, `test_pcb_nano_usb_pd_testboard_r2.py`)
+is the reviewed design (slice 2) with its own one-way floors, measured
+2026-10-17 (seed 1, default 4-layer stackup): **35/72 nets routed, 37
+failed**; DRC **106 errors** (`connectivity` 10, `unrouted` 37,
+`silk_missing` 54, `outline_containment` 2, `silk_edge_clearance` 3) and
+**15 warnings** (`clearance` 11, `board_edge_clearance` 3,
+`silk_edge_clearance` 1). The floors may only improve. They are the honest
 tuple, not a claim of cleanliness — §Blockers item 3's residue stands.
 
-Parts discipline: real LCSC C-numbers only where the fixture ships a
+Parts discipline (r2; the original fixture additionally keeps its
+provisional MIC5019 C621942 / YJD40N04A C919581 high-side stand-ins):
+real LCSC C-numbers only where the fixture ships a
 cached `part_footprints` row (C165948 receptacle, C2678061 STUSB4500QTR,
-C14877 ATMEGA328P-AU, C44377 TPS54360 bucks, C919581 N-FETs, C621942
-high-side drivers — all hand-authored stand-in geometry shaped like the
-real package, not datasheet land patterns); design-local `footprints[]`
-for headers/terminals/inductors/electrolytic/crystal/diodes/test points;
+C14877 ATMEGA328P-AU, C44377 TPS54360 bucks — hand-authored stand-in
+geometry shaped like the real package, not datasheet land patterns);
+design-local `footprints[]` for headers/terminals/inductors/electrolytic/
+crystal/diodes/test points and the part-agnostic DPAK/SOT-23 FET lands;
 `landpattern` synthesized bounds for the small 2-pin passives and LEDs,
 flagged in each part's `note` and `meta.synthesized_footprint_refdes`.
-The MIC5019 + N-FET high-side choice is marked PROVISIONAL in
-`meta.provisional` and the GATE*/OUT* net notes carry the netlist-review
-TODO; nothing here validates that topology.
 
-**C-number ↔ MPN mapping is UNVERIFIED.** Those six C-numbers were bound
+**C-number ↔ MPN mapping is UNVERIFIED.** Those four C-numbers were bound
 to hand-authored stand-in footprints seeded into the test DB
-(`part_footprints` rows inside the fixture, not fetched); the mapping was
-never confirmed against the catalog — confirm, at minimum,
-C44377 = TPS54360 and C919581 = YJD40N04A before any order. Because the
+(`part_footprints` rows inside the fixture, not fetched); confirm at
+minimum C44377 = TPS54360 against the catalog before any order. Because the
 parts look cached, the `synthesized_footprint` DRC rule does not fire for
 them: their geometry is a stand-in that *reads* as real.
 
-**Netlist-review items now carried on the nets** (each marked
-`TODO(netlist-review)` in the fixture, consistent with the GATE*/OUT*
-tags): there is **no sink power switch** — STUSB4500's VBUS_EN_SNK is
-unwired and the bucks, output-FET drains and the 20 V rail LED sit
-directly on VBUS, so they run unregulated from the vSafe5V pre-contract
-stage; and the ERR_LED resistors share D13/D12 with the ISP's SCK/MISO
-while D11 is both MOSI and the EN4 channel drive.
+**Netlist review (slice 2, done in r2).** The high-side topology is
+resolved, the sink power switch (VBUS_EN_SNK → Q_SNK) is wired, and the
+D11..D13 sharing is gone (channel enables D4..D7, error LEDs D8/D9). Gate
+drive: a 1 k series / 10 k pull-up pair gives ~4.5 V |Vsg| at a 5 V VBUS
+(ERR_SOURCE case; ~3.9 V for Q_SNK at vSafe5V, whose gate sits a D_SNK
+drop above the pulled-low pin) and a 12 V zener per gate clamps |Vsg|
+at 20 V (a plain 10 k/10 k divider gave only 2.5 V at 5 V, which does not
+reliably enhance a 40 V P-FET). VBUS_EN_SNK sits behind a blocking diode
+(D_SNK) because its absolute-maximum rating could not be confirmed
+(datasheet text was not reachable; ST's summaries cite 22 V on CC and 28 V
+on VBUS pins only, not this pin). Left, as intake items: pick and verify
+the P-FET, the level-shift N-FET and their LCSC numbers (the fixture
+carries `meta.provisional` and a `TODO(netlist-review)` on each GATE net
+until then); read DS12499's absolute-maximum table for VBUS_EN_SNK (voltage, and
+the ~7 mA it sinks through D_SNK when Q_SNK's zener conducts at 20 V) and
+its drive levels, then keep or drop D_SNK; Reto decides inductive loads
+(flyback) and which rails are stuffed.
