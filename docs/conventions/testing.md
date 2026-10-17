@@ -109,11 +109,13 @@ that touches only `docs/` and root `*.md` gets the **docs lane** instead of
 the shards: one job of the fast set (`-m 'not db and not slow'`, no
 Postgres), which holds the doc-reading tests (doc pointers, the secrets
 sweep, backlog front-matter). Skills, `scripts/` and `.claude/` are not docs
-for this purpose — tests execute them. The **full** shape (adds 3.12, macOS,
-Windows) runs nightly and on `workflow_dispatch` with `full: true`; a
+for this purpose — tests execute them. The **full** shape (adds 3.12 and
+macOS) runs nightly and on `workflow_dispatch` with `full: true`; a
 platform-only break therefore surfaces the next morning, off the ship that
-caused it — `tests/test_posix_only_guards.py` is the compile-time stand-in
-for the Windows leg.
+caused it. Windows is not supported or tested: its nightly leg was dropped
+2026-10-17 (Reto: "nothing but trouble"). The `skipif(win32)` markers and
+the `tests/test_posix_only_guards.py` walk remain until a separate cleanup
+removes them.
 
 **Pending main runs are replaced (gr479090).** Main's group never cancels a
 *running* run (`cancel-in-progress` is false), but GitHub keeps at most one
@@ -176,7 +178,7 @@ What still covers it, so nothing is actually ungated:
 
 - **check.yml's Linux shards carry no `-m` filter** — every push to `main`
   and every `ci/**` pre-merge gate runs the whole cluster.
-- The nightly full matrix runs it on 3.12, macOS and Windows too.
+- The nightly full matrix runs it on 3.12 and macOS too.
 
 The trade, taken deliberately: a `slow`-cluster regression can reach the
 cluster via `/go` and be caught by CI minutes later, rather than being

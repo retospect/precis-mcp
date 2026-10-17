@@ -57,7 +57,9 @@ def test_shards_partition_every_test_exactly_once() -> None:
 
 def test_job_budget_fits_the_cap() -> None:
     loaded, idle = COUNTS
-    nightly = 1 + 1 + 1 + 4 + 2 * loaded
+    # plan + lint + coverage-db + test-other (macOS x 2 Pythons; the Windows
+    # leg was dropped 2026-10-17) + test-linux (2 Pythons x `loaded` shards).
+    nightly = 1 + 1 + 1 + 2 + 2 * loaded
     assert nightly + (2 + loaded) <= CAP  # nightly + one loaded gate
     assert 3 * (2 + loaded) <= CAP  # three loaded gates
     # Idle: this 12-shard gate beside IDLE_MAX other gate-shaped runs. Beside

@@ -1,10 +1,14 @@
 """POSIX-only test shapes must carry the win32 guard — before main reddens.
 
-The Windows CI leg exists only post-merge: the ship gate is a Linux
-container and the dev hosts are macOS, so a test that spawns ``bash``,
-execs a shebang'd repo shell script (``OSError: [WinError 193]``), or
-imports a POSIX-only stdlib module looks green everywhere it runs before
-``main`` — and reddens ``check.yml`` for days after. Twice now: 0510182f
+(The Windows leg was dropped 2026-10-17 per Reto — "nothing but trouble".
+The win32 guards and this walk remain until a separate cleanup removes
+them; the history below explains why they exist.)
+
+The Windows CI leg existed only post-merge: the ship gate is a Linux
+container and the dev hosts are macOS, so a test that spawned ``bash``,
+exec'd a shebang'd repo shell script (``OSError: [WinError 193]``), or
+imported a POSIX-only stdlib module looked green everywhere it ran before
+``main`` — and reddened ``check.yml`` for days after. Twice: 0510182f
 guarded the then-existing offenders file-by-file, and the next new module
 (``test_reap_stale_serves.py``, five days later) forgot the guard again.
 This walk automates the classification so the gate teaches it instead.

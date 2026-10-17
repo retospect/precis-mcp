@@ -16,15 +16,17 @@ on:
     # verdict is the one the round deploys. See the concurrency note below.
     branches: [main, 'ci/**', 'release/**']
   pull_request:
-  # Nightly FULL matrix (both Pythons + macOS + Windows) on main. The ship
+  # Nightly FULL matrix (both Pythons + macOS) on main. The ship
   # gate below runs only the 3.13 Linux legs; the platform/3.12 legs are
   # scheduled so a break there surfaces the next morning, not weeks later.
+  # (The Windows leg was dropped 2026-10-17 per Reto — "nothing but
+  # trouble"; the win32 skipif guards remain until a separate cleanup.)
   #
   # 05:23 UTC is this fleet's quietest hour: over the 14 days to 2026-09-18,
   # main took 6 squash-merges in the 05:00 hour and 5 in the 06:00 hour,
-  # against 27 in the busiest (19:00). The full shape is 19 jobs of the
-  # account's 40 slots, so two ship gates (8 each) starting inside the nightly
-  # still fit — the concurrency note below has the arithmetic and why the
+  # against 27 in the busiest (19:00). The full shape is 25 jobs of the
+  # account's 40 slots, so a ship gate (12) starting inside the nightly
+  # still fits — the concurrency note below has the arithmetic and why the
   # nightly is never cancelled. Keep the
   # minute off :00: GitHub drops scheduled events under load, and the top of
   # the hour is where that load is.
@@ -37,7 +39,7 @@ on:
   workflow_dispatch:
     inputs:
       full:
-        description: run the full matrix (3.12 + macOS + Windows), not the ship-gate shape
+        description: run the full matrix (3.12 + macOS), not the ship-gate shape
         type: boolean
         default: false
       shards:
@@ -82,8 +84,8 @@ permissions:
 # 12), so two idle-mode gates fit (28); beside the nightly it can overshoot by
 # a job or two, which queues rather than fails. A 10-shard gate is 12 jobs, so
 # THREE gates fan out at once and a fourth queues. The nightly full shape is
-# 27 jobs (plan + lint + coverage-db + 4 test-other + 2 Pythons x 10 shards),
-# so nightly + one gate is 39 <= 40. Why not 6 or 8 under load: measured shards
+# 25 jobs (plan + lint + coverage-db + 2 test-other + 2 Pythons x 10 shards),
+# so nightly + one gate is 37 <= 40. Why not 6 or 8 under load: measured shards
 # (2026-10-16) ran 32-40 min with 6 and 32-36 min with 8 against the 40 min
 # timeout-minutes (a timeout reads as 'cancelled'); identical shards differ by
 # ~30% with runner speed alone, so headroom has to be bought with shards. Why
@@ -99,11 +101,12 @@ permissions:
 # gets its own lane on main. Keying on the ref alone put the 18-job full
 # matrix and every main push in one group, and a push cancels in progress —
 # so one sibling ship landing during the nightly silently wiped that day's
-# entire 3.12/macOS/Windows coverage, which is the exact failure the
-# schedule above exists to prevent (gr346455; latent, never observed —
-# ships cluster hours earlier). `workflow_dispatch` with full=true rides the
+# entire 3.12/macOS coverage (the Windows leg rode the same lane until it
+# was dropped 2026-10-17), which is the exact failure the schedule above
+# exists to prevent (gr346455; latent, never observed — ships cluster hours
+# earlier). `workflow_dispatch` with full=true rides the
 # same lane, so a deliberately-dispatched full run is likewise un-cancellable
-# by a push. Cost of the split: the two shapes now coexist (27 + 12 per gate, one
+# by a push. Cost of the split: the two shapes now coexist (25 + 12 per gate, one
 # gate fits beside the nightly), and a gate beyond that waits rather than
 # pre-empting anything (well inside ship's 150 min CI timeout, and a CAS race
 # lost while queued re-runs CI per gr343941).
@@ -435,12 +438,14 @@ jobs:
             .coverage.precis.json
           retention-days: 3
 
-  # macOS / Windows: no service-container support, so postgres is absent
-  # and the db-tagged tests auto-skip via the conftest probe. These legs
-  # cover the db-less suite + platform-specific paths. Nightly only (or
+  # macOS: no service-container support, so postgres is absent and the
+  # db-tagged tests auto-skip via the conftest probe. This leg covers the
+  # db-less suite + platform-specific paths. Nightly only (or
   # `workflow_dispatch` with full=true) — off the ship gate since
-  # 2026-09-16 so two ships fit the runner cap (then 20 slots; now 40, Pro); `tests/test_posix_only_guards.py`
-  # is the compile-time stand-in for the Windows leg.
+  # 2026-09-16 so two ships fit the runner cap (then 20 slots; now 40, Pro).
+  # The Windows leg was dropped 2026-10-17 per Reto ("nothing but trouble");
+  # tests/test_posix_only_guards.py still walks the win32 skipif guards,
+  # which remain until a separate cleanup removes them.
   test-other:
     needs: plan
     if: needs.plan.outputs.full == 'true'
@@ -449,7 +454,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [macos-latest, windows-latest]
+        platform: [macos-latest]
         python-version: ['3.12', '3.13']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -463,7 +468,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       # Same extras rationale as test-linux; every subtracted-set package
-      # ships win_amd64 + macosx_arm64 wheels (checked against uv.lock),
+      # ships macosx_arm64 wheels (checked against uv.lock),
       # and the platform-gated ones (marker-pdf, tblite) carry their own
       # environment markers.
       - run: uv run --all-extras --no-extra catalyst --no-extra catalyst-gpu pytest

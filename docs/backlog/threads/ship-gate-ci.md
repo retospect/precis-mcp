@@ -150,13 +150,11 @@ nightly — the diff-cover verdict is still open.
    agents to read other worktrees; the harness refuses.
 8. **backlog/ruff-is-unpinned-across-worktrees.md** — a `ruff>=0.11` floor
    lets trees format differently, so qland lint drifts.
-9. **backlog/windows-ci-residuals.md** — Windows timing-flake watch after
-    the skipif pass.
-10. **backlog/piped-exit-guard-tuning.md** — guard-piped-exit-code
+9. **backlog/piped-exit-guard-tuning.md** — guard-piped-exit-code
     false-positive rate vs value; a decision, not a defect.
-11. **backlog/token-review-hook-gaps.md** — the bash-reflex nudge misses
+10. **backlog/token-review-hook-gaps.md** — the bash-reflex nudge misses
     real traffic; compact-thrash re-reads.
-12. **backlog/fleet-coordination-via-precis.md** — peer messages and
+11. **backlog/fleet-coordination-via-precis.md** — peer messages and
     wakeups cost a full ~250k-context turn each; consider moving the
     status relay into precis.
 
