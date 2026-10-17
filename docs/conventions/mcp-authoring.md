@@ -57,3 +57,20 @@ takes a `next=`: the cheapest honest one is the listing call.
 and Internal from the tool-call ledger (`tool_calls.error_head`) into
 gripes; an Internal cluster is classed `bug` (a server fault or an unmapped
 boundary). Upstream stays out: it is another system's outage.
+
+`scripts/hint-followthrough [--days N]` reports, per (verb, kind, error
+family), how often the same session's next call to that kind within 2 calls
+succeeded (SQL and grouping: `workers/call_errors.py::hint_followthrough`).
+Low ok% means the `next=` did not land.
+
+## Transient retry
+
+`dispatch` retries lock-not-available, pool-timeout, serialization and
+deadlock faults up to 3 tries with jittered backoff, only for calls that
+are safe to replay: `get`/`search` on local-database kinds (not kinds that
+call a paid or outside service), and `put(kind='job', idem_key=...)` (job
+puts dedupe on an active key). `edit`/`delete`/`tag`/`link` and any other
+`put` never replay, since a handler may have committed one step before the
+fault.
+A fault that persists surfaces as `Upstream` saying it was retried N times.
+Handlers do not retry on their own for these faults.

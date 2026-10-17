@@ -268,3 +268,84 @@ def test_dispatch_ledger_noop_without_store(runtime: PrecisRuntime) -> None:
     # ``_record_tool_call`` no-ops cleanly when ``self.store`` is None.
     body, is_error = runtime.dispatch_with_status("get", {"kind": "skill", "id": "toc"})
     assert isinstance(body, str)
+
+
+def test_tool_ledger_is_the_only_tool_calls_writer() -> None:
+    """One chokepoint: no module but ``tool_ledger`` inserts into
+    ``tool_calls`` (an empty-error_head row would come from a second path)."""
+    import re
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[1] / "src"
+    pat = re.compile(r"insert\s+into\s+tool_calls|copy\s+tool_calls", re.I)
+    hits = sorted(
+        str(p.relative_to(src))
+        for p in src.rglob("*.py")
+        if pat.search(p.read_text(encoding="utf-8"))
+    )
+    assert hits == ["precis/tool_ledger.py"]
+
+
+def test_every_error_path_fills_error_head_source_client(
+    runtime_with_store: PrecisRuntime, monkeypatch: Any
+) -> None:
+    """gr494831 (b): all tool_calls rows come from one writer
+    (``tool_ledger._write``) behind ``_record_tool_call``. An error row
+    reaches it by three dispatch branches (typed PrecisError, boundary-
+    mapped library fault, Internal fallback); each must carry error_head,
+    and source + client when known."""
+    import psycopg.errors as pge
+
+    from precis import serve_ledger
+    from precis.runtime import dispatch as d
+
+    monkeypatch.setenv("PRECIS_CURRENT_MODEL", "sonnet")
+    monkeypatch.setattr(d, "_retry_sleep", lambda _a: None)
+
+    class _Info:
+        name = "ledger-test"
+        version = "9"
+
+    class _Params:
+        clientInfo = _Info()
+        meta = None
+
+    class _Session:
+        client_params = _Params()
+
+    tag = uuid4().hex[:8]
+    calc = runtime_with_store.hub.handler_for("calc")
+    assert calc is not None
+    original = calc.get
+    with serve_ledger.session_scope(_Session()):
+        for exc in (pge.LockNotAvailable("x"), KeyError("y")):
+
+            def boom(_e: BaseException = exc, **_kw: object) -> None:
+                raise _e
+
+            calc.get = boom
+            try:
+                _, is_error = runtime_with_store.dispatch_with_status(
+                    "get", {"kind": "calc", "id": f"typed-{tag}"}
+                )
+            finally:
+                calc.get = original
+            assert is_error
+        _, is_error = runtime_with_store.dispatch_with_status(
+            "get", {"kind": f"no-such-kind-{tag}", "id": "1"}
+        )
+        assert is_error
+
+    store = runtime_with_store.store
+    assert store is not None
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT error_type, error_head, source, client FROM tool_calls "
+            "WHERE outcome='error' AND ts > now() - interval '1 minute' "
+            "AND client = 'ledger-test/9' ORDER BY call_id DESC LIMIT 3"
+        ).fetchall()
+    assert len(rows) == 3
+    for error_type, head, source, client in rows:
+        assert error_type and head and "error" in head
+        assert source == "sonnet"
+        assert client == "ledger-test/9"
