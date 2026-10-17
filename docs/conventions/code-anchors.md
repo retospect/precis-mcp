@@ -29,9 +29,9 @@ scripts/coderef check --bare <file>      # + UPGRADE nudges: bare file.py:line r
 ```
 
 - **Authoring:** grab the durable form from a line you're looking at —
-  `scripts/coderef anchor src/precis/dispatch.py:174` → `…::Hub.register_ability`.
+  `scripts/coderef anchor <file.py>:<line>` → `…::Hub.register_ability`.
 - **Reading/clicking:** `scripts/coderef resolve …::Hub.register_ability`
-  → `src/precis/dispatch.py:174` (jump to it). A bare `method` resolves too if it's
+  → `<file.py>:<line>` (jump to it). A bare `method` resolves too if it's
   unambiguous; otherwise the tool lists the candidates to qualify.
 - **Keeping it true:** `scripts/coderef check docs` (drift-only, tree-wide) flags
   any written anchor whose symbol no longer resolves — a renamed/removed symbol is

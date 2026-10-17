@@ -11,7 +11,9 @@
     A bare file.py:308 reference rots when anything above it moves. Write the
     repo-relative path plus the dotted qualified name; get it with
     scripts/coderef anchor file.py:LINE.
-  enforcers: []
+  enforcers:
+    - path: tests/test_convention_docs_anchors.py
+      what: "zero bare file.py:NNN refs in docs outside backlog/ and zero drifted coderef anchors"
 - id: code-anchors/citation-surfaces-only
   file: docs/conventions/code-anchors.md
   section: "Rules that keep it from rotting — or nagging"
@@ -28,7 +30,9 @@
   body: >-
     The precis python kind is for discovering a symbol the first time;
     citation checks must be deterministic and must not couple to a running MCP.
-  enforcers: []
+  enforcers:
+    - path: tests/test_convention_docs_anchors.py
+      what: "scripts/coderef may not import precis, mcp, httpx or requests"
 
 # --------------------------------------------------------------- container-ops
 - id: container-ops/wrapper-scripts-only
@@ -106,7 +110,9 @@
   body: >-
     Deploy bounces every daemon fleet-wide. scripts/ship only surfaces
     shipped-but-undeployed lag and never blocks on it or deploys.
-  enforcers: []
+  enforcers:
+    - path: tests/test_convention_ship_no_deploy.py
+      what: "textual scan: a scripts/ship command line invoking scripts/deploy or scripts/release fails"
 - id: container-ops/deploy-rollback-guard
   file: docs/conventions/container-ops.md
   section: "Ship vs deploy — surfacing lag, never auto-deploying"
@@ -337,8 +343,10 @@
   body: >-
     safe_fetch re-validates every redirect hop against private, loopback and
     link-local ranges. A raw httpx client with follow_redirects=True is an
-    SSRF. There is no static ban; reviewers check.
-  enforcers: []
+    SSRF. A static scan bans new unreasoned users; reviewers check the rest.
+  enforcers:
+    - path: tests/test_convention_safe_get.py
+      what: "AST scan of src: follow_redirects not literal False, or requests.<verb> calls, outside a reasoned file allowlist"
 - id: invariants/uv-for-everything
   file: docs/conventions/invariants.md
   section: null
@@ -361,7 +369,9 @@
     kind_gate.gate runs before __init__, so a missing var lands on the
     'Kinds unavailable:' banner with a reason. An inline os.environ guard in
     dispatch.boot short-circuits before _try and the kind vanishes from the banner.
-  enforcers: []
+  enforcers:
+    - path: tests/test_convention_kind_enablement.py
+      what: "an os.environ-read-gated if around _gated/_try in dispatch.py fails"
 - id: kind-enablement/requires-secret-for-credentials
   file: docs/conventions/kind-enablement.md
   section: "Secrets: `requires_secret` (vault-resolved credentials)"
@@ -369,7 +379,9 @@
   body: >-
     The gate checks each name via secrets.is_available (env then vault) before
     __init__; an unresolved secret shows as 'missing secret ...' on the banner.
-  enforcers: []
+  enforcers:
+    - path: tests/test_convention_kind_enablement.py
+      what: "first-arg literal get_secret/require_secret/reveal_unbound in handlers/*.py must be declared"
 - id: kind-enablement/init-error-shape
   file: docs/conventions/kind-enablement.md
   section: "When `requires_env` isn't enough"
@@ -458,7 +470,9 @@
   body: >-
     Use \unskip\nobreak\ before the bracketed footnotesize citation: unskip eats
     the typed space and nobreak puts back an unbreakable one.
-  enforcers: []
+  enforcers:
+    - path: tests/test_convention_poster_typography.py
+      what: "\\src must be defined starting \\unskip\\nobreak"
 - id: poster-typography/band-sizing
   file: docs/conventions/poster-typography.md
   section: null
@@ -466,7 +480,9 @@
   body: >-
     A band sizes to the glyph bounding box; \vphantom gives every line the same
     ascender and descender. \strut keys to baselineskip and grows every band.
-  enforcers: []
+  enforcers:
+    - path: tests/test_convention_poster_typography.py
+      what: "poster.tex+preamble.tex must contain \\vphantom{Ay} and no \\strut (file-wide)"
 - id: poster-typography/math-and-units
   file: docs/conventions/poster-typography.md
   section: null
@@ -595,7 +611,9 @@
     take-agent rebases the agent branch onto yours and merges --ff-only, and
     records it so ship reaps the tree after the land. A hand-copied diff leaves
     the agent branch unmerged forever. Unwanted work: take-agent --discard.
-  enforcers: []
+  enforcers:
+    - path: tests/test_take_agent.py
+      what: "take-agent fast-forwards the agent branch into the caller's branch"
 - id: shipping/resolve-rebase-conflicts-and-rerun
   file: docs/conventions/shipping.md
   section: "Sync, and agent branches"
@@ -766,7 +784,9 @@
     Also cut marketing phrases ('by design'), universal verb-contract
     restatement, migration trivia, UX-rendered affordance descriptions and
     primitives that mislead at scale.
-  enforcers: []
+  enforcers:
+    - path: tests/test_convention_skill_style.py
+      what: "11 named internals banned in skill bodies; per-file ratchet"
 - id: skill-authoring-style/drop-decorative-frontmatter
   file: docs/conventions/skill-authoring-style.md
   section: "What to cut"
@@ -774,7 +794,9 @@
   body: >-
     utils/skill_common.py::parse_frontmatter is the authoritative field list.
     Status is the front-matter field, never a '## Status' body section.
-  enforcers: []
+  enforcers:
+    - path: tests/test_convention_skill_style.py
+      what: "decorative front-matter keys and a '## Status' body heading fail; 5 legacy last-updated lines are ratcheted"
 - id: skill-authoring-style/goal-voice-h2
   file: docs/conventions/skill-authoring-style.md
   section: "H2 voice"
@@ -822,7 +844,9 @@
     Eight repeats of one concrete slug bury the lesson. No 'Not yet'
     negative-laundry sections and no Note/Important/Tip callouts; fix a
     confusing runtime error instead of papering over it in the skill.
-  enforcers: []
+  enforcers:
+    - path: tests/test_convention_skill_style.py
+      what: "'Not yet' headings and Note:/Important:/Tip: callouts in skills fail"
 - id: skill-authoring-style/skill-size-frames
   file: docs/conventions/skill-authoring-style.md
   section: null
@@ -869,7 +893,9 @@
     paramstyle, a literal % in LIKE, or a renamed column. Add a
     tests/precis_web/test_<module>_sql.py companion, with adversarial input
     (%, _, quotes), in the same change.
-  enforcers: []
+  enforcers:
+    - path: tests/test_convention_raw_sql_companion.py
+      what: "a new precis_web module with raw SQL and no tests/precis_web/test_<module>_sql.py fails; 18 grandfathered"
 - id: testing/changed-lines-must-run
   file: docs/conventions/testing.md
   section: "Coverage posture: diff-gated, never %-tracked"
@@ -913,7 +939,9 @@
   body: >-
     A degeneracy test asserting area == 0.0 passed vacuously against triangles
     of area 9e-23.
-  enforcers: []
+  enforcers:
+    - path: tests/test_no_float_equality_in_numeric_tests.py
+      what: "== 0.0 style asserts in numeric suites fail"
 - id: testing/posix-and-encoding-portability
   file: docs/conventions/testing.md
   section: "What `scripts/test` actually does"
