@@ -1,13 +1,12 @@
 ---
-status: ready
+status: in-progress
 title: LaTeX and DOCX export parity — one shared walker, two renderers
 pillar: memory-graph
 prio: normal
 ---
 
-READY FOR REVIEW. Reto approved direction 2026-10-17; build after Wave 1.
-(`status: ready` is the nearest value `scripts/backlog-lint` allows for
-"ready-for-review"; the fixer must not pick this up before Wave 1 ends.)
+APPROVED by Reto 2026-10-17 (spec stands as written, Stage B included).
+Building in `g-export-parity`, one landing per slice. Slices landed: none.
 
 # LaTeX and DOCX export parity
 
