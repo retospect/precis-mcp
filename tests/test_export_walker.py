@@ -14,8 +14,8 @@ import pytest
 
 docx = pytest.importorskip("docx")
 
+from precis.export import _abbrev, latex, walker
 from precis.export import docx as dx
-from precis.export import latex, walker
 
 _PROTOCOL = sorted(
     name
@@ -28,11 +28,18 @@ _SAMPLES: dict[str, Any] = {
     "cite_group": walker.CiteGroup(
         ("smith20", "jones21"), (1, 2), (False, False), (None, None)
     ),
+    "term": _abbrev.Use("MOF", mode="first"),
 }
+
+_ABBREVS = {"MOF": "metal-organic framework"}
 
 
 def _latex_output(method: str) -> str:
-    ctx = latex._Ctx(keymap={}, known_handles=set())
+    ctx = latex._Ctx(
+        keymap=latex._acronym_keymap(_ABBREVS),
+        abbrevs=dict(_ABBREVS),
+        known_handles=set(),
+    )
     sink: list[str] = []
     getattr(latex.LatexRenderer(ctx), method)(sink, _SAMPLES[method])
     return "".join(sink)
@@ -42,6 +49,7 @@ def _docx_output(method: str) -> str:
     ctx = dx._Ctx(
         store=None,
         known_handles=set(),
+        abbrevs=dict(_ABBREVS),
         library_label="x",
         library_search_url="x",
     )
@@ -70,6 +78,23 @@ def test_both_backends_implement_and_emit(method: str) -> None:
 def test_cite_group_formats_only() -> None:
     assert _latex_output("cite_group") == r"\cite{smith20,jones21}"
     assert _docx_output("cite_group") == "[1, 2]"
+
+
+def test_term_formats_only() -> None:
+    assert _latex_output("term") == r"\gls{mof}"
+    assert _docx_output("term") == "metal-organic framework (MOF)"
+
+
+def test_term_segments_defines_once_and_never_in_a_heading() -> None:
+    seen: set[str] = set()
+    used: set[str] = set()
+    head = walker.term_segments("MOF", _ABBREVS, seen, used, preceding="", heading=True)
+    assert head == [_abbrev.Use("MOF", mode="bare")] and not seen
+    body = walker.term_segments(
+        "a MOF and MOF", _ABBREVS, seen, used, preceding="", heading=False
+    )
+    assert [s.mode for s in body if isinstance(s, _abbrev.Use)] == ["first", "later"]
+    assert seen == used == {"MOF"}
 
 
 def _g(*keys: str, si: bool = False) -> walker.CiteGroup:

@@ -1025,9 +1025,9 @@ def _emit_text(text: str, ctx: _Ctx, paragraph: Any) -> None:
     """Plain prose → runs, with **render-time first-use expansion** of
     known abbreviations: the first occurrence (in reading order) of a
     defined short becomes ``Long Form (SHORT)``; later ones stay ``SHORT``.
-    The matching is :func:`precis.export._abbrev.expand`, shared with the
-    LaTeX ``\\gls`` path so the two formats define the same occurrence;
-    it survives chunk reordering because it's computed here at export.
+    The matching is :func:`walker.term_segments`, shared with the LaTeX
+    ``\\gls`` path so the two formats define the same occurrence; it
+    survives chunk reordering because it's computed here at export.
 
     An author-escaped ``\\$`` (the lint's advice for literal money
     dollars) renders as the bare ``$`` — Word has no escape syntax.
@@ -1038,7 +1038,7 @@ def _emit_text(text: str, ctx: _Ctx, paragraph: Any) -> None:
     text = _BARE_HANDLE.sub(lambda m: _bare_handle_text(m.group(0), ctx), text)
     if not text:
         return
-    segments = _abbrev.expand(
+    segments = walker.term_segments(
         text,
         ctx.abbrevs,
         ctx.seen_acr,
@@ -1046,10 +1046,12 @@ def _emit_text(text: str, ctx: _Ctx, paragraph: Any) -> None:
         preceding=paragraph.text,
         heading=ctx.in_heading,
     )
+    renderer = DocxRenderer(ctx)
     for seg in segments:
-        paragraph.add_run(
-            seg if isinstance(seg, str) else _abbrev.plain(seg, ctx.abbrevs)
-        )
+        if isinstance(seg, str):
+            paragraph.add_run(seg)
+        else:
+            renderer.term(paragraph, seg)
 
 
 def _render_math(span: str, paragraph: Any) -> None:
@@ -1587,6 +1589,11 @@ class DocxRenderer:
             sink.add_run(" (SI)").font.superscript = True
         for slug in group.keys:
             _cite_link_group(slug, ctx, sink)
+
+    def term(self, sink: Any, use: _abbrev.Use) -> None:
+        """``Long Form (SHORT)`` for a definition, the bare short otherwise
+        (:func:`precis.export._abbrev.plain`)."""
+        sink.add_run(_abbrev.plain(use, self.ctx.abbrevs))
 
 
 def _resolve_source(store: RefLookupStore, slug: str) -> dict[str, Any] | None:

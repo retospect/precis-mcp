@@ -786,17 +786,19 @@ def _glsify(
     use)."""
     if not ctx.keymap:
         return text
+    # Only a short with a glossary key can become a \gls call.
     abbrevs = {s: ctx.abbrevs.get(s, "") for s in ctx.keymap if s}
     out: list[str] = []
-    for seg in _abbrev.expand(
+    renderer = LatexRenderer(ctx)
+    for seg in walker.term_segments(
         text, abbrevs, ctx.seen_acr, preceding=preceding, heading=ctx.in_heading
     ):
         if isinstance(seg, str):
             out.append(seg)
             continue
-        if seg.mode == "bare" and ctx.keymap[seg.short] not in ctx.heading_keys:
-            ctx.heading_keys.append(ctx.keymap[seg.short])
-        out.append(stash(_gls_use(seg, ctx.keymap)))
+        tex: list[str] = []
+        renderer.term(tex, seg)
+        out.append(stash("".join(tex)))
     return "".join(out)
 
 
@@ -1482,6 +1484,15 @@ class LatexRenderer:
 
     def cite_group(self, sink: list[str], group: walker.CiteGroup) -> None:
         sink.append(_cite_tex(group) + _cite_link_group(list(group.keys), self.ctx))
+
+    def term(self, sink: list[str], use: _abbrev.Use) -> None:
+        """The glossary call (:func:`_gls_use`). A bare heading use is
+        ``\\glsfmtshort``, which does not index, so its key is queued for
+        the ``\\glsadd`` after the heading (:func:`_heading_glsadd`)."""
+        key = self.ctx.keymap[use.short]
+        if use.mode == "bare" and key not in self.ctx.heading_keys:
+            self.ctx.heading_keys.append(key)
+        sink.append(_gls_use(use, self.ctx.keymap))
 
 
 def _cite(slug: str, ctx: _Ctx, *, si: bool = False) -> str:

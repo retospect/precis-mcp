@@ -19,14 +19,16 @@ else none" lookup both exporters memoize per export; the pure URL
 builders live in :mod:`precis.utils.paper_links`.
 
 Abbreviation first-use expansion: :mod:`._abbrev` is the one matcher both
-exporters call (which occurrence defines a short, what is left alone);
-each exporter only renders the result (docx text, LaTeX ``\\gls``).
+exporters reach through :func:`.walker.term_segments` (which occurrence
+defines a short, what is left alone); each exporter only renders the
+result (docx text, LaTeX ``\\gls``).
 
 Shared walker (:mod:`.walker`, docs/backlog/export-latex-docx-parity.md):
 the decisions both document backends must agree on, moved there family by
 family; each backend is a ``Renderer`` that only formats. Citations
-(numbering, SI resolution, grouping) are there now. Every move is checked
-byte-for-byte against ``tests/fixtures/export/golden/``."""
+(numbering, SI resolution, grouping) and abbreviation uses are there now.
+Every move is checked byte-for-byte against
+``tests/fixtures/export/golden/``."""
 
 from __future__ import annotations
 

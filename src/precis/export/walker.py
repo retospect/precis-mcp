@@ -33,6 +33,11 @@ Citations:
   walks (:class:`CiteRun`, which collapses consecutive cites of one paper
   across whitespace). Unifying the two is an output change and gets its own
   commit.
+
+Abbreviations: :func:`term_segments` decides which occurrence defines a
+short (first use in reading order, nested long forms, never in a heading;
+the rules are :mod:`precis.export._abbrev`'s); :meth:`Renderer.term`
+only formats each use (``\\gls`` family; ``long (SHORT)`` text).
 """
 
 from __future__ import annotations
@@ -41,6 +46,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from precis.export import _abbrev
 from precis.store.si_links import SI_PDF_ROLE, cite_target_for
 
 
@@ -69,6 +75,32 @@ class Renderer(Protocol):
 
     def cite_group(self, sink: Any, group: CiteGroup) -> None:
         """Format one citation mark and its link group."""
+
+    def term(self, sink: Any, use: _abbrev.Use) -> None:
+        """Format one abbreviation use: a definition (``mode='first'``,
+        possibly a ``pair``), a later use, a bare heading use, or an
+        authored definition that only marks the short defined."""
+
+
+def term_segments(
+    text: str,
+    abbrevs: dict[str, str],
+    seen: set[str],
+    used: set[str] | None = None,
+    *,
+    preceding: str | None,
+    heading: bool,
+) -> list[_abbrev.Segment]:
+    """Split one prose run into literal text and abbreviation uses, deciding
+    which occurrence defines a short (:func:`precis.export._abbrev.expand`,
+    gr491599). ``seen`` (defined shorts) and ``used`` (shorts that occurred)
+    thread through the whole export in reading order; ``preceding`` is the
+    paragraph text already rendered before ``text``; in a heading every use
+    is bare and defines nothing. Literal strings go out as prose; each
+    :class:`~precis.export._abbrev.Use` goes to :meth:`Renderer.term`."""
+    return _abbrev.expand(
+        text, abbrevs, seen, used, preceding=preceding, heading=heading
+    )
 
 
 def register(cited: list[str], key: str) -> int:
