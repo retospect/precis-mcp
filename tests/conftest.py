@@ -377,31 +377,33 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
 
 
-def _load_shard_pins() -> tuple[int, dict[str, int]]:
-    """``(n, {nodeid: 0-based shard})`` from tests/shard_weights.json, the
-    time-balanced pins for the slow tests (scripts/shard-weights regenerates
-    it). Missing file → no pins."""
+def _load_shard_pins() -> dict[int, dict[str, int]]:
+    """``{n: {nodeid: 0-based shard}}`` from tests/shard_weights.json, the
+    time-balanced pins for the slow tests, one table per shard count the gate
+    can run (scripts/shard-weights regenerates it; scripts/ci-shard-plan picks
+    the count). Missing file → no pins."""
     path = Path(__file__).parent / "shard_weights.json"
     if not path.exists():
-        return 0, {}
+        return {}
     data = json.loads(path.read_text(encoding="utf-8"))
-    return int(data["n"]), {k: int(v) for k, v in data["pinned"].items()}
+    return {
+        int(n): {k: int(v) for k, v in t.items()} for n, t in data["tables"].items()
+    }
 
 
-_SHARD_PIN_N, _SHARD_PINS = _load_shard_pins()
+_SHARD_PINS = _load_shard_pins()
 
 
 def shard_index(nodeid: str, n: int) -> int:
     """0-based shard for ``nodeid`` under an ``n``-way split. Slow tests are
-    pinned by shard_weights.json (only when ``n`` matches the table's N);
+    pinned by shard_weights.json (only when it has a table for ``n``);
     every other id is crc32, not ``hash()``: Python salts str hashes per
     process, and xdist workers each collect independently — every process
     must agree on the partition. Each id maps to exactly one shard, so the
     shards partition the suite whatever the pins say."""
-    if n == _SHARD_PIN_N:
-        pinned = _SHARD_PINS.get(nodeid)
-        if pinned is not None:
-            return pinned
+    pinned = _SHARD_PINS.get(n, {}).get(nodeid)
+    if pinned is not None:
+        return pinned
     return zlib.crc32(nodeid.encode("utf-8")) % n
 
 

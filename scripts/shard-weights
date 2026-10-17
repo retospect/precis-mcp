@@ -2,13 +2,13 @@
 """Regenerate tests/shard_weights.json from a pytest junit-xml full-suite run.
 
     scripts/test --bg --junitxml=.scratch/junit.xml -q    # full suite
-    scripts/shard-weights .scratch/junit.xml
+    scripts/shard-weights .scratch/junit.xml [more-runs.xml ...]
 
 Tests that took >= HEAVY seconds are pinned to shards by greedy
 longest-first packing on top of the crc32 load of all the light tests;
 everything else (and any test added later) keeps hashing, so the partition
-stays exact (tests/conftest.py shard_index). Re-run when a shard drifts
-past ~30 min in check.yml.
+stays exact (tests/conftest.py shard_index). One table per shard count scripts/ci-shard-plan can pick. Re-run when a
+shard drifts past ~30 min in check.yml.
 """
 
 from __future__ import annotations
@@ -21,12 +21,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "tests" / "shard_weights.json"
-N = 6
+NS = (10, 12)  # scripts/ci-shard-plan's LOADED, IDLE
 HEAVY = 1.0
 
 
 def nodeid(classname: str, name: str) -> str | None:
-    parts = classname.split(".")
+    parts = [p for p in classname.split(".") if p]
     for i in range(len(parts), 0, -1):
         path = Path(*parts[:i]).with_suffix(".py")
         if (ROOT / path).exists():
@@ -34,29 +34,41 @@ def nodeid(classname: str, name: str) -> str | None:
     return None
 
 
-def main(argv: list[str]) -> int:
-    times: dict[str, float] = {}
-    for tc in ET.parse(argv[1]).getroot().iter("testcase"):
-        nid = nodeid(tc.get("classname", ""), tc.get("name", ""))
-        if nid:
-            times[nid] = times.get(nid, 0.0) + float(tc.get("time", 0))
-    load = [0.0] * N
+def pack(times: dict[str, float], n: int) -> tuple[dict[str, int], list[float]]:
+    load = [0.0] * n
     heavy: list[tuple[float, str]] = []
     for nid, t in times.items():
         if t >= HEAVY:
             heavy.append((t, nid))
         else:
-            load[zlib.crc32(nid.encode("utf-8")) % N] += t
+            load[zlib.crc32(nid.encode("utf-8")) % n] += t
     pinned: dict[str, int] = {}
     for t, nid in sorted(heavy, key=lambda x: (-x[0], x[1])):
-        k = min(range(N), key=lambda i: (load[i], i))
+        k = min(range(n), key=lambda i: (load[i], i))
         load[k] += t
         pinned[nid] = k
-    OUT.write_text(
-        json.dumps({"n": N, "pinned": dict(sorted(pinned.items()))}, indent=0) + "\n",
-        encoding="utf-8",
-    )
-    print("estimated shard load (junit-minutes):", [round(x / 60, 1) for x in load])
+    return dict(sorted(pinned.items())), load
+
+
+def main(argv: list[str]) -> int:
+    # Several junit files (one per run, or one per shard of a run) are merged;
+    # a test seen in k RUNS is averaged over them, which damps runner-speed noise.
+    per_run: dict[str, list[float]] = {}
+    for path in argv[1:]:
+        seen: dict[str, float] = {}
+        for tc in ET.parse(path).getroot().iter("testcase"):
+            nid = nodeid(tc.get("classname", ""), tc.get("name", ""))
+            if nid:
+                seen[nid] = seen.get(nid, 0.0) + float(tc.get("time", 0))
+        for nid, t in seen.items():
+            per_run.setdefault(nid, []).append(t)
+    times = {nid: sum(v) / len(v) for nid, v in per_run.items()}
+    tables: dict[str, dict[str, int]] = {}
+    for n in NS:
+        pinned, load = pack(times, n)
+        tables[str(n)] = pinned
+        print(f"estimated shard load N={n} (junit-minutes):", [round(x / 60, 1) for x in load])
+    OUT.write_text(json.dumps({"tables": tables}, indent=0) + "\n", encoding="utf-8")
     return 0
 
 

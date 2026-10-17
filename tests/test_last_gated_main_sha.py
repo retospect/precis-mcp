@@ -616,10 +616,14 @@ def test_five_green_shards_are_not_enough(
 def test_nightly_shape_all_green_counts(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A sha the nightly also ran carries 2 lint + 18 test-linux runs. "At
-    least six", not "exactly six"."""
+    """A sha the nightly also ran carries 2 lint + 3.13 and 3.12 legs on top of
+    the gate's. Every Python's legs must still form a complete 1..N set."""
     mod = _load()
-    nightly = _shards(n=18) + [_run_node("lint", "SUCCESS", 2)]
+    nightly = (
+        _shards(n=10)
+        + [_run_node(f"test-linux (3.12, {i})", "SUCCESS", 2) for i in range(1, 11)]
+        + [_run_node("lint", "SUCCESS", 2)]
+    )
     _stub(mod, monkeypatch, {GATED: nightly})
     assert mod.main([]) == 0
     assert capsys.readouterr().out.strip() == GATED
@@ -629,11 +633,55 @@ def test_one_red_nightly_leg_disqualifies_the_sha(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     mod = _load()
-    nightly = _shards(n=18)
-    nightly[17]["conclusion"] = "FAILURE"
+    nightly = _shards(n=10)
+    nightly[9]["conclusion"] = "FAILURE"
     _stub(mod, monkeypatch, {BURST: nightly, GATED: _shards()})
     assert mod.main([]) == 0
     assert capsys.readouterr().out.strip() == GATED
+
+
+@pytest.mark.parametrize("n", [6, 10, 12])
+def test_any_planned_shard_count_complete_and_green_is_a_verdict(n: int) -> None:
+    assert _load().is_green(_shards(n=n))
+
+
+@pytest.mark.parametrize("n", [6, 10, 12])
+def test_incomplete_or_cancelled_matrix_is_not_a_verdict(n: int) -> None:
+    mod = _load()
+    missing = _shards(n=n)
+    del missing[n // 2]  # one shard never reported
+    assert not mod.is_green(missing)
+    cancelled = _shards(n=n)
+    cancelled[0]["conclusion"] = "CANCELLED"
+    assert not mod.is_green(cancelled)
+    # a count the planner cannot emit (7 of a 10 matrix) is not enough
+    assert not mod.is_green(_shards(n=7))
+
+
+@pytest.mark.parametrize("change", ["complete", "missing-shard", "cancelled-shard"])
+def test_exact_verdict_ten_shard_matrix(
+    monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    mod = _load()
+    runs = _completed(_shards(n=10))
+    if change == "missing-shard":
+        runs = [r for r in runs if r["name"] != "test-linux (3.13, 4)"]
+    elif change == "cancelled-shard":
+        runs[3]["conclusion"] = "CANCELLED"
+    monkeypatch.setattr(
+        mod,
+        "_run",
+        lambda *a: (
+            _exact_response(GATED, runs) if a[2] == "graphql" else _exact_jobs(runs)
+        ),
+    )
+    facts = mod.exact_verdict(GATED)
+    if change == "complete":
+        assert facts["candidate"] == GATED
+        assert facts["candidate_state"] == "found"
+    else:
+        assert facts["candidate"] == ""
+        assert facts["candidate_state"] == "release_not_green"
 
 
 def test_in_flight_run_is_not_a_verdict(
@@ -898,23 +946,33 @@ def test_help_prints_the_docstring(
     assert "exit 2, empty" in out and "not a crash" in out
 
 
-# -- the 6 is spelled in check.yml; the constant must follow it ---------------
+# -- the shard counts are chosen by scripts/ci-shard-plan; the constant follows
 
 
-def test_gate_shards_matches_the_check_yml_matrix() -> None:
-    """GATE_SHARDS is the test-linux `shard:` list length in check.yml, and the
-    `pytest --shard K/N` denominator. Parsed from the workflow's YAML, not a
-    literal: add a shard there and this reddens until the constant follows."""
+def test_gate_shard_counts_match_ci_shard_plan() -> None:
+    """GATE_SHARD_COUNTS covers every count scripts/ci-shard-plan can emit (plus 6, the
+    pre-gr492653 history),
+    and check.yml's matrix and `pytest --shard K/N` denominator both read the
+    plan job's output. Add a count there and this reddens until the constant
+    follows."""
     mod = _load()
+    tmp = Path(tempfile.mkdtemp(prefix="ci_shard_plan_")) / "ci_shard_plan.py"
+    shutil.copyfile(REPO / "scripts" / "ci-shard-plan", tmp)
+    spec = importlib.util.spec_from_file_location("ci_shard_plan", tmp)
+    assert spec is not None and spec.loader is not None
+    plan = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(plan)
+    assert {plan.LOADED, plan.IDLE} <= set(mod.GATE_SHARD_COUNTS)
     wf = yaml.safe_load(
         (REPO / ".github" / "workflows" / "check.yml").read_text(encoding="utf-8")
     )
     job = wf["jobs"]["test-linux"]
-    shards = job["strategy"]["matrix"]["shard"]
-    assert isinstance(shards, list)
-    assert len(shards) == mod.GATE_SHARDS
+    assert "shard_list" in job["strategy"]["matrix"]["shard"]
     runs = [s.get("run", "") for s in job["steps"] if isinstance(s, dict)]
-    assert any(f"--shard ${{{{ matrix.shard }}}}/{mod.GATE_SHARDS}" in r for r in runs)
+    assert any(
+        "--shard ${{ matrix.shard }}/${{ needs.plan.outputs.shards }}" in r
+        for r in runs
+    )
 
 
 # -- check.yml: release/** trigger and concurrency ---------------------------

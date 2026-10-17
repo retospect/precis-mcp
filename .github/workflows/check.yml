@@ -40,6 +40,10 @@ on:
         description: run the full matrix (3.12 + macOS + Windows), not the ship-gate shape
         type: boolean
         default: false
+      shards:
+        description: force the shard count (10 or 12) instead of picking from load; for measuring a mode
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -72,16 +76,23 @@ permissions:
 # Main's shared group above is unchanged.
 #
 # Job budget: the account is GitHub Pro, standard-runner concurrency cap 40.
-# The ship-gate shape is 8 jobs (plan + lint + 6 shards of one Linux leg), so
-# FIVE gates fan out fully at once; a sixth queues behind them rather than
-# failing. The nightly full shape is 19 (plan + lint + coverage-db + 4
-# test-other + 2 Pythons x 6 shards), so nightly + two overlapping gates is
-# 19 + 16 = 35 <= 40, and a third gate waits. Why 6 and not 12 shards: 12
-# means 14 jobs per gate (two fit, not five) and every shard repeats its
-# setup, so job-minutes per landing rise ~35% and queue throughput falls
-# while the fleet saturates the cap. Balance the 6 by time instead
-# (tests/shard_weights.json, see conftest.shard_index); adding shards or legs
-# past this budget costs concurrent gates — re-do the arithmetic here and in
+# The shard count is picked per run by scripts/ci-shard-plan from the live
+# queued + in-progress check.yml run count (gr492653): 12 shards when at most
+# one other run is active, else 10. A 12-shard gate is 14 jobs (plan + lint +
+# 12), so two idle-mode gates fit (28); beside the nightly it can overshoot by
+# a job or two, which queues rather than fails. A 10-shard gate is 12 jobs, so
+# THREE gates fan out at once and a fourth queues. The nightly full shape is
+# 27 jobs (plan + lint + coverage-db + 4 test-other + 2 Pythons x 10 shards),
+# so nightly + one gate is 39 <= 40. Why not 6 or 8 under load: measured shards
+# (2026-10-16) ran 32-40 min with 6 and 32-36 min with 8 against the 40 min
+# timeout-minutes (a timeout reads as 'cancelled'); identical shards differ by
+# ~30% with runner speed alone, so headroom has to be bought with shards. Why
+# not 12 always: 14 jobs per gate (two fit, not three) and every shard
+# repeats its setup, so job-minutes per landing rise ~35% and queue throughput
+# falls while the fleet saturates the cap (e94cfe674, reverted 94df07003).
+# Balance each count by time (tests/shard_weights.json, one table per count,
+# see conftest.shard_index); adding counts, shards or legs past this budget
+# costs concurrent gates — re-do the arithmetic here and in
 # tests/test_ci_shards.py first.
 #
 # The group key carries the run's SHAPE, not just the ref, so the nightly
@@ -92,8 +103,8 @@ permissions:
 # schedule above exists to prevent (gr346455; latent, never observed —
 # ships cluster hours earlier). `workflow_dispatch` with full=true rides the
 # same lane, so a deliberately-dispatched full run is likewise un-cancellable
-# by a push. Cost of the split: the two shapes now coexist (19 + 8 per gate, two
-# gates fit beside the nightly), and a gate beyond that waits rather than
+# by a push. Cost of the split: the two shapes now coexist (27 + 12 per gate, one
+# gate fits beside the nightly), and a gate beyond that waits rather than
 # pre-empting anything (well inside ship's 150 min CI timeout, and a CAS race
 # lost while queued re-runs CI per gr343941).
 concurrency:
@@ -112,7 +123,8 @@ jobs:
   #               are deliberately NOT docs here — skills are served and
   #               tested at runtime, scripts are executed by tests, and the
   #               .claude hooks are shell that tests exercise.
-  # Anything else is the ship-gate shape: lint + 6 shards of 3.13 Linux.
+  # Anything else is the ship-gate shape: lint + 10 (or 12 when idle) shards
+  # of 3.13 Linux (the `shards` step below).
   plan:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -121,9 +133,13 @@ jobs:
     permissions:
       contents: read
       checks: read
+      # actions: read for the live queued/in-progress run count (`shards`).
+      actions: read
     outputs:
       full: ${{ steps.shape.outputs.full }}
       docs_only: ${{ steps.shape.outputs.docs_only }}
+      shards: ${{ steps.shards.outputs.n }}
+      shard_list: ${{ steps.shards.outputs.list }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -194,6 +210,15 @@ jobs:
           echo "shape: event=$EVENT full=$full docs_only=$docs_only range=${range:-none}"
           echo "full=$full" >> "$GITHUB_OUTPUT"
           echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+      # Shard count from live load (gr492653): 12 when this run is nearly
+      # alone on the account, else 6. See the job-budget note above.
+      - id: shards
+        env:
+          FULL: ${{ steps.shape.outputs.full }}
+          FORCE_SHARDS: ${{ inputs.shards }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: python3 scripts/ci-shard-plan >> "$GITHUB_OUTPUT"
 
   lint:
     runs-on: ubuntu-latest
@@ -243,10 +268,10 @@ jobs:
     strategy:
       fail-fast: false
       # Nightly: cap test-linux so nightly + one gate stays <= 40 (budget above).
-      max-parallel: ${{ needs.plan.outputs.full == 'true' && 19 || 12 }}
+      max-parallel: ${{ needs.plan.outputs.full == 'true' && 20 || 12 }}
       matrix:
         python-version: ${{ needs.plan.outputs.full == 'true' && fromJSON('["3.12", "3.13"]') || fromJSON('["3.13"]') }}
-        shard: [1, 2, 3, 4, 5, 6]
+        shard: ${{ fromJSON(needs.plan.outputs.shard_list) }}
     services:
       postgres:
         # pgvector image so the `vector` extension is present; the
@@ -303,9 +328,18 @@ jobs:
       # (test_nm_sugars' rdkit-primary-path assertion, and test_rxn's
       # q='CCO' search, which only matches the rdkit-CANONICALISED
       # ethanol; the raw fixture SMILES spells it OCC).
-      - run: uv run --all-extras --no-extra catalyst --no-extra catalyst-gpu pytest --shard ${{ matrix.shard }}/6
+      - run: uv run --all-extras --no-extra catalyst --no-extra catalyst-gpu pytest --shard ${{ matrix.shard }}/${{ needs.plan.outputs.shards }} --junitxml=junit.xml
         env:
           PRECIS_TEST_PG_URL: postgresql://postgres:postgres@localhost:5432/precis_test
+      # Per-test timings for scripts/shard-weights (a finished shard only; a
+      # timed-out one writes nothing). Short retention: it is a rebalancing input.
+      - if: always() && matrix.python-version == '3.13'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: junit-${{ needs.plan.outputs.shards }}-${{ matrix.shard }}
+          path: junit.xml
+          retention-days: 7
+          if-no-files-found: ignore
 
   # Docs-only lane: replaces the shard matrix when `plan` saw nothing but
   # docs/ + root *.md. Runs the fast set (`not db and not slow`, no

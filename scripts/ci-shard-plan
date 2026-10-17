@@ -1,0 +1,82 @@
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
+"""Pick the ship gate's test-linux shard count from live runner load (gr492653).
+
+Prints ``n=<N>`` and ``list=<[1..N]>`` for $GITHUB_OUTPUT. check.yml's `plan`
+job runs it once per run and the shard matrix, ``pytest --shard K/N`` and
+max-parallel all follow it.
+
+  12 shards when at most IDLE_MAX *other* check.yml runs are queued or in
+     progress (a 12-shard gate is 14 jobs; beside one other gate, or the
+     19-job nightly, that is still <= the Pro cap of 40);
+  10 shards under load (a 12-job gate: three fit), for the nightly full
+     shape, and whenever the count cannot be read. Not 6 or 8: measured shards ran
+     32-40 min (6) and 32-36 min (8) of the 40 min timeout, no headroom.
+
+Both counts have weights tables in tests/shard_weights.json; adding a third
+needs a table there, GATE_SHARD_COUNTS in scripts/last-gated-main-sha, and the
+budget arithmetic in tests/test_ci_shards.py.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+
+LOADED = 10
+IDLE = 12
+IDLE_MAX = 1  # other active runs tolerated before we call the account loaded
+
+
+def choose(full: bool, others: int | None) -> int:
+    """Shard count for a run with ``others`` other active runs (None = unknown)."""
+    if full or others is None or others > IDLE_MAX:
+        return LOADED
+    return IDLE
+
+
+def count_others(repo: str) -> int | None:
+    """Queued + in-progress check.yml runs besides this one; None on any error."""
+    total = 0
+    for status in ("queued", "in_progress"):
+        try:
+            out = subprocess.run(
+                [
+                    "gh",
+                    "api",
+                    f"repos/{repo}/actions/workflows/check.yml/runs"
+                    f"?status={status}&per_page=1",
+                    "--jq",
+                    ".total_count",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=True,
+                timeout=60,
+            ).stdout
+            total += int(out.strip())
+        except (subprocess.SubprocessError, ValueError, OSError):
+            return None
+    return max(total - 1, 0)  # this run is itself in progress
+
+
+def main() -> int:
+    forced = os.environ.get("FORCE_SHARDS", "")
+    if forced in (str(LOADED), str(IDLE)):  # workflow_dispatch `shards` input
+        n = int(forced)
+        print(f"n={n}")
+        print(f"list={json.dumps(list(range(1, n + 1)))}")
+        return 0
+    full = os.environ.get("FULL") == "true"
+    others = None if full else count_others(os.environ.get("REPO", ""))
+    n = choose(full, others)
+    print(f"shard plan: full={full} others={others} -> {n}", file=sys.stderr)
+    print(f"n={n}")
+    print(f"list={json.dumps(list(range(1, n + 1)))}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

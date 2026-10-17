@@ -21,7 +21,7 @@ over-gating.
   scripts/last-gated-main-sha --exact <sha>  # one JSON verdict + age, no history walk
 
 Verdict rule for a sha: at least one check-run named exactly `lint`, every
-`lint` run SUCCESS; AND at least GATE_SHARDS (6) check-runs whose name starts
+`lint` run SUCCESS; AND at least GATE_SHARDS (6; a 12-shard gate has more) check-runs whose name starts
 with `test-linux`, every one SUCCESS. "At least", not "exactly": a sha the
 nightly also ran carries 18 test-linux runs (3.12 + 3.13 legs on top of the
 gate's six) and 2 lint runs. "Every" is across all check suites on the sha, so
@@ -88,6 +88,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
@@ -96,9 +97,11 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# check.yml's test-linux gate shape: shard: [1..6] and `pytest --shard K/6`.
-# tests/test_last_gated_main_sha.py pins this against the workflow.
-GATE_SHARDS = 6
+# check.yml's test-linux gate shape: scripts/ci-shard-plan picks 10 or 12 shards
+# per run (`pytest --shard K/N`). tests/test_last_gated_main_sha.py pins this
+# against scripts/ci-shard-plan.
+GATE_SHARD_COUNTS = (6, 10, 12)  # 6: shas gated before gr492653
+GATE_SHARDS = min(GATE_SHARD_COUNTS)
 
 # How far back to look: by commit date, capped by commit count. Sized to the
 # real commit rate (368 on main in 48 h), not to "a burst".
@@ -223,9 +226,11 @@ def exact_verdict(sha: str) -> dict[str, Any]:
             or str(j.get("name", "")).startswith("test-linux")
         ]
         names = [j["name"] for j in required]
-        gate = {"lint", *(f"test-linux (3.13, {i})" for i in range(1, GATE_SHARDS + 1))}
-        full = gate | {f"test-linux (3.12, {i})" for i in range(1, GATE_SHARDS + 1)}
-        if len(names) != len(set(names)) or set(names) not in (gate, full):
+        shapes = []
+        for n in GATE_SHARD_COUNTS:
+            gate = {"lint", *(f"test-linux (3.13, {i})" for i in range(1, n + 1))}
+            shapes += [gate, gate | {f"test-linux (3.12, {i})" for i in range(1, n + 1)}]
+        if len(names) != len(set(names)) or set(names) not in shapes:
             return facts
         if any(
             j.get("status") != "completed" or j.get("conclusion") != "success"
@@ -359,6 +364,22 @@ def fetch_page(since: str, after: str | None) -> dict[str, Any] | None:
     return history
 
 
+def _shard_sets_complete(shards: list[Run]) -> bool:
+    """Every Python's `test-linux (PY, K)` indices must form exactly 1..N for
+    some N in GATE_SHARD_COUNTS (duplicates from a second run on the sha are
+    fine). A matrix with a missing shard (e.g. 9 of 10) is not a verdict."""
+    by_py: dict[str, set[int]] = {}
+    for r in shards:
+        m = re.fullmatch(r"test-linux \((\S+), (\d+)\)", str(r.get("name", "")))
+        if not m:
+            return False
+        by_py.setdefault(m.group(1), set()).add(int(m.group(2)))
+    return bool(by_py) and all(
+        any(idx == set(range(1, n + 1)) for n in GATE_SHARD_COUNTS)
+        for idx in by_py.values()
+    )
+
+
 def is_green(runs: list[Run]) -> bool:
     """True when `runs` carry a full gate verdict (rule in the module doc)."""
     lint = [r for r in runs if r.get("name") == "lint"]
@@ -366,7 +387,7 @@ def is_green(runs: list[Run]) -> bool:
     return (
         bool(lint)
         and all(r.get("conclusion") == "SUCCESS" for r in lint)
-        and len(shards) >= GATE_SHARDS
+        and _shard_sets_complete(shards)
         and all(r.get("conclusion") == "SUCCESS" for r in shards)
     )
 
