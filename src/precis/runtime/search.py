@@ -26,6 +26,7 @@ import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -57,6 +58,9 @@ log = logging.getLogger(__name__)
 #: until the server-side cancel (ANN_STATEMENT_TIMEOUT_MS) is seen working on
 #: prod; raise it then.
 CROSS_KIND_MAX_WORKERS = 2
+#: Kinds whose source-search hits are addressed by the parent ref handle (gr),
+#: not the matching comment chunk (gc) — the status-browse kinds (gr495382).
+_PARENT_HANDLE_KINDS = frozenset({"gripe", "todo", "quest"})
 #: Wall-clock budget for the whole fan-out, not per kind.
 CROSS_KIND_DEADLINE_S = 30.0
 
@@ -502,6 +506,26 @@ class SearchMixin(RuntimeShape):
         sort = str(args.get("sort") or "relevance").strip().lower() or "relevance"
         top_k = int(args.get("page_size") or args.get("top_k") or 10)
         tags = args.get("tags")
+        # gr495382: ``status=`` used to be dropped on this path, so a
+        # ``sort=`` search of the status kinds returned every status. It is
+        # a ref-level filter: fold it into the STATUS tag, which the store
+        # applies to the parent ref (a ref carries one STATUS value, so an
+        # explicit status= replaces any STATUS: tag the caller also passed).
+        status = args.get("status")
+        if isinstance(status, str) and status.strip():
+            if isinstance(tags, str):
+                tags = [tags]
+            only = self.hub.handler_for(kinds[0]) if len(kinds) == 1 else None
+            if only is not None and hasattr(only, "_apply_status_default"):
+                # One status kind: its own rules (alert-state, aliases, '*').
+                tags, _note = only._apply_status_default(status, tags)
+            elif status.strip().lower() not in ("*", "any", "all"):
+                tags = [
+                    t for t in (tags or []) if not str(t).strip().startswith("STATUS:")
+                ]
+                tags.append(f"STATUS:{status.strip().lower()}")
+            if tags:
+                tags = Tag.normalize_filter(tags, kind=None)
         mode = args.get("mode")
         mode_lexical = isinstance(mode, str) and mode.strip().lower() == "lexical"
 
@@ -533,8 +557,22 @@ class SearchMixin(RuntimeShape):
             include_ref_ids=include_ref_ids,
         )
         hits: list[SearchHit] = []
+        seen_parents: set[int] = set()
         for block, ref, score in results:
-            hits.extend(block_hits_to_search_hits([(block, ref, score)], kind=ref.kind))
+            for hit in block_hits_to_search_hits([(block, ref, score)], kind=ref.kind):
+                # gr495382: gripe/todo/quest comments are chunks, but the
+                # thing to act on is the parent (gr123), not the chunk handle
+                # of the comment that matched (gc456): return the parent, once.
+                if ref.kind in _PARENT_HANDLE_KINDS:
+                    if ref.id in seen_parents:
+                        continue
+                    seen_parents.add(ref.id)
+                    parent = handle_registry.try_format(ref.kind, ref.id, chunk=False)
+                    if parent is not None:
+                        hit = replace(
+                            hit, uhandle=parent, dedupe_key=f"{ref.kind}:{ref.id}"
+                        )
+                hits.append(hit)
 
         date_suffix = " in the given date window" if (since or until) else ""
         if semantic_degraded:
