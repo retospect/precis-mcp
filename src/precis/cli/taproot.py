@@ -1731,9 +1731,9 @@ def _run_reword_sweep(args: argparse.Namespace) -> None:
         would = f"would reword {counts.get('reworded', 0)}"
         suffix = f"  [DRY-RUN -- nothing written; {would}]"
     breakdown = ", ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "none"
-    # `warned` is advisory grounding (an unseen epistemic mode, or no pinned
-    # passage at all) -- printed only when non-zero so a clean sweep stays a
-    # one-line result, and pointing at the JSONL rather than naming hubs.
+    # `warned` counts grounding findings (an unseen epistemic mode, or no
+    # pinned passage at all) that also reject -- printed only when non-zero
+    # so a clean sweep stays a one-line result, and pointing at the JSONL rather than naming hubs.
     warned = int(summary.get("warned", 0))
     warn_note = f", warned={warned}" if warned else ""
     print(

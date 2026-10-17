@@ -71,22 +71,22 @@ carries:
   nomenclature (``6-311G``, ``C60``, ``sp2``, ``B3LYP``), not a
   measurement, and grounding it against prose would re-run the
   ``hyphen-numeric-range`` false-positive treadmill.
-* **mode grounding** (advisory, :attr:`HubReword.warnings`) — every
+* **mode grounding** (blocking, :data:`_CHECK_UNGROUNDED_MODE`) — every
   specific epistemic-mode token the proposal names
-  (:func:`~precis.taproot.sentence_lint.find_epistemic_modes`) should
+  (:func:`~precis.taproot.sentence_lint.find_epistemic_modes`) must
   appear in a pinned passage. This guards the failure the lint itself
   *incentivises*: ``no-epistemic-mode`` demands a method, so the model
-  is under pressure to supply one it cannot see. Advisory on purpose —
-  the passage-side match is a word-prefix stem (so the passage's "cone
-  wall model" grounds the claim's "modelling"), which is loose in both
-  directions and has had no corpus dry run; promote it to blocking only
-  once one has measured its false-positive rate, the discipline
-  :data:`~precis.taproot.sentence_lint.EPISTEMIC_MODE_TOKENS` itself
-  was grown under.
+  is under pressure to supply one it cannot see. It was advisory until
+  the sweep showed models inventing methods; it now rejects (status
+  ``rejected``, nothing written). The passage-side match is a
+  word-prefix stem (so the passage's "cone wall model" grounds the
+  claim's "modelling"), loose in both directions, so a false positive
+  costs a skipped hub, not a bad write.
 
-A hub with no live pinned passage at all is not silently exempt: both
-checks no-op and the row carries a ``no pinned evidence`` warning, so
-the report never reads as "grounded" when nothing was checked.
+A hub with no live pinned passage at all is not silently exempt: on the
+sweep path it is rejected with :data:`_CHECK_NO_EVIDENCE`, because
+nothing can be grounded against nothing and the report must never read
+as "grounded" when nothing was checked.
 
 "Grounding" here is claim-against-its-passages, a different axis from
 :mod:`precis.taproot.grounding`, which asks whether a *chunk* is body
@@ -167,6 +167,8 @@ _CHECK_NUMERIC = "numeric"
 _CHECK_CITATION = "citation"
 _CHECK_OVER_LONG = "over-long"
 _CHECK_GROUNDING = "numeric-grounding"
+_CHECK_UNGROUNDED_MODE = "ungrounded-mode"
+_CHECK_NO_EVIDENCE = "no-evidence"
 
 
 @dataclass(frozen=True)
@@ -174,7 +176,7 @@ class RewordCandidate:
     """One cohort member: the hub, its failing sentence (``refs.title``),
     its ``meta.scope``, the blocking lint codes that admitted it, and the
     text of its live pinned evidence passages (``evidence``, empty when
-    the hub has none — see :func:`_grounding_warnings`)."""
+    the hub has none, which rejects: see ``_CHECK_NO_EVIDENCE``)."""
 
     hub_ref_id: int
     sentence: str
@@ -551,7 +553,7 @@ def _canon_grounding(text: str) -> str:
 #: acronyms) are searched whole.
 _MODE_STEM_CHARS = 5
 
-#: The advisory-warning texts, so the caller can match on a stable prefix.
+#: The grounding-finding texts, so the caller can match on a stable prefix.
 _WARN_NO_EVIDENCE = "no pinned evidence: grounding unchecked"
 _WARN_UNGROUNDED_MODE = "epistemic mode absent from every pinned passage"
 
@@ -607,7 +609,7 @@ def _mode_probes(token: str) -> tuple[str, ...]:
 
 def _ungrounded_modes(new: str, evidence: Sequence[str]) -> list[str]:
     """Epistemic-mode tokens ``new`` names that no pinned passage does.
-    Advisory: see the module docstring on why this is not blocking.
+    Blocking via :func:`_post_validate` (``ungrounded-mode``).
 
     A generic head (:data:`~precis.taproot.sentence_lint.
     GENERIC_EPISTEMIC_HEADS`) is grounded by ANY specific technique in
@@ -635,8 +637,9 @@ def _ungrounded_modes(new: str, evidence: Sequence[str]) -> list[str]:
 
 
 def _grounding_warnings(new: str, evidence: Sequence[str]) -> list[str]:
-    """The advisory half of grounding -- never blocks a write, always
-    lands in the JSONL row so a sweep is reviewable."""
+    """The mode/evidence grounding findings as text. These are blocking
+    now (:func:`_post_validate` rejects on them); the same text is kept
+    in ``HubReword.warnings`` so the JSONL row stays reviewable."""
     if not evidence:
         return [_WARN_NO_EVIDENCE]
     modes = _ungrounded_modes(new, evidence)
@@ -646,9 +649,13 @@ def _grounding_warnings(new: str, evidence: Sequence[str]) -> list[str]:
 
 
 def _post_validate(
-    old: str, new: str, *, evidence: Sequence[str] = ()
+    old: str,
+    new: str,
+    *,
+    evidence: Sequence[str] = (),
+    require_evidence: bool = False,
 ) -> tuple[list[str], list[str]]:
-    """All five blocking in-code checks over a proposed reword — returns
+    """All blocking in-code checks over a proposed reword — returns
     ``(checks_failed, human_details)``, both empty when the proposal is
     writable. Every check runs (a proposal can fail several); the
     explicit length check duplicates the ``over-long`` lint code on
@@ -656,9 +663,10 @@ def _post_validate(
     ``_BLOCKING_LINT_CODES``.
 
     The first four read ``old`` — self-consistency. ``evidence`` (the
-    hub's pinned passage texts) adds the fifth, numeric grounding, which
-    reads the *sources* instead; it no-ops when the sequence is empty, so
-    a caller with no passages to hand gets the historical behaviour."""
+    hub's pinned passage texts) adds numeric grounding and mode grounding,
+    which read the *sources* instead; both reject (not advisory). With
+    empty ``evidence`` they no-op unless ``require_evidence`` (the sweep
+    path), which rejects with ``no-evidence`` instead."""
     checks: list[str] = []
     details: list[str] = []
     still_failing = _blocking_codes(new)
@@ -682,6 +690,15 @@ def _post_validate(
         details.append(
             "quantit(y/ies) absent from every pinned passage: " + ", ".join(ungrounded)
         )
+    if not evidence:
+        if require_evidence:
+            checks.append(_CHECK_NO_EVIDENCE)
+            details.append(_WARN_NO_EVIDENCE)
+    else:
+        modes = _ungrounded_modes(new, evidence)
+        if modes:
+            checks.append(_CHECK_UNGROUNDED_MODE)
+            details.append(f"{_WARN_UNGROUNDED_MODE}: {', '.join(modes)}")
     return checks, details
 
 
@@ -724,7 +741,7 @@ def _reword_one(
             reason=f"malformed response (verdict={verdict!r})",
         )
     checks, details = _post_validate(
-        cand.sentence, new_sentence, evidence=cand.evidence
+        cand.sentence, new_sentence, evidence=cand.evidence, require_evidence=True
     )
     warnings = tuple(_grounding_warnings(new_sentence, cand.evidence))
     if checks:
@@ -823,9 +840,10 @@ def run_reword_sweep(
     ``last_ref_id`` is the highest hub ``ref_id`` processed (``None`` for
     an empty cohort) -- the ``--after-ref-id`` of the next batch.
 
-    ``warned`` counts hubs carrying an advisory grounding warning (an
-    unseen epistemic mode, or no pinned passage to check against). It is
-    a review pointer into the JSONL, never a gate.
+    ``warned`` counts hubs whose row carries a grounding finding (an
+    unseen epistemic mode, or no pinned passage to check against). Those
+    findings now also reject the reword (``ungrounded-mode`` /
+    ``no-evidence``); ``warned`` is a review pointer into the JSONL.
     """
     candidates = select_reword_cohort(
         store, hub=hub, limit=limit, after_ref_id=after_ref_id

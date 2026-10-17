@@ -56,7 +56,7 @@ Done this pass:
 passage that names the technique but not the result verifies `no`
 (tried 2026-10-02 on fi190987 ← pc404386 and fi192836 ← pc172364; both
 `no`, both removed again). The §"Grounding checks" table's "these four
-are mint jobs" plan does not hold; mode grounding stays advisory.
+are mint jobs" plan does not hold; mode grounding and a missing pinned passage reject (2026-10-17).
 
 ## Measured state (2026-08-29, prod)
 
@@ -577,7 +577,7 @@ Two checks now read the hub's own pinned passages:
 
 * **numeric grounding**, blocking — a quantity-shaped digit run absent
   from every pinned passage rejects the reword.
-* **mode grounding**, advisory (`HubReword.warnings`, `warned=` in the
+* **mode grounding**, rejecting (`HubReword.warnings`, `warned=` in the
   CLI line) — an epistemic-mode token the passages never name.
 
 Measured on this cohort before shipping. Numeric grounding fires on

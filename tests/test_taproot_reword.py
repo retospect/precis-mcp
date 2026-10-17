@@ -46,6 +46,14 @@ _NUM_DROPPED = (
 _STILL_LINTING = "Graphene possesses a tensile strength of 130 GPa."
 
 
+#: A pinned passage that grounds ``_ADMISSIBLE`` (its number and both its
+#: epistemic-mode tokens). Grounding checks block, so every test that
+#: expects a reword to apply or dry-run as ``reworded`` needs evidence.
+_GROUNDING_PASSAGE = (
+    "Nanoindentation measurements gave a tensile strength of 130 GPa for graphene."
+)
+
+
 def _mint(store: Any, sentence: str, **kwargs: Any) -> int:
     return mint_hub(store, CanonicalClaim(sentence=sentence, scope={}), **kwargs)
 
@@ -271,7 +279,7 @@ def test_reword_sweep_cli_binds_route_log_and_meter_and_prints_last_id(
 def test_dry_run_reports_proposal_and_writes_nothing(
     store: Any, tmp_path: Any, monkeypatch: Any
 ) -> None:
-    hub = _mint(store, _FAILING)
+    hub = _with_passage(store, _FAILING, _GROUNDING_PASSAGE)
     before = _hub_state(store, hub)
     monkeypatch.setattr("precis.taproot.reword.propose_reword", _stub(_ADMISSIBLE))
     out = tmp_path / "reword.jsonl"
@@ -298,7 +306,7 @@ def test_dry_run_reports_proposal_and_writes_nothing(
 
 
 def test_apply_rewords_through_the_retitle_door(store: Any) -> None:
-    hub = _mint(store, _FAILING)
+    hub = _with_passage(store, _FAILING, _GROUNDING_PASSAGE)
 
     summary = run_reword_sweep(store, apply=True, propose_fn=_stub(_ADMISSIBLE))
 
@@ -339,7 +347,7 @@ def test_numeric_rejection_names_the_dropped_token(store: Any, tmp_path: Any) ->
 
 
 def test_still_linting_reword_is_rejected(store: Any, tmp_path: Any) -> None:
-    hub = _mint(store, _FAILING)
+    hub = _with_passage(store, _FAILING, _GROUNDING_PASSAGE)
     before = _hub_state(store, hub)
     out = tmp_path / "r.jsonl"
 
@@ -355,7 +363,7 @@ def test_still_linting_reword_is_rejected(store: Any, tmp_path: Any) -> None:
 
 
 def test_reword_introducing_a_citation_is_rejected(store: Any, tmp_path: Any) -> None:
-    _mint(store, _FAILING)
+    _with_passage(store, _FAILING, _GROUNDING_PASSAGE)
     out = tmp_path / "r.jsonl"
     cited = _ADMISSIBLE[:-1] + " [12]."
 
@@ -363,7 +371,8 @@ def test_reword_introducing_a_citation_is_rejected(store: Any, tmp_path: Any) ->
 
     assert summary["counts"] == {"rejected": 1}
     (row,) = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
-    assert row["checks_failed"] == ["citation"]
+    # "12" is also an ungrounded quantity (the passage never states it).
+    assert row["checks_failed"] == ["citation", "numeric-grounding"]
     assert "[12]" in row["reason"]
 
 
@@ -411,7 +420,9 @@ def test_quantity_absent_from_the_passage_is_rejected(
     """The motivating defect: the sentence carries a number its own paper
     never states, and the old-to-new preservation check protects it."""
     hub = _with_passage(
-        store, _FAILING, "We measured a tensile strength of 120 GPa for graphene."
+        store,
+        _FAILING,
+        "Nanoindentation measurements gave 120 GPa for graphene.",  # mode grounded
     )
     before = _hub_state(store, hub)
     out = tmp_path / "r.jsonl"
@@ -429,9 +440,7 @@ def test_quantity_absent_from_the_passage_is_rejected(
 
 
 def test_grounded_reword_applies(store: Any) -> None:
-    hub = _with_passage(
-        store, _FAILING, "We measured a tensile strength of 130 GPa for graphene."
-    )
+    hub = _with_passage(store, _FAILING, _GROUNDING_PASSAGE)
 
     summary = run_reword_sweep(store, apply=True, propose_fn=_stub(_ADMISSIBLE))
 
@@ -440,22 +449,26 @@ def test_grounded_reword_applies(store: Any) -> None:
     assert _hub_state(store, hub)[0] == _ADMISSIBLE
 
 
-def test_hub_with_no_pinned_passage_warns_but_never_blocks(
-    store: Any, tmp_path: Any
-) -> None:
-    """Nothing to check against is reported, not silently called grounded."""
-    _mint(store, _FAILING)
+def test_hub_with_no_pinned_passage_is_rejected(store: Any, tmp_path: Any) -> None:
+    """Nothing to check against is a rejection (was a warning): the sweep
+    must not write a sentence it could not ground. The row still carries
+    the warning text for review."""
+    hub = _mint(store, _FAILING)
+    before = _hub_state(store, hub)
     out = tmp_path / "r.jsonl"
 
     summary = run_reword_sweep(
         store, apply=True, out=out, propose_fn=_stub(_ADMISSIBLE)
     )
 
-    assert summary["counts"] == {"reworded": 1}
+    assert summary["counts"] == {"rejected": 1}
+    assert summary["applied"] == 0
     assert summary["warned"] == 1
     (row,) = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
-    assert row["checks_failed"] == []
+    assert row["checks_failed"] == ["no-evidence"]
+    assert row["reason"] == "no pinned evidence: grounding unchecked"
     assert row["warnings"] == ["no pinned evidence: grounding unchecked"]
+    assert _hub_state(store, hub) == before
 
 
 def test_nomenclature_digits_are_not_quantities(store: Any) -> None:
@@ -479,30 +492,42 @@ def test_nomenclature_digits_are_not_quantities(store: Any) -> None:
     assert _hub_state(store, hub)[0] == grounded
 
 
-def test_unseen_epistemic_mode_warns_but_still_applies(
-    store: Any, tmp_path: Any
-) -> None:
-    """Mode grounding is advisory: the lint DEMANDS a method, so a model
-    that supplies one the passage never names is reported, not blocked."""
+def test_unseen_epistemic_mode_is_rejected(store: Any, tmp_path: Any) -> None:
+    """Mode grounding blocks (was advisory): the lint DEMANDS a method, so a
+    model that supplies one the passage never names is rejected."""
     hub = _with_passage(
         store, _FAILING, "We measured a tensile strength of 130 GPa for graphene."
     )
+    before = _hub_state(store, hub)
     out = tmp_path / "r.jsonl"
 
     summary = run_reword_sweep(
         store, apply=True, out=out, propose_fn=_stub(_ADMISSIBLE)
     )
 
-    assert summary["counts"] == {"reworded": 1}
+    assert summary["counts"] == {"rejected": 1}
+    assert summary["applied"] == 0
     assert summary["warned"] == 1
     (row,) = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
-    assert row["checks_failed"] == []
+    assert row["checks_failed"] == ["ungrounded-mode"]
     (warning,) = row["warnings"]
     # "measurements" stems onto the passage's "measured"; "Nanoindentation"
     # appears nowhere -- only the latter is reported.
     assert warning.startswith("epistemic mode absent from every pinned passage")
     assert "Nanoindentation" in warning
     assert "measurements" not in warning
+    assert warning in row["reason"]
+    assert _hub_state(store, hub) == before
+
+
+def test_mode_present_in_the_evidence_still_applies(store: Any) -> None:
+    hub = _with_passage(store, _FAILING, _GROUNDING_PASSAGE)
+
+    summary = run_reword_sweep(store, apply=True, propose_fn=_stub(_ADMISSIBLE))
+
+    assert summary["counts"] == {"reworded": 1}
+    assert summary["applied"] == 1
+    assert summary["warned"] == 0
     assert _hub_state(store, hub)[0] == _ADMISSIBLE
 
 
@@ -629,7 +654,7 @@ def test_llm_failure_is_a_status_not_a_crash(store: Any) -> None:
 
 
 def test_limit_caps_the_sweep(store: Any) -> None:
-    first = _mint(store, _FAILING)
+    first = _with_passage(store, _FAILING, _GROUNDING_PASSAGE)
     _mint(store, _FAILING_2)
     calls: list[str] = []
 
@@ -703,7 +728,7 @@ def test_cli_dry_run_is_the_default_and_writes_nothing(
 ) -> None:
     from precis.cli import taproot as taproot_cli
 
-    hub = _mint(store, _FAILING)
+    hub = _with_passage(store, _FAILING, _GROUNDING_PASSAGE)
     before = _hub_state(store, hub)
     monkeypatch.setattr("precis.taproot.reword.propose_reword", _stub(_ADMISSIBLE))
     out = tmp_path / "proposal.jsonl"
@@ -733,7 +758,7 @@ def test_cli_apply_retitles_through_the_retitle_door(
 ) -> None:
     from precis.cli import taproot as taproot_cli
 
-    hub = _mint(store, _FAILING)
+    hub = _with_passage(store, _FAILING, _GROUNDING_PASSAGE)
     monkeypatch.setattr("precis.taproot.reword.propose_reword", _stub(_ADMISSIBLE))
     out = tmp_path / "applied.jsonl"
 
