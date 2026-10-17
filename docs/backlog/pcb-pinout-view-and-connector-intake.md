@@ -52,7 +52,7 @@ Consequences for the design:
 1. **Pinout extensions:** consider a part-kind view for an uninstantiated
    footprint and an optional spatial map. Keep parsed/authored provenance
    explicit; do not infer missing pad geometry or mating orientation.
-2. **Unsaved explicit intake echo:** proposed `view='pinout-preview'` below.
+2. **Unsaved explicit intake echo:** `view='pinout-preview'` below (shipped).
    P1 already echoes authored mappings; do not rebuild that workflow or infer
    mappings from prose. Preview adds a non-authoring inspection step.
 3. **Store signal↔pad explicitly**, so the mapping is reviewable later and
@@ -69,12 +69,10 @@ Thus `put(...components[].pins...)` then `get(...#J1, view='pinout')` already
 checks **authored** input. That put changes state and can queue catalog-part
 datasheets; it cannot supply a zero-authoring preview. Only the latter is new.
 
-Reto via Claude R13 execution brief authorizes this bounded implementation,
-superseding the earlier withdrawal/spec-only hold. Codex source review remains
-required before merge; root owns version/full gate/exact deploy and subsequent
-same-owner native/browser dogfood. No live authoring in this implementation turn.
+Postdeploy native replay below (items 1–8) is the remaining acceptance;
+Codex source review was required before merge.
 
-**Selected API, not deployed:**
+**API (shipped ca972cb09, 8b055c1bd; on prod):**
 
 ```python
 get(kind='pcb', id='<existing-board>#<existing-REFDES>',

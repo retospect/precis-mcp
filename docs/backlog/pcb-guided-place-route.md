@@ -23,16 +23,11 @@ evaluators, `pcb_place`/`pcb_route` job types and `op=` handler dispatch
 (slice 10). Slices 8+10 landed together in `0351be2f` on a clean full
 gate (15735 passed, 0 failed) after the sibling-congestion window closed.
 
-**2026-08-28 late — the acceptance criterion is MET, and UNSHIPPED.** On
-the ESP32-C3 reference vehicle (`tests/fixtures/pcb/esp32c3_reference.json`,
-authored this day): **zero DRC errors, 61/61 connections routed, ~0.5s to
-realize.** 1063 → 612 → 234 → 0. The full account, including the four
-traps that each had to be got right and the design tension deliberately
-left open, is in `docs/backlog/pcb-engine-plan.md` §"2026-08-28 late: DRC
-to zero" — read that before touching the router. In one line: per-pin pad
-geometry, hard placement constraints replacing two graded cost terms the
-search was simply paying, and a new occupancy-grid maze router
-(`src/precis/pcb/maze.py`) that claims copper before drawing it.
+**Acceptance criterion MET and shipped** (ESP32-C3 reference vehicle,
+`tests/fixtures/pcb/esp32c3_reference.json`: zero DRC errors, 61/61
+connections routed; occupancy-grid maze router `src/precis/pcb/maze.py`).
+The four traps and the design tension left open: `docs/backlog/pcb-engine-plan.md`
+§"2026-08-28 late: DRC to zero" — read before touching the router.
 
 **Zero DRC is trivially achievable by routing nothing** — the router's
 first revision did exactly that, 58 of 61 unrouted, and read as a triumph.

@@ -10,16 +10,11 @@ pillar: memory-graph
 > thin coordinator slice shipped 2026-07-02. This file keeps the open
 > phases.
 
-Shipped portion: see the `workers/job_types/good_search.py` module
-docstring (the phase machine: fuse → fan out triage children →
-heartbeat gather → `Done`), `handlers/_good_search.py`, the
-`search(good=True)` surface, and `ctx.spawn_child`; full design +
-2026-07-02 code-review narrative in git history. Substrate fixes 1–3
-(soft-delete-aware `children_done` wake, coordinator comment,
-`JOB_PARENT_KINDS` + `'job'` guarded on `executor='coordinator'`)
-landed with it. Parenting is decided per ADR 0044: campaign on the
-intent lane, children on the coordinator via the polymorphic parent;
-idem reuse via `idem_key` + `derived_job_succeeded`.
+Shipped: see the `workers/job_types/good_search.py` module docstring (the
+phase machine), `handlers/_good_search.py`, and the `search(good=True)`
+surface; design in `git log`. Parenting is decided per ADR 0044: campaign
+on the intent lane, children on the coordinator via the polymorphic
+parent; idem reuse via `idem_key` + `derived_job_succeeded`.
 
 ## Open scope
 

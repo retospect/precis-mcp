@@ -27,7 +27,7 @@ modelling precedent: [`per-user-library-link.md`](./per-user-library-link.md).
 ## In scope
 
 1. Ownership: `email_account` gains an owner referencing a precis user
-   (`web_users.id`; web-basic-auth-users.md §2a).
+   (`web_users.id`; `web_users` migration 0131).
 2. Credential scope in the vault: a per-user name convention, e.g.
    `user/<id>/email/<account>`, enforced by the vault's access layer. The
    flat-name vault cannot enforce it today, so this item depends on the

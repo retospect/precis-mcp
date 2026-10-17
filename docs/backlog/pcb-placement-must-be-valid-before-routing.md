@@ -86,15 +86,16 @@ another cost term.
 
 ## Relationship to the existing pre-route DRC gate item
 
-**Shipped (gr451274a):** `pcb_route` runs `placement_drc_findings` after
+**Shipped (gr451274a; 09dbaf447, fb44ae4e3):** `pcb_route` runs `placement_drc_findings` after
 the anneal and before the router; error findings fail the job and write
 nothing (warnings do not block). `force=True` on `op='route'` routes anyway
 and records the override in the job summary and route log. The gate runs
 after the anneal on purpose: movable violators get the anneal's
-`courtyard_overlap` term first, and only what survives is refused. Still
-open here: `pcb_place` still only reports, and a gate without a placer cost
-term for pad/via keepout or a way to shift a `fixed='both'` violator
-((b)/(c)) refuses boards it could have placed.
+`courtyard_overlap` term first, and only what survives is refused. `pcb_place` refuses writing a pose set
+with more placement errors than the stored board unless `force=True`
+(09dbaf447, fb44ae4e3). Still open here: a gate without a placer cost term
+for pad/via keepout or a way to shift a `fixed='both'` violator ((b)/(c))
+refuses boards it could have placed.
 
 ## Acceptance criteria
 

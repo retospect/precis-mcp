@@ -9,20 +9,12 @@ prio: normal
 
 ## Motivation / why
 
-Measured 2026-09-30 on Reto's real board (`heaterBaseTest.epro2`, 200 × 75
-mm, 140 components, 4 layers), imported by `precis pcb import-epro` and
-routed in-process via `pcb_route._dispatch` at `iters=200`:
-
-```
-140 components, 89 nets: 105.7s
-status: {'failed': 81, 'realized': 8}
-   54 net(s): failed: no_path, same-layer-crossing
-   27 net(s): failed: no_path
-job failures reported: 0
-```
-
-**8 of 89 nets realized — 9%.** Every other net is `no_path`, two thirds of
-them additionally flagged `same-layer-crossing`.
+Real board: `heaterBaseTest.epro2` (200 × 75 mm, 140 components, 4 layers),
+imported by `precis pcb import-epro`, routed in-process via
+`pcb_route._dispatch` at `iters=200`. First measurement (2026-09-30):
+**8 of 89 nets realized — 9%** (54 `no_path` + same-layer-crossing, 27
+`no_path`), 0 job failures reported. Now **65/89** (diagnosis steps 4–14
+below; ~22 `unrouted` left, all congestion).
 
 This matters more than its size suggests. The entire
 `pcb-easyeda-round-trip` thread exists so Reto can **re-route his board to
@@ -73,8 +65,8 @@ go and count.
   It makes the router draw to a *stricter* rule, which cannot help a board
   that already cannot find a path, and folding the two would make it
   impossible to tell which change moved the number.
-- Placement. Measured 2026-10-01: freezing every part leaves the count at
-  8/89, so placement is not the variable (see Diagnosis).
+- Placement. Measured 2026-10-01: freezing every part left the count at
+  the then-current 8/89, so placement is not the variable (see Diagnosis).
 - Rewriting the router. Establishing the cause may well show the budget or
   the layer usage is wrong, which is a much smaller change.
 
@@ -350,10 +342,6 @@ for real congestion, PathFinder negotiated-congestion (McMurchie & Ebeling
   that a grid change will move — re-measure, don't treat as baselines.
   The 50x40 mm EWOD board already gets ~0.125 mm pitch; ewod-pcb wants the
   expansion-exhaustion reason split out too (its 15/55 mixes the two).
-- **Measured (2026-09-30):** 8/89 realized, 105.7 s at `iters=200`; 54
-  `no_path, same-layer-crossing` + 27 `no_path`; 0 job failures. Runtime
-  varied 87–211 s across three runs on a loaded machine, so the wall clock
-  here is indicative only — the realized COUNT was stable at 8.
 - **Open (Reto):** does this outrank `pcb-epro-import` (shipped) slice 1c? He
   chose 1c as next before this number existed. 1c (the copper measurement
   report) is what tells us which of the source board's widths and

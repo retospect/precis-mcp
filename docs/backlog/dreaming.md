@@ -5,29 +5,11 @@ pillar: memory-graph
 
 # Dreaming — agentic memory consolidation + synthesis
 
-Shipped portion: see the `precis.workers` package docstring and
-`src/precis/workers/dream_agent.py` module docstring; full design in
-git history. Live: migration `0007_dreaming.sql` (salience columns,
-`bump_salience()`, `supersedes` relation, `dream_log` +
-`dream_transcripts`), the full-agentic dream loop
-(claude-over-MCP, turn/cost-bounded, transcript capture), the
-`angle`/`n`/`like` cone-sampling spray on `search`,
-`view='dreamable'`, the guarded `supersede` tool, `DREAM:` fencing,
-external reach (`PRECIS_DREAM_SEARCH`), and the dream throttle
-(`workers/dream_throttle.py`). The `acquire` tool was later retired
-(see `handlers/paper.py` note).
-
+Shipped: see the `precis.workers` package docstring and
+`src/precis/workers/dream_agent.py` module docstring; design in `git log`.
 Owner anchors: `src/precis/workers/dream_agent.py`,
-`src/precis/tools/core.py` (angle spray / dreamable view).
-
-Also live: the packaged persona-neutral dreamer prompt
-(`data/prompts/dream-persona.md`) — the dream no longer wears the
-operator's chat persona, `PRECIS_DREAM_SOUL_PATH` is gone entirely
-(the eligibility gate is now `PRECIS_MCP_CONFIG`) — and **Step 6d/6e**: a cycle that lands on a
-cross-binding it cannot close proposes a nanopub `hypothesis`
-(`handlers/_finding_hypothesis.py`) and checks it against the real mint
-gates (`view='mint-preflight'`) before leaving it in the review queue.
-A dream's output is no longer a dead end at `kind='memory'`.
+`src/precis/tools/core.py` (angle spray / dreamable view),
+`handlers/_finding_hypothesis.py` (Step 6d/6e hypothesis proposals).
 
 ## Open scope
 

@@ -6,14 +6,8 @@ title: DB-resident settings — deferred key migrations (move when touched)
 
 # DB-resident settings — residuals
 
-Slices 1–4 shipped: registry/CLI/web/`requires_setting` (see the
-`precis.settings` module docstring), doctor `settings-env-shadowed` row,
-`precis-settings-help` skill, and the ansible diet (2026-08-22:
-`contact.polite_email` / `contact.crossref_mailto` seeded in precis_prod;
-env templating removed from `group_vars/all.yml`'s identity block, the
-operator overlay, and asa's `claude_mcp.json.j2` — whose
-`UNPAYWALL_EMAIL`/`CROSSREF_MAILTO` names matched no registered env var
-anyway).
+Slices 1–4 shipped (2026-08-22): see the `precis.settings` module
+docstring and skill `precis-settings-help`.
 
 Remaining, all deliberate move-when-touched:
 

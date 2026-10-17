@@ -5,13 +5,9 @@ pillar: memory-graph
 
 # Skills redesign — remaining: quality gates, schema includes, authoring triplet
 
-The substrate SHIPPED (present-state: `src/precis/handlers/skill.py` +
-`src/precis/ingest/skill_ingest.py` docstrings; full design in git history
-of `docs/backlog/docs-and-skills-redesign.md`): three-layer source-of-truth,
-boot-time scan-and-ingest of shipped skills, consecutive-H2 alias groups,
-`FLAVOR:` tags from frontmatter, `{{include doc:…}}` expansion,
-`[[skill:X]]` links, shipped personas (`data/skills/personas/`).
-Prose conventions live in `docs/conventions/skill-authoring-style.md`.
+Substrate shipped: `src/precis/handlers/skill.py` and
+`src/precis/ingest/skill_ingest.py` docstrings; design in `git log`.
+Prose conventions: `docs/conventions/skill-authoring-style.md`.
 
 ## Remaining scope
 

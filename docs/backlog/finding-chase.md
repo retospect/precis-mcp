@@ -5,18 +5,10 @@ pillar: memory-graph
 
 # Finding chase — trace cited claims back to their primary source
 
-Shipped portion: see the `precis.workers` package docstring and
-`src/precis/handlers/finding.py` / `src/precis/workers/chase.py`
-module docstrings; full design + shipped-slice ledger in git history
-(`v8.1.0 — finding-chase`, C0–C10 audited done 2026-06-05). Live:
-`kind='finding'` (deterministic `make_finding_paper_id` dedup),
-the `--only chase` sibling worker (hop advance, stubs by
-`pdf_sha256 IS NULL`, cycle/dead-chain/multi-candidate states,
-chain-snapshot card re-emit), `precis resolve` / `precis stats
---findings|--stubs`, LLM hooks behind `PRECIS_CHASE_LLM=1`,
-retraction propagation (`Store.set_retraction_status`), and the
-`edit(..., pick_candidate=...)` disambiguation verb. Related ADRs:
-0017, 0018. Skill: `precis-finding-help`.
+Shipped (v8.1.0 — finding-chase, C0–C10 audited done 2026-06-05): see the
+`precis.workers` package docstring and `src/precis/handlers/finding.py` /
+`src/precis/workers/chase.py` module docstrings; design in `git log`.
+Related ADRs: 0017, 0018. Skill: `precis-finding-help`.
 
 Owner anchors: `src/precis/handlers/finding.py`,
 `src/precis/workers/chase.py`, `src/precis/identity.py::make_finding_paper_id`.

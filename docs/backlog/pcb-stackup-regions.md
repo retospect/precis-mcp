@@ -133,8 +133,8 @@ Owning files: `src/precis/pcb/realize.py`, `src/precis/pcb/drc.py`,
 
 ### Slice 2 — lock and region columns (schema; lands via `/go`)
 
-**BUILT, awaiting `/go`** — branch `stackup-locks-migration`, migration
-`0219_pcb_locks_regions.sql`. Delete this slice when it is on main.
+**Shipped 2125d4e62** (migration `0219_pcb_locks_regions.sql`); spec below
+is the record, delete this slice when slice 3 starts.
 `docs/reference/schema.md` is generated from prod; regenerate after deploy.
 
 One forward-only migration, next free number at build time (main's highest

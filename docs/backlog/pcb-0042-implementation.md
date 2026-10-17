@@ -12,23 +12,6 @@ pillar: 3d-design
 > that spec's slice 9. This file's residuals get rewritten when its
 > slice 1 ships.
 
-## Slice 3 — `datasheet` kind (thin, capped)  ☐
-*labels: enhancement · ADR 0042 §7*
-
-- [ ] `DatasheetHandler(PaperHandler)`: `kind='datasheet'` (`da`),
-      `corpus_role='evidence'`, `supports_put=False` — a ~30-line spec, the
-      electronics sibling of `cfp` over the shared Marker→chunks pipeline.
-- [ ] **Lazy** ingest from the catalog's `datasheet_url` (on open / on first
-      design reference), not eager; `datasheet-of` / `has-datasheet` link to
-      `parts` rows (many-to-many — one datasheet per part family).
-- [ ] Scope datasheets out of academic `search(kind='paper')` and vice versa.
-- [ ] **Cap is explicit:** one kind for the whole electronics-doc family
-      (app-note/errata/ref-manual via a `meta` sub-type) — do NOT mint new
-      kinds per genre.
-- [ ] Track table-recognition gap (pinout / electrical-char tables) as an
-      ingest improvement; prefer Octopart/Nexar structured data where present.
-- **DoD:** ingest a datasheet PDF, search it, read its TOC, link it to a part.
-
 ## Slice 8 — Web  ☐
 *labels: enhancement · ADR 0042 §14*
 
@@ -72,5 +55,7 @@ skill) owns the decisions. **Not** a free-running skill.
   CLI (2.x reworked it — don't bump without rewriting _cmd); the jar's sha256
   pin is blank (supply-chain TODO); the DSN emits a via referencing an
   undefined padstack — check on the first real-jar run.
-- Slice 3 datasheet lazy ingest, slice 8 web ratsnest SVG + BOM table, and
-  slice 9 design-session orchestration (capstone): not started.
+- Slice 3 (`datasheet` kind) shipped: `src/precis/handlers/datasheet.py`.
+  Slice 8 web ratsnest SVG + BOM table and slice 9 design-session
+  orchestration (capstone; gate evaluators partly exist in
+  `workers/auto_check_evaluators/`): not started as a phase machine.

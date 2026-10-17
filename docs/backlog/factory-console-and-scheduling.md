@@ -11,22 +11,9 @@ pillar: platform
 > for current state, ordering, and laws. This file keeps only the
 > console/registry/capability-model scope that is still open.
 
-Shipped portion: see the `precis.workers` package docstring and
-`deploy/README.md`; full plan in git history. Live today: the
-`ServiceSpec` registry (`workers/registry.py`), `service_config` +
-prio-gate resolver + `precis service` CLI (migration 0072), the
-`/factory` console read+write (`precis_web/routes/factory.py`),
-capability universalization (patent/edgar gates dropped),
-`resource_slots` + reserve-at-claim + prio/scarcity ordering + soft
-mem-pressure veto (migration 0073; `store/_resource_slots_ops.py`,
-`workers/capability_probe.py`, `workers/heartbeat.py`,
-`workers/executors/_common.py`), litellm retirement (`served_by` on
-`llm` cards), the OAuth-vault materializer
-(`utils/claude_oauth.ensure_oauth_token`), envelope tier-1 enforcement
-(`workers/envelope.py`), the quests panel + cost-attribution fix, the
-llm-eval harness (`src/precis/llm_eval/`), the fleet-repo consolidation
-(`deploy/` tree), and the collapsed-worker cutover (executed 2026-08-04;
-residuals tracked in `cluster-scheduling.md` §L).
+Shipped (migrations 0072, 0073; collapsed-worker cutover 2026-08-04): see
+the `precis.workers` package docstring and `deploy/README.md`; design in
+`git log`. Residuals of the cutover: `cluster-scheduling.md` §L.
 
 ## The one-sentence principle (kept as the design frame)
 

@@ -5,14 +5,9 @@ pillar: memory-graph
 
 # Rich diagram editing with element→chunk binding — residuals
 
-Shipped portion: see the `precis.diagram` and `precis.mermaid` package
-docstrings; full design-of-record in git history. Live (un-darked
-2026-07-16, first-class kind): the chunk-binding substrate
-(`depicts`/`depicted-in`, migration 0064), figure element bindings +
-prepared context, the shared `src/precis/diagram/` core, the `mermaid`
-kind (migration 0066) with pure-Python `mermaidx`
-validation/render/export, the `diagram_propose` tick executor, and the
-`precis-mermaid*` skill family.
+Shipped (un-darked 2026-07-16; migrations 0064, 0066): see the
+`precis.diagram` and `precis.mermaid` package docstrings; design in
+`git log`.
 
 ## Open scope (residuals)
 

@@ -45,8 +45,7 @@ residual items.
 2. **backlog/render-sandbox-network-jail.md** — render sandbox phase 2,
    network and filesystem jail.
 3. **backlog/web-basic-auth-users.md** — shipped and live 2026-08-22;
-   only residuals remain (failed-auth logging, full CSP, feed-token rotate
-   race). Pending Reto's housekeeping ruling on whether the file closes
+   only residuals remain (full CSP, feed-token rotate race). Pending Reto's housekeeping ruling on whether the file closes
    (td461205).
 
 ## Parked
