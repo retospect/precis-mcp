@@ -69,6 +69,13 @@ DRAIN_TTL_S = 3600.0
 #: same set from the outside.
 RESCUE_SERVICES: tuple[str, ...] = ("sweeper", "nursery", "quest_loop_reconcile")
 
+#: Passes :func:`run_loop` ages to the front on the same budget as
+#: :data:`RESCUE_SERVICES`, without joining the rescue-gap alert set: the
+#: coordinator executor, so a parked ``quest_tick`` (5-min ``at_time``
+#: heartbeat) is claimed within ``rescue_budget_s`` plus one pass instead of
+#: once per full rotation (~85 min on melchior, gr493226).
+INTERLEAVED_SERVICES: tuple[str, ...] = (*RESCUE_SERVICES, "job_coordinator")
+
 #: Env var overriding :data:`DEFAULT_RESCUE_BUDGET_S`; ``0`` turns the
 #: rescue interleave off (rescue passes run only in their rotation slot).
 RESCUE_BUDGET_ENV = "PRECIS_WORKER_RESCUE_BUDGET_S"
@@ -394,7 +401,7 @@ def run_loop(
     rescue_passes: list[RefPass] = []
     if not once and budget_s > 0:
         rescue_passes = [
-            p for p in ref_passes or () if _service_name(p) in RESCUE_SERVICES
+            p for p in ref_passes or () if _service_name(p) in INTERLEAVED_SERVICES
         ]
     # handler name → monotonic time of its last attempt; seeded at start so
     # the first rotation's slot normally beats the budget.

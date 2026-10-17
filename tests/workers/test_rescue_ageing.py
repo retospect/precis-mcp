@@ -157,3 +157,31 @@ def test_rescue_pass_not_rerun_while_fresh(monkeypatch: pytest.MonkeyPatch) -> N
         should_stop=lambda: cycles >= 50,
     )
     assert len(runs) == 49  # one per completed cycle, never doubled
+
+
+def test_job_coordinator_claim_wait_is_bounded_under_flood(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr493226: the coordinator executor sits in the job lane at the head
+    of the rotation, so on a saturated host a parked ``quest_tick`` was only
+    claimed once per full rotation (~85 min on melchior) despite its 5-min
+    heartbeat. It is interleaved on the rescue budget now."""
+    sim = _SimTime()
+    monkeypatch.setattr(runner, "time", sim)
+    monkeypatch.delenv("PRECIS_WORKER_RESCUE_BUDGET_S", raising=False)
+    horizon_s = 24 * 60 * _MIN
+    runs: list[float] = []
+    ref_passes: list[RefPass] = [
+        _rescue("job_coordinator", sim, runs),
+        _pass("llm_summarize", sim, 36 * _MIN, 32),
+        _pass("fetch", sim, 30 * _MIN, 32),
+        _pass("chase", sim, 30 * _MIN, 32),
+    ]
+    run_loop(
+        [],
+        store=_NO_STORE,
+        ref_passes=ref_passes,
+        should_stop=lambda: sim.now >= horizon_s,
+    )
+    # Rotation is ~96 min; bound = budget + longest in-flight pass.
+    assert _max_gap(runs, horizon_s) <= _DEFAULT_BUDGET_S + 36 * _MIN
