@@ -510,7 +510,9 @@ def rung_knobs(rung: Rung) -> dict[str, Any]:
       unrelated knob these fields don't touch).
     * ``LOCAL`` — ``temperature`` (max ``2.0``); ``thinking`` not forwarded
       (no confirmed llama.cpp/llama-swap key, see :func:`_dispatch_local`);
-      no ``effort`` (bare local completion has no such wire field).
+      no UI ``effort`` knob (a chain rung may still carry
+      ``reasoning_effort``, sent as the wire's ``reasoning_effort`` field;
+      see :attr:`Rung.reasoning_effort`).
     * ``OPENAI_COMPAT`` — all three (:func:`openrouter_routing`'s
       ``reasoning.enabled``/``reasoning.effort``).
     * ``OPENAI_TOOLS`` — ``temperature``; ``thinking`` only when
@@ -1201,6 +1203,11 @@ class LlmRequest:
     #: ``endpoint`` — the LOCAL transport routes here instead of the default.
     #: ``None`` ⇒ the ``LlmConfig.from_env`` URL.
     local_url: str | None = None
+    #: Per-rung ``reasoning_effort`` for the LOCAL wire (``low``/``medium``/
+    #: ``high``), stamped by :class:`FailoverProvider` from
+    #: :attr:`Rung.reasoning_effort`; :func:`_dispatch_local` sends it as
+    #: ``extra_body={"reasoning_effort": ...}``. ``None`` ⇒ nothing extra.
+    local_reasoning_effort: str | None = None
     #: Caller label ("dream", "review:structural", "chase:verify", ...) — the
     #: categorical feature the route-log keys on. Free-form; empty if unset.
     source: str = ""
@@ -1519,6 +1526,11 @@ class Rung:
     ``_SMALL_LOCAL_TIMEOUT_S`` cap. It exists because a big local model (the
     castor gpt-oss-120b rung) legitimately needs ~60 s, which that 30 s cap
     cut off every time (gr489474).
+
+    ``reasoning_effort`` (``"low"``/``"medium"``/``"high"``) is sent on the
+    ``local`` wire only, as the OpenAI-compatible ``reasoning_effort`` body
+    field, so a reasoning model (gpt-oss-120b) spends fewer tokens thinking.
+    ``None`` sends the request exactly as before.
     """
 
     transport: Transport
@@ -1527,6 +1539,7 @@ class Rung:
     bare: bool = False
     max_tokens: int | None = None
     timeout_s: float | None = None
+    reasoning_effort: str | None = None
 
 
 #: A quality gate on an error-free result: return ``True`` to accept, ``False``
@@ -1589,6 +1602,10 @@ class FailoverProvider:
                 call_req = _replace(call_req, max_tokens=rung.max_tokens)
             if rung.timeout_s is not None and req.timeout_s is None:
                 call_req = _replace(call_req, timeout_s=rung.timeout_s)
+            if rung.reasoning_effort is not None and rung.transport is Transport.LOCAL:
+                call_req = _replace(
+                    call_req, local_reasoning_effort=rung.reasoning_effort
+                )
             started = time.monotonic()
             last = _classified(
                 _empty_length_is_failure(
@@ -1765,6 +1782,9 @@ def resolve_chain(tier: Tier, *, tools_needed: bool, backend: Backend) -> list[R
     return rungs
 
 
+_REASONING_EFFORTS = frozenset({"low", "medium", "high"})
+
+
 def parse_chain_rungs(
     override: list,
 ) -> tuple[list[Rung], tuple[str, int, object] | None]:
@@ -1817,6 +1837,9 @@ def parse_chain_rungs(
             or to_raw <= 0
         ):
             return [], ("has a non-positive-number timeout_s", i, to_raw)
+        re_raw = raw.get("reasoning_effort")
+        if re_raw is not None and re_raw not in _REASONING_EFFORTS:
+            return [], ("has an unknown reasoning_effort (low|medium|high)", i, re_raw)
         rungs.append(
             Rung(
                 transport,
@@ -1825,6 +1848,7 @@ def parse_chain_rungs(
                 bare=bare_raw,
                 max_tokens=mt_raw,
                 timeout_s=float(to_raw) if to_raw is not None else None,
+                reasoning_effort=re_raw,
             )
         )
     return rungs, None
@@ -3243,7 +3267,13 @@ def _dispatch_local(req: LlmRequest, model: str) -> LlmResult:
     messages = req.messages or [{"role": "user", "content": req.prompt}]
     client = LlmClient(cfg)
     try:
-        res = client.complete(messages)
+        if req.local_reasoning_effort is not None:
+            res = client.complete(
+                messages,
+                extra_body={"reasoning_effort": req.local_reasoning_effort},
+            )
+        else:
+            res = client.complete(messages)
     except (RuntimeError, OSError) as exc:
         # A transport-level timeout / connection failure / 5xx-or-429 is
         # unavailability, not a genuine failure — flag it `paused` so a pinned

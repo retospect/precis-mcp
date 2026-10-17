@@ -5723,6 +5723,48 @@ def test_parse_chain_rungs_maps_and_validates_timeout_s() -> None:
         assert bad is not None and "timeout_s" in bad[0]
 
 
+def test_parse_chain_rungs_maps_and_validates_reasoning_effort() -> None:
+    rungs, bad = router.parse_chain_rungs(
+        [{"transport": "local", "model": "m", "reasoning_effort": "low"}]
+    )
+    assert bad is None and rungs[0].reasoning_effort == "low"
+    rungs, bad = router.parse_chain_rungs([{"transport": "local", "model": "m"}])
+    assert bad is None and rungs[0].reasoning_effort is None
+    for bad_val in ("extreme", "", 1, True):
+        rungs, bad = router.parse_chain_rungs(
+            [{"transport": "local", "model": "m", "reasoning_effort": bad_val}]
+        )
+        assert rungs == []
+        assert bad is not None and "reasoning_effort" in bad[0]
+
+
+def test_local_rung_reasoning_effort_reaches_extra_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rung's reasoning_effort is sent as extra_body; a rung without one
+    calls complete(messages) exactly as before (no extra_body kwarg)."""
+    import precis.workers.llm_summarize as summ
+
+    calls: list[dict[str, object]] = []
+
+    class _FakeClient:
+        def __init__(self, config: object) -> None:
+            pass
+
+        def complete(self, messages, **kwargs):
+            calls.append(kwargs)
+            return summ.LlmResult(text="ok", total_tokens=1)
+
+    monkeypatch.setattr(summ, "LlmClient", _FakeClient)
+    req = LlmRequest(tier=Tier.SMALL, prompt="x")
+    FailoverProvider([Rung(Transport.LOCAL, model="m", reasoning_effort="low")]).run(
+        req, model="m"
+    )
+    assert calls[-1] == {"extra_body": {"reasoning_effort": "low"}}
+    FailoverProvider([Rung(Transport.LOCAL, model="m")]).run(req, model="m")
+    assert calls[-1] == {}
+
+
 def _empty_length(model: str = "m") -> LlmResult:
     return LlmResult(
         text="",
