@@ -117,9 +117,15 @@ class MessageHandler(NumericRefHandler):
         reason: str | None = None,
         author: str | None = None,
         attachments: list[dict[str, Any]] | None = None,
+        status: str | None = None,
+        error: str | None = None,
         **_kw: Any,
     ) -> Response:
-        """Queue a proactive outbound message.
+        """Queue a proactive outbound message, or stamp its delivery result.
+
+        Delivery stamp (asa_bot only): ``put(kind='message', id=N,
+        status='sent'|'failed', error='<reason>')`` merges ``status``
+        (and ``error`` on failure) into ``meta`` and nothing else.
 
         Required: ``text`` (body), ``target`` (where to deliver).
 
@@ -146,6 +152,8 @@ class MessageHandler(NumericRefHandler):
         (acceptable for human-scale traffic); operator can flip
         status back to ``'queued'`` to re-attempt.
         """
+        if id is not None and status is not None:
+            return self._stamp_delivery(id, status, error)
         if id is not None:
             raise BadInput(
                 f"put on existing message id={id!r} is not supported",
@@ -289,6 +297,29 @@ class MessageHandler(NumericRefHandler):
 
         return self._render_create_ack(ref.id, target=meta["target"])
 
+    def _stamp_delivery(
+        self, id: str | int, status: str, error: str | None
+    ) -> Response:
+        if status not in ("sent", "failed"):
+            raise BadInput(
+                f"status={status!r} not accepted; delivery stamps are 'sent' or 'failed'",
+                next="put(kind='message', id=N, status='sent'|'failed', error='...')",
+            )
+        try:
+            ref_id = int(id)
+        except (TypeError, ValueError):
+            raise BadInput(f"message id must be numeric, got {id!r}") from None
+        ref = self.store.get_ref(kind=self.kind, id=ref_id)
+        if ref is None:
+            raise BadInput(f"no message with id={ref_id}")
+        updates: dict[str, Any] = {"status": status}
+        if status == "failed":
+            updates["error"] = (error or "unknown")[:500]
+        else:
+            updates["error"] = None
+        self.store.stamp_ref_meta(ref_id, updates)
+        return Response(body=f"message id={ref_id} status={status}")
+
     def _render_create_ack(
         self,
         ref_id: int,
@@ -320,6 +351,8 @@ class MessageHandler(NumericRefHandler):
         reason = meta.get("reason")
         if reason:
             lines.append(f"reason: {reason}")
+        if meta.get("error"):
+            lines.append(f"error: {meta['error']}")
         attachments = meta.get("attachments") or []
         if attachments:
             lines.append(f"attachments: {len(attachments)}")

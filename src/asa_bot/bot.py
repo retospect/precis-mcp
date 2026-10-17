@@ -590,14 +590,23 @@ class AsaBot(discord.Client):
             text = _extract_message_body(body)
         if not text:
             log.warning("message %s: empty body, skipping", ref_id)
+            await self._stamp_delivery(ref_id, "failed", "empty body")
             return
         channel = await self._channel_from_slug(target)
         if channel is None:
             log.warning("message %s: no channel for target %r", ref_id, target)
+            await self._stamp_delivery(
+                ref_id, "failed", f"no channel for target {target!r}"
+            )
             return
         text = mask_secrets(text)
-        for c in _split_for_discord(text, self._cfg.discord.max_message_chars):
-            await channel.send(content=c)
+        try:
+            for c in _split_for_discord(text, self._cfg.discord.max_message_chars):
+                await channel.send(content=c)
+        except Exception as exc:
+            await self._stamp_delivery(ref_id, "failed", f"{type(exc).__name__}: {exc}")
+            raise
+        await self._stamp_delivery(ref_id, "sent")
 
         # Capture the posted body as an assistant conv turn so follow-up
         # questions see it in the thread history — else the bot "denies"
@@ -622,6 +631,21 @@ class AsaBot(discord.Client):
                 )
             except Exception:
                 log.exception("message %s: conv capture failed; delivered", ref_id)
+
+    async def _stamp_delivery(
+        self, ref_id: Any, status: str, error: str | None = None
+    ) -> None:
+        """Record the delivery result on the message ref (gr492860).
+
+        Goes through ``put(kind='message', id=, status=)``. Best-effort: a
+        stamp failure is logged and never masks the delivery outcome."""
+        args: dict[str, Any] = {"kind": "message", "id": ref_id, "status": status}
+        if error:
+            args["error"] = error
+        try:
+            await self._precis.call_tool("put", args)
+        except Exception:
+            log.exception("message %s: could not stamp status=%s", ref_id, status)
 
     async def _fetch_message_body(self, ref_id: Any) -> str:
         """Full text of a message, from its ``message_body`` chunk(s).

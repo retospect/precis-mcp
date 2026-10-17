@@ -183,7 +183,6 @@ _ARGS_ONLY: frozenset[tuple[str, str, str]] = frozenset(
         # (tools/core.py::edit now declares + forwards both).
         # -- put: in-process planner state ---------------------------------
         ("plan", "put", "belief"),
-        ("plan", "put", "status"),
         # -- put: protein (AlphaFold) + reaction-route mint -----------------
         # WIRED THROUGH 2026-09-13: engine/max_steps/requested_by/sequence/
         # seeds (and the new route constraints=) are now declared on
@@ -226,7 +225,6 @@ _ARGS_ONLY: frozenset[tuple[str, str, str]] = frozenset(
         # -- make-tree step state (mirrors plan's status decision: not in
         # the core verb schema; MCP callers set it via meta={'status': …}
         # on put, and step-status flips ride the same in-process path) ----
-        ("make", "put", "status"),
         ("make", "edit", "status"),
     }
 )

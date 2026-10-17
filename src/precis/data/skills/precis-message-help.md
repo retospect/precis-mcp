@@ -104,8 +104,10 @@ surface; the actual Discord message stays posted.
 3. asa_bot LISTENs on that channel, picks up the notification.
 4. asa_bot fetches the ref + chunks + attachments, posts to Discord
    via the appropriate transport.
-5. asa_bot stamps `meta.status='sent'` (or `'failed'` with an
-   error trace).
+5. asa_bot stamps `meta.status='sent'` (or `'failed'` with `meta.error`)
+   after each attempt, via `put(kind='message', id=N, status='sent'|'failed',
+   error='...')`. That put changes only status/error; the message stays
+   otherwise immutable.
 
 You don't see asa_bot. You just see the message land.
 

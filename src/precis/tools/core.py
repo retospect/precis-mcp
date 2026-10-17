@@ -1249,6 +1249,10 @@ def put(
     identifier: str | None = None,
     year: int | None = None,
     reason: str | None = None,
+    # message delivery stamp (asa_bot, precis-message-help):
+    # put(kind='message', id=N, status='sent'|'failed'[, error='…']).
+    status: str | None = None,
+    error: str | None = None,
     # quest logbook (see precis-quest-help): append a dated WORM entry —
     # put(kind='quest', id=N, text='…', entry='hypothesis'[, by='agent', cost=…]).
     # entry= is the type (note/observation/hypothesis/result/decision/dead-end/
@@ -1461,6 +1465,8 @@ def put(
             "identifier": identifier,
             "year": year,
             "reason": reason,
+            "status": status,
+            "error": error,
             "entry": entry,
             "by": by,
             "cost": cost,
