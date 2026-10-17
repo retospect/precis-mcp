@@ -80,7 +80,9 @@ Later, each its own build or less:
   `precis/sheet/`, with shims at the old paths. Half a build, owned by this
   thread, and sequenced with the parked pcb-easyeda-round-trip.
 - **Engrave layers for part labels** on the flat-pack job (stroke font →
-  `engrave_vector`), after the move above.
+  `engrave_vector`), after the move above. Labels blocked on the
+  geom/stroke-font move; move waits for pcb quiet +
+  pcb-easyeda-round-trip sequencing (2026-10-17).
 - **The PCB emit adapter,** built by ewod-pcb when it takes the item up:
   - edge-cut → `cut`;
   - NPTH drill → `drill`;
