@@ -19,6 +19,7 @@ from __future__ import annotations
 import time
 from collections.abc import Iterator
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -371,3 +372,34 @@ class TestOpenAlexWiring:
         assert out is not None
         assert out.event == "rate_limited"
         assert out.payload["limiter"] == "shared"
+
+
+class TestCrossrefSeed:
+    """Ruling 1 (Reto 2026-10-16): crossref is 1 request/s. Found by name,
+    not number, so a landing-order renumber only renames the file."""
+
+    (_MIGRATION,) = (
+        Path(rate_limit.__file__).resolve().parents[1] / "migrations"
+    ).glob("[0-9][0-9][0-9][0-9]_crossref_rate_1rps.sql")
+
+    def _crossref(self, store: Store) -> tuple[Any, ...] | None:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT capacity, refill_per_sec, tokens FROM external_rate_limits "
+                "WHERE provider = 'crossref'"
+            ).fetchone()
+            return tuple(row) if row is not None else None
+
+    def test_migrated_db_caps_crossref_at_one_per_second(self, store: Store) -> None:
+        assert self._crossref(store) == (1, 1.0, 1)
+
+    def test_migration_lowers_a_20rps_row_and_is_idempotent(self, store: Store) -> None:
+        sql = self._MIGRATION.read_text(encoding="utf-8")
+        _seed(store, "crossref", capacity=20, refill_per_sec=20.0, tokens=20)
+        try:
+            for _ in range(2):
+                with store.pool.connection() as conn:
+                    conn.execute(sql)
+                assert self._crossref(store) == (1, 1.0, 1)
+        finally:
+            _seed(store, "crossref", capacity=1, refill_per_sec=1.0, tokens=1)

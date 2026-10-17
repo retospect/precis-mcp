@@ -105,8 +105,9 @@ provider key.
 - **Open:** an entry Crossref can never answer (a 400 on odd citation
   text, an unparseable body) stays NULL and the sweep may re-pick it on
   every idle cycle — add a per-entry attempt marker if that shows up in
-  the limiter budget. The crossref seed row is 20 rps; ruling 1 lowers it to 1/s in a
-  new migration.
+  the limiter budget.
+- **Crossref cap (ruling 1):** `*_crossref_rate_1rps.sql` lowers the 0121
+  seed row (20 rps) to a one-token bucket refilling at 1/s.
 
 ## Rulings (Reto, 2026-10-16 ~10:2xZ, morning-queue entry 7)
 
