@@ -118,15 +118,12 @@ computed-pathway evidence edge the claim page drops) · `draft-authoring.md`
 (created 2026-10-01 — ranked by what the month's preprint hits).
 Seams: substrate vs consumers, pipeline vs the layer that consumes it, and
 the taproot umbrella vs its defect cluster, recorded in `threads/INDEX.md`.
-Top priority (Reto, 2026-10-07, "cut over soon"; supersedes the 10-01 line
-and the coexistence reading of R17): the cutover sequence —
-recall/walk/keep slices 1a+2 (shipped; spec deleted 2026-10-15) → deploy the mirror
-(`cli/memory_mirror.py`, shipped) → refresh the 146 stale `SPACE:repo-dev`
-nodes in place + the real import → hook on, `MEMORY.md` becomes a pointer
-to the mesh root memory node (plus how to bring the server back up) →
-`backlog/memory-native-authoring.md` as the primary write path → skills
-into the mesh. One write path (the graph); files are derived. Before the
-re-cut, record why the 10-03 cutover reverted.
+Top priority (Reto, 2026-10-07, "cut over soon"): the cutover sequence.
+Done: recall/walk/keep, the mirror (`cli/memory_mirror.py`), the real
+import, and the hook; `MEMORY.md` has been a pointer to the mesh root
+memory node since 2026-10-13. Open: `backlog/memory-native-authoring.md` as
+the primary write path, then skills into the mesh. One write path (the
+graph); files are derived.
 
 **Surfaces.** Agent: an agent never leaves the graph for SQL or a temp
 file to do its work. Human: a curated view — from a node Reto reaches its
@@ -204,12 +201,11 @@ rungs, with frontier review as the gate, and hands curated fisheye
 contexts to frontier models when a frontier call is worth it. The
 local-versus-cloud share is a number.
 
-**Where it stands.** 0% of LLM traffic is local: 406,527 calls in the 7
-days to 2026-10-01 all went cloud (~$298). The tier ladder moved to cloud at
-every rung on 2026-08-15; the castor/pollux/spark LLM servers have been
-stopped since 2026-08-23, GPUs idle, DeepSeek-V4-Flash and Qwen3 weights
-staged on castor; the last local call was 2026-09-10 (the melchior
-summariser model). The share is measured by `get(kind='llm',
+**Where it stands.** 7.3% of LLM calls landed local over the 7 days to
+2026-10-17 (small tier 8.3%, medium and big 0%; medium is the largest
+spend), up from 0% over the 7 days to 2026-10-01 (~$298 all cloud). The
+tier ladder moved to cloud at every rung on 2026-08-15 and the local
+servers returned in October. The share is measured by `get(kind='llm',
 id='/placement')`: landed (`placement`) and routed (`placement_routed`,
 migration 0179, recorded from the round-1 deploy on). No monitor
 answers "is capacity idle", and `backlog/cluster-scheduling.md` tears
@@ -354,6 +350,8 @@ than leaving it.
 
 Newest first; one line per pass (`/pillar-review` writes it).
 
+- 2026-10-17 housekeeping pass (no-pillar items, expired snoozes, drive-ux,
+  stale where-it-stands lines); full review decisions pending.
 - 2026-10-12 — Reto's focus rulings (chat), not a full pass. Active set:
   (1) graph memory + quantitative extraction from papers, (2) nanobuds
   paper, (3) the surface-Pourbaix map/view spec, (4) hexfold, (5) platform

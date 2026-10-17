@@ -3,7 +3,6 @@ status: draft
 pillar: local-compute
 title: Dedicated local summariser — one machine slice runs chunk summarisation, cloud only as overflow
 prio: high
-snooze-until: 2026-10-12
 ---
 
 # Dedicated local summariser — one machine slice runs chunk summarisation, cloud only as overflow
@@ -65,7 +64,7 @@ The prod row `llm.op.llm_summarize` was written 2026-10-11 11:53:54Z (local
   source='llm_summarize' AND ts > now()-interval '24 hours' GROUP BY 1,2;`
 - Decide: if quiet hours run mostly local and only drain bursts overflow,
   the slice is right-sized; if overflow dominates off-burst too, raise the
-  slot (`--parallel`) or add a second local server. Then drop the snooze.
+  slot (`--parallel`) or add a second local server. 
 
 ## In scope
 

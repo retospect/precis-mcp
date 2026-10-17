@@ -91,11 +91,10 @@ and the R17 ruling keeps files and graph coexisting. Kept for the record.
    2026-10-15. Legacy refresh (8993c22e6) and native export (afa814bd9)
    landed; the real import is live (namespace `repo-dev-harness-20261007`).
 3. **backlog/memory-native-authoring.md** — Reto 2026-10-01: top priority,
-   ahead of td458720's sequencing. **State 2026-10-07:** the cutover it
-   records was reverted; `MEMORY.md` is a file index again, memory-lint
-   runs in file mode, and the 146 nodes its importer created are stale.
-   The SPACE axis, `meta.hook`, the hook script and memory-lint graph
-   mode stay built; the cutover sequence is held behind item 2. First slice built 2026-10-02 (`SPACE:`
+   ahead of td458720's sequencing. **State:** the cutover completed;
+   `MEMORY.md` has been a pointer to the mesh root since 2026-10-13 and the
+   real import is live. The SPACE axis, `meta.hook`, the hook script and
+   memory-lint graph mode are built. First slice built 2026-10-02 (`SPACE:`
    axis, `precis memory import`/`index`, the hook script, test 4a).
    - **Dogfooded on prod 2026-10-03:** the import ran, and the graph render
      matched `MEMORY.md`.

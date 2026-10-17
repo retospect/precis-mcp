@@ -4,7 +4,7 @@
 
 - **Pillar:** platform
 - **Next:** Check pending publishers; resume module moves when the agreed hold lifts.
-- **Blocked by:** Module moves held until 2026-10-16; publisher correction belongs to Reto.
+- **Blocked by:** Module hold expired 2026-10-16; publisher correction belongs to Reto.
 - **Unblocks:** Packaging for the November catpath paper.
 - **Acceptance:** Use [plugin-split-runtime-shell](../plugin-split-runtime-shell.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
 - **Worktree:** `plugin-split` (any fresh tree works; nothing is unlanded)
@@ -19,8 +19,7 @@ catpath is the reference model in its own repo — specced in
 `backlog/plugin-split-runtime-shell.md`; it is the packaging half of
 `docs/mission.md`'s "machine-usable tools" for agents, since an installed
 model adds kinds to a constant 7-verb surface rather than tools to an
-agent's budget. Module moves are held to 2026-10-16 (Reto's 30-day rule);
-until then only behaviour-neutral prep lands. Steps 1–5 of the backlog
+agent's budget. The module-move hold (Reto's 30-day rule) expired 2026-10-16. Steps 1–5 of the backlog
 item have landed. Reto's 2026-10-01 rulings are in it:
 package-split superseded, private-until-paper = invisible. The goal is a
 minimal releasable model package that is also fully useful inside precis,
@@ -126,8 +125,8 @@ own item); they become items as each comes into reach.
    day: a minimal package releasable publicly *and* fully useful inside
    precis, plus a hope that modularity shrinks the deploy jam — which the
    item records as only partly supported (59% of commits touch core).
-2. **backlog/plugin-split-runtime-shell.md**, hexfold out first — waits on
-   the 10-16 snooze only; the import-boundary gate it also wanted landed 2026-10-01, and
+2. **backlog/plugin-split-runtime-shell.md**, hexfold out first — had only
+   the 10-16 hold (expired) to wait on; the import-boundary gate it also wanted landed 2026-10-01, and
    the restart precondition it used to carry turned out not to
    exist. Proves the entry-point mechanics at zero API risk.
 3. **backlog/plugin-split-runtime-shell.md**, precis_surface out — waits on

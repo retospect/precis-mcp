@@ -19,10 +19,11 @@ Current declared activity: [fleet roster](../../../.claude/fleet/threads.tsv); d
 **Status:** ends when the shared design substrate the se/hexfold/pcb/cad
 kinds stand on exists — design-state-core, pattern groups, complementarity,
 make tree, attached models — per `backlog/multiscale-design-system-spec.md`,
-with `backlog/multiscale-design-architecture.md` as the map. Today none of
-the core pieces exist; the three `ready/high` items below are independent
-enough to start in any order except where noted, and are the ones every
-consumer kind (se-machine-design, pcb-platform) is implicitly waiting on.
+with `backlog/multiscale-design-architecture.md` as the map. design-state-core
+has shipped (r37); pattern-groups, make-tree-vs-design-tree and
+attached-models-layer remain, independent enough to start in any order
+except where noted, and are the ones every consumer kind
+(se-machine-design, pcb-platform) is implicitly waiting on.
 **Last reviewed:** 2026-09-30
 **Worktree:** `multiscale-design-core`
 **Allocation decision (historical):** no — opens at the next session restart if Reto names it.

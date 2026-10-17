@@ -1,6 +1,7 @@
 ---
 status: draft
 title: Verify deployed supplier identity links and live reads
+pillar: 3d-design
 thread: se-machine-design
 ---
 

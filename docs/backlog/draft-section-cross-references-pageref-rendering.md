@@ -1,3 +1,7 @@
+---
+status: idea
+pillar: memory-graph
+---
 # Draft section cross-references cannot render page numbers
 
 **what**: Draft section cross-references (e.g., `\ref{sec:methods}`) in LaTeX export render as section labels only. A `\cpageref`-style marker is needed so LaTeX drafts can render page numbers in the PDF export, with a fallback to section names in docx (since docx does not support page-number fields in cross-references).

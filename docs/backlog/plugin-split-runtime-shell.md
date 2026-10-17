@@ -3,7 +3,6 @@ status: draft
 title: plugin split, top-down — precis-util runtime shell + precis-geom build layer + precis-xxx models, for agent use over MCP
 prio: normal
 model: opus
-snooze-until: 2026-10-16
 pillar: platform
 ---
 
@@ -14,9 +13,8 @@ handing off to `iridescent-watching-reef`). It **supersedes**
 `package-split.md` (Reto 2026-09-16, the same lineage approached bottom-up
 as kernel extraction): Reto ruled 2026-10-01 to delete that item, and its
 prep decisions not covered here were lifted into §In scope, steps 6–8.
-Its 30-day no-changes rule still governs: `snooze-until` above is the
-earliest day a file moves, and until then only behaviour-neutral prep is
-fair game.
+Its 30-day no-changes rule held module moves to 2026-10-16; the hold has
+expired.
 
 ## Motivation / why
 

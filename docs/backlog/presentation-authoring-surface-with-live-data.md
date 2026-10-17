@@ -1,3 +1,7 @@
+---
+status: idea
+pillar: memory-graph
+---
 # Presentation/poster authoring surface with live data binding
 
 **What:** Precis should provide an authoring surface for slides and posters as structured presentation objects — frames/panels as blocks that cite findings and pull live counts from prod at render time instead of hand-copied numbers. Today `pres` only stores finished decks for search; authoring happens in hand-maintained LaTeX or other external tools.
