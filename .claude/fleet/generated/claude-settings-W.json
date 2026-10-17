@@ -1,5 +1,4 @@
 {
-  "_generated": "GENERATED from .claude/fleet/authority.md by scripts/fleet-authority; do not edit.",
   "permissions": {
     "allow": [
       "Bash(scripts/ship --checked:*)",
@@ -19,13 +18,9 @@
       "Bash(scripts/host-ops/play:*)",
       "Bash(pkill -f:*)",
       "Edit(.claude/fleet/authority.md)",
-      "Write(.claude/fleet/authority.md)",
       "Edit(.claude/fleet/generated/**)",
-      "Write(.claude/fleet/generated/**)",
       "Edit(.devin/config.json)",
-      "Write(.devin/config.json)",
-      "Edit(~/work/infrastructure/**)",
-      "Write(~/work/infrastructure/**)"
+      "Edit(~/work/infrastructure/**)"
     ]
   }
 }

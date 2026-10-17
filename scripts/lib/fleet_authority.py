@@ -2,8 +2,14 @@
 
 The last fenced ```yaml block of authority.md is the only machine input.
 Subcommands: ``render`` (write .claude/fleet/generated/), ``check`` (diff a
-fresh render against the checked-in files), ``apply`` (copy one tier's
-Claude and Devin files to a target dir; dry run unless ``--yes``).
+fresh render against the checked-in files), ``apply`` (merge one tier's
+``permissions`` into a builder worktree's .claude/settings.local.json and
+.devin/config.json, and print its Codex flags; dry run unless ``--yes``).
+
+``apply`` only targets a linked worktree directly under the primary
+checkout's .claude/worktrees/, never the primary checkout, and only writes a
+file git ignores there, so the per-tree write never shows up as a change
+``scripts/ship`` would commit.
 """
 
 from __future__ import annotations
@@ -13,6 +19,7 @@ import difflib
 import json
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -23,6 +30,13 @@ REPO = Path(__file__).resolve().parents[2]
 AUTHORITY = REPO / ".claude" / "fleet" / "authority.md"
 GENERATED = REPO / ".claude" / "fleet" / "generated"
 TIERS = ("R", "W")
+#: Launcher tier names from before v2 (scripts/fleet-wave --tier).
+TIER_ALIASES = {"readonly": "R", "qland": "W"}
+#: Generated file stem -> path inside the target worktree.
+APPLY_FILES = {
+    "claude-settings": Path(".claude") / "settings.local.json",
+    "devin-config": Path(".devin") / "config.json",
+}
 HEADER = (
     "GENERATED from .claude/fleet/authority.md by scripts/fleet-authority; do not edit."
 )
@@ -95,9 +109,10 @@ def claude_settings(data: dict[str, Any], tier: str) -> dict[str, Any]:
     allow += [_mcp(t) for t in spec.get("allow_mcp", [])]
     deny = [f"Bash({c}:*)" for c in deny_exec(data, tier)]
     deny += [_mcp(t) for t in MCP_WRITE_TOOLS if t not in spec.get("allow_mcp", [])]
-    for p in _write_deny(data):
-        deny += [f"Edit({p})", f"Write({p})"]
-    return {"_generated": HEADER, "permissions": {"allow": allow, "deny": deny}}
+    # Claude Code checks writes against Edit(path) only; a Write(path) rule
+    # is accepted but never consulted, and warns at startup.
+    deny += [f"Edit({p})" for p in _write_deny(data)]
+    return {"permissions": {"allow": allow, "deny": deny}}
 
 
 def devin_config(data: dict[str, Any], tier: str) -> dict[str, Any]:
@@ -107,10 +122,7 @@ def devin_config(data: dict[str, Any], tier: str) -> dict[str, Any]:
     deny = [f"Exec({c})" for c in deny_exec(data, tier)]
     deny += [_mcp(t) for t in MCP_WRITE_TOOLS if t not in spec.get("allow_mcp", [])]
     deny += [f"Write({p})" for p in _write_deny(data)]
-    return {
-        "_generated": HEADER,
-        "permissions": {"allow": allow, "ask": [], "deny": deny},
-    }
+    return {"permissions": {"allow": allow, "ask": [], "deny": deny}}
 
 
 def codex_flags(data: dict[str, Any], tier: str) -> str:
@@ -172,8 +184,25 @@ def footer(data: dict[str, Any], tier: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+README = f"""# .claude/fleet/generated
+
+{HEADER}
+
+JSON cannot carry a comment, so this note covers every file here:
+claude-settings-<tier>.json, devin-config-<tier>.json, codex-<tier>.txt and
+footer-<tier>.txt. Change .claude/fleet/authority.md, then run
+`scripts/fleet-authority render`. tests/test_fleet_authority_drift.py fails
+when any file here, this README included, differs from a fresh render.
+
+Launchers do not copy these files. `scripts/fleet-authority apply --tier
+R|W --to <worktree> --yes` replaces only the `permissions` key of the
+worktree's .claude/settings.local.json and .devin/config.json (old copy kept
+as .bak) and prints the tier's Codex flags.
+"""
+
+
 def render(data: dict[str, Any]) -> dict[str, str]:
-    out: dict[str, str] = {}
+    out: dict[str, str] = {"README.md": README}
     for t in TIERS:
         out[f"footer-{t}.txt"] = footer(data, t)
         out[f"claude-settings-{t}.json"] = (
@@ -221,20 +250,96 @@ def cmd_check(_a: argparse.Namespace) -> int:
     return 1 if bad else 0
 
 
-def cmd_apply(a: argparse.Namespace) -> int:
-    target = Path(a.to).expanduser()
-    files = {
-        f"claude-settings-{a.tier}.json": "claude-settings.json",
-        f"devin-config-{a.tier}.json": "devin-config.json",
-    }
-    for src, dst in files.items():
-        print(
-            f"{'write' if a.yes else 'would write'} {GENERATED / src} -> {target / dst}"
+def _git(target: Path, *argv: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *argv],
+        cwd=target,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+
+def check_target(target: Path) -> str | None:
+    """Refusal reason, or None when ``target`` is a builder worktree."""
+    if not target.is_dir():
+        return f"{target}: not a directory"
+    top = _git(target, "rev-parse", "--show-toplevel")
+    common = _git(target, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    if top.returncode or common.returncode:
+        return f"{target}: not a git worktree"
+    if Path(top.stdout.strip()).resolve() != target:
+        return f"{target}: not a worktree root (top level {top.stdout.strip()})"
+    primary = Path(common.stdout.strip()).resolve().parent
+    if target == primary:
+        return f"{target}: the primary checkout; apply only to a builder worktree"
+    if target.parent != primary / ".claude" / "worktrees":
+        return f"{target}: not directly under {primary / '.claude' / 'worktrees'}"
+    return None
+
+
+def merged(existing: dict[str, Any], generated: dict[str, Any]) -> dict[str, Any]:
+    """``existing`` with only its ``permissions`` key replaced."""
+    return {**existing, "permissions": generated["permissions"]}
+
+
+def codex_line(tier: str) -> str:
+    text = (GENERATED / f"codex-{tier}.txt").read_text(encoding="utf-8")
+    return next(ln for ln in text.splitlines() if ln and not ln.startswith("#"))
+
+
+def _load_existing(dst: Path) -> dict[str, Any] | str:
+    """The JSON object at ``dst`` ({} when absent), or a refusal reason."""
+    if not dst.exists():
+        return {}
+    try:
+        old = json.loads(dst.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        return f"{dst}: {e}"
+    return old if isinstance(old, dict) else f"{dst}: not a JSON object"
+
+
+def apply(tier: str, target: Path, *, yes: bool) -> int:
+    """Merge tier ``permissions`` into ``target``; 2 on refusal."""
+    target = target.expanduser().resolve()
+    why = check_target(target)
+    plans: list[tuple[Path, str]] = []
+    for stem, rel in APPLY_FILES.items():
+        if why:
+            break
+        if _git(target, "check-ignore", "-q", "--no-index", str(rel)).returncode:
+            why = f"{target / rel} is not gitignored; writing it would dirty the tree"
+            break
+        dst = target / rel
+        old = _load_existing(dst)
+        if isinstance(old, str):
+            why = old
+            break
+        gen = json.loads(
+            (GENERATED / f"{stem}-{tier}.json").read_text(encoding="utf-8")
         )
-        if a.yes:
-            target.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(GENERATED / src, target / dst)
+        plans.append((dst, json.dumps(merged(old, gen), indent=2) + "\n"))
+    if why:
+        print(f"fleet-authority: refused: {why}", file=sys.stderr)
+        return 2
+    for dst, text in plans:
+        if dst.exists() and dst.read_text(encoding="utf-8") == text:
+            print(f"unchanged {dst}")
+            continue
+        bak = f" (old copy -> {dst.name}.bak)" if dst.exists() else ""
+        print(f"{'write' if yes else 'would write'} {dst}: tier {tier}{bak}")
+        if yes:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if dst.exists():
+                shutil.copyfile(dst, dst.with_name(dst.name + ".bak"))
+            dst.write_text(text, encoding="utf-8")
+    print(f"codex-flags: {codex_line(tier)}")
     return 0
+
+
+def cmd_apply(a: argparse.Namespace) -> int:
+    return apply(TIER_ALIASES.get(a.tier, a.tier), Path(a.to), yes=a.yes)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -243,7 +348,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("render").set_defaults(fn=cmd_render)
     sub.add_parser("check").set_defaults(fn=cmd_check)
     ap = sub.add_parser("apply")
-    ap.add_argument("--tier", choices=TIERS, required=True)
+    ap.add_argument("--tier", choices=(*TIERS, *TIER_ALIASES), required=True)
     ap.add_argument("--to", required=True)
     ap.add_argument("--yes", action="store_true")
     ap.set_defaults(fn=cmd_apply)

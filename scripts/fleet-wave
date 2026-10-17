@@ -8,7 +8,7 @@ The thread-session fleet (one window per roadmap thread) is
 ``scripts/fleet``; this is the per-wave kit beside it. Runbook: the
 ``gripe-fleet`` skill (.claude/skills/gripe-fleet/SKILL.md).
 
-    fleet-wave launch NAME --brief FILE [--tier readonly|qland] [--devin]
+    fleet-wave launch NAME --brief FILE [--tier R|W] [--devin]
     fleet-wave peek [WIN...] [-n N]     last N non-empty lines per window
     fleet-wave ctx                      context % per Claude pane
     fleet-wave prompts                  panes at a dialog: window, type, command
@@ -24,9 +24,18 @@ The thread-session fleet (one window per roadmap thread) is
 
 WIN is a window name (``claude-x``) or a wave NAME (resolved to its
 ``claude-``/``devin-`` window). tmux is always called with an argument
-list, never a shell string. Nothing is stored in the repo: footers come
-from .claude/fleet/footers/<tier>.txt with ``{coordinator}``,
-``{release_owner}`` and ``{approval}`` filled at launch.
+list, never a shell string. Nothing is stored in the repo.
+
+Launch tiers are authority v2's R and W (.claude/fleet/authority.md);
+``readonly`` and ``qland`` are aliases for R and W. Launch creates the
+worktree first (as ``claude -w``/devin-tree would; both reuse it), runs
+``scripts/fleet-authority apply --tier T --to TREE --yes`` so the tree's
+.claude/settings.local.json and .devin/config.json carry the tier's
+permissions, and prints the tier's Codex flags. The prompt footer is
+.claude/fleet/generated/footer-<T>.txt plus .claude/fleet/builder-workflow.txt
+with ``{coordinator}`` and ``{release_owner}`` filled. FLEET_LEGACY_FOOTERS=1
+restores the pre-v2 launch for one release: footers/<readonly|qland>.txt
+(which also needs ``{approval}``) and no apply.
 
 The approval ledger lives in ``$FLEET_STATE/approvals/<tree>.tsv`` (never
 the repo: its lines carry user and session ids, and the repo is public).
@@ -50,6 +59,7 @@ Configuration (env, or the matching flag before the subcommand):
   FLEET_COORDINATOR_TREE          absolute path of the coordinator tree;
                                   approve/--revoke refuse anywhere else
   FLEET_COORDINATOR, FLEET_RELEASE_OWNER, FLEET_APPROVAL   footer fills
+  FLEET_LEGACY_FOOTERS=1          pre-v2 footers, no apply (one release)
 """
 
 from __future__ import annotations
@@ -81,6 +91,10 @@ PROMPT_CHAR = "❯"
 #: paste (typed text loses its head in a Claude pane; see scripts/fleet).
 PASTE_MIN = 200
 PREFIXES = ("claude-", "devin-")
+SCRIPTS = Path(__file__).resolve().parent
+#: Authority v2 tiers; readonly/qland are the pre-v2 names, kept as aliases.
+TIER_ALIASES = {"readonly": "R", "qland": "W"}
+LEGACY_FOOTER = {"R": "readonly", "W": "qland"}
 PLACEHOLDER_RE = re.compile(r"\{(coordinator|release_owner|approval)\}")
 
 
@@ -465,6 +479,69 @@ def _fill_footer(text: str, fills: dict[str, str]) -> str:
     return PLACEHOLDER_RE.sub(lambda m: fills[m.group(1)], text)
 
 
+def _legacy_footers() -> bool:
+    return os.environ.get("FLEET_LEGACY_FOOTERS", "") == "1"
+
+
+def _footer_template(f: Fleet, tier: str) -> str:
+    """Generated tier footer plus the builder workflow; the pre-v2
+    footers/<readonly|qland>.txt under FLEET_LEGACY_FOOTERS=1."""
+    fleet = f.repo / ".claude" / "fleet"
+    if _legacy_footers():
+        legacy = fleet / "footers" / f"{LEGACY_FOOTER[tier]}.txt"
+        return legacy.read_text(encoding="utf-8")
+    gen = (fleet / "generated" / f"footer-{tier}.txt").read_text(encoding="utf-8")
+    body = [ln for ln in gen.splitlines() if not ln.startswith("# GENERATED")]
+    workflow = (fleet / "builder-workflow.txt").read_text(encoding="utf-8")
+    return "\n".join(body) + "\n" + workflow
+
+
+def _ensure_tree(f: Fleet, name: str) -> Path:
+    """Create the builder worktree before the agent starts, the way
+    ``claude -w`` and scripts/devin-tree would (both reuse an existing
+    tree), so its permission files are in place at session start."""
+    tree = f.worktrees / name
+    if tree.is_dir():
+        return tree
+    branch = f"worktree-{name}"
+    git("fetch", "-q", "origin", "main", cwd=f.main)
+    has_branch = subprocess.run(
+        ["git", "show-ref", "-q", "--verify", f"refs/heads/{branch}"],
+        cwd=f.main,
+        check=False,
+    )
+    add = ["git", "worktree", "add", "-q"]
+    add += (
+        [str(tree), branch]
+        if has_branch.returncode == 0
+        else ["-b", branch, str(tree), "origin/main"]
+    )
+    proc = subprocess.run(
+        add, cwd=f.main, capture_output=True, text=True, encoding="utf-8", check=False
+    )
+    if proc.returncode:
+        raise SystemExit(f"fleet-wave: worktree add {name}: {proc.stderr.strip()}")
+    return tree
+
+
+def _apply_authority(tier: str, tree: Path) -> str:
+    """Run scripts/fleet-authority apply on ``tree``; return its Codex flags."""
+    argv = [str(SCRIPTS / "fleet-authority"), "apply", "--tier", tier]
+    argv += ["--to", str(tree), "--yes"]
+    proc = subprocess.run(
+        argv,
+        cwd=SCRIPTS.parent,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    if proc.returncode:
+        raise SystemExit(f"fleet-wave: authority apply refused: {proc.stderr.strip()}")
+    flags = [ln for ln in proc.stdout.splitlines() if ln.startswith("codex-flags: ")]
+    return flags[-1].removeprefix("codex-flags: ") if flags else ""
+
+
 def cmd_launch(f: Fleet, a: argparse.Namespace) -> int:
     name = a.name
     if not re.fullmatch(r"[A-Za-z0-9._-]+", name):
@@ -474,18 +551,23 @@ def cmd_launch(f: Fleet, a: argparse.Namespace) -> int:
     if win in f.windows():
         print(f"exists: {win}")
         return 0
-    footer_path = f.repo / ".claude" / "fleet" / "footers" / f"{a.tier}.txt"
+    tier = TIER_ALIASES.get(a.tier, a.tier)
     fills = {
         "coordinator": a.coordinator or os.environ.get("FLEET_COORDINATOR", ""),
         "release_owner": a.release_owner or os.environ.get("FLEET_RELEASE_OWNER", ""),
         "approval": a.approval or os.environ.get("FLEET_APPROVAL", ""),
     }
-    footer = _fill_footer(footer_path.read_text(encoding="utf-8"), fills)
+    footer = _fill_footer(_footer_template(f, tier), fills)
     brief = Path(a.brief).read_text(encoding="utf-8").rstrip("\n")
     text = f"{brief}\n{footer}"
     f.state.mkdir(parents=True, exist_ok=True)
     prompt_file = f.state / f"{win}.prompt"
     prompt_file.write_text(text, encoding="utf-8")
+    codex = ""
+    if a.dry_run:
+        print(f"fleet-authority apply --tier {tier} --to {f.worktrees / name} --yes")
+    elif not _legacy_footers():
+        codex = _apply_authority(tier, _ensure_tree(f, name))
     if a.devin:
         argv = [
             str(f.repo / "scripts" / "devin-tree"),
@@ -516,7 +598,9 @@ def cmd_launch(f: Fleet, a: argparse.Namespace) -> int:
         print(" ".join([*tmux_argv, "--", *claude[:-1], f"<{len(text)} chars>"]))
         return 0
     f.tmux(*tmux_argv, "--", *claude)
-    print(f"launched {win} ({f.model}, tier {a.tier}, prompt {prompt_file})")
+    print(f"launched {win} ({f.model}, tier {tier}, prompt {prompt_file})")
+    if codex:
+        print(f"codex flags for tier {tier}: {codex}")
     return 0
 
 
@@ -682,7 +766,7 @@ def parser() -> argparse.ArgumentParser:
     s = sub.add_parser("launch", help="start a builder window")
     s.add_argument("name")
     s.add_argument("--brief", required=True)
-    s.add_argument("--tier", choices=("readonly", "qland"), default="readonly")
+    s.add_argument("--tier", choices=("R", "W", *TIER_ALIASES), default="R")
     s.add_argument("--devin", action="store_true")
     s.add_argument("--coordinator", default="")
     s.add_argument("--release-owner", default="")

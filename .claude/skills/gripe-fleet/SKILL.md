@@ -27,12 +27,15 @@ approval quote for the tier, with its UTC time).
    (one commit each), what to verify before changing, how to test. Name
    the files and anchors you already know. The footer is appended at
    launch; do not restate its rules.
-3. **Pick the tier.** `readonly` (default): builders commit, nothing lands;
-   the release owner lands. `qland`: builders run `scripts/ship --quick`
-   themselves and the release owner deploys in batches. `qland` needs the
-   user's explicit approval for this wave; put the quote in
-   `FLEET_APPROVAL`. Footers: `.claude/fleet/footers/<tier>.txt`.
-4. **Launch.** `scripts/fleet-wave launch NAME --brief FILE --tier qland`
+3. **Pick the tier** (`.claude/fleet/authority.md` v2). `R` (default; alias
+   `readonly`): builders commit, nothing lands; the release owner lands.
+   `W` (alias `qland`): builders land their own slice with
+   `scripts/ship --checked`/`--remote`. Launch applies the tier's
+   permissions to the new tree (`scripts/fleet-authority apply`) and appends
+   `.claude/fleet/generated/footer-<tier>.txt` plus
+   `.claude/fleet/builder-workflow.txt`. `FLEET_LEGACY_FOOTERS=1` restores
+   the old `footers/<readonly|qland>.txt` launch for one release.
+4. **Launch.** `scripts/fleet-wave launch NAME --brief FILE --tier W`
    (window `claude-NAME`, `claude -w NAME --permission-mode auto`), or
    `--devin` for `scripts/devin-tree`. `--dry-run` prints the argv.
    Launch fails if a footer placeholder is unfilled.

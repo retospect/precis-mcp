@@ -1,5 +1,4 @@
 {
-  "_generated": "GENERATED from .claude/fleet/authority.md by scripts/fleet-authority; do not edit.",
   "permissions": {
     "allow": [
       "Exec(scripts/ship --checked)",

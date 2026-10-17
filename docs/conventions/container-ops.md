@@ -166,10 +166,12 @@ that isn't implemented — this change only surfaces the lag.
 ## Coordinator tooling: builder waves and cluster liveness
 
 - **`scripts/fleet-wave`** drives a builder wave in tmux: `launch NAME
-  --brief FILE --tier readonly|qland` (a `claude -w NAME` window, or
-  `--devin` via `scripts/devin-tree`; the footer comes from
-  `.claude/fleet/footers/<tier>.txt` with the coordinator, release owner and
-  approval quote filled from `FLEET_*` env or flags), `peek WIN…`, `ctx`
+  --brief FILE --tier R|W` (aliases `readonly|qland`; a `claude -w NAME`
+  window, or `--devin` via `scripts/devin-tree`; the tree's permission
+  files come from `scripts/fleet-authority apply`, the footer from
+  `.claude/fleet/generated/footer-<tier>.txt` plus
+  `.claude/fleet/builder-workflow.txt` with the coordinator and release
+  owner filled from `FLEET_*` env or flags), `peek WIN…`, `ctx`
   (context % per Claude pane, from the status line), `prompts` (panes at a
   dialog, with the command), `send-line WIN TEXT` (refuses a pane with a
   dialog open or unsent text in its input box), `watch-done NAME…` and

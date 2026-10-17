@@ -17,10 +17,23 @@ _spec.loader.exec_module(fa)
 
 def test_generated_files_equal_fresh_render() -> None:
     fresh = fa.render(fa.load())
-    assert len(fresh) == 8
+    assert len(fresh) == 9
     for name, text in fresh.items():
         have = (fa.GENERATED / name).read_text(encoding="utf-8")
         assert have == text, f"{name} is stale: run scripts/fleet-authority render"
+    on_disk = {p.name for p in fa.GENERATED.iterdir()}
+    assert on_disk == set(fresh), on_disk ^ set(fresh)
+
+
+def test_readme_carries_the_do_not_edit_note_json_cannot() -> None:
+    readme = (fa.GENERATED / "README.md").read_text(encoding="utf-8")
+    assert fa.HEADER in readme
+    for tier in fa.TIERS:
+        for stem in ("claude-settings", "devin-config"):
+            data = json.loads(
+                (fa.GENERATED / f"{stem}-{tier}.json").read_text(encoding="utf-8")
+            )
+            assert list(data) == ["permissions"], (stem, tier)
 
 
 def test_every_key_the_generator_reads_exists() -> None:

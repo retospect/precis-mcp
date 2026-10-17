@@ -75,19 +75,25 @@ def _module() -> ModuleType:
 def env(tmp_path: Path) -> dict[str, str]:
     repo = tmp_path / "repo"
     repo.mkdir()
+    # launch writes the tree's permission files; apply refuses unless ignored.
+    (repo / ".gitignore").write_text(".claude/*\n.devin/*\n", encoding="utf-8")
     for cmd in (
         ["git", "init", "-q", "-b", "main"],
         ["git", "config", "user.email", "t@example.invalid"],
         ["git", "config", "user.name", "t"],
-        ["git", "commit", "-q", "--allow-empty", "-m", "init"],
+        ["git", "add", ".gitignore"],
+        ["git", "commit", "-q", "-m", "init"],
         # close checks landedness against origin/main; there is no real
         # remote, so the ref is set by hand (fetch just fails silently).
         ["git", "update-ref", "refs/remotes/origin/main", "HEAD"],
     ):
         subprocess.run(cmd, cwd=repo, check=True)
-    shutil.copytree(
-        REPO / ".claude" / "fleet" / "footers", repo / ".claude" / "fleet" / "footers"
-    )
+    for sub in ("footers", "generated", "builder-workflow.txt"):
+        src, dst = REPO / ".claude" / "fleet" / sub, repo / ".claude" / "fleet" / sub
+        if src.is_dir():
+            shutil.copytree(src, dst)
+        else:
+            shutil.copyfile(src, dst)
     fake = tmp_path / "fake"
     fake.mkdir()
     bin_dir = tmp_path / "bin"
@@ -304,8 +310,32 @@ def test_launch_fills_footer_and_runs_claude_by_argv(
     prompt = argv[6]
     assert prompt.startswith("Task: fix the thing.\n") and "\nRules:" in prompt
     assert "coord-1" in prompt and "rel-2" in prompt
-    assert "standing grant in .claude/fleet/authority.md" in prompt
+    assert "(version 2), tier W." in prompt and "\nFinish: " in prompt
+    assert "GENERATED" not in prompt
     assert "{" not in prompt.replace("{0,", "")
+    # qland is an alias for W: the tree exists with W's permissions applied.
+    tree = Path(env["FLEET_WORKTREES"]) / "fix-x"
+    local = json.loads(
+        (tree / ".claude" / "settings.local.json").read_text(encoding="utf-8")
+    )
+    assert "Bash(scripts/ship --checked:*)" in local["permissions"]["allow"]
+    assert (tree / ".devin" / "config.json").exists()
+    assert "codex flags for tier W: --sandbox workspace-write" in proc.stdout
+
+
+def test_launch_legacy_footers_behind_env_flag(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    _windows(env, {})
+    brief = tmp_path / "brief.txt"
+    brief.write_text("Task: x.\n", encoding="utf-8")
+    env = {**env, "FLEET_LEGACY_FOOTERS": "1", "FLEET_COORDINATOR": "c",
+           "FLEET_RELEASE_OWNER": "r", "FLEET_APPROVAL": "a"}  # fmt: skip
+    proc = _run(env, "launch", "old-x", "--brief", str(brief), "--tier", "W")
+    assert proc.returncode == 0, proc.stderr
+    argv = json.loads(Path(env["FAKE_CLAUDE_LOG"]).read_text(encoding="utf-8"))
+    assert "standing grant in .claude/fleet/authority.md" in argv[6]
+    assert not (Path(env["FLEET_WORKTREES"]) / "old-x").exists()
 
 
 def test_watch_done_emits_once_per_finish_line(env: dict[str, str]) -> None:
