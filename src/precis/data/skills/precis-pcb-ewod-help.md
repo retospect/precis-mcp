@@ -143,13 +143,14 @@ balanced by chain order, not by spatial block (`per_tiles` is removed
 and refused by name).
 
 `fixed: 'xy'|'rot'|'both'` (default: **omitted — the placer owns the
-position**). Each sink is emitted at the centroid of its own share of
-electrodes, but that is a SEED the annealer may leave. Set `fixed` only
-when a sink's pose is a mechanical constraint rather than a routing
-preference — the same reason nuts, screw holes, alignment pins and
-board-edge connectors get pinned. Pinning a sink under the electrode
-array is what put one board's solder lands on top of its own authored
-plaza vias, so prefer the default.
+position**). Each sink is emitted at the centre of the bounding box of
+its own share's plaza vias (so a pad ring that encloses the via field
+clears it equally on every side), but that is a SEED the annealer may
+leave. Set `fixed` only when a sink's pose is a mechanical constraint
+rather than a routing preference — the same reason nuts, screw holes,
+alignment pins and board-edge connectors get pinned. Pinning a sink
+under the electrode array is what put one board's solder lands on top
+of its own authored plaza vias, so prefer the default.
 
 **Control pins.** `clk_pin`, `le_pin`, `bl_pin`, `pol_pin`, `dir_pin`
 (pin names on the sink part) are *driven* lines: each named one gets a

@@ -18,7 +18,9 @@ legalised before the judge runs — slid by the placer's own
 left UNPLACED for ``op='place'`` to own (pcb-global-plan-router slice
 5b — the part-agnostic expansion cannot compute a legal seed from
 footprint geometry it never sees, and on a dense via field the legal
-islands are sub-lattice thin).
+islands are sub-lattice thin). Version 10 then moved the seed itself
+off the vias: it centres on the share's via box, which on this board is
+a legal pose with no legalising at all.
 """
 
 from __future__ import annotations
@@ -95,21 +97,26 @@ def test_stale_generators_reput_through_judged_put(store: Store) -> None:
     assert _pose(store, ref.id, "ARR1_SINK_0") == pose_before
 
 
-def test_regenerate_reput_reseeds_and_never_refuses(store: Store) -> None:
+def test_regenerate_reput_seeds_the_sink_clear_of_the_vias(store: Store) -> None:
     """``regenerate`` is the documented explicit reset — "retires the
     whole expansion, placement and routing with it" — so it must NOT
-    carry the stored pose forward. On this board the emitted centroid
-    seed is itself an ``invariant:no_via_in_pad`` violation (sink pads
-    over plaza vias) and the legal islands are narrower than the
-    legaliser's 0.25mm lattice, so the seed cannot be slid to a legal
-    pose cheaply: slice 5b legalises what it can and UNPLACES what it
-    cannot — the put lands incomplete-but-valid (the one permitted
-    failure), leaving the pose to ``op='place'``, whose anneal does find
-    a legal pose for this board (measured: the stored pose itself was an
-    anneal's own find). The put must succeed with the sink left unplaced
-    and the generator row at the current version."""
+    carry the stored pose forward; the sink takes the emitted seed.
+
+    The gripe's geometry: up to version 9 that seed was the share's
+    electrode centroid (-0.18, -0.18), and the 3x3 plaza lattice puts the
+    via field's centre at (+0.76, +0.76), so the HV507's left/right pad
+    columns (±8.5mm from its centre) landed on the outer via column (via
+    box ±7.12mm + 0.225mm radius about its own centre) — 14
+    ``invariant:no_via_in_pad`` hits, and slice 5b could only UNPLACE the
+    sink. Version 10 seeds on the via box's midpoint, which clears every
+    via by ~0.16mm per side, so the put lands with the sink PLACED at the
+    seed itself, not slid and not unplaced."""
     ref = _hydrate(store)
     params = dict(store.pcb_generators_for(ref.id)["ARR1"]["params"])
+    seed = {
+        c["refdes"]: c
+        for c in pcb_generators.expand("ewod_pad_array", "ARR1", params).components
+    }["ARR1_SINK_0"]
 
     pcb = PcbHandler(hub=Hub(store=store))
     pcb.put(
@@ -126,26 +133,41 @@ def test_regenerate_reput_reseeds_and_never_refuses(store: Store) -> None:
         },
     )
 
-    assert _pose(store, ref.id, "ARR1_SINK_0")[:2] == (None, None)
+    assert _pose(store, ref.id, "ARR1_SINK_0")[:3] == (seed["x"], seed["y"], 0.0)
     rows = store.pcb_generators_for(ref.id)
     assert int(rows["ARR1"]["version"]) == pcb_generators.VERSIONS["ewod_pad_array"]
     bad = [
         f
         for f in pcb._validity_findings(ref.id)
-        if f.rule == "invariant:no_via_in_pad" and f.severity == "error"
+        if f.severity == "error"
+        and (f.rule == "invariant:no_via_in_pad" or "ARR1_SINK_0" in f.where)
     ]
     assert bad == []
 
 
-def test_locked_seed_with_no_legal_pose_still_refuses(store: Store) -> None:
+def test_locked_seed_with_no_legal_pose_still_refuses(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Slice 5b legalises seeds; it never disarms the gate. A sink pinned
-    at its seed (``sink_grid.fixed='both'`` — a caller asserting the pose
-    is a mechanical constraint) cannot be slid off the vias, so the same
-    seed the legaliser would have repaired still refuses the put with
-    ``invariant:no_via_in_pad``."""
+    (``sink_grid.fixed='both'`` — a caller asserting the pose is a
+    mechanical constraint) at a pose over the vias cannot be slid off
+    them, so the put still refuses with ``invariant:no_via_in_pad``. The
+    version-10 seed is legal on this board, so the expansion is wrapped to
+    emit the sink at the field's centre instead, where the HV507's pad
+    columns at x=±8.5mm overlap the outer via column at x=7.875mm."""
     ref = _hydrate(store)
     params = dict(store.pcb_generators_for(ref.id)["ARR1"]["params"])
     params["sink_grid"] = {**params["sink_grid"], "fixed": "both"}
+    expand = pcb_generators.expand
+
+    def centred(gtype: str, gname: str, p: dict[str, Any]) -> Any:
+        exp = expand(gtype, gname, p)
+        for c in exp.components:
+            if c["refdes"] == "ARR1_SINK_0":
+                c["x"], c["y"] = 0.0, 0.0
+        return exp
+
+    monkeypatch.setattr(pcb_generators, "expand", centred)
     pcb = PcbHandler(hub=Hub(store=store))
     with pytest.raises(BadInput, match="invariant:no_via_in_pad"):
         pcb.put(

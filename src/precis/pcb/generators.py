@@ -98,6 +98,18 @@ holes, alignment pins, connectors). Sinks now emit no lock by default;
 the annealer's SEED, so the escape-locality argument still shapes the
 starting point — it just no longer overrides the search.
 
+**Version 10 (2026-10-17, gr481705) — the seed centres on the vias.** The
+electrode centroid is not the via field's centre: the 3x3 plaza lattice
+(rows/cols 1, 4, 7 of an 8x8 field) shifts the via field's centre toward
+the high side (0.76 mm per axis on ``ewod-dogfood-6``, pitch 2.25 mm,
+seed 0.94 mm off it), so the centroid seed put one
+pad row of the 80-QFP sink across the outer via column (14
+``invariant:no_via_in_pad`` hits on a fresh or ``regenerate`` put). The
+seed is now the midpoint of the share's via bounding box: a centrally
+symmetric footprint whose pad ring encloses the via field gets equal
+margin on opposite sides, which is the best a part-agnostic expansion can
+do. The put-time legaliser still judges it against the real lands.
+
 The ARRAY instance keeps ``fixed='both'``, and that asymmetry is
 deliberate: its authored plaza copper is emitted into ``pcb_fixed_copper``
 in the same absolute frame and stored separately, so a placer move would
@@ -365,7 +377,9 @@ VERSIONS: dict[str, int] = {
     # without them re-expands byte-identically. All changed the
     # expansion. Version 9 (2026-10-16, same doc ruling 18):
     # `sink_grid.top_plate_channel` puts the plate on a switched channel.
-    "ewod_pad_array": 9,
+    # Version 10 (2026-10-17, gr481705): a sink's seed centres on its
+    # share's plaza-via bounding box instead of its electrode centroid.
+    "ewod_pad_array": 10,
 }
 
 
@@ -2726,21 +2740,31 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
                     }
                 )
 
-            mean_r0 = sum(r0 for r0, _c0, _pin in share) / len(share)
-            mean_c0 = sum(c0 for _r0, c0, _pin in share) / len(share)
+            # gr481705: centre the seed on the bounding box of the plaza
+            # vias this share escapes to, not on its electrodes' centroid.
+            # The vias are what the sink's lands must clear, and on a 3x3
+            # plaza lattice they sit off the electrode centre (plazas at
+            # rows/cols 1,4,7 of an 8x8 field: 0.76mm on ewod-dogfood-6),
+            # so the electrode centroid pushed one pad row onto a via
+            # column. The bbox midpoint gives a centrally symmetric
+            # footprint equal margin on opposite sides; it is still a seed
+            # the put-time legaliser checks against the real lands.
+            share_vias = [ledger_pads[pin]["via"] for _r0, _c0, pin in share]
+            vxs = [float(v["x"]) for v in share_vias]
+            vys = [float(v["y"]) for v in share_vias]
             comp: dict[str, Any] = {
                 "refdes": sink_refdes,
                 "label": f"{name} sink {i}",
                 "footprint": sink_cfg.footprint_label,
-                "x": layout.cx(mean_c0),
-                "y": layout.cy(mean_r0),
+                "x": (min(vxs) + max(vxs)) / 2.0,
+                "y": (min(vys) + max(vys)) / 2.0,
                 "rot": 0.0,
                 "layer": "bottom",
                 # SEED, not a lock (Reto's ruling 2026-09-29: "placement
                 # should always be done with the placer. Sometimes we keep
                 # a thing fixed -- nuts, screw holes, alignment pins,
-                # connectors -- but most of it should move"). The centroid
-                # above still expresses the escape-locality argument the
+                # connectors -- but most of it should move"). The via-box
+                # centre above still expresses the escape-locality argument the
                 # spec's own "regular grid of HV switches directly under
                 # the array" language makes, but as a STARTING POINT the
                 # annealer may leave, not a position it is forbidden to

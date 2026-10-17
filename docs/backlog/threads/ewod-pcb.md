@@ -72,17 +72,13 @@ se-machine-design's input shape (Do-next).
 
 1. **gr464240** → `backlog/pcb-anneal-best-state-vs-routability.md` (Do-next 0b;
    ruled 2026-10-12: route start/best/last, keep the most-routed).
-2. **ewod-dogfood-6 re-put still owed — now BLOCKED on slice 5b** (ARR1
-   stored v3, code v6). gr480010 is closed: both guards shipped
-   (6d9139ab4) and were verified on prod at r32 (2026-10-13): `op='route'`
-   on the stale board is refused with no job minted, and `pcb_route`
-   commits nothing worse than the incumbent. The hinted re-put is itself
-   refused by the always-valid judge — with the stored sink pose carried
-   forward AND with `regenerate` — because v6's plaza vias land inside
-   ARR1_SINK_0's pads (gr481705 comment 6, 13 vias, nothing changed).
-   Fix: slice 5b of [pcb-global-plan-router](../pcb-global-plan-router.md)
-   (legalise generator secondaries before the judge), or Reto rules the
-   sink out from under the array at v6.
+2. **ewod-dogfood-6 re-put owed on prod, no longer blocked** (ARR1 stored
+   v3, code v10). gr480010 is closed: `op='route'` on the stale board is
+   refused with no job minted. A 2026-10-17 prod snapshot re-put on main
+   lands with the stored sink pose (rot 90) and no via-in-pad, and
+   generator v10 (gr481705) seeds the sink on its via box, so `regenerate`
+   lands it placed too. Left: after the deploy, re-put the same
+   generators entry on prod, then route.
 3. Build 4 is landed (round 3: 5f145c3a, 4d58cefc, 4def048c, 796fc1b4).
    Batch put, class_rules and op='footprint' are judged. Next is Do-next 2
    (datasheet pull, build 5). Order confirmed by Reto (ewod-pcb-3).

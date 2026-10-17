@@ -35,13 +35,24 @@ _CASES: dict[str, list[dict[str, Any]]] = {
                 "power": {"VDD": "VDD_LOGIC", "GND": "GND"},
             },
         },
+        # An 8x8 field, whose plaza lattice (rows/cols 1, 4, 7) puts the via
+        # box off the electrode centroid: version 10 moved only the sink
+        # seed from one to the other, and the 4x4 case has them coincide.
+        {
+            "grid": [8, 8],
+            "sink_grid": {
+                "part": "C0000",
+                "channels_per_sink": 64,
+                "channel_pins": [f"HVOUT{i}" for i in range(1, 65)],
+            },
+        },
     ],
 }
 
 #: generator -> (version, digest over every case's expansion). Re-pin both
 #: together, never the digest alone.
 _PINNED: dict[str, tuple[int, str]] = {
-    "ewod_pad_array": (9, "09a1779601db5e25"),
+    "ewod_pad_array": (10, "752c6081a31984c5"),
 }
 
 

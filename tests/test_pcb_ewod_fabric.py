@@ -314,9 +314,10 @@ def test_expansion_version_is_4_so_older_boards_regenerate_without_a_param_chang
     top-plate net when ``drive_voltage_v`` is declared
     (ewod-controller-and-hv-supply.md slices 2-4); version 9 adds
     ``sink_grid.top_plate_channel``, the top plate on a switched channel
-    (same doc, ruling 18)."""
+    (same doc, ruling 18); version 10 seeds each sink on its share's
+    plaza-via box instead of its electrode centroid (gr481705)."""
     exp = G.expand("ewod_pad_array", "ARR", {"grid": [6, 6]})
-    assert exp.version == 9
+    assert exp.version == 10
     necks, vias = _copper_by_ctype(exp)
     # What version 2 MEANS: two copper rows per driven electrode, and the
     # only B.Cu terminal is the via's own far landing.
