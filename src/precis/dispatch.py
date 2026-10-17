@@ -295,6 +295,9 @@ class Hub:
                 )
             cls = eps[0].load()
         inst = cls(hub=self)
+        # what _register_with stashes at boot: a handler whose __init__
+        # does not keep the hub itself (pathway) still reaches it
+        inst.hub = self
         self.handlers[kind] = inst
         return inst
 

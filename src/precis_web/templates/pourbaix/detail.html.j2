@@ -288,6 +288,10 @@ band — viable but not guaranteed (dashed); each in its route's colour">
   if (!uEl || !phEl) return;
   const PREFAC = 0.0592;  // V/pH at 298.15 K — RHE -> SHE relabel only
   const fmt = (x) => (x >= 0 ? '+' : '') + x.toFixed(3);
+
+  // pbx-pure:begin — the live re-tilt and coads-mismatch rules, DOM-free:
+  // tests/precis_web/test_pourbaix.py runs this block under node against
+  // the Python verdicts (reset_contour, staircase.mismatch).
   const sorted = (o) =>
     Object.fromEntries(Object.entries(o).sort(([a], [b]) => (a < b ? -1 : 1)));
 
@@ -297,6 +301,50 @@ band — viable but not guaranteed (dashed); each in its route's colour">
     }
     return null;
   }
+
+  // One route at U. rungs: [{name, dg0, ne, eps, margin}], margin = m_e + σ
+  // (NaN when unpriced). Returns every rung's ΔG(U) = ΔG0 + n_e·U, the
+  // limiting (highest-ΔG) rung and reset_contour's verdict: guaranteed when
+  // every priced rung's slack −ΔG − margin ≥ 0; hysteretic when not, but
+  // every rung is viable (ΔG ≤ eps); else outside the viable window, naming
+  // the rung furthest uphill of its eps.
+  function pbxRetilt(rungs, u) {
+    let lim = null, worst = null, uphill = null;
+    const dgs = rungs.map((r, i) => {
+      const dg = r.dg0 + r.ne * u;
+      if (!lim || dg > lim.dg) lim = { i, name: r.name, dg };
+      if (Number.isFinite(r.margin)) {
+        const s = -dg - r.margin;
+        if (worst === null || s < worst.s) worst = { name: r.name, s };
+      }
+      const over = dg - (Number.isFinite(r.eps) ? r.eps : 0);
+      if (over > 0 && (uphill === null || over > uphill.over)) uphill = { name: r.name, over };
+      return dg;
+    });
+    let reset = null;
+    if (worst !== null) {
+      reset = worst.s >= 0 ? { verdict: 'guaranteed', name: worst.name, s: worst.s }
+        : uphill === null ? { verdict: 'hysteretic', name: worst.name, s: worst.s }
+        : { verdict: 'outside', name: uphill.name, s: worst.s };
+    }
+    return { dgs, lim, reset };
+  }
+
+  // staircase.mismatch: null when no region covers U (nothing to compare)
+  // or the resting termination equals the coads the pathway assumed; else
+  // the assumed surface's label ('clean' or 'H×2 + O×1').
+  function pbxMismatch(region, assumed) {
+    if (!region) return null;
+    const t = region.termination;
+    const actual = t && typeof t.adsorbate === 'string' && t.adsorbate && typeof t.n === 'number'
+      ? { [t.adsorbate]: Math.trunc(t.n) }
+      : {};
+    const want = assumed || {};
+    if (JSON.stringify(sorted(actual)) === JSON.stringify(sorted(want))) return null;
+    const keys = Object.keys(want).sort();
+    return keys.length ? keys.map((k) => k + '×' + want[k]).join(' + ') : 'clean';
+  }
+  // pbx-pure:end
 
   function update() {
     const u = parseFloat(uEl.value);
@@ -332,85 +380,73 @@ band — viable but not guaranteed (dashed); each in its route's colour">
         el.textContent = r
           ? 'staircase starts from ' + r.label + ' (resting at ' + fmt(u) + ' V)'
           : 'resting at ' + fmt(u) + ' V: outside the swept window';
-        el.dataset.label = r ? r.label : '';
-        el.dataset.term = r && r.termination ? JSON.stringify(r.termination) : '';
       });
 
+      // the coads verdict is judged against the first map, as on the server
       const mm = sec.querySelector('.pbx-mismatch');
       if (mm && data) {
-        const rest = sec.querySelector('.pbx-resting');
-        const term = rest && rest.dataset.term ? JSON.parse(rest.dataset.term) : null;
-        const actual =
-          term && term.adsorbate && term.n !== null && term.n !== undefined
-            ? { [term.adsorbate]: Math.round(term.n) }
-            : {};
-        const assumed = data.coads || {};
-        const same = JSON.stringify(sorted(actual)) === JSON.stringify(sorted(assumed));
-        // No region at this U: no resting termination to compare against
-        // (matches the Python mismatch(), which returns None here).
-        if (!rest || !rest.dataset.label || same) {
+        const r0 = regionAt(data.maps && data.maps[0] ? data.maps[0].regions : [], u);
+        const assumed = pbxMismatch(r0, data.coads);
+        if (assumed === null) {
           mm.classList.add('hidden');
         } else {
-          const a = Object.keys(assumed).length
-            ? Object.entries(assumed).map(([k, v]) => k + '×' + v).join(' + ')
-            : 'clean';
           mm.textContent =
-            'coads mismatch: the pathway assumed ' + a +
+            'coads mismatch: the pathway assumed ' + assumed +
             ', but the resting termination at ' + fmt(u) + ' V is ' +
-            (rest.dataset.label || '?') +
+            (r0.label || '?') +
             ' — the staircase sits on a different starting surface';
           mm.classList.remove('hidden');
         }
       }
 
-      sec.querySelectorAll('.pbx-route').forEach((rt) => {
-        let lim = null;
-        let worst = null;  // min reset slack: -ΔG(U) - m_e (σ already in m_e)
-        rt.querySelectorAll('.pbx-rung').forEach((row) => {
-          const dg = parseFloat(row.dataset.dg0) + parseFloat(row.dataset.ne) * u;
-          row.querySelector('.pbx-dgu').textContent = fmt(dg);
-          const rm = parseFloat(row.dataset.rmargin);
-          if (Number.isFinite(rm)) {
-            const s = -dg - rm;
-            const eps = parseFloat(row.dataset.eps);
-            if (worst === null || s < worst.s)
-              worst = { s, dg, eps: Number.isFinite(eps) ? eps : 0, name: row.dataset.name };
-          }
-          if (!lim || dg > lim.dg) lim = { row, dg, name: row.dataset.name };
+      // a table's rows as pbxRetilt rungs; writes each row's ΔG(U) and,
+      // on a route, marks its limiting row
+      const retilt = (tbl, mark) => {
+        const rows = Array.from(tbl.querySelectorAll('.pbx-rung'));
+        const v = pbxRetilt(rows.map((row) => ({
+          name: row.dataset.name,
+          dg0: parseFloat(row.dataset.dg0),
+          ne: parseFloat(row.dataset.ne),
+          eps: parseFloat(row.dataset.eps),
+          margin: parseFloat(row.dataset.rmargin),
+        })), u);
+        rows.forEach((row, k) => {
+          row.querySelector('.pbx-dgu').textContent = fmt(v.dgs[k]);
+          if (mark) row.classList.toggle('pbx-limit', v.lim !== null && v.lim.i === k);
         });
-        rt.querySelectorAll('.pbx-rung').forEach((row) => row.classList.remove('pbx-limit'));
-        if (lim) {
-          lim.row.classList.add('pbx-limit');
+        return v;
+      };
+
+      sec.querySelectorAll('.pbx-route').forEach((rt) => {
+        const v = retilt(rt, true);
+        if (v.lim) {
           const el = rt.querySelector('.pbx-lim');
-          if (el) el.textContent = 'limiting at U: ' + lim.name + ' (ΔG ' + fmt(lim.dg) + ' eV)';
-          rt.dataset.limG = String(lim.dg);
+          if (el) el.textContent = 'limiting at U: ' + v.lim.name + ' (ΔG ' + fmt(v.lim.dg) + ' eV)';
+          rt.dataset.limG = String(v.lim.dg);
         }
         const rv = rt.querySelector('.pbx-reset-verdict');
+        const rs = v.reset;
         if (rv) {
-          if (worst === null) {
+          if (rs === null) {
             rv.textContent = '';
-          } else if (worst.s >= 0) {
+          } else if (rs.verdict === 'guaranteed') {
             rv.textContent = 'reset at ' + fmt(u) + ' V: guaranteed ' +
-              '(limiting ' + worst.name + ', slack ' + fmt(worst.s) + ' eV)';
-          } else if (worst.dg <= worst.eps) {
+              '(limiting ' + rs.name + ', slack ' + fmt(rs.s) + ' eV)';
+          } else if (rs.verdict === 'hysteretic') {
             rv.textContent = 'reset at ' + fmt(u) + ' V: hysteretic — ' +
-              worst.name + ' is ' + (-worst.s).toFixed(3) +
+              rs.name + ' is ' + (-rs.s).toFixed(3) +
               ' eV short of its reset margin';
           } else {
             rv.textContent = 'reset at ' + fmt(u) + ' V: outside the ' +
-              'viable window (' + worst.name + ' uphill)';
+              'viable window (' + rs.name + ' uphill)';
           }
         }
       });
 
       const her = sec.querySelector('.pbx-her');
       if (her) {
-        let hg = null;
-        her.querySelectorAll('.pbx-rung').forEach((row) => {
-          const dg = parseFloat(row.dataset.dg0) + parseFloat(row.dataset.ne) * u;
-          row.querySelector('.pbx-dgu').textContent = fmt(dg);
-          if (hg === null || dg > hg) hg = dg;
-        });
+        const hv = retilt(her, false);
+        const hg = hv.lim ? hv.lim.dg : null;
         const hl = her.querySelector('.pbx-her-lim');
         if (hl && hg !== null) hl.textContent = 'limiting HER rung at U ΔG ' + fmt(hg) + ' eV';
         sec.querySelectorAll('.pbx-route').forEach((rt) => {

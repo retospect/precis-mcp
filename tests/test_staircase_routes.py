@@ -503,6 +503,44 @@ def test_structure_staircase_view_picks_the_best_linked_pathway(
     assert "no staircase" in body
 
 
+def test_lazy_pathway_sibling_carries_the_hub(store: Store, hub: Hub) -> None:
+    """``Hub.sibling`` stashes the hub on a lazily built handler, as
+    ``_register_with`` does at boot — ``PathwayHandler.__init__`` keeps
+    none itself, and its reads go through ``self.hub``."""
+    assert "pathway" not in hub.handlers
+    pw_handler = hub.sibling("pathway")
+    assert isinstance(pw_handler, PathwayHandler)
+    assert pw_handler.hub is hub
+
+
+def test_structure_staircase_degrades_only_on_a_missing_plugin(
+    store: Store, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing pathway plugin reads as "not installed"; a failure inside
+    the pathway render propagates instead of being reported as one."""
+    st = _structure(store, hub, "pd_degrade")
+    pw = _pathway(store, _results(), "pw_degrade")
+    store.add_link(
+        src_ref_id=st.id, dst_ref_id=pw.id, relation="related-to", set_by="system"
+    )
+    sh = StructureHandler(hub=hub)
+    sh._register_with(hub)
+
+    def _boom(self: PathwayHandler, **_kw: Any) -> Any:
+        raise RuntimeError("render bug")
+
+    monkeypatch.setattr(PathwayHandler, "get", _boom)
+    with pytest.raises(RuntimeError, match="render bug"):
+        sh.get(id="pd_degrade", view="staircase")
+
+    def _absent(self: Hub, kind: str) -> Any:
+        raise KeyError(kind)
+
+    monkeypatch.setattr(Hub, "sibling", _absent)
+    body = sh.get(id="pd_degrade", view="staircase").body
+    assert "the pathway kind is not installed here" in body
+
+
 # ── the picked point (gr489471) ─────────────────────────────────────────
 
 
