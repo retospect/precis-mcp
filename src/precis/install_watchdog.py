@@ -564,7 +564,9 @@ def drain_then_exit(
 #: to respawn the child in place. SIGTERM itself cannot carry the drain:
 #: uvicorn owns it, and its graceful shutdown cancels the session manager's
 #: task group, so an in-flight call returns an empty body.
-DRAIN_SIGNAL = signal.SIGHUP
+# Windows has no SIGHUP; the name must still import (skill._dotgit_info reads
+# this module's checkout reader), and install_drain_signal() declines there.
+DRAIN_SIGNAL = getattr(signal, "SIGHUP", signal.SIGTERM)
 
 
 def install_drain_signal(*, drain_timeout_s: float | None = None) -> bool:
@@ -575,6 +577,8 @@ def install_drain_signal(*, drain_timeout_s: float | None = None) -> bool:
     thread, which is the event loop the in-flight calls need to finish, so
     the drain runs on its own thread. A repeat signal mid-drain is ignored.
     """
+    if not hasattr(signal, "SIGHUP"):
+        return False
     if threading.current_thread() is not threading.main_thread():
         return False
     timeout = resolved_drain_timeout_s() if drain_timeout_s is None else drain_timeout_s

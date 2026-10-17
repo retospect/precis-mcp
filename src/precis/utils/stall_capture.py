@@ -22,18 +22,21 @@ Deploy-side capability: ``docs/runbooks/stall-capture.md``.
 
 from __future__ import annotations
 
-import fcntl
 import json
 import logging
 import os
 import shutil
 import socket
 import subprocess
+import sys
 import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlparse
+
+if sys.platform != "win32":
+    import fcntl
 
 log = logging.getLogger(__name__)
 
@@ -73,7 +76,8 @@ def allow(state_path: Path, host: str, now: float) -> bool:
     after the previous one."""
     state_path.parent.mkdir(parents=True, exist_ok=True)
     with open(state_path, "a+", encoding="utf-8") as fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)
+        if sys.platform != "win32":  # no flock on Windows; tcpdump is POSIX-only too
+            fcntl.flock(fh, fcntl.LOCK_EX)
         fh.seek(0)
         try:
             state = json.loads(fh.read() or "{}")

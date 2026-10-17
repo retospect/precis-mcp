@@ -41,11 +41,6 @@ from precis.mcp_modalities import (
 from precis.runtime import PrecisRuntime
 from precis.store import Store
 
-_WIN_BUILD_INFO = pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="POSIX-only: build-info checkout lane assertions fail on Windows (unclassified path handling in skill._dotgit_info)",
-)
-
 _NEEDS_SIGHUP = pytest.mark.skipif(
     sys.platform == "win32",
     reason="POSIX-only: precis.install_watchdog reads signal.SIGHUP at import",
@@ -445,7 +440,6 @@ def _pin_lane(monkeypatch, *, source=None, watched=None, dist=None) -> None:
     monkeypatch.setattr(skill_mod, "_DIST_GIT_INFO", dist or {})
 
 
-@_WIN_BUILD_INFO
 def test_precis_status_mounted_checkout_beats_baked_sha(monkeypatch, tmp_path) -> None:
     """gr458061: a baked ``PRECIS_GIT_SHA`` must not win over a live checkout
     under the import path. That is the per-session dev container — image
@@ -504,7 +498,6 @@ def test_precis_status_image_build_lane_warns_staleness_unknown(monkeypatch) -> 
     assert "Overall: OK" not in body
 
 
-@_WIN_BUILD_INFO
 def test_precis_status_working_tree_lane_is_fresh_without_warnings(
     monkeypatch, tmp_path
 ) -> None:
@@ -545,7 +538,6 @@ def test_precis_status_unknown_lane_warns_staleness_unknown(monkeypatch) -> None
     assert "no git identity" in warnings[0]
 
 
-@_WIN_BUILD_INFO
 def test_precis_status_served_tree_behind_counts_commits(monkeypatch, tmp_path) -> None:
     """When the mounted checkout's HEAD moves past the import-time sha the
     page says how far behind the served tree is, in commits, from git; and
@@ -573,7 +565,6 @@ def test_precis_status_served_tree_behind_counts_commits(monkeypatch, tmp_path) 
     assert "Overall: WARN" in body
 
 
-@_WIN_BUILD_INFO
 def test_precis_status_build_age_is_an_age_and_warns_past_threshold(
     monkeypatch, tmp_path
 ) -> None:
@@ -617,7 +608,6 @@ def test_precis_status_build_age_is_an_age_and_warns_past_threshold(
     assert dict(skill_mod._collect_build_info())["build_age"] == "unparseable"
 
 
-@_WIN_BUILD_INFO
 def test_dotgit_info_reads_a_checkout_git_refuses(monkeypatch, tmp_path) -> None:
     """The import-time read must see a mounted checkout even where the
     ``git`` binary cannot (read-only bind mount owned by another uid): the
@@ -751,7 +741,6 @@ def _fake_checkout(root: Path, sha: str) -> None:
     (git_dir / "refs" / "heads" / "main").write_text(sha + "\n", encoding="utf-8")
 
 
-@_WIN_BUILD_INFO
 def test_precis_status_build_prefers_watched_checkout_over_baked_env(
     monkeypatch, tmp_path
 ) -> None:
@@ -781,7 +770,6 @@ def test_precis_status_build_prefers_watched_checkout_over_baked_env(
     assert rows["source_path"] == str(tmp_path)
 
 
-@_WIN_BUILD_INFO
 def test_precis_status_build_does_not_mix_git_identity_lanes(
     monkeypatch, tmp_path
 ) -> None:
