@@ -93,6 +93,45 @@ def test_surface_get_handle_list_infers_shared_kind(
     assert via_handles == via_explicit
 
 
+def test_plan_node_handle_reads_back_through_dispatch(
+    runtime_with_store: PrecisRuntime, store: Store, hub
+) -> None:
+    """gr495745: ``get(kind='plan', id='pe<N>')`` used to 404 — the
+    dispatcher rewrote the chunk handle to ``slug~ord``, a selector the
+    plan kind has no grammar for. A node handle (bare, explicit kind, or
+    relative) must reach PlanHandler untouched."""
+    import re
+
+    from precis.handlers.plan import PlanHandler
+
+    plan = PlanHandler(hub=hub)
+    proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
+    plan.put(id="p1", title="P", project=proj)
+    r1 = plan.put(id="p1", text="first step", at={"last": True})
+    m1 = re.search(r"pe\d+", r1.body)
+    assert m1 is not None
+    pe1 = m1.group(0)
+    r2 = plan.put(id="p1", text="second step", at={"last": True})
+    m2 = re.search(r"pe\d+", r2.body)
+    assert m2 is not None
+    pe2 = m2.group(0)
+
+    out, err = runtime_with_store.dispatch_with_status("get", {"id": pe1})
+    assert not err and "first step" in out
+    out, err = runtime_with_store.dispatch_with_status(
+        "get", {"kind": "plan", "id": pe1}
+    )
+    assert not err and "first step" in out
+    # relative navigation stays on the plan too
+    out, err = runtime_with_store.dispatch_with_status("get", {"id": f"{pe1}+1"})
+    assert not err and "second step" in out
+    out, err = runtime_with_store.dispatch_with_status(
+        "get", {"kind": "plan", "id": f"{pe1}+1"}
+    )
+    assert not err and "second step" in out
+    assert pe1 != pe2
+
+
 @_NEEDS_PAPER_EXTRA
 def test_surface_get_handle_list_mixed_kinds_refused(
     runtime_with_store: PrecisRuntime, store: Store

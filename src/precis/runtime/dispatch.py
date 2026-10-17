@@ -166,6 +166,9 @@ _SIGIL_KIND: dict[str, tuple[str, bool]] = {
 #: A draft chunk handle ``dc<chunk_id>`` and any trailing relative operator;
 #: group 1 is the bare ``<chunk_id>`` (existence probe), group 2 the operator.
 _DRAFT_DC_RE = re.compile(r"^dc(\d+)(.*)$")
+#: Same shape for plan chunk handles ``pe<id>`` — plans have their own
+#: handle grammar (``pe<N>`` + relative ops), never ``slug~ord``.
+_PLAN_PE_RE = re.compile(r"^pe(\d+)(.*)$")
 
 #: Matches the ``[error:ClassName]`` prefix :meth:`ErrorMixin.render_error`
 #: always emits — the tool-call ledger (:mod:`precis.tool_ledger`) reads the
@@ -3144,6 +3147,35 @@ class DispatchMixin(RuntimeShape):
         args["id"] = ident
         return True
 
+    def _maybe_route_plan_chunk(self, args: dict[str, Any], ident: str) -> bool:
+        """Route a plan chunk handle ``pe<id>`` (optionally with a relative
+        operator) to the plan handler, which parses the handle itself —
+        same idea as ``_maybe_route_draft_chunk``: a plan node's handle IS
+        its address, so the generic ``slug~ord`` rewrite must not see it
+        (gr495745)."""
+        if self.store is None:
+            return False
+        m = _PLAN_PE_RE.match(ident)
+        if m is None:
+            return False
+        if m.group(2) and handle_registry.parse_relative(ident) is None:
+            return False
+        explicit = args.get("kind")
+        if explicit is not None and explicit != "plan":
+            return False
+        try:
+            if (
+                self.store.drafts.get_draft_chunk(f"pe{m.group(1)}", kind="plan")
+                is None
+            ):
+                return False
+        except Exception:  # pragma: no cover — store outage etc.
+            log.exception("plan chunk routing lookup failed")
+            return False
+        args["kind"] = "plan"
+        args["id"] = ident
+        return True
+
     def _maybe_infer_kind_from_relative(self, args: dict[str, Any], ident: str) -> bool:
         """Relative-handle navigation: route ``pc10+1`` / ``pc10-2..3``.
 
@@ -3247,6 +3279,18 @@ class DispatchMixin(RuntimeShape):
                     resolved.kind, resolved.public_id, resolved.ref_id
                 )
             ):
+                # A kind that explicitly opts out of chunk selectors wants
+                # the raw handle at its own handler — pe<N> IS a plan
+                # node's address (gr495745), so the slug~ord rewrite would
+                # only produce a bogus slug.
+                handler = self.hub.handler_for(resolved.kind) if self.hub else None
+                if (
+                    handler is not None
+                    and getattr(handler.spec, "supports_chunk_selectors", None) is False
+                ):
+                    args["kind"] = resolved.kind
+                    args["id"] = ident
+                    return True
                 return False
             args["kind"] = resolved.kind
             args["id"] = f"{resolved.public_id}~{resolved.chunk_ord}"
@@ -3378,6 +3422,9 @@ class DispatchMixin(RuntimeShape):
             # parses the window. Drafts have no slug, so the generic
             # chunk-handle path below can't rewrite them to ``slug~ord``.
             if self._maybe_route_draft_chunk(args, ident):
+                return
+            # Same for a plan chunk handle ``pe<id>`` — its own grammar.
+            if self._maybe_route_plan_chunk(args, ident):
                 return
             # Universal handles relative navigation: ``pc10+1`` / ``pc10-2..3`` /
             # ``pc10^`` resolves against current structure to a per-kind

@@ -103,6 +103,10 @@ class PlanHandler(Handler):
         placement="artifact",
         corpus_role="none",
         views=("toc", "links"),
+        # Plan nodes are addressed by pe<chunk_id>, not slug~ord — the
+        # dispatcher's generic chunk-handle rewrite must leave them alone
+        # (gr495745: a rewritten pe<N> reached get as a bogus slug).
+        supports_chunk_selectors=False,
     )
 
     def __init__(self, *, hub: Hub) -> None:

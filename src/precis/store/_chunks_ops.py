@@ -1664,9 +1664,10 @@ class ChunkStore:
     # -- relative navigation ------------------------------------
 
     #: Kinds whose chunks form a tree (``parent_chunk_id`` + ``pos``) rather
-    #: than a flat ``ord`` sequence. Only ``draft`` today; its relative
-    #: navigation walks the hierarchy and is handled by the draft mixin.
-    _TREE_CHUNK_KINDS: frozenset[str] = frozenset({"draft"})
+    #: than a flat ``ord`` sequence. ``draft`` and ``plan`` — both ride the
+    #: draft chunk-tree substrate, so their relative navigation walks the
+    #: hierarchy and is handled by the draft mixin / PlanHandler itself.
+    _TREE_CHUNK_KINDS: frozenset[str] = frozenset({"draft", "plan"})
 
     def resolve_relative(self, handle: str) -> tuple[str, str] | None:
         """Resolve a relative chunk handle to ``(kind, per-kind selector)``.
