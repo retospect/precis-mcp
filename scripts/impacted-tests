@@ -221,10 +221,9 @@ PATH_MAP: list[tuple[str, list[str]]] = [
             "tests/test_surface_sort_vocabulary.py",
         ],
     ),
-    # Reviewed-blob pins: the mirror acceptance test pins git blob shas of
-    # these files (MIRROR_BLOBS) — an edit reds it. The literal is detected
-    # by the corpus scan too; listed so the coupling survives a literal-free
-    # refactor of the test.
+    # The mirror acceptance test is the behavioural golden for these files
+    # (byte-identical round trip, identities, edges); it imports them only
+    # through the CLI, so list the coupling explicitly.
     ("src/precis/utils/text.py", ["tests/test_memory_mirror_acceptance.py"]),
     ("src/precis/cli/memory.py", ["tests/test_memory_mirror_acceptance.py"]),
     ("src/precis/cli/memory_mirror.py", ["tests/test_memory_mirror_acceptance.py"]),

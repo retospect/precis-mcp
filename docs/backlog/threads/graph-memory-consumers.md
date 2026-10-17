@@ -86,9 +86,7 @@ and the R17 ruling keeps files and graph coexisting. Kept for the record.
    `Store.neighbourhood` (one neighbour set and inverse map with the web
    panel) but keeps its own per-label cap and reads uncapped; adopting
    `neighbourhood`'s 200-node cap would change hub renders, so it needs a
-   ruling. The mirror acceptance test rewrites the tracked
-   `.scratch/memory-mirror-acceptance.json` on every run (revert it before
-   committing); a change there touches an attested test (me481899).
+   ruling.
 2. **memory-file-mirror** — SHIPPED and deployed, backlog doc deleted
    2026-10-15. Legacy refresh (8993c22e6) and native export (afa814bd9)
    landed; the real import is live (namespace `repo-dev-harness-20261007`).

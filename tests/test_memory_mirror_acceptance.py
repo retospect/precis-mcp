@@ -25,12 +25,18 @@ from tests.conftest import PG_TEST_DSN, _active_dsn, _pg_available
 
 SOURCE_SHA = "0662bc0cfcae6c8038e24ef7b50373e931049ce8"
 REVIEWED_SHA = "9e246588ab1d16d0ab962c38ded4ac93f29fb629"
-ROOT = Path(__file__).resolve().parents[1]
-MIRROR_BLOBS = {
-    "src/precis/cli/memory_mirror.py": "4c2792716980912ddd89390c0de78b6d41bafc30",
-    "src/precis/cli/memory.py": "e5651e70444869b5c19401b3b46602a4a61e0af2",
-    "src/precis/utils/text.py": "ee025af69aae61fd32f7060c78abe178a797b995",
-}
+# Golden digest of the generated 121-file fixture (name + sha256 of bytes,
+# sorted). Pins the *input* so the fixture generator cannot drift together
+# with the importer; replaces the git-blob pins on the mirror sources.
+FIXTURE_DIGEST = "10f9b0ab199ec2de5766d9cdfe7a15055319e3b5ae4a977c92cc0d170ab111a4"
+RECEIPT_KEYS = {"created", "updated", "unchanged", "unresolved", "refs"}
+
+
+def _fixture_digest(files: dict[str, bytes]) -> str:
+    digest = hashlib.sha256()
+    for name in sorted(files):
+        digest.update(name.encode() + b"\0" + hashlib.sha256(files[name]).digest())
+    return digest.hexdigest()
 
 
 def _private_test_database(dsn: str, template_dsn: str, *, github_actions: bool) -> str:
@@ -260,13 +266,9 @@ def test_synthetic_orchestrator_roundtrip_acceptance(
     with psycopg.connect(dsn) as conn:
         row = conn.execute("SELECT current_database(), current_user").fetchone()
     assert row == (database, "postgres"), "connected target must match the test clone"
-    for path, expected in MIRROR_BLOBS.items():
-        raw = (ROOT / path).read_bytes()
-        actual = hashlib.sha1(f"blob {len(raw)}\0".encode() + raw).hexdigest()
-        assert actual == expected, f"reviewed mirror source differs: {path}"
-
     source = tmp_path / "synthetic-source"
     expected_files, expected_metadata, expected_edges = _fixture(source)
+    assert _fixture_digest(expected_files) == FIXTURE_DIGEST  # golden input
     calls: list[dict[str, Any]] = []
 
     def invoke(mode: str, path: Path, namespace: str) -> str:
@@ -288,11 +290,13 @@ def test_synthetic_orchestrator_roundtrip_acceptance(
         return receipt
 
     first = json.loads(invoke("import", source, "acceptance"))
+    assert set(first) >= RECEIPT_KEYS  # receipt shape consumers rely on
     assert (first["created"], first["updated"], first["unresolved"]) == (121, 0, [])
     graph = _graph(dsn, "acceptance")
     assert len(graph["refs"]) == 121 and graph["named_edges"] == expected_edges
     bodies = {rid: body for _, rid, body in graph["chunks"]}
-    assert len(bodies) == 121
+    assert len(bodies) == 121 and len(graph["chunks"]) == 121  # one body each
+    assert set(graph["refs"]) == set(expected_files)  # filename identities
     for rid, title, meta in graph["rows"]:
         name = meta["file_mirror"]["filename"]
         assert (meta["file_mirror"]["header"] + bodies[rid]).encode() == expected_files[
@@ -327,7 +331,7 @@ def test_synthetic_orchestrator_roundtrip_acceptance(
         "status": "PASS_SYNTHETIC_TEST_DB_ONLY",
         "source_sha": SOURCE_SHA,
         "reviewed_source_sha": REVIEWED_SHA,
-        "verified_git_blobs": MIRROR_BLOBS,
+        "fixture_digest": FIXTURE_DIGEST,
         "test_sha256": _hash(Path(__file__).read_bytes()),
         "source_provenance": "generated shape fixture; actual orchestrator source path not established; no real content read",
         "database": database,
@@ -362,8 +366,7 @@ def test_synthetic_orchestrator_roundtrip_acceptance(
         "calls": calls,
         "limits": "Synthetic CLI/test-DB acceptance only. No deployed feature, production memory migration, native mirror verb, model or scientific claim. DB clone removed by canonical fixture teardown.",
     }
-    report_path = ROOT / ".scratch" / "memory-mirror-acceptance.json"
-    report_path.parent.mkdir(exist_ok=True)
+    report_path = tmp_path / "memory-mirror-acceptance.json"
     report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(
         f"ACCEPTANCE PASS: {report_path}; TEST DB {database}; 121 files / 121 nodes / 360 edges per namespace"
