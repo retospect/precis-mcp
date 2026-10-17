@@ -29,6 +29,7 @@ _SAMPLES: dict[str, Any] = {
         ("smith20", "jones21"), (1, 2), (False, False), (None, None)
     ),
     "term": _abbrev.Use("MOF", mode="first"),
+    "xref": walker.Xref("dc2", None, live=True, label=("section", "1")),
 }
 
 _ABBREVS = {"MOF": "metal-organic framework"}
@@ -83,6 +84,60 @@ def test_cite_group_formats_only() -> None:
 def test_term_formats_only() -> None:
     assert _latex_output("term") == r"\gls{mof}"
     assert _docx_output("term") == "metal-organic framework (MOF)"
+
+
+def test_xref_formats_only() -> None:
+    assert _latex_output("xref") == r"\cref{chunk:dc2}"
+    assert _docx_output("xref") == "Section 1"  # paragraph start
+
+
+def test_resolve_xref_downgrades_dead_and_skips_unnumbered() -> None:
+    nums = walker.XrefNumbers({"dc2": ("section", "")}, set(), {"dc5": 1})
+    warnings: list[str] = []
+    dead = walker.resolve_xref(
+        "dc9", None, live={"dc2", "dc5"}, numbers=nums, warnings=warnings
+    )
+    assert not dead.live and warnings == [
+        "cross-ref dc9: no such live chunk — downgraded"
+    ]
+    kw: dict[str, Any] = {"live": None, "numbers": nums, "warnings": warnings}
+    assert walker.resolve_xref("dc5", None, **kw).equation == 1
+    assert walker.resolve_xref("dc2", None, **kw).label is None
+    assert walker.resolve_xref("dc2", "see", **kw).surface == "see"
+
+
+def test_merge_xref_runs_joins_whitespace_separated_refs() -> None:
+    items: list[str | tuple[str, ...]] = [
+        "a ",
+        ("x",),
+        " ",
+        ("y",),
+        "",
+        ("z",),
+        ", ",
+        ("w",),
+    ]
+    assert walker.merge_xref_runs(items) == ["a ", ("x", "y", "z"), ", ", ("w",)]
+
+
+def test_number_xrefs_reads_structure_only() -> None:
+    from types import SimpleNamespace as C
+
+    chunks = [
+        C(dc="dc1", chunk_kind="heading", depth=0, text="T"),
+        C(dc="dc2", chunk_kind="heading", depth=1, text="Intro"),
+        C(dc="dc3", chunk_kind="paragraph", depth=2, text="$$x$$ [§a]"),
+        C(dc="dc4", chunk_kind="paragraph", depth=2, text="$$y$$"),
+        C(dc="dc5", chunk_kind="figure", depth=2, text="cap [§b]"),
+    ]
+    nums = walker.number_xrefs(chunks, "T", equation_of=latex._standalone_equation)
+    assert nums.labels == {
+        "dc2": ("section", "1"),
+        "dc3": ("section", "1"),
+        "dc4": ("section", "1"),
+        "dc5": ("fig.", "1"),
+    }
+    assert nums.numbered_headings == {"dc2"} and nums.equations == {"dc4": 1}
 
 
 def test_term_segments_defines_once_and_never_in_a_heading() -> None:

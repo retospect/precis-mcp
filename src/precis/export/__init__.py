@@ -26,7 +26,8 @@ result (docx text, LaTeX ``\\gls``).
 Shared walker (:mod:`.walker`, docs/backlog/export-latex-docx-parity.md):
 the decisions both document backends must agree on, moved there family by
 family; each backend is a ``Renderer`` that only formats. Citations
-(numbering, SI resolution, grouping) and abbreviation uses are there now.
+(numbering, SI resolution, grouping), abbreviation uses and cross-refs
+(the section / figure / equation pre-pass) are there now.
 Every move is checked byte-for-byte against
 ``tests/fixtures/export/golden/``."""
 

@@ -8,10 +8,10 @@ prio: normal
 APPROVED by Reto 2026-10-17 (spec stands as written, Stage B included).
 Building in `g-export-parity`, one landing per slice. Slices landed: 1
 (cites, plus the golden baseline and the protocol test, fd0ef1361), 2
-(abbreviations, on the `g-abbrev-parity` expander 15cbd4c5b). Next: 3
-(xrefs; first check that no cite renders earlier than its body position,
-e.g. in a caption, abstract or footnote, so the pre-pass renumbers
-nothing).
+(abbreviations, on the `g-abbrev-parity` expander, 718fe0ac0), 3 (xrefs:
+the numbering pre-pass reads chunk structure only, so no cite is
+renumbered; the golden draft gained xref cases, baseline from main). Next:
+4 (back matter).
 
 # LaTeX and DOCX export parity
 

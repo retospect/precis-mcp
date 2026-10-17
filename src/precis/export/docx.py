@@ -81,7 +81,6 @@ from precis.export.latex import (
     _NAME_UNISPACE,
     _NAME_ZEROWIDTH,
     _PATENT_DOC_TYPE,
-    _back_matter_handles,
     _conjunct_cite_keys,
     _math_braces_balanced,
     _math_plausible,
@@ -299,113 +298,27 @@ class _Ctx:
         return walker.register(self.cited, slug)
 
 
-#: Chunk kinds the main render loop dispatches on their own branch — a
-#: standalone-equation paragraph can only occur in whatever's left over
-#: (the "paragraph (default)" branch), mirroring the kinds
-#: ``export/latex.py::render_body`` diverts before its own final ``else``.
-_EQ_SKIP_KINDS = frozenset(
-    {"ulist", "olist", "item", "term", "heading", "code", "listing", "table", "figure"}
-)
+#: The numbering pre-pass and the title / glossary structure are the
+#: walker's (:mod:`precis.export.walker`); these names stay for existing
+#: callers.
+_NUMBERED_DEPTHS = walker.NUMBERED_DEPTHS
+_is_glossary_heading = walker.is_glossary_heading
+_title_heading_dc = walker.title_heading_dc
+_depth_shift = walker.depth_shift
 
 
 def _standalone_equation_numbers(chunks: list[Any]) -> dict[str, int]:
-    """dc handle → 1-based equation number, walked over the WHOLE draft in
-    reading order before any rendering starts — a ``[dc<id>]`` cross-ref
-    can appear *before* the equation it points at, so the count has to be
-    known up front. Mirrors ``export/latex.py::_standalone_equation``'s
-    detection exactly (same shared function), so the two exporters number
-    identically; a starred (unnumbered) equation is skipped."""
-    numbers: dict[str, int] = {}
-    n = 0
-    for c in chunks:
-        if c.chunk_kind in _EQ_SKIP_KINDS:
-            continue
-        eq = _standalone_equation(c.text)
-        if eq is None or eq[1]:  # not standalone, or the starred escape hatch
-            continue
-        n += 1
-        numbers[c.dc] = n
-    return numbers
-
-
-#: LaTeX's sectioning depth that still carries a number (``article``:
-#: section, subsection, subsubsection); deeper headings are run-in paragraphs.
-_NUMBERED_DEPTHS = 3
-
-
-def _is_glossary_heading(c: Any) -> bool:
-    """The draft's own "Glossary" heading — LaTeX skips it (the acronym list
-    is generated), so it consumes no section number."""
-    return c.chunk_kind == "heading" and (c.text or "").strip().lower() == "glossary"
-
-
-def _title_heading_dc(chunks: list[Any], title: str | None) -> str | None:
-    """Mirror of ``export/latex.py::_title_heading_dc``: the ``dc`` of the
-    first reading-order heading when it is a depth-0 heading whose text is
-    the draft title (whitespace-normalised, case-insensitive)."""
-    if not chunks or not title:
-        return None
-    first = chunks[0]
-    if first.chunk_kind != "heading" or int(first.depth) != 0:
-        return None
-
-    def norm(x: str | None) -> str:
-        return " ".join((x or "").split()).lower()
-
-    return str(first.dc) if norm(first.text) == norm(title) else None
-
-
-def _depth_shift(chunks: list[Any], title_dc: str | None) -> int:
-    """1 when the body is nested under the seeded title chunk (so sections
-    number from 1, not 1.x), else 0 — LaTeX's ``shift`` in ``render_body``."""
-    return 1 if title_dc and len(chunks) > 1 and int(chunks[1].depth) >= 1 else 0
+    """dc handle → 1-based equation number (the walker's pre-pass)."""
+    return walker.number_xrefs(chunks, None, equation_of=_standalone_equation).equations
 
 
 def _xref_numbers(
     chunks: list[Any], title: str | None = None
 ) -> tuple[dict[str, tuple[str, str]], set[str]]:
-    """Section / figure numbering walked over the WHOLE draft in reading
-    order, mirroring how ``export/latex.py`` lays the draft out: a heading's
-    chunk depth picks ``\\section``/``\\subsection``/``\\subsubsection`` (the
-    seeded title heading is skipped and, when the body is nested under it,
-    every depth is lifted one level), the draft's own Glossary heading and
-    its terms are skipped, journal back matter (``\\section*``) is
-    unnumbered and a cross-ref to it prints its name (``\\nameref``), and
-    every figure chunk steps the figure counter. Like ``\\cref`` on a label
-    inside a section, a cross-ref to a plain paragraph/item/table resolves
-    to the enclosing numbered section.
-    Returns ``({dc: (noun, number)}, {dc of headings that show a number})``;
-    an empty noun means ``number`` is already the full label."""
-    out: dict[str, tuple[str, str]] = {}
-    shown: set[str] = set()
-    counters = [0] * _NUMBERED_DEPTHS
-    figs = 0
-    title_dc = _title_heading_dc(chunks, title)
-    shift = _depth_shift(chunks, title_dc)
-    back_matter = _back_matter_handles(chunks)
-    current = ""  # number of the enclosing numbered section
-    for c in chunks:
-        if c.chunk_kind == "figure":
-            figs += 1
-            out[c.dc] = ("fig.", str(figs))
-        elif c.chunk_kind == "heading":
-            if _is_glossary_heading(c) or c.dc == title_dc:
-                continue
-            if c.dc in back_matter:
-                out[c.dc] = ("", " ".join((c.text or "").split()))
-                continue
-            d = max(int(c.depth) - shift, 0)
-            if d < _NUMBERED_DEPTHS:
-                counters[d] += 1
-                for i in range(d + 1, _NUMBERED_DEPTHS):
-                    counters[i] = 0
-                shown.add(c.dc)
-                current = ".".join(str(n) for n in counters[: d + 1])
-            # else: run-in paragraph heading — resolves to the enclosing section
-            out[c.dc] = ("section", current)
-        elif c.chunk_kind not in ("ulist", "olist") and current:
-            out[c.dc] = ("section", current)
-    return out, shown
+    """``({dc: (noun, number)}, {dc of headings that show a number})`` from
+    the walker's pre-pass (:func:`walker.number_xrefs`)."""
+    nums = walker.number_xrefs(chunks, title, equation_of=_standalone_equation)
+    return nums.labels, nums.numbered_headings
 
 
 def _add_hyperlink(
@@ -551,18 +464,20 @@ def export_docx(
     from precis.config import load_config
 
     cfg = load_config()
-    xref, numbered_headings = _xref_numbers(chunks, getattr(ref, "title", None))
+    nums = walker.number_xrefs(
+        chunks, getattr(ref, "title", None), equation_of=_standalone_equation
+    )
     ctx = _Ctx(
         store=RefLookupMemo(store),
         known_handles=handles,
-        xref=xref,
-        numbered_headings=numbered_headings,
+        xref=nums.labels,
+        numbered_headings=nums.numbered_headings,
         dc_handles={c.dc for c in chunks},
         legacy_to_dc={c.handle: c.dc for c in chunks},
         abbrevs=store.drafts.defined_abbrevs(ref.id),
         endnote=(citations == "endnote"),
         doc_type=doc_type,
-        eq_numbers=_standalone_equation_numbers(chunks),
+        eq_numbers=nums.equations,
         doi_links=doi_links,
         library_links=library_links,
         library_label=cfg.library_label,
@@ -1375,33 +1290,16 @@ def _render_xref(dc: str, surface: str | None, ctx: _Ctx, paragraph: Any) -> Non
     ``fig. 2``, ``Eq. (3)`` — capitalised at a sentence start (``Section``,
     ``Fig.``, ``Equation``). Static text resolved at export time (no Word
     REF field). A cross-ref to a chunk that isn't live in this draft is
-    downgraded to its surface/handle with a warning, like LaTeX."""
-    if ctx.dc_handles and dc not in ctx.dc_handles:
-        ctx.warnings.append(f"cross-ref {dc}: no such live chunk — downgraded")
-        _flush_cites(ctx, paragraph)
-        paragraph.add_run(surface or dc)
-        return
-    if surface:
-        _flush_cites(ctx, paragraph)
-        paragraph.add_run(surface)
-        return
-    num = ctx.eq_numbers.get(dc)
-    if num is not None:
-        label = ("Equation" if _at_sentence_start(paragraph) else "Eq.") + f" ({num})"
-    elif dc in ctx.xref:
-        noun, number = ctx.xref[dc]
-        if not number:
-            return  # before the first numbered section: nothing to print
-        if not noun:
-            label = number  # unnumbered back matter: its name, like \nameref
-        else:
-            if _at_sentence_start(paragraph):
-                noun = noun[0].upper() + noun[1:]
-            label = f"{noun} {number}"
-    else:
-        return  # front matter / glossary: no number to print
-    _flush_cites(ctx, paragraph)
-    paragraph.add_run(label)
+    downgraded to its surface/handle with a warning, like LaTeX
+    (:func:`walker.resolve_xref` decides; :meth:`DocxRenderer.xref` prints)."""
+    xref = walker.resolve_xref(
+        dc,
+        surface,
+        live=ctx.dc_handles or None,
+        numbers=walker.XrefNumbers(ctx.xref, ctx.numbered_headings, ctx.eq_numbers),
+        warnings=ctx.warnings,
+    )
+    DocxRenderer(ctx).xref(paragraph, xref)
 
 
 def _inline_source_cite(
@@ -1594,6 +1492,29 @@ class DocxRenderer:
         """``Long Form (SHORT)`` for a definition, the bare short otherwise
         (:func:`precis.export._abbrev.plain`)."""
         sink.add_run(_abbrev.plain(use, self.ctx.abbrevs))
+
+    def xref(self, sink: Any, xref: walker.Xref) -> None:
+        """The surface / handle text, or what ``\\cref`` would print —
+        ``section 1.5.5``, ``fig. 2``, ``Eq. (3)`` — capitalised at a
+        sentence start (``Section``, ``Fig.``, ``Equation``); a back-matter
+        target prints its name. Nothing when there is no number."""
+        if not xref.live or xref.surface:
+            text = xref.surface or xref.dc
+        elif xref.equation is not None:
+            lead = "Equation" if _at_sentence_start(sink) else "Eq."
+            text = f"{lead} ({xref.equation})"
+        elif xref.label is not None:
+            noun, number = xref.label
+            if not noun:
+                text = number  # unnumbered back matter: its name, like \nameref
+            else:
+                if _at_sentence_start(sink):
+                    noun = noun[0].upper() + noun[1:]
+                text = f"{noun} {number}"
+        else:
+            return  # front matter / glossary / before section 1: nothing to print
+        _flush_cites(self.ctx, sink)
+        sink.add_run(text)
 
 
 def _resolve_source(store: RefLookupStore, slug: str) -> dict[str, Any] | None:

@@ -204,8 +204,22 @@ _CHUNKS = [
         meta={"figure": {"data_package": _SNAPSHOT}},
     ),
     _chunk(11, "paragraph", 2, "$$E = mc^2$$", parent=6),
+    _chunk(
+        14,
+        "paragraph",
+        2,
+        "[dc9] opens a sentence. Runs [dc2] [dc4] merge, [the intro](dc2) keeps "
+        "its text, a dead [dc999] and a legacy [¶h4] resolve, a run-in "
+        "[dc16] names itself, the end matter [dc17] too, and [dc11]. "
+        "[dc11] starts one.",
+        parent=6,
+    ),
+    _chunk(15, "heading", 2, "Deep part", parent=6),
+    _chunk(16, "heading", 4, "Run-in heading", parent=15),
     _chunk(12, "heading", 1, "Glossary", parent=1),
     _chunk(13, "term", 2, "metal-organic framework", parent=12, meta={"short": "MOF"}),
+    _chunk(17, "heading", 0, "Acknowledgements"),
+    _chunk(18, "paragraph", 1, "Thanks to all; see [dc2].", parent=17),
 ]
 
 

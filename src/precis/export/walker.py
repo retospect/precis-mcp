@@ -38,11 +38,20 @@ Abbreviations: :func:`term_segments` decides which occurrence defines a
 short (first use in reading order, nested long forms, never in a heading;
 the rules are :mod:`precis.export._abbrev`'s); :meth:`Renderer.term`
 only formats each use (``\\gls`` family; ``long (SHORT)`` text).
+
+Cross-references: :func:`number_xrefs` is the numbering pre-pass over chunk
+structure (sections, figures, equations; it reads no inline text, so it
+cannot renumber a cite); :func:`resolve_xref` decides liveness, the
+downgrade warning and what number to print; :func:`merge_xref_runs` joins
+whitespace-separated refs (LaTeX's ``\\cref{a,b}``). LaTeX lets cleveref
+count at compile time; docx prints the pre-pass numbers. A legacy ``¶``
+handle is still mapped to its ``dc`` in each backend's reference dispatch,
+which moves with the chunk loop.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -80,6 +89,10 @@ class Renderer(Protocol):
         """Format one abbreviation use: a definition (``mode='first'``,
         possibly a ``pair``), a later use, a bare heading use, or an
         authored definition that only marks the short defined."""
+
+    def xref(self, sink: Any, xref: Xref) -> None:
+        """Format one intra-draft cross-ref: downgraded text, the author's
+        surface as a link, or the target's number / name."""
 
 
 def term_segments(
@@ -325,3 +338,219 @@ class CiteRun:
     def interrupt(self) -> None:
         """Non-cite content (or a new chunk) ends the same-paper collapse."""
         self._last = None
+
+
+# ── cross-references ─────────────────────────────────────────────
+
+
+#: Top-level headings that are journal back matter: exported unnumbered
+#: (``\\section*`` + a TOC line), their subsections likewise.
+BACK_MATTER_HEADINGS = frozenset(
+    {
+        "author information",
+        "author contributions",
+        "acknowledgements",
+        "acknowledgments",
+        "notes",
+        "conflicts of interest",
+        "competing interests",
+        "data availability",
+        "supporting information",
+    }
+)
+
+#: LaTeX's sectioning depth that still carries a number (``article``:
+#: section, subsection, subsubsection); deeper headings are run-in paragraphs.
+NUMBERED_DEPTHS = 3
+
+#: Chunk kinds the render loops dispatch on their own branch — a
+#: standalone-equation paragraph can only occur in whatever's left over
+#: (the "paragraph (default)" branch).
+EQ_SKIP_KINDS = frozenset(
+    {"ulist", "olist", "item", "term", "heading", "code", "listing", "table", "figure"}
+)
+
+
+def is_back_matter_heading(text: str) -> bool:
+    return " ".join((text or "").split()).casefold() in BACK_MATTER_HEADINGS
+
+
+def is_glossary_heading(c: Any) -> bool:
+    """The draft's own "Glossary" heading — the acronym list is generated,
+    so it renders as nothing and consumes no section number."""
+    return c.chunk_kind == "heading" and (c.text or "").strip().lower() == "glossary"
+
+
+def title_heading_dc(chunks: list[Any], title: str | None) -> str | None:
+    """The ``dc`` of a first-in-reading-order depth-0 heading whose text is
+    the draft's title (whitespace-normalised, case-insensitive) — the chunk
+    ``create_draft`` seeds; ``None`` when the draft doesn't start that way."""
+    if not chunks or not title:
+        return None
+    first = chunks[0]
+    if first.chunk_kind != "heading" or int(first.depth) != 0:
+        return None
+
+    def norm(s: str | None) -> str:
+        return " ".join((s or "").split()).lower()
+
+    return str(first.dc) if norm(first.text) == norm(title) else None
+
+
+def depth_shift(chunks: list[Any], title_dc: str | None) -> int:
+    """1 when the body is nested under the seeded title chunk (so sections
+    number from 1, not 1.x), else 0; a draft whose sections sit beside the
+    title at depth 0 already numbers from 1."""
+    return 1 if title_dc and len(chunks) > 1 and int(chunks[1].depth) >= 1 else 0
+
+
+def back_matter_handles(chunks: list[Any]) -> frozenset[str]:
+    """``dc`` handles of every heading inside a back-matter section: a
+    matching depth-0 heading and the headings nested under it, up to the
+    next depth-0 heading."""
+    out: set[str] = set()
+    inside = False
+    for c in chunks:
+        if c.chunk_kind != "heading":
+            continue
+        if c.depth == 0:
+            inside = is_back_matter_heading(c.text or "")
+        if inside:
+            out.add(c.dc)
+    return frozenset(out)
+
+
+@dataclass(frozen=True)
+class XrefNumbers:
+    """The numbering pre-pass, walked over the whole draft before any
+    rendering (a cross-ref can precede its target): ``labels`` maps a dc
+    handle to ``(noun, number)`` as ``\\cref`` would print it (an empty
+    noun: ``number`` is already the full label, a back-matter heading's
+    name); ``numbered_headings`` are the headings that display a number;
+    ``equations`` maps a standalone equation's dc to its number."""
+
+    labels: dict[str, tuple[str, str]]
+    numbered_headings: set[str]
+    equations: dict[str, int]
+
+
+def number_xrefs(
+    chunks: list[Any],
+    title: str | None,
+    *,
+    equation_of: Callable[[str | None], tuple[str, bool] | None],
+) -> XrefNumbers:
+    """Section / figure / equation numbers in reading order, the way the
+    LaTeX layout counts them: a heading's depth picks section, subsection or
+    subsubsection (the seeded title heading is skipped and, when the body is
+    nested under it, every depth is lifted one level); the draft's own
+    Glossary heading and its terms are skipped; journal back matter is
+    unnumbered and a cross-ref to it prints its name; every figure steps the
+    figure counter; like ``\\cref`` on a label inside a section, a plain
+    paragraph/item/table resolves to the enclosing numbered section. An
+    unstarred standalone equation (``equation_of``, the one detector both
+    backends use) takes the next equation number. Reads chunk structure
+    only: no inline text is resolved here, so no cite is numbered."""
+    labels: dict[str, tuple[str, str]] = {}
+    shown: set[str] = set()
+    counters = [0] * NUMBERED_DEPTHS
+    figs = 0
+    title_dc = title_heading_dc(chunks, title)
+    shift = depth_shift(chunks, title_dc)
+    back_matter = back_matter_handles(chunks)
+    current = ""  # number of the enclosing numbered section
+    for c in chunks:
+        if c.chunk_kind == "figure":
+            figs += 1
+            labels[c.dc] = ("fig.", str(figs))
+        elif c.chunk_kind == "heading":
+            if is_glossary_heading(c) or c.dc == title_dc:
+                continue
+            if c.dc in back_matter:
+                labels[c.dc] = ("", " ".join((c.text or "").split()))
+                continue
+            d = max(int(c.depth) - shift, 0)
+            if d < NUMBERED_DEPTHS:
+                counters[d] += 1
+                for i in range(d + 1, NUMBERED_DEPTHS):
+                    counters[i] = 0
+                shown.add(c.dc)
+                current = ".".join(str(n) for n in counters[: d + 1])
+            # else: run-in paragraph heading — resolves to the enclosing section
+            labels[c.dc] = ("section", current)
+        elif c.chunk_kind not in ("ulist", "olist") and current:
+            labels[c.dc] = ("section", current)
+    equations: dict[str, int] = {}
+    for c in chunks:
+        if c.chunk_kind in EQ_SKIP_KINDS:
+            continue
+        eq = equation_of(c.text)
+        if eq is None or eq[1]:  # not standalone, or the starred escape hatch
+            continue
+        equations[c.dc] = len(equations) + 1
+    return XrefNumbers(labels=labels, numbered_headings=shown, equations=equations)
+
+
+@dataclass(frozen=True, slots=True)
+class Xref:
+    """One intra-draft cross-ref as the walker resolved it. ``live`` False:
+    the target is not a live chunk of this draft (render the surface or the
+    handle as text). ``surface``: the author's link text, which wins over
+    any number. ``equation`` / ``label``: what to print (from the
+    pre-pass, when the backend prints numbers itself); ``label`` is ``None``
+    when there is nothing to print (front matter, glossary, or a section
+    reference before the first numbered section)."""
+
+    dc: str
+    surface: str | None
+    live: bool
+    equation: int | None = None
+    label: tuple[str, str] | None = None
+
+
+def resolve_xref(
+    dc: str,
+    surface: str | None,
+    *,
+    live: Collection[str] | None,
+    numbers: XrefNumbers | None,
+    warnings: list[str],
+) -> Xref:
+    """Resolve a ``[dc<id>]`` cross-ref. ``live`` is the draft's live dc
+    handles (``None``: unknown, treat as live); a dead target warns and
+    downgrades. ``numbers`` is the pre-pass, for a backend that prints the
+    number itself (LaTeX's cleveref counts at compile time and passes
+    ``None``)."""
+    if live is not None and dc not in live:
+        warnings.append(f"cross-ref {dc}: no such live chunk — downgraded")
+        return Xref(dc, surface, live=False)
+    if surface or numbers is None:
+        return Xref(dc, surface, live=True)
+    eq = numbers.equations.get(dc)
+    if eq is not None:
+        return Xref(dc, None, live=True, equation=eq)
+    label = numbers.labels.get(dc)
+    if label is None or not label[1]:
+        return Xref(dc, None, live=True)
+    return Xref(dc, None, live=True, label=label)
+
+
+def merge_xref_runs(
+    items: Sequence[str | tuple[str, ...]],
+) -> list[str | tuple[str, ...]]:
+    """Cross-refs separated by nothing but whitespace become one multi-ref
+    (``\\cref{a,b}``: cleveref prints "sections 1 and 2"); the whitespace
+    between them is dropped. ``items`` are prose strings and label tuples."""
+    out: list[str | tuple[str, ...]] = []
+    for item in items:
+        if isinstance(item, tuple):
+            gap = out[-1] if out else None
+            if isinstance(gap, str) and not gap.strip() and len(out) >= 2:
+                if isinstance(out[-2], tuple):
+                    out.pop()
+            prev = out[-1] if out else None
+            if isinstance(prev, tuple):
+                out[-1] = prev + item
+                continue
+        out.append(item)
+    return out

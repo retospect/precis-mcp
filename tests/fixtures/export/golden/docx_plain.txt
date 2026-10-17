@@ -1025,6 +1025,109 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 </w:r>
 </w:p>
 <w:p>
+<w:r>
+<w:t>Fig. 1</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> opens a sentence. Runs </w:t>
+</w:r>
+<w:r>
+<w:t>section 1</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:r>
+<w:t>section 1</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> merge, </w:t>
+</w:r>
+<w:r>
+<w:t>the intro</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> keeps its text, a dead </w:t>
+</w:r>
+<w:r>
+<w:t>dc999</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> and a legacy </w:t>
+</w:r>
+<w:r>
+<w:t>section 1</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> resolve, a run-in </w:t>
+</w:r>
+<w:r>
+<w:t>section 2.1</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> names itself, the end matter </w:t>
+</w:r>
+<w:r>
+<w:t>Acknowledgements</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> too, and </w:t>
+</w:r>
+<w:r>
+<w:t>Eq. (1)</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve">. </w:t>
+</w:r>
+<w:r>
+<w:t>Equation (1)</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> starts one.</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:pPr>
+<w:pStyle w:val="Heading2">
+</w:pStyle>
+</w:pPr>
+<w:r>
+<w:t xml:space="preserve">2.1 </w:t>
+</w:r>
+<w:r>
+<w:t>Deep part</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:pPr>
+<w:pStyle w:val="Heading4">
+</w:pStyle>
+</w:pPr>
+<w:r>
+<w:t>Run-in heading</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:pPr>
+<w:pStyle w:val="Heading1">
+</w:pStyle>
+</w:pPr>
+<w:r>
+<w:t>Acknowledgements</w:t>
+</w:r>
+</w:p>
+<w:p>
+<w:r>
+<w:t xml:space="preserve">Thanks to all; see </w:t>
+</w:r>
+<w:r>
+<w:t>section 1</w:t>
+</w:r>
+<w:r>
+<w:t>.</w:t>
+</w:r>
+</w:p>
+<w:p>
 <w:pPr>
 <w:pStyle w:val="Heading1">
 </w:pStyle>
@@ -1699,4 +1802,5 @@ nobody99
 us123
 == warnings ==
 cite [fi10]: no citable source (conjunction hub without sourced conjuncts)
+cross-ref dc999: no such live chunk — downgraded
 cite 'nobody99': no source in corpus — stub reference

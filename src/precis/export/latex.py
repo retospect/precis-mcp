@@ -1064,20 +1064,17 @@ def _render_reference(m: re.Match[str], ctx: _Ctx) -> str:
 
 def _draft_xref(dc: str, surface: str | None, ctx: _Ctx) -> str:
     """An intra-draft chunk cross-ref (``dc<id>``) → ``\\cref`` / hyperref,
-    downgraded to text + a warning when the chunk isn't live in this draft."""
-    if dc not in ctx.known_handles:
-        ctx.warnings.append(f"cross-ref {dc}: no such live chunk — downgraded")
-        return _encode_unicode(_latex_escape(surface or dc))
-    if surface:
-        return f"\\hyperref[chunk:{dc}]{{{_encode_unicode(_latex_escape(surface))}}}"
-    if dc in ctx.paragraph_handles:
-        # ``\\paragraph`` is unnumbered: ``\\cref`` would print the parent
-        # section's number, so name the heading instead.
-        return f"\\nameref{{chunk:{dc}}}"
-    return f"\\cref{{chunk:{dc}}}"
+    downgraded to text + a warning when the chunk isn't live in this draft
+    (:func:`walker.resolve_xref`; cleveref numbers it at compile time)."""
+    xref = walker.resolve_xref(
+        dc, surface, live=ctx.known_handles, numbers=None, warnings=ctx.warnings
+    )
+    sink: list[str] = []
+    LatexRenderer(ctx).xref(sink, xref)
+    return "".join(sink)
 
 
-_CREF_RUN = re.compile(r"\\cref\{([^{}]*)\}\s*\\cref\{([^{}]*)\}")
+_CREF = re.compile(r"\\cref\{([^{}]*)\}")
 _CITE_MARK_END = re.compile(r"\\cite(?:\[[^\]]*\])?\{[^{}]*\}$")
 
 
@@ -1089,10 +1086,16 @@ def _polish_xrefs(s: str) -> str:
     start of the chunk or a sentence (the :func:`_glsify` rule)."""
     if "\\cref{" not in s:
         return s
-    prev = None
-    while prev != s:
-        prev = s
-        s = _CREF_RUN.sub(lambda m: f"\\cref{{{m.group(1)},{m.group(2)}}}", s)
+    items: list[str | tuple[str, ...]] = []
+    last = 0
+    for m in _CREF.finditer(s):
+        items += [s[last : m.start()], (m.group(1),)]
+        last = m.end()
+    items.append(s[last:])
+    s = "".join(
+        item if isinstance(item, str) else f"\\cref{{{','.join(item)}}}"
+        for item in walker.merge_xref_runs(items)
+    )
     out: list[str] = []
     pos = 0
     for m in re.finditer(r"\\cref\{", s):
@@ -1493,6 +1496,22 @@ class LatexRenderer:
         if use.mode == "bare" and key not in self.ctx.heading_keys:
             self.ctx.heading_keys.append(key)
         sink.append(_gls_use(use, self.ctx.keymap))
+
+    def xref(self, sink: list[str], xref: walker.Xref) -> None:
+        """``\\cref`` (cleveref numbers it), ``\\hyperref`` around the
+        author's surface, escaped text for a dead target."""
+        dc = xref.dc
+        if not xref.live:
+            sink.append(_encode_unicode(_latex_escape(xref.surface or dc)))
+        elif xref.surface:
+            surface = _encode_unicode(_latex_escape(xref.surface))
+            sink.append(f"\\hyperref[chunk:{dc}]{{{surface}}}")
+        elif dc in self.ctx.paragraph_handles:
+            # ``\\paragraph`` is unnumbered: ``\\cref`` would print the parent
+            # section's number, so name the heading instead.
+            sink.append(f"\\nameref{{chunk:{dc}}}")
+        else:
+            sink.append(f"\\cref{{chunk:{dc}}}")
 
 
 def _cite(slug: str, ctx: _Ctx, *, si: bool = False) -> str:
@@ -2180,57 +2199,12 @@ def _render_table(chunk: Any, ctx: _Ctx, label: str) -> list[str]:
 #: to a run-in paragraph heading.
 _SECTION_CMD = ["section", "subsection", "subsubsection", "paragraph"]
 
-#: Top-level headings that are journal back matter: exported unnumbered
-#: (``\\section*`` + a TOC line), their subsections likewise.
-_BACK_MATTER_HEADINGS = frozenset(
-    {
-        "author information",
-        "author contributions",
-        "acknowledgements",
-        "acknowledgments",
-        "notes",
-        "conflicts of interest",
-        "competing interests",
-        "data availability",
-        "supporting information",
-    }
-)
-
-
-def _is_back_matter_heading(text: str) -> bool:
-    return " ".join((text or "").split()).casefold() in _BACK_MATTER_HEADINGS
-
-
-def _title_heading_dc(chunks: list[Any], title: str | None) -> str | None:
-    """The ``dc`` of a first-in-reading-order depth-0 heading whose text is
-    the draft's title (whitespace-normalised, case-insensitive) — the chunk
-    ``create_draft`` seeds; ``None`` when the draft doesn't start that way."""
-    if not chunks or not title:
-        return None
-    first = chunks[0]
-    if first.chunk_kind != "heading" or int(first.depth) != 0:
-        return None
-
-    def norm(s: str | None) -> str:
-        return " ".join((s or "").split()).lower()
-
-    return str(first.dc) if norm(first.text) == norm(title) else None
-
-
-def _back_matter_handles(chunks: list[Any]) -> frozenset[str]:
-    """``dc`` handles of every heading inside a back-matter section: a
-    matching depth-0 heading and the headings nested under it, up to the
-    next depth-0 heading."""
-    out: set[str] = set()
-    inside = False
-    for c in chunks:
-        if c.chunk_kind != "heading":
-            continue
-        if c.depth == 0:
-            inside = _is_back_matter_heading(c.text or "")
-        if inside:
-            out.add(c.dc)
-    return frozenset(out)
+#: Back-matter and title-heading structure is the walker's
+#: (:mod:`precis.export.walker`); these names stay for existing callers.
+_BACK_MATTER_HEADINGS = walker.BACK_MATTER_HEADINGS
+_is_back_matter_heading = walker.is_back_matter_heading
+_title_heading_dc = walker.title_heading_dc
+_back_matter_handles = walker.back_matter_handles
 
 
 def render_body(
@@ -2268,7 +2242,7 @@ def render_body(
     title_dc = _title_heading_dc(chunks, getattr(ref, "title", None))
     # Lift only when the body is nested UNDER the title chunk; a draft whose
     # sections sit beside it at depth 0 already numbers from 1.
-    shift = 1 if title_dc and len(chunks) > 1 and int(chunks[1].depth) >= 1 else 0
+    shift = walker.depth_shift(chunks, title_dc)
 
     def depth_of(c: Any) -> int:
         return max(0, int(c.depth) - shift)
@@ -3305,7 +3279,7 @@ def _export_poster(
     chunks = store.drafts.reading_order(ref.id)
     back_matter = _back_matter_handles(chunks)
     title_dc = _title_heading_dc(chunks, getattr(ref, "title", None))
-    shift = 1 if title_dc and len(chunks) > 1 and int(chunks[1].depth) >= 1 else 0
+    shift = walker.depth_shift(chunks, title_dc)
 
     def depth_of(c: Any) -> int:
         return max(0, int(c.depth) - shift)

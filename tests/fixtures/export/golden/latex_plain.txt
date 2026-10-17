@@ -165,8 +165,18 @@ Prose \cite{lee22} and doi:10.1/x and st12 and \cite{nobody99} and patent \cite{
 E = mc^2
 \end{equation}
 
+\Cref{chunk:dc9} opens a sentence. Runs \cref{chunk:dc2,chunk:dc4} merge, \hyperref[chunk:dc2]{the intro} keeps its text, a dead dc999 and a legacy \cref{chunk:dc4} resolve, a run-in \nameref{chunk:dc16} names itself, the end matter \nameref{chunk:dc17} too, and \cref{chunk:dc11}. \Cref{chunk:dc11} starts one.\label{chunk:dc14}
+
+\subsection{Deep part}\label{chunk:dc15}
+
+\paragraph{Run-in heading}\label{chunk:dc16}
+
 \phantomsection\label{chunk:dc12}%
 \phantomsection\label{chunk:dc13}%
+\section*{Acknowledgements}\label{chunk:dc17}
+\addcontentsline{toc}{section}{Acknowledgements}
+
+Thanks to all; see \cref{chunk:dc2}.\label{chunk:dc18}
 
 
 \section*{Unverified claims}
@@ -266,4 +276,5 @@ nobody99
 us123
 == warnings ==
 cite [fi10]: no citable source (conjunction hub without sourced conjuncts)
+cross-ref dc999: no such live chunk — downgraded
 cite 'nobody99': no source in corpus — stub bib entry
