@@ -119,6 +119,24 @@ def _active_dsn() -> str:
     return _ACTIVE_DSN
 
 
+#: gr496644: per-test SQL bounds on every connection to the session clone,
+#: carried in the DSN so pooled (``Store.connect``) and direct
+#: (``psycopg.connect``) checkouts all inherit them. A statement or lock
+#: wait that would previously run into the CI job's 40-min limit now fails
+#: fast — with pytest naming the test that owns it. Generous on purpose:
+#: the slowest deliberate statement in the suite is a ``pg_sleep(20)``
+#: (the cross-kind fan-out deadline test) and normal lock waits are
+#: millisecond-scale under per-worker DB isolation, so 120 s / 30 s can
+#: never flake a healthy test. Maintenance paths that need tighter bounds
+#: (``_run_with_lock_retry``) override them with their own session SET.
+_TEST_DSN_OPTIONS = "-c statement_timeout=120s -c lock_timeout=30s"
+
+
+def _with_test_timeouts(dsn: str) -> str:
+    """``dsn`` plus the session-level SQL bounds for test connections."""
+    return make_conninfo(dsn, options=_TEST_DSN_OPTIONS)
+
+
 def _dsn_with_db(dsn: str, dbname: str) -> str:
     """``dsn`` with its database swapped for ``dbname`` (server + creds kept)."""
     return make_conninfo(dsn, dbname=dbname)
@@ -762,7 +780,7 @@ def _initialise_test_db() -> Iterator[None]:
             # concurrent session's orphan-sweep sees it as in-use. Autocommit
             # so it never sits idle-in-transaction.
             keepalive = psycopg.connect(clone_dsn, autocommit=True)
-            _ACTIVE_DSN = clone_dsn
+            _ACTIVE_DSN = _with_test_timeouts(clone_dsn)
         except psycopg.errors.InsufficientPrivilege:
             msg = (
                 "per-session test-DB isolation is DISABLED: the test role cannot "
@@ -774,7 +792,7 @@ def _initialise_test_db() -> Iterator[None]:
             log.warning("conftest: %s", msg)
             warnings.warn(msg, stacklevel=2)
             shared_fallback = True
-            _ACTIVE_DSN = PG_TEST_DSN
+            _ACTIVE_DSN = _with_test_timeouts(PG_TEST_DSN)
     finally:
         # Clone path: the lock was only needed for the clone, release now.
         # Shared fallback: hold it for the whole session (old behaviour).
