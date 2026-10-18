@@ -49,7 +49,6 @@ _ALLOWLIST: dict[str, str] = {
     "rtk/prefix-manually-outside-dev-mac": "no test, hook or lint checks it (audit 2026-10-16)",
     "shipping/gripe-sha-on-backlog-delete": "no test, hook or lint checks it (audit 2026-10-16)",
     "shipping/release-owner-doesnt-wait": "no test, hook or lint checks it (audit 2026-10-16)",
-    "shipping/qland-lint-and-drift-guard": "no test, hook or lint checks it (audit 2026-10-16)",
     "shipping/read-gate-failure-above-x": "no test, hook or lint checks it (audit 2026-10-16)",
     "shipping/mark-round-from-your-tree": "no test, hook or lint checks it (audit 2026-10-16)",
     "shipping/no-deploy-window": "no test, hook or lint checks it (audit 2026-10-16)",

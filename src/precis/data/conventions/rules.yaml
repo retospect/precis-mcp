@@ -673,7 +673,9 @@
     ship --quick refuses a dirty tree, warns when main's last all-green shard
     matrix is 24h old and refuses at 48h, then runs the pre-qland lint.
     PRECIS_QLAND_LINT=0 skips lint.
-  enforcers: []
+  enforcers:
+    - path: tests/test_ship_qland_drift.py
+      what: "24h warn, 48h refuse (age and exit-2), unknown-age never refuses, PRECIS_QLAND_DRIFT_OVERRIDE=1"
 - id: shipping/checked-lane-selection
   file: docs/conventions/shipping.md
   section: "--checked — the qland burst lane with a selected pytest"
