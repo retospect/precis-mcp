@@ -94,6 +94,21 @@ _BUFFER_QUAD_SEGS = 16
 #: two orders of magnitude under the smallest pad on this board.
 MIN_FRAGMENT_MM2 = 0.05
 
+#: A round buffer's facets are chords of the true offset circle, so a
+#: blocker grown by ``clearance`` with :data:`_BUFFER_QUAD_SEGS` lands up to
+#: the chord's sagitta INSIDE the clearance at every rounded corner:
+#: 0.18 um at 0.152 mm, above drc's ``_TIER_EPS``, which read as 279
+#: pad-to-pour "0.000 mm" warns on taz15-r2 (gr492989). Dividing the
+#: distance by this factor puts the facets on the circle's circumscribed
+#: polygon, so no point of the antipad edge is nearer than ``clearance``.
+_CIRCUMSCRIBE = 1.0 / math.cos(math.pi / (4 * _BUFFER_QUAD_SEGS))
+
+
+def _clearance_ring(geom: BaseGeometry, clearance_mm: float) -> BaseGeometry:
+    """``geom`` grown by AT LEAST ``clearance_mm`` everywhere — the keep-out
+    a pour is cut by (:data:`_CIRCUMSCRIBE`)."""
+    return geom.buffer(abs(clearance_mm) * _CIRCUMSCRIBE, quad_segs=_BUFFER_QUAD_SEGS)
+
 
 def _as_polygons(geom: BaseGeometry) -> list[Polygon]:
     if geom.is_empty:
@@ -281,9 +296,7 @@ def plane_pours(
                     continue
                 poly = _copper_item_polygon(item)
                 if poly is not None and not poly.is_empty:
-                    blockers.append(
-                        poly.buffer(clearance_mm, quad_segs=_BUFFER_QUAD_SEGS)
-                    )
+                    blockers.append(_clearance_ring(poly, clearance_mm))
             # Mitred, not round: a round offset's facets undershoot the
             # clearance at every convex corner by the chord's sagitta, which
             # the clearance check measures as a shortfall between two pours.
@@ -379,7 +392,7 @@ def cut_antipads(
         poly = _copper_item_polygon(item)
         if poly is None or poly.is_empty:
             continue
-        ring = poly.buffer(abs(clearance_mm), quad_segs=_BUFFER_QUAD_SEGS)
+        ring = _clearance_ring(poly, clearance_mm)
         for layer_name in _blocker_layers(item):
             rings_by_layer.setdefault(layer_name, []).append(ring)
 
