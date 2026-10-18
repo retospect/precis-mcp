@@ -747,7 +747,10 @@ class NumericRefHandler(Handler):
         if excluded:
             effective_tags, status_note = tags, "(default: live statuses)"
         else:
-            effective_tags, status_note = self._apply_status_default(status, tags)
+            effective_tags, status_note, status_excluded = self._apply_status_default(
+                status, tags
+            )
+            excluded = status_excluded
 
         # Validate at the agent boundary — symmetric with put(tags=...).
         # Pass kind= so per-kind axis enforcement catches
@@ -805,7 +808,7 @@ class NumericRefHandler(Handler):
         # degrade to a recency-ordered list, which is what the user
         # wanted in the first place.
         if q is None or not q.strip():
-            if normalized_tags or sort is not None or browse:
+            if normalized_tags or sort is not None or browse or excluded:
                 return self._list_by_tags(
                     normalized_tags or [],
                     page_size=page_size,
@@ -830,6 +833,7 @@ class NumericRefHandler(Handler):
                     note=status_note,
                     offset=offset,
                     page=page,
+                    exclude_tags=excluded,
                 )
             raise BadInput(
                 "search requires q= or tags= or link=",
@@ -850,6 +854,7 @@ class NumericRefHandler(Handler):
                 status_note=status_note,
                 page=page,
                 mode=mode,
+                exclude_tags=excluded or None,
                 exclude_ref_ids=exclude_ref_ids,
                 include_ref_ids=include_ref_ids,
                 chunk_scope=chunk_scope,
@@ -868,6 +873,7 @@ class NumericRefHandler(Handler):
             tags=normalized_tags,
             limit=page_size,
             mode=mode,
+            exclude_tags=excluded or None,
             exclude_ref_ids=exclude_ref_ids,
             include_ref_ids=include_ref_ids,
             card_kinds=self.search_card_kinds,
@@ -925,7 +931,12 @@ class NumericRefHandler(Handler):
         # notation-leg hit), which would render the nonsense "3 of 0
         # matches" — so the floor is what we actually returned.
         total = max(
-            self.store.count_refs_lexical(q=q, kind=self.kind, tags=normalized_tags),
+            self.store.count_refs_lexical(
+                q=q,
+                kind=self.kind,
+                tags=normalized_tags,
+                exclude_tags=excluded or None,
+            ),
             len(hit_refs),
         )
         header = format_search_headline(
@@ -946,12 +957,15 @@ class NumericRefHandler(Handler):
 
     def _apply_status_default(
         self, status: str | None, tags: list[str] | None
-    ) -> tuple[list[str] | None, str]:
+    ) -> tuple[list[str] | None, str, list[str]]:
         """Fold the per-kind STATUS default into the effective tag filter.
 
-        Returns ``(effective_tags, note)``. ``note`` is a one-line hint
-        naming the implicit default so it is *visible* in the response
-        (empty when no default was applied). Rules:
+        Returns ``(effective_tags, note, excluded_status_tags)``.
+        ``note`` is a one-line hint naming the implicit default so it is
+        *visible* in the response (empty when no default was applied).
+        ``excluded_status_tags`` are the caller's ``status='!v'``
+        exclusions in canonical tag form — they ride the
+        ``exclude_tags`` store channel (gr496191). Rules:
 
         * an explicit ``status=`` (not ``'*'``) always applies, and wins
           over any ``STATUS:`` tag the caller also passed — the
@@ -959,6 +973,9 @@ class NumericRefHandler(Handler):
           unsatisfiable filter (a ref carries one STATUS value);
         * ``status='*'`` opts out of the status shorthand (a caller's own
           ``STATUS:`` tag, if any, still stands);
+        * ``status='!v'`` (or a list of negations, ``'!a|!b'``) excludes
+          those status values — an exclusion is not expressible as a
+          positive tag AND, so it bypasses ``tags=`` entirely;
         * :attr:`default_search_status` fires only when the caller passed
           no ``status=`` *and* did not already pin a ``STATUS:`` tag — so
           it never fights an explicit choice or silently drops one.
@@ -968,6 +985,42 @@ class NumericRefHandler(Handler):
         as the closed axis (a mixed-case ``Status:`` parses as an open
         tag, so it must not suppress the default).
         """
+        axis = "alert-state" if self.kind == "alert" else "STATUS"
+        vocab_set: frozenset[str] | None = (
+            frozenset({"open", "resolved"})
+            if self.kind == "alert"
+            else _KIND_STATUS_VALUES.get(self.kind)
+        )
+        # ``status='!v'`` excludes rather than selects (gr496191): a
+        # separator-joined all-negated list unions the exclusions. The
+        # exclusion covers refs carrying *no* status tag too — "not
+        # wontfix" is true of an untagged gripe.
+        if status is not None:
+            parts = [p.strip() for p in re.split(r"[,|;]", status) if p.strip()]
+            if parts and all(p.startswith("!") for p in parts):
+                vals = [
+                    ("resolved" if self.kind == "alert" and v == "closed" else v)
+                    for v in (p[1:].strip() for p in parts)
+                ]
+                bad = [
+                    v
+                    for v in vals
+                    if not v or (vocab_set is not None and v not in vocab_set)
+                ]
+                if bad:
+                    raise BadInput(
+                        f"invalid status= value for kind {self.kind!r}: '{bad[0]}'",
+                        options=sorted(vocab_set) if vocab_set else None,
+                        next=(
+                            f"search(kind={self.kind!r}, status='*') for every "
+                            "status, or status='!<value>' to exclude one"
+                        ),
+                    )
+                return (
+                    list(tags) if tags else None,
+                    f"(status: all except {', '.join(vals)})",
+                    [f"{axis}:{v}" for v in vals],
+                )
         if self.kind == "alert" and status is not None and status != "*":
             state = "resolved" if status == "closed" else status
             if state not in {"open", "resolved"}:
@@ -979,7 +1032,7 @@ class NumericRefHandler(Handler):
                 t for t in (tags or []) if not t.strip().startswith("alert-state:")
             ]
             alert_tags.append(f"alert-state:{state}")
-            return alert_tags, ""
+            return alert_tags, "", []
         effective: list[str] = list(tags) if tags else []
         has_status_tag = any(t.strip().startswith("STATUS:") for t in effective)
         explicit = status is not None
@@ -1004,7 +1057,8 @@ class NumericRefHandler(Handler):
                 f"status= takes one value, got {status!r}{vocab}",
                 next=(
                     f"search(kind={self.kind!r}, status='*') for every "
-                    "status, or run one search per value"
+                    "status, run one search per value, or "
+                    "status='!<value>' to exclude a status"
                 ),
             )
         note = ""
@@ -1040,7 +1094,7 @@ class NumericRefHandler(Handler):
                 note = (
                     f"(default status={resolved!r} — pass status='*' for all statuses)"
                 )
-        return (effective or None, note)
+        return (effective or None, note, [])
 
     def _tag_truncation_note(
         self, tags: list[str] | None, *, matched_total: int, q: str
@@ -1147,6 +1201,7 @@ class NumericRefHandler(Handler):
             parts.append(status_note)
         if (
             exclude_tags
+            and set(exclude_tags) <= set(_BROWSE_TERMINALS.get(self.kind, ()))
             and not (q and q.strip())
             and link_ref_id is None
             and include_ref_ids is None
@@ -1154,7 +1209,8 @@ class NumericRefHandler(Handler):
         ):
             # Same "hidden terminals" readout _list_by_tags gives the
             # browse view — suppressed once extra filters make the
-            # subtraction meaningless.
+            # subtraction meaningless, and on a caller's own
+            # status='!v' exclusion the "terminal" wording would lie.
             hidden = self.store.count_refs(kind=self.kind, tags=tags) - total
             if hidden > 0:
                 parts.append(f"{hidden} terminal entries hidden; status='*' to include")
@@ -1264,7 +1320,9 @@ class NumericRefHandler(Handler):
         # and so a beyond-the-end page can say "still N total" rather
         # than misreporting an empty tag set.
         total = self.store.count_refs(kind=self.kind, tags=tags, **filters)
-        if exclude_tags:
+        if exclude_tags and set(exclude_tags) <= set(
+            _BROWSE_TERMINALS.get(self.kind, ())
+        ):
             hidden = self.store.count_refs(kind=self.kind, tags=tags) - total
             note = (
                 note + f"\n{hidden} terminal entries hidden; status='*' to include"
@@ -1350,6 +1408,7 @@ class NumericRefHandler(Handler):
         note: str = "",
         offset: int = 0,
         page: int = 1,
+        exclude_tags: list[str] | None = None,
     ) -> Response:
         """Recency-ordered list of ``self.kind`` refs linked to ``link``.
 
@@ -1382,9 +1441,13 @@ class NumericRefHandler(Handler):
             direction="both",
             limit=page_size,
             offset=offset,
+            exclude_tags=exclude_tags,
         )
         total = self.store.count_linked_refs(
-            target.ref_id, kind=self.kind, direction="both"
+            target.ref_id,
+            kind=self.kind,
+            direction="both",
+            exclude_tags=exclude_tags,
         )
         if not page_rows:
             if page > 1 and total > 0:
@@ -1517,6 +1580,7 @@ class NumericRefHandler(Handler):
         page_size: int,
         page: int = 1,
         mode: str | None = None,
+        exclude_tags: list[str] | None = None,
         exclude_ref_ids: list[int] | None = None,
         include_ref_ids: list[int] | None = None,
         chunk_scope: str | None = None,
@@ -1570,6 +1634,7 @@ class NumericRefHandler(Handler):
             tags=tags,
             limit=page_size * 5 * max(1, page),
             max_distance=SEMANTIC_DISTANCE_FLOOR,
+            exclude_tags=exclude_tags,
             exclude_ref_ids=exclude_ref_ids,
             include_ref_ids=include_ref_ids,
             card_kinds=card_kinds,
@@ -1594,6 +1659,7 @@ class NumericRefHandler(Handler):
                 kind=self.kind,
                 tags=tags,
                 distinct_refs=True,
+                exclude_tags=exclude_tags,
                 exclude_ref_ids=exclude_ref_ids,
                 include_ref_ids=include_ref_ids,
                 card_kinds=card_kinds,
@@ -1612,6 +1678,7 @@ class NumericRefHandler(Handler):
         status_note: str = "",
         page: int = 1,
         mode: str | None = None,
+        exclude_tags: list[str] | None = None,
         exclude_ref_ids: list[int] | None = None,
         include_ref_ids: list[int] | None = None,
         chunk_scope: str | None = None,
@@ -1623,6 +1690,7 @@ class NumericRefHandler(Handler):
             page_size,
             page=page,
             mode=mode,
+            exclude_tags=exclude_tags,
             exclude_ref_ids=exclude_ref_ids,
             include_ref_ids=include_ref_ids,
             chunk_scope=chunk_scope,

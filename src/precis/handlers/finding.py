@@ -88,6 +88,7 @@ sibling modules so this file stays legible:
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from psycopg.errors import UniqueViolation
@@ -169,6 +170,33 @@ _COHORT_OVERFETCH = 4
 #: still comes back short is honest about how little is settled.
 _TRUST_POOL_FACTOR = 5
 _TRUST_POOL_MAX = 100
+
+
+def _refuse_hand_set_established(
+    added: Iterable[Tag], pre_tags: set[Tag], *, where: str
+) -> None:
+    """Refuse a hand-set ``STATUS:established`` (A3).
+
+    ``established`` is the grounded cohort search defaults to; only the
+    chase worker may write it, after it has traced the claim to a
+    primary source. A hand tag would surface an ungrounded claim there.
+    ``where`` names the door for the message ("finding id=N" on
+    ``tag()``, "a new finding" on ``put(tags=...)``).
+    """
+    for t in added:
+        if t.namespace == "closed" and t.prefix == "STATUS":
+            if t.value == "established" and t not in pre_tags:
+                raise BadInput(
+                    f"{where}: STATUS:established is written "
+                    "by the chase worker, not by hand",
+                    options=["STATUS:tracing", "STATUS:acquiring"],
+                    next=(
+                        "register the source so the worker chases it: "
+                        "get(kind='skill', id='precis-finding-help') "
+                        "(put a finding with its provenance/wants); the "
+                        "worker sets STATUS:established once grounded"
+                    ),
+                )
 
 
 class FindingHandler(NumericRefHandler):
@@ -290,6 +318,15 @@ class FindingHandler(NumericRefHandler):
         self._reject_mutating_put(
             id=id, mode=mode, untags=untags, unlink=unlink, rel=rel, link=link
         )
+        # A3 covers the ``tag`` verb; the same refusal applies to the
+        # create-time ``tags=`` shortcut — otherwise ``put`` would mint
+        # the grounded-cohort marker ``tag`` refuses to write (gr496191).
+        if tags:
+            _refuse_hand_set_established(
+                [Tag.parse_strict(t, kind=self.kind) for t in tags],
+                pre_tags=set(),
+                where="a new finding",
+            )
 
         body_text = body if body is not None else text
 
@@ -1100,26 +1137,8 @@ class FindingHandler(NumericRefHandler):
     def _guard_tag_add(
         self, ref_id: int, added: list[Tag], pre_tags: set[Tag]
     ) -> list[Tag]:
-        """Refuse a hand-set ``STATUS:established`` (A3).
-
-        ``established`` is the grounded cohort search defaults to; only the
-        chase worker may write it, after it has traced the claim to a
-        primary source. A hand tag would surface an ungrounded claim there.
-        """
-        for t in added:
-            if t.namespace == "closed" and t.prefix == "STATUS":
-                if t.value == "established" and t not in pre_tags:
-                    raise BadInput(
-                        f"finding id={ref_id}: STATUS:established is written "
-                        "by the chase worker, not by hand",
-                        options=["STATUS:tracing", "STATUS:acquiring"],
-                        next=(
-                            "register the source so the worker chases it: "
-                            "get(kind='skill', id='precis-finding-help') "
-                            "(put a finding with its provenance/wants); the "
-                            "worker sets STATUS:established once grounded"
-                        ),
-                    )
+        """Refuse a hand-set ``STATUS:established`` on the ``tag`` verb."""
+        _refuse_hand_set_established(added, pre_tags, where=f"finding id={ref_id}")
         return added
 
     def search_hits(  # type: ignore[override]

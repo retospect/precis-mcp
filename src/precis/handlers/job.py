@@ -1180,12 +1180,27 @@ class JobHandler(NumericRefHandler):
 
     def _delete(self, id: str | int | None) -> Response:
         """Refuse to retire a live job: its worker keeps the reservation
-        and executor, so the row would vanish while work still runs."""
-        if id is not None:
-            job_id = self._coerce_id(id)
-            # a missing / other-kind id falls through to the base refusal
-            live = self.store.get_ref(kind=self.kind, id=job_id) is not None
-            status = _status_of(self.store.tags_for(job_id)) if live else None
+        and executor, so the row would vanish while work still runs.
+
+        The status read and the retire run in one transaction under a
+        ``FOR UPDATE`` lock on the refs row: the executor claim query
+        locks the same row (``FOR UPDATE OF r SKIP LOCKED``), so a claim
+        either commits first (we then re-read ``STATUS:running`` and
+        refuse) or skips this row while we hold the lock — the check
+        can't see a status the retire then makes stale (gr496191).
+        """
+        if id is None:
+            return super()._delete(id)
+        job_id = self._coerce_id(id)
+        # a missing / other-kind id falls through to the base refusal
+        if self.store.get_ref(kind=self.kind, id=job_id) is None:
+            return super()._delete(id)
+        with self.store.tx() as conn:
+            conn.execute(
+                "SELECT ref_id FROM refs WHERE ref_id = %s FOR UPDATE",
+                (job_id,),
+            )
+            status = _status_of(self.store.tags_for(job_id, conn=conn))
             if status is not None and status not in _TERMINAL_STATUSES:
                 raise BadInput(
                     f"job id={job_id} is STATUS:{status}; deleting a "
@@ -1201,7 +1216,8 @@ class JobHandler(NumericRefHandler):
                         "delete once it is STATUS:cancelled"
                     ),
                 )
-        return super()._delete(id)
+            self.store.retire_ref(job_id, conn=conn)
+        return Response(body=f"deleted {self._sense()} id={job_id}")
 
     def _retry_job(
         self,

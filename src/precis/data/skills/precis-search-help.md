@@ -362,7 +362,10 @@ search(
 Some kinds fold a **default status** into this: `gripe` defaults to
 `STATUS:open` and `finding` to `STATUS:established` when you pass no
 `status=`/`STATUS:` tag. Pass `status='*'` to opt out. The default is named
-in the response header, never silent.
+in the response header, never silent. `status='!wontfix'` *excludes* a
+status — every status but wontfix, untagged refs included; a list of
+negations (`'!done|!wontfix'`) unions them. A positive list still refuses —
+`status=` takes one value; exclusion is the multi-value form.
 
 ## Count and facet a filtered search (view='count')
 ## How many X are there? Group jobs/gripes/todos by status or tag

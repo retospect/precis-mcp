@@ -308,6 +308,7 @@ class TagsMixin:
         ref_id: int,
         *,
         pos: int | None = None,
+        conn: Connection | None = None,
     ) -> list[Tag]:
         """Return every tag on a ref (``pos=None``) or chunk (``pos=ord``).
 
@@ -315,10 +316,15 @@ class TagsMixin:
         :func:`_row_to_tag`. Order is insertion order on the join
         table (``created_at ASC, tag_id ASC``) so repeated calls
         return tags in a stable shape suitable for diffing.
+
+        ``conn`` lets the read join an outer transaction — e.g. the job
+        delete guard, which must see tag state as of the row lock it
+        already holds (gr496191).
         """
-        with self.pool.connection() as conn:
+
+        def _do(c: Connection) -> list[Tag]:
             if pos is None:
-                rows = conn.execute(
+                rows = c.execute(
                     "SELECT t.namespace, t.value "
                     "FROM ref_tags rt "
                     "JOIN tags t ON t.tag_id = rt.tag_id "
@@ -327,8 +333,8 @@ class TagsMixin:
                     (ref_id,),
                 ).fetchall()
             else:
-                chunk_id = _resolve_chunk_id(conn, ref_id, pos)
-                rows = conn.execute(
+                chunk_id = _resolve_chunk_id(c, ref_id, pos)
+                rows = c.execute(
                     "SELECT t.namespace, t.value "
                     "FROM chunk_tags ct "
                     "JOIN tags t ON t.tag_id = ct.tag_id "
@@ -336,7 +342,12 @@ class TagsMixin:
                     "ORDER BY ct.created_at ASC, t.tag_id ASC",
                     (chunk_id,),
                 ).fetchall()
-        return [_row_to_tag(str(r[0]), str(r[1])) for r in rows]
+            return [_row_to_tag(str(r[0]), str(r[1])) for r in rows]
+
+        if conn is not None:
+            return _do(conn)
+        with self.pool.connection() as c:
+            return _do(c)
 
     def has_tag(self, ref_id: int, namespace: str, value: str) -> bool:
         """Fast ref-level ``(namespace, value)`` presence probe.

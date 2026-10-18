@@ -513,13 +513,14 @@ class SearchMixin(RuntimeShape):
         # applies to the parent ref (a ref carries one STATUS value, so an
         # explicit status= replaces any STATUS: tag the caller also passed).
         status = args.get("status")
+        status_excluded: list[str] = []
         if isinstance(status, str) and status.strip():
             if isinstance(tags, str):
                 tags = [tags]
             only = self.hub.handler_for(kinds[0]) if len(kinds) == 1 else None
             if only is not None and hasattr(only, "_apply_status_default"):
                 # One status kind: its own rules (alert-state, aliases, '*').
-                tags, _note = only._apply_status_default(status, tags)
+                tags, _note, status_excluded = only._apply_status_default(status, tags)
             elif status.strip().lower() not in ("*", "any", "all"):
                 tags = [
                     t for t in (tags or []) if not str(t).strip().startswith("STATUS:")
@@ -549,6 +550,7 @@ class SearchMixin(RuntimeShape):
             query_vec=query_vec,
             mode=mode,
             tags=tags,
+            exclude_tags=status_excluded or None,
             since=since,
             until=until,
             sort=sort,

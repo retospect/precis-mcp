@@ -3269,6 +3269,7 @@ class RefsMixin:
         q: str,
         kind: str | None = None,
         tags: list[str] | None = None,
+        exclude_tags: list[str] | None = None,
     ) -> int:
         """Count refs matching the lexical filter (no LIMIT). Companion
         to :meth:`search_refs_lexical` for the "N of K" pagination
@@ -3290,6 +3291,10 @@ class RefsMixin:
         if tag_frag:
             clauses.append(tag_frag)
             params.extend(tag_params)
+        for ex_tag in exclude_tags or []:
+            ex_frag, ex_params = build_tag_filter([ex_tag], ref_alias="r")
+            clauses.append(f"NOT ({ex_frag})")
+            params.extend(ex_params)
         sql = (
             "SELECT count(*) FROM refs r, "
             "     websearch_to_tsquery('english', %s) qq(qq) "
@@ -3307,6 +3312,7 @@ class RefsMixin:
         kind: str | None = None,
         tags: list[str] | None = None,
         limit: int = 20,
+        exclude_tags: list[str] | None = None,
     ) -> list[tuple[Ref, float]]:
         """Lexical search over ``refs.title``. Returns ``(ref, rank)``
         desc. Semantic+RRF fusion happens at the block level; this stays
@@ -3337,6 +3343,10 @@ class RefsMixin:
         if tag_frag:
             clauses.append(tag_frag)
             params.extend(tag_params)
+        for ex_tag in exclude_tags or []:
+            ex_frag, ex_params = build_tag_filter([ex_tag], ref_alias="r")
+            clauses.append(f"NOT ({ex_frag})")
+            params.extend(ex_params)
         params.append(limit)
         sql = (
             f"SELECT {_REFS_COLS_ALIASED}, "

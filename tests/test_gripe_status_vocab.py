@@ -136,3 +136,70 @@ def test_web_count_and_rows_treat_untagged_gripe_as_open(store: Store) -> None:
     rows = _rows(store, status_filter="live")
     assert len(rows) == 2
     assert {r["status"] for r in rows} == {"open"}
+
+
+# ── status='!v' exclusion (gr496191) ────────────────────────────────
+
+
+def test_search_status_bang_excludes(hub: Any, store: Store) -> None:
+    """gr496191: ``status='!wontfix'`` is every status but wontfix —
+    the exclusion the prod callers reached for via ``exclude=['wontfix']``
+    (and as ``status='open|triaged|…'`` for the non-terminal cohort)."""
+    from precis.handlers.gripe import GripeHandler
+
+    h = GripeHandler(hub=hub)
+    open_id = _seed_gripe(store, "open")
+    done_id = _seed_gripe(store, "done")
+    wontfix_id = _seed_gripe(store, "wontfix")
+    out = h.search(status="!wontfix")
+    assert f"gr{open_id}" in out.body and f"gr{done_id}" in out.body
+    assert f"gr{wontfix_id}" not in out.body
+
+
+def test_search_status_bang_list_unions_exclusions(hub: Any, store: Store) -> None:
+    from precis.handlers.gripe import GripeHandler
+
+    h = GripeHandler(hub=hub)
+    open_id = _seed_gripe(store, "open")
+    done_id = _seed_gripe(store, "done")
+    wontfix_id = _seed_gripe(store, "wontfix")
+    out = h.search(status="!done|!wontfix")
+    assert f"gr{open_id}" in out.body
+    assert f"gr{done_id}" not in out.body and f"gr{wontfix_id}" not in out.body
+
+
+def test_search_status_bang_invalid_value_refused(hub: Any, store: Store) -> None:
+    from precis.handlers.gripe import GripeHandler
+
+    h = GripeHandler(hub=hub)
+    with pytest.raises(BadInput) as exc:
+        h.search(status="!bogus")
+    assert "invalid status= value" in str(exc.value)
+
+
+def test_search_status_bang_count_view(hub: Any, store: Store) -> None:
+    from precis.handlers.gripe import GripeHandler
+
+    h = GripeHandler(hub=hub)
+    _seed_gripe(store, "open")
+    _seed_gripe(store, "wontfix")
+    out = h.search(status="!wontfix", view="count")
+    assert "# 1 gripe entry" in out.body
+
+
+def test_search_status_bang_reaches_chunk_q_path(hub: Any, store: Store) -> None:
+    """The q= path searches gripe body chunks — the exclusion must reach
+    the chunk-search SQL, not just the listing paths."""
+    from precis.handlers.gripe import GripeHandler
+    from precis.store.types import ChunkInsert
+
+    h = GripeHandler(hub=hub)
+    open_id = _seed_gripe(store, "open")
+    wontfix_id = _seed_gripe(store, "wontfix")
+    for rid in (open_id, wontfix_id):
+        store.chunks.insert_chunks(
+            rid, [ChunkInsert(ord=0, text="flaky ingest timeout", meta={})]
+        )
+    out = h.search(q="flaky", status="!wontfix")
+    assert f"## gripe {open_id}" in out.body
+    assert f"## gripe {wontfix_id}" not in out.body

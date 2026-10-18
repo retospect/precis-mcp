@@ -87,6 +87,7 @@ def _block_leg(
     tags: list[str] | None,
     limit: int,
     chunk_kinds: list[str] | None,
+    exclude_tags: list[str] | None = None,
     exclude_ref_ids: list[int] | None = None,
     include_ref_ids: list[int] | None = None,
     card_kinds: tuple[str, ...] | None = None,
@@ -110,6 +111,7 @@ def _block_leg(
         tags=tags,
         limit=limit * _BLOCK_OVERFETCH,
         chunk_kinds=chunk_kinds,
+        exclude_tags=exclude_tags,
         max_distance=SEMANTIC_DISTANCE_FLOOR
         if (mode or "").strip().lower() == "semantic"
         else None,
@@ -138,6 +140,7 @@ def fused_ref_hits(
     limit: int = 20,
     mode: str | None = None,
     chunk_kinds: list[str] | None = None,
+    exclude_tags: list[str] | None = None,
     exclude_ref_ids: list[int] | None = None,
     include_ref_ids: list[int] | None = None,
     card_kinds: tuple[str, ...] | None = None,
@@ -197,7 +200,11 @@ def fused_ref_hits(
                 [
                     ref
                     for ref, _rank in store.search_refs_lexical(
-                        q=q, kind=kind, tags=tags, limit=limit
+                        q=q,
+                        kind=kind,
+                        tags=tags,
+                        limit=limit,
+                        exclude_tags=exclude_tags,
                     )
                 ]
             )
@@ -212,6 +219,7 @@ def fused_ref_hits(
             tags=tags,
             limit=limit,
             chunk_kinds=chunk_kinds,
+            exclude_tags=exclude_tags,
             exclude_ref_ids=exclude_ref_ids,
             include_ref_ids=include_ref_ids,
             card_kinds=card_kinds,
@@ -226,7 +234,11 @@ def fused_ref_hits(
                     [
                         ref
                         for ref, _rank in store.search_refs_lexical(
-                            q=canonical, kind=kind, tags=tags, limit=limit
+                            q=canonical,
+                            kind=kind,
+                            tags=tags,
+                            limit=limit,
+                            exclude_tags=exclude_tags,
                         )
                     ]
                 )
@@ -245,6 +257,7 @@ def fused_ref_hits(
                     tags=tags,
                     limit=limit,
                     chunk_kinds=chunk_kinds,
+                    exclude_tags=exclude_tags,
                     exclude_ref_ids=exclude_ref_ids,
                     include_ref_ids=include_ref_ids,
                     card_kinds=card_kinds,

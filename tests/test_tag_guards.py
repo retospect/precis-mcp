@@ -98,6 +98,30 @@ def test_finding_hand_set_established_refused(hub: Hub, store: Store) -> None:
     assert "STATUS:established" not in {str(t) for t in store.tags_for(fid)}
 
 
+def test_finding_put_create_established_refused(hub: Hub, store: Store) -> None:
+    """gr496191: the create-time ``tags=`` shortcut must not bypass the A3
+    guard — ``put(tags=['STATUS:established'])`` would mint the grounded-
+    cohort marker the ``tag`` verb refuses to write."""
+    h = FindingHandler(hub=hub)
+    with pytest.raises(BadInput) as ei:
+        h.put(title="t", body="b", cited_in="x", tags=["STATUS:established"])
+    assert "chase worker" in str(ei.value)
+
+
+def test_finding_put_create_other_status_tag_allowed(hub: Hub, store: Store) -> None:
+    """The guard refuses only ``established`` — a caller-pinned lifecycle
+    tag (e.g. the ungrounded ``STATUS:tracing``) still lands on create."""
+    from precis.store.types import ChunkInsert
+
+    paper = store.insert_ref(kind="paper", slug="miller23a", title="p", meta={})
+    store.chunks.insert_chunks(paper.id, [ChunkInsert(ord=0, text="body", meta={})])
+    h = FindingHandler(hub=hub)
+    resp = h.put(title="t", body="b", cited_in="miller23a", tags=["STATUS:acquiring"])
+    m = re.search(r"id=(\d+)", resp.body)
+    assert m is not None
+    assert "STATUS:acquiring" in {str(t) for t in store.tags_for(int(m.group(1)))}
+
+
 def test_finding_tracing_still_ok(hub: Hub, store: Store) -> None:
     h = FindingHandler(hub=hub)
     fid = _finding(store)

@@ -635,6 +635,7 @@ class ChunkStore:
         kinds: list[str] | None = None,
         scope_ref_id: int | None = None,
         tags: list[str] | None = None,
+        exclude_tags: list[str] | None = None,
         exclude_ref_ids: list[int] | None = None,
         include_ref_ids: list[int] | None = None,
         card_kinds: tuple[str, ...] | None = None,
@@ -686,6 +687,10 @@ class ChunkStore:
         if tag_frag:
             clauses.append(tag_frag)
             params.extend(tag_params)
+        for ex_tag in exclude_tags or []:
+            ex_frag, ex_params = build_tag_filter([ex_tag], ref_alias="r")
+            clauses.append(f"NOT ({ex_frag})")
+            params.extend(ex_params)
         if exclude_ref_ids:
             params.append(list(exclude_ref_ids))
             clauses.append("c.ref_id <> ALL(%s)")
@@ -913,6 +918,7 @@ class ChunkStore:
         tags: list[str] | None = None,
         limit: int = 20,
         offset: int = 0,
+        exclude_tags: list[str] | None = None,
         exclude_ref_ids: list[int] | None = None,
         include_ref_ids: list[int] | None = None,
         include_speculative: bool = False,
@@ -962,6 +968,10 @@ class ChunkStore:
         if tag_frag:
             clauses.append(tag_frag)
             params.extend(tag_params)
+        for ex_tag in exclude_tags or []:
+            ex_frag, ex_params = build_tag_filter([ex_tag], ref_alias="r")
+            clauses.append(f"NOT ({ex_frag})")
+            params.extend(ex_params)
         if self._fence_speculative(tags, include_speculative):
             clauses.append(speculative_fence("r"))
         if self._fence_wiki(tags, kind):
@@ -1010,6 +1020,7 @@ class ChunkStore:
         tags: list[str] | None = None,
         limit: int = 20,
         offset: int = 0,
+        exclude_tags: list[str] | None = None,
         exclude_ref_ids: list[int] | None = None,
         include_ref_ids: list[int] | None = None,
         include_speculative: bool = False,
@@ -1053,6 +1064,10 @@ class ChunkStore:
         if tag_frag:
             clauses.append(tag_frag)
             params.extend(tag_params)
+        for ex_tag in exclude_tags or []:
+            ex_frag, ex_params = build_tag_filter([ex_tag], ref_alias="r")
+            clauses.append(f"NOT ({ex_frag})")
+            params.extend(ex_params)
         if self._fence_speculative(tags, include_speculative):
             clauses.append(speculative_fence("r"))
         if self._fence_wiki(tags, kind):
@@ -1095,6 +1110,7 @@ class ChunkStore:
         limit: int = 20,
         offset: int = 0,
         max_distance: float | None = None,
+        exclude_tags: list[str] | None = None,
         exclude_ref_ids: list[int] | None = None,
         include_ref_ids: list[int] | None = None,
         include_speculative: bool = False,
@@ -1142,6 +1158,10 @@ class ChunkStore:
         if tag_frag:
             clauses.append(tag_frag)
             where_params.extend(tag_params)
+        for ex_tag in exclude_tags or []:
+            ex_frag, ex_params = build_tag_filter([ex_tag], ref_alias="r")
+            clauses.append(f"NOT ({ex_frag})")
+            where_params.extend(ex_params)
         if self._fence_speculative(tags, include_speculative):
             clauses.append(speculative_fence("r"))
         if self._fence_wiki(tags, kind):
@@ -1216,6 +1236,7 @@ class ChunkStore:
         offset: int = 0,
         k: int = 60,
         max_distance: float | None = None,
+        exclude_tags: list[str] | None = None,
         exclude_ref_ids: list[int] | None = None,
         include_ref_ids: list[int] | None = None,
         include_speculative: bool = False,
@@ -1278,6 +1299,13 @@ class ChunkStore:
         if tag_frag:
             clauses.append(tag_frag)
             params.extend(tag_params)
+        # ``params`` is spliced twice into ``full_params`` (once per CTE),
+        # so the bound values here stay aligned with the double-spliced
+        # ``where_extra`` fragment.
+        for ex_tag in exclude_tags or []:
+            ex_frag, ex_params = build_tag_filter([ex_tag], ref_alias="r")
+            clauses.append(f"NOT ({ex_frag})")
+            params.extend(ex_params)
         if self._fence_speculative(tags, include_speculative):
             # Parameterless clause — safe under the double-splice of
             # ``where_extra`` into both the lex and sem CTEs below.
@@ -1416,6 +1444,7 @@ class ChunkStore:
         created_to: datetime | None = None,
         scope_ref_id: int | None = None,
         tags: list[str] | None = None,
+        exclude_tags: list[str] | None = None,
         limit: int = 20,
         offset: int = 0,
         k: int = 60,
@@ -1501,6 +1530,7 @@ class ChunkStore:
                 created_to=created_to,
                 scope_ref_id=scope_ref_id,
                 tags=tags,
+                exclude_tags=exclude_tags,
                 limit=limit,
                 offset=offset,
                 exclude_ref_ids=exclude_ref_ids,
@@ -1536,6 +1566,7 @@ class ChunkStore:
                         created_to=created_to,
                         scope_ref_id=scope_ref_id,
                         tags=tags,
+                        exclude_tags=exclude_tags,
                         limit=pool,
                         exclude_ref_ids=exclude_ref_ids,
                         include_ref_ids=include_ref_ids,
@@ -1558,6 +1589,7 @@ class ChunkStore:
                         created_to=created_to,
                         scope_ref_id=scope_ref_id,
                         tags=tags,
+                        exclude_tags=exclude_tags,
                         limit=pool,
                         max_distance=max_distance,
                         exclude_ref_ids=exclude_ref_ids,
@@ -1619,6 +1651,7 @@ class ChunkStore:
         query_vec: list[float] | None = None,
         mode: str | None = None,
         tags: list[str] | None = None,
+        exclude_tags: list[str] | None = None,
         since: datetime | None = None,
         until: datetime | None = None,
         sort: str = "relevance",
@@ -1664,6 +1697,7 @@ class ChunkStore:
                 created_from=since,
                 created_to=until,
                 tags=tags,
+                exclude_tags=exclude_tags,
                 limit=pool,
                 k=k,
                 max_distance=max_distance,
@@ -1691,6 +1725,7 @@ class ChunkStore:
             created_from=since,
             created_to=until,
             tags=tags,
+            exclude_tags=exclude_tags,
             limit=limit,
             offset=offset,
             k=k,
@@ -1713,6 +1748,7 @@ class ChunkStore:
         offset: int = 0,
         k: int = 60,
         max_distance: float | None = None,
+        exclude_tags: list[str] | None = None,
         exclude_ref_ids: list[int] | None = None,
         include_ref_ids: list[int] | None = None,
         include_speculative: bool = False,
@@ -1752,6 +1788,7 @@ class ChunkStore:
                 tags=tags,
                 limit=limit,
                 offset=offset,
+                exclude_tags=exclude_tags,
                 exclude_ref_ids=exclude_ref_ids,
                 include_ref_ids=include_ref_ids,
                 include_speculative=include_speculative,
@@ -1770,6 +1807,7 @@ class ChunkStore:
                 limit=limit,
                 offset=offset,
                 max_distance=max_distance,
+                exclude_tags=exclude_tags,
                 exclude_ref_ids=exclude_ref_ids,
                 include_ref_ids=include_ref_ids,
                 include_speculative=include_speculative,
@@ -1787,6 +1825,7 @@ class ChunkStore:
                 tags=tags,
                 limit=limit,
                 offset=offset,
+                exclude_tags=exclude_tags,
                 exclude_ref_ids=exclude_ref_ids,
                 include_ref_ids=include_ref_ids,
                 include_speculative=include_speculative,
@@ -1802,6 +1841,7 @@ class ChunkStore:
             kind=kind,
             scope_ref_id=scope_ref_id,
             tags=tags,
+            exclude_tags=exclude_tags,
             limit=limit,
             offset=offset,
             k=k,
