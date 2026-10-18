@@ -971,3 +971,42 @@ def test_locked_net_helper_bounds_a_hung_command() -> None:
     )
     assert "rc=142" in proc.stdout, proc.stdout + proc.stderr
     assert time.monotonic() - t0 < 10
+
+
+_CI_EXTRAS = "--all-extras --no-extra catalyst --no-extra catalyst-gpu"
+
+
+def test_gate_env_sync_carries_the_ci_extras_set() -> None:
+    """A bare `uv sync` is exact and extras-less: it pruned the web extra
+    (fastapi) from every fresh tree and mypy reported import-not-found
+    across the repo. Both sync legs must carry CI's extras flags, and those
+    flags must be the ones check.yml and the Dockerfile use."""
+    ship = _SHIP_SRC.read_text(encoding="utf-8")
+    m = re.search(r"^GATE_SYNC_EXTRAS='([^']+)'", ship, re.MULTILINE)
+    assert m, "scripts/ship lost GATE_SYNC_EXTRAS"
+    flags = m.group(1)
+    assert flags.startswith(_CI_EXTRAS)
+    assert "--inexact" in flags.split()  # never prune what the image bakes
+    assert 'gate_sh "uv sync --offline ${GATE_SYNC_EXTRAS}"' in ship
+    assert 'gate_sh "uv sync ${GATE_SYNC_EXTRAS}"' in ship
+    assert "gate_sh 'uv sync" not in ship  # no bare, extras-less sync
+    check = (REPO / ".github/workflows/check.yml").read_text(encoding="utf-8")
+    assert f"uv run {_CI_EXTRAS} mypy src tests" in check
+    dockerfile = (REPO / "docker/Dockerfile").read_text(encoding="utf-8")
+    assert f'ARG PRECIS_DEPS_EXTRAS="{_CI_EXTRAS}"' in dockerfile
+
+
+@pytest.mark.skipif(shutil.which("uv") is None, reason="uv not installed")
+def test_gate_extras_keep_the_web_extra_in_the_locked_env() -> None:
+    """The set the gate syncs resolves fastapi (the web extra) from uv.lock —
+    the package the bare sync uninstalled."""
+    r = subprocess.run(
+        ["uv", "export", "--frozen", "--no-hashes", "--offline", *_CI_EXTRAS.split()],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert r.returncode == 0, r.stderr
+    assert re.search(r"^fastapi==", r.stdout, re.MULTILINE)

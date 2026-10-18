@@ -819,17 +819,26 @@ gate_sh() {
 GATE_UV_OFFLINE=0
 GATE_RUN_LOG=""
 
+# The extras set CI runs every job under (check.yml: `uv run --all-extras
+# --no-extra catalyst --no-extra catalyst-gpu`; the Dockerfile's
+# PRECIS_DEPS_EXTRAS default is the same). A bare `uv sync` is EXACT and
+# installs no extras, so it uninstalled the web extra (fastapi) and ~190 other
+# baked packages and mypy reported import-not-found everywhere. --inexact
+# additionally leaves anything the dev image bakes beyond CI's set (the
+# private catalyst extras) installed, exactly as `uv run` always has.
+GATE_SYNC_EXTRAS='--all-extras --no-extra catalyst --no-extra catalyst-gpu --inexact'
+
 gate_deps_sync() {
     local log host
     GATE_UV_OFFLINE=0
     log="$(mktemp "${TMPDIR:-/tmp}/precis-gate-sync.XXXXXX")"
-    if gate_sh 'uv sync --offline' >"$log" 2>&1; then
+    if gate_sh "uv sync --offline ${GATE_SYNC_EXTRAS}" >"$log" 2>&1; then
         GATE_UV_OFFLINE=1
         cat "$log"
         echo "gate env → synced offline from the uv cache (no pypi dependency)"
     else
         echo "offline env sync missed the uv cache — trying online (a genuinely new dep lands here; the cache re-warms for next time)"
-        if gate_sh 'uv sync' >>"$log" 2>&1; then
+        if gate_sh "uv sync ${GATE_SYNC_EXTRAS}" >>"$log" 2>&1; then
             GATE_UV_OFFLINE=0
             cat "$log"
         else
