@@ -3686,11 +3686,11 @@ def _drc_rows(store, slug):
     return store.pcb_drc_findings_latest(ref.id)
 
 
-def _drc_view_recorded(pcb, store, slug):
+def _drc_view_recorded(pcb, store, slug, args=None):
     """``get(view='drc')`` is read-only (gr491591): read it first (the delta
     is against the last RECORDED run), then record the same run so the
     persisted rows exist. Returns the view's response."""
-    resp = pcb.get(id=slug, view="drc")
+    resp = pcb.get(id=slug, view="drc", args=args)
     ref = store.get_ref(kind="pcb", id=slug)
     assert ref is not None
     pcb._drc_run(ref.id, store.pcb_load(ref.id), record=True)
@@ -3820,7 +3820,9 @@ def test_drc_clean_run_is_recorded_as_a_verdict_not_an_absence(pcb, store):
     store.pcb_write_drc_findings(board_id, "clean-run", [])
     assert store.pcb_drc_findings_latest(ref.id) == ("clean-run", [])
     assert store.pcb_drc_previous_run(board_id) == ("clean-run", [])
-    body = _drc_view_recorded(pcb, store, slug).body
+    # gr496242: the unchanged board would serve ``clean-run`` back —
+    # ``fresh`` forces the run this test exercises, diffing against it.
+    body = _drc_view_recorded(pcb, store, slug, args={"fresh": True}).body
     _run, rows = store.pcb_drc_findings_latest(ref.id)
     assert rows
     assert f"vs run clean-ru: {len(rows)} new, 0 still, 0 gone" in body
@@ -3833,7 +3835,7 @@ def _stub_drc_run(pcb, monkeypatch, findings):
     run = pcb_handler._DrcRun(
         "abcdef0123", findings, False, pcb_drc.FindingDelta(previous_run_id=None)
     )
-    monkeypatch.setattr(pcb, "_drc_run", lambda ref_id, design: run)
+    monkeypatch.setattr(pcb, "_drc_run", lambda ref_id, design, **_kw: run)
 
 
 def _tsv_rows(body):

@@ -32,6 +32,7 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.handlers.pcb import PcbHandler
+from precis.pcb import check_run
 
 from .test_pcb_declared_pins import _mini_design
 
@@ -101,6 +102,80 @@ def test_check_delta_second_run_reports_all_still(pcb: PcbHandler) -> None:
     assert int(m.group(1)) == 0
     assert int(m.group(2)) > 0
     assert int(m.group(3)) == 0
+
+
+# ── gr496242: an unchanged board reuses its last recorded run ──────────
+
+
+@pytest.fixture
+def run_spy(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """A counting wrapper over :func:`precis.pcb.check_run.run` — reuse
+    must never reach it."""
+    calls: list[int] = []
+    real = check_run.run
+
+    def _spy(*args: Any, **kwargs: Any) -> Any:
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(check_run, "run", _spy)
+    return calls
+
+
+def test_check_reuses_recorded_run_on_unchanged_board(
+    pcb: PcbHandler, run_spy: list[int]
+) -> None:
+    """After ``op='check'`` records a run, the same board's
+    ``view='check'`` serves it back — no DRC call — and says which run
+    and that it was reused."""
+    pcb.put(id="chk-reuse", args=_mini_design())
+    recorded = pcb.put(id="chk-reuse", args={"op": "check"}).body
+    run_id = re.search(r"run (\w{8})", recorded)
+    assert run_id, recorded
+    n_recorded = len(run_spy)  # the op='check' run itself
+    body = pcb.get(id="chk-reuse", view="check").body
+    assert len(run_spy) == n_recorded  # the get ran no DRC of its own
+    assert f"reused run {run_id.group(1)} recorded" in body, body
+    assert "ago" in body
+
+
+def test_drc_reuses_recorded_run_on_unchanged_board(
+    pcb: PcbHandler, run_spy: list[int]
+) -> None:
+    """``view='drc'`` takes the same reuse path (gr496242 names both
+    views)."""
+    pcb.put(id="chk-reuse-drc", args=_mini_design())
+    pcb.put(id="chk-reuse-drc", args={"op": "check"})
+    n_recorded = len(run_spy)
+    body = pcb.get(id="chk-reuse-drc", view="drc").body
+    assert len(run_spy) == n_recorded
+    assert "reused run" in body, body
+
+
+def test_check_reruns_when_board_changed(
+    pcb: PcbHandler, store: Any, run_spy: list[int]
+) -> None:
+    """A design edit stales the recorded run's revision stamp — the view
+    runs inline again."""
+    pcb.put(id="chk-stale", args=_mini_design())
+    pcb.put(id="chk-stale", args={"op": "check"})
+    n_recorded = len(run_spy)
+    ref = store.get_ref(kind="pcb", id="chk-stale")
+    assert store.pcb_set_placement(ref.id, {"U1": (0.0, 0.0)}) == 1
+    body = pcb.get(id="chk-stale", view="check").body
+    assert len(run_spy) == n_recorded + 1
+    assert "reused" not in body
+
+
+def test_check_fresh_arg_forces_rerun(pcb: PcbHandler, run_spy: list[int]) -> None:
+    """``args={'fresh': true}`` is the explicit way past reuse — the run
+    happens inline even with the board unchanged."""
+    pcb.put(id="chk-fresh", args=_mini_design())
+    pcb.put(id="chk-fresh", args={"op": "check"})
+    n_recorded = len(run_spy)
+    body = pcb.get(id="chk-fresh", view="check", args={"fresh": True}).body
+    assert len(run_spy) == n_recorded + 1
+    assert "reused" not in body
 
 
 def test_op_phase_sets_authored_phase_and_clears(pcb: PcbHandler, store: Any) -> None:

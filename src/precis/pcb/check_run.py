@@ -6,6 +6,9 @@ with the delta against the board's previous run of the same phase. With
 ``pcb_drc_runs`` row even when clean); without, it writes nothing
 (gr491591). ``view='drc'``, ``view='check'``, ``view='gerber'``'s
 pre-flight and the ``pcb_review`` job all ask the SAME question through it.
+:func:`reuse` answers it from the last recorded run instead when that
+run's design-revision stamp still matches (gr496242) — opt-in per call
+site, so the worker's "run the check itself" rule is untouched.
 
 This was ``PcbHandler._drc_run`` and its helpers until Reto's 2026-10-16
 ruling (3a): ``pcb_review`` runs the check itself rather than trusting
@@ -45,15 +48,18 @@ if TYPE_CHECKING:
     from precis.store import Store
 
 __all__ = [
+    "ERC_RULES",
     "DrcRun",
     "build_ir",
     "design_phase",
     "drills",
     "erc_findings",
     "export_date",
+    "finding_from_row",
     "geometry",
     "outline_from_features",
     "record_run",
+    "reuse",
     "rule_inputs",
     "run",
     "unsupplied_client_findings",
@@ -87,8 +93,13 @@ class DrcRun(NamedTuple):
     pads_only: bool
     delta: pcb_drc.FindingDelta
     #: :meth:`Store.pcb_drc_run_freshness` of ``delta``'s baseline, taken
-    #: BEFORE this run records (recording prunes superseded stamps).
+    #: BEFORE this run records (recording prunes superseded stamps). For
+    #: a :func:`reuse` result it is that run's own freshness.
     baseline: dict[str, Any] | None = None
+    #: ``True`` when this is the board's last RECORDED run served back
+    #: unchanged (gr496242: its design-revision stamp still matches), not
+    #: a run just computed. Callers say so in their ack.
+    reused: bool = False
 
 
 def outline_from_features(store: Store, ref_id: int) -> list[list[float]] | None:
@@ -371,6 +382,21 @@ def _baseline_freshness(
     return store.pcb_drc_run_freshness(ref_id, run_id)
 
 
+#: Phases whose CLAIMED eval narrows the run: a claimed ``netlist`` eval
+#: never reads ``pcb_copper`` or the geometric rules, a claimed ``placed``
+#: eval checks pads only. Recorded runs are stamped with the scope their
+#: claim produced (``meta['drc_scopes']``) so :func:`reuse` never answers
+#: a full-pass question with a narrowed run — or the reverse.
+_SCOPED_PHASES = ("netlist", "placed")
+
+
+def _run_scope(claimed_phase: str | None) -> str:
+    """``meta['drc_scopes']`` value for a run: the claimed phase when it
+    narrows the run, else ``"full"`` — ``routed``/``fab`` claims and an
+    unclaimed eval all run the full pass."""
+    return claimed_phase if claimed_phase in _SCOPED_PHASES else "full"
+
+
 def record_run(
     store: Store,
     board_id: int,
@@ -379,6 +405,7 @@ def record_run(
     phase: str | None = None,
     *,
     record: bool = False,
+    claimed_phase: str | None = None,
 ) -> DrcRun:
     """Diff one run against the last recorded one and, with ``record``,
     persist it — the tail of :func:`run` shared by every phase-scoped
@@ -388,7 +415,12 @@ def record_run(
     ``phase`` keys the delta BASELINE: the run diffs only against the
     previous run of the same phase and becomes that phase's baseline —
     a ``netlist`` eval's zero copper findings must never read to the
-    next full run as "everything resolved"."""
+    next full run as "everything resolved".
+
+    ``claimed_phase`` is the claim that produced the run (:func:`run`'s
+    ``claimed_phase``): with ``record`` it is stamped into
+    ``meta['drc_scopes']`` so a later :func:`reuse` can tell a narrowed
+    run from a full one under the same phase key."""
     prev_run_id, prev_rows = store.pcb_drc_previous_run(board_id, phase=phase)
     baseline = _baseline_freshness(store, board_id, prev_run_id)
     run_id: str | None = None
@@ -400,9 +432,29 @@ def record_run(
             [f.to_row() for f in findings],
             pads_only=pads_only,
             phase=phase,
+            scope=_run_scope(claimed_phase),
         )
     delta = pcb_drc.delta_against(prev_run_id, prev_rows, findings)
     return DrcRun(run_id, list(findings), pads_only, delta, baseline)
+
+
+#: The rules :func:`erc_findings` adds — the §1h ERC netlist rules,
+#: ``view='check'``'s ``erc=True`` superset over ``view='drc'``. Every
+#: recording path today (``op='check'``, ``pcb_review``) runs ``erc=True``,
+#: so a recorded run is always the superset; :func:`reuse` strips these
+#: for a caller that asked without them.
+ERC_RULES = frozenset(
+    {
+        "pin_conflict",
+        "no_driver",
+        "over_voltage",
+        "rail_crossing",
+        "no_decoupling",
+        "over_current",
+        "unsupplied_client",
+        "passive_rating",
+    }
+)
 
 
 def erc_findings(
@@ -442,6 +494,74 @@ def unsupplied_client_findings(graph: dict[str, Any]) -> list[pcb_drc.DrcFinding
 
     clients, supplies, roles = pcb_route_job._matching_model(graph, [])
     return pcb_drc.check_unsupplied_client(clients, supplies, roles)
+
+
+def finding_from_row(row: dict[str, Any]) -> pcb_drc.DrcFinding:
+    """Rehydrate one persisted ``pcb_drc_findings`` row into the
+    :class:`~precis.pcb.drc.DrcFinding` it was written from — the inverse
+    of :meth:`~precis.pcb.drc.DrcFinding.to_row` (``location`` is
+    ``where``). ``finding_key`` recomputes to the row's own key, so a
+    delta of these findings against the run they came from reads all
+    ``still``."""
+    return pcb_drc.DrcFinding(
+        rule=str(row["rule"]),
+        severity=str(row["severity"]),
+        where=str(row.get("location") or ""),
+        detail=str(row.get("detail") or ""),
+        objects=tuple(dict(o) for o in row.get("objects") or ()),
+        margin_mm=(None if row.get("margin_mm") is None else float(row["margin_mm"])),
+    )
+
+
+def reuse(
+    store: Store,
+    ref_id: int,
+    design: dict[str, Any],
+    *,
+    eval_phase: str | None = None,
+    eval_phase_claimed: bool = True,
+    erc: bool = False,
+) -> DrcRun | None:
+    """The board's last recorded run served back when it still describes
+    this design (gr496242): the phase baseline ``run`` would have been
+    recorded under, at the scope this eval's claim would produce, whose
+    design-revision stamp still matches the live design
+    (:meth:`Store.pcb_drc_run_freshness`). ``None`` on any miss — no run,
+    a stale one, or a scope mismatch — and the caller falls through to
+    :func:`run`. Read-only: records nothing (gr491591).
+
+    The delta is the stored run against itself — ``0 new, N still, 0
+    resolved`` IS the claim "the board is unchanged since that run"."""
+    board = design.get("board")
+    if board is None:
+        return None
+    phase = eval_phase or design_phase(design)
+    authored = str((board.get("meta") or {}).get("phase") or "")
+    if authored not in pcb_drc.PHASES:
+        authored = ""
+    claimed = (eval_phase if eval_phase_claimed else None) or authored
+    run_id, rows = store.pcb_drc_previous_run(int(board["board_id"]), phase=phase)
+    if run_id is None:
+        return None
+    fresh = store.pcb_drc_run_freshness(ref_id, run_id)
+    if (
+        fresh is None
+        or fresh["stale"]
+        or (fresh.get("scope") or "full") != _run_scope(claimed)
+    ):
+        return None
+    if not erc:
+        rows = [r for r in rows if r.get("rule") not in ERC_RULES]
+    findings = [finding_from_row(r) for r in rows]
+    delta = pcb_drc.delta_against(run_id, rows, findings)
+    return DrcRun(
+        run_id,
+        findings,
+        bool(fresh.get("pads_only")),
+        delta,
+        fresh,
+        reused=True,
+    )
 
 
 def run(
@@ -552,7 +672,13 @@ def run(
         # zero findings it is "0 findings at netlist" (and, recorded,
         # the phase's fresh baseline), never "nothing could run".
         return record_run(
-            store, board_id, findings, True, phase="netlist", record=record
+            store,
+            board_id,
+            findings,
+            True,
+            phase="netlist",
+            record=record,
+            claimed_phase=claimed_phase,
         )
 
     copper = [] if claimed_phase == "placed" else store.pcb_copper_list(board_id)
@@ -605,9 +731,23 @@ def run(
             if eval_phase is None:
                 return None
             return record_run(
-                store, board_id, findings, True, phase=phase, record=record
+                store,
+                board_id,
+                findings,
+                True,
+                phase=phase,
+                record=record,
+                claimed_phase=claimed_phase,
             )
-        return record_run(store, board_id, findings, True, phase=phase, record=record)
+        return record_run(
+            store,
+            board_id,
+            findings,
+            True,
+            phase=phase,
+            record=record,
+            claimed_phase=claimed_phase,
+        )
     pads_only = not copper
 
     ref = store.get_ref(kind="pcb", id=ref_id)
@@ -713,4 +853,12 @@ def run(
         findings += erc_findings(design, graph, pads)
     # Read the previous run BEFORE writing this one — it is what this
     # run is compared against; afterwards it would be this run itself.
-    return record_run(store, board_id, findings, pads_only, phase=phase, record=record)
+    return record_run(
+        store,
+        board_id,
+        findings,
+        pads_only,
+        phase=phase,
+        record=record,
+        claimed_phase=claimed_phase,
+    )

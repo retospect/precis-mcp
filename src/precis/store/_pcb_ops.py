@@ -693,14 +693,14 @@ _AMBIENT_CONN: contextvars.ContextVar[Connection | None] = contextvars.ContextVa
 
 #: What a DRC verdict depends on, per table: (row expression, FROM,
 #: ORDER BY, WHERE). Board meta drops the keys the recorder writes
-#: (``drc_runs_by_phase``, ``drc_revisions``) and ``op='order'``'s
-#: ``jlc_order`` cart record — none changes a verdict; ``part_footprints``
-#: hashes only its geometry columns.
+#: (``drc_runs_by_phase``, ``drc_revisions``, ``drc_scopes``) and
+#: ``op='order'``'s ``jlc_order`` cart record — none changes a verdict;
+#: ``part_footprints`` hashes only its geometry columns.
 _REVISION_PARTS: tuple[tuple[str, str, str, str], ...] = (
     (
         "ROW(t.board_id, t.name, t.stackup, t.fold_lines, "
         "COALESCE(t.meta, '{}'::jsonb) - 'drc_runs_by_phase' - 'drc_revisions' "
-        "- 'jlc_order')",
+        "- 'drc_scopes' - 'jlc_order')",
         "pcb_boards t",
         "t.board_id",
         "t.ref_id = %(ref)s AND t.retired_at IS NULL",
@@ -3371,6 +3371,7 @@ class PcbMixin:
         *,
         pads_only: bool = False,
         phase: str | None = None,
+        scope: str = "full",
         conn: Connection | None = None,
     ) -> None:
         """Persist one DRC run — a ``pcb_drc_runs`` row (0191, written even
@@ -3390,15 +3391,21 @@ class PcbMixin:
         PHASE — ``pcb_boards.meta['drc_runs_by_phase'][phase] = run_id`` —
         so a phase-scoped run (a ``netlist`` eval says nothing about
         copper) never becomes the baseline a full run diffs against.
-        The map lives in meta: a new phase is a key, not a migration."""
+        The map lives in meta: a new phase is a key, not a migration.
+
+        ``scope`` (gr496242) stamps the run's narrowing —
+        ``meta['drc_scopes'][run_id]``, ``'netlist'``/``'placed'`` for a
+        claimed scoped eval, ``'full'`` otherwise — pruned alongside
+        ``drc_revisions`` so :func:`precis.pcb.check_run.reuse` never
+        answers a full-pass question with a narrowed run."""
         if conn is not None:
             self._pcb_write_drc_findings(
-                conn, board_id, run_id, findings, pads_only, phase
+                conn, board_id, run_id, findings, pads_only, phase, scope
             )
             return
         with self._pcb_tx() as c:
             self._pcb_write_drc_findings(
-                c, board_id, run_id, findings, pads_only, phase
+                c, board_id, run_id, findings, pads_only, phase, scope
             )
 
     def _pcb_write_drc_findings(
@@ -3409,6 +3416,7 @@ class PcbMixin:
         findings: list[dict[str, Any]],
         pads_only: bool,
         phase: str | None = None,
+        scope: str = "full",
     ) -> None:
         n_error = sum(1 for f in findings if f["severity"] == "error")
         conn.execute(
@@ -3432,6 +3440,12 @@ class PcbMixin:
             }
             revisions[run_id] = self._pcb_design_revision(conn, int(row[0]))
             meta["drc_revisions"] = revisions
+            # gr496242: the run's narrowing, pruned on the same keep set.
+            scopes = {
+                k: v for k, v in (meta.get("drc_scopes") or {}).items() if k in keep
+            }
+            scopes[run_id] = scope
+            meta["drc_scopes"] = scopes
             conn.execute(
                 "UPDATE pcb_boards SET meta = %s WHERE board_id = %s",
                 (Jsonb(meta), board_id),
@@ -3487,20 +3501,26 @@ class PcbMixin:
     ) -> dict[str, Any] | None:
         """Whether recorded run ``run_id`` still describes the board
         (gr492096, Reto 2026-10-16): ``{stale, recorded_revision,
-        current_revision, recorded_at}``. Stale when the design changed
-        since the run was recorded, or when the run carries no revision
-        stamp (it predates stamping) — unknown counts as stale, so a stale
-        run never reads clean. ``None`` for no run: that is "not yet",
-        which callers already handle."""
+        current_revision, recorded_at, pads_only, scope}``. Stale when the
+        design changed since the run was recorded, or when the run carries
+        no revision stamp (it predates stamping) — unknown counts as stale,
+        so a stale run never reads clean. ``None`` for no run: that is
+        "not yet", which callers already handle.
+
+        ``pads_only``/``scope`` (gr496242) are the run row's own flag and
+        its ``meta['drc_scopes']`` stamp — what :func:`precis.pcb.check_run.
+        reuse` matches the caller's eval against (``None``/``'full'`` for
+        a run the stamp predates, which is stale anyway)."""
         if run_id is None:
             return None
         with self._pcb_conn() as conn:
             row = conn.execute(
-                "SELECT b.meta -> 'drc_revisions' ->> %s, r.created_at "
+                "SELECT b.meta -> 'drc_revisions' ->> %s, r.created_at, "
+                "r.pads_only, b.meta -> 'drc_scopes' ->> %s "
                 "FROM pcb_boards b LEFT JOIN pcb_drc_runs r "
                 "  ON r.board_id = b.board_id AND r.run_id = %s "
                 "WHERE b.ref_id = %s AND b.name = 'main' AND b.retired_at IS NULL",
-                (run_id, run_id, ref_id),
+                (run_id, run_id, run_id, ref_id),
             ).fetchone()
             current = self._pcb_design_revision(conn, ref_id)
         recorded = None if row is None else row[0]
@@ -3509,6 +3529,8 @@ class PcbMixin:
             "recorded_revision": recorded,
             "current_revision": current,
             "recorded_at": None if row is None else row[1],
+            "pads_only": None if row is None else row[2],
+            "scope": "full" if row is None or not row[3] else row[3],
         }
 
     def pcb_drc_run_stale(self, ref_id: int, run_id: str | None) -> bool:

@@ -440,6 +440,38 @@ _DRC_RECORD_HINT = (
 )
 
 
+def _rel_age(at: datetime | None) -> str:
+    """``34min ago``/``2h ago``/``3d ago`` — the relative half of a reused
+    run's recorded-at ack (gr496242)."""
+    if at is None:
+        return "unknown age"
+    s = max(0, int((datetime.now(UTC) - at.astimezone(UTC)).total_seconds()))
+    if s < 90:
+        return f"{s}s ago"
+    if s < 5400:
+        return f"{s // 60}min ago"
+    if s < 172800:
+        return f"{s // 3600}h ago"
+    return f"{s // 86400}d ago"
+
+
+def _drc_reused_line(ran: _DrcRun) -> str:
+    """gr496242: the ack a reused recorded run carries — which run, when
+    it recorded (UTC plus age), that the board is unchanged since, and
+    how to force a fresh one."""
+    at = (ran.baseline or {}).get("recorded_at")
+    when = (
+        at.astimezone(UTC).strftime("%Y-%m-%d %H:%MZ")
+        if at is not None
+        else "unknown time"
+    )
+    return (
+        f"\nreused {_drc_run_label(ran.run_id)} recorded {when} "
+        f"({_rel_age(at)}) — the board is unchanged since; "
+        "args={'fresh': true} re-runs inline"
+    )
+
+
 def _drc_stale_line(baseline: dict[str, Any] | None) -> str:
     """gr492096: the line under ``vs run X`` when that run is older than
     the board's current revision — both revisions and the record time, so
@@ -697,6 +729,8 @@ class PcbHandler(Handler):
                 "source",
                 "item",
                 "limit",
+                # op='check': force the inline run past reuse (gr496242).
+                "fresh",
                 # op='order' (_op_order / _order_dry_run); gr495025.
                 "achieve_date",
                 "billing_address",
@@ -736,6 +770,9 @@ class PcbHandler(Handler):
                 "phase",
                 "rule",
                 "severity",
+                # view='check'/'drc': force the inline run past reuse
+                # (gr496242).
+                "fresh",
             }
         ),
     }
@@ -5715,7 +5752,12 @@ class PcbHandler(Handler):
         filtered page is never read as a clean board. Rows sort errors
         first (stable within a severity, so run order is kept). Past
         ``_DRC_SUMMARY_MIN`` findings a ``by rule:`` line gives the
-        severity x rule counts."""
+        severity x rule counts.
+
+        An unchanged board is answered from its last recorded run
+        (gr496242 — the run's design-revision stamp still matches); the
+        ack says which run and when. ``args={'fresh': true}`` forces the
+        inline re-run."""
         args = args or {}
         severity = str(args.get("severity") or "").strip().lower()
         if severity and severity not in ("error", "warn"):
@@ -5730,20 +5772,22 @@ class PcbHandler(Handler):
                 body="no board yet\n\nNext: put(kind='pcb', id='slug', "
                 "args={'components':[...],'nets':[...]}) to create the design."
             )
-        ran = self._drc_run(ref_id, design)
+        ran = self._drc_run(ref_id, design, reuse=not args.get("fresh"))
         if ran is None:
             return Response(
                 body="no realized copper yet\n\nNext: put(kind='pcb', "
                 "id='slug', args={'op':'route'}) to realize copper, then "
                 "re-check this view."
             )
-        run_id, findings, pads_only, delta, baseline = ran
+        run_id, findings, pads_only, delta, baseline, reused = ran
         n_error = sum(1 for f in findings if f.severity == "error")
         n_warn = len(findings) - n_error
         head = (
             f"# DRC — {_drc_run_label(run_id)} — {n_error} error(s), {n_warn} warn(s)"
         )
         head += "\n" + _drc_delta_line(delta) + _drc_stale_line(baseline)
+        if reused:
+            head += _drc_reused_line(ran)
         n_synth = sum(1 for f in findings if f.rule == "synthesized_footprint")
         if n_synth:
             head += (
@@ -5844,7 +5888,13 @@ class PcbHandler(Handler):
         resolved`` below is against the board's last RECORDED run by
         ``finding_key`` — the same identity ``view='drc'`` reports.
         ``record=True`` is ``put(args={'op':'check'})``: the same run,
-        persisted as the new baseline."""
+        persisted as the new baseline.
+
+        An unchanged board is answered from that recorded run
+        (gr496242 — its design-revision stamp still matches); the ack
+        names the run and its record time. ``args={'fresh': true}``
+        forces the inline re-run — and, for ``op='check'``, a new
+        recorded run."""
         args = args or {}
         phase_arg = str(args.get("phase") or "").strip().lower()
         if phase_arg and phase_arg not in pcb_drc.PHASES:
@@ -5873,13 +5923,14 @@ class PcbHandler(Handler):
             eval_phase_claimed=bool(phase_arg),
             erc=True,
             record=record,
+            reuse=not args.get("fresh"),
         )
         if ran is None:
             return Response(
                 body=f"# check — phase {phase}\n— nothing the rules at this "
                 "phase can check (no pins, pads or copper yet)"
             )
-        run_id, findings, pads_only, delta, baseline = ran
+        run_id, findings, pads_only, delta, baseline, reused = ran
 
         # Not-checked rows present as ``info`` — the same ruling the se
         # completeness findings use: "we could not run to a verdict" is
@@ -5935,6 +5986,8 @@ class PcbHandler(Handler):
                 + (f" ({n_worse} worse)" if n_worse else "")
                 + f", {len(delta.gone)} resolved"
             ) + _drc_stale_line(baseline)
+        if reused:
+            head += _drc_reused_line(ran)
         n_synth = sum(1 for f in findings if f.rule == "synthesized_footprint")
         if n_synth:
             head += (
@@ -6057,12 +6110,33 @@ class PcbHandler(Handler):
         eval_phase_claimed: bool = True,
         erc: bool = False,
         record: bool = False,
+        reuse: bool = False,
     ) -> _DrcRun | None:
         """Delegates to :func:`precis.pcb.check_run.run` — the check
         surface lives in :mod:`precis.pcb` so the ``pcb_review`` worker
         runs it itself (it may not import this handler). ``record``
         persists the run (only ``op='check'``/``op='review'``;
-        gr491591)."""
+        gr491591).
+
+        ``reuse`` (gr496242) first asks :func:`precis.pcb.check_run.reuse`
+        for the board's last recorded run at this eval's phase and scope —
+        served back verbatim when its design-revision stamp still matches,
+        so an unchanged board's ``view='check'``/``'drc'`` never pays the
+        inline run twice. Only the get views pass it (and ``op='check'``,
+        which then returns the still-fresh run instead of recording a
+        duplicate); ``args.fresh``, the gerber banner and the worker run
+        inline as before."""
+        if reuse:
+            reused = check_run.reuse(
+                self.store,
+                ref_id,
+                design,
+                eval_phase=eval_phase,
+                eval_phase_claimed=eval_phase_claimed,
+                erc=erc,
+            )
+            if reused is not None:
+                return reused
         return check_run.run(
             self.store,
             ref_id,
@@ -6331,7 +6405,7 @@ class PcbHandler(Handler):
                 "to check; this bundle is unverified",
                 0,
             )
-        run_id, findings, pads_only, _delta, _baseline = ran
+        run_id, findings, pads_only, _delta, _baseline, _reused = ran
         # Judged AT fab — severities tier at fab too, so a netless pin a
         # placed board merely warns about is the error it is at tape-out.
         errors = [f for f in findings if pcb_drc.display_severity(f, "fab") == "error"]

@@ -34,10 +34,17 @@ def _digest(payload: Any) -> str:
 def _graph(store: Any, ref_id: int) -> dict[str, Any]:
     graph = dict(store.pcb_graph(ref_id))
     board = graph.get("board")
-    if isinstance(board, dict) and "drc_revisions" in (board.get("meta") or {}):
-        # gr492096: recording a DRC run stamps meta['drc_revisions']; that
-        # bookkeeping is not a design change and must not stale a verdict.
-        meta = {k: v for k, v in board["meta"].items() if k != "drc_revisions"}
+    if isinstance(board, dict) and (
+        {"drc_revisions", "drc_scopes"} & set(board.get("meta") or {})
+    ):
+        # gr492096/gr496242: recording a DRC run stamps meta['drc_revisions']
+        # and meta['drc_scopes']; that bookkeeping is not a design change
+        # and must not stale a verdict.
+        meta = {
+            k: v
+            for k, v in board["meta"].items()
+            if k not in ("drc_revisions", "drc_scopes")
+        }
         graph["board"] = {**board, "meta": meta}
     return graph
 

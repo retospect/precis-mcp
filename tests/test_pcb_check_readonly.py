@@ -76,12 +76,15 @@ def test_op_check_records_and_get_compares_against_it(
     assert f"run {run_id[:8]}" in rec.body
     assert "unrecorded run" not in rec.body
 
-    # A later read names the recorded run and still writes nothing.
+    # A later read names the recorded run and still writes nothing —
+    # gr496242: the unchanged board is served the run back (reuse), so
+    # the head carries its id plus the reused ack, not "unrecorded run".
     before = _counts(store)
     out = pcb.get(id="ro-rec", view="check")
     assert _counts(store) == before
     assert f"vs run {run_id[:8]}" in out.body
-    assert "unrecorded run" in out.body
+    assert f"reused run {run_id[:8]}" in out.body
+    assert "unrecorded run" not in out.body
     assert store.pcb_drc_findings_latest(ref.id)[0] == run_id
 
 

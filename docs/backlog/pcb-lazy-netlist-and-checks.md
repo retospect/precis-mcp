@@ -675,6 +675,15 @@ the snapshot.
     referent → render as dangling with the raw handle visible.
 - se back-port of the check surface beyond what the shared finding contract
   gives for free.
+- **A `pcb_drc` job past a time budget** (gr496242 option B, ruled
+  2026-10-18 a later slice): on a board whose inline run is still slow —
+  a fixed-copper import's modelled pours put `check_run.run` at 44 s on
+  taz15-r2 — the view/`op='check'` call dispatches a job past a budget and
+  returns its id with a `next=` to poll, instead of blocking the MCP
+  call. Needs the reuse read-path (shipped: `check_run.reuse`) to render
+  the job's recorded result, plus a ruling on whether a get may mint the
+  job or dispatch stays under `put`. Reuse covers unchanged boards only;
+  a pure-reader first call and every edit→recheck still run inline today.
 
 ## Acceptance criteria (whole item)
 
