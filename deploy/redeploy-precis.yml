@@ -284,13 +284,40 @@
       changed_when: false
       failed_when: false
 
-    - name: Set the deploy-changed gate (true if ANY managed venv will move)
+    # gr496849: the venv sha says what is on DISK, not what the web process
+    # LOADED. A resumed deploy (the first run installed the venv, then died)
+    # sees SAME everywhere, bounces nothing, and leaves com.precis.web serving
+    # the previous build's imported modules against the new templates —
+    # 2026-10-18, every /pcb/<slug> page 500. The web reports the commit it
+    # booted on in the X-Precis-Boot-Sha header of /healthz
+    # (src/precis_web/bootsha.py); anything but the pinned sha — a different
+    # build, an older web that sends no header, no answer at all — is stale.
+    # Gateway only: that is where precis-web runs.
+    - name: Probe the running precis-web's boot sha (gr496849)
+      when: inventory_hostname in groups['gateway']
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ precis_web_port | default(8000) }}/healthz"
+        timeout: 5
+        status_code: [200]
+      register: precis_web_preflight_probe
+      changed_when: false
+      failed_when: false
+
+    - name: Decide whether the running precis-web is stale (gr496849)
+      ansible.builtin.set_fact:
+        precis_web_stale: >-
+          {{ inventory_hostname in groups['gateway']
+             and ((precis_web_preflight_probe.x_precis_boot_sha | default(''))
+                  != precis_target_sha) }}
+
+    - name: Set the deploy-changed gate (true if ANY managed venv will move, or the web runs another build)
       ansible.builtin.set_fact:
         precis_deploy_changed: >-
           {{ precis_preflight.results
              | map(attribute='stdout') | map('trim')
              | select('match', '^DIFF') | list | length > 0
-             or (precis_overlay_changed | default(false) | bool) }}
+             or (precis_overlay_changed | default(false) | bool)
+             or (precis_web_stale | bool) }}
 
     - name: Report the deploy-change decision
       ansible.builtin.debug:
@@ -415,6 +442,17 @@
                 and precis_bounce_scope_raw is not skipped
                 and (precis_bounce_scope_raw.rc | default(1)) == 0
              else ('none' if not (precis_deploy_changed | default(true) | bool) else 'full') }}
+
+    # gr496849: a stale web is a web-scope bounce at minimum. The classifier
+    # above diffs INSTALLED venv shas against the target, so a resumed deploy
+    # (every venv already on the target) lands on 'none' and would skip the
+    # very restart the stale web needs. Only 'none' is raised; 'full' stays.
+    - name: Raise a 'none' bounce scope to 'web' when the running web is stale (gr496849)
+      when:
+        - precis_web_stale | bool
+        - precis_bounce_scope == 'none'
+      ansible.builtin.set_fact:
+        precis_bounce_scope: web
 
     - name: Report the bounce-scope decision
       ansible.builtin.debug:
@@ -1347,6 +1385,43 @@
       loop: "{{ precis_convergence.results }}"
       loop_control:
         label: "{{ inventory_hostname }}:{{ item.item.key }}"
+
+    # gr496849: the venv sha above proves the files; this proves the PROCESS.
+    # A web that booted before the install keeps the old modules in memory
+    # (r49: stale code against new templates, every /pcb page 500). Retries
+    # cover the bounce's launchd restart; a web that never reports the pinned
+    # sha fails the deploy here, so scripts/release (which runs this
+    # playbook) cannot reach PRECIS_DEPLOY_COMPLETE with a stale web.
+    - name: Read the running precis-web's boot sha (gr496849)
+      when: inventory_hostname in groups['gateway']
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ precis_web_port | default(8000) }}/healthz"
+        timeout: 5
+        status_code: [200]
+      register: precis_web_boot_probe
+      retries: 30
+      delay: 3
+      until: >-
+        (precis_web_boot_probe.x_precis_boot_sha | default(''))
+        == precis_target_sha
+      failed_when: false
+      changed_when: false
+
+    - name: Assert the running precis-web booted on the deployed commit (gr496849)
+      when: inventory_hostname in groups['gateway']
+      ansible.builtin.assert:
+        that:
+          - (precis_web_boot_probe.x_precis_boot_sha | default('')) == precis_target_sha
+        fail_msg: >-
+          {{ inventory_hostname }}: precis-web is running
+          {{ (precis_web_boot_probe.x_precis_boot_sha | default('no sha reported'))[:10] }}
+          but the pinned deploy target is {{ precis_target_sha[:10] }} — the
+          web process was not restarted onto the deployed build (stale
+          modules against new templates). Re-run the deploy.
+        success_msg: >-
+          {{ inventory_hostname }}: precis-web booted on
+          {{ precis_target_sha[:10] }} ✓
+        quiet: true
 
 # ── 5. Completion marker — the gateway reached the last play ──
 # ansible's PLAY RECAP alone cannot say whether the run finished: when one

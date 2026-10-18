@@ -16,11 +16,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from precis.budget.work_class import WorkClass, work_class_scope
+from precis_web.bootsha import BOOT_SHA, BOOT_SHA_HEADER
 from precis_web.config import WebConfig
 from precis_web.errors import register_error_handlers
 
@@ -258,7 +259,8 @@ def create_app(
         return RedirectResponse(url="/drive")
 
     @app.get("/healthz", include_in_schema=False)
-    async def _healthz() -> dict[str, str]:
+    async def _healthz(response: Response) -> dict[str, str]:
+        response.headers[BOOT_SHA_HEADER] = BOOT_SHA
         return {"status": "ok"}
 
     return app

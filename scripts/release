@@ -36,7 +36,11 @@ Steps, in order:
      branch stays; fix via `scripts/ship --release` or `round cut --abandon`.
      --ci-timeout also exits 2.
   7. `round deploy`, output streamed. Exit 3 (rollout done, runtime pending)
-     prints the `next:` confirm line and exits 3.
+     prints the `next:` confirm line and exits 3. The deploy playbook's last
+     gate (deploy/redeploy-precis.yml, "Verify every managed precis venv")
+     fails the run unless the running precis-web reports the pinned sha in
+     /healthz's X-Precis-Boot-Sha header, so a web left on the previous build
+     (gr496849) is a failed deploy, not a green one.
 
 Re-running after any partial state resumes: a recorded release containing S
 skips the cut (owner only; the marker is removed after `round close`
