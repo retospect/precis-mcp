@@ -405,6 +405,63 @@ def test_cap_clash_on_a_pinned_atom_refuses_the_build() -> None:
         )
 
 
+def test_protected_converging_stub_kept_as_ch2_warns() -> None:
+    # the ring-close fixture plus a degree-1 strip tip poking into the
+    # convergence from below the plane: within bonding reach of a
+    # converging atom but more than three bonds away (a separate strip),
+    # and its own caps clear the bars. Unpinned it would be trimmed
+    # (gr486406); pinned it is kept and mints =CH2 -- reported as
+    # terminate.protected_ch2 instead of passing silently.
+    xyz = [
+        (0.0, 0.0, 0.0),  # 0: deg-2 cap host
+        (-1.35, 1.35, 0.0),  # 1
+        (-1.35, -1.35, 0.0),  # 2
+        (2.5, 0.0, 0.0),  # 3: deg-2 cap host
+        (3.85, 1.35, 0.0),  # 4
+        (3.85, -1.35, 0.0),  # 5
+        (0.0, 0.0, -2.4),  # 6: the stub tip, 2.4 A under atom 0
+        (0.0, 0.0, -3.9),  # 7
+        (1.4, 0.0, -5.0),  # 8: the strip's far end, bent off-axis
+    ]
+    bonds = [(0, 1), (0, 2), (3, 4), (3, 5), (6, 7), (7, 8)]
+    block = _block_from_net(
+        _toy_net(xyz, bonds),
+        np.asarray(xyz, dtype=float),
+        spec="",
+        report=Report(()),
+        fidelity="stick",
+        pinned=frozenset({6}),
+    )
+    term = block.topology["terminated"]
+    assert term["closed"] == [[0, 3]] and term["trimmed"] == []
+    assert term["clashes"] == 0
+    # the pinned stub minted =CH2: two H bonds on atom 6
+    assert len([b for b in _h_bonds(block) if 6 in b]) == 2
+    findings = block.topology["report"]["findings"]
+    warn = [f for f in findings if f["code"] == "terminate.protected_ch2"]
+    assert len(warn) == 1 and warn[0]["severity"] == "WARN"
+    assert "t/(6,0,A)" in warn[0]["message"]
+    data = warn[0]["data"]
+    if isinstance(data, list):
+        data = dict(data)
+    assert data["atoms"] == ["t/(6,0,A)"]
+
+    # unpinned the same stub is trimmed instead, and nothing warns
+    plain = _block_from_net(
+        _toy_net(xyz, bonds),
+        np.asarray(xyz, dtype=float),
+        spec="",
+        report=Report(()),
+        fidelity="stick",
+    )
+    assert plain.topology["terminated"]["trimmed"] == ["t/(6,0,A)"]
+    assert not [
+        f
+        for f in plain.topology["report"]["findings"]
+        if f["code"] == "terminate.protected_ch2"
+    ]
+
+
 #: st493212's spec (nanobud-review-figs-r2-bud96): the bud's junction pulls
 #: two h_in port-rim carbons three bonds apart into cap-clash reach.
 BUD96 = """hexfold 0.2

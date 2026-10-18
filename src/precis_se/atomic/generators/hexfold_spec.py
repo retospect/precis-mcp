@@ -687,13 +687,15 @@ def _resolve_edge_caps(
     list[tuple[int, int]],
     float,
     list[int],
+    list[str],
 ]:
     """Resolve cap collisions at converging rims before the H atoms are
     minted (gr486406). Returns the net and coords — atoms may have been
     trimmed and ring-closure bonds added — plus the surviving cap
     hosts/positions, dropped-cap hosts, trimmed atoms' paths, the closed
-    pairs (final ordinals), the largest polish displacement and the
-    authored-interface hosts left bare instead of closing a small ring.
+    pairs (final ordinals), the largest polish displacement, the
+    authored-interface hosts left bare instead of closing a small ring
+    and the paths of protected converging stubs that still minted =CH2.
 
     Each pass places caps on the current net and collects the carbon
     pairs whose caps collide. In order, closest pair first: (1) a pair
@@ -731,6 +733,7 @@ def _resolve_edge_caps(
     trimmed: list[str] = []
     closed_paths: list[tuple[str, str]] = []
     bare: set[int] = set()  # protected hosts left uncapped (no 3-/4-ring)
+    protected_stubs: set[str] = set()  # converging stubs kept (protected)
     polish_disp = 0.0
 
     def closed_pairs() -> list[tuple[int, int]]:
@@ -773,8 +776,17 @@ def _resolve_edge_caps(
         # a stub whose caps clash goes through the close-first rule below
         converging = {o for pair in pairs for o in pair}
         converging |= {o for pair in closed_pairs() for o in pair}
-        stubs = _converging_stubs(work, xyz, nbrs, reach, converging) - protected
+        stubs = _converging_stubs(work, xyz, nbrs, reach, converging)
+        protected_stubs.update(str(work.atoms[o].path) for o in stubs & protected)
+        stubs -= protected
         if not pairs and not stubs:
+            caps_of: dict[int, int] = {}
+            for h in hosts:
+                caps_of[h] = caps_of.get(h, 0) + 1
+            protected_ch2 = sorted(
+                protected_stubs
+                & {str(work.atoms[h].path) for h, n in caps_of.items() if n >= 2}
+            )
             return (
                 work,
                 xyz,
@@ -785,6 +797,7 @@ def _resolve_edge_caps(
                 closed_pairs(),
                 polish_disp,
                 sorted(bare),
+                protected_ch2,
             )
         degree = [len(n) for n in nbrs]
         adj = [set(n) for n in nbrs]  # grows with this pass's closures
@@ -985,7 +998,12 @@ def _block_from_net(
     A clash on an authored interface whose closure would make a 3- or
     4-membered ring is never closed (gr493214): one host stays uncapped,
     reported as ``terminate.bare`` WARN and listed on
-    ``topology["terminated"]["bare"]``."""
+    ``topology["terminated"]["bare"]``.
+
+    A converging stub the resolver would trim is kept when it is pinned
+    or an authored interface — and when it still mints a =CH2 cap pair
+    that is reported as ``terminate.protected_ch2`` WARN naming the
+    atoms (gr486406)."""
     inverse: dict[str, Any] = {}
     coords, envelope = _canonical_frame(
         np.asarray(raw_coords, dtype=float),
@@ -995,6 +1013,7 @@ def _block_from_net(
     trimmed: list[str] = []
     h_dropped: list[int] = []  # host ordinals whose caps were dropped
     bare: list[int] = []  # interface hosts left uncapped, not ring-closed
+    protected_ch2: list[str] = []  # protected stubs that still minted =CH2
     polish_disp = 0.0
     if terminate != "none":
         (
@@ -1007,6 +1026,7 @@ def _block_from_net(
             closed,
             polish_disp,
             bare,
+            protected_ch2,
         ) = _resolve_edge_caps(
             net,
             coords,
@@ -1062,6 +1082,26 @@ def _block_from_net(
                             ("count", len(bare)),
                             ("hosts", bare),
                             ("atoms", [str(net.atoms[h].path) for h in bare]),
+                        ),
+                    ),
+                )
+            )
+        )
+    if protected_ch2:
+        report = report.merge(
+            Report(
+                (
+                    Finding(
+                        "terminate.protected_ch2",
+                        Severity.WARN,
+                        f"{len(protected_ch2)} protected rim atom(s) minted "
+                        f"=CH2 at a converging seam end: "
+                        f"{', '.join(protected_ch2)} — a lattice stub the "
+                        "resolver trims is pinned or on an authored "
+                        "interface, so its caps were kept",
+                        data=(
+                            ("count", len(protected_ch2)),
+                            ("atoms", protected_ch2),
                         ),
                     ),
                 )
