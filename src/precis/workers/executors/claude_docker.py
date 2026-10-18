@@ -55,6 +55,12 @@ Slice 1 (the stub-gated container-execution substrate) stages
   ``meta.harvest_orig_path`` on a store miss) and launches
   ``sh -c 'cd /work && uv sync && <RUN.json.cmd>'`` with **no** claude /
   OAuth / API-key env at all.
+* **Script** (``_launch_script`` / ``build_script_argv``) —
+  ``mode:script`` locks the job's PyPI ``deps`` and downloads their
+  wheels executor-side (``_sandbox_script``), stages ``/work/main.py`` +
+  ``/work/lock.txt``, and launches ``--network none`` with an explicit
+  ``sh -c`` (offline install, then the script). ``out/`` is harvested
+  on every exit, not only a clean one.
 * **Read dial** (``precis_access:read``, ``_sandbox_read_mcp``) — a
   ``mode:build`` job may get a per-run ``precis serve --transport
   streamable-http`` child (``agent_ro`` DSN, loopback-bound, fresh
@@ -77,7 +83,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from precis.utils.llm.router import Backend, resolve_backend
-from precis.workers.executors import _sandbox_harvest, _sandbox_read_mcp
+from precis.workers.executors import (
+    _sandbox_harvest,
+    _sandbox_read_mcp,
+    _sandbox_script,
+)
 from precis.workers.executors._common import (
     CANCELLED as _CANCELLED,
 )
@@ -350,6 +360,65 @@ def build_rerun_argv(
     ]
 
 
+#: The ``mode:script`` in-container command: a scratch venv, an offline
+#: install of the executor-staged wheels pinned by ``/work/lock.txt``,
+#: then the script. Never the image CMD (``code-task-run`` runs claude).
+SCRIPT_SHELL_CMD = (
+    "uv venv /tmp/v && uv pip install --python /tmp/v --offline --no-index "
+    "--find-links /work/wheels -r /work/lock.txt && /tmp/v/bin/python /work/main.py"
+)
+
+
+def build_script_argv(
+    *,
+    podman_bin: str,
+    job_id: int,
+    image: str,
+    work_dir: str,
+    wheels_dir: str,
+    memory: str,
+    cpus: str,
+    pids_limit: int,
+) -> list[str]:
+    """Build the detached ``podman run`` argv for a ``mode:script`` run.
+
+    Same detached-name / cgroup-cap / ``/work`` bus invariants as
+    :func:`build_rerun_argv`, with no auth env at all, but the network is
+    always ``none`` — not :func:`_network_mode` — so neither
+    ``PRECIS_SANDBOX_NETWORK`` nor a param can open egress: the deps
+    arrive as wheels the executor downloaded (``wheels_dir``, shared
+    across jobs by lock sha, mounted read-only at ``/work/wheels`` so a
+    script cannot poison the cache), and the in-container command is the
+    explicit :data:`SCRIPT_SHELL_CMD`, never the image CMD.
+    """
+    return [
+        podman_bin,
+        "run",
+        "-d",
+        "--name",
+        container_name(job_id),
+        # cgroup caps — bound the blast radius on a load-dominant host.
+        "--memory",
+        memory,
+        "--cpus",
+        cpus,
+        "--pids-limit",
+        str(pids_limit),
+        # No network at all: PyPI is reached executor-side only.
+        "--network",
+        "none",
+        "-v",
+        f"{work_dir}:/work",
+        "-v",
+        f"{wheels_dir}:/work/wheels:ro",
+        "--",
+        image,
+        "sh",
+        "-c",
+        SCRIPT_SHELL_CMD,
+    ]
+
+
 # ── podman plumbing ────────────────────────────────────────────────
 
 
@@ -398,6 +467,16 @@ def _logs_tail(name: str, *, max_chars: int = 4000) -> str:
         return ""
     text = (res.stderr or "") + (res.stdout or "")
     return text[-max_chars:]
+
+
+def _logs_streams(name: str, *, max_chars: int = 4000) -> tuple[str, str]:
+    """Best-effort ``(stdout, stderr)`` tails, kept apart (``mode:script``:
+    stdout is the script's result channel, stderr its traceback)."""
+    try:
+        res = _podman(["logs", "--tail", "50", name])
+    except (OSError, subprocess.SubprocessError):  # pragma: no cover
+        return "", ""
+    return (res.stdout or "")[-max_chars:], (res.stderr or "")[-max_chars:]
 
 
 def _reap(name: str) -> None:
@@ -664,6 +743,8 @@ def _launch(store: Store, ref_id: int, meta: dict[str, Any], node: str | None) -
     mode = str(params.get("mode") or "build")
     if mode == "run":
         _launch_run(store, ref_id, params, node)
+    elif mode == "script":
+        _launch_script(store, ref_id, params, node)
     else:
         _launch_build(store, ref_id, params, node)
 
@@ -932,6 +1013,102 @@ def _launch_run(
     log.info("claude_docker: launched re-run job %d as %s", ref_id, name)
 
 
+def _launch_script(
+    store: Store, ref_id: int, params: dict[str, Any], node: str | None
+) -> None:
+    """Lock + stage the script's PyPI wheels executor-side, stage
+    ``/work/main.py`` + ``/work/lock.txt``, launch a detached
+    ``--network none`` container (``mode:script`` — no claude, no OAuth,
+    no MCP).
+
+    ``params.code`` is validated by ``semantic_rejection`` before this
+    runs (``code_ref`` / ``inputs`` / ``precis_access:read`` are refused
+    there). The lock + download run synchronously in this tick; a
+    failure fails the job before any container exists.
+    """
+    name = container_name(ref_id)
+    work_dir = _work_root() / name
+    try:
+        staged = _sandbox_script.stage_deps(
+            list(params.get("deps") or []),
+            cache_root=_sandbox_script.wheel_cache_root(_work_root()),
+        )
+    except _sandbox_script.ScriptStageError as exc:
+        _fail(store, ref_id, str(exc))
+        return
+
+    if work_dir.exists():
+        shutil.rmtree(work_dir, ignore_errors=True)
+    # ``wheels`` is only the mountpoint for the read-only wheel cache bind.
+    for sub in ("out", "in", "_run", "wheels"):
+        (work_dir / sub).mkdir(parents=True, exist_ok=True)
+    (work_dir / "main.py").write_text(str(params["code"]), encoding="utf-8")
+    (work_dir / "lock.txt").write_text(staged.lock_text, encoding="utf-8")
+    # World-writable staging, as for mode:build: the image's non-root
+    # user maps to a subordinate host uid, not the daemon user.
+    for p in (work_dir, work_dir / "out", work_dir / "in", work_dir / "_run"):
+        p.chmod(0o777)
+
+    wall_seconds = int(_sandbox_run.resolve_wall_seconds(params) or 0)
+    image = params.get("image") or _sandbox_run.default_image()
+
+    # A leftover container of the same name (crashed prior attempt) would
+    # make ``run --name`` fail; clear it first.
+    _reap(name)
+
+    memory, cpus, pids_limit = _cgroup_caps()
+    argv = build_script_argv(
+        podman_bin=_podman_bin(),
+        job_id=ref_id,
+        image=image,
+        work_dir=str(work_dir),
+        wheels_dir=str(staged.wheels_dir),
+        memory=memory,
+        cpus=cpus,
+        pids_limit=pids_limit,
+    )
+    res = subprocess.run(
+        argv,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=120,
+        check=False,
+    )
+    if res.returncode != 0:
+        tail = (res.stderr or res.stdout or "").strip()[-2000:]
+        _fail(store, ref_id, f"sandbox_run: podman run failed: {tail}")
+        return
+
+    container_id = (res.stdout or "").strip()
+    deadline = time.time() + wall_seconds
+    n_deps = len(params.get("deps") or [])
+    with store.pool.connection() as conn:
+        _set_meta(
+            conn,
+            ref_id,
+            container=name,
+            container_id=container_id,
+            run_host=node or "",
+            deadline=deadline,
+            image=image,
+            deps_lock_sha=staged.lock_sha,
+        )
+        _append_chunk(
+            store,
+            ref_id,
+            _JOB_EVENT_KIND,
+            f"launched script container {name} (image={image}, network=none, "
+            f"{n_deps} deps, lock {staged.lock_sha[:12]}"
+            f"{' reused' if staged.reused else ''}, wall={wall_seconds}s) on "
+            f"{node or '<unpinned>'}",
+            conn=conn,
+        )
+        conn.commit()
+    log.info("claude_docker: launched script job %d as %s", ref_id, name)
+
+
 # ── Poll + reap ────────────────────────────────────────────────────
 
 
@@ -1074,15 +1251,23 @@ def _terminate(
     build folder it re-ran. A harvest failure is caught and logged,
     never crashes the poll tick (the container is already reaped by this
     point; failing the whole terminal transition would strand the job
-    ``running`` with no container). Every other terminal path (non-zero
-    exit, timeout, vanished container) discards ``out/`` unchanged, as
-    slice 1 did.
+    ``running`` with no container). For ``mode:build`` / ``mode:run``,
+    every other terminal path (non-zero exit, timeout, vanished
+    container) discards ``out/`` unchanged, as slice 1 did;
+    ``mode:script`` harvests ``out/`` on every terminal path and appends
+    the stdout and stderr tails as separate ``job_event`` chunks.
 
     gr329258/gr333438: an empty ``out/`` on a short exit-0 run gets an
     explicit ``⚠`` warning appended to the summary (and WARN-logged) —
     a flag, not a status change (:data:`_EMPTY_HARVEST_SHORT_RUN_S`).
     """
-    stderr_tail = _logs_tail(name)
+    params = dict((meta or {}).get("params") or {})
+    run_mode = str(params.get("mode") or "build")
+    stdout_tail = ""
+    if run_mode == "script":
+        stdout_tail, stderr_tail = _logs_streams(name)
+    else:
+        stderr_tail = _logs_tail(name)
     # Kill (best-effort) then force-remove — covers a still-running
     # deadline reap and a clean exited container alike.
     try:
@@ -1125,9 +1310,9 @@ def _terminate(
     duration = _duration_seconds(store, ref_id)
 
     harvest_note = ""
-    if status == _SUCCEEDED and exit_code == 0:
-        params = dict((meta or {}).get("params") or {})
-        run_mode = str(params.get("mode") or "build")
+    # mode:script harvests on EVERY exit: a failing script's partial out/
+    # is the debugging evidence. build/run harvest only a clean exit.
+    if (status == _SUCCEEDED and exit_code == 0) or run_mode == "script":
         build_folder_id = params.get("artifact") if run_mode == "run" else None
         try:
             result = _sandbox_harvest.harvest_out(
@@ -1144,6 +1329,7 @@ def _terminate(
             harvest_note = " " + _sandbox_harvest.summarize(result)
             if (
                 result.empty
+                and run_mode != "script"
                 and duration is not None
                 and duration < _EMPTY_HARVEST_SHORT_RUN_S
             ):
@@ -1178,12 +1364,23 @@ def _terminate(
             + (f" ({duration:.0f}s)" if duration is not None else ""),
             conn=conn,
         )
-        if stderr_tail:
+        if stdout_tail:
             _append_chunk(
                 store,
                 ref_id,
                 _JOB_EVENT_KIND,
-                f"container log tail ({len(stderr_tail)} chars):\n{stderr_tail}",
+                f"script stdout tail ({len(stdout_tail)} chars):\n{stdout_tail}",
+                conn=conn,
+            )
+        if stderr_tail:
+            label = (
+                "script stderr tail" if run_mode == "script" else "container log tail"
+            )
+            _append_chunk(
+                store,
+                ref_id,
+                _JOB_EVENT_KIND,
+                f"{label} ({len(stderr_tail)} chars):\n{stderr_tail}",
                 conn=conn,
             )
         _set_meta(conn, ref_id, exit_code=exit_code)
@@ -1259,6 +1456,7 @@ def _skip(store: Store, ref_id: int, reason: str) -> None:
 __all__ = [
     "build_rerun_argv",
     "build_run_argv",
+    "build_script_argv",
     "container_name",
     "reconcile_orphans",
     "run_claude_docker_pass",

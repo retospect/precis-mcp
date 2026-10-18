@@ -38,6 +38,9 @@ Modes:
   by design.
 
 `mode:script` needs no Claude and no OAuth, so it does not wait on gr329258.
+Its job path (inline `code`, the PyPI lock + wheel stage in
+`executors/_sandbox_script.py`, `build_script_argv`, harvest on any exit)
+is in code; what follows is the design the remaining slices build on.
 
 ## The new mode
 
@@ -109,17 +112,13 @@ a new job.
 
 ## Slices
 
-1. **`mode:script` on the job path.** Schema, `validate_submit`
-   (fail-closed: no `code` and no `code_ref`, both, a non-PyPI requirement,
-   oversize code, `secrets`, `precis_access:read`), the executor-side lock
-   + wheel stage, `build_script_argv` with `--network none`, harvest of
-   `/work/out/` on any exit, the stdout tail. One builder, two commits:
-   (a) schema/validation/argv, (b) executor stage + harvest + tests.
-   Stub-podman tests like the existing sandbox tests. Exit: a fake-podman
-   test runs `print(numpy.__version__)` end to end with a recorded wheel
-   dir; the podman argv carries `--network none` and the explicit `sh -c`;
-   a non-zero exit still harvests `out/`.
-2. **`inputs` staging + `precis_access:read` for scripts.** Read access
+2. **`inputs` staging, `code_ref`, and `precis_access:read` for
+   scripts.** All three are refused at submit today (`_script_rejection`
+   in `sandbox_run.py`). `code_ref` resolution is an open question
+   to settle here: a plaintext ref means its whole body, a markdown ref
+   means a fenced ```` ```python ```` block (which one if there are
+   several?), and a `folder` id needs a rule for which file is the entry
+   point. Read access
    must not use the slirp mode: `slirp4netns:allow_host_loopback=true`
    gives general NAT egress plus every host loopback port (the same leak
    in `mode:build` is gr496149). Instead bind the per-run

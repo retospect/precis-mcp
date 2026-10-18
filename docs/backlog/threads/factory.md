@@ -44,7 +44,10 @@ quality-of-life and container items.
 4. **backlog/sandbox-python-script.md** — `prio: high`; arbitrary Python
    in a no-network container (`sandbox_run mode:script`), from a job or a
    `run:python` todo. Needs no OAuth, so it does not wait on gr329258;
-   started 2026-10-18 on Reto's ask.
+   started 2026-10-18 on Reto's ask. Slice 1 (job-path `mode:script`:
+   inline `code`, PyPI wheel lock, `--network none`, harvest on any exit)
+   shipped 2026-10-18; next is slice 2 (`inputs`, `code_ref`, read MCP
+   over a unix socket). Not live until slice 4 lights castor + pollux.
 
 ## Horizon
 

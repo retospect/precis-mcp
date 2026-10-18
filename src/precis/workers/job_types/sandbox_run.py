@@ -3,7 +3,10 @@
 The mint → claim → launch → poll → terminal spine, run by the
 :mod:`precis.workers.executors.claude_docker` executor; ``mode:run``
 (stage the harvested tarball, ``uv sync`` + ``RUN.json.cmd``, no
-claude/OAuth); and ``precis_access:read`` (a per-run, token'd,
+claude/OAuth); ``mode:script`` (a submitted script as ``/work/main.py``,
+its PyPI ``deps`` locked + downloaded as wheels executor-side, run
+under ``--network none``, no claude/OAuth); and ``precis_access:read``
+(``mode:build`` only; a per-run, token'd,
 read-only MCP callback, gated by ``PRECIS_SANDBOX_READ_MCP`` and built by
 :mod:`precis.workers.executors._sandbox_read_mcp`). Ships **dark** — the
 executor pass is registered only under ``PRECIS_SANDBOX_ENABLED``, so a
@@ -19,7 +22,11 @@ The job_type module is a pure declaration + helpers:
   ``PRECIS_SANDBOX_READ_MCP``, a ``secrets`` list, a non-sandbox /
   melchior ``target_node``, ``mode:build`` with no ``prompt``,
   ``mode:run`` with no ``artifact`` (a prior build's ``folder`` ref
-  id), or (``mode:build`` only) a missing ``CLAUDE_CODE_OAUTH_TOKEN`` in
+  id), a ``mode:script`` without an inline ``code`` (``code_ref`` is
+  refused until it resolves) or with oversize code, ``inputs``,
+  ``precis_access:read`` or a
+  non-PyPI requirement in ``deps``, or (``mode:build`` only) a missing
+  ``CLAUDE_CODE_OAUTH_TOKEN`` in
   the daemon env. The claude_docker executor re-checks the same
   conditions at launch (defence in depth for jobs minted by
   ``dispatch`` from a todo, which don't pass through the JobHandler put
@@ -76,9 +83,10 @@ from precis.utils.llm.router import Tier, resolve_model
 #: operator mistakenly lists it in ``PRECIS_SANDBOX_HOSTS``.
 _EXCLUDED_NODES: frozenset[str] = frozenset({"melchior", "melchior.local"})
 
-#: ``build`` (a fresh claude coding task) and ``run`` (re-run a prior
-#: build's harvested tarball, no claude).
-_SUPPORTED_MODES = frozenset({"build", "run"})
+#: ``build`` (a fresh claude coding task), ``run`` (re-run a prior
+#: build's harvested tarball, no claude) and ``script`` (run a submitted
+#: python script offline against a PyPI-only wheel lock, no claude).
+_SUPPORTED_MODES = frozenset({"build", "run", "script"})
 _DEFAULT_MODE = "build"
 
 #: ``none`` (default, no precis DB access at all) and ``read`` (a
@@ -98,6 +106,25 @@ _DEFAULT_PRECIS_ACCESS = "none"
 #: ``\Z`` (not ``$``, which also matches before a single trailing newline —
 #: so ``"code-task:latest\n"`` would slip through and taint the meta/log).
 _IMAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:@-]*\Z")
+
+#: ``mode:script`` caps: the inline script (UTF-8 bytes) and the number
+#: of ``deps`` entries. Data belongs in ``inputs``, not in the code string.
+MAX_SCRIPT_BYTES = 256_000
+MAX_SCRIPT_DEPS = 64
+
+#: One PyPI requirement (a ``mode:script`` ``deps`` entry): a project
+#: name, optional extras, an optional version specifier and an optional
+#: environment marker after ``;``. No ``@`` (direct reference), no ``:``
+#: before the marker (URL schemes, ``file:``, ``git+``), no leading
+#: ``-`` (pip options such as ``--index-url`` / ``-e`` / ``-r``), no
+#: newline. The container is offline, so only what the executor can lock
+#: and download from PyPI as a wheel can ever install.
+_PYPI_REQ_RE = re.compile(
+    r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"  # project name
+    r"(?:\s*\[[A-Za-z0-9._, -]*\])?"  # extras
+    r"[ <>=!~*.,A-Za-z0-9+]*"  # version specifier
+    r"(?:;[^@\n]*)?\Z"  # environment marker
+)
 
 
 PARAMS_SCHEMA: dict[str, Any] = {
@@ -133,8 +160,18 @@ PARAMS_SCHEMA: dict[str, Any] = {
         "artifact": {"type": "integer"},
         # ``none`` (default) | ``read`` — ``read`` additionally requires
         # PRECIS_SANDBOX_READ_MCP=1 in the daemon env (an ops capability
-        # flag; see read_mcp_enabled()).
+        # flag; see read_mcp_enabled()). mode:script refuses ``read``.
         "precis_access": {"type": "string"},
+        # mode:script only — the script staged as /work/main.py, or a
+        # ref whose content is the script (exactly one of the two).
+        "code": {"type": "string"},
+        "code_ref": {"type": "string"},
+        # mode:script only — PyPI requirements, locked and downloaded as
+        # wheels executor-side; the offline container installs them.
+        "deps": {"type": "array", "items": {"type": "string"}},
+        # mode:script only — ref ids staged under /work/in/ (refused
+        # until the inputs slice lands).
+        "inputs": {"type": "array", "items": {"type": "string"}},
         "secrets": {"type": "array"},
     },
     "required": ["target_node", "resources"],
@@ -146,8 +183,9 @@ COMPATIBLE_EXECUTORS: frozenset[str] = frozenset({"claude_docker"})
 REQUIRES: frozenset[str] = frozenset({"podman", "claude_oauth"})
 
 DESCRIPTION: str = (
-    "Run an open-ended coding task (mode:build) or re-run a prior build's "
-    "harvested tarball (mode:run) inside a throwaway, cgroup-capped "
+    "Run an open-ended coding task (mode:build), re-run a prior build's "
+    "harvested tarball (mode:run) or run a python script offline with "
+    "PyPI-only deps (mode:script) inside a throwaway, cgroup-capped "
     "container on an agent_sandbox_host and keep minimal forensics. "
     "precis_access:read (mode:build only) gives it a per-run, token'd, "
     "read-only MCP callback when PRECIS_SANDBOX_READ_MCP=1. Registered "
@@ -226,12 +264,14 @@ def semantic_rejection(params: dict[str, Any]) -> str | None:
     The single source of truth for the submit-time gates, shared by
     ``validate_submit`` (put time) and the claude_docker executor
     (launch time). Rejects, in order: an unsupported ``mode``, an
-    unsupported ``precis_access`` value, ``precis_access:read`` without
+    unsupported ``precis_access`` value, ``precis_access:read`` on
+    ``mode:script``, ``precis_access:read`` without
     ``PRECIS_SANDBOX_READ_MCP``, a non-empty ``secrets`` list, an
     invalid ``image``, a missing / melchior / non-allowlisted
     ``target_node``, a non-positive ``resources.wall_seconds``, a
-    ``mode:build`` with no ``prompt``, and a ``mode:run`` with no
-    (positive integer) ``artifact``.
+    ``mode:build`` with no ``prompt``, a ``mode:run`` with no
+    (positive integer) ``artifact``, and a ``mode:script`` that fails
+    :func:`_script_rejection`.
     """
     mode = str(params.get("mode") or _DEFAULT_MODE)
     if mode not in _SUPPORTED_MODES:
@@ -245,6 +285,12 @@ def semantic_rejection(params: dict[str, Any]) -> str | None:
             f"sandbox_run: precis_access:{precis_access!r} is not a "
             f"supported value (precis_access:"
             f"{{{'|'.join(sorted(_SUPPORTED_PRECIS_ACCESS_VALUES))}}})"
+        )
+    if mode == "script" and precis_access == "read":
+        return (
+            "sandbox_run: precis_access:read is not supported for "
+            "mode:script yet (the script container runs --network none); "
+            "next: drop precis_access or set it to 'none'"
         )
     if precis_access == "read" and not read_mcp_enabled():
         return (
@@ -295,12 +341,77 @@ def semantic_rejection(params: dict[str, Any]) -> str | None:
         prompt = params.get("prompt")
         if not isinstance(prompt, str) or not prompt.strip():
             return "sandbox_run: params.prompt is required for mode:build"
+    elif mode == "script":
+        return _script_rejection(params)
     else:  # mode == "run"
         artifact = params.get("artifact")
         if not isinstance(artifact, int) or isinstance(artifact, bool) or artifact <= 0:
             return (
                 "sandbox_run: params.artifact (a prior mode:build run's "
                 "harvested folder ref id) is required for mode:run"
+            )
+    return None
+
+
+def _script_rejection(params: dict[str, Any]) -> str | None:
+    """The ``mode:script`` half of :func:`semantic_rejection`.
+
+    Rejects: neither or both of ``code`` / ``code_ref``, ``code_ref``
+    alone (its resolution is a later slice), an empty or oversize
+    ``code``, ``inputs`` (a later slice), a ``deps`` value that
+    is not a list of strings, too many ``deps``, and any requirement
+    that is not a plain PyPI requirement (:data:`_PYPI_REQ_RE`).
+    """
+    code = params.get("code")
+    code_ref = params.get("code_ref")
+    if code is None and code_ref is None:
+        return (
+            "sandbox_run: mode:script needs the script; next: pass it "
+            "inline as params.code"
+        )
+    if code is not None and code_ref is not None:
+        return (
+            "sandbox_run: mode:script takes exactly one of params.code and "
+            "params.code_ref; next: drop one of them"
+        )
+    if code_ref is not None:
+        return (
+            "sandbox_run: params.code_ref is not resolved yet (a later "
+            "slice); next: pass the script inline as code="
+        )
+    if code is not None:
+        if not isinstance(code, str) or not code.strip():
+            return "sandbox_run: params.code must be a non-empty string"
+        size = len(code.encode("utf-8"))
+        if size > MAX_SCRIPT_BYTES:
+            return (
+                f"sandbox_run: params.code is {size} bytes (cap "
+                f"{MAX_SCRIPT_BYTES}); next: shrink the script and pass data "
+                "as an input ref, not inline"
+            )
+    if params.get("inputs"):
+        return (
+            "sandbox_run: params.inputs is not supported for mode:script yet "
+            "(staging lands in a later slice); next: drop inputs"
+        )
+    deps = params.get("deps")
+    if deps is None:
+        return None
+    if not isinstance(deps, list) or not all(isinstance(d, str) for d in deps):
+        return "sandbox_run: params.deps must be a list of requirement strings"
+    if len(deps) > MAX_SCRIPT_DEPS:
+        return (
+            f"sandbox_run: params.deps has {len(deps)} entries (cap "
+            f"{MAX_SCRIPT_DEPS}); next: list only the direct dependencies"
+        )
+    for dep in deps:
+        if not _PYPI_REQ_RE.match(dep.strip()):
+            return (
+                f"sandbox_run: params.deps entry {dep!r} is not a PyPI "
+                "requirement (VCS, file:, direct-URL and pip-option entries "
+                "are refused: the container is offline and installs only "
+                "PyPI wheels); next: use a name with an optional version, "
+                "e.g. 'numpy>=2'"
             )
     return None
 
@@ -326,7 +437,7 @@ def validate_submit(
         return reason
     mode = str(params.get("mode") or _DEFAULT_MODE)
     if mode != "build":
-        # mode:run spawns no claude — nothing to authenticate.
+        # mode:run and mode:script spawn no claude — nothing to authenticate.
         return None
     from precis import secrets as _secrets
 
