@@ -3309,6 +3309,36 @@ class PcbMixin:
                 )
         return phase
 
+    def pcb_set_board_profile(
+        self, ref_id: int, profile: str, *, conn: Connection | None = None
+    ) -> str:
+        """The board ``profile`` (``prod`` | ``prototype``) onto
+        ``pcb_boards.meta['profile']``. ``prod`` removes the key — absent
+        means ``prod``, so a prod board's meta stays byte-identical. The
+        caller validates the name. ``conn=`` joins the create transaction.
+        Raises ``NotFound`` for a design with no board yet."""
+        if conn is None:
+            with self._pcb_tx() as own:
+                return self.pcb_set_board_profile(ref_id, profile, conn=own)
+        row = conn.execute(
+            "SELECT board_id FROM pcb_boards "
+            "WHERE ref_id = %s AND name = 'main' AND retired_at IS NULL",
+            (ref_id,),
+        ).fetchone()
+        if row is None:
+            raise NotFound(f"pcb {ref_id}: no board to profile")
+        if profile == "prod":
+            conn.execute(
+                "UPDATE pcb_boards SET meta = meta - 'profile' WHERE board_id = %s",
+                (int(row[0]),),
+            )
+        else:
+            conn.execute(
+                "UPDATE pcb_boards SET meta = meta || %s::jsonb WHERE board_id = %s",
+                (Jsonb({"profile": profile}), int(row[0])),
+            )
+        return profile
+
     def pcb_merge_board_meta(
         self, ref_id: int, patch: dict[str, Any]
     ) -> dict[str, Any]:

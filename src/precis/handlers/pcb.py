@@ -135,6 +135,7 @@ from precis.pcb import length_ratio as pcb_length_ratio
 from precis.pcb import matching as pcb_matching
 from precis.pcb import optimize as pcb_optimize
 from precis.pcb import planes as pcb_planes
+from precis.pcb import profiles as pcb_profiles
 from precis.pcb import realize as pcb_realize
 from precis.pcb import resolved as pcb_resolved
 from precis.pcb import review as pcb_review
@@ -275,6 +276,7 @@ _INLINE_EDIT_OPS = (
     "class_rules",
     "stackup",
     "phase",
+    "profile",
     "pins",
 )
 #: gr341532 fix 3 — pull/author a catalog part's real footprint into the
@@ -688,6 +690,7 @@ class PcbHandler(Handler):
                 "footprint",
                 "force",
                 "phase",
+                "profile",
                 "pins",
                 "source",
                 "item",
@@ -798,7 +801,7 @@ class PcbHandler(Handler):
             "job (never inline; idempotent per design+op+content-hash) — "
             "args={'autoplace':{...}} is a deprecated alias for op='place'; "
             "put(args={'op':'move'|'rip'|'pin_side'|'plane_net'|'class_rules'|"
-            "'phase'|'pins'}) "
+            "'phase'|'profile'|'pins'}) "
             "are cheap inline edits; put(args={'op':'footprint','part':"
             "'C639448'}) (or parts=[...], force=True to re-pull, or "
             "footprint={...} to author one directly under part=) pulls/"
@@ -913,6 +916,11 @@ class PcbHandler(Handler):
         net_classes = args.get("net_classes")
         roles = args.get("roles")
         ttl = (title or slug).strip() or slug
+        profile = (
+            self._parse_profile(args["profile"])
+            if args.get("profile") is not None
+            else None
+        )
 
         self._reject_non_electrical(nets)
         for comp in components:
@@ -950,6 +958,8 @@ class PcbHandler(Handler):
                     conn=conn,
                     seeded=seeded,
                 )
+                if profile is not None:
+                    self.store.pcb_set_board_profile(ref.id, profile, conn=conn)
                 n_classes = 0
                 if isinstance(net_classes, dict) and net_classes:
                     n_classes = self.store.pcb_upsert_net_classes(
@@ -1488,6 +1498,8 @@ class PcbHandler(Handler):
             return self._op_class_rules(ref, args)
         if op == "phase":
             return self._op_phase(ref, args)
+        if op == "profile":
+            return self._op_profile(ref, args)
         if op == "pins":
             return self._op_pins(ref, args)
         if op == "stackup":
@@ -2661,6 +2673,38 @@ class PcbHandler(Handler):
             body=(
                 f"{ref.slug}: phase = {phase} (authored — "
                 "pcb_boards.meta['phase'])\nNext: get(kind='pcb', "
+                f"id='{ref.slug}', view='check')"
+            )
+        )
+
+    @staticmethod
+    def _parse_profile(raw: Any) -> str:
+        """A board profile name, or ``BadInput`` listing the valid ones."""
+        name = str(raw).strip().lower()
+        if name not in pcb_profiles.profile_names():
+            raise BadInput(
+                f"profile={name!r} not recognized",
+                options=list(pcb_profiles.profile_names()),
+            )
+        return name
+
+    def _op_profile(self, ref: Any, args: dict[str, Any]) -> Response:
+        """``put(args={'op':'profile','profile':'prod|prototype'})`` — the
+        board profile, stored on ``pcb_boards.meta['profile']`` (absent ⇒
+        ``prod``). ``prototype`` tunes the layout for hand assembly and
+        rework (precis.pcb.profiles); ``prod`` is today's behaviour."""
+        if args.get("profile") is None:
+            raise BadInput(
+                "op='profile' needs args.profile",
+                options=list(pcb_profiles.profile_names()),
+            )
+        profile = self._parse_profile(args["profile"])
+        self.store.pcb_set_board_profile(ref.id, profile)
+        return Response(
+            body=(
+                f"{ref.slug}: profile = {profile} — "
+                f"{pcb_profiles.profile_rules(profile).label} (authored — "
+                "pcb_boards.meta['profile'])\nNext: get(kind='pcb', "
                 f"id='{ref.slug}', view='check')"
             )
         )
@@ -6898,9 +6942,13 @@ class PcbHandler(Handler):
         parts = []
         board = design.get("board")
         if board is not None:
-            parts.append(
+            line = (
                 f"## board: {board['name']} — {self._stackup_summary(board['stackup'])}"
             )
+            profile = pcb_profiles.board_profile(board.get("meta"))
+            if profile != pcb_profiles.DEFAULT_PROFILE:
+                line += f"\nprofile: {profile}"
+            parts.append(line)
         irows = [
             {
                 "refdes": i["refdes"],

@@ -362,6 +362,12 @@ get(kind="pcb", id="s", view="schematic")  # net-label schematic SVG — works
 copper; `fab` is a claim via `op='phase'`), deltas by `finding_key`.
 Full contract: **[[precis-pcb-check-help]]**.
 
+`op='profile'` (`args={'op':'profile','profile':'prod'|'prototype'}`, or
+`args={'profile': …}` at create) names the board's profile; absent means
+`prod`, today's behaviour. `prototype` is the hand-assembly and rework
+profile; the board summary prints `profile: prototype` only when it is not
+`prod`. The profile's rules are data in `pcb_profiles.json`.
+
 ## Argue with the design — the board page's text box, `view='notes'`
 
 The human-facing board page (`/pcb/<slug>` on the web UI) has one text box.

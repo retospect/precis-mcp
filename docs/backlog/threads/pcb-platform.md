@@ -73,8 +73,10 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
     (ewod-pcb's), so what survives here is the `datasheet` kind slice and
     similar leftovers.
 11. **backlog/pcb-board-profile-prototype.md** — `ready/normal`, promoted
-    2026-10-18 (gr495399); slices 1–3 stand alone, slice 4 (thermal
-    reliefs) lands after `pcb-stackup-regions.md` slice 10.
+    2026-10-18 (gr495399); key, data, accessor and summary line
+    shipped; next is the capability overlay + DRC strictness slice, then
+    router cost/checks/silk; the thermal-relief slice lands after
+    `pcb-stackup-regions.md` slice 10.
 
 ## Horizon
 

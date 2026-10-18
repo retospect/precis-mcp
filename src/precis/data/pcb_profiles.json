@@ -1,0 +1,72 @@
+{
+  "_note": "Board profiles, versioned DATA (docs/backlog/pcb-board-profile-prototype.md). One row per profile; precis.pcb.profiles.profile_rules(name) is the only reader. A rule omitted from a row is OFF (None). Every set rule is {value, why}: the value is a floor/ceiling applied ON TOP of the fab capability row (it can raise a number, never take one below jlc_min), the why is the one-line reason it exists. 'prod' is the all-off row: today's behaviour exactly. Tune a prototype figure here, not in code.",
+  "rows": [
+    {
+      "name": "prod",
+      "label": "production board, machine assembled once (the default)",
+      "rules": {}
+    },
+    {
+      "name": "prototype",
+      "label": "prototype board, hand assembled, probed and reworked",
+      "rules": {
+        "trace_width_mm": {
+          "value": 0.20,
+          "why": "survives a lifted pad and iron heat; legible on a scope"
+        },
+        "trace_spacing_mm": {
+          "value": 0.20,
+          "why": "solder bridges and probe tips stay off the neighbour"
+        },
+        "drill_mm": {
+          "value": 0.30,
+          "why": "a wire-wrap or probe wire fits; the drill survives rework"
+        },
+        "annular_ring_mm": {
+          "value": 0.25,
+          "why": "unchanged from the house tier; via diameter follows drill + 2 x ring, the ring is not the lever"
+        },
+        "via_body_cost_mm": {
+          "value": 6.0,
+          "why": "soft router cost for a via under a part's courtyard, double the production 3.0; a cost, never a keep-out"
+        },
+        "via_density_max_per_mm2": {
+          "value": 0.25,
+          "why": "at most 1 via per 4 mm2 in any window; vias are what a person has to dig past"
+        },
+        "via_density_window_mm": {
+          "value": 10.0,
+          "why": "the limit is on windows, not the board average"
+        },
+        "via_density_step_mm": {
+          "value": 2.5,
+          "why": "window slide step over the outline bounding box"
+        },
+        "thermal_spokes": {
+          "value": 4,
+          "why": "hand soldering a pad tied to a plane pulls the heat away"
+        },
+        "thermal_spoke_width_mm": {
+          "value": 0.30,
+          "why": "at least the prototype trace-width floor"
+        },
+        "thermal_gap_mm": {
+          "value": 0.25,
+          "why": "antipad gap between pad and pour"
+        },
+        "refdes_height_mm": {
+          "value": 1.2,
+          "why": "a person reads the board; the label has to survive a magnifier-free glance"
+        }
+      },
+      "strict_fields": {
+        "fields": ["trace_width_mm", "trace_spacing_mm", "drill_mm", "annular_ring_mm"],
+        "why": "the profile's numbers are the new floor; a warn on a number the profile set is noise"
+      },
+      "checks": {
+        "rules": ["starved_thermal", "via_density", "via_under_part", "fine_pitch_pad"],
+        "why": "prototype-only findings; prod never emits these rule names"
+      }
+    }
+  ]
+}

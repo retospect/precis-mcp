@@ -159,14 +159,17 @@ One overlay, applied once, read everywhere:
 
 ### Slices
 
-1. **Key + data + accessor + summary.** `op='profile'`, create arg,
-   `pcb_profiles.json`, `profile_rules`, the summary line. `prod` is a
-   no-op everywhere. No migration.
-2. **Capability overlay + DRC strictness + net rules.** Items 1–3 above.
-   `prototype` boards re-judge under the raised floors.
-3. **Router cost, `vias_under_part` count, `via_density`,
+Slice 1 (key, `pcb_profiles.json`, `profile_rules`, summary line) shipped:
+`precis.pcb.profiles` is the accessor and holds every figure in the table
+above; nothing reads the rules yet.
+
+1. **Capability overlay + DRC strictness + net rules.** Items 1–3 above.
+   `prototype` boards re-judge under the raised floors. Also owns the
+   load-time rejection of a profile value below `jlc_min` (criterion 3),
+   since it needs the capability rows.
+2. **Router cost, `vias_under_part` count, `via_density`,
    `via_under_part`, `fine_pitch_pad`, silk height.** Items 4 and 6.
-4. **Thermal reliefs** (item 5) and `starved_thermal`. Lands after
+3. **Thermal reliefs** (item 5) and `starved_thermal`. Lands after
    [pcb-stackup-regions](pcb-stackup-regions.md) slice 10 (it owns the
    spoke generator and the per-class key); this slice then only sets the
    profile default and proves the exports.
