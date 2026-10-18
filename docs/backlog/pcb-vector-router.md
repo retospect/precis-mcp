@@ -445,6 +445,11 @@ fallback until slice 6a ties or beats it, and is retired in slice 10.
 **`pcb-missing-constraint-classes.md` §E-1.** Slice 1 + slice 3 close the
 "router half": pairwise voltage clearance reaches copper through `required()`.
 
+**`pcb-route-cleanup-pass.md` (gr495397).** A maze-route post-pass that
+moves another net's blocking via so a kinked track runs straight. No slice
+here covers it (slice 7's SCP cleanup runs under `router='topo'` only), so
+it ships standalone and needs none of slices 0–2.
+
 **e8753d909 and gr489923.** e8753d909 stays reverted and is not relanded.
 Its test `tests/test_pcb_maze_escape_stub.py` (deleted in 4949f7ee6;
 recover with `git show e8753d909:tests/test_pcb_maze_escape_stub.py`) is
