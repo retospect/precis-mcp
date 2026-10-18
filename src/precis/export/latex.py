@@ -49,7 +49,6 @@ from pylatexenc.latexencode import (
 )
 
 from precis.export import _abbrev, progress, walker
-from precis.export._cite_ids import paper_identifier
 from precis.export._data_package import (
     SECTION_TITLE as _DATA_PACKAGE_SECTION_TITLE,
 )
@@ -871,35 +870,31 @@ class _Ctx:
     footnote_refs: bool = (
         False  # reMarkable mode: source cites → self-contained footnotes
     )
-    #: Append the ``doi`` run after each in-text ``\cite{...}`` mark (normal
-    #: mode only — patent/footnote modes have their own citation rendering
-    #: and are unaffected). ``--no-doi-links`` / ``params.doi_links=False``
-    #: turns it off, independently of ``library_links``.
+    #: Link each in-text ``[n]`` to ``https://doi.org/<doi>`` (normal mode
+    #: only — patent/footnote modes have their own citation rendering and are
+    #: unaffected). The link rides on the bib entry (``userb``) and the
+    #: preamble's :data:`_CITE_LINK_PREAMBLE`, so no text is added to the
+    #: body. ``--no-doi-links`` / ``params.doi_links=False`` turns it off,
+    #: independently of ``library_links``.
     doi_links: bool = True
-    #: Append the library-discovery-search run (labelled
-    #: :attr:`precis.config.PrecisConfig.library_label`) after each in-text
-    #: ``\cite{...}`` mark. ``--no-library-links`` /
-    #: ``params.library_links=False`` turns it off, independently of
-    #: ``doi_links``.
+    #: Link ``[n]`` to the library discovery search
+    #: (:attr:`precis.config.PrecisConfig.library_label`) when the paper has
+    #: no DOI link, and print that link in the bibliography entry.
+    #: ``--no-library-links`` / ``params.library_links=False`` turns it off,
+    #: independently of ``doi_links``.
     library_links: bool = True
-    #: Link text for the library-search run appended by
-    #: :func:`_cite_link_group` (:attr:`precis.config.PrecisConfig.
-    #: library_label`). Read from config ONCE by :func:`render_body` (not
-    #: per cite site) and threaded through here; an empty string (the
-    #: dataclass default, used by tests that construct ``_Ctx`` directly)
-    #: falls back to :func:`~precis.config.load_config` in
+    #: Link text of the bibliography's library-search link
+    #: (:attr:`precis.config.PrecisConfig.library_label`). Read from config
+    #: ONCE by :func:`render_body` and threaded through here; an empty string
+    #: (the dataclass default, used by tests that construct ``_Ctx``
+    #: directly) falls back to :func:`~precis.config.load_config` in
     #: ``__post_init__``.
     library_label: str = ""
-    #: Search-URL template for :func:`_cite_link_group`'s library link
+    #: Search-URL template for the library link
     #: (:attr:`precis.config.PrecisConfig.library_search_url`) — same
     #: once-per-export loading and test-fallback rule as
     #: :attr:`library_label`.
     library_search_url: str = ""
-    #: ``{ref_id: identifier}`` memo for :func:`_paper_identifier` — a
-    #: repeatedly-cited paper (a common case: the same source backing
-    #: several passages) would otherwise re-query ``identifiers_for_refs``
-    #: at every cite site.
-    _identifier_cache: dict[int, str] = field(default_factory=dict, repr=False)
     #: ``{ref_id: (target_ref, is_si)}`` memo for
     #: :func:`precis.store.si_links.cite_target_for`, and ``{slug: (slug,
     #: is_si)}`` memo for :func:`_resolve_si_slug`.
@@ -1382,74 +1377,19 @@ def _inline_paper_by_slug(slug: str, ctx: _Ctx) -> str:
     return _encode_unicode(_latex_escape(text))
 
 
-def _paper_identifier(ref_id: int, ctx: _Ctx) -> str:
-    """The one identifier a cite-link group hangs off: a DOI, else an
-    ``arxiv:``-prefixed arXiv id, else ``""`` (:func:`paper_identifier`,
-    shared with ``export/docx.py``). Same alias source
-    (``identifiers_for_refs``) as :func:`_paper_dois` / ``build_bib``'s
-    ``doi``/``eprint`` fields, so the inline link can't disagree with the
-    bibliography entry it sits next to. Memoized on ``ctx`` — a paper cited
-    several times would otherwise re-query per cite site."""
-    if ref_id in ctx._identifier_cache:
-        return ctx._identifier_cache[ref_id]
-    fn = getattr(ctx.store, "identifiers_for_refs", None)
-    identifier = paper_identifier(ref_id, fn)
-    ctx._identifier_cache[ref_id] = identifier
-    return identifier
-
-
-def _cite_link_group(bases: list[str], ctx: _Ctx) -> str:
-    """The compact ``doi`` / library-search hyperlink pair appended right
-    after a normal-mode ``\\cite{...}`` mark, one entry per distinct cited
-    paper (``bases``, in citation order) that resolves to a DOI or arXiv id.
-    ``""`` when both ``ctx.doi_links``/``ctx.library_links`` are off,
-    there's no store, or none of the papers carry an identifier — so an
-    ordinary source-less cite (or an export with both switches off) renders
-    byte-for-byte as before this feature.
-
-    ``ctx.doi_links`` and ``ctx.library_links`` are independent: either can
-    run alone. A DOI paper's ``doi`` run links ``https://doi.org/<doi>``;
-    the library run (labelled :attr:`precis.config.PrecisConfig.
-    library_label`) links this install's discovery search
-    (:mod:`precis.utils.paper_links`). An arXiv-only paper reuses the
-    ``doi``-labelled slot for its arXiv abstract page (still searchable by
-    arXiv id) and drops the library run only if :func:`uol_url` can't build
-    one. A paper with neither identifier contributes nothing."""
-    if not ctx.doi_links and not ctx.library_links:
-        return ""
-    if ctx.store is None:
-        return ""
-    get_ref = getattr(ctx.store, "get_ref", None)
-    if not callable(get_ref):
-        return ""
-    library_label = ctx.library_label
-    parts: list[str] = []
-    for base in bases:
-        pref = None
-        for kind, _etype in _CITE_ENTRY_TYPES:
-            pref = get_ref(kind=kind, id=base)
-            if pref is not None:
-                break
-        if pref is None:
-            continue
-        identifier = _paper_identifier(pref.id, ctx)
-        doi_link = doi_url(identifier) if ctx.doi_links else ""
-        lib_link = (
-            uol_url(identifier, search_url_template=ctx.library_search_url)
-            if ctx.library_links
-            else ""
-        )
-        if not doi_link and not lib_link:
-            continue
-        pieces = []
-        if doi_link:
-            pieces.append(_tex_url(doi_link, "doi"))
-        if lib_link:
-            pieces.append(_tex_url(lib_link, library_label))
-        parts.append("\\,".join(pieces))
-    if not parts:
-        return ""
-    return "{\\scriptsize " + "\\ ".join(parts) + "}"
+def _cite_urls(
+    identifier: str, *, doi_links: bool, library_links: bool, search_url: str
+) -> tuple[str, str]:
+    """``(doi_link, library_link)`` for one paper's identifier (a DOI, or an
+    ``arxiv:`` id): ``doi_link`` is ``https://doi.org/<doi>`` (the arXiv
+    abstract page for an arXiv-only paper), ``library_link`` this install's
+    discovery search (:mod:`precis.utils.paper_links`). Each is ``""`` when
+    its switch is off or the identifier can't build it."""
+    doi_link = doi_url(identifier) if doi_links else ""
+    lib_link = (
+        uol_url(identifier, search_url_template=search_url) if library_links else ""
+    )
+    return doi_link, lib_link
 
 
 def _cite_tex(group: walker.CiteGroup) -> str:
@@ -1493,7 +1433,7 @@ class LatexRenderer:
         self.ctx = ctx
 
     def cite_group(self, sink: list[str], group: walker.CiteGroup) -> None:
-        sink.append(_cite_tex(group) + _cite_link_group(list(group.keys), self.ctx))
+        sink.append(_cite_tex(group))
 
     def term(self, sink: list[str], use: _abbrev.Use) -> None:
         """The glossary call (:func:`_gls_use`). A bare heading use is
@@ -2021,6 +1961,19 @@ def _hub_footnote(pk: int, evidence: Any, ctx: _Ctx) -> str:
     return f"\\footnote{{{body}}}\x02"  # \x02: adjacency sentinel, see _render_inline
 
 
+def _tex_url_target(url: str) -> str:
+    """``url`` percent-encoded and escaped for use as an ``\\href`` target
+    inside a macro argument or a ``.bib`` field value (see :func:`_tex_url`)."""
+    encoded = quote(url, safe="/:#?=&@~!*()',;-._")
+    return (
+        encoded.replace("%", "\\%")
+        .replace("#", "\\#")
+        .replace("~", "\\string~")
+        .replace("_", "\\_")
+        .replace("&", "\\&")
+    )
+
+
 def _tex_url(url: str, text: str | None = None) -> str:
     """A clickable, visibly-printed URL that survives being INSIDE another
     macro's argument (the hub footnote): ``\\href`` with ``#``/``%``
@@ -2040,15 +1993,9 @@ def _tex_url(url: str, text: str | None = None) -> str:
 
     ``text`` overrides the visible link text (default: the URL itself) —
     the cite-link group's short ``doi`` / ``UL`` labels use this."""
-    encoded = quote(url, safe="/:#?=&@~!*()',;-._")
-    target = (
-        encoded.replace("%", "\\%")
-        .replace("#", "\\#")
-        .replace("~", "\\string~")
-        .replace("_", "\\_")
-        .replace("&", "\\&")
+    return (
+        f"\\href{{{_tex_url_target(url)}}}{{{_tex(text if text is not None else url)}}}"
     )
-    return f"\\href{{{target}}}{{{_tex(text if text is not None else url)}}}"
 
 
 def _chunk_id_of(handle: str) -> int | None:
@@ -2339,8 +2286,8 @@ def render_body(
     is still built (the footnote's ``[N]`` matches it).
 
     ``doi_links=False`` / ``library_links=False`` independently turn off the
-    ``doi`` / library-search runs normal mode otherwise appends after each
-    ``\\cite{...}`` mark (:func:`_cite_link_group`) — no effect in
+    external links normal mode otherwise puts on each ``[n]`` (the link
+    itself rides on the bib entry, :func:`build_bib`) — no effect in
     patent/footnote mode, which never emit ``\\cite`` at all."""
     chunks = store.drafts.reading_order(ref.id)
     back_matter = _back_matter_handles(chunks)
@@ -2638,11 +2585,39 @@ def datasheet_pub_label(meta: dict[str, Any] | None) -> str:
     return DATASHEET_SUBTYPE_LABELS.get(sub, "Datasheet")
 
 
-def build_bib(store: RefLookupStore, slugs: list[str], warnings: list[str]) -> str:
+#: Preamble line (injected only when a cite-link switch is on) that makes a
+#: citation's ``[n]`` one external link: biblatex wraps each cited number in
+#: ``\\bibhyperref`` (an internal jump to the bibliography entry); an entry
+#: carrying ``userb`` (:func:`build_bib`) swaps that for an ``\\href`` to
+#: the field's URL instead — never nested inside the internal link. An entry
+#: without ``userb`` keeps the internal jump.
+_CITE_LINK_PREAMBLE = (
+    "\\DeclareFieldFormat{bibhyperref}"
+    "{\\iffieldundef{userb}{\\bibhyperref{#1}}{\\href{\\thefield{userb}}{#1}}}"
+)
+
+
+def build_bib(
+    store: RefLookupStore,
+    slugs: list[str],
+    warnings: list[str],
+    *,
+    doi_links: bool = False,
+    library_links: bool = False,
+    library_label: str = "",
+    library_search_url: str = "",
+) -> str:
     """Generate ``refs.bib`` from the cited source refs. Resolves each
     slug to its paper / patent / datasheet ref, pulling
     title / authors / year / DOI / arXiv. A slug with no matching source
-    gets a stub entry + a warning so the document still compiles."""
+    gets a stub entry + a warning so the document still compiles.
+
+    With ``doi_links`` / ``library_links`` a paper that resolves to a DOI
+    or arXiv id also gets ``userb`` (the URL its in-text ``[n]`` links to:
+    the DOI link, else the library link — read by
+    :data:`_CITE_LINK_PREAMBLE`) and, for the library link, an ``addendum``
+    printing it as ``library_label`` beside the entry's own DOI. Both
+    switches off (the default) leaves the entries byte-identical."""
     entries: list[str] = []
     ref_by_slug: dict[str, Any] = {}
     entry_type_by_slug: dict[str, str] = {}
@@ -2693,6 +2668,24 @@ def build_bib(store: RefLookupStore, slugs: list[str], warnings: list[str]) -> s
             fields.append(
                 f"  eprint = {{{alias['arxiv']}}},\n  archiveprefix = {{arXiv}}"
             )
+        if doi_links or library_links:
+            identifier = (
+                str(alias["doi"]).strip()
+                if alias.get("doi")
+                else f"arxiv:{str(alias['arxiv']).strip()}"
+                if alias.get("arxiv")
+                else ""
+            )
+            doi_link, lib_link = _cite_urls(
+                identifier,
+                doi_links=doi_links,
+                library_links=library_links,
+                search_url=library_search_url,
+            )
+            if doi_link or lib_link:
+                fields.append(f"  userb = {{{_tex_url_target(doi_link or lib_link)}}}")
+            if lib_link:
+                fields.append(f"  addendum = {{{_tex_url(lib_link, library_label)}}}")
         entry_type = entry_type_by_slug[slug]
         if entry_type == "article":
             # A paper: venue/journal (+ volume/number/pages, once an
@@ -3329,6 +3322,8 @@ def _export_poster(
     if ctx.cited:
         inject.append("\\usepackage[backend=biber]{biblatex}")
         inject.append("\\addbibresource{refs.bib}")
+        if doi_links or library_links:
+            inject.append(_CITE_LINK_PREAMBLE)
     inject.append(f"\\renewcommand{{\\PosterTitle}}{{{_tex(title)}}}")
     inject.append(f"\\renewcommand{{\\PosterAuthors}}{{{_tex(authors)}}}")
     inject.append(f"\\renewcommand{{\\PosterAffiliations}}{{{_tex(affiliations)}}}")
@@ -3345,7 +3340,19 @@ def _export_poster(
     head, sep, tail = _template_text("poster.tex").rpartition("\\begin{document}")
     assert sep, "poster.tex lost its \\begin{document} anchor"
     main_tex = head + "\n".join(inject) + "\n" + sep + tail
-    bib_text = build_bib(store, ctx.cited, ctx.warnings) if ctx.cited else ""
+    bib_text = (
+        build_bib(
+            store,
+            ctx.cited,
+            ctx.warnings,
+            doi_links=doi_links,
+            library_links=library_links,
+            library_label=ctx.library_label,
+            library_search_url=ctx.library_search_url,
+        )
+        if ctx.cited
+        else ""
+    )
 
     if record_override:
         record_override_event(store, ref, ctx.trust)
@@ -3410,8 +3417,8 @@ def export_draft(
     records.
 
     ``doi_links=False`` / ``library_links=False`` independently turn off the
-    inline ``doi`` / library-search runs (:func:`render_body`) — default
-    both on. ``claim_appendix=False`` omits the "Published claim artifacts"
+    external links on each ``[n]`` and the library link in the bibliography
+    entry (:func:`build_bib`) — default both on. ``claim_appendix=False`` omits the "Published claim artifacts"
     appendix.
 
     ``bib_style`` picks the biblatex bibliography style (see
@@ -3471,11 +3478,25 @@ def export_draft(
     )
     if style_warning and not patent_mode:
         rendered.warnings.append(style_warning)
+    cite_links = (doi_links or library_links) and not patent_mode
     acronyms_tex = build_acronyms(rendered.acronyms, rendered.acronym_keys)
     # A patent specification has no bibliography — everything is cited
     # in-text, so ``cited_slugs`` stays empty and refs.bib is a stub.
+    from precis.config import load_config
+
+    cfg = load_config()
     bib_text = (
-        "" if patent_mode else build_bib(store, rendered.cited_slugs, rendered.warnings)
+        ""
+        if patent_mode
+        else build_bib(
+            store,
+            rendered.cited_slugs,
+            rendered.warnings,
+            doi_links=doi_links,
+            library_links=library_links,
+            library_label=cfg.library_label,
+            library_search_url=cfg.library_search_url,
+        )
     )
     title = (ref.title or ref.slug or "Untitled").split("\n", 1)[0]
     fallback = str((ref.meta or {}).get("author") or "precis")
@@ -3519,7 +3540,10 @@ def export_draft(
         unverified_section=unverified_tex,
         published_section=published_tex,
         data_package_section=data_package_tex,
-        extra_preamble="\\usepackage{embedfile}" if data_package_tex else "",
+        extra_preamble="\n".join(
+            ([_CITE_LINK_PREAMBLE] if cite_links else [])
+            + (["\\usepackage{embedfile}"] if data_package_tex else [])
+        ),
         bib_style=resolved_style,
     )
     # ``ref_events`` export record (the trust-surfaces override audit) — one row

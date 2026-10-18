@@ -123,6 +123,7 @@
   \end{quote}\medskip%
 }
 
+\DeclareFieldFormat{bibhyperref}{\iffieldundef{userb}{\bibhyperref{#1}}{\href{\thefield{userb}}{#1}}}
 \usepackage{embedfile}
 
 % ── reMarkable 2 page profile (send-to-tablet export) ──
@@ -161,7 +162,7 @@ Prose \footnote{{\textquotedblleft}No identifier paper{\textquotedblright}~\cite
 \begin{figure}[htbp]
 \centering
 \includegraphics[width=\linewidth,height=0.42\textheight,keepaspectratio]{pics/dc9.png}
-\caption{A \glstip{mof} figure \cite{jones21}{\scriptsize \href{https://arxiv.org/abs/2101.00002}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,2101.00002}{UL}}.}\label{chunk:dc9}
+\caption{A \glstip{mof} figure \cite{jones21}.}\label{chunk:dc9}
 \end{figure}
 
 \begin{equation}
@@ -267,6 +268,8 @@ B     -0.4
   author = {Author1, A. and Second1, B.},
   year = {2020},
   doi = {10.1000/golden.1},
+  userb = {https://doi.org/10.1000/golden.1},
+  addendum = {\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,10.1000\%252Fgolden.1}{UL}},
   journaltitle = {J. Golden},
   volume = {1},
   pages = {1-10},
@@ -278,6 +281,8 @@ B     -0.4
   year = {2021},
   eprint = {2101.00002},
   archiveprefix = {arXiv},
+  userb = {https://arxiv.org/abs/2101.00002},
+  addendum = {\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,2101.00002}{UL}},
   journaltitle = {J. Golden},
   volume = {2},
   pages = {2-11},

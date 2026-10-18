@@ -10,7 +10,7 @@ title: Draft export UI — Check/Export split + per-format tabs
 
 The smartdraft export controls (`src/precis_web/templates/smartdraft/view.html.j2`, ~line 1109) render eight links/buttons and three checkboxes in one flat row. The checkboxes do not indicate which formats they affect: `+ sources` applies to PDF and docx; `allow placeholder figures` only to reMarkable; `force` only to the retraction check. Controls are opaque.
 
-Separately, two exporter options exist in code but are unreachable from the browser: `doi_links` and `library_links` (independent booleans, both settable via CLI with `--no-doi-links` / `--no-library-links` and via `draft_export` job params). Web download routes never pass them, so both are hard-wired on. This forces every in-text cite to render as `[203] doi UL` — the two link words cannot be switched off from the UI.
+Separately, two exporter options exist in code but are unreachable from the browser: `doi_links` and `library_links` (independent booleans, both settable via CLI with `--no-doi-links` / `--no-library-links` and via `draft_export` job params). Web download routes never pass them, so both are hard-wired on. In LaTeX every in-text `[203]` is therefore a link (DOI, else library search), with the library link in the bibliography entry; only the "submission copy" box switches them off.
 
 A third issue: the export gate is applied inconsistently across formats — gripe 454753. The `GET /drafts/{ident}/pdf` route, the most-pressed export control, applies neither the retraction gate nor figure clearance, while the docx and job paths apply one or both.
 

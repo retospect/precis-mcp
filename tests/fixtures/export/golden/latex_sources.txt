@@ -123,6 +123,7 @@
   \end{quote}\medskip%
 }
 
+\DeclareFieldFormat{bibhyperref}{\iffieldundef{userb}{\bibhyperref{#1}}{\href{\thefield{userb}}{#1}}}
 \usepackage{embedfile}
 
 \addbibresource{refs.bib}
@@ -142,22 +143,22 @@
 \phantomsection\label{chunk:dc1}%
 \section{Introduction}\label{chunk:dc2}
 
-A \gls{mof} hosts a \gls{fmof}; later \glstip{mof} and \glstip{fmof} uses. Plain \cite{smith20}{\scriptsize \href{https://doi.org/10.1000/golden.1}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,10.1000\%252Fgolden.1}{UL}} and run \cite{smith20,jones21,lee22}{\scriptsize \href{https://doi.org/10.1000/golden.1}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,10.1000\%252Fgolden.1}{UL}\ \href{https://arxiv.org/abs/2101.00002}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,2101.00002}{UL}} end.\label{chunk:dc3}
+A \gls{mof} hosts a \gls{fmof}; later \glstip{mof} and \glstip{fmof} uses. Plain \cite{smith20} and run \cite{smith20,jones21,lee22} end.\label{chunk:dc3}
 
-Collapse \cite{smith20}{\scriptsize \href{https://doi.org/10.1000/golden.1}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,10.1000\%252Fgolden.1}{UL}} \cite{smith20}{\scriptsize \href{https://doi.org/10.1000/golden.1}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,10.1000\%252Fgolden.1}{UL}} and \cite{smith20}{\scriptsize \href{https://doi.org/10.1000/golden.1}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,10.1000\%252Fgolden.1}{UL}} then \cite{jones21,smith20}{\scriptsize \href{https://arxiv.org/abs/2101.00002}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,2101.00002}{UL}\ \href{https://doi.org/10.1000/golden.1}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,10.1000\%252Fgolden.1}{UL}} stop.\label{chunk:dc4}
+Collapse \cite{smith20} \cite{smith20} and \cite{smith20} then \cite{jones21,smith20} stop.\label{chunk:dc4}
 
-Handles \cite{smith20,jones21}{\scriptsize \href{https://doi.org/10.1000/golden.1}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,10.1000\%252Fgolden.1}{UL}\ \href{https://arxiv.org/abs/2101.00002}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,2101.00002}{UL}}, SI \cite[SI]{parent24} and \cite[SI]{parent24}, alias \cite{parent24}, then \cite{parent24}\cite[SI]{parent24}\cite{lee22}.\label{chunk:dc5}
+Handles \cite{smith20,jones21}, SI \cite[SI]{parent24} and \cite[SI]{parent24}, alias \cite{parent24}, then \cite{parent24}\cite[SI]{parent24}\cite{lee22}.\label{chunk:dc5}
 
 \section{Claims about \glsfmtshort{fmof} \cite{lee22}}\label{chunk:dc6}\glsadd{fmof}
 
-Finding \cite{smith20}{\scriptsize \href{https://doi.org/10.1000/golden.1}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,10.1000\%252Fgolden.1}{UL}}\textsuperscript{?}[unverified: source pending] hub \cite{jones21,lee22}{\scriptsize \href{https://arxiv.org/abs/2101.00002}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,2101.00002}{UL}}\textsuperscript{?}[unverified: source pending] mixed \cites{lee22}[SI]{parent24}\relax\textsuperscript{?}[unverified: source pending] repeat \cite{smith20}{\scriptsize \href{https://doi.org/10.1000/golden.1}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,10.1000\%252Fgolden.1}{UL}}\textsuperscript{?}[unverified: source pending]; dropped \textsuperscript{?}[unverified: source pending]. Joined (see \cite{smith20}{\scriptsize \href{https://doi.org/10.1000/golden.1}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,10.1000\%252Fgolden.1}{UL}}\textsuperscript{?}[unverified: source pending]) and (also \cite{smith20}{\scriptsize \href{https://doi.org/10.1000/golden.1}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,10.1000\%252Fgolden.1}{UL}}\textsuperscript{?}[unverified: source pending]).\label{chunk:dc7}
+Finding \cite{smith20}\textsuperscript{?}[unverified: source pending] hub \cite{jones21,lee22}\textsuperscript{?}[unverified: source pending] mixed \cites{lee22}[SI]{parent24}\relax\textsuperscript{?}[unverified: source pending] repeat \cite{smith20}\textsuperscript{?}[unverified: source pending]; dropped \textsuperscript{?}[unverified: source pending]. Joined (see \cite{smith20}\textsuperscript{?}[unverified: source pending]) and (also \cite{smith20}\textsuperscript{?}[unverified: source pending]).\label{chunk:dc7}
 
 Prose \cite{lee22} and doi:10.1/x and st12 and \cite{nobody99} and patent \cite{us123}. See \cref{chunk:dc2} and \cref{chunk:dc11}.\label{chunk:dc8}
 
 \begin{figure}[htbp]
 \centering
 \includegraphics[width=\linewidth,height=0.42\textheight,keepaspectratio]{pics/dc9.png}
-\caption{A \glstip{mof} figure \cite{jones21}{\scriptsize \href{https://arxiv.org/abs/2101.00002}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,2101.00002}{UL}}.}\label{chunk:dc9}
+\caption{A \glstip{mof} figure \cite{jones21}.}\label{chunk:dc9}
 \end{figure}
 
 \begin{equation}
@@ -172,7 +173,7 @@ E = mc^2
 \paragraph{Run-in heading}\label{chunk:dc16}
 
 \begin{itemize}
-\item First point about \glstip{mof} \cite{smith20}{\scriptsize \href{https://doi.org/10.1000/golden.1}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,10.1000\%252Fgolden.1}{UL}}.\label{chunk:dc21}
+\item First point about \glstip{mof} \cite{smith20}.\label{chunk:dc21}
 
 \begin{enumerate}
 \item Nested step \textbf{bold}.\label{chunk:dc23}
@@ -198,7 +199,7 @@ print('listing')
 Material & Source \\
 \midrule\endhead
 \bottomrule\endlastfoot
-\glstip{mof} & \cite{jones21}{\scriptsize \href{https://arxiv.org/abs/2101.00002}{doi}\,\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,2101.00002}{UL}} \\
+\glstip{mof} & \cite{jones21} \\
 \glstip{fmof} & none \\
 \end{longtable}
 \label{chunk:dc28}
@@ -278,6 +279,8 @@ This export was produced with a retraction block overridden (\texttt{ignore\_ret
   author = {Author1, A. and Second1, B.},
   year = {2020},
   doi = {10.1000/golden.1},
+  userb = {https://doi.org/10.1000/golden.1},
+  addendum = {\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,10.1000\%252Fgolden.1}{UL}},
   journaltitle = {J. Golden},
   volume = {1},
   pages = {1-10},
@@ -289,6 +292,8 @@ This export was produced with a retraction block overridden (\texttt{ignore\_ret
   year = {2021},
   eprint = {2101.00002},
   archiveprefix = {arXiv},
+  userb = {https://arxiv.org/abs/2101.00002},
+  addendum = {\href{https://uol.primo.exlibrisgroup.com/discovery/search?vid=353UOL\_INST:353UOL\_VU1\&search\_scope=MyInst\_and\_CI\&lang=en\&sortby=rank\&tab=TAB1\&query=any,contains,2101.00002}{UL}},
   journaltitle = {J. Golden},
   volume = {2},
   pages = {2-11},

@@ -766,11 +766,11 @@ def test_hub_finding_multiple_originators_renders_multi_cite(store) -> None:
     assert ctx.cited == ["latxa01", "latxb02"]  # both land in the .bib
 
 
-def test_hub_finding_multi_cite_gets_doi_ul_link_group(store) -> None:
-    """Normal-mode cite-links: a hub cite with two DOI-bearing originator
-    papers gets one small doi/UL ``\\href`` pair per distinct paper, right
-    after the combined ``\\cite{...}`` — and none at all with both
-    ``doi_links=False`` and ``library_links=False``."""
+def test_hub_finding_multi_cite_links_ride_on_bib_not_body(store) -> None:
+    """Normal-mode cite-links: the body carries a bare ``\\cite{...}`` (no
+    ``doi``/``UL`` text); each DOI-bearing paper's bib entry carries the
+    ``userb`` DOI target and the library ``addendum``. Both switches off:
+    no link fields at all (the clean submission copy)."""
     hub = mint_hub(store, _HUB_CLAIM)
     a = store.insert_ref(
         kind="paper", slug="latxa11", title="A — first report", year=2001, meta={}
@@ -791,53 +791,54 @@ def test_hub_finding_multi_cite_gets_doi_ul_link_group(store) -> None:
     ctx = latex._Ctx(keymap={}, known_handles=set(), store=store)
     out = latex._render_inline(f"see [{_hub_finding_handle(hub)}].", ctx)
 
-    assert r"\cite{latxa11,latxb12}" in out
-    assert out.count(r"\href{https://doi.org/10.1/latxa11}{doi}") == 1
-    assert out.count(r"\href{https://doi.org/10.1/latxb12}{doi}") == 1
-    assert out.count("uol.primo.exlibrisgroup.com") == 2  # one UL link/paper
+    assert out == "see \\cite{latxa11,latxb12}."  # nothing visible added
 
-    ctx_off = latex._Ctx(
-        keymap={},
-        known_handles=set(),
-        store=store,
-        doi_links=False,
-        library_links=False,
+    bib = latex.build_bib(
+        store,
+        ["latxa11", "latxb12"],
+        [],
+        doi_links=True,
+        library_links=True,
+        library_label="UL",
+        library_search_url=ctx.library_search_url,
     )
-    out_off = latex._render_inline(f"see [{_hub_finding_handle(hub)}].", ctx_off)
-    assert r"\cite{latxa11,latxb12}" in out_off
-    assert r"\href" not in out_off
+    assert bib.count("userb = {https://doi.org/10.1/latxa11}") == 1
+    assert bib.count("userb = {https://doi.org/10.1/latxb12}") == 1
+    assert bib.count("uol.primo.exlibrisgroup.com") == 2  # one UL link/paper
+
+    bib_off = latex.build_bib(store, ["latxa11", "latxb12"], [])
+    assert "userb" not in bib_off and "addendum" not in bib_off
 
 
 def test_cite_link_doi_and_library_switches_are_independent(store) -> None:
     """``doi_links`` and ``library_links`` are independent switches: doi-on/
-    library-off emits only the ``doi`` run; doi-off/library-on emits only
-    the library-search run."""
+    library-off puts only the DOI target in the bib entry; doi-off/
+    library-on targets (and prints) only the library-search link."""
     a = store.insert_ref(
         kind="paper", slug="latxdoi1", title="A", year=2001, meta={}
     ).id
     store.insert_ref_identifiers(a, [("doi", "10.1/latxdoi1", "manual")])
+    ctx = latex._Ctx(keymap={}, known_handles=set(), store=store)
 
-    ctx_doi_only = latex._Ctx(
-        keymap={},
-        known_handles=set(),
-        store=store,
-        doi_links=True,
-        library_links=False,
-    )
-    out = latex._render_inline("see [§latxdoi1].", ctx_doi_only)
-    assert r"\href{https://doi.org/10.1/latxdoi1}{doi}" in out
-    assert "uol.primo.exlibrisgroup.com" not in out
+    def bib(**kw) -> str:
+        return latex.build_bib(
+            store,
+            ["latxdoi1"],
+            [],
+            library_label="UL",
+            library_search_url=ctx.library_search_url,
+            **kw,
+        )
 
-    ctx_library_only = latex._Ctx(
-        keymap={},
-        known_handles=set(),
-        store=store,
-        doi_links=False,
-        library_links=True,
-    )
-    out = latex._render_inline("see [§latxdoi1].", ctx_library_only)
-    assert r"\href{https://doi.org/10.1/latxdoi1}{doi}" not in out
-    assert "uol.primo.exlibrisgroup.com" in out
+    doi_only = bib(doi_links=True, library_links=False)
+    assert "userb = {https://doi.org/10.1/latxdoi1}" in doi_only
+    assert "uol.primo.exlibrisgroup.com" not in doi_only
+    assert "addendum" not in doi_only
+
+    lib_only = bib(doi_links=False, library_links=True)
+    assert "userb = {https://doi.org/10.1/latxdoi1}" not in lib_only
+    assert "userb = {https://uol.primo.exlibrisgroup.com" in lib_only
+    assert "addendum" in lib_only
 
 
 def test_hub_finding_corroborator_only_fallback(store) -> None:
@@ -2674,14 +2675,13 @@ def test_si_cite_group_uses_cites_with_postnote_on_si_key_only(monkeypatch) -> N
     assert ctx.cited == ["other", "parent24"] and ctx.si_cited == ["parent24"]
 
 
-def test_multicite_is_terminated_before_link_group(monkeypatch) -> None:
+def test_multicite_is_terminated_with_relax(monkeypatch) -> None:
     store = _si_store(monkeypatch, with_parent=True)
     ctx = _ctx("", store=store)
-    monkeypatch.setattr(latex, "_cite_link_group", lambda _k, _c: r"{\scriptsize L}")
     out = latex._merge_adjacent_cites(
         latex._cite_keys(["other", "parent24si"], ctx), ctx
     )
-    assert out == r"\cites{other}[SI]{parent24}\relax{\scriptsize L}"
+    assert out == r"\cites{other}[SI]{parent24}\relax"
 
 
 def test_aliases_canonicalise_to_one_key_and_one_bib_entry(monkeypatch) -> None:
@@ -2728,36 +2728,32 @@ def test_si_cite_without_parent_falls_back_with_warning(monkeypatch) -> None:
 
 
 def _link_ctx(monkeypatch):
-    ctx = _ctx("")
-    monkeypatch.setattr(
-        latex, "_cite_link_group", lambda keys, _c: "{L:" + "+".join(keys) + "}"
-    )
-    return ctx
+    return _ctx("")
 
 
 def test_adjacent_cites_merge_with_one_link_group(monkeypatch) -> None:
     ctx = _link_ctx(monkeypatch)
     s = latex._cite("a", ctx) + latex._cite("b", ctx)
-    assert latex._merge_adjacent_cites(s, ctx) == r"\cite{a,b}{L:a+b}"
+    assert latex._merge_adjacent_cites(s, ctx) == r"\cite{a,b}"
 
 
 def test_overlapping_cites_dedupe_keys(monkeypatch) -> None:
     ctx = _link_ctx(monkeypatch)
     s = latex._cite("a", ctx) + latex._cite_keys(["a", "b"], ctx)
-    assert latex._merge_adjacent_cites(s, ctx) == r"\cite{a,b}{L:a+b}"
+    assert latex._merge_adjacent_cites(s, ctx) == r"\cite{a,b}"
 
 
 def test_si_cite_not_merged(monkeypatch) -> None:
     ctx = _link_ctx(monkeypatch)
     s = latex._cite("a", ctx) + latex._cite("b", ctx, si=True) + latex._cite("c", ctx)
     out = latex._merge_adjacent_cites(s, ctx)
-    assert out == r"\cite{a}{L:a}\cite[SI]{b}{L:b}\cite{c}{L:c}"
+    assert out == r"\cite{a}\cite[SI]{b}\cite{c}"
 
 
 def test_text_between_cites_prevents_merge(monkeypatch) -> None:
     ctx = _link_ctx(monkeypatch)
     s = latex._cite("a", ctx) + " " + latex._cite("b", ctx)
-    assert latex._merge_adjacent_cites(s, ctx) == r"\cite{a}{L:a} \cite{b}{L:b}"
+    assert latex._merge_adjacent_cites(s, ctx) == r"\cite{a} \cite{b}"
 
 
 def test_adjacent_cites_without_links_unchanged() -> None:

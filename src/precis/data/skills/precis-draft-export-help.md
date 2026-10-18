@@ -57,14 +57,17 @@ Exports are one-way and disposable (re-export, never hand-edit). Resolves
 automatically: each block gets `\label{chunk:<handle>}`, `[dc<id>]`
 cross-refs become `\cref{chunk:h}`; each `[pc<id>]`/`[fi<id>]` citation
 resolves to its paper and becomes `\cite{}`, `refs.bib` carrying one
-entry per cited paper (DOI/arXiv when known). LaTeX/docx also append a
-small `doi` link (DOI, or the arXiv abstract page when there's no DOI)
-and a library-discovery-search link (labelled per install, default `UL`
-for the University of Limerick) after each citation — two independent
-on-by-default switches, `doi_links`/`--no-doi-links` and
-`library_links`/`--no-library-links`; the search URL and label are
+entry per cited paper (DOI/arXiv when known). In LaTeX the `[n]` itself
+is one clickable link, no extra text: to `https://doi.org/<doi>` (the
+arXiv abstract page when there's no DOI), else to the library discovery
+search (labelled per install, default `UL` for the University of
+Limerick); a paper with neither keeps the plain jump to its
+bibliography entry. The bibliography entry prints the library link next
+to its DOI. Two independent on-by-default switches,
+`doi_links`/`--no-doi-links` and `library_links`/`--no-library-links`
+(both off = the clean submission copy); the search URL and label are
 per-install config on `PrecisConfig` (`PRECIS_LIBRARY_SEARCH_URL`,
-`PRECIS_LIBRARY_LABEL`). Every defined abbreviation
+`PRECIS_LIBRARY_LABEL`). The Word export is unchanged. Every defined abbreviation
 becomes a `\newacronym`, first use full and later `\gls{…}`, with a
 page-number list in the glossary. PDF and Word define the same
 occurrence: headings print the bare short and never define it, URLs and
