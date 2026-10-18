@@ -397,3 +397,18 @@ field, skills `precis-se-regions-help` and `precis-se-atomic-help`.
     in the MCP image; dispatch the single point as a job and read the
     stored result; or a cheaper charge model (Gasteiger, EEQ) as a
     labelled fallback. Deploy-side, so it is Reto's call.
+
+- **Proposed (needs ruling), readiness judge 2026-10-18 — slice 2
+  shape and dependencies (Q8, Q9).** Q8: keep `PocketSpec.shape` a
+  string and add one token `mol:<block>@<clearance>` (the offset
+  vdW surface of that molecule block, in the world frame); a region
+  facing a patch uses a new selector `mpatch:<block>:<patch_id>`
+  where patch ids come from the stable clustering in
+  `pocket_spec.py`. Q9: keep realised values on the se side (computers
+  in `COMPUTERS`, signature `(tree, measure) -> float | None` already
+  fixed in `precis_se/properties/__init__.py`) and do not wait on
+  `measures-substrate`/class lattice; the class hash is a sha256 of the
+  canonicalised region list stored on the pocket, promoted to a `class`
+  node when the lattice ships. Also fix the migration number
+  (next free core migration after the current head) and the
+  default clearance (0 Å, Q4) as the slice-2 value.

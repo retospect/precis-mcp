@@ -102,3 +102,7 @@ Judgement-only, stay allowlisted (52), grouped by why:
   (per-machine daemon setting).
 - Design calls: env-vars (3: tier choice; 33 vars are read raw in 2+ files,
   so a per-var check starts red), time/coerce-at-boundary (heuristic).
+
+## Readiness review 2026-10-18
+
+- **Proposed (needs ruling):** the next buildable slice is the one named real gap, a test for `shipping/qland-lint-and-drift-guard` (24h warn, 48h refuse, exit-2 refuses, unknown age never refuses, `PRECIS_QLAND_DRIFT_OVERRIDE=1`). Build it as `tests/test_ship_qland_drift.py` on the `tests/test_ship_narrow_lock.py` `Rig`, with a stub `scripts/last-gated-main-sha` in the rig worktree printing a chosen age, then set `enforcers: [tests/test_ship_qland_drift.py]` on that manifest entry and delete its allowlist entry (52 to 51). The remaining 51 allowlisted rules are judgement-only by the wave note above; a Devin should not touch them. File retirement and the `related-to` CLAUDE.md edge stay Reto's / blocked on a repo-root node.

@@ -71,3 +71,7 @@ oversubscription design — a Mamba-hybrid ceiling at c=8 kills it
   list.
 - Memory `mcp-throughput-gil-ceiling` — being transferred from another
   machine.
+
+## Open questions / decisions log
+
+- Proposed (needs ruling): the order is stale. Slice 0 ran on castor, not spark, with results recorded 2026-10-03 in `vllm-per-node-serving.md`, and castor is now retired as a compute node. Proposal: strike items 1 and 4, rewrite items 2-3 against pollux (one GB10) and spark (compute and sandbox lanes), or delete this file once the remaining host work is tracked on the cluster desk's list.

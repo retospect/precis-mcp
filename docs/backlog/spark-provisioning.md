@@ -46,3 +46,9 @@ together. The current state, read 2026-09-29: spark runs driver
 - The cadence (monthly in the first round window of the month, proposed)
   recorded in `deploy/README.md`.
 Deploy-role change: goes to the orchestrator as a branch, not a qland.
+
+## Open questions / decisions log
+
+- Proposed (needs ruling): the "GPU-node provisioning role" in section 1 does not exist; only `deploy/roles/vllm/tasks/main.yml` and `deploy/roles/sglang/tasks/main.yml` touch the nvidia runtime, and both only assert it (`'nvidia' not in ...Runtimes`). Proposal: add a converge task (install-check `nvidia-ctk`, `nvidia-ctk runtime configure --runtime=docker`, notify a docker restart handler, then keep the assert) to both roles, with a pin in `tests/test_deploy_vllm.py` and `tests/test_deploy_sglang.py`. Marker OCR is not a deploy role today, so it is out of scope for this slice.
+- Proposed (needs ruling): section 2 (TTS base image) is stale: `deploy/roles/tts/tasks/main.yml` already derives the base from the Dockerfile `FROM` and `tts_base_image` is gone. Proposal: delete the `tts_base_image` sentence, keep only the host-side pre-seed note.
+- Proposed (needs ruling): section 3 names castor as an update target; castor is retired as a compute node and pollux has one GB10. Proposal: restate the host list from the live inventory overlay before anyone builds the play.
