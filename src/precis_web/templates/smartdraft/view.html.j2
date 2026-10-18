@@ -239,6 +239,28 @@
     0% { background: rgb(var(--bg-accent-strong)); }   /* violet-300 */
     100% { background: transparent; }
   }
+  /* Lazy-hydrate placeholder state (gr496247): a distant full-doc block's
+     spacer visibly marks itself as LOADING — sized by the server estimate
+     plus a faint striped background + CSS spinner — so on-demand content
+     never reads as blank space while it loads. ``sd-ph-failed`` is the
+     terminal state after bounded retries (a reload retries). */
+  .sd-ph { display: flex; align-items: flex-start; justify-content: center;
+    gap: .4rem; padding-top: .8rem; color: rgb(var(--text-fg-ghost));
+    background: repeating-linear-gradient(-45deg, transparent 0 12px,
+      rgb(var(--bg-surface-subtle)) 12px 24px); }
+  .sd-ph-spin { flex: none; width: .8rem; height: .8rem; margin-top: .1rem;
+    border-radius: 9999px; border: 2px solid rgb(var(--border-line));
+    border-top-color: rgb(var(--text-info-faint));
+    animation: sd-ph-rot .8s linear infinite; }
+  @keyframes sd-ph-rot { to { transform: rotate(360deg); } }
+  .sd-ph-note { font-size: 11px; }
+  .sd-ph-failed { color: rgb(var(--text-warning)); background: none; }
+  /* Figure media keeps a minimum footprint + background while its asset
+     streams in (``loading="lazy"``), so a not-yet-loaded figure reads as a
+     sized placeholder, never blank space. */
+  .sd-fig-media { min-height: 3rem; }
+  .sd-fig-media img { background: rgb(var(--bg-surface-subtle));
+    min-height: 3rem; }
 </style>
 
 {# KaTeX — same client-side $…$ / $$…$$ math render the classic /drafts reader
@@ -685,8 +707,12 @@
            and hydrated to a real doc block on scroll (IntersectionObserver →
            /smartdraft/{ident}/blocks). Keeps the initial full-doc page O(window)
            instead of O(N) on a 10k-chunk draft; its review indicator lands
-           with the real content on hydration (item 4). #}
-        <div data-dc="{{ n.dc }}" data-ph class="block rounded px-2 py-1" style="min-height: {{ m.est }}px"></div>
+           with the real content on hydration (item 4). The inner ``sd-ph-*``
+           markup is the visible loading state (gr496247 — an on-demand load
+           must never read as blank space): a striped, sized spacer plus a CSS
+           spinner that stays up until the real block swaps in or the bounded
+           retries give up (``sd-ph-failed``). #}
+        <div data-dc="{{ n.dc }}" data-ph class="block rounded px-2 py-1 sd-ph" style="min-height: {{ m.est }}px"><span class="sd-ph-spin" aria-hidden="true"></span><span class="sd-ph-note">Loading…</span></div>
         {% elif m.mode in ('tail', 'head') %}
         {# ±1 neighbour: verbatim, truncated toward the focus (tail leads in,
            head flows out) — except a table chunk, which always renders in
@@ -1492,13 +1518,22 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
   }
   // ── Full-document lazy hydration ─────────────────────────────────────
   // In 📄 (relevance-off) mode only a window around the focus renders real
-  // blocks; the rest are `data-ph` spacers (sized by a server estimate). An
-  // IntersectionObserver hydrates a batch of near-viewport placeholders at a
-  // time by fetching /blocks and swapping the real blocks in place, so a
-  // 10k-chunk draft loads a screenful, not all N. Grow-only (no de-hydration)
-  // — simple, and the win (cheap initial page) is already banked. Re-installed
-  // by afterSwap() so it survives no-reload nav swaps; no-op when there are no
-  // placeholders (fisheye mode).
+  // blocks; the rest are `data-ph` spacers (sized by a server estimate, with
+  // a visible loading state). An IntersectionObserver hydrates a batch of
+  // near-viewport placeholders at a time by fetching /blocks and swapping the
+  // real blocks in place, so a 10k-chunk draft loads a screenful, not all N.
+  // Grow-only (no de-hydration) — simple, and the win (cheap initial page) is
+  // already banked. Re-installed by afterSwap() so it survives no-reload nav
+  // swaps; no-op when there are no placeholders (fisheye mode).
+  //
+  // Robustness (gr496247): a failed or partial /blocks response must NEVER
+  // silently kill a spacer — that was the "content stops loading partway"
+  // defect (one 500/redirect/hung fetch turned its whole batch into
+  // permanent blank spacers). The fetch checks `res.ok` and has an abort
+  // timeout; each placeholder retries a bounded number of times
+  // (`data-ph-tries`) and then renders an explicit "did not load" marker
+  // (`sd-ph-failed`) — it never stays a blank spacer.
+  const PH_TRIES_MAX = 3;
   function installDocHydrator() {
     const cont = document.getElementById('sd-content');
     if (!cont || !cont.querySelector('[data-ph]')) {
@@ -1513,6 +1548,18 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
     window.__sdDocObs = io;
     cont.querySelectorAll('[data-ph]').forEach((el) => { pending.add(el); io.observe(el); });
     let scheduled = false;
+    // Bump a placeholder's failure count; once it exceeds PH_TRIES_MAX the
+    // spacer becomes a visible "did not load" marker (never blank) and stops
+    // retrying. Returns true when the retries are exhausted.
+    function phFail(el) {
+      const tries = (parseInt(el.getAttribute('data-ph-tries') || '0', 10) || 0) + 1;
+      el.setAttribute('data-ph-tries', String(tries));
+      if (tries < PH_TRIES_MAX) return false;
+      el.removeAttribute('data-ph');
+      el.classList.add('sd-ph-failed');
+      el.innerHTML = '<span class="sd-ph-note">⚠ block did not load — reload the page to retry</span>';
+      return true;
+    }
     async function hydrateSoon() {
       if (scheduled) return;
       scheduled = true;
@@ -1529,12 +1576,22 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
       // Claim this batch OUT of `pending` (and stop observing it) BEFORE the
       // await, so a scroll that fires the observer again mid-fetch can't
       // re-pick the same placeholders and duplicate the request; on failure
-      // they're re-added below so a later scroll retries.
+      // they're re-added below so a later scroll retries (bounded by
+      // `data-ph-tries`).
       batch.forEach((el) => { pending.delete(el); io.unobserve(el); });
       const dcs = batch.map((el) => el.getAttribute('data-dc'));
       try {
         const url = `/smartdraft/${IDENT}/blocks?dcs=` + encodeURIComponent(dcs.join(','));
-        const html = await (await fetch(url, { cache: 'no-store' })).text();
+        // Bounded fetch — a stalled request must not leave claimed spacers
+        // blank forever, and a non-200/error-page response is retried via the
+        // catch below instead of being parsed as block markup.
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 20000);
+        let res;
+        try { res = await fetch(url, { cache: 'no-store', signal: ctrl.signal }); }
+        finally { clearTimeout(timer); }
+        if (!res.ok) throw new Error('blocks ' + res.status);
+        const html = await res.text();
         const doc = new DOMParser().parseFromString(html, 'text/html');
         const inserted = [];
         for (const el of batch) {
@@ -1547,8 +1604,13 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
             if (window.Alpine && window.Alpine.mutateDom) window.Alpine.mutateDom(() => el.replaceWith(node));
             else el.replaceWith(node);
             inserted.push(node);
+          } else if (!phFail(el)) {
+            // A 200 fragment WITHOUT this dc (truncated payload, a concurrent
+            // draft edit) — re-queue for a bounded retry instead of dropping
+            // the spacer silently; phFail() marks it permanently after
+            // PH_TRIES_MAX misses.
+            pending.add(el); io.observe(el);
           }
-          else { el.removeAttribute('data-ph'); }   // unknown handle → drop the spacer
         }
         inserted.forEach((node) => {
           if (window.Alpine && window.Alpine.initTree) window.Alpine.initTree(node);
@@ -1556,10 +1618,14 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
           __renderMath(node);
         });
       } catch (e) {
-        // fetch failed — re-queue the batch (still in the DOM) so a later
-        // scroll retries it instead of leaving permanent blank spacers.
+        // fetch/parse failed — re-queue the batch (still in the DOM) so a
+        // later scroll retries it instead of leaving permanent blank spacers
+        // (bounded by `data-ph-tries`; exhausted placeholders show
+        // `sd-ph-failed`).
         batch.forEach((el) => {
-          if (el.isConnected && el.hasAttribute('data-ph')) { pending.add(el); io.observe(el); }
+          if (el.isConnected && el.hasAttribute('data-ph') && !phFail(el)) {
+            pending.add(el); io.observe(el);
+          }
         });
         return;
       }

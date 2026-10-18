@@ -382,6 +382,39 @@ def big_draft_client(tmp_path) -> TestClient:
     return TestClient(app)
 
 
+class BigFigDraftFakeStore(BigDraftFakeStore):
+    """``BigDraftFakeStore`` + a blob-backed figure at the tail of the draft —
+    past the ±``_FULLDOC_WINDOW`` server-render window, so the figure starts
+    as a ``skel`` placeholder and only its ``/blocks`` hydration can carry the
+    real media (gr496247's "figures don't appear when scrolled to")."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._chunks.append(
+            _sd_chunk(
+                102,
+                "figure",
+                "Fig tail. A chart of results.",
+                1,
+                meta={"figure": {"origin": "original"}},
+            )
+        )
+
+    def chunk_blob_version(self, chunk_id) -> str | None:
+        if chunk_id == 102:
+            return "fixturesha0102"
+        return super().chunk_blob_version(chunk_id)
+
+
+@pytest.fixture
+def big_fig_client(tmp_path) -> TestClient:
+    app = create_app(
+        runtime=FakeRuntime(BigFigDraftFakeStore()),
+        web_config=WebConfig(corpus_dir=tmp_path),
+    )
+    return TestClient(app)
+
+
 class CitedBigDraftFakeStore(BigDraftFakeStore):
     """Like ``BigDraftFakeStore``, but every paragraph carries a bracket-
     handle paper citation (``[pc9999]``) AND every one of the 101 chunks
@@ -629,6 +662,72 @@ def test_smartdraft_blocks_endpoint_hydrates_requested_dcs(
     r2 = big_draft_client.get("/smartdraft/sdt/blocks?dcs=dc9999")
     assert r2.status_code == 200
     assert 'data-dc="dc9999"' not in r2.text
+
+
+def test_smartdraft_skel_placeholder_shows_loading_state(
+    big_draft_client: TestClient,
+) -> None:
+    """gr496247 (added scope): anything that loads on demand must carry a
+    VISIBLE loading state — a sized placeholder with a spinner, never blank
+    space. Every ``skel`` spacer ships the ``sd-ph`` loading marker
+    (``sd-ph-spin`` ring + a "Loading…" note) inside its estimated box."""
+    r = big_draft_client.get("/smartdraft/sdt?relevance=0&focus=dc1")
+    assert r.status_code == 200
+    body = r.text
+    # every placeholder carries the spinner + note inside its opening tag
+    assert body.count('data-ph class="') > 30
+    assert body.count("sd-ph-spin") > 30
+    assert body.count('sd-ph-note">Loading…') > 30
+
+
+def test_smartdraft_full_doc_figure_emits_placeholder_then_media(
+    big_fig_client: TestClient,
+) -> None:
+    """gr496247 (added scope): a figure block emits its (visible) placeholder
+    in the initial full-doc render, and ``/blocks`` hydration swaps in the
+    real media — the figure must actually APPEAR when scrolled to, not just
+    its caption text."""
+    r = big_fig_client.get("/smartdraft/sdt?relevance=0&focus=dc1")
+    assert r.status_code == 200
+    # the tail figure is a placeholder: no media markup yet, but a SIZED
+    # spacer carrying the loading state (figure est = 240px)
+    assert '<div data-dc="dc102" data-ph' in r.text
+    seg = r.text[r.text.index('<div data-dc="dc102" data-ph') :]
+    seg = seg[: seg.index("</div>")]
+    assert "min-height" in seg and "sd-ph" in seg
+    # hydration delivers the figure media itself (shared figure_media
+    # render + caption), not just the caption text
+    r2 = big_fig_client.get("/smartdraft/sdt/blocks?dcs=dc102")
+    assert r2.status_code == 200
+    block = _dc_block(r2.text, "dc102")
+    assert "<figure" in block
+    assert "<img" in block and 'loading="lazy"' in block
+    assert "/drafts/blob/H000102?v=" in block
+    assert "Fig tail. A chart of results." in block
+    assert "<figcaption" in block
+
+
+def test_smartdraft_hydrator_retries_failed_blocks_visibly(
+    big_draft_client: TestClient,
+) -> None:
+    """gr496247 (original gripe): the lazy hydrator must not turn a failed
+    ``/blocks`` response into permanent blank spacers — it checks the HTTP
+    status, bounds a stalled fetch, retries each placeholder a bounded
+    number of times, then shows an explicit "did not load" marker
+    (``sd-ph-failed``) instead of blank space."""
+    r = big_draft_client.get("/smartdraft/sdt?relevance=0&focus=dc1")
+    assert r.status_code == 200
+    body = r.text
+    # non-OK responses are thrown into the retry path, not parsed as markup
+    assert "res.ok" in body
+    # a stalled fetch is bounded by an AbortController timeout
+    assert "AbortController" in body
+    # retries are bounded per placeholder, then an explicit failed marker
+    assert "data-ph-tries" in body
+    assert "PH_TRIES_MAX" in body
+    assert "sd-ph-failed" in body
+    # a 200 fragment missing the dc re-queues instead of silently dropping
+    assert "pending.add(el)" in body
 
 
 def test_smartdraft_reader_renders_three_panes(
@@ -959,14 +1058,30 @@ def claim_trust_client(tmp_path) -> TestClient:
 
 
 def _dc_block(html: str, dc: str) -> str:
-    """The single rendered ``<div data-dc="dc">…</div>`` for one block —
-    ``sd_doc_block`` deliberately nests no ``<div>`` inside its widget, so
-    the next ``</div>`` after the opening tag is always this block's own
-    close (see ``_block.html.j2``'s own comment to that effect)."""
+    """The single rendered ``<div data-dc="dc">…</div>`` for one block.
+
+    Slices by nesting depth: text/table/term blocks deliberately nest no
+    ``<div>`` at all (``_block.html.j2``), but a FIGURE block may contain
+    nested ``<div>`` markup inside its media/clearance widgets (the
+    documented exception), so "the next ``</div>``" is not always the
+    block's own close — counting open/close keeps the slice right either
+    way (gr496247)."""
     marker = f'<div data-dc="{dc}"'
     start = html.index(marker)
-    end = html.index("</div>", start)
-    return html[start:end]
+    depth, pos = 0, start
+    while True:
+        nxt_open = html.find("<div", pos)
+        nxt_close = html.find("</div>", pos)
+        if nxt_close < 0:
+            return html[start:]
+        if 0 <= nxt_open < nxt_close:
+            depth += 1
+            pos = nxt_open + 4
+        else:
+            depth -= 1
+            pos = nxt_close + 6
+            if depth <= 0:
+                return html[start:pos]
 
 
 def test_smartdraft_badge_marks_unverified_and_unsupported_claims(

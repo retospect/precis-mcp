@@ -16,6 +16,11 @@
    colour (``sd-prov-*``, set below) — no ``title`` — a whole-paragraph
    browser tooltip on every prose block was found superfluous and it fought
    the abbr hover popovers (linkify._highlight_abbrevs). #}
+{# Shared figure media render + clearance badge — the SAME macros the focus
+   branch (view.html.j2) and the classic reader use, so a figure block that
+   hydrates on scroll shows its actual media, not just the caption text
+   (gr496247). #}
+{% import "drafts/_figures.html.j2" as draft_figures %}
 {% macro prov_title(provenance) -%}
 {%- if provenance == 'sourced' -%}sourced — cites a corpus paper/patent
 {%- elif provenance == 'pending' -%}pending — cites a finding; the source is still being chased
@@ -29,10 +34,11 @@
    identically whether it's the focus or just passing through. Deliberately
    emits ONLY table elements (table/caption/thead/tbody/tr/th/td) — no
    wrapping <div> — because every caller inlines this inside its own single
-   ``<div data-dc>`` block, and a test (``_dc_block`` in
-   test_smartdraft_reader.py) assumes exactly one <div> per rendered block; a
-   nested <div> here would break that "find the block's closing </div>"
-   assumption. A caller that wants horizontal overflow scrolling puts it on
+   ``<div data-dc>`` block; text/table blocks keep the one-``<div>`` shape
+   (figure blocks are the documented exception — see ``sd_figure``), and
+   ``_dc_block`` in test_smartdraft_reader.py slices a block by nesting
+   depth so a nested <div> inside a FIGURE block stays readable. A caller
+   that wants horizontal overflow scrolling puts it on
    THIS <table> itself (``block overflow-x-auto``) rather than wrapping. #}
 {% macro sd_table(table, claims, abbrevs=none, pending_claims=none, refuted_claims=none, hypothesis_claims=none) -%}
 <table class="w-full border-collapse text-sm">
@@ -88,11 +94,37 @@
 {%- endif -%}
 {%- endmacro %}
 
+{# Read-only figure block for doc mode (a non-focus figure scrolled into
+   view — gr496247): the SAME ``figure_media`` + ``clearance_badge`` the
+   focus branch (view.html.j2) renders, so a hydrated block's figure matches
+   the focused one. The caption renders in ``<figcaption>`` with the same
+   linkify pass prose blocks get. NB: unlike ``sd_table`` above, this CAN
+   emit nested ``<div>`` markup (``figure_media``'s no-asset draw form and
+   ``clearance_badge``'s popover/editor) — figure blocks are the documented
+   exception to the one-``<div>``-per-block assumption; ``_dc_block`` in
+   test_smartdraft_reader.py slices by nesting depth for exactly this
+   reason. #}
+{% macro sd_figure(n, display, claims, ident, abbrevs=none, pending_claims=none, refuted_claims=none, hypothesis_claims=none) -%}
+<figure class="sd-fig-media rounded-md border border-line bg-surface p-2">
+  {{ draft_figures.figure_media(ident, n.base58, n.figure_render, n.text) }}
+  <figcaption class="mt-1.5 text-sm text-fg-secondary">
+    {#- NB: no "block" on the inner span — 'class="block whitespace-pre-wrap'
+       is the assertion signature of the retired block-level <a> bug
+       (test_smartdraft_full_doc_cited_block_is_div_not_nested_anchor
+       asserts it never appears on the page). -#}
+    <span class="whitespace-pre-wrap break-words">{{ display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}</span>
+  </figcaption>
+  {{ draft_figures.clearance_badge(ident, n.base58, n.figure_origin, n.figure_cleared, n.figure_permission) }}
+  {% if n.figure_has_data_package %}{{ draft_figures.figure_refresh_form(ident, n.base58) }}{% endif %}
+</figure>
+{%- endmacro %}
+
 {% macro sd_doc_block(n, display, claims, review, ident, abbrevs=none, pending_claims=none, refuted_claims=none, hypothesis_claims=none, authored=none) -%}
 {%- set hd = 'font-semibold text-fg-strong text-base' if n.is_heading else '' -%}
 {%- set prov = ' sd-prov-' ~ n.provenance if n.provenance else '' -%}
 {%- set is_tbl = n.is_table and n.table -%}
-<div data-dc="{{ n.dc }}" class="block cursor-pointer{{ '' if is_tbl else ' whitespace-pre-wrap' }} rounded px-2 py-1 text-fg-secondary hover:bg-surface-subtle {{ hd }}{{ prov }}{{ ' sd-authored' if authored }}">{{ sd_dc_id(n.dc) }}{{ sd_authored_chip(authored) }}{% if review %}{{ sd_review_widget(n, review, ident) }} {% endif %}{% if is_tbl %}{{ sd_table(n.table, claims, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}{% else %}{{ display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}{% endif %}</div>
+{%- set is_fig = n.is_figure and n.figure_render -%}
+<div data-dc="{{ n.dc }}" class="block cursor-pointer{{ '' if (is_tbl or is_fig) else ' whitespace-pre-wrap' }} rounded px-2 py-1 text-fg-secondary hover:bg-surface-subtle {{ hd }}{{ prov }}{{ ' sd-authored' if authored }}">{{ sd_dc_id(n.dc) }}{{ sd_authored_chip(authored) }}{% if review %}{{ sd_review_widget(n, review, ident) }} {% endif %}{% if is_tbl %}{{ sd_table(n.table, claims, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}{% elif is_fig %}{{ sd_figure(n, display, claims, ident, abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}{% else %}{{ display | linkify_refs(markdown=True, compact=True, claims=claims, abbrevs=abbrevs, pending_claims=pending_claims, refuted_claims=refuted_claims, hypothesis_claims=hypothesis_claims) }}{% endif %}</div>
 {%- endmacro %}
 
 {# The per-block review indicator + dropdown
@@ -119,9 +151,9 @@
 {#- NB: every element inside this widget is a <span>/<button>/<a> — deliberately
    NO <div> anywhere, even for the dropdown panel — because sd_doc_block (and the
    focus/tail/head blocks in view.html.j2) inline this widget inside their own
-   single <div data-dc>, and a test (and the delegated click handler) assumes
-   exactly one <div> per rendered block; a nested <div> here would break that
-   "find the block's closing </div>" assumption. -#}
+   single <div data-dc>, and keeping text/table blocks to one <div> preserves
+   the readable-block slicing (``_dc_block`` is nesting-aware, but prose/table
+   blocks stay div-free on purpose). -#}
 {# Reuse the ledger matrix so inherited section checks and stale watermarks
    agree with the aggregate dot; these flags never start a review. #}
 {% if n.is_prose or n.is_heading %}
