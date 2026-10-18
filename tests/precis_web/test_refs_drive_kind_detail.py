@@ -10,6 +10,8 @@ they render the handler's own card through the generic detail template.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 pytest.importorskip("fastapi")
@@ -155,3 +157,27 @@ def test_component_supplier_block_is_lazy_and_never_cached(
     assert "LIVE-MARKER" in live.text and "not stored" in live.text
     assert "<script>alert(1)</script>" not in live.text
     assert kind_client.get("/refs/component/999999999/supplier-live").status_code == 404
+
+
+def test_ref_header_shows_relative_age_with_utc_title(kind_client, runtime_with_store):
+    """gr496193: created/updated carry a server-side relative age, and the
+    absolute UTC time sits in ``title=``."""
+    store = runtime_with_store.hub.store
+    ComponentHandler(hub=runtime_with_store.hub).put(
+        id="age-bolt", title="Age bolt", category="fastener"
+    )
+    ref = store.get_ref(kind="component", id="age-bolt")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET created_at = now() - interval '3 days 2 hours',"
+            " updated_at = now() - interval '5 minutes' WHERE ref_id = %s",
+            (ref.id,),
+        )
+    r = kind_client.get(f"/refs/component/{ref.id}")
+    assert r.status_code == 200
+    assert re.search(
+        r'created <span title="\d{4}-\d\d-\d\d \d\d:\d\d UTC">'
+        r"\d{4}-\d\d-\d\d \d\d:\d\d UTC \(3 days ago\)</span>",
+        r.text,
+    )
+    assert re.search(r"updated <span[^>]*>[^<]*\(5 minutes ago\)</span>", r.text)

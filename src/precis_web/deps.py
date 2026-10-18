@@ -78,6 +78,7 @@ def _make_jinja_env() -> jinja2.Environment:
         relative,
         until,
         utc_date,
+        when,
     )
 
     env.filters["linkify_refs"] = linkify_refs
@@ -109,6 +110,9 @@ def _make_jinja_env() -> jinja2.Environment:
     # Absolute day+time plus remaining span — a future instant that can be
     # days out, where a bare 'HH:MM UTC' clock doesn't say which day.
     env.filters["until"] = until
+    # Absolute UTC time plus long-form age ('2026-10-15 21:30 UTC (3 days
+    # ago)') — ref page headers (gr496193); callers put abs_ts in title=.
+    env.filters["when"] = when
 
     # ``planner_models()`` → the ordered list of picker rows
     # (``{alias, tier, model, placement, fallbacks, size, context}``) the

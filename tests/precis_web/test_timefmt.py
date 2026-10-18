@@ -17,6 +17,7 @@ from precis_web.timefmt import (
     span_seconds,
     until,
     utc_date,
+    when,
 )
 
 
@@ -170,3 +171,15 @@ def test_utc_date_accepts_iso_string_and_empty() -> None:
     assert utc_date("2026-09-18T23:59:00Z") == "2026-09-18"
     assert utc_date(None) == ""
     assert utc_date("nonsense") == ""
+
+
+def test_when_pairs_absolute_utc_with_long_age() -> None:
+    now = datetime.now(UTC)
+    then = now - timedelta(days=3, hours=2)
+    assert when(then) == f"{abs_ts(then)} (3 days ago)"
+    assert when(now - timedelta(days=1, hours=1)).endswith("(25 hours ago)")
+    assert when(now - timedelta(minutes=1)).endswith("(60 seconds ago)")
+    assert when(now - timedelta(minutes=10)).endswith("(10 minutes ago)")
+    assert when(now - timedelta(seconds=1, milliseconds=100)).endswith("(1 second ago)")
+    assert when(now + timedelta(hours=1)).endswith("(0 seconds ago)")
+    assert when(None) == "" and when("garbage") == ""

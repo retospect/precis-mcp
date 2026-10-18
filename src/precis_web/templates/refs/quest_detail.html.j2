@@ -40,7 +40,7 @@
     </span>
     <span class="text-fg-faint">·</span>
     <span title="lifetime token spend on this quest — sum of logbook entry costs">tote {{ '%g' | format(tote) }}</span>
-    {% if ref.updated %}<span class="text-fg-faint">·</span><span>updated {{ ref.updated }}</span>{% endif %}
+    {% if ref.updated %}<span class="text-fg-faint">·</span><span>updated <span title="{{ ref.updated }}">{{ ref.updated_at | when if ref.updated_at else ref.updated }}</span></span>{% endif %}
   </p>
 </div>
 

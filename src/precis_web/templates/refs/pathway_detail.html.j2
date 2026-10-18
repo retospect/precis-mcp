@@ -41,7 +41,7 @@
     </span>
     {% endif %}
     {% if autocatpath_version %}<span class="text-fg-faint">·</span><span>autocatpath {{ autocatpath_version }}</span>{% endif %}
-    {% if ref.updated %}<span class="text-fg-faint">·</span><span>updated {{ ref.updated }}</span>{% endif %}
+    {% if ref.updated %}<span class="text-fg-faint">·</span><span>updated <span title="{{ ref.updated }}">{{ ref.updated_at | when if ref.updated_at else ref.updated }}</span></span>{% endif %}
   </p>
   {# ── cross-tier toggle + delta (item 2) — a "view: screen | verified"
      control linking to this candidate's other-tier pathway (the linked

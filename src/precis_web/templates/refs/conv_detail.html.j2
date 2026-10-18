@@ -8,7 +8,7 @@
   <p class="text-sm text-fg-subtle">
     #{{ ref.id }}
     {% if ref.slug %}· <span class="font-mono break-all">{{ ref.slug }}</span>{% endif %}
-    {% if ref.updated %}· updated {{ ref.updated }}{% endif %}
+    {% if ref.updated %}· updated <span title="{{ ref.updated }}">{{ ref.updated_at | when if ref.updated_at else ref.updated }}</span>{% endif %}
     · {{ turns | length }} turn{{ '' if turns | length == 1 else 's' }}
   </p>
   {% if followup_source %}

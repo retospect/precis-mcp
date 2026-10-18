@@ -90,6 +90,31 @@ def abs_ts(value: Any) -> str:
     return dt.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")
 
 
+def _long_bucket(secs: float) -> str:
+    """Spelled-out magnitude for a non-negative second count ('3 days')."""
+    for limit, unit, size in (
+        (90, "second", 1),
+        (5400, "minute", 60),
+        (172800, "hour", 3600),
+    ):
+        if secs < limit:
+            n = int(secs / size)
+            return f"{n} {unit}{'' if n == 1 else 's'}"
+    n = int(secs / 86400)
+    return f"{n} day{'' if n == 1 else 's'}"
+
+
+def when(value: Any) -> str:
+    """``"2026-10-15 21:30 UTC (3 days ago)"``: the absolute UTC time with a
+    spelled-out age beside it, computed from ``datetime.now(UTC)`` on the
+    server (no JS). ``""`` for nothing parseable; a future value reads
+    ``"0 seconds ago"`` like :func:`ago`'s clamp."""
+    secs = age_seconds(value)
+    if secs is None:
+        return ""
+    return f"{abs_ts(value)} ({_long_bucket(max(0.0, secs))} ago)"
+
+
 def until(value: Any, *, now: datetime | None = None) -> str:
     """Absolute date+time UTC plus remaining span, for a future instant.
 

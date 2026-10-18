@@ -156,6 +156,9 @@ def _row(ref: Any) -> dict[str, Any]:
         # ``title`` above stays full for the detail-page header.
         "display_title": display_title(title),
         "updated": abs_ts(updated),
+        # Raw instants for the header's relative age (``| ago``, gr496193).
+        "updated_at": updated,
+        "created_at": created,
         # Extra meta surfaced on the detail page's header strip. The
         # list templates ignore the keys they don't use, so widening
         # the row here is safe for index / consolidated callers too.

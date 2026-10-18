@@ -16,8 +16,8 @@
   <p class="mt-1 text-sm text-fg-subtle">
     #{{ ref.id }}
     {% if ref.slug %}· <span class="font-mono break-all">{{ ref.slug }}</span>{% endif %}
-    {% if ref.created %}· created {{ ref.created }}{% endif %}
-    {% if ref.updated %}· deleted around {{ ref.updated }}{% endif %}
+    {% if ref.created %}· created <span title="{{ ref.created }}">{{ ref.created_at | when if ref.created_at else ref.created }}</span>{% endif %}
+    {% if ref.updated %}· deleted around <span title="{{ ref.updated }}">{{ ref.updated_at | when if ref.updated_at else ref.updated }}</span>{% endif %}
   </p>
 
   <p class="mt-3 text-sm text-fg-muted">
