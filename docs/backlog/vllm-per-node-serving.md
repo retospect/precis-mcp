@@ -52,8 +52,7 @@ regressing at c=320). Nemotron 3 Super is also hybrid Mamba-Transformer. If
 that ceiling carries, the whole oversubscription design dies at single-digit
 concurrency on a box that can do 256 — so measure it before building
 anything else. Serve the candidate and the control, ramp concurrency, find
-where aggregate tok/s stops climbing. Host prep and order relative to the
-GIL profile: `serving-programme-followups.md`.
+where aggregate tok/s stops climbing. Host prep: `spark-provisioning.md` §Host items.
 
 **Slice 1 — serving** (role `deploy/roles/vllm/`, playbook `49-vllm.yml`). A vLLM deploy role alongside `deploy/roles/llamacpp/`,
 single-node, `--enable-prefix-caching`, `--enable-auto-tool-choice` with the

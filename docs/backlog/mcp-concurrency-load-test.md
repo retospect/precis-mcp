@@ -278,7 +278,6 @@ if canary p95 is still flat at 16.
 
 ### Still owed
 
-Order and cross-item constraints: `serving-programme-followups.md`.
 
 * ~~**Which work holds the GIL.**~~ **Answered 2026-10-15** (profile
   section above): psycopg's pure-Python array dump of the fused-search

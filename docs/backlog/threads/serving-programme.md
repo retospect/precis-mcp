@@ -48,22 +48,23 @@ wait, and five orphan gripes)
 Written from the 2026-09-29 resume pointer; the shared-server owners
 correct it.
 
-1. **backlog/serving-programme-followups.md item 6** (2-3 precis serve
-   processes behind a balancer) — waits on the py-spy answer (Do next 1); a
-   serve tier sized for ~24 sessions instead of the 28 calls/s ceiling.
-2. **session-mcp-shared-server end state** (that thread's
-   backlog/session-mcp-http-server.md) — waits on 1's topology answer; the
+1. **session-mcp-shared-server end state** (that thread's
+   backlog/session-mcp-http-server.md) — waits on Do next 1's topology answer; the
    end of the per-session container and the install-watchdog-exit-visibility
    class of defect that motivated it.
-3. **backlog/eval-run-spine.md items 4, 8, 9** (blob store, contamination
+2. **backlog/eval-run-spine.md items 4, 8, 9** (blob store, contamination
    detection, frozen eval world) — waits on Do next 3 and on local-compute's
    spark prerequisites (the `/mnt/cluster` NFS hang and spark host prep,
-   `serving-programme-followups.md` items 1-2); reproducible, comparable
+   `spark-provisioning.md` §Host items); reproducible, comparable
    eval runs. `backlog/model-qualification.md` (unthreaded) is its first
    consumer.
-4. **backlog/curation-gate.md** (+ its prerequisite
+3. **backlog/curation-gate.md** (+ its prerequisite
    backlog/review-container-readonly-role.md) — waits on the verdict column;
    the reviewer loop the roadmap and taxonomy threads park on.
+4. **2-3 `precis serve` processes behind a balancer** (no item yet; the
+   measurement is backlog/mcp-concurrency-load-test.md's multi-process arm,
+   N=8-12 sessions per process) — waits on Do next 1's topology answer;
+   spec it as its own item when that answer lands.
 
 ## Parked
 

@@ -62,7 +62,7 @@ branch.
 
 ## Open questions / decisions log
 
-- Blocked on spark host prep (`serving-programme-followups.md` item 2) and
+- Blocked on spark host prep (`spark-provisioning.md` §Host items) and
   on the `/mnt/cluster` NFS hang (review item local-compute-6) only as far
   as spark's `nfs_clients` membership goes. The embedder itself does not
   need the share.

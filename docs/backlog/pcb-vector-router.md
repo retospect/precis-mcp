@@ -119,6 +119,19 @@ Two smaller defects the kernel removes:
 | 7 | Arcs in the kernel | **Analytic, no polygonisation in the kernel.** Remaining polygons (CDT input, pour booleans, views) are drawn outward at **5 µm** sagitta. |
 | 8 | Runtime budget | **Quality first.** A slower route is accepted when it realizes more or has fewer DRC findings; the route job's wall deadline is the only hard cap; runtime is reported per board size; the per-slice figures only flag profiling. |
 
+## Decisions (Reto 2026-10-18)
+
+Reto, ~16:0xZ in the coordinator window, verbatim: "So, push the vector stuff, and leave this alone for now. I am even thinkin of dropping the limits for the grid router now, because it just causes issues. vector first and best algorithm. Also, shove the parts and the vias as needed, maybe even gradual weights that shift stuff and multi iter place route. vector first." And just before that: "The thought is that these boards should be easy to route with the proper algo. No ratchet needed, that seems like incremental and painfult."
+
+| # | Question | Ruling |
+|---|---|---|
+| 13 | Priority | **Vector first, best algorithm.** This item is the pcb routing critical path. Work that only tunes the maze (stackup default change, placer silk spacing, THT pad model, plane stitching) is held, and nothing new targets maze floors. |
+| 14 | Target | **Absolute, not ratcheted.** The goal on the benchmark boards is every net routed with 0 DRC errors. Until slice 4, the maze floors stay only as regression guards. Reto is "thinking of dropping the limits for the grid router"; that is not ruled yet. When slice 4 lands, the per-seed counts are replaced by the absolute target, not re-tuned. |
+| 15 | Shove | **Batch shove of parts and vias as needed.** The router may move vias, and nudge parts, to open a route, using gradual weights that shift things rather than hard keep-outs. This is batch, not interactive; Non-goals keeps "interactive push-and-shove". |
+| 16 | Place-route loop | **Multiple place-route iterations.** Placement and routing alternate, with placement costs fed by routing congestion and failures, rather than a single place-then-route pass. Builder proposes the slice shape (proposal 13–16 below), coordinated with `pcb-guided-place-route.md` and `pcb-global-codesign-north-star.md`. |
+
+**Proposal (needs a builder's design, then Reto):** how 15–16 slot in. Via shove belongs with slice 3/4 (vector escape: a via that blocks a walled-in segment may move within its net's legal region). Part nudge plus the place-route loop is a new slice after slice 5's region-graph probe, because congestion per region is the signal the placer consumes.
+
 ### Notes on 7 and 8
 
 **7. Why not true arcs — is it a Gerber limitation?** No. Gerber (G02/G03)

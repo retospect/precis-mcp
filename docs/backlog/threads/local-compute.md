@@ -300,7 +300,7 @@ task set.
    into one exclusive big model, one local embeddings and one GPU science
    lanes. Ruled 22:03Z (local-compute-5): **castor big model, pollux
    science, spark embeddings**. In order:
-   a. **backlog/serving-programme-followups.md items 1-2** — the
+   a. **backlog/spark-provisioning.md §Host items** — the
       `/mnt/cluster` NFS hang (server caspar) hits only the Linux Sparks;
       the Macs read it fine. caspar's nfsd is healthy, so the approved
       restart (local-compute-6) stopped at its read-only gate. The leading
