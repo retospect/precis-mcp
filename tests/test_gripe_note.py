@@ -164,7 +164,10 @@ def test_posts_through_the_cli_and_reports(tmp_path: Path) -> None:
 
 def test_failed_post_is_logged_and_exits_zero(tmp_path: Path) -> None:
     root, _ = _repo(tmp_path, "fix(a): b (gr7)")
-    cli = _fake_cli(tmp_path, "echo 'boom postgresql://u:p@h/db' >&2; exit 1")
+    # A fake DSN for the redaction check, assembled so the source carries no
+    # credential-shaped URL (tests/test_deploy_tree_no_secrets.py).
+    dsn = "postgresql://" + ":".join(("u", "p")) + "@h/db"
+    cli = _fake_cli(tmp_path, f"echo 'boom {dsn}' >&2; exit 1")
     cp = _run(root, "--rev", "HEAD", "--text", "t", PRECIS_GRIPE_NOTE_CLI=cli)
     assert cp.returncode == 0
     assert cp.stdout.strip() == "gripe-note: posting on gr7 failed (exit 1): boom <url>"
@@ -196,7 +199,10 @@ def test_prod_call_cap_fits_inside_the_release_wait(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("body", ["sleep 30", "echo boom >&2; exit 1"])
 def test_release_note_never_fails_or_holds_the_deploy(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], body: str
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    body: str,
 ) -> None:
     """A hung or failing gripe-note costs the deploy path at most
     NOTE_TIMEOUT_S and never raises."""
@@ -206,9 +212,9 @@ def test_release_note_never_fails_or_holds_the_deploy(
     fake = fake_dir / "gripe-note"
     fake.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
     fake.chmod(0o755)
-    release.HERE = fake_dir
-    release.ROOT = tmp_path
-    release.NOTE_TIMEOUT_S = 1.0
+    monkeypatch.setattr(release, "HERE", fake_dir)
+    monkeypatch.setattr(release, "ROOT", tmp_path)
+    monkeypatch.setattr(release, "NOTE_TIMEOUT_S", 1.0)
     t0 = time.monotonic()
     release.note_gripes("aaaa", "bbbb", "deployed r1 ({sha})")
     assert time.monotonic() - t0 < 15
