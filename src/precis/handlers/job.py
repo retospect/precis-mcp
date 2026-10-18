@@ -41,6 +41,14 @@ from precis.workers.executors import (
     DEFAULT_EXECUTOR,
     EXECUTOR_PROVIDES,
     is_known_executor,
+    suspended_job_types,
+)
+from precis.workers.executors._common import (
+    QUEUED,
+    RUNNING,
+    STATUS_NAMESPACE,
+    _aged_prio_sql,
+    claim_age_step_s,
 )
 from precis.workers.job_types import get_job_type, known_job_types
 
@@ -1485,6 +1493,8 @@ class JobHandler(NumericRefHandler):
             lines.append(
                 f"ran_on: {ran_on} (code {meta.get('lease_code') or 'unstamped'})"
             )
+        if status == "queued":
+            lines.extend(self._queue_lines(ref))
         lines.append("")
         if ref.title:
             lines.append(ref.title)
@@ -1501,6 +1511,117 @@ class JobHandler(NumericRefHandler):
                 lines.append(f"## event {block.ord}")
                 lines.append(block.text)
         return "\n".join(lines)
+
+    def _queue_lines(self, ref: Ref) -> list[str]:
+        """``queue:`` lines for a ``STATUS:queued`` job: where it stands in
+        its executor's claim order and what it waits behind (gr495292: a
+        queued ``pcb_route`` showed neither). Read-only, advisory — the
+        order mirrors ``claim_executor_jobs``' ``aged_prio, queued_since,
+        ref_id`` key but not its capability-scarcity re-rank, and the
+        reasons are the claim gates visible from the row itself: operator
+        suspension, a ``target_node`` pin, a live lease, and work already
+        running on the same executor.
+        """
+        meta = ref.meta or {}
+        executor = meta.get("executor")
+        if not executor:
+            return []
+        qsql = (
+            "(SELECT max(rt.created_at) FROM ref_tags rt "
+            "JOIN tags t USING (tag_id) "
+            "WHERE rt.ref_id = r.ref_id AND t.namespace = %s AND t.value = %s)"
+        )
+        asql, aparams = _aged_prio_sql(
+            qsql, (STATUS_NAMESPACE, QUEUED), claim_age_step_s()
+        )
+        suspended = sorted(suspended_job_types())
+        susp_sql = (
+            " AND COALESCE(r.meta->>'job_type', '') <> ALL(%s)" if suspended else ""
+        )
+        susp_params: tuple[list[str], ...] = (suspended,) if suspended else ()
+        with self.store.pool.connection() as conn:
+            row = conn.execute(
+                f"""
+                WITH q AS (
+                  SELECT r.ref_id, {qsql} AS qs, {asql} AS aged
+                    FROM refs r
+                   WHERE r.kind = 'job' AND r.retired_at IS NULL
+                     AND r.meta->>'executor' = %s
+                     AND EXISTS (SELECT 1 FROM ref_tags rt
+                                   JOIN tags t USING (tag_id)
+                                  WHERE rt.ref_id = r.ref_id
+                                    AND t.namespace = %s AND t.value = %s)
+                     {susp_sql}
+                )
+                SELECT count(*),
+                       count(*) FILTER (WHERE (aged, qs, ref_id) <
+                            (SELECT aged, qs, ref_id FROM q WHERE ref_id = %s)),
+                       (SELECT qs FROM q WHERE ref_id = %s)
+                  FROM q
+                """,
+                (
+                    STATUS_NAMESPACE,
+                    QUEUED,
+                    *aparams,
+                    executor,
+                    STATUS_NAMESPACE,
+                    QUEUED,
+                    *susp_params,
+                    ref.id,
+                    ref.id,
+                ),
+            ).fetchone()
+            running = conn.execute(
+                """
+                SELECT COALESCE(r.meta->>'job_type', '?'), count(*)
+                  FROM refs r
+                  JOIN ref_tags rt ON rt.ref_id = r.ref_id
+                  JOIN tags t ON t.tag_id = rt.tag_id
+                 WHERE r.kind = 'job' AND r.retired_at IS NULL
+                   AND r.meta->>'executor' = %s
+                   AND t.namespace = %s AND t.value = %s
+                 GROUP BY 1 ORDER BY 2 DESC, 1
+                """,
+                (executor, STATUS_NAMESPACE, RUNNING),
+            ).fetchall()
+        lines: list[str] = []
+        job_type = meta.get("job_type")
+        if job_type in suspended_job_types():
+            lines.append(
+                f"queue: held — job_type {job_type!r} is in this server's "
+                "PRECIS_SUSPENDED_JOB_TYPES (operator hold; workers read their "
+                "own copy); a suspended type is not claimed until the hold clears"
+            )
+        total, ahead, queued_since = row if row else (0, 0, None)
+        since = as_utc(queued_since)
+        if total and since is not None:
+            waited = int((datetime.now(UTC) - since).total_seconds())
+            lines.append(
+                f"queue: position {ahead + 1} of {total} queued for executor "
+                f"{executor!r} ({ahead} ahead; claim order is priority, then "
+                f"time queued); waiting {waited // 60}m{waited % 60:02d}s"
+            )
+        if running:
+            mix = ", ".join(f"{t} x{n}" for t, n in running)
+            lines.append(
+                f"queue: running now on {executor!r}: {sum(n for _, n in running)} "
+                f"({mix}) — a worker takes queued work as it frees up"
+            )
+        else:
+            lines.append(
+                f"queue: nothing running on {executor!r}; if this stays queued, "
+                "no worker is claiming that executor (get(kind='job', "
+                "id='/throughput') shows which hosts are claiming)"
+            )
+        pin = (meta.get("params") or {}).get("target_node")
+        if pin:
+            lines.append(f"queue: pinned to node {pin!r} — only a worker on it claims")
+        lease = meta.get("lease_until")
+        if lease:
+            until = as_utc(datetime.fromisoformat(str(lease)))
+            if until is not None and until > datetime.now(UTC):
+                lines.append(f"queue: lease held until {lease}; not claimable before")
+        return lines
 
     # ── view='count' trailer: top error heads per failing job_type ──
 
