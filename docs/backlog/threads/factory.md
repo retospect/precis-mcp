@@ -41,6 +41,10 @@ quality-of-life and container items.
 3. **backlog/bare-rung-billing-accounting.md** — bare chain rungs spend
    dollars the meter never counts; the meter half of the gate that
    shipped, and 2 cannot bound what it cannot see.
+4. **backlog/sandbox-python-script.md** — `prio: high`; arbitrary Python
+   in a no-network container (`sandbox_run mode:script`), from a job or a
+   `run:python` todo. Needs no OAuth, so it does not wait on gr329258;
+   started 2026-10-18 on Reto's ask.
 
 ## Horizon
 

@@ -88,6 +88,78 @@ The three uses:
   as the `wrong_site` gate. Ranking stays on our own numbers; no
   calibration offset until the gaps have been measured.
 
+## Decided (Reto, 2026-10-18, starting today)
+
+- **Step 1 covers both MOF sources in one builder:** QMOF (geometry + DFT
+  energy) and CoRE MOF (geometry only).
+- **Generic CIF import now**, agent-facing, not only behind the adapters.
+- **Storage when no per-record API exists:** download the bundle once to
+  the NAS, build a small name → offset index, import a single record on
+  `get`. The DB stays on-demand (chemistry-4); only the lookup file is
+  bulk.
+
+## Sources checked (web, 2026-10-18)
+
+| Source | Location | Licence | What step 1 uses |
+|---|---|---|---|
+| CoRE MOF 2024 | Zenodo doi:10.5281/zenodo.15055758 (v1.1): `CoREMOF2024DB_SI_20250204.zip` 44 MB of CIFs + ASR/FSR/ION CSVs; 8,300 structures, 2,664 computation-ready | CC-BY 4.0 (confirmed) | bundle → NAS index; geometry only, no DFT energies |
+| CoRE MOF 2019 | Zenodo doi:10.5281/zenodo.7691378 | CC-BY 4.0 (snippet) | skip; 2024 supersedes |
+| QMOF | figshare doi:10.6084/m9.figshare.13147324; per-record mirror on MPContribs (`contribs-api.materialsproject.org`, project `qmof`) | likely CC-BY 4.0, **unconfirmed** (figshare 403'd) | per-record via MPContribs needs the MP API key; else the figshare bundle → NAS index. PBE energies (VASP) |
+| ODAC23 | fairchem (arXiv 2311.00341), bulk LMDB | CC-BY 4.0 unconfirmed | step 2, not step 1 |
+| Materials Project | `api.materialsproject.org`, `mp-api`; 25 req/s | CC-BY 4.0 | catalyst builder; free API key |
+| Catalysis-Hub | `api.catalysis-hub.org/graphql` | unconfirmed | a third-party README says keyless GraphQL works again, against this file's 401 note; the catalyst builder re-probes first |
+| BEAST DB | NREL `beastdb.nrel.gov` (DNS failed) | unconfirmed | none until hosting and licence are confirmed with the authors |
+
+The builder confirms the QMOF licence on the figshare page before
+committing the adapter's licence note. QMOF goes per-record through
+MPContribs when `MP_API_KEY` is set; otherwise the bundle index.
+
+## Step 1 in detail (the builder's brief source)
+
+1. **`cif_to_scene(text) -> Scene`** in `structure/importers/` (lazy
+   `ase.io.read(format="cif")` → the existing `scene_from_ase`,
+   `structure/search.py`). Caps before parse: text size, and an atom-count
+   cap after (huge cells hang ase). A 3D framework keeps
+   `pbc=(True, True, True)`; nothing slab-specific.
+2. **Generic agent entry.** A `put` on the structure kind that takes CIF
+   text, or a URL fetched with `safe_get` (redirects followed, size-capped;
+   `src/precis/utils/safe_fetch.py`). It yields an ordinary design (no
+   external run) unless a source is named. Refusals carry `next=`.
+3. **Adapters** `qmof` and `core-mof`, registered with `register_adapter`,
+   pure over a recorded raw record `{id, cif_text, energy?, method?}`.
+   `config_id` is the QMOF id / CoRE refcode; `dataset` the source name.
+4. **Optional energy.** `ExternalRun.energy` is a required float today
+   (`structure/importers/__init__.py`); CoRE MOF records have none. Make it
+   `float | None`, with the store path (`store/_structure_ops.py`
+   `structure_import`) writing a geometry-only external run, and the method
+   fingerprint still set (`{"source": "core-mof-2024", "geometry":
+   "experimental, solvent-removed"}`). If the column is NOT NULL, this is a
+   forward-only migration; check before writing code.
+5. **Lookup wiring.** Extend `_get_external` in `handlers/structure.py`
+   (hard-wired to catalysis-hub today) with `source='qmof'|'core-mof'` and
+   `id=`. It reads the NAS index, imports that one record through the
+   adapter, and short-circuits on an existing `(dataset, config_id)` row.
+   The index path comes from config (`docs/reference/config-variables.md`),
+   never a literal host path. Missing index → a refusal naming the
+   build-index command.
+6. **Index build CLI** `precis structure index-bundle <source> <path>`:
+   streams the downloaded bundle, writes `{id: (member, offset)}`. The
+   download itself is an ops step (cluster-desk, after deploy).
+
+Step 1 acceptance (replaces the general criteria for this step):
+
+- A recorded CIF fixture of each source parses to a Scene with a 3D cell;
+  no network in tests.
+- The adapter output carries `provenance="external"` and a method
+  fingerprint; a CoRE MOF record imports with no energy.
+- The same `config_id` twice yields one ref.
+- A CIF over the atom cap and a non-CIF body are refused with `next=`.
+- A URL CIF import goes through `safe_get` (asserted by a test double).
+
+Shipping step 1 deletes, from this file: the "**MOFs: nothing beyond
+tags**" bullet's "has no CIF import" clause, and "needs CIF import" from
+the CoRE MOF row.
+
 ## Build order
 
 1. **CIF import + a CoRE MOF / QMOF adapter.** Open sources, no
