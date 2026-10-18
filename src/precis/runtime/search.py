@@ -48,6 +48,7 @@ from precis.utils import handle_registry
 from precis.utils.search_merge import (
     SearchHit,
     block_hits_to_search_hits,
+    flag_title_matches,
     merge_and_render,
 )
 
@@ -596,7 +597,7 @@ class SearchMixin(RuntimeShape):
     def _dispatch_cross_kind(self, kind: str, args: dict[str, Any]) -> Response:
         """Fan out a search across multiple kinds and RRF-fuse the streams.
 
-        Each handler's ``search_hits(q=..., top_k=...)`` is called
+        Each handler's ``search_hits(q=..., page_size=...)`` is called
         with the same arguments; per-handler exceptions degrade to
         empty streams (logged) so one slow / broken kind doesn't
         crash the whole query.  Final ranking is reciprocal-rank
@@ -638,7 +639,7 @@ class SearchMixin(RuntimeShape):
                     f"or search(kind={kind!r}, tags=['<tag>']) for a tags-only sweep"
                 ),
             )
-        top_k = int(args.get("top_k") or 10)
+        top_k = int(args.get("page_size") or args.get("top_k") or 10)
         tags = args.get("tags")
         exclude = args.get("exclude")
         mode = args.get("mode")
@@ -746,7 +747,10 @@ class SearchMixin(RuntimeShape):
         # whose ``search_hits`` signature doesn't accept ``query_vec=``
         # fall through the same TypeError-degradation chain as
         # ``exclude=`` / ``tags=``.
-        base_kwargs: dict[str, Any] = {"q": q, "top_k": top_k}
+        # ``page_size`` is the name every handler's ``search_hits`` takes;
+        # passing ``top_k`` was swallowed by ``**_kw`` so each kind returned
+        # its default 10 whatever the caller asked for (gr495190).
+        base_kwargs: dict[str, Any] = {"q": q, "page_size": top_k}
         if mode is not None:
             base_kwargs["mode"] = mode
         semantic_degraded = False
@@ -842,7 +846,7 @@ class SearchMixin(RuntimeShape):
                 hits = [
                     h for h in hits if h.ref_id is not None and h.ref_id in folder_scope
                 ]
-            hits_list = list(hits)
+            hits_list = flag_title_matches(list(hits), q)
             per_kind_counts.append((k, len(hits_list)))
             streams.append(hits_list)
 

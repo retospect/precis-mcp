@@ -36,7 +36,8 @@ changing their UX.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from precis.response import Response
@@ -49,6 +50,44 @@ from precis.utils.search_header import format_search_headline
 # ``store.search_chunks_fused`` so it's also the value agents
 # implicitly already pay for.
 _RRF_K: int = 60
+
+# A document whose title contains the whole query as a phrase has its fused
+# total multiplied by this. Adjacent ranks differ by ~1% of a total, so any
+# factor above ~1.1 lifts such a hit over its stream-mates; 1.5 also lets
+# it beat another stream's rank 1 without burying real multi-stream hits
+# (a rank-1 + rank-1 document totals 2x a single rank-1).
+_TITLE_PHRASE_FACTOR: float = 1.5
+
+_WORD_RE = re.compile(r"\w+")
+
+
+def _title_key(text: str) -> str:
+    """Case/punctuation-insensitive word sequence, space-joined."""
+    return " ".join(_WORD_RE.findall(text.casefold()))
+
+
+def flag_title_matches(hits: list[SearchHit], query: str) -> list[SearchHit]:
+    """Mark hits whose title *is* the query (``pinned``) or contains it as
+    a whole-word phrase (``title_phrase``).
+
+    Rank-only RRF cannot see that a rank-1 hit is an exact title hit while
+    another stream's rank 1 is a semantic neighbour (gr495190). Matching
+    ignores case and punctuation but not word boundaries: ``dogfood``
+    matches "Dogfood run 3" and not "dogfooding".
+    """
+    nq = _title_key(query)
+    if not nq:
+        return hits
+    out: list[SearchHit] = []
+    for h in hits:
+        nt = _title_key(h.title)
+        if nt == nq:
+            h = replace(h, pinned=True, title_phrase=True)
+        elif f" {nq} " in f" {nt} ":
+            h = replace(h, title_phrase=True)
+        out.append(h)
+    return out
+
 
 # Multiplicative penalty applied to a document's fused RRF total,
 # keyed by ``refs.retraction_status``. See docs/backlog/retraction-
@@ -260,6 +299,12 @@ class SearchHit:
     # each stream's rank 1 the same, so a named paper otherwise ties
     # with ~30 other kinds' top hits and falls off the page.
     pinned: bool = False
+    # The query appears in the title as a whole-word phrase (set by
+    # :func:`flag_title_matches`). ``rrf`` mode multiplies the document's
+    # fused total by ``_TITLE_PHRASE_FACTOR`` — rank-only fusion gives a
+    # title that *contains* the query no more weight than a semantic
+    # neighbour at the same rank.
+    title_phrase: bool = False
 
     @property
     def handle(self) -> str:
@@ -455,6 +500,8 @@ def _merge_rrf(streams: list[list[SearchHit]]) -> list[SearchHit]:
         factor = _RETRACTION_SCORE_FACTOR.get(status)
         if factor is not None:
             totals[key] *= factor
+        if hit.title_phrase:
+            totals[key] *= _TITLE_PHRASE_FACTOR
         posture = hit.posture or ""
         if posture.startswith(_POSTURE_REFUTED_PREFIX):
             totals[key] *= _POSTURE_REFUTED_FACTOR
