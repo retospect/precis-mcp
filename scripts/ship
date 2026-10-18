@@ -665,7 +665,11 @@ testmon_from_container() {
     # runs regardless of the gate's own rc — a red gate's map is still valid
     # once it passes checkpoint+integrity, and rc==0 doesn't guarantee the
     # map wasn't torn by some other interruption either.
-    if ! compose exec -T precis-gate uv run python -c '
+    # UV_OFFLINE=1: this check runs on every impacted ship — under a dead
+    # pypi route (gr496615) uv's env sync would stall on index timeouts here
+    # inside the red-gate cleanup path; the env is already synced, so cache
+    # is all it needs (a cold-cache miss degrades to the keep-host-map path).
+    if ! compose exec -T -e UV_OFFLINE=1 precis-gate uv run python -c '
 import sqlite3
 c = sqlite3.connect("/app/.testmondata")
 c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -736,12 +740,146 @@ Nothing was amended or reset. Commit or discard them, then re-run scripts/ship."
     fi
 }
 
+# ── offline-first gate env + the network-vs-code-red split (gr496615) ────
+# Every `uv run` in a gate command first syncs the project env, and syncing
+# rebuilds precis-mcp against /app's freshly-synced source — which resolves
+# build-system.requires (hatchling, deliberately unpinned and NOT in uv.lock)
+# against the pypi index. That is a live network fetch on EVERY gate run, so
+# a pypi/uplink/CDN flap used to fail every local ship and surface as "lint
+# is RED" — six ship runs blocked in the 2026-10-18 flap, none a code failure.
+# The uv cache persists on the gate-cache volume (mounted on precis-gate AND
+# precis-dev, so warm and bind gates share it), which makes offline-first
+# workable:
+#
+#   gate_deps_sync — `uv sync --offline` first: a warm cache makes a dead
+#                    route irrelevant. On a cache miss (what a genuinely new
+#                    or changed dep looks like) fall back to `uv sync`
+#                    online, which also re-warms the cache. A failure with a
+#                    fetch/transport signature dies on the network path —
+#                    never as a lint red.
+#   gate_exec      — runs the gate command under UV_OFFLINE=1 when the env
+#                    synced offline (its own `uv run` finds the env fresh;
+#                    the env var also covers uv's index revalidation and
+#                    `--with` overlays). A failure carrying uv's offline
+#                    cache-miss signature retries once online; one carrying
+#                    a fetch signature dies_network.
+#   gate_net_host  — reads a captured gate log and echoes the unreachable
+#                    host; empty when the failure has no fetch signature
+#                    (a real code red, which takes the caller's normal die).
+#
+# No image rebuild needed: nothing is baked, the persistent cache volume
+# already existed. A still-cold cache on a dead route cannot lint — but every
+# ship since the image was built has already warmed it.
+
+die_network() {
+    # rc 68 = EX_NOHOST, distinct from die's 1 so a fleet coordinator can tell
+    # "dead route, retry later" from "red code, needs a human" by exit code.
+    printf '\n\033[31m✖ NETWORK failure — not a code red. The gate could not reach %s to fetch Python packages.\n  A pypi/uplink/CDN flap blocks every local ship exactly like this (gr496615); nothing above is a lint or test verdict on your diff. Fix the route or wait it out, then re-run scripts/ship.\033[0m\n' "$1" >&2
+    exit 68
+}
+
+gate_net_host() {
+    # Echo the host a failed uv fetch names in captured gate output; nothing
+    # (rc 1) when no fetch signature is present = a real code red.
+    local log="$1" host
+    host="$(grep -E 'Failed to fetch|Failed to download|error sending request' "$log" 2>/dev/null \
+        | grep -oE 'https?://[A-Za-z0-9._-]+' | head -1 || true)"
+    if [[ -n "$host" ]]; then
+        echo "${host#*://}"
+        return 0
+    fi
+    # uv always prints the URL on a fetch failure, so a bare transport error
+    # with no fetch marker is not claimed as network — a test-DB "connection
+    # refused" inside a pytest failure is infra but has no package host.
+    if grep -qE 'Failed to fetch|Failed to download|error sending request' "$log" 2>/dev/null; then
+        echo "a package index (uv named no host)"
+        return 0
+    fi
+    return 1
+}
+
+# One shell command inside whichever gate is up — the warm container's exec,
+# or a fresh bind-mount run. Centralised so the env sync and the gate command
+# go through the same door. $1 = command; remaining args are extra `compose
+# exec|run` flags (e.g. `-e UV_OFFLINE=1`, which must ride the env — a
+# `VAR=1 cmd1 && cmd2` prefix would only cover the first `&&` leg).
+gate_sh() {
+    local cmd="$1"; shift
+    if [[ "$GATE_MODE" == warm ]]; then
+        compose exec -T "$@" precis-gate bash -lc "$cmd"
+    else
+        compose run --rm --no-deps "${TEST_DB_ENV[@]+"${TEST_DB_ENV[@]}"}" "$@" \
+            -v "${WORKTREE}":/app precis-dev bash -lc "$cmd"
+    fi
+}
+
+# 1 when the env synced offline — the gate command then runs under
+# UV_OFFLINE=1. Per-run gate output capture, tee'd into by gate_exec and the
+# test-seam path, so a red run can be re-read for a fetch signature.
+GATE_UV_OFFLINE=0
+GATE_RUN_LOG=""
+
+gate_deps_sync() {
+    local log host
+    GATE_UV_OFFLINE=0
+    log="$(mktemp "${TMPDIR:-/tmp}/precis-gate-sync.XXXXXX")"
+    if gate_sh 'uv sync --offline' >"$log" 2>&1; then
+        GATE_UV_OFFLINE=1
+        cat "$log"
+        echo "gate env → synced offline from the uv cache (no pypi dependency)"
+    else
+        echo "offline env sync missed the uv cache — trying online (a genuinely new dep lands here; the cache re-warms for next time)"
+        if gate_sh 'uv sync' >>"$log" 2>&1; then
+            GATE_UV_OFFLINE=0
+            cat "$log"
+        else
+            cat "$log" >&2
+            host="$(gate_net_host "$log" || true)"
+            rm -f "$log"
+            gate_slot_release
+            if [[ -n "$host" ]]; then
+                die_network "$host"
+            fi
+            die "gate env sync failed and NOT on a package fetch — uv could not resolve/install the locked environment (output above). A lockfile/dep problem, not lint: fix it and re-run scripts/ship."
+        fi
+    fi
+    rm -f "$log"
+}
+
+gate_exec() {
+    local cmd="$1" rc=0 host
+    local -a offline_env=()
+    [[ "$GATE_UV_OFFLINE" == 1 ]] && offline_env=(-e UV_OFFLINE=1)
+    gate_sh "$cmd" "${offline_env[@]+"${offline_env[@]}"}" 2>&1 | tee "$GATE_RUN_LOG" || rc=$?
+    # An env synced offline can still miss the cache mid-command (a --with
+    # overlay the volume has never seen): uv's own words are "not found in
+    # the cache" / "the network was disabled" / "connectivity is disabled".
+    # Retry that once online — anything else under UV_OFFLINE is a real red,
+    # returned untouched.
+    if [[ "$rc" != 0 && "$GATE_UV_OFFLINE" == 1 ]] \
+        && grep -qiE 'offline|in the cache|disabled' "$GATE_RUN_LOG"; then
+        echo "⚠ offline gate run hit a uv cache miss — retrying the gate once online" >&2
+        : > "$GATE_RUN_LOG"
+        rc=0
+        gate_sh "$cmd" 2>&1 | tee -a "$GATE_RUN_LOG" || rc=$?
+    fi
+    if [[ "$rc" != 0 ]]; then
+        host="$(gate_net_host "$GATE_RUN_LOG" || true)"
+        if [[ -n "$host" ]]; then
+            gate_slot_release
+            rm -f "$GATE_RUN_LOG"
+            die_network "$host"
+        fi
+    fi
+    return "$rc"
+}
+
 # Run one gate command in the chosen gate. Warm: sync worktree in → (carry the
-# testmon map in for impacted mode) → exec → sync ruff fixes back (always, even
-# on a red gate, so the fixes stay staged for the human) → carry the updated
-# testmon map back out. Bind fallback: the classic per-run container with the
-# worktree mounted at /app (the map is on the mount already). NB `env UID=…` — a
-# bare `UID=…` fails (UID readonly).
+# testmon map in for impacted mode) → offline-first env sync → exec → sync
+# ruff fixes back (always, even on a red gate, so the fixes stay staged for
+# the human) → carry the updated testmon map back out. Bind fallback: the
+# classic per-run container with the worktree mounted at /app (the map is on
+# the mount already). NB `env UID=…` — a bare `UID=…` fails (UID readonly).
 run_gate() {
     # Optional leading flags: --slot forces a gate slot even on a --quick-family
     # ship (--checked runs real pytest — the RAM pressure the semaphore guards);
@@ -761,24 +899,30 @@ run_gate() {
     # behind someone's 2h suite — queueing is the exact congestion /qland
     # exists to avoid. gate_slot_release is a no-op when no slot is held.
     [[ "$QUICK" == 1 && "$want_slot" != 1 ]] || gate_slot_acquire
-    local rc=0
+    local rc=0 _host
+    GATE_RUN_LOG="$(mktemp "${TMPDIR:-/tmp}/precis-gate-run.XXXXXX")"
     if [[ -n "${PRECIS_SHIP_TEST_GATE_CMD:-}" ]]; then
         # TEST-ONLY seam (tests/test_ship_narrow_lock.py): run this host command instead of the container gate.
-        bash -c "$PRECIS_SHIP_TEST_GATE_CMD" || rc=$?
+        # tee'd into GATE_RUN_LOG so the same network-vs-code-red split below
+        # can read the fake gate's output.
+        bash -c "$PRECIS_SHIP_TEST_GATE_CMD" 2>&1 | tee "$GATE_RUN_LOG" || rc=$?
     elif [[ "$GATE_MODE" == warm ]]; then
         if ! sync_to_container; then
             gate_slot_release
+            rm -f "$GATE_RUN_LOG"
             echo "✖ could not sync source into precis-gate" >&2
             return 90
         fi
         [[ "$IMPACTED" == 1 || "$want_testmon" == 1 ]] && testmon_into_container
-        compose exec -T precis-gate bash -lc "$1" || rc=$?
+        gate_deps_sync
+        gate_exec "$1" || rc=$?
         # A failed sync-back is fatal on a green gate: ruff's autofixes stayed
         # in the container, so the tree about to be amended is not the tree
         # that passed lint (gr346536). On a red gate it is only noise.
         if ! sync_from_container; then
             if [[ "$rc" == 0 ]]; then
                 gate_slot_release
+                rm -f "$GATE_RUN_LOG"
                 echo "✖ gate passed but could not sync src/tests back out of precis-gate" >&2
                 return 91
             fi
@@ -786,10 +930,20 @@ run_gate() {
         fi
         [[ "$IMPACTED" == 1 || "$want_testmon" == 1 ]] && testmon_from_container
     else
-        compose run --rm --no-deps "${TEST_DB_ENV[@]+"${TEST_DB_ENV[@]}"}" \
-            -v "${WORKTREE}":/app precis-dev bash -lc "$1" || rc=$?
+        gate_deps_sync
+        gate_exec "$1" || rc=$?
     fi
     gate_slot_release
+    # Last-chance split (the test-seam path above all): a failure carrying a
+    # fetch signature is a dead route, never a code red.
+    if [[ "$rc" != 0 ]]; then
+        _host="$(gate_net_host "$GATE_RUN_LOG" || true)"
+        if [[ -n "$_host" ]]; then
+            rm -f "$GATE_RUN_LOG"
+            die_network "$_host"
+        fi
+    fi
+    rm -f "$GATE_RUN_LOG"
     return "$rc"
 }
 
@@ -1109,9 +1263,17 @@ _squawk_new_migrations() {
     [[ -n "$files" && "${PRECIS_SQUAWK:-1}" != 0 ]] || return 0
     if command -v uvx >/dev/null 2>&1; then
         say "squawk — migration SQL lint (new files only)"
+        local _sq_log _sq_rc=0 _sq_host
+        _sq_log="$(mktemp "${TMPDIR:-/tmp}/precis-squawk.XXXXXX")"
         # shellcheck disable=SC2086
-        uvx -q --from 'squawk-cli>=2' squawk $files \
-            || die "squawk found migration hazards — fix them (or, deliberately, PRECIS_SQUAWK=0) and re-run scripts/ship."
+        uvx -q --from 'squawk-cli>=2' squawk $files 2>&1 | tee "$_sq_log" || _sq_rc=$?
+        if [[ "$_sq_rc" != 0 ]]; then
+            _sq_host="$(gate_net_host "$_sq_log" || true)"
+            rm -f "$_sq_log"
+            [[ -n "$_sq_host" ]] && die_network "$_sq_host"
+            die "squawk found migration hazards — fix them (or, deliberately, PRECIS_SQUAWK=0) and re-run scripts/ship."
+        fi
+        rm -f "$_sq_log"
     else
         echo "WARNING: uvx missing — skipping the squawk migration lint"
     fi
@@ -1972,9 +2134,17 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
                 if [[ "$SLOW" != 1 ]]; then
                     SLOW_HINT=" NOTE: this gate ran the FAST lane (-m 'not slow'), so tests in the slow cluster did not execute — if the uncovered lines are pcb/se/hexfold, re-run with --slow before writing new tests."
                 fi
+                _dc_log="$(mktemp "${TMPDIR:-/tmp}/precis-diff-cover.XXXXXX")"
+                _dc_rc=0
                 uvx -q 'diff-cover>=9' coverage.xml --compare-branch=origin/main \
-                    --fail-under="$DIFF_COVER_MIN" \
-                    || die "diff coverage under ${DIFF_COVER_MIN}% — the report above lists the untested changed lines. Add tests for them (or, deliberately, PRECIS_DIFF_COVER_MIN=0) and re-run scripts/ship.${SLOW_HINT}"
+                    --fail-under="$DIFF_COVER_MIN" 2>&1 | tee "$_dc_log" || _dc_rc=$?
+                if [[ "$_dc_rc" != 0 ]]; then
+                    _dc_host="$(gate_net_host "$_dc_log" || true)"
+                    rm -f "$_dc_log"
+                    [[ -n "$_dc_host" ]] && die_network "$_dc_host"
+                    die "diff coverage under ${DIFF_COVER_MIN}% — the report above lists the untested changed lines. Add tests for them (or, deliberately, PRECIS_DIFF_COVER_MIN=0) and re-run scripts/ship.${SLOW_HINT}"
+                fi
+                rm -f "$_dc_log"
             else
                 echo "WARNING: coverage.xml or uvx missing — skipping the diff-coverage gate"
             fi

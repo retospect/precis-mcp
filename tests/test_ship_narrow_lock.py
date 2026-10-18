@@ -40,13 +40,31 @@ _BASH = "/bin/bash"  # macOS ships 3.2: the version scripts/ship must run on
 _FAKE_LINT = r"""#!/usr/bin/env bash
 # Fake lint/gate. PRECIS_FAKE_LINT_SLEEP seconds; marks start/finish in
 # PRECIS_FAKE_LINT_DIR; with PRECIS_FAKE_LINT_PROBE=1 fails if the repo-wide
-# ship lock dir exists at any probe.
+# ship lock dir exists at any probe. PRECIS_FAKE_LINT_NETFAIL=1 dies with
+# uv's unreachable-index signature; PRECIS_FAKE_LINT_FAIL=1 is a plain red.
 set -u
 d="$PRECIS_FAKE_LINT_DIR"
 name="$(basename "$PWD")"
 common="$(cd "$(git rev-parse --git-common-dir)" && pwd)"
 : > "$d/$name.started"
 echo run >> "$d/$name.runs"
+# PRECIS_FAKE_LINT_NETFAIL=1: die with uv's verbatim signature for a dead
+# package-index route (gr496615) — ship must report a NETWORK failure, never
+# "lint is RED". pypi.invalid is a reserved TLD, never a real host.
+if [ "${PRECIS_FAKE_LINT_NETFAIL:-0}" = 1 ]; then
+    echo 'error: Failed to build `precis-mcp @ file:///app`'
+    echo '  cause: Failed to resolve requirements from `build-system.requires`'
+    echo '  cause: Failed to fetch: https://pypi.invalid/simple/hatchling/'
+    echo '  cause: error sending request for url (https://pypi.invalid/simple/hatchling/)'
+    echo '  cause: client error (Connect)'
+    echo '  cause: Connect timeout'
+    exit 1
+fi
+# PRECIS_FAKE_LINT_FAIL=1: a plain red with no fetch signature — the control.
+if [ "${PRECIS_FAKE_LINT_FAIL:-0}" = 1 ]; then
+    echo "ruff: found 1 error"
+    exit 1
+fi
 # PRECIS_FAKE_LINT_HOLD=1: run until the test creates $d/release (load-proof;
 # the 300 s cap only bounds a hung test) instead of a fixed sleep.
 end=$((SECONDS + ${PRECIS_FAKE_LINT_SLEEP:-4}))
@@ -457,6 +475,33 @@ def test_checked_selector_failure_refuses(rig: Rig) -> None:
     assert rc != 0, out
     assert "cannot compute the checked selection" in out
     assert not rig.lockdir().exists()
+
+
+def test_gate_network_failure_is_not_a_lint_red(rig: Rig) -> None:
+    """gr496615: a dead package-index route inside the gate is a NETWORK
+    failure on a distinct exit path (rc 68, the unreachable host named) —
+    never "pre-qland lint is RED"."""
+    wt = rig.worktree("net", {"net.txt": "n\n"})
+    p, log = rig.ship(wt, "--quick", sleep=1, PRECIS_FAKE_LINT_NETFAIL="1")
+    rc = p.wait(timeout=120)
+    out = log.read_text(encoding="utf-8")
+    assert rc == 68, out
+    assert "NETWORK failure" in out
+    assert "pypi.invalid" in out
+    assert "lint is RED" not in out
+    assert not rig.lockdir().exists()
+
+
+def test_gate_plain_failure_stays_a_lint_red(rig: Rig) -> None:
+    """Control for the split: a red with no fetch signature keeps the
+    ordinary die path — the network check must not blanket-relabel."""
+    wt = rig.worktree("red", {"red.txt": "r\n"})
+    p, log = rig.ship(wt, "--quick", sleep=1, PRECIS_FAKE_LINT_FAIL="1")
+    rc = p.wait(timeout=120)
+    out = log.read_text(encoding="utf-8")
+    assert rc == 1, out
+    assert "pre-qland lint is RED" in out
+    assert "NETWORK failure" not in out
 
 
 def test_exact_land_full_gate_pins_and_has_no_trailer(rig: Rig) -> None:

@@ -208,7 +208,13 @@ broken code until the next pass: accepted on a dev cluster, and
 All paths abort+report on failure and are idempotent — fix and re-run.
 Merge target is `main` (no `master`). Red gate: the failure is printed above
 the `✖` — read *that*, never `scripts/ship` (remote-gate red: ship prints the
-failing jobs + `gh run view <id> --log-failed`). Where a commit has got to is
+failing jobs + `gh run view <id> --log-failed`). A dead package-index route
+is NOT a red: before the gate command, ship syncs the gate's project env
+offline-first (`uv sync --offline`, falling back online only on a uv cache
+miss — the cache lives on the per-worktree `gate-cache` volume shared by
+both gate services), and any fetch/transport failure exits 68 with
+"NETWORK failure" naming the unreachable host instead of a lint/test verdict
+(gr496615). Where a commit has got to is
 three refs: `main` (landed), `origin/gated` (last full-gate green),
 `origin/prod` (what the cluster runs) — script-moved, fast-forward only,
 never committed to (`deploy/README.md`). While a release is open,

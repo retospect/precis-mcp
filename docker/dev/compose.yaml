@@ -106,6 +106,13 @@ services:
       secrets:
         - gh_token
     working_dir: /app
+    volumes:
+      # Share the warm gate's persistent cache: bind-fallback gate runs and
+      # scripts/test then resolve the uv env — including the project's
+      # build-system.requires (hatchling), the per-run pypi fetch that made
+      # every local ship hostage to a CDN flap (gr496615) — offline once any
+      # run has warmed it. Per-worktree namespaced like precis-gate's mount.
+      - gate-cache:/home/precis/.cache
 
   # Warm gate container (scripts/ship). Long-lived across ships, and
   # DELIBERATELY has no /app bind mount: ship tar-syncs `git archive HEAD`
