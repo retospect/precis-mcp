@@ -678,3 +678,61 @@ def test_check_netlist_head_counts_collapsed_unrouted_todos(
         args={"phase": "netlist", "rule": "unrouted"},
     ).body
     assert ", 3 todo" in expanded.splitlines()[0]
+
+
+def _fixed_vdd_stub_and_gnd_pour(store: Any, slug: str) -> int:
+    """The taz15 shape in miniature (gr492989): the board's only copper is
+    AUTHORED fixed copper (one VDD stub off U1's VDD pad), and GND is a
+    pour-carried net on F.Cu, so U1's and U2's GND pads are joined by the
+    fill and nothing else. Returns the ref id."""
+    ref = store.get_ref(kind="pcb", id=slug)
+    board_id = store.pcb_ensure_board(ref.id)
+    assert store.pcb_assign_plane(ref.id, "F.Cu", "GND")
+    store.pcb_fixed_copper_put(
+        ref.id,
+        board_id,
+        "__epro_source",
+        "epro_import",
+        "1",
+        [
+            {
+                "ctype": "track",
+                "layer": "F.Cu",
+                "net": "VDD",
+                "geom": {
+                    "segments": [
+                        {"shape": "line", "start": [-7.0, 0.0], "end": [-7.0, -3.0]}
+                    ],
+                    "width_mm": 0.2,
+                },
+            }
+        ],
+    )
+    return int(ref.id)
+
+
+def test_check_pours_fixed_copper_board_so_pour_nets_read_connected(
+    pcb: PcbHandler, store: Any
+) -> None:
+    """gr492989: a board whose copper is all fixed source copper was never
+    realized, so nothing poured its pour-carried nets and DRC read each as
+    split or unrouted (taz15-r2: GND, 3V3, PV+, 12V_POWER). The check run
+    pours them with realize's own pour code, so pads its own net's fill
+    reaches count as connected."""
+    from precis.pcb import check_run
+
+    pcb.put(id="chk-fixed-pour", args=_mini_design())
+    ref_id = _fixed_vdd_stub_and_gnd_pour(store, "chk-fixed-pour")
+    design = store.pcb_load(ref_id)
+    ran = check_run.run(store, ref_id, design, eval_phase="routed")
+    assert ran is not None
+    by_rule: dict[str, set[str]] = {}
+    for f in ran.findings:
+        by_rule.setdefault(f.rule, set()).add(f.where)
+    assert "net GND" not in by_rule.get("unrouted", set()), by_rule
+    assert "net GND" not in by_rule.get("connectivity", set()), by_rule
+    # A net the fill does not carry is judged exactly as before.
+    assert "net SIG" in by_rule.get("unrouted", set()), by_rule
+    # Nothing is written: the pour exists in the check's model only.
+    board_id = int(design["board"]["board_id"])
+    assert not [c for c in store.pcb_copper_list(board_id) if c.get("ctype") == "pour"]

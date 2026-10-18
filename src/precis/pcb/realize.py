@@ -4199,6 +4199,50 @@ def _pour_planes(
     return pours, extra
 
 
+def fixed_copper_pours(
+    ir: PcbIR,
+    config: RealizeConfig,
+    footprints: dict[str, dict[str, Any]] | None,
+    fixed_copper: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """The pours a realize pass would lay over ``fixed_copper`` alone: the
+    same :func:`_pour_planes` call, clearances and bare-island drop as
+    :func:`realize`, with no routed tracks or vias. For a board whose only
+    copper is authored (an import with ``--copper fixed``, gr492989): its
+    plane and pour-carried nets reach their pads through the fill, and a
+    DRC model without the fill reads every such net as split. ``[]`` when
+    the stackup pours nothing or the board has no outline."""
+    rules_by_net = {
+        n: _resolve_track_rules(ir, n, PAD_LAYER, config) for n in range(ir.n_nets)
+    }
+    if not rules_by_net:
+        return []
+    clearance_max = max(_net_clearances(rules_by_net, config).values())
+    pours, _ = _pour_planes(
+        ir,
+        [],
+        [],
+        [],
+        [],
+        clearance_max,
+        max(clearance_max, _board_edge_min_mm(config)) + 0.01,
+        footprints,
+        fixed_copper,
+        npth_clearance_mm=_npth_clearance_mm(config),
+    )
+    if not pours:
+        return []
+    pours, _dropped = _drop_bare_islands(
+        ir,
+        [],
+        [],
+        pours,
+        pads_for_ir(ir, [str(e.get("name")) for e in ir.stackup], footprints),
+        fixed_copper,
+    )
+    return pours
+
+
 # ── courtyard ink avoidance (round-4 silk review, item 8 residue) ─────────
 #
 # A part's courtyard OUTLINE is placement-derived and known in full before
@@ -8536,6 +8580,7 @@ __all__ = [
     "RealizedVia",
     "UnroutedReason",
     "UnstitchedNet",
+    "fixed_copper_pours",
     "pad_geometry",
     "pads_for_ir",
     "pin_topology",

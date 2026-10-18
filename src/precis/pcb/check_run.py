@@ -758,6 +758,27 @@ def run(
     }
     vias = [c for c in copper if c.get("ctype") == "via"]
     outline = outline_from_features(store, ref_id)
+    # A board whose copper is all authored (``--copper fixed`` import,
+    # gr492989) was never realized, so nothing poured its plane and
+    # pour-carried nets: their pads reach each other only through the
+    # fill, and a model without it reads each such net as split. Pour
+    # them the way realize would, before the furniture cuts its antipads.
+    # A fresh IR: plane promotion is L1 state the route job re-applies
+    # (:func:`precis.pcb.session.apply_plane_assignments`), and ``ir``
+    # above stays the unpromoted one every other reader here was built on.
+    fixed = [c for c in copper if c.get("fixed")]
+    if fixed and outline and not any(c.get("ctype") == "pour" for c in copper):
+        pour_ir = build_ir(store, ref_id, graph)
+        pour_ir.outline = [(float(x), float(y)) for x, y in outline]
+        pcb_session.apply_plane_assignments(pour_ir, store.pcb_planes_list(ref_id))
+        copper = copper + pcb_realize.fixed_copper_pours(
+            pour_ir,
+            pcb_realize.RealizeConfig(
+                fab_caps=capability, class_rules=graph.get("net_classes")
+            ),
+            footprints,
+            fixed,
+        )
     # `pads` below is REPLACED with `_board_furniture`'s own return, not
     # merely extended — that call already folds the component pads
     # passed in here together with the fiducial flashes it mints
