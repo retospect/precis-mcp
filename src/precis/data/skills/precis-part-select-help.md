@@ -59,9 +59,12 @@ Columns: `lcsc · mfr_part · description · basic · stock · restocks · packa
 $ea`. Pick the top Basic row that matches your parametrics + footprint.
 
 A `q` that is itself a C-number is a point lookup against the catalog row
-(the selector's description match would never see it). When the local catalog
-has no hit, `search` asks the live jlcpcb.com listing with the same keyword —
-results are headed **LIVE**, catalogued on the way out, and show
+(the selector's description match would never see it). Rows with stock 0 rank
+last. When a multi-word `q` matches no part on **every** word (catalog text says
+`16P` where you wrote `16pin`), `search` retries with any word and heads the
+table **PARTIAL**, ranked by terms matched; trim the odd word, or search the
+exact MPN. When the local catalog has no hit at all, `search` asks the live
+jlcpcb.com listing with the same keyword — results are headed **LIVE**, catalogued on the way out, and show
 `restocks = —` until turnover accrues. A wedged endpoint degrades to the
 catalog's own answer with the failure named.
 

@@ -319,6 +319,58 @@ def test_search_c_number_is_a_point_lookup(store):
     assert called == []
 
 
+def test_search_partial_match_ranks_in_stock_first_and_skips_live(store):
+    """gr495293: 'receptacle'/'16pin' are not in the catalog description
+    ('16P'), so the all-terms query is empty; the OR fallback finds the
+    connector, in-stock before an out-of-stock junk row, without the live
+    call that used to answer with stock-0 listings."""
+    desc = "16P 5A Female Surface Mount, Right Angle Type-C SMD USB Connectors"
+    store.parts_import(
+        [
+            {
+                "lcsc": "C9900091898",
+                "mfr_part": "USB_C_Receptacle",
+                "description": "USB-C-SMD_TYPE-C New Arrivals",
+                "jlcpcb_assemblable": True,
+                "stock": 0,
+            },
+            {
+                "lcsc": "C165948",
+                "mfr_part": "TYPE-C-31-M-12",
+                "description": desc,
+                "jlcpcb_assemblable": True,
+                "stock": 365713,
+            },
+        ]
+    )
+    called = []
+
+    def live_search(*_a, **_k):
+        called.append(1)
+        return []
+
+    part = PartHandler(hub=Hub(store=store), live_search=live_search)
+    body = part.search(q="USB Type-C 16pin receptacle SMD").body
+    assert "PARTIAL" in body
+    assert body.index("C165948") < body.index("C9900091898")
+    assert called == []
+    strict = part.search(q="USB Type-C SMD").body
+    assert "PARTIAL" not in strict
+    assert strict.index("C165948") < strict.index("C9900091898")
+
+
+def test_search_live_rows_list_in_stock_first(store):
+    out_of_stock = {**C2655145, "stockCount": 0, "componentCode": "C9900000001"}
+    part = PartHandler(
+        hub=Hub(store=store),
+        live_search=lambda s, q, page_size=25: jlc_library.live_search(
+            s, q, post=_post_with([out_of_stock, C2655145]), page_size=page_size
+        ),
+    )
+    body = part.search(q="AS7341 sensor").body
+    assert body.index("C2655145") < body.index("C9900000001")
+
+
 def test_search_live_outage_names_the_failure(store):
     def boom(store_, q, page_size=25):
         raise VendorError("jlcpcb-web", "HTTP 503 from listing")

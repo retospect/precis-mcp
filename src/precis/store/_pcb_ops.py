@@ -5382,20 +5382,36 @@ class PcbMixin:
         )
         return restocked
 
-    def parts_search(self, q: str, *, limit: int = 20) -> list[dict[str, Any]]:
+    def parts_search(
+        self, q: str, *, limit: int = 20, partial: bool = False
+    ) -> list[dict[str, Any]]:
         """The JLCPCB-native selector: hard-filter to assemblable
-        parts; rank Basic-first then **turnover** (restock frequency + healthy
-        EWMA stock) — prefer parts that keep being available, not the last reel.
+        parts; rank in-stock first, then Basic-first, then **turnover**
+        (restock frequency + healthy EWMA stock) — prefer parts that keep
+        being available, not the last reel.
+
+        ``partial`` ORs the query terms instead of ANDing them (catalog
+        descriptions say ``16P`` where a query says ``16pin``): in-stock
+        first, then the number of terms matched, then the usual ranking.
         """
+        if partial:
+            tsq = "replace(plainto_tsquery('english', %s)::text, '&', '|')::tsquery"
+            rank = "round(ts_rank(p.description_tsv, q.tsq)::numeric, 3) DESC, "
+            frm = f"FROM (SELECT {tsq} AS tsq) q, parts p "
+            cond = "p.description_tsv @@ q.tsq"
+        else:
+            rank = ""
+            frm = "FROM parts p "
+            cond = "p.description_tsv @@ plainto_tsquery('english', %s)"
         with self._pcb_conn() as conn:
             rows = conn.execute(
                 "SELECT p.lcsc, p.mfr_part, p.description, p.basic, p.stock, "
                 "       p.package, p.price, coalesce(a.restock_count, 0), "
                 "       a.ewma_stock "
-                "FROM parts p LEFT JOIN part_availability a ON a.lcsc = p.lcsc "
-                "WHERE p.jlcpcb_assemblable "
-                "  AND p.description_tsv @@ plainto_tsquery('english', %s) "
-                "ORDER BY p.basic DESC, coalesce(a.restock_count, 0) DESC, "
+                f"{frm}LEFT JOIN part_availability a ON a.lcsc = p.lcsc "
+                f"WHERE p.jlcpcb_assemblable AND {cond} "
+                f"ORDER BY coalesce(p.stock, 0) > 0 DESC, {rank}"
+                "         p.basic DESC, coalesce(a.restock_count, 0) DESC, "
                 "         coalesce(a.ewma_stock, p.stock, 0) DESC "
                 "LIMIT %s",
                 (q, limit),

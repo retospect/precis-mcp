@@ -270,6 +270,14 @@ class PartHandler(Handler):
                 hit = self.store.part_row(direct)
                 if hit is not None:
                     rows = [hit]
+        partial = False
+        if not rows and len(q.split()) > 1:
+            # No part matches every word: rank by terms matched, in-stock
+            # first, so '16pin' vs a catalog '16P' still finds the part. A
+            # single token (an MPN like TYPE-C-31-M-12 tokenizes into common
+            # fragments) goes to the live lookup instead.
+            rows = self.store.parts_search(q, limit=page_size, partial=True)
+            partial = bool(rows)
         live_rows: list[dict[str, Any]] | None = None
         live_err: str | None = None
         if not rows:
@@ -296,7 +304,8 @@ class PartHandler(Handler):
                 "fallback) — it may be empty until that has run."
             )
         out = []
-        for r in rows or live_rows or []:
+        shown = rows or sorted(live_rows or [], key=lambda r: not (r["stock"] or 0))
+        for r in shown:
             price = min_unit_price(r.get("price"))
             out.append(
                 {
@@ -311,7 +320,11 @@ class PartHandler(Handler):
                 }
             )
         head = (
-            f"# {len(out)} assemblable part(s) for {q!r} (Basic + high-turnover first)"
+            f"# {len(out)} PARTIAL match(es) for {q!r} — no part matches every "
+            "term; ranked in-stock first, then by terms matched"
+            if partial
+            else f"# {len(out)} assemblable part(s) for {q!r} "
+            "(in stock, Basic + high-turnover first)"
             if rows
             else f"# {len(out)} LIVE part(s) for {q!r} — fetched from "
             "jlcpcb.com's listing just now and catalogued (not yet ranked by "
