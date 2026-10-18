@@ -7,6 +7,9 @@ Subcommands:
   leak via ``ps`` / shell history.
 * ``list``       — masked inventory (name, hint, updated_at). No plaintext.
 * ``get NAME``   — reveal one plaintext (admin/debug; writes an audit row).
+* ``check``      — probe every known credential against its provider's fixed
+  auth-only endpoint and report ok / failed / unprobed / missing. Prints
+  names, states and status codes only, never a value.
 * ``rm NAME``    — delete a secret.
 * ``import``     — bulk-load from ``~/.secrets/pw/*`` files (migration helper).
 """
@@ -16,6 +19,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import Any
 
 from precis.cli._common import resolve_dsn
 
@@ -39,6 +43,12 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
 
     p_get = s.add_parser("get", help="Reveal one plaintext (audited).")
     p_get.add_argument("name")
+
+    s.add_parser(
+        "check",
+        help="Probe every known credential; report ok/failed/unprobed/missing "
+        "(no values).",
+    )
 
     p_rm = s.add_parser("rm", help="Delete a secret.")
     p_rm.add_argument("name")
@@ -70,6 +80,8 @@ def run(args: argparse.Namespace) -> None:
             _list(store, vault)
         elif cmd == "get":
             _get(args, store, vault)
+        elif cmd == "check":
+            _check(store)
         elif cmd == "rm":
             vault.delete_secret(args.name, store=store)
             print(f"secret: deleted {args.name}")
@@ -103,6 +115,14 @@ def _list(store: object, vault: object) -> None:
     width = max(len(str(r["name"])) for r in rows)
     for r in rows:
         print(f"{r['name']!s:<{width}}  {r['hint']:<16}  {r['updated_at']}")
+
+
+def _check(store: Any) -> None:
+    import asyncio
+
+    from precis_web import secret_status
+
+    print(secret_status.format_report(asyncio.run(secret_status.weekly_report(store))))
 
 
 def _get(args: argparse.Namespace, store: object, vault: object) -> None:

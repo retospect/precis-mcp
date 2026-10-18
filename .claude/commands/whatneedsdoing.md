@@ -1,7 +1,7 @@
 ---
 description: "One honest 'what needs doing' across repo dev work (backlog, gripes, PRs, Dependabot) and the prod todo queue, plus hygiene and system-health scans."
 argument-hint: "[optional focus, e.g. 'dark-factory' or 'drafts']"
-allowed-tools: Read, Bash(grep:*), Bash(ssh:*), Bash(gh:*), Bash(scripts/migration-check:*), Bash(scripts/docs-index:*), Bash(scripts/memory-lint:*), Bash(scripts/skill-eval:*), Bash(scripts/backlog-lint:*), Bash(scripts/token-review:*), Bash(scripts/surface-review:*), Bash(scripts/db-thrash-review:*), Bash(scripts/skill-search-review:*), Bash(scripts/gripe-gc-review:*), Bash(scripts/fda-grant-review:*), Bash(scripts/nightly:*), Bash(scripts/main-ci-status:*), Bash(uv run precis maintenance cfp-watch:*), Bash(scripts/coderef:*), mcp__precis__get, mcp__precis__search
+allowed-tools: Read, Bash(grep:*), Bash(ssh:*), Bash(gh:*), Bash(scripts/migration-check:*), Bash(scripts/docs-index:*), Bash(scripts/memory-lint:*), Bash(scripts/skill-eval:*), Bash(scripts/backlog-lint:*), Bash(scripts/token-review:*), Bash(scripts/surface-review:*), Bash(scripts/db-thrash-review:*), Bash(scripts/skill-search-review:*), Bash(scripts/gripe-gc-review:*), Bash(scripts/fda-grant-review:*), Bash(scripts/secrets-check-review:*), Bash(scripts/prod-precis secret check:*), Bash(scripts/nightly:*), Bash(scripts/main-ci-status:*), Bash(uv run precis maintenance cfp-watch:*), Bash(scripts/coderef:*), mcp__precis__get, mcp__precis__search
 ---
 
 Work lives in **two different substrates** — do not merge them into one flat
@@ -35,8 +35,8 @@ Live GitHub — open PRs:
 Live GitHub — open Dependabot alerts (severity ⋅ package ⋅ #num ⋅ summary):
 !`gh api "repos/{owner}/{repo}/dependabot/alerts?state=open&per_page=50" --jq '.[] | "\(.security_advisory.severity)\t\(.dependency.package.name)\t#\(.number)\t\(.security_advisory.summary)"' 2>/dev/null || echo '(dependabot API unavailable — needs a token with repo security-read)'`
 
-Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅ skill-eval diff ⋅ backlog done-gunk ⋅ token-review cadence ⋅ db-thrash cadence ⋅ skill-search cadence ⋅ gripe-gc cadence ⋅ fda-grant cadence ⋅ nightly build ⋅ main on CI:
-!`scripts/migration-check --quiet 2>&1 || true; echo '— code anchors —'; uv run --quiet python scripts/coderef check docs 2>&1 | tail -6 || true; echo '— memory —'; scripts/memory-lint 2>&1 || true; echo '— skill-eval —'; scripts/skill-eval --runner live --diff 2>&1 || true; echo '— backlog —'; scripts/backlog-lint 2>&1 | head -1 || true; echo '— tokens —'; scripts/token-review 2>&1 || true; echo '— surface —'; scripts/surface-review 2>&1 || true; echo '— db-thrash —'; scripts/db-thrash-review 2>&1 || true; echo '— skill-search —'; scripts/skill-search-review 2>&1 || true; echo '— gripe-gc —'; scripts/gripe-gc-review 2>&1 || true; echo '— fda-grant —'; scripts/fda-grant-review 2>&1 || true; echo '— nightly —'; scripts/nightly --check 2>&1 || true; echo '— main on CI —'; uv run --quiet python scripts/main-ci-status 2>&1 || true`
+Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅ skill-eval diff ⋅ backlog done-gunk ⋅ token-review cadence ⋅ db-thrash cadence ⋅ skill-search cadence ⋅ gripe-gc cadence ⋅ fda-grant cadence ⋅ credential-check cadence ⋅ nightly build ⋅ main on CI:
+!`scripts/migration-check --quiet 2>&1 || true; echo '— code anchors —'; uv run --quiet python scripts/coderef check docs 2>&1 | tail -6 || true; echo '— memory —'; scripts/memory-lint 2>&1 || true; echo '— skill-eval —'; scripts/skill-eval --runner live --diff 2>&1 || true; echo '— backlog —'; scripts/backlog-lint 2>&1 | head -1 || true; echo '— tokens —'; scripts/token-review 2>&1 || true; echo '— surface —'; scripts/surface-review 2>&1 || true; echo '— db-thrash —'; scripts/db-thrash-review 2>&1 || true; echo '— skill-search —'; scripts/skill-search-review 2>&1 || true; echo '— gripe-gc —'; scripts/gripe-gc-review 2>&1 || true; echo '— fda-grant —'; scripts/fda-grant-review 2>&1 || true; echo '— secrets-check —'; scripts/secrets-check-review 2>&1 || true; echo '— nightly —'; scripts/nightly --check 2>&1 || true; echo '— main on CI —'; uv run --quiet python scripts/main-ci-status 2>&1 || true`
 
 ## Procedure
 
@@ -209,7 +209,18 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
      a `brew upgrade python` cdhash bump silently broke melchior's grant and
      dark-ingested for days; see the runbook + the `docs/backlog/` melchior
      daemon-NAS-lockout item.)
-   - **Nightly build** (`scripts/nightly --check`) — the LOCAL full-suite health
+   - **Credential-check cadence** (`scripts/secrets-check-review`) — on **DUE**
+     (last check >7 days ago) run `scripts/prod-precis secret check`: the
+     `/secrets` page's probes against the prod vault, one line per registry
+     secret as `ok` / `failed` (HTTP status) / `unprobed` / `missing`, plus the
+     last succeeded job for an unprobed secret jobs depend on. Never print,
+     paste or store a value — the output has none. File each `failed` or
+     non-optional `missing` credential as one `waiting-for:reto` todo with the
+     key URL from its line (step 4a), then append a dated line to
+     `docs/runbooks/secrets-check.md`. Inside the 7-day window it's quiet —
+     skip it. (An expired key otherwise surfaces only as a failing job, e.g.
+     `pourbaix_bulk` with `failure_class=config`; runbook has the details.)
+  - **Nightly build** (`scripts/nightly --check`) — the LOCAL full-suite health
      read (not GitHub). **`✗ RED`** means green main was broken by upstream
      dependency drift (the ship gate can't catch it — no code changed);
      investigate the named failing tests. **`DUE`** (last run >24h ago) →

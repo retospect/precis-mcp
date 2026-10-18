@@ -14,6 +14,11 @@ exception *type*, never from response headers/body (Wolfram's body-sniff is
 the one exception, and it reads a few hundred bytes locally to test for a
 substring — it is never included in ``detail``).
 
+:func:`weekly_report` / ``precis secret check`` run the same probes outside the
+web page for ``/whatneedsdoing`` (gr496305): one state per registry secret
+(ok, failed, unprobed, missing), plus the last succeeded job for an unprobed
+secret that jobs depend on. It adds no endpoints beyond :data:`_PROBES`.
+
 The probe URLs are fixed, hardcoded provider endpoints — never agent- or
 user-supplied — so the ``safe_fetch`` SSRF convention
 (``src/precis/utils/safe_fetch.py``) does not apply here; a plain
@@ -26,7 +31,7 @@ import asyncio
 import os
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -55,6 +60,13 @@ class SecretSpec:
     #: Key into :data:`_PROBES`, or ``None`` for a presence-only secret (no
     #: cheap auth-only endpoint, or a probe would cost money/side effects).
     probe_group: str | None = None
+    #: ``meta->>'job_type'`` values of jobs that cannot succeed without this
+    #: secret. The weekly check shows the last succeeded one for a secret no
+    #: probe covers, as evidence that it still works.
+    used_by_job_types: tuple[str, ...] = ()
+    #: Absent is a normal configuration, so the weekly check reports it as
+    #: missing without asking anyone to provision it.
+    optional: bool = False
 
 
 KNOWN_SECRETS: tuple[SecretSpec, ...] = (
@@ -183,6 +195,7 @@ KNOWN_SECRETS: tuple[SecretSpec, ...] = (
         "key — paste it here.",
         cost="free",
         probe_group=None,
+        used_by_job_types=("pourbaix_bulk",),
     ),
     SecretSpec(
         name="PRECIS_CORE_API_KEY",
@@ -238,6 +251,7 @@ KNOWN_SECRETS: tuple[SecretSpec, ...] = (
         "different endpoint/key than the main LLM ladder.",
         cost="depends on the endpoint",
         probe_group=None,
+        optional=True,
     ),
     SecretSpec(
         name="ACATOME_CROSSREF_MAILTO",
@@ -262,6 +276,55 @@ KNOWN_SECRETS: tuple[SecretSpec, ...] = (
         get_blurb="Auto-minted into the vault on first `precis users add` — "
         "there's nothing to obtain. Never rotate it: rotation invalidates "
         "every peppered password hash.",
+        probe_group=None,
+    ),
+    SecretSpec(
+        name="JLCPCB_APP_ID",
+        purpose="pcb kind — JLCPCB Open API triple (app ID); live stock/price.",
+        get_url=None,
+        get_blurb="Create an app in the JLCPCB Open API console, grant it the "
+        "Components scope, and set the app ID, access key and secret key here. "
+        "Requests are HMAC-signed per call, so there is no auth-only "
+        "endpoint to probe.",
+        probe_group=None,
+    ),
+    SecretSpec(
+        name="JLCPCB_ACCESS_KEY",
+        purpose="pcb kind — JLCPCB Open API triple (access key).",
+        get_url=None,
+        get_blurb="Same app as JLCPCB_APP_ID in the JLCPCB Open API console.",
+        probe_group=None,
+    ),
+    SecretSpec(
+        name="JLCPCB_SECRET_KEY",
+        purpose="pcb kind — JLCPCB Open API triple (HMAC signing secret).",
+        get_url=None,
+        get_blurb="Same app as JLCPCB_APP_ID in the JLCPCB Open API console.",
+        probe_group=None,
+    ),
+    SecretSpec(
+        name="NANOPUB_BOT_PRIVATE_KEY",
+        purpose="Nanopub signing key (base64 PKCS#8) for the non-attesting bot identity.",
+        get_url=None,
+        get_blurb="Generate with `precis nanopub keygen` and store it with "
+        "`precis secret set`. Not an external service credential.",
+        probe_group=None,
+    ),
+    SecretSpec(
+        name="NANOPUB_ATTESTING_PRIVATE_KEY",
+        purpose="Nanopub signing key (base64 PKCS#8) for the attesting reviewer.",
+        get_url=None,
+        get_blurb="Generate with `precis nanopub keygen` and store it with "
+        "`precis secret set`. Not an external service credential.",
+        probe_group=None,
+    ),
+    SecretSpec(
+        name="NANOPUB_ATTESTING_ORCID",
+        purpose="ORCID URI the attesting nanopub key is registered to (an "
+        "identifier, not a credential).",
+        get_url=None,
+        get_blurb="The reviewer's ORCID iD as `https://orcid.org/...`; it must "
+        "match the key's registry allowlist entry.",
         probe_group=None,
     ),
 )
@@ -684,12 +747,129 @@ async def get_results(
         return _last
 
 
+# ── weekly report ────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class ReportRow:
+    """One registry secret as the weekly check reports it. ``state`` is
+    ``ok`` | ``failed`` | ``unprobed`` | ``missing``; ``detail`` is a
+    :class:`CheckResult` detail or a fixed phrase, never a secret value."""
+
+    name: str
+    state: str
+    detail: str
+    get_url: str | None
+    optional: bool = False
+    job_types: tuple[str, ...] = ()
+    #: ``(job id, finished_at)`` of the newest succeeded job of a type in
+    #: ``job_types`` — only looked up for ``unprobed`` rows.
+    last_job: tuple[int, datetime] | None = None
+
+
+def classify(spec: SecretSpec, present: bool, result: CheckResult | None) -> ReportRow:
+    """Pure mapping from presence + probe outcome to a report row.
+
+    An inconclusive probe (timeout, rate limit, 5xx) is ``unprobed``, not
+    ``failed``: the key was not shown to be bad, so nobody is asked to
+    rotate it.
+    """
+    state, detail = "ok", "verified"
+    if not present:
+        state, detail = "missing", "optional, not set" if spec.optional else "not set"
+    elif result is None:
+        state, detail = "unprobed", "no cheap auth-only check"
+    elif result.state == "bad":
+        state, detail = "failed", result.detail
+    elif result.state != "ok":
+        state, detail = "unprobed", f"probe inconclusive: {result.detail}"
+    return ReportRow(
+        spec.name, state, detail, spec.get_url, spec.optional, spec.used_by_job_types
+    )
+
+
+def last_succeeded_job(
+    store: Store, job_types: tuple[str, ...]
+) -> tuple[int, datetime] | None:
+    """Newest live job of one of ``job_types`` tagged ``STATUS:succeeded``."""
+    if not job_types:
+        return None
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            SELECT r.ref_id, r.updated_at
+              FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE r.kind = 'job' AND r.retired_at IS NULL
+               AND r.meta->>'job_type' = ANY(%s)
+               AND t.namespace = 'STATUS' AND t.value = 'succeeded'
+             ORDER BY r.updated_at DESC
+             LIMIT 1
+            """,
+            (list(job_types),),
+        ).fetchone()
+    return (int(row[0]), row[1]) if row else None
+
+
+async def weekly_report(store: Store) -> list[ReportRow]:
+    """Probe every probe-able registry secret once and report all of them.
+
+    Calls :func:`run_checks` directly (the fixed :data:`_PROBES` endpoints, no
+    page cache) and, for each ``unprobed`` secret that jobs depend on, adds
+    the last succeeded job as evidence the key still works.
+    """
+    results = await run_checks(store)
+    rows: list[ReportRow] = []
+    for spec in KNOWN_SECRETS:
+        row = classify(
+            spec, is_available(spec.name, store=store), results.get(spec.name)
+        )
+        if row.state == "unprobed":
+            row = replace(row, last_job=last_succeeded_job(store, row.job_types))
+        rows.append(row)
+    return rows
+
+
+def format_report(rows: list[ReportRow]) -> str:
+    """Plain-text report, one line per secret, grouped by state. Failed and
+    missing (non-optional) rows carry the provider's key URL; an unprobed
+    row with job dependencies names its last succeeded job."""
+    order = ("failed", "missing", "unprobed", "ok")
+    width = max((len(r.name) for r in rows), default=0)
+    lines = [
+        "secrets: " + " ".join(f"{sum(r.state == s for r in rows)} {s}" for s in order)
+    ]
+    for state in order:
+        for r in (r for r in rows if r.state == state):
+            line = f"{state:<8} {r.name:<{width}}  {r.detail}"
+            if state in ("failed", "missing") and not r.optional and r.get_url:
+                line += f"  — get a key: {r.get_url}"
+            if state == "unprobed" and r.last_job is not None:
+                job_id, at = r.last_job
+                line += (
+                    f"  — last succeeded job: get(kind='job', id={job_id}) "
+                    f"at {at.astimezone(UTC):%Y-%m-%dT%H:%MZ}"
+                )
+            elif state == "unprobed" and r.job_types:
+                line += f"  — no succeeded {'/'.join(r.job_types)} job on record"
+            elif state == "unprobed":
+                line += "  — no job records its use"
+            lines.append(line)
+    return "\n".join(lines)
+
+
 __all__ = [
     "KNOWN_SECRETS",
     "CheckResult",
     "ProbeFn",
+    "ReportRow",
     "SecretSpec",
     "checked_at",
+    "classify",
+    "format_report",
     "get_results",
+    "last_succeeded_job",
     "run_checks",
+    "weekly_report",
 ]
