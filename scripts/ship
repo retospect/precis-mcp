@@ -2376,6 +2376,13 @@ else
     # commit, so name OUR landed sha rather than whatever main is by now.
     say "shipped — landed on main:"
     git log --oneline -1 "${LANDED_SHA:-origin/main}"
+    # Comment each gripe the landed commit fixes (subject "(gr123)" or a
+    # "Fixes: gr123" trailer; docs/conventions/shipping.md). Only for a commit
+    # this run pushed — the nothing-new path re-names main's tip. Best-effort:
+    # gripe-note always exits 0 and caps its prod call at 25 s.
+    if [[ -n "$LANDED_SHA" && "$LANDED_SHA" != "$OLD_MAIN" && -x "${WORKTREE}/scripts/gripe-note" ]]; then
+        "${WORKTREE}/scripts/gripe-note" --rev "$LANDED_SHA" --text 'landed {sha} on main' || true
+    fi
     if [[ "$QUICK" == 1 ]]; then
         # Names what actually ran. The old wording ("no ruff/mypy/pytest") outlived
         # the pre-qland lint by one commit, and a banner that overstates the debt is

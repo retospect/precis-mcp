@@ -59,6 +59,7 @@ import json
 import math
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -419,6 +420,52 @@ def next_line(sha: str) -> str:
     )
 
 
+def release_label(state: dict[str, Any]) -> str:
+    """``r<N>`` from the recorded release branch, else the round number."""
+    branch = str((state.get("release") or {}).get("branch") or "")
+    return branch.rsplit("/", 1)[-1] if branch else f"r{state.get('n')}"
+
+
+#: Longest the deploy path waits on scripts/gripe-note (its own prod call
+#: is capped at 25 s); past this the note is abandoned, the deploy goes on.
+NOTE_TIMEOUT_S = 30.0
+
+
+def note_gripes(prev: str, head: str, text: str) -> None:
+    """Comment each gripe a commit in prev..head fixes (scripts/gripe-note).
+
+    Best-effort: the rollout already happened, so nothing here fails or
+    holds the deploy past :data:`NOTE_TIMEOUT_S`.
+    """
+    if not head or prev == head:
+        return
+    rng = f"{prev}..{head}" if prev else head
+    # Own process group: gripe-note runs under `uv run`, whose python child
+    # would outlive a kill of the direct child and keep the pipe open.
+    try:
+        proc = subprocess.Popen(
+            [str(HERE / "gripe-note"), "--rev", rng, "--text", text],
+            cwd=str(ROOT),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            start_new_session=True,
+        )
+    except OSError as e:
+        say(f"gripe-note: {type(e).__name__} — no deploy comments posted")
+        return
+    try:
+        out, _ = proc.communicate(timeout=NOTE_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.communicate()
+        say(f"gripe-note: TimeoutExpired after {NOTE_TIMEOUT_S:g}s — no deploy comments")
+        return
+    if out.strip():
+        say(out.strip())
+
+
 def pending_sha(rel: dict[str, Any], default: str) -> str:
     dep = rel.get("deployment") or {}
     return str(dep.get("sha") or default)
@@ -478,10 +525,19 @@ def deploy_and_close(args: argparse.Namespace, sha: str) -> int:
     stale_rc = _regate_if_stale(args)
     if stale_rc:
         return stale_rc
+    label = release_label(round_state() or {})
+    prev = rev("origin/prod")
     rc = rnd("deploy", stream=True).returncode
     if rc == 3:
+        # The release owner's path: rollout done, runtime confirmed later by
+        # `scripts/round deploy --confirm-runtime`. The deploy note posts
+        # here, the one exit of this script a deploy takes in practice.
         cur = round_state() or {}
-        say(next_line(pending_sha(cur.get("release") or {}, sha)))
+        head = pending_sha(cur.get("release") or {}, sha)
+        note_gripes(
+            prev, head, f"deployed {label} ({{sha}}); runtime confirmation pending"
+        )
+        say(next_line(head))
         return 3
     if rc != 0:
         return die(

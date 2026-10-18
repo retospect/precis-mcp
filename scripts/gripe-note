@@ -1,0 +1,174 @@
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
+"""scripts/gripe-note — comment each gripe a landed commit says it fixes.
+
+    scripts/gripe-note --rev SHA --text 'landed {sha} on main'
+    scripts/gripe-note --rev OLD..NEW --text 'deployed r42 ({sha})'
+
+Reads the commit (or every commit in the range) and collects the gripes it
+FIXES, from exactly two places (docs/conventions/shipping.md):
+
+- a ``Fixes: gr123`` trailer line (``Fixes: gr1, gr2`` / ``gr1 gr2``), and
+- a parenthesised id list ending the subject: ``fix(x): y (gr123)``.
+
+Any other mention (``blocks gr…``, ``related gr…``, ``per gr… c6``) is
+context, never matched: a "landed"/"deployed" comment is read by the
+issue-closer, so it must land only on gripes the commit fixes.
+
+TEXT is posted on each through ``scripts/prod-precis gripes --note`` — one
+prod call, which skips a gripe that already carries the same comment, so a
+re-run posts nothing twice. ``{sha}`` in TEXT becomes the nine-character
+head sha. A comment, never a close.
+
+Best-effort by contract: scripts/ship and scripts/release call it after
+the landing or rollout has happened. It always exits 0 and prints one line:
+a prod outage, refusal, crash or a prod call past TIMEOUT_S (25 s) is
+reported, not retried. It skips when PRECIS_GRIPE_NOTE=0, when the host has
+no prod DSN (~/.secrets/pw/PRECIS_DATABASE_URL), or when nothing is named.
+The write runs as that DSN's role (agent_rw). scripts/prod-precis refuses a
+write from a tree behind origin/prod (exit 3), so a stale tree reports a
+failed post and posts nothing.
+
+Test seams: PRECIS_GRIPE_NOTE_CLI replaces the prod-precis command (and
+skips the DSN check); PRECIS_GRIPE_NOTE_TIMEOUT overrides TIMEOUT_S.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import shlex
+import signal
+import subprocess
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+DSN_FILE = Path.home() / ".secrets" / "pw" / "PRECIS_DATABASE_URL"
+#: A release range can name many gripes; past this the tail is reported,
+#: not posted (one prod call per run keeps a ship's tail short).
+MAX_IDS = 40
+#: The prod call's ceiling. scripts/release waits at most 30 s on the
+#: whole run, so this stays under it.
+TIMEOUT_S = 25.0
+_IDS = r"gr\d+(?:[,\s]+gr\d+)*"
+_TRAILER_RE = re.compile(rf"^\s*fixes:\s*({_IDS})\s*$", re.IGNORECASE | re.MULTILINE)
+_SUBJECT_RE = re.compile(rf"\(({_IDS})\)\s*$")
+_ID_RE = re.compile(r"gr(\d+)")
+
+
+def fixed_gripe_ids(message: str) -> list[int]:
+    """Gripe ids one commit message says it fixes, distinct, in order."""
+    lines = message.splitlines()
+    found: list[str] = []
+    if lines and (m := _SUBJECT_RE.search(lines[0])):
+        found.append(m.group(1))
+    found += [m.group(1) for m in _TRAILER_RE.finditer("\n".join(lines[1:]))]
+    seen: dict[int, None] = {}
+    for group in found:
+        for m in _ID_RE.finditer(group):
+            seen.setdefault(int(m.group(1)), None)
+    return list(seen)
+
+
+def _git(*args: str) -> str | None:
+    try:
+        cp = subprocess.run(
+            ["git", *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=20,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return cp.stdout if cp.returncode == 0 else None
+
+
+def run_capped(cmd: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+    """``subprocess.run`` whose timeout kills the whole process group.
+
+    ``prod-precis`` execs ``uv run``, which forks the python that holds the
+    output pipes; killing only the direct child would leave it running and
+    the pipe read blocked. Raises ``TimeoutExpired`` after the kill.
+    """
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        start_new_session=True,
+    )
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.communicate()
+        raise
+    return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+
+
+def _messages(rev: str) -> list[str] | None:
+    """Each commit message in ``rev`` (a sha, or an OLD..NEW range)."""
+    args = ["log", "-z", "--format=%B"] + ([rev] if ".." in rev else ["-1", rev])
+    out = _git(*args)
+    return None if out is None else [m for m in out.split("\0") if m.strip()]
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(prog="scripts/gripe-note", description=__doc__)
+    ap.add_argument("--rev", required=True, help="a commit, or OLD..NEW")
+    ap.add_argument("--text", required=True, help="comment; {sha} = head sha[:9]")
+    ap.add_argument("--dry-run", action="store_true", help="print, do not post")
+    args = ap.parse_args(argv)
+
+    head = args.rev.split("..", 1)[1] if ".." in args.rev else args.rev
+    messages = _messages(args.rev)
+    sha = (_git("rev-parse", "--short=9", head) or "").strip()
+    if messages is None or not sha:
+        print(f"gripe-note: cannot read {args.rev} — no comments posted")
+        return 0
+    seen: dict[int, None] = {}
+    for msg in messages:
+        for gid in fixed_gripe_ids(msg):
+            seen.setdefault(gid, None)
+    ids = list(seen)
+    if not ids:
+        return 0
+    text = args.text.replace("{sha}", sha)
+    over = ids[MAX_IDS:]
+    ids = ids[:MAX_IDS]
+    named = " ".join(f"gr{i}" for i in ids)
+    tail = f" (+{len(over)} more not posted)" if over else ""
+    if args.dry_run:
+        print(f"gripe-note: would post {text!r} on {named}{tail}")
+        return 0
+    if os.environ.get("PRECIS_GRIPE_NOTE", "1") == "0":
+        print(f"gripe-note: PRECIS_GRIPE_NOTE=0 — skipped {named}{tail}")
+        return 0
+    cli = os.environ.get("PRECIS_GRIPE_NOTE_CLI", "").strip()
+    if not cli and not DSN_FILE.is_file():
+        print(f"gripe-note: no prod DSN on this host — skipped {named}{tail}")
+        return 0
+    base = shlex.split(cli) if cli else [str(HERE / "prod-precis")]
+    cmd = [*base, "gripes", "--note", text, "--ids", ",".join(str(i) for i in ids)]
+    timeout = float(os.environ.get("PRECIS_GRIPE_NOTE_TIMEOUT") or TIMEOUT_S)
+    try:
+        cp = run_capped(cmd, timeout)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        print(f"gripe-note: {type(e).__name__} posting on {named} — not retried")
+        return 0
+    out = (cp.stdout.strip().splitlines() or [""])[-1]
+    if cp.returncode != 0:
+        err = (cp.stderr.strip().splitlines() or [""])[-1]
+        err = re.sub(r"[a-z]+://\S+", "<url>", err)[:200]
+        print(f"gripe-note: posting on {named} failed (exit {cp.returncode}): {err}")
+        return 0
+    print(f"gripe-note: {out}{tail}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -18,6 +18,31 @@ closed gripes and historical citations even after a SHA follow-up; a subset
 snapshot checks only that subset. Production reads use only those session
 MCP verbs; the checker itself reads local files and never repoints comments.
 
+**Name the gripes a commit fixes** in one of two places, and only there:
+a parenthesised id list ending the subject (`fix(x): y (gr123)`) or a
+`Fixes: gr123` trailer line in the body (`Fixes: gr1, gr2` also works).
+Any other mention (`blocks gr…`, `related gr…`, `per gr… c6`) is context
+and gets nothing.
+
+After a landing, `scripts/ship` comments `landed <sha> on main` on each
+gripe the landed commit fixes. On a deploy, `scripts/release` comments
+`deployed r<N> (<sha>); runtime confirmation pending` on each gripe fixed by
+a commit in the old-prod..release range, when `round deploy` exits 3
+(rollout done, runtime pending): the release owner's path. Runtime
+confirmation (`scripts/round deploy --confirm-runtime`) posts nothing.
+These are comments, not closes; a gripe closes with a `resolved:` comment
+after the deploy is verified.
+
+Both go through `scripts/gripe-note`: one prod call (`scripts/prod-precis
+gripes --note`), writing as the host's prod DSN role (`agent_rw`), with no
+repeat of a comment the gripe already has. It is best-effort: it runs
+after the push or rollout, its prod call stops at 25 s (release waits at
+most 30 s), and an outage, refusal or timeout prints one `gripe-note:` line
+and exits 0. It never fails the ship or the deploy. Off switch:
+`PRECIS_GRIPE_NOTE=0`. A host without the prod DSN skips. `prod-precis`
+refuses writes from a tree behind `origin/prod`, so a stale tree prints a
+failed post and posts nothing.
+
 ## /land — gate on GitHub
 
 `scripts/ship --remote`: refuse uncommitted edits outside `.claude/`

@@ -14,7 +14,10 @@ deprecation notice to stderr.
 
 ``--summary`` is not deprecated: it prints the one-line open-gripe
 digest (``N open · M older than 3d · oldest grX (D days)``) that the
-session-start hook shows, and nothing else.
+session-start hook shows, and nothing else. ``--note TEXT --ids N,M``
+is not deprecated either: it comments TEXT on each listed gripe that
+does not already carry it (scripts/gripe-note's one prod call after a
+landing or deploy) and prints one summary line.
 """
 
 from __future__ import annotations
@@ -69,6 +72,17 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         help="Print only the one-line open-gripe digest (session-start hook).",
     )
     dp.add_argument(
+        "--note",
+        default=None,
+        metavar="TEXT",
+        help="Comment TEXT on each --ids gripe that lacks it (scripts/gripe-note).",
+    )
+    dp.add_argument(
+        "--ids",
+        default="",
+        help="Comma-separated gripe ids for --note.",
+    )
+    dp.add_argument(
         "--limit",
         type=int,
         default=None,
@@ -84,6 +98,14 @@ def run(args: argparse.Namespace) -> None:
 
     if args.summary:
         _print_summary(args)
+        return
+    if args.note is not None:
+        ids = [int(i) for i in args.ids.replace(" ", "").split(",") if i]
+        store = Store.connect(resolve_dsn(args.database_url, cfg=load_config()))
+        try:
+            print(note_gripes(store, args.note, ids))
+        finally:
+            store.close()
         return
 
     print(
@@ -158,6 +180,47 @@ def _print_summary(args: argparse.Namespace) -> None:
         print(f"gripes: {line} — get(kind='gripe', id='/open')")
     finally:
         store.close()
+
+
+def note_gripes(store: Any, text: str, ids: list[int]) -> str:
+    """Comment ``text`` on each gripe in ``ids`` unless it already has it.
+
+    Returns ``commented grA grB · already had it: grC · not found: grD``
+    (empty groups omitted). A soft-deleted or unknown id is "not found";
+    a refused comment is reported under "failed", never raised.
+    """
+    from precis.dispatch import Hub
+    from precis.errors import PrecisError
+    from precis.handlers.gripe import GripeHandler
+
+    handler = GripeHandler(hub=Hub(store=store))
+    groups: dict[str, list[str]] = {
+        "commented": [],
+        "already had it:": [],
+        "not found:": [],
+        "failed:": [],
+    }
+    for gid in ids:
+        if store.get_ref(kind="gripe", id=gid) is None:
+            groups["not found:"].append(f"gr{gid}")
+            continue
+        existing = {
+            c.text.strip()
+            for c in store.chunks.list_chunks_for_ref(gid)
+            if c.chunk_kind == "gripe_comment"
+        }
+        if text.strip() in existing:
+            groups["already had it:"].append(f"gr{gid}")
+            continue
+        try:
+            handler.put(id=gid, text=text)
+        except PrecisError as e:
+            groups["failed:"].append(f"gr{gid} ({type(e).__name__})")
+            continue
+        groups["commented"].append(f"gr{gid}")
+    return " · ".join(
+        f"{label} {' '.join(items)}" for label, items in groups.items() if items
+    )
 
 
 # ---------------------------------------------------------------------------
