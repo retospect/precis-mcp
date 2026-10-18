@@ -27,7 +27,7 @@ from precis.workers import llm_reconcile
 
 pytest.importorskip("fastapi")
 
-from precis_web import secret_status
+from precis import secret_status
 
 
 @dataclass

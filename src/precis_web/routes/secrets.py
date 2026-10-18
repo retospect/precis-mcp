@@ -3,7 +3,7 @@
 Reads **`vault.list()` only** (name + masked hint + updated_at) for the
 inventory: the RENDER path never decrypts, never holds ciphertext, and cannot
 reveal a plaintext even if the process is compromised. The "Verify now"
-probe pass (:mod:`precis_web.secret_status`) is the one path that decrypts —
+probe pass (:mod:`precis.secret_status`) is the one path that decrypts —
 server-side only, to authenticate against each provider's own API — and it
 never renders or logs the plaintext it resolves; only a short status classification
 (``ok``/``bad``/``unknown`` + a code/exception-derived detail string) crosses
@@ -31,8 +31,8 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from starlette.responses import Response
 
+from precis import secret_status
 from precis import secrets as vault
-from precis_web import secret_status
 from precis_web.deps import get_store, templates
 
 router = APIRouter(prefix="/secrets", tags=["secrets"])

@@ -11,10 +11,10 @@ from typing import Any
 
 import pytest
 
+from precis import secret_status
 from precis.cli import secret as secret_cli
+from precis.secret_status import CheckResult, SecretSpec, classify
 from precis.store import Tag
-from precis_web import secret_status
-from precis_web.secret_status import CheckResult, SecretSpec, classify
 
 _SPEC = SecretSpec("X_KEY", "p", "https://example.test/keys", "b")
 _OK = CheckResult("ok", "verified")

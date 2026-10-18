@@ -10,7 +10,7 @@ script only keeps the clock — it never probes anything.
 ## The pass
 
 1. `scripts/prod-precis secret check`. It runs the `/secrets` page's probes
-   (`precis_web.secret_status._PROBES`: fixed provider endpoints, nothing
+   (`precis.secret_status._PROBES`: fixed provider endpoints, nothing
    else) against the prod vault and prints one line per registry secret:
    - `ok` — a probe authenticated.
    - `failed` — the provider rejected it; the line carries the HTTP status

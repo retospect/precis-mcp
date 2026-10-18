@@ -8,7 +8,7 @@ pillar: personal
 A mailbox password is personal, but `email.<account>.password` (e.g.
 `email.rs@retostamm.com.password`, from `precis.mail.account.default_secret_name`)
 sits in the one cluster-wide vault beside API keys. Surfaced 2026-10-06 on the
-`/secrets` page (`src/precis_web/secret_status.py`), where the mailbox shows as
+`/secrets` page (`src/precis/secret_status.py`), where the mailbox shows as
 a cluster key. Parent design: [`email-kind.md`](./email-kind.md); per-user
 modelling precedent: [`per-user-library-link.md`](./per-user-library-link.md).
 
@@ -63,7 +63,7 @@ modelling precedent: [`per-user-library-link.md`](./per-user-library-link.md).
 
 `src/precis/secrets.py` · `src/precis/mail/account.py::default_secret_name` ·
 `src/precis/handlers/email.py` · `src/precis/workers/mail_poll.py` ·
-`src/precis/workers/inject_scan.py` · `src/precis_web/secret_status.py` ·
+`src/precis/workers/inject_scan.py` · `src/precis/secret_status.py` ·
 `precis email` CLI · a new forward migration (owner column) · the one-shot
 migration script. Drift to fix on the way: `email-kind.md` §Storage names the
 secret `email.<account>.imap_password`; the code uses `.password`.

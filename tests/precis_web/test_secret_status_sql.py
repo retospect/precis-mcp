@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from precis.secret_status import last_succeeded_job
 from precis.store import Tag
-from precis_web.secret_status import last_succeeded_job
 
 
 def _job(store: Any, job_type: str, status: str) -> Any:

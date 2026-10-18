@@ -19,8 +19,8 @@ pytest.importorskip("fastapi")
 
 from fastapi.testclient import TestClient
 
+from precis import secret_status
 from precis import secrets as vault
-from precis_web import secret_status
 
 if TYPE_CHECKING:
     from precis.store import Store

@@ -120,7 +120,7 @@ def _list(store: object, vault: object) -> None:
 def _check(store: Any) -> None:
     import asyncio
 
-    from precis_web import secret_status
+    from precis import secret_status
 
     print(secret_status.format_report(asyncio.run(secret_status.weekly_report(store))))
 

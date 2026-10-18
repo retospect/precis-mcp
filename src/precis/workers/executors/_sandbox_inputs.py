@@ -207,10 +207,14 @@ def _precis_root() -> Path | None:
 
 
 def _file_path(store: Store, ref: Any, *, root: Path | None) -> Path:
-    """The on-disk file behind a ``plaintext``/``markdown`` ref."""
-    from precis.dispatch import Hub
-    from precis.handlers.markdown import MarkdownHandler
-    from precis.handlers.plaintext import PlaintextHandler
+    """The on-disk file behind a ``plaintext``/``markdown`` ref.
+
+    Mirrors the handlers' ``_resolve_path`` for an ingested ref under the
+    workspace root (stored ``meta.ext``, else the kind's default
+    extension) without importing ``precis.handlers`` — workers sit below
+    the handler layer (import contract "workers never import handlers").
+    """
+    from precis.utils.md_parse import is_valid_file_slug, path_from_file_slug
 
     effective_root = root if root is not None else _precis_root()
     if effective_root is None or not ref.slug:
@@ -219,15 +223,17 @@ def _file_path(store: Store, ref: Any, *, root: Path | None) -> Path:
             "here (PRECIS_ROOT is unset on the executor host); next: run on "
             "a sandbox host with PRECIS_ROOT, or pass the content inline"
         )
-    cls = MarkdownHandler if ref.kind == "markdown" else PlaintextHandler
-    handler = cls(hub=Hub(store=store, embedder=None), root=effective_root)
-    try:
-        path = handler._resolve_path(str(ref.slug), must_exist=True)
-    except Exception as exc:
+    slug = str(ref.slug)
+    default_ext = ".md" if ref.kind == "markdown" else ".txt"
+    ext = (ref.meta or {}).get("ext") or default_ext
+    base = effective_root.resolve()
+    path = (base / path_from_file_slug(slug, ext=ext)).resolve()
+    if not is_valid_file_slug(slug) or not path.is_relative_to(base):
         raise ScriptRefError(
-            f"sandbox_run: {ref.kind} ref {ref.slug} has no readable file "
-            f"({exc}); next: check get(kind='{ref.kind}', id='{ref.slug}')"
-        ) from exc
+            f"sandbox_run: {ref.kind} ref {slug} has no readable file "
+            f"(not a workspace file slug); next: check "
+            f"get(kind='{ref.kind}', id='{slug}')"
+        )
     if not path.is_file():
         raise ScriptRefError(
             f"sandbox_run: {ref.kind} ref {ref.slug} has no file on disk; "

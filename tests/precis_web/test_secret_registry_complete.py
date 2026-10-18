@@ -17,7 +17,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from precis_web import secret_status
+from precis import secret_status
 
 _SRC = Path(__file__).resolve().parents[2] / "src"
 
@@ -111,7 +111,7 @@ def test_every_secret_the_code_reads_has_a_spec() -> None:
         if name not in registry and name not in _NOT_LISTED
     }
     assert not missing, (
-        "get_secret() names with no SecretSpec in precis_web.secret_status."
+        "get_secret() names with no SecretSpec in precis.secret_status."
         f"KNOWN_SECRETS (add one, or justify it in _NOT_LISTED): {missing}"
     )
 
