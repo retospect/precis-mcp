@@ -78,7 +78,12 @@ from precis.structure import relax as run_relax
 from precis.structure.canonical import normalize_scene
 from precis.structure.cell import Cell
 from precis.structure.fragment_names import fragment_names
-from precis.structure.importers import catalysis_hub, get_adapter, mof
+from precis.structure.importers import (
+    bundle_index,
+    catalysis_hub,
+    get_adapter,
+    mof,
+)
 from precis.structure.importers.cif import (
     CifRefused,
     CifUnsupported,
@@ -799,8 +804,9 @@ class StructureHandler(Handler):
             "from the design's own composition/description (no LLM) and runs "
             "it against the paper corpus (gr161578); "
             "get(args={'source':'catalysis-hub', 'surface_composition':.., "
-            "'facet':.., 'config_id':..}) on-demand hydrates a config from an "
-            "external catalyst DB into a cited, read-only design "
+            "'facet':.., 'config_id':..}) (or source 'qmof'|'core-mof' with "
+            "config_id) on-demand hydrates a config from an "
+            "external DB into a cited, read-only design "
             "(a repeat call by config_id is a cache hit, no refetch); "
             "link relates designs (rel='derived-from') or papers that "
             "motivated the design (rel='cites', note='rationale…', "
@@ -1475,8 +1481,8 @@ class StructureHandler(Handler):
         except ValueError as exc:
             raise BadInput(
                 str(exc),
-                next="get(kind='structure', args={'source': 'catalysis-hub', "
-                "'config_id': '<id>'}) — the wired source today",
+                next="get(kind='structure', args={'source': 'catalysis-hub'|"
+                "'qmof'|'core-mof', 'config_id': '<id>'})",
             ) from exc
 
         config_id = args.get("config_id")
@@ -1489,10 +1495,12 @@ class StructureHandler(Handler):
                     [(existing_ref_id, source, str(config_id), None)], cached=True
                 )
 
+        if source in mof.CIF_ADAPTERS:
+            return self._get_bundle_record(source, config_id, adapter_fn)
         if source != "catalysis-hub":
             raise BadInput(
                 f"on-demand hydrate has no fetch layer wired for source={source!r} yet",
-                next="known sources: catalysis-hub",
+                next="known sources: catalysis-hub, qmof, core-mof",
             )
         filters = _resolve_catalysis_hub_filters(q, args)
         try:
@@ -1532,6 +1540,95 @@ class StructureHandler(Handler):
             imported = matched
 
         return self._render_hydrated(imported, cached=False)
+
+    def _get_bundle_record(
+        self, source: str, config_id: Any, adapter_fn: Any
+    ) -> Response:
+        """Import one QMOF / CoRE MOF record by id (the by-id cache hit has
+        already been checked). The NAS bundle index comes first: it holds
+        the CIF and, for QMOF, the PBE energy. With no index, QMOF falls
+        back to MPContribs when the Materials Project key is in the vault
+        (geometry only: MPContribs has no QMOF total energy); otherwise the
+        refusal names the index-build command."""
+        from precis.config import struct_bundle_index_dir
+
+        if not config_id:
+            raise BadInput(
+                f"a {source} lookup needs config_id= (the record id); "
+                "there is no filter search over a bundle",
+                next=f"get(kind='structure', args={{'source': {source!r}, "
+                "'config_id': '<id>'})",
+            )
+        record_id = str(config_id).strip()
+        index_dir = struct_bundle_index_dir()
+        note: str | None = None
+        try:
+            raw = bundle_index.load_record(source, record_id, index_dir)
+        except bundle_index.BundleIndexError as exc:
+            if not bundle_index.index_path(source, index_dir).is_file():
+                raw = (
+                    self._qmof_from_mpcontribs(record_id) if source == "qmof" else None
+                )
+                if raw is None:
+                    raise Unsupported(str(exc), next=exc.next) from exc
+                note = (
+                    "no energy: fetched from MPContribs, which has no QMOF total "
+                    "energy; index the figshare bundle for PBE energies"
+                )
+            else:
+                raise Unsupported(str(exc), next=exc.next) from exc
+        except CifRefused as exc:
+            raise BadInput(str(exc), next=exc.next) from exc
+        if raw is None:
+            raise NotFound(
+                f"no {source} record {record_id!r} in the bundle index",
+                next="check the id (QMOF ids look like 'qmof-1a2b3c4'; CoRE MOF "
+                "ids are the CIF file stem, e.g. 'ABAVIJ_clean')",
+            )
+        try:
+            scene, run, ext_id = adapter_fn(raw)
+        except CifRefused as exc:
+            raise BadInput(str(exc), next=exc.next) from exc
+        except CifUnsupported as exc:
+            raise Unsupported(
+                str(exc), next="install it:  pip install 'precis-mcp[dft]'"
+            ) from exc
+        if note is None and run.energy is None:
+            note = "no energy (geometry only)"
+        ref_id = self.store.structure_import(scene, run, ext_id)
+        return self._render_hydrated(
+            [(ref_id, ext_id.dataset, ext_id.config_id, run.method)],
+            cached=False,
+            note=note,
+        )
+
+    def _qmof_from_mpcontribs(self, record_id: str) -> dict[str, Any] | None:
+        """One QMOF raw record from MPContribs, or ``None`` when the
+        Materials Project key is not in the vault (never required)."""
+        from precis import secrets
+        from precis.workers.job_types.pourbaix_bulk import MP_API_KEY_SECRET
+
+        api_key = (secrets.get_secret(MP_API_KEY_SECRET) or "").strip()
+        if not api_key:
+            return None
+        import httpx
+
+        from precis.utils.http import VendorError
+
+        try:
+            raw = mof.fetch_qmof_mpcontribs(record_id, api_key)
+        except (httpx.HTTPError, VendorError, ValueError) as exc:
+            raise Upstream(
+                f"MPContribs qmof lookup for {record_id!r} failed: {exc}",
+                next="retry in a minute, or index the QMOF bundle with "
+                "`precis structure index-bundle qmof <bundle path>`",
+            ) from exc
+        if raw is None:
+            raise NotFound(
+                f"MPContribs has no qmof record {record_id!r}",
+                next="check the id (QMOF ids look like 'qmof-1a2b3c4')",
+            )
+        return raw
 
     def _render_hydrated(
         self,

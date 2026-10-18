@@ -58,11 +58,19 @@ get(
   config_id)` (`ref_identifiers`); a repeat `config_id=` lookup never refetches.
   A broad `surface_composition=`/`facet=`/`q=` filter (no `config_id=`) always
   refetches — there's no way to know in advance whether new configs match.
-- **Only `catalysis-hub` has a `get` fetch layer wired today** (its network
-  client, httpx, is a core dep); an unregistered source raises `BadInput`
-  naming the known ones. A broken venv missing httpx returns
-  `Unsupported` with a reinstall hint, never a crash. QMOF and CoRE MOF
-  records come in through the CIF `put` with `source=` above.
+- **Wired sources: `catalysis-hub`, `qmof`, `core-mof`.** An unregistered
+  source raises `BadInput` naming the known ones. A broken venv missing
+  httpx returns `Unsupported` with a reinstall hint, never a crash.
+- **MOFs — `qmof` (DFT-relaxed, PBE-D3(BJ) energy) and `core-mof`
+  (CoRE MOF 2024, experimental geometry, no energy).** Lookup is by id only:
+  `get(kind='structure', args={'source': 'core-mof', 'config_id':
+  'ABAVIJ_clean'})` or `{'source': 'qmof', 'config_id': 'qmof-1a2b3c4'}`.
+  One record is read out of a bundle downloaded to the NAS, through an
+  index; a host without the index refuses and names the operator command
+  that builds it (`precis structure index-bundle`). QMOF on a host with no
+  index falls back to MPContribs when the Materials Project key is set;
+  that record has no energy, and the answer says so. A MOF is a 3D
+  framework (`pbc` all true), not a slab.
 - **The `catalysis-hub` *live* fetch is dark** (verified 2026-07-24): SUNCAT
   gated all public access — the GraphQL API 401s without an `X-API-Key` and
   the old public Postgres password is rotated. The on-demand `source=` path is

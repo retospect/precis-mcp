@@ -82,6 +82,11 @@ COMMANDS: tuple[Command, ...] = (
     _c("secret", "secret", "Manage the DB secrets vault."),
     _c("nanopub", "nanopub", "Mint, sign, anchor and audit claim nanopubs."),
     _c("pcb", "pcb", "PCB board import and catalog maintenance."),
+    _c(
+        "structure",
+        "structure",
+        "Structure-kind maintenance: index a downloaded MOF bundle.",
+    ),
     _c("settings", "settings", "Manage DB-resident settings (precis.settings)."),
     _c("users", "users", "Manage precis-web login accounts."),
     _c("db", "db", "Database baseline maintenance."),

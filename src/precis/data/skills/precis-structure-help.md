@@ -109,8 +109,8 @@ put(
 
 `put(kind='structure', id=<slug>, args={'cif': <text>})` (or `'cif_url'`)
 builds a design from a CIF; `get(kind='structure', args={'source':
-'catalysis-hub', 'config_id': …})` pulls one database record as a
-read-only design. Caps, refusals and provenance:
+'qmof'|'core-mof'|'catalysis-hub', 'config_id': …})` pulls one database
+record as a read-only design. Caps, refusals and provenance:
 `precis-structure-import-help`.
 
 ## Author a design — the ops table

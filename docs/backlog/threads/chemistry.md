@@ -159,8 +159,9 @@ it at five; engine-over-UI still holds.
    tie-ins (Reto, 2026-10-02): structure seeds, reference energies,
    screening. Decided 2026-10-02: MOF library + ODAC23 references,
    Catalysis-Hub first (Reto requests the SUNCAT credentials), on-demand
-   import, show-and-flag only. Build order in the item; step 1 (CIF import
-   + CoRE MOF/QMOF adapter) needs no credentials. Ranked here because the
+   import, show-and-flag only. Step 1 (CIF import, QMOF/CoRE MOF adapters,
+   NAS bundle index) shipped; its bundle download is an ops step. Next is
+   the reference-comparison hook. Ranked here because the
    November trust-demo paper needs reference energies UMA was not trained
    on. Its mechanism for the Pd slabs (typed reference, match key,
    bare-host calibration panel, distrust flag) is

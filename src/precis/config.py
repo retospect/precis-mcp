@@ -515,6 +515,13 @@ def patent_raw_root() -> Path:
     return Path(raw).expanduser() if raw else cache_root("patent-raw")
 
 
+def struct_bundle_index_dir() -> Path:
+    """Where ``precis structure index-bundle`` writes the MOF bundle indexes
+    (``<dir>/<source>.json``) — ``PRECIS_STRUCT_BUNDLE_DIR`` else default."""
+    raw = os.environ.get("PRECIS_STRUCT_BUNDLE_DIR")
+    return Path(raw).expanduser() if raw else cache_root("struct-bundles")
+
+
 def edgar_raw_root() -> Path:
     """The SEC filing mirror root — ``PRECIS_EDGAR_RAW_ROOT`` else default."""
     raw = os.environ.get("PRECIS_EDGAR_RAW_ROOT")

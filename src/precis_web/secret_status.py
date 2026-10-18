@@ -176,7 +176,8 @@ KNOWN_SECRETS: tuple[SecretSpec, ...] = (
     ),
     SecretSpec(
         name="PRECIS_MP_API_KEY",
-        purpose="Materials Project Pourbaix entries for the pourbaix_bulk job.",
+        purpose="Materials Project Pourbaix entries for the pourbaix_bulk job; "
+        "QMOF CIFs from MPContribs when no QMOF bundle index is configured.",
         get_url="https://next-gen.materialsproject.org/api",
         get_blurb="Log in to the Materials Project; the API page shows your "
         "key — paste it here.",
