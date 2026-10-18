@@ -9,6 +9,7 @@ No network, no real sleeping, no DB.
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -214,6 +215,13 @@ def test_orcid_one_overall_deadline_over_all_retries(
         orcid._api_get(f"{_ORCID_ID}/person")
     assert time.monotonic() - t0 < 1.0
     assert len(server.requests) >= 2  # it retried; the deadline spanned them
+    # The abandoned deadline thread keeps retrying after the call returned;
+    # left alone it takes limiter tokens inside whichever later test has the
+    # recording limiter patched in. Let it unwind before this test ends.
+    for t in threading.enumerate():
+        if t.name.startswith("deadline-"):
+            t.join(timeout=10)
+            assert not t.is_alive()
 
 
 # ── PubChem ────────────────────────────────────────────────────────────────
