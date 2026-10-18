@@ -83,6 +83,22 @@ A family datasheet that covers several parts takes one more link per extra
 part: `link(kind='datasheet', id='<slug>', rel='datasheet-of',
 target='part:<C-number>')`.
 
+**Every URL bot-walls** (`not_pdf` / `http_403` on the part's `datasheet:`
+line — common for LCSC-hosted sheets): find the same PDF on a fetchable
+host and hand that URL over. A paid search turns one up for ~$0.005;
+another vendor's sheet for the same MPN counts when the exact one is
+unreachable.
+
+```python
+get(kind='perplexity-reasoning', q='<mfr> <MPN> datasheet pdf')
+put(kind='datasheet', args={'url': '<found PDF URL>', 'part': 'C883122'})
+```
+
+Slug and title come from the PDF's own metadata and can name an unrelated
+document — check the stored ref's title against the part and `edit` it
+when wrong; don't re-pull. A put on a part that already has a datasheet
+is a no-op.
+
 ## The fact layer — `view='facts'`
 
 After a pull lands (queued by a `pcb` put or a `datasheet` put), a
