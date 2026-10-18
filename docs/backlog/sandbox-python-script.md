@@ -126,14 +126,20 @@ a new job.
    `/work`, keep `--network none`, and give scripts a small client (httpx
    UDS transport). Exit: a script reads a staged structure CIF, makes one
    `search` over the socket, and writes a plot to `out/`; the argv still
-   carries `--network none`.
+   carries `--network none`. Proposal, not yet decided (coordinator
+   2026-10-18): a package-name allow-list for `deps`. Today any PyPI
+   wheel up to the caps is accepted (lock `--no-build`, at most 50
+   packages and 500 MB of wheels). An allow-list would also bound whose
+   code reaches the container at all.
 3. **Todo dispatch sugar** (§ Todo sugar). Exit: tagging a todo
    `run:python` mints one job; the result lands as a comment; a successful
    run leaves the todo open.
 4. **Light castor + pollux.** Ops: the sandbox play (`35-precis-worker-
    sandbox.yml`) on pollux, the `service prio` row for `job_claude_docker`
    on both, a smoke job on each. Cluster-desk's lane, run from
-   `origin/prod` after deploy.
+   `origin/prod` after deploy. The lane lights only once `origin/prod`
+   contains the `--no-build` lock fix (`_sandbox_script.compile_lock`).
+   Builds before that can run an sdist's build backend on the host.
 5. **Skill.** `precis-job-compute-help` gains a `mode:script` section: the
    params table, the network rule, how to get data in (`inputs`), how to
    read the result.

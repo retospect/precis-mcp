@@ -315,6 +315,9 @@ def test_stage_deps_locks_with_hashes_and_downloads_binary_only(
     (uv_argv,) = _calls(stubs, "uv")
     assert uv_argv[:2] == ["pip", "compile"]
     assert "--generate-hashes" in uv_argv and "--no-config" in uv_argv
+    # No sdist build for metadata: that would run a package's build
+    # backend on the executor host, outside the container.
+    assert "--no-build" in uv_argv
     assert uv_argv[uv_argv.index("--python-version") + 1] == "3.12"
     assert uv_argv[uv_argv.index("--default-index") + 1] == "https://pypi.org/simple"
 
@@ -356,6 +359,43 @@ def test_stage_deps_missing_pip_names_the_override(
         _sandbox_script.stage_deps(["numpy>=2"], cache_root=cache)
     # A failed download never leaves a trusted wheel dir behind.
     assert not (cache / _LOCK_SHA).exists()
+
+
+def test_lock_packages_counts_pins_not_hash_lines() -> None:
+    lock = "# comment\n" + _LOCK_TEXT + "scipy==1.14.1 \\\n    --hash=sha256:bb\n"
+    assert _sandbox_script.lock_packages(lock) == ["numpy==2.1.0", "scipy==1.14.1"]
+
+
+def test_caps_default_to_50_packages_and_500_mb(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PRECIS_SANDBOX_MAX_PACKAGES", raising=False)
+    monkeypatch.delenv("PRECIS_SANDBOX_MAX_WHEEL_MB", raising=False)
+    assert _sandbox_script.max_packages() == 50
+    assert _sandbox_script.max_wheel_bytes() == 500_000_000
+
+
+def test_stage_deps_refuses_a_lock_over_the_package_cap(
+    stubs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(_sandbox_script, "max_packages", lambda: 0)
+    with pytest.raises(_sandbox_script.ScriptStageError, match=r"1 packages \(cap 0"):
+        _sandbox_script.stage_deps(["numpy>=2"], cache_root=tmp_path / "cache")
+    assert _calls(stubs, "pip") == []  # refused before any download
+
+
+def test_stage_deps_refuses_wheels_over_the_size_cap(
+    stubs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(_sandbox_script, "max_wheel_bytes", lambda: 1)
+    cache = tmp_path / "cache"
+    with pytest.raises(
+        _sandbox_script.ScriptStageError, match="PRECIS_SANDBOX_MAX_WHEEL_MB"
+    ):
+        _sandbox_script.stage_deps(["numpy>=2"], cache_root=cache)
+    # The oversize download is discarded, never left as a trusted wheel dir.
+    assert not (cache / _LOCK_SHA).exists()
+    assert list(cache.iterdir()) == []
 
 
 # ── launch / poll / harvest (DB) ───────────────────────────────────

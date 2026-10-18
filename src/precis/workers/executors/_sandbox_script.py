@@ -5,15 +5,21 @@ already be on disk when it starts. The executor (trusted, has network)
 does the PyPI work, called by
 :func:`precis.workers.executors.claude_docker._launch_script`:
 
-1. ``uv pip compile --generate-hashes --python-version 3.12`` the
-   ``deps`` against PyPI (``--no-config`` + an explicit
+1. ``uv pip compile --no-build --generate-hashes --python-version 3.12``
+   the ``deps`` against PyPI. ``--no-build`` is the security line: without
+   it uv may build an sdist to read its metadata, which runs an
+   agent-chosen package's build backend on this host, outside the
+   container. A lock pinning more than ``PRECIS_SANDBOX_MAX_PACKAGES``
+   (default 50) packages is refused. ``--no-config`` + an explicit
    ``--default-index``, so a host ``uv.toml`` or ``UV_INDEX_URL`` cannot
    point it elsewhere; ``--no-header`` so the lock text, and therefore its
    sha, depends only on the resolution).
 2. ``pip download --only-binary=:all: --no-deps -r lock`` into a wheel
    dir keyed by the lock's sha256 (uv has no ``pip download``). The lock
    carries hashes, so pip runs in hash-checking mode. Sdists are refused:
-   the offline container cannot fetch build dependencies.
+   the offline container cannot fetch build dependencies. Wheels totalling
+   more than ``PRECIS_SANDBOX_MAX_WHEEL_MB`` (default 500 MB) are refused
+   and discarded.
 
 The wheel dir is reused across jobs with the same lock sha: a
 ``.complete`` marker is written only after a download finished, into a
@@ -47,6 +53,8 @@ PYPI_INDEX = "https://pypi.org/simple"
 _COMPLETE_MARKER = ".complete"
 _COMPILE_TIMEOUT_S = 300
 _DOWNLOAD_TIMEOUT_S = 900
+_DEFAULT_MAX_PACKAGES = 50
+_DEFAULT_MAX_WHEEL_MB = 500
 
 
 class ScriptStageError(RuntimeError):
@@ -70,6 +78,35 @@ def _uv_bin() -> str:
 def _pip_cmd() -> list[str]:
     raw = os.environ.get("PRECIS_SANDBOX_PIP") or "python3 -m pip"
     return shlex.split(raw)
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        value = int(os.environ.get(name, ""))
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def max_packages() -> int:
+    """Cap on pinned packages in one lock (``PRECIS_SANDBOX_MAX_PACKAGES``)."""
+    return _env_int("PRECIS_SANDBOX_MAX_PACKAGES", _DEFAULT_MAX_PACKAGES)
+
+
+def max_wheel_bytes() -> int:
+    """Cap on one lock's total staged wheel size
+    (``PRECIS_SANDBOX_MAX_WHEEL_MB``, megabytes)."""
+    return _env_int("PRECIS_SANDBOX_MAX_WHEEL_MB", _DEFAULT_MAX_WHEEL_MB) * 1_000_000
+
+
+def lock_packages(lock_text: str) -> list[str]:
+    """The pinned requirement lines of a lock (hash continuation lines and
+    comments excluded)."""
+    return [
+        ln.split()[0]
+        for ln in lock_text.splitlines()
+        if ln.strip() and not ln[0].isspace() and not ln.startswith("#")
+    ]
 
 
 def wheel_cache_root(work_root: Path) -> Path:
@@ -132,6 +169,9 @@ def compile_lock(deps: list[str]) -> str:
                 "pip",
                 "compile",
                 "--no-config",
+                # Never build an sdist for metadata: that would run an
+                # agent-chosen package's build backend on this host.
+                "--no-build",
                 "--generate-hashes",
                 "--no-header",
                 "--python-version",
@@ -187,6 +227,12 @@ def stage_deps(deps: list[str], *, cache_root: Path) -> StagedDeps:
     with the ``.complete`` marker is reused without a download.
     """
     lock_text = compile_lock(deps)
+    n_packages = len(lock_packages(lock_text))
+    if n_packages > max_packages():
+        raise ScriptStageError(
+            f"sandbox_run: the dependency lock pins {n_packages} packages "
+            f"(cap {max_packages()}, PRECIS_SANDBOX_MAX_PACKAGES); trim deps"
+        )
     lock_sha = hashlib.sha256(lock_text.encode("utf-8")).hexdigest()
     wheels_dir = cache_root / lock_sha
     if (wheels_dir / _COMPLETE_MARKER).exists():
@@ -197,6 +243,13 @@ def stage_deps(deps: list[str], *, cache_root: Path) -> StagedDeps:
     try:
         if lock_text.strip():
             download_wheels(lock_text, tmp)
+        total = sum(p.stat().st_size for p in tmp.iterdir() if p.is_file())
+        if total > max_wheel_bytes():
+            raise ScriptStageError(
+                f"sandbox_run: the staged wheels total {total // 1_000_000} MB "
+                f"(cap {max_wheel_bytes() // 1_000_000} MB, "
+                "PRECIS_SANDBOX_MAX_WHEEL_MB); trim deps"
+            )
         (tmp / _COMPLETE_MARKER).write_text(lock_sha + "\n", encoding="utf-8")
         # Readable by the container's mapped uid (mounted read-only).
         tmp.chmod(0o755)
