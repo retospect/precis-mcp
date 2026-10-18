@@ -131,6 +131,9 @@ Reto, ~16:0xZ in the coordinator window, verbatim: "So, push the vector stuff, a
 | 16 | Place-route loop | **Multiple place-route iterations.** Placement and routing alternate, with placement costs fed by routing congestion and failures, rather than a single place-then-route pass. Builder proposes the slice shape (proposal 13–16 below), coordinated with `pcb-guided-place-route.md` and `pcb-global-codesign-north-star.md`. |
 
 **Proposal (needs a builder's design, then Reto):** how 15–16 slot in. Via shove belongs with slice 3/4 (vector escape: a via that blocks a walled-in segment may move within its net's legal region). Part nudge plus the place-route loop is a new slice after slice 5's region-graph probe, because congestion per region is the signal the placer consumes.
+Placement, ruled 2026-10-18: §Decisions 15–16 in the vector slices
+(after slice 5); the cost, shove and loop design is
+[pcb-unified-place-route](pcb-unified-place-route.md).
 
 ### Notes on 7 and 8
 
@@ -634,6 +637,73 @@ lands. N31's miss is unexplained
 (a real cut, or own-net copper blocking it).
 
 Owning files: `src/precis/pcb/topo.py`, `tests/test_pcb_topo.py`.
+
+### Decisions 15–16 in the vector slices
+
+Reto ruled on this section's questions on 2026-10-18 (vias ~18:5xZ, the
+rest ~19:0xZ). Batch shove (Decision 15) and the place-route loop
+(Decision 16) are designed in
+[pcb-unified-place-route](pcb-unified-place-route.md): its cost, its
+insertion-plus-descent shove (slice 5 there), and its round schedule.
+This item adds one thing, the congestion signal V-overflow below, which
+feeds that item's T7 ("router needs space"). Interactive push-and-shove
+stays a Non-goal.
+
+| Ruling | Where it lands | Owner |
+|---|---|---|
+| 15, vias and parts | the unified insertion + descent. Any via may move (router-placed, user-placed, stitching); footprint copper, through-hole pads included, never moves (Reto: "Any vias may be moved. The thp for footprints and any footprint specific things must remain.") | pcb-unified-place-route |
+| 15, vias on the maze path | not built. The proposed V-shove post-pass is superseded by pcb-unified-place-route slice 5 (Reto: "unified is better, lets not waste tokens") | — |
+| 16, the loop | the unified schedule's rounds (the `anneal_route_loop` role); this item supplies `vroute`/`topo` as library searches (its composition rows 3 and 5) | pcb-unified-place-route |
+| 15–16, congestion signal | V-overflow below, the source of the unified T7 | this item |
+
+**Where a wire must pass, today.** Slice 5's probe answers per net only
+"is there a portal sequence at all": `RegionGraph.portal_path` is a
+breadth-first search for the sequence with the fewest portals of capacity
+≥ 1, one per net. It is not length-shortest, it offers no alternative
+homotopy class, and it puts no demand on the portals it crosses. V-overflow
+replaces that yes/no witness with a demand per portal.
+
+#### V-overflow — fractional portal demand (with slices 6a/6b)
+
+A portal is a gap between two named obstacles (`topo.Portal.ends`), so
+congestion on it names the via or part that bounds the choke. A tile
+boundary has no owner, so the tile model cannot do this.
+
+Definition, per layer (Reto, ~19:0xZ):
+
+1. **Candidates.** Each net `n` gets `K` candidate portal paths, one per
+   homotopy class: the k-shortest distinct sleeves on the CDT dual
+   (step 3, item 3), plus 6a's converged path once it exists. Path cost
+   `cost_{n,i}` is its length plus the shared route cost (step 2).
+2. **Fractional choice.** `p_{n,i} = softmax_i(−cost_{n,i} / T)`. Each
+   net spreads one unit of demand over its candidates.
+3. **Demand.** `D_e = Σ_n Σ_{i ∋ e} p_{n,i}` over portal `e`.
+4. **Overflow.** `O_e = softplus_β(D_e − C_e)`, with `C_e = (L_e − s)/(w + s)`.
+   This is `topo.portal_capacity` before the floor, so `C_e` is smooth in
+   the positions of the two obstacles that bound `e`, and so is `O_e`. Its
+   gradient pushes those two owners apart along the portal.
+5. **Annealing.** `T` falls between rounds, so each net congeals onto one
+   class: at `T → 0`, `p` is one-hot on the cheapest path and `D_e` is an
+   integer count. This is deterministic annealing over the probabilistic
+   congestion estimate, the smooth cousin of 6a's negotiated history
+   cost. Candidates stay fixed within a round and are re-enumerated
+   between rounds, because a homotopy class is discrete.
+
+This item delivers `D_e`, `O_e`, and `∂(Σ_e O_e)` with respect to each
+movable owner's position (via centre, instance pose), returned beside the
+topology result. How T7 weighs it is pcb-unified-place-route's call.
+
+Exit:
+- The gradient passes the `differentiation` skill's three-stage check
+  (directional, Taylor remainder, central differences on owner
+  positions).
+- At the lowest `T`, `D_e` equals the integer count of the chosen paths
+  on every benchmark.
+- On ewod replay, qfp-plaza and nano: total overflow is reported per `T`
+  step, and every overflowing portal attributes to at least one owner.
+- Fixed-pose boards report the gradient without moving anything.
+
+Owning files: `topo.py`, `tests/test_pcb_topo.py`.
 
 ### Slice 6a — PathFinder on the CDT (baseline)
 

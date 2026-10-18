@@ -30,3 +30,10 @@ silently promoted. 2-layer boards route power like signals (no plane layers),
 so the plane/`net_plane_layers` machinery and the realizer's layer
 assumptions need a no-plane path. The guard stays until the floor derivation
 exists.
+
+The multi-iteration place-route loop and batch shove
+([pcb-unified-place-route](pcb-unified-place-route.md),
+[pcb-vector-router](pcb-vector-router.md) §Decisions 15–16 in the vector slices)
+take the layer count as given: when they find the stackup is the limit,
+they report it the way this item refuses a pick below the floor, and never
+add a layer themselves.

@@ -134,6 +134,18 @@ term carries ∂/∂θ.
 | T11 | Segment angle wells | `Σ_edges w_a (1 − cos(8 φ_e))`, φ_e the edge direction (`check_octilinear` house rule) | vertices, vias | yes | via atan2 derivative; arcs exempt |
 | T12 | Array regularity | per frozen group of same-footprint parts in a row: `Var(Δ_i)` over consecutive spacings + `Σ (1 − cos(θ_i − θ_j))` | x, y, θ | yes | linear in Δ |
 
+**T7's congestion source (Reto 2026-10-18 ~19:0xZ).** For nets not yet
+inserted, the portal demand is fractional: each net spreads one unit over
+its candidate portal paths (homotopy classes) with `softmax(−cost/T)`,
+overflow per portal is `softplus(demand − capacity)` with capacity smooth in
+the positions of the two obstacles that bound the portal, and `T` anneals
+so each net congeals onto one path. The definition and its gradient with
+respect to via and part positions are
+[pcb-vector-router](pcb-vector-router.md) §Decisions 15–16 in the vector
+slices, V-overflow. That vector-side output supplies T7's force on the
+parts and vias that bound a choke; the chord term above is the fallback
+before the CDT exists.
+
 Discrete acceptance terms (annealer only, never in the gradient):
 unrouted segment count × M, via count × `VIA_COST_MM`-equivalent, kernel
 violations after snap × M', label dropped × M''. Money terms
