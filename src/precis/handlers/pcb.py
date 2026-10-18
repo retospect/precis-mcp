@@ -1897,13 +1897,18 @@ class PcbHandler(Handler):
                 if not isinstance(args[key], bool):
                     raise BadInput(
                         f"pcb: {key} must be a boolean, true or false "
-                        f"(got {args[key]!r})"
+                        f"(got {args[key]!r})",
+                        next=f"args={{'op':'move','refdes':'{refdes}','{key}':True}}",
                     )
                 out[key] = args[key]
         if "side" in args:
             side = args["side"]
             if side not in ("top", "bottom"):
-                raise BadInput(f"pcb: side must be 'top' or 'bottom' (got {side!r})")
+                raise BadInput(
+                    f"pcb: side must be 'top' or 'bottom' (got {side!r})",
+                    options=["top", "bottom"],
+                    next=f"args={{'op':'move','refdes':'{refdes}','side':'bottom'}}",
+                )
             out["layer"] = side
         if "room_id" in args:
             room = args["room_id"]
@@ -1913,7 +1918,9 @@ class PcbHandler(Handler):
                 if isinstance(room, bool) or not isinstance(room, int):
                     raise BadInput(
                         f"pcb: room_id must be an integer feature id or null "
-                        f"(got {room!r})"
+                        f"(got {room!r})",
+                        next="room_id: the integer feature_id of a 'room' "
+                        "feature, or null to unassign",
                     )
                 feature = next(
                     (
@@ -1924,10 +1931,16 @@ class PcbHandler(Handler):
                     None,
                 )
                 if feature is None:
-                    raise BadInput(f"pcb: no live feature {room} on this board")
+                    raise BadInput(
+                        f"pcb: no live feature {room} on this board",
+                        next="author a room first: put(args={'features':"
+                        "[{'ftype':'room',...}]})",
+                    )
                 if feature["ftype"] != "room":
                     raise BadInput(
-                        f"pcb: feature {room} is a {feature['ftype']!r}, not a room"
+                        f"pcb: feature {room} is a {feature['ftype']!r}, not a room",
+                        next="room_id must name a feature with ftype='room' — "
+                        "author one via put(args={'features':[{'ftype':'room',...}]})",
                     )
                 out["room_id"] = room
         if "side" in args:
@@ -1940,12 +1953,17 @@ class PcbHandler(Handler):
                 None,
             )
             if inst is None:
-                raise NotFound(f"pcb instance {refdes!r} not found in {ref.slug!r}")
+                raise NotFound(
+                    f"pcb instance {refdes!r} not found in {ref.slug!r}",
+                    next=f"get(kind='pcb', id='{ref.slug}') lists this design's refdes",
+                )
             if self._is_through_hole(ref, inst):
                 raise BadInput(
                     f"pcb: {refdes} is a through-hole part (its footprint has "
                     "drilled pads, which exist on both sides); side= only "
-                    "applies to surface-mount parts"
+                    "applies to surface-mount parts",
+                    next=f"omit 'side' for {refdes} — a through-hole part is "
+                    "already on both sides",
                 )
             gens = self.store.pcb_generators_for(ref.id)
             gi: dict[str, Any] = next(
@@ -1964,7 +1982,9 @@ class PcbHandler(Handler):
                 raise BadInput(
                     f"pcb: {refdes} belongs to a "
                     f"{'generator' if in_generator else 'rigid'} group; a group "
-                    "side flip is not supported yet (pcb-stackup-regions slice 5)"
+                    "side flip is not supported yet (pcb-stackup-regions slice 5)",
+                    next=f"omit 'side' for {refdes} — flipping a whole group "
+                    "is not supported",
                 )
             unlocking = out.get("fixed_side") is False
             if (
@@ -1974,7 +1994,9 @@ class PcbHandler(Handler):
             ):
                 raise BadInput(
                     f"pcb: {refdes} is side-locked (fixed_side=true); pass "
-                    "fixed_side=false to unlock it"
+                    "fixed_side=false to unlock it",
+                    next=f"args={{'op':'move','refdes':'{refdes}','side':"
+                    f"'{args['side']}','fixed_side':False}}",
                 )
         return out
 
@@ -2040,7 +2062,10 @@ class PcbHandler(Handler):
             if refdes not in by_refdes:
                 if single_form:
                     return None  # the plain path reports the missing refdes
-                raise NotFound(f"pcb instance {refdes!r} not found in {ref.slug!r}")
+                raise NotFound(
+                    f"pcb instance {refdes!r} not found in {ref.slug!r}",
+                    next=f"get(kind='pcb', id='{ref.slug}') lists this design's refdes",
+                )
             names = [n for n, g in gens.items() if owns(n, g, refdes)]
             if single_form and not names:
                 return None
@@ -2150,7 +2175,9 @@ class PcbHandler(Handler):
                 )
             except (ValueError, KeyError, TypeError) as exc:
                 raise BadInput(
-                    f"pcb: cannot judge {label}'s copper on this board — {exc}"
+                    f"pcb: cannot judge {label}'s copper on this board — {exc}",
+                    next="args={'op':'stackup','preset':'4l-two-sided'} — v1 "
+                    "supports 2- or 4-layer boards",
                 ) from exc
 
         caps: Any = capabilities() if (all_names or carried_old) else None
@@ -2317,7 +2344,11 @@ class PcbHandler(Handler):
                 lock=lock,
             )
         except ValueError as exc:
-            raise NotFound(str(exc)) from exc
+            raise NotFound(
+                str(exc),
+                next=f"get(kind='pcb', id='{ref.slug}') lists this design's "
+                "live refdes — retry with one of those",
+            ) from exc
         if single_form:
             tx, ty = first["target"]
             px, py = first["pivot"]
@@ -2460,7 +2491,10 @@ class PcbHandler(Handler):
             )
         ok = self.store.pcb_pin_topology(ref.id, net, a, b, int(side))
         if not ok:
-            raise NotFound(f"net {net!r} not found in {ref.slug!r}")
+            raise NotFound(
+                f"net {net!r} not found in {ref.slug!r}",
+                next=f"get(kind='pcb', id='{ref.slug}') lists this design's nets",
+            )
         return Response(
             body=f"# pinned {a} ↔ {b} on {net} to side={side}\n"
             "Takes effect on the next put(args={'op':'route'})."
@@ -2511,10 +2545,17 @@ class PcbHandler(Handler):
         if priority is not None and (
             isinstance(priority, bool) or not isinstance(priority, int)
         ):
-            raise BadInput(f"pcb: priority must be an integer (got {priority!r})")
+            raise BadInput(
+                f"pcb: priority must be an integer (got {priority!r})",
+                next="args={'op':'plane_net','layer':'In1.Cu','net':'GND',"
+                "'priority':10}",
+            )
         plane_id = self.store.pcb_assign_plane(ref.id, layer, net, priority=priority)
         if not plane_id:
-            raise NotFound(f"net {net!r} not found in {ref.slug!r}")
+            raise NotFound(
+                f"net {net!r} not found in {ref.slug!r}",
+                next=f"get(kind='pcb', id='{ref.slug}') lists this design's nets",
+            )
         return Response(
             body=f"# {net} assigned to plane layer {layer}\n"
             "Takes effect on the next put(args={'op':'route'}) — its pins "
@@ -2563,7 +2604,11 @@ class PcbHandler(Handler):
         except ValueError as exc:
             # A rules value the table cannot honour (e.g. working_voltage_v
             # past IPC-2221B's top band) is bad input, not a judge verdict.
-            raise BadInput(str(exc)) from exc
+            raise BadInput(
+                str(exc),
+                next="bring the named rule value into range and retry the "
+                "same put — nothing was changed",
+            ) from exc
         return Response(
             body=f"# net class {name!r} rules set: {rules}\n" + judged.lines()
         )
@@ -2635,7 +2680,11 @@ class PcbHandler(Handler):
         try:
             result = self.store.pcb_patch_pins(ref.id, refdes, pins)
         except ValueError as exc:
-            raise BadInput(f"pcb: {exc}") from exc
+            raise BadInput(
+                f"pcb: {exc}",
+                next="fix the named pin or field and retry — the message "
+                "lists the component's real pins",
+            ) from exc
         changed, unchanged = result["changed"], result["unchanged"]
         body = f"# {refdes}: {len(changed)} pin(s) annotated"
         if unchanged:
@@ -2915,7 +2964,12 @@ class PcbHandler(Handler):
             try:
                 _, data = normalize_local_footprint({**footprint_data, "name": lcsc})
             except ValueError as exc:
-                raise BadInput(f"pcb: {exc}") from exc
+                raise BadInput(
+                    f"pcb: {exc}",
+                    next="fix the field the message names — the footprint "
+                    "dict takes the same {pads: [...]} shape as a put "
+                    "'footprints' entry",
+                ) from exc
             data["source"] = "authored"
             judged = self._put_footprints_judged(ref, {lcsc: data})
             row = self.store.part_footprint_get(lcsc)
