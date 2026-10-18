@@ -19,10 +19,10 @@ const facts = {
     J1: { value: null, package: null, rating: null, lcsc: null },
   },
   nets: {
-    VBUS: { pins: ['J1.1', 'C2.1'], current_a: 0.12, status: 'realized', reason: null },
-    GND: { pins: ['J1.2', 'C2.2', 'R9.1', 'R9.2', 'X.1'], current_a: null, status: 'realized', reason: null },
-    CC2: { pins: ['J1.5', 'R9.1'], current_a: null, status: 'failed', reason: 'no path on F.Cu' },
-    SBU: { pins: ['J1.8', 'R9.2'], current_a: null, status: 'unrouted', reason: 'unrouted' },
+    VBUS: { pins: ['J1.1', 'C2.1'], net_class: 'power', current_a: 0.12, status: 'realized', reason: null },
+    GND: { pins: ['J1.2', 'C2.2', 'R9.1', 'R9.2', 'X.1'], net_class: 'ground', current_a: null, status: 'realized', reason: null },
+    CC2: { pins: ['J1.5', 'R9.1'], net_class: 'signal', current_a: null, status: 'failed', reason: 'no path on F.Cu' },
+    SBU: { pins: ['J1.8', 'R9.2'], net_class: null, current_a: null, status: 'unrouted', reason: 'unrouted' },
   },
 };
 
@@ -30,10 +30,25 @@ const facts = {
 assert.equal(F.describe(facts, { kind: 'pad', refdes: 'C2', pad: '2' }).text, 'C2/(10uF 0603 6.3V)/Pad 2');
 // track: net/current/[a:b]; current omitted when unknown; N pins when multi-pin
 assert.equal(F.describe(facts, { kind: 'net', net: 'VBUS' }).text, 'VBUS/120mA/[J1.1:C2.1]');
-assert.equal(F.describe(facts, { kind: 'net', net: 'GND' }).text, 'GND/[5 pins]');
+// every net says something about its current (gr496367): ground = computed return
+assert.equal(F.describe(facts, { kind: 'net', net: 'GND' }).text,
+  'GND/return ≤ 120mA (sum of power nets: VBUS 120mA; cascaded rails counted twice)/[5 pins]');
 // failed net: the router's reason is shown verbatim; unrouted shows its status
-assert.equal(F.describe(facts, { kind: 'ratsnest', net: 'CC2' }).text, 'CC2/[J1.5:R9.1]/FAILED: no path on F.Cu');
-assert.equal(F.describe(facts, { kind: 'ratsnest', net: 'SBU' }).text, 'SBU/[J1.8:R9.2]/unrouted');
+assert.equal(F.describe(facts, { kind: 'ratsnest', net: 'CC2' }).text, 'CC2/signal, no current set/[J1.5:R9.1]/FAILED: no path on F.Cu');
+assert.equal(F.describe(facts, { kind: 'ratsnest', net: 'SBU' }).text, 'SBU/current: not set/[J1.8:R9.2]/unrouted');
+// ground sums supply nets, names the unset ones, and says so when none is set
+const rails = (a, b) => ({ nets: {
+  GND: { pins: [], net_class: 'ground', current_a: null },
+  V5: { pins: [], net_class: 'power', current_a: a },
+  V3: { pins: [], net_class: 'power', current_a: b },
+  SIG: { pins: [], net_class: 'signal', current_a: 2 } } });
+assert.equal(F.netText(rails(0.5, 0.1), 'GND'), 'GND/return ≤ 600mA (sum of power nets: V5 500mA + V3 100mA; cascaded rails counted twice)/[0 pins]');
+assert.equal(F.netText(rails(0.5, null), 'GND'),
+  'GND/return ≤ 500mA (sum of power nets: V5 500mA; cascaded rails counted twice; current not set: V3)/[0 pins]');
+assert.equal(F.netText(rails(null, null), 'GND'),
+  'GND/return current: unknown (no supply net has a current set; V5, V3)/[0 pins]');
+assert.equal(F.netText(rails(0.5, 0.1), 'V3'), 'V3/100mA/[0 pins]');
+assert.equal(F.netText(rails(0.5, null), 'V3'), 'V3/current: not set/[0 pins]');
 assert.equal(
   F.describe(facts, { kind: 'pad', refdes: 'J1', pad: '5', net: 'CC2' }).text,
   'J1/Pad 5/CC2 FAILED: no path on F.Cu');
