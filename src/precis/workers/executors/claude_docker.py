@@ -57,16 +57,20 @@ Slice 1 (the stub-gated container-execution substrate) stages
   OAuth / API-key env at all.
 * **Script** (``_launch_script`` / ``build_script_argv``) —
   ``mode:script`` locks the job's PyPI ``deps`` and downloads their
-  wheels executor-side (``_sandbox_script``), stages ``/work/main.py`` +
-  ``/work/lock.txt``, and launches ``--network none`` with an explicit
-  ``sh -c`` (offline install, then the script). ``out/`` is harvested
-  on every exit, not only a clean one.
+  wheels executor-side (``_sandbox_script``), stages the script (inline
+  ``code`` or a resolved ``code_ref``), ``/work/lock.txt`` and the
+  ``inputs`` (``_sandbox_inputs``, read-only at ``/work/in``), and
+  launches ``--network none`` with an explicit ``sh -c`` (offline
+  install, then the script). ``out/`` is harvested on every exit, not
+  only a clean one.
 * **Read dial** (``precis_access:read``, ``_sandbox_read_mcp``) — a
-  ``mode:build`` job may get a per-run ``precis serve --transport
-  streamable-http`` child (``agent_ro`` DSN, loopback-bound, fresh
-  per-run token; only the PID persists in job meta — never token/port).
-  Fail-closed on ``PRECIS_SANDBOX_READ_MCP``; teardown is wired into
-  every terminal path (``_terminate`` + boot ``reconcile_orphans``).
+  ``mode:script`` job may get a per-run ``precis serve --read-only``
+  child on a unix socket (``agent_ro`` DSN, get/search/more only, fresh
+  per-run token; only the PID persists in job meta — never the token),
+  its socket dir bind-mounted read-only at ``/work/mcp`` while the
+  container keeps ``--network none``. Fail-closed on
+  ``PRECIS_SANDBOX_READ_MCP``; teardown is wired into every terminal
+  path (``_terminate`` + boot ``reconcile_orphans``).
 * **Image provenance** — the image that ran a job is recorded on
   ``job.meta.image``, echoed on every terminal ``job_summary`` line, and
   stamped onto the harvested folder's meta.
@@ -76,6 +80,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 import time
@@ -85,6 +90,7 @@ from typing import TYPE_CHECKING, Any
 from precis.utils.llm.router import Backend, resolve_backend
 from precis.workers.executors import (
     _sandbox_harvest,
+    _sandbox_inputs,
     _sandbox_read_mcp,
     _sandbox_script,
 )
@@ -228,6 +234,15 @@ def _load_ok() -> bool:
     return load1 <= ceiling
 
 
+def _remove_run_dirs(work_dir: Path) -> None:
+    """Delete a run's ``/work`` dir and its ``mode:script`` siblings: the
+    staged inputs (``<run>-in``) and the read MCP's socket dir
+    (``<run>-mcp``). Idempotent."""
+    shutil.rmtree(work_dir, ignore_errors=True)
+    shutil.rmtree(work_dir.parent / f"{work_dir.name}-in", ignore_errors=True)
+    shutil.rmtree(_sandbox_read_mcp.socket_dir(work_dir), ignore_errors=True)
+
+
 def container_name(job_id: int) -> str:
     return f"{_CONTAINER_PREFIX}{job_id}"
 
@@ -363,10 +378,27 @@ def build_rerun_argv(
 #: The ``mode:script`` in-container command: a scratch venv, an offline
 #: install of the executor-staged wheels pinned by ``/work/lock.txt``,
 #: then the script. Never the image CMD (``code-task-run`` runs claude).
-SCRIPT_SHELL_CMD = (
+_SCRIPT_INSTALL = (
     "uv venv /tmp/v && uv pip install --python /tmp/v --offline --no-index "
-    "--find-links /work/wheels -r /work/lock.txt && /tmp/v/bin/python /work/main.py"
+    "--find-links /work/wheels -r /work/lock.txt"
 )
+SCRIPT_SHELL_CMD = f"{_SCRIPT_INSTALL} && /tmp/v/bin/python /work/main.py"
+
+
+def script_shell_cmd(entry: str = "main.py") -> str:
+    """:data:`SCRIPT_SHELL_CMD` for ``entry`` (relative to ``/work``).
+
+    A folder entry (``code/…``) gets ``PYTHONPATH=/work`` so
+    ``import precis_client`` still finds ``/work/precis_client.py``.
+    ``entry`` is shape-checked at submit (``_sandbox_inputs.entry_rejection``)
+    and quoted here as well.
+    """
+    if entry == "main.py":
+        return SCRIPT_SHELL_CMD
+    return (
+        f"{_SCRIPT_INSTALL} && PYTHONPATH=/work /tmp/v/bin/python "
+        f"{shlex.quote('/work/' + entry)}"
+    )
 
 
 def build_script_argv(
@@ -379,6 +411,9 @@ def build_script_argv(
     memory: str,
     cpus: str,
     pids_limit: int,
+    entry: str = "main.py",
+    inputs_dir: str | None = None,
+    mcp_dir: str | None = None,
 ) -> list[str]:
     """Build the detached ``podman run`` argv for a ``mode:script`` run.
 
@@ -389,8 +424,17 @@ def build_script_argv(
     arrive as wheels the executor downloaded (``wheels_dir``, shared
     across jobs by lock sha, mounted read-only at ``/work/wheels`` so a
     script cannot poison the cache), and the in-container command is the
-    explicit :data:`SCRIPT_SHELL_CMD`, never the image CMD.
+    explicit :func:`script_shell_cmd`, never the image CMD. ``inputs_dir``
+    (the staged ``inputs``) mounts read-only at ``/work/in``; ``mcp_dir``
+    (the read MCP's socket dir, ``precis_access:read`` only) mounts
+    read-only at ``/work/mcp`` — the container reaches the socket through
+    the bind, not a network.
     """
+    extra_mounts: list[str] = []
+    if inputs_dir is not None:
+        extra_mounts += ["-v", f"{inputs_dir}:/work/in:ro"]
+    if mcp_dir is not None:
+        extra_mounts += ["-v", f"{mcp_dir}:{_sandbox_read_mcp.CONTAINER_SOCKET_DIR}:ro"]
     return [
         podman_bin,
         "run",
@@ -411,11 +455,12 @@ def build_script_argv(
         f"{work_dir}:/work",
         "-v",
         f"{wheels_dir}:/work/wheels:ro",
+        *extra_mounts,
         "--",
         image,
         "sh",
         "-c",
-        SCRIPT_SHELL_CMD,
+        script_shell_cmd(entry),
     ]
 
 
@@ -524,6 +569,7 @@ def reconcile_orphans(store: Store) -> int:
         if not _job_is_live(store, job_id):
             _reap_orphan_read_mcp(store, job_id)
             _reap(name)
+            _remove_run_dirs(_work_root() / name)
             reaped += 1
             log.info("claude_docker: reaped orphan container %s", name)
     return reaped
@@ -823,30 +869,10 @@ def _launch_build(
     for p in (work_dir, work_dir / "out", work_dir / "in", work_dir / "_run"):
         p.chmod(0o777)
 
-    # precis_access:read — spawn a per-run,
-    # token'd, read-only MCP callback BEFORE the container starts, so
-    # /work/mcp.json exists the moment the container can read /work.
-    # Never for mode:run (this function is build-mode only) and gated
-    # fail-closed by semantic_rejection on PRECIS_SANDBOX_READ_MCP
-    # already (defence in depth: re-check the value here too, since a
-    # dispatch-minted job's params never passed through validate_submit).
-    read_mcp_pid: int | None = None
+    # precis_access:read is refused for mode:build by semantic_rejection
+    # (the read MCP is a unix socket Claude Code cannot speak), so no
+    # callback is spawned here.
     network = _network_mode()
-    if params.get("precis_access") == "read":
-        try:
-            handle = _sandbox_read_mcp.spawn_read_mcp(store, work_dir=work_dir)
-        except Exception as exc:
-            _fail(
-                store,
-                ref_id,
-                f"sandbox_run: precis_access:read MCP spawn failed: {exc}",
-            )
-            return
-        read_mcp_pid = handle.pid
-        # Only THIS network mode gives the container a route back to the
-        # spawned callback's loopback bind (allow_host_loopback is the
-        # one hole punched for the read-only MCP callback).
-        network = _sandbox_read_mcp.READ_MCP_NETWORK
 
     # A leftover container of the same name (crashed prior attempt) would
     # make ``run --name`` fail; clear it first.
@@ -880,8 +906,6 @@ def _launch_build(
         env={**os.environ, "CLAUDE_CODE_OAUTH_TOKEN": _oauth},
     )
     if res.returncode != 0:
-        if read_mcp_pid is not None:
-            _sandbox_read_mcp.reap_read_mcp(read_mcp_pid)
         tail = (res.stderr or res.stdout or "").strip()[-2000:]
         _fail(store, ref_id, f"sandbox_run: podman run failed: {tail}")
         return
@@ -898,7 +922,6 @@ def _launch_build(
             deadline=deadline,
             image=image,
             model=model,
-            **({"read_mcp_pid": read_mcp_pid} if read_mcp_pid is not None else {}),
         )
         _append_chunk(
             store,
@@ -1016,38 +1039,64 @@ def _launch_run(
 def _launch_script(
     store: Store, ref_id: int, params: dict[str, Any], node: str | None
 ) -> None:
-    """Lock + stage the script's PyPI wheels executor-side, stage
-    ``/work/main.py`` + ``/work/lock.txt``, launch a detached
-    ``--network none`` container (``mode:script`` — no claude, no OAuth,
-    no MCP).
+    """Lock + stage the script's PyPI wheels executor-side, stage the
+    script (``/work/main.py``, or a folder under ``/work/code``),
+    ``/work/lock.txt`` and the ``inputs``, spawn the read MCP for
+    ``precis_access:read``, then launch a detached ``--network none``
+    container (``mode:script`` — no claude, no OAuth).
 
-    ``params.code`` is validated by ``semantic_rejection`` before this
-    runs (``code_ref`` / ``inputs`` / ``precis_access:read`` are refused
-    there). The lock + download run synchronously in this tick; a
-    failure fails the job before any container exists.
+    ``semantic_rejection`` has checked the param shapes; ``code_ref`` and
+    ``inputs`` are resolved again here (``_sandbox_inputs``) because a
+    dispatch-minted job skipped ``validate_submit`` and the refs may have
+    changed. The lock + download run synchronously in this tick; any
+    staging failure fails the job before a container exists.
     """
     name = container_name(ref_id)
     work_dir = _work_root() / name
+    inputs = list(params.get("inputs") or [])
     try:
+        if isinstance(params.get("code_ref"), str):
+            code = _sandbox_inputs.resolve_code_ref(
+                store,
+                str(params["code_ref"]),
+                block=params.get("block"),
+                entry=params.get("entry"),
+            )
+        else:
+            code = _sandbox_inputs.ResolvedCode(
+                entry="main.py", source=str(params["code"])
+            )
         staged = _sandbox_script.stage_deps(
             list(params.get("deps") or []),
             cache_root=_sandbox_script.wheel_cache_root(_work_root()),
         )
-    except _sandbox_script.ScriptStageError as exc:
+        if work_dir.exists():
+            shutil.rmtree(work_dir, ignore_errors=True)
+        # ``wheels``/``mcp`` are only mountpoints for read-only binds; ``in``
+        # is one too when inputs are staged.
+        for sub in ("out", "in", "_run", "wheels", "mcp"):
+            (work_dir / sub).mkdir(parents=True, exist_ok=True)
+        _sandbox_inputs.stage_code(store, code, work_dir)
+        inputs_dir: Path | None = None
+        if inputs:
+            inputs_dir = work_dir.parent / f"{name}-in"
+            _sandbox_inputs.stage_inputs(store, inputs, inputs_dir)
+    except (_sandbox_inputs.ScriptRefError, _sandbox_script.ScriptStageError) as exc:
+        _remove_run_dirs(work_dir)
         _fail(store, ref_id, str(exc))
         return
-
-    if work_dir.exists():
-        shutil.rmtree(work_dir, ignore_errors=True)
-    # ``wheels`` is only the mountpoint for the read-only wheel cache bind.
-    for sub in ("out", "in", "_run", "wheels"):
-        (work_dir / sub).mkdir(parents=True, exist_ok=True)
-    (work_dir / "main.py").write_text(str(params["code"]), encoding="utf-8")
     (work_dir / "lock.txt").write_text(staged.lock_text, encoding="utf-8")
     # World-writable staging, as for mode:build: the image's non-root
     # user maps to a subordinate host uid, not the daemon user.
     for p in (work_dir, work_dir / "out", work_dir / "in", work_dir / "_run"):
         p.chmod(0o777)
+    # Staged trees are read by that subordinate uid too, whatever the
+    # daemon's umask was when tar or write_bytes created them.
+    for tree in (inputs_dir, work_dir / "code"):
+        if tree is not None and tree.exists():
+            for p in (tree, *tree.rglob("*")):
+                if not p.is_symlink():
+                    p.chmod(0o755 if p.is_dir() else 0o644)
 
     wall_seconds = int(_sandbox_run.resolve_wall_seconds(params) or 0)
     image = params.get("image") or _sandbox_run.default_image()
@@ -1055,6 +1104,26 @@ def _launch_script(
     # A leftover container of the same name (crashed prior attempt) would
     # make ``run --name`` fail; clear it first.
     _reap(name)
+
+    # precis_access:read — the per-run read-only MCP on a unix socket,
+    # spawned BEFORE the container so /work/mcp.json exists when it
+    # starts (the client retries the connect while serve boots). The
+    # value is re-checked by semantic_rejection at launch, flag included.
+    read_mcp_pid: int | None = None
+    mcp_dir: Path | None = None
+    if params.get("precis_access") == "read":
+        try:
+            handle = _sandbox_read_mcp.spawn_read_mcp(store, work_dir=work_dir)
+        except Exception as exc:
+            _remove_run_dirs(work_dir)
+            _fail(
+                store,
+                ref_id,
+                f"sandbox_run: precis_access:read MCP spawn failed: {exc}",
+            )
+            return
+        read_mcp_pid = handle.pid
+        mcp_dir = handle.socket_dir
 
     memory, cpus, pids_limit = _cgroup_caps()
     argv = build_script_argv(
@@ -1066,6 +1135,9 @@ def _launch_script(
         memory=memory,
         cpus=cpus,
         pids_limit=pids_limit,
+        entry=code.entry,
+        inputs_dir=str(inputs_dir) if inputs_dir is not None else None,
+        mcp_dir=str(mcp_dir) if mcp_dir is not None else None,
     )
     res = subprocess.run(
         argv,
@@ -1077,6 +1149,9 @@ def _launch_script(
         check=False,
     )
     if res.returncode != 0:
+        if read_mcp_pid is not None:
+            _sandbox_read_mcp.reap_read_mcp(read_mcp_pid)
+        _remove_run_dirs(work_dir)
         tail = (res.stderr or res.stdout or "").strip()[-2000:]
         _fail(store, ref_id, f"sandbox_run: podman run failed: {tail}")
         return
@@ -1094,15 +1169,17 @@ def _launch_script(
             deadline=deadline,
             image=image,
             deps_lock_sha=staged.lock_sha,
+            **({"read_mcp_pid": read_mcp_pid} if read_mcp_pid is not None else {}),
         )
         _append_chunk(
             store,
             ref_id,
             _JOB_EVENT_KIND,
             f"launched script container {name} (image={image}, network=none, "
-            f"{n_deps} deps, lock {staged.lock_sha[:12]}"
-            f"{' reused' if staged.reused else ''}, wall={wall_seconds}s) on "
-            f"{node or '<unpinned>'}",
+            f"entry={code.entry}, {n_deps} deps, lock {staged.lock_sha[:12]}"
+            f"{' reused' if staged.reused else ''}, {len(inputs)} inputs, "
+            f"read_mcp={'uds' if read_mcp_pid is not None else 'none'}, "
+            f"wall={wall_seconds}s) on {node or '<unpinned>'}",
             conn=conn,
         )
         conn.commit()
@@ -1398,7 +1475,7 @@ def _terminate(
 
     # Harvest (above) copies anything worth keeping out of /work/out
     # before this — the scratch workdir is deleted either way.
-    shutil.rmtree(work_dir, ignore_errors=True)
+    _remove_run_dirs(work_dir)
 
     if status == _FAILED:
         from precis.utils.job_bubble import bubble_job_failure

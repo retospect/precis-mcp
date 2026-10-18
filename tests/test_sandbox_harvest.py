@@ -679,6 +679,51 @@ class TestStageRunArtifact:
         # (main.py, not main-py.txt).
         assert (dest_dir / "main.py").read_text(encoding="utf-8") == "print('hi')\n"
 
+    @pytest.mark.parametrize("escape", ["../escaped.py", "/tmp/precis-escape-abs.py"])
+    def test_plaintext_fallback_never_writes_outside_the_stage_dir(
+        self, store: Store, tmp_path: Path, escape: str
+    ) -> None:
+        # harvest_orig_path is ref meta; a hostile value must not steer the
+        # executor's write out of dest_dir (mode:script stages folder refs).
+        precis_root = tmp_path / "PRECIS_ROOT"
+        precis_root.mkdir()
+        art_root = tmp_path / "artifacts"
+        jid = _mk_job(store)
+        work_dir = tmp_path / "work" / "sandbox-build"
+        (work_dir / "out").mkdir(parents=True)
+        (work_dir / "out" / "main.py").write_text("print('hi')\n", encoding="utf-8")
+        result = harvest.harvest_out(
+            store,
+            job_ref_id=jid,
+            container_name="sandbox-build",
+            work_dir=work_dir,
+            image="code-task:abc",
+            model="claude-opus",
+            root=precis_root,
+            artifact_store_root=art_root,
+        )
+        assert result.folder_ref_id is not None and result.artifact is not None
+        harvest.artifact_path(result.artifact["sha256"], root=art_root).unlink()
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET meta = jsonb_set(meta, '{harvest_orig_path}', "
+                "to_jsonb(%s::text)) WHERE parent_id = %s AND kind = 'plaintext'",
+                (escape, result.folder_ref_id),
+            )
+            conn.commit()
+
+        dest_dir = tmp_path / "stage" / "run-work"
+        with pytest.raises(ValueError):
+            harvest.stage_run_artifact(
+                store,
+                folder_id=result.folder_ref_id,
+                dest_dir=dest_dir,
+                artifact_store_root=art_root,
+                root=precis_root,
+            )
+        assert not (tmp_path / "stage" / "escaped.py").exists()
+        assert not Path("/tmp/precis-escape-abs.py").exists()
+
     def test_no_tarball_and_no_plaintext_refs_raises(
         self, store: Store, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

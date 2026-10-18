@@ -179,6 +179,7 @@ def test_main_network_transport_dispatches_with_token(
         "port": 9999,
         "token": "tok",
         "fd": None,
+        "uds": None,
     }
 
 

@@ -53,6 +53,8 @@ def main() -> None:
             token=args.token,
             fd=args.fd,
             migrate=args.migrate,
+            uds=args.uds,
+            read_only=args.read_only,
         )
         return
 
@@ -111,6 +113,18 @@ def _build_parser(path: tuple[str, ...] | None = None) -> argparse.ArgumentParse
         default=None,
         help="Serve a network transport on this already-listening inherited "
         "socket instead of binding --host/--port (set by precis.mcp_supervisor).",
+    )
+    serve_parser.add_argument(
+        "--uds",
+        default=None,
+        help="Serve a network transport on this unix socket path instead of "
+        "--host/--port (the sandbox_run read MCP's bind-mounted socket).",
+    )
+    serve_parser.add_argument(
+        "--read-only",
+        action="store_true",
+        help="Serve only the read verbs (get/search/more); every write verb "
+        "is removed before the transport starts.",
     )
     serve_parser.add_argument(
         "--migrate",

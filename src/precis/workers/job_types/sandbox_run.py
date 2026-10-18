@@ -5,9 +5,11 @@ The mint → claim → launch → poll → terminal spine, run by the
 (stage the harvested tarball, ``uv sync`` + ``RUN.json.cmd``, no
 claude/OAuth); ``mode:script`` (a submitted script as ``/work/main.py``,
 its PyPI ``deps`` locked + downloaded as wheels executor-side, run
-under ``--network none``, no claude/OAuth); and ``precis_access:read``
-(``mode:build`` only; a per-run, token'd,
-read-only MCP callback, gated by ``PRECIS_SANDBOX_READ_MCP`` and built by
+under ``--network none``, no claude/OAuth; ``code_ref`` and ``inputs``
+resolve through :mod:`precis.workers.executors._sandbox_inputs`); and
+``precis_access:read`` (``mode:script`` only; a per-run, token'd,
+read-only MCP on a bind-mounted unix socket, gated by
+``PRECIS_SANDBOX_READ_MCP`` and built by
 :mod:`precis.workers.executors._sandbox_read_mcp`). Ships **dark** — the
 executor pass is registered only under ``PRECIS_SANDBOX_ENABLED``, so a
 merge/deploy touches nothing in prod until a human enables it on a
@@ -18,15 +20,14 @@ The job_type module is a pure declaration + helpers:
 * ``PARAMS_SCHEMA`` / ``COMPATIBLE_EXECUTORS`` / ``REQUIRES`` — the
   registry metadata (validated at ``put`` time by the JobHandler).
 * ``validate_submit`` — the **fail-closed** submit gate: rejects an
-  unsupported ``mode``, ``precis_access:read`` without
-  ``PRECIS_SANDBOX_READ_MCP``, a ``secrets`` list, a non-sandbox /
-  melchior ``target_node``, ``mode:build`` with no ``prompt``,
+  unsupported ``mode``, ``precis_access:read`` on ``mode:build`` or
+  without ``PRECIS_SANDBOX_READ_MCP``, a ``secrets`` list, a non-sandbox
+  / melchior ``target_node``, ``mode:build`` with no ``prompt``,
   ``mode:run`` with no ``artifact`` (a prior build's ``folder`` ref
-  id), a ``mode:script`` without an inline ``code`` (``code_ref`` is
-  refused until it resolves) or with oversize code, ``inputs``,
-  ``precis_access:read`` or a
-  non-PyPI requirement in ``deps``, or (``mode:build`` only) a missing
-  ``CLAUDE_CODE_OAUTH_TOKEN`` in
+  id), a ``mode:script`` without exactly one of ``code``/``code_ref``,
+  with oversize code, a ``code_ref`` or ``inputs`` entry that does not
+  resolve, or a non-PyPI requirement in ``deps``, or (``mode:build``
+  only) a missing ``CLAUDE_CODE_OAUTH_TOKEN`` in
   the daemon env. The claude_docker executor re-checks the same
   conditions at launch (defence in depth for jobs minted by
   ``dispatch`` from a todo, which don't pass through the JobHandler put
@@ -74,6 +75,7 @@ import re
 from typing import Any
 
 from precis.utils.llm.router import Tier, resolve_model
+from precis.workers.executors import _sandbox_inputs
 
 # ── Declared metadata (read by the dispatcher and the executor) ────
 
@@ -160,17 +162,20 @@ PARAMS_SCHEMA: dict[str, Any] = {
         "artifact": {"type": "integer"},
         # ``none`` (default) | ``read`` — ``read`` additionally requires
         # PRECIS_SANDBOX_READ_MCP=1 in the daemon env (an ops capability
-        # flag; see read_mcp_enabled()). mode:script refuses ``read``.
+        # flag; see read_mcp_enabled()). mode:build refuses ``read``.
         "precis_access": {"type": "string"},
         # mode:script only — the script staged as /work/main.py, or a
         # ref whose content is the script (exactly one of the two).
         "code": {"type": "string"},
         "code_ref": {"type": "string"},
+        # mode:script code_ref pickers: the 1-based ```python block of a
+        # markdown ref, the entry file of a folder ref.
+        "block": {"type": "integer"},
+        "entry": {"type": "string"},
         # mode:script only — PyPI requirements, locked and downloaded as
         # wheels executor-side; the offline container installs them.
         "deps": {"type": "array", "items": {"type": "string"}},
-        # mode:script only — ref ids staged under /work/in/ (refused
-        # until the inputs slice lands).
+        # mode:script only — ref targets staged read-only under /work/in/.
         "inputs": {"type": "array", "items": {"type": "string"}},
         "secrets": {"type": "array"},
     },
@@ -187,9 +192,9 @@ DESCRIPTION: str = (
     "harvested tarball (mode:run) or run a python script offline with "
     "PyPI-only deps (mode:script) inside a throwaway, cgroup-capped "
     "container on an agent_sandbox_host and keep minimal forensics. "
-    "precis_access:read (mode:build only) gives it a per-run, token'd, "
-    "read-only MCP callback when PRECIS_SANDBOX_READ_MCP=1. Registered "
-    "only under PRECIS_SANDBOX_ENABLED."
+    "precis_access:read (mode:script only) gives the script a per-run, "
+    "token'd, read-only MCP on a unix socket when PRECIS_SANDBOX_READ_MCP=1. "
+    "Registered only under PRECIS_SANDBOX_ENABLED."
 )
 
 
@@ -265,7 +270,7 @@ def semantic_rejection(params: dict[str, Any]) -> str | None:
     ``validate_submit`` (put time) and the claude_docker executor
     (launch time). Rejects, in order: an unsupported ``mode``, an
     unsupported ``precis_access`` value, ``precis_access:read`` on
-    ``mode:script``, ``precis_access:read`` without
+    ``mode:build``, ``precis_access:read`` without
     ``PRECIS_SANDBOX_READ_MCP``, a non-empty ``secrets`` list, an
     invalid ``image``, a missing / melchior / non-allowlisted
     ``target_node``, a non-positive ``resources.wall_seconds``, a
@@ -286,11 +291,13 @@ def semantic_rejection(params: dict[str, Any]) -> str | None:
             f"supported value (precis_access:"
             f"{{{'|'.join(sorted(_SUPPORTED_PRECIS_ACCESS_VALUES))}}})"
         )
-    if mode == "script" and precis_access == "read":
+    if mode == "build" and precis_access == "read":
         return (
-            "sandbox_run: precis_access:read is not supported for "
-            "mode:script yet (the script container runs --network none); "
-            "next: drop precis_access or set it to 'none'"
+            "sandbox_run: precis_access:read is not supported for mode:build: "
+            "the read MCP is served on a unix socket and Claude Code's "
+            "mcp.json has no socket transport, so it waits on a socket "
+            "bridge in the image; next: drop precis_access, or use "
+            "mode:script, whose scripts read through /work/precis_client.py"
         )
     if precis_access == "read" and not read_mcp_enabled():
         return (
@@ -354,13 +361,15 @@ def semantic_rejection(params: dict[str, Any]) -> str | None:
 
 
 def _script_rejection(params: dict[str, Any]) -> str | None:
-    """The ``mode:script`` half of :func:`semantic_rejection`.
+    """The ``mode:script`` half of :func:`semantic_rejection` (shape only;
+    :func:`script_refs_rejection` resolves the refs against the store).
 
-    Rejects: neither or both of ``code`` / ``code_ref``, ``code_ref``
-    alone (its resolution is a later slice), an empty or oversize
-    ``code``, ``inputs`` (a later slice), a ``deps`` value that
-    is not a list of strings, too many ``deps``, and any requirement
-    that is not a plain PyPI requirement (:data:`_PYPI_REQ_RE`).
+    Rejects: neither or both of ``code`` / ``code_ref``, a non-string
+    ``code_ref``, ``block``/``entry`` without a ``code_ref`` or of the
+    wrong shape, a malformed ``inputs`` list, an empty or oversize
+    ``code``, a ``deps`` value that is not a list of strings, too many
+    ``deps``, and any requirement that is not a plain PyPI requirement
+    (:data:`_PYPI_REQ_RE`).
     """
     code = params.get("code")
     code_ref = params.get("code_ref")
@@ -374,11 +383,25 @@ def _script_rejection(params: dict[str, Any]) -> str | None:
             "sandbox_run: mode:script takes exactly one of params.code and "
             "params.code_ref; next: drop one of them"
         )
-    if code_ref is not None:
+    if code_ref is not None and (not isinstance(code_ref, str) or not code_ref.strip()):
         return (
-            "sandbox_run: params.code_ref is not resolved yet (a later "
-            "slice); next: pass the script inline as code="
+            "sandbox_run: params.code_ref must be a ref target; next: pass "
+            "e.g. 'markdown:notes--fit', 'plaintext:run--py' or 'fo123'"
         )
+    if code_ref is None and (
+        params.get("block") is not None or params.get("entry") is not None
+    ):
+        return (
+            "sandbox_run: params.block / params.entry pick from a code_ref; "
+            "next: drop them for inline code="
+        )
+    for reason in (
+        _sandbox_inputs.block_rejection(params.get("block")),
+        _sandbox_inputs.entry_rejection(params.get("entry")),
+        _sandbox_inputs.inputs_rejection(params.get("inputs")),
+    ):
+        if reason is not None:
+            return reason
     if code is not None:
         if not isinstance(code, str) or not code.strip():
             return "sandbox_run: params.code must be a non-empty string"
@@ -389,11 +412,6 @@ def _script_rejection(params: dict[str, Any]) -> str | None:
                 f"{MAX_SCRIPT_BYTES}); next: shrink the script and pass data "
                 "as an input ref, not inline"
             )
-    if params.get("inputs"):
-        return (
-            "sandbox_run: params.inputs is not supported for mode:script yet "
-            "(staging lands in a later slice); next: drop inputs"
-        )
     deps = params.get("deps")
     if deps is None:
         return None
@@ -416,9 +434,25 @@ def _script_rejection(params: dict[str, Any]) -> str | None:
     return None
 
 
+def script_refs_rejection(store: Any, params: dict[str, Any]) -> str | None:
+    """Resolve a ``mode:script`` job's ``code_ref`` and check its
+    ``inputs`` resolve (no files written). ``None`` when both hold."""
+    code_ref = params.get("code_ref")
+    try:
+        if isinstance(code_ref, str):
+            _sandbox_inputs.resolve_code_ref(
+                store, code_ref, block=params.get("block"), entry=params.get("entry")
+            )
+        for target in params.get("inputs") or []:
+            _sandbox_inputs.check_input(store, target)
+    except _sandbox_inputs.ScriptRefError as exc:
+        return str(exc)
+    return None
+
+
 def validate_submit(
-    # unused (deleted below) -- kept for the registry's uniform
-    # validate_submit signature; tests pass None directly.
+    # the JobHandler's store; mode:script resolves its refs against it.
+    # Tests pass None, which skips that check.
     store: Any,
     *,
     gripe_id: int | None = None,
@@ -431,13 +465,17 @@ def validate_submit(
     The JobHandler surfaces a non-``None`` return as a ``BadInput`` at
     ``put(kind='job', ...)`` time.
     """
-    del store, gripe_id
+    del gripe_id
     reason = semantic_rejection(params)
     if reason is not None:
         return reason
     mode = str(params.get("mode") or _DEFAULT_MODE)
+    if mode == "script":
+        # mode:script spawns no claude; its refs resolve now so a bad one
+        # refuses at put time (the launch resolves them again).
+        return script_refs_rejection(store, params) if store is not None else None
     if mode != "build":
-        # mode:run and mode:script spawn no claude — nothing to authenticate.
+        # mode:run spawns no claude — nothing to authenticate.
         return None
     from precis import secrets as _secrets
 

@@ -5,7 +5,7 @@ Two deployments, and the difference is load-bearing.
 **stdio** is still the default and the transport for every *spawned*
 caller: bare `precis serve`, `precis repl`, the per-job children in
 `workers/executors/` (agent containers, the `sandbox_run`
-`precis_access:read` sidecar bound to `127.0.0.1`), and `asa_bot`. One
+`precis_access:read` sidecar on a unix socket, `--read-only`), and `asa_bot`. One
 process per caller, so this module's process-level state — the
 `_tool_semaphore` below, the store's connection pool — is a *per-caller*
 budget.
@@ -1491,8 +1491,45 @@ def _install_token_auth(app: Any, *, token: str) -> None:
     app.add_middleware(_TokenAuthMiddleware)
 
 
+#: The verbs a ``--read-only`` serve keeps (the sandbox_run read MCP).
+#: Every other registered tool is removed before the transport starts.
+READ_ONLY_VERBS = frozenset({"get", "search", "more"})
+
+
+def _restrict_to_read_verbs(fastmcp: FastMCP) -> None:
+    """Remove every tool not in :data:`READ_ONLY_VERBS` from ``fastmcp``.
+
+    The enforcement lives here, in the serving process, so nothing a
+    client sends can reach ``put``/``edit``/``delete``/``tag``/``link``:
+    FastMCP answers a call to a removed tool with "Unknown tool". The
+    ``command`` profile is refused outright because its single
+    ``precis(command)`` tool dispatches to every verb. The remaining set
+    is re-read and checked, so a tool registered by some other path
+    fails the startup instead of being served.
+    """
+    if _mcp_profile() == "command":
+        raise ValueError(
+            "precis serve: --read-only needs the typed profile (the command "
+            f"profile's single tool dispatches write verbs); unset {_MCP_PROFILE_ENV}"
+        )
+    for tool in fastmcp._tool_manager.list_tools():
+        if tool.name not in READ_ONLY_VERBS:
+            fastmcp.remove_tool(tool.name)
+    left = {t.name for t in fastmcp._tool_manager.list_tools()}
+    if not left <= READ_ONLY_VERBS:
+        raise ValueError(  # pragma: no cover - defensive
+            f"precis serve: --read-only left non-read tools {sorted(left - READ_ONLY_VERBS)}"
+        )
+
+
 def _run_network_transport(
-    *, transport: str, host: str, port: int, token: str, fd: int | None = None
+    *,
+    transport: str,
+    host: str,
+    port: int,
+    token: str,
+    fd: int | None = None,
+    uds: str | None = None,
 ) -> None:
     """Serve ``mcp`` over ``sse``/``streamable-http`` with the token gate.
 
@@ -1506,7 +1543,10 @@ def _run_network_transport(
 
     ``fd`` serves on an already-listening socket inherited from
     :mod:`precis.mcp_supervisor` instead of binding ``host:port``, so the
-    port stays bound across server restarts (gr459481).
+    port stays bound across server restarts (gr459481). ``uds`` serves on
+    a unix socket at that path instead (uvicorn sets it ``0o666``); the
+    sandbox_run read MCP uses it so a ``--network none`` container can
+    reach its callback through a bind mount.
     """
     import socket
 
@@ -1520,7 +1560,11 @@ def _run_network_transport(
 
     async def _serve() -> None:
         config = uvicorn.Config(
-            app, host=host, port=port, log_level=mcp.settings.log_level.lower()
+            app,
+            host=host,
+            port=port,
+            uds=uds,
+            log_level=mcp.settings.log_level.lower(),
         )
         server = uvicorn.Server(config)
         if fd is None:
@@ -1539,6 +1583,8 @@ def main(
     token: str | None = None,
     fd: int | None = None,
     migrate: bool = False,
+    uds: str | None = None,
+    read_only: bool = False,
 ) -> None:
     """Run the MCP server.
 
@@ -1554,12 +1600,17 @@ def main(
     the network otherwise, since an unauthenticated network MCP would be
     a live corpus-read hole. ``migrate`` maps the ``--migrate`` flag onto
     ``PRECIS_AUTO_MIGRATE=1`` so the startup schema gate in
-    ``_init_runtime`` self-heals instead of refusing.
+    ``_init_runtime`` self-heals instead of refusing. ``uds`` binds a
+    network transport to a unix socket instead of ``host:port``;
+    ``read_only`` serves only :data:`READ_ONLY_VERBS`
+    (:func:`_restrict_to_read_verbs`), applied before the runtime starts.
     """
     from precis.config import load_config
     from precis.utils.log_scrub import install_log_scrub
     from precis.utils.utc_logging import force_utc_timestamps
 
+    if read_only:
+        _restrict_to_read_verbs(mcp)
     if migrate:
         os.environ["PRECIS_AUTO_MIGRATE"] = "1"
     config = load_config()
@@ -1624,7 +1675,12 @@ def main(
 
         install_drain_signal()
     _run_network_transport(
-        transport=transport, host=host, port=port, token=resolved_token, fd=fd
+        transport=transport,
+        host=host,
+        port=port,
+        token=resolved_token,
+        fd=fd,
+        uds=uds,
     )
 
 

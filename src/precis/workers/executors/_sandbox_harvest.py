@@ -539,6 +539,16 @@ def _reconstruct_from_plaintext_refs(
         if not src.is_file():
             continue
         dest = dest_dir / str(orig_rel)
+        # ``harvest_orig_path`` is ref meta, not a trusted path: an absolute
+        # or ``..`` value must not write outside ``dest_dir`` (the same
+        # containment ``filter="data"`` gives the tarball leg).
+        if not dest.resolve().is_relative_to(dest_dir.resolve()):
+            log.warning(
+                "sandbox_run stage: skipping folder child %r — "
+                "harvest_orig_path escapes the stage dir",
+                orig_rel,
+            )
+            continue
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(src.read_bytes())
         n += 1

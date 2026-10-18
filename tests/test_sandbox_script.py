@@ -183,11 +183,34 @@ class TestScriptSubmit:
         )
         assert err is not None and "exactly one" in err
 
-    def test_rejects_code_ref_alone_with_next(self) -> None:
-        params = _script_params(code_ref="md:script")
+    def test_code_ref_alone_passes_the_shape_gate(self) -> None:
+        # Resolution needs the store (script_refs_rejection); with None
+        # only the shape is checked.
+        params = _script_params(code_ref="markdown:notes--fit")
+        del params["code"]
+        assert sandbox_run.validate_submit(None, params=params) is None
+
+    def test_rejects_block_or_entry_without_code_ref(self) -> None:
+        for extra in ({"block": 1}, {"entry": "run.py"}):
+            err = sandbox_run.validate_submit(None, params=_script_params(**extra))
+            assert err is not None and "code_ref" in err and "next:" in err
+
+    @pytest.mark.parametrize("block", [0, -1, True, "1"])
+    def test_rejects_bad_block(self, block: Any) -> None:
+        params = _script_params(code_ref="markdown:notes--fit", block=block)
         del params["code"]
         err = sandbox_run.validate_submit(None, params=params)
-        assert err is not None and "next: pass the script inline as code=" in err
+        assert err is not None and "args={'block'" in err
+
+    @pytest.mark.parametrize(
+        "entry",
+        ["../x.py", "/abs.py", "run.sh", "a b.py", "-x.py", "a;rm.py", "a/../b.py"],
+    )
+    def test_rejects_bad_entry(self, entry: str) -> None:
+        params = _script_params(code_ref="fo12", entry=entry)
+        del params["code"]
+        err = sandbox_run.validate_submit(None, params=params)
+        assert err is not None and "args={'entry'" in err, entry
 
     def test_rejects_empty_code(self) -> None:
         err = sandbox_run.validate_submit(None, params=_script_params(code="  \n"))
@@ -198,20 +221,48 @@ class TestScriptSubmit:
         err = sandbox_run.validate_submit(None, params=_script_params(code=big))
         assert err is not None and "cap" in err and "next:" in err
 
-    def test_rejects_inputs(self) -> None:
-        err = sandbox_run.validate_submit(
-            None, params=_script_params(inputs=["structure:7"])
+    def test_inputs_pass_the_shape_gate(self) -> None:
+        assert (
+            sandbox_run.validate_submit(
+                None, params=_script_params(inputs=["structure:7", "md12"])
+            )
+            is None
         )
-        assert err is not None and "inputs" in err and "next:" in err
 
-    def test_rejects_precis_access_read_even_with_flag(
+    @pytest.mark.parametrize(
+        "inputs",
+        [
+            "structure:7",
+            [7],
+            ["structure:7", "structure:7"],
+            ["markdown:notes~intro"],
+            [""],
+            [f"structure:{i}" for i in range(33)],
+        ],
+    )
+    def test_rejects_bad_inputs(self, inputs: Any) -> None:
+        err = sandbox_run.validate_submit(None, params=_script_params(inputs=inputs))
+        assert err is not None and "inputs" in err and "next:" in err, inputs
+
+    def test_precis_access_read_passes_with_flag(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("PRECIS_SANDBOX_READ_MCP", "1")
+        assert (
+            sandbox_run.validate_submit(
+                None, params=_script_params(precis_access="read")
+            )
+            is None
+        )
+
+    def test_precis_access_read_still_needs_the_flag(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("PRECIS_SANDBOX_READ_MCP", raising=False)
         err = sandbox_run.validate_submit(
             None, params=_script_params(precis_access="read")
         )
-        assert err is not None and "mode:script" in err and "next:" in err
+        assert err is not None and "PRECIS_SANDBOX_READ_MCP" in err
 
     def test_rejects_secrets(self) -> None:
         err = sandbox_run.validate_submit(
@@ -296,6 +347,32 @@ def test_build_script_argv_invariants() -> None:
     assert argv[-3:] == ["sh", "-c", claude_docker.SCRIPT_SHELL_CMD]
     assert "--offline --no-index --find-links /work/wheels" in argv[-1]
     assert argv[-1].endswith("/tmp/v/bin/python /work/main.py")
+    # No inputs / read MCP: no extra mounts.
+    assert not any(":/work/in" in a or ":/work/mcp" in a for a in argv)
+
+
+def test_build_script_argv_mounts_inputs_and_socket_read_only() -> None:
+    argv = claude_docker.build_script_argv(
+        podman_bin="podman",
+        job_id=42,
+        image="code-task:abc",
+        work_dir="/tmp/precis-sandbox/sandbox-42",
+        wheels_dir="/tmp/precis-sandbox/wheels/abc",
+        memory="8g",
+        cpus="2",
+        pids_limit=512,
+        entry="code/pkg/run.py",
+        inputs_dir="/tmp/precis-sandbox/sandbox-42-in",
+        mcp_dir="/tmp/precis-sandbox/sandbox-42-mcp",
+    )
+    assert "/tmp/precis-sandbox/sandbox-42-in:/work/in:ro" in argv
+    assert "/tmp/precis-sandbox/sandbox-42-mcp:/work/mcp:ro" in argv
+    # The socket is a bind mount, never a network route.
+    assert argv[argv.index("--network") + 1] == "none"
+    assert argv.count("--network") == 1
+    assert "--env" not in argv
+    assert argv[argv.index("--") + 1] == "code-task:abc"
+    assert argv[-1].endswith("PYTHONPATH=/work /tmp/v/bin/python /work/code/pkg/run.py")
 
 
 # ── lock + wheel stage (no DB) ─────────────────────────────────────

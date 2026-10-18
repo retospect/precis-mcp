@@ -113,6 +113,20 @@ def _valid_params(**over: Any) -> dict[str, Any]:
     return p
 
 
+def _script_read_params(**over: Any) -> dict[str, Any]:
+    """mode:script params with ``precis_access:read`` — the only mode
+    the read MCP serves. No deps, so staging runs no uv/pip."""
+    p: dict[str, Any] = {
+        "mode": "script",
+        "code": "print('hello')\n",
+        "precis_access": "read",
+        "target_node": "balthazar",
+        "resources": {"wall_seconds": 1800},
+    }
+    p.update(over)
+    return p
+
+
 def _valid_run_params(*, artifact: int, **over: Any) -> dict[str, Any]:
     """mode:run params — no ``prompt`` (mode:build's field), ``artifact``
     is the prior build's harvested ``folder`` ref id."""
@@ -271,9 +285,7 @@ class TestValidateSubmit:
     ) -> None:
         self._env(monkeypatch)
         monkeypatch.delenv("PRECIS_SANDBOX_READ_MCP", raising=False)
-        err = sandbox_run.validate_submit(
-            None, params=_valid_params(precis_access="read")
-        )
+        err = sandbox_run.validate_submit(None, params=_script_read_params())
         assert err is not None and "PRECIS_SANDBOX_READ_MCP" in err
 
     def test_accepts_precis_access_read_with_read_mcp_flag(
@@ -281,10 +293,20 @@ class TestValidateSubmit:
     ) -> None:
         self._env(monkeypatch)
         monkeypatch.setenv("PRECIS_SANDBOX_READ_MCP", "1")
+        err = sandbox_run.validate_submit(None, params=_script_read_params())
+        assert err is None
+
+    def test_rejects_precis_access_read_on_mode_build_even_with_flag(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The read MCP is a unix socket; Claude Code's mcp.json cannot
+        # reach it, so mode:build refuses until a socket bridge ships.
+        self._env(monkeypatch)
+        monkeypatch.setenv("PRECIS_SANDBOX_READ_MCP", "1")
         err = sandbox_run.validate_submit(
             None, params=_valid_params(precis_access="read")
         )
-        assert err is None
+        assert err is not None and "socket bridge" in err and "next:" in err
 
     def test_rejects_unsupported_precis_access_value(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1260,8 +1282,9 @@ def test_recurring_mints_mode_run_child_with_same_params(
 # ``_sandbox_read_mcp.spawn_read_mcp`` itself (subprocess.Popen of a real
 # `python -m precis serve`, real DSN derivation) is unit-tested in
 # tests/test_sandbox_read_mcp.py; here we only cover claude_docker's
-# WIRING — spawn called (or not) at the right time, the network mode
-# swap, and teardown on every terminal path — by faking the spawn with a
+# WIRING (mode:script, the only mode the read MCP serves) — spawn called
+# (or not) at the right time, the socket dir mounted while the network
+# stays none, and teardown on every terminal path — by faking the spawn with a
 # REAL stand-in child process (a plain `sleep`), so "test with fake
 # PIDs" (spec) means a real process whose liveness we can actually
 # assert, not an arbitrary integer `os.kill` on would be meaningless.
@@ -1283,8 +1306,12 @@ def _fake_spawn_read_mcp(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         calls["n"] += 1
         proc = _subprocess.Popen(["sleep", "300"])
         calls["proc"] = proc
-        read_mcp.write_mcp_json(work_dir, port=6543, token="fake-token")
-        return read_mcp.ReadMcpHandle(pid=proc.pid, port=6543, token="fake-token")
+        read_mcp.write_mcp_json(work_dir, token="fake-token")
+        sock_dir = read_mcp.socket_dir(work_dir)
+        sock_dir.mkdir(parents=True, exist_ok=True)
+        return read_mcp.ReadMcpHandle(
+            pid=proc.pid, socket_dir=sock_dir, token="fake-token"
+        )
 
     monkeypatch.setattr(claude_docker._sandbox_read_mcp, "spawn_read_mcp", _fake)
     # The stand-in is a bare `sleep`, not a real `precis serve` — bypass
@@ -1312,41 +1339,47 @@ def _cleanup_proc(calls: dict[str, Any]) -> None:
         proc.wait(timeout=2)
 
 
-def test_launch_build_read_access_spawns_mcp_writes_json_and_swaps_network(
+def test_launch_script_read_access_spawns_mcp_mounts_socket_keeps_network_none(
     store: Store, sandbox_env: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("PRECIS_SANDBOX_READ_MCP", "1")
     calls = _fake_spawn_read_mcp(monkeypatch)
 
     captured: dict[str, Any] = {}
-    real_build_run_argv = claude_docker.build_run_argv
+    real_build_script_argv = claude_docker.build_script_argv
 
     def _spy(**kw: Any) -> list[str]:
-        captured["network"] = kw["network"]
-        return real_build_run_argv(**kw)
+        argv = real_build_script_argv(**kw)
+        captured["argv"] = argv
+        return argv
 
-    monkeypatch.setattr(claude_docker, "build_run_argv", _spy)
+    monkeypatch.setattr(claude_docker, "build_script_argv", _spy)
 
     try:
-        jid = _mk_queued_job(store, params=_valid_params(precis_access="read"))
+        jid = _mk_queued_job(store, params=_script_read_params())
         claude_docker.run_claude_docker_pass(store, limit=4)
 
         assert calls["n"] == 1
-        assert captured["network"] == claude_docker._sandbox_read_mcp.READ_MCP_NETWORK
+        argv = captured["argv"]
+        # The socket arrives by bind mount; the network stays none.
+        assert argv[argv.index("--network") + 1] == "none"
+        assert argv.count("--network") == 1
+        work = Path(os.environ["PRECIS_SANDBOX_WORK_DIR"]) / f"sandbox-{jid}"
+        sock_dir = claude_docker._sandbox_read_mcp.socket_dir(work)
+        assert f"{sock_dir}:/work/mcp:ro" in argv
         meta = _meta(store, jid)
         assert meta["read_mcp_pid"] == calls["proc"].pid
-        work = Path(os.environ["PRECIS_SANDBOX_WORK_DIR"]) / f"sandbox-{jid}"
         assert (work / "mcp.json").is_file()
     finally:
         _cleanup_proc(calls)
 
 
-def test_launch_build_no_read_access_no_mcp_json_default_network(
+def test_launch_script_no_read_access_no_mcp_json(
     store: Store, sandbox_env: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls = _fake_spawn_read_mcp(monkeypatch)
 
-    jid = _mk_queued_job(store, params=_valid_params())
+    jid = _mk_queued_job(store, params=_script_read_params(precis_access="none"))
     claude_docker.run_claude_docker_pass(store, limit=4)
 
     assert calls["n"] == 0  # never called for precis_access:none
@@ -1363,7 +1396,7 @@ def test_poll_exit_zero_read_access_reaps_mcp_child(
     calls = _fake_spawn_read_mcp(monkeypatch)
 
     try:
-        jid = _mk_queued_job(store, params=_valid_params(precis_access="read"))
+        jid = _mk_queued_job(store, params=_script_read_params())
         claude_docker.run_claude_docker_pass(store, limit=4)  # launch
         assert _is_alive(calls["proc"].pid)
 
@@ -1387,7 +1420,7 @@ def test_poll_deadline_kill_read_access_reaps_mcp_child(
     calls = _fake_spawn_read_mcp(monkeypatch)
 
     try:
-        jid = _mk_queued_job(store, params=_valid_params(precis_access="read"))
+        jid = _mk_queued_job(store, params=_script_read_params())
         claude_docker.run_claude_docker_pass(store, limit=4)  # launch
         assert _is_alive(calls["proc"].pid)
 
@@ -1418,7 +1451,7 @@ def test_reconcile_reaps_orphan_read_mcp_child(
     calls = _fake_spawn_read_mcp(monkeypatch)
 
     try:
-        jid = _mk_queued_job(store, params=_valid_params(precis_access="read"))
+        jid = _mk_queued_job(store, params=_script_read_params())
         claude_docker.run_claude_docker_pass(store, limit=4)  # launch
         assert _is_alive(calls["proc"].pid)
 

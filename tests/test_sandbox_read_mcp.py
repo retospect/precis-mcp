@@ -1,6 +1,7 @@
 """sandbox_run's ``precis_access:read`` dial (design §"Precis access") —
-the per-run, token'd, read-only MCP callback. Pure helpers (DSN
-derivation, argv/env/mcp.json shape) are asserted directly; the
+the per-run, token'd, read-only MCP on a unix socket. Pure helpers (DSN
+derivation, argv/env/mcp.json shape) are asserted directly (the socket
+itself is exercised in tests/test_sandbox_read_mcp_socket.py); the
 impure spawn/reap paths use a REAL stand-in child process (``sleep``,
 or a SIGTERM-ignoring one) rather than a fake pid an ``os.kill`` on
 would be meaningless — "test with fake PIDs" (spec) means a stand-in
@@ -10,9 +11,11 @@ process, not a bogus number.
 from __future__ import annotations
 
 import os
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, cast
@@ -53,14 +56,17 @@ class TestReadOnlyDatabaseUrl:
 
 class TestBuildServeArgv:
     def test_shape(self) -> None:
-        argv = read_mcp.build_serve_argv(host="127.0.0.1", port=54321, token="tok-abc")
+        argv = read_mcp.build_serve_argv(uds="/tmp/x-mcp/precis.sock")
         assert argv[0] == sys.executable
         assert argv[1:4] == ["-m", "precis", "serve"]
         assert "--transport" in argv
         assert argv[argv.index("--transport") + 1] == "streamable-http"
-        assert argv[argv.index("--host") + 1] == "127.0.0.1"
-        assert argv[argv.index("--port") + 1] == "54321"
-        assert argv[argv.index("--token") + 1] == "tok-abc"
+        assert argv[argv.index("--uds") + 1] == "/tmp/x-mcp/precis.sock"
+        # The host-side verb filter is always on.
+        assert "--read-only" in argv
+        # No TCP bind, and the token never rides argv (ps shows argv).
+        assert "--host" not in argv and "--port" not in argv
+        assert "--token" not in argv
 
 
 class TestBuildServeEnv:
@@ -71,12 +77,16 @@ class TestBuildServeEnv:
             "PRECIS_ROOT": "/data/precis",
             "PRECIS_DATABASE_URL": "postgresql://deploy@x/y",
         }
-        env = read_mcp.build_serve_env(base, ro_dsn="postgresql://agent_ro@x/y")
+        env = read_mcp.build_serve_env(
+            base, ro_dsn="postgresql://agent_ro@x/y", token="tok-run"
+        )
         assert env["PATH"] == "/usr/bin"
         assert env["HOME"] == "/home/precis"
         assert env["PRECIS_ROOT"] == "/data/precis"
         assert env["PRECIS_DATABASE_URL"] == "postgresql://agent_ro@x/y"
         assert env["PRECIS_MCP_DB_ROLE"] == "agent_ro"
+        assert env["PRECIS_MCP_TOKEN"] == "tok-run"
+        assert env["PRECIS_MCP_PROFILE"] == "typed"
         # base_env is not mutated in place.
         assert base["PRECIS_DATABASE_URL"] == "postgresql://deploy@x/y"
 
@@ -95,8 +105,12 @@ class TestBuildServeEnv:
             "DB_SECRET": "shh",
             "ADMIN_PASSWORD": "hunter2",
             "PRECIS_HARMLESS_VAR": "keep-me",
+            "PRECIS_MCP_TOKEN": "the-daemon-own-token",
+            "PRECIS_MCP_PROFILE": "command",
         }
-        env = read_mcp.build_serve_env(base, ro_dsn="postgresql://agent_ro@x/y")
+        env = read_mcp.build_serve_env(
+            base, ro_dsn="postgresql://agent_ro@x/y", token="tok-run"
+        )
         for credential_name in (
             "CLAUDE_CODE_OAUTH_TOKEN",
             "ANTHROPIC_API_KEY",
@@ -110,27 +124,35 @@ class TestBuildServeEnv:
         assert env["PRECIS_HARMLESS_VAR"] == "keep-me"
         assert env["PRECIS_DATABASE_URL"] == "postgresql://agent_ro@x/y"
         assert env["PRECIS_MCP_DB_ROLE"] == "agent_ro"
+        # The daemon's own MCP token is stripped; only the per-run one rides.
+        assert env["PRECIS_MCP_TOKEN"] == "tok-run"
+        assert env["PRECIS_MCP_PROFILE"] == "typed"
 
 
 class TestMcpJsonPayload:
-    def test_shape_has_bearer_header_not_url(self) -> None:
-        payload = read_mcp.mcp_json_payload(
-            url="http://10.0.2.2:5555/mcp", token="tok-xyz"
-        )
-        server_cfg = payload["mcpServers"]["precis"]
-        assert server_cfg["type"] == "http"
-        assert server_cfg["url"] == "http://10.0.2.2:5555/mcp"
-        assert server_cfg["headers"]["Authorization"] == "Bearer tok-xyz"
-        assert "tok-xyz" not in server_cfg["url"]
+    def test_shape_names_the_in_container_socket_and_token(self) -> None:
+        payload = read_mcp.mcp_json_payload(token="tok-xyz")
+        assert payload["socket"] == "/work/mcp/precis.sock"
+        assert payload["path"] == "/mcp"
+        assert payload["token"] == "tok-xyz"
+        # No TCP address anywhere: the container has no network.
+        assert "url" not in payload and "10.0.2.2" not in str(payload)
 
     def test_write_mcp_json_lands_on_disk(self, tmp_path: Path) -> None:
-        path = read_mcp.write_mcp_json(tmp_path, port=6001, token="tok-1")
+        path = read_mcp.write_mcp_json(tmp_path, token="tok-1")
         assert path == tmp_path / "mcp.json"
         assert path.is_file()
         import json
 
         data = json.loads(path.read_text(encoding="utf-8"))
-        assert data["mcpServers"]["precis"]["url"] == "http://10.0.2.2:6001/mcp"
+        assert data["socket"] == f"{read_mcp.CONTAINER_SOCKET_DIR}/precis.sock"
+        assert data["token"] == "tok-1"
+
+    def test_socket_dir_is_a_sibling_outside_the_work_mount(
+        self, tmp_path: Path
+    ) -> None:
+        work = tmp_path / "sandbox-7"
+        assert read_mcp.socket_dir(work) == tmp_path / "sandbox-7-mcp"
 
 
 # ── impure: spawn (fake DSN/port, no real subprocess) ───────────────
@@ -150,8 +172,8 @@ class TestSpawnReadMcp:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # Stub the actual process launch — this test is about the
-        # orchestration (DSN check, port pick, mcp.json write, handle
-        # shape), not actually spawning `python -m precis serve`.
+        # orchestration (DSN check, socket dir, mcp.json + client write,
+        # handle shape), not actually spawning `python -m precis serve`.
         captured: dict[str, object] = {}
 
         class _FakeProc:
@@ -164,18 +186,64 @@ class TestSpawnReadMcp:
 
         monkeypatch.setattr(read_mcp.subprocess, "Popen", fake_popen)
 
+        work = tmp_path / "sandbox-9"
+        work.mkdir()
         handle = read_mcp.spawn_read_mcp(
             cast(Any, _FakeStore("postgresql://deploy@dbhost:5432/precis")),
-            work_dir=tmp_path,
-            port_picker=lambda host: 7001,
+            work_dir=work,
+            ready_s=0,
         )
         assert handle.pid == 424242
-        assert handle.port == 7001
+        assert handle.socket_dir == tmp_path / "sandbox-9-mcp"
+        assert handle.socket_dir.is_dir()
         assert handle.token  # a real random token, non-empty
-        assert (tmp_path / "mcp.json").is_file()
+        assert (work / "mcp.json").is_file()
+        assert (work / "precis_client.py").read_text(
+            encoding="utf-8"
+        ) == read_mcp.CLIENT_SOURCE
+        argv = captured["argv"]
+        assert isinstance(argv, list)
+        assert "--read-only" in argv
+        assert argv[argv.index("--uds") + 1] == str(handle.socket_dir / "precis.sock")
+        assert handle.token not in argv
         env = captured["env"]
         assert isinstance(env, dict)
         assert env["PRECIS_DATABASE_URL"] == "postgresql://agent_ro@dbhost:5432/precis"
+        assert env["PRECIS_MCP_TOKEN"] == handle.token
+
+    def test_refuses_a_socket_path_too_long_to_bind(self, tmp_path: Path) -> None:
+        deep = tmp_path / ("d" * 120) / "sandbox-1"
+        with pytest.raises(ValueError, match="next: set PRECIS_SANDBOX_WORK_DIR"):
+            read_mcp.spawn_read_mcp(
+                cast(Any, _FakeStore("postgresql://deploy@dbhost/precis")),
+                work_dir=deep,
+            )
+
+    def test_child_dying_before_bind_fails_the_spawn(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class _DeadProc:
+            pid = 424243
+            returncode = 1
+
+            def poll(self) -> int:
+                return 1
+
+        monkeypatch.setattr(read_mcp.subprocess, "Popen", lambda *a, **k: _DeadProc())
+        # Short path: the length check must not fire first.
+        work = Path(tempfile.mkdtemp(prefix="rm-", dir="/tmp")) / "sandbox-2"
+        try:
+            work.mkdir()
+            with pytest.raises(ValueError, match="exited"):
+                read_mcp.spawn_read_mcp(
+                    cast(Any, _FakeStore("postgresql://deploy@dbhost/precis")),
+                    work_dir=work,
+                    ready_s=5,
+                )
+            # The files were written before the spawn, never after it.
+            assert (work / "mcp.json").is_file()
+        finally:
+            shutil.rmtree(work.parent, ignore_errors=True)
 
 
 # ── pid-recycle guard: identity check before signaling ──────────────

@@ -46,8 +46,10 @@ quality-of-life and container items.
    `run:python` todo. Needs no OAuth, so it does not wait on gr329258;
    started 2026-10-18 on Reto's ask. Slice 1 (job-path `mode:script`:
    inline `code`, PyPI wheel lock, `--network none`, harvest on any exit)
-   shipped 2026-10-18; next is slice 2 (`inputs`, `code_ref`, read MCP
-   over a unix socket). Not live until slice 4 lights castor + pollux.
+   shipped 2026-10-18, slice 2 (`inputs`, `code_ref`, a read-only MCP
+   on a unix socket) the same day; next is slice 3 (todo sugar). Not
+   live until slice 4 lights castor + pollux, which first needs async
+   staging (gr496426) and the package allow-list review.
 
 ## Horizon
 
