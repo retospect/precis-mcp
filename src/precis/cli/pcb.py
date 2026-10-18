@@ -322,6 +322,8 @@ def _import_epro(args: argparse.Namespace) -> None:
     # cannot see which will assume it came across.
     for w in result.warnings:
         print(f"  warn: {w}")
+    for line in result.dropped_lines():
+        print(f"  {line}")
     if result.alignment_candidates:
         print(
             f"  {len(result.alignment_candidates)} part(s) look alignment-critical "

@@ -95,6 +95,23 @@ class ImportResult:
     #: ``(refdes, why)`` for parts that look alignment-critical
     #: (:func:`alignment_candidates`). Listed, never locked.
     alignment_candidates: list[tuple[str, str]] = field(default_factory=list)
+    #: Source nets with fewer than 2 pins and no source copper, not
+    #: imported (:func:`drop_dangling_nets`), and the ``REFDES.PIN`` each
+    #: one held, now marked ``unused``.
+    dropped_nets: list[str] = field(default_factory=list)
+    unused_pins: list[str] = field(default_factory=list)
+
+    def dropped_lines(self) -> list[str]:
+        """The dropped nets and their pins, every name listed (not a warn:
+        nothing the source meant is lost)."""
+        if not self.dropped_nets:
+            return []
+        return [
+            f"{len(self.dropped_nets)} net(s) with fewer than 2 pins and no "
+            f"copper not imported: {', '.join(self.dropped_nets)}",
+            f"{len(self.unused_pins)} pin(s) they held marked unused: "
+            f"{', '.join(self.unused_pins) or '-'}",
+        ]
 
 
 #: Refdes prefixes of parts a user sees or touches through an enclosure:
@@ -709,6 +726,41 @@ def _intake_copper_rows(
     return rows
 
 
+def drop_dangling_nets(
+    design: epro.Design, keep: set[str]
+) -> tuple[list[str], list[str]]:
+    """Drop every net with fewer than 2 pins that is not in ``keep``.
+
+    Such a net is nothing (Reto 2026-10-18, gr492989): EasyEDA names an
+    unwired pad's net after the pad (``CN4_1``), and taz15 carried 71 of
+    those plus one net no pad joins. ``keep`` holds the nets that carry
+    source copper or a plane, whose geometry must not be lost. A dropped
+    net's lone pin is marked ``unused`` (pad geometry stays, and the
+    unconnected-pin rule reads it as intended). Returns the dropped net
+    names and the ``REFDES.PIN`` pins marked."""
+    members: dict[str, set[tuple[str, str]]] = {}
+    for k in design.connections:
+        members.setdefault(str(k["net"]), set()).add((str(k["refdes"]), str(k["pin"])))
+    gone = {
+        str(n["name"])
+        for n in design.nets
+        if len(members.get(str(n["name"]), ())) < 2 and str(n["name"]) not in keep
+    }
+    if not gone:
+        return [], []
+    lone = sorted(rp for net in gone for rp in members.get(net, ()))
+    design.nets = [n for n in design.nets if str(n["name"]) not in gone]
+    design.connections = [k for k in design.connections if str(k["net"]) not in gone]
+    by_refdes = {str(c["refdes"]): c for c in design.components}
+    for refdes, pin in lone:
+        for p in by_refdes[refdes].get("pins", []):
+            if str(p["name"]) == pin:
+                p["unused"] = True
+    design.stats["nets"] = len(design.nets)
+    design.stats["connections"] = len(design.connections)
+    return sorted(gone), [f"{r}.{p}" for r, p in lone]
+
+
 def import_epro(
     store: Any,
     data: bytes,
@@ -790,9 +842,17 @@ def import_epro(
     stackup = ir.validate_stackup(stackup)
     drc.process_for_stackup(stackup)
 
+    source_rows = _intake_copper_rows(board, frame, hashlib.sha256(data).hexdigest())
+    dropped_nets, unused_pins = drop_dangling_nets(
+        design,
+        keep={str(r["net"]) for r in source_rows}
+        | set(planes.values())
+        | {str(n) for e in stackup for n in e.get("pour_nets") or []},
+    )
+
     existing = store.get_ref(kind="pcb", id=slug)
     if update:
-        return _update(
+        updated = _update(
             store,
             existing,
             data,
@@ -807,6 +867,8 @@ def import_epro(
             source_name=source_name,
             dry_run=dry_run,
         )
+        updated.dropped_nets, updated.unused_pins = dropped_nets, unused_pins
+        return updated
     if existing is not None:
         raise EproImportError(
             f"pcb {slug!r} already exists. A plain second import would extend "
@@ -828,8 +890,9 @@ def import_epro(
         warnings=warnings,
         stats=dict(design.stats),
         alignment_candidates=alignment_candidates(design),
+        dropped_nets=dropped_nets,
+        unused_pins=unused_pins,
     )
-    source_rows = _intake_copper_rows(board, frame, hashlib.sha256(data).hexdigest())
     result.stats["source_track_records"] = sum(
         r["ctype"] == "track" for r in source_rows
     )

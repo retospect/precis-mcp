@@ -4678,6 +4678,7 @@ class PcbHandler(Handler):
         # Every warning, never a count standing in for them: each is a thing
         # the re-imported board does NOT carry.
         lines += [f"⚠️  {w}" for w in result.warnings]
+        lines += result.dropped_lines()
         if result.copper is not None:
             lines += copper_report.render(result.copper)
         if queued or facts:

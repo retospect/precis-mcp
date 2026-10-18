@@ -736,3 +736,48 @@ def test_check_pours_fixed_copper_board_so_pour_nets_read_connected(
     # Nothing is written: the pour exists in the check's model only.
     board_id = int(design["board"]["board_id"])
     assert not [c for c in store.pcb_copper_list(board_id) if c.get("ctype") == "pour"]
+
+
+def _with_dangling_nets(slug: str, pcb: PcbHandler, store: Any) -> int:
+    """``_mini_design`` plus a one-pin net TP and a no-pin net EMPTY, on the
+    fixed-copper taz15 shape (no route run). Returns the ref id."""
+    design_args = _mini_design()
+    design_args["nets"] += [{"name": "TP"}, {"name": "EMPTY"}]
+    design_args["connections"].append({"net": "TP", "refdes": "U1", "pin": "SPARE"})
+    pcb.put(id=slug, args=design_args)
+    return _fixed_vdd_stub_and_gnd_pour(store, slug)
+
+
+def test_check_treats_dangling_nets_as_nothing(pcb: PcbHandler, store: Any) -> None:
+    """gr492989, Reto 2026-10-18: a net with fewer than 2 pins is nothing.
+    A route run writes it 'realized', but a fixed-copper import never runs
+    one, so taz15-r2 read its 71 one-pin nets and one no-pin net as
+    unrouted. The check run drops them by the route job's own
+    ``net_member_counts`` rule: no unrouted row, no warn, in the run and in
+    ``view='drc'``."""
+    from precis.pcb import check_run
+
+    ref_id = _with_dangling_nets("chk-dangling", pcb, store)
+    ran = check_run.run(store, ref_id, store.pcb_load(ref_id), eval_phase="routed")
+    assert ran is not None
+    assert not [f for f in ran.findings if f.where in ("net TP", "net EMPTY")]
+    body = pcb.get(id="chk-dangling", view="drc").body
+    assert "net TP" not in body and "net EMPTY" not in body, body
+
+
+def test_two_pad_net_without_copper_stays_unrouted(pcb: PcbHandler, store: Any) -> None:
+    """The dangling-net exemption can't hide a real unrouted net: SIG has
+    two pads and no track or pour, so it stays an ``unrouted`` error."""
+    from precis.pcb import check_run
+
+    assert [
+        c["refdes"] for c in _mini_design()["connections"] if c["net"] == "SIG"
+    ] == [
+        "U1",
+        "U2",
+    ]
+    ref_id = _with_dangling_nets("chk-two-pad", pcb, store)
+    ran = check_run.run(store, ref_id, store.pcb_load(ref_id), eval_phase="routed")
+    assert ran is not None
+    unrouted = [f for f in ran.findings if f.rule == "unrouted"]
+    assert [f.severity for f in unrouted if f.where == "net SIG"] == ["error"]

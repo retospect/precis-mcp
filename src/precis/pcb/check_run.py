@@ -829,8 +829,14 @@ def run(
     )
     # Fixed source copper routes a net with no ``pcb_routes`` row
     # (gr492989): judge "unrouted" by the copper, not the status alone.
+    # A net with fewer than 2 pins is nothing (Reto 2026-10-18): a route run
+    # writes it 'realized', but a fixed-copper import never runs one, so the
+    # same ``net_member_counts`` rule drops it here, with no finding.
     pending = pcb_route_state.route_state(store, ref_id, drc=False).pending
-    routed_by_copper = pcb_drc.nets_routed_by_copper(model) if pending else set()
+    dangling = {
+        str(ir.net_name[i]) for i, n in pcb_ir.net_member_counts(ir).items() if n < 2
+    }
+    settled = (pcb_drc.nets_routed_by_copper(model) if pending else set()) | dangling
     findings = pcb_drc.run_geometric_drc(
         model,
         capability=capability,
@@ -842,7 +848,7 @@ def run(
         unrouted=[
             {"net": r["name"], "note": r.get("note")}
             for r in pending
-            if r["name"] not in routed_by_copper
+            if r["name"] not in settled
         ],
         census=silk_census,
         holes=[

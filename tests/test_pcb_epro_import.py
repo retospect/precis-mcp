@@ -1806,3 +1806,56 @@ def test_tht_drills_survive_import_into_the_fab_render(store, pcb) -> None:
     assert svg.count("<title>PTH · ") == 6  # round plated drills
     assert svg.count("<title>NPTH · ") == 2
     assert svg.count('class="drill-slot"') == 1
+
+
+def _dangling_design() -> epro.Design:
+    """SIG joins two pads; CN4_1 is EasyEDA's self-named net on one unwired
+    pad; S$151 is a net no pad joins; TRK is one pad with a source track."""
+    design = epro.Design(
+        components=[
+            {"refdes": "U1", "pins": [{"name": n} for n in ("1", "2", "3")]},
+            {"refdes": "U2", "pins": [{"name": "1"}]},
+        ],
+        nets=[{"name": n} for n in ("SIG", "CN4_1", "S$151", "TRK")],
+        connections=[
+            {"net": "SIG", "refdes": "U1", "pin": "1"},
+            {"net": "SIG", "refdes": "U2", "pin": "1"},
+            {"net": "CN4_1", "refdes": "U1", "pin": "2"},
+            {"net": "TRK", "refdes": "U1", "pin": "3"},
+        ],
+    )
+    design.stats = {"nets": 4, "connections": 4}
+    return design
+
+
+def test_import_drops_nets_with_fewer_than_two_pins() -> None:
+    """gr492989, Reto 2026-10-18: a net with fewer than 2 pins is nothing,
+    so the importer does not create one. Its lone pin is marked ``unused``
+    (pad kept, no unconnected-pin warn) and both are listed in the result."""
+    design = _dangling_design()
+    dropped, unused = pcb_epro.drop_dangling_nets(design, keep={"TRK"})
+    assert dropped == ["CN4_1", "S$151"]
+    assert unused == ["U1.2"]
+    assert [n["name"] for n in design.nets] == ["SIG", "TRK"]
+    assert {c["net"] for c in design.connections} == {"SIG", "TRK"}
+    pins = {p["name"]: p for p in design.components[0]["pins"]}
+    assert pins["2"].get("unused") is True
+    assert not pins["1"].get("unused") and not pins["3"].get("unused")
+    assert design.stats == {"nets": 2, "connections": 3}
+    result = pcb_epro.ImportResult(
+        slug="x", ref_id=0, created=False, dropped_nets=dropped, unused_pins=unused
+    )
+    assert result.dropped_lines() == [
+        "2 net(s) with fewer than 2 pins and no copper not imported: CN4_1, S$151",
+        "1 pin(s) they held marked unused: U1.2",
+    ]
+
+
+def test_import_keeps_a_dangling_net_that_carries_source_copper() -> None:
+    """A one-pin or no-pin net with source copper (or a plane) is kept:
+    dropping it would lose the geometry the fixed-copper intake preserves."""
+    design = _dangling_design()
+    dropped, _ = pcb_epro.drop_dangling_nets(design, keep={"TRK", "S$151"})
+    assert dropped == ["CN4_1"]
+    assert {n["name"] for n in design.nets} == {"SIG", "TRK", "S$151"}
+    assert {"net": "TRK", "refdes": "U1", "pin": "3"} in design.connections
