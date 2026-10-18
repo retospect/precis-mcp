@@ -182,6 +182,29 @@ cases:
         text='…') — put with an existing id is refused; edit rewrites in
         place.
 
+  # source: gr495608 — put(kind='memory', id=N, link=..., rel=...) refused
+  # three times; the intent is "attach an edge", which is link().
+  - id: link-existing-memory-edge
+    prompt: |
+      Memory me489276 was derived from paper wang2020state. Record that
+      edge on the existing memory.
+    expect:
+      calls:
+        - {verb: link, kind: memory, args: {id: 're:(me)?489276', target: 're:paper:wang2020state'}}
+    forbid:
+      calls:
+        - {verb: put, kind: memory, args: {id: 're:.+'}}
+    fake:
+      calls:
+        - verb: link
+          kind: memory
+          args: {id: 489276, target: 'paper:wang2020state', rel: 'derived-from'}
+      record: {kind: memory}
+      answer: >
+        link(kind='memory', id=489276, target='paper:wang2020state',
+        rel='derived-from') — put creates new memories; link adds an edge
+        to an existing one.
+
   # source: tool_calls search|memory tags=['DREAM:speculative',
   # 'speculative'] BadInput x37 (calls 407274, 407310) — a bare flag that
   # collides with a closed value is refused; pass the qualified tag.

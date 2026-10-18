@@ -1723,13 +1723,22 @@ class NumericRefHandler(Handler):
         """
         if id is not None:
             note = f" ({id_note})" if id_note else ""
+            idr = id if isinstance(id, int) else repr(id)
+            opts = []
+            if self.spec.supports_edit:
+                opts.append(
+                    f"edit(kind={self.kind!r}, id={idr}, mode='replace', text='<new body>')"
+                )
+            if self.spec.supports_link:
+                opts.append(
+                    f"link(kind={self.kind!r}, id={idr}, target='kind:slug', rel='related-to')"
+                )
+            if self.spec.supports_tag:
+                opts.append(f"tag(kind={self.kind!r}, id={idr}, add=['...'])")
+            opts.append(f"delete(kind={self.kind!r}, id={idr})")
             raise BadInput(
                 f"put on existing {self._sense()} id={id!r} is not supported{note}",
-                next=(
-                    f"to mutate id={id}: tag(kind={self.kind!r}, id=N, add=[...]/remove=[...]) / "
-                    f"link(kind={self.kind!r}, id=N, target=..., mode='add'|'remove') / "
-                    f"delete(kind={self.kind!r}, id=N)"
-                ),
+                next="to mutate it: " + " / ".join(opts),
             )
         if mode is not None:
             raise BadInput(

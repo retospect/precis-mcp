@@ -440,6 +440,21 @@ class MemoryHandler(NumericRefHandler):
         ``meta={'hook': '...'}`` sets the memory's one-line index text
         (``refs.meta.hook``); ``type`` (user/feedback/project/reference) is the other writable key.
         """
+        if id is not None:
+            return self._put_on_existing(
+                id=id,
+                text=text,
+                title=title,
+                mode=mode,
+                tags=tags,
+                untags=untags,
+                link=link,
+                unlink=unlink,
+                rel=rel,
+                rule=rule,
+                warrant=warrant,
+                meta=meta,
+            )
         # This fresh payload is passed down the stack, never staged on self.
         # Validate the public meta allowlist before adding internal fields.
         # Automated writers cannot rephrase: mask here. Agent verb calls are
@@ -464,6 +479,63 @@ class MemoryHandler(NumericRefHandler):
             rel=rel,
             auto_refresh_days=auto_refresh_days,
             meta=create_meta,
+        )
+
+    def _put_on_existing(
+        self,
+        *,
+        id: str | int,
+        text: str | None,
+        title: str | None,
+        mode: str | None,
+        tags: list[str] | None,
+        untags: list[str] | None,
+        link: str | None,
+        unlink: str | None,
+        rel: str | None,
+        rule: str | None,
+        warrant: str | None,
+        meta: dict[str, Any] | None,
+    ) -> Response:
+        """``put(id=N, ...)`` on memory: delegate the link shape, refuse the rest.
+
+        ``id`` + ``link`` (+``rel``/``tags``) is "attach an edge" and runs
+        through ``link()``; anything else on an existing memory points at
+        the verb that does it (gr495608).
+        """
+        n = self._coerce_id(id)
+        if mode is not None or untags is not None or unlink is not None:
+            raise BadInput(
+                f"put creates new memories; memory id={n} already exists, "
+                "and mode=/untags=/unlink= are not put arguments",
+                next=(
+                    f"link(kind='memory', id={n}, target='kind:slug', mode='remove') "
+                    "to drop an edge / "
+                    f"tag(kind='memory', id={n}, remove=['...']) to drop a tag / "
+                    f"edit(kind='memory', id={n}, mode='replace', text='<new body>') "
+                    "to rewrite the body"
+                ),
+            )
+        has_body = any(
+            v is not None and v != {} for v in (text, title, rule, warrant, meta)
+        )
+        if link is None or has_body:
+            raise BadInput(
+                f"put creates new memories; memory id={n} already exists",
+                next=(
+                    f"edit(kind='memory', id={n}, mode='replace', text='<new body>') / "
+                    f"edit(kind='memory', id={n}, mode='find-replace', "
+                    "find='<old>', text='<new>') / "
+                    f"put(kind='memory', text='...', link='memory:{n}', rel='part-of')"
+                ),
+            )
+        out = self.link(id=n, target=link, rel=rel or "related-to")
+        if tags:
+            self.tag(id=n, add=tags)
+        return Response(
+            body=out.body
+            + f"\nlinked via link(); next time use link(kind='memory', id={n}, "
+            "target=..., rel=...)"
         )
 
     def _create(self, **kw: Any) -> Response:

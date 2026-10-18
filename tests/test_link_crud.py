@@ -739,18 +739,32 @@ class TestMemoryHandlerLink:
     def test_put_on_existing_id_rejected(
         self, memory_handler: MemoryHandler, store: Store
     ) -> None:
-        """After the seven-verb cutover, put is creation-only on
-        memory. Passing ``id=`` (with anything) raises BadInput
-        pointing at tag/link/delete.
+        """put stays create-only for bodies: ``id=`` + ``text=`` raises
+        BadInput with runnable edit/put next= lines carrying the real id.
         """
+        m = memory_handler.put(text="m")
+        new_id = id_of(m.body)
+        with pytest.raises(BadInput, match="already exists") as ei:
+            memory_handler.put(id=new_id, text="new body")
+        nxt = str(ei.value.next)
+        assert f"edit(kind='memory', id={new_id}, mode='replace'" in nxt
+        assert f"link='memory:{new_id}'" in nxt
+
+    def test_put_id_with_link_adds_edge(
+        self, memory_handler: MemoryHandler, store: Store
+    ) -> None:
+        """``put(id=N, link=..., rel=...)`` delegates to link() and the
+        ack names link() as the verb to use next time."""
         _seed_paper(store)
         m = memory_handler.put(text="m")
         new_id = id_of(m.body)
-        with pytest.raises(BadInput, match="put on existing memory"):
-            memory_handler.put(
-                id=new_id,
-                link="paper:wang2020state",
-            )
+        out = memory_handler.put(
+            id=new_id, link="paper:wang2020state", rel="cites", tags=["topic-x"]
+        )
+        assert "link(kind='memory'" in out.body
+        got = memory_handler.get(id=new_id, view="fisheye+1hop")
+        assert "wang2020state" in got.body
+        assert "topic-x" in memory_handler.get(id=new_id).body
 
     def test_rel_without_link_on_create_rejected(
         self, memory_handler: MemoryHandler

@@ -78,7 +78,7 @@ def test_put_on_existing_id_rejected(handler: MemoryHandler) -> None:
     r = handler.put(text="original")
     new_id = id_of(r.body)
 
-    with pytest.raises(BadInput, match="put on existing memory"):
+    with pytest.raises(BadInput, match="already exists"):
         handler.put(id=new_id, text="updated")
 
     # The original text is untouched.

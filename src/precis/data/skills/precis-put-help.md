@@ -22,7 +22,8 @@ and `link`.
 
 `put(kind='gripe'|'todo', id=N, text=...)` appends a comment to an existing
 one (no `args=`); older comments are shown as one-liners, `view='comments'`
-shows all. On gripe the append takes `link=`/`rel=` and `tags=` in the same
+shows all. On memory, id= with link= adds the edge; use edit for text.
+On gripe the append takes `link=`/`rel=` and `tags=` in the same
 transaction — comment-then-close is one call.
 
 `text=` and `body=` are the same prose slot spelled two ways across

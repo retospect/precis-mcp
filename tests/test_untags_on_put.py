@@ -174,7 +174,7 @@ def test_put_on_existing_id_rejected(memory: MemoryHandler, store: Store) -> Non
     numeric refs. Passing ``id=`` is a misuse and the error points
     at the right verb to reach instead of accepting a no-op."""
     rid = _create_with_tags(memory)
-    with pytest.raises(BadInput, match="put on existing memory"):
+    with pytest.raises(BadInput, match="already exists"):
         memory.put(id=rid)
 
 

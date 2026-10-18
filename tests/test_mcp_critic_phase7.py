@@ -95,7 +95,7 @@ class TestPutNarrowedToCreateOnly:
         h = MemoryHandler(hub=Hub(store=store))
         m = h.put(text="m")
         rid = id_of(m.body)
-        with pytest.raises(BadInput, match="put on existing memory"):
+        with pytest.raises(BadInput, match="already exists"):
             h.put(id=rid)
 
     def test_delete_verb_works(self, store: Store) -> None:
