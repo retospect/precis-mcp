@@ -80,6 +80,12 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
 
 ## Horizon
 
+- **backlog/pcb-unified-place-route.md** — `draft/high`, Reto 2026-10-18
+  ("anneal the totality of placement (including labels) routing and so on
+  in one smooth space"): one smooth cost over poses, labels, track
+  vertices and vias (money out), basin hopping with discrete topology
+  moves, insertion that shoves by descent; consumes vector-router slices
+  1–2, slot beside slices 3–5; ten open questions for Reto in the file.
 - **backlog/pcb-workbench-layout.md** — `ready/normal`, Reto's web design
   pass 2026-10-18 ("spec it"): schematic left, layout right, one chat,
   cross-probing, shared zoom/pan module with se. **Slice 1 shipped**
