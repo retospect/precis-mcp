@@ -1,14 +1,1 @@
-{
- "handlers/pcb.py::PcbHandler._fab_zip::BadInput": 1,
- "handlers/pcb.py::PcbHandler._op_order::BadInput": 4,
- "handlers/pcb.py::PcbHandler._render_capability::BadInput": 2,
- "handlers/pcb.py::PcbHandler._render_congestion::NotFound": 1,
- "handlers/pcb.py::PcbHandler._render_fab_svg::BadInput": 1,
- "handlers/pcb.py::PcbHandler._render_instance::NotFound": 1,
- "handlers/pcb.py::PcbHandler._render_net::NotFound": 1,
- "handlers/pcb.py::PcbHandler._render_view::BadInput": 2,
- "handlers/pcb.py::PcbHandler._render_view::NotFound": 1,
- "handlers/pcb.py::PcbHandler._validity_findings::BadInput": 1,
- "handlers/pcb.py::PcbHandler.delete::BadInput": 1,
- "handlers/pcb.py::PcbHandler.link::BadInput": 1
-}
+{}

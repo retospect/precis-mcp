@@ -3271,6 +3271,7 @@ class PcbHandler(Handler):
                 f"pcb: {slug} already carries a JLCPCB order "
                 f"(batch {prior.get('batch_num')}) — pass reorder=True to "
                 "place ANOTHER one; nothing was sent",
+                next="retry the same call with 'reorder':True added",
             )
         if not isinstance(shipping_address, dict) or not shipping_address:
             raise BadInput(
@@ -3278,12 +3279,17 @@ class PcbHandler(Handler):
                 "JLC's OrderAddressData fields (firstName, lastName, "
                 "streetAddress, city, country, postalCode, "
                 "cellOrMobileNumber; companyName/addressLine2 optional)",
+                next="add 'shipping_address':{firstName:...,lastName:...,"
+                "streetAddress:...,city:...,country:...,postalCode:...,"
+                "cellOrMobileNumber:...} to the same args",
             )
         if not client.available:
             raise BadInput(
                 "pcb: JLCPCB credentials do not resolve here "
                 "(JLCPCB_APP_ID/ACCESS_KEY/SECRET_KEY live in the prod "
                 "vault) — nothing was sent",
+                next="run the same call with 'dry_run':True for the payload "
+                "preview, or place the order on jlcpcb.com by hand",
             )
         file_key = client.upload_gerber(
             f"{slug}-fab.zip", blob, meta={"fileName": f"{slug}-fab.zip"}
@@ -3294,7 +3300,8 @@ class PcbHandler(Handler):
         except Exception as exc:
             raise BadInput(
                 f"pcb: gerber uploaded (fileKey {file_key}) but the quote "
-                f"failed — order NOT created: {type(exc).__name__}: {exc}"
+                f"failed — order NOT created: {type(exc).__name__}: {exc}",
+                next="retry the same put — the upload succeeded; no order was created",
             ) from exc
         create_req["fileKey"] = file_key
         created = client.create_order(
@@ -3407,7 +3414,11 @@ class PcbHandler(Handler):
 
             ref = self.store.fetch_refs_by_ids([ref_id]).get(ref_id)
             if ref is None:
-                raise NotFound(f"pcb id={ref_id} not found")
+                raise NotFound(
+                    f"pcb id={ref_id} not found",
+                    next="re-resolve the design: get(kind='pcb', id='slug', "
+                    "view='links')",
+                )
             return render_links_view(self.store, ref, sense="pcb")
         graph = pcb_session.sorted_graph(self._effective_graph(ref_id))
         if view in ("crossings", "ratsnest", "feasibility"):
@@ -3486,7 +3497,10 @@ class PcbHandler(Handler):
             try:
                 pr = eyes.proximity(graph, a, b)
             except KeyError as exc:
-                raise BadInput(str(exc)) from exc
+                raise BadInput(
+                    str(exc),
+                    next="get(kind='pcb', id='slug') lists this design's refdes",
+                ) from exc
             return Response(body=f"{a} ↔ {b}: {pr['gap_mm']:g} mm (centroid)")
         if view == "trace":
             net = str(args.get("net") or "")
@@ -3499,7 +3513,10 @@ class PcbHandler(Handler):
             try:
                 tr = eyes.trace(graph, net)
             except KeyError as exc:
-                raise BadInput(str(exc)) from exc
+                raise BadInput(
+                    str(exc),
+                    next="get(kind='pcb', id='slug') lists this design's net names",
+                ) from exc
             path = " → ".join(
                 f"{p['net']}" + (f" (via {p['via']})" if p["via"] != "—" else "")
                 for p in tr["path"]
@@ -4371,7 +4388,9 @@ class PcbHandler(Handler):
         except pcb_gerber.SynthesizedPadError as exc:
             raise BadInput(
                 f"pcb: {exc} Use view='svg' args={{'level':'fab'}} to inspect "
-                "the board as gerbers without exporting it."
+                "the board as gerbers without exporting it.",
+                next=f"cache the real footprint first: put(kind='pcb', "
+                f"id='{slug}', args={{'op':'footprint','part':'<lcsc>'}})",
             ) from exc
         return pcb_gerber.zip_fab(files), warnings, files, model
 
@@ -4808,7 +4827,11 @@ class PcbHandler(Handler):
         arithmetic, not just report "unrouted")."""
         ref = self.store.get_ref(kind="pcb", id=ref_id)
         if ref is None:
-            raise NotFound(f"pcb id={ref_id} not found")
+            raise NotFound(
+                f"pcb id={ref_id} not found",
+                next="re-resolve the design: get(kind='pcb', id='slug', "
+                "view='congestion')",
+            )
         last_route = (ref.meta or {}).get("last_route")
         if not last_route:
             return Response(
@@ -5931,7 +5954,11 @@ class PcbHandler(Handler):
         try:
             capability = capability_for(pcb_drc.process_for_stackup(board["stackup"]))
         except ValueError as exc:
-            raise BadInput(f"pcb: {exc}") from exc
+            raise BadInput(
+                f"pcb: {exc}",
+                next="args={'op':'stackup','preset':'4l-two-sided'} — v1 "
+                "supports 2- or 4-layer boards",
+            ) from exc
         layer_names = [str(layer.get("name")) for layer in board["stackup"]]
         pads, courtyard_local, _footprints = self._drc_geometry(ref_id, layer_names)
         # A part with no real footprint is checked at a guessed bound, which
@@ -6339,10 +6366,16 @@ class PcbHandler(Handler):
                 raise BadInput(
                     f"pcb: {len(gens)} generators on this design — pass "
                     f"args={{'name': ...}}, one of {sorted(gens)}",
+                    options=sorted(gens),
+                    next="get(kind='pcb', id='slug', view='capability', "
+                    "args={'name':'<generator name>'})",
                 )
             name = next(iter(gens))
         elif name not in gens:
-            raise BadInput(f"pcb: no generator named {name!r} — known: {sorted(gens)}")
+            raise BadInput(
+                f"pcb: no generator named {name!r} — known: {sorted(gens)}",
+                options=sorted(gens),
+            )
         row = gens[name]
         fmt = str(args.get("format") or "svg").strip().lower()
         if fmt not in ("svg", "ledger"):
@@ -6631,7 +6664,15 @@ class PcbHandler(Handler):
                 body = body.replace("</svg>", f"{desc}</svg>", 1)
             return Response(body=body)
         except gerber_view.UnsupportedGerber as exc:
-            raise BadInput(f"pcb: cannot render this fab set — {exc}") from exc
+            raise BadInput(
+                f"pcb: cannot render this fab set — {exc}",
+                next=[
+                    "get(kind='pcb', id='slug', view='svg') renders from the "
+                    "IR without the gerber round-trip",
+                    "file a gripe — our own export produced gerbers the "
+                    "viewer cannot parse",
+                ],
+            ) from exc
 
     # ── link ─────────────────────────────────────────────────────────
     def link(
@@ -6651,7 +6692,10 @@ class PcbHandler(Handler):
         vocabulary, the constraint table (``serves`` is acyclic) and
         lazy target minting; ``rel=None`` adds ``related-to``."""
         if id is None:
-            raise BadInput("pcb link needs id= (the design slug)")
+            raise BadInput(
+                "pcb link needs id= (the design slug)",
+                next="link(kind='pcb', id='slug', target='<kind:id>')",
+            )
         target = require_link_target("pcb", target)
         validate_link_mode(mode)
         ref = resolve_live_slug_ref(self.store, kind="pcb", id=str(id).strip())
@@ -6676,7 +6720,10 @@ class PcbHandler(Handler):
     # ── delete ───────────────────────────────────────────────────────
     def delete(self, *, id: str | int | None = None, **_kw: Any) -> Response:
         if id is None or not str(id).strip():
-            raise BadInput("delete(kind='pcb') requires id= (the design slug)")
+            raise BadInput(
+                "delete(kind='pcb') requires id= (the design slug)",
+                next="delete(kind='pcb', id='slug')",
+            )
         ref = resolve_live_slug_ref(self.store, kind="pcb", id=str(id).strip())
         counts = self.store.pcb_delete(ref.id)
         n = counts.get("pcb_instances", 0)
@@ -7142,7 +7189,10 @@ class PcbHandler(Handler):
     def _render_instance(self, ref_id: int, refdes: str) -> Response:
         nb = self.store.pcb_instance_neighbors(ref_id, refdes)
         if nb is None:
-            raise NotFound(f"pcb instance {refdes!r} not found in this design")
+            raise NotFound(
+                f"pcb instance {refdes!r} not found in this design",
+                next="get(kind='pcb', id='slug') lists this design's refdes",
+            )
         rows = [
             {
                 "pin": p["pin"],
@@ -7197,7 +7247,10 @@ class PcbHandler(Handler):
     def _render_net(self, ref_id: int, name: str) -> Response:
         net = self.store.pcb_net_members(ref_id, name)
         if net is None:
-            raise NotFound(f"pcb net {name!r} not found in this design")
+            raise NotFound(
+                f"pcb net {name!r} not found in this design",
+                next="get(kind='pcb', id='slug') lists this design's net names",
+            )
         rows = [
             {"refdes": m["refdes"], "pin": m["pin"], "tags": ",".join(m["tags"]) or "—"}
             for m in net["members"]
