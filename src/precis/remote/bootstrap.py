@@ -139,8 +139,13 @@ def runtime_artifacts(plan: dict[str, Any]) -> dict[str, bytes]:
         "export TZ=UTC\n"
         'test -n "${SLURM_JOB_ID:-}" || return 70\n'
         'test -n "${pilot_stage:-}" && test -n "${pilot_run:-}" || return 70\n'
+        "# GNU coreutils path first; /sbin is where macOS ships sha256sum (no --status there).\n"
+        "for REMOTE_RUNTIME_SHA256SUM in /usr/bin/sha256sum /sbin/sha256sum; do\n"
+        '  test -x "$REMOTE_RUNTIME_SHA256SUM" && break\n'
+        "done\n"
         f"printf '%s  %s\\n' {shlex.quote(plan['baseline_python']['sha256'])} {shlex.quote(plan['baseline_python']['path'])} "
-        "| /usr/bin/sha256sum --check --status 2>/dev/null || return 70\n"
+        '| "$REMOTE_RUNTIME_SHA256SUM" -c - >/dev/null 2>&1 || return 70\n'
+        "unset REMOTE_RUNTIME_SHA256SUM\n"
         f"if REMOTE_RUNTIME_OBSERVATIONS=$({shlex.quote(plan['baseline_python']['path'])} "
         '"$pilot_stage/runtime-check.py" "$pilot_stage/runtime-plan.json" "$pilot_stage" "$pilot_run" 2>/dev/null) '
         "; then\n"
