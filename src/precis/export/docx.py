@@ -1277,7 +1277,7 @@ def _paper_identifier(ref_id: int, ctx: _Ctx) -> str:
 def _cite_link_group(slug: str, ctx: _Ctx, paragraph: Any) -> None:
     """Append the small ``doi`` / library-search hyperlink run(s) right
     after a plain ``[n]`` citation marker — mirrors
-    ``export/latex.py::_cite_link_group``. ``ctx.doi_links`` and
+    ``export/latex.py::_cite_urls``. ``ctx.doi_links`` and
     ``ctx.library_links`` are independent (either can run alone). No-op
     when both are off, there's no store, the slug doesn't resolve, or it
     carries neither a DOI nor an arXiv id (an arXiv-only paper reuses the

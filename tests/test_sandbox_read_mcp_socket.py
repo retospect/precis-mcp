@@ -47,7 +47,7 @@ server._run_network_transport(
 def _load_client(cfg_path: Path) -> types.ModuleType:
     mod = types.ModuleType("precis_client_under_test")
     exec(compile(read_mcp.CLIENT_SOURCE, "precis_client.py", "exec"), mod.__dict__)
-    mod._CFG_PATH = str(cfg_path)  # type: ignore[attr-defined]
+    mod.__dict__["_CFG_PATH"] = str(cfg_path)
     return mod
 
 

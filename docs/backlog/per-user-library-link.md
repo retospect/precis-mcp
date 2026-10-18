@@ -56,7 +56,7 @@ network. The current install-wide default cannot adapt per viewer.
 ## Target + blast radius
 
 `src/precis/utils/paper_links.py` · `src/precis_web/paper_links.py` ·
-`src/precis/export/latex.py::_cite_link_group` ·
+`src/precis/export/latex.py::_cite_urls` (consumed by `build_bib`) ·
 `src/precis/export/docx.py::_cite_link_group` · `src/precis/config.py`
 (library_* fields) · `src/precis_web/config.py` (auth integration) · web
 user settings route · export job schema (identity/library override field) ·

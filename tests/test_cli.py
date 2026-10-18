@@ -34,6 +34,8 @@ def test_serve_invokes_server_main(monkeypatch: pytest.MonkeyPatch) -> None:
         token: str | None,
         fd: int | None,
         migrate: bool = False,
+        uds: str | None = None,
+        read_only: bool = False,
     ) -> None:
         called["hit"] = True
         called["fd"] = fd
@@ -41,6 +43,8 @@ def test_serve_invokes_server_main(monkeypatch: pytest.MonkeyPatch) -> None:
         called["host"] = host
         called["port"] = port
         called["token"] = token
+        called["uds"] = uds
+        called["read_only"] = read_only
 
     import precis.server
 
@@ -52,6 +56,8 @@ def test_serve_invokes_server_main(monkeypatch: pytest.MonkeyPatch) -> None:
     assert called["transport"] == "stdio"
     assert called["token"] is None
     assert called["fd"] is None
+    assert called["uds"] is None
+    assert called["read_only"] is False
 
 
 def test_serve_passes_through_network_transport_flags(
@@ -67,8 +73,18 @@ def test_serve_passes_through_network_transport_flags(
         token: str | None,
         fd: int | None,
         migrate: bool = False,
+        uds: str | None = None,
+        read_only: bool = False,
     ) -> None:
-        captured.update(transport=transport, host=host, port=port, token=token, fd=fd)
+        captured.update(
+            transport=transport,
+            host=host,
+            port=port,
+            token=token,
+            fd=fd,
+            uds=uds,
+            read_only=read_only,
+        )
 
     import precis.server
 
@@ -89,6 +105,9 @@ def test_serve_passes_through_network_transport_flags(
             "s3cr3t",
             "--fd",
             "3",
+            "--uds",
+            "/tmp/precis-test.sock",
+            "--read-only",
         ],
     )
 
@@ -99,6 +118,8 @@ def test_serve_passes_through_network_transport_flags(
         "port": 9999,
         "token": "s3cr3t",
         "fd": 3,
+        "uds": "/tmp/precis-test.sock",
+        "read_only": True,
     }
 
 
