@@ -70,7 +70,6 @@ a link on the board page, `op='import_epro'`
 ## Not covered here (stays on gr495289)
 
 The export warnings now say what they dropped (the orphan-pad line names
-the auto fiducials by position, the blind-via line gives each span). Still
-open: whether the router should emit non-through via spans on a 4-layer
-board at all, and whether the writer should carry the auto fiducials
-instead of dropping them.
+stray pads, the blind-via line gives each span); the auto fiducials ride as
+`FID<n>` free pads. Still open: the router emitting through vias only unless
+the fab capability allows blind/buried (gr495289 ruling 1, after R).

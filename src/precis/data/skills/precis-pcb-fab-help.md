@@ -104,9 +104,10 @@ get(kind="pcb", id="s", view="epro", args={"verify": True})  # + diff
 
 The file carries the board only: outline, parts with their footprints,
 pads, nets, tracks, vias, pour zones, silk strokes and editable
-designators (Pro draws them in its own font). It has no schematic, on
-purpose: Pro reports a clean import with no schematic pages; do not run
-"Update PCB from schematic" there, it rewrites the netlist. Every dropped
+designators (Pro draws them in its own font) and the auto-placed board
+fiducials, filed as `FID<n>` free pads on the outer layers. It has no
+schematic, on purpose: Pro reports a clean import with no schematic pages;
+do not run "Update PCB from schematic" there, it rewrites the netlist. Every dropped
 item is a `⚠️` line in the response (an unplaced part, a pad with no
 placed part, a blind via written through-hole). Synthesized pads refuse
 the export unless `args={'allow_synthesized': True}`.

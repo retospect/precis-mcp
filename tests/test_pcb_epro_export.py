@@ -484,9 +484,8 @@ def test_things_the_slice_does_not_carry_are_warned_about():
     ex = _export(model)
     text = " | ".join(ex.warnings)
     for needle in (
-        "2 pad(s) belong to no placed part",
-        "1 board fiducial(s) at (1.000, 1.000)",
-        "1 stray pad row(s) (?.? at (1.000, 1.000))",
+        "1 pad(s) belong to no placed part and are not exported (stray rows): "
+        "?.? at (1.000, 1.000)",
         "1 net(s) have no exported pad and are not in the file: LONELY",
         "1 pour(s)/plane(s)",
         "1 soldermask-opening",
@@ -505,6 +504,73 @@ def test_things_the_slice_does_not_carry_are_warned_about():
         if not b.get("plated") and (b.get("hole") or {}).get("width")
     ]
     assert len(npth) == 1
+    assert "fiducial" not in text
+
+
+def _fiducials(spots, layers=_LAYERS, dia=1.0):
+    return [
+        {
+            "layer": layer,
+            "net": "",
+            "shape": "circle",
+            "x": x,
+            "y": y,
+            "w": dia,
+            "role": "fiducial",
+        }
+        for x, y in spots
+        for layer in layers
+    ]
+
+
+def test_auto_fiducials_are_carried_as_free_pads_on_the_outer_layers():
+    """The model holds one flash per copper layer (3 fiducials x 4 layers =
+    12 rows, the gr495289 board); the file carries one free pad per outer
+    layer and the export no longer calls them orphans."""
+    spots = [(3.0, 3.0), (27.0, 3.0), (3.0, 17.0)]
+    model = _model(extra_pads=_fiducials(spots))
+    ex = _export(model)
+    assert not [w for w in ex.warnings if "belong to no placed part" in w]
+    assert ex.stats["fiducial_pads"] == 6
+    pcb = _read(ex).pcb()
+    frame = epro_write.frame_for(model)
+    fids = [b for b in pcb.bodies("PAD") if str(b["num"]).startswith("FID")]
+    assert sorted((b["num"], b["layerId"]) for b in fids) == [
+        (f"FID{n}", layer) for n in (1, 2, 3) for layer in (1, 2)
+    ]
+    for b in fids:
+        assert b["netName"] == "" and b["hole"]["width"] == 0
+        assert b["defaultPad"]["width"] == pytest.approx(
+            epro_write.to_mils(1.0), abs=1e-3
+        )
+    top = {b["num"]: (b["centerX"], b["centerY"]) for b in fids if b["layerId"] == 1}
+    for n, (x, y) in enumerate(sorted(spots), 1):
+        assert top[f"FID{n}"] == epro_write.to_epro_xy(x, y, frame)
+
+
+def test_reimport_skips_the_carried_fiducials_without_a_warning():
+    model = _model(extra_pads=_fiducials([(3.0, 3.0)]))
+    project = _read(_export(model))
+    board = project.pcb()
+    _design, frame = epro.build_design(project, board)
+    holes, warnings = epro.extract_mounting_holes(board, frame)
+    assert [h for h in holes if h["ftype"] == "mounting_hole"] == []
+    assert warnings == []
+
+
+def test_verify_checks_the_carried_fiducials():
+    model = _model(extra_pads=_fiducials([(3.0, 3.0), (27.0, 17.0)]))
+    v = _verify(model)
+    assert not v.fails, v.render()
+    assert "fiducial pads 4 in the model, 4 written -> 4 read" in v.render()
+    ex = _export(model)
+    files = dict(ex.files)
+    member = next(n for n in files if n.endswith(".epru"))
+    lines = files[member].split("\n")
+    drop = next(k for k, ln in enumerate(lines) if '"num":"FID1"' in ln)
+    files[member] = "\n".join(lines[:drop] + lines[drop + 1 :])
+    v = epro_verify.verify_export(model, epro_write.zip_epro(files), stats=ex.stats)
+    assert any(f.startswith("fiducial pads 4 in the model") for f in v.fails)
 
 
 # ── silk + editable designators (slice 2e) ──────────────────────────────
@@ -2803,7 +2869,8 @@ def test_handler_epro_verify_passes_on_a_native_board(pcb, tmp_path):
     assert "parts 2 -> 2" in body
     assert "pour zones 1 written -> 1 read" in body  # the In1.Cu GND plane
     assert "\nFAIL " not in body, body
-    assert "verify: 15 ok, 0 FAIL" in body
+    assert "fiducial pads 4 in the model, 4 written -> 4 read" in body
+    assert "verify: 16 ok, 0 FAIL" in body
 
 
 def test_handler_epro_without_verify_points_at_it(pcb, tmp_path):
@@ -2830,7 +2897,8 @@ def test_handler_epro_verify_passes_on_an_imported_board(pcb, store, tmp_path):
     assert "copper segments 8 in the model, 8 written -> 8 read" in body
     assert "vias 1 in the model, 1 written -> 1 read" in body
     assert "\nFAIL " not in body, body
-    assert "verify: 15 ok, 0 FAIL" in body
+    assert "fiducial pads 6 in the model, 6 written -> 6 read" in body
+    assert "verify: 16 ok, 0 FAIL" in body
 
 
 # ── fetch + re-import (gr495289, Reto's rulings 1a / 2a) ─────────────────

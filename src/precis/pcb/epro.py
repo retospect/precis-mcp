@@ -105,6 +105,10 @@ _TOP, _BOTTOM, _INNER = "TOP", "BOTTOM", "SIGNAL"
 #: ``layerType`` of the board-outline layer.
 _OUTLINE = "OUTLINE"
 
+#: Pad-number prefix of the free ``PAD`` the writer files a board fiducial as
+#: (``precis.pcb.epro_write``); the reader recognises it and imports nothing.
+FIDUCIAL_PAD_PREFIX = "FID"
+
 
 def _nm(v_mil: float) -> float:
     """mil → mm, rounded to the nanometre.
@@ -2100,6 +2104,10 @@ def extract_mounting_holes(
     become features — a plated free pad is real copper on a real net with
     no precis home at all, so it is reported rather than quietly turned
     into a mounting hole, which would drop its net.
+
+    A hole-less free pad numbered ``FID<n>`` is the writer's carried board
+    fiducial (:data:`FIDUCIAL_PAD_PREFIX`). It is skipped silently: precis
+    mints its own fiducials at render time, so importing it would double it.
     """
     warnings: list[str] = []
     out: list[dict[str, Any]] = []
@@ -2107,6 +2115,8 @@ def extract_mounting_holes(
     for b in pcb.bodies("PAD"):
         hole = b.get("hole")
         dia_mil = (hole or {}).get("width") if isinstance(hole, dict) else None
+        if not dia_mil and str(b.get("num") or "").startswith(FIDUCIAL_PAD_PREFIX):
+            continue
         if b.get("plated"):
             plated_free += 1
             continue

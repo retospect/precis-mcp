@@ -29,6 +29,8 @@ quantisation plus a fresh float transform can move a point by ~0.5 um,
 which straddles any fixed rounding key) and pass within :data:`TOL_MM`,
 the 0.5 um the writer's round-trip tests hold.
 
+Board fiducials are compared as ``FID<n>`` free pads (position, count).
+
 Not compared: silk strokes and designator text, holes, the cached pour
 fill, and via spans (``VIA`` has no span field; the export already warns
 per via). Pours are compared by count only.
@@ -41,7 +43,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from precis.pcb import epro, padplace, pose
-from precis.pcb.epro_write import arc_sweep_deg
+from precis.pcb.epro_write import arc_sweep_deg, fiducial_pads
 
 #: Pairing window, mm.
 MATCH_MM = 0.005
@@ -135,9 +137,49 @@ def verify_export(
         f"pour zones {stats.get('pours', 0)} written -> "
         f"{len(board.bodies('POUR'))} read",
     )
+    _check_fiducials(v, model, board, parts, frame, stats, at)
     _check_outline(v, outline, design, at)
     _check_rules(v, model, design)
     return v
+
+
+def _check_fiducials(
+    v: Verdict,
+    model: dict[str, Any],
+    board: epro.EproDocument,
+    parts: dict[str, dict[str, Any]],
+    frame: epro.Frame,
+    stats: dict[str, int],
+    at: Callable[[Any, Any], _XY],
+) -> None:
+    """The auto board fiducials ride as ``FID<n>`` free pads: one per outer
+    layer, at the model's position and diameter."""
+    want = fiducial_pads(
+        [p for p in model.get("pads") or [] if str(p.get("refdes") or "") not in parts],
+        [str(n) for n in model.get("layers") or []],
+    )
+    got = [
+        b
+        for b in board.bodies("PAD")
+        if str(b.get("num") or "").startswith(epro.FIDUCIAL_PAD_PREFIX)
+    ]
+    if not want and not got:
+        return
+    pool = [at(*frame.xy(float(b["centerX"]), float(b["centerY"]))) for b in got]
+    missing: list[str] = []
+    for num, pad, _bottom in want:
+        wxy = (float(pad["x"]), float(pad["y"]))
+        hit = next((k for k, xy in enumerate(pool) if _dist(xy, wxy) < MATCH_MM), None)
+        if hit is None:
+            missing.append(num)
+            continue
+        pool.pop(hit)
+    written = stats.get("fiducial_pads", 0)
+    v.check(
+        not missing and not pool and len(want) == written,
+        f"fiducial pads {len(want)} in the model, {written} written -> "
+        f"{len(got)} read" + (f" (unmatched {_names(missing)})" if missing else ""),
+    )
 
 
 def _check_parts(

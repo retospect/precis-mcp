@@ -63,6 +63,11 @@ documents:
   reader's ``_footprint_holes`` parses back); a board-level
   mounting-hole drill becomes a free ``PAD`` with ``plated: false`` —
   the shape the reader's ``extract_mounting_holes`` parses;
+* board fiducials: the auto-placed ones (``role: "fiducial"``, no refdes,
+  one model flash per copper layer) are filed as hole-less netless free
+  ``PAD`` records numbered ``FID<n>``, one per outer layer — the free-pad
+  shape above, not an observed Pro fiducial record, so the reader skips
+  them rather than import a second set;
 * the imported rule table, verbatim (slice 2f):
   ``model["epro_rules"]``/``model["epro_board"]`` carry the records the
   reader preserved (``meta.epro_rules`` on the ref — RULE, RULE_SELECTOR,
@@ -121,6 +126,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from precis.pcb import padplace, pose
+from precis.pcb.epro import FIDUCIAL_PAD_PREFIX
 from precis.pcb.gerber import SynthesizedPadError
 
 #: 1 mil = 0.0254 mm — the ``.epru`` body unit. Pinned equal to the
@@ -1004,37 +1010,65 @@ def _group_pads(model: dict[str, Any], parts: dict[str, _Part]) -> list[dict[str
     return orphans
 
 
-def _orphan_warning(orphans: list[dict[str, Any]]) -> str:
-    """One line saying which pads :func:`_group_pads` could not file under a
-    part. Auto-placed board fiducials carry no refdes and one flash per copper
-    layer, so they are counted as fiducials (by position), not as pad rows."""
-    fids: dict[tuple[float, float], set[str]] = {}
-    strays: list[str] = []
-    for pad in orphans:
-        xy = (
-            round(float(pad.get("x") or 0.0), 3),
-            round(float(pad.get("y") or 0.0), 3),
-        )
-        if pad.get("role") == "fiducial":
-            fids.setdefault(xy, set()).add(str(pad.get("layer") or "?"))
-            continue
-        who = f"{pad.get('refdes') or '?'}.{pad.get('pin') or '?'}"
-        strays.append(f"{who} at ({xy[0]:.3f}, {xy[1]:.3f})")
-    what: list[str] = []
-    if fids:
-        spots = ", ".join(f"({x:.3f}, {y:.3f})" for x, y in sorted(fids)[:4])
-        what.append(
-            f"{len(fids)} board fiducial(s) at {spots}{'…' if len(fids) > 4 else ''} "
-            "(auto-placed, one flash per copper layer, not parts in the file — "
-            "re-add them in Pro)"
-        )
-    if strays:
-        shown = ", ".join(strays[:4]) + ("…" if len(strays) > 4 else "")
-        what.append(f"{len(strays)} stray pad row(s) ({shown})")
+def _orphan_warning(strays: list[dict[str, Any]]) -> str:
+    """One line naming the pads that belong to no placed part and are not
+    exported. The auto-placed board fiducials are not among them:
+    :func:`fiducial_pads` writes those."""
+    named = [
+        f"{p.get('refdes') or '?'}.{p.get('pin') or '?'} at "
+        f"({float(p.get('x') or 0.0):.3f}, {float(p.get('y') or 0.0):.3f})"
+        for p in strays
+    ]
+    shown = ", ".join(named[:4]) + ("…" if len(named) > 4 else "")
     return (
-        f"{len(orphans)} pad(s) belong to no placed part and are not "
-        f"exported: {'; '.join(what)}"
+        f"{len(strays)} pad(s) belong to no placed part and are not exported "
+        f"(stray rows): {shown}"
     )
+
+
+def fiducial_pads(
+    orphans: list[dict[str, Any]], layers: list[str]
+) -> list[tuple[str, dict[str, Any], bool]]:
+    """``(num, model pad, bottom)`` for each auto-placed board fiducial
+    (``role: "fiducial"``) on an outer copper layer, ``num`` = ``FID<n>`` by
+    fiducial position. The model carries one flash per copper layer; an
+    inner-layer flash is a clearance artefact and is not written, since a
+    free SMD pad is surface copper only."""
+    if not layers:
+        return []
+    outer = {str(layers[0]): False, str(layers[-1]): True}
+    fids = [p for p in orphans if p.get("role") == "fiducial"]
+
+    def spot(p: dict[str, Any]) -> tuple[float, float]:
+        return round(float(p["x"]), 3), round(float(p["y"]), 3)
+
+    index = {s: k + 1 for k, s in enumerate(sorted({spot(p) for p in fids}))}
+    rows = [
+        (f"{FIDUCIAL_PAD_PREFIX}{index[spot(p)]}", p, outer[str(p.get("layer"))])
+        for p in fids
+        if str(p.get("layer")) in outer
+    ]
+    return sorted(rows, key=lambda r: (index[spot(r[1])], r[2]))
+
+
+def _fiducial_pad_body(
+    pad: dict[str, Any], num: str, bottom: bool, frame: EproFrame, z_index: int
+) -> dict[str, Any]:
+    """A board fiducial as a hole-less, netless free ``PAD`` on its outer
+    layer: :func:`_free_pad_body`'s record minus the hole, with the same
+    solder expansion as every other pad here."""
+    dia = to_mils(float(pad.get("w") or 0.0))
+    x, y = to_epro_xy(float(pad["x"]), float(pad["y"]), frame)
+    body = _free_pad_body({"x": 0.0, "y": 0.0, "dia_mm": 0.0}, num, frame, z_index)
+    body.update(
+        layerId=_L_BOTTOM if bottom else _L_TOP,
+        centerX=x,
+        centerY=y,
+        hole={"holeType": "ROUND", "width": 0, "height": 0},
+        defaultPad={"padType": "ELLIPSE", "width": dia, "height": dia},
+        plated=True,
+    )
+    return body
 
 
 @dataclass
@@ -2235,6 +2269,13 @@ def epro_files(
             _free_pad_body(d, str(npth + plated_free), frame, s.z()),
             _rid(slug, f"freepad:{npth + plated_free}"),
         )
+    fid_rows = fiducial_pads(orphans, layers)
+    for num, fpad, bottom in fid_rows:
+        s.record(
+            "PAD",
+            _fiducial_pad_body(fpad, num, bottom, frame, s.z()),
+            _rid(slug, f"fid:{num}:{'b' if bottom else 't'}"),
+        )
 
     for group in groups:
         s.dochead("FOOTPRINT", group.uuid, client)
@@ -2297,8 +2338,9 @@ def epro_files(
             f"{len(padless)} placed part(s) have no pads in the model and are "
             f"omitted: {', '.join(padless[:8])}"
         )
-    if orphans:
-        warnings.append(_orphan_warning(orphans))
+    strays = [p for p in orphans if p.get("role") != "fiducial"]
+    if strays:
+        warnings.append(_orphan_warning(strays))
     warnings += _copper_warnings(cu)
     if plated_free:
         warnings.append(
@@ -2363,6 +2405,7 @@ def epro_files(
             "pours_dropped": cu.pours_dropped,
             "npth": npth,
             "plated_free": plated_free,
+            "fiducial_pads": len(fid_rows),
             "rule_records": len(model.get("epro_rules") or []),
             "silk_polys": silk_out.polys,
             "silk_refdes_suppressed": silk_out.refdes,
@@ -2399,6 +2442,7 @@ __all__ = [
     "copper_layer_ids",
     "epro_angle",
     "epro_files",
+    "fiducial_pads",
     "frame_for",
     "loose_drills",
     "safe_stem",
