@@ -95,11 +95,13 @@ BASELINE_FAILED = 29
 #: so one broken seed still fails. The mean floor is one-way: raise it when
 #: the mean improves. Measured 2026-10-18 on main 902fd6a80, routed per
 #: seed 1/3/5/6/7/8 = 35/34/36/30/35/37, mean 34.5 (the 2026-10-15 sweep's
-#: mean too). Seeds 2 and 4 are left out: their anneal leaves one part
-#: 0.041 mm past the outline and the route job refuses the placement
-#: (gr496151).
-NANO_SEEDS: tuple[int, ...] = (1, 3, 5, 6, 7, 8)
-NANO_MEAN_ROUTED_FLOOR = 34.5
+#: mean too). gr496151's outline settle (both jobs, Reto 2026-10-18) let
+#: seeds 2 and 4 route: they had left C_B5 / C_AREF 0.041 mm past a
+#: rounded corner and the route job refused the placement. Seeds 1-8 then
+#: route 35/31/39/34/36/28/35/37: the six old seeds' mean rose to 35.0,
+#: and over all eight it is 34.375.
+NANO_SEEDS: tuple[int, ...] = (1, 2, 3, 4, 5, 6, 7, 8)
+NANO_MEAN_ROUTED_FLOOR = 34.375
 NANO_SEED_ROUTED_MIN = 28
 
 _DRC_HEAD_RE = re.compile(r"— (\d+) error\(s\), (\d+) warn\(s\)")

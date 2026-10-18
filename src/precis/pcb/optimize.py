@@ -2309,6 +2309,7 @@ class OptimizeEngine:
             int, tuple[tuple[float, float, float], list[tuple[float, float]]]
         ] = {}
         self._placement_bounds = self._derive_placement_bounds()
+        self._outline_region = _outline_region(ir.outline)
         #: ``t0`` and TRANSLATE's step both scale off ``board_side``. It is
         #: deliberately NOT re-derived from the (larger) placement bounds:
         #: inflating it makes the anneal start hot enough to scatter a
@@ -3680,6 +3681,7 @@ class OptimizeEngine:
         proposals: Sequence[tuple[int, float, float]],
         *,
         rotations: dict[int, float] | None = None,
+        in_outline: bool = False,
     ) -> bool:
         """True iff every proposed ``(instance, x, y)`` sits inside
         :attr:`_placement_bounds`, clears every other instance's keep-out
@@ -3742,6 +3744,10 @@ class OptimizeEngine:
         for i, (inst, x, y) in enumerate(proposals):
             x0, y0, x1, y1 = self.bounds_for(inst)
             if not (x0 <= x <= x1 and y0 <= y <= y1):
+                return False
+            if in_outline and not _courtyard_in_outline(
+                self._outline_region, proposed_poly[inst]
+            ):
                 return False
             t = float(self._soft_pin_mm[inst])
             if math.isfinite(t):
@@ -3958,12 +3964,69 @@ class OptimizeEngine:
             moved.extend(str(ir.instance_refdes[m]) for m in members)
         return tuple(moved)
 
+    def settle_into_outline(self) -> tuple[str, ...]:
+        """Move every movable rigid body whose courtyard overhangs the
+        board outline to the nearest pose that is legal AND inside it;
+        returns the refdes it moved. Runs after every anneal, so in both
+        the place and the route job (gr496151; Reto 2026-10-18).
+
+        Legality bounds a part's CENTRE by the outline's bounding box
+        (:meth:`bounds_for`), so a part may sit over a rounded corner:
+        nano seeds 2 and 4 settled C_B5 / C_AREF 0.041 mm past a 3 mm
+        fillet, and the route job refused the placement on
+        ``outline_containment``. The outline is not a move-legality term
+        because that changes the anneal's trajectory on every seed:
+        measured on nano, routed 35 -> 33 at seed 1, and 4-6 nets lower
+        on seeds 3/5/7/8. Here a board with no overhang is untouched,
+        and the search uses no RNG. A body with no legal inside pose
+        stays where it is, and the placement-DRC gate still reports it."""
+        if self._outline_region is None:
+            return ()
+        ir = self.ir
+        moved: list[str] = []
+        seen: set[int] = set()
+        # A local nudge, not a re-place: a body with no inside pose this
+        # close must not cost a whole-board lattice scan every round.
+        max_rings = math.ceil(_SETTLE_RADIUS_MM / _LEGALIZE_STEP_MM)
+        for inst in self._movable_xy:
+            members = self._rigid_members(int(inst))
+            if seen.intersection(members):
+                continue
+            seen.update(members)
+            if any(bool(ir.inst_fixed_xy[m]) for m in members):
+                continue
+            old = [(m, float(ir.inst_x[m]), float(ir.inst_y[m])) for m in members]
+            if any(math.isnan(x) or math.isnan(y) for _m, x, y in old):
+                continue
+            if all(
+                _courtyard_in_outline(self._outline_region, self._world_courtyard(m))
+                for m in members
+            ):
+                continue
+            target = self._nearest_legal_offset(old, max_rings, in_outline=True)
+            if target is None:
+                continue
+            dx, dy = target
+            old_pose = tuple(
+                (float(ir.inst_x[m]), float(ir.inst_y[m]), float(ir.inst_rot[m]))
+                for m in members
+            )
+            new_pose = tuple((x + dx, y + dy, rot) for x, y, rot in old_pose)
+            self.apply_move(Move(MoveKind.TRANSLATE, members, old_pose, new_pose))
+            moved.extend(str(ir.instance_refdes[m]) for m in members)
+        return tuple(moved)
+
     def _nearest_legal_offset(
-        self, old: list[tuple[int, float, float]], max_rings: int
+        self,
+        old: list[tuple[int, float, float]],
+        max_rings: int,
+        *,
+        in_outline: bool = False,
     ) -> tuple[float, float] | None:
         """The smallest ``(dx, dy)`` on the :data:`_LEGALIZE_STEP_MM`
-        lattice that makes every member of ``old`` legal, searched ring
-        by ring outward; ``None`` when no lattice point is."""
+        lattice that makes every member of ``old`` legal (and inside the
+        outline when ``in_outline``), searched ring by ring outward;
+        ``None`` when no lattice point is."""
         step = _LEGALIZE_STEP_MM
         for ring in range(1, max_rings + 1):
             offsets = [
@@ -3975,7 +4038,9 @@ class OptimizeEngine:
             offsets.sort(key=lambda ij: ij[0] * ij[0] + ij[1] * ij[1])
             for i, j in offsets:
                 dx, dy = i * step, j * step
-                if self._placement_is_legal([(m, x + dx, y + dy) for m, x, y in old]):
+                if self._placement_is_legal(
+                    [(m, x + dx, y + dy) for m, x, y in old], in_outline=in_outline
+                ):
                     return (dx, dy)
         return None
 
@@ -4208,6 +4273,7 @@ class OptimizeEngine:
         ir = self.ir
         ir.outline = list(move.new_outline if forward else move.old_outline)
         self._placement_bounds = self._derive_placement_bounds()
+        self._outline_region = _outline_region(ir.outline)
         for i in range(ir.n_instances):
             self._refresh_board_edge(i)
         self._money_outline_area = self._outline_area_usd()
@@ -4841,6 +4907,46 @@ def _clamp(v: float, lo: float, hi: float) -> float:
     return min(hi, max(lo, v))
 
 
+def _outline_region(outline: Any) -> tuple[Any, bool] | None:
+    """The board outline as a prepared polygon plus whether it is convex,
+    for :func:`_courtyard_in_outline`; ``None`` without an outline (the
+    placement box is then the whole domain)."""
+    if not outline or len(outline) < 3:
+        return None
+    import shapely
+    from shapely.geometry import Polygon
+
+    board = Polygon([(float(p[0]), float(p[1])) for p in outline])
+    if not board.is_valid:
+        board = board.buffer(0)
+    if board.is_empty:
+        return None
+    convex = board.convex_hull.area - board.area <= 1e-9 * max(board.area, 1.0)
+    shapely.prepare(board)
+    return board, convex
+
+
+def _courtyard_in_outline(
+    region: tuple[Any, bool] | None, poly: list[tuple[float, float]]
+) -> bool:
+    """True iff the courtyard ``poly`` lies inside the outline, boundary
+    included — the test ``drc.check_outline_containment`` applies to a
+    part. On a convex outline the vertices decide it (their hull, which
+    contains the polygon, is then inside too); a concave outline also
+    takes the full ``covers``."""
+    if region is None:
+        return True
+    import shapely
+    from shapely.geometry import Polygon
+
+    board, convex = region
+    xs = np.fromiter((p[0] for p in poly), dtype=float)
+    ys = np.fromiter((p[1] for p in poly), dtype=float)
+    if not bool(shapely.intersects_xy(board, xs, ys).all()):
+        return False
+    return convex or bool(board.covers(Polygon(poly)))
+
+
 #: How many draws a placement generator makes before conceding that this
 #: iteration has no legal proposal (:meth:`OptimizeEngine._placement_is_
 #: legal`). One draw would silently disable TRANSLATE for parts in a
@@ -4851,6 +4957,9 @@ _LEGALIZE_TRIES = 8
 #: coarse enough that a search across a whole board stays in the
 #: thousands of legality checks.
 _LEGALIZE_STEP_MM = 0.25
+#: How far, mm, :meth:`OptimizeEngine.settle_into_outline` may move a body
+#: to clear the outline (a corner overhang is tens of microns).
+_SETTLE_RADIUS_MM = 2.0
 
 
 def _sample_delta_1d(rng: random.Random, step: float, lo: float, hi: float) -> float:
@@ -5461,6 +5570,7 @@ def optimize(
     if config.support_groups:
         placed_groups = engine.organize_support_groups()
         support_groups = pcb_support_groups.summary_lines(ir, placed_groups)
+    engine.settle_into_outline()
     cost_after = engine.total()
     # Cosmetic, post-measurement: `cost_before`/`cost_after` grade the
     # anneal's own work; the rigid recentre below changes absolute
@@ -6043,6 +6153,7 @@ def anneal_route_loop(
     # the best-round restore then carries the organised poses forward.
     if config.support_groups:
         engine.organize_support_groups()
+    engine.settle_into_outline()
 
     rounds: list[RouteLoopRound] = []
     outcomes: list[RouteOutcome] = []
@@ -6085,6 +6196,9 @@ def anneal_route_loop(
         all_moves.extend(engine.moves)
         if config.support_groups:
             engine.organize_support_groups()
+        # Each round's route measures, and the restore may keep, the
+        # settled board — never one the placement-DRC gate refuses.
+        engine.settle_into_outline()
 
     # Best round: fewest failures, then most routed, then lowest cost.
     def _rank(i: int) -> tuple[float, float, float]:

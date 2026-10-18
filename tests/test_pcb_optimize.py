@@ -2661,6 +2661,51 @@ def test_a_legal_start_is_not_legalized():
     assert (float(ir.inst_x[0]), float(ir.inst_y[0])) == (0.0, 0.0)
 
 
+def _chamfered_corner_ir():
+    """``_via_ir`` on a 40 mm board whose (0, 0) corner is cut by a 2.5 mm
+    chamfer, U0 at the low corner of its own placement box: legal by the
+    bbox-based bounds, yet its courtyard pokes past the chamfer (the
+    rounded-corner shape of gr496151). The via and U1 sit well away."""
+    ir = _via_ir(lands=_TWO_LANDS, via_xy=(30.0, 30.0))
+    ir.outline = [(2.5, 0.0), (40.0, 0.0), (40.0, 40.0), (0.0, 40.0), (0.0, 2.5)]
+    ir.inst_x[1], ir.inst_y[1] = 20.0, 30.0
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=3))
+    x0, y0, _x1, _y1 = engine.bounds_for(0)
+    ir.inst_x[0], ir.inst_y[0] = x0, y0
+    return ir
+
+
+def test_settle_moves_a_courtyard_off_a_cut_corner_and_leaves_the_rest():
+    """gr496151: the anneal bounds a centre by the outline's BBOX, so a
+    part can settle over a rounded or cut corner and the route job then
+    refuses the placement on ``outline_containment``. The settle moves
+    only that part, to a pose that is legal and inside the outline."""
+    from precis.pcb.optimize import _courtyard_in_outline
+
+    ir = _chamfered_corner_ir()
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=3))
+    region = engine._outline_region
+    assert engine._placement_is_legal([(0, float(ir.inst_x[0]), float(ir.inst_y[0]))])
+    assert not _courtyard_in_outline(region, engine._world_courtyard(0))
+    u1 = (float(ir.inst_x[1]), float(ir.inst_y[1]))
+
+    assert engine.settle_into_outline() == ("U0",)
+    assert _courtyard_in_outline(region, engine._world_courtyard(0))
+    assert engine._placement_is_legal([(0, float(ir.inst_x[0]), float(ir.inst_y[0]))])
+    assert (float(ir.inst_x[1]), float(ir.inst_y[1])) == u1
+    assert engine.settle_into_outline() == ()  # idempotent
+
+
+def test_settle_leaves_a_board_with_no_overhang_untouched():
+    """Negative control: nothing overhangs, nothing moves, so a seed whose
+    anneal already ends inside the outline is bit-for-bit unchanged."""
+    ir = _chamfered_corner_ir()
+    ir.inst_x[0], ir.inst_y[0] = 20.0, 20.0
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=3))
+    assert engine.settle_into_outline() == ()
+    assert (float(ir.inst_x[0]), float(ir.inst_y[0])) == (20.0, 20.0)
+
+
 def test_a_part_wider_than_the_nominal_canvas_is_not_pinned_to_its_centre():
     """With no authored outline the domain is a nominal ``board_side``
     canvas. A part whose keep-out diameter exceeds it had its centre pinned
