@@ -1575,6 +1575,27 @@ def test_router_never_gripe_group_stays_silent_regardless_of_age(store) -> None:
     assert store.list_refs(kind="gripe", tags=["STATUS:open"]) == []
 
 
+def _auto_closed(store, gripe_id: int) -> bool:
+    """Closed the way auto_gripe closes: still live (never soft-deleted),
+    STATUS:done, newest comment ``resolved: auto-closed: …``."""
+    with store.pool.connection() as conn:
+        (retired,) = conn.execute(
+            "SELECT retired_at FROM refs WHERE ref_id = %s", (gripe_id,)
+        ).fetchone()
+        comment = conn.execute(
+            "SELECT text FROM chunks WHERE ref_id = %s "
+            "AND chunk_kind = 'gripe_comment' ORDER BY ord DESC LIMIT 1",
+            (gripe_id,),
+        ).fetchone()
+    status = {str(t) for t in store.tags_for(gripe_id) if str(t).startswith("STATUS:")}
+    return (
+        retired is None
+        and status == {"STATUS:done"}
+        and comment is not None
+        and comment[0].startswith("resolved: auto-closed: ")
+    )
+
+
 def test_router_auto_closes_when_condition_clears(store) -> None:
     from precis.alerts import resolve_alert
     from precis.store.types import ChunkInsert
@@ -1609,6 +1630,7 @@ def test_router_auto_closes_when_condition_clears(store) -> None:
             "SELECT retired_at FROM refs WHERE ref_id = %s", (gripe_id,)
         ).fetchone()
     assert still_open[0] is None
+    assert "STATUS:open" in {str(t) for t in store.tags_for(gripe_id)}
 
     # Condition clears (mirrors what resolve_stale_alerts does when a check
     # goes fresh again).
@@ -1617,9 +1639,6 @@ def test_router_auto_closes_when_condition_clears(store) -> None:
     assert routed_after == frozenset()
 
     with store.pool.connection() as conn:
-        row = conn.execute(
-            "SELECT retired_at FROM refs WHERE ref_id = %s", (gripe_id,)
-        ).fetchone()
         comment = conn.execute(
             "SELECT text FROM chunks WHERE ref_id = %s AND chunk_kind = 'gripe_comment' "
             "ORDER BY ord DESC LIMIT 1",
@@ -1628,9 +1647,14 @@ def test_router_auto_closes_when_condition_clears(store) -> None:
         other_row = conn.execute(
             "SELECT retired_at FROM refs WHERE ref_id = %s", (other.id,)
         ).fetchone()
-    assert row[0] is not None  # soft-deleted
-    assert comment is not None and "auto-closed by health_digest" in comment[0]
+    # A normal close (resolved: comment + STATUS:done), never a soft delete.
+    assert _auto_closed(store, gripe_id)
+    assert comment is not None and (
+        "health_digest condition watchdog:coherence/some-pass returned fresh"
+        in comment[0]
+    )
     assert other_row[0] is None  # non-watchdog gripe untouched
+    assert "STATUS:open" in {str(t) for t in store.tags_for(other.id)}
 
 
 def test_router_flood_cap_limits_new_gripes_per_eval(store) -> None:
@@ -1646,6 +1670,21 @@ def test_router_flood_cap_limits_new_gripes_per_eval(store) -> None:
     routed2 = _route_findings(store)
     assert len(routed | routed2) == 5
     assert len(store.list_refs(kind="gripe", tags=["STATUS:open"])) == 5
+
+
+def test_router_files_at_auto_prio_and_critical_at_crit_prio(store) -> None:
+    """Auto-filed gripes sink below unset PRIO (5) in the open view; a
+    critical condition files at 4 (ruling 2026-10-18)."""
+    _seed_watchdog_alert(store, group="coherence", name="warn-pass", hours_old=30)
+    _seed_watchdog_alert(
+        store, group="coherence", name="crit-pass", hours_old=30, severity="critical"
+    )
+    _route_findings(store)
+    prio = {
+        g.title.split("/")[1].split(":")[0]: g.prio
+        for g in store.list_refs(kind="gripe", tags=["STATUS:open"])
+    }
+    assert prio == {"warn-pass": 7, "crit-pass": 4}
 
 
 def test_open_marker_gripes_parses_source_and_fingerprint(store) -> None:
@@ -1712,11 +1751,7 @@ def test_router_auto_closes_triaged_marker_gripe_when_condition_clears(
     routed_after = _route_findings(store)
     assert routed_after == frozenset()
 
-    with store.pool.connection() as conn:
-        row = conn.execute(
-            "SELECT retired_at FROM refs WHERE ref_id = %s", (gripe_id,)
-        ).fetchone()
-    assert row[0] is not None  # soft-deleted despite not being STATUS:open
+    assert _auto_closed(store, gripe_id)  # closed despite not being STATUS:open
 
 
 def test_router_done_marker_gripe_not_seen_allows_refile(store) -> None:
@@ -1822,11 +1857,7 @@ def test_nursery_backlog_drained_auto_closes_aggregate_gripe(store) -> None:
     routed_after = _route_findings(store)
     assert ("nursery-backlog", "nursery:orphan") not in routed_after
 
-    with store.pool.connection() as conn:
-        row = conn.execute(
-            "SELECT retired_at FROM refs WHERE ref_id = %s", (gripe_id,)
-        ).fetchone()
-    assert row[0] is not None
+    assert _auto_closed(store, gripe_id)
 
 
 def test_nursery_backlog_under_budget_files_nothing(store) -> None:
@@ -1927,11 +1958,7 @@ def test_nursery_backlog_tracked_alert_auto_closes_aggregate(store) -> None:
     routed = _route_findings(store)
 
     assert ("nursery-backlog", "nursery:child-failed-parked") not in routed
-    with store.pool.connection() as conn:
-        row = conn.execute(
-            "SELECT retired_at FROM refs WHERE ref_id = %s", (aggregate.id,)
-        ).fetchone()
-    assert row[0] is not None
+    assert _auto_closed(store, aggregate.id)
 
 
 def test_nursery_backlog_terminal_tracker_does_not_suppress(store) -> None:
@@ -2323,11 +2350,7 @@ def test_tracked_source_cleared_alert_closes_tracker(store) -> None:
     (gripe,) = store.list_refs(kind="gripe", tags=["STATUS:open"])
     resolve_alert(store, alert_id)
     _route_findings(store)
-    with store.pool.connection() as conn:
-        row = conn.execute(
-            "SELECT retired_at FROM refs WHERE ref_id = %s", (gripe.id,)
-        ).fetchone()
-    assert row[0] is not None
+    assert _auto_closed(store, gripe.id)
 
 
 def test_tracked_source_under_budget_files_nothing(store) -> None:
@@ -2353,22 +2376,15 @@ def test_tracked_aggregate_source_is_one_gripe_closing_when_all_clear(store) -> 
     body = store.chunks.list_chunks_for_ref(gripe.id)[0].text
     assert all(f"quest:dry-rest/{q}" in body for q in (11, 12, 13))
 
-    def retired() -> bool:
-        with store.pool.connection() as conn:
-            row = conn.execute(
-                "SELECT retired_at FROM refs WHERE ref_id = %s", (gripe.id,)
-            ).fetchone()
-        return row[0] is not None
-
     resolve_alert(store, ids[0])
     resolve_alert(store, ids[1])
     _route_findings(store)
-    assert not retired()
+    assert not _auto_closed(store, gripe.id)
     assert len(store.list_refs(kind="gripe", tags=["STATUS:open"])) == 1
 
     resolve_alert(store, ids[2])
     _route_findings(store)
-    assert retired()
+    assert _auto_closed(store, gripe.id)
 
 
 # ── gr479694: the news budget follows the news_poll recurring's cron ─────

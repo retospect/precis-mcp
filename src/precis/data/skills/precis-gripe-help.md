@@ -312,10 +312,16 @@ form` line to the *body text* itself. That's a web-only convention,
 invisible here — it doesn't populate the header either, and MCP
 `put` has no equivalent.)
 
-One automated filer exists: the daily `call_errors` pass files gripes
+Two automated filers exist. The daily `call_errors` pass files gripes
 for clusters of MCP calls the server rejected before real work, tagged
 `origin:call-errors` + `callerr:<mcp|skill|hint|needs-triage>`; repeats
-bump the open gripe with a count comment instead of re-filing.
+bump the open gripe with a count comment instead of re-filing. The
+health digest router files `origin:health-digest-router` gripes for
+watchdog alerts past their self-heal budget. Both file at prio 7 (a
+critical alert at 4), below an unset PRIO, and close their own gripe
+when the condition clears (call_errors: no matching error for three
+daily passes) with a `resolved: auto-closed: …` comment and
+`STATUS:done`.
 
 ## Link a gripe to a related paper or chunk
 

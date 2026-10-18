@@ -36,6 +36,14 @@ doc or hint problem).
 ``skill`` wins over ``hint`` when both fire: a wrong doc is the root
 cause and the repeat failure follows from it.
 
+Lifecycle (precis.workers.auto_gripe, ruling 2026-10-18): a cluster
+gripe files at prio 7, so human-filed gripes sort above it, and closes
+itself once the cluster has been absent for :data:`CLEAR_AFTER_HOURS`
+(three daily passes): no matching error in the ledger in that window. The
+close is a ``resolved: auto-closed: …`` comment + ``STATUS:done``, naming
+the last matching error found in the :data:`CLEAR_SCAN_HOURS` scan (else
+the gripe's last filing/bump).
+
 Flood control: at most :data:`MAX_NEW_GRIPES` new gripes per run — a bad
 deploy that turns every call into the same rejection cannot fill the
 queue; the overflow count goes to the run log. Bumps are uncapped (a
@@ -55,7 +63,7 @@ import re
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from precis.workers.runner import BatchResult
@@ -74,6 +82,12 @@ MIN_CALLS = 3
 MIN_SESSIONS = 2
 #: New gripes filed per run, max — the bad-deploy flood cap.
 MAX_NEW_GRIPES = 5
+#: A live cluster gripe with no matching error in this window (three daily
+#: passes) closes itself.
+CLEAR_AFTER_HOURS = 72
+#: Ledger window the close sweep reads to name a cleared cluster's last
+#: matching error.
+CLEAR_SCAN_HOURS = 7 * 24
 #: Rejected-before-real-work error classes (typed envelope, before the
 #: verb's real work ran). NotFound/Gone did real lookups; Upstream/
 #: Internal/RateLimited are runtime faults, not call-shape errors.
@@ -452,6 +466,7 @@ def _file_gripe(
     ``_file_router_gripe`` precedent; this pass is write-capable, so the
     ``file_gripe_readonly`` carve-out does not apply)."""
     from precis.store.types import ChunkInsert, Tag
+    from precis.workers.auto_gripe import AUTO_PRIO
 
     with store.tx() as conn:
         ref = store.insert_ref(
@@ -481,6 +496,7 @@ def _file_gripe(
         )
         store.add_tag(ref.id, Tag.open(f"{FP_PREFIX}{cls}"), set_by="system", conn=conn)
         store.add_tag(ref.id, Tag.open(ORIGIN_TAG), set_by="system", conn=conn)
+        store.set_prio(ref.id, AUTO_PRIO, conn=conn)
     return int(ref.id)
 
 
@@ -501,6 +517,54 @@ def _bump_gripe(store: Store, gripe_id: int, cl: Cluster, now: datetime) -> None
     )
 
 
+def _last_written(store: Store, gripe_id: int) -> datetime:
+    """When the gripe was last filed or bumped (newest chunk, else the ref)."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT coalesce(max(c.created_at), r.created_at) FROM refs r "
+            "LEFT JOIN chunks c ON c.ref_id = r.ref_id WHERE r.ref_id = %s "
+            "GROUP BY r.created_at",
+            (gripe_id,),
+        ).fetchone()
+    assert row is not None
+    return row[0]
+
+
+def _close_cleared(store: Store, live: dict[str, int], now: datetime) -> int:
+    """Close each live cluster gripe whose cluster has no matching error in
+    the last :data:`CLEAR_AFTER_HOURS`. Returns the number closed."""
+    from precis.workers.auto_gripe import close_auto_gripe
+
+    if not live:
+        return 0
+    cutoff = now - timedelta(hours=CLEAR_AFTER_HOURS)
+    last = {
+        cl.fingerprint: cl.last_ts
+        for cl in _cluster(_scan(store, CLEAR_SCAN_HOURS))
+        if cl.last_ts is not None
+    }
+    closed = 0
+    for fp, gripe_id in live.items():
+        seen = last.get(fp) or _last_written(store, gripe_id)
+        if seen >= cutoff:
+            continue
+        try:
+            close_auto_gripe(
+                store,
+                gripe_id,
+                reason=(
+                    f"call_errors cluster {fp} absent from the last "
+                    f"{CLEAR_AFTER_HOURS // 24} daily passes"
+                ),
+                last_seen=seen,
+            )
+        except Exception:
+            log.exception("call_errors: auto-close failed for gripe id=%d", gripe_id)
+            continue
+        closed += 1
+    return closed
+
+
 # ── the pass ──────────────────────────────────────────────────────────────
 
 
@@ -513,7 +577,14 @@ def run_call_errors_pass(
 ) -> BatchResult:
     """One daily mining fire. ``claimed`` = over-threshold clusters seen;
     ``ok`` = gripes filed + bumped; ``failed`` = clusters whose file/bump
-    raised (logged, never allowed to strand the rest)."""
+    raised (logged, never allowed to strand the rest). Cleared clusters'
+    gripes close first (:func:`_close_cleared`; logged, not counted)."""
+    now = datetime.now(UTC)
+    live = _live_cluster_gripes(store)
+    closed = _close_cleared(store, live, now)
+    if closed:
+        log.info("call_errors: auto-closed %d cleared cluster gripe(s)", closed)
+        live = _live_cluster_gripes(store)
     rows = _scan(store, lookback_hours)
     clusters = [
         cl
@@ -524,8 +595,6 @@ def run_call_errors_pass(
         return BatchResult(handler="call_errors", claimed=0, ok=0, failed=0)
 
     texts = skill_texts if skill_texts is not None else _skill_texts()
-    live = _live_cluster_gripes(store)
-    now = datetime.now(UTC)
     filed = bumped = failed = overflow = 0
     for cl in clusters:
         gripe_id = live.get(cl.fingerprint)

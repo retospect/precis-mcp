@@ -308,6 +308,60 @@ def test_pass_refires_after_gripe_closed(store: Any) -> None:
     assert len(gripes) == 2
 
 
+def _filed_cluster(store: Any) -> tuple[str, str, int]:
+    """File one cluster gripe; returns (kind, fingerprint, gripe id)."""
+    tag = uuid4().hex[:8]
+    kind = f"zz{tag}"
+    head = f"[error:BadInput] unknown key 'zz{tag}' for put"
+    _seed_calls(store, verb="put", kind=kind, head=head, sessions=["a", "b", "c"])
+    fp = _fp("put", kind, head)
+    call_errors.run_call_errors_pass(store, skill_texts={})
+    return kind, fp, _cluster_gripes(store, fp)[0][0]
+
+
+def _age_cluster(store: Any, kind: str, gid: int, days: float) -> None:
+    """Backdate the cluster's ledger rows and the gripe's chunks."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE tool_calls SET ts = now() - make_interval(secs => %s) "
+            "WHERE kind = %s",
+            (days * 86400, kind),
+        )
+        conn.execute(
+            "UPDATE chunks SET created_at = now() - make_interval(secs => %s) "
+            "WHERE ref_id = %s",
+            (days * 86400, gid),
+        )
+
+
+def test_pass_files_cluster_gripe_at_auto_prio(store: Any) -> None:
+    _, _, gid = _filed_cluster(store)
+    ref = store.get_ref(kind="gripe", id=gid)
+    assert ref is not None and ref.prio == 7
+
+
+def test_pass_closes_cluster_absent_three_days(store: Any) -> None:
+    kind, fp, gid = _filed_cluster(store)
+    _age_cluster(store, kind, gid, 4)
+    call_errors.run_call_errors_pass(store, skill_texts={})
+    assert _status(store, gid) == "done"
+    # A normal close: still live (not soft-deleted), resolved: comment last.
+    assert [g for g, _ in _cluster_gripes(store, fp)] == [gid]
+    last = _gripe_comments(store, gid)[-1]
+    assert last.startswith(
+        f"resolved: auto-closed: call_errors cluster {fp} absent from the last "
+        "3 daily passes (not seen since "
+    )
+
+
+def test_pass_keeps_cluster_seen_within_three_days(store: Any) -> None:
+    kind, _, gid = _filed_cluster(store)
+    _age_cluster(store, kind, gid, 2)
+    call_errors.run_call_errors_pass(store, skill_texts={})
+    assert _status(store, gid) == "open"
+    assert not any(c.startswith("resolved:") for c in _gripe_comments(store, gid))
+
+
 def test_pass_caps_new_gripes(store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     tag = uuid4().hex[:8]
     rows = [

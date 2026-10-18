@@ -63,7 +63,9 @@ import anywhere, enforced by ``tests/workers/test_health_digest.py``.
    ``watchdog:<group>`` alert older than its class's self-heal budget gets
    one condition-linked ``kind='gripe'`` (dedup key: a
    ``watchdog-condition: <source>/<fingerprint>`` marker line, re-scanned
-   every eval), auto-closed when the alert clears. Budgets by ``group``:
+   every eval), filed at prio 7 (4 for a critical alert) and closed when
+   the alert clears with a ``resolved: auto-closed:`` comment +
+   ``STATUS:done`` (:mod:`precis.workers.auto_gripe`). Budgets by ``group``:
    ``cadence``→6h, ``coherence``→24h, ``discovery``→12h,
    else→24h-at-warn/never-at-info; ``meta`` (``alert_backlog_rot``) never
    gripes. Flood-capped at 3 new gripes/eval, over-cap retried next eval.
@@ -2320,34 +2322,18 @@ def _auto_close_marker_gripe(
 ) -> None:
     """One marker gripe whose condition cleared (no live open watchdog
     alert for its ``(source, fingerprint)`` — ``resolve_stale_alerts``
-    already closed the alert this eval): append the resolution comment,
-    then soft-delete. Mirrors ``handlers/gripe.py``'s ``_append_comment``
-    (next_pos computed before the write tx) + delete path at the SQL
-    level."""
-    from precis.store.types import ChunkInsert
+    already closed the alert this eval): a normal close through
+    :func:`precis.workers.auto_gripe.close_auto_gripe` (``resolved:``
+    comment + ``STATUS:done``, never a soft delete). ``STATUS:done``
+    drops it out of :func:`_open_marker_gripes`, so a recurrence files a
+    fresh gripe."""
+    from precis.workers.auto_gripe import close_auto_gripe
 
-    existing = store.chunks.list_chunks_for_ref(gripe_id)
-    next_pos = len(existing)
-    comment = (
-        f"auto-closed by health_digest: condition {fingerprint} returned "
-        f"fresh at {datetime.now(UTC).isoformat()}"
-    )
-    with store.tx() as conn:
-        store.chunks.insert_chunks(
-            gripe_id,
-            [
-                ChunkInsert(
-                    ord=next_pos, text=comment, meta={"chunk_kind": "gripe_comment"}
-                )
-            ],
-            conn=conn,
-        )
-        store.retire_ref(gripe_id, conn=conn)
-    log.info(
-        "health_digest: router auto-closed gripe id=%d (%s/%s fresh)",
+    close_auto_gripe(
+        store,
         gripe_id,
-        source,
-        fingerprint,
+        reason=f"health_digest condition {source}/{fingerprint} returned fresh",
+        last_seen=datetime.now(UTC),
     )
 
 
@@ -2361,14 +2347,17 @@ def _file_router_gripe(
     detail: str,
     created_at: datetime,
     budget_hours: float,
+    prio: int | None = None,
 ) -> int:
     """Insert one condition-linked gripe (marker-line protocol — module
     docstring's Piece 1 template). Direct store insert-ref + body chunk +
     ``STATUS:open`` tag, mirroring ``workers/backlog_groom.py``'s
     worker-side ref-creation pattern (not ``file_gripe_readonly`` — that
     SQL function exists so an ``agent_ro`` connection can still file a
-    gripe; this background pass already runs write-capable)."""
+    gripe; this background pass already runs write-capable). ``prio``
+    defaults to :data:`~precis.workers.auto_gripe.AUTO_PRIO`."""
     from precis.store.types import ChunkInsert, Tag
+    from precis.workers.auto_gripe import AUTO_PRIO
 
     cls = _router_class(group)
     nudge = _router_nudge(store, cls, fingerprint)
@@ -2403,6 +2392,7 @@ def _file_router_gripe(
         store.add_tag(
             ref.id, Tag.open("origin:health-digest-router"), set_by="system", conn=conn
         )
+        store.set_prio(ref.id, AUTO_PRIO if prio is None else prio, conn=conn)
     log.info(
         "health_digest: router filed gripe id=%d for %s/%s (age > %.0fh budget)",
         ref.id,
@@ -2411,6 +2401,14 @@ def _file_router_gripe(
         budget_hours,
     )
     return int(ref.id)
+
+
+def _router_prio(severity: str | None) -> int:
+    """Filing prio: critical conditions at CRIT_PRIO, the rest at AUTO_PRIO
+    (precis.workers.auto_gripe; ruling 2026-10-18)."""
+    from precis.workers.auto_gripe import AUTO_PRIO, CRIT_PRIO
+
+    return CRIT_PRIO if severity == "critical" else AUTO_PRIO
 
 
 def _route_findings(store: Store) -> frozenset[tuple[str, str]]:
@@ -2570,6 +2568,7 @@ def _route_findings(store: Store) -> frozenset[tuple[str, str]]:
                 detail=detail or "",
                 created_at=created_at,
                 budget_hours=budget,
+                prio=_router_prio(severity),
             )
         except Exception:
             log.exception(
