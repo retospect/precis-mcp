@@ -383,9 +383,9 @@
 
 {% import "_verified_mark.html.j2" as vm %}
 {% macro item_list(items) %}
-<ul class="rounded-lg border border-line bg-surface divide-y divide-line-subtle">
+<ul class="rounded-lg border border-line bg-surface divide-y divide-line-subtle" data-shortcut-scope="list">
   {% for row in items %}
-  <li class="px-4 py-3 hover:bg-surface-subtle" x-data="{ titleHover: false, chunkHover: false }">
+  <li data-row class="px-4 py-3 hover:bg-surface-subtle" x-data="{ titleHover: false, chunkHover: false }">
     <div class="flex items-start gap-3">
       {% if row.thumbnail %}
       <img src="{{ row.thumbnail }}" loading="lazy" alt=""
@@ -401,7 +401,7 @@
       <div class="min-w-0 flex-1 relative">
         {% set tm = row.title_meta %}
         <span class="relative inline-block" @mouseenter="titleHover=true" @mouseleave="titleHover=false">
-          <a href="{{ row.open_url }}" class="text-info-strong hover:underline text-sm">{{ row.title }}</a>
+          <a href="{{ row.open_url }}" data-row-open class="text-info-strong hover:underline text-sm">{{ row.title }}</a>
           {{ vm.verified_mark(tm.reviewed_at, tm.reviewed_by) if tm }}
           {# Title/metadata popover — full (uncapped) title + journal/authors/year,
              only worth a floating box when it says more than the capped row title. #}

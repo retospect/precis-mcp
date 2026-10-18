@@ -103,8 +103,7 @@
 {% include "graph/_outline.html.j2" %}
 {% else %}
 <div class="relative" x-data="graphKeys()" @mouseover="peek($event)" @focusin="peek($event)"
-     @mouseleave="shown = false" @focusout="shown = false"
-     @keydown.window="key($event)">
+     @mouseleave="shown = false" @focusout="shown = false">
   {# Peek (items 8/8b): the hovered or keyboard-focused node's card, copied
      from the embedded #graph-peeks set — no request per hover. #}
   <div x-ref="box" x-show="shown" x-cloak role="status" aria-live="polite"
@@ -126,10 +125,10 @@
   {% endfor %}
 </div>
 <script>
-  // Keyboard map (item 9): every key targets an anchor or input already
-  // on the page — j/k walk the nodes in ring order (data-ring), Enter
-  // follows the focused node's link natively, u/Backspace retreat, U zoom
-  // out, / search, 1/2 depth (data-key on each target).
+  // Keyboard map (item 9) lives in static/shortcuts.js: j/k walk the nodes
+  // in ring order (data-ring), Enter follows the focused node's link
+  // natively, and u/Backspace retreat, U zoom out, / search, 1/2 depth via
+  // data-key (an alias of data-shortcut) on each target. Peek only here.
   function graphKeys() {
     return {
       shown: false,
@@ -139,26 +138,6 @@
           '#graph-peeks [data-peek-card="' + CSS.escape(a.dataset.peek) + '"]');
         this.shown = !!card;
         if (card) this.$refs.box.innerHTML = card.innerHTML;
-      },
-      key(ev) {
-        const t = ev.target;
-        if (ev.ctrlKey || ev.metaKey || ev.altKey || ev.repeat || ev.isComposing || ev.defaultPrevented ||
-            (t && (t.isContentEditable || /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName)))) return;
-        if (ev.key === 'j' || ev.key === 'k') {
-          const nodes = [...document.querySelectorAll('a[data-ring]')]
-            .sort((x, y) => x.dataset.ring - y.dataset.ring);
-          if (!nodes.length) return;
-          const i = nodes.indexOf(document.activeElement);
-          const n = i < 0 ? 0 : (i + (ev.key === 'j' ? 1 : nodes.length - 1)) % nodes.length;
-          nodes[n].focus();
-          ev.preventDefault();
-          return;
-        }
-        const el = [...document.querySelectorAll('[data-key]')]
-          .find((e) => e.dataset.key.split(' ').includes(ev.key));
-        if (!el) return;
-        ev.preventDefault();
-        if (el.tagName === 'INPUT') el.focus(); else el.click();
       },
     };
   }

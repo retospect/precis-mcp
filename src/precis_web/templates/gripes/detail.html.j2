@@ -43,7 +43,7 @@
 <section class="mt-6">
   <h2 class="text-sm font-semibold mb-2 text-fg-secondary">Add a comment</h2>
   <form method="post" action="/gripes/{{ id }}/comment" class="space-y-2">
-    <textarea name="text" rows="3" required placeholder="Append context — comments are append-only, corrections go in a new one…"
+    <textarea name="text" rows="3" required data-shortcut="e" data-shortcut-label="Add a comment" placeholder="Append context (e) — comments are append-only, corrections go in a new one…"
               class="w-full rounded-md border border-line-strong px-3 py-2 text-sm"></textarea>
     <button class="rounded-md bg-success-solid text-on-solid text-sm px-4 py-2 hover:bg-success-solid-strong">
       Comment

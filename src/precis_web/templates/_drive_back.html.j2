@@ -4,5 +4,6 @@
    list page. #}
 {% macro drive_back(kind, label) -%}
 <a href="/drive?k={{ kind | urlencode }}&amp;folder=*&amp;sort=recency"
+   data-shortcut="u" data-shortcut-label="Up to {{ label }}"
    class="text-xs text-fg-faint hover:text-fg-muted">&larr; {{ label }}</a>
 {%- endmacro %}

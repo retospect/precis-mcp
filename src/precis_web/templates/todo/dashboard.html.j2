@@ -313,10 +313,11 @@
          hidden because an ancestor is collapsed. */
       #tree li[data-row-collapsed="1"] { display: none; }
     </style>
-    <ul id="tree" class="divide-y divide-line-subtle rounded-lg border border-line bg-surface" data-tour="todo-tree">
+    <ul id="tree" class="divide-y divide-line-subtle rounded-lg border border-line bg-surface" data-tour="todo-tree" data-shortcut-scope="list">
       {% for r in rows %}
       <li class="px-3 py-2{% if r.kind == 'job' %} bg-surface-subtle/60{% endif %}"
           x-data="{actions:false}"
+          data-row data-row-href="/todo?focus={{ r.id }}"
           data-id="{{ r.id }}"
           data-kind="{{ r.kind }}"
           data-depth="{{ r.depth }}"

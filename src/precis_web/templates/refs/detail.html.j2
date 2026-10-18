@@ -64,7 +64,7 @@
   {% endfor %}
   <form method="post" action="/refs/{{ kind }}/{{ ref.id }}/tags"
         class="inline-flex items-center gap-1 ml-auto">
-    <input name="add" placeholder="+ tag (comma-separated)"
+    <input name="add" data-shortcut="e" data-shortcut-label="Add a tag" placeholder="+ tag, comma-separated (e)"
            class="text-xs px-2 py-1 rounded border border-line-strong w-56" />
     <button class="text-xs px-2 py-1 rounded bg-success-solid text-on-solid hover:bg-success-solid-strong">add</button>
   </form>

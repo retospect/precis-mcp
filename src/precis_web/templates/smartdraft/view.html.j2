@@ -288,9 +288,9 @@
        rename in the same session edits what's on screen. #}
     <h1 x-show="!editing" id="sd-title" class="min-w-0 truncate text-base font-semibold"
         @dblclick="startEdit()">{{ ref.title }}</h1>
-    <button x-show="!editing" @click="startEdit()"
+    <button x-show="!editing" @click="startEdit()" data-shortcut="e" data-shortcut-label="Rename draft"
             class="shrink-0 text-[11px] text-fg-ghost hover:text-info-strong"
-            title="rename this draft (writes both the ref title and the document's title heading)">✎</button>
+            title="rename this draft (e) (writes both the ref title and the document's title heading)">✎</button>
     <form x-show="editing" x-cloak @submit.prevent="save()" class="flex min-w-0 flex-1 items-center gap-1">
       <input x-ref="titleBox" x-model="draftTitle" @keydown.escape="editing = false"
              class="min-w-0 flex-1 rounded border border-info-emphasis px-2 py-0.5 text-base font-semibold focus:outline-none">

@@ -42,9 +42,16 @@
   // Elements bound to `keys`. The page's own control wins over the header's
   // (Drive's query box beats the global search), so page content is listed
   // before anything inside <header>.
+  // `data-key` is the older single-key spelling (graph pages; space-separated
+  // aliases such as "u Backspace"); it stays an alias for one slice.
+  function bound(el, keys) {
+    if (el.dataset.shortcut === keys) return true;
+    return !!el.dataset.key && el.dataset.key.split(' ').includes(keys);
+  }
+
   function targets(keys) {
-    const all = [...document.querySelectorAll('[data-shortcut]')]
-      .filter((e) => e.dataset.shortcut === keys);
+    const all = [...document.querySelectorAll('[data-shortcut],[data-key]')]
+      .filter((e) => bound(e, keys));
     const inHeader = (e) => (e.closest('header') ? 1 : 0);
     return all.sort((a, b) => inHeader(a) - inHeader(b));
   }
@@ -67,6 +74,61 @@
     return true;
   }
 
+  // ── list cursor ────────────────────────────────────────────────────
+  // j/k walk the [data-row] elements inside [data-shortcut-scope="list"];
+  // the cursor is a .kb-cursor class, not focus, so a row's own links and
+  // checkbox stay where the mouse expects them. Graph pages have no list
+  // scope: there j/k walk the node anchors in ring order and use real focus,
+  // because the peek card follows focusin.
+  function listRows() {
+    const rows = [];
+    for (const scope of document.querySelectorAll('[data-shortcut-scope="list"]')) {
+      for (const r of scope.querySelectorAll('[data-row]')) if (visible(r)) rows.push(r);
+    }
+    return rows;
+  }
+
+  function ringNodes() {
+    return [...document.querySelectorAll('a[data-ring]')]
+      .sort((x, y) => x.dataset.ring - y.dataset.ring);
+  }
+
+  function moveCursor(step) {
+    const rows = listRows();
+    if (!rows.length) {
+      const nodes = ringNodes();
+      if (!nodes.length) return false;
+      const i = nodes.indexOf(document.activeElement);
+      nodes[i < 0 ? 0 : (i + (step > 0 ? 1 : nodes.length - 1)) % nodes.length].focus();
+      return true;
+    }
+    const cur = document.querySelector('.kb-cursor');
+    const i = rows.indexOf(cur);
+    const n = i < 0 ? (step > 0 ? 0 : rows.length - 1)
+                    : Math.min(rows.length - 1, Math.max(0, i + step));
+    if (cur) cur.classList.remove('kb-cursor');
+    rows[n].classList.add('kb-cursor');
+    rows[n].scrollIntoView({ block: 'nearest' });
+    return true;
+  }
+
+  function cursorRow() {
+    const cur = document.querySelector('.kb-cursor');
+    return cur && listRows().includes(cur) ? cur : null;
+  }
+
+  function openRow(row) {
+    if (row.dataset.rowHref) { window.location.assign(row.dataset.rowHref); return; }
+    const a = row.matches('a[href]') ? row
+      : (row.querySelector('[data-row-open]') || row.querySelector('a[href]'));
+    if (a) a.click();
+  }
+
+  function toggleRow(row) {
+    const box = row.querySelector('input[type="checkbox"]');
+    if (box) box.click();
+  }
+
   // ── help overlay ───────────────────────────────────────────────────
   let dialog = null;
 
@@ -80,6 +142,13 @@
     for (const el of document.querySelectorAll('[data-shortcut]')) {
       const keys = el.dataset.shortcut;
       if (!rows.has(keys)) rows.set(keys, labelOf(el));
+    }
+    if (document.querySelector('[data-shortcut-scope="list"] [data-row]')) {
+      rows.set('j', 'Next row');
+      rows.set('k', 'Previous row');
+      rows.set('Enter', 'Open row');
+      rows.set('o', 'Open row');
+      rows.set('x', 'Tick row');
     }
     rows.set('?', 'This help');
     rows.set('Esc', 'Close / leave a field');
@@ -146,10 +215,23 @@
       if (dialog && dialog.open) closeHelp(); else openHelp();
       return;
     }
-    if (ev.key === '/' || ev.key.length === 1) {
-      if (document.querySelector('dialog[open]')) return;
-      if (trigger(ev.key)) ev.preventDefault();
+    if (document.querySelector('dialog[open]')) return;
+    if (ev.key === 'j' || ev.key === 'k') {
+      if (moveCursor(ev.key === 'j' ? 1 : -1)) ev.preventDefault();
+      return;
     }
+    if (ev.key === 'Enter' || ev.key === 'o' || ev.key === 'x') {
+      // Enter on a deliberately focused link/button keeps its native action.
+      const t = document.activeElement;
+      if (ev.key === 'Enter' && t && t !== document.body) return;
+      const row = cursorRow();
+      if (row) {
+        ev.preventDefault();
+        if (ev.key === 'x') toggleRow(row); else openRow(row);
+        return;
+      }
+    }
+    if (trigger(ev.key)) ev.preventDefault();
   });
 
   window.precisShortcuts = { trigger, targets, ignored, labelOf };
