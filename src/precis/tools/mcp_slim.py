@@ -9,8 +9,8 @@ tool-call ledger) are advertised; everything else rides ``args={...}``.
 The slim function forwards to the unchanged full function in
 :mod:`precis.tools.core` (still used in-process, by the CLI adapter and by
 the ``command`` profile), after promoting any ``args`` key that names one of
-the full function's own parameters back to that parameter. Keys the full
-function does not declare stay in ``args`` and ride the ``__extras__``
+the full function's own parameters back to that parameter, provided the
+target kind's handler declares it top-level. Other keys stay in ``args`` and ride the ``__extras__``
 channel through the dispatcher's accepted-kwargs gate (unknown key ->
 ``BadInput`` listing the kind's accepted keys).
 
@@ -91,6 +91,32 @@ def deprecation_note(keys: list[str]) -> str:
     return f"note: pass {joined} inside args={{...}}; top-level {joined} is deprecated"
 
 
+def _handler_top_level(verb: str, kind: Any) -> frozenset[str] | None:
+    """Top-level kwargs the ``kind`` handler's ``verb`` declares, else ``None``.
+
+    ``None`` means "cannot tell" (no kind, unknown/disabled kind, handler
+    tolerates extras, runtime not up): the caller then lifts every full-verb
+    name as before, so the dispatcher's own refusal text is unchanged.
+    """
+    if not isinstance(kind, str) or not kind:
+        return None
+    try:
+        from precis.protocol import TOLERATES_EXTRA_KWARGS_ATTR
+        from precis.runtime.dispatch import _handler_accepted_kwargs
+        from precis.tools.core import _get_runtime
+
+        handler = _get_runtime().hub.handler_for(kind)
+        method = getattr(handler, verb, None)
+        if handler is None or method is None:
+            return None
+        if getattr(method, TOLERATES_EXTRA_KWARGS_ATTR, False):
+            return None
+        cls: Any = type(handler)
+        return cast(frozenset[str], _handler_accepted_kwargs(cls, verb))
+    except Exception:
+        return None
+
+
 def make_slim_verb(verb: str, full: Callable[..., Any]) -> Callable[..., Any]:
     """Build the slim twin of ``full`` advertising only ``CORE_PARAMS[verb]``."""
     full_sig = inspect.signature(full, eval_str=True)
@@ -116,8 +142,13 @@ def make_slim_verb(verb: str, full: Callable[..., Any]) -> Callable[..., Any]:
                 args.setdefault(key, value)
         # Promote args keys that name a full-verb parameter back to that
         # parameter, so the verb function's own validation/forwarding runs.
+        # Only lift what the target kind's handler declares top-level; any
+        # other key (``source`` on pcb ``op=import_epro``) stays in ``args``.
+        accepted_top = _handler_top_level(verb, call.get("kind"))
         for key in list(args):
             if key in full_names and key not in slim_names and key not in _INJECTED:
+                if accepted_top is not None and key not in accepted_top:
+                    continue
                 call[key] = coerce_json_container(
                     args.pop(key), full_sig.parameters[key].annotation
                 )

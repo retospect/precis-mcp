@@ -195,3 +195,80 @@ def test_stringified_top_level_scalar_reaches_the_verb_as_int(
     assert seen["per_paper"] == 2
     assert "per_paper must be" not in out, out
     assert "note: pass per_paper inside args=" in out
+
+
+def _recording_slim(seen: list[dict[str, Any]]) -> Any:
+    import functools
+
+    from precis.tools.mcp_slim import make_slim_verb
+
+    @functools.wraps(tools_core.put)
+    def recorder(**kw: Any) -> str:
+        seen.append(kw)
+        return "ok"
+
+    return make_slim_verb("put", recorder)
+
+
+def test_pcb_import_epro_source_in_args_reaches_handler(
+    mcp_runtime: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr496397: ``source`` is a core.put name but pcb takes it in args=."""
+    from precis.handlers.pcb import PcbHandler
+
+    got: dict[str, Any] = {}
+
+    def fake(self: Any, slug: str, args: dict[str, Any]) -> str:
+        got.update(args)
+        return "imported"
+
+    monkeypatch.setattr(PcbHandler, "_op_import_epro", fake)
+    out = _call(
+        "put",
+        {
+            "kind": "pcb",
+            "id": "copy-c",
+            "args": {"op": "import_epro", "source": "export:board-b"},
+        },
+    )
+    assert "does not accept" not in out, out
+    assert got.get("source") == "export:board-b"
+
+
+def test_pcb_pins_source_in_args_reaches_handler(
+    mcp_runtime: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis.handlers import pcb as pcb_mod
+
+    got: dict[str, Any] = {}
+
+    def fake(self: Any, ref: Any, args: dict[str, Any]) -> str:
+        got.update(args)
+        return "pinned"
+
+    monkeypatch.setattr(pcb_mod, "resolve_live_slug_ref", lambda *a, **k: object())
+    monkeypatch.setattr(pcb_mod.PcbHandler, "_op_pins", fake)
+    out = _call(
+        "put",
+        {"kind": "pcb", "id": "b", "args": {"op": "pins", "source": "datasheet:x"}},
+    )
+    assert "does not accept" not in out, out
+    assert got.get("source") == "datasheet:x"
+
+
+def test_material_top_level_source_still_top_level(mcp_runtime: None) -> None:
+    seen: list[dict[str, Any]] = []
+    _recording_slim(seen)(kind="material", id="m1", source="paper:x")
+    assert seen[0].get("source") == "paper:x"
+    assert "source" not in (seen[0].get("args") or {})
+
+
+def test_handler_declared_args_key_is_still_lifted(mcp_runtime: None) -> None:
+    seen: list[dict[str, Any]] = []
+    _recording_slim(seen)(kind="material", id="m1", args={"source": "paper:x"})
+    assert seen[0].get("source") == "paper:x"
+    # a key the handler does not declare stays in args
+    seen.clear()
+    _recording_slim(seen)(kind="pcb", id="b", args={"op": "pins", "source": "s"})
+    assert "source" not in seen[0]
+    assert seen[0]["args"]["source"] == "s"
