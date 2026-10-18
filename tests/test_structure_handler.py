@@ -316,6 +316,101 @@ def test_relax_dispatch_refuses_without_dft_node(structure, no_local_mlip, monke
         structure.edit(id="pd_pair", ops=[{"op": "relax", "fidelity": "ml"}])
 
 
+# ── rung 'xtb' is dispatch-only from the request path (gripe 496562) ───────
+
+#: The budget an xtb relax must answer inside — the gripe's calls blocked
+#: 300 s+ inline; the assert leaves headroom for the local clean pre-relax
+#: and the DB writes without ever paying GFN2's per-step SCF.
+_XTB_REQUEST_BUDGET_S = 20.0
+
+
+@pytest.fixture
+def no_inline_xtb(monkeypatch):
+    """Tripwire proving rung 'xtb' never computes in the request path:
+    building the tblite calculator raises, so any inline attempt fails the
+    test loudly instead of spending real SCF time."""
+    import importlib
+
+    relax_mod = importlib.import_module("precis.structure.relax")
+
+    def _no_xtb(**_kw):
+        raise AssertionError("xtb calculator built in the request path")
+
+    monkeypatch.setattr(relax_mod, "_xtb_calculator", _no_xtb)
+
+
+def test_relax_xtb_dispatches_a_job_never_inline(
+    structure, store, no_inline_xtb, monkeypatch
+):
+    """With tblite importable or not, an ``xtb`` relax mints a queued
+    struct_relax job and returns its id inside the budget — GFN2 never runs
+    inside the MCP call (gr496562's three hung hexfold relaxes)."""
+    import time
+
+    monkeypatch.setenv("PRECIS_MLIP_NODES", "alpha,beta")
+    structure.put(id="pd_pair", text=_PD)
+    t0 = time.monotonic()
+    resp = structure.edit(id="pd_pair", ops=[{"op": "relax", "fidelity": "xtb"}])
+    assert time.monotonic() - t0 < _XTB_REQUEST_BUDGET_S
+    assert "dispatched" in resp.body and "job id=" in resp.body
+    assert "STATUS:queued" in resp.body
+    ref = structure.store.get_ref(kind="structure", id="pd_pair")
+    jobs = _child_jobs2(store, ref.id)
+    assert len(jobs) == 1, "xtb relax minted no job"
+    params = jobs[0]["params"]
+    assert params["fidelity"] == "xtb" and params["model"] == "gfn2-xtb"
+    assert params["target_node"] in {"alpha", "beta"}
+
+
+def test_relax_xtb_refuses_fast_without_a_compute_node(
+    structure, no_inline_xtb, monkeypatch
+):
+    """No compute host configured ⇒ the xtb rung refuses inside the budget
+    with a next=, instead of running inline or pinning a ghost node."""
+    import time
+
+    from precis.errors import Internal
+
+    for env in (
+        "PRECIS_DFT_NODE",
+        "PRECIS_MLIP_NODES",
+        "PRECIS_AUTOCATPATH_ROUTE_NODE",
+    ):
+        monkeypatch.delenv(env, raising=False)
+    structure.put(id="pd_pair", text=_PD)
+    t0 = time.monotonic()
+    with pytest.raises(Internal, match="PRECIS_DFT_NODE") as excinfo:
+        structure.edit(id="pd_pair", ops=[{"op": "relax", "fidelity": "xtb"}])
+    assert time.monotonic() - t0 < _XTB_REQUEST_BUDGET_S
+    assert excinfo.value.next and "'clean'" in str(excinfo.value.next)
+
+
+def test_relax_xtb_validator_refusal_is_fast_and_mints_no_job(
+    structure, store, no_inline_xtb
+):
+    """A dirty block fails the pre-dispatch validator promptly — BadInput
+    with a next=, no job row — before any staging happens."""
+    import time
+
+    bad = json.dumps(
+        {
+            "cell": {"a": 10.0, "b": 10.0, "c": 10.0},
+            "ops": [
+                {"op": "add_atom", "element": "H", "frac": [0.0, 0.0, 0.0]},
+                {"op": "add_atom", "element": "H", "frac": [0.03, 0.0, 0.0]},
+            ],
+        }
+    )
+    structure.put(id="clash_xtb", text=bad)
+    ref = structure.store.get_ref(kind="structure", id="clash_xtb")
+    t0 = time.monotonic()
+    with pytest.raises(BadInput) as excinfo:
+        structure.edit(id="clash_xtb", ops=[{"op": "relax", "fidelity": "xtb"}])
+    assert time.monotonic() - t0 < _XTB_REQUEST_BUDGET_S
+    assert "aH1" in str(excinfo.value) and "'clean'" in str(excinfo.value.next)
+    assert _child_jobs2(store, ref.id) == []
+
+
 # ── pre-flight gate ahead of cloud dispatch (gripe 51393) ──────────────────
 
 

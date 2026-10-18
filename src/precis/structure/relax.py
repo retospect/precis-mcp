@@ -16,7 +16,11 @@ dependency, no MLIP needed), whose closed element coverage happens
 to be exactly the fcc catalytic metals a Pd/Cu/Ni screen needs. ``xtb``
 (GFN2-xTB via tblite's ASE calculator) is a real energy rung wherever the
 tblite wheel installs — the relaxer of record for hexfold blocks (Reto
-2026-10-11, gr472846). The remaining rungs are **rented backends**
+2026-10-11, gr472846); the MCP handler treats it as **dispatch-only**,
+always staging a ``struct_relax`` job rather than running it in-request
+(gr496562), so local ``_relax_xtb`` here serves the job's in-process run
+and direct calls, not the request path. The remaining rungs are
+**rented backends**
 (``ff``/``ml``/``dft-fast``/``dft-tight``) gated behind the ``[dft-ml]`` /
 ``[dft-gpaw]`` extras — calling one without its backend raises
 :class:`RelaxUnsupported`, surfaced as ``Unsupported`` at the handler,

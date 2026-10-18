@@ -307,8 +307,9 @@ one pair at a time).
 GFN2-xTB, the relaxer of record: `edit(kind='structure',
 id='<design>-<block>', ops=[{'op':'relax','fidelity':'xtb'}])` on the bound
 structure (the block's `realization:` slug); `view='block'` then reports
-the rung, not `fidelity=stick`. Without local tblite it mints a
-`struct_relax` job on the compute group; `view='runs'` shows it. A job
+the rung, not `fidelity=stick`. The rung never runs inside the call: it
+always mints a `struct_relax` job on the compute group and returns its id
+(gr496562); `view='runs'` shows it. A job
 failing `infra` with "no backend" means the node lacks the tblite wheel.
 
 ## Options (spec §25.3)

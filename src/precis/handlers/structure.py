@@ -2202,10 +2202,11 @@ class StructureHandler(Handler):
         :meth:`_apply_ops_with_imports` first and pass only the relax op(s)
         here (the graph-op filter below is defensive, normally a no-op).
         Returns the :class:`RelaxResult` (or None), or a
-        :class:`_NeedsDispatch` when an energy rung missed the cache and has
-        no local backend (the caller mints a ``struct_relax`` job). A graph
-        edit invalidates any prior relax; the caller persists the run (§9
-        system-of-record)."""
+        :class:`_NeedsDispatch` when an energy rung missed the cache and
+        must not compute here — no local backend, or a dispatch-only rung
+        (``xtb``, gr496562) — (the caller mints a ``struct_relax`` job). A
+        graph edit invalidates any prior relax; the caller persists the run
+        (§9 system-of-record)."""
         graph_ops = [o for o in ops if o.get("op") != "relax"]
         relax_ops = [o for o in ops if o.get("op") == "relax"]
         try:
@@ -2318,6 +2319,25 @@ class StructureHandler(Handler):
             if hit_result is not None:
                 return hit_result
 
+        # gr496562: rung 'xtb' is dispatch-only from the request path — a
+        # GFN2-xTB relax on a real block is minutes of compute, and tblite
+        # being importable in the MCP container must not turn the call into
+        # a blocking inline relax (three hexfold blocks hung 300 s+ that
+        # way, minting no job). Stage it exactly like a rung with no local
+        # backend; the in-process compute still happens inside the
+        # struct_relax job on the compute group (_INPROC_FIDELITIES).
+        if fidelity == "xtb":
+            return self._stage_relax_dispatch(
+                scene,
+                ro,
+                fidelity=fidelity,
+                model=model,
+                steps=steps,
+                cell_mode=cell_mode,
+                dispersion=dispersion,
+                cache_key=cache_key,
+            )
+
         try:
             res = run_relax(
                 scene,
@@ -2338,116 +2358,19 @@ class StructureHandler(Handler):
                     res.forces
                 )
         except RelaxUnsupported as exc:
-            # No local backend for this energy rung. If the caller named a
-            # parent todo we dispatch it to the GPU node (§23.12); otherwise
-            # the caller turns this into an Unsupported with the exact call.
-            #
-            # Except with dispersion on: the dispatch contract (the
-            # ``struct_relax`` params schema, and the container's POSCAR +
-            # params.json under it) carries no dispersion field, so a
-            # dispatched job would compute D3-*free* and sink it into the
-            # run-cube under a dispersion=True cache key, quietly poisoning
-            # every later hit. Refuse rather than dispatch a lie — the same
-            # rule the dispatcher's own fidelity gate enforces (gr346449).
-            if dispersion:
-                raise Unsupported(
-                    f"{exc} — dispersion=True runs locally only; the "
-                    "struct_relax dispatch contract carries no dispersion "
-                    "flag, so this relax cannot be dispatched",
-                    next="install the [dft-ml] extra locally, or re-run with "
-                    "dispersion omitted to use the cluster",
-                ) from exc
-            # xtb dispatches like ml: its jobs pin to the compute group
-            # (struct_relax.mlip_nodes), whose worker venv carries the
-            # linux-aarch64 tblite wheel from the wheelhouse
-            # (scripts/build-tblite-wheel, gr488907). A node without it fails
-            # the job as infra, naming the extra.
-            if cache_key is None:  # defensive — clean never reaches here
-                raise Unsupported(
-                    str(exc),
-                    next="relax with fidelity='clean' (geometry repair, "
-                    "always available)",
-                ) from exc
-
-            # Hard-reject gate (gripe 51393): cloud dispatch is a last
-            # resort, never a place to burn GPU time on an impossible
-            # geometry. Only the heavy-dispatch branch is gated — a direct
-            # local ``clean``/``emt`` relax above never reaches here, so it
-            # stays free to repair the very geometry this would reject.
-            findings = validate(scene)
-            if findings:
-                raise BadInput(
-                    _format_gate_rejection(findings),
-                    next="fix the flagged atom(s)/bond(s), or run "
-                    "edit(ops=[{'op':'relax','fidelity':'clean'}]) locally "
-                    "first to repair mild clashes before requesting "
-                    f"fidelity={fidelity!r}",
-                ) from exc
-
-            # Always pre-relax locally before staging anything for the cloud
-            # (gripe 51393) — ``clean`` by default, or ``emt`` when the op
-            # opts in and the element set/backend allow it. Mutates ``scene``
-            # in place, so the caller's subsequent ``structure_save`` persists
-            # the cleaned geometry exactly like a normal ``clean`` relax would.
-            preflight_mode = str(ro.get("preflight", "clean"))
-            preflight_result, preflight_note = _preflight_relax(
-                scene, preflight_mode, steps=steps
-            )
-            # gripe 161576: label-pair the preflight's own forces (a real
-            # local clean/emt pass) for storage — same as an ordinary
-            # standalone relax above (FIX 1: never canonical-rank-indexed).
-            if preflight_result.forces is not None:
-                preflight_result.forces_labels, preflight_result.forces_vectors = (
-                    relax_cache.serialize_forces(preflight_result.forces)
-                )
-            # The geometry just changed — recompute the address so the
-            # dispatched job / run-cube row is addressed by what's actually
-            # staged, not the pre-preflight input. A design that happens to
-            # preflight-clean onto an already-cached geometry (e.g. another
-            # design's completed relax converged to the same input) must
-            # still be a zero-compute hit here too — the earlier lookup ran
-            # against the as-authored (pre-preflight) geometry and can't
-            # have caught this.
-            #
-            # ``dispersion`` is threaded explicitly even though the guard above
-            # means it is always False here: stating it keeps this address
-            # honest if that early raise is ever relaxed, rather than silently
-            # minting a dispersion-free key for a dispersion-on relax.
-            cache_key, structure_sha, order = _relax_cache_address(
+            # No local backend for this energy rung — stage a
+            # ``struct_relax`` job (the dispatch-only rung above takes the
+            # same path with no ``cause``).
+            return self._stage_relax_dispatch(
                 scene,
+                ro,
                 fidelity=fidelity,
                 model=model,
                 steps=steps,
                 cell_mode=cell_mode,
                 dispersion=dispersion,
-            )
-            hit_result = self._cache_hit_result(
-                scene,
                 cache_key=cache_key,
-                structure_sha=structure_sha,
-                fidelity=fidelity,
-                dispersion=dispersion,
-            )
-            if hit_result is not None:
-                return hit_result
-            return _NeedsDispatch(
-                fidelity=fidelity,
-                model=model,
-                steps=steps,
-                cell=cell_mode,
-                cache_key=cache_key,
-                structure_sha=structure_sha or "",
-                order=order,
-                poscar=export.to_poscar(scene),
-                poscar_labels=_poscar_row_labels(scene),
-                # Optional requesting todo (compute lane). Accept
-                # the clear ``requested_by`` key; tolerate the legacy
-                # ``parent_id`` spelling from before the lane split.
-                requester_id=_as_int_or_none(
-                    ro.get("requested_by", ro.get("parent_id"))
-                ),
-                preflight_result=preflight_result,
-                preflight_note=preflight_note,
+                cause=exc,
             )
 
         # Cache miss: stamp the content address + relaxed geometry so the next
@@ -2458,6 +2381,135 @@ class StructureHandler(Handler):
             res.structure_sha = structure_sha
             res.final_geometry = relax_cache.serialize_geometry(scene, order)
         return res
+
+    def _stage_relax_dispatch(
+        self,
+        scene: Scene,
+        ro: dict[str, Any],
+        *,
+        fidelity: str,
+        model: str,
+        steps: int,
+        cell_mode: str | None,
+        dispersion: bool,
+        cache_key: str | None,
+        cause: RelaxUnsupported | None = None,
+    ) -> RelaxResult | _NeedsDispatch:
+        """Stage a ``struct_relax`` dispatch for a rung that must not compute
+        in the request path — either an energy rung whose local backend is
+        missing (``cause`` carries the :class:`RelaxUnsupported` the inline
+        attempt raised) or the dispatch-only ``xtb`` rung (gr496562;
+        ``cause=None`` — tblite importable or not, a GFN2-xTB relax never
+        runs inside an MCP call).
+
+        Refuses rather than stages when the dispatch contract cannot carry
+        the request honestly (``dispersion``: the ``struct_relax`` params
+        schema carries no dispersion field, so a dispatched job would compute
+        D3-*free* and sink it into the run-cube under a dispersion=True cache
+        key — the same call the dispatcher's own fidelity gate made,
+        gr346449), or when the geometry fails the hard-reject validator
+        (gripe 51393). Otherwise it runs the cheap local pre-relax
+        (``preflight=`` picks ``clean``/``emt``), re-checks the run-cube over
+        the cleaned geometry — a preflight-clean onto an already-computed
+        input is still a zero-compute hit — and returns the
+        :class:`_NeedsDispatch` the caller mints."""
+        if dispersion:
+            raise Unsupported(
+                f"{cause} — dispersion=True runs locally only; the "
+                "struct_relax dispatch contract carries no dispersion "
+                "flag, so this relax cannot be dispatched",
+                next="install the [dft-ml] extra locally, or re-run with "
+                "dispersion omitted to use the cluster",
+            ) from cause
+        # xtb dispatches like ml: its jobs pin to the compute group
+        # (struct_relax.mlip_nodes), whose worker venv carries the
+        # linux-aarch64 tblite wheel from the wheelhouse
+        # (scripts/build-tblite-wheel, gr488907). A node without it fails
+        # the job as infra, naming the extra.
+        if cache_key is None:  # defensive — an uncached rung never reaches here
+            raise Unsupported(
+                str(cause),
+                next="relax with fidelity='clean' (geometry repair, always available)",
+            ) from cause
+
+        # Hard-reject gate (gripe 51393): cloud dispatch is a last
+        # resort, never a place to burn GPU time on an impossible
+        # geometry. Only the heavy-dispatch branch is gated — a direct
+        # local ``clean``/``emt`` relax above never reaches here, so it
+        # stays free to repair the very geometry this would reject.
+        findings = validate(scene)
+        if findings:
+            raise BadInput(
+                _format_gate_rejection(findings),
+                next="fix the flagged atom(s)/bond(s), or run "
+                "edit(ops=[{'op':'relax','fidelity':'clean'}]) locally "
+                "first to repair mild clashes before requesting "
+                f"fidelity={fidelity!r}",
+            ) from cause
+
+        # Always pre-relax locally before staging anything for the cloud
+        # (gripe 51393) — ``clean`` by default, or ``emt`` when the op
+        # opts in and the element set/backend allow it. Mutates ``scene``
+        # in place, so the caller's subsequent ``structure_save`` persists
+        # the cleaned geometry exactly like a normal ``clean`` relax would.
+        preflight_mode = str(ro.get("preflight", "clean"))
+        preflight_result, preflight_note = _preflight_relax(
+            scene, preflight_mode, steps=steps
+        )
+        # gripe 161576: label-pair the preflight's own forces (a real
+        # local clean/emt pass) for storage — same as an ordinary
+        # standalone relax above (FIX 1: never canonical-rank-indexed).
+        if preflight_result.forces is not None:
+            preflight_result.forces_labels, preflight_result.forces_vectors = (
+                relax_cache.serialize_forces(preflight_result.forces)
+            )
+        # The geometry just changed — recompute the address so the
+        # dispatched job / run-cube row is addressed by what's actually
+        # staged, not the pre-preflight input. A design that happens to
+        # preflight-clean onto an already-cached geometry (e.g. another
+        # design's completed relax converged to the same input) must
+        # still be a zero-compute hit here too — the earlier lookup ran
+        # against the as-authored (pre-preflight) geometry and can't
+        # have caught this.
+        #
+        # ``dispersion`` is threaded explicitly even though the guard above
+        # means it is always False here: stating it keeps this address
+        # honest if that early raise is ever relaxed, rather than silently
+        # minting a dispersion-free key for a dispersion-on relax.
+        cache_key, structure_sha, order = _relax_cache_address(
+            scene,
+            fidelity=fidelity,
+            model=model,
+            steps=steps,
+            cell_mode=cell_mode,
+            dispersion=dispersion,
+        )
+        hit_result = self._cache_hit_result(
+            scene,
+            cache_key=cache_key,
+            structure_sha=structure_sha,
+            fidelity=fidelity,
+            dispersion=dispersion,
+        )
+        if hit_result is not None:
+            return hit_result
+        return _NeedsDispatch(
+            fidelity=fidelity,
+            model=model,
+            steps=steps,
+            cell=cell_mode,
+            cache_key=cache_key,
+            structure_sha=structure_sha or "",
+            order=order,
+            poscar=export.to_poscar(scene),
+            poscar_labels=_poscar_row_labels(scene),
+            # Optional requesting todo (compute lane). Accept
+            # the clear ``requested_by`` key; tolerate the legacy
+            # ``parent_id`` spelling from before the lane split.
+            requester_id=_as_int_or_none(ro.get("requested_by", ro.get("parent_id"))),
+            preflight_result=preflight_result,
+            preflight_note=preflight_note,
+        )
 
     def _cache_hit_result(
         self,

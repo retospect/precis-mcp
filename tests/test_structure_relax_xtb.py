@@ -170,26 +170,72 @@ def _stub_tblite(monkeypatch: pytest.MonkeyPatch, calc: type) -> None:
 def test_xtb_run_records_rung_model_and_nonconverged(
     store: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Through the handler the xtb rung records like every other energy
-    rung: struct_runs row + last_relax on the ref + runs view — with the
+    """The xtb rung records like every other energy rung — but through the
+    job, not the edit call (gr496562: the rung never computes in-request).
+    The edit mints the ``struct_relax`` job and records the local
+    pre-relax; the job's in-process run then writes the rung's own
+    struct_runs row, and a repeat relax of the same geometry is a
+    zero-compute run-cube hit that stamps ``last_relax`` — all with the
     optimiser's own honest verdict (non-converged at the step cap)."""
+    from precis.workers.executors._context import DispatchContext
+    from precis.workers.job_types import struct_relax
+
     _stub_tblite(monkeypatch, _StuckTBLite)
     structure = StructureHandler(hub=Hub(store=store))
     structure.put(id="mol", text=_MOLECULE)
     resp = structure.edit(
         id="mol", ops=[{"op": "relax", "fidelity": "xtb", "steps": 3}]
     )
-    assert "relax[xtb]" in resp.body
+    assert "dispatched" in resp.body and "job id=" in resp.body
 
     ref = store.get_ref(kind="structure", id="mol")
-    lr = ref.meta["last_relax"]
+    # the edit recorded the local pre-relax — not an inline xtb run.
+    assert ref.meta["last_relax"]["rung"] == "clean"
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id, meta FROM refs WHERE parent_id = %s "
+            "AND kind = 'job' AND retired_at IS NULL ORDER BY ref_id",
+            (ref.id,),
+        ).fetchall()
+    assert len(rows) == 1
+    job_id, meta = int(rows[0][0]), rows[0][1]
+    assert meta["params"]["fidelity"] == "xtb"
+    assert meta["params"]["model"] == "gfn2-xtb"
+
+    # the claimed job runs the rung in-process on the node — the stubbed
+    # TBLite's forces never fall under fmax, so FIRE hits the step cap.
+    events: list[tuple[str, Any]] = []
+    ctx = DispatchContext(
+        store=store,
+        ref_id=job_id,
+        title="relax",
+        meta=meta,
+        set_status=lambda s: events.append(("status", s)),
+        append_chunk=lambda k, t: events.append((k, t)),
+        set_meta=lambda **kw: events.append(("meta", kw)),
+        record_failure=lambda r, **kw: events.append(("fail", {"reason": r, **kw})),
+        is_cancel_requested=lambda: False,
+    )
+    struct_relax._dispatch(ctx, struct_relax.SPEC)
+    assert not [p for k, p in events if k == "fail"]
+    assert ("status", "succeeded") in events
+
+    run = [r for r in store.structure_runs(ref.id) if r["fidelity"] == "xtb"][0]
+    assert run["model"] == "gfn2-xtb"
+    assert run["converged"] is False
+    # the runs table has no model column — the rung row is what shows.
+    runs_view = structure.get(id="mol", view="runs").body
+    assert "xtb" in runs_view
+
+    # a repeat relax of the same geometry is a zero-compute cube hit —
+    # that is what stamps last_relax with the xtb envelope.
+    resp2 = structure.edit(
+        id="mol", ops=[{"op": "relax", "fidelity": "xtb", "steps": 3}]
+    )
+    assert "relax[xtb]" in resp2.body
+    lr = store.get_ref(kind="structure", id="mol").meta["last_relax"]
     assert lr["rung"] == "xtb" and lr["model"] == "gfn2-xtb"
     assert lr["converged"] is False
-    run = store.structure_runs(ref.id)[0]
-    assert run["fidelity"] == "xtb" and run["model"] == "gfn2-xtb"
-    assert run["converged"] is False
-    runs_view = structure.get(id="mol", view="runs").body
-    assert "xtb" in runs_view and "gfn2-xtb" in runs_view
 
 
 def _diatomic(a: str, b: str, d: float) -> StructScene:
