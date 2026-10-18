@@ -247,6 +247,224 @@ def test_search_empty_query_degrades_to_index(skill: SkillHandler) -> None:
         )
 
 
+# ── gr496170: gap cut over the top-10 (rerank-after-top-k) ───────────
+#
+# ``q="zzzq wwwe"`` pins no skill's title/section tokens (verified:
+# neither token appears in any ``_skill_title_tokens`` pool), so the
+# merged menu is exactly the stubbed stream — no title-boost row lands
+# on top and reorders the crafted sequence.
+
+
+def _stub_hits(
+    skill: SkillHandler,
+    monkeypatch: pytest.MonkeyPatch,
+    pairs: list[tuple[str, float]],
+) -> None:
+    """Drive ``search`` with a crafted score sequence.
+
+    ``variant='heading_only'`` keeps ``_addressable_chunk_idx`` off the
+    filesystem — the section column renders the heading text as-is, no
+    ``~N`` lookup against the real skill body.
+    """
+    from precis.skill_index import SearchHit
+
+    hits = [
+        SearchHit(
+            slug=slug,
+            chunk_idx=0,
+            heading="sec",
+            score=score,
+            snippet="snip",
+            variant="heading_only",
+        )
+        for slug, score in pairs
+    ]
+    monkeypatch.setattr(
+        skill, "_semantic_hits", lambda q, *, page_size: hits[:page_size]
+    )
+    monkeypatch.setattr(skill, "_lexical_hits", lambda q: [])
+
+
+_GAP_QUERY = "zzzq wwwe"
+
+
+def test_search_gap_cut_trims_dominant_top(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A no-pin page whose tail drops below 0.6 × top renders only the
+    head, with the ``…and N more`` tail line offering ``page=2``."""
+    _stub_hits(
+        skill,
+        monkeypatch,
+        [
+            ("precis-get-help", 0.92),
+            ("precis-put-help", 0.88),
+            ("precis-link-help", 0.40),
+            ("precis-tag-help", 0.35),
+        ],
+    )
+    out = skill.search(q=_GAP_QUERY)
+    table = out.body.split("\n\n")[1]
+    assert "precis-get-help" in table
+    assert "precis-put-help" in table
+    assert "precis-link-help" not in table
+    assert "precis-tag-help" not in table
+    assert "…and 2 more" in out.body
+    assert f"search(kind='skill', q={_GAP_QUERY!r}, page=2)" in out.body
+
+
+def test_search_gap_cut_page2_returns_hidden_rows(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cut defines the page-1/2 boundary: page=2 starts exactly
+    where the trimmed page 1 stopped, so nothing is unreachable."""
+    _stub_hits(
+        skill,
+        monkeypatch,
+        [
+            ("precis-get-help", 0.92),
+            ("precis-put-help", 0.88),
+            ("precis-link-help", 0.40),
+            ("precis-tag-help", 0.35),
+        ],
+    )
+    page2 = skill.search(q=_GAP_QUERY, page=2)
+    assert "precis-link-help" in page2.body
+    assert "precis-tag-help" in page2.body
+    assert "precis-get-help" not in page2.body
+    # Both rows fit page 2 — no page=3 continuation is offered.
+    assert "page=3" not in page2.body
+
+
+def test_search_gap_cut_explicit_page_size_untouched(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ruling: an explicit ``page_size`` means "caller asked for N,
+    show N" — the same dominant-top menu renders in full."""
+    pairs = [
+        ("precis-get-help", 0.92),
+        ("precis-put-help", 0.88),
+        ("precis-link-help", 0.40),
+        ("precis-tag-help", 0.35),
+    ]
+    _stub_hits(skill, monkeypatch, pairs)
+    out = skill.search(q=_GAP_QUERY, page_size=10)
+    for slug, _score in pairs:
+        assert slug in out.body
+
+
+def test_search_gap_cut_verbatim_untouched(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ruling: ``mode='verbatim'`` never cuts — the literal-quote
+    lookup keeps every verbatim row and offers no tail line."""
+    # verbatim mode scores lexical rows only (the semantic stream is
+    # skipped); stub verbatim hits and assert the exemption contract:
+    # every row renders, no ``…and N more`` is offered.
+    lexical = [
+        ("precis-get-help", 9, "p", True, 0),
+        ("precis-put-help", 1, "p", True, 0),
+        ("precis-link-help", 1, "p", True, 0),
+    ]
+    monkeypatch.setattr(skill, "_lexical_hits", lambda q: lexical)
+    out = skill.search(q=_GAP_QUERY, mode="verbatim")
+    assert "precis-get-help" in out.body
+    assert "precis-put-help" in out.body
+    assert "precis-link-help" in out.body
+    assert "…and" not in out.body
+
+
+def test_search_gap_cut_title_pin_never_cuts(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A page led at or above ``_TITLE_MATCH_SCORE`` never cuts: the
+    pin already declared the intent match, and the skill-eval probe
+    corpus showed the tail below a pin still carries the named answer
+    (recall@cut = 100 % bar)."""
+    _stub_hits(
+        skill,
+        monkeypatch,
+        [
+            ("precis-get-help", 1.62),
+            ("precis-put-help", 0.28),
+            ("precis-link-help", 0.22),
+        ],
+    )
+    out = skill.search(q=_GAP_QUERY)
+    assert "precis-put-help" in out.body
+    assert "precis-link-help" in out.body
+    assert "…and" not in out.body
+
+
+def test_search_gap_cut_tie_cluster_never_splits(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Near-equal scores are a genuine tie cluster — nothing clearly
+    dominates, so the full page renders."""
+    _stub_hits(
+        skill,
+        monkeypatch,
+        [
+            ("precis-get-help", 0.90),
+            ("precis-put-help", 0.88),
+            ("precis-link-help", 0.85),
+        ],
+    )
+    out = skill.search(q=_GAP_QUERY)
+    assert "precis-link-help" in out.body
+    assert "…and" not in out.body
+
+
+def test_search_page_beyond_end_is_an_honest_empty(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``page=`` previously vanished into ``**_kw`` and silently
+    re-served page 1. Now an out-of-range page says so instead of
+    claiming there were no matches at all."""
+    _stub_hits(skill, monkeypatch, [("precis-get-help", 0.92)])
+    out = skill.search(q=_GAP_QUERY, page=3)
+    assert "no more skill matches" in out.body
+    assert "page 3" in out.body
+
+
+def test_search_gap_cut_eval_corpus_recall(skill: SkillHandler) -> None:
+    """The gr496170 landing bar, ratcheted: replay every skill-eval
+    case prompt through search and check the YAML's named skill
+    survives the gap cut whenever it made the uncut top-10 at all.
+    An explicit ``page_size=10`` bypasses the cut, so it is the
+    before/after oracle. Probes whose named skill never ranked are
+    skipped — they can't measure the cut."""
+    from precis.skill_eval.cases import load_cases
+
+    def table_slugs(body: str) -> set[str]:
+        rows: set[str] = set()
+        in_table = False
+        for line in body.splitlines():
+            if line.startswith("{slug"):
+                in_table = True
+                continue
+            if in_table:
+                if not line.strip():
+                    break
+                rows.add(line.split("\t")[0].split(" [")[0])
+        return rows
+
+    misses: list[str] = []
+    measured = 0
+    for case in load_cases():
+        uncut = table_slugs(skill.search(q=case.prompt, page_size=10).body)
+        if case.skill not in uncut:
+            continue
+        measured += 1
+        kept = table_slugs(skill.search(q=case.prompt).body)
+        if case.skill not in kept:
+            misses.append(case.case_id)
+    assert not misses, (
+        f"recall@cut < 100%: named skill dropped by the gap cut on "
+        f"{len(misses)}/{measured} probes: {misses}"
+    )
+
+
 # ── packaging guarantees ─────────────────────────────────────────────
 
 

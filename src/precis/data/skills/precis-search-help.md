@@ -313,6 +313,12 @@ page is 25 *papers*; refine first (above), don't walk the tail.
 `more(cursor=...)`, the separate MCP-transport pagination mechanism
 for a single oversized response — see [[precis-toon]].
 
+`skill` searches additionally trim the *default* page for you: when
+the top hit clearly outscores the tail, the menu stops there and ends
+with `…and N more — page=2` (`page=2` returns what was hidden; an
+explicit `page_size=` shows the untrimmed page, `mode='verbatim'` is
+never trimmed).
+
 ## Filter search results by tag
 ## Find refs tagged with topic:X
 ## Combine search with a tag axis

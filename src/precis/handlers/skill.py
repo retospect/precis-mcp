@@ -377,6 +377,13 @@ def _skill_tags(slug: str) -> list[str]:
 #: ("how do I cite a paper" → precis-cite-paper-help) leads the results.
 _TITLE_MATCH_SCORE = 1.5
 
+#: gr496170 (rerank-after-top-k): on a default-page, non-verbatim search
+#: the rendered menu stops at the first row scoring below this fraction
+#: of the top score — a dominant top hit makes the tail menu bloat the
+#: agent would only ``get()`` anyway. Conservative enough that an
+#: equal-score tie cluster can never trip it.
+_GAP_CUT_RATIO = 0.6
+
 
 class _SkillSearchRow:
     """Per-slug merged hit for the search response.
@@ -484,6 +491,12 @@ def _semantic_row(hit: SearchHit) -> _SkillSearchRow:
 #: modes this kind can honour (``hybrid`` is the default).
 _SKILL_SEARCH_MODES = ("hybrid", "semantic", "lexical", "verbatim")
 
+#: Ceiling on a lexical row's score in ``_lexical_row`` — substring
+#: counting can never reach a cosine score, so the gap cut normalises
+#: by this cap instead of calling every lexical hit "dominated" by any
+#: decent semantic top.
+_LEXICAL_SCORE_CAP = 0.49
+
 
 def _lexical_row(
     slug: str, count: int, preview: str, *, verbatim: bool, compounds: int = 0
@@ -503,7 +516,7 @@ def _lexical_row(
     scoring, so the specific term outweighs its generic parts.
     """
     if verbatim:
-        score = min(0.49, 0.30 + count / 50.0)
+        score = min(_LEXICAL_SCORE_CAP, 0.30 + count / 50.0)
         label = f"{count} substring {'hit' if count == 1 else 'hits'}"
     else:
         # Gentle slope so longer queries keep ranking headroom (more
@@ -518,6 +531,39 @@ def _lexical_row(
         source="lexical",
         section=label,
         snippet=short.strip(),
+    )
+
+
+def _norm_score(row: _SkillSearchRow) -> float:
+    """Score as a fraction of its own retrieval regime's ceiling.
+
+    Raw scores mix regimes: a semantic cosine can reach ~1.0 while a
+    lexical row ceilings at ``_LEXICAL_SCORE_CAP``. Comparing raw
+    values would read a 0.4 verbatim hit under a 0.8 semantic top as
+    "dominated" when it's really at ~80 % of what lexical matching can
+    express — a literal phrase match is a different signal, not a weak
+    cosine. Normalising per regime is what makes "the tail clearly
+    drops" honest.
+    """
+    return row.score / (_LEXICAL_SCORE_CAP if row.source == "lexical" else 1.0)
+
+
+def _gap_cut_index(rows: list[_SkillSearchRow]) -> int:
+    """First index where the score tail clearly drops below the top hit.
+
+    ``rows`` is the score-sorted page head (search passes the top 10);
+    comparisons use ``_norm_score`` so a regime's own scale decides.
+    Returns the keep-count for the rendered menu: ``len(rows)`` when
+    nothing clearly dominates — an equal-score tie cluster can't satisfy
+    the ratio, and a non-positive top score has no dominance to measure
+    against. Never returns less than 1 (the top hit always renders).
+    """
+    if len(rows) < 2 or rows[0].score <= 0:
+        return len(rows)
+    floor = _GAP_CUT_RATIO * _norm_score(rows[0])
+    return next(
+        (i for i in range(1, len(rows)) if _norm_score(rows[i]) < floor),
+        len(rows),
     )
 
 
@@ -974,7 +1020,8 @@ class SkillHandler(Handler):
         self,
         *,
         q: str | None = None,
-        page_size: int = 10,
+        page_size: int | None = None,
+        page: int = 1,
         tag: str | None = None,
         kinds: str | None = None,
         family: str | None = None,
@@ -992,6 +1039,16 @@ class SkillHandler(Handler):
                 f"search(kind='skill'): mode={mode!r} not recognized",
                 options=list(_SKILL_SEARCH_MODES),
             )
+        # ``page_size`` stays None until here so "caller asked for N" is
+        # distinguishable from the default (dispatch strips None kwargs,
+        # so an unset page_size arrives as this signature default) — the
+        # gr496170 gap cut below runs only on the default page; an
+        # explicit N is honoured verbatim. ``page`` follows the paper
+        # convention: clamp a stray page<1 rather than error.
+        page_size_explicit = page_size is not None
+        if page_size is None:
+            page_size = 10
+        page = max(1, int(page))
         # ``q=`` is optional — round-2 picky N4/F-6, 2026-05-30. The
         # rest of the surface (``search(kind='memory', tags=[...])``,
         # for instance) degrades on empty q to a list view; doing the
@@ -1238,7 +1295,33 @@ class SkillHandler(Handler):
         )
 
         total_wired = len(wired_rows)
-        visible = wired_rows[:page_size]
+
+        # gr496170 (rerank-after-top-k, slice 1): on a default-page,
+        # non-verbatim search whose top hit is NOT title-pinned, trim
+        # the rendered menu at the first decisive score drop — one
+        # dominant hit makes the tail menu bloat the agent would only
+        # get() anyway. A page carrying a title pin never cuts: the pin
+        # already declared the intent match and the skill-eval probe
+        # corpus (recall@cut bar) shows the tail below a pin still
+        # carries the named answer — the cut only runs where the score
+        # curve is the sole dominance signal. The cut index also sets
+        # the page-1/page-2 boundary so ``page=2`` returns exactly the
+        # rows the cut hid (a plain (page-1)*page_size stride when
+        # nothing was cut).
+        first_len = page_size
+        if (
+            not page_size_explicit
+            and mode_norm != "verbatim"
+            and wired_rows
+            and wired_rows[0].score < _TITLE_MATCH_SCORE
+        ):
+            first_len = _gap_cut_index(wired_rows[:10])
+        if page <= 1:
+            offset, limit = 0, first_len
+        else:
+            offset = first_len + (page - 2) * page_size
+            limit = offset + page_size
+        visible = wired_rows[offset:limit]
 
         # Round-2 picky 2026-05-31: dropped low-signal columns
         # (status/source/score) that the maintainer flagged as
@@ -1287,6 +1370,8 @@ class SkillHandler(Handler):
                     schema=["slug", "section", "more", "keywords"],
                 )
             )
+        elif page > 1:
+            body = f"# no more skill matches for {q!r} on page {page}"
         else:
             body = f"# no actionable skill matches for {q!r}"
 
@@ -1316,6 +1401,31 @@ class SkillHandler(Handler):
                     "narrow to a family",
                 )
             )
+        # The gap cut only ever hides rows — it never drops them, so
+        # ``page=2`` returns exactly what page 1 trimmed. Print the tail
+        # whenever rows sit beyond this render AND the reader got here
+        # through a cut or an explicit page turn; a full default page
+        # keeps the historical shape (headline already says "N of M").
+        remaining = max(0, total_wired - offset - len(visible))
+        if remaining and (page > 1 or first_len < page_size):
+            call = f"search(kind='skill', q={q!r}"
+            if mode is not None:
+                call += f", mode={mode_norm!r}"
+            if page_size_explicit:
+                call += f", page_size={page_size}"
+            if tag is not None:
+                call += f", tag={tag!r}"
+            if kinds is not None:
+                call += f", kinds={kinds!r}"
+            args_extra: dict[str, Any] = {}
+            if family is not None:
+                args_extra["family"] = family
+            if configured_only:
+                args_extra["configured_only"] = True
+            if args_extra:
+                call += f", args={args_extra!r}"
+            call += f", page={page + 1})"
+            body += f"\n\n…and {remaining} more — {call}"
         if visible:
             nav.append(
                 (
