@@ -109,6 +109,52 @@ def test_write_verb_over_the_socket_is_refused(
         client.call(verb, wait_s=30, kind="todo", id=1, text="x")
 
 
+@pytest.mark.parametrize(
+    ("kind", "args"),
+    [
+        ("web", {"id": "https://example.invalid/cache-miss"}),
+        ("perplexity-reasoning", {"q": "anything"}),
+        ("websearch", {"q": "anything"}),
+    ],
+)
+def test_live_fetch_and_paid_kinds_over_the_socket_are_refused(
+    served: dict[str, Any], kind: str, args: dict[str, str]
+) -> None:
+    client = _load_client(served["cfg"])
+    with pytest.raises(RuntimeError, match=r"not served by the sandbox") as exc:
+        client.call("get", wait_s=30, kind=kind, **args)
+    assert "next:" in str(exc.value)
+
+
+def test_search_without_a_kind_is_refused(served: dict[str, Any]) -> None:
+    client = _load_client(served["cfg"])
+    with pytest.raises(RuntimeError, match=r"next:"):
+        client.call("search", wait_s=30, q="anything")
+
+
+def test_allowlist_excludes_every_fetch_and_paid_kind() -> None:
+    fetch_or_paid = {
+        "web",
+        "youtube",
+        "wikipedia",
+        "news",
+        "datasheet",
+        "paper",
+        "patent",
+        "edgar",
+        "perplexity-reasoning",
+        "perplexity-research",
+        "websearch",
+        "llm",
+        "oracle",
+        "semanticscholar",
+        "email",
+    }
+    assert not fetch_or_paid & read_mcp.READ_KIND_ALLOWLIST
+    assert read_mcp.kind_refusal("get", "skill") is None
+    assert read_mcp.kind_refusal("more", None) is None
+
+
 def test_wrong_token_is_401(served: dict[str, Any]) -> None:
     bad = served["tmp"] / "bad.json"
     payload = json.loads(served["cfg"].read_text(encoding="utf-8"))

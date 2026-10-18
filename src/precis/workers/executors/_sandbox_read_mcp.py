@@ -24,7 +24,9 @@ socket. Pieces:
    ``--read-only`` removes every tool but ``get``/``search``/``more``
    inside that host process (``server._restrict_to_read_verbs``), so a
    write verb sent over the socket is answered "Unknown tool" whatever
-   the container sends. The socket lives in a per-run host dir
+   the container sends. The same host process refuses any ``get``/
+   ``search`` ``kind=`` outside :data:`READ_KIND_ALLOWLIST` (live-fetch
+   and paid kinds, gr496511). The socket lives in a per-run host dir
    (:func:`socket_dir`, a sibling of the run dir) that the executor
    bind-mounts read-only at :data:`CONTAINER_SOCKET_DIR`; the container
    keeps ``--network none``. A fresh per-run token rides the child's env
@@ -66,6 +68,78 @@ if TYPE_CHECKING:
     from precis.store import Store
 
 log = logging.getLogger(__name__)
+
+#: Kinds the read-only serve answers (deny by default, gr496511). Corpus,
+#: file and pure-local compute kinds only. Excluded on purpose: every kind
+#: that fetches live on a cache miss (web, youtube, wikipedia, news,
+#: datasheet, paper, patent, edgar, chem, protein, taxon, ...) — a
+#: ``--network none`` script must not get public egress or a data-out
+#: channel through the host — and every paid kind (perplexity-*, websearch,
+#: llm, oracle). A fetch kind joins only with a cache-hit-only handler path.
+READ_KIND_ALLOWLIST = frozenset(
+    {
+        "calc",
+        "cad",
+        "checklist",
+        "citation",
+        "component",
+        "concept",
+        "draft",
+        "figure",
+        "finding",
+        "folder",
+        "gripe",
+        "markdown",
+        "material",
+        "math",
+        "md",
+        "measure",
+        "memory",
+        "mermaid",
+        "part",
+        "pathway",
+        "pcb",
+        "plaintext",
+        "plan",
+        "pres",
+        "profile",
+        "provenance",
+        "python",
+        "quest",
+        "random",
+        "route",
+        "rxn",
+        "se",
+        "skill",
+        "structure",
+        "tag",
+        "tex",
+        "time",
+        "todo",
+    }
+)
+
+
+def kind_refusal(verb: str, kind: Any) -> str | None:
+    """The refusal text when a read-only ``get``/``search`` names a kind
+    outside :data:`READ_KIND_ALLOWLIST` (or none at all), else ``None``.
+    ``more`` carries no kind and is never gated.
+    """
+    if verb not in ("get", "search"):
+        return None
+    names = [k.strip() for k in str(kind or "").split(",") if k.strip()]
+    if names and all(n in READ_KIND_ALLOWLIST for n in names):
+        return None
+    shown = ", ".join(names) if names else "(no kind)"
+    return (
+        f"[error:BadInput] {verb}(kind={shown!r}) is not served by the sandbox "
+        "read-only MCP: it answers corpus and local kinds only, never live-fetch "
+        "or paid kinds\n"
+        f"  options: {', '.join(sorted(READ_KIND_ALLOWLIST))}\n"
+        f"  next: {verb}(kind=<one of the options>, ...); fetch the page or "
+        "paid result outside the sandbox and pass it in as a script input"
+    )
+
 
 #: Where the per-run socket dir is mounted (read-only) in the container.
 CONTAINER_SOCKET_DIR = "/work/mcp"

@@ -1496,6 +1496,26 @@ def _install_token_auth(app: Any, *, token: str) -> None:
 READ_ONLY_VERBS = frozenset({"get", "search", "more"})
 
 
+def _kind_gated(verb: str, fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Wrap a read tool so ``kind=`` outside the sandbox allow-list
+    (:data:`precis.workers.executors._sandbox_read_mcp.READ_KIND_ALLOWLIST`)
+    is refused before dispatch — no live fetch, no paid call (gr496511)."""
+    from mcp.types import CallToolResult, TextContent
+
+    from precis.workers.executors._sandbox_read_mcp import kind_refusal
+
+    @functools.wraps(fn)
+    async def gated(**kwargs: Any) -> Any:
+        body = kind_refusal(verb, kwargs.get("kind"))
+        if body is not None:
+            return CallToolResult(
+                content=[TextContent(type="text", text=body)], isError=True
+            )
+        return await fn(**kwargs)
+
+    return gated
+
+
 def _restrict_to_read_verbs(fastmcp: FastMCP) -> None:
     """Remove every tool not in :data:`READ_ONLY_VERBS` from ``fastmcp``.
 
@@ -1515,6 +1535,8 @@ def _restrict_to_read_verbs(fastmcp: FastMCP) -> None:
     for tool in fastmcp._tool_manager.list_tools():
         if tool.name not in READ_ONLY_VERBS:
             fastmcp.remove_tool(tool.name)
+        else:
+            tool.fn = _kind_gated(tool.name, tool.fn)
     left = {t.name for t in fastmcp._tool_manager.list_tools()}
     if not left <= READ_ONLY_VERBS:
         raise ValueError(  # pragma: no cover - defensive

@@ -161,17 +161,10 @@ a new job.
    `origin/prod` after deploy. The lane lights only once `origin/prod`
    contains the `--no-build` lock fix (`_sandbox_script.compile_lock`).
    Builds before that can run an sdist's build backend on the host.
-   It also waits on three code items:
-   - **A host-side kind allow-list on `--read-only`** (gr496511). Today
-     `get` on a fetch kind (web, youtube, wikipedia, news, datasheet,
-     paper) fetches live on a cache miss on the sandbox host, and paid
-     kinds (perplexity-\*, websearch) spend. That gives a `--network
-     none` script public egress and spend through the host. The fix is
-     deny by default: corpus kinds are served from the store, fetch kinds
-     answer cache hits only and refuse misses with `next=`, and paid
-     kinds are always refused. It ships with a socket test showing that
-     a cache-miss `get(kind='web')` and a `get(kind='perplexity-reasoning')`
-     are refused.
+   It also waits on two code items. The `--read-only` kind allow-list
+   shipped (gr496511, `READ_KIND_ALLOWLIST`): fetch and paid kinds are
+   refused outright, not served on cache hits. Serving cache hits for
+   fetch kinds needs a cache-hit-only handler path and is not built.
    - **Async staging** (gr496426). The lock and wheel download run in
      the claim tick and can block the worker's poll for about 20 min.
      Give staging its own lease and heartbeat, or make it a separate
