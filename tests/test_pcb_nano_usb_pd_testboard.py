@@ -89,6 +89,14 @@ BASELINE_DRC_WARNS = sum(BASELINE_DRC_WARNS_BY_RULE.values())
 BASELINE_ROUTED = 35
 BASELINE_FAILED = 29
 
+#: gr489909: per-seed one-way floors on routed nets (fanout >= 2), so a
+#: router change is judged across placements, not on ``SEED``'s draw alone.
+#: Measured 2026-10-18 on main 902fd6a80; with seed 1 the mean is 34.5, the
+#: same as the 2026-10-15 sweep, so nothing regressed across seeds. Seeds 2
+#: and 4 are left out: their anneal leaves one part 0.041 mm past the
+#: outline and the route job refuses the placement.
+SEED_ROUTED_FLOORS: dict[int, int] = {3: 34, 5: 36, 6: 30, 7: 35, 8: 37}
+
 _DRC_HEAD_RE = re.compile(r"— (\d+) error\(s\), (\d+) warn\(s\)")
 
 
@@ -257,8 +265,9 @@ def _drain_one_job(store: Store, parent_id: int, *, unrouted_ok: bool) -> None:
     raise AssertionError(f"job {job_ref_id} never reached a terminal status")
 
 
-@pytest.mark.slow
-def test_nano_board_place_route_drc_baseline(store: Store) -> None:
+def _place_and_route(store: Store, seed: int) -> tuple[PcbHandler, int, int, int]:
+    """Create the board, place and route it at ``seed``; return the
+    handler, the board's ref id, and routed/failed over fanout >= 2 nets."""
     # The catalog footprints are the fixture's cache — seeded into the
     # test DB before the put so the catalog parts resolve to real pad
     # geometry. Read-only lookups at apply; no JLC/LCSC calls.
@@ -271,11 +280,11 @@ def test_nano_board_place_route_drc_baseline(store: Store) -> None:
     ref = store.get_ref(kind="pcb", id=SLUG)
     assert ref is not None
 
-    place_resp = pcb.put(id=SLUG, args={"op": "place", "seed": SEED})
+    place_resp = pcb.put(id=SLUG, args={"op": "place", "seed": seed})
     assert "enqueued" in place_resp.body
     _drain_one_job(store, ref.id, unrouted_ok=False)
 
-    route_resp = pcb.put(id=SLUG, args={"op": "route", "seed": SEED})
+    route_resp = pcb.put(id=SLUG, args={"op": "route", "seed": seed})
     assert "enqueued" in route_resp.body
     _drain_one_job(store, ref.id, unrouted_ok=True)
 
@@ -293,15 +302,30 @@ def test_nano_board_place_route_drc_baseline(store: Store) -> None:
         for row in status_rows
         if row["name"] in fanout2_nets and row["status"] == "failed"
     )
+    return pcb, ref.id, routed, failed
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("seed", sorted(SEED_ROUTED_FLOORS))
+def test_nano_board_routed_floor_per_seed(store: Store, seed: int) -> None:
+    _pcb, _ref_id, routed, _failed = _place_and_route(store, seed)
+    floor = SEED_ROUTED_FLOORS[seed]
+    assert routed >= floor, f"seed {seed}: routed {routed} < floor {floor}"
+
+
+@pytest.mark.slow
+def test_nano_board_place_route_drc_baseline(store: Store) -> None:
+    pcb, ref_id, routed, failed = _place_and_route(store, SEED)
+    fanout2_nets = {n for n, k in _fanout(fx.DESIGN["connections"]).items() if k >= 2}
 
     # --- DRC, both tiers ----------------------------------------------------
     drc = pcb.get(id=SLUG, view="drc")
-    pcb._drc_run(ref.id, store.pcb_load(ref.id), record=True)  # view is read-only
+    pcb._drc_run(ref_id, store.pcb_load(ref_id), record=True)  # view is read-only
     match = _DRC_HEAD_RE.search(drc.body)
     assert match is not None, f"DRC view head didn't match: {drc.body!r}"
     n_errors, n_warns = int(match.group(1)), int(match.group(2))
 
-    _run_id, findings = store.pcb_drc_findings_latest(ref.id)
+    _run_id, findings = store.pcb_drc_findings_latest(ref_id)
     errors_by_rule = collections.Counter(
         f["rule"] for f in findings if f["severity"] == "error"
     )
