@@ -255,6 +255,10 @@ check their state first.
    (`server._FairSemaphore`). It loads at the next drained respawn after
    a deploy. The pool-storm test is built (`tests/test_mcp_pool_storm.py`).
    Left: the supervision acceptance bullet, then delete the item.
+4. **backlog/kind-scoped-vector-search.md** — root cause of gr495190: a
+   per-kind semantic search walks the global HNSW (memory 33 s on prod)
+   and times out sessions' calls. Built; waits on the release owner's
+   seven-step rollout (Reto chose option 1: fill every kind, then reindex).
 
 ## Runbook
 

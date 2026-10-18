@@ -1646,7 +1646,7 @@ class TestSeed:
             ).fetchall()
             n_emb = conn.execute(
                 "SELECT count(*) FROM chunk_embeddings e JOIN chunks c USING (chunk_id)"
-                " JOIN refs r USING (ref_id) WHERE r.kind='taxon'"
+                " JOIN refs r ON r.ref_id = c.ref_id WHERE r.kind='taxon'"
             ).fetchone()[0]
         n_nodes = _count(store, "SELECT count(*) FROM refs WHERE kind='taxon'")
         assert ords == [(-1, n_nodes)]

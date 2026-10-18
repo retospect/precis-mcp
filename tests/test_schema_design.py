@@ -64,6 +64,11 @@ ALLOWED_FK_CYCLES: frozenset[frozenset[str]] = frozenset(
 UNINDEXED_FKS: frozenset[str] = frozenset(
     {
         "chunk_embeddings.chunk_embeddings_embedder_fkey",
+        # 0226: (chunk_id, ref_id) -> chunks. Not a seq scan: the cascade
+        # probe `chunk_id = $1 AND ref_id = $2` runs on the primary key's
+        # leading chunk_id (one row per embedder). A second 3.9M-row btree
+        # would only add write cost on the embedding path.
+        "chunk_embeddings.chunk_embeddings_chunk_ref_fkey",
         "chunk_summaries.chunk_summaries_summarizer_fkey",
         "chunk_tags.chunk_tags_set_by_fkey",
         "chunks.chunks_set_by_fkey",

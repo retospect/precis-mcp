@@ -24,6 +24,9 @@ _DEFAULT_EMBEDDER = "bge-m3"  # migration-seeded default (embedders.dim=1024)
 _DIM = 1024
 _N_PAPERS = 200
 _N_FINDINGS = 3
+#: Two kinds, so the store stays on the global index (a single small kind
+#: takes the exact route since migration 0226; tests/test_kind_scoped_ann.py).
+_KINDS = ["finding", "oracle"]
 
 
 def _unit(v: np.ndarray) -> list[float]:
@@ -114,7 +117,7 @@ def test_rare_kind_is_not_starved_by_nearer_papers(
     assert "chunk_embeddings_vec_hnsw_idx" in plan, re.sub(r"\[[^\]]*\]", "[..]", plan)
 
     hits = store.chunks.search_chunks_semantic(
-        query_vec=v, kinds=["finding"], limit=24, max_distance=0.6
+        query_vec=v, kinds=_KINDS, limit=24, max_distance=0.6
     )
     assert sorted(ref.title for _c, ref, _d in hits) == [
         f"Finding {i}" for i in range(_N_FINDINGS)
@@ -135,23 +138,21 @@ def test_distance_floor_outside_the_scan_keeps_rows_and_pages(
     def titles(rows: list[tuple[Any, Any, Any]]) -> list[str]:
         return [ref.title for _c, ref, _d in rows]
 
-    unfloored = store.chunks.search_chunks_semantic(
-        query_vec=v, kinds=["finding"], limit=10
-    )
+    unfloored = store.chunks.search_chunks_semantic(query_vec=v, kinds=_KINDS, limit=10)
     within = [r for r in unfloored if r[2] < 0.27]
     assert titles(within) == ["Finding 0", "Finding 1"]
 
     floored = store.chunks.search_chunks_semantic(
-        query_vec=v, kinds=["finding"], limit=10, max_distance=0.27
+        query_vec=v, kinds=_KINDS, limit=10, max_distance=0.27
     )
     assert titles(floored) == titles(within)
 
     page2 = store.chunks.search_chunks_semantic(
-        query_vec=v, kinds=["finding"], limit=1, offset=1, max_distance=0.27
+        query_vec=v, kinds=_KINDS, limit=1, offset=1, max_distance=0.27
     )
     assert titles(page2) == ["Finding 1"]
     page3 = store.chunks.search_chunks_semantic(
-        query_vec=v, kinds=["finding"], limit=1, offset=2, max_distance=0.27
+        query_vec=v, kinds=_KINDS, limit=1, offset=2, max_distance=0.27
     )
     assert page3 == []
 

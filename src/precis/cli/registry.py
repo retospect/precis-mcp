@@ -166,6 +166,11 @@ COMMANDS: tuple[Command, ...] = (
         "glyph_backfill",
         "Flag old papers whose PDF fonts garble Greek/micro (gr228594).",
     ),
+    _c(
+        "backfill-embedding-kinds",
+        "embedding_kind_backfill",
+        "Fill chunk_embeddings.ref_id/kind after migration 0226.",
+    ),
     _c("podcast", "podcast", "Publish/list private audio-feed episodes."),
     _c("gripes", "gripe", "Dump all filed gripes for human triage."),
     _c(

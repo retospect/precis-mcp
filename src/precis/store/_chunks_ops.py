@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import os
 import random
+import time
 from contextlib import nullcontext
 from contextvars import ContextVar
 from datetime import UTC, datetime
@@ -167,6 +168,152 @@ def _prepare_filtered_ann(conn: Connection, limit: int) -> None:
         "       set_config('hnsw.max_scan_tuples', %s, true), "
         "       set_config('hnsw.ef_search', %s, true)",
         (str(_ANN_MAX_SCAN_TUPLES), str(ef)),
+    )
+
+
+#: Kinds the global HNSW index serves well on its own: they dominate it, so
+#: a post-filter over its nearest candidates keeps nearly every row (paper is
+#: ~92% of prod's embeddings; 0.3 s measured 2026-10-17). No partial index.
+_ANN_GLOBAL_KINDS: frozenset[str] = frozenset({"paper"})
+#: Kinds big enough for their own partial HNSW index (>= 5,000 embedded
+#: chunks on prod, 2026-10-17; docs/backlog/kind-scoped-vector-search.md).
+#: ``precis backfill-embedding-kinds`` builds one per kind CONCURRENTLY under
+#: :func:`ann_partial_index_name`; until that index is valid (and the 0226
+#: CHECK validated) the kind stays on the global index. Adding a kind here
+#: and re-running the command is the whole change.
+_ANN_PARTIAL_KINDS: tuple[str, ...] = (
+    "job",
+    "anki",
+    "orcid",
+    "draft",
+    "memory",
+    "news",
+    "perplexity-research",
+    "websearch",
+    "patent",
+    "quest",
+    "semanticscholar",
+    "tex",
+    "gripe",
+    "conv",
+)
+
+
+def ann_partial_index_name(kind: str) -> str:
+    """Name of ``kind``'s partial HNSW index on ``chunk_embeddings``."""
+    return "chunk_embeddings_vec_hnsw_" + kind.replace("-", "_") + "_idx"
+
+
+#: Seconds a cached :func:`_ann_kind_state` answer stays fresh. Bounds how
+#: long a process keeps the pre-backfill route after the gate validates.
+_ANN_STATE_TTL_S = 60.0
+#: ``(host, port, dbname)`` -> ``(fetched_at, filled, indexed_kinds)``.
+_ann_state_cache: dict[tuple[str, int, str], tuple[float, bool, frozenset[str]]] = {}
+
+_ANN_STATE_SQL = """
+SELECT
+  coalesce((SELECT convalidated FROM pg_constraint
+             WHERE conrelid = 'chunk_embeddings'::regclass
+               AND conname = 'chunk_embeddings_ref_kind_filled'), false),
+  coalesce(array_agg(substring(pg_get_expr(i.indpred, i.indrelid)
+                               FROM '\\(kind = ''([^'']+)''::text\\)')), '{}')
+  FROM pg_index i
+  JOIN pg_class ic ON ic.oid = i.indexrelid
+  JOIN pg_am am ON am.oid = ic.relam
+ WHERE i.indrelid = 'chunk_embeddings'::regclass
+   AND am.amname = 'hnsw'
+   AND i.indisvalid
+   AND pg_get_expr(i.indpred, i.indrelid) ~ '\\(kind = '''
+"""
+
+
+def _reset_ann_state_cache() -> None:
+    """Drop cached :func:`_ann_kind_state` answers (tests, after a backfill)."""
+    _ann_state_cache.clear()
+
+
+def _ann_kind_state(conn: Connection) -> tuple[bool, frozenset[str]]:
+    """``(filled, indexed_kinds)`` for kind-scoped ANN routing (migration 0226).
+
+    ``filled``: the ``chunk_embeddings_ref_kind_filled`` CHECK is validated,
+    i.e. every embedding row carries its ref's kind. ``indexed_kinds``: kinds
+    with a valid partial HNSW index on ``chunk_embeddings`` (read from the
+    index predicates; ``indisvalid`` only, so a failed CONCURRENTLY build
+    does not count). Cached per database
+    for :data:`_ANN_STATE_TTL_S`.
+    """
+    info = conn.info
+    key = (str(info.host), int(info.port or 0), str(info.dbname))
+    now = time.monotonic()
+    hit = _ann_state_cache.get(key)
+    if hit is not None and now - hit[0] < _ANN_STATE_TTL_S:
+        return hit[1], hit[2]
+    row = conn.execute(_ANN_STATE_SQL).fetchone()
+    filled = bool(row[0]) if row else False
+    names = (row[1] if row else None) or []
+    indexed = frozenset(k for k in names if k)
+    _ann_state_cache[key] = (now, filled, indexed)
+    return filled, indexed
+
+
+def _ann_route(
+    conn: Connection, kind: str | None, kinds: list[str] | None
+) -> tuple[str, str | None]:
+    """Pick how a semantic leg finds its nearest rows for a kind filter.
+
+    Returns ``(route, kind)``:
+
+    * ``"global"`` — the global HNSW index plus post-filter (the pre-0226
+      path): no single kind, a kind in :data:`_ANN_GLOBAL_KINDS`, or a kind
+      in :data:`_ANN_PARTIAL_KINDS` whose index is missing or invalid or
+      whose backfill has not validated yet.
+    * ``"partial"`` — the kind's own partial HNSW index (``ce.kind = <k>``):
+      the index exists, is valid, and the NOT NULL CHECK is validated.
+    * ``"exact"`` — any other kind is small (< 5,000 embedded chunks when
+      0226 was cut): filter to its chunks, then exact distance. Query-only,
+      so it needs neither the backfill nor an index.
+
+    A ``kinds`` list of one counts as that kind; longer lists stay global
+    (the cross-kind fan-out splits them into single-kind calls).
+    """
+    k = kind if kinds is None else (kinds[0] if len(kinds) == 1 else None)
+    if k is None or k in _ANN_GLOBAL_KINDS:
+        return "global", k
+    if k not in _ANN_PARTIAL_KINDS:
+        return "exact", k
+    filled, indexed = _ann_kind_state(conn)
+    return ("partial", k) if filled and k in indexed else ("global", k)
+
+
+def _ann_core_sql(
+    route: str, kind: str | None, *, select: str, body: str, dist: str
+) -> tuple[str, bool]:
+    """The nearest-``LIMIT`` core of a semantic leg, shaped for ``route``.
+
+    ``body`` is ``FROM ... WHERE ...`` over ``ce`` (``chunk_embeddings``).
+    Placeholders, in order: query vector, then those inside ``body``, then
+    (when the returned flag is True) the query vector again for the ORDER BY,
+    then the LIMIT.
+
+    The exact route computes the distance inside an ``OFFSET 0`` subquery
+    with no ORDER BY, so no HNSW index can serve it: the planner reaches the
+    rows through the kind filter and sorts. The partial route adds the kind
+    as a literal, because a partial index only matches a predicate it can
+    prove at plan time (a bind parameter in a generic plan cannot).
+    """
+    if route == "exact":
+        return (
+            f"SELECT * FROM (SELECT {select}, (ce.vector <=> %s::vector) AS {dist} "
+            f"{body} OFFSET 0) e ORDER BY e.{dist} ASC LIMIT %s",
+            False,
+        )
+    if route == "partial":
+        assert kind is not None
+        body = f"{body} AND ce.kind = '{kind.replace(chr(39), chr(39) * 2)}'"
+    return (
+        f"SELECT {select}, (ce.vector <=> %s::vector) AS {dist} {body} "
+        "ORDER BY ce.vector <=> %s::vector ASC LIMIT %s",
+        True,
     )
 
 
@@ -1026,30 +1173,33 @@ class ChunkStore:
             distance_params = [float(max_distance)]
 
         qv = _vec_param(query_vec)
-        params: list[Any] = [
-            qv,
-            embedder,
-            *where_params,
-            qv,
-            limit + offset,
-            *distance_params,
-            offset,
-        ]
-
         proj = _CHUNK_PROJ.format(embedding="NULL::vector")
-        sql = (
-            "SELECT * FROM ("
-            f"SELECT {proj}, {_REFS_COLS_ALIASED}, "
-            "       (ce.vector <=> %s::vector) AS dist "
+        body = (
             "FROM chunks c "
             "JOIN refs r ON r.ref_id = c.ref_id "
             "JOIN chunk_embeddings ce "
             "  ON ce.chunk_id = c.chunk_id AND ce.embedder = %s "
-            f"WHERE {' AND '.join(clauses)} "
-            "ORDER BY ce.vector <=> %s::vector ASC LIMIT %s"
-            f") s {outer_where}ORDER BY s.dist ASC OFFSET %s"
+            f"WHERE {' AND '.join(clauses)}"
         )
         with self.pool.connection() as conn:
+            route, route_kind = _ann_route(conn, kind, kinds)
+            core, order_vec = _ann_core_sql(
+                route,
+                route_kind,
+                select=f"{proj}, {_REFS_COLS_ALIASED}",
+                body=body,
+                dist="dist",
+            )
+            params: list[Any] = [
+                qv,
+                embedder,
+                *where_params,
+                *([qv] if order_vec else []),
+                limit + offset,
+                *distance_params,
+                offset,
+            ]
+            sql = f"SELECT * FROM ({core}) s {outer_where}ORDER BY s.dist ASC OFFSET %s"
             _prepare_filtered_ann(conn, limit + offset)
             rows = conn.execute(sql, params).fetchall()
         return [_unpack_search_row(r) for r in rows]
@@ -1160,6 +1310,21 @@ class ChunkStore:
             sem_outer_where = "WHERE x.d < %s"
 
         proj = _CHUNK_PROJ.format(embedding="NULL::vector")
+        with self.pool.connection() as conn:
+            route, route_kind = _ann_route(conn, kind, None)
+        sem_core, order_vec = _ann_core_sql(
+            route,
+            route_kind,
+            select="c.chunk_id AS cid",
+            body=(
+                "FROM chunks c "
+                "JOIN refs r ON r.ref_id = c.ref_id "
+                "JOIN chunk_embeddings ce "
+                "  ON ce.chunk_id = c.chunk_id AND ce.embedder = %s "
+                f"WHERE ce.vector IS NOT NULL AND ce.status = 'ok'{where_extra}"
+            ),
+            dist="d",
+        )
         sql = f"""
             WITH lex AS (
                 SELECT c.chunk_id AS cid,
@@ -1176,19 +1341,7 @@ class ChunkStore:
             ),
             sem AS (
                 SELECT x.cid, row_number() OVER (ORDER BY x.d ASC) AS rnk
-                FROM (
-                    SELECT c.chunk_id AS cid,
-                           (ce.vector <=> %s::vector) AS d
-                    FROM chunks c
-                    JOIN refs r ON r.ref_id = c.ref_id
-                    JOIN chunk_embeddings ce
-                      ON ce.chunk_id = c.chunk_id AND ce.embedder = %s
-                    WHERE ce.vector IS NOT NULL
-                          AND ce.status = 'ok'
-                          {where_extra}
-                    ORDER BY ce.vector <=> %s::vector ASC
-                    LIMIT %s
-                ) x
+                FROM ({sem_core}) x
                 {sem_outer_where}
             ),
             fused AS (
@@ -1224,8 +1377,9 @@ class ChunkStore:
 
         # Param construction sequence:
         #   lex: q + WHERE params + inner_limit
-        #   sem: query_vec + embedder + WHERE params + query_vec
-        #        + inner_limit + [optional: max_distance]
+        #   sem: query_vec + embedder + WHERE params
+        #        + query_vec (unless the exact route) + inner_limit
+        #        + [optional: max_distance]
         #   fused: k + k
         #   outer: limit + offset
         full_params: list[Any] = []
@@ -1236,7 +1390,8 @@ class ChunkStore:
         full_params.append(qv)
         full_params.append(embedder)
         full_params.extend(params)
-        full_params.append(qv)
+        if order_vec:
+            full_params.append(qv)
         full_params.append(inner_limit)
         if max_distance is not None:
             full_params.append(float(max_distance))
