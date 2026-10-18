@@ -19,7 +19,9 @@ per C-number its board uses that has no datasheet yet). Steps:
    exists, so only the link is made (one family datasheet, many parts).
 4. **Ingest** otherwise, through the same Marker pipeline the inbox's
    ``datasheets/`` drop uses (``precis_add(PdfInput(as_kind='datasheet'))``),
-   then stamp ``meta.source_url`` / ``meta.part_lcsc``.
+   then stamp ``meta.source_url`` / ``meta.part_lcsc`` — and the
+   ``<mfr> <mfr_part>`` title when the PDF's own metadata doesn't name the
+   part (a mirror copy's metadata is whatever the mirror shipped).
 5. **Link** ``datasheet-of`` datasheet → the part's lazy ref.
 
 The outcome is recorded on the part ref's ``meta.datasheet_pull``. A
@@ -253,12 +255,65 @@ def _existing_by_sha(store: Store, sha: str) -> int | None:
     return int(row[0]) if row is not None else None
 
 
-def _kind_of(store: Store, ref_id: int) -> str:
+def _kind_title(store: Store, ref_id: int) -> tuple[str, str]:
+    """``(kind, title)`` of a just-minted ref."""
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT kind FROM refs WHERE ref_id = %s", (ref_id,)
+            "SELECT kind, title FROM refs WHERE ref_id = %s", (ref_id,)
         ).fetchone()
-    return str(row[0]) if row is not None else ""
+    return (str(row[0]), str(row[1] or "")) if row is not None else ("", "")
+
+
+def _squash(text: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", text.lower())
+
+
+def _mpn_title(store: Store, lcsc: str, minted_title: str) -> str | None:
+    """``'<mfr> <mfr_part>'`` when the extracted title doesn't name the part.
+
+    The PDF's metadata is whatever a mirror happened to ship — a junk title
+    mints a junk handle (gr496320: a BSMD1206 sheet titled as a legal
+    paper) — while the catalog row's identity is known-good. ``None`` when
+    no MPN is catalogued or the minted title already contains it.
+    """
+    row = store.part_row(lcsc) or {}
+    mpn = str(row.get("mfr_part") or "").strip()
+    if not mpn or _squash(mpn) in _squash(minted_title):
+        return None
+    return " ".join(p for p in (str(row.get("mfr") or "").strip(), mpn) if p)
+
+
+def _stamp_new_sheet(
+    store: Store, ds_id: int, lcsc: str, source_url: str, minted_title: str
+) -> None:
+    """Provenance stamps on a freshly minted datasheet. A title override
+    rewrites the card chunks too (the pair the paper edit path writes), so
+    search matches the new title."""
+    meta_patch = {"source_url": source_url, "part_lcsc": lcsc}
+    title = _mpn_title(store, lcsc, minted_title)
+    if title is None:
+        store.update_paper_fields(ds_id, meta_patch=meta_patch, source="datasheet_pull")
+        return
+    from precis.ingest.cards import rewrite_cards
+    from precis.utils.authors import author_names
+
+    with store.tx() as conn:
+        updated = store.update_paper_fields(
+            ds_id,
+            title=title,
+            meta_patch=meta_patch,
+            source="datasheet_pull",
+            conn=conn,
+        )
+        meta = updated.meta or {}
+        rewrite_cards(
+            conn,
+            ds_id,
+            title=updated.title or "",
+            author_names=author_names(updated.authors),
+            abstract=str(meta.get("abstract") or ""),
+            keywords=list(meta.get("keywords") or []),
+        )
 
 
 def _body_chunks(store: Store, ref_id: int) -> int:
@@ -290,16 +345,12 @@ def pull(store: Store, lcsc: str, url: str | None = None) -> dict[str, Any]:
                 named = path.with_name(f"datasheet-{sha[:12]}.pdf")
                 path.rename(named)
                 ds_id, inserted = _ingest(store, named)
-                kind = _kind_of(store, ds_id)
+                kind, minted_title = _kind_title(store, ds_id)
                 if kind != "datasheet":
                     # the ingest's own dedupe resolved to another kind of ref
                     raise _Failed(f"ingest_failed:sha_matches_{kind}")
                 if inserted:
-                    store.update_paper_fields(
-                        ds_id,
-                        meta_patch={"source_url": final_url, "part_lcsc": lcsc},
-                        source="datasheet_pull",
-                    )
+                    _stamp_new_sheet(store, ds_id, lcsc, final_url, minted_title)
         part_id = store.ensure_part_ref(lcsc, uncatalogued_ok=True)
         empty = _body_chunks(store, ds_id) == 0
         if not (empty and prior is not None):
@@ -369,7 +420,7 @@ def pull_component(store: Store, ref_id: int, url: str) -> dict[str, Any]:
                 named = path.with_name(f"datasheet-{sha[:12]}.pdf")
                 path.rename(named)
                 ds_id, inserted = _ingest(store, named)
-                if _kind_of(store, ds_id) != "datasheet":
+                if _kind_title(store, ds_id)[0] != "datasheet":
                     raise _Failed("ingest_failed:wrong_kind")
                 if inserted:
                     store.update_paper_fields(

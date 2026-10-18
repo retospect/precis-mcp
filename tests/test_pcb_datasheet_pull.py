@@ -392,6 +392,73 @@ def test_jlc_row_is_upserted_and_its_url_used(store, monkeypatch, serve, fake_in
     assert serve["asked"] == ["https://x.test/from-jlc.pdf"]
 
 
+def _mint_with_title(monkeypatch, title: str, *, with_card: bool = False):
+    """fake_ingest variant: the minted datasheet carries ``title`` (and a
+    ``card_title`` chunk when ``with_card``, so a card rewrite shows)."""
+
+    def _ingest(st, path):
+        sha = hashlib.sha256(path.read_bytes()).hexdigest()
+        ref = st.insert_ref(kind="datasheet", slug=f"ds-{sha[:8]}", title=title)
+        with st.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
+                "VALUES ('pdf_sha256', %s, %s, 'test')",
+                (sha, ref.id),
+            )
+            conn.execute(
+                "INSERT INTO chunks (ref_id, ord, chunk_kind, text, meta) "
+                "VALUES (%s, 0, 'paragraph', 'body', '{}'::jsonb)",
+                (ref.id,),
+            )
+            if with_card:
+                conn.execute(
+                    "INSERT INTO chunks (ref_id, ord, chunk_kind, text, meta) "
+                    "VALUES (%s, -2, 'card_title', %s, '{}'::jsonb)",
+                    (ref.id, title),
+                )
+            conn.commit()
+        return ref.id, True
+
+    monkeypatch.setattr(dp, "_ingest", _ingest)
+
+
+def test_junk_pdf_title_is_replaced_by_the_parts_mpn(store, no_jlc, serve, monkeypatch):
+    """A mirror-found sheet's metadata can name an unrelated document
+    (gr496320): a minted title that doesn't name the part becomes
+    ``<mfr> <mfr_part>`` from the catalog row, with card_title rewritten."""
+    store.parts_import([_catalog_row(25900, "https://x.test/a.pdf")])
+    _mint_with_title(monkeypatch, "unrelated legal paper", with_card=True)
+    assert dp.pull(store, "C25900")["status"] == "ok"
+    ds_id, slug = pcb_datasheets.datasheet_state(store, "C25900")["datasheet"]
+    ref = store.get_ref(kind="datasheet", id=slug)
+    assert ref is not None and ref.id == ds_id
+    assert ref.title == "Acme ACME25900"
+    assert (ref.meta or {}).get("part_lcsc") == "C25900"
+    with store.pool.connection() as conn:
+        card = conn.execute(
+            "SELECT text FROM chunks WHERE ref_id = %s AND chunk_kind = 'card_title'",
+            (ref.id,),
+        ).fetchone()
+    assert card[0] == "Acme ACME25900"
+
+
+def test_a_minted_title_naming_the_part_is_kept(store, no_jlc, serve, monkeypatch):
+    store.parts_import([_catalog_row(25900, "https://x.test/a.pdf")])
+    _mint_with_title(monkeypatch, "ACME25900 10k 0402 resistor datasheet")
+    assert dp.pull(store, "C25900")["status"] == "ok"
+    _, slug = pcb_datasheets.datasheet_state(store, "C25900")["datasheet"]
+    ref = store.get_ref(kind="datasheet", id=slug)
+    assert ref.title == "ACME25900 10k 0402 resistor datasheet"
+
+
+def test_an_uncatalogued_part_keeps_the_minted_title(store, no_jlc, serve, fake_ingest):
+    assert dp.pull(store, "C99999", url="https://x.test/ds.pdf")["status"] == "ok"
+    _, slug = pcb_datasheets.datasheet_state(store, "C99999")["datasheet"]
+    ref = store.get_ref(kind="datasheet", id=slug)
+    assert ref.title == "A datasheet"
+    assert (ref.meta or {}).get("part_lcsc") == "C99999"
+
+
 # ── read side ────────────────────────────────────────────────────────
 
 
