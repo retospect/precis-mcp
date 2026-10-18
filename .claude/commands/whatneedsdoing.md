@@ -241,6 +241,30 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
      line first, then fix and ship; the claim is what stops three trees
      shipping the same four-file format fix. "newer run in progress" → wait
      for it before acting. Green needs nothing.
+   - **Landing page** (GitHub front door: `README.md` plus the docs it links,
+     e.g. `docs/setup-single-machine.md` and `docs/mission.md`). Two checks,
+     weekly at most; skip when the last pass is under 7 days old. The
+     records are `git log -1 --format=%cI -- README.md docs/setup-single-machine.md`
+     (last page edit) and `git log --since=<that date> --oneline origin/main`
+     filtered to `feat(`/`fix(` subjects (feature changes since).
+     - **Age.** If the page is more than 7 days older than main's newest
+       `feat(` commit, or `feat(` commits since the page edit touch a
+       capability the README lists (or should list), report it as stale
+       and name the commits.
+     - **Two-persona proofread.** Read the README top to bottom twice.
+       (1) A scientist who wants to install and use precis: do the install
+       steps run as written, is the capability list accurate, is there a
+       quick start that ends in a visible result? (2) A grant reviewer:
+       are there screenshots, a capability overview, and evidence of rigor
+       (tests, gates, validation numbers)? Dig a little into the tree:
+       every claimed feature exists (grep the kind or script it names), and
+       every number matches `docs/mission.md` § Facts.
+     - **Style.** Readable for agents and humans; no emojis, no em-dashes.
+     - **Output.** One PR-sized docs commit per pass (`docs(readme): ...`,
+       from a worktree, shipped as usual). A finding you can't fix in that
+       commit becomes a gripe. Nothing is sent outward; the page is only
+       changed in the repo. Feeds the AI for Science and Claude for OSS
+       applications.
 
 4. **Prod factory queue — todos.** `search(kind='todo', view='attention')`
    (asking-user + failed children) and `search(kind='todo', view='doable')`
