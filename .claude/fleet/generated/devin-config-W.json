@@ -5,6 +5,7 @@
       "Exec(scripts/ship --remote)",
       "Exec(scripts/test)",
       "Exec(scripts/prod-psql)",
+      "Exec(scripts/ship --quick)",
       "mcp__precis__put",
       "mcp__precis__edit",
       "mcp__precis__tag",
