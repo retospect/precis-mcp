@@ -738,6 +738,8 @@ Owning files: `topo.py`, `tests/test_pcb_topo_lp.py`.
 
 ### Slice 7 — geometric embedding and SCP cleanup
 
+Only the SCP/HiGHS QP spacing cleanup is superseded by pcb-unified-place-route (Reto 2026-10-18; that spec's ERBS pass + descent); keep it only if it later measurably beats them on the bench. Funnel string-pulling, offsets and 45° conversion move into that spec's slice 4.
+
 Funnel string-pulling, tangent arcs, order-preserving offsets, 45°
 conversion, SCP spacing cleanup (HiGHS QP, active set from the kernel),
 kernel verification, no-good cuts back to slice 6b (or 6a's history cost).

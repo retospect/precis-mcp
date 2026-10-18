@@ -1,6 +1,6 @@
 ---
 status: draft
-title: "pcb: unified place-and-route — one smooth cost over poses, labels, tracks and vias, annealed with discrete topology moves"
+title: "pcb: unified place-and-route — one piecewise-smooth energy over poses, labels, taut-band tracks and vias, annealed with discrete topology moves"
 prio: high
 model: opus
 pillar: 3d-design
@@ -81,17 +81,38 @@ row "Signed distance, exact analytic").
 | Coordinator's take | Verdict |
 |---|---|
 | Fully smooth placement as in ePlace/DREAMPlace; overlap as an electrostatic density field | Smooth x, y, θ: yes. Electrostatic density: **no at our size.** ePlace's FFT Poisson field is for 10⁵–10⁶ near-uniform cells; a board has 30–300 heterogeneous footprints and a hard 0.40 mm courtyard rule. Pairwise exact signed distance between courtyard polygons with a softplus penalty is cheaper, exact at convergence, and has a gradient. A density term buys nothing a pairwise term does not. |
-| LSE/WA wirelength per net | Yes, on **rotated pad centres** (Cypress), never on centroids — that is what makes rotation a variable at all. Once tracks exist, the track elastic energy replaces it (§Cost, T1/T2). |
-| RUDY for "router needs space" | **Replace.** RUDY smears demand over a bbox and ignores which airwires conflict; the survey says it misreads few-layer PCBs. The faithful push is the clearance gradient of the current tracks flowing into part poses, plus a chord-corridor term for nets not yet inserted (T7). `OptimizeEngine.apply_route_feedback`'s `route_demand` margin is the discrete ancestor. |
+| LSE/WA wirelength per net | Yes, on **rotated pad centres** (Cypress), never on centroids — that is what makes rotation a variable at all. Once tracks exist, the band length energy replaces it (§Cost, T1/T2). |
+| RUDY for "router needs space" | **Replace.** RUDY smears demand over a bbox and ignores which airwires conflict; the survey says it misreads few-layer PCBs. The faithful push is the band tension and clearance gradient of the current tracks flowing into part poses, plus a chord-corridor term for nets not yet inserted (T7). `OptimizeEngine.apply_route_feedback`'s `route_demand` margin is the discrete ancestor. |
 | Periodic wells, coarse to fine | Yes. With pitches 10/5/1/0.5 mm nested, the summed wells are deepest at coarse multiples by construction; 2 mm is not nested in 5 mm and needs its own weight. Same construction for rotation (T10) and segment angle (T11). |
 | Array regularity as spacing variance | Yes (T12). Group membership is frozen before descent (a catalogue choice, not a variable). |
 | Locked parts not variables | Yes; also `fixed='rot'` removes θ only, `fixed='both'` removes x, y, θ. |
 | Augmented Lagrangian on overlap, then a small legalization | Yes. Legalization is the existing `_placement_is_legal` predicate plus the kernel; a result that is not legal after the ramp is a failed round under the never-worse ratchet, never a committed overlap. |
-| Routing smooth only within a fixed topology; topology changes are discrete | Yes, and the survey, the vector-router doc and SURF all say so. The addition: **shove is not a separate discrete move.** Insert a path with reduced inflation, then descend all variables — the clearance gradient moves the neighbours. Discrete moves are only what descent cannot do: side swap, via hop, layer change, rip-up. |
+| Routing smooth only within a fixed topology; topology changes are discrete | Yes, piecewise smooth (kinks where band contacts change); the survey, the vector-router doc and SURF all say so. The addition: **shove is not a separate discrete move.** Insert a path with reduced inflation, then descend all variables — band tension and clearance move the neighbours. Discrete moves are only what descent cannot do: side or order swap, via jump, layer change, rip-up. |
 | Rotation: smooth well plus discrete jumps | Yes. θ stays a continuous variable with wells; a 90°/180° jump is an SA move whose proposal is followed by descent (basin hopping). |
 | Cost: weighted sum with penalties for unrouted nets and DRC | Smooth terms in the descent; unrouted count, via count and residual DRC are **discrete acceptance terms** of the annealer, never faked smooth (differentiation skill rule 2). |
 
 ## Design
+
+### Problem class
+
+Mixed-integer, nonsmooth bilevel optimisation. Outer level, discrete
+topology: layer per segment, homotopy class (side of each obstacle), band
+order around each obstacle, which vias exist, rotation well, label spot.
+Inner level, geometry: each segment is the shortest path of its class (a
+taut band, below), a value function of part, via and obstacle positions.
+Reduced into one energy `E(z)` over the continuous variables; the discrete
+state is searched by the annealer.
+
+`E` is piecewise smooth, not smooth. Gradients kink where a band gains or
+loses a contact, and signed distance is itself nonsmooth on the medial axis
+(clearance uses a soft-min over nearby features). The local step is a
+trust-region method that takes Clarke subgradients, with gradient sampling at
+detected contact changes; plain Adam stalls at kinks.
+
+Complexity: one band in a fixed class is linear time; a fixed sketch is
+polynomial (SURF); choosing non-crossing routes for many nets is NP-hard.
+There is no global guarantee. SA's guarantee needs logarithmic cooling; ours
+is a heuristic, hence the never-worse gate (§Measures).
 
 ### State
 
@@ -99,227 +120,330 @@ One vector `z` of continuous variables, packed per board:
 
 | Block | Variables | Not a variable when |
 |---|---|---|
-| Part pose | `x_i, y_i, θ_i` per instance | `fixed='both'` (all), `fixed='rot'` (θ), `fixed='pos'` (x, y); edge-mated parts keep the edge constraint (`snap_to_edges`) |
+| Part pose | `x_i, y_i, θ_i` per instance | `fixed='both'` (all), `fixed='rot'` (θ), `fixed='xy'` (x, y); edge-mated parts keep the edge constraint (`snap_to_edges`) |
 | Label pose | `lx_i, ly_i` per label (glyph angle 0°, mirrored on bottom) | never; a part with no label has none |
-| Track vertices | `v_{n,k} = (x, y)` per inserted segment, N vertices per segment (N fixed per segment, redundant vertices collapse on straight runs) | before insertion (T1 stands in) |
-| Via position | `(x, y)` per via | — (existence is discrete) |
+| Via position | `(x, y)` per via (a bead on its bands) | footprint THT holes and footprint-specific features stay fixed; every other via may move |
 
-Discrete state, owned by the annealer: per-segment layer and via
-existence, per-segment sidedness signature (which side of each obstacle
-it passes — the homotopy class), side (`inst_bottom`), rotation well index
-(which well θ sits in), label spot index, array groups, support groups.
+Tracks are not variables. Each segment is a taut band (below); its shape is
+derived from the obstacle, part and via positions in `z`.
+
+Discrete state, owned by the annealer: per-segment layer, via existence, the
+segment's homotopy class (side of each obstacle), the cyclic **order** of
+bands around each obstacle (and via, Steiner point), side (`inst_bottom`),
+rotation well index, label spot index, array groups, support groups
+(including the chosen ground pin of each pair, below). Vias are through-only
+with antipads (gr495289 c9); pads are hard via keep-outs (barrier in the cost
+plus a final check).
+
+### Taut bands
+
+Each segment is the shortest path in its homotopy class around obstacles
+inflated by `w/2 + clearance`: the funnel algorithm on the CDT, the SURF /
+TopoR rubber-band sketch. Tracks have no variables of their own; the band's
+length is a value function of the obstacle, part and via positions. Its
+gradient with respect to those positions is the band tension at the contact
+points (envelope theorem / Danskin): the squeeze of a band on the obstacle it
+wraps.
+
+Band–band spacing has no such gradient. Neighbouring ordered bands act as
+offset obstacles for each other (offset = half widths + clearance), and
+mutually offset bands form a fixed point, not a differentiable term. It is
+solved by the ERBS joint spacing pass (SURF's extended rubber-band sketch),
+run after each topology change and after each K descent steps. The pass's
+reaction on parts and vias is the force descent sees. "Insertion can shove
+other wires" means, mechanically: insert, re-solve ERBS, then descend on
+parts and vias. Changing the order or a side is a discrete move.
+
+The final shape is a band → octilinear **conversion** (funnel → tangent-arc →
+45°), not a snap of variables. The explicit-vertex descent (vertices as
+variables) survives only as a fallback for the final polish if the conversion
+is messy.
 
 ### Cost (money out)
 
-`E(z) = Σ_t λ_t T_t(z)` over the smooth terms below. Every term is a sum
-of closed-form pair or per-object expressions, so the gradient is the sum
-of analytic pair gradients (reverse mode by hand; cost independent of
-variable count). `softplus_β(u) = log(1 + e^{βu}) / β`; `sd(a, b)` is the
-kernel's signed distance; `req(a, b, L)` is `rules.required(...).warn_mm`
-(vector slice 1). Pads are `R(θ_i)·p_local + (x_i, y_i)`, so every pad
-term carries ∂/∂θ.
+`E(z) = Σ_t λ_t T_t(z)` over the piecewise-smooth terms below. Every term is
+a sum of closed-form pair, per-band or per-object expressions; gradients are
+assembled by hand (reverse mode; cost independent of variable count).
+`softplus_β(u) = log(1 + e^{βu}) / β`; `sd(a, b)` is the kernel's signed
+distance, with a soft-min over nearby features where it would sit on the
+medial axis; `req(a, b, L)` is `rules.required(...).warn_mm` (vector slice
+1). Pads are `R(θ_i)·p_local + (x_i, y_i)`, so every pad term carries ∂/∂θ.
 
-| # | Term | Formula | Variables | Smooth | Gradient / move |
+| # | Term | Formula | Variables | Smoothness | Gradient / move |
 |---|---|---|---|---|---|
-| T1 | Connectivity pull (pre-insertion) | per net, WA wirelength on pad centres: `Σ x e^{x/γ} / Σ e^{x/γ} − Σ x e^{−x/γ} / Σ e^{−x/γ}`, same for y; γ annealed down | x, y, θ | yes | analytic WA derivative on pads, chain through R(θ) |
-| T2 | Track elastic (post-insertion) | `Σ_segments Σ_k √(|v_{k+1} − v_k|² + ε²)`; endpoints are pads (functions of pose) and vias | vertices, vias, x, y, θ | yes | per-edge unit vector; replaces T1 for inserted nets |
-| T3 | Copper clearance | `Σ_{(a,b) kernel pairs, foreign nets} softplus_β(req(a,b,L) − sd(a,b))²` over track–track, track–pad, via–anything, pad–pad (different footprints) on each layer | everything | a.e. (medial-axis set is measure zero) | kernel `gradient(prim, prim)` w.r.t. the primitive's defining points; STRtree-culled pair list rebuilt every K steps |
-| T4 | Courtyard clearance | `Σ_{i<j} softplus_β(0.40 − sd(poly_i, poly_j))²` (`COURTYARD_CLEARANCE_MM`) | x, y, θ | piecewise (GJK/SAT witness pair) | witness-pair normal; same polygons `_placement_is_legal` tests |
-| T5 | Board edge and keep-outs | `Σ_obj softplus_β(inset − sd(obj, outline))²` for parts, tracks, vias, labels | all | yes | outline edge normal |
-| T6 | Rubber bands (support groups) | `Σ_{(p,q) ∈ support pairs} k·softplus(d(p,q) − d₀)²` between the cap's pad and the IC's pin, pads from `support_groups` | x, y, θ | yes | spring |
-| T7 | Router needs space | for each not-yet-inserted segment with chord `c`: `Σ_{parts j near c} softplus_β(r_n − dist(courtyard_j, c))²`, weight `w_n` grows per failed insertion round; for inserted nets the force is T3's gradient on the parts bounding each pinched pair | x, y, θ | yes | point–segment distance gradient; `w_n` from the round counter (the `route_failure`/`route_demand` margins today) |
-| T8 | Labels | `Σ_i a·|l_i − bl_i(pose)|² + Σ softplus_β(req_silk − sd(label_i, o))²` over o ∈ pads, vias, outlines, other labels, board edge (`_label_blocked`'s set) | lx, ly, and x, y, θ through `bl_i` | yes | box–shape distance; label box from `stroke_font.layout_text` extents |
-| T9 | Grid wells | `Σ_i Σ_{p ∈ {10,5,2,1,0.5}} w_p (1 − cos(2π x_i / p))`, same in y; anchor point is pad 1 (open question 6); vias on their own pitch | x, y (parts, vias) | yes, non-convex | `w_p (2π/p) sin(2π x/p)`; `w_p` = 0 early, ramped late |
-| T10 | Rotation wells | `Σ_i Σ_k w_k (1 − cos(k θ_i))`, k ∈ {1, 2, 4, 8, 12} for 0 > 180 > 90 > 45 > 30°, `w_1 > w_2 > w_4 > w_8 > w_12` | θ | yes, non-convex | `w_k k sin(kθ)` |
-| T11 | Segment angle wells | `Σ_edges w_a (1 − cos(8 φ_e))`, φ_e the edge direction (`check_octilinear` house rule) | vertices, vias | yes | via atan2 derivative; arcs exempt |
-| T12 | Array regularity | per frozen group of same-footprint parts in a row: `Var(Δ_i)` over consecutive spacings + `Σ (1 − cos(θ_i − θ_j))` | x, y, θ | yes | linear in Δ |
+| T1 | Connectivity pull (pre-insertion) | per net, WA wirelength on pad centres: `Σ x e^{x/γ} / Σ e^{x/γ} − Σ x e^{−x/γ} / Σ e^{−x/γ}`, same for y; γ annealed down. Supply, ground and pour nets are excluded (their tree term is their only pull, see below) | x, y, θ | smooth | analytic WA derivative on pads, chain through R(θ) |
+| T2 | Band length (post-insertion) | `Σ_segments L_band(class; ends, inflated obstacles)`, the taut-path length times a per-layer multiplier (a small extra on pour layers); ends are pads (functions of pose) and vias | x, y, θ, vias | piecewise (kinks where a contact appears or vanishes) | band tension at each contact (unit-vector difference at the contact vertex) onto the touched obstacle/part/via; replaces T1 for inserted nets |
+| T3 | Copper clearance | band–band: the ordering + offset model, solved by the ERBS pass (not differentiated; any residual shortfall `softplus_β(req − gap)²` is stress for acceptance); kernel pairs `Σ softplus_β(req(a,b,L) − sd(a,b))²` for the non-band pairs (track–pad, via–anything, pad–pad of different footprints) on each layer | everything | piecewise | ERBS reaction force on the parts and vias; kernel `gradient(prim, prim)` for non-band pairs; STRtree-culled pair list rebuilt every K steps. The kernel signed distance also runs in Verify for all pairs |
+| T4 | Courtyard clearance | `Σ_{i<j} softplus_β(0.40 − sd(poly_i, poly_j))²` (`COURTYARD_CLEARANCE_MM`); courtyards on opposite sides do not interact (cross-side overlap is legal) | x, y, θ | piecewise (GJK/SAT witness pair) | witness-pair normal; same polygons `_placement_is_legal` tests |
+| T5 | Board edge and keep-outs | `Σ_obj softplus_β(inset − sd(obj, outline))²` for parts, vias, labels and bands; pad keep-outs for vias are a barrier | all | piecewise | outline edge normal; T5 holds vias in |
+| T6 | Rubber bands (support groups) | `Σ k·softplus(d(p,q) − d₀)²` over a cap's pads and its IC pins; the pair is (supply pin, ground pin), see §Support pairs. Pre-insertion proxy: T14 replaces it once the cap's bands exist, and T6 keeps only the d₀ ceiling | x, y, θ | smooth | spring |
+| T7 | Router needs space | for each not-yet-inserted segment with chord `c`: `Σ_{parts j near c} softplus_β(r_n − dist(courtyard_j, c))²`, weight `w_n` from congestion prices (below); for inserted nets the force is the band tension and T3's gradient on the parts bounding each pinched pair | x, y, θ | piecewise | point–segment distance gradient; prices from the round loop (the `route_failure`/`route_demand` margins today) |
+| T8 | Labels | `Σ_i a·|l_i − bl_i(pose)|² + Σ softplus_β(req_silk − sd(label_i, o))²` over o ∈ pads, vias, outlines, other labels, board edge (`_label_blocked`'s set); bottom-left (gr495394) is the well `bl_i`, a preference, not a constraint | lx, ly, and x, y, θ through `bl_i` | piecewise | box–shape distance; label box from `stroke_font.layout_text` extents |
+| T9 | Grid wells | `Σ_i Σ_{p ∈ P_i} w_p (1 − cos(2π x_i / p))`, same in y, `P_i = {10,5,2,1,0.5} ∪ {the part's own pitch}`, the latter from `_preferred_snap_grid_mm` (which picks the pitch); anchor is the part **centre** via `snap_to_preferred`, not pad 1, so flipped and rotated parts stay aligned; vias on their own pitch, active in Harden | x, y (parts, vias) | smooth, non-convex | `w_p (2π/p) sin(2π x/p)`; `w_p` = 0 early, ramped late |
+| T10 | Rotation wells | `Σ_i Σ_k w_k (1 − cos(k θ_i))`, k ∈ {1, 2, 4, 8, 12, 24} for 0 > 180 > 90 > 45 > 30 > 15°, `w_1 > w_2 > w_4 ≫ w_8 > w_12 > w_24` (strong preference for multiples of 90; k=24 smallest); every part | θ | smooth, non-convex | `w_k k sin(kθ)` |
+| T11 | Segment angle wells | `Σ_edges w_a (1 − cos(8 φ_e))`, φ_e the edge direction between band contacts. Off during descent; ramped in Harden, then the band → octilinear conversion (funnel → tangent-arc → 45°). Output default stays octilinear (`check_octilinear`); any-angle output is a per-board option. No per-layer preferred direction | x, y, θ, vias (through the contacts) | smooth | atan2 derivative; arcs exempt |
+| T12 | Array regularity | per frozen group of same-footprint parts in a row: `Var(Δ_i)` over consecutive spacings + `Σ (1 − cos(θ_i − θ_j))` | x, y, θ | smooth | linear in Δ |
+| T13 | Bend rule | at every band vertex with deflection `δ`: `softplus_β(δ − π/2)²`, so no turn sharper than 90° (no acute/acid-trap bends). On octilinear output finished bends are 45° or 90° only (interior angle 135° or 90°); on any-angle boards turns are ≤ 90°. Active from the start, on every layer; after the conversion a hard check, residuals go back like a DRC violation | x, y, θ, vias (through the contacts) | piecewise | deflection-angle derivative |
+| T14 | Decoupling loop (PDN) | `E_PDN = α·Σ I²R + β·Σ_loops L_loop·I²` (both energy-like; `R = ρℓ/(w t)` per supply segment; weights are schedule-dependent, or each term is normalised by a per-board reference). A loop is IC supply pin → trace → cap supply pad → cap → cap ground pad → trace → IC ground pin → (inside the chip, fixed by the footprint) back. `L` for a trace over its return: `μ0·ℓ·h/w`, `h` the dielectric height to the return. The preferred pairing is stacked: supply and return on adjacent layers, one over the other, which is the `μ0·ℓ·h/w` case. Side-by-side on one layer is the fallback (supply and return as neighbouring traces, no plane): coplanar strips, `L = μ0·ℓ·K(k)/K(k')` with `k = g/(g+2w)`, `g` the gap and `w` the width, evaluated in closed form by Hilberg's approximation, `K(k)/K(k') ≈ (1/π)·ln(2(1+√k)/(1−√k))` (one log and one square root per segment pair, analytic gradient). For `g ≫ w` this tends to `(μ0·ℓ/π)·ln(4s/w)`, `s` the centre spacing. Check both against a field solver in slice 7. Plus a per-via inductance (~0.5–1 nH at 1.6 mm) | x, y, θ, vias (through the band shapes) | piecewise | length/height/width derivative through pad and via positions; see §Support pairs |
+| T15 | Return-path continuity | no fast signal crosses a gap or slot in its adjacent ground. Penalty on the signal band's length over a slot in the ground pour/plane of the neighbouring layer | x, y, θ, vias (through the bands and the slot's bounding obstacles) | piecewise | pushes the signal off the slot, or the obstacle that makes the slot, away |
+| T16 | Bundling | smooth pair attraction between same-layer segments ("keep it together"), leaving large free regions; the pour-layer length penalty is a T2 multiplier, not here | x, y, θ, vias (through the bands) | piecewise | pair distance |
+| T17 | Pour neck (Verify only) | once the pour has run: `Σ softplus_β(w_min(net) − neck)²` per pour net, `w_min` from IPC-2152 width-for-current; thermal-relief spokes count toward a power pad's neck, and a solid connection is allowed for power pads | x, y, θ, vias (through the bounding bands) | piecewise | force pushing the bounding tracks apart; the window loops back |
+
+**Support pairs (T6, T14).** `support_groups` extends from cap → one pin to
+cap → (supply pin, ground pin) pair. The ground pin giving the smallest loop
+is chosen once at start; `PAIR_SWAP` is a discrete move used only when
+stuck: T14's loop area is not reduced over N descents, or the cap violates its d₀ ceiling. Pins far apart: the in-chip segment is fixed; the term pulls the cap
+toward the supply pin with its ground pad dropping by a short via to the
+ground pour, so the return closes under the chip. Caps may sit on the
+opposite side under the part (courtyard overlap across sides is legal; still
+no via-in-pad, gr496850; vias sit just beside the pads and count in the
+loop). The term decides per board; under-part wins only when much closer
+(QFN/BGA). On 2-layer boards the term co-routes supply over its return (TI:
+power directly over ground, length:width ≤ 3:1). Full PDN impedance versus
+frequency is sign-off only, not in the optimiser.
+
+**Ground, supply and pours.** During routing, ground, every supply net
+(3V3, 5V, VBUS, ...) and every pour net keeps a **tree** in the cost (the
+"supply system tree") so it stays connected while things move; at the end it
+pours or grows per `grow_to_fill`. Intended consequence: a supply tree's
+length term pulls the parts of one supply domain together, so 3.3 V parts
+cluster and 5 V parts cluster. These nets are excluded from T1: the tree
+term is their only pull, with a per-net weight, ground lowest (it spans every
+part and so clusters nothing). At the end the
+pour fills and re-merges freely (small re-merged loops lower inductance;
+ground-loop problems are large cable loops, not a pour meshing on one
+board). Requirement: each pour net is one connected piece; no unintended
+islands; no neck below its minimum width; enough parallel vias per layer
+change (from current); thermal-relief spokes count toward a power pad's neck
+(solid connection allowed for power pads); no slivers or acute corners below
+fab minimum. Per-net setting `grow_to_fill` (new per-net setting): default on for ground and for
+nets with current > 0.5 A; those nets become pours in Verify. Minimum neck
+width per net is the IPC-2152 width for its current (per-net current is
+already known, 08aae1f2b), not a fixed multiple.
 
 **T7's congestion source (Reto 2026-10-18 ~19:0xZ).** For nets not yet
-inserted, the portal demand is fractional: each net spreads one unit over
-its candidate portal paths (homotopy classes) with `softmax(−cost/T)`,
-overflow per portal is `softplus(demand − capacity)` with capacity smooth in
-the positions of the two obstacles that bound the portal, and `T` anneals
-so each net congeals onto one path. The definition and its gradient with
-respect to via and part positions are
+inserted, the portal demand is fractional: each net spreads one unit over its
+candidate portal paths (homotopy classes) with `softmax(−cost/T)` (soft-min
+error ≤ T·log K for K candidates), and `T` anneals so each net congeals onto
+one path. Overflow per portal is `softplus(demand − capacity)` with capacity
+smooth in the positions of the two obstacles that bound the portal. Instead
+of growing a weight each round, **Lagrangian prices** sit on portals and
+corridors: a price rises while demand exceeds capacity, and each net routes
+against the prices. A multicommodity-flow LP relaxation optionally gives a
+lower bound, reported as "how close to achievable". The definition and its
+gradient with respect to via and part positions are
 [pcb-vector-router](pcb-vector-router.md) §Decisions 15–16 in the vector
-slices, V-overflow. That vector-side output supplies T7's force on the
-parts and vias that bound a choke; the chord term above is the fallback
-before the CDT exists.
+slices, V-overflow; that output supplies T7's force on the parts and vias
+that bound a choke. The chord term above is the fallback before the CDT
+exists.
 
-Discrete acceptance terms (annealer only, never in the gradient):
-unrouted segment count × M, via count × `VIA_COST_MM`-equivalent, kernel
-violations after snap × M', label dropped × M''. Money terms
-(`board_area`, `layer_count`, `via_count` USD, `routing_area`) leave the
-objective; `pcb_cost` keeps reporting them (open question 1).
+Discrete acceptance terms (annealer only, never in the gradient): unrouted
+segment count × M, islands and pour failures × M, via count ×
+`VIA_COST_MM`-equivalent, kernel violations after snap × M', label dropped ×
+M''. Money (`board_area`, `layer_count`, `via_count` USD, `routing_area`) is
+out of the objective; `pcb_cost` keeps reporting it. A smooth "shrink-wrap"
+outline-area term is a parked option, not in scope.
 
-Weights `λ_t` are schedule-dependent (below), not board-dependent. No
-term is normalised to USD.
+Weights `λ_t` are schedule-dependent (below), not board-dependent. No term
+is normalised to USD.
 
 ### Optimizer
 
 Basin hopping over `E`: an SA loop whose every proposal is followed by a
 bounded descent, accepted on the descended energy plus the discrete
-acceptance terms. "Anneal the totality" is this loop; the smooth phase is
-its inner step.
+acceptance terms. "Anneal the totality" is this loop; the smooth phase is its
+inner step.
 
-**Smooth step.** Adam or L-BFGS on `z` with the current `λ`, step length
-capped at `min(req)/4` per variable (a track vertex never crosses an
-obstacle in one step), K steps per call. After each step the sidedness
-signature is recomputed for moved segments; a change is a rejected step
-(topology is the annealer's).
+**Local step.** Trust-region descent on `z` with the current `λ`: Clarke
+subgradients, gradient sampling at detected contact changes, K steps per
+call, trust radius capped at `min(req)/4` per variable. Band shapes are
+recomputed from the positions each step (a funnel pass per moved band); order
+and homotopy class change only by annealer moves.
 
-**Discrete move set** (each: propose, descend K steps, accept/reject):
+**Discrete move set** (each: propose, settle with a short descent, accept or
+reject on the settled energy):
 
 | Move | What | Replaces |
 |---|---|---|
 | ROTATE_JUMP | θ_i += 90° or 180°, then descend | `MoveKind.ROTATE` |
-| SIDE_SWAP | flip one segment's side of one obstacle (re-insert with the other sidedness bit) | `seg_side` |
-| VIA_HOP | split a segment at a vertex, change layer on one side; or remove a via | the maze's layer change |
+| SIDE_SWAP | flip one band's side of one obstacle (re-thread with the other side, then settle) | `seg_side` |
+| ORDER_SWAP | swap two bands' cyclic order around an obstacle, via or Steiner point | — |
+| VIA_JUMP | move a via across an obstacle: re-thread with the other side, then settle | — |
+| VIA_INSERT / VIA_REMOVE | split a band at a point and change layer on one side (insert), or merge (remove) | the maze's layer change |
 | LAYER_SWAP | move a whole segment to another routable layer | `MoveKind.LAYER_ASSIGN` |
 | RIP_REINSERT | remove the most-stressed segment(s) in a window, re-insert after the stuck one | `realize._realize_maze` re-ordering |
 | LABEL_JUMP | move a label to the next spot in `LABEL_SPOT_ORDER`, then descend | the silk candidate search |
-| SWAP, SIDE_FLIP, PLANE_* , OUTLINE_GROW, LAYER_ADD | as today (`MoveKind`), capped; priced only if open question 1 says so | — |
+| PAIR_SWAP | change a decoupling cap's ground pin; only when stuck (loop area not reduced over N descents, or the d₀ ceiling violated) | — |
+| SWAP, SIDE_FLIP, PLANE_* | as today (`MoveKind`) | — |
+| OUTLINE_GROW, LAYER_ADD | as today, capped by `expansion_caps`. Proposed only when a round ends with unrouted segments, dropped labels or pour failures after the budget; accepted only if they remove failures (acceptance terms above) | — |
+
+Vias move continuously (beads on their bands): band tensions pull, clearance
+pushes, T5 holds them in, T9's via-grid well acts in Harden. Crossing an
+obstacle is a discrete jump.
+
+**Labels with no legal spot.** First T8's force spreads the parts; then
+LABEL_JUMP to the next spot; then the label counts as a failure that may
+trigger OUTLINE_GROW within caps. A covered label is the last resort, only
+when caps forbid growth, and is reported.
 
 **Insertion ("depth-first find a path").** Segments ordered
 most-constrained first (shortest slack, highest fanout). Each is found by
-search on the current geometry — the vector router's tangent graph
-(slice 3 `vroute`) or the CDT dual (slice 5 `topo`) — with obstacle
-inflation at a fraction `α < 1` of `req` so a path exists where the full
-inflation would wall it in; the resulting overlap is T3 stress, and the
-descent that follows is the shove (Reto: "insertion can shove other
-wires"). If descent cannot zero the stress, the annealer tries SIDE_SWAP,
-VIA_HOP, then RIP_REINSERT on the 1-hop neighbours, depth-first with a
-bounded backtrack budget per segment; a segment that exhausts the budget
-stays uninserted and feeds T7 in the next round. Nothing already inserted
-is frozen — that is the difference from the maze and from slice 3's
-post-pass.
+search on the current geometry — the vector router's tangent graph (slice 3
+`vroute`) or the CDT dual (slice 5 `topo`) — with obstacle inflation at a
+fraction `α < 1` of `req` so a path exists where the full inflation would
+wall it in; the resulting overlap is T3 stress; re-solving ERBS and then descending on
+parts and vias is the shove (Reto: "insertion can shove other wires"). If descent cannot
+zero the stress, the annealer tries SIDE_SWAP, ORDER_SWAP, VIA_INSERT, then
+RIP_REINSERT on the 1-hop neighbours, depth-first with a bounded backtrack
+budget per segment; a segment that exhausts the budget stays uninserted and
+feeds T7 in the next round. Nothing already inserted is frozen — that is the
+difference from the maze and from slice 3's post-pass.
 
 **Schedule** (one run):
 
-1. **Spread.** Variables: poses, labels. Terms: T1, T4, T5, T6, T8, T12;
-   λ_T4 ramped (augmented Lagrangian) until courtyard stress is 0; wells
-   off; SA temperature high for ROTATE_JUMP/SWAP.
-2. **Insert.** Segments inserted in order; after each, K descent steps
-   on all variables (T2, T3 replace T1 for inserted nets; T7 for the
-   rest). One pass is a round; rounds repeat while uninserted segments
-   remain and the budget holds (the `anneal_route_loop` role).
-3. **Harden.** β up, λ_T3 up, wells on (T9 coarse → fine, T10, T11),
-   temperature down. Ends with the hard snaps: θ to its well, part origin
-   to the finest active raster, segment angles to 45°, labels to spots.
+1. **Spread.** Variables: poses, labels. Terms: T1, T4, T5, T6, T8, T12,
+   T14 (placement part), supply/ground tree lengths; λ_T4 ramped (augmented Lagrangian) until courtyard
+   stress is 0; wells off; SA temperature high for ROTATE_JUMP/SWAP.
+2. **Insert.** Segments inserted in order; after each, K descent steps on
+   all variables (T2, T3 replace T1 for inserted nets; T7 for the rest). Any
+   angle; T13 active. One pass is a round; rounds repeat while uninserted
+   segments remain and the budget holds (the `anneal_route_loop` role). After
+   topology selection, one joint spacing/compaction pass (ERBS).
+3. **Harden.** β up, λ_T3 up, wells on (T9 coarse → fine, T10), T11's 45°
+   preference ramped, temperature down. Then the exact snap: θ to its well,
+   part origin to the finest active raster, segment angles to 45° multiples
+   (the band → octilinear conversion, unless the board opts for any-angle output), labels to spots.
 4. **Verify.** Kernel DRC (`drc.clearance_violations_naive` stays the
-   independent oracle), `connectivity.net_islands`, label coverage. A
-   residual goes back to step 2 for the offending window, with a budget;
-   then the never-worse ratchet decides whether anything is written.
+   independent oracle), `connectivity.net_islands`, label coverage, the bend
+   check (T13), the return-path check (T15), a via-in-pad check on same-net
+   pairs (gr496850; the kernel clearance pass exempts same-net), via layer
+   span = through, THT holes unchanged. The pour runs **once**, then the
+   existing pour connectivity DRC (e-pour-connectivity, 7ae9dfbe1) and the
+   neck measurement (T17); a too-narrow neck becomes a force pushing the
+   bounding tracks apart and the window loops back; an island counts as a
+   failure like an unrouted segment. Violations the snap opens, and any
+   residual, go back to step 2 for the offending window, with a budget; then
+   the never-worse ratchet decides whether anything is written. Fewer steps
+   than today's pour/re-check loop.
 
-Where "depth-first" fits: step 2's insertion order and the bounded
-backtrack over SIDE_SWAP/VIA_HOP/RIP_REINSERT for a stuck segment. Where
-"gradient descent" fits: every K-step descent, in all phases. Where
-"anneal" fits: the acceptance of each move on the descended energy.
+Where "depth-first" fits: step 2's insertion order and the bounded backtrack
+over the discrete moves for a stuck segment. Where "gradient descent" fits:
+every K-step descent, in all phases. Where "anneal" fits: the acceptance of
+each move on the settled energy.
 
 ### Derivative route (per the `differentiation` skill)
 
-Many variables into one scalar ⇒ reverse mode. All terms are sums of
-closed-form pair expressions, so the gradient is assembled by hand in
-numpy/numba (the repo's existing stack; no JAX/torch core dependency;
-vector Decision 10 keeps GPU out). Non-smooth pieces are smoothed (`|·|` →
-`√(·² + ε²)`, max → softplus, snap → wells) or frozen (group membership,
-layer, via existence, sidedness). The kernel's `gradient` is the one
-shared derivative of `sd`. Each term ships with the three-stage gradient
-test: directional dot-product, Taylor remainder halving, central finite
-differences on a few variables at several steps (`structsolve/simp.py`
-pattern). Finite differences are a test, never the production gradient.
+Many variables into one scalar ⇒ reverse mode. Gradients are hand-written
+analytic numpy/numba (the repo's existing stack); autodiff (JAX/PyTorch) is
+not a dependency (aarch64 wheel risk, cf. dscribe; vector Decision 10 keeps
+GPU out). Nonsmooth pieces are smoothed (`|·|` → `√(·² + ε²)`, max →
+softplus or soft-min, snap → wells) where that is cheap; contact-change kinks
+are handled by the trust-region step, not hidden. Frozen (discrete): group
+membership, layer, via existence, homotopy class, band order. The kernel's
+`gradient` is the one shared derivative of `sd`. Each term ships with a
+finite-difference check test: directional dot-product, Taylor remainder
+halving, central finite differences on a few variables at several steps
+(`structsolve/simp.py` pattern), away from kinks. Finite differences are a
+test, never the production gradient.
 
 ### Composition with the vector router slices
 
 | Vector slice | Reused as | Order change |
 |---|---|---|
 | 1 `rules.required` | `req(a, b, L)` in T3, T8 | none; prerequisite |
-| 2 clearance kernel | `sd`, `gradient`, STRtree pair culling for T3/T4/T5/T8 | none; prerequisite. The kernel API must expose the derivative of `sd` w.r.t. each primitive's defining points (the "Better maths" row already names `gradient`) |
-| 3 `vroute` tangent graph | the insertion search, with inflation `α·req` | the post-pass stays as specced for the maze path; the unified path calls the same search as a library |
-| 4 shared route cost | T2 layer multipliers and direction penalty on segment edges | none |
-| 5 CDT portals | insertion search alternative and the SIDE_SWAP candidate generator (the sleeve on the other side of a portal) | none |
+| 2 clearance kernel | `sd`, `gradient`, STRtree pair culling for T3/T4/T5/T8; Verify | none; prerequisite. The kernel API must expose the derivative of `sd` w.r.t. each primitive's defining points (the "Better maths" row already names `gradient`) |
+| 3 `vroute` tangent graph | the insertion search, with inflation `α·req`; funnel/band geometry | the post-pass stays as specced for the maze path; the unified path calls the same search as a library |
+| 4 shared route cost | T2 layer multipliers on band edges | none |
+| 5 CDT portals | insertion search alternative, the band funnel domain, and the SIDE_SWAP candidate generator (the sleeve on the other side of a portal) | none |
 | 6a/6b topology assignment | the topology oracle only when insertion + backtrack fails on a benchmark; 6b (LP) stays optional | proposed: 6b waits for the unified path's benchmark numbers |
-| 7 SCP cleanup (HiGHS QP) | overlaps with the descent within a topology (T2 + T3 + T11) | **one formulation should win** (open question 7); proposal: the descent, since it also moves parts and labels |
+| 7 SCP cleanup (HiGHS QP) | only the SCP/HiGHS QP spacing cleanup is **superseded** (Reto 2026-10-18) by this spec's ERBS pass + descent; keep it only if it later measurably beats them on the bench. Slice 7's funnel string-pulling, order-preserving offsets and 45° conversion move into unified slice 4 | one spacing formulation wins: this one |
 | 10 retire the maze | unchanged exit criteria | the unified path is a second candidate for the default beside `router='topo'` |
 
-Slot: a new item in parallel with vector slices 3–5, consuming 1–2,
-landing behind an opt-in `router='field'` (name open) until §Measures
-says otherwise. `optimize.OptimizeEngine` keeps its hard-locality rule:
-the descent is a separate module (`src/precis/pcb/field.py`, new) called
-from the engine's move loop, and the engine's per-move delta cost is not
-touched.
+Slot: a new item consuming vector slices 1–2, plus a funnel domain (vector 5's CDT or vector 3's tangent graph) from slice 4 on, and vector 5 for slice 5's portal prices; landing
+behind an opt-in `router='field'` until it becomes default (§Slices, slice
+6). `optimize.OptimizeEngine` keeps its hard-locality rule: the descent is a
+separate module (`src/precis/pcb/field.py`, new) called from the engine's
+move loop, and the engine's per-move delta cost is not touched.
 
 ## Measures and exit criteria
 
 Per board, every run, written by the vector slice 0 harness
-(`scripts/pcb-route-bench`): segments inserted / total, kernel DRC errors
-and warns by rule, labels placed / total, vias, track length, wall time,
+(`scripts/pcb-route-bench`): segments inserted / total, kernel DRC errors and
+warns by rule, labels placed / total, vias, track length, islands, wall time,
 seconds per net.
 
-Exit (the thread's, not a slice's): on nano (8 seeds), r2, dogfood-b (the
-two named by the coordinator's brief; neither is a test fixture on main —
-slice 0 of the harness has to pin them as snapshots), the ewod replay
-(55) and the qfp-plaza member (55): **100 % segments routed, 0 DRC
-errors, 100 % labels placed**, with runtime reported against vector
-Decision 8 (quality first; the job wall is the only hard cap). Until then
-every slice holds the existing floors (nano mean ≥ 34.375, seed min ≥ 28,
-`silk_missing` ≤ 35, `clearance` warns ≤ 9, ewod ≥ 51, qfp ≥ 53) and the
-never-worse ratchet.
+Gates. Every slice is never-worse on every bench board (the existing
+floors: nano mean ≥ 34.375, seed min ≥ 28, `silk_missing` ≤ 35, `clearance`
+warns ≤ 9, ewod ≥ 51, qfp ≥ 53, and nano r2's floors in
+`tests/test_pcb_nano_usb_pd_testboard_r2.py`, `BASELINE_DRC_ERRORS_BY_RULE`)
+and under the never-worse ratchet. 100 %
+routed and labelled is the thread exit only.
+
+Exit (the thread's, not a slice's): on nano (8 seeds), r2, dogfood-b (named by
+the coordinator's brief; r2 has a fixture, only dogfood-b lacks one — slice 0 of
+the harness has to pin it as a snapshot), the ewod replay (55) and the
+qfp-plaza member (55): **100 % segments routed, 0 DRC errors, 100 % labels
+placed, no pour islands**, with runtime reported against vector Decision 8
+(quality first; the job wall is the only hard cap).
 
 ## Slices
 
-Each lands alone, with its test; smallest useful first.
+Each lands alone, with its test; smallest useful first. Each term's gradient
+ships with its finite-difference check.
 
 | # | Slice | Test |
 |---|---|---|
-| 0 | `field.py` skeleton: state packing, term interface `(value, grad)`, gradient test harness; T1 and T4 implemented | `tests/test_pcb_field.py`: dot-product, Taylor, FD on random boards for T1, T4; rotation gradient non-zero |
+| 0 | `field.py` skeleton: state packing, term interface `(value, grad)`, gradient-check harness (hand-written numpy/numba); T1 and T4 implemented | `tests/test_pcb_field.py`: dot-product, Taylor, FD on random boards for T1, T4; rotation gradient non-zero |
 | 1 | Placement polish: after `optimize()`, descend x, y, θ on T1 + T4 + T5 + T6 with λ_T4 ramp; accept only if legal and E lower | nano 8 seeds and ewod not worse; legality predicate holds; synthetic 3-part board converges to the known optimum |
-| 2 | Wells T9, T10; θ becomes a real variable (ROTATE stops being cost-neutral) | synthetic board lands on 10 mm multiples and 0°/180° in preference order; nano floors |
-| 3 | Labels as variables (T8) with LABEL_JUMP fallback; `silk.build_silk` reads the stored label pose | `silk_missing` on nano ≤ 35 and reported; 100 % on a synthetic board the candidate ladder fails; first cases (gr495393): outlines still cut by a routed via — usbc-attiny-dogfood-b R3 at (24.07, 18.43) and J2 at (11.42, 18.21), and the nano (34) / nano r2 (47) cuts left once bulges are vetoed for costing a label |
-| 4 | Track relaxation within topology (T2, T3, T11, snap, kernel verify) on the maze's or `vroute`'s output; needs vector slice 2 | DRC warns not up, track length down on nano/ewod; synthetic pinched corridor opens when a part is free |
-| 5 | Shove by descent: insertion with `α·req`, joint descent on parts + tracks + vias + labels; T7 | synthetic two-wire corridor routes both; ewod ≥ 51 reported, target 55 |
-| 6 | Discrete move set + basin hopping + the full schedule, opt-in `router='field'` | the five boards' table; becomes default when it ties or beats on all five |
-| 7 | T12 arrays and T6 from `support_groups`; array groups frozen from footprint + value + refdes run | ewod array spacing variance 0; nano decoupling caps within d₀ |
-| 8 | Exit run against §Measures; retire the superseded path components the table names | the thread's exit criteria |
+| 2 | Wells T9 (anchor: part centre), T10 (k up to 24); θ becomes a real variable (ROTATE stops being cost-neutral) | synthetic board lands on 10 mm multiples and 0°/180° in preference order, flipped/rotated parts stay aligned; nano floors |
+| 3 | Labels as variables (T8) with LABEL_JUMP fallback and the failure → OUTLINE_GROW (capped, only if it removes failures) → covered-last-resort order; `silk.build_silk` reads the stored label pose. No label pose exists in `PcbIR` or the store today: a new IR field (per-instance label position) is needed; if it needs a migration, that takes /go | `silk_missing` on nano ≤ 35 and reported; 100 % on a synthetic board the candidate ladder fails; first cases (gr495393): outlines still cut by a routed via — usbc-attiny-dogfood-b R3 at (24.07, 18.43) and J2 at (11.42, 18.21), and the nano (34) / nano r2 (47) cuts left once bulges are vetoed for costing a label |
+| 4 | Bands: taut-band geometry (funnel on the CDT), T2 band length and tension, band order bookkeeping, T3 ordering + offset model, T13 bend rule, T11 ramp + band → octilinear conversion, ERBS spacing/compaction pass, kernel verify; vertex-descent fallback for the polish if needed. Absorbs vector slice 7's funnel, offset and 45° conversion. Needs vector slice 2 plus a funnel domain (vector 5 CDT or vector 3 tangent graph) | DRC warns not up, track length down on nano/ewod; tension gradient matches FD away from kinks; synthetic pinched corridor opens when a part is free; no turn sharper than 90° on any bench board |
+| 5 | Shove by descent: insertion with `α·req`, joint trust-region descent on parts + bands + vias + labels; T7 with Lagrangian portal prices (needs vector slice 5; the chord fallback ships without it), optional LP lower bound; continuous vias (T5 hold-in, pad barrier) | synthetic two-wire corridor routes both; ewod ≥ 51 reported, target 55 |
+| 6 | Discrete move set (SIDE_SWAP, ORDER_SWAP, VIA_JUMP, VIA_INSERT/REMOVE, LAYER_SWAP, RIP_REINSERT, capped OUTLINE_GROW/LAYER_ADD) + basin hopping + the full schedule, opt-in `router='field'`. Becomes default when it ties or beats today's router on all five bench boards; the old router is deleted then | the five boards' table; deletion lands in the default-flip commit |
+| 7 | Placement: T12 arrays; T6 extended to (supply pin, ground pin) support pairs with PAIR_SWAP; T14 PDN term (IR + loop inductance, cross-side caps); array groups frozen from footprint + value + refdes run | ewod array spacing variance 0; nano decoupling loop area not up and caps within d₀; synthetic QFN puts an under-part cap on the opposite side only when much closer |
+| 8 | Verify: pour once (tree in cost while routing, free re-merge after), grow-to-fill per net with IPC-2152 neck and via counts, T17 neck force, T15 return-path check and force, T16 bundling, island = failure | synthetic board: no islands, no neck below minimum, no fast signal over a slot; existing e-pour-connectivity DRC passes; fewer Verify loops than the old pour re-check |
+| 9 | Exit run against §Measures; remove any remaining superseded path components the table names | the thread's exit criteria |
 
 ## Risks
 
 | Risk | Mitigation |
 |---|---|
+| Piecewise-smooth kinks: gradients jump where a band gains or loses a contact; plain Adam stalls | trust-region step with Clarke subgradients and gradient sampling at detected contact changes; soft-min clearance; FD tests away from kinks |
+| Band order bookkeeping: the cyclic order around obstacles, vias and Steiner points drifts out of sync with the geometry (a band slips past its neighbour) | order is annealer state, updated only by ORDER_SWAP/SIDE_SWAP/VIA_JUMP; a consistency check each step; mismatch rejects the step |
+| Snap re-opening: the band → octilinear conversion and the rotation/raster snaps open violations | T11 ramp and T13 before the conversion; kernel verify after; residuals go back to Insert with a budget; the ratchet refuses a worse board |
+| PDN term mis-weighting: α, β pull caps against courtyards, labels or routability; a wrong cross-side choice | start β small; the term only decides cross-side when much closer; per-board reporting of loop area; never-worse gate |
+| Supply-domain clustering competes with signal-net pull (T1/T2): the supply tree length term drags parts together that signals want elsewhere | the tree weight sets the balance (supply > ground); tune on the bench boards; never-worse gate |
 | Non-convex wells and penalties trap descent in a poor basin | wells only in Harden; basin hopping with ROTATE_JUMP/SWAP; `NANO_SEEDS` already measure multi-start |
-| A descent step tunnels a vertex through a thin obstacle (topology change unnoticed) | step cap `min(req)/4`; sidedness recomputed per step, change = reject; capsules not sampled points |
-| Gradient evaluation cost: ~10⁵ culled pairs × 10³–10⁴ steps | numba pair kernels; pair list refreshed every K steps; measure in slice 0/1 before any schedule tuning |
-| Smooth zero ≠ DRC zero (finite β), and the 45° snap re-opens violations | T11 before snap; kernel verify after; the residual goes back to Insert with a budget; the ratchet refuses a worse board |
-| 100 % labels is infeasible on a dense board without growing it | OUTLINE_GROW as a capped discrete move; open question 4 |
-| Two cleanup formulations (vector slice 7 SCP vs this descent) | open question 7; one wins before either lands as default |
+| Gradient evaluation cost: ~10⁵ culled pairs × 10³–10⁴ steps; a funnel pass per moved band per step | numba pair kernels; pair list refreshed every K steps; measure in slice 0/1 before any schedule tuning |
+| Smooth zero ≠ DRC zero (finite β) | kernel verify after the snap; the ratchet refuses a worse board |
+| 100 % labels is infeasible on a dense board without growing it | OUTLINE_GROW as a capped discrete move (slice 3) |
+| Descent cleanup duplicates vector slice 7 | slice 7 superseded here; revisit only if it measurably beats the descent |
 | The hard-locality rule of `OptimizeEngine` vs a global descent | descent lives in `field.py`, called as one move; the engine's delta cost untouched |
-| Hand-written gradients drift from the terms | the three-stage gradient test is a gate on every term |
+| Hand-written gradients drift from the terms | the finite-difference check is a gate on every term |
 | Rounds of insert/descend exceed the job wall on taz15-size boards | budget per segment and per round; the best round is restored (`anneal_route_loop` already does this) |
 | Slices 0–3 land before the kernel exists and build a second distance code path | T4/T5/T8 use shapely polygon distance until slice 2 lands, then switch; the oracle test pins agreement |
 
-## Open questions for Reto
+## Decisions (Reto 2026-10-18)
 
-1. Money fully out of the objective, or kept as a reporting number with
-   `OUTLINE_GROW`/`LAYER_ADD` still capped by `expansion_caps`?
-2. During descent, any-angle with a final 45° snap (T11 + snap), or 45°
-   wells from the start? Does the vector slice 11 any-angle option become
-   this path's default?
-3. Track geometry as explicit vertex variables (proposed) or implicit
-   string-pulling per topology?
-4. When a label has no legal spot: grow the outline, spread the parts, or
-   accept a `covered` label? Is bottom-left (gr495394) a hard preference
-   or a well?
-5. Rotation wells: are 30° multiples allowed for every part or only for
-   passives? Weight order 0 > 180 > 90 > 45 > 30 as stated?
-6. Raster anchor: part origin (today's `_preferred_snap_grid_mm` snaps
-   the centre) or pad 1 centre (proposed, probing)?
-7. Vector slice 7 (SCP QP per ribbon) vs the descent in slice 4 here —
-   one formulation; which?
-8. Gates: never-worse per slice as today, 100 % only as the thread exit?
-9. Dependency: hand-written numpy/numba gradients (proposed) or a CPU
-   autodiff library?
-10. Default switch rule: `router='field'` becomes default when it ties or
-    beats on all five boards (the vector slice 7 rule)?
+Numbers 1–10 answer the former open questions; D11–D16 were approved after.
+Folded into the body above.
+
+1. Money is out of the objective; `pcb_cost` keeps reporting board_area, layer_count and via USD. OUTLINE_GROW and LAYER_ADD stay discrete, capped by `expansion_caps`, proposed only after a round ends with unrouted segments, dropped labels or pour failures, accepted only if they remove failures. A smooth outline-area term is parked.
+2. Any-angle during descent; the 45° preference (T11) ramps in Harden; the band → octilinear conversion (exact 45° multiples) at the end and Verify repairs what it opens. Output default stays octilinear; any-angle output is a per-board option. Bend rule (T13): on octilinear output finished bends turn by 45° or 90° only; any-angle boards get turns ≤ 90°; no acute bends; penalty from the start, hard check after the conversion. No per-layer preferred direction.
+3. Tracks are taut bands (shortest path per homotopy class, funnel on the CDT), not vertex variables. Band-length gradient is the contact tension (Danskin); explicit state is the cyclic band order per obstacle; band–band spacing is the ERBS pass (no gradient), whose reaction on parts and vias is the force. Vertex descent only as a polish fallback.
+4. Label without a legal spot: T8 spreads parts, then LABEL_JUMP, then a failure that may trigger OUTLINE_GROW within caps; covered label only as the last resort when caps forbid growth, reported. Bottom-left is a well, not hard.
+5. Rotation wells for every part, order 0 > 180 > 90 > 45 > 30 > 15, strong preference for multiples of 90; k=24 added with the smallest weight.
+6. Raster anchor is the part centre via `snap_to_preferred`, not pad 1; the pitch set adds the part's own pitch from `_preferred_snap_grid_mm`.
+7. One formulation: the descent here replaces the vector router's slice 7 SCP/HiGHS QP.
+8. Gates: never-worse per slice on every bench board; 100 % routed/labelled only as the thread exit.
+9. Hand-written numpy/numba analytic gradients, each with a finite-difference check test; no autodiff dependency (aarch64 wheel risk).
+10. `router='field'` becomes default when it ties or beats today's router on all five bench boards; the old router is deleted at that point.
+11. (D11) Mixed-integer nonsmooth bilevel framing (topology outer, taut-path value functions inner); `E` is piecewise smooth; trust-region with Clarke subgradients and gradient sampling; soft-min clearance; no global guarantee, hence the never-worse gate. Source `perplexity-research:496881`.
+12. (D12) T7 uses Lagrangian prices on portals/corridors instead of per-round weight growth; fractional softmax over K candidates stays; optional multicommodity-flow LP lower bound; link to vector §Decisions 15–16 kept.
+13. (D13) PDN term T14 (IR drop + loop inductance); support groups become (supply pin, ground pin) pairs with the ground pin fixed at start and PAIR_SWAP when stuck; caps may sit on the opposite side under the part; full PDN impedance is sign-off only.
+14. (D14) Ground, every supply net and every pour net keep a tree in the cost while routing, excluded from T1 (supply trees cluster the parts of one supply domain; ground's weight is lowest since it spans every part); the pour runs once in Verify and re-merges freely; pour requirements (one piece, no islands, neck, vias, relief spokes, no slivers); return-path check T15; bundling T16; neck force T17; island = failure.
+15. (D15) Per-net `grow_to_fill` (new per-net setting), default on for ground and nets > 0.5 A; neck width and via count from IPC-2152 width-for-current.
+16. (D16) Vias are continuous beads on their bands, every via may move except footprint THT holes and features; obstacle crossing, VIA insert and remove are discrete jumps, each followed by a short settle; through-only with antipads; pads are hard via keep-outs.
 
 ## Literature
 
@@ -340,9 +464,19 @@ import with `put(kind='paper')` before citing in a draft.
 - TrajOpt: Schulman et al., IJRR 2014, doi 10.1177/0278364914528132; CHOMP: Ratliff et al., ICRA 2009, doi 10.1109/ROBOT.2009.5152817 (both already in `pcb-vector-router.md`)
 - Basin hopping (not from the survey): Wales & Doye, J. Phys. Chem. A 1997, doi 10.1021/jp970984n
 
+From `perplexity-research:496881` (links unverified):
+
+- RUPlace: Chen et al., DAC 2025, unified placement and global routing (ADMM + Wasserstein, bilevel)
+- DGR, differentiable global router: Zhang et al., DAC 2024
+- SURF extended rubber-band sketch (ERBS): Dai, Kong, Sato, "Routability of a Rubber-Band Sketch", DAC 1991
+- TI guidance on 2-layer boards: power directly over ground, length:width ≤ 3:1
+- NXP AN10897: solid ground plane, no splits
+
+Ground and pour survey source: `perplexity-reasoning:496879`.
+
 ## Related
 
-- [pcb-vector-router](pcb-vector-router.md) — kernel, `vroute`, `topo`; the slot above.
+- [pcb-vector-router](pcb-vector-router.md) — kernel, `vroute`, `topo`; the slot above. Only its slice 7 SCP/HiGHS QP spacing cleanup is superseded, by this spec's ERBS pass + descent.
 - [pcb-global-plan-probe](pcb-global-plan-probe.md) — why hard corridors lose.
 - `optimize.anneal_route_loop` (the shipped pcb-anneal-closes-router-loop item) — the loop this replaces.
 - `docs/backlog/threads/pcb-platform.md` Horizon.
