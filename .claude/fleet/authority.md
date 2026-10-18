@@ -65,7 +65,7 @@ Stop. Report the exact command and the refusal reason to the coordinator, who br
 | `delete` of a ref nobody named in its brief | Reto |
 | Lower `_SHA_MAX` 13 → 12 | W (tightens) |
 | Add `skipif(win32)` | Reto (loosens) |
-| `scripts/ship --quick` on a code change | not allowed (lane rule) |
+| `scripts/ship --quick` on a code change | W (land first, fix after release, Reto 2026-10-18); never `*/migrations/*.sql` or `safe_fetch.py` (`scripts/qgo-guard`) |
 | `scripts/prod-psql "UPDATE jobs SET ... WHERE job_id = 494748"` for its own stuck seed | W |
 | The same UPDATE with no WHERE | Reto |
 | `put(kind='pcb', op='order', confirm=True)` | Reto (outward, spends money) |
@@ -83,11 +83,11 @@ tiers:
     inherits: R
     mcp_endpoint: precis-rw
     db_role: agent_rw
-    allow_exec: ["scripts/ship --checked", "scripts/ship --remote", "scripts/test", "scripts/prod-psql"]
+    allow_exec: ["scripts/ship --checked", "scripts/ship --remote", "scripts/test", "scripts/prod-psql", "scripts/ship --quick"]
     allow_mcp: [put, edit, tag, link, delete]
     spend_cap_usd: 25
 roles:
-  coordinator: {tier: W}
+  coordinator: {tier: W, allow_exec: ["scripts/fleet-wave launch"]}
   release_owner: {tier: W, allow_exec: [scripts/release, scripts/deploy, scripts/round]}
   host_desk: {tier: R}
 reto_only_exec: [scripts/release, scripts/deploy, scripts/host-ops/play]
