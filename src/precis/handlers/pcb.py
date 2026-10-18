@@ -145,6 +145,7 @@ from precis.pcb import selectables as pcb_selectables
 from precis.pcb import session as pcb_session
 from precis.pcb import silk as pcb_silk
 from precis.pcb import svg as pcb_svg
+from precis.pcb import topo as pcb_topo
 from precis.pcb.capabilities import CapabilityRow, capability_for
 from precis.pcb.footprint import fetch_footprint
 from precis.pcb.landpattern import rotate_offset
@@ -5063,10 +5064,73 @@ class PcbHandler(Handler):
                 f"(track {track_mm} + clearance {clearance_mm}, modal class)\n"
                 + "\n".join(tgraph.row_report)
             )
+            # No authored outline: the grid's own extent, the area the
+            # tile map above measured.
+            spec = grid.spec
+            x1 = spec.x0 + spec.nx * spec.pitch
+            y1 = spec.y0 + spec.ny * spec.pitch
+            outline = pcb_session.outline_from_features(features) or [
+                [spec.x0, spec.y0],
+                [x1, spec.y0],
+                [x1, y1],
+                [spec.x0, y1],
+            ]
+            text += self._portal_map_text(
+                [str(ir.stackup[li].get("name")) for li in ctx.signal_layers],
+                pcb_session._copper_model(
+                    ir,
+                    [{**row, "net": row.get("net") or ""} for row in fixed],
+                    footprints=footprints,
+                ),
+                outline,
+                track_mm=track_mm,
+                clearance_mm=clearance_mm,
+            )
             self._capacity_map_cache[ref_id] = (key, text)
             return text
         except Exception as exc:  # the digest above still renders without it
             return f"\n\n# capacity map — unavailable ({exc})"
+
+    @staticmethod
+    def _portal_map_text(
+        layers: list[str],
+        model: dict[str, Any],
+        outline: list[list[float]],
+        *,
+        track_mm: float,
+        clearance_mm: float,
+    ) -> str:
+        """The CDT portal map under the tile map (``docs/backlog/
+        pcb-vector-router.md`` slice 5, a probe): per signal layer, free
+        triangles, portals, portals that take no track, and the capacity
+        spread, measured on the same pre-route copper (pads + fixed
+        copper). Its own failure says so without hiding the tile map."""
+        try:
+            graphs = {
+                lay: pcb_topo.build_region_graph(
+                    pcb_topo.board_obstacles(model, lay),
+                    outline,
+                    lay,
+                    track_mm=track_mm,
+                    clearance_mm=clearance_mm,
+                )
+                for lay in layers
+            }
+            summary = pcb_topo.summarize(graphs, [])
+        except Exception as exc:
+            return f"\n\n# portal map — unavailable ({exc})"
+        lines = [
+            "\n\n# portal map — CDT of free space (probe: drc pad/copper shapes "
+            f"drawn outward {pcb_topo.DELTA_MM * 1000:.0f} µm, modal-class lanes)"
+        ]
+        for lay, s in summary["layers"].items():
+            caps = [c for c, n in s["cap_hist"].items() for _ in range(n)]
+            spread = f", capacity median {sorted(caps)[len(caps) // 2]}" if caps else ""
+            lines.append(
+                f"- {lay}: {s['triangles']} triangles, {s['portals']} portals, "
+                f"{s['zero_cap']} take no track{spread}"
+            )
+        return "\n".join(lines)
 
     def _render_planes(self, ref_id: int) -> Response:
         """Plane assignments (``pcb_planes``) — which nets are

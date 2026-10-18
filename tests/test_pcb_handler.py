@@ -2254,6 +2254,19 @@ def test_congestion_view_appends_the_capacity_map(pcb):
     assert "strict flow" in body
 
 
+def test_congestion_view_appends_the_portal_map(pcb):
+    """Slice 5 of pcb-vector-router: the CDT portal map renders under the
+    tile map, one line per signal layer with portal counts."""
+    pcb.put(id="cong-portals", args=_CROSSED)
+    body = pcb.get(id="cong-portals", view="congestion").body
+    assert "# portal map" in body
+    assert "unavailable" not in body
+    portal_lines = [
+        ln for ln in body.splitlines() if ln.startswith("- ") and "portals" in ln
+    ]
+    assert portal_lines and all("triangles" in ln for ln in portal_lines)
+
+
 def test_congestion_capacity_map_is_cached(pcb, monkeypatch):
     """The strict flow-graph build costs seconds; a second read of an
     unchanged board must reuse it (the cache keys on content_hash), and

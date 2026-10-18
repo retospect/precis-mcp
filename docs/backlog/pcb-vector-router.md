@@ -599,13 +599,39 @@ Owning files: `vroute.py`, `realize.py`, `maze.py`, `src/precis/pcb/routecost.py
 
 ### Slice 5 — CDT region graph and portal capacities (probe)
 
-`topo.build_region_graph` per layer from the kernel's inflated obstacles,
-physical portal capacities, `view='congestion'` gains a portal map. Measure
-against `globalplan.build_tile_graph(capacity="flow")` on the ewod replay
-and the QFP plaza member: does every net's escape exist as a portal
-sequence where the tile model reads 0 lanes?
+**Probe shipped** (measurement only, nothing routes through it):
+`topo.build_region_graph` triangulates one layer's free space with every
+obstacle boundary constrained, and `topo.portal_capacity` prices each
+portal at `⌊(L − s)/(w + s)⌋`. Obstacles are `drc._copper_item_polygon`
+shapes drawn outward by `topo.outward` (≤ δ = 5 µm), because slice 2's
+kernel has not landed yet. `s` is the class clearance until slice 1's
+`required()` lands. There are no via edges, and own-net copper other than
+the two terminals blocks. `view='congestion'` prints a per-layer portal
+map under the tile map: triangles, portals, portals that take no track,
+and the median capacity. `tests/test_pcb_topo.py` holds the unit tests and
+the two slow comparisons below.
 
-Exit: the comparison table in this item; no default changes.
+The comparison is per connection, single layer (its goal layer), against
+`build_tile_graph(capacity="flow", strict=True)` with `exit_cap` for the
+net's own copper. Measured 2026-10-18; both runs gave the same counts.
+
+| Board | Connections | CDT portal sequence | Flow tile path | Terminal tile reads 0 lanes | CDT finds one there | Tile only | CDT build |
+|---|---|---|---|---|---|---|---|
+| qfp-plaza (B.Cu) | 55 | 54 (miss: N31) | 25 | 27 | 26 | 0 | 1.1 s |
+| ewod-replay (goal layer) | 55 | 55 | 34 | 14 | 14 | 0 | 1.5 s |
+
+These numbers use the stand-in obstacles and the class `s` described
+above, not the exact kernel, so slice 6a re-measures them on the kernel.
+Answer to the slice question: yes on the ewod replay. Wherever the tile
+model walls a terminal in, the CDT still has a portal sequence (14/14).
+On the QFP plaza member the CDT has one for 26 of the 27 walled-in
+terminals. The tile model finds no path that the CDT lacks. Reachability
+here is per net: the probe does not check that all nets fit together
+within portal capacity. Slice 6a's negotiated congestion is that test.
+
+Left in this slice: portal columns in slice 0's bench once the bench
+lands. N31's miss is unexplained
+(a real cut, or own-net copper blocking it).
 
 Owning files: `src/precis/pcb/topo.py`, `tests/test_pcb_topo.py`.
 
