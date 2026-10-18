@@ -294,8 +294,6 @@ def _walk_client(pages):
 
 
 def test_iter_components_parses_list_nested_under_data_result(creds):
-    # The cursor stays top-level: _extract_cursor does not descend into
-    # data/result (gr494906; the parser fix waits for the logged shape).
     pages = [
         {
             "data": {"result": {"list": [{"componentCode": "C1", "stockCount": 1}]}},
@@ -307,6 +305,101 @@ def test_iter_components_parses_list_nested_under_data_result(creds):
     rows = list(client.iter_components())
     assert [r["lcsc"] for r in rows] == ["C1", "C2"]
     assert '"lastKey":"page2"' in calls[1]
+
+
+def _prod_shaped_page(first: int, n: int, *, last_key: str | None, code_key: str):
+    """A page shaped like prod's captured envelope (gr494906): wrapper keys
+    plus ``data: {componentInfos, lastKey}``, ``n`` rows of a real page size."""
+    data: dict = {
+        "componentInfos": [
+            {
+                code_key: f"C{first + i}",
+                "componentModelEn": f"PART-{first + i}",
+                "stockCount": i,
+                "componentLibraryType": "base" if i % 2 else "expand",
+            }
+            for i in range(n)
+        ]
+    }
+    if last_key is not None:
+        data["lastKey"] = last_key
+    return {"success": True, "code": 200, "message": "ok", "data": data}
+
+
+def test_extract_cursor_descends_into_data_and_result():
+    assert jlc_api._extract_cursor({"data": {"lastKey": "k1"}}) == "k1"
+    assert jlc_api._extract_cursor({"result": {"data": {"nextKey": "k2"}}}) == "k2"
+    assert jlc_api._extract_cursor({"data": {"componentInfos": []}}) is None
+
+
+def test_prod_shaped_walk_follows_data_lastkey(creds):
+    pages = [
+        _prod_shaped_page(1, 1000, last_key="p2", code_key="componentCode"),
+        _prod_shaped_page(1001, 1000, last_key=None, code_key="componentCode"),
+    ]
+    client, calls = _walk_client(pages)
+    rows = list(client.iter_components())
+    assert len(rows) == 2000
+    assert len(calls) == 2
+    assert '"lastKey":"p2"' in calls[1]
+    assert client.last_key is None
+
+
+def test_parts_refresh_pass_persists_data_lastkey(creds, store):
+    from precis.workers.parts_refresh import CURSOR_SETTING_KEY, run_parts_refresh_pass
+
+    client, _ = _walk_client(
+        [_prod_shaped_page(1, 1000, last_key="p2", code_key="componentCode")]
+    )
+    result = run_parts_refresh_pass(store, client=client, row_budget=1000)
+    assert result["claimed"] == 1000
+    assert result["failed"] == 0
+    assert store.get_setting(CURSOR_SETTING_KEY) == "p2"
+
+
+def test_iter_components_logs_row_key_names_once(creds, caplog):
+    client, _ = _walk_client(
+        [
+            _prod_shaped_page(1, 5, last_key="p2", code_key="componentCode"),
+            _prod_shaped_page(6, 5, last_key=None, code_key="componentCode"),
+        ]
+    )
+    with caplog.at_level("INFO", logger=jlc_api.log.name):
+        list(client.iter_components())
+    lines = [r.getMessage() for r in caplog.records if "row keys=" in r.getMessage()]
+    assert len(lines) == 1
+    assert "componentCode" in lines[0]
+    assert "C1" not in lines[0].replace("componentCode", "")
+
+
+def test_iter_components_all_unknown_key_page_raises(creds):
+    client, _ = _walk_client(
+        [_prod_shaped_page(1, 1000, last_key="p2", code_key="mysteryPartId")]
+    )
+    with pytest.raises(VendorError, match="none normalized") as exc:
+        list(client.iter_components())
+    msg = str(exc.value)
+    assert "mysteryPartId" in msg
+    assert "next:" in msg
+    assert "C1" not in msg.replace("componentCode", "")
+    assert client.last_key is None
+
+
+def test_parts_refresh_pass_alerts_on_all_unknown_key_page(creds, store):
+    from precis.alerts import open_alert_severity
+    from precis.workers.parts_refresh import CURSOR_SETTING_KEY, run_parts_refresh_pass
+
+    client, _ = _walk_client(
+        [_prod_shaped_page(1, 1000, last_key="p2", code_key="mysteryPartId")]
+    )
+    result = run_parts_refresh_pass(store, client=client)
+    assert result["failed"] == 1 and result["claimed"] == 0
+    assert "none normalized" in result["error"]
+    assert store.get_setting(CURSOR_SETTING_KEY) in (None, "")
+    assert (
+        open_alert_severity(store, source="parts_refresh", fingerprint="jlcpcb-api")
+        is not None
+    )
 
 
 def test_iter_components_empty_first_page_is_a_failure(creds):

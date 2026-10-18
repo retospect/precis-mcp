@@ -204,10 +204,12 @@ def _extract_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _extract_cursor(data: dict[str, Any]) -> str | None:
-    """The ``lastKey`` resume cursor, wherever the envelope put it."""
-    for key in ("lastKey", "last_key", "nextKey", "cursor"):
+    """The ``lastKey`` resume cursor, wherever the envelope put it. Prod's
+    envelope is ``{success, code, message, data: {componentInfos, lastKey}}``
+    (gr494906), so ``data``/``result`` are walked like :func:`_extract_rows`."""
+    for key in ("lastKey", "last_key", "nextKey", "cursor", "data", "result"):
         val = data.get(key)
-        if isinstance(val, str) and val:
+        if isinstance(val, str) and val and key not in ("data", "result"):
             return val
         if isinstance(val, dict):
             nested = _extract_cursor(val)
@@ -267,6 +269,12 @@ def normalize_api_row(row: dict[str, Any]) -> dict[str, Any] | None:
         or row.get("lcscCode")
         or row.get("lcsc")
         or row.get("C")
+        # Unverified candidates: prod's bulk rows carry NONE of the keys
+        # above (gr494906 -- all 1000 rows of a page dropped), and the real
+        # name is not yet in evidence. iter_components logs the row key
+        # names and raises when a page normalizes to nothing.
+        or row.get("lcscPart")
+        or row.get("lcscPartNumber")
     )
     if lcsc is None:
         return None
@@ -497,12 +505,26 @@ class JlcApiClient:
                     f"empty first page from {COMPONENT_INFO_PATH} (HTTP 200, "
                     f"no rows, no cursor); envelope {envelope_shape(data)}",
                 )
+            if page == 1 and rows and isinstance(rows[0], dict):
+                log.info("jlc_api: row keys=%s", _key_names(rows[0]))
+            normalized = [n for n in map(normalize_api_row, rows) if n is not None]
+            if rows and not normalized:
+                # Non-empty page, zero usable rows: the C-number key is not
+                # one normalize_api_row knows (gr494906). Raise before the
+                # cursor moves so the walk neither checkpoints past dropped
+                # rows nor reports a quiet claimed=0.
+                first = rows[0]
+                names = _key_names(first) if isinstance(first, dict) else "-"
+                raise VendorError(
+                    "jlcpcb",
+                    f"page {page} from {COMPONENT_INFO_PATH} had {len(rows)} "
+                    f"rows but none normalized (no C-number key); row "
+                    f"keys={names}. next: add the C-number key to "
+                    f"normalize_api_row in src/precis/pcb/jlc_api.py",
+                )
             previous, cursor = cursor, next_cursor
             self.last_key = cursor
-            for raw in rows:
-                norm = normalize_api_row(raw)
-                if norm is not None:
-                    yield norm
+            yield from normalized
             if not rows or not cursor:
                 break
             if cursor == previous:
