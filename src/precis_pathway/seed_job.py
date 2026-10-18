@@ -308,7 +308,7 @@ def _reap_scratch(ctx: Any, handle: Any, *, failed: bool) -> None:
     ``wall_s`` / ``node`` stamp has landed (gr496403): a dir that vanishes
     first takes the only wall-time record of the run with it. An unstamped
     job keeps its dir (and logs it) rather than losing the evidence."""
-    from precis_pathway import runner
+    from precis_pathway import scratch
 
     if not _job_stamped(ctx):
         log.warning(
@@ -317,7 +317,7 @@ def _reap_scratch(ctx: Any, handle: Any, *, failed: bool) -> None:
             (handle or {}).get("dir"),
         )
         return
-    runner.finalize_seed_partial_detached(handle, failed=failed)
+    scratch.finalize_seed_partial_detached(handle, failed=failed)
 
 
 def _poll(ctx: Any, handle: Any) -> bool:
@@ -413,9 +413,9 @@ def _kill(ctx: Any, handle: Any) -> None:
     """``ssh_node`` wall-clock kill hook (§H piece 2) — best-effort SIGKILL
     of the detached child's process group. The scratch dir stays until
     :func:`_reap` runs after the terminal write has stamped the job."""
-    from precis_pathway import runner
+    from precis_pathway import scratch
 
-    runner.kill_seed_partial_detached(handle, keep_scratch=True)
+    scratch.kill_seed_partial_detached(handle, keep_scratch=True)
 
 
 def _reap(ctx: Any, handle: Any) -> None:

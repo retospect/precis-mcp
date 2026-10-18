@@ -40,7 +40,7 @@ from precis.dispatch import Hub, _try
 from precis.store import Store
 from precis.workers import job_types as jt
 from precis_pathway import job as pathway_job
-from precis_pathway import runner
+from precis_pathway import runner, scratch
 from precis_pathway.handler import PathwayHandler
 from precis_pathway.persist import pathway_title, persist_result
 from precis_pathway.types import DetachedHandle, PathwayArtifact, PollResult
@@ -1824,7 +1824,7 @@ def test_seed_job_poll_done_persists_then_finalizes_scratch(
     )
     finalized: list[Any] = []
     monkeypatch.setattr(
-        runner,
+        scratch,
         "finalize_seed_partial_detached",
         lambda handle, **_kw: finalized.append(handle),
     )
@@ -1860,7 +1860,7 @@ def test_seed_job_poll_done_persist_failure_keeps_scratch_for_retry(
     )
     finalized: list[Any] = []
     monkeypatch.setattr(
-        runner,
+        scratch,
         "finalize_seed_partial_detached",
         lambda handle, **_kw: finalized.append(handle),
     )
@@ -2528,7 +2528,7 @@ def test_seed_job_kill_delegates_to_runner(
 
     calls: list[Any] = []
     monkeypatch.setattr(
-        runner,
+        scratch,
         "kill_seed_partial_detached",
         lambda handle, **_kw: calls.append(handle),
     )

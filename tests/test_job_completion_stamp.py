@@ -123,7 +123,19 @@ class _Ctx:
         self.ref_id = ref_id
 
 
-def test_reaper_skips_unstamped_and_reaps_stamped(store: Store, tmp_path: Path) -> None:
+@pytest.fixture
+def no_autocatpath(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Simulate a host without the catalyst extra (CI): the kill/reap hooks
+    must remove the scratch dir without importing ``autocatpath``."""
+    import sys
+
+    monkeypatch.setitem(sys.modules, "autocatpath", None)
+    monkeypatch.delitem(sys.modules, "precis_pathway.runner", raising=False)
+
+
+def test_reaper_skips_unstamped_and_reaps_stamped(
+    store: Store, tmp_path: Path, no_autocatpath: None
+) -> None:
     from precis_pathway import seed_job
 
     scratch = tmp_path / "autocatpath-seed-x"
@@ -145,7 +157,7 @@ def test_reaper_skips_unstamped_and_reaps_stamped(store: Store, tmp_path: Path) 
 
 
 def test_kill_keeps_dir_until_reap_hook_after_stamp(
-    store: Store, tmp_path: Path
+    store: Store, tmp_path: Path, no_autocatpath: None
 ) -> None:
     from precis_pathway import seed_job
 

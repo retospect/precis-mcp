@@ -44,6 +44,16 @@ from autocatpath.config import Config
 from autocatpath.pipeline import Results, run
 
 from .coverage_sites import representable_coverages, slab_top_sites
+from .scratch import (
+    _cleanup_detached,
+    _tail_logs,
+)
+from .scratch import (
+    finalize_seed_partial_detached as finalize_seed_partial_detached,
+)
+from .scratch import (
+    kill_seed_partial_detached as kill_seed_partial_detached,
+)
 from .step_retry import narrow_partial, narrow_structures
 from .types import (
     CoverageScanResult,
@@ -928,74 +938,6 @@ def run_coverage_scan_subprocess(
     return cast("CoverageScanResult", result)
 
 
-def _tail_logs(scratch_dir: str, limit: int = 4000) -> str:
-    """Tail of the detached child's captured streams — the diagnosis a
-    blocking run gets for free from ``subprocess.run``'s ``capture_output``
-    (:func:`run_seed_partial_subprocess`), reconstructed here from the files
-    :func:`submit_seed_partial_detached` redirected the child into (a
-    detached ``Popen`` can't be waited on for output).
-
-    The budget is split PER STREAM and each is labelled, rather than tailing
-    one concatenation of both. Concatenating and slicing once looks
-    equivalent and isn't: stderr carries the traceback and the import
-    warnings, stdout carries hours of ``print()`` progress, and a single
-    trailing window over ``stderr + stdout`` returns the end of *stdout*
-    only — silently dropping the very traceback that says why the run died.
-    That was latent while stdout was always empty (``_child_cmd`` ran the
-    child buffered, so nothing survived a kill); making the child unbuffered
-    is exactly what would have armed it.
-
-    ``limit`` bounds the log CONTENT, not the returned string: each stream's
-    label adds a few dozen chars on top. Callers that re-truncate to a hard
-    chunk budget may therefore clip a leading label — cosmetic, since every
-    stream was already sliced to its own share before the labels went on.
-    """
-    import os
-
-    streams: list[tuple[str, str]] = []
-    for name in ("stderr.log", "stdout.log"):
-        path = os.path.join(scratch_dir, name)
-        try:
-            with open(path, encoding="utf-8", errors="replace") as fh:
-                text = fh.read()
-        except OSError:
-            continue
-        if text.strip():
-            streams.append((name, text))
-    if not streams:
-        return ""
-    per = max(1, limit // len(streams))
-    return "\n".join(
-        f"--- {name} (last {per} chars) ---\n{text[-per:]}" for name, text in streams
-    )
-
-
-def _cleanup_detached(scratch_dir: str, *, failed: bool = False) -> None:
-    """Best-effort scratch-dir removal — a detached submit's dir is a bare
-    ``tempfile.mkdtemp`` (not context-managed, unlike the blocking sibling's
-    ``TemporaryDirectory``), so nothing else reclaims it.
-
-    Set ``PRECIS_PATHWAY_KEEP_FAILED_SCRATCH=1`` to RETAIN the dir of a run
-    that failed, so its full ``stdout.log`` / ``stderr.log`` outlive the
-    terse tail lifted into the job event. Off by default deliberately: these
-    dirs live in ``/tmp`` on a compute node, and a job type that can fail
-    ~100 times a week would turn unconditional retention into a disk-filling
-    failure mode of its own — trading one silent outage for another. Turn it
-    on while actively diagnosing, off the rest of the time.
-    """
-    import os
-    import shutil
-
-    if failed and os.environ.get("PRECIS_PATHWAY_KEEP_FAILED_SCRATCH") == "1":
-        log.warning(
-            "autocatpath_seed: retaining failed scratch dir %s "
-            "(PRECIS_PATHWAY_KEEP_FAILED_SCRATCH=1)",
-            scratch_dir,
-        )
-        return
-    shutil.rmtree(scratch_dir, ignore_errors=True)
-
-
 # How long a terminal-branch reap will spin WNOHANG for a proven-done child to
 # become reapable before giving up (see _reap_zombie). Short: it only has to
 # cover normal exit/teardown, never a pathological libcuda hang.
@@ -1357,77 +1299,6 @@ def poll_seed_partial_detached(
     if not defer_cleanup:
         _cleanup_detached(scratch, failed=True)
     return result
-
-
-def finalize_seed_partial_detached(
-    handle: DetachedHandle, *, failed: bool = False
-) -> None:
-    """Remove a DONE job's scratch dir — call ONLY after persisting.
-
-    The ``"done"`` branch of :func:`poll_seed_partial_detached` deliberately
-    leaves the scratch dir (and its ``result.json`` envelope) on disk so
-    that a failed DB persist retries on the next poll instead of discarding
-    a finished run. Once the caller's persist has succeeded, this reclaims
-    the disk. Best-effort and idempotent (missing dir is a no-op).
-
-    ``failed=True`` reclaims the dir of a failed/killed run under
-    ``PRECIS_PATHWAY_KEEP_FAILED_SCRATCH`` rules (see
-    :func:`_cleanup_detached`); ``seed_job`` calls it only once the job's
-    completion stamp has landed (gr496403).
-    """
-    _cleanup_detached(handle["dir"], failed=failed)
-
-
-def kill_seed_partial_detached(
-    handle: DetachedHandle, *, keep_scratch: bool = False
-) -> None:
-    """Best-effort SIGKILL of a detached submit's whole process group — the
-    ssh_node wall-clock kill hook (§H piece 2), invoked once
-    ``meta.deadline`` passes. ``os.killpg`` reaches every descendant the
-    child may have spawned (MACE/CUDA workers), not just its own PID — the
-    same reason :func:`submit_seed_partial_detached` starts a new session.
-    Guards ``ProcessLookupError``/``PermissionError`` (already dead is the
-    common case: this only fires once the compute has overrun its own wall
-    budget by a full margin) and removes the scratch dir regardless of
-    whether the kill landed. Also reaps the killed PID (``os.waitpid``,
-    best-effort) when this happens to be the process that submitted it —
-    same zombie concern :func:`_process_alive` explains: a killed child
-    that's never reaped would otherwise sit defunct in this worker process
-    for the rest of its life."""
-    import os
-    import signal
-
-    pgid = handle.get("pgid")
-    if pgid is not None:
-        try:
-            os.killpg(int(pgid), signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
-    pid = handle.get("pid")
-    if pid is not None:
-        try:
-            os.waitpid(int(pid), 0)
-        except (ChildProcessError, OSError):
-            pass
-    scratch = handle.get("dir")
-    if scratch:
-        # Log the tail before wiping: this path returns ``None`` (the
-        # executor terminalizes from its own side), so unlike the poll
-        # branches there is no channel to hand the child's output back on —
-        # and it deleted the dir without ever reading it. Every wall-clock
-        # kill therefore explained itself with nothing but the handle dict.
-        # SIGKILL leaves no in-process buffer to flush, but with an
-        # unbuffered child (:func:`_child_cmd`) the progress is already ON
-        # DISK, so there is now something real to capture here.
-        tail = _tail_logs(scratch)
-        if tail:
-            log.warning(
-                "autocatpath_seed: wall-clock kill of pid=%s — child output:\n%s",
-                handle.get("pid"),
-                tail,
-            )
-        if not keep_scratch:
-            _cleanup_detached(scratch, failed=True)
 
 
 def aggregate_seed_partials(
