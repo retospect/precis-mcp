@@ -1,21 +1,16 @@
 {
- "handlers/pcb.py::PcbHandler._enqueue_op::BadInput": 7,
  "handlers/pcb.py::PcbHandler._fab_zip::BadInput": 1,
- "handlers/pcb.py::PcbHandler._legalize_generator_seeds::BadInput": 1,
  "handlers/pcb.py::PcbHandler._move_lock_kwargs::BadInput": 8,
  "handlers/pcb.py::PcbHandler._move_lock_kwargs::NotFound": 1,
  "handlers/pcb.py::PcbHandler._move_poses.capabilities::BadInput": 1,
  "handlers/pcb.py::PcbHandler._move_poses::NotFound": 2,
  "handlers/pcb.py::PcbHandler._op_class_rules::BadInput": 1,
  "handlers/pcb.py::PcbHandler._op_footprint::BadInput": 1,
- "handlers/pcb.py::PcbHandler._op_move::NotFound": 1,
  "handlers/pcb.py::PcbHandler._op_order::BadInput": 4,
  "handlers/pcb.py::PcbHandler._op_pin_side::NotFound": 1,
  "handlers/pcb.py::PcbHandler._op_pins::BadInput": 1,
  "handlers/pcb.py::PcbHandler._op_plane_net::BadInput": 1,
  "handlers/pcb.py::PcbHandler._op_plane_net::NotFound": 1,
- "handlers/pcb.py::PcbHandler._op_review::BadInput": 2,
- "handlers/pcb.py::PcbHandler._parse_max_travel::BadInput": 3,
  "handlers/pcb.py::PcbHandler._render_capability::BadInput": 2,
  "handlers/pcb.py::PcbHandler._render_congestion::NotFound": 1,
  "handlers/pcb.py::PcbHandler._render_fab_svg::BadInput": 1,
@@ -25,6 +20,5 @@
  "handlers/pcb.py::PcbHandler._render_view::NotFound": 1,
  "handlers/pcb.py::PcbHandler._validity_findings::BadInput": 1,
  "handlers/pcb.py::PcbHandler.delete::BadInput": 1,
- "handlers/pcb.py::PcbHandler.link::BadInput": 1,
- "handlers/pcb.py::PcbHandler.put::BadInput": 1
+ "handlers/pcb.py::PcbHandler.link::BadInput": 1
 }

@@ -967,7 +967,11 @@ class PcbHandler(Handler):
                 ref_id_of=lambda r: int(r[0].id),
             )
         except ValueError as exc:
-            raise BadInput(f"pcb: {exc}") from exc
+            raise BadInput(
+                f"pcb: {exc}",
+                next="correct the named argument and retry the same put — "
+                "nothing was stored",
+            ) from exc
 
         # After the commit, never inside the judged transaction: queue the
         # datasheet pulls + extractions (jobs; nothing is fetched here).
@@ -1384,7 +1388,11 @@ class PcbHandler(Handler):
                     pcb_drc.process_for_stackup(board["stackup"])
                 )
             except ValueError as exc:
-                raise BadInput(f"pcb: {exc}") from exc
+                raise BadInput(
+                    f"pcb: {exc}",
+                    next="args={'op':'stackup','preset':'4l-two-sided'} — v1 "
+                    "supports 2- or 4-layer boards",
+                ) from exc
             ir.net_clearance_floor_mm = pcb_session.net_clearance_floors(
                 design, capability
             )
@@ -1552,7 +1560,11 @@ class PcbHandler(Handler):
         if op == "route" and opts.get("warm_start") is not None:
             warm_start = opts["warm_start"]
             if warm_start not in ("distance", "radial"):
-                raise BadInput("pcb: warm_start must be distance or radial")
+                raise BadInput(
+                    "pcb: warm_start must be distance or radial",
+                    options=["distance", "radial"],
+                    next="put(args={'op':'route','warm_start':'distance'})",
+                )
             params["warm_start"] = warm_start
         # Opt-in negotiated congestion (realize.RealizeConfig.
         # negotiate_iterations); off unless asked for.
@@ -1562,7 +1574,8 @@ class PcbHandler(Handler):
             if not 0 <= negotiate <= cap:
                 raise BadInput(
                     f"pcb: negotiate={negotiate} is out of range; give 0 (off) "
-                    f"to {cap} negotiated-congestion iterations."
+                    f"to {cap} negotiated-congestion iterations.",
+                    next=f"put(args={{'op':'route','negotiate':{cap}}})",
                 )
             params["negotiate"] = negotiate
         # Opt-in corridors-as-cost / plaza escape (RealizeConfig.
@@ -1570,11 +1583,18 @@ class PcbHandler(Handler):
         if op == "route" and opts.get("corridor") is not None:
             corridor = float(opts["corridor"])
             if not corridor >= 0:
-                raise BadInput("pcb: corridor must be a number >= 0")
+                raise BadInput(
+                    "pcb: corridor must be a number >= 0",
+                    next="put(args={'op':'route','corridor':2.0})",
+                )
             params["corridor"] = corridor
         if op == "route" and opts.get("escape") is not None:
             if opts["escape"] != "plaza":
-                raise BadInput("pcb: escape must be 'plaza' when set")
+                raise BadInput(
+                    "pcb: escape must be 'plaza' when set",
+                    options=["plaza"],
+                    next="put(args={'op':'route','escape':'plaza'})",
+                )
             params["escape"] = "plaza"
         # Per-layer route cost (RealizeConfig.layer_route_cost,
         # pcb-stackup-regions slice 1): {layer name: multiplier >= 1}.
@@ -1588,7 +1608,8 @@ class PcbHandler(Handler):
             ):
                 raise BadInput(
                     "pcb: layer_cost must map layer names to finite multipliers >= 1, "
-                    "e.g. {'In1.Cu': 2.5}"
+                    "e.g. {'In1.Cu': 2.5}",
+                    next="put(args={'op':'route','layer_cost':{'In1.Cu':2.5}})",
                 )
             params["layer_cost"] = {str(k): float(v) for k, v in layer_cost.items()}
         # Cross-grain step multiplier (RealizeConfig.off_axis_penalty,
@@ -1613,7 +1634,8 @@ class PcbHandler(Handler):
             if not 0 <= loop <= cap:
                 raise BadInput(
                     f"pcb: loop={loop} is out of range; give 0 (off) "
-                    f"to {cap} route rounds."
+                    f"to {cap} route rounds.",
+                    next=f"put(args={{'op':'route','loop':{cap}}})",
                 )
             params["loop"] = loop
         # Authored expansion bounds for the loop's priced moves ride the
@@ -1627,7 +1649,10 @@ class PcbHandler(Handler):
         # Override for the pre-route placement DRC gate; absent unless True.
         if op in ("place", "route") and opts.get("force") is not None:
             if not isinstance(opts["force"], bool):
-                raise BadInput("pcb: force must be a boolean (True or False)")
+                raise BadInput(
+                    "pcb: force must be a boolean (True or False)",
+                    next="put(args={'op':'route','force':True})",
+                )
             if opts["force"]:
                 params["force"] = True
         # Raw store rows, verbatim -- `content_hash` itself does the
@@ -1692,11 +1717,22 @@ class PcbHandler(Handler):
         if args.get("limit") is not None:
             limit = int(args["limit"])
             if not 1 <= limit <= 60:
-                raise BadInput("pcb: review limit must be 1..60 items")
+                raise BadInput(
+                    "pcb: review limit must be 1..60 items",
+                    next="put(args={'op':'review','limit':20})",
+                )
             params["limit"] = limit
         q = pcb_review.queue(self.store, ref.id, item=item)
         if q.reason is not None:
-            raise BadInput(f"pcb: {ref.slug}: {q.reason}")
+            raise BadInput(
+                f"pcb: {ref.slug}: {q.reason}",
+                next=[
+                    f"edit(kind='checklist', id='{pcb_review.CHECKLIST}', "
+                    f"op='assign', target='pcb:{ref.slug}')",
+                    "if the checklist itself is missing it is created by the "
+                    "checklist_sync job — file a gripe if it stays absent",
+                ],
+            )
         status_next = (
             f"Next: get(kind='checklist', id='{pcb_review.CHECKLIST}', "
             f"target='pcb:{ref.slug}')"
@@ -1811,7 +1847,10 @@ class PcbHandler(Handler):
             standing = []
         ok = self.store.pcb_move_instance(ref.id, refdes, **kwargs)
         if not ok:
-            raise NotFound(f"pcb instance {refdes!r} not found in {ref.slug!r}")
+            raise NotFound(
+                f"pcb instance {refdes!r} not found in {ref.slug!r}",
+                next=f"get(kind='pcb', id='{ref.slug}') lists this design's refdes",
+            )
         body = f"# {refdes} moved — {kwargs}"
         if standing:
             body += (
@@ -1827,18 +1866,21 @@ class PcbHandler(Handler):
             return None
         if isinstance(pin, bool):
             raise BadInput(
-                f"pcb: max_travel_mm must be a number of mm >= 0 (got {pin!r})"
+                f"pcb: max_travel_mm must be a number of mm >= 0 (got {pin!r})",
+                next="max_travel_mm: a number of mm >= 0, or null to clear the pin",
             )
         try:
             pin_mm = float(pin)
         except (TypeError, ValueError):
             raise BadInput(
-                f"pcb: max_travel_mm must be a number of mm >= 0 (got {pin!r})"
+                f"pcb: max_travel_mm must be a number of mm >= 0 (got {pin!r})",
+                next="max_travel_mm: a number of mm >= 0, or null to clear the pin",
             ) from None
         if not math.isfinite(pin_mm) or pin_mm < 0:
             raise BadInput(
                 f"pcb: max_travel_mm must be a number of mm >= 0 "
-                f"(got {pin!r}); null clears the pin"
+                f"(got {pin!r}); null clears the pin",
+                next="max_travel_mm: a number of mm >= 0, or null to clear the pin",
             )
         return pin_mm
 
