@@ -61,6 +61,13 @@ def _private_test_database(dsn: str, template_dsn: str, *, github_actions: bool)
     database = target.pop("dbname", "")
     assert isinstance(database, str), "test database name must be a string"
     template.pop("dbname")
+    # conftest's _with_test_timeouts adds options= to the active DSN only.
+    options = target.pop("options", None)
+    if options is not None:
+        assert isinstance(options, str)
+        assert "statement_timeout" in options and "lock_timeout" in options, (
+            "active DSN options must carry the test timeouts"
+        )
     assert target == template, "active DSN must retain the canonical test endpoint"
     assert re.fullmatch(r"precis_test_[0-9a-f]{12}", database), (
         "private throwaway clone required"
