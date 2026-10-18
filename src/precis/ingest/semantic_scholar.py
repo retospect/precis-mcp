@@ -9,6 +9,7 @@ from typing import Any
 
 from semanticscholar import SemanticScholar
 
+from precis.utils import rate_limit
 from precis.utils.http import call_with_backoff
 
 
@@ -119,6 +120,9 @@ def search_s2_papers(
 
 _RATE_LIMITED = object()
 
+#: How long a swallowed 429 parks the shared ``s2`` limiter row.
+_RATE_LIMITED_PARK_S = 10.0
+
 
 def _search_fast_fail(sch: SemanticScholar, query: str, limit: int) -> Any:
     """Like :func:`_search_with_retry` but a 429 (the lib raises
@@ -130,6 +134,10 @@ def _search_fast_fail(sch: SemanticScholar, query: str, limit: int) -> Any:
         try:
             return sch.search_paper(query, limit=limit)
         except ConnectionRefusedError:
+            # The lib hides the response, so there is no Retry-After; park
+            # the shared row briefly so the next caller does not walk into
+            # the same 429.
+            rate_limit.park("s2", _RATE_LIMITED_PARK_S)
             return _RATE_LIMITED
 
     return call_with_backoff(_call, service="s2")

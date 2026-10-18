@@ -325,6 +325,10 @@ class Policy:
     #: When set, a fatal 401/403 opens the breaker at once for this many
     #: seconds (instead of counting toward ``breaker_threshold``).
     fatal_cooldown: float | None = None
+    #: Whether a fatal 401/403 counts toward ``breaker_threshold``. Off for a
+    #: service where a 403 is per-record (ORCID's private profiles), so a run
+    #: of those must not open the breaker on healthy traffic.
+    fatal_counts_toward_breaker: bool = True
     #: Human name for operator-facing messages (defaults to the service key).
     label: str = ""
     #: ``external_rate_limits`` row taken per attempt; ``None`` means no
@@ -369,7 +373,7 @@ POLICIES: dict[str, Policy] = {
     "europepmc": Policy(provider="europepmc", label="Europe PMC"),
     "core": Policy(provider="core", label="CORE"),
     "datacite": Policy(provider="datacite", label="DataCite"),
-    "orcid": Policy(provider="orcid", label="ORCID"),
+    "orcid": Policy(provider="orcid", fatal_counts_toward_breaker=False, label="ORCID"),
     "pubchem": Policy(provider="pubchem", label="PubChem"),
     "sec": Policy(provider="sec", label="SEC EDGAR"),
     "google-patents": Policy(
@@ -719,7 +723,7 @@ def with_backoff(
                     circuit.refused_until = wall() + timedelta(
                         seconds=policy.fatal_cooldown
                     )
-                else:
+                elif policy.fatal_counts_toward_breaker:
                     _trip(circuit, policy, now)
                 raise VendorError(
                     service,

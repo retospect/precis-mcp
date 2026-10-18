@@ -2169,7 +2169,26 @@ def _download_markup(
     OCR on a bad parse, so a landing-page here is caught downstream
     rather than poisoning the corpus. Writes to ``<target>.part`` and
     renames on success. Returns the byte count; raises on an empty body.
+
+    Runs under the same politeness core as :func:`_download_pdf`: one
+    ``host:<netloc>`` limiter token per attempt (the publisher hosts are
+    shared with the PDF leg), full-jitter backoff on transport/429/5xx
+    only, ``Retry-After`` parks the host row. Any other 4xx is final.
     """
+    netloc = urlparse(url).netloc.lower()
+    return call_with_backoff(
+        lambda: _download_markup_once(url, target, extra_headers),
+        service=f"pdf:{netloc}",
+        policy=_DOWNLOAD_POLICY,
+        url=url,
+        retry_if=_is_transient_download_error,
+    )
+
+
+def _download_markup_once(
+    url: str, target: Path, extra_headers: dict[str, str] | None
+) -> int:
+    """One download attempt for :func:`_download_markup`."""
     from precis.utils.http import http_client
     from precis.utils.safe_fetch import safe_stream
 
