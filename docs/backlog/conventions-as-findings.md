@@ -27,7 +27,13 @@ Ranks after `memory-native-authoring.md` (needs the `SPACE:` axis and the
 retirement-test shape it ships). Owner: `src/precis/taproot/` mint path
 for the findings, `docs/conventions/`.
 
-test: `tests/test_conventions_retired.py` allowlist shrinks to empty;
+End state (Reto, 2026-10-18: "R2. done."): every testable rule has an
+enforcer test; the judgement-only rules stay documented as findings marked
+judgement-only, each with an `_ALLOWLIST` entry giving the reason. The
+allowlist need not reach empty.
+
+test: `tests/test_conventions_retired.py` allowlist holds only
+judgement-only rules, each with its reason;
 `get(kind='finding', id=F, view='fisheye')` from a gripe reaches the
 convention it violates in one hop.
 
@@ -56,7 +62,7 @@ convention it violates in one hop.
   Every convention file is in the manifest; every enforcer path exists
   (a `ruff:` id needs a selected prefix); and the rules with no inbound
   `tests` edge equal `_ALLOWLIST` exactly.
-- **Left:** drain `_ALLOWLIST` by writing enforcers. The `related-to`
+- **Left:** write enforcers for the remaining testable rules; the rest stay allowlisted as judgement-only. The `related-to`
   edge to the `CLAUDE.md` one-liner waits for a repo root in the graph
   (`file-mirror.md` §deltas 2). File retirement is Reto's call, per
   batch.
@@ -105,4 +111,4 @@ Judgement-only, stay allowlisted (52), grouped by why:
 
 ## Readiness review 2026-10-18
 
-- **Proposed (needs ruling):** the next buildable slice is the one named real gap, a test for `shipping/qland-lint-and-drift-guard` (24h warn, 48h refuse, exit-2 refuses, unknown age never refuses, `PRECIS_QLAND_DRIFT_OVERRIDE=1`). Build it as `tests/test_ship_qland_drift.py` on the `tests/test_ship_narrow_lock.py` `Rig`, with a stub `scripts/last-gated-main-sha` in the rig worktree printing a chosen age, then set `enforcers: [tests/test_ship_qland_drift.py]` on that manifest entry and delete its allowlist entry (52 to 51). The remaining 51 allowlisted rules are judgement-only by the wave note above; a Devin should not touch them. File retirement and the `related-to` CLAUDE.md edge stay Reto's / blocked on a repo-root node.
+- **Decided (Reto, 2026-10-18, "R2. done."):** done means every testable rule has an enforcer; judgement-only rules stay allowlisted with a reason and the allowlist need not empty. The last buildable slice is the one named real gap, a test for `shipping/qland-lint-and-drift-guard` (24h warn, 48h refuse, exit-2 refuses, unknown age never refuses, `PRECIS_QLAND_DRIFT_OVERRIDE=1`). Build it as `tests/test_ship_qland_drift.py` on the `tests/test_ship_narrow_lock.py` `Rig`, with a stub `scripts/last-gated-main-sha` in the rig worktree printing a chosen age, then set `enforcers: [tests/test_ship_qland_drift.py]` on that manifest entry and delete its allowlist entry (52 to 51). The remaining 51 allowlisted rules are the end state: judgement-only by the wave note above; a Devin should not touch them. File retirement and the `related-to` CLAUDE.md edge stay Reto's / blocked on a repo-root node.

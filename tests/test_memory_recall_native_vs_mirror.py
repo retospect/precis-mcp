@@ -25,7 +25,7 @@ from tests.test_memory_recall_fixture import QUERIES, TOPICS, K
 
 Topic = tuple[str, str, str, str]
 
-#: The P4 question set (``docs/backlog/memory-recall-quality.md``): real
+#: The P4 question set (``src/precis/data/memory_recall_set.json``): real
 #: recall queries, each with its prod answer node's handle and that node's
 #: title + hook snapshot. Packaged in ``precis.data`` so the weekly
 #: ``memory_recall`` cadence and ``precis memory index --set`` score the

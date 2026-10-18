@@ -16,8 +16,8 @@ slices B and C of [se-region-property-layer](se-region-property-layer.md)
 
 **Status (2026-10-17):** slice 1 is built (its section below says
 what); its surface settings are provisional until open question 4 is
-answered. Next: slice 2, which needs open questions 8 and 9 answered
-first. Slices 3–5 wait on 2.
+answered. Questions 8 and 9 are decided (Reto, 2026-10-18); next is
+slice 2, split into 2a and 2b below. Slices 3–5 wait on 2.
 
 ## Use case — the nanoreactor tunnel
 
@@ -137,6 +137,11 @@ turn spin polarisation on for doublets is open question 12; where the
 read can run in prod is open question 13.
 
 ### 2. Pocket spec from surface (case a)
+
+Split (readiness note, Reto 2026-10-18 "Sounds good"): **2a** the
+computers (`COMPUTERS` entries) plus the core migration; **2b**
+`pocket_spec.py` plus the `pocket_from_molecule` op. Clearance stays
+provisional at 0 Å for slice 2 (Q4).
 
 **Owning code:** new `src/precis_se/properties/pocket_spec.py`; a new se
 op `pocket_from_molecule` in `src/precis_se/ops.py` that writes through
@@ -368,10 +373,21 @@ field, skills `precis-se-regions-help` and `precis-se-atomic-help`.
    molecule patch have no selector form either (`patch:` is on a cad
    face, `atoms:`/`sites:` name wall atoms that do not exist yet). New
    tokens, or a different anchoring?
+   **Decided (Reto, 2026-10-18, "Q8 Good"):** `PocketSpec.shape` stays a
+   string and gains one token `mol:<block>@<clearance>` (the offset vdW
+   surface of that molecule block, world frame). A region facing a patch
+   uses the selector `mpatch:<block>:<id>`; patch ids come from the
+   stable clustering in `pocket_spec.py`.
 9. **Dependencies.** Region-property slice B was blocked on
    `measures-substrate` (realised values in `measures` with a
    `subject_selector`), slice C on the class lattice. Build them first,
    or keep realised values on the se side until they ship?
+   **Decided (Reto, 2026-10-18, "Q9: Sounds good"):** realised values
+   stay on the se side (computers in `COMPUTERS`, signature
+   `(tree, measure) -> float | None` in `precis_se/properties/__init__.py`);
+   slice 2 does not wait on `measures-substrate` or the class lattice.
+   The class hash is sha256 over the canonical region list, stored on
+   the pocket and promoted to a `class` node when the lattice ships.
 10. **Viewer payload.** Whether the vendored three-cad-viewer colours
     per vertex, or the surface needs the shared molecule renderer
     ([se-structure-shared-molecule-viewer](se-structure-shared-molecule-viewer.md)).
@@ -398,17 +414,7 @@ field, skills `precis-se-regions-help` and `precis-se-atomic-help`.
     stored result; or a cheaper charge model (Gasteiger, EEQ) as a
     labelled fallback. Deploy-side, so it is Reto's call.
 
-- **Proposed (needs ruling), readiness judge 2026-10-18 — slice 2
-  shape and dependencies (Q8, Q9).** Q8: keep `PocketSpec.shape` a
-  string and add one token `mol:<block>@<clearance>` (the offset
-  vdW surface of that molecule block, in the world frame); a region
-  facing a patch uses a new selector `mpatch:<block>:<patch_id>`
-  where patch ids come from the stable clustering in
-  `pocket_spec.py`. Q9: keep realised values on the se side (computers
-  in `COMPUTERS`, signature `(tree, measure) -> float | None` already
-  fixed in `precis_se/properties/__init__.py`) and do not wait on
-  `measures-substrate`/class lattice; the class hash is a sha256 of the
-  canonicalised region list stored on the pocket, promoted to a `class`
-  node when the lattice ships. Also fix the migration number
-  (next free core migration after the current head) and the
-  default clearance (0 Å, Q4) as the slice-2 value.
+- **Decided (Reto, 2026-10-18), from the readiness judge's proposal:**
+  Q8 and Q9 as above. Slice 2 fixes the migration number (next free core
+  migration after the current head) and the default clearance (0 Å, Q4,
+  provisional) as the slice-2 value.

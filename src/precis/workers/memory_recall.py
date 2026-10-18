@@ -1,10 +1,9 @@
 """The weekly memory-recall check — the durable form of the P4 scorer.
 
-``docs/backlog/memory-recall-quality.md`` measures "never found", the
-failure mode once repo-dev memory is discovered by recall rather than
-preloaded. Until this pass the only check was a hand-run
-``precis memory index --set`` — a score nobody watches drifts silently.
-Fired from the weekly host-agnostic ``memory_recall`` scheduler cadence:
+Measures "never found", the failure mode once repo-dev memory is
+discovered by recall rather than preloaded (context-memory-hierarchy P4,
+landed 2026-10-18). A hand-run ``precis memory index --set`` is a score
+nobody watches; this makes it durable. Fired from the weekly host-agnostic ``memory_recall`` scheduler cadence:
 
 1. **Score** — :func:`precis.cli.memory.recall_report_rows` over the
    packaged P4 question set (``precis.data``
@@ -21,6 +20,24 @@ Fired from the weekly host-agnostic ``memory_recall`` scheduler cadence:
 3. **Alert** — a score below the last recorded one (total or either
    origin split) raises one WARN ``kind='alert'``; an equal-or-higher
    run resolves it. The first run only records a baseline.
+
+Question set rules (``src/precis/data/memory_recall_set.json``, one entry
+per real case: ``query``, prod answer ``want`` handle, title + hook
+snapshot, ``source``, ``why``; no body text, hostnames or addresses, the
+repo is public):
+
+- Entries were written by an agent that read the answer nodes, so query
+  wording leaks node vocabulary and the score is an upper bound. Grow the
+  set from observed misses: when a session finds a memory only after the
+  mistake, add its first recall query and the node.
+- A prod title or hook edit updates that entry's snapshot in the same
+  commit. Fixes are meta-only edits (title and/or ``meta.hook``, no body
+  rewrite); an edited header card has no embedding until the embed worker
+  fills it, so measure after it has a vector.
+- ``tests/test_memory_recall_native_vs_mirror.py::test_recall_set_holds_its_floor``
+  scores the set with the hash embedder (lexical in effect, guards the
+  scorer and seeding path, not wording); ``SET_FLOOR`` is raised when a
+  fix lands, never lowered. Prod is the only signal for title/hook fixes.
 """
 
 from __future__ import annotations

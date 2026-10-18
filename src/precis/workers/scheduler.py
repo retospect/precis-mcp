@@ -484,7 +484,7 @@ def _run_memory_thread_sweep(store: Store, batch_size: int) -> None:
 
 
 def _run_memory_recall(store: Store, batch_size: int) -> None:
-    """One P4 recall-set score (docs/backlog/memory-recall-quality.md),
+    """One P4 recall-set score (``precis.workers.memory_recall``),
     fired from the weekly host-agnostic ``memory_recall`` cadence — any
     live worker can win it, same shape as ``cfp_watch``, except the
     ``eligible`` gate below keeps hosts that cannot build the configured
@@ -883,7 +883,7 @@ CADENCES: tuple[Cadence, ...] = (
         interval_s=24 * 3600 + 43 * 60,
         run=_run_memory_thread_sweep,
     ),
-    # docs/backlog/memory-recall-quality.md made durable: score the P4
+    # The P4 scorer (workers/memory_recall.py) made durable: score the P4
     # recall question set weekly, record the k=5 score (native/mirror
     # split) in app_settings, and raise a WARN alert when it drops below
     # the last recorded run. Host-agnostic, off the exact week like

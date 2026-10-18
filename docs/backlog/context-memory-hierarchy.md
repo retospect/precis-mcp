@@ -54,9 +54,11 @@ Slices, in build order:
    preamble from CLAUDE.md + MEMORY.md to CLAUDE.md + the live-thread
    render, so the budget line needs re-stating).
 
-5. **P4 — recall quality.** A question set of real recall cases, a
-   re-runnable score (prod and a test floor) and title/hook/link fixes
-   driven by its misses: [memory-recall-quality](./memory-recall-quality.md).
+5. **P4 — recall quality: done 2026-10-18** (Reto: "Memory p4, yes";
+   32f1dc70c, f24973944). Question set `src/precis/data/memory_recall_set.json`,
+   scorer `precis memory index --set`, weekly `memory_recall` cadence
+   (`src/precis/workers/memory_recall.py`), test floor
+   `tests/test_memory_recall_native_vs_mirror.py`.
 
 **Agent-tag-scoped sticky memories:** buildable once Reto decides the
 open question. Today `src/asa_bot/preamble.py::_fetch_stickies` searches

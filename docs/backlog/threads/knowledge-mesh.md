@@ -7,7 +7,7 @@ effort: high
 
 ## Resume
 
-- **Next:** Dormant from 2026-10-17 (Reto): P1 winds down to maintenance once memory P4 lands (queued). R17 [norr-her-meta packing reconciliation](../norr-her-meta.md#r17-packing-evidence-reconciliation), native task `td470289`: hand off the verified retained corrected packed 300-row receipts and exact reproducibility manifest with independent review before any duplicate implementation or spend. Packing and per-half grouping already shipped. Trust slice 1 is built (compat mode), reviewed and landing; see Do next 0.
+- **Next:** Dormant from 2026-10-17 (Reto): P1 winds down to maintenance once memory P4 landed (2026-10-18). R17 [norr-her-meta packing reconciliation](../norr-her-meta.md#r17-packing-evidence-reconciliation), native task `td470289`: hand off the verified retained corrected packed 300-row receipts and exact reproducibility manifest with independent review before any duplicate implementation or spend. Packing and per-half grouping already shipped. Trust slice 1 is built (compat mode), reviewed and landing; see Do next 0.
 - **Blocked by:** No blocker to retained-artifact verification. The separate local 100-row qualification still needs supported placement access; old Castor/0188 status below is historical, not a current runtime claim. Canonical focused tests/types wait for root's R16 queue release if code changes are necessary.
 - **Unblocks:** A qualified taxonomy substrate for graph memory.
 - **Acceptance:** The bounded R17 criteria in [norr-her-meta](../norr-her-meta.md#r17-packing-evidence-reconciliation), with durable native receipts and explicit unavailable evidence; no full corpus, freeze, gold adjudication or quest tick.

@@ -636,7 +636,7 @@ def score_recall(
     """Rank of each entry's ``want`` handle in the ``--q`` render of its
     ``query`` (1-based; ``None`` when it is not in the top ``k``).
 
-    The question-set scorer of ``docs/backlog/memory-recall-quality.md``: the
+    The question-set scorer for ``memory_recall_set.json``: the
     same :func:`render_memory_index` call a session's recall makes.
     """
     ranks: list[int | None] = []
@@ -707,7 +707,7 @@ def render_recall_report(
     return "\n".join(out) + "\n"
 
 
-#: Packaged P4 question set (``docs/backlog/memory-recall-quality.md``) —
+#: Packaged P4 question set (``precis/data/memory_recall_set.json``) —
 #: in ``precis.data`` so a deployed worker (an installed package, no
 #: ``tests/`` tree) reads the same set ``precis memory index --set``
 #: scores by hand and the ``memory_recall`` cadence scores weekly.

@@ -133,7 +133,7 @@ import, and the hook; `MEMORY.md` has been a pointer to the mesh root
 memory node since 2026-10-13. Open: `backlog/memory-native-authoring.md` as
 the primary write path, then skills into the mesh. One write path (the
 graph); files are derived.
-Wind-down (Reto, 2026-10-17): once memory P4 (queued) and
+Wind-down (Reto, 2026-10-17): once memory P4 (landed 2026-10-18) and
 conventions-as-findings land, this pillar moves to maintenance, and
 `knowledge-mesh.md` and `graph-memory-consumers.md` are dormant from that
 ruling. Skills and conventions into the mesh stays the plan of record.
