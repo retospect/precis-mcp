@@ -372,6 +372,52 @@ def test_iter_components_logs_row_key_names_once(creds, caplog):
     assert "C1" not in lines[0].replace("componentCode", "")
 
 
+def _live_row(i: int) -> dict:
+    """Row with the key set of the live getComponentInfos probe (gr494906,
+    2026-10-18); values are made up."""
+    return {
+        "lcscPart": f"C{100 + i}",
+        "firstCategory": "Resistors",
+        "secondCategory": "Chip Resistor",
+        "mfrPart": f"RES-{i}",
+        "solderJoint": 2,
+        "manufacturer": "ExampleCorp",
+        "libraryType": "base",
+        "description": "10k 0603",
+        "datasheet": f"https://example.invalid/ds/{i}.pdf",
+        "price": "1-9:0.01",
+        "stock": 500 + i,
+        "package": "0603",
+    }
+
+
+def test_normalize_api_row_live_probe_key_set():
+    out = jlc_api.normalize_api_row(_live_row(7))
+    assert out is not None
+    assert out["lcsc"] == "C107"
+    assert out["mfr_part"] == "RES-7"
+    assert out["datasheet_url"] == "https://example.invalid/ds/7.pdf"
+    assert out["mfr"] == "ExampleCorp"
+    assert out["basic"] is True
+    assert out["stock"] == 507
+    assert out["package"] == "0603"
+
+
+def test_parts_refresh_pass_claims_live_probe_rows(creds, store):
+    from precis.workers.parts_refresh import run_parts_refresh_pass
+
+    page = {
+        "success": True,
+        "code": 200,
+        "message": "ok",
+        "data": {"componentInfos": [_live_row(i) for i in range(50)], "lastKey": "p2"},
+    }
+    client, _ = _walk_client([page])
+    result = run_parts_refresh_pass(store, client=client, row_budget=50)
+    assert result["claimed"] > 0
+    assert result["failed"] == 0
+
+
 def test_iter_components_all_unknown_key_page_raises(creds):
     client, _ = _walk_client(
         [_prod_shaped_page(1, 1000, last_key="p2", code_key="mysteryPartId")]

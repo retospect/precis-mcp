@@ -265,23 +265,22 @@ def normalize_api_row(row: dict[str, Any]) -> dict[str, Any] | None:
     source's rows unchanged. ``None`` when the row carries no C-number.
     """
     lcsc = _lcsc_number(
-        row.get("componentCode")
+        # ``lcscPart`` is the bulk-walk (getComponentInfos) spelling, seen in
+        # the live probe 2026-10-18 (gr494906); the rest are the detail /
+        # listing spellings.
+        row.get("lcscPart")
+        or row.get("componentCode")
         or row.get("lcscCode")
         or row.get("lcsc")
         or row.get("C")
-        # Unverified candidates: prod's bulk rows carry NONE of the keys
-        # above (gr494906 -- all 1000 rows of a page dropped), and the real
-        # name is not yet in evidence. iter_components logs the row key
-        # names and raises when a page normalizes to nothing.
-        or row.get("lcscPart")
-        or row.get("lcscPartNumber")
     )
     if lcsc is None:
         return None
     return {
         "lcsc": lcsc,
         "mfr": row.get("manufacturer") or row.get("manufacturerName"),
-        "mfr_part": row.get("mfrPartNumber")
+        "mfr_part": row.get("mfrPart")
+        or row.get("mfrPartNumber")
         or row.get("componentModel")
         or row.get("mfr_part"),
         "description": row.get("description") or row.get("componentName") or "",
@@ -305,7 +304,9 @@ def normalize_api_row(row: dict[str, Any]) -> dict[str, Any] | None:
         "height_mm": None,  # not carried by this endpoint; the footprint
         # cache / dump remain the source for physical dimensions.
         "params": None,
-        "datasheet_url": row.get("dataManualUrl") or row.get("datasheet_url"),
+        "datasheet_url": row.get("datasheet")
+        or row.get("dataManualUrl")
+        or row.get("datasheet_url"),
     }
 
 
