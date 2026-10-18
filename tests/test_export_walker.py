@@ -315,3 +315,19 @@ def test_cite_run_collapses_same_paper_across_whitespace_only() -> None:
     assert run.gap(" and ") is None
     assert run.add("a", 1, si=False, chunk_id=None) == []
     assert run.flush() == walker.CiteGroup(("a",), (1,), (False,), (None,))
+
+
+@pytest.mark.parametrize(
+    ("prose", "want"),
+    [
+        ("(see \\cite{a} and ", "(see \\cite{a}"),
+        ("(see [pa12] and ", "(see [pa12]"),
+        ("A, B, and ", "A, B"),
+        ("either X or ", "either X"),
+        ("seen ", "seen"),
+        ("brand and sand ", "brand and sand"),
+        ("understand ", "understand"),
+    ],
+)
+def test_trim_before_dropped_strips_stranded_joiner(prose: str, want: str) -> None:
+    assert walker.trim_before_dropped(prose) == want

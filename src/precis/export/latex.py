@@ -2216,8 +2216,8 @@ def _render_inline(text: str, ctx: _Ctx) -> str:
     plain = ""  # source so far, a display link as its surface text
     for m in _COMBINED.finditer(text):
         gap = text[last : m.start()]
-        if dropped_at is not None and gap[:1] in (".", ",", ";", ":", "!", "?", ")"):
-            out[dropped_at] = out[dropped_at].rstrip(" ")
+        if dropped_at is not None and gap[:1] in walker.CLOSING_PUNCT:
+            out[dropped_at] = walker.trim_before_dropped(out[dropped_at])
         dropped_at = None
         out.append(_render_gap(gap, ctx, preceding=plain))
         plain += gap + (m.group("disp") or m.group(0))
@@ -2233,8 +2233,8 @@ def _render_inline(text: str, ctx: _Ctx) -> str:
         out.append(ref)
         last = m.end()
     tail = text[last:]
-    if dropped_at is not None and tail[:1] in (".", ",", ";", ":", "!", "?", ")"):
-        out[dropped_at] = out[dropped_at].rstrip(" ")
+    if dropped_at is not None and tail[:1] in walker.CLOSING_PUNCT:
+        out[dropped_at] = walker.trim_before_dropped(out[dropped_at])
     out.append(_render_gap(tail, ctx, preceding=plain))
     s = _merge_adjacent_cites("".join(out), ctx)
     # Directly-adjacent footnote markers print as one number ("23" for 2

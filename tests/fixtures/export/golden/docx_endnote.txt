@@ -630,7 +630,79 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 <w:t xml:space="preserve"> [unverified: source pending]</w:t>
 </w:r>
 <w:r>
-<w:t>.</w:t>
+<w:t xml:space="preserve">. Joined (see </w:t>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="begin">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:instrText xml:space="preserve"> ADDIN EN.CITE &lt;EndNote&gt;&lt;Cite&gt;&lt;Author&gt;Author1&lt;/Author&gt;&lt;Year&gt;2020&lt;/Year&gt;&lt;RecNum&gt;1&lt;/RecNum&gt;&lt;DisplayText&gt;[1]&lt;/DisplayText&gt;&lt;record&gt;&lt;rec-number&gt;1&lt;/rec-number&gt;&lt;foreign-keys&gt;&lt;key app="EN" db-id="precismcp0traveling0library000000000" timestamp="1700000000"&gt;1&lt;/key&gt;&lt;/foreign-keys&gt;&lt;ref-type name="Journal Article"&gt;17&lt;/ref-type&gt;&lt;contributors&gt;&lt;authors&gt;&lt;author&gt;Author1, A.&lt;/author&gt;&lt;author&gt;Second1, B.&lt;/author&gt;&lt;/authors&gt;&lt;/contributors&gt;&lt;titles&gt;&lt;title&gt;Amine uptake in MOFs&lt;/title&gt;&lt;secondary-title&gt;J. Golden&lt;/secondary-title&gt;&lt;/titles&gt;&lt;periodical&gt;&lt;full-title&gt;J. Golden&lt;/full-title&gt;&lt;/periodical&gt;&lt;pages&gt;1-10&lt;/pages&gt;&lt;volume&gt;1&lt;/volume&gt;&lt;dates&gt;&lt;year&gt;2020&lt;/year&gt;&lt;/dates&gt;&lt;electronic-resource-num&gt;10.1000/golden.1&lt;/electronic-resource-num&gt;&lt;urls&gt;&lt;related-urls&gt;&lt;url&gt;https://doi.org/10.1000/golden.1&lt;/url&gt;&lt;/related-urls&gt;&lt;/urls&gt;&lt;/record&gt;&lt;/Cite&gt;&lt;/EndNote&gt;</w:instrText>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="separate">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:rPr>
+<w:noProof>
+</w:noProof>
+</w:rPr>
+<w:t xml:space="preserve">[1]</w:t>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="end">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:rPr>
+<w:i>
+</w:i>
+<w:color w:val="666666">
+</w:color>
+</w:rPr>
+<w:t xml:space="preserve"> [unverified: source pending]</w:t>
+</w:r>
+<w:r>
+</w:r>
+<w:r>
+<w:t xml:space="preserve">) and (also </w:t>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="begin">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:instrText xml:space="preserve"> ADDIN EN.CITE &lt;EndNote&gt;&lt;Cite&gt;&lt;Author&gt;Author1&lt;/Author&gt;&lt;Year&gt;2020&lt;/Year&gt;&lt;RecNum&gt;1&lt;/RecNum&gt;&lt;DisplayText&gt;[1]&lt;/DisplayText&gt;&lt;record&gt;&lt;rec-number&gt;1&lt;/rec-number&gt;&lt;foreign-keys&gt;&lt;key app="EN" db-id="precismcp0traveling0library000000000" timestamp="1700000000"&gt;1&lt;/key&gt;&lt;/foreign-keys&gt;&lt;ref-type name="Journal Article"&gt;17&lt;/ref-type&gt;&lt;contributors&gt;&lt;authors&gt;&lt;author&gt;Author1, A.&lt;/author&gt;&lt;author&gt;Second1, B.&lt;/author&gt;&lt;/authors&gt;&lt;/contributors&gt;&lt;titles&gt;&lt;title&gt;Amine uptake in MOFs&lt;/title&gt;&lt;secondary-title&gt;J. Golden&lt;/secondary-title&gt;&lt;/titles&gt;&lt;periodical&gt;&lt;full-title&gt;J. Golden&lt;/full-title&gt;&lt;/periodical&gt;&lt;pages&gt;1-10&lt;/pages&gt;&lt;volume&gt;1&lt;/volume&gt;&lt;dates&gt;&lt;year&gt;2020&lt;/year&gt;&lt;/dates&gt;&lt;electronic-resource-num&gt;10.1000/golden.1&lt;/electronic-resource-num&gt;&lt;urls&gt;&lt;related-urls&gt;&lt;url&gt;https://doi.org/10.1000/golden.1&lt;/url&gt;&lt;/related-urls&gt;&lt;/urls&gt;&lt;/record&gt;&lt;/Cite&gt;&lt;/EndNote&gt;</w:instrText>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="separate">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:rPr>
+<w:noProof>
+</w:noProof>
+</w:rPr>
+<w:t xml:space="preserve">[1]</w:t>
+</w:r>
+<w:r>
+<w:fldChar w:fldCharType="end">
+</w:fldChar>
+</w:r>
+<w:r>
+<w:rPr>
+<w:i>
+</w:i>
+<w:color w:val="666666">
+</w:color>
+</w:rPr>
+<w:t xml:space="preserve"> [unverified: source pending]</w:t>
+</w:r>
+<w:r>
+</w:r>
+<w:r>
+<w:t>).</w:t>
 </w:r>
 </w:p>
 <w:p>
@@ -1822,6 +1894,8 @@ nobody99
 us123
 == warnings ==
 cite [fi10]: no citable source (conjunction hub without sourced conjuncts)
+cite [fi11]: no citable source (conjunction hub without sourced conjuncts)
+cite [fi11]: no citable source (conjunction hub without sourced conjuncts)
 cite 'nobody99': no paper in corpus — plain marker
 cross-ref dc999: no such live chunk — downgraded
 cite 'nobody99': no source in corpus — stub reference

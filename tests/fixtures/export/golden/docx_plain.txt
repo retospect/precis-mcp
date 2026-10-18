@@ -780,7 +780,113 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 <w:t xml:space="preserve"> [unverified: source pending]</w:t>
 </w:r>
 <w:r>
-<w:t>.</w:t>
+<w:t xml:space="preserve">. Joined (see </w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:vertAlign w:val="superscript">
+</w:vertAlign>
+</w:rPr>
+<w:t>[1]</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:hyperlink r:id="rId9">
+<w:r>
+<w:rPr>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>doi</w:t>
+</w:r>
+</w:hyperlink>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:hyperlink r:id="rId10">
+<w:r>
+<w:rPr>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>UL</w:t>
+</w:r>
+</w:hyperlink>
+<w:r>
+<w:rPr>
+<w:i>
+</w:i>
+<w:color w:val="666666">
+</w:color>
+</w:rPr>
+<w:t xml:space="preserve"> [unverified: source pending]</w:t>
+</w:r>
+<w:r>
+</w:r>
+<w:r>
+<w:t xml:space="preserve">) and (also </w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:vertAlign w:val="superscript">
+</w:vertAlign>
+</w:rPr>
+<w:t>[1]</w:t>
+</w:r>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:hyperlink r:id="rId9">
+<w:r>
+<w:rPr>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>doi</w:t>
+</w:r>
+</w:hyperlink>
+<w:r>
+<w:t xml:space="preserve"> </w:t>
+</w:r>
+<w:hyperlink r:id="rId10">
+<w:r>
+<w:rPr>
+<w:color w:val="000000">
+</w:color>
+<w:u w:val="single">
+</w:u>
+<w:sz w:val="14">
+</w:sz>
+</w:rPr>
+<w:t>UL</w:t>
+</w:r>
+</w:hyperlink>
+<w:r>
+<w:rPr>
+<w:i>
+</w:i>
+<w:color w:val="666666">
+</w:color>
+</w:rPr>
+<w:t xml:space="preserve"> [unverified: source pending]</w:t>
+</w:r>
+<w:r>
+</w:r>
+<w:r>
+<w:t>).</w:t>
 </w:r>
 </w:p>
 <w:p>
@@ -2067,5 +2173,7 @@ nobody99
 us123
 == warnings ==
 cite [fi10]: no citable source (conjunction hub without sourced conjuncts)
+cite [fi11]: no citable source (conjunction hub without sourced conjuncts)
+cite [fi11]: no citable source (conjunction hub without sourced conjuncts)
 cross-ref dc999: no such live chunk — downgraded
 cite 'nobody99': no source in corpus — stub reference

@@ -125,6 +125,7 @@ _FINDING_KEYS = {
     8: ["jones21", "lee22"],
     9: ["lee22", "parent24si"],
     10: [],
+    11: [],  # clean and sourceless: the cite is dropped outright
 }
 
 
@@ -184,7 +185,8 @@ _CHUNKS = [
         7,
         "paragraph",
         2,
-        "Finding [fi7] hub [fi8] mixed [fi9] repeat [fi7][fi7]; dropped [fi10].",
+        "Finding [fi7] hub [fi8] mixed [fi9] repeat [fi7][fi7]; dropped [fi10]. "
+        "Joined (see [fi7] and [fi11]) and (also [fi7], or [fi11]).",
         parent=6,
     ),
     _chunk(
@@ -336,6 +338,19 @@ def golden_env(monkeypatch: pytest.MonkeyPatch) -> Any:
         "finding_cite_keys",
         lambda _store, pk: SimpleNamespace(
             cite_keys=list(_FINDING_KEYS.get(pk, [])), is_hub=False, evidence=None
+        ),
+    )
+    from precis.export import _trust_marks
+    from precis.taproot.trust import TrustState
+
+    real_trust = _trust_marks.claim_trust
+    monkeypatch.setattr(
+        _trust_marks,
+        "claim_trust",
+        lambda store, pk: (
+            TrustState(label="clean", note=None, overridden=False, status="tracing")
+            if pk == 11
+            else real_trust(store, pk)
         ),
     )
     monkeypatch.setattr(latex, "_conjunct_cite_keys", lambda _s, _pk: [])

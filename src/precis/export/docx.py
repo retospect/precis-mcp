@@ -752,17 +752,15 @@ def _script_only_to_html(m: re.Match[str]) -> str:
     return f"<{tag}>{arg}</{tag}>"
 
 
-#: Punctuation that must hug the preceding word: a dropped cite mark leaves
-#: its leading space behind, which is pulled off before one of these.
-_CLOSING_PUNCT = (".", ",", ";", ":", "!", "?", ")")
+_CLOSING_PUNCT = walker.CLOSING_PUNCT
 
 
 def _rstrip_last_run(paragraph: Any) -> None:
-    """Trim trailing spaces off the paragraph's last run (the space that
-    preceded a dropped citation mark)."""
+    """Trim the paragraph's last run before a dropped citation mark (its
+    leading space, a stranded ``and``)."""
     runs = paragraph.runs
     if runs:
-        runs[-1].text = runs[-1].text.rstrip(" ")
+        runs[-1].text = walker.trim_before_dropped(runs[-1].text)
 
 
 # Tokeniser for a non-reference gap: math / code / bold / italic / sub /

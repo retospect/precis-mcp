@@ -154,7 +154,7 @@ Handles \footnote{{\textquotedblleft}Amine uptake in MOFs{\textquotedblright}~\c
 
 \section{Claims about \glsfmtshort{fmof} \cite{lee22}}\label{chunk:dc6}\glsadd{fmof}
 
-Finding \footnote{{\textquotedblleft}Amine uptake in MOFs{\textquotedblright}~\cite{smith20}}\textsuperscript{?}[unverified: source pending] hub \footnote{{\textquotedblleft}Arxiv-only preprint{\textquotedblright}~\cite{jones21}}\textsuperscript{,}\footnote{{\textquotedblleft}No identifier paper{\textquotedblright}~\cite{lee22}}\textsuperscript{?}[unverified: source pending] mixed \footnote{{\textquotedblleft}No identifier paper{\textquotedblright}~\cite{lee22}}\textsuperscript{,}\footnote{{\textquotedblleft}Supplement{\textquotedblright}~\cite{parent24si}}\textsuperscript{?}[unverified: source pending] repeat \footnote{{\textquotedblleft}Amine uptake in MOFs{\textquotedblright}~\cite{smith20}}\textsuperscript{?}[unverified: source pending]\footnote{{\textquotedblleft}Amine uptake in MOFs{\textquotedblright}~\cite{smith20}}\textsuperscript{?}[unverified: source pending]; dropped \textsuperscript{?}[unverified: source pending].\label{chunk:dc7}
+Finding \footnote{{\textquotedblleft}Amine uptake in MOFs{\textquotedblright}~\cite{smith20}}\textsuperscript{?}[unverified: source pending] hub \footnote{{\textquotedblleft}Arxiv-only preprint{\textquotedblright}~\cite{jones21}}\textsuperscript{,}\footnote{{\textquotedblleft}No identifier paper{\textquotedblright}~\cite{lee22}}\textsuperscript{?}[unverified: source pending] mixed \footnote{{\textquotedblleft}No identifier paper{\textquotedblright}~\cite{lee22}}\textsuperscript{,}\footnote{{\textquotedblleft}Supplement{\textquotedblright}~\cite{parent24si}}\textsuperscript{?}[unverified: source pending] repeat \footnote{{\textquotedblleft}Amine uptake in MOFs{\textquotedblright}~\cite{smith20}}\textsuperscript{?}[unverified: source pending]\footnote{{\textquotedblleft}Amine uptake in MOFs{\textquotedblright}~\cite{smith20}}\textsuperscript{?}[unverified: source pending]; dropped \textsuperscript{?}[unverified: source pending]. Joined (see \footnote{{\textquotedblleft}Amine uptake in MOFs{\textquotedblright}~\cite{smith20}}\textsuperscript{?}[unverified: source pending]) and (also \footnote{{\textquotedblleft}Amine uptake in MOFs{\textquotedblright}~\cite{smith20}}\textsuperscript{?}[unverified: source pending]).\label{chunk:dc7}
 
 Prose \footnote{{\textquotedblleft}No identifier paper{\textquotedblright}~\cite{lee22}} and doi:10.1/x and st12 and \footnote{nobody99~\cite{nobody99}} and patent \footnote{Patent No. US123~\cite{us123}}. See \cref{chunk:dc2} and \cref{chunk:dc11}.\label{chunk:dc8}
 
@@ -334,5 +334,7 @@ nobody99
 us123
 == warnings ==
 cite [fi10]: no citable source (conjunction hub without sourced conjuncts)
+cite [fi11]: no citable source (conjunction hub without sourced conjuncts)
+cite [fi11]: no citable source (conjunction hub without sourced conjuncts)
 cross-ref dc999: no such live chunk — downgraded
 cite 'nobody99': no source in corpus — stub bib entry

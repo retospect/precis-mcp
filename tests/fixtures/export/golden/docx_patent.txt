@@ -318,7 +318,41 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 <w:t xml:space="preserve"> [unverified: source pending]</w:t>
 </w:r>
 <w:r>
-<w:t>.</w:t>
+<w:t xml:space="preserve">. Joined (see </w:t>
+</w:r>
+<w:r>
+<w:t>“Amine uptake in MOFs”</w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:i>
+</w:i>
+<w:color w:val="666666">
+</w:color>
+</w:rPr>
+<w:t xml:space="preserve"> [unverified: source pending]</w:t>
+</w:r>
+<w:r>
+</w:r>
+<w:r>
+<w:t xml:space="preserve">) and (also </w:t>
+</w:r>
+<w:r>
+<w:t>“Amine uptake in MOFs”</w:t>
+</w:r>
+<w:r>
+<w:rPr>
+<w:i>
+</w:i>
+<w:color w:val="666666">
+</w:color>
+</w:rPr>
+<w:t xml:space="preserve"> [unverified: source pending]</w:t>
+</w:r>
+<w:r>
+</w:r>
+<w:r>
+<w:t>).</w:t>
 </w:r>
 </w:p>
 <w:p>
@@ -1276,4 +1310,6 @@ sha256 25f133eff1e20d6e024db7bcd6ed68718140bca8f60f0d28c9a3e602905f1a85
 
 == warnings ==
 cite [fi10]: no citable source (conjunction hub without sourced conjuncts)
+cite [fi11]: no citable source (conjunction hub without sourced conjuncts)
+cite [fi11]: no citable source (conjunction hub without sourced conjuncts)
 cross-ref dc999: no such live chunk — downgraded

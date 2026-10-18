@@ -150,7 +150,7 @@ Handles \cite{smith20,jones21}, SI \cite[SI]{parent24} and \cite[SI]{parent24}, 
 
 \section{Claims about \glsfmtshort{fmof} \cite{lee22}}\label{chunk:dc6}\glsadd{fmof}
 
-Finding \cite{smith20}\textsuperscript{?}[unverified: source pending] hub \cite{jones21,lee22}\textsuperscript{?}[unverified: source pending] mixed \cites{lee22}[SI]{parent24}\relax\textsuperscript{?}[unverified: source pending] repeat \cite{smith20}\textsuperscript{?}[unverified: source pending]; dropped \textsuperscript{?}[unverified: source pending].\label{chunk:dc7}
+Finding \cite{smith20}\textsuperscript{?}[unverified: source pending] hub \cite{jones21,lee22}\textsuperscript{?}[unverified: source pending] mixed \cites{lee22}[SI]{parent24}\relax\textsuperscript{?}[unverified: source pending] repeat \cite{smith20}\textsuperscript{?}[unverified: source pending]; dropped \textsuperscript{?}[unverified: source pending]. Joined (see \cite{smith20}\textsuperscript{?}[unverified: source pending]) and (also \cite{smith20}\textsuperscript{?}[unverified: source pending]).\label{chunk:dc7}
 
 Prose \cite{lee22} and doi:10.1/x and st12 and \cite{nobody99} and patent \cite{us123}. See \cref{chunk:dc2} and \cref{chunk:dc11}.\label{chunk:dc8}
 
@@ -310,5 +310,7 @@ nobody99
 us123
 == warnings ==
 cite [fi10]: no citable source (conjunction hub without sourced conjuncts)
+cite [fi11]: no citable source (conjunction hub without sourced conjuncts)
+cite [fi11]: no citable source (conjunction hub without sourced conjuncts)
 cross-ref dc999: no such live chunk — downgraded
 cite 'nobody99': no source in corpus — stub bib entry

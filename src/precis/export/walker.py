@@ -62,6 +62,7 @@ section with the LaTeX renderer in poster mode.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -327,6 +328,27 @@ def _dedupe(group: CiteGroup) -> CiteGroup:
         si=tuple(group.si[i] for i in keep),
         chunk_ids=tuple(group.chunk_ids[i] for i in keep if i < len(group.chunk_ids)),
     )
+
+
+#: Punctuation that must hug the preceding word: a dropped cite mark leaves
+#: its leading space behind, which is pulled off before one of these.
+CLOSING_PUNCT = (".", ",", ";", ":", "!", "?", ")")
+
+#: A conjunction stranded at the end of prose by a dropped cite
+#: (``(see [pa12] and [fi10])`` -> ``(see [pa12] and``), with the comma of
+#: an Oxford list before it.
+_STRANDED_JOINER = re.compile(r"(?:[,;]\s*)?\b(?:and|or)\s*$", re.IGNORECASE)
+
+
+def trim_before_dropped(prose: str) -> str:
+    """Prose that precedes a cite mark dropped for no source, cleaned for
+    the closing punctuation that now follows it: trailing spaces go, and so
+    does a stranded ``and`` / ``or`` (``see [pa12] and`` -> ``see [pa12]``).
+    Both backends call this at the same point so a dropped cite reads the
+    same in LaTeX and Word."""
+    trimmed = prose.rstrip(" ")
+    stripped = _STRANDED_JOINER.sub("", trimmed)
+    return stripped.rstrip(" ") if stripped != trimmed else trimmed
 
 
 @dataclass

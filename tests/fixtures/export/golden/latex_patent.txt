@@ -149,7 +149,7 @@ Handles {\textquotedblleft}Amine uptake in MOFs{\textquotedblright}{\textquotedb
 
 \section{Claims about \glsfmtshort{fmof} {\textquotedblleft}No identifier paper{\textquotedblright}}\label{chunk:dc6}\glsadd{fmof}
 
-Finding {\textquotedblleft}Amine uptake in MOFs{\textquotedblright}\textsuperscript{?}[unverified: source pending] hub {\textquotedblleft}Arxiv-only preprint{\textquotedblright}{\textquotedblleft}No identifier paper{\textquotedblright}\textsuperscript{?}[unverified: source pending] mixed {\textquotedblleft}No identifier paper{\textquotedblright}{\textquotedblleft}Supplement{\textquotedblright}\textsuperscript{?}[unverified: source pending] repeat {\textquotedblleft}Amine uptake in MOFs{\textquotedblright}\textsuperscript{?}[unverified: source pending]{\textquotedblleft}Amine uptake in MOFs{\textquotedblright}\textsuperscript{?}[unverified: source pending]; dropped \textsuperscript{?}[unverified: source pending].\label{chunk:dc7}
+Finding {\textquotedblleft}Amine uptake in MOFs{\textquotedblright}\textsuperscript{?}[unverified: source pending] hub {\textquotedblleft}Arxiv-only preprint{\textquotedblright}{\textquotedblleft}No identifier paper{\textquotedblright}\textsuperscript{?}[unverified: source pending] mixed {\textquotedblleft}No identifier paper{\textquotedblright}{\textquotedblleft}Supplement{\textquotedblright}\textsuperscript{?}[unverified: source pending] repeat {\textquotedblleft}Amine uptake in MOFs{\textquotedblright}\textsuperscript{?}[unverified: source pending]{\textquotedblleft}Amine uptake in MOFs{\textquotedblright}\textsuperscript{?}[unverified: source pending]; dropped \textsuperscript{?}[unverified: source pending]. Joined (see {\textquotedblleft}Amine uptake in MOFs{\textquotedblright}\textsuperscript{?}[unverified: source pending]) and (also {\textquotedblleft}Amine uptake in MOFs{\textquotedblright}\textsuperscript{?}[unverified: source pending]).\label{chunk:dc7}
 
 Prose {\textquotedblleft}No identifier paper{\textquotedblright} and doi:10.1/x and st12 and nobody99 and patent Patent No. US123. See \cref{chunk:dc2} and \cref{chunk:dc11}.\label{chunk:dc8}
 
@@ -255,4 +255,6 @@ B     -0.4
 
 == warnings ==
 cite [fi10]: no citable source (conjunction hub without sourced conjuncts)
+cite [fi11]: no citable source (conjunction hub without sourced conjuncts)
+cite [fi11]: no citable source (conjunction hub without sourced conjuncts)
 cross-ref dc999: no such live chunk — downgraded
