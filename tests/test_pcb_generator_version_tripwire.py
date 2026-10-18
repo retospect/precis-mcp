@@ -13,12 +13,13 @@ replace the pinned ``(version, digest)`` with the pair the failure prints.
 from __future__ import annotations
 
 import hashlib
-import json
 from typing import Any
 
 import pytest
 
 from precis.pcb import generators
+from tests._canon import assert_close
+from tests._canon import digest as canon_digest
 
 #: Fixed inputs per generator: a bare field, and one that emits a sink part
 #: (version 3 changed only the sink instances, so a sink-free case would not
@@ -52,23 +53,15 @@ _CASES: dict[str, list[dict[str, Any]]] = {
 #: generator -> (version, digest over every case's expansion). Re-pin both
 #: together, never the digest alone.
 _PINNED: dict[str, tuple[int, str]] = {
-    "ewod_pad_array": (10, "752c6081a31984c5"),
+    "ewod_pad_array": (10, "1b32f1cd558ddf44"),
 }
 
 
-def _rounded(value: Any) -> Any:
-    # Floats rounded so a last-bit libm difference between macOS and the
-    # Linux gate is not an "output change"; 1 nm is far below any fab grid.
-    if isinstance(value, float):
-        return round(value, 6)
-    if isinstance(value, dict):
-        return {str(k): _rounded(v) for k, v in value.items()}
-    if isinstance(value, list | tuple):
-        return [_rounded(v) for v in value]
-    return value
-
-
 def _digest(generator: str) -> str:
+    # Strict on everything (counts, ids, nets, copper, params, version) except
+    # polygon vertex lists, which tests/_canon.py reduces to area/bounds/
+    # centroid/ring count at 1e-4. The only insensitivity this adds is arc
+    # vertex count, which depends on platform libm (macOS vs glibc, gr495146).
     h = hashlib.sha256()
     for params in _CASES[generator]:
         exp = generators.expand(generator, "G1", params)
@@ -83,7 +76,7 @@ def _digest(generator: str) -> str:
             "measures": exp.measures,
             "canonical_params": exp.canonical_params,
         }
-        h.update(json.dumps(_rounded(emitted), sort_keys=True).encode("utf-8"))
+        h.update(canon_digest(emitted).encode("utf-8"))
     return h.hexdigest()[:16]
 
 
@@ -165,3 +158,41 @@ def test_fixed_copper_travels_with_the_array_anchor():
     xs, ys = [p[0] for p in poly], [p[1] for p in poly]
     for vx, vy in m_pts:
         assert min(xs) <= vx <= max(xs) and min(ys) <= vy <= max(ys)
+
+
+def _circle(r: float, quad_segs: int) -> list[list[float]]:
+    from shapely.geometry import Point
+
+    ring = Point(1.0, 2.0).buffer(r, quad_segs=quad_segs).exterior.coords
+    return [[x, y] for x, y in ring]
+
+
+def test_arc_vertex_count_does_not_change_the_digest():
+    # At the pad resolution (~950 vertices) a one-or-two vertex libm drift
+    # moves the area ~1e-8; quad_segs 237 vs 238 is the same class of change.
+    # (quad_segs 8 vs 9 is a 1e-2 area change, a real resolution change.)
+    a, b = _circle(1.0, 237), _circle(1.0, 238)
+    assert len(a) != len(b)
+    assert canon_digest({"poly": a}) == canon_digest({"poly": b})
+    assert canon_digest({"poly": _circle(1.0, 8)}) != canon_digest(
+        {"poly": _circle(1.0, 9)}
+    )
+
+
+def test_a_resized_moved_or_added_pad_changes_the_digest():
+    base = {"pads": [{"id": "1", "poly": _circle(1.0, 64)}]}
+    resized = {"pads": [{"id": "1", "poly": _circle(1.01, 64)}]}
+    moved = {
+        "pads": [{"id": "1", "poly": [[x + 0.01, y] for x, y in _circle(1.0, 64)]}]
+    }
+    added = {"pads": [*base["pads"], {"id": "2", "poly": _circle(1.0, 64)}]}
+    for changed in (resized, moved, added):
+        assert canon_digest(changed) != canon_digest(base)
+
+
+def test_assert_close_tolerates_float_noise_only():
+    assert_close({"a": [1.0, 2.0], "n": 3}, {"a": [1.00001, 2.0], "n": 3})
+    with pytest.raises(AssertionError):
+        assert_close({"a": 1.0}, {"a": 1.1})
+    with pytest.raises(AssertionError):
+        assert_close({"n": 3}, {"n": 4})
