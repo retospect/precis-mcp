@@ -2503,6 +2503,9 @@ class RefsMixin:
     _LIST_ORDER_BY: ClassVar[dict[str, str]] = {
         "updated_desc": "r.updated_at DESC",
         "prio_asc": "coalesce(r.prio, 5) ASC, r.updated_at DESC, r.ref_id DESC",
+        # Triage order (gripe open view): within a PRIO the oldest waits
+        # longest, so it comes first; a fresh comment does not reorder.
+        "prio_age": "coalesce(r.prio, 5) ASC, r.created_at ASC, r.ref_id ASC",
         "updated_asc": "r.updated_at ASC",
         # Most recently *opened* in the reader first; never-opened refs fall
         # to the bottom, then by last write. Backs the drafts list.
@@ -3360,6 +3363,7 @@ class RefsMixin:
         provider: str | None = None,
         tags: list[str] | None = None,
         exclude_tags: list[str] | None = None,
+        created_before: datetime | None = None,
     ) -> int:
         """Count active (not soft-deleted) refs, optionally filtered.
 
@@ -3369,7 +3373,9 @@ class RefsMixin:
 
         ``tags=`` accepts the same canonical tag-string list as
         :meth:`list_refs`; runtime callers must validate via
-        :meth:`Tag.parse_strict` before this point.
+        :meth:`Tag.parse_strict` before this point. ``created_before=``
+        keeps refs created strictly before that instant (the gripe open
+        view's "older than 3d" count).
         """
         clauses = ["r.retired_at IS NULL"]
         params: list[Any] = []
@@ -3379,6 +3385,9 @@ class RefsMixin:
         if provider is not None:
             params.append(provider)
             clauses.append("r.provider = %s")
+        if created_before is not None:
+            params.append(created_before)
+            clauses.append("r.created_at < %s")
         tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
         if tag_frag:
             clauses.append(tag_frag)

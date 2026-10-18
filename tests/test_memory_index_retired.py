@@ -135,7 +135,12 @@ def test_hook_over_budget_drops_threads_into_the_older_count(
     lines = proc.stdout.rstrip("\n").splitlines()
     assert lines[0] == "## Live threads (edited ≤14 days)"
     assert lines[1].startswith("(+3 older thread nodes: search(kind='memory'")
-    assert len(lines) == 2
+    # The open-gripe digest line rides after the index, outside its budget.
+    assert re.fullmatch(
+        r"gripes: \d+ open · \d+ older than 3d.* — get\(kind='gripe', id='/open'\)",
+        lines[2],
+    ), lines[2]
+    assert len(lines) == 3
 
 
 def test_hook_exports_the_node_bodies_next_to_the_cache(

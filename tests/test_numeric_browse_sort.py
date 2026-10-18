@@ -64,13 +64,24 @@ def test_priority_and_recency_pages(
         status="active" if kind == "quest" else "open",
         page_size=2,
     )
+    # PRIO ties: todo/quest put the newest first; gripe puts the oldest
+    # first (a triage queue — the longest-waiting gripe leads, 2026-10-18).
+    oldest_first = kind == "gripe"
     first = _text(core.search(**args, sort="prio"))
     assert "[error:" not in first
-    assert first.index("fixture-sort-hot-new") < first.index("fixture-sort-hot-old")
+    new_at, old_at = (
+        first.index("fixture-sort-hot-new"),
+        first.index("fixture-sort-hot-old"),
+    )
+    assert (old_at < new_at) if oldest_first else (new_at < old_at)
     assert "fixture-sort-cold" not in first
     assert "fixture-sort-closed" not in first
     second = _text(core.search(**args, sort="prio", page=2))
-    assert second.index("fixture-sort-default") < second.index("fixture-sort-unset")
+    default_at, unset_at = (
+        second.index("fixture-sort-default"),
+        second.index("fixture-sort-unset"),
+    )
+    assert (unset_at < default_at) if oldest_first else (default_at < unset_at)
     assert "fixture-sort-hot-new" not in second
     last = _text(core.search(**args, sort="prio", page=3))
     assert "fixture-sort-cold" in last

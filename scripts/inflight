@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # scripts/inflight — a live table of every worktree + branch in flight on THIS machine.
 #
-# Everything here is DERIVED from git at call time (never a stored cache), so it
+# Everything here is DERIVED from git at call time (never a stored cache; the
+# one exception is the trailing gripe line, see gripe_line), so it
 # cannot drift: worktrees appear/vanish between ships and the table is still
 # correct the instant you run it. The one thing git can't derive — what a
 # random-codenamed worktree is actually *about* — is read from a per-worktree
@@ -304,6 +305,16 @@ print(json.dumps({"base": base, "stashCount": stash_count, "worktrees": worktree
   exit 0
 fi
 
+# The open-gripe line (`gripes: N open · M older than 3d · oldest grX`) from
+# the session-start memory hook's saved render — the one cached fact here,
+# shown with its timestamp; inflight itself never queries prod.
+gripe_line() {
+  local c="${PRECIS_MEMORY_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/precis/memory-index.md}" l
+  [ -s "$c" ] || return 0
+  l="$(grep -m1 '^gripes: ' "$c")" || return 0
+  echo "$l (as of $(date -u -r "$c" +%Y-%m-%dT%H:%MZ))"
+}
+
 if [ "$FOR_HOOK" = 1 ]; then
   # Compact: only trees that matter for overlap, short PURPOSE, LAST = age only.
   echo "🌳 In-flight trees (scan for overlap; once your task is clear, write one line to .claude/purpose):"
@@ -319,6 +330,7 @@ if [ "$FOR_HOOK" = 1 ]; then
   } | column -t -s '|'
   [ "$HIDDEN" -gt 0 ] && echo "+ ${HIDDEN} merged/clean/sessionless trees hidden (scripts/inflight for all)"
   [ "${#REMOVABLE[@]}" -gt 0 ] && echo "${#REMOVABLE[@]} removable — reap-worktrees handles them"
+  gripe_line
   exit 0
 fi
 {
@@ -331,4 +343,5 @@ if [ "${#REMOVABLE[@]}" -gt 0 ]; then
   echo "Removable (merged + clean + no live session): ${REMOVABLE[*]}"
   echo "  → review, then: git worktree remove <name> && git branch -d worktree-<name>"
 fi
+gripe_line
 exit 0

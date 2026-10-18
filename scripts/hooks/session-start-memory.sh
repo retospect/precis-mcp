@@ -33,6 +33,12 @@
 # A failed render leaves the previous set as it was; a failed export prints one
 # stderr line and does not change the index output or the exit code.
 #
+# Gripe line: after a good render the hook appends one `gripes: N open · M
+# older than 3d · oldest grX (D days)` line (`precis gripes --summary`, the
+# same numbers as get(kind='gripe', id='/open')). It is part of the saved
+# copy, which is where scripts/inflight reads it from. A failed gripe call
+# drops the line and nothing else.
+#
 # Never blocks a session: any failure exits 0, printing the cached copy and
 # one line, or just the one line when no copy exists.
 set -uo pipefail
@@ -92,6 +98,10 @@ fi
 if [ -z "$out" ]; then
     fail "precis memory index printed nothing"
 fi
+gripes="$("${cli[@]}" gripes --summary 2>/dev/null | tail -n 1)" || gripes=""
+case "$gripes" in
+"gripes: "*) out="$out"$'\n'"$gripes" ;;
+esac
 printf '%s\n' "$out"
 # A successful render can still carry the CLI's one-line export failure.
 grep -F 'memory index: node export' "$errf" | tail -n 1 | cut -c1-300 >&2

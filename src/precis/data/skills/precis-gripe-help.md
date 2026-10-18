@@ -95,7 +95,14 @@ header flags it (`⚠ N of M … also match q`) so the truncation is visible.
 
 ```python
 search(kind="gripe", tags=["STATUS:open"])  # complete enumeration (no q)
+get(kind="gripe", id="/open")               # same set, 20 per page
 ```
+
+Queryless gripe browse sorts by PRIO, oldest first within a PRIO
+(unset PRIO counts as 5), so the longest-waiting gripe is on page 1.
+Under the header one line reads `N open · M older than 3d · oldest grX
+(D days) · K more past this page (page=N)`. `sort='recency'` gives the
+newest-touched order instead.
 
 ## Find gripes that are ready for a fix attempt
 

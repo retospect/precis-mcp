@@ -11,6 +11,10 @@ removed in a follow-up release.
 The implementation is preserved verbatim so existing shell
 scripts keep working; only the entry point prints a one-line
 deprecation notice to stderr.
+
+``--summary`` is not deprecated: it prints the one-line open-gripe
+digest (``N open · M older than 3d · oldest grX (D days)``) that the
+session-start hook shows, and nothing else.
 """
 
 from __future__ import annotations
@@ -60,6 +64,11 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         help="Walk the backlog in filed order (default: newest first).",
     )
     dp.add_argument(
+        "--summary",
+        action="store_true",
+        help="Print only the one-line open-gripe digest (session-start hook).",
+    )
+    dp.add_argument(
         "--limit",
         type=int,
         default=None,
@@ -72,6 +81,10 @@ def run(args: argparse.Namespace) -> None:
     """Implements ``precis gripes``."""
     from precis.config import load_config
     from precis.store import Store
+
+    if args.summary:
+        _print_summary(args)
+        return
 
     print(
         "precis gripes: DEPRECATED — gripe is now a full MCP kind. "
@@ -130,6 +143,19 @@ def run(args: argparse.Namespace) -> None:
         print()
         for row in rows:
             _print_text(row)
+    finally:
+        store.close()
+
+
+def _print_summary(args: argparse.Namespace) -> None:
+    from precis.config import load_config
+    from precis.handlers.gripe import age_summary
+    from precis.store import Store
+
+    store = Store.connect(resolve_dsn(args.database_url, cfg=load_config()))
+    try:
+        line = age_summary(store, ["STATUS:open"])
+        print(f"gripes: {line} — get(kind='gripe', id='/open')")
     finally:
         store.close()
 

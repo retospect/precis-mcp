@@ -28,12 +28,17 @@ Surface (see ``precis-gripe-help``):
   0005 e2e: the plan said comments would be searchable for free
   via the chunk substrate, but the verb itself never reached the
   chunk table.)
+- Queryless browse (``get(id='/open')``, ``search(tags=['STATUS:open'])``)
+  sorts by PRIO, oldest first within a PRIO, under an
+  ``N open · M older than 3d · oldest grX (D days)`` line
+  (:func:`age_summary`, also the session-start digest line).
 - ``tag`` / ``link`` / ``delete`` behave like every other
   first-class numeric ref kind via :class:`NumericRefHandler`.
 """
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 
 from precis.errors import BadInput, Gone, NotFound, Unsupported
@@ -54,7 +59,7 @@ from precis.handlers._prio_tag import (
 from precis.handlers._request_state import RequestState
 from precis.protocol import ArgsSpec, KindSpec
 from precis.response import Response
-from precis.store import Tag
+from precis.store import Store, Tag
 from precis.store.types import Ref
 from precis.utils.secret_scan import mask_secrets
 
@@ -77,11 +82,52 @@ _BODY_HEAD_CHARS = 1500
 #: read. Applied to a single-id get without q= only; the reply names it.
 _VIEW_ALIASES: dict[str, str | None] = {"full": "comments", "default": None}
 
+#: Open-view age cut: a gripe filed before this is "older than 3d" in the
+#: list summary (2026-10-18 audit: the newest-20 page hid the 44 oldest).
+_STALE_AFTER = timedelta(days=3)
+
 
 #: A create-time ``prio=`` plumbed from ``put`` into ``_create`` (which the
 #: base class calls with a fixed arg set). Request-scoped, not an instance
 #: attribute: one handler instance serves concurrent calls.
 _PUT_PRIO: RequestState[int | None] = RequestState("precis_gripe_put_prio", None)
+
+
+def age_summary(
+    store: Store,
+    tags: list[str],
+    *,
+    exclude_tags: list[str] | None = None,
+    total: int | None = None,
+) -> str:
+    """``N open · M older than 3d · oldest grX (D days)`` over a gripe filter.
+
+    Shared by the queryless list header and ``precis gripes --summary``
+    (the session-start digest line). ``total`` skips the count when the
+    caller already has it. The label is the single ``STATUS:`` value in
+    ``tags`` (``open``), else ``live`` when terminal statuses are excluded,
+    else ``listed``.
+    """
+    from precis.utils.handle_registry import format_handle
+
+    filters: dict[str, Any] = {"exclude_tags": exclude_tags} if exclude_tags else {}
+    if total is None:
+        total = store.count_refs(kind="gripe", tags=tags, **filters)
+    statuses = [t.split(":", 1)[1] for t in tags if t.startswith("STATUS:")]
+    label = statuses[0] if len(statuses) == 1 else "live" if exclude_tags else "listed"
+    now = datetime.now(UTC)
+    stale = store.count_refs(
+        kind="gripe", tags=tags, created_before=now - _STALE_AFTER, **filters
+    )
+    parts = [f"{total} {label}", f"{stale} older than {_STALE_AFTER.days}d"]
+    oldest = store.list_refs(
+        kind="gripe", tags=tags, order_by="created_asc", limit=1, **filters
+    )
+    if oldest:
+        days = (now - oldest[0].created_at).days
+        handle = format_handle("gripe", oldest[0].id)
+        parts.append(f"oldest {handle} ({days} day{'' if days == 1 else 's'})")
+    return " · ".join(parts)
 
 
 class GripeHandler(NumericRefHandler):
@@ -136,6 +182,12 @@ class GripeHandler(NumericRefHandler):
     # so it's never a silent filter.
     default_search_status: ClassVar[str] = "open"
 
+    # Queryless browse is a triage queue: PRIO first, oldest first within a
+    # PRIO, so the long-waiting gripe is on page 1 instead of past it.
+    # sort='recency' still gives the newest-touched order.
+    browse_default_sort: ClassVar[str] = "prio"
+    prio_order_by: ClassVar[str] = "prio_age"
+
     # Body + append-only comment timeline live in chunks, so search the
     # chunks grouped by ref (a term that only appears in a comment still
     # surfaces the parent gripe). Salience stays cold — bug reports must
@@ -154,10 +206,24 @@ class GripeHandler(NumericRefHandler):
 
     def _list_view(self, view: str) -> Response | None:
         if view == "open":
-            return self._list_by_tags(["STATUS:open"], page_size=20)
+            return self._list_by_tags(["STATUS:open"], page_size=20, sort="prio")
         if view == "wontfix":
             return self._list_by_tags(["STATUS:wontfix"], page_size=20)
         return super()._list_view(view)
+
+    def _list_summary(
+        self,
+        tags: list[str],
+        *,
+        exclude_tags: list[str] | None,
+        total: int,
+        past_page: int,
+    ) -> str:
+        """``N open · M older than 3d · oldest grX (D days) · K more past this page``."""
+        line = age_summary(self.store, tags, exclude_tags=exclude_tags, total=total)
+        if past_page > 0:
+            line += f" · {past_page} more past this page (page=N)"
+        return line
 
     # ── put: create or append-comment ───────────────────────────────
 

@@ -354,6 +354,60 @@ class TestGripe:
         assert "6 total" in body
         assert "page 4" in body
 
+    # ── open view: PRIO then oldest first, with an age summary (2026-10-18
+    # audit: the newest-20 page hid the oldest 44 of 64) ─────────────────
+
+    def _age(self, gripe: GripeHandler, ref_id: int, days: int) -> None:
+        with gripe.store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET created_at = now() - make_interval(days => %s) "
+                "WHERE ref_id = %s",
+                (days, ref_id),
+            )
+
+    def _gid(self, gripe: GripeHandler, text: str) -> int:
+        gripe.put(text=text)
+        return int(
+            next(
+                r
+                for r in gripe.store.list_refs(kind="gripe", limit=50)
+                if r.title == text
+            ).id
+        )
+
+    def test_open_view_sorts_prio_then_oldest(self, gripe: GripeHandler) -> None:
+        fresh = self._gid(gripe, "fresh unprioritised")
+        old = self._gid(gripe, "old unprioritised")
+        urgent = self._gid(gripe, "urgent but new")
+        self._age(gripe, old, 10)
+        self._age(gripe, fresh, 1)
+        gripe.tag(id=urgent, prio=1)
+        # A fresh comment must not lift the fresh gripe above the old one.
+        gripe.put(id=fresh, text="bump")
+
+        for body in (
+            gripe.get(id="/open").body,
+            gripe.search(tags=["STATUS:open"]).body,
+        ):
+            pos = [body.index(t) for t in ("urgent but new", "old unprio", "fresh unp")]
+            assert pos == sorted(pos), body
+
+        assert "(by prio)" in gripe.get(id="/open").body
+        recency = gripe.search(tags=["STATUS:open"], sort="recency").body
+        assert "(by recency)" in recency
+
+    def test_open_view_summary_line(self, gripe: GripeHandler) -> None:
+        ids = [self._gid(gripe, f"summary probe {i}") for i in range(4)]
+        self._age(gripe, ids[0], 9)
+        self._age(gripe, ids[1], 5)
+        body = gripe.search(tags=["STATUS:open"], page_size=3).body
+        assert (
+            f"4 open · 2 older than 3d · oldest gr{ids[0]} (9 days) · "
+            "1 more past this page (page=N)"
+        ) in body
+        # No rows past the page → no hidden-rows clause.
+        assert "past this page" not in gripe.get(id="/open").body
+
     def test_create_ack_hints_round_trip(self, gripe: GripeHandler) -> None:
         """The ack used to advertise ``link='gripe'+':N'`` — a BinOp
         the literals-only command parser rejects. Now both the

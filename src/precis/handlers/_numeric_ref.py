@@ -29,7 +29,9 @@ cloze-markup handling) override the relevant hook.
 Queryless gripe/todo/quest status/tag browse accepts recency and
 priority. Runtime keeps these reads out of query-based source search;
 priority ordering runs before SQL pagination, with unset priority at 5
-and ref-id ties.
+and ref-id ties. A kind picks its default browse order
+(``browse_default_sort``) and its PRIO tie-break (``prio_order_by``);
+gripe browses by PRIO, oldest first, with an age summary line.
 
 Lifecycle browse defaults to live rows without changing ranked defaults:
 explicit status/tags or ``status='*'`` include terminal history. The
@@ -422,6 +424,15 @@ class NumericRefHandler(Handler):
     #: kind that doesn't set it.
     default_search_status: ClassVar[str | None] = None
 
+    #: Queryless browse order when the caller passes no ``sort=``
+    #: (``'recency'`` or ``'prio'``). Gripe browses by priority.
+    browse_default_sort: ClassVar[str] = "recency"
+
+    #: :meth:`Store.list_refs` ``order_by`` key behind ``sort='prio'``.
+    #: The default breaks PRIO ties newest-update first; gripe uses
+    #: ``'prio_age'`` (oldest first within a PRIO).
+    prio_order_by: ClassVar[str] = "prio_asc"
+
     def __init__(self, *, hub: Hub) -> None:
         if hub.store is None:
             raise InitError(f"{self.kind}: store required")
@@ -801,7 +812,7 @@ class NumericRefHandler(Handler):
                     note=status_note,
                     offset=offset,
                     page=page,
-                    sort=sort or "recency",
+                    sort=sort or self.browse_default_sort,
                     exclude_tags=excluded,
                 )
             # gr311342: ``link=`` alone is a fully-determined filter (the
@@ -1245,7 +1256,7 @@ class NumericRefHandler(Handler):
             tags=tags,
             limit=page_size,
             offset=offset,
-            order_by="prio_asc" if sort == "prio" else "updated_desc",
+            order_by=self.prio_order_by if sort == "prio" else "updated_desc",
             **filters,
         )
         # Total tagged population (list_refs caps at page_size) so the
@@ -1303,10 +1314,33 @@ class NumericRefHandler(Handler):
             f"(by {sort})"
         )
         parts = [header]
+        if summary := self._list_summary(
+            tags,
+            exclude_tags=exclude_tags,
+            total=total,
+            past_page=total - offset - shown,
+        ):
+            parts.append(summary)
         if note:
             parts.append(note)
         parts.append(self._render_hits_table(refs))
         return Response(body="\n".join(parts), result_count=len(refs))
+
+    def _list_summary(
+        self,
+        tags: list[str],
+        *,
+        exclude_tags: list[str] | None,
+        total: int,
+        past_page: int,
+    ) -> str:
+        """Optional per-kind line under a queryless list's header.
+
+        Called with the list's filter set, its total and the rows past
+        this page. Gripe uses it for the open-set age readout. Returns ""
+        for no line (the default).
+        """
+        return ""
 
     def _list_by_link(
         self,
