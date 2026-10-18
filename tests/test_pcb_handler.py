@@ -1386,6 +1386,29 @@ def test_op_route_loop_enqueues_params_and_forwards_authored_caps(store, monkeyp
     assert "expansion_caps" not in params
 
 
+def test_op_route_cleanup_must_be_boolean_and_only_off_is_forwarded(store, monkeypatch):
+    """gr495397: the clean-up pass is on by default, so only ``False``
+    reaches the job params (an omitted or ``True`` knob keeps the dedup
+    key of a plain route)."""
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    hub = Hub(store=store)
+    PcbHandler(hub=hub).put(id="op-cleanup", args=_CROSSED)
+    ref = store.get_ref(kind="pcb", id="op-cleanup")
+    assert ref is not None
+    with pytest.raises(BadInput, match="cleanup"):
+        PcbHandler(hub=hub).put(id="op-cleanup", args={"op": "route", "cleanup": 1})
+    job = Mock()
+    job.put.return_value = SimpleNamespace(body="job captured")
+    monkeypatch.setattr(hub, "sibling", lambda kind: job)
+    handler = PcbHandler(hub=hub)
+    handler._enqueue_op(ref, "route", {"cleanup": False})
+    assert job.put.call_args.kwargs["params"]["cleanup"] is False
+    handler._enqueue_op(ref, "route", {"cleanup": True})
+    assert "cleanup" not in job.put.call_args.kwargs["params"]
+
+
 def test_op_route_force_must_be_boolean(pcb):
     pcb.put(id="op-force-bad", args=_CROSSED)
     with pytest.raises(BadInput, match="force"):

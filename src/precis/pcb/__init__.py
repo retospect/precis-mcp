@@ -77,6 +77,8 @@ Map, in pipeline order (design doc:
   :mod:`~precis.pcb.maze` (grid router that cannot violate clearance),
   :mod:`~precis.pcb.globalplan` (tile-capacity plan probe, experiment
   only — docs/backlog/pcb-global-plan-router.md),
+  :mod:`~precis.pcb.routeclean` (post-route pass: move another net's
+  blocking via so a kinked track runs straight),
   :mod:`~precis.pcb.planes` (pours), :mod:`~precis.pcb.tiling` (a net
   owns a region on a layer), :mod:`~precis.pcb.silk` +
   :mod:`~precis.pcb.stroke_font` (silkscreen), :mod:`~precis.pcb.geom`

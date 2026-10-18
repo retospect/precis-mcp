@@ -120,7 +120,7 @@ from __future__ import annotations
 import itertools
 import math
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -454,6 +454,18 @@ class RealizeConfig:
     #: ``off_axis`` param). Default :data:`precis.pcb.maze.OFF_AXIS_PENALTY`;
     #: below 1.0 is refused for the same heuristic reason as a layer cost.
     off_axis_penalty: float = maze.OFF_AXIS_PENALTY
+    #: Route clean-up post-pass (:mod:`precis.pcb.routeclean`, gr495397):
+    #: after the winning pass, a kinked track whose straight run is blocked
+    #: by another net's via gets both nets re-routed with the via moved,
+    #: kept only when length, bends and vias all hold or improve and the
+    #: caller's DRC check stays clean. Runs only when :func:`realize` is
+    #: given a ``cleanup_check`` (the route job supplies one), so a bare
+    #: ``realize()`` call is unchanged.
+    route_cleanup: bool = True
+    #: Bounds on the clean-up pass per :func:`realize` call: moves tried,
+    #: and wall-clock seconds checked before each trial.
+    cleanup_max_moves: int = 40
+    cleanup_budget_s: float = 20.0
 
     def __post_init__(self) -> None:
         for name, mult in self.layer_route_cost:
@@ -993,6 +1005,48 @@ class RealizeResult:
     #: (:func:`_drop_bare_islands`, pcb-floating-pour-island). Reported per
     #: net in the route note; never silent.
     dropped_islands: tuple[DroppedIsland, ...] = ()
+    #: What the route clean-up post-pass did (:mod:`precis.pcb.routeclean`);
+    #: ``None`` when it did not run (flag off, no ``cleanup_check``, or the
+    #: tangent drawer).
+    cleanup: CleanupReport | None = None
+
+
+#: The route clean-up pass's DRC half (:func:`realize`'s ``cleanup_check``):
+#: finding counts keyed by ``(rule, severity)`` over a board's tracks and
+#: vias before pours. Supplied by the caller so the producer never imports
+#: its own checker (module docstring).
+CleanupCheck = Callable[
+    [PcbIR, Sequence["RealizedTrack"], Sequence["RealizedVia"]],
+    Mapping[tuple[str, str], int],
+]
+
+
+@dataclass(frozen=True, slots=True)
+class CleanupReport:
+    """One clean-up pass (:mod:`precis.pcb.routeclean`): moves kept and
+    tried, and what the kept moves saved. Deltas are positive savings."""
+
+    kept: int
+    tried: int
+    length_saved_mm: float
+    bends_saved: int
+    vias_saved: int
+    out_of_time: bool
+    elapsed_s: float
+
+    def line(self) -> str | None:
+        """The route summary line; ``None`` when nothing was tried."""
+        if not self.tried:
+            return None
+        out = (
+            f"cleanup: {self.kept} moves kept, {self.tried} tried, "
+            f"length -{self.length_saved_mm:.2f} mm, bends -{self.bends_saved}"
+        )
+        if self.vias_saved:
+            out += f", vias -{self.vias_saved}"
+        if self.out_of_time:
+            out += f" (stopped at the {self.elapsed_s:.0f}s budget)"
+        return out
 
 
 @dataclass(frozen=True, slots=True)
@@ -1888,6 +1942,7 @@ def _realize_maze(
     config: RealizeConfig,
     footprints: dict[str, dict[str, Any]] | None = None,
     fixed_copper: list[dict[str, Any]] | None = None,
+    cleanup_check: CleanupCheck | None = None,
 ) -> tuple[
     list[RealizedTrack],
     list[RealizedVia],
@@ -1898,6 +1953,7 @@ def _realize_maze(
     dict[int, str],
     NegotiationReport | None,
     tuple[CongestionCell, ...],
+    CleanupReport | None,
 ]:
     """Route ``ids`` on a shared occupancy grid — see :mod:`precis.pcb.
     maze` for why this cannot emit overlapping copper, and what it gives
@@ -1930,7 +1986,7 @@ def _realize_maze(
     """
     ctx = _route_context(ir, ids, config, footprints, fixed_copper)
     if ctx is None:
-        return [], [], list(ids), [], [], [], {}, None, ()
+        return [], [], list(ids), [], [], [], {}, None, (), None
     signal_layers = ctx.signal_layers
     pad_geoms = ctx.pad_geoms
     pads = ctx.pads
@@ -1957,17 +2013,19 @@ def _realize_maze(
     ]
     best: Outcome | None = None
     best_score = (0, 0)
+    best_stamped: dict[int, maze.RoutePath] = {}
     accepted_counts: list[int] = []
 
     def attempts(order: list[int], preferred: dict[int, _Proposal] | None) -> None:
         """Up to ``config.route_passes`` passes, failures to the front."""
-        nonlocal best, best_score
+        nonlocal best, best_score, best_stamped
         for _attempt in range(max(1, config.route_passes)):
             attempt_grid = maze.OccupancyGrid(
                 spec, clearance_mm=clearance, net_clearance_mm=net_clearance
             )
             attempt_grid.set_body_mask(body_mask)
             accepted: list[int] | None = [] if preferred is not None else None
+            stamped: dict[int, maze.RoutePath] = {}
             outcome = _route_pass(
                 ir,
                 order,
@@ -1987,6 +2045,7 @@ def _realize_maze(
                 preferred=preferred,
                 accepted=accepted,
                 plane_served_pins=plane_served_pins,
+                stamped=stamped,
             )
             if accepted is not None:
                 accepted_counts.append(len(accepted))
@@ -1995,7 +2054,7 @@ def _realize_maze(
             # segments.
             score = (len({int(ir.seg_net[s]) for s in outcome[2]}), len(outcome[2]))
             if best is None or score < best_score:
-                best, best_score = outcome, score
+                best, best_score, best_stamped = outcome, score, stamped
             if not outcome[2]:
                 return
             # Failures go to the front for the next attempt, keeping their
@@ -2064,6 +2123,15 @@ def _realize_maze(
             won=best is not hard_best,
         )
     assert best is not None  # the loop runs at least once
+    cleanup: CleanupReport | None = None
+    if config.route_cleanup and cleanup_check is not None and best_stamped:
+        # Deferred for the same reason as `globalplan` above: the pass
+        # imports this module.
+        from precis.pcb import routeclean
+
+        best, cleanup = routeclean.cleanup(
+            ir, ctx, config, best, best_stamped, cleanup_check
+        )
     tracks, vias, unrouted, island_terminal_notes, plane_failed_pins = best
     # The pour RIM insets by the board-edge rule alone — NOT `edge_inset`,
     # which is a TRACK-CENTERLINE figure (edge rule + half the widest
@@ -2204,6 +2272,7 @@ def _realize_maze(
         island_terminal_notes,
         negotiation,
         congestion,
+        cleanup,
     )
 
 
@@ -3564,6 +3633,8 @@ def _route_pass(
     preferred: dict[int, _Proposal] | None = None,
     accepted: list[int] | None = None,
     plane_served_pins: frozenset[int] = frozenset(),
+    kept: dict[int, maze.RoutePath] | None = None,
+    stamped: dict[int, maze.RoutePath] | None = None,
 ) -> tuple[
     list[RealizedTrack],
     list[RealizedVia],
@@ -3612,7 +3683,13 @@ def _route_pass(
     still legal on this grid as it stands (:func:`_preferred_fits`), and
     then committed verbatim — snapped as negotiated, not straightened.
     Anything else searches as usual. ``accepted`` collects the segments
-    committed that way."""
+    committed that way.
+
+    ``kept`` (the clean-up pass's replay, :mod:`precis.pcb.routeclean`)
+    maps a segment to the exact path an earlier pass stamped; it is
+    stamped again unchecked — no search, snap or straighten, no island
+    note — so its copper comes out identical. ``stamped`` collects every
+    segment's final stamped path, in commit order."""
     tracks, vias, unrouted, failed_pins = _claim_static(
         ir,
         plane_ids,
@@ -3646,11 +3723,16 @@ def _route_pass(
         net_id, rules, n_vias = req.net_id, req.rules, req.n_vias
         group_extent, terms = req.group_extent, req.terms
         start, end = req.start, req.end
+        held = (kept or {}).get(seg_id)
         pref = (preferred or {}).get(seg_id)
-        committed = pref is not None and _preferred_fits(grid, pref.raw, req)
-        if committed:
+        committed = (
+            held is None and pref is not None and _preferred_fits(grid, pref.raw, req)
+        )
+        if held is not None:
+            path: maze.RoutePath | None = held
+        elif committed:
             assert pref is not None
-            path: maze.RoutePath | None = pref.raw
+            path = pref.raw
             if accepted is not None:
                 accepted.append(seg_id)
         else:
@@ -3658,18 +3740,19 @@ def _route_pass(
         if path is None or len(path.points) < 2:
             unrouted.append(seg_id)
             continue
-        note = _describe_used_terminal(path, terms)
-        if note is not None:
-            island_notes[seg_id] = note
+        if held is None:
+            note = _describe_used_terminal(path, terms)
+            if note is not None:
+                island_notes[seg_id] = note
         if committed:
             # Verbatim: the negotiation claimed and attached to exactly this
             # copper, so a later branch's attach point is still on it. A
             # straighten here would move the copper under that branch.
             assert pref is not None
             path = pref.copper
-        else:
+        elif held is None:
             path = _snap_to_pads(path, start, end, spec.pitch)
-        if config.straighten and not committed:
+        if config.straighten and not committed and held is None:
             path = _straighten(
                 path,
                 grid,
@@ -3681,6 +3764,8 @@ def _route_pass(
                 ink_field=ink_field,
             )
         grid.stamp_path(path, rules.track_width_mm)
+        if stamped is not None:
+            stamped[seg_id] = path
         via_r = (
             grid.core_radius_mm(rules.via_dia_mm)
             if rules.via_dia_mm is not None
@@ -7322,6 +7407,7 @@ def realize(
     seg_ids: list[int] | None = None,
     footprints: dict[str, dict[str, Any]] | None = None,
     fixed_copper: list[dict[str, Any]] | None = None,
+    cleanup_check: CleanupCheck | None = None,
 ) -> RealizeResult:
     """Realize every segment in ``seg_ids`` (default: the whole board) —
     the checkpoint call. Never touches the IR (module docstring); pure
@@ -7347,7 +7433,12 @@ def realize(
     connectivity component of ``fixed_copper`` alone is never searched at
     all — see :func:`_split_fixed_realized` and :attr:`RealizeResult.
     fixed_realized`. ``None`` (the default) reproduces the prior
-    behaviour exactly: nothing is claimed, nothing is short-circuited."""
+    behaviour exactly: nothing is claimed, nothing is short-circuited.
+
+    ``cleanup_check`` (maze router only) turns on the route clean-up
+    post-pass (:attr:`RealizeConfig.route_cleanup`,
+    :mod:`precis.pcb.routeclean`): it is the DRC half of that pass's accept
+    rule. ``None`` (the default) skips the pass."""
     ids = list(range(ir.n_segments)) if seg_ids is None else seg_ids
     if config.router == "maze":
         route_ids, fixed_realized = _split_fixed_realized(
@@ -7363,7 +7454,10 @@ def realize(
             island_notes,
             negotiation,
             congestion,
-        ) = _realize_maze(ir, route_ids, config, footprints, fixed_copper)
+            cleanup,
+        ) = _realize_maze(
+            ir, route_ids, config, footprints, fixed_copper, cleanup_check
+        )
         pours, dropped = _drop_bare_islands(
             ir,
             tracks,
@@ -7389,6 +7483,7 @@ def realize(
             congestion_cells=congestion,
             pour_quality=tuple(pour_quality(pours)),
             dropped_islands=tuple(dropped),
+            cleanup=cleanup,
         )
     if config.router != "tangent":
         raise ValueError(

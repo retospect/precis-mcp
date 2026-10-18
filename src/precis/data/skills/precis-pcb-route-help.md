@@ -145,6 +145,12 @@ job applies).
   experimental negotiated-congestion iterations, tried only when the
   normal rip-up passes leave nets unrouted; capped at 60 s, and the result
   is kept only if it routes more nets. Unmeasured on real boards yet.
+- `op='route'` also accepts `cleanup` (bool, default on): after routing, a
+  track that kinks around another net's via gets both nets re-routed with
+  the via moved up to 1 mm, kept only if length, bends and vias all hold
+  or improve and no DRC finding is added; capped at 40 moves and 20 s.
+  The summary says `cleanup: K moves kept, L tried, length -X mm,
+  bends -Y`. `cleanup=False` turns it off.
 - `op='route'` also accepts `corridor` (number ≥ 0, default 0 = off):
   the tile-plan corridor experiment (slice 1 of the global-plan
   router). When on, a strict

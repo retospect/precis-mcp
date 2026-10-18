@@ -658,6 +658,7 @@ class PcbHandler(Handler):
                 "corridor",
                 "layer_cost",
                 "off_axis",
+                "cleanup",
                 "escape",
                 "groups",
                 "loop",
@@ -1686,6 +1687,16 @@ class PcbHandler(Handler):
                 )
             if opts["force"]:
                 params["force"] = True
+        # Route clean-up post-pass (RealizeConfig.route_cleanup, gr495397);
+        # on unless turned off, so only `False` is forwarded.
+        if op == "route" and opts.get("cleanup") is not None:
+            if not isinstance(opts["cleanup"], bool):
+                raise BadInput(
+                    "pcb: cleanup must be a boolean (True or False)",
+                    next="put(args={'op':'route','cleanup':False})",
+                )
+            if not opts["cleanup"]:
+                params["cleanup"] = False
         # Raw store rows, verbatim -- `content_hash` itself does the
         # narrowing (job-written-field exclusion, authored-vs-derived
         # filtering) so there is exactly one place that can get it wrong.

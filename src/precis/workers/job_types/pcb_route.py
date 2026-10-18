@@ -121,7 +121,8 @@ log = logging.getLogger(__name__)
 # 10 = stackup plane_net/fill pour without a pcb_planes row, derived power
 #      regions, stackup direction/route_cost, bare islands dropped after
 #      stitching (pcb-stackup-regions slices 3-4).
-CODE_VERSION = 10
+# 11 = route clean-up post-pass moves another net's blocking via (gr495397).
+CODE_VERSION = 11
 
 PARAMS_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -166,6 +167,9 @@ PARAMS_SCHEMA: dict[str, Any] = {
         "force": {"type": "boolean"},
         # Opt-in support-passive rows (optimize.OptimizeConfig.support_groups).
         "groups": {"type": "boolean"},
+        # Route clean-up post-pass (RealizeConfig.route_cleanup, gr495397):
+        # absent = on; false = off.
+        "cleanup": {"type": "boolean"},
     },
     "required": ["pcb_ref_id"],
     "additionalProperties": False,
@@ -1125,7 +1129,30 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             for name, mult in sorted((params.get("layer_cost") or {}).items())
         ),
         off_axis_penalty=float(params.get("off_axis") or pcb_maze.OFF_AXIS_PENALTY),
+        route_cleanup=bool(params.get("cleanup", True)),
     )
+
+    def _cleanup_check(
+        ir_: PcbIR,
+        tracks: Sequence[pcb_realize.RealizedTrack],
+        vias: Sequence[pcb_realize.RealizedVia],
+    ) -> Counter[tuple[str, str]]:
+        """The clean-up pass's DRC half (gr495397): the post-route gate's
+        own routed-copper rules over pre-pour copper, counted by (rule,
+        severity), so a move that adds a finding of any class is refused."""
+        probe = pcb_realize.RealizeResult(tuple(tracks), tuple(vias), ())
+        findings = pcb_session.routed_drc_findings(
+            ir_,
+            probe,
+            capability=fab_caps,
+            footprints=footprints,
+            fixed_copper=fixed_copper,
+            outline=pcb_session.outline_from_features(features),
+            net_rules=_graph_net_rules(graph, fab_caps),
+            net_voltages=_graph_net_voltages(graph),
+        )
+        return Counter((f.rule, f.severity) for f in findings)
+
     # `footprints` (the same refdes-keyed pad geometry PIN_SWAP's feed
     # above also used) was resolved earlier, before the anneal — see that
     # block's own comment for why.
@@ -1335,6 +1362,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
                 config=realize_config,
                 footprints=footprints,
                 fixed_copper=fixed_copper,
+                cleanup_check=_cleanup_check,
             )
             realized_by_round.append(rres_)
             outcome = pcb_feedback.outcome_from_realize(ir_, rres_)
@@ -1448,7 +1476,11 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         # bridge (`RealizeResult.fixed_realized` below) — see `realize()`'s own
         # `fixed_copper` keyword docstring for both halves.
         rres = pcb_realize.realize(
-            ir, config=realize_config, footprints=footprints, fixed_copper=fixed_copper
+            ir,
+            config=realize_config,
+            footprints=footprints,
+            fixed_copper=fixed_copper,
+            cleanup_check=_cleanup_check,
         )
     assert rres is not None  # every non-returning arm above sets it
     # Post-route legality gate. Legality is a hard gate and incompleteness the
@@ -1800,6 +1832,9 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     # follow-up: job 470129 reported the baseline 22/33 and nothing else).
     if rres.negotiation is not None:
         pin_swap_summary += "\n" + rres.negotiation.line()
+    cleanup_line = rres.cleanup.line() if rres.cleanup is not None else None
+    if cleanup_line:
+        pin_swap_summary += "\n" + cleanup_line
     # A class naming a layer the stackup does not route on is narrowed, not
     # refused (gr472108): say so, or a "no gain" reads as a routing result.
     for drop in rres.class_layer_drops:

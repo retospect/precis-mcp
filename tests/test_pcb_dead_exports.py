@@ -284,10 +284,8 @@ _KNOWN_UNWIRED: dict[str, str] = {
         "real gap, not fixed here (realize.py is out of this agent's "
         "remit)"
     ),
-    "src/precis/pcb/ir.py::PcbIR.via_net": (
-        "same real gap as add_via -- see that entry's reason; nothing "
-        "outside ir.py itself ever reads or writes this"
-    ),
+    # via_net left this mapping 2026-10-18: routeclean.py reads it to name
+    # a blocking via's net (gr495397).
     # via_layer_span left this mapping 2026-10-13: optimize.py now
     # remaps it on LAYER_ADD (bit-shift in _shift_layer_indices) and
     # carries it in the loop's state snapshot -- a real producer/consumer.
