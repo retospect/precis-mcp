@@ -21,15 +21,9 @@ _BACKENDS = ("latex.py", "docx.py")
 
 #: Functions allowed to compare a chunk's kind, with the reason and the
 #: gripe that removes the allowance. CLOSED: nothing joins this without a
-#: ruling (witty, 2026-10-17).
-_KIND_ALLOWED = {
-    # a poster logo is a figure REF; its own chunks (figure_node / blob)
-    # are an asset lookup, not the draft's structure
-    "_figure_logo_asset": (
-        "gr495810: logo asset lookup inside a figure ref; move it out of "
-        "the renderer and drop this entry"
-    ),
-}
+#: ruling (witty, 2026-10-17). EMPTY since gr495810 moved the poster logo
+#: lookup to ``export/walker.py``.
+_KIND_ALLOWED: dict[str, str] = {}
 
 
 def _functions(tree: ast.AST) -> dict[ast.AST, str]:
@@ -153,6 +147,6 @@ def test_detector_catches_each_category() -> None:
 
 def test_allowed_kind_dispatch_is_named_and_exists() -> None:
     source = (_EXPORT / "latex.py").read_text(encoding="utf-8")
-    assert set(_KIND_ALLOWED) == {"_figure_logo_asset"}  # closed list
+    assert not _KIND_ALLOWED  # closed list stays empty without a ruling
     for fn, reason in _KIND_ALLOWED.items():
         assert reason.startswith("gr") and f"def {fn}(" in source

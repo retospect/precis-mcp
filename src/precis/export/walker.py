@@ -864,3 +864,47 @@ def poster_sections(
             cur.append(c)
     flush()
     return sections
+
+
+_EXT_BY_MIME_LOGO: dict[str, str] = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/gif": "gif",
+    "image/webp": "webp",
+    "image/tiff": "tiff",
+    "image/bmp": "bmp",
+    "application/pdf": "pdf",
+}
+
+
+def figure_logo_asset(store: Any, figure_id: str) -> tuple[bytes, str] | None:
+    """``(bytes, ext)`` for a strip logo — a ``kind='figure'`` ref
+    resolved by slug (or numeric id): its SVG canvas rasterises to PNG
+    (same ``resvg`` path as figure export); a chunk blob passes through.
+    ``None`` when the ref is absent or carries no usable asset."""
+    fid: int | str = figure_id
+    if str(figure_id).isdigit():
+        fid = int(figure_id)
+    try:
+        ref = store.get_ref(kind="figure", id=fid)
+    except Exception:
+        return None
+    if ref is None:
+        return None
+    from precis.utils.figure_source import _svg_to_png
+
+    for c in store.drafts.reading_order(ref.id, kind="figure"):
+        if c.chunk_kind == "figure_node" and (c.text or "").strip():
+            png = _svg_to_png(c.text)
+            return (png, "png") if png else None
+        blob = store.drafts.get_chunk_blob(c.handle)
+        if blob is not None:
+            data, mime = blob
+            mime = (mime or "").split(";", 1)[0].strip()
+            if mime == "image/svg+xml":
+                png = _svg_to_png(data.decode("utf-8", "replace"))
+                return (png, "png") if png else None
+            ext = _EXT_BY_MIME_LOGO.get(mime)
+            if ext:
+                return data, ext
+    return None

@@ -260,11 +260,11 @@ def draft_user_default(store: Store, ref: Any) -> dict[str, Any] | None:
 
 def logo_asset(store: Store, figure_id: str) -> tuple[bytes, str] | None:
     """``(bytes, ext)`` for a strip logo — the figure-blob resolver the
-    export path already uses. Lazy import: ``precis.export.latex`` is a
+    export path already uses. Lazy import: ``precis.export.walker`` is a
     heavy module this data layer must not pay for at import time."""
-    from precis.export.latex import _figure_logo_asset
+    from precis.export.walker import figure_logo_asset
 
-    return _figure_logo_asset(store, figure_id)
+    return figure_logo_asset(store, figure_id)
 
 
 def normalize_logos(raw: Any) -> list[dict[str, Any]]:
