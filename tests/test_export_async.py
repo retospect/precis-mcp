@@ -229,3 +229,23 @@ def test_reader_page_wires_the_progress_ui(client: TestClient) -> None:
     assert "startExport('pdf')" in html
     assert "data-export-progress" in html
     assert "/export/start" in html
+
+
+def test_first_progress_event_precedes_render(
+    seeded: tuple[Any, Any], tmp_path: Path
+) -> None:
+    """gr493192: the bar used to say "starting…" through the preflight
+    gates (retraction + figure clearance walks); the first event now comes
+    from that phase, well before the render stage."""
+    from precis.export.preflight import draft_export_preflight
+
+    store, ref = seeded
+    events: list[str] = []
+    with progress.bind(lambda s, d, t: events.append(s)):
+        pf = draft_export_preflight(store, ref)
+        export_docx(store, ref, target_path=tmp_path / "e.docx")
+    assert events[0] == "checking cited papers for retractions"
+    assert "checking figure permissions" in events
+    assert not pf.blocked
+    assert events.index("checking figure permissions") < events.index("rendering")
+    assert events.index("reading the draft") < events.index("rendering")

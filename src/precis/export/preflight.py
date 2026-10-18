@@ -25,6 +25,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from precis.export import progress
+
 if TYPE_CHECKING:
     from precis.store.store import Store
     from precis.utils.figure_clearance import FigureClear
@@ -119,6 +121,7 @@ def draft_export_preflight(
     stop; the overrides are the only way past."""
     from precis.utils.figure_clearance import partition_uncleared
 
+    progress.report("checking cited papers for retractions")
     report = _safe_retraction_report(store, ref)
     retraction_blocked: list[Any] = []
     retraction_override: list[Any] = []
@@ -128,6 +131,7 @@ def draft_export_preflight(
         else:
             retraction_blocked = list(report.retracted)
 
+    progress.report("checking figure permissions")
     clearance = _safe_figure_clearance(store, ref.id)
     total = clearance.total if clearance is not None else 0
     figures_blocked: list[FigureClear] = []

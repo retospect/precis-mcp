@@ -451,6 +451,7 @@ def export_docx(
 
     from precis.export import guard_exportable, guard_no_secrets
 
+    progress.report("reading the draft")
     guard_exportable(ref)
     guard_no_secrets(store, ref)
     target_path = Path(target_path)

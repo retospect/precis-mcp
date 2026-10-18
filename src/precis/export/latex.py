@@ -48,7 +48,7 @@ from pylatexenc.latexencode import (
     get_builtin_uni2latex_dict,
 )
 
-from precis.export import _abbrev, walker
+from precis.export import _abbrev, progress, walker
 from precis.export._cite_ids import paper_identifier
 from precis.export._data_package import (
     SECTION_TITLE as _DATA_PACKAGE_SECTION_TITLE,
@@ -3429,6 +3429,7 @@ def export_draft(
     the ``draft_export``/``remarkable_send`` jobs and the CLI — pass it)."""
     from precis.export import guard_exportable, guard_no_secrets
 
+    progress.report("reading the draft")
     guard_exportable(ref)
     guard_no_secrets(store, ref)
     target_dir = Path(target_dir)
