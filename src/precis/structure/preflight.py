@@ -576,6 +576,12 @@ def _geometry_checks(scene: Scene, atoms, labels: list[str]) -> list[PreflightRe
     # -- clash: any non-frozen-frozen pair still sub-``MIN_BOND`` apart -----
     reasons.extend(_clash_reasons(scene, atoms, labels, settled=True))
 
+    # A non-periodic structure (molecule, cluster, nanobud) has no slab, no
+    # surface normal and no periodic image: the slab/adsorbate split, vacuum
+    # and density checks below don't apply (gr496330). Clash (above) does.
+    if not any(scene.cell.pbc):
+        return reasons
+
     # -- detached: an adsorbate atom too far from every slab atom ----------
     slab_idx, ads_idx = _slab_adsorbate_indices(scene, atoms, labels)
     if slab_idx and ads_idx:

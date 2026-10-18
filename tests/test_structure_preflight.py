@@ -151,6 +151,48 @@ class TestPorous:
         assert verdict.ok is False
 
 
+class TestNonPeriodic:
+    """gr496330: slab tests (density, vacuum, ceiling, detached) are for
+    periodic structures only; a molecule in a big box must not be called a
+    '99% void slab'."""
+
+    @staticmethod
+    def _carbon_cluster(pbc: tuple[bool, bool, bool]) -> Scene:
+        """Four atoms scattered through a 20 A cell: ~99% void if periodic."""
+        scene = Scene(cell=Cell.from_lengths_angles(20.0, 20.0, 20.0, pbc=pbc))
+        positions = [
+            [0.1, 0.1, 0.1],
+            [0.5, 0.5, 0.5],
+            [0.9, 0.1, 0.3],
+            [0.3, 0.8, 0.7],
+        ]
+        for i, frac in enumerate(positions):
+            label = f"aC{i + 1}"
+            scene.atoms[label] = Atom(label=label, element="C", frac=np.array(frac))
+        return scene
+
+    def test_non_periodic_molecule_passes(self) -> None:
+        verdict = pf.preflight(self._carbon_cluster((False, False, False)))
+        assert verdict.ok is True, verdict.reasons
+
+    def test_non_periodic_molecule_still_gets_clash_check(self) -> None:
+        scene = self._carbon_cluster((False, False, False))
+        scene.atoms["aC7"] = Atom(
+            label="aC7", element="C", frac=scene.atoms["aC1"].frac + 0.2 / 20.0
+        )
+        verdict = pf.preflight(scene)
+        assert any(r.code == "clash" for r in verdict.reasons)
+
+    def test_periodic_void_cell_still_refused(self) -> None:
+        verdict = pf.preflight(self._carbon_cluster((True, True, True)))
+        assert verdict.ok is False
+        assert any(r.code == "porous" for r in verdict.reasons)
+
+    def test_slab_periodic_in_plane_only_still_checked(self) -> None:
+        verdict = pf.preflight(self._carbon_cluster((True, True, False)))
+        assert verdict.ok is False
+
+
 class TestElementAgnostic:
     def test_non_emt_metal_runs_all_checks_without_crashing(self) -> None:
         """Fe isn't in :data:`relax.EMT_ELEMENTS` — proves the settle/geometry
