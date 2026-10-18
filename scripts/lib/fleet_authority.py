@@ -2,7 +2,7 @@
 
 The last fenced ```yaml block of authority.md is the only machine input.
 Subcommands: ``render`` (write .claude/fleet/generated/), ``check`` (diff a
-fresh render against the checked-in files), ``apply`` (merge one tier's
+fresh render against the checked-in files), ``apply`` (merge one tier's (or role's)
 ``permissions`` into a builder worktree's .claude/settings.local.json and
 .devin/config.json, and print its Codex flags; dry run unless ``--yes``).
 
@@ -51,7 +51,8 @@ TIER_KEYS = (
     "spend_cap_usd",
     "inherits",
 )
-TOP_KEYS = ("version", "tiers", "reto_only_exec", "deny_write_paths")
+TOP_KEYS = ("version", "tiers", "roles", "reto_only_exec", "deny_write_paths")
+ROLE_KEYS = ("tier", "allow_exec")
 
 
 def load(path: Path = AUTHORITY) -> dict[str, Any]:
@@ -65,12 +66,25 @@ def load(path: Path = AUTHORITY) -> dict[str, Any]:
     return data
 
 
-def resolve(data: dict[str, Any], tier: str) -> dict[str, Any]:
-    """Tier settings with ``inherits`` applied: lists concatenate."""
+def role_names(data: dict[str, Any]) -> list[str]:
+    return sorted(data.get("roles", {}))
+
+
+def resolve(data: dict[str, Any], tier: str, role: str | None = None) -> dict[str, Any]:
+    """Tier settings with ``inherits`` applied: lists concatenate. A ``role``
+    unions its ``allow_exec`` over the tier's (tier entries first, no dupes)."""
+    spec = _resolve_tier(data, tier)
+    extra = data["roles"][role].get("allow_exec", []) if role else []
+    if extra:
+        spec["allow_exec"] = list(dict.fromkeys([*spec.get("allow_exec", []), *extra]))
+    return spec
+
+
+def _resolve_tier(data: dict[str, Any], tier: str) -> dict[str, Any]:
     spec = dict(data["tiers"][tier])
     parent = spec.get("inherits")
     if parent:
-        base = resolve(data, parent)
+        base = _resolve_tier(data, parent)
         for k, v in base.items():
             if isinstance(v, list):
                 spec[k] = list(dict.fromkeys(v + list(spec.get(k, []))))
@@ -79,10 +93,10 @@ def resolve(data: dict[str, Any], tier: str) -> dict[str, Any]:
     return spec
 
 
-def deny_exec(data: dict[str, Any], tier: str) -> list[str]:
+def deny_exec(data: dict[str, Any], tier: str, role: str | None = None) -> list[str]:
     """Denied commands. A deny that is a prefix of an allowed command is
     dropped (deny beats allow in both CLIs); the narrower allow stays."""
-    spec = resolve(data, tier)
+    spec = resolve(data, tier, role)
     allowed = spec.get("allow_exec", [])
     out = [
         d
@@ -103,11 +117,13 @@ def _write_deny(data: dict[str, Any]) -> list[str]:
     return list(data["deny_write_paths"])
 
 
-def claude_settings(data: dict[str, Any], tier: str) -> dict[str, Any]:
-    spec = resolve(data, tier)
+def claude_settings(
+    data: dict[str, Any], tier: str, role: str | None = None
+) -> dict[str, Any]:
+    spec = resolve(data, tier, role)
     allow = [f"Bash({c}:*)" for c in spec.get("allow_exec", [])]
     allow += [_mcp(t) for t in spec.get("allow_mcp", [])]
-    deny = [f"Bash({c}:*)" for c in deny_exec(data, tier)]
+    deny = [f"Bash({c}:*)" for c in deny_exec(data, tier, role)]
     deny += [_mcp(t) for t in MCP_WRITE_TOOLS if t not in spec.get("allow_mcp", [])]
     # Claude Code checks writes against Edit(path) only; a Write(path) rule
     # is accepted but never consulted, and warns at startup.
@@ -115,11 +131,13 @@ def claude_settings(data: dict[str, Any], tier: str) -> dict[str, Any]:
     return {"permissions": {"allow": allow, "deny": deny}}
 
 
-def devin_config(data: dict[str, Any], tier: str) -> dict[str, Any]:
-    spec = resolve(data, tier)
+def devin_config(
+    data: dict[str, Any], tier: str, role: str | None = None
+) -> dict[str, Any]:
+    spec = resolve(data, tier, role)
     allow = [f"Exec({c})" for c in spec.get("allow_exec", [])]
     allow += [_mcp(t) for t in spec.get("allow_mcp", [])]
-    deny = [f"Exec({c})" for c in deny_exec(data, tier)]
+    deny = [f"Exec({c})" for c in deny_exec(data, tier, role)]
     deny += [_mcp(t) for t in MCP_WRITE_TOOLS if t not in spec.get("allow_mcp", [])]
     deny += [f"Write({p})" for p in _write_deny(data)]
     return {"permissions": {"allow": allow, "ask": [], "deny": deny}}
@@ -300,10 +318,16 @@ def _load_existing(dst: Path) -> dict[str, Any] | str:
     return old if isinstance(old, dict) else f"{dst}: not a JSON object"
 
 
-def apply(tier: str, target: Path, *, yes: bool) -> int:
-    """Merge tier ``permissions`` into ``target``; 2 on refusal."""
+def apply(tier: str, target: Path, *, yes: bool, role: str | None = None) -> int:
+    """Merge tier (or role) ``permissions`` into ``target``; 2 on refusal."""
     target = target.expanduser().resolve()
+    data = load()
     why = check_target(target)
+    if role is not None:
+        if role not in data.get("roles", {}):
+            why = f"unknown role {role!r}; next=--role one of {role_names(data)}"
+        else:
+            tier = data["roles"][role]["tier"]
     plans: list[tuple[Path, str]] = []
     for stem, rel in APPLY_FILES.items():
         if why:
@@ -316,9 +340,14 @@ def apply(tier: str, target: Path, *, yes: bool) -> int:
         if isinstance(old, str):
             why = old
             break
-        gen = json.loads(
-            (GENERATED / f"{stem}-{tier}.json").read_text(encoding="utf-8")
-        )
+        if role is None:
+            gen = json.loads(
+                (GENERATED / f"{stem}-{tier}.json").read_text(encoding="utf-8")
+            )
+        else:
+            # Roles have no checked-in file; build from the same generator.
+            build = claude_settings if stem == "claude-settings" else devin_config
+            gen = build(data, tier, role)
         plans.append((dst, json.dumps(merged(old, gen), indent=2) + "\n"))
     if why:
         print(f"fleet-authority: refused: {why}", file=sys.stderr)
@@ -328,7 +357,8 @@ def apply(tier: str, target: Path, *, yes: bool) -> int:
             print(f"unchanged {dst}")
             continue
         bak = f" (old copy -> {dst.name}.bak)" if dst.exists() else ""
-        print(f"{'write' if yes else 'would write'} {dst}: tier {tier}{bak}")
+        what = f"role {role} (tier {tier})" if role else f"tier {tier}"
+        print(f"{'write' if yes else 'would write'} {dst}: {what}{bak}")
         if yes:
             dst.parent.mkdir(parents=True, exist_ok=True)
             if dst.exists():
@@ -339,7 +369,8 @@ def apply(tier: str, target: Path, *, yes: bool) -> int:
 
 
 def cmd_apply(a: argparse.Namespace) -> int:
-    return apply(TIER_ALIASES.get(a.tier, a.tier), Path(a.to), yes=a.yes)
+    tier = TIER_ALIASES.get(a.tier, a.tier) if a.tier else ""
+    return apply(tier, Path(a.to), yes=a.yes, role=a.role)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -348,7 +379,11 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("render").set_defaults(fn=cmd_render)
     sub.add_parser("check").set_defaults(fn=cmd_check)
     ap = sub.add_parser("apply")
-    ap.add_argument("--tier", choices=(*TIERS, *TIER_ALIASES), required=True)
+    pick = ap.add_mutually_exclusive_group(required=True)
+    pick.add_argument("--tier", choices=(*TIERS, *TIER_ALIASES))
+    pick.add_argument(
+        "--role", help="a roles: entry of authority.md; its tier plus its allow_exec"
+    )
     ap.add_argument("--to", required=True)
     ap.add_argument("--yes", action="store_true")
     ap.set_defaults(fn=cmd_apply)
