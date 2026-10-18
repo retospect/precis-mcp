@@ -43,10 +43,11 @@ Mixin assumes the concrete Store provides ``self.pool``.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from psycopg import Connection
+from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
 from precis.store._chunks_ops import _vec_param
@@ -112,6 +113,55 @@ def _resolve_chunk_id(conn: Connection, ref_id: int, ord_: int) -> int:
     return chunk_id
 
 
+#: ``STATUS:`` values that end a job's run (mirrors
+#: ``workers.executors._common.TERMINAL``; the store can't import workers).
+_JOB_TERMINAL = frozenset({"succeeded", "failed", "cancelled"})
+
+
+def _stamp_job_completion(conn: Connection, ref_id: int) -> None:
+    """Stamp ``meta.finished_at`` / ``wall_s`` / ``node`` on a job ref.
+
+    Runs inside :meth:`TagsMixin.add_tag` whenever a terminal ``STATUS:``
+    lands on a ``kind='job'`` ref, so every completion path (executor
+    success/fail/cancel, the tag verb, the sweeper, the quest loop's reaps)
+    stamps without each remembering to. ``wall_s`` is ``finished_at -
+    meta.started_at`` (first claim), ``0.0`` for a job that never ran;
+    ``node`` is the pinned ``params.target_node`` else the claiming host
+    (``meta.lease_host``), else null. A re-terminalised job is re-stamped.
+    The compute-dir reaper keys on ``finished_at`` (gr496403).
+    """
+    row = conn.execute(
+        "SELECT meta FROM refs WHERE ref_id = %s AND kind = 'job'", (ref_id,)
+    ).fetchone()
+    if row is None:
+        return
+    meta = row[0] or {}
+    now = datetime.now(UTC)
+    wall_s = 0.0
+    started = meta.get("started_at")
+    if started:
+        try:
+            began = datetime.fromisoformat(str(started))
+            wall_s = max(0.0, (now - began).total_seconds())
+        except (ValueError, TypeError):
+            wall_s = 0.0
+    params = meta.get("params") or {}
+    node = params.get("target_node") or meta.get("lease_host") or None
+    conn.execute(
+        "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
+        (
+            Jsonb(
+                {
+                    "finished_at": now.isoformat(),
+                    "wall_s": round(wall_s, 3),
+                    "node": node,
+                }
+            ),
+            ref_id,
+        ),
+    )
+
+
 class TagsMixin:
     """v2 tag CRUD against the unified tags + ref_tags / chunk_tags model."""
 
@@ -174,6 +224,8 @@ class TagsMixin:
                     "    expires_at = EXCLUDED.expires_at",
                     (ref_id, tag_id, set_by, expires_at),
                 )
+                if namespace == "STATUS" and value in _JOB_TERMINAL:
+                    _stamp_job_completion(c, ref_id)
                 return
 
             # Chunk-level tag.

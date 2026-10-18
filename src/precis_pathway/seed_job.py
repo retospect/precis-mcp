@@ -291,6 +291,35 @@ def _submit(ctx: Any, spec: Any) -> DetachedHandle | None:
         return None
 
 
+def _job_stamped(ctx: Any) -> bool:
+    """True once the job row carries its completion stamp
+    (``meta.finished_at``, written with the terminal ``STATUS:`` by
+    ``store.add_tag``). Reads the row fresh — ``ctx.meta`` is the claim-time
+    snapshot."""
+    with ctx.store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta ? 'finished_at' FROM refs WHERE ref_id = %s", (ctx.ref_id,)
+        ).fetchone()
+    return bool(row and row[0])
+
+
+def _reap_scratch(ctx: Any, handle: Any, *, failed: bool) -> None:
+    """Delete the compute dir, but only after the job's ``finished_at`` /
+    ``wall_s`` / ``node`` stamp has landed (gr496403): a dir that vanishes
+    first takes the only wall-time record of the run with it. An unstamped
+    job keeps its dir (and logs it) rather than losing the evidence."""
+    from precis_pathway import runner
+
+    if not _job_stamped(ctx):
+        log.warning(
+            "autocatpath_seed: job %s has no finished_at yet — keeping %s",
+            ctx.ref_id,
+            (handle or {}).get("dir"),
+        )
+        return
+    runner.finalize_seed_partial_detached(handle, failed=failed)
+
+
 def _poll(ctx: Any, handle: Any) -> bool:
     """Detached poll half (§H piece 4) — on "done", does exactly
     ``_dispatch``'s post-run tail (same ``set_meta`` fields, same
@@ -302,7 +331,7 @@ def _poll(ctx: Any, handle: Any) -> bool:
     params, not a submit-time snapshot."""
     from precis_pathway import runner
 
-    status = runner.poll_seed_partial_detached(handle)
+    status = runner.poll_seed_partial_detached(handle, defer_cleanup=True)
     state = status.get("state")
     if state == "running":
         return False
@@ -338,6 +367,7 @@ def _poll(ctx: Any, handle: Any) -> bool:
             open_tag=open_tag,
             failure_class="infra" if status.get("infra") else None,
         )
+        _reap_scratch(ctx, handle, failed=True)
         return True
 
     # state == "done"
@@ -375,16 +405,22 @@ def _poll(ctx: Any, handle: Any) -> bool:
     # next poll instead of losing the finished run (see
     # runner.finalize_seed_partial_detached). Retried chunks may duplicate;
     # a duplicated run_log beats a discarded result.
-    runner.finalize_seed_partial_detached(handle)
+    _reap_scratch(ctx, handle, failed=False)
     return True
 
 
 def _kill(ctx: Any, handle: Any) -> None:
     """``ssh_node`` wall-clock kill hook (§H piece 2) — best-effort SIGKILL
-    of the detached child's process group plus scratch-dir cleanup."""
+    of the detached child's process group. The scratch dir stays until
+    :func:`_reap` runs after the terminal write has stamped the job."""
     from precis_pathway import runner
 
-    runner.kill_seed_partial_detached(handle)
+    runner.kill_seed_partial_detached(handle, keep_scratch=True)
+
+
+def _reap(ctx: Any, handle: Any) -> None:
+    """``ssh_node`` post-terminal hook — remove the killed run's dir."""
+    _reap_scratch(ctx, handle, failed=True)
 
 
 SPEC = JobTypeSpec(
@@ -398,6 +434,7 @@ SPEC = JobTypeSpec(
     submit=_submit,
     poll=_poll,
     kill=_kill,
+    reap=_reap,
 )
 
 

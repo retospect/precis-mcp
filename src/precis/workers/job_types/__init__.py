@@ -142,6 +142,13 @@ class JobTypeSpec:
     #: ``claude_docker``'s ``_terminate``, which always CAN kill because
     #: it owns the container directly).
     kill: Callable[..., Any] | None = None
+    #: Optional post-terminal scratch reap, ``reap(ctx, handle)``. ``kill``
+    #: runs BEFORE the row is terminalized, so a kill that also deleted the
+    #: compute dir would destroy it before ``meta.finished_at`` / ``wall_s``
+    #: / ``node`` landed (gr496403). ``ssh_node`` calls ``reap`` after the
+    #: terminal ``STATUS:failed`` write; the hook deletes only once it sees
+    #: the stamp.
+    reap: Callable[..., Any] | None = None
 
     def __post_init__(self) -> None:
         """Enforce "the executor has something to call".

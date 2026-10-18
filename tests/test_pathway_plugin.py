@@ -111,6 +111,7 @@ class _FakeCtx:
 
     def __init__(self, *, store: Store, params: dict[str, Any]) -> None:
         self.store = store
+        self.ref_id = 0  # no such ref: the scratch reaper sees "unstamped"
         self.meta: dict[str, Any] = {"params": params}
         self.status: str | None = None
         self.failure: str | None = None
@@ -1749,7 +1750,7 @@ def test_seed_job_poll_infra_failure_tags_infra_child_killed(
     monkeypatch.setattr(
         runner,
         "poll_seed_partial_detached",
-        lambda handle: {
+        lambda handle, **_kw: {
             "state": "failed",
             "error": "child process exited without writing result.json",
             "tail": "",
@@ -1779,7 +1780,7 @@ def test_seed_job_poll_non_infra_failure_does_not_tag_infra_child_killed(
     monkeypatch.setattr(
         runner,
         "poll_seed_partial_detached",
-        lambda handle: {
+        lambda handle, **_kw: {
             "state": "failed",
             "error": "ValueError: bad backend",
             "tail": "",
@@ -1818,9 +1819,16 @@ def test_seed_job_poll_done_persists_then_finalizes_scratch(
         },
         "tail": "ok",
     }
-    monkeypatch.setattr(runner, "poll_seed_partial_detached", lambda handle: done)
+    monkeypatch.setattr(
+        runner, "poll_seed_partial_detached", lambda handle, **_kw: done
+    )
     finalized: list[Any] = []
-    monkeypatch.setattr(runner, "finalize_seed_partial_detached", finalized.append)
+    monkeypatch.setattr(
+        runner,
+        "finalize_seed_partial_detached",
+        lambda handle, **_kw: finalized.append(handle),
+    )
+    monkeypatch.setattr(seed_job, "_job_stamped", lambda ctx: True)
 
     ctx = _FakeCtx(store=pathway_store, params={"seed": 3, "model_index": 1})
     handle = {"pid": 1, "dir": "/nonexistent-scratch"}
@@ -1844,14 +1852,19 @@ def test_seed_job_poll_done_persist_failure_keeps_scratch_for_retry(
     monkeypatch.setattr(
         runner,
         "poll_seed_partial_detached",
-        lambda handle: {
+        lambda handle, **_kw: {
             "state": "done",
             "result": {"model": "emt", "partial": {"states": {}, "warnings": []}},
             "tail": "",
         },
     )
     finalized: list[Any] = []
-    monkeypatch.setattr(runner, "finalize_seed_partial_detached", finalized.append)
+    monkeypatch.setattr(
+        runner,
+        "finalize_seed_partial_detached",
+        lambda handle, **_kw: finalized.append(handle),
+    )
+    monkeypatch.setattr(seed_job, "_job_stamped", lambda ctx: True)
 
     class _PersistBoom(_FakeCtx):
         def set_meta(self, **fields: Any) -> None:
@@ -2345,7 +2358,7 @@ def test_seed_job_poll_running_returns_false(
     from precis_pathway import seed_job
 
     monkeypatch.setattr(
-        runner, "poll_seed_partial_detached", lambda handle: {"state": "running"}
+        runner, "poll_seed_partial_detached", lambda handle, **_kw: {"state": "running"}
     )
     ctx = _FakeCtx(store=pathway_store, params={})
     terminal = seed_job._poll(ctx, {"pid": 1})
@@ -2373,7 +2386,7 @@ def test_seed_job_poll_done_sets_meta_and_succeeds(
     monkeypatch.setattr(
         runner,
         "poll_seed_partial_detached",
-        lambda handle: {"state": "done", "result": result},
+        lambda handle, **_kw: {"state": "done", "result": result},
     )
     ctx = _FakeCtx(
         store=pathway_store,
@@ -2428,7 +2441,11 @@ def test_seed_job_poll_done_appends_run_log_when_tail_present(
     monkeypatch.setattr(
         runner,
         "poll_seed_partial_detached",
-        lambda handle: {"state": "done", "result": result, "tail": "run output here"},
+        lambda handle, **_kw: {
+            "state": "done",
+            "result": result,
+            "tail": "run output here",
+        },
     )
     ctx = _FakeCtx(
         store=pathway_store,
@@ -2463,7 +2480,7 @@ def test_seed_job_poll_done_caps_run_log_at_4000_chars(
     monkeypatch.setattr(
         runner,
         "poll_seed_partial_detached",
-        lambda handle: {"state": "done", "result": result, "tail": huge_tail},
+        lambda handle, **_kw: {"state": "done", "result": result, "tail": huge_tail},
     )
     ctx = _FakeCtx(
         store=pathway_store,
@@ -2485,7 +2502,11 @@ def test_seed_job_poll_failed_records_failure(
     monkeypatch.setattr(
         runner,
         "poll_seed_partial_detached",
-        lambda handle: {"state": "failed", "error": "boom", "tail": "stderr tail"},
+        lambda handle, **_kw: {
+            "state": "failed",
+            "error": "boom",
+            "tail": "stderr tail",
+        },
     )
     ctx = _FakeCtx(
         store=pathway_store, params={"config": {}, "seed": 0, "model_index": 0}
@@ -2507,7 +2528,9 @@ def test_seed_job_kill_delegates_to_runner(
 
     calls: list[Any] = []
     monkeypatch.setattr(
-        runner, "kill_seed_partial_detached", lambda handle: calls.append(handle)
+        runner,
+        "kill_seed_partial_detached",
+        lambda handle, **_kw: calls.append(handle),
     )
     ctx = _FakeCtx(store=pathway_store, params={})
 
@@ -3095,7 +3118,7 @@ def test_seed_job_poll_failure_reason_carries_exit_and_stderr(
     monkeypatch.setattr(
         runner,
         "poll_seed_partial_detached",
-        lambda handle: {
+        lambda handle, **_kw: {
             "state": "failed",
             "error": "child process exited without writing result.json",
             "tail": "",

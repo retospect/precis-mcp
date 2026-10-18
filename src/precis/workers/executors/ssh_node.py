@@ -434,6 +434,16 @@ def _kill_and_terminalize(
         _set_status(store, ref_id, _FAILED, conn=conn)
         conn.commit()
     bubble_job_failure(store, ref_id)
+    if getattr(spec, "reap", None) is not None:
+        try:
+            spec.reap(ctx, handle)
+        except Exception:  # pragma: no cover — defensive
+            log.warning(
+                "ssh_node: reap(handle=%r) of job %d raised",
+                handle,
+                ref_id,
+                exc_info=True,
+            )
 
 
 def _poll_one(ctx: DispatchContext) -> bool:

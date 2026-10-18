@@ -1467,6 +1467,12 @@ class JobHandler(NumericRefHandler):
             lines.append(f"executor: {meta['executor']}")
         if meta.get("wall_seconds") is not None:
             lines.append(f"wall_seconds: {meta['wall_seconds']:.1f}")
+        if meta.get("finished_at"):
+            lines.append(f"finished_at: {meta['finished_at']}")
+            if meta.get("wall_s") is not None:
+                lines.append(f"wall_s: {meta['wall_s']:.1f}")
+            if meta.get("node"):
+                lines.append(f"node: {meta['node']}")
         if meta.get("branch"):
             lines.append(f"branch: {meta['branch']}")
         if meta.get("sha"):

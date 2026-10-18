@@ -237,6 +237,10 @@ another attempt.
 search(kind="job", tags=["STATUS:running"])
 ```
 
+## How long did a job run, and where?
+
+Every terminal `STATUS:` (succeeded, failed, cancelled, timeout kill) stamps `meta.finished_at` (UTC), `meta.wall_s` (finished minus first claim; 0 if it never ran) and `meta.node` (the pinned `target_node`, else the claiming host). `get(kind="job", id=N)` prints them. A seed's compute dir is kept until that stamp lands.
+
 ## Show me everything queued up
 
 ```python

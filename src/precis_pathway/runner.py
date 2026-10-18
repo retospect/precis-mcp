@@ -1222,7 +1222,9 @@ def submit_seed_partial_detached(
     }
 
 
-def poll_seed_partial_detached(handle: DetachedHandle) -> PollResult:
+def poll_seed_partial_detached(
+    handle: DetachedHandle, *, defer_cleanup: bool = False
+) -> PollResult:
     """Poll one detached submit — the ssh_node ``poll`` half.
 
     Checks ``result.json`` FIRST: a child that wrote its envelope and exited
@@ -1251,7 +1253,10 @@ def poll_seed_partial_detached(handle: DetachedHandle) -> PollResult:
     ``{"state": "done", "result": <run_seed_partial output>, "tail": ...}``,
     or ``{"state": "failed", "error": ..., "tail": ..., "infra": <bool, only
     on the no-envelope branch>}``. FAILED states remove the scratch dir
-    (best-effort) after extracting what they need; the DONE state leaves it
+    (best-effort) after extracting what they need — unless
+    ``defer_cleanup=True``, where the caller removes it via
+    :func:`finalize_seed_partial_detached` once the job's completion stamp
+    has landed (gr496403); the DONE state leaves it
     in place until the caller has persisted the result and calls
     :func:`finalize_seed_partial_detached` — a persist failure must be
     retryable, not a permanent loss of a finished run.
@@ -1286,7 +1291,8 @@ def poll_seed_partial_detached(handle: DetachedHandle) -> PollResult:
                 "tail": _tail_logs(scratch),
             }
             _REAPED_STATUS.pop(pid, None)
-            _cleanup_detached(scratch, failed=True)
+            if not defer_cleanup:
+                _cleanup_detached(scratch, failed=True)
             return result
         # Envelope parsed cleanly -> the child is done one way or another;
         # reap now, on the SUCCEEDING branch too, or it never happens. A bare
@@ -1321,7 +1327,8 @@ def poll_seed_partial_detached(handle: DetachedHandle) -> PollResult:
             "error": str(payload.get("error")),
             "tail": _tail_logs(scratch),
         }
-        _cleanup_detached(scratch, failed=True)
+        if not defer_cleanup:
+            _cleanup_detached(scratch, failed=True)
         return result
 
     if _process_alive(pid):
@@ -1347,11 +1354,14 @@ def poll_seed_partial_detached(handle: DetachedHandle) -> PollResult:
         result["exit_code"] = info["exit_code"]
     if "exit_signal" in info:
         result["exit_signal"] = info["exit_signal"]
-    _cleanup_detached(scratch, failed=True)
+    if not defer_cleanup:
+        _cleanup_detached(scratch, failed=True)
     return result
 
 
-def finalize_seed_partial_detached(handle: DetachedHandle) -> None:
+def finalize_seed_partial_detached(
+    handle: DetachedHandle, *, failed: bool = False
+) -> None:
     """Remove a DONE job's scratch dir — call ONLY after persisting.
 
     The ``"done"`` branch of :func:`poll_seed_partial_detached` deliberately
@@ -1359,11 +1369,18 @@ def finalize_seed_partial_detached(handle: DetachedHandle) -> None:
     that a failed DB persist retries on the next poll instead of discarding
     a finished run. Once the caller's persist has succeeded, this reclaims
     the disk. Best-effort and idempotent (missing dir is a no-op).
+
+    ``failed=True`` reclaims the dir of a failed/killed run under
+    ``PRECIS_PATHWAY_KEEP_FAILED_SCRATCH`` rules (see
+    :func:`_cleanup_detached`); ``seed_job`` calls it only once the job's
+    completion stamp has landed (gr496403).
     """
-    _cleanup_detached(handle["dir"])
+    _cleanup_detached(handle["dir"], failed=failed)
 
 
-def kill_seed_partial_detached(handle: DetachedHandle) -> None:
+def kill_seed_partial_detached(
+    handle: DetachedHandle, *, keep_scratch: bool = False
+) -> None:
     """Best-effort SIGKILL of a detached submit's whole process group — the
     ssh_node wall-clock kill hook (§H piece 2), invoked once
     ``meta.deadline`` passes. ``os.killpg`` reaches every descendant the
@@ -1409,7 +1426,8 @@ def kill_seed_partial_detached(handle: DetachedHandle) -> None:
                 handle.get("pid"),
                 tail,
             )
-        _cleanup_detached(scratch, failed=True)
+        if not keep_scratch:
+            _cleanup_detached(scratch, failed=True)
 
 
 def aggregate_seed_partials(
