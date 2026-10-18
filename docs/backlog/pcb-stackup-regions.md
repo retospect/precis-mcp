@@ -48,7 +48,7 @@ clearance halos wall the pad in (fine-pitch IC rows), so
   from slice 1's table. "High cost does not need to be massively high."
 - **Thermal reliefs:** solid by default; reliefs per class opt-in with a
   starved-thermal check. A board-wide `prototype` flag is a separate idea
-  item: [pcb-prototype-thermal-reliefs](pcb-prototype-thermal-reliefs.md).
+  item: [pcb-board-profile-prototype](pcb-board-profile-prototype.md).
 - **Bare pour islands are stitched to their net, not dropped**; drop only
   when no via site reaches a same-net plane, and report it. Owned by
   [pcb-floating-pour-island](pcb-floating-pour-island.md).
@@ -423,7 +423,8 @@ place/route; both are measured before landing.
 
 - [pcb-floating-pour-island](pcb-floating-pour-island.md) — island
   stitching (Reto: stitch, not drop).
-- [pcb-prototype-thermal-reliefs](pcb-prototype-thermal-reliefs.md) — idea.
+- [pcb-board-profile-prototype](pcb-board-profile-prototype.md) — ready; sets
+  the default for slice 10's thermal key.
 - [pcb-layer-preferred-direction](pcb-layer-preferred-direction.md) —
   absorbed by slice 3.
 - [pcb-keepout-does-not-bind](pcb-keepout-does-not-bind.md) — closed by
