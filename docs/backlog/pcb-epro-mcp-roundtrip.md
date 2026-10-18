@@ -69,19 +69,8 @@ a link on the board page, `op='import_epro'`
 
 ## Not covered here (stays on gr495289)
 
-The gripe's two export warnings need their own root-cause pass before any
-change:
-- "12 pad(s) belong to no placed part" on a 12-part board with no
-  authored fiducials. `epro_write._group_pads` counts a pad whose `refdes`
-  is not a placed part. Observed while building slice 2, not yet proven
-  on the gripe's board: `_fab_model` adds the board-furniture fiducials
-  (`_board_furniture`) to `model["pads"]`, and the writer drops them as
-  orphans. The seeded test board places 2 fiducials (its third is
-  reported skipped) and drops 8 pads; the imported tiny fixture skips
-  none and drops 12. That fits 4 rows per fiducial, and 12 fits the
-  gripe's board with all 3 placed. If confirmed, the fix is the warning's
-  wording (or writing the fiducials), not the count.
-- "14 blind/buried via(s) written as THROUGH-HOLE" on a 4-layer board.
-  Blind vias are possible on 4 layers, so the warning may be correct. The
-  open question is whether the router should emit non-through spans on
-  this board at all.
+The export warnings now say what they dropped (the orphan-pad line names
+the auto fiducials by position, the blind-via line gives each span). Still
+open: whether the router should emit non-through via spans on a 4-layer
+board at all, and whether the writer should carry the auto fiducials
+instead of dropping them.

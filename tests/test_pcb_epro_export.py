@@ -485,6 +485,8 @@ def test_things_the_slice_does_not_carry_are_warned_about():
     text = " | ".join(ex.warnings)
     for needle in (
         "2 pad(s) belong to no placed part",
+        "1 board fiducial(s) at (1.000, 1.000)",
+        "1 stray pad row(s) (?.? at (1.000, 1.000))",
         "1 net(s) have no exported pad and are not in the file: LONELY",
         "1 pour(s)/plane(s)",
         "1 soldermask-opening",
@@ -1394,6 +1396,7 @@ def test_copper_drops_and_flattenings_are_warned():
     for needle in (
         "blind/buried",
         "THROUGH-HOLE",
+        "GND at (20.000, 5.000) F.Cu→In1.Cu",
         "pour(s)",
         "carry no net",
         "no finite centre",

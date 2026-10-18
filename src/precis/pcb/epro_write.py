@@ -978,16 +978,16 @@ class _Part:
     local_pads: list[_LocalPad] = field(default_factory=list)
 
 
-def _group_pads(model: dict[str, Any], parts: dict[str, _Part]) -> int:
+def _group_pads(model: dict[str, Any], parts: dict[str, _Part]) -> list[dict[str, Any]]:
     """File each model pad under its part, collapsing the per-copper-layer
     repeats of a through-hole pad (same refdes, pin, position) to one.
-    Returns how many pads belong to no placed part (fiducials, stray rows)."""
+    Returns the pads that belong to no placed part (fiducials, stray rows)."""
     seen: set[tuple[str, str, float, float]] = set()
-    orphans = 0
+    orphans: list[dict[str, Any]] = []
     for pad in model.get("pads") or []:
         part = parts.get(str(pad.get("refdes") or ""))
         if part is None:
-            orphans += 1
+            orphans.append(pad)
             continue
         key = (
             part.refdes,
@@ -1002,6 +1002,39 @@ def _group_pads(model: dict[str, Any], parts: dict[str, _Part]) -> int:
     for part in parts.values():
         part.local_pads = [_local_pad(p, part.inst) for p in part.pads]
     return orphans
+
+
+def _orphan_warning(orphans: list[dict[str, Any]]) -> str:
+    """One line saying which pads :func:`_group_pads` could not file under a
+    part. Auto-placed board fiducials carry no refdes and one flash per copper
+    layer, so they are counted as fiducials (by position), not as pad rows."""
+    fids: dict[tuple[float, float], set[str]] = {}
+    strays: list[str] = []
+    for pad in orphans:
+        xy = (
+            round(float(pad.get("x") or 0.0), 3),
+            round(float(pad.get("y") or 0.0), 3),
+        )
+        if pad.get("role") == "fiducial":
+            fids.setdefault(xy, set()).add(str(pad.get("layer") or "?"))
+            continue
+        who = f"{pad.get('refdes') or '?'}.{pad.get('pin') or '?'}"
+        strays.append(f"{who} at ({xy[0]:.3f}, {xy[1]:.3f})")
+    what: list[str] = []
+    if fids:
+        spots = ", ".join(f"({x:.3f}, {y:.3f})" for x, y in sorted(fids)[:4])
+        what.append(
+            f"{len(fids)} board fiducial(s) at {spots}{'…' if len(fids) > 4 else ''} "
+            "(auto-placed, one flash per copper layer, not parts in the file — "
+            "re-add them in Pro)"
+        )
+    if strays:
+        shown = ", ".join(strays[:4]) + ("…" if len(strays) > 4 else "")
+        what.append(f"{len(strays)} stray pad row(s) ({shown})")
+    return (
+        f"{len(orphans)} pad(s) belong to no placed part and are not "
+        f"exported: {'; '.join(what)}"
+    )
 
 
 @dataclass
@@ -1584,7 +1617,9 @@ def _write_copper(
             vx, vy = float(item["x"]), float(item["y"])
             span = item.get("layers") or item.get("span")
             if span and [str(span[0]), str(span[-1])] != through:
-                out.blind.append(f"{net or '?'} at ({vx:.3f}, {vy:.3f})")
+                out.blind.append(
+                    f"{net or '?'} at ({vx:.3f}, {vy:.3f}) {span[0]}→{span[-1]}"
+                )
             if not net:
                 out.netless += 1
             cx, cy = to_epro_xy(vx, vy, frame)
@@ -1692,8 +1727,9 @@ def _copper_warnings(cu: _CopperOut) -> list[str]:
         shown = ", ".join(cu.blind[:6]) + ("…" if len(cu.blind) > 6 else "")
         out.append(
             f"{len(cu.blind)} blind/buried via(s) written as THROUGH-HOLE "
-            f"({shown}) — VIA carries no span in this format; fix their span "
-            "in Pro before fabricating"
+            f"({shown}) — VIA carries no span in this format, so each reaches "
+            "every copper layer; fix their span in Pro before "
+            "fabricating"
         )
     if cu.netless:
         out.append(
@@ -2262,10 +2298,7 @@ def epro_files(
             f"omitted: {', '.join(padless[:8])}"
         )
     if orphans:
-        warnings.append(
-            f"{orphans} pad(s) belong to no placed part (fiducials, stray "
-            f"rows) and are not exported"
-        )
+        warnings.append(_orphan_warning(orphans))
     warnings += _copper_warnings(cu)
     if plated_free:
         warnings.append(
