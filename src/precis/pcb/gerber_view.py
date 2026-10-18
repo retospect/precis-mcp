@@ -176,6 +176,41 @@ _STACK_ORDER = [
     "Edge_Cuts",
 ]
 
+#: The same physical stack seen from the bottom (the flip button): the B.*
+#: side paints last — on top. Not a naive ``_STACK_ORDER`` reversal: the
+#: physical order is mirrored, so far-side silkscreen sinks to the back and
+#: B_Silkscreen is the topmost ink. Drills and the outline stay on top
+#: either way — a hole is a hole from both sides, and the outline bounds
+#: both views.
+_FLIPPED_STACK = [
+    "F_Silkscreen",
+    "F_Paste",
+    "F_Mask",
+    "F_Cu",
+    "In1_Cu",
+    "In2_Cu",
+    "B_Cu",
+    "B_Mask",
+    "B_Paste",
+    "B_Silkscreen",
+    "PTH",
+    "NPTH",
+    "Edge_Cuts",
+]
+
+
+def _layer_style(key: str, flip: bool) -> tuple[str, bool]:
+    """``(colour, default_visible)`` for a layer — from the bottom, a layer
+    inherits its counterpart's default visibility (the bottom view exists
+    to look at B-side silkscreen and copper, so the far side's ink starts
+    hidden just as B_Silkscreen's does from the top)."""
+    colour, visible = _LAYER_STYLE.get(key, _DEFAULT_STYLE)
+    if flip and key[:2] in ("F_", "B_"):
+        counterpart = ("B_" if key.startswith("F_") else "F_") + key[2:]
+        visible = _LAYER_STYLE.get(counterpart, _DEFAULT_STYLE)[1]
+    return colour, visible
+
+
 _ARC_MAX_SEG_DEG = 6.0
 
 
@@ -1090,6 +1125,7 @@ def render_fab_svg(
     margin_mm: float = 2.0,
     selection_manifest: dict[str, Any] | None = None,
     outline_handle: str | None = None,
+    flip: bool = False,
 ) -> str:
     """An SVG of a whole fab set, one toggleable group per layer.
 
@@ -1097,6 +1133,12 @@ def render_fab_svg(
     bottom-left and SVG's is top-left. Getting this wrong renders a mirrored
     board that looks entirely plausible — which is the kind of error that
     reaches a fab.
+
+    ``flip`` is the workbench's bottom view: the board group also mirrors
+    x (``scale(-1,-1)``) and the stack paints from :data:`_FLIPPED_STACK`
+    so the B.* layers land on top. ``data-side="bottom"`` marks the
+    document; selection identity is unchanged — a pad is the same object
+    seen from either side.
 
     The layer selector is inline: legend rows toggle a CSS class on their
     group. A viewer that does not run script still shows every layer that
@@ -1116,8 +1158,9 @@ def render_fab_svg(
     x1, y1 = x1 + margin_mm, y1 + margin_mm
     w, h = max(1e-6, x1 - x0), max(1e-6, y1 - y0)
 
-    keys = [k for k in _STACK_ORDER if k in arts or k in drills]
-    keys += sorted(k for k in {*arts, *drills} if k not in _STACK_ORDER)
+    stack = _FLIPPED_STACK if flip else _STACK_ORDER
+    keys = [k for k in stack if k in arts or k in drills]
+    keys += sorted(k for k in {*arts, *drills} if k not in stack)
 
     # The mask FILM's own shape — the real Edge_Cuts outline when this file
     # set parsed one, else the same rect the viewBox itself is built from.
@@ -1129,7 +1172,7 @@ def render_fab_svg(
 
     body: list[str] = _part_body_els(arts)
     for key in keys:
-        colour, visible = _LAYER_STYLE.get(key, _DEFAULT_STYLE)
+        colour, visible = _layer_style(key, flip)
         cls = "layer" if visible else "layer off"
         # GROUP opacity, copper layers only — see _COPPER_LAYER_OPACITY's
         # docstring. Drills/silkscreen/mask/paste/outline stay opaque:
@@ -1232,7 +1275,7 @@ def render_fab_svg(
 
     rows: list[str] = []
     for i, key in enumerate(keys):
-        colour, visible = _LAYER_STYLE.get(key, _DEFAULT_STYLE)
+        colour, visible = _layer_style(key, flip)
         ty = 18 + i * 20
         mark = "on" if visible else "off"
         label = _DRILL_LABEL.get(key, key)
@@ -1284,9 +1327,16 @@ def render_fab_svg(
             f' data-pcb-board="{int(selection_manifest["board_ref_id"])}"'
             f' data-pcb-snapshot="{esc(str(selection_manifest["snapshot"]), quote=True)}"'
         )
+    side = ' data-side="bottom"' if flip else ""
+    # Normal: translate so gerber x0 lands on the gutter edge, then flip y.
+    # Bottom view mirrors x around the board's own span — translate so x1
+    # lands on the gutter edge and scale x negative; a gerber point at x0
+    # then draws on the right, exactly as the board looks turned over.
+    board_x = _LEGEND_GUTTER_PX + (x1 if flip else -x0) * px
+    board_sx = -px if flip else px
     return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {doc_w:.1f} {doc_h:.1f}"
- width="{doc_w:.0f}" height="{doc_h:.0f}" role="img"{selection_root} aria-label="{esc(title, quote=True)}">
-<title>{esc(title, quote=True)} — rendered from gerbers</title>
+ width="{doc_w:.0f}" height="{doc_h:.0f}" role="img"{selection_root}{side} aria-label="{esc(title, quote=True)}">
+<title>{esc(title, quote=True)}{" — bottom view" if flip else ""} — rendered from gerbers</title>
 <style>
   .layer.off {{ display: none; }}
   .rs-off .ratsnest {{ display: none; }}
@@ -1297,7 +1347,7 @@ def render_fab_svg(
   .legend-row.off .swatch {{ fill-opacity: 0.25; }}
 {selection_css}</style>
 {selection_meta}{hover_meta}<rect x="0" y="0" width="{doc_w:.1f}" height="{doc_h:.1f}" fill="{_BOARD_BG}"/>
-<g transform="translate({_LEGEND_GUTTER_PX + -x0 * px:.4f},{y1 * px:.4f}) scale({px:.6f},-{px:.6f})">
+<g transform="translate({board_x:.4f},{y1 * px:.4f}) scale({board_sx:.6f},-{px:.6f})">
 {chr(10).join(body)}
 </g>
 <g class="legend">

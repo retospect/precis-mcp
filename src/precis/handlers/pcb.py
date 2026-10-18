@@ -6372,7 +6372,9 @@ class PcbHandler(Handler):
                     svg_text = note + svg_text
             return Response(body=svg_text)
         if level == "fab":
-            return self._render_fab_svg(ref_id, slug)
+            return self._render_fab_svg(
+                ref_id, slug, flip=bool((args or {}).get("flip"))
+            )
         if level != "board":
             raise BadInput(
                 f"view='svg' args.level={level!r} not recognized",
@@ -6631,6 +6633,7 @@ class PcbHandler(Handler):
         slug: str,
         *,
         selection_manifest: dict[str, Any] | None = None,
+        flip: bool = False,
     ) -> Response:
         """``level='fab'`` — the board rendered FROM ITS GERBERS, with a
         layer selector.
@@ -6696,6 +6699,7 @@ class PcbHandler(Handler):
                 outline_handle=(
                     argue.feature_handle("outline") if model.get("outline") else None
                 ),
+                flip=flip,
             )
             # **A dropped fiducial or title block must not be invisible on the
             # surface a human INSPECTS the board with.** This path used to

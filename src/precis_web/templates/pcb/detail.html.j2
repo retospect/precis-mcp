@@ -26,6 +26,64 @@
 </div>
 {% else %}
 <script type="application/json" id="pcb-selection-manifest">{{ {'context': pcb_context, 'instances': pcb_instances, 'poses': pcb_poses} | tojson }}</script>
+{# The workbench (docs/backlog/pcb-workbench-layout.md): schematic left,
+   layout right, a draggable divider whose split is remembered, and the
+   info strip below. Both panes are <object> documents — each SVG keeps
+   its own scripted legend/behaviour, and static/viewport.js drives
+   zoom/pan in both by rewriting the viewBox. #}
+<style>
+  #pcb-workbench { display: flex; align-items: stretch; height: 72vh; min-height: 22rem; }
+  #pcb-workbench .pcb-pane { display: flex; flex-direction: column; min-width: 0; }
+  #pcb-pane-schematic { flex: 0 0 50%; }
+  #pcb-pane-layout { flex: 1 1 auto; }
+  #pcb-workbench object { flex: 1 1 auto; min-height: 0; width: 100%; }
+  #pcb-divider { flex: 0 0 7px; cursor: col-resize; border-radius: 4px; }
+  #pcb-divider:hover, #pcb-divider:focus-visible { background: rgb(var(--bg-surface-emphasis)); }
+</style>
+<div id="pcb-workbench" class="mb-1">
+  <section id="pcb-pane-schematic" class="pcb-pane rounded border border-line bg-surface p-2">
+    <h2 class="mb-1 px-1 text-sm font-semibold text-fg-secondary">Schematic
+      <span class="font-normal text-xs text-fg-faint">net-label style — matching labels are the connection</span>
+      <span class="vp-tools float-right inline-flex gap-1">
+        <button type="button" data-vp="in" data-shortcut-label="Zoom in" title="zoom in (+)" class="rounded border border-line px-1 font-mono text-xs text-fg-secondary">+</button>
+        <button type="button" data-vp="out" data-shortcut-label="Zoom out" title="zoom out (-)" class="rounded border border-line px-1 font-mono text-xs text-fg-secondary">−</button>
+        <button type="button" data-vp="fit" data-shortcut-label="Fit view" title="fit view (f, or double-click empty space)" class="rounded border border-line px-1 font-mono text-xs text-fg-secondary">fit</button>
+        <button type="button" data-vp="reset" data-shortcut-label="Reset view" title="reset view (0)" class="rounded border border-line px-1 font-mono text-xs text-fg-secondary">reset</button>
+      </span>
+    </h2>
+    <object id="pcb-schematic-object" type="image/svg+xml" data="/pcb/{{ slug | urlencode }}/schematic.svg">
+      schematic unavailable
+    </object>
+  </section>
+  <div id="pcb-divider" role="separator" aria-orientation="vertical" tabindex="0"
+       aria-label="pane divider" title="drag to resize · double-click resets · arrows adjust"></div>
+  <section id="pcb-pane-layout" class="pcb-pane rounded border border-line bg-surface p-2">
+    <h2 class="mb-1 px-1 text-sm font-semibold text-fg-secondary">Layout
+      <span class="font-normal text-xs text-fg-faint">click a pad, part or track to drop its handle into the argument below</span>
+      <a href="/pcb/{{ slug | urlencode }}/export.epro2" class="font-normal text-xs text-fg-faint underline hover:text-fg-secondary">download .epro2 (EasyEDA Pro)</a>
+      <span class="vp-tools float-right inline-flex gap-1">
+        <button type="button" id="pcb-flip" aria-pressed="false"
+                title="bottom view — mirrored, B.* layers on top" class="rounded border border-line px-1 font-mono text-xs text-fg-secondary">bottom view</button>
+        <button type="button" data-vp="in" data-shortcut-label="Zoom in" title="zoom in (+)" class="rounded border border-line px-1 font-mono text-xs text-fg-secondary">+</button>
+        <button type="button" data-vp="out" data-shortcut-label="Zoom out" title="zoom out (-)" class="rounded border border-line px-1 font-mono text-xs text-fg-secondary">−</button>
+        <button type="button" data-vp="fit" data-shortcut-label="Fit view" title="fit view (f, or double-click empty space)" class="rounded border border-line px-1 font-mono text-xs text-fg-secondary">fit</button>
+        <button type="button" data-vp="reset" data-shortcut-label="Reset view" title="reset view (0)" class="rounded border border-line px-1 font-mono text-xs text-fg-secondary">reset</button>
+      </span>
+    </h2>
+    <object id="pcb-board-object" type="image/svg+xml"
+            data="/pcb/{{ slug | urlencode }}/board.svg?shown={{ pcb_context.shown.snapshot | urlencode }}"
+            data-base="/pcb/{{ slug | urlencode }}/board.svg?shown={{ pcb_context.shown.snapshot | urlencode }}">
+      board render unavailable
+    </object>
+  </section>
+</div>
+{# The info strip: hover/selection details left, the board cursor readout
+   right (moved here from the old board box). #}
+<div id="pcb-info-strip" class="mb-3 flex items-baseline justify-between gap-4 rounded border border-line bg-surface px-2 py-1 text-xs text-fg-subtle">
+  <span id="pcb-info-detail" aria-live="polite"></span>
+  <span id="pcb-cursor-readout" aria-live="off" title="cursor position, board origin"
+        class="whitespace-nowrap font-mono">x — y — mm</span>
+</div>
 <div id="pcb-selection-panel" class="rounded border p-3 mb-3">
   <h2 class="text-sm font-semibold">Selection</h2>
   <p id="pcb-selection-status" role="status">Select a board object.</p>
@@ -38,22 +96,6 @@
   <button type="button" id="pcb-select-component" disabled>Select component</button>
   <button type="button" id="pcb-select-net" disabled>Select net</button>
   <button type="button" id="pcb-deselect">Deselect</button>
-</div>
-{# object, not img: the board SVG's layer-toggle legend is scripted, and
-   scripts only run when the SVG is its own document. #}
-<div class="mb-6 rounded border border-line bg-surface p-2">
-  <h2 class="mb-1 px-1 text-sm font-semibold text-fg-secondary">Board
-    <span class="font-normal text-xs text-fg-faint">click a pad, part or track to drop its handle into the argument below</span>
-    <a href="/pcb/{{ slug | urlencode }}/export.epro2" class="font-normal text-xs text-fg-faint underline hover:text-fg-secondary">download .epro2 (EasyEDA Pro)</a>
-  </h2>
-  <div class="overflow-auto">
-    <object id="pcb-board-object" type="image/svg+xml" data="/pcb/{{ slug | urlencode }}/board.svg?shown={{ pcb_context.shown.snapshot | urlencode }}"
-            class="min-w-full">
-      board render unavailable
-    </object>
-  </div>
-  <div id="pcb-cursor-readout" aria-live="off" title="cursor position, board origin"
-       style="text-align:right;font:12px ui-monospace,monospace" class="px-1 pt-1 text-fg-subtle">x — y — mm</div>
 </div>
 
 {# One text box, always present: a whole-design argument needs no click.
@@ -77,19 +119,10 @@
   <h3 class="mt-3 mb-1 px-1 text-xs font-semibold text-fg-muted">Notes</h3>
   <div id="pcb-notes-host">{% include "pcb/_notes.html.j2" %}</div>
 </div>
-<script src="/static/pcb-argue.js" defer></script>
-
-<div class="mb-6 rounded border border-line bg-surface p-2">
-  <h2 class="mb-1 px-1 text-sm font-semibold text-fg-secondary">Schematic
-    <span class="font-normal text-xs text-fg-faint">net-label style — matching labels are the connection</span>
-  </h2>
-  <div class="overflow-auto">
-    <img src="/pcb/{{ slug }}/schematic.svg" alt="schematic of {{ title }}"
-         class="min-w-full">
-  </div>
-</div>
-
 <script src="/static/pcb-facts.js" defer></script>
+<script src="/static/viewport.js" defer></script>
+<script src="/static/pcb-workbench.js" defer></script>
+<script src="/static/pcb-argue.js" defer></script>
 <script src="/static/pcb-hover.js" defer></script>
 <script src="/static/pcb-selection.js" defer></script>
 {% endif %}

@@ -122,6 +122,59 @@ def test_detail_shows_vitals_and_both_panes(pcb_client, runtime_with_store) -> N
     assert "/pcb/web_pcb/schematic.svg" in r.text
 
 
+def test_detail_renders_the_two_pane_workbench(pcb_client, runtime_with_store) -> None:
+    """The workbench layout (docs/backlog/pcb-workbench-layout.md slice 1):
+    schematic left, layout right, a divider between them, the info strip
+    below carrying the cursor readout, and the flip control — with
+    viewport.js and the workbench glue loaded."""
+    _seed(runtime_with_store)
+    r = pcb_client.get("/pcb/web_pcb")
+    assert r.status_code == 200
+    for marker in (
+        'id="pcb-workbench"',
+        'id="pcb-pane-schematic"',
+        'id="pcb-pane-layout"',
+        'id="pcb-divider"',
+        'id="pcb-info-strip"',
+        'id="pcb-cursor-readout"',
+        'id="pcb-flip"',
+        'id="pcb-schematic-object"',
+        'id="pcb-board-object"',
+        "/static/viewport.js",
+        "/static/pcb-workbench.js",
+    ):
+        assert marker in r.text, marker
+    # schematic is the left pane; the strip sits below both panes
+    assert (
+        r.text.index('id="pcb-pane-schematic"')
+        < r.text.index('id="pcb-pane-layout"')
+        < r.text.index('id="pcb-info-strip"')
+    )
+    # both panes are <object> documents (each svg keeps its own scripts)
+    assert 'object id="pcb-schematic-object"' in r.text
+    assert "board.svg?shown=" in r.text
+
+
+def test_board_svg_flip_renders_the_bottom_view(pcb_client, runtime_with_store) -> None:
+    """``board.svg?flip=1`` is the mirrored bottom view (gerber_view's
+    ``_FLIPPED_STACK``): B.* layers paint on top, ``data-side`` marks it."""
+    from precis_web import pcb_design
+
+    _seed(runtime_with_store)
+    store = runtime_with_store.hub.store
+    ref = store.get_ref(kind="pcb", id="web_pcb")
+    with store.pcb_view_tx() as conn:
+        token = pcb_design.capture_view(store, ref, conn=conn).token
+    top = pcb_client.get("/pcb/web_pcb/board.svg", params={"shown": token})
+    bottom = pcb_client.get(
+        "/pcb/web_pcb/board.svg", params={"shown": token, "flip": "1"}
+    )
+    assert top.status_code == 200 and bottom.status_code == 200
+    assert 'data-side="bottom"' in bottom.text
+    assert "data-side" not in top.text
+    assert bottom.text.index('id="layer-B_Cu"') > bottom.text.index('id="layer-F_Cu"')
+
+
 def test_detail_title_uses_the_captured_read_transaction(
     pcb_client, runtime_with_store, monkeypatch
 ) -> None:

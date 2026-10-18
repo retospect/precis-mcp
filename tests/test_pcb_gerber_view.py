@@ -191,6 +191,29 @@ def test_the_svg_carries_one_toggleable_group_per_layer() -> None:
     assert m.group(1) == m.group(2)
 
 
+def test_the_bottom_view_mirrors_and_stacks_b_side_on_top() -> None:
+    """The workbench flip button (docs/backlog/pcb-workbench-layout.md):
+    ``flip=True`` is a bottom view — mirrored, with the B.* layers drawn
+    on top, and its own silkscreen the one shown."""
+    files = gerber.export_fab(_model(), name="t", allow_synthesized=True)
+    top = gerber_view.render_fab_svg(files, title="t")
+    bottom = gerber_view.render_fab_svg(files, title="t", flip=True)
+    assert 'data-side="bottom"' in bottom
+    assert "data-side" not in top
+    assert re.search(r"scale\(\d", top) is not None
+    assert re.search(r"scale\(-", bottom) is not None
+    # Paint order is the flipped physical stack: B.Cu over F.Cu — the
+    # reverse of the top view. Drills still sit above both.
+    assert top.index('id="layer-B_Cu"') < top.index('id="layer-F_Cu"')
+    assert bottom.index('id="layer-B_Cu"') > bottom.index('id="layer-F_Cu"')
+    assert bottom.index('id="layer-PTH"') > bottom.index('id="layer-B_Cu"')
+    if 'id="layer-B_Silkscreen"' in bottom:
+        # A bottom view exists to look at the B side, so its own ink
+        # starts on and the far side's off — the counterpart defaults.
+        assert 'id="layer-B_Silkscreen" class="layer"' in bottom
+        assert 'id="layer-F_Silkscreen" class="layer off"' in bottom
+
+
 def _hex_brightness(hexcolour: str) -> float:
     hexcolour = hexcolour.lstrip("#")
     r, g, b = (int(hexcolour[i : i + 2], 16) for i in (0, 2, 4))

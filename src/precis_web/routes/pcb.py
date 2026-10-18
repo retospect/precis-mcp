@@ -9,7 +9,8 @@ same data:
 * ``GET  /pcb/{slug}`` — one design: the fab-level board render beside the
   net-label schematic, with the netlist/route/DRC vitals above.
 * ``GET  /pcb/{slug}/board.svg`` — the fab SVG (embedded via ``<object>``
-  so its layer-toggle legend script keeps working).
+  so its layer-toggle legend script keeps working). ``?flip=1`` is the
+  workbench's bottom view — mirrored, the B.* layers on top.
 * ``GET  /pcb/{slug}/schematic.svg`` — the net-label schematic
   (:mod:`precis.pcb.schematic` — placement-free, renders from day one).
 * ``GET  /pcb/{slug}/export.epro2`` — the EasyEDA Pro file, rebuilt on
@@ -319,7 +320,7 @@ def _svg_response(svg: str) -> RawResponse:
 
 @router.get("/pcb/{slug}/board.svg")
 async def pcb_board_svg(
-    request: Request, slug: str, shown: str | None = None
+    request: Request, slug: str, shown: str | None = None, flip: bool = False
 ) -> RawResponse:
     store = get_store(request)
     try:
@@ -339,11 +340,14 @@ async def pcb_board_svg(
                 }
             if manifest is None:
                 resp = _handler(store).get(
-                    id=ref.slug, view="svg", args={"level": "fab"}
+                    id=ref.slug, view="svg", args={"level": "fab", "flip": flip}
                 )
             else:
                 resp = _handler(store)._render_fab_svg(
-                    ref.id, str(ref.slug), selection_manifest=manifest
+                    ref.id,
+                    str(ref.slug),
+                    selection_manifest=manifest,
+                    flip=flip,
                 )
     except ValueError as exc:
         return RawResponse(status_code=409, content=str(exc))

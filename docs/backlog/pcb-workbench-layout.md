@@ -81,29 +81,23 @@ The keys register through the shortcuts module (`static/shortcuts.js`,
 
 ## Slices
 
-1. **Layout and viewport.** The two-pane page with the divider, the info
-   strip below, `static/viewport.js` (the gesture table) used by both panes,
-   and the flip button. Exit: a render test for the two-pane structure and
-   the flip control. A static JS test checks that viewport.js handles wheel,
-   pinch, drag, fit and reset. Both panes zoom and pan in a real browser
-   (reported by hand).
-2. **Cross-probing.** The schematic SVG stamps the same `data-handle`
+1. **Cross-probing.** The schematic SVG stamps the same `data-handle`
    grammar as the board, using `precis.pcb.argue`'s parser. Hover highlights
    and click selects, with the hover/selection panel rule above and the
    power/ground exception. Exit: a test that every schematic pin and part
    handle resolves through the argue parser to the same object as the board
    handle, plus a render test for the hover/selection panel slots.
-3. **One chat.** Merge the two boxes into one, with the Ask / Propose
+2. **One chat.** Merge the two boxes into one, with the Ask / Propose
    toggle, clear, chips and the `L:` prefix. Add the part cards with the
    cached thumbnail. Exit: Ask posts to the note route, and Propose posts to
    the design-chat route with Apply still required (test). The thumbnail
    fetch goes through `safe_get` (test with a fake fetch).
-4. **Focus mode and pinning** on the schematic. Exit: a focus render test,
+3. **Focus mode and pinning** on the schematic. Exit: a focus render test,
    and a test that the pin state survives a reload.
-5. **Multiple sheets.** Sheets come from placement groups, with tabs and
+4. **Multiple sheets.** Sheets come from placement groups, with tabs and
    off-sheet connectors. Exit: a schematic test that a cross-sheet net gets
    connectors on both sheets, and that cross-probing picks the sheet.
-6. **se adopts viewport.js.** Same gestures and keys; 3D adds rotate. Exit:
+5. **se adopts viewport.js.** Same gestures and keys; 3D adds rotate. Exit:
    se 2D uses the module (static test), and the se 3D key map matches the
    table.
 
