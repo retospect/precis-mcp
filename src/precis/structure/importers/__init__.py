@@ -51,9 +51,14 @@ class ExternalRun:
     against a different functional/cutoff/k-mesh. ``provenance`` defaults to
     ``"external"`` (vs ``"computed"``) so an imported row is never mistaken
     for — or silently overwritten by — our own compute.
+
+    ``energy`` is ``None`` for a geometry-only source (CoRE MOF holds
+    experimental, solvent-removed cells and no DFT energy); the row still
+    lands, with its ``method`` fingerprint naming the source, so the design
+    stays read-only and reports where its atoms came from.
     """
 
-    energy: float
+    energy: float | None
     max_force: float | None
     final_geometry: dict | None  # relaxed geometry payload, JSONB-serializable
     method: dict = field(default_factory=dict)  # functional/cutoff_eV/kmesh/spin/...

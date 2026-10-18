@@ -52,7 +52,7 @@ import numpy as np
 
 from precis.design.history import record_revision
 from precis.dispatch import Hub, InitError
-from precis.errors import BadInput, Internal, NotFound, Unsupported
+from precis.errors import BadInput, Internal, NotFound, Unsupported, Upstream
 from precis.format import render_agent_table
 from precis.handlers._placement import RESERVED_PARENT_REL, place_ref
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
@@ -78,7 +78,13 @@ from precis.structure import relax as run_relax
 from precis.structure.canonical import normalize_scene
 from precis.structure.cell import Cell
 from precis.structure.fragment_names import fragment_names
-from precis.structure.importers import catalysis_hub, get_adapter
+from precis.structure.importers import catalysis_hub, get_adapter, mof
+from precis.structure.importers.cif import (
+    CifRefused,
+    CifUnsupported,
+    cif_to_scene,
+    fetch_cif_url,
+)
 from precis.structure.preflight import PreflightReason
 from precis.structure.preflight import _preflight_enabled as _mlip_preflight_enabled
 from precis.structure.preflight import preflight as _mlip_preflight
@@ -441,6 +447,15 @@ _PUT_EXAMPLE = (
 )
 
 
+def _looks_like_cif(text: str | None) -> bool:
+    """A ``text=`` body that is a CIF rather than the JSON payload: not a
+    JSON object, with a ``data_`` block line. :func:`cif_to_scene` makes the
+    real check and refuses a body that only looks the part."""
+    if not text or text.lstrip().startswith(("{", "[")):
+        return False
+    return any(line.lstrip().startswith("data_") for line in text.splitlines())
+
+
 def _payload(text: str | None, args: dict[str, Any] | None) -> dict[str, Any]:
     if args:
         return dict(args)
@@ -722,7 +737,9 @@ class StructureHandler(Handler):
     #: args= keys each verb reads out of ``args`` (gr475332); dispatch
     #: rejects any other key. Keep in step with the verb bodies.
     ARGS: ClassVar[dict[str, ArgsSpec]] = {
-        "put": ArgsSpec({"cell", "ops", "description"}),
+        "put": ArgsSpec(
+            {"cell", "ops", "description", "cif", "cif_url", "source", "config_id"}
+        ),
         "edit": ArgsSpec({"ops"}),
         "get": ArgsSpec(
             {
@@ -770,7 +787,8 @@ class StructureHandler(Handler):
         description=(
             "Atomistic cell + bond-graph design. put creates/replaces "
             "from JSON {cell:{a,b,c,pbc}|{lattice,pbc}, ops:[...]} (cell optional "
-            "when ops start with a `slab` bulk template); edit applies "
+            "when ops start with a `slab` bulk template), or from a CIF "
+            "(args={'cif': text} or {'cif_url': url}); edit applies "
             "more ops (slab/set_cell/add_atom/set_element/vacancy/displace/add_bond/"
             "remove_bond/constrain, plus eye/measure/unmark/remove_measure "
             "markers, plus the fragment-building ops "
@@ -828,7 +846,37 @@ class StructureHandler(Handler):
         validation/save — quest candidates opt in so every stored candidate
         for a quest lives in one canonical frame and translation/rotation/
         mirror twins hash identically. Default off; existing callers
-        (dispatch registry included) are unaffected."""
+        (dispatch registry included) are unaffected.
+
+        CIF import: ``args={'cif': <text>}`` or ``args={'cif_url': <url>}``
+        (or a bare CIF body in ``text=``) builds the design from a CIF
+        instead of ops — see :meth:`_put_cif`."""
+        a = args or {}
+        cif_text = a.get("cif")
+        cif_url = a.get("cif_url")
+        if (
+            cif_text is None
+            and cif_url is None
+            and not set(a) - {"description"}
+            and _looks_like_cif(text)
+        ):
+            cif_text = text
+        if cif_text is not None or cif_url is not None:
+            return self._put_cif(
+                id=id,
+                title=title,
+                cif_text=cif_text,
+                cif_url=cif_url,
+                args=a,
+                normalize=normalize,
+            )
+        if a.get("source") is not None or a.get("config_id") is not None:
+            raise BadInput(
+                "args source=/config_id= name a CIF import's source; they need "
+                "args cif= or cif_url=",
+                next="put(kind='structure', args={'cif': '<CIF text>', "
+                "'source': 'core-mof', 'config_id': '<refcode>'})",
+            )
         if id is None or not str(id).strip():
             raise BadInput(
                 "put(kind='structure') requires id= (the design slug)",
@@ -913,6 +961,154 @@ class StructureHandler(Handler):
                 _scene, ref, handles, head_verb=verb, relax_summary=relax_summary
             ),
             _combine_echo(import_echo, preflight_caveats),
+        )
+
+    def _put_cif(
+        self,
+        *,
+        id: str | int | None,
+        title: str | None,
+        cif_text: Any,
+        cif_url: Any,
+        args: dict[str, Any],
+        normalize: bool = False,
+    ) -> Response:
+        """Create a design from a CIF (text, or a URL fetched through
+        ``safe_get``). No ``source=``: an ordinary editable design under
+        ``id=``, with no external run. ``source='qmof'|'core-mof'`` plus
+        ``config_id=``: the record goes through that source's adapter and
+        ``store.structure_import``, so it lands read-only with an external
+        run under the import slug; ``id=`` is refused there because the
+        import picks the slug. A named-source put never overwrites an
+        already-imported ``(source, config_id)`` (that would rewrite a real
+        reference record with caller geometry), and its method fingerprint
+        records that the caller supplied the CIF.
+
+        The Tier-0 preflight gate is not run: its vacuum-headroom and porous-
+        slab checks assume a slab, and a CIF is usually a 3D framework."""
+        if cif_text is not None and cif_url is not None:
+            raise BadInput(
+                "put(kind='structure') takes args cif= or cif_url=, not both",
+                next="drop one of args cif= / cif_url=",
+            )
+        if cif_text is not None and not isinstance(cif_text, str):
+            raise BadInput(
+                "args cif= must be the CIF text as a string",
+                next="put(kind='structure', id='<slug>', args={'cif': '<CIF text>'})",
+            )
+        source = args.get("source")
+        source = str(source).strip().lower() if source is not None else None
+        config_id = str(args.get("config_id") or "").strip() or None
+        if source is not None:
+            if source not in mof.CIF_ADAPTERS:
+                raise BadInput(
+                    f"no CIF adapter for source {source!r}",
+                    next="omit source= for an ordinary design, or use one of "
+                    f"{', '.join(mof.CIF_ADAPTERS)}",
+                    options=list(mof.CIF_ADAPTERS),
+                )
+            if config_id is None:
+                raise BadInput(
+                    f"a {source} import needs config_id= (the record id)",
+                    next=f"put(kind='structure', args={{'cif': '<CIF text>', "
+                    f"'source': {source!r}, 'config_id': '<id>'}})",
+                )
+            if id is not None and str(id).strip():
+                raise BadInput(
+                    f"a {source} import picks its own slug from config_id=; "
+                    "id= is not used",
+                    next="drop id= and keep source= / config_id=",
+                )
+            if self.store.find_ref_by_identifier(source, config_id, kind="structure"):
+                raise BadInput(
+                    f"{source} record {config_id!r} is already imported; a put "
+                    "does not overwrite a reference record",
+                    next=f"get(kind='structure', args={{'source': {source!r}, "
+                    f"'config_id': {config_id!r}}}), or put the CIF under your "
+                    "own id= without source=",
+                )
+        elif id is None or not str(id).strip():
+            raise BadInput(
+                "put(kind='structure') with a CIF requires id= (the design slug)",
+                next="put(kind='structure', id='<slug>', args={'cif': '<CIF text>'})",
+            )
+        if cif_url is not None:
+            url = str(cif_url).strip()
+            if not url.lower().startswith(("http://", "https://")):
+                raise BadInput(
+                    f"args cif_url= must be an http(s) URL, got {url!r}",
+                    next="put(kind='structure', id='<slug>', "
+                    "args={'cif_url': 'https://…/x.cif'})",
+                )
+            import httpx
+
+            try:
+                cif_text = fetch_cif_url(url)
+            except CifRefused as exc:
+                raise BadInput(str(exc), next=exc.next) from exc
+            except httpx.HTTPError as exc:
+                raise Upstream(
+                    f"fetching {url} failed: {exc}",
+                    next="retry in a minute, or pass the CIF text as args={'cif': ...}",
+                ) from exc
+        else:
+            url = None
+        try:
+            if source is not None:
+                adapter_fn = get_adapter(source)
+                scene, run, ext_id = adapter_fn(
+                    {
+                        "id": config_id,
+                        "cif_text": cif_text,
+                        "method": {"geometry_supplied_by": "put"},
+                    }
+                )
+            else:
+                scene = cif_to_scene(cif_text)
+        except CifRefused as exc:
+            raise BadInput(str(exc), next=exc.next) from exc
+        except CifUnsupported as exc:
+            raise Unsupported(
+                str(exc), next="install it:  pip install 'precis-mcp[dft]'"
+            ) from exc
+        if source is not None:
+            ref_id = self.store.structure_import(scene, run, ext_id)
+            return self._render_hydrated(
+                [(ref_id, ext_id.dataset, ext_id.config_id, run.method)],
+                cached=False,
+                note=None if run.energy is not None else "no energy (geometry only)",
+            )
+        slug = str(id).strip()
+        existing = self.store.get_ref(kind="structure", id=slug)
+        if existing is not None and self._external_provenance(existing.id) is not None:
+            raise BadInput(
+                "this is an imported reference config (provenance:external) "
+                "— derive a variant instead of overwriting it in place",
+                next=f"derive(kind='structure', id={slug!r}, "
+                "to='<new-slug>', ops=[...])",
+            )
+        if normalize:
+            normalize_scene(scene)
+        version = (int(existing.meta.get("version", 0)) + 1) if existing else 1
+        desc = str(args.get("description") or "").strip()
+        ttl = (title or slug).strip() or slug
+        op: dict[str, Any] = {"op": "import_cif", "natoms": len(scene.atoms)}
+        if url is not None:
+            op["url"] = url
+        with self.store.tx() as conn:
+            ref, created = self.store.structure_save(
+                slug=slug,
+                title=ttl,
+                scene=scene,
+                version=version,
+                card_text=self._card_text(ttl, scene, desc),
+                description=desc,
+                conn=conn,
+            )
+            record_revision(self.store, ref.id, rev=version, ops=[op], conn=conn)
+        _scene, handles = self.store.structure_load(ref.id)
+        return self._toc_response(
+            _scene, ref, handles, head_verb="created" if created else "updated"
         )
 
     # ── edit ─────────────────────────────────────────────────────────
@@ -1342,10 +1538,13 @@ class StructureHandler(Handler):
         rows: list[tuple[int, str, str, dict[str, Any] | None]],
         *,
         cached: bool,
+        note: str | None = None,
     ) -> Response:
         """Render on-demand-hydrate result(s) — a full TOC + citation footer
         for a single config (the common case: a by-id hit, or a filtered
-        fetch that resolved to exactly one record), else a summary table."""
+        fetch that resolved to exactly one record), else a summary table.
+        ``note`` (one record only) rides on the footer, e.g. that the
+        record carries no energy."""
         if len(rows) == 1:
             ref_id, dataset, config_id, method = rows[0]
             ref = self.store.get_ref(kind="structure", id=ref_id)
@@ -1359,6 +1558,8 @@ class StructureHandler(Handler):
             footer = f"\n\n# source: {dataset} · config {config_id}"
             if doi:
                 footer += f" · doi:{doi}"
+            if note:
+                footer += f" · {note}"
             return Response(body=body + footer)
 
         table_rows = []

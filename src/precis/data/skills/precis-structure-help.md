@@ -7,7 +7,6 @@ answers:
   - how do I build an atomistic cell and bond graph as typed ops?
   - how do I relax a structure through the fidelity levels (clean to ml to DFT)?
   - how do I probe coordination, rings, or fragments in a structure?
-  - how do I import a structure from an external catalyst database?
   - how do I export a structure to POSCAR or CIF?
   - how do I put a picture of a structure or se block into a draft figure?
   - does it matter where in the cell I put a dopant?
@@ -105,6 +104,14 @@ put(
 - `put` applies the ops eagerly and echoes the TOC, so a bad op surfaces
   immediately. Re-`put`ting a slug **replaces** it (old atoms/bonds
   soft-retired, recoverable). Atom labels are minted in op order.
+
+## Import a CIF or a database record
+
+`put(kind='structure', id=<slug>, args={'cif': <text>})` (or `'cif_url'`)
+builds a design from a CIF; `get(kind='structure', args={'source':
+'catalysis-hub', 'config_id': …})` pulls one database record as a
+read-only design. Caps, refusals and provenance:
+`precis-structure-import-help`.
 
 ## Author a design — the ops table
 
@@ -515,54 +522,6 @@ each tagged `search:agox` and carrying `meta.search` (`algo`, `model`,
 candidate's `ml` energy is already on its run-cube (`view='runs'`)
 like any relax — but these oracle calls never touch the relax cache,
 so re-running the identical search re-evaluates rather than hitting it.
-
-## Import from an external catalyst DB (ADR 0053)
-
-`get(kind='structure', args={'source': 'catalysis-hub', ...})` hydrates a
-real, DFT-relaxed config from an external library into an ordinary
-`structure` design — a "quest worker pokes around and pulls a real
-substrate" surface, not a separate API.
-
-```python
-get(
-    kind="structure",
-    args={"surface_composition": "Pd", "facet": "111", "source": "catalysis-hub"},
-)  # a filtered fetch — hydrates every match, renders a summary table if >1
-get(
-    kind="structure",
-    args={"config_id": "12345", "source": "catalysis-hub"},
-)  # exact config_id: a network-free cache hit if already imported
-```
-
-- **First touch hydrates, forever after is a cache hit.** The fetch → adapter
-  → `store.structure_import` write path is idempotent on `(dataset,
-  config_id)` (`ref_identifiers`); a repeat `config_id=` lookup never refetches.
-  A broad `surface_composition=`/`facet=`/`q=` filter (no `config_id=`) always
-  refetches — there's no way to know in advance whether new configs match.
-- **Only `catalysis-hub` has a fetch layer wired today** (its network
-  client, httpx, is a core dep); an unregistered source raises `BadInput`
-  naming the known ones. A broken venv missing httpx returns
-  `Unsupported` with a reinstall hint, never a crash.
-- **The `catalysis-hub` *live* fetch is dark** (verified 2026-07-24): SUNCAT
-  gated all public access — the GraphQL API 401s without an `X-API-Key` and
-  the old public Postgres password is rotated. The on-demand `source=` path is
-  code-complete but needs a SUNCAT credential to reach the network.
-- **Keyless ingress — mine a local cathub `.db`.** A cathub `.db` is a
-  self-contained, credential-free package (relational reactions + embedded ASE
-  structures + citation). The bulk import is operator-run, not a verb — ask a
-  human to run it. Each reaction's product adsorbate config lands as an
-  ordinary `structure` (its external run carries the adsorption energy +
-  method fingerprint), searchable as usual.
-- **Imported designs are read-only.** They carry `provenance:external` on
-  their `struct_runs` row; `edit` refuses ("derive a variant instead") —
-  branch off one with `derive(id=<imported-slug>, to=<new-slug>, ops=[...])`.
-  `view='runs'` labels each row's provenance + method fingerprint
-  (functional/cutoff/spin/dataset_doi/facet/...).
-- **Energies are only comparable within one method.** An external run's DFT
-  functional/cutoff differs from a computed rung's model — subtracting across
-  them is a category error, not a real ΔE, so an energy-delta surface must
-  check both runs share a method fingerprint before comparing (geometry/graph
-  reads like `diff` stay method-agnostic).
 
 ## Find a design — `search`
 
