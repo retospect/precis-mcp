@@ -6262,6 +6262,24 @@ class TestDispatchAutocatpath:
         assert len(self._agg_todo_ids(store, first)) == 1
         assert self._agg_todo_ids(store, second) == []
 
+    def test_redispatch_ack_reports_minted_seeds_per_node_and_warns_on_zero(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """gr496163: the ack counts seeds newly minted per target node, not
+        the ``autocatpath[`` prefix (which a ``(0 new)`` dispatch also has)."""
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, "node-a,node-b")
+        qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
+        store.stamp_ref_meta(qid, {"reaction_config": self._RX})
+        sid = self._candidate(store, qid)
+
+        first = compute_mod.redispatch_candidates(store, qid, only=[sid])
+        assert "3 new seed(s) minted [node-a 2, node-b 1]" in first, first
+        assert "WARNING" not in first
+
+        again = compute_mod.redispatch_candidates(store, qid, only=[sid])
+        assert "WARNING 0 new seeds minted" in again, again
+        assert "re-dispatched 1 candidate(s)" in again
+
     def test_redispatch_tier_without_a_completed_rung_uses_the_entry_rung(
         self, store: Any
     ) -> None:

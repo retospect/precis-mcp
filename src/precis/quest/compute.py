@@ -1593,8 +1593,13 @@ def dispatch_autocatpath(
     hub: Any | None = None,
     force_backend: str | None = None,
     tier: str = _TIER_NEB,
+    minted_by_node: dict[str, int] | None = None,
 ) -> str:
     """Dispatch a autocatpath barrier evaluation on a candidate structure.
+
+    ``minted_by_node``, when given, is filled with the number of seed jobs
+    newly minted per ``target_node`` (``"(unpinned)"`` for a seed with none),
+    so a caller can report where the work landed (gr496163).
 
     ``tier`` (default ``"neb"``, today's straight-to-NEB shape) selects the
     rung of the **screening → neb → verify** ladder. :func:`_apply_tier_config`
@@ -1945,6 +1950,9 @@ def dispatch_autocatpath(
                 # the SAME todo (get-or-create below reuses it) rather than
                 # leaving the candidate wedged behind a dead seed forever.
                 minted += 1
+                if minted_by_node is not None:
+                    node_key = seed_node or "(unpinned)"
+                    minted_by_node[node_key] = minted_by_node.get(node_key, 0) + 1
                 seed_todo_id = _ensure_autocatpath_todo(
                     store,
                     parent_id=agg_todo_id,
@@ -3999,13 +4007,24 @@ def redispatch_candidates(
         return "\n".join([head, *(f"  st{sid} → {tier}" for sid, tier in plan)])
     hub = hub or _hub_for(store)
     dispatched: list[str] = []
+    minted_by_node: dict[str, int] = {}
     for sid, tier in plan:
-        note = dispatch_autocatpath(store, sid, reaction, hub=hub, tier=tier)
+        note = dispatch_autocatpath(
+            store, sid, reaction, hub=hub, tier=tier, minted_by_node=minted_by_node
+        )
         if note.startswith("autocatpath["):
             dispatched.append(tier)
+    # "autocatpath[" also prefixes "dispatched K seed(s) (0 new)", so the
+    # candidate count above says nothing about what was minted (gr496163).
+    new_seeds = sum(minted_by_node.values())
+    if new_seeds:
+        per_node = ", ".join(f"{n} {c}" for n, c in sorted(minted_by_node.items()))
+        minted = f"{new_seeds} new seed(s) minted [{per_node}]"
+    else:
+        minted = "WARNING 0 new seeds minted (every seed already live or done)"
     return (
-        f"re-dispatched {len(dispatched)} candidate(s) on the deployed engine "
-        f"({_per_rung(dispatched)}){skipped}"
+        f"re-dispatched {len(dispatched)} candidate(s), {minted}, on the "
+        f"deployed engine ({_per_rung(dispatched)}){skipped}"
     )
 
 
