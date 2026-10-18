@@ -782,8 +782,11 @@ gate_net_host() {
     # Echo the host a failed uv fetch names in captured gate output; nothing
     # (rc 1) when no fetch signature is present = a real code red.
     local log="$1" host
+    # uv words a source-build failure "Failed to download and build `pkg`" —
+    # that is a build/resolve problem (no wheel, no compiler), not a dead
+    # route, so those lines never count as a fetch signature.
     host="$(grep -E 'Failed to fetch|Failed to download|error sending request' "$log" 2>/dev/null \
-        | grep -oE 'https?://[A-Za-z0-9._-]+' | head -1 || true)"
+        | grep -vE 'and build|Failed to build' | grep -oE 'https?://[A-Za-z0-9._-]+' | head -1 || true)"
     if [[ -n "$host" ]]; then
         echo "${host#*://}"
         return 0
@@ -791,7 +794,8 @@ gate_net_host() {
     # uv always prints the URL on a fetch failure, so a bare transport error
     # with no fetch marker is not claimed as network — a test-DB "connection
     # refused" inside a pytest failure is infra but has no package host.
-    if grep -qE 'Failed to fetch|Failed to download|error sending request' "$log" 2>/dev/null; then
+    if grep -E 'Failed to fetch|Failed to download|error sending request' "$log" 2>/dev/null \
+        | grep -qvE 'and build|Failed to build'; then
         echo "a package index (uv named no host)"
         return 0
     fi
@@ -826,7 +830,15 @@ GATE_RUN_LOG=""
 # baked packages and mypy reported import-not-found everywhere. --inexact
 # additionally leaves anything the dev image bakes beyond CI's set (the
 # private catalyst extras) installed, exactly as `uv run` always has.
-GATE_SYNC_EXTRAS='--all-extras --no-extra catalyst --no-extra catalyst-gpu --inexact'
+#
+# aarch64 gate containers (Apple-silicon hosts) additionally drop the extras
+# with no aarch64 Linux wheel: struct-search pulls agox -> dscribe, which is
+# sdist-only there, and the gate image has no compiler — uv's source build
+# died on missing g++ and the failure read as NETWORK (rc 68). The gate never
+# source-builds; --inexact keeps whatever the image already bakes. The arch
+# test runs INSIDE the container (the `$(...)` is expanded by its shell, not
+# the host's, which is darwin arm64).
+GATE_SYNC_EXTRAS='--all-extras --no-extra catalyst --no-extra catalyst-gpu --inexact $(case "$(uname -m)" in aarch64|arm64) echo --no-extra struct-search ;; esac)'
 
 gate_deps_sync() {
     local log host

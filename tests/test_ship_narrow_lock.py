@@ -1010,3 +1010,78 @@ def test_gate_extras_keep_the_web_extra_in_the_locked_env() -> None:
     )
     assert r.returncode == 0, r.stderr
     assert re.search(r"^fastapi==", r.stdout, re.MULTILINE)
+
+
+def _expanded_sync_flags(machine: str, tmp_path: Path) -> list[str]:
+    """GATE_SYNC_EXTRAS as the gate container's shell expands it, with `uname -m`
+    faked to ``machine``."""
+    ship = _SHIP_SRC.read_text(encoding="utf-8")
+    m = re.search(r"^GATE_SYNC_EXTRAS='([^']+)'", ship, re.MULTILINE)
+    assert m
+    fake = tmp_path / "uname"
+    fake.write_text(f"#!{_BASH}\necho {machine}\n", encoding="utf-8")
+    fake.chmod(0o755)
+    proc = subprocess.run(
+        [_BASH, "-c", f'PATH="{tmp_path}:$PATH"; echo {m.group(1)}'],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        check=True,
+    )
+    return proc.stdout.split()
+
+
+@pytest.mark.parametrize("machine", ["aarch64", "arm64"])
+def test_gate_sync_drops_no_wheel_extras_on_aarch64(
+    machine: str, tmp_path: Path
+) -> None:
+    """struct-search -> agox -> dscribe has no aarch64 Linux wheel and the gate
+    image has no compiler: the sync must not request it there."""
+    flags = _expanded_sync_flags(machine, tmp_path)
+    assert flags[:2] == ["--all-extras", "--no-extra"]
+    assert "struct-search" in flags
+    assert flags[flags.index("struct-search") - 1] == "--no-extra"
+    assert "--inexact" in flags
+
+
+def test_gate_sync_keeps_every_extra_on_x86(tmp_path: Path) -> None:
+    flags = _expanded_sync_flags("x86_64", tmp_path)
+    assert "struct-search" not in flags
+    assert "--all-extras" in flags
+
+
+def _net_host(log_text: str, tmp_path: Path) -> subprocess.CompletedProcess[str]:
+    text = _SHIP_SRC.read_text(encoding="utf-8")
+    m = re.search(r"^gate_net_host\(\) \{\n.*?^\}\n", text, re.S | re.M)
+    assert m
+    log = tmp_path / "gate.log"
+    log.write_text(log_text, encoding="utf-8")
+    return subprocess.run(
+        [_BASH, "-c", f'{m.group(0)}\ngate_net_host "{log}"'],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        check=False,
+    )
+
+
+def test_source_build_failure_is_not_classified_as_network(tmp_path: Path) -> None:
+    """uv words a missing-compiler sdist build "Failed to download and build";
+    that must not map to the NETWORK rc 68 path."""
+    r = _net_host(
+        "error: Failed to download and build `dscribe==2.1.2`\n"
+        "  Caused by: Failed to build `dscribe==2.1.2`\n"
+        "  error: command 'g++' failed: No such file or directory\n",
+        tmp_path,
+    )
+    assert r.returncode != 0 and not r.stdout.strip()
+
+
+def test_real_fetch_failure_still_names_the_host(tmp_path: Path) -> None:
+    r = _net_host(
+        "error: Failed to fetch: `https://pypi.example.org/simple/fastapi/`\n",
+        tmp_path,
+    )
+    assert r.returncode == 0 and r.stdout.strip() == "pypi.example.org"
