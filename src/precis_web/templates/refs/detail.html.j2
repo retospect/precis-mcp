@@ -136,6 +136,9 @@
 <div class="rounded-lg border border-line bg-surface p-4 text-xs text-fg-secondary overflow-x-auto space-y-1">{{ body | linkify_toon(footnotes, doi_links) }}</div>
 {% endif %}
 
+{% from "_trust_footer.html.j2" import trust_footer_row %}
+{{ trust_footer_row(trust_footer) }}
+
 {% from "graph/_panel_mount.html.j2" import panel_mount %}
 {{ panel_mount(kind, ref.id) }}
 

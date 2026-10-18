@@ -62,6 +62,13 @@ def test_get_renders_the_trust_line_with_the_sha(
     out = runtime_with_store.dispatch("get", {"kind": "memory", "id": mid})
     sha = _sha(store, "ref", mid)
     assert f"trust: generated · hunch · sha {sha}" in out
+    # gr496226: the footer is a runnable consider call — real kind, ref
+    # id and sha filled in; only the reason stays a quoted placeholder.
+    assert (
+        f"edit(kind='memory', id={mid}, mode='trust', args={{'trust': "
+        f"{{'confidence': 'considered', 'reason': '<why you trust it>', "
+        f"'expected_sha': '{sha}'}}}})" in out
+    )
 
 
 def test_get_marks_legacy_rows_unstamped(

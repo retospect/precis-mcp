@@ -27,6 +27,7 @@ unconverted (unknown/unknown version 0) until they declare one.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from precis.errors import BadInput, NotFound
@@ -173,10 +174,22 @@ def _target_ref_id(store: Any, kind: str, ident: Any) -> int:
     return int(ref.id)
 
 
-def trust_line(store: Any, kind: str, ident: Any) -> str | None:
-    """``trust: generated · hunch · sha 1a2b…`` for one ref, or None when
-    ``ident`` names no ref of ``kind``. Version 0 reads ``unknown · unknown
-    (unstamped)``: legacy or an unconverted writer, never a guess."""
+@dataclass(frozen=True, slots=True)
+class TrustFooter:
+    """The resolved stamp behind one ``get`` trust line. ``line`` is the
+    text an agent reads — the consider call spelled out and runnable; the
+    parts let a surface link that call instead of printing it."""
+
+    kind: str
+    ref_id: int
+    stamp: str
+    sha: str | None
+    line: str
+
+
+def trust_footer(store: Any, kind: str, ident: Any) -> TrustFooter | None:
+    """Resolve ``ident`` to a ref and read its trust state, or ``None``
+    when it names no ref of ``kind``."""
     try:
         ref_id = _target_ref_id(store, kind, ident)
     except (NotFound, ValueError):
@@ -185,10 +198,23 @@ def trust_line(store: Any, kind: str, ident: Any) -> str | None:
     if state is None:
         return None
     stamp = state.label if state.version else f"{state.label} (unstamped)"
-    return (
-        f"trust: {stamp} · sha {state.sha} — edit(mode='trust', args={{'trust': "
-        "{'confidence': 'considered', 'reason': …, 'expected_sha': this sha}})"
-    )
+    line = f"trust: {stamp}"
+    if state.sha:
+        line += (
+            f" · sha {state.sha} — edit(kind={kind!r}, id={ref_id}, mode='trust', "
+            "args={'trust': {'confidence': 'considered', 'reason': "
+            f"'<why you trust it>', 'expected_sha': '{state.sha}'}}}})"
+        )
+    return TrustFooter(kind=kind, ref_id=ref_id, stamp=stamp, sha=state.sha, line=line)
+
+
+def trust_line(store: Any, kind: str, ident: Any) -> str | None:
+    """``trust: generated · hunch · sha 1a2b… — edit(<the consider call,
+    runnable)>`` for one ref, or None when ``ident`` names no ref of
+    ``kind``. Version 0 reads ``unknown · unknown (unstamped)``: legacy
+    or an unconverted writer, never a guess."""
+    footer = trust_footer(store, kind, ident)
+    return None if footer is None else footer.line
 
 
 def edit_trust(

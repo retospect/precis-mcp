@@ -70,6 +70,7 @@ from precis_web.routes.favorites import faved
 from precis_web.routes.rxn import doi_link_map as rxn_doi_links
 from precis_web.routes.structure import _geom_payload
 from precis_web.timefmt import abs_ts
+from precis_web.trust_footer import strip_trust_footer
 
 if TYPE_CHECKING:
     from precis.store.protocols import RefsByIdStore
@@ -3018,6 +3019,13 @@ async def detail(
                     "showing the stored body."
                 )
 
+    # The dispatch appended the agent-facing ``trust:`` footer line —
+    # dead call syntax to a person (gr496226). Lift it out of the body;
+    # the template renders the stamp + console/fisheye links instead.
+    trust_ctx: dict[str, Any] | None = None
+    if not is_error:
+        body, trust_ctx = strip_trust_footer(store, kind, ref.id, body)
+
     # Patent body text lives in body chunks; the handler's overview
     # only renders the bibliographic header + abstract excerpt. Pull
     # the chunks so the detail view can show the full text (description
@@ -3088,6 +3096,7 @@ async def detail(
             "body": body,
             "footnotes": footnotes,
             "is_error": is_error,
+            "trust_footer": trust_ctx,
             "chunks": chunks,
             "tags": tags,
             "body_disabled_notice": body_disabled_notice,

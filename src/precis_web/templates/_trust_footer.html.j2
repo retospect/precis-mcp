@@ -1,0 +1,15 @@
+{# The web face of the get() trust line (gr496226): the stamp is
+   informative, the MCP consider call is not — link it (console,
+   prefilled) instead of printing call syntax. ``tf`` is the ctx from
+   precis_web.trust_footer.strip_trust_footer ({stamp, sha,
+   console_href}). The ref's fisheye page stays on the nav's eye link —
+   this row doesn't duplicate it. #}
+{% macro trust_footer_row(tf) %}
+{% if tf %}
+<p class="mt-1 text-xs text-fg-faint">
+  trust: {{ tf.stamp }}
+  {%- if tf.sha %} · sha <span class="font-mono">{{ tf.sha }}</span>{% endif %}
+  {%- if tf.console_href %} · <a href="{{ tf.console_href }}" class="text-info-strong hover:underline" title="console prefilled with the consider call — type the reason and Run">mark considered →</a>{% endif %}
+</p>
+{% endif %}
+{% endmacro %}
