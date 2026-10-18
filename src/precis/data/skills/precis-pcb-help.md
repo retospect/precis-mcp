@@ -471,6 +471,14 @@ courtyard) and the stored ones are cleared, so re-send them with every edit.
 (refdes, C-number, cached?, source, pad count) — the read-side counterpart,
 and where to check before trusting a `view='drc'` pass on that part.
 
+## Fix a wrong pin name — `op='pin_rename'` / `op='pin_remove'`
+
+A connection pin that is a pad NUMBER of a cached footprint is wired to
+that pad's pin name. A pin already declared wrong:
+`args={'op':'pin_rename','refdes':'U1','pin':'8','to':'GND'}` keeps its
+connection; if `to` exists, `op='pin_remove'` the wrong pin (its
+connection goes too) and re-put the connection.
+
 ## Annotate pin semantics on an existing part — `op='pins'`
 
 A re-`put` never edits pins (create-or-extend only), so the pin facts the

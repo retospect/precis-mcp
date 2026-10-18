@@ -105,6 +105,8 @@ _INLINE: list[tuple[str, dict[str, Any]]] = [
     ("phase", {"phase": "placed"}),
     ("pins", {"refdes": "A", "pins": [{"name": "1", "etype": "passive"}]}),
     ("stackup", {"layers": _STACKUP}),
+    ("pin_rename", {"refdes": "A", "pin": "1", "to": "X1"}),
+    ("pin_remove", {"refdes": "A", "pin": "1"}),
 ]
 
 

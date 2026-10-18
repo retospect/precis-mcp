@@ -984,6 +984,7 @@ class PcbMixin:
         meta: dict[str, Any] | None = None,
         conn: Connection | None = None,
         seeded: list[str] | None = None,
+        mapped: list[str] | None = None,
     ) -> tuple[Any, bool, dict[str, int]]:
         """Create-or-extend a design, batch. Returns ``(ref, created,
         counts)``.
@@ -1040,6 +1041,10 @@ class PcbMixin:
         stored pose to carry forward) is appended, so the caller can
         legalise seeds before the always-valid gate reads the board.
 
+        ``mapped``, when given, is an out-list of the connection pins given
+        as footprint pad numbers and rewritten to pin names
+        (``"U1.8 -> GND"``; :meth:`_pcb_map_pad_number_pins`).
+
         Reuses ``conn`` inside an existing transaction (e.g. bundling
         the ``net_classes`` upsert so both commit/rollback as one unit);
         opens its own otherwise (mirrors :meth:`pcb_ensure_board`)."""
@@ -1057,6 +1062,7 @@ class PcbMixin:
                 generators=generators,
                 meta=meta,
                 seeded=seeded,
+                mapped=mapped,
             )
         with self._pcb_tx() as c:
             return self._pcb_apply(
@@ -1072,6 +1078,7 @@ class PcbMixin:
                 generators=generators,
                 meta=meta,
                 seeded=seeded,
+                mapped=mapped,
             )
 
     def _pcb_apply(
@@ -1089,6 +1096,7 @@ class PcbMixin:
         generators: list[dict[str, Any]] | None = None,
         meta: dict[str, Any] | None = None,
         seeded: list[str] | None = None,
+        mapped: list[str] | None = None,
     ) -> tuple[Any, bool, dict[str, int]]:
         """The body of :meth:`pcb_apply`, given an already-open ``conn``."""
         existing = self.get_ref(kind="pcb", id=slug)
@@ -1393,6 +1401,12 @@ class PcbMixin:
             )
 
         before = self._pcb_net_memberships(conn, ref.id) if connections else {}
+        if connections:
+            connections, pins_mapped = self._pcb_map_pad_number_pins(
+                conn, ref.id, connections, inst_by_refdes
+            )
+            if mapped is not None:
+                mapped.extend(pins_mapped)
         for k in connections:
             counts["conns"] += self._pcb_connect(
                 conn, ref.id, k, inst_by_refdes, net_by_name
@@ -1926,6 +1940,170 @@ class PcbMixin:
                 continue
             decls.append({**decl, "meta": {"completed_from_footprint": True}})
         return self._pcb_insert_pins(conn, component_id, decls, refdes=refdes)
+
+    def _pcb_map_pad_number_pins(
+        self,
+        conn: Connection,
+        ref_id: int,
+        connections: list[dict[str, Any]],
+        inst_by_refdes: dict[str, tuple[int, int]],
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        """Rewrite a connection pin given as a PAD NUMBER of the part's
+        cached footprint to that pad's pin name (gr495291).
+
+        ``{refdes:'U1', pin:'8'}`` is the natural spelling for a JLC part
+        whose pads are numbered, but the netlist joins by pin NAME: '8'
+        matched no pin, so :meth:`_pcb_pin_id` minted a ghost pin '8' at a
+        synthesized bound while the real pad (``GND``) stayed netless. A
+        pin that is already an active pin name, or a footprint pin name,
+        or not a pad number, is left alone.
+
+        Returns ``(connections, ["U1.8 -> GND", ...])``."""
+        comp_refdes: dict[int, str] = {}
+        for k in connections:
+            inst = inst_by_refdes.get(str(k.get("refdes") or "").strip())
+            if inst is not None:
+                comp_refdes[inst[1]] = str(k.get("refdes")).strip()
+        if not comp_refdes:
+            return connections, []
+        names = self._pcb_pin_names_by_components(conn, list(comp_refdes))
+        fps, _flags, _diffs = self._pcb_footprint_refs_by_components(
+            conn, ref_id, [({}, cid, r) for cid, r in comp_refdes.items()]
+        )
+        # ``pad_label`` is a function of the pad number, so each number
+        # names exactly one pin; a number that is itself some pad's pin
+        # name is a name, never remapped.
+        by_number: dict[int, dict[str, str]] = {}
+        for cid, fp in fps.items():
+            pin_map = fp.get("pin_map") or {}
+            numbers = {
+                str(pad.get("number") or "").strip(): pcb_padplace.pad_label(
+                    pad, pin_map
+                )
+                for pad in fp.get("pads") or []
+            }
+            labels = set(numbers.values())
+            by_number[cid] = {
+                n: label
+                for n, label in numbers.items()
+                if n and label and n not in labels
+            }
+        out: list[dict[str, Any]] = []
+        mapped: list[str] = []
+        for k in connections:
+            refdes = str(k.get("refdes") or "").strip()
+            pin = str(k.get("pin") or "").strip()
+            inst = inst_by_refdes.get(refdes)
+            target = by_number.get(inst[1], {}).get(pin) if inst else None
+            if (
+                inst is None
+                or target is None
+                or pin in names.get(inst[1], (set(), set()))[1]
+            ):
+                out.append(k)
+                continue
+            out.append({**k, "pin": target})
+            mapped.append(f"{refdes}.{pin} -> {target}")
+        return out, mapped
+
+    def pcb_pin_rename(
+        self, ref_id: int, refdes: str, old: str, new: str
+    ) -> dict[str, Any]:
+        """``op='pin_rename'`` — rename one pin of an instance's component,
+        keeping its connections (gr495291: a pin declared under the wrong
+        name). Idempotent: ``old`` gone and ``new`` present is
+        ``unchanged``. Refuses when both are live pins: merging two pins
+        is :meth:`pcb_pin_remove` on the wrong one plus a re-put of its
+        connection. Returns ``{"status", "net"}``."""
+        with self._pcb_tx() as conn:
+            comp_id = self._pcb_live_component(conn, ref_id, refdes)
+            pins = self._pcb_live_pins(conn, comp_id)
+            if old not in pins:
+                if new in pins:
+                    return {"status": "unchanged", "net": pins[new][1]}
+                raise ValueError(
+                    f"component {refdes}: no pin {old!r} — its pins are {sorted(pins)}"
+                )
+            if new in pins:
+                raise ValueError(
+                    f"component {refdes}: pin {new!r} already exists, so "
+                    f"{old!r} cannot take its name; remove {old!r} with "
+                    "op='pin_remove' and re-put its connection on "
+                    f"{new!r}"
+                )
+            conn.execute(
+                "UPDATE pcb_pins SET name = %s WHERE pin_id = %s",
+                (new, pins[old][0]),
+            )
+            return {"status": "renamed", "net": pins[old][1]}
+
+    def pcb_pin_remove(self, ref_id: int, refdes: str, pin: str) -> dict[str, Any]:
+        """``op='pin_remove'`` — retire one pin of an instance's component
+        and delete its connections (gr495291: the ghost pin a pad-number
+        connection minted had no way out but deleting the design). A pin
+        the cached footprint names is a real pad and is refused: mark it
+        ``unused`` with ``op='pins'`` instead. Idempotent: an already
+        retired pin is ``unchanged``. Returns ``{"status", "net"}``."""
+        with self._pcb_tx() as conn:
+            comp_id = self._pcb_live_component(conn, ref_id, refdes)
+            pins = self._pcb_live_pins(conn, comp_id)
+            if pin not in pins:
+                retired = conn.execute(
+                    "SELECT 1 FROM pcb_pins WHERE component_id = %s AND name = %s",
+                    (comp_id, pin),
+                ).fetchone()
+                if retired is not None:
+                    return {"status": "unchanged", "net": None}
+                raise ValueError(
+                    f"component {refdes}: no pin {pin!r} — its pins are {sorted(pins)}"
+                )
+            fps, _flags, _diffs = self._pcb_footprint_refs_by_components(
+                conn, ref_id, [({}, comp_id, refdes)]
+            )
+            fp = fps.get(comp_id)
+            if fp is not None and any(
+                pcb_padplace.pad_label(pad, fp.get("pin_map") or {}) == pin
+                for pad in fp.get("pads") or []
+            ):
+                raise ValueError(
+                    f"component {refdes}: pin {pin!r} is a pad of the cached "
+                    "footprint, not a ghost; mark it unused with op='pins' "
+                    f"(pins=[{{'name':{pin!r},'unused':true}}]) instead"
+                )
+            pin_id = pins[pin][0]
+            conn.execute("DELETE FROM pcb_netconns WHERE pin_id = %s", (pin_id,))
+            conn.execute(
+                "UPDATE pcb_pins SET retired_at = now() WHERE pin_id = %s",
+                (pin_id,),
+            )
+            return {"status": "removed", "net": pins[pin][1]}
+
+    def _pcb_live_component(self, conn: Connection, ref_id: int, refdes: str) -> int:
+        row = conn.execute(
+            "SELECT component_id FROM pcb_instances "
+            "WHERE ref_id = %s AND refdes = %s AND retired_at IS NULL",
+            (ref_id, refdes),
+        ).fetchone()
+        if row is None:
+            raise NotFound(f"pcb {ref_id}: no live instance {refdes!r}")
+        return int(row[0])
+
+    def _pcb_live_pins(
+        self, conn: Connection, component_id: int
+    ) -> dict[str, tuple[int, str | None]]:
+        """``{name: (pin_id, net name or None)}`` for a component's live
+        pins (a pin's net over any of the component's instances)."""
+        return {
+            str(name): (int(pin_id), net)
+            for pin_id, name, net in conn.execute(
+                "SELECT p.pin_id, p.name, min(n.name) FROM pcb_pins p "
+                "LEFT JOIN pcb_netconns nc ON nc.pin_id = p.pin_id "
+                "LEFT JOIN pcb_nets n ON n.net_id = nc.net_id "
+                "WHERE p.component_id = %s AND p.retired_at IS NULL "
+                "GROUP BY p.pin_id, p.name",
+                (component_id,),
+            ).fetchall()
+        }
 
     def _pcb_resolve_parts(
         self, conn: Connection, lcscs: list[str]

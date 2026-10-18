@@ -279,6 +279,8 @@ _INLINE_EDIT_OPS = (
     "phase",
     "profile",
     "pins",
+    "pin_rename",
+    "pin_remove",
 )
 #: gr341532 fix 3 — pull/author a catalog part's real footprint into the
 #: ``part_footprints`` cache. A handful of small HTTP calls (EasyEDA), not
@@ -980,6 +982,7 @@ class PcbHandler(Handler):
             # happened (gr — pcb-guided-place-route Slice 1 review).
             existing = self.store.get_ref(kind="pcb", id=slug)
             tag_counts: dict[str, Any] = {}
+            mapped: list[str] = []
 
             def apply(conn: Any) -> tuple[Any, bool, dict[str, int], int]:
                 seeded: list[str] = []
@@ -996,6 +999,7 @@ class PcbHandler(Handler):
                     meta=meta,
                     conn=conn,
                     seeded=seeded,
+                    mapped=mapped,
                 )
                 if profile is not None:
                     self.store.pcb_set_board_profile(ref.id, profile, conn=conn)
@@ -1098,6 +1102,12 @@ class PcbHandler(Handler):
             )
         if n_classes:
             extra += f", +{n_classes} net_class(es)"
+        mapped_line = (
+            f"{len(mapped)} connection pin(s) given as pad numbers were wired "
+            "to the footprint's pin names (gr495291): " + ", ".join(mapped) + "\n"
+            if mapped
+            else ""
+        )
         head = (
             f"# {slug} — {verb}: +{counts['components']} part(s), "
             f"+{counts['nets']} net(s), +{counts['conns']} conn(s){extra}  "
@@ -1111,6 +1121,7 @@ class PcbHandler(Handler):
             + "\n"
             + judged.lines()
             + (tag_line + "\n" if tag_line else "")
+            + mapped_line
             + "".join(n + "\n" for n in notes)
             + (f"{queued} datasheet pull(s) queued\n" if queued else "")
             + (
@@ -1541,6 +1552,8 @@ class PcbHandler(Handler):
             return self._op_profile(ref, args)
         if op == "pins":
             return self._op_pins(ref, args)
+        if op in ("pin_rename", "pin_remove"):
+            return self._op_pin_edit(ref, op, args)
         if op == "stackup":
             return self._op_stackup(ref, args)
         if op == "footprint":
@@ -2807,6 +2820,52 @@ class PcbHandler(Handler):
         return Response(
             body=body + f"Next: get(kind='pcb', id='{ref.slug}', view='check', "
             "args={'phase':'netlist'}) — the ERC rules now read this pin."
+        )
+
+    def _op_pin_edit(self, ref: Any, op: str, args: dict[str, Any]) -> Response:
+        """``put(args={'op':'pin_rename','refdes':'U1','pin':'8','to':'GND'})``
+        and ``put(args={'op':'pin_remove','refdes':'U1','pin':'8'})`` —
+        the way out for a pin declared under the wrong name (gr495291: a
+        pad-number connection minted ghost pin '8' and only deleting the
+        design removed it). Rename keeps the pin's connection; remove
+        retires the pin and drops its connection. Both are idempotent."""
+        refdes = str(args.get("refdes") or "").strip()
+        pin = str(args.get("pin") or "").strip()
+        to = str(args.get("to") or "").strip()
+        if not refdes or not pin or (op == "pin_rename" and not to):
+            raise BadInput(
+                f"op={op!r} needs args.refdes and args.pin"
+                + (" and args.to" if op == "pin_rename" else ""),
+                next=(
+                    "args={'op':'pin_rename','refdes':'U1','pin':'8','to':'GND'}"
+                    if op == "pin_rename"
+                    else "args={'op':'pin_remove','refdes':'U1','pin':'8'}"
+                ),
+            )
+        try:
+            if op == "pin_rename":
+                result = self.store.pcb_pin_rename(ref.id, refdes, pin, to)
+            else:
+                result = self.store.pcb_pin_remove(ref.id, refdes, pin)
+        except ValueError as exc:
+            raise BadInput(
+                f"pcb: {exc}",
+                next="fix the named pin and retry; nothing was changed",
+            ) from exc
+        net = result.get("net")
+        if result["status"] == "unchanged":
+            head = f"# {refdes}: no change, {op} of {pin} is already applied"
+        elif op == "pin_rename":
+            head = f"# {refdes}: pin {pin} renamed to {to}" + (
+                f" (net {net})" if net else ""
+            )
+        else:
+            head = f"# {refdes}: pin {pin} removed" + (
+                f", its connection to {net} dropped" if net else ""
+            )
+        return Response(
+            body=head + f"\nNext: get(kind='pcb', id='{ref.slug}', view='footprints')"
+            " — the pin-name warning no longer lists it."
         )
 
     def _op_stackup(self, ref: Any, args: dict[str, Any]) -> Response:

@@ -585,7 +585,12 @@ def pin_name_mismatch_note(
             f"- {refdes}: declared {_names(unmatched)}; "
             f"the footprint names {_names(available)}"
         )
-    return "\n".join(lines) + "\n\nNext: rename the pins to the footprint's names.\n"
+    return (
+        "\n".join(lines) + "\n\nNext: rename each pin to the footprint's name with "
+        "put(args={'op':'pin_rename','refdes':...,'pin':...,'to':...}), or, "
+        "when that name already exists, op='pin_remove' the wrong pin and "
+        "re-put its connection on the right one.\n"
+    )
 
 
 def apply_real_pin_offsets(
