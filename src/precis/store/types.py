@@ -932,6 +932,19 @@ class Tag:
                                 f"search(kind={kind!r}, status='*')"
                             ),
                         )
+                if prefix == "PRIO" and re.fullmatch(r"[pP]?\d+", value):
+                    # Not mapped: callers mean a 1..5, P0..P4 or 1..10
+                    # scale (see ``PRIO_TAG_ALIASES``); the numeric
+                    # column is the unambiguous spelling.
+                    raise BadInput(
+                        f"invalid PRIO value: {value!r} — PRIO: takes a name",
+                        options=sorted(allowed),
+                        next=(
+                            f"write PRIO:{{{'|'.join(sorted(allowed))}}}, or for a "
+                            "number pass prio=<1..10> (1 = hottest, 5 = default) "
+                            "to put/tag instead of a tag"
+                        ),
+                    )
                 if value not in allowed:
                     raise BadInput(
                         f"invalid {prefix} value: {value!r}",

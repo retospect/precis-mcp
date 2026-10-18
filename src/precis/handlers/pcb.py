@@ -77,6 +77,7 @@ from __future__ import annotations
 import collections
 import csv
 import dataclasses
+import difflib
 import hashlib
 import io
 import json
@@ -95,6 +96,7 @@ from precis.config import load_config
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
 from precis.format import render_agent_table
+from precis.handlers._interpret import interpreted
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.pcb import (
     PIN_ETYPES,
@@ -247,6 +249,19 @@ _VIEWS = (
     *_RENDER_VIEWS,
     *_OTHER_VIEWS,
 )
+#: ``view=`` spellings with exactly one reading (gr495607: prod callers sent
+#: ``view='easyeda'`` for the EasyEDA Pro export); run as the canonical view
+#: with an ``interpreted:`` line.
+_VIEW_ALIASES = {"easyeda": "epro", "easyeda-pro": "epro", "epro2": "epro"}
+#: Spellings with two plausible readings: refuse, naming both
+#: (gr495607: ``view='meta'`` / ``view='nets'``).
+_VIEW_NEAR_MISSES = {
+    "meta": "the TOC (omit view=: board, stackup, tags, parts, nets)",
+    "nets": (
+        "the TOC (omit view=) for the net list, id='<board>@<NET>' for one "
+        "net's members, or view='netlist' for the netlist file export"
+    ),
+}
 
 #: pcb-guided-place-route Slice 10 tool surface — the two heavy ops that
 #: enqueue a worker job (never compute inline) and the inline edits that
@@ -1226,7 +1241,11 @@ class PcbHandler(Handler):
 
         ref = resolve_live_slug_ref(self.store, kind="pcb", id=s)
         if view is not None:
-            return self._render_view(ref.id, view, args or {})
+            canon = _VIEW_ALIASES.get(view.strip().lower())
+            readings = [f"view={view!r} read as view={canon!r}"] if canon else []
+            return interpreted(
+                self._render_view(ref.id, canon or view, args or {}), readings
+            )
         design = self.store.pcb_load(ref.id)
         head = (
             f"# {ref.slug} — {len(design['instances'])} part(s), "
@@ -3363,9 +3382,18 @@ class PcbHandler(Handler):
     # ── the eyes ───────────────────────────────────────
     def _render_view(self, ref_id: int, view: str, args: dict[str, Any]) -> Response:
         if view not in _VIEWS:
+            near = _VIEW_NEAR_MISSES.get(view.strip().lower())
+            guess = near or "; ".join(
+                f"view={m!r}"
+                for m in difflib.get_close_matches(view.lower(), _VIEWS, n=3)
+            )
             raise BadInput(
                 f"unknown pcb view {view!r}",
-                next=f"view= one of {list(_VIEWS)}, or omit for the netlist TOC",
+                options=list(_VIEWS),
+                next=(
+                    (f"did you mean {guess}? " if guess else "")
+                    + f"view= one of {list(_VIEWS)}, or omit for the netlist TOC"
+                ),
             )
         if view in _EXPORT_VIEWS:
             return self._render_export(ref_id, view, args)

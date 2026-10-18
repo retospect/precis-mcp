@@ -147,3 +147,16 @@ def test_numeric_prio_still_refuses(hub: Hub) -> None:
         for r in h.store.list_refs(kind="gripe")
         if r.title == "Synthetic numeric prio gripe"
     ]
+
+
+def test_numeric_prio_refusal_points_at_prio_kwarg(hub: Hub) -> None:
+    h = GripeHandler(hub=hub)
+    with pytest.raises(BadInput, match="invalid PRIO value") as exc:
+        h.put(text="Synthetic numeric prio next", tags=["PRIO:2"])
+    assert "prio=<1..10>" in (exc.value.next or "")
+
+
+def test_search_view_index_is_the_plain_listing(hub: Hub) -> None:
+    h, _a, _b = _two(hub)
+    plain = h.search(status="open")
+    assert h.search(status="open", view="index").body == plain.body
