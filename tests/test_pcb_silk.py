@@ -3002,19 +3002,68 @@ def test_dogfood_u2_outline_is_no_longer_cut_by_u1s_silk():
         assert row.outcome == "placed", (refdes, row.reason)
 
 
-def test_dogfood_via_still_breaks_only_the_outlines_it_lands_on():
-    """A via already routed onto an outline is copper silk must not print
-    on, so the builder still breaks that outline around it -- and names
-    the via. The router can keep new vias off outlines
-    (``silk.outline_via_keepouts``, ``RealizeConfig.silk_via_keepout``)."""
+def test_dogfood_outlines_bend_around_the_routed_via_instead_of_breaking():
+    """gr495393 option A (Reto's ruling 2026-10-18): the via routed onto the
+    U1/J2 wall is copper silk must not print on, so both outlines are
+    redrawn around it. Each dents: J2 round the via's +y side (its body),
+    U1 round the -y side, so the shared wall opens into one eye with the
+    via inside, and each stays ONE closed line clear of the via by the
+    legal clearance. The router is untouched."""
+    from shapely.geometry import LineString as SLine
+    from shapely.geometry import Point as SPoint
+
     ir, pads, via = _dogfood_cluster()
     result = build_silk(ir, pads=pads, vias=[via])
-    u2 = next(c for c in result.census if c.refdes == "U2" and c.kind == "courtyard")
-    assert u2.outcome == "placed"
-    for refdes in ("U1", "J2"):
+    centre = SPoint(via["x"], via["y"])
+    legal = _W / 2.0 + silk.DEFAULT_SILK_TO_MASK_CLEARANCE_MM
+    rings = {}
+    for refdes in ("U1", "U2", "J2"):
+        (line,) = _outline_lines(result, refdes)
+        assert line[0] == pytest.approx(line[-1]), refdes
+        rings[refdes] = SLine(line)
         row = next(
             c for c in result.census if c.refdes == refdes and c.kind == "courtyard"
         )
-        if row.outcome != "placed":
-            assert "broken around via" in str(row.reason), row.reason
+        assert "broken around" not in str(row.reason), (refdes, row.reason)
+        if refdes == "U2":
+            assert row.outcome == "placed"
+            continue
+        assert "bent around via at (13.52, 13.54)" in str(row.reason), row.reason
+        assert rings[refdes].distance(centre) >= via["dia_mm"] / 2.0 + legal - 1e-6
+    assert not _draws_hit_any_pad(result.draws["top"], [_via_as_pad(via)])
+    assert not _draws_hit_any_pad(result.draws["top"], pads)
+    # The eye: near the via, U1's ring stays wholly on its -y side and
+    # passes below it by the clearance; J2's arc passes above it.
+    reach = via["dia_mm"] / 2.0 + legal - 1e-6
+    u1_ys = [y for x, y in rings["U1"].coords if centre.distance(SPoint(x, y)) < 1.6]
+    j2_ys = [y for x, y in rings["J2"].coords if centre.distance(SPoint(x, y)) < 1.6]
+    assert max(u1_ys) < via["y"]
+    assert min(u1_ys) <= via["y"] - reach
+    assert max(j2_ys) >= via["y"] + reach
+
+
+def test_a_via_no_bend_clears_still_cuts_the_outline():
+    """gr495393: a via on J1's outline right under a pad, with the board's
+    silk edge margin just past the ring. A dent would cross the pad, a
+    bulge would leave the board, so the outline is cut around the via as
+    before, and the census names the via."""
+    ir, pads = _edge_connector(5.0)
+    (ring,) = _outline_lines(build_silk(ir, pads=pads), "J1")
+    low = min(p[1] for p in ring)
+    pad = min(pads, key=lambda p: p["y"])
+    via = {
+        "x": pad["x"],
+        "y": low,
+        "dia_mm": 0.45,
+        "drill_mm": 0.2,
+        "span": ["F.Cu", "B.Cu"],
+    }
+    margin = silk._silk_edge_margin_mm(capability_for("4layer"))
+    edge = low - margin - _W / 2.0 - 0.05
+    outline = [(0.0, edge), (20.0, edge), (20.0, 10.0), (0.0, 10.0)]
+    result = build_silk(ir, pads=pads, vias=[via], outline=outline)
+    row = next(c for c in result.census if c.kind == "courtyard")
+    label = f"via at ({via['x']:.2f}, {via['y']:.2f})"
+    assert f"broken around {label}" in str(row.reason), row.reason
+    assert "bent around" not in str(row.reason)
     assert not _draws_hit_any_pad(result.draws["top"], [_via_as_pad(via)])

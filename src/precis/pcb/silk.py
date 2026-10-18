@@ -1371,6 +1371,12 @@ class PartOutline:
     meets: tuple[str, ...] = ()
     #: Length of ring buried inside those earlier outlines (mm).
     buried_mm: float = 0.0
+    #: The routed vias this ring was redrawn around instead of printing on
+    #: them (:func:`_bend_around_vias`), each named by
+    #: :func:`_obstacle_label`.
+    bent_around: tuple[str, ...] = ()
+    #: Those of them the ring bulged out round, each ``(via label, x, y)``.
+    bulged: tuple[tuple[str, float, float], ...] = ()
 
 
 def _polyline_length(points: Sequence[Point]) -> float:
@@ -1473,6 +1479,214 @@ def _hull_cells(hulls: list[tuple[int, Any]], *, margin_mm: float) -> dict[int, 
     }
 
 
+def _via_to_silk_mm(capability: CapabilityRow | None) -> float:
+    """Clear board silk owes a via's annulus. The fab publishes no via-to-silk
+    figure; a via's annulus is exposed copper the way a mask opening is, so
+    silk owes it the same ``silk_to_mask_clearance_mm`` an outline owes a
+    pad (house default first)."""
+    return design_value(
+        capability,
+        "silk_to_mask_clearance_mm",
+        fallback=DEFAULT_SILK_TO_MASK_CLEARANCE_MM,
+    )
+
+
+@dataclass(slots=True)
+class _BendRing:
+    """One outline's working state for :func:`_bend_around_vias`."""
+
+    inst: int
+    side: str
+    refdes: str
+    poly: Any
+    bent: list[str]
+    #: The bulges kept, each ``(via label, x, y)``: what
+    #: :func:`build_silk` may veto when one costs a label.
+    bulged: list[tuple[str, float, float]]
+
+
+def _bend_around_vias(
+    rings: list[_BendRing],
+    obstacles_by_side: dict[str, list[dict[str, Any]]],
+    *,
+    inside: Any,
+    spacing_mm: float,
+    stroke_width_mm: float,
+    via_to_silk_mm: float,
+    bulge_veto: frozenset[tuple[str, str]] | None = frozenset(),
+) -> None:
+    """Move each outline off the routed vias it would print on, in place
+    (gr495393 option A, Reto's ruling 2026-10-18: silk yields, the router
+    and the placer are untouched).
+
+    A via TOUCHES an outline when the ring's centreline is within the via's
+    radius plus half a stroke plus ``via_to_silk_mm``: the legal clearance.
+    For each touching via, the ring is redrawn around it as a circular arc,
+    one of two ways:
+
+    - **dent**: the disk is cut out of the outline, so the via sits outside
+      it. This is the move for a via under the part's own body between its
+      pads (J2 on usbc-attiny-dogfood-b), where the ring can't grow outward
+      without running into the neighbour on the far side.
+    - **bulge**: the disk is added, so the outline encloses the via. This is
+      the move for a via just outside the part.
+
+    Dents run first across the whole board, then bulges, then each mode
+    retries whatever is still touching. A neighbour that dents first leaves
+    room for the bulge on its other side. Each move tries the largest radius
+    first: via radius plus the legal clearance plus ``OUTLINE_GAP_STROKES``
+    widths, plus the outline spacing; then without the spacing; then the
+    legal clearance alone. A move is kept only if the redrawn ring
+
+    - clears the via by the legal clearance,
+    - hits no pad, fiducial or other furniture (each widened by the
+      silk-to-mask clearance) that the old ring did not already hit, and
+      brings no other via inside its legal clearance,
+    - still encloses every one of the part's own pads,
+    - stays inside the board's silk edge margin, and
+    - keeps its new stretch out of every other same-side outline and at
+      least ``spacing_mm`` off its ring.
+
+    ``bulge_veto`` names the ``(refdes, via label)`` bulges not to try;
+    ``None`` tries no bulge at all. :func:`build_silk` sets it to give a
+    label back the room a bulge took (gr495393 option c).
+
+    A via that no move clears stays where it is: :func:`build_silk` cuts
+    the outline around it, as before, and the census reason names the via
+    (no DRC rule: the ruling 2026-10-18 kept these cuts silent, as they
+    were)."""
+    half = stroke_width_mm / 2.0
+    legal = half + via_to_silk_mm
+    radii = (
+        legal + OUTLINE_GAP_STROKES * stroke_width_mm + spacing_mm,
+        legal + OUTLINE_GAP_STROKES * stroke_width_mm,
+        legal + 1e-3,
+    )
+    for side in ("top", "bottom"):
+        side_obs = obstacles_by_side.get(side, [])
+        ctx = _BendSide(
+            rings=[r for r in rings if r.side == side],
+            vias=[o for o in side_obs if o.get("obstacle") == "via"],
+            hard=[
+                _mask_opening(o, via_to_silk_mm)
+                for o in side_obs
+                if o.get("obstacle") != "via"
+            ],
+            legal_mm=legal,
+            spacing_mm=spacing_mm,
+            stroke_width_mm=stroke_width_mm,
+            inside=inside,
+        )
+        if not ctx.rings or not ctx.vias:
+            continue
+        for mode, natural in (
+            ("dent", True),
+            ("bulge", True),
+            ("dent", False),
+            ("bulge", False),
+        ):
+            for ring in ctx.rings:
+                for k in range(len(ctx.vias)):
+                    if not ctx.touching(ring.poly, k):
+                        continue
+                    under = bool(ring.poly.covers(ctx.centre(k)))
+                    if natural and under != (mode == "dent"):
+                        continue
+                    if mode == "bulge" and (
+                        bulge_veto is None
+                        or (ring.refdes, _obstacle_label(ctx.vias[k])) in bulge_veto
+                    ):
+                        continue
+                    for extra in radii:
+                        if _try_bend(ctx, ring, k, mode=mode, extra_mm=extra):
+                            break
+
+
+@dataclass(slots=True)
+class _BendSide:
+    """One board side's state for :func:`_bend_around_vias`: its outlines,
+    the vias that reach it, and the copper and furniture a bent ring must
+    not newly hit (widened by the silk-to-mask clearance)."""
+
+    rings: list[_BendRing]
+    vias: list[dict[str, Any]]
+    hard: list[dict[str, Any]]
+    legal_mm: float
+    spacing_mm: float
+    stroke_width_mm: float
+    inside: Any
+
+    def centre(self, k: int) -> Any:
+        return _ShapelyPoint(float(self.vias[k]["x"]), float(self.vias[k]["y"]))
+
+    def radius(self, k: int) -> float:
+        return float(self.vias[k]["w"]) / 2.0
+
+    def touching(self, poly: Any, k: int) -> bool:
+        reach = self.radius(k) + self.legal_mm - 1e-9
+        return bool(poly.exterior.distance(self.centre(k)) < reach)
+
+
+def _try_bend(
+    ctx: _BendSide, ring: _BendRing, k: int, *, mode: str, extra_mm: float
+) -> bool:
+    """Redraw ``ring`` around via ``k`` as one dent or bulge of radius
+    via radius + ``extra_mm``; keep it only if every check in
+    :func:`_bend_around_vias` passes."""
+    centre, r = ctx.centre(k), ctx.radius(k)
+    old = ring.poly
+    old_line = old.exterior
+    disk = centre.buffer(r + extra_mm, quad_segs=8)
+    moved = old.difference(disk) if mode == "dent" else old.union(disk)
+    if moved.is_empty or moved.geom_type != "Polygon":
+        return False
+    moved = _shapely_orient(_ShapelyPolygon(moved.exterior), 1.0)
+    line = moved.exterior
+    if line.distance(centre) < r + ctx.legal_mm - 1e-6:
+        return False
+    changed = line.difference(old_line.buffer(1e-4))
+    if changed.is_empty:
+        return False
+    if ctx.inside is not None and not ctx.inside.buffer(1e-6).covers(changed):
+        return False
+    own = [
+        p
+        for p in ctx.hard
+        if "obstacle" not in p and str(p.get("refdes")) == ring.refdes
+    ]
+    if not all(moved.covers(_ShapelyPoint(float(p["x"]), float(p["y"]))) for p in own):
+        return False
+    pts = [(float(x), float(y)) for x, y in line.coords]
+    old_pts = [(float(x), float(y)) for x, y in old_line.coords]
+    width = ctx.stroke_width_mm
+    for o in _near_obstacles(ctx.hard, pts, 2.0 * width):
+        if (
+            _stroke_hits(pts, [o], width) is not None
+            and _stroke_hits(old_pts, [o], width) is None
+        ):
+            return False
+    for j in range(len(ctx.vias)):
+        if j != k and ctx.touching(moved, j) and not ctx.touching(old, j):
+            return False
+    far = changed.difference(old_line.buffer(ctx.spacing_mm))
+    for other in ctx.rings:
+        if other is ring:
+            continue
+        if other.poly.buffer(-1e-6).intersects(changed):
+            return False
+        if (
+            not far.is_empty
+            and far.distance(other.poly.exterior) < ctx.spacing_mm - 1e-6
+        ):
+            return False
+    ring.poly = moved
+    label = _obstacle_label(ctx.vias[k])
+    ring.bent.append(label)
+    if mode == "bulge":
+        ring.bulged.append((label, float(centre.x), float(centre.y)))
+    return True
+
+
 def part_outlines(
     ir: PcbIR,
     *,
@@ -1480,6 +1694,8 @@ def part_outlines(
     stroke_width_mm: float = DEFAULT_SILK_WIDTH_MM,
     instance_sides: dict[str, str] | None = None,
     outline: Sequence[Sequence[float]] | None = None,
+    obstacles_by_side: dict[str, list[dict[str, Any]]] | None = None,
+    bulge_veto: frozenset[tuple[str, str]] | None = frozenset(),
 ) -> dict[int, PartOutline]:
     """Every placed part's outline, keyed by instance — the ONE place an
     outline's shape is decided, read by :func:`build_silk` (which draws it)
@@ -1517,11 +1733,17 @@ def part_outlines(
        past the margin is cut away: one clean gap at the edge instead of a
        silk_edge_clearance error per segment (gr495293).
 
+    5. Given ``obstacles_by_side`` (:func:`build_silk`'s seed obstacle
+       lists: pads, the vias reaching each side, furniture), redraw each ring
+       around the routed vias it would print on (:func:`_bend_around_vias`,
+       gr495393 option A), skipping the bulges ``bulge_veto`` names. The
+       router never sees this: the :func:`outline_via_keepouts` call
+       passes no obstacles.
+
     Other silk — refdes labels, pin-1 marks, title block — yields to these
     rings, never the other way round. Copper the outline still lands on
-    (a via, a foreign pad inside ``floor``) is :func:`build_silk`'s to
-    clip; :func:`outline_via_keepouts` can keep new vias off it in the first
-    place.
+    (a via no bend clears, a foreign pad inside ``floor``) is
+    :func:`build_silk`'s to clip.
 
     ``instance_sides`` is refdes -> ``'top'``/``'bottom'`` as
     :func:`build_silk` takes it; ``None`` reads the IR's own
@@ -1612,6 +1834,41 @@ def part_outlines(
         exterior = _shapely_orient(_ShapelyPolygon(poly.exterior), 1.0).exterior
         rings[inst] = (side, [(float(x), float(y)) for x, y in exterior.coords])
 
+    bent: dict[int, tuple[str, ...]] = {}
+    bulged: dict[int, tuple[tuple[str, float, float], ...]] = {}
+    if obstacles_by_side:
+        work = [
+            _BendRing(
+                inst=inst,
+                side=side,
+                refdes=str(ir.instance_refdes[inst]),
+                poly=_ShapelyPolygon(ring),
+                bent=[],
+                bulged=[],
+            )
+            for inst, (side, ring) in sorted(
+                rings.items(),
+                key=lambda kv: _refdes_sort_key(str(ir.instance_refdes[kv[0]])),
+            )
+        ]
+        _bend_around_vias(
+            work,
+            obstacles_by_side,
+            inside=inside,
+            spacing_mm=spacing,
+            stroke_width_mm=stroke_width_mm,
+            via_to_silk_mm=_via_to_silk_mm(capability),
+            bulge_veto=bulge_veto,
+        )
+        for w in work:
+            if w.bent:
+                rings[w.inst] = (
+                    w.side,
+                    [(float(x), float(y)) for x, y in w.poly.exterior.coords],
+                )
+                bent[w.inst] = tuple(w.bent)
+                bulged[w.inst] = tuple(w.bulged)
+
     # Draw order is natural refdes order, as everywhere in this module. A
     # later outline that runs INSIDE an earlier one (parts closer than two
     # floors, i.e. overlapping) leaves out that stretch, so the two read as
@@ -1657,6 +1914,8 @@ def part_outlines(
             edge_open_mm=edge_open,
             buried_mm=buried,
             meets=tuple(str(ir.instance_refdes[o]) for o, _a in over),
+            bent_around=bent.get(inst, ()),
+            bulged=bulged.get(inst, ()),
         )
     return out
 
@@ -1680,11 +1939,7 @@ def outline_via_keepouts(
     pad. 0.625 mm at house-default figures. Read off the IR's own outline
     and sides, so the router sees the rings :func:`build_silk` draws on a
     board whose silk is built with the same outline and capability row."""
-    via_to_silk = design_value(
-        capability,
-        "silk_to_mask_clearance_mm",
-        fallback=DEFAULT_SILK_TO_MASK_CLEARANCE_MM,
-    )
+    via_to_silk = _via_to_silk_mm(capability)
     margin = stroke_width_mm / 2.0 + via_to_silk + OUTLINE_GAP_STROKES * stroke_width_mm
     outlines = part_outlines(
         ir,
@@ -3101,7 +3356,91 @@ def build_silk(
     or on committed silk (module docstring's edge-margin note). The
     courtyard ring and the corner tick are NOT filtered by this — see
     that same note for why.
+
+    A courtyard ring bulges out round a routed via only where that costs
+    no silk (gr495393 option c, Reto 2026-10-18: "better algo should not
+    require any label missing"). The board is built with every bulge, and
+    again with none; while the bulged build drops an item the no-bulge
+    build kept, the bulges within :data:`_BULGE_VETO_REACH_MM` of the
+    dropped item's part are vetoed (the ring dents or is cut there
+    instead) and the board rebuilt. If the widest reach still loses one,
+    the no-bulge build stands.
     """
+    common: dict[str, Any] = {
+        "vias": vias,
+        "instance_sides": instance_sides,
+        "reserved": reserved,
+        "height_mm": height_mm,
+        "stroke_width_mm": stroke_width_mm,
+        "capability": capability,
+        "outline": outline,
+        "polarized": polarized,
+    }
+    result, bulges = _build_silk_pass(ir, pads, bulge_veto=frozenset(), **common)
+    if not bulges:
+        return result
+    base, _none = _build_silk_pass(ir, pads, bulge_veto=None, **common)
+    kept = {(c.refdes, c.kind) for c in base.census if c.outcome != "dropped"}
+    centre = {
+        str(ir.instance_refdes[i]): (float(ir.inst_x[i]), float(ir.inst_y[i]))
+        for i in range(ir.n_instances)
+    }
+    veto: set[tuple[str, str]] = set()
+    for reach in _BULGE_VETO_REACH_MM:
+        lost = {
+            c.refdes
+            for c in result.census
+            if c.outcome == "dropped" and (c.refdes, c.kind) in kept
+        }
+        if not lost:
+            return result
+        more = {
+            (refdes, label)
+            for refdes, items in bulges.items()
+            for label, x, y in items
+            if any(
+                math.hypot(x - centre[r][0], y - centre[r][1]) <= reach
+                for r in lost
+                if r in centre
+            )
+        }
+        if more <= veto:
+            continue
+        veto |= more
+        result, bulges = _build_silk_pass(
+            ir, pads, bulge_veto=frozenset(veto), **common
+        )
+        if not bulges:
+            break
+    if not any(
+        c.outcome == "dropped" and (c.refdes, c.kind) in kept for c in result.census
+    ):
+        return result
+    return base
+
+
+#: How far from a part whose silk a bulge cost (mm, part origin to via
+#: centre) :func:`build_silk` vetoes bulges, widening each round: the part's
+#: own neighbourhood first, then its label ladder's reach.
+_BULGE_VETO_REACH_MM = (2.0, 5.0, 10.0)
+
+
+def _build_silk_pass(
+    ir: PcbIR,
+    pads: list[dict[str, Any]],
+    *,
+    vias: list[dict[str, Any]] | None,
+    instance_sides: dict[str, str] | None,
+    reserved: dict[str, list[dict[str, Any]]] | None,
+    height_mm: float,
+    stroke_width_mm: float,
+    capability: CapabilityRow | None,
+    outline: list[tuple[float, float]] | None,
+    polarized: frozenset[str] | None,
+    bulge_veto: frozenset[tuple[str, str]] | None,
+) -> tuple[SilkResult, dict[str, list[tuple[str, float, float]]]]:
+    """One :func:`build_silk` pass with these bulges vetoed (``None``: no
+    bulges); also returns the bulges kept, by refdes."""
     sides = instance_sides or {}
     polarized_set = polarized or frozenset()
     top: list[dict[str, Any]] = []
@@ -3182,14 +3521,22 @@ def build_silk(
     #
     # The rings themselves come from `part_outlines` (gr495393): settled
     # against every other part and the board edge at once, never clipped
-    # by other silk afterwards.
+    # by other silk afterwards, and redrawn around the routed vias they
+    # would print on.
     outlines = part_outlines(
         ir,
         capability=capability,
         stroke_width_mm=stroke_width_mm,
         instance_sides=sides,
         outline=outline_ring,
+        obstacles_by_side=obstacles_by_side,
+        bulge_veto=bulge_veto,
     )
+    bulges = {
+        str(ir.instance_refdes[inst]): list(o.bulged)
+        for inst, o in outlines.items()
+        if o.bulged
+    }
     courtyard_ring: dict[int, tuple[str, list[Point]]] = {
         inst: (o.side, o.ring) for inst, o in outlines.items()
     }
@@ -3390,6 +3737,11 @@ def build_silk(
                     notes.append(
                         "courtyard outline leaves out the stretch on or inside "
                         "the outline of " + ", ".join(part_outline.meets)
+                    )
+                if part_outline.bent_around:
+                    notes.append(
+                        "courtyard outline bent around "
+                        + ", ".join(part_outline.bent_around)
                     )
                 if hit is not None:
                     notes.append(
@@ -3773,7 +4125,7 @@ def build_silk(
         census=tuple(census),
         dropped=dropped,
         relocated=relocated,
-    )
+    ), bulges
 
 
 __all__ = [
