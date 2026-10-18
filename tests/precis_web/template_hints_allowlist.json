@@ -1,0 +1,25 @@
+{
+ "icon-button-title": {
+  "_reader/reader.html.j2": 4,
+  "drafts/_editors.html.j2": 1,
+  "drafts/_figures.html.j2": 1,
+  "drive/index.html.j2": 3,
+  "smartdraft/view.html.j2": 2,
+  "todo/dashboard.html.j2": 1
+ },
+ "placeholder": {
+  "account/index.html.j2": 6,
+  "blocktree/detail3d.html.j2": 1,
+  "claim/_review.html.j2": 2,
+  "datasheets/_meta_panel.html.j2": 1,
+  "drafts/_editors.html.j2": 3,
+  "drafts/_figures.html.j2": 5,
+  "drive/index.html.j2": 1,
+  "papers/_meta_forms.html.j2": 4,
+  "pres/_meta_panel.html.j2": 2,
+  "rxn/index.html.j2": 2,
+  "settings/index.html.j2": 1,
+  "smartdraft/view.html.j2": 1,
+  "todo/dashboard.html.j2": 1
+ }
+}
