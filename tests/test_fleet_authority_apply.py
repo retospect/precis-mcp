@@ -126,7 +126,25 @@ def test_role_unions_allow_exec_over_tier() -> None:
     assert fa.resolve(data, "W", "dup")["allow_exec"] == [*tier_w, "x y"]
 
 
-def test_apply_role_writes_role_permissions(primary: Path) -> None:
+@pytest.fixture
+def committed_authority(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A committed temp copy of authority.md that fa.AUTHORITY points at."""
+    repo = tmp_path / "auth"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "t@example.invalid")
+    _git(repo, "config", "user.name", "t")
+    copy = repo / "authority.md"
+    copy.write_text(fa.AUTHORITY.read_text(encoding="utf-8"), encoding="utf-8")
+    _git(repo, "add", "authority.md")
+    _git(repo, "commit", "-q", "-m", "init")
+    monkeypatch.setattr(fa, "AUTHORITY", copy)
+    return copy
+
+
+def test_apply_role_writes_role_permissions(
+    primary: Path, committed_authority: Path
+) -> None:
     tree = _tree(primary)
     assert fa.apply("", tree, yes=True, role="coordinator") == 0
     local = tree / ".claude" / "settings.local.json"
@@ -146,6 +164,51 @@ def test_apply_unknown_role_refuses_naming_valid_roles(
     assert "coordinator" in err
     assert "host_desk" in err
     assert not (tree / ".claude" / "settings.local.json").exists()
+
+
+def test_apply_refuses_stale_generated_files(
+    primary: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    stale = tmp_path / "generated"
+    stale.mkdir()
+    for p in fa.GENERATED.iterdir():
+        (stale / p.name).write_text(p.read_text(encoding="utf-8"), encoding="utf-8")
+    target = stale / "claude-settings-W.json"
+    target.write_text(
+        target.read_text(encoding="utf-8").replace(
+            "mcp__precis__put", "mcp__precis__old"
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(fa, "GENERATED", stale)
+    tree = _tree(primary)
+    assert fa.apply("W", tree, yes=True) == 2
+    err = capsys.readouterr().err
+    assert "claude-settings-W.json" in err
+    assert "next=run scripts/fleet-authority render" in err
+    assert not (tree / ".claude" / "settings.local.json").exists()
+
+
+def test_role_apply_refuses_uncommitted_authority(
+    primary: Path,
+    committed_authority: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    copy = committed_authority
+    tree = _tree(primary)
+    assert fa.apply("", tree, yes=True, role="coordinator") == 0  # committed: ok
+    local = tree / ".claude" / "settings.local.json"
+    local.unlink()
+    copy.write_text(copy.read_text(encoding="utf-8") + "\nnote\n", encoding="utf-8")
+    capsys.readouterr()
+    assert fa.apply("", tree, yes=True, role="coordinator") == 2
+    assert "uncommitted" in capsys.readouterr().err
+    assert not local.exists()
+    # tier apply does not read authority.md's working copy state
+    assert fa.apply("W", tree, yes=True) == 0
 
 
 def test_apply_refuses_a_file_git_would_track(primary: Path) -> None:

@@ -318,6 +318,32 @@ def _load_existing(dst: Path) -> dict[str, Any] | str:
     return old if isinstance(old, dict) else f"{dst}: not a JSON object"
 
 
+def stale_reason(data: dict[str, Any]) -> str | None:
+    """Refusal when the checked-in generated files differ from a fresh render."""
+    stale = [
+        n
+        for n, text in render(data).items()
+        if not (GENERATED / n).exists()
+        or (GENERATED / n).read_text(encoding="utf-8") != text
+    ]
+    if stale:
+        return (
+            f"generated files are stale against authority.md ({', '.join(stale)}); "
+            "next=run scripts/fleet-authority render and commit the result"
+        )
+    return None
+
+
+def uncommitted_reason() -> str | None:
+    """Refusal when authority.md has uncommitted changes (role apply reads it)."""
+    st = _git(AUTHORITY.parent, "status", "--porcelain", "--", AUTHORITY.name)
+    if st.returncode:
+        return f"cannot check {AUTHORITY} with git: {st.stderr.strip()}"
+    if st.stdout.strip():
+        return f"{AUTHORITY} has uncommitted changes; next=commit it, then re-run"
+    return None
+
+
 def apply(tier: str, target: Path, *, yes: bool, role: str | None = None) -> int:
     """Merge tier (or role) ``permissions`` into ``target``; 2 on refusal."""
     target = target.expanduser().resolve()
@@ -328,6 +354,7 @@ def apply(tier: str, target: Path, *, yes: bool, role: str | None = None) -> int
             why = f"unknown role {role!r}; next=--role one of {role_names(data)}"
         else:
             tier = data["roles"][role]["tier"]
+    why = why or stale_reason(data) or (role and uncommitted_reason())
     plans: list[tuple[Path, str]] = []
     for stem, rel in APPLY_FILES.items():
         if why:
