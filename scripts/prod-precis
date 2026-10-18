@@ -13,7 +13,55 @@
 #   /tmp/prod-precis tools get --id fi237847
 #   /tmp/prod-precis tools edit --kind draft --id dc123 --find '…' --text '…'
 #   /tmp/prod-precis taproot mint --dry-run --spec spec.json
+#
+# `uv run precis` executes THIS tree's code, so a tree that is not a
+# descendant of origin/prod runs old logic (e.g. without the live-node guard)
+# against production (gr496163). Fetch, then: read subcommands warn, write
+# subcommands refuse. Reads = `tools get|search`, `quest status`, `logs`,
+# `stats`, `resolve`, `schema-doc`, anything with --dry-run or -h/--help;
+# every other subcommand counts as a write. Emergency override (silent, skips
+# the fetch): PRECIS_ALLOW_STALE_PROD_TREE=1. Fix instead: rebase onto
+# origin/prod (`git rebase origin/prod`), or run from a tree that is.
 set -euo pipefail
+root="$(cd "$(dirname "$0")/.." && pwd)"
+
+is_read_only() {
+    local a
+    for a in "$@"; do
+        case "$a" in --dry-run | -h | --help) return 0 ;; esac
+    done
+    case "${1:-}" in
+        logs | stats | resolve | schema-doc) return 0 ;;
+        tools) [[ "${2:-}" == get || "${2:-}" == search ]] && return 0 ;;
+        quest) [[ "${2:-}" == status ]] && return 0 ;;
+    esac
+    return 1
+}
+
+if [[ "${PRECIS_ALLOW_STALE_PROD_TREE:-}" != 1 ]]; then
+    git -C "$root" fetch --quiet origin prod 2>/dev/null ||
+        echo "prod-precis: WARNING: could not fetch origin/prod; checking against the local ref" >&2
+    stale=""
+    if ! git -C "$root" rev-parse --verify --quiet origin/prod >/dev/null; then
+        stale="no origin/prod ref to compare against"
+    elif ! git -C "$root" merge-base --is-ancestor origin/prod HEAD; then
+        behind="$(git -C "$root" rev-list --count HEAD..origin/prod)"
+        stale="HEAD $(git -C "$root" rev-parse --short HEAD) is not a descendant of origin/prod (missing $behind commit(s))"
+    fi
+    if [[ -n "$stale" ]]; then
+        if is_read_only "$@"; then
+            echo "prod-precis: WARNING: $stale; this read runs old code against prod." >&2
+        else
+            {
+                echo "prod-precis: REFUSED: $stale."
+                echo "  A write from a stale tree runs old logic against production."
+                echo "  Next: git rebase origin/prod (or run from a tree that contains it)."
+                echo "  Emergency only: PRECIS_ALLOW_STALE_PROD_TREE=1 $0 ..."
+            } >&2
+            exit 3
+        fi
+    fi
+fi
 # The stored DSN is container-oriented (host.docker.internal = the Mac's
 # autossh tunnel to caspar's pgbouncer); on the host that's 127.0.0.1.
 export PRECIS_DATABASE_URL="$(sed 's#@host.docker.internal:#@127.0.0.1:#' "$HOME/.secrets/pw/PRECIS_DATABASE_URL")"
@@ -24,5 +72,5 @@ if [[ -z "${PRECIS_LLM_BASE_URL+x}" && -r "$HOME/.secrets/pw/PRECIS_LLM_BASE_URL
     export PRECIS_LLM_BASE_URL="$(cat "$HOME/.secrets/pw/PRECIS_LLM_BASE_URL")"
 fi
 export PRECIS_EMBEDDER=remote PRECIS_EMBEDDER_URL=http://127.0.0.1:8181
-cd "$(dirname "$0")/.."
+cd "$root"
 exec uv run precis "$@"
