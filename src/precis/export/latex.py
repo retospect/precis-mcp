@@ -1324,9 +1324,14 @@ def _render_target(
             return _encode_unicode(_latex_escape(surface or tgt))
         return ""  # other record/chunk handle — provenance only
     if tgt.startswith("¶"):  # legacy base-58 chunk handle
-        dc = ctx.legacy_to_dc.get(tgt[1:])
+        dc = walker.resolve_legacy(
+            tgt[1:],
+            ctx.legacy_to_dc,
+            accept_dc=False,
+            known=None,
+            warnings=ctx.warnings,
+        )
         if dc is None:
-            ctx.warnings.append(f"cross-ref {tgt}: no such live chunk — downgraded")
             return _encode_unicode(_latex_escape(surface or tgt))
         return _draft_xref(dc, surface, ctx)
     if tgt.startswith("§"):
@@ -2361,7 +2366,7 @@ def render_body(
         abbrevs=abbrevs,
         known_handles={c.dc for c in chunks},
         store=store,
-        legacy_to_dc={c.handle: c.dc for c in chunks},
+        legacy_to_dc=walker.legacy_map(chunks),
         doc_type=doc_type,
         footnote_refs=footnote_refs,
         doi_links=doi_links,
@@ -3180,45 +3185,8 @@ _POSTER_COLUMNS = 3
 _POSTER_COLUMN_SLOTS = ("One", "Two", "Three")
 
 
-def _poster_sections(
-    chunks: list[Any],
-    depth_of: Any,
-    title_dc: str | None,
-) -> list[tuple[str, int | None, list[Any]]]:
-    """Group reading order into poster sections: each effective-depth-0
-    heading opens a new section (its text becomes the ``block`` title);
-    everything under it is a member. Chunks before the first section
-    heading form one anonymous leading block. Returns
-    ``(title, poster_column_hint, members)`` triples."""
-    sections: list[tuple[str, int | None, list[Any]]] = []
-    cur_title = ""
-    cur_col: int | None = None
-    cur: list[Any] = []
-    started = False
-
-    def flush() -> None:
-        nonlocal cur_title, cur_col, cur, started
-        if started or cur:
-            sections.append((cur_title, cur_col, cur))
-        cur_title, cur_col, cur, started = "", None, [], False
-
-    for c in chunks:
-        if c.dc == title_dc:
-            continue
-        if c.chunk_kind == "heading" and depth_of(c) == 0:
-            flush()
-            started = True
-            cur_title = c.text or ""
-            meta = getattr(c, "meta", None) or {}
-            raw_col = meta.get("poster_column")
-            try:
-                cur_col = int(raw_col) if raw_col is not None else None
-            except (TypeError, ValueError):
-                cur_col = None
-        else:
-            cur.append(c)
-    flush()
-    return sections
+#: Poster section grouping is the walker's (:func:`walker.poster_sections`).
+_poster_sections = walker.poster_sections
 
 
 def _poster_column_index(hint: int | None, counts: list[int]) -> int:
@@ -3325,7 +3293,7 @@ def _export_poster(
         abbrevs=abbrevs,
         known_handles={c.dc for c in chunks},
         store=store,
-        legacy_to_dc={c.handle: c.dc for c in chunks},
+        legacy_to_dc=walker.legacy_map(chunks),
         doc_type=_POSTER_DOC_TYPE,
         doi_links=doi_links,
         library_links=library_links,

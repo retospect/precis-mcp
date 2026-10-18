@@ -90,6 +90,7 @@ artifact: derived, idempotent, content-addressed). This is "the factory."
 | **Discovery / search** | search verbs, F20 layer | keywords, `toc`, hybrid retrieval |
 | **Todo tree / factory** | `todo` handler, planner, jobs | intent vs compute lanes, dispatch |
 | **Review tiers** | nursery / structural / deep | `nursery` = SQL/min, only `critical` alerts |
+| **Document export** | `src/precis/export/` | draft → LaTeX/PDF and docx: `walker.py` makes every shared decision (cite numbering and grouping, abbreviation first use, xref numbers, back-matter selection, the chunk walk); `latex.py` and `docx.py` are renderers that only format, checked byte-for-byte by `tests/test_export_golden.py` and kept decision-free by `tests/test_export_decisions.py` |
 | **Nanopub publication** | `src/precis/nanopub/`, `nanopub_*` tables (0128) | reviewed claims → signed, OTS-anchored artifacts; append-only proof store; the ladder runs **both ways** — a `contradicts` edge demotes below the freeze line, alerts above it |
 
 PCB selection binds raw board snapshots and instance IDs to optional Gerber

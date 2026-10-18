@@ -471,7 +471,7 @@ def export_docx(
         xref=nums.labels,
         numbered_headings=nums.numbered_headings,
         dc_handles={c.dc for c in chunks},
-        legacy_to_dc={c.handle: c.dc for c in chunks},
+        legacy_to_dc=walker.legacy_map(chunks),
         abbrevs=store.drafts.defined_abbrevs(ref.id),
         endnote=(citations == "endnote"),
         doc_type=doc_type,
@@ -1167,16 +1167,16 @@ def _render_target(
     ctx.cite_run.interrupt()
     if tgt.startswith("¶"):
         handle = tgt[1:]
-        dc = ctx.legacy_to_dc.get(handle)
-        if dc is None:
-            hp = handle_registry.parse(handle)
-            if hp is not None and hp[0] == "draft" and hp[1]:
-                dc = handle  # ``[¶dc<id>]`` — the ¶ is just the xref sigil
+        dc = walker.resolve_legacy(
+            handle,
+            ctx.legacy_to_dc,
+            accept_dc=True,
+            known=ctx.known_handles,
+            warnings=ctx.warnings,
+        )
         if dc is not None:
             _render_xref(dc, surface, ctx, paragraph)
             return
-        if handle not in ctx.known_handles:
-            ctx.warnings.append(f"cross-ref ¶{handle}: no such live chunk — downgraded")
         _flush_cites(ctx, paragraph)
         paragraph.add_run(surface or f"¶{handle}")
         return

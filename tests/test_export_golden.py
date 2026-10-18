@@ -1,5 +1,5 @@
 """Byte-identical safety net for the export-parity walker
-(docs/backlog/export-latex-docx-parity.md): one synthetic golden draft,
+(export-latex-docx-parity): one synthetic golden draft,
 exported end to end through ``export_draft`` (plain, patent, reMarkable
 footnote mode) and ``export_docx`` (plain, EndNote, patent), compared with
 the checked-in baseline under ``tests/fixtures/export/golden/``.

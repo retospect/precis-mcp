@@ -3,7 +3,7 @@
 ``export/latex.py`` and ``export/docx.py`` used to each re-implement the
 same citation decisions (SI resolution, numbering, run merging, same-paper
 collapse), so a fix in one left the other wrong
-(docs/backlog/export-latex-docx-parity.md: eight parity fixes in one churn
+(the export-latex-docx-parity work, 2026-10-17: eight parity fixes in one churn
 window). This module owns those decisions; each backend is a
 :class:`Renderer` that only formats the resolved values it is handed
 (``\\cite`` markup and biblatex link groups; python-docx runs and EndNote
@@ -68,6 +68,7 @@ from typing import Any, Protocol
 
 from precis.export import _abbrev, _back_matter
 from precis.store.si_links import SI_PDF_ROLE, cite_target_for
+from precis.utils import handle_registry
 
 
 @dataclass(frozen=True, slots=True)
@@ -790,3 +791,76 @@ def walk_body(
                 renderer.equation(sink, c, eq[0], number_of, eq[1])
     while open_lists:  # close any lists still open at the end
         renderer.list_close(sink, open_lists.pop()[0])
+
+
+# ── legacy handles and poster sections ───────────────────────────
+
+
+def legacy_map(chunks: list[Any]) -> dict[str, str]:
+    """Legacy base-58 chunk handle (``[¶<handle>]``) → its ``dc`` handle."""
+    return {c.handle: c.dc for c in chunks}
+
+
+def resolve_legacy(
+    handle: str,
+    legacy: dict[str, str],
+    *,
+    accept_dc: bool,
+    known: Collection[str] | None,
+    warnings: list[str],
+) -> str | None:
+    """A legacy ``[¶<handle>]`` cross-ref → the ``dc`` it points at, or
+    ``None`` (the caller downgrades it to text). ``accept_dc``: a
+    ``[¶dc<id>]`` handle is itself the target (the ¶ is just the xref
+    sigil; docx reads it so, LaTeX does not — a known divergence, kept
+    byte-identical). An unresolved handle warns unless it is in ``known``
+    (``None``: always warn)."""
+    dc = legacy.get(handle)
+    if dc is None and accept_dc:
+        parsed = handle_registry.parse(handle)
+        if parsed is not None and parsed[0] == "draft" and parsed[1]:
+            dc = handle
+    if dc is None and (known is None or handle not in known):
+        warnings.append(f"cross-ref ¶{handle}: no such live chunk — downgraded")
+    return dc
+
+
+def poster_sections(
+    chunks: list[Any],
+    depth_of: Callable[[Any], int],
+    title_dc: str | None,
+) -> list[tuple[str, int | None, list[Any]]]:
+    """Group reading order into poster sections: each effective-depth-0
+    heading opens a new section (its text becomes the ``block`` title);
+    everything under it is a member. Chunks before the first section
+    heading form one anonymous leading block. Returns
+    ``(title, poster_column_hint, members)`` triples."""
+    sections: list[tuple[str, int | None, list[Any]]] = []
+    cur_title = ""
+    cur_col: int | None = None
+    cur: list[Any] = []
+    started = False
+
+    def flush() -> None:
+        nonlocal cur_title, cur_col, cur, started
+        if started or cur:
+            sections.append((cur_title, cur_col, cur))
+        cur_title, cur_col, cur, started = "", None, [], False
+
+    for c in chunks:
+        if c.dc == title_dc:
+            continue
+        if c.chunk_kind == "heading" and depth_of(c) == 0:
+            flush()
+            started = True
+            cur_title = c.text or ""
+            meta = getattr(c, "meta", None) or {}
+            raw_col = meta.get("poster_column")
+            try:
+                cur_col = int(raw_col) if raw_col is not None else None
+            except (TypeError, ValueError):
+                cur_col = None
+        else:
+            cur.append(c)
+    flush()
+    return sections

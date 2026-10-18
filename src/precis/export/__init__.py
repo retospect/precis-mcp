@@ -23,7 +23,7 @@ exporters reach through :func:`.walker.term_segments` (which occurrence
 defines a short, what is left alone); each exporter only renders the
 result (docx text, LaTeX ``\\gls``).
 
-Shared walker (:mod:`.walker`, docs/backlog/export-latex-docx-parity.md):
+Shared walker (:mod:`.walker`, the export-latex-docx-parity work):
 the decisions both document backends must agree on, moved there family by
 family; each backend is a ``Renderer`` that only formats. Citations
 (numbering, SI resolution, grouping), abbreviation uses, cross-refs (the
