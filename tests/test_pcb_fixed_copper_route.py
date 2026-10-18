@@ -234,7 +234,10 @@ def test_plane_fanout_keeps_the_drop_for_a_pin_the_source_reaches_only_partway()
     assert len(drops) == 2, "a partway source via does not serve the pin"
     u0_drops = [v for v in drops if v.x < 10.0]
     assert len(u0_drops) == 1
-    assert u0_drops[0].layer_hi == 2, "U0's drop reaches the In2.Cu pour"
+    assert (u0_drops[0].layer_lo, u0_drops[0].layer_hi) == (0, 3), (
+        "U0's drop is a through via, so it reaches the In2.Cu pour (and every "
+        "other layer; gr495289)"
+    )
 
 
 def test_plane_fanout_keeps_the_stub_for_a_pad_on_its_own_pour_layer(

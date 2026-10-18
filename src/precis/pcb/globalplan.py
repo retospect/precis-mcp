@@ -1146,6 +1146,7 @@ def commit_searched_path(
     via_r = (
         grid.core_radius_mm(rules.via_dia_mm) if rules.via_dia_mm is not None else 0.0
     )
+    through_lo, through_hi = realize.through_span(spec.n_layers)
     for vx, vy, lo, hi in path.vias:
         if rules.via_dia_mm is None or rules.via_drill_mm is None:
             continue
@@ -1162,8 +1163,8 @@ def commit_searched_path(
                     y=vy,
                     dia_mm=rules.via_dia_mm,
                     drill_mm=rules.via_drill_mm,
-                    layer_lo=lo,
-                    layer_hi=hi,
+                    layer_lo=through_lo,
+                    layer_hi=through_hi,
                     endpoint="a",
                 )
             )

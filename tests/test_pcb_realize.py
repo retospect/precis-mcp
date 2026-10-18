@@ -704,8 +704,9 @@ def test_stitch_one_net_sprinkles_a_via_and_merges_two_overlapping_sheets():
     )
     for v in new_vias:
         assert v.net_id == 0
-        assert (v.layer_lo, v.layer_hi) == (0, 1), (
-            "a stitching via must span exactly the two sheets it joins",
+        assert (v.layer_lo, v.layer_hi) == (0, 3), (
+            "a stitching via is a through via: it spans every copper layer "
+            "(no blind/buried vias, gr495289), not just the two sheets it joins",
             v,
         )
         # every placed via must actually land in the overlap ([5, 10] x
@@ -1422,11 +1423,11 @@ def test_realize_emits_a_via_at_a_layer_transition():
         assert v.seg_id == 0
 
 
-def test_realize_via_span_covers_only_the_transitioned_layers():
-    """Span correctness: a via between F.Cu (pad layer) and In1.Cu must
-    NOT claim to reach In2.Cu/B.Cu -- a blind via must not appear on
-    layers it doesn't actually span (the exact prior scalar-layer bug's
-    consequence, restated as a span-boundary check)."""
+def test_realize_via_to_an_inner_layer_is_still_a_through_via():
+    """Span correctness (gr495289, Reto 2026-10-18): a via for a transition
+    between F.Cu (pad layer) and In1.Cu is a THROUGH via, F.Cu to B.Cu --
+    blind and buried vias are a costly fab upgrade the router never emits.
+    Still a span pair, never a scalar layer (the prior scalar-layer bug)."""
     ir = from_graph(_two_pin_graph(), stackup=DEFAULT_STACKUP)
     ir.set_layer(0, 1)  # In1.Cu
     result = realize(ir, config=_TANGENT)
@@ -1441,8 +1442,7 @@ def test_realize_via_span_covers_only_the_transitioned_layers():
     assert vias
     for v in vias:
         assert "layer" not in v  # never a scalar layer -- span/layers only
-        assert v["span"] == ["F.Cu", "In1.Cu"]
-        assert "In2.Cu" not in v["span"] and "B.Cu" not in v["span"]
+        assert v["span"] == ["F.Cu", "B.Cu"]
 
 
 def test_realize_via_span_a_through_via_when_transitioning_to_the_far_outer_layer():

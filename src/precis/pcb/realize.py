@@ -695,6 +695,15 @@ class RealizedVia:
     endpoint: str
 
 
+def through_span(n_layers: int) -> tuple[int, int]:
+    """``(layer_lo, layer_hi)`` of a through via: every copper layer. The
+    router emits no blind or buried via (Reto 2026-10-18, gr495289: partial
+    vias are a costly fab upgrade we do not buy). A via that does not
+    connect on a layer still occupies it: the grid reserves its disk there
+    and the pour pass cuts an antipad around it."""
+    return 0, max(n_layers, 1) - 1
+
+
 def _resolve_track_rules(
     ir: PcbIR, net_id: int, layer: int, config: RealizeConfig
 ) -> NetRules:
@@ -822,7 +831,7 @@ def _vias_for_track(
     assert rules.via_dia_mm is not None and rules.via_drill_mm is not None, (
         "implied_via_count already returns 0 when either is unresolved"
     )
-    layer_lo, layer_hi = min(PAD_LAYER, track.layer), max(PAD_LAYER, track.layer)
+    layer_lo, layer_hi = through_span(len(ir.stackup))
     n = total // 2
     pitch = rules.via_dia_mm + config.clearance_mm
     start = (float(track.segments[0]["start"][0]), float(track.segments[0]["start"][1]))
@@ -3771,6 +3780,7 @@ def _route_pass(
             if rules.via_dia_mm is not None
             else 0.0
         )
+        through_lo, through_hi = through_span(spec.n_layers)
         for vx, vy, lo, hi in path.vias:
             if rules.via_dia_mm is None or rules.via_drill_mm is None:
                 continue  # this fab publishes no via figures — don't invent any
@@ -3792,8 +3802,8 @@ def _route_pass(
                         y=vy,
                         dia_mm=rules.via_dia_mm,
                         drill_mm=rules.via_drill_mm,
-                        layer_lo=lo,
-                        layer_hi=hi,
+                        layer_lo=through_lo,
+                        layer_hi=through_hi,
                         endpoint="a",
                     )
                 )
@@ -4559,8 +4569,7 @@ def _plane_fanout(
             # from a bottom pad crosses (and therefore stitches) every
             # nearer pour on the way — the property the note above relies
             # on, now measured from the right end.
-            lo = min([pad_layer, *plane_layers])
-            hi = max([pad_layer, *plane_layers])
+            lo, hi = through_span(len(ir.stackup))
             dx, dy = float(ir.pin_dx[pid]), float(ir.pin_dy[pid])
             norm = math.hypot(dx, dy)
             # A pin at its instance's exact centroid has no outward
@@ -5410,8 +5419,7 @@ def _try_plane_jumper(
     attempts = 0
     for detour in detours:
         width_mm = track_width_by_layer[detour]
-        lo_a, hi_a = min(layer_a, detour), max(layer_a, detour)
-        lo_b, hi_b = min(layer_b, detour), max(layer_b, detour)
+        lo_a, hi_a = lo_b, hi_b = through_span(grid.spec.n_layers)
         for gap, qa, qb in pairs:
             if attempts >= _JUMPER_ROUTE_ATTEMPTS:
                 break
@@ -5424,18 +5432,8 @@ def _try_plane_jumper(
                 continue
             if not via_is_legal(qb[0], qb[1], lo_b, hi_b):
                 continue
-            disc_a = _ShapelyPoint(*qa).buffer(
-                via_r + clearance, quad_segs=_JUMPER_QUAD_SEGS
-            )
-            disc_b = _ShapelyPoint(*qb).buffer(
-                via_r + clearance, quad_segs=_JUMPER_QUAD_SEGS
-            )
-            if not _clears_foreign_pours(
-                disc_a, range(lo_a, hi_a + 1), foreign_pours
-            ) or not _clears_foreign_pours(
-                disc_b, range(lo_b, hi_b + 1), foreign_pours
-            ):
-                continue
+            # A through barrel may cross a foreign plane: the re-pour that
+            # follows cuts its antipad, as it does for any other via.
             attempts += 1
             path = grid.route(
                 net_id,
@@ -5726,7 +5724,7 @@ def _stitch_one_net(
         overlap = poly_i.intersection(poly_j)
         if overlap.is_empty or overlap.area <= 0.0:
             continue
-        lo, hi = (li, lj) if li < lj else (lj, li)
+        lo, hi = through_span(grid.spec.n_layers)
         parts = [g for g in getattr(overlap, "geoms", [overlap]) if g.area > 0.0]
         # Smallest part first: an island's single guaranteed slot must
         # not depend on how much budget the big field consumed.
@@ -5790,7 +5788,7 @@ def _stitch_one_net(
         _gap, i, j = candidates[0]
         li, poly_i = frags[i]
         lj, poly_j = frags[j]
-        lo, hi = (li, lj) if li <= lj else (lj, li)
+        lo, hi = through_span(grid.spec.n_layers)
         overlap = poly_i.intersection(poly_j)
         placed_here = False
         if not overlap.is_empty and overlap.area > 0.0:
@@ -6266,7 +6264,8 @@ def _rescue_plane_pins(
                     continue
                 grid.stamp_path(path, width)
                 via_core = grid.core_radius_mm(rules.via_dia_mm)
-                for vx, vy, lo, hi in path.vias:
+                lo, hi = through_span(len(all_layers))
+                for vx, vy, _lo, _hi in path.vias:
                     grid.stamp_disk(range(lo, hi + 1), vx, vy, via_core, net_id)
                     new_vias.append(
                         RealizedVia(
