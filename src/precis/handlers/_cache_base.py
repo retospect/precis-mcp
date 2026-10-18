@@ -188,6 +188,11 @@ class FetchResult:
     citable source (web). Lands in `cache_state.content_sha256`; every
     fetch/refresh overwrites it. None = this provider records none."""
 
+    cacheable: bool = True
+    """False = serve this answer but do not keep it: the row is written
+    born-stale (``ttl_seconds=0``) so the next get re-fetches. For a
+    partial answer that a later lookup could complete."""
+
 
 # ---------------------------------------------------------------------------
 # Chunk-selector grammar (gr311336)
@@ -572,6 +577,8 @@ class CacheBackedHandler(Handler):
         # True miss — fresh ref creation.
         result = self._stamp_inject_scan(self._fetch_guarded(key))
         ttl_to_write = ttl_seconds_override if ttl_override_active else self.ttl_seconds
+        if not result.cacheable:
+            ttl_to_write = 0
         ref, cache = self.store.put_cache_entry(
             kind=self.spec.kind,
             slug=self._slug_for(key),
@@ -616,6 +623,8 @@ class CacheBackedHandler(Handler):
         """
         result = self._stamp_inject_scan(self._fetch_guarded(key))
         ttl_to_write = ttl_seconds_override if ttl_override_active else self.ttl_seconds
+        if not result.cacheable:
+            ttl_to_write = 0
         new_ref, cache = self.store.update_cache_entry(
             ref_id=ref.id,
             title=result.title,

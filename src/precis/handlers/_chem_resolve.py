@@ -176,6 +176,16 @@ class Resolution:
     def answer(self) -> StructureReading | None:
         return self.candidates[0] if self.status == "resolved" else None
 
+    @property
+    def partial(self) -> bool:
+        """An ambiguous answer whose isomer list is incomplete (an OPSIN
+        fault, the probe cap, or OPSIN off/silent): never cached, so a
+        later lookup can return the full list (gr493217)."""
+        return self.status == "ambiguous" and any(
+            m.endswith("INCOMPLETE") or "stopped after" in m or "not enumerated" in m
+            for m in self.notes
+        )
+
     def to_meta(self) -> dict[str, Any]:
         ans = self.answer
         return {

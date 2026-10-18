@@ -139,6 +139,7 @@ class ChemHandler(CacheBackedHandler):
             body_blocks=[ChunkInsert(ord=0, text=render_resolution(res))],
             cost_usd=None,
             meta=res.to_meta(),
+            cacheable=not res.partial,
         )
 
 

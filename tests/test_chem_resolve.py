@@ -477,6 +477,29 @@ def test_handler_renders_underspecified_refusal(chem: ChemHandler) -> None:
     assert "2. 1,2-Dichloroethane: ClCCCl" in body
 
 
+def test_handler_partial_ambiguous_answer_is_not_cached(chem: ChemHandler) -> None:
+    routes = _locant_probe_routes()
+    routes[_opsin("1,2-Dichloroethane")] = TimeoutError("handshake timed out")
+    first = Replay(routes)
+    chem.fetch = first
+    assert "INCOMPLETE" in chem.get(id="dichloroethane").body
+    # OPSIN recovered: the next get re-resolves and returns the full list.
+    second = _dce_cir_down()
+    chem.fetch = second
+    body = chem.get(id="dichloroethane").body
+    assert second.calls  # not served from cache
+    assert "2. 1,2-Dichloroethane: ClCCCl" in body
+
+
+def test_handler_complete_ambiguous_answer_is_cached(chem: ChemHandler) -> None:
+    fetch = _dce_cir_down()
+    chem.fetch = fetch
+    assert "2. 1,2-Dichloroethane" in chem.get(id="dichloroethane").body
+    n = len(fetch.calls)
+    assert "2. 1,2-Dichloroethane" in chem.get(id="dichloroethane").body
+    assert len(fetch.calls) == n
+
+
 def test_handler_cir_off_via_env_never_calls_it(
     chem: ChemHandler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
