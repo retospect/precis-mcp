@@ -380,6 +380,62 @@ def test_prune_dedups_links_that_collapse_when_chunks_are_nulled(
     assert got == [(920001, None), (920003, None)]
 
 
+def test_prune_drops_selfref_link_when_its_chunk_ids_dangle(
+    store: Store, tmp_path: Path
+) -> None:
+    """Nulling both dangling chunk anchors of a self-referencing link used
+    to land on (R, NULL, R, NULL) and trip links_check; the link goes."""
+    assert store.dsn is not None
+    slice_path = tmp_path / "slice.jsonl"
+    meta = {
+        "version": seed.SLICE_VERSION,
+        "tree": ["refs", "chunks", "links"],
+        "lookups": [],
+    }
+
+    def link(i: int, src_chunk: int | None, dst_chunk: int | None) -> dict[str, Any]:
+        return {
+            "t": "links",
+            "r": {
+                "link_id": i,
+                "src_ref_id": 930001,
+                "src_chunk_id": src_chunk,
+                "dst_ref_id": 930001,
+                "dst_chunk_id": dst_chunk,
+                "relation": "related-to",
+                "set_by": "agent",
+            },
+        }
+
+    lines: list[dict[str, Any]] = [
+        {"_meta": meta},
+        {"t": "refs", "r": {"ref_id": 930001, "kind": "memory", "title": "a"}},
+        {
+            "t": "chunks",
+            "r": {
+                "chunk_id": 930010,
+                "ref_id": 930001,
+                "ord": 0,
+                "chunk_kind": "heading",
+                "text": "live chunk",
+            },
+        },
+        link(930001, 888001, 888002),  # both dangle -> nulled to a self-loop
+        link(930002, None, 888003),  # one NULL already, the other dangles
+        link(930003, 930010, 888004),  # one live anchor -> survives nulled
+    ]
+    slice_path.write_text(
+        "".join(json.dumps(x) + "\n" for x in lines), encoding="utf-8"
+    )
+    counts = seed.load_slice(store.dsn, slice_path, migrate=False)
+    assert counts["links"] == 1, counts
+    with psycopg.connect(store.dsn) as conn:
+        got = conn.execute(
+            "SELECT link_id, src_chunk_id, dst_chunk_id FROM links"
+        ).fetchall()
+    assert got == [(930003, 930010, None)]
+
+
 @pytest.mark.parametrize("bad", [{"version": 99}, {}])
 def test_read_slice_refuses_an_unknown_version(
     tmp_path: Path, bad: dict[str, Any]

@@ -699,6 +699,7 @@ def _prune_dangling(conn: Any, loaded: set[str]) -> int:
             ).format(present=present, p=sql.Identifier(rt), m=match)
             if nullable:
                 if t == "links":
+                    changed += _drop_links_becoming_selfloops(conn, cols, rt, rcols)
                     changed += _drop_links_collapsing_on_null(conn, cols, rt, rcols)
                 sets = sql.SQL(", ").join(
                     sql.SQL("{} = NULL").format(sql.Identifier(cc)) for cc in cols
@@ -762,6 +763,44 @@ def _drop_links_collapsing_on_null(
         nulled=nulled,
         present_o=o_present,
         om=dangling("o"),
+    )
+    return int(conn.execute(stmt).rowcount)
+
+
+def _drop_links_becoming_selfloops(
+    conn: Any, cols: list[str], rt: str, rcols: list[str]
+) -> int:
+    """Delete dangling links that nulling ``cols`` would turn into a
+    self-loop under links_check: same ref both ends, chunk ids NOT
+    DISTINCT once the dangling side is NULL (a ``(R, A, R, B)`` link with
+    A and B both pruned would land on ``(R, NULL, R, NULL)``)."""
+    from psycopg import sql
+
+    def eff(col: str) -> Any:
+        return (
+            sql.SQL("NULL")
+            if col in cols
+            else sql.SQL("c.{}").format(sql.Identifier(col))
+        )
+
+    stmt = sql.SQL(
+        "DELETE FROM links c WHERE {present} "
+        "AND NOT EXISTS (SELECT 1 FROM {p} p WHERE {m}) "
+        "AND {src_ref} = {dst_ref} "
+        "AND {src_chunk} IS NOT DISTINCT FROM {dst_chunk}"
+    ).format(
+        present=sql.SQL(" AND ").join(
+            sql.SQL("c.{} IS NOT NULL").format(sql.Identifier(k)) for k in cols
+        ),
+        p=sql.Identifier(rt),
+        m=sql.SQL(" AND ").join(
+            sql.SQL("p.{} = c.{}").format(sql.Identifier(rc), sql.Identifier(cc))
+            for cc, rc in zip(cols, rcols, strict=True)
+        ),
+        src_ref=eff("src_ref_id"),
+        dst_ref=eff("dst_ref_id"),
+        src_chunk=eff("src_chunk_id"),
+        dst_chunk=eff("dst_chunk_id"),
     )
     return int(conn.execute(stmt).rowcount)
 
