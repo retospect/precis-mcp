@@ -113,6 +113,7 @@ def facts_from_tables(
         cur = net.get("est_current_a")
         out_nets[net["name"]] = {
             "pins": sorted(set(labels.get(net["net_id"], []))),
+            "net_class": net.get("net_class") or None,
             "current_a": cur if isinstance(cur, (int, float)) and cur > 0 else None,
             "status": status,
             "reason": reason,

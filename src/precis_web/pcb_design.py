@@ -183,6 +183,15 @@ def capture_view(store: Any, ref: Any, *, conn: Connection) -> PcbView:
     return PcbView(current, raw, token, rev, instances)
 
 
+def instance_poses(view: PcbView) -> dict[int, dict[str, Any]]:
+    """``{instance_id: {x, y, rot, fixed, layer}}`` of the shown snapshot's
+    instance rows; the model prompt and the Selection box read the same pose."""
+    return {
+        r["instance_id"]: {k: r[k] for k in ("x", "y", "rot", "fixed", "layer")}
+        for r in view.raw["tables"]["pcb_instances"]
+    }
+
+
 def selection_manifest(view: PcbView) -> dict[str, Any]:
     """What the SVG route and :func:`selection_objects` hand the handler: the
     shown token, the instance identities and the live raw rows the
@@ -384,10 +393,7 @@ def digest(store: Any, slug: str, *, context: dict[str, Any] | None = None) -> s
         selected = None
         if context is not None:
             selected = resolve_selection(view, context, store)["selected"][0]
-        poses = {
-            r["instance_id"]: {k: r[k] for k in ("x", "y", "rot", "fixed", "layer")}
-            for r in view.raw["tables"]["pcb_instances"]
-        }
+        poses = instance_poses(view)
         body: dict[str, Any] = {
             "board": view.context["board"],
             "shown": view.context["shown"],

@@ -153,7 +153,7 @@ _TABLES: dict[str, list[dict[str, Any]]] = {
         {"pin_id": 3, "component_id": 30, "pad": "1", "name": "1"},
     ],
     "pcb_nets": [
-        {"net_id": 7, "name": "VBUS", "est_current_a": 0.5},
+        {"net_id": 7, "name": "VBUS", "net_class": "power", "est_current_a": 0.5},
         {"net_id": 8, "name": "CC2", "est_current_a": None},
     ],
     "pcb_netconns": [
@@ -186,6 +186,7 @@ def test_facts_join_catalogue_rows_and_route_state() -> None:
     }
     nets = out["facts"]["nets"]
     assert nets["VBUS"]["current_a"] == 0.5 and nets["VBUS"]["reason"] is None
+    assert nets["VBUS"]["net_class"] == "power" and nets["CC2"]["net_class"] is None
     assert nets["CC2"]["pins"] == ["J1.5", "R9.1"]
     assert nets["CC2"]["reason"] == "no path on F.Cu"  # carried verbatim
     assert out["unrouted"] == ["CC2"] and out["failed"] == ["CC2"]

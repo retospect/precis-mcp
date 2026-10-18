@@ -150,6 +150,7 @@ async def pcb_detail(request: Request, slug: str, rev: int | None = None) -> Any
                 **_notes_ctx(store, ref, conn),
                 "pcb_context": view.context,
                 "pcb_instances": view.instances,
+                "pcb_poses": pcb_design.instance_poses(view),
                 "read_only": read_only,
                 "revision_summary": summary,
                 "rev": rev or view.revision,

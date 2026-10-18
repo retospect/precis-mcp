@@ -37,11 +37,21 @@
       default: return o.key;
     }
   };
+  // The part's placement from the page manifest: "x 12.5 mm, y 3 mm · layer F.Cu · rotation 90°".
+  // A missing value says so; the line never drops out.
+  const placement = (instanceId) => {
+    const p = (manifest.poses || {})[instanceId];
+    if (!p || p.x == null || p.y == null) return 'Placement: not placed';
+    const rot = p.rot == null ? 'unknown' : `${p.rot}°`;
+    return `Placement: x ${p.x} mm, y ${p.y} mm · layer ${p.layer || 'unknown'} · rotation ${rot}` +
+      (p.fixed ? ` · fixed (${p.fixed})` : '');
+  };
   const describe = (o) => {
     switch (o.kind) {
       case 'instance': {
         const fp = o.footprint;
         return `Instance ${o.instance_id} · ${o.refdes}\n` +
+          `${placement(o.instance_id)}\n` +
           `Footprint: ${fp.available ? fp.scheme + ':' + JSON.stringify(fp.id) : 'unavailable'}\n` +
           `Part: ${fp.part_lcsc || 'unavailable'} · package label: ${fp.label || 'unavailable'}`;
       }
@@ -52,7 +62,8 @@
           `Pin: ${o.pin_name ?? 'unmatched'} · pad number: ${o.pad_number ?? 'unmatched'}\n` +
           `Geometry: ${g.shape} at ${pt([g.x, g.y])}` + (g.w != null ? ` · ${g.w}` + (g.h != null ? `×${g.h}` : '') + ' mm' : '') +
           (g.drill != null ? ` · drill ${g.drill} mm` : '') + (g.vertices ? ` · ${g.vertices} vertices` : '') + '\n' +
-          `Layer: ${o.layer} · net: ${o.net ?? 'none'}`;
+          `Layer: ${o.layer} · net: ${o.net ?? 'none'}` +
+          (o.instance_id == null ? '' : `\nPart ${o.refdes}: ${placement(o.instance_id)}`);
       }
       case 'via':
         return `Via at ${pt([o.x, o.y])}\nNet: ${o.net ?? 'none'}\n` +
@@ -60,7 +71,8 @@
           `Layers: ${o.layers.join(', ')}${o.fixed ? ' · fixed' : ''}`;
       case 'silk':
         return `Silkscreen ${o.role}\nLayer: ${o.layer}\nContent: ${o.content ?? 'not recorded'}\n` +
-          `Anchor: ${o.anchor.kind === 'instance' ? o.anchor.refdes + ' (instance ' + o.anchor.instance_id + ')' : 'board'}`;
+          `Anchor: ${o.anchor.kind === 'instance' ? o.anchor.refdes + ' (instance ' + o.anchor.instance_id + ')' : 'board'}` +
+          (o.anchor.kind === 'instance' ? `\nPart ${o.anchor.refdes}: ${placement(o.anchor.instance_id)}` : '');
       case 'outline':
         return `Board outline segment ${o.index}\nLayer: ${o.layer}\n${pt(o.start)} → ${pt(o.end)}`;
       case 'fiducial':
@@ -75,6 +87,7 @@
     switch (o.kind) {
       case 'pad': return o.refdes ? {kind: 'pad', refdes: o.refdes, pad: o.pin, net: o.net} : (o.net ? {kind: 'net', net: o.net} : null);
       case 'instance': return {kind: 'part', refdes: o.refdes};
+      case 'silk': return o.anchor.kind === 'instance' ? {kind: 'part', refdes: o.anchor.refdes} : null;
       case 'net': return {kind: 'net', net: o.name};
       case 'via': return o.net ? {kind: 'net', net: o.net} : null;
       default: return null;

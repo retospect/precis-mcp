@@ -25,7 +25,7 @@
   <a href="/pcb/{{ slug | urlencode }}">Current board</a>
 </div>
 {% else %}
-<script type="application/json" id="pcb-selection-manifest">{{ {'context': pcb_context, 'instances': pcb_instances} | tojson }}</script>
+<script type="application/json" id="pcb-selection-manifest">{{ {'context': pcb_context, 'instances': pcb_instances, 'poses': pcb_poses} | tojson }}</script>
 <div id="pcb-selection-panel" class="rounded border p-3 mb-3">
   <h2 class="text-sm font-semibold">Selection</h2>
   <p id="pcb-selection-status" role="status">Select a board object.</p>
@@ -52,6 +52,8 @@
       board render unavailable
     </object>
   </div>
+  <div id="pcb-cursor-readout" aria-live="off" title="cursor position, board origin"
+       style="text-align:right;font:12px ui-monospace,monospace" class="px-1 pt-1 text-fg-subtle">x — y — mm</div>
 </div>
 
 {# One text box, always present: a whole-design argument needs no click.

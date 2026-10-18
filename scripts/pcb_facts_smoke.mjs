@@ -38,6 +38,21 @@ assert.equal(
   F.describe(facts, { kind: 'pad', refdes: 'J1', pad: '5', net: 'CC2' }).text,
   'J1/Pad 5/CC2 FAILED: no path on F.Cu');
 
+// vias: net, drill, pad, layers, stitching only on a ground net (gr496368)
+const via = { net: 'GND', drill_mm: 0.3, dia_mm: 0.6, layers: ['F.Cu', 'B.Cu'], fixed: false };
+assert.equal(F.viaText(facts, via), 'GND via/drill 0.3mm/pad 0.6mm/F.Cu-B.Cu/stitching');
+assert.equal(
+  F.viaText(facts, { ...via, net: 'VBUS', drill_mm: null, fixed: true }),
+  'VBUS via/drill unknown/pad 0.6mm/F.Cu-B.Cu/not stitching/fixed');
+assert.equal(F.viaText(facts, { ...via, net: null }), 'no net via/drill 0.3mm/pad 0.6mm/F.Cu-B.Cu/not stitching');
+assert.equal(F.isGround({ nets: { X: { net_class: 'ground' } } }, 'X'), true, 'class beats name');
+assert.equal(F.isGround({ nets: { GND: { net_class: 'power' } } }, 'GND'), false, 'class beats name');
+// silkscreen: the owning part's tooltip, else the layer
+const silkR9 = { role: 'refdes', layer: 'F_Silkscreen', anchor: { kind: 'instance', refdes: 'C2', instance_id: 1 } };
+assert.equal(F.silkText(facts, silkR9), 'C2/(10uF 0603 6.3V)/silk refdes');
+assert.equal(F.silkText(facts, { role: 'title', layer: 'F_Silkscreen', anchor: { kind: 'board' } }),
+  'Silkscreen title/F_Silkscreen');
+
 // LCSC link: fixed template, validated C-number, otherwise nothing at all
 const c2 = F.describe(facts, { kind: 'part', refdes: 'C2' });
 assert.equal(c2.url, 'https://www.lcsc.com/product-detail/C19702.html');

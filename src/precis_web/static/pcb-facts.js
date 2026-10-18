@@ -93,5 +93,42 @@
     return out;
   }
 
-  return {describe, lcscUrl, load, netText, partText, LCSC_PRODUCT};
+  // Ground by class when the design set one, else by the usual names.
+  const GROUND_RE = /^[ADP]?GND\d*$|^VSS[A-Z]*\d*$/i;
+  function isGround(facts, name) {
+    const net = (facts.nets || {})[name];
+    if (net && typeof net.net_class === 'string' && net.net_class) {
+      return net.net_class.toLowerCase() === 'ground';
+    }
+    return typeof name === 'string' && GROUND_RE.test(name);
+  }
+
+  function mm(v) {
+    return typeof v === 'number' && isFinite(v) ? +v.toFixed(3) + 'mm' : 'unknown';
+  }
+
+  /* A via from the SVG's pcb-objects catalogue:
+     "GND via/drill 0.3mm/pad 0.6mm/F.Cu-B.Cu/stitching". A via on a ground net
+     is called stitching; any other net says "not stitching". */
+  function viaText(facts, via) {
+    const parts = [(via.net || 'no net') + ' via',
+      'drill ' + mm(via.drill_mm), 'pad ' + mm(via.dia_mm)];
+    const layers = via.layers || [];
+    if (layers.length) parts.push(layers.length > 2 ? layers.join(',') : layers.join('-'));
+    parts.push(via.net && isGround(facts, via.net) ? 'stitching' : 'not stitching');
+    if (via.fixed) parts.push('fixed');
+    return parts.join('/');
+  }
+
+  /* A silkscreen object: the owning part's tooltip plus the silk role
+     ("R1/(10k 0603 0.1W)/silk refdes"), or the layer for board-level silk. */
+  function silkText(facts, silk) {
+    const anchor = silk.anchor || {};
+    if (anchor.kind === 'instance' && anchor.refdes) {
+      return partText(facts, anchor.refdes) + '/silk ' + (silk.role || 'outline');
+    }
+    return 'Silkscreen ' + (silk.role || 'art') + '/' + (silk.layer || 'unknown layer');
+  }
+
+  return {describe, isGround, lcscUrl, load, netText, partText, silkText, viaText, LCSC_PRODUCT};
 });
