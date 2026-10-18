@@ -490,7 +490,8 @@ elif (( BANDS )); then
             if grep -qiE "$open_re" "$tf"; then band=ACTIVE
             elif landed_body "$tf"; then band=SPENT; fi
         fi
-        case "$band" in ACTIVE) r=0 ;; SETTLED) r=1 ;; *) r=2 ;; esac
+        # Leading-paren patterns: a bare `ACTIVE)` closes the enclosing $( early.
+        case "$band" in (ACTIVE) r=0 ;; (SETTLED) r=1 ;; (*) r=2 ;; esac
         printf '%s\t%s\t%s\t%s\n' "$hubh" "$r" "$band" "$h"
     done < <(awk -F'\t' -v OFS='\t' 'function f(i) { return (NF < i || $i == "") ? "-" : $i }
         { print $1, f(2), f(3), f(9), f(11) }' "$MANIFEST") | sort -s -t$'\t' -k1,1 -k2,2n)
