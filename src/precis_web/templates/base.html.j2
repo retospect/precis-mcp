@@ -71,8 +71,10 @@
              Drafts/Papers/Items retired into Drive (WS1a/WS1b/nav
              restructure) — their routes redirect, so no tab needed. #}
           {% set tabs = [('drive','Drive','/drive'), ('tags','Tags','/tags'), ('todo','ToDo','/todo'), ('design','Design','/design')] %}
+          {# g-chord shortcuts (static/shortcuts.js): one per nav anchor, unique. #}
+          {% set _sc = {'drive': 'g d', 'todo': 'g t', 'drafts': 'g r', 'papers': 'g p', 'status': 'g s'} %}
           {% for key, label, href in tabs %}
-          <a href="{{ href }}"
+          <a href="{{ href }}"{% if key in _sc %} data-shortcut="{{ _sc[key] }}" data-shortcut-label="{{ label }}" title="{{ label }} ({{ _sc[key] }})"{% endif %}
              class="px-2 py-1 rounded text-xs font-medium transition {% if active_tab == key %}{{ _tab_on }}{% else %}{{ _tab_off }}{% endif %}">
             {{ label }}
           </a>
@@ -94,7 +96,7 @@
              through the retired route. Their workbenches
              (``/structure/{slug}`` etc.) are unaffected. Clusters is
              a bespoke visualization with no Drive equivalent. #}
-          {% set browse = [('quests','Quests','/drive?submitted=1&k=quest&sort=recency'), ('schedules','Schedules','/drive?submitted=1&k=todo&tag=level:recurring&sort=recency'), ('clusters','Clusters','/clusters'), ('structure','Structures','/drive?k=structure&folder=*&sort=recency'), ('cad','CAD','/drive?k=cad&folder=*&sort=recency'), ('pcb','PCB','/drive?k=pcb&folder=*&sort=recency'), ('figure','Figures','/drive?k=figure&folder=*&sort=recency'), ('mermaid','Mermaid','/drive?k=mermaid&folder=*&sort=recency'), ('rxn','Reaction ledger','/rxn'), ('nanopub','Nanopubs','/nanopub')] %}
+          {% set browse = [('drafts','Drafts','/drive?k=draft&folder=*&sort=recency'), ('papers','Papers','/drive?k=paper&folder=*&sort=recency'), ('quests','Quests','/drive?submitted=1&k=quest&sort=recency'), ('schedules','Schedules','/drive?submitted=1&k=todo&tag=level:recurring&sort=recency'), ('clusters','Clusters','/clusters'), ('structure','Structures','/drive?k=structure&folder=*&sort=recency'), ('cad','CAD','/drive?k=cad&folder=*&sort=recency'), ('pcb','PCB','/drive?k=pcb&folder=*&sort=recency'), ('figure','Figures','/drive?k=figure&folder=*&sort=recency'), ('mermaid','Mermaid','/drive?k=mermaid&folder=*&sort=recency'), ('rxn','Reaction ledger','/rxn'), ('nanopub','Nanopubs','/nanopub')] %}
           {% set browse_keys = browse | map(attribute=0) | list %}
           <div x-data="{open:false}" @click.outside="open=false" @keydown.escape="open=false" class="relative">
             <button type="button" @click="open=!open"
@@ -104,7 +106,7 @@
             <div x-show="open" x-cloak x-transition.opacity
                  class="absolute left-0 mt-1 z-40 min-w-[9rem] rounded-md border border-chrome bg-chrome-raised py-1 shadow-lg">
               {% for key, label, href in browse %}
-              <a href="{{ href }}"
+              <a href="{{ href }}"{% if key in _sc %} data-shortcut="{{ _sc[key] }}" data-shortcut-label="{{ label }}" title="{{ label }} ({{ _sc[key] }})"{% endif %}
                  class="block px-3 py-1.5 text-xs font-medium transition {% if active_tab == key %}bg-chrome-hover text-chrome-strong{% else %}text-chrome-muted hover:bg-chrome-hover hover:text-chrome-strong{% endif %}">
                 {{ label }}
               </a>
@@ -121,21 +123,21 @@
                full triage queue (active_tab 'triage') lands under this
                tab, so it lights up there too. #}
             {% set needs_you_keys = ['needs-you', 'triage'] %}
-            <a href="/needs-you"
+            <a href="/needs-you" data-shortcut="g n" data-shortcut-label="Needs you" title="Needs you (g n)"
                class="px-2 py-1 rounded text-xs font-medium transition inline-flex items-center {% if active_tab in needs_you_keys %}{{ _tab_on }}{% else %}{{ _tab_off }}{% endif %}">
               Needs you
               {% if nav_needs_you %}
               <span class="ml-1 inline-flex items-center justify-center rounded-full bg-danger-solid text-on-solid text-[10px] font-semibold leading-none px-1.5 h-[1.1rem] min-w-[1.1rem]">{{ nav_needs_you }}</span>
               {% endif %}
             </a>
-            <a href="/gripes" data-tour="nav-gripes"
+            <a href="/gripes" data-tour="nav-gripes" data-shortcut="g g" data-shortcut-label="Gripes" title="Gripes (g g)"
                class="px-2 py-1 rounded text-xs font-medium transition inline-flex items-center {% if active_tab == 'gripes' %}{{ _tab_on }}{% else %}{{ _tab_off }}{% endif %}">
               Gripes
               {% if nav_gripes %}
               <span class="ml-1 inline-flex items-center justify-center rounded-full bg-accent-solid-soft text-on-solid text-[10px] font-semibold leading-none px-1.5 h-[1.1rem] min-w-[1.1rem]">{{ nav_gripes }}</span>
               {% endif %}
             </a>
-            <a href="/alerts" data-tour="nav-alerts"
+            <a href="/alerts" data-tour="nav-alerts" data-shortcut="g a" data-shortcut-label="Alerts" title="Alerts (g a)"
                class="px-2 py-1 rounded text-xs font-medium transition inline-flex items-center {% if active_tab == 'alerts' %}{{ _tab_on }}{% else %}{{ _tab_off }}{% endif %}">
               Alerts
               {% if nav_alerts %}
@@ -147,7 +149,7 @@
                and unbadged: it is the thing you go looking for when you do
                NOT know which tab you need, so it must not be inside a
                dropdown. #}
-            <a href="/manual"
+            <a href="/manual" data-shortcut="g m" data-shortcut-label="Manual" title="Manual (g m)"
                class="px-2 py-1 rounded text-xs font-medium transition {% if active_tab == 'manual' %}{{ _tab_on }}{% else %}{{ _tab_off }}{% endif %}">
               Manual
             </a>
@@ -161,7 +163,7 @@
               <div x-show="open" x-cloak x-transition.opacity
                    class="absolute right-0 mt-1 z-40 min-w-[9rem] rounded-md border border-chrome bg-chrome-raised py-1 shadow-lg">
                 {% for key, label, href in ops %}
-                <a href="{{ href }}"
+                <a href="{{ href }}"{% if key in _sc %} data-shortcut="{{ _sc[key] }}" data-shortcut-label="{{ label }}" title="{{ label }} ({{ _sc[key] }})"{% endif %}
                    class="block px-3 py-1.5 text-xs font-medium transition {% if active_tab == key %}bg-chrome-hover text-chrome-strong{% else %}text-chrome-muted hover:bg-chrome-hover hover:text-chrome-strong{% endif %}">
                   {{ label }}
                 </a>
@@ -174,7 +176,7 @@
                user can narrow/widen via the Source/Author kind chips on
                the results page. #}
             <form method="get" action="/drive" class="ml-1 flex items-center gap-1">
-              <input name="q" data-key="/" placeholder="🔍 search everything…"
+              <input name="q" data-key="/" data-shortcut="/" data-shortcut-label="Search" placeholder="🔍 search everything (/)…"
                      class="bg-chrome-raised border border-chrome text-chrome placeholder-chrome-faint text-sm px-3 py-1 rounded w-44 focus:w-72 focus:outline-none focus:ring-1 focus:ring-chrome-brand transition-all" />
             </form>
             {# "?" tour launcher — only on a page a tour manifest's route
@@ -471,5 +473,8 @@
      Dependency-free (no Alpine/htmx), so this one injection covers every
      page regardless of what else that page loads. #}
   <script src="/static/tour.js" defer></script>
+  {# Keyboard shortcuts (static/shortcuts.js): "/" search, "?" help overlay,
+     g-chords on the nav anchors' data-shortcut, j/k/Enter/x list cursor. #}
+  <script src="/static/shortcuts.js" defer></script>
 </body>
 </html>

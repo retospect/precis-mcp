@@ -130,7 +130,8 @@
          @click.outside="slashOpen = false">
       <label for="drive-query" class="block text-xs text-fg-subtle mb-0.5">Search</label>
       <input id="drive-query" type="search" name="q" value="{{ q }}" autofocus
-             placeholder="Search work, a handle or a DOI" @input="onQueryInput()"
+             data-shortcut="/" data-shortcut-label="Search Drive"
+             placeholder="Search work, a handle or a DOI (/)" @input="onQueryInput()"
              x-ref="q" @keydown="onQueryKey($event)"
              x-init="$el.setSelectionRange($el.value.length, $el.value.length)"
              class="w-full rounded-md border border-line-strong px-3 py-1.5 text-sm" />
