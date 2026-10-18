@@ -553,8 +553,9 @@ slice):
   clearance warns nowhere near a stub). Exit must show `silk_missing` and
   `clearance` warns at or under the floors, not only routed/failed.
 - **Noise.** Nano swings about ±2 nets on small routing changes (gr491588).
-  Reto decides: is the floor judged on seed 1 alone, or on a stated seed set
-  with the worst seed as the gate.
+  Reto 2026-10-18: nano floor = mean over seeds, per-seed catastrophe floor
+  28; the product keeps single-seed placement for now, best-of-N not yet.
+  (`NANO_SEEDS`, `NANO_MEAN_ROUTED_FLOOR` in the nano test.)
 - **Fixture.** The source of the failing pad geometry is gr489923: CN4
   `CONN-SMD_APCI0136-P001A`, 69 pads 0.3 × 1.55 mm in two staggered rows at
   0.5 mm pitch, pad gap 0.2 mm; a 0.3 mm track along the pad axis clears a

@@ -89,13 +89,18 @@ BASELINE_DRC_WARNS = sum(BASELINE_DRC_WARNS_BY_RULE.values())
 BASELINE_ROUTED = 35
 BASELINE_FAILED = 29
 
-#: gr489909: per-seed one-way floors on routed nets (fanout >= 2), so a
-#: router change is judged across placements, not on ``SEED``'s draw alone.
-#: Measured 2026-10-18 on main 902fd6a80; with seed 1 the mean is 34.5, the
-#: same as the 2026-10-15 sweep, so nothing regressed across seeds. Seeds 2
-#: and 4 are left out: their anneal leaves one part 0.041 mm past the
-#: outline and the route job refuses the placement.
-SEED_ROUTED_FLOORS: dict[int, int] = {3: 34, 5: 36, 6: 30, 7: 35, 8: 37}
+#: gr489909: routed nets (fanout >= 2) are judged across placements, not
+#: on ``SEED``'s draw alone. Reto 2026-10-18: the floor is the MEAN over
+#: ``NANO_SEEDS`` ("one can be worse"), plus a per-seed catastrophe floor
+#: so one broken seed still fails. The mean floor is one-way: raise it when
+#: the mean improves. Measured 2026-10-18 on main 902fd6a80, routed per
+#: seed 1/3/5/6/7/8 = 35/34/36/30/35/37, mean 34.5 (the 2026-10-15 sweep's
+#: mean too). Seeds 2 and 4 are left out: their anneal leaves one part
+#: 0.041 mm past the outline and the route job refuses the placement
+#: (gr496151).
+NANO_SEEDS: tuple[int, ...] = (1, 3, 5, 6, 7, 8)
+NANO_MEAN_ROUTED_FLOOR = 34.5
+NANO_SEED_ROUTED_MIN = 28
 
 _DRC_HEAD_RE = re.compile(r"— (\d+) error\(s\), (\d+) warn\(s\)")
 
@@ -265,9 +270,12 @@ def _drain_one_job(store: Store, parent_id: int, *, unrouted_ok: bool) -> None:
     raise AssertionError(f"job {job_ref_id} never reached a terminal status")
 
 
-def _place_and_route(store: Store, seed: int) -> tuple[PcbHandler, int, int, int]:
-    """Create the board, place and route it at ``seed``; return the
-    handler, the board's ref id, and routed/failed over fanout >= 2 nets."""
+def _place_and_route(
+    store: Store, seed: int, slug: str = SLUG
+) -> tuple[PcbHandler, int, int, int]:
+    """Create the board as ``slug``, place and route it at ``seed``; return
+    the handler, the board's ref id, and routed/failed over fanout >= 2
+    nets."""
     # The catalog footprints are the fixture's cache — seeded into the
     # test DB before the put so the catalog parts resolve to real pad
     # geometry. Read-only lookups at apply; no JLC/LCSC calls.
@@ -275,16 +283,16 @@ def _place_and_route(store: Store, seed: int) -> tuple[PcbHandler, int, int, int
         store.part_footprint_put(lcsc, fp)
 
     pcb = PcbHandler(hub=Hub(store=store))
-    created = pcb.put(id=SLUG, args=dict(fx.DESIGN))
+    created = pcb.put(id=slug, args=dict(fx.DESIGN))
     assert "created" in created.body
-    ref = store.get_ref(kind="pcb", id=SLUG)
+    ref = store.get_ref(kind="pcb", id=slug)
     assert ref is not None
 
-    place_resp = pcb.put(id=SLUG, args={"op": "place", "seed": seed})
+    place_resp = pcb.put(id=slug, args={"op": "place", "seed": seed})
     assert "enqueued" in place_resp.body
     _drain_one_job(store, ref.id, unrouted_ok=False)
 
-    route_resp = pcb.put(id=SLUG, args={"op": "route", "seed": seed})
+    route_resp = pcb.put(id=slug, args={"op": "route", "seed": seed})
     assert "enqueued" in route_resp.body
     _drain_one_job(store, ref.id, unrouted_ok=True)
 
@@ -306,11 +314,18 @@ def _place_and_route(store: Store, seed: int) -> tuple[PcbHandler, int, int, int
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("seed", sorted(SEED_ROUTED_FLOORS))
-def test_nano_board_routed_floor_per_seed(store: Store, seed: int) -> None:
-    _pcb, _ref_id, routed, _failed = _place_and_route(store, seed)
-    floor = SEED_ROUTED_FLOORS[seed]
-    assert routed >= floor, f"seed {seed}: routed {routed} < floor {floor}"
+def test_nano_board_mean_routed_floor_over_seeds(store: Store) -> None:
+    routed = {
+        seed: _place_and_route(store, seed, slug=f"{SLUG}-s{seed}")[2]
+        for seed in NANO_SEEDS
+    }
+    mean = sum(routed.values()) / len(routed)
+    print(f"\nnano routed by seed: {routed}; mean {mean:.3f}")
+    broken = {s: n for s, n in routed.items() if n < NANO_SEED_ROUTED_MIN}
+    assert not broken, f"seeds under {NANO_SEED_ROUTED_MIN} routed: {broken}"
+    assert mean >= NANO_MEAN_ROUTED_FLOOR, (
+        f"mean routed {mean:.3f} < floor {NANO_MEAN_ROUTED_FLOOR} ({routed})"
+    )
 
 
 @pytest.mark.slow
