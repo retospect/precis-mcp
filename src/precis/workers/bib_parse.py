@@ -362,6 +362,15 @@ _MATCH_CONF_CROSSREF_LLM = 0.6
 #: Attempted, unmatched — the memoization marker (non-NULL, ``doi`` stays
 #: NULL) so a later pass doesn't re-query Crossref for this entry.
 _MATCH_CONF_UNMATCHED = 0.0
+#: Crossref refused this entry's query as permanently malformed (HTTP 414,
+#: URI Too Long). Non-NULL like :data:`_MATCH_CONF_UNMATCHED` so the entry is
+#: not retried every pass (gr496070; one entry did so ~729x/day), but
+#: distinguishable from a genuine no-match: ``doi`` NULL, ``match_conf < 0``.
+_MATCH_CONF_QUERY_REJECTED = -1.0
+#: Longest bibliographic string sent to Crossref. A real citation line is far
+#: shorter; an entry that swallowed a page of text made the GET URL exceed
+#: Crossref's limit, and the tail adds no matching signal.
+_CROSSREF_QUERY_MAX_CHARS = 600
 
 _ADJUDICATE_SYS = (
     "You are matching a bibliography citation line to the correct "
@@ -403,6 +412,11 @@ def _local_doi_match(
     return None
 
 
+class CrossrefQueryRejected(Exception):
+    """Crossref answered 414: this entry's query URL is too long and will be
+    again on every retry, so the caller records it and stops retrying."""
+
+
 def _crossref_query(raw_text: str, *, mailto: str = "") -> list[dict[str, Any]] | None:
     """Crossref bibliographic query (``query.bibliographic=<raw_text>``),
     up to two candidates, via ``safe_get`` (never raw httpx — SSRF guard).
@@ -421,12 +435,19 @@ def _crossref_query(raw_text: str, *, mailto: str = "") -> list[dict[str, Any]] 
     refusal on the first attempt raises :class:`RateLimited` (not ``None``)
     so the pass can defer the paper unstamped instead of finishing it with
     unmatched entries.
+
+    ``raw_text`` is cut to :data:`_CROSSREF_QUERY_MAX_CHARS` first. A 414
+    despite that raises :class:`CrossrefQueryRejected` (terminal for the
+    entry, unlike every other failure, which returns ``None``).
     """
     from precis.utils.http import http_client, polite_user_agent, with_backoff
     from precis.utils.safe_fetch import safe_get
     from precis.utils.stall_capture import maybe_capture
 
-    params: dict[str, Any] = {"query.bibliographic": raw_text, "rows": 2}
+    params: dict[str, Any] = {
+        "query.bibliographic": raw_text[:_CROSSREF_QUERY_MAX_CHARS],
+        "rows": 2,
+    }
     if mailto:
         params["mailto"] = mailto
 
@@ -452,6 +473,8 @@ def _crossref_query(raw_text: str, *, mailto: str = "") -> list[dict[str, Any]] 
             raise
         except Exception:
             return None
+    if resp.status_code == 414:
+        raise CrossrefQueryRejected(raw_text[:80])
     if resp.status_code != 200:
         log.warning("bib_parse: crossref returned status %s", resp.status_code)
         return None
@@ -632,7 +655,26 @@ def _match_one_entry(
         retry_locked(_write_local, label=f"bib_parse match entry_id={entry_id}")
         return "matched"
 
-    items = _crossref_query(raw_text, mailto=mailto)
+    try:
+        items = _crossref_query(raw_text, mailto=mailto)
+    except CrossrefQueryRejected:
+        log.warning(
+            "bib_parse: crossref returned 414 for entry_id=%s (query %d chars "
+            "after truncation) -- recording match_conf=%s, not retrying",
+            entry_id,
+            min(len(raw_text), _CROSSREF_QUERY_MAX_CHARS),
+            _MATCH_CONF_QUERY_REJECTED,
+        )
+
+        def _write_rejected() -> None:
+            with store.pool.connection() as wconn:
+                _write_crossref_match(
+                    wconn, entry_id, None, None, _MATCH_CONF_QUERY_REJECTED
+                )
+                wconn.commit()
+
+        retry_locked(_write_rejected, label=f"bib_parse match entry_id={entry_id}")
+        return "unmatched"
     if items is None:
         log.warning(
             "bib_parse: crossref query failed for entry_id=%s -- leaving "

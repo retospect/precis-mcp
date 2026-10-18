@@ -834,6 +834,46 @@ class TestMatchCrossref:
         assert second == {"attempted": 0}
         assert call_count["n"] == 1
 
+    def test_414_is_terminal_and_recorded_not_retried(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr496070: a recorded 414 from Crossref marks the entry rejected
+        (non-NULL ``match_conf``, no DOI) so the next pass makes no call."""
+        ref_id = seed_ref(store, title="citing paper")
+        entry_id = _insert_entry(store, ref_id, 1, "A citation Crossref 414s.")
+        calls: list[Any] = []
+
+        def fake_safe_get(client: Any, url: str, /, **kw: Any) -> Any:
+            calls.append(kw)
+            return _FakeResponse(414)
+
+        monkeypatch.setattr("precis.utils.safe_fetch.safe_get", fake_safe_get)
+
+        first = run_bib_parse_match_pass(store, ref_id, client=_FakeClient("{}"))
+        assert first == {"attempted": 1}
+        assert len(calls) == 1  # 414 is not retried within the pass either
+        doi, _s2_id, _held, match_conf = _entry_row(store, entry_id)
+        assert doi is None
+        assert match_conf == pytest.approx(bib_parse_mod._MATCH_CONF_QUERY_REJECTED)
+
+        second = run_bib_parse_match_pass(store, ref_id, client=_FakeClient("{}"))
+        assert second == {"attempted": 0}
+        assert len(calls) == 1
+
+    def test_crossref_query_truncates_an_oversized_raw_text(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen: list[str] = []
+
+        def fake_safe_get(client: Any, url: str, /, **kw: Any) -> Any:
+            seen.append(kw["params"]["query.bibliographic"])
+            return _FakeResponse(200, {"message": {"items": []}})
+
+        monkeypatch.setattr("precis.utils.safe_fetch.safe_get", fake_safe_get)
+        long_text = "x" * (bib_parse_mod._CROSSREF_QUERY_MAX_CHARS * 5)
+        assert bib_parse_mod._crossref_query(long_text) == []
+        assert seen == ["x" * bib_parse_mod._CROSSREF_QUERY_MAX_CHARS]
+
     def test_transient_error_retries_then_succeeds(
         self, store: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
