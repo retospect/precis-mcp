@@ -1308,7 +1308,9 @@ class TestHarvest:
         )
         store.add_tag(job.id, Tag.closed("STATUS", "failed"), set_by="system")
 
-    def _failed_autocatpath_aggregate(self, store: Any, sid: int) -> None:
+    def _failed_autocatpath_aggregate(
+        self, store: Any, sid: int, job_meta: dict[str, Any] | None = None
+    ) -> None:
         """Current fan-out shape: a failed ``autocatpath_aggregate`` job one
         level down, under the aggregate todo (``T_agg``, a direct child of the
         candidate) — mirrors what :func:`dispatch_autocatpath` mints (loosely,
@@ -1326,10 +1328,90 @@ class TestHarvest:
             kind="job",
             slug=None,
             title="autocatpath_aggregate",
-            meta={"job_type": "autocatpath_aggregate"},
+            meta={"job_type": "autocatpath_aggregate", **(job_meta or {})},
             parent_id=agg_todo.id,
         )
         store.add_tag(job.id, Tag.closed("STATUS", "failed"), set_by="system")
+
+    _OFF_LANE_ERR = (
+        "unclaimable: pinned to target_node=castor, which has left the "
+        "ssh_node lane: no job_ssh_node pass has run there since "
+        "2026-10-16T10:58Z (62.2h, budget 4.0h) and every claim path "
+        "node-gates on the pin. Failed as infra so the bounded retry "
+        "re-derives the pin (gr493226)."
+    )
+
+    def _off_lane_harness(
+        self,
+        store: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        job_meta: dict[str, Any],
+        *,
+        dispatch_note: str = "autocatpath[ml]",
+    ) -> tuple[int, int, list[int]]:
+        qid = self._reaction_quest(store)
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.stamp_ref_meta(sid, {"quest_autocatpath_infra_retries": 2})
+        self._failed_autocatpath_aggregate(store, sid, job_meta)
+        calls: list[int] = []
+
+        def _fake_dispatch(_s: Any, structure_ref_id: int, _c: Any, **_kw: Any) -> str:
+            calls.append(structure_ref_id)
+            return dispatch_note
+
+        monkeypatch.setattr(compute_mod, "dispatch_autocatpath", _fake_dispatch)
+        return qid, sid, calls
+
+    def test_off_lane_reaped_aggregate_gets_amnesty(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr497193: an aggregate reaped for a pin to a retired-lane node is
+        re-dispatched even with the retry budget spent, and the counter
+        resets once the dispatch lands."""
+        qid, sid, calls = self._off_lane_harness(
+            store,
+            monkeypatch,
+            {"failure_class": "infra", "error": self._OFF_LANE_ERR},
+        )
+        step = compute_mod.harvest_measures(store, qid, hub=object())
+        assert calls == [sid]
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta.get("quest_autocatpath_infra_retries") == 0
+        assert any("amnesty re-dispatch" in n for n in step.notes)
+        assert step.ruled_out == 0
+
+    def test_off_lane_amnesty_keeps_counter_when_no_live_lane(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        qid, sid, calls = self._off_lane_harness(
+            store,
+            monkeypatch,
+            {"failure_class": "infra", "error": self._OFF_LANE_ERR},
+            dispatch_note=f"autocatpath refused for x: {compute_mod._NO_LIVE_LANE}",
+        )
+        compute_mod.harvest_measures(store, qid, hub=object())
+        assert calls == [sid]
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta.get("quest_autocatpath_infra_retries") == 2
+
+    def test_ordinary_infra_aggregate_failure_gets_no_amnesty(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Budget spent + a real infra failure: no re-dispatch (gripe-filed
+        dedup path), counter untouched."""
+        qid, sid, calls = self._off_lane_harness(
+            store,
+            monkeypatch,
+            {"failure_class": "infra", "error": "OOM: killed by the kernel"},
+        )
+        step = compute_mod.harvest_measures(store, qid, hub=object())
+        assert calls == []
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta.get("quest_autocatpath_infra_retries") == 2
+        assert not any("amnesty" in n for n in step.notes)
 
     def test_failed_autocatpath_never_rules_out_candidate(self, store: Any) -> None:
         """A failed legacy ``autocatpath_explore`` (retired pre-fan-out shape,

@@ -3111,6 +3111,19 @@ def _seed_timeout_held(
     return True
 
 
+def _is_off_lane_reap(job_meta: dict[str, Any]) -> bool:
+    """True iff the job was failed by the sweeper's off-lane-pin reap
+    (``workers.sweeper._off_lane_reason``: "pinned to target_node=X, which has
+    left the ssh_node lane"). Matched on that wording plus
+    ``failure_class='infra'``, so ordinary infra failures keep the ladder."""
+    err = str(job_meta.get("error") or "")
+    return (
+        job_meta.get("failure_class") == "infra"
+        and "unclaimable: pinned to target_node=" in err
+        and ", which has left the " in err
+    )
+
+
 def _seed_geometry_held(
     store: Store,
     cand: Any,
@@ -3806,6 +3819,26 @@ def harvest_measures(
                         notes.append(
                             f"stuck seed persists for [{handle}] (gripe already filed)"
                         )
+            elif _is_off_lane_reap(cp_job_meta) and hub is not None and reaction:
+                # Amnesty (gr497193): the aggregate was reaped for a frozen pin
+                # to a node that left the lane (gr496916 signature) — a defect
+                # since fixed in dispatch, not a fault of this candidate. Same
+                # shape as the explore amnesty above: re-dispatch bypasses the
+                # ladder; the counter resets only when a dispatch lands.
+                onote = dispatch_autocatpath(
+                    store,
+                    s.id,
+                    reaction,
+                    hub=hub,
+                    tier=_retry_tier(store, cp_job_meta),
+                )
+                if is_no_live_lane(onote):
+                    _note_no_live_lane(notes, "off-lane amnesty re-dispatch", onote)
+                else:
+                    store.stamp_ref_meta(s.id, {"quest_autocatpath_infra_retries": 0})
+                    notes.append(
+                        f"off-lane-pin failure for [{handle}] → amnesty re-dispatch"
+                    )
             else:
                 cp_retries = int(
                     (s.meta or {}).get("quest_autocatpath_infra_retries", 0) or 0
