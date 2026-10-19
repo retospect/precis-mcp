@@ -76,10 +76,10 @@ NOH* has no thermo data.
    medium and large. Intermediates: `[NO, NOH, N, NH, NH2]` plus HNO, NH2OH,
    N2O and the NO dimer (the last four are catpath network-template work and
    are not in the first engine PR).
-3. **Precis wiring** (after the engine ships; none of it is built, there is
-   no engine to test against): feature-detect `spectators` on
-   `autocatpath.config.Config`, as `runner.coverage_mixtures_supported` does
-   for mixtures; pass the block through the pathway lane; key quest results
+3. **Precis wiring** (engine 0.31.0 ships `spectators`; the feature detection
+   and the pass-through are built: `runner.spectators_supported` /
+   `drop_unsupported_spectators` in the explore/seed/aggregate dispatchers).
+   Still open: key quest results
    and anchors by `footing.arrangement_hash`; show dilute and dense rows side
    by side; refuse pooling across footings (the engine's
    `aggregate_partials` refuses mixed footings already). The coverage scan

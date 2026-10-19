@@ -142,6 +142,9 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     except (KeyError, TypeError, ValueError) as exc:
         ctx.record_failure(f"autocatpath_aggregate: malformed params ({exc})")
         return
+    from precis_pathway import runner as _runner
+
+    config = _runner.drop_unsupported_spectators(config)
     force_backend = params.get("force_backend")
 
     # The dispatch worker stamps `dispatched_from_todo` = the parent todo's

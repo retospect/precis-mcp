@@ -1405,6 +1405,33 @@ def coverage_mixtures_supported() -> bool:
     return "mixtures" in {f.name for f in dataclasses.fields(CoverageConfig)}
 
 
+def spectators_supported() -> bool:
+    """Whether the installed engine's ``Config`` takes ``spectators`` — the
+    background adsorbate layer (autocatpath 0.31.0, catpath PR #8; gr496903).
+    Feature-detected on the dataclass fields like
+    :func:`coverage_mixtures_supported`: an older engine's
+    ``Config.from_dict`` refuses the unknown key."""
+    import dataclasses
+
+    return "spectators" in {f.name for f in dataclasses.fields(Config)}
+
+
+def drop_unsupported_spectators(config: dict[str, Any]) -> dict[str, Any]:
+    """``config`` as the installed engine can take it: unchanged when it
+    supports ``spectators`` (or none is set), else a copy without the key
+    and a logged warning so the dilute run is never mistaken for a dense
+    one. The dispatchers call this before the config reaches the engine."""
+    if "spectators" not in config or spectators_supported():
+        return config
+    log.warning(
+        "autocatpath engine %s has no Config.spectators; running %r without "
+        "the spectator layer",
+        __version__,
+        config.get("name", "?"),
+    )
+    return {k: v for k, v in config.items() if k != "spectators"}
+
+
 def coverage_seed_supported() -> bool:
     """Whether the installed engine's scan takes ``seed`` (gr492112) —
     feature-detected on ``scan``'s signature, the keyword

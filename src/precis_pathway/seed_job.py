@@ -174,6 +174,9 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     except (KeyError, TypeError, ValueError) as exc:
         ctx.record_failure(f"autocatpath_seed: malformed params ({exc})")
         return
+    from precis_pathway import runner as _runner
+
+    config = _runner.drop_unsupported_spectators(config)
     force_backend = params.get("force_backend")
     slab_extxyz = params.get("slab_extxyz")
     # Kill the compute at its OWN declared wall budget (default 5400s). The
