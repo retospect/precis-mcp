@@ -50,6 +50,26 @@ review, the full gate for any `safe_fetch.py` change (`scripts/qgo-guard`),
 and `tests/test_safe_fetch.py` / `tests/test_safe_fetch_fallback.py`. There
 is no static ban on raw `httpx.Client` in new code; reviewers check for it.
 
+## Outbound calls are polite
+
+Every outbound HTTP call to a third party goes through the politeness core in
+`utils/http.py`: `with_backoff` / `call_with_backoff` (one limiter token per
+attempt, full jitter, `Retry-After` parks the limiter row, 401/403 fatal, a
+breaker per service) with an entry in `POLICIES` and `polite_user_agent()`.
+The wrappers `polite_send` (supply vendors), `polite_fetch` (chem resolvers),
+`paced_requests` (library `requests` sessions) and `external_retry` count too.
+`safe_get` / `safe_stream` only guard SSRF; the call around them still has to
+be polite. A new host with no limiter row auto-seeds `host:<netloc>`; add a
+named row (migration) when the provider publishes a rate. Never spoof a
+browser User-Agent.
+
+Enforced by `tests/test_outbound_polite_ratchet.py`: an AST walk over `src/`
+that fails on any httpx/requests/urllib/aiohttp call, or `http_client()`, whose
+enclosing function does not use the core. Its `_ALLOWLIST` holds only
+cluster-internal or operator-configured endpoints (embedder, llm serving,
+capability probe, readyz, ASKCOS, deadman, health digest, key probes), each
+with a one-line reason. Fix the call site; do not widen the allowlist.
+
 **`uv` for everything.** Dependencies resolve from `uv.lock`; bare `pip`,
 `pytest`, `mypy` or a host `python` use an unpinned environment and report
 phantom failures (the torch-free host lacks `marker`, `sympy`, ...). Tests

@@ -96,3 +96,8 @@ puts dedupe on an active key). `edit`/`delete`/`tag`/`link` and any other
 fault.
 A fault that persists surfaces as `Upstream` saying it was retried N times.
 Handlers do not retry on their own for these faults.
+
+Calls a handler makes to an outside HTTP service go through
+`utils/http.py::with_backoff` / `call_with_backoff` (limiter, jitter,
+`Retry-After`, breaker); a 429 is `RateLimited`, never "not found". See
+[Outbound calls are polite](invariants.md#outbound-calls-are-polite).

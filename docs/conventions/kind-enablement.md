@@ -65,6 +65,10 @@ credentials this way, so the kind is hidden only where the vault can't supply
 them — its `PRECIS_PATENT_RAW_ROOT` is a config-defaulted path, not a gate
 (the capability-universalization dropped the incidental env gates).
 
+A kind that calls an outside service sends every request through the
+politeness core (`utils/http.py::with_backoff` plus a `POLICIES` entry); see
+[Outbound calls are polite](invariants.md#outbound-calls-are-polite).
+
 ## Anti-pattern: inline boot-site gating
 
 ```python
