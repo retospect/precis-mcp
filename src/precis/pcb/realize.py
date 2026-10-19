@@ -1367,17 +1367,10 @@ def _resolve_route_end(
     ``layers=`` set refuses unconditionally)."""
     if native_layer in allowed_set:
         # A drilled primary pad's OTHER-layer landings (kind
-        # "pad_through", `_sibling_pad_terminals_by_pin`) exist for the
-        # locked case below only: offered as extra seeds when the native
-        # pad is already routable they changed every through-hole board's
-        # search (Nano USB-PD 38 -> 28/64, a dogfood I2C track ending on a
-        # header pad's B.Cu landing the test's own copper model does not
-        # carry), so they are dropped here and the search is unchanged.
-        return (
-            native_point,
-            native_layer,
-            tuple(c for c in candidates if c[0].kind != "pad_through"),
-        )
+        # "pad_through", `_sibling_pad_terminals_by_pin`) stay as extra
+        # seeds: the pad is copper on every layer, so a route may leave
+        # it from the far side with no via beside it (gr489175).
+        return native_point, native_layer, candidates
     for i, (term, layer) in enumerate(candidates):
         if layer in allowed_set:
             return term.point, layer, candidates[:i] + candidates[i + 1 :]
@@ -7441,10 +7434,9 @@ def _sibling_pad_terminals_by_pin(
     # of failing `layer_lock`. Found by the synthetic QFP fanout family
     # (tests/fixtures/pcb/qfp_fanout.py, 2026-10-13): through-hole sources
     # on a top-mounted part with an In2.Cu+B.Cu class routed 0/16 while
-    # the same board with F.Cu allowed routed 16/16. Kind "pad_through"
-    # so `_resolve_route_end` uses them ONLY when the native layer is
-    # locked out — as plain extra seeds they moved every through-hole
-    # board's routing (see that function).
+    # the same board with F.Cu allowed routed 16/16. With the native
+    # layer allowed they stay extra seeds, so a route may leave the pad
+    # from its far side with no via beside it (gr489175).
     if signal_layers and footprints:
         geoms = pad_geometry(ir, footprints)
         for pin in range(ir.n_pins):

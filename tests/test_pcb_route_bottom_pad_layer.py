@@ -247,3 +247,26 @@ def test_an_smd_blocker_pad_only_claims_its_own_layer_so_b_cu_passes_underneath(
         f"pad, not detour around it (there is no room to, in this strip): "
         f"tracks={result.tracks!r}"
     )
+
+
+def test_a_drilled_pad_connects_on_its_far_layer_with_no_via():
+    """gr489175: a drilled pad is copper on EVERY layer, so a route may
+    leave it from the far side. U1 is top-mounted but drilled; U2 sits on
+    B.Cu; BLOCKER's SMD pad walls off F.Cu across the strip. The route
+    must start on U1's own B.Cu landing and reach U2 on B.Cu with no via:
+    a router that seeds U1 on F.Cu only has to drop a via beside the pad
+    to get under the wall."""
+    ir = from_graph(_wall_graph(), stackup=DEFAULT_STACKUP, outline=_WALL_OUTLINE)
+    u1 = _blocker_footprint(drilled=True)
+    u1["pads"][0].update(w=1.6, h=1.6)
+    result = realize(
+        ir,
+        config=RealizeConfig(router="maze"),
+        footprints={"U1": u1, "BLOCKER": _blocker_footprint(drilled=False)},
+    )
+    assert result.unrouted == (), result.unrouted_reasons
+    assert result.vias == (), (
+        f"U1's drilled pad is already on B.Cu: no via is needed to reach "
+        f"U2 under the F.Cu wall, got vias={result.vias!r}"
+    )
+    assert all(t.layer == _BOTTOM_LAYER for t in result.tracks), result.tracks

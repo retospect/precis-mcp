@@ -58,23 +58,29 @@ SEED = 1
 #: Tightened 2026-10-17 (gr495393/gr495394): silk_missing 54 -> 51,
 #: silk_edge_clearance 3 -> 0 errors and 1 -> 0 warns,
 #: outline_containment 2 -> 0.
+#: Loosened by Reto 2026-10-19 ~09:0xZ, gr489175 (drilled pads route
+#: from every copper layer; the rip-up order shifts and one net is lost):
+#: connectivity 10 -> 13, unrouted 37 -> 38, board_edge_clearance warns
+#: 3 -> 4, total errors 98 -> 101. The same run tightens silk_missing
+#: 51 -> 50 and clearance warns 11 -> 10.
 BASELINE_DRC_ERRORS_BY_RULE: dict[str, int] = {
-    "connectivity": 10,
-    "unrouted": 37,
-    "silk_missing": 51,
+    "connectivity": 13,
+    "unrouted": 38,
+    "silk_missing": 50,
 }
 BASELINE_DRC_WARNS_BY_RULE: dict[str, int] = {
-    "clearance": 11,
-    "board_edge_clearance": 3,
+    "clearance": 10,
+    "board_edge_clearance": 4,
 }
 BASELINE_DRC_ERRORS = sum(BASELINE_DRC_ERRORS_BY_RULE.values())
 BASELINE_DRC_WARNS = sum(BASELINE_DRC_WARNS_BY_RULE.values())
 
 #: Route status over nets with fanout >= 2 (the honest denominator —
 #: single-member nets trivially "route" and are never the question).
-#: Floor: at least 35 of 72 nets realized, at most 37 failed.
-MIN_ROUTED = 35
-MAX_FAILED = 37
+#: Floor: at least 34 of 72 nets realized, at most 38 failed.
+#: Reto 2026-10-19 ~09:0xZ, gr489175: 35 -> 34 routed, 37 -> 38 failed.
+MIN_ROUTED = 34
+MAX_FAILED = 38
 
 _DRC_HEAD_RE = re.compile(r"— (\d+) error\(s\), (\d+) warn\(s\)")
 

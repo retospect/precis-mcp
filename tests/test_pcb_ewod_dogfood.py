@@ -867,7 +867,8 @@ def test_dogfood_route_op_routes_real_geometry_and_reports_the_escape_gap(pcb, s
     # what a layer-blind router that claims every pad on F.Cu regardless
     # of mount side produces for a bottom-mounted part (U_TEMP's I2C
     # pads). So each candidate target below carries the LAYER(S) it is
-    # real copper on (a pad: its one `pads_for_ir` layer; a fixed/routed
+    # real copper on (an SMD pad: its one `pads_for_ir` layer; a drilled
+    # pad: every layer; a fixed/routed
     # via: every layer its span covers), and a track endpoint only counts
     # as reaching a target when their layer sets overlap — either the
     # track's OWN layer, or a layer its own capping via (this net's routed
@@ -879,12 +880,19 @@ def test_dogfood_route_op_routes_real_geometry_and_reports_the_escape_gap(pcb, s
         lo, hi = min(lo, hi), max(lo, hi)
         return frozenset(layer_names[lo : hi + 1])
 
+    # A drilled pad is plated copper on every layer (gr489175), the same
+    # "drill" key drc.py reads; an SMD pad is copper on its one layer.
     pads_by_net: dict[str, list[tuple[float, float, frozenset[str]]]] = {}
     for pad in pcb._drc_pads(ref.id, layer_names):
         net = str(pad.get("net") or "")
         if net:
+            pad_layers = (
+                frozenset(layer_names)
+                if pad.get("drill")
+                else frozenset({str(pad["layer"])})
+            )
             pads_by_net.setdefault(net, []).append(
-                (float(pad["x"]), float(pad["y"]), frozenset({str(pad["layer"])}))
+                (float(pad["x"]), float(pad["y"]), pad_layers)
             )
     fixed_by_net: dict[str, list[tuple[float, float, frozenset[str]]]] = {}
     for row in store.pcb_fixed_copper_list(int(design["board"]["board_id"])):

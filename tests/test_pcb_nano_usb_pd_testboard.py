@@ -68,13 +68,19 @@ SEED = 1
 #: an edge gap for J_USB, labels outside outlines on a 4x16 ladder took
 #: silk_missing 36 -> 35, silk_edge_clearance 1 -> 0 errors and 3 -> 1
 #: warns, outline_containment 1 -> 0.
+#:
+#: Loosened by Reto 2026-10-19 ~07:3xZ, gr489175 (a drilled pad's
+#: far-layer landings stay route seeds): seed 1 loses one net (D11
+#: J_ISP.4|U1.PB3, a congestion race), so unrouted 29 -> 30, clearance
+#: warns 9 -> 10, routed 35 -> 34 and failed 29 -> 30 below; the same
+#: run tightens silk_missing 35 -> 32.
 BASELINE_DRC_ERRORS_BY_RULE: dict[str, int] = {
     "connectivity": 11,
-    "unrouted": 29,
-    "silk_missing": 35,
+    "unrouted": 30,
+    "silk_missing": 32,
 }
 BASELINE_DRC_WARNS_BY_RULE: dict[str, int] = {
-    "clearance": 9,
+    "clearance": 10,
     "board_edge_clearance": 2,
     "silk_edge_clearance": 1,
 }
@@ -86,8 +92,9 @@ BASELINE_DRC_WARNS = sum(BASELINE_DRC_WARNS_BY_RULE.values())
 #: 35 of 64 nets realized; the 29 failures are congestion-dominated
 #: (the route job's failure reasons: congestion, same-layer-crossing,
 #: width) — the residue the anneal feedback loop exists to close.
-BASELINE_ROUTED = 35
-BASELINE_FAILED = 29
+#: Reto 2026-10-19 ~07:3xZ, gr489175: 35 -> 34 routed, 29 -> 30 failed.
+BASELINE_ROUTED = 34
+BASELINE_FAILED = 30
 
 #: gr489909: routed nets (fanout >= 2) are judged across placements, not
 #: on ``SEED``'s draw alone. Reto 2026-10-18: the floor is the MEAN over
@@ -99,10 +106,13 @@ BASELINE_FAILED = 29
 #: seeds 2 and 4 route: they had left C_B5 / C_AREF 0.041 mm past a
 #: rounded corner and the route job refused the placement. Seeds 1-8 then
 #: route 35/31/39/34/36/28/35/37: the six old seeds' mean rose to 35.0,
-#: and over all eight it is 34.375.
+#: and over all eight it is 34.375. gr489175 (a drilled pad's far-layer
+#: landings stay route seeds) moved seeds 1-8 to 34/33/43/34/31/33/31/37,
+#: mean 34.5 and per-seed min 31, measured 2026-10-19 on main b1a055f14
+#: and again on 234fa2d3d.
 NANO_SEEDS: tuple[int, ...] = (1, 2, 3, 4, 5, 6, 7, 8)
-NANO_MEAN_ROUTED_FLOOR = 34.375
-NANO_SEED_ROUTED_MIN = 28
+NANO_MEAN_ROUTED_FLOOR = 34.5
+NANO_SEED_ROUTED_MIN = 31
 
 _DRC_HEAD_RE = re.compile(r"— (\d+) error\(s\), (\d+) warn\(s\)")
 
