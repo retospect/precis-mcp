@@ -360,16 +360,6 @@ _KNOWN_UNWIRED: dict[str, str] = {
         "set for the pcb_review pass (pcb-datasheet-review items 7-8), "
         "which is not built; tests/test_datasheet_facts.py pins it"
     ),
-    "src/precis/pcb/field.py::check_gradient": (
-        "pcb-unified-place-route slice 0: the gradient-check harness every "
-        "term's test uses; tests/test_pcb_field.py pins it. The field "
-        "descent is wired into optimize() in slice 1, which drops this entry"
-    ),
-    "src/precis/pcb/field.py::Layout.pack": (
-        "pcb-unified-place-route slice 0: the initial state vector for the "
-        "slice-1 descent; tests/test_pcb_field.py pins it. Slice 1 drops "
-        "this entry"
-    ),
 }
 
 

@@ -23,13 +23,19 @@ opposite sides do not interact.
 
 from __future__ import annotations
 
+import logging
+import math
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
+from scipy.optimize import minimize
 from shapely.geometry import Point, Polygon
 from shapely.ops import nearest_points
 
+_LOG = logging.getLogger(__name__)
 _Z = np.ndarray  # packed state, shape (n_vars,)
 
 
@@ -103,6 +109,18 @@ class Layout:
         th[self.free_rot] = z[2 * a : 2 * a + self._nrot]
         vias = z[2 * a + self._nrot :].reshape(-1, 2).copy()
         return x, y, th, vias
+
+    def pack_from(self, x: np.ndarray, y: np.ndarray, th: np.ndarray) -> _Z:
+        """Full per-part poses → packed state (vias stay at their base)."""
+        b = self.board
+        return np.concatenate(
+            [
+                x[self.free_xy],
+                y[self.free_xy],
+                th[self.free_rot],
+                np.asarray(b.vias0, dtype=float).reshape(-1),
+            ]
+        ).astype(float)
 
     def scatter(self, gx: np.ndarray, gy: np.ndarray, gth: np.ndarray) -> _Z:
         """Per-part full gradients → packed gradient (vias get zero)."""
@@ -212,12 +230,114 @@ class CourtyardClearance(Term):
         self.c = float(clearance)
         self.beta = float(beta)
 
-    def _signed(self, pa: Polygon, pb: Polygon) -> tuple[float, np.ndarray, np.ndarray]:
-        """``(sd, witness on A, witness on B)`` in world coordinates."""
+    @staticmethod
+    def _convex_ring(ring: np.ndarray) -> np.ndarray | None:
+        """``ring`` as a CCW open vertex array when it is convex, else None."""
+        v = ring[:-1] if len(ring) > 1 and np.allclose(ring[0], ring[-1]) else ring
+        if len(v) < 3:
+            return None
+        e = np.roll(v, -1, axis=0) - v
+        cross = (
+            e[:, 0] * np.roll(e, -1, axis=0)[:, 1]
+            - e[:, 1] * np.roll(e, -1, axis=0)[:, 0]
+        )
+        if np.all(cross >= -1e-12):
+            return v
+        if np.all(cross <= 1e-12):
+            return v[::-1]
+        return None
+
+    def _sat(
+        self, va: np.ndarray, vb: np.ndarray, ta: np.ndarray, tb: np.ndarray
+    ) -> tuple[float, np.ndarray, np.ndarray] | None:
+        """Penetration of two overlapping CONVEX rings by SAT: ``sd = max`` over
+        every outward edge normal ``n`` of ``min_q n·(q − p_edge)`` (≤ 0 when
+        they overlap). Returns ``(sd, grad_a, grad_b)`` — ``∂sd`` wrt
+        ``(x, y, θ)`` of each body, including the rotation of the normal when
+        the axis belongs to that body (a plus-sign crossing has no vertex
+        inside the other, so the vertex-depth rule gives it nothing)."""
+        best: tuple[float, np.ndarray, np.ndarray, np.ndarray, int] | None = None
+        for owner, (vo, vq) in enumerate(((va, vb), (vb, va))):
+            e = np.roll(vo, -1, axis=0) - vo
+            n = np.stack([e[:, 1], -e[:, 0]], axis=1)
+            n /= np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-300)
+            proj = vq[None, :, :] - vo[:, None, :]  # (edges, q, 2)
+            s = np.einsum("kqd,kd->kq", proj, n)
+            qi = s.argmin(axis=1)
+            sk = s[np.arange(len(n)), qi]
+            k = int(sk.argmax())
+            if best is None or sk[k] > best[0]:
+                best = (float(sk[k]), n[k], vo[k], vq[qi[k]], owner)
+        assert best is not None
+        sd, n, p, q, owner = best
+        t_o, t_q = (ta, tb) if owner == 0 else (tb, ta)
+
+        def perp(r: np.ndarray) -> np.ndarray:
+            return np.array([-r[1], r[0]])
+
+        g_q = np.array([n[0], n[1], float(n @ perp(q - t_q))])
+        g_o = np.array([-n[0], -n[1], float(perp(n) @ (q - p) - n @ perp(p - t_o))])
+        return (sd, g_o, g_q) if owner == 0 else (sd, g_q, g_o)
+
+    def _signed(
+        self,
+        pa: Polygon,
+        pb: Polygon,
+        ra: np.ndarray,
+        rb: np.ndarray,
+        ta: np.ndarray,
+        tb: np.ndarray,
+    ) -> tuple[float, np.ndarray, np.ndarray]:
+        """``(sd, ∂sd/∂pose_a, ∂sd/∂pose_b)``; each gradient is ``(x, y, θ)``."""
+
+        def point_pair(sign: float, a: np.ndarray, b: np.ndarray):
+            diff = b - a
+            nrm = float(np.linalg.norm(diff))
+            if nrm < 1e-12:
+                z3 = np.zeros(3)
+                return z3, z3
+            u = sign * diff / nrm  # ∂sd/∂b; ∂sd/∂a = −u
+
+            def pose_grad(g: np.ndarray, pt: np.ndarray, t: np.ndarray) -> np.ndarray:
+                return np.array(
+                    [g[0], g[1], -g[0] * (pt[1] - t[1]) + g[1] * (pt[0] - t[0])]
+                )
+
+            return pose_grad(-u, a, ta), pose_grad(u, b, tb)
+
         if not pa.intersects(pb):
-            qa, qb = nearest_points(pa, pb)
-            a, b = np.array(qa.coords[0]), np.array(qb.coords[0])
-            return float(np.linalg.norm(a - b)), a, b
+            # The distance is attained at a VERTEX of one polygon and the
+            # nearest boundary point of the other. Parallel facing edges (every
+            # axis-aligned courtyard pair) make shapely's witness an arbitrary
+            # point on the overlap, which has the wrong rotation derivative, so
+            # witness the vertices; ties share the gradient (a subgradient).
+            cands: list[tuple[float, np.ndarray, np.ndarray, bool]] = []
+            for src, dst, flip in ((pa, pb, False), (pb, pa, True)):
+                for v in list(src.exterior.coords)[:-1]:
+                    pt = Point(v)
+                    qv = nearest_points(pt, dst)[1]
+                    cands.append(
+                        (
+                            float(pt.distance(dst)),
+                            np.array(v),
+                            np.array(qv.coords[0]),
+                            flip,
+                        )
+                    )
+            dmin = min(c[0] for c in cands)
+            tied = [c for c in cands if c[0] <= dmin + 1e-9]
+            ga, gb = np.zeros(3), np.zeros(3)
+            for _d, vv, qq, flip in tied:
+                pa_pt, pb_pt = (qq, vv) if flip else (vv, qq)
+                pga, pgb = point_pair(1.0, pa_pt, pb_pt)
+                ga += pga / len(tied)
+                gb += pgb / len(tied)
+            return dmin, ga, gb
+        cva, cvb = self._convex_ring(ra), self._convex_ring(rb)
+        if cva is not None and cvb is not None:
+            res = self._sat(cva, cvb, ta, tb)
+            if res is not None:
+                return res
         depth = 0.0
         wa: np.ndarray | None = None
         wb: np.ndarray | None = None
@@ -233,10 +353,11 @@ class CourtyardClearance(Term):
                     vv, qq = np.array(v), np.array(q.coords[0])
                     depth = d
                     wa, wb = (qq, vv) if flip else (vv, qq)
-        if wa is None or wb is None:  # edges cross, no vertex inside: zero depth
-            c = np.array(pa.intersection(pb).centroid.coords[0])
-            return 0.0, c, c
-        return -depth, wa, wb
+        if wa is None or wb is None:
+            # non-convex, edges cross, no vertex inside: no depth signal
+            return 0.0, np.zeros(3), np.zeros(3)
+        ga, gb = point_pair(-1.0, wa, wb)
+        return -depth, ga, gb
 
     def value_grad(self, z: _Z) -> tuple[float, _Z]:
         lay = self.layout
@@ -258,23 +379,18 @@ class CourtyardClearance(Term):
                 gap = np.maximum(lo[i] - hi[j], lo[j] - hi[i]).max()
                 if gap > reach:
                     continue
-                sd, a, b = self._signed(polys[i], polys[j])
+                ti, tj = np.array([x[i], y[i]]), np.array([x[j], y[j]])
+                sd, gi, gj = self._signed(
+                    polys[i], polys[j], rings[i], rings[j], ti, tj
+                )
                 u = self.c - sd
                 sp = _softplus(u, self.beta)
                 total += sp * sp
                 dE_dsd = -2.0 * sp * _sigmoid(u, self.beta)
-                diff = b - a
-                nrm = float(np.linalg.norm(diff))
-                if nrm < 1e-12:
-                    continue
-                unit = diff / nrm
-                # sd = ±|b−a|: gradient wrt b is sign·unit, wrt a is −sign·unit
-                sign = 1.0 if sd >= 0 else -1.0
-                gb = dE_dsd * sign * unit
-                for idx, pt, g in ((i, a, -gb), (j, b, gb)):
-                    gx[idx] += g[0]
-                    gy[idx] += g[1]
-                    gth[idx] += -g[0] * (pt[1] - y[idx]) + g[1] * (pt[0] - x[idx])
+                for idx, g in ((i, gi), (j, gj)):
+                    gx[idx] += dE_dsd * g[0]
+                    gy[idx] += dE_dsd * g[1]
+                    gth[idx] += dE_dsd * g[2]
         return total, lay.scatter(gx, gy, gth)
 
 
@@ -334,3 +450,289 @@ def check_gradient(
         fd = (f(z + e)[0] - f(z - e)[0]) / (2 * h)
         worst = max(worst, abs(fd - g[k]) / max(abs(g[k]), abs(fd), 1e-6))
     return GradCheck(dot_err, orders, worst)
+
+
+class BoardEdge(Term):
+    """T5 (slice 1): ``Σ_i softplus_β(lo − c_i)² + softplus_β(c_i − hi)²`` on
+    part CENTRES against the engine's placement rectangle — the same box
+    ``_placement_is_legal`` clamps centres to. The exact outline test stays in
+    the legality gate; this term only pulls strays inward. Smooth; no ∂/∂θ."""
+
+    def __init__(
+        self,
+        layout: Layout,
+        lo: tuple[float, float],
+        hi: tuple[float, float],
+        beta: float = 8.0,
+    ):
+        super().__init__(layout)
+        self.lo, self.hi, self.beta = lo, hi, float(beta)
+
+    def value_grad(self, z: _Z) -> tuple[float, _Z]:
+        lay = self.layout
+        x, y, _th, _ = lay.unpack(z)
+        gx, gy = np.zeros_like(x), np.zeros_like(y)
+        total = 0.0
+        for c, g, lo, hi in (
+            (x, gx, self.lo[0], self.hi[0]),
+            (y, gy, self.lo[1], self.hi[1]),
+        ):
+            for u, sgn in ((lo - c, -1.0), (c - hi, 1.0)):
+                sp = np.logaddexp(0.0, self.beta * u) / self.beta
+                total += float((sp * sp).sum())
+                g += 2.0 * sp * 0.5 * (1.0 + np.tanh(0.5 * self.beta * u)) * sgn
+        return total, lay.scatter(gx, gy, np.zeros_like(x))
+
+
+class PadSpring(Term):
+    """T6 (slice 1): rubber bands, ``Σ k·softplus_β(|P − Q| − d₀)²`` over
+    ``(part i, pad a, part j, pad b, d₀)`` pairs — a decoupling cap's pad and
+    the IC pin it serves. One-sided: slack inside ``d₀``."""
+
+    def __init__(
+        self,
+        layout: Layout,
+        springs: Sequence[tuple[int, int, int, int, float]],
+        k: float = 1.0,
+        beta: float = 8.0,
+    ):
+        super().__init__(layout)
+        self.springs, self.k, self.beta = list(springs), float(k), float(beta)
+
+    def value_grad(self, z: _Z) -> tuple[float, _Z]:
+        lay = self.layout
+        x, y, th, _ = lay.unpack(z)
+        parts = lay.board.parts
+        gx, gy, gth = np.zeros_like(x), np.zeros_like(y), np.zeros_like(th)
+        total = 0.0
+        for i, a, j, b, d0 in self.springs:
+            p = _world(parts[i], parts[i].pads[a : a + 1], x[i], y[i], th[i])[0]
+            q = _world(parts[j], parts[j].pads[b : b + 1], x[j], y[j], th[j])[0]
+            diff = p - q
+            d = float(np.linalg.norm(diff))
+            if d < 1e-12:
+                continue
+            sp = _softplus(d - d0, self.beta)
+            total += self.k * sp * sp
+            g = 2.0 * self.k * sp * _sigmoid(d - d0, self.beta) * diff / d
+            for idx, pt, gg in ((i, p, g), (j, q, -g)):
+                gx[idx] += gg[0]
+                gy[idx] += gg[1]
+                gth[idx] += -gg[0] * (pt[1] - y[idx]) + gg[1] * (pt[0] - x[idx])
+        return total, lay.scatter(gx, gy, gth)
+
+
+# ── slice 1: placement polish on the engine's board ──────────────────────
+
+#: Net names that keep a tree term in the spec (supply/ground), not a T1 pull.
+_RAIL_RE = re.compile(
+    r"^(\+?\d+(\.\d+)?V\d*|[ADP]?GND\w*|V(SS|CC|DD|BUS|IN|OUT|BAT|REF)\w*)$", re.I
+)
+#: T6 rubber-band slack: a served decoupling pad within this of its pin is free.
+SUPPORT_D0_MM = 1.5
+#: λ_T4 ramp: start loose so wirelength can pull, end firm so overlaps resolve.
+LAMBDA_T4_RAMP = (0.25, 1.0, 4.0, 16.0)
+
+
+@dataclass(frozen=True)
+class PolishResult:
+    applied: bool
+    reason: str  # applied | unplaced | no_free_vars | no_gain | illegal | cost_worse | bad_gradient
+    e_before: float
+    e_after: float
+    moved: tuple[int, ...]
+
+    def summary(self) -> str:
+        return (
+            f"field_polish {self.reason}: E {self.e_before:.4f} -> "
+            f"{self.e_after:.4f}, {len(self.moved)} parts moved"
+        )
+
+
+def board_from_engine(
+    engine: Any,
+) -> tuple[FieldBoard, list[tuple[int, int, int, int, float]]] | None:
+    """The engine's board as a :class:`FieldBoard`; ``None`` if any part is
+    unplaced. Frozen (no variable): fixed axes, hard-align operands and rigid
+    group members. θ is the engine's clockwise-degree rotation negated into
+    radians; bottom-side pads are mirrored in x, courtyards are not (the
+    engine does not mirror them either)."""
+    from precis.pcb import support_groups as sg
+
+    ir = engine.ir
+    n = ir.n_instances
+    if not (np.isfinite(ir.inst_x).all() and np.isfinite(ir.inst_y).all()):
+        return None
+    hard_paired = {
+        inst
+        for a, b, spec in engine._measure_pairs
+        if spec.metric == "align" and spec.hard and spec.weight > 0.0
+        for inst in (a, b)
+        if inst >= 0
+    }
+    free_xy, free_rot = set(engine._movable_xy), set(engine._movable_rot)
+    pads_of: list[list[int]] = [[] for _ in range(n)]
+    for p in range(len(ir.pin_instance)):
+        pads_of[int(ir.pin_instance[p])].append(p)
+    slot = {p: k for ps in pads_of for k, p in enumerate(ps)}
+    parts = []
+    for i in range(n):
+        bottom = bool(ir.inst_bottom[i])
+        pads = np.array(
+            [
+                [(-1.0 if bottom else 1.0) * float(ir.pin_dx[p]), float(ir.pin_dy[p])]
+                for p in pads_of[i]
+            ]
+        ).reshape(-1, 2)
+        frozen = len(engine._rigid_members(i)) > 1 or i in hard_paired
+        parts.append(
+            Part(
+                pads=pads,
+                court=np.array(engine._keepout_poly[i], dtype=float).reshape(-1, 2),
+                side=int(bottom),
+                fixed_xy=frozen or i not in free_xy,
+                fixed_rot=frozen or i not in free_rot,
+            )
+        )
+    by_net: dict[int, list[tuple[int, int]]] = {}
+    for p in range(len(ir.pin_instance)):
+        net = int(ir.pin_net[p])
+        if net < 0:
+            continue
+        by_net.setdefault(net, []).append((int(ir.pin_instance[p]), slot[p]))
+    nets = tuple(
+        tuple(members)
+        for net, members in sorted(by_net.items())
+        if len({i for i, _ in members}) >= 2
+        and len(members) <= 12
+        and int(ir.net_plane_layers[net]) == 0
+        and not _RAIL_RE.match(str(ir.net_name[net]))
+    )
+    springs: list[tuple[int, int, int, int, float]] = []
+    for grp in sg.detect_support_groups(ir):
+        if grp.kind != "support_cap":
+            continue
+        for m, served in zip(grp.members, grp.served, strict=True):
+            for q in served:
+                mine = [p for p in pads_of[m] if ir.pin_net[p] == ir.pin_net[q]]
+                if mine:
+                    springs.append(
+                        (
+                            m,
+                            slot[mine[0]],
+                            int(ir.pin_instance[q]),
+                            slot[q],
+                            SUPPORT_D0_MM,
+                        )
+                    )
+    th0 = np.array(
+        [-math.radians(0.0 if math.isnan(float(r)) else float(r)) for r in ir.inst_rot]
+    )
+    board = FieldBoard(
+        parts=tuple(parts),
+        nets=nets,
+        x0=np.asarray(ir.inst_x, dtype=float).copy(),
+        y0=np.asarray(ir.inst_y, dtype=float).copy(),
+        th0=th0,
+    )
+    return board, springs
+
+
+def polish_placement(
+    engine: Any,
+    *,
+    max_iter: int = 60,
+    lambda_t4: Sequence[float] = LAMBDA_T4_RAMP,
+    gamma: float = 0.5,
+) -> PolishResult:
+    """Descend x, y, θ on T1 + T4 + T5 + T6 with a λ_T4 ramp, snap the moved
+    rotations to 90°, and accept ONLY if (a) the snapped pose has lower E at
+    the final weights, (b) ``_placement_is_legal`` accepts every move at once,
+    and (c) the engine's own ``total()`` does not rise. Otherwise the board is
+    left exactly as it was."""
+    from precis.pcb.ir import COURTYARD_CLEARANCE_MM
+    from precis.pcb.optimize import Move, MoveKind
+
+    ir = engine.ir
+    built = board_from_engine(engine)
+    if built is None:
+        return PolishResult(False, "unplaced", 0.0, 0.0, ())
+    board, springs = built
+    lay = Layout(board)
+    if lay.size == 0:
+        return PolishResult(False, "no_free_vars", 0.0, 0.0, ())
+    x0, y0, x1, y1 = engine._placement_bounds
+    t1 = ConnectivityPull(lay, gamma=gamma)
+    t4 = CourtyardClearance(lay, clearance=COURTYARD_CLEARANCE_MM)
+    t5 = BoardEdge(lay, (x0, y0), (x1, y1))
+    t6 = PadSpring(lay, springs)
+
+    def energy(l4: float) -> Energy:
+        return Energy(lay, [(1.0, t1), (l4, t4), (1.0, t5), (1.0, t6)])
+
+    final = energy(lambda_t4[-1])
+    z0 = lay.pack()
+    e0 = final.value_grad(z0)[0]
+    # A wrong analytic gradient silently wrecks a descent; refuse rather than
+    # move parts on it. Checked along x, y only: rotation of axis-aligned
+    # courtyards sits exactly on a kink (tied witness vertices), where a
+    # central difference and the one-sided derivative legitimately differ.
+    n_xy = 2 * int(lay.free_xy.sum())
+
+    def xy_only(w: _Z) -> tuple[float, _Z]:
+        zz = z0.copy()
+        zz[:n_xy] = w
+        v, g = final.value_grad(zz)
+        return v, g[:n_xy]
+
+    probe = check_gradient(
+        xy_only, z0[:n_xy], rng=np.random.default_rng(0), h=1e-5, n_fd=2
+    )
+    if not probe.dot_rel_err < 5e-2:
+        _LOG.warning("field_polish refused: gradient check failed (%s)", probe)
+        return PolishResult(False, "bad_gradient", e0, e0, ())
+    z = z0.copy()
+    for l4 in lambda_t4:
+        z = minimize(
+            energy(l4).value_grad,
+            z,
+            jac=True,
+            method="L-BFGS-B",
+            options={"maxiter": max_iter},
+        ).x
+    x, y, th, _ = lay.unpack(z)
+    rot = -np.degrees(th)
+    for k in np.flatnonzero(lay.free_rot):
+        if abs(th[k] - board.th0[k]) > 1e-6:
+            rot[k] = (round(rot[k] / 90.0) * 90.0) % 360.0
+        else:
+            rot[k] = -math.degrees(board.th0[k])
+        th[k] = -math.radians(rot[k])
+    e1 = final.value_grad(lay.pack_from(x, y, th))[0]
+    if not e1 < e0:
+        return PolishResult(False, "no_gain", e0, e1, ())
+    old: list[tuple[float, float, float]] = []
+    new: list[tuple[float, float, float]] = []
+    moved: list[int] = []
+    for i in range(ir.n_instances):
+        r_old = 0.0 if math.isnan(float(ir.inst_rot[i])) else float(ir.inst_rot[i])
+        r_new = float(rot[i]) if lay.free_rot[i] else r_old
+        pose_old = (float(ir.inst_x[i]), float(ir.inst_y[i]), r_old)
+        pose_new = (float(x[i]), float(y[i]), r_new)
+        if max(abs(a - b) for a, b in zip(pose_old, pose_new, strict=True)) > 1e-6:
+            moved.append(i)
+            old.append(pose_old)
+            new.append(pose_new)
+    if not moved:
+        return PolishResult(False, "no_gain", e0, e1, ())
+    proposals = [(i, p[0], p[1]) for i, p in zip(moved, new, strict=True)]
+    rotations = {i: p[2] for i, p in zip(moved, new, strict=True)}
+    if not engine._placement_is_legal(proposals, rotations=rotations):
+        return PolishResult(False, "illegal", e0, e1, tuple(moved))
+    before = engine.total()
+    move = Move(MoveKind.TRANSLATE, tuple(moved), tuple(old), tuple(new))
+    engine.apply_move(move)
+    if engine.total() > before + 1e-9:
+        engine.undo_move(move)
+        return PolishResult(False, "cost_worse", e0, e1, tuple(moved))
+    return PolishResult(True, "applied", e0, e1, tuple(moved))
