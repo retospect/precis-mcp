@@ -196,3 +196,67 @@ def test_octilinear_yardstick() -> None:
         0, ((0.0, 0.0, 0), (5.0, 0.0, 0), (5.0, 0.0, 3), (5.0, 4.0, 3)), 0.0
     )
     assert routeclean.path_length_and_bends(via_hop) == (9.0, 0)
+
+
+def _fanout_ir(sig_y: float | None, sig_x: float = 5.0) -> PcbIR:
+    """Two GND pins on a plane (each gets a fan-out drop via) and, when
+    ``sig_y`` is given, SIG running vertically through (``sig_x``, ``sig_y``)
+    — clear of G1's own pad, which sits 2.5 mm west of its drop via."""
+    instances: list[dict[str, Any]] = [
+        {"refdes": "G1", "x": 5.0, "y": 3.0},
+        {"refdes": "G2", "x": 25.0, "y": 12.0},
+    ]
+    nets: list[dict[str, Any]] = [
+        {
+            "name": "GND",
+            "net_class": "ground",
+            "domain": "electrical",
+            "members": [{"refdes": "G1", "pin": "1"}, {"refdes": "G2", "pin": "1"}],
+        }
+    ]
+    if sig_y is not None:
+        instances += [
+            {"refdes": "S1", "x": sig_x, "y": sig_y - 6.0},
+            {"refdes": "S2", "x": sig_x, "y": sig_y + 6.0},
+        ]
+        members = [{"refdes": "S1", "pin": "1"}, {"refdes": "S2", "pin": "1"}]
+        nets.append({"name": "SIG", "members": members})
+    outline = [[-10.0, -10.0], [40.0, -10.0], [40.0, 25.0], [-10.0, 25.0]]
+    ir = from_graph(
+        {"instances": instances, "nets": nets}, stackup=DEFAULT_STACKUP, outline=outline
+    )
+    ir.promote_plane(0, 1)  # GND onto In1.Cu
+    return ir
+
+
+def test_a_plane_fanout_via_that_blocks_a_track_is_moved() -> None:
+    """Reto 2026-10-18: any via may move. G1's drop via lands on SIG's
+    straight line; the clean-up bans that site, the fan-out takes its next
+    legal one, and SIG runs straighter."""
+    config = pcb_realize.RealizeConfig(router="maze", fab_caps=_CAPS)
+    bare = pcb_realize.realize(_fanout_ir(None), config=config)
+    (g1_via,) = [v for v in bare.vias if abs(v.x - 5.0) < 3.0 and abs(v.y - 3.0) < 3.0]
+
+    ir = _fanout_ir(g1_via.y, g1_via.x)
+    off_config = pcb_realize.RealizeConfig(
+        router="maze", fab_caps=_CAPS, route_cleanup=False
+    )
+    off = pcb_realize.realize(ir, config=off_config, cleanup_check=_drc)
+    on = pcb_realize.realize(ir, config=config, cleanup_check=_drc)
+    assert not off.unrouted and not on.unrouted
+    sig = _seg_of(ir, "SIG")
+
+    def bends(res: pcb_realize.RealizeResult) -> int:
+        track = next(t for t in res.tracks if t.seg_id == sig)
+        return max(0, len(track.segments) - 1)
+
+    assert bends(off) >= 2, "fixture must kink SIG around G1's drop via"
+    assert on.cleanup is not None and on.cleanup.kept >= 1
+    assert bends(on) < bends(off)
+    gnd = next(i for i, name in enumerate(ir.net_name) if name == "GND")
+    fan_off = [v for v in off.vias if v.net_id == gnd]
+    fan_on = [v for v in on.vias if v.net_id == gnd]
+    assert len(fan_on) == len(fan_off), "a fan-out move never adds or drops a via"
+    assert (g1_via.x, g1_via.y) not in {(v.x, v.y) for v in fan_on}
+    drc_off, drc_on = _drc(ir, off.tracks, off.vias), _drc(ir, on.tracks, on.vias)
+    assert all(n <= drc_off.get(k, 0) for k, n in drc_on.items()), (drc_off, drc_on)

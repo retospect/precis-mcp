@@ -26,7 +26,13 @@ its octilinear shortest distance — the 45-degree yardstick, since the
 router cannot beat it) and up to :data:`VIAS_PER_VICTIM` vias of other
 routed nets whose keep-out (via radius + clearance + victim half-width)
 meets the victim's straight chord or either octilinear dogleg. Vias of
-plane fan-outs, stitching and fixed copper never move. It rips both nets
+stitching and fixed copper never move. A plane fan-out via moves
+differently (Reto 2026-10-18: any via may move, only through-hole pads are
+fixed): only the victim is ripped and the fan-out re-runs with that via's
+site banned, so the pin takes its next legal site (the stub still feeds
+the pad, the drop still reaches the plane); the move must change exactly
+that one fan-out via, within :data:`FANOUT_MOVE_RADIUS_MM`, on the same layers,
+and leave the unrouted set unchanged. A signal-via move rips both nets
 whole (a net is the unit that moves, as in ``realize._negotiate``),
 victim first. The move is kept only if both nets route everything they
 routed before, every new via stays within :data:`MOVE_RADIUS_MM` of one
@@ -71,6 +77,10 @@ _ALIGN_MM = 1e-3
 VIAS_PER_VICTIM = 3
 #: A re-routed net's every new via lies within this of one of its old vias.
 MOVE_RADIUS_MM = 1.0
+#: A fan-out drop via sits on a discrete ring of sites around its pad
+#: (:func:`~precis.pcb.realize._drop_via_site`), a pad-derived reach apart,
+#: so its next site is farther than a routed via's 1 mm nudge.
+FANOUT_MOVE_RADIUS_MM = 5.0
 #: The smallest length change counted as an improvement.
 MIN_LENGTH_GAIN_MM = 0.01
 
@@ -170,7 +180,11 @@ def _candidates(
         if rank is not None:
             victims.append((-rank[0], -rank[1], seg_id))
     victims.sort()
-    movable = [v for v in vias if v.seg_id in stamped]
+    plane_segs = set(ctx.plane_ids)
+    # A plane fan-out via (its segment is a dog-bone stub, never in
+    # `stamped`) may move too: only fixed copper and through-hole pads are
+    # fixed. Fixed-copper vias are not in `vias` at all.
+    movable = [v for v in vias if v.seg_id in stamped or v.seg_id in plane_segs]
     for _excess, _bends, seg_id in victims:
         path = stamped[seg_id]
         net_id = int(ir.seg_net[seg_id])
@@ -248,11 +262,14 @@ def _trial(
     config: realize.RealizeConfig,
     stamped: Mapping[int, maze.RoutePath],
     victim_net: int,
-    via_net: int,
+    via_net: int | None,
+    banned: tuple[tuple[float, float], ...] = (),
 ) -> tuple[Outcome, dict[int, maze.RoutePath]] | None:
     """Replay the board with ``victim_net`` and ``via_net`` ripped and
-    re-routed in that order; ``None`` when a ripped segment fails."""
-    nets = (victim_net, via_net)
+    re-routed in that order; ``None`` when a ripped segment fails.
+    ``via_net=None`` is a fan-out move: only the victim is ripped and the
+    plane fan-out re-runs with ``banned`` drop-via sites skipped."""
+    nets = (victim_net,) if via_net is None else (victim_net, via_net)
     kept = {s: p for s, p in stamped.items() if int(ir.seg_net[s]) not in nets}
     ripped = [s for net in nets for s in stamped if int(ir.seg_net[s]) == net]
     grid = maze.OccupancyGrid(
@@ -279,10 +296,39 @@ def _trial(
         plane_served_pins=ctx.plane_served_pins,
         kept=kept,
         stamped=new_stamped,
+        banned_via_sites=banned,
     )
     if any(s not in new_stamped for s in ripped):
         return None
     return out, new_stamped
+
+
+def _fanout_move_is_legal(
+    plane_segs: set[int],
+    old_vias: list[realize.RealizedVia],
+    new_vias: list[realize.RealizedVia],
+    moved: realize.RealizedVia,
+) -> bool:
+    """Of the plane fan-out vias, exactly ``moved`` is gone and exactly one
+    new via of its net stands within :data:`FANOUT_MOVE_RADIUS_MM` of it, on
+    the same layers: the stub still reaches the pad and the drop still
+    reaches its plane."""
+
+    def key(v: realize.RealizedVia) -> tuple[int, float, float]:
+        return v.net_id, round(v.x, 3), round(v.y, 3)
+
+    old = {key(v): v for v in old_vias if v.seg_id in plane_segs}
+    new = {key(v): v for v in new_vias if v.seg_id in plane_segs}
+    gone = old.keys() - new.keys()
+    added = new.keys() - old.keys()
+    if gone != {key(moved)} or len(added) != 1:
+        return False
+    (fresh,) = (new[k] for k in added)
+    return (
+        fresh.net_id == moved.net_id
+        and (fresh.layer_lo, fresh.layer_hi) == (moved.layer_lo, moved.layer_hi)
+        and math.hypot(fresh.x - moved.x, fresh.y - moved.y) <= FANOUT_MOVE_RADIUS_MM
+    )
 
 
 def cleanup(
@@ -306,32 +352,58 @@ def cleanup(
     # nets ripped over the same kept copper re-route the same way. That
     # stays true after an accepted move (re-ripping the pair just accepted
     # reproduces it), so a pair is tried once per pass.
-    seen: set[tuple[int, int]] = set()
+    # A plane fan-out via is keyed by its site as well (one victim can
+    # dodge several), a signal via by net alone.
+    seen: set[tuple[int, int, float, float]] = set()
+    plane_segs = set(ctx.plane_ids)
     baseline_drc: Mapping[tuple[str, str], int] | None = None
     n_victims = sum(1 for p in stamped.values() if _is_victim(p) is not None)
     queue = list(_candidates(ir, ctx, stamped, outcome[1]))
     while tried < config.cleanup_max_moves:
-        pair: tuple[int, int] | None = None
+        pair: tuple[int, int, float, float] | None = None
+        blocker: realize.RealizedVia | None = None
         while queue:
             seg_id, via = queue.pop(0)
-            candidate = (int(ir.seg_net[seg_id]), via.net_id)
+            fanout = via.seg_id not in stamped
+            candidate = (
+                int(ir.seg_net[seg_id]),
+                via.net_id,
+                round(via.x, 3) if fanout else 0.0,
+                round(via.y, 3) if fanout else 0.0,
+            )
             if candidate not in seen:
                 pair = candidate
+                blocker = via
                 break
-        if pair is None:
+        if pair is None or blocker is None:
             break
         if time.monotonic() >= deadline:
             out_of_time = True
             break
         seen.add(pair)
         tried += 1
-        victim_net, via_net = pair
-        nets = {victim_net, via_net}
-        trial = _trial(ir, ctx, config, stamped, victim_net, via_net)
+        victim_net, via_net = pair[0], pair[1]
+        fan_move = blocker.seg_id not in stamped
+        nets = {victim_net} if fan_move else {victim_net, via_net}
+        trial = _trial(
+            ir,
+            ctx,
+            config,
+            stamped,
+            victim_net,
+            None if fan_move else via_net,
+            ((blocker.x, blocker.y),) if fan_move else (),
+        )
         if trial is None:
             continue
-        (t_tracks, t_vias, _unrouted, t_notes, _failed), t_stamped = trial
+        (t_tracks, t_vias, t_unrouted, t_notes, t_failed), t_stamped = trial
         if not _move_is_legal(ir, nets, stamped, t_stamped):
+            continue
+        if fan_move and (
+            sorted(t_unrouted) != sorted(outcome[2])
+            or sorted(t_failed) != sorted(outcome[4])
+            or not _fanout_move_is_legal(plane_segs, outcome[1], t_vias, blocker)
+        ):
             continue
         before = _score(ir, nets, stamped, outcome[1])
         after = _score(ir, nets, t_stamped, t_vias)

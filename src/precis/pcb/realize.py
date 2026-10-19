@@ -3194,6 +3194,7 @@ def _claim_static(
     fixed_copper: list[dict[str, Any]] | None,
     *,
     plane_served_pins: frozenset[int] = frozenset(),
+    banned_via_sites: tuple[Point, ...] = (),
 ) -> tuple[list[RealizedTrack], list[RealizedVia], list[int], list[int]]:
     """Everything a routing attempt claims before its first search: fixed
     copper, fiducial and mounting-hole keep-outs, pads, and the plane
@@ -3217,6 +3218,7 @@ def _claim_static(
         pad_geoms,
         ink_field=ink_field,
         served_pins=plane_served_pins,
+        banned_via_sites=banned_via_sites,
     )
     unrouted: list[int] = []
     # A pin with no legal drop leaves its net's segments unserved. Report
@@ -3694,6 +3696,7 @@ def _route_pass(
     plane_served_pins: frozenset[int] = frozenset(),
     kept: dict[int, maze.RoutePath] | None = None,
     stamped: dict[int, maze.RoutePath] | None = None,
+    banned_via_sites: tuple[Point, ...] = (),
 ) -> tuple[
     list[RealizedTrack],
     list[RealizedVia],
@@ -3760,6 +3763,7 @@ def _route_pass(
         ink_field,
         fixed_copper,
         plane_served_pins=plane_served_pins,
+        banned_via_sites=banned_via_sites,
     )
     island_notes: dict[int, str] = {}
 
@@ -4481,12 +4485,18 @@ def _plane_fanout(
     pad_geoms: list[PadGeom],
     ink_field: _InkField | None = None,
     served_pins: frozenset[int] = frozenset(),
+    banned_via_sites: tuple[Point, ...] = (),
 ) -> tuple[list[RealizedTrack], list[RealizedVia], list[int]]:
     """Connect every pin of a plane-promoted net DOWN to its plane.
 
     ``served_pins`` (:func:`_plane_served_pins`) are the pins authored
     fixed copper already carries onto a poured layer; they get no stub
     and no drop via here.
+
+    ``banned_via_sites`` (the route clean-up pass,
+    :mod:`precis.pcb.routeclean`) are drop-via sites the search must skip,
+    so the pin takes its next legal site instead; empty = the ordinary
+    search.
 
     Two passes (pcb-stackup-regions slice 1): every pin's site is found
     and reserved on the grid first, then each pin releases its own
@@ -4695,6 +4705,7 @@ def _plane_fanout(
                 pin.edge_clip,
                 ink_field=ink_field,
                 inside=pin.region_area,
+                banned_sites=banned_via_sites,
             )
             if site is not None:
                 return site, rules
@@ -4977,8 +4988,13 @@ def _drop_via_site(
     edge_clip: tuple[float, float, float, float] | None = None,
     ink_field: _InkField | None = None,
     inside: Any = None,
+    banned_sites: tuple[Point, ...] = (),
 ) -> Point | None:
     """Where this pin's drop via can legally sit, or ``None``.
+
+    ``banned_sites`` are skipped (within 1 µm), so the sweep lands on its
+    next legal candidate: the route clean-up pass moves a fan-out via off
+    a victim track's line this way.
 
     ``inside`` (a shapely polygon, pcb-stackup-regions slice 4) confines
     the via centre to the net's derived region, already shrunk by the via
@@ -5092,6 +5108,11 @@ def _drop_via_site(
         for offset in _DROP_SEARCH_OFFSETS:
             vx, vy = _OCTO_DIRS[(base + offset) % 8]
             site = (pad[0] + vx * reach, pad[1] + vy * reach)
+            if any(
+                abs(site[0] - bx) < 1e-3 and abs(site[1] - by) < 1e-3
+                for bx, by in banned_sites
+            ):
+                continue
             if edge_clip is not None and not (
                 edge_clip[0] <= site[0] <= edge_clip[2]
                 and edge_clip[1] <= site[1] <= edge_clip[3]
