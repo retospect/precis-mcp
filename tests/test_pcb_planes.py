@@ -349,3 +349,73 @@ def test_walled_in_plane_pin_is_rescued_by_a_routed_trace_at_fab_floor_width():
 
     model = pcb_session._routed_model(ir, res, footprints=None, fixed_copper=None)
     assert [i for i in net_islands(model) if i.net == "GND"] == []
+
+
+def test_plane_drop_stub_falls_back_to_fab_floor_width_between_close_neighbours():
+    """gr492108 comment 3: a 2.0mm class width is a trunk width. U2 sits
+    between two other-net pads 1.0mm above and below it, so a 2.0mm stub
+    cannot leave it, but a fab-floor stub straight out along +x can.
+    ``_plane_fanout`` must give U2 its drop itself (a DOGBONE stub, not the
+    post-route rescue's trace), at a width under the net's 2.0mm."""
+    import math
+
+    from precis.pcb import DEFAULT_STACKUP
+    from precis.pcb.capabilities import capability_for
+    from precis.pcb.ir import from_graph, pin_point
+    from precis.pcb.realize import RealizeConfig, realize
+
+    instances: list[dict[str, Any]] = [
+        {"refdes": "U1", "x": 12.0, "y": 0.0},
+        {"refdes": "U2", "x": 0.0, "y": 0.0},
+        {"refdes": "R1", "x": 0.0, "y": 1.0},
+        {"refdes": "R2", "x": 0.0, "y": -1.0},
+        {"refdes": "Q1", "x": -8.0, "y": 8.0},
+        {"refdes": "Q2", "x": -8.0, "y": -8.0},
+    ]
+    nets: list[dict[str, Any]] = [
+        {
+            "name": "GND",
+            "net_class": "ground",
+            "domain": "electrical",
+            "members": [{"refdes": "U1", "pin": "1"}, {"refdes": "U2", "pin": "1"}],
+        },
+        {
+            "name": "S1",
+            "members": [{"refdes": "R1", "pin": "1"}, {"refdes": "Q1", "pin": "1"}],
+        },
+        {
+            "name": "S2",
+            "members": [{"refdes": "R2", "pin": "1"}, {"refdes": "Q2", "pin": "1"}],
+        },
+    ]
+    outline = [[-15.0, -12.0], [20.0, -12.0], [20.0, 12.0], [-15.0, 12.0]]
+    ir = from_graph(
+        {"instances": instances, "nets": nets}, stackup=DEFAULT_STACKUP, outline=outline
+    )
+    ir.promote_plane(0, 1)  # In1.Cu
+    config = RealizeConfig(
+        router="maze",
+        fab_caps=capability_for("4layer"),
+        class_rules={"ground": {"track_width_mm": 2.0}},
+    )
+    res = realize(ir, config=config)
+
+    blocked = [r for r in res.unrouted_reasons if r.kind == "plane_drop_blocked"]
+    assert not blocked, [(r.message, r.pins) for r in blocked]
+    u2 = next(p for p in range(ir.n_pins) if int(ir.pin_instance[p]) == 1)
+    pt = pin_point(ir, u2)
+    assert pt is not None
+    stubs = [
+        t
+        for t in res.tracks
+        if t.net_id == 0
+        and t.is_dogbone
+        and math.hypot(
+            t.segments[0]["start"][0] - pt[0], t.segments[0]["start"][1] - pt[1]
+        )
+        < 1e-6
+    ]
+    assert len(stubs) == 1, [
+        (t.is_dogbone, t.width_mm) for t in res.tracks if t.net_id == 0
+    ]
+    assert stubs[0].width_mm < 2.0

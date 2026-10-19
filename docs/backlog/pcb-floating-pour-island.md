@@ -123,10 +123,11 @@ Not done, still open:
   taz15 + GND/3V3: 3V3 is 12 bare F.Cu pieces, the largest 5190 mm², with
   no spare unpoured layer for a jumper.
 - taz15 + GND/3V3 GND stays 5 components (F.Cu pads at (6.1, 94.6),
-  (19.0, 43.8), (16.0, 43.8), (9.7, 9.9), (54.2, 20.0)); nano V5 4 and GND 2
-  components (F.Cu pads; nearest same-net via 1.7–18 mm away). Not
-  diagnosed past "the fan-out reports no blocked pin and the pad is still
-  its own component".
+  (19.0, 43.8), (16.0, 43.8), (9.7, 9.9), (54.2, 20.0)); not re-measured
+  since the nano fix below. The nano pieces were fine-pitch pins whose drop
+  stub was drawn at the power trunk width and found no site (gr492108
+  comment 3); the fan-out now retries at the fab floor, and nano GND→In1 +
+  V5→In2 seed 1 is GND 7 → 1, V5 6 → 1 on main 2026-10-19.
 - Drop-on-unreachable: built 2026-10-17 with pcb-stackup-regions slice 4
   (g-stackup-plane, unlanded). `realize._drop_bare_islands` runs after the
   last stitch round and removes a piece only when no via, track, pad (any

@@ -121,7 +121,7 @@ import itertools
 import math
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import numpy as np
@@ -4550,6 +4550,16 @@ def _plane_fanout(
     ]
     pending: list[_FanoutPin] = []
     region_areas = _region_areas(ir, rules_by_net)
+    # A power class's current-sized width is a TRUNK width; the stub is one
+    # pin's tie to its plane. Drawn at 2.77 mm (nano GND) it cannot leave a
+    # 0.25 mm pad between neighbours 1 mm away, so every fine-pitch pin of
+    # the net was stranded before routing began and walled in by signal
+    # copper before the rescue ran (gr492108: nano GND's and V5's last
+    # pieces were exactly these pins). The fab floor is the fallback, as
+    # the rescue and the jumper already use it.
+    floor_width = resolve_net_rules(
+        "", layer_is_outer=True, fab_caps=config.fab_caps
+    ).track_width_mm
     for net_id, seg_id in sorted(seg_of_net.items()):
         # A net may now be poured on SEVERAL layers at once
         # (net_plane_layers is a bitmask). One drop via per pin still
@@ -4650,27 +4660,38 @@ def _plane_fanout(
                         _board_edge_min_mm(config) + (rules.via_dia_mm or 0.0) / 2.0,
                     ),
                     region_areas.get(net_id),
+                    replace(rules, track_width_mm=floor_width)
+                    if floor_width < rules.track_width_mm
+                    else None,
                 )
             )
 
     def site_for(
         pin: _FanoutPin, others: list[tuple[float, float, float]]
-    ) -> Point | None:
-        return _drop_via_site(
-            grid,
-            pin.point,
-            pin.direction,
-            pin.net_id,
-            pin.rules,
-            config,
-            range(pin.lo, pin.hi + 1),
-            pin.pad_layer,
-            pin.pad_radius,
-            placed_via_sites + others,
-            pin.edge_clip,
-            ink_field=ink_field,
-            inside=pin.region_area,
-        )
+    ) -> tuple[Point, NetRules] | None:
+        """The pin's drop site and the rules its stub is drawn with: the
+        net's own width first, then the fab floor."""
+        for rules in (pin.rules, pin.narrow_rules):
+            if rules is None:
+                continue
+            site = _drop_via_site(
+                grid,
+                pin.point,
+                pin.direction,
+                pin.net_id,
+                rules,
+                config,
+                range(pin.lo, pin.hi + 1),
+                pin.pad_layer,
+                pin.pad_radius,
+                placed_via_sites + others,
+                pin.edge_clip,
+                ink_field=ink_field,
+                inside=pin.region_area,
+            )
+            if site is not None:
+                return site, rules
+        return None
 
     # Pass 1 — reserve. Every pin's preferred site (stub and via) is held
     # on the grid under its own sentinel before any pin draws copper, the
@@ -4680,10 +4701,10 @@ def _plane_fanout(
     # also join the via-to-via spacing check, so two reservations are as
     # far apart as two real drop vias.
     token_base = int(ir.n_nets) + int(ir.n_pins) + _DROP_RESERVE_NET_OFFSET
-    held: dict[int, tuple[np.ndarray, tuple[float, float, float]]] = {}
+    held: dict[int, tuple[np.ndarray, tuple[float, float, float], NetRules]] = {}
 
-    def reserve(pin: _FanoutPin, site: Point) -> None:
-        assert pin.rules.via_dia_mm is not None
+    def reserve(pin: _FanoutPin, site: Point, rules: NetRules) -> None:
+        assert rules.via_dia_mm is not None
         token = token_base + pin.pid
         cells = [
             grid.reserve_disk(
@@ -4692,13 +4713,11 @@ def _plane_fanout(
                 site[1],
                 # `stamp_disk` adds the net's class-clearance extra; the
                 # hold covers what the pin will really claim.
-                grid.core_radius_mm(pin.rules.via_dia_mm) + grid.extra_mm(pin.net_id),
+                grid.core_radius_mm(rules.via_dia_mm) + grid.extra_mm(pin.net_id),
                 token,
             )
         ]
-        stub_r = grid.core_radius_mm(pin.rules.track_width_mm) + grid.extra_mm(
-            pin.net_id
-        )
+        stub_r = grid.core_radius_mm(rules.track_width_mm) + grid.extra_mm(pin.net_id)
         n = max(1, int(dist(pin.point, site) / (grid.spec.pitch / 2.0)))
         for k in range(1, n):
             cells.append(
@@ -4712,23 +4731,24 @@ def _plane_fanout(
             )
         held[pin.pid] = (
             np.concatenate(cells),
-            (site[0], site[1], pin.rules.via_dia_mm / 2.0),
+            (site[0], site[1], rules.via_dia_mm / 2.0),
+            rules,
         )
 
-    def release(pid: int) -> tuple[float, float, float] | None:
+    def release(pid: int) -> tuple[Point, NetRules] | None:
         entry = held.pop(pid, None)
         if entry is None:
             return None
         grid.release(entry[0], token_base + pid)
-        return entry[1]
+        return (entry[1][0], entry[1][1]), entry[2]
 
     def reserved_sites() -> list[tuple[float, float, float]]:
-        return [site for _cells, site in held.values()]
+        return [site for _cells, site, _rules in held.values()]
 
     for pin in pending:
-        site = site_for(pin, reserved_sites())
-        if site is not None:
-            reserve(pin, site)
+        found = site_for(pin, reserved_sites())
+        if found is not None:
+            reserve(pin, *found)
 
     # Pass 2 — place, releasing each pin's reservation just before its own
     # search. A pin the reservations starve gets one retry with every
@@ -4742,11 +4762,11 @@ def _plane_fanout(
             lifted = {q: release(q) for q in list(held)}
             stub_end = site_for(pin, [])
             if stub_end is not None:
-                _place_drop(pin, stub_end, grid, tracks, vias, placed_via_sites)
+                _place_drop(pin, *stub_end, grid, tracks, vias, placed_via_sites)
             for later in pending[i + 1 :]:
                 old = lifted.get(later.pid)
                 if old is not None:
-                    reserve(later, (old[0], old[1]))
+                    reserve(later, *old)
             if stub_end is None and not pin.pour_reaches_pad:
                 failed.append(pin.pid)
             continue
@@ -4754,7 +4774,7 @@ def _plane_fanout(
             if not pin.pour_reaches_pad:
                 failed.append(pin.pid)
             continue
-        _place_drop(pin, stub_end, grid, tracks, vias, placed_via_sites)
+        _place_drop(pin, *stub_end, grid, tracks, vias, placed_via_sites)
     return tracks, vias, failed
 
 
@@ -4785,6 +4805,9 @@ class _FanoutPin:
     #: The net's derived region shrunk by the via radius, or ``None``
     #: (:func:`_drop_via_site`'s ``inside``).
     region_area: Any = None
+    #: ``rules`` with the stub at the fab floor, tried when the net's own
+    #: width finds no site; ``None`` when the net is already at the floor.
+    narrow_rules: NetRules | None = None
 
 
 def _region_areas(ir: PcbIR, rules_by_net: dict[int, NetRules]) -> dict[int, Any]:
@@ -4803,13 +4826,14 @@ def _region_areas(ir: PcbIR, rules_by_net: dict[int, NetRules]) -> dict[int, Any
 def _place_drop(
     pin: _FanoutPin,
     stub_end: Point,
+    rules: NetRules,
     grid: maze.OccupancyGrid,
     tracks: list[RealizedTrack],
     vias: list[RealizedVia],
     placed_via_sites: list[tuple[float, float, float]],
 ) -> None:
-    """Draw and claim one pin's stub and drop via at ``stub_end``."""
-    rules = pin.rules
+    """Draw and claim one pin's stub and drop via at ``stub_end``, the stub
+    at ``rules``' width (:func:`_plane_fanout`'s ``site_for``)."""
     point, pad_layer, lo, hi = pin.point, pin.pad_layer, pin.lo, pin.hi
     tracks.append(
         RealizedTrack(
