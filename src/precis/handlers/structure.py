@@ -82,6 +82,7 @@ from precis.structure.importers import (
     bundle_index,
     catalysis_hub,
     get_adapter,
+    materials_project,
     mof,
 )
 from precis.structure.importers.cif import (
@@ -808,6 +809,9 @@ class StructureHandler(Handler):
             "config_id) on-demand hydrates a config from an "
             "external DB into a cited, read-only design "
             "(a repeat call by config_id is a cache hit, no refetch); "
+            "get(id='mp-<n>', args={'source':'materials-project'}) does the "
+            "same for a Materials Project bulk crystal (needs the "
+            "PRECIS_MP_API_KEY secret); "
             "link relates designs (rel='derived-from') or papers that "
             "motivated the design (rel='cites', note='rationale…', "
             "gr161577; surfaced in the TOC's Provenance: section); "
@@ -1312,6 +1316,8 @@ class StructureHandler(Handler):
             )
         if src is not None:
             query = q if q is not None else a.get("q")
+            if id is not None and str(id).strip() and not a.get("config_id"):
+                a = {**a, "config_id": str(id).strip()}
             return self._get_external(source=src, q=query, args=a)
         if id is None or (isinstance(id, str) and id.strip() in ("", "/")):
             if view in ("completion", "completion_digest"):
@@ -1482,7 +1488,8 @@ class StructureHandler(Handler):
             raise BadInput(
                 str(exc),
                 next="get(kind='structure', args={'source': 'catalysis-hub'|"
-                "'qmof'|'core-mof', 'config_id': '<id>'})",
+                "'qmof'|'core-mof', 'config_id': '<id>'}) or get(kind='structure', "
+                "id='mp-<n>', args={'source': 'materials-project'})",
             ) from exc
 
         config_id = args.get("config_id")
@@ -1497,10 +1504,12 @@ class StructureHandler(Handler):
 
         if source in mof.CIF_ADAPTERS:
             return self._get_bundle_record(source, config_id, adapter_fn)
+        if source == "materials-project":
+            return self._get_materials_project(adapter_fn, config_id)
         if source != "catalysis-hub":
             raise BadInput(
                 f"on-demand hydrate has no fetch layer wired for source={source!r} yet",
-                next="known sources: catalysis-hub, qmof, core-mof",
+                next="known sources: catalysis-hub, qmof, core-mof, materials-project",
             )
         filters = _resolve_catalysis_hub_filters(q, args)
         try:
@@ -1508,6 +1517,17 @@ class StructureHandler(Handler):
         except catalysis_hub.CatalysisHubUnsupported as exc:
             raise Unsupported(
                 str(exc), next="pip install --force-reinstall 'precis-mcp'"
+            ) from exc
+        except catalysis_hub.CatalysisHubAuthRequired as exc:
+            raise Unsupported(
+                str(exc),
+                next=(
+                    f"the {catalysis_hub.CATHUB_KEY_SECRET} secret is rejected "
+                    "— replace it on the /secrets page"
+                    if exc.keyed
+                    else f"set the {catalysis_hub.CATHUB_KEY_SECRET} secret "
+                    "(SUNCAT-issued key) on the /secrets page, then retry"
+                ),
             ) from exc
 
         if not raw_records:
@@ -1629,6 +1649,49 @@ class StructureHandler(Handler):
                 next="check the id (QMOF ids look like 'qmof-1a2b3c4')",
             )
         return raw
+
+    def _get_materials_project(self, adapter_fn: Any, config_id: object) -> Response:
+        """Hydrate one Materials Project material by ``mp-<n>`` (cache hit
+        already short-circuited by the caller)."""
+        material_id = str(config_id or "").strip()
+        if not materials_project.valid_material_id(material_id):
+            raise BadInput(
+                f"materials-project needs an mp-<digits> id, got {material_id!r}",
+                next="get(kind='structure', id='mp-149', "
+                "args={'source': 'materials-project'})",
+            )
+        try:
+            raw = materials_project.fetch_record(material_id)
+        except materials_project.MaterialsProjectKeyMissing as exc:
+            raise Unsupported(
+                str(exc),
+                next=f"set the {materials_project.MP_KEY_SECRET} secret "
+                "(free key from the Materials Project API page) on the "
+                "/secrets page, then retry",
+            ) from exc
+        except materials_project.MaterialsProjectAuthRejected as exc:
+            raise Unsupported(
+                str(exc),
+                next=f"replace the {materials_project.MP_KEY_SECRET} secret "
+                "on the /secrets page",
+            ) from exc
+        if raw is None:
+            return Response(
+                body=f"materials-project has no material {material_id!r}\n\n"
+                "Next: check the id on the Materials Project site."
+            )
+        try:
+            scene, run, ext_id = adapter_fn(raw)
+        except ValueError as exc:
+            raise BadInput(
+                str(exc),
+                next="pick another material (ordered structure with a "
+                "formation energy)",
+            ) from exc
+        ref_id = self.store.structure_import(scene, run, ext_id)
+        return self._render_hydrated(
+            [(ref_id, ext_id.dataset, ext_id.config_id, run.method)], cached=False
+        )
 
     def _render_hydrated(
         self,

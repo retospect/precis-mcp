@@ -19,9 +19,19 @@ open questions on 2026-10-02 (see Decided).
   `method` fingerprint keeps external energies from being compared naively
   against ours.
 - **Catalysis-Hub.** `catalysis_hub.py` (GraphQL) and `cathub_db.py`
-  (batch import, proven on PengRole2020.db) are built. They are parked
-  because every public channel now needs SUNCAT credentials (keyless
-  GraphQL returns 401). `structure-import.md` § bulk corpus.
+  (batch import, proven on PengRole2020.db) are built. The fetch sends the
+  `PRECIS_CATHUB_API_KEY` secret as `X-API-Key` when set and refuses a
+  401/403 with `next=`. Keyless status is unsettled: the 2026-10-18 probe
+  (one POST) never completed a TLS handshake from the dev machine, so it
+  returned no HTTP status. Re-probe once the host answers; if keyless
+  works, the key stays optional as built. Live use waits on Reto's SUNCAT
+  credentials. `structure-import.md` § bulk corpus.
+- **Materials Project.** `materials_project.py` adapter (bulk structure +
+  formation energy + optional `surface_properties`) and
+  `get(kind='structure', id='mp-<n>', args={'source': 'materials-project'})`,
+  key from `PRECIS_MP_API_KEY`. Tested on a hand-built fixture shaped like
+  the mp-api docs; verify the field names against one live record when the
+  key is provisioned.
 - **A pending source pick.** `structure-import.md` § bulk corpus has been
   waiting on Reto: the first open bulk source, OC20 or AQCat25. Decision
   `chemistry-3` below settles it.
@@ -50,11 +60,11 @@ anything is built.
 
 | Source | Content | Would feed | Access / catch |
 |---|---|---|---|
-| Catalysis-Hub | published adsorption/reaction energies + geometries | reference energies, slab seeds | adapter built; needs SUNCAT creds |
+| Catalysis-Hub | published adsorption/reaction energies + geometries | reference energies, slab seeds | adapter + key path built; needs SUNCAT creds |
 | OC20 / OC22 | ~1M+ adsorbate–slab relaxations (RPBE) | slab seeds beyond fcc111, screening priors | open (CC-BY), S3; **UMA's training set, so not an independent check on UMA** |
 | AQCat25 | spin-polarised adsorption set | seeds, magnetic-metal references | HF gated:auto; also near UMA's training data |
 | BEAST DB | GC-DFT, potential-dependent, includes NRR | independent reference for qu164903's CHE lever | licence/format unchecked |
-| Materials Project | bulk crystals, formation energies, surface energies, Pourbaix | bulk stability, non-fcc111 facets, Pourbaix check (catalysis-selectivity) | free API key; do not revive precis-dft's ingest |
+| Materials Project | bulk crystals, formation energies, surface energies, Pourbaix | bulk stability, non-fcc111 facets, Pourbaix check (catalysis-selectivity) | free API key; adapter built; screening use not built; do not revive precis-dft's ingest |
 | CoRE MOF (2019 / 2024) | ~14k / ~40k computation-ready experimental MOF CIFs | MOF structure seeds | open |
 | QMOF | ~20k MOFs with DFT-relaxed geometries and properties | MOF seeds with energies | open (CC-BY) |
 | ODAC23 / OpenDAC | DFT CO2/H2O adsorption in ~8k MOFs; UMA has an `odac` task head | MOF adsorption reference energies; an engine path for MOF adsorbates | open; same circularity caveat as OC20 for UMA |
@@ -107,7 +117,7 @@ The three uses:
 | QMOF | figshare doi:10.6084/m9.figshare.13147324; per-record mirror on MPContribs (`contribs-api.materialsproject.org`, project `qmof`) | CC-BY 4.0 per the QMOF README and MPContribs' CCA4 label; the figshare page itself is **unconfirmed** (connection refused 2026-10-18) | the figshare bundle → NAS index first (geometry + PBE-D3(BJ) energy, VASP); MPContribs per-record only when no index is configured and `PRECIS_MP_API_KEY` is set, geometry only |
 | ODAC23 | fairchem (arXiv 2311.00341), bulk LMDB | CC-BY 4.0 unconfirmed | step 2, not step 1 |
 | Materials Project | `api.materialsproject.org`, `mp-api`; 25 req/s | CC-BY 4.0 | catalyst builder; free API key |
-| Catalysis-Hub | `api.catalysis-hub.org/graphql` | unconfirmed | a third-party README says keyless GraphQL works again, against this file's 401 note; the catalyst builder re-probes first |
+| Catalysis-Hub | `api.catalysis-hub.org/graphql` | unconfirmed | 2026-10-18 keyless POST: TCP connects, TLS handshake hangs (no HTTP status); the 401 note and the third-party "keyless works" README are both unverified |
 | BEAST DB | NREL `beastdb.nrel.gov` (DNS failed) | unconfirmed | none until hosting and licence are confirmed with the authors |
 
 QMOF reads the bundle index first and MPContribs only when there is no
@@ -138,9 +148,9 @@ is in the code; `precis-structure-help` documents the surface. Left:
    ODAC23 slice; Catalysis-Hub feeds it once the SUNCAT credentials land.
    How a record is matched to a Pd slab model and what is compared:
    `catalyst-library-pd-slab-tie-in.md`.
-2. **The Catalysis-Hub credential path:** thread `X-API-Key` from a precis
-   secret, and give a clean keyless error (`structure-import.md`).
-3. **BEAST DB** (licence check first) and **Materials Project** adapters.
+3. **BEAST DB** adapter (licence check first). Also left from the
+   catalyst-database step: re-probe Catalysis-Hub keyless, and a
+   Materials Project screening hook (stability / facet energy prefilter).
 
 ## Acceptance criteria
 

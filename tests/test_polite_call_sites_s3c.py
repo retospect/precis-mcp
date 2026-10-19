@@ -430,6 +430,42 @@ def test_cathub_404_not_retried_raises_http_status(
     assert len(server.requests) == 1 and clock.sleeps == []
 
 
+def test_cathub_sends_x_api_key_only_when_the_secret_is_set(
+    server: Server,
+    limiter: Limiter,
+    clock: Clock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("precis.secrets.get_secret", lambda *a, **k: None)
+    server.script = [(200, {}, _CH_OK)]
+    catalysis_hub.fetch_config()
+    assert "x-api-key" not in server.requests[0].headers
+
+    monkeypatch.setattr("precis.secrets.get_secret", lambda *a, **k: "ch-secret")
+    server.script = [(200, {}, _CH_OK)]
+    catalysis_hub.fetch_config()
+    assert server.requests[1].headers["x-api-key"] == "ch-secret"
+
+
+@pytest.mark.parametrize("keyed", [False, True])
+def test_cathub_401_is_a_clean_auth_refusal_not_http_status(
+    server: Server,
+    limiter: Limiter,
+    clock: Clock,
+    monkeypatch: pytest.MonkeyPatch,
+    keyed: bool,
+) -> None:
+    monkeypatch.setattr(
+        "precis.secrets.get_secret", lambda *a, **k: "ch-secret" if keyed else None
+    )
+    server.script = [(401, {}, {})]
+    with pytest.raises(catalysis_hub.CatalysisHubAuthRequired) as ei:
+        catalysis_hub.fetch_config()
+    assert ei.value.keyed is keyed
+    assert "ch-secret" not in str(ei.value)
+    assert len(server.requests) == 1 and clock.sleeps == []
+
+
 def test_cathub_exhausted_429_raises_not_empty_result(
     server: Server, limiter: Limiter, clock: Clock
 ) -> None:

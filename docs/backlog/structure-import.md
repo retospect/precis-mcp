@@ -34,8 +34,8 @@ AQCat25 (HF gated:auto), batch-mirroring a filtered Pd/Cu/Ni × N/O/NHx slice
 Catalysis-Hub first (2026-10-02, `chem-database-tie-ins.md`); he is
 requesting the SUNCAT credentials.
 Catalysis-Hub is parked: ALL public channels now need SUNCAT creds (GraphQL
-401s keyless; the cathub "public" pg password was rotated server-side) — if
-creds arrive, thread X-API-Key from a precis secret + a clean keyless error.
+401s keyless; the cathub "public" pg password was rotated server-side) — the
+`PRECIS_CATHUB_API_KEY` path and the clean refusal are built; waits on creds.
 Small follow-ons: carry pub title/authors/year when dataset_doi is null;
 promote `source=` to a first-class get param; the derivative loop + MLIP
 fine-tuning on the imported corpus stays deferred (§4/§7). Owner

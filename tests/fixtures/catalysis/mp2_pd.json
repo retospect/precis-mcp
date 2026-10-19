@@ -1,0 +1,58 @@
+{
+  "_note": "Hand-built to the mp-api summary + emmet SurfacePropDoc schemas (fcc Pd, mp-2); values are illustrative, not a live recording.",
+  "summary": {
+    "material_id": "mp-2",
+    "formula_pretty": "Pd",
+    "formation_energy_per_atom": 0.0,
+    "energy_above_hull": 0.0,
+    "database_version": "2025.09.25",
+    "symmetry": {"symbol": "Fm-3m", "number": 225},
+    "structure": {
+      "lattice": {
+        "matrix": [
+          [0.0, 1.975, 1.975],
+          [1.975, 0.0, 1.975],
+          [1.975, 1.975, 0.0]
+        ]
+      },
+      "sites": [
+        {
+          "species": [{"element": "Pd", "occu": 1}],
+          "abc": [0.0, 0.0, 0.0],
+          "label": "Pd"
+        }
+      ]
+    }
+  },
+  "surface_properties": {
+    "material_id": "mp-2",
+    "weighted_surface_energy": 1.52,
+    "weighted_surface_energy_EV_PER_ANG2": 0.0949,
+    "weighted_work_function": 5.25,
+    "surface_anisotropy": 0.06,
+    "shape_factor": 3.4,
+    "has_reconstructed": false,
+    "surfaces": [
+      {
+        "miller_index": [1, 1, 1],
+        "surface_energy": 1.41,
+        "surface_energy_EV_PER_ANG2": 0.088,
+        "is_reconstructed": false,
+        "work_function": 5.4,
+        "efermi": 5.9,
+        "area_fraction": 0.7,
+        "has_wulff": true
+      },
+      {
+        "miller_index": [1, 0, 0],
+        "surface_energy": 1.7,
+        "surface_energy_EV_PER_ANG2": 0.106,
+        "is_reconstructed": false,
+        "work_function": 5.0,
+        "efermi": 5.9,
+        "area_fraction": 0.3,
+        "has_wulff": true
+      }
+    ]
+  }
+}

@@ -123,3 +123,15 @@ def test_missing_import_extra_is_a_clean_unsupported(structure, monkeypatch):
             args={"surface_composition": "Pd", "facet": "111"},
         )
     assert "pip install" in str(exc_info.value.next or exc_info.value)
+
+
+@pytest.mark.parametrize("keyed", [False, True])
+def test_auth_refusal_names_the_secret_in_next(structure, monkeypatch, keyed):
+    def _raise_auth(**_kwargs):
+        raise catalysis_hub.CatalysisHubAuthRequired(401, keyed=keyed)
+
+    monkeypatch.setattr(catalysis_hub, "fetch_config", _raise_auth)
+
+    with pytest.raises(Unsupported) as exc_info:
+        structure.get(source="catalysis-hub", args={"surface_composition": "Pd"})
+    assert catalysis_hub.CATHUB_KEY_SECRET in str(exc_info.value.next)

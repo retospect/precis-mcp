@@ -188,7 +188,8 @@ KNOWN_SECRETS: tuple[SecretSpec, ...] = (
     ),
     SecretSpec(
         name="PRECIS_MP_API_KEY",
-        purpose="Materials Project Pourbaix entries for the pourbaix_bulk job; "
+        purpose="Materials Project: Pourbaix entries for the pourbaix_bulk job, "
+        "bulk-crystal lookups for structure source='materials-project', and "
         "QMOF CIFs from MPContribs when no QMOF bundle index is configured.",
         get_url="https://next-gen.materialsproject.org/api",
         get_blurb="Log in to the Materials Project; the API page shows your "
@@ -196,6 +197,16 @@ KNOWN_SECRETS: tuple[SecretSpec, ...] = (
         cost="free",
         probe_group=None,
         used_by_job_types=("pourbaix_bulk",),
+    ),
+    SecretSpec(
+        name="PRECIS_CATHUB_API_KEY",
+        purpose="Catalysis-Hub GraphQL key for structure source='catalysis-hub'; "
+        "optional until the server demands it.",
+        get_url="https://www.catalysis-hub.org",
+        get_blurb="Request SUNCAT credentials from the Catalysis-Hub maintainers "
+        "and paste the API key here.",
+        cost="free — credentials issued by SUNCAT",
+        probe_group=None,
     ),
     SecretSpec(
         name="PRECIS_CORE_API_KEY",

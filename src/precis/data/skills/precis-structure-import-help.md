@@ -58,7 +58,7 @@ get(
   config_id)` (`ref_identifiers`); a repeat `config_id=` lookup never refetches.
   A broad `surface_composition=`/`facet=`/`q=` filter (no `config_id=`) always
   refetches — there's no way to know in advance whether new configs match.
-- **Wired sources: `catalysis-hub`, `qmof`, `core-mof`.** An unregistered
+- **Wired sources: `catalysis-hub`, `qmof`, `core-mof`, `materials-project`.** An unregistered
   source raises `BadInput` naming the known ones. A broken venv missing
   httpx returns `Unsupported` with a reinstall hint, never a crash.
 - **MOFs — `qmof` (DFT-relaxed, PBE-D3(BJ) energy) and `core-mof`
@@ -71,6 +71,15 @@ get(
   index falls back to MPContribs when the Materials Project key is set;
   that record has no energy, and the answer says so. A MOF is a 3D
   framework (`pbc` all true), not a slab.
+- **`materials-project`:** `get(kind='structure', id='mp-149',
+  args={'source': 'materials-project'})` imports a bulk crystal whose run
+  energy is the formation energy per atom in eV/atom
+  (`method['energy_kind']` says so); `method['surface']` carries per-facet
+  surface energies in J/m² and work functions when MP has them.
+- **Keys.** `materials-project` needs the `PRECIS_MP_API_KEY` secret;
+  `catalysis-hub` sends `PRECIS_CATHUB_API_KEY` as `X-API-Key` when set. A
+  missing or rejected key refuses with `Unsupported` and a `next=` naming the
+  secret.
 - **The `catalysis-hub` *live* fetch is dark** (verified 2026-07-24): SUNCAT
   gated all public access — the GraphQL API 401s without an `X-API-Key` and
   the old public Postgres password is rotated. The on-demand `source=` path is

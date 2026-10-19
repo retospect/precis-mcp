@@ -2,9 +2,13 @@
 
 Catalysis-Hub (SUNCAT) publishes DFT surface-reaction data (adsorption +
 reaction energies over Pd/Cu/Ni/Pt facets — exactly the catalyst quest's
-chemistry) behind a public, key-free GraphQL endpoint
-(``https://api.catalysis-hub.org/graphql``). Two layers, per the registry's
-adapter contract:
+chemistry) behind a GraphQL endpoint
+(``https://api.catalysis-hub.org/graphql``). Whether the endpoint needs a
+key is unsettled (a keyless probe on 2026-10-18 never got past the TLS
+handshake), so the key is optional: when the ``PRECIS_CATHUB_API_KEY``
+secret is set it rides along as ``X-API-Key``; a 401/403 raises
+:class:`CatalysisHubAuthRequired` with the next step. Two layers, per the
+registry's adapter contract:
 
 * :func:`adapter` — **pure**, no I/O. Normalises one already-fetched,
   flattened Catalysis-Hub record (one ``(reaction, system)`` pair — see
@@ -46,8 +50,11 @@ from . import ExternalId, ExternalRun, register_adapter
 if TYPE_CHECKING:
     import httpx
 
-#: The public, key-free Catalysis-Hub GraphQL endpoint.
+#: The Catalysis-Hub GraphQL endpoint.
 GRAPHQL_URL = "https://api.catalysis-hub.org/graphql"
+
+#: Secret holding the SUNCAT-issued API key (vault, process env first).
+CATHUB_KEY_SECRET = "PRECIS_CATHUB_API_KEY"
 
 #: Atomic-number -> element symbol, scoped to the catalyst quest's palette
 #: (NOx/NRR chemistry on Pd/Cu/Ni/Pt) plus common adsorbate/support elements.
@@ -88,6 +95,22 @@ _SYMBOLS: dict[int, str] = {
 
 class CatalysisHubUnsupported(RuntimeError):
     """The Catalysis-Hub fetch layer's dep (``httpx``, the ``[import]`` extra) is missing."""
+
+
+class CatalysisHubAuthRequired(RuntimeError):
+    """The server answered 401/403. ``keyed`` says whether a key was sent."""
+
+    def __init__(self, status: int, *, keyed: bool) -> None:
+        self.status = status
+        self.keyed = keyed
+        if keyed:
+            msg = (
+                f"Catalysis-Hub rejected the configured {CATHUB_KEY_SECRET} "
+                f"(HTTP {status})"
+            )
+        else:
+            msg = f"Catalysis-Hub needs an API key (keyless request got HTTP {status})"
+        super().__init__(msg)
 
 
 def _symbol(number: int) -> str:
@@ -291,9 +314,13 @@ def fetch_config(
     plain ``?query=...`` GET, so this routes through the SSRF-guarded
     :func:`precis.utils.safe_fetch.safe_get` rather than an unguarded POST.
 
+    The ``PRECIS_CATHUB_API_KEY`` secret, when set, is sent as
+    ``X-API-Key``; the key is never logged or echoed.
+
     Raises:
         CatalysisHubUnsupported: ``httpx`` (the ``[import]`` extra) isn't
             installed.
+        CatalysisHubAuthRequired: the server answered 401/403.
     """
     try:
         import httpx  # noqa: F401  availability probe (raise the domain error); used in the annotation below
@@ -303,13 +330,18 @@ def fetch_config(
             "pip install --force-reinstall 'precis-mcp'"
         ) from exc
 
+    from ... import secrets as _secrets
     from ...utils.http import (
+        VendorError,
         http_client,
         policy_for,
         polite_user_agent,
         with_backoff,
     )
     from ...utils.safe_fetch import safe_get
+
+    api_key = (_secrets.get_secret(CATHUB_KEY_SECRET) or "").strip()
+    headers = {"X-API-Key": api_key} if api_key else {}
 
     clauses = []
     if surface_composition is not None:
@@ -324,15 +356,24 @@ def fetch_config(
         # host:<netloc> row — limiter token per attempt, backoff on 429/5xx
         # + Retry-After. Exhaustion raises VendorUnavailable (a 4xx other
         # than 429 still reaches raise_for_status below).
-        resp: httpx.Response = with_backoff(
-            lambda: safe_get(client, url, params={"query": query}),
-            service="catalysis-hub",
-            # Interactive import: bounded, not the 5-try / 60 s default.
-            policy=replace(
-                policy_for("catalysis-hub"), attempts=2, cap=10.0, limiter_wait_s=5.0
-            ),
-            url=url,
-        )
+        try:
+            resp: httpx.Response = with_backoff(
+                lambda: safe_get(client, url, params={"query": query}, headers=headers),
+                service="catalysis-hub",
+                # Interactive import: bounded, not the 5-try / 60 s default.
+                policy=replace(
+                    policy_for("catalysis-hub"),
+                    attempts=2,
+                    cap=10.0,
+                    limiter_wait_s=5.0,
+                ),
+                url=url,
+            )
+        except VendorError as exc:
+            # 401/403 are fatal statuses: with_backoff raises instead of returning.
+            if exc.status in (401, 403):
+                raise CatalysisHubAuthRequired(exc.status, keyed=bool(api_key)) from exc
+            raise
         resp.raise_for_status()
         payload = resp.json()
 
@@ -348,7 +389,9 @@ def fetch_config(
 register_adapter("catalysis-hub", adapter)
 
 __all__ = [
+    "CATHUB_KEY_SECRET",
     "GRAPHQL_URL",
+    "CatalysisHubAuthRequired",
     "CatalysisHubUnsupported",
     "adapter",
     "fetch_config",
