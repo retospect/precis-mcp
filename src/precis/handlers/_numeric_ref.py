@@ -2584,11 +2584,13 @@ class NumericRefHandler(Handler):
         """
         if not cls.batch_ids:
             takers = sorted(cls._batch_kinds())
+            first = next((i for i in ids if i is not None), "<id>")
             raise BadInput(
                 f"{cls.kind} does not take id=[...]",
                 next=(
-                    "pass one call per ref (id= is not a list); kinds that "
-                    f"take id=[...]: {', '.join(takers)}"
+                    f"one call per ref: get(kind={cls.kind!r}, id={first!r}); "
+                    f"search(kind={cls.kind!r}, q='...') lists many in one "
+                    f"call; kinds that take id=[...]: {', '.join(takers)}"
                 ),
             )
         if not ids:

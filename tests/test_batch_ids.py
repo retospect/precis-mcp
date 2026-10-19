@@ -110,7 +110,10 @@ def test_list_id_refused_cleanly_elsewhere(hub: Hub) -> None:
     with pytest.raises(BadInput, match="does not take id=") as refused:
         AnkiHandler(hub=hub).get(id=_batch(1, 2))
     assert "gripe" in str(refused.value.next) and "memory" in str(refused.value.next)
-    assert "anki" not in str(refused.value.next)
+    assert "get(kind='anki', id=1)" in str(refused.value.next)
+    assert "search(kind='anki'" in str(refused.value.next)
+    assert "take id=[...]: " in str(refused.value.next)
+    assert "anki" not in str(refused.value.next).split("take id=[...]: ")[1]
     # A non-batch kind's link still refuses a list.
     with pytest.raises(BadInput, match="does not take id="):
         AnkiHandler(hub=hub).link(id=_batch(1, 2), target="anki:3")
