@@ -412,7 +412,12 @@ def _script_rejection(params: dict[str, Any]) -> str | None:
                 f"{MAX_SCRIPT_BYTES}); next: shrink the script and pass data "
                 "as an input ref, not inline"
             )
-    deps = params.get("deps")
+    return deps_rejection(params.get("deps"))
+
+
+def deps_rejection(deps: Any) -> str | None:
+    """Rejection reason for a ``deps`` value (``None`` = absent or fine).
+    Also the stage job's launch-time re-check."""
     if deps is None:
         return None
     if not isinstance(deps, list) or not all(isinstance(d, str) for d in deps):

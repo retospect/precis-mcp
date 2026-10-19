@@ -547,6 +547,36 @@ def _harvested_files(store: Store, folder_id: int) -> set[str]:
     return {r[0] for r in rows}
 
 
+def _launch_via_stage(store: Store, jid: int) -> None:
+    """Drive a deps job to its launch: the run job mints a stage job and
+    requeues; the next pass claims the stage (a thread); once it finished
+    the run job's re-check lease is expired and the third pass launches."""
+    claude_docker.run_claude_docker_pass(store, limit=4)  # mint + requeue
+    claude_docker.run_claude_docker_pass(store, limit=4)  # stage job claimed
+    claude_docker.join_stage_threads()
+    _expire_lease(store, jid)
+    claude_docker.run_claude_docker_pass(store, limit=4)  # launch or fail
+
+
+def _expire_lease(store: Store, ref_id: int) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || jsonb_build_object("
+            "'lease_until', (now() - interval '1 second')::text) WHERE ref_id = %s",
+            (ref_id,),
+        )
+        conn.commit()
+
+
+def _stage_ids(store: Store) -> list[int]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id FROM refs WHERE kind = 'job' "
+            "AND meta->>'idem_key' LIKE 'sandbox_stage:%' ORDER BY ref_id"
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
 @pytest.mark.db
 def test_script_end_to_end_prints_numpy_version_from_recorded_wheels(
     store: Store, script_env: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -556,7 +586,7 @@ def test_script_end_to_end_prints_numpy_version_from_recorded_wheels(
     _record_wheel_dir(tmp_path)
     jid = _mk_queued_job(store, _script_params())
 
-    claude_docker.run_claude_docker_pass(store, limit=4)  # lock + launch
+    _launch_via_stage(store, jid)
     assert _status(store, jid) == "running"
     meta = _meta(store, jid)
     assert meta["deps_lock_sha"] == _LOCK_SHA
@@ -567,6 +597,11 @@ def test_script_end_to_end_prints_numpy_version_from_recorded_wheels(
     )
     assert argv[argv.index("--network") + 1] == "none"
     assert argv[-3:] == ["sh", "-c", claude_docker.SCRIPT_SHELL_CMD]
+    # The run job mounts the wheel dir its stage job recorded.
+    (stage_id,) = _stage_ids(store)
+    staged = _meta(store, stage_id)["stage"]
+    assert staged["wheels_dir"] == str(tmp_path / "wheels" / _LOCK_SHA)
+    assert f"{staged['wheels_dir']}:/work/wheels" in " ".join(argv)
     work = tmp_path / "work" / f"sandbox-{jid}"
     assert (work / "main.py").read_text(encoding="utf-8") == _script_params()["code"]
     assert (work / "lock.txt").read_text(encoding="utf-8") == _LOCK_TEXT
@@ -589,7 +624,7 @@ def test_script_nonzero_exit_still_harvests_out(
     monkeypatch.setenv("SCRIPT_STUB_EXIT", "1")
     _record_wheel_dir(tmp_path)
     jid = _mk_queued_job(store, _script_params())
-    claude_docker.run_claude_docker_pass(store, limit=4)
+    _launch_via_stage(store, jid)
     claude_docker.run_claude_docker_pass(store, limit=4)
 
     assert _status(store, jid) == "failed"
@@ -606,11 +641,13 @@ def test_script_lock_failure_fails_job_without_container(
 ) -> None:
     monkeypatch.setenv("UV_STUB_EXIT", "1")
     jid = _mk_queued_job(store, _script_params())
-    claude_docker.run_claude_docker_pass(store, limit=4)
+    _launch_via_stage(store, jid)
 
     assert _status(store, jid) == "failed"
     assert "container" not in _meta(store, jid)
     assert any("uv pip compile" in e for e in _events(store, jid))
+    (stage_id,) = _stage_ids(store)
+    assert _status(store, stage_id) == "failed"
 
 
 @pytest.mark.db
@@ -643,3 +680,176 @@ def test_put_time_gate_for_script(hub: Any, store: Store, script_env: Path) -> N
             parent_id=parent.id,
             params=_script_params(deps=["git+https://github.com/numpy/numpy"]),
         )
+
+
+# ── async dependency staging (gr496426) ────────────────────────────
+
+
+@pytest.mark.db
+def test_stage_mode_is_not_submittable() -> None:
+    reason = sandbox_run.semantic_rejection(_script_params(mode="stage"))
+    assert reason is not None and "stage" in reason
+
+
+@pytest.mark.db
+def test_one_stage_job_serves_concurrent_requests_for_one_dep_set(
+    store: Store, script_env: Path, tmp_path: Path
+) -> None:
+    first = _mk_queued_job(store, _script_params())
+    second = _mk_queued_job(store, _script_params(deps=["numpy>=2", "numpy>=2"]))
+    claude_docker.run_claude_docker_pass(store, limit=4)  # both mint-or-reuse
+    assert len(_stage_ids(store)) == 1
+    claude_docker.run_claude_docker_pass(store, limit=4)  # stage runs
+    claude_docker.join_stage_threads()
+    for jid in (first, second):
+        _expire_lease(store, jid)
+    claude_docker.run_claude_docker_pass(store, limit=4)
+
+    assert len(_stage_ids(store)) == 1
+    assert len(_calls(script_env, "uv")) == 1  # one lock for both
+    assert len(_calls(script_env, "pip")) == 1  # one download for both
+    assert _status(store, first) == "running"
+    assert _status(store, second) == "running"
+    (stage_id,) = _stage_ids(store)
+    assert _meta(store, first)["stage_job"] == stage_id
+    assert _meta(store, second)["deps_lock_sha"] == _LOCK_SHA
+
+
+@pytest.mark.db
+def test_run_job_requeues_not_blocks_while_staging(
+    store: Store, script_env: Path
+) -> None:
+    jid = _mk_queued_job(store, _script_params())
+    claude_docker.run_claude_docker_pass(store, limit=4)
+
+    assert _status(store, jid) == "queued"
+    assert "container" not in _meta(store, jid)
+    assert any("dependency stage job" in e for e in _events(store, jid))
+    # Not claimable again before its re-check lease lapses.
+    claude_docker.run_claude_docker_pass(store, limit=4)
+    assert _status(store, jid) == "queued"
+
+
+@pytest.mark.db
+def test_stage_lease_expiry_reclaims_and_retries(
+    store: Store, script_env: Path
+) -> None:
+    from precis.workers.executors import _sandbox_stage
+
+    state = _sandbox_stage.find_or_mint(store, "balthazar", ["numpy>=2"])
+    # A worker claimed it, then died: running, lease in the past.
+    store.add_tag(state.ref_id, Tag.parse_strict("STATUS:running"), set_by="agent")
+    _expire_lease(store, state.ref_id)
+
+    claude_docker.run_claude_docker_pass(store, limit=4)
+    claude_docker.join_stage_threads()
+
+    assert _status(store, state.ref_id) == "succeeded"
+    meta = _meta(store, state.ref_id)
+    assert meta["attempts"] == 1  # the expiry reclaim counted as an attempt
+    assert meta["stage"]["lock_sha"] == _LOCK_SHA
+
+
+@pytest.mark.db
+def test_running_stage_heartbeats_its_lease(
+    store: Store, script_env: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    from precis.workers.executors import _sandbox_stage
+
+    release = threading.Event()
+
+    def slow_stage(deps: list[str], *, cache_root: Path) -> Any:
+        release.wait(30)
+        return _sandbox_script.StagedDeps(_LOCK_TEXT, _LOCK_SHA, cache_root, False)
+
+    monkeypatch.setattr(_sandbox_script, "stage_deps", slow_stage)
+    state = _sandbox_stage.find_or_mint(store, "balthazar", ["numpy>=2"])
+    claude_docker.run_claude_docker_pass(store, limit=4)  # claims, thread blocks
+    first = _meta(store, state.ref_id)["lease_until"]
+    assert _status(store, state.ref_id) == "running"
+
+    claude_docker.run_claude_docker_pass(store, limit=4)  # heartbeat
+    assert _meta(store, state.ref_id)["lease_until"] > first
+
+    release.set()
+    claude_docker.join_stage_threads()
+    assert _status(store, state.ref_id) == "succeeded"
+
+
+@pytest.mark.db
+def test_wall_seconds_starts_at_launch_not_at_first_claim(
+    store: Store, script_env: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import types
+
+    clock = [1_000_000.0]
+    monkeypatch.setattr(
+        claude_docker, "time", types.SimpleNamespace(time=lambda: clock[0])
+    )
+    _record_wheel_dir(tmp_path)
+    jid = _mk_queued_job(store, _script_params())  # wall_seconds 600
+    claude_docker.run_claude_docker_pass(store, limit=4)  # first claim: staging starts
+    claude_docker.run_claude_docker_pass(store, limit=4)
+    claude_docker.join_stage_threads()
+    clock[0] += 5_000  # staging took far longer than the script's wall
+    _expire_lease(store, jid)
+    claude_docker.run_claude_docker_pass(store, limit=4)
+
+    assert _status(store, jid) == "running"
+    assert _meta(store, jid)["deadline"] == 1_005_600.0
+
+
+@pytest.mark.db
+def test_failed_stage_fails_waiting_job_and_next_request_restages(
+    store: Store, script_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("UV_STUB_EXIT", "1")
+    jid = _mk_queued_job(store, _script_params())
+    _launch_via_stage(store, jid)
+    assert _status(store, jid) == "failed"
+    (failed_stage,) = _stage_ids(store)
+
+    monkeypatch.delenv("UV_STUB_EXIT")
+    again = _mk_queued_job(store, _script_params())
+    _launch_via_stage(store, again)
+    assert _status(store, again) == "running"
+    assert len(_stage_ids(store)) == 2
+    assert _status(store, failed_stage) == "failed"
+
+
+def test_concurrent_stages_of_one_lock_fill_the_wheel_dir_once(
+    stubs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two dep sets resolving to one lock stage at once: both download into
+    private temp dirs, one renames into place, the other reuses it."""
+    import threading
+
+    barrier = threading.Barrier(2, timeout=30)
+    real = _sandbox_script.download_wheels
+
+    def meet_then_download(lock_text: str, dest: Path) -> None:
+        real(lock_text, dest)
+        barrier.wait()  # both finished downloading before either renames
+
+    monkeypatch.setattr(_sandbox_script, "download_wheels", meet_then_download)
+    results: list[Any] = []
+
+    def stage(deps: list[str]) -> None:
+        results.append(_sandbox_script.stage_deps(deps, cache_root=tmp_path / "wheels"))
+
+    threads = [
+        threading.Thread(target=stage, args=(d,)) for d in (["numpy>=2"], ["numpy"])
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(60)
+
+    assert sorted(r.reused for r in results) == [False, True]
+    assert {r.lock_sha for r in results} == {_LOCK_SHA}
+    final = tmp_path / "wheels" / _LOCK_SHA
+    assert (final / ".complete").exists()
+    assert len(list(final.glob("*.whl"))) == 1
+    assert [p.name for p in (tmp_path / "wheels").iterdir()] == [_LOCK_SHA]

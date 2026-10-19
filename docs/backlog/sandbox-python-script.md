@@ -165,10 +165,24 @@ a new job.
    shipped (gr496511, `READ_KIND_ALLOWLIST`): fetch and paid kinds are
    refused outright, not served on cache hits. Serving cache hits for
    fetch kinds needs a cache-hit-only handler path and is not built.
-   - **Async staging** (gr496426). The lock and wheel download run in
-     the claim tick and can block the worker's poll for about 20 min.
-     Give staging its own lease and heartbeat, or make it a separate
-     stage job, and count its time apart from `wall_seconds`.
+   - **Async staging** (gr496426), built as a separate stage job (Reto
+     OK'd witty's pick). The lock and wheel download used to run in the
+     run job's claim tick and could block the worker's poll for about
+     20 min. Now a `sandbox_run` row with `params.mode:"stage"` (internal:
+     `semantic_rejection` refuses it at put) does the lock and download.
+     It is keyed by `idem_key` = target node + sha256 of the normalised
+     `deps` (the lock hash is only known after the compile, so the dep
+     set keys the job and the lock hash keys the wheel dir it fills).
+     It has its own lease (short, heartbeated each pass by the worker
+     that runs it in a thread; a dead worker's lease expires and the row
+     is reclaimed and retried under the usual attempt cap) and its own
+     failure. A run job that finds no finished stage mints or reuses one
+     (advisory-locked, so concurrent requests share it), requeues itself
+     with a short re-check lease, and launches once the stage
+     succeeded. A failed stage fails the waiting run job with the stage's
+     message; the next request mints a fresh stage. `wall_seconds` and the
+     run lease start at the launching claim, so staging time never counts
+     against the script. Dark: no default profile or config enables it.
    - **The package allow-list review.** Decide whether `deps` gets a
      package-name allow-list, which would bound whose code reaches the
      container at all.

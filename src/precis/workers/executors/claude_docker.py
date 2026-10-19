@@ -56,8 +56,9 @@ Slice 1 (the stub-gated container-execution substrate) stages
   ``sh -c 'cd /work && uv sync && <RUN.json.cmd>'`` with **no** claude /
   OAuth / API-key env at all.
 * **Script** (``_launch_script`` / ``build_script_argv``) —
-  ``mode:script`` locks the job's PyPI ``deps`` and downloads their
-  wheels executor-side (``_sandbox_script``), stages the script (inline
+  ``mode:script`` takes the job's PyPI wheels from a separate stage job
+  (``_sandbox_stage``; the lock + download run in a thread under their
+  own lease, requeueing the run job until done), stages the script (inline
   ``code`` or a resolved ``code_ref``), ``/work/lock.txt`` and the
   ``inputs`` (``_sandbox_inputs``, read-only at ``/work/in``), and
   launches ``--network none`` with an explicit ``sh -c`` (offline
@@ -83,6 +84,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -93,6 +95,7 @@ from precis.workers.executors import (
     _sandbox_inputs,
     _sandbox_read_mcp,
     _sandbox_script,
+    _sandbox_stage,
 )
 from precis.workers.executors._common import (
     CANCELLED as _CANCELLED,
@@ -105,6 +108,9 @@ from precis.workers.executors._common import (
 )
 from precis.workers.executors._common import (
     JOB_SUMMARY_KIND as _JOB_SUMMARY_KIND,
+)
+from precis.workers.executors._common import (
+    QUEUED as _QUEUED,
 )
 from precis.workers.executors._common import (
     RUNNING as _RUNNING,
@@ -120,6 +126,12 @@ from precis.workers.executors._common import (
 )
 from precis.workers.executors._common import (
     poison_guard as _poison_guard,
+)
+from precis.workers.executors._common import (
+    release_job_reservation as _release_job_reservation,
+)
+from precis.workers.executors._common import (
+    renew_lease_if_mine as _renew_lease_if_mine,
 )
 from precis.workers.executors._common import (
     set_meta as _set_meta,
@@ -144,6 +156,11 @@ _LEASE_MARGIN_S = 600
 
 #: Process-lifetime flag: run the orphan reconcile once per worker boot.
 _reconciled = False
+
+#: Stage jobs this process is running: job id -> (thread, claim meta, lost).
+#: ``lost`` is set when a lease renewal finds another worker reclaimed the
+#: row, so the thread skips its terminal write.
+_STAGE_THREADS: dict[int, tuple[threading.Thread, dict[str, Any], threading.Event]] = {}
 
 #: gr329258/gr333438 residual: an exit-0 container with an EMPTY ``out/``
 #: that also ran for under this many seconds is more likely a silently
@@ -641,6 +658,9 @@ def run_claude_docker_pass(store: Store, *, limit: int = 4) -> dict[str, int]:
     ok = 0
     failed = 0
 
+    # 0) Keep the leases of this process's running stage jobs alive.
+    _heartbeat_stages(store)
+
     # 1) Poll in-flight jobs pinned to this node.
     for ref_id, meta in _running_jobs(store, node):
         try:
@@ -755,6 +775,9 @@ def _claim(
 
 def _lease_seconds(meta: dict[str, Any]) -> int:
     params = meta.get("params") or {}
+    if params.get("mode") == _sandbox_stage.MODE:
+        # Short and heartbeated: a dead worker's stage is retried quickly.
+        return _sandbox_stage.STAGE_LEASE_S
     wall = int(_sandbox_run.resolve_wall_seconds(params) or 0)
     return max(_LEASE_MARGIN_S, wall + _LEASE_MARGIN_S)
 
@@ -782,6 +805,10 @@ def _launch(store: Store, ref_id: int, meta: dict[str, Any], node: str | None) -
     at launch time. A rejection fails the job (no container).
     """
     params = dict(meta.get("params") or {})
+    if params.get("mode") == _sandbox_stage.MODE:
+        # Executor-minted and internal: the put gate refuses this mode.
+        _launch_stage(store, ref_id, params, meta)
+        return
     reason = _sandbox_run.semantic_rejection(params)
     if reason is not None:
         _fail(store, ref_id, reason)
@@ -790,7 +817,7 @@ def _launch(store: Store, ref_id: int, meta: dict[str, Any], node: str | None) -
     if mode == "run":
         _launch_run(store, ref_id, params, node)
     elif mode == "script":
-        _launch_script(store, ref_id, params, node)
+        _launch_script(store, ref_id, params, node, meta=meta)
     else:
         _launch_build(store, ref_id, params, node)
 
@@ -1037,9 +1064,15 @@ def _launch_run(
 
 
 def _launch_script(
-    store: Store, ref_id: int, params: dict[str, Any], node: str | None
+    store: Store,
+    ref_id: int,
+    params: dict[str, Any],
+    node: str | None,
+    *,
+    meta: dict[str, Any] | None = None,
 ) -> None:
-    """Lock + stage the script's PyPI wheels executor-side, stage the
+    """Take the script's PyPI wheels from its stage job (requeueing until
+    that job succeeded), stage the
     script (``/work/main.py``, or a folder under ``/work/code``),
     ``/work/lock.txt`` and the ``inputs``, spawn the read MCP for
     ``precis_access:read``, then launch a detached ``--network none``
@@ -1048,8 +1081,10 @@ def _launch_script(
     ``semantic_rejection`` has checked the param shapes; ``code_ref`` and
     ``inputs`` are resolved again here (``_sandbox_inputs``) because a
     dispatch-minted job skipped ``validate_submit`` and the refs may have
-    changed. The lock + download run synchronously in this tick; any
-    staging failure fails the job before a container exists.
+    changed. The lock + download run in a separate stage job
+    (:mod:`_sandbox_stage`), never in this tick, so the deadline set at
+    launch excludes staging; a failed stage fails this job before a
+    container exists.
     """
     name = container_name(ref_id)
     work_dir = _work_root() / name
@@ -1066,10 +1101,9 @@ def _launch_script(
             code = _sandbox_inputs.ResolvedCode(
                 entry="main.py", source=str(params["code"])
             )
-        staged = _sandbox_script.stage_deps(
-            list(params.get("deps") or []),
-            cache_root=_sandbox_script.wheel_cache_root(_work_root()),
-        )
+        staged = _staged_deps(store, ref_id, params, node, meta or {})
+        if staged is None:
+            return  # requeued behind its stage job, or failed
         if work_dir.exists():
             shutil.rmtree(work_dir, ignore_errors=True)
         # ``wheels``/``mcp`` are only mountpoints for read-only binds; ``in``
@@ -1184,6 +1218,180 @@ def _launch_script(
         )
         conn.commit()
     log.info("claude_docker: launched script job %d as %s", ref_id, name)
+
+
+# ── Dependency stage jobs (gr496426) ───────────────────────────────
+
+
+def _staged_deps(
+    store: Store,
+    ref_id: int,
+    params: dict[str, Any],
+    node: str | None,
+    meta: dict[str, Any],
+) -> _sandbox_script.StagedDeps | None:
+    """The run job's staged wheels, or ``None`` when it was requeued behind
+    a pending stage job or failed with that stage's error."""
+    deps = list(params.get("deps") or [])
+    cache_root = _sandbox_script.wheel_cache_root(_work_root())
+    if not _sandbox_stage.normalise_deps(deps):
+        return _sandbox_script.stage_deps([], cache_root=cache_root)  # no network
+    prev = meta.get("stage_job")
+    state = _sandbox_stage.get_stage(store, int(prev)) if prev else None
+    if state is None or (state.status == "succeeded" and not state.usable):
+        state = _sandbox_stage.find_or_mint(
+            store, str(params.get("target_node") or node or "") or None, deps
+        )
+    if state.usable:
+        info = state.meta["stage"]
+        return _sandbox_script.StagedDeps(
+            lock_text=str(info["lock_text"]),
+            lock_sha=str(info["lock_sha"]),
+            wheels_dir=Path(str(info["wheels_dir"])),
+            reused=True,
+        )
+    if state.pending:
+        _requeue_for_stage(store, ref_id, state.ref_id, first=prev != state.ref_id)
+        return None
+    _fail(
+        store,
+        ref_id,
+        "sandbox_run: dependency staging failed: "
+        f"{state.meta.get('stage_error') or 'stage job ' + str(state.ref_id)}",
+    )
+    return None
+
+
+def _requeue_for_stage(
+    store: Store, ref_id: int, stage_id: int, *, first: bool
+) -> None:
+    """Put a claimed run job back to ``queued`` with a short re-check lease
+    (a queued row is not claimable before its ``lease_until``). Its
+    reservation is refunded; the launching claim re-reserves and sizes the
+    run lease and ``wall_seconds`` deadline afresh."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || jsonb_build_object("
+            "  'stage_job', %s::int,"
+            "  'lease_until', (now() + make_interval(secs => %s))::text"
+            ") WHERE ref_id = %s",
+            (stage_id, _sandbox_stage.RECHECK_S, ref_id),
+        )
+        _release_job_reservation(conn, ref_id)
+        if first:
+            _append_chunk(
+                store,
+                ref_id,
+                _JOB_EVENT_KIND,
+                f"waiting for dependency stage job {stage_id} "
+                "(staging time does not count against wall_seconds)",
+                conn=conn,
+            )
+        _set_status(store, ref_id, _QUEUED, conn=conn)
+        conn.commit()
+
+
+def _launch_stage(
+    store: Store, ref_id: int, params: dict[str, Any], meta: dict[str, Any]
+) -> None:
+    """Run a stage job's lock + download in a thread; the pass keeps its
+    lease alive and the thread writes the terminal state."""
+    live = _STAGE_THREADS.get(ref_id)
+    if live is not None and live[0].is_alive():
+        return  # reclaimed while this process still runs it
+    deps = list(params.get("deps") or [])
+    reason = _sandbox_run.deps_rejection(deps)
+    if reason is not None:
+        _fail(store, ref_id, reason)
+        return
+    lost = threading.Event()
+    thread = threading.Thread(
+        target=_run_stage,
+        args=(store, ref_id, deps, lost),
+        name=f"sandbox-stage-{ref_id}",
+        daemon=True,
+    )
+    _STAGE_THREADS[ref_id] = (thread, meta, lost)
+    _append_chunk(
+        store, ref_id, _JOB_EVENT_KIND, f"staging {len(deps)} deps (lock + wheels)"
+    )
+    thread.start()
+
+
+def _run_stage(
+    store: Store, ref_id: int, deps: list[str], lost: threading.Event
+) -> None:
+    try:
+        try:
+            staged = _sandbox_script.stage_deps(
+                deps, cache_root=_sandbox_script.wheel_cache_root(_work_root())
+            )
+        except _sandbox_script.ScriptStageError as exc:
+            error = str(exc)
+        except Exception as exc:
+            log.warning("claude_docker: stage job %d raised", ref_id, exc_info=True)
+            error = f"sandbox_run: dependency staging raised: {exc!r}"
+        else:
+            if lost.is_set():
+                return  # another worker owns the row now
+            with store.pool.connection() as conn:
+                _set_meta(
+                    conn,
+                    ref_id,
+                    stage={
+                        "lock_text": staged.lock_text,
+                        "lock_sha": staged.lock_sha,
+                        "wheels_dir": str(staged.wheels_dir),
+                        "reused": staged.reused,
+                    },
+                )
+                _append_chunk(
+                    store,
+                    ref_id,
+                    _JOB_EVENT_KIND,
+                    f"staged lock {staged.lock_sha[:12]}"
+                    f"{' (reused)' if staged.reused else ''}",
+                    conn=conn,
+                )
+                _set_status(store, ref_id, _SUCCEEDED, conn=conn)
+                conn.commit()
+            return
+        if lost.is_set():
+            return
+        with store.pool.connection() as conn:
+            _set_meta(conn, ref_id, stage_error=error)
+            conn.commit()
+        _fail(store, ref_id, error)
+    except Exception:  # pragma: no cover - defensive
+        log.warning(
+            "claude_docker: stage job %d bookkeeping failed", ref_id, exc_info=True
+        )
+    finally:
+        _STAGE_THREADS.pop(ref_id, None)
+
+
+def _heartbeat_stages(store: Store) -> None:
+    for ref_id, (thread, meta, lost) in list(_STAGE_THREADS.items()):
+        if not thread.is_alive():
+            continue
+        try:
+            with store.pool.connection() as conn:
+                mine = _renew_lease_if_mine(
+                    conn, ref_id, meta, _sandbox_stage.STAGE_LEASE_S
+                )
+                conn.commit()
+            if not mine:
+                lost.set()
+        except Exception:  # pragma: no cover - defensive
+            log.warning(
+                "claude_docker: stage heartbeat of %d failed", ref_id, exc_info=True
+            )
+
+
+def join_stage_threads(timeout: float = 30.0) -> None:
+    """Wait for this process's stage threads (tests, orderly shutdown)."""
+    for thread, _meta, _lost in list(_STAGE_THREADS.values()):
+        thread.join(timeout)
 
 
 # ── Poll + reap ────────────────────────────────────────────────────
