@@ -16,9 +16,9 @@ in §Current state, [pcb-vector-router](pcb-vector-router.md),
 does not edit the vector-router spec (§Composition names the slot).
 
 **Acceptance sanity board:** the 100 x 100 mm four-header board
-(`tests/fixtures/pcb/sanity_board.py`, tests `tests/test_pcb_sanity_board.py`) — 20/20
+(`src/precis/pcb/sanity_board.py`, tests `tests/test_pcb_sanity_board.py`) — 20/20
 nets and 0 DRC errors on every variant is the floor; iterate with
-`uv run python -m tests.fixtures.pcb.sanity_board [variant ...]`.
+`uv run python -m precis.pcb.bench sanity [variant ...]`.
 
 ## Reto's position
 

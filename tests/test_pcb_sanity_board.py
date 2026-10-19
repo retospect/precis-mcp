@@ -1,6 +1,6 @@
 """PCB sanity board — the acceptance board of
 ``docs/backlog/pcb-unified-place-route.md``. Board and variants:
-``tests/fixtures/pcb/sanity_board.py``.
+``src/precis/pcb/sanity_board.py``.
 
 Pure in-memory (no store, no DB, no MCP): the fixture builds the IR the
 route job would build; ``realize`` and the routed DRC run on it directly.
@@ -11,14 +11,14 @@ route job would build; ``realize`` and the routed DRC run on it directly.
 Iterate without the gate queue (prints routed/20, DRC by rule, per-net
 verdicts)::
 
-    uv run python -m tests.fixtures.pcb.sanity_board [variant ...]
+    uv run python -m precis.pcb.bench sanity [variant ...]
 """
 
 from __future__ import annotations
 
 import pytest
 
-from tests.fixtures.pcb import sanity_board as sb
+from precis.pcb import sanity_board as sb
 
 NETS = 2 * sb.PINS
 

@@ -22,7 +22,7 @@ would build, routed with ``realize`` and checked with the routed DRC.
 
 Iterate without the gate queue::
 
-    uv run python -m tests.fixtures.pcb.sanity_board [variant ...]
+    uv run python -m precis.pcb.bench sanity [variant ...]
 
 prints routed/20, DRC by rule and the per-net verdicts.
 """
@@ -316,9 +316,29 @@ def main(argv: list[str] | None = None) -> int:
     if unknown:
         print(f"unknown variant(s) {unknown}; known: {list(SPECS)}", file=sys.stderr)
         return 2
-    results = [route(SPECS[n]) for n in names]
+    results = [_run(SPECS[n]) for n in names]
     print(report(results))
     return 0 if all(not r.failed and not r.errors_by_rule for r in results) else 1
+
+
+def _run(spec: SanitySpec) -> SanityResult:
+    """Route a variant; one with unpinned parts is placed first, and what
+    the placer did is printed (poses, TB airwire length, placement DRC)."""
+    if not spec.free:
+        return route(spec)
+    built = build(spec)
+    before = net_length_mm(built, "TB")
+    poses = place(built)
+    print(
+        f"{spec.name}: placed "
+        + ", ".join(
+            f"{r}=({poses[r][0]:.2f}, {poses[r][1]:.2f}, rot {poses[r][2]:.0f})"
+            for r in spec.free
+        )
+        + f"; TB airwire {before:.1f} -> {net_length_mm(built, 'TB'):.1f} mm; "
+        f"placement DRC errors {placement_errors(built) or 'none'}"
+    )
+    return route(spec, built)
 
 
 if __name__ == "__main__":
