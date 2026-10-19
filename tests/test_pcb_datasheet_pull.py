@@ -839,3 +839,63 @@ def test_first_failure_is_recorded_as_before(store, no_jlc, serve, fake_ingest):
     meta = store.get_ref(kind="part", id="C25900").meta["datasheet_pull"]
     assert (meta["status"], meta["reason"]) == ("failed", "http_404")
     assert "last_attempt" not in meta
+
+
+# recorded body of wmsc.lcsc.com's answer to a PDF URL (content-type text/html)
+_LCSC_JS_GATE = (
+    b"<script>window.top.location.href="
+    b"'https://datasheet.lcsc.com/datasheet/pdf/abc123.pdf?productCode=C25900'"
+    b"</script>"
+)
+
+
+def _gate_stream(serve, monkeypatch, gate_body: bytes, target: str):
+    @contextmanager
+    def fake_stream(client, method, url, /, **kw):
+        serve["asked"].append(url)
+        if url == target:
+            yield _FakeResp(_PDF, 200, url)
+            return
+        resp = _FakeResp(gate_body, 200, url)
+        resp.headers["Content-Type"] = "text/html;charset=ISO-8859-1"
+        yield resp
+
+    monkeypatch.setattr(dp, "safe_stream", fake_stream)
+
+
+def test_lcsc_js_redirect_page_is_followed_to_the_pdf(
+    store, no_jlc, serve, fake_ingest, monkeypatch
+):
+    target = "https://datasheet.lcsc.com/datasheet/pdf/abc123.pdf?productCode=C25900"
+    _gate_stream(serve, monkeypatch, _LCSC_JS_GATE, target)
+    url = "https://wmsc.lcsc.com/wmsc/upload/file/pdf/v2/lcsc/x_C25900.pdf"
+    store.parts_import([_catalog_row(25900, url)])
+    rec = dp.pull(store, "C25900")
+    assert rec["status"] == "ok"
+    assert serve["asked"] == [url, target]
+
+
+def test_cross_site_js_redirect_is_not_followed(
+    store, no_jlc, serve, fake_ingest, monkeypatch
+):
+    other = "https://evil.test/a.pdf"
+    gate = b"<script>window.top.location.href='" + other.encode() + b"'</script>"
+    _gate_stream(serve, monkeypatch, gate, other)
+    url = "https://wmsc.lcsc.com/wmsc/upload/file/pdf/v2/lcsc/x_C25900.pdf"
+    store.parts_import([_catalog_row(25900, url)])
+    rec = dp.pull(store, "C25900")
+    assert (rec["status"], rec["reason"]) == ("failed", "not_pdf")
+    assert serve["asked"] == [url]
+
+
+def test_redirect_page_chain_stops_after_one_hop(
+    store, no_jlc, serve, fake_ingest, monkeypatch
+):
+    loop = "https://datasheet.lcsc.com/loop"
+    gate = b"<script>location.href='" + loop.encode() + b"'</script>"
+    _gate_stream(serve, monkeypatch, gate, "https://never.test/")
+    url = "https://wmsc.lcsc.com/a.pdf"
+    store.parts_import([_catalog_row(25900, url)])
+    rec = dp.pull(store, "C25900")
+    assert (rec["status"], rec["reason"]) == ("failed", "not_pdf")
+    assert serve["asked"] == [url, loop]

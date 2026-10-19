@@ -12,7 +12,8 @@ per C-number its board uses that has no datasheet yet). Steps:
    capped at 50 MB (``too_large``), ``%PDF`` magic required and a ``text/*``
    Content-Type refused (``not_pdf``, detail ``not a PDF (text/html)``; the
    catalog URL is tried once when it differs from the JLC one, else the
-   part waits for an operator drop);
+   part waits for an operator drop; LCSC's tiny ``location.href=`` HTML
+   forward to the real PDF is followed once, same site only);
    a refused address is ``fetch_refused:<detail>``, an HTTP error
    ``http_<status>``.
 3. **Dedupe by content sha**: a datasheet with that ``pdf_sha256`` already
@@ -48,6 +49,7 @@ import tempfile
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 import psycopg
 
@@ -165,13 +167,49 @@ def _download_any(urls: list[str], dest: Path) -> tuple[str, str]:
     raise _Failed("no_url")  # unreachable: urls is never empty
 
 
-def _download(url: str, dest: Path) -> tuple[str, str]:
-    """Stream ``url`` to ``dest``; returns ``(final_url, sha256)``."""
+#: LCSC's file hosts answer a PDF URL with a tiny HTML page whose only job is
+#: ``window.top.location.href='<real pdf url>'``; a browser follows it, httpx
+#: does not.
+_JS_REDIRECT = re.compile(
+    r"""location(?:\.href)?\s*=\s*(['"])(?P<u>https?://[^'"\s]+)\1""", re.I
+)
+_META_REFRESH = re.compile(
+    r"""<meta[^>]+http-equiv=["']?refresh[^>]+url=(?P<u>https?://[^"'>\s]+)""", re.I
+)
+_REDIRECT_PAGE_MAX = 4096
+
+
+def _site(host: str) -> str:
+    return ".".join(host.lower().split(".")[-2:])
+
+
+def _html_redirect_target(page: bytes, url: str) -> str | None:
+    """The same-site URL a small HTML interstitial forwards to, if it is one.
+
+    Same registrable domain only (``wmsc.lcsc.com`` -> ``datasheet.lcsc.com``):
+    a page that bounces to another site is a wall, not a hop. The target is
+    fetched through ``safe_stream`` like the first URL."""
+    text = page[:_REDIRECT_PAGE_MAX].decode("utf-8", "replace")
+    m = _JS_REDIRECT.search(text) or _META_REFRESH.search(text)
+    if m is None:
+        return None
+    target = m.group("u")
+    if _site(urlsplit(target).hostname or "") != _site(urlsplit(url).hostname or ""):
+        return None
+    return target
+
+
+def _download(url: str, dest: Path, *, hop: int = 0) -> tuple[str, str]:
+    """Stream ``url`` to ``dest``; returns ``(final_url, sha256)``.
+
+    One same-site HTML forward (``hop``) is followed; nothing deeper."""
     httpx = require_httpx()
     sha = hashlib.sha256()
     size = 0
     head = b""
     checked = False
+    forward: str | None = None
+    final_url = url
     deadline = time.monotonic() + _DEADLINE_S
     try:
         with http_client(
@@ -187,28 +225,41 @@ def _download(url: str, dest: Path) -> tuple[str, str]:
                 ctype = resp.headers.get("Content-Type", "").split(";")[0].strip()
                 if ctype.lower().startswith("text/"):
                     # a bot wall / error page: never write it to disk
-                    raise _Failed("not_pdf", f"not a PDF ({ctype.lower()})")
-                final_url = str(resp.url)
-                with dest.open("wb") as fh:
-                    for chunk in resp.iter_bytes(chunk_size=_CHUNK):
-                        if time.monotonic() > deadline:
-                            raise _Failed("fetch_timeout", f"over {_DEADLINE_S:.0f}s")
-                        if not checked:
-                            head += chunk[: _MAGIC_WINDOW - len(head)]
-                            if len(head) >= _MAGIC_WINDOW:
-                                checked = True
-                                _require_pdf(head)
-                        size += len(chunk)
-                        if size > MAX_BYTES:
-                            raise _Failed("too_large", f"over {MAX_BYTES} bytes")
-                        sha.update(chunk)
-                        fh.write(chunk)
+                    if hop == 0:
+                        page = b""
+                        for chunk in resp.iter_bytes(chunk_size=_CHUNK):
+                            page += chunk
+                            if len(page) >= _REDIRECT_PAGE_MAX:
+                                break
+                        forward = _html_redirect_target(page, url)
+                    if forward is None:
+                        raise _Failed("not_pdf", f"not a PDF ({ctype.lower()})")
+                if forward is None:
+                    final_url = str(resp.url)
+                    with dest.open("wb") as fh:
+                        for chunk in resp.iter_bytes(chunk_size=_CHUNK):
+                            if time.monotonic() > deadline:
+                                raise _Failed(
+                                    "fetch_timeout", f"over {_DEADLINE_S:.0f}s"
+                                )
+                            if not checked:
+                                head += chunk[: _MAGIC_WINDOW - len(head)]
+                                if len(head) >= _MAGIC_WINDOW:
+                                    checked = True
+                                    _require_pdf(head)
+                            size += len(chunk)
+                            if size > MAX_BYTES:
+                                raise _Failed("too_large", f"over {MAX_BYTES} bytes")
+                            sha.update(chunk)
+                            fh.write(chunk)
     except SsrfBlocked as exc:
         raise _Failed("fetch_refused", str(exc)) from exc
     except httpx.TimeoutException as exc:
         raise _Failed("fetch_timeout", str(exc)) from exc
     except httpx.HTTPError as exc:
         raise _Failed(f"fetch_error:{type(exc).__name__}", str(exc)) from exc
+    if forward is not None:
+        return _download(forward, dest, hop=1)
     if size == 0:
         raise _Failed("not_pdf", "empty body")
     if not checked:
