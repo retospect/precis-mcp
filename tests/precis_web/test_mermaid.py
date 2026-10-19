@@ -91,6 +91,19 @@ def test_detail_shows_source_and_vocab(mm_client, runtime_with_store) -> None:
         assert marker in r.text, marker
 
 
+def test_detail_has_mermaid_download_button(mm_client, runtime_with_store) -> None:
+    """gr498614 follow-up — a visible ``.mermaid`` download button sits with
+    the rendered-format buttons and links to ``export.mermaid``; the header
+    also links the full-size view."""
+    _seed(runtime_with_store)
+    r = mm_client.get("/mermaid/web_mm")
+    assert r.status_code == 200
+    assert 'id="mm-export-mermaid"' in r.text
+    assert 'href="/mermaid/web_mm/export.mermaid"' in r.text
+    assert 'id="mm-full-link"' in r.text
+    assert 'href="/mermaid/web_mm/full"' in r.text
+
+
 def test_export_mermaid_source(mm_client, runtime_with_store) -> None:
     """``export.mermaid`` downloads the raw source text as ``<slug>.mermaid``."""
     _seed(runtime_with_store)
@@ -157,6 +170,32 @@ def test_export_png_pdf(mm_client, runtime_with_store, fmt, media) -> None:
 def test_export_unknown_fmt_404(mm_client, runtime_with_store) -> None:
     _seed(runtime_with_store)
     r = mm_client.get("/mermaid/web_mm/export.tiff")
+    assert r.status_code == 404
+
+
+def test_full_view_renders_with_splitter(mm_client, runtime_with_store) -> None:
+    """gr498614 follow-up — ``/mermaid/<slug>/full`` is the full-size view:
+    the render fills the window beside the source, with the shared
+    ``pane-split.js`` grip wired between the panes."""
+    _seed(runtime_with_store)
+    r = mm_client.get("/mermaid/web_mm/full")
+    assert r.status_code == 200
+    for marker in (
+        'id="mm-full"',
+        'id="mm-full-diagram"',
+        'id="mm-full-divider"',
+        'id="mm-full-source"',
+        "/static/pane-split.js",
+        "PrecisPaneSplit.attach",
+        "precis:mermaid:full-left-pct",
+    ):
+        assert marker in r.text, marker
+    assert "intake[Intake]" in r.text  # source in the right pane
+    assert 'href="/mermaid/web_mm/export.mermaid"' in r.text
+
+
+def test_full_view_404(mm_client, runtime_with_store) -> None:
+    r = mm_client.get("/mermaid/nope/full")
     assert r.status_code == 404
 
 

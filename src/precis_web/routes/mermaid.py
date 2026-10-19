@@ -12,6 +12,8 @@ Routes:
 * ``GET  /mermaid`` — retired into the unified Drive surface; redirects to
   the ``kind=mermaid`` facet preset.
 * ``GET  /mermaid/{slug}`` — the editor.
+* ``GET  /mermaid/{slug}/full`` — full-size view: render and source fill the
+  window, split by the shared ``pane-split.js`` grip (gr498614 follow-up).
 * ``GET  /mermaid/{slug}/render.svg`` — the sanitized rendered SVG (``<img>`` src).
 * ``GET  /mermaid/{slug}/export.{fmt}`` — download the diagram
   (``mermaid`` / ``svg`` / ``png`` / ``pdf``, Content-Disposition attachment).
@@ -95,22 +97,26 @@ async def mermaid_list() -> RedirectResponse:
     return RedirectResponse(url="/drive?k=mermaid&folder=*&sort=recency")
 
 
+def _not_found(request: Request, slug: str) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request,
+        "error.html.j2",
+        {
+            "title": "Mermaid diagram not found",
+            "detail": f"no live mermaid diagram with slug {slug!r}",
+            "status": 404,
+        },
+        status_code=404,
+    )
+
+
 @router.get("/mermaid/{slug}", response_class=HTMLResponse)
 async def mermaid_detail(request: Request, slug: str) -> HTMLResponse:
     store = get_store(request)
     try:
         ref = resolve_live_slug_ref(store, kind="mermaid", id=slug)
     except NotFound:
-        return templates.TemplateResponse(
-            request,
-            "error.html.j2",
-            {
-                "title": "Mermaid diagram not found",
-                "detail": f"no live mermaid diagram with slug {slug!r}",
-                "status": 404,
-            },
-            status_code=404,
-        )
+        return _not_found(request, slug)
     source, vocab, notes, turns = _docs(store, ref.id)
     findings = MERMAID_LANG.lint(source, None)
     ctx = {
@@ -126,6 +132,32 @@ async def mermaid_detail(request: Request, slug: str) -> HTMLResponse:
         "bindings": _bindings(store, ref.id),
     }
     return templates.TemplateResponse(request, "mermaid/detail.html.j2", ctx)
+
+
+@router.get("/mermaid/{slug}/full", response_class=HTMLResponse)
+async def mermaid_full(request: Request, slug: str) -> HTMLResponse:
+    """Full-size view (gr498614 follow-up): the same sanitized render the
+    workbench inlines fills the window beside the source, split by the
+    shared ``pane-split.js`` grip. Read-only — the workbench stays the
+    editor."""
+    store = get_store(request)
+    try:
+        ref = resolve_live_slug_ref(store, kind="mermaid", id=slug)
+    except NotFound:
+        return _not_found(request, slug)
+    source, _v, _n, _t = _docs(store, ref.id)
+    ctx = {
+        "active_tab": "mermaid",
+        "slug": ref.slug,
+        "title": ref.title or ref.slug,
+        "source": source,
+        "svg": _rendered_svg(source),  # inlined; sanitize is the trust boundary
+        "findings": [
+            {"kind": f.kind, "message": f.message}
+            for f in MERMAID_LANG.lint(source, None)
+        ],
+    }
+    return templates.TemplateResponse(request, "mermaid/full.html.j2", ctx)
 
 
 @router.get("/mermaid/{slug}/render.svg")

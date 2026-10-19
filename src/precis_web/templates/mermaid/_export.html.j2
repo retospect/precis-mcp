@@ -1,0 +1,17 @@
+{# The download row shared by the mermaid workbench and the full-size view:
+   one bordered button per format — .mermaid is the raw source, the rest are
+   the same server-side render the page shows. gr498614 follow-up: Reto
+   wanted a *visible* .mermaid button, not a subtle text link. #}
+{% macro mm_export(slug) -%}
+<span id="mm-export" class="inline-flex items-center gap-1"
+      title="download — the raw source, or the rendered diagram exactly as this page shows it">
+  <a class="rounded border border-line px-2 py-0.5 text-xs text-fg-secondary hover:bg-surface-subtle"
+     id="mm-export-mermaid" href="/mermaid/{{ slug }}/export.mermaid" download>.mermaid</a>
+  <a class="rounded border border-line px-2 py-0.5 text-xs text-fg-secondary hover:bg-surface-subtle"
+     id="mm-export-svg" href="/mermaid/{{ slug }}/export.svg" download>.svg</a>
+  <a class="rounded border border-line px-2 py-0.5 text-xs text-fg-secondary hover:bg-surface-subtle"
+     id="mm-export-png" href="/mermaid/{{ slug }}/export.png" download>.png</a>
+  <a class="rounded border border-line px-2 py-0.5 text-xs text-fg-secondary hover:bg-surface-subtle"
+     id="mm-export-pdf" href="/mermaid/{{ slug }}/export.pdf" download>.pdf</a>
+</span>
+{%- endmacro %}

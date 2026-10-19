@@ -1,5 +1,6 @@
 {% extends "base.html.j2" %}
 {% from "_drive_back.html.j2" import drive_back %}
+{% from "mermaid/_export.html.j2" import mm_export %}
 {% block title %}{{ title }} — Mermaid{% endblock %}
 {% block main_class %}px-4 py-6{% endblock %}
 {% block content %}
@@ -8,13 +9,10 @@
   {{ drive_back('mermaid', 'Mermaid') }}
   <h1 class="text-lg font-semibold">{{ title }}</h1>
   <span class="text-xs text-fg-faint">{{ slug }}</span>
-  <span id="mm-export" class="text-xs text-fg-subtle"
-        title="download — the raw source, or the rendered diagram exactly as this page shows it">
-    export: <a class="underline" id="mm-export-mermaid" href="/mermaid/{{ slug }}/export.mermaid" download>mermaid</a>
-    · <a class="underline" id="mm-export-svg" href="/mermaid/{{ slug }}/export.svg" download>svg</a>
-    · <a class="underline" id="mm-export-png" href="/mermaid/{{ slug }}/export.png" download>png</a>
-    · <a class="underline" id="mm-export-pdf" href="/mermaid/{{ slug }}/export.pdf" download>pdf</a>
-  </span>
+  <a id="mm-full-link" href="/mermaid/{{ slug }}/full"
+     class="rounded border border-line px-2 py-0.5 text-xs text-fg-secondary hover:bg-surface-subtle"
+     title="full-size view — diagram and source fill the window">full-size</a>
+  <span class="ml-auto">{{ mm_export(slug) }}</span>
 </div>
 
 {# The workbench is the pcb-workbench layout (static/pane-split.js):
