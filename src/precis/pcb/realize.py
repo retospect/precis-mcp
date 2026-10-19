@@ -2210,7 +2210,7 @@ def _realize_maze(
     tracks, vias = _prune_redundant_drop_vias(ir, tracks, vias, pours)
     # A plane pin the fan-out found no site for gets a routed connection to
     # a neighbouring drop via; the pour is carved again around what it adds.
-    rescue_tracks, rescue_vias, rescued = _rescue_plane_pins(
+    rescues = _rescue_plane_pins(
         ir,
         tracks,
         vias,
@@ -2223,31 +2223,45 @@ def _realize_maze(
         config=config,
         pour_clearance=ctx.clearance_max,
     )
-    if rescued:
-        tracks = tracks + rescue_tracks
-        vias = vias + rescue_vias
-        rescued_set = set(rescued)
-        plane_failed_pins = [p for p in plane_failed_pins if p not in rescued_set]
-        still = {int(ir.pin_net[p]) for p in plane_failed_pins}
-        fully = {int(ir.pin_net[p]) for p in rescued} - still
+    if rescues:
+        base = (tracks, vias, unrouted, plane_failed_pins)
         plane_seg_set = set(plane_ids)
-        unrouted = [
-            s_
-            for s_ in unrouted
-            if not (s_ in plane_seg_set and int(ir.seg_net[s_]) in fully)
-        ]
-        pours, extra_unrouted = _pour_planes(
-            ir,
-            tracks,
-            vias,
-            unrouted,
-            plane_ids,
-            ctx.clearance_max,
-            max(ctx.clearance_max, edge_min) + 0.01,
-            footprints,
-            fixed_copper,
-            npth_clearance_mm=_npth_clearance_mm(config),
+
+        def repour(
+            chosen: list[_PlaneRescue],
+        ) -> tuple[Any, dict[tuple[str, int], int]]:
+            r_tracks = base[0] + [t for r in chosen for t in r.tracks]
+            r_vias = base[1] + [v for r in chosen for v in r.vias]
+            rescued_set = {r.pid for r in chosen}
+            failed = [p for p in base[3] if p not in rescued_set]
+            still = {int(ir.pin_net[p]) for p in failed}
+            fully = {int(ir.pin_net[p]) for p in rescued_set} - still
+            r_unrouted = [
+                s_
+                for s_ in base[2]
+                if not (s_ in plane_seg_set and int(ir.seg_net[s_]) in fully)
+            ]
+            r_pours, r_extra = _pour_planes(
+                ir,
+                r_tracks,
+                r_vias,
+                r_unrouted,
+                plane_ids,
+                ctx.clearance_max,
+                max(ctx.clearance_max, edge_min) + 0.01,
+                footprints,
+                fixed_copper,
+                npth_clearance_mm=_npth_clearance_mm(config),
+            )
+            return (
+                (r_tracks, r_vias, r_unrouted, failed, r_pours, r_extra),
+                _pour_pieces(ir, r_tracks, r_vias, r_pours, pads),
+            )
+
+        _kept, kept_result = _keep_splitless_rescues(
+            rescues, repour, _pour_pieces(ir, tracks, vias, pours, pads)
         )
+        tracks, vias, unrouted, plane_failed_pins, pours, extra_unrouted = kept_result
     # Deliberate stitching vias, AFTER pouring -- this pass needs the
     # finished pour polygons to know what it is joining (module docstring's
     # "Plane fragment stitching" note, gripe 270637).
@@ -6257,6 +6271,118 @@ def _final_board_grid(
     return grid
 
 
+@dataclass(frozen=True)
+class _PlaneRescue:
+    """One plane pin's rescue (:func:`_rescue_plane_pins`): the copper it
+    adds, and the earlier rescue whose via it ends on (``None`` when it
+    ends on a fan-out drop), which it cannot outlive."""
+
+    pid: int
+    tracks: list[RealizedTrack]
+    vias: list[RealizedVia]
+    after: int | None
+
+
+def _pour_pieces(
+    ir: PcbIR,
+    tracks: list[RealizedTrack],
+    vias: list[RealizedVia],
+    pours: list[dict[str, Any]],
+    pads: list[tuple[Point, int, maze.PadShape, tuple[int, ...]]],
+) -> dict[tuple[str, int], int]:
+    """``(net, layer) -> how many electrical pieces that net's pour on that
+    layer is in``: poured pieces joined through the net's own vias, pads and
+    track ends, the joins :func:`_stitch_one_net` counts (physics copied
+    from the checker's model, not the checker consulted; this module's
+    independence note). :func:`_keep_splitless_rescues` compares it before
+    and after a re-pour, so only its rises matter."""
+    net_ids = {str(ir.net_name[n]): n for n in range(ir.n_nets)}
+    frags_by_net: dict[str, list[tuple[int, Any]]] = {}
+    for net, layer, poly in _pour_polygons(ir, pours):
+        for piece in getattr(poly, "geoms", [poly]):
+            frags_by_net.setdefault(net, []).append((layer, piece))
+    out: dict[tuple[str, int], int] = {}
+    for net, frags in frags_by_net.items():
+        net_id = net_ids.get(net)
+        own_vias = [v for v in vias if v.net_id == net_id]
+        own_pads = [(pt, lyrs) for pt, n, _shape, lyrs in pads if n == net_id]
+        nf, nv = len(frags), len(own_vias)
+        dsu = _UnionFind(nf + nv + len(own_pads))
+        for i, (layer, poly) in enumerate(frags):
+            for k, v in enumerate(own_vias):
+                if v.layer_lo <= layer <= v.layer_hi and _touches(poly, v.x, v.y):
+                    dsu.union(i, nf + k)
+            for k, (pt, lyrs) in enumerate(own_pads):
+                if layer in lyrs and _touches(poly, pt[0], pt[1]):
+                    dsu.union(i, nf + nv + k)
+        for track in tracks:
+            if track.net_id != net_id:
+                continue
+            ends = [
+                (float(seg[end][0]), float(seg[end][1]))
+                for seg in track.segments
+                for end in ("start", "end")
+            ]
+            touched = [
+                i
+                for i, (layer, poly) in enumerate(frags)
+                if layer == track.layer and any(_touches(poly, x, y) for x, y in ends)
+            ]
+            touched += [
+                nf + k
+                for k, v in enumerate(own_vias)
+                if v.layer_lo <= track.layer <= v.layer_hi
+                and any(math.hypot(x - v.x, y - v.y) <= v.dia_mm / 2.0 for x, y in ends)
+            ]
+            touched += [
+                nf + nv + k
+                for k, (pt, lyrs) in enumerate(own_pads)
+                if track.layer in lyrs
+                and any(math.hypot(x - pt[0], y - pt[1]) <= 1e-6 for x, y in ends)
+            ]
+            for other in touched[1:]:
+                dsu.union(touched[0], other)
+        roots: dict[int, set[int]] = {}
+        for i, (layer, _poly) in enumerate(frags):
+            roots.setdefault(layer, set()).add(dsu.find(i))
+        for layer, r in roots.items():
+            out[(net, layer)] = len(r)
+    return out
+
+
+def _keep_splitless_rescues(
+    rescues: list[_PlaneRescue],
+    repour: Callable[[list[_PlaneRescue]], tuple[Any, dict[tuple[str, int], int]]],
+    before: dict[tuple[str, int], int],
+) -> tuple[list[_PlaneRescue], Any]:
+    """The rescues whose copper, once the planes are poured again around
+    it, leaves no plane in more electrical pieces than ``before``
+    (:func:`_pour_pieces`), and ``repour``'s result for them. All are kept
+    when together they split nothing (one re-pour); otherwise each is tried
+    in order on top of those kept, and one that raises a count is dropped,
+    with every later rescue that ends on its via (gr492108: a rescue's
+    through-via antipad can cut a foreign plane's neck, which the
+    geometric pre-check in :func:`_rescue_plane_pins` cannot see past the
+    re-pour)."""
+
+    def splits(pieces: dict[tuple[str, int], int]) -> bool:
+        return any(n > before.get(key, 1) for key, n in pieces.items())
+
+    result, pieces = repour(rescues)
+    if not splits(pieces):
+        return rescues, result
+    kept: list[_PlaneRescue] = []
+    result, _ = repour(kept)
+    for rescue in rescues:
+        if rescue.after is not None and rescue.after not in {r.pid for r in kept}:
+            continue
+        trial, pieces = repour([*kept, rescue])
+        if not splits(pieces):
+            kept.append(rescue)
+            result = trial
+    return kept, result
+
+
 def _pour_yields(poly: Any, cut: Any, pads_covered: list[Point]) -> Any | None:
     """``poly`` less ``cut`` when the plane survives it -- no more pieces
     than before and every pad in ``pads_covered`` still touched -- else
@@ -6282,7 +6408,7 @@ def _rescue_plane_pins(
     rules_by_net: dict[int, NetRules],
     config: RealizeConfig,
     pour_clearance: float | None = None,
-) -> tuple[list[RealizedTrack], list[RealizedVia], list[int]]:
+) -> list[_PlaneRescue]:
     """Give a plane pin that found no drop-via site a ROUTED connection to
     one of its own net's drop vias that already reaches the pour (gr492108:
     nano V5's 15 pieces were exactly these pins).
@@ -6291,18 +6417,21 @@ def _rescue_plane_pins(
     pin walled in beyond that can still have a legal trace to a drop via
     further away, which the maze router finds on the final board. The trace
     may change layer; the re-pour that follows carves the planes around
-    whatever it adds. Returns the new tracks and vias and the pins rescued;
-    a pin with no reachable same-net drop stays failed and keeps its
+    whatever it adds. Returns one :class:`_PlaneRescue` per pin rescued, in
+    order; a pin with no reachable same-net drop stays failed and keeps its
     ``plane_drop_blocked`` reason.
 
-    A trace on a layer another net pours is accepted only when that plane
-    survives it (:func:`_pour_yields`): cut by the trace at
+    A trace on a layer another net pours, or a via through it, is accepted
+    only when that plane survives it (:func:`_pour_yields`): cut by the
+    trace, or by the via's antipad on every layer its barrel spans, at
     ``pour_clearance`` (the clearance the re-pour carves at), each yielding
     pour gains no piece and still covers every one of its net's pads it
     covered before. Otherwise it is refused, as the jumper refuses (gr492108:
-    taz15's F.Cu pins under the 3V3 pour had no other way out)."""
+    taz15's F.Cu pins under the 3V3 pour had no other way out). This is the
+    geometric pre-check; the caller re-pours and judges the electrical
+    pieces (:func:`_keep_splitless_rescues`)."""
     if not failed_pins or not pours:
-        return [], [], []
+        return []
     pour_polys = _pour_polygons(ir, pours)
     cut_clearance = clearance if pour_clearance is None else pour_clearance
     # Each net's pour per layer, cut as rescues are accepted, and the pads
@@ -6328,9 +6457,13 @@ def _rescue_plane_pins(
     floor_width = resolve_net_rules(
         "", layer_is_outer=True, fab_caps=config.fab_caps
     ).track_width_mm
-    new_tracks: list[RealizedTrack] = []
     new_vias: list[RealizedVia] = []
-    rescued: list[int] = []
+    #: Which rescue placed each of ``new_vias`` (a later rescue may end on
+    #: one, and depends on it).
+    via_owner: list[int] = []
+    rescues: list[_PlaneRescue] = []
+    rescued: set[int] = set()
+    lo, hi = through_span(len(all_layers))
     for pid in failed_pins:
         net_id = int(ir.pin_net[pid])
         rules = rules_by_net[net_id]
@@ -6380,18 +6513,32 @@ def _rescue_plane_pins(
                 )
                 if path is None or len(path.points) < 2:
                     continue
-                # A via may cross a foreign plane (the re-pour cuts its
-                # antipad); a TRACK on a layer another net pours cuts that
-                # plane, and is kept only if the plane survives the cut.
-                yielded: dict[tuple[str, int], Any] = {}
-                refused = False
+                # A TRACK on a layer another net pours cuts that plane, and
+                # so does a VIA's antipad on every layer its barrel spans
+                # (the re-pour carves both); each is kept only if the plane
+                # survives the cut.
+                cuts: list[tuple[int, Any]] = []
                 for layer in {int(p[2]) for p in path.points}:
                     pts = [(x, y) for x, y, lyr in path.points if int(lyr) == layer]
-                    if len(pts) < 2:
-                        continue
-                    cut = _ShapelyLineString(pts).buffer(
-                        width / 2.0 + cut_clearance, quad_segs=_JUMPER_QUAD_SEGS
+                    if len(pts) >= 2:
+                        cuts.append(
+                            (
+                                layer,
+                                _ShapelyLineString(pts).buffer(
+                                    width / 2.0 + cut_clearance,
+                                    quad_segs=_JUMPER_QUAD_SEGS,
+                                ),
+                            )
+                        )
+                for vx, vy, _lo, _hi in path.vias:
+                    disk = _ShapelyPoint(vx, vy).buffer(
+                        rules.via_dia_mm / 2.0 + cut_clearance,
+                        quad_segs=_JUMPER_QUAD_SEGS,
                     )
+                    cuts += [(layer, disk) for layer in range(lo, hi + 1)]
+                yielded: dict[tuple[str, int], Any] = {}
+                refused = False
+                for layer, cut in cuts:
                     for (n, i), poly in pour_state.items():
                         if i != layer or n == net_name or not poly.intersects(cut):
                             continue
@@ -6409,10 +6556,10 @@ def _rescue_plane_pins(
                 pour_state.update(yielded)
                 grid.stamp_path(path, width)
                 via_core = grid.core_radius_mm(rules.via_dia_mm)
-                lo, hi = through_span(len(all_layers))
+                path_vias: list[RealizedVia] = []
                 for vx, vy, _lo, _hi in path.vias:
                     grid.stamp_disk(range(lo, hi + 1), vx, vy, via_core, net_id)
-                    new_vias.append(
+                    path_vias.append(
                         RealizedVia(
                             seg_id=_STITCH_SEG_ID,
                             net_id=net_id,
@@ -6425,10 +6572,22 @@ def _rescue_plane_pins(
                             endpoint="a",
                         )
                     )
-                new_tracks += _tracks_from_path(_STITCH_SEG_ID, net_id, path, width)
-                rescued.append(pid)
+                after = next(
+                    (via_owner[k] for k, nv in enumerate(new_vias) if nv is v), None
+                )
+                new_vias += path_vias
+                via_owner += [pid] * len(path_vias)
+                rescues.append(
+                    _PlaneRescue(
+                        pid,
+                        _tracks_from_path(_STITCH_SEG_ID, net_id, path, width),
+                        path_vias,
+                        after,
+                    )
+                )
+                rescued.add(pid)
                 break
-    return new_tracks, new_vias, rescued
+    return rescues
 
 
 def _stitch_plane_fragments(
