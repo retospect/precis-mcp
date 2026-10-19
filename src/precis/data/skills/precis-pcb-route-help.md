@@ -392,7 +392,9 @@ get(kind="pcb", id="s", view="planes")  # see what's assigned
 ```
 
 `layer` must name a layer in the board's stackup (`get(id=s)`'s TOC shows
-it, e.g. `4 layers: F.Cu/In1.Cu(GND)/In2.Cu/B.Cu`); an unknown name is
+it, e.g. `4 layers: F.Cu/In1.Cu(GND)/In2.Cu/B.Cu` — `(GND)` is the stackup's
+declaration only; nothing pours until `op='plane_net'` or `op='stackup'` records
+an assignment, see `view='planes'`); an unknown name is
 rejected with the valid options. A plane-assigned net's pins **dog-bone
 fan out** (a short stub off the pad, no via-in-pad) instead of routing
 point-to-point — on the pin's OWN side, so a bottom-mounted part's stub is
