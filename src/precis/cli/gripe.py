@@ -30,6 +30,8 @@ import sys
 from datetime import datetime
 from typing import Any
 
+import psycopg
+
 from precis.cli._common import resolve_dsn
 
 
@@ -270,6 +272,7 @@ def shorten_titles(
     from precis.errors import PrecisError
     from precis.handlers._gripe_title import short_title
     from precis.handlers.gripe import GripeHandler
+    from precis.store.revision_context import revision_context
 
     with store.pool.connection() as conn:
         rows = conn.execute(
@@ -285,6 +288,7 @@ def shorten_titles(
     handler = GripeHandler(hub=Hub(store=store))
     out: list[str] = []
     found = written = 0
+    skipped: list[str] = []
     for ref_id, title in rows:
         new = short_title(title)
         if new is None or new == title:
@@ -296,16 +300,33 @@ def shorten_titles(
         out.append(f'gr{ref_id}: "{old[:100]}" → "{new}"')
         if not apply:
             continue
+        # The title is derived mechanically by this pass, so it declares
+        # itself ``computed`` (an operator-run gardening pass), not a human
+        # or reviewer. Title first: a refused row is skipped before it
+        # gets a "shortened from" comment it would not honour.
         try:
-            handler.put(id=int(ref_id), text=f"title shortened from: {old}")
-            store.update_ref(int(ref_id), title=new)
-        except PrecisError as e:
+            with revision_context(
+                "gripe title gardening pass",
+                actor="cli:gripes --shorten-titles",
+                trust_origin="computed",
+                trust_actor_type="operator",
+            ):
+                store.update_ref(int(ref_id), title=new)
+                handler.put(id=int(ref_id), text=f"title shortened from: {old}")
+        except (PrecisError, psycopg.Error) as e:
             out.append(f"  failed: {type(e).__name__}")
+            skipped.append(f"gr{ref_id} ({type(e).__name__}: {_first_line(e)})")
             continue
         written += 1
     verb = f"shortened {written}" if apply else "dry run, nothing written"
     out.append(f"{found} open gripe title(s) to shorten; {verb}")
+    if skipped:
+        out.append(f"skipped {len(skipped)}: " + " · ".join(skipped))
     return out
+
+
+def _first_line(exc: BaseException) -> str:
+    return (str(exc).strip().splitlines() or [""])[0][:160]
 
 
 # ---------------------------------------------------------------------------

@@ -9,6 +9,9 @@ records the old title in a comment when it writes.
 
 from __future__ import annotations
 
+from typing import Any
+
+import psycopg
 import pytest
 
 from precis.cli.gripe import shorten_titles
@@ -17,6 +20,7 @@ from precis.errors import BadInput
 from precis.handlers import _gripe_title
 from precis.handlers._gripe_title import TITLE_MAX, short_title
 from precis.handlers.gripe import GripeHandler
+from precis.store.revision_context import revision_context
 from tests._gripe import insert_gripe
 
 LONG = (
@@ -156,3 +160,42 @@ def test_gardening_pass_lists_by_default_and_records_the_old_title(
 
     again = shorten_titles(gripe.store, apply=True, ids=[gid])
     assert again == ["0 open gripe title(s) to shorten; shortened 0"]
+
+
+def _stamped_gripe(gripe: GripeHandler, title: str) -> int:
+    """A gripe stamped generated/hunch, as a trust-converted agent files it."""
+    with revision_context(trust_origin="generated", trust_actor_type="agent"):
+        return int(insert_gripe(gripe.store, title).id)
+
+
+def test_gardening_pass_shortens_a_trust_stamped_gripe(gripe: GripeHandler) -> None:
+    gid = _stamped_gripe(gripe, LONG)
+
+    done = shorten_titles(gripe.store, apply=True, ids=[gid])
+
+    assert done[-1] == "1 open gripe title(s) to shorten; shortened 1"
+    assert _title(gripe, gid) == short_title(LONG)
+    assert _comments(gripe, gid) == [f"title shortened from: {LONG}"]
+
+
+def test_gardening_pass_skips_and_reports_a_refused_row(
+    gripe: GripeHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bad = _stamped_gripe(gripe, LONG)
+    good = _stamped_gripe(gripe, LONG + " and a second one")
+    real = gripe.store.update_ref
+
+    def refuse(ref_id: int, **kw: Any) -> Any:
+        if ref_id == bad:
+            raise psycopg.errors.CheckViolation("trust: refused for the test")
+        return real(ref_id, **kw)
+
+    monkeypatch.setattr(gripe.store, "update_ref", refuse)
+
+    out = shorten_titles(gripe.store, apply=True, ids=[bad, good])
+
+    assert any(f"skipped 1: gr{bad} (CheckViolation" in line for line in out)
+    assert out[-2] == "2 open gripe title(s) to shorten; shortened 1"
+    assert _title(gripe, bad) == LONG
+    assert _comments(gripe, bad) == []
+    assert _title(gripe, good) == short_title(LONG + " and a second one")
