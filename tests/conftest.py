@@ -96,6 +96,13 @@ from tests._node import require_node  # noqa: F401  (fixture for needs_node)
 # collection — before any session fixture runs. Tests of the unset behavior
 # monkeypatch ``struct_relax._NODE`` / delenv per-test.
 os.environ.setdefault("PRECIS_DFT_NODE", "dft-test-node")
+# gr495146: the OpenMP runtime reads OMP_STACKSIZE once, when tblite is first
+# imported. relax._xtb_calculator floors it too, but a test's
+# ``importorskip("tblite")`` (or an earlier test in the same xdist worker)
+# imports tblite first, so on macOS (512 KB default worker stack) the floor
+# came too late and tblite segfaulted in its error callback. Set it before
+# any test module can import tblite.
+os.environ.setdefault("OMP_STACKSIZE", "1G")
 
 PG_TEST_DSN = os.environ.get(
     "PRECIS_TEST_PG_URL",
