@@ -1467,6 +1467,30 @@ def _ensure_autocatpath_todo(
     return int(ref.id)
 
 
+def _seed_todo_paused(store: Store, seed_todo_id: int) -> bool:
+    """Does the seed leaf carry an open pause tag (``child-failed:<job>``,
+    ``halt``, ``ask-user``, …) — the same set the ssh_node claim gate
+    (``parent_not_paused``) refuses to run jobs under?
+
+    A job minted under such a todo can never be claimed, so
+    :func:`dispatch_autocatpath` holds the re-mint instead.
+    """
+    from precis.store._todo_sql import _doable_exclusion_clause
+
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            f"""
+            SELECT EXISTS (
+              SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+               WHERE rt.ref_id = %s AND t.namespace = 'OPEN'
+                 AND {_doable_exclusion_clause()}
+            )
+            """,
+            (seed_todo_id,),
+        ).fetchone()
+    return bool(row and row[0])
+
+
 def _seed_todo_handled(store: Store, seed_todo_id: int) -> bool:
     """Does the seed leaf at ``seed_todo_id`` need no fresh ``autocatpath_seed``
     job — i.e. is it *handled* rather than *stuck*?
@@ -1532,22 +1556,33 @@ def _seed_todo_handled(store: Store, seed_todo_id: int) -> bool:
 _NO_LIVE_LANE = "every route node has a retired ssh_node lane"
 
 
+#: Refusal body when every seed of a dispatch is held under a paused seed todo
+#: (``_seed_todo_paused``). Same stand-down contract as :data:`_NO_LIVE_LANE`.
+_ALL_SEEDS_HELD = "every seed is held under a paused seed todo"
+
+
 def is_no_live_lane(note: object) -> bool:
-    """True when ``note`` is the dispatch refusal for "no live lane left".
+    """True when ``note`` is a dispatch refusal that minted nothing: "no live
+    lane left" or "every seed held under a paused seed todo".
 
     Such a call minted nothing, so a caller must not count it as an attempt:
     no retry bump, no counter reset, no gripe, no re-queue. The note already
     carries the ``next:`` hint; surface it once and stop.
     """
-    return isinstance(note, str) and _NO_LIVE_LANE in note and "refused" in note
+    return (
+        isinstance(note, str)
+        and (_NO_LIVE_LANE in note or _ALL_SEEDS_HELD in note)
+        and "refused" in note
+    )
 
 
 def _note_no_live_lane(notes: list[str], what: str, refusal: str) -> None:
     """Record a held dispatch once per pass: the first carries the refusal
     (with its ``next:``), later ones add nothing, so a quest with hundreds of
     candidates logs one line, not hundreds."""
-    if not any(_NO_LIVE_LANE in n for n in notes):
-        notes.append(f"{what} held, no live lane: {refusal}")
+    if not any(_NO_LIVE_LANE in n or _ALL_SEEDS_HELD in n for n in notes):
+        why = "no live lane" if _NO_LIVE_LANE in refusal else "paused seed todos"
+        notes.append(f"{what} held, {why}: {refusal}")
 
 
 def _live_route_nodes(store: Store, nodes: list[str]) -> tuple[list[str], str]:
@@ -1965,6 +2000,7 @@ def dispatch_autocatpath(
             seed_resources["cpuset"] = seed_cpuset
 
         minted = 0
+        held = 0
         for model_index in range(len(specs)):
             for seed_idx, seed in enumerate(seeds):
                 # Round-robin the fan-out across every routed GPU host —
@@ -1983,6 +2019,15 @@ def dispatch_autocatpath(
                 if seed_todo_id is not None and _seed_todo_handled(store, seed_todo_id):
                     # done/won't-do, or already has a succeeded/live job —
                     # leave it alone (§B-1's original "retry skips it").
+                    continue
+                if seed_todo_id is not None and _seed_todo_paused(store, seed_todo_id):
+                    # `child-failed:` / halt / ask-user on the seed leaf: the
+                    # ssh_node claim gate (`parent_not_paused`) skips every job
+                    # under it, so a re-mint would sit queued forever
+                    # (gr497891: 8 seeds, 7.7 h). The sweeper's `unpark` phase
+                    # re-arms the leaf when a retry is warranted; the next
+                    # dispatch after it clears the tag mints normally.
+                    held += 1
                     continue
                 # No seed todo yet, OR one exists but its only job(s) are
                 # failed/cancelled — this is the automatic infra-repair path
@@ -2038,9 +2083,19 @@ def dispatch_autocatpath(
         return f"autocatpath dispatch failed for {ref.slug}: tree mint ({e})"
 
     total = len(specs) * len(seeds)
+    if total and held == total:
+        # Nothing could run: every seed sits under a paused seed todo. Report it
+        # as a refusal so the retry/amnesty callers stand down (no counter bump,
+        # no reset) instead of counting a dispatch that minted nothing.
+        return (
+            f"autocatpath dispatch refused for {ref.slug}: {_ALL_SEEDS_HELD} "
+            "(next: the sweeper unpark phase clears the pause tag once its "
+            "cause changes; nothing to do until then)"
+        )
+    held_note = f", {held} held under a paused seed todo" if held else ""
     return (
         f"autocatpath[{force or 'config'}] dispatched {total} seed(s) "
-        f"({minted} new) + aggregate for {ref.slug} → pathway {pslug}"
+        f"({minted} new{held_note}) + aggregate for {ref.slug} → pathway {pslug}"
     )
 
 

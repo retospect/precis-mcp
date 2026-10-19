@@ -3180,12 +3180,33 @@ def _render_fleet_utilisation(store: Store | None) -> list[str]:
         )
     out.append("")
     if lanes:
-        listed = "; ".join(
-            f"{lane.executor} ({lane.queued} queued, "
-            f"oldest {lane.oldest_queued_minutes}m)"
-            for lane in lanes
-        )
-        out.append(f"Lanes idle beside queued work: {listed}")
+        idle = [lane for lane in lanes if not lane.all_paused]
+        paused = [lane for lane in lanes if lane.all_paused]
+        if idle:
+            listed = "; ".join(
+                f"{lane.executor} ({lane.queued} queued, "
+                f"oldest {lane.oldest_queued_minutes}m"
+                + (
+                    f", {lane.behind_paused_parent} behind a paused parent"
+                    if lane.behind_paused_parent
+                    else ""
+                )
+                + ")"
+                for lane in idle
+            )
+            out.append(f"Lanes idle beside queued work: {listed}")
+        else:
+            out.append("Lanes idle beside queued work: none")
+        if paused:
+            listed = "; ".join(
+                f"{lane.executor} ({lane.queued} queued, "
+                f"oldest {lane.oldest_queued_minutes}m)"
+                for lane in paused
+            )
+            out.append(
+                "Queued behind paused parent (child-failed / halt / ask-user "
+                f"on the parent todo; the lane cannot claim them): {listed}"
+            )
     else:
         out.append("Lanes idle beside queued work: none")
     out.append("")

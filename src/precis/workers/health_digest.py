@@ -1198,7 +1198,10 @@ def _check_lanes_idle_beside_queue(conn: Any) -> CheckResult:
             _WARN,
         )
     detail = "; ".join(
-        f"{lane.executor}: {lane.queued} queued, "
+        f"{lane.executor}: {lane.queued} queued behind a paused parent, "
+        f"oldest {lane.oldest_queued_minutes}m"
+        if lane.all_paused
+        else f"{lane.executor}: {lane.queued} queued, "
         f"oldest {lane.oldest_queued_minutes}m, no claim in 1h"
         for lane in lanes
     )

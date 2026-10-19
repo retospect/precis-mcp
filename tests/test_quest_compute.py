@@ -5978,6 +5978,67 @@ class TestDispatchAutocatpath:
         assert len(self._agg_todo_ids(store, sid)) == 1  # same tree, not a new one
         assert len(self._seed_todo_ids(store, sid)) == 3  # same todo reused, not 4
 
+    def test_failed_seed_under_child_failed_todo_not_reminted(self, store: Any) -> None:
+        """gr497891: a seed leaf bubbled ``child-failed:<job>`` is paused for
+        the ssh_node claim gate, so a re-mint would queue unclaimable. The
+        dispatch holds it; once the tag clears (sweeper unpark) it re-mints."""
+        from precis.store import Tag
+
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        job0_id, _m = self._seed_job_for(store, sid, 0)
+        store.add_tag(
+            job0_id,
+            Tag.closed("STATUS", "failed"),
+            set_by="system",
+            replace_prefix=True,
+        )
+        with store.pool.connection() as conn:
+            seed_todo_id = conn.execute(
+                "SELECT parent_id FROM refs WHERE ref_id = %s", (job0_id,)
+            ).fetchone()[0]
+        store.add_tag(
+            seed_todo_id, Tag.open(f"child-failed:{job0_id}"), set_by="system"
+        )
+
+        note = compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        assert "(0 new, 1 held under a paused seed todo)" in note
+        assert len(self._seed_jobs(store, sid)) == 3  # no unclaimable re-mint
+
+        store.remove_tag(seed_todo_id, Tag.open(f"child-failed:{job0_id}"))
+        note = compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        assert "(1 new)" in note
+        assert len(self._seed_jobs(store, sid)) == 4
+
+    def test_all_seeds_held_is_a_refusal_that_spends_no_retry(self, store: Any) -> None:
+        """gr497891: a pass where EVERY seed is held minted nothing, so it must
+        read as a refusal (``is_no_live_lane``) — the retry/amnesty callers then
+        stand down instead of bumping ``quest_*_infra_retries``."""
+        from precis.store import Tag
+
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        for seed in (0, 1, 2):
+            job_id, _m = self._seed_job_for(store, sid, seed)
+            store.add_tag(
+                job_id,
+                Tag.closed("STATUS", "failed"),
+                set_by="system",
+                replace_prefix=True,
+            )
+            with store.pool.connection() as conn:
+                todo_id = conn.execute(
+                    "SELECT parent_id FROM refs WHERE ref_id = %s", (job_id,)
+                ).fetchone()[0]
+            store.add_tag(todo_id, Tag.open(f"child-failed:{job_id}"), set_by="system")
+
+        note = compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        assert compute_mod.is_no_live_lane(note)
+        assert "dispatched" not in note
+        assert len(self._seed_jobs(store, sid)) == 3  # nothing minted
+
     def test_done_seed_todo_not_reminted_even_with_a_failed_job(
         self, store: Any
     ) -> None:

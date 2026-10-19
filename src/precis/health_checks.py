@@ -545,6 +545,16 @@ class IdleLane:
     executor: str
     queued: int
     oldest_queued_minutes: int
+    #: Of ``queued``, jobs whose parent todo carries an open pause tag
+    #: (``child-failed:``, ``halt``, …): the ``parent_not_paused`` claim gate
+    #: skips them, so an idle lane beside them is not a dead lane (gr497891).
+    behind_paused_parent: int = 0
+
+    @property
+    def all_paused(self) -> bool:
+        """Every queued job sits behind a paused parent: the lane has no
+        claimable work, so "idle" is the wrong word for it."""
+        return self.queued > 0 and self.behind_paused_parent >= self.queued
 
 
 #: Executor owned by ``workers/nursery.py::_detect_dispatch_stalls``.
@@ -579,11 +589,17 @@ def idle_lanes(
     # for a running or recently started job. The probes stop at the first
     # hit, so the expensive no-match walk only happens when a lane really is
     # idle beside its queue.
+    from precis.store._todo_sql import _doable_exclusion_clause
+
     rows = conn.execute(
-        """
+        f"""
         WITH q AS (
           SELECT r.meta->>'executor' AS executor,
                  count(*)::int        AS queued,
+                 count(*) FILTER (WHERE EXISTS (
+                   SELECT 1 FROM ref_tags prt JOIN tags pt ON pt.tag_id = prt.tag_id
+                    WHERE prt.ref_id = r.parent_id AND pt.namespace = 'OPEN'
+                      AND {_doable_exclusion_clause("pt", "prt")}))::int AS paused,
                  min(rt.created_at)   AS oldest
             FROM refs r
             JOIN ref_tags rt ON rt.ref_id = r.ref_id
@@ -596,7 +612,8 @@ def idle_lanes(
           HAVING min(rt.created_at) < now() - make_interval(mins => %(mins)s)
         )
         SELECT q.executor, q.queued,
-               floor(extract(epoch FROM now() - q.oldest) / 60)::int
+               floor(extract(epoch FROM now() - q.oldest) / 60)::int,
+               q.paused
           FROM q
          WHERE NOT EXISTS (
                  SELECT 1 FROM refs r
@@ -620,8 +637,13 @@ def idle_lanes(
         },
     ).fetchall()
     return [
-        IdleLane(executor=e, queued=int(q), oldest_queued_minutes=int(m))
-        for e, q, m in rows
+        IdleLane(
+            executor=e,
+            queued=int(q),
+            oldest_queued_minutes=int(m),
+            behind_paused_parent=int(p),
+        )
+        for e, q, m, p in rows
     ]
 
 

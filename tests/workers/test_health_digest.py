@@ -2619,6 +2619,30 @@ def test_lanes_idle_stale_when_requeued_job_sits_unclaimed(store) -> None:
     assert "coordinator_t6: 1 queued, oldest 4" in res.detail
 
 
+def test_lanes_idle_names_a_queue_behind_a_paused_parent(store) -> None:
+    """gr497891: jobs under a ``child-failed:`` parent cannot be claimed
+    (``parent_not_paused``); the digest and precis-status say so instead of
+    blaming an idle lane."""
+    from precis.handlers import skill as skill_mod
+
+    parent = seed_ref(store, title="paused seed todo", kind="todo")
+    store.add_tag(parent, Tag.open("child-failed:1"), set_by="system")
+    job = _seed_job(store, executor="ssh_node_t7", status="queued", age_min=90)
+    with store.pool.connection() as conn:
+        conn.execute("UPDATE refs SET parent_id = %s WHERE ref_id = %s", (parent, job))
+        conn.commit()
+
+    res = _lanes_check(store)
+    assert res.status == "stale"
+    assert "ssh_node_t7: 1 queued behind a paused parent" in res.detail
+    assert "no claim in 1h" not in res.detail
+
+    out = "\n".join(skill_mod._render_fleet_utilisation(store))
+    assert "Lanes idle beside queued work: none" in out
+    assert "Queued behind paused parent" in out
+    assert "ssh_node_t7 (1 queued" in out
+
+
 def test_lanes_idle_unknown_when_the_probe_fails(store, monkeypatch) -> None:
     def boom(conn, **_kw):
         conn.execute("SELECT 1/0")
