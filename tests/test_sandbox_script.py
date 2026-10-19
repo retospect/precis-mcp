@@ -853,3 +853,27 @@ def test_concurrent_stages_of_one_lock_fill_the_wheel_dir_once(
     assert (final / ".complete").exists()
     assert len(list(final.glob("*.whl"))) == 1
     assert [p.name for p in (tmp_path / "wheels").iterdir()] == [_LOCK_SHA]
+
+
+def test_stage_that_loses_the_rename_race_reports_reused(
+    stubs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stage whose exists() check saw no wheel dir, then lost the rename to a
+    concurrent winner, reuses the winner's dir (deterministic interleaving)."""
+    cache = tmp_path / "wheels"
+    real_rename = Path.rename
+    state = {"winner_done": False}
+
+    def rename_after_winner(self: Path, target: Any) -> Any:
+        if not state["winner_done"]:
+            state["winner_done"] = True
+            winner = _sandbox_script.stage_deps(["numpy"], cache_root=cache)
+            assert winner.reused is False
+        return real_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", rename_after_winner)
+    loser = _sandbox_script.stage_deps(["numpy>=2"], cache_root=cache)
+
+    assert loser.reused is True
+    assert (cache / _LOCK_SHA / ".complete").exists()
+    assert [p.name for p in cache.iterdir()] == [_LOCK_SHA]

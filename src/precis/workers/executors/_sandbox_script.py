@@ -263,6 +263,9 @@ def stage_deps(deps: list[str], *, cache_root: Path) -> StagedDeps:
         except OSError:
             if not (wheels_dir / _COMPLETE_MARKER).exists():
                 raise
+            # Lost the rename race: the winner's dir is complete, so this
+            # stage reuses it rather than reporting a fresh fill.
+            return StagedDeps(lock_text, lock_sha, wheels_dir, reused=True)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     return StagedDeps(lock_text, lock_sha, wheels_dir, reused=False)
