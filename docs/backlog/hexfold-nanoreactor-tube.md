@@ -55,9 +55,23 @@ Still needed from hexfold (ranked):
   `opening(port=)` composing with `fuse`/`fuse{reducer}` lines
   (`examples/tunnel_two_steps.hx`: sheet | 18 → 12 → 6 | sheet), with a
   `junction.strain` read per opening mouth and per reducer seam
-  (`opening:<sheet>`, `reducer:<wide>-><narrow>:outer|inner`). Left: an
-  optional outer Y-junction / cones when a step over-strains, H3 relax,
-  and wiring the reducer into the tunnel/rail-tube scene feature.
+  (`opening:<sheet>`, `reducer:<wide>-><narrow>:outer|inner`). Landed: the
+  stepped rail tube in the `tunnel-reservoirs` scene feature —
+  `tube: {rail: [[rows,periods],…], rails, rows, pores:[[seg,arc,u,v],…]}`
+  composes N-arc ribbed segments with a solver-minted washer per step
+  (the `fuse{reducer}` role: flat annulus, narrow rim stitched into the
+  hole, wide rim onto the outer edge; rail ends are stars so the `cap`
+  registry cannot fuse them), sites labelled per segment
+  (`seg<i>.strip<k>`), `junction.strain` per step as
+  `reducer:seg<w>->seg<n>:outer|inner`. A step over-strains when the
+  read's `seam_bonds_max_A > 3.0` or `angle_dev_max_deg > 45` (measured
+  on a relaxed 18→8 rail step; WARN `step.overstrained`). Known residual:
+  the star-notch walls at a step seam relax to ~1 Å unbonded neighbours,
+  so `geom.nearest_not_bonded`/`geom.clash` ERRORs appear in the washer
+  zone — closing those needs the cone transition (it shortens the notch
+  at the step), not more margin. Left: build the outer cone/Y transition
+  the WARN names (wedge excision + radial fuse, refused by name until
+  then), the notch-wall residual above, H3 relax, and zigzag rims.
 - **H3: relaxed geometry with per-seam strain** — MLIP/GFN-FF relax of
   the assembled tunnel (tblite is wired for the `xtb` rung but absent on
   this host), reporting strain per seam and junction; a 7k-atom preview

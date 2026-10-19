@@ -42,7 +42,7 @@ from hexfold.build import JunctionRecord, Net
 from hexfold.check import Relaxed, geometry_findings
 from hexfold.report import Finding, Report, Severity
 from hexfold.stick import angle_springs, stick_relax_pinned
-from hexfold.tunnel import Junction, Tunnel, tunnel_reservoirs
+from hexfold.tunnel import Junction, Tunnel, tunnel_reservoirs, tunnel_steps
 from precis_se.atomic.generators._types import GeneratedBlock, GeneratorError
 from precis_se.atomic.generators.hexfold_spec import (
     _block_from_net,
@@ -51,6 +51,12 @@ from precis_se.atomic.generators.hexfold_spec import (
 )
 
 FEATURE_TYPE = "tunnel-reservoirs"
+
+#: over-strain bars for a step washer's ``junction.strain`` read (the
+#: ``step.overstrained`` WARN; measured on a 16 -> 8 rail step, spec
+#: docs/backlog/hexfold-nanoreactor-tube.md)
+_STEP_STRAIN_BOND_A = 3.0
+_STEP_STRAIN_ANGLE_DEG = 45.0
 
 
 def _is_int(v: object) -> bool:
@@ -87,29 +93,87 @@ def _normalize(
         tspec: tuple = (n, periods)
     elif isinstance(tube, dict):
         rail = tube.get("rail")
-        wall = _int_pair(rail, "tube.rail") if rail is not None else None
         rails = tube.get("rails")
         rows = tube.get("rows", 4)
         pores = tube.get("pores", [])
         if (
-            wall is None
-            or not _is_int(rails)
-            or not _is_int(rows)
-            or not isinstance(pores, list)
-            or not all(
-                isinstance(p, list | tuple)
-                and len(p) == 3
-                and all(_is_int(x) for x in p)
-                for p in pores
-            )
+            isinstance(rail, list)
+            and rail
+            and all(isinstance(s, list | tuple) and len(s) == 2 for s in rail)
+            and not _is_int(rail[0])
         ):
-            raise GeneratorError(
-                "tunnel-reservoirs rail tube must be {rail: [rows, periods], "
-                "rails: int, rows: int, pores: [[arc,u,v],...]}; got "
-                f"{tube!r}"
+            # stepped tube: a list of [rows, periods] rail segments --
+            # H2 radius steps, solver-minted washers between segments
+            for key in tube:
+                if key not in ("rail", "rails", "rows", "pores"):
+                    raise GeneratorError(
+                        f"tunnel-reservoirs stepped rail takes only "
+                        f"rail/rails/rows/pores; {key!r} is unsupported "
+                        "(an outer cone/Y step transition is not yet "
+                        "buildable — watch for the step.overstrained WARN)"
+                    )
+            steps = tuple(_int_pair(s, "tube.rail[]") for s in rail)
+            if len(steps) < 2:
+                raise GeneratorError(
+                    "tunnel-reservoirs stepped rail needs at least two "
+                    f"[rows, periods] segments; got {rail!r}"
+                )
+            if (
+                not _is_int(rails)
+                or not _is_int(rows)
+                or not isinstance(pores, list)
+                or not all(
+                    isinstance(p, list | tuple)
+                    and len(p) == 4
+                    and all(_is_int(x) for x in p)
+                    for p in pores
+                )
+            ):
+                raise GeneratorError(
+                    "tunnel-reservoirs stepped rail must be {rail: "
+                    "[[rows,periods],...], rails: int, rows: int, pores: "
+                    f"[[seg,arc,u,v],...]}}; got {tube!r}"
+                )
+            per_seg: list[list[tuple[int, int, int]]] = [[] for _ in steps]
+            for p in pores:
+                seg_i, arc_i, u_i, v_i = (int(x) for x in p)
+                if not 0 <= seg_i < len(steps):
+                    raise GeneratorError(
+                        f"tunnel-reservoirs pore seg {seg_i} has no segment"
+                    )
+                per_seg[seg_i].append((arc_i, u_i, v_i))
+            kind = "rail_steps"
+            tspec = tuple(
+                (s[0], s[1], rows, rails, tuple(per_seg[i]) or None)
+                for i, s in enumerate(steps)
             )
-        kind = "rail"
-        tspec = (wall[0], wall[1], rows, rails, tuple(tuple(p) for p in pores) or None)
+        else:
+            wall = _int_pair(rail, "tube.rail") if rail is not None else None
+            if (
+                wall is None
+                or not _is_int(rails)
+                or not _is_int(rows)
+                or not isinstance(pores, list)
+                or not all(
+                    isinstance(p, list | tuple)
+                    and len(p) == 3
+                    and all(_is_int(x) for x in p)
+                    for p in pores
+                )
+            ):
+                raise GeneratorError(
+                    "tunnel-reservoirs rail tube must be {rail: [rows, periods], "
+                    "rails: int, rows: int, pores: [[arc,u,v],...]}; got "
+                    f"{tube!r}"
+                )
+            kind = "rail"
+            tspec = (
+                wall[0],
+                wall[1],
+                rows,
+                rails,
+                tuple(tuple(p) for p in pores) or None,
+            )
     else:
         raise GeneratorError(
             "tunnel-reservoirs tube must be [n, periods] (armchair) or "
@@ -229,19 +293,29 @@ def _tunnel_sites(net: Net, tun: Tunnel, pos: np.ndarray) -> dict[str, Any]:
                 }
             )
     junction_atoms = {e["ordinal"] for e in sites}
+    # also the step washers' seam zones, so rib ends at a step junction
+    # are not double-labelled lumen sites
+    junction_atoms |= {a for j in tun.reducers for a in j.atoms}
     if tun.kind == "rail":
         for kk, strip in enumerate(tun.strip_atoms):
+            seg_i = tun.strip_segment[kk] if tun.strip_segment else None
             for o in strip:
                 if deg[o] < 3 and o not in junction_atoms:
                     sites.append(
                         {
                             "ordinal": int(o),
-                            "region": f"strip{kk}",
+                            "region": (
+                                f"strip{kk}"
+                                if seg_i is None
+                                else f"seg{seg_i}.strip{kk}"
+                            ),
                             "role": "lumen",
                             "normal": _free_dir(pos, nbrs, o).tolist(),
                         }
+                        | ({} if seg_i is None else {"segment": int(seg_i)})
                     )
         for kk, seam in enumerate(tun.seam_atoms):
+            seg_i = tun.seam_segment[kk] if tun.seam_segment else None
             for o in seam:
                 if o not in junction_atoms:
                     rxy = float(np.linalg.norm(pos[o][:2]))
@@ -253,10 +327,13 @@ def _tunnel_sites(net: Net, tun: Tunnel, pos: np.ndarray) -> dict[str, Any]:
                     sites.append(
                         {
                             "ordinal": int(o),
-                            "region": f"seam{kk}",
+                            "region": (
+                                f"seam{kk}" if seg_i is None else f"seg{seg_i}.seam{kk}"
+                            ),
                             "role": "seam",
                             "normal": inward,
                         }
+                        | ({} if seg_i is None else {"segment": int(seg_i)})
                     )
     for e in sites:
         x, y, z = (float(v) for v in pos[e["ordinal"]])
@@ -280,7 +357,10 @@ def build_tunnel_reservoirs(params: dict[str, Any]) -> GeneratedBlock:
     tspec, sheet, name, k, kind = _normalize(params)
     termination = terminate_mode(params)
     try:
-        net, tun = tunnel_reservoirs(tspec, sheet, kind=kind)
+        if kind == "rail_steps":
+            net, tun = tunnel_steps(tspec, sheet, kinds=("rail",) * len(tspec))
+        else:
+            net, tun = tunnel_reservoirs(tspec, sheet, kind=kind)
     except ValueError as exc:
         raise GeneratorError(str(exc)) from exc
     seed = tun.coords
@@ -330,17 +410,24 @@ def build_tunnel_reservoirs(params: dict[str, Any]) -> GeneratedBlock:
             ),
         )
     )
+    if kind == "rail_steps":
+        tube_echo: Any = {
+            "rail": [[s[0], s[1]] for s in tspec],
+            "rails": tspec[0][3],
+            "rows": tspec[0][2],
+            "pores": [[i, *p] for i, s in enumerate(tspec) for p in (s[4] or ())],
+        }
+    elif kind == "armchair":
+        tube_echo = list(tspec)
+    else:
+        tube_echo = {
+            "rail": list(tspec[:2]),
+            "rails": tspec[3],
+            "rows": tspec[2],
+            "pores": [list(p) for p in (tspec[4] or ())],
+        }
     normalized: dict[str, Any] = {
-        "tube": (
-            list(tspec)
-            if kind == "armchair"
-            else {
-                "rail": list(tspec[:2]),
-                "rails": tspec[3],
-                "rows": tspec[2],
-                "pores": [list(p) for p in (tspec[4] or ())],
-            }
-        ),
+        "tube": tube_echo,
         "features": [{"name": name, "type": FEATURE_TYPE, "sheet": list(sheet)}],
         "k_tether": k,
     }
@@ -581,6 +668,7 @@ def stored_tunnel(net: Net, tun: Tunnel, block: GeneratedBlock) -> Tunnel:
             unbonded_sheet=ords(j.unbonded_sheet),
             unbonded_tube=ords(j.unbonded_tube),
             atoms=ords(j.atoms),
+            name=j.name,
         )
 
     kept = sorted(remap, key=remap.__getitem__)
@@ -593,6 +681,8 @@ def stored_tunnel(net: Net, tun: Tunnel, block: GeneratedBlock) -> Tunnel:
         coords=np.asarray(tun.coords)[kept],
         strip_atoms=tuple(ords(s) for s in tun.strip_atoms),
         seam_atoms=tuple(ords(s) for s in tun.seam_atoms),
+        reducers=tuple(junction(j) for j in tun.reducers),
+        segment_atoms=tuple(ords(s) for s in tun.segment_atoms),
     )
 
 
@@ -670,13 +760,22 @@ def _junction_checks(
             )
         )
     # 3. per-junction coordination + strain on stored coords
+    all_junctions = (*tun.junctions, *tun.reducers)
     strain = tunnel_strain(
         coords,
         elements,
         block.bonds,
-        tun.junctions,
+        all_junctions,
         tun.seam_atoms if tun.kind == "rail" else (),
         net.lattice.sigma_A,
+        names=[
+            j.name or t
+            for j, t in zip(
+                all_junctions,
+                ("low", "high", *(x.name for x in tun.reducers)),
+                strict=True,
+            )
+        ],
     )
     strain_by_tag: dict[str, list[Finding]] = {}
     seam_strain: list[Finding] = []
@@ -685,7 +784,11 @@ def _junction_checks(
             strain_by_tag.setdefault(f.where, []).append(f)
         else:
             seam_strain.append(f)
-    for tag, jun in zip(("low", "high"), tun.junctions, strict=True):
+    for tag, jun in zip(
+        ("low", "high", *(j.name for j in tun.reducers)),
+        all_junctions,
+        strict=True,
+    ):
         over = [a for a in jun.atoms if len(cbonds[a]) > 3]
         under = [a for a in jun.atoms if len(cbonds[a]) < 2]
         if over or under:
@@ -700,6 +803,36 @@ def _junction_checks(
                 )
             )
         out.extend(strain_by_tag.get(tag, ()))
+        # over-strained step seam: the flat washer concentrates the radius
+        # change in one ring; a cone frustum (the outer Y alternative)
+        # spreads it.  Bars measured on the relaxed preview of a 16 -> 8
+        # rail step (worst stitched bond ~4.6 A at rib-tip notches,
+        # face-angle deviations ~45 deg).  The cone build is not wired yet
+        # -- this WARN names when it would be wanted.
+        if tag.startswith("reducer:"):
+            sj = strain_by_tag.get(tag, [])
+            data = dict(sj[0].data) if sj else {}
+            if (data.get("seam_bonds_max_A") or 0.0) > _STEP_STRAIN_BOND_A or (
+                data.get("angle_dev_max_deg") or 0.0
+            ) > _STEP_STRAIN_ANGLE_DEG:
+                out.append(
+                    Finding(
+                        "step.overstrained",
+                        Severity.WARN,
+                        f"{tag}: step seam reads over-strain "
+                        f"(seam bond max {data.get('seam_bonds_max_A')} A > "
+                        f"{_STEP_STRAIN_BOND_A:g} or face-angle dev "
+                        f"{data.get('angle_dev_max_deg')} deg > "
+                        f"{_STEP_STRAIN_ANGLE_DEG:g}); an outer cone/Y "
+                        "transition would spread the radius change "
+                        "(not yet buildable)",
+                        where=tag,
+                        data=(
+                            ("bond_bar_A", _STEP_STRAIN_BOND_A),
+                            ("angle_bar_deg", _STEP_STRAIN_ANGLE_DEG),
+                        ),
+                    )
+                )
         # relax research (memory me482127): an equal-120 sp2 seam dimerises
         # into sp3 under GFN2-xTB -- flag a run of flat equal-120 degree-3
         # junction atoms so the pattern is never silently emitted

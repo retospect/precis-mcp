@@ -8,9 +8,10 @@ prio: low
 # Functionalized-interior carbon channel for staged catalysis
 
 **Dormant.** Reto, 2026-10-03 (via review session): "needs more work on the
-carbon side". It is blocked on hexfold building a three-arc cross-section
-with inward ribs; the carbon-side asks go to hexfold-toolkit separately.
-**No quest is minted until hexfold can build that cross-section** (Reto).
+carbon side". The blocking build has since landed: the three-arc ribbed
+cross-section `rail-k3-120-z` shipped 2026-10-13, so the cross-section
+gate Reto set is met. **Minting the quest is Reto's call** — this file
+does not mint one.
 Later it feeds the catalysis quests. Reto's full brief:
 `~/.claude/projects/-Users-reto-precis-mcp/scratch/review-msgs/cnt-channel-context-2026-10-03.md`.
 Concrete instance and its design toolchain (2026-10-04):
@@ -168,5 +169,6 @@ Second pass, 2026-10-03 16:53Z (4 more papers fetched):
 
 ## Explicitly NOT in scope
 
-- Minting a quest (held by Reto until the cross-section can be built).
+- Minting a quest (Reto's call; the cross-section `rail-k3-120-z`
+  landed 2026-10-13, so the build gate is met).
 - The carbon-side builder capabilities: hexfold-toolkit owns those.

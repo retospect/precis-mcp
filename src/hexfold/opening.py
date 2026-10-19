@@ -261,12 +261,18 @@ def _points_in_polygon(points: np.ndarray, poly: np.ndarray) -> np.ndarray:
     return inside
 
 
-def _cut(block: Block, polygon: np.ndarray) -> tuple[Block, tuple[int, ...]]:
+def _cut(
+    block: Block, polygon: np.ndarray, outside: bool = False
+) -> tuple[Block, tuple[int, ...]]:
     """Remove atoms strictly inside ``polygon`` (xy), then prune kept
     atoms that ended up below two bonds (frayed spikes), to convergence.
+    With ``outside`` the polygon is the kept region instead -- the outer
+    edge a wide tube end stitches to (the step washer's outer seam).
     Returns the cut block and the removed ordinals in *block* indexing."""
     pos = np.asarray(block.coords)
     inside = _points_in_polygon(pos[:, :2], polygon)
+    if outside:
+        inside = ~inside
     removed = set(np.where(inside)[0].tolist())
     adj = _adjacency(block.bonds, len(pos))
     for _ in range(100):
@@ -329,6 +335,39 @@ def _hole_walk(
         if area < 1e-9:
             continue
         if best is None or area < best[0]:
+            best = (area, face)
+    if best is None:
+        return None
+    walk = best[1]
+    bondable = tuple(a for a in walk if deg[a] <= _BONDABLE_DEGREE)
+    return walk, bondable
+
+
+def _outer_walk(
+    block: Block, centre: np.ndarray
+) -> tuple[tuple[int, ...], tuple[int, ...]] | None:
+    """The outer boundary orbit of ``block``: the largest-area face orbit
+    whose polygon encloses ``centre`` (an inner hole's orbit encloses the
+    centre too but smaller, so largest wins).  Returns ``(walk,
+    bondable)`` in block ordinals, or None when nothing surrounds it."""
+    deg = _degrees(block.bonds, len(block.elements))
+    pos2 = np.asarray(block.coords)[:, :2]
+    best: tuple[float, tuple[int, ...]] | None = None
+    for face in _dart_faces(block.bonds, pos2):
+        poly = pos2[list(face)]
+        if not _points_in_polygon(centre[None], poly)[0]:
+            continue
+        area = 0.5 * abs(
+            float(
+                np.sum(
+                    poly[:, 0] * np.roll(poly[:, 1], -1)
+                    - np.roll(poly[:, 0], -1) * poly[:, 1]
+                )
+            )
+        )
+        if area < 1e-9:
+            continue
+        if best is None or area > best[0]:
             best = (area, face)
     if best is None:
         return None
@@ -485,12 +524,18 @@ def stitch(
 
 
 def _boundary_count(
-    pos: np.ndarray, adj: list[set[int]], polygon: np.ndarray
+    pos: np.ndarray,
+    adj: list[set[int]],
+    polygon: np.ndarray,
+    outside: bool = False,
 ) -> tuple[set[int], list[int]]:
     """The scan's cheap pass over ``_cut``: removed atoms and the bondable
-    (degree-2) boundary list, without rebuilding a block."""
+    (degree-2) boundary list, without rebuilding a block.  ``outside``
+    flips the cut -- atoms outside the polygon are the removed set, so the
+    boundary read is the sheet's outer edge (the step washer's wide rim)."""
     n = len(pos)
-    removed = set(np.where(_points_in_polygon(pos[:, :2], polygon))[0].tolist())
+    inside = _points_in_polygon(pos[:, :2], polygon)
+    removed = set(np.where(~inside if outside else inside)[0].tolist())
     cand = {a for a in range(n) if adj[a] & removed}
     for _ in range(100):
         drop = {a for a in cand if a not in removed and len(adj[a] - removed) < 2}
@@ -530,11 +575,17 @@ def _rim_axis(rim_pos: np.ndarray) -> np.ndarray:
 
 
 def scan_opening(
-    sheet: Block, rim: RimLoop, tube_coords: np.ndarray
+    sheet: Block,
+    rim: RimLoop,
+    tube_coords: np.ndarray,
+    *,
+    outside: bool = False,
 ) -> tuple[float, float, np.ndarray] | None:
     """Best ``(cost, scale, polygon)`` cut for this rim at the given
     (already placed and twisted) tube coords, or None when no scale
     leaves a boundary cycle whose bondable count meets the rim's.
+    ``outside`` scans the outer edge instead of an inner hole (the step
+    washer's wide-rim seam).
 
     ``cost`` is the summed squared partner distance of the winning cyclic
     pairing -- the caller compares ends or picks a shared twist by it.
@@ -548,7 +599,9 @@ def scan_opening(
     best: tuple[float, float] | None = None
     s = _SCALE_LO
     while s <= _SCALE_HI + 1e-9:
-        _removed, bondable = _boundary_count(spos, adj, poly0 * s + cen2)
+        _removed, bondable = _boundary_count(
+            spos, adj, poly0 * s + cen2, outside=outside
+        )
         if len(bondable) == target:
             angs = np.arctan2(spos[bondable, 1] - cen2[1], spos[bondable, 0] - cen2[0])
             hp = spos[[bondable[i] for i in np.argsort(angs)]]
@@ -577,14 +630,18 @@ def apply_opening(
     rim: RimLoop,
     tube_coords: np.ndarray,
     polygon: np.ndarray,
+    *,
+    outside: bool = False,
 ) -> tuple[Block, Opening]:
     """Cut ``sheet`` at ``polygon`` and stitch ``rim`` into it -- the
     back half of :func:`armchair_opening`, split so a driver that picked
-    a shared twist itself can use the scan separately."""
+    a shared twist itself can use the scan separately.  ``outside`` cuts
+    the sheet down to the polygon and stitches the rim onto its outer
+    edge (the wide side of a step washer)."""
     rim_pos = np.asarray(tube_coords)[list(rim.atoms)]
     cen2 = rim_pos[:, :2].mean(axis=0)
-    cut, removed = _cut(sheet, polygon)
-    got = _hole_walk(cut, cen2)
+    cut, removed = _cut(sheet, polygon, outside=outside)
+    got = _outer_walk(cut, cen2) if outside else _hole_walk(cut, cen2)
     if got is None:
         raise ValueError("armchair opening: winning cut lost its rim walk")
     walk, bondable = got
