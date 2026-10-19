@@ -35,6 +35,7 @@ from precis.pcb import geom as pcb_geom
 from precis.pcb import ir as pcb_ir
 from precis.pcb import optimize as pcb_optimize
 from precis.pcb import padplace
+from precis.pcb import planes as pcb_planes
 from precis.pcb import profiles as pcb_profiles
 from precis.pcb import realize as pcb_realize
 from precis.pcb import resolved as pcb_resolved
@@ -826,6 +827,16 @@ def run(
         "drills": drills(ir),
         "silkscreen": silk_draws,
         "soldermask_expansion_mm": pcb_silk.soldermask_expansion_mm(capability),
+        # Pours the router will make but has not (fixed source copper
+        # imported without them): connectivity counts them (gr492989).
+        "pending_pours": [
+            {"net": a.net, "layer": a.layer, "region": a.region}
+            for a in pcb_planes.resolve_assignments(
+                stackup,
+                store.pcb_planes_list(ref_id),
+                [str(n["name"]) for n in graph.get("nets") or []],
+            )[0]
+        ],
     }
     courtyards, courtyard_bottom, net_rules, net_voltages = rule_inputs(
         design, courtyard_local, capability

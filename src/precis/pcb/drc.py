@@ -3493,13 +3493,17 @@ def check_pour_fragmented(model: dict[str, Any]) -> list[DrcFinding]:
 def nets_routed_by_copper(model: dict[str, Any]) -> set[str]:
     """Nets that carry copper whose copper plus pads is ONE connected
     piece: already routed, whoever drew it (the router, or fixed source
-    copper imported with ``--copper fixed``; gr492989). A net with no
-    copper, or with copper in several pieces, is not in the set."""
+    copper imported with ``--copper fixed``; gr492989). A net carried by a
+    declared pour (``model["pending_pours"]``) counts when the pour joins it, with
+    or without track copper. A net with no copper and no declared pour, or
+    whose pieces stay several, is not in the set."""
     from precis.pcb.connectivity import net_islands
 
     split = {island.net for island in net_islands(model)}
     return {
-        str(item["net"]) for item in model.get("copper") or [] if item.get("net")
+        str(item["net"])
+        for item in [*(model.get("copper") or []), *(model.get("pending_pours") or [])]
+        if item.get("net")
     } - split
 
 

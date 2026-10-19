@@ -43,6 +43,8 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
+from shapely.geometry import Point as ShapelyPoint
+
 from precis.pcb.drc import (
     _arc_points,
     _capsule_capsule_gap,
@@ -52,7 +54,7 @@ from precis.pcb.drc import (
     _via_layer_names,
 )
 from precis.pcb.geom import Point, dist_point_to_segment, point_in_polygon
-from precis.pcb.planes import point_in_pour
+from precis.pcb.planes import point_in_pour, region_polygon
 
 #: Copper closer than this is treated as touching. Pure float-noise slack:
 #: the realizer emits coordinates that are meant to be identical (a via at
@@ -433,6 +435,28 @@ def _net_components(model: dict[str, Any]) -> tuple[list[_Prim], _DisjointSet] |
             i
             for i, p in enumerate(prims)
             if p.net == net and p.layer == layer and point_in_pour(pour, p.a[0], p.a[1])
+        ]
+        for other in members[1:]:
+            dsu.union(members[0], other)
+
+    # A declared pour no router run has made yet (``model["pending_pours"]``:
+    # ``{"net", "layer", "region"?}``, the board's effective plane
+    # assignments) joins its net's primitives on that layer inside its
+    # region exactly as the pour it will become would; a stored pour for
+    # the same net and layer is the truth and replaces the declaration
+    # (gr492989).
+    poured = {(str(p.get("net", "")), str(p.get("layer", ""))) for p in pours}
+    for decl in model.get("pending_pours") or []:
+        net, layer = str(decl.get("net", "")), str(decl.get("layer", ""))
+        if (net, layer) in poured:
+            continue
+        area = region_polygon(decl.get("region"))
+        members = [
+            i
+            for i, p in enumerate(prims)
+            if p.net == net
+            and p.layer == layer
+            and (area is None or area.covers(ShapelyPoint(p.a)))
         ]
         for other in members[1:]:
             dsu.union(members[0], other)

@@ -2567,6 +2567,81 @@ def test_nets_routed_by_copper_counts_any_connected_copper():
     assert "M" not in drc.nets_routed_by_copper(joined)
 
 
+def _pour_gap_model() -> dict[str, Any]:
+    """Net N in two track pieces on F.Cu, each from a pad to a via that
+    reaches In1.Cu."""
+    vias = [_via("N", "F.Cu", x, 0.0, dia_mm=0.6, drill_mm=0.3) for x in (1.0, 5.0)]
+    for via in vias:
+        via["layers"] = ["F.Cu", "In1.Cu"]
+    return {
+        "layers": ["F.Cu", "In1.Cu"],
+        "pads": [_fp_pad("R1", "1", "N", 0.0), _fp_pad("R2", "1", "N", 6.0)],
+        "copper": [
+            _track("N", "F.Cu", (0.0, 0.0), (1.0, 0.0)),
+            _track("N", "F.Cu", (5.0, 0.0), (6.0, 0.0)),
+            *vias,
+        ],
+    }
+
+
+def test_declared_pour_joins_a_net_split_on_copper_alone():
+    """gr492989: pieces joined only by a pour no router run made yet are
+    one net, in connectivity and in routed-by-copper; a stored pour for
+    the same net and layer replaces the declaration, and a declaration for
+    another net, or whose region misses a piece, joins nothing."""
+    model = _pour_gap_model()
+    assert [f.rule for f in drc.check_connectivity(model)] == ["connectivity"]
+    assert "N" not in drc.nets_routed_by_copper(model)
+
+    declared = {**model, "pending_pours": [{"net": "N", "layer": "In1.Cu"}]}
+    assert drc.check_connectivity(declared) == []
+    assert "N" in drc.nets_routed_by_copper(declared)
+
+    elsewhere = {**model, "pending_pours": [{"net": "N", "layer": "F.Cu"}]}
+    assert drc.check_connectivity(elsewhere) == []
+    other_net = {**model, "pending_pours": [{"net": "M", "layer": "In1.Cu"}]}
+    assert len(drc.check_connectivity(other_net)) == 1
+
+    region_misses = {
+        **model,
+        "pending_pours": [
+            {
+                "net": "N",
+                "layer": "In1.Cu",
+                "region": [[4.0, -1.0], [7.0, -1.0], [7.0, 1.0], [4.0, 1.0]],
+            }
+        ],
+    }
+    assert len(drc.check_connectivity(region_misses)) == 1
+
+    stored = {
+        **declared,
+        "copper": [
+            *model["copper"],
+            {
+                "ctype": "pour",
+                "net": "N",
+                "layer": "In1.Cu",
+                "polygon": [[10.0, 10.0], [11.0, 10.0], [11.0, 11.0], [10.0, 11.0]],
+            },
+        ],
+    }
+    assert len(drc.check_connectivity(stored)) == 1
+
+
+def test_declared_pour_counts_a_pad_only_net_as_routed():
+    """gr492989: a net with no track copper but a declared pour is routed
+    when its pads are joined by it (drilled pads reach every layer)."""
+    drilled = [
+        {**_fp_pad("J1", "1", "G", 0.0), "drill": 0.8},
+        {**_fp_pad("J2", "1", "G", 5.0), "drill": 0.8},
+    ]
+    model = {"layers": ["F.Cu", "In1.Cu"], "pads": drilled, "copper": []}
+    assert "G" not in drc.nets_routed_by_copper(model)
+    model["pending_pours"] = [{"net": "G", "layer": "In1.Cu"}]
+    assert "G" in drc.nets_routed_by_copper(model)
+
+
 def test_clearance_finding_names_the_layer_the_pair_met_on():
     """gr345858: a through via's row carries a nominal ``layer`` (F.Cu)
     whatever it spans, so a via against a BOTTOM-side pad used to be

@@ -619,6 +619,61 @@ def _two_tracks_too_close(store: Any, slug: str) -> None:
     )
 
 
+def _gnd_in_two_pieces(store: Any, slug: str) -> None:
+    """GND copper on F.Cu in two pieces (a stub and a through via at each
+    GND pad), nothing joining them but the layers the vias reach."""
+    ref = store.get_ref(kind="pcb", id=slug)
+    board_id = store.pcb_ensure_board(ref.id)
+    gnd = store.pcb_net_ids(ref.id)["GND"]
+    rows: list[dict[str, Any]] = []
+    for pad_x, via_x in ((-4.0, -3.0), (12.0, 11.0)):
+        rows.append(
+            {
+                "ctype": "track",
+                "layer": "F.Cu",
+                "net_id": gnd,
+                "route_id": None,
+                "geom": {
+                    "segments": [
+                        {
+                            "shape": "line",
+                            "start": [pad_x, 0.0],
+                            "end": [via_x, 0.0],
+                        }
+                    ],
+                    "width_mm": 0.2,
+                },
+            }
+        )
+        rows.append(
+            {
+                "ctype": "via",
+                "layer": "F.Cu",
+                "net_id": gnd,
+                "route_id": None,
+                "geom": {"x": via_x, "y": 0.0, "dia_mm": 0.45, "drill_mm": 0.2},
+            }
+        )
+    store.pcb_copper_replace(board_id, rows)
+
+
+def test_check_counts_a_declared_plane_as_connecting_its_net(
+    pcb: PcbHandler, store: Any
+) -> None:
+    """gr492989: GND pieces joined only by an In1.Cu plane the router has
+    not poured (fixed source copper) are one net, not a ``connectivity``
+    error; without the plane assignment the same copper is split."""
+    for slug in ("chk-noplane", "chk-plane"):
+        pcb.put(id=slug, args=_mini_design())
+    pcb.put(id="chk-plane", args={"op": "plane_net", "layer": "In1.Cu", "net": "GND"})
+    for slug in ("chk-noplane", "chk-plane"):
+        _gnd_in_two_pieces(store, slug)
+    split = pcb.get(id="chk-noplane", view="check", args={"rule": "connectivity"})
+    assert "net GND copper is in 2 disconnected pieces" in split.body, split.body
+    joined = pcb.get(id="chk-plane", view="check", args={"phase": "routed"}).body
+    assert "\tconnectivity\t" not in joined, joined
+
+
 def test_check_placed_phase_reports_no_connectivity_for_copperless_nets(
     pcb: PcbHandler,
 ) -> None:
