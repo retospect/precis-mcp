@@ -321,12 +321,55 @@ def plane_pours(
             if blockers:
                 region = region.difference(unary_union(blockers))
             kept = [f for f in _as_polygons(region) if f.area >= MIN_FRAGMENT_MM2]
+            kept = _drop_islands(kept, net, layer_name, layers, copper)
             for frag in kept:
                 out.append(_pour_item(frag, layer_name, net))
             claimed.extend(kept)
             if spec.region is None and kept:
                 whole_board_done = True
     return out
+
+
+def _drop_islands(
+    frags: list[Polygon],
+    net: str,
+    layer_name: str,
+    layers: list[str],
+    copper: list[dict[str, Any]],
+) -> list[Polygon]:
+    """Standard pour behaviour: a fragment that touches no same-net pad,
+    via or track on this layer is a floating island and is removed (not
+    stitched). When NO fragment is anchored the pour has no copper to judge
+    by (a plane nothing has reached yet), so every fragment is kept."""
+    anchors: list[BaseGeometry] = []
+    for item in copper:
+        if str(item.get("net", "")) != net:
+            continue
+        if item.get("ctype") == "via":
+            if layer_name not in _via_layer_names(item, layers):
+                continue
+        elif str(item.get("layer", "")) != layer_name:
+            continue
+        poly = _copper_item_polygon(item)
+        if poly is not None and not poly.is_empty:
+            anchors.append(poly)
+    if not anchors:
+        return frags
+    anchored = [f for f in frags if any(f.intersects(a) for a in anchors)]
+    if not anchored:
+        return frags
+    # A fragment that is nothing but a same-net land (a stitching via
+    # through another net's region leaves its own disc inside the antipad
+    # hole) adds no copper: the via/pad already draws that land on this
+    # layer, so it is not a plane piece.
+    lands = unary_union(anchors).buffer(_LAND_TOL_MM)
+    planes = [f for f in anchored if f.difference(lands).area >= MIN_FRAGMENT_MM2]
+    return planes or anchored
+
+
+#: How far a pour fragment may stick out of the same-net lands it holds and
+#: still count as just those lands (:func:`_drop_islands`).
+_LAND_TOL_MM = 0.05
 
 
 def _blocker_layers(item: dict[str, Any]) -> list[str]:

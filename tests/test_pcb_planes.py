@@ -581,3 +581,60 @@ def test_keep_splitless_rescues_drops_a_splitting_rescue_and_its_dependents():
     calls.clear()
     kept, result = pcb_realize._keep_splitless_rescues([good], repour, {("VCC", 2): 1})
     assert kept == [good] and result == [2] and calls == [[2]]
+
+
+def _wall_and_via(*, gnd_via: bool) -> list[dict[str, Any]]:
+    """A foreign track cutting the 40x40 board into two halves, plus (when
+    asked) a GND via in the left half only."""
+    copper: list[dict[str, Any]] = [
+        {
+            "ctype": "track",
+            "net": "VIN",
+            "layer": "F.Cu",
+            "width_mm": 2.0,
+            "segments": [{"shape": "line", "start": [20.0, -1.0], "end": [20.0, 41.0]}],
+        }
+    ]
+    if gnd_via:
+        copper.append(
+            {
+                "ctype": "via",
+                "net": "GND",
+                "x": 10.0,
+                "y": 20.0,
+                "dia_mm": 0.75,
+                "layers": ["F.Cu"],
+            }
+        )
+    return copper
+
+
+def _pour_with(copper: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return plane_pours(
+        outline=_BOARD_OUTLINE,
+        layers=["F.Cu"],
+        plane_nets={0: "GND"},
+        copper=copper,
+        clearance_mm=_CLEARANCE_MM,
+        edge_clearance_mm=0.5,
+    )
+
+
+def test_pour_drops_an_island_that_holds_no_same_net_pad_or_via():
+    pours = _pour_with(_wall_and_via(gnd_via=True))
+    assert len(pours) == 1
+    assert _shapely_pour(pours[0]).centroid.x < 20.0
+
+
+def test_pour_drops_a_fragment_that_is_only_a_same_net_via_land():
+    # A GND via inside the foreign wall's antipad leaves a disc of GND the
+    # size of its own land: not a plane piece.
+    copper = _wall_and_via(gnd_via=True)
+    copper.append({**copper[1], "x": 20.0, "y": 20.0})
+    pours = _pour_with(copper)
+    assert len(pours) == 1
+    assert _shapely_pour(pours[0]).centroid.x < 20.0
+
+
+def test_pour_with_no_same_net_copper_keeps_every_fragment():
+    assert len(_pour_with(_wall_and_via(gnd_via=False))) == 2
