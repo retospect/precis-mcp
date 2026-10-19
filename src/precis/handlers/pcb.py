@@ -732,6 +732,10 @@ class PcbHandler(Handler):
                 "source",
                 "item",
                 "limit",
+                # op='pin_rename' / 'pin_remove': pad number or pin name;
+                # `to` is the new net name (pin_rename only).
+                "pin",
+                "to",
                 # op='check': force the inline run past reuse (gr496242).
                 "fresh",
                 # op='order' (_op_order / _order_dry_run); gr495025.
