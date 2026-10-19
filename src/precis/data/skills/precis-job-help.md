@@ -321,6 +321,21 @@ running/submitted/waiting_* -> cancel_requested|failed; cancel_requested ->
 cancelled. Any other STATUS (running, succeeded, queued) is
 worker-owned and refused; re-run a failed job with `mode='retry'`.
 
+## Move a queued pinned job to another node
+
+A queued job pinned by `params.target_node` waits for that node even when
+another is idle. Move the pin (queued jobs only):
+
+```python
+put(kind='job', id=<queued_job_id>, mode='retarget',
+    params={'target_node': '<host>'}, text='<why>')
+```
+
+It refuses a job that is not `STATUS:queued` or not pinned, a node whose
+executor lane is retired, and a node that doesn't advertise every resource
+the job requires. `text=` is required; the old and new node, the reason and
+the actor land in a `job-retarget` event on the job.
+
 ## Re-submit a failed job
 ## Retry a failed job
 ## Re-run a job with a different model

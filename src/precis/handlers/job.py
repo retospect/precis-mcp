@@ -27,6 +27,7 @@ from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Tag
 from precis.store._refs_ops import filtered_ref_clauses
+from precis.store._salience import current_background_actor
 from precis.store.types import Ref
 from precis.todo import guards as todo_guards
 from precis.utils import handle_registry
@@ -285,11 +286,12 @@ class JobHandler(NumericRefHandler):
         is_numeric=True,
         id_required=False,
         note_like=True,
-        # put() genuinely branches on mode= — the sole recognised value
-        # is the retry surface (put(id=N, mode='retry')); every other
-        # value is rejected (gr343755 — a real one-element vocabulary,
-        # not the "every mode= rejected" `()` shape).
-        modes=("retry",),
+        # put() genuinely branches on mode= — the recognised
+        # values are the retry surface (put(id=N, mode='retry')) and the
+        # queued-pin move (put(id=N, mode='retarget')); every other
+        # value is rejected (gr343755 — a real vocabulary, not the
+        # "every mode= rejected" `()` shape).
+        modes=("retry", "retarget"),
     )
 
     kind: ClassVar[str] = "job"
@@ -888,6 +890,8 @@ class JobHandler(NumericRefHandler):
         # ``mode`` rejections below.
         if mode == "retry":
             return self._retry_job(id=id, model=model, select=select)
+        if mode == "retarget":
+            return self._retarget_job(id=id, text=text, params=params)
         if id is not None:
             raise BadInput(
                 f"put on existing job id={id!r} is not supported",
@@ -1218,6 +1222,134 @@ class JobHandler(NumericRefHandler):
                 )
             self.store.retire_ref(job_id, conn=conn)
         return Response(body=f"deleted {self._sense()} id={job_id}")
+
+    def _retarget_job(
+        self,
+        *,
+        id: str | int | None,
+        text: str | None,
+        params: dict[str, Any] | None,
+    ) -> Response:
+        """Move a queued job's ``params.target_node`` pin to another node.
+
+        ``put(kind='job', id=N, mode='retarget', params={'target_node':
+        '<host>'}, text='<why>')``. Only a ``STATUS:queued`` job moves (a
+        claimed one is already running where it is; the status is re-read
+        under the row lock so a concurrent claim wins). The target must not
+        have a retired lane for the job's executor and must advertise every
+        resource the job requires. The old and new node, the reason and the
+        actor are recorded as a ``job-retarget`` event on the job.
+        """
+        if id is None:
+            raise BadInput(
+                "put(kind='job', mode='retarget') requires id= (the queued job)",
+                next=(
+                    "put(kind='job', id=<queued_job_id>, mode='retarget', "
+                    "params={'target_node': '<host>'}, text='<why>')"
+                ),
+            )
+        job_id = self._coerce_id(id)
+        ref = self._resolve_live_ref(job_id)
+        extra = sorted(set(params or {}) - {"target_node"})
+        node = (params or {}).get("target_node")
+        if extra or not isinstance(node, str) or not node.strip():
+            raise BadInput(
+                "mode='retarget' takes exactly params={'target_node': '<host>'}"
+                + (f"; got extra keys {extra}" if extra else ""),
+                next=(
+                    f"put(kind='job', id={job_id}, mode='retarget', "
+                    "params={'target_node': '<host>'}, text='<why>')"
+                ),
+            )
+        node = node.strip()
+        reason = (text or "").strip()
+        if not reason:
+            raise BadInput(
+                "mode='retarget' requires text= (why the job moves); it is "
+                "recorded with the change",
+                next=(
+                    f"put(kind='job', id={job_id}, mode='retarget', "
+                    f"params={{'target_node': {node!r}}}, text='<why>')"
+                ),
+            )
+        status = _status_of(self.store.tags_for(job_id))
+        if status != QUEUED:
+            raise BadInput(
+                f"job id={job_id} is STATUS:{status or 'unset'}; only a queued "
+                "job can be retargeted",
+                next=(
+                    "a running job finishes where it is; to move failed work "
+                    f"use put(kind='job', id={job_id}, mode='retry')"
+                ),
+            )
+        meta = ref.meta or {}
+        executor = str(meta.get("executor") or "")
+        old = (meta.get("params") or {}).get("target_node")
+        if not old:
+            raise BadInput(
+                f"job id={job_id} is not pinned (no params.target_node); any "
+                "live worker on its executor may claim it",
+                next="nothing to retarget",
+            )
+        if old == node:
+            raise BadInput(
+                f"job id={job_id} is already pinned to {node!r}",
+                next="pick a different node",
+            )
+        from precis.workers.executors._common import effective_requires
+        from precis.workers.sweeper import retired_lane_nodes
+
+        retired = retired_lane_nodes(self.store, [node], executor)
+        if node in retired:
+            raise BadInput(
+                f"node {node!r} cannot take job id={job_id}: {retired[node]}",
+                next="pick a node that runs this executor's lane",
+            )
+        slots: dict[str, int] = {}
+        for s in self.store.all_resource_slots():
+            if s.host == node:
+                slots[s.resource] = slots.get(s.resource, 0) + int(s.capacity)
+        lacking = sorted(r for r in effective_requires(meta) if slots.get(r, 0) <= 0)
+        if lacking:
+            raise BadInput(
+                f"node {node!r} does not advertise {lacking} that job "
+                f"id={job_id} requires",
+                next=f"pick a node advertising {lacking} (resource_slots)",
+            )
+
+        from precis.store.revision_context import current_revision_context
+
+        ctx = current_revision_context()
+        actor = (ctx.actor if ctx else None) or current_background_actor() or "agent"
+        with self.store.tx() as conn:
+            row = conn.execute(
+                "SELECT meta FROM refs WHERE ref_id = %s FOR UPDATE", (job_id,)
+            ).fetchone()
+            still_queued = conn.execute(
+                "SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id) "
+                "WHERE rt.ref_id = %s AND t.namespace = %s AND t.value = %s",
+                (job_id, STATUS_NAMESPACE, QUEUED),
+            ).fetchone()
+            if row is None or still_queued is None:
+                raise BadInput(
+                    f"job id={job_id} left STATUS:queued while retargeting",
+                    next=f"get(kind='job', id={job_id})",
+                )
+            new_params = {**((row[0] or {}).get("params") or {}), "target_node": node}
+            self.store.stamp_ref_meta(job_id, {"params": new_params}, conn=conn)
+            self.store.append_event(
+                job_id,
+                source="job-retarget",
+                event="retargeted",
+                payload={"from": old, "to": node, "by": actor, "reason": reason},
+                conn=conn,
+            )
+        return Response(
+            body=(
+                f"retargeted job #{job_id}: {old} -> {node} (queued; recorded "
+                f"by {actor}: {reason}). poll: get(kind='job', id={job_id})."
+            )
+        )
 
     def _retry_job(
         self,
