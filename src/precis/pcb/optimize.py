@@ -242,6 +242,7 @@ from precis.pcb.ir import (
     instance_courtyard_polygons,
     instance_land_rects,
     nearest_other_instance,
+    pin_point,
     plane_layers_of,
     pourable_layers,
     routable_layers,
@@ -682,6 +683,19 @@ class OptimizeConfig:
 
     cost: CostConfig = field(default_factory=CostConfig)
     iters: int = 2000
+    #: Price connections at their pads, so a part's orientation matters to
+    #: the cost (``ir.segment_points``). Off by default: the centroid cost
+    #: is what every pinned bench floor was measured with.
+    pin_point_cost: bool = False
+    #: Let a fraction of TRANSLATE proposals be a long jump: the part's
+    #: connected pads onto the centroid of the pads they connect to,
+    #: backed off to the nearest legal point. A 0.5 mm random walk cannot
+    #: cross a board against a shallow gradient, or hop a band of crossings
+    #: the Metropolis test would never pay for. The proposal is asymmetric,
+    #: so this is an optimiser, not a sampler: the run's result is the best
+    #: state it passed (``anneal`` restores it). ``False`` draws nothing
+    #: from the rng, so the run is bit-for-bit the one without it.
+    centroid_jump: bool = False
     #: Route-only run (gr495397): :func:`optimize` seeds only unplaced parts
     #: and returns the board as stored — no edge snap, start legalisation,
     #: anneal, settle, recentre or grid snap. A zero-iteration anneal is not
@@ -2040,6 +2054,7 @@ class OptimizeEngine:
     def __init__(self, ir: PcbIR, config: OptimizeConfig) -> None:
         self.ir = ir
         self.config = config
+        ir.pin_point_cost = config.pin_point_cost
         self.level = (
             Level.L4
         )  # placement moves need L4 fidelity to see congestion at all
@@ -5011,6 +5026,57 @@ def _sample_delta_1d(rng: random.Random, step: float, lo: float, hi: float) -> f
     return _clamp(rng.gauss(0, step), lo, hi)
 
 
+#: Share of TRANSLATE draws that try :func:`_centroid_jump` (when on).
+_CENTROID_JUMP_P = 0.1
+#: Fractions of the way from the target back to the current pose, and the
+#: sideways offsets (mm), tried in order when legalising a jump.
+_JUMP_BACKOFF = (1.0, 0.95, 0.9, 0.8, 0.7, 0.55, 0.4, 0.25)
+_JUMP_SIDEWAYS_MM = (0.0, 1.5, -1.5, 3.0, -3.0)
+
+
+def _centroid_jump(
+    engine: OptimizeEngine, inst: int, old: tuple[tuple[float, float, float], ...]
+) -> Move | None:
+    """Move ``inst`` so the centroid of its connected pads lands on the
+    centroid of the pads they connect to; ``None`` when there is nothing to
+    pull toward, the pull is under 1 mm, or no backed-off point is legal.
+    The target is generally inside the partner part's keep-out, so the pose
+    is walked back along the line to the current one (with a little sideways
+    play) and the first legal point wins: the nearest legal point to the
+    target on that line. Rotation is held."""
+    ir = engine.ir
+    own: list[tuple[float, float]] = []
+    other: list[tuple[float, float]] = []
+    for seg in ir._segs_of_instance.get(inst, ()):
+        a, b = int(ir.seg_pin_a[seg]), int(ir.seg_pin_b[seg])
+        if int(ir.pin_instance[a]) == int(ir.pin_instance[b]):
+            continue
+        mine, theirs = (a, b) if int(ir.pin_instance[a]) == inst else (b, a)
+        pm, pt = pin_point(ir, mine), pin_point(ir, theirs)
+        if pm is not None and pt is not None:
+            own.append(pm)
+            other.append(pt)
+    if not own:
+        return None
+    dx = sum(p[0] for p in other) / len(other) - sum(p[0] for p in own) / len(own)
+    dy = sum(p[1] for p in other) / len(other) - sum(p[1] for p in own) / len(own)
+    dist = math.hypot(dx, dy)
+    if dist < 1.0:
+        return None
+    x0, y0, rot = old[0]
+    bx0, by0, bx1, by1 = engine.bounds_for(inst)
+    px, py = -dy / dist, dx / dist
+    for t in _JUMP_BACKOFF:
+        for off in _JUMP_SIDEWAYS_MM:
+            x = min(max(x0 + t * dx + off * px, bx0), bx1)
+            y = min(max(y0 + t * dy + off * py, by0), by1)
+            if math.hypot(x - x0, y - y0) < 0.5:
+                continue
+            if engine._placement_is_legal([(inst, x, y)]):
+                return Move(MoveKind.TRANSLATE, (inst,), old, ((x, y, rot),))
+    return None
+
+
 def _gen_translate(
     engine: OptimizeEngine, rng: random.Random, temp: float
 ) -> Move | None:
@@ -5028,6 +5094,14 @@ def _gen_translate(
         (float(ir.inst_x[m]), float(ir.inst_y[m]), float(ir.inst_rot[m]))
         for m in members
     )
+    if (
+        engine.config.centroid_jump
+        and len(members) == 1
+        and rng.random() < _CENTROID_JUMP_P
+    ):
+        jump = _centroid_jump(engine, inst, old)
+        if jump is not None:
+            return jump
     step = max(
         0.5, engine.config.translate_step_mm * (temp / max(engine.board_side, 1.0))
     )

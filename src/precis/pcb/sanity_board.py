@@ -215,7 +215,13 @@ def place(built: Built, *, seed: int = 1) -> dict[str, tuple[float, float, float
     the IR in place; returns the poses. Pinned parts do not move."""
     optimize(
         built.ir,
-        OptimizeConfig(iters=_DEFAULT_ITERS, seed=seed, schedule=_PLACE_ONLY_SCHEDULE),
+        OptimizeConfig(
+            iters=_DEFAULT_ITERS,
+            seed=seed,
+            schedule=_PLACE_ONLY_SCHEDULE,
+            pin_point_cost=True,
+            centroid_jump=True,
+        ),
     )
     return pcb_session.positions(built.ir)
 

@@ -583,6 +583,11 @@ class PcbIR:
     #: entry pours the whole board at priority 0, as every plane did before.
     #: Written only through :meth:`promote_plane`/:meth:`demote_plane`.
     plane_regions: dict[tuple[int, int], tuple[Any, int]] = field(default_factory=dict)
+    #: Measure a connection at its PADS (:func:`pin_point`) instead of the
+    #: instance centroids in :func:`segment_points`. Off: a part's rotation
+    #: is invisible to the placement cost. Set from
+    #: ``OptimizeConfig.pin_point_cost`` when the engine starts.
+    pin_point_cost: bool = False
 
     # -- sizes --------------------------------------------------------
     @property
@@ -2168,10 +2173,13 @@ def compute_region_density(ir: PcbIR, *, cell_mm: float = 5.0) -> None:
 def segment_points(
     ir: PcbIR, seg_id: int
 ) -> tuple[tuple[float, float], tuple[float, float]] | None:
-    """``seg_id``'s two endpoints at INSTANCE-centroid granularity — the
-    same L3 fidelity every geometric cost.py estimator already uses
-    (``loop_inductance``, ``coupling``; see optimize.py's ROTATE note for
-    why component rotation/sub-instance pad offset isn't modeled here).
+    """``seg_id``'s two endpoints: at INSTANCE-centroid granularity by
+    default — the L3 fidelity the other geometric cost.py estimators use —
+    which makes ROTATE cost-neutral (a header at rot 0 and rot 180 scores
+    identically, so the anneal's accepted rotations are a random walk and a
+    bottom header pulled under its partner ends pin-reversed about half the
+    time). With ``ir.pin_point_cost`` the endpoints are the PADS
+    (:func:`pin_point`), and orientation is priced.
     ``None`` if either endpoint's instance has no L3 position yet —
     callers exclude that segment rather than treating a NaN position as
     the origin, which would manufacture phantom crossings at (0, 0) among
@@ -2181,6 +2189,9 @@ def segment_points(
     :mod:`precis.pcb.optimize`'s per-move crossing delta, so both derive
     the identical geometry from one place."""
     a, b = int(ir.seg_pin_a[seg_id]), int(ir.seg_pin_b[seg_id])
+    if ir.pin_point_cost:
+        pa, pb = pin_point(ir, a), pin_point(ir, b)
+        return None if pa is None or pb is None else (pa, pb)
     ia, ib = int(ir.pin_instance[a]), int(ir.pin_instance[b])
     xa, ya = float(ir.inst_x[ia]), float(ir.inst_y[ia])
     xb, yb = float(ir.inst_x[ib]), float(ir.inst_y[ib])
