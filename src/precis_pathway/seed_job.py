@@ -42,6 +42,7 @@ wall-clock backstop ``ssh_node`` calls past ``meta.deadline``.
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING, Any
 
 from precis.workers.job_types import JobTypeSpec
@@ -52,6 +53,29 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 NAME = "autocatpath_seed"
+
+#: ``meta.failure_class`` of a seed whose candidate placement autocatpath's
+#: geometry validation rejected (gr496915). Deterministic: the same
+#: candidate fails the same way on every retry, so the sweeper's unpark
+#: phase latches ``child-failed-final`` instead of burning its 12 h cool-down
+#: retries. Keep in step with ``precis.workers.sweeper.INVALID_GEOMETRY_CLASS``.
+INVALID_GEOMETRY_CLASS = "invalid-geometry"
+
+#: The one validation error that class covers, matched on its own wording
+#: ("placement {...} puts H 1.10 A from Pd33 in the slab -- inside it, not on
+#: it"), not on ``ValueError`` in general: other errors may be transient.
+_INVALID_PLACEMENT_RE = re.compile(
+    r"placement \{[^}]*\} puts \S+ [\d.]+ A from \S+ in the slab -- "
+    r"inside it, not on it"
+)
+
+
+def _geometry_failure_class(reason: str) -> str | None:
+    """:data:`INVALID_GEOMETRY_CLASS` when ``reason`` carries the placement
+    validation error, else ``None`` (the failure keeps its unclassified,
+    retried shape)."""
+    return INVALID_GEOMETRY_CLASS if _INVALID_PLACEMENT_RE.search(reason) else None
+
 
 _PARAMS_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -203,7 +227,8 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         return
     except Exception as exc:  # pragma: no cover - env/compute dependent
         log.warning("autocatpath_seed: run failed", exc_info=True)
-        ctx.record_failure(f"autocatpath_seed: run failed: {exc}")
+        reason = f"autocatpath_seed: run failed: {exc}"
+        ctx.record_failure(reason, failure_class=_geometry_failure_class(reason))
         return
 
     partial = result["partial"]
@@ -365,7 +390,9 @@ def _poll(ctx: Any, handle: Any) -> bool:
         ctx.record_failure(
             reason,
             open_tag=open_tag,
-            failure_class="infra" if status.get("infra") else None,
+            failure_class=(
+                "infra" if status.get("infra") else _geometry_failure_class(reason)
+            ),
         )
         _reap_scratch(ctx, handle, failed=True)
         return True

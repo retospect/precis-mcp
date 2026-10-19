@@ -1970,6 +1970,42 @@ def _transient_retry_after(conn: Connection, ref_id: int) -> datetime | None:
     return retry_after
 
 
+#: ``meta.failure_class`` of a job the candidate's own geometry validation
+#: rejected (gr496915) — deterministic, so a retry cannot change the outcome.
+#: Stamped by ``precis_pathway.seed_job``, which owns the narrow match.
+INVALID_GEOMETRY_CLASS = "invalid-geometry"
+
+
+def _deterministic_park_error(conn: Connection, ref_id: int) -> str | None:
+    """The recorded error when EVERY job parking this leaf failed with
+    :data:`INVALID_GEOMETRY_CLASS`, else ``None``.
+
+    Same job set as :func:`_transient_retry_after` (the live
+    ``child-failed:<job_id>`` tags). One job without the class means the
+    park may still be retryable, so the normal cool-down governs."""
+    row = conn.execute(
+        r"""
+        SELECT count(*) FILTER (WHERE j.meta->>'failure_class' = %s),
+               count(*),
+               max(j.meta->>'error')
+          FROM ref_tags rt
+          JOIN tags t ON t.tag_id = rt.tag_id
+          LEFT JOIN refs j
+            ON j.kind = 'job'
+           AND j.ref_id = NULLIF(
+                 substring(t.value FROM '^child-failed:(\d+)$'), ''
+               )::int
+         WHERE rt.ref_id = %s
+           AND t.namespace = 'OPEN'
+           AND t.value LIKE 'child-failed:%%'
+        """,
+        (INVALID_GEOMETRY_CLASS, ref_id),
+    ).fetchone()
+    if row is None or int(row[1]) == 0 or int(row[0]) != int(row[1]):
+        return None
+    return str(row[2] or INVALID_GEOMETRY_CLASS)
+
+
 def _transition_unpark(store: Store, ref_id: int) -> str:
     """Lock one parked leaf, re-verify eligibility, and either unpark it,
     latch it terminal, or leave it (still cooling down / lost the race).
@@ -2025,6 +2061,24 @@ def _transition_unpark(store: Store, ref_id: int) -> str:
         # never come back empty; the assert is for mypy, not runtime safety.
         assert meta_row is not None
         last_parked_at, attempts = meta_row[0], int(meta_row[1])
+
+        deterministic = _deterministic_park_error(conn, ref_id)
+        if deterministic is not None:
+            store.add_tag(
+                ref_id, Tag.open("child-failed-final"), set_by="system", conn=conn
+            )
+            store.append_event(
+                ref_id,
+                source="sweeper",
+                event="unpark-final",
+                payload={
+                    "unpark_attempts": attempts,
+                    "reason": "deterministic",
+                    "error": deterministic,
+                },
+                conn=conn,
+            )
+            return "final"
 
         if attempts >= UNPARK_CAP:
             store.add_tag(

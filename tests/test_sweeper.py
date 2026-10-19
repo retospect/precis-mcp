@@ -1651,3 +1651,61 @@ def test_unpark_mixed_transient_and_content_park_uses_cooldown(
     assert f"child-failed:{transient_job}" in tags
     assert f"child-failed:{content_job}" in tags
     assert _unpark_attempts_of(store, rid) == 0
+
+
+# ── deterministic geometry failure goes straight to final (gr496915) ──
+
+
+def _insert_job_with_class(store: Store, failure_class: str | None) -> int:
+    job = store.insert_ref(kind="job", slug=None, title="failed seed", meta={})
+    if failure_class is not None:
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET meta = meta || jsonb_build_object("
+                "  'failure_class', %s::text, 'error', 'placement rejected'"
+                ") WHERE ref_id = %s",
+                (failure_class, job.id),
+            )
+            conn.commit()
+    return job.id
+
+
+def test_unpark_invalid_geometry_latches_final_without_retry(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A park whose every job failed candidate-geometry validation cannot
+    change on retry: the next sweep latches ``child-failed-final`` and
+    records the error, with no unpark and no attempt bump."""
+    r = handler.put(text="bad candidate geometry")
+    rid = _id_of(r.body)
+    job_id = _insert_job_with_class(store, "invalid-geometry")
+    _park_leaf(store, rid, job_id=job_id)
+
+    run_sweeper_pass(store, limit=10)
+
+    tags = {str(t) for t in store.tags_for(rid)}
+    assert "child-failed-final" in tags
+    assert f"child-failed:{job_id}" in tags
+    assert _unpark_attempts_of(store, rid) == 0
+    final = [e for e in store.events_for(rid) if e.event == "unpark-final"]
+    assert final and final[0].payload["error"] == "placement rejected"
+
+
+def test_unpark_other_failure_class_keeps_cooldown_retry(
+    handler: TodoHandler, store: Store
+) -> None:
+    """Only the geometry class short-circuits: any other failure (here a
+    non-convergence) or a mixed set keeps the 12 h cool-down retry."""
+    r = handler.put(text="geometry plus a transient sibling")
+    rid = _id_of(r.body)
+    geometry_job = _insert_job_with_class(store, "invalid-geometry")
+    other_job = _insert_job_with_class(store, "non-convergence")
+    _park_leaf(store, rid, job_id=geometry_job)
+    store.add_tag(rid, Tag.open(f"child-failed:{other_job}"), set_by="system")
+
+    run_sweeper_pass(store, limit=10)
+
+    tags = {str(t) for t in store.tags_for(rid)}
+    assert "child-failed-final" not in tags
+    assert f"child-failed:{other_job}" in tags
+    assert _unpark_attempts_of(store, rid) == 0

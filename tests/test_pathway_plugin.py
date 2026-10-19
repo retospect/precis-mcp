@@ -1739,6 +1739,53 @@ def test_seed_job_dispatch_generic_error_does_not_tag_infra_child_killed(
     assert ctx.failure_class is None
 
 
+_BAD_PLACEMENT = (
+    "ValueError: placement {'symbol': 'H', 'site': 'fcc', 'height': 1.1} puts "
+    "H 1.10 A from Pd33 in the slab -- inside it, not on it"
+)
+
+
+def test_seed_job_dispatch_invalid_placement_is_classified_deterministic(
+    pathway_store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The candidate-geometry validation error (gr496915) is stamped
+    ``invalid-geometry`` so the sweeper latches it final instead of retrying."""
+    from precis_pathway import seed_job
+
+    def _fake_sub(*a: Any, **k: Any) -> Any:
+        raise ValueError(_BAD_PLACEMENT.removeprefix("ValueError: "))
+
+    monkeypatch.setattr(runner, "run_seed_partial_subprocess", _fake_sub)
+    ctx = _FakeCtx(
+        store=pathway_store,
+        params={"config": _yaml_dict(FANOUT), "seed": 0, "model_index": 0},
+    )
+    seed_job._dispatch(ctx, seed_job.SPEC)
+
+    assert ctx.status == "failed"
+    assert ctx.failure_class == seed_job.INVALID_GEOMETRY_CLASS
+    assert "inside it, not on it" in (ctx.failure or "")
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "autocatpath_seed: run failed: ValueError: something else entirely",
+        "autocatpath_seed: run failed: CUDA out of memory",
+        "autocatpath_seed: run failed: placement is fine",
+    ],
+)
+def test_seed_job_geometry_class_is_narrow(reason: str) -> None:
+    """Other errors, including other ValueErrors, stay unclassified."""
+    from precis_pathway import seed_job
+
+    assert seed_job._geometry_failure_class(reason) is None
+    assert (
+        seed_job._geometry_failure_class(_BAD_PLACEMENT)
+        == seed_job.INVALID_GEOMETRY_CLASS
+    )
+
+
 def test_seed_job_poll_infra_failure_tags_infra_child_killed(
     pathway_store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
