@@ -25,6 +25,14 @@ Reading aids, all deterministic:
   visibly intentional, not missing;
 * every stub carries a ``<title>`` naming the net and its full member
   list, so hover answers "where does this go".
+
+**Cross-probe identity.** Every part is wrapped in a ``data-handle``
+group and every pin stub and net label carries the same grammar the fab
+render stamps (:mod:`precis.pcb.argue` — ``U1``, ``U1.3``, ``net:GND``),
+plus ``data-pcb-part``/``-pad``/``-net``/``data-net-class`` attributes —
+so the workbench's hover/click wiring (``static/pcb-crossprobe.js``)
+treats a part, pin or net as one object in both panes, the way
+``gerber_view``'s board side already does.
 """
 
 from __future__ import annotations
@@ -33,6 +41,9 @@ import re
 import zlib
 from typing import Any
 from xml.sax.saxutils import escape
+
+from precis.pcb import argue
+from precis.utils.text import esc
 
 # ── geometry constants (px) ──────────────────────────────────────────
 _PIN_PITCH = 18.0  # vertical distance between pin rows
@@ -203,6 +214,14 @@ def render_schematic_svg(graph: dict[str, Any], *, title: str = "schematic") -> 
         for part in row:
             bx = x + part.halo_l  # box left edge
             by = y + (row_h - part.box_h) / 2.0
+            # The part group carries the refdes handle; pin groups inside
+            # it carry their own, so closest('[data-handle]') from a stub
+            # resolves the pin and from the box the part — the same rule
+            # the board SVG's stamped handles follow.
+            body.append(
+                f'<g class="sch-part" data-handle="{esc(part.refdes, quote=True)}"'
+                f' data-pcb-part="{esc(part.refdes, quote=True)}">'
+            )
             body.append(
                 f'<rect x="{bx:.1f}" y="{by:.1f}" width="{part.box_w:.1f}" '
                 f'height="{part.box_h:.1f}" class="part"/>'
@@ -231,19 +250,33 @@ def render_schematic_svg(graph: dict[str, Any], *, title: str = "schematic") -> 
                         if net
                         else f"{part.refdes}.{pin} — no connect"
                     )
+                    pin_attrs = (
+                        f'data-handle="{esc(argue.pad_handle(part.refdes, pin), quote=True)}"'
+                        f' data-pcb-part="{esc(part.refdes, quote=True)}"'
+                        f' data-pcb-pad="{esc(pin, quote=True)}"'
+                    )
+                    if net:
+                        pin_attrs += (
+                            f' data-pcb-net="{esc(net, quote=True)}"'
+                            f' data-net-class="{esc(str(net_class_of.get(net) or ""), quote=True)}"'
+                        )
                     body.append(
-                        f"<g><title>{escape(hover)}</title>"
+                        f"<g {pin_attrs}><title>{escape(hover)}</title>"
                         f'<path d="M {edge:.1f} {py:.1f} H {tip:.1f}" class="stub"/>'
                     )
                     if net:
                         body.append(
-                            _label_glyph(
+                            f'<g data-handle="{esc(argue.net_handle(net), quote=True)}"'
+                            f' data-pcb-net="{esc(net, quote=True)}"'
+                            f' data-net-class="{esc(str(net_class_of.get(net) or ""), quote=True)}">'
+                            + _label_glyph(
                                 tip,
                                 py,
                                 net,
                                 net_class_of.get(net),
                                 rightward=(side == "R"),
                             )
+                            + "</g>"
                         )
                     else:
                         # the no-connect mark: a small open circle
@@ -255,6 +288,7 @@ def render_schematic_svg(graph: dict[str, Any], *, title: str = "schematic") -> 
                         f'text-anchor="{pin_anchor}" class="pin">{escape(pin)}</text>'
                         "</g>"
                     )
+            body.append("</g>")
             x += part.cell_w + _COL_GAP
         doc_w = max(doc_w, x - _COL_GAP + _MARGIN)
         y += row_h + _ROW_GAP

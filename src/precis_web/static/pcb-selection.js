@@ -118,6 +118,7 @@
     copy.disabled = send.disabled = toComponent.disabled = toNet.disabled = true;
     status.textContent = message;
     highlight(null);
+    document.dispatchEvent(new CustomEvent('pcb-selection-changed', {detail: {object: null, text: ''}}));
   };
   const matchesRoot = () => svgDoc && svgDoc.documentElement &&
     svgDoc.documentElement.dataset.pcbBoard === String(manifest.context.board.ref_id) &&
@@ -156,6 +157,10 @@
     highlight(key);
     const handle = handleOf(o);
     if (handle) document.dispatchEvent(new CustomEvent('pcb-selection-attach', {detail: {handle}}));
+    // The workbench's info strip mirrors the selection between hovers
+    // (pcb-crossprobe.js listens); the object rides along so the strip
+    // can light the same expansion in both panes.
+    document.dispatchEvent(new CustomEvent('pcb-selection-changed', {detail: {object: o, text: describe(o)}}));
   };
   // Catalogue = the SVG's own object list, with the page manifest's instance
   // identities (which carry the footprint) required to agree with it.
@@ -219,6 +224,13 @@
     });
     observer.observe(svgDoc.documentElement, {attributes: true, subtree: true, attributeFilter: ['data-pcb-board', 'data-pcb-snapshot', 'class']});
   };
+  // The schematic pane's clicks arrive here as the SAME board object —
+  // pcb-crossprobe.js translates a schematic handle to this catalogue's
+  // key and asks for a normal select (panel, chat context, chips).
+  document.addEventListener('pcb-cross-select', (event) => {
+    const key = event.detail && event.detail.key;
+    if (key && catalogue.has(key)) select(key);
+  });
   object.addEventListener('load', bind);
   // An object can finish before this deferred script registers its listener.
   if (object.contentDocument?.documentElement.dataset.pcbSnapshot) bind();

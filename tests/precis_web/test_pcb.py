@@ -260,6 +260,52 @@ def test_schematic_renders_before_any_placement(pcb_client, runtime_with_store) 
     assert ">GND</text>" not in r.text  # ground draws as the glyph
 
 
+def test_schematic_handles_resolve_through_the_argue_parser(
+    pcb_client, runtime_with_store
+) -> None:
+    """Cross-probing (workbench spec): every data-handle the schematic
+    stamps is argue grammar — a part, a pin or a net — and resolves
+    against the SAME live board the board SVG's handles do."""
+    import re
+
+    from precis.pcb import argue
+
+    _seed(runtime_with_store)
+    store = runtime_with_store.hub.store
+    ref = store.get_ref(kind="pcb", id="web_pcb")
+    svg = pcb_client.get("/pcb/web_pcb/schematic.svg").text
+    handles = re.findall(r'data-handle="([^"]+)"', svg)
+    # part, pin, net — and the power/ground exception's net-class stamp
+    assert {"U1", "R1"} <= set(handles)
+    assert "U1.1" in handles
+    assert "net:SIG" in handles and "net:GND" in handles
+    assert 'data-net-class="ground"' in svg
+    resolved, unknown = argue.resolve(store, ref.id, handles)
+    assert unknown == []
+    assert {r.kind for r in resolved} == {"part", "pin", "net"}
+    # the pin and the part are the same object the board resolves
+    kinds = {r.handle: r.kind for r in resolved}
+    assert kinds["U1"] == "part" and kinds["U1.1"] == "pin"
+    assert kinds["net:SIG"] == "net"
+
+
+def test_info_strip_has_hover_and_selection_slots(
+    pcb_client, runtime_with_store
+) -> None:
+    """The strip's two slots (workbench spec, cross-probing slice): the
+    selection view plus the hover view that temporarily replaces it, and
+    the cross-probe script that drives both panes."""
+    _seed(runtime_with_store)
+    r = pcb_client.get("/pcb/web_pcb")
+    assert r.status_code == 200
+    for marker in (
+        'id="pcb-info-selection"',
+        'id="pcb-info-hover"',
+        "pcb-crossprobe.js",
+    ):
+        assert marker in r.text, marker
+
+
 def test_board_endpoint_renders_even_before_placement(
     pcb_client, runtime_with_store
 ) -> None:

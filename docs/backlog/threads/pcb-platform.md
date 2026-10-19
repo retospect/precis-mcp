@@ -88,10 +88,12 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
   1–2, slot beside slices 3–5; ten open questions for Reto in the file.
 - **backlog/pcb-workbench-layout.md** — `ready/normal`, Reto's web design
   pass 2026-10-18 ("spec it"): schematic left, layout right, one chat,
-  cross-probing, shared zoom/pan module with se. **Slice 1 shipped**
+  cross-probing, shared zoom/pan module with se. **Slices 1–2 shipped**
   (d-workbench): the two-pane page, remembered divider, info strip,
-  `static/viewport.js` and the flip button; next is cross-probing, then
-  the one chat, focus/pinning, sheets, and the se adoption.
+  `static/viewport.js`, the flip button, and cross-probing (the
+  schematic stamps argue's `data-handle` grammar; hover/selection strip
+  rule + power/ground exception in `static/pcb-crossprobe.js`); next is
+  the one chat, then focus/pinning, sheets, and the se adoption.
 - **backlog/pcb-datasheet-review.md** — `in-progress/high`, filed
   2026-10-13 from the taz15-blank dogfood: shared part facts, design
   intent in graph memory, re-derivable verdicts, review job, shortlist

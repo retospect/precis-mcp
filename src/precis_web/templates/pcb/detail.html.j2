@@ -50,6 +50,11 @@
   #pcb-divider:hover, #pcb-divider:focus-visible,
   #pcb-height:hover, #pcb-height:focus-visible { background: rgb(var(--bg-surface-emphasis)); }
   #pcb-height { height: 7px; cursor: row-resize; border-radius: 4px; margin: 2px 0; }
+  /* Reto's rule: the strip shows the selection; a hover temporarily
+     replaces it, and leaving restores it. */
+  #pcb-info-detail.hovering #pcb-info-selection { display: none; }
+  #pcb-info-hover:empty { display: none; }
+  #pcb-info-detail { white-space: pre-wrap; }
 </style>
 <div id="pcb-workbench" class="mb-1">
   <section id="pcb-pane-schematic" class="pcb-pane rounded border border-line bg-surface p-2">
@@ -97,7 +102,7 @@
 {# The info strip: hover/selection details left, the board cursor readout
    right (moved here from the old board box). #}
 <div id="pcb-info-strip" class="mb-3 flex items-baseline justify-between gap-4 rounded border border-line bg-surface px-2 py-1 text-xs text-fg-subtle">
-  <span id="pcb-info-detail" aria-live="polite"></span>
+  <span id="pcb-info-detail" aria-live="polite"><span id="pcb-info-selection"></span><span id="pcb-info-hover"></span></span>
   <span id="pcb-cursor-readout" aria-live="off" title="cursor position, board origin"
         class="whitespace-nowrap font-mono">x — y — mm</span>
 </div>
@@ -142,6 +147,7 @@
 <script src="/static/pcb-argue.js" defer></script>
 <script src="/static/pcb-hover.js" defer></script>
 <script src="/static/pcb-selection.js" defer></script>
+<script src="/static/pcb-crossprobe.js" defer></script>
 {% endif %}
 {{ design_chat(chat, rev, rev_current) }}
 {% endblock %}
