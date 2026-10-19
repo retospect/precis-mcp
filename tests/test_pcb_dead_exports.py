@@ -116,6 +116,10 @@ _spec.loader.exec_module(coderef)
 #: of the contract: an entry that gains a real caller must be REMOVED,
 #: not left masking a future regression check forever.
 _KNOWN_UNWIRED: dict[str, str] = {
+    "src/precis/pcb/clearance.py::outward_circle": (
+        "pcb-vector-router slice 2: the circumscribed polygon for consumers "
+        "that only take polygons; its first caller is slice 5's CDT input"
+    ),
     "src/precis/pcb/jlc_api.py::reset_live_cache": (
         "own docstring: 'Clear the live-lookup negative cache (tests; an "
         "operator retry)' -- same ops-tool shape as _http.reset_circuit"

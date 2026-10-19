@@ -21,7 +21,7 @@ from precis.pcb import DEFAULT_STACKUP, drc
 from precis.pcb.capabilities import capability_for
 from precis.pcb.ir import from_graph
 from precis.pcb.realize import RealizeConfig, realize, to_gerber_model
-from precis.pcb.rules import NetRules
+from precis.pcb.rules import NetRules, resolve_net_rules
 from precis.pcb.silk import SilkPlacement
 
 _CAP4 = capability_for("4layer")
@@ -2315,19 +2315,14 @@ def test_clearance_oracle_matches_strtree_engine_on_real_realized_vias():
                 model, required_mm=required_mm
             )
         }
-        # `to_gerber_model` (real production output) carries real pads, and
-        # the oracle deliberately excludes pads from its closed-form
-        # circle/capsule alphabet exactly like it already excludes pours
-        # (module docstring) -- so a pad-involving pair is only ever found
-        # by the indexed engine. Restricted here to the track/via-only
-        # comparison this oracle actually claims to make; pad clearance
-        # itself is covered directly in the pad-vs-copper tests above.
+        # `to_gerber_model` (real production output) carries real pads; the
+        # oracle measures them too since vector-router slice 2, so every
+        # pair — pad pairs included — is compared.
         indexed = {
             (i, j): gap
             for i, j, gap, _layer in drc.clearance_pairs_indexed(
                 model, required_mm=required_mm
             )
-            if i < n_copper and j < n_copper
         }
         assert set(naive) == set(indexed), (trial, set(naive) ^ set(indexed))
         for key, gap in naive.items():
@@ -2985,3 +2980,168 @@ def test_pour_reaches_pad_is_part_of_run_geometric_drc():
     model = _pour_model(_gnd_pad(), [_gnd_pour_item("F.Cu", hole=True)])
     findings = drc.run_geometric_drc(model, capability=_CAP4, outline=_EDGE_OUTLINE)
     assert sum(f.rule == "pour_reaches_pad" for f in findings) == 1
+
+
+# ── per-(class pair, layer) clearance (pcb-vector-router slice 1) ────────────
+
+
+def _ewod_hv_findings(escape_rules: dict[str, Any]) -> list[drc.DrcFinding]:
+    """The EWOD array's own copper with extra rules on its escape class,
+    judged the way the put judge does (pads + authored copper)."""
+    from tests.test_pcb_ewod_generator_drc import _ewod_model
+
+    expansion, model = _ewod_model(grid=[3, 3])
+    classes = {k: dict(v) for k, v in expansion.net_classes.items()}
+    classes["ewod_ARR1_escape"].update(escape_rules)
+    by_class = {
+        c: resolve_net_rules(c, layer_is_outer=True, fab_caps=_CAP4, overrides=o)
+        for c, o in classes.items()
+    }
+    net_rules = {
+        str(n["name"]): by_class[str(n["net_class"])]
+        for n in expansion.nets
+        if n.get("net_class") in by_class
+    }
+    return drc.check_clearance(model, _CAP4, net_rules=net_rules)
+
+
+def _track_pad_errors(findings: list[drc.DrcFinding]) -> list[str]:
+    return [
+        f.where
+        for f in findings
+        if f.severity == "error" and f.where.startswith("track[") and "pad[" in f.where
+    ]
+
+
+def test_ewod_hv_class_floor_on_every_layer_refuses_the_array_plaza_stubs() -> None:
+    """The defect slice 1 removes: working_voltage_v=250 alone sets 0.4 mm
+    on every layer, so the array's own F.Cu stubs read as errors."""
+    errors = _track_pad_errors(_ewod_hv_findings({"working_voltage_v": 250}))
+    assert "track[ARR1_R0C2] <-> pad[ARR1/R1C2 net ARR1_R1C2] on F.Cu" in errors
+
+
+def test_ewod_hv_per_layer_floor_admits_the_f_cu_stubs_and_keeps_b_cu_at_0_4() -> None:
+    hv = {
+        "working_voltage_v": 250,
+        "clearance_by_layer": {
+            "F.Cu": {"min_clearance_mm": 0.152},
+            "B.Cu": {"min_clearance_mm": 0.4},
+        },
+    }
+    findings = _ewod_hv_findings(hv)
+    assert _track_pad_errors(findings) == []
+    # The plaza vias span every layer: at 0.091 mm they are judged on the
+    # strictest layer they meet on (0.4 mm), not on F.Cu's 0.152 mm.
+    via_errors = [
+        f for f in findings if f.severity == "error" and f.where.startswith("via[")
+    ]
+    assert via_errors
+    assert all("class floor 0.400mm" in f.detail for f in via_errors)
+
+
+def test_b_cu_pair_under_the_layer_floor_still_errors() -> None:
+    hv = resolve_net_rules(
+        "hv",
+        layer_is_outer=True,
+        fab_caps=_CAP4,
+        overrides={
+            "working_voltage_v": 250,
+            "clearance_by_layer": {"F.Cu": {"min_clearance_mm": 0.152}},
+        },
+    )
+    plain = resolve_net_rules("", layer_is_outer=True, fab_caps=_CAP4)
+
+    def track(net: str, layer: str, y: float) -> dict[str, Any]:
+        return {
+            "ctype": "track",
+            "layer": layer,
+            "net": net,
+            "width_mm": 0.2,
+            "segments": [{"shape": "line", "start": [0.0, y], "end": [5.0, y]}],
+        }
+
+    def findings(layer: str, *, coated: bool = True) -> list[drc.DrcFinding]:
+        # 0.3 mm gap: above F.Cu's 0.152 mm, below B.Cu's 0.4 mm class floor
+        # (B4, coated board), above In1.Cu's 0.2 mm (B1).
+        model = {
+            "layers": [str(e["name"]) for e in DEFAULT_STACKUP],
+            "copper": [track("HV", layer, 0.0), track("LV", layer, 0.5)],
+        }
+        return drc.check_clearance(
+            model, _CAP4, net_rules={"HV": hv, "LV": plain}, coated=coated
+        )
+
+    back = findings("B.Cu")
+    assert [f.severity for f in back] == ["error"]
+    assert "class floor 0.400mm" in back[0].detail
+    assert [f.severity for f in findings("F.Cu")] == ["warn"]
+
+
+def test_working_voltage_floor_reads_the_ipc_column_of_each_layer() -> None:
+    """Reto 2026-10-18, "Yes, IPC column per layer": a class's
+    working_voltage_v floor is IPC-2221B B1 on inner layers, B4 on outer
+    layers of a coated board, B2 on outer layers of an uncoated one."""
+    hv = resolve_net_rules(
+        "hv", layer_is_outer=True, fab_caps=_CAP4, overrides={"working_voltage_v": 250}
+    )
+    plain = resolve_net_rules("", layer_is_outer=True, fab_caps=_CAP4)
+
+    def floor(layer: str, coated: bool) -> str:
+        model = {
+            "layers": [str(e["name"]) for e in DEFAULT_STACKUP],
+            "copper": [
+                {"ctype": "via", "net": n, "x": x, "y": 0.0, "dia_mm": 0.3}
+                | {"layers": [layer]}
+                for n, x in (("HV", 0.0), ("LV", 0.4))
+            ],
+        }
+        found = drc.check_clearance(
+            model, _CAP4, net_rules={"HV": hv, "LV": plain}, coated=coated
+        )
+        return " ".join(f.severity + ":" + f.detail[:60] for f in found)
+
+    # 0.1 mm of copper gap on every layer.
+    assert "class floor 0.200mm" in floor("In1.Cu", coated=True)
+    assert "class floor 0.400mm" in floor("F.Cu", coated=True)
+    assert "class floor 1.250mm" in floor("B.Cu", coated=False)
+
+
+def test_through_via_pair_is_judged_where_it_fares_worst_not_by_higher_floor() -> None:
+    """In1.Cu carries the higher error floor (0.4) and the pair clears it;
+    on an outer layer the 250 V pairwise term asks 1.25 mm and the pair
+    falls short. The finding is that warn, not silence."""
+    hv = resolve_net_rules(
+        "hv",
+        layer_is_outer=True,
+        fab_caps=_CAP4,
+        overrides={"clearance_by_layer": {"In1.Cu": {"min_clearance_mm": 0.4}}},
+    )
+    plain = resolve_net_rules("", layer_is_outer=True, fab_caps=_CAP4)
+
+    def via(net: str, x: float) -> dict[str, Any]:
+        return {"ctype": "via", "net": net, "x": x, "y": 0.0, "dia_mm": 0.5}
+
+    model = {
+        "layers": [str(e["name"]) for e in DEFAULT_STACKUP],
+        "copper": [via("HV", 0.0), via("LV", 1.0)],  # 0.5 mm apart
+    }
+    findings = drc.check_clearance(
+        model,
+        _CAP4,
+        net_rules={"HV": hv, "LV": plain},
+        net_voltages={"HV": 250.0, "LV": 0.0},
+    )
+    assert [f.severity for f in findings] == ["warn"]
+    assert findings[0].where.endswith(("on F.Cu", "on B.Cu"))
+
+
+def test_unnetted_items_are_not_the_same_net() -> None:
+    model = {
+        "layers": ["F.Cu", "B.Cu"],
+        "copper": [
+            {"ctype": "via", "x": 0.0, "y": 0.0, "dia_mm": 0.5},
+            {"ctype": "via", "net": None, "x": 0.55, "y": 0.0, "dia_mm": 0.5},
+        ],
+    }
+    findings = drc.check_clearance(model, _CAP4, net_rules={})
+    assert [f.severity for f in findings] == ["error"]

@@ -152,7 +152,7 @@ CDT input (`shapely.constrained_delaunay_triangles`), the pour booleans in
 `planes.py`, and rendered views. There they are always outward
 (circumscribed), so they can narrow a corridor by at most the tolerance and
 never open a false one. The remaining question is that tolerance: lean 5 µm
-sagitta (5 segments per quadrant at R = 0.3 mm, 11 at R = 2 mm).
+sagitta (5 segments per quadrant at R = 0.3 mm, 12 at R = 2 mm).
 
 **8. Is the runtime budget a limitation; should it relax?** It is a design
 target, not a correctness limit: clearance and connectivity hold however
@@ -493,57 +493,136 @@ Wall-time figures below are targets, not gates, pending open question 8
 the first pass in slices 3–9 only; slice 10 removes it. No slice carries a
 migration; any that grows one ships via `/go`.
 
-### Slice 0 — measurement harness
+### Baseline (slice 0, shipped)
 
-A script (`scripts/pcb-route-bench`) and a marked-slow test that route the
-benchmark set and write one table: routed/failed, DRC errors and warns by
-rule, vias, wire length, wall time, seconds per net and per connection,
-per board. It also records whether `pcb_route` runs under a hard wall
-(none found in `pcb_route.py`; the runner's `deadline_s` bound is the
-mechanism if one is added). taz15-blank runs only where
-the gitignored snapshot exists (the `test_taz15_import_export_reimport_structural`
-pattern). No behaviour change.
+`scripts/pcb-route-bench [--twice] [OUT.md]` routes the set
+(`tests/fixtures/pcb/route_bench.py` says how each board is built) and
+writes this table plus a JSON of every count and
+`rule:severity:finding_key`; `--twice` fails unless both runs match.
+taz15-blank joins only when its gitignored export exists
+(`.scratch/pcb-snapshot/taz15-blank.json`). Hard wall: none —
+`pcb_route` has no deadline or timeout; only realize's
+`negotiate_budget_s` bounds the negotiation loop.
 
-Exit: the table for current main is written into this item; reruns are
-deterministic (same counts twice).
+Measured 2026-10-18 on main 7c03ac7dc, two runs, every count and finding
+key identical (wall and DRC seconds from the first run; the rerun's were
+within 2 s and 1.4 s). `routed/nets` counts nets with two or more members,
+so taz15-blank reads 64/79; the 139/151 and 149/151 above count every net.
+"DRC s" is the recorded `view='drc'` run on the job boards and
+`session.routed_drc_findings` (copper rules only) on ewod-replay and
+qfp-plaza.
 
-### Slice 1 — clearance rules by (class pair, layer)
+| board | routed/nets | failed | conns | vias | wire mm | wall s | s/net | s/conn | DRC s | DRC errors | DRC warns |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| nano | 35/64 | 29 | 206 | 92 | 2082.3 | 71.5 | 1.12 | 0.347 | 9.00 | 75: connectivity 11, silk_missing 35, unrouted 29 | 12: board_edge_clearance 2, clearance 9, silk_edge_clearance 1 |
+| esp32c3-s1 | 11/11 | 0 | 61 | 29 | 214.2 | 10.4 | 0.95 | 0.170 | 1.60 | 0 | 87: clearance 63, trace_width 24 |
+| esp32c3-s2 | 11/11 | 0 | 61 | 31 | 242.4 | 11.2 | 1.02 | 0.184 | 1.76 | 0 | 78: clearance 54, trace_width 24 |
+| esp32c3-s3 | 11/11 | 0 | 61 | 33 | 206.5 | 13.8 | 1.25 | 0.226 | 1.92 | 0 | 83: clearance 57, trace_width 26 |
+| esp32c3-s4 | 11/11 | 0 | 61 | 32 | 225.4 | 11.3 | 1.03 | 0.185 | 1.74 | 0 | 79: clearance 55, trace_width 24 |
+| esp32c3-s5 | 11/11 | 0 | 61 | 32 | 217.6 | 10.5 | 0.95 | 0.172 | 1.72 | 0 | 81: clearance 55, silk_edge_clearance 2, trace_width 24 |
+| ewod-replay | 51/55 | 4 | 55 | 25 | 454.9 | 32.9 | 0.60 | 0.598 | 0.43 | 0 | 160: annular_ring 55, clearance 50, trace_width 55 |
+| qfp-plaza | 53/55 | 2 | 55 | 35 | 271.3 | 4.8 | 0.09 | 0.087 | 0.05 | 39: clearance 39 | 178: annular_ring 90, trace_width 88 |
+| taz15-blank | 64/79 | 15 | 236 | 143 | 1682.5 | 47.1 | 0.60 | 0.200 | 33.39 | 23: connectivity 4, silk_missing 4, unrouted 15 | 366: board_edge_clearance 2, clearance 333, courtyard_overlap 30, unconnected_pin 1 |
 
-`rules.py`: `clearance_by_layer`, `pair_rules`, per-layer `working_voltage_v`
-derivation (outer/inner, coated where the coat covers), and
-`required(a, b, layer, ctx)`. `drc.check_clearance` reads `required()`;
-`maze.OccupancyGrid.extra_mm` becomes per (net, layer). Validation in
-`handlers/pcb.py` refuses unknown layers and classes in the new keys.
+Failed nets: ewod-replay ARR1_R1C5, R6C5, R7C2, R7C6; qfp-plaza N27, N49;
+taz15-blank C9_2, CN4_40/42/56/58/60/67/74, GND, MCU_BOOT, MCU_RST, PV+,
+USB2_A5, USB2_B5, USBD-; nano the 29 of its floor test.
 
-Exit: the EWOD HV array (`ARR1`, working_voltage_v=250, B.Cu 0.4 mm, F.Cu
-class floor) puts without the `track[ARR1_R0C2] ↔ pad[ARR1/R1C2]` refusal,
-and B.Cu pairs under 0.4 mm still ERROR (new tests in `tests/test_pcb_rules.py`,
-`tests/test_pcb_drc.py`); a board with none of the new keys is bit-for-bit
-unchanged (nano, esp32c3 DRC identical).
+### Slice 1 — clearance rules by (class pair, layer) (shipped)
+
+Shipped: `clearance_by_layer` and `pair_rules` on `pcb_net_classes.rules`,
+`rules.required(a, b, layer, ctx)` read by `drc.check_clearance`,
+`OccupancyGrid.extra_mm(net, layer)`, and the P7 refusals in
+`handlers/pcb.py` (`op='class_rules'` and the design put). One defect
+found on the way: `clearance_pairs_indexed` reported a through-via pair on
+its first layer only, so a floor set on B.Cu alone would never be read for
+it; with layer-scoped rules a multi-layer pair is now judged on its
+strictest layer (boards without them keep the old path). The EWOD exit
+holds (the two EWOD HV tests in `tests/test_pcb_drc.py`, e.g.
+`tests/test_pcb_drc.py::test_ewod_hv_per_layer_floor_admits_the_f_cu_stubs_and_keeps_b_cu_at_0_4`,
+and `tests/test_pcb_clearance_rules_put.py`).
+
+Bench at slice 1 against the slice 0 baseline: every board's counts and
+every `rule:severity:finding_key` identical (none of the benchmark
+boards carries the new keys); wall and DRC seconds within run-to-run noise
+(DRC s: nano 9.00 → 7.23, esp32c3 1.60–1.92 → 1.63–1.95, ewod-replay
+0.43 → 0.50, qfp-plaza 0.05 → 0.05, taz15-blank 33.39 → 33.23).
+
+**Slice 1 decisions (builder V proposal; coordinator ruling 2026-10-18:
+P1–P3, P6, P7 approved as written; P4/P5 reduced as stated).**
+
+- **P1. Layer entries.** A key in `clearance_by_layer[L]`
+  (`clearance_mm`, `min_clearance_mm`) replaces the class value of that
+  tier on L, and the `working_voltage_v` floor does not apply on L for a
+  tier the entry names. The fab minimum still clamps both tiers.
+- **P2. Pair entries.** `{"with": <class>, "layers": [...],
+  "min_clearance_mm"?, "clearance_mm"?}`; `layers` omitted means every
+  copper layer. A rule on A "with B" also covers (B, A); when both classes
+  name each other on L, the larger value wins. A matched entry replaces
+  the pair's per-net value (the larger of the two nets) for each tier it
+  names; a tier it omits keeps the per-net value; the warn tier is never
+  below the error tier.
+- **P3. Pairwise voltage** (`net_voltages`, `|V_a − V_b|`) is unchanged:
+  it raises the warn tier by `max()` after the pair rule.
+- **P4. Coating column.** Slice 1 keeps today's B4 floor for a class's
+  `working_voltage_v` on every layer, so the slice is behaviour-neutral
+  and no clearance falls. The per-layer column (B1 inner, B2/B4 outer by
+  a `coated` flag) is a slice 2 proposal below; lowering inner layers
+  needs Reto's ruling.
+- **P5. Router.** The maze reserves each net's own per-layer warn tier
+  (`OccupancyGrid.extra_mm(net, layer)`); pair rules stay DRC-only, as the
+  caller table says.
+- **P6. Scope of `required()` in slice 1:** same net (`none`), class pair,
+  voltage, per-net per-layer floors. The same-footprint coated WARN stays
+  in `check_clearance`; the via, edge and NPTH kind rules move in slice 2
+  with the kernel.
+- **P7. Validation.** `clearance_by_layer` keys and `pair_rules[].layers`
+  must name copper layers of the board's stackup (routable or not);
+  `pair_rules[].with` must name a class on the design or in the same put;
+  an entry key outside the ones above is refused.
 
 Follow-on once this lands: put EWOD ruling 19 (`working_voltage_v: 250`
 on the `ewod_{name}_escape` class) into the generator
 (`docs/backlog/ewod-controller-and-hv-supply.md`; Reto, 2026-10-16 ~16:05Z, via the fleet coordinator: "add the constraint when it is supported.")
 
-Owning files: `src/precis/pcb/rules.py`, `drc.py`, `maze.py`, `realize.py`
-(`_net_clearances`), `src/precis/handlers/pcb.py`, skill
-`precis-pcb-route-help`.
+### Slice 2 — the clearance kernel (shipped)
 
-### Slice 2 — the clearance kernel
+Shipped: `clearance.py` (bodies = exact core + arcs + radius, closed-form
+arc distances, a box STRtree per layer, `outward_circle`);
+`clearance_pairs_indexed`, `check_via_pad_keepout`, `check_npth_clearance`
+and `check_board_edge_clearance` measure through it; the same-net via
+hole-wall rule moved into `rules.required()`; `clearance_violations_naive`
+measures arcs and rect/obround/polygon pads and agrees with the kernel on
+500 random layouts (`tests/test_pcb_clearance.py`). A pour against an arc
+track culls the pour's edges exactly (numpy box test under an upper bound
+from the arc's start point) before the closed form.
 
-`clearance.py` primitives, analytic distances, per-layer index,
-conservative polygonisation. `drc.check_clearance`, `check_via_via_keepout`,
-`check_via_pad_keepout`, `check_npth_clearance`, `check_board_edge_clearance`
-re-based on it. `clearance_violations_naive` extended to arcs and rectangular
-pads and asserted equal to the kernel over randomized layouts.
+Bench against slice 1: routing identical on every board. New `clearance`
+warns, all arc track against a pour, each gap moved by at most the old 15°
+chord error, R·(1 − cos 7.5°) (1–2 µm at the fillet radii here): esp32c3
+seeds 1–5 +5/+7/+6/+7/+8 (seed 3 also loses one), taz15-blank +48; nano,
+ewod-replay and qfp-plaza identical. Pad and via gaps moved by ≤ 0.05 µm
+(the old 64-segment circles), flipping no finding. `view='drc'` seconds:
+nano 7.50 → 7.58, esp32c3 1.64–2.00 → 1.39–1.66, ewod-replay 0.50 → 0.46,
+qfp-plaza 0.05 → 0.05, taz15-blank 34.16 → 30.36. Those pours were cut
+against the same chorded tracks (`planes.py` blockers from
+`drc._copper_item_polygon`); cutting them with outward kernel polygons is
+the next commit, so pours are generated legal instead of flagged.
 
-Exit: every fixture board's DRC findings identical by `finding_key`, except
-arc-track findings, whose margins change by at most the old chord error
-(listed in the commit); oracle agreement on ≥ 500 randomized layouts with
-arcs and rect pads; `view='drc'` wall time within +20 % of slice 0.
-
-Owning files: `src/precis/pcb/clearance.py`, `drc.py`, `tests/test_pcb_clearance.py`,
-`tests/test_pcb_drc.py`.
+**IPC column per layer (from slice 1 P4; built in slice 2).** Reto,
+2026-10-18, in the builder's session: "Yes, IPC column per layer". The
+rule context carries `coated` (`gerber.declares_parylene_coat`), and a
+class's `working_voltage_v` floor reads the IPC-2221B column per layer:
+B1 on inner layers, B4 on outer layers of a coated board, B2 on outer
+layers of an uncoated board. Effects: inner-layer floors fall (250 V:
+0.4 → 0.2 mm); outer floors on an uncoated board rise (250 V: 0.4 →
+1.25 mm). The router's per-(net, layer) reservation reads the same column.
+Known limit: the router decides "coated" from electrode pads only
+(mask-open-only arrays are not in its input), so on such a board it
+reserves the B2 figure where DRC asks B4 — more room than needed, never a
+DRC error. No benchmark board carries a class `working_voltage_v`; EWOD
+boards (coated, the only generator that emits one) change on inner layers
+only.
 
 ### Slice 3 — vector escape for walled-in segments
 

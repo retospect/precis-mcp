@@ -486,6 +486,7 @@ class OccupancyGrid:
         *,
         clearance_mm: float,
         net_clearance_mm: Mapping[int, float] | None = None,
+        net_layer_clearance_mm: Mapping[tuple[int, int], float] | None = None,
     ):
         self.spec = spec
         self.clearance_mm = clearance_mm
@@ -496,6 +497,15 @@ class OccupancyGrid:
             for n, c in (net_clearance_mm or {}).items()
             if float(c) > clearance_mm + 1e-12
         }
+        #: Per net, per layer index: the same difference for a layer its
+        #: class's ``clearance_by_layer`` names (vector-router slice 1). A
+        #: figure below ``clearance_mm`` claims nothing extra (0), never
+        #: less than the grid's base.
+        self._net_layer_extra: dict[int, dict[int, float]] = {}
+        for (n, layer), c in (net_layer_clearance_mm or {}).items():
+            self._net_layer_extra.setdefault(int(n), {})[int(layer)] = max(
+                0.0, float(c) - clearance_mm
+            )
         self._owner = np.full((spec.n_layers, spec.ny, spec.nx), FREE, dtype=np.int32)
         self._flat = self._owner.reshape(-1)
         #: Per net: flat cell index -> the EXACT centreline coordinate that
@@ -593,10 +603,31 @@ class OccupancyGrid:
             )
         self._body_mask = None if mask is None else mask.astype(bool)
 
-    def extra_mm(self, net_id: int) -> float:
-        """``net_id``'s clearance beyond ``clearance_mm``; 0 for a
-        default-class net, a sentinel or :data:`CONTESTED`."""
-        return self._net_extra.get(int(net_id), 0.0)
+    def extra_mm(self, net_id: int, layer: int | None = None) -> float:
+        """``net_id``'s clearance beyond ``clearance_mm`` on ``layer``; 0
+        for a default-class net, a sentinel or :data:`CONTESTED`. With no
+        ``layer`` (a query spanning layers, e.g. one A* search) it is the
+        net's widest figure over every layer, so the answer is never
+        short on any of them."""
+        net_id = int(net_id)
+        base = self._net_extra.get(net_id, 0.0)
+        by_layer = self._net_layer_extra.get(net_id)
+        if not by_layer:
+            return base
+        if layer is not None:
+            return by_layer.get(int(layer), base)
+        return max(base, *by_layer.values())
+
+    def _layers_by_extra(
+        self, net_id: int, layers: Iterable[int]
+    ) -> list[tuple[float, list[int]]]:
+        """``layers`` grouped by ``net_id``'s extra on each, in first-seen
+        order — one group (the per-net figure) for a net with no layer
+        figures, so a claim is stamped exactly as before."""
+        groups: dict[float, list[int]] = {}
+        for layer in layers:
+            groups.setdefault(self.extra_mm(net_id, layer), []).append(layer)
+        return list(groups.items())
 
     def core_radius_mm(self, width_mm: float) -> float:
         """The radius one piece of copper claims for itself: its own
@@ -619,9 +650,21 @@ class OccupancyGrid:
         already owned by a DIFFERENT net becomes :data:`CONTESTED`
         (passable by nobody) instead of being overwritten — the correct
         resolution for two pads whose keep-outs overlap. A net with a
-        class clearance above ``clearance_mm`` claims its extra on top."""
+        class clearance above ``clearance_mm`` claims its extra on top —
+        per layer, when its class names a layer figure."""
+        for extra, group in self._layers_by_extra(net_id, layers):
+            self._stamp_disk_on(group, x, y, radius_mm + extra, net_id, contest)
+
+    def _stamp_disk_on(
+        self,
+        layers: Iterable[int],
+        x: float,
+        y: float,
+        radius_mm: float,
+        net_id: int,
+        contest: bool,
+    ) -> None:
         spec = self.spec
-        radius_mm += self.extra_mm(net_id)
         r_cells = math.ceil(radius_mm / spec.pitch)
         cx, cy = spec.to_cell(x, y)
         lo_x, hi_x = max(0, cx - r_cells), min(spec.nx - 1, cx + r_cells)
@@ -765,10 +808,19 @@ class OccupancyGrid:
         each of them, computed ONCE and only the write repeated per
         layer; a bare one-shot ``Iterable`` would silently claim nothing
         past the first layer once consumed. Like :meth:`stamp_disk`, the
-        net's extra clearance is added to ``margin_mm``."""
-        layer_list = list(layers)
+        net's extra clearance (per layer) is added to ``margin_mm``."""
+        for extra, group in self._layers_by_extra(net_id, layers):
+            self._stamp_shape_on(group, shape, margin_mm + extra, net_id, contest)
+
+    def _stamp_shape_on(
+        self,
+        layer_list: list[int],
+        shape: PadShape,
+        margin_mm: float,
+        net_id: int,
+        contest: bool,
+    ) -> None:
         spec = self.spec
-        margin_mm += self.extra_mm(net_id)
         if shape.kind == "poly" and shape.poly:
             xs_v = [p[0] for p in shape.poly]
             ys_v = [p[1] for p in shape.poly]
@@ -873,10 +925,19 @@ class OccupancyGrid:
         via stamped without asking produced real overlapping copper, and
         the occupancy grid's whole guarantee is that copper is claimed
         before it is drawn. Callers that choose a position must ask first.
-        The querying net's extra clearance is added to ``radius_mm``.
+        The querying net's extra clearance is added to ``radius_mm``, per
+        layer.
         """
+        groups = self._layers_by_extra(net_id, layers) or [(self.extra_mm(net_id), [])]
+        return all(
+            self._disk_is_free_on(group, x, y, radius_mm + extra, net_id)
+            for extra, group in groups
+        )
+
+    def _disk_is_free_on(
+        self, layers: list[int], x: float, y: float, radius_mm: float, net_id: int
+    ) -> bool:
         spec = self.spec
-        radius_mm += self.extra_mm(net_id)
         r_cells = math.ceil(radius_mm / spec.pitch)
         cx, cy = spec.to_cell(x, y)
         lo_x, hi_x = max(0, cx - r_cells), min(spec.nx - 1, cx + r_cells)
@@ -919,7 +980,7 @@ class OccupancyGrid:
                 float(b[0]),
                 float(b[1]),
                 int(n),
-                float(radius_mm) + self.extra_mm(net_id),
+                float(radius_mm) + self.extra_mm(net_id, layer),
                 int(net_id),
                 float(spec.x0),
                 float(spec.y0),

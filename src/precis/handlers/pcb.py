@@ -99,6 +99,7 @@ from precis.format import render_agent_table
 from precis.handlers._interpret import interpreted
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.pcb import (
+    DEFAULT_STACKUP,
     PIN_ETYPES,
     PRESET_GROUND_NET,
     PRESET_SIDES,
@@ -149,7 +150,7 @@ from precis.pcb import topo as pcb_topo
 from precis.pcb.capabilities import CapabilityRow, capability_for
 from precis.pcb.footprint import fetch_footprint
 from precis.pcb.landpattern import rotate_offset
-from precis.pcb.rules import NetRules
+from precis.pcb.rules import NetRules, clearance_rule_problems
 from precis.protocol import ArgsSpec, Handler, KindSpec
 from precis.response import Response
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
@@ -981,6 +982,10 @@ class PcbHandler(Handler):
             # a committed design followed by a BadInput implying nothing
             # happened (gr — pcb-guided-place-route Slice 1 review).
             existing = self.store.get_ref(kind="pcb", id=slug)
+            if isinstance(net_classes, dict) and net_classes:
+                self._refuse_bad_clearance_rules(
+                    existing.id if existing is not None else None, net_classes
+                )
             tag_counts: dict[str, Any] = {}
             mapped: list[str] = []
 
@@ -2655,6 +2660,47 @@ class PcbHandler(Handler):
             "fan out (dog-bone) instead of routing."
         )
 
+    def _refuse_bad_clearance_rules(
+        self, ref_id: int | None, batch: dict[str, Any]
+    ) -> None:
+        """Refuse ``clearance_by_layer``/``pair_rules`` that name a layer
+        the board's stackup lacks or a class the design does not define
+        (vector-router slice 1, P7). ``batch`` is ``{class: rules}``; its
+        own names count as defined. A design not created yet is judged
+        against the stackup it will get."""
+        if not any(
+            isinstance(r, dict) and ("clearance_by_layer" in r or "pair_rules" in r)
+            for r in batch.values()
+        ):
+            return
+        if ref_id is not None:
+            design = self.store.pcb_load(ref_id)
+            stackup = (design.get("board") or {}).get("stackup") or DEFAULT_STACKUP
+            known = set(design.get("net_classes") or {})
+        else:
+            stackup, known = DEFAULT_STACKUP, set()
+        layers = [str(e.get("name")) for e in stackup]
+        classes = known | {str(n) for n in batch}
+        problems = [
+            line
+            for name, rules in batch.items()
+            if isinstance(rules, dict)
+            for line in clearance_rule_problems(
+                str(name), rules, layers=layers, classes=classes
+            )
+        ]
+        if problems:
+            raise BadInput(
+                "net-class clearance rules refused: " + "; ".join(problems),
+                next=(
+                    "name copper layers of this board's stackup and net "
+                    "classes the design defines; entry keys are "
+                    "clearance_mm / min_clearance_mm (+ with / layers in "
+                    "pair_rules) — nothing was changed"
+                ),
+                options=layers,
+            )
+
     def _op_class_rules(self, ref: Any, args: dict[str, Any]) -> Response:
         """``put(args={'op':'class_rules','name':...,'rules':{...}})`` — set
         one net class's rules. Judged (:meth:`_judged_mutation`): router
@@ -2669,6 +2715,7 @@ class PcbHandler(Handler):
                 next="args={'op':'class_rules','name':'i2c',"
                 "'rules':{'clearance_mm':0.2}}",
             )
+        self._refuse_bad_clearance_rules(ref.id, {name: rules})
         named = rules.get("layers")
         if isinstance(named, list | tuple) and named:
             stackup = (self.store.pcb_load(ref.id)["board"]).get("stackup") or []

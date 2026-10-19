@@ -19,9 +19,15 @@ from precis.pcb.rules import (
     IPC2221_K_INTERNAL,
     VIA_REFERENCE_CAPACITY_A,
     VIA_REFERENCE_DIA_MM,
+    LayerTiers,
+    NetRules,
+    Owner,
+    RuleContext,
+    clearance_rule_problems,
     ipc2221_capacity_a,
     ipc2221_track_width_mm,
     net_current_a_or_none,
+    required,
     resolve_net_rules,
     via_capacity_a,
     via_count_for_current,
@@ -233,3 +239,151 @@ def test_net_current_a_or_none_normalizes_nan_and_none():
     assert net_current_a_or_none(None) is None
     assert net_current_a_or_none(math.nan) is None
     assert net_current_a_or_none(5.0) == 5.0
+
+
+# ── per-(class pair, layer) clearance (pcb-vector-router slice 1) ────────────
+
+
+def _resolve(overrides: dict, net_class: str = "c") -> NetRules:
+    return resolve_net_rules(
+        net_class, layer_is_outer=True, fab_caps=_CAP4, overrides=overrides
+    )
+
+
+def test_no_new_keys_resolve_exactly_as_before() -> None:
+    hv = _resolve({"working_voltage_v": 250, "clearance_mm": 0.099})
+    assert hv.by_layer == () and hv.pair_rules == ()
+    assert hv.clearance_mm == pytest.approx(0.4)
+    assert hv.min_clearance_mm == pytest.approx(0.4)
+    assert hv.tiers_on("In2.Cu") == LayerTiers(hv.clearance_mm, hv.min_clearance_mm)
+
+
+def test_layer_entry_replaces_the_voltage_floor_on_that_layer_only() -> None:
+    """P1: a named tier replaces the class value and the working_voltage_v
+    floor on its layer; other layers keep the class's B4 floor."""
+    rules = _resolve(
+        {
+            "working_voltage_v": 250,
+            "clearance_mm": 0.099,
+            "clearance_by_layer": {
+                "F.Cu": {"min_clearance_mm": 0.152},
+                "B.Cu": {"min_clearance_mm": 0.4},
+            },
+        }
+    )
+    front, back = rules.tiers_on("F.Cu"), rules.tiers_on("B.Cu")
+    assert front.min_clearance_mm == pytest.approx(0.152)
+    assert front.clearance_mm == pytest.approx(0.152)
+    assert back.min_clearance_mm == pytest.approx(0.4)
+    assert rules.tiers_on("In1.Cu").min_clearance_mm == pytest.approx(0.4)
+
+
+def test_layer_entry_is_clamped_to_the_fab_minimum() -> None:
+    jlc_min = _CAP4.jlc_min["trace_spacing_mm"]
+    rules = _resolve({"clearance_by_layer": {"F.Cu": {"min_clearance_mm": 0.0}}})
+    assert rules.tiers_on("F.Cu").min_clearance_mm == pytest.approx(jlc_min)
+
+
+def _ctx(**net_rules: NetRules) -> RuleContext:
+    return RuleContext(
+        fab_caps=_CAP4,
+        net_rules=net_rules,
+        outer_layers=frozenset({"F.Cu", "B.Cu"}),
+    )
+
+
+def test_required_takes_the_stricter_net_per_layer() -> None:
+    hv = _resolve(
+        {"clearance_by_layer": {"B.Cu": {"min_clearance_mm": 0.4}}}, net_class="hv"
+    )
+    plain = _resolve({}, net_class="plain")
+    ctx = _ctx(A=hv, B=plain)
+    back = required(Owner("A"), Owner("B"), "B.Cu", ctx)
+    front = required(Owner("A"), Owner("B"), "F.Cu", ctx)
+    assert back.error_mm == pytest.approx(0.4)
+    assert back.warn_mm == pytest.approx(0.4)
+    assert front.error_mm == pytest.approx(_CAP4.jlc_min["trace_spacing_mm"])
+    assert front.metric == "copper"
+    assert required(Owner("A"), Owner("A"), "F.Cu", ctx).metric == "none"
+
+
+def test_pair_rule_wins_over_the_per_net_floor_and_is_symmetric() -> None:
+    """P2: the pair rule replaces the per-net floor for the pair on its
+    layers, from either side; elsewhere the class floor holds."""
+    escape = _resolve(
+        {
+            "working_voltage_v": 250,
+            "pair_rules": [
+                {"with": "pixel", "layers": ["F.Cu"], "min_clearance_mm": 0.152}
+            ],
+        },
+        net_class="escape",
+    )
+    pixel = _resolve({"clearance_mm": 0.099}, net_class="pixel")
+    other = _resolve({}, net_class="other")
+    ctx = _ctx(E=escape, P=pixel, O=other)
+    for a, b in (("E", "P"), ("P", "E")):
+        req = required(Owner(a), Owner(b), "F.Cu", ctx)
+        assert req.error_mm == pytest.approx(0.152)
+        # The rule names no warn tier: the per-net 0.4 stays the warn tier.
+        assert req.warn_mm == pytest.approx(0.4)
+    assert required(Owner("E"), Owner("P"), "B.Cu", ctx).error_mm == pytest.approx(0.4)
+    assert required(Owner("E"), Owner("O"), "F.Cu", ctx).error_mm == pytest.approx(0.4)
+
+
+def test_pair_rules_from_both_classes_take_the_larger() -> None:
+    a = _resolve(
+        {"pair_rules": [{"with": "b", "min_clearance_mm": 0.2}]}, net_class="a"
+    )
+    b = _resolve(
+        {"pair_rules": [{"with": "a", "min_clearance_mm": 0.3, "clearance_mm": 0.35}]},
+        net_class="b",
+    )
+    req = required(Owner("A"), Owner("B"), "In1.Cu", _ctx(A=a, B=b))
+    assert req.error_mm == pytest.approx(0.3)
+    assert req.warn_mm == pytest.approx(0.35)
+
+
+def test_required_folds_the_pairwise_voltage_into_the_warn_tier() -> None:
+    plain = _resolve({})
+    ctx = RuleContext(
+        fab_caps=_CAP4,
+        net_rules={"A": plain, "B": plain},
+        outer_layers=frozenset({"F.Cu", "B.Cu"}),
+        net_voltages={"A": 250.0, "B": 0.0},
+    )
+    req = required(Owner("A"), Owner("B"), "F.Cu", ctx)
+    assert req.warn_mm == pytest.approx(1.25)  # B2, external
+    inner = required(Owner("A"), Owner("B"), "In1.Cu", ctx)
+    assert inner.warn_mm == pytest.approx(0.2)  # B1
+    assert req.error_mm == pytest.approx(_CAP4.jlc_min["trace_spacing_mm"])
+
+
+def test_clearance_rule_problems_names_layers_classes_and_keys() -> None:
+    layers = ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"]
+    good = {
+        "clearance_by_layer": {"B.Cu": {"min_clearance_mm": 0.4}},
+        "pair_rules": [{"with": "px", "layers": ["F.Cu"], "min_clearance_mm": 0.152}],
+    }
+    assert (
+        clearance_rule_problems("hv", good, layers=layers, classes={"hv", "px"}) == []
+    )
+    bad = {
+        "clearance_by_layer": {
+            "In3.Cu": {"min_clearance_mm": 0.4},
+            "F.Cu": {"gap": 1, "clearance_mm": -1},
+        },
+        "pair_rules": [
+            {"with": "nope", "layers": ["X.Cu"], "min_clearance_mm": 0.1},
+            {"with": "px"},
+        ],
+    }
+    text = "\n".join(
+        clearance_rule_problems("hv", bad, layers=layers, classes={"hv", "px"})
+    )
+    assert "clearance_by_layer['In3.Cu']: no such copper layer" in text
+    assert "unknown key 'gap'" in text
+    assert "clearance_mm must be a number of mm >= 0" in text
+    assert "no such net class 'nope'" in text
+    assert "no such copper layer ['X.Cu']" in text
+    assert "names neither clearance_mm nor min_clearance_mm" in text

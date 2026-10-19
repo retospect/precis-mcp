@@ -63,7 +63,8 @@ close, not one to risk re-introducing via an optimistic constant).
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
 from typing import Any
 
 from precis.pcb.capabilities import CapabilityRow, conductor_spacing_mm
@@ -106,6 +107,83 @@ class NetRules:
     #: margin. Fed by a class's own ``min_clearance_mm`` key or derived
     #: from its ``working_voltage_v`` through IPC-2221B Table 6-1.
     min_clearance_mm: float | None = None
+    #: The class this was resolved for — what a :class:`PairRule`'s
+    #: ``with_class`` matches against.
+    net_class: str = ""
+    #: ``(layer name, tiers)`` for each layer the class's
+    #: ``clearance_by_layer`` names; every other layer reads
+    #: ``clearance_mm``/``min_clearance_mm`` (:meth:`tiers_on`).
+    by_layer: tuple[tuple[str, LayerTiers], ...] = ()
+    #: The class's ``pair_rules`` (:func:`required` applies them).
+    pair_rules: tuple[PairRule, ...] = ()
+    #: ``(layer name or None, IPC-2221B column, tiers)`` — set only for a
+    #: class with ``working_voltage_v``, whose floor depends on the layer
+    #: (Reto 2026-10-18, "Yes, IPC column per layer"): ``"B1"`` on inner
+    #: layers, ``"B4"`` on outer layers of a coated board, ``"B2"`` on
+    #: outer layers of an uncoated one. ``None`` is the class-wide row; a
+    #: named layer is that ``clearance_by_layer`` entry.
+    columns: tuple[tuple[str | None, str, LayerTiers], ...] = ()
+
+    def tiers_on(
+        self, layer: str, *, outer: bool = True, coated: bool = True
+    ) -> LayerTiers:
+        """This net's own clearance tiers on ``layer`` — an ``outer``
+        copper layer or an inner one, on a ``coated`` board or not."""
+        if self.columns:
+            column = "B1" if not outer else ("B4" if coated else "B2")
+            fallback: LayerTiers | None = None
+            for name, col, tiers in self.columns:
+                if col != column:
+                    continue
+                if name == layer:
+                    return tiers
+                if name is None:
+                    fallback = tiers
+            if fallback is not None:
+                return fallback
+        for name, tiers in self.by_layer:
+            if name == layer:
+                return tiers
+        return LayerTiers(self.clearance_mm, self.min_clearance_mm)
+
+    def max_clearance_mm(self) -> float:
+        """The largest clearance any layer or pair rule of this net can
+        ask for — the radius a candidate-pair prune must reach."""
+        values = [self.clearance_mm]
+        values += [t.clearance_mm for _, t in self.by_layer]
+        values += [t.clearance_mm for _, _, t in self.columns]
+        for rule in self.pair_rules:
+            values += [
+                v for v in (rule.clearance_mm, rule.min_clearance_mm) if v is not None
+            ]
+        return max(values)
+
+
+@dataclass(frozen=True, slots=True)
+class LayerTiers:
+    """One net's two clearance tiers on one layer: ``clearance_mm`` the
+    preferred (warn) tier, ``min_clearance_mm`` the hard (error) floor, or
+    ``None`` when the fab minimum is the whole floor."""
+
+    clearance_mm: float
+    min_clearance_mm: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class PairRule:
+    """One ``pair_rules`` entry of a class: the floor between this class
+    and ``with_class`` on ``layers`` (``None`` = every copper layer). A
+    tier left ``None`` keeps the per-net value (:func:`required`)."""
+
+    with_class: str
+    layers: frozenset[str] | None
+    clearance_mm: float | None
+    min_clearance_mm: float | None
+
+    def applies(self, other_class: str, layer: str) -> bool:
+        return other_class == self.with_class and (
+            self.layers is None or layer in self.layers
+        )
 
 
 def ipc2221_track_width_mm(
@@ -239,51 +317,55 @@ def resolve_net_rules(
     if width_min is not None:
         width_mm = max(float(width_mm), width_min)
 
-    clearance_mm = overrides.get("clearance_mm")
-
-    # Slice 4c (ewod-controller-and-hv-supply.md): a class's
-    # ``working_voltage_v`` — the SAME key ``drc.py::_net_voltage`` reads
-    # for the ERC checks — derives a spacing floor through IPC-2221B Table
-    # 6-1, so the number is derived, not typed. External nets read the B4
-    # (coated) column: the EWOD boards this exists for are
-    # parylene-coated (ruling 3/10's own column choice); internal nets
-    # read B1 (coated is inapplicable there anyway). Above the table's
-    # 500 V top band this RAISES — a voltage claim the table cannot answer
-    # is refused, never extrapolated.
-    derived: float | None = None
-    working_voltage_v = overrides.get("working_voltage_v")
-    if working_voltage_v is not None:
-        derived = conductor_spacing_mm(
-            float(working_voltage_v),
-            layer="internal" if not layer_is_outer else "external",
-            coated=True,
+    tiers = _clearance_tiers(overrides, fab_caps, layer_is_outer=layer_is_outer)
+    # Stored rules were refused at put time if malformed
+    # (:func:`clearance_rule_problems`); an entry of the wrong shape that
+    # reached the table anyway is skipped here rather than raising out of a
+    # DRC run.
+    raw_layers = overrides.get("clearance_by_layer")
+    by_layer = tuple(
+        (
+            str(layer),
+            _clearance_tiers(
+                overrides, fab_caps, layer_is_outer=layer_is_outer, entry=entry
+            ),
         )
-        if clearance_mm is None:
-            clearance_mm = derived
-    if clearance_mm is None:
-        clearance_mm = _fab_floor(fab_caps, "trace_spacing_mm", _FALLBACK_CLEARANCE_MM)
-    clearance_min = _fab_min(fab_caps, "trace_spacing_mm")
-    if clearance_min is not None:
-        clearance_mm = max(float(clearance_mm), clearance_min)
-
-    # Slice 4b: ``min_clearance_mm`` is the class's HARD floor — the
-    # error-tier threshold ``check_clearance`` applies where ``jlc_min``
-    # alone used to set it. An authored explicit key and the derived
-    # voltage floor both feed it; the resolved value never dips below the
-    # fab floor (below it the fab can't build anything anyway).
-    explicit_floor = overrides.get("min_clearance_mm")
-    min_clearance_mm: float | None = None
-    if explicit_floor is not None or derived is not None:
-        min_clearance_mm = max(
-            float(explicit_floor) if explicit_floor is not None else 0.0,
-            derived or 0.0,
+        for layer, entry in by_layer_entries(raw_layers)
+    )
+    columns: tuple[tuple[str | None, str, LayerTiers], ...] = ()
+    if overrides.get("working_voltage_v") is not None:
+        entries: list[tuple[str | None, dict[str, Any] | None]] = [(None, None)]
+        entries += [(name, entry) for name, entry in by_layer_entries(raw_layers)]
+        columns = tuple(
+            (
+                name,
+                column,
+                _clearance_tiers(
+                    overrides,
+                    fab_caps,
+                    layer_is_outer=column != "B1",
+                    coated=column == "B4",
+                    entry=entry,
+                ),
+            )
+            for name, entry in entries
+            for column in ("B1", "B2", "B4")
         )
-        if clearance_min is not None:
-            min_clearance_mm = max(min_clearance_mm, clearance_min)
-        # The derived floor also raises the preferred tier — the router
-        # (which reads ``clearance_mm``) and the WARN band must both keep
-        # the creepage distance, not merely error below it.
-        clearance_mm = max(clearance_mm, min_clearance_mm)
+    raw_pairs = overrides.get("pair_rules")
+    pair_rules = tuple(
+        PairRule(
+            with_class=raw["with"],
+            layers=(
+                frozenset(str(n) for n in raw["layers"])
+                if isinstance(raw.get("layers"), list | tuple)
+                else None
+            ),
+            clearance_mm=_clamped(raw.get("clearance_mm"), fab_caps),
+            min_clearance_mm=_clamped(raw.get("min_clearance_mm"), fab_caps),
+        )
+        for raw in (raw_pairs if isinstance(raw_pairs, list | tuple) else ())
+        if isinstance(raw, dict) and isinstance(raw.get("with"), str)
+    )
 
     via_dia_mm = overrides.get("via_dia_mm")
     if via_dia_mm is None:
@@ -305,11 +387,334 @@ def resolve_net_rules(
 
     return NetRules(
         track_width_mm=float(width_mm),
-        clearance_mm=float(clearance_mm),
+        clearance_mm=tiers.clearance_mm,
         via_dia_mm=None if via_dia_mm is None else float(via_dia_mm),
         via_drill_mm=None if via_drill_mm is None else float(via_drill_mm),
-        min_clearance_mm=min_clearance_mm,
+        min_clearance_mm=tiers.min_clearance_mm,
+        net_class=net_class,
+        by_layer=by_layer,
+        pair_rules=pair_rules,
+        columns=columns,
     )
+
+
+def by_layer_entries(raw: Any) -> list[tuple[str, dict[str, Any]]]:
+    """A stored ``clearance_by_layer`` as sorted ``(layer, entry)`` pairs,
+    skipping anything not shaped ``{layer: {...}}``."""
+    if not isinstance(raw, dict):
+        return []
+    return sorted((str(k), v) for k, v in raw.items() if isinstance(v, dict))
+
+
+def _clamped(value: Any, fab_caps: CapabilityRow) -> float | None:
+    """An authored clearance clamped up to the fab minimum, or ``None``."""
+    if value is None:
+        return None
+    floor = _fab_min(fab_caps, "trace_spacing_mm")
+    return float(value) if floor is None else max(float(value), floor)
+
+
+def _clearance_tiers(
+    overrides: dict[str, Any],
+    fab_caps: CapabilityRow,
+    *,
+    layer_is_outer: bool,
+    coated: bool = True,
+    entry: dict[str, Any] | None = None,
+) -> LayerTiers:
+    """A class's two clearance tiers — on every layer, or on the one
+    layer ``entry`` (its ``clearance_by_layer[layer]``) describes. A tier
+    the entry names replaces the class value AND the ``working_voltage_v``
+    floor for that tier (vector-router slice 1, P1); the fab minimum
+    clamps both tiers either way."""
+    entry = entry or {}
+    clearance_mm = entry.get("clearance_mm", overrides.get("clearance_mm"))
+
+    # Slice 4c (ewod-controller-and-hv-supply.md): a class's
+    # ``working_voltage_v`` — the SAME key ``drc.py::_net_voltage`` reads
+    # for the ERC checks — derives a spacing floor through IPC-2221B Table
+    # 6-1, so the number is derived, not typed. Internal layers read B1;
+    # external layers read B4 when ``coated`` (the EWOD boards this exists
+    # for are parylene-coated, ruling 3/10) and B2 when not.
+    # :func:`resolve_net_rules`'s own fields keep B4 (the router's base
+    # figure); per layer, :attr:`NetRules.columns` carries all three
+    # (Reto 2026-10-18, "Yes, IPC column per layer"). Above the table's
+    # 500 V top band this RAISES — a voltage claim the table cannot answer
+    # is refused, never extrapolated.
+    derived: float | None = None
+    working_voltage_v = overrides.get("working_voltage_v")
+    if working_voltage_v is not None:
+        derived = conductor_spacing_mm(
+            float(working_voltage_v),
+            layer="internal" if not layer_is_outer else "external",
+            coated=coated,
+        )
+        if clearance_mm is None and "clearance_mm" not in entry:
+            clearance_mm = derived
+    if clearance_mm is None:
+        clearance_mm = _fab_floor(fab_caps, "trace_spacing_mm", _FALLBACK_CLEARANCE_MM)
+    clearance_min = _fab_min(fab_caps, "trace_spacing_mm")
+    if clearance_min is not None:
+        clearance_mm = max(float(clearance_mm), clearance_min)
+
+    # Slice 4b: ``min_clearance_mm`` is the class's HARD floor — the
+    # error-tier threshold ``check_clearance`` applies where ``jlc_min``
+    # alone used to set it. An authored explicit key and the derived
+    # voltage floor both feed it; the resolved value never dips below the
+    # fab floor (below it the fab can't build anything anyway).
+    if "min_clearance_mm" in entry:
+        explicit_floor = entry["min_clearance_mm"]
+        derived = None
+    else:
+        explicit_floor = overrides.get("min_clearance_mm")
+    min_clearance_mm: float | None = None
+    if explicit_floor is not None or derived is not None:
+        min_clearance_mm = max(
+            float(explicit_floor) if explicit_floor is not None else 0.0,
+            derived or 0.0,
+        )
+        if clearance_min is not None:
+            min_clearance_mm = max(min_clearance_mm, clearance_min)
+        # The derived floor also raises the preferred tier — the router
+        # (which reads ``clearance_mm``) and the WARN band must both keep
+        # the creepage distance, not merely error below it.
+        clearance_mm = max(clearance_mm, min_clearance_mm)
+    return LayerTiers(float(clearance_mm), min_clearance_mm)
+
+
+#: JLCPCB "Via Hole-to-Hole Spacing" (gr489914, Reto ruling (a)
+#: 2026-10-16): the minimum drilled-wall to drilled-wall gap between two
+#: via holes. Source: https://jlcpcb.com/capabilities/pcb-capabilities ,
+#: Drilling section, read 2026-10-16 10:00Z as "Via Hole-to-Hole Spacing
+#: 0.2mm" (the same page lists "Pad Hole-to-Hole Spacing 0.45mm" for
+#: plated pad holes). A drill figure, so it is not per copper process.
+JLC_VIA_HOLE_TO_HOLE_MM = 0.2
+
+
+@dataclass(frozen=True, slots=True)
+class Requirement:
+    """What one pair of objects owes each other on one layer:
+    ``error_mm`` the hard floor, ``warn_mm`` the preferred tier (``None``
+    when no tier above the floor exists), ``metric`` what is measured —
+    ``"copper"`` edge to edge, ``"none"`` for copper that merges."""
+
+    error_mm: float
+    warn_mm: float | None
+    metric: str
+
+
+@dataclass(frozen=True, slots=True)
+class Owner:
+    """The rule-relevant identity of one object (vector-router step 1).
+    Slice 1 resolves copper against copper by net; the clearance kernel
+    (slice 2) adds the kind rules."""
+
+    net: str | None
+    kind: str = "copper"
+
+
+@dataclass(frozen=True)
+class RuleContext:
+    """Board-wide inputs :func:`required` resolves against: the fab row,
+    each net's resolved rules by NAME, the outer copper layer names (the
+    IPC-2221B external/internal split; empty = unknown, read as outer, the
+    larger figure), the annotated net voltages, and whether the board takes
+    the conformal coat (:func:`precis.pcb.gerber.declares_parylene_coat`),
+    which picks B4 over B2 on outer layers."""
+
+    fab_caps: CapabilityRow
+    net_rules: Mapping[str, NetRules] = field(default_factory=dict)
+    outer_layers: frozenset[str] = frozenset()
+    net_voltages: Mapping[str, float] | None = None
+    coated: bool = True
+
+    def is_outer(self, layer: str) -> bool:
+        return not self.outer_layers or layer in self.outer_layers
+
+
+def _pair_tiers(
+    a: NetRules, b: NetRules, layer: str
+) -> tuple[float | None, float | None, bool]:
+    """``(clearance_mm, min_clearance_mm, matched)`` over every pair rule
+    of either class that covers the other on ``layer``; the larger value
+    per tier when several match."""
+    clearance: float | None = None
+    floor: float | None = None
+    matched = False
+    for mine, other in ((a, b), (b, a)):
+        for rule in mine.pair_rules:
+            if not rule.applies(other.net_class, layer):
+                continue
+            matched = True
+            if rule.clearance_mm is not None:
+                clearance = max(clearance or 0.0, rule.clearance_mm)
+            if rule.min_clearance_mm is not None:
+                floor = max(floor or 0.0, rule.min_clearance_mm)
+    return clearance, floor, matched
+
+
+def required(a: Owner, b: Owner, layer: str, ctx: RuleContext) -> Requirement:
+    """The clearance ``a`` and ``b`` owe each other on ``layer`` — the one
+    resolution routing and DRC share (``docs/backlog/pcb-vector-router.md``
+    step 1, slice 1 decisions P1–P3, P6):
+
+    1. same net: copper merges (``metric='none'``), except two vias,
+       which owe :data:`JLC_VIA_HOLE_TO_HOLE_MM` of drill wall
+       (``metric='hole_wall'``);
+    2. per-net tiers on ``layer`` (:meth:`NetRules.tiers_on`): the larger
+       of the two nets' preferred tier, the larger of their hard floors,
+       never below the fab minimum;
+    3. a class pair rule covering the pair on ``layer`` replaces each tier
+       it names; the warn tier is then kept at or above the error tier;
+    4. annotated voltages on both nets raise the warn tier to the
+       IPC-2221B spacing for ``|V_a − V_b|`` (uncoated column, external on
+       outer layers). A missing annotation is not 0 V.
+
+    A net with no resolved rules reads the fab's house tier."""
+    caps = ctx.fab_caps
+    field_name = "trace_spacing_mm"
+    jlc_min = caps.jlc_min.get(field_name) or 0.0
+    house = caps.house_default.get(field_name)
+    if a.net is not None and a.net != "" and a.net == b.net:
+        if a.kind == "via" and b.kind == "via":
+            # gr489914 ruling (a): two barrels of one net may touch; the fab
+            # needs wall between the drills.
+            return Requirement(JLC_VIA_HOLE_TO_HOLE_MM, None, "hole_wall")
+        return Requirement(0.0, None, "none")
+    ra = ctx.net_rules.get(str(a.net)) if ctx.net_rules else None
+    rb = ctx.net_rules.get(str(b.net)) if ctx.net_rules else None
+    outer = ctx.is_outer(layer)
+    tiers = [
+        r.tiers_on(layer, outer=outer, coated=ctx.coated)
+        for r in (ra, rb)
+        if r is not None
+    ]
+    warn: float | None = max(t.clearance_mm for t in tiers) if tiers else house
+    error = max(
+        [jlc_min]
+        + [t.min_clearance_mm for t in tiers if t.min_clearance_mm is not None]
+    )
+    if ra is not None and rb is not None:
+        pair_warn, pair_floor, matched = _pair_tiers(ra, rb, layer)
+        if matched:
+            if pair_floor is not None:
+                error = max(jlc_min, pair_floor)
+            if pair_warn is not None:
+                warn = pair_warn
+            if warn is not None:
+                warn = max(warn, error)
+    if ctx.net_voltages:
+        v_a = ctx.net_voltages.get(str(a.net))
+        v_b = ctx.net_voltages.get(str(b.net))
+        if v_a is not None and v_b is not None:
+            spacing = voltage_spacing_mm(v_a - v_b, outer=layer in ctx.outer_layers)
+            if spacing is not None:
+                warn = spacing if warn is None else max(warn, spacing)
+    return Requirement(error, warn, "copper")
+
+
+def voltage_spacing_mm(delta_v: float, *, outer: bool) -> float | None:
+    """IPC-2221B Table 6-1 spacing for a potential difference (uncoated
+    column), or ``None`` when the table cannot answer.
+
+    :func:`precis.pcb.capabilities.conductor_spacing_mm` RAISES above its
+    500 V top band rather than extrapolating (its own documented rule).
+    That is right for a generator computing one electrode gap and wrong
+    for a check: a single mis-typed annotation would take the whole
+    ``view='drc'`` down with a ValueError instead of reporting a board. So
+    the refusal becomes ``None`` and the caller reports it."""
+    try:
+        return conductor_spacing_mm(
+            abs(delta_v), layer="external" if outer else "internal", coated=False
+        )
+    except ValueError:
+        return None
+
+
+#: The keys a ``clearance_by_layer`` entry and a ``pair_rules`` entry may
+#: carry (slice 1, P7).
+_LAYER_ENTRY_KEYS = frozenset({"clearance_mm", "min_clearance_mm"})
+_PAIR_ENTRY_KEYS = frozenset({"with", "layers", "clearance_mm", "min_clearance_mm"})
+
+
+def clearance_rule_problems(
+    class_name: str,
+    rules: dict[str, Any],
+    *,
+    layers: Iterable[str],
+    classes: Iterable[str],
+) -> list[str]:
+    """Why ``rules``' ``clearance_by_layer``/``pair_rules`` cannot be
+    honoured on a board with copper ``layers`` and net ``classes`` — one
+    line per problem, empty when they can (slice 1, P7). Layers are any
+    copper layer of the stackup, routable or not."""
+    layer_set = {str(n) for n in layers}
+    class_set = {str(n) for n in classes}
+    problems: list[str] = []
+
+    def _number(where: str, key: str, value: Any) -> None:
+        if (
+            not isinstance(value, int | float)
+            or isinstance(value, bool)
+            or not math.isfinite(value)
+            or value < 0
+        ):
+            problems.append(f"{where}.{key} must be a number of mm >= 0, got {value!r}")
+
+    by_layer = rules.get("clearance_by_layer")
+    if by_layer is not None:
+        if not isinstance(by_layer, dict):
+            problems.append(
+                f"class {class_name!r}: clearance_by_layer must be "
+                "{layer: {clearance_mm?, min_clearance_mm?}}"
+            )
+        else:
+            for layer, entry in by_layer.items():
+                where = f"class {class_name!r}: clearance_by_layer[{layer!r}]"
+                if str(layer) not in layer_set:
+                    problems.append(f"{where}: no such copper layer")
+                if not isinstance(entry, dict) or not entry:
+                    problems.append(f"{where} must be a non-empty dict")
+                    continue
+                for key, value in entry.items():
+                    if key not in _LAYER_ENTRY_KEYS:
+                        problems.append(f"{where}: unknown key {key!r}")
+                    else:
+                        _number(where, key, value)
+    pairs = rules.get("pair_rules")
+    if pairs is not None:
+        if not isinstance(pairs, list | tuple):
+            problems.append(f"class {class_name!r}: pair_rules must be a list")
+            pairs = ()
+        for i, entry in enumerate(pairs):
+            where = f"class {class_name!r}: pair_rules[{i}]"
+            if not isinstance(entry, dict):
+                problems.append(f"{where} must be a dict")
+                continue
+            for key in entry:
+                if key not in _PAIR_ENTRY_KEYS:
+                    problems.append(f"{where}: unknown key {key!r}")
+            other = entry.get("with")
+            if not isinstance(other, str) or other not in class_set:
+                problems.append(f"{where}.with: no such net class {other!r}")
+            named = entry.get("layers")
+            if named is not None:
+                if not isinstance(named, list | tuple) or not named:
+                    problems.append(f"{where}.layers must be a non-empty list")
+                else:
+                    unknown = [str(n) for n in named if str(n) not in layer_set]
+                    if unknown:
+                        problems.append(
+                            f"{where}.layers: no such copper layer {unknown}"
+                        )
+            tiers = [k for k in ("clearance_mm", "min_clearance_mm") if k in entry]
+            if not tiers:
+                problems.append(
+                    f"{where} names neither clearance_mm nor min_clearance_mm"
+                )
+            for key in tiers:
+                _number(where, key, entry[key])
+    return problems
 
 
 def net_current_a_or_none(value: float | None) -> float | None:
@@ -442,16 +847,25 @@ def implied_via_count(
 __all__ = [
     "IPC2221_K_EXTERNAL",
     "IPC2221_K_INTERNAL",
+    "JLC_VIA_HOLE_TO_HOLE_MM",
     "PAD_LAYER",
     "VIA_REFERENCE_CAPACITY_A",
     "VIA_REFERENCE_DIA_MM",
+    "LayerTiers",
     "NetRules",
+    "Owner",
+    "PairRule",
+    "Requirement",
+    "RuleContext",
+    "clearance_rule_problems",
     "implied_via_count",
     "ipc2221_capacity_a",
     "ipc2221_track_width_mm",
     "layer_is_outer",
     "net_current_a_or_none",
+    "required",
     "resolve_net_rules",
     "via_capacity_a",
     "via_count_for_current",
+    "voltage_spacing_mm",
 ]

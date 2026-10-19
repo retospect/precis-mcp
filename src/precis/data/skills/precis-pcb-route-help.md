@@ -489,6 +489,29 @@ makes a copper gap under the floor a DRC **error** (not a warning) naming
 `min_clearance_mm`; the stricter floor of the two nets in the pair wins,
 and the derived value also raises `clearance_mm`.
 
+Per layer and per class pair:
+
+- `"clearance_by_layer": {"B.Cu": {"min_clearance_mm": 0.4}}` sets a tier
+  on one layer; other layers keep the class values. A `min_clearance_mm`
+  there replaces the class floor and the `working_voltage_v` floor on that
+  layer. A `clearance_mm` alone replaces only the class's preferred value:
+  the voltage floor still applies and still raises it.
+- The router's copper claims use each layer's `clearance_mm`; its path
+  search uses the net's widest value on every layer.
+- `"pair_rules": [{"with": "ewod_pixel", "layers": ["F.Cu"],
+  "min_clearance_mm": 0.152}]` sets the floor between this class and
+  another (either order; `layers` omitted = every layer). It wins over
+  both nets' own floors for the tiers it names. DRC only: the router
+  cannot reserve a pairwise gap.
+- A layer the stackup lacks, a `with` class the design does not define,
+  or another key inside an entry is refused, and nothing is stored.
+
+```
+put(kind="pcb", id="s", args={"op": "class_rules", "name": "hv", "rules": {
+  "working_voltage_v": 250,
+  "clearance_by_layer": {"F.Cu": {"min_clearance_mm": 0.152}}}})
+```
+
 **Net-class `layers` IS consumed (Rulings 2026-09-19 item 7, gr347037).**
 A class's `rules` may name `"layers": ["B.Cu", ...]` (stackup layer names)
 — every net tagged with that class routes ONLY on the intersection of

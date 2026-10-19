@@ -1622,6 +1622,38 @@ def _net_clearances(
     }
 
 
+def _net_layer_clearances(
+    ir: PcbIR, rules_by_net: dict[int, NetRules], config: RealizeConfig
+) -> dict[tuple[int, int], float]:
+    """``(net, layer index)`` -> routing clearance where a net's figure
+    depends on the layer: a layer its class names in ``clearance_by_layer``
+    (vector-router slice 1), or any layer of a class with
+    ``working_voltage_v``, whose floor reads B1 inside, B4 outside on a
+    coated board and B2 outside on an uncoated one (slice 2; Reto
+    2026-10-18, "Yes, IPC column per layer"). Floored at
+    ``config.clearance_mm`` like :func:`_net_clearances`. Empty for a board
+    whose classes name neither — the grid is then exactly the per-net
+    one."""
+    coated = _board_coated(ir)
+    out: dict[tuple[int, int], float] = {}
+    for n, r in rules_by_net.items():
+        if not r.by_layer and not r.columns:
+            continue
+        for i, layer in enumerate(ir.stackup):
+            tiers = r.tiers_on(
+                str(layer.get("name")), outer=layer_is_outer(ir, i), coated=coated
+            )
+            out[(n, i)] = max(config.clearance_mm, tiers.clearance_mm)
+    return out
+
+
+def _board_coated(ir: PcbIR) -> bool:
+    """The board takes the parylene coat: it carries an electrode pad (the
+    pad half of :func:`precis.pcb.gerber.declares_parylene_coat`; a
+    mask-open-only array reads uncoated here, the larger figure)."""
+    return any(fp.raw.get("role") == "electrode" for fp in ir.footprint_pads)
+
+
 @dataclass(frozen=True, slots=True)
 class _RouteContext:
     """Everything a routing attempt is built from, before the first
@@ -1657,6 +1689,8 @@ class _RouteContext:
     #: their net's poured layers (:func:`_plane_served_pins`) — the plane
     #: fan-out draws no drop via for these.
     plane_served_pins: frozenset[int] = frozenset()
+    #: :func:`_net_layer_clearances` — the per-(net, layer) figures.
+    net_layer_clearance: dict[tuple[int, int], float] = field(default_factory=dict)
 
 
 def _route_context(
@@ -1754,8 +1788,9 @@ def _route_context(
     # fabric unroutable. The grid keeps the smallest as its base and each
     # wider net carries its difference (maze.py, "Per-net clearance").
     net_clearance = _net_clearances(rules_by_net, config)
+    net_layer_clearance = _net_layer_clearances(ir, rules_by_net, config)
     clearance = min(net_clearance.values())
-    clearance_max = max(net_clearance.values())
+    clearance_max = max([*net_clearance.values(), *net_layer_clearance.values()])
     # The board-edge inset is a DIFFERENT figure from inter-net clearance
     # (drc.check_board_edge_clearance reads board_edge_clearance_*_mm), and
     # it applies to the copper's edge, so half the widest COPPER FEATURE has
@@ -1869,6 +1904,7 @@ def _route_context(
         fixed_copper,
         edge_min,
         plane_served_pins,
+        net_layer_clearance,
     )
 
 
@@ -1927,7 +1963,10 @@ def _static_route_grid(
     capacity map measure this grid; the reorder passes each build their
     own through :func:`_route_pass` as before."""
     grid = maze.OccupancyGrid(
-        ctx.spec, clearance_mm=ctx.clearance, net_clearance_mm=ctx.net_clearance
+        ctx.spec,
+        clearance_mm=ctx.clearance,
+        net_clearance_mm=ctx.net_clearance,
+        net_layer_clearance_mm=ctx.net_layer_clearance,
     )
     grid.set_body_mask(ctx.body_mask)
     tracks, vias, unrouted, failed_pins = _claim_static(
@@ -2030,7 +2069,10 @@ def _realize_maze(
         nonlocal best, best_score, best_stamped
         for _attempt in range(max(1, config.route_passes)):
             attempt_grid = maze.OccupancyGrid(
-                spec, clearance_mm=clearance, net_clearance_mm=net_clearance
+                spec,
+                clearance_mm=clearance,
+                net_clearance_mm=net_clearance,
+                net_layer_clearance_mm=ctx.net_layer_clearance,
             )
             attempt_grid.set_body_mask(body_mask)
             accepted: list[int] | None = [] if preferred is not None else None
@@ -3496,6 +3538,7 @@ def _negotiate(
         spec,
         clearance_mm=clearance,
         net_clearance_mm=_net_clearances(rules_by_net, config),
+        net_layer_clearance_mm=_net_layer_clearances(ir, rules_by_net, config),
     )
     grid.set_body_mask(body_mask)
     _claim_static(
@@ -6138,6 +6181,7 @@ def _final_board_grid(
         spec,
         clearance_mm=clearance,
         net_clearance_mm=_net_clearances(rules_by_net, config),
+        net_layer_clearance_mm=_net_layer_clearances(ir, rules_by_net, config),
     )
     _claim_fiducial_keepouts(grid, ir)
     _claim_silk_keepouts(grid, ir, config)

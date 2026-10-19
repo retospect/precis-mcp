@@ -116,7 +116,7 @@ import collections
 import dataclasses
 import math
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -125,6 +125,7 @@ from typing import Any
 # outside this module's remit) -- silence the import-untyped noise here
 # rather than let it mask real errors elsewhere in the file (tiling.py
 # sets the same precedent).
+from shapely import box as shapely_box
 from shapely.geometry import LineString, Point, Polygon
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import nearest_points
@@ -141,13 +142,22 @@ from precis.pcb import (
     PIN_CURRENT_ROLES,
     PIN_ETYPES,
 )
-from precis.pcb.capabilities import CapabilityRow, conductor_spacing_mm
+from precis.pcb import clearance as clearance_kernel
+from precis.pcb.capabilities import CapabilityRow
 from precis.pcb.catalog import parse_passive_description
 from precis.pcb.geom import _orient, dist_point_to_segment
 from precis.pcb.geom import dist as _dist
 from precis.pcb.gerber import declares_parylene_coat
 from precis.pcb.ir import COURTYARD_MITRE_LIMIT
-from precis.pcb.rules import NetRules
+from precis.pcb.rules import JLC_VIA_HOLE_TO_HOLE_MM as rules_hole_to_hole_mm
+from precis.pcb.rules import (
+    NetRules,
+    Owner,
+    Requirement,
+    RuleContext,
+    voltage_spacing_mm,
+)
+from precis.pcb.rules import required as rules_required
 from precis.pcb.silk import SilkPlacement
 
 Coord = tuple[float, float]
@@ -713,7 +723,7 @@ def _tagged_pads(model: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def clearance_pairs_indexed(
-    model: dict[str, Any], *, required_mm: float
+    model: dict[str, Any], *, required_mm: float, every_layer: bool = False
 ) -> list[tuple[int, int, float, str]]:
     """``(item_i, item_j, gap_mm, layer)`` for every same-layer, different-net
     copper-item pair (tracks/vias/pours/PADS) whose true edge-to-edge gap
@@ -766,55 +776,28 @@ def clearance_pairs_indexed(
     for. Handled the SAME way a via's multi-layer span is here: one entry
     per layer, deduplicated at the SOURCE-pair level below so a THT pad
     close to a foreign net on several layers still reports ONE finding,
-    not one per layer."""
+    not one per layer.
+
+    ``every_layer=True`` keeps one entry per (source pair, layer) instead:
+    with per-layer clearance rules (``clearance_by_layer``, ``pair_rules``)
+    the same pair can pass on one layer and fail on another, so the
+    caller picks the strictest layer (:func:`check_clearance`).
+
+    **The gap is the clearance kernel's** (:mod:`precis.pcb.clearance`,
+    vector-router slice 2): exact centreline distances minus radii, arcs in
+    closed form — no buffered polygon, no 15° arc chords."""
     items = _clearance_items(model)
     all_layers = list(model.get("layers") or [])
-    # (source_idx, net, layer, polygon) — one entry per (item, layer it's on).
-    entries: list[tuple[int, str, str, BaseGeometry]] = []
-    for idx, item in enumerate(items):
-        poly = _copper_item_polygon(item)
-        if poly is None or poly.is_empty:
-            continue
-        net = str(item.get("net", ""))
-        if item.get("ctype") == "via" or (
-            item.get("ctype") == "pad" and item.get("drill")
-        ):
-            for layer in _via_layer_names(item, all_layers):
-                entries.append((idx, net, layer, poly))
-        else:
-            entries.append((idx, net, str(item.get("layer", "")), poly))
-
-    by_layer: dict[str, list[int]] = {}
-    for local_i, (_src, _net, layer, _poly) in enumerate(entries):
-        by_layer.setdefault(layer, []).append(local_i)
-
-    out: list[tuple[int, int, float, str]] = []
-    seen_src: set[tuple[int, int]] = set()
-    for layer, locals_ in by_layer.items():
-        if len(locals_) < 2:
-            continue
-        layer_polys = [entries[i][3] for i in locals_]
-        tree = STRtree(layer_polys)
-        seen_local: set[tuple[int, int]] = set()
-        for local_i in locals_:
-            src_i, net_i, _layer_i, poly_i = entries[local_i]
-            for c in tree.query(poly_i, predicate="dwithin", distance=required_mm):
-                local_j = locals_[int(c)]
-                src_j, net_j, _layer_j, poly_j = entries[local_j]
-                if src_i == src_j or net_i == net_j:
-                    continue
-                key_local = (min(local_i, local_j), max(local_i, local_j))
-                if key_local in seen_local:
-                    continue
-                seen_local.add(key_local)
-                src_key = (min(src_i, src_j), max(src_i, src_j))
-                if src_key in seen_src:
-                    continue  # a through via already matched this source pair on another layer
-                gap = poly_i.distance(poly_j)
-                if gap < required_mm - _EPS:
-                    seen_src.add(src_key)
-                    out.append((src_key[0], src_key[1], gap, layer))
-    return out
+    layers_of = [
+        _via_layer_names(item, all_layers)
+        if item.get("ctype") == "via"
+        or (item.get("ctype") == "pad" and item.get("drill"))
+        else [str(item.get("layer", ""))]
+        for item in items
+    ]
+    return clearance_kernel.different_net_pairs(
+        items, layers_of, within_mm=required_mm, every_layer=every_layer
+    )
 
 
 def _clearance_detail(
@@ -921,6 +904,14 @@ def _clearance_object(
     return obj
 
 
+def _owner(item: dict[str, Any]) -> Owner:
+    """An item's rule identity. A missing or null net stays ``None`` so it
+    is never "the same net" as another unnetted item, while the rules
+    lookup still keys it ``"None"`` as before."""
+    net = item.get("net")
+    return Owner(net=None if net is None else str(net))
+
+
 def check_clearance(
     model: dict[str, Any],
     capability: CapabilityRow,
@@ -985,7 +976,7 @@ def check_clearance(
     if jlc_min is None:
         return []
     if net_rules:
-        resolved_values = [r.clearance_mm for r in net_rules.values()]
+        resolved_values = [r.max_clearance_mm() for r in net_rules.values()]
         query_radius = (
             max(resolved_values)
             if resolved_values
@@ -1024,50 +1015,44 @@ def check_clearance(
         # silently never fires on the pairs it exists for.
         query_radius = max(query_radius, _max_voltage_spacing_mm(net_voltages))
     parylene = declares_parylene_coat(model) if coated is None else coated
-    pairs = clearance_pairs_indexed(model, required_mm=query_radius)
+    ctx = RuleContext(
+        fab_caps=capability,
+        net_rules=net_rules or {},
+        outer_layers=outer_layers,
+        net_voltages=net_voltages,
+        coated=parylene,
+    )
+    # One resolution per pair and layer (rules.required): the per-net
+    # per-layer tiers, a class pair rule, then the pairwise voltage term (a
+    # missing annotation is not 0 V; the coverage report above already
+    # named it). Slice 4b (ewod-controller-and-hv-supply.md): a resolved
+    # ``min_clearance_mm`` is a HARD floor — below it is an ERROR, the same
+    # tier the fab minimum owns. With layer-scoped rules a multi-layer pair
+    # (a through via) is judged on the layer where it fares worst: an
+    # error over a warn over clean, then the deeper margin.
+    layer_scoped = any(
+        r.by_layer or r.columns or any(p.layers is not None for p in r.pair_rules)
+        for r in (net_rules or {}).values()
+    )
+    judged: dict[tuple[int, int], tuple[float, str, Requirement]] = {}
+    worst: dict[tuple[int, int], tuple[int, float]] = {}
+    for i, j, gap, layer in clearance_pairs_indexed(
+        model, required_mm=query_radius, every_layer=layer_scoped
+    ):
+        req = rules_required(_owner(items[i]), _owner(items[j]), layer, ctx)
+        outcome = _two_tier(gap, req.error_mm, req.warn_mm)
+        rank = (
+            (0, 0.0)
+            if outcome is None
+            else (2 if outcome[0] == "error" else 1, -outcome[1])
+        )
+        if (i, j) not in judged or rank > worst[(i, j)]:
+            judged[(i, j)] = (gap, layer, req)
+            worst[(i, j)] = rank
     findings: list[DrcFinding] = []
-    for i, j, gap, layer in pairs:
+    for (i, j), (gap, layer, req) in judged.items():
         a, b = items[i], items[j]
-        required = house
-        if net_rules:
-            candidates = [
-                r.clearance_mm
-                for r in (
-                    net_rules.get(str(a.get("net"))),
-                    net_rules.get(str(b.get("net"))),
-                )
-                if r is not None
-            ]
-            if candidates:
-                required = max(candidates)
-        if net_voltages:
-            v_a = net_voltages.get(str(a.get("net")))
-            v_b = net_voltages.get(str(b.get("net")))
-            # Both or neither: a missing annotation is not 0 V (the
-            # coverage report above already named it), and a difference
-            # past the table's top band yields None rather than an
-            # extrapolation.
-            if v_a is not None and v_b is not None:
-                spacing = _voltage_spacing_mm(v_a - v_b, outer=layer in outer_layers)
-                if spacing is not None:
-                    required = spacing if required is None else max(required, spacing)
-        # Slice 4b (ewod-controller-and-hv-supply.md): a net's resolved
-        # ``min_clearance_mm`` is a HARD floor — below it is an ERROR, the
-        # same tier the fab minimum owns, because a creepage requirement
-        # reported as a warning is not acceptable. The pair floor is the
-        # stricter of the two nets', never below the fab's own.
-        floor = jlc_min
-        if net_rules:
-            floors = [
-                r.min_clearance_mm
-                for r in (
-                    net_rules.get(str(a.get("net"))),
-                    net_rules.get(str(b.get("net"))),
-                )
-                if r is not None and r.min_clearance_mm is not None
-            ]
-            if floors:
-                floor = max(floor, *floors)
+        required, floor = req.warn_mm, req.error_mm
         # Two pads of ONE footprint sit at the part's vendor-fixed pitch
         # (a 0.65mm-pitch HV sink's VPP and DIOB lands): placement and
         # routing cannot widen that gap. On a parylene-coated board (Reto
@@ -1225,21 +1210,10 @@ def _outer_layers(model: dict[str, Any]) -> frozenset[str]:
 
 
 def _voltage_spacing_mm(delta_v: float, *, outer: bool) -> float | None:
-    """IPC-2221B Table 6-1 spacing for a potential difference, or ``None``
-    when the table cannot answer.
-
-    :func:`precis.pcb.capabilities.conductor_spacing_mm` RAISES above its
-    500 V top band rather than extrapolating (its own documented rule).
-    That is right for a generator computing one electrode gap and wrong
-    here: a single mis-typed annotation would take the whole ``view='drc'``
-    down with a ValueError instead of reporting a board. So the refusal is
-    caught and surfaced as a finding by the caller."""
-    try:
-        return conductor_spacing_mm(
-            abs(delta_v), layer="external" if outer else "internal", coated=False
-        )
-    except ValueError:
-        return None
+    """:func:`precis.pcb.rules.voltage_spacing_mm` — the pairwise term
+    :func:`precis.pcb.rules.required` applies, read here for the coverage
+    report and the query radius."""
+    return voltage_spacing_mm(delta_v, outer=outer)
 
 
 def _max_voltage_spacing_mm(net_voltages: dict[str, float]) -> float:
@@ -1265,10 +1239,13 @@ def _max_voltage_spacing_mm(net_voltages: dict[str, float]) -> float:
 
 @dataclass(frozen=True, slots=True)
 class _Prim:
-    """One circle (``b=None``) or capsule (line segment ``a``-``b``,
-    radius ``r``) — ``group`` is the parent ``model["copper"]`` index (two
-    primitives of the SAME group, e.g. two segments of one track, never
-    count as a clearance pair against each other, mirroring
+    """One oracle primitive, swept by radius ``r``: a circle (``b=None``),
+    a capsule (line segment ``a``-``b``), an arc capsule (``arc`` =
+    ``(cx, cy, R, start angle, signed sweep)``, ``a`` its start point) or a
+    polygon (``poly``, ``r=0``: a rect or polygon pad). ``group`` is the
+    parent item's index in :func:`_clearance_items`'s list (two primitives
+    of the SAME group, e.g. two segments of one track, never count as a
+    clearance pair against each other, mirroring
     :func:`precis.pcb.geom.sweep_line_crossings`'s ``group_id`` exclusion)."""
 
     a: Coord
@@ -1277,40 +1254,82 @@ class _Prim:
     group: int
     net: str
     layer: str
+    arc: tuple[float, float, float, float, float] | None = None
+    poly: tuple[Coord, ...] | None = None
 
 
 def _copper_primitives(model: dict[str, Any]) -> list[_Prim]:
-    """Track/via items only, flattened to circles/capsules — pours AND
-    pads are deliberately excluded (module docstring: the oracle's scope
-    is the closed-form-representable primitives; a rect/obround pad no
-    more fits a circle/capsule than a pour polygon does, so pad clearance
-    — like pour clearance before it — is validated by the accelerated
-    engine alone)."""
+    """Every track, via and pad of :func:`_clearance_items`, as oracle
+    primitives: arcs stay arcs, a rect or polygon pad is its polygon, a
+    round pad a circle, an obround pad a capsule. A via or drilled pad
+    yields one primitive per layer it spans. Pours stay out (a polygon
+    with holes is checked by the kernel alone)."""
     prims: list[_Prim] = []
-    for idx, item in enumerate(model.get("copper") or []):
+    all_layers = list(model.get("layers") or [])
+    for idx, item in enumerate(_clearance_items(model)):
         ctype = item.get("ctype")
         net = str(item.get("net", ""))
         if ctype == "track":
             r = float(item.get("width_mm", 0.0)) / 2.0
             layer = str(item.get("layer", ""))
             for seg in item.get("segments") or []:
+                a = (float(seg["start"][0]), float(seg["start"][1]))
                 if seg.get("shape") == "arc":
-                    pts = _arc_points(seg)
-                    prims.extend(
-                        _Prim(pts[k], pts[k + 1], r, idx, net, layer)
-                        for k in range(len(pts) - 1)
+                    prims.append(
+                        _Prim(a, None, r, idx, net, layer, arc=_oracle_arc(seg))
                     )
                 else:
-                    a = (float(seg["start"][0]), float(seg["start"][1]))
                     b = (float(seg["end"][0]), float(seg["end"][1]))
                     prims.append(_Prim(a, b, r, idx, net, layer))
         elif ctype == "via":
             r = float(item.get("dia_mm", 0.0)) / 2.0
             x, y = float(item["x"]), float(item["y"])
-            layers = _via_layer_names(item, list(model.get("layers") or []))
-            for layer in layers:
+            for layer in _via_layer_names(item, all_layers):
                 prims.append(_Prim((x, y), None, r, idx, net, layer))
+        elif ctype == "pad":
+            layers = (
+                _via_layer_names(item, all_layers)
+                if item.get("drill")
+                else [str(item.get("layer", ""))]
+            )
+            for prim in _pad_primitives(item, idx, net):
+                prims.extend(
+                    _Prim(prim.a, prim.b, prim.r, idx, net, layer, poly=prim.poly)
+                    for layer in layers
+                )
     return prims
+
+
+def _pad_primitives(item: dict[str, Any], idx: int, net: str) -> list[_Prim]:
+    """A pad's shape as one layer-less oracle primitive (empty when the
+    pad is degenerate)."""
+    shape = item.get("shape", "circle")
+    if shape == "polygon":
+        poly = tuple((float(p[0]), float(p[1])) for p in item.get("poly") or [])
+        if len(poly) < 3:
+            return []
+        return [_Prim(poly[0], None, 0.0, idx, net, "", poly=poly)]
+    x, y = float(item["x"]), float(item["y"])
+    w = float(item.get("w", 0.0))
+    h = float(item.get("h", w))
+    if w <= 0 or h <= 0:
+        return []
+    if shape == "rect":
+        hw, hh = w / 2.0, h / 2.0
+        corners = (
+            (x - hw, y - hh),
+            (x + hw, y - hh),
+            (x + hw, y + hh),
+            (x - hw, y + hh),
+        )
+        return [_Prim(corners[0], None, 0.0, idx, net, "", poly=corners)]
+    if shape == "obround" and w != h:
+        half, r = (abs(w - h) / 2.0, min(w, h) / 2.0)
+        ends = (
+            ((x - half, y), (x + half, y)) if w > h else ((x, y - half), (x, y + half))
+        )
+        return [_Prim(ends[0], ends[1], r, idx, net, "")]
+    return [_Prim((x, y), None, w / 2.0, idx, net, "")]
 
 
 def _on_segment(p: Coord, q: Coord, r: Coord, *, eps: float = 1e-9) -> bool:
@@ -1371,6 +1390,144 @@ def _capsule_capsule_gap(x: _Prim, y: _Prim) -> float:
     return max(0.0, center - x.r - y.r)
 
 
+def _oracle_arc(seg: dict[str, Any]) -> tuple[float, float, float, float, float]:
+    """``(cx, cy, R, a1, sweep)`` of a gerber arc segment, ``cw`` taken
+    literally (default clockwise) — :func:`_arc_points`'s convention."""
+    cx, cy = float(seg["center"][0]), float(seg["center"][1])
+    sx, sy = float(seg["start"][0]), float(seg["start"][1])
+    ex, ey = float(seg["end"][0]), float(seg["end"][1])
+    a1 = math.atan2(sy - cy, sx - cx)
+    diff = (math.atan2(ey - cy, ex - cx) - a1) % (2 * math.pi)
+    sweep = diff if not seg.get("cw", True) else diff - 2 * math.pi
+    return cx, cy, math.hypot(sx - cx, sy - cy), a1, sweep
+
+
+def _arc_at(arc: tuple[float, float, float, float, float], t: float) -> Coord:
+    cx, cy, radius, a1, sweep = arc
+    return cx + radius * math.cos(a1 + sweep * t), cy + radius * math.sin(
+        a1 + sweep * t
+    )
+
+
+def _point_in_poly(p: Coord, poly: tuple[Coord, ...]) -> bool:
+    """Even-odd ray cast; a point on an edge counts as inside."""
+    inside = False
+    n = len(poly)
+    for k in range(n):
+        a, b = poly[k], poly[(k + 1) % n]
+        if dist_point_to_segment(p, a, b) <= 1e-12:
+            return True
+        if (a[1] > p[1]) != (b[1] > p[1]):
+            x = a[0] + (p[1] - a[1]) * (b[0] - a[0]) / (b[1] - a[1])
+            if x > p[0]:
+                inside = not inside
+    return inside
+
+
+def _poly_edges(poly: tuple[Coord, ...]) -> list[tuple[Coord, Coord]]:
+    return [(poly[k], poly[(k + 1) % len(poly)]) for k in range(len(poly))]
+
+
+def _segment_gap(a: Coord, b: Coord, c: Coord, d: Coord) -> float:
+    if _segments_intersect(a, b, c, d):
+        return 0.0
+    return min(
+        dist_point_to_segment(a, c, d),
+        dist_point_to_segment(b, c, d),
+        dist_point_to_segment(c, a, b),
+        dist_point_to_segment(d, a, b),
+    )
+
+
+def _flat_centre_gap(x: _Prim, y: _Prim) -> float:
+    """Centreline distance between two arc-free primitives."""
+    if x.poly is not None or y.poly is not None:
+        if x.poly is None:
+            x, y = y, x
+        assert x.poly is not None
+        if y.poly is not None:
+            if any(_point_in_poly(p, x.poly) for p in y.poly) or any(
+                _point_in_poly(p, y.poly) for p in x.poly
+            ):
+                return 0.0
+            return min(
+                _segment_gap(a, b, c, d)
+                for a, b in _poly_edges(x.poly)
+                for c, d in _poly_edges(y.poly)
+            )
+        if _point_in_poly(y.a, x.poly) or (
+            y.b is not None and _point_in_poly(y.b, x.poly)
+        ):
+            return 0.0
+        if y.b is None:
+            return min(dist_point_to_segment(y.a, a, b) for a, b in _poly_edges(x.poly))
+        return min(_segment_gap(y.a, y.b, a, b) for a, b in _poly_edges(x.poly))
+    if x.b is None and y.b is None:
+        return _dist(x.a, y.a)
+    if x.b is None:
+        assert y.b is not None
+        return dist_point_to_segment(x.a, y.a, y.b)
+    if y.b is None:
+        return dist_point_to_segment(y.a, x.a, x.b)
+    return _segment_gap(x.a, x.b, y.a, y.b)
+
+
+def _minimise(f: Callable[[float], float]) -> float:
+    """Global minimum of ``f`` on [0, 1]: a 256-sample scan, then golden
+    sections around the three best samples. ``f`` here is a distance from
+    a moving point on an arc, smooth between at most a few kinks."""
+    n = 256
+    values = [f(k / n) for k in range(n + 1)]
+    best = min(values)
+    golden = (math.sqrt(5) - 1) / 2
+    for k in sorted(range(n + 1), key=values.__getitem__)[:3]:
+        lo, hi = max(0.0, (k - 1) / n), min(1.0, (k + 1) / n)
+        c, d = hi - golden * (hi - lo), lo + golden * (hi - lo)
+        fc, fd = f(c), f(d)
+        for _ in range(80):
+            if fc < fd:
+                hi, d, fd = d, c, fc
+                c = hi - golden * (hi - lo)
+                fc = f(c)
+            else:
+                lo, c, fc = c, d, fd
+                d = lo + golden * (hi - lo)
+                fd = f(d)
+        best = min(best, fc, fd)
+    return best
+
+
+def _centre_gap(x: _Prim, y: _Prim) -> float:
+    if x.arc is None and y.arc is None:
+        return _flat_centre_gap(x, y)
+    if x.arc is None:
+        x, y = y, x
+    assert x.arc is not None
+    arc = x.arc
+
+    def from_arc(t: float) -> float:
+        point = _Prim(_arc_at(arc, t), None, 0.0, -1, "", "")
+        if y.arc is None:
+            return _flat_centre_gap(point, y)
+        return _point_arc_gap(point.a, y.arc)
+
+    return _minimise(from_arc)
+
+
+def _point_arc_gap(p: Coord, arc: tuple[float, float, float, float, float]) -> float:
+    """Distance from ``p`` to an arc: radial when ``p``'s direction from
+    the centre falls inside the sweep, else the nearer endpoint."""
+    cx, cy, radius, a1, sweep = arc
+    rho = math.hypot(p[0] - cx, p[1] - cy)
+    if rho > 0:
+        off = (math.atan2(p[1] - cy, p[0] - cx) - a1) % (2 * math.pi)
+        if sweep < 0:
+            off = (2 * math.pi - off) % (2 * math.pi)
+        if off <= abs(sweep) + 1e-12:
+            return abs(rho - radius)
+    return min(_dist(p, _arc_at(arc, 0.0)), _dist(p, _arc_at(arc, 1.0)))
+
+
 def clearance_violations_naive(
     model: dict[str, Any], *, required_mm: float
 ) -> list[tuple[int, int, float]]:
@@ -1414,7 +1571,7 @@ def clearance_violations_naive(
                 for py in group_j:
                     if px.layer != py.layer:
                         continue
-                    gap = _capsule_capsule_gap(px, py)
+                    gap = max(0.0, _centre_gap(px, py) - px.r - py.r)
                     if best_gap is None or gap < best_gap:
                         best_gap = gap
             if best_gap is None:
@@ -1713,21 +1870,26 @@ def check_npth_clearance(
     holes = [d for d in (model.get("drills") or []) if not d.get("plated", True)]
     if not holes:
         return []
-    prims = _copper_primitives(model)
+    # Track and via copper (pads and pours stay out, as before), measured by
+    # the clearance kernel: exact arcs, nothing flattened.
+    copper = model.get("copper") or []
+    bodies = [
+        (idx, body)
+        for idx, item in enumerate(copper)
+        if item.get("ctype") in ("track", "via")
+        and (body := clearance_kernel.body_of(item)) is not None
+    ]
     findings: list[DrcFinding] = []
     for h in holes:
         hx, hy = float(h["x"]), float(h["y"])
         hr = float(h.get("dia_mm", 0.0)) / 2.0
+        hole = clearance_kernel.Body(Point(hx, hy), (), hr)
         best = math.inf
-        nearest: _Prim | None = None
-        for p in prims:
-            d = (
-                _dist(p.a, (hx, hy))
-                if p.b is None
-                else dist_point_to_segment((hx, hy), p.a, p.b)
-            )
-            if d - hr - p.r < best:
-                best, nearest = d - hr - p.r, p
+        nearest: dict[str, Any] | None = None
+        for idx, body in bodies:
+            d = clearance_kernel.signed_gap(hole, body)
+            if d < best:
+                best, nearest = d, copper[idx]
         if best is math.inf:
             continue
         result = _two_tier(best, jlc_min, house)
@@ -1751,8 +1913,8 @@ def check_npth_clearance(
                         # otherwise cannot tell whose copper sits on the hole.
                         **(
                             {
-                                "net": nearest.net,
-                                **_derived_tag(model["copper"][nearest.group]),
+                                "net": str(nearest.get("net", "")),
+                                **_derived_tag(nearest),
                             }
                             if nearest is not None
                             else {}
@@ -1859,10 +2021,10 @@ def check_via_pad_keepout(
     # would have cleared. Candidates are re-sorted into pad order before the
     # per-pad body runs, so the findings list stays identical — same
     # elements, same order — to the unindexed version.
-    pad_polys: list[BaseGeometry | None] = []
-    for pad in pads:
-        poly = _copper_item_polygon({**pad, "ctype": "pad"})
-        pad_polys.append(None if poly is None or poly.is_empty else poly)
+    # The pad's exact shape is the clearance kernel's body (vector-router
+    # slice 2); the trees prune on its bounding box, a superset, so they
+    # never drop a pad the exact test would keep.
+    pad_bodies = [clearance_kernel.body_of({**pad, "ctype": "pad"}) for pad in pads]
 
     # A drilled pad's land is copper on EVERY layer, so it stays a candidate
     # whatever the via spans (gr341516). Indexed in its own tree rather than
@@ -1875,17 +2037,23 @@ def check_via_pad_keepout(
     drilled: list[int] = []
     degenerate: list[int] = []
     for idx, pad in enumerate(pads):
-        if pad_polys[idx] is None:
+        if pad_bodies[idx] is None:
             degenerate.append(idx)
         elif pad.get("drill"):
             drilled.append(idx)
         else:
             by_layer.setdefault(str(pad.get("layer", "")), []).append(idx)
-    layer_trees = {
-        layer: (idxs, STRtree([pad_polys[i] for i in idxs]))
-        for layer, idxs in by_layer.items()
-    }
-    drilled_tree = STRtree([pad_polys[i] for i in drilled]) if drilled else None
+
+    def _box_tree(idxs: list[int]) -> STRtree:
+        boxes = []
+        for i in idxs:
+            body = pad_bodies[i]
+            assert body is not None
+            boxes.append(shapely_box(*body.bounds()))
+        return STRtree(boxes)
+
+    layer_trees = {layer: (idxs, _box_tree(idxs)) for layer, idxs in by_layer.items()}
+    drilled_tree = _box_tree(drilled) if drilled else None
 
     for item in model.get("copper") or []:
         if item.get("ctype") != "via":
@@ -1915,8 +2083,8 @@ def check_via_pad_keepout(
             pad_net_raw = pad.get("net")
             if via_fixed and via_net and pad_net_raw and via_net == pad_net_raw:
                 continue
-            pad_poly = pad_polys[pad_idx]
-            if pad_poly is not None:
+            pad_body = pad_bodies[pad_idx]
+            if pad_body is not None:
                 # The pad's REAL outline (:func:`_copper_item_polygon` — the
                 # module docstring's ONE shape function, already the source
                 # of truth for a pad's physical reach in
@@ -1930,7 +2098,10 @@ def check_via_pad_keepout(
                 # ``gap`` is the exact edge-to-edge distance (0 the instant
                 # the via's centre enters the pad), same contract the old
                 # circle/circle formula kept.
-                gap = pad_poly.distance(vx_y) - vr
+                gap = (
+                    clearance_kernel.gap(clearance_kernel.Body(vx_y, (), 0.0), pad_body)
+                    - vr
+                )
             else:
                 px, py = float(pad["x"]), float(pad["y"])
                 w = float(pad.get("w", 0.0))
@@ -2007,13 +2178,8 @@ def same_net(a: dict[str, Any], b: dict[str, Any]) -> bool:
     return bool(a_net) and a_net == b_net
 
 
-#: JLCPCB "Via Hole-to-Hole Spacing" (gr489914, Reto ruling (a)
-#: 2026-10-16): the minimum drilled-wall to drilled-wall gap between two
-#: via holes. Source: https://jlcpcb.com/capabilities/pcb-capabilities ,
-#: Drilling section, read 2026-10-16 10:00Z as "Via Hole-to-Hole Spacing
-#: 0.2mm" (the same page lists "Pad Hole-to-Hole Spacing 0.45mm" for
-#: plated pad holes). A drill figure, so it is not per copper process.
-JLC_VIA_HOLE_TO_HOLE_MM = 0.2
+#: Re-exported: the rule lives in :func:`precis.pcb.rules.required`.
+JLC_VIA_HOLE_TO_HOLE_MM = rules_hole_to_hole_mm
 
 
 def check_via_via_keepout(
@@ -2096,6 +2262,7 @@ def check_via_via_keepout(
         return []
     all_layers = list(model.get("layers") or [])
     vias = [item for item in model.get("copper") or [] if item.get("ctype") == "via"]
+    via_ctx = RuleContext(fab_caps=capability)
     findings: list[DrcFinding] = []
     for a_i, via_a in enumerate(vias):
         ax, ay = float(via_a["x"]), float(via_a["y"])
@@ -2129,7 +2296,13 @@ def check_via_via_keepout(
 
             hole_gap = center - (a_drill / 2.0 + b_drill / 2.0)
             if same_net(via_a, via_b):
-                if hole_gap < JLC_VIA_HOLE_TO_HOLE_MM - _EPS:
+                wall = rules_required(
+                    Owner(net=str(a_net), kind="via"),
+                    Owner(net=str(b_net), kind="via"),
+                    "",
+                    via_ctx,
+                ).error_mm
+                if hole_gap < wall - _EPS:
                     findings.append(
                         DrcFinding(
                             rule="via_via_keepout",
@@ -2137,11 +2310,11 @@ def check_via_via_keepout(
                             where=where,
                             detail=(
                                 f"same-net via holes leave {hole_gap:.3f}mm of "
-                                f"wall, needs {JLC_VIA_HOLE_TO_HOLE_MM:.3f}mm "
+                                f"wall, needs {wall:.3f}mm "
                                 "(JLC via hole-to-hole spacing)"
                             ),
                             objects=objects,
-                            margin_mm=hole_gap - JLC_VIA_HOLE_TO_HOLE_MM,
+                            margin_mm=hole_gap - wall,
                         )
                     )
                 copper_gap = None
@@ -2614,13 +2787,14 @@ def check_board_edge_clearance(
     ring_pts = [(float(p[0]), float(p[1])) for p in outline]
     if ring_pts[0] != ring_pts[-1]:
         ring_pts.append(ring_pts[0])
-    boundary = LineString(ring_pts)
+    edge = clearance_kernel.Body(LineString(ring_pts), (), 0.0)
     findings: list[DrcFinding] = []
     for item in _clearance_items(model):
-        geom = _copper_item_polygon(item)
-        if geom is None or geom.is_empty:
+        body = clearance_kernel.body_of(item)
+        if body is None:
             continue
-        gap = boundary.distance(geom)
+        # The kernel's exact gap to the outline line (vector-router slice 2).
+        gap = clearance_kernel.gap(edge, body)
         result = _two_tier(gap, jlc_min, house)
         if result is None:
             continue
