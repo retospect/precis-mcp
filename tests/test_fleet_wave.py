@@ -463,6 +463,60 @@ def test_close_squash_landed_tree(env: dict[str, str]) -> None:
     assert [c[-1] for c in kills] == ["claude-sq1"]
 
 
+def test_close_tree_equal_squash_land(env: dict[str, str]) -> None:
+    """The gr497896 failure shape: two branch commits whose combined state
+    landed on main under different shas — no per-commit patch match and no
+    subject match would prove it, but the tree diff against origin/main is
+    empty, so close must not refuse."""
+    repo = Path(env["CWD"])
+    sq = _worktree(env, "sq2")
+    (sq / "f.txt").write_text("one\n", encoding="utf-8")
+    subprocess.run(["git", "add", "f.txt"], cwd=sq, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "part one"], cwd=sq, check=True)
+    (sq / "f.txt").write_text("one\ntwo\n", encoding="utf-8")
+    subprocess.run(["git", "commit", "-q", "-am", "part two"], cwd=sq, check=True)
+    # One squashed commit on main holds the same tree — the way ship lands
+    # a multi-commit branch.
+    (repo / "f.txt").write_text("one\ntwo\n", encoding="utf-8")
+    subprocess.run(["git", "add", "f.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "fix: squashed"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/main", "HEAD"],
+        cwd=repo,
+        check=True,
+    )
+    _windows(env, {"claude-sq2": IDLE})
+    proc = _run(env, "close", "sq2")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "branch deleted: worktree-sq2" in proc.stdout
+    assert not sq.exists() and "worktree-sq2" not in _branches(env)
+
+
+def test_close_refuses_subject_only_match(env: dict[str, str]) -> None:
+    """gr497896 review: a branch whose commit subject already appears on
+    main but whose content is unlanded must still be refused — a subject is
+    a hint, not a landed proof."""
+    repo = Path(env["CWD"])
+    sub = _worktree(env, "subj1")
+    (sub / "new-work.txt").write_text("real unlanded work\n", encoding="utf-8")
+    subprocess.run(["git", "add", "new-work.txt"], cwd=sub, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "fix(x): done"], cwd=sub, check=True)
+    # A same-subject commit on main carrying DIFFERENT content.
+    (repo / "other.txt").write_text("different\n", encoding="utf-8")
+    subprocess.run(["git", "add", "other.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "fix(x): done"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/main", "HEAD"],
+        cwd=repo,
+        check=True,
+    )
+    _windows(env, {"claude-subj1": IDLE})
+    proc = _run(env, "close", "subj1")
+    assert proc.returncode == 1
+    assert "REFUSED subj1" in proc.stdout
+    assert sub.exists() and "worktree-subj1" in _branches(env)
+
+
 def _coordinator(env: dict[str, str]) -> dict[str, str]:
     """env with the approve guard satisfied: coordinator tree + a user."""
     return {**env, "FLEET_COORDINATOR_TREE": env["CWD"], "USER": "tester"}

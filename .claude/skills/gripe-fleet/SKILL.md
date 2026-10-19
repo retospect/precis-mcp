@@ -71,6 +71,11 @@ approval quote for the tier, with its UTC time).
 
 ## Standing safety rules
 
+- Conflict resolution never runs in a desk or coordinator main loop. When a
+  builder's ship or rebase reports a conflict, hand it to a coder sub-agent
+  or send it back to the builder's own tree — Edit-tool diffs in a desk pane
+  are the token flood `REBASE_STATUS`-style quiet output exists to prevent
+  (gr497896).
 - Never answer another session's permission prompt unless the user
   authorised that class of prompt. `prompts` shows them; relay the rest to
   the user.

@@ -69,8 +69,19 @@ local impacted pre-gate first; bare `--impacted` = legacy local-only gate.
 Every ship path except `--release` syncs Git Town style: squash the branch to
 one commit on its merge-base, then `git rebase origin/main`. A conflict stops
 mid-rebase: resolve, `git add -A && git rebase --continue`, re-run ship (ship
-refuses to start while a rebase is in progress). The in-lock forward merge
+refuses to start while a rebase is in progress). In a fleet wave the
+resolution itself belongs to a coder sub-agent or the builder's own tree —
+never a desk or coordinator main loop (the `gripe-fleet` skill's standing
+rules). The in-lock forward merge
 above stays a merge; the squash and the branch reset absorb it.
+
+`scripts/ship` and `scripts/rebase` are quiet by default (gr497896): the
+full transcript goes to a `/tmp` log whose path is printed, and the terminal
+sees only the ✖ lines, a conflict's file list, and the final
+`SHIP_STATUS:`/`REBASE_STATUS:` token. `--verbose` (or
+`PRECIS_SHIP_VERBOSE=1`) restores the old full stream. `scripts/branch-audit
+[BRANCH...]` prints each branch's landed/unlanded/partial verdict; the same
+`scripts/lib/branch_audit.py` test drives `fleet-wave close`'s refusal.
 
 An editing subagent's work enters your branch only by fast-forward:
 `scripts/take-agent <agent-tree>` rebases the agent branch onto yours and

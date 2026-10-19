@@ -115,6 +115,11 @@ class Rig:
             "GIT_CONFIG_NOSYSTEM": "1",
             "PRECIS_NO_AUTOREAP": "1",
             "PRECIS_SQUAWK": "0",
+            # Ship is quiet by default (gr497896): the transcript goes to a
+            # /tmp log and only the epilogue reaches captured stdout. These
+            # tests assert on the transcript, so they run it verbose;
+            # PRECIS_SHIP_VERBOSE=0 in a call re-enables the quiet path.
+            "PRECIS_SHIP_VERBOSE": "1",
             "PRECIS_CO_AUTHOR": "Test <t@example.invalid>",
             "PRECIS_SHIP_TEST_GATE_CMD": f"{_BASH} {self.fake_lint}",
             "PRECIS_FAKE_LINT_DIR": str(self.lintdir),

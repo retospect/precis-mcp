@@ -133,6 +133,14 @@
 #                                        # PRECIS_REMOTE_CI_TIMEOUT_MIN (150),
 #                                        # PRECIS_REMOTE_CI_RETRIES (set: that
 #                                        # many retries + the hybrid local gate).
+#         --verbose                     # the full transcript on the terminal
+#                                        # (PRECIS_SHIP_VERBOSE=1). Default is
+#                                        # quiet (gr497896): the run logs to
+#                                        # /tmp and the terminal gets only the
+#                                        # ✖ lines, a conflict's file list, the
+#                                        # log path and a final SHIP_STATUS
+#                                        # token — same gate semantics and exit
+#                                        # codes, only the rendering changes.
 #
 # The full-suite path (no --impacted/--quick) also runs the DIFF-COVERAGE gate:
 # pytest runs under pytest-cov in the container, then diff-cover on the HOST
@@ -232,7 +240,13 @@ SLOW="${PRECIS_GATE_SLOW:-0}"
 # into main (design note 5, ship-gate-ci). Implies --quick; see the usage header.
 RELEASE=0
 ALLOW_MIGRATION=0
+# --verbose (or PRECIS_SHIP_VERBOSE=1): the full transcript on the terminal,
+# as before. Default is quiet (gr497896): the run goes to a /tmp log and the
+# terminal sees only its ✖ lines, a conflict's file list, the log path and a
+# final SHIP_STATUS token — see the re-exec block after flag parsing.
+VERBOSE="${PRECIS_SHIP_VERBOSE:-0}"
 MSG=""
+ORIG_ARGV=("$@")
 while :; do
     case "${1:-}" in
         --release)  RELEASE=1; QUICK=1; shift ;;
@@ -244,12 +258,13 @@ while :; do
         --remote)   REMOTE=1; shift ;;
         --full)     FULL=1; shift ;;
         --slow)     SLOW=1; shift ;;
+        --verbose)  VERBOSE=1; shift ;;
         # git-commit muscle memory: accept -m/--message rather than letting
         # the literal "-m" become the shipped subject and the real message
         # get silently dropped (gr209915).
         -m|--message) MSG="${2:-}"; shift 2 ;;
         --) shift; break ;;
-        -*) printf '\033[31m✖ unknown flag %s (known: --impacted --mutate --quick --checked --remote --full --slow --release --allow-migration -m/--message)\033[0m\n' "$1" >&2; exit 2 ;;
+        -*) printf '\033[31m✖ unknown flag %s (known: --impacted --mutate --quick --checked --remote --full --slow --release --allow-migration --verbose -m/--message)\033[0m\n' "$1" >&2; exit 2 ;;
         *) break ;;
     esac
 done
@@ -269,6 +284,33 @@ if [[ "$CHECKED" == 1 && ( "$FULL" == 1 || "$MUTATE" == 1 || "$RELEASE" == 1 ) ]
 fi
 if [[ "$REMOTE" == 1 ]] && ! command -v gh >/dev/null 2>&1; then
     printf '\033[31m✖ --remote needs the gh CLI (authenticated) to poll the check run.\033[0m\n' >&2; exit 2
+fi
+
+# ── quiet transcript (gr497896) ─────────────────────────────────────────
+# A desk or coordinator only wants the verdict. Default: the whole run is
+# re-executed with its stdout/stderr in a /tmp log, and the terminal sees
+# the epilogue — the log's ✖ lines, the conflicted file list on a
+# conflict, the log path and a final SHIP_STATUS: <shipped|conflict|error>
+# token (quiet_epilogue in scripts/lib/quiet-log.sh). --verbose is the old
+# full stream. The re-exec leaves this run's locks and EXIT traps entirely
+# to the inner process, which keeps the real exit code; INT/TERM/HUP are
+# forwarded so a kill still lands on the work. PRECIS_SHIP_QUIET marks the
+# inner run so it cannot wrap again. stdin passes straight through to the
+# inner run — ship never prompts, so this is inert; --verbose changes
+# nothing there either.
+if [[ "$VERBOSE" != 1 && -z "${PRECIS_SHIP_QUIET:-}" && -f "${WORKTREE}/scripts/lib/quiet-log.sh" ]]; then
+    source "${WORKTREE}/scripts/lib/quiet-log.sh"
+    SHIP_LOG="${TMPDIR:-/tmp}/ship-${BRANCH:-detached}-$$.log"
+    printf 'log: %s\n' "$SHIP_LOG"
+    rc=0
+    inner=0
+    trap 'kill "$inner" 2>/dev/null || true' INT TERM HUP
+    PRECIS_SHIP_QUIET=1 bash "$0" ${ORIG_ARGV[@]+"${ORIG_ARGV[@]}"} >"$SHIP_LOG" 2>&1 &
+    inner=$!
+    wait "$inner" || rc=$?
+    trap - INT TERM HUP
+    quiet_epilogue "$SHIP_LOG" "$rc" SHIP_STATUS shipped || true
+    exit "$rc"
 fi
 
 MSG="${MSG:-${1:-}}"
@@ -1468,7 +1510,7 @@ _release_merge_tree() {
     out="$(git merge-tree --write-tree --name-only "$@" 2>&1)" || rc=$?
     MT_TREE="${out%%$'\n'*}"
     if (( rc == 1 )); then
-        paths="$(printf '%s\n' "$out" | sed -n '2,/^$/p' | grep -v '^$' || true)"
+        paths="$(printf '%s\n' "$out" | sed -n '2,/^$/p' | grep -v '^$' | sed 's/^/  /' || true)"
         printf '\n\033[31m✖ release conflict at step "%s" — conflicted paths:\033[0m\n%s\n' "$label" "$paths" >&2
         die "release conflict — ask the coordinator (\`fleet say\`), $(_release_state_note "nothing was pushed"). Step: ${label}. $([[ -n "$RELEASE_LANDED" ]] || printf '%s and main are untouched. ' "$REL_BRANCH")${RELEASE_TREE_HINT}"
     elif (( rc != 0 )); then

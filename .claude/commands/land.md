@@ -61,6 +61,10 @@ Optional ship message from the user: `$ARGUMENTS`
    ```
    scripts/ship --remote "<message>" > /tmp/ship.log 2>&1
    ```
+   Output is quiet by default (gr497896): `/tmp/ship.log` captures the
+   epilogue — ✖ lines, a conflict's file list, the printed `/tmp/ship-*.log`
+   full-transcript path, and a final `SHIP_STATUS:` token. Tail the printed
+   log for the live gate output; `--verbose` restores the old stream.
    `--remote` gates on **GitHub's computers**: the synced branch goes to
    `ci/<branch>`, the check.yml gate shape (lint · mypy · 6 shards of
    Linux+db 3.13; a docs-only diff runs the fast-set docs lane instead of

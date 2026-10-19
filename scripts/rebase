@@ -22,13 +22,46 @@
 #   10 diverged  — on main and it has diverged from base; can't ff (LLM/human)
 #   1  error     — hard failure (not a repo, detached HEAD, fetch failed, …)
 #
+# Output is quiet by default (gr497896): the run's transcript goes to a /tmp
+# log and the terminal sees the ✖ lines, a conflict's file list (names, no
+# diffs), the log path and the REBASE_STATUS token — nothing else. --verbose
+# restores the old full stream.
+#
 # Usage:  scripts/rebase              # rebase current branch onto origin/main
 #         scripts/rebase origin/foo   # rebase onto a different base
+#         scripts/rebase --verbose    # full transcript, not the epilogue
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-BASE_REF="${1:-origin/main}"
+VERBOSE=0
+BASE_REF="origin/main"
+for arg in "$@"; do
+    case "$arg" in
+        --verbose) VERBOSE=1 ;;
+        *)         BASE_REF="$arg" ;;
+    esac
+done
+
+# Quiet mode (gr497896): re-exec the real run with its output in a /tmp log,
+# then print the epilogue (lib/quiet-log.sh). The inner run keeps this
+# script's exit code and does the work; INT/TERM/HUP forward to it.
+# PRECIS_REBASE_QUIET marks the inner run so it cannot wrap again. stdin
+# passes straight through to the inner run — rebase never prompts.
+if [[ "$VERBOSE" != 1 && -z "${PRECIS_REBASE_QUIET:-}" && -f scripts/lib/quiet-log.sh ]]; then
+    source scripts/lib/quiet-log.sh
+    REBASE_LOG="${TMPDIR:-/tmp}/rebase-$(git branch --show-current 2>/dev/null || basename "$PWD")-$$.log"
+    printf 'log: %s\n' "$REBASE_LOG"
+    rc=0
+    inner=0
+    trap 'kill "$inner" 2>/dev/null || true' INT TERM HUP
+    PRECIS_REBASE_QUIET=1 bash "$0" "$@" >"$REBASE_LOG" 2>&1 &
+    inner=$!
+    wait "$inner" || rc=$?
+    trap - INT TERM HUP
+    quiet_epilogue "$REBASE_LOG" "$rc" REBASE_STATUS clean || true
+    exit "$rc"
+fi
 
 say()  { printf '\n\033[1m▶ %s\033[0m\n' "$*"; }
 warn() { printf '\033[33m! %s\033[0m\n' "$*" >&2; }

@@ -1,0 +1,90 @@
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
+"""scripts/branch-audit — one landedness line per local branch (gr497896).
+
+    scripts/branch-audit [BRANCH...]            audit these branches
+    scripts/branch-audit                        every local branch with no
+                                                worktree checked out
+    scripts/branch-audit --base origin/gated    measure against another base
+
+One line per branch:
+
+    <branch>: <landed|partial|unlanded>  <n> commits  <tip age>  <tip subject>
+
+``landed`` needs a content proof: merged outright, every commit
+patch-equivalent (``git cherry``), an empty diff against the base tip, or
+the merge-base diff reverse-applying cleanly on the base. Commit subjects
+found on the base are a hint only — a subject match alone is ``partial``
+at most, never a landed proof. ``partial`` also covers a diff that applies
+in neither direction — a human should look. ``unlanded`` means none of it
+is on the base.
+
+The verdicts come from ``scripts/branch_audit.Auditor`` — the same
+test ``scripts/fleet-wave close`` applies before dropping a tree — so the
+audit line and the close refusal can never disagree.
+
+Read-only: no fetch (it reads the base as last fetched), no ref moves, no
+worktree writes — the apply checks run on a scratch GIT_INDEX_FILE.
+"""
+
+from __future__ import annotations
+
+import argparse
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from branch_audit import Auditor
+
+
+def _worktreeless_branches(cwd: Path) -> list[str]:
+    """Local branches no worktree has checked out — the leftover set."""
+    out = subprocess.run(
+        [
+            "git",
+            "for-each-ref",
+            "--format=%(refname:short)%09%(worktreepath)",
+            "refs/heads/",
+        ],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    ).stdout
+    return [
+        ln.partition("\t")[0] for ln in out.splitlines() if not ln.partition("\t")[2]
+    ]
+
+
+def main(argv: list[str]) -> int:
+    p = argparse.ArgumentParser(
+        prog="branch-audit", description=__doc__.splitlines()[0]
+    )
+    p.add_argument("branches", nargs="*")
+    p.add_argument("--base", default="origin/main")
+    a = p.parse_args(argv)
+    aud = Auditor(Path.cwd(), a.base)
+    rc = 0
+    branches = a.branches or _worktreeless_branches(Path.cwd())
+    for b in branches:
+        r = aud.audit(b)
+        if r.verdict == "error":
+            print(f"{b}: error  {r.note}")
+            rc = 1
+            continue
+        line = (
+            f"{b}: {r.verdict}  {r.ahead} commit{'s' if r.ahead != 1 else ''}"
+            f"  {r.age}  {r.subject}"
+        )
+        if r.verdict == "partial":
+            line += f"  ({r.matched}/{r.ahead} on {a.base})"
+        if r.note:
+            line += f"  ({r.note})"
+        print(line)
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

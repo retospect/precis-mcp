@@ -27,7 +27,9 @@ Optional base ref from the user: `$ARGUMENTS`
    ```
    scripts/rebase $ARGUMENTS
    ```
-   It ends with a `REBASE_STATUS: <token>` line. Branch on it:
+   It ends with a `REBASE_STATUS: <token>` line. Branch on it (the run is
+   quiet by default — `gr497896`: the transcript goes to a printed `/tmp`
+   log; `--verbose` shows it all):
 
 2. **Clean path — nothing more to do.** For `uptodate`, `ff`, or `clean`
    (exit 0), the sync completed mechanically. Report it in **one line** (what

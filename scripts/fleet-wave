@@ -92,6 +92,11 @@ PROMPT_CHAR = "❯"
 PASTE_MIN = 200
 PREFIXES = ("claude-", "devin-")
 SCRIPTS = Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPTS))
+try:
+    from branch_audit import Auditor
+except ImportError:  # a staged copy without scripts/lib — close falls back
+    Auditor = None
 #: Authority v2 tiers; readonly/qland are the pre-v2 names, kept as aliases.
 TIER_ALIASES = {"readonly": "R", "qland": "W"}
 LEGACY_FOOTER = {"R": "readonly", "W": "qland"}
@@ -700,14 +705,22 @@ def cmd_close(f: Fleet, a: argparse.Namespace) -> int:
             print(f"REFUSED {name}: origin/main does not resolve; kept")
             rc = 1
             continue
-        cherry = git("cherry", "origin/main", "HEAD", cwd=tree).splitlines()
-        if not all(ln.startswith("-") for ln in cherry):
+        # Landed = the scripts/branch-audit test (gr497896): ancestry, an
+        # empty tree diff against origin/main, per-commit patch equivalence,
+        # a squash-subject match, or a clean reverse-apply. A multi-commit
+        # squash-land trips the plain `git cherry` check that used to gate
+        # this, so a landed tree looked unlanded.
+        if Auditor is not None:
+            audit = Auditor(tree).audit("HEAD")
+            landed = audit.verdict == "landed"
+        else:
+            cherry = git("cherry", "origin/main", "HEAD", cwd=tree).splitlines()
+            landed = all(ln.startswith("-") for ln in cherry)
+        if not landed:
             print(f"REFUSED {name}: unlanded commits; window, tree, branch kept")
             print(git("log", "--oneline", "origin/main..HEAD", cwd=tree), end="")
             rc = 1
             continue
-        # Merged by patch, not ancestry (a squash-land): -d fails, -D is safe.
-        patch_equiv = bool(cherry)
         for p in PREFIXES:
             if p + name in wins:
                 f.tmux("kill-window", "-t", f.target(p + name), check=False)
@@ -737,7 +750,9 @@ def cmd_close(f: Fleet, a: argparse.Namespace) -> int:
                 encoding="utf-8",
                 check=False,
             )
-            if d.returncode and patch_equiv:
+            # -d proves ancestry only; a squash- or patch-landed branch still
+            # fails it, and the audit above already proved the work is on main.
+            if d.returncode:
                 d = subprocess.run(
                     ["git", "branch", "-D", branch],
                     cwd=f.main,
