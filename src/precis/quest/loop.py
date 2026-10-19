@@ -97,7 +97,10 @@ runs :func:`_reconcile_orphaned_pathways` per active quest:
 :func:`_pathway_job_tree_state` walks the ``dispatch_autocatpath`` todo/job
 tree (``T_agg`` + per-seed children) and classifies it — any live job/todo
 leaves it alone; a genuine ``STATUS:failed`` job with no infra-class open
-tag stamps the pathway ``"failed"`` (no compute worth re-running); an
+tag stamps the pathway ``"failed"`` (no compute worth re-running) — UNLESS
+other seeds already produced results, in which case only the dead seeds
+are closed ``won't-do`` and the pathway finalises from the ok seeds
+(``meta.seeds_failed`` records the exclusions; gr489164 option B); an
 all-terminal tree via ``cancelled``/infra-tagged-``failed``/never-minted
 (all "wrongfully killed", not a real verdict) gets a bounded re-dispatch
 instead, capped at :data:`_MAX_PATHWAY_REDISPATCH_PER_PASS` per quest per
@@ -114,7 +117,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from precis.alert_ids import RULES_BY_ID
 from precis.quest.allocator import active_quest_ids, cool_stalled
@@ -127,7 +130,7 @@ from precis.quest.compute import (
 )
 from precis.quest.tick import quest_loop_enabled
 from precis.utils.env import env_int
-from precis.utils.job_bubble import INFRA_FAILURE_TAGS
+from precis.utils.job_bubble import INFRA_FAILURE_TAGS, remove_child_failed_tags
 from precis.workers.nursery import DEAD_WORKER_SILENCE_MIN, WORKER_CONTINUOUS_PROCESSES
 
 if TYPE_CHECKING:
@@ -786,7 +789,21 @@ def _reap_dead_node_pinned_loop(
         return None
 
 
-def _pathway_job_tree_state(store: Store, pathway_id: int) -> tuple[str, str | None]:
+class _PathwayTreeState(NamedTuple):
+    """``_pathway_job_tree_state``'s verdict.
+
+    ``failed_seeds`` maps each still-OPEN seed todo whose job(s) all
+    terminalised with at least one genuine (non-infra) ``STATUS:failed``
+    job onto ``{"job_id": …, "reason": …}`` — populated only on the
+    ``"partial"`` state, where :func:`_reconcile_orphaned_pathways` spends
+    it (gr489164 option B); empty on every other state."""
+
+    state: str
+    reason: str | None
+    failed_seeds: dict[int, dict[str, Any]]
+
+
+def _pathway_job_tree_state(store: Store, pathway_id: int) -> _PathwayTreeState:
     """Classify a ``computing`` `pathway`'s compute tree.
 
     Walks the :func:`~precis.quest.compute.dispatch_autocatpath` todo tree
@@ -797,8 +814,8 @@ def _pathway_job_tree_state(store: Store, pathway_id: int) -> tuple[str, str | N
     carry the same ``meta.params.pathway_ref_id`` provenance stamp, but the
     todo-tree walk is what lets a todo with NO job at all — a dispatch that
     crashed before ``jobs.put`` landed, see ``compute._seed_todo_handled`` —
-    read distinctly from one whose job(s) actually ran). Returns
-    ``(state, reason)`` where ``state`` is one of:
+    read distinctly from one whose job(s) actually ran). Returns a
+    :class:`_PathwayTreeState` whose ``state`` is one of:
 
     * ``"in_flight"`` — some job is still queued/running/waiting_*, or an
       open SEED todo has no job yet, or ``T_agg`` itself has no seed
@@ -809,6 +826,14 @@ def _pathway_job_tree_state(store: Store, pathway_id: int) -> tuple[str, str | N
       never gets a job of its own until every seed todo resolves and the
       ordinary dispatch worker notices — an expected, not stuck, state — so
       it's simply skipped rather than treated as evidence of anything.
+    * ``"partial"`` — nothing in flight, at least one seed produced a
+      result (todo ``done``, or a ``succeeded`` job on a still-open todo),
+      and at least one open seed terminalised on a genuine failure:
+      Reto's gr489164 option-B ruling — the pathway finalises from the ok
+      seeds; the caller closes each ``failed_seeds`` todo ``won't-do`` so
+      the dispatch worker mints the aggregate over the rest. An infra-dead
+      seed in the mix doesn't block this — it stays open and the ordinary
+      ``"wrongful_kill"`` re-dispatch picks it up on a later pass.
     * ``"failed"`` — at least one job terminalized ``STATUS:failed`` WITHOUT
       an infra-class open tag (:data:`_PATHWAY_WRONGFUL_KILL_TAGS`) — a
       genuine compute/content failure; ``reason`` is a short human string.
@@ -821,8 +846,8 @@ def _pathway_job_tree_state(store: Store, pathway_id: int) -> tuple[str, str | N
       (:func:`_reconcile_stale_computing_pathways`, todo-tree-agnostic) is
       the backstop for a truly abandoned mint once it's stale enough.
 
-    Never raises — a read failure returns ``("unknown", None)``, i.e. fail
-    toward "leave it alone".
+    Never raises — a read failure returns ``_PathwayTreeState("unknown",
+    None, {})``, i.e. fail toward "leave it alone".
     """
     try:
         with store.pool.connection() as conn:
@@ -841,6 +866,7 @@ def _pathway_job_tree_state(store: Store, pathway_id: int) -> tuple[str, str | N
                 )
                 SELECT
                   tr.is_root,
+                  tr.ref_id AS todo_id,
                   COALESCE(
                     (SELECT tg.value FROM ref_tags rt JOIN tags tg
                         ON tg.tag_id = rt.tag_id
@@ -858,7 +884,14 @@ def _pathway_job_tree_state(store: Store, pathway_id: int) -> tuple[str, str | N
                         ON tg3.tag_id = rt3.tag_id
                      WHERE rt3.ref_id = j.ref_id AND tg3.namespace = 'OPEN'
                        AND tg3.value = ANY(%(wrongful_tags)s)
-                  ) AS job_wrongful
+                  ) AS job_wrongful,
+                  COALESCE(
+                    j.meta->>'error',
+                    (SELECT c.text FROM chunks c
+                      WHERE c.ref_id = j.ref_id AND c.chunk_kind = 'job_event'
+                        AND c.retired_at IS NULL
+                      ORDER BY c.ord DESC LIMIT 1)
+                  ) AS job_reason
                   FROM tree tr
                   LEFT JOIN refs j
                     ON j.parent_id = tr.ref_id AND j.kind = 'job'
@@ -873,10 +906,10 @@ def _pathway_job_tree_state(store: Store, pathway_id: int) -> tuple[str, str | N
         log.exception(
             "_pathway_job_tree_state: failed to read tree for pathway %s", pathway_id
         )
-        return "unknown", None
+        return _PathwayTreeState("unknown", None, {})
 
     if not rows:
-        return "unknown", None
+        return _PathwayTreeState("unknown", None, {})
 
     # T_agg alone with no seed children at all is a DIFFERENT case from
     # T_agg alone-and-jobless WITH seed children under it: the latter is the
@@ -886,32 +919,115 @@ def _pathway_job_tree_state(store: Store, pathway_id: int) -> tuple[str, str | N
     # (in-flight, not "unknown" — this candidate never even started).
     has_children = any(not is_root for is_root, *_rest in rows)
 
+    # Row order is unspecified and a retried seed carries several job rows,
+    # so no row may decide alone: gather each open seed todo's jobs first,
+    # THEN rule (gr489164 — this walk used to return "failed" on the FIRST
+    # failed row while later seeds were still queued, stamping the pathway
+    # failed mid-drain). Precedence: in_flight > partial > failed >
+    # wrongful_kill.
+    in_flight = False
+    saw_genuine_fail = False
     any_terminal_bad = False
-    for is_root, todo_status, job_id, job_status, job_wrongful in rows:
-        if todo_status in ("done", "won't-do"):
+    ok_seeds: set[int] = set()
+    # open seed todo id -> [(job_id, job_status, job_wrongful, job_reason)]
+    open_seed_jobs: dict[int, list[tuple[int, str | None, bool, Any]]] = {}
+    for (
+        is_root,
+        todo_id,
+        todo_status,
+        job_id,
+        job_status,
+        job_wrongful,
+        job_reason,
+    ) in rows:
+        if is_root:
+            if todo_status in ("done", "won't-do"):
+                continue
+            if job_id is None:
+                if has_children:
+                    # T_agg never gets a job of its own until every seed
+                    # todo resolves (dispatch_autocatpath's docstring) —
+                    # expected, not evidence either way; skip rather than
+                    # short-circuit.
+                    continue
+                in_flight = True
+                continue
+            if job_status not in _TERMINAL_STATUSES:
+                in_flight = True
+                continue
+            if job_status == "succeeded":
+                continue
+            if job_status == "failed" and not job_wrongful:
+                saw_genuine_fail = True
+            else:
+                any_terminal_bad = True
+            continue
+        # A seed todo.
+        if todo_status == "done":
+            # auto_check's child_job_succeeded only ever flips on a
+            # succeeded child job — a done seed is an ok seed.
+            ok_seeds.add(todo_id)
+            continue
+        if todo_status == "won't-do":
+            # Already excluded (e.g. by an earlier "partial" pass) —
+            # neither ok nor a failure to re-record.
             continue
         if job_id is None:
-            if is_root and has_children:
-                # T_agg never gets a job of its own until every seed todo
-                # resolves (dispatch_autocatpath's docstring) — expected,
-                # not evidence either way; skip rather than short-circuit.
-                continue
-            # A seed todo with no job at all, OR a T_agg with no seed
-            # children ever minted — both ambiguous (crashed dispatch, or
-            # one that started this same tick) — read conservatively as
-            # in-flight; the age-gated catch-all is the backstop for a
-            # truly abandoned mint, not this walk.
-            return "in_flight", None
-        if job_status not in _TERMINAL_STATUSES:
-            return "in_flight", None
-        if job_status == "succeeded":
+            # An open seed todo with no job at all — ambiguous (crashed
+            # dispatch, or one that started this same tick) — read
+            # conservatively as in-flight; the age-gated catch-all is the
+            # backstop for a truly abandoned mint, not this walk.
+            in_flight = True
             continue
-        if job_status == "failed" and not job_wrongful:
-            return "failed", "seed jobs failed"
-        any_terminal_bad = True
+        open_seed_jobs.setdefault(todo_id, []).append(
+            (job_id, job_status, bool(job_wrongful), job_reason)
+        )
+
+    failed_seeds: dict[int, dict[str, Any]] = {}
+    for todo_id, jobs in open_seed_jobs.items():
+        if any(status not in _TERMINAL_STATUSES for _, status, _, _ in jobs):
+            in_flight = True
+            continue
+        if any(status == "succeeded" for _, status, _, _ in jobs):
+            # The auto_check flip runs a dispatch tick behind — count the
+            # seed ok on its own job's STATUS rather than waiting on the
+            # todo's (same dual as compute._seed_todo_handled).
+            ok_seeds.add(todo_id)
+            continue
+        # Every job terminal-dead: a genuine (non-infra) failure makes the
+        # seed deterministic-dead; infra-tagged/cancelled-only deaths stay
+        # re-dispatch-eligible.
+        genuine = next(
+            (
+                (jid, reason)
+                for jid, status, wrongful, reason in jobs
+                if status == "failed" and not wrongful
+            ),
+            None,
+        )
+        if genuine is not None:
+            saw_genuine_fail = True
+            failed_seeds[todo_id] = {
+                "job_id": genuine[0],
+                "reason": genuine[1] or "seed job failed",
+            }
+        else:
+            any_terminal_bad = True
+
+    if in_flight:
+        return _PathwayTreeState("in_flight", None, {})
+    if failed_seeds and ok_seeds:
+        return _PathwayTreeState(
+            "partial",
+            f"{len(failed_seeds)} seed(s) failed deterministically, "
+            f"finalising from {len(ok_seeds)} ok",
+            failed_seeds,
+        )
+    if saw_genuine_fail:
+        return _PathwayTreeState("failed", "seed jobs failed", {})
     if any_terminal_bad:
-        return "wrongful_kill", None
-    return "unknown", None
+        return _PathwayTreeState("wrongful_kill", None, {})
+    return _PathwayTreeState("unknown", None, {})
 
 
 _COMPUTING_SUFFIX = " (computing)"
@@ -943,13 +1059,104 @@ def _stamp_pathway_failed(
             _retitle(c)
 
 
+def _finalise_partial_pathway(
+    store: Store, pathway_id: int, failed_seeds: dict[int, dict[str, Any]]
+) -> int:
+    """Close a ``"partial"`` pathway's deterministically-failed seed todos
+    ``STATUS:won't-do`` so the ordinary dispatch worker mints the aggregate
+    over the ok seeds — Reto's gr489164 option-B ruling.
+
+    Per excluded seed: one tx flips the seed todo (``replace_prefix``),
+    re-checked in-tx first — an auto_check ``done`` landing between the
+    classify and this write is never clobbered, and a seed that gained a
+    non-terminal or succeeded job in that gap (a re-mint) is skipped
+    rather than excluded under it. Drops its stale
+    ``child-failed:*`` bubble tags (same cleanup the auto-resolver does,
+    gr202263), and logs a ``seed-wont-do`` event carrying the reason.
+    The pathway ref records ``meta.seeds_failed = [{"id", "job_id",
+    "reason"}]`` — merged onto any earlier pass's entries — so the final
+    result can't pass as a full seed set. Returns the number of seed
+    todos closed."""
+    from precis.store.types import Tag
+
+    entries: list[dict[str, Any]] = []
+    with store.tx() as conn:
+        row = conn.execute(
+            "SELECT meta->'seeds_failed' FROM refs WHERE ref_id = %s",
+            (pathway_id,),
+        ).fetchone()
+        prior = list(row[0]) if row and row[0] else []
+        for todo_id, detail in failed_seeds.items():
+            # In-tx recheck before the close: between the classify and this
+            # write a re-mint may have landed a fresh job under the seed
+            # todo, or auto_check may have resolved it — only a still-open
+            # todo whose every job is still terminal-dead may close.
+            cur = conn.execute(
+                """
+                SELECT COALESCE(
+                         (SELECT t.value FROM ref_tags rt JOIN tags t
+                             ON t.tag_id = rt.tag_id
+                           WHERE rt.ref_id = %(t)s AND t.namespace = 'STATUS'
+                           LIMIT 1),
+                         'open') AS todo_status,
+                       count(j.ref_id) AS n_jobs,
+                       count(j.ref_id) FILTER (
+                         WHERE COALESCE(
+                                 (SELECT tj.value FROM ref_tags rj
+                                     JOIN tags tj ON tj.tag_id = rj.tag_id
+                                   WHERE rj.ref_id = j.ref_id
+                                     AND tj.namespace = 'STATUS' LIMIT 1),
+                                 'open')
+                           IN ('failed', 'cancelled')
+                       ) AS dead_jobs
+                  FROM refs st
+                  LEFT JOIN refs j ON j.parent_id = st.ref_id
+                       AND j.kind = 'job' AND j.retired_at IS NULL
+                 WHERE st.ref_id = %(t)s AND st.retired_at IS NULL
+                 GROUP BY st.ref_id
+                """,
+                {"t": todo_id},
+            ).fetchone()
+            if (
+                cur is None
+                or cur[0] in ("done", "won't-do", "auto-timeout")
+                or cur[1] == 0
+                or cur[1] != cur[2]
+            ):
+                continue
+            store.add_tag(
+                todo_id,
+                Tag.closed("STATUS", "won't-do"),
+                set_by="system",
+                replace_prefix=True,
+                conn=conn,
+            )
+            remove_child_failed_tags(store, todo_id, conn=conn)
+            reason = str(detail["reason"])
+            store.append_event(
+                todo_id,
+                source="quest-loop-reconcile",
+                event="seed-wont-do",
+                payload={"pathway_id": pathway_id, "reason": reason},
+                conn=conn,
+            )
+            entries.append(
+                {"id": todo_id, "job_id": detail["job_id"], "reason": reason}
+            )
+        if entries:
+            store.stamp_ref_meta(
+                pathway_id, {"seeds_failed": prior + entries}, conn=conn
+            )
+    return len(entries)
+
+
 def _reconcile_orphaned_pathways(
     store: Store, quest_id: int, *, hub: Any
-) -> tuple[int, int]:
+) -> tuple[int, int, int]:
     """Resolve this quest's dead ``computing`` `pathway` stubs — stamp a
-    genuine failure, or re-dispatch a wrongfully-killed tree — rather than
-    leaving them stuck forever (see the module docstring's "Orphaned pathway
-    stubs" section).
+    genuine failure, finalise a partial fan-out, or re-dispatch a
+    wrongfully-killed tree — rather than leaving them stuck forever (see
+    the module docstring's "Orphaned pathway stubs" section).
 
     For every candidate `structure` this quest serves
     (:func:`~precis.quest.compute._candidate_struct_ids`), finds its still-
@@ -960,6 +1167,10 @@ def _reconcile_orphaned_pathways(
     * ``"in_flight"``/``"unknown"`` — left alone.
     * ``"failed"`` — stamped ``meta.status = 'failed'`` +
       ``meta.failed_reason`` directly.
+    * ``"partial"`` — its deterministically-failed seed todos are closed
+      ``won't-do`` via :func:`_finalise_partial_pathway` (the pathway stays
+      ``computing``; the dispatch worker mints the aggregate over the ok
+      seeds next pass).
     * ``"wrongful_kill"`` — re-dispatched via
       :func:`~precis.quest.compute.dispatch_autocatpath` (idempotent — the
       quest's own ``reaction_config`` at the pathway's own ``meta.tier``),
@@ -968,12 +1179,12 @@ def _reconcile_orphaned_pathways(
       ``reaction_config`` — nothing to re-dispatch against; the catch-all
       still eventually reclaims it.
 
-    Returns ``(failed, redispatched)`` counts for this quest. Never raises —
-    a single candidate's/pathway's failure is logged and skipped, never
-    aborts the reconcile pass.
+    Returns ``(failed, redispatched, partial)`` counts for this quest.
+    Never raises — a single candidate's/pathway's failure is logged and
+    skipped, never aborts the reconcile pass.
     """
     reaction = _quest_reaction_config(store, quest_id)
-    failed = redispatched = 0
+    failed = redispatched = partial = 0
     lane_held = False
     for sid in _candidate_struct_ids(store, quest_id):
         try:
@@ -998,8 +1209,32 @@ def _reconcile_orphaned_pathways(
         for raw_id, raw_meta in rows:
             pathway_id = int(raw_id)
             pmeta = dict(raw_meta or {})
-            state, reason = _pathway_job_tree_state(store, pathway_id)
-            if state == "failed":
+            tree = _pathway_job_tree_state(store, pathway_id)
+            state, reason = tree.state, tree.reason
+            if state == "partial":
+                try:
+                    closed = _finalise_partial_pathway(
+                        store, pathway_id, tree.failed_seeds
+                    )
+                    if closed:
+                        partial += 1
+                    log.info(
+                        "reconcile_quest_loops: pathway %d (quest %s, "
+                        "candidate %s) partial-finalised: %s — %d seed "
+                        "todo(s) closed won't-do",
+                        pathway_id,
+                        quest_id,
+                        sid,
+                        reason,
+                        closed,
+                    )
+                except Exception:
+                    log.exception(
+                        "_reconcile_orphaned_pathways: partial finalise "
+                        "failed for pathway %d",
+                        pathway_id,
+                    )
+            elif state == "failed":
                 try:
                     _stamp_pathway_failed(
                         store, pathway_id, reason or "seed jobs failed"
@@ -1058,7 +1293,7 @@ def _reconcile_orphaned_pathways(
                         pathway_id,
                         sid,
                     )
-    return failed, redispatched
+    return failed, redispatched, partial
 
 
 def _reconcile_stale_computing_pathways(store: Store) -> int:
@@ -1235,7 +1470,10 @@ def reconcile_quest_loops(
     created), ``pathways_failed`` (``computing`` `pathway` stubs stamped
     ``failed`` this pass — genuine content failures plus the age-gated
     catch-all, see the module docstring's "Orphaned pathway stubs" section),
-    ``pathways_redispatched`` (wrongfully-killed trees re-dispatched instead).
+    ``pathways_redispatched`` (wrongfully-killed trees re-dispatched
+    instead), ``pathways_partial`` (partial fan-outs whose failed seed
+    todos were closed ``won't-do`` so the aggregate mints over the ok
+    seeds — gr489164 option B).
     """
     on = quest_loop_enabled() if enabled is None else enabled
     if not on:
@@ -1252,6 +1490,7 @@ def reconcile_quest_loops(
             "minted": 0,
             "pathways_failed": _reconcile_stale_computing_pathways(store),
             "pathways_redispatched": 0,
+            "pathways_partial": 0,
         }
 
     cooled = cool_stalled(store)
@@ -1264,15 +1503,16 @@ def reconcile_quest_loops(
         _DRY_REST_ESCALATE_COOLDOWN_ENV, _DRY_REST_ESCALATED_COOLDOWN_S, lo=0
     )
     escalated = reaped = backoff = ensured = minted = 0
-    pathways_failed = pathways_redispatched = 0
+    pathways_failed = pathways_redispatched = pathways_partial = 0
     for qid in active_quest_ids(store):
         # Independent of the tick-loop reap/cooldown/mint state below — runs
         # for every active quest regardless of where it lands in that state
         # machine (see the module docstring's "Orphaned pathway stubs"
         # section).
-        pf, pr = _reconcile_orphaned_pathways(store, qid, hub=hub)
+        pf, pr, pp = _reconcile_orphaned_pathways(store, qid, hub=hub)
         pathways_failed += pf
         pathways_redispatched += pr
+        pathways_partial += pp
         # gr170252: a quest stuck on missing input is held out of the mint —
         # no reap, no ordinary cooldown — while its escalated cooldown holds.
         # Checked before everything else so an orphan reap can't accidentally
@@ -1320,6 +1560,7 @@ def reconcile_quest_loops(
         "minted": minted,
         "pathways_failed": pathways_failed,
         "pathways_redispatched": pathways_redispatched,
+        "pathways_partial": pathways_partial,
     }
 
 

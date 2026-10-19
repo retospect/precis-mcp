@@ -321,6 +321,7 @@ class TestReconcileQuestLoops:
             "minted": 0,
             "pathways_failed": 0,
             "pathways_redispatched": 0,
+            "pathways_partial": 0,
         }
 
     def test_enabled_ensures_each_active_quest_and_tallies(
@@ -355,6 +356,7 @@ class TestReconcileQuestLoops:
             "minted": 2,
             "pathways_failed": 0,
             "pathways_redispatched": 0,
+            "pathways_partial": 0,
         }
 
     def test_enabled_via_env_default(self, store: Store, monkeypatch: Any) -> None:
@@ -373,6 +375,7 @@ class TestReconcileQuestLoops:
             "minted": 0,
             "pathways_failed": 0,
             "pathways_redispatched": 0,
+            "pathways_partial": 0,
         }
 
     def test_a_failing_ensure_does_not_stop_the_rest(
@@ -402,6 +405,7 @@ class TestReconcileQuestLoops:
             "minted": 1,
             "pathways_failed": 0,
             "pathways_redispatched": 0,
+            "pathways_partial": 0,
         }
 
 
@@ -1221,7 +1225,7 @@ class TestPathwayJobTreeState(_PathwayTreeMixin):
         q = _mk_quest(store, "A striving")
         sid = self._candidate(store, q)
         pw = self._pathway(store, sid)
-        assert loop_mod._pathway_job_tree_state(store, pw) == ("unknown", None)
+        assert loop_mod._pathway_job_tree_state(store, pw).state == "unknown"
 
     def test_todo_with_no_job_yet_is_in_flight(self, store: Store) -> None:
         q = _mk_quest(store, "A striving")
@@ -1244,9 +1248,9 @@ class TestPathwayJobTreeState(_PathwayTreeMixin):
         pw = self._pathway(store, sid)
         agg = self._agg_todo(store, sid, pw)
         self._seed(store, agg, pathway_id=pw, job_statuses=["failed"])
-        state, reason = loop_mod._pathway_job_tree_state(store, pw)
-        assert state == "failed"
-        assert reason
+        tree = loop_mod._pathway_job_tree_state(store, pw)
+        assert tree.state == "failed"
+        assert tree.reason
 
     def test_cancelled_only_is_wrongful_kill(self, store: Store) -> None:
         q = _mk_quest(store, "A striving")
@@ -1254,7 +1258,7 @@ class TestPathwayJobTreeState(_PathwayTreeMixin):
         pw = self._pathway(store, sid)
         agg = self._agg_todo(store, sid, pw)
         self._seed(store, agg, pathway_id=pw, job_statuses=["cancelled"])
-        assert loop_mod._pathway_job_tree_state(store, pw) == ("wrongful_kill", None)
+        assert loop_mod._pathway_job_tree_state(store, pw).state == "wrongful_kill"
 
     def test_infra_tagged_failed_is_wrongful_kill(self, store: Store) -> None:
         q = _mk_quest(store, "A striving")
@@ -1268,7 +1272,7 @@ class TestPathwayJobTreeState(_PathwayTreeMixin):
             job_statuses=["failed"],
             job_open_tags=["infra:child-killed"],
         )
-        assert loop_mod._pathway_job_tree_state(store, pw) == ("wrongful_kill", None)
+        assert loop_mod._pathway_job_tree_state(store, pw).state == "wrongful_kill"
 
     def test_dead_node_reaped_failed_is_wrongful_kill(self, store: Store) -> None:
         """``reaped:dead-node-orphan`` is infra-class in ``_job_bubble.
@@ -1287,7 +1291,7 @@ class TestPathwayJobTreeState(_PathwayTreeMixin):
             job_statuses=["failed"],
             job_open_tags=["reaped:dead-node-orphan"],
         )
-        assert loop_mod._pathway_job_tree_state(store, pw) == ("wrongful_kill", None)
+        assert loop_mod._pathway_job_tree_state(store, pw).state == "wrongful_kill"
 
     def test_genuine_failure_wins_over_a_sibling_wrongful_kill(
         self, store: Store
@@ -1303,6 +1307,97 @@ class TestPathwayJobTreeState(_PathwayTreeMixin):
         self._seed(store, agg, pathway_id=pw, job_statuses=["failed"])
         assert loop_mod._pathway_job_tree_state(store, pw)[0] == "failed"
 
+    @pytest.mark.parametrize("statuses", [["failed", "queued"], ["queued", "failed"]])
+    def test_failed_seed_with_sibling_still_queued_is_in_flight(
+        self, store: Store, statuses: list[str]
+    ) -> None:
+        """Row order is unspecified (gr489164): a genuine failure must not
+        stamp the pathway failed while any sibling is still in flight —
+        whichever row the walk happens to meet first."""
+        q = _mk_quest(store, "A striving")
+        sid = self._candidate(store, q)
+        pw = self._pathway(store, sid)
+        agg = self._agg_todo(store, sid, pw)
+        for status in statuses:
+            self._seed(store, agg, pathway_id=pw, job_statuses=[status])
+        assert loop_mod._pathway_job_tree_state(store, pw)[0] == "in_flight"
+
+    def test_failed_seed_with_jobless_sibling_todo_is_in_flight(
+        self, store: Store
+    ) -> None:
+        """A seed todo with no job at all counts as in-flight too, so it
+        likewise outranks a sibling's genuine failure (gr489164)."""
+        q = _mk_quest(store, "A striving")
+        sid = self._candidate(store, q)
+        pw = self._pathway(store, sid)
+        agg = self._agg_todo(store, sid, pw)
+        self._seed(store, agg, pathway_id=pw, job_statuses=["failed"])
+        self._seed(store, agg, pathway_id=pw, job_statuses=[])
+        assert loop_mod._pathway_job_tree_state(store, pw)[0] == "in_flight"
+
+    def test_infra_failed_seed_with_sibling_queued_is_in_flight(
+        self, store: Store
+    ) -> None:
+        """Infra-tagged failures keep their semantics: never 'failed'
+        themselves, and still outranked by a live sibling (gr489164)."""
+        q = _mk_quest(store, "A striving")
+        sid = self._candidate(store, q)
+        pw = self._pathway(store, sid)
+        agg = self._agg_todo(store, sid, pw)
+        self._seed(
+            store,
+            agg,
+            pathway_id=pw,
+            job_statuses=["failed"],
+            job_open_tags=["infra:child-killed"],
+        )
+        self._seed(store, agg, pathway_id=pw, job_statuses=["queued"])
+        assert loop_mod._pathway_job_tree_state(store, pw)[0] == "in_flight"
+
+    def test_all_terminal_no_ok_seed_still_fails(self, store: Store) -> None:
+        """Option B's carve-out needs ≥1 ok seed: with every seed dead, a
+        genuine failure still reads 'failed' (an infra-tagged sibling death
+        doesn't soften it), and nothing is offered for won't-do (gr489164)."""
+        q = _mk_quest(store, "A striving")
+        sid = self._candidate(store, q)
+        pw = self._pathway(store, sid)
+        agg = self._agg_todo(store, sid, pw)
+        self._seed(store, agg, pathway_id=pw, job_statuses=["failed"])
+        self._seed(
+            store,
+            agg,
+            pathway_id=pw,
+            job_statuses=["failed"],
+            job_open_tags=["infra:child-killed"],
+        )
+        tree = loop_mod._pathway_job_tree_state(store, pw)
+        assert tree.state == "failed"
+        assert tree.failed_seeds == {}
+
+    def test_ok_seed_plus_genuine_failure_is_partial(self, store: Store) -> None:
+        """gr489164 option B: ≥1 ok seed + a deterministically-failed open
+        seed reads ``partial`` and carries the dead todo's id + the failed
+        job's recorded reason for the won't-do close."""
+        q = _mk_quest(store, "A striving")
+        sid = self._candidate(store, q)
+        pw = self._pathway(store, sid)
+        agg = self._agg_todo(store, sid, pw)
+        self._seed(store, agg, pathway_id=pw, job_statuses=["succeeded"])
+        dead_todo, dead_jobs = self._seed(
+            store, agg, pathway_id=pw, job_statuses=["failed"]
+        )
+        store.stamp_ref_meta(
+            dead_jobs[0],
+            {
+                "failure_class": "invalid-geometry",
+                "error": "autocatpath_seed: run failed: ValueError: bad placement",
+            },
+        )
+        tree = loop_mod._pathway_job_tree_state(store, pw)
+        assert tree.state == "partial"
+        assert tree.failed_seeds[dead_todo]["job_id"] == dead_jobs[0]
+        assert "bad placement" in tree.failed_seeds[dead_todo]["reason"]
+
     def test_done_todo_with_stale_failed_job_is_excluded(self, store: Store) -> None:
         q = _mk_quest(store, "A striving")
         sid = self._candidate(store, q)
@@ -1311,7 +1406,7 @@ class TestPathwayJobTreeState(_PathwayTreeMixin):
         self._seed(
             store, agg, pathway_id=pw, job_statuses=["failed"], todo_status="done"
         )
-        assert loop_mod._pathway_job_tree_state(store, pw) == ("unknown", None)
+        assert loop_mod._pathway_job_tree_state(store, pw).state == "unknown"
 
     def test_succeeded_seeds_with_no_aggregate_job_yet_is_never_actioned(
         self, store: Store
@@ -1346,7 +1441,9 @@ class TestReconcileOrphanedPathways(_PathwayTreeMixin):
         agg = self._agg_todo(store, sid, pw)
         self._seed(store, agg, pathway_id=pw, job_statuses=["failed"])
 
-        failed, redispatched = loop_mod._reconcile_orphaned_pathways(store, q, hub=None)
+        failed, redispatched, _partial = loop_mod._reconcile_orphaned_pathways(
+            store, q, hub=None
+        )
 
         assert (failed, redispatched) == (1, 0)
         meta = _pathway_meta(store, pw)
@@ -1360,7 +1457,9 @@ class TestReconcileOrphanedPathways(_PathwayTreeMixin):
         agg = self._agg_todo(store, sid, pw)
         self._seed(store, agg, pathway_id=pw, job_statuses=["running"])
 
-        failed, redispatched = loop_mod._reconcile_orphaned_pathways(store, q, hub=None)
+        failed, redispatched, _partial = loop_mod._reconcile_orphaned_pathways(
+            store, q, hub=None
+        )
 
         assert (failed, redispatched) == (0, 0)
         assert _pathway_meta(store, pw)["status"] == "computing"
@@ -1385,7 +1484,9 @@ class TestReconcileOrphanedPathways(_PathwayTreeMixin):
 
         monkeypatch.setattr(loop_mod, "dispatch_autocatpath", _fake_dispatch)
 
-        failed, redispatched = loop_mod._reconcile_orphaned_pathways(store, q, hub=None)
+        failed, redispatched, _partial = loop_mod._reconcile_orphaned_pathways(
+            store, q, hub=None
+        )
 
         assert (failed, redispatched) == (0, 1)
         assert calls == [(sid, {"substrate": "NO"}, "verify")]
@@ -1416,7 +1517,9 @@ class TestReconcileOrphanedPathways(_PathwayTreeMixin):
             agg = self._agg_todo(store, sid, pw)
             self._seed(store, agg, pathway_id=pw, job_statuses=["cancelled"])
 
-        failed, redispatched = loop_mod._reconcile_orphaned_pathways(store, q, hub=None)
+        failed, redispatched, _partial = loop_mod._reconcile_orphaned_pathways(
+            store, q, hub=None
+        )
 
         assert (failed, redispatched) == (0, 0)
         assert len(calls) == 1
@@ -1435,7 +1538,9 @@ class TestReconcileOrphanedPathways(_PathwayTreeMixin):
             loop_mod, "dispatch_autocatpath", lambda *a, **k: calls.append(1)
         )
 
-        failed, redispatched = loop_mod._reconcile_orphaned_pathways(store, q, hub=None)
+        failed, redispatched, _partial = loop_mod._reconcile_orphaned_pathways(
+            store, q, hub=None
+        )
 
         assert (failed, redispatched) == (0, 0)
         assert calls == []
@@ -1460,7 +1565,7 @@ class TestReconcileOrphanedPathways(_PathwayTreeMixin):
 
         monkeypatch.setattr(loop_mod, "dispatch_autocatpath", _fake_dispatch)
 
-        _failed, redispatched = loop_mod._reconcile_orphaned_pathways(
+        _failed, redispatched, _partial = loop_mod._reconcile_orphaned_pathways(
             store, q, hub=None
         )
 
@@ -1486,7 +1591,238 @@ class TestReconcileOrphanedPathways(_PathwayTreeMixin):
 
         assert out["pathways_failed"] == 1
         assert out["pathways_redispatched"] == 0
+        assert out["pathways_partial"] == 0
         assert _pathway_meta(store, pw)["status"] == "failed"
+
+    def test_partial_fanout_closes_dead_seeds_and_lets_aggregate_mint(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        """gr489164 option B end-to-end: 2 ok seeds + 1 deterministically-
+        failed seed (invalid-geometry, no infra tag) → the reconcile closes
+        only the dead seed's todo won't-do, records ``meta.seeds_failed``
+        on the still-``computing`` pathway, and the ordinary dispatch pass
+        then mints ``T_agg``'s aggregate job over the ok seeds."""
+        from precis.workers import job_types as jt
+        from precis.workers.dispatch import run_dispatch_pass
+        from precis_pathway import aggregate_job
+
+        # Same registry injection test_quest_compute uses — the dev
+        # container's entry-point snapshot predates this job_type.
+        monkeypatch.setitem(jt._REGISTRY, "autocatpath_aggregate", aggregate_job.SPEC)
+        q = _mk_quest(store, "A striving")
+        sid = self._candidate(store, q)
+        pw = self._pathway(store, sid)
+        agg = self._agg_todo(store, sid, pw)
+        # One ok seed already flipped done by auto_check, one still waiting
+        # on it — both count toward "at least one seed succeeded".
+        self._seed(
+            store,
+            agg,
+            pathway_id=pw,
+            job_statuses=["succeeded"],
+            todo_status="done",
+        )
+        ok_b, _ok_b_jobs = self._seed(
+            store, agg, pathway_id=pw, job_statuses=["succeeded"]
+        )
+        dead_todo, dead_jobs = self._seed(
+            store, agg, pathway_id=pw, job_statuses=["failed"]
+        )
+        reason = (
+            "autocatpath_seed: run failed: ValueError: placement puts H inside the slab"
+        )
+        store.stamp_ref_meta(
+            dead_jobs[0],
+            {"failure_class": "invalid-geometry", "error": reason},
+        )
+        # The bubble tag a non-infra child failure leaves on its seed todo.
+        store.add_tag(
+            dead_todo,
+            Tag.open(f"child-failed:{dead_jobs[0]}"),
+            set_by="system",
+        )
+
+        failed, redispatched, partial = loop_mod._reconcile_orphaned_pathways(
+            store, q, hub=None
+        )
+
+        assert (failed, redispatched, partial) == (0, 0, 1)
+        assert _current_status(store, dead_todo) == "won't-do"
+        # The ok seeds are untouched — auto_check owns ok_b's flip, not us.
+        assert _current_status(store, ok_b) is None
+        # …and the close took the stale bubble tag with it (gr202263).
+        assert not any(
+            str(t).startswith("child-failed:") for t in store.tags_for(dead_todo)
+        )
+        meta = _pathway_meta(store, pw)
+        assert meta["status"] == "computing"
+        assert meta["seeds_failed"] == [
+            {"id": dead_todo, "job_id": dead_jobs[0], "reason": reason}
+        ]
+
+        # Every seed todo is now resolved — except ok_b, whose flip
+        # auto_check owns; drive that pass synchronously (in prod it runs
+        # a tick behind), then the ordinary dispatch pass mints T_agg's
+        # aggregate job over the surviving seeds.
+        from precis.workers.auto_check import run_auto_check_pass
+
+        run_auto_check_pass(store)
+        assert _current_status(store, ok_b) == "done"
+        result = run_dispatch_pass(store)
+        assert result.ok == 1
+        with store.pool.connection() as conn:
+            jobs = conn.execute(
+                "SELECT meta->>'job_type' FROM refs WHERE parent_id = %s "
+                "AND kind = 'job' AND retired_at IS NULL",
+                (agg,),
+            ).fetchall()
+        assert [j[0] for j in jobs] == ["autocatpath_aggregate"]
+
+    def test_all_seeds_dead_still_stamps_pathway_failed(self, store: Store) -> None:
+        """Option B needs ≥1 ok seed — every seed genuinely failed stamps
+        the pathway failed exactly as before: no won't-do, no seeds_failed."""
+        q = _mk_quest(store, "A striving")
+        sid = self._candidate(store, q)
+        pw = self._pathway(store, sid)
+        agg = self._agg_todo(store, sid, pw)
+        dead_a, _ = self._seed(store, agg, pathway_id=pw, job_statuses=["failed"])
+        self._seed(store, agg, pathway_id=pw, job_statuses=["failed"])
+
+        failed, redispatched, partial = loop_mod._reconcile_orphaned_pathways(
+            store, q, hub=None
+        )
+
+        assert (failed, redispatched, partial) == (1, 0, 0)
+        meta = _pathway_meta(store, pw)
+        assert meta["status"] == "failed"
+        assert "seeds_failed" not in meta
+        assert _current_status(store, dead_a) is None
+
+    def test_infra_failure_never_triggers_partial(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        """An infra-tagged dead seed keeps today's retry behaviour: the tree
+        reads ``wrongful_kill`` (bounded re-dispatch), never ``partial`` —
+        its seed todo stays open for the re-mint, nothing is recorded."""
+        q = _mk_quest(store, "A striving")
+        store.update_ref(q, meta_patch={"reaction_config": {"substrate": "NO"}})
+        sid = self._candidate(store, q)
+        pw = self._pathway(store, sid)
+        agg = self._agg_todo(store, sid, pw)
+        self._seed(
+            store,
+            agg,
+            pathway_id=pw,
+            job_statuses=["succeeded"],
+            todo_status="done",
+        )
+        infra_todo, _infra_jobs = self._seed(
+            store,
+            agg,
+            pathway_id=pw,
+            job_statuses=["failed"],
+            job_open_tags=["infra:child-killed"],
+        )
+
+        calls: list[int] = []
+
+        def _fake_dispatch(*_a: Any, **_k: Any) -> str:
+            calls.append(1)
+            return "ok"
+
+        monkeypatch.setattr(loop_mod, "dispatch_autocatpath", _fake_dispatch)
+
+        failed, redispatched, partial = loop_mod._reconcile_orphaned_pathways(
+            store, q, hub=None
+        )
+
+        assert (failed, redispatched, partial) == (0, 1, 0)
+        assert calls == [1]
+        assert _current_status(store, infra_todo) is None
+        assert "seeds_failed" not in _pathway_meta(store, pw)
+
+    def test_partial_close_skips_a_seed_that_gained_a_live_job(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        """Race guard: a fresh non-terminal job landing on the dead seed
+        between the classify snapshot and the won't-do write (a re-mint)
+        must not be buried — the in-tx recheck skips it, nothing is
+        recorded, and the partial count only fires on a real close."""
+        q = _mk_quest(store, "A striving")
+        sid = self._candidate(store, q)
+        pw = self._pathway(store, sid)
+        agg = self._agg_todo(store, sid, pw)
+        self._seed(
+            store,
+            agg,
+            pathway_id=pw,
+            job_statuses=["succeeded"],
+            todo_status="done",
+        )
+        dead_todo, _dead_jobs = self._seed(
+            store, agg, pathway_id=pw, job_statuses=["failed"]
+        )
+
+        real = loop_mod._pathway_job_tree_state
+
+        def _racy(_store: Store, pathway_id: int) -> Any:
+            tree = real(_store, pathway_id)
+            # Simulate a re-mint landing AFTER the classify snapshot:
+            # a live job under the seed the snapshot wants to close.
+            job = store.insert_ref(
+                kind="job",
+                slug=None,
+                title="autocatpath_seed",
+                meta={"job_type": "autocatpath_seed"},
+                parent_id=dead_todo,
+            )
+            store.add_tag(job.id, Tag.closed("STATUS", "queued"), set_by="system")
+            return tree
+
+        monkeypatch.setattr(loop_mod, "_pathway_job_tree_state", _racy)
+
+        failed, redispatched, partial = loop_mod._reconcile_orphaned_pathways(
+            store, q, hub=None
+        )
+
+        assert (failed, redispatched, partial) == (0, 0, 0)
+        assert _current_status(store, dead_todo) is None
+        assert "seeds_failed" not in _pathway_meta(store, pw)
+
+    def test_second_reconcile_pass_after_partial_is_a_no_op(self, store: Store) -> None:
+        """Idempotent: once the dead seed is won't-do, a second reconcile
+        changes nothing — no re-marking, ``seeds_failed`` unchanged, and no
+        job minted under T_agg (the aggregate is the dispatch worker's)."""
+        q = _mk_quest(store, "A striving")
+        sid = self._candidate(store, q)
+        pw = self._pathway(store, sid)
+        agg = self._agg_todo(store, sid, pw)
+        self._seed(
+            store,
+            agg,
+            pathway_id=pw,
+            job_statuses=["succeeded"],
+            todo_status="done",
+        )
+        dead_todo, _dead_jobs = self._seed(
+            store, agg, pathway_id=pw, job_statuses=["failed"]
+        )
+
+        first = loop_mod._reconcile_orphaned_pathways(store, q, hub=None)
+        assert first == (0, 0, 1)
+        before = _pathway_meta(store, pw)["seeds_failed"]
+
+        second = loop_mod._reconcile_orphaned_pathways(store, q, hub=None)
+        assert second == (0, 0, 0)
+        assert _pathway_meta(store, pw)["seeds_failed"] == before
+        assert _current_status(store, dead_todo) == "won't-do"
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT count(*) FROM refs WHERE parent_id = %s "
+                "AND kind = 'job' AND retired_at IS NULL",
+                (agg,),
+            ).fetchone()
+        assert row is not None and row[0] == 0
 
 
 class TestReconcileStaleComputingPathways(_PathwayTreeMixin):
