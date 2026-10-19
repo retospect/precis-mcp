@@ -171,6 +171,19 @@ class RegionGraph:
                 best = (d, i)
         return None if best is None else best[1]
 
+    def shorted_by(self, idx: int) -> tuple[int, ...]:
+        """Indices of other-net obstacles whose copper overlaps obstacle
+        ``idx``. A terminal covered like this has no free-space access
+        face of its own (its vertices lie inside the union the CDT
+        carves out), so no portal sequence can reach it: the board has a
+        copper short there, not a routing cut."""
+        mine = self.obstacles[idx]
+        return tuple(
+            i
+            for i, ob in enumerate(self.obstacles)
+            if i != idx and ob.net != mine.net and ob.poly.intersects(mine.poly)
+        )
+
     def portal_path(
         self, src: int, dst: int, *, min_capacity: int = 1
     ) -> list[int] | None:
@@ -332,12 +345,26 @@ def connection_reach(
     return out
 
 
+def _buried(conn: Connection, graphs: dict[str, RegionGraph]) -> bool:
+    """True when a terminal's copper is overlapped by another net's copper
+    on a shared layer (:meth:`RegionGraph.shorted_by`): an unreachable
+    connection of this kind is a board short, not a portal cut."""
+    for lay in connection_layers(conn, graphs):
+        g = graphs[lay]
+        for t in (conn.a, conn.b):
+            idx = g.obstacle_at(conn.net, t.x, t.y)
+            if idx is not None and g.shorted_by(idx):
+                return True
+    return False
+
+
 def summarize(
     graphs: dict[str, RegionGraph], connections: Iterable[Connection]
 ) -> dict[str, Any]:
     """The probe's measurement for one board: per layer the triangle and
     portal counts and the capacity histogram; over ``connections``, how
-    many have a portal sequence on at least one shared layer."""
+    many have a portal sequence on at least one shared layer, and which
+    unreachable nets have a terminal buried in foreign copper."""
     conns = list(connections)
     reach = [connection_reach(c, graphs) for c in conns]
     return {
@@ -357,6 +384,13 @@ def summarize(
                 c.net
                 for c, r in zip(conns, reach, strict=True)
                 if not any(v is not None for v in r.values())
+            }
+        ),
+        "buried": sorted(
+            {
+                c.net
+                for c, r in zip(conns, reach, strict=True)
+                if not any(v is not None for v in r.values()) and _buried(c, graphs)
             }
         ),
     }

@@ -713,8 +713,9 @@ here is per net: the probe does not check that all nets fit together
 within portal capacity. Slice 6a's negotiated congestion is that test.
 
 Left in this slice: portal columns in slice 0's bench once the bench
-lands. N31's miss is unexplained
-(a real cut, or own-net copper blocking it).
+lands. N31's miss is explained: the fixture's plaza source at (0, 9)
+overlaps two unconnected QFP pads, so the terminal is buried in foreign
+copper (`RegionGraph.shorted_by`), not cut off by portal capacity.
 
 Owning files: `src/precis/pcb/topo.py`, `tests/test_pcb_topo.py`.
 

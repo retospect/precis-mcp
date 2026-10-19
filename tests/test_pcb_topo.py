@@ -243,6 +243,7 @@ def _compare(
     cdt_s = time.monotonic() - t0
     rows: collections.Counter[str] = collections.Counter()
     misses: list[str] = []
+    shorted: list[str] = []
     for net, net_id, far, near, layer in pairs:
         name = layer_names[layer]
         conn = topo.Connection(
@@ -254,6 +255,13 @@ def _compare(
         walled = _tile_walled(tg, li, net_id, far) or _tile_walled(tg, li, net_id, near)
         if not cdt:
             misses.append(net)
+            g = graphs[name]
+            ends = [
+                g.obstacle_at(net, *far),
+                g.obstacle_at(net, *near),
+            ]
+            if any(e is not None and g.shorted_by(e) for e in ends):
+                shorted.append(net)
         rows["connections"] += 1
         rows["cdt"] += cdt
         rows["tile"] += tile
@@ -266,6 +274,7 @@ def _compare(
         "counts": dict(rows),
         "layers": summary["layers"],
         "cdt_misses": sorted(misses),
+        "cdt_miss_shorted": sorted(shorted),
         "cdt_s": round(cdt_s, 2),
     }
 
@@ -335,6 +344,12 @@ def test_qfp_plaza_cdt_against_flow_tiles(monkeypatch):
     counts = result["counts"]
     assert counts["connections"] == 55
     assert counts == QFP_PLAZA_COUNTS
+    # gr496698: the one miss is not a routing cut. The plaza source at
+    # (0, 9) is a drilled pad sitting on two unconnected QFP pads of the
+    # top row (the fixture's plaza lattice lands on the pin row), so the
+    # terminal is buried in foreign copper.
+    assert result["cdt_misses"] == ["N31"]
+    assert result["cdt_miss_shorted"] == ["N31"]
 
 
 @pytest.mark.slow
