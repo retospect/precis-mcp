@@ -198,7 +198,7 @@ many edges traversable.
 ```python
 get(
     kind="python",
-    id="main::precis_pathway.runner.run_kinetics_subprocess",
+    id="precis::precis_pathway.runner.run_kinetics_subprocess",
     extent="fisheye+1hop",
 )
 ```

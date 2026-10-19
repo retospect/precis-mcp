@@ -4,7 +4,8 @@ stock, plus a thumbnail.
 
 The thumbnail URL cannot be derived from the C-number, so the server
 resolves it ONCE from the part's LCSC product page (``og:image``) through
-:func:`precis.utils.safe_fetch.safe_get` — the SSRF-guarded fetch — then
+:func:`precis.utils.http.polite_safe_get` — the SSRF-guarded fetch under
+the politeness core's ``lcsc`` policy — then
 caches ``{url, mime, b64}`` on the part ref's ``meta`` (a lazily-minted
 ``refs(kind='part')`` row via :meth:`Store.ensure_part_ref`). The page only
 ever serves the cached copy through ``/pcb/{slug}/part/{refdes}/thumb`` —
@@ -49,23 +50,30 @@ def cards(view: Any) -> dict[str, dict[str, Any]]:
 
 def _fetch_thumbnail(lcsc: str) -> tuple[bytes, str] | None:
     """Resolve the product page's ``og:image`` and fetch it — both hops
-    through ``safe_get``. ``None`` on any miss; never raises outward."""
+    through ``polite_safe_get`` (``safe_get`` under the politeness core's
+    ``lcsc`` policy). ``None`` on any miss; never raises outward."""
     import httpx  # noqa: F401  (type surface)
 
     # Local imports: lets tests monkeypatch safe_fetch.safe_get (the repo's
     # standard seam, see precis.pcb.easyeda) without a real pinned client.
-    from precis.utils.http import http_client
-    from precis.utils.safe_fetch import safe_get
+    from precis.utils.http import POLICIES, http_client, polite_safe_get
 
     try:
         with http_client(timeout=15.0) as client:
-            page = safe_get(client, f"https://www.lcsc.com/product-detail/{lcsc}.html")
+            page = polite_safe_get(
+                client,
+                f"https://www.lcsc.com/product-detail/{lcsc}.html",
+                service="lcsc",
+                policy=POLICIES["lcsc"],
+            )
             if page.status_code != 200:
                 return None
             m = _OG_IMAGE.search(page.text)
             if not m:
                 return None
-            img = safe_get(client, m.group(1))
+            img = polite_safe_get(
+                client, m.group(1), service="lcsc", policy=POLICIES["lcsc"]
+            )
             if img.status_code != 200 or len(img.content) > _MAX_IMAGE_BYTES:
                 return None
             mime = img.headers.get("content-type", "").split(";")[0].strip()
