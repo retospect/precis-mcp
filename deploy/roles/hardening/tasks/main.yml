@@ -308,7 +308,7 @@
     name: earlyoom
     state: present
     update_cache: true
-    cache_valid_time: 3600
+    cache_valid_time: 43200
     lock_timeout: 120
   become: true
   register: _apt_earlyoom

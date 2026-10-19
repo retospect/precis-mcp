@@ -2,7 +2,9 @@
 
 A single Canonical round-robin IP timing out fails ``apt update`` outright;
 retries have always succeeded, so each apt task carries until/retries/delay
-and a dpkg ``lock_timeout``.
+and a dpkg ``lock_timeout``. Cache-refreshing tasks also pin
+``cache_valid_time: 43200`` so a cache younger than 12h skips the refresh —
+and with it the mirror round-trip that times out.
 """
 
 from __future__ import annotations
@@ -21,6 +23,9 @@ VIA_APT = APT | {
     "ansible.builtin.apt_repository",
     "apt_repository",
 }
+# 12h: short enough that a day's deploys see fresh metadata, long enough that
+# a burst of host plays reuses one refresh (gr494680).
+CACHE_VALID_S = 43200
 
 
 def _tasks(node):
@@ -42,7 +47,7 @@ def _tasks(node):
                 yield from _tasks(node[key])
 
 
-def _apt_tasks():
+def _apt_tasks(modules=VIA_APT):
     out = []
     for path in sorted(DEPLOY.rglob("*.yml")):
         try:
@@ -50,7 +55,7 @@ def _apt_tasks():
         except yaml.YAMLError:
             continue  # Jinja-templated files are covered by other tests
         for task in _tasks(doc):
-            if VIA_APT & task.keys():
+            if modules & task.keys():
                 out.append(
                     pytest.param(
                         task, id=f"{path.relative_to(DEPLOY)}::{task.get('name')}"
@@ -75,3 +80,14 @@ def test_apt_task_retries(task):
     module = next(iter(APT & task.keys()), None)
     if module:
         assert task[module].get("lock_timeout", 0) >= 60, "apt task needs lock_timeout"
+
+
+@pytest.mark.parametrize("task", _apt_tasks(APT))
+def test_apt_task_cache_valid_time(task):
+    module = next(iter(APT & task.keys()))
+    args = task[module]
+    if not (args.get("update_cache") or "cache_valid_time" in args):
+        return  # installs that never refresh the cache are not sites
+    assert args.get("cache_valid_time") == CACHE_VALID_S, (
+        "apt cache refresh needs cache_valid_time: 43200 (12h)"
+    )
