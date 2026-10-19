@@ -288,6 +288,7 @@ Corpus-pipeline services documenting against this skill:
 | `clusterize` | SOM cluster maps for `/clusters` (daily) |
 | `llm_summarize` | model-authored 2-part chunk summaries |
 | `paper_glossary` | per-paper glossary → `card_glossary` chunk |
+| `card_describe` | LLM narrative `card_description` per non-text ref (structure first, gr497688) |
 | `context_sentence` | one method/evidence sentence per grounding paper |
 | `classify_topics` | paper→topic-dossier cascade (`topic:` tags) |
 | `watch_poll` | S2 citing-paper poll → stubs |

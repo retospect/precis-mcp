@@ -113,6 +113,7 @@ _SKIP_KINDS: frozenset[str] = frozenset(
     {
         "card_authors",
         "card_combined",
+        "card_description",
         "card_title",
         "table",
         "equation",

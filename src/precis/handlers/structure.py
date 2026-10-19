@@ -3485,7 +3485,7 @@ class StructureHandler(Handler):
             kind="structure",
             limit=page_size,
             max_distance=SEMANTIC_DISTANCE_FLOOR,
-            card_kinds=("card_combined",),
+            card_kinds=("card_combined", "card_description"),
         )
 
     def search_hits(  # type: ignore[override]

@@ -544,6 +544,19 @@ def _unpack_search_row(row: tuple) -> tuple[ChunkRow, Ref, float]:
     )
 
 
+#: ``chunks (ref_id, ord)`` is UNIQUE, so every one-per-ref card kind
+#: owns a fixed negative ord: ``card_combined`` −1 (the ingest-time
+#: summary card), ``card_glossary`` −1000 (``workers/paper_glossary.py``,
+#: written there not through :meth:`ChunkStore._replace_card_chunk`),
+#: ``card_description`` −2 (``workers/card_describe.py``). A new card
+#: kind takes the next free negative slot here.
+_CARD_KIND_ORD: dict[str, int] = {
+    "card_combined": -1,
+    "card_glossary": -1000,
+    "card_description": -2,
+}
+
+
 class ChunkStore:
     """Composed sub-store for block (chunk) ops — reached as
     ``store.chunks``. ChunkRow insert / get / list + lexical / semantic /
@@ -562,25 +575,49 @@ class ChunkStore:
 
     # -- helpers ------------------------------------------------------------
 
-    def _replace_card_combined(
-        self, conn: Connection, *, ref_id: int, card_text: str
+    def _replace_card_chunk(
+        self,
+        conn: Connection,
+        *,
+        ref_id: int,
+        chunk_kind: str,
+        text: str,
+        meta: dict[str, Any] | None = None,
     ) -> None:
-        """Replace a ref's single ``card_combined`` search chunk (delete +
-        insert, so the embed/summary cascade re-runs). The shared write for
-        the keystone kinds' summary cards (cad / structure / pcb)."""
+        """Replace a ref's single ``chunk_kind`` card chunk (delete +
+        insert, so the embed/summary cascade re-runs). The shared write
+        for every one-per-ref card: the ingest-time ``card_combined``
+        (cad / structure / pcb) and the derived ``card_description``
+        (``workers/card_describe.py``). ``chunks (ref_id, ord)`` is
+        UNIQUE, so each card kind owns a fixed negative ord — the kind
+        must be a key of :data:`_CARD_KIND_ORD`."""
+        ord_ = _CARD_KIND_ORD.get(chunk_kind)
+        if ord_ is None:
+            raise ValueError(
+                f"_replace_card_chunk wants a known card_* kind, got {chunk_kind!r}"
+            )
         # Explicit for auditability — every caller already runs this inside
         # ``self.tx()``, so this nests as a savepoint rather than opening a
         # fresh transaction; either way the DELETE+INSERT pair is atomic.
         with conn.transaction():
             conn.execute(
-                "DELETE FROM chunks WHERE ref_id = %s AND chunk_kind = 'card_combined'",
-                (ref_id,),
+                "DELETE FROM chunks WHERE ref_id = %s AND chunk_kind = %s",
+                (ref_id, chunk_kind),
             )
             conn.execute(
                 "INSERT INTO chunks (ref_id, set_by, ord, chunk_kind, text, meta) "
-                "VALUES (%s, 'agent', -1, 'card_combined', %s, %s)",
-                (ref_id, card_text, Jsonb({})),
+                "VALUES (%s, 'agent', %s, %s, %s, %s)",
+                (ref_id, ord_, chunk_kind, text, Jsonb(meta or {})),
             )
+
+    def _replace_card_combined(
+        self, conn: Connection, *, ref_id: int, card_text: str
+    ) -> None:
+        """Replace a ref's single ``card_combined`` search chunk — the
+        ingest-time summary card, via :meth:`_replace_card_chunk`."""
+        self._replace_card_chunk(
+            conn, ref_id=ref_id, chunk_kind="card_combined", text=card_text
+        )
 
     def _default_embedder_name(self, conn: Connection) -> str:
         """Resolve the registered default embedder name (FK target).

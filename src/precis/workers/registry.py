@@ -915,6 +915,25 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-overview",
     ),
     ServiceSpec(
+        # gr497688 S1: LLM narrative `card_description` chunks for
+        # structure refs (S2/S3 extend to cad/pcb/figure). Default-ON is
+        # cheap: the claim is watermarked to cards minted after the
+        # `card_description` chunk_kinds row landed, so it covers only
+        # new/edited refs — the existing corpus is S4's Devin-agent
+        # backfill, never swept at Sonnet cost. BIG tier per Reto's
+        # ruling. See workers/card_describe.py.
+        name="card_describe",
+        label="Card descriptions (LLM)",
+        category="discovery",
+        kind=ServiceKind.PASS,
+        default_profiles=_SYS,
+        ref_pass=True,
+        uses_model=True,
+        cost_sources=("card_describe",),
+        one_line="Generated narrative card_description per non-text ref (gr497688).",
+        doc_skill="precis-overview",
+    ),
+    ServiceSpec(
         # gripe 196447 Layer 2: corpus remediation for bibliography chunks
         # mis-typed `chunk_kind='paragraph'` (marker/PDF-OCR ingest) — retypes
         # the content-detected ones to `references` in place and deletes their

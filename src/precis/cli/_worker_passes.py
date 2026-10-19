@@ -746,6 +746,43 @@ def build_ref_passes(
 
         ref_passes.append(_classify_pass)
 
+    # card_describe — one LLM narrative `card_description` chunk per
+    # non-text ref (gr497688; S1 covers `structure`). BIG tier
+    # (sonnet-class) per Reto's ruling — the chain (`llm.chain.big`)
+    # resolves the model, no id pinned. Default-ON is cheap: the claim
+    # is watermarked to cards minted after the `card_description`
+    # chunk_kinds row landed, so it covers only new/edited refs — the
+    # existing corpus is S4's Devin-agent backfill, never swept here.
+    # Lite route-log rows (metadata, no replay blob).
+    if _register("card_describe"):
+        from precis.utils.llm.router import DispatchClient as _CdDispatchClient
+        from precis.utils.llm.router import Tier as _CdTier
+        from precis.workers.runner import BatchResult as _CdBatchResult
+
+        _describe_client = _CdDispatchClient(
+            tier=_CdTier.BIG,
+            source="card_describe",
+            log_call=True,
+            log_blobs=False,
+        )
+
+        def _card_describe_pass(batch_size: int) -> _CdBatchResult:
+            from precis.workers.card_describe import run_card_describe_pass
+
+            r = run_card_describe_pass(
+                store,
+                client=_describe_client,
+                batch_size=min(batch_size, 16),
+            )
+            return _CdBatchResult(
+                handler="card_describe",
+                claimed=r["claimed"],
+                ok=r["ok"],
+                failed=r["failed"],
+            )
+
+        ref_passes.append(_card_describe_pass)
+
     # llm_reconcile — keep the llm-catalog model-card facts true against the
     # live OpenRouter feed + flag proxy drift (llm-catalog slice 1, step 1 of
     # the litellm teardown). Default-OFF (`service prio` / --only

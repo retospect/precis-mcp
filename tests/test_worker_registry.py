@@ -43,6 +43,7 @@ _EXPECTED_SYSTEM = frozenset(
     {
         "summarize",
         "chunk_keywords",
+        "card_describe",
         "bib_parse",
         "bib_mark",
         "chase",
