@@ -61,17 +61,17 @@ def test_unsupported_verb_for_kind(runtime: PrecisRuntime) -> None:
     assert "calc does not support put" in out
 
 
-def test_gripe_edit_unsupported_names_the_put_idiom(
+def test_gripe_edit_body_refused_names_the_put_idiom(
     runtime_with_store: PrecisRuntime,
 ) -> None:
-    """gr338669: an agent generalizing from todo's supports_edit reaches
-    for edit(kind='gripe', ...) and gets a bare "does not support" — the
-    next: hint must name the actual recovery (put-with-id append-
-    comment), not just point at a skill."""
-    out = runtime_with_store.dispatch("edit", {"kind": "gripe", "id": 1, "text": "x"})
-    assert "[error:Unsupported]" in out
-    assert "gripe does not support edit" in out
-    assert "put(kind='gripe', id=N, text='...')" in out
+    """gr338669: an agent generalizing from todo's edit reaches for
+    edit(kind='gripe', text=...) — gripe's edit is title-only (Reto
+    ruling 2026-10-19), so text=/body= is refused and the next: hint
+    must name the actual recovery (put-with-id append-comment)."""
+    for kw in ("text", "body"):
+        out = runtime_with_store.dispatch("edit", {"kind": "gripe", "id": 1, kw: "x"})
+        assert "[error:BadInput]" in out
+        assert "put(kind='gripe', id=N, text='...')" in out
 
 
 def test_calc_bad_input_renders(runtime: PrecisRuntime) -> None:

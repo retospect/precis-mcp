@@ -38,6 +38,7 @@ Surface (see ``precis-gripe-help``):
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 
@@ -64,6 +65,8 @@ from precis.store.types import Ref
 from precis.utils.secret_scan import mask_secrets
 
 # Chunk-kind slugs we own. Match the seed in 0005.
+log = logging.getLogger(__name__)
+
 _BODY_KIND = "gripe_body"
 _RESOLVED_PREFIX = "resolved:"
 _TERMINAL_STATUS_TAGS = frozenset({"STATUS:done", "STATUS:wontfix"})
@@ -149,6 +152,7 @@ class GripeHandler(NumericRefHandler):
         supports_delete=True,
         supports_tag=True,
         supports_link=True,
+        supports_edit=True,
         is_numeric=True,
         id_required=False,
         note_like=True,
@@ -624,6 +628,7 @@ class GripeHandler(NumericRefHandler):
             ).fetchone()
             assert row is not None
             ref_id = int(row[0])
+            short = self._shorten_title(conn, ref_id, text)
             if prio_from_tag is not None:
                 self.store.set_prio(ref_id, prio_from_tag, conn=conn)
             for tag in parsed_extra_tags:
@@ -646,8 +651,81 @@ class GripeHandler(NumericRefHandler):
             self._render_create_ack(
                 ref_id,
                 has_thread=any(t.lower().startswith("thread:") for t in tags or ()),
+                short_title=short,
             ),
             readings,
+        )
+
+    @staticmethod
+    def _shorten_title(conn: Any, ref_id: int, text: str) -> str | None:
+        """Store the derived short title (:mod:`._gripe_title`) on a new
+        gripe whose first line is long; the body keeps the full text.
+
+        ``file_gripe_readonly`` stores the full text as the title. The
+        rewrite runs in a savepoint: an ``agent_ro`` connection cannot
+        UPDATE refs, and its gripe must still file, so a refused rewrite
+        rolls back alone and the full-text title stays. Returns the stored
+        short title, or ``None``."""
+        import psycopg
+
+        from precis.handlers._gripe_title import short_title
+
+        title = short_title(text)
+        if title is None:
+            return None
+        try:
+            with conn.transaction():
+                conn.execute(
+                    "UPDATE refs SET title = %s WHERE ref_id = %s", (title, ref_id)
+                )
+        except psycopg.Error:
+            log.info("gripe: title not shortened for id=%d (write refused)", ref_id)
+            return None
+        return title
+
+    def edit(
+        self,
+        *,
+        id: str | int | None = None,
+        title: str | None = None,
+        text: str | None = None,
+        body: str | None = None,
+        dry_run: bool | str | None = None,
+        **kw: Any,
+    ) -> Response:
+        """Rewrite a gripe's title (``refs.title``) only. The body and the
+        comment timeline are append-only: add context with
+        ``put(id=N, text=...)``. ``text=``/``body=`` are declared only so
+        they are refused here, with that recovery named."""
+        extra = sorted(
+            [k for k, v in kw.items() if v is not None and k != "mode"]
+            + [k for k, v in (("text", text), ("body", body)) if v is not None]
+        )
+        if id is None or title is None or extra:
+            raise BadInput(
+                f"edit(kind={self.kind!r}) rewrites the title only"
+                + (f"; {', '.join(extra)} not accepted" if extra else ""),
+                next=(
+                    f"edit(kind={self.kind!r}, id={id or '<id>'}, "
+                    "title='Area: what is wrong') — add context with "
+                    f"put(kind={self.kind!r}, id=N, text='...')"
+                ),
+            )
+        new = " ".join(title.split())
+        if not new:
+            raise BadInput(
+                "title= is empty",
+                next=f"edit(kind={self.kind!r}, id={id}, title='Area: what is wrong')",
+            )
+        ref = self._resolve_live_ref(self._coerce_id(id))
+        if dry_run:
+            return Response(
+                body=f"dry run: {self._sense()} id={ref.id} title "
+                f"{ref.title!r} → {new!r} (nothing written)"
+            )
+        self.store.update_ref(ref.id, title=new)
+        return Response(
+            body=f"{self._sense()} id={ref.id} title {ref.title!r} → {new!r}"
         )
 
     def _append_comment(self, *, id: str | int, text: str) -> Response:
@@ -782,7 +860,13 @@ class GripeHandler(NumericRefHandler):
             body, _BODY_HEAD_CHARS, f"get(kind='gripe', id={ref_id}, view='comments')"
         )
 
-    def _render_create_ack(self, ref_id: int, *, has_thread: bool = False) -> Response:
+    def _render_create_ack(
+        self,
+        ref_id: int,
+        *,
+        has_thread: bool = False,
+        short_title: str | None = None,
+    ) -> Response:
         # Unified shape (broad-pass finding #9): kwarg spelling +
         # uppercase STATUS axis + TOON Next: trailer. Previous inline-
         # prose breadcrumb was harder to paste and bunched two
@@ -801,6 +885,12 @@ class GripeHandler(NumericRefHandler):
                 )
             ]
         )
+        if short_title is not None:
+            body += (
+                f'\ntitle shortened to "{short_title}" (the body keeps the full '
+                f"text); edit(kind={self.kind!r}, id={ref_id}, "
+                "title='<new title>') to change it."
+            )
         body += render_next_section(
             [
                 *thread_hint,

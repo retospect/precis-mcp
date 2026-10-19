@@ -153,9 +153,10 @@ def test_todo_memory_edit_replace_only_and_gripe_put_create_comment(
     assert todo.edit_modes == ("replace", "find-replace", "insert")
     assert memory.edit_modes == ("replace", "find-replace", "insert", "append")
     assert gripe.modes == ("create", "comment")
-    # gripe doesn't support edit at all — edit_modes stays the None
-    # ("no concept") default, not the reject-all `()` (gr343755).
-    assert gripe.supports_edit is False
+    # gripe's edit verb is title-only (Reto ruling 2026-10-19) — it takes
+    # no mode=, so edit_modes stays the None ("no concept") default, not
+    # the reject-all `()` (gr343755).
+    assert gripe.supports_edit is True
     assert gripe.edit_modes is None
 
 

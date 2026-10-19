@@ -17,7 +17,9 @@ digest (``N open · M older than 3d · oldest grX (D days)``) that the
 session-start hook shows, and nothing else. ``--note TEXT --ids N,M``
 is not deprecated either: it comments TEXT on each listed gripe that
 does not already carry it (scripts/gripe-note's one prod call after a
-landing or deploy) and prints one summary line.
+landing or deploy) and prints one summary line. ``--shorten-titles``
+is the one-time short-title gardening pass (:func:`shorten_titles`); it
+only lists unless ``--apply`` is given.
 """
 
 from __future__ import annotations
@@ -80,7 +82,20 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
     dp.add_argument(
         "--ids",
         default="",
-        help="Comma-separated gripe ids for --note.",
+        help="Comma-separated gripe ids for --note (or to scope --shorten-titles).",
+    )
+    dp.add_argument(
+        "--shorten-titles",
+        action="store_true",
+        help=(
+            "List open gripes whose title is longer than the short-title cap "
+            "with the derived title; writes nothing without --apply."
+        ),
+    )
+    dp.add_argument(
+        "--apply",
+        action="store_true",
+        help="With --shorten-titles: store each title, old title in a comment.",
     )
     dp.add_argument(
         "--limit",
@@ -104,6 +119,17 @@ def run(args: argparse.Namespace) -> None:
         store = Store.connect(resolve_dsn(args.database_url, cfg=load_config()))
         try:
             print(note_gripes(store, args.note, ids))
+        finally:
+            store.close()
+        return
+    if args.shorten_titles:
+        store = Store.connect(resolve_dsn(args.database_url, cfg=load_config()))
+        try:
+            ids = [int(i) for i in args.ids.replace(" ", "").split(",") if i]
+            for line in shorten_titles(
+                store, apply=args.apply, limit=args.limit, ids=ids or None
+            ):
+                print(line)
         finally:
             store.close()
         return
@@ -221,6 +247,65 @@ def note_gripes(store: Any, text: str, ids: list[int]) -> str:
     return " · ".join(
         f"{label} {' '.join(items)}" for label, items in groups.items() if items
     )
+
+
+def shorten_titles(
+    store: Any,
+    *,
+    apply: bool,
+    limit: int | None = None,
+    ids: list[int] | None = None,
+) -> list[str]:
+    """The one-time title gardening pass (gripe system batch F slice 6).
+
+    Lists every open gripe whose title has a shorter derived form
+    (:func:`precis.handlers._gripe_title.short_title`), oldest first, as
+    ``grN: "old" → "new"``. With ``apply`` it first comments
+    ``title shortened from: <old>`` on the gripe, then stores the new
+    title, so the old one stays readable on the timeline. The last line
+    counts what it found and wrote. ``ids`` restricts the pass to those
+    gripes (``--ids``).
+    """
+    from precis.dispatch import Hub
+    from precis.errors import PrecisError
+    from precis.handlers._gripe_title import short_title
+    from precis.handlers.gripe import GripeHandler
+
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT r.ref_id, coalesce(r.title, '') FROM refs r "
+            "JOIN ref_tags rt ON rt.ref_id = r.ref_id "
+            "JOIN tags t ON t.tag_id = rt.tag_id "
+            "AND t.namespace = 'STATUS' AND t.value = 'open' "
+            "WHERE r.kind = 'gripe' AND r.retired_at IS NULL "
+            "AND (%s::bigint[] IS NULL OR r.ref_id = ANY(%s::bigint[])) "
+            "ORDER BY r.created_at, r.ref_id",
+            (ids, ids),
+        ).fetchall()
+    handler = GripeHandler(hub=Hub(store=store))
+    out: list[str] = []
+    found = written = 0
+    for ref_id, title in rows:
+        new = short_title(title)
+        if new is None or new == title:
+            continue
+        if limit is not None and found >= limit:
+            break
+        found += 1
+        old = " ".join(title.split())
+        out.append(f'gr{ref_id}: "{old[:100]}" → "{new}"')
+        if not apply:
+            continue
+        try:
+            handler.put(id=int(ref_id), text=f"title shortened from: {old}")
+            store.update_ref(int(ref_id), title=new)
+        except PrecisError as e:
+            out.append(f"  failed: {type(e).__name__}")
+            continue
+        written += 1
+    verb = f"shortened {written}" if apply else "dry run, nothing written"
+    out.append(f"{found} open gripe title(s) to shorten; {verb}")
+    return out
 
 
 # ---------------------------------------------------------------------------
