@@ -157,9 +157,15 @@ def route_config(tables: dict[str, Any], params: dict[str, Any]) -> dict[str, An
     optimize = OptimizeConfig(
         iters=int(params.get("iters") or 3000), seed=int(params.get("seed") or 0)
     )
+    optimize_defaults = _json_config(asdict(optimize))
+    # Opt-in switches that default OFF stay out of the summary while off, so a
+    # flag that changes nothing at its default cannot move a stored capture
+    # (field_polish, acea4bf12: flag-off behaviour is byte-identical).
+    if not optimize.field_polish:
+        optimize_defaults.pop("field_polish", None)
     return {
         "realize": _json_config(asdict(realize)),
-        "optimize_defaults": _json_config(asdict(optimize)),
+        "optimize_defaults": optimize_defaults,
     }
 
 
