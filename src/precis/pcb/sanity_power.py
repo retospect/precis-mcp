@@ -236,6 +236,7 @@ def check(built: Built, rres: Any, findings: Any) -> dict[str, dict[str, Any]]:
         if r.kind == "plane_drop_blocked"
     )
     layers = [str(e["name"]) for e in ir.stackup]
+    shortfalls = pcb_session.power_drop_shortfalls(ir, rres)
     width_short: list[str] = []
     narrowest: dict[str, float] = {}
     geoms = pcb_realize.pad_geometry(ir, built.footprints)
@@ -276,6 +277,14 @@ def check(built: Built, rres: Any, findings: Any) -> dict[str, dict[str, Any]]:
             "pieces": {f"{n}@{la}": v for (n, la), v in sorted(pieces.items())},
         },
         "plane_drop_blocked": {"ok": not blocked, "nets": blocked},
+        "drop_ampacity": {
+            "ok": not shortfalls,
+            "short": [
+                f"{n}@({p[0]:.1f},{p[1]:.1f}) {c:.1f}A<{need:.1f}A"
+                for n, p, c, need in shortfalls
+            ],
+            "drop_vias": len(rres.vias),
+        },
         "power_width": {
             "ok": not width_short,
             "short": width_short,

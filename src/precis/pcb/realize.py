@@ -4578,6 +4578,7 @@ def _plane_fanout(
         (float(v.x), float(v.y), float(v.dia_mm) / 2.0) for v in ir.fixed_vias
     ]
     pending: list[_FanoutPin] = []
+    extra_drops: list[_FanoutPin] = []
     region_areas = _region_areas(ir, rules_by_net)
     # A power class's current-sized width is a TRUNK width; the stub is one
     # pin's tie to its plane. Drawn at 2.77 mm (nano GND) it cannot leave a
@@ -4678,29 +4679,44 @@ def _plane_fanout(
             neck = max(floor_width, min(geom.w_mm, geom.h_mm))
             if neck < rules.track_width_mm:
                 stub_rules = replace(rules, track_width_mm=neck)
-            pending.append(
-                _FanoutPin(
-                    pid,
-                    net_id,
-                    seg_id,
-                    point,
-                    (ux, uy),
-                    pad_layer,
-                    lo,
-                    hi,
-                    pad_radius,
-                    stub_rules,
-                    pour_reaches_pad,
-                    _outline_clip(
-                        ir,
-                        _board_edge_min_mm(config) + (rules.via_dia_mm or 0.0) / 2.0,
-                    ),
-                    region_areas.get(net_id),
-                    replace(rules, track_width_mm=floor_width)
-                    if floor_width < stub_rules.track_width_mm
-                    else None,
-                )
+            primary = _FanoutPin(
+                pid,
+                net_id,
+                seg_id,
+                point,
+                (ux, uy),
+                pad_layer,
+                lo,
+                hi,
+                pad_radius,
+                stub_rules,
+                pour_reaches_pad,
+                _outline_clip(
+                    ir,
+                    _board_edge_min_mm(config) + (rules.via_dia_mm or 0.0) / 2.0,
+                ),
+                region_areas.get(net_id),
+                replace(rules, track_width_mm=floor_width)
+                if floor_width < stub_rules.track_width_mm
+                else None,
+                key=pid,
             )
+            pending.append(primary)
+            # One via carries only `via_capacity_a` of the pad's current
+            # (a pad on a different layer than its pour reaches the plane
+            # through its drop vias alone): add parallel drops until their
+            # summed ampacity covers it. Placed after every primary so an
+            # extra drop never takes a neighbour's primary site.
+            if not pour_reaches_pad and rules.via_dia_mm is not None:
+                need = via_count_for_current(
+                    net_current_a_or_none(float(ir.net_current_a[net_id])),
+                    rules.via_dia_mm,
+                )
+                for c in range(1, need):
+                    extra_drops.append(
+                        replace(primary, copy=c, key=pid + c * (int(ir.n_pins) + 1))
+                    )
+    pending.extend(extra_drops)
 
     def site_for(
         pin: _FanoutPin, others: list[tuple[float, float, float]]
@@ -4742,7 +4758,7 @@ def _plane_fanout(
 
     def reserve(pin: _FanoutPin, site: Point, rules: NetRules) -> None:
         assert rules.via_dia_mm is not None
-        token = token_base + pin.pid
+        token = token_base + pin.key
         cells = [
             grid.reserve_disk(
                 range(pin.lo, pin.hi + 1),
@@ -4766,17 +4782,17 @@ def _plane_fanout(
                     token,
                 )
             )
-        held[pin.pid] = (
+        held[pin.key] = (
             np.concatenate(cells),
             (site[0], site[1], rules.via_dia_mm / 2.0),
             rules,
         )
 
-    def release(pid: int) -> tuple[Point, NetRules] | None:
-        entry = held.pop(pid, None)
+    def release(key: int) -> tuple[Point, NetRules] | None:
+        entry = held.pop(key, None)
         if entry is None:
             return None
-        grid.release(entry[0], token_base + pid)
+        grid.release(entry[0], token_base + key)
         return (entry[1][0], entry[1][1]), entry[2]
 
     def reserved_sites() -> list[tuple[float, float, float]]:
@@ -4793,7 +4809,7 @@ def _plane_fanout(
     # sites afterwards (only cells still free), so the hold can cost a
     # pin its preferred site but never its drop.
     for i, pin in enumerate(pending):
-        release(pin.pid)
+        release(pin.key)
         stub_end = site_for(pin, reserved_sites())
         if stub_end is None and held:
             lifted = {q: release(q) for q in list(held)}
@@ -4801,14 +4817,17 @@ def _plane_fanout(
             if stub_end is not None:
                 _place_drop(pin, *stub_end, grid, tracks, vias, placed_via_sites)
             for later in pending[i + 1 :]:
-                old = lifted.get(later.pid)
+                old = lifted.get(later.key)
                 if old is not None:
                     reserve(later, *old)
-            if stub_end is None and not pin.pour_reaches_pad:
+            # An extra (parallel) drop that finds no site is not a failed
+            # pin: the primary drop connects it; the shortfall is reported
+            # by the power-drop ampacity check on the finished copper.
+            if stub_end is None and not pin.pour_reaches_pad and pin.copy == 0:
                 failed.append(pin.pid)
             continue
         if stub_end is None:
-            if not pin.pour_reaches_pad:
+            if not pin.pour_reaches_pad and pin.copy == 0:
                 failed.append(pin.pid)
             continue
         _place_drop(pin, *stub_end, grid, tracks, vias, placed_via_sites)
@@ -4845,6 +4864,11 @@ class _FanoutPin:
     #: ``rules`` with the stub at the fab floor, tried when the net's own
     #: width finds no site; ``None`` when the net is already at the floor.
     narrow_rules: NetRules | None = None
+    #: Which of the pin's parallel drops this is (0 = the primary); the
+    #: extra drops carry the pad's current beyond one via's ampacity.
+    copy: int = 0
+    #: Unique reservation key: ``pid`` for the primary drop.
+    key: int = -1
 
 
 def _region_areas(ir: PcbIR, rules_by_net: dict[int, NetRules]) -> dict[int, Any]:

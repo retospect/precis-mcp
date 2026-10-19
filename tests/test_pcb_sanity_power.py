@@ -11,7 +11,32 @@ from __future__ import annotations
 
 import pytest
 
+from precis.pcb import realize as pcb_realize
 from precis.pcb import sanity_power as sp
+from precis.pcb import session as pcb_session
+
+
+def test_single_drop_via_per_power_pad_is_reported_as_under_current() -> None:
+    built = sp.build(sp.SPECS["p1"])
+    rres = pcb_realize.realize(
+        built.ir, config=built.config, footprints=built.footprints
+    )
+    assert pcb_session.power_drop_shortfalls(built.ir, rres) == []
+    # Keep one stub+via per pad: 0.75 mm vias carry 2.5 A of the rail's 5 A.
+    seen: set[tuple[int, tuple[float, float]]] = set()
+    keep = []
+    for t in rres.tracks:
+        pad = (round(t.segments[0]["start"][0], 3), round(t.segments[0]["start"][1], 3))
+        if (t.net_id, pad) not in seen:
+            seen.add((int(t.net_id), pad))
+            keep.append(t)
+    thinned = pcb_realize.RealizeResult(tuple(keep), rres.vias, ())
+    short = pcb_session.power_drop_shortfalls(built.ir, thinned)
+    assert {n for n, *_ in short} == {sp.RAIL}
+    assert len(short) == sp.CAPS + 2
+    assert all(cap < need for _n, _pt, cap, need in short)
+    rows = pcb_session.power_drop_findings(built.ir, thinned)
+    assert {f.rule for f in rows} == {"power_drop_under_current"}
 
 
 def test_boards_are_distinct_and_hold_the_documented_parts() -> None:

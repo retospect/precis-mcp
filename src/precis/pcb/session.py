@@ -1345,7 +1345,64 @@ def routed_drc_findings(
         outline=outline,
         net_rules=net_rules,
         net_voltages=net_voltages,
-    )
+    ) + power_drop_findings(ir, rres)
+
+
+def power_drop_shortfalls(
+    ir: pcb_ir.PcbIR, rres: RealizeResult
+) -> list[tuple[str, tuple[float, float], float, float]]:
+    """``(net, pad point, via ampacity A, net current A)`` for every
+    plane-net pad whose drop vias together carry less than the net's
+    current. A pad whose only pour is on its own layer needs no via path and
+    is exempt, as is a net with no current annotation."""
+    from precis.pcb.ir import plane_layers_of
+    from precis.pcb.rules import net_current_a_or_none, via_capacity_a
+
+    vias_at = {(round(v.x, 3), round(v.y, 3)): v for v in rres.vias}
+    per_pad: dict[tuple[int, tuple[float, float]], float] = {}
+    for t in rres.tracks:
+        if not t.is_dogbone or not t.segments:
+            continue
+        current = net_current_a_or_none(float(ir.net_current_a[t.net_id]))
+        if current is None:
+            continue
+        if set(plane_layers_of(int(ir.net_plane_layers[t.net_id]))) == {t.layer}:
+            continue
+        start = t.segments[0]["start"]
+        end = t.segments[-1]["end"]
+        key = (t.net_id, (round(float(start[0]), 3), round(float(start[1]), 3)))
+        via = vias_at.get((round(float(end[0]), 3), round(float(end[1]), 3)))
+        per_pad[key] = per_pad.get(key, 0.0) + (
+            via_capacity_a(float(via.dia_mm)) if via is not None else 0.0
+        )
+    out = []
+    for (net_id, pt), cap in sorted(per_pad.items()):
+        current = float(ir.net_current_a[net_id])
+        if cap + 1e-9 < current:
+            out.append((str(ir.net_name[net_id]), pt, cap, current))
+    return out
+
+
+def power_drop_findings(ir: pcb_ir.PcbIR, rres: RealizeResult) -> list[DrcFinding]:
+    """``power_drop_under_current`` warnings (:func:`power_drop_shortfalls`):
+    a power pad whose drop vias cannot carry the net's current. A warning,
+    not an error, so the post-route gate reports it without stripping the
+    net."""
+    from precis.pcb.drc import DrcFinding
+
+    return [
+        DrcFinding(
+            rule="power_drop_under_current",
+            severity="warn",
+            where=f"{net} pad ({pt[0]:.2f}, {pt[1]:.2f})",
+            detail=(
+                f"drop vias carry {cap:.1f} A of the net's {current:.1f} A; "
+                "no room for more drops"
+            ),
+            margin_mm=None,
+        )
+        for net, pt, cap, current in power_drop_shortfalls(ir, rres)
+    ]
 
 
 def _routed_findings_on_model(
