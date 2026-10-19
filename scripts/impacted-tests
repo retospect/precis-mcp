@@ -210,6 +210,18 @@ PATH_MAP: list[tuple[str, list[str]]] = [
             "tests/test_mcp_verb_kwarg_parity.py",
         ],
     ),
+    # Every handler's args= keys are walked against the dispatch table; C-4
+    # 3bfef3908 reddened main past --checked (gr496992). Too slow for CONTRACT
+    # (>20 s), so it rides on any handler edit instead, with the other
+    # registry walks (every handler subclass / every verb).
+    (
+        "src/precis/handlers/**",
+        [
+            "tests/test_dispatch_args_keys.py",
+            "tests/test_delete_kind_guards.py",
+            "tests/test_tool_args_reachability.py",
+        ],
+    ),
     # Numeric-ref browse sort: the advertised sort hint and its refusal text
     # live in _numeric_ref.py, but the tests reach it only through
     # core.search -> hub dispatch, an edge the static ladder misses
