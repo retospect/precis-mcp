@@ -34,7 +34,7 @@ def test_complete_lists_every_registered_kind(client) -> None:
     accepts, each with its one-line description."""
     items = client.get("/drive/complete", params={"text": "/"}).json()
     names = {i["name"] for i in items}
-    assert names == _roster()
+    assert names == _roster() | {"paper+chunks"}
     for i in items:
         assert i["insert"] == f"/{i['name']}"
         assert i["desc"]
@@ -43,8 +43,24 @@ def test_complete_lists_every_registered_kind(client) -> None:
 def test_complete_filters_by_prefix(client) -> None:
     items = client.get("/drive/complete", params={"text": "/pa"}).json()
     names = {i["name"] for i in items}
-    assert names == {k for k in _roster() if k.startswith("pa")}
-    assert {"paper", "patent", "pathway"} <= names
+    assert names == {k for k in _roster() if k.startswith("pa")} | {"paper+chunks"}
+    assert {"paper", "paper+chunks", "patent", "pathway"} <= names
+    chunks = next(i for i in items if i["name"] == "paper+chunks")
+    assert chunks["insert"] == "/paper+chunks"
+    assert chunks["desc"] == "papers with chunks"
+
+
+def test_complete_paper_chunks_token_prefixes(client) -> None:
+    for text in ("/paper+", "/paper+ch", "/papers"):
+        names = {
+            i["name"]
+            for i in client.get("/drive/complete", params={"text": text}).json()
+        }
+        assert "paper+chunks" in names, text
+    names = {
+        i["name"] for i in client.get("/drive/complete", params={"text": "/pat"}).json()
+    }
+    assert "paper+chunks" not in names
 
 
 def test_complete_plural_prefix(client) -> None:

@@ -100,7 +100,11 @@ router.add_api_route("/tags/suggest", _tags_suggest, methods=["GET"])
 #: A ``/word`` still being typed at the end of the query head (gr486407).
 #: Token chars exclude "/" so a pasted ``/c/<handle>`` site path or URL is
 #: never mistaken for a slash command.
-_SLASH_TOKEN_RE = re.compile(r"(?:^|\s)/([A-Za-z0-9_-]*)$")
+_SLASH_TOKEN_RE = re.compile(r"(?:^|\s)/([A-Za-z0-9_+-]*)$")
+
+#: ``/paper+chunks`` — a kind token with a filter modifier (gr498598). The
+#: parser peels it into kind ``paper`` plus ``paper_chunks=with``.
+_PAPER_CHUNKS_TOKEN = "paper+chunks"
 
 
 @router.get("/complete")
@@ -129,6 +133,18 @@ async def complete(request: Request, text: str = "", pos: int = -1) -> JSONRespo
         for k in sorted(kinds)
         if k.startswith(prefix) or (prefix.endswith("s") and k.startswith(prefix[:-1]))
     ]
+    if "paper" in kinds and (
+        _PAPER_CHUNKS_TOKEN.startswith(prefix)
+        or (prefix.endswith("s") and _PAPER_CHUNKS_TOKEN.startswith(prefix[:-1]))
+    ):
+        items.append(
+            {
+                "name": _PAPER_CHUNKS_TOKEN,
+                "insert": f"/{_PAPER_CHUNKS_TOKEN}",
+                "desc": "papers with chunks",
+            }
+        )
+        items.sort(key=lambda i: i["name"])
     return JSONResponse(items)
 
 
@@ -301,27 +317,38 @@ def _site_url_target(request: Request, q: str) -> str | None:
     return None
 
 
-def _split_kind_tokens(q: str, known_kinds: Iterable[str]) -> tuple[list[str], str]:
+def _split_kind_tokens(
+    q: str, known_kinds: Iterable[str]
+) -> tuple[list[str], str, bool]:
     """Peel leading ``/kind`` tokens off a query (gr478511).
 
-    ``"/draft nano"`` -> ``(["draft"], "nano")``. Tokens match a known kind
-    case-insensitively, singular or plural (``/drafts``, ``/papers``). Only a
-    *leading* run is consumed; an unknown ``/word`` stops the scan and stays
-    in the free text, so paths and URLs are searched literally.
+    ``"/draft nano"`` -> ``(["draft"], "nano", False)``. Tokens match a known
+    kind case-insensitively, singular or plural (``/drafts``, ``/papers``).
+    ``/paper+chunks`` (or ``/papers+chunks``) is kind ``paper`` plus the
+    body-availability filter: the third element is True and the caller sets
+    ``paper_chunks=with`` (gr498598). Only a *leading* run is consumed; an
+    unknown ``/word`` stops the scan and stays in the free text, so paths and
+    URLs are searched literally.
     """
     by_name = {kk.lower(): kk for kk in known_kinds}
     words = q.split()
     kinds: list[str] = []
+    with_chunks = False
     i = 0
     while i < len(words) and words[i].startswith("/") and len(words[i]) > 1:
         tok = words[i][1:].lower()
-        hit = by_name.get(tok) or (by_name.get(tok[:-1]) if tok.endswith("s") else None)
-        if hit is None:
+        base, plus, mod = tok.partition("+")
+        hit = by_name.get(base) or (
+            by_name.get(base[:-1]) if base.endswith("s") else None
+        )
+        if hit is None or (plus and not (mod == "chunks" and hit == "paper")):
             break
+        if plus:
+            with_chunks = True
         if hit not in kinds:
             kinds.append(hit)
         i += 1
-    return kinds, " ".join(words[i:])
+    return kinds, " ".join(words[i:]), with_chunks
 
 
 # Discovery is a content/work browsing scope, not an authorship classifier.
@@ -744,10 +771,13 @@ async def index(
             ]
         )
     # ``/draft nano`` -> kind chip + free text "nano" (gr478511).
-    token_kinds, q_rest = _split_kind_tokens(q, all_kind_defs)
+    token_kinds, q_rest, token_chunks = _split_kind_tokens(q, all_kind_defs)
     if token_kinds:
         selected_kinds = token_kinds
         q = q_rest
+        if token_chunks:
+            # ``/paper+chunks`` only sets the existing param (gr498598).
+            paper_chunks = "with"
     tags = [t.strip() for t in tag if t.strip()]
     # ``tag=level:recurring`` is the "Schedules" preset link (base.html.j2 /
     # drive/index.html.j2's nav chip) — kept as a familiar URL even though
