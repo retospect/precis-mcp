@@ -20,6 +20,13 @@ Views: ``toc`` (repo-level), ``outline`` (file/symbol; default),
 ``runtrace``, ``callers`` / ``importers`` / ``imports``, ``provenance``,
 ``tests`` (evidence-labelled test discovery), ``impact`` (bounded
 change impact over a git revision pair or a changed symbol).
+
+The kind also answers the fisheye ladder: ``get(kind='python',
+id='<alias>::<qualname or module>', extent=<rung>)`` routes through
+``Handler.eye`` to the override below — the focus in full, the module's
+member list at ``fisheye``, callers/callees/package-gloss/tests at
+``+1hop`` (signature + first docstring line), the second hop as names
+at ``+2hop``; per-section char budgets in ``_python_eye`` (gr498663).
 """
 
 from __future__ import annotations
@@ -37,12 +44,14 @@ from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers import _python_callgraph as cgraph
 from precis.handlers import _python_entries as entries_mod
+from precis.handlers import _python_eye as peye
 from precis.handlers import _python_impact as impact_mod
 from precis.handlers import _python_render as render
 from precis.handlers import _python_reverse as reverse
 from precis.handlers import _python_runtrace as rtrace
 from precis.handlers import _python_tests as ptests
 from precis.handlers import _python_write as write
+from precis.handlers._eye import EYE_NEXT
 from precis.handlers._mode_help import require_mode
 from precis.handlers._python_provenance import (
     indexed_file,
@@ -68,8 +77,10 @@ from precis.utils.edit_resolve import (
     render_dry_run_full,
     render_dry_run_header,
 )
+from precis.utils.eye_render import parse_extent
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
+from precis.workers.working_set import Extent
 
 log = logging.getLogger(__name__)
 
@@ -474,6 +485,99 @@ class PythonHandler(Handler):
                 next=f"get(kind='python', id={parsed.alias!r}, view='toc')",
             )
         return Response(body=render.render_repo_overview(parsed.alias, idx))
+
+    # ── eye: the fisheye ladder (the extent= door) ─────────────────
+
+    @with_provenance
+    def eye(
+        self,
+        *,
+        id: str | int | None = None,
+        extent: Any = "fisheye",
+        q: str | None = None,
+        ring: Any = None,
+    ) -> Response:
+        """The fisheye ladder on a symbol or module (gr498663).
+
+        ``<alias>::<qualname>`` in full; ``fisheye`` adds the module's
+        member list (the reading-order analogue), ``fisheye+1hop`` the
+        code edge ring (callers, callees, the package ``__init__``
+        gloss, the referencing tests — signature + first docstring
+        line), ``fisheye+2hop`` the second hop as names. Same rung
+        semantics as the refs ladder; layout and budgets live in
+        :mod:`precis.handlers._python_eye`.
+        """
+        try:
+            ext, recall = parse_extent(extent)
+        except ValueError as exc:
+            raise BadInput(str(exc), next=EYE_NEXT) from exc
+        if recall:
+            raise Unsupported(
+                "the python eye has no +recall rung — semantic proximity "
+                "lives on search",
+                next="search(kind='python', q='<what it does>', scope='<alias>')",
+            )
+        if q is not None:
+            raise BadInput(
+                "q= expands a ref eye's second-hop group; the python eye "
+                "has no ring groups to expand",
+                next=f"get(kind='python', id={id!r}, extent='fisheye+2hop')",
+            )
+        if ring is not None:
+            raise BadInput(
+                "ring= narrows a link/doc eye's link rings; the python "
+                "eye's rings are code edges, not refs links",
+                next=f"get(kind='python', id={id!r}, extent='fisheye+1hop')",
+            )
+        if id is None or not str(id).strip() or str(id) == "/":
+            raise BadInput(
+                "a python eye focuses one symbol or module: id='<alias>::<qualname>'",
+                next="get(kind='python', id='<alias>', view='toc')",
+            )
+        parsed = _parse_id(str(id))
+        if parsed.start_line is not None or parsed.block_selector is not None:
+            raise BadInput(
+                f"an eye focuses one symbol, not a window or selector ({id!r})",
+                next=f"get(kind='python', id='{parsed.alias}::<qualname>', "
+                "extent='fisheye')",
+            )
+        root = self._resolve_alias(parsed.alias)
+        idx = self._index(parsed.alias, root)
+        if parsed.qualname is not None:
+            sym = idx.symbol(parsed.qualname)
+            if sym is None:
+                raise NotFound(
+                    f"symbol {parsed.qualname!r} not found in repo {parsed.alias!r}",
+                    next=f"search(kind='python', "
+                    f"q='{parsed.qualname.split('.')[-1]}', "
+                    f"scope={parsed.alias!r})",
+                )
+        elif parsed.file is not None:
+            mod = idx.file(parsed.file)
+            if mod is None:
+                raise NotFound(
+                    f"file {parsed.file!r} not found in repo {parsed.alias!r}",
+                    next=f"get(kind='python', id={parsed.alias!r}, view='toc')",
+                )
+            sym = mod.module_symbol
+        else:
+            raise BadInput(
+                "a python eye focuses one symbol or module — a bare alias "
+                "is the repo, not a node",
+                next=f"get(kind='python', id={parsed.alias!r}, view='toc')",
+            )
+        mod = idx.file(sym.file)
+        assert mod is not None
+        note_file(idx, mod)
+        hits: list[ptests.TestHit] = []
+        if ext >= Extent.HOP1:
+            measured = ptests.load_measured(root, idx)
+            hits = ptests.discover_tests(sym, idx, measured=measured)
+        return Response(
+            body=peye.render_eye(
+                alias=parsed.alias, sym=sym, idx=idx, extent=ext, hits=hits
+            )
+        )
 
     # ── search ─────────────────────────────────────────────────────
 

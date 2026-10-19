@@ -89,8 +89,17 @@ metadata. Runtrace provenance does not attest executed bytes.
 every root. Assert a known alias's expected root before indexing:
 
 ```python
-get(kind='python', id='precis::pkg.mod.func', args={'expected_root': '/absolute/task/root'})
-search(kind='python', q='cache', scope='precis', args={'expected_root': '/absolute/task/root'})
+get(
+    kind="python",
+    id="precis::pkg.mod.func",
+    args={"expected_root": "/absolute/task/root"},
+)
+search(
+    kind="python",
+    q="cache",
+    scope="precis",
+    args={"expected_root": "/absolute/task/root"},
+)
 ```
 
 `expected_root` requires an explicit alias id/scope and grants no access or
@@ -184,20 +193,60 @@ many edges traversable.
 | `tests` | ranked test nodeids for a file or symbol, evidence-labelled |
 | `impact` | bounded change impact: symbol diff, callers/importers, tests, docs |
 
+## Orient around one symbol — the fisheye ladder (`extent=`)
+
+```python
+get(
+    kind="python",
+    id="main::precis_pathway.runner.run_kinetics_subprocess",
+    extent="fisheye+1hop",
+)
+```
+
+The same `extent=` ladder every kind answers (`precis-fisheye-help`),
+on `<alias>::<qualname>` or `<alias>::<module>` (a file id focuses its
+module). Each rung strictly contains the previous:
+
+| `extent=` | Shows |
+|---|---|
+| `kwd` | one-line bookmark (qualname, kind, file:lines, first doc line) |
+| `summary` | signature + first docstring line — alone |
+| `verbatim` | the focus **in full**: signature + whole docstring (+ methods/members) |
+| `fisheye` | `verbatim` + the module's member list around it (the reading-order analogue; a module focus lists its sibling modules) |
+| `fisheye+1hop` | `fisheye` + ring 1 — callers, callees, the package `__init__` gloss, the referencing tests (evidence-labelled) — each at signature + first docstring line |
+| `fisheye+2hop` | `+1hop` + ring 2 — one edge further, plus the file-mates of whatever it lands on — names only |
+
+Every ring section states its character budget (`≤N chars`, ~4 per
+token) and overflows with a `… +N more` line naming the view that
+expands it — never a silent cut. `+recall`, `q=` and `ring=` are
+refused with a next step: semantic proximity is
+`search(kind='python', q=…)`.
+
 ## What does this change touch?
 
 ```python
 # Diff a revision pair (head defaults to the working tree — uncommitted
 # bytes get exact sha256 fingerprints):
-get(kind="python", id="precis", view="impact",
-    args={"base": "origin/main", "head": "HEAD"})
+get(
+    kind="python",
+    id="precis",
+    view="impact",
+    args={"base": "origin/main", "head": "HEAD"},
+)
 get(kind="python", id="precis", view="impact", args={"base": "HEAD~1"})
 # Scope to one file:
-get(kind="python", id="precis/src/precis/utils/link_target.py", view="impact",
-    args={"base": "HEAD~1"})
+get(
+    kind="python",
+    id="precis/src/precis/utils/link_target.py",
+    view="impact",
+    args={"base": "HEAD~1"},
+)
 # Or take one symbol as the change (no diff):
-get(kind="python", id="precis::precis.utils.link_target.parse_link_target",
-    view="impact")
+get(
+    kind="python",
+    id="precis::precis.utils.link_target.parse_link_target",
+    view="impact",
+)
 ```
 
 Sections: changed symbols (`signature` / `removed` / `body` / `added` /
@@ -215,7 +264,9 @@ nothing executes source.
 ## Which tests cover this symbol?
 
 ```python
-get(kind="python", id="precis::precis.utils.link_target.parse_link_target", view="tests")
+get(
+    kind="python", id="precis::precis.utils.link_target.parse_link_target", view="tests"
+)
 ```
 
 Each row is a pytest nodeid labelled with evidence and confidence —

@@ -60,8 +60,9 @@ EYE_NEXT = f"extent ∈ {'|'.join(EYE_LADDER)}, optionally +recall"
 #: each — the reason, not a shrug.
 _NO_NODE_REASON: dict[str, str] = {
     "python": "a python symbol is file-backed (no refs row), so it has no "
-    "link neighbourhood to render — get(kind='python', id=…) reads it with "
-    "callers and callees",
+    "*link* neighbourhood — its code eye is served by the python handler "
+    "itself: get(kind='python', id='<alias>::<qualname>', "
+    "extent='fisheye+1hop')",
     "md": "the md index is file-backed (no refs row), so it has no link "
     "neighbourhood — get(kind='markdown', id=…) is the refs-backed file kind",
     "tag": "a tag is a vocabulary row, not a graph node — search(tags=[…]) "
