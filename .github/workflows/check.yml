@@ -361,6 +361,18 @@ jobs:
     if: needs.plan.outputs.docs_only == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      # gr496666: `-n auto` was NEVER missing — addopts already carries it,
+      # and the cancelled runs (39143473087, 39147024961) show "2/2 workers"
+      # on the 2-vCPU runner doing 24,622 items to ~90% in 30 min. So the
+      # real deficit is one job's worth of cores, not xdist — split the fast
+      # set the same way test-linux does, over `--shard K/N` (tests/conftest.py
+      # crc32 partitions exactly; shard_weights has no table for n=4, which
+      # only means the slow-test rebalance doesn't apply here — the fast set
+      # deselects `slow` anyway). The count is spelled twice, keep them equal.
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # JS-under-pytest tests (SE view state, topology cloud, CAD
@@ -372,7 +384,7 @@ jobs:
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           python-version: '3.13'
-      - run: uv run --all-extras --no-extra catalyst --no-extra catalyst-gpu pytest -m 'not db and not slow'
+      - run: uv run --all-extras --no-extra catalyst --no-extra catalyst-gpu pytest --shard ${{ matrix.shard }}/4 -m 'not db and not slow'
 
   # Nightly per-test coverage DB — the measured tier for
   # scripts/impacted-tests (ship --checked / test --selected today; a
