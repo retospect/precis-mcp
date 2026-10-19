@@ -646,7 +646,7 @@ dev = [
 override-dependencies = ["pillow>=12.3.0"]
 
 [tool.uv.sources]
-autocatpath = { git = "https://github.com/retospect/catpath", rev = "239654c82a99834e732b0b436edcfeaecd150541" }  # v0.31.0
+autocatpath = { git = "https://github.com/retospect/catpath", rev = "4291094d9793f75c01a54dc2644dde1e22f6a4d3" }  # v0.31.1
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/precis", "src/precis_web", "src/asa_bot", "src/asa_slack", "src/precis_chem", "src/precis_bio", "src/precis_pathway", "src/precis_dft", "src/precis_estimate", "src/precis_se", "src/hexfold", "src/precis_surface", "src/precis_chain"]
