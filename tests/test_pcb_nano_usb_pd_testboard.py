@@ -74,9 +74,13 @@ SEED = 1
 #: J_ISP.4|U1.PB3, a congestion race), so unrouted 29 -> 30, clearance
 #: warns 9 -> 10, routed 35 -> 34 and failed 29 -> 30 below; the same
 #: run tightens silk_missing 35 -> 32.
+#:
+#: Tightened 2026-10-19 (vector router slice 3a, the gridless escape
+#: post-pass, on main ed617d0ef): routed 34 -> 39, failed 30 -> 25,
+#: unrouted 30 -> 25, connectivity 11 -> 9; the rest unchanged.
 BASELINE_DRC_ERRORS_BY_RULE: dict[str, int] = {
-    "connectivity": 11,
-    "unrouted": 30,
+    "connectivity": 9,
+    "unrouted": 25,
     "silk_missing": 32,
 }
 BASELINE_DRC_WARNS_BY_RULE: dict[str, int] = {
@@ -93,8 +97,9 @@ BASELINE_DRC_WARNS = sum(BASELINE_DRC_WARNS_BY_RULE.values())
 #: (the route job's failure reasons: congestion, same-layer-crossing,
 #: width) — the residue the anneal feedback loop exists to close.
 #: Reto 2026-10-19 ~07:3xZ, gr489175: 35 -> 34 routed, 29 -> 30 failed.
-BASELINE_ROUTED = 34
-BASELINE_FAILED = 30
+#: Vector router slice 3a (2026-10-19): 34 -> 39 routed, 30 -> 25 failed.
+BASELINE_ROUTED = 39
+BASELINE_FAILED = 25
 
 #: gr489909: routed nets (fanout >= 2) are judged across placements, not
 #: on ``SEED``'s draw alone. Reto 2026-10-18: the floor is the MEAN over
@@ -109,10 +114,13 @@ BASELINE_FAILED = 30
 #: and over all eight it is 34.375. gr489175 (a drilled pad's far-layer
 #: landings stay route seeds) moved seeds 1-8 to 34/33/43/34/31/33/31/37,
 #: mean 34.5 and per-seed min 31, measured 2026-10-19 on main b1a055f14
-#: and again on 234fa2d3d.
+#: and again on 234fa2d3d. Vector router slice 3a (the gridless escape
+#: post-pass, measured 2026-10-19 on main ed617d0ef): seeds 1-8 route
+#: 39/35/46/35/33/35/35/38, mean 37.0, no seed worse; the mean floor is
+#: set 1.0 under it and the per-seed floor at the new minimum, 33.
 NANO_SEEDS: tuple[int, ...] = (1, 2, 3, 4, 5, 6, 7, 8)
-NANO_MEAN_ROUTED_FLOOR = 34.5
-NANO_SEED_ROUTED_MIN = 31
+NANO_MEAN_ROUTED_FLOOR = 36.0
+NANO_SEED_ROUTED_MIN = 33
 
 _DRC_HEAD_RE = re.compile(r"— (\d+) error\(s\), (\d+) warn\(s\)")
 

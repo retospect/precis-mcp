@@ -547,7 +547,11 @@ def test_maze_router_reports_what_it_could_not_route():
     must name the segments it gave up on, not draw them anyway."""
     ir = from_graph(_ladder_graph(3), stackup=DEFAULT_STACKUP)
     optimize(ir, OptimizeConfig(iters=200, seed=6))
-    result = realize(ir, config=RealizeConfig(router="maze", max_expansions=1))
+    # The maze's own residue: the gridless escape pass (which would route
+    # these) is off, so the 1-expansion budget is the whole router.
+    result = realize(
+        ir, config=RealizeConfig(router="maze", max_expansions=1, vector_escape=False)
+    )
     # With a 1-expansion budget nothing non-trivial can route, and every
     # such segment has to show up in `unrouted` rather than vanish.
     assert result.unrouted

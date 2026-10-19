@@ -137,7 +137,7 @@ from shapely.geometry import Point as _ShapelyPoint
 from shapely.geometry import Polygon as _ShapelyPolygon
 
 from precis.pcb import connectivity as pcb_connectivity
-from precis.pcb import geom, landpattern, maze, padplace, pose
+from precis.pcb import geom, landpattern, maze, padplace, pose, vroute
 from precis.pcb import silk as pcb_silk
 from precis.pcb.capabilities import CapabilityRow, capability_for
 from precis.pcb.geom import Point, dist, dist_point_to_segment
@@ -466,6 +466,16 @@ class RealizeConfig:
     #: and wall-clock seconds checked before each trial.
     cleanup_max_moves: int = 40
     cleanup_budget_s: float = 20.0
+    #: Vector escape post-pass (:func:`precis.pcb.vroute.escape_pass`,
+    #: vector-router slice 3): after the clean-up pass, every failed
+    #: non-plane segment is routed gridless against the frozen copper, so a
+    #: fine-pitch pad the grid sees as walled in (gr489923) still connects
+    #: where the copper fits. Nothing the maze routed moves.
+    vector_escape: bool = True
+    #: Search work for the whole escape pass on one board, in A* node
+    #: expansions (each connection takes at most 6000 of it). Work, not
+    #: seconds, so a board routes the same on every machine.
+    vector_escape_max_expansions: int = 60000
 
     def __post_init__(self) -> None:
         for name, mult in self.layer_route_cost:
@@ -1018,6 +1028,9 @@ class RealizeResult:
     #: ``None`` when it did not run (flag off, no ``cleanup_check``, or the
     #: tangent drawer).
     cleanup: CleanupReport | None = None
+    #: What the vector escape post-pass did (:mod:`precis.pcb.vroute`);
+    #: ``None`` when it did not run.
+    escape: vroute.EscapeReport | None = None
 
 
 #: The route clean-up pass's DRC half (:func:`realize`'s ``cleanup_check``):
@@ -2006,6 +2019,7 @@ def _realize_maze(
     NegotiationReport | None,
     tuple[CongestionCell, ...],
     CleanupReport | None,
+    vroute.EscapeReport | None,
 ]:
     """Route ``ids`` on a shared occupancy grid — see :mod:`precis.pcb.
     maze` for why this cannot emit overlapping copper, and what it gives
@@ -2038,7 +2052,7 @@ def _realize_maze(
     """
     ctx = _route_context(ir, ids, config, footprints, fixed_copper)
     if ctx is None:
-        return [], [], list(ids), [], [], [], {}, None, (), None
+        return [], [], list(ids), [], [], [], {}, None, (), None, None
     signal_layers = ctx.signal_layers
     pad_geoms = ctx.pad_geoms
     pads = ctx.pads
@@ -2186,6 +2200,11 @@ def _realize_maze(
 
         best, cleanup = routeclean.cleanup(
             ir, ctx, config, best, best_stamped, cleanup_check
+        )
+    escape: vroute.EscapeReport | None = None
+    if config.vector_escape:
+        best, escape = vroute.escape_pass(
+            ir, ctx, config, best, footprints, fixed_copper
         )
     tracks, vias, unrouted, island_terminal_notes, plane_failed_pins = best
     # The pour RIM insets by the board-edge rule alone — NOT `edge_inset`,
@@ -2343,6 +2362,7 @@ def _realize_maze(
         negotiation,
         congestion,
         cleanup,
+        escape,
     )
 
 
@@ -7832,6 +7852,7 @@ def realize(
             negotiation,
             congestion,
             cleanup,
+            escape,
         ) = _realize_maze(
             ir, route_ids, config, footprints, fixed_copper, cleanup_check
         )
@@ -7861,6 +7882,7 @@ def realize(
             pour_quality=tuple(pour_quality(pours)),
             dropped_islands=tuple(dropped),
             cleanup=cleanup,
+            escape=escape,
         )
     if config.router != "tangent":
         raise ValueError(

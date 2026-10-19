@@ -212,6 +212,16 @@ job applies).
   place+route above). `place=False` is route-only: no anneal, every pose
   and the stored sketch stay as stored. Cannot combine with `loop`.
 
+## Gridless retry of failed nets
+
+After routing and the clean-up pass, every net the grid left failed gets
+a gridless retry (45°/90° tracks, through vias never in a pad) against the
+copper already routed. A net keeps it only if all its connections route
+and no plane pour splits. The summary says `vector escape: K of N failed
+segments routed gridless (E expansions, S s)`. The retry is bounded by
+search work, not time, so the same board routes the same on every
+machine.
+
 ## Check a route job's result
 
 After a route job lands:

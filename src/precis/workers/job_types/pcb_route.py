@@ -1849,6 +1849,9 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     cleanup_line = rres.cleanup.line() if rres.cleanup is not None else None
     if cleanup_line:
         pin_swap_summary += "\n" + cleanup_line
+    escape_line = rres.escape.line() if rres.escape is not None else None
+    if escape_line:
+        pin_swap_summary += "\n" + escape_line
     # A class naming a layer the stackup does not route on is narrowed, not
     # refused (gr472108): say so, or a "no gain" reads as a routing result.
     for drop in rres.class_layer_drops:

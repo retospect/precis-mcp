@@ -320,6 +320,14 @@ def test_route_refuses_the_stale_dogfood_board(store, monkeypatch):
     job.put.assert_not_called()
 
 
+def _without_clock(result: dict) -> dict:
+    """A realize result minus the vector escape pass's wall-clock reading,
+    the one field two identical runs cannot share."""
+    if result.get("escape"):
+        result = {**result, "escape": {**result["escape"], "elapsed_s": None}}
+    return result
+
+
 @pytest.mark.slow
 def test_exact_dogfood_grid_refinement_improves_count_and_is_deterministic(
     store, monkeypatch
@@ -346,7 +354,7 @@ def test_exact_dogfood_grid_refinement_improves_count_and_is_deterministic(
         )
     assert len(_failed(ir, after)) == 32
     assert _failed(ir, repeated) == _failed(ir, after)
-    assert asdict(repeated) == asdict(after)
+    assert _without_clock(asdict(repeated)) == _without_clock(asdict(after))
     _assert_legal(ir, graph, features, footprints, fixed, config, after)
     recovered = _failed(ir, before) - _failed(ir, after)
     lost = _failed(ir, after) - _failed(ir, before)

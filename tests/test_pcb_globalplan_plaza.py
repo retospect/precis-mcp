@@ -211,7 +211,9 @@ def test_plaza_escape_on_the_qfp_member(tmp_path):
         (float(x), float(y)) for x, y in zip(built.ir.inst_x, built.ir.inst_y)
     )
     assert poses_after == poses_before
-    assert routed >= 53
+    # 53 -> 54 with the vector escape post-pass (vector router slice 3a:
+    # N27 routes gridless; N49 is the one left).
+    assert routed >= 54
 
 
 @pytest.mark.slow
