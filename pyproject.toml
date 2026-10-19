@@ -550,6 +550,12 @@ se_simp = "precis_se.simp_job:SPEC"
 # bound back as a cad field-leaf design on the group root (same item,
 # round B2). Small groups fuse inline; this job takes the rest.
 se_manufacture = "precis_se.manufacture_job:SPEC"
+# hexfold_relax: assembled-hexfold-block relax on the compute group —
+# whole-block polish + GFN2 on H-capped junction fragments, strain
+# before/after stored on the scene (hexfold H3,
+# docs/backlog/hexfold-nanoreactor-tube.md). Plugin spec, not a core
+# builtin: the core must never import precis_se.
+hexfold_relax = "precis_se.hexfold_relax_job:SPEC"
 
 [project.entry-points."precis.migrations"]
 precis_chem = "precis_chem.migrations"

@@ -497,12 +497,33 @@ def build_tunnel_reservoirs(params: dict[str, Any]) -> GeneratedBlock:
         },
     }
     block.topology["sites"] = site_data
+    stun = stored_tunnel(net, tun, block)
+    # Strain bookkeeping on stored ordinals (H3): the relax job re-scores
+    # ``tunnel_strain`` on relaxed atoms without re-running the generator.
+    # Mouths plus every reducer step junction (d-hexh2's stepped rails).
+    block.topology["junctions"] = [
+        {
+            "name": tag,
+            "atoms": list(j.atoms),
+            "fused": [list(p) for p in j.fused],
+            "faces": [list(f) for f in j.faces],
+        }
+        for tag, j in zip(("low", "high"), stun.junctions, strict=True)
+    ] + [
+        {
+            "name": j.name,
+            "atoms": list(j.atoms),
+            "fused": [list(p) for p in j.fused],
+            "faces": [list(f) for f in j.faces],
+        }
+        for j in stun.reducers
+    ]
+    if stun.kind == "rail":
+        block.topology["seam_atoms"] = [list(s) for s in stun.seam_atoms]
+    block.topology["sigma_A"] = float(net.lattice.sigma_A)
     stored_findings = list(block.topology["report"]["findings"])
     stored_findings.extend(
-        f.to_dict()
-        for f in _junction_checks(
-            block, net, stored_tunnel(net, tun, block), termination
-        )
+        f.to_dict() for f in _junction_checks(block, net, stun, termination)
     )
     block.topology["report"]["findings"] = stored_findings
     return block

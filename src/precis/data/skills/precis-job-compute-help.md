@@ -45,6 +45,7 @@ job_type=…, params=…)`); what differs is the executor and the params.
 | `autocatpath_seed` | `ssh_node`     | One `(model, seed)` unit of an autocatpath pathway exploration; stashes the JSON partial for the sibling aggregate (see `precis-pathway-help`) |
 | `autocatpath_aggregate` | `ssh_node` | Fold the seed fan-out's partials into the pathway's graph + pooled-uncertainty result on the pathway ref |
 | `autocatpath_explore` | `ssh_node`   | Legacy single-shot autocatpath run — still registered so pre-existing queued rows don't error-loop; nothing new mints it (superseded by the seed/aggregate fan-out) |
+| `hexfold_relax`     | `ssh_node`   | Assembled-hexfold-block relax (hexfold H3): whole-block polish on a relax-ladder rung (`polish`, `ml` default) + `xtb` on H-capped buffer-frozen junction fragments (`fragment`, or `none`); the relaxed geometry becomes the structure's next version and per-mouth/per-seam strain before/after lands on `meta.generated.relax`. Params: `structure_ref_id` (required — a structure minted with junction bookkeeping), optional `on_version`, `polish`/`model`, `fragment`, `buffer_A` (12), `core_A` (4), `steps` (200), `target_node`. See `precis-hexfold-help`. |
 
 (More land as new modules under `precis/workers/job_types/`. See
 the per-type recipe skills for invocation details.)

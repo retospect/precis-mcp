@@ -309,6 +309,20 @@ def build_hexfold(params: dict[str, Any]) -> GeneratedBlock:
                 names=[j.name for j in live],
             )
             stored.extend(f.to_dict() for f in strain if f.code == "junction.strain")
+        if live:
+            # Strain bookkeeping on stored ordinals (H3): the relax job
+            # re-scores ``tunnel_strain`` on relaxed atoms without
+            # re-running the generator.
+            block.topology["junctions"] = [
+                {
+                    "name": j.name,
+                    "atoms": list(j.atoms),
+                    "fused": [list(p) for p in j.fused],
+                    "faces": [list(f) for f in j.faces],
+                }
+                for j in live
+            ]
+            block.topology["sigma_A"] = float(net.lattice.sigma_A)
         block.topology["report"]["findings"] = stored
     return block
 

@@ -133,6 +133,7 @@ nearest junction atom (sp3 or coordination-changed) [O]:
   fragments with ≥12 Å buffer; relax; paste back by atom id. Accept: Y-A
   assembled end to end, interface max force < 0.2 eV/Å, wall time within 2×
   of the estimate.
+  **Partially landed 2026-10-19** (H3): the `hexfold_relax` job type runs whole-block polish + `xtb` on junction fragments (`precis_se.atomic.relax_block`) on the compute group; the cut is a distance cut with a frozen shell, not the armchair cut, and the interface max-force acceptance is unchecked. S1/S2 untouched.
 - **S4 module cache.** Structures keyed as above, gates enforced. Accept: a
   second variant reuses cached modules, relaxes in < 1 h, and a radius
   outside the bin is refused.

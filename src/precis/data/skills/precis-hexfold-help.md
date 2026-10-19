@@ -312,6 +312,16 @@ always mints a `struct_relax` job on the compute group and returns its id
 (gr496562); `view='runs'` shows it. A job
 failing `infra` with "no backend" means the node lacks the tblite wheel.
 
+An **assembled** block (tunnel-reservoirs, fuse/opening builds) instead
+takes the `hexfold_relax` job (plugin spec, `ssh_node`): mint it with
+`put(kind='job', job_type='hexfold_relax', parent_id=<structure ref>,
+params={'structure_ref_id': <id>})` — it polishes the whole block
+(`polish`, `ml` default), relaxes each junction as an H-capped fragment
+with a frozen buffer (`fragment`, `xtb` default — GFN2 only where the
+physics matters), writes the geometry as the next design version, and
+stores `junction.strain`/`seam.strain` before/after on
+`meta.generated.relax`.
+
 ## Options (spec §25.3)
 
 `hexfold.options.options(spec, handle, wish)` / `hexfold options FILE

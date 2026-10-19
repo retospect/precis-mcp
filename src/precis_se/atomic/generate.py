@@ -429,6 +429,9 @@ _GENERATED_RECORD_KEYS = (
     "scene",
     "plan",
     "sites",
+    "junctions",
+    "seam_atoms",
+    "sigma_A",
 )
 
 

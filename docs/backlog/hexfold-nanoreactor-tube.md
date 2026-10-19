@@ -71,19 +71,22 @@ Still needed from hexfold (ranked):
   zone — closing those needs the cone transition (it shortens the notch
   at the step), not more margin. Left: build the outer cone/Y transition
   the WARN names (wedge excision + radial fuse, refused by name until
-  then), the notch-wall residual above, H3 relax, and zigzag rims.
-- **H3: relaxed geometry with per-seam strain** — MLIP/GFN-FF relax of
-  the assembled tunnel (tblite is wired for the `xtb` rung but absent on
-  this host), reporting strain per seam and junction; a 7k-atom preview
-  build relaxes in seconds under stick but a GFN2-xTB pass is hours, so
-  this belongs to a dedicated compute slice, not a generation op.
-  The strain read is in place: `tunnel_strain` (in
-  `precis_se.atomic.generators.tunnel`) takes coordinates plus the
-  junction/seam bookkeeping only and emits `junction.strain` per mouth
-  and `seam.strain` per rail seam (incident bond lengths, 120° angle
-  deviation, pyramidalisation), so a relaxed geometry can be re-scored
-  without the stick seed. Left: run the xtb/MLIP relax on the compute
-  group and wire `tunnel_strain` onto the relaxed atoms.
+  then), the notch-wall residual above, and zigzag rims.
+- **H3: relaxed geometry with per-seam strain** — landed 2026-10-19:
+  the `hexfold_relax` job type (`ssh_node`, in-process like
+  `struct_relax`'s rungs) runs the relax pipeline of
+  [hexfold-relax-pipeline](hexfold-relax-pipeline.md) on the compute
+  group — a whole-block polish on any relax-ladder rung (`ml` default;
+  GFN-FF has no backend) plus `xtb` on H-capped, buffer-frozen junction
+  fragments (`precis_se.atomic.relax_block.relax_block`), and stores
+  `junction.strain`/`seam.strain` before/after on the ref's
+  `meta.generated.relax` while the relaxed geometry becomes the next
+  design version. Junction/seam bookkeeping persists at mint
+  (`topology.junctions`/`seam_atoms`/`sigma_A`) so `tunnel_strain`
+  re-scores without the stick seed. Mint via `put(kind='job',
+  job_type='hexfold_relax', executor='ssh_node',
+  parent_id=<structure ref>, params={'structure_ref_id': N})`. Prod
+  relax timing is an open Reto call — no prod jobs submitted.
 
 test: a spec with one tube, two sheets, three inner rails and two pores
 builds, checks clean, and its site list round-trips to (z, θ) within
