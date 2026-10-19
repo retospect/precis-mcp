@@ -121,6 +121,10 @@ gr346534, soft-deleted)
    the role shipped; what is left is the deploy-time steps and open points
    in that item (secret names, login, bind address, flag flip). Ranks last
    because the gate already stops the false NodeDown/PostgresDown.
+6. **backlog/host-session-events.md** (filed 2026-10-19 from gr496610;
+   IDEA, nothing specced). Record host reboot, network loss and regain, power
+   events and session exits, with a per-host timeline view. Ranks last: it
+   adds history, not a missing page.
 
 ## Horizon
 
