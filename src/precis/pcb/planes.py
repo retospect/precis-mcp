@@ -80,6 +80,7 @@ from shapely.geometry import MultiPoint, MultiPolygon, Point, Polygon
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import unary_union
 
+from precis.pcb import clearance as clearance_kernel
 from precis.pcb.drc import _copper_item_polygon, _via_layer_names
 
 #: Shapely buffer resolution for round caps/joins. Matches drc.py's own
@@ -293,6 +294,18 @@ def plane_pours(
                     if layer_name not in _via_layer_names(item, layers):
                         continue
                 elif str(item.get("layer", "")) != layer_name:
+                    continue
+                body = clearance_kernel.body_of(item)
+                if body is not None and body.arcs:
+                    # An arc track's polygon is 15° chords, up to R(1 - cos
+                    # 7.5°) inside the true copper on the outer side of a
+                    # bend: an antipad grown from it left pours 1-2 µm short
+                    # of the clearance the exact check measures (vector
+                    # router slice 2). The kernel's outward polygon holds
+                    # the true track plus clearance.
+                    blockers.append(
+                        clearance_kernel.outward_polygon(body, abs(clearance_mm))
+                    )
                     continue
                 poly = _copper_item_polygon(item)
                 if poly is not None and not poly.is_empty:

@@ -117,6 +117,60 @@ def test_outward_circle_contains_the_circle_within_the_sagitta(radius: float) ->
     assert far - radius <= k.DELTA_MM + 1e-12
 
 
+@pytest.mark.parametrize("seed", range(20))
+def test_outward_polygon_holds_the_grown_body_within_the_sagitta(seed: int) -> None:
+    """Every boundary point of the outward polygon of an arc track sits
+    between ``r + grow`` and ``r + grow + sagitta`` from the true track."""
+    rng = random.Random(seed)
+    track = _rand_track(rng, "A", "F.Cu")
+    body = k.body_of(track)
+    assert body is not None
+    grow = rng.uniform(0.05, 0.4)
+    poly = k.outward_polygon(body, grow)
+    ring = poly.exterior if hasattr(poly, "exterior") else poly.geoms[0].exterior
+    for x, y in ring.segmentize(0.002).coords:
+        d = k.signed_gap(k.Body(Point(x, y), (), 0.0), body)
+        assert grow - 1e-9 <= d <= grow + k.DELTA_MM + 1e-9, (x, y, d)
+
+
+def test_pour_cut_around_an_arc_track_clears_it_exactly() -> None:
+    """The esp32c3 bench's arc-vs-pour warns: the antipad is cut from the
+    kernel's outward polygon, so the exact gap is the full clearance."""
+    from precis.pcb.planes import plane_pours
+
+    arc_track = {
+        "ctype": "track",
+        "layer": "F.Cu",
+        "net": "SIG",
+        "width_mm": 0.2,
+        "segments": [
+            {"shape": "line", "start": [2.0, 5.0], "end": [4.8, 5.0]},
+            {
+                "shape": "arc",
+                "start": [4.8, 5.0],
+                "end": [5.0, 5.2],
+                "center": [4.8, 5.2],
+                "cw": False,
+            },
+            {"shape": "line", "start": [5.0, 5.2], "end": [5.0, 8.0]},
+        ],
+    }
+    pours = plane_pours(
+        outline=[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]],
+        layers=["F.Cu", "B.Cu"],
+        plane_nets={0: "GND"},
+        copper=[arc_track],
+        clearance_mm=0.15,
+        edge_clearance_mm=0.3,
+    )
+    track = k.body_of(arc_track)
+    assert pours and track is not None
+    for pour in pours:
+        body = k.body_of(pour)
+        assert body is not None
+        assert k.gap(body, track) >= 0.15 - 1e-9
+
+
 def test_outward_segments_per_quadrant_at_the_5_um_sagitta() -> None:
     """Decision 7's note, recomputed: 5 per quadrant at R = 0.3 mm, 12 at
     R = 2 mm (deviation R(1/cos(pi/4q) - 1) <= 5 um)."""

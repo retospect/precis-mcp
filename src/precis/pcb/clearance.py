@@ -502,6 +502,39 @@ def outward_circle(
     )
 
 
+def outward_polygon(
+    body: Body, grow: float = 0.0, sagitta: float = DELTA_MM
+) -> BaseGeometry:
+    """A polygon holding every point within ``body.r + grow`` of the body's
+    core and arcs, and reaching no more than ``sagitta`` past that — what a
+    pour antipad is cut with, so a pour is generated legal rather than
+    flagged. Each arc is flattened with chord error ``e = sagitta / 4``
+    and the polyline buffered ``e`` further, so it holds the true arc; on
+    the inner side of a bend that costs ``2e``. The round buffer's facets
+    are circumscribed (as :func:`outward_circle`) within another ``e``,
+    and a last ``e`` absorbs GEOS's own buffer rounding and input
+    simplification (measured at tens of nm): at most ``sagitta`` past the
+    grown body anywhere."""
+    e = sagitta / 4.0
+    parts: list[BaseGeometry] = []
+    if body.core is not None and not body.core.is_empty:
+        parts.append(body.core)
+    for arc in body.arcs:
+        if arc.radius <= e:
+            step = math.pi
+        else:
+            step = 2.0 * math.acos(1.0 - e / arc.radius)
+        n = max(1, math.ceil(abs(arc.sweep) / step))
+        parts.append(
+            LineString([arc.point_at(arc.a0 + arc.sweep * k / n) for k in range(n + 1)])
+        )
+    reach = body.r + grow + e + (e if body.arcs else 0.0)
+    q = outward_segments_per_quadrant(reach, e)
+    return shapely.union_all(parts).buffer(
+        reach / math.cos(math.pi / (4 * q)), quad_segs=q
+    )
+
+
 __all__ = [
     "DELTA_MM",
     "Arc",
@@ -513,6 +546,7 @@ __all__ = [
     "different_net_pairs",
     "gap",
     "outward_circle",
+    "outward_polygon",
     "outward_segments_per_quadrant",
     "point_arc",
     "point_segment",
