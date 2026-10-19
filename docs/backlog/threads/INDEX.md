@@ -118,6 +118,12 @@ Seams:
   contract and the wheel bump. `backlog/catpath-desorption-link-kind.md`
   moved to catalysis-selectivity (Do-next 2); `neb-barriers-in-the-catpath-pipeline.md`
   stays chemistry's, catalysis-selectivity decides where NEB runs.
+- `backlog/kinetics-engine-v2.md` (catalysis-selectivity) owns the
+  kinetic environment block (T, split input/output partial pressures,
+  optional U/σ/cation/pH) and the ΔG/TS provider seam; the
+  electrochemical-interface spec plugs a provider into that seam and
+  never redefines the rate builder. Engine code lands in catpath via
+  chemistry's wheel bump.
 - nanoreactor's T1 (`backlog/nanoreactor-station-path-finder.md`)
   adds off-slab environments and a station-record export to the engine;
   chemistry owns the engine contract and the wheel bump. Its T2

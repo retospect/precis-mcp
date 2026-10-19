@@ -283,6 +283,15 @@ Reto: gr482121 backfill of the 559 overwritten `pw-*` structure refs.
    ported from the CatMAP/CatmapInterface.jl stack, plus a CatMAP parity
    export. Ranked last: Do-next 5–6 define the window and the decisive
    edges it would make U-dependent, and Horizon 1 supplies the barriers.
+5a. **backlog/kinetics-engine-v2.md** (2026-10-19, design, needs
+   Reto's nine rulings) — the kinetic core Horizon 5 shifts: split
+   input/output partial-pressure environment block, one free-energy
+   ledger with detailed balance by construction, BEP as a rated
+   source, site-balance MKM, rejection-free KMC with absorbing-chain
+   timescale handling, pressure sweeps. Ranked with Horizon 5 because
+   it owns the environment block and the ΔG/TS provider seam that
+   Horizon 5 and the electrochemical-interface spec plug into; slices
+   1–4 need no KMC and no U.
 6. **backlog/quest-batch-coverage-scan.md** (gr491442) — a quest-tier op to
    scan a named list of candidates × models; convenience over the documented
    per-candidate put recipe, so it ranks below the experiments that use it.
