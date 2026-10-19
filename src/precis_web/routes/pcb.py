@@ -17,6 +17,10 @@ same data:
   request by the MCP view's own ``PcbHandler.epro_build`` (deterministic
   bytes, nothing stored); ``?sha=`` from the MCP response turns a stale
   link into a 409.
+* ``GET  /pcb/{slug}/fab.zip`` — the ``view='fab'`` production package as
+  one download (gr496699): the gerber+drill zip plus the JLC BOM and CPL,
+  assembled in memory by ``PcbHandler.fab_package_zip`` off the same
+  artifacts the MCP view writes to a directory.
 * ``POST /pcb/{slug}/note`` — argue with the design
   (docs/backlog/pcb-argue-with-design.md). The page's one text box
   accumulates handles as the user clicks the board render (the fab SVG
@@ -405,6 +409,38 @@ async def pcb_export_epro(
         media_type="application/zip",
         headers={
             "Content-Disposition": f'attachment; filename="{build.filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@router.get("/pcb/{slug}/fab.zip")
+async def pcb_fab_zip(request: Request, slug: str) -> RawResponse:
+    """The ``view='fab'`` production package as one download (gr496699):
+    the gerber+drill zip plus the JLC BOM and CPL, rebuilt in memory by
+    :meth:`PcbHandler.fab_package_zip` — the same three artifacts the
+    MCP view writes to disk, nothing stored."""
+    store = get_store(request)
+    try:
+        ref = resolve_live_slug_ref(store, kind="pcb", id=slug)
+    except NotFound:
+        return RawResponse(
+            status_code=404, content="not found", media_type="text/plain"
+        )
+    try:
+        built = await asyncio.to_thread(_handler(store).fab_package_zip, ref.id)
+    except BadInput as exc:
+        return RawResponse(status_code=422, content=str(exc), media_type="text/plain")
+    if built is None:
+        return RawResponse(
+            status_code=422, content="no board yet", media_type="text/plain"
+        )
+    blob, filename = built
+    return RawResponse(
+        content=blob,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
             "Cache-Control": "no-store",
         },
     )

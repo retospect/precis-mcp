@@ -4574,6 +4574,31 @@ class PcbHandler(Handler):
             ) from exc
         return pcb_gerber.zip_fab(files), warnings, files, model
 
+    def fab_package_zip(self, ref_id: int) -> tuple[bytes, str] | None:
+        """The ``view='fab'`` package as ONE zip a browser can download
+        (gr496699): ``{slug}-fab.zip`` (the gerber+drill bundle
+        :meth:`_fab_zip` builds, kept whole for JLC's gerber upload),
+        ``{slug}-bom.csv`` and ``{slug}-cpl.csv`` — the same three
+        artifacts :meth:`_render_fab_package` writes to a directory,
+        assembled in memory with nothing stored. ``None`` when the
+        design has no board row, the same contract as
+        :meth:`_fab_zip`."""
+        import zipfile
+
+        ref = self.store.get_ref(kind="pcb", id=ref_id)
+        slug = ref.slug if ref is not None and ref.slug else str(ref_id)
+        built = self._fab_zip(ref_id, slug)
+        if built is None:
+            return None
+        blob, _warnings, _files, _model = built
+        export_model = self._export_model(ref_id)
+        out = io.BytesIO()
+        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(f"{slug}-fab.zip", blob)
+            zf.writestr(f"{slug}-bom.csv", pcb_export.bom_csv(export_model))
+            zf.writestr(f"{slug}-cpl.csv", pcb_export.cpl_csv(export_model))
+        return out.getvalue(), f"{slug}-fab-package.zip"
+
     def epro_build(
         self, ref_id: int, *, allow_synthesized: bool = False
     ) -> EproBuild | None:

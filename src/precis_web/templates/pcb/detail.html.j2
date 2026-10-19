@@ -16,6 +16,12 @@
   </span>
   {% endif %}
   {% include "pcb/_drc_badge.html.j2" %}
+  <span class="text-xs text-fg-subtle">
+    export:
+    <a href="/pcb/{{ slug | urlencode }}/fab.zip" class="underline hover:text-fg-secondary">production files (.zip)</a>
+    ·
+    <a href="/pcb/{{ slug | urlencode }}/export.epro2" class="underline hover:text-fg-secondary">.epro2</a>
+  </span>
 </div>
 
 {% if read_only %}

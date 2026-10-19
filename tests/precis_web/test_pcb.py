@@ -754,3 +754,55 @@ def test_epro_download_refuses_a_stale_sha(pcb_client, runtime_with_store) -> No
 
 def test_epro_download_404(pcb_client) -> None:
     assert pcb_client.get("/pcb/nope/export.epro2").status_code == 404
+
+
+# ── GET /pcb/{slug}/fab.zip + the export toolbar (gr496699) ─────────────
+
+
+def test_fab_zip_downloads_the_full_production_package(
+    pcb_client, runtime_with_store
+) -> None:
+    import io
+    import zipfile
+
+    _seed_placed(runtime_with_store, "web_fab")
+    r = pcb_client.get("/pcb/web_fab/fab.zip")
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"] == "application/zip"
+    assert r.headers["content-disposition"] == (
+        'attachment; filename="web_fab-fab-package.zip"'
+    )
+    zf = zipfile.ZipFile(io.BytesIO(r.content))
+    assert sorted(zf.namelist()) == [
+        "web_fab-bom.csv",
+        "web_fab-cpl.csv",
+        "web_fab-fab.zip",
+    ]
+    # the nested zip is the same gerber+drill bundle view='fab' writes
+    inner = zipfile.ZipFile(io.BytesIO(zf.read("web_fab-fab.zip")))
+    names = inner.namelist()
+    assert "web_fab-Edge_Cuts.gbr" in names
+    assert "web_fab-F_Cu.gbr" in names
+    bom = zf.read("web_fab-bom.csv").decode(encoding="utf-8")
+    assert "R1" in bom and "C25744" in bom
+    assert "R1" in zf.read("web_fab-cpl.csv").decode(encoding="utf-8")
+
+
+def test_detail_export_toolbar_links_both_downloads(
+    pcb_client, runtime_with_store
+) -> None:
+    _seed_placed(runtime_with_store, "web_toolbar")
+    r = pcb_client.get("/pcb/web_toolbar")
+    assert r.status_code == 200
+    assert 'href="/pcb/web_toolbar/fab.zip"' in r.text
+    assert 'href="/pcb/web_toolbar/export.epro2"' in r.text
+    assert "production files" in r.text
+
+
+def test_fab_zip_404_and_no_board(pcb_client, runtime_with_store) -> None:
+    assert pcb_client.get("/pcb/nope/fab.zip").status_code == 404
+    store = runtime_with_store.hub.store
+    store.insert_ref(kind="pcb", slug="web_no_board", title="bare")
+    r = pcb_client.get("/pcb/web_no_board/fab.zip")
+    assert r.status_code == 422
+    assert "no board" in r.text
