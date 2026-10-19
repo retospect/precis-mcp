@@ -113,13 +113,41 @@
     // camera.
     svg.setAttribute('width', '100%');
     svg.setAttribute('height', '100%');
+    // A layer legend (.legend) is HUD, not board: pinned to the pane's
+    // top-left at a fixed pixel size however the camera moves or the pane
+    // is resized (gr497528).
+    this.legend = svg.querySelector ? svg.querySelector('.legend') : null;
     this.space = false;
     this.pointers = new Map();
     this.drag = null;
     this.pinch = null;
     this.suppress = false;
     this._bind();
+    this.pinLegend();
+    if (this.win && this.win.addEventListener) {
+      this.win.addEventListener('resize', () => this.pinLegend());
+    }
   }
+
+  /* The legend is authored in document pixels, but it lives inside the
+     viewBox, so zoom would scale it and pan would carry it away. Counter
+     the camera: put its origin at the svg element's top-left corner in
+     viewBox units and scale by one CSS pixel in viewBox units. */
+  Controller.prototype.pinLegend = function () {
+    if (!this.legend) return;
+    const r = this.svg.getBoundingClientRect();
+    const m = screenScale(this.svg, this.box);
+    const x = this.box.x - (m.ox - r.left) / m.s;
+    const y = this.box.y - (m.oy - r.top) / m.s;
+    this.legend.setAttribute(
+      'transform',
+      `translate(${+x.toFixed(5)} ${+y.toFixed(5)}) scale(${+(1 / m.s).toFixed(6)})`
+    );
+  };
+
+  Controller.prototype.setLegendHidden = function (hidden) {
+    if (this.legend) this.legend.style.display = hidden ? 'none' : '';
+  };
 
   Controller.prototype.setBox = function (b) {
     const minW = this.base.w / MAX_IN;
@@ -133,6 +161,7 @@
     }
     this.box = b;
     this.svg.setAttribute('viewBox', boxAttr(b));
+    this.pinLegend();
   };
 
   Controller.prototype.zoomBy = function (factor, clientX, clientY) {

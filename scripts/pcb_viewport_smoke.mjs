@@ -164,6 +164,39 @@ function rig() {
   assert(viewBox(svg).w <= 200 / 0.25 + 1e-6, 'zoom-out clamp');
 }
 
+// ── the layer legend stays pinned, fixed-size and hideable (gr497528) ──
+{
+  const legendAttrs = {};
+  const legend = {
+    style: {display: ''},
+    setAttribute(k, v) {
+      legendAttrs[k] = String(v);
+    },
+  };
+  const svg = fakeSvg();
+  svg.querySelector = (sel) => (sel === '.legend' ? legend : null);
+  const ctl = new V.Controller(svg, fakeTarget());
+  const t = () => legendAttrs.transform;
+  // fitted: pane is 200x100 for a 200x100 box, so 1 viewBox unit = 1px
+  assert(t() === 'translate(0 0) scale(1)', `fitted legend: ${t()}`);
+  ctl.zoomBy(2, 100, 50);
+  // zoomed 2x: the legend counter-scales to stay one CSS px per unit and
+  // rides the pane's top-left corner (the new box origin)
+  const b = viewBox(svg);
+  assert(t() === `translate(${+b.x.toFixed(5)} ${+b.y.toFixed(5)}) scale(0.5)`,
+    `zoomed legend keeps its size and corner: ${t()}`);
+  ctl.panScreen(40, 20);
+  const p = viewBox(svg);
+  assert(t().startsWith(`translate(${+p.x.toFixed(5)} ${+p.y.toFixed(5)})`),
+    `panned legend stays on the corner: ${t()}`);
+  ctl.fit();
+  assert(t() === 'translate(0 0) scale(1)', 'fit restores the pinned legend');
+  ctl.setLegendHidden(true);
+  assert(legend.style.display === 'none', 'legend hides');
+  ctl.setLegendHidden(false);
+  assert(legend.style.display === '', 'legend shows again');
+}
+
 // ── the wheel classifier itself ──────────────────────────────────────
 assert(V._classifyWheel({deltaY: -120, deltaX: 0, deltaMode: 0}) === 'zoom');
 assert(V._classifyWheel({deltaY: -120, deltaX: 0, deltaMode: 1}) === 'zoom');

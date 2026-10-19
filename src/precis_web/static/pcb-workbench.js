@@ -158,6 +158,43 @@
     }
   }
 
+  // gr497528: the layer legend is pinned and fixed-size by viewport.js; this
+  // button hides/shows it, remembered per user. The board <object> reloads
+  // on flip, so the stored state is re-applied on every load.
+  const layersBtn = el('pcb-layers-toggle');
+  const LAYERS_KEY = 'precis:pcb-workbench:layers-hidden';
+  if (layersBtn && boardObj) {
+    let hidden = false;
+    try {
+      hidden = localStorage.getItem(LAYERS_KEY) === '1';
+    } catch (_) {
+      /* same */
+    }
+    const paint = () => {
+      layersBtn.setAttribute('aria-pressed', String(!hidden));
+      layersBtn.textContent = hidden ? 'show layers' : 'hide layers';
+      let doc = null;
+      try {
+        doc = boardObj.contentDocument;
+      } catch (_) {
+        doc = null;
+      }
+      const svg = doc && doc.documentElement;
+      if (svg && svg.__precisVp) svg.__precisVp.setLegendHidden(hidden);
+    };
+    paint();
+    boardObj.addEventListener('load', paint);
+    layersBtn.addEventListener('click', () => {
+      hidden = !hidden;
+      try {
+        localStorage.setItem(LAYERS_KEY, hidden ? '1' : '0');
+      } catch (_) {
+        /* same */
+      }
+      paint();
+    });
+  }
+
   // Flip re-requests the same shown snapshot with flip=1: the bottom view,
   // mirrored, B.* layers on top (gerber_view._FLIPPED_STACK). Selection
   // identity is unchanged, so a selection survives the flip.

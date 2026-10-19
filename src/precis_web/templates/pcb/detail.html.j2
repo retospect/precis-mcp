@@ -73,6 +73,8 @@
       <span class="font-normal text-xs text-fg-faint">click a pad, part or track to drop its handle into the argument below</span>
       <a href="/pcb/{{ slug | urlencode }}/export.epro2" class="font-normal text-xs text-fg-faint underline hover:text-fg-secondary">download .epro2 (EasyEDA Pro)</a>
       <span class="vp-tools float-right inline-flex gap-1">
+        <button type="button" id="pcb-layers-toggle" aria-pressed="true"
+                title="hide or show the layer panel" class="rounded border border-line px-1 font-mono text-xs text-fg-secondary">hide layers</button>
         <button type="button" id="pcb-flip" aria-pressed="false"
                 title="bottom view — mirrored, B.* layers on top" class="rounded border border-line px-1 font-mono text-xs text-fg-secondary">bottom view</button>
         <button type="button" data-vp="in" data-shortcut-label="Zoom in" title="zoom in (+)" class="rounded border border-line px-1 font-mono text-xs text-fg-secondary">+</button>

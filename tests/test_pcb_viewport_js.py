@@ -49,3 +49,17 @@ def test_viewport_keys_ride_shortcuts_js_not_a_second_handler() -> None:
         assert f'data-vp="{name}"' in (
             _REPO / "src" / "precis_web" / "templates" / "pcb" / "detail.html.j2"
         ).read_text(encoding="utf-8")
+
+
+def test_layer_toggle_button_and_persistence_are_wired() -> None:
+    """No browser e2e harness exists for the pcb page; the pinning maths is
+    in the node smoke, this pins the page wiring (gr497528)."""
+    tpl = (
+        _REPO / "src" / "precis_web" / "templates" / "pcb" / "detail.html.j2"
+    ).read_text(encoding="utf-8")
+    js = (_STATIC / "pcb-workbench.js").read_text(encoding="utf-8")
+    assert 'id="pcb-layers-toggle"' in tpl
+    assert "pcb-layers-toggle" in js
+    assert "precis:pcb-workbench:layers-hidden" in js
+    assert "setLegendHidden" in js
+    assert "pinLegend" in (_STATIC / "viewport.js").read_text(encoding="utf-8")
