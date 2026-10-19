@@ -483,6 +483,25 @@ def _run_cfp_watch(store: Store, batch_size: int) -> None:
     )
 
 
+def _run_secret_check(store: Store, batch_size: int) -> None:
+    """Weekly credential probe (gr496305 item 4): runs
+    ``secret_status.weekly_report`` and raises one ``secret_check`` alert
+    per ``failed`` credential. ``batch_size`` is unused — the pass walks
+    the whole KNOWN_SECRETS registry (a fixed, bounded set). Probes
+    resolve the vault/env on whichever host wins the lease —
+    env-override-wins, same as the manual `precis secret check`. See
+    workers/secret_check.py."""
+    from precis.workers.secret_check import run_secret_check_pass
+
+    result = run_secret_check_pass(store)
+    log.info(
+        "scheduler: secret_check inner result claimed=%d ok=%d failed=%d",
+        result.claimed,
+        result.ok,
+        result.failed,
+    )
+
+
 def _run_memory_thread_sweep(store: Store, batch_size: int) -> None:
     """One ``section:threads`` retirement sweep (gr485358 item 1), fired
     from the daily host-agnostic ``memory_thread_sweep`` cadence.
@@ -923,6 +942,18 @@ CADENCES: tuple[Cadence, ...] = (
         interval_s=7 * 24 * 3600 + 17 * 60,
         run=_run_memory_recall,
         eligible=_memory_recall_eligible,
+    ),
+    # gr496305 item 4: the weekly credential check — run the /secrets
+    # probes on a cadence and raise one secret_check alert per `failed`
+    # credential, so a revoked key doesn't wait for a /whatneedsdoing
+    # session. Host-agnostic like cfp_watch; off the exact week (+29m so
+    # the weekly fires don't land together). No `eligible` gate: a host
+    # with nothing configured reports every row missing — quiet, no
+    # alerts. spends=False: fixed-endpoint HTTP probes only, no LLM.
+    Cadence(
+        name="secret_check",
+        interval_s=7 * 24 * 3600 + 29 * 60,
+        run=_run_secret_check,
     ),
 )
 

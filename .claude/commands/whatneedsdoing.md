@@ -220,6 +220,10 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
      `docs/runbooks/secrets-check.md`. Inside the 7-day window it's quiet —
      skip it. (An expired key otherwise surfaces only as a failing job, e.g.
      `pourbaix_bulk` with `failure_class=config`; runbook has the details.)
+     The weekly `secret_check` scheduler cadence runs the same probes and
+     raises one alert per `failed` credential — check
+     `search(kind='alert', q='secret_check')` for an already-filed finding
+     before writing a todo.
   - **Nightly build** (`scripts/nightly --check`) — the LOCAL full-suite health
      read (not GitHub). **`✗ RED`** means green main was broken by upstream
      dependency drift (the ship gate can't catch it — no code changed);

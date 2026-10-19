@@ -38,8 +38,10 @@ script only keeps the clock — it never probes anything.
 - Registry completeness is a test:
   `tests/precis_web/test_secret_registry_complete.py` fails when the code
   reads a secret name that has no `SecretSpec`.
-- The scheduled-job variant (no human has to run the pass) is the backlog item
-  `credential-check-scheduled-job`.
+- The weekly `secret_check` scheduler cadence runs this pass without a human
+  and raises one `secret_check` alert per `failed` credential (deduped, and
+  auto-resolved when the credential passes again). The manual pass above
+  remains the review and todo-filing step.
 
 ## Log
 

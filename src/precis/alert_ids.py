@@ -660,6 +660,17 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         "is `precis pcb refresh-parts --from-sqlite`.",
     ),
     AlertRule(
+        "secret_check",
+        "failed:{secret}",
+        "The weekly credential check found a configured key its provider "
+        "rejects (name, HTTP status and key URL only — never the value).",
+        "warn",
+        "scheduler",
+        triage="Rotate the named credential (`precis secret set`; the key "
+        "URL is in the alert detail); `precis secret check` shows live states.",
+        budget="weekly cadence",
+    ),
+    AlertRule(
         "memory_recall",
         "recall-dropped",
         "The weekly P4 memory recall score dropped below the last recorded "

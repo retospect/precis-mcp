@@ -12,7 +12,11 @@ The plaintext never leaves this function call — it is never put into a
 is always a short human string synthesized from an HTTP status code or
 exception *type*, never from response headers/body (Wolfram's body-sniff is
 the one exception, and it reads a few hundred bytes locally to test for a
-substring — it is never included in ``detail``).
+substring — it is never included in ``detail``). Probe traffic runs inside
+:func:`_quiet_probe_logs`: httpx logs the full request URL at INFO and
+httpcore logs headers at DEBUG/TRACE, and the OpenAlex/Wolfram probes carry
+the key in the query string — the key goes on the wire, never into a log
+record.
 
 :func:`weekly_report` / ``precis secret check`` run the same probes outside the
 web page for ``/whatneedsdoing`` (gr496305): one state per registry secret
@@ -28,9 +32,12 @@ user-supplied — so the ``safe_fetch`` SSRF convention
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import logging
 import os
+import threading
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -411,6 +418,45 @@ def _probe_client() -> httpx.AsyncClient:
     )
 
 
+_QUIET_LOGGERS = ("httpx", "httpcore")
+_quiet_lock = threading.Lock()
+_quiet_depth = 0
+_quiet_prior: list[int] = []
+
+
+@contextlib.contextmanager
+def _quiet_probe_logs() -> Iterator[None]:
+    """Raise the httpx/httpcore loggers to WARNING for the probe call.
+
+    httpx logs the full request URL at INFO (``HTTP Request: GET …``) and
+    httpcore logs request headers at DEBUG/TRACE; the OpenAlex ``api_key``
+    and Wolfram ``appid`` probes carry the key in the query string, and a
+    transport exception's repr can echo the URL too. The key belongs on the
+    wire, never in a log record — and this cadence now runs weekly
+    unattended, so "someone notices the INFO line" is not a control.
+    Refcounted so two concurrent batches (the /secrets page and the
+    ``secret_check`` cadence in one process) can't restore the level while
+    the other is still probing.
+    """
+    global _quiet_depth
+    loggers = [logging.getLogger(n) for n in _QUIET_LOGGERS]
+    with _quiet_lock:
+        _quiet_depth += 1
+        if _quiet_depth == 1:
+            _quiet_prior[:] = [lg.level for lg in loggers]
+            for lg in loggers:
+                lg.setLevel(logging.WARNING)
+    try:
+        yield
+    finally:
+        with _quiet_lock:
+            _quiet_depth -= 1
+            if _quiet_depth == 0:
+                for lg, level in zip(loggers, _quiet_prior, strict=True):
+                    lg.setLevel(level)
+                _quiet_prior.clear()
+
+
 async def _probe_anthropic(
     client: httpx.AsyncClient, values: dict[str, str]
 ) -> CheckResult:
@@ -709,26 +755,28 @@ async def run_checks(store: Store) -> dict[str, CheckResult]:
 
     # Fixed provider endpoints only (see module docstring) — not agent- or
     # user-supplied, so plain httpx is fine here; safe_fetch is for the
-    # agent-supplied-URL surface.
-    async with _probe_client() as client:
-        for group, names in _PROBE_GROUP_MEMBERS.items():
-            present = [n for n in names if is_available(n, store=store)]
-            if not present:
-                continue
-            if len(present) < len(names):
-                for n in present:
-                    results[n] = CheckResult("bad", "partner secret missing")
-                continue
-            if group == "oss_llm" and not os.environ.get("PRECIS_LLM_BASE_URL"):
-                # No endpoint configured — nothing to probe against; the key
-                # is presence-only until a base URL is set.
-                continue
-            values = {n: get_secret(n, store=store) or "" for n in names}
-            group_order.append(group)
-            group_names[group] = names
-            coros.append(_probe_group(group, client, values))
+    # agent-supplied-URL surface. The log suppression keeps probe URLs and
+    # headers (key-bearing for openalex/wolfram) out of INFO/DEBUG records.
+    with _quiet_probe_logs():
+        async with _probe_client() as client:
+            for group, names in _PROBE_GROUP_MEMBERS.items():
+                present = [n for n in names if is_available(n, store=store)]
+                if not present:
+                    continue
+                if len(present) < len(names):
+                    for n in present:
+                        results[n] = CheckResult("bad", "partner secret missing")
+                    continue
+                if group == "oss_llm" and not os.environ.get("PRECIS_LLM_BASE_URL"):
+                    # No endpoint configured — nothing to probe against; the
+                    # key is presence-only until a base URL is set.
+                    continue
+                values = {n: get_secret(n, store=store) or "" for n in names}
+                group_order.append(group)
+                group_names[group] = names
+                coros.append(_probe_group(group, client, values))
 
-        outcomes = await asyncio.gather(*coros) if coros else []
+            outcomes = await asyncio.gather(*coros) if coros else []
 
     for group, outcome in zip(group_order, outcomes, strict=True):
         for n in group_names[group]:
