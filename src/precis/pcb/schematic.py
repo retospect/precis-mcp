@@ -49,9 +49,11 @@ _TARGET_ROW_W = 1150.0  # shelf-wrap width
 
 def _natural_key(pin: str) -> tuple[Any, ...]:
     """Sort '2' before '10' and 'A1' before 'A2' — datasheet pin order,
-    not ASCII order."""
+    not ASCII order. Each segment is tagged (0=number, 1=text) because a
+    part can mix numeric and named pins — an imported EasyEDA symbol's
+    'A1' next to '1' must never compare ``int < str`` (gr496856)."""
     return tuple(
-        int(part) if part.isdigit() else part
+        (0, int(part)) if part.isdigit() else (1, part)
         for part in re.split(r"(\d+)", pin)
         if part != ""
     )

@@ -59,6 +59,30 @@ def _graph() -> dict[str, Any]:
     }
 
 
+def test_mixed_named_and_numeric_pins_sort_without_crash() -> None:
+    """Imported (EasyEDA) parts carry named pins next to numeric ones —
+    'A1' beside '1'. The pin sort must not compare int < str (gr496856:
+    the schematic view TypeError'd on taz15-r2)."""
+    graph = {
+        "instances": [{"refdes": "Q1", "label": "MOSFET", "n_pins": 3}],
+        "nets": [
+            {
+                "name": "SIG",
+                "net_class": None,
+                "members": [{"refdes": "Q1", "pin": "A1"}],
+            },
+            {
+                "name": "GND",
+                "net_class": "ground",
+                "members": [{"refdes": "Q1", "pin": "1"}],
+            },
+        ],
+        "unconnected": [{"refdes": "Q1", "pin": "S"}],
+    }
+    svg = render_schematic_svg(graph, title="t")
+    assert ">Q1</text>" in svg and ">SIG</text>" in svg
+
+
 def test_every_part_pin_and_net_label_appears() -> None:
     svg = render_schematic_svg(_graph(), title="t")
     for refdes in ("U1", "R1", "C1"):

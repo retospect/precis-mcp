@@ -1859,3 +1859,14 @@ def test_import_keeps_a_dangling_net_that_carries_source_copper() -> None:
     assert dropped == ["CN4_1"]
     assert {n["name"] for n in design.nets} == {"SIG", "TRK", "S$151"}
     assert {"net": "TRK", "refdes": "U1", "pin": "3"} in design.connections
+
+
+def test_the_schematic_renders_on_the_imported_board(store, imported) -> None:
+    """gr496856 — get(view='schematic') TypeError'd on taz15-r2: an
+    imported part's named pins next to numeric ones made the pin sort
+    compare int < str."""
+    from precis.pcb import schematic
+
+    ref = store.get_ref(kind="pcb", id="epro-import-1")
+    svg = schematic.render_schematic_svg(store.pcb_graph(ref.id))
+    assert svg.startswith("<svg")
