@@ -319,13 +319,15 @@ def record_ann_sql(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, Any]]:
 
 
 @contextmanager
-def _no_seqscan(conn: Connection) -> Iterator[None]:
+def _no_seqscan(conn: Connection, *, no_sort: bool = False) -> Iterator[None]:
     conn.execute("SET LOCAL enable_seqscan = off")
+    if no_sort:
+        conn.execute("SET LOCAL enable_sort = off")
     yield
 
 
-def _plan(store: Store, sql: str, params: Any) -> str:
-    with store.pool.connection() as conn, _no_seqscan(conn):
+def _plan(store: Store, sql: str, params: Any, *, no_sort: bool = False) -> str:
+    with store.pool.connection() as conn, _no_seqscan(conn, no_sort=no_sort):
         _chunks_ops._prepare_filtered_ann(conn, 20)
         return "\n".join(
             str(r[0]) for r in conn.execute("EXPLAIN " + sql, params).fetchall()
@@ -335,10 +337,21 @@ def _plan(store: Store, sql: str, params: Any) -> str:
 def test_planner_uses_the_partial_index_for_a_big_kind(
     store: Store, kind_indexes: dict[str, bool], record_ann_sql: list[tuple[str, Any]]
 ) -> None:
+    """The big-kind ANN statement CAN be served by its own partial index.
+
+    This proves usability for the query shape: with seqscan and an explicit
+    Sort forbidden, the ORDER BY distance has to come from
+    ``chunk_embeddings_vec_hnsw_memory_idx`` itself, named below. It does not
+    prove the planner *chooses* that index at prod scale; that needs real
+    stats and belongs in a prod EXPLAIN smoke test.
+    """
     v, _truth = _seed(store, "memory", n_kind=12, n_paper=60)
     store.chunks.search_chunks_semantic(query_vec=v, kind="memory", limit=5)
     sql, params = record_ann_sql[-1]
-    plan = _plan(store, sql, params)
+    # 72 rows: an exact scan plus an explicit Sort is genuinely cheaper than
+    # any HNSW walk, and which side wins follows the table stats a neighbour
+    # test left behind (gr496950), so the Sort is forbidden here.
+    plan = _plan(store, sql, params, no_sort=True)
     assert "chunk_embeddings_vec_hnsw_memory_idx" in plan, re.sub(
         r"\[[^\]]*\]", "[..]", plan
     )
