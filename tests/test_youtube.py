@@ -19,13 +19,15 @@ from typing import Any
 import pytest
 
 from precis.dispatch import Hub
-from precis.errors import BadInput, NotFound, Upstream
+from precis.errors import BadInput, NotFound, Unsupported, Upstream
 from precis.handlers.youtube import (
     YouTubeHandler,
     _extract_video_id,
     _parse_languages,
 )
+from precis.runtime import PrecisRuntime
 from precis.store import Store
+from precis.store.types import ChunkInsert
 
 # ── stub youtube-transcript-api at the import boundary ────────────────
 
@@ -438,3 +440,276 @@ def test_generic_upstream_error_names_languages_view(
         h.get(id="dQw4w9WgXcQ")
     assert exc.value.next is not None
     assert "view='languages'" in str(exc.value.next)
+
+
+# ── cached-video discovery (gr498108) ────────────────────────────────
+
+
+def _cache_video(
+    store: Store,
+    video_id: str,
+    title: str,
+    *,
+    channel: str | None = None,
+    duration_s: int | None = None,
+    description: str | None = None,
+    text: str = "transcript body",
+):
+    """Insert a youtube cache row directly — no upstream involved."""
+    meta: dict[str, Any] = {"video_id": video_id, "languages": ["en"]}
+    if channel is not None:
+        meta["channel_name"] = channel
+    if duration_s is not None:
+        meta["duration_s"] = duration_s
+    if description is not None:
+        meta["description"] = description
+    return store.put_cache_entry(
+        kind="youtube",
+        slug=video_id,
+        title=title,
+        body_blocks=[ChunkInsert(ord=0, text=text)],
+        provider="youtube",
+        request_hash=f"hash-{video_id}",
+        ttl_seconds=30 * 24 * 3600,
+        cache_meta=meta,
+    )
+
+
+class TestRecentListing:
+    def test_lists_videos_with_channel_duration_date(
+        self, handler: YouTubeHandler, store: Store
+    ) -> None:
+        _cache_video(
+            store,
+            "dQw4w9WgXcQ",
+            "Rick Astley - Never Gonna Give You Up",
+            channel="Rick Astley",
+            duration_s=213,
+        )
+        resp = handler.get(id="/recent")
+        assert "# cached youtube videos" in resp.body
+        assert "`dQw4w9WgXcQ`" in resp.body
+        assert "Rick Astley - Never Gonna Give You Up" in resp.body
+        assert "Rick Astley" in resp.body
+        assert "3m33s" in resp.body
+        assert "CACHE:fresh" in resp.body
+        assert "showing 1–1 of 1" in resp.body
+        assert _StubApi.fetch_calls == []
+
+    def test_bare_get_and_slash_are_the_same_listing(
+        self, handler: YouTubeHandler, store: Store
+    ) -> None:
+        _cache_video(store, "dQw4w9WgXcQ", "T")
+        for ident in (None, "", "/", "/recent"):
+            resp = handler.get(id=ident)
+            assert "`dQw4w9WgXcQ`" in resp.body, ident
+
+    def test_paginates(self, handler: YouTubeHandler, store: Store) -> None:
+        for i in range(25):
+            _cache_video(store, f"vid{i:07d}xyz", f"Video {i}")
+        p1 = handler.get(id="/recent", page_size=10)
+        p2 = handler.get(id="/recent", page_size=10, page=2)
+        assert "showing 1–10 of 25 (page 1 of 3)" in p1.body
+        assert "showing 11–20 of 25 (page 2 of 3)" in p2.body
+        assert "page': 2" in p1.body  # next-page hint
+        p4 = handler.get(id="/recent", page_size=10, page=4)
+        assert "no entries" in p4.body
+
+    def test_page_on_a_transcript_read_is_refused(
+        self, handler: YouTubeHandler
+    ) -> None:
+        with pytest.raises(BadInput, match="page"):
+            handler.get(id="dQw4w9WgXcQ", page=2)
+
+    def test_unknown_view_is_refused_with_options(
+        self, handler: YouTubeHandler
+    ) -> None:
+        with pytest.raises(BadInput, match="unknown view") as exc:
+            handler.get(id="dQw4w9WgXcQ", view="bogus")
+        assert exc.value.options == ["languages"]
+
+    def test_no_fetch_reads_without_fetching(
+        self, handler: YouTubeHandler, store: Store
+    ) -> None:
+        _cache_video(store, "dQw4w9WgXcQ", "T", text="the cached words")
+        resp = handler.get(id="dQw4w9WgXcQ", no_fetch=True)
+        assert "the cached words" in resp.body
+        assert _StubApi.fetch_calls == []
+
+
+class TestSearch:
+    def test_chunk_hits_grouped_one_row_per_video(
+        self, handler: YouTubeHandler, store: Store
+    ) -> None:
+        # Two hits in the SAME video must collapse to one row.
+        store.put_cache_entry(
+            kind="youtube",
+            slug="vidAAAAAAA1",
+            title="Ions talk",
+            body_blocks=[
+                ChunkInsert(ord=0, text="neighbouring ions repel each other"),
+                ChunkInsert(ord=1, text="neighbouring ions also attract"),
+            ],
+            provider="youtube",
+            request_hash="h1",
+            ttl_seconds=3600,
+            cache_meta={"video_id": "vidAAAAAAA1", "channel_name": "Ch"},
+        )
+        resp = handler.search(q="neighbouring ions")
+        assert resp.body.count("`vidAAAAAAA1`") == 1
+        assert "more transcript hit" in resp.body
+
+    def test_title_match_surfaced(self, handler: YouTubeHandler, store: Store) -> None:
+        _cache_video(
+            store,
+            "vidBBBBBBB2",
+            "How neighbouring ions self-organise",
+            channel="Ion Channel",
+        )
+        resp = handler.search(q="neighbouring ions")
+        assert "`vidBBBBBBB2`" in resp.body
+        assert "title/channel match" in resp.body
+
+    def test_channel_match(self, handler: YouTubeHandler, store: Store) -> None:
+        _cache_video(
+            store,
+            "vidCCCCCCC3",
+            "A lecture",
+            channel="Veritasium",
+        )
+        resp = handler.search(q="veritasium")
+        assert "`vidCCCCCCC3`" in resp.body
+
+    def test_empty_state_lists_closest_titles(
+        self, handler: YouTubeHandler, store: Store
+    ) -> None:
+        _cache_video(store, "vidDDDDDDD4", "Quantum chromodynamics lecture")
+        resp = handler.search(q="quantum chromodynamic")
+        if "no cached youtube videos match" in resp.body:
+            assert "closest cached titles" in resp.body
+            assert "/recent" in resp.body
+        else:
+            assert "`vidDDDDDDD4`" in resp.body
+
+    def test_per_paper_raises_chunk_cap(
+        self, handler: YouTubeHandler, store: Store
+    ) -> None:
+        store.put_cache_entry(
+            kind="youtube",
+            slug="vidEEEEEEE5",
+            title="T",
+            body_blocks=[
+                ChunkInsert(ord=0, text="alpha beta gamma"),
+                ChunkInsert(ord=1, text="alpha beta delta"),
+            ],
+            provider="youtube",
+            request_hash="h5",
+            ttl_seconds=3600,
+            cache_meta={"video_id": "vidEEEEEEE5"},
+        )
+        one = handler.search(q="alpha beta")
+        two = handler.search(q="alpha beta", per_paper=2)
+        assert two.body.count("alpha beta") > one.body.count("alpha beta")
+        with pytest.raises(BadInput, match="per_paper"):
+            handler.search(q="alpha beta", per_paper=0)
+
+    def test_no_live_fetch_on_search(
+        self, handler: YouTubeHandler, store: Store
+    ) -> None:
+        _cache_video(store, "vidFFFFFFF6", "T", text="hello world")
+        handler.search(q="hello")
+        assert _StubApi.fetch_calls == []
+        assert _StubApi.list_calls == []
+
+    def test_page_two_includes_later_title_hits(
+        self, handler: YouTubeHandler, store: Store
+    ) -> None:
+        """The title leg must fetch through the requested page — a
+        ``limit=page_size`` fetch would drop page-2 title matches and
+        under-count the total."""
+        for i in range(12):
+            _cache_video(store, f"vid{i:07d}pqr", f"Ions lecture {i}")
+        p1 = handler.search(q="ions lecture", page_size=10)
+        p2 = handler.search(q="ions lecture", page_size=10, page=2)
+        assert "10 of 12 video hits" in p1.body
+        assert p2.body.count("## `") == 2
+        assert "page 3" not in p2.body
+
+    def test_channel_match_escapes_ilike_wildcards(
+        self, handler: YouTubeHandler, store: Store
+    ) -> None:
+        """A literal '%' in q must not act as an ILIKE wildcard."""
+        _cache_video(store, "vidIIIIIII9", "Chem A", channel="100% Chemistry")
+        _cache_video(store, "vidJJJJJJJ0", "Chem B", channel="1000 Islands")
+        resp = handler.search(q="100%")
+        assert "100% Chemistry" in resp.body
+        assert "1000 Islands" not in resp.body
+
+    def test_prose_query_on_get_hints_at_search(self, handler: YouTubeHandler) -> None:
+        with pytest.raises(BadInput) as exc:
+            handler.get(q="neighbouring ions")
+        assert "search(kind='youtube'" in str(exc.value.next)
+
+
+class TestDispatchArgs:
+    """The extras gate must forward the new kwargs end-to-end (gr498108:
+    ``args={'per_paper': 1}`` was refused before it reached the handler)."""
+
+    def test_per_paper_via_args_reaches_handler(
+        self, runtime_with_store: PrecisRuntime, store: Store
+    ) -> None:
+        _cache_video(store, "vidGGGGGGG7", "Ions", text="ions everywhere")
+        out = runtime_with_store.dispatch(
+            "search",
+            {"kind": "youtube", "q": "ions", "__extras__": {"per_paper": 1}},
+        )
+        body = out.body if hasattr(out, "body") else str(out)
+        assert "not accepted" not in body
+        assert "`vidGGGGGGG7`" in body
+
+    def test_no_fetch_via_args_reaches_handler(
+        self, runtime_with_store: PrecisRuntime, store: Store
+    ) -> None:
+        _cache_video(store, "vidHHHHHHH8", "T", text="cached bytes")
+        out = runtime_with_store.dispatch(
+            "get",
+            {
+                "kind": "youtube",
+                "id": "vidHHHHHHH8",
+                "__extras__": {"no_fetch": True},
+            },
+        )
+        body = out.body if hasattr(out, "body") else str(out)
+        assert "cached bytes" in body
+
+    def test_page_via_args_pages_the_listing(
+        self, runtime_with_store: PrecisRuntime, store: Store
+    ) -> None:
+        for i in range(3):
+            _cache_video(store, f"p{i:09d}x", f"V{i}")
+        out = runtime_with_store.dispatch(
+            "get",
+            {
+                "kind": "youtube",
+                "id": "/recent",
+                "__extras__": {"page": 2, "page_size": 2},
+            },
+        )
+        body = out.body if hasattr(out, "body") else str(out)
+        assert "page 2" in body
+
+
+class TestEyeRefusal:
+    def test_stored_ref_error_names_what_is_wrong(
+        self, handler: YouTubeHandler, store: Store
+    ) -> None:
+        """gr498108: a cached youtube ref IS a stored ref — the eye
+        refusal must say so (missing handle, not missing ref) and
+        point at /recent."""
+        _cache_video(store, "dQw4w9WgXcQ", "T")
+        with pytest.raises(Unsupported) as exc:
+            handler.eye(id="dQw4w9WgXcQ", extent="summary")
+        assert "stored" in exc.value.cause
+        assert "not a stored ref" not in exc.value.cause
+        assert "handle" in exc.value.cause
+        assert "/recent" in str(exc.value.next)

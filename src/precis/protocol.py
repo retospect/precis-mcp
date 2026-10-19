@@ -369,6 +369,14 @@ class Handler(ABC):
     #: a new kind is gated until it argues otherwise.
     stores_opaque_text: ClassVar[bool] = False
 
+    #: True for fetch-cache kinds (:class:`CacheBackedHandler` subclasses):
+    #: their fetches DO land as live refs + chunks, but the kind is
+    #: query/URL-addressed and carries no universal handle — so the eye
+    #: refusal on them must say "stored refs, no handle" rather than the
+    #: generic "not a stored ref" (gr498108 — a cached youtube transcript
+    #: told the caller it wasn't a stored ref while sitting in ``refs``).
+    stores_cached_refs: ClassVar[bool] = False
+
     #: The handler defines its own ``under=`` / ``depth=`` search arguments, so
     #: the dispatcher's generic part-of ``under`` facet leaves them alone.
     owns_under: ClassVar[bool] = False
@@ -527,7 +535,13 @@ class Handler(ABC):
                 f"no eye on kind={self.spec.kind!r}: this process has no store bound"
             )
         return eye_response(
-            store, kind=self.spec.kind, id=id, extent=extent, q=q, ring=ring
+            store,
+            kind=self.spec.kind,
+            id=id,
+            extent=extent,
+            q=q,
+            ring=ring,
+            stores_cache=self.stores_cached_refs,
         )
 
     def accepted_views(self, *, id: Any = None) -> list[str]:

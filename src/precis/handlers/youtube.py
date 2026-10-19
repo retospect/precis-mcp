@@ -7,6 +7,12 @@ at the same video share a row. Free, no API key.
 Supports the ``view='languages'`` shortcut to list available
 transcript languages without committing to a fetch (useful when the
 default ``en`` track doesn't exist).
+
+Discovery over what's already cached (gr498108): ``id='/recent'``
+(or a bare get) pages the cached-video list — video id, title,
+channel, duration, cache state — and ``search`` fuses a
+title/channel leg with transcript-chunk hits, grouped one row per
+video, so a vague topic description finds the video without SQL.
 """
 
 from __future__ import annotations
@@ -17,6 +23,7 @@ import re
 from collections.abc import Callable, Iterator
 from contextvars import ContextVar
 from dataclasses import replace
+from datetime import UTC, datetime
 from typing import Any, ClassVar
 from urllib.parse import parse_qs, urlparse
 
@@ -24,7 +31,9 @@ from precis.errors import BadInput, NotFound, Upstream
 from precis.handlers._cache_base import CacheBackedHandler, FetchResult
 from precis.protocol import KindSpec
 from precis.response import Response
-from precis.store.types import ChunkInsert
+from precis.store import SEMANTIC_DISTANCE_FLOOR
+from precis.store.types import CacheEntry, ChunkInsert, Ref
+from precis.utils.embed_query import embed_query, query_vec_for
 from precis.utils.http import (
     Policy,
     call_with_backoff,
@@ -34,6 +43,9 @@ from precis.utils.http import (
 )
 from precis.utils.next_block import render_next_section
 from precis.utils.optional_deps import require_optional
+from precis.utils.search_header import format_search_headline
+from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
+from precis.utils.text import excerpt as _excerpt
 
 log = logging.getLogger(__name__)
 
@@ -114,7 +126,9 @@ class YouTubeHandler(CacheBackedHandler):
         title="YouTube transcripts",
         description=(
             "Fetch a YouTube video transcript by id or URL. "
-            "Use view='languages' to list available transcript languages."
+            "Use view='languages' to list available transcript languages. "
+            "id='/recent' lists cached videos; search matches title, "
+            "channel and transcript."
         ),
         supports_get=True,
         supports_search=True,
@@ -145,6 +159,12 @@ class YouTubeHandler(CacheBackedHandler):
         tags: list[str] | None = None,
         untags: list[str] | None = None,
         mode: str | None = None,
+        page: int | None = None,
+        page_size: int | None = None,
+        no_fetch: bool = False,
+        refresh: bool = False,
+        ttl_days: int | None = None,
+        literal: bool = False,
         **_kw: Any,
     ) -> Response:
         if view == "languages":
@@ -155,6 +175,28 @@ class YouTubeHandler(CacheBackedHandler):
             video_id = _extract_video_id(video_input)
             return _list_languages(video_id)
 
+        if view is not None:
+            # The eye-ladder labels in view= are intercepted by the
+            # dispatcher before this method runs, so any view reaching
+            # here is genuinely unknown — refuse, don't silently ignore.
+            raise BadInput(
+                f"unknown view={view!r} for kind='youtube'",
+                options=["languages"],
+                next=(
+                    "extent= picks an eye-ladder rung (kwd|summary|verbatim|fisheye|…)"
+                ),
+            )
+
+        # Cached-video listing (gr498108): bare get / '' / '/' /
+        # '/recent' pages the rows this kind has already fetched.
+        if self._is_listing_request(id, q):
+            return self._render_recent_videos(page=page, page_size=page_size)
+        if page is not None or page_size is not None:
+            raise BadInput(
+                "page=/page_size= page the /recent listing, not a transcript read",
+                next="get(kind='youtube', id='/recent', args={'page': 2})",
+            )
+
         # Plug `languages=` kwarg into the cache key so distinct
         # language preferences cache separately. Default to English.
         # The preference is stashed on a per-request ``ContextVar`` so
@@ -163,9 +205,11 @@ class YouTubeHandler(CacheBackedHandler):
         # thread pool).
         token = _LANG_PREF.set(tuple(_parse_languages(languages or "")))
         try:
-            # Forward ``**_kw`` so base-class controls (``no_fetch`` for the
-            # read-only web detail page, ``refresh`` / ``ttl_days``) reach
-            # ``CacheBackedHandler.get`` instead of being silently dropped.
+            # ``no_fetch`` / ``refresh`` / ``ttl_days`` / ``literal`` are
+            # re-declared on this signature so the dispatch extras gate
+            # (which reads the most-derived ``get``) forwards them to the
+            # base instead of refusing them — ``no_fetch`` is what the
+            # /recent trailer advertises.
             return super().get(
                 id=id,
                 q=q,
@@ -173,10 +217,348 @@ class YouTubeHandler(CacheBackedHandler):
                 tags=tags,
                 untags=untags,
                 mode=mode,
+                no_fetch=no_fetch,
+                refresh=refresh,
+                ttl_days=ttl_days,
+                literal=literal,
                 **_kw,
             )
         finally:
             _LANG_PREF.reset(token)
+
+    # ── /recent listing — one row per cached video ────────────────────
+
+    def _render_recent_videos(
+        self,
+        *,
+        page: int | None = None,
+        page_size: int | None = None,
+    ) -> Response:
+        """Paginated cached-video listing (gr498108).
+
+        One row per video: the video-id slug (its pastable handle on
+        this kind — youtube carries no universal handle), title,
+        channel, duration and cache state, newest fetch first.
+        ``page=``/``page_size=`` ride ``args=`` on the MCP surface.
+        """
+        try:
+            page = max(1, int(page or 1))
+        except (TypeError, ValueError):
+            raise BadInput(
+                f"page must be a positive integer, got {page!r}",
+                next="get(kind='youtube', id='/recent')",
+            ) from None
+        try:
+            limit = int(page_size if page_size is not None else 20)
+        except (TypeError, ValueError):
+            raise BadInput(
+                f"page_size must be a positive integer ≤ 100, got {page_size!r}",
+                next="get(kind='youtube', id='/recent', args={'page_size': 20})",
+            ) from None
+        if not 1 <= limit <= 100:
+            raise BadInput(
+                f"page_size must be a positive integer ≤ 100, got {limit!r}",
+                next="get(kind='youtube', id='/recent', args={'page_size': 20})",
+            )
+
+        entries = self.store.list_cache_entries(
+            kind=self.spec.kind,
+            provider=self.provider,
+            limit=limit,
+            offset=(page - 1) * limit,
+        )
+        total = self.store.count_cache_entries(
+            kind=self.spec.kind, provider=self.provider
+        )
+        heading = "# cached youtube videos"
+        if not entries:
+            if page > 1 and total:
+                pages = -(-total // limit)
+                body = (
+                    f"{heading}\n\npage {page}: no entries — {total} "
+                    f"cached in {pages} page(s)\n"
+                )
+            else:
+                body = f"{heading}\n\n_(no cached youtube videos yet.)_\n"
+            body += render_next_section(
+                [
+                    (
+                        "get(kind='youtube', id='<video id or URL>')",
+                        "fetch and cache a transcript",
+                    ),
+                ]
+            )
+            return Response(body=body)
+
+        pages = -(-total // limit)
+        lines: list[str] = [heading, ""]
+        for ref, cache in entries:
+            bits = _video_listing_bits(cache)
+            title = ref.title or "(untitled)"
+            if len(title) > 80:
+                title = title[:77] + "..."
+            lines.append(f"- `{ref.slug or ref.id}` — {title}  _{' · '.join(bits)}_")
+        lines.append("")
+        first = (page - 1) * limit + 1
+        last = first + len(entries) - 1
+        lines.append(f"_showing {first}–{last} of {total} (page {page} of {pages})._")
+        calls: list[tuple[str, str]] = [
+            (
+                "get(kind='youtube', id='<video_id>', args={'no_fetch': True})",
+                "read a cached transcript — never fetches",
+            ),
+            (
+                "search(kind='youtube', q='<title, channel or topic>')",
+                "find a cached video by title, channel or transcript",
+            ),
+        ]
+        if page < pages:
+            calls.append(
+                (
+                    f"get(kind='youtube', id='/recent', args={{'page': {page + 1}}})",
+                    f"see page {page + 1} of {pages}",
+                )
+            )
+        body = "\n".join(lines) + render_next_section(calls)
+        return Response(body=body)
+
+    # ── search — title/channel leg + per-video grouped chunks ─────────
+
+    def search(
+        self,
+        *,
+        q: str | None = None,
+        page_size: int = 10,
+        page: int = 1,
+        mode: str | None = None,
+        per_paper: int | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Find a cached video — hits grouped one row per video.
+
+        Two legs (gr498108): a title/channel match over the cache rows
+        themselves (the "which cached video did I mean" signal a bare
+        chunk search lacks), then transcript-chunk hits capped at
+        ``per_paper`` (default 1) chunks per video so one long talk
+        can't flood the page. ``page=`` pages the merged video list.
+        """
+        if q is None or not q.strip():
+            raise BadInput(
+                "search requires q= for kind='youtube'",
+                next="search(kind='youtube', q='<title, channel or topic>')",
+            )
+        q = q.strip()
+        if not isinstance(page, int) or page < 1:
+            page = 1
+        try:
+            page_size = int(page_size)
+        except (TypeError, ValueError):
+            raise BadInput(
+                f"page_size must be a positive integer ≤ 100, got {page_size!r}",
+                next="search(kind='youtube', q='…', page_size=10)",
+            ) from None
+        if not 1 <= page_size <= 100:
+            raise BadInput(
+                f"page_size must be a positive integer ≤ 100, got {page_size!r}",
+                next="search(kind='youtube', q='…', page_size=10)",
+            )
+        cap = 1
+        if per_paper is not None:
+            if (
+                isinstance(per_paper, bool)
+                or not isinstance(per_paper, int)
+                or per_paper < 1
+            ):
+                raise BadInput(
+                    f"per_paper must be a positive integer, got {per_paper!r}",
+                    next="per_paper=2 keeps at most 2 transcript hits per video",
+                )
+            cap = per_paper
+
+        query_vec = query_vec_for(self.embedder, q, mode)
+
+        # Title/channel leg — the cache-row match chunk search can't
+        # express (a video whose *title* names the topic but whose
+        # transcript never does). Fetch a generous pool through the
+        # requested page: the merge below pages over the union, so the
+        # leg must reach past ``page * page_size`` rows or later pages
+        # lose title matches *and* the "of K" total undercounts.
+        title_pool = min(max(50, page * page_size), 500)
+        title_hits = self.store.search_cache_entry_titles(
+            kind=self.spec.kind,
+            q=q,
+            meta_fields=("channel_name",),
+            limit=title_pool,
+        )
+
+        # Transcript-chunk leg, capped per video in the fused pool.
+        pool = min(max(50, page * page_size * cap), 500)
+        counts: dict[int, int] = {}
+        chunk_hits = self.store.chunks.search_chunks_multi(
+            q_texts=[q],
+            query_vecs=[query_vec] if query_vec else [],
+            mode=mode,
+            kind=self.spec.kind,
+            limit=pool,
+            max_distance=SEMANTIC_DISTANCE_FLOOR,
+            per_paper=cap,
+            ref_counts_out=counts,
+        )
+
+        # Group chunk hits per ref (fused order = best chunk first).
+        chunks_by_ref: dict[int, list[tuple[Any, Ref, float]]] = {}
+        ref_order: list[int] = []
+        ref_by_id: dict[int, Ref] = {}
+        for block, ref, score in chunk_hits:
+            if ref.id not in chunks_by_ref:
+                chunks_by_ref[ref.id] = []
+                ref_order.append(ref.id)
+                ref_by_id[ref.id] = ref
+            chunks_by_ref[ref.id].append((block, ref, score))
+
+        # Merge: title/channel matches first (they answer "which video"),
+        # then chunk-hit videos in fused order. Page over the union.
+        merged: list[tuple[Ref, CacheEntry | None, str]] = []
+        seen: set[int] = set()
+        for ref, tcache in title_hits:
+            seen.add(ref.id)
+            merged.append((ref, tcache, "title/channel match"))
+        for ref_id in ref_order:
+            if ref_id in seen:
+                continue
+            merged.append((ref_by_id[ref_id], None, "transcript match"))
+        total_found = len(merged)
+        rows = merged[(page - 1) * page_size : page * page_size]
+        pool_saturated = len(chunk_hits) >= pool or len(title_hits) >= title_pool
+
+        if not rows:
+            return self._search_empty(q, page=page, total=total_found)
+
+        lines = [
+            format_search_headline(
+                n_returned=len(rows),
+                total=None if pool_saturated else total_found,
+                noun="video hit",
+                query=q,
+            )
+        ]
+        shown_blocks: list[int] = []
+        for ref, cache, why in rows:
+            slug = ref.slug or str(ref.id)
+            if cache is None:
+                # Chunk-leg row — the title leg didn't carry the
+                # cache_state row. One PK lookup for the channel /
+                # duration / freshness tail.
+                found = self.store.get_cache_entry_by_ref_id(
+                    kind=self.spec.kind, ref_id=ref.id
+                )
+                cache = found[1] if found else None
+            meta = (cache.meta if cache else {}) or {}
+            group = chunks_by_ref.get(ref.id) or []
+            if group:
+                score = group[0][2]
+                head = f"## `{slug}` — {ref.title}  (score={score:.4f})"
+            else:
+                head = f"## `{slug}` — {ref.title}  _({why})_"
+            lines.append("")
+            lines.append(head)
+            bits = _video_listing_bits(cache) if cache else []
+            if bits:
+                lines.append(f"_{' · '.join(bits)}_")
+            for block, _ref, _score in group[:cap]:
+                shown_blocks.append(block.id)
+                lines.append(_excerpt(block.text))
+            if not group:
+                desc = (meta.get("description") or "").strip()
+                if desc:
+                    lines.append(_excerpt(desc))
+            more = counts.get(ref.id, len(group)) - len(group)
+            if more > 0:
+                lines.append(
+                    f"_(+{more} more transcript hit{'s' if more > 1 else ''} "
+                    "in this video)_"
+                )
+        if shown_blocks:
+            self.store.chunks.bump_salience(shown_blocks)
+        calls: list[tuple[str, str]] = [
+            (
+                "get(kind='youtube', id='<video_id>', args={'no_fetch': True})",
+                "read a cached transcript — never fetches",
+            ),
+        ]
+        if page * page_size < total_found:
+            calls.append(
+                (
+                    f"search(kind='youtube', q={q!r}, page={page + 1})",
+                    f"page {page + 1} of {-(-total_found // page_size)}",
+                )
+            )
+        body = "\n".join(lines) + render_next_section(calls)
+        return Response(body=body)
+
+    def _search_empty(self, q: str, *, page: int, total: int) -> Response:
+        """The no-hits render: closest cached titles, then the way out."""
+        if page > 1 and total:
+            return Response(body=f"no more video hits for {q!r} (page {page})")
+        body = f"no cached youtube videos match {q!r}"
+        close = self.store.search_cache_entry_titles(
+            kind=self.spec.kind,
+            q=q,
+            meta_fields=("channel_name",),
+            min_similarity=0.15,
+            limit=5,
+        )
+        if close:
+            body += "\n\nclosest cached titles:"
+            for ref, cache in close:
+                channel = (cache.meta or {}).get("channel_name")
+                suffix = f" ({channel})" if channel else ""
+                body += f"\n- `{ref.slug or ref.id}` — {ref.title}{suffix}"
+        body += render_next_section(
+            [
+                (
+                    "get(kind='youtube', id='/recent')",
+                    "list every cached video",
+                ),
+                (
+                    "get(kind='youtube', id='<video id or URL>')",
+                    "fetch and cache a transcript",
+                ),
+            ]
+        )
+        return Response(body=body)
+
+    def search_hits(self, **kw: Any) -> list[SearchHit]:
+        """Chunk-level hits for cross-kind fan-out — one row per video.
+
+        ``ref_level_dedupe`` collapses every chunk of a video onto the
+        ``youtube:<slug>`` key so a long transcript can't fill a merged
+        page with duplicate rows of itself (gr498108). The ``**kw``
+        shape matches ``Handler.search_hits`` so no override
+        suppression is needed (the ratchet is a floor, not a budget).
+        """
+        q = kw.get("q") or ""
+        mode = kw.get("mode")
+        query_vec = kw.get("query_vec")
+        page_size = kw.get("page_size") or 10
+        if not (q and q.strip()):
+            return []
+        if (mode or "").strip().lower() == "lexical":
+            query_vec = None
+        elif query_vec is None:
+            query_vec = embed_query(self.embedder, q)
+        triples = self.store.chunks.search_chunks(
+            q=q,
+            query_vec=query_vec,
+            mode=mode,
+            kind=self.spec.kind,
+            limit=page_size,
+            max_distance=SEMANTIC_DISTANCE_FLOOR,
+        )
+        self.store.chunks.bump_salience([block.id for block, _r, _s in triples])
+        return block_hits_to_search_hits(
+            triples, kind=self.spec.kind, ref_level_dedupe=True
+        )
 
     # ── refresh-by-slug support ───────────────────────────────────────
 
@@ -204,8 +586,29 @@ class YouTubeHandler(CacheBackedHandler):
 
         Variants like ``https://youtu.be/X``, ``youtube.com/watch?v=X``,
         and bare ``X`` collapse into a single row keyed on the id.
+        Free text isn't an id — the caller wanted a title/topic lookup
+        (gr498108), so the refusal points at search and the /recent
+        list rather than at a bare-id example.
         """
-        video_id = _extract_video_id(query)
+        try:
+            video_id = _extract_video_id(query)
+        except BadInput as exc:
+            if any(c.isspace() for c in query.strip()):
+                safe_q = " ".join(query.split())
+                search_hint = (
+                    f"search(kind='youtube', q={safe_q!r})"
+                    if "'" not in safe_q
+                    else "search(kind='youtube', q='<topic>')"
+                )
+                raise BadInput(
+                    exc.cause,
+                    next=[
+                        f"{search_hint} — find a cached video by "
+                        "title, channel or transcript",
+                        "get(kind='youtube', id='/recent') — list cached videos",
+                    ],
+                ) from exc
+            raise
         # Stable language portion of the key (sorted; empty langs == ['en']).
         lang_part = "+".join(sorted(_LANG_PREF.get()))
         return f"{video_id}:{lang_part}"
@@ -328,6 +731,35 @@ class YouTubeHandler(CacheBackedHandler):
             body=body + "\n" + deep_link,
             cost=resp.cost,
         )
+
+
+# ---------------------------------------------------------------------------
+# Listing / search display helpers
+# ---------------------------------------------------------------------------
+
+
+def _video_listing_bits(cache: CacheEntry) -> list[str]:
+    """The ``channel · duration · cached <date> · CACHE:state`` tail of a
+    video row — shared by the /recent listing and search hit cards."""
+    meta = cache.meta or {}
+    bits: list[str] = []
+    if meta.get("channel_name"):
+        bits.append(str(meta["channel_name"]))
+    if meta.get("duration_s"):
+        mins, s = divmod(int(meta["duration_s"]), 60)
+        bits.append(f"{mins}m{s:02d}s")
+    elif meta.get("duration_iso"):
+        bits.append(str(meta["duration_iso"]))
+    if cache.fetched_at is not None:
+        bits.append(f"cached {cache.fetched_at.strftime('%Y-%m-%d')}")
+    if cache.fresh_until is None:
+        state = "CACHE:pinned"
+    elif cache.fresh_until > datetime.now(UTC):
+        state = "CACHE:fresh"
+    else:
+        state = "CACHE:stale"
+    bits.append(state)
+    return bits
 
 
 # ---------------------------------------------------------------------------

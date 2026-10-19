@@ -44,6 +44,7 @@ Mixin assumes the concrete Store provides:
 
 from __future__ import annotations
 
+import re
 from contextlib import AbstractContextManager
 from typing import TYPE_CHECKING, Any
 
@@ -59,6 +60,18 @@ from precis.store._mappers import (
     _row_to_ref,
 )
 from precis.store.types import CacheEntry, ChunkInsert, Ref
+
+#: jsonb key shape allowed in :meth:`CacheMixin.search_cache_entry_titles`'
+#: ``meta_fields`` — handler constants only; anything else is refused
+#: before it can be quoted into SQL.
+_META_FIELD_RE = re.compile(r"[a-z][a-z0-9_]*")
+
+
+def _ilike_pattern(q: str) -> str:
+    """Literal-substring ILIKE pattern for ``q`` — its ``%`` and ``_``
+    escaped so a query like ``"100%"`` matches only the literal text.
+    Pair with ``ILIKE %s ESCAPE '\\'`` at the call site."""
+    return "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
 
 
 class CacheMixin:
@@ -472,6 +485,150 @@ class CacheMixin:
             cache = _row_to_cache_entry(cache_row)
 
         return (ref, cache)
+
+    # ── listing / discovery over the cache ────────────────────────────
+
+    def list_cache_entries(
+        self,
+        *,
+        kind: str,
+        provider: str | None = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> list[tuple[Ref, CacheEntry]]:
+        """Newest-fetch-first page of cached refs for ``kind``.
+
+        Backs the ``/recent`` listings: each row pairs the live ref
+        with its ``cache_state`` row so a renderer can show fetch
+        date, freshness and provider meta (a youtube channel or
+        duration) in one pass — ``list_refs`` alone sees neither
+        ``cs.fetched_at`` nor ``cs.meta``.
+        """
+        clauses = ["refs.retired_at IS NULL", "refs.kind = %s"]
+        params: list[Any] = [kind]
+        if provider is not None:
+            clauses.append("cs.provider = %s")
+            params.append(provider)
+        params.extend([limit, offset])
+        sql = f"""
+            SELECT {_REFS_COLS_FOR_CACHE},
+                   cs.ref_id, cs.provider, cs.request_hash, cs.model,
+                   cs.fetched_at, cs.fresh_until, cs.cost_usd, cs.meta,
+                   cs.content_sha256
+            FROM cache_state cs
+            JOIN refs ON refs.ref_id = cs.ref_id
+            WHERE {" AND ".join(clauses)}
+            ORDER BY cs.fetched_at DESC, refs.ref_id DESC
+            LIMIT %s OFFSET %s
+        """
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [
+            (
+                _row_to_ref(r[:_REFS_COLS_LEN]),
+                _row_to_cache_entry(r[_REFS_COLS_LEN : _REFS_COLS_LEN + 9]),
+            )
+            for r in rows
+        ]
+
+    def count_cache_entries(self, *, kind: str, provider: str | None = None) -> int:
+        """Live ``cache_state`` rows for ``kind`` — the "of K" a
+        ``/recent`` page header reports; same WHERE as
+        :meth:`list_cache_entries` so the two numbers can't drift."""
+        clauses = ["refs.retired_at IS NULL", "refs.kind = %s"]
+        params: list[Any] = [kind]
+        if provider is not None:
+            clauses.append("cs.provider = %s")
+            params.append(provider)
+        sql = (
+            "SELECT count(*) FROM cache_state cs "
+            "JOIN refs ON refs.ref_id = cs.ref_id "
+            f"WHERE {' AND '.join(clauses)}"
+        )
+        with self.pool.connection() as conn:
+            row = conn.execute(sql, params).fetchone()
+        assert row is not None
+        return int(row[0])
+
+    def search_cache_entry_titles(
+        self,
+        *,
+        kind: str,
+        q: str,
+        meta_fields: tuple[str, ...] = (),
+        min_similarity: float = 0.3,
+        limit: int = 10,
+    ) -> list[tuple[Ref, CacheEntry]]:
+        """Cached refs of ``kind`` whose *title or cache-meta text* hits ``q``.
+
+        The "which cached <kind> did I mean" leg, fusing three
+        signals: title FTS (``websearch_to_tsquery`` — ANDs every
+        term), ``pg_trgm`` title similarity ≥ 0.3 (a vague
+        half-remembered title the AND misses — same bar
+        ``find_papers_by_title`` uses), and an ``ILIKE`` substring
+        match on each named ``cache_state.meta`` text field
+        (``channel_name`` for youtube). Ranked best-signal first,
+        newest fetch breaking ties.
+
+        A leg, not a search — the caller fuses with chunk-level hits.
+        ``meta_fields`` are jsonb keys interpolated into the SQL, so
+        they must be handler constants: anything that isn't a plain
+        identifier is refused rather than quoted into a query.
+        ``min_similarity`` lowers the trigram bar for a "closest
+        titles" suggestion list (the default is the match bar).
+        """
+        for f in meta_fields:
+            if not _META_FIELD_RE.fullmatch(f):
+                raise ValueError(f"unsafe cache meta field name: {f!r}")
+        meta_concat = " || ' ' || ".join(
+            f"coalesce(cs.meta->>'{f}', '')" for f in meta_fields
+        )
+        meta_rank_sql = (
+            f"CASE WHEN {meta_concat} ILIKE %s ESCAPE '\\' THEN 1.0 ELSE 0.0 END"
+            if meta_fields
+            else "0.0"
+        )
+        meta_match_sql = f"OR {meta_concat} ILIKE %s ESCAPE '\\'" if meta_fields else ""
+        sql = f"""
+            SELECT {_REFS_COLS_FOR_CACHE},
+                   cs.ref_id, cs.provider, cs.request_hash, cs.model,
+                   cs.fetched_at, cs.fresh_until, cs.cost_usd, cs.meta,
+                   cs.content_sha256,
+                   greatest(
+                       coalesce(ts_rank_cd(
+                           to_tsvector('english', refs.title), qq.qq), 0.0),
+                       coalesce(similarity(refs.title, %s), 0.0),
+                       {meta_rank_sql}
+                   ) AS rank
+            FROM cache_state cs
+            JOIN refs ON refs.ref_id = cs.ref_id,
+                 websearch_to_tsquery('english', %s) qq(qq)
+            WHERE refs.retired_at IS NULL
+              AND refs.kind = %s
+              AND (
+                  to_tsvector('english', refs.title) @@ qq.qq
+                  OR similarity(refs.title, %s) >= %s
+                  {meta_match_sql}
+              )
+            ORDER BY rank DESC, cs.fetched_at DESC
+            LIMIT %s
+        """
+        params: list[Any] = [q]
+        if meta_fields:
+            params.append(_ilike_pattern(q))
+        params.extend([q, kind, q, min_similarity])
+        if meta_fields:
+            params.append(_ilike_pattern(q))
+        params.append(limit)
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [
+            (
+                _row_to_ref(r[:_REFS_COLS_LEN]),
+                _row_to_cache_entry(r[_REFS_COLS_LEN : _REFS_COLS_LEN + 9]),
+            )
+            for r in rows
+        ]
 
 
 # _REFS_COLS adapted for use inside cache JOINs. The base _REFS_COLS

@@ -8,6 +8,8 @@ answers:
   - can I paste a YouTube URL directly instead of the bare video id?
   - how do I fetch a transcript in a specific language?
   - what happens when a video has no transcript?
+  - how do I list the YouTube videos already cached?
+  - how do I find a cached YouTube video from a topic or channel?
 applies-to: get (kind='youtube')
 tags: [external-sources]
 kinds: [youtube]
@@ -70,6 +72,35 @@ get(kind="youtube", id="dQw4w9WgXcQ", args={"languages": "en,es"})  # fallback l
 
 Different language requests cache separately — a German fetch doesn't
 invalidate the English one.
+
+## Browse what's already cached
+## List the cached YouTube videos
+
+```python
+get(kind="youtube", id="/recent")                    # page 1
+get(kind="youtube", id="/recent", args={"page": 2})  # next page
+```
+
+One row per cached video: video id, title, channel, duration and
+cache state, newest first. A bare `get(kind="youtube")` shows the
+same listing. Read one without triggering a fetch:
+
+```python
+get(kind="youtube", id="dQw4w9WgXcQ", args={"no_fetch": True})
+```
+
+## Find a cached video from a topic or channel
+
+```python
+search(kind="youtube", q="neighbouring ions")   # title + channel + transcript
+search(kind="youtube", q="Veritasium")          # channel names match too
+```
+
+Hits come back **grouped per video** (best transcript chunk per
+video, one row each) — a long talk can't flood the page.
+`per_paper=N` raises the chunks shown per video; `page=` pages the
+video list. When nothing matches, the empty state lists the closest
+cached titles instead of a dead end.
 
 ## See what languages a video has
 

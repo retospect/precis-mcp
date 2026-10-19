@@ -77,9 +77,24 @@ def is_eye_view(view: str | None) -> bool:
     return view is not None and (view in EYE_LADDER or view.endswith(RECALL_SUFFIX))
 
 
-def _no_node(kind: str) -> Unsupported:
+def _no_node(kind: str, *, stores_cache: bool = False) -> Unsupported:
     reason = _NO_NODE_REASON.get(kind)
     if reason is None:
+        if stores_cache:
+            # Fetch-cache kinds (web/youtube/…) DO land as live refs +
+            # chunks — the generic "not a stored ref" reason is wrong
+            # about the data model (gr498108). What's actually missing
+            # is the universal handle the eye focuses on.
+            return Unsupported(
+                f"no eye on kind={kind!r}: {kind} refs are stored (fetch "
+                "cache), but the kind carries no universal handle, so "
+                "there is no graph node to focus",
+                next=(
+                    f"get(kind={kind!r}, id='/recent') lists what's cached; "
+                    "the eye ladder needs a handle-coded kind "
+                    "(get(kind='skill', id='precis-fisheye-help'))"
+                ),
+            )
         reason = (
             f"kind={kind!r} is addressed by query or URL, not a stored ref, so "
             "it has no graph node to focus"
@@ -122,7 +137,13 @@ def _resolve_ref_id(store: Store, kind: str, ident: str) -> int:
     return int(ref.id)
 
 
-def eye_handle(store: Store, *, kind: str, id: str | int | None) -> str:
+def eye_handle(
+    store: Store,
+    *,
+    kind: str,
+    id: str | int | None,
+    stores_cache: bool = False,
+) -> str:
     """``(kind, id)`` → the handle :func:`render_eye` takes, or raise.
 
     Accepts the kind's public id (an int for numeric kinds, a slug for the
@@ -131,13 +152,17 @@ def eye_handle(store: Store, *, kind: str, id: str | int | None) -> str:
     chunk handle into. ``Unsupported`` for a kind with no graph node;
     ``NotFound`` for a dead or unknown id; ``BadInput`` for a window
     selector (``~0..5``) — an eye focuses one node.
+
+    ``stores_cache`` marks a fetch-cache kind (``refs``+``chunks`` rows
+    but no universal handle) so the no-node refusal names what's
+    actually missing rather than claiming the ref isn't stored.
     """
     if kind == "skill":
         if id is None or not str(id).strip():
             raise BadInput("the skill eye needs id=<slug>", next=EYE_NEXT)
         return f"sk:{str(id).strip()}"
     if kind in _NO_NODE_REASON or handle_registry.try_format(kind, 0) is None:
-        raise _no_node(kind)
+        raise _no_node(kind, stores_cache=stores_cache)
     if id is None or not str(id).strip():
         raise BadInput(f"get(kind={kind!r}, extent=…) needs id=", next=EYE_NEXT)
     s = str(id).strip()
@@ -184,13 +209,15 @@ def eye_response(
     extent: str | int | Extent,
     q: str | None = None,
     ring: Any = None,
+    stores_cache: bool = False,
 ) -> Response:
     """Render the eye on ``(kind, id)`` at ``extent`` — the default body of
     :meth:`precis.protocol.Handler.eye`. ``ring`` is
     :class:`precis.utils.eye_render.RingFilter`'s wire form: ``{'kinds':
     <csv|list>, 'space': <csv|list>}``, narrowing every ring a link or doc
-    eye renders."""
-    handle = eye_handle(store, kind=kind, id=id)
+    eye renders. ``stores_cache`` marks a fetch-cache kind so the
+    no-node refusal names the missing handle, not a missing ref."""
+    handle = eye_handle(store, kind=kind, id=id, stores_cache=stores_cache)
     try:
         return Response(body=render_eye(store, handle, extent, q=q, ring=ring))
     except ValueError as e:

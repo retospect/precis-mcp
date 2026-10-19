@@ -237,6 +237,13 @@ class CacheBackedHandler(Handler):
     #: fetch caches hold third-party content: the agent-write secret gate (dispatch) skips this kind.
     stores_opaque_text: ClassVar[bool] = True
 
+    #: Fetch results land as live refs + chunks — the eye refusal on
+    #: handle-less cache kinds (web/youtube/…) says "stored refs, no
+    #: universal handle" instead of "not a stored ref" (gr498108).
+    #: Handle-coded cache kinds (news, orcid) render their eye normally;
+    #: the flag is only read on the no-handle refusal branch.
+    stores_cached_refs: ClassVar[bool] = True
+
     provider: ClassVar[str]
     ttl_seconds: ClassVar[int | None]
     attribution: ClassVar[str]
