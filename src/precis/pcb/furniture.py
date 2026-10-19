@@ -37,6 +37,7 @@ def board_furniture(
     capability: CapabilityRow | None = None,
     date: str | None = None,
     polarized: frozenset[str] = frozenset(),
+    label_spots: dict[str, str] | None = None,
 ) -> tuple[
     list[dict[str, Any]],
     dict[str, list[dict[str, Any]]],
@@ -80,7 +81,9 @@ def board_furniture(
     component flags/labels (this function only sees ``ir``/``pads``,
     never a label). Defaults to empty, same "every pre-2026-09-01
     caller's behaviour is unchanged" contract ``build_silk`` itself
-    documents.
+    documents. ``label_spots`` is passed through the same way — the
+    per-instance refdes-label spot overrides (``session.label_spots``
+    off the raw design; ``build_silk``'s docstring defines the map).
 
     **This exists because there are two render sites** —
     :meth:`_render_gerber` (the fab set a human orders from) and the
@@ -131,6 +134,7 @@ def board_furniture(
             instance_sides=instance_sides,
             capability=capability,
             polarized=polarized,
+            label_spots=label_spots,
         )
         warnings.extend(f"silk: {m}" for m in silk_only.dropped)
         warnings.extend(f"silk: {m}" for m in silk_only.relocated)
@@ -330,6 +334,7 @@ def board_furniture(
         capability=capability,
         outline=[(float(p[0]), float(p[1])) for p in outline],
         polarized=polarized,
+        label_spots=label_spots,
     )
     warnings.extend(f"silk: {m}" for m in silk_result.dropped)
     warnings.extend(f"silk: {m}" for m in silk_result.relocated)

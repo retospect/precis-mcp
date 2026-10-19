@@ -1878,6 +1878,24 @@ def polarized_refdes(design: dict[str, Any]) -> frozenset[str]:
     return frozenset(out)
 
 
+def label_spots(design: dict[str, Any]) -> dict[str, str]:
+    """The per-instance refdes-label spot overrides — the ``label_spots``
+    map :func:`~precis.pcb.silk.build_silk` (via
+    :func:`~precis.pcb.furniture.board_furniture`) reads (gr496552: "we
+    can move it"). Like :func:`polarized_refdes` this runs off the raw
+    design's ``instances`` list: the override lives on
+    ``pcb_instances.meta["label_spot"]`` (``op='move'`` writes it,
+    ``pcb_load`` hoists it), so a plain dict is all a caller needs.
+    Values pass through unchecked — the write path validates against
+    ``silk.LABEL_SPOT_ORDER`` and the builder ignores a name that matches
+    no candidate."""
+    return {
+        str(i["refdes"]): str(i["label_spot"])
+        for i in design.get("instances") or []
+        if i.get("label_spot")
+    }
+
+
 __all__ = [
     "apply_real_pin_offsets",
     "apply_route_overrides",
@@ -1887,6 +1905,7 @@ __all__ = [
     "fixed_vias_from_copper",
     "footprints_by_refdes",
     "furniture_clearance_mm",
+    "label_spots",
     "land_rects_by_instance",
     "local_footprint_names_by_refdes",
     "mounting_holes_from_features",

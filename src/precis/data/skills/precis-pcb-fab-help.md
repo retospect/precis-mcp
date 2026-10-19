@@ -71,10 +71,12 @@ just past that side of the outline, flush with its left or right edge):
 7. top
 8. bottom
 
-Past those it tries spots further out. Only when nothing outside fits
-does it go inside the outline; DRC then warns `silk_label_covered`
-("label will be covered", naming the part). Make room beside that part.
-No spot at all is `silk_missing`.
+Past those it tries spots further out, walking outward from bottom-left.
+A label never goes inside the outline — ink under the assembled part is
+invisible, so a part with no clear outside spot drops its label and DRC
+reports `silk_missing`. To move one label by hand, set a per-part spot:
+`put(kind='pcb', id='<slug>', args={'op':'move','refdes':'U1','label_spot':'top-right'})`
+(any of the eight names above; `null` clears it).
 
 `view='route'` runs the place↔route hand-off: place → `.dsn` →
 Freerouting → on an incomplete route, re-place (more iters) and re-route,

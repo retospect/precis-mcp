@@ -2945,7 +2945,14 @@ class PcbMixin:
                     ),
                     **{
                         k: (r[13] or {})[k]
-                        for k in ("local_fp_lcsc", "local_fp_diff")
+                        for k in (
+                            "local_fp_lcsc",
+                            "local_fp_diff",
+                            # gr496552: per-part refdes label spot override
+                            # (`op='move'`'s `label_spot` writes it) —
+                            # `session.label_spots` reads it hoisted.
+                            "label_spot",
+                        )
                         if k in (r[13] or {})
                     },
                 }

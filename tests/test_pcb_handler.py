@@ -17,6 +17,7 @@ from precis.errors import BadInput, NotFound
 from precis.handlers.pcb import PcbHandler
 from precis.pcb import catalog
 from precis.pcb import drc as pcb_drc
+from precis.pcb import session as pcb_session
 
 # A tiny but real board: an MCU + a bypass cap + a pull-up, on an I2C net.
 _DESIGN: dict[str, Any] = {
@@ -1512,6 +1513,38 @@ def test_op_move_max_travel_mm_rejects_a_negative(pcb):
         pcb.put(
             id="op-move-pin-neg",
             args={"op": "move", "refdes": "A", "max_travel_mm": -1.0},
+        )
+
+
+def test_op_move_label_spot_sets_and_clears_the_refdes_override(pcb, store):
+    """gr496552 ("we can move it"): ``label_spot`` writes the per-part
+    refdes label override onto instance ``meta``, ``pcb_load`` hoists it
+    for ``session.label_spots``, and null clears it."""
+    pcb.put(id="op-move-spot", args=_CROSSED)
+    resp = pcb.put(
+        id="op-move-spot",
+        args={"op": "move", "refdes": "A", "label_spot": "top-right"},
+    )
+    assert "moved" in resp.body
+    ref = store.get_ref(kind="pcb", id="op-move-spot")
+    inst = next(i for i in store.pcb_load(ref.id)["instances"] if i["refdes"] == "A")
+    assert inst["label_spot"] == "top-right"
+    assert pcb_session.label_spots(store.pcb_load(ref.id)) == {"A": "top-right"}
+
+    pcb.put(
+        id="op-move-spot",
+        args={"op": "move", "refdes": "A", "label_spot": None},
+    )
+    inst = next(i for i in store.pcb_load(ref.id)["instances"] if i["refdes"] == "A")
+    assert "label_spot" not in inst
+
+
+def test_op_move_label_spot_rejects_an_unknown_spot_name(pcb):
+    pcb.put(id="op-move-spot-bad", args=_CROSSED)
+    with pytest.raises(BadInput, match="label_spot"):
+        pcb.put(
+            id="op-move-spot-bad",
+            args={"op": "move", "refdes": "A", "label_spot": "diagonal"},
         )
 
 

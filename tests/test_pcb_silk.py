@@ -290,7 +290,7 @@ def test_side_routes_to_the_bottom_bucket():
     assert result.draws["bottom"]
 
 
-# ── refdes lands within its part's extent (the default, centered case) ───
+# ── refdes lands just off its outline (the default bottom-left spot) ────
 def test_refdes_lands_outside_its_outline_when_unobstructed():
     """gr495394: the default spot is OUTSIDE the outline (bottom-left
     corner), never over the part that will cover it, and the label keeps
@@ -337,8 +337,9 @@ def test_refdes_relocates_when_the_default_spot_overlaps_a_pad():
 
 def test_refdes_dropped_when_every_candidate_overlaps_a_pad():
     ir = from_graph(_graph("U4", 16, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
-    # a pad so large it blankets the part and every relocation candidate.
-    pads = [{"shape": "circle", "x": 0.0, "y": 0.0, "w": 40.0, "net": "FOREIGN"}]
+    # a pad so large it blankets the part and every relocation candidate
+    # (the ladder's outermost ring included).
+    pads = [{"shape": "circle", "x": 0.0, "y": 0.0, "w": 80.0, "net": "FOREIGN"}]
     result = build_silk(ir, pads=pads)
     assert any("U4" in msg and "dropped" in msg for msg in result.dropped)
     refdes_draws = [
@@ -498,7 +499,7 @@ def test_a_label_bigger_than_its_part_still_clears_its_own_outline():
     result = build_silk(ir, pads=[], height_mm=5.0)
     assert not result.dropped
     row = next(c for c in result.census if c.kind == "refdes")
-    assert row.outcome in ("placed", "relocated") and not row.covered
+    assert row.outcome in ("placed", "relocated")
     assert not _refdes_hits_own_silk(result.draws["top"], gerber.DEFAULT_SILK_WIDTH_MM)
     outline = next(d for d in result.draws["top"] if d["role"] == "outline")
     ring = [tuple(s["start"]) for s in outline["segments"]]
@@ -2051,7 +2052,7 @@ def test_census_records_dropped_outcome_with_a_reason_matching_the_derived_prose
     # blankets the whole part and every relocation candidate -- everything
     # for TP4 drops (same fixture shape as
     # test_refdes_dropped_when_every_candidate_overlaps_a_pad above).
-    pads = [{"shape": "circle", "x": 0.0, "y": 0.0, "w": 40.0, "net": "FOREIGN"}]
+    pads = [{"shape": "circle", "x": 0.0, "y": 0.0, "w": 80.0, "net": "FOREIGN"}]
     result = build_silk(ir, pads=pads)
     refdes_row = next(
         c for c in result.census if c.refdes == "TP4" and c.kind == "refdes"
@@ -2286,28 +2287,32 @@ def test_the_corner_tick_is_the_last_resort_when_no_dot_fits():
     assert mark["width_mm"] == pytest.approx(0.15)
 
 
-def test_the_refdes_ladder_starts_centred_and_walks_outward_right_first():
-    """Order is the whole contract of the ladder: centred is the common
-    case, and after that every relocated label prefers the SAME side
-    (right, then bottom) so repeated parts in an array land their labels
-    in the same relative spot -- side consistency reads as tidy across a
-    populated board (task brief 2026-09-01). Pinned because the sweep is
-    generated -- a sort-key change could silently start every board's
-    labels somewhere else."""
-    cands = silk._refdes_candidates(3, 12)
-    assert len(cands) == 1 + 3 * 12
-    assert cands[0][:2] == (0.0, 0.0)
-    # First spot off centre: straight right, one ring out.
-    du, dv, h_align, v_align, spot = cands[1]
-    assert (round(du, 6), round(dv, 6)) == (1.0, 0.0)
-    assert (h_align, v_align) == ("left", "middle")
+def test_the_refdes_ladder_has_no_centre_and_walks_outward_from_bottom_left():
+    """Order is the whole contract of the ladder (gr496552): there is NO
+    centred candidate -- a label on the part origin prints under the
+    package and the assembled part hides it -- and the sweep starts at
+    the bottom-left diagonal (the default spot's bearing) so a blocked
+    default relocates to its own nearest free bearing. After that every
+    relocated label prefers the SAME side, so repeated parts in an array
+    land their labels in the same relative spot -- side consistency
+    reads as tidy across a populated board (task brief 2026-09-01).
+    Pinned because the sweep is generated -- a sort-key change could
+    silently start every board's labels somewhere else."""
+    cands = silk._refdes_candidates(4, 16)
+    assert len(cands) == 4 * 16
+    assert all((du, dv) != (0.0, 0.0) for du, dv, *_ in cands)
+    # First rung: straight down-left (angle -135deg), one ring out.
+    du, dv, h_align, v_align, spot = cands[0]
+    assert du == pytest.approx(math.cos(-3 * math.pi / 4))
+    assert dv == pytest.approx(math.sin(-3 * math.pi / 4))
+    assert (h_align, v_align) == ("right", "top")
     assert "ring 1" in spot
     # Rings are walked in order, and magnitude IS the ring number, so
     # ring 2 sits twice as far out as ring 1 (the old hand-written
     # `(0, -2)` fallback's meaning, generalized).
-    rings = [round(math.hypot(du, dv)) for du, dv, _h, _v, _s in cands[1:]]
+    rings = [round(math.hypot(du, dv)) for du, dv, _h, _v, _s in cands]
     assert rings == sorted(rings)
-    assert set(rings) == {1, 2, 3}
+    assert set(rings) == {1, 2, 3, 4}
 
 
 def test_census_records_relocated_outcome_with_the_spot_it_settled_on():
@@ -2459,7 +2464,7 @@ def test_refdes_default_is_flush_left_below_the_outlines_literal_bottom_left(shi
             ir.pin_dx[pid] = float(ir.pin_dx[pid]) + 2.0
     result = build_silk(ir, pads=[])
     row = next(c for c in result.census if c.kind == "refdes")
-    assert row.outcome == "placed" and not row.covered
+    assert row.outcome == "placed"
     x0, y0, x1, _y1 = _outline_bbox(result, "J1")
     if shifted:
         assert (x0 + x1) / 2.0 != pytest.approx(0.0, abs=0.5)  # genuinely off-centre
@@ -2514,18 +2519,54 @@ def test_a_crowded_label_falls_back_in_the_documented_order():
     for k in range(len(order)):
         result = build_silk(ir, pads=[blockers[s] for s in order[: k + 1]])
         row = next(c for c in result.census if c.kind == "refdes")
-        assert row.outcome == "relocated" and not row.covered, (k, row)
-        expected = order[k + 1] if k + 1 < len(order) else "ring "
-        assert f"drawn at {expected}" in str(row.reason), (k, row.reason)
+        assert row.outcome == "relocated", (k, row)
+        if k + 1 < len(order):
+            assert f"drawn at {order[k + 1]}" in str(row.reason), (k, row.reason)
+        else:
+            # all eight spots blocked -> a quarter-edge anchor or a ring
+            assert "edge" in str(row.reason) or "ring" in str(row.reason), row.reason
         assert f"R1: {row.reason}" in result.relocated
 
 
-def test_a_boxed_in_label_goes_inside_its_outline_with_a_covered_finding():
-    """gr495394's last resort: with every spot outside the outline blocked,
-    the label goes INSIDE it -- and the census and DRC both say the part
-    will cover it, naming the part. A frame of foreign copper around the
-    outline (clear of the outline's own ink) blocks every outside spot,
-    the radial ladder included."""
+def test_a_per_part_label_spot_override_wins():
+    """gr496552 ("we can move it"): ``build_silk``'s ``label_spots`` map
+    takes one named :data:`silk.LABEL_SPOT_ORDER` spot for that part,
+    ahead of the bottom-left default -- the write path is ``op='move'``'s
+    ``label_spot`` (``session.label_spots`` hoists it off the design)."""
+    ir = from_graph(_graph("U6", 16, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
+    boxes = _spot_boxes(ir, 0, "U6")
+    result = build_silk(ir, pads=[], label_spots={"U6": "top-right"})
+    row = next(c for c in result.census if c.kind == "refdes")
+    assert row.outcome == "relocated"
+    assert "label_spot" in str(row.reason) and "top-right" in str(row.reason)
+    # the drawn label sits at the override spot's own box
+    box = boxes["top-right"]
+    assert row.x_mm == pytest.approx(min(p[0] for p in box))
+    assert row.y_mm == pytest.approx(min(p[1] for p in box))
+
+
+def test_a_label_spot_override_falls_back_when_its_spot_is_blocked():
+    """The override picks the FIRST try, not the only one: with a foreign
+    pad on the named spot the label walks the ordinary order past it."""
+    ir = from_graph(_graph("U6", 16, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
+    boxes = _spot_boxes(ir, 0, "U6")
+    pads = [_pad_on(boxes["top-right"])]
+    result = build_silk(ir, pads=pads, label_spots={"U6": "top-right"})
+    row = next(c for c in result.census if c.kind == "refdes")
+    # top-right is blocked; the unobstructed default (bottom-left) wins.
+    assert row.outcome == "placed"
+    assert not _draws_hit_any_pad(
+        [d for d in result.draws["top"] if d["role"] == "refdes"], pads
+    )
+
+
+def test_a_boxed_in_label_drops_rather_than_print_under_the_part():
+    """gr496552's rule: no refdes label inside a part's courtyard or body,
+    ever -- ink under the assembled part is invisible, so with every spot
+    outside the outline blocked the label DROPS and DRC reports
+    ``silk_missing``, instead of printing a label nobody can read. A
+    frame of foreign copper around the outline (clear of the outline's
+    own ink) blocks every outside spot, the radial ladder included."""
     ir = from_graph(_graph("U1", 16, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
     bare = build_silk(ir, pads=[])
     x0, y0, x1, y1 = _outline_bbox(bare, "U1")
@@ -2534,17 +2575,13 @@ def test_a_boxed_in_label_goes_inside_its_outline_with_a_covered_finding():
     outline_row = next(c for c in result.census if c.kind == "courtyard")
     assert outline_row.outcome == "placed"  # the frame never touches the outline
     row = next(c for c in result.census if c.kind == "refdes")
-    assert row.outcome == "relocated" and row.covered
-    assert "INSIDE" in str(row.reason)
-    pts = _label_points(result, "U1")
-    assert pts
-    assert all(x0 < p[0] < x1 and y0 < p[1] < y1 for p in pts)
-    findings = drc.check_silk_label_covered(result.census)
-    assert [f.rule for f in findings] == ["silk_label_covered"]
-    assert findings[0].severity == "warn"
-    assert "U1" in findings[0].where and "label will be covered" in findings[0].detail
+    assert row.outcome == "dropped"
+    assert not _label_points(result, "U1")  # nothing is drawn under the part
+    findings = drc.check_silk_missing(result.census, {"silkscreen": result.draws})
+    assert [f.rule for f in findings] == ["silk_missing"]
+    assert findings[0].severity == "error" and "U1" in findings[0].where
     # An outside label is never reported.
-    assert drc.check_silk_label_covered(bare.census) == []
+    assert drc.check_silk_missing(bare.census, {"silkscreen": bare.draws}) == []
 
 
 def test_a_label_never_lands_over_a_neighbours_outline():
@@ -2637,13 +2674,13 @@ def test_silk_edge_margin_mm_reads_house_default_from_a_real_capability_row():
     assert silk._silk_edge_margin_mm(cap) == expected
 
 
-def test_refdes_candidate_rejected_outside_the_outline_relocates_to_one_inside():
+def test_refdes_candidate_rejected_outside_the_outline_relocates_on_board():
     """The default (bottom-left, gr495394) refdes spot prints past the
     board's own cut edge here -- without ``outline`` the builder happily
     draws it there; with ``outline`` that candidate must be rejected and
     the label either relocates to a candidate that is fully inside the
     board with the silk-to-edge margin, or is dropped -- never printed
-    off-board."""
+    off-board (and never inside the part's own outline, gr496552)."""
     # Placed near the BOTTOM edge: the default spot hangs below the part,
     # so that is the direction that has to leak off-board for the sanity
     # check below to mean anything.

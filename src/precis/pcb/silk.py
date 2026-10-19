@@ -11,16 +11,21 @@ already applies to copper.
 **Per placed instance, three kinds of silk:**
 
 1. a **reference-designator label** (:mod:`precis.pcb.stroke_font`), sized
-   from ``height_mm``. **Outside the part's outline** (gr495394, Reto
-   2026-10-17: "label outside white line, say to the bottom left corner of
-   the component. Unless unavailable."): the bottom-left corner by
-   default, then a fixed order of corners and sides
-   (:data:`LABEL_SPOT_ORDER`, :func:`_outline_spot_candidates`), each two
-   clear line widths off the outline; then the radial ladder further out
-   (:data:`_CANDIDATES`, a ring sweep); and only then, as the last resort,
-   INSIDE the outline (:func:`_inside_candidates`), recorded as
-   ``covered`` so :func:`precis.pcb.drc.check_silk_label_covered` says the
-   part will hide it. Failing every spot it is DROPPED — "a fab scrapes
+   from ``height_mm``. **Outside the part's outline, always** (gr495394,
+   Reto 2026-10-17: "label outside white line, say to the bottom left
+   corner of the component. Unless unavailable."; gr496552, Reto
+   2026-10-18: "it still should not be printed under parts, on vias."):
+   the bottom-left corner by default, then a fixed order of corners and
+   sides (:data:`LABEL_SPOT_ORDER`, :func:`_outline_spot_candidates`),
+   each two clear line widths off the outline; then the radial ladder
+   further out (:data:`_CANDIDATES`, a ring sweep that walks outward
+   from bottom-left). **There is no centred candidate and no inside
+   last resort** — a label under the assembled part is invisible ink,
+   so a part with no clear outside spot gets its label DROPPED (the
+   ``silk_missing`` error names it), not hidden. "We can move it": a
+   part's spot is overridable per instance via ``build_silk``'s
+   ``label_spots`` argument (``op='move'``'s ``label_spot`` writes it).
+   Failing every spot it is DROPPED — "a fab scrapes
    silk off pads, so text under a pad is silently lost" (task brief).
    Never emitted blind. A label never overlaps a pad, a via, another
    label, or any part's outline (:func:`_label_blocked`).
@@ -321,7 +326,13 @@ DEFAULT_REFDES_HEIGHT_MM = 1.0
 #: r2 fixtures: 3x12 38/59, 4x12 36/55, 3x16 38/55, 4x16 35/51, 5x16 32/50
 #: (old geometry at 3x12: 36/52). 4x16 is the smallest that is no worse
 #: than before on both; 5x16 floats labels five outline-reaches away.
-_REFDES_RINGS = 4
+#:
+#: **Now 5x16 (gr496552).** Reto 2026-10-18: "better algo should not
+#: require any label missing. 100% is our quest" — a label one more ring
+#: out is still legible and attributable; a dropped one is a DRC error.
+#: The 5 mm step cap (:data:`_LADDER_STEP_CAP_MM`) keeps ring 5 from
+#: floating the way an uncapped reach did.
+_REFDES_RINGS = 5
 _REFDES_DIRECTIONS = 16
 
 #: The most one ladder ring steps out past the one before it, mm. A ring
@@ -368,20 +379,21 @@ def _refdes_candidates(
     except that no ring steps more than :data:`_LADDER_STEP_CAP_MM` past
     the one before it (:func:`_label_candidates`).
 
-    Order is: centred first (the common case), then each ring outward,
-    and within a ring the directions nearest RIGHT (+x, angle 0) first,
-    then nearest BELOW (-y, angle -pi/2), then everything else. A single
-    "up is where a reader expects a refdes" preference is superseded by
-    this side-consistency rule: a repeated part in an array relocates its
-    label to the SAME relative spot every time, which is what actually
-    reads as tidy across a populated board (task brief, verbatim,
-    2026-09-01). Ties (a direction equidistant from both preferred sides)
-    break toward the smaller angle, so the sweep is deterministic rather
-    than dict-ordered.
+    Order is each ring outward, and within a ring the directions nearest
+    the bottom-left diagonal (angle -3*pi/4 — gr496552: the ladder walks
+    outward from the bottom-left default spot, and there is NO centred
+    candidate — a label on the part origin prints under the package and
+    the assembled part hides it), then nearest BELOW (-y, angle -pi/2),
+    then everything else. A single "up is where a reader expects a
+    refdes" preference is superseded by this side-consistency rule: a
+    repeated part in an array relocates its label to the SAME relative
+    spot every time, which is what actually reads as tidy across a
+    populated board (task brief, verbatim, 2026-09-01). Ties (a
+    direction equidistant from both preferred sides) break toward the
+    smaller angle, so the sweep is deterministic rather than
+    dict-ordered.
 
-    The ladder always walks past candidate 0 for a small part — an 0402's
-    courtyard is smaller than any legible label at a normal ``height_mm``,
-    so "centred" can never clear its own outline there. Landing outside a
+    Landing outside a
     part's courtyard is still an unambiguous, readable label; more than a
     dropped one is (task brief: "prefer moving the label to shrinking the
     outline"). A candidate is rejected against a pad/via, board-level
@@ -389,17 +401,15 @@ def _refdes_candidates(
     instance's own courtyard and pin-1 mark — has already committed, all
     folded into the SAME growing obstacle list (module docstring's
     "Avoidance is GLOBAL")."""
-    out: list[tuple[float, float, str, str, str]] = [
-        (0.0, 0.0, "center", "middle", "centred")
-    ]
+    out: list[tuple[float, float, str, str, str]] = []
     for ring in range(1, n_rings + 1):
         angles = [2.0 * math.pi * k / per_ring for k in range(per_ring)]
-        # Nearest RIGHT (angle 0) first, then nearest BELOW (angle
-        # -pi/2); the remaining tie breaks toward the smaller angle so
-        # the order never depends on float ties.
+        # Nearest bottom-left (angle -3*pi/4, i.e. 5*pi/4) first, then
+        # nearest BELOW (angle -pi/2); the remaining tie breaks toward
+        # the smaller angle so the order never depends on float ties.
         angles.sort(
             key=lambda a: (
-                round(_angular_dist(a, 0.0), 9),
+                round(_angular_dist(a, 5.0 * math.pi / 4.0), 9),
                 round(_angular_dist(a, -math.pi / 2.0), 9),
                 a,
             )
@@ -517,26 +527,6 @@ def _outline_spot_candidates(
     return tuple((*spots[name], name) for name in LABEL_SPOT_ORDER)
 
 
-def _inside_candidates(
-    box_board: list[Point], stroke_width_mm: float
-) -> tuple[tuple[Point, str, str, str], ...]:
-    """The last-resort spots INSIDE the outline (gr495394: allowed only
-    when no outside spot fits, and reported as a label the part will
-    cover): centred, then the bottom-left and bottom-right corners, each
-    :func:`_label_gap_mm` in from the outline's bounding box."""
-    if not box_board:
-        return ()
-    xs = [p[0] for p in box_board]
-    ys = [p[1] for p in box_board]
-    x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
-    g = _label_gap_mm(stroke_width_mm)
-    return (
-        (((x0 + x1) / 2.0, (y0 + y1) / 2.0), "center", "middle", "inside-center"),
-        ((x0 + g, y0 + g), "left", "baseline", "inside-bottom-left"),
-        ((x1 - g, y0 + g), "right", "baseline", "inside-bottom-right"),
-    )
-
-
 @dataclass(frozen=True, slots=True)
 class SilkPlacement:
     """One census row per silk item :func:`build_silk` considered — a
@@ -561,7 +551,7 @@ class SilkPlacement:
     ``"relocated"`` below is reserved for the refdes label's own
     multi-candidate ladder; a courtyard/pin-1 tick has no such ladder, only
     placed-or-dropped), ``"relocated"`` (a refdes label landed on a
-    candidate other than the default centered one), ``"dropped"``
+    candidate other than the default bottom-left one), ``"dropped"``
     (never drawn at all — the fact :func:`precis.pcb.drc.
     check_silk_missing` turns into a DRC error), or, ``kind="pin1"`` only,
     ``"not_applicable"`` (never ATTEMPTED — an unpolarized R/C/L/FB, see
@@ -601,11 +591,6 @@ class SilkPlacement:
     x_mm: float | None = None
     y_mm: float | None = None
     angle_deg: float = 0.0
-    #: ``kind="refdes"`` only: the label was drawn INSIDE its own part's
-    #: outline because no outside spot was clear (gr495394's last resort),
-    #: so the assembled part will hide it.
-    #: :func:`precis.pcb.drc.check_silk_label_covered` reports each one.
-    covered: bool = False
 
 
 def _prose_from_census(
@@ -972,12 +957,11 @@ def _stroke_crosses_stroke(
 ) -> bool:
     """Do two INKED strokes (not just their centrelines) touch, both
     inflated by ``stroke_width_mm``? A narrow, same-instance-only
-    complement to the solid-obstacle checks above: a refdes candidate is
-    allowed to sit INSIDE its own courtyard's hollow interior (the default
-    centered placement always does), so the courtyard can't be folded into
-    ``side_obstacles`` as a filled shape until after this instance's own
-    label is placed (see the call site) -- but a glyph stroke still can't
-    cross the courtyard's own border line, hollow or not. Reuses the exact
+    complement to the solid-obstacle checks above: a courtyard can't be
+    folded into ``side_obstacles`` as a filled shape before this
+    instance's own pin-1 tick draws ON the outline's corner (see the
+    call sites) -- but a glyph stroke still can't cross the courtyard's
+    own border line, hollow or not. Reuses the exact
     SAT/segment-box machinery :func:`_stroke_overlaps_any_pad` already
     uses."""
     half = stroke_width_mm / 2.0
@@ -1091,8 +1075,8 @@ def _pin1_id(ir: PcbIR, inst: int, pins: list[int]) -> int:
 #: courtyard's ``reach * 0.3`` was — ``reach`` was a HALF-extent, and the
 #: distinction is not cosmetic: reading it as 0.3 of the whole edge
 #: doubles the tick, whose bounding box is then folded into the shared
-#: obstacle list and shoulders this part's own centred refdes label off
-#: its default spot (measured on the two-part fixture in
+#: obstacle list and shoulders this part's own refdes label off its
+#: default spot (measured on the two-part fixture in
 #: ``tests/test_pcb_silk.py``, by 4 micrometres).
 _PIN1_TICK_EDGE_FRACTION = 0.15
 
@@ -3008,12 +2992,11 @@ def _box_inside_outline(
 
 
 #: One refdes label candidate, resolved to the board: ``(spot, anchor,
-#: corners, h_align, v_align, tier)``. ``corners`` is the text bbox the
+#: corners, h_align, v_align)``. ``corners`` is the text bbox the
 #: acceptance checks and the committed obstacle both use, so the two can
-#: never disagree about where the label is. ``tier`` is ``"spot"`` (the
-#: :data:`LABEL_SPOT_ORDER` spots), ``"ladder"`` (the radial ladder, still
-#: outside) or ``"inside"`` (the covered last resort).
-_LabelCandidate = tuple[str, Point, list[Point], str, str, str]
+#: never disagree about where the label is. ``spot`` names the
+#: :data:`LABEL_SPOT_ORDER` spot or the ladder's ``"ring N at Xdeg"``.
+_LabelCandidate = tuple[str, Point, list[Point], str, str]
 
 
 def _label_candidates(
@@ -3029,12 +3012,16 @@ def _label_candidates(
     """Every refdes spot for one placed part, in try order, resolved to a
     world anchor and bbox ONCE (an acceptance test and a reorder test built
     from two independently computed boxes is this module's own named
-    recurring defect). Order (gr495394): the :data:`LABEL_SPOT_ORDER`
-    corners and sides just outside the outline; then the radial ladder
-    (:data:`_CANDIDATES`), further out but still outside; then, as the last
-    resort, the :func:`_inside_candidates` spots the part will cover. A
-    part with no outline (pinless) has nothing to be inside or outside of
-    and walks the ladder from its centre.
+    recurring defect). Order (gr495394/gr496552): the
+    :data:`LABEL_SPOT_ORDER` corners and sides just outside the outline;
+    then the quarter-edge anchors between each corner and side-centre
+    ("a nearby free spot outside the courtyard"); then the radial ladder
+    (:data:`_CANDIDATES`), further out but still outside. There is no
+    inside last resort — a part with no clear
+    outside spot drops its label rather than print it under the package
+    (gr496552, Reto 2026-10-18: "it still should not be printed under
+    parts"). A part with no outline (pinless) has nothing to be inside
+    or outside of and walks the ladder from its centre.
 
     ``box_board`` is the courtyard as it sits ON THE BOARD (rotated and
     mirrored, still relative to the part origin), not the part's own
@@ -3047,14 +3034,28 @@ def _label_candidates(
     # ladder rung inside that gap is a candidate the acceptance test can
     # only reject.
     gap = max(height_mm * 0.3, _label_gap_mm(stroke_width_mm))
-    raw: list[tuple[Point, str, str, str, str]] = [
-        (*cand, "spot") for cand in _outline_spot_candidates(box_board, stroke_width_mm)
-    ]
+    raw: list[tuple[Point, str, str, str]] = list(
+        _outline_spot_candidates(box_board, stroke_width_mm)
+    )
+    if box_board:
+        # Edge-quarter anchors (gr496552, "a nearby free spot outside the
+        # courtyard"): two more near-in spots per edge, between each
+        # corner and the side-centre candidate, still `gap` off the
+        # outline. In congestion a quarter-edge box threads where the
+        # corner and side-centre boxes cannot.
+        xs = [p[0] for p in box_board]
+        ys = [p[1] for p in box_board]
+        x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+        for f in (0.25, 0.75):
+            mid_x = x0 + f * (x1 - x0)
+            mid_y = y0 + f * (y1 - y0)
+            raw += [
+                ((mid_x, y0 - gap), "center", "top", f"bottom edge {f:.0%}"),
+                ((x0 - gap, mid_y), "right", "middle", f"left edge {f:.0%}"),
+                ((x1 + gap, mid_y), "left", "middle", f"right edge {f:.0%}"),
+                ((mid_x, y1 + gap), "center", "baseline", f"top edge {f:.0%}"),
+            ]
     for du, dv, h_align, v_align, spot in _CANDIDATES:
-        if (du, dv) == (0.0, 0.0):
-            if not box_board:
-                raw.append(((0.0, 0.0), h_align, v_align, spot, "ladder"))
-            continue
         # Directional, not one scalar radius: an elongated part reaches
         # much further along its own long axis than across it, and the
         # square courtyard this replaced pushed every label out by the
@@ -3063,13 +3064,10 @@ def _label_candidates(
         ux, uy = du / ring, dv / ring
         reach = _courtyard_support_mm(box_board, ux, uy) + gap
         off = reach + (ring - 1.0) * min(reach, _LADDER_STEP_CAP_MM)
-        raw.append(((ux * off, uy * off), h_align, v_align, spot, "ladder"))
-    raw += [
-        (*cand, "inside") for cand in _inside_candidates(box_board, stroke_width_mm)
-    ]
+        raw.append(((ux * off, uy * off), h_align, v_align, spot))
 
     out: list[_LabelCandidate] = []
-    for board_offset, h_align, v_align, spot, tier in raw:
+    for board_offset, h_align, v_align, spot in raw:
         ax, ay = cx + board_offset[0], cy + board_offset[1]
         if mirror:
             # Bottom-side glyphs mirror about the anchor, which flips which
@@ -3085,14 +3083,14 @@ def _label_candidates(
             h_align=h_align,
             v_align=v_align,
         )
-        out.append((spot, (ax, ay), corners, h_align, v_align, tier))
+        out.append((spot, (ax, ay), corners, h_align, v_align))
     return out
 
 
 def _label_strokes(
     refdes: str, cand: _LabelCandidate, *, mirror: bool, height_mm: float
 ) -> list[list[Point]]:
-    _spot, anchor, _corners, h_align, v_align, _tier = cand
+    _spot, anchor, _corners, h_align, v_align = cand
     return stroke_font.layout_text(
         refdes,
         anchor=anchor,
@@ -3135,7 +3133,6 @@ def _label_blocked(
     *,
     inst: int,
     side_name: str,
-    tier: str,
     obstacles: list[dict[str, Any]],
     rings: dict[int, _RingGeom],
     outline_ring: list[Point] | None,
@@ -3150,11 +3147,10 @@ def _label_blocked(
     Against every part outline on this side, placed or not yet (gr495394:
     a label never overlaps another outline, and keeps
     :data:`OUTLINE_GAP_STROKES` clear line widths off any outline,
-    :func:`_label_gap_mm`): the text box may not touch or sit inside
-    another part's outline, nor come within the gap of any outline line.
-    Its own outline it must sit outside of, unless ``tier`` is
-    ``"inside"`` (the covered last resort), where it must sit wholly inside
-    instead. Checked on the text BOX, not the glyphs: stricter, and the
+    :func:`_label_gap_mm`): the text box may not touch or sit inside ANY
+    part's outline — its own included (gr496552: no label inside a
+    courtyard, ever) — nor come within the gap of any outline line.
+    Checked on the text BOX, not the glyphs: stricter, and the
     same box :func:`_outline_spot_candidates` spaces off the outline."""
     if any(_box_overlaps_pad(corners, pad) for pad in obstacles):
         return True
@@ -3175,13 +3171,8 @@ def _label_blocked(
             continue
         if box.distance(geom.line) < gap:
             return True
-        if other != inst or tier != "inside":
-            if box.intersects(geom.area):
-                return True
-        elif not geom.area.contains(box):
+        if box.intersects(geom.area):
             return True
-    if tier == "inside" and inst not in rings:
-        return True
     strokes = strokes_of()
     # bbox cleared but a real stroke may not have
     return any(
@@ -3285,6 +3276,7 @@ def build_silk(
     capability: CapabilityRow | None = None,
     outline: list[tuple[float, float]] | None = None,
     polarized: frozenset[str] | None = None,
+    label_spots: dict[str, str] | None = None,
 ) -> SilkResult:
     """Build ``{"top": [...], "bottom": [...]}`` silk draws for every
     PLACED instance in ``ir`` — the one builder :mod:`precis.handlers.pcb`
@@ -3365,6 +3357,16 @@ def build_silk(
     dropped item's part are vetoed (the ring dents or is cut there
     instead) and the board rebuilt. If the widest reach still loses one,
     the no-bulge build stands.
+
+    ``label_spots`` is the per-instance label override (gr496552: "we
+    can move it"), refdes -> a :data:`LABEL_SPOT_ORDER` name; the named
+    spot becomes that part's FIRST candidate, ahead of even an aligned
+    group's shared spot, with the rest of the order unchanged behind it
+    when the named spot is blocked. Names are the board-frame spots the
+    module docstring defines; an unknown name is ignored (the write
+    path, ``op='move'``'s ``label_spot``, validates). An overridden part
+    sits out of :func:`_aligned_label_groups` — the spot its row shares
+    is a tidiness default, and an explicit spot outranks it.
     """
     common: dict[str, Any] = {
         "vias": vias,
@@ -3375,6 +3377,7 @@ def build_silk(
         "capability": capability,
         "outline": outline,
         "polarized": polarized,
+        "label_spots": label_spots,
     }
     result, bulges = _build_silk_pass(ir, pads, bulge_veto=frozenset(), **common)
     if not bulges:
@@ -3437,12 +3440,14 @@ def _build_silk_pass(
     capability: CapabilityRow | None,
     outline: list[tuple[float, float]] | None,
     polarized: frozenset[str] | None,
+    label_spots: dict[str, str] | None,
     bulge_veto: frozenset[tuple[str, str]] | None,
 ) -> tuple[SilkResult, dict[str, list[tuple[str, float, float]]]]:
     """One :func:`build_silk` pass with these bulges vetoed (``None``: no
     bulges); also returns the bulges kept, by refdes."""
     sides = instance_sides or {}
     polarized_set = polarized or frozenset()
+    label_spots = label_spots or {}
     top: list[dict[str, Any]] = []
     bottom: list[dict[str, Any]] = []
     census: list[SilkPlacement] = []
@@ -3554,6 +3559,11 @@ def _build_silk_pass(
     for inst in placed:
         if inst not in courtyard_ring:
             continue
+        if str(ir.instance_refdes[inst]) in label_spots:
+            # A per-part label_spot override outranks the shared spot a
+            # group would pick (`build_silk`'s own docstring): the member
+            # neither shapes the group's choice nor takes it first.
+            continue
         rot = float(ir.inst_rot[inst])
         side_name = courtyard_ring[inst][0]
         label_shapes[inst] = (
@@ -3584,11 +3594,7 @@ def _build_silk_pass(
             )
             for m in group
         }
-        for k, (spot, *_rest, tier) in enumerate(cands[group[0]]):
-            if tier == "inside":
-                # A shared spot is a tidiness choice; a covered label is
-                # never chosen for tidiness.
-                break
+        for k, (spot, *_rest) in enumerate(cands[group[0]]):
             boxes: list[list[Point]] = []
             for m in group:
                 cand = cands[m][k]
@@ -3606,7 +3612,6 @@ def _build_silk_pass(
                     ),
                     inst=m,
                     side_name=group_side,
-                    tier=tier,
                     obstacles=seed_obstacles[
                         "bottom" if group_side == "bottom" else "top"
                     ],
@@ -3848,14 +3853,12 @@ def _build_silk_pass(
                     continue
                 # Fully OUTSIDE this instance's own courtyard, not merely
                 # "doesn't cross its border line". `_stroke_crosses_stroke`
-                # (the refdes label's own self-check, a few lines down)
-                # is right for a glyph: the courtyard's hollow interior is
-                # legal ground for TEXT, since the default refdes candidate
-                # sits inside it on purpose. A pin-1 dot has no such
-                # exemption -- the module docstring's own "the dot sits
-                # outside, beside the pin it names" -- so a candidate
-                # entirely inside the polygon, which crosses no border and
-                # so never tripped a crossing test, must still be rejected.
+                # is the border-touching half of the check; a candidate
+                # entirely inside the polygon crosses no border, so it
+                # must still be rejected outright -- the module
+                # docstring's own "the dot sits outside, beside the pin
+                # it names" (and, since gr496552, the same is true of the
+                # refdes label: no candidate may sit inside any outline).
                 # `_polygon_overlaps_circle` already covers both shapes of
                 # failure (fully inside, or merely touching the boundary)
                 # in one exact (non-sampled) test.
@@ -4021,17 +4024,23 @@ def _build_silk_pass(
             stroke_width_mm=stroke_width_mm,
         )
         default_spot = candidates[0][0]
+        over_name = label_spots.get(refdes)
+        over_k = next((k for k, c in enumerate(candidates) if c[0] == over_name), -1)
         shared_k, shared_spot, group_size = group_spot.get(inst, (-1, "", 0))
-        # The aligned group's shared spot goes first, ahead of even the
-        # default; the rest keep their order. Matched by index: group
-        # members share one candidate list.
+        # A per-part label_spot override goes first, then the aligned
+        # group's shared spot, ahead of even the default; the rest keep
+        # their order. Matched by index: group members share one
+        # candidate list.
         scored = sorted(
-            enumerate(candidates), key=lambda item: 0 if item[0] == shared_k else 1
+            enumerate(candidates),
+            key=lambda item: (
+                0 if item[0] == over_k else 1 if item[0] == shared_k else 2
+            ),
         )
 
         placed_text = False
         for _k, cand in scored:
-            spot, _anchor, corners, _h, _v, tier = cand
+            spot, _anchor, corners, _h, _v = cand
             if _label_blocked(
                 corners,
                 functools.partial(
@@ -4039,7 +4048,6 @@ def _build_silk_pass(
                 ),
                 inst=inst,
                 side_name=side_name,
-                tier=tier,
                 obstacles=side_obstacles,
                 rings=ring_geoms,
                 outline_ring=outline_ring,
@@ -4055,25 +4063,26 @@ def _build_silk_pass(
             placed_text = True
             label_x = min(p[0] for p in corners)
             label_y = min(p[1] for p in corners)
-            covered = tier == "inside"
             if spot != default_spot:
-                shared = (
-                    f", the spot its aligned row of {group_size} identical parts shares"
-                    if spot == shared_spot
-                    else f"; its aligned row's shared spot {shared_spot} was "
-                    "taken by silk committed earlier"
-                    if group_size
-                    else ""
-                )
-                reason = (
-                    "refdes label placed INSIDE its own outline -- no spot "
-                    "outside it is clear of pads, vias, outlines and other "
-                    f"labels, so the part will cover it (drawn at {spot})"
-                    if covered
-                    else f"refdes label moved off the default {default_spot} "
-                    "spot to clear a pad, a via, an outline or silk already "
-                    f"committed (drawn at {spot}{shared})"
-                )
+                if spot == over_name:
+                    reason = (
+                        f"refdes label drawn at its per-part label_spot "
+                        f"override {spot} (default {default_spot})"
+                    )
+                else:
+                    shared = (
+                        f", the spot its aligned row of {group_size} identical parts shares"
+                        if spot == shared_spot
+                        else f"; its aligned row's shared spot {shared_spot} was "
+                        "taken by silk committed earlier"
+                        if group_size
+                        else ""
+                    )
+                    reason = (
+                        f"refdes label moved off the default {default_spot} "
+                        "spot to clear a pad, a via, an outline or silk already "
+                        f"committed (drawn at {spot}{shared})"
+                    )
                 census.append(
                     SilkPlacement(
                         refdes=refdes,
@@ -4085,7 +4094,6 @@ def _build_silk_pass(
                         height_mm=height_mm,
                         x_mm=label_x,
                         y_mm=label_y,
-                        covered=covered,
                     )
                 )
             else:
@@ -4110,9 +4118,10 @@ def _build_silk_pass(
                     side=side_name,
                     outcome="dropped",
                     reason=(
-                        "refdes label dropped -- every candidate placement, "
-                        "inside its outline included, overlaps a pad, a via, "
-                        "an outline or silk already committed"
+                        "refdes label dropped -- every spot outside its "
+                        "outline overlaps a pad, a via, an outline or silk "
+                        "already committed, and no label prints under a part "
+                        "(gr496552)"
                     ),
                     stroke_width_mm=stroke_width_mm,
                     height_mm=height_mm,

@@ -709,6 +709,8 @@ class PcbHandler(Handler):
                 "fixed_side",
                 "group_fixed",
                 "room_id",
+                # op='move' refdes label spot override (gr496552).
+                "label_spot",
                 "priority",
                 "snap",
                 "net",
@@ -1922,11 +1924,25 @@ class PcbHandler(Handler):
         if "max_travel_mm" in args:
             # explicit null clears the soft pin (the column -> NULL)
             kwargs["max_travel_mm"] = self._parse_max_travel(args["max_travel_mm"])
+        if "label_spot" in args:
+            # gr496552: the refdes label spot override lives on instance
+            # meta ("we can move it"); explicit null clears it.
+            spot = args["label_spot"]
+            if spot is not None and str(spot) not in pcb_silk.LABEL_SPOT_ORDER:
+                raise BadInput(
+                    f"pcb: label_spot must be one of "
+                    f"{', '.join(pcb_silk.LABEL_SPOT_ORDER)} (got {spot!r}); "
+                    "null clears the override",
+                    next=f"args={{'op':'move','refdes':'{refdes}',"
+                    "'label_spot':'top-right'}}",
+                )
+            kwargs["meta"] = {"label_spot": None if spot is None else str(spot)}
         kwargs.update(self._move_lock_kwargs(ref, refdes, args))
         if not kwargs:
             raise BadInput(
                 "op='move' needs at least one of x / y / rot / fixed / "
-                "max_travel_mm / side / fixed_side / group_fixed / room_id",
+                "max_travel_mm / side / fixed_side / group_fixed / room_id / "
+                "label_spot",
                 next="args={'op':'move','refdes':'U1','fixed':'xy'}",
             )
         if {"x", "y", "rot"} & kwargs.keys() or "layer" in kwargs:
@@ -1941,6 +1957,8 @@ class PcbHandler(Handler):
                 # lock columns — the soft pin, side and the other columns
                 # apply here.
                 extra = {k: v for k, v in kwargs.items() if k in _MOVE_COLUMN_KEYS}
+                if "meta" in kwargs:
+                    extra["meta"] = kwargs["meta"]
                 if extra:
                     self.store.pcb_move_instance(ref.id, refdes, **extra)
                 return Response(body=group_body)
@@ -3978,6 +3996,7 @@ class PcbHandler(Handler):
         capability: CapabilityRow | None = None,
         date: str | None = None,
         polarized: frozenset[str] = frozenset(),
+        label_spots: dict[str, str] | None = None,
     ) -> tuple[
         list[dict[str, Any]],
         dict[str, list[dict[str, Any]]],
@@ -4003,6 +4022,7 @@ class PcbHandler(Handler):
             capability=capability,
             date=date,
             polarized=polarized,
+            label_spots=label_spots,
         )
 
     def _drc_pads(self, ref_id: int, layers: list[str]) -> list[dict[str, Any]]:
@@ -4404,6 +4424,7 @@ class PcbHandler(Handler):
                 vias=vias,
                 instance_sides=instance_sides,
                 polarized=self._polarized_refdes(design),
+                label_spots=pcb_session.label_spots(design),
                 copper=copper,
                 outline=outline,
                 layer_names=layer_names,
@@ -6844,6 +6865,7 @@ class PcbHandler(Handler):
                 vias=vias,
                 instance_sides=instance_sides,
                 polarized=self._polarized_refdes(design),
+                label_spots=pcb_session.label_spots(design),
                 copper=copper,
                 outline=outline,
                 layer_names=layer_names,

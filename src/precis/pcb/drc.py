@@ -3186,31 +3186,6 @@ def check_silk_missing(
     return findings
 
 
-def check_silk_label_covered(census: Sequence[SilkPlacement]) -> list[DrcFinding]:
-    """A warning per refdes label :func:`~precis.pcb.silk.build_silk` had to
-    draw INSIDE its own part's outline (``SilkPlacement.covered``): no spot
-    outside was clear, so the label prints but the assembled part hides it
-    (gr495394 — inside the outline is the last resort, and it must say so,
-    naming the part). A ``warn``, not an ``error``: the ink is there and
-    legible on a bare board, unlike a :func:`check_silk_missing` drop."""
-    return [
-        DrcFinding(
-            rule="silk_label_covered",
-            severity="warn",
-            where=f"{c.refdes} (refdes, {c.side})",
-            detail=(
-                f"label will be covered: the refdes label for {c.refdes} sits "
-                "inside its own outline because no spot outside it was clear "
-                "of pads, vias, outlines and other labels; the assembled part "
-                "will hide it — make room beside the part, or move it"
-            ),
-            objects=({"refdes": c.refdes, "kind": c.kind, "side": c.side},),
-        )
-        for c in census
-        if c.kind == "refdes" and c.covered and c.outcome in ("placed", "relocated")
-    ]
-
-
 def check_silk_printability(
     census: Sequence[SilkPlacement], capability: CapabilityRow
 ) -> list[DrcFinding]:
@@ -4032,7 +4007,6 @@ def run_geometric_drc(
         )
         findings += check_courtyard_hole(courtyards, holes)
     findings += check_silk_missing(census or (), model)
-    findings += check_silk_label_covered(census or ())
     findings += check_silk_printability(census or (), capability)
     return findings
 
@@ -4985,7 +4959,6 @@ __all__ = [
     "check_pour_reaches_pad",
     "check_rail_crossing",
     "check_silk_edge_clearance",
-    "check_silk_label_covered",
     "check_silk_missing",
     "check_silk_printability",
     "check_synthesized_footprint",

@@ -204,6 +204,7 @@ def _catalogue(
             capability=inp["capability"],
             date=datetime.now(UTC).date().isoformat(),
             polarized=pcb_session.polarized_refdes(design),
+            label_spots=pcb_session.label_spots(design),
         )
         model: dict[str, Any] = {
             "layers": inp["layers"],
