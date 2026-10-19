@@ -1226,6 +1226,21 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-gardener-help",
     ),
     ServiceSpec(
+        # Gripe system batch F slice 4 (precis.workers.gripe_triage): the
+        # daily `gripe_triage` scheduler cadence fires the pass; this row
+        # names the service so `precis service` can light it. NO
+        # `default_profiles` and no rotation wiring (ref_pass=False): the
+        # pass is dark until a service_config row (prio > 0) lights it.
+        name="gripe_triage",
+        label="Gripe triage",
+        category="health",
+        kind=ServiceKind.PASS,
+        one_line="Daily triage comment on open gripes older than 3 days "
+        "with no PRIO or thread: tag — suggests both with a reason, never "
+        "closes; dark until service_config lights it.",
+        doc_skill="precis-gripe-help",
+    ),
+    ServiceSpec(
         name="watch_poll",
         label="Citation-forward watcher",
         category="acquisition",

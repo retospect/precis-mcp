@@ -239,6 +239,24 @@ def _run_call_errors(store: Store, batch_size: int) -> None:
     )
 
 
+def _run_gripe_triage(store: Store, batch_size: int) -> None:
+    """One gripe triage pass (gripe system batch F slice 4): one
+    ``triage:`` comment suggesting PRIO and owning thread on stale open
+    gripes. Dark unless a ``gripe_triage`` service_config row lights it
+    (gated inside the pass). ``batch_size`` is unused — the pass's own
+    per-run comment cap is the throttle. spends=False: no LLM."""
+    del batch_size
+    from precis.workers.gripe_triage import run_gripe_triage_pass
+
+    result = run_gripe_triage_pass(store)
+    log.info(
+        "scheduler: gripe_triage inner result claimed=%d ok=%d failed=%d",
+        result.claimed,
+        result.ok,
+        result.failed,
+    )
+
+
 def _run_graph_garden_mint(store: Store, batch_size: int) -> None:
     """Mint ONE queued ``graph_garden`` job per UTC day — the proposals-
     only graph-upkeep pass (docs/backlog/graph-gardener.md). Same shape as
@@ -871,6 +889,16 @@ CADENCES: tuple[Cadence, ...] = (
         name="call_errors",
         interval_s=24 * 3600 + 47 * 60,
         run=_run_call_errors,
+    ),
+    # Gripe system batch F slice 4: one `triage:` comment (PRIO + owning
+    # thread suggestion) per stale open gripe, never a close. Host-
+    # agnostic, daily, off the exact day boundary (+53m). No `eligible`
+    # check: the pass is dark-gated on the gripe_triage service_config
+    # row, so an unset fleet just no-ops. spends=False: no LLM.
+    Cadence(
+        name="gripe_triage",
+        interval_s=24 * 3600 + 53 * 60,
+        run=_run_gripe_triage,
     ),
     # gr485358 item 1: retire dead section:threads memory nodes — 'Left:
     # none' first lines, nodes another live memory supersedes, and nodes

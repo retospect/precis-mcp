@@ -328,6 +328,13 @@ when the condition clears (call_errors: no matching error for three
 daily passes) with a `resolved: auto-closed: …` comment and
 `STATUS:done`.
 
+A daily `gripe_triage` pass, off unless a `gripe_triage` service_config
+row lights it, comments once per three days on open gripes older than
+three days that lack a PRIO or a `thread:<slug>` tag. The `triage:`
+comment suggests the missing PRIO (7 for `origin:*`, else 5) and owning
+thread with the reason and the `tag(...)` call that applies it; it never
+closes or retags.
+
 ## Link a gripe to a related paper or chunk
 
 ```python
