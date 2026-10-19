@@ -80,6 +80,74 @@
     });
   }
 
+  // gr496860: the row-resize handle under the workbench, mirroring the
+  // divider above — drag sets the height in px, remembered per user,
+  // double-click resets to the stylesheet default, arrows adjust.
+  const heightEl = el('pcb-height');
+  const H_KEY = 'precis:pcb-workbench:height-px';
+  const H_MIN = 160, H_MAX = 4000;
+  const applyH = (h) => { wb.style.height = Math.round(h) + 'px'; };
+  const storeH = (h) => {
+    try {
+      localStorage.setItem(H_KEY, String(Math.round(h)));
+    } catch (_) {
+      /* remembering is a nicety */
+    }
+  };
+  const resetH = () => {
+    wb.style.height = '';
+    try {
+      localStorage.removeItem(H_KEY);
+    } catch (_) {
+      /* same */
+    }
+  };
+  if (heightEl) {
+    const clampH = (h) => Math.min(H_MAX, Math.max(H_MIN, h));
+    try {
+      const saved = parseFloat(localStorage.getItem(H_KEY));
+      if (isFinite(saved)) applyH(clampH(saved));
+    } catch (_) {
+      /* same */
+    }
+    let hdrag = null; // {y, h}
+    heightEl.addEventListener('pointerdown', (ev) => {
+      hdrag = {y: ev.clientY, h: wb.getBoundingClientRect().height};
+      if (heightEl.setPointerCapture) heightEl.setPointerCapture(ev.pointerId);
+      ev.preventDefault();
+    });
+    heightEl.addEventListener('pointermove', (ev) => {
+      if (hdrag) applyH(clampH(hdrag.h + ev.clientY - hdrag.y));
+    });
+    heightEl.addEventListener('pointerup', (ev) => {
+      if (!hdrag) return;
+      const h = clampH(hdrag.h + ev.clientY - hdrag.y);
+      applyH(h);
+      storeH(h);
+      hdrag = null;
+    });
+    heightEl.addEventListener('pointercancel', () => {
+      hdrag = null;
+    });
+    heightEl.addEventListener('dblclick', resetH);
+    heightEl.addEventListener('keydown', (ev) => {
+      const cur = wb.getBoundingClientRect().height;
+      let h = null;
+      if (ev.key === 'ArrowUp') h = cur - 24;
+      else if (ev.key === 'ArrowDown') h = cur + 24;
+      else if (ev.key === 'Home') {
+        ev.preventDefault();
+        resetH();
+        return;
+      }
+      if (h == null) return;
+      ev.preventDefault();
+      h = clampH(h);
+      applyH(h);
+      storeH(h);
+    });
+  }
+
   // Both panes share viewport.js. The layout pane's toolbar holds the
   // data-shortcut keys until the pointer picks a pane — activation moves
   // them, so +/-, f and 0 always act under the cursor.

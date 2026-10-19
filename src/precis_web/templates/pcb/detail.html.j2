@@ -2,6 +2,7 @@
 {% from "_drive_back.html.j2" import drive_back %}
 {% from "_design_chat.html.j2" import design_chat %}
 {% block title %}{{ title }} — PCB{% endblock %}
+{% block main_class %}px-4 py-6{% endblock %}
 {% block content %}
 
 <div class="mb-3 flex items-baseline gap-3 flex-wrap">
@@ -44,7 +45,9 @@
   #pcb-pane-layout { flex: 1 1 auto; }
   #pcb-workbench object { flex: 1 1 auto; min-height: 0; width: 100%; }
   #pcb-divider { flex: 0 0 7px; cursor: col-resize; border-radius: 4px; }
-  #pcb-divider:hover, #pcb-divider:focus-visible { background: rgb(var(--bg-surface-emphasis)); }
+  #pcb-divider:hover, #pcb-divider:focus-visible,
+  #pcb-height:hover, #pcb-height:focus-visible { background: rgb(var(--bg-surface-emphasis)); }
+  #pcb-height { height: 7px; cursor: row-resize; border-radius: 4px; margin: 2px 0; }
 </style>
 <div id="pcb-workbench" class="mb-1">
   <section id="pcb-pane-schematic" class="pcb-pane rounded border border-line bg-surface p-2">
@@ -83,6 +86,10 @@
     </object>
   </section>
 </div>
+{# gr496860: a row-resize handle under the panes, mirroring #pcb-divider —
+   remembered per user, double-click resets, arrows adjust. #}
+<div id="pcb-height" role="separator" aria-orientation="horizontal" tabindex="0"
+     aria-label="workbench height" title="drag to resize · double-click resets · arrows adjust"></div>
 {# The info strip: hover/selection details left, the board cursor readout
    right (moved here from the old board box). #}
 <div id="pcb-info-strip" class="mb-3 flex items-baseline justify-between gap-4 rounded border border-line bg-surface px-2 py-1 text-xs text-fg-subtle">

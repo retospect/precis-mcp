@@ -135,6 +135,8 @@ def test_detail_renders_the_two_pane_workbench(pcb_client, runtime_with_store) -
         'id="pcb-pane-schematic"',
         'id="pcb-pane-layout"',
         'id="pcb-divider"',
+        'id="pcb-height"',
+        'aria-orientation="horizontal"',
         'id="pcb-info-strip"',
         'id="pcb-cursor-readout"',
         'id="pcb-flip"',
@@ -150,6 +152,14 @@ def test_detail_renders_the_two_pane_workbench(pcb_client, runtime_with_store) -
         < r.text.index('id="pcb-pane-layout"')
         < r.text.index('id="pcb-info-strip"')
     )
+    # the row-resize handle (gr496860) sits between the workbench and the
+    # strip; the page overrides base's main_class to full width (gr496857)
+    assert (
+        r.text.index('id="pcb-workbench"')
+        < r.text.index('id="pcb-height"')
+        < r.text.index('id="pcb-info-strip"')
+    )
+    assert '<main class="px-4 py-6">' in r.text
     # both panes are <object> documents (each svg keeps its own scripts)
     assert 'object id="pcb-schematic-object"' in r.text
     assert "board.svg?shown=" in r.text
