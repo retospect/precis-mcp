@@ -408,6 +408,27 @@ class TestGripe:
         # No rows past the page → no hidden-rows clause.
         assert "past this page" not in gripe.get(id="/open").body
 
+    def test_open_view_pages(self, gripe: GripeHandler) -> None:
+        """gr497175: ``get(id='/open', page=N)`` windows the list."""
+        for i in range(25):
+            gripe.put(text=f"pager probe {i:02d}")
+        p1 = gripe.get(id="/open", page=1).body
+        p2 = gripe.get(id="/open", page=2).body
+
+        def rows(body: str) -> set[str]:
+            return {ln for ln in body.splitlines() if "pager probe" in ln}
+
+        assert rows(p1) and rows(p2)
+        assert not rows(p1) & rows(p2)
+        assert len(rows(p1)) + len(rows(p2)) == 25
+        assert "page 1 of 2 · 25 total" in p1
+        assert "page 2 of 2 · 25 total · last page" in p2
+        assert gripe.get(id="/wontfix", page=2).result_count == 0
+        with pytest.raises(BadInput):
+            gripe.get(id="/open", page=0)
+        with pytest.raises(BadInput, match="no pages"):
+            gripe.get(id="/recent", page=2)
+
     def test_create_ack_hints_round_trip(self, gripe: GripeHandler) -> None:
         """The ack used to advertise ``link='gripe'+':N'`` — a BinOp
         the literals-only command parser rejects. Now both the

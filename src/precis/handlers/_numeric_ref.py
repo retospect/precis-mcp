@@ -404,6 +404,11 @@ class NumericRefHandler(Handler):
     #: lives in :meth:`_search_body_chunks` / :meth:`_body_search_hits`.
     search_body_chunks: ClassVar[bool] = False
 
+    #: ``id='/<view>'`` list views whose ``_list_view`` takes ``page=`` and
+    #: windows its rows. ``get(id='/<view>', page=N)`` on any other view is
+    #: refused rather than re-showing page 1 (gr497175).
+    paged_list_views: ClassVar[frozenset[str]] = frozenset()
+
     #: Synthetic card kinds (``ord < 0``) the title+block hybrid search also
     #: scans. Default ``None`` = body chunks only. A kind whose searchable
     #: text lives only in its card (``taxon``: ``('card_combined',)``) opts in
@@ -572,7 +577,7 @@ class NumericRefHandler(Handler):
         # `id='/recent'` and similar path views — subclasses may
         # implement custom list shapes (e.g. todo's open / done filters).
         if isinstance(id, str) and id.startswith("/"):
-            list_resp = self._list_view(id[1:])
+            list_resp = self._list_view_paged(id[1:], _kw.get("page"))
             if list_resp is not None:
                 return list_resp
             # Enumerate the actual list views this handler supports
@@ -1290,6 +1295,7 @@ class NumericRefHandler(Handler):
         page: int = 1,
         sort: str = "recency",
         exclude_tags: list[str] | None = None,
+        more_call: str = "",
     ) -> Response:
         """Recency-ordered list of refs matching ``tags``, no ranking.
 
@@ -1331,9 +1337,10 @@ class NumericRefHandler(Handler):
             if page > 1 and total > 0:
                 # Past the last page — total is still positive, so this
                 # is an empty window, not "nothing tagged this way".
+                pages_all = -(-total // page_size) if page_size > 0 else 1
                 body = (
                     f"page {page}: no {self._sense()} entries tagged {tags} "
-                    f"— {total} total"
+                    f"— {total} total in {pages_all} page(s)"
                 )
                 if note:
                     body += f"\n{note}"
@@ -1355,6 +1362,7 @@ class NumericRefHandler(Handler):
             )
             return Response(body=body, result_count=0)
         shown = len(refs)
+        pages = -(-total // page_size) if page_size > 0 else 1
         if page > 1:
             # "N of K" alone doesn't say *which* N once page > 1 — show
             # the actual row window so the header can't be misread as
@@ -1382,6 +1390,17 @@ class NumericRefHandler(Handler):
         if note:
             parts.append(note)
         parts.append(self._render_hits_table(refs))
+        if pages > 1:
+            # Name the total and the page count so a short page can't be
+            # mistaken for the end of the list (gr497175).
+            line = f"page {page} of {pages} · {total} total"
+            if page >= pages:
+                line += " · last page"
+            elif more_call:
+                line += f"\nnext page: {more_call.format(next=page + 1)}"
+            else:
+                line += " · page=N for more"
+            parts.append(line)
         return Response(body="\n".join(parts), result_count=len(refs))
 
     def _list_summary(
@@ -3098,6 +3117,35 @@ class NumericRefHandler(Handler):
         with search-side views (todo's ``projects``/``doable``/…) override.
         """
         return frozenset()
+
+    def _list_view_paged(self, view: str, page: Any) -> Response | None:
+        """Route ``get(id='/<view>', page=N)`` to ``_list_view``.
+
+        Views in :attr:`paged_list_views` receive ``page=``; any other view
+        refuses ``page>1`` with a pointer at ``search`` instead of silently
+        returning page 1 (gr497175).
+        """
+        try:
+            n = 1 if page is None else int(page)
+        except (TypeError, ValueError):
+            n = 0
+        if n < 1:
+            raise BadInput(
+                f"page must be a positive integer, got {page!r}",
+                next=f"get(kind={self.kind!r}, id='/{view}', args={{'page': 1}})",
+            )
+        if view in self.paged_list_views:
+            # Only views in ``paged_list_views`` take ``page=``; the base
+            # signature stays ``(view)`` so non-paging overrides still match.
+            paged: Any = self._list_view
+            resp: Response | None = paged(view, page=n)
+            return resp
+        if n > 1:
+            raise BadInput(
+                f"id='/{view}' on kind={self.kind!r} has no pages (page={n})",
+                next=f"search(kind={self.kind!r}, page={n}, page_size=100)",
+            )
+        return self._list_view(view)
 
     def _list_view(self, view: str) -> Response | None:
         """Handle ``id='/recent'`` and friends.

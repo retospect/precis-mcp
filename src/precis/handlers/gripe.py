@@ -39,6 +39,7 @@ Surface (see ``precis-gripe-help``):
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 
@@ -208,12 +209,28 @@ class GripeHandler(NumericRefHandler):
         # explicit tag filter: search(kind='gripe', tags=['STATUS:in_review']).
         return ("recent", "open", "wontfix")
 
-    def _list_view(self, view: str) -> Response | None:
-        if view == "open":
-            return self._list_by_tags(["STATUS:open"], page_size=20, sort="prio")
-        if view == "wontfix":
-            return self._list_by_tags(["STATUS:wontfix"], page_size=20)
-        return super()._list_view(view)
+    paged_list_views: ClassVar[frozenset[str]] = frozenset({"open", "wontfix"})
+
+    def _list_view(self, view: str, *, page: int = 1) -> Response | None:
+        offset = (page - 1) * 20
+        if view not in self.paged_list_views:
+            return super()._list_view(view)
+        tags = ["STATUS:open"] if view == "open" else ["STATUS:wontfix"]
+        resp = self._list_by_tags(
+            tags,
+            page_size=20,
+            page=page,
+            offset=offset,
+            sort="prio" if view == "open" else "recency",
+            more_call=f"get(kind='gripe', id='/{view}', args={{{{'page': {{next}}}}}})",
+        )
+        if "next page:" in resp.body:
+            resp = replace(
+                resp,
+                body=resp.body
+                + f"\nfallback: search(kind='gripe', status='{view}', page_size=100)",
+            )
+        return resp
 
     def _list_summary(
         self,
@@ -786,8 +803,13 @@ class GripeHandler(NumericRefHandler):
         id: str | int | list[str | int] | None = None,
         view: str | None = None,
         q: str | None = None,
+        page: int | None = None,
         **_kw: Any,
     ) -> Response:
+        # ``args={'page': N}`` pages the id='/open' / '/wontfix' lists; the
+        # base reads it back out of the forwarded kwargs (gr497175).
+        if page is not None:
+            _kw["page"] = page
         view = plain_listing_view(view, ())
         if (r := self._route_find(id=id, view=view, q=q)) is not None:
             return r
