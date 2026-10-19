@@ -34,8 +34,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from precis.utils.authors import to_author_dicts
-from precis.utils.http import http_client, request_with_deadline
-from precis.utils.rate_limit import require as require_rate_limit
+from precis.utils.http import call_with_backoff, http_client, request_with_deadline
 
 log = logging.getLogger(__name__)
 
@@ -63,20 +62,25 @@ def fetch_openalex_work(
     :class:`precis.utils.rate_limit.RateLimited` without calling out when the
     shared ``openalex`` limiter refuses (daily quota spent or rate-starved).
     """
-    require_rate_limit("openalex")
     url = f"{_OPENALEX_WORKS}/doi:{doi}"
     params = {"mailto": email} if email else {}
-    with http_client(timeout=timeout, headers={"User-Agent": _ua(email)}) as client:
-        # httpx timeouts are per-phase — a trickling peer defeats them
-        # (gr486823), so the whole request gets an overall wall-clock
-        # bound of 2x the per-phase timeout.
-        resp = request_with_deadline(
-            client, 2 * timeout, lambda: client.get(url, params=params)
-        )
-        if resp.status_code == 404:
-            return None
-        resp.raise_for_status()
-        data = resp.json()
+
+    def once() -> Any:
+        with http_client(timeout=timeout, headers={"User-Agent": _ua(email)}) as client:
+            # httpx timeouts are per-phase — a trickling peer defeats them
+            # (gr486823), so the whole request gets an overall wall-clock
+            # bound of 2x the per-phase timeout.
+            resp = request_with_deadline(
+                client, 2 * timeout, lambda: client.get(url, params=params)
+            )
+            if resp.status_code == 404:
+                return None
+            resp.raise_for_status()
+            return resp.json()
+
+    # The shared ``openalex`` row gives a token per attempt; 429/5xx back
+    # off (Retry-After honoured), 4xx other than 404 raise at once.
+    data = call_with_backoff(once, service="openalex")
     return data if isinstance(data, dict) else None
 
 

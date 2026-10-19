@@ -28,7 +28,12 @@ from precis.errors import Upstream
 from precis.handlers._cache_base import CacheBackedHandler, FetchResult
 from precis.protocol import KindSpec
 from precis.store.types import ChunkInsert
-from precis.utils.http import http_client
+from precis.utils.http import (
+    VendorError,
+    http_client,
+    polite_user_agent,
+    with_backoff,
+)
 
 log = logging.getLogger(__name__)
 
@@ -206,8 +211,18 @@ def _run_query(app_id: str, expression: str) -> Any:
         totaltimeout="55",
     )
     url = "https://api.wolframalpha.com/v2/query"
-    with http_client(timeout=60.0) as http:
-        resp = http.get(url, params=params)
+    with http_client(timeout=60.0, user_agent=polite_user_agent()) as http:
+        try:
+            resp = with_backoff(
+                lambda: http.get(url, params=params), service="wolfram", url=url
+            )
+        except VendorError as exc:
+            # Not str(exc): the failing request URL carries the appid.
+            raise Upstream(
+                f"Wolfram Alpha unavailable (HTTP {exc.status or 'transport'})",
+                next="retry shortly; check WOLFRAM_APP_ID at "
+                "https://account.wolfram.com",
+            ) from None
     if resp.status_code != 200:
         raise Upstream(
             f"Wolfram Alpha HTTP {resp.status_code}: {resp.text[:200]}",

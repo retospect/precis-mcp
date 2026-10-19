@@ -144,8 +144,14 @@ def test_search_http_failure_names_retry(
     from precis.errors import Upstream
 
     monkeypatch.setattr(
-        safe_fetch, "safe_get", lambda *a, **k: types.SimpleNamespace(status_code=503)
+        safe_fetch,
+        "safe_get",
+        lambda *a, **k: types.SimpleNamespace(status_code=503, headers={}),
     )
+    monkeypatch.setattr("precis.utils.http._default_sleep", lambda _s: None)
+    from precis.utils.http import reset_circuit
+
+    reset_circuit()
     h = WikipediaHandler(hub=Hub(store=store))
     with pytest.raises(Upstream, match="wikipedia search HTTP 503") as exc:
         h._resolve_title(None, "https://en.wikipedia.org/w/api.php", "attention")

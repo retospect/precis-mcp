@@ -83,14 +83,22 @@ class PublishResult:
 
 
 def _default_post(url: str, trig_bytes: bytes) -> None:
-    import httpx
+    from precis.utils.http import http_client, polite_user_agent, with_backoff
 
-    resp = httpx.post(
-        url,
-        content=trig_bytes,
-        headers={"Content-Type": "application/trig"},
-        timeout=30.0,
-    )
+    # A publish creates something: only connect failures and 429 are retried
+    # (idempotent=False); a read timeout or 5xx stays ambiguous for the
+    # caller (see _is_definite_failure).
+    with http_client(timeout=30.0, user_agent=polite_user_agent()) as client:
+        resp = with_backoff(
+            lambda: client.post(
+                url,
+                content=trig_bytes,
+                headers={"Content-Type": "application/trig"},
+            ),
+            service="nanopub-registry",
+            url=url,
+            idempotent=False,
+        )
     resp.raise_for_status()
 
 
@@ -104,7 +112,8 @@ def _is_definite_failure(exc: BaseException) -> bool:
     408/425/429 are 4xx the server may send after reading the body, so they
     stay ambiguous."""
     resp = getattr(exc, "response", None)
-    status = getattr(resp, "status_code", None)
+    # A VendorError (the politeness core refused 401/403) carries ``status``.
+    status = getattr(resp, "status_code", None) or getattr(exc, "status", None)
     return (
         isinstance(status, int) and 400 <= status < 500 and status not in _AMBIGUOUS_4XX
     )

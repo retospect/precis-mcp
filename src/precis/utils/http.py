@@ -37,16 +37,19 @@ venv into a typed, actionable error instead of an ImportError.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import functools
 import http.client
+import ipaddress
 import json
 import logging
 import math
 import random
 import threading
 import time
-from collections.abc import Callable, Iterator
+import urllib.error
+from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
@@ -158,6 +161,8 @@ def _status_of(exc: BaseException) -> int | None:
     ``ConnectionRefusedError``); httpx and ``requests`` carry the response
     on the exception. Only the S2 mapping needs the type-based table.
     """
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code
     response = getattr(exc, "response", None)
     code = getattr(response, "status_code", None)
     if isinstance(code, int):
@@ -177,6 +182,14 @@ def _status_of(exc: BaseException) -> int | None:
     if isinstance(exc, ConnectionRefusedError):
         return 429
     return None
+
+
+def _headers_of(exc: BaseException) -> Any:
+    """Response headers carried by ``exc`` (httpx/requests ``.response``, or
+    a stdlib ``urllib.error.HTTPError`` which is its own response)."""
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.headers
+    return getattr(getattr(exc, "response", None), "headers", None)
 
 
 def _is_transport_error(exc: BaseException) -> bool:
@@ -386,6 +399,28 @@ POLICIES: dict[str, Policy] = {
     "digikey": Policy(provider="digikey", label="DigiKey"),
     "mouser": Policy(provider="mouser", label="Mouser"),
     "farnell": Policy(provider="farnell", label="Farnell"),
+    # Services below take the ``host:<netloc>`` limiter row of the ``url=``
+    # the caller passes (auto-seeded, one request a second), so they need no
+    # migration. A 4xx other than 401/403/429 comes back as a response.
+    "web-fetch": Policy(attempts=3, base=2.0, cap=30.0, label="web fetch"),
+    "wikipedia": Policy(attempts=4, base=2.0, label="Wikipedia"),
+    "wolfram": Policy(attempts=3, base=2.0, cap=30.0, label="Wolfram Alpha"),
+    # A live agent waits on these two: few attempts, short cap. A 429 backs
+    # off here and is never raised to the agent as a rate-limit error.
+    "perplexity": Policy(attempts=4, base=2.0, cap=30.0, label="Perplexity"),
+    "openai-tools": Policy(attempts=2, base=2.0, cap=30.0, label="OpenAI-style API"),
+    "remarkable": Policy(
+        attempts=4,
+        base=2.0,
+        fatal_counts_toward_breaker=False,
+        label="reMarkable cloud",
+    ),
+    "nanopub-mirror": Policy(attempts=4, base=2.0, label="nanopub mirror"),
+    "provenance-rw": Policy(attempts=4, base=2.0, label="Retraction Watch"),
+    "secret-probe": Policy(attempts=3, base=2.0, cap=20.0, label="credential probe"),
+    "datasheet-pull": Policy(attempts=3, base=2.0, cap=30.0, label="datasheet fetch"),
+    "cif-fetch": Policy(attempts=3, base=2.0, cap=30.0, label="CIF fetch"),
+    "discord": Policy(attempts=3, base=2.0, cap=30.0, label="Discord webhook"),
 }
 
 
@@ -458,7 +493,7 @@ def _url_of(resp: httpx.Response) -> str | None:
     (a bare test-double :class:`httpx.Response` may not have one)."""
     try:
         return str(resp.request.url)
-    except RuntimeError:
+    except (RuntimeError, AttributeError):
         return None
 
 
@@ -841,8 +876,7 @@ def call_with_backoff[T](
             last_exc = exc
             circuit.last_call_at = now()
             _trip(circuit, policy, now)
-            response = getattr(exc, "response", None)
-            hinted = retry_after_seconds(getattr(response, "headers", None), wall=wall)
+            hinted = retry_after_seconds(_headers_of(exc), wall=wall)
             _park(row, hinted)
             if (
                 attempt + 1 >= policy.attempts
@@ -864,6 +898,86 @@ def call_with_backoff[T](
         circuit.consecutive_failures = 0
         return result
     raise AssertionError("unreachable")  # pragma: no cover (attempts < 1)
+
+
+async def async_call_with_backoff[T](
+    fn: Callable[[], Awaitable[T]],
+    *,
+    service: str,
+    policy: Policy | None = None,
+    provider: str | _Unset | None = _UNSET,
+    url: str | None = None,
+    retry_if: Callable[[BaseException], bool] = is_retryable_external_error,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+) -> T:
+    """:func:`call_with_backoff` for coroutines (the secret-status probes).
+
+    Same rules: breaker, limiter token per attempt (taken off the event
+    loop), 401/403 never retried, full-jitter backoff, ``Retry-After``
+    honoured and parked; the original exception is re-raised when retries
+    run out. ``policy.min_interval`` is not applied here."""
+    policy = policy or policy_for(service)
+    row, seed = _resolve_provider(provider, policy, url)
+    circuit = _circuit_for(service, policy)
+    _enter(
+        service,
+        policy,
+        circuit,
+        now=time.monotonic,
+        sleep=lambda _s: None,
+        uniform=random.uniform,
+    )
+    for attempt in range(policy.attempts):
+        await asyncio.to_thread(_take_token, row, policy, seed)
+        try:
+            result = await fn()
+        except Exception as exc:
+            status = _status_of(exc)
+            if status in FATAL_STATUSES or not retry_if(exc):
+                raise
+            circuit.last_call_at = time.monotonic()
+            _trip(circuit, policy, time.monotonic)
+            hinted = retry_after_seconds(_headers_of(exc))
+            _park(row, hinted)
+            if (
+                attempt + 1 >= policy.attempts
+                or circuit.opened_at is not None
+                or _draining()
+            ):
+                raise
+            wait = (
+                min(hinted, policy.cap)
+                if hinted is not None
+                else _delay(attempt, policy, random.uniform)
+            )
+            await sleep(wait)
+            continue
+        circuit.last_call_at = time.monotonic()
+        circuit.consecutive_failures = 0
+        return result
+    raise AssertionError("unreachable")  # pragma: no cover (attempts < 1)
+
+
+#: Host suffixes that never name a third party.
+_INTERNAL_SUFFIXES = (".local", ".lan", ".internal", ".localdomain", ".ts.net")
+
+
+def is_internal_host(url: str) -> bool:
+    """True when ``url``'s host is loopback, private/link-local, a bare
+    single-label name or an internal suffix — a cluster- or operator-owned
+    endpoint rather than a third party. Decided per call from the URL, so a
+    config pointing the same client at a public host is paced, and one
+    pointing it at the LAN is not."""
+    host = (urlparse(url).hostname or "").lower().rstrip(".")
+    if not host:
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return (
+            host == "localhost" or "." not in host or host.endswith(_INTERNAL_SUFFIXES)
+        )
+    return ip.is_loopback or ip.is_private or ip.is_link_local
 
 
 @dataclass(frozen=True, slots=True)
@@ -962,6 +1076,32 @@ def paced_requests(
             _PACED_HOSTS.remove(entry)
             if not _PACED_HOSTS:
                 session_cls.send = _PACED_ORIG_SEND
+
+
+def polite_safe_get(
+    client: httpx.Client,
+    url: str,
+    *,
+    service: str | None = None,
+    policy: Policy | None = None,
+    **kwargs: Any,
+) -> httpx.Response:
+    """:func:`safe_get` (SSRF-pinned, redirect-revalidated) under the
+    politeness core: a limiter token per attempt on ``host:<netloc>``,
+    full-jitter backoff on transport errors and 429/5xx, ``Retry-After``
+    parks the row, 401/403 are fatal (:class:`VendorError`).
+
+    ``service`` defaults to the host, so one dead site cannot open the
+    breaker for every other site an agent asks for. An :class:`SsrfBlocked`
+    propagates untouched (not retried). Other 4xx come back as responses."""
+    from precis.utils.safe_fetch import safe_get
+
+    return with_backoff(
+        lambda: safe_get(client, url, **kwargs),
+        service=service or netloc_provider(url) or "web-fetch",
+        policy=policy or POLICIES["web-fetch"],
+        url=url,
+    )
 
 
 def _log_refusal(service: str, resp: httpx.Response) -> None:
@@ -1170,14 +1310,17 @@ __all__ = [
     "Policy",
     "VendorError",
     "VendorUnavailable",
+    "async_call_with_backoff",
     "backoff_delay",
     "call_with_backoff",
     "check_user_agent",
     "external_retry",
     "http_client",
+    "is_internal_host",
     "is_retryable_external_error",
     "netloc_provider",
     "policy_for",
+    "polite_safe_get",
     "polite_user_agent",
     "request_with_deadline",
     "require_httpx",

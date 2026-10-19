@@ -66,8 +66,6 @@ _ATTRIBUTION = (
     "with trafilatura. Verify quotes against the original; quote sparingly."
 )
 
-_DEFAULT_UA = "precis-mcp/2.0 (+https://github.com/retospect/precis-mcp)"
-
 #: Query-string keys that are pure tracking noise — stripped during URL
 #: canonicalization so the same article arriving via five feeds (each
 #: with its own utm campaign) dedups to one ref.
@@ -204,9 +202,11 @@ def fetch_article(url: str, *, embedder: Any = None) -> FetchResult:
     httpx = require_httpx()
     trafilatura = require_optional("trafilatura")
 
-    from precis.utils.safe_fetch import SsrfBlocked, safe_get
+    from precis.utils.http import VendorError, polite_safe_get, polite_user_agent
+    from precis.utils.rate_limit import RateLimited
+    from precis.utils.safe_fetch import SsrfBlocked
 
-    ua = os.environ.get("WEB_USER_AGENT", _DEFAULT_UA)
+    ua = os.environ.get("WEB_USER_AGENT") or polite_user_agent()
 
     try:
         with http_client(
@@ -214,13 +214,13 @@ def fetch_article(url: str, *, embedder: Any = None) -> FetchResult:
             headers={"Accept": "text/html,*/*;q=0.8"},
             user_agent=ua,
         ) as client:
-            resp = safe_get(client, url)
+            resp = polite_safe_get(client, url)
     except SsrfBlocked as exc:
         raise Upstream(
             f"news fetch refused for {url}: {exc}",
             next="the URL resolves to a non-public address; use a public URL",
         ) from exc
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPError, VendorError, RateLimited) as exc:
         raise Upstream(
             f"news fetch failed for {url}: {exc}",
             next="check the URL is reachable; retry later",

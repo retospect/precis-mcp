@@ -22,23 +22,25 @@ from the logs.
 Idempotency: keyed on RW's own ``Record ID`` so re-runs reconcile in
 place via ``INSERT ... ON CONFLICT DO UPDATE``. Safe to run repeatedly.
 
-Stdlib-only fetch — uses ``urllib.request`` to avoid pulling in
-``httpx`` for one job. The full CSV is ~40 MB; we stream it line-by-line
-into the parser so we don't peak >100 MB memory at upsert time.
+The fetch runs under the politeness core (``with_backoff``, honest
+User-Agent). The full CSV is ~40 MB; we stream it line-by-line into the
+parser so we don't peak >100 MB memory at upsert time.
 """
 
 from __future__ import annotations
 
 import logging
-import urllib.error
-import urllib.request
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
+from urllib.parse import urljoin
 
+import httpx
 from psycopg.types.json import Jsonb
 
 from precis.ingest._rw_csv import RWRow, parse_rw_rows
+from precis.utils.http import VendorError
+from precis.utils.rate_limit import RateLimited
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -54,6 +56,7 @@ LABS_URL_TEMPLATE = "https://api.labs.crossref.org/data/retractionwatch?{email}"
 # Reasonable timeout for a ~40 MB download. Tune up if Crossref Labs
 # is on a slow day; the sync runs monthly so a slow fetch is fine.
 _HTTP_TIMEOUT_SECONDS = 600  # 10 minutes
+_MAX_REDIRECTS = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,17 +86,49 @@ def _stream_lines(url: str) -> Iterator[str]:
     """Open ``url`` and yield decoded lines.
 
     Yields the response line-by-line so the ~40 MB CSV never lands
-    entirely in memory. ``urllib.request`` is stdlib — no extra dep
-    just for this monthly job.
-    """
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": "precis-mcp/provenance-rw-sync"},
+    entirely in memory. Opening the stream (not the body) is what the
+    politeness core retries: 429/5xx back off, ``Retry-After`` honoured."""
+    from precis.utils.http import (
+        POLICIES,
+        http_client,
+        polite_user_agent,
+        with_backoff,
     )
-    with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_SECONDS) as resp:
-        # Force UTF-8; RW publishes UTF-8 per their docs.
-        for raw_line in resp:
-            yield raw_line.decode("utf-8", errors="replace")
+
+    with http_client(
+        timeout=_HTTP_TIMEOUT_SECONDS, user_agent=polite_user_agent()
+    ) as client:
+
+        def open_stream() -> httpx.Response:
+            # Redirects are followed by hand (the client never auto-follows);
+            # every hop goes through the client's pinning transport.
+            target = url
+            for _hop in range(_MAX_REDIRECTS + 1):
+                resp = client.send(client.build_request("GET", target), stream=True)
+                if resp.status_code == 200:
+                    return resp
+                resp.read()  # small error/redirect body; frees the connection
+                resp.close()
+                location = resp.headers.get("Location")
+                if resp.status_code in (301, 302, 303, 307, 308) and location:
+                    target = urljoin(target, location)
+                    continue
+                return resp
+            return resp
+
+        resp = with_backoff(
+            open_stream,
+            service="provenance-rw",
+            policy=POLICIES["provenance-rw"],
+            url=url,
+        )
+        try:
+            resp.raise_for_status()
+            # Force UTF-8; RW publishes UTF-8 per their docs.
+            for raw_line in resp.iter_lines():
+                yield raw_line + "\n"
+        finally:
+            resp.close()
 
 
 def _upsert_rows(store: Store, rows: Iterator[RWRow]) -> int:
@@ -196,7 +231,7 @@ def _try_source(
                 yield r
 
         upserted = _upsert_rows(store, counting_iter())
-    except (urllib.error.URLError, OSError) as exc:
+    except (httpx.HTTPError, VendorError, RateLimited, OSError) as exc:
         err = f"transport error: {exc}"
         log.warning("RW sync: %s for %s", err, source_url)
         _record_sync(

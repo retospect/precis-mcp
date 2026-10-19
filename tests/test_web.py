@@ -88,6 +88,11 @@ def _patch_httpx(monkeypatch: pytest.MonkeyPatch) -> None:
     _StubClient.raise_on_get = None
 
     monkeypatch.setattr(httpx, "Client", _StubClient)
+    # Backoff retries must not sleep for real, nor leak a breaker across tests.
+    from precis.utils.http import reset_circuit
+
+    reset_circuit()
+    monkeypatch.setattr("precis.utils.http._default_sleep", lambda _s: None)
 
 
 @pytest.fixture

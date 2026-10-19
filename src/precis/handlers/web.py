@@ -41,11 +41,8 @@ _WEB_BASE_ATTRIBUTION = (
 )
 
 
-# Generous default UA so brittle anti-bot middleware doesn't 403 us.
-# Real users can override via `WEB_USER_AGENT` env var.
-_DEFAULT_UA = (
-    "Mozilla/5.0 (compatible; precis-mcp/2.0; +https://github.com/retospect/precis-mcp)"
-)
+# Honest UA (``polite_user_agent``); an operator can override via the
+# `WEB_USER_AGENT` env var.
 
 
 class WebHandler(CacheBackedHandler):
@@ -129,9 +126,11 @@ class WebHandler(CacheBackedHandler):
 
         import os
 
-        from precis.utils.safe_fetch import SsrfBlocked, safe_get
+        from precis.utils.http import VendorError, polite_safe_get, polite_user_agent
+        from precis.utils.rate_limit import RateLimited
+        from precis.utils.safe_fetch import SsrfBlocked
 
-        ua = os.environ.get("WEB_USER_AGENT", _DEFAULT_UA)
+        ua = os.environ.get("WEB_USER_AGENT") or polite_user_agent()
 
         try:
             # follow_redirects=False (http_client's default) — safe_get
@@ -144,7 +143,7 @@ class WebHandler(CacheBackedHandler):
                 headers={"Accept": "text/html,*/*;q=0.8"},
                 user_agent=ua,
             ) as client:
-                resp = safe_get(client, key)
+                resp = polite_safe_get(client, key)
         except SsrfBlocked as exc:
             raise Upstream(
                 f"fetch refused for {key}: {exc}",
@@ -153,7 +152,7 @@ class WebHandler(CacheBackedHandler):
                     "non-public address; use a public-internet URL"
                 ),
             ) from exc
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, VendorError, RateLimited) as exc:
             raise Upstream(
                 f"fetch failed for {key}: {exc}",
                 next="check the URL is reachable; retry later",

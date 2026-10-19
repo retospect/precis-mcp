@@ -214,17 +214,42 @@ def register_device(code: str, *, timeout_s: float = 15.0) -> str:
     url = os.environ.get("PRECIS_RMAPI_REGISTER_URL") or _REGISTER_URL_DEFAULT
     import httpx
 
+    from precis.utils.http import VendorError, polite_user_agent, with_backoff
+    from precis.utils.rate_limit import RateLimited
+
+    payload = {
+        "code": normalised,
+        "deviceDesc": "desktop-linux",
+        "deviceID": str(uuid.uuid4()),
+    }
     try:
-        resp = httpx.post(
-            url,
-            json={
-                "code": normalised,
-                "deviceDesc": "desktop-linux",
-                "deviceID": str(uuid.uuid4()),
-            },
-            headers={"Authorization": "Bearer"},
-            timeout=timeout_s,
+        # A one-time code is single-use: only connect failures and 429 retry.
+        # Operator-configured pairing endpoint: plain httpx (no SSRF pin).
+        resp = with_backoff(
+            lambda: httpx.post(
+                url,
+                json=payload,
+                headers={"Authorization": "Bearer", "User-Agent": polite_user_agent()},
+                timeout=timeout_s,
+            ),
+            service="remarkable",
+            url=url,
+            idempotent=False,
         )
+    except VendorError as exc:
+        if exc.status in (401, 403):
+            raise PairingError(
+                f"reMarkable rejected that code (status {exc.status}) — "
+                "one-time codes are single-use and expire within a few "
+                "minutes; generate a fresh one and try again."
+            ) from exc
+        raise PairingError(
+            f"could not reach the reMarkable pairing service: {exc}"
+        ) from exc
+    except RateLimited as exc:
+        raise PairingError(
+            "the reMarkable pairing service is rate-limiting us; try again in a minute"
+        ) from exc
     except httpx.HTTPError as exc:
         raise PairingError(
             f"could not reach the reMarkable pairing service: {exc}"

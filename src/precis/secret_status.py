@@ -38,7 +38,12 @@ from typing import TYPE_CHECKING
 import httpx
 
 from precis.secrets import get_secret, is_available
-from precis.utils.http import polite_user_agent
+from precis.utils.http import (
+    POLICIES,
+    RETRY_STATUSES,
+    async_call_with_backoff,
+    polite_user_agent,
+)
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -389,6 +394,23 @@ def _classify_status(
 ProbeFn = Callable[[httpx.AsyncClient, dict[str, str]], Awaitable[CheckResult]]
 
 
+async def _raise_retryable(response: httpx.Response) -> None:
+    """Response hook: a 429/5xx raises so the politeness core backs off and
+    retries; a 401/403 passes through to ``_classify_status`` (never retried)."""
+    if response.status_code in RETRY_STATUSES:
+        response.raise_for_status()
+
+
+def _probe_client() -> httpx.AsyncClient:
+    """The probe client: honest UA, retryable statuses raised for
+    :func:`async_call_with_backoff` (see ``_safe_probe``)."""
+    return httpx.AsyncClient(
+        timeout=_PROBE_TIMEOUT_S,
+        headers={"User-Agent": polite_user_agent()},
+        event_hooks={"response": [_raise_retryable]},
+    )
+
+
 async def _probe_anthropic(
     client: httpx.AsyncClient, values: dict[str, str]
 ) -> CheckResult:
@@ -655,7 +677,14 @@ async def _safe_probe(
     """
     try:
         async with _probe_slots():
-            return await fn(client, values)
+            # Per-probe breaker and backoff; no shared limiter row (the
+            # per-target interval floor above paces probes).
+            return await async_call_with_backoff(
+                lambda: fn(client, values),
+                service=f"probe:{fn.__name__}",
+                policy=POLICIES["secret-probe"],
+                provider=None,
+            )
     except httpx.TimeoutException:
         return CheckResult("unknown", "timeout — could not verify")
     except Exception as exc:  # deliberately broad, see docstring above
@@ -681,9 +710,7 @@ async def run_checks(store: Store) -> dict[str, CheckResult]:
     # Fixed provider endpoints only (see module docstring) — not agent- or
     # user-supplied, so plain httpx is fine here; safe_fetch is for the
     # agent-supplied-URL surface.
-    async with httpx.AsyncClient(
-        timeout=_PROBE_TIMEOUT_S, headers={"User-Agent": polite_user_agent()}
-    ) as client:
+    async with _probe_client() as client:
         for group, names in _PROBE_GROUP_MEMBERS.items():
             present = [n for n in names if is_available(n, store=store)]
             if not present:

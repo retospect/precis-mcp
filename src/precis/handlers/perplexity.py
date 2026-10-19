@@ -45,7 +45,14 @@ from precis.errors import BadInput, Upstream
 from precis.handlers._cache_base import CacheBackedHandler, FetchResult
 from precis.protocol import KindSpec
 from precis.response import Response
-from precis.utils.http import http_client, require_httpx
+from precis.utils.http import (
+    VendorError,
+    VendorUnavailable,
+    http_client,
+    polite_user_agent,
+    require_httpx,
+    with_backoff,
+)
 from precis.utils.next_block import render_next_section
 from precis.utils.slug import slug_from_text
 
@@ -311,16 +318,52 @@ class _PerplexityBase(CacheBackedHandler):
             "return_citations": True,
             "web_search_options": {"search_context_size": "high"},
         }
+        # Politeness core: a 429 backs off (Retry-After parks the row) and is
+        # retried before it can reach the agent. A paid call is not re-sent
+        # after a read timeout or 5xx (idempotent=False: the provider may
+        # already have billed it), so only connect failures and 429 retry.
         try:
-            with http_client(timeout=float(self.TIER.timeout)) as client:
-                resp = client.post(
-                    _SONAR_URL,
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json=payload,
+            with http_client(
+                timeout=float(self.TIER.timeout), user_agent=polite_user_agent()
+            ) as client:
+                resp = with_backoff(
+                    lambda: client.post(
+                        _SONAR_URL,
+                        headers={
+                            "Authorization": f"Bearer {api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json=payload,
+                    ),
+                    service="perplexity",
+                    url=_SONAR_URL,
+                    idempotent=False,
                 )
+        except VendorUnavailable as exc:
+            raise Upstream(
+                f"Perplexity rate limit or outage persisted after retries: {exc}",
+                next="wait a minute and retry; consider a slower tier "
+                "(perplexity-reasoning/perplexity-research)",
+            ) from exc
+        except VendorError as exc:
+            if exc.status == 401 or exc.status == 403:
+                raise Upstream(
+                    f"Perplexity rejected the API key (HTTP {exc.status})",
+                    next="check PERPLEXITY_API_KEY",
+                ) from exc
+            if isinstance(exc.__cause__, httpx.TimeoutException):
+                raise Upstream(
+                    f"Perplexity {self.TIER.model} timed out after "
+                    f"{self.TIER.timeout}s",
+                    next=(
+                        "try a shorter query, or use kind='perplexity-research' "
+                        "for slow-paced multi-step work"
+                    ),
+                ) from exc
+            raise Upstream(
+                f"Perplexity transport error: {exc}",
+                next="check connectivity; retry later",
+            ) from exc
         except httpx.TimeoutException as exc:
             raise Upstream(
                 f"Perplexity {self.TIER.model} timed out after {self.TIER.timeout}s",

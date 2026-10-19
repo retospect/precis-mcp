@@ -176,11 +176,18 @@ def fetch_cif_url(url: str, *, timeout: float = 30.0) -> str:
     about its length.
     """
     from ...utils import safe_fetch
-    from ...utils.http import http_client, polite_user_agent
+    from ...utils.http import (
+        POLICIES,
+        VendorError,
+        http_client,
+        polite_safe_get,
+        polite_user_agent,
+    )
+    from ...utils.rate_limit import RateLimited
 
     try:
         with http_client(timeout=timeout, user_agent=polite_user_agent()) as client:
-            resp = safe_fetch.safe_get(client, url)
+            resp = polite_safe_get(client, url, policy=POLICIES["cif-fetch"])
             declared = resp.headers.get("Content-Length")
             if declared is not None and declared.isdigit():
                 if int(declared) > MAX_CIF_BYTES:
@@ -199,6 +206,11 @@ def fetch_cif_url(url: str, *, timeout: float = 30.0) -> str:
         raise CifRefused(
             f"URL refused: {exc}",
             next="use a public http(s) URL, or pass the CIF text as args={'cif': ...}",
+        ) from exc
+    except (VendorError, RateLimited) as exc:
+        raise CifRefused(
+            f"{url} unavailable: {exc}",
+            next="retry shortly, or pass the CIF text as args={'cif': ...}",
         ) from exc
     if len(body) > MAX_CIF_BYTES:
         raise CifRefused(

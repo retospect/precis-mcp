@@ -174,8 +174,10 @@ def _engine(monkeypatch: pytest.MonkeyPatch, adapter: _Canned) -> list[Any]:
         *,
         user_agent: str | None = None,
         pace: Any = None,
+        get: Any = None,
     ) -> Any:
-        paces.append(pace)
+        # The per-page backoff-wrapped GET replaced the pace hook.
+        paces.append(get)
         sess = _session(adapter)
         for path in ("summary", "thermo", "pourbaix"):  # mp-api's own requests
             sess.get(f"https://api.materialsproject.org/{path}")

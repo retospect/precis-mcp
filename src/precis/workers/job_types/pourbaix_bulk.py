@@ -379,21 +379,34 @@ def _mp_version(api_key: str) -> str:
 def _mp_fetch(api_key: str, chemsys: str) -> list[Any]:
     from precis.utils.http import (
         call_with_backoff,
-        limiter_pacer,
         paced_requests,
+        policy_for,
         polite_user_agent,
+        with_backoff,
     )
     from precis_dft.pourbaix_bulk import fetch_entries
 
     # A limiter token per whole-fetch attempt, plus one per request mp-api
-    # and the ion-reference pager issue inside it; the ion-reference REST
+    # and the ion-reference pager issue inside it (the pager's GETs are
+    # backoff-wrapped via ``get``, one token per page); the ion-reference REST
     # call carries the polite UA (mp-api keeps its own).
     ua = polite_user_agent()
-    pace = limiter_pacer("materialsproject")
+
+    def polite_get(url: str, **kw: Any) -> Any:
+        # One limiter token and one backoff budget per page request, so a
+        # 429 mid-walk retries that page, not the whole fetch.
+        import httpx
+
+        return with_backoff(
+            lambda: httpx.get(url, **kw),
+            service="materialsproject:ion-ref",
+            policy=policy_for("materialsproject"),
+            url=url,
+        )
 
     def call() -> list[Any]:
         with paced_requests(_MP_HOST, service="materialsproject"):
-            return fetch_entries(api_key, chemsys, user_agent=ua, pace=pace)
+            return fetch_entries(api_key, chemsys, user_agent=ua, get=polite_get)
 
     return call_with_backoff(call, service="materialsproject")
 

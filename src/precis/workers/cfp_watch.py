@@ -61,11 +61,10 @@ Fetch = Callable[[str], str]
 
 
 def _default_fetch(url: str) -> str:
-    from precis.utils.http import http_client
-    from precis.utils.safe_fetch import safe_get
+    from precis.utils.http import http_client, polite_safe_get, polite_user_agent
 
-    with http_client(timeout=30.0) as client:
-        resp = safe_get(client, url)
+    with http_client(timeout=30.0, user_agent=polite_user_agent()) as client:
+        resp = polite_safe_get(client, url)
     resp.raise_for_status()
     return resp.text
 

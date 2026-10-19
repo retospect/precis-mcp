@@ -44,10 +44,37 @@ from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store._tag_filter import WIKI_TAG, is_wiki_tag
 from precis.store.types import ChunkInsert
-from precis.utils.http import http_client, require_httpx
+from precis.utils.http import (
+    POLICIES,
+    VendorError,
+    http_client,
+    polite_safe_get,
+    require_httpx,
+)
 from precis.utils.slug import slug_from_text
 
 log = logging.getLogger(__name__)
+
+
+def _get(client: Any, api: str, params: dict[str, Any], what: str) -> Any:
+    """One API GET under the politeness core; an exhausted retry budget or a
+    refusal reads as the same ``wikipedia <what> HTTP <status>`` upstream
+    error a bare non-200 does."""
+    try:
+        return polite_safe_get(
+            client,
+            api,
+            service="wikipedia",
+            policy=POLICIES["wikipedia"],
+            params=params,
+        )
+    except VendorError as exc:
+        if exc.status is None:
+            raise
+        raise Upstream(
+            f"wikipedia {what} HTTP {exc.status}",
+            next="retry the same call shortly; Wikipedia's API may be down",
+        ) from exc
 
 
 _ATTRIBUTION = (
@@ -60,7 +87,6 @@ _ATTRIBUTION = (
 #: the client and a contact (a URL or email). Generic browser UAs and
 #: empty UAs are rate-limited or blocked outright. Operators can swap
 #: in their own contact via ``PRECIS_WIKIPEDIA_UA``.
-_DEFAULT_UA = "precis-mcp/2.0 (+https://github.com/retospect/precis-mcp)"
 
 #: Max characters of extract to keep. Long articles run to tens of KB;
 #: the base auto-chunker splits this into ~800-char blocks. We cap so a
@@ -143,13 +169,19 @@ class WikipediaHandler(CacheBackedHandler):
 
     @staticmethod
     def _user_agent() -> str:
-        return (settings.get_str("contact.wikipedia_ua") or "").strip() or _DEFAULT_UA
+        from precis.utils.http import polite_user_agent
+
+        return (
+            settings.get_str("contact.wikipedia_ua") or ""
+        ).strip() or polite_user_agent()
 
     # ── upstream fetch ────────────────────────────────────────────────
 
     def _fetch(self, key: str) -> FetchResult:
         httpx = require_httpx()
 
+        from precis.utils.http import VendorError
+        from precis.utils.rate_limit import RateLimited
         from precis.utils.safe_fetch import SsrfBlocked
 
         lang = self._lang()
@@ -176,7 +208,7 @@ class WikipediaHandler(CacheBackedHandler):
                 next="file a gripe — the api host is fixed and public; "
                 "the fetch guard misfired",
             ) from exc
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, VendorError, RateLimited) as exc:
             raise Upstream(
                 f"wikipedia transport error: {exc}",
                 next="check connectivity to wikipedia.org; retry later",
@@ -211,8 +243,6 @@ class WikipediaHandler(CacheBackedHandler):
 
     def _resolve_title(self, client: Any, api: str, query: str) -> str | None:
         """Run CirrusSearch; return the top-hit article title or None."""
-        from precis.utils.safe_fetch import safe_get
-
         params = {
             "action": "query",
             "list": "search",
@@ -222,7 +252,7 @@ class WikipediaHandler(CacheBackedHandler):
             "format": "json",
             "formatversion": 2,
         }
-        resp = safe_get(client, api, params=params)
+        resp = _get(client, api, params, "search")
         if resp.status_code != 200:
             raise Upstream(
                 f"wikipedia search HTTP {resp.status_code}",
@@ -234,8 +264,6 @@ class WikipediaHandler(CacheBackedHandler):
         self, client: Any, api: str, title: str
     ) -> tuple[str, int | None, str]:
         """Fetch the plain-text extract for an exact article title."""
-        from precis.utils.safe_fetch import safe_get
-
         params = {
             "action": "query",
             "prop": "extracts",
@@ -246,7 +274,7 @@ class WikipediaHandler(CacheBackedHandler):
             "format": "json",
             "formatversion": 2,
         }
-        resp = safe_get(client, api, params=params)
+        resp = _get(client, api, params, "extract")
         if resp.status_code != 200:
             raise Upstream(
                 f"wikipedia extract HTTP {resp.status_code}",

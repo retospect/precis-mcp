@@ -44,6 +44,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from types import SimpleNamespace
+from typing import Any
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 log = logging.getLogger(__name__)
@@ -514,13 +515,31 @@ class _HostThrottle:
         self._last[host] = time.monotonic()
 
 
+def _http_get(url: str, *, timeout: Any, accept: str, user_agent: str) -> HttpResult:
+    """One pinned ``safe_get``. Private transport: ``default_fetch``'s caller
+    runs it under ``call_with_backoff`` (``discover``), which retries the 429
+    and 5xx statuses raised from the :class:`HttpResult` it returns."""
+    from precis.utils.http import http_client
+    from precis.utils.safe_fetch import safe_get
+
+    with http_client(
+        timeout=timeout, headers={"Accept": accept}, user_agent=user_agent
+    ) as client:
+        resp = safe_get(client, url)
+        return HttpResult(
+            status=resp.status_code,
+            text=resp.text if resp.status_code == 200 else "",
+            url=str(resp.url),
+            headers={k.lower(): v for k, v in resp.headers.items()},
+        )
+
+
 def default_fetch(email: str = "") -> FetchFn:
     """The production ``fetch``: ``safe_get`` through a pinned client, >=1 s
     between requests to one host. A 403 comes back as a status, never raises."""
     import httpx
 
-    from precis.utils.http import http_client, polite_user_agent
-    from precis.utils.safe_fetch import safe_get
+    from precis.utils.http import polite_user_agent
 
     timeout = httpx.Timeout(_API_TIMEOUT_S, connect=_API_CONNECT_TIMEOUT_S)
     throttle = _HostThrottle(1.0)
@@ -535,18 +554,7 @@ def default_fetch(email: str = "") -> FetchFn:
             )
             else "text/html"
         )
-        with http_client(
-            timeout=timeout,
-            headers={"Accept": accept},
-            user_agent=ua,
-        ) as client:
-            resp = safe_get(client, url)
-            return HttpResult(
-                status=resp.status_code,
-                text=resp.text if resp.status_code == 200 else "",
-                url=str(resp.url),
-                headers={k.lower(): v for k, v in resp.headers.items()},
-            )
+        return _http_get(url, timeout=timeout, accept=accept, user_agent=ua)
 
     return _fetch
 

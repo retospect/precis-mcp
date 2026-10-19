@@ -487,6 +487,7 @@ def _fake_engine(
         *,
         user_agent: str | None = None,
         pace: Any = None,
+        get: Any = None,
     ) -> Any:
         seen.append(user_agent)
         out = outcomes.pop(0)

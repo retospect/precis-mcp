@@ -31,6 +31,14 @@ from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from precis.utils.http import (
+    POLICIES,
+    call_with_backoff,
+    is_internal_host,
+    netloc_provider,
+    polite_user_agent,
+)
+
 # ── tool schema shaping ────────────────────────────────────────────────
 
 
@@ -165,6 +173,34 @@ class HttpTransport(Protocol):
     ) -> dict[str, Any]: ...
 
 
+def _post_open(url: str, data: bytes, headers: dict[str, str], timeout: float) -> Any:
+    headers = {"User-Agent": polite_user_agent(), **headers}
+    req = urllib.request.Request(url, data=data, method="POST", headers=headers)
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
+def _post_read(url: str, data: bytes, headers: dict[str, str], timeout: float) -> bytes:
+    with _post_open(url, data, headers, timeout) as resp:
+        raw: bytes = resp.read()
+    return raw
+
+
+def _polite[T](send: Callable[[], T], url: str) -> T:
+    """Run ``send`` under the politeness core when ``url`` names a third
+    party (OpenRouter, OpenAI-compatible hosts): a limiter token on
+    ``host:<netloc>``, jittered backoff on 429/5xx with ``Retry-After``,
+    401/403 never retried, an honest User-Agent. A cluster or LAN endpoint
+    (:func:`is_internal_host`, decided per call) goes straight through."""
+    if is_internal_host(url):
+        return send()
+    return call_with_backoff(
+        send,
+        service=netloc_provider(url) or "openai-tools",
+        policy=POLICIES["openai-tools"],
+        url=url,
+    )
+
+
 class _UrllibTransport:
     """Default stdlib transport — one POST, JSON in / JSON out."""
 
@@ -177,10 +213,8 @@ class _UrllibTransport:
         timeout: float,
     ) -> dict[str, Any]:
         data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(url, data=data, method="POST", headers=headers)
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                raw = resp.read()
+            raw = _polite(lambda: _post_read(url, data, headers, timeout), url)
         except urllib.error.HTTPError as exc:
             # `urlopen` raises on a 4xx/5xx *before* the body is read, so the
             # upstream's rejection reason (e.g. an OpenRouter provider's "this
@@ -223,8 +257,8 @@ class _UrllibTransport:
         are skipped; the OpenAI ``[DONE]`` sentinel ends the stream.
         """
         data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(url, data=data, method="POST", headers=headers)
-        with urllib.request.urlopen(req, timeout=idle_timeout) as resp:
+        # Only opening the stream is retried; once tokens flow it is not.
+        with _polite(lambda: _post_open(url, data, headers, idle_timeout), url) as resp:
             for raw_line in resp:
                 line = raw_line.decode("utf-8", "replace").strip()
                 if not line.startswith("data:"):

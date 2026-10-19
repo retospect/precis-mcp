@@ -146,6 +146,7 @@ def fetch_ion_reference_data(
     *,
     user_agent: str | None = None,
     pace: Callable[[], None] | None = None,
+    get: Callable[..., Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch MP's ion_ref_data project over its supported Contribs REST API.
 
@@ -156,8 +157,13 @@ def fetch_ion_reference_data(
     ``user_agent`` (the caller's honest polite UA; this subtree imports
     nothing from ``precis``) is sent when given. ``pace`` is called before
     every page after the first (the caller already paced the first).
+    ``get`` is the page GET (``httpx.get``'s signature); the default is plain
+    ``httpx.get`` for standalone use, and the precis worker injects a
+    backoff-wrapped one so a 429 retries only that page.
     """
     import httpx
+
+    do_get = get or httpx.get
 
     headers = {"x-api-key": api_key}
     if user_agent:
@@ -169,7 +175,7 @@ def fetch_ion_reference_data(
     while total_pages is None or page <= total_pages:
         if pace is not None and page > 1:
             pace()
-        response = httpx.get(
+        response = do_get(
             ION_REFERENCE_URL,
             params={
                 "project": "ion_ref_data",
@@ -697,6 +703,7 @@ def fetch_entries(
     *,
     user_agent: str | None = None,
     pace: Callable[[], None] | None = None,
+    get: Callable[..., Any] | None = None,
 ) -> list[Any]:
     """Pourbaix entries for one chemsys from the Materials Project — one
     ``get_pourbaix_entries`` call (MP adds O and H itself). ``user_agent``
@@ -705,7 +712,7 @@ def fetch_entries(
     from mp_api.client import MPRester
 
     ion_reference_data = fetch_ion_reference_data(
-        api_key, user_agent=user_agent, pace=pace
+        api_key, user_agent=user_agent, pace=pace, get=get
     )
 
     class _MPResterWithIonReferenceData(MPRester):

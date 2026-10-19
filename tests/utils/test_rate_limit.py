@@ -321,7 +321,7 @@ class TestRequire:
 
 class TestOpenAlexWiring:
     @patch("precis.ingest.openalex_meta.http_client")
-    @patch("precis.ingest.openalex_meta.require_rate_limit")
+    @patch("precis.utils.rate_limit.require")
     def test_fetch_openalex_work_refused_never_calls_out(
         self, mock_require: MagicMock, mock_client: MagicMock
     ) -> None:
@@ -330,7 +330,9 @@ class TestOpenAlexWiring:
         mock_require.side_effect = rate_limit.RateLimited("openalex")
         with pytest.raises(rate_limit.RateLimited):
             fetch_openalex_work("10.1/x")
-        mock_require.assert_called_once_with("openalex")
+        # The politeness core takes the openalex token (one call, no retry).
+        mock_require.assert_called_once()
+        assert mock_require.call_args.args == ("openalex",)
         mock_client.assert_not_called()
 
     @pytest.mark.parametrize(

@@ -40,6 +40,7 @@ class _StubResp:
         self._json_data = json_data or {}
         self.status_code = status_code
         self.text = text or "stub-text"
+        self.headers: dict[str, str] = {}
 
     def json(self) -> dict[str, Any]:
         return self._json_data
@@ -110,6 +111,11 @@ def _patch_httpx_and_env(monkeypatch: pytest.MonkeyPatch) -> None:
     _StubClient.raise_on_post = None
     _StubClient.call_count = 0
     monkeypatch.setattr(httpx, "Client", _StubClient)
+    # Backoff retries must not sleep for real, nor leak a breaker across tests.
+    from precis.utils.http import reset_circuit
+
+    reset_circuit()
+    monkeypatch.setattr("precis.utils.http._default_sleep", lambda _s: None)
 
 
 @pytest.fixture

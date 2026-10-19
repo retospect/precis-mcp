@@ -206,6 +206,11 @@ def test_register_device_rejects_a_malformed_code() -> None:
         rm.register_device("short")
 
 
+@pytest.fixture(autouse=True)
+def _no_real_backoff_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("precis.utils.http._default_sleep", lambda _s: None)
+
+
 def test_register_device_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     import httpx as _httpx
 

@@ -180,6 +180,14 @@ def adapter(raw: object) -> tuple[Scene, ExternalRun, ExternalId]:
     return scene, run, ExternalId("materials-project", str(summary["material_id"]))
 
 
+def _client() -> Any:
+    """The pinned, honest-UA client; its requests go through
+    :func:`_get_json`, which runs them under ``with_backoff``."""
+    from ...utils.http import http_client, polite_user_agent
+
+    return http_client(timeout=30.0, user_agent=polite_user_agent())
+
+
 def _get_json(
     client: Any,
     url: str,
@@ -233,14 +241,13 @@ def fetch_record(
         raise ValueError(f"not a Materials Project id: {material_id!r}")
 
     from ... import secrets as _secrets
-    from ...utils.http import http_client, polite_user_agent
 
     api_key = (_secrets.get_secret(MP_KEY_SECRET) or "").strip()
     if not api_key:
         raise MaterialsProjectKeyMissing(f"no {MP_KEY_SECRET} secret set")
     headers = {"X-API-Key": api_key}
 
-    with http_client(timeout=30.0, user_agent=polite_user_agent()) as client:
+    with _client() as client:
         summary_payload = _get_json(
             client,
             f"{api_root}/materials/summary/",

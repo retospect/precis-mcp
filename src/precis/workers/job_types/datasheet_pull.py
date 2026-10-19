@@ -55,7 +55,18 @@ import psycopg
 
 from precis.pcb.datasheets import datasheet_state
 from precis.pcb.jlc_api import JlcApiClient
-from precis.utils.http import http_client, require_httpx
+from precis.utils.http import (
+    POLICIES,
+    RETRY_STATUSES,
+    VendorError,
+    call_with_backoff,
+    http_client,
+    is_retryable_external_error,
+    netloc_provider,
+    polite_user_agent,
+    require_httpx,
+)
+from precis.utils.rate_limit import RateLimited
 from precis.utils.safe_fetch import SsrfBlocked, safe_stream
 from precis.utils.timeutil import now_iso
 from precis.workers.job_types import JobTypeSpec
@@ -199,6 +210,15 @@ def _html_redirect_target(page: bytes, url: str) -> str | None:
     return target
 
 
+class _RetryStatus(Exception):
+    """A 429/5xx answer, raised so the backoff retries it (carries the
+    response for ``Retry-After``)."""
+
+    def __init__(self, response: Any) -> None:
+        super().__init__(f"HTTP {response.status_code}")
+        self.response = response
+
+
 def _download(url: str, dest: Path, *, hop: int = 0) -> tuple[str, str]:
     """Stream ``url`` to ``dest``; returns ``(final_url, sha256)``.
 
@@ -211,11 +231,20 @@ def _download(url: str, dest: Path, *, hop: int = 0) -> tuple[str, str]:
     forward: str | None = None
     final_url = url
     deadline = time.monotonic() + _DEADLINE_S
-    try:
+
+    def attempt() -> None:
+        nonlocal sha, size, head, checked, forward, final_url
+        # A retry restarts the transfer from scratch.
+        sha = hashlib.sha256()
+        size, head, checked, forward, final_url = 0, b"", False, None, url
         with http_client(
-            timeout=_FETCH_TIMEOUT_S, headers={"Accept": "application/pdf,*/*"}
+            timeout=_FETCH_TIMEOUT_S,
+            headers={"Accept": "application/pdf,*/*"},
+            user_agent=polite_user_agent(),
         ) as client:
             with safe_stream(client, "GET", url) as resp:
+                if resp.status_code in RETRY_STATUSES:
+                    raise _RetryStatus(resp)  # retried, Retry-After honoured
                 if resp.status_code >= 400:
                     raise _Failed(f"http_{resp.status_code}")
                 declared = resp.headers.get("Content-Length")
@@ -252,10 +281,29 @@ def _download(url: str, dest: Path, *, hop: int = 0) -> tuple[str, str]:
                                 raise _Failed("too_large", f"over {MAX_BYTES} bytes")
                             sha.update(chunk)
                             fh.write(chunk)
+
+    def retryable(exc: BaseException) -> bool:
+        # Only before the first body byte: a 429/5xx status or a failed connect.
+        return is_retryable_external_error(exc) and isinstance(
+            exc, (_RetryStatus, httpx.ConnectError, httpx.ConnectTimeout)
+        )
+
+    try:
+        call_with_backoff(
+            attempt,
+            service=netloc_provider(url) or "datasheet-pull",
+            policy=POLICIES["datasheet-pull"],
+            url=url,
+            retry_if=retryable,
+        )
     except SsrfBlocked as exc:
         raise _Failed("fetch_refused", str(exc)) from exc
     except httpx.TimeoutException as exc:
         raise _Failed("fetch_timeout", str(exc)) from exc
+    except _RetryStatus as exc:
+        raise _Failed(f"http_{exc.response.status_code}") from exc
+    except (VendorError, RateLimited) as exc:
+        raise _Failed("fetch_error:rate_limited", str(exc)) from exc
     except httpx.HTTPError as exc:
         raise _Failed(f"fetch_error:{type(exc).__name__}", str(exc)) from exc
     if forward is not None:

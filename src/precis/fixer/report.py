@@ -48,12 +48,23 @@ def _should_push(status: ReportStatus) -> bool:
 
 def _post_discord(webhook: str, content: str) -> None:
     data = json.dumps({"content": content}).encode("utf-8")
+    from precis.utils.http import POLICIES, call_with_backoff, polite_user_agent
+    from precis.utils.rate_limit import RateLimited
+
     req = urllib.request.Request(
-        webhook, data=data, headers={"Content-Type": "application/json"}
+        webhook,
+        data=data,
+        headers={"Content-Type": "application/json", "User-Agent": polite_user_agent()},
     )
     try:
-        urllib.request.urlopen(req, timeout=15)
-    except (urllib.error.URLError, OSError) as exc:
+        # discord.com is a third party: backoff on 429/5xx, Retry-After honoured.
+        call_with_backoff(
+            lambda: urllib.request.urlopen(req, timeout=15).close(),
+            service="discord",
+            policy=POLICIES["discord"],
+            url=webhook,
+        )
+    except (urllib.error.URLError, OSError, RateLimited) as exc:
         log.warning("fixer: discord post failed: %s", exc)
 
 
