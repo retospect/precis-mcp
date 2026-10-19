@@ -51,20 +51,33 @@ class PowerSpec:
     name: str
     #: Add the 20 crossing signal nets of the signal sanity board.
     signals: bool = False
+    #: ``"cross"`` (P1/P3) or ``"split"`` (P4: two rails share In2).
+    kind: str = "cross"
 
 
 SPECS: dict[str, PowerSpec] = {
-    s.name: s for s in (PowerSpec("p1"), PowerSpec("p3", signals=True))
+    s.name: s
+    for s in (
+        PowerSpec("p1"),
+        PowerSpec("p3", signals=True),
+        PowerSpec("p4", kind="split"),
+    )
 }
 
+#: P4: the two rails that split In2, left rail first.
+SPLIT_LEFT = "3V3"
+SPLIT_RIGHT = "5V"
+SPLIT_CURRENT_A = 2.0
+STRADDLE_FOOTPRINT = "CONN-SMT-1x3"
 
-def conn_footprint() -> dict[str, Any]:
-    """Two 3 x 3 mm SMT pads 5.08 mm apart along local y, pin 1 = rail."""
+
+def conn_footprint(pins: int = 2) -> dict[str, Any]:
+    """``pins`` 3 x 3 mm SMT pads 5.08 mm apart along local y, centred."""
     pads = [
         {
             "number": str(n),
             "x": 0.0,
-            "y": round((n - 1.5) * 5.08, 4),
+            "y": round((n - (pins + 1) / 2.0) * 5.08, 4),
             "w": 3.0,
             "h": 3.0,
             "rot": 0.0,
@@ -72,11 +85,11 @@ def conn_footprint() -> dict[str, Any]:
             "drill": None,
             "shape": "rect",
         }
-        for n in (1, 2)
+        for n in range(1, pins + 1)
     ]
     return {
         "pads": pads,
-        "pin_map": {"1": {"name": "1", "tags": []}, "2": {"name": "2", "tags": []}},
+        "pin_map": {str(n): {"name": str(n), "tags": []} for n in range(1, pins + 1)},
     }
 
 
@@ -114,8 +127,53 @@ def _inst(refdes: str, lcsc: str, x: float, y: float, rot: float) -> dict[str, A
     }
 
 
+def _power_nets(rails: dict[str, list[tuple[str, str]]], amps: float) -> list[dict]:
+    return [
+        {
+            "name": name,
+            "net_class": "power",
+            "domain": "electrical",
+            "est_current_a": amps,
+            "members": [{"refdes": r, "pin": p} for r, p in members],
+        }
+        for name, members in rails.items()
+    ]
+
+
+def build_graph_split(spec: PowerSpec) -> dict[str, Any]:
+    """P4: 3V3 feeds the left half, 5V the right, GND is In1. Two 2-pin
+    loads per side, plus one 3-pin load (3V3 / GND / 5V) on the split."""
+    mid = sb.BOARD_MM / 2.0
+    instances = [
+        _inst("J_L", CONN_FOOTPRINT, 8.0, mid, 0.0),
+        _inst("J_R", CONN_FOOTPRINT, sb.BOARD_MM - 8.0, mid, 0.0),
+        _inst("LA", CONN_FOOTPRINT, 26.0, 28.0, 0.0),
+        _inst("LB", CONN_FOOTPRINT, 26.0, 72.0, 0.0),
+        _inst("RA", CONN_FOOTPRINT, 74.0, 28.0, 0.0),
+        _inst("RB", CONN_FOOTPRINT, 74.0, 72.0, 0.0),
+        _inst("X", STRADDLE_FOOTPRINT, mid, mid, 90.0),
+    ]
+    left, right = ["J_L", "LA", "LB"], ["J_R", "RA", "RB"]
+    nets = _power_nets(
+        {
+            SPLIT_LEFT: [(r, "1") for r in left] + [("X", "1")],
+            SPLIT_RIGHT: [(r, "1") for r in right] + [("X", "3")],
+            GND: [(r, "2") for r in left + right] + [("X", "2")],
+        },
+        SPLIT_CURRENT_A,
+    )
+    return {
+        "instances": instances,
+        "nets": nets,
+        "net_classes": {},
+        "board": {"stackup": [dict(e) for e in STACKUP_PRESETS[PRESET]]},
+    }
+
+
 def build_graph(spec: PowerSpec) -> dict[str, Any]:
     """A ``Store.pcb_graph``-shaped dict, no DB."""
+    if spec.kind == "split":
+        return build_graph_split(spec)
     mid = sb.BOARD_MM / 2.0
     instances = [
         _inst("J_IN", CONN_FOOTPRINT, 8.0, mid, 0.0),
@@ -167,6 +225,7 @@ def build(spec: PowerSpec) -> Built:
     by_lcsc = {
         CONN_FOOTPRINT: conn_footprint(),
         CAP_FOOTPRINT: cap_footprint(),
+        STRADDLE_FOOTPRINT: conn_footprint(3),
         sb.FOOTPRINT: sb.footprint(),
     }
     ir = pcb_session.build_ir(graph, outline=sb.outline(), footprints_by_lcsc=by_lcsc)
@@ -291,6 +350,17 @@ def check(built: Built, rres: Any, findings: Any) -> dict[str, dict[str, Any]]:
             "narrowest_mm": {k: round(v, 3) for k, v in narrowest.items()},
         },
     }
+    if built.spec.kind == "split":
+        region_layer = next(
+            str(e["name"]) for e in ir.stackup if e.get("power_regions")
+        )
+        want = {f"{n}@{region_layer}" for n in (SPLIT_LEFT, SPLIT_RIGHT)}
+        have = {k for k in out["plane_pieces"]["pieces"] if k in want}
+        out["split_regions"] = {
+            "ok": have == want,
+            "poured": sorted(have),
+            "missing": sorted(want - have),
+        }
     if built.spec.signals:
         out["signal_on_pour_layer"] = _signal_on_pour_layer(built, rres)
     return out

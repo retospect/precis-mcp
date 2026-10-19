@@ -75,10 +75,10 @@ from typing import Any
 # same reason. Boolean geometry on real polygons is what this module is,
 # and hand-rolling it would be a second, worse implementation of a
 # dependency the project already takes.
-from shapely import concave_hull
+from shapely import STRtree, concave_hull
 from shapely.geometry import MultiPoint, MultiPolygon, Point, Polygon
 from shapely.geometry.base import BaseGeometry
-from shapely.ops import unary_union
+from shapely.ops import unary_union, voronoi_diagram
 
 from precis.pcb import clearance as clearance_kernel
 from precis.pcb.drc import _copper_item_polygon, _via_layer_names
@@ -755,8 +755,70 @@ def derive_regions(
         (n for n, pts in net_pins.items() if len(pts) >= 2),
         key=lambda n: (-len(net_pins[n]), n),
     )
+    first, first_notes = _derive_pass(
+        net_pins, order, inset, clearance_mm, reach_mm, cells=None
+    )
+    if len(first) == len(order):
+        return first, notes
+    # Some net got no region. First come, first served can starve the
+    # later-ranked rail of a load that straddles the split, so retry with
+    # the contested ground cut at the bisector between the competing pins.
+    # Kept only when no net that had a region loses it.
+    cells = _pin_cells(net_pins, inset)
+    fair, fair_notes = _derive_pass(
+        net_pins, order, inset, clearance_mm, reach_mm, cells=cells
+    )
+    if {r.net for r in first} <= {r.net for r in fair} and len(fair) > len(first):
+        return fair, notes + fair_notes
+    return first, notes + first_notes
+
+
+def _pin_cells(
+    net_pins: dict[str, list[tuple[float, float]]], inset: BaseGeometry
+) -> dict[str, list[tuple[Point, BaseGeometry]]]:
+    """Per net, each pin with its Voronoi cell (the ground nearer to that pin
+    than to any other power pin), cut to a box around the board."""
+    labelled = [
+        (net, Point(float(x), float(y)))
+        for net, pts in net_pins.items()
+        if len(pts) >= 2
+        for x, y in pts
+    ]
+    out: dict[str, list[tuple[Point, BaseGeometry]]] = {n: [] for n, _ in labelled}
+    if len(labelled) < 2:
+        return out
+    box = inset.envelope.buffer(1.0)
+    diagram = voronoi_diagram(MultiPoint([p for _, p in labelled]), envelope=box)
+    cells = [c.intersection(box) for c in diagram.geoms]
+    tree = STRtree(cells)
+    for net, pt in labelled:
+        for i in tree.query(pt, predicate="intersects"):
+            out[net].append((pt, cells[int(i)]))
+            break
+    return out
+
+
+def _derive_pass(
+    net_pins: dict[str, list[tuple[float, float]]],
+    order: list[str],
+    inset: BaseGeometry,
+    clearance_mm: float,
+    reach_mm: float | dict[str, float],
+    *,
+    cells: dict[str, list[tuple[Point, BaseGeometry]]] | None,
+) -> tuple[list[DerivedRegion], list[str]]:
+    """One ranked pass of :func:`derive_regions`. ``cells`` None: each net
+    takes what the nets above it left. With ``cells``: each net is confined
+    to its own pins' Voronoi territory, less half the clearance along every
+    border with another net's territory."""
+    notes: list[str] = []
     taken: list[BaseGeometry] = []
     out: list[DerivedRegion] = []
+    territory: dict[str, BaseGeometry] = {}
+    if cells is not None:
+        territory = {
+            n: unary_union([c for _, c in cs]) for n, cs in cells.items() if cs
+        }
     for net in order:
         reach = float(reach_mm[net] if isinstance(reach_mm, dict) else reach_mm)
         pts = MultiPoint([(float(x), float(y)) for x, y in net_pins[net]])
@@ -764,7 +826,15 @@ def derive_regions(
         area = _polygonal(
             hull.buffer(reach, quad_segs=_BUFFER_QUAD_SEGS).intersection(inset)
         )
-        if taken:
+        strip: BaseGeometry | None = None
+        if cells is not None and net in territory:
+            others = [t for n, t in territory.items() if n != net]
+            if others:
+                strip = unary_union(others).buffer(clearance_mm / 2.0, join_style=2)
+            area = area.intersection(territory[net])
+            if strip is not None:
+                area = area.difference(strip)
+        elif taken:
             area = area.difference(
                 unary_union(taken).buffer(clearance_mm, join_style=2)
             )
@@ -780,19 +850,30 @@ def derive_regions(
             )
             continue
         poly = parts[0]
+        if cells is not None and poly.interiors:
+            notes.append(f"{net}: no region — another net's pins sit inside it")
+            continue
         # A pin's reach disc, clipped to the board, must sit inside the
         # region. Both circles are faceted (16 segments a quarter), at
-        # different angles, so the slack is the facets' sagitta.
+        # different angles, so the slack is the facets' sagitta. In the
+        # fair pass a disc is also clipped to the pin's own cell: the part
+        # past the bisector belongs to the other net.
         grown = poly.buffer(reach * (1.0 - math.cos(math.pi / 64.0)) * 2.0 + 1e-3)
-        outside = [
-            (x, y)
-            for x, y in net_pins[net]
-            if not grown.contains(
+        cell_of = {(p.x, p.y): c for p, c in cells.get(net, [])} if cells else {}
+        outside = []
+        for x, y in net_pins[net]:
+            need = (
                 Point(float(x), float(y))
                 .buffer(reach, quad_segs=_BUFFER_QUAD_SEGS)
                 .intersection(inset)
             )
-        ]
+            cell = cell_of.get((float(x), float(y)))
+            if cell is not None:
+                need = need.intersection(cell)
+                if strip is not None:
+                    need = need.difference(strip)
+            if not grown.contains(need):
+                outside.append((x, y))
         if outside:
             x, y = outside[0]
             notes.append(

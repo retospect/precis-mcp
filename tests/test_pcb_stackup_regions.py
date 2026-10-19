@@ -257,6 +257,25 @@ def test_derive_regions_refuses_a_net_its_neighbour_crowds_out() -> None:
     assert any(n.startswith("SMALL: no region") for n in notes)
 
 
+def test_derive_regions_splits_a_straddled_boundary_at_the_bisector() -> None:
+    # Two pins of different rails 10 mm apart: each reach disc (5.4 mm)
+    # crosses the midline, so first come first served starves the later
+    # net. The fair pass cuts at x = 20 less half the clearance each side.
+    pins = {
+        "3V3": [(5.0, 15.0), (15.0, 15.0)],
+        "5V": [(25.0, 15.0), (35.0, 15.0)],
+    }
+    regions, notes = derive_regions(
+        pins, outline=_BOARD, edge_clearance_mm=0.5, clearance_mm=0.2, reach_mm=5.4
+    )
+    assert [r.net for r in regions] == ["3V3", "5V"], notes
+    a, b = (region_polygon(r.region) for r in regions)
+    assert a is not None and b is not None
+    assert a.bounds[2] <= 20.0 - 0.1 + 1e-6
+    assert b.bounds[0] >= 20.0 + 0.1 - 1e-6
+    assert a.distance(b) >= 0.2 - 1e-6
+
+
 def test_content_hash_sees_region_and_priority() -> None:
     graph: dict[str, Any] = {"instances": [], "nets": []}
     row = {"layer": "In2.Cu", "net": "3V3", "source": "authored", "region": None}
