@@ -6280,6 +6280,107 @@ class TestDispatchAutocatpath:
         assert "WARNING 0 new seeds minted" in again, again
         assert "re-dispatched 1 candidate(s)" in again
 
+    def _two_candidates(self, store: Any) -> tuple[int, int, int]:
+        qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
+        store.stamp_ref_meta(qid, {"reaction_config": self._RX})
+        spec2 = {
+            "cell": {"a": 8.4, "b": 8.4, "c": 24.0, "pbc": [True, True, False]},
+            "ops": [{"op": "add_atom", "element": "Ni", "frac": [0.0, 0.0, 0.5]}],
+        }
+        first = compute_mod.ensure_candidate(
+            store, qid, {"name": "first", "structure": _SPEC}
+        )
+        second = compute_mod.ensure_candidate(
+            store, qid, {"name": "second", "structure": spec2}
+        )
+        assert first is not None and second is not None
+        return qid, first, second
+
+    def test_redispatch_node_pins_every_new_seed(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """gr496506: --node overrides the env round-robin for the new seeds."""
+        a, b = f"na-{uuid4().hex[:6]}", f"nb-{uuid4().hex[:6]}"
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, f"{a},{b}")
+        qid, first, _second = self._two_candidates(store)
+        note = compute_mod.redispatch_candidates(store, qid, only=[first], node=b)
+        assert f"3 new seed(s) minted [{b} 3]" in note, note
+        targets = {
+            (j.get("params") or {})["target_node"]
+            for _id, j in self._seed_jobs(store, first)
+        }
+        assert targets == {b}
+
+    def test_redispatch_node_refuses_a_retired_lane_and_mints_nothing(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        live, retired = f"live-{uuid4().hex[:6]}", f"gone-{uuid4().hex[:6]}"
+        self._ssh_node_pass_log(store, live, age_hours=0.01)
+        self._ssh_node_pass_log(store, retired, age_hours=30)
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, f"{live},{retired}")
+        qid, first, _second = self._two_candidates(store)
+        for dry in (True, False):
+            note = compute_mod.redispatch_candidates(
+                store, qid, only=[first], node=retired, dry_run=dry
+            )
+            assert note.startswith("redispatch refused"), note
+            assert retired in note
+        assert self._agg_todo_ids(store, first) == []
+
+    def test_redispatch_node_refuses_an_unknown_host(self, store: Any) -> None:
+        store.sync_host_resource_slots("spark-x", {"gpu": 1})
+        qid, first, _second = self._two_candidates(store)
+        note = compute_mod.redispatch_candidates(store, qid, node="typo-node")
+        assert note.startswith("redispatch refused")
+        assert "typo-node" in note and "spark-x" in note
+        assert self._agg_todo_ids(store, first) == []
+
+    def test_redispatch_node_and_spread_are_alternatives(self, store: Any) -> None:
+        qid, first, _second = self._two_candidates(store)
+        note = compute_mod.redispatch_candidates(store, qid, node="x", spread=True)
+        assert note.startswith("redispatch refused") and "one" in note
+        assert self._agg_todo_ids(store, first) == []
+
+    def test_redispatch_spread_balances_an_idle_pair_deterministically(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        a, b = f"na-{uuid4().hex[:6]}", f"nb-{uuid4().hex[:6]}"
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, f"{b},{a}")
+        qid, first, _second = self._two_candidates(store)
+        note = compute_mod.redispatch_candidates(store, qid, only=[first], spread=True)
+        assert f"3 new seed(s) minted [{a} 2, {b} 1]" in note, note
+        assert f"[{a} 0, {b} 0]" in note, note
+
+    def test_redispatch_spread_sends_new_seeds_to_the_idle_node(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """gr496506: the queued seeds already on one node count as its load,
+        so the next batch goes to the free node, and the ack names both."""
+        busy, idle = f"na-{uuid4().hex[:6]}", f"nb-{uuid4().hex[:6]}"
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, f"{busy},{idle}")
+        qid, first, second = self._two_candidates(store)
+        compute_mod.redispatch_candidates(store, qid, only=[first], node=busy)
+        assert compute_mod._gpu_node_load(store, [busy, idle]) == {busy: 3, idle: 0}
+        dry = compute_mod.redispatch_candidates(
+            store, qid, only=[second], spread=True, dry_run=True
+        )
+        assert f"[{busy} 3, {idle} 0]" in dry, dry
+        note = compute_mod.redispatch_candidates(store, qid, only=[second], spread=True)
+        assert f"3 new seed(s) minted [{idle} 3]" in note, note
+        assert f"spread over live nodes by load [{busy} 3, {idle} 0]" in note
+
+    def test_redispatch_spread_skips_a_retired_lane_node(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        live, retired = f"live-{uuid4().hex[:6]}", f"gone-{uuid4().hex[:6]}"
+        self._ssh_node_pass_log(store, live, age_hours=0.01)
+        self._ssh_node_pass_log(store, retired, age_hours=30)
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, f"{retired},{live}")
+        qid, first, _second = self._two_candidates(store)
+        note = compute_mod.redispatch_candidates(store, qid, only=[first], spread=True)
+        assert f"3 new seed(s) minted [{live} 3]" in note, note
+        assert retired not in note
+
     def test_redispatch_tier_without_a_completed_rung_uses_the_entry_rung(
         self, store: Any
     ) -> None:

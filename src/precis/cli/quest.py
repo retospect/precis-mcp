@@ -196,6 +196,19 @@ def add_parser(subparsers: Any) -> None:
         help="Print how many candidates would re-run at each ladder rung "
         "(with --only, each candidate's rung too); dispatch nothing.",
     )
+    where = rd.add_mutually_exclusive_group()
+    where.add_argument(
+        "--node",
+        default=None,
+        help="Pin every newly minted seed to this node (refused if its "
+        "ssh_node lane is retired).",
+    )
+    where.add_argument(
+        "--spread",
+        action="store_true",
+        help="Give each newly minted seed to the least-loaded live node "
+        "(queued + running gpu jobs; ties by name). The ack names the counts.",
+    )
     rd.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
     bf = qsub.add_parser(
@@ -762,6 +775,8 @@ def _cmd_redispatch(store: Store, args: argparse.Namespace) -> None:
         hub=None if args.dry_run else Hub(store=store),
         include_ruled_out=args.include_ruled_out,
         dry_run=args.dry_run,
+        node=args.node,
+        spread=args.spread,
     )
     print(f"quest {args.id}: {note}")
 

@@ -1585,6 +1585,33 @@ def _live_route_nodes(store: Store, nodes: list[str]) -> tuple[list[str], str]:
     )
 
 
+def _gpu_node_load(store: Store, nodes: Sequence[str]) -> dict[str, int]:
+    """Queued plus running gpu ``ssh_node`` jobs per node, 0 for an idle one.
+
+    Read-only. A job counts toward its pin (``params.target_node``), else the
+    host holding its lease, so unpinned running work still loads its node.
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT COALESCE(r.meta->'params'->>'target_node',
+                            r.meta->>'lease_host') AS node, count(*)
+              FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE r.kind = 'job'
+               AND r.retired_at IS NULL
+               AND t.namespace = 'STATUS'
+               AND t.value IN ('queued', 'running')
+               AND r.meta->>'executor' = 'ssh_node'
+               AND (r.meta->'requires'->>'gpu') IS NOT NULL
+             GROUP BY 1
+            """
+        ).fetchall()
+    counts = {str(n): int(c) for n, c in rows if n is not None}
+    return {n: counts.get(n, 0) for n in nodes}
+
+
 def dispatch_autocatpath(
     store: Store,
     structure_ref_id: int,
@@ -1594,12 +1621,21 @@ def dispatch_autocatpath(
     force_backend: str | None = None,
     tier: str = _TIER_NEB,
     minted_by_node: dict[str, int] | None = None,
+    route_nodes: Sequence[str] | None = None,
+    load: dict[str, int] | None = None,
 ) -> str:
     """Dispatch a autocatpath barrier evaluation on a candidate structure.
 
     ``minted_by_node``, when given, is filled with the number of seed jobs
     newly minted per ``target_node`` (``"(unpinned)"`` for a seed with none),
     so a caller can report where the work landed (gr496163).
+
+    ``route_nodes`` replaces the env/``resource_slots`` node resolution (the
+    caller has already vetted it, gr496506); retired lanes are still dropped.
+    ``load``, when given, is a queued-plus-running count per node: each newly
+    minted seed then goes to the least-loaded node (ties by name) and bumps
+    its count, instead of the position-keyed round-robin. Re-dispatch passes
+    one dict across candidates so the whole batch spreads.
 
     ``tier`` (default ``"neb"``, today's straight-to-NEB shape) selects the
     rung of the **screening → neb → verify** ladder. :func:`_apply_tier_config`
@@ -1733,7 +1769,11 @@ def dispatch_autocatpath(
     env_route = os.environ.get(_AUTOCATPATH_ROUTE_NODE_ENV) or ""
     # The env pin accepts a comma-separated list; a single value keeps the old
     # one-node contract.
-    nodes = [n.strip() for n in env_route.split(",") if n.strip()]
+    nodes = (
+        list(route_nodes)
+        if route_nodes
+        else [n.strip() for n in env_route.split(",") if n.strip()]
+    )
     # Env unset → resolve the GPU node(s) from the runtime capability map rather
     # than degrading to an unrouted EMT job (gr172886). The env-set path (the
     # coordinator daemon) never touches resource_slots, so this adds no new
@@ -1950,6 +1990,9 @@ def dispatch_autocatpath(
                 # the SAME todo (get-or-create below reuses it) rather than
                 # leaving the candidate wedged behind a dead seed forever.
                 minted += 1
+                if load is not None and nodes:
+                    seed_node = min(nodes, key=lambda n: (load.get(n, 0), n))
+                    load[seed_node] = load.get(seed_node, 0) + 1
                 if minted_by_node is not None:
                     node_key = seed_node or "(unpinned)"
                     minted_by_node[node_key] = minted_by_node.get(node_key, 0) + 1
@@ -3923,6 +3966,8 @@ def redispatch_candidates(
     include_ruled_out: bool = False,
     dry_run: bool = False,
     only: Sequence[int] | None = None,
+    node: str | None = None,
+    spread: bool = False,
 ) -> str:
     """Re-dispatch a autocatpath barrier eval for every candidate of a quest.
 
@@ -3945,7 +3990,14 @@ def redispatch_candidates(
     a ranking). An id that is not a candidate of the quest refuses the whole
     call by name rather than being dropped; a dry run then also lists each
     ``st<id> → rung`` it would mint.
+
+    ``node`` pins every newly minted seed to that node; ``spread`` instead
+    gives each to the least-loaded live node (queued plus running gpu jobs,
+    ties by name; :func:`_gpu_node_load`). Both refuse a retired-lane node,
+    never together, and the ack names the per-node counts (gr496506).
     """
+    if node and spread:
+        return "redispatch refused: --node and --spread are alternatives, pass one"
     reaction = _quest_reaction_config(store, quest_id)
     if reaction is None:
         return f"redispatch skipped: quest {quest_id} has no reaction_config"
@@ -3978,6 +4030,7 @@ def redispatch_candidates(
         counts = {t: tiers.count(t) for t in _TIERS if t in tiers}
         return ", ".join(f"{t} {c}" for t, c in counts.items()) or "none"
 
+    live: list[str] = []
     if plan:
         # Refuse up front (also on a dry run) when no live node could take a
         # seed, rather than minting jobs the sweeper fails (gr495691).
@@ -3986,21 +4039,35 @@ def redispatch_candidates(
             for n in (os.environ.get(_AUTOCATPATH_ROUTE_NODE_ENV) or "").split(",")
             if n.strip()
         ]
+        slots = store.all_resource_slots()
         route = env_nodes or sorted(
-            {
-                s.host
-                for s in store.all_resource_slots()
-                if s.resource == "gpu" and s.capacity > 0
-            }
+            {s.host for s in slots if s.resource == "gpu" and s.capacity > 0}
         )
+        if node:
+            known = sorted({s.host for s in slots})
+            if known and node not in known:
+                return (
+                    f"redispatch refused: --node {node} is not a known host; "
+                    f"next: one of {', '.join(known)}"
+                )
+            route = [node]
         if route:
-            _live, refusal = _live_route_nodes(store, route)
+            live, refusal = _live_route_nodes(store, route)
             if refusal:
                 return f"redispatch refused: {refusal}"
+    route_nodes = [node] if node else None
+    load: dict[str, int] | None = None
+    if spread and plan:
+        load = _gpu_node_load(store, live)
+        route_nodes = live
+        before = ", ".join(f"{n} {c}" for n, c in sorted(load.items()))
+        spread_note = f"; spread over live nodes by load [{before}]"
+    else:
+        spread_note = ""
     if dry_run:
         head = (
             f"would re-dispatch {len(plan)} candidate(s): "
-            f"{_per_rung([t for _, t in plan])}{skipped}"
+            f"{_per_rung([t for _, t in plan])}{skipped}{spread_note}"
         )
         if only is None:
             return head
@@ -4010,7 +4077,14 @@ def redispatch_candidates(
     minted_by_node: dict[str, int] = {}
     for sid, tier in plan:
         note = dispatch_autocatpath(
-            store, sid, reaction, hub=hub, tier=tier, minted_by_node=minted_by_node
+            store,
+            sid,
+            reaction,
+            hub=hub,
+            tier=tier,
+            minted_by_node=minted_by_node,
+            route_nodes=route_nodes,
+            load=load,
         )
         if note.startswith("autocatpath["):
             dispatched.append(tier)
@@ -4024,7 +4098,7 @@ def redispatch_candidates(
         minted = "WARNING 0 new seeds minted (every seed already live or done)"
     return (
         f"re-dispatched {len(dispatched)} candidate(s), {minted}, on the "
-        f"deployed engine ({_per_rung(dispatched)}){skipped}"
+        f"deployed engine ({_per_rung(dispatched)}){skipped}{spread_note}"
     )
 
 

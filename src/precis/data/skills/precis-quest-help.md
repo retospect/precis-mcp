@@ -398,6 +398,13 @@ candidates is an expensive call. It is meant for manual use after an engine
 deploy, not for a loop. It collapses onto existing jobs when the engine
 token is unchanged.
 
+Where the new seeds run: by default they round-robin over the live gpu
+nodes. `--node <name>` pins every new seed to that node; `--spread` gives
+each to the least-loaded live node (queued plus running gpu jobs, ties by
+name). Neither picks a node whose ssh_node lane is retired, and the ack
+names the per-node counts. Seeds already queued stay where they are
+(`job` `mode='retarget'` moves those).
+
 A margin measured on an older reaction network (another catpath template or
 version) does not rank. It shows as provisional with the reason "measured on
 an older reaction network (template@version)" until that candidate is
