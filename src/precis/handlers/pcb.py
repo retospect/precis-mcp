@@ -697,6 +697,7 @@ class PcbHandler(Handler):
                 "layer_cost",
                 "off_axis",
                 "cleanup",
+                "place",
                 "escape",
                 "groups",
                 "loop",
@@ -1769,6 +1770,22 @@ class PcbHandler(Handler):
                 )
             if not opts["cleanup"]:
                 params["cleanup"] = False
+        # Route-only run (gr495397): `place=False` keeps every pose and the
+        # stored sketch and only routes; absent/True = the joint place+route.
+        if op == "route" and opts.get("place") is not None:
+            if not isinstance(opts["place"], bool):
+                raise BadInput(
+                    "pcb: place must be a boolean (True or False)",
+                    next="put(args={'op':'route','place':False})",
+                )
+            if not opts["place"]:
+                if opts.get("loop"):
+                    raise BadInput(
+                        "pcb: place=False cannot combine with loop (the loop "
+                        "re-anneals between rounds)",
+                        next="put(args={'op':'route','place':False})",
+                    )
+                params["place"] = False
         # Raw store rows, verbatim -- `content_hash` itself does the
         # narrowing (job-written-field exclusion, authored-vs-derived
         # filtering) so there is exactly one place that can get it wrong.

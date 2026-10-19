@@ -1042,11 +1042,17 @@ class CleanupReport:
     vias_saved: int
     out_of_time: bool
     elapsed_s: float
+    #: Tracks the detector flagged (avoidable bends or detour), tried or not.
+    victims: int = 0
 
-    def line(self) -> str | None:
-        """The route summary line; ``None`` when nothing was tried."""
+    def line(self) -> str:
+        """The route summary line; always present when the pass ran, so a
+        silent no-op is distinguishable from a pass that never ran."""
         if not self.tried:
-            return None
+            return (
+                f"cleanup: 0 moves kept, 0 tried ({self.victims} kinked/detoured "
+                "track(s), none with a foreign via blocking its straight line)"
+            )
         out = (
             f"cleanup: {self.kept} moves kept, {self.tried} tried, "
             f"length -{self.length_saved_mm:.2f} mm, bends -{self.bends_saved}"

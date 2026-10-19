@@ -170,6 +170,8 @@ PARAMS_SCHEMA: dict[str, Any] = {
         # Route clean-up post-pass (RealizeConfig.route_cleanup, gr495397):
         # absent = on; false = off.
         "cleanup": {"type": "boolean"},
+        # Route-only (gr495397): false = no anneal, poses and sketch kept.
+        "place": {"type": "boolean"},
     },
     "required": ["pcb_ref_id"],
     "additionalProperties": False,
@@ -1109,8 +1111,18 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
                     failure_class="input",
                 )
                 return
+    # place=False: route-only. `hold_poses` skips every pose-moving pass of
+    # `optimize`, so poses and the stored sketch reach the realizer as stored.
+    route_only = params.get("place", True) is False
+    if route_only and loop_rounds:
+        ctx.record_failure(
+            "pcb_route: place=False cannot combine with loop",
+            failure_class="input",
+        )
+        return
     config = OptimizeConfig(
-        iters=iters,
+        iters=0 if route_only else iters,
+        hold_poses=route_only,
         seed=seed,
         locked_plane_nets=locked_plane_nets,
         measures=measures,

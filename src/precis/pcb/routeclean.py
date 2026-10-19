@@ -308,6 +308,7 @@ def cleanup(
     # reproduces it), so a pair is tried once per pass.
     seen: set[tuple[int, int]] = set()
     baseline_drc: Mapping[tuple[str, str], int] | None = None
+    n_victims = sum(1 for p in stamped.values() if _is_victim(p) is not None)
     queue = list(_candidates(ir, ctx, stamped, outcome[1]))
     while tried < config.cleanup_max_moves:
         pair: tuple[int, int] | None = None
@@ -370,5 +371,6 @@ def cleanup(
         vias_saved=vias_saved,
         out_of_time=out_of_time,
         elapsed_s=time.monotonic() - started,
+        victims=n_victims,
     )
     return outcome, report

@@ -682,6 +682,11 @@ class OptimizeConfig:
 
     cost: CostConfig = field(default_factory=CostConfig)
     iters: int = 2000
+    #: Route-only run (gr495397): :func:`optimize` seeds only unplaced parts
+    #: and returns the board as stored — no edge snap, start legalisation,
+    #: anneal, settle, recentre or grid snap. A zero-iteration anneal is not
+    #: enough: those passes still move parts.
+    hold_poses: bool = False
     seed: int = 0
     t0: float | None = None  # None => derived from board scale
     cooling: float = 0.995
@@ -5546,18 +5551,21 @@ def optimize(
     # Side-insertion connectors (gr451356) go flush on the outline and are
     # locked BEFORE the engine reads the lock bits, so the anneal neither
     # moves them nor counts them as movable.
-    snap_to_edges(ir)
+    hold = config.hold_poses
+    if not hold:
+        snap_to_edges(ir)
     engine = OptimizeEngine(ir, config)
-    legalized = engine.legalize_start()
+    legalized = () if hold else engine.legalize_start()
     report_schedule = engine._report_schedule()
     engine.schedule = report_schedule
     cost_before = engine.total()
-    engine.schedule = 0.0
-    engine.anneal(rng)
+    if not hold:
+        engine.schedule = 0.0
+        engine.anneal(rng)
     engine.schedule = report_schedule
     # The snap is part of the placement, not cosmetic: it runs BEFORE
     # `cost_after` so the reported cost is the cost of the returned board.
-    snapped = engine.snap_hard_aligns()
+    snapped = () if hold else engine.snap_hard_aligns()
     # Opt-in support-passive organisation (docs/backlog/
     # pcb-placement-groups.md): a post-anneal pass — hard aligns already
     # snapped win, and the organised rows' cost counts in cost_after.
@@ -5567,10 +5575,11 @@ def optimize(
     # the pass, and every further search step only trades the wires it
     # was organised for back into the cost model's other terms.
     support_groups: tuple[str, ...] = ()
-    if config.support_groups:
+    if config.support_groups and not hold:
         placed_groups = engine.organize_support_groups()
         support_groups = pcb_support_groups.summary_lines(ir, placed_groups)
-    engine.settle_into_outline()
+    if not hold:
+        engine.settle_into_outline()
     cost_after = engine.total()
     # Cosmetic, post-measurement: `cost_before`/`cost_after` grade the
     # anneal's own work; the rigid recentre below changes absolute
@@ -5579,13 +5588,13 @@ def optimize(
     # datum (a `point`/`feature_id`): that datum is fixed to the BOARD like
     # a locked part, and a rigid shift of the pack would walk the part off
     # the alignment the anneal and the snap just achieved.
-    if not any(
+    if not hold and not any(
         spec.datum is not None and spec.weight > 0.0
         for _a, _b, spec in engine._measure_pairs
     ):
         recentre_in_outline(ir)
     preferred_snapped: dict[str, dict[str, float]] = {}
-    if config.preferred_snap:
+    if config.preferred_snap and not hold:
         # Cosmetic, post-measurement like the recentre above — and it
         # MUST run after it: the snap lands parts on an absolute grid, so
         # a rigid pack shift afterwards would slide them straight off it.

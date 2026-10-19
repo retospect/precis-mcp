@@ -2211,3 +2211,39 @@ def test_diagnose_unrouted_names_layers_and_constricting_pads() -> None:
     src = inspect.getsource(pcb_route.pcb_realize._diagnose_unrouted)
     assert "layer_names" in src
     assert "_constricting_pad_names" in src
+
+
+def _poses(store: Store, ref_id: int) -> dict[str, tuple[float, float]]:
+    return {
+        str(c["refdes"]): (float(c["x"]), float(c["y"]))
+        for c in store.pcb_graph(ref_id)["instances"]
+    }
+
+
+def test_pcb_route_place_false_routes_without_moving_parts(store: Store) -> None:
+    """gr495397: route-only keeps every stored pose (the joint default
+    anneals them) and still routes the net."""
+    ref_id = _seed(store, "route-only", _DESIGN_WITH_DANGLING)
+    before = _poses(store, ref_id)
+    ctx = _FakeCtx(
+        store,
+        params={"pcb_ref_id": ref_id, "iters": 2000, "seed": 1, "place": False},
+    )
+    _route(ctx)
+
+    assert not ctx.failures, ctx.failures
+    assert _poses(store, ref_id) == before
+    statuses = {r["name"]: r["status"] for r in store.pcb_route_status(ref_id)}
+    assert statuses["N1"] == "realized"
+
+
+def test_pcb_route_summary_always_carries_a_cleanup_line(store: Store) -> None:
+    """gr495397: a pass with nothing to try used to print nothing, which read
+    as 'never ran'."""
+    ref_id = _seed(store, "route-cleanup-line", _DESIGN)
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 300, "seed": 1})
+    _route(ctx)
+
+    assert not ctx.failures, ctx.failures
+    text = "\n".join(t for _k, t in ctx.summaries)
+    assert "cleanup: " in text, text
