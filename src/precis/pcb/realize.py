@@ -4671,6 +4671,13 @@ def _plane_fanout(
             # numbers for the same pad.
             geom = pad_geoms[pid]
             pad_radius = math.hypot(geom.w_mm, geom.h_mm) / 2.0
+            # The stub carries the pad's current, so it keeps the net's
+            # derived width, necked to the pad where the pad is narrower
+            # (never under the fab floor).
+            stub_rules = rules
+            neck = max(floor_width, min(geom.w_mm, geom.h_mm))
+            if neck < rules.track_width_mm:
+                stub_rules = replace(rules, track_width_mm=neck)
             pending.append(
                 _FanoutPin(
                     pid,
@@ -4682,7 +4689,7 @@ def _plane_fanout(
                     lo,
                     hi,
                     pad_radius,
-                    rules,
+                    stub_rules,
                     pour_reaches_pad,
                     _outline_clip(
                         ir,
@@ -4690,7 +4697,7 @@ def _plane_fanout(
                     ),
                     region_areas.get(net_id),
                     replace(rules, track_width_mm=floor_width)
-                    if floor_width < rules.track_width_mm
+                    if floor_width < stub_rules.track_width_mm
                     else None,
                 )
             )

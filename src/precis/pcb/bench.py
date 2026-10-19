@@ -10,15 +10,19 @@ from __future__ import annotations
 
 import sys
 
-from precis.pcb import sanity_board
+from precis.pcb import sanity_board, sanity_power
 
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
-    if not args or args[0] != "sanity":
-        print("usage: python -m precis.pcb.bench sanity [variant ...]", file=sys.stderr)
+    boards = {"sanity": sanity_board.main, "power": sanity_power.main}
+    if not args or args[0] not in boards:
+        print(
+            "usage: python -m precis.pcb.bench sanity|power [variant ...]",
+            file=sys.stderr,
+        )
         return 2
-    return sanity_board.main(args[1:])
+    return boards[args[0]](args[1:])
 
 
 if __name__ == "__main__":
