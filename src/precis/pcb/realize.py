@@ -2223,6 +2223,7 @@ def _realize_maze(
         pads=pads,
         rules_by_net=rules_by_net,
         config=config,
+        pour_clearance=ctx.clearance_max,
     )
     if rescued:
         tracks = tracks + rescue_tracks
@@ -5052,7 +5053,14 @@ def _drop_via_site(
         return None  # this fab publishes no via figures — don't invent any
     via_radius_mm = rules.via_dia_mm / 2.0
     via_r = grid.core_radius_mm(rules.via_dia_mm)
-    stub_r = grid.core_radius_mm(rules.track_width_mm)
+    # The stub is a QUERY, so it pays its own half-width plus one cell, as
+    # `grid.route` does (maze module docstring): every claim it is asked
+    # against already carries that copper's clearance. `core_radius_mm` is
+    # the CLAIM radius and counted the clearance twice, which at fine pitch
+    # refused the stub over its own pad, where the neighbours' halos meet
+    # (gr492108: taz15 CN4.6/CN4.18 GND, every candidate refused at the
+    # first sample).
+    stub_r = rules.track_width_mm / 2.0 + grid.spec.pitch
     # The nominal reach a via needs from its own pad is not a flat
     # constant (this subsystem's most-repeated defect — a courtyard
     # radius, a seed pitch, a claim radius, PAD_RADIUS_MM, and now this,
@@ -6230,6 +6238,18 @@ def _final_board_grid(
     return grid
 
 
+def _pour_yields(poly: Any, cut: Any, pads_covered: list[Point]) -> Any | None:
+    """``poly`` less ``cut`` when the plane survives it -- no more pieces
+    than before and every pad in ``pads_covered`` still touched -- else
+    ``None`` (:func:`_rescue_plane_pins`'s guarded rescue)."""
+    after = poly.difference(cut)
+    if len(getattr(after, "geoms", [after])) > len(getattr(poly, "geoms", [poly])):
+        return None
+    if not all(_touches(after, x, y) for x, y in pads_covered):
+        return None
+    return after
+
+
 def _rescue_plane_pins(
     ir: PcbIR,
     tracks: list[RealizedTrack],
@@ -6242,6 +6262,7 @@ def _rescue_plane_pins(
     pads: list[tuple[Point, int, maze.PadShape, tuple[int, ...]]],
     rules_by_net: dict[int, NetRules],
     config: RealizeConfig,
+    pour_clearance: float | None = None,
 ) -> tuple[list[RealizedTrack], list[RealizedVia], list[int]]:
     """Give a plane pin that found no drop-via site a ROUTED connection to
     one of its own net's drop vias that already reaches the pour (gr492108:
@@ -6253,10 +6274,33 @@ def _rescue_plane_pins(
     may change layer; the re-pour that follows carves the planes around
     whatever it adds. Returns the new tracks and vias and the pins rescued;
     a pin with no reachable same-net drop stays failed and keeps its
-    ``plane_drop_blocked`` reason."""
+    ``plane_drop_blocked`` reason.
+
+    A trace on a layer another net pours is accepted only when that plane
+    survives it (:func:`_pour_yields`): cut by the trace at
+    ``pour_clearance`` (the clearance the re-pour carves at), each yielding
+    pour gains no piece and still covers every one of its net's pads it
+    covered before. Otherwise it is refused, as the jumper refuses (gr492108:
+    taz15's F.Cu pins under the 3V3 pour had no other way out)."""
     if not failed_pins or not pours:
         return [], [], []
     pour_polys = _pour_polygons(ir, pours)
+    cut_clearance = clearance if pour_clearance is None else pour_clearance
+    # Each net's pour per layer, cut as rescues are accepted, and the pads
+    # each one covers: what a yielding plane must still be and still reach.
+    pour_state: dict[tuple[str, int], Any] = {}
+    for n, i, poly in pour_polys:
+        prev = pour_state.get((n, i))
+        pour_state[(n, i)] = poly if prev is None else prev.union(poly)
+    covered: dict[tuple[str, int], list[Point]] = {}
+    for pt, pad_net, _shape, pad_layers in pads:
+        if pad_net < 0 or pad_net >= ir.n_nets:
+            continue
+        name = str(ir.net_name[pad_net])
+        for layer in pad_layers:
+            poly = pour_state.get((name, layer))
+            if poly is not None and _touches(poly, pt[0], pt[1]):
+                covered.setdefault((name, layer), []).append(pt)
     grid = _final_board_grid(
         ir, tracks, vias, spec, clearance, pads, rules_by_net, config
     )
@@ -6276,10 +6320,6 @@ def _rescue_plane_pins(
             continue
         pad_layer = _side_layer(ir, int(ir.pin_instance[pid]), all_layers)
         net_name = str(ir.net_name[net_id])
-        foreign_pours: dict[int, list[Any]] = {}
-        for n, i, poly in pour_polys:
-            if n != net_name:
-                foreign_pours.setdefault(i, []).append(poly)
         widths = sorted({rules.track_width_mm, floor_width}, reverse=True)
         polys = [(i, poly) for n, i, poly in pour_polys if n == net_name]
         targets = sorted(
@@ -6322,20 +6362,32 @@ def _rescue_plane_pins(
                 if path is None or len(path.points) < 2:
                     continue
                 # A via may cross a foreign plane (the re-pour cuts its
-                # antipad), but a TRACK on a layer another net pours would
-                # slice that plane, so it is refused here as the jumper does.
-                if any(
-                    not _clears_foreign_pours(
-                        _ShapelyLineString(
-                            [(x, y) for x, y, lyr in path.points if lyr == layer]
-                        ).buffer(width / 2.0 + clearance, quad_segs=_JUMPER_QUAD_SEGS),
-                        range(layer, layer + 1),
-                        foreign_pours,
+                # antipad); a TRACK on a layer another net pours cuts that
+                # plane, and is kept only if the plane survives the cut.
+                yielded: dict[tuple[str, int], Any] = {}
+                refused = False
+                for layer in {int(p[2]) for p in path.points}:
+                    pts = [(x, y) for x, y, lyr in path.points if int(lyr) == layer]
+                    if len(pts) < 2:
+                        continue
+                    cut = _ShapelyLineString(pts).buffer(
+                        width / 2.0 + cut_clearance, quad_segs=_JUMPER_QUAD_SEGS
                     )
-                    for layer in {int(p[2]) for p in path.points}
-                    if sum(1 for p in path.points if int(p[2]) == layer) >= 2
-                ):
+                    for (n, i), poly in pour_state.items():
+                        if i != layer or n == net_name or not poly.intersects(cut):
+                            continue
+                        after = _pour_yields(
+                            yielded.get((n, i), poly), cut, covered.get((n, i), [])
+                        )
+                        if after is None:
+                            refused = True
+                            break
+                        yielded[(n, i)] = after
+                    if refused:
+                        break
+                if refused:
                     continue
+                pour_state.update(yielded)
                 grid.stamp_path(path, width)
                 via_core = grid.core_radius_mm(rules.via_dia_mm)
                 lo, hi = through_span(len(all_layers))
