@@ -75,7 +75,7 @@ def test_logrotate_unchanged_on_shared_mount() -> None:
 def test_restore_test_default_uses_local_dump() -> None:
     out = _render("restore_test.sh.j2")
     assert "toc.dat" in out
-    assert "tar.zst" not in out and "mktemp" not in out
+    assert "tar.zst" not in out and "NAS_BACKUP_DIR" not in out
 
 
 def test_restore_test_verified_only_extracts_nas_archive() -> None:
@@ -87,7 +87,7 @@ def test_restore_test_verified_only_extracts_nas_archive() -> None:
     assert 'NAS_BACKUP_DIR="/nas/backups/postgres"' in out
     assert "precis_prod_*.tar.zst" in out
     assert 'BACKUP_DIR="/var/local/backups/postgres"' in out
-    assert "mktemp -d" in out and "trap 'rm -rf \"${SCRATCH_DIR}\"' EXIT" in out
+    assert "mktemp -d" in out and "trap on_exit EXIT" in out
 
 
 def test_drill_pull_renders_in_both_states() -> None:

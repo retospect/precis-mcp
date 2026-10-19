@@ -13,8 +13,43 @@ export PATH="/opt/homebrew/opt/postgresql@17/bin:/opt/homebrew/bin:${PATH}"
 {% endif %}
 
 BACKUP_DIR="{{ host_local_root | default(shared_mount) }}/backups/postgres"
-TEST_DB="precis_prod_restore_test"
+TEST_DB_PREFIX="precis_prod_restore_test"
+TEST_DB="${TEST_DB_PREFIX}"
+LIVE_DB="precis_prod"
 PG_USER="{{ pg_user }}"
+SCRATCH_DIR=""
+
+# Drop the throwaway DB and scratch dir on ANY exit — success, a failed step,
+# or the ~03:00Z nightly reboot's SIGTERM. With `set -e` and no trap a failed
+# pg_restore aborted before the final dropdb and stranded ~43 GB each week
+# (gripe 496659). The guard pins the dropped name to the scratch prefix and
+# never the live name, so no glob or stray expansion of TEST_DB can reach the
+# live DB.
+restore_test_drop() {
+    local db="${1:-${TEST_DB:-}}"
+    if [ "${db}" = "${LIVE_DB}" ]; then
+        echo "[$(date -u)] REFUSING to drop live DB '${db}'" >&2
+        return 1
+    fi
+    case "${db}" in
+        "${TEST_DB_PREFIX}"*) ;;
+        *)
+            echo "[$(date -u)] REFUSING to drop '${db}': outside scratch prefix '${TEST_DB_PREFIX}'" >&2
+            return 1
+            ;;
+    esac
+    dropdb -U "${PG_USER}" --if-exists "${db}"
+}
+
+on_exit() {
+    case "${SCRATCH_DIR}" in
+        "${BACKUP_DIR}/restore_test_"*) rm -rf "${SCRATCH_DIR}" ;;
+    esac
+    if ! restore_test_drop "${TEST_DB}"; then
+        echo "[$(date -u)] WARNING: cleanup could not drop scratch DB '${TEST_DB}' — check it manually" >&2
+    fi
+}
+trap on_exit EXIT
 
 # Newest COMPLETE dump — matches both the nightly directory-format dumps
 # (precis_prod_<TS>/) and the on-demand custom-format files
@@ -23,10 +58,12 @@ PG_USER="{{ pg_user }}"
 # SIGKILL/reboot has an mtime of "now" and would win (gripe 466216). A
 # directory dump is complete only once pg_dump has written toc.dat, so skip
 # any dir without it and fall back to the next-newest.
+mkdir -p "${BACKUP_DIR}"
+SCRATCH_DIR=$(mktemp -d "${BACKUP_DIR}/restore_test_XXXXXX")
 {% if pg_backup_local_keep_verified_only | default(false) | bool %}
 # pg_backup.sh deletes the local dump once the NAS archive verifies, so restore
-# from the newest NAS archive instead: extract to a scratch dir under the
-# host-local root (never the NAS share) and remove it on any exit.
+# from the newest NAS archive instead: extract it under the scratch dir (on the
+# host-local root, never the NAS share).
 NAS_BACKUP_DIR="{{ nas_root }}/backups/postgres"
 LATEST_ARCHIVE=$(ls -t "${NAS_BACKUP_DIR}"/precis_prod_*.tar.zst 2>/dev/null | head -1)
 
@@ -35,9 +72,6 @@ if [ -z "${LATEST_ARCHIVE}" ]; then
     exit 1
 fi
 
-mkdir -p "${BACKUP_DIR}"
-SCRATCH_DIR=$(mktemp -d "${BACKUP_DIR}/restore_test_XXXXXX")
-trap 'rm -rf "${SCRATCH_DIR}"' EXIT
 echo "[$(date -u)] Extracting ${LATEST_ARCHIVE} to ${SCRATCH_DIR}"
 tar --use-compress-program='zstd -d -T0' -xf "${LATEST_ARCHIVE}" -C "${SCRATCH_DIR}"
 LATEST_DUMP=$(find "${SCRATCH_DIR}" -maxdepth 1 -name 'precis_prod_*' 2>/dev/null | sort -r | head -1)
@@ -62,16 +96,35 @@ fi
 
 echo "[$(date -u)] Testing restore of: ${LATEST_DUMP}"
 
-# Drop and recreate the throwaway test database.
-dropdb -U "${PG_USER}" --if-exists "${TEST_DB}"
+# Exclude the vector HNSW indexes from the test restore: chunk_embeddings' is a
+# ~50 GB build that kept a -j1 run going >21 h, straight into the next ~03:00Z
+# reboot — every run since 2026-08-17 died mid-index (gripe 496659). The test
+# validates that the dump restores — tables, data, btree/gin indexes,
+# constraints — not the ANN index prod already has, so filter those TOC
+# entries out and let everything else restore normally. The excluded entries
+# are logged by name each run — a silent skip would hide a drifted list.
+pg_restore -l "${LATEST_DUMP}" > "${SCRATCH_DIR}/toc.full"
+grep -E '^[0-9]+;.* INDEX [^ ]+ [^ ]*hnsw' "${SCRATCH_DIR}/toc.full" \
+    > "${SCRATCH_DIR}/toc.skip" || true
+if [ -s "${SCRATCH_DIR}/toc.skip" ]; then
+    echo "[$(date -u)] Restore test skips these HNSW index entries:"
+    sed 's/^/    /' "${SCRATCH_DIR}/toc.skip"
+fi
+grep -vE '^[0-9]+;.* INDEX [^ ]+ [^ ]*hnsw' "${SCRATCH_DIR}/toc.full" \
+    > "${SCRATCH_DIR}/toc.list"
+
+# Drop and recreate the throwaway test database — a previous killed run may
+# have left one behind. Same guarded call the EXIT trap makes.
+restore_test_drop "${TEST_DB}"
 createdb -U "${PG_USER}" "${TEST_DB}"
 
 # Restore. --no-owner/--no-privileges keep a throwaway restore from choking on
-# role grants. Single-job + no parallel index workers: the pg host is a 32 GB
-# box also serving precis_prod, and a -j4 restore with parallel index builds
-# drove it ~11 GB into swap (2026-08-10) — correctness proof, not a race.
+# role grants. -j4, un-niced: the host also serves precis_prod, so parallelism
+# stays modest and each worker's index builds are capped (single-threaded,
+# 256 MB) — the 2026-08-10 -j4 swap event was the HNSW build, now excluded.
 export PGOPTIONS="-c max_parallel_maintenance_workers=0 -c maintenance_work_mem=256MB"
-nice -n 19 pg_restore -U "${PG_USER}" -d "${TEST_DB}" --no-owner --no-privileges -j1 "${LATEST_DUMP}"
+pg_restore -U "${PG_USER}" -d "${TEST_DB}" --no-owner --no-privileges \
+    -j4 -L "${SCRATCH_DIR}/toc.list" "${LATEST_DUMP}"
 
 # Basic sanity check — a healthy precis_prod restore has hundreds of tables.
 # -X: skip ~/.psqlrc, whose interactive \timing / \pset settings would append
@@ -79,6 +132,5 @@ nice -n 19 pg_restore -U "${PG_USER}" -d "${TEST_DB}" --no-owner --no-privileges
 TABLE_COUNT=$(psql -X -U "${PG_USER}" -d "${TEST_DB}" -tAc "SELECT count(*) FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog','information_schema')")
 echo "[$(date -u)] Restore OK — ${TABLE_COUNT} tables found"
 
-# Clean up.
-dropdb -U "${PG_USER}" "${TEST_DB}"
-echo "[$(date -u)] Test database dropped. Restore test PASSED."
+echo "[$(date -u)] Restore test PASSED."
+# The EXIT trap drops ${TEST_DB} and removes ${SCRATCH_DIR}.
