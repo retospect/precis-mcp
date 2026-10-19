@@ -11,6 +11,11 @@
 # what scripts/inflight and the reaper read as liveness; when Devin exits the
 # lock goes dead and a merged+clean tree auto-reaps like any Claude tree.
 # --purpose writes .claude/purpose (the inflight table's PURPOSE column).
+# Before launch the repo's .claude/worktrees directory is added to Devin's
+# trusted_workspaces.json (scripts/lib/devin_trust.py; Devin trusts
+# subfolders of a listed parent, so one entry covers every tree) — without
+# it Devin stops at the directory-trust prompt. DEVIN_TRUSTED_WORKSPACES
+# points the write at a different file (tests).
 # --model takes an id from `devin models list` (default: Devin's own, SWE-2
 # High; all SWE-2 tiers are free). --permission-mode defaults to `auto`
 # (read-only tools auto-approved); `dangerous` is Devin's autonomous mode
@@ -82,6 +87,11 @@ fi
 git -C "$root" worktree unlock "$tree" >/dev/null 2>&1 || true
 git -C "$root" worktree lock --reason "pid $$" "$tree"
 [[ -n $purpose ]] && printf '%s\n' "$purpose" >"$tree/.claude/purpose"
+
+# Trust failure must not abort the launch — Devin just asks at its prompt.
+"$(dirname "$(realpath "$0")")/lib/devin_trust.py" \
+	"$root/.claude/worktrees" ||
+	echo "devin-tree: trust step failed; Devin may ask to trust the directory" >&2
 
 tmux new-window -t "=$session:" -n "devin-$name" -c "$tree" \
 	"exec $(printf '%q ' "$(realpath "$0")" --exec "$tree" ${devin_args[@]+"${devin_args[@]}"})"

@@ -14,7 +14,12 @@ scripts/devin-tree NAME --purpose "one line" [--prompt-file FILE] \
 It creates `.claude/worktrees/NAME` on branch `worktree-NAME` from
 `origin/main`, or reuses an existing tree or branch without resetting it. It
 writes `.claude/purpose` and opens tmux window `devin-NAME` running
-`devin --permission-mode auto`. The tree is locked `pid <devin pid>`, so
+`devin --permission-mode auto`. Before launch it adds the repo's
+`.claude/worktrees` directory to `trusted_paths` in
+`~/.local/share/devin/cli/trusted_workspaces.json` — Devin trusts
+subfolders of a listed parent, so the one entry covers every tree and
+Devin never stops at the directory-trust prompt. The tree is locked
+`pid <devin pid>`, so
 `scripts/inflight` shows it live and the reaper leaves it alone until Devin
 exits. A merged, clean tree then reaps once its purpose is over 6 hours old.
 Outside tmux, pass `--session`. `--dry-run` prints the plan.
