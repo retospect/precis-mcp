@@ -302,7 +302,7 @@ def finding_identity(f: DrcFinding) -> tuple[str, tuple[str, ...], str | None]:
     ``via_via_keepout``: ``a_*``/``b_*``) are split into their two
     participants here; every other rule's participants are its ``objects``
     one by one through :func:`_object_identity`."""
-    if f.rule == "via_pad_keepout" and f.objects:
+    if f.rule in ("via_pad_keepout", "via_in_pad") and f.objects:
         o = f.objects[0]
         via = (
             f"fixed:{o['via_fixed_id']}"
@@ -1930,6 +1930,12 @@ def check_npth_clearance(
 # ── via-to-pad keep-out (a via is a drilled hole, not a trace) ──────────
 
 
+#: Pad ``role`` values that are copper fields with no solder joint (an EWOD
+#: electrode, the tape landing strip): a via dropping into one is not
+#: ``via_in_pad`` (gr496850).
+_COPPER_FIELD_PAD_ROLES = frozenset({"electrode", "tape_land"})
+
+
 def check_via_pad_keepout(
     model: dict[str, Any], capability: CapabilityRow
 ) -> list[DrcFinding]:
@@ -1978,6 +1984,14 @@ def check_via_pad_keepout(
     now read off the pad's real polygon, see just below — no longer does).
     This carve-out stays regardless: it is a narrower, net-scoped policy
     call about an authored drop point, not a stand-in for the geometry fix.
+    **It never hides a via IN a pad** (gr496850, Reto 2026-10-18: "no vias
+    in pads", a filled-and-capped via is a fab upgrade we do not buy): a
+    carved-out via whose annulus overlaps the pad's copper is reported as
+    ``via_in_pad``, an error whatever the net or provenance (an imported
+    fixed via included). A non-exempt overlap is already a
+    ``via_pad_keepout`` error, so the two rules never double-report a pair.
+    A copper-field pad (EWOD ``electrode``, ``tape_land``) is no solder land,
+    so the plaza via dropping into its electrode stays carved out.
     A FOREIGN net's via, or an ordinary (non-fixed) via on the SAME net, is
     unaffected: only ``item["fixed"] and via_net == pad_net`` (both
     non-empty) skips.
@@ -2081,8 +2095,9 @@ def check_via_pad_keepout(
             if pad.get("layer") not in via_layers and not pad.get("drill"):
                 continue
             pad_net_raw = pad.get("net")
-            if via_fixed and via_net and pad_net_raw and via_net == pad_net_raw:
-                continue
+            exempt = bool(
+                via_fixed and via_net and pad_net_raw and via_net == pad_net_raw
+            )
             pad_body = pad_bodies[pad_idx]
             if pad_body is not None:
                 # The pad's REAL outline (:func:`_copper_item_polygon` — the
@@ -2113,7 +2128,19 @@ def check_via_pad_keepout(
                 # still gets SOME check rather than none.
                 pr = max(w, h) / 2.0
                 gap = _dist((vx, vy), (px, py)) - vr - pr
-            if gap >= required - _EPS:
+            # The same-net fixed carve-out above never hides a via sitting
+            # IN a pad (annulus on the pad's copper): that is `via_in_pad`,
+            # an error whatever the net or provenance (gr496850).
+            # An EWOD electrode or tape land is a copper field, not a solder
+            # land: the plaza via legitimately drops into it.
+            in_pad = (
+                exempt
+                and gap < -_EPS
+                and pad.get("role") not in _COPPER_FIELD_PAD_ROLES
+            )
+            if exempt and not in_pad:
+                continue
+            if gap >= required - _EPS and not in_pad:
                 continue
             pad_net, pad_layer = pad.get("net"), pad.get("layer")
             # Name the pad by its PART, not only by its net (gr451052).
@@ -2133,13 +2160,17 @@ def check_via_pad_keepout(
             )
             findings.append(
                 DrcFinding(
-                    rule="via_pad_keepout",
+                    rule="via_in_pad" if in_pad else "via_pad_keepout",
                     severity="error",
                     where=(
                         f"via[{via_net}] @ ({vx}, {vy}) <-> {pad_id} on {pad_layer}"
                     ),
                     detail=(
-                        f"via clears {pad_id} by {gap:.3f}mm, needs "
+                        f"via sits in {pad_id}: its annulus overlaps the pad's "
+                        f"copper by {-gap:.3f}mm — a via in a pad needs a filled "
+                        "and capped via (a costly fab upgrade we do not buy)"
+                        if in_pad
+                        else f"via clears {pad_id} by {gap:.3f}mm, needs "
                         f"{required:.3f}mm (JLC min {field}, "
                         f"{capability.process}) — a via drilled into a solder "
                         "land starves the joint regardless of net"

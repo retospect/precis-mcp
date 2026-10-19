@@ -94,6 +94,11 @@ table with `args={'severity': 'error'|'warn'|'todo', 'rule': 'via_pad_keepout'}`
 the valid options). The head counts stay board-wide and a
 `filtered: showing N of M` line says the table is cut.
 
+No via may sit in a pad: a via whose annulus overlaps a solder pad's copper
+is an error (`via_pad_keepout`, or `via_in_pad` for an imported or authored
+same-net fixed via), because a via in a pad needs a filled and capped via,
+a fab upgrade we do not buy. Fix an imported one at the source board.
+
 The fab-export path (`view='gerber'`) always judges at `fab`: an
 authored `phase='placed'` claim is a progress statement, not a licence
 to ship — a routed board's clearance/connectivity errors still lead the

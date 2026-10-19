@@ -973,10 +973,43 @@ def test_check_via_pad_keepout_exempts_a_same_net_fixed_via():
     net's own designed fabric, not a foreign intrusion; an ordinary
     router-placed via stays fully checked (test immediately above)."""
     pad = _pad("SIG", "F.Cu", 0.0, 0.0, w=1.0, h=1.0)
-    via = {**_via("SIG", "F.Cu", 0.0, 0.0, dia_mm=0.6, drill_mm=0.3), "fixed": True}
+    # beside the pad, annulus clear of its copper but inside the keep-out
+    via = {**_via("SIG", "F.Cu", 0.85, 0.0, dia_mm=0.6, drill_mm=0.3), "fixed": True}
     model = {"layers": ["F.Cu"], "copper": [via], "pads": [pad]}
     assert drc.check_clearance(model, _CAP4) == []
     assert drc.check_via_pad_keepout(model, _CAP4) == []
+
+
+def test_a_same_net_fixed_via_in_a_pad_is_a_via_in_pad_error():
+    """gr496850 (Reto 2026-10-18, "no vias in pads"): the same-net fixed
+    carve-out covers a via BESIDE its pad, never one sitting IN it: an
+    imported via in a pad (taz15-r2 C32.2) is an error, one finding per
+    pair, naming the via, the pad and the net."""
+    pad = {**_pad("SIG", "F.Cu", 0.0, 0.0, w=1.0, h=1.0), "refdes": "C32", "pin": "2"}
+    via = {**_via("SIG", "F.Cu", 0.0, 0.0, dia_mm=0.6, drill_mm=0.3), "fixed": True}
+    model = {"layers": ["F.Cu"], "copper": [via], "pads": [pad]}
+    (f,) = drc.check_via_pad_keepout(model, _CAP4)
+    assert f.rule == "via_in_pad" and f.severity == "error"
+    assert "C32/2" in f.where and "via[SIG]" in f.where
+    assert f.objects[0]["pad_refdes"] == "C32" and f.objects[0]["via_net"] == "SIG"
+    required = _CAP4.jlc_min["trace_spacing_mm"]
+    assert required is not None
+    assert f.margin_mm == pytest.approx(-0.3 - required, abs=1e-9)
+    # an EWOD electrode is a copper field, not a solder land: still carved out
+    electrode = {**pad, "role": "electrode"}
+    assert (
+        drc.check_via_pad_keepout(
+            {"layers": ["F.Cu"], "copper": [via], "pads": [electrode]}, _CAP4
+        )
+        == []
+    )
+    # a router-placed (non-fixed) via in the same pad stays one keepout error
+    routed = {k: v for k, v in via.items() if k != "fixed"}
+    (g,) = drc.check_via_pad_keepout(
+        {"layers": ["F.Cu"], "copper": [routed], "pads": [pad]}, _CAP4
+    )
+    assert g.rule == "via_pad_keepout"
+    assert drc.finding_identity(f)[0] == "via_in_pad"
 
 
 def test_check_via_pad_keepout_fires_regardless_of_net():
