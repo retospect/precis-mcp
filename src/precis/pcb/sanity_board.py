@@ -24,16 +24,20 @@ Iterate without the gate queue::
 
     uv run python -m precis.pcb.bench sanity [variant ...]
 
-prints routed/20, DRC by rule and the per-net verdicts.
+prints routed/20, DRC by rule and the per-net verdicts. ``--svg DIR`` writes
+a drawing per variant; ``--upload`` puts each routed board in the configured
+store as a frozen ``sanity-<variant>`` pcb board for viewing (never replaces
+an existing slug; ``--version`` takes the next free ``-vN``).
 """
 
 from __future__ import annotations
 
+import argparse
 import math
 import random
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from precis.pcb import realize as pcb_realize
@@ -241,6 +245,11 @@ class SanityResult:
     failed: dict[str, str]
     #: ``rule:severity:where`` per DRC finding.
     findings: tuple[str, ...]
+    #: The realize result and final poses, for the SVG and the upload.
+    rres: Any = field(default=None, repr=False, compare=False)
+    poses: dict[str, tuple[float, float, float]] = field(
+        default_factory=dict, repr=False, compare=False
+    )
 
     @property
     def errors_by_rule(self) -> dict[str, int]:
@@ -282,6 +291,8 @@ def route(spec: SanitySpec, built: Built | None = None) -> SanityResult:
         findings=tuple(
             sorted(f"{f.rule}:{f.severity}:{getattr(f, 'where', '')}" for f in findings)
         ),
+        rres=rres,
+        poses=pcb_session.positions(ir),
     )
 
 
@@ -311,21 +322,99 @@ def report(results: list[SanityResult]) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    names = (argv if argv is not None else sys.argv[1:]) or list(PINNED)
+    parser = argparse.ArgumentParser(prog="python -m precis.pcb.bench sanity")
+    parser.add_argument("variants", nargs="*", help=f"default: {list(PINNED)}")
+    parser.add_argument("--svg", metavar="DIR", help="write DIR/sanity-<variant>.svg")
+    parser.add_argument(
+        "--upload",
+        action="store_true",
+        help="put each routed board in the configured store as a frozen "
+        "sanity-<variant> pcb board (never replaces one)",
+    )
+    parser.add_argument(
+        "--version",
+        action="store_true",
+        help="with --upload: take the next free sanity-<variant>-vN when the "
+        "slug exists instead of refusing",
+    )
+    args = parser.parse_args(argv if argv is not None else sys.argv[1:])
+    names = args.variants or list(PINNED)
     unknown = [n for n in names if n not in SPECS]
     if unknown:
         print(f"unknown variant(s) {unknown}; known: {list(SPECS)}", file=sys.stderr)
         return 2
-    results = [_run(SPECS[n]) for n in names]
+    if args.version and not args.upload:
+        print("--version only applies with --upload", file=sys.stderr)
+        return 2
+    runs = [_run(SPECS[n]) for n in names]
+    results = [r for r, _ in runs]
     print(report(results))
+    if args.svg:
+        _write_svgs(args.svg, runs)
+    if args.upload and not _upload(runs, version=args.version):
+        return 1
     return 0 if all(not r.failed and not r.errors_by_rule for r in results) else 1
 
 
-def _run(spec: SanitySpec) -> SanityResult:
+def _write_svgs(directory: str, runs: list[tuple[SanityResult, Built]]) -> None:
+    from pathlib import Path
+
+    from precis.pcb import sanity_render
+
+    out = Path(directory)
+    out.mkdir(parents=True, exist_ok=True)
+    for result, built in runs:
+        instances = [
+            {**i, "x": result.poses[i["refdes"]][0], "y": result.poses[i["refdes"]][1]}
+            | {"rot": result.poses[i["refdes"]][2]}
+            for i in built.graph["instances"]
+        ]
+        path = out / f"sanity-{result.spec.name}.svg"
+        path.write_text(
+            sanity_render.svg(
+                outline=outline(),
+                instances=instances,
+                footprint=footprint(),
+                tracks=list(result.rres.tracks),
+                vias=list(result.rres.vias),
+                title=f"{result.spec.name}: {result.routed}/{result.nets}",
+            ),
+            encoding="utf-8",
+        )
+        print(f"{result.spec.name}: wrote {path}")
+
+
+def _upload(runs: list[tuple[SanityResult, Built]], *, version: bool) -> bool:
+    """Upload every run to the store ``PRECIS_DATABASE_URL`` names; a refused
+    slug is reported and skipped (never replaced). True when none refused."""
+    from precis.cli._common import resolve_dsn
+    from precis.pcb import sanity_upload
+    from precis.store import Store
+
+    store = Store.connect(resolve_dsn(None))
+    ok = True
+    try:
+        for result, built in runs:
+            try:
+                slug = sanity_upload.upload(store, result, built, version=version)
+            except sanity_upload.UploadRefused as exc:
+                print(f"{result.spec.name}: not uploaded — {exc}", file=sys.stderr)
+                ok = False
+                continue
+            print(
+                f"{result.spec.name}: uploaded {slug} -> {sanity_upload.page_path(slug)}"
+            )
+    finally:
+        store.close()
+    return ok
+
+
+def _run(spec: SanitySpec) -> tuple[SanityResult, Built]:
     """Route a variant; one with unpinned parts is placed first, and what
     the placer did is printed (poses, TB airwire length, placement DRC)."""
     if not spec.free:
-        return route(spec)
+        built = build(spec)
+        return route(spec, built), built
     built = build(spec)
     before = net_length_mm(built, "TB")
     poses = place(built)
@@ -338,7 +427,7 @@ def _run(spec: SanitySpec) -> SanityResult:
         + f"; TB airwire {before:.1f} -> {net_length_mm(built, 'TB'):.1f} mm; "
         f"placement DRC errors {placement_errors(built) or 'none'}"
     )
-    return route(spec, built)
+    return route(spec, built), built
 
 
 if __name__ == "__main__":

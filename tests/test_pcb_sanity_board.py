@@ -16,6 +16,8 @@ verdicts)::
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from precis.pcb import sanity_board as sb
@@ -42,6 +44,12 @@ def test_headers_are_centred_25mm_in_and_fixed() -> None:
         "J_R": (75.0, 50.0),
     }
     assert all(i["fixed"] == "both" for i in insts.values())
+
+
+def test_svg_option_writes_a_drawing(tmp_path: Path) -> None:
+    assert sb.main(["straight", "--svg", str(tmp_path)]) == 0
+    text = (tmp_path / "sanity-straight.svg").read_text(encoding="utf-8")
+    assert text.startswith("<svg") and text.count("<path") >= NETS
 
 
 @pytest.mark.parametrize("name", sb.PINNED)
