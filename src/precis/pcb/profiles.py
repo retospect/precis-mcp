@@ -11,9 +11,9 @@ through :func:`profile_rules` only; none branches on the profile name.
 value is a floor/ceiling applied on top of the fab capability row, never
 below ``jlc_min``.
 
-Slice 1 of docs/backlog/pcb-board-profile-prototype.md ships the key, the
-data and this accessor; the consumers (capability overlay, DRC strictness,
-router cost, thermals, silk) arrive in later slices.
+The capability overlay (:func:`precis.pcb.capabilities.apply_profile`) and
+DRC strictness consume it; router cost, thermals and silk arrive in later
+slices of docs/backlog/pcb-board-profile-prototype.md.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ from importlib import resources
 from typing import Any
 
 from precis.pcb.capabilities import FIELDS as _CAPABILITY_FIELDS
+from precis.pcb.capabilities import load_capabilities
 
 _PACKAGED_DATA = "precis.data"
 _FILE = "pcb_profiles.json"
@@ -86,6 +87,23 @@ def _load_raw() -> dict[str, Any]:
     return data
 
 
+def _check_floors(rules: ProfileRules) -> None:
+    """A profile figure below even the loosest fab row's ``jlc_min`` is a
+    data error and is refused at load. A figure below a *stricter* row's
+    floor (aluminum needs a 0.65 mm drill) is legal: the overlay only
+    raises (:func:`precis.pcb.capabilities.apply_profile`), so that row
+    keeps its own floor."""
+    rows = load_capabilities()
+    for key in ("trace_width_mm", "trace_spacing_mm", "drill_mm", "annular_ring_mm"):
+        value = getattr(rules, key)
+        floors = [f for r in rows if (f := r.jlc_min.get(key)) is not None]
+        if value is not None and floors and value < min(floors):
+            raise ValueError(
+                f"profile {rules.name!r}: {key} {value} is below every "
+                f"fab row's jlc_min (loosest {min(floors)})"
+            )
+
+
 def _build(row: dict[str, Any]) -> ProfileRules:
     name = row["name"]
     kwargs: dict[str, Any] = {"name": name, "label": row.get("label", "")}
@@ -132,6 +150,7 @@ def _profiles() -> dict[str, ProfileRules]:
     out = {}
     for row in _load_raw()["rows"]:
         rules = _build(row)
+        _check_floors(rules)
         out[rules.name] = rules
     if DEFAULT_PROFILE not in out:
         raise ValueError(f"{_FILE}: no {DEFAULT_PROFILE!r} row")

@@ -72,9 +72,12 @@ band is refused rather than extrapolated. Valid only below 3050m altitude
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from importlib import resources
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from precis.pcb.profiles import ProfileRules
 
 _PACKAGED_DATA = "precis.data"
 _FILE = "pcb_capabilities.json"
@@ -113,6 +116,22 @@ class CapabilityRow:
     #: aluminum's minimum CNC milling-cutter width, surface finish, mask
     #: color). Empty string when a row has nothing to add.
     process_notes: str = ""
+
+
+@dataclass(frozen=True)
+class ProfileCapabilityRow(CapabilityRow):
+    """A fab row with a board profile laid over it (:func:`apply_profile`).
+    A subclass, not a field on :class:`CapabilityRow`, so a plain fab row
+    serialises exactly as before (route params and snapshots embed it)."""
+
+    #: Fields whose ``house_default`` shortfall is an error, not a warn.
+    strict_fields: frozenset[str] = frozenset()
+
+
+def strict_fields_of(row: CapabilityRow) -> frozenset[str]:
+    """The fields whose house-tier shortfall is an error for ``row``; empty
+    for a plain fab row."""
+    return row.strict_fields if isinstance(row, ProfileCapabilityRow) else frozenset()
 
 
 def _load_raw() -> dict[str, Any]:
@@ -162,6 +181,48 @@ def load_capabilities() -> list[CapabilityRow]:
             )
         )
     return rows
+
+
+#: Profile rule -> the capability field it raises (same name).
+_PROFILE_FIELDS = (
+    "trace_width_mm",
+    "trace_spacing_mm",
+    "annular_ring_mm",
+    "drill_mm",
+)
+
+
+def apply_profile(row: CapabilityRow, rules: ProfileRules) -> CapabilityRow:
+    """``row`` with ``rules`` laid over it: each profiled field's
+    ``house_default`` becomes ``max(house_default, profile value)``, the
+    via diameter follows (``max(current, drill + 2 x ring)``, the same
+    coupling :func:`_derive_via_diameter_mm` holds), ``jlc_min`` is never
+    touched, and ``strict_fields`` carries the profile's strict set. The
+    all-off ``prod`` rules return ``row`` itself, so prod is byte-identical.
+    A field the row has no ``jlc_min`` for (not applicable to the process)
+    stays untouched."""
+    house = dict(row.house_default)
+    changed = False
+    for field in _PROFILE_FIELDS:
+        value = getattr(rules, field)
+        if value is None or row.jlc_min.get(field) is None:
+            continue
+        current = house.get(field)
+        raised = max(float(value), float(current or row.jlc_min[field] or 0.0))
+        if current is None or raised > current:
+            house[field] = raised
+            changed = True
+    drill, ring = house.get("drill_mm"), house.get("annular_ring_mm")
+    via = house.get("via_diameter_mm")
+    if changed and via is not None and drill is not None and ring is not None:
+        house["via_diameter_mm"] = max(via, drill + 2.0 * ring)
+    strict = frozenset(f for f in rules.strict_fields if row.jlc_min.get(f) is not None)
+    if not changed and not strict:
+        return row
+    base = {f.name: getattr(row, f.name) for f in fields(CapabilityRow)}
+    return ProfileCapabilityRow(
+        **{**base, "house_default": house}, strict_fields=strict
+    )
 
 
 def capability_for(process: str) -> CapabilityRow:

@@ -134,6 +134,7 @@ from precis.pcb import jlc_order as pcb_jlc_order
 from precis.pcb import layer_lock as pcb_layer_lock
 from precis.pcb import length_ratio as pcb_length_ratio
 from precis.pcb import matching as pcb_matching
+from precis.pcb import mounts as pcb_mounts
 from precis.pcb import optimize as pcb_optimize
 from precis.pcb import planes as pcb_planes
 from precis.pcb import profiles as pcb_profiles
@@ -282,6 +283,7 @@ _INLINE_EDIT_OPS = (
     "pins",
     "pin_rename",
     "pin_remove",
+    "corner_nuts",
 )
 #: gr341532 fix 3 — pull/author a catalog part's real footprint into the
 #: ``part_footprints`` cache. A handful of small HTTP calls (EasyEDA), not
@@ -731,6 +733,12 @@ class PcbHandler(Handler):
                 "phase",
                 "profile",
                 "pins",
+                # op='corner_nuts' (_op_corner_nuts); gr496392.
+                "radius_mm",
+                "hole_dia_mm",
+                "ring_dia_mm",
+                "body_dia_mm",
+                "clearance_mm",
                 "source",
                 "item",
                 "limit",
@@ -1474,8 +1482,8 @@ class PcbHandler(Handler):
         board = design["board"]
         if board is not None:
             try:
-                capability = capability_for(
-                    pcb_drc.process_for_stackup(board["stackup"])
+                capability = pcb_session.board_capability(
+                    board["stackup"], pcb_profiles.board_profile(board.get("meta"))
                 )
             except ValueError as exc:
                 raise BadInput(
@@ -1565,6 +1573,8 @@ class PcbHandler(Handler):
             return self._op_pins(ref, args)
         if op in ("pin_rename", "pin_remove"):
             return self._op_pin_edit(ref, op, args)
+        if op == "corner_nuts":
+            return self._op_corner_nuts(ref, args)
         if op == "stackup":
             return self._op_stackup(ref, args)
         if op == "footprint":
@@ -2290,8 +2300,9 @@ class PcbHandler(Handler):
             # No capability row = no rule to judge copper by. Refuse rather
             # than move unchecked copper (legality never fails open).
             try:
-                return capability_for(
-                    pcb_drc.process_for_stackup((graph.get("board") or {})["stackup"])
+                gboard = graph.get("board") or {}
+                return pcb_session.board_capability(
+                    gboard["stackup"], pcb_profiles.board_profile(gboard.get("meta"))
                 )
             except (ValueError, KeyError, TypeError) as exc:
                 raise BadInput(
@@ -2805,6 +2816,78 @@ class PcbHandler(Handler):
                 f"{ref.slug}: phase = {phase} (authored — "
                 "pcb_boards.meta['phase'])\nNext: get(kind='pcb', "
                 f"id='{ref.slug}', view='check')"
+            )
+        )
+
+    def _op_corner_nuts(self, ref: Any, args: dict[str, Any]) -> Response:
+        """``put(args={'op':'corner_nuts'[, 'radius_mm':5.0, ...]})`` — four
+        SMT mounting nuts, one per corner of the rectangular outline, each
+        centred on the arc that rounds its corner (``corner_radius_mm`` =
+        the nut's edge distance). Replaces the outline and any earlier
+        corner nuts; other mounting holes stay. See
+        :mod:`precis.pcb.mounts`."""
+        features = self.store.pcb_features_list(ref.id)
+        outline = next(
+            (
+                f
+                for f in reversed(features)
+                if f["ftype"] == "outline"
+                and isinstance((f.get("geom") or {}).get("path"), list)
+            ),
+            None,
+        )
+        if outline is None:
+            raise BadInput(
+                "op='corner_nuts' needs a rectangular outline feature",
+                next="put(args={'features':[{'ftype':'outline','geom':"
+                "{'path':[[0,0],[40,0],[40,30],[0,30]]}}]}) first",
+            )
+        sizes: dict[str, float] = {}
+        for key in (
+            "radius_mm",
+            "hole_dia_mm",
+            "ring_dia_mm",
+            "body_dia_mm",
+            "clearance_mm",
+        ):
+            if args.get(key) is not None:
+                try:
+                    sizes[key] = float(args[key])
+                except (TypeError, ValueError):
+                    raise BadInput(
+                        f"op='corner_nuts' {key}={args[key]!r} is not a number",
+                        next=f"{key}: a number of mm, or omit it",
+                    ) from None
+        try:
+            new = pcb_mounts.corner_nut_features(outline["geom"]["path"], **sizes)
+        except ValueError as exc:
+            raise BadInput(
+                f"op='corner_nuts': {exc}",
+                next="radius_mm / ring_dia_mm / body_dia_mm: mm sizes that fit "
+                "the board; the outline must be a plain rectangle",
+            ) from None
+        old_nuts = [
+            f["feature_id"]
+            for f in features
+            if f["ftype"] == "mounting_hole"
+            and (f.get("geom") or {}).get("style") == pcb_mounts.NUT_STYLE
+        ]
+        self.store.pcb_features_retire(ref.id, old_nuts)
+        self.store.pcb_apply(
+            slug=ref.slug,
+            title=ref.title or ref.slug,
+            components=[],
+            nets=[],
+            connections=[],
+            features=new,
+        )
+        radius = new[0]["geom"]["corner_radius_mm"]
+        return Response(
+            body=(
+                f"{ref.slug}: 4 corner nuts at ({radius:g} mm, {radius:g} mm) "
+                f"from each corner, corner_radius_mm = {radius:g} "
+                f"({len(old_nuts)} earlier corner nut(s) replaced)\nNext: "
+                f"get(kind='pcb', id='{ref.slug}', view='check')"
             )
         )
 
@@ -3968,12 +4051,12 @@ class PcbHandler(Handler):
         return pcb_session.furniture_clearance_mm(stackup)
 
     def _stackup_capability(
-        self, stackup: list[dict[str, Any]]
+        self, stackup: list[dict[str, Any]], profile: str | None = None
     ) -> CapabilityRow | None:
         """Delegates to :func:`precis.pcb.session.stackup_capability` —
         the lookup lives in the session layer so the ``pcb_argue`` worker
         shares it."""
-        return pcb_session.stackup_capability(stackup)
+        return pcb_session.stackup_capability(stackup, profile)
 
     def _polarized_refdes(self, design: dict[str, Any]) -> frozenset[str]:
         """Delegates to :func:`precis.pcb.session.polarized_refdes` —
@@ -4416,7 +4499,9 @@ class PcbHandler(Handler):
             for i in design["instances"]
         }
         vias = [c for c in copper if c.get("ctype") == "via"]
-        capability = self._stackup_capability(board["stackup"])
+        capability = self._stackup_capability(
+            board["stackup"], pcb_profiles.board_profile(board.get("meta"))
+        )
         pads, silk_draws, furniture_warnings, silk_census, copper = (
             self._board_furniture(
                 ir,
@@ -5222,9 +5307,10 @@ class PcbHandler(Handler):
                     graph
                 ),
             )
-            capability = self._stackup_capability(ir.stackup) or capability_for(
-                "4layer"
-            )
+            capability = self._stackup_capability(
+                ir.stackup,
+                pcb_profiles.board_profile((graph.get("board") or {}).get("meta")),
+            ) or capability_for("4layer")
             config = pcb_realize.RealizeConfig(
                 fab_caps=capability, class_rules=graph.get("net_classes")
             )
@@ -6330,7 +6416,9 @@ class PcbHandler(Handler):
         ):
             return []
         try:
-            capability = capability_for(pcb_drc.process_for_stackup(board["stackup"]))
+            capability = pcb_session.board_capability(
+                board["stackup"], pcb_profiles.board_profile(board.get("meta"))
+            )
         except ValueError as exc:
             raise BadInput(
                 f"pcb: {exc}",
@@ -6857,7 +6945,9 @@ class PcbHandler(Handler):
         copper = self.store.pcb_copper_list(int(board["board_id"]))
         vias = [c for c in copper if c.get("ctype") == "via"]
         outline = self._outline_from_features(ref_id) or []
-        capability = self._stackup_capability(board["stackup"])
+        capability = self._stackup_capability(
+            board["stackup"], pcb_profiles.board_profile(board.get("meta"))
+        )
         pads, silk_draws, furniture_warnings, _silk_census, copper = (
             self._board_furniture(
                 ir,

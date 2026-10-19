@@ -366,7 +366,10 @@ Full contract: **[[precis-pcb-check-help]]**.
 `args={'profile': …}` at create) names the board's profile; absent means
 `prod`, today's behaviour. `prototype` is the hand-assembly and rework
 profile; the board summary prints `profile: prototype` only when it is not
-`prod`. The profile's rules are data in `pcb_profiles.json`.
+`prod`. The profile's rules are data in `pcb_profiles.json`. On
+`prototype` the DRC raises the trace width, spacing and annular-ring house
+tier and reports a shortfall as an error, not a warning; the drill floor is
+set but no check reads it yet.
 
 ## Argue with the design — the board page's text box, `view='notes'`
 

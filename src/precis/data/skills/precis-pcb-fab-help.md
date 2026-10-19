@@ -213,6 +213,30 @@ put(
 )
 ```
 
+### Corner mounting nuts
+
+`put(kind='pcb', id='s', args={'op': 'corner_nuts'})` replaces the outline
+with a rounded one and puts four SMT nuts (SMTSO family; default Sinhoo
+SMTSO3030CTJ, LCSC C2915308, M3 x 3 through-thread) one per corner of a
+plain rectangular outline. Each nut sits on the arc that rounds its corner:
+an arc centred on the nut and tangent to both edges puts the nut at (R, R),
+so `corner_radius_mm` equals the edge distance. Default R is the larger of
+5.0 mm (PEM-style M3 nuts want 4.8-5.6 mm centre to edge) and body radius +
+0.5 mm. Override with `radius_mm`, `hole_dia_mm`, `ring_dia_mm`,
+`body_dia_mm` (datasheet values for another nut). The sizes default to the
+SMTSO M3 table row (hole 4.22, solder pad 6.2, flange 5.56 mm); that table
+was read from OCR text, so confirm it against the manufacturer PDF. Re-running replaces the
+earlier corner nuts; other mounting holes stay. A board that does not ask
+gets none.
+
+- Pro: no sharp corner to chip or catch; the rounding removes only
+  R^2 (1 - pi/4) per corner (~5.4 mm^2 at R = 5 mm), area that sits inside
+  the nut keep-out anyway, so routing room is almost unchanged.
+- Con: a rounded outline is routed, not V-scored, and panels need slightly
+  more spacing. On a small board that is routed anyway this costs nothing.
+- The nut is a plated hole with a copper land on every layer: the router,
+  pours and DRC clear it like a pad.
+
 `view='mechanical'` emits a JSON profile (outline + holes + component
 height-blocks) a `cad` enclosure references (see [[precis-cad-help]]).
 

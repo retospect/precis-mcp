@@ -63,6 +63,7 @@ from typing import TYPE_CHECKING, Any
 
 from precis.pcb import argue
 from precis.pcb import eyes as pcb_eyes
+from precis.pcb import profiles as pcb_profiles
 from precis.pcb import resolved as pcb_resolved
 from precis.pcb import selectables as pcb_selectables
 from precis.pcb import session as pcb_session
@@ -159,7 +160,9 @@ def _board_inputs(
         ),
         "fixed_copper": fixed_copper,
         "copper": store.pcb_copper_list(int(board_id)),
-        "capability": pcb_session.stackup_capability(stackup),
+        "capability": pcb_session.stackup_capability(
+            stackup, pcb_profiles.board_profile(board.get("meta"))
+        ),
     }
 
 

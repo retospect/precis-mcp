@@ -68,10 +68,10 @@ from precis.pcb import matching as pcb_matching
 from precis.pcb import maze as pcb_maze
 from precis.pcb import pinswap as pcb_pinswap
 from precis.pcb import planes as pcb_planes
+from precis.pcb import profiles as pcb_profiles
 from precis.pcb import realize as pcb_realize
 from precis.pcb import resolved as pcb_resolved
 from precis.pcb import session as pcb_session
-from precis.pcb.capabilities import capability_for
 from precis.pcb.cost import outline_bbox
 from precis.pcb.geom import segments_cross
 from precis.pcb.ir import (
@@ -1003,7 +1003,9 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     # one fetch, two consumers, not a second round-trip.
     footprints = _footprints(ir)
     try:
-        fab_caps = capability_for(_process_for_stackup(ir.stackup))
+        fab_caps = pcb_session.board_capability(
+            ir.stackup, pcb_profiles.board_profile(board.get("meta"))
+        )
     except ValueError as exc:
         ctx.record_failure(f"pcb_route: {exc}", failure_class="infra")
         return

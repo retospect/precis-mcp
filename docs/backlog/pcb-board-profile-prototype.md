@@ -159,17 +159,17 @@ One overlay, applied once, read everywhere:
 
 ### Slices
 
-Slice 1 (key, `pcb_profiles.json`, `profile_rules`, summary line) shipped:
-`precis.pcb.profiles` is the accessor and holds every figure in the table
-above; nothing reads the rules yet.
+Slices 1 (key, `pcb_profiles.json`, `profile_rules`, summary line) and 2
+(capability overlay `capabilities.apply_profile`, `session.board_capability` /
+`stackup_capability(profile=)`, `strict_fields` in the DRC `_two_tier`, and
+the load-time floor check in `profiles._check_floors`) shipped. The overlay
+is read by the handler, the DRC render, `pcb_route` and `pcb_argue`; a
+`prototype` 0.17 mm trace is an error, `prod` stays a warn. Drill strictness
+has no consumer until a drill-size check exists.
 
-1. **Capability overlay + DRC strictness + net rules.** Items 1–3 above.
-   `prototype` boards re-judge under the raised floors. Also owns the
-   load-time rejection of a profile value below `jlc_min` (criterion 3),
-   since it needs the capability rows.
-2. **Router cost, `vias_under_part` count, `via_density`,
+1. **Router cost, `vias_under_part` count, `via_density`,
    `via_under_part`, `fine_pitch_pad`, silk height.** Items 4 and 6.
-3. **Thermal reliefs** (item 5) and `starved_thermal`. Lands after
+2. **Thermal reliefs** (item 5) and `starved_thermal`. Lands after
    [pcb-stackup-regions](pcb-stackup-regions.md) slice 10 (it owns the
    spoke generator and the per-class key); this slice then only sets the
    profile default and proves the exports.

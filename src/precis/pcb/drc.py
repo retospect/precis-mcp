@@ -143,7 +143,7 @@ from precis.pcb import (
     PIN_ETYPES,
 )
 from precis.pcb import clearance as clearance_kernel
-from precis.pcb.capabilities import CapabilityRow
+from precis.pcb.capabilities import CapabilityRow, strict_fields_of
 from precis.pcb.catalog import parse_passive_description
 from precis.pcb.geom import _orient, dist_point_to_segment
 from precis.pcb.geom import dist as _dist
@@ -488,20 +488,28 @@ def process_for_stackup(stackup: list[dict[str, Any]]) -> str:
 
 
 def _two_tier(
-    value_mm: float, jlc_min: float | None, house_default: float | None
+    value_mm: float,
+    jlc_min: float | None,
+    house_default: float | None,
+    *,
+    strict: bool = False,
 ) -> tuple[str, float] | None:
     """(severity, margin_mm) if ``value_mm`` fails the two-tier bar, else
     ``None`` (clean — no finding). ``jlc_min=None`` means the process/field
     combination is genuinely inapplicable (JLC publishes nothing for it):
     never a finding, never an invented number (capabilities.py's own
     discipline). ``margin_mm`` is always negative when a finding fires —
-    the deficit below whichever tier's threshold was crossed."""
+    the deficit below whichever tier's threshold was crossed.
+
+    ``strict`` (a profile's ``strict_fields``) makes the ``house_default``
+    shortfall an ``error`` too: the margin stays the house deficit, so a
+    caller tells the two errors apart by ``value_mm >= jlc_min``."""
     if jlc_min is None:
         return None
     if value_mm < jlc_min - _TIER_EPS:
         return "error", value_mm - jlc_min
     if house_default is not None and value_mm < house_default - _TIER_EPS:
-        return "warn", value_mm - house_default
+        return ("error" if strict else "warn"), value_mm - house_default
     return None
 
 
@@ -516,6 +524,12 @@ def _margin_detail(
     jlc_min = capability.jlc_min[field]
     house = capability.house_default.get(field)
     assert jlc_min is not None  # _two_tier already checked this
+    if severity == "error" and house is not None and value_mm >= jlc_min - _TIER_EPS:
+        return (
+            f"{label} {value_mm:.3f}mm < profile floor {house:.3f}mm "
+            f"({capability.process}, JLC min {jlc_min:.3f}mm) — "
+            f"{abs(margin_mm):.3f}mm short of the board profile's minimum"
+        )
     if severity == "error":
         return (
             f"{label} {value_mm:.3f}mm < JLC min {jlc_min:.3f}mm "
@@ -819,6 +833,12 @@ def _clearance_detail(
     names the floor that was crossed, never a figure that wasn't."""
     if severity == "error":
         floor = floor_mm if floor_mm is not None else jlc_min
+        if required_mm is not None and value_mm >= floor - _TIER_EPS:
+            return (
+                f"copper clearance {value_mm:.3f}mm < profile floor "
+                f"{required_mm:.3f}mm ({process}, JLC min {jlc_min:.3f}mm) — "
+                f"{abs(margin_mm):.3f}mm short of the board profile's minimum"
+            )
         if floor > jlc_min:
             return (
                 f"copper clearance {value_mm:.3f}mm < class floor "
@@ -1067,7 +1087,9 @@ def check_clearance(
         ):
             findings.append(_part_fixed_clearance_finding(a, b, gap, floor, layer))
             continue
-        result = _two_tier(gap, floor, required)
+        result = _two_tier(
+            gap, floor, required, strict=field in strict_fields_of(capability)
+        )
         if result is None:
             continue
         severity, margin = result
@@ -1595,7 +1617,9 @@ def check_trace_width(
         if item.get("ctype") != "track":
             continue
         width = float(item.get("width_mm", 0.0))
-        result = _two_tier(width, jlc_min, house)
+        result = _two_tier(
+            width, jlc_min, house, strict=field in strict_fields_of(capability)
+        )
         if result is None:
             continue
         severity, margin = result
@@ -1780,7 +1804,9 @@ def check_annular_ring(
             continue
         dia, drill = float(item.get("dia_mm", 0.0)), float(item.get("drill_mm", 0.0))
         ring = (dia - drill) / 2.0
-        result = _two_tier(ring, jlc_min, house)
+        result = _two_tier(
+            ring, jlc_min, house, strict=field in strict_fields_of(capability)
+        )
         if result is None:
             continue
         severity, margin = result
@@ -1821,7 +1847,9 @@ def check_annular_ring(
             ring = _slot_lateral_ring_mm(pad, slot, drill)
         else:
             ring = (dia - drill) / 2.0
-        result = _two_tier(ring, jlc_min, house)
+        result = _two_tier(
+            ring, jlc_min, house, strict=field in strict_fields_of(capability)
+        )
         if result is None:
             continue
         severity, margin = result

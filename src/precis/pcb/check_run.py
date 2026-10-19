@@ -35,12 +35,13 @@ from precis.pcb import geom as pcb_geom
 from precis.pcb import ir as pcb_ir
 from precis.pcb import optimize as pcb_optimize
 from precis.pcb import padplace
+from precis.pcb import profiles as pcb_profiles
 from precis.pcb import realize as pcb_realize
 from precis.pcb import resolved as pcb_resolved
 from precis.pcb import route_state as pcb_route_state
 from precis.pcb import session as pcb_session
 from precis.pcb import silk as pcb_silk
-from precis.pcb.capabilities import CapabilityRow, capability_for, coating_extent_mm
+from precis.pcb.capabilities import CapabilityRow, coating_extent_mm
 from precis.pcb.landpattern import place_points
 from precis.pcb.rules import NetRules, resolve_net_rules
 
@@ -609,7 +610,9 @@ def run(
     board = design["board"]
     stackup = board["stackup"]
     try:
-        capability = capability_for(pcb_drc.process_for_stackup(stackup))
+        capability = pcb_session.board_capability(
+            stackup, pcb_profiles.board_profile(board.get("meta"))
+        )
     except ValueError as exc:
         raise BadInput(f"pcb: {exc}") from exc
     layer_names = [str(layer.get("name")) for layer in stackup]

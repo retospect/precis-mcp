@@ -1800,20 +1800,39 @@ def content_hash(
     return hashlib.blake2b(payload_json.encode("utf-8"), digest_size=12).hexdigest()
 
 
-def stackup_capability(stackup: list[dict[str, Any]]) -> CapabilityRow | None:
+def board_capability(
+    stackup: list[dict[str, Any]], profile: str | None = None
+) -> CapabilityRow:
+    """:func:`stackup_capability` that raises ``ValueError`` (from
+    :func:`precis.pcb.drc.process_for_stackup`) for an unsupported layer
+    count — for the DRC and route paths, which refuse rather than judge by
+    a missing row."""
+    from precis.pcb import drc as pcb_drc
+    from precis.pcb.capabilities import apply_profile, capability_for
+    from precis.pcb.profiles import profile_rules
+
+    row = capability_for(pcb_drc.process_for_stackup(stackup))
+    return apply_profile(row, profile_rules(profile))
+
+
+def stackup_capability(
+    stackup: list[dict[str, Any]], profile: str | None = None
+) -> CapabilityRow | None:
     """This board's fab-capability row, or ``None`` for a layer count
     :func:`precis.pcb.drc.process_for_stackup` has no row for.
+
+    ``profile`` is the board's authored profile name (``None``/``'prod'``
+    return the fab row unchanged); a non-prod profile is laid over the row
+    by :func:`precis.pcb.capabilities.apply_profile`, so every consumer of
+    this lookup sees the raised house tier and strict set.
 
     Was ``PcbHandler._stackup_capability`` until ``pcb_argue`` needed the
     same lookup and the workers->handlers layering contract refused the
     import. ``None`` rather than raising, for exactly the reason
     :func:`furniture_clearance_mm` documents — a board on an unsupported
     layer count still has to export and preview."""
-    from precis.pcb import drc as pcb_drc
-    from precis.pcb.capabilities import capability_for
-
     try:
-        return capability_for(pcb_drc.process_for_stackup(stackup))
+        return board_capability(stackup, profile)
     except ValueError:
         return None
 
@@ -1899,6 +1918,7 @@ def label_spots(design: dict[str, Any]) -> dict[str, str]:
 __all__ = [
     "apply_real_pin_offsets",
     "apply_route_overrides",
+    "board_capability",
     "build_ir",
     "content_hash",
     "extract_sketch",
