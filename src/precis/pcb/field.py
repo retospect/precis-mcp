@@ -48,6 +48,7 @@ class Part:
     side: int = 0  # 0 top, 1 bottom
     fixed_xy: bool = False
     fixed_rot: bool = False
+    cls: str | None = None  # JLCPCB spacing class (see SPACING_CLASSES), if known
 
 
 @dataclass(frozen=True)
@@ -225,10 +226,19 @@ class CourtyardClearance(Term):
     gradient — so the term is piecewise smooth, with kinks where the witness
     pair switches."""
 
-    def __init__(self, layout: Layout, clearance: float = 0.40, beta: float = 8.0):
+    def __init__(
+        self,
+        layout: Layout,
+        clearance: float = 0.40,
+        beta: float = 8.0,
+        pair_min: dict[tuple[int, int], float] | None = None,
+    ):
         super().__init__(layout)
         self.c = float(clearance)
         self.beta = float(beta)
+        #: per-pair required clearance, keyed ``(i, j)`` with ``i < j``;
+        #: pairs not listed use ``clearance``
+        self.pair_min = pair_min or {}
 
     @staticmethod
     def _convex_ring(ring: np.ndarray) -> np.ndarray | None:
@@ -383,7 +393,7 @@ class CourtyardClearance(Term):
                 sd, gi, gj = self._signed(
                     polys[i], polys[j], rings[i], rings[j], ti, tj
                 )
-                u = self.c - sd
+                u = self.pair_min.get((i, j), self.c) - sd
                 sp = _softplus(u, self.beta)
                 total += sp * sp
                 dE_dsd = -2.0 * sp * _sigmoid(u, self.beta)
@@ -522,6 +532,129 @@ class PadSpring(Term):
         return total, lay.scatter(gx, gy, gth)
 
 
+# ── slice 2: JLCPCB pairwise SMD spacing ─────────────────────────────────
+
+#: Minimum SMD component-to-component spacing, mm, by package class pair.
+#: Source: https://jlcpcb.com/help/article/minimum-spacing-for-smd-components
+#: (JLCPCB help center, read 2026-10-19; the page lists mm with mil in
+#: brackets). The page renders as an upper-triangular matrix whose rows start
+#: at the diagonal cell; each row below is ``(class, value)`` read left to
+#: right from the diagonal. The table is symmetric. The page gives NO
+#: body-to-board-edge rule, so none is encoded here.
+SPACING_CLASSES = (
+    "0201",
+    "0402",
+    "0603",
+    "0805",
+    "1206",
+    "QFN",
+    "QFP",
+    "SOP",
+    "SOT",
+    "BGA",
+)
+_SPACING_ROWS: dict[str, tuple[float, ...]] = {
+    "0201": (0.15, 0.15, 0.18, 0.18, 0.25, 1.0, 0.5, 0.4, 0.2, 1.0),
+    "0402": (0.15, 0.18, 0.18, 0.25, 1.0, 0.5, 0.4, 0.2, 1.0),
+    "0603": (0.18, 0.18, 0.25, 1.0, 0.5, 0.4, 0.2, 1.0),
+    "0805": (0.18, 0.25, 1.0, 0.5, 0.4, 0.2, 1.0),
+    "1206": (0.35, 1.0, 0.5, 0.4, 0.2, 1.0),
+    "QFN": (1.0, 1.0, 1.0, 1.0, 1.5),
+    "QFP": (1.25, 1.25, 1.0, 1.5),
+    "SOP": (0.5, 0.4, 1.0),
+    "SOT": (0.4, 1.0),
+    "BGA": (2.0,),
+}
+JLCPCB_SPACING_MM: dict[frozenset[str], float] = {}
+for _r, _row in _SPACING_ROWS.items():
+    _k = SPACING_CLASSES.index(_r)
+    assert len(_row) == len(SPACING_CLASSES) - _k, _r
+    for _c, _v in zip(SPACING_CLASSES[_k:], _row, strict=True):
+        JLCPCB_SPACING_MM[frozenset((_r, _c))] = _v
+
+
+def pair_spacing(a: str | None, b: str | None) -> float | None:
+    """The JLCPCB minimum spacing between two classes (symmetric), or ``None``
+    when either class is unknown."""
+    if a is None or b is None:
+        return None
+    return JLCPCB_SPACING_MM.get(frozenset((a, b)))
+
+
+def classify_package(
+    refdes: str, pads: np.ndarray, pad_w: np.ndarray, pad_h: np.ndarray
+) -> str | None:
+    """Best-effort :data:`SPACING_CLASSES` member from refdes prefix and pad
+    geometry (the IR carries no footprint name). ``None`` when unsure — an
+    unclassed part keeps the uniform fallback clearance, never a guess.
+
+    Chips (two pads, R/C/L/D/F prefix) by the pad-to-pad outer length;
+    SOT = 3–6 pads in a small box; SOP = two opposite pad rows; QFN/QFP =
+    four pad rows, told apart by pad length; BGA = a square grid with
+    several interior pads."""
+    n = len(pads)
+    if n == 0:
+        return None
+    prefix = re.match(r"[A-Za-z]+", refdes)
+    pre = prefix.group(0).upper() if prefix else ""
+    xs, ys = pads[:, 0], pads[:, 1]
+    ext_x = float(np.ptp(xs) + pad_w.max())
+    ext_y = float(np.ptp(ys) + pad_h.max())
+    if n == 2 and pre in {"R", "C", "L", "D", "F", "FB", "LED"}:
+        length = max(ext_x, ext_y)
+        for cls, hi in (("0201", 1.25), ("0402", 2.0), ("0603", 2.7), ("0805", 3.6)):
+            if length < hi:
+                return cls
+        return "1206"
+    if n < 3 or pre not in {"U", "IC", "Q", "D", "V"}:
+        return None
+    if n <= 6 and max(ext_x, ext_y) <= 4.5:
+        return "SOT"
+    tol = 0.05
+    on_x = (np.abs(xs - xs.min()) < tol) | (np.abs(xs - xs.max()) < tol)
+    on_y = (np.abs(ys - ys.min()) < tol) | (np.abs(ys - ys.max()) < tol)
+    interior = int((~on_x & ~on_y).sum())
+    square = float(
+        np.median(np.maximum(pad_w, pad_h) / np.maximum(np.minimum(pad_w, pad_h), 1e-6))
+    )
+    if n >= 16 and interior >= 4 and square < 1.3:
+        return "BGA"
+    if on_x.sum() + on_y.sum() >= n and interior <= 1 and n >= 8:
+        rows_x = int((np.abs(xs - xs.min()) < tol).sum() >= 3) + int(
+            (np.abs(xs - xs.max()) < tol).sum() >= 3
+        )
+        rows_y = int((np.abs(ys - ys.min()) < tol).sum() >= 3) + int(
+            (np.abs(ys - ys.max()) < tol).sum() >= 3
+        )
+        if rows_x == 2 and rows_y == 2:
+            return "QFP" if float(np.median(np.maximum(pad_w, pad_h))) >= 1.2 else "QFN"
+        if rows_x == 2 or rows_y == 2:
+            return "SOP"
+    return None
+
+
+def pair_minimums(
+    parts: Sequence[Part], fallback: float, reserve: float = 0.0
+) -> dict[tuple[int, int], float]:
+    """Per-pair T4 clearance overrides: only the pairs whose JLCPCB table
+    value EXCEEDS ``fallback`` (the body-to-body gap every other pair keeps),
+    as ``table − reserve`` (``reserve`` is what the courtyards already add
+    between two parts). The table can only RAISE a target: the engine's
+    legality gate keeps its 0.40 mm per-part reserve (a 0.8 mm hull gap), so
+    a table value below the fallback cannot be realised and only makes the
+    polish propose placements the gate refuses. Relaxing the reserve to the
+    table is an engine change that moves pinned boards, a separate decision.
+    Pairs not returned use the term's own clearance unchanged. Keys are
+    ``(i, j)`` with ``i < j``."""
+    out: dict[tuple[int, int], float] = {}
+    for i in range(len(parts)):
+        for j in range(i + 1, len(parts)):
+            table = pair_spacing(parts[i].cls, parts[j].cls)
+            if table is not None and table > fallback:
+                out[(i, j)] = table - reserve
+    return out
+
+
 # ── slice 1: placement polish on the engine's board ──────────────────────
 
 #: Net names that keep a tree term in the spec (supply/ground), not a T1 pull.
@@ -592,6 +725,12 @@ def board_from_engine(
                 side=int(bottom),
                 fixed_xy=frozen or i not in free_xy,
                 fixed_rot=frozen or i not in free_rot,
+                cls=classify_package(
+                    str(ir.instance_refdes[i]),
+                    pads,
+                    np.array([float(ir.pin_w[p]) for p in pads_of[i]]),
+                    np.array([float(ir.pin_h[p]) for p in pads_of[i]]),
+                ),
             )
         )
     by_net: dict[int, list[tuple[int, int]]] = {}
@@ -663,7 +802,18 @@ def polish_placement(
         return PolishResult(False, "no_free_vars", 0.0, 0.0, ())
     x0, y0, x1, y1 = engine._placement_bounds
     t1 = ConnectivityPull(lay, gamma=gamma)
-    t4 = CourtyardClearance(lay, clearance=COURTYARD_CLEARANCE_MM)
+    # The courtyards are the engine's, already inflated by its 0.40 mm reserve
+    # on each side. Unclassed pairs keep slice 1's soft 0.40 mm on top of
+    # that (a 1.2 mm body gap); a JLCPCB table value above 1.2 mm raises it.
+    t4 = CourtyardClearance(
+        lay,
+        clearance=COURTYARD_CLEARANCE_MM,
+        pair_min=pair_minimums(
+            board.parts,
+            fallback=3.0 * COURTYARD_CLEARANCE_MM,
+            reserve=2.0 * COURTYARD_CLEARANCE_MM,
+        ),
+    )
     t5 = BoardEdge(lay, (x0, y0), (x1, y1))
     t6 = PadSpring(lay, springs)
 

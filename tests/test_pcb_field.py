@@ -210,3 +210,104 @@ def test_flag_off_never_calls_polish_and_is_deterministic(monkeypatch) -> None:
         poses.append((ir.inst_x.copy(), ir.inst_y.copy(), ir.inst_rot.copy()))
     for a, b in zip(poses[0], poses[1], strict=True):
         assert np.array_equal(a, b)
+
+
+# ── slice 2: JLCPCB pairwise spacing ─────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("a", "b", "mm"),
+    [
+        ("0402", "0402", 0.15),  # diagonal
+        ("1206", "1206", 0.35),  # diagonal
+        ("BGA", "BGA", 2.0),
+        ("QFP", "QFP", 1.25),
+        ("0603", "BGA", 1.0),
+        ("BGA", "0603", 1.0),  # symmetric lookup
+        ("QFN", "BGA", 1.5),
+        ("SOP", "SOT", 0.4),
+    ],
+)
+def test_jlcpcb_spacing_cells(a: str, b: str, mm: float) -> None:
+    assert F.pair_spacing(a, b) == mm
+
+
+def test_jlcpcb_table_is_complete_and_symmetric() -> None:
+    cls = F.SPACING_CLASSES
+    assert len(F.JLCPCB_SPACING_MM) == len(cls) * (len(cls) + 1) // 2
+    for a in cls:
+        for b in cls:
+            assert F.pair_spacing(a, b) == F.pair_spacing(b, a) is not None
+    assert F.pair_spacing("0402", None) is None
+    assert F.pair_spacing("0402", "DIP") is None
+
+
+def _rows(xs: list[float], ys: list[float]) -> np.ndarray:
+    return np.array(list(zip(xs, ys, strict=True)))
+
+
+def _classify(ref: str, pads: np.ndarray, w: float, h: float) -> str | None:
+    return F.classify_package(ref, pads, np.full(len(pads), w), np.full(len(pads), h))
+
+
+def test_classify_package_families() -> None:
+    assert _classify("R1", _rows([-0.5, 0.5], [0, 0]), 0.6, 0.5) == "0402"
+    assert _classify("C1", _rows([-0.8, 0.8], [0, 0]), 0.9, 0.95) == "0603"
+    assert _classify("C2", _rows([-1.5, 1.5], [0, 0]), 1.1, 1.6) == "1206"
+    assert _classify("J1", _rows([-0.5, 0.5], [0, 0]), 0.6, 0.5) is None
+    sot = _rows([-1.0, -1.0, 1.0], [-0.95, 0.95, 0.0])
+    assert _classify("Q1", sot, 1.0, 0.6) == "SOT"
+    ys = [-1.905, -0.635, 0.635, 1.905]
+    sop = _rows([-2.7] * 4 + [2.7] * 4, ys + ys)
+    assert _classify("U1", sop, 1.5, 0.6) == "SOP"
+    side = [-0.75, -0.25, 0.25, 0.75]
+    qfn = np.array(
+        [(-1.5, y) for y in side]
+        + [(1.5, y) for y in side]
+        + [(x, -1.5) for x in side]
+        + [(x, 1.5) for x in side]
+    )
+    assert _classify("U2", qfn, 0.8, 0.3) == "QFN"
+    assert _classify("U3", qfn * 5, 1.6, 0.3) == "QFP"
+    grid = np.array([(x, y) for x in range(5) for y in range(5)], dtype=float) * 0.8
+    assert _classify("U4", grid, 0.4, 0.4) == "BGA"
+
+
+def test_t4_pair_minimum_sets_the_required_clearance() -> None:
+    sq = np.array([[-1.0, -1], [1, -1], [1, 1], [-1, 1]])
+    zeros = np.zeros(2)
+    parts = tuple(F.Part(pads=np.zeros((1, 2)), court=sq) for _ in range(2))
+    # 2x2 squares with a 0.3 mm gap: a 0.15 minimum is met, a 1.0 one is not
+    lay = F.Layout(F.FieldBoard(parts, (), np.array([0.0, 2.3]), zeros, zeros))
+    z = lay.pack()
+    loose = F.CourtyardClearance(lay, pair_min={(0, 1): 0.15}).value_grad(z)[0]
+    tight = F.CourtyardClearance(lay, pair_min={(0, 1): 1.0}).value_grad(z)[0]
+    assert tight > 10 * loose
+    assert F.CourtyardClearance(lay, clearance=1.0).value_grad(z)[0] == tight
+    # and the per-pair path is FD-checked on a generic board
+    lay2 = F.Layout(_board(2, overlap=True))
+    mins = {(i, j): 0.2 + 0.1 * (i + j) for i in range(5) for j in range(i + 1, 5)}
+    term = F.CourtyardClearance(lay2, beta=6.0, pair_min=mins)
+    z2 = lay2.pack()
+    res = F.check_gradient(term.value_grad, z2, rng=np.random.default_rng(3), h=1e-5)
+    assert res.dot_rel_err < 1e-4 and res.fd_max_rel_err < 1e-3, res
+
+
+def test_pair_minimums_only_raise_the_fallback() -> None:
+    def part(cls: str | None) -> F.Part:
+        return F.Part(pads=np.zeros((1, 2)), court=np.zeros((3, 2)), cls=cls)
+
+    parts = (part("SOT"), part("SOT"), part("BGA"), part("BGA"), part(None))
+    mins = F.pair_minimums(parts, 1.2)
+    assert mins == {(2, 3): 2.0}  # only BGA-BGA beats the fallback
+    # SOT-SOT 0.4, SOT-BGA 1.0 and unknown-class pairs keep the term's default
+    # courtyards already carry a reserve between two parts: it is subtracted
+    inflated = F.pair_minimums(parts, 1.2, reserve=0.8)
+    assert inflated == {(2, 3): pytest.approx(1.2)}
+
+
+def test_board_from_engine_classes_are_known_or_none() -> None:
+    built = F.board_from_engine(_engine())
+    assert built is not None
+    for part in built[0].parts:
+        assert part.cls is None or part.cls in F.SPACING_CLASSES
