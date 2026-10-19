@@ -1,0 +1,325 @@
+"""The PCB sanity board — the acceptance board of
+``docs/backlog/pcb-unified-place-route.md``: if the router cannot do this
+it cannot do anything.
+
+100 x 100 mm, four routable layers, four 10-pin 2.54 mm-pitch SMT headers,
+one on each side, each centred on its side and 25 mm in from the edge
+(``J_T``/``J_B`` at y = 75/25, ``J_L``/``J_R`` at x = 25/75). Every part is
+``fixed='both'`` unless the variant frees it: the router is the only thing
+under test. Top connects to bottom and left to right, 20 two-pin nets,
+nothing else on the board.
+
+Variants differ in the pin permutation of the two connections:
+
+- ``straight`` — top pin ``i`` to bottom pin ``i``, left ``i`` to right ``i``.
+- ``tb-s<N>`` — top-to-bottom is a seeded random permutation, left-right
+  straight (the "raised difficulty" board; seeds 1-3).
+- ``both-s1`` — both are permuted.
+- ``free-bottom`` — straight, bottom header unpinned (placement test).
+
+Pure in-memory (no store, no DB, like ``qfp_fanout``): the IR the route job
+would build, routed with ``realize`` and checked with the routed DRC.
+
+Iterate without the gate queue::
+
+    uv run python -m tests.fixtures.pcb.sanity_board [variant ...]
+
+prints routed/20, DRC by rule and the per-net verdicts.
+"""
+
+from __future__ import annotations
+
+import math
+import random
+import sys
+import time
+from dataclasses import dataclass
+from typing import Any
+
+from precis.pcb import realize as pcb_realize
+from precis.pcb import session as pcb_session
+from precis.pcb.ir import PcbIR, pin_point
+from precis.pcb.optimize import OptimizeConfig, optimize
+from precis.workers.job_types.pcb_place import _DEFAULT_ITERS, _PLACE_ONLY_SCHEDULE
+from precis.workers.job_types.pcb_route import _graph_net_rules
+
+BOARD_MM = 100.0
+INSET_MM = 25.0
+PINS = 10
+PITCH_MM = 2.54
+FOOTPRINT = "HDR-SMT-1x10"
+STACKUP: list[dict[str, Any]] = [
+    {"name": "F.Cu", "role": "signal"},
+    {"name": "In1.Cu", "role": "signal"},
+    {"name": "In2.Cu", "role": "signal"},
+    {"name": "B.Cu", "role": "signal"},
+]
+
+
+@dataclass(frozen=True)
+class SanitySpec:
+    """``tb_seed``/``lr_seed``: ``None`` = straight 1:1, else the seed of the
+    random permutation of the second header's pin order. ``free``: refdes
+    left unpinned for the placer."""
+
+    name: str
+    tb_seed: int | None = None
+    lr_seed: int | None = None
+    free: tuple[str, ...] = ()
+
+
+SPECS: dict[str, SanitySpec] = {
+    s.name: s
+    for s in (
+        SanitySpec("straight"),
+        SanitySpec("tb-s1", tb_seed=1),
+        SanitySpec("tb-s2", tb_seed=2),
+        SanitySpec("tb-s3", tb_seed=3),
+        SanitySpec("both-s1", tb_seed=1, lr_seed=1),
+        SanitySpec("free-bottom", free=("J_B",)),
+    )
+}
+#: The variants every router change must keep at 20/20 (all parts pinned).
+PINNED = ("straight", "tb-s1", "tb-s2", "tb-s3", "both-s1")
+
+
+def permutation(seed: int | None) -> list[int]:
+    """Pin numbers 1..PINS in connection order; identity when unseeded."""
+    pins = list(range(1, PINS + 1))
+    if seed is not None:
+        random.Random(seed).shuffle(pins)
+    return pins
+
+
+def footprint() -> dict[str, Any]:
+    """One row of ``PINS`` SMT pads along local x, centred on the origin,
+    long axis pointing out of the board edge (local y). Pins are ``P<n>``."""
+    pads = []
+    pin_map = {}
+    for i in range(PINS):
+        number = str(i + 1)
+        pads.append(
+            {
+                "number": number,
+                "x": round((i - (PINS - 1) / 2.0) * PITCH_MM, 4),
+                "y": 0.0,
+                "w": 1.5,
+                "h": 3.0,
+                "rot": 0.0,
+                "layer": "F.Cu",
+                "drill": None,
+                "shape": "rect",
+            }
+        )
+        pin_map[number] = {"name": f"P{number}", "tags": []}
+    return {"pads": pads, "pin_map": pin_map}
+
+
+def _header(
+    refdes: str, x: float, y: float, rot: float, fixed: str | None
+) -> dict[str, Any]:
+    return {
+        "refdes": refdes,
+        "part_lcsc": FOOTPRINT,
+        "x": x,
+        "y": y,
+        "rot": rot,
+        "layer": "top",
+        "fixed": fixed,
+    }
+
+
+def build_graph(spec: SanitySpec) -> dict[str, Any]:
+    """A ``Store.pcb_graph``-shaped dict, no DB."""
+    mid = BOARD_MM / 2.0
+    far = BOARD_MM - INSET_MM
+    placed = (
+        ("J_T", mid, far, 0.0),
+        ("J_B", mid, INSET_MM, 0.0),
+        ("J_L", INSET_MM, mid, 90.0),
+        ("J_R", far, mid, 90.0),
+    )
+    instances = [
+        _header(r, x, y, rot, None if r in spec.free else "both")
+        for r, x, y, rot in placed
+    ]
+    nets: list[dict[str, Any]] = []
+    for prefix, a, b, seed in (
+        ("TB", "J_T", "J_B", spec.tb_seed),
+        ("LR", "J_L", "J_R", spec.lr_seed),
+    ):
+        for i, pin_b in enumerate(permutation(seed), start=1):
+            nets.append(
+                {
+                    "name": f"{prefix}{i:02d}",
+                    "net_class": "default",
+                    "domain": "electrical",
+                    "members": [
+                        {"refdes": a, "pin": f"P{i}"},
+                        {"refdes": b, "pin": f"P{pin_b}"},
+                    ],
+                }
+            )
+    return {
+        "instances": instances,
+        "nets": nets,
+        "net_classes": {},
+        "board": {"stackup": STACKUP},
+    }
+
+
+def outline() -> list[list[float]]:
+    return [[0.0, 0.0], [BOARD_MM, 0.0], [BOARD_MM, BOARD_MM], [0.0, BOARD_MM]]
+
+
+@dataclass
+class Built:
+    spec: SanitySpec
+    ir: PcbIR
+    graph: dict[str, Any]
+    footprints: dict[str, dict[str, Any]]
+    config: pcb_realize.RealizeConfig
+
+
+def build(spec: SanitySpec) -> Built:
+    """The IR the route job would build for this board."""
+    graph = build_graph(spec)
+    by_lcsc = {FOOTPRINT: footprint()}
+    ir = pcb_session.build_ir(graph, outline=outline(), footprints_by_lcsc=by_lcsc)
+    footprints = pcb_session.footprints_by_refdes(ir, by_lcsc)
+    return Built(spec, ir, graph, footprints, pcb_realize.RealizeConfig())
+
+
+def net_length_mm(built: Built, prefix: str = "") -> float:
+    """Sum of the straight pin-to-pin distances of every airwire whose net
+    name starts with ``prefix`` (``"TB"`` = the top-bottom nets) — the
+    ratsnest length placement is meant to shorten."""
+    ir = built.ir
+    total = 0.0
+    for s in range(len(ir.seg_net)):
+        if not str(ir.net_name[int(ir.seg_net[s])]).startswith(prefix):
+            continue
+        a = pin_point(ir, int(ir.seg_pin_a[s]))
+        b = pin_point(ir, int(ir.seg_pin_b[s]))
+        if a is not None and b is not None:
+            total += math.hypot(a[0] - b[0], a[1] - b[1])
+    return total
+
+
+def place(built: Built, *, seed: int = 1) -> dict[str, tuple[float, float, float]]:
+    """The place job's anneal (its own schedule and default iterations) on
+    the IR in place; returns the poses. Pinned parts do not move."""
+    optimize(
+        built.ir,
+        OptimizeConfig(iters=_DEFAULT_ITERS, seed=seed, schedule=_PLACE_ONLY_SCHEDULE),
+    )
+    return pcb_session.positions(built.ir)
+
+
+def placement_errors(built: Built) -> list[str]:
+    """Pre-route DRC errors (courtyard overlap, outline containment, ...) of
+    the IR's current poses, as ``rule:where`` strings."""
+    findings = pcb_session.placement_drc_findings(
+        built.ir,
+        capability=built.config.fab_caps,
+        footprints=built.footprints,
+        outline=outline(),
+    )
+    return sorted(
+        f"{f.rule}:{getattr(f, 'where', '')}" for f in findings if f.severity == "error"
+    )
+
+
+@dataclass(frozen=True)
+class SanityResult:
+    spec: SanitySpec
+    nets: int
+    routed: int
+    vias: int
+    seconds: float
+    #: net name -> why it did not route (empty when 20/20).
+    failed: dict[str, str]
+    #: ``rule:severity:where`` per DRC finding.
+    findings: tuple[str, ...]
+
+    @property
+    def errors_by_rule(self) -> dict[str, int]:
+        out: dict[str, int] = {}
+        for f in self.findings:
+            rule, severity, _ = f.split(":", 2)
+            if severity == "error":
+                out[rule] = out.get(rule, 0) + 1
+        return out
+
+
+def route(spec: SanitySpec, built: Built | None = None) -> SanityResult:
+    """Realize with the production maze (default config) and run the routed
+    DRC. ``built`` lets a caller route a board it already placed."""
+    built = built or build(spec)
+    ir = built.ir
+    t0 = time.monotonic()
+    rres = pcb_realize.realize(ir, config=built.config, footprints=built.footprints)
+    seconds = time.monotonic() - t0
+    names = {int(n): str(ir.net_name[int(n)]) for n in ir.seg_net}
+    unrouted = {int(ir.seg_net[s]) for s in rres.unrouted}
+    reasons = _failure_reasons(rres)
+    failed = {names[n]: reasons.get(names[n], "unrouted") for n in sorted(unrouted)}
+    findings = pcb_session.routed_drc_findings(
+        ir,
+        rres,
+        capability=built.config.fab_caps,
+        footprints=built.footprints,
+        outline=outline(),
+        net_rules=_graph_net_rules(built.graph, built.config.fab_caps),
+    )
+    return SanityResult(
+        spec=spec,
+        nets=len(names),
+        routed=len(names) - len(unrouted),
+        vias=len(rres.vias),
+        seconds=round(seconds, 1),
+        failed=failed,
+        findings=tuple(
+            sorted(f"{f.rule}:{f.severity}:{getattr(f, 'where', '')}" for f in findings)
+        ),
+    )
+
+
+def _failure_reasons(rres: Any) -> dict[str, str]:
+    """Per-net failure text off the realize result, when it carries any."""
+    for attr in ("unrouted_reasons", "failures", "reasons"):
+        got = getattr(rres, attr, None)
+        if isinstance(got, dict):
+            return {str(k): str(v) for k, v in got.items()}
+    return {}
+
+
+def report(results: list[SanityResult]) -> str:
+    lines = ["| variant | routed | vias | s | DRC errors |", "|---|---|---|---|---|"]
+    for r in results:
+        errs = ", ".join(f"{k} {v}" for k, v in sorted(r.errors_by_rule.items()))
+        lines.append(
+            f"| {r.spec.name} | {r.routed}/{r.nets} | {r.vias} | {r.seconds} "
+            f"| {sum(r.errors_by_rule.values())}: {errs or '—'} |"
+        )
+    for r in results:
+        for net, why in r.failed.items():
+            lines.append(f"  {r.spec.name}: {net} FAILED — {why}")
+        for f in r.findings:
+            lines.append(f"  {r.spec.name}: {f}")
+    return "\n".join(lines)
+
+
+def main(argv: list[str] | None = None) -> int:
+    names = (argv if argv is not None else sys.argv[1:]) or list(PINNED)
+    unknown = [n for n in names if n not in SPECS]
+    if unknown:
+        print(f"unknown variant(s) {unknown}; known: {list(SPECS)}", file=sys.stderr)
+        return 2
+    results = [route(SPECS[n]) for n in names]
+    print(report(results))
+    return 0 if all(not r.failed and not r.errors_by_rule for r in results) else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

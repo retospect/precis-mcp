@@ -15,6 +15,11 @@ in §Current state, [pcb-vector-router](pcb-vector-router.md),
 [pcb-global-plan-probe](pcb-global-plan-probe.md). This file proposes; it
 does not edit the vector-router spec (§Composition names the slot).
 
+**Acceptance sanity board:** the 100 x 100 mm four-header board
+(`tests/fixtures/pcb/sanity_board.py`, tests `tests/test_pcb_sanity_board.py`) — 20/20
+nets and 0 DRC errors on every variant is the floor; iterate with
+`uv run python -m tests.fixtures.pcb.sanity_board [variant ...]`.
+
 ## Reto's position
 
 Verbatim, 2026-10-18 ~17:0xZ. Design input, not to be redesigned.
