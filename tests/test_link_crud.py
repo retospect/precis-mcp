@@ -766,6 +766,27 @@ class TestMemoryHandlerLink:
         assert "wang2020state" in got.body
         assert "topic-x" in memory_handler.get(id=new_id).body
 
+    def test_put_id_with_link_is_idempotent(
+        self, memory_handler: MemoryHandler, store: Store
+    ) -> None:
+        """A second identical ``put(id=N, link=...)`` adds nothing and says so."""
+        _seed_paper(store)
+        new_id = id_of(memory_handler.put(text="m").body)
+        first = memory_handler.put(id=new_id, link="paper:wang2020state", rel="cites")
+        before = store.count_links_for_refs([new_id])[new_id]
+        second = memory_handler.put(id=new_id, link="paper:wang2020state", rel="cites")
+        assert "already linked" not in first.body
+        assert "already linked, nothing added" in second.body
+        assert store.count_links_for_refs([new_id])[new_id] == before
+
+    def test_put_unknown_id_with_link_refuses_with_next(
+        self, memory_handler: MemoryHandler, store: Store
+    ) -> None:
+        _seed_paper(store)
+        with pytest.raises(NotFound) as ei:
+            memory_handler.put(id=999999999, link="paper:wang2020state")
+        assert ei.value.next
+
     def test_rel_without_link_on_create_rejected(
         self, memory_handler: MemoryHandler
     ) -> None:

@@ -529,11 +529,14 @@ class MemoryHandler(NumericRefHandler):
                     f"put(kind='memory', text='...', link='memory:{n}', rel='part-of')"
                 ),
             )
+        before = self.store.count_links_for_refs([n]).get(n, 0)
         out = self.link(id=n, target=link, rel=rel or "related-to")
+        added = self.store.count_links_for_refs([n]).get(n, 0) > before
         if tags:
             self.tag(id=n, add=tags)
+        body = out.body if added else f"already linked, nothing added: {out.body}"
         return Response(
-            body=out.body
+            body=body
             + f"\nlinked via link(); next time use link(kind='memory', id={n}, "
             "target=..., rel=...)"
         )
