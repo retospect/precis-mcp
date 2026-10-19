@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import docx as docx_lib
 
 from precis.export import docx as dx
 from precis.export import latex
-from precis.export._provenance_strip import strip_provenance_handles
+from precis.export._provenance_strip import (
+    record_title,
+    short_title,
+    strip_provenance_handles,
+)
 
 _DOSSIER = (
     "Two directions stay permanently ruled out: grounding the finding-hub "
@@ -123,3 +128,76 @@ def test_code_and_math_untouched() -> None:
 def test_possessive_title_is_neutralised() -> None:
     out = strip_provenance_handles("see [dr1]'s", title_for=lambda _h: "T$x$ *b* [pa1]")
     assert out == "see Tx b (pa1)'s"
+
+
+def test_stranded_glue_word_drops_with_the_handle() -> None:
+    """A dropped handle at a clause end takes the preposition/conjunction
+    it stranded — "… under [td5]." prints "… .", not "… under."
+    (gr493181, dossier 459659's "sits in January 2027 under.")."""
+    assert _strip("sits in January 2027 under [td1].") == "sits in January 2027."
+    assert (
+        _strip("November holds catpath under [td1]; December next")
+        == "November holds catpath; December next"
+    )
+    # the "(see [pa12] and [dr1])" leftover, gone with the stranded "and"
+    assert _strip("(see [pa12] and [dr1]) ends") == "(see [pa12]) ends"
+    assert _strip("x on [dr1] and [dr2].") == "x."  # a glued chain collapses
+    # mid-clause the word stays; a word not touching the mark stays too
+    assert _strip("kept in [td1] review.") == "kept in review."
+    assert _strip("under review [td1].") == "under review."
+
+
+def test_record_title_splices_the_short_title() -> None:
+    """A bare handle renders the record's short title — a todo's
+    ``refs.title`` tail is notes, not a title (gr493181: a bare
+    ``td459589`` printed the todo's whole long title)."""
+    title = (
+        "Paper of the month, November 2026: post the catpath pathway-engine "
+        "and trust-demo paper as a preprint. Reto moved it from January."
+    )
+    store = SimpleNamespace(
+        fetch_refs_by_ids=lambda ids: {
+            i: SimpleNamespace(title=title, meta={}) for i in ids
+        }
+    )
+    out = record_title("td459589", store)
+    assert out == (
+        "Paper of the month, November 2026: post the catpath pathway-engine "
+        "and trust-demo paper as a preprint"
+    )
+    assert "Reto moved" not in out
+
+
+def test_short_title_first_sentence_and_clip() -> None:
+    assert short_title("A short title") == "A short title"
+    assert short_title("Head line.\nnotes below") == "Head line"
+    assert short_title("First sentence. Then notes.") == "First sentence"
+    long = "x " * 200
+    out = short_title(long)
+    assert len(out) <= 121 and out.endswith("…")
+
+
+def test_short_title_skips_abbreviation_periods() -> None:
+    """'Dr. Smith' / 'et al.' / 'e.g.' / 'J. R.' are not sentence ends —
+    cutting there would splice a fragment ('Fix Dr') into prose."""
+    assert (
+        short_title("Fix Dr. Smith's model later. Notes here.")
+        == "Fix Dr. Smith's model later"
+    )
+    assert short_title("Tuning e.g. the rate. Then notes.") == "Tuning e.g. the rate"
+    assert short_title("J. R. Tolkien's maps. A note.") == "J. R. Tolkien's maps"
+    assert (
+        short_title("X by Chen et al. 2024 revisited. Notes.")
+        == "X by Chen et al. 2024 revisited"
+    )
+
+
+def test_glue_words_stay_without_a_dropped_handle() -> None:
+    """'under'/'and'/'see' in plain prose with no dropped handle are
+    untouched — the word-drop only ever fires next to a removal mark."""
+    for s in (
+        "the cat sits under the mat and sleeps; see under the hood.",
+        "it sits in January 2027 under review and over budget.",
+        "see the appendix for details.",
+    ):
+        assert _strip(s) == s

@@ -578,8 +578,9 @@ def number_xrefs(
 @dataclass(frozen=True, slots=True)
 class Xref:
     """One intra-draft cross-ref as the walker resolved it. ``live`` False:
-    the target is not a live chunk of this draft (render the surface or the
-    handle as text). ``surface``: the author's link text, which wins over
+    the target is not a live chunk of this draft (render the surface, or the
+    neutral ``fallback`` text — never the bare handle). ``surface``: the
+    author's link text, which wins over
     any number. ``equation`` / ``label``: what to print (from the
     pre-pass, when the backend prints numbers itself); ``label`` is ``None``
     when there is nothing to print (front matter, glossary, or a section
@@ -590,6 +591,26 @@ class Xref:
     live: bool
     equation: int | None = None
     label: tuple[str, str] | None = None
+    #: Neutral text for a dead target with no authored surface (a retired
+    #: chunk prints "a removed figure", never the bare ``dc…`` — gr493181).
+    fallback: str | None = None
+
+
+#: Placeholder for a dead ``[dc]`` cross-ref whose target is unknown or
+#: lives in another draft.
+DEAD_XREF_TEXT = "(removed)"
+
+#: Neutral text for a dead cross-ref by the retired target's chunk kind —
+#: "a removed figure" reads as prose where the bare handle used to leak.
+_REMOVED_XREF_NOUN = {
+    "figure": "a removed figure",
+    "heading": "a removed section",
+    "table": "a removed table",
+    "ulist": "a removed list",
+    "olist": "a removed list",
+    "item": "a removed list item",
+}
+_REMOVED_XREF_DEFAULT = "a removed passage"
 
 
 def resolve_xref(
@@ -599,15 +620,32 @@ def resolve_xref(
     live: Collection[str] | None,
     numbers: XrefNumbers | None,
     warnings: list[str],
+    dead: Callable[[str], tuple[str | None, str]] | None = None,
 ) -> Xref:
     """Resolve a ``[dc<id>]`` cross-ref. ``live`` is the draft's live dc
     handles (``None``: unknown, treat as live); a dead target warns and
     downgrades. ``numbers`` is the pre-pass, for a backend that prints the
     number itself (LaTeX's cleveref counts at compile time and passes
-    ``None``)."""
+    ``None``). ``dead`` maps a dead handle to ``(replacement, text)``: a
+    retired target resolves to its recorded live replacement, otherwise the
+    xref prints ``text`` — a neutral placeholder, never the bare handle."""
     if live is not None and dc not in live:
+        replacement: str | None = None
+        text = DEAD_XREF_TEXT
+        if dead is not None:
+            try:
+                replacement, text = dead(dc)
+            except Exception:  # store hiccup — the neutral text stands
+                replacement, text = None, DEAD_XREF_TEXT
+        if replacement is not None and replacement in live:
+            warnings.append(
+                f"cross-ref {dc}: retired — resolved to its replacement {replacement}"
+            )
+            return resolve_xref(
+                replacement, surface, live=live, numbers=numbers, warnings=warnings
+            )
         warnings.append(f"cross-ref {dc}: no such live chunk — downgraded")
-        return Xref(dc, surface, live=False)
+        return Xref(dc, surface, live=False, fallback=text)
     if surface or numbers is None:
         return Xref(dc, surface, live=True)
     eq = numbers.equations.get(dc)
@@ -617,6 +655,91 @@ def resolve_xref(
     if label is None or not label[1]:
         return Xref(dc, None, live=True)
     return Xref(dc, None, live=True, label=label)
+
+
+def dead_xref(
+    store: Any,
+    dc: str,
+    live: Collection[str],
+    cache: dict[str, tuple[str | None, str]],
+) -> tuple[str | None, str]:
+    """The ``dead`` callback for :func:`resolve_xref`: for a ``dc`` that is
+    not a live chunk of this draft, the dc of its recorded live replacement
+    (or ``None``) and the neutral text to print when there is none.
+    Memoised per export in ``cache``."""
+    if dc not in cache:
+        cache[dc] = _dead_xref_lookup(store, dc, live)
+    return cache[dc]
+
+
+def _dead_xref_lookup(
+    store: Any, dc: str, live: Collection[str]
+) -> tuple[str | None, str]:
+    chunk = _chunk_for_handle(store, dc)
+    if chunk is None or not getattr(chunk, "retired", False):
+        # Never existed, or a live chunk of another draft — either way
+        # there is nothing this export can number.
+        return None, DEAD_XREF_TEXT
+    text = _REMOVED_XREF_NOUN.get(
+        getattr(chunk, "chunk_kind", ""), _REMOVED_XREF_DEFAULT
+    )
+    return _chunk_replacement(store, chunk, live), text
+
+
+def _chunk_for_handle(store: Any, handle: str) -> Any:
+    get = getattr(getattr(store, "drafts", None), "get_draft_chunk", None)
+    if not callable(get):
+        return None
+    try:
+        return get(handle)
+    except Exception:  # store hiccup — treat as unknown
+        return None
+
+
+def _chunk_replacement(store: Any, chunk: Any, live: Collection[str]) -> str | None:
+    """The live dc a retired chunk was replaced by, when the replacement is
+    recorded: the chunk's ``meta.superseded_by`` / ``meta.replaced_by``
+    (a ``dc`` handle, a bare chunk id, or a legacy ``¶`` handle — the same
+    convention ``refs.meta.superseded_by`` uses), else a chunk-level
+    ``supersedes`` link (``new --supersedes--> old``)."""
+    meta = getattr(chunk, "meta", None) or {}
+    for key in ("superseded_by", "replaced_by"):
+        cand = _dc_of(store, meta.get(key), live)
+        if cand is not None and cand in live:
+            return cand
+    links_for = getattr(store, "links_for", None)
+    chunk_id = getattr(chunk, "chunk_id", None)
+    ref_id = getattr(chunk, "ref_id", None)
+    if callable(links_for) and chunk_id is not None and ref_id is not None:
+        try:
+            links = links_for(ref_id, direction="in", relation="supersedes")
+        except Exception:  # store hiccup — no redirect
+            links = []
+        for ln in links or []:
+            if getattr(ln, "dst_chunk_id", None) == chunk_id:
+                cand = _dc_of(store, getattr(ln, "src_chunk_id", None), live)
+                if cand is not None and cand in live:
+                    return cand
+    return None
+
+
+def _dc_of(store: Any, raw: Any, live_set: Collection[str]) -> str | None:
+    """A successor pointer → its ``dc`` handle: a chunk id, a ``dc<id>``
+    handle, or a legacy ``¶`` handle (looked up so its dc can be checked
+    against the live set)."""
+    if raw is None:
+        return None
+    if isinstance(raw, int):
+        raw = f"dc{raw}"
+    s = str(raw).strip()
+    if not s:
+        return None
+    if s.isdigit():
+        s = f"dc{s}"
+    if s in live_set:  # already a live dc — no lookup needed
+        return s
+    chunk = _chunk_for_handle(store, s)
+    return getattr(chunk, "dc", None) if chunk is not None else None
 
 
 def merge_xref_runs(

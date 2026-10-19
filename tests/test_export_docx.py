@@ -1605,6 +1605,29 @@ def test_si_mark_survives_after_plain_mark_of_same_parent(monkeypatch) -> None:
     assert para.text == "[1][1] (SI)"
 
 
+def test_si_mark_separates_a_directly_adjacent_cite(monkeypatch) -> None:
+    """A cite mark right after ``[n] (SI)`` takes a separating space —
+    ``(SI)[4`` read as one blob (gr491600's nit)."""
+    import docx
+
+    from precis.export import docx as dx
+
+    ctx = _si_docx_ctx(monkeypatch, with_parent=True)
+    para = docx.Document().add_paragraph()
+    dx._cite("parent24si", ctx, para)
+    dx._cite("parent24", ctx, para)  # the same paper — a second [1] mark
+    dx._flush_cites(ctx, para)
+    assert para.text == "[1] (SI) [1]"
+    # intervening prose, not an adjacent mark: no added space
+    ctx2 = _si_docx_ctx(monkeypatch, with_parent=True)
+    para2 = docx.Document().add_paragraph()
+    dx._cite("parent24si", ctx2, para2)
+    para2.add_run(" then ")
+    dx._cite("parent24", ctx2, para2)
+    dx._flush_cites(ctx2, para2)
+    assert para2.text == "[1] (SI) then [1]"
+
+
 def test_mathrm_renders_upright_omml() -> None:
     """``\\mathrm{C}_{60}`` (the repaired ``C$_{60}$``) must come out as
     upright (``m:sty p``) OMML runs, single- and multi-character alike."""
@@ -1868,9 +1891,110 @@ def test_bare_dc_crossref_prints_section_and_figure_numbers() -> None:
     )
     assert _render_text("via [¶Abc]", ctx) == "via section 1.5.5"
     # authored surface wins; a non-live chunk downgrades with a warning
+    # and a neutral placeholder — never the bare handle (gr493181)
     assert _render_text("[the intro](dc4)", ctx) == "the intro"
-    assert _render_text("see [dc99]", ctx) == "see dc99"
+    assert _render_text("see [dc99]", ctx) == "see (removed)"
     assert any("dc99" in w for w in ctx.warnings)
+
+
+def test_retired_xref_target_prints_placeholder_or_replacement() -> None:
+    """A cross-ref to a retired chunk prints "a removed <noun>" (never the
+    bare ``dc`` handle) and resolves to its recorded live replacement when
+    one exists (gr493181 — the nanobuds paragraph printed ``dc4300876`` /
+    ``dc4300877`` as literals)."""
+    from types import SimpleNamespace
+
+    from precis.export import docx as dx
+
+    retired_fig = SimpleNamespace(
+        chunk_id=99,
+        ref_id=1,
+        chunk_kind="figure",
+        retired=True,
+        meta={},
+    )
+    retired_sup = SimpleNamespace(
+        chunk_id=98,
+        ref_id=1,
+        chunk_kind="figure",
+        retired=True,
+        meta={"superseded_by": "dc5"},
+    )
+    retired_link = SimpleNamespace(
+        chunk_id=97,
+        ref_id=1,
+        chunk_kind="figure",
+        retired=True,
+        meta={},
+    )
+    store = SimpleNamespace(
+        drafts=SimpleNamespace(
+            get_draft_chunk=lambda h: {
+                "dc99": retired_fig,
+                "dc98": retired_sup,
+                "dc97": retired_link,
+            }.get(h)
+        ),
+        fetch_refs_by_ids=lambda ids: {},
+        # a chunk-level "supersedes" edge: dc6 -[supersedes]-> dc97
+        links_for=lambda _rid, **kw: (
+            [SimpleNamespace(dst_chunk_id=97, src_chunk_id=6)]
+            if kw.get("relation") == "supersedes"
+            else []
+        ),
+    )
+    ctx = dx._Ctx(
+        store=store,
+        known_handles=set(),
+        xref={"dc5": ("fig.", "2"), "dc6": ("fig.", "3")},
+        dc_handles={"dc5", "dc6"},
+        doi_links=False,
+        library_links=False,
+        library_label="x",
+        library_search_url="x",
+    )
+    assert _render_text("models of [dc99] here", ctx) == (
+        "models of a removed figure here"
+    )
+    # meta.superseded_by → the live replacement's number
+    assert _render_text("models of [dc98] here", ctx) == "models of fig. 2 here"
+    # a chunk-level supersedes link resolves the same way
+    assert _render_text("models of [dc97] here", ctx) == "models of fig. 3 here"
+    assert any("dc99" in w for w in ctx.warnings)
+    assert any("resolved to its replacement dc5" in w for w in ctx.warnings)
+    assert any("resolved to its replacement dc6" in w for w in ctx.warnings)
+
+
+def test_retired_xref_end_to_end_on_a_fixture_draft(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    """Fixture draft: retire the figure a paragraph cross-references —
+    the docx prints the placeholder, not the dead handle (gr493181)."""
+    pid = _new_draft_project(hub)
+    draft.put(id="dret", title="T", project=pid)
+    ref = hub.live_store.get_ref(kind="draft", id="dret")
+    assert ref is not None
+    title_h = hub.live_store.drafts.reading_order(ref.id)[0].handle
+    fig = hub.live_store.drafts.add_chunks(
+        ref_id=ref.id,
+        chunk_kind="figure",
+        text="Fig 1. A widget.",
+        at={"after": title_h},
+        split=False,
+    )[0]
+    draft.put(
+        id="dret",
+        chunk_kind="paragraph",
+        text=f"Models of [{fig.dc}] follow.",
+        at={"last": True},
+    )
+    hub.live_store.drafts.retire_chunk(fig.handle)
+    out = tmp_path / "dret.docx"
+    res = export_docx(hub.live_store, ref, target_path=out)
+    text = "\n".join(p.text for p in docx.Document(str(out)).paragraphs)
+    assert fig.dc not in text
+    assert "Models of a removed figure follow." in text
+    assert any(fig.dc in w for w in res.warnings)
 
 
 def test_export_numbers_headings_and_resolves_crossrefs(

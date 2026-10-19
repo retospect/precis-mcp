@@ -926,6 +926,11 @@ class _Ctx:
     #: ``dc`` handles of heading chunks that render as unnumbered
     #: ``\\paragraph`` — cross-referenced with ``\\nameref``, not ``\\cref``.
     paragraph_handles: frozenset[str] = frozenset()
+    #: Memo for :func:`walker.dead_xref` — a dead cross-ref handle maps to
+    #: ``(replacement dc | None, neutral text)`` (gr493181).
+    _dead_xref_cache: dict[str, tuple[str | None, str]] = field(
+        default_factory=dict, repr=False
+    )
     #: ``doc_type='poster'`` render mode: heading chunks inside a block
     #: render as bold run-in lines (block titles are the real headings),
     #: and figure/table chunks emit non-floating markup — ``figure``
@@ -1061,7 +1066,14 @@ def _draft_xref(dc: str, surface: str | None, ctx: _Ctx) -> str:
     downgraded to text + a warning when the chunk isn't live in this draft
     (:func:`walker.resolve_xref`; cleveref numbers it at compile time)."""
     xref = walker.resolve_xref(
-        dc, surface, live=ctx.known_handles, numbers=None, warnings=ctx.warnings
+        dc,
+        surface,
+        live=ctx.known_handles,
+        numbers=None,
+        warnings=ctx.warnings,
+        dead=lambda d: walker.dead_xref(
+            ctx.store, d, ctx.known_handles, ctx._dead_xref_cache
+        ),
     )
     sink: list[str] = []
     LatexRenderer(ctx).xref(sink, xref)
@@ -1446,10 +1458,16 @@ class LatexRenderer:
 
     def xref(self, sink: list[str], xref: walker.Xref) -> None:
         """``\\cref`` (cleveref numbers it), ``\\hyperref`` around the
-        author's surface, escaped text for a dead target."""
+        author's surface, neutral text for a dead target."""
         dc = xref.dc
         if not xref.live:
-            sink.append(_encode_unicode(_latex_escape(xref.surface or dc)))
+            sink.append(
+                _encode_unicode(
+                    _latex_escape(
+                        xref.surface or xref.fallback or walker.DEAD_XREF_TEXT
+                    )
+                )
+            )
         elif xref.surface:
             surface = _encode_unicode(_latex_escape(xref.surface))
             sink.append(f"\\hyperref[chunk:{dc}]{{{surface}}}")

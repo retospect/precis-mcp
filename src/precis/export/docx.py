@@ -65,6 +65,9 @@ from precis.export._provenance_strip import (
     is_provenance_only,
     strip_provenance_handles,
 )
+from precis.export._provenance_strip import (
+    short_title as _short_title,
+)
 from precis.export._ref_cache import RefLookupMemo
 from precis.export._trust_marks import (
     UNSUPPORTED_MARK_TEXT,
@@ -265,6 +268,16 @@ class _Ctx:
     #: ``dc`` handles of uncleared third-party figures waived under
     #: ``placeholder_figures``: rendered as a bordered notice, never embedded.
     withheld_figures: frozenset[str] = frozenset()
+    #: Memo for :func:`walker.dead_xref` — a dead cross-ref handle maps to
+    #: ``(replacement dc | None, neutral text)`` (gr493181).
+    _dead_xref_cache: dict[str, tuple[str | None, str]] = field(
+        default_factory=dict, repr=False
+    )
+    #: ``(paragraph, len(paragraph.runs))`` right after an ``(SI)``
+    #: postnote mark — a directly adjacent following mark takes a
+    #: separating space ("(SI) [4]", gr491600's nit); stale once other
+    #: runs land.
+    _si_mark: tuple[Any, int] | None = field(default=None, repr=False)
     #: Number of the last numbered heading the walk passed (``""`` before
     #: the first) — where a finding cite lands, for the published-claims
     #: table's "Cited in" column.
@@ -852,7 +865,7 @@ def _bare_handle_text(token: str, ctx: _Ctx) -> str:
             ref = fetch([pk]).get(pk)
         except Exception:  # pragma: no cover — store hiccup → kind name
             ref = None
-        title = str(getattr(ref, "title", None) or "").strip()
+        title = _short_title(str(getattr(ref, "title", None) or "").strip())
     if not title:
         title = kind
         ctx.warnings.append(f"bare handle {token!r} in prose rendered as {kind!r}")
@@ -1223,6 +1236,9 @@ def _render_xref(dc: str, surface: str | None, ctx: _Ctx, paragraph: Any) -> Non
         live=ctx.dc_handles or None,
         numbers=walker.XrefNumbers(ctx.xref, ctx.numbered_headings, ctx.eq_numbers),
         warnings=ctx.warnings,
+        dead=lambda d: walker.dead_xref(
+            ctx.store, d, ctx.dc_handles, ctx._dead_xref_cache
+        ),
     )
     DocxRenderer(ctx).xref(paragraph, xref)
 
@@ -1490,16 +1506,26 @@ class DocxRenderer:
         """One superscript mark (``[n]``, ``[1, 2]``, ``[1–3]``; an SI mark
         ``[n] (SI)``) plus each paper's link runs, or ONE EndNote field."""
         ctx, si = self.ctx, any(group.si)
+        si_mark = ctx._si_mark
+        ctx._si_mark = None
+        if si_mark is not None and si_mark[0] is sink and len(sink.runs) == si_mark[1]:
+            # A mark directly after "[n] (SI)" reads as one blob without a
+            # separator ("(SI)[4]" — gr491600's nit).
+            sink.add_run(" ")
         if ctx.endnote:
             entries = list(zip(group.keys, group.numbers, group.chunk_ids, strict=True))
             _cite_endnote(entries, ctx, sink, suffix=" (SI)" if si else "")
-            return
-        # biblatex sorts the keys of a merged cite before printing it.
-        sink.add_run(merged_cite_numbers(sorted(group.numbers))).font.superscript = True
+        else:
+            # biblatex sorts the keys of a merged cite before printing it.
+            sink.add_run(
+                merged_cite_numbers(sorted(group.numbers))
+            ).font.superscript = True
+            if si:
+                sink.add_run(" (SI)").font.superscript = True
+            for slug in group.keys:
+                _cite_link_group(slug, ctx, sink)
         if si:
-            sink.add_run(" (SI)").font.superscript = True
-        for slug in group.keys:
-            _cite_link_group(slug, ctx, sink)
+            ctx._si_mark = (sink, len(sink.runs))
 
     def term(self, sink: Any, use: _abbrev.Use) -> None:
         """``Long Form (SHORT)`` for a definition, the bare short otherwise
@@ -1507,12 +1533,12 @@ class DocxRenderer:
         sink.add_run(_abbrev.plain(use, self.ctx.abbrevs))
 
     def xref(self, sink: Any, xref: walker.Xref) -> None:
-        """The surface / handle text, or what ``\\cref`` would print —
+        """The surface / fallback text, or what ``\\cref`` would print —
         ``section 1.5.5``, ``fig. 2``, ``Eq. (3)`` — capitalised at a
         sentence start (``Section``, ``Fig.``, ``Equation``); a back-matter
         target prints its name. Nothing when there is no number."""
         if not xref.live or xref.surface:
-            text = xref.surface or xref.dc
+            text = xref.surface or xref.fallback or walker.DEAD_XREF_TEXT
         elif xref.equation is not None:
             lead = "Equation" if _at_sentence_start(sink) else "Eq."
             text = f"{lead} ({xref.equation})"

@@ -82,7 +82,7 @@ def record_title(handle: str, store: Any) -> str:
             ref = None
         title = str(getattr(ref, "title", None) or "").strip()
         if title:
-            return title
+            return short_title(title)
     return kind
 
 
@@ -100,16 +100,143 @@ def _is_debris(inner: str) -> bool:
     return all(w.lower() in _GLUE for w in words)
 
 
+#: A function word a dropped handle strands at a clause end — "… under
+#: [td5]." would print "… under ."; the word goes with the mark. Runs to a
+#: fixpoint so a chain ("… on [a] and [b].") collapses fully.
+_STRANDED_WORDS = (
+    "about",
+    "after",
+    "against",
+    "and",
+    "at",
+    "before",
+    "by",
+    "cf",
+    "closed",
+    "during",
+    "for",
+    "from",
+    "in",
+    "into",
+    "of",
+    "on",
+    "or",
+    "over",
+    "per",
+    "see",
+    "then",
+    "through",
+    "to",
+    "under",
+    "via",
+    "with",
+    "within",
+)
+_STRANDED_WORD = re.compile(
+    rf"(?:^|{_T}+)(?:{'|'.join(_STRANDED_WORDS)})\b{_T}*{_MARK}"
+    rf"(?:{_T}+(?:{'|'.join(_STRANDED_WORDS)})\b{_T}*{_MARK})*"
+    rf"(?=[,.;:!?)\n]|$)",
+    re.IGNORECASE,
+)
+
+
 def _tidy(seg: str) -> str:
     """Fix spacing/separators locally around each removal sentinel."""
     seg = _GROUP.sub(_MARK, seg)
-    seg = re.sub(rf"(\(){_T}*{_MARK}{_SEPS}*", r"\1", seg)
-    seg = re.sub(rf"{_SEPS}*{_MARK}{_T}*\)", ")", seg)
-    seg = re.sub(rf"([,;]){_T}*{_MARK}{_T}*[,;]", r"\1", seg)
-    seg = re.sub(rf"{_T}+{_MARK}(?=[,.;:!?)\n]|$)", "", seg)
-    seg = re.sub(rf"{_T}+{_MARK}{_T}+", " ", seg)
-    seg = re.sub(rf"(?m)^({_T}*){_MARK}{_T}*", r"\1", seg)
-    return seg.replace(_MARK, "")
+    while True:
+        out = _STRANDED_WORD.sub("", seg)
+        out = re.sub(rf"(\(){_T}*{_MARK}{_SEPS}*", r"\1", out)
+        out = re.sub(rf"{_SEPS}*{_MARK}{_T}*\)", ")", out)
+        out = re.sub(rf"([,;]){_T}*{_MARK}{_T}*[,;]", r"\1", out)
+        out = re.sub(rf"{_T}+{_MARK}(?=[,.;:!?)\n]|$)", "", out)
+        out = re.sub(rf"{_T}+{_MARK}{_T}+", " ", out)
+        out = re.sub(rf"(?m)^({_T}*){_MARK}{_T}*", r"\1", out)
+        if out == seg:
+            return seg.replace(_MARK, "")
+        seg = out
+
+
+#: Cap for a record title spliced into prose.
+_TITLE_MAX = 120
+#: First-sentence end inside a title: ". " before a capital/digit/quote.
+_TITLE_SENT_END = re.compile(r"[.!?]\s+(?=[A-Z0-9\"'(\[])")
+_TITLE_TRAIL = ".,;:—–- \t"
+#: Words a ". " can follow without ending the sentence — abbreviations
+#: ("Dr. Smith", "et al. used") the boundary regex would otherwise cut at.
+_TITLE_ABBREVS = {
+    "al",
+    "approx",
+    "cf",
+    "dept",
+    "dr",
+    "ed",
+    "eds",
+    "eq",
+    "eqs",
+    "et",
+    "etc",
+    "fig",
+    "figs",
+    "ibid",
+    "inc",
+    "jr",
+    "ltd",
+    "mr",
+    "mrs",
+    "ms",
+    "no",
+    "nos",
+    "ph",
+    "pp",
+    "prof",
+    "ref",
+    "refs",
+    "rev",
+    "sec",
+    "secs",
+    "sr",
+    "st",
+    "tab",
+    "vs",
+    "viz",
+    "vol",
+    "vols",
+}
+
+
+def _title_break_ok(prefix: str) -> bool:
+    """Is ". " a real sentence end? Not after an abbreviation or a
+    single-letter initial ("J. R."), and not after a dotted abbrev
+    ("e.g.", "i.e.", "U.S.")."""
+    words = prefix.split()
+    if not words:
+        return True
+    tok = words[-1].lower().rstrip(_TITLE_TRAIL)
+    if not tok:
+        return True
+    if len(tok) == 1 or "." in tok:
+        return False
+    return tok not in _TITLE_ABBREVS
+
+
+def short_title(title: str) -> str:
+    """The prose-spliceable short form of a record's title: its first line
+    up to the first sentence end — a todo's ``refs.title`` carries its
+    notes as later sentences ("… a preprint. Reto moved it …"), and the
+    whole title floods the sentence it lands in (gr493181). Past
+    :data:`_TITLE_MAX` chars a word-boundary clip + ellipsis."""
+    line = " ".join(str(title or "").split("\n", 1)[0].split())
+    for m in _TITLE_SENT_END.finditer(line):
+        if _title_break_ok(line[: m.start()]):
+            line = line[: m.start()]
+            break
+    line = line.strip(_TITLE_TRAIL)
+    if len(line) > _TITLE_MAX:
+        cut = line[:_TITLE_MAX].rfind(" ")
+        line = (line[:cut] if cut > _TITLE_MAX // 3 else line[:_TITLE_MAX]).strip(
+            _TITLE_TRAIL
+        ) + "…"
+    return line
 
 
 def _strip_prose(text: str, title_for: Callable[[str], str]) -> str:
