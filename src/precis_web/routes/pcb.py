@@ -21,6 +21,8 @@ same data:
   one download (gr496699): the gerber+drill zip plus the JLC BOM and CPL,
   assembled in memory by ``PcbHandler.fab_package_zip`` off the same
   artifacts the MCP view writes to a directory.
+* ``POST /pcb/create`` — an EMPTY board through the ``put(kind='pcb')``
+  create path (gr496699); refuses a taken slug, redirects to the board.
 * ``GET  /pcb/new`` — the board-creation page (gr496699): import an
   uploaded EasyEDA Pro ``.epro2`` through
   :func:`precis.ingest.pcb_epro.import_epro` — the same importer
@@ -142,6 +144,47 @@ def _pcb_error(request: Request, title: str, detail: str, status: int = 400) -> 
 async def pcb_new(request: Request) -> Any:
     return templates.TemplateResponse(
         request, "pcb/new.html.j2", {"active_tab": "pcb", "title": "New board"}
+    )
+
+
+@router.post("/pcb/create", response_model=None)
+async def pcb_create(
+    request: Request,
+    slug: str = Form(""),
+    title: str = Form(""),
+) -> Any:
+    """Create an EMPTY board through the pcb ``put`` create path, then land
+    on its page. Refuses a taken slug — ``put`` on an existing slug would
+    edit that design, not make a new one. CSRF and auth are the app
+    middleware's, as for ``/pcb/import``."""
+    want = slugify(slug)
+    if not want:
+        return _pcb_error(
+            request,
+            "Create refused",
+            "no slug — name the board in the form (letters, digits, dashes).",
+        )
+    if want == "new":
+        return _pcb_error(
+            request,
+            "Create refused",
+            "'new' is the board-creation page's own address — pick another slug.",
+        )
+    if get_store(request).get_ref(kind="pcb", id=want) is not None:
+        return _pcb_error(
+            request,
+            "Create refused",
+            f"a board '{want}' already exists — pick a fresh slug.",
+        )
+    call: dict[str, Any] = {"kind": "pcb", "id": want, "args": {}}
+    if title.strip():
+        call["title"] = title.strip()
+    return await redirect_or_error(
+        request,
+        "put",
+        call,
+        redirect=f"/pcb/{want}",
+        error_title="Create refused",
     )
 
 

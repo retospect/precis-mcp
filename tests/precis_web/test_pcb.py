@@ -950,3 +950,37 @@ def test_import_enforces_the_upload_cap(pcb_client, monkeypatch) -> None:
     assert r.status_code == 400
     assert "larger than" in r.text
     assert "CLI" in r.text
+
+
+def test_new_page_has_the_create_form(pcb_client) -> None:
+    r = pcb_client.get("/pcb/new")
+    assert 'action="/pcb/create"' in r.text
+
+
+def test_create_makes_an_empty_board_and_redirects(
+    pcb_client, runtime_with_store
+) -> None:
+    r = pcb_client.post(
+        "/pcb/create",
+        data={"slug": "Fresh Board", "title": "Fresh"},
+        follow_redirects=False,
+    )
+    assert r.status_code in (302, 303), r.text
+    assert r.headers["location"] == "/pcb/fresh-board"
+    ref = runtime_with_store.hub.store.get_ref(kind="pcb", id="fresh-board")
+    assert ref is not None
+    assert pcb_client.get("/pcb/fresh-board").status_code == 200
+
+
+def test_create_taken_slug_is_refused(pcb_client, runtime_with_store) -> None:
+    _seed_placed(runtime_with_store, "web-create-taken")
+    r = pcb_client.post("/pcb/create", data={"slug": "web-create-taken"})
+    assert r.status_code == 400
+    assert "already exists" in r.text
+
+
+def test_create_refuses_blank_and_new_slugs(pcb_client) -> None:
+    assert pcb_client.post("/pcb/create", data={"slug": "  "}).status_code == 400
+    r = pcb_client.post("/pcb/create", data={"slug": "new"})
+    assert r.status_code == 400
+    assert "another slug" in r.text

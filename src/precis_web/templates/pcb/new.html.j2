@@ -8,6 +8,23 @@
   <h1 class="text-lg font-semibold">New board</h1>
 </div>
 
+<div class="rounded border border-line bg-surface p-3 max-w-xl mb-3">
+  <h2 class="text-sm font-semibold">Empty board</h2>
+  <form method="post" action="/pcb/create" class="mt-2 flex flex-col gap-2">
+    <label class="text-sm">slug
+      <input type="text" name="slug" required placeholder="e.g. sensor-node" class="block mt-1 font-mono">
+    </label>
+    <label class="text-sm">title
+      <input type="text" name="title" placeholder="defaults to the slug" class="block mt-1">
+    </label>
+    <button type="submit" class="rounded bg-solid-strong px-3 py-1 text-xs text-on-solid w-fit">create</button>
+  </form>
+  <p class="mt-2 text-xs text-fg-subtle">
+    Creates an empty design; add parts and pins from its page or over MCP.
+    A slug already in use is refused.
+  </p>
+</div>
+
 <div class="rounded border border-line bg-surface p-3 max-w-xl">
   <h2 class="text-sm font-semibold">Import an EasyEDA Pro board (.epro2)</h2>
   <form method="post" action="/pcb/import" enctype="multipart/form-data" class="mt-2 flex flex-col gap-2">
