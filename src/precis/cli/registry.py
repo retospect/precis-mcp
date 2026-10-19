@@ -83,6 +83,11 @@ COMMANDS: tuple[Command, ...] = (
     _c("nanopub", "nanopub", "Mint, sign, anchor and audit claim nanopubs."),
     _c("pcb", "pcb", "PCB board import and catalog maintenance."),
     _c(
+        "pcb-bench",
+        "pcb_bench",
+        "Route the PCB sanity boards in memory; optional --svg, --upload.",
+    ),
+    _c(
         "structure",
         "structure",
         "Structure-kind maintenance: index a downloaded MOF bundle.",
