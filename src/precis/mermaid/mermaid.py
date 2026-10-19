@@ -113,6 +113,24 @@ def render_svg(source: str) -> str:
     return str(mx.render(source).svg())
 
 
+def render_png(source: str) -> bytes:
+    """Rasterize mermaid to PNG via ``mermaidx`` (resvg). Same engine guard as
+    :func:`render_svg`."""
+    mx = _engine()
+    if mx is None:
+        raise RuntimeError("mermaidx is not installed (the [mermaid] extra)")
+    return bytes(mx.render(source).png())
+
+
+def render_pdf(source: str) -> bytes:
+    """Render mermaid to a PDF document via ``mermaidx``. Same engine guard as
+    :func:`render_svg`."""
+    mx = _engine()
+    if mx is None:
+        raise RuntimeError("mermaidx is not installed (the [mermaid] extra)")
+    return bytes(mx.render(source).pdf())
+
+
 def _one_line(msg: str) -> str:
     line = msg.strip().splitlines()[0] if msg.strip() else "mermaid did not parse"
     return line.removeprefix("Mermaid rendering failed: ").strip()

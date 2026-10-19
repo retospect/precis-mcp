@@ -12,6 +12,12 @@ turn actually validates/renders. The kind is first-class (registered like
 out of the box.
 """
 
-from precis.mermaid.mermaid import MERMAID_LANG, MermaidLang, render_svg
+from precis.mermaid.mermaid import (
+    MERMAID_LANG,
+    MermaidLang,
+    render_pdf,
+    render_png,
+    render_svg,
+)
 
-__all__ = ["MERMAID_LANG", "MermaidLang", "render_svg"]
+__all__ = ["MERMAID_LANG", "MermaidLang", "render_pdf", "render_png", "render_svg"]

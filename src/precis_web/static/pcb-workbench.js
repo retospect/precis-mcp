@@ -13,138 +13,20 @@
   const flip = el('pcb-flip');
   const boardObj = el('pcb-board-object');
   const schemObj = el('pcb-schematic-object');
-  const LS_KEY = 'precis:pcb-workbench:left-pct';
-  const MIN = 15, MAX = 85;
-
-  const clamp = (p) => Math.min(MAX, Math.max(MIN, p));
-  const apply = (p) => {
-    if (left) left.style.flexBasis = p + '%';
-  };
-  const store = (p) => {
-    try {
-      localStorage.setItem(LS_KEY, String(Math.round(p * 10) / 10));
-    } catch (_) {
-      /* private mode: remembering is a nicety, the split still works */
-    }
-  };
-  try {
-    const saved = parseFloat(localStorage.getItem(LS_KEY));
-    if (isFinite(saved)) apply(clamp(saved));
-  } catch (_) {
-    /* same */
-  }
-
-  if (divider && left) {
-    let drag = null;
-    const set = (clientX) => {
-      const r = wb.getBoundingClientRect();
-      if (!r.width) return drag;
-      drag = clamp(((clientX - r.left) / r.width) * 100);
-      apply(drag);
-      return drag;
-    };
-    divider.addEventListener('pointerdown', (ev) => {
-      drag = clamp(parseFloat(left.style.flexBasis) || 50);
-      set(ev.clientX);
-      if (divider.setPointerCapture) divider.setPointerCapture(ev.pointerId);
-      ev.preventDefault();
+  // The column divider and the row-resize handle (gr496860) come from the
+  // shared splitter, static/pane-split.js — same ids and localStorage keys
+  // as before; pane-split.js must load ahead of this file (defer order).
+  if (window.PrecisPaneSplit) {
+    window.PrecisPaneSplit.attach({
+      container: wb,
+      left: left,
+      divider: divider,
+      key: 'precis:pcb-workbench:left-pct',
     });
-    divider.addEventListener('pointermove', (ev) => {
-      if (drag != null) set(ev.clientX);
-    });
-    divider.addEventListener('pointerup', () => {
-      if (drag != null) store(drag);
-      drag = null;
-    });
-    divider.addEventListener('pointercancel', () => {
-      drag = null;
-    });
-    divider.addEventListener('dblclick', () => {
-      drag = 50;
-      apply(50);
-      store(50);
-      drag = null;
-    });
-    divider.addEventListener('keydown', (ev) => {
-      const cur = parseFloat(left.style.flexBasis) || 50;
-      let p = null;
-      if (ev.key === 'ArrowLeft') p = cur - 2;
-      else if (ev.key === 'ArrowRight') p = cur + 2;
-      else if (ev.key === 'Home') p = 50;
-      if (p == null) return;
-      ev.preventDefault();
-      drag = clamp(p);
-      apply(drag);
-      store(drag);
-      drag = null;
-    });
-  }
-
-  // gr496860: the row-resize handle under the workbench, mirroring the
-  // divider above — drag sets the height in px, remembered per user,
-  // double-click resets to the stylesheet default, arrows adjust.
-  const heightEl = el('pcb-height');
-  const H_KEY = 'precis:pcb-workbench:height-px';
-  const H_MIN = 160, H_MAX = 4000;
-  const applyH = (h) => { wb.style.height = Math.round(h) + 'px'; };
-  const storeH = (h) => {
-    try {
-      localStorage.setItem(H_KEY, String(Math.round(h)));
-    } catch (_) {
-      /* remembering is a nicety */
-    }
-  };
-  const resetH = () => {
-    wb.style.height = '';
-    try {
-      localStorage.removeItem(H_KEY);
-    } catch (_) {
-      /* same */
-    }
-  };
-  if (heightEl) {
-    const clampH = (h) => Math.min(H_MAX, Math.max(H_MIN, h));
-    try {
-      const saved = parseFloat(localStorage.getItem(H_KEY));
-      if (isFinite(saved)) applyH(clampH(saved));
-    } catch (_) {
-      /* same */
-    }
-    let hdrag = null; // {y, h}
-    heightEl.addEventListener('pointerdown', (ev) => {
-      hdrag = {y: ev.clientY, h: wb.getBoundingClientRect().height};
-      if (heightEl.setPointerCapture) heightEl.setPointerCapture(ev.pointerId);
-      ev.preventDefault();
-    });
-    heightEl.addEventListener('pointermove', (ev) => {
-      if (hdrag) applyH(clampH(hdrag.h + ev.clientY - hdrag.y));
-    });
-    heightEl.addEventListener('pointerup', (ev) => {
-      if (!hdrag) return;
-      const h = clampH(hdrag.h + ev.clientY - hdrag.y);
-      applyH(h);
-      storeH(h);
-      hdrag = null;
-    });
-    heightEl.addEventListener('pointercancel', () => {
-      hdrag = null;
-    });
-    heightEl.addEventListener('dblclick', resetH);
-    heightEl.addEventListener('keydown', (ev) => {
-      const cur = wb.getBoundingClientRect().height;
-      let h = null;
-      if (ev.key === 'ArrowUp') h = cur - 24;
-      else if (ev.key === 'ArrowDown') h = cur + 24;
-      else if (ev.key === 'Home') {
-        ev.preventDefault();
-        resetH();
-        return;
-      }
-      if (h == null) return;
-      ev.preventDefault();
-      h = clampH(h);
-      applyH(h);
-      storeH(h);
+    window.PrecisPaneSplit.attachHeight({
+      container: wb,
+      handle: el('pcb-height'),
+      key: 'precis:pcb-workbench:height-px',
     });
   }
 

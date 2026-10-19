@@ -1,34 +1,60 @@
 {% extends "base.html.j2" %}
 {% from "_drive_back.html.j2" import drive_back %}
 {% block title %}{{ title }} — Mermaid{% endblock %}
+{% block main_class %}px-4 py-6{% endblock %}
 {% block content %}
 
-<div class="mb-4 flex items-center gap-3">
+<div class="mb-2 flex items-center gap-3">
   {{ drive_back('mermaid', 'Mermaid') }}
   <h1 class="text-lg font-semibold">{{ title }}</h1>
   <span class="text-xs text-fg-faint">{{ slug }}</span>
+  <span id="mm-export" class="text-xs text-fg-subtle"
+        title="download — the raw source, or the rendered diagram exactly as this page shows it">
+    export: <a class="underline" id="mm-export-mermaid" href="/mermaid/{{ slug }}/export.mermaid" download>mermaid</a>
+    · <a class="underline" id="mm-export-svg" href="/mermaid/{{ slug }}/export.svg" download>svg</a>
+    · <a class="underline" id="mm-export-png" href="/mermaid/{{ slug }}/export.png" download>png</a>
+    · <a class="underline" id="mm-export-pdf" href="/mermaid/{{ slug }}/export.pdf" download>pdf</a>
+  </span>
 </div>
 
-<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-  {# ── left: rendered diagram + source + lints + bindings ── #}
-  <div>
-    <div class="scheme-light rounded border border-line bg-surface p-2 min-h-[12rem] overflow-auto">
+{# The workbench is the pcb-workbench layout (static/pane-split.js):
+   the rendered diagram on the left, source/info + chat on the right, and
+   a draggable divider between them whose split is remembered per user. #}
+<style>
+  #mm-workbench { display: flex; align-items: stretch; height: calc(100vh - 9rem); min-height: 24rem; }
+  #mm-workbench .mm-pane { display: flex; flex-direction: column; min-width: 0; }
+  #mm-pane-diagram { flex: 0 0 50%; }
+  #mm-pane-info { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+  #mm-canvas-wrap { flex: 1 1 auto; min-height: 0; overflow: auto; }
+  #mm-divider { flex: 0 0 7px; cursor: col-resize; border-radius: 4px; }
+  #mm-divider:hover, #mm-divider:focus-visible { background: rgb(var(--bg-surface-emphasis)); }
+</style>
+<div id="mm-workbench">
+  {# ── left: rendered diagram ── #}
+  <section id="mm-pane-diagram" class="mm-pane scheme-light rounded border border-line bg-surface p-2">
+    <div id="mm-canvas-wrap">
       <div id="mm-canvas">{{ svg | safe }}</div>
       {% if not svg %}
       <pre id="mm-canvas-fallback" class="text-xs text-fg-muted whitespace-pre-wrap">{{ source }}</pre>
       {% endif %}
     </div>
-    <details class="mt-2">
+  </section>
+  <div id="mm-divider" role="separator" aria-orientation="vertical" tabindex="0"
+       aria-label="pane divider" title="drag to resize · double-click resets · arrows adjust"></div>
+
+  {# ── right: source + lints + bindings, docs (two tabs), chat ── #}
+  <section id="mm-pane-info" class="mm-pane gap-3 pr-1">
+    <details>
       <summary class="text-[11px] text-fg-faint cursor-pointer">source</summary>
       <pre id="mm-source" class="mt-1 text-xs bg-surface-subtle border border-line rounded p-2 whitespace-pre-wrap">{{ source }}</pre>
     </details>
-    <div id="mm-lints" class="mt-2 space-y-1 text-[11px]">
+    <div id="mm-lints" class="space-y-1 text-[11px]">
       {% for f in findings %}
       <div class="text-warning-strong">⚠ [{{ f.kind }}] {{ f.message }}</div>
       {% endfor %}
     </div>
     {# ── node → chunk bindings ── #}
-    <div id="mm-bindings" class="mt-2 flex flex-wrap gap-1 text-[11px]{% if not bindings %} hidden{% endif %}">
+    <div id="mm-bindings" class="flex flex-wrap gap-1 text-[11px]{% if not bindings %} hidden{% endif %}">
       {% for b in bindings %}
       <span class="inline-flex items-center gap-1 rounded bg-info-subtle border border-info px-1.5 py-0.5 text-info-deep"
             title="{{ b.title }}">
@@ -36,10 +62,7 @@
       </span>
       {% endfor %}
     </div>
-  </div>
 
-  {# ── right: docs (two tabs) + chat ── #}
-  <div class="flex flex-col gap-4">
     <div>
       <div class="flex items-center gap-1 mb-1">
         <button id="mm-tab-vocab" type="button"
@@ -65,9 +88,10 @@
         <button id="mm-send" class="rounded bg-solid text-on-solid px-3 py-1.5 text-sm hover:bg-solid-soft">Send ▸</button>
       </form>
     </div>
-  </div>
+  </section>
 </div>
 
+<script src="/static/pane-split.js" defer></script>
 <script>
 (function () {
   const form = document.getElementById('mm-form');
@@ -83,6 +107,24 @@
   const binds = document.getElementById('mm-bindings');
   const tabVocab = document.getElementById('mm-tab-vocab');
   const tabNotes = document.getElementById('mm-tab-notes');
+
+  // The divider is the shared workbench splitter (static/pane-split.js);
+  // deferred scripts run before DOMContentLoaded, so it is defined there.
+  const attachSplit = function () {
+    if (window.PrecisPaneSplit) {
+      window.PrecisPaneSplit.attach({
+        container: document.getElementById('mm-workbench'),
+        left: document.getElementById('mm-pane-diagram'),
+        divider: document.getElementById('mm-divider'),
+        key: 'precis:mermaid:left-pct',
+      });
+    }
+  };
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', attachSplit);
+  } else {
+    attachSplit();
+  }
 
   const ON = 'px-2 py-0.5 rounded text-xs font-semibold text-fg-secondary bg-surface-muted';
   const OFF = 'px-2 py-0.5 rounded text-xs text-fg-subtle hover:bg-surface-subtle';

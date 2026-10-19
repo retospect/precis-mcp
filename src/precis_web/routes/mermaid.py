@@ -13,6 +13,8 @@ Routes:
   the ``kind=mermaid`` facet preset.
 * ``GET  /mermaid/{slug}`` — the editor.
 * ``GET  /mermaid/{slug}/render.svg`` — the sanitized rendered SVG (``<img>`` src).
+* ``GET  /mermaid/{slug}/export.{fmt}`` — download the diagram
+  (``mermaid`` / ``svg`` / ``png`` / ``pdf``, Content-Disposition attachment).
 * ``POST /mermaid/{slug}/turn`` — run one turn (form ``message=``) → JSON.
 
 The turn runs in a worker thread (``asyncio.to_thread``) — the model call is
@@ -25,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Form, Request
@@ -34,7 +37,7 @@ from fastapi.responses import Response as RawResponse
 from precis.errors import NotFound
 from precis.figure.svg import sanitize_svg
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
-from precis.mermaid.mermaid import MERMAID_LANG, render_svg
+from precis.mermaid.mermaid import MERMAID_LANG, render_pdf, render_png, render_svg
 from precis.mermaid.turn import run_turn
 from precis_web.deps import get_store, templates
 
@@ -77,7 +80,8 @@ def _rendered_svg(source: str) -> str:
         return ""
     try:
         return sanitize_svg(render_svg(source))
-    except Exception:
+    except Exception as exc:
+        log.warning("mermaid render failed (%s): %s", type(exc).__name__, exc)
         return ""
 
 
@@ -139,6 +143,61 @@ async def mermaid_render(request: Request, slug: str) -> RawResponse:
         content=svg,
         media_type="image/svg+xml",
         headers={"Cache-Control": "no-store"},
+    )
+
+
+#: Download formats the workbench offers — ``mermaid`` is the raw source;
+#: the rest are rendered server-side by mermaidx, ``svg`` through the same
+#: sanitized render the canvas shows.
+_EXPORT_FORMATS = ("mermaid", "svg", "png", "pdf")
+
+#: Header-unsafe characters are scrubbed out of the download filename — a
+#: stored slug should never contain them, but Content-Disposition is a raw
+#: response header and must not be injectable through one (branch-desk
+#: review of gr498614).
+_FILENAME_UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+@router.get("/mermaid/{slug}/export.{fmt}")
+async def mermaid_export(request: Request, slug: str, fmt: str) -> RawResponse:
+    """Download the diagram as ``<slug>.<fmt>`` — the same mermaidx render
+    the page displays (``svg`` is the sanitized inline render, ``png`` /
+    ``pdf`` rasterize/typeset the same source), or the raw source for
+    ``mermaid``."""
+    if fmt not in _EXPORT_FORMATS:
+        return RawResponse(f"unknown export format {fmt!r}\n", status_code=404)
+    store = get_store(request)
+    try:
+        ref = resolve_live_slug_ref(store, kind="mermaid", id=slug)
+    except NotFound:
+        return RawResponse(status_code=404, content="not found")
+    source, _v, _n, _t = _docs(store, ref.id)
+    try:
+        if fmt == "mermaid":
+            body: str | bytes = source
+            media = "text/plain; charset=utf-8"
+        elif fmt == "svg":
+            body = _rendered_svg(source)
+            media = "image/svg+xml"
+        elif fmt == "png":
+            body = render_png(source)
+            media = "image/png"
+        else:
+            body = render_pdf(source)
+            media = "application/pdf"
+    except Exception as exc:
+        log.warning("mermaid export render failed (%s): %s", type(exc).__name__, exc)
+        return RawResponse(status_code=422, content="could not render mermaid")
+    if not body:
+        return RawResponse(status_code=422, content="could not render mermaid")
+    filename = _FILENAME_UNSAFE.sub("_", ref.slug or slug) or "diagram"
+    return RawResponse(
+        content=body,
+        media_type=media,
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Disposition": f'attachment; filename="{filename}.{fmt}"',
+        },
     )
 
 
