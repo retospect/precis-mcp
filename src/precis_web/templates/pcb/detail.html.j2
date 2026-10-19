@@ -35,6 +35,7 @@
 </div>
 {% else %}
 <script type="application/json" id="pcb-selection-manifest">{{ {'context': pcb_context, 'instances': pcb_instances, 'poses': pcb_poses} | tojson }}</script>
+<script type="application/json" id="pcb-part-cards">{{ pcb_part_cards | tojson }}</script>
 {# The workbench (docs/backlog/pcb-workbench-layout.md): schematic left,
    layout right, a draggable divider whose split is remembered, and the
    info strip below. Both panes are <object> documents — each SVG keeps
@@ -120,21 +121,33 @@
   <button type="button" id="pcb-deselect">Deselect</button>
 </div>
 
-{# One text box, always present: a whole-design argument needs no click.
-   Clicks on the board SVG (its own document, same origin) insert handles
-   at the caret — see static/pcb-argue.js. No place/route button here:
-   actions stay in the MCP/job surface; this page is for arguing. #}
+{# ONE chat box (workbench spec slice 3): Ask posts to /note (question
+   notes, no edits), Propose posts the shared design-chat form (proposal,
+   explicit Apply). Clicked handles show as removable chips; layout-only
+   objects carry the L: prefix. The transcript + Apply stay in the
+   design-chat macro below; its own input form is hidden for pcb —
+   this box drives it. #}
 <div class="mb-6 rounded border border-line bg-surface p-2"
      id="pcb-argue" data-note-url="/pcb/{{ slug }}/note">
-  <h2 class="mb-1 px-1 text-sm font-semibold text-fg-secondary">Argue with the design
-    <span class="font-normal text-xs text-fg-faint">handles: <code>U1</code> part · <code>U1.3</code> pad · <code>net:GND</code> net</span>
+  <h2 class="mb-1 px-1 text-sm font-semibold text-fg-secondary">Design chat
+    <span class="font-normal text-xs text-fg-faint">handles: <code>U1</code> part · <code>U1.3</code> pad · <code>net:GND</code> net · <code>L:</code> layout objects</span>
   </h2>
+  <div class="mb-1 flex items-center gap-2 px-1 text-xs" role="group" aria-label="chat mode">
+    <button type="button" id="pcb-mode-ask" aria-pressed="true"
+            class="rounded border border-line px-2 py-0.5 font-semibold">Ask</button>
+    <button type="button" id="pcb-mode-propose" aria-pressed="false"
+            class="rounded border border-line px-2 py-0.5">Propose</button>
+    <span class="text-fg-faint">Ask answers a question, changes nothing · Propose suggests an edit, always needs explicit Apply</span>
+  </div>
+  <div id="pcb-argue-chips" class="flex flex-wrap gap-1 px-1 pb-1 text-[10px] text-fg-subtle"></div>
   <textarea id="pcb-argue-text" rows="3"
             class="w-full rounded border border-line-strong p-2 font-mono text-sm"
             placeholder="R_BLEED is on the wrong side of J_HV, and U1.3 should be on net:GND …"></textarea>
   <div class="mt-1 flex items-center gap-3">
     <button type="button" id="pcb-argue-submit"
-            class="rounded bg-solid-strong px-3 py-1 text-xs text-on-solid">submit argument</button>
+            class="rounded bg-solid-strong px-3 py-1 text-xs text-on-solid">send</button>
+    <button type="button" id="pcb-argue-clear"
+            class="rounded border border-line px-2 py-0.5 text-xs text-fg-secondary">clear</button>
     <span id="pcb-argue-status" class="text-xs text-fg-subtle"></span>
   </div>
   <div id="pcb-argue-error" class="mt-1 hidden text-xs text-danger-strong"></div>

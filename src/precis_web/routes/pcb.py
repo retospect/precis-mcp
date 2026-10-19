@@ -86,7 +86,14 @@ from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.handlers.pcb import PcbHandler
 from precis.pcb import argue
 from precis.utils.text import slugify
-from precis_web import design_chat, design_turn, pcb_design, pcb_hover, quest_board
+from precis_web import (
+    design_chat,
+    design_turn,
+    pcb_design,
+    pcb_hover,
+    pcb_parts,
+    quest_board,
+)
 from precis_web.deps import (
     await_dispatch,
     get_store,
@@ -327,6 +334,7 @@ async def pcb_detail(request: Request, slug: str, rev: int | None = None) -> Any
                 **_vitals(store, ref.id),
                 **_notes_ctx(store, ref, conn),
                 "pcb_context": view.context,
+                "pcb_part_cards": pcb_parts.cards(view),
                 "pcb_instances": view.instances,
                 "pcb_poses": pcb_design.instance_poses(view),
                 "read_only": read_only,
@@ -616,6 +624,34 @@ async def pcb_fab_zip(request: Request, slug: str) -> RawResponse:
             "Content-Disposition": f'attachment; filename="{filename}"',
             "Cache-Control": "no-store",
         },
+    )
+
+
+@router.get("/pcb/{slug}/part/{refdes}/thumb")
+async def pcb_part_thumb(request: Request, slug: str, refdes: str) -> RawResponse:
+    """The part card's cached thumbnail (pcb_parts.thumbnail — safe_get,
+    cached on the part ref's meta; never a hotlink)."""
+    store = get_store(request)
+    try:
+        ref = resolve_live_slug_ref(store, kind="pcb", id=slug)
+    except NotFound:
+        return RawResponse(status_code=404, content="not found")
+    lcsc = None
+    try:
+        with store.pcb_view_tx() as conn:
+            view = pcb_design.capture_view(store, ref, conn=conn)
+            lcsc = (pcb_parts.cards(view).get(refdes) or {}).get("lcsc")
+    except ValueError:
+        return RawResponse(status_code=409, content="design changed")
+    if not lcsc:
+        return RawResponse(status_code=404, content="no part image")
+    got = await asyncio.to_thread(pcb_parts.thumbnail, store, str(lcsc))
+    if got is None:
+        return RawResponse(status_code=404, content="no part image")
+    return RawResponse(
+        content=got[0],
+        media_type=got[1],
+        headers={"Cache-Control": "private, max-age=86400"},
     )
 
 

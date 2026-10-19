@@ -81,17 +81,13 @@ The keys register through the shortcuts module (`static/shortcuts.js`,
 
 ## Slices
 
-1. **One chat.** Merge the two boxes into one, with the Ask / Propose
-   toggle, clear, chips and the `L:` prefix. Add the part cards with the
-   cached thumbnail. Exit: Ask posts to the note route, and Propose posts to
-   the design-chat route with Apply still required (test). The thumbnail
-   fetch goes through `safe_get` (test with a fake fetch).
-2. **Focus mode and pinning** on the schematic. Exit: a focus render test,
+
+1. **Focus mode and pinning** on the schematic. Exit: a focus render test,
    and a test that the pin state survives a reload.
-3. **Multiple sheets.** Sheets come from placement groups, with tabs and
+2. **Multiple sheets.** Sheets come from placement groups, with tabs and
    off-sheet connectors. Exit: a schematic test that a cross-sheet net gets
    connectors on both sheets, and that cross-probing picks the sheet.
-4. **se adopts viewport.js.** Same gestures and keys; 3D adds rotate. Exit:
+3. **se adopts viewport.js.** Same gestures and keys; 3D adds rotate. Exit:
    se 2D uses the module (static test), and the se 3D key map matches the
    table.
 

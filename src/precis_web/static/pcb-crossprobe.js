@@ -29,6 +29,9 @@
   const schemObj = el('pcb-schematic-object');
 
   const DOCS = []; // {obj, doc}
+  const cardsEl = el('pcb-part-cards');
+  let cards = {};
+  try { cards = JSON.parse(cardsEl.textContent); } catch (_) { cards = {}; }
   let facts = {parts: {}, nets: {}};
   let objects = new Map(); // board catalogue key -> identity
   let hovered = null;    // handle currently hovered
@@ -220,15 +223,46 @@
     return '';
   }
 
+  // Part card (both panes, spec slice 3): refdes, value, package, LCSC
+  // number and stock, plus the cached thumbnail — always our own route,
+  // never a hotlink.
+  function partCard(refdes) {
+    const c = cards[refdes];
+    if (!c) return null;
+    const card = document.createElement('span');
+    card.className = 'pcb-part-card inline-flex items-center gap-2 align-middle';
+    if (c.lcsc) {
+      const img = document.createElement('img');
+      img.src = `/pcb/${encodeURIComponent(SLUG)}/part/${encodeURIComponent(refdes)}/thumb`;
+      img.alt = '';
+      img.style.cssText = 'width:28px;height:28px;object-fit:contain';
+      img.onerror = () => img.remove();
+      card.appendChild(img);
+    }
+    const line = document.createElement('span');
+    const fields = [c.value, c.package].filter(Boolean).join(' ');
+    line.textContent =
+      refdes + (fields ? ` (${fields})` : '') +
+      (c.lcsc ? ` · ${c.lcsc}` : '') +
+      (c.stock != null ? ` · stock ${c.stock}` : '');
+    card.appendChild(line);
+    return card;
+  }
+  const SLUG = (boardObj && boardObj.dataset.base || '')
+    .split('/pcb/')[1].split('/')[0];
+
   function setHover(t) {
     clearCls('pcb-xh');
     hovered = t;
+    hoverEl.textContent = '';
     if (t) {
       mark(expansion(t), 'pcb-xh');
-      hoverEl.textContent = describe(t);
+      const refdes = t.handle && (t.handle.includes('.') ? t.handle.split('.')[0] : t.handle);
+      const card = refdes && !refdes.includes(':') ? partCard(refdes) : null;
+      if (card) hoverEl.appendChild(card);
+      else hoverEl.textContent = describe(t);
       strip.classList.add('hovering');
     } else {
-      hoverEl.textContent = '';
       strip.classList.remove('hovering');
     }
   }

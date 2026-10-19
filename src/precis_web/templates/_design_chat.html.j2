@@ -107,8 +107,9 @@
   </div>
   {% endif %}
 
-  {# ── the input ── #}
-  <form id="design-chat-form" method="post" action="{{ chat.chat_url }}" class="mt-3">
+  {# ── the input ── (for pcb the workbench's single chat box drives this
+     form; it stays in the DOM — pcb-selection.js reads it — but hidden) #}
+  <form id="design-chat-form" method="post" action="{{ chat.chat_url }}" class="mt-3"{% if chat.kind == 'pcb' %} hidden{% endif %}>
     <textarea id="design-chat-message" name="message" rows="3" required
               placeholder="{{ 'e.g. lock the selected resistor, or propose moving it to x=10 mm' if chat.kind == 'pcb' else ('e.g. add a block @linker between @tube and @bud' if chat.kind == 'se' else 'e.g. put an O on top of @aPd1, then measure the Pd–O distance') }}"
               class="w-full rounded border border-line-strong px-2 py-1 text-sm"></textarea>

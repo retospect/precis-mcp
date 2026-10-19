@@ -306,6 +306,69 @@ def test_info_strip_has_hover_and_selection_slots(
         assert marker in r.text, marker
 
 
+def test_one_chat_box_and_part_card_render(pcb_client, runtime_with_store) -> None:
+    """One chat box (workbench spec slice 3): the Ask/Propose toggle, clear
+    and the chips row — and the design-chat form is present-but-hidden on
+    pcb (the box drives it; Apply still required)."""
+    _seed(runtime_with_store)
+    r = pcb_client.get("/pcb/web_pcb")
+    assert r.status_code == 200
+    for marker in (
+        'id="pcb-mode-ask"',
+        'id="pcb-mode-propose"',
+        'id="pcb-argue-chips"',
+        'id="pcb-argue-clear"',
+        'id="pcb-part-cards"',
+    ):
+        assert marker in r.text, marker
+    assert 'id="design-chat-form" method="post"' in r.text
+    assert (
+        'design-chat-form" method="post" action="/pcb/web_pcb/chat" class="mt-3" hidden'
+        in r.text
+    )
+
+
+def test_part_thumbnail_via_safe_get_cached_on_ref(
+    pcb_client, runtime_with_store, monkeypatch
+) -> None:
+    """The thumbnail resolves through the fetch seam (production: safe_get)
+    once, caches b64+mime on the part ref's meta, and never refetches."""
+    from precis_web import pcb_parts
+
+    store = runtime_with_store.hub.store
+    ref = store.insert_ref(kind="part", slug="C99999", title="t")
+    monkeypatch.setattr(store, "ensure_part_ref", lambda lcsc, **kw: ref.id)
+    calls = []
+
+    class _R:
+        def __init__(self, code, body=b"", mime="text/html"):
+            self.status_code, self.content, self.headers = (
+                code,
+                body,
+                {"content-type": mime},
+            )
+            self.text = body.decode("utf-8", "replace")
+
+    def fake_fetch(lcsc):
+        calls.append(lcsc)
+        return (b"\x89PNGx", "image/png")
+
+    assert pcb_parts.thumbnail(store, "C99999", fetch=fake_fetch) == (
+        b"\x89PNGx",
+        "image/png",
+    )
+    # second ask reads the meta cache — no fetch
+    assert pcb_parts.thumbnail(store, "C99999", fetch=fake_fetch) == (
+        b"\x89PNGx",
+        "image/png",
+    )
+    assert calls == ["C99999"]
+    assert store.get_ref(kind="part", id=ref.id).meta["thumb"]["mime"] == "image/png"
+    # the production fetch's two hops go through the SSRF guard
+    src = __import__("pathlib").Path(pcb_parts.__file__).read_text(encoding="utf-8")
+    assert "safe_get(" in src
+
+
 def test_board_endpoint_renders_even_before_placement(
     pcb_client, runtime_with_store
 ) -> None:

@@ -23,7 +23,62 @@
   var errorEl = document.getElementById("pcb-argue-error");
   var submit = document.getElementById("pcb-argue-submit");
   var host = document.getElementById("pcb-notes-host");
+  var chipsEl = document.getElementById("pcb-argue-chips");
+  var clearBtn = document.getElementById("pcb-argue-clear");
+  var modeAsk = document.getElementById("pcb-mode-ask");
+  var modePropose = document.getElementById("pcb-mode-propose");
+  var chatForm = document.getElementById("design-chat-form");
+  var chatMsg = document.getElementById("design-chat-message");
+  var chatHandles = document.getElementById("design-chat-handles");
+  var mode = "ask";
   var clicked = [];
+  var shown = {}; // raw handle -> the text inserted into the box
+
+  // Layout-only objects (vias, tracks, pours, zones — catalogue keys with
+  // a via:/silk:/outline:/fiducial: prefix) carry the L: prefix; a layout
+  // pin is the same object as the netlist pin and gets none.
+  function displayOf(handle) {
+    var kind = handle.split(":")[0];
+    if (["via", "silk", "outline", "fiducial"].indexOf(kind) !== -1) {
+      return "L:" + handle.replace(/:/g, " ");
+    }
+    return handle;
+  }
+
+  function renderChips() {
+    if (!chipsEl) return;
+    chipsEl.textContent = "";
+    clicked.forEach(function (h) {
+      var chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "rounded-full bg-surface-muted px-1.5 py-0.5";
+      chip.textContent = displayOf(h) + " ×";
+      chip.title = "remove " + displayOf(h);
+      chip.addEventListener("click", function () {
+        clicked = clicked.filter(function (x) { return x !== h; });
+        renderChips();
+      });
+      chipsEl.appendChild(chip);
+    });
+  }
+
+  function setMode(m) {
+    mode = m;
+    if (modeAsk) modeAsk.setAttribute("aria-pressed", String(m === "ask"));
+    if (modePropose) modePropose.setAttribute("aria-pressed", String(m === "propose"));
+    if (modeAsk) modeAsk.classList.toggle("font-semibold", m === "ask");
+    if (modePropose) modePropose.classList.toggle("font-semibold", m === "propose");
+  }
+  if (modeAsk) modeAsk.addEventListener("click", function () { setMode("ask"); });
+  if (modePropose) modePropose.addEventListener("click", function () { setMode("propose"); });
+  if (clearBtn) clearBtn.addEventListener("click", function () {
+    box.value = "";
+    clicked = [];
+    shown = {};
+    renderChips();
+    if (errorEl) errorEl.classList.add("hidden");
+    if (status) status.textContent = "";
+  });
 
   function insertHandle(handle) {
     var v = box.value;
@@ -33,12 +88,15 @@
     var after = v.slice(end);
     var lead = before && !/\s$/.test(before) ? " " : "";
     var trail = after && !/^\s/.test(after) ? " " : " ";
-    var ins = lead + handle + trail;
+    var text = displayOf(handle);
+    shown[handle] = text;
+    var ins = lead + text + trail;
     box.value = before + ins + after;
     var caret = start + ins.length;
     box.setSelectionRange(caret, caret);
     box.focus({ preventScroll: true });
     if (clicked.indexOf(handle) === -1) clicked.push(handle);
+    renderChips();
   }
 
   function handleAt(doc, ev) {
@@ -95,16 +153,28 @@
   function send() {
     var text = box.value;
     if (!text.trim()) {
-      showError("type an argument first");
+      showError("type something first");
+      return;
+    }
+    // Only handles still present in the text (as the L:-display form or the
+    // raw key) count as clicked.
+    var present = clicked.filter(function (h) {
+      return text.indexOf(shown[h] || h) !== -1 || text.indexOf(h) !== -1;
+    });
+    if (mode === "propose") {
+      // The shared design-chat form carries the proposal: typed ops only,
+      // never applied without the explicit Apply in the transcript below.
+      if (!chatForm || !chatMsg) { showError("design chat unavailable"); return; }
+      chatMsg.value = text;
+      if (chatHandles) chatHandles.value = present.join(",");
+      errorEl.classList.add("hidden");
+      status.textContent = "proposing…";
+      chatForm.requestSubmit();
       return;
     }
     errorEl.classList.add("hidden");
     status.textContent = "asking the model…";
     submit.disabled = true;
-    // Only handles still present in the text count as clicked.
-    var present = clicked.filter(function (h) {
-      return text.indexOf(h) !== -1;
-    });
     fetch(noteUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -136,6 +206,8 @@
           : "recorded as " + d.name + ", answered as " + d.answer;
         box.value = "";
         clicked = [];
+        shown = {};
+        renderChips();
       })
       .catch(function (e) {
         submit.disabled = false;
