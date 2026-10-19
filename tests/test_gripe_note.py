@@ -265,3 +265,98 @@ def test_note_gripes_posts_once_and_reports(store: Store) -> None:
         if c.chunk_kind == "gripe_comment"
     ]
     assert len(comments) == 1
+
+
+def _g(cwd: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    ).stdout.strip()
+
+
+def _commit(repo: Path, n: int) -> str:
+    (repo / "f").write_text(str(n), encoding="utf-8")
+    _g(repo, "add", "f")
+    _g(
+        repo,
+        "-c",
+        "user.email=t@example.invalid",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-qm",
+        f"c{n}",
+    )
+    return _g(repo, "rev-parse", "HEAD")
+
+
+def _prod_rig(tmp_path: Path) -> tuple[Path, Path, Path, list[str]]:
+    """A bare origin, a seed clone that pushes c1..c3, and the release owner's
+    checkout ``owner`` (at c1). Origin's ``prod`` starts at c1."""
+    origin = tmp_path / "origin.git"
+    _g(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    seed = tmp_path / "seed"
+    _g(tmp_path, "clone", "-q", str(origin), str(seed))
+    shas = [_commit(seed, n) for n in (1, 2, 3)]
+    _g(seed, "push", "-q", "origin", "HEAD:refs/heads/main")
+    _g(seed, "push", "-q", "origin", f"{shas[0]}:refs/heads/prod")
+    owner = tmp_path / "owner"
+    _g(tmp_path, "clone", "-q", str(origin), str(owner))
+    _g(owner, "checkout", "-q", "--detach", shas[0])
+    return origin, seed, owner, shas
+
+
+def _prod_clone(tmp_path: Path, origin: Path, sha: str) -> Path:
+    clone = tmp_path / "prod-clone"
+    _g(tmp_path, "clone", "-q", str(origin), str(clone))
+    _g(clone, "checkout", "-q", "--detach", sha)
+    (clone / "scripts").mkdir()
+    (clone / "scripts" / "prod-precis").write_text("#!/bin/sh\n", encoding="utf-8")
+    return clone
+
+
+def test_write_tree_keeps_a_tree_that_contains_origin_prod(tmp_path: Path) -> None:
+    _, _, owner, _ = _prod_rig(tmp_path)
+    mod = _load(SCRIPT, "gripe_note", tmp_path)
+    assert mod.write_tree(owner) == owner
+
+
+def test_write_tree_moves_a_stale_owner_to_the_prod_clone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    origin, seed, owner, shas = _prod_rig(tmp_path)
+    _g(seed, "push", "-q", "origin", f"{shas[2]}:refs/heads/prod")  # the deploy
+    clone = _prod_clone(tmp_path, origin, shas[2])
+    monkeypatch.setenv("PRECIS_PROD_CHECKOUT", str(clone))
+    mod = _load(SCRIPT, "gripe_note", tmp_path)
+    # The owner's checkout never fetched the move: the local origin/prod is
+    # still c1, so only a fetch-then-compare sees it is behind.
+    assert _g(owner, "rev-parse", "origin/prod") == shas[0]
+    assert mod.write_tree(owner) == clone
+
+
+def test_write_tree_refuses_to_pick_a_stale_clone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    origin, seed, owner, shas = _prod_rig(tmp_path)
+    _g(seed, "push", "-q", "origin", f"{shas[2]}:refs/heads/prod")
+    clone = _prod_clone(tmp_path, origin, shas[1])  # behind origin/prod
+    monkeypatch.setenv("PRECIS_PROD_CHECKOUT", str(clone))
+    mod = _load(SCRIPT, "gripe_note", tmp_path)
+    # Nothing contains origin/prod: fall back to the caller's tree, whose
+    # prod-precis guard then refuses the write.
+    assert mod.write_tree(owner) == owner
+
+
+def test_write_tree_without_a_prod_clone_falls_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, seed, owner, shas = _prod_rig(tmp_path)
+    _g(seed, "push", "-q", "origin", f"{shas[2]}:refs/heads/prod")
+    monkeypatch.setenv("PRECIS_PROD_CHECKOUT", str(tmp_path / "absent"))
+    mod = _load(SCRIPT, "gripe_note", tmp_path)
+    assert mod.write_tree(owner) == owner

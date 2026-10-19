@@ -25,8 +25,13 @@ a prod outage, refusal, crash or a prod call past TIMEOUT_S (25 s) is
 reported, not retried. It skips when PRECIS_GRIPE_NOTE=0, when the host has
 no prod DSN (~/.secrets/pw/PRECIS_DATABASE_URL), or when nothing is named.
 The write runs as that DSN's role (agent_rw). scripts/prod-precis refuses a
-write from a tree behind origin/prod (exit 3), so a stale tree reports a
-failed post and posts nothing.
+write from a tree behind origin/prod (exit 3), and a release runs this from
+the release owner's checkout, which sits behind the head it just rolled out
+(origin/prod moves at the deploy). So the call runs from the first tree that
+contains origin/prod: this one, else the prod clone (PRECIS_PROD_CHECKOUT, or
+the main checkout's ``-prod`` sibling), which a deploy has already moved to
+the released sha. The guard is untouched; no tree contains it -> the refusal
+is reported and nothing posts (gr497809).
 
 Test seams: PRECIS_GRIPE_NOTE_CLI replaces the prod-precis command (and
 skips the DSN check); PRECIS_GRIPE_NOTE_TIMEOUT overrides TIMEOUT_S.
@@ -84,6 +89,56 @@ def _git(*args: str) -> str | None:
     except (OSError, subprocess.TimeoutExpired):
         return None
     return cp.stdout if cp.returncode == 0 else None
+
+
+def _in(root: Path, *args: str) -> subprocess.CompletedProcess[str] | None:
+    try:
+        return subprocess.run(
+            ["git", "-C", str(root), *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=20,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def contains_prod(root: Path) -> bool:
+    """Whether ``root``'s HEAD descends from a freshly fetched origin/prod.
+
+    The same test scripts/prod-precis applies before a write.
+    """
+    _in(root, "fetch", "--quiet", "origin", "prod")
+    cp = _in(root, "merge-base", "--is-ancestor", "origin/prod", "HEAD")
+    return cp is not None and cp.returncode == 0
+
+
+def prod_clone(root: Path) -> Path | None:
+    """The prod clone (scripts/lib/env-pointers.sh ``env_prod_checkout_dir``)."""
+    if override := os.environ.get("PRECIS_PROD_CHECKOUT", "").strip():
+        clone = Path(override)
+    else:
+        cp = _in(root, "rev-parse", "--path-format=absolute", "--git-common-dir")
+        if cp is None or cp.returncode != 0 or not cp.stdout.strip():
+            return None
+        common = Path(cp.stdout.strip())
+        clone = common.parent.with_name(common.parent.name + "-prod")
+    return clone if (clone / ".git" / "HEAD").is_file() else None
+
+
+def write_tree(root: Path) -> Path:
+    """The tree to run the prod write from: ``root`` if it contains
+    origin/prod, else the prod clone if it does, else ``root`` (the guard then
+    refuses and the caller reports it)."""
+    if contains_prod(root):
+        return root
+    clone = prod_clone(root)
+    if clone is not None and (clone / "scripts" / "prod-precis").is_file():
+        if contains_prod(clone):
+            return clone
+    return root
 
 
 def run_capped(cmd: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
@@ -152,7 +207,11 @@ def main(argv: list[str] | None = None) -> int:
     if not cli and not DSN_FILE.is_file():
         print(f"gripe-note: no prod DSN on this host — skipped {named}{tail}")
         return 0
-    base = shlex.split(cli) if cli else [str(HERE / "prod-precis")]
+    base = (
+        shlex.split(cli)
+        if cli
+        else [str(write_tree(HERE.parent) / "scripts" / "prod-precis")]
+    )
     cmd = [*base, "gripes", "--note", text, "--ids", ",".join(str(i) for i in ids)]
     timeout = float(os.environ.get("PRECIS_GRIPE_NOTE_TIMEOUT") or TIMEOUT_S)
     try:
