@@ -42,6 +42,12 @@ moved) all hold with one improving, and no ``(rule, severity)`` count of
 the caller's DRC check rises — errors and warns alike. An accepted move
 is the new baseline and the victim list is recomputed.
 
+**The gate** (Reto 2026-10-19): the pass runs only on a finished board —
+every net routed and no copper DRC error. Silk and label rules
+(:data:`NON_COPPER_RULE_PREFIXES`) do not count. Otherwise it returns the
+outcome untouched with a report whose line says why, e.g. ``cleanup:
+skipped (29 unrouted, 11 copper DRC errors)``.
+
 **Bounds**: ``RealizeConfig.cleanup_max_moves`` trials and
 ``cleanup_budget_s`` seconds per :func:`~precis.pcb.realize.realize` call,
 checked before each trial. The route job prints
@@ -83,6 +89,9 @@ MOVE_RADIUS_MM = 1.0
 FANOUT_MOVE_RADIUS_MM = 5.0
 #: The smallest length change counted as an improvement.
 MIN_LENGTH_GAIN_MM = 0.01
+#: DRC rules that do not gate the pass: silk and label findings say nothing
+#: about copper.
+NON_COPPER_RULE_PREFIXES = ("silk",)
 
 _EPS = 1e-6
 
@@ -273,7 +282,10 @@ def _trial(
     kept = {s: p for s, p in stamped.items() if int(ir.seg_net[s]) not in nets}
     ripped = [s for net in nets for s in stamped if int(ir.seg_net[s]) == net]
     grid = maze.OccupancyGrid(
-        ctx.spec, clearance_mm=ctx.clearance, net_clearance_mm=ctx.net_clearance
+        ctx.spec,
+        clearance_mm=ctx.clearance,
+        net_clearance_mm=ctx.net_clearance,
+        net_layer_clearance_mm=ctx.net_layer_clearance,
     )
     grid.set_body_mask(ctx.body_mask)
     new_stamped: dict[int, maze.RoutePath] = {}
@@ -344,6 +356,40 @@ def cleanup(
     when no move was kept — and the report."""
     started = time.monotonic()
     deadline = started + config.cleanup_budget_s
+    unrouted_nets = {int(ir.seg_net[s]) for s in outcome[2]} | {
+        int(ir.pin_net[p]) for p in outcome[4]
+    }
+    try:
+        counts = check(ir, outcome[0], outcome[1])
+    except Exception as exc:
+        # The post-route DRC gate runs the same rules next and reports a
+        # raise with its own failure class; the clean-up must not pre-empt it.
+        return outcome, realize.CleanupReport(
+            kept=0,
+            tried=0,
+            length_saved_mm=0.0,
+            bends_saved=0,
+            vias_saved=0,
+            out_of_time=False,
+            elapsed_s=time.monotonic() - started,
+            skipped=f"DRC check raised {type(exc).__name__}",
+        )
+    copper_errors = sum(
+        n
+        for (rule, severity), n in counts.items()
+        if severity == "error" and not rule.startswith(NON_COPPER_RULE_PREFIXES)
+    )
+    if unrouted_nets or copper_errors:
+        return outcome, realize.CleanupReport(
+            kept=0,
+            tried=0,
+            length_saved_mm=0.0,
+            bends_saved=0,
+            vias_saved=0,
+            out_of_time=False,
+            elapsed_s=time.monotonic() - started,
+            skipped=f"{len(unrouted_nets)} unrouted, {copper_errors} copper DRC errors",
+        )
     tried = kept = 0
     length_saved = 0.0
     bends_saved = vias_saved = 0
@@ -356,7 +402,7 @@ def cleanup(
     # dodge several), a signal via by net alone.
     seen: set[tuple[int, int, float, float]] = set()
     plane_segs = set(ctx.plane_ids)
-    baseline_drc: Mapping[tuple[str, str], int] | None = None
+    baseline_drc: Mapping[tuple[str, str], int] = counts
     n_victims = sum(1 for p in stamped.values() if _is_victim(p) is not None)
     queue = list(_candidates(ir, ctx, stamped, outcome[1]))
     while tried < config.cleanup_max_moves:
@@ -419,8 +465,6 @@ def cleanup(
         )
         if not (holds and gains):
             continue
-        if baseline_drc is None:
-            baseline_drc = check(ir, outcome[0], outcome[1])
         drc_after = check(ir, t_tracks, t_vias)
         if any(n > baseline_drc.get(key, 0) for key, n in drc_after.items()):
             continue

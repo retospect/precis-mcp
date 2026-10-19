@@ -1044,10 +1044,15 @@ class CleanupReport:
     elapsed_s: float
     #: Tracks the detector flagged (avoidable bends or detour), tried or not.
     victims: int = 0
+    #: Why the pass did not run (:func:`precis.pcb.routeclean.cleanup`'s
+    #: gate); empty when it did.
+    skipped: str = ""
 
     def line(self) -> str:
         """The route summary line; always present when the pass ran, so a
         silent no-op is distinguishable from a pass that never ran."""
+        if self.skipped:
+            return f"cleanup: skipped ({self.skipped})"
         if not self.tried:
             return (
                 f"cleanup: 0 moves kept, 0 tried ({self.victims} kinked/detoured "

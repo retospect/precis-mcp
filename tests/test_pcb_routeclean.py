@@ -5,6 +5,7 @@ straight; a board with no improving move comes out byte-identical."""
 from __future__ import annotations
 
 import collections
+import dataclasses
 import itertools
 from collections.abc import Sequence
 from typing import Any
@@ -260,3 +261,81 @@ def test_a_plane_fanout_via_that_blocks_a_track_is_moved() -> None:
     assert (g1_via.x, g1_via.y) not in {(v.x, v.y) for v in fan_on}
     drc_off, drc_on = _drc(ir, off.tracks, off.vias), _drc(ir, on.tracks, on.vias)
     assert all(n <= drc_off.get(k, 0) for k, n in drc_on.items()), (drc_off, drc_on)
+
+
+def test_the_pass_skips_a_board_with_copper_drc_errors_and_says_why() -> None:
+    """Reto 2026-10-19: only a finished board is cleaned up. Silk errors do
+    not count; a copper error does."""
+    ir, ctx, config, outcome, stamped = _kinked_board()
+
+    def copper_errors(
+        ir_: PcbIR,
+        tracks: Sequence[pcb_realize.RealizedTrack],
+        vias: Sequence[pcb_realize.RealizedVia],
+    ) -> dict[tuple[str, str], int]:
+        return {("clearance", "error"): 3, ("silk_missing", "error"): 9}
+
+    new, report = routeclean.cleanup(
+        ir, ctx, config, outcome, dict(stamped), copper_errors
+    )
+    assert new is outcome
+    assert (report.kept, report.tried) == (0, 0)
+    assert report.line() == "cleanup: skipped (0 unrouted, 3 copper DRC errors)"
+
+
+def test_the_pass_skips_a_board_with_an_unrouted_net_and_says_why() -> None:
+    ir, ctx, config, outcome, stamped = _kinked_board()
+    unrouted = (outcome[0], outcome[1], [_seg_of(ir, "B")], outcome[3], outcome[4])
+
+    new, report = routeclean.cleanup(ir, ctx, config, unrouted, dict(stamped), _drc)
+    assert new is unrouted
+    assert report.tried == 0
+    assert report.line() == "cleanup: skipped (1 unrouted, 0 copper DRC errors)"
+
+
+def test_the_pass_runs_when_only_silk_rules_fail() -> None:
+    ir, ctx, config, outcome, stamped = _kinked_board()
+
+    def silk_only(
+        ir_: PcbIR,
+        tracks: Sequence[pcb_realize.RealizedTrack],
+        vias: Sequence[pcb_realize.RealizedVia],
+    ) -> dict[tuple[str, str], int]:
+        return {("silk_missing", "error"): 40, ("silk_edge_clearance", "error"): 2}
+
+    _new, report = routeclean.cleanup(
+        ir, ctx, config, outcome, dict(stamped), silk_only
+    )
+    assert report.skipped == ""
+    assert report.kept == 1 and report.tried == 1
+
+
+def test_a_raising_drc_check_skips_the_pass_and_leaves_the_raise_to_the_gate() -> None:
+    ir, ctx, config, outcome, stamped = _kinked_board()
+
+    def boom(
+        ir_: PcbIR,
+        tracks: Sequence[pcb_realize.RealizedTrack],
+        vias: Sequence[pcb_realize.RealizedVia],
+    ) -> dict[tuple[str, str], int]:
+        raise ValueError("drc exploded")
+
+    new, report = routeclean.cleanup(ir, ctx, config, outcome, dict(stamped), boom)
+    assert new is outcome
+    assert report.line() == "cleanup: skipped (DRC check raised ValueError)"
+
+
+def test_a_trial_grid_carries_the_per_net_layer_clearance() -> None:
+    """The route's own passes build their grid with ctx.net_layer_clearance;
+    a trial that left it out would accept copper the real pass refuses."""
+    ir, ctx, config, outcome, stamped = _kinked_board()
+    sig, b = _seg_of(ir, "SIG"), _seg_of(ir, "B")
+    sig_net, b_net = int(ir.seg_net[sig]), int(ir.seg_net[b])
+    plain = routeclean._trial(ir, ctx, config, stamped, sig_net, b_net)
+    assert plain is not None
+    wide = dataclasses.replace(
+        ctx, net_layer_clearance={(sig_net, layer): 3.0 for layer in ctx.signal_layers}
+    )
+    strict = routeclean._trial(ir, wide, config, stamped, sig_net, b_net)
+    if strict is not None:
+        assert strict[1][sig] != plain[1][sig], "SIG ignored its 3 mm layer clearance"

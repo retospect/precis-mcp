@@ -204,7 +204,10 @@ job applies).
   The summary says `cleanup: K moves kept, L tried, length -X mm,
   bends -Y`; when no flagged track has a foreign via in its way it says
   `cleanup: 0 moves kept, 0 tried (N kinked/detoured track(s), none with
-  a foreign via blocking its straight line)`. `cleanup=False` turns it off.
+  a foreign via blocking its straight line)`. It runs only on a finished
+  board (every net routed, no copper DRC error; silk rules do not count);
+  otherwise `cleanup: skipped (29 unrouted, 11 copper DRC errors)`.
+  `cleanup=False` turns it off.
 - `op='route'` also accepts `place` (bool, default true = the joint
   place+route above). `place=False` is route-only: no anneal, every pose
   and the stored sketch stay as stored. Cannot combine with `loop`.
