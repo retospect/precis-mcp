@@ -2166,6 +2166,19 @@ def _retry_attempts() -> int:
     return env_int("PRECIS_LLM_RETRY_ATTEMPTS", 3, lo=1, hi=6)
 
 
+def _server_retry_hint_s(result: LlmResult) -> float | None:
+    """Seconds until ``result.retry_at`` when it is an upstream
+    ``Retry-After`` (:func:`~precis.utils.llm.failure.classify` stamps one
+    shorter than the class's fixed horizon), else ``None``."""
+    if result.retry_at is None or result.reason_class is None:
+        return None
+    horizon = _failure.DEFAULT_HORIZON.get(result.reason_class)
+    left = (result.retry_at - datetime.now(UTC)).total_seconds()
+    if horizon is None or left >= horizon.total_seconds() - 5:
+        return None
+    return max(left, 0.0)
+
+
 def _run_with_retry(
     provider: LlmProvider,
     req: LlmRequest,
@@ -2203,6 +2216,13 @@ def _run_with_retry(
             break
         wait = min(_RETRY_BASE_S * (2 ** (n - 1)), _RETRY_MAX_WAIT_S)
         wait = min(wait * (0.75 + random.random() * 0.5), _RETRY_MAX_WAIT_S - waited)
+        hint = _server_retry_hint_s(result)
+        if hint is not None:
+            # The upstream named its own Retry-After: never retry sooner, and
+            # a wait beyond the in-process budget is left to ``retry_at``.
+            if hint > _RETRY_MAX_WAIT_S - waited:
+                break
+            wait = max(wait, hint)
         if wait <= 0:
             break
         log.info(

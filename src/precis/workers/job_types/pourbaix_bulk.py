@@ -359,29 +359,43 @@ def find_cached_entries(store: Any, key: str) -> tuple[int, list[Any]] | None:
 
 # ── MP seams (tests replace these; no network in the suite) ───────────
 
+_MP_HOST = "materialsproject.org"
+
 
 def _mp_version(api_key: str) -> str:
-    from precis.utils.http import call_with_backoff
+    from precis.utils.http import call_with_backoff, paced_requests
     from precis_dft.pourbaix_bulk import database_version
 
     # Politeness core (limiter row ``materialsproject``): retries transport
     # errors and HTTP 429/5xx the client surfaces; MPRestError etc. pass.
-    return call_with_backoff(
-        lambda: database_version(api_key), service="materialsproject"
-    )
+    # paced_requests meters mp-api's own requests individually.
+    def call() -> str:
+        with paced_requests(_MP_HOST, service="materialsproject"):
+            return database_version(api_key)
+
+    return call_with_backoff(call, service="materialsproject")
 
 
 def _mp_fetch(api_key: str, chemsys: str) -> list[Any]:
-    from precis.utils.http import call_with_backoff, polite_user_agent
+    from precis.utils.http import (
+        call_with_backoff,
+        limiter_pacer,
+        paced_requests,
+        polite_user_agent,
+    )
     from precis_dft.pourbaix_bulk import fetch_entries
 
-    # One limiter token per whole-fetch attempt (mp-api issues its own
-    # requests inside); the ion-reference REST call carries the polite UA.
+    # A limiter token per whole-fetch attempt, plus one per request mp-api
+    # and the ion-reference pager issue inside it; the ion-reference REST
+    # call carries the polite UA (mp-api keeps its own).
     ua = polite_user_agent()
-    return call_with_backoff(
-        lambda: fetch_entries(api_key, chemsys, user_agent=ua),
-        service="materialsproject",
-    )
+    pace = limiter_pacer("materialsproject")
+
+    def call() -> list[Any]:
+        with paced_requests(_MP_HOST, service="materialsproject"):
+            return fetch_entries(api_key, chemsys, user_agent=ua, pace=pace)
+
+    return call_with_backoff(call, service="materialsproject")
 
 
 MP_VERSION: Callable[[str], str] = _mp_version

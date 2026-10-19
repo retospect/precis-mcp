@@ -37,14 +37,16 @@ venv into a typed, actionable error instead of an ImportError.
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import http.client
 import json
 import logging
 import math
 import random
+import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
@@ -862,6 +864,104 @@ def call_with_backoff[T](
         circuit.consecutive_failures = 0
         return result
     raise AssertionError("unreachable")  # pragma: no cover (attempts < 1)
+
+
+@dataclass(frozen=True, slots=True)
+class _PacedHost:
+    suffix: str
+    row: str | None
+    seed: tuple[int, float] | None
+    policy: Policy
+    user_agent: str | None
+
+
+_PACED_LOCK = threading.Lock()
+_PACED_HOSTS: list[_PacedHost] = []
+_PACED_ORIG_SEND: Any = None
+
+
+def _paced_send(session: Any, request: Any, **kwargs: Any) -> Any:
+    """``requests.Session.send`` replacement: one limiter token per outbound
+    request to a registered host, a Retry-After on 429/503 parks the row."""
+    host = (urlparse(str(request.url)).hostname or "").lower()
+    with _PACED_LOCK:
+        entry = next(
+            (
+                h
+                for h in reversed(_PACED_HOSTS)
+                if host == h.suffix or host.endswith("." + h.suffix)
+            ),
+            None,
+        )
+        orig = _PACED_ORIG_SEND
+    if entry is None:
+        return orig(session, request, **kwargs)
+    if entry.user_agent and str(request.headers.get("User-Agent", "")).startswith(
+        "python-requests"
+    ):
+        request.headers["User-Agent"] = entry.user_agent
+    _take_token(entry.row, entry.policy, entry.seed)
+    resp = orig(session, request, **kwargs)
+    if resp.status_code in (429, 503):
+        _park(entry.row, retry_after_seconds(resp.headers))
+    return resp
+
+
+def limiter_pacer(service: str, *, policy: Policy | None = None) -> Callable[[], None]:
+    """A zero-argument callable taking one limiter token for ``service`` —
+    for code that must not import ``precis`` (``precis_dft``) but loops over
+    several upstream requests and has to pace each one."""
+    policy = policy or policy_for(service)
+    row, seed = _resolve_provider(_UNSET, policy, None)
+
+    def pace() -> None:
+        _take_token(row, policy, seed)
+
+    return pace
+
+
+@contextlib.contextmanager
+def paced_requests(
+    host: str,
+    *,
+    service: str,
+    policy: Policy | None = None,
+    provider: str | _Unset | None = _UNSET,
+    user_agent: str | None = None,
+) -> Iterator[None]:
+    """Pace every ``requests`` call to ``host`` (and its subdomains) made
+    inside the block — for client libraries that issue several requests per
+    call and expose no hook (``mp_api``, ``youtube_transcript_api``), where
+    :func:`call_with_backoff` can only meter the whole call.
+
+    Each request takes a token from the service's limiter row (the policy's
+    ``limiter_wait_s`` bounds the wait; a refusal raises ``RateLimited`` out
+    of the library call), and a 429/503 ``Retry-After`` parks the row.
+    ``user_agent`` replaces the library's bare ``python-requests`` UA only;
+    a library that sets its own keeps it. Requests to other hosts pass
+    through untouched. Re-entrant and safe across threads: the patch is
+    installed with the first block and removed with the last.
+    """
+    import requests
+
+    session_cls: Any = requests.Session  # Any: the class attribute is swapped
+    policy = policy or policy_for(service)
+    url = f"https://{host}/"
+    row, seed = _resolve_provider(provider, policy, url)
+    entry = _PacedHost(host.lower(), row, seed, policy, user_agent)
+    global _PACED_ORIG_SEND
+    with _PACED_LOCK:
+        if not _PACED_HOSTS:
+            _PACED_ORIG_SEND = session_cls.send
+            session_cls.send = _paced_send
+        _PACED_HOSTS.append(entry)
+    try:
+        yield
+    finally:
+        with _PACED_LOCK:
+            _PACED_HOSTS.remove(entry)
+            if not _PACED_HOSTS:
+                session_cls.send = _PACED_ORIG_SEND
 
 
 def _log_refusal(service: str, resp: httpx.Response) -> None:

@@ -86,7 +86,7 @@ extra; they are imported lazily so importing this module never needs them.
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any, cast
 
 #: Verdict values, worst first — the order ``worst_in_window`` ranks by.
@@ -142,7 +142,10 @@ ION_REFERENCE_FIELDS = "identifier,formula,data"
 
 
 def fetch_ion_reference_data(
-    api_key: str, *, user_agent: str | None = None
+    api_key: str,
+    *,
+    user_agent: str | None = None,
+    pace: Callable[[], None] | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch MP's ion_ref_data project over its supported Contribs REST API.
 
@@ -151,7 +154,8 @@ def fetch_ion_reference_data(
     optional MPContribs client (whose transitive Pint bounds conflict with
     the ``[estimate]`` extra). Results are paginated and schema-checked.
     ``user_agent`` (the caller's honest polite UA; this subtree imports
-    nothing from ``precis``) is sent when given.
+    nothing from ``precis``) is sent when given. ``pace`` is called before
+    every page after the first (the caller already paced the first).
     """
     import httpx
 
@@ -163,6 +167,8 @@ def fetch_ion_reference_data(
     total_pages: int | None = None
     page = 1
     while total_pages is None or page <= total_pages:
+        if pace is not None and page > 1:
+            pace()
         response = httpx.get(
             ION_REFERENCE_URL,
             params={
@@ -686,14 +692,21 @@ def render_text(result: Mapping[str, Any]) -> str:
 
 
 def fetch_entries(
-    api_key: str, chemsys_str: str, *, user_agent: str | None = None
+    api_key: str,
+    chemsys_str: str,
+    *,
+    user_agent: str | None = None,
+    pace: Callable[[], None] | None = None,
 ) -> list[Any]:
     """Pourbaix entries for one chemsys from the Materials Project — one
     ``get_pourbaix_entries`` call (MP adds O and H itself). ``user_agent``
-    applies to the ion-reference REST fetch only; mp-api sets its own."""
+    applies to the ion-reference REST fetch only; mp-api sets its own.
+    ``pace`` meters that fetch's extra pages."""
     from mp_api.client import MPRester
 
-    ion_reference_data = fetch_ion_reference_data(api_key, user_agent=user_agent)
+    ion_reference_data = fetch_ion_reference_data(
+        api_key, user_agent=user_agent, pace=pace
+    )
 
     class _MPResterWithIonReferenceData(MPRester):
         """Use the supported REST-fetched references in the mp-api workflow."""

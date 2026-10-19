@@ -478,3 +478,51 @@ def test_medium_ladder_content_error_never_reaches_paid_rung(
     out = route(LlmRequest(tier=Tier.MEDIUM, prompt="x"))
     assert out.error is not None and out.reason_class == "content"
     assert claude.calls == 1 and paid.calls == 0
+
+
+def _http_ra(code: int, retry_after: str) -> HTTPError:
+    hdrs = Message()
+    hdrs["Retry-After"] = retry_after
+    return HTTPError("http://x", code, "slow down", hdrs, None)
+
+
+@pytest.mark.parametrize("code", [429, 503])
+def test_classify_honours_retry_after_on_429_and_503(code: int) -> None:
+    found = failure.classify("x", exc=_http_ra(code, "7"), now=NOW)
+    assert found.retry_at == NOW + timedelta(seconds=7)
+    assert found.reason_class == ("rate" if code == 429 else "transport")
+
+
+def test_classify_retry_after_http_date_and_absent_header() -> None:
+    when = (NOW + timedelta(seconds=90)).strftime("%a, %d %b %Y %H:%M:%S GMT")
+    found = failure.classify("x", exc=_http_ra(429, when), now=NOW)
+    assert found.retry_at == NOW + timedelta(seconds=90)
+    # No header (or a 500, which never carries one for us): fixed horizon.
+    assert failure.classify("x", exc=_http(429, "m"), now=NOW).retry_at == (
+        NOW + timedelta(minutes=15)
+    )
+    assert failure.classify("x", exc=_http_ra(500, "7"), now=NOW).retry_at == (
+        NOW + timedelta(minutes=30)
+    )
+
+
+def test_small_retry_waits_at_least_the_retry_after(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _flaky_client(monkeypatch, [_http_ra(429, "12"), _Reply("ok")])
+    waits = _patch_sleep(monkeypatch)
+    out = route(LlmRequest(tier=Tier.SMALL, prompt="x"))
+    assert out.error is None and len(calls) == 2
+    assert len(waits) == 1 and 11.0 <= waits[0] <= 12.5  # > the 2s backoff
+
+
+def test_small_retry_after_beyond_the_budget_is_not_retried_in_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _flaky_client(monkeypatch, [_http_ra(503, "120"), _Reply("never")])
+    waits = _patch_sleep(monkeypatch)
+    out = route(LlmRequest(tier=Tier.SMALL, prompt="x"))
+    assert out.error is not None and len(calls) == 1 and waits == []
+    assert out.retry_at is not None
+    left = (out.retry_at - datetime.now(UTC)).total_seconds()
+    assert 100 < left <= 120

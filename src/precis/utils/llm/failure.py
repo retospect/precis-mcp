@@ -40,6 +40,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal
 from urllib.error import HTTPError
 
+from precis.utils.http import retry_after_seconds
 from precis.utils.llm.quota import quota_retry_at
 
 FailureClass = Literal["quota", "rate", "budget", "transport", "content"]
@@ -174,6 +175,12 @@ def classify(
     if structural is None and timed_out:
         structural = "transport"
     if structural is not None:
+        # A 429/503 that names its own Retry-After overrides the fixed
+        # horizon: the upstream said when to come back (OpenRouter sends it).
+        if isinstance(exc, HTTPError) and exc.code in (429, 503):
+            secs = retry_after_seconds(exc.headers, wall=lambda: now)
+            if secs is not None:
+                return Classified(structural, now + timedelta(seconds=secs))
         return Classified(structural, now + DEFAULT_HORIZON[structural])
     return classify_text(text, now=now)
 

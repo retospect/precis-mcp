@@ -11,8 +11,10 @@ default ``en`` track doesn't exist).
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
+from collections.abc import Callable, Iterator
 from contextvars import ContextVar
 from dataclasses import replace
 from typing import Any, ClassVar
@@ -23,7 +25,13 @@ from precis.handlers._cache_base import CacheBackedHandler, FetchResult
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store.types import ChunkInsert
-from precis.utils.http import Policy, call_with_backoff, policy_for
+from precis.utils.http import (
+    Policy,
+    call_with_backoff,
+    paced_requests,
+    policy_for,
+    polite_user_agent,
+)
 from precis.utils.next_block import render_next_section
 from precis.utils.optional_deps import require_optional
 
@@ -54,6 +62,11 @@ _LANG_PREF: ContextVar[tuple[str, ...]] = ContextVar(
 )
 
 
+def _paced_call(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    with _yt_paced():
+        return fn(*args, **kwargs)
+
+
 def _yt_policy(service: str, *, attempts: int = 2, cap: float = 10.0) -> Policy:
     """Bounded interactive policy: a live agent call must not sit in long
     backoff. The scrape gets its own ``service`` so exhausted best-effort
@@ -64,6 +77,22 @@ def _yt_policy(service: str, *, attempts: int = 2, cap: float = 10.0) -> Policy:
 
 #: Limiter-row key source for the transcript client (which owns its own HTTP).
 _YT_HOST_URL = "https://www.youtube.com/"
+_YT_HOST = "www.youtube.com"
+
+
+@contextlib.contextmanager
+def _yt_paced() -> Iterator[None]:
+    """Meter each request the transcript library issues (watch page,
+    innertube, caption track) on the ``host:www.youtube.com`` row, and send
+    the honest UA in place of the library's bare ``python-requests``."""
+    with paced_requests(
+        _YT_HOST,
+        service="youtube",
+        policy=_yt_policy("youtube"),
+        user_agent=polite_user_agent(),
+    ):
+        yield
+
 
 _YT_BASE_ATTRIBUTION = (
     "Source: YouTube. Transcript © the video's uploader or YouTube "
@@ -211,7 +240,7 @@ class YouTubeHandler(CacheBackedHandler):
             # surfaced by the client. Domain errors (disabled, no transcript,
             # unavailable) are not retryable and propagate unchanged.
             snippets = call_with_backoff(
-                lambda: api.fetch(video_id, languages=languages),
+                lambda: _paced_call(api.fetch, video_id, languages=languages),
                 service="youtube",
                 policy=_yt_policy("youtube"),
                 url=_YT_HOST_URL,
@@ -317,7 +346,7 @@ def _list_languages(video_id: str) -> Response:
     try:
         api = yt.YouTubeTranscriptApi()
         transcripts = call_with_backoff(
-            lambda: list(api.list(video_id)),
+            lambda: _paced_call(lambda v: list(api.list(v)), video_id),
             service="youtube",
             policy=_yt_policy("youtube"),
             url=_YT_HOST_URL,

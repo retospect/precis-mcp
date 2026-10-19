@@ -482,7 +482,11 @@ def _fake_engine(
     monkeypatch: pytest.MonkeyPatch, outcomes: list[Any], seen: list[Any]
 ) -> None:
     def fetch_entries(
-        api_key: str, chemsys: str, *, user_agent: str | None = None
+        api_key: str,
+        chemsys: str,
+        *,
+        user_agent: str | None = None,
+        pace: Any = None,
     ) -> Any:
         seen.append(user_agent)
         out = outcomes.pop(0)
