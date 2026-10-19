@@ -1,0 +1,31 @@
+{% extends "base.html.j2" %}
+{% from "_drive_back.html.j2" import drive_back %}
+{% block title %}New board — PCB{% endblock %}
+{% block content %}
+
+<div class="mb-3 flex items-baseline gap-3 flex-wrap">
+  {{ drive_back('pcb', 'PCB') }}
+  <h1 class="text-lg font-semibold">New board</h1>
+</div>
+
+<div class="rounded border border-line bg-surface p-3 max-w-xl">
+  <h2 class="text-sm font-semibold">Import an EasyEDA Pro board (.epro2)</h2>
+  <form method="post" action="/pcb/import" enctype="multipart/form-data" class="mt-2 flex flex-col gap-2">
+    <label class="text-sm">file
+      <input type="file" name="file" accept=".epro2,application/zip" required class="block mt-1">
+    </label>
+    <label class="text-sm">slug
+      <input type="text" name="slug" placeholder="derived from the filename when empty" class="block mt-1 font-mono">
+    </label>
+    <label class="text-sm">title
+      <input type="text" name="title" placeholder="defaults to the slug" class="block mt-1">
+    </label>
+    <button type="submit" class="rounded bg-solid-strong px-3 py-1 text-xs text-on-solid w-fit">import</button>
+  </form>
+  <p class="mt-2 text-xs text-fg-subtle">
+    Creates a new design — a slug already in use is refused. Nets with fewer
+    than 2 pins are dropped and their pins marked unused; the import report
+    lists them after the upload.
+  </p>
+</div>
+{% endblock %}

@@ -7,6 +7,8 @@ asymmetry is asserted here.
 
 from __future__ import annotations
 
+import pathlib
+
 import pytest
 
 pytest.importorskip("fastapi")
@@ -635,7 +637,9 @@ def test_pcb_selection_chat_explicit_apply_and_readonly_history(
     assert stale_send.status_code == 409
 
 
-@pytest.mark.parametrize("path", ["/pcb/fixture/chat", "/pcb/fixture/chat/apply"])
+@pytest.mark.parametrize(
+    "path", ["/pcb/fixture/chat", "/pcb/fixture/chat/apply", "/pcb/import"]
+)
 def test_pcb_post_auth_and_cross_origin_refused_before_handler(
     runtime_with_store, tmp_path, path, monkeypatch
 ):
@@ -806,6 +810,7 @@ def test_detail_export_toolbar_links_both_downloads(
     assert r.status_code == 200
     assert 'href="/pcb/web_toolbar/fab.zip"' in r.text
     assert 'href="/pcb/web_toolbar/export.epro2"' in r.text
+    assert 'href="/pcb/new"' in r.text
     assert "production files" in r.text
 
 
@@ -816,3 +821,132 @@ def test_fab_zip_404_and_no_board(pcb_client, runtime_with_store) -> None:
     r = pcb_client.get("/pcb/web_no_board/fab.zip")
     assert r.status_code == 422
     assert "no board" in r.text
+
+
+# ── GET /pcb/new + POST /pcb/import (gr496699 slice 2) ──────────────────
+
+_EPRO_TINY = pathlib.Path(__file__).parent.parent / "fixtures" / "pcb_epro_tiny"
+
+
+def _epro2_bytes(*, lone_pin_net: bool = False) -> bytes:
+    """The tiny fixture board as a real ``.epro2`` upload (the same zip
+    ``test_pcb_epro_import.py`` feeds the importer)."""
+    import io
+    import zipfile
+
+    board = (_EPRO_TINY / "board.epru").read_bytes()
+    if lone_pin_net:
+        stream = board.decode(encoding="utf-8")
+        stream = stream.replace(
+            '"id":"s2p3m"}||{"parentId":"s2p3","key":"Pin Name",'
+            '"value":"GND","partId":"U.1"',
+            '"id":"s2p3m"}||{"parentId":"s2p3","key":"Pin Name",'
+            '"value":"LONE_PIN","partId":"U.1"',
+        )
+        stream = stream.replace(
+            '{"type":"DOCHEAD","ticket":70}||{"docType":"FOOTPRINT"',
+            '{"type":"NET","ticket":15,"id":"[\\"NET\\",\\"LONE\\"]"}||'
+            '{"netType":null}|\n'
+            '{"type":"PAD_NET","ticket":98,"id":"[\\"PAD_NET\\",\\"c2\\",'
+            '\\"3\\",\\"f3\\"]"}||{"padNet":"LONE","padLen":null,"attrsMap":{}}|\n'
+            '{"type":"DOCHEAD","ticket":70}||{"docType":"FOOTPRINT"',
+        )
+        board = stream.encode(encoding="utf-8")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("project2.json", (_EPRO_TINY / "project2.json").read_bytes())
+        zf.writestr("board.epru", board)
+    return buf.getvalue()
+
+
+def test_new_page_renders_the_import_form(pcb_client) -> None:
+    r = pcb_client.get("/pcb/new")
+    assert r.status_code == 200
+    assert 'action="/pcb/import"' in r.text
+    assert 'type="file"' in r.text
+
+
+def test_import_upload_creates_the_board_and_shows_the_report(
+    pcb_client, runtime_with_store
+) -> None:
+    r = pcb_client.post(
+        "/pcb/import",
+        files={
+            "file": ("tiny.epro2", _epro2_bytes(lone_pin_net=True), "application/zip")
+        },
+    )
+    assert r.status_code == 200, r.text
+    store = runtime_with_store.hub.store
+    ref = store.get_ref(kind="pcb", id="tiny")
+    assert ref is not None
+    assert "Imported tiny" in r.text
+    assert "component(s)" in r.text
+    assert "applied:" in r.text
+    assert "stackup:" in r.text
+    assert "net(s) with fewer than 2 pins" in r.text
+    assert "LONE" in r.text
+    assert "marked unused" in r.text
+    assert "U1.LONE_PIN" in r.text
+    assert 'href="/pcb/tiny"' in r.text
+    # the imported board's own page then serves it
+    assert pcb_client.get("/pcb/tiny").status_code == 200
+
+
+def test_import_taken_slug_is_refused(pcb_client, runtime_with_store) -> None:
+    _seed_placed(runtime_with_store, "web-taken")
+    r = pcb_client.post(
+        "/pcb/import",
+        files={"file": ("other.epro2", _epro2_bytes(), "application/zip")},
+        data={"slug": "web-taken"},
+    )
+    assert r.status_code == 400
+    assert "already exists" in r.text or "fresh slug" in r.text
+
+
+def test_import_refuses_a_non_epro2_upload_with_a_next_step(pcb_client) -> None:
+    r = pcb_client.post(
+        "/pcb/import",
+        files={"file": ("notes.txt", b"hello world", "text/plain")},
+    )
+    assert r.status_code == 400
+    assert "not an .epro2" in r.text
+    assert "EasyEDA Pro" in r.text
+
+
+def test_import_refuses_a_zip_that_is_not_an_epro2(pcb_client) -> None:
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("README.txt", "not a board")
+    r = pcb_client.post(
+        "/pcb/import",
+        files={"file": ("not-board.epro2", buf.getvalue(), "application/zip")},
+    )
+    assert r.status_code == 400
+    assert "project2.json" in r.text
+    assert "EasyEDA Pro" in r.text
+
+
+def test_import_refuses_slug_new(pcb_client) -> None:
+    r = pcb_client.post(
+        "/pcb/import",
+        files={"file": ("tiny.epro2", _epro2_bytes(), "application/zip")},
+        data={"slug": "new"},
+    )
+    assert r.status_code == 400
+    assert "another slug" in r.text
+
+
+def test_import_enforces_the_upload_cap(pcb_client, monkeypatch) -> None:
+    from precis_web.routes import pcb
+
+    monkeypatch.setattr(pcb, "_EPRO_UPLOAD_MAX", 4)
+    r = pcb_client.post(
+        "/pcb/import",
+        files={"file": ("tiny.epro2", b"PK\x03\x04x", "application/zip")},
+    )
+    assert r.status_code == 400
+    assert "larger than" in r.text
+    assert "CLI" in r.text

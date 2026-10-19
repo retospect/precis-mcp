@@ -21,6 +21,14 @@ same data:
   one download (gr496699): the gerber+drill zip plus the JLC BOM and CPL,
   assembled in memory by ``PcbHandler.fab_package_zip`` off the same
   artifacts the MCP view writes to a directory.
+* ``GET  /pcb/new`` — the board-creation page (gr496699): import an
+  uploaded EasyEDA Pro ``.epro2`` through
+  :func:`precis.ingest.pcb_epro.import_epro` — the same importer
+  ``op='import_epro'`` runs. File bytes only; no URL fetch, no path the
+  upload could reach. The import writes under the same
+  ``human_write_context`` the dispatch wrapper stamps, and its report
+  (counts, stackup, warnings, dropped nets / unused pins) lands on a
+  result page, not the board page.
 * ``POST /pcb/{slug}/note`` — argue with the design
   (docs/backlog/pcb-argue-with-design.md). The page's one text box
   accumulates handles as the user clicks the board render (the fab SVG
@@ -65,7 +73,7 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.responses import Response as RawResponse
 
@@ -75,10 +83,12 @@ from precis.errors import BadInput, NotFound
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.handlers.pcb import PcbHandler
 from precis.pcb import argue
+from precis.utils.text import slugify
 from precis_web import design_chat, design_turn, pcb_design, pcb_hover, quest_board
 from precis_web.deps import (
     await_dispatch,
     get_store,
+    human_write_context,
     redirect_or_error,
     templates,
 )
@@ -112,6 +122,126 @@ async def pcb_list() -> RedirectResponse:
     (``/pcb/{slug}`` and its SVG endpoints below) is unaffected.
     """
     return RedirectResponse(url="/drive?k=pcb&folder=*&sort=recency")
+
+
+#: ``POST /pcb/import``'s upload cap (gr496699): an ``.epro2`` is a zip of
+#: text records; the real boards imported so far are single-digit MB.
+_EPRO_UPLOAD_MAX = 32 * 1024 * 1024
+
+
+def _pcb_error(request: Request, title: str, detail: str, status: int = 400) -> Any:
+    return templates.TemplateResponse(
+        request,
+        "error.html.j2",
+        {"title": title, "detail": detail, "status": status},
+        status_code=status,
+    )
+
+
+@router.get("/pcb/new", response_class=HTMLResponse)
+async def pcb_new(request: Request) -> Any:
+    return templates.TemplateResponse(
+        request, "pcb/new.html.j2", {"active_tab": "pcb", "title": "New board"}
+    )
+
+
+@router.post("/pcb/import", response_class=HTMLResponse)
+async def pcb_import(
+    request: Request,
+    file: UploadFile = File(...),
+    slug: str = Form(""),
+    title: str = Form(""),
+) -> Any:
+    """Import an uploaded ``.epro2`` into a NEW board and show the import
+    report — the same ``import_epro`` ``op='import_epro'`` wraps."""
+    from precis.ingest.pcb_epro import EproImportError, import_epro
+    from precis.pcb import copper_report
+    from precis.pcb.epro import EproError
+
+    store = get_store(request)
+    data = await file.read(_EPRO_UPLOAD_MAX + 1)
+    if not data:
+        return _pcb_error(
+            request, "Import refused", "no file uploaded — choose an .epro2 file."
+        )
+    if len(data) > _EPRO_UPLOAD_MAX:
+        return _pcb_error(
+            request,
+            "Import refused",
+            f"the upload is larger than {_EPRO_UPLOAD_MAX // 2**20} MiB — "
+            "import it with the CLI instead: "
+            "precis pcb import-epro <file> --slug <slug>.",
+        )
+    if not data.startswith(b"PK\x03\x04"):
+        return _pcb_error(
+            request,
+            "Import refused",
+            "the upload is not an .epro2 — its first bytes are not the zip "
+            "signature (PK). Export the board from EasyEDA Pro as .epro2 "
+            "and upload that file.",
+        )
+    stem = (file.filename or "").replace("\\", "/").rsplit("/", 1)[-1].rsplit(".", 1)[0]
+    want = slugify(slug) if slug.strip() else slugify(stem)
+    if not want:
+        return _pcb_error(
+            request,
+            "Import refused",
+            "no slug to import under — name one in the form, or rename the "
+            "file so a slug can be derived from it.",
+        )
+    if want == "new":
+        return _pcb_error(
+            request,
+            "Import refused",
+            "'new' is the board-creation page's own address — pick another slug.",
+        )
+    try:
+
+        def _run() -> tuple[Any, int, int]:
+            with human_write_context(request):
+                result = import_epro(
+                    store,
+                    data,
+                    slug=want,
+                    title=title.strip() or want,
+                    source_name=file.filename,
+                )
+                queued, facts = _handler(store)._queue_datasheets(result.ref_id)
+                return result, queued, facts
+
+        result, queued, facts = await asyncio.to_thread(_run)
+    except EproError as exc:
+        return _pcb_error(
+            request,
+            "Import refused",
+            f"{exc} Export the board from EasyEDA Pro as .epro2 and upload that file.",
+        )
+    except (BadInput, EproImportError, ValueError) as exc:
+        return _pcb_error(
+            request,
+            "Import refused",
+            f"{exc} Pick a fresh slug or correct the named field and retry.",
+        )
+    return templates.TemplateResponse(
+        request,
+        "pcb/import_result.html.j2",
+        {
+            "active_tab": "pcb",
+            "title": f"Imported {result.slug}",
+            "slug": result.slug,
+            "filename": file.filename,
+            "stats": result.stats,
+            "counts": result.counts,
+            "stackup": [str(layer.get("name")) for layer in result.stackup],
+            "planes": result.planes,
+            "dropped": result.dropped_lines(),
+            "warnings": result.warnings,
+            "copper": (copper_report.render(result.copper) if result.copper else []),
+            "alignment": result.alignment_candidates,
+            "queued": queued,
+            "facts": facts,
+        },
+    )
 
 
 @router.get("/pcb/{slug}", response_class=HTMLResponse)
