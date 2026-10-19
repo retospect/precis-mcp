@@ -3111,6 +3111,45 @@ def _seed_timeout_held(
     return True
 
 
+def _seed_geometry_held(
+    store: Store,
+    cand: Any,
+    handle: str,
+    seed_meta: dict[str, Any],
+    notes: list[str],
+) -> bool:
+    """True iff a failed seed was rejected by the candidate's own geometry
+    validation (``meta.failure_class == 'invalid-geometry'``, stamped by the
+    seed job; gr496915).
+
+    The same candidate fails the same way on every re-dispatch, on every
+    node, so the infra ladder would only burn its retry and then file a
+    ``quest-infra-failure`` gripe for a fault no executor can fix
+    (gr497198, gr497203: placement H 1.10 A inside the slab, pollux and
+    spark alike). The caller skips the re-dispatch, the gripe and the retry
+    counter; the candidate is not ruled out (no physical verdict either).
+    The note is appended once per seed job, deduped by stamping the job id
+    on the candidate (``quest_seed_geometry_noted``).
+    """
+    from precis.workers.sweeper import INVALID_GEOMETRY_CLASS
+
+    if seed_meta.get("failure_class") != INVALID_GEOMETRY_CLASS:
+        return False
+    job_id = seed_meta.get("_job_ref_id")
+    if (
+        job_id is not None
+        and (cand.meta or {}).get("quest_seed_geometry_noted") != job_id
+    ):
+        store.stamp_ref_meta(cand.id, {"quest_seed_geometry_noted": job_id})
+        why = str(seed_meta.get("error") or "").strip().splitlines()
+        notes.append(
+            f"seed for [{handle}] rejected the candidate geometry"
+            f"{' — ' + why[0][:160] if why else ''}"
+            " — held, re-dispatch would fail identically; not an infra fault"
+        )
+    return True
+
+
 def _file_infra_gripe(
     store: Store,
     quest_id: int,
@@ -3725,6 +3764,9 @@ def harvest_measures(
                 elif _seed_timeout_held(store, s, handle, cp_job_meta, notes):
                     # Deadline-killed at a wall the retry would not raise: no
                     # dispatch, no gripe, no counter bump (not an infra fault).
+                    pass
+                elif _seed_geometry_held(store, s, handle, cp_job_meta, notes):
+                    # Candidate geometry rejected: deterministic, same hold.
                     pass
                 else:
                     sk_retries = _seed_infra_retry_count(store, s.id)

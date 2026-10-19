@@ -1735,6 +1735,56 @@ class TestHarvest:
         assert len(held) == 1 and "not an infra fault" in held[0]
         assert not any("timed out" in n for n in step2.notes)  # noted once
 
+    def test_invalid_geometry_seed_is_held_not_retried_or_gripe_filed(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr497198/gr497203: a seed the candidate's own geometry validation
+        rejected fails identically on every node, so the infra ladder must
+        neither re-dispatch it nor file a quest-infra-failure gripe."""
+        qid = self._reaction_quest(store)
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert sid is not None
+        self._stuck_seed(
+            store,
+            sid,
+            job_meta={
+                "failure_class": "invalid-geometry",
+                "error": "ValueError: placement {'symbol': 'H'} puts H 1.10 A "
+                "from Pd33 in the slab -- inside it, not on it.",
+            },
+        )
+        calls: list[int] = []
+        gripes: list[dict[str, Any]] = []
+
+        class _FakeGripeHandler:
+            def __init__(self, *, hub: Any) -> None:
+                pass
+
+            def put(self, *, text: str, tags: list[str] | None = None) -> None:
+                gripes.append({"text": text})
+
+        monkeypatch.setattr(
+            compute_mod,
+            "dispatch_autocatpath",
+            lambda _s, structure_ref_id, _c, **_kw: calls.append(structure_ref_id),
+        )
+        monkeypatch.setattr("precis.handlers.gripe.GripeHandler", _FakeGripeHandler)
+        hub = object()
+        step1 = compute_mod.harvest_measures(store, qid, hub=hub)
+        step2 = compute_mod.harvest_measures(store, qid, hub=hub)
+        assert calls == []
+        assert gripes == []
+        assert step1.ruled_out == 0
+        assert not any(str(t).startswith("ruled-out:") for t in store.tags_for(sid))
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert "quest_seed_infra_retries" not in meta
+        assert meta.get("quest_seed_geometry_noted")
+        held = [n for n in step1.notes if "rejected the candidate geometry" in n]
+        assert len(held) == 1 and "inside it, not on it" in held[0]
+        assert not any("rejected the candidate geometry" in n for n in step2.notes)
+
     def test_timeout_seed_with_raised_retry_wall_is_redispatched(
         self, store: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
