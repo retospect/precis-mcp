@@ -8,6 +8,8 @@ combo).
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 import pytest
 
 from precis.dispatch import Hub
@@ -1498,3 +1500,54 @@ def test_daily_ceiling_zero_llm_exemption_vetoed_by_llm_tier(
     assert _child_jobs_under(store, int(hybrid.id)) == [], (
         "llm_tier candidate must not ride the zero-LLM exemption"
     )
+
+
+# ── retired-lane pins (gr496916) ─────────────────────────────────
+
+
+def _dispatch_pinned_struct_relax(
+    handler: TodoHandler, store: Store, node: str
+) -> dict:
+    r = handler.put(
+        text="pinned at todo mint",
+        meta={
+            "executor": "ssh_node",
+            "job_type": "struct_relax",
+            "params": {"target_node": node, "keep": 1},
+        },
+    )
+    rid = id_of(r.body)
+    assert run_dispatch_pass(store).ok == 1
+    (child,) = _child_jobs_under(store, rid)
+    return child["meta"]["params"]
+
+
+def test_dispatch_drops_pin_to_switched_off_lane(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A todo that froze ``target_node`` before the node left the lane must not
+    hand the sweeper a job it will fail as infra: the mint goes unpinned."""
+    node = f"off-{uuid4().hex[:6]}"
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO service_config (host, service, prio) "
+            "VALUES (%s, 'job_ssh_node', 0)",
+            (node,),
+        )
+        conn.commit()
+    try:
+        params = _dispatch_pinned_struct_relax(handler, store, node)
+    finally:
+        with store.pool.connection() as conn:
+            conn.execute("DELETE FROM service_config WHERE host = %s", (node,))
+            conn.commit()
+    assert "target_node" not in params
+    assert params["unpinned_from"] == node
+    assert params["keep"] == 1
+
+
+def test_dispatch_keeps_pin_to_live_lane(handler: TodoHandler, store: Store) -> None:
+    node = f"live-{uuid4().hex[:6]}"
+    params = _dispatch_pinned_struct_relax(handler, store, node)
+    assert params["target_node"] == node
+    assert "unpinned_from" not in params

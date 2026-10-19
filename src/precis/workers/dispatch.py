@@ -598,6 +598,34 @@ def _drop_orphaned(store: Store, ids: list[int]) -> list[int]:
     return [i for i in ids if i not in orphaned]
 
 
+def _drop_retired_lane_pin(
+    store: Store, executor: str, params: dict[str, Any]
+) -> dict[str, Any]:
+    """``params`` without a ``target_node`` whose executor lane is retired.
+
+    A todo freezes its ``params.target_node`` when it is minted; the job it
+    dispatches days later inherits that pin even if the node has since left
+    the lane (castor, 2026-10-16), and the sweeper then fails it as infra
+    (gr496916). Placement already refuses retired nodes at mint
+    (:func:`precis.quest.compute._live_route_nodes`); this applies the same
+    lane state here so the late mint is not the one path that bypasses it.
+    The job goes unpinned, so any live lane worker may claim it; the dropped
+    node is kept in ``params.unpinned_from`` for the audit trail.
+    """
+    node = params.get("target_node")
+    if not isinstance(node, str) or not node:
+        return params
+    from precis.workers.sweeper import retired_lane_nodes
+
+    why = retired_lane_nodes(store, [node], executor).get(node)
+    if why is None:
+        return params
+    log.info("dispatch: dropping pin to %s for %s job (%s)", node, executor, why)
+    kept = {k: v for k, v in params.items() if k != "target_node"}
+    kept["unpinned_from"] = node
+    return kept
+
+
 def _carry_fixes_link(
     store: Store,
     conn: Any,
@@ -906,6 +934,8 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool]:
                 """,
                 (ref_id,),
             )
+
+        params = _drop_retired_lane_pin(store, executor, params)
 
         # Mint the child job ref. Stay inside the tx so the row
         # lock spans claim + mint + status tag + event append.
