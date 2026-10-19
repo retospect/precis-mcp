@@ -222,6 +222,12 @@ expands it — never a silent cut. `+recall`, `q=` and `ring=` are
 refused with a next step: semantic proximity is
 `search(kind='python', q=…)`.
 
+The same eye renders in the browser at `/python/<alias>::<qualname>`
+(e.g. `/python/main::precis_pathway.runner.run_kinetics_subprocess`) —
+the identical handler output with every caller/callee/test/member a
+link that re-centres the eye, plus the rung row, a `view='source'`
+toggle and a `mode='pattern'` search box at `/python/` (gr499107).
+
 ## What does this change touch?
 
 ```python

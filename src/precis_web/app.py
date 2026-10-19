@@ -192,6 +192,7 @@ def create_app(
         pourbaix,
         pres,
         preview,
+        python,
         refs,
         rxn,
         se_print,
@@ -244,6 +245,7 @@ def create_app(
     app.include_router(claim.router)
     app.include_router(preview.router)
     app.include_router(eye.router)
+    app.include_router(python.router)
     app.include_router(console.router)
     app.include_router(status.router)
     app.include_router(budget.router)

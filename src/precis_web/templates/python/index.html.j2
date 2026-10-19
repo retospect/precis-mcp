@@ -1,0 +1,19 @@
+{% extends "base.html.j2" %}
+{% block title %}Python{% endblock %}
+{% block content %}
+<div class="mt-2 mb-4">
+  <h1 class="text-lg font-semibold">Python — the code eye in the browser</h1>
+  <p class="text-sm text-fg-subtle">An id (<span class="font-mono">main::pkg.mod.fn</span>, <span class="font-mono">main/src/x.py</span>, a bare alias) opens its page; anything else runs <span class="font-mono">search(kind='python', mode='pattern')</span> and each hit is a click away from focus.</p>
+</div>
+<form method="get" action="/python/" class="flex gap-2">
+  <input name="q" value="{{ q }}" autofocus placeholder="id or pattern"
+         class="flex-1 rounded border border-line-strong px-3 py-1.5 text-sm font-mono" />
+  <button class="rounded bg-solid-strong px-3 py-1.5 text-sm text-on-solid">focus</button>
+</form>
+<p class="mt-3 text-xs text-fg-subtle">Ladder: {% for r in ladder %}<span class="font-mono">{{ r }}</span>{% if not loop.last %} &lt; {% endif %}{% endfor %} — no <span class="font-mono">+recall</span> here; semantic proximity is the search box.</p>
+{% if error %}
+<pre class="mt-4 whitespace-pre-wrap rounded border border-danger bg-danger-subtle p-4 text-sm text-danger-strong">{{ error }}</pre>
+{% elif hits %}
+<pre class="mt-4 whitespace-pre-wrap rounded border border-line bg-surface p-4 text-sm text-fg leading-relaxed">{{ hits | safe }}</pre>
+{% endif %}
+{% endblock %}

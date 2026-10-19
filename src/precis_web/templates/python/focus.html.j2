@@ -1,0 +1,34 @@
+{% extends "base.html.j2" %}
+{% block title %}Python · {{ ref }}{% endblock %}
+{% block content %}
+<div class="mt-2 mb-3 flex flex-wrap items-baseline justify-between gap-3">
+  <div>
+    <h1 class="text-lg font-semibold font-mono">{{ ref }}</h1>
+    <p class="text-xs text-fg-subtle">
+      <a href="/python/" class="underline">python</a>
+      · <span class="font-mono">get(kind='python', id='{{ ref }}'{% if view %}, view='{{ view }}'{% elif extent %}, extent='{{ extent }}'{% endif %})</span>
+    </p>
+  </div>
+  <form method="get" action="/python/" class="flex gap-1">
+    <input name="q" placeholder="id or pattern"
+           class="rounded border border-line-strong px-2 py-0.5 text-xs font-mono" />
+    <button class="rounded bg-solid-strong px-2 py-0.5 text-xs text-on-solid">find</button>
+  </form>
+</div>
+<nav class="mb-3 flex flex-wrap items-center gap-1 text-xs" aria-label="view selector">
+  {% if is_node %}
+  <a href="{{ eye_href }}" class="rounded px-2 py-0.5 font-mono {% if not view %}bg-solid-strong text-on-solid{% else %}bg-surface-muted text-fg-secondary hover:bg-surface-emphasis{% endif %}">eye</a>
+  {% endif %}
+  {% for v in views %}
+  <a href="{{ v.href }}" class="rounded px-2 py-0.5 font-mono {% if v.on %}bg-solid-strong text-on-solid{% else %}bg-surface-muted text-fg-secondary hover:bg-surface-emphasis{% endif %}">{{ v.label }}</a>
+  {% endfor %}
+</nav>
+{% if ladder %}
+<nav class="mb-3 flex flex-wrap gap-1 text-xs" aria-label="extent ladder">
+  {% for r in ladder %}
+  <a href="{{ r.href }}" class="rounded px-2 py-0.5 font-mono {% if r.on %}bg-solid-strong text-on-solid{% else %}bg-surface-muted text-fg-secondary hover:bg-surface-emphasis{% endif %}">{{ r.label }}</a>
+  {% endfor %}
+</nav>
+{% endif %}
+<pre class="eye-body whitespace-pre-wrap rounded-lg border {% if is_error %}border-danger bg-danger-subtle text-danger-strong{% else %}border-line bg-surface text-fg{% endif %} p-4 text-sm leading-relaxed">{{ body | safe }}</pre>
+{% endblock %}
