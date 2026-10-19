@@ -43,7 +43,12 @@ Stop and report back — do not file anything — if:
      title, not a proposed fix>')` per `precis-gripe-help` convention — don't
      pre-classify, don't add STATUS tags (the system auto-tags
      `STATUS:open`). If the caller supplied a repo/project tag, pass
-     `tags=['repo:<name>']`.
+     `tags=['repo:<name>']`. Name the owning thread with
+     `tags=['thread:<slug>']`, where `<slug>` is a
+     `docs/backlog/threads/<slug>.md` file. Use the caller's thread if given;
+     otherwise pick the file whose `## Do next` or Status line covers the
+     finding. If none fits, file without it and say so in your return. An
+     unknown slug is refused with the valid list.
    - **docs/backlog/**: `Write` a new item file `docs/backlog/<slug>.md`
      (kebab-case slug from the title), in the item format from
      `docs/README.md` §Backlog lifecycle — a `# title` plus a few lines:

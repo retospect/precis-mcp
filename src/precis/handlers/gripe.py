@@ -403,6 +403,7 @@ class GripeHandler(NumericRefHandler):
     ) -> Response:
         # Near-miss PRIO spellings are read as canonical, named in the reply.
         add, readings = alias_prio_tags(add)
+        readings = [*readings, *self._check_thread_tags(add, id=id)]
         if isinstance(id, list):
             return interpreted(
                 self._tag_batch(id, add=add, remove=remove, prio=prio, **_kw), readings
@@ -450,6 +451,41 @@ class GripeHandler(NumericRefHandler):
                     readings,
                 )
         return interpreted(super().tag(id=id, add=add, remove=remove, **_kw), readings)
+
+    def _check_thread_tags(
+        self, tags: list[str] | None, *, id: object = "<id>"
+    ) -> list[str]:
+        """Refuse a ``thread:<slug>`` tag naming no thread file. The closed
+        list is :func:`precis.utils.thread_files.thread_slugs`; a process
+        without the thread files passes the tag unchecked and says so (the
+        returned reading)."""
+        from precis.utils.thread_files import THREAD_TAG_PREFIX, thread_slugs
+
+        named = sorted(
+            {
+                t.lower()[len(THREAD_TAG_PREFIX) :]
+                for t in tags or ()
+                if t.lower().startswith(THREAD_TAG_PREFIX)
+            }
+        )
+        if not named:
+            return []
+        slugs = thread_slugs()
+        if slugs is None:
+            return ["thread tag not checked: no docs/backlog/threads in this checkout"]
+        unknown = [s for s in named if s not in slugs]
+        if unknown:
+            shown = id if not isinstance(id, list) else "<id>"
+            raise BadInput(
+                f"unknown thread {unknown[0]!r}: a thread tag names a "
+                "docs/backlog/threads/<slug>.md file",
+                options=sorted(slugs),
+                next=(
+                    f"tag(kind={self.kind!r}, id={shown}, "
+                    f"add=['{THREAD_TAG_PREFIX}<slug>']) with a slug from options"
+                ),
+            )
+        return []
 
     def _comments(self, ref_id: int, ref: Ref | None = None) -> list[Any]:
         """Visible comments (hidden ones, per ``refs.meta``, are skipped)."""
@@ -577,6 +613,7 @@ class GripeHandler(NumericRefHandler):
         # decorative tag row. Strip it before strict tag parsing. An
         # explicit ``put(prio=)`` (plumbed via ``_PUT_PRIO``) wins.
         tags, prio_from_tag = split_prio(tags)
+        readings = self._check_thread_tags(tags)
         if (put_prio := _PUT_PRIO.get()) is not None:
             prio_from_tag = put_prio
         parsed_extra_tags = [Tag.parse_strict(t, kind=self.kind) for t in (tags or [])]
@@ -605,7 +642,13 @@ class GripeHandler(NumericRefHandler):
                     relation=relation,
                     conn=conn,
                 )
-        return self._render_create_ack(ref_id)
+        return interpreted(
+            self._render_create_ack(
+                ref_id,
+                has_thread=any(t.lower().startswith("thread:") for t in tags or ()),
+            ),
+            readings,
+        )
 
     def _append_comment(self, *, id: str | int, text: str) -> Response:
         ref = self._resolve_live_ref(self._coerce_id(id))
@@ -739,7 +782,7 @@ class GripeHandler(NumericRefHandler):
             body, _BODY_HEAD_CHARS, f"get(kind='gripe', id={ref_id}, view='comments')"
         )
 
-    def _render_create_ack(self, ref_id: int) -> Response:
+    def _render_create_ack(self, ref_id: int, *, has_thread: bool = False) -> Response:
         # Unified shape (broad-pass finding #9): kwarg spelling +
         # uppercase STATUS axis + TOON Next: trailer. Previous inline-
         # prose breadcrumb was harder to paste and bunched two
@@ -747,8 +790,20 @@ class GripeHandler(NumericRefHandler):
         from precis.utils.next_block import render_next_section
 
         body = f"created {self.kind} id={ref_id} (STATUS:open)."
+        thread_hint: list[tuple[str, str]] = (
+            []
+            if has_thread
+            else [
+                (
+                    f"tag(kind={self.kind!r}, id={ref_id}, add=['thread:<slug>'])",
+                    "name its owning thread (docs/backlog/threads/<slug>.md); "
+                    "a wrong slug is refused with the list",
+                )
+            ]
+        )
         body += render_next_section(
             [
+                *thread_hint,
                 (
                     f"put(kind={self.kind!r}, id={ref_id}, text='more details')",
                     "append a comment",

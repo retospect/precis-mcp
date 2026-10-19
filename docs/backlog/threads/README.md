@@ -171,6 +171,12 @@ writes the gripe ids it fixed or filed into the owning thread file, in
 the same commit as the close: shipped ids leave Do next, new ones go in
 at their rank.
 
+A gripe joins a thread through its `thread:<slug>` tag; `put` and `tag`
+refuse a slug with no thread file. `scripts/docs-index` lists each
+thread's open tagged gripes in PRIORITIES.md, reading prod best-effort,
+so that list is generated and never hand-kept. A `gr<id>` line in
+`## Do next` still carries the rank and its why-line.
+
 A change that adds or removes a seam between threads updates `INDEX.md`
 in the same commit.
 

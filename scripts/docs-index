@@ -8,7 +8,11 @@ the files are gitignored, so they never churn or conflict):
   docs/backlog/INDEX.md    one line per work item: slug — status — summary
   docs/runbooks/INDEX.md   one line per runbook: slug — summary
   docs/codebase-map.md     package map: import path — docstring first line
-  docs/backlog/threads/PRIORITIES.md  activity + bounded Resume fields
+  docs/backlog/threads/PRIORITIES.md  activity + bounded Resume fields,
+                           then each thread's open gripes (gripes tagged
+                           thread:<slug>, read from prod best-effort via
+                           scripts/prod-psql --ro; off with
+                           PRECIS_DOCS_INDEX_GRIPES=0 and under CI)
 
 The summary for a markdown file is its first non-heading, non-front-matter
 prose line; `status:` is read from front-matter (backlog only, defaults to
@@ -37,7 +41,9 @@ errors, invalid thread navigation or (with --lint) a docstring finding.
 from __future__ import annotations
 
 import ast
+import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -332,6 +338,90 @@ def thread_priorities(root: Path) -> list[str]:
     ]
 
 
+#: Open gripes per thread, from the gripe -> thread link (the
+#: ``thread:<slug>`` tag, gripe system batch F slice 5). Read-only role.
+_THREAD_GRIPES_SQL = (
+    "SELECT concat_ws(chr(31), substr(t.value, 8), r.ref_id, "
+    "coalesce(r.prio, 5), "
+    "left(regexp_replace(coalesce(r.title, ''), '\\s+', ' ', 'g'), 90)) "
+    "FROM refs r "
+    "JOIN ref_tags rt ON rt.ref_id = r.ref_id "
+    "JOIN tags t ON t.tag_id = rt.tag_id "
+    "AND t.namespace = 'OPEN' AND t.value LIKE 'thread:%' "
+    "JOIN ref_tags st ON st.ref_id = r.ref_id "
+    "JOIN tags s ON s.tag_id = st.tag_id "
+    "AND s.namespace = 'STATUS' AND s.value = 'open' "
+    "WHERE r.kind = 'gripe' AND r.retired_at IS NULL "
+    "ORDER BY substr(t.value, 8), coalesce(r.prio, 5), r.created_at"
+)
+#: The prod read never holds the SessionStart hook longer than this.
+_THREAD_GRIPES_TIMEOUT_S = 5
+
+
+def thread_gripes(root: Path) -> dict[str, list[str]] | str:
+    """``{slug: ['gr12 (P5) title', ...]}`` for open gripes tagged
+    ``thread:<slug>``, read from prod via ``scripts/prod-psql --ro``, or a
+    one-line reason it is unavailable. Best-effort: off with
+    ``PRECIS_DOCS_INDEX_GRIPES=0`` and under CI; an outage, a missing prod
+    overlay or a timeout returns the reason, never raises."""
+    if os.environ.get("PRECIS_DOCS_INDEX_GRIPES") == "0":
+        return "off (PRECIS_DOCS_INDEX_GRIPES=0)"
+    if os.environ.get("CI"):
+        return "off under CI"
+    env = {**os.environ, "PRECIS_PROD_PSQL_OPTS": "-At"}
+    try:
+        cp = subprocess.run(
+            [str(root / "scripts/prod-psql"), "--ro", _THREAD_GRIPES_SQL],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=_THREAD_GRIPES_TIMEOUT_S,
+            env=env,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return f"unavailable (prod read timed out after {_THREAD_GRIPES_TIMEOUT_S}s)"
+    except OSError as error:
+        return f"unavailable ({error.__class__.__name__})"
+    if cp.returncode != 0:
+        tail = (cp.stderr.strip().splitlines() or ["no stderr"])[-1][:120]
+        return f"unavailable (prod-psql exit {cp.returncode}: {tail})"
+    out: dict[str, list[str]] = {}
+    for line in cp.stdout.splitlines():
+        parts = line.split("\x1f")
+        if len(parts) != 4:
+            continue
+        slug, ref_id, prio, title = parts
+        out.setdefault(slug, []).append(f"gr{ref_id} (P{prio}) {title}")
+    return out
+
+
+def render_thread_gripes(root: Path, gripes: dict[str, list[str]] | str) -> list[str]:
+    """The generated ``## Gripes in each thread`` section of PRIORITIES.md."""
+    rows = [
+        "",
+        "## Gripes in each thread",
+        "",
+        "Open gripes tagged `thread:<slug>`, read from prod when this file "
+        "was generated. Tag a gripe to list it here.",
+        "",
+    ]
+    if isinstance(gripes, str):
+        return [*rows, f"Gripe list {gripes}."]
+    slugs = sorted(
+        p.stem
+        for p in (root / "docs/backlog/threads").glob("*.md")
+        if p.name not in ("README.md", "INDEX.md", "PRIORITIES.md")
+    )
+    for slug in slugs:
+        items = gripes.get(slug, [])
+        rows.append(f"- **{slug}** ({len(items)}): " + ("; ".join(items) or "none"))
+    unknown = sorted(set(gripes) - set(slugs))
+    if unknown:
+        rows.append(f"- tagged with no thread file: {', '.join(unknown)}")
+    return rows
+
+
 def main() -> int:
     if "--lint" in sys.argv[1:]:
         problems = lint_docstrings()
@@ -344,6 +434,7 @@ def main() -> int:
     except ValueError as error:
         print(f"docs-index: {error}", file=sys.stderr)
         return 1
+    priorities += render_thread_gripes(ROOT, thread_gripes(ROOT))
     if write_generated(
         ROOT / "docs/backlog/threads/PRIORITIES.md", "Thread priorities", priorities
     ):
