@@ -7,6 +7,20 @@ handler in a worker thread, records its progress, and holds the finished
 response so the page can poll ``…/export/status/<token>`` (progress bar)
 and then fetch ``…/export/download/<token>``.
 
+``POST …/export/start`` does *no* draft work itself — not even the draft
+lookup: the token comes straight back so the bar can show "starting…"
+on click. The job's stage 1 is the preflight (``resolve=`` loads the
+draft — a miss ends the job ``error: draft not found``, the same message
+the start route used to return synchronously — then ``preflight=`` runs
+the shared export gates), reported like every other stage. The resolved
+ref and the gate verdict are handed to the handler through the fabricated
+request's scope (``export_ref`` / ``export_preflight``), so the work is
+done once rather than again inside the route.
+
+Builds are capped at :data:`_BUILD_SLOTS` concurrent threads; a job over
+the cap waits with a ``queued`` stage instead of spawning unbounded
+threads.
+
 Why re-run the route rather than a parallel builder: the route owns the
 export gates (retraction block, figure clearance, overrides, sources
 bundle, filename). A gated or failed export comes back as a non-file
@@ -37,11 +51,17 @@ from fastapi.responses import FileResponse, Response
 
 from precis.budget.work_class import WorkClass, work_class_scope
 from precis.export import progress
+from precis_web.deps import get_store
 
 log = logging.getLogger(__name__)
 
 _TTL_S = 3600.0
 _MAX_JOBS = 64
+
+#: How many export builds run at once. A build holds a DB connection and
+#: chews CPU for tens of seconds; beyond this a job waits with a
+#: ``queued`` stage rather than stacking threads on a single-user UI.
+_BUILD_SLOTS = threading.Semaphore(2)
 
 Handler = Callable[[Request, str], Coroutine[Any, Any, Response]]
 
@@ -113,12 +133,28 @@ def get(token: str, ident: str) -> ExportJob | None:
 
 
 def start(
-    request: Request, ident: str, fmt: str, handler: Handler, query: bytes
+    request: Request,
+    ident: str,
+    fmt: str,
+    handler: Handler,
+    query: bytes,
+    *,
+    resolve: Callable[[Any, str], Any | None] | None = None,
+    preflight: Callable[[Any, Any, Request], Any | None] | None = None,
 ) -> ExportJob:
     """Run ``handler`` (a GET export route) in a thread against ``query``.
 
     A running job for the same draft + format + query is reused, so a
-    double click or a second tab joins the build instead of doubling it."""
+    double click or a second tab joins the build instead of doubling it.
+
+    ``resolve`` — ``(store, ident) -> ref | None`` — loads the draft
+    inside the job thread; ``None`` ends the job as ``error: draft not
+    found`` (the handler would only redirect, which loses the reason in
+    the progress bar). ``preflight`` — ``(store, ref, request) -> verdict``
+    — is the job's reported stage 1, run once here so the gates are the
+    first thing the bar shows; both results ride the fabricated request's
+    scope (``export_ref`` / ``export_preflight``) so the handler reuses
+    them rather than re-running the walks."""
     key = f"{fmt}:{query.decode('latin-1')}"
     now = time.monotonic()
     with _LOCK:
@@ -134,8 +170,29 @@ def start(
         job.stage, job.done, job.total = stage, done, total
 
     def run() -> None:
+        if not _BUILD_SLOTS.acquire(blocking=False):
+            job.stage = "queued"
+            _BUILD_SLOTS.acquire()
         try:
             with progress.bind(on_progress):
+                if resolve is not None:
+                    progress.report("preflight: checking cited papers and figures")
+                    store = get_store(sub)
+                    ref = resolve(store, ident)
+                    if ref is None:
+                        job.error = "draft not found"
+                        job.finished = time.monotonic()
+                        job.state = "error"
+                        return
+                    sub.scope["export_ref"] = ref
+                    if preflight is not None:
+                        pf = preflight(store, ref, sub)
+                        sub.scope["export_preflight"] = pf
+                        progress.report(
+                            "preflight blocked"
+                            if getattr(pf, "blocked", False)
+                            else "preflight passed"
+                        )
                 resp = asyncio.run(handler(sub, ident))
             job.response = resp
             job.finished = time.monotonic()
@@ -145,6 +202,8 @@ def start(
             job.error = f"{type(exc).__name__}: {exc}"[:300]
             job.finished = time.monotonic()
             job.state = "error"
+        finally:
+            _BUILD_SLOTS.release()
 
     def run_interactive() -> None:
         # A bare thread starts with an empty context; the request ran under

@@ -56,6 +56,15 @@ from here:
   WITHHELD (caption kept, image replaced by a box naming publisher and
   source; never embedded). The overrides are query params on the GET downloads and
   form fields on the PDF-job POST.
+  ``POST .../export/start`` is the progress-bar path: it returns the job
+  token with **no** draft work in the request (the job's reported stage 1
+  is the preflight — draft resolution + both gates — then the handler
+  builds), and the page polls
+  ``GET .../export/status/<token>`` then downloads from
+  ``GET .../export/download/<token>`` (``precis_web.export_jobs``). The
+  preflight and the retraction-status walk run off the event loop
+  (``asyncio.to_thread``) — inline they starve every other request,
+  /export/start included (gr493192).
   ``GET .../retraction-status`` (no-network read) and
   ``POST .../retraction-check`` (live re-check, TTL-gated,
   ``force=1`` bypasses) back the export pane; same shared walk. That walk
@@ -234,6 +243,11 @@ def _doc_state(store: Store, ref: Any) -> tuple[list[Any], int, dict[str, str]]:
     chunk_objs = _reading_order_cached(store, ref.id, version)
     abbrevs = _abbrevs_cached(store, ref.id, version)
     return chunk_objs, version, abbrevs
+
+
+def _flag(request: Request, name: str) -> bool:
+    """A ``?name=1|true|yes`` query toggle on the GET export routes."""
+    return request.query_params.get(name) in ("1", "true", "yes")
 
 
 def _draft_ref(store: Store, ident: str) -> Any:
@@ -1327,26 +1341,28 @@ async def export_docx_route(request: Request, ident: str) -> Response:
     from precis.export.docx import export_docx
 
     store = get_store(request)
-    ref = _draft_ref(store, ident)
+    # Under the async export job the runner already resolved (and gated)
+    # the draft in stage 1 — reuse it rather than looking it up twice;
+    # a direct GET finds nothing in scope and does the lookup itself.
+    ref = request.scope.get("export_ref") or _draft_ref(store, ident)
     if ref is None:
         return RedirectResponse(url="/drafts", status_code=303)
 
-    ignore_retractions = request.query_params.get("ignore_retractions") in (
-        "1",
-        "true",
-        "yes",
-    )
-    placeholder_figures = request.query_params.get("placeholder_figures") in (
-        "1",
-        "true",
-        "yes",
-    )
-    pf = draft_export_preflight(
-        store,
-        ref,
-        ignore_retractions=ignore_retractions,
-        placeholder_figures=placeholder_figures,
-    )
+    ignore_retractions = _flag(request, "ignore_retractions")
+    placeholder_figures = _flag(request, "placeholder_figures")
+    # Off the event loop: the gate walks render the draft body and resolve
+    # every cited ref — tens of seconds on a big draft. Under the async job
+    # the runner already ran it as stage 1 and stashed the verdict in the
+    # request scope, so only a direct GET pays it here.
+    pf: Any = request.scope.get("export_preflight")
+    if pf is None:
+        pf = await asyncio.to_thread(
+            draft_export_preflight,
+            store,
+            ref,
+            ignore_retractions=ignore_retractions,
+            placeholder_figures=placeholder_figures,
+        )
     if pf.retraction_blocked:
         return _retraction_blocked_response(request, pf.retraction_report)
     if pf.figures_blocked:
@@ -1465,7 +1481,10 @@ async def export_pdf_route(request: Request, ident: str) -> Response:
         "on",
     )
 
-    pf = draft_export_preflight(
+    # Same reason as the .docx route: the gate walks are slow enough to
+    # pin the event loop if they run inline here.
+    pf = await asyncio.to_thread(
+        draft_export_preflight,
         store,
         ref,
         ignore_retractions=ignore_retractions,
@@ -1527,7 +1546,10 @@ async def retraction_status_route(request: Request, ident: str) -> Response:
     ref = _draft_ref(store, ident)
     if ref is None:
         return JSONResponse({"ok": False, "error": "draft not found"}, status_code=404)
-    report = _safe_retraction_report(store, ref)
+    # Off the event loop — the page fires this on load (x-init), and the
+    # walk is seconds on a big draft; run inline it starved every other
+    # request, including the export job's /export/start (gr493192).
+    report = await asyncio.to_thread(_safe_retraction_report, store, ref)
     if report is None:
         return JSONResponse(
             {"ok": False, "error": "retraction status unavailable"}, status_code=502
@@ -1988,7 +2010,9 @@ async def pdf(request: Request, ident: str) -> Response:
     from precis.export.latex import export_draft
 
     store = get_store(request)
-    ref = _draft_ref(store, ident)
+    # Same reuse as the .docx route: under the async job the runner's
+    # stage 1 already resolved (and gated) the draft.
+    ref = request.scope.get("export_ref") or _draft_ref(store, ident)
     if ref is None:
         return templates.TemplateResponse(
             request,
@@ -2008,22 +2032,19 @@ async def pdf(request: Request, ident: str) -> Response:
     # the version cache so a stored PDF compiled while clean can't serve after
     # a cite is retracted / a figure's permission lapses. Overrides are query
     # params on this GET: ``ignore_retractions=1`` / ``placeholder_figures=1``.
-    ignore_retractions = request.query_params.get("ignore_retractions") in (
-        "1",
-        "true",
-        "yes",
-    )
-    placeholder_figures = request.query_params.get("placeholder_figures") in (
-        "1",
-        "true",
-        "yes",
-    )
-    pf = draft_export_preflight(
-        store,
-        ref,
-        ignore_retractions=ignore_retractions,
-        placeholder_figures=placeholder_figures,
-    )
+    ignore_retractions = _flag(request, "ignore_retractions")
+    placeholder_figures = _flag(request, "placeholder_figures")
+    # Same reason as the .docx route: keep the gate walks off the loop —
+    # and reuse the job's stage-1 verdict when it ran there.
+    pf: Any = request.scope.get("export_preflight")
+    if pf is None:
+        pf = await asyncio.to_thread(
+            draft_export_preflight,
+            store,
+            ref,
+            ignore_retractions=ignore_retractions,
+            placeholder_figures=placeholder_figures,
+        )
     if pf.retraction_blocked:
         return _retraction_blocked_response(request, pf.retraction_report)
     if pf.figures_blocked:
@@ -2081,7 +2102,10 @@ async def pdf(request: Request, ident: str) -> Response:
                 status_code=503,
             )
         progress.report("exporting LaTeX project")
-        export_draft(
+        # Off the event loop, like the gate walks above — the LaTeX build
+        # plus a latexmk pass is minutes, not milliseconds.
+        await asyncio.to_thread(
+            export_draft,
             store,
             ref,
             target_dir=cache_dir,
@@ -2092,7 +2116,7 @@ async def pdf(request: Request, ident: str) -> Response:
             claim_appendix=claims,
         )
         progress.report("compiling PDF (latexmk)")
-        result = compile_pdf(cache_dir)
+        result = await asyncio.to_thread(compile_pdf, cache_dir)
         if not result.ok:
             return templates.TemplateResponse(
                 request,
@@ -2115,6 +2139,15 @@ async def pdf(request: Request, ident: str) -> Response:
 async def export_start_route(request: Request, ident: str) -> Response:
     """Start a background ``.docx`` / PDF build and return its job token.
 
+    The request itself does **no** draft work — not even the draft lookup
+    (gr493192): the token comes straight back so the page's "starting…"
+    state isn't gated on the store. The job's reported stage 1 is the
+    preflight (draft resolution + the export gates, ``resolve=`` /
+    ``preflight=``), then the handler builds — all inside the job thread,
+    reporting progress the status route serves. A missing draft ends the
+    job as ``error: draft not found`` (the bar shows it: a 200 + error
+    status, where the start route used to return a 404).
+
     ``?fmt=docx|pdf`` plus the same query the direct download takes
     (``sources``, ``citations``, overrides…). The page polls
     :func:`export_status_route`, then fetches the file from
@@ -2123,9 +2156,6 @@ async def export_start_route(request: Request, ident: str) -> Response:
 
     from precis_web import export_jobs
 
-    store = get_store(request)
-    if _draft_ref(store, ident) is None:
-        return JSONResponse({"ok": False, "error": "draft not found"}, status_code=404)
     pairs = parse_qsl(request.url.query, keep_blank_values=True)
     fmt = next((v for k, v in pairs if k == "fmt"), "docx")
     handler = {"docx": export_docx_route, "pdf": pdf}.get(fmt)
@@ -2134,7 +2164,15 @@ async def export_start_route(request: Request, ident: str) -> Response:
             {"ok": False, "error": f"unknown fmt {fmt!r}"}, status_code=400
         )
     query = urlencode([(k, v) for k, v in pairs if k != "fmt"]).encode("latin-1")
-    job = export_jobs.start(request, ident, fmt, handler, query)
+    job = export_jobs.start(
+        request,
+        ident,
+        fmt,
+        handler,
+        query,
+        resolve=_draft_ref,
+        preflight=_export_preflight,
+    )
     return JSONResponse(
         {
             "ok": True,
@@ -2146,6 +2184,19 @@ async def export_start_route(request: Request, ident: str) -> Response:
 
 def _async_url(ident: str, fmt: str) -> str:
     return f"/drafts/{ident}/" + ("export.docx" if fmt == "docx" else "pdf")
+
+
+def _export_preflight(store: Store, ref: Any, request: Request) -> Any:
+    """The shared export gates, run as the async job's reported stage 1
+    (``export_jobs.start``): the same ``draft_export_preflight`` the
+    handlers run for a direct GET, with the override flags parsed off the
+    fabricated GET's query — identical parsing either way."""
+    return draft_export_preflight(
+        store,
+        ref,
+        ignore_retractions=_flag(request, "ignore_retractions"),
+        placeholder_figures=_flag(request, "placeholder_figures"),
+    )
 
 
 @router.get("/drafts/{ident}/export/status/{token}")

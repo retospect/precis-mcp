@@ -9,6 +9,7 @@ not touched by this change)."""
 from __future__ import annotations
 
 import re
+import threading
 import time
 import zipfile
 from pathlib import Path
@@ -219,8 +220,158 @@ def test_async_gated_export_reports_blocked(
 
 def test_async_start_rejects_unknown_format_and_draft(client: TestClient) -> None:
     assert client.post("/drafts/asyncd/export/start?fmt=odt").status_code == 400
-    assert client.post("/drafts/nope-zz/export/start?fmt=docx").status_code == 404
+    # A missing draft no longer 404s the POST — the request does no draft
+    # work at all; the job's stage-1 resolution reports the not-found
+    # through the same "draft not found" message instead.
+    start = client.post("/drafts/nope-zz/export/start?fmt=docx")
+    assert start.status_code == 200 and start.json()["ok"]
+    snap = _wait(client, f"/drafts/nope-zz/export/status/{start.json()['token']}")
+    assert snap["state"] == "error" and snap["error"] == "draft not found"
     assert client.get("/drafts/asyncd/export/status/bogus").status_code == 404
+
+
+def test_export_start_returns_before_preflight(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr493192: /export/start hands the token back with no draft work in
+    the request — preflight runs inside the job thread, after it."""
+    import precis_web.routes.drafts as drafts_mod
+
+    real_ref = drafts_mod._draft_ref
+    real_preflight = drafts_mod.draft_export_preflight
+    resolve_entered = threading.Event()
+    release = threading.Event()
+    preflight_calls: list[str] = []
+
+    def parked_ref(store: Any, ident: str) -> Any:
+        resolve_entered.set()
+        release.wait(30)
+        return real_ref(store, ident)
+
+    def sentinel_preflight(*a: Any, **k: Any) -> Any:
+        preflight_calls.append("preflight")
+        return real_preflight(*a, **k)
+
+    # Parking the draft resolver holds the job thread ahead of preflight,
+    # so a preflight call during the request could not hide behind a race.
+    monkeypatch.setattr(drafts_mod, "_draft_ref", parked_ref)
+    monkeypatch.setattr(drafts_mod, "draft_export_preflight", sentinel_preflight)
+    try:
+        start = client.post("/drafts/asyncd/export/start?fmt=docx")
+        assert start.status_code == 200 and start.json()["ok"]
+        # The job is parked in stage-1 resolution; nothing preflight has run.
+        assert resolve_entered.wait(10)
+        assert preflight_calls == []
+    finally:
+        release.set()
+    snap = _wait(client, f"/drafts/asyncd/export/status/{start.json()['token']}")
+    assert snap["state"] == "done"
+    assert preflight_calls == ["preflight"]
+
+
+def test_export_preflight_failure_surfaces_as_job_error(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr493192: a preflight error arrives through the job status, not the
+    start response."""
+    import precis_web.routes.drafts as drafts_mod
+
+    def boom(*a: Any, **k: Any) -> Any:
+        raise RuntimeError("preflight exploded")
+
+    monkeypatch.setattr(drafts_mod, "draft_export_preflight", boom)
+    start = client.post("/drafts/asyncd/export/start?fmt=docx")
+    assert start.status_code == 200 and start.json()["ok"]
+    snap = _wait(client, f"/drafts/asyncd/export/status/{start.json()['token']}")
+    assert snap["state"] == "error"
+    assert "preflight exploded" in snap["error"]
+
+
+def test_export_job_reports_preflight_as_first_stage(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr493192 review: the gates are the job's reported stage 1 — the
+    first real stage the bar shows is the preflight, run once on the
+    draft the job already loaded (no second _draft_ref in the handler)."""
+    import precis.export.docx as docx_mod
+    import precis_web.routes.drafts as drafts_mod
+
+    real_docx = docx_mod.export_docx
+    real_ref = drafts_mod._draft_ref
+    ref_calls: list[str] = []
+    release = threading.Event()
+
+    def counting_ref(store: Any, ident: str) -> Any:
+        ref_calls.append(ident)
+        return real_ref(store, ident)
+
+    def parked_docx(*a: Any, **k: Any) -> Any:
+        release.wait(30)
+        return real_docx(*a, **k)
+
+    monkeypatch.setattr(drafts_mod, "_draft_ref", counting_ref)
+    monkeypatch.setattr(docx_mod, "export_docx", parked_docx)
+    first = None
+    try:
+        start = client.post("/drafts/asyncd/export/start?fmt=docx")
+        assert start.status_code == 200
+        tok = start.json()["token"]
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < 30:
+            stage = client.get(f"/drafts/asyncd/export/status/{tok}").json()["stage"]
+            if stage != "starting":
+                first = stage
+                break
+            time.sleep(0.02)
+        assert first is not None and first.startswith("preflight")
+    finally:
+        release.set()
+    assert _wait(client, f"/drafts/asyncd/export/status/{tok}")["state"] == "done"
+    assert ref_calls == ["asyncd"]
+
+
+def test_export_jobs_queue_past_the_build_cap(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr493192 review: at most _BUILD_SLOTS jobs build at once; the rest
+    hold a 'queued' stage until a slot frees."""
+    import precis_web.routes.drafts as drafts_mod
+
+    real_ref = drafts_mod._draft_ref
+    entered = threading.Semaphore(0)
+    release = threading.Event()
+
+    def parked_ref(store: Any, ident: str) -> Any:
+        entered.release()
+        release.wait(30)
+        return real_ref(store, ident)
+
+    monkeypatch.setattr(drafts_mod, "_draft_ref", parked_ref)
+    urls = [
+        "/drafts/asyncd/export/start?fmt=docx",
+        "/drafts/asyncd/export/start?fmt=docx&citations=plain",
+        "/drafts/asyncd/export/start?fmt=docx&links=0",
+    ]
+    toks = [client.post(u).json()["token"] for u in urls[:2]]
+    # Both build slots are held — both jobs parked in stage-1 resolution.
+    assert entered.acquire(timeout=10)
+    assert entered.acquire(timeout=10)
+    toks.append(client.post(urls[2]).json()["token"])
+    snaps = []
+    try:
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < 30:
+            snaps = [
+                client.get(f"/drafts/asyncd/export/status/{t}").json() for t in toks
+            ]
+            if any(s["stage"] == "queued" for s in snaps):
+                break
+            time.sleep(0.05)
+        assert any(s["stage"] == "queued" for s in snaps), snaps
+    finally:
+        release.set()
+    for t in toks:
+        assert _wait(client, f"/drafts/asyncd/export/status/{t}")["state"] == "done"
 
 
 def test_reader_page_wires_the_progress_ui(client: TestClient) -> None:
