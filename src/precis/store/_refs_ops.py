@@ -1158,6 +1158,107 @@ class RefsMixin:
             row = conn.execute(sql, (awaiting, no_oa)).fetchone()
         return int(row[0]) if row else 0
 
+    def paper_fetch_status(self, ref_ids: list[int]) -> list[dict[str, Any]]:
+        """Per-paper ingest state + last fetch outcome for a set of ids.
+
+        ``body`` is ``'full-text'`` (a live non-card, non-``references``
+        body chunk exists), ``'card-only'`` (only ``card_*`` chunks —
+        abstract/title cards) or ``'stub'`` (no chunks at all).
+        ``last_event`` / ``last_source`` / ``last_ts`` are the strictly
+        newest ``fetcher:%`` ref_event (empty when never tried). Ids that
+        are not live ``paper`` refs are simply absent from the result.
+        One query; rows come back in ``ref_ids`` order.
+        """
+        if not ref_ids:
+            return []
+        sql = """
+            SELECT r.ref_id,
+                   (SELECT min(id_value) FROM ref_identifiers
+                     WHERE ref_id = r.ref_id AND id_kind = 'cite_key'),
+                   r.pdf_sha256 IS NOT NULL,
+                   COALESCE(c.n_full, 0), COALESCE(c.n_card, 0),
+                   le.ts, le.source, le.event
+              FROM refs r
+              LEFT JOIN LATERAL (
+                   SELECT count(*) FILTER (WHERE ord >= 0
+                                           AND chunk_kind <> 'references') AS n_full,
+                          count(*) FILTER (WHERE ord < 0) AS n_card
+                     FROM chunks
+                    WHERE ref_id = r.ref_id AND retired_at IS NULL) c ON true
+              LEFT JOIN LATERAL (
+                   SELECT ts, source, event FROM ref_events
+                    WHERE ref_id = r.ref_id AND source LIKE 'fetcher:%%'
+                    ORDER BY ts DESC LIMIT 1) le ON true
+             WHERE r.ref_id = ANY(%s) AND r.kind = 'paper'
+               AND r.retired_at IS NULL
+        """
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, (list(ref_ids),)).fetchall()
+        by_id: dict[int, dict[str, Any]] = {}
+        for rid, cite, has_pdf, n_full, n_card, ts, src, ev in rows:
+            by_id[int(rid)] = {
+                "ref_id": int(rid),
+                "cite_key": cite or "",
+                "has_pdf": bool(has_pdf),
+                "body": (
+                    "full-text" if n_full else ("card-only" if n_card else "stub")
+                ),
+                "full_chunks": int(n_full),
+                "last_ts": ts.isoformat() if ts is not None else "",
+                "last_source": src or "",
+                "last_event": ev or "",
+            }
+        return [by_id[i] for i in dict.fromkeys(ref_ids) if i in by_id]
+
+    def paper_ingest_rate(self, *, since: datetime) -> list[tuple[Any, int, int]]:
+        """Per-UTC-day paper landings since ``since``: ``(day, full, card)``.
+
+        ``full`` counts papers whose *first* full-text chunk (``ord >= 0``,
+        ``chunk_kind <> 'references'``) was created that day; ``card`` counts
+        papers *created* that day that hold only ``card_*`` chunks right now
+        (a later PDF ingest moves them to a ``full`` day). Days with neither
+        are absent; newest day first.
+        """
+        sql = """
+            WITH recent AS (
+                SELECT DISTINCT ref_id FROM chunks
+                 WHERE created_at >= %(since)s AND ord >= 0
+                   AND chunk_kind <> 'references' AND retired_at IS NULL
+            ),
+            ft AS (
+                SELECT c.ref_id, min(c.created_at) AS ts
+                  FROM chunks c JOIN recent USING (ref_id)
+                 WHERE c.ord >= 0 AND c.chunk_kind <> 'references'
+                   AND c.retired_at IS NULL
+                 GROUP BY c.ref_id
+            ),
+            full_days AS (
+                SELECT (ft.ts AT TIME ZONE 'UTC')::date AS d, count(*) AS n
+                  FROM ft JOIN refs r ON r.ref_id = ft.ref_id
+                 WHERE r.kind = 'paper' AND r.retired_at IS NULL
+                   AND ft.ts >= %(since)s
+                 GROUP BY 1
+            ),
+            card_days AS (
+                SELECT (r.created_at AT TIME ZONE 'UTC')::date AS d, count(*) AS n
+                  FROM refs r
+                 WHERE r.kind = 'paper' AND r.retired_at IS NULL
+                   AND r.created_at >= %(since)s
+                   AND EXISTS (SELECT 1 FROM chunks c WHERE c.ref_id = r.ref_id
+                                AND c.ord < 0 AND c.retired_at IS NULL)
+                   AND NOT EXISTS (SELECT 1 FROM chunks c WHERE c.ref_id = r.ref_id
+                                    AND c.ord >= 0 AND c.chunk_kind <> 'references'
+                                    AND c.retired_at IS NULL)
+                 GROUP BY 1
+            )
+            SELECT COALESCE(f.d, k.d) AS d, COALESCE(f.n, 0), COALESCE(k.n, 0)
+              FROM full_days f FULL OUTER JOIN card_days k ON f.d = k.d
+             ORDER BY 1 DESC
+        """
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, {"since": since}).fetchall()
+        return [(d, int(f), int(k)) for d, f, k in rows]
+
     def manual_retrieval_list(
         self, *, limit: int = 50, offset: int = 0
     ) -> list[dict[str, Any]]:

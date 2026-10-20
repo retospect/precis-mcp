@@ -54,7 +54,7 @@ def test_raise_alert_inserts_open_with_tags(store: Store) -> None:
         subject_ref_id=42,
     )
     tags = _tags(store, aid)
-    assert STATE_OPEN in tags
+    assert alerts_mod.STATE_OPEN in tags
     assert "alert-source:nursery:spin-loop" in tags
     assert "severity:warn" in tags
     with store.pool.connection() as conn:
@@ -371,7 +371,7 @@ def test_resolved_alert_carries_resolved_tag_and_timestamp(store: Store) -> None
     resolve_stale_alerts(store, source="s", live_fingerprints=[])
     tags = _tags(store, aid)
     assert STATE_RESOLVED in tags
-    assert STATE_OPEN not in tags
+    assert alerts_mod.STATE_OPEN not in tags
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT meta, resolved_at FROM refs WHERE ref_id = %s", (aid,)
@@ -415,7 +415,7 @@ def test_resolve_alert_dismisses_single_open_alert(store: Store) -> None:
 
     tags = _tags(store, aid)
     assert STATE_RESOLVED in tags
-    assert STATE_OPEN not in tags
+    assert alerts_mod.STATE_OPEN not in tags
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT meta, resolved_at FROM refs WHERE ref_id = %s", (aid,)
@@ -528,7 +528,7 @@ def test_resolve_stale_alerts_resolves_null_column_row_during_rollout(
     assert n == 1
     tags = _tags(store, old_id)
     assert STATE_RESOLVED in tags
-    assert STATE_OPEN not in tags
+    assert alerts_mod.STATE_OPEN not in tags
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT resolved_at FROM refs WHERE ref_id = %s", (old_id,)
@@ -752,7 +752,7 @@ def test_tag_verb_unrelated_edit_leaves_resolved_at(hub: Hub, store: Store) -> N
     handler.tag(id=aid, add=["ack-seen"])
     resolved_at, _meta = _lifecycle_row(store, aid)
     assert resolved_at is None
-    assert STATE_OPEN in _tags(store, aid)
+    assert alerts_mod.STATE_OPEN in _tags(store, aid)
 
 
 # ── critical push (asa_bot message path) ───────────────────────────
@@ -1099,7 +1099,7 @@ def test_ack_silences_readers_without_resolving(store: Store) -> None:
     resolved_at, _, by = _row(store, aid)
     assert resolved_at is None
     assert by == "t"
-    assert STATE_OPEN in _tags(store, aid)
+    assert alerts_mod.STATE_OPEN in _tags(store, aid)
     assert "alert-state:acknowledged" not in _tags(store, aid)
 
 
@@ -1151,3 +1151,71 @@ def test_ack_refuses_a_non_open_alert_and_naive_datetimes(store: Store) -> None:
     assert not alerts_mod.ack_alert(
         store, aid, until=datetime.now(UTC) + timedelta(days=1)
     )
+
+
+# ── quiet-window auto-resolve (gr500373) ───────────────────────────
+
+
+def _age(store: Store, ref_id: int, seconds: int) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET updated_at = now() - make_interval(secs => %s) "
+            "WHERE ref_id = %s",
+            (seconds, ref_id),
+        )
+
+
+def _resolved(store: Store, ref_id: int) -> tuple[Any, Any]:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT resolved_at, meta->>'resolved_by' FROM refs WHERE ref_id = %s",
+            (ref_id,),
+        ).fetchone()
+    assert row is not None
+    return row[0], row[1]
+
+
+@pytest.mark.parametrize(
+    ("source", "fingerprint", "quiet_s"),
+    [
+        ("budget", "cap-hourly", alerts_mod.QUIET_RESOLVE_BUDGET_S),
+        ("sweeper", "off-lane-pin:castor/dft", alerts_mod.QUIET_RESOLVE_OFF_LANE_S),
+    ],
+)
+def test_resolve_quiet_alerts_closes_only_past_window(
+    store: Store, source: str, fingerprint: str, quiet_s: int
+) -> None:
+    aid, _ = raise_alert(
+        store, source=source, fingerprint=fingerprint, title="t", severity="warn"
+    )
+    _age(store, aid, quiet_s - 600)  # still inside the window: firing recently
+    assert alerts_mod.resolve_quiet_alerts(store) == 0
+    assert _resolved(store, aid)[0] is None
+    assert alerts_mod.STATE_OPEN in _tags(store, aid)
+
+    _age(store, aid, quiet_s + 600)
+    assert alerts_mod.resolve_quiet_alerts(store) == 1
+    resolved_at, by = _resolved(store, aid)
+    assert resolved_at is not None
+    assert by == alerts_mod.QUIET_RESOLVED_BY
+    assert alerts_mod.STATE_OPEN not in _tags(store, aid)
+    # Idempotent, and a re-fire mints a fresh open row.
+    assert alerts_mod.resolve_quiet_alerts(store) == 0
+    aid2, is_new = raise_alert(
+        store, source=source, fingerprint=fingerprint, title="t", severity="warn"
+    )
+    assert is_new and aid2 != aid
+
+
+@pytest.mark.parametrize("fingerprint", ["quota-5h", "cap-daily"])
+def test_resolve_quiet_alerts_ignores_other_families(
+    store: Store, fingerprint: str
+) -> None:
+    """cap-daily can stand overnight with no paid call to refresh it, so
+    quiet does not mean cleared; it is never auto-resolved."""
+    aid, _ = raise_alert(
+        store, source="budget", fingerprint=fingerprint, title="t", severity="warn"
+    )
+    _age(store, aid, 10 * 24 * 3600)
+    assert alerts_mod.resolve_quiet_alerts(store) == 0
+    assert _resolved(store, aid)[0] is None

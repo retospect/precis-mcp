@@ -107,6 +107,9 @@ def _pa(ref: Ref) -> str:
 # Public spec
 # ---------------------------------------------------------------------------
 
+#: Cap on ``search(view='status', ids=[…])`` — one bulk query, one page.
+_STATUS_MAX_IDS = 200
+
 _SUPPORTED_VIEWS = (
     "bibtex",
     "ris",
@@ -1220,6 +1223,16 @@ class PaperHandler(Handler):
         # restriction; an empty list means "restricted to zero sources"
         # and must return zero hits, not fall through unfiltered.
         include_ref_ids: list[int] | None = None,
+        # ``view='count'`` (gr500649): filtered total + ``group_by=``
+        # facets, same contract as the numeric-ref kinds. ``view='status'``
+        # (gr500651, ``ids=`` handles/slugs) and ``view='ingest'``
+        # (gr500643, ``days=``) are paper-only ingest-state reads.
+        view: str | None = None,
+        group_by: str | list[str] | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        ids: list[str] | None = None,
+        days: int | None = None,
         **_kw: Any,
     ) -> Response:
         """Dispatch to the right search collaborator (see ``_paper_search.py``).
@@ -1233,6 +1246,30 @@ class PaperHandler(Handler):
         :mod:`precis.handlers._paper_search`.
         """
         kind = self.spec.kind
+        if view is not None and view not in ("index", "ids"):
+            if view == "count":
+                return self._count_view(
+                    q=q,
+                    tags=tags,
+                    group_by=group_by,
+                    since=since,
+                    until=until,
+                    exclude_ref_ids=exclude_ref_ids,
+                    include_ref_ids=include_ref_ids,
+                )
+            if view == "status":
+                return self._fetch_status_view(ids)
+            if view == "ingest":
+                return self._ingest_rate_view(days)
+            raise BadInput(
+                f"unknown view {view!r} for search(kind={kind!r})",
+                options=["count", "status", "ingest", "stubs", "chase-queue"],
+                next=(
+                    f"search(kind={kind!r}, view='count', "
+                    "args={'group_by': 'tag:studytype'}) · view='status' "
+                    "(ids=[…]) · view='ingest' (days=14)"
+                ),
+            )
         # Field-scoped byline lookup — ``title=`` / ``author=`` return
         # paper *records* (handle + citation), the targeted alternative to
         # the block-hit path when you know the title or an author. Routed
@@ -1424,6 +1461,195 @@ class PaperHandler(Handler):
             extra_include_ref_ids=include_ref_ids,
         )
         return PaperSearchResultRenderer(kind=kind).render(result)
+
+    # -- count / ingest-state views (gr500649 / gr500651 / gr500643) ---------
+
+    def _count_view(
+        self,
+        *,
+        q: str | None,
+        tags: list[str] | None,
+        group_by: Any,
+        since: str | None,
+        until: str | None,
+        exclude_ref_ids: list[int] | None,
+        include_ref_ids: list[int] | None,
+    ) -> Response:
+        """``search(kind='paper', view='count')`` — filtered total + facets.
+
+        Same store query and facet grammar as the numeric-ref kinds
+        (``_numeric_ref._count_view``); ``q=`` matches titles or any live
+        body chunk. ``group_by='tag:<axis>'`` / ``'meta.<key>'`` facet.
+        """
+        from precis.handlers._numeric_ref import (
+            _COUNT_GROUP_LIMIT,
+            _count_facet_label,
+            _parse_count_facets,
+            _parse_window_bound,
+        )
+        from precis.utils.next_block import render_next_section
+
+        kind = self.spec.kind
+        facets = _parse_count_facets(group_by)
+        since_dt = _parse_window_bound(since, "since")
+        until_dt = _parse_window_bound(until, "until")
+        normalized = Tag.normalize_filter(tags, kind=kind) if tags else None
+        total, groups = self.store.count_refs_facets(
+            kind=kind,
+            tags=normalized,
+            q=q,
+            q_in_chunks=True,
+            include_ref_ids=include_ref_ids,
+            exclude_ref_ids=exclude_ref_ids,
+            facets=facets,
+            group_limit=_COUNT_GROUP_LIMIT,
+            since=since_dt,
+            until=until_dt,
+        )
+        filters: list[str] = []
+        if q and q.strip():
+            filters.append(f"q={q!r}")
+        if normalized:
+            filters.append(f"tags={normalized!r}")
+        if since_dt is not None or until_dt is not None:
+            lo = since_dt.strftime("%Y-%m-%dT%H:%M:%SZ") if since_dt else "…"
+            hi = until_dt.strftime("%Y-%m-%dT%H:%M:%SZ") if until_dt else "…"
+            filters.append(f"created [{lo}, {hi})")
+        head = f"# {total} {kind} entr{'y' if total == 1 else 'ies'}"
+        if filters:
+            head += f" ({', '.join(filters)})"
+        parts = [head]
+        if facets:
+            parts.append("")
+            parts.append(" × ".join(_count_facet_label(f) for f in facets) + ":")
+            for vals, n in groups:
+                label = " | ".join(v if v is not None else "(none)" for v in vals)
+                parts.append(f"  {label}: {n}")
+            if len(groups) == _COUNT_GROUP_LIMIT:
+                parts.append(f"  … (top {_COUNT_GROUP_LIMIT} groups by count)")
+        else:
+            parts.append(
+                render_next_section(
+                    [
+                        (
+                            f"search(kind='{kind}', view='count', "
+                            "args={'group_by': 'tag:studytype'})",
+                            "facet by a tag axis (or 'meta.<key>')",
+                        ),
+                        (
+                            f"search(kind='{kind}', view='ingest')",
+                            "full-text vs card-only landings per day",
+                        ),
+                    ]
+                )
+            )
+        return Response(body="\n".join(parts), result_count=total)
+
+    def _require_paper_kind(self, view: str) -> None:
+        if self.spec.kind != "paper":
+            raise BadInput(
+                f"view={view!r} is paper-only (kind={self.spec.kind!r})",
+                next=f"search(kind='paper', view={view!r})",
+            )
+
+    def _fetch_status_view(self, ids: list[str] | None) -> Response:
+        """``search(kind='paper', view='status', ids=[…])`` — one row per
+        paper: body state (full-text / card-only / stub), has-PDF, and the
+        newest fetcher outcome. Full-text = live non-card, non-references
+        body chunks; ``card_*`` chunks are abstract/title cards only."""
+        from precis.utils.next_block import render_next_section
+
+        self._require_paper_kind("status")
+        if isinstance(ids, str):
+            ids = [ids]
+        if not ids:
+            raise BadInput(
+                "view='status' needs ids= (paper handles, slugs or DOIs)",
+                next="search(kind='paper', view='status', "
+                "ids=['pa123', 'wang2020state'])",
+            )
+        if len(ids) > _STATUS_MAX_IDS:
+            raise BadInput(
+                f"ids= has {len(ids)} entries, max {_STATUS_MAX_IDS}",
+                next=f"split the list into pages of up to {_STATUS_MAX_IDS}",
+            )
+        resolved = resolve_exclude_paper_ids([str(i) for i in ids], store=self.store)
+        rows = self.store.paper_fetch_status(sorted(resolved))
+        lines = [f"fetch status — {len(rows)} of {len(ids)} ids resolved:", ""]
+        counts: dict[str, int] = {}
+        for r in rows:
+            counts[r["body"]] = counts.get(r["body"], 0) + 1
+            h = handle_registry.format_handle("paper", r["ref_id"])
+            last = (
+                f"{r['last_event']} {r['last_ts'][:16]}Z ({r['last_source']})"
+                if r["last_event"]
+                else "never tried"
+            )
+            pdf = "pdf" if r["has_pdf"] else "no-pdf"
+            lines.append(
+                f"  {h}  [{r['cite_key'] or h}]  {r['body']}"
+                f" ({r['full_chunks']} body chunks)  {pdf}  fetch: {last}"
+            )
+        unresolved = len(ids) - len(rows)
+        summary = " · ".join(f"{n} {k}" for k, n in sorted(counts.items())) or "none"
+        if unresolved > 0:
+            summary += f" · {unresolved} unresolved"
+        lines.append("")
+        lines.append(f"summary: {summary}")
+        lines.append(
+            render_next_section(
+                [
+                    ("search(kind='paper', view='stubs')", "the papers still to get"),
+                    ("get(kind='paper', id='<handle>', view='log')", "full event log"),
+                ]
+            )
+        )
+        return Response(body="\n".join(lines), result_count=len(rows))
+
+    def _ingest_rate_view(self, days: int | None) -> Response:
+        """``search(kind='paper', view='ingest', days=N)`` — is ingestion
+        landing papers? Per-UTC-day full-text vs card-only landings."""
+        from datetime import timedelta
+
+        from precis.utils.next_block import render_next_section
+
+        self._require_paper_kind("ingest")
+        n = 14 if days is None else days
+        if isinstance(n, bool) or not isinstance(n, int) or not 1 <= n <= 90:
+            raise BadInput(
+                f"days must be an integer 1..90, got {days!r}",
+                next="search(kind='paper', view='ingest', args={'days': 14})",
+            )
+        now = datetime.now(UTC)
+        since = (now - timedelta(days=n - 1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        rows = self.store.paper_ingest_rate(since=since)
+        tot_full = sum(f for _d, f, _k in rows)
+        tot_card = sum(k for _d, _f, k in rows)
+        lines = [
+            f"# paper landings, last {n} days (UTC, since {since:%Y-%m-%d}): "
+            f"{tot_full} full-text · {tot_card} card-only",
+            "full-text = first non-card, non-references body chunk created that "
+            "day; card-only = created that day, only card_* chunks so far",
+            "",
+        ]
+        if not rows:
+            lines.append("  no landings in the window")
+        for d, f, k in rows:
+            lines.append(f"  {d}: {f} full-text · {k} card-only")
+        lines.append(
+            render_next_section(
+                [
+                    (
+                        "search(kind='paper', view='status', ids=[…])",
+                        "per-paper body state + last fetch outcome",
+                    ),
+                    ("search(kind='paper', view='stubs')", "the still-to-get backlog"),
+                ]
+            )
+        )
+        return Response(body="\n".join(lines), result_count=tot_full + tot_card)
 
     # -- search_hits: structured form for cross-kind merge -------------------
 

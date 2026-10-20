@@ -168,9 +168,18 @@ class TestSpawnReadMcp:
         with pytest.raises(ValueError, match="no base DSN"):
             read_mcp.spawn_read_mcp(cast(Any, _FakeStore(None)), work_dir=tmp_path)
 
+    @pytest.fixture
+    def short_dir(self) -> Any:
+        # macOS pytest tmp_path is long enough to exceed the AF_UNIX bind limit.
+        d = Path(tempfile.mkdtemp(dir="/tmp"))
+        yield d
+        shutil.rmtree(d, ignore_errors=True)
+        shutil.rmtree(str(d) + "-9-mcp", ignore_errors=True)
+
     def test_spawns_writes_mcp_json_and_returns_handle(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, short_dir: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        tmp_path = short_dir
         # Stub the actual process launch — this test is about the
         # orchestration (DSN check, socket dir, mcp.json + client write,
         # handle shape), not actually spawning `python -m precis serve`.

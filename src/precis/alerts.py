@@ -529,6 +529,76 @@ def resolve_stale_alerts(
     return resolved
 
 
+#: Quiet window (seconds) after which an open alert whose raising probe has
+#: not re-fired is auto-resolved (gr500373). Keyed by ``(alert_source,
+#: fingerprint LIKE pattern)``. Only ``cap-hourly`` is listed for budget: an
+#: hourly cap resets within the hour, so 2h of quiet means it cleared. The
+#: breaker refreshes a standing trip every ``budget.breaker._ALERT_REFRESH_S``,
+#: but only when a paid call reaches its gate, so ``cap-daily`` (which can
+#: stand overnight with no calls) is NOT auto-resolved here. The off-lane-pin
+#: alert is raised only when jobs are reaped (they are already failed) and
+#: otherwise resolved on rejoin; a node still off-lane after 24h is closed
+#: here as a reported incident, not as "cleared" -- re-reaping re-raises it.
+QUIET_RESOLVE_BUDGET_S = 2 * 3600
+QUIET_RESOLVE_OFF_LANE_S = 24 * 3600
+QUIET_RESOLVE_WINDOWS: tuple[tuple[str, str, int], ...] = (
+    ("budget", "cap-hourly", QUIET_RESOLVE_BUDGET_S),
+    ("sweeper", "off-lane-pin:%", QUIET_RESOLVE_OFF_LANE_S),
+)
+#: ``resolved_by`` stamped on quiet auto-resolves (visible in alert history).
+QUIET_RESOLVED_BY = "auto:quiet-window"
+
+
+def resolve_quiet_alerts(
+    store: Store,
+    *,
+    windows: Iterable[tuple[str, str, int]] = QUIET_RESOLVE_WINDOWS,
+) -> int:
+    """Auto-resolve open alerts whose probe has been quiet past its window.
+
+    For each ``(source, fingerprint_like, quiet_s)``: an open alert whose
+    ``updated_at`` (bumped by every non-throttled re-raise, so at most the
+    reraise throttle stale while the condition holds) is older than
+    ``quiet_s`` is resolved with ``resolved_by=QUIET_RESOLVED_BY`` and the
+    resolve is logged. Alerts still firing are never touched. Returns the
+    number resolved.
+    """
+    resolved = 0
+    for source, like, quiet_s in windows:
+        cutoff = datetime.now(UTC) - timedelta(seconds=quiet_s)
+        with store.tx() as conn:
+            rows = conn.execute(
+                """
+                SELECT r.ref_id, r.fingerprint, r.updated_at
+                  FROM refs r
+                  JOIN ref_tags rt ON rt.ref_id = r.ref_id
+                  JOIN tags t ON t.tag_id = rt.tag_id
+                 WHERE r.kind = 'alert'
+                   AND r.retired_at IS NULL
+                   AND r.resolved_at IS NULL
+                   AND r.alert_source = %s
+                   AND r.fingerprint LIKE %s
+                   AND r.updated_at < %s
+                   AND t.namespace = 'OPEN'
+                   AND t.value = %s
+                """,
+                (source, like, cutoff, STATE_OPEN),
+            ).fetchall()
+            for ref_id, fp, updated_at in rows:
+                _flip_resolved(store, conn, int(ref_id), resolved_by=QUIET_RESOLVED_BY)
+                log.info(
+                    "alerts: auto-resolved quiet alert %s/%s (id=%s): no re-fire "
+                    "since %sZ (window %ds)",
+                    source,
+                    fp,
+                    ref_id,
+                    updated_at.astimezone(UTC).strftime("%Y-%m-%dT%H:%M"),
+                    quiet_s,
+                )
+                resolved += 1
+    return resolved
+
+
 def resolve_alert(store: Store, ref_id: int, *, resolved_by: str = "") -> bool:
     """Manually resolve (dismiss) one open alert. Returns ``True`` if flipped.
 

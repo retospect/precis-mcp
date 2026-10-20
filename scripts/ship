@@ -693,6 +693,14 @@ testmon_into_container() {
         | compose exec -T precis-gate tar -C /app --no-same-owner -xf - || true
 }
 testmon_from_container() {
+    # testmon-retry.sh dropped a stale map after a testmon INTERNALERROR and
+    # left /app/.testmondata.dropped: remove the host copy too, so the next
+    # run sees no map (plain selection) instead of re-importing the stale one.
+    if compose exec -T precis-gate sh -c 'test -e /app/.testmondata.dropped'; then
+        rm -f "${WORKTREE}"/.testmondata*
+        compose exec -T precis-gate sh -c 'rm -f /app/.testmondata*' || true
+        return 0
+    fi
     # Glob INSIDE the container (`sh -c`): on a first-ever impacted ship the
     # host worktree has no map yet, so a local `.testmondata*` would stay
     # literal and tar would miss the file testmon just built in /app.
@@ -881,7 +889,7 @@ GATE_RUN_LOG=""
 # source-builds; --inexact keeps whatever the image already bakes. The arch
 # test runs INSIDE the container (the `$(...)` is expanded by its shell, not
 # the host's, which is darwin arm64).
-GATE_SYNC_EXTRAS='--all-extras --no-extra catalyst --no-extra catalyst-gpu --inexact $(case "$(uname -m)" in aarch64|arm64) echo --no-extra struct-search ;; esac)'
+GATE_SYNC_EXTRAS='--all-extras --no-extra catalyst --no-extra catalyst-gpu --inexact $(case "$(uname -m)" in (aarch64|arm64) echo --no-extra struct-search ;; esac)'
 
 gate_deps_sync() {
     local log host
@@ -2074,7 +2082,7 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
             fi
             if [[ "$SEL_TESTMON" == "testmon=1" ]]; then
                 say "checked gate — testmon-selected pytest + ${SEL_N} impacted-tests targets — ${GATE_MODE} gate, gate slot"
-                run_gate --slot --testmon "TESTMON_DATAFILE=/app/.testmondata uv run --with pytest-testmon pytest -q --testmon -n0 -m 'not slow' && uv run pytest -q -n ${PRECIS_GATE_N:-6} -m 'not slow' ${SEL_LIST}" \
+                run_gate --slot --testmon "TESTMON_DATAFILE=/app/.testmondata bash /app/scripts/lib/testmon-retry.sh /app/.testmondata uv run --with pytest-testmon pytest -q --testmon -n0 -m 'not slow' && uv run pytest -q -n ${PRECIS_GATE_N:-6} -m 'not slow' ${SEL_LIST}" \
                     || die "checked selection is RED — not shipping. Fix the failure above and re-run scripts/ship --checked."
             else
                 say "checked gate — ${SEL_N} impacted-tests targets (contract + map/corpus + index evidence; no testmon map) — ${GATE_MODE} gate, gate slot"

@@ -9,6 +9,8 @@ answers:
   - how do I look a paper up by its exact title or author instead of a keyword search?
   - how do I find where a paper mentions a specific exact term?
   - how do I filter papers by publication year?
+  - how many papers match, and is ingestion landing full text?
+  - which of these papers are full text, card-only or stubs?
   - how do I search inside one paper for a passage?
   - how do I get a paper whose DOI isn't indexed yet?
   - how do I resolve a journal/volume/page/year citation to a paper?
@@ -359,6 +361,25 @@ search(kind="paper", q="photocatalytic NOx reduction", page=3, page_size=20)
 ```
 
 Pagination mechanics (defaults, `page_size=` cap): `precis-search-help`.
+
+## How many papers? Is ingestion landing full text?
+## Which of these papers are full text, abstract-card only, or stubs?
+
+```python
+search(kind="paper", view="count")                                  # total
+search(kind="paper", view="count", tags=["studytype:review"],
+       args={"group_by": "tag:studytype"}, since="2026-10-01")      # filtered + facets
+search(kind="paper", view="ingest", args={"days": 14})              # landings per UTC day
+search(kind="paper", view="status", args={"ids": ["pa123", "wang2020state"]})
+```
+
+`view='count'` = the numeric-ref count view (`precis-search-help`).
+`view='ingest'`: per day, papers whose first **full-text** chunk landed
+(non-card, non-references body chunk) vs **card-only** papers created
+(only `card_*` abstract/title chunks so far). `view='status'` (up to 200
+handles/slugs/DOIs): per paper `full-text | card-only | stub`, PDF
+present, and the newest fetcher outcome (`fetch_ok`, `fetch_failed`,
+`no_oa_version`, or never tried). Backlog to chase: `view='stubs'`.
 
 ## Filter papers by publication year
 ## Find recent papers / papers from a date range

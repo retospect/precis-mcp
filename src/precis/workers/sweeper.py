@@ -114,6 +114,7 @@ from precis.alert_ids import RULES_BY_ID
 from precis.alerts import (
     raise_alert,
     resolve_alert_by_fingerprint,
+    resolve_quiet_alerts,
     resolve_stale_alerts,
 )
 from precis.store import Store
@@ -833,6 +834,13 @@ def run_sweeper_pass(store: Store, *, limit: int = 50) -> BatchResult:
     # Live host, executor pass gone (gr493226): a pinned job the host-death
     # predicate above can't see, because the node still heartbeats.
     _reap_off_lane_pinned(store, limit=limit)
+    # Quiet-window auto-resolve (gr500373): off-lane-pin and budget-cap alerts
+    # whose probe stopped re-firing close themselves, logged with who/why.
+    # Best-effort: a failure here must not skip the phases below.
+    try:
+        resolve_quiet_alerts(store)
+    except Exception:
+        log.exception("sweeper: quiet-window alert resolve failed")
     # ``unpark`` phase (parked-leaf-recovery) — a DISTINCT pass over
     # ``child-failed:*``-latched todos, unconditional and fleet-wide like
     # the dead-node reap above; called before the generic orphan sweep's

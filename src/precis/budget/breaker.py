@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from typing import TYPE_CHECKING
 
 from precis.alert_ids import RULES_BY_ID
@@ -42,6 +43,12 @@ _ALERT_SOURCE = RULES_BY_ID["budget/cap-{window}"].rule
 _ALERT_SOURCE_QUOTA = RULES_BY_ID["budget:quota/quota-{window}"].rule
 
 _alert_lock = threading.Lock()
+#: A standing trip re-raises its alert this often (seconds) so the alert's
+#: ``updated_at`` stays fresh and the quiet-window auto-resolve
+#: (:func:`precis.alerts.resolve_quiet_alerts`, gr500373) can tell a live
+#: trip from a stale one. Must stay well under ``QUIET_RESOLVE_BUDGET_S``.
+_ALERT_REFRESH_S = 600
+_last_refresh = 0.0
 #: Last tripped window we alerted on (``'hourly'`` / ``'daily'`` / ``None``),
 #: so we only touch the alert store on a state *transition*.
 _last_window: str | None = None
@@ -223,10 +230,14 @@ def _sync_alert(
     """
     if store is None:
         return
-    global _last_window
+    global _last_window, _last_refresh
     with _alert_lock:
+        now = time.monotonic()
         if window == _last_window:
-            return
+            if window is None or now - _last_refresh < _ALERT_REFRESH_S:
+                return
+            # Standing trip: refresh liveness (re-raises if auto-resolved).
+        _last_refresh = now
         prior = _last_window
         _last_window = window
     try:
@@ -325,8 +336,9 @@ def _apply_alert(
 
 def _reset_alert_state() -> None:
     """Test hook: forget the last-alerted windows."""
-    global _last_window, _last_quota_window
+    global _last_window, _last_quota_window, _last_refresh
     with _alert_lock:
+        _last_refresh = 0.0
         _last_window = None
         _last_quota_window = None
 
