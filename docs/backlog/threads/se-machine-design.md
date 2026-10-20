@@ -206,6 +206,9 @@ off that gap until it closes.
 
 ## Horizon
 
+0. **backlog/se-flow-kernel.md** — dimension-free Hele-Shaw + tracer on
+   cad envelopes (mm to 50 cm thin chambers) with a regime card; draft
+   filed 2026-10-20 from Reto's cfdtest tracer; Q1–Q3 open.
 1. **backlog/se-feasibility-and-cost.md** — owned by nobody today; the far
    end all se threads (se-3d-viewer, se-nucleic-chain, hexfold-toolkit)
    serve. Claimed here.
