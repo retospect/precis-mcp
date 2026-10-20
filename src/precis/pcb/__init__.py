@@ -356,8 +356,8 @@ PRESET_GROUND_NET = "GND"
 #: Named stackups ``put(args={'op':'stackup','preset':...})`` writes
 #: (pcb-stackup-regions slice 3, Reto's rulings 2026-10-16):
 #:
-#: - ``4l-two-sided`` — the hybrid (ruled the default; see
-#:   :data:`DEFAULT_STACKUP` for why it is not yet). F.Cu/B.Cu
+#: - ``4l-two-sided`` — the hybrid (:data:`DEFAULT_STACKUP` instead routes
+#:   and fills both inner layers, measured better on nano). F.Cu/B.Cu
 #:   signal with a GND ``fill``; In1.Cu a GND plane that also routes at
 #:   :data:`HYBRID_IN1_ROUTE_COST`; In2.Cu carries derived power regions
 #:   (``power_regions``) with GND filling whatever no region claims. Sides
@@ -418,16 +418,16 @@ def stackup_preset(
     return out
 
 
-#: The default stackup every board is born with — still the v1 SIG/GND/
-#: PWR/SIG literal migration 0138 inlined for its backfill (keep the two in
-#: sync by eye). pcb-stackup-regions slice 3 rules the ``4l-two-sided``
-#: hybrid the default, but switching was measured on the nano board first
-#: and lost routed nets against its one-way floor (the table in the spec),
-#: so the switch waits on Reto; the hybrid is ``op='stackup',
-#: preset='4l-two-sided'`` meanwhile. On this legacy stackup In1's
-#: ``plane_net`` is a declaration ``op='stackup'`` mirrors into
-#: ``pcb_planes`` — the router does not pour it without a row (gr495287;
-#: :func:`precis.pcb.planes.resolve_assignments`).
+#: The default stackup every board is born with (gr495395/gr495287): both
+#: inner layers route and pour a GND ``fill`` over whatever routing leaves,
+#: In2.Cu also deriving power-net regions. A ``fill`` pours after routing
+#: without a ``pcb_planes`` row, so a fresh board's In1.Cu(GND) is real
+#: copper; the v1 literal (In1 a ``plane_net`` declaration the router never
+#: poured without ``op='stackup'``) did not. Measured on the nano board
+#: seeds 1-8 against the v1 literal: routed mean 34.375 -> 35.75, per-seed
+#: min 28 -> 30. Migration 0138's backfill literal is the old v1 one; no
+#: column default reads this. The ``4l-two-sided`` hybrid preset (In1 a
+#: whole-board plane) stays ``op='stackup', preset=...``.
 #:
 #: **``role`` answers two questions; the explicit flags split them.**
 #: :func:`precis.pcb.ir.layer_is_routable`/:func:`~precis.pcb.ir.
@@ -446,7 +446,13 @@ def stackup_preset(
 #: board-covering fill on a signal layer (gr486958).
 DEFAULT_STACKUP: list[dict[str, Any]] = [
     {"name": "F.Cu", "role": "signal"},
-    {"name": "In1.Cu", "role": "plane", "plane_net": "GND"},
-    {"name": "In2.Cu", "role": "plane"},
+    {"name": "In1.Cu", "role": "signal", "routable": True, "fill": PRESET_GROUND_NET},
+    {
+        "name": "In2.Cu",
+        "role": "signal",
+        "routable": True,
+        "fill": PRESET_GROUND_NET,
+        "power_regions": True,
+    },
     {"name": "B.Cu", "role": "signal"},
 ]

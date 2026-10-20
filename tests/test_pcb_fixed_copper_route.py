@@ -31,12 +31,12 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.handlers.pcb import PcbHandler
-from precis.pcb import DEFAULT_STACKUP
 from precis.pcb import connectivity as pcb_connectivity
 from precis.pcb.ir import from_graph
 from precis.pcb.realize import RealizeConfig, realize, to_gerber_model
 from precis.store import Store
 from precis.workers.job_types import pcb_route
+from tests.fixtures.pcb.stackups import LEGACY_V1_STACKUP
 
 pytestmark = pytest.mark.db
 
@@ -69,7 +69,7 @@ def test_realize_never_routes_a_segment_fully_bridged_by_fixed_copper():
     no route: the segment is reported in ``fixed_realized``, never in
     ``tracks`` (no NEW copper for a connection fixed copper already
     made) and never in ``unrouted`` (it was never searched at all)."""
-    ir = from_graph(_two_pin_graph((0.0, 0.0), (2.0, 0.0)), stackup=DEFAULT_STACKUP)
+    ir = from_graph(_two_pin_graph((0.0, 0.0), (2.0, 0.0)), stackup=LEGACY_V1_STACKUP)
     fixed_copper = [
         {
             "ctype": "track",
@@ -89,7 +89,7 @@ def test_realize_with_no_fixed_copper_routes_normally():
     """Baseline: the SAME board with no ``fixed_copper`` argument routes
     the connection itself -- the short-circuit above is conditional on
     the keyword, never the default behaviour."""
-    ir = from_graph(_two_pin_graph((0.0, 0.0), (2.0, 0.0)), stackup=DEFAULT_STACKUP)
+    ir = from_graph(_two_pin_graph((0.0, 0.0), (2.0, 0.0)), stackup=LEGACY_V1_STACKUP)
     result = realize(ir, config=RealizeConfig(router="maze"))
     assert result.fixed_realized == ()
     assert result.tracks, "the same connection with no fixed copper must self-route"
@@ -103,7 +103,7 @@ def test_realize_a_via_bridges_two_coincident_pins():
     it follows a track's segments, not just the line-geometry path the
     test above exercises."""
     graph = _two_pin_graph((0.0, 0.0), (0.0, 0.0), net="N1")
-    ir = from_graph(graph, stackup=DEFAULT_STACKUP)
+    ir = from_graph(graph, stackup=LEGACY_V1_STACKUP)
     fixed_copper = [
         {
             "ctype": "via",
@@ -146,7 +146,7 @@ def test_plane_fanout_skips_a_pin_the_source_via_already_drops_to_the_plane():
         ],
     }
     outline = [[-10.0, -10.0], [30.0, -10.0], [30.0, 10.0], [-10.0, 10.0]]
-    ir = from_graph(graph, stackup=DEFAULT_STACKUP, outline=outline)
+    ir = from_graph(graph, stackup=LEGACY_V1_STACKUP, outline=outline)
     ir.promote_plane(0, 1)  # In1.Cu, the GND plane layer
     # The source's own escape: a stub off U0's pad into a through via.
     fixed_copper = [
@@ -202,7 +202,7 @@ def test_plane_fanout_keeps_the_drop_for_a_pin_the_source_reaches_only_partway()
         ],
     }
     outline = [[-10.0, -10.0], [30.0, -10.0], [30.0, 10.0], [-10.0, 10.0]]
-    ir = from_graph(graph, stackup=DEFAULT_STACKUP, outline=outline)
+    ir = from_graph(graph, stackup=LEGACY_V1_STACKUP, outline=outline)
     ir.promote_plane(0, 1)  # In1.Cu
     ir.promote_plane(0, 2)  # In2.Cu
     fixed_copper = [
@@ -276,7 +276,7 @@ def test_plane_fanout_keeps_the_stub_for_a_pad_on_its_own_pour_layer(
         ],
     }
     outline = [[-10.0, -10.0], [30.0, -10.0], [30.0, 10.0], [-10.0, 10.0]]
-    ir = from_graph(graph, stackup=DEFAULT_STACKUP, outline=outline)
+    ir = from_graph(graph, stackup=LEGACY_V1_STACKUP, outline=outline)
     ir.promote_plane(0, 0)  # F.Cu, the pads' own layer
     config = RealizeConfig(router="maze", fab_caps=capability_for("4layer"))
     offered: list[Any] = []
@@ -330,7 +330,7 @@ def test_realize_claims_fixed_copper_as_an_obstacle_for_a_foreign_net():
         ],
     }
     outline = [(-2.0, -1.0), (12.0, -1.0), (12.0, 1.0), (-2.0, 1.0)]
-    ir = from_graph(graph, stackup=DEFAULT_STACKUP, outline=outline)
+    ir = from_graph(graph, stackup=LEGACY_V1_STACKUP, outline=outline)
     # Wide enough (width/2 + default clearance) to clear the whole 2mm-tall
     # strip on both routable layers -- a genuine total block, not merely a
     # tight squeeze.
@@ -478,7 +478,7 @@ def test_realize_routes_from_a_fixed_via_terminal_when_the_pad_corridor_is_seale
     merely land near it -- so `net_islands` sees N1 as one piece once the
     fixed and derived copper are combined."""
     graph = _island_terminal_graph()
-    ir = from_graph(graph, stackup=DEFAULT_STACKUP, outline=_ISLAND_OUTLINE)
+    ir = from_graph(graph, stackup=LEGACY_V1_STACKUP, outline=_ISLAND_OUTLINE)
     result = realize(
         ir, config=RealizeConfig(router="maze"), fixed_copper=_ISLAND_FIXED_COPPER
     )
@@ -521,7 +521,7 @@ def test_realize_without_the_fixed_via_stays_unrouted_pad_sealed_by_wall():
     visible ``no_path`` reason the "(b)" wall test above gets for an
     equivalent total seal."""
     graph = _island_terminal_graph()
-    ir = from_graph(graph, stackup=DEFAULT_STACKUP, outline=_ISLAND_OUTLINE)
+    ir = from_graph(graph, stackup=LEGACY_V1_STACKUP, outline=_ISLAND_OUTLINE)
     fixed_copper = [*_wall_ring_rows(), _WALL2_ROW]
     result = realize(ir, config=RealizeConfig(router="maze"), fixed_copper=fixed_copper)
     seg_id = 0
@@ -537,7 +537,7 @@ def test_realize_fully_bridged_segment_is_unaffected_by_island_terminal_search()
     never reaches the maze search at all -- the island-terminal machinery
     (which only ever touches segments the search receives) must not
     change that."""
-    ir = from_graph(_two_pin_graph((0.0, 0.0), (2.0, 0.0)), stackup=DEFAULT_STACKUP)
+    ir = from_graph(_two_pin_graph((0.0, 0.0), (2.0, 0.0)), stackup=LEGACY_V1_STACKUP)
     fixed_copper = [
         {
             "ctype": "track",

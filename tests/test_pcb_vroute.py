@@ -8,9 +8,11 @@ from __future__ import annotations
 import itertools
 import math
 import random
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
-from shapely.geometry import LineString, Point
+from shapely.geometry import LineString, Point, Polygon
 
 from precis.pcb import clearance as k
 from precis.pcb import vroute as v
@@ -199,6 +201,9 @@ def test_batched_leg_check_matches_the_single_leg_predicate(seed: int) -> None:
             arc = k.Arc(x, y, rng.uniform(0.3, 2.0), rng.uniform(0, 6.28), 1.5)
             obs.append(v.Obstacle(k.Body(None, (arc,), 0.1), f"A{i}", frozenset((0,))))
     obs.append(_pad("SIG", 10.0, 10.0, 1.0, 1.0))
+    # A reserved power region (gr495395) is an obstacle to tracks on both paths.
+    region = k.Body(Polygon([(3, 3), (7, 3), (7, 8), (3, 8)]), (), 0.0)
+    obs.append(v.Obstacle(region, "PWR", frozenset((0,)), track_only=True))
     space = _space(obs)
     legs = [
         (
@@ -224,3 +229,86 @@ def test_octagon_corners_circumscribe_the_grown_body() -> None:
     corners = v.octagon_corners(body, 0.3)
     for c in corners:
         assert k.signed_gap(k.Body(Point(c), (), 0.0), body) >= 0.3 - 1e-9
+
+
+# ── reserved power regions (gr495395) ─────────────────────────────────────
+
+
+def test_a_track_only_area_blocks_foreign_tracks_and_no_via() -> None:
+    area = v.Obstacle(
+        k.Body(Polygon([(8, 0), (12, 0), (12, 20), (8, 20)]), (), 0.0),
+        "PWR",
+        frozenset((0,)),
+        track_only=True,
+    )
+    space = _space([area])
+    inside = k.Body(Point(10.0, 10.0), (), 0.3)
+    assert not space.clears(inside, "SIG", 0)
+    assert space.clears(inside, "SIG", 0, via_site=True)
+    assert space.clears(inside, "PWR", 0)
+
+
+def _escape_across_a_region(reserve: bool):
+    """One failed SIG segment whose straight F.Cu path crosses PWR's
+    region on F.Cu, routed by the escape pass alone (the maze's result is
+    taken as 'nothing routed')."""
+    from precis.pcb import ir as pcb_ir
+    from precis.pcb import realize as rz
+
+    def pins(a: str, b: str) -> list[dict[str, str]]:
+        return [{"refdes": "R1", "pin": a}, {"refdes": "R2", "pin": b}]
+
+    graph = {
+        "instances": [
+            {"refdes": "R1", "label": "10k 0603", "x": 5.0, "y": 15.0},
+            {"refdes": "R2", "label": "10k 0603", "x": 35.0, "y": 15.0},
+        ],
+        "nets": [
+            {"name": "SIG", "members": pins("2", "1")},
+            {"name": "PWR", "members": pins("1", "2")},
+        ],
+    }
+    ir = pcb_ir.from_graph(
+        graph, outline=[(0.0, 0.0), (40.0, 0.0), (40.0, 30.0), (0.0, 30.0)]
+    )
+    names = [str(e["name"]) for e in ir.stackup]
+    nets = [str(n) for n in ir.net_name]
+    points = [[15.0, -1.0], [25.0, -1.0], [25.0, 31.0], [15.0, 31.0]]
+    ir.plane_regions = {
+        (nets.index("PWR"), names.index("F.Cu")): ({"points": points}, 1)
+    }
+    config = rz.RealizeConfig(reserve_power_region_tracks=reserve)
+    segs = list(range(len(ir.seg_net)))
+    sig = [s for s in segs if int(ir.seg_net[s]) == nets.index("SIG")]
+    ctx = rz._route_context(ir, segs, config, None, None)
+    assert ctx is not None
+    (tracks, vias, still, _notes, _plane), _report = v.escape_pass(
+        ir, ctx, config, ([], [], sig, {}, []), None, None
+    )
+    rows = rz.result_copper_rows(
+        cast(Any, SimpleNamespace(tracks=tracks, vias=vias, pours=[])), ir, names
+    )
+    on_top = [r for r in rows if r["ctype"] == "track" and r["layer"] == "F.Cu"]
+    return Polygon(points), still, on_top, vias
+
+
+def _gaps(region: Polygon, track_rows: list[dict[str, Any]]) -> list[float]:
+    return [
+        region.distance(LineString([seg["start"], seg["end"]])) - row["width_mm"] / 2
+        for row in track_rows
+        for seg in row["segments"]
+    ]
+
+
+def test_no_escape_track_sits_inside_a_reserved_region() -> None:
+    """witty's bar for gr495395's flag: with the regions reserved, the
+    gridless escape keeps another net's tracks out of a power region (it
+    changes layer under it by via instead); without, the same segment
+    runs straight across, so the check bites."""
+    region, still, on_top, vias = _escape_across_a_region(reserve=True)
+    assert still == []
+    assert on_top and min(_gaps(region, on_top)) >= 0.0
+    assert vias
+    region, still, on_top, _vias = _escape_across_a_region(reserve=False)
+    assert still == []
+    assert min(_gaps(region, on_top)) < 0.0

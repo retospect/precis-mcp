@@ -311,10 +311,10 @@ def test_pad_sizes_merged_pad_keeps_constant_gap_against_its_neighbours():
 
 
 def test_escape_layers_defaults_to_every_signal_layer_but_the_field():
-    """The escape net class must name layers, and the default must state
-    the RULE (every signal layer the electrode field does not own) rather
-    than a hardcoded answer. On ``DEFAULT_STACKUP`` that is ``["B.Cu"]``,
-    since In1/In2 are plane layers there."""
+    """The escape net class must name layers. The default is ``["B.Cu"]``
+    (Rulings 2026-09-19 item 7), pinned in the generator: the default
+    stackup routes In1/In2 since gr495395, and In1.Cu sits under the
+    electrode field."""
     exp = G.expand("ewod_pad_array", "ARR", {"grid": [4, 4]})
     assert exp.canonical_params["escape_layers"] == ["B.Cu"]
     escape_class = next(

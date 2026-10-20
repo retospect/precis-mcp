@@ -4620,11 +4620,15 @@ class PcbHandler(Handler):
             # {layer name: plane net} from the stackup — the .epro2
             # writer covers a plane that has no authored pour left over
             # with an outline-sized zone so its net survives; the gerber
-            # writer realizes its own fill and ignores the key.
+            # writer realizes its own fill and ignores the key. A layer's
+            # `fill` net counts too (gr495395: the default stackup pours
+            # GND as a fill on both inner layers, not as a plane_net).
             "planes": {
                 str(e["name"]): str(e["plane_net"])
-                for e in board["stackup"]
                 if e.get("role") == "plane" and e.get("plane_net")
+                else str(e["fill"])
+                for e in board["stackup"]
+                if (e.get("role") == "plane" and e.get("plane_net")) or e.get("fill")
             },
         }
         return model, warnings

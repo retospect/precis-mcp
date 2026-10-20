@@ -1855,9 +1855,15 @@ def test_op_class_rules_sets_rules(pcb, store):
 
 
 def test_op_class_rules_refuses_a_layer_the_stackup_does_not_route_on(pcb, store):
-    """gr472108: the default stackup's In2.Cu is a plane; naming it beside
+    """gr472108: on the v1 stackup In2.Cu is a plane; naming it beside
     B.Cu used to be silently narrowed to B.Cu at route time."""
+    from tests.fixtures.pcb.stackups import LEGACY_V1_STACKUP
+
     pcb.put(id="op-classrules-layers", args=_CROSSED)
+    board_ref = store.get_ref(kind="pcb", id="op-classrules-layers")
+    store.pcb_set_stackup(
+        store.pcb_graph(board_ref.id)["board"]["board_id"], LEGACY_V1_STACKUP
+    )
     with pytest.raises(BadInput, match=r"In2\.Cu.*routable.*B\.Cu"):
         pcb.put(
             id="op-classrules-layers",
@@ -1907,12 +1913,18 @@ def test_feasibility_view(pcb):
 
 def test_put_creates_default_board(pcb):
     resp = pcb.put(id="sensor-node", args=_DESIGN)
-    # the netlist TOC surfaces the board name + stackup layer summary
+    # the netlist TOC surfaces the board name + stackup layer summary;
+    # gr495287: it names the GND the default stackup really pours (a fill
+    # on both inner layers), not a plane declaration nothing poured
+    summary = (
+        "4 layers: F.Cu/In1.Cu/In2.Cu/B.Cu, GND fill on In1.Cu/In2.Cu, "
+        "power regions on In2.Cu"
+    )
     assert "board: main" in resp.body
-    assert "4 layers: F.Cu/In1.Cu(GND)/In2.Cu/B.Cu" in resp.body
+    assert summary in resp.body
     toc = pcb.get(id="sensor-node")
     assert "board: main" in toc.body
-    assert "4 layers: F.Cu/In1.Cu(GND)/In2.Cu/B.Cu" in toc.body
+    assert summary in toc.body
 
 
 def test_stackup_default_content(pcb, store):

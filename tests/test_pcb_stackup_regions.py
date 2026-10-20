@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 from shapely.geometry import Point, Polygon
 
-from precis.pcb import DEFAULT_STACKUP, STACKUP_PRESETS, maze, stackup_preset
+from precis.pcb import STACKUP_PRESETS, maze, stackup_preset
 from precis.pcb import ir as pcb_ir
 from precis.pcb.connectivity import pour_components
 from precis.pcb.drc import check_pour_fragmented
@@ -23,6 +23,7 @@ from precis.pcb.planes import (
     resolve_assignments,
 )
 from precis.pcb.session import content_hash
+from tests.fixtures.pcb.stackups import LEGACY_V1_STACKUP
 
 _BOARD = [[0.0, 0.0], [40.0, 0.0], [40.0, 30.0], [0.0, 30.0]]
 _HYBRID = stackup_preset("4l-two-sided")
@@ -163,15 +164,37 @@ def test_a_missing_net_or_a_whole_board_row_skips_the_declaration() -> None:
 
 
 def test_a_legacy_stackup_keeps_its_plane_net_a_declaration() -> None:
-    """The old default (no slice-3 keys) pours nothing without a row — the
-    switch to honouring it waits on Reto (nano floor table in the spec)."""
-    got, notes = resolve_assignments(DEFAULT_STACKUP, [], ["GND"])
+    """The old default (no slice-3 keys), still on boards born before
+    gr495395, pours nothing without a row."""
+    got, notes = resolve_assignments(LEGACY_V1_STACKUP, [], ["GND"])
     assert got == []
     assert any("legacy" in n and "In1.Cu=GND" in n for n in notes)
     rows = [{"layer": "In1.Cu", "net": "GND", "source": "authored"}]
-    got, notes = resolve_assignments(DEFAULT_STACKUP, rows, ["GND"])
+    got, notes = resolve_assignments(LEGACY_V1_STACKUP, rows, ["GND"])
     assert [(a.layer, a.net, a.source) for a in got] == [("In1.Cu", "GND", "authored")]
     assert notes == []
+
+
+def test_an_outline_less_board_routes_a_declared_fill_as_traces() -> None:
+    """gr495395: with no outline a pour has no extent, so the default
+    stackup's GND fill is not promoted (it would fail every pin
+    ``unpourable_plane``); an authored row still is."""
+    from precis.pcb.session import apply_plane_assignments
+
+    ir = _two_pin_ir()
+    ir.outline = []
+    applied = apply_plane_assignments(ir, [])
+    assert applied.assignments == []
+    assert int(ir.net_plane_layers[0]) == 0
+    assert any("no outline" in n for n in applied.notes)
+    ir = _two_pin_ir()
+    ir.outline = []
+    row = {"layer": "In1.Cu", "net": "GND", "source": "authored"}
+    applied = apply_plane_assignments(ir, [row])
+    assert [(a.layer, a.net) for a in applied.assignments] == [("In1.Cu", "GND")]
+    with_outline = _two_pin_ir()
+    applied = apply_plane_assignments(with_outline, [])
+    assert {a.source for a in applied.assignments} == {"fill"}
 
 
 # ── slice 4: region pours ─────────────────────────────────────────────────

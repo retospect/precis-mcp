@@ -18,6 +18,7 @@ from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.pcb import PcbHandler
 from precis.pcb import ir as pcb_ir
+from tests.fixtures.pcb.stackups import LEGACY_V1_STACKUP
 
 _DESIGN: dict[str, Any] = {
     "components": [
@@ -69,6 +70,9 @@ def test_op_stackup_makes_an_inner_layer_routable(pcb, store):
     pcb.put(id="stk-routable", args=_DESIGN)
     ref = store.get_ref(kind="pcb", id="stk-routable")
     assert ref is not None
+    # A board born before gr495395 switched the default: inner planes only.
+    board_id = store.pcb_graph(ref.id)["board"]["board_id"]
+    store.pcb_set_stackup(board_id, LEGACY_V1_STACKUP)
     before = store.pcb_graph(ref.id)
     assert [
         e["name"] for e in before["board"]["stackup"] if pcb_ir.layer_is_routable(e)

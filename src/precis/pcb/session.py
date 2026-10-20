@@ -701,6 +701,18 @@ def apply_plane_assignments(
 
     names = [str(ir.net_name[n]) for n in range(ir.n_nets)]
     assignments, notes = pcb_planes.resolve_assignments(ir.stackup, rows, names)
+    if not ir.outline or len(ir.outline) < 3:
+        # A pour has no extent without an outline: a stackup declaration
+        # promoted here fails every pin ``unpourable_plane``, where the
+        # legacy stackup's unread ``plane_net`` left the net routed as
+        # traces (gr495395). Authored and derived rows stay as they were.
+        undeclared = [a for a in assignments if a.source in ("stackup", "fill")]
+        assignments = [a for a in assignments if a.source not in ("stackup", "fill")]
+        notes = notes + [
+            f"{a.layer}={a.net} ({a.source}): the board has no outline to pour "
+            "into — the router routes the net as traces"
+            for a in undeclared
+        ]
     net_id = {name: n for n, name in enumerate(names)}
     layer_idx = {str(layer.get("name")): i for i, layer in enumerate(ir.stackup)}
     locked: set[int] = set()

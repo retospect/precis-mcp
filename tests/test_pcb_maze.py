@@ -17,6 +17,7 @@ unrouted, and the DRC number alone read as a triumph.
 
 from __future__ import annotations
 
+import itertools
 import math
 
 import numpy as np
@@ -206,6 +207,44 @@ def test_a_via_may_overhang_the_mask():
     vx, _vy, _lo, _hi = path.vias[0]
     assert 2.85 <= vx <= 3.15
     assert all(mask[layer, iy, ix] for layer, iy, ix in _cells(grid, path))
+
+
+def test_a_reserved_band_keeps_other_nets_tracks_out_but_not_their_vias():
+    """gr495395: a power region reserved on layer 0 for net 7 (a band
+    across the whole board) — net 2's track may not run through it on
+    layer 0, so it dives to layer 1 and back; net 7's own track crosses."""
+    spec = _spec(n_layers=2)
+    grid = OccupancyGrid(spec, clearance_mm=0.05)
+    band = np.zeros((spec.ny, spec.nx), dtype=bool)
+    band[:, 25:35] = True  # x in [2.5, 3.5)
+    grid.reserve_track_cells(0, band, 7)
+    path = grid.route(
+        2,
+        (0.5, 3.0),
+        (5.5, 3.0),
+        layers=[0, 1],
+        width_mm=0.1,
+        via_dia_mm=0.5,
+        start_layer=0,
+        goal_layer=0,
+    )
+    assert path is not None
+    assert len(path.vias) == 2
+
+    def layer0_spans(p):
+        return [
+            (min(a[0], b[0]), max(a[0], b[0]))
+            for a, b in itertools.pairwise(p.points)
+            if a[2] == b[2] == 0
+        ]
+
+    assert layer0_spans(path)
+    assert all(hi < 2.5 or lo >= 3.5 for lo, hi in layer0_spans(path))
+    own = grid.route(7, (0.5, 1.0), (5.5, 1.0), layers=[0], width_mm=0.1)
+    assert own is not None
+    assert any(lo < 2.5 and hi >= 3.5 for lo, hi in layer0_spans(own))
+    with pytest.raises(ValueError, match="cells shape"):
+        grid.reserve_track_cells(0, band[:-1], 7)
 
 
 def test_a_detour_outside_the_search_window_still_routes(monkeypatch):

@@ -125,6 +125,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 import numpy as np
+import shapely
 
 # shapely ships no py.typed marker here -- same suppression drc.py/planes.py
 # carry, same reason: only the polygon booleans this module's stitching
@@ -421,6 +422,13 @@ class RealizeConfig:
     #: 39); a 0.325 mm margin (no two-width term) and a 0.075 mm one
     #: (ink only) fail them too. Turning it on is a floor change.
     silk_via_keepout: bool = False
+    #: Keep other nets' TRACKS off a derived power region on a routable
+    #: layer (:func:`_claim_power_regions`, gr495395): the default stackup
+    #: routes In2, which carries the regions, and a foreign track across
+    #: one splits its pour. Vias still pass. **Off by default** until the
+    #: vector router honours the same areas (``_RouteContext.
+    #: reserved_regions``) and the routing floors are measured with it on.
+    reserve_power_region_tracks: bool = False
     #: Corridors-as-cost from a tile-capacity global plan
     #: (:mod:`precis.pcb.globalplan`, slice 1 of
     #: ``docs/backlog/pcb-global-plan-router.md``): ``0.0`` (off) is the
@@ -1778,6 +1786,9 @@ class _RouteContext:
     plane_served_pins: frozenset[int] = frozenset()
     #: :func:`_net_layer_clearances` — the per-(net, layer) figures.
     net_layer_clearance: dict[tuple[int, int], float] = field(default_factory=dict)
+    #: :func:`_track_reserved_regions` — ``(layer, polygon, owner net
+    #: name)`` areas no other net's track may cross.
+    reserved_regions: tuple[tuple[int, Any, str], ...] = ()
 
 
 def _route_context(
@@ -2005,6 +2016,7 @@ def _route_context(
         edge_min,
         plane_served_pins,
         net_layer_clearance,
+        _track_reserved_regions(ir, config),
     )
 
 
@@ -3366,6 +3378,51 @@ def _layer_cost(ir: PcbIR, config: RealizeConfig) -> dict[int, float] | None:
     return costs or None
 
 
+def _track_reserved_regions(
+    ir: PcbIR, config: RealizeConfig
+) -> tuple[tuple[int, Any, str], ...]:
+    """``(layer, polygon, owner net name)`` for each derived power region
+    (:attr:`PcbIR.plane_regions`) on a ROUTABLE layer, when
+    :attr:`RealizeConfig.reserve_power_region_tracks` is on; empty
+    otherwise. On a plane-only layer no track can cross a region anyway."""
+    if not config.reserve_power_region_tracks:
+        return ()
+    routable = set(routable_layers(ir))
+    out: list[tuple[int, Any, str]] = []
+    for (net_id, layer), (region, _priority) in sorted(ir.plane_regions.items()):
+        if layer not in routable:
+            continue
+        poly = region_polygon(region)
+        if poly is None or poly.is_empty:
+            continue
+        out.append((layer, poly, str(ir.net_name[net_id])))
+    return tuple(out)
+
+
+def _claim_power_regions(
+    grid: maze.OccupancyGrid, ir: PcbIR, config: RealizeConfig
+) -> None:
+    """Reserve each :func:`_track_reserved_regions` area for its own net's
+    tracks (:meth:`~precis.pcb.maze.OccupancyGrid.reserve_track_cells`).
+    A region is the net's pour, and another net's track drawn across it
+    cuts the pour into pieces (gr495395: the default stackup routes In2,
+    which carries the regions, and VBUS@In2 poured in 2-3 pieces). Vias
+    are left alone: a through via only punches an antipad, and claiming
+    the cells outright stopped every other net changing layer there
+    (nano routed 36 -> 20 per seed)."""
+    regions = _track_reserved_regions(ir, config)
+    if not regions:
+        return
+    by_name = {str(ir.net_name[n]): n for n in range(ir.n_nets)}
+    spec = grid.spec
+    xs = spec.x0 + np.arange(spec.nx) * spec.pitch
+    ys = spec.y0 + np.arange(spec.ny) * spec.pitch
+    gx, gy = np.meshgrid(xs, ys)
+    for layer, poly, net_name in regions:
+        cells = shapely.contains_xy(poly, gx, gy)
+        grid.reserve_track_cells(layer, cells, by_name[net_name])
+
+
 def _claim_static(
     ir: PcbIR,
     plane_ids: list[int],
@@ -3390,6 +3447,7 @@ def _claim_static(
     _claim_silk_keepouts(grid, ir, config)
     _claim_mounting_holes(grid, ir, npth_clearance_mm=_npth_clearance_mm(config))
     _stamp_pads(grid, pads)
+    _claim_power_regions(grid, ir, config)
     # Plane-served segments are dog-bone stubs, not searched routes — but
     # they ARE copper, so they get realized (and claimed) first, before
     # any route can be planned through where they sit.

@@ -166,8 +166,12 @@ def route_config(tables: dict[str, Any], params: dict[str, Any]) -> dict[str, An
     for flag in ("field_polish", "pin_point_cost", "centroid_jump"):
         if not getattr(optimize, flag):
             optimize_defaults.pop(flag, None)
+    realize_summary = _json_config(asdict(realize))
+    for flag in ("reserve_power_region_tracks",):
+        if not getattr(realize, flag):
+            realize_summary.pop(flag, None)
     return {
-        "realize": _json_config(asdict(realize)),
+        "realize": realize_summary,
         "optimize_defaults": optimize_defaults,
     }
 

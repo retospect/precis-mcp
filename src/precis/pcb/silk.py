@@ -1996,20 +1996,18 @@ def _corner_point(
     return (cx, cy)
 
 
-def _circle_inside_polygon(
-    center: Point, radius: float, poly: list[Point], n: int = 12
-) -> bool:
-    """Conservative containment for a disc of ``radius`` at ``center``:
-    the centre AND ``n`` points around its circumference all inside
-    ``poly``. A sampled approximation, same spirit as :func:`_segment_box`'s
-    square-cap stroke inflation elsewhere in this module — cheap, and
-    never UNDER-flags a disc that pokes outside a concave outline."""
+def _circle_inside_polygon(center: Point, radius: float, poly: list[Point]) -> bool:
+    """Exact containment for a disc of ``radius`` at ``center``: the centre
+    inside ``poly`` and at least ``radius`` from every one of its edges.
+    Not sampled: 12 points on the circumference reach only cos(15°) of the
+    radius between samples, and a pin-1 dot accepted that way printed
+    0.013 mm inside the silk edge margin (gr495395, r2 seed 6)."""
     if not point_in_polygon(center, poly):
         return False
-    cx, cy = center
+    ring = poly if poly[0] == poly[-1] else [*poly, poly[0]]
     return all(
-        point_in_polygon((cx + radius * math.cos(a), cy + radius * math.sin(a)), poly)
-        for a in (2.0 * math.pi * i / n for i in range(n))
+        dist_point_to_segment(center, a, b) >= radius
+        for a, b in itertools.pairwise(ring)
     )
 
 
@@ -3127,6 +3125,19 @@ def _ring_geoms(rings: dict[int, tuple[str, list[Point]]]) -> dict[int, _RingGeo
     return out
 
 
+#: How far, in em, any glyph's centreline leaves its advance box (the
+#: box :func:`~precis.pcb.stroke_font.text_bbox_corners` returns): '#',
+#: '(' and ')' reach 1/3 em below the baseline. A label box at least this
+#: far inside the edge margin needs no per-stroke edge check. No glyph
+#: leaves its box sideways today; ``-x`` still guards the left side.
+_GLYPH_OVERHANG_EM = max(
+    max(-y, y - 1.0, -x, 0.0)
+    for glyph in stroke_font.GLYPHS.values()
+    for stroke in glyph
+    for x, y in stroke
+)
+
+
 def _label_blocked(
     corners: list[Point],
     strokes_of: Callable[[], list[list[Point]]],
@@ -3154,10 +3165,22 @@ def _label_blocked(
     same box :func:`_outline_spot_candidates` spaces off the outline."""
     if any(_box_overlaps_pad(corners, pad) for pad in obstacles):
         return True
-    if outline_ring is not None and not _box_inside_outline(
-        corners, outline_ring, edge_margin_mm
-    ):
+    # The DRC grades the INK against the edge, and the box is neither: it
+    # bounds stroke centrelines, which reach its top and bottom while a
+    # few glyphs ('_', 'Q', brackets) drop below or rise above it, and its
+    # advance width carries letter spacing no ink fills. So the box only
+    # has to sit inside the board; a box within the margin plus half a
+    # stroke plus the widest overhang has its strokes measured below
+    # (gr495395: J_N1's box cleared the margin, its ink printed 0.021 mm
+    # and its '_' 0.116 mm inside it).
+    if outline_ring is not None and not _box_inside_outline(corners, outline_ring, 0.0):
         return True
+    ink_margin = edge_margin_mm + stroke_width_mm / 2.0
+    near_edge = outline_ring is not None and not _box_inside_outline(
+        corners,
+        outline_ring,
+        ink_margin + _GLYPH_OVERHANG_EM * math.dist(corners[0], corners[3]),
+    )
     gap = _label_gap_mm(stroke_width_mm) - 1e-9
     box = _ShapelyPolygon(corners)
     bx0, by0, bx1, by1 = box.bounds
@@ -3174,10 +3197,203 @@ def _label_blocked(
         if box.intersects(geom.area):
             return True
     strokes = strokes_of()
+    if near_edge and outline_ring is not None:
+        edge = _ShapelyLineString(
+            outline_ring
+            if outline_ring[0] == outline_ring[-1]
+            else [*outline_ring, outline_ring[0]]
+        )
+        if any(
+            edge.distance(_ShapelyLineString(pts)) < ink_margin
+            for pts in strokes
+            if len(pts) >= 2
+        ):
+            return True
     # bbox cleared but a real stroke may not have
     return any(
         _stroke_overlaps_any_pad(pts, obstacles, stroke_width_mm) for pts in strokes
     )
+
+
+#: At most this many placed labels move to free one dropped label's spot
+#: (:func:`_repair_dropped_labels`).
+_LABEL_REPAIR_MAX_MOVERS = 2
+
+#: Repair sweeps over the dropped labels; a sweep that frees nothing ends
+#: it early. A later sweep can use a spot an earlier move opened.
+_LABEL_REPAIR_PASSES = 3
+
+
+@dataclass(slots=True)
+class _LabelState:
+    """One part's refdes label as the greedy pass left it, enough for
+    :func:`_repair_dropped_labels` to move it: its candidates in try
+    order, which one it took (``None`` when dropped), the obstacle it
+    committed, and where its census row and draws live."""
+
+    inst: int
+    refdes: str
+    side_name: str
+    mirror: bool
+    bucket: list[dict[str, Any]]
+    side_obstacles: list[dict[str, Any]]
+    candidates: list[_LabelCandidate]
+    default_spot: str
+    pinned_spot: str | None
+    census_index: int
+    taken: int | None = None
+    obstacle: dict[str, Any] | None = None
+
+
+def _repair_dropped_labels(
+    states: list[_LabelState],
+    census: list[SilkPlacement],
+    *,
+    rings: dict[int, _RingGeom],
+    outline_ring: list[Point] | None,
+    edge_margin_mm: float,
+    stroke_width_mm: float,
+    height_mm: float,
+) -> None:
+    """Give a dropped label a spot that only other labels block, by moving
+    those labels to other clear spots of their own (gr495395).
+
+    The greedy pass hands out spots in refdes order, first fit. A part
+    that comes early takes its first clear spot even when a later
+    neighbour had no other: measured on the nano board, 6-10 of the
+    30-40 dropped labels per seed had a spot whose only blocker was
+    another part's label. Each drop is retried here once all silk is
+    committed: for each of its spots in order, if nothing but at most
+    :data:`_LABEL_REPAIR_MAX_MOVERS` placed labels block it, and each of
+    them (none pinned by a ``label_spot`` override) has another spot
+    clear of everything else, the new label and the movers already
+    planned, they move and the dropped label takes the freed spot. Repeats
+    for :data:`_LABEL_REPAIR_PASSES` sweeps. Never drops a placed label,
+    so the drop count can only fall. Mutates ``census`` and the states'
+    buckets and obstacle lists in place."""
+
+    def blocked(
+        state: _LabelState, cand: _LabelCandidate, obstacles: list[dict[str, Any]]
+    ) -> bool:
+        return _label_blocked(
+            cand[2],
+            functools.partial(
+                _label_strokes,
+                state.refdes,
+                cand,
+                mirror=state.mirror,
+                height_mm=height_mm,
+            ),
+            inst=state.inst,
+            side_name=state.side_name,
+            obstacles=obstacles,
+            rings=rings,
+            outline_ring=outline_ring,
+            edge_margin_mm=edge_margin_mm,
+            stroke_width_mm=stroke_width_mm,
+        )
+
+    def commit(state: _LabelState, k: int, reason: str | None) -> None:
+        cand = state.candidates[k]
+        spot, _anchor, corners, _h, _v = cand
+        state.bucket[:] = [
+            d
+            for d in state.bucket
+            if not (d.get("role") == "refdes" and d.get("refdes") == state.refdes)
+        ]
+        for pts in _label_strokes(
+            state.refdes, cand, mirror=state.mirror, height_mm=height_mm
+        ):
+            state.bucket.append(
+                _draw(pts, stroke_width_mm, role="refdes", refdes=state.refdes)
+            )
+        if state.obstacle is not None:
+            state.side_obstacles[:] = [
+                o for o in state.side_obstacles if o is not state.obstacle
+            ]
+        state.obstacle = obstacle_from_bbox(
+            corners, label=f"{state.refdes} refdes silk"
+        )
+        state.side_obstacles.append(state.obstacle)
+        state.taken = k
+        census[state.census_index] = SilkPlacement(
+            refdes=state.refdes,
+            kind="refdes",
+            side=state.side_name,
+            outcome="placed" if spot == state.default_spot else "relocated",
+            reason=None
+            if spot == state.default_spot
+            else f"refdes label moved off the default {state.default_spot} spot "
+            f"(drawn at {spot}){reason or ''}",
+            stroke_width_mm=stroke_width_mm,
+            height_mm=height_mm,
+            x_mm=min(p[0] for p in corners),
+            y_mm=min(p[1] for p in corners),
+        )
+
+    def plan_moves(
+        dropped: _LabelState, cand_a: _LabelCandidate
+    ) -> list[tuple[_LabelState, int]] | None:
+        owners = {id(s.obstacle): s for s in states if s.obstacle is not None}
+        fixed = [o for o in dropped.side_obstacles if id(o) not in owners]
+        if blocked(dropped, cand_a, fixed):
+            return None
+        strokes_a = _label_strokes(
+            dropped.refdes, cand_a, mirror=dropped.mirror, height_mm=height_mm
+        )
+        movers = [
+            owners[id(o)]
+            for o in dropped.side_obstacles
+            if id(o) in owners
+            and (
+                _box_overlaps_pad(cand_a[2], o)
+                or any(
+                    _stroke_overlaps_any_pad(p, [o], stroke_width_mm) for p in strokes_a
+                )
+            )
+        ]
+        if not movers or len(movers) > _LABEL_REPAIR_MAX_MOVERS:
+            return None
+        if any(m.candidates[m.taken or 0][0] == m.pinned_spot for m in movers):
+            return None
+        moving = {id(m.obstacle) for m in movers}
+        planned = [obstacle_from_bbox(cand_a[2], label=f"{dropped.refdes} refdes silk")]
+        moves: list[tuple[_LabelState, int]] = []
+        for mover in movers:
+            rest = [o for o in mover.side_obstacles if id(o) not in moving] + planned
+            kb = next(
+                (
+                    k
+                    for k, cand_b in enumerate(mover.candidates)
+                    if k != mover.taken and not blocked(mover, cand_b, rest)
+                ),
+                None,
+            )
+            if kb is None:
+                return None
+            moves.append((mover, kb))
+            planned.append(
+                obstacle_from_bbox(
+                    mover.candidates[kb][2], label=f"{mover.refdes} refdes silk"
+                )
+            )
+        return moves
+
+    for _pass in range(_LABEL_REPAIR_PASSES):
+        repaired = False
+        for dropped in [s for s in states if s.taken is None]:
+            for ka, cand_a in enumerate(dropped.candidates):
+                moves = plan_moves(dropped, cand_a)
+                if moves is None:
+                    continue
+                for mover, kb in moves:
+                    commit(mover, kb, f", making room for {dropped.refdes}'s label")
+                names = ", ".join(m.refdes for m, _kb in moves)
+                commit(dropped, ka, f", after {names} moved")
+                repaired = True
+                break
+        if not repaired:
+            break
 
 
 #: Two parts sit on one row (or column) when their origins agree to this
@@ -3626,6 +3842,7 @@ def _build_silk_pass(
                 group_spot.update((m, (k, spot, len(group))) for m in group)
                 break
 
+    label_states: list[_LabelState] = []
     for inst in order:
         cx, cy = float(ir.inst_x[inst]), float(ir.inst_y[inst])
         refdes = str(ir.instance_refdes[inst])
@@ -4038,8 +4255,21 @@ def _build_silk_pass(
             ),
         )
 
+        state = _LabelState(
+            inst=inst,
+            refdes=refdes,
+            side_name=side_name,
+            mirror=mirror,
+            bucket=bucket,
+            side_obstacles=side_obstacles,
+            candidates=[cand for _k, cand in scored],
+            default_spot=default_spot,
+            pinned_spot=over_name if over_k >= 0 else None,
+            census_index=-1,
+        )
+        label_states.append(state)
         placed_text = False
-        for _k, cand in scored:
+        for pos, (_k, cand) in enumerate(scored):
             spot, _anchor, corners, _h, _v = cand
             if _label_blocked(
                 corners,
@@ -4057,9 +4287,10 @@ def _build_silk_pass(
                 continue
             for pts in _label_strokes(refdes, cand, mirror=mirror, height_mm=height_mm):
                 bucket.append(_draw(pts, stroke_width_mm, role="refdes", refdes=refdes))
-            side_obstacles.append(
-                obstacle_from_bbox(corners, label=f"{refdes} refdes silk")
-            )
+            state.obstacle = obstacle_from_bbox(corners, label=f"{refdes} refdes silk")
+            side_obstacles.append(state.obstacle)
+            state.taken = pos
+            state.census_index = len(census)
             placed_text = True
             label_x = min(p[0] for p in corners)
             label_y = min(p[1] for p in corners)
@@ -4111,6 +4342,7 @@ def _build_silk_pass(
                 )
             break
         if not placed_text:
+            state.census_index = len(census)
             census.append(
                 SilkPlacement(
                     refdes=refdes,
@@ -4128,6 +4360,15 @@ def _build_silk_pass(
                 )
             )
 
+    _repair_dropped_labels(
+        label_states,
+        census,
+        rings=ring_geoms,
+        outline_ring=outline_ring,
+        edge_margin_mm=edge_margin_mm,
+        stroke_width_mm=stroke_width_mm,
+        height_mm=height_mm,
+    )
     dropped, relocated = _prose_from_census(census)
     return SilkResult(
         draws={"top": top, "bottom": bottom},

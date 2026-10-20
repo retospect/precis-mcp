@@ -284,6 +284,11 @@ Point = tuple[float, float]
 #: lift this once ``put(stackup=...)`` authoring (Slice 3) exists.
 _FAB_PROCESS = "4layer"
 
+#: The EWOD escape layer lock when a design names none (Rulings 2026-09-19
+#: item 7): B.Cu only. Not derived from the default stackup, whose inner
+#: layers route since gr495395; In1.Cu sits under the electrode field.
+_EWOD_DEFAULT_ESCAPE_LAYERS: tuple[str, ...] = ("B.Cu",)
+
 #: pcb-ewod-multitile decisions log: gap 0.10mm (electrode gap — advisory
 #: only, HV separation applies to plaza internals/B.Cu escapes instead),
 #: edge tooth_depth 0.06mm / tooth_pitch 0.25mm (Frontiers Phys. 2020
@@ -2349,26 +2354,22 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
     # Which layers an escape may use. DESIGN data, not engine policy --
     # the board decides, the generator passes it through.
     #
-    # The DEFAULT states the actual rule rather than one stackup's answer
-    # to it: **every SIGNAL layer the electrode field does not own.** The
-    # electrodes are F.Cu by construction, so an escape may never use it
-    # -- a trace across the electrode plane disturbs the very field the
+    # The electrodes are F.Cu by construction, so an escape may never use
+    # it -- a trace across the electrode plane disturbs the very field the
     # board exists to control (measured 2026-09-27: lifting the layer
     # restriction to "any signal layer" promptly routed escapes on F.Cu).
     #
-    # The default is computed from ``DEFAULT_STACKUP``, which evaluates to
-    # ``["B.Cu"]`` -- identical to the value Rulings 2026-09-19 item 7
-    # hardcoded, because In1/In2 are PLANE layers there, so B.Cu is the
-    # only routing layer that stackup actually has. The ruling was not
-    # costing anything; the STACKUP is.
+    # The default is :data:`_EWOD_DEFAULT_ESCAPE_LAYERS`, ``["B.Cu"]``
+    # (Rulings 2026-09-19 item 7), pinned rather than read from
+    # ``DEFAULT_STACKUP``: since gr495395 that stackup routes In1.Cu and
+    # In2.Cu too, and "every signal layer but F.Cu" would put escapes on
+    # In1.Cu, directly under the electrode field (coordinator ruling
+    # 2026-10-19). A design that wants inner escape layers passes them.
     #
     # **This does NOT read the design's own stackup.** A generator is
     # expanded from its params alone (`_REGISTRY`'s contract) and has no
-    # board context, so a design with a different stackup still gets
-    # DEFAULT_STACKUP's answer here and must pass ``escape_layers``
-    # explicitly. Threading the real stackup in is the honest fix and
-    # belongs with `put(stackup=...)` (unbuilt) -- until then this is a
-    # default, not a derivation.
+    # board context, so a design with a different stackup must pass
+    # ``escape_layers`` explicitly.
     #
     # Preference needs no prohibition either way: ``maze.VIA_COST_MM``
     # already charges every layer transition, so the router stays on the
@@ -2385,11 +2386,7 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
     if len(set(escape_layers)) != len(escape_layers):
         raise ValueError(f"escape_layers: duplicate layer in {escape_layers}")
     if not escape_layers:
-        escape_layers = [
-            str(layer["name"])
-            for layer in DEFAULT_STACKUP
-            if layer.get("role") == "signal" and str(layer["name"]) != "F.Cu"
-        ]
+        escape_layers = list(_EWOD_DEFAULT_ESCAPE_LAYERS)
 
     # A diagonal escape's via slot sits only `gap*sqrt(2)` from the
     # diagonally-adjacent electrode's own corner (round-2 stress-test

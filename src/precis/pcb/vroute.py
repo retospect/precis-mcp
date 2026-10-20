@@ -69,12 +69,16 @@ class Obstacle:
     occupies, and whether a new via must keep clear of it whatever its net:
     every pad (no via-in-pad, Reto gr496850; ``maze.OccupancyGrid.
     via_clears_pads``'s rule) and every via (the hole-to-hole rule holds
-    between one net's own vias too)."""
+    between one net's own vias too). A ``track_only`` obstacle is not
+    copper but an area reserved for ``net``'s pour (``realize.
+    _track_reserved_regions``): it keeps foreign TRACKS out and never
+    blocks a via, as on the grid (``maze.OccupancyGrid.reserve_track_cells``)."""
 
     body: Body
     net: str
     layers: frozenset[int]
     blocks_vias: bool = False
+    track_only: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +133,7 @@ class _Layer:
     _arcs: np.ndarray | None = None
     _nets: np.ndarray | None = None
     _pads: np.ndarray | None = None
+    _track_only: np.ndarray | None = None
     #: Each obstacle's own clearance on this layer (filled by :class:`Space`).
     _cl: np.ndarray | None = None
 
@@ -145,6 +150,7 @@ class _Layer:
         self._arcs = np.array([bool(b.arcs) for b in bodies], dtype=bool)
         self._nets = np.array([o.net for o in self.obstacles], dtype=object)
         self._pads = np.array([o.blocks_vias for o in self.obstacles], dtype=bool)
+        self._track_only = np.array([o.track_only for o in self.obstacles], dtype=bool)
 
 
 class Space:
@@ -219,13 +225,15 @@ class Space:
     ) -> bool:
         """Does ``body`` (copper of ``net``) clear every foreign obstacle on
         ``layer`` by the pair's clearance? With ``via_site`` (``body`` is
-        a new via) every pad and via counts, its own net's included."""
+        a new via) every pad and via counts, its own net's included, and no
+        ``track_only`` area does."""
         li = self._layer(layer)
         if li is None:
             return True
         assert li._tree is not None and li._nets is not None
         assert li._cores is not None and li._radii is not None
         assert li._arcs is not None and li._pads is not None
+        assert li._track_only is not None
         own = self.cl(net, layer)
         reach = max(own, self._reach.get(layer, 0.0))
         cand = li._tree.query(box(*body.bounds()), predicate="dwithin", distance=reach)
@@ -234,6 +242,7 @@ class Space:
         foreign = li._nets[cand] != net
         if via_site:
             foreign |= li._pads[cand]
+            foreign &= ~li._track_only[cand]
         cand = cand[foreign]
         if not len(cand):
             return True
@@ -787,6 +796,12 @@ def escape_pass(
         row = {**pad, "ctype": "pad"}
         obstacles += obstacles_of(row, index, n)
         pad_of.setdefault((str(pad.get("refdes")), str(pad.get("pin"))), row)
+    # The power regions the maze kept other nets' tracks out of
+    # (``realize._claim_power_regions``) stay closed to them here too.
+    for layer, poly, owner in getattr(ctx, "reserved_regions", ()):
+        obstacles.append(
+            Obstacle(Body(poly, (), 0.0), owner, frozenset((layer,)), track_only=True)
+        )
     space = Space(obstacles, clearance)
 
     xs = [float(p[0]) for p in ir.outline] if ir.outline else []

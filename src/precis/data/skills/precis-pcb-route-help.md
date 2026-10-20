@@ -333,11 +333,13 @@ put(kind="pcb", id="s", args={"op": "stackup", "layers": [
 ]})
 ```
 
-Every board is born on the default stackup (`F.Cu` / `In1.Cu` plane /
-`In2.Cu` plane / `B.Cu`), which has exactly **two** routing layers, and on
-a board whose front is spoken for — an electrode field, a big connector
-land — that leaves **one**. This is usually the real reason a dense board
-will not route. Measured on the EWOD dogfood: opening `In2.Cu` as signal
+Every board is born on the default stackup: all four layers route, and
+`In1.Cu` and `In2.Cu` each pour a GND `fill` over what routing leaves
+(`In2.Cu` also derives power regions). A board authored with plane-only
+inner layers has exactly **two** routing layers, and on a board whose
+front is spoken for (an electrode field, a big connector land) that
+leaves **one**. That is usually the real reason such a board will not
+route. Measured on the EWOD dogfood: opening `In2.Cu` as signal
 took electrode escapes from **28/54 to 50/54** with zero new DRC errors,
 having changed nothing else.
 

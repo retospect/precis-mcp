@@ -1096,8 +1096,8 @@ def test_handler_epro_view_writes_a_readable_file(pcb, tmp_path):
     assert path.exists() and str(path) in resp.body
     assert "show NO schematic pages" in resp.body
     assert "Update PCB from schematic" in resp.body
-    # the seeded board has no routed copper, but its stackup declares an
-    # In1.Cu GND plane — which now writes an outline-covering POUR zone
+    # the seeded board has no routed copper, but its stackup declares a
+    # GND fill on both inner layers, each an outline-covering POUR zone
     assert "pour zone(s)" in resp.body
     assert "Verified: Reto opened" in resp.body
     assert "UNVERIFIED" not in resp.body
@@ -2867,7 +2867,8 @@ def test_handler_epro_verify_passes_on_a_native_board(pcb, tmp_path):
     assert f"sha256: {hashlib.sha256(data).hexdigest()}" in body
     assert "## verify" in body
     assert "parts 2 -> 2" in body
-    assert "pour zones 1 written -> 1 read" in body  # the In1.Cu GND plane
+    # the default stackup's GND fill on In1.Cu and In2.Cu (gr495395)
+    assert "pour zones 2 written -> 2 read" in body, body
     assert "\nFAIL " not in body, body
     assert "fiducial pads 4 in the model, 4 written -> 4 read" in body
     assert "verify: 16 ok, 0 FAIL" in body

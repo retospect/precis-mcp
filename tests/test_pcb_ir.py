@@ -35,6 +35,7 @@ from precis.pcb.ir import (
     unconnected_items,
     validate_embedding,
 )
+from tests.fixtures.pcb.stackups import LEGACY_V1_STACKUP
 
 
 def _net(name, cls, *refdes, domain="electrical", pin="1"):
@@ -362,8 +363,16 @@ def test_clean_clears_the_named_level_only():
 
 
 # ── routable vs pourable: two independent per-layer questions ─────────
-def test_default_stackup_routable_and_pourable_match_legacy_role_split():
+def test_default_stackup_routes_every_layer_and_leaves_auto_pour_to_fills():
+    # gr495395: both inner layers are signal layers carrying a GND `fill`,
+    # so all four route and none is offered to the annealer's own pour.
     ir = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)
+    assert routable_layers(ir) == [0, 1, 2, 3]
+    assert pourable_layers(ir) == []
+
+
+def test_legacy_stackup_routable_and_pourable_match_legacy_role_split():
+    ir = from_graph(_star_graph(), stackup=LEGACY_V1_STACKUP)
     # F.Cu/B.Cu (role='signal') routable; In1.Cu/In2.Cu (role='plane') not.
     assert routable_layers(ir) == [0, 3]
     # In1.Cu/In2.Cu (role='plane') pourable; F.Cu/B.Cu (role='signal') not

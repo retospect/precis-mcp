@@ -612,6 +612,45 @@ class OccupancyGrid:
         #: default and means the ``via_body_cost_mm`` surcharge in
         #: :meth:`route` never fires, so an unset mask is a pure no-op.
         self._body_mask: np.ndarray | None = None
+        #: ``(n_layers, ny, nx)`` net ids, or ``None``: cells only that
+        #: net's TRACKS may occupy (:meth:`reserve_track_cells`). Vias are
+        #: not gated by it. Per-net masks for :meth:`_route_in` are cached
+        #: in ``_track_mask_cache`` until the next reservation.
+        self._track_reserved: np.ndarray | None = None
+        self._track_mask_cache: dict[int, np.ndarray] = {}
+
+    def reserve_track_cells(self, layer: int, cells: np.ndarray, net_id: int) -> None:
+        """Reserve ``cells`` (``(ny, nx)`` bool) on ``layer`` for
+        ``net_id``'s tracks: another net's track centreline may not enter
+        them, while its vias still pass under the normal copper keep-outs.
+        A derived power region on a routable layer is the user
+        (:func:`precis.pcb.realize._claim_power_regions`, gr495395): a
+        foreign track across it cuts the region's pour apart, a through via
+        only punches an antipad."""
+        spec = self.spec
+        if cells.shape != (spec.ny, spec.nx):
+            raise ValueError(f"cells shape {cells.shape} != {(spec.ny, spec.nx)}")
+        if self._track_reserved is None:
+            self._track_reserved = np.full(
+                (spec.n_layers, spec.ny, spec.nx), FREE, dtype=np.int64
+            )
+        self._track_reserved[layer][cells] = int(net_id)
+        self._track_mask_cache.clear()
+
+    def _track_corridor(
+        self, net_id: int, mask: np.ndarray | None
+    ) -> np.ndarray | None:
+        """``mask`` with every cell another net reserved
+        (:meth:`reserve_track_cells`) removed; ``mask`` itself when nothing
+        is reserved."""
+        reserved = self._track_reserved
+        if reserved is None:
+            return mask
+        own = self._track_mask_cache.get(net_id)
+        if own is None:
+            own = (reserved == FREE) | (reserved == int(net_id))
+            self._track_mask_cache[net_id] = own
+        return own if mask is None else own & mask.astype(bool)
 
     @property
     def owner(self) -> np.ndarray:
@@ -1687,6 +1726,7 @@ class OccupancyGrid:
         self.last_route_exhausted = False
         if not layers:
             return None
+        mask = self._track_corridor(net_id, mask)
         sx, sy = spec.to_cell(*start)
         gx, gy = spec.to_cell(*goal)
         plane = spec.nx * spec.ny

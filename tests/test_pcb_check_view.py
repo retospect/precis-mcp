@@ -33,6 +33,7 @@ import pytest
 from precis.dispatch import Hub
 from precis.handlers.pcb import PcbHandler
 from precis.pcb import check_run
+from tests.fixtures.pcb.stackups import LEGACY_V1_STACKUP
 
 from .test_pcb_declared_pins import _mini_design
 
@@ -665,6 +666,12 @@ def test_check_counts_a_declared_plane_as_connecting_its_net(
     error; without the plane assignment the same copper is split."""
     for slug in ("chk-noplane", "chk-plane"):
         pcb.put(id=slug, args=_mini_design())
+        # The v1 stackup: the default's GND fill would join "chk-noplane"
+        # too, and the control needs a board where nothing pours GND.
+        ref = store.get_ref(kind="pcb", id=slug)
+        store.pcb_set_stackup(
+            store.pcb_graph(ref.id)["board"]["board_id"], LEGACY_V1_STACKUP
+        )
     pcb.put(id="chk-plane", args={"op": "plane_net", "layer": "In1.Cu", "net": "GND"})
     for slug in ("chk-noplane", "chk-plane"):
         _gnd_in_two_pieces(store, slug)

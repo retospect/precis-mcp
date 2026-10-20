@@ -40,6 +40,7 @@ from typing import Any
 from precis.pcb import DEFAULT_STACKUP
 from precis.pcb.ir import from_graph
 from precis.pcb.realize import RealizeConfig, realize
+from tests.fixtures.pcb.stackups import LEGACY_V1_STACKUP
 
 _TOP_LAYER = 0  # F.Cu -- DEFAULT_STACKUP index 0, also `rules.PAD_LAYER`
 _BOTTOM_LAYER = 3  # B.Cu -- DEFAULT_STACKUP index 3, the last signal layer
@@ -255,8 +256,13 @@ def test_a_drilled_pad_connects_on_its_far_layer_with_no_via():
     B.Cu; BLOCKER's SMD pad walls off F.Cu across the strip. The route
     must start on U1's own B.Cu landing and reach U2 on B.Cu with no via:
     a router that seeds U1 on F.Cu only has to drop a via beside the pad
-    to get under the wall."""
-    ir = from_graph(_wall_graph(), stackup=DEFAULT_STACKUP, outline=_WALL_OUTLINE)
+    to get under the wall.
+
+    Pinned to the legacy stackup (inner layers not routable): under the
+    (c) default the maze leaves U1 on In1.Cu and drops a via to B.Cu
+    instead (gr500163, to be checked on the vector router; the maze is
+    frozen)."""
+    ir = from_graph(_wall_graph(), stackup=LEGACY_V1_STACKUP, outline=_WALL_OUTLINE)
     u1 = _blocker_footprint(drilled=True)
     u1["pads"][0].update(w=1.6, h=1.6)
     result = realize(

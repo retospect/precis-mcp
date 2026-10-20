@@ -32,7 +32,6 @@ from unittest import mock
 
 import pytest
 
-from precis.pcb import DEFAULT_STACKUP
 from precis.pcb import session as pcb_session
 from precis.pcb.cost import (
     COURTYARD_MIN_SEPARATION_MM,
@@ -70,6 +69,7 @@ from precis.pcb.optimize import (
     resolve_measures,
     seed_placement,
 )
+from tests.fixtures.pcb.stackups import LEGACY_V1_STACKUP
 
 _FIXTURE_DIR = Path(__file__).parent / "fixtures" / "pcb"
 
@@ -148,7 +148,7 @@ def _seeded_ir(
     only report as ``failed: unpourable_plane``). Off by default so every
     other test keeps the outline-less seeding it was written against."""
     graph = _board(n, seed=graph_seed, fixed=fixed, max_travel=max_travel)
-    ir = from_graph(graph, stackup=DEFAULT_STACKUP)
+    ir = from_graph(graph, stackup=LEGACY_V1_STACKUP)
     if outline:
         ir.outline = [
             (-200.0, -200.0),
@@ -213,7 +213,7 @@ def test_layer_assign_only_targets_signal_role_layers():
     ir = _seeded_ir(8, graph_seed=33, seed_rng_seed=34)
     engine = OptimizeEngine(ir, OptimizeConfig(seed=34))
     signal_idx = {
-        i for i, layer in enumerate(DEFAULT_STACKUP) if layer["role"] == "signal"
+        i for i, layer in enumerate(LEGACY_V1_STACKUP) if layer["role"] == "signal"
     }
     rng = random.Random(35)
     for _ in range(50):
@@ -270,7 +270,7 @@ def test_plane_promote_only_targets_plane_role_layers():
     ir = _seeded_ir(10, graph_seed=42, seed_rng_seed=43, outline=True)
     engine = OptimizeEngine(ir, OptimizeConfig(seed=43))
     plane_idx = {
-        i for i, layer in enumerate(DEFAULT_STACKUP) if layer["role"] == "plane"
+        i for i, layer in enumerate(LEGACY_V1_STACKUP) if layer["role"] == "plane"
     }
     rng = random.Random(44)
     for _ in range(50):
@@ -364,7 +364,7 @@ def test_locked_plane_net_survives_a_full_anneal_unlocked_one_still_demotes():
     accepted immediately and permanently). This pins the fix: the locked
     net must survive that same anneal, while an otherwise-identical
     UNLOCKED promoted net remains exactly as demotable as it always was."""
-    ir = from_graph(_board(10, seed=77), stackup=DEFAULT_STACKUP)
+    ir = from_graph(_board(10, seed=77), stackup=LEGACY_V1_STACKUP)
     ir.promote_plane(0, 1)  # locked, like an authored "GND -> In1.Cu"
     ir.promote_plane(1, 2)  # unlocked, like an optimizer-derived assignment
     optimize(
@@ -511,7 +511,7 @@ def _crossing_ir_with_positions():
             },
         ],
     }
-    return from_graph(graph, stackup=DEFAULT_STACKUP)
+    return from_graph(graph, stackup=LEGACY_V1_STACKUP)
 
 
 def test_layer_assign_is_no_longer_cost_neutral():
@@ -649,7 +649,7 @@ def _courtyard_ir_with_positions():
             },
         ],
     }
-    return from_graph(graph, stackup=DEFAULT_STACKUP)
+    return from_graph(graph, stackup=LEGACY_V1_STACKUP)
 
 
 def test_delta_correctness_for_courtyard_overlap_over_random_moves():
@@ -793,7 +793,7 @@ def test_recentre_in_outline_centers_the_finished_pack():
     from precis.pcb.optimize import COURTYARD_MIN_SEPARATION_MM
 
     graph = _board(10, seed=50)
-    ir = from_graph(graph, stackup=DEFAULT_STACKUP)
+    ir = from_graph(graph, stackup=LEGACY_V1_STACKUP)
     seed_placement(ir, random.Random(51))  # no outline: origin-anchored
     # The SAME part-edge pack bbox recentre_in_outline itself measures.
     radii = courtyard_bound_radius_mm(
@@ -837,7 +837,7 @@ def test_recentre_in_outline_skips_a_placeholder_canvas():
     through the absolute-coordinate board-edge interactions, for zero
     layout meaning. The area-ratio gate refuses it."""
     graph = _board(10, seed=50)
-    ir = from_graph(graph, stackup=DEFAULT_STACKUP)
+    ir = from_graph(graph, stackup=LEGACY_V1_STACKUP)
     seed_placement(ir, random.Random(51))
     ir.outline = [
         (-500.0, -500.0),
@@ -856,7 +856,7 @@ def test_recentre_in_outline_refuses_when_any_instance_is_locked():
     the lock, and translating everyone else would tear the placement --
     any lock means no shift at all."""
     graph = _board(6, seed=54, fixed={0: "xy"})
-    ir = from_graph(graph, stackup=DEFAULT_STACKUP)
+    ir = from_graph(graph, stackup=LEGACY_V1_STACKUP)
     ir.outline = [
         (-500.0, -500.0),
         (500.0, -500.0),
@@ -959,8 +959,8 @@ def test_delta_correctness_survives_a_full_short_anneal():
 # ── determinism ───────────────────────────────────────────────────────
 def test_determinism_same_seed_same_result():
     graph = _board(10, seed=12)
-    ir1 = from_graph(graph, stackup=DEFAULT_STACKUP)
-    ir2 = from_graph(graph, stackup=DEFAULT_STACKUP)
+    ir1 = from_graph(graph, stackup=LEGACY_V1_STACKUP)
+    ir2 = from_graph(graph, stackup=LEGACY_V1_STACKUP)
     config = OptimizeConfig(seed=13, iters=300)
 
     r1 = optimize(ir1, config)
@@ -999,7 +999,7 @@ def _states_equal(a: dict, b: dict) -> bool:
 
 @pytest.mark.parametrize("seed", [0, 1, 2, 3, 4, 5])
 def test_cost_after_never_exceeds_cost_before(seed):
-    ir = from_graph(_board(10, seed=seed), stackup=DEFAULT_STACKUP)
+    ir = from_graph(_board(10, seed=seed), stackup=LEGACY_V1_STACKUP)
     r = optimize(ir, OptimizeConfig(seed=seed, iters=400, t0=50.0))
     assert r.cost_after <= r.cost_before + 1e-9
 
@@ -1058,7 +1058,7 @@ def test_final_worse_than_intermediate_restores_best():
 
 def test_result_reports_restored_best_in_header():
     for seed in range(23, 143):
-        ir = from_graph(_board(10, seed=21), stackup=DEFAULT_STACKUP)
+        ir = from_graph(_board(10, seed=21), stackup=LEGACY_V1_STACKUP)
         r = optimize(ir, OptimizeConfig(seed=seed, iters=300, t0=500.0, cooling=1.0))
         if r.restored_best_at is not None:
             break
@@ -1108,7 +1108,7 @@ def _far_apart_ir(*, max_travel: dict[int, float] | None = None):
             }
         ],
     }
-    return from_graph(graph, stackup=DEFAULT_STACKUP)
+    return from_graph(graph, stackup=LEGACY_V1_STACKUP)
 
 
 def test_soft_pin_bounds_for_is_the_anchor_box_intersected():
@@ -1213,7 +1213,7 @@ def _taz15_headers_graph(*, pin: float | None, fixed: bool) -> dict:
 def test_soft_pin_taz15_headers_clear_the_courtyard_overlap():
     def overlap_mm() -> float:
         ir = from_graph(
-            _taz15_headers_graph(pin=0.5, fixed=False), stackup=DEFAULT_STACKUP
+            _taz15_headers_graph(pin=0.5, fixed=False), stackup=LEGACY_V1_STACKUP
         )
         engine = OptimizeEngine(ir, OptimizeConfig(seed=0))
         return -convex_polygons_signed_separation(
@@ -1224,7 +1224,7 @@ def test_soft_pin_taz15_headers_clear_the_courtyard_overlap():
 
     # The frozen arm stays overlapped forever — the fixture's premise.
     frozen = from_graph(
-        _taz15_headers_graph(pin=None, fixed=True), stackup=DEFAULT_STACKUP
+        _taz15_headers_graph(pin=None, fixed=True), stackup=LEGACY_V1_STACKUP
     )
     optimize(frozen, OptimizeConfig(seed=0, iters=200))
     frozen_engine = OptimizeEngine(frozen, OptimizeConfig(seed=0))
@@ -1233,7 +1233,7 @@ def test_soft_pin_taz15_headers_clear_the_courtyard_overlap():
     )
 
     pinned = from_graph(
-        _taz15_headers_graph(pin=0.5, fixed=False), stackup=DEFAULT_STACKUP
+        _taz15_headers_graph(pin=0.5, fixed=False), stackup=LEGACY_V1_STACKUP
     )
     result = optimize(pinned, OptimizeConfig(seed=0, iters=200))
     pinned_engine = OptimizeEngine(pinned, OptimizeConfig(seed=0))
@@ -1262,7 +1262,7 @@ def _placed_ir(specs: list[dict]):
             unconnected.append({"refdes": s["refdes"], "pin": f"P{p}"})
     return from_graph(
         {"instances": instances, "nets": [], "unconnected": unconnected},
-        stackup=DEFAULT_STACKUP,
+        stackup=LEGACY_V1_STACKUP,
     )
 
 
@@ -1447,7 +1447,7 @@ def test_locked_components_still_contribute_cost():
 
 # ── SA improves on the constructive seed ─────────────────────────────
 def test_anneal_improves_cost_vs_the_constructive_seed():
-    ir = from_graph(_board(24, seed=20), stackup=DEFAULT_STACKUP)
+    ir = from_graph(_board(24, seed=20), stackup=LEGACY_V1_STACKUP)
     config = OptimizeConfig(seed=20, iters=4000)
     result = optimize(ir, config)
 
@@ -1456,7 +1456,7 @@ def test_anneal_improves_cost_vs_the_constructive_seed():
 
 # ── digest: per-term AND per-region, not a scalar ────────────────────
 def test_digest_carries_per_term_and_per_region_breakdown():
-    ir = from_graph(_board(16, seed=21), stackup=DEFAULT_STACKUP)
+    ir = from_graph(_board(16, seed=21), stackup=LEGACY_V1_STACKUP)
     config = OptimizeConfig(seed=21, iters=500)
     result = optimize(ir, config)
     d = result.digest
@@ -1506,7 +1506,7 @@ def _isolated_pair_graph() -> dict:
 
 
 def _seeded_pair(sep_mm: float):
-    ir = from_graph(_isolated_pair_graph(), stackup=DEFAULT_STACKUP)
+    ir = from_graph(_isolated_pair_graph(), stackup=LEGACY_V1_STACKUP)
     ir.inst_x[0], ir.inst_y[0] = 0.0, 0.0
     ir.inst_x[1], ir.inst_y[1] = sep_mm, 0.0
     return ir
@@ -1593,7 +1593,7 @@ def test_no_measures_default_path_is_bit_identical_to_before_this_feature():
     graph = _board(10, seed=50)
     config = OptimizeConfig(seed=51, iters=400)
 
-    ir0 = from_graph(graph, stackup=DEFAULT_STACKUP)
+    ir0 = from_graph(graph, stackup=LEGACY_V1_STACKUP)
     seed_placement(ir0, random.Random(config.seed))
     engine = OptimizeEngine(ir0, config)
     assert engine._money_measures == 0.0
@@ -1610,8 +1610,8 @@ def test_no_measures_default_path_is_bit_identical_to_before_this_feature():
         + engine._money_routing_area
     )
 
-    ir1 = from_graph(graph, stackup=DEFAULT_STACKUP)
-    ir2 = from_graph(graph, stackup=DEFAULT_STACKUP)
+    ir1 = from_graph(graph, stackup=LEGACY_V1_STACKUP)
+    ir2 = from_graph(graph, stackup=LEGACY_V1_STACKUP)
     r1 = optimize(ir1, config)
     r2 = optimize(ir2, config)
     assert r1.positions == r2.positions
@@ -1782,14 +1782,14 @@ _WIDE_OUTLINE = [(-200.0, -200.0), (200.0, -200.0), (200.0, 200.0), (-200.0, 200
 
 
 def _group_ir(seed_rng_seed: int):
-    ir = from_graph(_group_graph(), stackup=DEFAULT_STACKUP)
+    ir = from_graph(_group_graph(), stackup=LEGACY_V1_STACKUP)
     ir.outline = _WIDE_OUTLINE
     seed_placement(ir, random.Random(seed_rng_seed))
     return ir
 
 
 def _pattern_ir(seed_rng_seed: int):
-    ir = from_graph(_channel_pattern_graph(), stackup=DEFAULT_STACKUP)
+    ir = from_graph(_channel_pattern_graph(), stackup=LEGACY_V1_STACKUP)
     ir.outline = _WIDE_OUTLINE
     seed_placement(ir, random.Random(seed_rng_seed))
     return ir
@@ -1868,7 +1868,7 @@ def _isolated_group_graph():
 
 
 def test_translate_and_rotate_move_a_pattern_tile_as_one_rigid_body():
-    ir = from_graph(_isolated_group_graph(), stackup=DEFAULT_STACKUP)
+    ir = from_graph(_isolated_group_graph(), stackup=LEGACY_V1_STACKUP)
     seed_placement(ir, random.Random(5))
     engine = OptimizeEngine(ir, OptimizeConfig(seed=5))
     gid = int(ir.inst_group[0])
@@ -1995,7 +1995,7 @@ def test_swap_between_congruent_pattern_tiles_trades_anchors():
 def test_courtyard_overlapping_a_mounting_hole_is_illegal():
     ir = from_graph(
         {"instances": [{"refdes": "U1"}], "nets": []},
-        stackup=DEFAULT_STACKUP,
+        stackup=LEGACY_V1_STACKUP,
         mounting_holes=(
             MountingHole(x=10.0, y=10.0, drill_mm=5.6, ring_dia_mm=8.0, plated=True),
         ),
@@ -2018,7 +2018,7 @@ def test_a_part_on_its_own_footprint_hole_is_legal_but_a_neighbour_is_not():
     would walk it off its hole), while the same hole still blocks U1."""
     ir = from_graph(
         {"instances": [{"refdes": "CN1"}, {"refdes": "U1"}], "nets": []},
-        stackup=DEFAULT_STACKUP,
+        stackup=LEGACY_V1_STACKUP,
         mounting_holes=(MountingHole(x=10.0, y=10.0, drill_mm=6.4, part="CN1"),),
     )
     ir.inst_x[0], ir.inst_y[0] = 5.0, 5.0
@@ -2038,7 +2038,7 @@ def test_footprint_hole_follows_its_owner_through_the_optimizer():
     repelled from the hole where CN1 now has it, not where it started."""
     ir = from_graph(
         {"instances": [{"refdes": "CN1"}, {"refdes": "U1"}], "nets": []},
-        stackup=DEFAULT_STACKUP,
+        stackup=LEGACY_V1_STACKUP,
         mounting_holes=(
             MountingHole(
                 x=22.0, y=10.0, drill_mm=3.0, part="CN1", local_x=12.0, local_y=0.0
@@ -2120,7 +2120,7 @@ def test_courtyard_overlapping_a_mounting_hole_head_envelope_is_illegal():
     physically under the screw head)."""
     ir = from_graph(
         {"instances": [{"refdes": "U1"}], "nets": []},
-        stackup=DEFAULT_STACKUP,
+        stackup=LEGACY_V1_STACKUP,
         mounting_holes=(
             MountingHole(
                 x=10.0,
@@ -2155,7 +2155,7 @@ def test_short_anneal_on_nano_like_fixture_clears_mounting_hole_overlap():
         MountingHole(x=6.0, y=6.0, drill_mm=5.6, ring_dia_mm=8.0, plated=True),
         MountingHole(x=56.0, y=6.0, drill_mm=5.6, ring_dia_mm=8.0, plated=True),
     )
-    ir = from_graph(graph, stackup=DEFAULT_STACKUP, mounting_holes=holes)
+    ir = from_graph(graph, stackup=LEGACY_V1_STACKUP, mounting_holes=holes)
     ir.outline = _WIDE_OUTLINE
     seed_placement(ir, random.Random(61))
     ir.inst_x[0] = holes[0].x
@@ -2394,7 +2394,7 @@ def _two_part_ir(*, second_layer: str):
             }
         ],
     }
-    ir = from_graph(graph, stackup=DEFAULT_STACKUP)
+    ir = from_graph(graph, stackup=LEGACY_V1_STACKUP)
     ir.outline = [(-50.0, -50.0), (50.0, -50.0), (50.0, 50.0), (-50.0, 50.0)]
     ir.inst_x[:] = [0.0, 0.0]
     ir.inst_y[:] = [0.0, 0.0]
