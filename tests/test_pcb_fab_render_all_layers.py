@@ -275,12 +275,17 @@ _EXPECTED_LAYERS = (
     "PTH",
 )
 
+#: The pcb_route failure reason that means "partial route" (and nothing else).
+_NOT_REALIZED_RE = re.compile(r"\d+ of \d+ net\(s\) not realized")
+
 _GROUP_RE = re.compile(
     r'<g id="layer-([A-Za-z0-9_]+)" class="[^"]*"[^>]*>(.*?)</g>', re.S
 )
 
 
-def _drain_one_job(store: Store, parent_id: int) -> None:
+def _drain_one_job(
+    store: Store, parent_id: int, *, allow_partial_route: bool = False
+) -> None:
     """Drain the queued job most recently enqueued under ``parent_id``.
 
     Not just "whatever's next in the queue" (gr295496): the shared
@@ -323,7 +328,16 @@ def _drain_one_job(store: Store, parent_id: int) -> None:
             (path / f"fab-{job_type}-seed{seed}.json").write_text(
                 json.dumps(evidence, indent=2, default=str), encoding="utf-8"
             )
-            assert status == "succeeded", (
+            # Reto 2026-10-20 cutover: routing counts are reported, not gated.
+            # A pcb_route that failed ONLY because some nets were not realized
+            # is a partial route, not a failure; any other reason still fails.
+            partial_route = (
+                allow_partial_route
+                and status == "failed"
+                and job_type == "pcb_route"
+                and _NOT_REALIZED_RE.search(str(job_meta.get("error")))
+            )
+            assert status == "succeeded" or partial_route, (
                 f"job {job_ref_id} failed to drain cleanly: status={status!r}; "
                 f"error={job_meta.get('error')}"
             )
@@ -418,7 +432,7 @@ def test_the_fab_svg_carries_every_film_including_the_declared_ground_planes(
     assert (
         "enqueued" in pcb.put(id="fabrender", args={"op": "route", "seed": seed}).body
     )
-    _drain_one_job(store, ref.id)
+    _drain_one_job(store, ref.id, allow_partial_route=True)
 
     svg = pcb.get(id="fabrender", view="svg", args={"level": "fab"}).body
 
@@ -467,10 +481,14 @@ def test_the_fab_svg_carries_every_film_including_the_declared_ground_planes(
     # Compare per RULE against the waiver, never a total: a summed budget
     # lets a fixed defect pay for a new one silently.
     waiver = KNOWN_OPEN_DRC_ERRORS.get(seed, {})
+    # Reto 2026-10-20 cutover: routing counts are reported, not gated. This
+    # test checks films, not routing, so the `unrouted` rule (the routed-net
+    # count as a DRC finding) is printed rather than held to the waiver.
+    print(f"REPORT seed={seed} unrouted_drc={by_rule.get('unrouted', 0)}")
     over_budget = {
         rule: (n, waiver.get(rule, 0))
         for rule, n in by_rule.items()
-        if n > waiver.get(rule, 0)
+        if n > waiver.get(rule, 0) and rule != "unrouted"
     }
     # Report the OFFENDING findings with their objects, not the first six of
     # whatever the board produced. A message that names a rule and a count

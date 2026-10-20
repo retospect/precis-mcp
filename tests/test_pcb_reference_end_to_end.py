@@ -137,6 +137,9 @@ BASELINE_SILK_ERRORS_BY_SEED: dict[int, int] = {1: 2}
 #: test (~16s, xdist-parallel), so a failing seed names itself.
 SEEDS: tuple[int, ...] = (1, 2, 3, 4, 5)
 
+#: The pcb_route failure reason that means "partial route" (and nothing else).
+_NOT_REALIZED_RE = re.compile(r"\d+ of \d+ net\(s\) not realized")
+
 _DRC_HEAD_RE = re.compile(r"— (\d+) error\(s\), (\d+) warn\(s\)")
 
 
@@ -147,7 +150,9 @@ def _fanout(connections: list[dict[str, Any]]) -> dict[str, int]:
     return counts
 
 
-def _drain_one_job(store: Store, parent_id: int) -> None:
+def _drain_one_job(
+    store: Store, parent_id: int, *, allow_partial_route: bool = False
+) -> None:
     """Drain the queued job most recently enqueued under ``parent_id``.
 
     Not just "whatever's next in the queue" (gr295496): the shared
@@ -190,7 +195,16 @@ def _drain_one_job(store: Store, parent_id: int) -> None:
             (path / f"reference-{job_type}-seed{seed}.json").write_text(
                 json.dumps(evidence, indent=2, default=str), encoding="utf-8"
             )
-            assert status == "succeeded", (
+            # Reto 2026-10-20 cutover: routing counts are reported, not gated.
+            # A pcb_route that failed ONLY because some nets were not realized
+            # is a partial route, not a failure; any other reason still fails.
+            partial_route = (
+                allow_partial_route
+                and status == "failed"
+                and job_type == "pcb_route"
+                and _NOT_REALIZED_RE.search(str(job_meta.get("error")))
+            )
+            assert status == "succeeded" or partial_route, (
                 f"job {job_ref_id} failed to drain cleanly: status={status!r}; "
                 f"error={job_meta.get('error')}"
             )
@@ -202,7 +216,7 @@ def _drain_one_job(store: Store, parent_id: int) -> None:
 
 @pytest.mark.parametrize("seed", SEEDS)
 def test_esp32c3_reference_place_and_route_never_regresses_the_baseline(
-    store: Store, seed: int
+    store: Store, seed: int, record_property: Any
 ) -> None:
     with FIXTURE.open(encoding="utf-8") as fh:
         design: dict[str, Any] = json.load(fh)
@@ -229,7 +243,7 @@ def test_esp32c3_reference_place_and_route_never_regresses_the_baseline(
     # --- route ------------------------------------------------------
     route_resp = pcb.put(id="esp32c3-ref", args={"op": "route", "seed": seed})
     assert "enqueued" in route_resp.body
-    _drain_one_job(store, ref.id)
+    _drain_one_job(store, ref.id, allow_partial_route=True)
 
     # --- read back: routed count, honestly denominated ---------------
     # view='route-status' / store.pcb_route_status report per-net status
@@ -263,6 +277,9 @@ def test_esp32c3_reference_place_and_route_never_regresses_the_baseline(
     # DRC one, and shorting everything satisfies the routed one.
     import collections
 
+    # view='drc' is read-only (gr491591): record the run so the findings below
+    # are this board's, not an empty "no run yet" list.
+    pcb._drc_run(ref.id, store.pcb_load(ref.id), record=True)
     _run_id, findings = store.pcb_drc_findings_latest(ref.id)
     breakdown = collections.Counter(
         f"{f['rule']}" for f in findings if f["severity"] == "error"
@@ -277,7 +294,11 @@ def test_esp32c3_reference_place_and_route_never_regresses_the_baseline(
     # standards (hard zero vs. a downward-only ratchet), so summing them
     # would let a silk drop mask a copper short.
     silk_errors = sum(n for rule, n in breakdown.items() if rule.startswith("silk"))
-    copper_errors = drc_error_count - silk_errors
+    # Reto 2026-10-20 cutover: routing counts are reported, not gated. The
+    # `unrouted` rule is the routed-net count restated as a DRC finding, so it
+    # is reported with the routed count below instead of counted as copper.
+    unrouted_errors = breakdown.get("unrouted", 0)
+    copper_errors = drc_error_count - silk_errors - unrouted_errors
     assert copper_errors <= BASELINE_DRC_ERRORS, (
         f"{copper_errors} copper-class DRC errors (expected "
         f"{BASELINE_DRC_ERRORS}): {dict(breakdown)} -- inter-net clearance is "
@@ -290,8 +311,11 @@ def test_esp32c3_reference_place_and_route_never_regresses_the_baseline(
         f"baseline: {dict(breakdown)} -- this ratchet only goes down; see "
         f"docs/backlog/pcb-courtyard-polygon.md\n{detail}"
     )
-    assert routed_count >= BASELINE_ROUTED_FANOUT2, (
-        f"routed {routed_count}/11 fanout>=2 nets, below the "
-        f"{BASELINE_ROUTED_FANOUT2}/11 baseline -- a regression (note that a "
-        "router which declines to route also reports zero DRC errors)"
+    # Reto 2026-10-20 cutover: routing counts are reported, not gated. The
+    # zero-copper-DRC assertion above still holds over whatever IS routed.
+    print(
+        f"REPORT seed={seed} routed_fanout2={routed_count}/{len(fanout2_nets)} "
+        f"(reference {BASELINE_ROUTED_FANOUT2}) copper_drc={copper_errors} "
+        f"silk_drc={silk_errors} unrouted_drc={unrouted_errors}"
     )
+    record_property("routed_fanout2", routed_count)
