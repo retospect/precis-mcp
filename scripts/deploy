@@ -1289,9 +1289,10 @@ fi
 # Building is in scope on purpose. The floor lives in this repo and the
 # artifact lives in the catpath checkout, so they drift by construction; a fix
 # that still needs a hand-run `uv build` after every bump just relocates the
-# same failure to the next one. Version equality with the floor is what keeps
-# this honest — a checkout too old to satisfy the floor is reported, never
-# built and hoped over.
+# same failure to the next one. Version equality with what uv.lock pins (or
+# the floor when nothing is pinned — gr499104) is what keeps this honest — a
+# checkout or wheel too old to satisfy it is reported, never built and hoped
+# over.
 #
 #   PRECIS_CATPATH_DIR            — catpath checkout. Unset, the sibling
 #                                   layout is probed: <repo>/../catpath,
@@ -1326,12 +1327,33 @@ if [[ -z "${PRECIS_DEPLOY_SKIP_CATPATH_WHEEL:-}" \
     if [[ -z "$_FLOOR" ]]; then
         : # no autocatpath floor declared — nothing to seed
     else
-        _WHEEL="$(newest_autocatpath_wheel "${_CATPATH_DIR}/dist" || true)"
-        if [[ -z "$_WHEEL" ]] || ! version_ge "$(autocatpath_wheel_version "$_WHEEL")" "$_FLOOR"; then
-            # No local wheel clears the floor — try to build one, but only
-            # from a checkout that actually declares a satisfying version.
+        # gr499104: "the newest wheel clears the floor" is NOT "this wheel is
+        # the code precis locked" — a `uv lock -P autocatpath` that moves only
+        # the pinned commit leaves the floor untouched, so r66 shipped
+        # autocatpath-0.31.0 while the pin declared 0.31.1 and the build path
+        # below never ran. When uv.lock names a pin, only a wheel at the
+        # pin's own version qualifies; a floor-clearing wheel at any other
+        # version takes the build path like a missing one.
+        _LOCKED="$(autocatpath_locked_sha "${REPO_ROOT}/uv.lock" || true)"
+        _LOCK_V=""
+        if [[ -n "$_LOCKED" ]]; then
+            _LOCK_V="$(autocatpath_locked_version "${REPO_ROOT}/uv.lock" || true)"
+            [[ -n "$_LOCK_V" ]] \
+                || die "uv.lock pins autocatpath at ${_LOCKED} but its stanza records no readable version — regenerate the lock with 'uv lock'. (gr499104)"
+            version_ge "$_LOCK_V" "$_FLOOR" \
+                || die "uv.lock pins autocatpath ${_LOCKED} at version ${_LOCK_V} — below the floor >=${_FLOOR} this repo's pyproject demands. Run 'uv lock -P autocatpath' here so the lock and the floor agree. (gr499104)"
+        fi
+        _WHEEL="$(autocatpath_select_wheel "${_CATPATH_DIR}/dist" "$_FLOOR" "$_LOCK_V" || true)"
+        if [[ -z "$_WHEEL" ]]; then
+            if [[ -n "$_LOCK_V" ]]; then
+                _NEED="uv.lock pins ${_LOCKED:0:12} (v${_LOCK_V}); no autocatpath-${_LOCK_V} wheel in ${_CATPATH_DIR}/dist"
+            else
+                _NEED="no wheel >=${_FLOOR} in ${_CATPATH_DIR}/dist"
+            fi
+            # No qualifying wheel — try to build one, but only from a
+            # checkout that actually declares a satisfying version.
             _PROJ_V="$(autocatpath_project_version "${_CATPATH_DIR}/pyproject.toml" || true)"
-            [[ -n "$_PROJ_V" ]] || die "autocatpath floor is >=${_FLOOR} but no wheel that new exists in ${_CATPATH_DIR}/dist and there is no catpath checkout there to build one from. Set PRECIS_CATPATH_DIR, or PRECIS_DEPLOY_SKIP_CATPATH_WHEEL=1 if the hosts are already seeded. (gr263082)"
+            [[ -n "$_PROJ_V" ]] || die "${_NEED}, and there is no catpath checkout at ${_CATPATH_DIR} to build one from (floor >=${_FLOOR}). Set PRECIS_CATPATH_DIR, or PRECIS_DEPLOY_SKIP_CATPATH_WHEEL=1 if the hosts are already seeded. (gr263082)"
             # The checkout's own version is NOT the gate: uv.lock may pin a
             # newer catpath commit than the checkout has checked out (the
             # throwaway-worktree path below builds the pin, not HEAD), so the
@@ -1363,7 +1385,6 @@ if [[ -z "${PRECIS_DEPLOY_SKIP_CATPATH_WHEEL:-}" \
             # packaging config) is what a build actually reads.
             _BUILD_DIR="$_CATPATH_DIR"
             _PIN_WT=""
-            _LOCKED="$(autocatpath_locked_sha "${REPO_ROOT}/uv.lock" || true)"
             if [[ -n "$_LOCKED" ]]; then
                 git -C "$_CATPATH_DIR" cat-file -e "${_LOCKED}^{commit}" 2>/dev/null \
                     || die "uv.lock pins autocatpath at ${_LOCKED}, but that commit is not in ${_CATPATH_DIR} even after a fetch — the checkout is on a different remote, or the pin references an unpushed commit. Fix the checkout, or build on the release machine and pass -e autocatpath_wheel=<path>. (gr263082)"
@@ -1401,7 +1422,7 @@ if [[ -z "${PRECIS_DEPLOY_SKIP_CATPATH_WHEEL:-}" \
 
             version_ge "$_PROJ_V" "$_FLOOR" || die "autocatpath floor is >=${_FLOOR} but the catpath source to build from (${_BUILD_DIR}) declares only ${_PROJ_V} — pull/bump catpath (or 'uv lock -P autocatpath' so the pin clears the floor) and release the wheel first. (gr263082)"
 
-            say "building autocatpath ${_PROJ_V} wheel (floor >=${_FLOOR}, nothing that new in ${_CATPATH_DIR}/dist)"
+            say "building autocatpath ${_PROJ_V} wheel — ${_NEED}"
             # The wheel always lands in the checkout's own dist/ — a worktree
             # build's dist/ would vanish with the worktree.
             if (cd "$_BUILD_DIR" && uv build --wheel --out-dir "${_CATPATH_DIR}/dist"); then
@@ -1414,11 +1435,11 @@ if [[ -z "${PRECIS_DEPLOY_SKIP_CATPATH_WHEEL:-}" \
             fi
             [[ "$_BUILD_RC" == "0" ]] \
                 || die "autocatpath wheel build failed in ${_BUILD_DIR} — the cluster cannot resolve autocatpath>=${_FLOOR} without it. (gr263082)"
-            _WHEEL="$(newest_autocatpath_wheel "${_CATPATH_DIR}/dist" || true)"
-            [[ -n "$_WHEEL" ]] && version_ge "$(autocatpath_wheel_version "$_WHEEL")" "$_FLOOR" \
-                || die "built autocatpath in ${_CATPATH_DIR} but still no wheel >=${_FLOOR} in dist/. (gr263082)"
+            _WHEEL="$(autocatpath_select_wheel "${_CATPATH_DIR}/dist" "$_FLOOR" "$_LOCK_V" || true)"
+            [[ -n "$_WHEEL" ]] \
+                || die "built autocatpath ${_PROJ_V} in ${_CATPATH_DIR} but dist/ still holds no qualifying wheel (${_NEED}). (gr499104)"
         fi
-        say "autocatpath wheel → $(basename "$_WHEEL") (floor >=${_FLOOR})"
+        say "autocatpath wheel → $(basename "$_WHEEL") (floor >=${_FLOOR}${_LOCK_V:+, uv.lock pin ${_LOCKED:0:12}})"
         EXTRA_ARGS+=(-e autocatpath_wheel="$_WHEEL")
     fi
 fi

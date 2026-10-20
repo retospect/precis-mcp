@@ -121,3 +121,57 @@ autocatpath_locked_sha() {
     [ -n "$sha" ] || return 1
     printf '%s' "$sha"
 }
+
+# autocatpath_locked_version <uv.lock-path>
+#
+# Prints the version uv.lock records for the autocatpath package — the pinned
+# commit's own declared version, captured when `uv lock` resolved it, so no
+# catpath checkout is needed to read it (`git show <sha>:pyproject.toml`
+# would say the same thing, at the cost of requiring the checkout). Returns
+# 1 if autocatpath is not in the lock.
+#
+# gr499104: a `uv lock -P autocatpath` that moves only the pinned commit
+# leaves the pyproject floor untouched, so "newest wheel >= floor" happily
+# selected last release's wheel — r66 shipped autocatpath-0.31.0 while the
+# pin declared 0.31.1, and the build-from-pin path never ran. Equality with
+# THIS version is the check the floor cannot provide.
+autocatpath_locked_version() {
+    local lock=$1 v
+    [ -f "$lock" ] || return 1
+    v=$(
+        awk '/^name = "autocatpath"$/ { in_pkg = 1; next }
+             in_pkg && /^\[\[/        { in_pkg = 0 }
+             in_pkg && /^version = /  { print; exit }' "$lock" |
+            sed -n 's/^version = "\([^"]*\)".*/\1/p'
+    )
+    [ -n "$v" ] || return 1
+    printf '%s' "$v"
+}
+
+# autocatpath_select_wheel <dist-dir> <floor> [pin-version]
+#
+# Prints the wheel scripts/deploy should seed, or returns 1 when <dist-dir>
+# holds none that qualifies — the caller then takes the build path.
+#
+# With <pin-version> (autocatpath_locked_version's answer when uv.lock pins a
+# commit), ONLY `autocatpath-<pin-version>-*.whl` qualifies: a floor-clearing
+# wheel at any other version is a build of code precis does not depend on,
+# older OR newer (gr499104). Without a pin the pre-gr499104 rule applies —
+# the newest wheel at or above <floor> — since an index-resolved dep has no
+# commit to match against.
+autocatpath_select_wheel() {
+    local dir=$1 floor=$2 pin_v=${3:-} wheel v
+    if [ -n "$pin_v" ]; then
+        version_ge "$pin_v" "$floor" || return 1
+        for wheel in "$dir"/autocatpath-"$pin_v"-*.whl; do
+            [ -f "$wheel" ] || continue
+            printf '%s' "$wheel"
+            return 0
+        done
+        return 1
+    fi
+    wheel=$(newest_autocatpath_wheel "$dir" 2>/dev/null) || return 1
+    v=$(autocatpath_wheel_version "$wheel")
+    version_ge "$v" "$floor" || return 1
+    printf '%s' "$wheel"
+}

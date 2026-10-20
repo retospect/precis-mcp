@@ -17,6 +17,12 @@ they can always drift; ``scripts/lib/autocatpath-wheel.sh`` exists so
 These tests cover the version arithmetic that decision rests on (kept
 side-effect-free precisely so it can be tested here) plus the wiring that
 makes it reachable.
+
+gr499104 sharpens "what qualifies": a floor-clearing wheel is not
+necessarily the locked code — a ``uv lock -P autocatpath`` that moves only
+the pinned commit leaves the floor untouched (r66 shipped 0.31.0 against a
+0.31.1 pin). ``autocatpath_select_wheel`` takes the lock's recorded version
+as an exact-match requirement when a pin exists.
 """
 
 from __future__ import annotations
@@ -332,6 +338,105 @@ def test_locked_sha_reads_the_real_lockfile() -> None:
 
 def test_locked_sha_reports_absence_rather_than_guessing(tmp_path: Path) -> None:
     assert _sh(f'autocatpath_locked_sha "{tmp_path / "absent.lock"}"').returncode == 1
+
+
+def test_locked_version_reads_the_stanza_version(tmp_path: Path) -> None:
+    """The pinned commit's declared version is already in the lock — reading
+    it there answers "which wheel is the locked code" without needing the
+    catpath checkout at all."""
+    lock = tmp_path / "uv.lock"
+    lock.write_text(_LOCK_OTHER + "\n" + _LOCK_ACP, encoding="utf-8")
+    assert _sh(f'autocatpath_locked_version "{lock}"').stdout == "0.18.0"
+
+
+def test_locked_version_reports_absence_rather_than_guessing(tmp_path: Path) -> None:
+    lock = tmp_path / "uv.lock"
+    lock.write_text(_LOCK_OTHER, encoding="utf-8")
+    assert _sh(f'autocatpath_locked_version "{lock}"').returncode == 1
+    assert (
+        _sh(f'autocatpath_locked_version "{tmp_path / "absent.lock"}"').returncode == 1
+    )
+
+
+def _wheel_dist(tmp_path: Path, *names: str) -> Path:
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    for name in names:
+        (dist / name).write_text("", encoding="utf-8")
+    return dist
+
+
+def test_select_wheel_refuses_a_floor_clearer_below_the_pin(tmp_path: Path) -> None:
+    """The gr499104 regression itself: r66 shipped autocatpath-0.31.0 because
+    it cleared the >=0.31.0 floor while uv.lock's pin declared 0.31.1. With
+    a pin version in hand, that wheel must NOT qualify — the deploy builds
+    from the pinned commit instead."""
+    dist = _wheel_dist(tmp_path, "autocatpath-0.31.0-py3-none-any.whl")
+    assert _sh(f'autocatpath_select_wheel "{dist}" 0.31.0 0.31.1').returncode == 1
+
+
+def test_select_wheel_returns_the_wheel_at_the_pinned_version(tmp_path: Path) -> None:
+    """A newer wheel in dist/ does not shadow the pin either: when the lock
+    says 0.31.1, a stray 0.32.0 build is someone else's code, not ours."""
+    dist = _wheel_dist(
+        tmp_path,
+        "autocatpath-0.31.0-py3-none-any.whl",
+        "autocatpath-0.31.1-py3-none-any.whl",
+        "autocatpath-0.32.0-py3-none-any.whl",
+    )
+    result = _sh(f'autocatpath_select_wheel "{dist}" 0.31.0 0.31.1')
+    assert result.returncode == 0, result.stderr
+    assert Path(result.stdout).name == "autocatpath-0.31.1-py3-none-any.whl"
+
+
+def test_select_wheel_refuses_a_pin_version_below_the_floor(tmp_path: Path) -> None:
+    """Pin below the floor means lock and pyproject disagree; no wheel may
+    qualify, so the deploy refuses instead of shipping below-floor code."""
+    dist = _wheel_dist(tmp_path, "autocatpath-0.31.0-py3-none-any.whl")
+    assert _sh(f'autocatpath_select_wheel "{dist}" 0.32.0 0.31.0').returncode == 1
+
+
+def test_select_wheel_without_a_pin_keeps_floor_semantics(tmp_path: Path) -> None:
+    """autocatpath resolved from an index has no commit to match — the
+    pre-gr499104 rule (newest wheel >= floor) is all there is."""
+    dist = _wheel_dist(
+        tmp_path,
+        "autocatpath-0.30.0-py3-none-any.whl",
+        "autocatpath-0.31.0-py3-none-any.whl",
+    )
+    result = _sh(f'autocatpath_select_wheel "{dist}" 0.31.0')
+    assert result.returncode == 0, result.stderr
+    assert Path(result.stdout).name == "autocatpath-0.31.0-py3-none-any.whl"
+    assert _sh(f'autocatpath_select_wheel "{dist}" 0.32.0').returncode == 1
+
+
+def test_deploy_selects_the_wheel_against_the_lock_pin() -> None:
+    """Structural: the floor-only acceptance was the bug, so the select
+    helper must be the gate BEFORE the build AND the post-build verify —
+    a re-resolved "newest >= floor" after `uv build` would re-land the same
+    stale-wheel ship when dist/ already held a newer foreign build."""
+    deploy = (REPO_ROOT / "scripts" / "deploy").read_text(encoding="utf-8")
+    build_at = deploy.index("uv build --wheel")
+    first = deploy.index("autocatpath_select_wheel")
+    assert first < build_at, (
+        "pin-aware selection must gate the accept, before the build"
+    )
+    assert deploy.index("autocatpath_select_wheel", build_at) > build_at, (
+        "the post-build re-resolve must use the same pin-aware selection"
+    )
+    for reader in ("autocatpath_locked_sha", "autocatpath_locked_version"):
+        assert deploy.index(reader) < first, (
+            f"{reader} must be read before the wheel is selected"
+        )
+
+
+def test_deploy_reports_why_a_floor_clearer_was_rejected() -> None:
+    """The r66 log line said "floor >=0.31.0" next to a wheel that was wrong
+    for a different reason. When a pin drove the refusal the operator-facing
+    message must name the pin version it wanted, not just the floor."""
+    deploy = (REPO_ROOT / "scripts" / "deploy").read_text(encoding="utf-8")
+    assert "_NEED=" in deploy and "${_NEED}" in deploy
+    assert "autocatpath-${_LOCK_V}" in deploy
 
 
 def test_deploy_checks_the_checkout_against_the_locked_commit() -> None:

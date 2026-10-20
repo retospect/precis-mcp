@@ -69,11 +69,16 @@ of that ref on the `part-of` tree (a memory hub or summary node); `'depth': 1`
 keeps direct members only. It combines with `q=`, `tags=` and `view='index'`;
 without `q=` memory hits list newest-touched first. Todo and taxon keep their
 own `under=` (todo subtree, concept descendants).
-`args={'angle': N, 'like': …}` run a salience-rotation search seeded from a ref
-handle (`precis-dreaming-help`). `view='dreamable'` / `'stubs'` /
-`'chase-queue'` swap in a different result shape and ignore `q=` — a
-salience pick, or the paper-acquisition backlog (`precis-dreaming-help`,
-`precis-stubs-help`). `view='count'` on a numeric-ref kind returns the
+`angle=`/`like=`/`n=` run the diverse-cone salience spray seeded from a ref
+handle or `q=` — `search(args={'angle': 0.5, 'like': 'quest:164903', 'n': 8})`.
+They are the spray's own verb-level params, not a kind's `args=` keys — no
+handler's `search` accepts them, so on a single named kind (`kind='paper'`)
+the same call fails BadInput. Omit `kind=` for the default target set
+(paper+memory+draft), or pass a comma-list (`kind='memory,draft'`) to aim
+the spray. `view='dreamable'` / `'stubs'` / `'chase-queue'` swap in a
+different result shape and ignore `q=` — a salience pick, or the
+paper-acquisition backlog (`precis-stubs-help`). `view='count'` on a
+numeric-ref kind returns the
 filtered total plus `group_by` facet counts instead of hits — see
 "Count and facet a filtered search" below. `status=` is shorthand for
 `tags=['STATUS:<value>']` on kinds with that axis — see "Enumerating a
