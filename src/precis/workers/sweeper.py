@@ -84,6 +84,17 @@ as the latest ``retry_after`` passes. Attempts still bump and
 :data:`UNPARK_CAP` still latches terminal, so a hard-down cause
 escalates instead of retrying forever.
 
+**Engine-changed re-arm** (gr498683). A ``child-failed-final`` latch is
+terminal *for the engine that produced it*, not forever: a
+deterministic latch records ``meta.parked_engine_version`` (the
+autocatpath pin/rev the parking jobs were minted under — the same token
+``quest.compute._autocatpath_engine_token`` folds into their idem
+keys). Each pass compares it to the deployed token and, on a mismatch,
+strips the latch + bubbles and resets the retry bookkeeping — an engine
+fix like gr498003's releases its parked seeds with no manual tag-clear.
+Leaves latched before the stamp existed carry nothing to compare and
+stay human-only.
+
 Pass shape: SQL-only, idempotent, ``system`` profile; per-row
 ``FOR UPDATE OF r SKIP LOCKED`` dedups racing sweepers; cheap enough to
 run every cycle.
@@ -1976,18 +1987,40 @@ def _transient_retry_after(conn: Connection, ref_id: int) -> datetime | None:
 INVALID_GEOMETRY_CLASS = "invalid-geometry"
 
 
-def _deterministic_park_error(conn: Connection, ref_id: int) -> str | None:
-    """The recorded error when EVERY job parking this leaf failed with
-    :data:`INVALID_GEOMETRY_CLASS`, else ``None``.
+def _autocatpath_engine_version() -> str:
+    """The deployed autocatpath pin/rev — the same token
+    ``quest.compute`` folds into every autocatpath idem key.
+
+    Lazy import: ``precis.quest.compute`` imports THIS module for
+    :data:`INVALID_GEOMETRY_CLASS`, so a module-level import would cycle.
+    The token reads the pin floor from precis's own dist metadata, never
+    the engine package itself — safe on a sweeper host with no autocatpath
+    installed."""
+    from precis.quest.compute import _autocatpath_engine_token
+
+    return _autocatpath_engine_token()
+
+
+def _deterministic_park_error(
+    conn: Connection, ref_id: int
+) -> tuple[str | None, str | None]:
+    """``(error, engine_token)`` when EVERY job parking this leaf failed
+    with :data:`INVALID_GEOMETRY_CLASS`, else ``(None, None)``.
 
     Same job set as :func:`_transient_retry_after` (the live
     ``child-failed:<job_id>`` tags). One job without the class means the
-    park may still be retryable, so the normal cool-down governs."""
+    park may still be retryable, so the normal cool-down governs.
+
+    ``engine_token`` is the newest ``params.engine_token`` among the
+    parking jobs — the autocatpath pin/rev stamped at mint
+    (``quest.compute.dispatch_autocatpath``) that *produced* the failure
+    (gr498683). ``None`` for jobs minted before the stamp existed."""
     row = conn.execute(
         r"""
         SELECT count(*) FILTER (WHERE j.meta->>'failure_class' = %s),
                count(*),
-               max(j.meta->>'error')
+               max(j.meta->>'error'),
+               max(j.meta->'params'->>'engine_token')
           FROM ref_tags rt
           JOIN tags t ON t.tag_id = rt.tag_id
           LEFT JOIN refs j
@@ -2002,8 +2035,9 @@ def _deterministic_park_error(conn: Connection, ref_id: int) -> str | None:
         (INVALID_GEOMETRY_CLASS, ref_id),
     ).fetchone()
     if row is None or int(row[1]) == 0 or int(row[0]) != int(row[1]):
-        return None
-    return str(row[2] or INVALID_GEOMETRY_CLASS)
+        return None, None
+    engine = str(row[3]) if row[3] else None
+    return str(row[2] or INVALID_GEOMETRY_CLASS), engine
 
 
 def _transition_unpark(store: Store, ref_id: int) -> str:
@@ -2062,8 +2096,18 @@ def _transition_unpark(store: Store, ref_id: int) -> str:
         assert meta_row is not None
         last_parked_at, attempts = meta_row[0], int(meta_row[1])
 
-        deterministic = _deterministic_park_error(conn, ref_id)
-        if deterministic is not None:
+        det_error, det_engine = _deterministic_park_error(conn, ref_id)
+        if det_error is not None:
+            # Record the engine rev that produced the deterministic failure
+            # (the parking jobs' mint stamp; current pin as fallback for
+            # pre-stamp jobs) so the engine-changed re-arm can release this
+            # latch automatically once a fix deploys (gr498683).
+            engine_version = det_engine or _autocatpath_engine_version()
+            store.update_ref(
+                ref_id,
+                meta_patch={"parked_engine_version": engine_version},
+                conn=conn,
+            )
             store.add_tag(
                 ref_id, Tag.open("child-failed-final"), set_by="system", conn=conn
             )
@@ -2074,7 +2118,8 @@ def _transition_unpark(store: Store, ref_id: int) -> str:
                 payload={
                     "unpark_attempts": attempts,
                     "reason": "deterministic",
-                    "error": deterministic,
+                    "error": det_error,
+                    "engine_version": engine_version,
                 },
                 conn=conn,
             )
@@ -2124,6 +2169,103 @@ def _transition_unpark(store: Store, ref_id: int) -> str:
     return "unparked"
 
 
+def _enumerate_engine_mismatch_latched(
+    store: Store, *, engine_version: str, limit: int
+) -> list[_ParkedLeaf]:
+    """``child-failed-final`` leaves whose recorded failure engine
+    (``meta.parked_engine_version``) differs from the deployed engine —
+    deterministic latches that deserve a fresh try under the new rev
+    (gr498683). A leaf with no stamp can't be compared, so it keeps the
+    human-only latch it had before this release condition existed."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id
+              FROM refs r
+             WHERE r.kind = 'todo'
+               AND r.retired_at IS NULL
+               AND r.meta ? 'parked_engine_version'
+               AND r.meta->>'parked_engine_version' <> %s
+               AND EXISTS (
+                     SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                      WHERE rt.ref_id = r.ref_id
+                        AND t.namespace = 'OPEN'
+                        AND t.value = 'child-failed-final'
+                   )
+               AND COALESCE(
+                     (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                       WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1),
+                     'open'
+                   ) <> ALL(%s)
+             ORDER BY r.ref_id
+             LIMIT %s
+            """,
+            (engine_version, list(_UNPARK_TERMINAL_STATUSES), limit),
+        ).fetchall()
+    return [_ParkedLeaf(ref_id=int(r[0])) for r in rows]
+
+
+def _transition_engine_rearm(store: Store, ref_id: int, *, engine_version: str) -> str:
+    """Release one deterministically-latched leaf whose failure engine is
+    stale: strip the latch + every ``child-failed:*`` bubble and reset the
+    retry bookkeeping, exactly like an autonomous unpark — the next
+    dispatch re-mints under the new engine. Returns ``"unparked"`` or
+    ``"raced"`` (tag/meta changed between enumeration and lock)."""
+    with store.tx() as conn:
+        row = conn.execute(
+            """
+            SELECT r.meta->>'parked_engine_version'
+              FROM refs r
+             WHERE r.ref_id = %s
+               AND r.kind = 'todo'
+               AND r.retired_at IS NULL
+               AND r.meta ? 'parked_engine_version'
+               AND r.meta->>'parked_engine_version' <> %s
+               AND EXISTS (
+                     SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                      WHERE rt.ref_id = r.ref_id
+                        AND t.namespace = 'OPEN'
+                        AND t.value = 'child-failed-final'
+                   )
+               AND COALESCE(
+                     (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                       WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1),
+                     'open'
+                   ) <> ALL(%s)
+             FOR UPDATE OF r SKIP LOCKED
+            """,
+            (ref_id, engine_version, list(_UNPARK_TERMINAL_STATUSES)),
+        ).fetchone()
+        if row is None:
+            return "raced"
+        old_engine = str(row[0])
+
+        remove_child_failed_tags(store, ref_id, conn=conn)
+        store.remove_tag(ref_id, Tag.open("child-failed-final"), conn=conn)
+        store.remove_tag(ref_id, Tag.open("halt:orphan-retry-cap"), conn=conn)
+        # Fresh budget under the new engine: drop the park cycle and the
+        # version stamp outright (absent == 0 attempts, as everywhere else).
+        conn.execute(
+            "UPDATE refs SET meta = meta - 'parked_engine_version' "
+            "                 - 'unpark_attempts' - 'last_parked_at' "
+            "WHERE ref_id = %s",
+            (ref_id,),
+        )
+        store.append_event(
+            ref_id,
+            source="sweeper",
+            event="unparked",
+            payload={
+                "unpark_attempts": 0,
+                "via": "engine-changed",
+                "engine_version": old_engine,
+                "new_engine_version": engine_version,
+            },
+            conn=conn,
+        )
+    return "unparked"
+
+
 def _run_unpark_pass(store: Store, *, limit: int) -> int:
     """Run the ``unpark`` phase over up to ``limit`` candidates.
 
@@ -2133,8 +2275,39 @@ def _run_unpark_pass(store: Store, *, limit: int) -> int:
     the count actually unparked (``"final"``/``"cooldown"``/``"raced"``
     outcomes are not counted — only a genuine autonomous re-arm is).
     """
-    candidates = _enumerate_parked_leaves(store, limit=limit)
     n = 0
+    # Engine-changed re-arm (gr498683): a leaf latched ``child-failed-final``
+    # for a DETERMINISTIC failure carries the engine rev that produced it
+    # (``meta.parked_engine_version``); when the deployed engine moves, the
+    # cause it was parked for may be fixed — release it automatically
+    # instead of leaving the latch set forever.
+    try:
+        engine_version = _autocatpath_engine_version()
+    except Exception:  # pragma: no cover - dist metadata absent
+        engine_version = ""
+    if engine_version:
+        for leaf in _enumerate_engine_mismatch_latched(
+            store, engine_version=engine_version, limit=limit
+        ):
+            try:
+                outcome = _transition_engine_rearm(
+                    store, leaf.ref_id, engine_version=engine_version
+                )
+            except Exception:  # pragma: no cover - defensive
+                log.warning(
+                    "sweeper: engine re-arm for todo #%d raised",
+                    leaf.ref_id,
+                    exc_info=True,
+                )
+                continue
+            if outcome == "unparked":
+                n += 1
+                log.info(
+                    "sweeper: todo #%d unlatched — engine changed (now %s), retrying",
+                    leaf.ref_id,
+                    engine_version,
+                )
+    candidates = _enumerate_parked_leaves(store, limit=limit)
     for leaf in candidates:
         try:
             outcome = _transition_unpark(store, leaf.ref_id)

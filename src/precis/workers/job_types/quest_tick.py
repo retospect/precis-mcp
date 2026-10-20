@@ -71,6 +71,7 @@ from precis.quest.weave_tick import (
     QUEST_BODY_ROADMAP,
     QUEST_BODY_WEAVE,
 )
+from precis.store._todo_sql import _doable_exclusion_clause
 from precis.utils.env import env_int
 from precis.workers.executors._yield import Done, WakeWhen, Yield
 from precis.workers.job_types import JobTypeSpec
@@ -279,10 +280,36 @@ def _pending_sim_ids(store: Store, quest_id: int) -> list[int]:
 
     This is the in-flight set the loop waits on and the per-quest backpressure
     signal (empty ⇒ safe to propose the next batch).
+
+    A job the ``ssh_node`` claim gate can never pick up — its parent todo
+    carries a pause tag (``parent_not_paused``'s
+    :func:`_doable_exclusion_clause` — ``child-failed:*``/``halt:*``/
+    ``ask-user*``/``waiting-for:*``/live ``claimed-by:``) — is BLOCKED, not
+    pending: it sits ``STATUS:queued`` forever, so waiting on it deadlocks
+    the loop (gr498683). Such rows split out via
+    :func:`_blocked_sim_ids` instead of being awaited.
     """
+    return _sim_wait_ids(store, quest_id)[0]
+
+
+def _blocked_sim_ids(store: Store, quest_id: int) -> list[int]:
+    """The parent-gated half of :func:`_sim_wait_ids` — non-terminal sims
+    under this quest that no claim can ever pick up while their parent
+    todo's pause tag stands. Reported by ``_phase_await`` (so the operator
+    can see WHY the batch isn't finishing) instead of waited on."""
+    return _sim_wait_ids(store, quest_id)[1]
+
+
+def _sim_wait_ids(store: Store, quest_id: int) -> tuple[list[int], list[int]]:
+    """``(claimable_pending, parent_gated_blocked)`` — one subtree scan,
+    split on the same ``parent_not_paused`` predicate the ``ssh_node``
+    claim gate applies (:func:`_doable_exclusion_clause` on the job's
+    ``parent_id``), so "await waits on X" and "a worker can claim X" can
+    never drift apart again."""
+    clause = _doable_exclusion_clause("pt", "prt")
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             WITH RECURSIVE roots AS (
                 SELECT l.src_ref_id AS ref_id
                   FROM links l
@@ -296,7 +323,14 @@ def _pending_sim_ids(store: Store, quest_id: int) -> list[int]:
                   JOIN subtree s ON r.parent_id = s.ref_id
                  WHERE r.retired_at IS NULL
             )
-            SELECT j.ref_id
+            SELECT j.ref_id,
+                   EXISTS (
+                     SELECT 1 FROM ref_tags prt
+                       JOIN tags pt ON pt.tag_id = prt.tag_id
+                      WHERE prt.ref_id = j.parent_id
+                        AND pt.namespace = 'OPEN'
+                        AND {clause}
+                   ) AS parent_gated
               FROM refs j
               JOIN subtree s ON s.ref_id = j.ref_id
              WHERE j.kind = 'job'
@@ -312,20 +346,36 @@ def _pending_sim_ids(store: Store, quest_id: int) -> list[int]:
             """,
             (quest_id, list(_SIM_JOB_TYPES)),
         ).fetchall()
-    return [int(r[0]) for r in rows]
+    pending = [int(r[0]) for r in rows if not r[1]]
+    blocked = [int(r[0]) for r in rows if r[1]]
+    return pending, blocked
 
 
 def _queued_sim_count(store: Store) -> int:
     """Count non-terminal sim jobs across ALL quests — the node-load signal for
-    the starvation gate (don't stack a new batch onto an already-deep queue)."""
+    the starvation gate (don't stack a new batch onto an already-deep queue).
+
+    Parent-gated rows (the ``ssh_node`` claim's ``parent_not_paused``
+    predicate on the job's ``parent_id``) are excluded — an unclaimable job
+    occupies no compute, and counting it starves every quest behind a
+    queue that can never drain (gr498683).
+    """
+    clause = _doable_exclusion_clause("pt", "prt")
     with store.pool.connection() as conn:
         row = conn.execute(
-            """
+            f"""
             SELECT count(*)
               FROM refs j
              WHERE j.kind = 'job'
                AND j.retired_at IS NULL
                AND (j.meta->>'job_type') = ANY(%s)
+               AND NOT EXISTS (
+                     SELECT 1 FROM ref_tags prt
+                       JOIN tags pt ON pt.tag_id = prt.tag_id
+                      WHERE prt.ref_id = j.parent_id
+                        AND pt.namespace = 'OPEN'
+                        AND {clause}
+                   )
                AND COALESCE(
                      (SELECT t.value FROM ref_tags rt
                         JOIN tags t ON t.tag_id = rt.tag_id
@@ -675,6 +725,24 @@ def _phase_await(ctx: Any, state: dict[str, Any]) -> Any:
     pending = _pending_sim_ids(ctx.store, quest_id)
     if pending:
         return _await_yield(state, pending)
+    try:
+        blocked = _blocked_sim_ids(ctx.store, quest_id)
+    except Exception:  # a stub store in unit tests; a read hiccup shouldn't
+        blocked = []  # hold the loop — proceed to tick exactly as before
+    if blocked:
+        ctx.append_chunk(
+            "job_event",
+            f"{len(blocked)} sim job(s) unclaimable behind a parent gate "
+            f"({', '.join(f'#{i}' for i in blocked)}) — counted blocked, "
+            "not awaited",
+        )
+        log.warning(
+            "quest_tick: quest %d await found %d parent-gated, unclaimable "
+            "sim job(s) — resuming tick without them: %s",
+            quest_id,
+            len(blocked),
+            blocked,
+        )
     ctx.append_chunk(
         "job_event",
         f"batch complete ({len(state.get('child_job_ids') or [])} sim(s)) "

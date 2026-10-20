@@ -1656,8 +1656,13 @@ def test_unpark_mixed_transient_and_content_park_uses_cooldown(
 # ── deterministic geometry failure goes straight to final (gr496915) ──
 
 
-def _insert_job_with_class(store: Store, failure_class: str | None) -> int:
-    job = store.insert_ref(kind="job", slug=None, title="failed seed", meta={})
+def _insert_job_with_class(
+    store: Store, failure_class: str | None, *, engine_token: str | None = None
+) -> int:
+    meta: dict = {}
+    if engine_token is not None:
+        meta["params"] = {"engine_token": engine_token}
+    job = store.insert_ref(kind="job", slug=None, title="failed seed", meta=meta)
     if failure_class is not None:
         with store.pool.connection() as conn:
             conn.execute(
@@ -1709,3 +1714,130 @@ def test_unpark_other_failure_class_keeps_cooldown_retry(
     assert "child-failed-final" not in tags
     assert f"child-failed:{other_job}" in tags
     assert _unpark_attempts_of(store, rid) == 0
+
+
+# ── engine-changed re-arm of the deterministic latch (gr498683) ───────
+
+
+def _latched_leaf_meta(store: Store, rid: int) -> dict:
+    with store.pool.connection() as conn:
+        row = conn.execute("SELECT meta FROM refs WHERE ref_id = %s", (rid,)).fetchone()
+    assert row is not None
+    return dict(row[0] or {})
+
+
+def _latch_final(store: Store, rid: int, *, engine_version: str | None) -> None:
+    """Mirror the deterministic latch's terminal state: the
+    ``child-failed-final`` tag plus (post-gr498683) the recorded engine
+    rev on ``meta.parked_engine_version``. ``None`` models a leaf latched
+    before the stamp existed."""
+    store.add_tag(rid, Tag.open("child-failed-final"), set_by="system")
+    if engine_version is not None:
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET meta = meta || jsonb_build_object("
+                "  'parked_engine_version', %s::text"
+                ") WHERE ref_id = %s",
+                (engine_version, rid),
+            )
+            conn.commit()
+
+
+def test_deterministic_latch_records_engine_version(
+    handler: TodoHandler, store: Store
+) -> None:
+    """The latch stamps the parking jobs' mint token — the engine rev that
+    PRODUCED the failure — onto ``meta.parked_engine_version`` so the
+    engine-changed re-arm can compare it later."""
+    r = handler.put(text="geometry failure under engine A")
+    rid = _id_of(r.body)
+    job_id = _insert_job_with_class(store, "invalid-geometry", engine_token="0.31.0")
+    _park_leaf(store, rid, job_id=job_id)
+
+    run_sweeper_pass(store, limit=10)
+
+    assert _latched_leaf_meta(store, rid)["parked_engine_version"] == "0.31.0"
+    final = [e for e in store.events_for(rid) if e.event == "unpark-final"]
+    assert final and final[0].payload["engine_version"] == "0.31.0"
+
+
+def test_deterministic_latch_falls_back_to_current_token(
+    handler: TodoHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A parking job minted before the ``engine_token`` stamp carries none
+    — the latch records the CURRENT pin/rev instead of nothing."""
+    monkeypatch.setenv("PRECIS_AUTOCATPATH_VERSION", "0.30.0")
+    r = handler.put(text="geometry failure, pre-stamp job")
+    rid = _id_of(r.body)
+    job_id = _insert_job_with_class(store, "invalid-geometry")
+    _park_leaf(store, rid, job_id=job_id)
+
+    run_sweeper_pass(store, limit=10)
+
+    assert _latched_leaf_meta(store, rid)["parked_engine_version"] == "0.30.0"
+
+
+def test_engine_mismatch_rearms_latched_leaf(
+    handler: TodoHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr498683's release condition: a deterministic latch under an OLD
+    engine unparks by itself once the deployed rev differs — final tag,
+    ``child-failed:*`` bubble and retry bookkeeping all cleared."""
+    monkeypatch.setenv("PRECIS_AUTOCATPATH_VERSION", "0.31.1")
+    r = handler.put(text="latched under 0.31.0, engine now 0.31.1")
+    rid = _id_of(r.body)
+    _park_leaf(store, rid, job_id=777, unpark_attempts=3)
+    _latch_final(store, rid, engine_version="0.31.0")
+
+    run_sweeper_pass(store, limit=10)
+
+    tags = {str(t) for t in store.tags_for(rid)}
+    assert "child-failed-final" not in tags
+    assert "child-failed:777" not in tags
+    meta = _latched_leaf_meta(store, rid)
+    assert "parked_engine_version" not in meta
+    assert "unpark_attempts" not in meta
+    assert "last_parked_at" not in meta
+    events = [e for e in store.events_for(rid) if e.event == "unparked"]
+    assert events
+    payload = events[0].payload
+    assert payload["via"] == "engine-changed"
+    assert payload["engine_version"] == "0.31.0"
+    assert payload["new_engine_version"] == "0.31.1"
+
+
+def test_same_engine_rev_keeps_latch(
+    handler: TodoHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same rev on both sides is no signal: the leaf stays latched and its
+    ``child-failed:*`` bubble untouched."""
+    monkeypatch.setenv("PRECIS_AUTOCATPATH_VERSION", "0.31.0")
+    r = handler.put(text="latched under the same engine")
+    rid = _id_of(r.body)
+    _park_leaf(store, rid, job_id=888)
+    _latch_final(store, rid, engine_version="0.31.0")
+
+    run_sweeper_pass(store, limit=10)
+
+    tags = {str(t) for t in store.tags_for(rid)}
+    assert "child-failed-final" in tags
+    assert "child-failed:888" in tags
+
+
+def test_unstamped_latch_stays_final(
+    handler: TodoHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A leaf latched before ``parked_engine_version`` existed has nothing
+    to compare — it keeps the human-only latch even when the engine
+    moves."""
+    monkeypatch.setenv("PRECIS_AUTOCATPATH_VERSION", "0.31.1")
+    r = handler.put(text="legacy latch, no engine stamp")
+    rid = _id_of(r.body)
+    _park_leaf(store, rid, job_id=999)
+    _latch_final(store, rid, engine_version=None)
+
+    run_sweeper_pass(store, limit=10)
+
+    tags = {str(t) for t in store.tags_for(rid)}
+    assert "child-failed-final" in tags
+    assert "child-failed:999" in tags

@@ -1177,10 +1177,101 @@ class TestSimWaitSetReachesBarrierFanout:
         assert cancelled not in pending
         assert succeeded not in pending
 
+    def _parent_todo_of(self, store: Any, job_id: int) -> int:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT parent_id FROM refs WHERE ref_id = %s", (job_id,)
+            ).fetchone()
+        assert row is not None and row[0] is not None
+        return int(row[0])
+
+    def test_parent_gated_seed_is_blocked_not_pending(self, store: Any) -> None:
+        """gr498683: a seed whose seed_todo carries ``child-failed:*`` is
+        unclaimable by construction (the ssh_node ``parent_not_paused``
+        claim gate skips it) — await must count it BLOCKED, not pending,
+        or the loop waits on it forever."""
+        from precis.store import Tag
+
+        qid, cand = self._serving_candidate(store)
+        seed = self._nested_seed_job(store, cand)  # untagged → queued
+        store.add_tag(
+            self._parent_todo_of(store, seed),
+            Tag.open("child-failed:1"),
+            set_by="system",
+        )
+        assert seed not in qt._pending_sim_ids(store, qid)
+        assert seed in qt._blocked_sim_ids(store, qid)
+
+    def test_halt_gated_seed_is_blocked_too(self, store: Any) -> None:
+        """The gate is the whole pause-tag vocabulary, not just
+        child-failed — a ``halt:`` parent blocks the same claim path."""
+        from precis.store import Tag
+
+        qid, cand = self._serving_candidate(store)
+        seed = self._nested_seed_job(store, cand)
+        store.add_tag(
+            self._parent_todo_of(store, seed),
+            Tag.open("halt:orphan-retry-cap"),
+            set_by="system",
+        )
+        assert seed not in qt._pending_sim_ids(store, qid)
+        assert seed in qt._blocked_sim_ids(store, qid)
+
+    def test_gated_seed_excluded_from_starvation_gate(self, store: Any) -> None:
+        """An unclaimable job occupies no compute — counting it would
+        starve every quest behind a queue that can never drain."""
+        from precis.store import Tag
+
+        _qid, cand = self._serving_candidate(store)
+        gated = self._nested_seed_job(store, cand)
+        store.add_tag(
+            self._parent_todo_of(store, gated),
+            Tag.open("child-failed:1"),
+            set_by="system",
+        )
+        assert qt._queued_sim_count(store) == 0
+
     def test_seed_counts_toward_global_starvation_gate(self, store: Any) -> None:
         _qid, cand = self._serving_candidate(store)
         self._nested_seed_job(store, cand)  # non-terminal
         assert qt._queued_sim_count(store) >= 1
+
+
+class TestAwaitBlockedChildren:
+    """gr498683: ``_phase_await`` must not wait forever on parent-gated,
+    unclaimable children — it reports them and resumes the tick."""
+
+    def test_await_reports_blocked_children_and_ticks(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _stub_pending(monkeypatch, [[]])  # nothing claimable in flight
+        monkeypatch.setattr(qt, "_blocked_sim_ids", lambda store, qid: [11, 22])
+        _stub_queued(monkeypatch, 0)
+        calls = _stub_tick(monkeypatch, _Outcome())
+
+        ctx = FakeCtx(_meta({"phase": "await", "slice_count": 3}))
+        out = qt._phase_await(ctx, {"phase": "await", "slice_count": 3})
+
+        assert calls and calls[0]["quest_id"] == _QUEST_ID  # tick resumed
+        events = [t for kind, t in ctx.chunks if kind == "job_event"]
+        assert any("blocked" in t and "#11" in t and "#22" in t for t in events), events
+        assert isinstance(out, Yield)
+
+    def test_await_mixed_pending_and_blocked_still_waits(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A blocked sibling must not unblock the loop while ANY claimable
+        sim is still in flight."""
+        _stub_pending(monkeypatch, [[55]])
+        monkeypatch.setattr(qt, "_blocked_sim_ids", lambda store, qid: [11])
+        calls = _stub_tick(monkeypatch, _Outcome())
+
+        ctx = FakeCtx(_meta({"phase": "await"}))
+        out = qt._phase_await(ctx, {"phase": "await"})
+
+        assert not calls  # still waiting on the claimable one
+        assert isinstance(out, Yield)
+        assert out.state["phase"] == "await"
 
 
 class TestDryRestEscalation:

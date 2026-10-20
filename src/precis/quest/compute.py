@@ -2066,6 +2066,12 @@ def dispatch_autocatpath(
                         "model_index": model_index,
                         "force_backend": force,
                         "content_key": skey,
+                        # The engine pin/rev this job was minted under — the
+                        # same token folded (hashed) into ``skey``. Kept
+                        # readable so a deterministic-failure latch can
+                        # record WHICH engine produced it and re-arm when
+                        # the deployed engine changes (gr498683).
+                        "engine_token": _autocatpath_engine_token(),
                         "target_node": seed_node,
                         # Provenance only: lets the seed job stamp its own
                         # meta.pathway_ref so the pathway page's run-job links
