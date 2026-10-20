@@ -92,6 +92,7 @@ artifact: derived, idempotent, content-addressed). This is "the factory."
 | **Review tiers** | nursery / structural / deep | `nursery` = SQL/min, only `critical` alerts |
 | **Document export** | `src/precis/export/` | draft → LaTeX/PDF and docx: `walker.py` makes every shared decision (cite numbering and grouping, abbreviation first use, xref numbers, back-matter selection, the chunk walk); `latex.py` and `docx.py` are renderers that only format, checked byte-for-byte by `tests/test_export_golden.py` and kept decision-free by `tests/test_export_decisions.py` |
 | **Nanopub publication** | `src/precis/nanopub/`, `nanopub_*` tables (0128) | reviewed claims → signed, OTS-anchored artifacts; append-only proof store; the ladder runs **both ways** — a `contradicts` edge demotes below the freeze line, alerts above it |
+| **Flow kernel** | `src/precis_flow/` | dimension-free Hele-Shaw solve + Lagrangian tracer + regime card (`docs/backlog/se-flow-kernel.md`); numpy/scipy only, no first-party imports — se bindings stay outside |
 
 PCB selection binds raw board snapshots and instance IDs to optional Gerber
 SVG targets. The shared web design-chat engine stores proposals in conversations;

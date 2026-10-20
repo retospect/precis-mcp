@@ -655,7 +655,7 @@ override-dependencies = ["pillow>=12.3.0"]
 autocatpath = { git = "https://github.com/retospect/catpath", rev = "aeb3fa3f638a607eb4ecb9c9df56e257087948e9" }  # v0.32.0 + aeb3fa3 (legacy warnings fix)
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/precis", "src/precis_web", "src/asa_bot", "src/asa_slack", "src/precis_chem", "src/precis_bio", "src/precis_pathway", "src/precis_dft", "src/precis_estimate", "src/precis_se", "src/hexfold", "src/precis_surface", "src/precis_chain"]
+packages = ["src/precis", "src/precis_web", "src/asa_bot", "src/asa_slack", "src/precis_chem", "src/precis_bio", "src/precis_pathway", "src/precis_dft", "src/precis_estimate", "src/precis_se", "src/hexfold", "src/precis_surface", "src/precis_chain", "src/precis_flow"]
 
 # Note: hatchling ≥ 1.20 already includes non-Python files inside a
 # packaged directory (Jinja .j2 templates under
@@ -719,6 +719,8 @@ root_packages = [
     # rest of the tree is visible to the contract below — the kernel is a
     # numpy-only package destined for its own pip, like `hexfold`.
     "precis_chain",
+    # `precis_flow` is the same shape (numpy + scipy, no first-party imports).
+    "precis_flow",
 ]
 
 [[tool.importlinter.contracts]]
@@ -748,6 +750,14 @@ forbidden_modules = ["precis", "precis_web", "asa_bot", "asa_slack"]
 # closure is numpy and the standard library. `tests/
 # test_precis_chain_import_boundary.py` is the belt to this braces (it catches a
 # `precis_se`/`precis_chem` plugin import too, which is not a root package here).
+
+[[tool.importlinter.contracts]]
+name = "precis_flow is a standalone numpy/scipy kernel: no precis/asa imports"
+type = "forbidden"
+source_modules = ["precis_flow"]
+forbidden_modules = ["precis", "precis_web", "asa_bot", "asa_slack"]
+# Same shape as the precis_chain contract above. `tests/test_precis_flow.py`
+# carries the AST-walk belt for non-root first-party packages (precis_se etc.).
 
 [[tool.importlinter.contracts]]
 name = "slack bridge shares asa_bot runtime but never the web app"

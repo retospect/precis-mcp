@@ -91,17 +91,9 @@ card tells whether that size is still inside the model.
 
 ## Slices
 
-1. **Kernel package** `src/precis_flow/` (vendored from cfdtest
-   `flow.py` + `tracker.py` + `cost.py`, dimension-free API):
-   `Domain(mask, h_star, ports)`, `solve(domain) -> Field(U_star,
-   p_star, R_star)`, `trace(field, seed, n, D_v_star, seed_rng) ->
-   Paths(breakthrough, residence)`, `RegimeCard.from_physical(...)`.
-   Registered in `pyproject.toml` (`packages`, import-linter
-   `root_packages`); imports nothing from `precis` or `precis_se`.
-   Tests: cfdtest's invariants ported; a uniform rectangle reproduces
-   Poiseuille `R*`; the same mask at `L = 1 mm` and `L = 500 mm` gives
-   identical reduced results and different cards; the card refuses the
-   `Re_h · h₀/L = 2.5` worked point by name.
+*Slice 1 (kernel package `src/precis_flow/`) landed 2026-10-20 — the
+commit carrying this line; `git log` has the sha.*
+
 2. **se adapter**: cad envelope → `Domain` (thin-axis detection, depth
    map, `patch:` ports), `view='flow'` (field, streamlines, card),
    measures through `COMPUTERS`. Test: the cfdtest hex chamber rebuilt
