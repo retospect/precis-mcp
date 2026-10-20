@@ -106,6 +106,16 @@ shape (e.g. `notes--meeting~L42-58`).
 
 ## Install
 
+Use [uv](https://docs.astral.sh/uv/) and Python 3.13, the version CI tests
+on every run (uv fetches 3.13 itself if it is missing):
+
+```bash
+uv tool install --python 3.13 'precis-mcp[all]'
+```
+
+This puts the `precis` command in its own isolated environment; upgrade
+with `uv tool upgrade precis-mcp`. Plain pip also works on Python 3.12–3.13:
+
 ```bash
 pip install 'precis-mcp[all]'
 ```
