@@ -340,7 +340,9 @@ with ≥ 10⁴ firings and `net production within its 90 % CI of zero`.
 
 Entropies: `thermo.ThermoConfig.adsorbate_mode: ts0 | harmonic | hindered`
 (default becomes `hindered` in slice 2 — Q4 in §Decisions, proposed
-2026-10-20). `hindered` = Sprowl–Campbell (pa2203) for the two frustrated
+2026-10-20), a new field orthogonal to the existing `mode: none | table |
+vib` — `mode` says where adsorbate data comes from, `adsorbate_mode`
+which entropy model prices it; `vib` is not folded into `harmonic`. `hindered` = Sprowl–Campbell (pa2203) for the two frustrated
 translations and the azimuthal rotation, harmonic for the rest, with
 `freq_floor` as today; the TS inherits its reactant's correction minus
 the reaction coordinate (unchanged convention, stated in output). Inputs per adsorbate for
