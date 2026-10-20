@@ -1,5 +1,5 @@
 ---
-status: draft
+status: ready
 pillar: 3d-design
 prio: medium
 model: opus
@@ -96,6 +96,8 @@ card tells whether that size is still inside the model.
    `Domain(mask, h_star, ports)`, `solve(domain) -> Field(U_star,
    p_star, R_star)`, `trace(field, seed, n, D_v_star, seed_rng) ->
    Paths(breakthrough, residence)`, `RegimeCard.from_physical(...)`.
+   Registered in `pyproject.toml` (`packages`, import-linter
+   `root_packages`); imports nothing from `precis` or `precis_se`.
    Tests: cfdtest's invariants ported; a uniform rectangle reproduces
    Poiseuille `R*`; the same mask at `L = 1 mm` and `L = 500 mm` gives
    identical reduced results and different cards; the card refuses the
@@ -111,16 +113,18 @@ card tells whether that size is still inside the model.
 4. **Annealer as an se op**: hole/port placement under the realize loop
    (cfdtest `anneal.py`), cost terms as measures.
 
-## Open questions (Reto)
+## Decisions (Reto 2026-10-20: "yes")
 
-- Q1 Vendor into `src/precis_flow/` (one dependency, numpy + scipy) or
-  keep `breakthrough-annealer` a separate package and import it?
-  Recommendation: vendor; it is 1.4 k lines and the API changes.
-- Q2 Which se objects first: cad envelopes (EWOD cells, the hex chamber)
-  or hexfold lumens? Recommendation: cad first (slice 2), lumens in
-  slice 3 with the nano propagator — the continuum kernel is wrong there.
-- Q3 3-D (non-thin) chambers: out of scope here; name a follow-on
-  (external Stokes solver) when a case needs it.
+- Q1 Vendored into `src/precis_flow/` (numpy + scipy, both already
+  precis deps), not imported from `breakthrough-annealer`.
+- Q2 Cad envelopes first (slice 2); hexfold lumens in slice 3 with the
+  nano propagator — the continuum kernel is wrong there.
+- Q3 3-D (non-thin) chambers stay out; a follow-on (external Stokes
+  solver) is named when a case needs it.
+
+Sequencing: slice 1 is self-contained and builds now. Slice 2 waits for
+pocket-from-molecule slice 2 to land, because that slice fixes the
+provisional `Computer` signature in `precis_se.properties.COMPUTERS`.
 
 ## Explicitly NOT in scope
 
