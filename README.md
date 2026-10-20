@@ -159,7 +159,7 @@ extras — each enables its kinds; omit any you don't want:
 | `tts`          | Audio export — local TTS for voice drafts + the morning brief (Kokoro) | yes (host-specific) |
 | `cad-step`     | `cad` exact STEP export (OpenCASCADE B-rep)        | yes (~200 MB OCCT libs) |
 | `dft-ml`       | `structure` ML-potential relax (ASE + MACE-torch)  | yes (pulls torch) |
-| `chem`         | `route` kind — retrosynthesis tool-pack (RDKit)    | yes (~150 MB) |
+| `chem`         | Kept as a no-op alias: RDKit (the `route` retrosynthesis kind) moved into core on 2026-10-15 | no |
 | `catalyst`     | `pathway` kind surface (autocatpath engine — release-gated dep, not on PyPI; resolves via `[tool.uv.sources]` in this repo) | no |
 | `catalyst-gpu` | `pathway` compute — in-process NEB/relax (autocatpath[mace] + cuequivariance; same dep caveat) | yes (pulls torch) |
 | `struct-search`| Global structure search (AGOX GOFEE/basin-hopping) | yes (ray, dscribe, …) |
