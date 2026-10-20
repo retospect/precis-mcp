@@ -11,8 +11,9 @@ model: opus
 Replace the single-site linear chain with one ledger, a site-balance MKM and a rejection-free KMC (MCAMC-accelerated), driven by a split input/output partial-pressure environment block, anchored to experimental TPD, optimised over T and total pressure, and re-runnable from one manifest.
 
 Owner: catalysis-selectivity (thread file: Horizon 5a, next to
-`electrochem-kinetics-beyond-che.md`). Engine work lands in catpath
-(`~/catpath`, GPL-3) through chemistry's wheel-bump path; precis owns the
+`electrochem-kinetics-beyond-che.md`). Engine work lands in catpath (the
+sibling checkout under `work/projects/code/catpath`, package
+`src/autocatpath/`, GPL-3) through chemistry's wheel-bump path; precis owns the
 environment block, the job, the views, the manifest store and the quest
 scalars. Revised 2026-10-19 after Reto's review (rulings in §Decisions);
 re-revised 2026-10-20 with the second-wave evidence (pa498800–pa498880,
@@ -99,6 +100,10 @@ cheap and a mean-field site-balance model is a one-second cross-check.
   follow-on, not v1).
 - Diffusion events in the KMC (v1 has none; §D5 says what that costs).
 - Lateral interactions before the first paper (Reto, §Decisions Q8).
+- `electrochem-kinetics-beyond-che.md` slice 1 (β·U and U/pH arguments on
+  `kinetics.solve`) is superseded by the D1 `electrochemical` block and the
+  `ShiftProvider` of slice 8; its slice 3 (nonlinear MF) is D7 here. That
+  spec points here before either is built; the U argument has one owner.
 - Replacing the energetic span or the CHE route scalars; they stay and are
   reported next to the kinetic numbers.
 - NEB scheduling (`pathway-kinetics-promotion-gate.md` decides where NEB
@@ -196,13 +201,45 @@ Rules:
   bare number is accepted as `source: null`. Measured anchor: s0(NO) on
   Pd(111) = 0.5, constant to ~75 % coverage at 300–350 K (pa498804,
   fi499138).
-- The block hashes into the correction basis
-  (`pathway-correction-basis.md`) and into the validation manifest (D10):
-  two solves compare only on equal `(environment_schema=2, T, p_total,
-  inputs, outputs, inerts, sticking, electrochemical.provider+params)`.
+- **Legacy configs are untouched.** A config with no `environment:` block
+  (today every prod config; `conditions.pressures` is mostly `{}`) is
+  priced as today: reference mode, today's trust gate, byte-identical
+  output. The `refuse` default and the uncited-sticking gate apply only
+  when an `environment:` block is present. The aggregate-embedded solve
+  therefore keeps working for every existing quest (ruling confirmed
+  2026-10-20 against the ready-check).
+- **Repricing a baked node at (T, p).** `kinetics.solve` receives nodes
+  priced at the aggregate's T and pressures (`th.corrected_refs` carries
+  `kT ln p`; `_gas_pair`: "pressure term is already inside dg"). Changing
+  `p_of` alone would make `k_des` scale with p. The rule: the gas part is
+  rebuilt through `ledger_energy` with the environment's refs
+  (`build_table(cfg)` fed the Environment, so `Table.gas_correction` and
+  `p_of`/`s_of` read one object); the adsorbate part through `Table(T)`
+  from stored modes. Slice 1 pins T to the aggregate's T; slice 4 defines
+  the re-T rule (modes re-evaluated at T; a node whose correction is `vib`
+  without stored modes refuses a T other than the run T, naming the node).
+- **Equilibrium composition, defined.** Inputs stay at their table values,
+  the target's output pressure is fixed, and the remaining outputs are
+  solved so every one of the `n_gas − rank(ν)` independent affinities
+  vanishes. At that composition `q_over_k = 1` (the reaction named for
+  `q_over_k` is target formation) and `z_i = 1` for every step; both are
+  slice-1 acceptances.
+- **Basis field.** The block hashes into `environment_basis`, computed in
+  `compute._network_basis` as a projection of the stored config through
+  the same adapter (a legacy config projects to the reference block, so
+  no backfill and no prod write) and folded into
+  `frontier.same_network_basis`; a null basis never compares. It also
+  enters the validation manifest (D10): two solves compare only on equal
+  `(environment_schema=2, T, p_total, inputs, outputs, inerts, sticking,
+  electrochemical.provider+params)`. `pathway-correction-basis.md` stays
+  unbuilt and is not a dependency.
 - Replaces `ConditionsConfig.pressures` and `KineticsConfig.sticking` in
   the engine via a reconciling adapter (`from_dict` keeps the old keys
-  readable; new runs write the block).
+  readable; new runs write the block). The pressure table is read by
+  `thermo.build_table`/`Table.gas_correction`, `coverage.py`,
+  `provenance.py`, `report.py` and `viz.py` as well as `kinetics.py`; the
+  adapter is the one object all of them read, so pipeline-time and
+  kinetics-time pricing cannot drift apart.
 
 ### D2. Provider contract (the seam the electrochem spec plugs into)
 
@@ -306,16 +343,32 @@ Entropies: `thermo.ThermoConfig.adsorbate_mode: ts0 | harmonic | hindered`
 2026-10-20). `hindered` = Sprowl–Campbell (pa2203) for the two frustrated
 translations and the azimuthal rotation, harmonic for the rest, with
 `freq_floor` as today; the TS inherits its reactant's correction minus
-the reaction coordinate (unchanged convention, stated in output). Against
-experiment the ranking is CPES (complete potential-energy sampling) >
+the reaction coordinate (unchanged convention, stated in output). Inputs per adsorbate for
+`hindered`: mass; the frustrated-translation barrier (the diffusion
+barrier between adjacent sites of its class — one MLIP NEB, or the
+`isomerization` BEP-class estimate, provenance carried); the site
+spacing; the rotational barrier about the surface normal and the moment
+of inertia from the relaxed geometry; `modes_meV` for the remaining
+modes. `thermo.ADSORBATES` holds ZPE-only entries for NH₃, NO, N, H and
+CO and computed modes for six other species; slice 2 computes the
+missing modes the same way in the aggregate. When any input is missing
+the fallback is the Campbell–Sellers correlation `S_ads = 0.70·S_gas −
+3.3R` (pa1169, σ ≈ 2R) with provenance `cs_correlation`, stated per
+species in the record. The acceptance oracle for both paths is
+`T·S_ads` within 0.1 eV of the correlation at 298 K for NH₃ and NO.
+Against experiment the ranking is CPES (complete potential-energy sampling) >
 hindered translator > harmonic > free translator (Jørgensen–Grönbeck
 pa498867), so `hindered` is the floor and `cpes` is a named follow-on
 mode, not an open question. The reference-state convention for adsorbate
 K and k_TST (seven are in use and they disagree systematically,
 Ye–Truhlar pa498877) is stamped next to the mode: `thermo.reference_state`
-is part of `corrections.VERSION` and of the manifest's
-`inputs.corrections`. A mode or reference-state change bumps
-`corrections.VERSION` so margins never compare across it.
+is part of the stamp. `corrections.VERSION` stops being a constant: it
+is derived, `f"{TABLE_VERSION}+{adsorbate_mode}+{reference_state}+tpd:{tpd_set_sha256[:8] or 'none'}"`
+(`TABLE_VERSION` is today's date constant), and the correction-policy
+tuple carries the derived stamp as `table_version` (never normalised to
+null while any switch is on). Test: two configs differing only in mode
+produce different stamps. A mode, reference-state or TPD-set change
+therefore changes the stamp and margins never compare across it.
 
 ### D4. Barrier sources, scaling and uncertainty — the maths
 
@@ -328,8 +381,10 @@ gets a rate and a provenance. Outputs add `bep_flux_share` = fraction of
 the target's net production that passes through a non-NEB transition at
 steady state; `_kinetics_scalars` marks `kinetics_trusted=False` with note
 `bep_flux_share > 0.5` (threshold a quest knob). Fast-process rescaling
-stays what `_capped` does: one common factor per pair, applied only to
-pairs the quasi-equilibrium detector (D3/D6) names; K is untouched.
+stays what `_capped` does (one common factor per pair, K untouched) and
+stays unconditional as the `K_CAP` overflow guard until slice 4's
+quasi-equilibrium detector exists; from slice 4 the MF solve applies it
+only to the pairs the detector names, and slice 3 does not touch it.
 
 **BEP / TS scaling.** For a step `i` in class `c` (dissociation,
 hydrogenation, coupling, … as `bep.py` classes them) with reaction energy
@@ -341,7 +396,9 @@ E_TS,i = E_IS,i + max(Ea_i, 0, ΔE_i)      (the once-applied floor of D2)
 ```
 
 `(α_c, β_c)` are the class fit (`bep.py`), `ε_i ~ N(0, σ_c²)` with
-`σ_c = band_eV` the class residual. A TS-scaling form `E_TS = γ_c·E_FS +
+`σ_c = residual_eV` (the class RMSE; `band_eV` is twice that, floored,
+and is a band half-width, not a σ) and `σ_c = mae` for a prior class
+whose `residual_eV` is None. A TS-scaling form `E_TS = γ_c·E_FS +
 δ_c` (Abild-Pedersen pa34732) is the same relation re-parameterised
 (`α = γ`, `β = δ − (1 − γ)·E_IS` per step) and is not a second source.
 A class is a valence family: one bond type made or broken on one
@@ -385,7 +442,7 @@ the closest, a committee). So the honest plan is staged:
 
 | Stage | Draw | What it models | Status |
 |---|---|---|---|
-| **v1 (slice 3)** | `z_model ~ N(0,1)` one per run · `z_c ~ N(0,1)` one per BEP class · `z_i ~ N(0,1)` one per step | `δG_state,s = σ_model·z_model` for every adsorbed state (pooled MLIP model-form spread from `uncertainty.Estimate.std` across models, same sign everywhere); `ε_i = σ_c·[√ρ·z_c + √(1−ρ)·z_i]` with equicorrelation ρ = 0.5 stated and swept over {0, 0.5, 0.9}; NEB steps use their own `Estimate.std` for `z_i` | **Build.** Hierarchical family model; the defensible first version per pa498677 when `C_c` is unknown. |
+| **v1 (slice 3)** | `z_model ~ N(0,1)` one per run · `z_c ~ N(0,1)` one per BEP class · `z_i ~ N(0,1)` one per step | `δG_state,s = σ_model·z_model` for every adsorbed state, `σ_model` = the RMS over adsorbed states of `uncertainty.Estimate.std` across MLIP models (0, stated, when one model ran), same sign everywhere; `ε_i = σ_c·[√ρ·z_c + √(1−ρ)·z_i]` with equicorrelation ρ = 0.5 stated and swept over {0, 0.5, 0.9}; NEB steps use their own `Estimate.std` for `z_i` | **Build.** Hierarchical family model; the defensible first version per pa498677 when `C_c` is unknown. |
 | v2 | `ε_c = L_c z`, `L_c L_cᵀ = C_c` | Fitted residual covariance per class from the pathway corpus (`bep.py` residuals across pathways) | After ≥ 50 verify-tier pathways exist; a follow-on item. |
 | v3 | Committee member per run | MLIP committee (MACE/UMA/CHGNet as members, Wang pa498267) in place of `z_model` | When the agent image carries ≥ 3 models routinely. |
 | Out of scope | Bayesian calibration to experiment with a discrepancy term (Walker pa498719; CheKiPEUQ pa498722; Tian–Rangarajan pa498697) | Learning corrections from kinetic data | The TPD offset of D11 is the only experiment-informed correction; it is a fixed, audited offset, not a posterior. |
@@ -684,22 +741,22 @@ class KineticsResult:
     manifest_id: str                # D10
     tof_span_limit: float
     tof_chain: float
-    tof_mf: float
-    tof_kmc: TofKmc | None
+    tof_mf: float | None            # slice 4
+    tof_kmc: TofKmc | None          # slice 5
     selectivity: dict[str, float]
     coverages: dict[str, dict[str, float]]
     drc: dict[str, float]
     trc: dict[str, float]
-    orders: dict[str, float]
-    ea_app: float
+    orders: dict[str, float] | None # slice 4
+    ea_app: float | None            # slice 4
     q_over_k: float
     reversibility: dict[str, float]
     bep_flux_share: float
     correlation_effect: float | None
     uncertainty: UncertaintyBand | None
-    tpd: dict[str, TpdComparison]   # D11, per adsorbate
-    optimum: Optimum | None         # D7
-    acceleration: Acceleration | None
+    tpd: dict[str, TpdComparison] | None   # D11, slice 9
+    optimum: Optimum | None         # D7, slice 4
+    acceleration: Acceleration | None       # slice 6
     consistency: dict[str, bool]
     warnings: tuple[str, ...] = ()
 
@@ -759,6 +816,17 @@ class TpdComparison:                # one per adsorbate, D11
 | `consistency` | result of each D3 check by name | bool | D3 | never (core checks always run; optional ones listed only when run) |
 | `warnings` | human-readable notes (`unlisted gas priced at reference`, `KMC values used for selectivity`, …) | — | accumulated | never |
 
+**Migration: v2 is written beside v1, never in place.** The engine writes
+`kinetics_v2.json` next to v1's `kinetics` block and precis stores it as
+`meta.kinetics_v2`; every field a later slice fills is `None` until then
+(the comments above). v1 consumers (`kin["tof"]`, `tof_bracket`,
+`sensitivity.tof`, `drc.X_RC`) keep reading v1. Reader flips by slice:
+slice 2 none; slice 3 `_kinetics_scalars` lifts `bep_flux_share` and the
+band from v2; slice 4 `_kinetics_scalars` lifts `tof`, `log_tof`,
+`orders`, `q_over_k`, `drc_top` from v2 and `kinetics_text` + `view=
+'kinetics'` render v2; slice 10 retires the v1 writer (readers fall back
+to v2 only; the harvest keys move with slice 4).
+
 precis `_kinetics_scalars` lifts `tof` (= `tof_kmc.median` when present,
 else `tof_mf`), `log_tof` band, `kinetics_method`, `bep_flux_share`,
 `order_<gas>`, `q_over_k`, `drc_top`, `tpd_max_offset_eV`,
@@ -816,7 +884,13 @@ drift against stated tolerances.
 | `search.seeds`, `kinetics.monte_carlo(seed)` | catpath `config.py`, `kinetics.py` | RNG seeds for search and sensitivity |
 
 Gaps: no platform record, no lock hash, no weights hash, no KMC replica
-seeds, no single id that names all of it.
+seeds, no single id that names all of it. Sources named: `weights_sha256`
+is the sha256 of the checkpoint file `calculators._load` resolves (MACE
+cache path or UMA checkpoint path), computed once and cached per path;
+`autocatpath_sha` is `autocatpath.__git_sha__`, written into the wheel
+by catpath's build script from slice 10 on (`None` for older wheels and
+stated). `kmc_replica_seeds`, `tpd_reference_set_sha256` and the KMC/TPD
+tolerances are nullable until slices 5 and 9 exist.
 
 **The manifest.** One frozen record (D8 idiom), `@record(schema=
 "validation_manifest", version=1)`:
@@ -995,9 +1069,14 @@ where the paper gives them and records `theta0` otherwise.
    every `|r⁺ − r⁻| < 1e−6·k_scale`; `p_total: 10` with a composition
    reproduces the explicit-table result.
 2. **Ledger + provider seam + core checks + records.** `VacuumProvider`,
-   the rate builder as the only rate path, the four core checks and the
-   three optional ones behind `consistency.extended`, the `@record`
-   decorator, `adsorbate_mode` knob (default unchanged). Acceptance: core
+   the rate builder as the only rate path, the three core checks that
+   exist without a lattice (elementary ratio; barrier identity tested on
+   energies `G_TS − G_IS` vs `G_TS − G_FS`, not on rates; equilibrium flux
+   on the chain) and the three optional ones behind
+   `consistency.extended` — the lattice loop check lands with slice 5 —
+   the `@record` decorator, the v2 record written beside v1 (D8),
+   `adsorbate_mode` knob with default `hindered` (Q4) and the derived
+   `corrections.VERSION` stamp. Acceptance: core
    checks green on the NO→NH₃ network; a fixture with an independently
    clipped reverse barrier fails the barrier identity with the step named;
    mode `hindered` shifts NH₃ desorption K by the Campbell–Sellers amount
@@ -1010,8 +1089,12 @@ where the paper gives them and records `theta0` otherwise.
    note='bep_flux_share=…'`; on a verify run `bep_flux_share = 0` and the
    TOF equals slice-2's; the correlated band on pw455722 is narrower than
    today's independent band for the candidate-vs-reference ratio and wider
-   for the absolute TOF; ρ = 0 reproduces today's independent band.
-4. **Mean-field MKM + orders + sweep job + coverage optimum.** Acceptance:
+   for the absolute TOF; ρ = 0 with `z_model` off (`σ_model = 0`) reproduces today's independent
+   band; `_capped` is untouched.
+4. **Mean-field MKM + orders + sweep job + coverage optimum + ladder
+   wiring.** The re-T rule of D1, the QE detector, and the tier ladder
+   minting `autocatpath_kinetics` after every verify-tier aggregate (D9).
+   Acceptance: a verify aggregate on the fixture mints the job;
    non-interacting single-site fixture reproduces `tof_chain` to 1 % in the
    dilute limit (θ_* > 0.95 on every site class; the chain has no site
    balance, so agreement is expected only there) and the departure at
@@ -1024,24 +1107,32 @@ where the paper gives them and records `theta0` otherwise.
 5. **Rejection-free KMC core (no diffusion).** Pattern events, log-rate
    selector, local update, replicas. Acceptance: chemistry off reproduces
    the Langmuir isotherm (θ vs p at 3 T) within CI; non-interacting
-   single-site fixture reproduces `tof_chain` within CI; validation case C
-   (Piccinin–Stamatakis CO oxidation on Pd(111) pa201772,
-   `tests/validation/`) within 0.5 log₁₀ of the published TOF at its
-   conditions; equilibrium-flux and loop checks pass on the lattice;
+   single-site fixture reproduces `tof_chain` within CI; validation case C (Piccinin–Stamatakis CO
+   oxidation on Pd(111) pa201772, `tests/validation/`) keeps its
+   mechanism-level assertions (MARI, poison, controlling step) on the KMC,
+   and its TOF comparison is *reported, not gated*, until the paper's
+   tables are transcribed into the fixture, the network has explicit O₂
+   adsorption states (the ledger prices O from H₂O today) and slice 7
+   supplies the lateral interactions the paper's model has; `numba` added
+   to catpath's `pyproject.toml` (lazy import, numpy fallback); equilibrium-flux and loop checks pass on the lattice;
    `correlation_effect` reported only at `kmc_points`; the `zacros`
    backend round-trips validation case C into Zacros input files and
    parses a stored Zacros output fixture into the same `TofKmc`.
 6. **MCAMC + accelerator harness + channel-scaling fallback.** Acceptance:
    the D6 pitfall tests (reflecting-walk stationary distribution; `Q·1 +
    B·1 = 0`; ramp under `s = 2`; 18-decade conditioning; Novotny's Ising
-   `s = 2` matrices); 1 bar H₂ with a 0.5 eV cycle step — events per unit
+   `s = 2` matrices once pa498724's full text is in — until then the
+   reflecting walk and `Q·1 + B·1 = 0` gate); 1 bar H₂ with a 0.5 eV cycle step — events per unit
    simulated time drop ≥ 100× with TOF inside the brute-force CI;
    `kmc.compare(['none', 'bkl', 'mcamc_s2', 'mcamc_bfs',
    'channel_scaling'])` renders the comparison table on the fixtures;
    `amc_leak` reported and the fallback triggers on a fixture with an open
    basin.
 7. **Lateral interactions (pair cluster expansion + ω) + diffusion
-   patterns.** After the first paper (Reto, Q8). Acceptance: loop check
+   patterns.** After the first paper (Reto, Q8); the paper is not yet
+   named and the cluster-expansion parameters of the O/Pt(111) fixture
+   have no cited source, so this slice stays out of any unattended wave
+   until both are named. Slice 8 does not depend on it and runs ahead. Acceptance: loop check
    and cluster finite-difference test green on random configurations;
    O/Pt(111) ordering fixture reproduces the p(2×2) phase at the published
    coverage.
@@ -1053,9 +1144,11 @@ where the paper gives them and records `theta0` otherwise.
    the rate builder.
 9. **TPD validation + `tpd_corrected`.** `tpd.py` (MF ramp; KMC ramp when
    slice 6 is in), the reference fixture set, `TPDCorrectedProvider`,
-   `view='tpd'`. Acceptance: CO/Pd(111) at β = 0.5 K s⁻¹ reproduces the
-   pa498702 peak within 15 K after correction and the offset, its σ and
-   `base_provenance` are in the record; H/Pd(111) second-order peak family
+   `view='tpd'`. Acceptance: CO/Pd(111) at β = 0.5 K s⁻¹ reports the
+   uncorrected `ΔT_p`, the corrected one is within 15 K and at least 2×
+   smaller, and one of the three β values is held out of the fit and
+   still lands within 15 K; the offset, its σ and `base_provenance` are
+   in the record; H/Pd(111) second-order peak family
    reproduces the θ₀ shift direction of pa498701; NO/Pd(111) is *refused*
    (dissociation) and the refusal reason is recorded; `tpd.N.reference =
    null`; applying an offset bumps `corrections.VERSION` and two margins
@@ -1069,7 +1162,17 @@ where the paper gives them and records `theta0` otherwise.
     refuses with the mismatch named; the job type's executors exclude every
     LLM executor. The manifest is also the tolerance contract inside the
     published Zenodo bundle: `catpath-repro-bundle.md` (its slice 3 waits on
-    this slice).
+    this slice). The macOS arm64 cross-platform check is a manual
+    post-deploy check, not a gate.
+
+**Cross-repo handoff.** Every engine + glue slice is two builds in one
+sequence: the catpath commit lands first (version bump, tag, push), then
+the precis tree moves the pin (`uv lock -P autocatpath`) and builds the
+glue gated on the engine version (`catpath-wheel-version-reuse.md`).
+Precis tests cannot see new engine symbols before the pin moves. Slice 1
+also commits a trimmed pw455722 `results.json` (nodes, edges with `bep`,
+`thermo`) as the shared NO→NH₃ fixture; without it the pw455722
+acceptances are post-deploy only.
 
 Order: 1 → 2 → 3 (one build each, engine + glue), 4 (one build), 10 (one
 build; needed before any result is called validated), 5 → 6 (two builds),
@@ -1078,14 +1181,18 @@ KMC.
 
 ## Target + blast radius
 
-catpath `kinetics.py`, `thermo.py`, `config.py` (conditions/kinetics/
-objective/sweep/tpd blocks), `corrections.py` (`VERSION`, TPD set), new
+catpath `kinetics.py`, `thermo.py` (`build_table`, `Table.gas_correction`,
+`ADSORBATES` modes), `config.py` (conditions/kinetics/objective/sweep/tpd
+blocks), `coverage.py`, `provenance.py`, `report.py`, `viz.py` (pressure
+readers), `pyproject.toml` (numba), `corrections.py` (`VERSION` derived,
+TPD set), new
 `environment.py` / `provider.py` / `mkm.py` / `kmc.py` / `amc.py` /
 `consistency.py` / `tpd.py` / `records.py` / `manifest.py`,
 `tests/validation/` case C and `tests/validation/tpd/`; precis
 `precis_pathway/runner.py` (`_prep`, `run_kinetics`, `content_key` folded
 into the manifest), `types.py`, `_dispatch_common._kinetics_scalars`,
-`aggregate_job.py` kinetics tail, `toon_views.kinetics_text`, `handler.py`
+`aggregate_job.py` kinetics tail, `precis/quest/frontier.py`
+(`same_network_basis` gains `environment_basis`), `toon_views.kinetics_text`, `handler.py`
 views (`kinetics`, `kinetics-sweep`, `tpd`, `manifest`), two new job types,
 `precis.quest.compute` harvest keys, `pathway-correction-basis.md` (the
 policy tuple gains `tpd_set_sha256`; the basis becomes a projection of the
@@ -1158,159 +1265,14 @@ affiliation beyond the work e-mail, and the exact licence term text.
   8). The σ term enters as `ShiftProvider` shifts and is optional per the
   coordinator.**
 
-**Ready-check 2026-10-20 (ready agent, against catpath 0.31.1 = precis
-`uv.lock` pin; verdict needs-work, 10 blockers, 11 advisories).** Anchors
-verified present: `kinetics.py` `solve`/`build_transitions`/`p_of`/
-`_linear_steady`/`_step_pair`/`_gas_pair`/`K_CAP`/`excluded_step_bracket`/
-`monte_carlo`/`rate_matrix`, `ConditionsConfig.pressures`,
-`KineticsConfig.sticking`, `thermo.ADSORBATES`, `corrections.VERSION`,
-`bep.band_eV`, `sweep.py`, `uncertainty.Estimate`, `ledger.GAS_MOLECULES`;
-precis `runner._prep`/`run_kinetics_subprocess`/`content_key`/
-`seed_content_key`, `_dispatch_common._kinetics_scalars`, `aggregate_job`
-kinetics tail, `toon_views.kinetics_text`, handler view `kinetics`,
-`compute._network_basis`, `JobTypeSpec`. Engine lives at
-`/Users/reto/work/projects/code/catpath/src/autocatpath/`, not `~/catpath` /
-`autocatpath/`.
-
-- **blocker (slice 1, 4)** No defined way to price states at an environment
-  other than the one the run was aggregated at. `kinetics.solve` takes
-  `nodes` already baked at the pipeline's T and `conditions.pressures`
-  (`pipeline.py` aggregate: `th.corrected_refs` carries kT ln p;
-  `_gas_pair` docstring "pressure term is already inside dg"). Changing only
-  `p_of` re-scales Hertz-Knudsen but not dg, so `k_des = k_hk * exp(-dg/kT)`
-  then scales with p (wrong; true k_des is p-independent). Slice 1 acceptance
-  2-4 (`far` vs 1 bar, equilibrium flux, `p_total` scaling) and slice 4's
-  `(T, p_total)` grid all need repricing, but the provider seam only arrives
-  in slice 2 and no slice says how a baked node becomes `G(T, p)`
-  (`results.thermo` keeps `pressures` and `state_corrections` at run T; `vib`
-  mode corrections cannot be re-T'd at all). State the repricing rule
-  (ledger gas part via `ledger_energy` with new refs; adsorbate part via
-  `Table(T)`; refuse `vib` off the run T) and put it in slice 1.
-- **blocker (slice 1)** Default behaviour of an unconfigured quest is
-  undefined and its blast radius unstated. `unlisted: refuse` default plus
-  "uncited sticking trips `kinetics_trusted=False`" (D1) plus Q5 "no default
-  product pressure" collide with the aggregate's in-process solve
-  (`aggregate_job` runs it after every aggregate; today `conditions.pressures`
-  is `{}` for most configs). Either every existing and new aggregate becomes
-  `kinetics_error` / untrusted (log_tof dropped for the whole frontier) or a
-  legacy fallback exists that the text does not name. Say which environment
-  the aggregate-embedded solve uses when the quest gave none, and whether a
-  legacy config (no `environment` block) is `reference` (today) or `refuse`.
-- **blocker (slice 1)** "basis hash" / "stamped with different bases" names
-  no field. The existing basis is `compute._network_basis`
-  `{digest, template, version}` compared by `frontier.same_network_basis`
-  (`current_network_basis` ties); the correction-policy tuple lives in the
-  unbuilt draft `pathway-correction-basis.md` and has no environment term.
-  Target + blast radius omits `precis/quest/frontier.py` and gives no
-  `blocked-by` for that draft. Define the key (e.g. `network_basis.env_sha`),
-  the compare rule, and the backfill for "every existing TOF-bearing measure
-  re-stamps" (only `backfill_network_basis` exists, for network basis).
-- **blocker (slice 2)** `adsorbate_mode: hindered` has no specified inputs.
-  Sprowl-Campbell needs frustrated-translation barrier/frequencies, rotational
-  constants and masses per adsorbate; `thermo.ADSORBATES` holds ZPE only and
-  `modes_meV` exist for 6 `computed` species only (not NH3, NO, N, H, CO).
-  The acceptance oracle (Campbell-Sellers S_ads = 0.70 S_gas - 3.3R, 0.1 eV)
-  suggests the correlation, not the partition function. Pick one and name its
-  parameter source, else the builder invents it.
-- **blocker (slice 2)** "bumps `corrections.VERSION`" is not implementable as
-  a per-mode stamp: `VERSION = "2026-10-16"` is a code constant. A one-line
-  constant edit satisfies the acceptance while `ts0` and `hindered` results
-  still carry the same stamp; the correction-policy tuple's `table_version`
-  is normalised to null with switches off and has no `adsorbate_mode`. Define
-  the stamp (e.g. `VERSION + "+" + mode + "+" + reference_state`) and test
-  that two configs differing only in mode produce different stamps.
-- **blocker (slice 2)** Record migration unowned. `KineticsResult` requires
-  `tof_mf`, `orders`, `optimum`, `tpd`, `acceleration` that exist only from
-  slices 4/5/6/9, and `selectivity` changes from `float|None` to
-  `dict[str, float]`; v1 consumers read `kin["tof"]`, `tof_bracket`,
-  `sensitivity.tof`, `drc.X_RC`. No slice owns the `_kinetics_scalars`,
-  `kinetics_text`/`view='kinetics'` and harvest-key changes of D8. Say
-  whether slice 2 writes v2 alongside v1 (dual-write) or replaces it, which
-  record fields are optional until later slices, and which slice lifts which
-  scalar.
-- **blocker (slice 3)** Two code mismatches. (a) `band_eV` is 2*class RMSE
-  floored at 0.15 (fits) or the literature MAE (priors) per `bep.py`, not a
-  Gaussian sigma; `residual_eV` is the RMSE and is None for priors. D4's
-  "sigma_c = band_eV" doubles the spread. (b) Acceptance "rho = 0 reproduces
-  today's independent band" cannot hold: `monte_carlo` moves only the TS at
-  fixed dG, while v1 adds `delta_G_state = sigma_model*z_model` (moves dG)
-  and `sigma_model` is undefined (which `Estimate.std`, pooled how). Define
-  sigma_model and state that `z_model` is off for the rho = 0 check.
-- **blocker (slice 5)** Case C TOF acceptance is not buildable.
-  `tests/validation/cases/co_oxidation_pd111.yaml` (catpath) states it
-  asserts no TOF and that quantitative targets "await transcription of the
-  paper's tables"; its conditions use O2/CO2 while the ledger supplies O from
-  H2O (the file's own "known modeling gap"); the paper's kMC has lateral
-  interactions and diffusion, both out of v1 (Q8, D5), so "within 0.5 log10
-  of the published TOF" is neither reachable nor checkable. Replace with a
-  mechanism-level assertion or name the transcribed numbers and an O2 network.
-- **blocker (slice 7)** Open loop: gated "after the first paper (Q8)" with no
-  paper named; cluster-expansion parameters and the "published coverage" of
-  the O/Pt(111) p(2x2) fixture have no source. Keep out of an unattended wave
-  until a paper and parameter source are named. (Slice 8 does not depend on 7
-  and can run ahead of it.)
-- **blocker (all engine+glue slices 1-4, 10)** Each slice is "engine + glue"
-  across two repos (catpath, then precis pinned to a catpath commit via
-  `uv lock -P autocatpath`, per `catpath-wheel-version-reuse.md`), but one
-  build is one tree. Precis tests cannot see new engine symbols until the pin
-  moves. Specify the handoff (catpath commit lands first; precis tree bumps
-  the pin; glue gated on the engine version) or split each slice into an
-  engine build and a glue build.
-- **advisory (slice 1, 2, 3, 10)** `pw455722` is a prod pathway, not a repo
-  fixture (no hit in catpath or precis tests). Commit one trimmed
-  `results.json` (nodes, edges incl. `bep`, `thermo`) as the shared NO->NH3
-  fixture in slice 1, else the pw455722 acceptances are post-deploy only.
-- **advisory (slice 1)** Equilibrium-composition procedure underdetermined:
-  with inputs NO, H2 fixed, `n_gas - rank(nu)` affinities vanish but rank(nu)
-  = 3 pressures stay free, so one more pressure must be fixed; also Q/K and
-  `z_i` are in scope but have no acceptance and "the overall reaction" is
-  undefined for a multi-product network. Add: Q/K = 1 and z_i = 1 at the
-  equilibrium composition, and name the reaction (target formation).
-- **advisory (slice 2)** Slice text "`adsorbate_mode` knob (default
-  unchanged)" contradicts D3, Q4 (proposed) and Target ("until slice 2's
-  mode is switched"), which switch the default to `hindered` in slice 2.
-  Align the slice text with whichever ruling Reto confirms.
-- **advisory (slice 2)** "The four core checks" includes the lattice
-  Kolmogorov loop (KMC only, slice 5) and D3 scopes equilibrium-flux and the
-  three optional checks to MF/KMC; at slice 2 only the chain exists. State
-  that slice 2 builds ratio + barrier identity + equilibrium flux on the chain
-  (the barrier identity must test energies G_TS-G_IS vs G_TS-G_FS, not the
-  rates, or it duplicates the ratio check) and defers the rest.
-- **advisory (slice 3)** "Rescaling only for pairs the QE detector names"
-  changes `_capped` (K_CAP overflow guard, applies to every pair today) before
-  any QE detector exists (D3/D6 detectors come in slices 4/6). Keep `_capped`
-  unconditional until then. Also the promotion gate
-  (`pathway-kinetics-promotion-gate.md`) leaves non-decisive edges
-  "thermodynamic only" at neb tier, so "verify run -> `bep_flux_share = 0`"
-  may fail on real runs; fixture-only claim.
-- **advisory (slice 4, Q6)** The ladder wiring (aggregate/quest minting
-  `autocatpath_kinetics` after a verify aggregate; quest requesting the KMC
-  rung) is in D9 but in no slice's scope or acceptance; slice 4 only runs the
-  job on a fixture.
-- **advisory (sibling)** `electrochem-kinetics-beyond-che.md` slice 1 adds
-  beta*U and U/pH arguments to `kinetics.solve` and slice 3 decides whether a
-  nonlinear MF solve is needed; v2 D1 `electrochemical` block, slice 4 (MF)
-  and slice 8 overlap both and do not acknowledge them. Reconcile who owns the
-  U argument before either is built.
-- **advisory (slice 10)** Manifest v1 carries KMC seeds, `tpd_reference_set_
-  sha256` and TPD/KMC tolerances, none of which exist at slice 10 (before 5,
-  9); say they are nullable. `weights_sha256` (calculators cache key has no
-  weights hash) and `autocatpath_sha` (a wheel carries no git sha) need an
-  engine-side source named. The macOS arm64 acceptance is a manual
-  post-deploy check, not a gate.
-- **advisory (slice 6, 9)** Slice 6's "Novotny Ising s = 2 matrices
-  (pa498724)" and slice 9's pa49870x reference values are abstract-only
-  (known gap); slice 9's "peak within 15 K after correction" is tautological
-  when the offset is least-squares fitted to the same reference. Add an
-  uncorrected-vs-corrected improvement check or a held-out beta.
-- **advisory (D1 blast radius)** The adapter that "replaces
-  `ConditionsConfig.pressures`" touches more than `config.py`/`kinetics.py`:
-  `thermo.py` (`build_table` pressures, `Table.gas_correction`), `coverage.py`,
-  `provenance.py`, `report.py`, `viz.py` all read it. List them, and note the
-  pipeline-time and kinetics-time pressure tables must stay one object.
-- **advisory (D5)** `numba` is a precis dependency (`pyproject.toml`,
-  `uv.lock` 0.67.0) but not in catpath's `pyproject.toml`; add it (or a lazy
-  import with the numpy fallback) to catpath in slice 5.
+**Ready-check 2026-10-20** (ready agent, against catpath 0.31.1; 10
+blockers, 11 advisories) is folded into D1 (legacy rule, repricing,
+equilibrium composition, basis field, adapter readers), D3 (`hindered`
+inputs, derived `VERSION`), D4 (`σ_c`, `σ_model`, `_capped`), D8
+(migration), D10 (hash sources), the slices and the blast radius, in
+the commit after ceb385f69. Still open from it: slice 7's paper and
+cluster-expansion source (unnamed; slice stays out of unattended waves),
+the Zacros licence (unsubmitted), and Reto's confirmation of Q4/Q6/Q9.
 
 ## Data flow
 
