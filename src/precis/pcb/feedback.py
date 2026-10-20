@@ -70,12 +70,8 @@ def outcome_from_realize(ir: PcbIR, rres: RealizeResult) -> RouteOutcome:
       preserved, not guessed). Escape causes (:data:`_ESCAPE_CAUSES`)
       tie to the segment's actual terminal instances; every other cause
       implicates the segment's span cells.
-    - ``congestion_cells`` (PathFinder's final present congestion,
-      grid-to-mm already resolved by the realizer) -> ``demand``,
-      provenance (layer, grid pitch) carried through.
-    - ``warnings`` (the hard grid's own over-capacity gaps — the only
-      congestion evidence a negotiate=0 run produces) join ``demand``
-      too, at each warned instance's position.
+    - ``warnings`` (the router's over-capacity gap evidence) join
+      ``demand`` at each warned instance's position.
     - ``routed``/``total`` are PER NET: a net with any segment left
       unrouted is not routed. Dangling nets (no segments) count neither
       — same honest denominator the baseline pin uses.
@@ -112,20 +108,10 @@ def outcome_from_realize(ir: PcbIR, rres: RealizeResult) -> RouteOutcome:
                 detail=reason.message if reason else "",
             )
         )
-    demand = [
-        DemandCell(
-            x_mm=c.x_mm,
-            y_mm=c.y_mm,
-            usage=c.usage,
-            layer=c.layer,
-            pitch_mm=c.pitch_mm,
-        )
-        for c in rres.congestion_cells
-    ]
-    # The hard grid's own over-capacity gaps are a DIFFERENT demand unit
-    # than PathFinder's per-cell claim count — a gap's `usage` is nets
-    # wanting through a gap of `capacity` strands, not contested cell
-    # claims. They ride the same DemandCell channel but with their own
+    demand: list[DemandCell] = []
+    # The router's own over-capacity gaps are a distinct demand unit —
+    # a gap's `usage` is nets wanting through a gap of `capacity`
+    # strands. They ride the DemandCell channel with their own
     # source/capacity, so `apply_route_feedback` normalises them
     # separately (`_GAP_WARNING_FULL_OVERAGE`) and the digest's units
     # line names the difference.

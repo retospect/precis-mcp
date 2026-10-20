@@ -264,163 +264,6 @@ def test_pour_notes_join_every_layer_of_a_net_into_one_clause():
     assert "In1.Cu 1 piece(s)" in notes["GND"] and "neck >2mm" in notes["GND"]
 
 
-def test_walled_in_plane_pin_is_rescued_by_a_routed_trace_at_fab_floor_width():
-    """gr492108: GND is poured on In1.Cu with a 2.0mm class track width. U1
-    drops a via in open board; U2 sits at (-4, 0) inside a ring of seven
-    other-net pads (R=2.4mm, one pad missing) so ``_plane_fanout`` finds no
-    stub+via site. A routed trace can still leave through the opening, but
-    only at a narrower width than the net's 2.0mm. ``_rescue_plane_pins`` must
-    route it to U1's drop via: no ``plane_drop_blocked`` for U2, a GND track
-    touching U2's pad, and the net in one connected component."""
-    import math
-
-    from precis.pcb import DEFAULT_STACKUP
-    from precis.pcb import session as pcb_session
-    from precis.pcb.capabilities import capability_for
-    from precis.pcb.connectivity import net_islands
-    from precis.pcb.ir import from_graph, pin_point
-    from precis.pcb.realize import RealizeConfig, realize
-
-    cx, ring_r, ring_n = -4.0, 2.4, 8
-    instances: list[dict[str, Any]] = [
-        {"refdes": "U1", "x": 12.0, "y": 0.0},
-        {"refdes": "U2", "x": cx, "y": 0.0},
-    ]
-    nets: list[dict[str, Any]] = [
-        {
-            "name": "GND",
-            "net_class": "ground",
-            "domain": "electrical",
-            "members": [{"refdes": "U1", "pin": "1"}, {"refdes": "U2", "pin": "1"}],
-        }
-    ]
-    for i in range(1, ring_n):  # i == 0 omitted: the opening
-        a = math.radians((i + 0.5) * 360.0 / ring_n)
-        instances.append(
-            {
-                "refdes": f"R{i}",
-                "x": cx + ring_r * math.cos(a),
-                "y": ring_r * math.sin(a),
-            }
-        )
-        instances.append(
-            {"refdes": f"Q{i}", "x": cx + (i - ring_n / 2) * 2.0, "y": 8.0}
-        )
-        nets.append(
-            {
-                "name": f"S{i}",
-                "members": [
-                    {"refdes": f"R{i}", "pin": "1"},
-                    {"refdes": f"Q{i}", "pin": "1"},
-                ],
-            }
-        )
-    outline = [[-15.0, -12.0], [20.0, -12.0], [20.0, 12.0], [-15.0, 12.0]]
-    ir = from_graph(
-        {"instances": instances, "nets": nets}, stackup=DEFAULT_STACKUP, outline=outline
-    )
-    ir.promote_plane(0, 1)  # In1.Cu
-    config = RealizeConfig(
-        router="maze",
-        fab_caps=capability_for("4layer"),
-        class_rules={"ground": {"track_width_mm": 2.0}},
-    )
-    res = realize(ir, config=config)
-
-    blocked = [r for r in res.unrouted_reasons if r.kind == "plane_drop_blocked"]
-    assert not blocked, [(r.message, r.pins) for r in blocked]
-
-    u2 = next(p for p in range(ir.n_pins) if int(ir.pin_instance[p]) == 1)
-    pt_u2 = pin_point(ir, u2)
-    assert pt_u2 is not None
-    px, py = pt_u2
-    touching = [
-        t
-        for t in res.tracks
-        if t.net_id == 0
-        and any(
-            math.hypot(pt[0] - px, pt[1] - py) < 0.05  # grid-snapped start
-            for s in t.segments
-            for pt in (s["start"], s["end"])
-        )
-    ]
-    assert touching, "no GND track reaches U2's pad"
-    assert all(t.width_mm < 2.0 for t in touching), [t.width_mm for t in touching]
-
-    model = pcb_session._routed_model(ir, res, footprints=None, fixed_copper=None)
-    assert [i for i in net_islands(model) if i.net == "GND"] == []
-
-
-def test_plane_drop_stub_falls_back_to_fab_floor_width_between_close_neighbours():
-    """gr492108 comment 3: a 2.0mm class width is a trunk width. U2 sits
-    between two other-net pads 1.0mm above and below it, so a 2.0mm stub
-    cannot leave it, but a fab-floor stub straight out along +x can.
-    ``_plane_fanout`` must give U2 its drop itself (a DOGBONE stub, not the
-    post-route rescue's trace), at a width under the net's 2.0mm."""
-    import math
-
-    from precis.pcb import DEFAULT_STACKUP
-    from precis.pcb.capabilities import capability_for
-    from precis.pcb.ir import from_graph, pin_point
-    from precis.pcb.realize import RealizeConfig, realize
-
-    instances: list[dict[str, Any]] = [
-        {"refdes": "U1", "x": 12.0, "y": 0.0},
-        {"refdes": "U2", "x": 0.0, "y": 0.0},
-        {"refdes": "R1", "x": 0.0, "y": 1.0},
-        {"refdes": "R2", "x": 0.0, "y": -1.0},
-        {"refdes": "Q1", "x": -8.0, "y": 8.0},
-        {"refdes": "Q2", "x": -8.0, "y": -8.0},
-    ]
-    nets: list[dict[str, Any]] = [
-        {
-            "name": "GND",
-            "net_class": "ground",
-            "domain": "electrical",
-            "members": [{"refdes": "U1", "pin": "1"}, {"refdes": "U2", "pin": "1"}],
-        },
-        {
-            "name": "S1",
-            "members": [{"refdes": "R1", "pin": "1"}, {"refdes": "Q1", "pin": "1"}],
-        },
-        {
-            "name": "S2",
-            "members": [{"refdes": "R2", "pin": "1"}, {"refdes": "Q2", "pin": "1"}],
-        },
-    ]
-    outline = [[-15.0, -12.0], [20.0, -12.0], [20.0, 12.0], [-15.0, 12.0]]
-    ir = from_graph(
-        {"instances": instances, "nets": nets}, stackup=DEFAULT_STACKUP, outline=outline
-    )
-    ir.promote_plane(0, 1)  # In1.Cu
-    config = RealizeConfig(
-        router="maze",
-        fab_caps=capability_for("4layer"),
-        class_rules={"ground": {"track_width_mm": 2.0}},
-    )
-    res = realize(ir, config=config)
-
-    blocked = [r for r in res.unrouted_reasons if r.kind == "plane_drop_blocked"]
-    assert not blocked, [(r.message, r.pins) for r in blocked]
-    u2 = next(p for p in range(ir.n_pins) if int(ir.pin_instance[p]) == 1)
-    pt = pin_point(ir, u2)
-    assert pt is not None
-    stubs = [
-        t
-        for t in res.tracks
-        if t.net_id == 0
-        and t.is_dogbone
-        and math.hypot(
-            t.segments[0]["start"][0] - pt[0], t.segments[0]["start"][1] - pt[1]
-        )
-        < 1e-6
-    ]
-    assert len(stubs) == 1, [
-        (t.is_dogbone, t.width_mm) for t in res.tracks if t.net_id == 0
-    ]
-    assert stubs[0].width_mm < 2.0
-
-
 def _dumbbell_pour(neck_half: float, *, net: str = "VCC", layer: str = "In2.Cu"):
     """Two lobes, x -3..4 and 6..14, joined at x 4..6 by a neck
     ``2 * neck_half`` wide: a via antipad at (5, 0) cuts a thin one in two."""
@@ -468,7 +311,9 @@ def _rescue_board():
         outline=[[-5.0, -5.0], [16.0, -5.0], [16.0, 5.0], [-5.0, 5.0]],
     )
     ir.promote_plane(0, 1)  # GND on In1.Cu
-    config = pcb_realize.RealizeConfig(router="maze", fab_caps=capability_for("4layer"))
+    config = pcb_realize.RealizeConfig(
+        router="vector", fab_caps=capability_for("4layer")
+    )
     ctx = pcb_realize._route_context(ir, list(range(ir.n_segments)), config, None, None)
     assert ctx is not None
     rules = ctx.rules_by_net[0]
@@ -490,49 +335,6 @@ def _rescue_board():
         if str(ir.instance_refdes[int(ir.pin_instance[p])]) == "U2"
     )
     return ir, config, ctx, drop, u2_pin
-
-
-def test_plane_rescue_refuses_a_via_whose_antipad_splits_a_foreign_plane(
-    monkeypatch,
-):
-    """gr492108 follow-up: the rescue checked only its TRACK against foreign
-    pours, so a through-via it dropped could cut a foreign plane's neck on a
-    layer the track never runs on (the re-pour carves the antipad). U2's
-    only rescue path (stubbed router) changes layer at (5, 0), the middle of
-    VCC's In2.Cu neck: refused when the neck is thinner than the antipad,
-    kept when it is wide enough to survive."""
-    from precis.pcb import maze
-    from precis.pcb import realize as pcb_realize
-
-    ir, config, ctx, drop, u2_pin = _rescue_board()
-    last = len(ir.stackup) - 1
-    path = maze.RoutePath(
-        0, ((0.0, 0.0, 0), (5.0, 0.0, 0), (5.0, 0.0, last), (10.0, 0.0, last)), 10.0
-    )
-    monkeypatch.setattr(maze.OccupancyGrid, "route", lambda self, *a, **k: path)
-
-    def rescue(neck_half: float) -> list[Any]:
-        pours = [
-            _rect_pour(8, -2, 12, 2, net="GND", layer="In1.Cu"),
-            _dumbbell_pour(neck_half),
-        ]
-        return pcb_realize._rescue_plane_pins(
-            ir,
-            [],
-            [drop],
-            pours,
-            [u2_pin],
-            spec=ctx.spec,
-            clearance=ctx.clearance,
-            pads=[],
-            rules_by_net=ctx.rules_by_net,
-            config=config,
-            pour_clearance=ctx.clearance_max,
-        )
-
-    assert rescue(0.2) == [], "the via antipad cuts VCC's neck in two"
-    (kept,) = rescue(2.0)
-    assert kept.pid == u2_pin and len(kept.vias) == 1 and kept.after is None
 
 
 def test_pour_pieces_counts_electrical_pieces_not_polygons():

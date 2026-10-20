@@ -65,7 +65,6 @@ from typing import TYPE_CHECKING, Any
 from precis.pcb import DANGLING_NET_NOTE, format_warm_start
 from precis.pcb import feedback as pcb_feedback
 from precis.pcb import matching as pcb_matching
-from precis.pcb import maze as pcb_maze
 from precis.pcb import pinswap as pcb_pinswap
 from precis.pcb import planes as pcb_planes
 from precis.pcb import profiles as pcb_profiles
@@ -122,7 +121,8 @@ log = logging.getLogger(__name__)
 #      regions, stackup direction/route_cost, bare islands dropped after
 #      stitching (pcb-stackup-regions slices 3-4).
 # 11 = route clean-up post-pass moves another net's blocking via (gr495397).
-CODE_VERSION = 11
+# 12 = the grid maze router (and its params) removed; vector is the only router.
+CODE_VERSION = 12
 
 PARAMS_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -131,29 +131,20 @@ PARAMS_SCHEMA: dict[str, Any] = {
         "iters": {"type": "integer", "minimum": 1},
         "seed": {"type": "integer"},
         "warm_start": {"type": "string", "enum": ["distance", "radial"]},
-        # Handler already validates the bounded per-call opt-in. Keep it
-        # in the shared job contract too: otherwise enqueue refuses before
-        # the existing RealizeConfig plumbing can ever see the value.
-        "negotiate": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": pcb_realize.MAX_NEGOTIATE_ITERATIONS,
-        },
-        # Off-corridor cell price for the tile-plan corridor experiment
-        # (globalplan slice 1): 0/absent = plain 12-pass router.
+        # Which router — accepts only 'vector' (absent = vector); the grid
+        # maze router was removed and any other value refuses the job.
+        "router": {"type": "string"},
+        # Removed grid-router knobs (negotiate/corridor/escape/layer_cost/
+        # off_axis/cleanup) stay in the schema — callers may still send
+        # them; they are collected into the run's `ignored` list, not
+        # refused.
+        "negotiate": {"type": "integer", "minimum": 0},
         "corridor": {"type": "number", "minimum": 0},
-        # Angular escape assignment for dense pad rows (globalplan
-        # slice 2): absent = the ordinary search.
-        "escape": {"type": "string", "enum": ["plaza"]},
-        # Per-layer route cost, {layer name: multiplier >= 1}
-        # (RealizeConfig.layer_route_cost; pcb-stackup-regions slice 1):
-        # absent = every layer at the base step.
+        "escape": {"type": "string"},
         "layer_cost": {
             "type": "object",
             "additionalProperties": {"type": "number", "minimum": 1},
         },
-        # Cross-grain step multiplier (RealizeConfig.off_axis_penalty;
-        # pcb-stackup-regions slice 3): absent = maze.OFF_AXIS_PENALTY.
         "off_axis": {"type": "number", "minimum": 1},
         # The route -> penalise -> anneal -> route outer loop
         # (optimize.anneal_route_loop): 0 = the single anneal+realize
@@ -167,8 +158,8 @@ PARAMS_SCHEMA: dict[str, Any] = {
         "force": {"type": "boolean"},
         # Opt-in support-passive rows (optimize.OptimizeConfig.support_groups).
         "groups": {"type": "boolean"},
-        # Route clean-up post-pass (RealizeConfig.route_cleanup, gr495397):
-        # absent = on; false = off.
+        # Removed with the grid router (route clean-up, gr495397):
+        # accepted and ignored.
         "cleanup": {"type": "boolean"},
         # Route-only (gr495397): false = no anneal, poses and sketch kept.
         "place": {"type": "boolean"},
@@ -796,17 +787,28 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             "pcb_route: warm_start must be distance or radial", failure_class="input"
         )
         return
-    negotiate = int(params.get("negotiate") or 0)
-    # Direct job puts share this spec but the v1 params validator only
-    # checks types, not numeric schema bounds. Enforce the same cap here
-    # before reading or writing a board, not only in PcbHandler.
-    if not 0 <= negotiate <= pcb_realize.MAX_NEGOTIATE_ITERATIONS:
+    router = str(params.get("router") or "vector")
+    if router != "vector":
         ctx.record_failure(
-            f"pcb_route: negotiate={negotiate} is out of range; give 0 (off) "
-            f"to {pcb_realize.MAX_NEGOTIATE_ITERATIONS} iterations",
+            f"pcb_route: router={router!r} — the grid maze router was "
+            "removed; only 'vector' exists",
             failure_class="input",
         )
         return
+    # Removed grid-router knobs a caller may still send: honest, not a
+    # refusal — each is reported in the route note, never silently eaten.
+    ignored = [
+        name
+        for name in (
+            "negotiate",
+            "corridor",
+            "escape",
+            "layer_cost",
+            "off_axis",
+            "cleanup",
+        )
+        if params.get(name) not in (None, 0, 0.0, "", False, {})
+    ]
     loop_rounds = int(params.get("loop") or 0)
     # Same arm as `negotiate` above: an out-of-range loop count refuses
     # before the board is ever read.
@@ -1143,37 +1145,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     realize_config = pcb_realize.RealizeConfig(
         fab_caps=fab_caps,
         class_rules=graph.get("net_classes"),
-        negotiate_iterations=negotiate,
-        corridor_penalty=float(params.get("corridor") or 0.0),
-        escape=str(params.get("escape") or ""),
-        layer_route_cost=tuple(
-            (str(name), float(mult))
-            for name, mult in sorted((params.get("layer_cost") or {}).items())
-        ),
-        off_axis_penalty=float(params.get("off_axis") or pcb_maze.OFF_AXIS_PENALTY),
-        route_cleanup=bool(params.get("cleanup", True)),
     )
-
-    def _cleanup_check(
-        ir_: PcbIR,
-        tracks: Sequence[pcb_realize.RealizedTrack],
-        vias: Sequence[pcb_realize.RealizedVia],
-    ) -> Counter[tuple[str, str]]:
-        """The clean-up pass's DRC half (gr495397): the post-route gate's
-        own routed-copper rules over pre-pour copper, counted by (rule,
-        severity), so a move that adds a finding of any class is refused."""
-        probe = pcb_realize.RealizeResult(tuple(tracks), tuple(vias), ())
-        findings = pcb_session.routed_drc_findings(
-            ir_,
-            probe,
-            capability=fab_caps,
-            footprints=footprints,
-            fixed_copper=fixed_copper,
-            outline=pcb_session.outline_from_features(features),
-            net_rules=_graph_net_rules(graph, fab_caps),
-            net_voltages=_graph_net_voltages(graph),
-        )
-        return Counter((f.rule, f.severity) for f in findings)
 
     # `footprints` (the same refdes-keyed pad geometry PIN_SWAP's feed
     # above also used) was resolved earlier, before the anneal — see that
@@ -1384,7 +1356,6 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
                 config=realize_config,
                 footprints=footprints,
                 fixed_copper=fixed_copper,
-                cleanup_check=_cleanup_check,
             )
             realized_by_round.append(rres_)
             outcome = pcb_feedback.outcome_from_realize(ir_, rres_)
@@ -1502,7 +1473,6 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             config=realize_config,
             footprints=footprints,
             fixed_copper=fixed_copper,
-            cleanup_check=_cleanup_check,
         )
     assert rres is not None  # every non-returning arm above sets it
     # Post-route legality gate. Legality is a hard gate and incompleteness the
@@ -1850,16 +1820,13 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         f"\n{line}" for line in format_warm_start(warm_start_report)
     )
     pin_swap_summary = "\n" + "\n".join(pin_swap_warnings) if pin_swap_warnings else ""
-    # A `negotiate=N` run that gains nothing must say WHY (gr469872's
-    # follow-up: job 470129 reported the baseline 22/33 and nothing else).
-    if rres.negotiation is not None:
-        pin_swap_summary += "\n" + rres.negotiation.line()
-    cleanup_line = rres.cleanup.line() if rres.cleanup is not None else None
-    if cleanup_line:
-        pin_swap_summary += "\n" + cleanup_line
-    escape_line = rres.escape.line() if rres.escape is not None else None
-    if escape_line:
-        pin_swap_summary += "\n" + escape_line
+    if ignored:
+        pin_swap_summary += "\nignored removed grid-router param(s): " + ", ".join(
+            ignored
+        )
+    vector_line = rres.vector.line() if rres.vector is not None else None
+    if vector_line:
+        pin_swap_summary += "\n" + vector_line
     # A class naming a layer the stackup does not route on is narrowed, not
     # refused (gr472108): say so, or a "no gain" reads as a routing result.
     for drop in rres.class_layer_drops:
@@ -2055,7 +2022,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         "dangling": n_dangling,
         "vias": len(rres.vias),
         "warnings": [w.message() for w in rres.warnings][:20],
-        "negotiation": (rres.negotiation.as_dict() if rres.negotiation else None),
+        "vector": (rres.vector.line() if rres.vector else None),
         "class_layer_drops": list(rres.class_layer_drops),
         "pre_route_drc": {
             "errors": n_placement_errors,

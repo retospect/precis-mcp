@@ -127,7 +127,6 @@ from precis.pcb import furniture as pcb_furniture
 from precis.pcb import generators as pcb_generators
 from precis.pcb import geom as pcb_geom
 from precis.pcb import gerber as pcb_gerber
-from precis.pcb import globalplan as pcb_globalplan
 from precis.pcb import ir as pcb_ir
 from precis.pcb import jlc_api as pcb_jlc_api
 from precis.pcb import jlc_order as pcb_jlc_order
@@ -692,6 +691,7 @@ class PcbHandler(Handler):
                 "iters",
                 "seed",
                 "warm_start",
+                "router",
                 "negotiate",
                 "corridor",
                 "layer_cost",
@@ -1679,66 +1679,23 @@ class PcbHandler(Handler):
                     next="put(args={'op':'route','warm_start':'distance'})",
                 )
             params["warm_start"] = warm_start
-        # Opt-in negotiated congestion (realize.RealizeConfig.
-        # negotiate_iterations); off unless asked for.
-        if op == "route" and opts.get("negotiate") is not None:
-            negotiate = int(opts["negotiate"])
-            cap = pcb_realize.MAX_NEGOTIATE_ITERATIONS
-            if not 0 <= negotiate <= cap:
-                raise BadInput(
-                    f"pcb: negotiate={negotiate} is out of range; give 0 (off) "
-                    f"to {cap} negotiated-congestion iterations.",
-                    next=f"put(args={{'op':'route','negotiate':{cap}}})",
-                )
-            params["negotiate"] = negotiate
-        # Opt-in corridors-as-cost / plaza escape (RealizeConfig.
-        # corridor_penalty / escape); absent = the plain router.
-        if op == "route" and opts.get("corridor") is not None:
-            corridor = float(opts["corridor"])
-            if not corridor >= 0:
-                raise BadInput(
-                    "pcb: corridor must be a number >= 0",
-                    next="put(args={'op':'route','corridor':2.0})",
-                )
-            params["corridor"] = corridor
-        if op == "route" and opts.get("escape") is not None:
-            if opts["escape"] != "plaza":
-                raise BadInput(
-                    "pcb: escape must be 'plaza' when set",
-                    options=["plaza"],
-                    next="put(args={'op':'route','escape':'plaza'})",
-                )
-            params["escape"] = "plaza"
-        # Per-layer route cost (RealizeConfig.layer_route_cost,
-        # pcb-stackup-regions slice 1): {layer name: multiplier >= 1}.
-        if op == "route" and opts.get("layer_cost") is not None:
-            layer_cost = opts["layer_cost"]
-            if not isinstance(layer_cost, dict) or not all(
-                isinstance(v, int | float)
-                and not isinstance(v, bool)
-                and 1 <= v < math.inf
-                for v in layer_cost.values()
+        # Removed grid-router knobs (negotiate/corridor/escape/layer_cost/
+        # off_axis/cleanup): still forwarded — the job collects them into
+        # the run's `ignored` list rather than refusing a stale caller.
+        if op == "route":
+            for knob in (
+                "negotiate",
+                "corridor",
+                "escape",
+                "layer_cost",
+                "off_axis",
             ):
-                raise BadInput(
-                    "pcb: layer_cost must map layer names to finite multipliers >= 1, "
-                    "e.g. {'In1.Cu': 2.5}",
-                    next="put(args={'op':'route','layer_cost':{'In1.Cu':2.5}})",
-                )
-            params["layer_cost"] = {str(k): float(v) for k, v in layer_cost.items()}
-        # Cross-grain step multiplier (RealizeConfig.off_axis_penalty,
-        # pcb-stackup-regions slice 3); absent = maze.OFF_AXIS_PENALTY.
-        if op == "route" and opts.get("off_axis") is not None:
-            off_axis = opts["off_axis"]
-            if (
-                not isinstance(off_axis, int | float)
-                or isinstance(off_axis, bool)
-                or not 1 <= off_axis < math.inf
-            ):
-                raise BadInput(
-                    "pcb: off_axis must be a finite multiplier >= 1, e.g. 1.6",
-                    next="put(args={'op':'route','off_axis':1.3})",
-                )
-            params["off_axis"] = float(off_axis)
+                if opts.get(knob) is not None:
+                    params[knob] = opts[knob]
+        # Router selector — 'vector' (the only router); anything else
+        # fails at the job with a legible input error.
+        if op == "route" and opts.get("router") is not None:
+            params["router"] = str(opts["router"])
         # Opt-in route -> penalise -> anneal -> route outer loop
         # (optimize.anneal_route_loop); off unless asked for.
         if op == "route" and opts.get("loop") is not None:
@@ -5276,13 +5233,13 @@ class PcbHandler(Handler):
         )
 
     def _capacity_map_text(self, ref_id: int) -> str:
-        """The tile-capacity map for ``view='congestion'`` — the strict
-        flow model (``docs/backlog/pcb-global-plan-router.md`` slice 1):
-        per-layer rows of summed/min boundary track capacities measured
-        as vertex-disjoint paths across each two-tile strip on the SAME
-        static occupancy grid a route pass would start from, so a wall
-        the router hits is a wall the map shows. Empty string when the
-        board has nothing to measure.
+        """The capacity evidence for ``view='congestion'`` — since the
+        grid router's removal this is the CDT portal map alone
+        (``docs/backlog/pcb-vector-router.md`` slice 5): per signal layer,
+        free triangles, portals, portals that take no track, and the
+        capacity spread, measured on the pre-route static copper (pads +
+        fixed copper). Empty string when the board has nothing to
+        measure.
 
         The build costs seconds on a real board, so the rendered text is
         cached per ref in ``self._capacity_map_cache`` keyed on the
@@ -5290,7 +5247,7 @@ class PcbHandler(Handler):
         rows the map reads (graph, features, the latest netlist snapshot,
         planes, fixed_copper), so a changed board always rebuilds and an
         unchanged board's repeat reads are free. Routes are not passed
-        at all: the map describes the pre-route static grid, so neither
+        at all: the map describes the pre-route static board, so neither
         realized copper nor authored route topology can stale it."""
         try:
             graph = self.store.pcb_graph(ref_id)
@@ -5348,43 +5305,42 @@ class PcbHandler(Handler):
             )
             if ctx is None or not ctx.route_ids:
                 return ""
-            grid, _t, _v, _u, _f = pcb_realize._static_route_grid(ir, ctx, config)
-            (track_mm, clearance_mm, via_dia_mm), _n = collections.Counter(
+            (track_mm, clearance_mm), _n = collections.Counter(
                 (
                     ctx.rules_by_net[int(ir.seg_net[s])].track_width_mm,
                     ctx.rules_by_net[int(ir.seg_net[s])].clearance_mm,
-                    ctx.rules_by_net[int(ir.seg_net[s])].via_dia_mm,
                 )
                 for s in ctx.route_ids
             ).most_common(1)[0]
-            tgraph = pcb_globalplan.build_tile_graph(
-                grid,
-                layers=ctx.signal_layers,
-                track_mm=track_mm,
-                clearance_mm=clearance_mm,
-                via_dia_mm=via_dia_mm or 0.45,
-                participant_nets={int(ir.seg_net[s]) for s in ctx.route_ids},
-                strict=True,
-                capacity="flow",
-            )
-            text = (
-                f"\n\n# capacity map — strict flow, tile {tgraph.tile_mm} mm, "
-                f"lane {track_mm + clearance_mm:.3f} mm "
-                f"(track {track_mm} + clearance {clearance_mm}, modal class)\n"
-                + "\n".join(tgraph.row_report)
-            )
-            # No authored outline: the grid's own extent, the area the
-            # tile map above measured.
-            spec = grid.spec
-            x1 = spec.x0 + spec.nx * spec.pitch
-            y1 = spec.y0 + spec.ny * spec.pitch
-            outline = pcb_session.outline_from_features(features) or [
-                [spec.x0, spec.y0],
-                [x1, spec.y0],
-                [x1, y1],
-                [spec.x0, y1],
-            ]
-            text += self._portal_map_text(
+            outline = pcb_session.outline_from_features(features)
+            if not outline:
+                bbox = pcb_realize._outline_bbox(ir)
+            else:
+                bbox = None
+            if not outline and bbox is None:
+                # No authored outline at all (the old grid fabricated its
+                # extent from the cell bounds): measure around the pins —
+                # a diagnostic view, not a routing constraint.
+                pts = [
+                    p
+                    for pid in range(ir.n_pins)
+                    if (p := pcb_ir.pin_point(ir, pid)) is not None
+                ]
+                if not pts:
+                    return ""
+                xs = [p[0] for p in pts]
+                ys = [p[1] for p in pts]
+                m = 5.0
+                bbox = (min(xs) - m, min(ys) - m, max(xs) + m, max(ys) + m)
+            if not outline:
+                assert bbox is not None
+                outline = [
+                    [bbox[0], bbox[1]],
+                    [bbox[2], bbox[1]],
+                    [bbox[2], bbox[3]],
+                    [bbox[0], bbox[3]],
+                ]
+            text = self._portal_map_text(
                 [str(ir.stackup[li].get("name")) for li in ctx.signal_layers],
                 pcb_session._copper_model(
                     ir,
@@ -5395,6 +5351,8 @@ class PcbHandler(Handler):
                 track_mm=track_mm,
                 clearance_mm=clearance_mm,
             )
+            if text:
+                text = "\n\n# capacity map — portal model\n" + text.lstrip()
             self._capacity_map_cache[ref_id] = (key, text)
             return text
         except Exception as exc:  # the digest above still renders without it

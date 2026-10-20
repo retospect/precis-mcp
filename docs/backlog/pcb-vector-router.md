@@ -31,7 +31,7 @@ construction and loses every passage narrower than about two cells.
 | taz15-blank | 139/151 without the stub; 149/151 with e8753d909 (exact-geometry escape stub, `OccupancyGrid.escape_stub`, `realize._route_with_escape_stubs`). Last 2 are `plane_drop_blocked` (GND, PV+). | gr489923, e8753d909 |
 | nano seed 1 | Stub as landed: routed/failed 36/28, silk_missing 39, clearance warns 11, against floors 35/29, 36, 9. It fired 63 times, mostly on congestion failures; the new warns are nowhere near a stub. Gated to pads with no passable cell: 34/30, 37, 9. | gr491588 |
 | e8753d909 | Reverted in 4949f7ee6 (router-lane trio, with 2bf9dc75e and f97455a37); held. Backup branch `rlf-full-backup`. | git log, gr491588 |
-| ewod replay | The tile plan (`globalplan.py`) cannot express the braid an escape needs inside one tile; every plan-guided variant ties or loses to plain 51/55. | `pcb-global-plan-router.md` slices 0–1b |
+| ewod replay | The tile plan (deleted `globalplan.py`) could not express the braid an escape needs inside one tile; every plan-guided variant tied or lost to plain 51/55. | `pcb-global-plan-router.md` slices 0–1b (deleted; git history) |
 | HV pairs | DRC grades `|V_a − V_b|` pairwise (`drc.check_clearance`); the router cannot (one claim radius per net). "Still open: the ROUTER half." | `pcb-missing-constraint-classes.md` §E-1 |
 | EWOD HV | `working_voltage_v=250` sets a 0.4 mm ERROR floor on every layer (`rules.resolve_net_rules` → `NetRules.min_clearance_mm`). Physics needs 0.4 mm on B.Cu only; F.Cu pads are parylene-coated and the HV is plate-to-pixel. The array's own F.Cu plaza stubs (`track[ARR1_R0C2] ↔ pad[ARR1/R1C2]`) are refused. | EWOD HV builder, 2026-10-16 |
 
@@ -85,7 +85,7 @@ Two smaller defects the kernel removes:
 - A GPU requirement. Every path has a CPU implementation that tests run on.
 - Changing the placer, except where the topology router's min-cut witness
   feeds `optimize.anneal_route_loop` (already specced in
-  `pcb-global-plan-router.md` slice 4).
+  `pcb-global-plan-router.md` slice 4 — deleted with the grid router; git history).
 
 ## Invariants this item keeps
 
@@ -324,7 +324,7 @@ routers.
 
 ### Step 3 — topological global router (`src/precis/pcb/topo.py`, new)
 
-The tile graph's measured limit is the intra-tile braid (`pcb-global-plan-router.md`
+The tile graph's measured limit is the intra-tile braid (`pcb-global-plan-router.md`, deleted — git history
 slice 1). A constrained Delaunay triangulation of free space has no tiles:
 every portal is a gap between two real obstacles.
 
@@ -359,7 +359,7 @@ every portal is a gap between two real obstacles.
 6. **Feedback.** An embedding failure becomes a no-good cut (this branch
    set, this portal order, these classes) and the LP re-solves. An
    infeasible LP yields the min-cut witness for `ConflictDigest`, the
-   expansion moves and the LLM menu (`pcb-global-plan-router.md`).
+   expansion moves and the LLM menu (`pcb-global-plan-router.md`, deleted — git history).
 
 Report four counts separately, never one: topologically connected,
 capacity-feasible, geometrically embedded, kernel-clean (`491905`, last
@@ -453,7 +453,7 @@ portal sequence, packed at minimum pitch by the embedding; the discount is a
 per-portal cost reduction in the LP objective, capped at a bundle width of
 5 unless the class says otherwise.
 
-**`pcb-global-plan-router.md`.** Its levels [A]/[B]/[C] stay; this item
+**`pcb-global-plan-router.md` (deleted with the grid router — git history).** Its levels [A]/[B]/[C] stay; this item
 replaces [B]'s tile graph with the CDT dual (slices 5–6b) and replaces [C]'s
 maze with `vroute` (slices 3–4, retired in slice 10). Its slices 2 (pin assignment inside the plan, min-cut witness)
 and 4 (loop) carry over to `topo`. `globalplan.py` stays as the probe and
@@ -977,8 +977,8 @@ that skips the octilinear conversion and exempts the board from
 ## Related
 
 - [pcb-stackup-regions](pcb-stackup-regions.md) — shared route cost, slice ordering.
-- [pcb-global-plan-router](pcb-global-plan-router.md) — levels [A]/[B]/[C]; [B] moves to the CDT.
-- [pcb-global-plan-probe](pcb-global-plan-probe.md) — tile-model evidence.
+- `pcb-global-plan-router.md` (deleted with the grid router; git history) — levels [A]/[B]/[C]; [B] moves to the CDT.
+- `pcb-global-plan-probe.md` (deleted; git history) — tile-model evidence.
 - [pcb-missing-constraint-classes](pcb-missing-constraint-classes.md) §E-1 — the router half of pairwise clearance.
 - [pcb-lazy-netlist-and-checks](pcb-lazy-netlist-and-checks.md) — one check surface; kernel findings keep that surface.
 - gr489923, gr491588 (CN4 escape, stub regression), gr489914 (same-net vias).

@@ -146,7 +146,7 @@ No tests, provider requests, placement or routing were run for this pass.
    the actual rail currents and rules; this source check does not prove
    a chosen power rail or footprint can carry its current.
 3. **Open residue — shared router clearance and WARN tier.**
-   `src/precis/pcb/realize.py::_realize_maze` uses one clearance: the maximum
+   `src/precis/pcb/realize.py`'s `_realize_vector` (was `_realize_maze`) uses one clearance: the maximum
    of config and resolved net clearances. Net-class rules do have consumers
    in realization, cost and DRC; the “no consumer” claim is stale.
    `src/precis/pcb/drc.py::check_clearance` resolves the stricter pairwise

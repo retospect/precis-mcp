@@ -4,113 +4,45 @@ docs/backlog/pcb-guided-place-route.md §"Sketch + realize".
 **Runs at checkpoints, never in the inner loop.** Sketch (L0-L2, plus L3
 placement) is canonical; copper (L5) is derived and regenerable, same
 discipline as chunks→embeddings. A pure function of a settled
-:class:`~precis.pcb.ir.PcbIR` snapshot (plus obstacle/config data) — never
+:class:`~precis.pcb.ir.PcbIR` snapshot (plus config data) — never
 mutates L0-L3 state (that's ``optimize.py``'s move classes) — only reads
 the sketch, writes L5-shaped output.
 
-**Two routers**; ``RealizeConfig.router`` selects, opposite guarantees:
+**One router**: ``vector`` (:mod:`precis.pcb.vroute`) — gridless,
+octilinear, kernel-exact. The grid maze router, the tangent drawer, the
+negotiation loop and the route clean-up pass were removed (Reto
+2026-10-20): a track is a centreline polyline and legality is
+:mod:`precis.pcb.clearance`'s distance test, so a corridor is open
+exactly when the copper fits. What it cannot route is reported in
+:attr:`RealizeResult.unrouted` with a per-segment
+:class:`UnroutedReason`, never drawn through other copper.
 
-- ``'maze'`` (default, :mod:`precis.pcb.maze`): claims each route's
-  corridor on a shared occupancy grid before drawing it, so inter-net
-  ``clearance`` violations are structurally impossible. Chooses its own
-  layers/path (``seg_layer`` is a preference, not an instruction); reports
-  what it couldn't route in :attr:`RealizeResult.unrouted`.
-- ``'tangent'``: one straight-or-hugging track per segment on that
-  segment's ``seg_layer``, drawn unconditionally, blind to every other
-  track. Right for a single-segment question (:func:`realize_segment` IS
-  this); wrong for a board — 234 same-layer clearance violations on the
-  reference fixture, unrepairable by any later pass.
-
-**Geometry is arcs and tangent lines, not beziers**: the shortest path
-around a single circular clearance obstacle is exactly straight tangents
-joined by a circular arc, closed-form (:func:`tangent_arc_path`). Gerber
-has native arcs (G02/G03), no bezier primitive — a bezier would just be
-flattened to polylines on export.
-
-**Output matches :mod:`precis.pcb.gerber`'s model shape exactly**: a
-track's ``segments`` entries are ``{"shape": "line"|"arc", "start": [x,
-y], "end": [x, y]}`` (arc adds ``"center": [x, y], "cw": bool}``) — the
-dict shape :func:`precis.pcb.gerber.copper_gerber` reads via
-``_emit_stroke`` (see :func:`to_gerber_model`,
-``tests/test_pcb_realize.py``'s round-trip through
-:func:`precis.pcb.gerber.export_gerbers`).
-
-**Single-obstacle closed form only.** A segment blocked by more than one
-obstacle at once (a multi-obstacle rubber-band problem) is out of scope —
-realizes around the single nearest blocking obstacle, falls back to a
-straight line, reports the rest as still-blocking rather than emitting a
-wrong path. "Fail legibly", applied to the realizer's own limits.
-
-**Per-gap capacity accounting lives here too**, as data not just the
-optimizer's estimate: every realized segment's binding gap (the same
-``nearest_other_instance`` neighbourhood :mod:`precis.pcb.optimize` uses
-for L4) is tallied; a gap whose strand usage exceeds capacity produces a
-:class:`CongestionWarning` naming the gap, participants, and clearance
-arithmetic.
-
-**Vias.** Under ``'tangent'``, emitted wherever a track's realized layer
-differs from its pad layer. Under ``'maze'``, emitted wherever the search
-changed layer, gated on the STITCHED GROUP's full extent fitting in
-cleared space (not just the trace's) — a rail crossing layers through one
-via is a fuse; stitching four vias for a group planned around one puts
-three in somebody else's copper. See :func:`_vias_for_track` (tangent
-rule) and :class:`RealizedVia`, which always carries a layer SPAN
-(``layer_lo``/``layer_hi``), never a scalar — a scalar via makes every via
-DRC rule blind on every layer but one. Via COUNT scales with the net's
-current annotation (:func:`precis.pcb.rules.via_count_for_current`)
-rather than always emitting one — an array that can't carry its rail's
-current is the same silent-failure class as missing geometry.
+**Vias.** Emitted wherever a route changes layer, gated on the STITCHED
+GROUP's full ampacity extent fitting in cleared space (not just the
+trace's) — a rail crossing layers through one via is a fuse; stitching
+four vias for a group planned around one puts three in somebody else's
+copper. See :class:`RealizedVia`, which always carries a layer SPAN
+(``layer_lo``/``layer_hi``), never a scalar. Via COUNT scales with the
+net's current annotation (:func:`precis.pcb.rules.via_count_for_current`).
 
 **Plane fragment stitching is a PRODUCER, deliberately independent of its
 own checker** (:func:`_stitch_plane_fragments`, gripe 270637). A net poured
-on several layers (``ir.net_plane_layers``, a bitmask —
-:func:`~precis.pcb.ir.plane_layers_of`) used to come out as one electrical
-net only where a per-pin drop via *happened* to span every poured sheet, or
-where a foreign via's antipad *happened* to leave a net's own pin
-population inside every fragment it cut a same-layer pour into — both
-purely incidental, and measured (gripe 270637) to fragment on real boards
-(GND, more pins, got lucky every seed; VCC3V3, fewer pins, did not).
-:func:`_stitch_plane_fragments` places deliberate stitching vias instead,
-in two stages: a generous regular-grid SPRINKLE across every pair of a
-net's poured sheets that spatially overlap (stage 1 — what a real fab tool
-does, reusing this module's own keep-out checks:
-:meth:`~precis.pcb.maze.OccupancyGrid.via_clears_pads`,
-:func:`_via_clears_vias`, :meth:`~precis.pcb.maze.OccupancyGrid.
-disk_is_free` — no new geometry predicate duplicates any of those), then a
-bounded TARGETED pass that finds whatever pieces remain disconnected and
-tries the single nearest legal via to join them (stage 2 — see that
-function's own docstring for exactly which gaps one via can and cannot
-bridge), and finally a JUMPER for a pair stage 2 has just proved no single
-via can close (stage 3, :func:`_try_plane_jumper`): a via out of each
-fragment plus a trace between them on a spare layer. Stage 3 is the only
-mechanism here that can join two fragments of one net on the SAME layer —
-a via joins LAYERS, not lateral gaps, so no number of them ever could —
-and it is the only reason this pass emits TRACKS as well as vias.
+on several layers used to come out as one electrical net only where a
+per-pin drop via *happened* to span every poured sheet. This pass places
+deliberate stitching vias instead — a regular-grid sprinkle across each
+pair of a net's overlapping poured sheets, a bounded targeted pass for
+whatever remains, then a JUMPER (a via out of each fragment plus a trace
+on a spare layer) for the same-layer pairs a via provably cannot close.
 
 **This pass computes its own connectivity, with its own union-find
 (:class:`_UnionFind`), and never calls
-:func:`precis.pcb.connectivity.net_islands` or imports from that module.**
-``net_islands`` is the INDEPENDENT CHECKER for exactly this property
-(:mod:`precis.pcb.connectivity`'s own module docstring); if this pass
-decided when to stop by asking that same checker whether it was happy, the
-``connectivity`` DRC finding could never fire again for a REAL defect
-either — not because boards became correct, but because the check became
-tautological. So the two are deliberately duplicated, not shared, for the
-same reason :mod:`precis.pcb.drc`'s own ``clearance_violations_naive``
-reference oracle reimplements its own layer logic rather than importing
-the accelerated engine's: a producer and its checker must stay
-independent, even though a *shared definition* elsewhere in this codebase
-(a clearance constant, a pad's real shape) still belongs in ONE place. The
-one thing this pass DOES reuse is generic, checker-agnostic geometry —
-shapely polygon construction/intersection/nearest-point queries, and this
-module's own existing keep-out predicates — never ``connectivity.py``'s
-reasoning about what "connected" means.
+:func:`precis.pcb.connectivity.net_islands`.** ``net_islands`` is the
+INDEPENDENT CHECKER for exactly this property; a producer and its checker
+must stay independent.
 
 **Rip-up primitives**: :func:`rip_net` removes one net's tracks (and
 warnings), leaving every other net's geometry byte-identical.
-:func:`pin_topology` delegates to :meth:`precis.pcb.ir.PcbIR.set_side`
-(pinning a topology choice is a sketch edit, not a realizer concern) —
-kept here for rip-up-loop callers' convenience.
+:func:`pin_topology` delegates to :meth:`precis.pcb.ir.PcbIR.set_side`;
 :func:`re_realize_segments` recomputes only the named segments' tracks
 against an already-realized result.
 """
@@ -120,12 +52,11 @@ from __future__ import annotations
 import itertools
 import math
 import time
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
 
 import numpy as np
-import shapely
 
 # shapely ships no py.typed marker here -- same suppression drc.py/planes.py
 # carry, same reason: only the polygon booleans this module's stitching
@@ -138,20 +69,19 @@ from shapely.geometry import Point as _ShapelyPoint
 from shapely.geometry import Polygon as _ShapelyPolygon
 
 from precis.pcb import connectivity as pcb_connectivity
-from precis.pcb import geom, landpattern, maze, padplace, pose, vroute
+from precis.pcb import geom, landpattern, padplace, pose, vroute
 from precis.pcb import silk as pcb_silk
 from precis.pcb.capabilities import CapabilityRow, capability_for
+from precis.pcb.clearance import Body
 from precis.pcb.geom import Point, dist, dist_point_to_segment
 from precis.pcb.ir import (
     NO_NET,
     NO_PIN,
     FootprintPad,
     PcbIR,
-    direction_token,
     footprint_pad_set,
     instance_courtyard_polygon,
     layer_is_routable,
-    layer_route_cost,
     nearest_other_instance,
     pin_point,
     plane_layers_of,
@@ -170,7 +100,6 @@ from precis.pcb.planes import (
 from precis.pcb.rules import (
     PAD_LAYER,
     NetRules,
-    implied_via_count,
     layer_is_outer,
     net_current_a_or_none,
     pin_current_a_or_none,
@@ -191,494 +120,69 @@ from precis.pcb.rules import (
 #: coupling that wasn't already there.
 PAD_LAYER = PAD_LAYER
 
-# ── config + obstacles ───────────────────────────────────────────────────
-
-#: Routing-grid pitch as a fraction of the board's clearance — see the
-#: `maze.grid_for` call in `_realize_maze` for the measurement behind it.
-# Keep the proven global baseline. A half-cap experiment realizes 23/55
-# ewod-dogfood-6 connections instead of 22/55 (12 gains/11 losses, zero DRC
-# errors), but makes ESP32 reference seed5 and fab-film seeds2/3/4 fail
-# their route jobs. A finer grid changes deterministic competition, not just
-# resolution; the single-board gain does not justify a global default.
-# The explicit experiment remains covered without loosening any route/DRC
-# ratchet or increasing search budgets. Diagnostic parity is separate.
-_PITCH_PER_CLEARANCE = 2.0 / 3.0
-
-
-#: Most negotiation iterations one route op may ask for (``negotiate=``);
-#: the handler refuses more. VPR converges in tens of iterations.
-MAX_NEGOTIATE_ITERATIONS = 100
+# ── config ────────────────────────────────────────────────────────────────
 
 
 @dataclass(frozen=True, slots=True)
 class RealizeConfig:
     clearance_mm: float = 0.15
-    #: Fallback courtyard radius for an instance with no explicit obstacle
-    #: supplied (see :func:`_default_obstacles`) — a generic component-body
-    #: half-size, not a real footprint courtyard (that data lives in
-    #: ``part_footprints``, a store concern this pure module doesn't read).
-    default_obstacle_radius_mm: float = 1.0
     #: Class-generic trace pitch (width + clearance) for GAP-CAPACITY
     #: accounting (:func:`_gap_usage`) — the same fallback
-    #: :mod:`precis.pcb.cost`'s ``default_pitch_mm`` uses. Deliberately
-    #: NOT wired to ``class_rules`` below (a different question — "how
-    #: many strands fit through this gap", not "how wide is one net's own
-    #: trace" — out of this module's current scope).
+    #: :mod:`precis.pcb.cost`'s ``default_pitch_mm`` uses.
     pitch_mm: float = 0.3
     #: Plane-served nets fan out via a short dog-bone stub instead of a
-    #: routed trace (backlog cost policy, verbatim) — this is that stub's
-    #: length. The via-to-plane connection itself is ``planes.py``'s job,
-    #: a later module; this realizer only ever draws the stub.
+    #: routed trace — this is that stub's length.
     dogbone_stub_mm: float = 0.5
     #: Corner radius for filleting routed traces, as a MULTIPLE of the
-    #: track's own width — so a wide power trace gets a proportionally
-    #: wider corner rather than every trace on the board sharing one
-    #: absolute radius (the flat-constant mistake this module has made in
-    #: five other places: a courtyard radius, a seed pitch, a claim radius,
-    #: ``PAD_RADIUS_MM``, and the drop-via reach).
-    #:
-    #: **This is an engineering/appearance choice, not a fab figure.** No
-    #: row in ``capabilities.py``/``pcb_capabilities.json`` publishes a
-    #: corner radius, and none is needed: the radius is additionally
-    #: clamped per run so filleting can only remove copper (see
-    #: :func:`_track_from_run`). ``0.0`` disables filleting and restores
-    #: mitered corners exactly.
+    #: track's own width. ``0.0`` disables filleting. See
+    #: :func:`_track_from_run` — the radius is clamped per run so
+    #: filleting can only remove copper.
     fillet_radius_tracks: float = 1.5
     #: The fab this board realizes against — every emitted track's width
     #: is clamped to this table's minimum (:mod:`precis.pcb.rules`'s own
-    #: resolver discipline). Defaults to the house 4-layer row so a bare
-    #: ``RealizeConfig()`` (most tests, most synthetic boards) still
-    #: resolves a sane width; a real board's caller should pass the row
-    #: for its ACTUAL stackup (``drc.process_for_stackup``).
+    #: resolver discipline).
     fab_caps: CapabilityRow = field(default_factory=lambda: capability_for("4layer"))
-    #: ``pcb_net_classes.rules`` overrides, keyed by net_class name —
-    #: ``pcb_graph()``'s own ``net_classes`` dict, unmodified. A class with
-    #: no row here (the common case) falls through to the current-derived
-    #: or fab-floor tiers (:func:`precis.pcb.rules.resolve_net_rules`).
+    #: ``pcb_net_classes.rules`` overrides, keyed by net_class name.
     class_rules: dict[str, dict[str, Any]] | None = None
     #: IPC-2221 target temperature rise / copper weight for the
     #: current-derived width tier — see :mod:`precis.pcb.rules`.
     temp_rise_c: float = 10.0
     copper_oz: float = 1.0
-    #: Which router draws the copper.
-    #:
-    #: ``'maze'`` (the default) claims each route's corridor on a shared
-    #: occupancy grid (:mod:`precis.pcb.maze`), so two nets' copper can
-    #: never overlap — ``clearance`` DRC errors become structurally
-    #: impossible and the residual failure mode is an UNROUTED net
-    #: (``RealizeResult.unrouted``) instead of a shorted one.
-    #:
-    #: ``'tangent'`` is the original closed-form drawer: a straight line
-    #: per segment, optionally hugging one component courtyard, blind to
-    #: every other track. Kept because it is the right primitive for a
-    #: single-segment question (``realize_segment`` is still exactly this)
-    #: and because a caller that wants geometry without an occupancy grid
-    #: — a sketch preview, a cost probe — should not pay for one. It is
-    #: not a routing strategy: measured on the reference fixture it drew
-    #: 234 same-layer clearance violations that no later pass can repair.
-    router: str = "maze"
-    #: Cap on A* expansions per connection before that connection is
-    #: declared unrouted. See :data:`precis.pcb.maze.MAX_EXPANSIONS`.
-    max_expansions: int = maze.MAX_EXPANSIONS
-    #: How many times the whole maze pass may be re-run with the previous
-    #: attempt's failures moved to the front (see :func:`_realize_maze`).
-    #: 1 is a single shortest-first pass — the prior behaviour. Each extra
-    #: pass costs one full route (~0.4s on the reference board) and can
-    #: only reduce the unrouted count, never the correctness of a result.
-    #:
-    #: 12 because the loop STOPS at the first fully-routed pass, so the
-    #: cost is only paid on a board that needs it. Measured on the
-    #: reference fixture: four of five seeds finish on pass 1 (~0.3s) and
-    #: the fifth needs 12 (~4.8s) to place its last connection. Raising
-    #: ``max_expansions`` instead does not help — 400k expansions leaves
-    #: the same connection unrouted, because it is losing a corridor race,
-    #: not running out of search.
-    route_passes: int = 12
-    #: Negotiated-congestion iterations (:func:`_negotiate`) run when the
-    #: ``route_passes`` re-ordering leaves any net unrouted. ``0`` (off) by
-    #: default until a pinned real-board measurement shows it helps; opt in
-    #: per call (``pcb_route``'s ``negotiate`` param). The loop stops at the
-    #: first iteration with no conflict.
-    negotiate_iterations: int = 0
-    #: Wall-clock cap on the whole negotiation, in seconds, checked before
-    #: each net; when it runs out the proposal so far is committed. A route
-    #: op holds a worker lane for as long as it runs.
-    negotiate_budget_s: float = 60.0
-    #: Give each signal layer a preferred routing axis (H, V, diagonal, in
-    #: stackup order — :func:`precis.pcb.maze.preferred_directions`).
-    #: Off-axis steps cost more; nothing is forbidden. Unstructured routing
-    #: on every layer fragments free space into islands too small to route
-    #: through and too awkward to pour, which is why every VLSI router does
-    #: this.
-    preferred_directions: bool = True
-    #: Pull each routed path taut against the occupancy grid before
-    #: claiming it (:func:`_straighten`), collapsing the 45-degree
-    #: staircases an octile search necessarily produces into straight
-    #: runs plus taut 45/90 elbows. Octilinear-preserving: the pull never
-    #: emits a direction that is not a multiple of 45 degrees, and can
-    #: only remove copper, never move it into someone else's corridor.
-    straighten: bool = True
-    #: Let :func:`_straighten` nudge a via's (x, y) — never its layer SPAN —
-    #: within :attr:`via_shove_radius_mm` when doing so lets a wire go
-    #: straighter, re-validated on the SAME occupancy grid using the via's
-    #: own wider (group-extent) mask, collapsed across every layer it
-    #: spans (:mod:`precis.pcb.maze`'s own discipline for a layer change,
-    #: reused rather than re-derived). Every layer the via anchors moves
-    #: together because the shove happens on the shared (x, y) the route
-    #: search itself already threads through both the pre- and
-    #: post-transition points — see :func:`_shove_vias`.
-    #:
-    #: **On by default — measured to cost nothing.** ESP32-C3 reference
-    #: fixture, seeds 1-5, real place+route through the job dispatch path
-    #: (not a synthetic probe), straighten+preferred-directions baseline
-    #: vs. the same run with ``shove_vias=True``:
-    #:
-    #: ============  =========  ==========  ========  ===========  ===========
-    #: seed          segments   copper mm   vias      DRC errors   routed
-    #: ============  =========  ==========  ========  ===========  ===========
-    #: 1  off/on     126 / 125  544.3/543.8 26 / 26   0 / 0        11/11, 11/11
-    #: 2  off/on     119 / 118  529.9/522.8 25 / 27   0 / 0        11/11, 11/11
-    #: 3  off/on     136 / 113  491.4/476.9 25 / 24   0 / 0        11/11, 11/11
-    #: 4  off/on     131 / 129  541.0/540.1 30 / 30   0 / 0        11/11, 11/11
-    #: 5  off/on     127 / 127  537.1/529.4 29 / 30   0 / 0        11/11, 11/11
-    #: ============  =========  ==========  ========  ===========  ===========
-    #:
-    #: Segment count and copper length never went UP on any seed (the
-    #: monotonic-non-increase this flag's own correctness argument
-    #: predicts); DRC stayed at zero and the routed count never moved on
-    #: any seed either. Via count moved by ±1-2 on two seeds — expected
-    #: and benign: shoving one connection's via changes what corridor a
-    #: LATER connection in the same sequential pass finds, which can shift
-    #: where ITS via lands, not a violation of "shoving moves a via, it
-    #: doesn't add one" (that invariant holds per-connection, in isolation
-    #: — see this module's test). Net effect: ~4% fewer segments, ~1%
-    #: less copper, zero correctness cost, so — unlike
-    #: ``preferred_directions``, which traded routability for structure —
-    #: there is no case for leaving this off.
-    shove_vias: bool = True
-    #: How far a via may move from its searched position, in mm. Small on
-    #: purpose ("slightly", per the backlog) — this is a cosmetic taut-up
-    #: of the search's own result, not a second placement pass.
-    via_shove_radius_mm: float = 0.5
-    #: Regular-grid pitch for stage-1 "sprinkle" stitching-via placement
-    #: (:func:`_stitch_plane_fragments`, gripe 270637): candidate via sites
-    #: are tried every this many mm across the OVERLAP of two of one net's
-    #: poured sheets. Not a fab figure — neither ``capabilities.py`` nor
-    #: ``pcb_capabilities.json`` publish a hole-to-hole spacing row to pin
-    #: this to (checked before adding this field). ``None`` (the default)
-    #: derives it from geometry already in hand instead of a bare
-    #: constant: twice the resolved via's own (diameter + clearance) — the
-    #: SAME pitch :func:`_route_pass`/:func:`_vias_for_track` already use
-    #: to space members of one via GROUP, doubled so consecutive grid
-    #: candidates don't immediately crowd each other's own keep-out before
-    #: the keep-out filter below even gets a chance to accept either one.
-    #: An explicit override here is an ENGINEERING choice about stitching
-    #: density (more vias = more thermal/EMI margin = more copper cost),
-    #: never a fab minimum.
-    stitch_pitch_mm: float | None = None
-    #: Cap on ACCEPTED sprinkle vias per (sheet, sheet) overlap region — a
-    #: runtime/copper-budget guard, not a connectivity requirement: the
-    #: residue stage is what GUARANTEES the fragment count goes down, not
-    #: this cap. An overlap the size of the whole board at a fine pitch
-    #: would otherwise sprinkle thousands of vias for a property that
-    #: needs at most one.
-    max_sprinkle_vias_per_overlap: int = 24
-    #: Bound on the residue stage's stitch-and-recheck loop, per net (see
-    #: :func:`_stitch_plane_fragments`). Each iteration either merges two
-    #: pieces or proves that pair has no legal single-via bridge and moves
-    #: on — a rejected candidate leaves a net exactly as fragmented as it
-    #: was, never more, so this bounds worst-case runtime, not correctness.
-    max_stitch_iterations: int = 8
-    #: Cap on JUMPERS (two vias plus a detour-layer trace,
-    #: :func:`_try_plane_jumper`) placed for one net. A jumper is the only
-    #: mechanism that can join two fragments of one net on the SAME layer —
-    #: no via can, and that is a proof, not a search limit
-    #: (:func:`_stitch_one_net`'s docstring) — but it is also the most
-    #: expensive thing this pass emits: a full A* on the detour layer plus
-    #: real copper on a layer this net had no business being on. A net in
-    #: ``k`` same-layer pieces needs ``k-1`` jumpers, so the default carries
-    #: a 5-piece plane; past that, an honest ``UnstitchedNet`` beats
-    #: silently threading a board full of detours.
-    max_plane_jumpers_per_net: int = 4
-    #: Extra cost, on top of :data:`~precis.pcb.maze.VIA_COST_MM`, for a
-    #: via the maze search places under a placed component's own body
-    #: (:func:`_courtyard_body_mask`, forwarded to
-    #: :meth:`~precis.pcb.maze.OccupancyGrid.route`'s
-    #: ``via_body_cost_mm``) — reworkability: a via there is legal (it can
-    #: be the only way through) but the part has to come off the board to
-    #: rework it, so the search should reach for a detour first and only
-    #: pay this when nothing cheaper exists. Defaults to
-    #: :data:`~precis.pcb.maze.VIA_UNDER_BODY_COST_MM`, the SAME "routing
-    #: preference, not the ``via_count`` MONEY term" figure that module
-    #: documents for :data:`~precis.pcb.maze.VIA_COST_MM` itself.
-    via_body_cost_mm: float = maze.VIA_UNDER_BODY_COST_MM
-    #: Keep vias off part-outline silk (gr495393 comment 1, Reto
-    #: 2026-10-17): every via site the router or a fan-out picks stays the
-    #: via-to-silk clearance plus two silk widths off the outline
-    #: :func:`precis.pcb.silk.build_silk` will draw
-    #: (:func:`_claim_silk_keepouts`). **Off by default, pending Reto's
-    #: call:** measured 2026-10-17 it costs the router floors (nano routed
-    #: 35 -> 31, nano r2 35 -> 27, dogfood-6 replay distance/inner 51 ->
-    #: 39); a 0.325 mm margin (no two-width term) and a 0.075 mm one
-    #: (ink only) fail them too. Turning it on is a floor change.
+    #: Which router draws the copper. Only ``'vector'`` exists — the grid
+    #: maze router and the tangent drawer were removed (Reto 2026-10-20);
+    #: any other value raises in :func:`realize`.
+    router: str = "vector"
+    #: Whole-pass search-work cap for the vector router, in A* node
+    #: expansions shared across all connections (each ``vroute.Request``
+    #: gets the remaining budget, capped by its own per-connection
+    #: default). Work, not seconds, so a board routes the same on every
+    #: machine.
+    max_expansions: int = 60000
+    #: Keep vias off part-outline silk (gr495393 comment 1): every via
+    #: site the router or a fan-out picks stays the via-to-silk clearance
+    #: off the outline :func:`precis.pcb.silk.build_silk` will draw.
+    #: **Off by default, pending Reto's call** — measured 2026-10-17 it
+    #: costs the router floors; turning it on is a floor change.
     silk_via_keepout: bool = False
     #: Keep other nets' TRACKS off a derived power region on a routable
-    #: layer (:func:`_claim_power_regions`, gr495395): the default stackup
-    #: routes In2, which carries the regions, and a foreign track across
-    #: one splits its pour. Vias still pass. **Off by default** until the
-    #: vector router honours the same areas (``_RouteContext.
-    #: reserved_regions``) and the routing floors are measured with it on.
+    #: layer (gr495395). Vias still pass.
     reserve_power_region_tracks: bool = False
-    #: Corridors-as-cost from a tile-capacity global plan
-    #: (:mod:`precis.pcb.globalplan`, slice 1 of
-    #: ``docs/backlog/pcb-global-plan-router.md``): ``0.0`` (off) is the
-    #: default until a pinned measurement shows the plan-guided pass beats
-    #: the plain 12-pass reorder on the benchmark pair; opt in per call
-    #: (``pcb_route``'s ``corridor`` param). When on, one negotiated
-    #: tile-level plan is routed first — each planned segment searches
-    #: with every OFF-corridor cell carrying this static price — and its
-    #: commits ride the ordinary reorder passes as verbatim proposals,
-    #: with plain passes as the fallback for whatever is still unrouted.
-    corridor_penalty: float = 0.0
-    #: Plaza packing, targeted for tough spots (slice 2 of
-    #: ``docs/backlog/pcb-global-plan-router.md``; Reto 2026-10-14):
-    #: ``"plaza"`` detects dense pad rows the strict flow map reads as
-    #: lanes-free and gives each an angular escape — stub outward on the
-    #: pad's layer to a packed margin via lattice, inner-layer run to the
-    #: source — as wedge corridors priced by ``corridor_penalty``
-    #: (default 5.0 when unset). Anything else / empty = off; the plain
-    #: passes still run after, so it can cost time, never nets.
-    escape: str = ""
-    #: Per-layer route cost, ``(layer name, multiplier)`` pairs: every
-    #: maze step on that layer costs ``multiplier`` times the base step
-    #: (:meth:`~precis.pcb.maze.OccupancyGrid.route`'s ``layer_cost``).
-    #: Empty = every layer 1.0, today's search. pcb-stackup-regions
-    #: rulings: an inner GND plane that may carry a trace (In1) at about
-    #: 2-3x, tuned from slice 1's table. A multiplier below 1.0 is
-    #: refused, since the search heuristic assumes no step is cheaper than
-    #: the base.
-    layer_route_cost: tuple[tuple[str, float], ...] = ()
-    #: The cross-grain step multiplier on a layer with a preferred
-    #: direction (:func:`precis.pcb.maze._step_penalty`) — a board
-    #: parameter since pcb-stackup-regions slice 3 (``pcb_route``'s
-    #: ``off_axis`` param). Default :data:`precis.pcb.maze.OFF_AXIS_PENALTY`;
-    #: below 1.0 is refused for the same heuristic reason as a layer cost.
-    off_axis_penalty: float = maze.OFF_AXIS_PENALTY
-    #: Route clean-up post-pass (:mod:`precis.pcb.routeclean`, gr495397):
-    #: after the winning pass, a kinked track whose straight run is blocked
-    #: by another net's via gets both nets re-routed with the via moved,
-    #: kept only when length, bends and vias all hold or improve and the
-    #: caller's DRC check stays clean. Runs only when :func:`realize` is
-    #: given a ``cleanup_check`` (the route job supplies one), so a bare
-    #: ``realize()`` call is unchanged.
-    route_cleanup: bool = True
-    #: Bounds on the clean-up pass per :func:`realize` call: moves tried,
-    #: and wall-clock seconds checked before each trial.
-    cleanup_max_moves: int = 40
-    cleanup_budget_s: float = 20.0
-    #: Vector escape post-pass (:func:`precis.pcb.vroute.escape_pass`,
-    #: vector-router slice 3): after the clean-up pass, every failed
-    #: non-plane segment is routed gridless against the frozen copper, so a
-    #: fine-pitch pad the grid sees as walled in (gr489923) still connects
-    #: where the copper fits. Nothing the maze routed moves.
-    vector_escape: bool = True
-    #: Search work for the whole escape pass on one board, in A* node
-    #: expansions (each connection takes at most 6000 of it). Work, not
-    #: seconds, so a board routes the same on every machine.
-    vector_escape_max_expansions: int = 60000
-    #: Bounded budget retry for a search that ran out of work
-    #: (gr489909/gr497768): a connection whose REAL search ended on
-    #: ``max_expansions`` (:meth:`precis.pcb.maze.OccupancyGrid.route`
-    #: sets ``last_route_exhausted``) was never proved unroutable — the
-    #: budget ran out first — so after the reorder passes each
-    #: still-unrouted segment that exhausted is searched again at
-    #: ``max_expansions * exhaustion_retry_factor``, failures first, for
-    #: up to ``exhaustion_retry_passes`` more passes. Only the exhausted
-    #: segments pay the raised budget: a corridor race is not a budget
-    #: failure (400k expansions route no further than 120k there — see
-    #: ``route_passes``), so giving it one only burns time. Passes, not
-    #: a clock, bound the cost, so a board routes the same on every
-    #: machine; a board with no exhausted segment never sees the pass.
-    #: ``1.0`` (or less) disables. Measured on nano seed 1 (2026-10-20):
-    #: 29 unrouted nets -> 19 at 4x the budget.
-    exhaustion_retry_factor: float = 4.0
-    #: See :attr:`exhaustion_retry_factor`.
-    exhaustion_retry_passes: int = 2
-
-    def __post_init__(self) -> None:
-        for name, mult in self.layer_route_cost:
-            if isinstance(mult, bool) or not 1.0 <= float(mult) < math.inf:
-                raise ValueError(
-                    f"layer_route_cost for {name!r} is {mult}; a layer may cost "
-                    "more than the base step, never less (minimum 1.0, finite)"
-                )
-        off = self.off_axis_penalty
-        if isinstance(off, bool) or not 1.0 <= float(off) < math.inf:
-            raise ValueError(
-                f"off_axis_penalty is {off}; a cross-grain step may cost more "
-                "than an on-axis one, never less (minimum 1.0, finite)"
-            )
-
-
-@dataclass(frozen=True, slots=True)
-class Obstacle:
-    """A layer-agnostic circular clearance obstacle — an instance's
-    courtyard, expanded by the class clearance the caller wants respected.
-    ``radius`` should already include clearance; :func:`tangent_arc_path`
-    treats it as the hard keep-out radius."""
-
-    instance: int
-    center: Point
-    radius: float
-
-
-def _instance_point(ir: PcbIR, inst: int) -> Point | None:
-    x, y = float(ir.inst_x[inst]), float(ir.inst_y[inst])
-    if math.isnan(x) or math.isnan(y):
-        return None
-    return (x, y)
-
-
-def _pin_point(ir: PcbIR, pin_id: int) -> Point | None:
-    """A track endpoint: the PAD, not the part centre.
-
-    Using the instance centroid here meant every net leaving a part
-    started at the same coordinate, so tracks of different nets were
-    coincident before any routing ran — ~600 `clearance` findings at an
-    exact 0.000mm gap, which no routing algorithm can separate.
-    """
-    return pin_point(ir, pin_id)
-
-
-def _default_obstacles(ir: PcbIR, config: RealizeConfig) -> list[Obstacle]:
-    """One obstacle per placed instance, at the config's generic radius —
-    the honest fallback when no real footprint courtyard data is
-    supplied. A caller with real courtyards should build its own
-    ``obstacles`` list and pass it to :func:`realize` instead."""
-    out = []
-    for inst in range(ir.n_instances):
-        p = _instance_point(ir, inst)
-        if p is not None:
-            out.append(Obstacle(inst, p, config.default_obstacle_radius_mm))
-    return out
+    #: Regular pitch for stage-1 "sprinkle" stitching-via placement
+    #: (:func:`_stitch_plane_fragments`): ``None`` derives it as twice the
+    #: resolved via's (diameter + clearance). An explicit override is an
+    #: engineering choice about stitching density, never a fab minimum.
+    stitch_pitch_mm: float | None = None
+    #: Cap on ACCEPTED sprinkle vias per (sheet, sheet) overlap region —
+    #: a runtime/copper-budget guard, not a connectivity requirement.
+    max_sprinkle_vias_per_overlap: int = 24
+    #: Bound on the residue stage's stitch-and-recheck loop, per net.
+    max_stitch_iterations: int = 8
+    #: Cap on JUMPERS (two vias plus a detour-layer trace,
+    #: :func:`_try_plane_jumper`) placed for one net.
+    max_plane_jumpers_per_net: int = 4
 
 
 # ── the closed-form geometric primitive ──────────────────────────────────
-
-
-def _tangent_points(p: Point, c: Point, r: float) -> tuple[Point, Point]:
-    """The two points on circle ``(c, r)`` touched by a tangent line from
-    external point ``p``. Raises if ``p`` is inside/on the circle — no
-    tangent exists there. See the module-level derivation: for the right
-    triangle (center, tangent point, p) with the right angle at the
-    tangent point, ``cos(angle at center) = r / |p - c|``."""
-    dx, dy = c[0] - p[0], c[1] - p[1]
-    d = math.hypot(dx, dy)
-    if d <= r + 1e-9:
-        raise ValueError("tangent point undefined: point is inside/on the circle")
-    theta = math.acos(min(1.0, r / d))
-    phi = math.atan2(p[1] - c[1], p[0] - c[0])
-    t1 = (c[0] + r * math.cos(phi + theta), c[1] + r * math.sin(phi + theta))
-    t2 = (c[0] + r * math.cos(phi - theta), c[1] + r * math.sin(phi - theta))
-    return t1, t2
-
-
-def _signed_shorter_sweep(c: Point, r: float, ta: Point, tb: Point) -> float:
-    """The signed angle (radians, in ``(-pi, pi]``) swept from ``ta`` to
-    ``tb`` around ``c`` going the SHORT way — positive = counterclockwise
-    (increasing angle), negative = clockwise."""
-    a1 = math.atan2(ta[1] - c[1], ta[0] - c[0])
-    a2 = math.atan2(tb[1] - c[1], tb[0] - c[0])
-    diff = (a2 - a1) % (2 * math.pi)
-    if diff > math.pi:
-        diff -= 2 * math.pi
-    return diff
-
-
-def tangent_arc_path(
-    start: Point, end: Point, center: Point, radius: float
-) -> tuple[list[dict[str, Any]], float]:
-    """The shortest path from ``start`` to ``end`` that clears the circle
-    ``(center, radius)`` — a straight line when the direct segment already
-    clears it, else two tangent lines joined by a circular arc, all in
-    closed form. Returns ``(segments, length_mm)`` where ``segments`` is
-    ALREADY in :mod:`precis.pcb.gerber`'s exact track-segment shape.
-
-    **Why brute-force over the 4 tangent-point pairings, not a single
-    "same-side" formula.** For two external points on genuinely different
-    sides of the circle, which tangent point (of each point's own two)
-    forms a valid, non-self-intersecting hugging path is NOT a fixed
-    labeling ("+theta with +theta") — it depends on the two points'
-    relative angular position (verified empirically against 500
-    randomized obstacle placements while building this function: the
-    "same label" pairing is sometimes the long way around, ~40% farther,
-    not merely suboptimal). Enumerating all 4 ``(tangent(start), tangent
-    (end))`` pairs, each with its own shorter-direction arc sweep, and
-    taking the global minimum total length reliably finds the correct
-    valid path — the two "wrong" pairings are always longer (this is
-    what the property test in ``tests/test_pcb_realize.py`` checks over
-    many random obstacle placements: real clearance is honoured
-    everywhere, not just at the one hand-computed fixture point)."""
-    if dist_point_to_segment(center, start, end) >= radius - 1e-9:
-        return [{"shape": "line", "start": list(start), "end": list(end)}], dist(
-            start, end
-        )
-
-    s1, s2 = _tangent_points(start, center, radius)
-    e1, e2 = _tangent_points(end, center, radius)
-    best: tuple[float, Point, Point, float] | None = None
-    for sp in (s1, s2):
-        for ep in (e1, e2):
-            sweep = _signed_shorter_sweep(center, radius, sp, ep)
-            arc_len = abs(sweep) * radius
-            total = dist(start, sp) + arc_len + dist(ep, end)
-            if best is None or total < best[0]:
-                best = (total, sp, ep, sweep)
-    assert best is not None
-    total, sp, ep, sweep = best
-
-    segments: list[dict[str, Any]] = []
-    if dist(start, sp) > 1e-9:
-        segments.append({"shape": "line", "start": list(start), "end": list(sp)})
-    segments.append(
-        {
-            "shape": "arc",
-            "start": list(sp),
-            "end": list(ep),
-            "center": list(center),
-            # atan2/math convention: increasing angle is counterclockwise,
-            # which is G03 in gerber.py's `_emit_stroke` (cw=False -> G03).
-            "cw": sweep < 0,
-        }
-    )
-    if dist(ep, end) > 1e-9:
-        segments.append({"shape": "line", "start": list(ep), "end": list(end)})
-    return segments, total
-
-
-def _blocking_obstacle(
-    start: Point, end: Point, obstacles: list[Obstacle], clearance_mm: float
-) -> Obstacle | None:
-    """The single nearest obstacle whose (radius + clearance) disk both
-    blocks the direct S->E line AND leaves both endpoints strictly
-    outside it — the second condition matters for tightly-packed
-    components: an obstacle already touching (or containing) one of this
-    segment's own endpoints has no tangent line from that endpoint at
-    all (:func:`_tangent_points` is undefined there), so it is not a
-    candidate for the tangent-arc construction and is excluded rather
-    than crashing. This is a real, honest limitation for very tight
-    packing, not an oversight — see the module docstring's
-    single-obstacle-closed-form-only note."""
-    candidates = []
-    for o in obstacles:
-        eff_r = o.radius + clearance_mm
-        if dist(start, o.center) <= eff_r or dist(end, o.center) <= eff_r:
-            continue
-        if dist_point_to_segment(o.center, start, end) < eff_r:
-            candidates.append(o)
-    if not candidates:
-        return None
-    return min(candidates, key=lambda o: dist_point_to_segment(o.center, start, end))
 
 
 # ── per-segment realization ──────────────────────────────────────────────
@@ -794,144 +298,6 @@ def _seg_rules(
     return _resolve_track_rules(ir, net_id, PAD_LAYER, config, current_a=seg_a)
 
 
-def realize_segment(
-    ir: PcbIR, seg_id: int, obstacles: list[Obstacle], config: RealizeConfig
-) -> RealizedTrack | None:
-    """One segment's realized track, or ``None`` when its endpoints have
-    no L3 position yet (nothing to draw)."""
-    a, b = int(ir.seg_pin_a[seg_id]), int(ir.seg_pin_b[seg_id])
-    ia, ib = int(ir.pin_instance[a]), int(ir.pin_instance[b])
-    start, end = _pin_point(ir, a), _pin_point(ir, b)
-    if start is None or end is None:
-        return None
-    net_id = int(ir.seg_net[seg_id])
-    layer = int(ir.seg_layer[seg_id])
-    width_mm = _resolve_track_rules(
-        ir, net_id, layer, config, current_a=seg_current_a_or_none(ir, seg_id)
-    ).track_width_mm
-
-    if int(ir.net_plane_layers[net_id]) != 0:
-        # Dog-bone fanout: a short stub off the near pad, not a full route
-        # to the far end (which is served by the plane, not this trace).
-        dx, dy = end[0] - start[0], end[1] - start[1]
-        length = math.hypot(dx, dy)
-        if length < 1e-9:
-            stub_end = start
-        else:
-            ratio = min(1.0, config.dogbone_stub_mm / length)
-            stub_end = (start[0] + dx * ratio, start[1] + dy * ratio)
-        segments: list[dict[str, Any]] = [
-            {"shape": "line", "start": list(start), "end": list(stub_end)}
-        ]
-        return RealizedTrack(
-            seg_id,
-            net_id,
-            layer,
-            tuple(segments),
-            dist(start, stub_end),
-            None,
-            width_mm,
-            is_dogbone=True,
-        )
-
-    relevant = [o for o in obstacles if o.instance not in (ia, ib)]
-    blocker = _blocking_obstacle(start, end, relevant, config.clearance_mm)
-    if blocker is None:
-        segs, length = (
-            [{"shape": "line", "start": list(start), "end": list(end)}],
-            dist(start, end),
-        )
-        blocked_by = None
-    else:
-        segs, length = tangent_arc_path(
-            start, end, blocker.center, blocker.radius + config.clearance_mm
-        )
-        blocked_by = blocker.instance
-    return RealizedTrack(
-        seg_id, net_id, layer, tuple(segs), length, blocked_by, width_mm
-    )
-
-
-def _vias_for_track(
-    ir: PcbIR, track: RealizedTrack, config: RealizeConfig
-) -> tuple[RealizedVia, ...]:
-    """Vias for ONE realized track, wherever its routed layer differs from
-    :data:`PAD_LAYER` — "emit a via wherever a net's realized route changes
-    layer" (the master backlog's via-geometry gap), restated at this
-    module's actual per-segment granularity: each :class:`RealizedTrack`
-    carries exactly one layer, so "a route changes layer" here means "this
-    track's layer isn't the layer its own two pads sit on", checked once
-    per track rather than diffed against a neighbouring segment.
-
-    A dog-bone stub is explicitly OUT of scope (module docstring: the
-    via-to-plane connection is ``planes.py``'s job, a later module) and an
-    unassigned (``UNSET_LAYER``) or already-pad-layer track has nothing to
-    transition — both return no vias. Both checks, PLUS the via COUNT
-    itself, are delegated to :func:`precis.pcb.rules.implied_via_count`
-    rather than re-derived here — that function is the same predicate,
-    hoisted out so :mod:`precis.pcb.cost`'s ``via_count`` MONEY term can share it and
-    the two can never drift apart again (see that function's own docstring
-    for the defect this closes: an optimizer that paid nothing for a via
-    while this function quietly emitted real ones).
-
-    Sized via the SAME resolver every other consumer uses
-    (:func:`precis.pcb.rules.resolve_net_rules` — never a second sizing
-    path); a fab process publishing no via figures (``via_dia_mm``/
-    ``via_drill_mm`` both ``None``) means genuinely nothing to size
-    against, not an invented default. The stitched group is spread along a
-    straight line through each endpoint at via-pitch spacing (no real
-    footprint/keepout geometry exists yet to route an array around), one
-    group at the start point and one at the end point — both this track's
-    own two pads need the same layer transition; ``implied_via_count``'s
-    total is always even (one stitched group of the SAME size at each of
-    the two endpoints), so splitting it in half below exactly recovers the
-    per-endpoint count :func:`precis.pcb.rules.via_count_for_current`
-    itself produced.
-    """
-    total = implied_via_count(
-        ir,
-        track.seg_id,
-        fab_caps=config.fab_caps,
-        class_rules=config.class_rules,
-        temp_rise_c=config.temp_rise_c,
-        copper_oz=config.copper_oz,
-    )
-    if total == 0:
-        return ()
-    rules = _resolve_track_rules(ir, track.net_id, track.layer, config)
-    assert rules.via_dia_mm is not None and rules.via_drill_mm is not None, (
-        "implied_via_count already returns 0 when either is unresolved"
-    )
-    layer_lo, layer_hi = through_span(len(ir.stackup))
-    n = total // 2
-    pitch = rules.via_dia_mm + config.clearance_mm
-    start = (float(track.segments[0]["start"][0]), float(track.segments[0]["start"][1]))
-    end = (float(track.segments[-1]["end"][0]), float(track.segments[-1]["end"][1]))
-    vias: list[RealizedVia] = []
-    for endpoint, point in (("a", start), ("b", end)):
-        for k in range(n):
-            offset = (k - (n - 1) / 2.0) * pitch
-            # These vias never touch the routing grid, so nothing else
-            # keeps them off the board edge — see `_clamp_via_into_board`.
-            vx, vy = _clamp_via_into_board(
-                ir, config, point[0] + offset, point[1], rules.via_dia_mm
-            )
-            vias.append(
-                RealizedVia(
-                    seg_id=track.seg_id,
-                    net_id=track.net_id,
-                    x=vx,
-                    y=vy,
-                    dia_mm=rules.via_dia_mm,
-                    drill_mm=rules.via_drill_mm,
-                    layer_lo=layer_lo,
-                    layer_hi=layer_hi,
-                    endpoint=endpoint,
-                )
-            )
-    return tuple(vias)
-
-
 # ── per-gap capacity accounting + the legible congestion digest ─────────
 
 
@@ -961,40 +327,13 @@ class CongestionWarning:
 
 
 @dataclass(frozen=True, slots=True)
-class CongestionCell:
-    """One over-subscribed occupancy-grid cell from a negotiated-
-    congestion run's FINAL usage map — PathFinder's present congestion at
-    end of loop, converted to board mm through the grid spec it was
-    measured on (``x``/``y`` = the cell centre, ``layer`` the stackup
-    index, ``pitch_mm`` the grid it was counted on, ``usage`` how many
-    nets' claims cover the cell). The anneal's route-feedback path reads
-    these as its ``route_demand`` evidence (optimize.py); empty whenever
-    negotiation never ran."""
-
-    x_mm: float
-    y_mm: float
-    layer: int
-    usage: int
-    pitch_mm: float
-
-
-#: Bound on :attr:`RealizeResult.congestion_cells` — a negotiated board
-#: can contest thousands of cells; the evidence needs the WORST, not a
-#: second occupancy grid attached to every result. Sorted by usage
-#: descending before the cut so what survives is the signal.
-_MAX_CONGESTION_CELLS = 512
-
-
-@dataclass(frozen=True, slots=True)
 class RealizeResult:
     tracks: tuple[RealizedTrack, ...]
     vias: tuple[RealizedVia, ...]
     warnings: tuple[CongestionWarning, ...]
-    #: Segment ids the maze router could not route without crossing
-    #: another net's copper. **This is the honest residue of a guaranteed-
-    #: clean router**: the tangent drawer never reports an unrouted
-    #: segment because it always draws something, even straight through
-    #: three other nets. Always empty for ``router='tangent'``.
+    #: Segment ids the vector router could not route without crossing
+    #: another net's copper — the honest residue of a guaranteed-clean
+    #: router.
     unrouted: tuple[int, ...] = ()
     #: Copper pours, one per connected fragment of each plane-assigned
     #: layer (:mod:`precis.pcb.planes`). Empty when no net is promoted to a
@@ -1002,21 +341,20 @@ class RealizeResult:
     #: being entirely disconnected went unnoticed for so long.
     pours: tuple[dict[str, Any], ...] = ()
     #: WHY each entry of ``unrouted`` failed — index-aligned by ``seg_id``,
-    #: never by position (:func:`_realize_maze` builds ``unrouted`` and
+    #: never by position (:func:`_realize_vector` builds ``unrouted`` and
     #: this together but does not promise they land in the same order).
     #: Closes "total routing failure produces no diagnostic at all"
     #: (docs/backlog/pcb-engine-plan.md "BOARD TWO" finding 1): before
     #: this, a caller saw a net name and nothing else, whether the real
     #: cause was a corridor that never existed, a race this connection
     #: lost to one that routed first, or an endpoint walled in on every
-    #: allowed layer — three very different fixes wearing one word. Always
-    #: empty for ``router='tangent'`` (nothing there is ever unrouted).
+    #: allowed layer — three very different fixes wearing one word.
     unrouted_reasons: tuple[UnroutedReason, ...] = ()
     #: Plane-promoted nets :func:`_stitch_plane_fragments` could NOT bring
     #: to a single connected piece within its own bounded attempt (module
     #: docstring's stitching note, gripe 270637). Always empty for
     #: ``router='tangent'`` (that drawer never pours a plane at all) and
-    #: usually empty for ``'maze'`` too — non-empty is this pass's own
+    #: usually empty — non-empty is this pass's own
     #: honest "tried and could not", independent of whatever
     #: :func:`precis.pcb.connectivity.net_islands` separately finds.
     unstitched: tuple[UnstitchedNet, ...] = ()
@@ -1030,8 +368,7 @@ class RealizeResult:
     #: one never entered the search at all) and from ``tracks`` (no
     #: derived copper is emitted for a segment realized this way — the
     #: whole point is that none is needed). Always empty when ``realize``
-    #: was called with no ``fixed_copper``, and always empty for
-    #: ``router='tangent'`` (that drawer does not accept the keyword).
+    #: was called with no ``fixed_copper``.
     #:
     #: **Known residue, stated rather than hidden**: only a segment whose
     #: BOTH pins land in one fixed-copper island qualifies for THIS
@@ -1058,22 +395,20 @@ class RealizeResult:
     #: What the negotiated-congestion loop did, when it ran
     #: (``config.negotiate_iterations > 0`` AND the re-ordering passes
     #: left a net unrouted); ``None`` otherwise. The route job prints
-    #: :meth:`NegotiationReport.line` so a ``negotiate=N`` run that gains
+    #: :meth:`EscapeReport.line` so a ``negotiate=N`` run that gains
     #: nothing says whether the loop converged, ran out of time, or never
     #: settled — the three very different next steps.
-    negotiation: NegotiationReport | None = None
     #: One line per net class whose ``"layers"`` rule names layers this
     #: stackup does not route on while at least one named layer does
     #: (:func:`class_layer_drops`, gr472108): :func:`_net_class_layers`
     #: silently narrows such a class, and only a class left with NOTHING
-    #: fails as ``'layer_lock'``. Empty for ``router='tangent'``.
+    #: fails as ``'layer_lock'``.
     class_layer_drops: tuple[str, ...] = ()
-    #: PathFinder's final present-congestion per cell (:class:`CongestionCell`),
+    #: PathFinder's final present-congestion per cell (:class:`CongestionWarning`),
     #: from the LAST negotiation iteration's usage map — the
     #: over-subscribed cells the loop ended on, win or lose, grid-to-mm
     #: provenance included. Empty whenever ``negotiate_iterations`` was 0
     #: or no net was left unrouted for the loop to contest.
-    congestion_cells: tuple[CongestionCell, ...] = ()
     #: How whole each plane net's fill is, per (net, layer): pieces,
     #: largest piece's area share, narrowest neck
     #: (:func:`precis.pcb.planes.pour_quality`, pcb-stackup-regions slice
@@ -1085,62 +420,8 @@ class RealizeResult:
     #: (:func:`_drop_bare_islands`, pcb-floating-pour-island). Reported per
     #: net in the route note; never silent.
     dropped_islands: tuple[DroppedIsland, ...] = ()
-    #: What the route clean-up post-pass did (:mod:`precis.pcb.routeclean`);
-    #: ``None`` when it did not run (flag off, no ``cleanup_check``, or the
-    #: tangent drawer).
-    cleanup: CleanupReport | None = None
-    #: What the vector escape post-pass did (:mod:`precis.pcb.vroute`);
-    #: ``None`` when it did not run.
-    escape: vroute.EscapeReport | None = None
-
-
-#: The route clean-up pass's DRC half (:func:`realize`'s ``cleanup_check``):
-#: finding counts keyed by ``(rule, severity)`` over a board's tracks and
-#: vias before pours. Supplied by the caller so the producer never imports
-#: its own checker (module docstring).
-CleanupCheck = Callable[
-    [PcbIR, Sequence["RealizedTrack"], Sequence["RealizedVia"]],
-    Mapping[tuple[str, str], int],
-]
-
-
-@dataclass(frozen=True, slots=True)
-class CleanupReport:
-    """One clean-up pass (:mod:`precis.pcb.routeclean`): moves kept and
-    tried, and what the kept moves saved. Deltas are positive savings."""
-
-    kept: int
-    tried: int
-    length_saved_mm: float
-    bends_saved: int
-    vias_saved: int
-    out_of_time: bool
-    elapsed_s: float
-    #: Tracks the detector flagged (avoidable bends or detour), tried or not.
-    victims: int = 0
-    #: Why the pass did not run (:func:`precis.pcb.routeclean.cleanup`'s
-    #: gate); empty when it did.
-    skipped: str = ""
-
-    def line(self) -> str:
-        """The route summary line; always present when the pass ran, so a
-        silent no-op is distinguishable from a pass that never ran."""
-        if self.skipped:
-            return f"cleanup: skipped ({self.skipped})"
-        if not self.tried:
-            return (
-                f"cleanup: 0 moves kept, 0 tried ({self.victims} kinked/detoured "
-                "track(s), none with a foreign via blocking its straight line)"
-            )
-        out = (
-            f"cleanup: {self.kept} moves kept, {self.tried} tried, "
-            f"length -{self.length_saved_mm:.2f} mm, bends -{self.bends_saved}"
-        )
-        if self.vias_saved:
-            out += f", vias -{self.vias_saved}"
-        if self.out_of_time:
-            out += f" (stopped at the {self.elapsed_s:.0f}s budget)"
-        return out
+    #: What the vector route pass did (:mod:`precis.pcb.vroute`).
+    vector: vroute.EscapeReport | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1187,11 +468,11 @@ class UnroutedReason:
       that resolves to NO usable layer on this board — a name absent from
       the stackup, or one that intersects this board's routable signal
       layers to nothing. Never silently widened back to the full signal-
-      layer set; the segment never reaches ``grid.route`` at all
-      (:func:`_net_class_layers`, checked in :func:`_route_pass`).
+      layer set; the segment never reaches ``vroute.route`` at all
+      (:func:`_net_class_layers`, checked in :func:`_realize_vector`).
     - ``'search_budget'`` — a search ran out of ``max_expansions`` before
       finding a path or proving there is none. Two origins: the segment's
-      REAL search on the busy grid exhausted (:func:`_route_pass` records
+      REAL search on the busy grid exhausted (:func:`_realize_vector` records
       it — reported directly, never re-probed, since a pads-only probe
       that finds a corridor would mislabel the budget failure
       ``'congestion'``; gr489909, 2026-10-20), or the diagnosis's own
@@ -1282,7 +563,7 @@ def _gap_usage(
     return warnings
 
 
-# ── the maze router ───────────────────────────────────────────────────────
+# ── the vector router ───────────────────────────────────────────────────────
 
 
 def _signal_layers(ir: PcbIR) -> list[int]:
@@ -1305,7 +586,7 @@ def _side_layer[T](ir: PcbIR, inst_id: int, layers: Sequence[T]) -> T:
     generic over ``layers``' element type so both existing hand-copies of
     this ternary collapse onto it: :func:`pads_for_ir` walks a stackup
     NAME list (``layers[-1] if bottom else layers[0]``, for the gerber/DRC
-    pad dict's own ``"layer"`` key) and :func:`_realize_maze` below walks
+    pad dict's own ``"layer"`` key) and :func:`_realize_vector` below walks
     :func:`_signal_layers`' routable INDEX list (for the router's
     occupancy grid, which only ever speaks in indices) — two different
     element types answering the identical "which side does this instance
@@ -1313,56 +594,6 @@ def _side_layer[T](ir: PcbIR, inst_id: int, layers: Sequence[T]) -> T:
     own docstring warns "One rule, two call sites" about (see
     :func:`pads_for_ir`'s docstring, gr341516)."""
     return layers[-1] if bool(ir.inst_bottom[inst_id]) else layers[0]
-
-
-def _layer_preferences(ir: PcbIR, signal_layers: list[int]) -> dict[int, str]:
-    """Per-group H/V/diagonal axis assignment
-    (:func:`precis.pcb.maze.preferred_directions`), computed separately
-    for the OUTER and INNER members of ``signal_layers`` rather than once
-    over the whole routable set.
-
-    ``preferred_directions`` cycles H, V, diagonal, H, ... in STACKUP
-    INDEX order over whatever list it is given — feeding it the whole
-    routable set in one call means an outer layer (always the lowest
-    index once it is ALSO routable) claims 'H' first and pushes every
-    inner layer's axis one further round the cycle for each outer layer
-    that precedes it. That is invisible today (:data:`precis.pcb.
-    DEFAULT_STACKUP`: only F.Cu/B.Cu are routable, and a single call over
-    ``[0, 3]`` already gives F.Cu='H', B.Cu='V') but wrong the moment an
-    inner layer becomes ALSO routable — this module's new "a layer can
-    carry BOTH traces and copper fill" capability: a board with all four
-    layers routable and no split would give F.Cu='H', In1.Cu='V',
-    In2.Cu='diagonal', B.Cu='H', not the In1='H'/In2='V' a caller who
-    explicitly marked exactly those two layers routable actually asked
-    for.
-
-    Splitting by :func:`precis.pcb.rules.layer_is_outer` (the SAME
-    inner/outer question :mod:`precis.pcb.rules`'s IPC-2221 width
-    resolver already asks, reused rather than re-derived) restarts the
-    H/V/diagonal cycle at each group's own first (lowest-index) member,
-    so In1.Cu — the first INNER routable layer — gets 'H' and In2.Cu gets
-    'V' regardless of how many outer layers are also routable. Two calls
-    into a pure, order-preserving function and a dict merge; no change to
-    :mod:`precis.pcb.maze` itself.
-
-    **The stackup's own ``direction`` wins** (pcb-stackup-regions slice 3):
-    a layer that names one gets that axis (:func:`precis.pcb.ir.
-    direction_token`), ``'any'`` removes its preference so no step on it
-    pays the off-axis price; the index-order cycle above is only the
-    fallback for a layer that names none."""
-    outer = [layer for layer in signal_layers if layer_is_outer(ir, layer)]
-    inner = [layer for layer in signal_layers if not layer_is_outer(ir, layer)]
-    prefs = {**maze.preferred_directions(outer), **maze.preferred_directions(inner)}
-    for layer in signal_layers:
-        entry = ir.stackup[layer] if 0 <= layer < len(ir.stackup) else {}
-        if "direction" not in entry:
-            continue
-        token = direction_token(entry["direction"])
-        if token is None:
-            prefs.pop(layer, None)
-        else:
-            prefs[layer] = token
-    return prefs
 
 
 def class_layer_drops(
@@ -1401,7 +632,7 @@ def _net_class_layers(
     human-legible reason naming the offending class/layer — a name this
     stackup doesn't carry, or one that intersects ``signal_layers`` to
     nothing (e.g. a plane-only or otherwise non-routable layer) — for a
-    caller (:func:`_realize_maze`) to fail the net LEGIBLY as
+    caller (:func:`_realize_vector`) to fail the net LEGIBLY as
     ``UnroutedReason(kind="layer_lock")`` rather than silently routing on
     the full set anyway (module-wide "fail legibly" discipline, same as
     every other :class:`UnroutedReason` kind)."""
@@ -1446,9 +677,9 @@ def _resolve_route_end(
     a fabricated point on bare board where this pin has no real copper.
     ``(None, None, candidates)`` when neither the native pad nor any
     candidate lands on an allowed layer: this end genuinely has no legal
-    way to route on the locked layer set, for :func:`_route_pass`'s own
+    way to route on the locked layer set, for :func:`_realize_vector`'s own
     caller to fail the whole segment on rather than force an illegal
-    ``grid.route`` call (``start_layer``/``goal_layer`` outside its own
+    ``vroute.route`` call (``start_layer``/``goal_layer`` outside its own
     ``layers=`` set refuses unconditionally)."""
     if native_layer in allowed_set:
         # A drilled primary pad's OTHER-layer landings (kind
@@ -1465,7 +696,7 @@ def _resolve_route_end(
 def _outline_bbox(ir: PcbIR) -> tuple[float, float, float, float] | None:
     """The outline's bounding box, or ``None`` when the design authored
     no outline — the one place both ``_outline_clip`` and the routing
-    grid's edge keep-out (:class:`precis.pcb.maze.EdgeKeepout`) read the
+    grid's edge keep-out (the edge keep-out) read the
     boundary from."""
     if not ir.outline or len(ir.outline) < 3:
         return None
@@ -1516,36 +747,6 @@ def _board_edge_min_mm(config: RealizeConfig) -> float:
     )
 
 
-def _clamp_via_into_board(
-    ir: PcbIR, config: RealizeConfig, x: float, y: float, via_dia_mm: float
-) -> tuple[float, float]:
-    """Pull a via centre inside the board-edge inset for its OWN diameter.
-
-    **Why a clamp and not a check.** Ampacity vias
-    (:func:`_current_vias`) are anchored to a track ENDPOINT — a pad
-    coordinate — and never consult the routing grid, so
-    :func:`_outline_clip`'s inset, which is what keeps every grid-placed
-    via legal, simply does not apply to them. A pad placed legally can
-    still sit nearer the edge than a via hung off it may go, and the
-    result was measured on the 40mm reference fixture: a VCC3V3 via
-    0.010mm inside the 0.400mm V-cut floor, reported by the checker and
-    fixable by nothing upstream, because no code owned the question.
-
-    The group is already spread off its anchor by design (see
-    ``_current_vias``), so a small correction keeps it on its own pad's
-    copper. A LARGE one would not — a via dragged far from its endpoint
-    stops carrying current between layers, which is the whole reason it
-    exists. That case is left to :func:`precis.pcb.drc.check_connectivity`
-    to report rather than silently accepted here: a clamp that quietly
-    detaches a via would trade a reported defect for an unreported one.
-    """
-    clip = _outline_clip(ir, _board_edge_min_mm(config) + via_dia_mm / 2.0)
-    if clip is None:
-        return x, y
-    cx0, cy0, cx1, cy1 = clip
-    return min(max(x, cx0), cx1), min(max(y, cy0), cy1)
-
-
 def _seg_span_mm(ir: PcbIR, seg_id: int) -> float:
     a, b = int(ir.seg_pin_a[seg_id]), int(ir.seg_pin_b[seg_id])
     pa, pb = pin_point(ir, a), pin_point(ir, b)
@@ -1570,7 +771,7 @@ def pad_board_wh(geom: PadGeom, inst_rot: float) -> tuple[float, float]:
     **Two functions used to answer this question independently and
     disagree** (the defect :func:`precis.pcb.drc._copper_item_polygon`'s
     docstring names as this subsystem's most-repeated one):
-    :func:`_pad_shape` swapped, :func:`pads_for_ir` did not, so on the
+    :func:`pads_for_ir` swapped, :func:`pads_for_ir` did not, so on the
     esp32c3 reference board 45 synthesized pads on 90/270-rotated
     instances were claimed by the occupancy grid transposed 90 degrees
     from the pad the DRC, the gerber fallback and the fab preview
@@ -1584,7 +785,7 @@ def pad_board_wh(geom: PadGeom, inst_rot: float) -> tuple[float, float]:
     Only rect/obround have an orientation to get wrong: a circle's w/h
     are its diameter, and a polygon pad carries a true rotated ring
     instead. An oblique (non-90-degree-multiple) rotation is NOT handled
-    here — :func:`_pad_shape` claims a conservative enclosing circle for
+    here — :func:`pads_for_ir` claims a conservative enclosing circle for
     that case, and ``pads_for_ir`` emits the true rotated outline as a
     polygon pad (:func:`oblique_pad_ring`), so w/h are not read."""
     if geom.shape not in ("rect", "obround"):
@@ -1603,7 +804,7 @@ def pad_is_oblique(geom: PadGeom, inst_rot: float) -> bool:
     """True for a rect/obround pad whose board-space extent is NOT an
     axis-aligned box — the case :func:`pad_board_wh`'s w/h cannot describe
     and :func:`oblique_pad_ring` exists for. Same axis-alignment decision
-    :func:`_pad_shape` makes (a synthesized pad's off the instance
+    :func:`pads_for_ir` makes (a synthesized pad's off the instance
     rotation, a real pad's off :attr:`PadGeom.axis_aligned`)."""
     if geom.shape not in ("rect", "obround"):
         return False
@@ -1626,7 +827,7 @@ def oblique_pad_ring(
     semicircular caps of ``min(w, h) / 2`` joined along the long axis,
     tessellated at :data:`_OBLIQUE_CAP_SEGMENTS` per cap with every vertex
     ON the true arc (so the ring sits at most ~0.5% of the radius inside
-    the real outline, always within :func:`_pad_shape`'s circumscribed
+    the real outline, always within the pad claim's circumscribed
     circle)."""
     w, h = geom.w_mm, geom.h_mm
     local: list[tuple[float, float]]
@@ -1653,58 +854,6 @@ def oblique_pad_ring(
         px, py = landpattern.rotate_offset(lx, ly, geom.pad_rot_deg)
         out.append(landpattern.rotate_offset(px, py, rot, mirrored=mirrored))
     return out
-
-
-def _pad_shape(
-    geom: PadGeom, point: Point, inst_rot: float, *, mirrored: bool = False
-) -> maze.PadShape:
-    """One pin's TRUE footprint as a :class:`~precis.pcb.maze.PadShape`
-    (gripe 346962) — the router's fine-pitch fix: an enclosing circle for
-    every pad let a neighbour's claim steal a pad's own centre cell at
-    0.8mm QFP pitch (``docs/backlog`` — HV507, C639448).
-
-    - ``shape == "polygon"``: the true ring, mirrored (bottom side) then
-      rotated by ``inst_rot`` about ``point`` through :mod:`precis.pcb.pose`
-      — the SAME transform :func:`pads_for_ir` and the fab path
-      (:func:`~precis.pcb.padplace.place_footprint_pads`) apply to the ring.
-    - ``shape == "circle"``: a disc, radius ``max(w, h) / 2`` — orientation
-      never matters for a round pad.
-    - ``shape in ("rect", "obround")`` and axis-aligned in board space: an
-      axis-aligned rect at ``geom.w_mm`` x ``geom.h_mm``. A REAL pad's
-      w/h are already board-oriented when ``geom.axis_aligned`` (its own
-      docstring); a SYNTHESIZED pad's are footprint-local (the IR carries
-      no per-pin rotation, see :func:`~precis.pcb.ir.
-      instance_courtyard_polygon`'s own note), so this swaps them itself
-      off ``inst_rot`` when that instance sits at a 90°-multiple.
-    - Anything else — an oblique (non-90°-multiple) rotation, or an
-      unrecognised shape word — falls back to the OLD conservative
-      enclosing circle every pad used before this change (the same limit
-      :func:`~precis.pcb.padplace.place_footprint_pads`'s own
-      aperture-less writer already has for a non-90° rotation, module
-      docstring)."""
-    inst_rot = 0.0 if math.isnan(inst_rot) else inst_rot
-    if geom.shape == "polygon" and geom.poly:
-        poly = tuple(
-            (point[0] + rvx, point[1] + rvy)
-            for rvx, rvy in (
-                pose.rel_to_world(vx, vy, inst_rot, mirrored=mirrored)
-                for vx, vy in geom.poly
-            )
-        )
-        return maze.PadShape("poly", point[0], point[1], poly=poly)
-    if geom.shape == "circle":
-        return maze.PadShape("circle", point[0], point[1], geom.w_mm, geom.h_mm)
-    if geom.shape in ("rect", "obround"):
-        w, h = pad_board_wh(geom, inst_rot)
-        axis_aligned = (
-            padplace.pad_axis_aligned(inst_rot)
-            if geom.synthesized
-            else geom.axis_aligned
-        )
-        if axis_aligned:
-            return maze.PadShape("rect", point[0], point[1], w, h)
-    diameter = math.hypot(geom.w_mm, geom.h_mm)
-    return maze.PadShape("circle", point[0], point[1], diameter, diameter)
 
 
 def _net_clearances(
@@ -1749,277 +898,6 @@ def _board_coated(ir: PcbIR) -> bool:
     return any(fp.raw.get("role") == "electrode" for fp in ir.footprint_pads)
 
 
-@dataclass(frozen=True, slots=True)
-class _RouteContext:
-    """Everything a routing attempt is built from, before the first
-    search — factored out of :func:`_realize_maze`'s preamble so the
-    tile-capacity planner (:func:`precis.pcb.globalplan.corridor_attempt`)
-    and the capacity map (``view='congestion'``) build the SAME static
-    grid a real pass would, rather than a second copy of the pad/fixed-
-    copper claim list that would drift."""
-
-    signal_layers: list[int]
-    pad_geoms: list[PadGeom]
-    pads: list[tuple[Point, int, maze.PadShape, tuple[int, ...]]]
-    rules_by_net: dict[int, NetRules]
-    net_layers: dict[int, list[int]]
-    net_layer_lock_fail: dict[int, str]
-    #: The smallest net clearance on the board: the grid's base figure and
-    #: what the pitch is cut from. ``net_clearance`` carries every net's
-    #: own; ``clearance_max`` the widest, for the board-edge inset and the
-    #: plane pours, which apply one figure to every net.
-    clearance: float
-    net_clearance: dict[int, float]
-    clearance_max: float
-    spec: maze.GridSpec
-    plane_ids: list[int]
-    route_ids: list[int]
-    order: list[int]
-    ink_field: _InkField | None
-    body_mask: np.ndarray
-    island_terminals: dict[int, tuple[_EndTerminals, _EndTerminals]]
-    fixed_copper: list[dict[str, Any]] | None
-    edge_min: float
-    #: Plane-net pins whose fixed-copper island already reaches one of
-    #: their net's poured layers (:func:`_plane_served_pins`) — the plane
-    #: fan-out draws no drop via for these.
-    plane_served_pins: frozenset[int] = frozenset()
-    #: :func:`_net_layer_clearances` — the per-(net, layer) figures.
-    net_layer_clearance: dict[tuple[int, int], float] = field(default_factory=dict)
-    #: :func:`_track_reserved_regions` — ``(layer, polygon, owner net
-    #: name)`` areas no other net's track may cross.
-    reserved_regions: tuple[tuple[int, Any, str], ...] = ()
-
-
-def _route_context(
-    ir: PcbIR,
-    ids: list[int],
-    config: RealizeConfig,
-    footprints: dict[str, dict[str, Any]] | None,
-    fixed_copper: list[dict[str, Any]] | None,
-) -> _RouteContext | None:
-    """The :func:`_realize_maze` preamble, standalone — ``None`` when the
-    board has no pads or no routable nets (the maze's early-out cases)."""
-    signal_layers = _signal_layers(ir)
-    # Every board layer, not just the routable ones -- what a DRILLED pad's
-    # claim spans below (same "a hole is a physical fact on every layer,
-    # routable or not" convention `_claim_mounting_holes`/
-    # `_claim_fixed_copper`'s via handling already use, `range(0,
-    # grid.spec.n_layers)`, and what `maze.grid_for` is given as
-    # `n_layers` a few lines down -- this is that same count, read once).
-    n_board_layers = len(ir.stackup) or 1
-    # Each pad's own keep-out radius, not one flat constant for every pin
-    # regardless of package — see PcbIR.pin_w's docstring for the defect
-    # this closes. `pad_geometry` is the ONE place that decides real vs
-    # synthesized per pin; the router only ever asks it for a size.
-    pad_geoms = pad_geometry(ir, footprints)
-    # 4th element: the LAYERS this pad's claim spans. **A trace may
-    # legally run on a DIFFERENT layer under an SMD pad** (the pad's
-    # copper is a flash on ONE side; the board under it is real routable
-    # space on every other layer) **but never through a drilled hole**,
-    # which is physical copper on every layer it plates, exactly like a
-    # via (`drc.py::clearance_pairs_indexed`'s own "a drilled pad has no
-    # single `item['layer']` either" note, gr341516, is the same fact
-    # this router-side claim now honours). So an SMD pad claims one entry
-    # -- `_side_layer`'s bottom/top resolution within `signal_layers`,
-    # the same rule `pads_for_ir` applies over the stackup NAME list --
-    # and a drilled (THT/plated) pad claims every board layer, keyed off
-    # `PadGeom.drill_mm` truthy (`geom.drill_mm`), the SAME "drilled"
-    # signal `drc.py` already reads off a pad dict's own `"drill"` key.
-    pads: list[tuple[Point, int, maze.PadShape, tuple[int, ...]]] = []
-    for pid in range(ir.n_pins):
-        point = pin_point(ir, pid)
-        if point is not None:
-            geom = pad_geoms[pid]
-            inst_rot = float(ir.inst_rot[int(ir.pin_instance[pid])])
-            shape = _pad_shape(
-                geom,
-                point,
-                inst_rot,
-                mirrored=bool(ir.inst_bottom[int(ir.pin_instance[pid])]),
-            )
-            net = int(ir.pin_net[pid])
-            if net == NO_NET:
-                # LATENT DEFECT, found while testing this change (not part
-                # of items 1-3, fixed in passing because it lives in this
-                # exact loop): NO_NET is -1, the SAME value as
-                # maze.FREE. Stamping an unconnected (test-point/NC/
-                # mounting-hole) pin's pad under net=-1 makes it read as
-                # genuinely EMPTY board to every other net's `owner !=
-                # FREE` foreign-copper test — the pad is real copper that
-                # the router could then route straight through with zero
-                # clearance. Give every unconnected pin its own sentinel,
-                # guaranteed distinct from FREE (-1), CONTESTED (-2), and
-                # every real net id (0..n_nets-1) — and distinct PER PIN,
-                # so two NC pads are never treated as one shared net
-                # either (each is its own island of copper that nothing,
-                # including another NC pad, may route through).
-                net = ir.n_nets + pid
-            layers = (
-                tuple(range(n_board_layers))
-                if geom.drill_mm
-                else (_side_layer(ir, int(ir.pin_instance[pid]), signal_layers),)
-            )
-            pads.append((point, net, shape, layers))
-    if not pads:
-        return None
-    rules_by_net = {
-        n: _resolve_track_rules(ir, n, PAD_LAYER, config) for n in range(ir.n_nets)
-    }
-    if not rules_by_net:
-        return None
-    # Rulings 2026-09-19 item 7 — per-net layer lock, resolved ONCE
-    # (net-class-derived, not attempt-derived, same "built once outside
-    # the retry loop" reasoning as `rules_by_net` itself). A net absent
-    # from `net_layer_lock_fail` routes on `net_layers[net_id]`, which is
-    # `signal_layers` itself for the overwhelming majority with no
-    # `"layers"` override.
-    net_layers: dict[int, list[int]] = {}
-    net_layer_lock_fail: dict[int, str] = {}
-    for n in rules_by_net:
-        layers_n, problem = _net_class_layers(ir, n, config, signal_layers)
-        net_layers[n] = layers_n
-        if problem is not None:
-            net_layer_lock_fail[n] = problem
-    # Per net, not one global max (slice 9, pcb-lazy-netlist-and-checks):
-    # one 0.4 mm HV class inflating every net to 0.4 mm made the 0.099 mm
-    # fabric unroutable. The grid keeps the smallest as its base and each
-    # wider net carries its difference (maze.py, "Per-net clearance").
-    net_clearance = _net_clearances(rules_by_net, config)
-    net_layer_clearance = _net_layer_clearances(ir, rules_by_net, config)
-    clearance = min(net_clearance.values())
-    clearance_max = max([*net_clearance.values(), *net_layer_clearance.values()])
-    # The board-edge inset is a DIFFERENT figure from inter-net clearance
-    # (drc.check_board_edge_clearance reads board_edge_clearance_*_mm), and
-    # it applies to the copper's edge, so half the widest COPPER FEATURE has
-    # to come off it too. Take the house tier where the fab publishes one,
-    # so the result clears the advisory threshold and not merely the hard
-    # one.
-    edge_min = _board_edge_min_mm(config)
-    # A via is not a track (see maze.py's module docstring): its copper is
-    # an annulus at its OWN diameter, not the routing net's track width, and
-    # nothing downstream of this inset is via-aware — `grid.route`'s via
-    # search and `_shove_vias` both place a via anywhere the shared
-    # occupancy grid says is in-bounds, with no separate edge test of their
-    # own. `_outline_clip`'s bounds (fed straight into `maze.grid_for`) are
-    # therefore the ONE place "how far from the board edge may copper be"
-    # gets decided, for a track's centreline AND a via's centre alike — a
-    # via-blind inset here silently reused a track-sized margin for a
-    # via-sized hole. Widening the shared clip to the widest of every net's
-    # track width OR via diameter (rather than adding a second, via-only
-    # edge check at each placement site) keeps that one definition true:
-    # a per-site check would have to be threaded through both `maze.
-    # OccupancyGrid.route`'s via mask and `_shove_vias`'s candidate test,
-    # duplicating the same "distance to true edge" arithmetic this
-    # subsystem has already drifted out of step on once (see maze.py's
-    # via-vs-track mask history). The cost is symmetric: every track's
-    # routable margin also grows to the widest via's, not just the widest
-    # track's, giving up a little edge-adjacent routability on nets that
-    # never place a via there — the same "conservative is the safe
-    # direction" trade `stamp_disk`'s pad radius already makes.
-    widest = max(
-        max(r.track_width_mm for r in rules_by_net.values()),
-        max(
-            (r.via_dia_mm for r in rules_by_net.values() if r.via_dia_mm is not None),
-            default=0.0,
-        ),
-    )
-    edge_inset = max(clearance_max, edge_min) + widest / 2.0
-    # The coarsest cell the clearance survives. `maze` adds one cell of
-    # slack to every keep-out, so a cell is extra clearance a fine-pitch
-    # escape has to squeeze past. Measured on a 140-part 200 mm board
-    # (clearance 0.15 mm): 0.5 mm cells routed 8/89 nets, 0.15 mm 20/89,
-    # 0.1 mm 66/89. See `maze.grid_for`.
-    edge_bbox = _outline_bbox(ir)
-    spec = maze.grid_for(
-        [p for p, _, _, _ in pads],
-        n_layers=len(ir.stackup) or 1,
-        bounds=_outline_clip(ir, edge_inset),
-        max_pitch_mm=clearance * _PITCH_PER_CLEARANCE,
-        # `bounds` stays the clip it always was — but `grid_for` grows the
-        # grid back over a pad sitting outside it, and the band that opens
-        # between the clip and the grid edge used to be routable by every
-        # net at every width (gr497865: a 2.765 mm power trace's copper
-        # measured ON the outline). `edge` hands the searches the outline
-        # and the fab figure so each net keeps its own inset and an edge
-        # pad escapes through its own cells only.
-        edge=(
-            maze.EdgeKeepout(bbox=edge_bbox, min_mm=edge_min)
-            if edge_bbox is not None
-            else None
-        ),
-    )
-    # Appended AFTER `grid_for`, deliberately. The grid's pitch is cut
-    # from the point set it is given, so feeding it these lands would
-    # re-cut the pitch board-wide off pads that no net routes to -- a
-    # global change paid for a local obstacle. They still claim their
-    # cells, because `_stamp_pads` below rasterises a claim wherever it
-    # falls; the pitch just is not chosen for them.
-    pads.extend(
-        _footprint_pad_claims(
-            ir,
-            [str(entry.get("name") or "") for entry in ir.stackup],
-            signal_layers,
-            footprints,
-            n_board_layers,
-        )
-    )
-    plane_ids = [s for s in ids if int(ir.net_plane_layers[int(ir.seg_net[s])]) != 0]
-    route_ids = [s for s in ids if s not in set(plane_ids)]
-    # Shortest-first is the opening order. A short connection has the
-    # fewest alternative corridors, so letting a long one claim the board
-    # first strands it; a heuristic, not a guarantee, and the guarantee
-    # (no overlapping copper) does not depend on it.
-    order = sorted(route_ids, key=lambda s: _seg_span_mm(ir, s))
-    # Built ONCE, outside the retry loop below: courtyard ink is
-    # placement-derived (this section's module note), identical on every
-    # rip-up-and-retry attempt, so recomputing it per attempt would just
-    # be the same answer paid for again.
-    ink_field = _courtyard_ink_field(ir, config.fab_caps)
-    # Same "built ONCE, outside the retry loop" reasoning as `ink_field`
-    # right above: which grid cells sit under a placed part is
-    # placement-derived, so it does not change between rip-up-and-retry
-    # attempts.
-    body_mask = _courtyard_body_mask(ir, spec)
-    # Built ONCE, outside the retry loop, same reasoning as `ink_field`/
-    # `body_mask` above: which pins sit in a fixed-copper island is
-    # placement- and fixed-copper-derived, not attempt-derived. A pin's
-    # other pads (gr339236) follow its fixed-copper terminals.
-    fixed_terminals_by_pin = _island_terminals_by_pin(ir, footprints, fixed_copper)
-    island_terminals = _seg_island_terminals(
-        ir,
-        route_ids,
-        _merge_terminals(
-            fixed_terminals_by_pin,
-            _sibling_pad_terminals_by_pin(ir, footprints, signal_layers),
-        ),
-    )
-    plane_served_pins = _plane_served_pins(ir, plane_ids, fixed_terminals_by_pin)
-    return _RouteContext(
-        signal_layers,
-        pad_geoms,
-        pads,
-        rules_by_net,
-        net_layers,
-        net_layer_lock_fail,
-        clearance,
-        net_clearance,
-        clearance_max,
-        spec,
-        plane_ids,
-        route_ids,
-        order,
-        ink_field,
-        body_mask,
-        island_terminals,
-        fixed_copper,
-        edge_min,
-        plane_served_pins,
-        net_layer_clearance,
-        _track_reserved_regions(ir, config),
-    )
-
-
 def _plane_served_pins(
     ir: PcbIR,
     plane_ids: list[int],
@@ -2060,49 +938,594 @@ def _plane_served_pins(
     return frozenset(served)
 
 
-def _static_route_grid(
-    ir: PcbIR, ctx: _RouteContext, config: RealizeConfig
-) -> tuple[
-    maze.OccupancyGrid,
-    list[RealizedTrack],
-    list[RealizedVia],
-    list[int],
-    list[int],
-]:
-    """The occupancy grid one routing attempt starts from — ``ctx``'s
-    static claims (fixed copper, keep-outs, pads, plane fan-out) stamped,
-    no routed net. The tile-capacity planner and the ``view='congestion'``
-    capacity map measure this grid; the reorder passes each build their
-    own through :func:`_route_pass` as before."""
-    grid = maze.OccupancyGrid(
-        ctx.spec,
-        clearance_mm=ctx.clearance,
-        net_clearance_mm=ctx.net_clearance,
-        net_layer_clearance_mm=ctx.net_layer_clearance,
+@dataclass(frozen=True, slots=True)
+class _RouteContext:
+    """Everything one vector route pass is built from, before the first
+    search — factored out of :func:`_realize_vector`'s preamble so the
+    capacity map (``view='congestion'``) builds the same static context a
+    real pass would."""
+
+    signal_layers: list[int]
+    pad_geoms: list[PadGeom]
+    #: ``(point, net_id, enclosing_radius_mm, layers)`` per pin and per
+    #: non-primary footprint land; ``net_id`` uses the ``n_nets + pid``
+    #: sentinel for an unconnected pin.
+    pads: list[tuple[Point, int, float, tuple[int, ...]]]
+    rules_by_net: dict[int, NetRules]
+    net_layers: dict[int, list[int]]
+    net_layer_lock_fail: dict[int, str]
+    #: The smallest net clearance on the board; ``net_clearance`` carries
+    #: every net's own, ``clearance_max`` the widest (edge inset, pours).
+    clearance: float
+    net_clearance: dict[int, float]
+    clearance_max: float
+    plane_ids: list[int]
+    route_ids: list[int]
+    order: list[int]
+    ink_field: _InkField | None
+    island_terminals: dict[int, tuple[_EndTerminals, _EndTerminals]]
+    fixed_copper: list[dict[str, Any]] | None
+    edge_min: float
+    plane_served_pins: frozenset[int] = frozenset()
+    net_layer_clearance: dict[tuple[int, int], float] = field(default_factory=dict)
+    #: ``(layer, polygon, owner net name)`` areas no other net's track may
+    #: cross (:func:`_track_reserved_regions`).
+    reserved_regions: tuple[tuple[int, Any, str], ...] = ()
+
+
+def _route_context(
+    ir: PcbIR,
+    ids: list[int],
+    config: RealizeConfig,
+    footprints: dict[str, dict[str, Any]] | None,
+    fixed_copper: list[dict[str, Any]] | None,
+) -> _RouteContext | None:
+    """The :func:`_realize_vector` preamble, standalone — ``None`` when the
+    board has no pads or no routable nets."""
+    signal_layers = _signal_layers(ir)
+    # Every board layer, not just the routable ones — what a DRILLED pad's
+    # claim spans (a hole is a physical fact on every layer).
+    n_board_layers = len(ir.stackup) or 1
+    pad_geoms = pad_geometry(ir, footprints)
+    # 4th element: the LAYERS this pad's claim spans. A trace may run on a
+    # DIFFERENT layer under an SMD pad but never through a drilled hole.
+    pads: list[tuple[Point, int, float, tuple[int, ...]]] = []
+    for pid in range(ir.n_pins):
+        point = pin_point(ir, pid)
+        if point is not None:
+            geom = pad_geoms[pid]
+            net = int(ir.pin_net[pid])
+            if net == NO_NET:
+                # An unconnected pin gets its own sentinel, distinct from
+                # every real net and from every other NC pin — the pad is
+                # real copper nothing may route through.
+                net = ir.n_nets + pid
+            layers = (
+                tuple(range(n_board_layers))
+                if geom.drill_mm
+                else (_side_layer(ir, int(ir.pin_instance[pid]), signal_layers),)
+            )
+            pads.append((point, net, math.hypot(geom.w_mm, geom.h_mm) / 2.0, layers))
+    if not pads:
+        return None
+    rules_by_net = {
+        n: _resolve_track_rules(ir, n, PAD_LAYER, config) for n in range(ir.n_nets)
+    }
+    if not rules_by_net:
+        return None
+    net_layers: dict[int, list[int]] = {}
+    net_layer_lock_fail: dict[int, str] = {}
+    for n in rules_by_net:
+        layers_n, problem = _net_class_layers(ir, n, config, signal_layers)
+        net_layers[n] = layers_n
+        if problem is not None:
+            net_layer_lock_fail[n] = problem
+    net_clearance = _net_clearances(rules_by_net, config)
+    net_layer_clearance = _net_layer_clearances(ir, rules_by_net, config)
+    clearance = min(net_clearance.values())
+    clearance_max = max([*net_clearance.values(), *net_layer_clearance.values()])
+    # The board-edge inset is a DIFFERENT figure from inter-net clearance
+    # (drc.check_board_edge_clearance reads board_edge_clearance_*_mm).
+    edge_min = _board_edge_min_mm(config)
+    pads.extend(
+        _footprint_pad_claims(
+            ir,
+            [str(entry.get("name") or "") for entry in ir.stackup],
+            signal_layers,
+            footprints,
+            n_board_layers,
+        )
     )
-    grid.set_body_mask(ctx.body_mask)
-    tracks, vias, unrouted, failed_pins = _claim_static(
+    plane_ids = [s for s in ids if int(ir.net_plane_layers[int(ir.seg_net[s])]) != 0]
+    route_ids = [s for s in ids if s not in set(plane_ids)]
+    # Shortest-first is the opening order. A short connection has the
+    # fewest alternative corridors, so letting a long one claim the board
+    # first strands it; a heuristic, not a guarantee.
+    order = sorted(route_ids, key=lambda s: _seg_span_mm(ir, s))
+    ink_field = _courtyard_ink_field(ir, config.fab_caps)
+    fixed_terminals_by_pin = _island_terminals_by_pin(ir, footprints, fixed_copper)
+    island_terminals = _seg_island_terminals(
+        ir,
+        route_ids,
+        _merge_terminals(
+            fixed_terminals_by_pin,
+            _sibling_pad_terminals_by_pin(ir, footprints, signal_layers),
+        ),
+    )
+    plane_served_pins = _plane_served_pins(ir, plane_ids, fixed_terminals_by_pin)
+    return _RouteContext(
+        signal_layers,
+        pad_geoms,
+        pads,
+        rules_by_net,
+        net_layers,
+        net_layer_lock_fail,
+        clearance,
+        net_clearance,
+        clearance_max,
+        plane_ids,
+        route_ids,
+        order,
+        ink_field,
+        island_terminals,
+        fixed_copper,
+        edge_min,
+        plane_served_pins,
+        net_layer_clearance,
+        _track_reserved_regions(ir, config),
+    )
+
+
+def _layer_index(ir: PcbIR) -> tuple[list[str], dict[str, int], int]:
+    """``(layer names, name→index, layer count)`` for the stackup."""
+    names = [str(e.get("name")) for e in ir.stackup]
+    return names, {name: i for i, name in enumerate(names)}, len(names) or 1
+
+
+def _space_clearance(ir: PcbIR, ctx: _RouteContext) -> Callable[[str, int], float]:
+    """The per-(net-name, layer) routing clearance a :class:`vroute.Space`
+    indexes by — ``ctx.net_layer_clearance`` then ``ctx.net_clearance``,
+    floored at the board minimum for a name the IR does not carry."""
+    net_id = {str(ir.net_name[i]): i for i in range(len(ir.net_name))}
+
+    def clearance(net: str, layer: int) -> float:
+        nid = net_id.get(net)
+        if nid is None:
+            return float(ctx.clearance)
+        return float(
+            ctx.net_layer_clearance.get(
+                (nid, layer), ctx.net_clearance.get(nid, ctx.clearance)
+            )
+        )
+
+    return clearance
+
+
+def _keepout_obstacles(
+    ir: PcbIR, config: RealizeConfig, n_layers: int
+) -> list[vroute.Obstacle]:
+    """Fiducial candidate sites, mounting-hole/NPTH rings and (opt-in) the
+    silk-outline via keep-outs — one ``"__keepout__"``-netted obstacle
+    each, so every real net treats them as foreign on every layer.
+    ``blocks_vias=True`` makes them bar via sites too; the silk lines are
+    ``via_only`` (tented copper under ink is fine, an annulus is not)."""
+    out: list[vroute.Obstacle] = []
+    all_layers = frozenset(range(n_layers))
+    # Fiducials are minted by the handler at render/DRC time; claim the
+    # obstacle-independent candidate SUPERSET so the router never draws
+    # through the spot the mint later picks.
+    if ir.outline and len(ir.outline) >= 3:
+        for _corner, (fx, fy) in pcb_silk.fiducial_candidate_sites(ir.outline, ir=ir):
+            out.append(
+                vroute.Obstacle(
+                    Body(
+                        _ShapelyPoint(fx, fy),
+                        (),
+                        pcb_silk.FIDUCIAL_MASK_DIA_MM / 2.0,
+                    ),
+                    "__keepout__",
+                    all_layers,
+                    blocks_vias=True,
+                )
+            )
+    npth = _npth_clearance_mm(config)
+    for hole in ir.mounting_holes:
+        r = max(float(hole.drill_mm), float(hole.ring_dia_mm)) / 2.0
+        if r <= 0.0:
+            continue
+        if not hole.plated and float(hole.ring_dia_mm) <= 0.0:
+            # A bare NPTH hole owes copper npth_clearance_mm, not the
+            # board's net clearance — grow the keep-out by the difference.
+            r += max(0.0, npth - config.clearance_mm)
+        out.append(
+            vroute.Obstacle(
+                Body(_ShapelyPoint(float(hole.x), float(hole.y)), (), r),
+                "__keepout__",
+                all_layers,
+                blocks_vias=True,
+            )
+        )
+    if config.silk_via_keepout:
+        for line, margin in pcb_silk.outline_via_keepouts(
+            ir, capability=config.fab_caps
+        ):
+            out.append(
+                vroute.Obstacle(
+                    Body(_ShapelyLineString(line), (), margin),
+                    "__silk__",
+                    all_layers,
+                    via_only=True,
+                )
+            )
+    return out
+
+
+def _static_obstacles(
+    ir: PcbIR,
+    ctx: _RouteContext,
+    config: RealizeConfig,
+    footprints: dict[str, dict[str, Any]] | None,
+    fixed_copper: list[dict[str, Any]] | None,
+) -> list[vroute.Obstacle]:
+    """Pads, authored fixed copper, keep-outs and reserved track regions —
+    everything a route pass is checked against before the first search."""
+    names, index, n = _layer_index(ir)
+    obstacles: list[vroute.Obstacle] = []
+    for pad in pads_for_ir(ir, names, footprints):
+        obstacles += vroute.obstacles_of({**pad, "ctype": "pad"}, index, n)
+    for row in fixed_copper or []:
+        if row.get("ctype") in ("track", "via", "pour"):
+            obstacles += vroute.obstacles_of(row, index, n)
+    obstacles += _keepout_obstacles(ir, config, n)
+    for layer, poly, owner in ctx.reserved_regions:
+        obstacles.append(
+            vroute.Obstacle(
+                Body(poly, (), 0.0), owner, frozenset((layer,)), track_only=True
+            )
+        )
+    return obstacles
+
+
+def _static_space(
+    ir: PcbIR,
+    ctx: _RouteContext,
+    config: RealizeConfig,
+    footprints: dict[str, dict[str, Any]] | None,
+) -> tuple[vroute.Space, list[RealizedTrack], list[RealizedVia], list[int], list[int]]:
+    """The Space one route pass starts from — static obstacles plus the
+    plane fan-out's own stub+drop-via copper, reserved into the space as
+    it is placed. Returns the space, the fan-out's copper, the plane
+    segments it could not serve and the PIN ids it could not give a legal
+    drop."""
+    space = vroute.Space(
+        _static_obstacles(ir, ctx, config, footprints, ctx.fixed_copper),
+        _space_clearance(ir, ctx),
+    )
+    tracks, vias, failed = _plane_fanout(
         ir,
         ctx.plane_ids,
-        grid,
+        space,
         config,
         ctx.rules_by_net,
-        ctx.pads,
         ctx.pad_geoms,
-        ctx.ink_field,
-        ctx.fixed_copper,
-        plane_served_pins=ctx.plane_served_pins,
+        ink_field=ctx.ink_field,
+        served_pins=ctx.plane_served_pins,
     )
-    return grid, tracks, vias, unrouted, failed_pins
+    unrouted: list[int] = []
+    # A pin with no legal drop leaves its net's segments unserved; report
+    # the segments (the unit ``unrouted`` is counted in) and keep the pin
+    # ids themselves for ``UnroutedReason.pins``.
+    if failed:
+        stranded = {int(ir.pin_net[p]) for p in failed}
+        unrouted += [s for s in ctx.plane_ids if int(ir.seg_net[s]) in stranded]
+    return space, tracks, vias, unrouted, list(failed)
 
 
-def _realize_maze(
+def _pads_only_space(
+    ir: PcbIR,
+    ctx: _RouteContext,
+    config: RealizeConfig,
+    footprints: dict[str, dict[str, Any]] | None,
+    fixed_copper: list[dict[str, Any]] | None,
+) -> vroute.Space:
+    """The Space :func:`_diagnose_unrouted` probes: every static obstacle
+    and pad, no routed copper — answers "does a corridor exist at all"."""
+    return vroute.Space(
+        _static_obstacles(ir, ctx, config, footprints, fixed_copper),
+        _space_clearance(ir, ctx),
+    )
+
+
+def _final_board_space(
+    ir: PcbIR,
+    tracks: list[RealizedTrack],
+    vias: list[RealizedVia],
+    ctx: _RouteContext,
+    config: RealizeConfig,
+    footprints: dict[str, dict[str, Any]] | None,
+    fixed_copper: list[dict[str, Any]] | None,
+) -> vroute.Space:
+    """A FRESH Space stamped from the finished tracks, vias and pads: the
+    real final board (pours are never stamped)."""
+    names, index, n = _layer_index(ir)
+    obstacles = _static_obstacles(ir, ctx, config, footprints, fixed_copper)
+    obstacles += _copper_obstacles(tracks, vias, ir, index, n, names)
+    return vroute.Space(obstacles, _space_clearance(ir, ctx))
+
+
+def _via_join_layers(path: vroute.VPath) -> list[tuple[int, int]]:
+    """Per via site, the ``(pre, post)`` run layers it joins — a via sits
+    exactly on the boundary between consecutive runs (the run ends and
+    the next starts at the via's coordinate)."""
+    out: list[tuple[int, int]] = []
+    for x, y in path.vias:
+        lo = hi = 0
+        for layer, pts in path.runs:
+            if pts[-1] == (x, y):
+                lo = layer
+            if pts[0] == (x, y):
+                hi = layer
+        out.append((lo, hi))
+    return out
+
+
+def _vpath_points(path: vroute.VPath) -> list[tuple[float, float, int]]:
+    """A ``VPath`` as ``(x, y, layer)`` triples — every run's points on
+    its layer, plus each via site on the two run layers it joins."""
+    pts = [(x, y, layer) for layer, run in path.runs for x, y in run]
+    for (x, y), (lo, hi) in zip(path.vias, _via_join_layers(path), strict=True):
+        pts.append((x, y, lo))
+        pts.append((x, y, hi))
+    return pts
+
+
+def _describe_used_terminal(
+    used_start: vroute.Terminal,
+    used_goal: vroute.Terminal,
+    terms: tuple[_EndTerminals, _EndTerminals] | None,
+) -> str | None:
+    """The honesty half of the island-terminal seam: did this successful
+    route actually start or end on one of the extra candidates offered,
+    rather than the plain pad? Matched by exact coordinate — the vector
+    search only ever starts/ends on a terminal's exact point."""
+    if not terms:
+        return None
+    parts: list[str] = []
+    for which, used, ends in (
+        ("started from", used_start, terms[0]),
+        ("ended at", used_goal, terms[1]),
+    ):
+        for t, layer in ends:
+            if layer in used.layers and dist(t.point, (used.x, used.y)) < 1e-6:
+                parts.append(
+                    f"{which} {_terminal_noun(t)} at "
+                    f"({t.point[0]:.3f}, {t.point[1]:.3f}) on {t.layer}"
+                )
+                break
+    return "; ".join(parts) if parts else None
+
+
+def _copper_obstacles(
+    tracks: list[RealizedTrack],
+    vias: list[RealizedVia],
+    ir: PcbIR,
+    index: dict[str, int],
+    n: int,
+    names: list[str],
+) -> list[vroute.Obstacle]:
+    """Newly made copper as Space obstacles (gerber-model rows →
+    :func:`vroute.obstacles_of`), for stamping into a space."""
+    out: list[vroute.Obstacle] = []
+    interim = RealizeResult(tuple(tracks), tuple(vias), ())
+    for row in result_copper_rows(interim, ir, names):
+        out += vroute.obstacles_of(row, index, n)
+    return out
+
+
+def _copper_legal(
+    space: vroute.Space,
+    tracks: list[RealizedTrack],
+    vias: list[RealizedVia],
+    net_name: str,
+    ir: PcbIR,
+    index: dict[str, int],
+    n: int,
+    names: list[str],
+) -> bool:
+    """The final copper (filleted corners included) against the space —
+    a fillet bulges a corner's copper inward past the straight legs the
+    search proved clear, so emit only what the kernel still clears."""
+    for ob in _copper_obstacles(tracks, vias, ir, index, n, names):
+        for layer in ob.layers:
+            if not space.clears(ob.body, net_name, layer, via_site=ob.blocks_vias):
+                return False
+    return True
+
+
+def _route_seg_vector(
+    space: vroute.Space,
+    ir: PcbIR,
+    seg_id: int,
+    ctx: _RouteContext,
+    config: RealizeConfig,
+    index: dict[str, int],
+    n: int,
+    names: list[str],
+    spent: list[int],
+    island_notes: dict[int, str],
+    exhausted: set[int],
+) -> tuple[list[RealizedTrack], list[RealizedVia]] | None:
+    """One segment's vector route — ``None`` when the search found no
+    legal path within its share of the pass budget. Stamps the new copper
+    into ``space`` on success; a layer-locked-to-nothing net returns
+    ``None`` without searching (:class:`UnroutedReason` ``'layer_lock'``).
+
+    Island terminals (:attr:`RealizeResult.island_terminals`): each end's
+    candidate terminals are the pin's own pad first, then its
+    fixed-copper island / sibling-pad terminals on an allowed layer; pairs
+    are tried in order (cap 4) until ``vroute.route`` succeeds. A pad
+    whose own layer the net's class lock excludes simply yields an empty
+    ``start.layers ∩ layers`` — the search refuses it fast and the next
+    candidate pair is tried, which is what :func:`_resolve_route_end`'s
+    substitution did by hand for the grid."""
+    a, b = int(ir.seg_pin_a[seg_id]), int(ir.seg_pin_b[seg_id])
+    pa, pb = pin_point(ir, a), pin_point(ir, b)
+    assert pa is not None and pb is not None  # the caller skips these
+    net_id = int(ir.seg_net[seg_id])
+    name = str(ir.net_name[net_id])
+    rules = _seg_rules(ir, seg_id, ctx.rules_by_net, config)
+    allowed = tuple(ctx.net_layers.get(net_id, ctx.signal_layers))
+    if not allowed:
+        return None
+    # `ir.seg_layer` (the LAYER_ASSIGN move) is deliberately NOT consulted:
+    # it was a soft preference under the maze too — the router picks the
+    # layer that fits.
+    width = float(rules.track_width_mm)
+    allowed_set = set(allowed)
+    terms = ctx.island_terminals.get(seg_id)
+
+    def end_terms(pid: int, point: Point, cand: _EndTerminals) -> list[vroute.Terminal]:
+        geom = ctx.pad_geoms[pid]
+        pad_layers = (
+            frozenset(range(n))
+            if geom.drill_mm
+            else frozenset(
+                {_side_layer(ir, int(ir.pin_instance[pid]), ctx.signal_layers)}
+            )
+        )
+        # Pad first when the search may enter it directly; islands first
+        # when it cannot — a class lock whose pin already reaches the
+        # locked layer through fixed copper gets its free entry before the
+        # pad-only stub+via the term-only layer would have to buy.
+        direct = bool(pad_layers & allowed_set)
+        pad = vroute.Terminal(point[0], point[1], pad_layers)
+        islands = [
+            vroute.Terminal(t.point[0], t.point[1], frozenset({layer}))
+            for t, layer in cand
+            if layer in allowed_set
+        ]
+        return ([pad] + islands) if direct else (islands + [pad])
+
+    cands_a = end_terms(a, pa, terms[0] if terms else ())
+    cands_b = end_terms(b, pb, terms[1] if terms else ())
+    n_vias, group_extent = _via_group_extent(ir, seg_id, rules, ctx.clearance)
+    via = None
+    if rules.via_dia_mm is not None and rules.via_drill_mm is not None:
+        # Always offer the via geometry: an ampacity group's full extent
+        # when one applies, else the rule's own barrel — a layer change
+        # needs the spec whether the ampacity bookkeeping asked for one
+        # or not.
+        via = vroute.ViaSpec(
+            dia_mm=group_extent if group_extent is not None else rules.via_dia_mm,
+            drill_mm=rules.via_drill_mm,
+        )
+    inset = float(ctx.edge_min) + width / 2.0 + vroute.DELTA_MM
+    bbox = _outline_bbox(ir)
+    if bbox is not None:
+        x0, y0, x1, y1 = bbox
+        bounds = (x0 + inset, y0 + inset, x1 - inset, y1 - inset)
+    else:
+        bounds = (-1e6, -1e6, 1e6, 1e6)
+    remaining = int(config.max_expansions) - spent[0]
+    if remaining <= 0:
+        return None
+    path: vroute.VPath | None = None
+    used_pair: tuple[vroute.Terminal, vroute.Terminal] | None = None
+    attempts = 0
+    stats: dict[str, Any] = {}
+    for ts in cands_a:
+        for tg in cands_b:
+            if attempts >= 4:
+                break
+            # No terminal-layer ∩ route-layer check here: a pad sits on its
+            # own mount layer and the VIA is exactly what bridges from it
+            # into `allowed` — filtering on `allowed_set` would refuse the
+            # only legal terminal a layer-assigned segment has.
+            attempts += 1
+            req = vroute.Request(
+                net=name,
+                width_mm=width,
+                layers=allowed,
+                start=ts,
+                goal=tg,
+                bounds=bounds,
+                via=via,
+                via_layers=tuple(range(n)),
+                max_expansions=max(1, int(config.max_expansions) - spent[0]),
+            )
+            stats = {}
+            path = vroute.route(space, req, stats=stats)
+            spent[0] += int(stats.get("expansions", 0))
+            if path is not None:
+                used_pair = (ts, tg)
+                break
+        if path is not None or attempts >= 4:
+            break
+    if stats.get("stop") in ("budget", "exhausted"):
+        exhausted.add(seg_id)
+    if path is None:
+        return None
+    if used_pair is not None and terms:
+        note = _describe_used_terminal(used_pair[0], used_pair[1], terms)
+        if note:
+            island_notes[seg_id] = note
+    fillet = float(config.fillet_radius_tracks) * width
+    made: list[RealizedTrack] = []
+    for layer, pts in path.runs:
+        run = _track_from_run(
+            seg_id, net_id, layer, pts, width, fillet_radius_mm=fillet
+        )
+        if run and not _copper_legal(space, run, [], name, ir, index, n, names):
+            # The fillet bulged copper inward past a leg the search proved
+            # clear — emit the unfilleted run instead.
+            run = _track_from_run(seg_id, net_id, layer, pts, width)
+        made += run
+    made_vias: list[RealizedVia] = []
+    via_dia = rules.via_dia_mm
+    join_layers = _via_join_layers(path)
+    if via_dia is not None and rules.via_drill_mm is not None:
+        for (vx, vy), (lo_, hi_) in zip(path.vias, join_layers, strict=True):
+            pitch = via_dia + ctx.clearance
+            off0 = (n_vias - 1) / 2.0 * pitch
+            for k in range(n_vias):
+                made_vias.append(
+                    RealizedVia(
+                        seg_id,
+                        net_id,
+                        vx + off0 - k * pitch,
+                        vy,
+                        via_dia,
+                        rules.via_drill_mm,
+                        0,
+                        n - 1,
+                        "a",
+                    )
+                )
+            if n_vias > 1:
+                # The bar joining the group's barrels on the two layers
+                # the via joins — the group is ampacity-sized, the bar is
+                # what makes it one electrical thing.
+                for layer in dict.fromkeys((lo_, hi_)):
+                    made += _track_from_run(
+                        seg_id,
+                        net_id,
+                        layer,
+                        [(vx - off0, vy), (vx + off0, vy)],
+                        via_dia,
+                    )
+    if not _copper_legal(space, made, made_vias, name, ir, index, n, names):
+        return None
+    for ob in _copper_obstacles(made, made_vias, ir, index, n, names):
+        space.add(ob)
+    return made, made_vias
+
+
+def _realize_vector(
     ir: PcbIR,
     ids: list[int],
     config: RealizeConfig,
     footprints: dict[str, dict[str, Any]] | None = None,
     fixed_copper: list[dict[str, Any]] | None = None,
-    cleanup_check: CleanupCheck | None = None,
 ) -> tuple[
     list[RealizedTrack],
     list[RealizedVia],
@@ -2111,613 +1534,233 @@ def _realize_maze(
     list[UnroutedReason],
     list[UnstitchedNet],
     dict[int, str],
-    NegotiationReport | None,
-    tuple[CongestionCell, ...],
-    CleanupReport | None,
     vroute.EscapeReport | None,
 ]:
-    """Route ``ids`` on a shared occupancy grid — see :mod:`precis.pcb.
-    maze` for why this cannot emit overlapping copper, and what it gives
-    up in exchange (unrouted segments, reported not hidden).
-
-    **Rip-up and retry, by re-ordering.** One shortest-first pass is
-    order-dependent: a connection fails because earlier ones took the
-    corridor it needed, not because no route exists. So the whole pass is
-    re-run on a fresh grid with the failures moved to the front, up to
-    ``config.route_passes`` times, and the best result wins. This is
-    PathFinder's idea (McMurchie & Ebeling 1995) in its crudest form —
-    history-based *ordering* rather than history-based *cost* — chosen
-    because the occupancy grid has no incremental un-claim: a track
-    overwrites the clearance halo of copper it passes, so clearing one
-    net's cells would strip protection from its neighbours, while
-    re-running a pass is cheap.
-
-    **A history COST on top was tried and lost** (2026-10-01, 140-part
-    board): surcharging, after each pass, the corridor each lost-race
-    connection takes on a board with nothing routed realized 49/89 at one
-    grid step per cell and 62/89 at a quarter step, against 65/89 without.
-    Those corridors run through the same pad-escape regions every net
-    needs, so the surcharge pushes everyone into longer detours that use up
-    more board. Real negotiated congestion lets nets share cells while
-    they negotiate, which this hard-ownership grid cannot express.
-
-    Every pass is individually clean by construction, so this trades
-    runtime for routability and never for correctness — a later pass
-    cannot introduce an overlap a single pass would have refused.
-    """
+    """The whole vector route pass — the board's one router
+    (:mod:`precis.pcb.vroute`): static obstacles and the plane fan-out,
+    then every routed segment net-by-net into one shared
+    :class:`vroute.Space`, then the pour/rescue/stitch tail, then the
+    unrouted diagnosis. Returns ``(tracks, vias, unrouted, pours,
+    reasons, unstitched, island_notes, report)``."""
     ctx = _route_context(ir, ids, config, footprints, fixed_copper)
     if ctx is None:
-        return [], [], list(ids), [], [], [], {}, None, (), None, None
-    signal_layers = ctx.signal_layers
-    pad_geoms = ctx.pad_geoms
-    pads = ctx.pads
-    rules_by_net = ctx.rules_by_net
-    net_layers = ctx.net_layers
-    net_layer_lock_fail = ctx.net_layer_lock_fail
-    clearance = ctx.clearance
-    net_clearance = ctx.net_clearance
-    spec = ctx.spec
-    plane_ids = ctx.plane_ids
-    route_ids = ctx.route_ids
-    order = ctx.order
-    ink_field = ctx.ink_field
-    body_mask = ctx.body_mask
-    island_terminals = ctx.island_terminals
-    edge_min = ctx.edge_min
-    plane_served_pins = ctx.plane_served_pins
-    Outcome = tuple[
-        list[RealizedTrack],
-        list[RealizedVia],
-        list[int],
-        dict[int, str],
-        list[int],
-    ]
-    best: Outcome | None = None
-    best_score = (0, 0)
-    best_stamped: dict[int, maze.RoutePath] = {}
-    #: Segments whose search in the BEST attempt ended on the expansion
-    #: cap — the set :func:`_route_pass` fills from
-    #: :attr:`maze.OccupancyGrid.last_route_exhausted` — kept beside
-    #: ``best`` so the budget retry below knows which failures were
-    #: budget, not geometry, and the diagnosis can say so.
-    best_exhausted: set[int] = set()
-    accepted_counts: list[int] = []
-
-    def attempts(
-        order: list[int],
-        preferred: dict[int, _Proposal] | None,
-        passes: int | None = None,
-        seg_expansions: dict[int, int] | None = None,
-    ) -> None:
-        """Up to ``config.route_passes`` passes, failures to the front.
-
-        ``passes`` overrides the pass count (the budget retry below wants
-        fewer). ``seg_expansions`` maps a segment to the ``max_expansions``
-        ITS search gets this pass — every other segment keeps
-        ``config.max_expansions``."""
-        nonlocal best, best_score, best_stamped, best_exhausted
-        for _attempt in range(max(1, passes or config.route_passes)):
-            attempt_grid = maze.OccupancyGrid(
-                spec,
-                clearance_mm=clearance,
-                net_clearance_mm=net_clearance,
-                net_layer_clearance_mm=ctx.net_layer_clearance,
-            )
-            attempt_grid.set_body_mask(body_mask)
-            accepted: list[int] | None = [] if preferred is not None else None
-            stamped: dict[int, maze.RoutePath] = {}
-            exhausted: set[int] = set()
-            outcome = _route_pass(
-                ir,
-                order,
-                plane_ids,
-                attempt_grid,
-                config,
-                rules_by_net,
-                pads,
-                clearance,
-                signal_layers,
-                spec,
-                pad_geoms,
-                ink_field=ink_field,
-                fixed_copper=fixed_copper,
-                island_terminals=island_terminals,
-                net_layers=net_layers,
-                preferred=preferred,
-                accepted=accepted,
-                plane_served_pins=plane_served_pins,
-                stamped=stamped,
-                seg_expansions=seg_expansions,
-                exhausted=exhausted,
-            )
-            if accepted is not None:
-                accepted_counts.append(len(accepted))
-            # Fewest failed NETS first — a net with any unrouted segment
-            # fails the route job (Reto, 2026-10-01) — then fewest failed
-            # segments.
-            score = (len({int(ir.seg_net[s]) for s in outcome[2]}), len(outcome[2]))
-            if best is None or score < best_score:
-                best, best_score, best_stamped = outcome, score, stamped
-                best_exhausted = exhausted
-            if not outcome[2]:
-                return
-            # Failures go to the front for the next attempt, keeping their
-            # relative order. A connection that has already lost a race
-            # gets first refusal on the next one.
-            failed = [s for s in order if s in set(outcome[2])]
-            order = failed + [s for s in order if s not in set(failed)]
-
-    # Corridors-as-cost (slice 1, pcb-global-plan-router): a strict
-    # flow-capacity tile plan guides each planned segment's search, the
-    # commits ride the reorder passes as verbatim proposals. Opt-in only
-    # (``RealizeConfig.corridor_penalty``); a corridor attempt that still
-    # leaves nets unrouted falls through to the plain passes below, so the
-    # opt-in can cost time, never nets. The deferred import keeps
-    # `globalplan`'s own dependency on this module one-directional.
-    if (config.corridor_penalty > 0.0 or config.escape) and route_ids:
-        try:
-            from precis.pcb import globalplan
-
-            guided = (
-                globalplan.plaza_attempt(ir, ctx, config)
-                if config.escape == "plaza"
-                else globalplan.corridor_attempt(ir, ctx, config)
-            )
-        except Exception:  # the opt-in must never take the plain route down
-            guided = None
-        if guided is not None:
-            attempts(guided.order, guided.preferred)
-    if best is None or best_score[0]:
-        attempts(order, None)
-    if (
-        best_score[0]
-        and best_exhausted
-        and config.exhaustion_retry_factor > 1.0
-        and config.exhaustion_retry_passes > 0
-    ):
-        # Budget retry (gr489909/gr497768): the passes above left nets
-        # unrouted whose search ended on the expansion cap, so they were
-        # never proved unroutable. Run the failures first again with ONLY
-        # those segments given max_expansions * exhaustion_retry_factor —
-        # appended after the normal passes, never instead of them, so it
-        # can cost time but never nets.
-        retry_budget = int(config.max_expansions * config.exhaustion_retry_factor)
-        attempts(
-            [s for s in order if s in best_exhausted]
-            + [s for s in order if s not in best_exhausted],
-            None,
-            passes=config.exhaustion_retry_passes,
-            seg_expansions={s: retry_budget for s in best_exhausted},
-        )
-    negotiation: NegotiationReport | None = None
-    congestion: tuple[CongestionCell, ...] = ()
-    if best_score[0] and config.negotiate_iterations > 0:
-        # The re-ordering passes left nets unrouted: negotiate (see
-        # `_negotiate`), then commit the proposal onto a hard grid the same
-        # way, conflict-free nets first. Kept only if it scores better, so
-        # it can cost time but never realized nets.
-        hard_best = best
-        proposal, conflicted, report, congestion = _negotiate(
-            ir,
-            order,
-            plane_ids,
-            spec,
-            body_mask,
-            config,
-            rules_by_net,
-            pads,
-            clearance,
-            signal_layers,
-            pad_geoms,
-            ink_field,
-            fixed_copper,
-            island_terminals,
-            net_layers,
-            plane_served_pins=plane_served_pins,
-        )
-        settled = [s for s in order if int(ir.seg_net[s]) not in conflicted]
-        attempts(settled + [s for s in order if s not in set(settled)], proposal)
-        negotiation = NegotiationReport(
-            report.iterations_run,
-            report.conflicted,
-            report.proposals,
-            report.out_of_time,
-            report.elapsed_s,
-            accepted=max(accepted_counts, default=0),
-            won=best is not hard_best,
-        )
-    assert best is not None  # the loop runs at least once
-    cleanup: CleanupReport | None = None
-    if config.route_cleanup and cleanup_check is not None and best_stamped:
-        # Deferred for the same reason as `globalplan` above: the pass
-        # imports this module.
-        from precis.pcb import routeclean
-
-        best, cleanup = routeclean.cleanup(
-            ir, ctx, config, best, best_stamped, cleanup_check
-        )
-    escape: vroute.EscapeReport | None = None
-    if config.vector_escape:
-        best, escape = vroute.escape_pass(
-            ir, ctx, config, best, footprints, fixed_copper
-        )
-    tracks, vias, unrouted, island_terminal_notes, plane_failed_pins = best
-    # The pour RIM insets by the board-edge rule alone — NOT `edge_inset`,
-    # which is a TRACK-CENTERLINE figure (edge rule + half the widest
-    # track) that over-insets a polygon rim by `widest/2` and left parts
-    # near the edge visibly outside the fill (user review 2026-09-01:
-    # "extend fill pattern to the edge as far as design rules allow").
-    # The +0.01 cushion keeps float noise on a mitred rim from grazing
-    # the two-tier warn threshold at exactly the house figure.
-    pours, extra_unrouted = _pour_planes(
-        ir,
-        tracks,
-        vias,
-        unrouted,
-        plane_ids,
-        ctx.clearance_max,
-        max(ctx.clearance_max, edge_min) + 0.01,
-        footprints,
-        fixed_copper,
-        npth_clearance_mm=_npth_clearance_mm(config),
+        return [], [], list(ids), [], [], [], {}, None
+    t0 = time.monotonic()
+    space, tracks, vias, unrouted, plane_failed_pins = _static_space(
+        ir, ctx, config, footprints
     )
+    names, index, n = _layer_index(ir)
+    island_notes: dict[int, str] = {}
+    exhausted: set[int] = set()
+    spent = [0]
+    budget = int(config.max_expansions)
+    edge_inset = max(ctx.clearance_max, ctx.edge_min) + 0.01
+
+    def pour() -> tuple[list[dict[str, Any]], list[int]]:
+        return _pour_planes(
+            ir,
+            tracks,
+            vias,
+            unrouted,
+            ctx.plane_ids,
+            ctx.clearance_max,
+            edge_inset,
+            footprints,
+            fixed_copper,
+            npth_clearance_mm=_npth_clearance_mm(config),
+        )
+
+    # A route that shatters a plane is a net loss even when legal: a net's
+    # copper can cut another's pour in two. ``plane_misses`` counts the
+    # (un-served plane segment, pour-piece) pair before and after a net's
+    # copper; a rise rolls the net back (the structure lifted from
+    # ``vroute.escape_pass``'s same guard).
+    poured_layers = {
+        layer
+        for nid in range(len(ir.net_plane_layers))
+        for layer in range(n)
+        if int(ir.net_plane_layers[nid]) >> layer & 1
+    }
+
+    def plane_misses(
+        extra_tracks: list[RealizedTrack], extra_vias: list[RealizedVia]
+    ) -> tuple[int, int]:
+        pours_, missed = _pour_planes(
+            ir,
+            tracks + extra_tracks,
+            vias + extra_vias,
+            unrouted,
+            ctx.plane_ids,
+            ctx.clearance_max,
+            edge_inset,
+            footprints,
+            fixed_copper,
+            npth_clearance_mm=_npth_clearance_mm(config),
+        )
+        return len(missed), len(pours_)
+
+    misses = plane_misses([], []) if poured_layers else (0, 0)
+    by_net: dict[int, list[int]] = {}
+    for s in ctx.route_ids:
+        by_net.setdefault(int(ir.seg_net[s]), []).append(s)
+
+    def seg_span(s: int) -> float:
+        pa_, pb_ = (
+            pin_point(ir, int(ir.seg_pin_a[s])),
+            pin_point(ir, int(ir.seg_pin_b[s])),
+        )
+        if pa_ is None or pb_ is None:
+            return math.inf
+        return vroute.octile(pa_, pb_)
+
+    def net_span(segs: list[int]) -> float:
+        return sum(seg_span(s) for s in segs)
+
+    routed: set[int] = set()
+    no_position: set[int] = set()
+    tried = 0
+    out_of_budget = False
+    # Shortest net first — the same ordering the escape pass used.
+    for net in sorted(by_net, key=lambda k: net_span(by_net[k])):
+        if spent[0] >= budget:
+            out_of_budget = True
+            break
+        mark = space.mark()
+        net_tracks: list[RealizedTrack] = []
+        net_vias: list[RealizedVia] = []
+        ok = True
+        for s in sorted(by_net[net], key=seg_span):
+            pa_, pb_ = (
+                pin_point(ir, int(ir.seg_pin_a[s])),
+                pin_point(ir, int(ir.seg_pin_b[s])),
+            )
+            if pa_ is None or pb_ is None:
+                no_position.add(s)
+                continue
+            tried += 1
+            got = _route_seg_vector(
+                space,
+                ir,
+                s,
+                ctx,
+                config,
+                index,
+                n,
+                names,
+                spent,
+                island_notes,
+                exhausted,
+            )
+            if got is None:
+                ok = False
+                break
+            net_tracks += got[0]
+            net_vias += got[1]
+        if ok and poured_layers & {t.layer for t in net_tracks}:
+            now = plane_misses(net_tracks, net_vias)
+            if now[0] > misses[0] or now[1] > misses[1]:
+                ok = False
+            else:
+                misses = now
+        if not ok:
+            space.rollback(mark)
+            unrouted += [s for s in by_net[net] if s not in no_position]
+            continue
+        tracks += net_tracks
+        vias += net_vias
+        routed.update(by_net[net])
+    # Every route segment never attempted (budget ran out mid-board) is
+    # failed copper for this run — report it, never pretend it routed.
+    for s in ctx.route_ids:
+        if s not in routed and s not in no_position and s not in unrouted:
+            unrouted.append(s)
+    pours, extra_unrouted = pour()
     tracks, vias = _prune_redundant_drop_vias(ir, tracks, vias, pours)
-    # A plane pin the fan-out found no site for gets a routed connection to
-    # a neighbouring drop via; the pour is carved again around what it adds.
     rescues = _rescue_plane_pins(
         ir,
         tracks,
         vias,
         pours,
         plane_failed_pins,
-        spec=spec,
-        clearance=clearance,
-        pads=pads,
-        rules_by_net=rules_by_net,
+        ctx=ctx,
         config=config,
-        pour_clearance=ctx.clearance_max,
+        footprints=footprints,
+        fixed_copper=fixed_copper,
     )
-    if rescues:
-        base = (tracks, vias, unrouted, plane_failed_pins)
-        plane_seg_set = set(plane_ids)
 
-        def repour(
-            chosen: list[_PlaneRescue],
-        ) -> tuple[Any, dict[tuple[str, int], int]]:
-            r_tracks = base[0] + [t for r in chosen for t in r.tracks]
-            r_vias = base[1] + [v for r in chosen for v in r.vias]
-            rescued_set = {r.pid for r in chosen}
-            failed = [p for p in base[3] if p not in rescued_set]
-            still = {int(ir.pin_net[p]) for p in failed}
-            fully = {int(ir.pin_net[p]) for p in rescued_set} - still
-            r_unrouted = [
-                s_
-                for s_ in base[2]
-                if not (s_ in plane_seg_set and int(ir.seg_net[s_]) in fully)
-            ]
-            r_pours, r_extra = _pour_planes(
-                ir,
-                r_tracks,
-                r_vias,
-                r_unrouted,
-                plane_ids,
-                ctx.clearance_max,
-                max(ctx.clearance_max, edge_min) + 0.01,
-                footprints,
-                fixed_copper,
-                npth_clearance_mm=_npth_clearance_mm(config),
-            )
-            return (
-                (r_tracks, r_vias, r_unrouted, failed, r_pours, r_extra),
-                _pour_pieces(ir, r_tracks, r_vias, r_pours, pads),
-            )
-
-        _kept, kept_result = _keep_splitless_rescues(
-            rescues, repour, _pour_pieces(ir, tracks, vias, pours, pads)
-        )
-        tracks, vias, unrouted, plane_failed_pins, pours, extra_unrouted = kept_result
-    # Deliberate stitching vias, AFTER pouring -- this pass needs the
-    # finished pour polygons to know what it is joining (module docstring's
-    # "Plane fragment stitching" note, gripe 270637).
-    #
-    # POUR AGAIN after any round that added copper. A stitch via is placed
-    # after the pours were carved, so a FOREIGN layer its barrel merely
-    # passes through still shows solid copper where the barrel is — the
-    # exact "third net's finished pour" limitation `_stitch_plane_
-    # fragments`'s docstring stated and deferred. It stopped being
-    # theoretical the day a board poured GND on F/In1/B and VBAT on In2
-    # (nano fixture, 2026-09-01: 24 clearance errors, every one a GND
-    # stitch barrel inside the VBAT plane). Re-pouring with the stitch
-    # vias in the copper list cuts the missing antipads — planes yield to
-    # vias, as fabricated boards actually do — and the loop runs the
-    # stitcher once more against the re-carved pours in case an antipad
-    # split something (a fresh fragment gets its join; a quiet round ends
-    # the loop). Two rounds bound it: each antipad is a via-sized bite,
-    # so a second round's additions are few and a third round's would be
-    # none in any board seen; a residual split is reported honestly by
-    # `unstitched`/connectivity rather than looped on forever.
-    unstitched: list[UnstitchedNet] = []
-    for _stitch_round in range(2):
-        stitch_vias, stitch_tracks, unstitched = _stitch_plane_fragments(
+    def repour(
+        kept: list[_PlaneRescue],
+    ) -> tuple[
+        tuple[list[RealizedTrack], list[RealizedVia], list[dict[str, Any]]],
+        dict[tuple[str, int], int],
+    ]:
+        r_tracks = tracks + [t for r in kept for t in r.tracks]
+        r_vias = vias + [v for r in kept for v in r.vias]
+        r_pours, _x = _pour_planes(
             ir,
-            tracks,
-            vias,
-            pours,
-            spec=spec,
-            clearance=clearance,
-            pads=pads,
-            rules_by_net=rules_by_net,
-            config=config,
-        )
-        vias = vias + stitch_vias
-        # Jumper traces are this net's own copper on a spare layer and are
-        # cleared against every foreign pour geometrically
-        # (`_clears_foreign_pours`), so they need no antipad; the re-pour
-        # below still folds them in as ordinary blockers for OTHER nets.
-        tracks = tracks + stitch_tracks
-        if not stitch_vias and not stitch_tracks:
-            break
-        pours, _ = _pour_planes(
-            ir,
-            tracks,
-            vias,
+            r_tracks,
+            r_vias,
             unrouted,
-            plane_ids,
+            ctx.plane_ids,
             ctx.clearance_max,
-            max(ctx.clearance_max, edge_min) + 0.01,
+            edge_inset,
             footprints,
             fixed_copper,
             npth_clearance_mm=_npth_clearance_mm(config),
         )
+        return (r_tracks, r_vias, r_pours), _pour_pieces(
+            ir, r_tracks, r_vias, r_pours, ctx.pads
+        )
+
+    if rescues:
+        before_pieces = _pour_pieces(ir, tracks, vias, pours, ctx.pads)
+        kept, (tracks, vias, pours) = _keep_splitless_rescues(
+            rescues, repour, before_pieces
+        )
+    unrouted += extra_unrouted
+    # Two stitch rounds, each on a fresh final-board space: sprinkle +
+    # residue, re-pour, repeat — the same shape the grid pass kept.
+    unstitched: list[UnstitchedNet] = []
+    for _round in range(2):
+        new_vias, new_tracks, unstitched = _stitch_plane_fragments(
+            ir,
+            tracks,
+            vias,
+            pours,
+            ctx=ctx,
+            config=config,
+            footprints=footprints,
+            fixed_copper=fixed_copper,
+        )
+        if not new_tracks and not new_vias:
+            break
+        tracks += new_tracks
+        vias += new_vias
+        pours, extra2 = pour()
+        unrouted += extra2
     reasons = _diagnose_all(
         ir,
         unrouted,
         extra_unrouted,
-        set(plane_ids),
-        spec,
-        pads,
-        clearance,
-        signal_layers,
-        rules_by_net,
-        config.max_expansions,
+        set(ctx.plane_ids),
+        ctx,
         config,
         fixed_copper=fixed_copper,
-        npth_clearance_mm=_npth_clearance_mm(config),
-        net_layer_lock_fail=net_layer_lock_fail,
-        routed_copper=(tracks, vias),
+        footprints=footprints,
+        net_layer_lock_fail=ctx.net_layer_lock_fail,
+        routed_tracks=tracks,
+        routed_vias=vias,
         plane_failed_pins=plane_failed_pins,
-        exhausted=best_exhausted,
+        exhausted=exhausted,
     )
-    return (
-        tracks,
-        vias,
-        unrouted + extra_unrouted,
-        pours,
-        reasons,
-        unstitched,
-        island_terminal_notes,
-        negotiation,
-        congestion,
-        cleanup,
-        escape,
+    report = vroute.EscapeReport(
+        tried=tried,
+        routed=len(routed),
+        expansions=spent[0],
+        elapsed_s=time.monotonic() - t0,
+        out_of_budget=out_of_budget,
     )
-
-
-def _diagnose_all(
-    ir: PcbIR,
-    unrouted: list[int],
-    extra_unrouted: list[int],
-    plane_id_set: set[int],
-    spec: maze.GridSpec,
-    pads: list[tuple[Point, int, maze.PadShape, tuple[int, ...]]],
-    clearance: float,
-    signal_layers: list[int],
-    rules_by_net: dict[int, NetRules],
-    max_expansions: int,
-    config: RealizeConfig,
-    *,
-    fixed_copper: list[dict[str, Any]] | None = None,
-    npth_clearance_mm: float = 0.0,
-    net_layer_lock_fail: dict[int, str] | None = None,
-    routed_copper: tuple[list[RealizedTrack], list[RealizedVia]] | None = None,
-    plane_failed_pins: list[int] | None = None,
-    exhausted: set[int] | None = None,
-) -> list[UnroutedReason]:
-    """One :class:`UnroutedReason` per segment in ``unrouted +
-    extra_unrouted`` — split out of :func:`_realize_maze` purely to keep
-    that function's already-long body from growing further, not because
-    anything here is reused elsewhere.
-
-    ``plane_failed_pins`` is the actual per-PIN list of terminals
-    :func:`_plane_fanout` could not give a legal drop — grouped per net
-    and stamped on the matching ``'plane_drop_blocked'`` reasons as
-    ``UnroutedReason.pins``, so the actual terminal that could not
-    escape survives into evidence rather than being flattened into the
-    segment-level ``unrouted`` list (which is only the counting unit,
-    per ``_claim_static``'s own note).
-
-    ``net_layer_lock_fail`` (Rulings 2026-09-19 item 7) is checked FIRST,
-    before even the plane-drop branch below: a net whose class named a
-    layer this board can't route it on never reached `grid.route` at all
-    (`_route_pass`'s own early-continue), so re-running the point-to-point
-    probes below would ask the wrong question, the same reasoning the
-    plane-drop branch already documents for ITS own never-searched
-    segments.
-
-    ``exhausted`` (:func:`_route_pass`'s record of which segments' REAL
-    search ended on the expansion cap, from
-    :attr:`maze.OccupancyGrid.last_route_exhausted`) is checked before the
-    probes for the same reason: the busy-grid search already answered why
-    this segment failed — the budget ran out — so a pads-only probe that
-    then finds a corridor would misreport the failure as a lost race
-    (gr489909: 19 of nano's 29 unrouted nets were exactly this)."""
-    reasons: list[UnroutedReason] = []
-    pins_by_net: dict[int, list[int]] = {}
-    for pid in plane_failed_pins or ():
-        pins_by_net.setdefault(int(ir.pin_net[pid]), []).append(pid)
-    probe: maze.OccupancyGrid | None = None
-    for seg_id in unrouted:
-        net_id = int(ir.seg_net[seg_id])
-        if net_layer_lock_fail and net_id in net_layer_lock_fail:
-            reasons.append(
-                UnroutedReason(
-                    seg_id, net_id, "layer_lock", net_layer_lock_fail[net_id]
-                )
-            )
-            continue
-        if seg_id in plane_id_set:
-            # This segment never went through `grid.route` at all -- see
-            # `_route_pass`'s `plane_ids`/`route_ids` split -- so its
-            # failure is a PIN's drop-via search coming up empty
-            # (`_plane_fanout`/`_drop_via_site`), a different search
-            # entirely from the point-to-point one `_diagnose_unrouted`
-            # re-runs. Diagnosing it as a route-search failure would ask
-            # the wrong question and could report a misleading answer.
-            reasons.append(
-                UnroutedReason(
-                    seg_id,
-                    net_id,
-                    "plane_drop_blocked",
-                    "this plane-promoted net had at least one pin with no "
-                    "legal drop-via site within its search radius (blocked by "
-                    "other copper) -- not a point-to-point route failure",
-                    pins=tuple(pins_by_net.get(net_id, ())),
-                )
-            )
-            continue
-        if exhausted and seg_id in exhausted:
-            reasons.append(
-                UnroutedReason(
-                    seg_id,
-                    net_id,
-                    "search_budget",
-                    "this connection's route search ran out of expansions "
-                    "(max_expansions) on the busy grid before finding a "
-                    "path or proving none — a budget failure, not a lost "
-                    "corridor race; the diagnosis's pads-only probe is not "
-                    "re-run, since its verdict could only mislabel this "
-                    "congestion",
-                )
-            )
-            continue
-        rules = _seg_rules(ir, seg_id, rules_by_net, config)
-        n_vias, group_extent = _via_group_extent(ir, seg_id, rules, clearance)
-        if probe is None:
-            probe = _pads_only_probe(
-                ir, spec, pads, clearance, fixed_copper, npth_clearance_mm
-            )
-        reasons.append(
-            _diagnose_unrouted(
-                ir,
-                seg_id,
-                spec,
-                pads,
-                clearance,
-                signal_layers,
-                rules,
-                n_vias,
-                group_extent,
-                max_expansions,
-                fixed_copper=fixed_copper,
-                probe=probe,
-                routed_copper=routed_copper,
-            )
-        )
-    for seg_id in extra_unrouted:
-        net_id = int(ir.seg_net[seg_id])
-        reasons.append(
-            UnroutedReason(
-                seg_id,
-                net_id,
-                "unpourable_plane",
-                f"net {ir.net_name[net_id]} is plane-promoted but the board has "
-                "no outline to pour a plane into, so this connection has "
-                "nowhere to land",
-            )
-        )
-    return reasons
-
-
-def _claim_silk_keepouts(
-    grid: maze.OccupancyGrid, ir: PcbIR, config: RealizeConfig
-) -> None:
-    """Keep every via this grid places off part-outline silk (gr495393
-    comment 1: vias must not land on the outlines, enforced in via
-    placement rather than by clipping the silk afterwards). The outlines
-    are :func:`precis.pcb.silk.outline_via_keepouts`' — the same
-    :func:`~precis.pcb.silk.part_outlines` rings the silk builder draws,
-    off this IR's outline, sides and capability row — and each becomes a
-    net-blind via keep-out line on the grid
-    (:meth:`~precis.pcb.maze.OccupancyGrid.add_via_keepout_line`), read by
-    the maze search's via mask and every fan-out/stitch site's
-    ``via_clears_pads`` alike. Tracks may still cross outline silk:
-    tented copper under ink is fine, a via annulus is not."""
-    if not config.silk_via_keepout:
-        return
-    for line, margin in pcb_silk.outline_via_keepouts(ir, capability=config.fab_caps):
-        grid.add_via_keepout_line(line, margin)
-
-
-def _claim_fiducial_keepouts(grid: maze.OccupancyGrid, ir: PcbIR) -> None:
-    """Claim every corner site a render-time fiducial may occupy — BEFORE
-    :func:`_stamp_pads`, so the pad pass's own re-assert wins any overlap
-    back for a real pad (a candidate that crowds a pad is one
-    :func:`precis.pcb.silk.build_fiducials` will reject anyway, so losing
-    its cells to the pad costs nothing).
-
-    Fiducials are minted by the handler at render/DRC time, after routing
-    (:func:`precis.pcb.silk.fiducial_candidate_sites`'s docstring tells
-    the whole story); without this claim the router draws tracks, and
-    lands vias, straight through the spot the mint later picks — the
-    0.000mm-clearance / ``via_pad_keepout`` family
-    (``docs/backlog/pcb-plane-via-copper-claim-leak.md``), reproduced
-    live on esp32c3 seed 3 as a VCC3V3 track through the (6, 6) fiducial.
-    Claiming the obstacle-independent candidate SUPERSET rather than
-    predicting the mint's exact choices is what makes this robust: the
-    mint's pad/title-block/spacing checks only ever reject candidates,
-    so its output is always inside what was claimed here, at the cost of
-    a few never-used corner keep-outs.
-
-    **Every layer, not just ``PAD_LAYER``** — same discipline as
-    :func:`_claim_mounting_holes` right below, and for the identical
-    reason: :func:`precis.pcb.silk.build_fiducials` now mints a copper
-    flash on EVERY stackup layer (a fiducial is a whole-stack
-    registration mark, not a top-side-only one), so a router that only
-    claimed the pad layer would leave inner-layer/B.Cu copper free to
-    route straight through a fiducial the mint later lands there — the
-    same 0.000mm short this function exists to prevent, just one layer
-    down. :meth:`~precis.pcb.maze.OccupancyGrid.stamp_pad` (not bare
-    ``stamp_disk``) so the via keep-out mask sees the mask opening too —
-    a via drilled through a fiducial's window is as fab-fatal as a track
-    through it. Sentinel nets sit above the NC-pad band
-    (``n_nets + n_pins + k``): foreign to every real net, distinct per
-    site."""
-    if not ir.outline or len(ir.outline) < 3:
-        return
-    layers = range(0, grid.spec.n_layers)
-    for k, (_corner, (fx, fy)) in enumerate(
-        pcb_silk.fiducial_candidate_sites(ir.outline, ir=ir)
-    ):
-        radius = pcb_silk.FIDUCIAL_MASK_DIA_MM / 2.0
-        net = int(ir.n_nets) + int(ir.n_pins) + k
-        grid.stamp_disk(layers, fx, fy, grid.core_radius_mm(2.0 * radius), net)
-        grid.stamp_pad(layers, fx, fy, radius, net)
-
-
-#: Sentinel-net offset for mounting-hole claims — far above any fiducial
-#: candidate count (those sentinels are ``n_nets + n_pins + k`` for a
-#: handful of corner sites), so the two claim families can never collide.
-_MOUNTING_HOLE_NET_OFFSET = 4096
-#: Sentinel-net offset for unclaimed footprint lands
-#: (:func:`_footprint_pad_claims`), the THIRD family sharing this band.
-#: Above the mounting-hole one for the same reason it exists: a QFP with
-#: 11 unclaimed lands and a board with 4 fiducial candidate sites both
-#: start counting at ``k = 0``, so without an offset the first land and
-#: the first fiducial are the same synthetic net — and
-#: :meth:`~precis.pcb.maze.OccupancyGrid.stamp_shape`'s contest test is
-#: ``owner != net_id``, so two claimants sharing an id read as one and
-#: silently reassign instead of going CONTESTED.
-_UNCLAIMED_PAD_NET_OFFSET = 8192
+    return tracks, vias, unrouted, pours, reasons, unstitched, island_notes, report
 
 
 def _npth_clearance_mm(config: RealizeConfig) -> float:
@@ -2733,241 +1776,11 @@ def _npth_clearance_mm(config: RealizeConfig) -> float:
     )
 
 
-def _claim_mounting_holes(
-    grid: maze.OccupancyGrid, ir: PcbIR, *, npth_clearance_mm: float = 0.0
-) -> None:
-    """Claim every :attr:`~precis.pcb.ir.PcbIR.mounting_holes` entry on
-    the grid — BEFORE :func:`_stamp_pads`, same discipline (and same
-    reason) as :func:`_claim_fiducial_keepouts` above: a hole only the
-    handler knows about is one the router draws copper through, which is
-    the ``npth_clearance`` finding family (round-3 review item 4 —
-    measured as 4/4 corner holes violated on the nano fixture).
-
-    A drilled hole exists on EVERY layer, so unlike the SMD-assumption
-    pad claims this stamps ``range(0, n_layers)`` — a track dodging the
-    hole on F.Cu but crossing it on In1.Cu is still a track through a
-    drill. The claim radius is the larger of the drill and the copper
-    annulus (a solder-nut's ring is copper other nets owe clearance to,
-    exactly like a pad). :meth:`~precis.pcb.maze.OccupancyGrid.stamp_pad`
-    for the core so the via keep-out mask sees it too — a via inside a
-    mounting hole's ring is fab-fatal the same way one inside a pad is.
-
-    A bare non-plated hole owes copper ``npth_clearance_mm``
-    (:func:`_npth_clearance_mm`), not the grid's net clearance: the claim
-    grows by the difference. Measured on Reto's board 2026-10-02: 12 of
-    the 13 nets the post-route gate stripped sat 0.22-0.40 mm from a
-    Ø6 hole against a 0.45 mm floor."""
-    for k, hole in enumerate(ir.mounting_holes):
-        r = max(float(hole.drill_mm), float(hole.ring_dia_mm)) / 2.0
-        if r <= 0.0:
-            continue
-        if not hole.plated and float(hole.ring_dia_mm) <= 0.0:
-            r += max(0.0, npth_clearance_mm - grid.clearance_mm)
-        net = int(ir.n_nets) + int(ir.n_pins) + _MOUNTING_HOLE_NET_OFFSET + k
-        layers = range(0, grid.spec.n_layers)
-        grid.stamp_disk(layers, hole.x, hole.y, grid.core_radius_mm(2.0 * r), net)
-        grid.stamp_pad(layers, hole.x, hole.y, r, net)
-
-
-def _fixed_copper_polyline(seg: dict[str, Any]) -> list[Point]:
-    """One fixed-copper track segment's polyline, for stamping only.
-
-    ``"line"`` is just its two endpoints; ``"arc"`` is flattened by hand
-    (mirroring :mod:`precis.pcb.drc`'s own ``_arc_points`` sampler at
-    ~0.05mm chord steps — not imported: a small, self-contained geometry
-    helper, the same "a stamping bug here must never make a defect
-    invisible to a DIFFERENT checker reading the same segment shape"
-    reasoning this module's own docstring gives for
-    ``clearance_violations_naive`` staying independent of the accelerated
-    engine). The maze router itself never emits an arc into
-    ``RealizedTrack.segments`` when re-stamped by
-    :func:`_stamp_realized_track` — fixed copper is authored, not
-    router-derived, so it can carry one (a generator's curved trace), and
-    this claim path must not silently skip it."""
-    if seg.get("shape") != "arc":
-        return [
-            (float(seg["start"][0]), float(seg["start"][1])),
-            (float(seg["end"][0]), float(seg["end"][1])),
-        ]
-    cx, cy = float(seg["center"][0]), float(seg["center"][1])
-    sx, sy = float(seg["start"][0]), float(seg["start"][1])
-    ex, ey = float(seg["end"][0]), float(seg["end"][1])
-    r = math.hypot(sx - cx, sy - cy)
-    a1 = math.atan2(sy - cy, sx - cx)
-    a2 = math.atan2(ey - cy, ex - cx)
-    diff = (a2 - a1) % (2 * math.pi)
-    if seg.get("cw"):
-        diff -= 2 * math.pi
-    n = max(1, math.ceil(abs(diff) * max(r, 1e-6) / 0.05))
-    return [
-        (cx + r * math.cos(a1 + diff * k / n), cy + r * math.sin(a1 + diff * k / n))
-        for k in range(n + 1)
-    ]
-
-
-def _claim_fixed_copper(
-    grid: maze.OccupancyGrid,
-    ir: PcbIR,
-    fixed_copper: list[dict[str, Any]] | None,
-) -> None:
-    """Claim every AUTHORED fixed-copper row (``store.pcb_fixed_copper_
-    list`` — docs/backlog/pcb-pre-place-route-blocks.md Slice 1, "Realize
-    seam") onto ``grid`` as real copper — BEFORE :func:`_stamp_pads`, same
-    discipline as :func:`_claim_fiducial_keepouts`/:func:`
-    _claim_mounting_holes` right above: a fixture the router cannot see is
-    one it draws straight through, and a pad's own re-assert (this
-    module's existing ordering) should always win the cells directly under
-    a real pad, fixed copper or not.
-
-    Claimed with the row's OWN net as owner (:meth:`~precis.pcb.maze.
-    OccupancyGrid.stamp_disk`'s ``net_id``, resolved by NAME — the same
-    join every other net-by-name lookup in this build already does), never
-    ``contest=True``: this claim represents copper that is DEFINITELY
-    there, same certainty a pad's core disk carries, not two candidates
-    disputing a cell. Same-net routing may therefore still touch it (the
-    maze search's passable set is "every OTHER net's copper, dilated" —
-    :meth:`~precis.pcb.maze.OccupancyGrid.route`'s own docstring); a
-    foreign net treats it as blocked, exactly like a pad. A row naming no
-    net, or a net this IR does not currently carry (a stale/retired
-    name), or a layer/span this stackup does not carry, claims nothing —
-    a row this router cannot resolve is a fact it has no keep-out rule for
-    yet, the same "nothing to check against" gap :func:`_default_obstacles`
-    already accepts for an obstacle with no position.
-
-    Track geometry is sampled along each segment at half-pitch steps —
-    :meth:`~precis.pcb.maze.OccupancyGrid.stamp_path`'s own technique, for
-    the same reason: a long span skips intermediate grid cells if only its
-    two endpoints are stamped. Via geometry claims every layer in its
-    ``span``, both ends inclusive. Both use ``grid.core_radius_mm`` — half
-    the physical width/diameter plus the grid's own clearance figure, the
-    SAME keep-out radius every other claim in this module (pads,
-    fiducials, mounting holes) resolves to, per this function's own
-    docstring instruction."""
-    if not fixed_copper:
-        return
-    net_name_to_id = {str(ir.net_name[n]): n for n in range(ir.n_nets)}
-    layer_name_to_idx = {
-        str(layer.get("name")): i for i, layer in enumerate(ir.stackup)
-    }
-    step = grid.spec.pitch / 2.0
-    fixed_vias: list[tuple[tuple[int, ...], float, float, float, int]] = []
-    for row in fixed_copper:
-        net_name = row.get("net")
-        net_id = net_name_to_id.get(str(net_name)) if net_name else None
-        if net_id is None:
-            continue
-        ctype = row.get("ctype")
-        if ctype == "track":
-            layer = layer_name_to_idx.get(str(row.get("layer")))
-            if layer is None:
-                continue
-            radius = grid.core_radius_mm(float(row.get("width_mm", 0.0)))
-            for seg in row.get("segments") or []:
-                pts = _fixed_copper_polyline(seg)
-                for a, b in itertools.pairwise(pts):
-                    seg_len = dist(a, b)
-                    n = max(1, math.ceil(seg_len / step))
-                    for k in range(n + 1):
-                        t = k / n
-                        grid.stamp_disk(
-                            (layer,),
-                            a[0] + (b[0] - a[0]) * t,
-                            a[1] + (b[1] - a[1]) * t,
-                            radius,
-                            net_id,
-                        )
-        elif ctype == "via":
-            span = row.get("span")
-            if not span or len(span) != 2:
-                continue
-            lo = layer_name_to_idx.get(str(span[0]))
-            hi = layer_name_to_idx.get(str(span[1]))
-            if lo is None or hi is None:
-                continue
-            lo, hi = min(lo, hi), max(lo, hi)
-            # Deferred: an EWOD plaza packs 0.45mm vias 0.54mm apart, so a
-            # one-shot core disc (half-dia + clearance) overlaps its
-            # neighbours'. Stamped in arrival order the LAST via overwrote
-            # the rims of the earlier ones, leaving each a one-cell island
-            # the search could not leave (every B.Cu-locked escape came
-            # back `no_path` "walled in", even routed alone — 2026-09-19
-            # ewod-dogfood-2 rebuild, docs/backlog/pcb-ewod-multitile.md
-            # ruling 7). Contested rings (the pad recipe) are worse at this
-            # pitch — the contested lens between neighbours, dilated, shuts
-            # every exit. So: all cores first, then every via's TRUE disc
-            # re-asserted, then its centre cell — each via owns its own
-            # copper outright, the keep-out between two vias belongs to
-            # whichever came last, and the dilation the search applies to a
-            # foreign core still leaves the outward cells free.
-            via_layers = tuple(range(lo, hi + 1))
-            x, y = float(row.get("x", 0.0)), float(row.get("y", 0.0))
-            dia = float(row.get("dia_mm", 0.0))
-            grid.stamp_disk(via_layers, x, y, grid.core_radius_mm(dia), net_id)
-            fixed_vias.append((via_layers, x, y, dia, net_id))
-    for via_layers, x, y, dia, net_id in fixed_vias:
-        grid.stamp_disk(via_layers, x, y, dia / 2.0, net_id)
-    for via_layers, x, y, dia, net_id in fixed_vias:
-        grid.claim_centre(via_layers, x, y, net_id)
-
-
-def _stamp_pads(
-    grid: maze.OccupancyGrid,
-    pads: list[tuple[Point, int, maze.PadShape, tuple[int, ...]]],
-) -> None:
-    """Claim every pad on ``grid`` — the router's static baseline, factored
-    out so a diagnostic probe (:func:`_diagnose_unrouted`) can build the
-    SAME starting grid a real route pass would, minus every other net's
-    ROUTED copper, rather than hand-rolling a second copy of this.
-
-    **Which layer(s) is per-pad, not a shared constant** (``pads``' 4th
-    element — an SMD pad claims one, a drilled/THT pad claims every board
-    layer, see :func:`_realize_maze`'s own comment on how that element is
-    built): a trace on a DIFFERENT layer may legally run under an SMD
-    pad, never through a drilled hole's plated land, physically
-    indistinguishable from a via for this purpose (``drc.py::
-    clearance_pairs_indexed``'s identical note).
-
-    **Three passes, each pad bringing its own TRUE shape** (``pads``' 3rd
-    element, a :class:`~precis.pcb.maze.PadShape` — real footprint where
-    supplied, package-family synthesis otherwise; see
-    :func:`_pad_shape`). An enclosing circle for EVERY pad (this
-    function's pre-gripe-346962 behaviour) is wider than a 0.8mm QFP
-    pitch, so a neighbour's disc could steal a pad's own centre cell
-    before the search ever ran — the exact defect this shape/pass split
-    closes:
-
-    1. The dilated (``clearance_mm`` margin) shape, ``contest=True`` —
-       where two pads' outer keep-outs overlap the cell goes to NEITHER
-       (:data:`~precis.pcb.maze.CONTESTED`), never to whichever pad
-       happened to stamp last.
-    2. The TRUE shape at zero margin, via :meth:`~precis.pcb.maze.
-       OccupancyGrid.stamp_pad_shape` (never plain ``stamp_shape`` —
-       gripe 269811's fix: only ``stamp_pad``/``stamp_pad_shape`` append
-       to ``grid._pads``, which :meth:`~precis.pcb.maze.OccupancyGrid.
-       via_clears_pads`/``_pad_keepout_mask`` read as the via keep-out;
-       an empty ``_pads`` made both vacuously true on every board this
-       module ever routed). Also ``contest=True`` now — two pads' TRUE
-       copper actually overlapping is a real collision, not a race to
-       resolve by stamp order.
-    3. Every pad's own NEAREST cell, forced via :meth:`~precis.pcb.maze.
-       OccupancyGrid.claim_centre` — unconditionally, bypassing CONTEST.
-       Passes 1-2 can legitimately lose a tight neighbour's contest, but
-       the one cell a route must start/end on must never be able to —
-       gripe 346962's own repro (HV507, 0.8mm pitch, C639448).
-    """
-    for _point, net, shape, layers in pads:
-        grid.stamp_shape(layers, shape, grid.clearance_mm, net, contest=True)
-    for _point, net, shape, layers in pads:
-        grid.stamp_pad_shape(layers, shape, net, contest=True)
-    for point, net, _shape, layers in pads:
-        grid.claim_centre(layers, point[0], point[1], net)
-
-
 def _via_group_extent(
     ir: PcbIR, seg_id: int, rules: NetRules, clearance: float
 ) -> tuple[int, float | None]:
     """``(n_vias, group_extent_mm)`` for a layer change on ``seg_id`` — the
-    exact figure :func:`_route_pass` feeds ``grid.route``'s ``via_dia_mm``
+    exact figure :func:`_realize_vector` feeds ``vroute.route``'s ``via_dia_mm``
     with, hoisted out so :func:`_diagnose_unrouted` asks the search the
     same question it already asked rather than a smaller, unvalidated one.
     Sized by the SEGMENT's current (:func:`seg_current_a_or_none`,
@@ -2986,33 +1799,6 @@ def _via_group_extent(
         else n_vias * rules.via_dia_mm + (n_vias - 1) * clearance
     )
     return n_vias, group_extent
-
-
-#: The probe width used to test "does ANY path exist, ignoring how wide
-#: the real trace needs to be" — see :func:`_diagnose_unrouted`. Not zero:
-#: `grid.route` still queries a disk, and a true zero-radius query can slip
-#: between cells the real (nonzero-width) search never could, which would
-#: report a path where none usably exists. A quarter of a cell is
-#: negligible copper and still exercises the same dilation machinery.
-_PROBE_WIDTH_FRACTION_OF_PITCH = 0.25
-
-
-def _pads_only_probe(
-    ir: PcbIR,
-    spec: maze.GridSpec,
-    pads: list[tuple[Point, int, maze.PadShape, tuple[int, ...]]],
-    clearance: float,
-    fixed_copper: list[dict[str, Any]] | None,
-    npth_clearance_mm: float = 0.0,
-) -> maze.OccupancyGrid:
-    """The grid :func:`_diagnose_unrouted` searches: every fixed obstacle
-    and pad claimed, no routed copper."""
-    probe = maze.OccupancyGrid(spec, clearance_mm=clearance)
-    _claim_fixed_copper(probe, ir, fixed_copper)
-    _claim_fiducial_keepouts(probe, ir)
-    _claim_mounting_holes(probe, ir, npth_clearance_mm=npth_clearance_mm)
-    _stamp_pads(probe, pads)
-    return probe
 
 
 def _seg_point_dist(
@@ -3052,7 +1838,7 @@ def _seg_seg_dist(
 
 
 def _foreign_copper_near_path(
-    path: maze.RoutePath,
+    points: list[tuple[float, float, int]],
     net_id: int,
     tracks: list[RealizedTrack],
     vias: list[RealizedVia],
@@ -3060,14 +1846,14 @@ def _foreign_copper_near_path(
 ) -> dict[int, set[int]]:
     """``{blocking net_id: {layers it contests}}`` — every OTHER net's
     routed track or via lying within ``reach_mm`` (+ its own half width /
-    radius) of ``path`` on the path's layers. Empty dict means no foreign
-    copper near the corridor (the old boolean's ``False``). Conservative
-    on arcs: a track's segment endpoints stand in for its curve. The
-    blockers are returned, not just detected, so a ``'congestion'``
-    verdict can NAME who won the race (gr495293)."""
+    radius) of ``points`` (a ``_vpath_points`` triple list) on the path's
+    layers. Empty dict means no foreign copper near the corridor.
+    Conservative on arcs: a track's segment endpoints stand in for its
+    curve. The blockers are returned, not just detected, so a
+    ``'congestion'`` verdict can NAME who won the race (gr495293)."""
     runs = [
         ((a[0], a[1]), (b[0], b[1]), a[2])
-        for a, b in itertools.pairwise(path.points)
+        for a, b in itertools.pairwise(points)
         if a[2] == b[2]
     ]
     found: dict[int, set[int]] = {}
@@ -3116,9 +1902,9 @@ def layer_names(ir: PcbIR, indices: Sequence[int]) -> list[str]:
 
 def _constricting_pad_names(
     ir: PcbIR,
-    thin_path: maze.RoutePath,
+    thin_points: list[tuple[float, float, int]],
     net_id: int,
-    pads: list[tuple[Point, int, maze.PadShape, tuple[int, ...]]],
+    pads: list[tuple[Point, int, float, tuple[int, ...]]],
     width_mm: float,
     clearance: float,
     *,
@@ -3135,7 +1921,7 @@ def _constricting_pad_names(
     probe's."""
     runs = [
         ((a[0], a[1]), (b[0], b[1]), a[2])
-        for a, b in itertools.pairwise(thin_path.points)
+        for a, b in itertools.pairwise(thin_points)
         if a[2] == b[2]
     ]
     if not runs:
@@ -3150,20 +1936,17 @@ def _constricting_pad_names(
             f"{ir.instance_refdes[inst]}.{ir.pin_label[pid]}"
         )
     names: list[str] = []
-    for point, pad_net, shape, pad_layers in pads:
+    for point, pad_net, pad_r, pad_layers in pads:
         if int(pad_net) == net_id:
             continue  # our own pads are endpoints, not obstacles
         shared = [r for r in runs if r[2] in pad_layers]
         if not shared:
             continue
-        reach = shape.enclosing_radius_mm + width_mm / 2.0 + clearance
-        if not any(
-            _seg_point_dist((shape.x, shape.y), a, b) <= reach
-            for a, b, _layer in shared
-        ):
+        reach = pad_r + width_mm / 2.0 + clearance
+        if not any(_seg_point_dist(point, a, b) <= reach for a, b, _layer in shared):
             continue
-        centre = (round(float(shape.x), 4), round(float(shape.y), 4))
-        label = pin_label_at.get(centre, f"pad@({shape.x:.2f},{shape.y:.2f})")
+        centre = (round(float(point[0]), 4), round(float(point[1]), 4))
+        label = pin_label_at.get(centre, f"pad@({point[0]:.2f},{point[1]:.2f})")
         owner = (
             str(ir.net_name[pad_net])
             if 0 <= int(pad_net) < len(ir.net_name)
@@ -3175,207 +1958,6 @@ def _constricting_pad_names(
         if len(names) >= max_names:
             break
     return names
-
-
-def _diagnose_unrouted(
-    ir: PcbIR,
-    seg_id: int,
-    spec: maze.GridSpec,
-    pads: list[tuple[Point, int, maze.PadShape, tuple[int, ...]]],
-    clearance: float,
-    signal_layers: list[int],
-    rules: NetRules,
-    n_vias: int,
-    group_extent: float | None,
-    max_expansions: int,
-    *,
-    fixed_copper: list[dict[str, Any]] | None = None,
-    probe: maze.OccupancyGrid | None = None,
-    routed_copper: tuple[list[RealizedTrack], list[RealizedVia]] | None = None,
-) -> UnroutedReason:
-    """WHY ``seg_id`` never routed, in one of :class:`UnroutedReason`'s
-    three route-search categories — 'BOARD TWO' finding 1's diagnostic gap
-    (docs/backlog/pcb-engine-plan.md), closed without touching the width
-    MODEL that produces the failure (decision 3b, explicitly out of scope
-    here).
-
-    **The technique: a fresh grid with only pads claimed — no other net's
-    routed copper — answers "does a corridor exist at all", independent of
-    routing order.** Re-running the real search on that empty-of-congestion
-    grid at the connection's REAL required width (trace width, or — at a
-    layer transition — the via GROUP's full extent, the same figure
-    :func:`_route_pass` already feeds ``grid.route``) either finds a path
-    (a corridor DOES exist physically, so the failure on the busy grid was
-    losing a race: ``'congestion'``) or does not. If it does not, a second
-    probe at a near-zero width with no via requirement asks the weaker
-    question — does ANY path exist, at ANY width: if that also fails, the
-    endpoint is topologically unreachable on the allowed layers
-    (``'no_path'``); if it succeeds, a path exists but not one wide enough
-    for this net (``'width'``).
-
-    ``probe`` is that pads-only grid, prebuilt: it is the same for every
-    segment and :meth:`maze.OccupancyGrid.route` never stamps the grid it
-    searches, so :func:`_diagnose_all` builds it once. Rebuilding it per
-    segment was 36 of 85 s of realize on a 140-part board (2026-10-01).
-
-    ``routed_copper`` (the finished tracks and vias, gr472026) lets a
-    ``'congestion'`` verdict be checked: when the pads-only probe finds a
-    corridor but NO other net's routed copper lies in it, the connection
-    did not lose a race — it failed alone, so it is reported as
-    ``'no_path'`` with a message saying so. ``None`` (callers without the
-    routed copper) keeps the unqualified ``'congestion'`` verdict.
-    """
-    net_id = int(ir.seg_net[seg_id])
-    a, b = int(ir.seg_pin_a[seg_id]), int(ir.seg_pin_b[seg_id])
-    start, end = pin_point(ir, a), pin_point(ir, b)
-    if start is None or end is None:
-        return UnroutedReason(
-            seg_id,
-            net_id,
-            "no_path",
-            "this connection's endpoint has no placed (x, y) yet — nothing to route",
-        )
-    # This segment's OWN two pad layers (`_side_layer`, same rule
-    # `_realize_maze`'s `pads` list and `_route_pass` resolve by), never
-    # a shared `PAD_LAYER` — a probe pinned to the top layer at both ends
-    # can never find the corridor a bottom-mounted pin's pad actually
-    # needs, and would misreport a real `no_path` as though the width or
-    # congestion diagnosis even applied.
-    start_layer = _side_layer(ir, int(ir.pin_instance[a]), signal_layers)
-    goal_layer = _side_layer(ir, int(ir.pin_instance[b]), signal_layers)
-    if probe is None:
-        probe = _pads_only_probe(ir, spec, pads, clearance, fixed_copper)
-    clear_path = probe.route(
-        net_id,
-        start,
-        end,
-        layers=signal_layers,
-        width_mm=rules.track_width_mm,
-        via_dia_mm=group_extent,
-        start_layer=start_layer,
-        goal_layer=goal_layer,
-        attach=False,
-        max_expansions=max_expansions,
-    )
-    clear_exhausted = probe.last_route_exhausted
-    if clear_path is not None:
-        blockers: dict[int, set[int]] = {}
-        if routed_copper is not None:
-            blockers = _foreign_copper_near_path(
-                clear_path,
-                net_id,
-                routed_copper[0],
-                routed_copper[1],
-                rules.track_width_mm / 2.0 + clearance,
-            )
-        if routed_copper is not None and not blockers:
-            return UnroutedReason(
-                seg_id,
-                net_id,
-                "no_path",
-                "this connection failed with no other net's routed copper in "
-                "its corridor: a pads-only probe finds a path, so the blocker "
-                "is static (fixed copper, pads, a layer restriction on its "
-                "class) or the search itself, not contention with another "
-                "net's routing",
-            )
-        via_note = (
-            f", stitching {n_vias} via(s) at a layer change" if group_extent else ""
-        )
-        who = ""
-        if blockers:
-            who = " — contested by " + ", ".join(
-                f"{ir.net_name[n] if 0 <= n < len(ir.net_name) else f'net#{n}'} "
-                f"on {'/'.join(layer_names(ir, sorted(ls)))}"
-                for n, ls in sorted(blockers.items())[:4]
-            )
-        return UnroutedReason(
-            seg_id,
-            net_id,
-            "congestion",
-            f"a corridor wide enough for this net ({rules.track_width_mm:.3f}mm"
-            f"{via_note}) exists between its endpoints once every OTHER net's "
-            f"copper is cleared away, so this connection lost a race for it to "
-            f"a net that routed first{who} (rip-up/retry already re-tries "
-            "failures first on the next pass)",
-        )
-    thin_path = probe.route(
-        net_id,
-        start,
-        end,
-        layers=signal_layers,
-        width_mm=spec.pitch * _PROBE_WIDTH_FRACTION_OF_PITCH,
-        via_dia_mm=None,
-        start_layer=start_layer,
-        goal_layer=goal_layer,
-        attach=False,
-        max_expansions=max_expansions,
-    )
-    thin_exhausted = probe.last_route_exhausted
-    # A verdict resting on a search that gave up is not a verdict: "width"
-    # needs the full-width probe to have FINISHED without a path, and
-    # "no_path" needs the thin one to have.
-    if (thin_path is not None and clear_exhausted) or (
-        thin_path is None and thin_exhausted
-    ):
-        return UnroutedReason(
-            seg_id,
-            net_id,
-            "search_budget",
-            f"the search gave up after {max_expansions} expansions before "
-            "finding a path or proving there is none — the endpoints may be "
-            "walled in, or simply too far apart for the budget at this grid "
-            "pitch",
-        )
-    if thin_path is not None:
-        via_note = (
-            f" (including a {group_extent:.3f}mm via GROUP at a layer change)"
-            if group_extent
-            else ""
-        )
-        pinchers = _constricting_pad_names(
-            ir, thin_path, net_id, pads, rules.track_width_mm, clearance
-        )
-        pinched = f" — constricted by {', '.join(pinchers)}" if pinchers else ""
-        return UnroutedReason(
-            seg_id,
-            net_id,
-            "width",
-            f"a path exists between this connection's endpoints "
-            f"(on {'/'.join(layer_names(ir, signal_layers))}, "
-            f"corridor ≥{spec.pitch * _PROBE_WIDTH_FRACTION_OF_PITCH:.3f}mm "
-            "wide), but this net's required width "
-            f"({rules.track_width_mm:.3f}mm{via_note}) does not fit any "
-            f"corridor along it — the width itself is the blocker, not "
-            f"routing order{pinched}",
-        )
-    return UnroutedReason(
-        seg_id,
-        net_id,
-        "no_path",
-        "no path connects this connection's endpoints on the allowed layers "
-        f"({'/'.join(layer_names(ir, signal_layers))}) at "
-        "any width — the endpoint is walled in, not merely too tight",
-    )
-
-
-def _layer_cost(ir: PcbIR, config: RealizeConfig) -> dict[int, float] | None:
-    """Per-layer route cost by stackup index: each layer's own stackup
-    ``route_cost`` (pcb-stackup-regions slice 3, the board parameter), with
-    :attr:`RealizeConfig.layer_route_cost` (a per-run override) winning by
-    name. ``None`` when every layer costs 1.0. A name the stackup lacks is
-    ignored (a cost tuned for a four-layer board must not fail a two-layer
-    one)."""
-    costs = {
-        i: layer_route_cost(layer)
-        for i, layer in enumerate(ir.stackup)
-        if layer_route_cost(layer) != 1.0
-    }
-    index = {str(layer.get("name")): i for i, layer in enumerate(ir.stackup)}
-    for name, mult in config.layer_route_cost:
-        if name in index:
-            costs[index[name]] = float(mult)
-    return costs or None
 
 
 def _track_reserved_regions(
@@ -3397,753 +1979,6 @@ def _track_reserved_regions(
             continue
         out.append((layer, poly, str(ir.net_name[net_id])))
     return tuple(out)
-
-
-def _claim_power_regions(
-    grid: maze.OccupancyGrid, ir: PcbIR, config: RealizeConfig
-) -> None:
-    """Reserve each :func:`_track_reserved_regions` area for its own net's
-    tracks (:meth:`~precis.pcb.maze.OccupancyGrid.reserve_track_cells`).
-    A region is the net's pour, and another net's track drawn across it
-    cuts the pour into pieces (gr495395: the default stackup routes In2,
-    which carries the regions, and VBUS@In2 poured in 2-3 pieces). Vias
-    are left alone: a through via only punches an antipad, and claiming
-    the cells outright stopped every other net changing layer there
-    (nano routed 36 -> 20 per seed)."""
-    regions = _track_reserved_regions(ir, config)
-    if not regions:
-        return
-    by_name = {str(ir.net_name[n]): n for n in range(ir.n_nets)}
-    spec = grid.spec
-    xs = spec.x0 + np.arange(spec.nx) * spec.pitch
-    ys = spec.y0 + np.arange(spec.ny) * spec.pitch
-    gx, gy = np.meshgrid(xs, ys)
-    for layer, poly, net_name in regions:
-        cells = shapely.contains_xy(poly, gx, gy)
-        grid.reserve_track_cells(layer, cells, by_name[net_name])
-
-
-def _claim_static(
-    ir: PcbIR,
-    plane_ids: list[int],
-    grid: maze.OccupancyGrid,
-    config: RealizeConfig,
-    rules_by_net: dict[int, NetRules],
-    pads: list[tuple[Point, int, maze.PadShape, tuple[int, ...]]],
-    pad_geoms: list[PadGeom],
-    ink_field: _InkField | None,
-    fixed_copper: list[dict[str, Any]] | None,
-    *,
-    plane_served_pins: frozenset[int] = frozenset(),
-    banned_via_sites: tuple[Point, ...] = (),
-) -> tuple[list[RealizedTrack], list[RealizedVia], list[int], list[int]]:
-    """Everything a routing attempt claims before its first search: fixed
-    copper, fiducial and mounting-hole keep-outs, pads, and the plane
-    fan-out stubs. Returns the fan-out's copper, the plane segments it
-    could not serve, and the PIN ids it could not give a legal drop —
-    the actual failing terminals, for ``UnroutedReason.pins``."""
-    _claim_fixed_copper(grid, ir, fixed_copper)
-    _claim_fiducial_keepouts(grid, ir)
-    _claim_silk_keepouts(grid, ir, config)
-    _claim_mounting_holes(grid, ir, npth_clearance_mm=_npth_clearance_mm(config))
-    _stamp_pads(grid, pads)
-    _claim_power_regions(grid, ir, config)
-    # Plane-served segments are dog-bone stubs, not searched routes — but
-    # they ARE copper, so they get realized (and claimed) first, before
-    # any route can be planned through where they sit.
-    plane_tracks, plane_vias, plane_failed = _plane_fanout(
-        ir,
-        plane_ids,
-        grid,
-        config,
-        rules_by_net,
-        pad_geoms,
-        ink_field=ink_field,
-        served_pins=plane_served_pins,
-        banned_via_sites=banned_via_sites,
-    )
-    unrouted: list[int] = []
-    # A pin with no legal drop leaves its net's segments unserved. Report
-    # the segments, because that is the unit `unrouted` is counted in and
-    # the unit a reader can act on. The pin ids THEMSELVES are returned
-    # too — the actual terminal that could not escape is evidence the
-    # unrouted-reason diagnosis (`UnroutedReason.pins`) must not flatten
-    # into "some endpoint".
-    if plane_failed:
-        stranded = {int(ir.pin_net[p]) for p in plane_failed}
-        unrouted += [s for s in plane_ids if int(ir.seg_net[s]) in stranded]
-    return list(plane_tracks), list(plane_vias), unrouted, list(plane_failed)
-
-
-@dataclass(frozen=True, slots=True)
-class _SegRequest:
-    """One segment's search, resolved: what :func:`_route_pass` and
-    :func:`_negotiate` both hand ``grid.route``. ``failed`` marks a segment
-    with no legal search at all (no allowed layer, or an end with no copper
-    on one)."""
-
-    seg_id: int
-    net_id: int
-    rules: NetRules
-    failed: bool
-    start: Point
-    end: Point
-    eff_start: Point
-    eff_goal: Point
-    start_layer: int
-    goal_layer: int
-    n_vias: int
-    group_extent: float | None
-    terms: tuple[_EndTerminals, _EndTerminals] | None
-    route_kwargs: dict[str, Any]
-
-
-def _seg_request(
-    ir: PcbIR,
-    seg_id: int,
-    config: RealizeConfig,
-    rules_by_net: dict[int, NetRules],
-    clearance: float,
-    signal_layers: list[int],
-    island_terminals: dict[int, tuple[_EndTerminals, _EndTerminals]] | None,
-    net_layers: dict[int, list[int]] | None,
-) -> _SegRequest | None:
-    """Resolve ``seg_id``'s search — ``None`` when a pin has no L3 position
-    yet (nothing to draw, not a failure). See :func:`_route_pass`."""
-    a, b = int(ir.seg_pin_a[seg_id]), int(ir.seg_pin_b[seg_id])
-    start, end = pin_point(ir, a), pin_point(ir, b)
-    if start is None or end is None:
-        return None
-    net_id = int(ir.seg_net[seg_id])
-    rules = _seg_rules(ir, seg_id, rules_by_net, config)
-
-    def failed() -> _SegRequest:
-        return _SegRequest(
-            seg_id, net_id, rules, True, start, end, start, end, 0, 0, 1, None, None, {}
-        )
-
-    # Rulings 2026-09-19 item 7: this net's own routable subset,
-    # never the board-wide `signal_layers` directly once a class lock
-    # applies — see `_route_pass`'s own docstring paragraph on
-    # `net_layers`. A net locked to nothing at all (`_net_class_layers`
-    # found no usable layer) never reaches `grid.route`: there is
-    # nothing legal to search, and an empty `layers=` list would only
-    # crash `_side_layer` below, not fail cleanly.
-    allowed_layers = (net_layers or {}).get(net_id, signal_layers)
-    if not allowed_layers:
-        return failed()
-    # How much room ONE layer change costs this net. A via group is
-    # sized by ampacity, not by geometry: a 5A rail cannot cross
-    # layers through a single via, and a router that plans for one
-    # and then stitches four has just put three of them through
-    # somebody else's copper. So the search is told the group's full
-    # extent up front and only changes layer where the whole group
-    # fits.
-    n_vias, group_extent = _via_group_extent(ir, seg_id, rules, clearance)
-    terms = (island_terminals or {}).get(seg_id)
-    term_a = terms[0] if terms else ()
-    term_b = terms[1] if terms else ()
-    # This segment's OWN two pad layers, never a shared `PAD_LAYER` —
-    # `_side_layer` is the same bottom/top rule `pads` above was built
-    # with, so a route between a top- and a bottom-mounted pin enters
-    # and leaves on the copper its own pads actually sit on instead of
-    # both ends being pinned to the top layer regardless of mount side.
-    native_a = _side_layer(ir, int(ir.pin_instance[a]), signal_layers)
-    native_b = _side_layer(ir, int(ir.pin_instance[b]), signal_layers)
-    allowed_set = set(allowed_layers)
-    # A locked net's endpoint whose own native pad ISN'T on an allowed
-    # layer (e.g. an EWOD electrode's F.Cu body, locked to B.Cu) has
-    # NO real copper `grid.route` may legally start from at its own
-    # XY — `grid.OccupancyGrid.route` requires `start_layer`/
-    # `goal_layer` to be IN its own `layers=` set, unconditionally, so
-    # simply forcing that native point onto the locked layer (this
-    # module's first attempt) would plant a phantom track origin on
-    # bare board where no copper exists. See `_resolve_route_end`'s
-    # own docstring for the real substitution this uses instead.
-    eff_start, start_layer, extra_a = _resolve_route_end(
-        native_a, start, term_a, allowed_set
-    )
-    eff_goal, goal_layer, extra_b = _resolve_route_end(
-        native_b, end, term_b, allowed_set
-    )
-    if start_layer is None or goal_layer is None:
-        return failed()
-    assert eff_start is not None and eff_goal is not None  # same branch as above
-    kwargs: dict[str, Any] = {
-        "layers": allowed_layers,
-        "width_mm": rules.track_width_mm,
-        "via_dia_mm": group_extent,
-        "start_layer": start_layer,
-        "goal_layer": goal_layer,
-        "via_body_cost_mm": config.via_body_cost_mm,
-        "max_expansions": config.max_expansions,
-        "layer_prefs": (
-            _layer_preferences(ir, signal_layers)
-            if config.preferred_directions
-            else None
-        ),
-        "layer_cost": _layer_cost(ir, config),
-        "off_axis_penalty": config.off_axis_penalty,
-        "extra_start_terminals": tuple((t.point, layer) for t, layer in extra_a),
-        "extra_goal_terminals": tuple((t.point, layer) for t, layer in extra_b),
-    }
-    return _SegRequest(
-        seg_id,
-        net_id,
-        rules,
-        False,
-        start,
-        end,
-        eff_start,
-        eff_goal,
-        start_layer,
-        goal_layer,
-        n_vias,
-        group_extent,
-        terms,
-        kwargs,
-    )
-
-
-def _preferred_fits(
-    grid: maze.OccupancyGrid, path: maze.RoutePath, req: _SegRequest
-) -> bool:
-    """May a negotiated ``path`` be committed onto ``grid`` as it stands?
-    Legal cell for cell (:meth:`maze.OccupancyGrid.path_is_legal`), and, if
-    it began on its own net's copper, that copper must still be there at
-    the same point — an earlier connection the commit re-searched or
-    straightened may have moved it, and a branch left starting on bare
-    board severs the net with DRC reading clean."""
-    if len(path.points) < 2:
-        return False
-    first, last = path.points[0], path.points[-1]
-    spec = grid.spec
-    if path.attached and not grid.is_attach_point(
-        req.net_id, first[0], first[1], first[2]
-    ):
-        return False
-    start_exempt = (
-        not path.attached
-        and first[2] == req.start_layer
-        and spec.to_cell(first[0], first[1]) == spec.to_cell(*req.eff_start)
-    )
-    goal_exempt = last[2] == req.goal_layer and spec.to_cell(
-        last[0], last[1]
-    ) == spec.to_cell(*req.eff_goal)
-    return grid.path_is_legal(
-        path,
-        width_mm=req.rules.track_width_mm,
-        via_dia_mm=req.group_extent,
-        start_exempt=start_exempt,
-        goal_exempt=goal_exempt,
-    )
-
-
-@dataclass(frozen=True, slots=True)
-class _Proposal:
-    """One negotiated segment: ``raw`` is the search result, whose cells
-    :func:`_preferred_fits` checks; ``copper`` is ``raw`` snapped onto its
-    pads, what the negotiation claimed and attached to and what a commit
-    stamps."""
-
-    raw: maze.RoutePath
-    copper: maze.RoutePath
-
-
-@dataclass(frozen=True, slots=True)
-class NegotiationReport:
-    """What one :func:`_negotiate` run did — the route job's only window
-    into the loop. Before this, a ``negotiate=10`` job on the EWOD dogfood
-    board (job 470129) reported the same 22/33 as ``negotiate=0`` and
-    nothing else, and a four-arm replay (2026-10-07: 40 iterations, three
-    pressure schedules) was needed to learn that 52 of 55 nets were still
-    in conflict after EVERY iteration — the loop never converged, and the
-    job had no way to say so."""
-
-    #: Full iterations completed (a budget cut-off mid-iteration counts
-    #: none; its partial proposals are still committed).
-    iterations_run: int
-    #: Nets still in conflict after each completed iteration, in order.
-    #: Converged means the last entry is 0.
-    conflicted: tuple[int, ...]
-    #: Segments holding a proposal when the loop ended.
-    proposals: int
-    #: ``config.negotiate_budget_s`` ran out before the iterations did.
-    out_of_time: bool
-    elapsed_s: float
-    #: Most proposals one commit pass took verbatim (:func:`_route_pass`'s
-    #: ``accepted``) — how much of the negotiated plan survived the hard
-    #: grid.
-    accepted: int = 0
-    #: The result the caller gets came from a commit pass, not from the
-    #: plain re-ordering passes before it.
-    won: bool = False
-
-    @property
-    def converged(self) -> bool:
-        return bool(self.conflicted) and self.conflicted[-1] == 0
-
-    def as_dict(self) -> dict[str, Any]:
-        return {
-            "iterations_run": self.iterations_run,
-            "conflicted": list(self.conflicted),
-            "converged": self.converged,
-            "proposals": self.proposals,
-            "out_of_time": self.out_of_time,
-            "elapsed_s": round(self.elapsed_s, 1),
-            "accepted": self.accepted,
-            "won": self.won,
-        }
-
-    def line(self) -> str:
-        """One summary sentence for a job digest."""
-        if self.conflicted:
-            trail = f"{self.conflicted[0]}→{self.conflicted[-1]} net(s) in conflict"
-        else:
-            trail = "no iteration completed"
-        verdict = (
-            "converged"
-            if self.converged
-            else "out of time"
-            if self.out_of_time
-            else "did not converge"
-        )
-        taken = "taken" if self.won else "not taken (hard passes scored better)"
-        return (
-            f"negotiated {self.iterations_run} iteration(s) in "
-            f"{self.elapsed_s:.0f}s: {trail}, {verdict}; {self.proposals} "
-            f"proposal(s), {self.accepted} committed verbatim, result {taken}"
-        )
-
-
-def _negotiation_claims(
-    grid: maze.OccupancyGrid, path: maze.RoutePath, req: _SegRequest, clearance: float
-) -> list[tuple[float, float, int, int, float]]:
-    """The ``(x, y, layer_lo, layer_hi, radius)`` disks a hard commit of
-    ``path`` would stamp: :meth:`maze.OccupancyGrid.stamp_path`'s corridor
-    plus :func:`_route_pass`'s via group on every layer."""
-    radius = grid.core_radius_mm(req.rules.track_width_mm)
-    out = [
-        (x, y, lo, hi, radius)
-        for x, y, lo, hi in maze.path_samples(path, grid.spec.pitch / 2.0)
-    ]
-    rules = req.rules
-    if rules.via_dia_mm is not None and rules.via_drill_mm is not None:
-        via_r = grid.core_radius_mm(rules.via_dia_mm)
-        pitch = rules.via_dia_mm + clearance
-        top = grid.spec.n_layers - 1
-        for vx, vy, _lo, _hi in path.vias:
-            for k in range(req.n_vias):
-                out.append(
-                    (vx + (k - (req.n_vias - 1) / 2.0) * pitch, vy, 0, top, via_r)
-                )
-    return out
-
-
-def _negotiate(
-    ir: PcbIR,
-    order: list[int],
-    plane_ids: list[int],
-    spec: maze.GridSpec,
-    body_mask: np.ndarray,
-    config: RealizeConfig,
-    rules_by_net: dict[int, NetRules],
-    pads: list[tuple[Point, int, maze.PadShape, tuple[int, ...]]],
-    clearance: float,
-    signal_layers: list[int],
-    pad_geoms: list[PadGeom],
-    ink_field: _InkField | None,
-    fixed_copper: list[dict[str, Any]] | None,
-    island_terminals: dict[int, tuple[_EndTerminals, _EndTerminals]] | None,
-    net_layers: dict[int, list[int]] | None,
-    *,
-    plane_served_pins: frozenset[int] = frozenset(),
-) -> tuple[
-    dict[int, _Proposal], set[int], NegotiationReport, tuple[CongestionCell, ...]
-]:
-    """Negotiated congestion over the routed nets (:class:`maze.
-    Negotiation`): a proposal per segment, the nets still in conflict
-    when the iterations or ``config.negotiate_budget_s`` ran out, and a
-    :class:`NegotiationReport` of what happened (``accepted``/``won`` are
-    the caller's to fill — they are known only after the commit).
-
-    Each iteration rips up and re-routes every net that ended the last one
-    in conflict, whole (its connections attach to one another, so a net is
-    the unit that moves). Nets route in ``order``'s first-appearance order,
-    their segments in ``order``. Static copper is claimed exactly as a
-    routing attempt claims it (:func:`_claim_static`) and stays a wall.
-
-    Claims and attach points come from the SNAPPED path, the copper a
-    commit stamps verbatim, so a later branch's attach point survives the
-    commit. A search that exhausts ``max_expansions`` keeps the segment's
-    previous proposal: late iterations inflate every cost, and losing a net
-    there would be a budget artefact, not congestion. A kept proposal may
-    attach to sibling copper this iteration just re-routed elsewhere; it
-    still counts as a claim here, and at commit the attach check rejects
-    it and the segment searches again — so a kept proposal is a claim,
-    not a promise of validity.
-
-    ``config.negotiate_budget_s`` is checked before each net, so the
-    wall-clock bound holds inside an iteration too."""
-    grid = maze.OccupancyGrid(
-        spec,
-        clearance_mm=clearance,
-        net_clearance_mm=_net_clearances(rules_by_net, config),
-        net_layer_clearance_mm=_net_layer_clearances(ir, rules_by_net, config),
-    )
-    grid.set_body_mask(body_mask)
-    _claim_static(
-        ir,
-        plane_ids,
-        grid,
-        config,
-        rules_by_net,
-        pads,
-        pad_geoms,
-        ink_field,
-        fixed_copper,
-        plane_served_pins=plane_served_pins,
-    )
-    neg = maze.Negotiation(
-        spec, pres_fac=maze.NEGOTIATE_PRES_FAC, hist_fac=maze.NEGOTIATE_HIST_FAC
-    )
-    reqs: dict[int, _SegRequest] = {}
-    by_net: dict[int, list[int]] = {}
-    for seg_id in order:
-        req = _seg_request(
-            ir,
-            seg_id,
-            config,
-            rules_by_net,
-            clearance,
-            signal_layers,
-            island_terminals,
-            net_layers,
-        )
-        if req is None or req.failed:
-            continue
-        reqs[seg_id] = req
-        by_net.setdefault(req.net_id, []).append(seg_id)
-    paths: dict[int, _Proposal] = {}
-    conflicted = set(by_net)
-    started = time.monotonic()
-    deadline = started + config.negotiate_budget_s
-    trail: list[int] = []
-    out_of_time = False
-    for _iteration in range(config.negotiate_iterations):
-        for net_id, segs in by_net.items():
-            if net_id not in conflicted:
-                continue
-            # Per net, not per iteration: one iteration on a real board can
-            # run for minutes. A partial iteration's proposals are still
-            # usable, since the commit re-checks every one; ``conflicted``
-            # stays the last full iteration's set.
-            if (
-                time.monotonic() >= deadline
-            ):  # >=: a coarse clock may not tick past a zero budget
-                out_of_time = True
-                break
-            neg.rip_net(net_id)
-            grid.forget_attach(net_id)
-            claims = []
-            for seg_id in segs:
-                req = reqs[seg_id]
-                raw = grid.route(
-                    net_id,
-                    req.eff_start,
-                    req.eff_goal,
-                    negotiation=neg,
-                    **req.route_kwargs,
-                )
-                if raw is not None and len(raw.points) >= 2:
-                    copper = _snap_to_pads(raw, req.start, req.end, spec.pitch)
-                    paths[seg_id] = _Proposal(raw, copper)
-                elif not grid.last_route_exhausted:
-                    paths.pop(seg_id, None)
-                prop = paths.get(seg_id)
-                if prop is None:
-                    continue
-                grid.register_attach(prop.copper)
-                claims.append(
-                    neg.claim_cells(
-                        _negotiation_claims(grid, prop.copper, req, clearance)
-                    )
-                )
-            neg.set_net(net_id, claims)
-        if out_of_time:
-            break
-        conflicted = set()
-        for net_id, segs in by_net.items():
-            for seg_id in segs:
-                prop = paths.get(seg_id)
-                if prop is None:
-                    continue
-                hits = neg.conflicts(
-                    net_id,
-                    prop.raw,
-                    width_mm=reqs[seg_id].rules.track_width_mm,
-                    via_dia_mm=reqs[seg_id].group_extent,
-                )
-                if hits.shape[0]:
-                    conflicted.add(net_id)
-                    neg.add_history(hits)
-        trail.append(len(conflicted))
-        if not conflicted:
-            break
-        neg.pres_fac *= maze.NEGOTIATE_PRES_GROWTH
-    report = NegotiationReport(
-        iterations_run=len(trail),
-        conflicted=tuple(trail),
-        proposals=len(paths),
-        out_of_time=out_of_time,
-        elapsed_s=time.monotonic() - started,
-    )
-    # PathFinder's final present congestion, for the caller's evidence:
-    # every cell more than one net's claims still cover at end of loop,
-    # grid indices converted to board mm through this grid's own spec.
-    # Bounded by _MAX_CONGESTION_CELLS, worst usage first.
-    contested = np.argwhere(neg.usage > 1)
-    cells = [
-        CongestionCell(
-            float(spec.to_point(int(ix), int(iy))[0]),
-            float(spec.to_point(int(ix), int(iy))[1]),
-            int(layer),
-            int(neg.usage[layer, iy, ix]),
-            float(spec.pitch),
-        )
-        for layer, iy, ix in contested
-    ]
-    cells.sort(key=lambda c: c.usage, reverse=True)
-    return paths, conflicted, report, tuple(cells[:_MAX_CONGESTION_CELLS])
-
-
-def _route_pass(
-    ir: PcbIR,
-    order: list[int],
-    plane_ids: list[int],
-    grid: maze.OccupancyGrid,
-    config: RealizeConfig,
-    rules_by_net: dict[int, NetRules],
-    pads: list[tuple[Point, int, maze.PadShape, tuple[int, ...]]],
-    clearance: float,
-    signal_layers: list[int],
-    spec: maze.GridSpec,
-    pad_geoms: list[PadGeom],
-    ink_field: _InkField | None = None,
-    fixed_copper: list[dict[str, Any]] | None = None,
-    island_terminals: dict[int, tuple[_EndTerminals, _EndTerminals]] | None = None,
-    net_layers: dict[int, list[int]] | None = None,
-    preferred: dict[int, _Proposal] | None = None,
-    accepted: list[int] | None = None,
-    plane_served_pins: frozenset[int] = frozenset(),
-    kept: dict[int, maze.RoutePath] | None = None,
-    stamped: dict[int, maze.RoutePath] | None = None,
-    seg_expansions: dict[int, int] | None = None,
-    exhausted: set[int] | None = None,
-    banned_via_sites: tuple[Point, ...] = (),
-) -> tuple[
-    list[RealizedTrack],
-    list[RealizedVia],
-    list[int],
-    dict[int, str],
-    list[int],
-]:
-    """One complete routing attempt onto a fresh ``grid``, in ``order``.
-
-    ``ink_field`` (:func:`_courtyard_ink_field`, built ONCE in
-    :func:`_realize_maze` — placement-derived, so it is identical on every
-    attempt) is forwarded to the plane fan-out's drop-via search and to
-    the straighten pass's via shove, the two via-placement sites that
-    defer to courtyard silk (this section's module note).
-
-    ``fixed_copper`` (:func:`realize`'s own new keyword — pcb-pre-place-
-    route-blocks Slice 1's "Realize seam") is claimed FIRST, before even
-    the fiducial/mounting-hole keep-outs — see :func:`_claim_fixed_copper`
-    for why a pad's own re-assert must still win the cells directly under
-    it regardless of claim order.
-
-    ``island_terminals`` (:func:`_seg_island_terminals`, also built ONCE
-    in :func:`_realize_maze`) hands each segment's search the alternate
-    start/target set its fixed-copper-connected pin(s) offer, on top of
-    the plain pad point — see :meth:`~precis.pcb.maze.OccupancyGrid.route`'s
-    ``extra_start_terminals``/``extra_goal_terminals``. Every segment
-    whose realized path actually used one is named in the returned notes
-    dict (:attr:`RealizeResult.island_terminals`).
-
-    ``net_layers`` (:func:`_net_class_layers`, built ONCE in
-    :func:`_realize_maze` — Rulings 2026-09-19 item 7) is this net's
-    routable subset of ``signal_layers``, defaulting to ``signal_layers``
-    itself for a net with no class-level lock — the ``layers=`` argument
-    every segment's ``grid.route`` call below is searched against. A pin
-    whose own NATIVE pad layer (:func:`_side_layer` against the full
-    ``signal_layers``, unchanged) isn't in that locked set has no real
-    copper `grid.route` may start from at its own coordinate; the loop
-    below substitutes the first ``island_terminals`` candidate that IS on
-    an allowed layer as the search's primary endpoint instead (the plaza
-    via's own B.Cu landing, for the EWOD escape case) — never a
-    fabricated point on bare board — and fails the segment outright when
-    no such terminal exists.
-
-    ``preferred`` (:func:`_negotiate`'s proposal) maps a segment to a path
-    to commit instead of searching, used only when its search cells are
-    still legal on this grid as it stands (:func:`_preferred_fits`), and
-    then committed verbatim — snapped as negotiated, not straightened.
-    Anything else searches as usual. ``accepted`` collects the segments
-    committed that way.
-
-    ``kept`` (the clean-up pass's replay, :mod:`precis.pcb.routeclean`)
-    maps a segment to the exact path an earlier pass stamped; it is
-    stamped again unchecked — no search, snap or straighten, no island
-    note — so its copper comes out identical. ``stamped`` collects every
-    segment's final stamped path, in commit order.
-
-    ``seg_expansions`` (the budget retry, :func:`_realize_maze`) maps a
-    segment to the ``max_expansions`` ITS search gets this pass; every
-    other segment keeps ``config.max_expansions``. ``exhausted`` collects
-    the segments whose search ended on that cap
-    (:attr:`maze.OccupancyGrid.last_route_exhausted`) — the retry's input
-    and the diagnosis's evidence that the failure was budget, not
-    geometry."""
-    tracks, vias, unrouted, failed_pins = _claim_static(
-        ir,
-        plane_ids,
-        grid,
-        config,
-        rules_by_net,
-        pads,
-        pad_geoms,
-        ink_field,
-        fixed_copper,
-        plane_served_pins=plane_served_pins,
-        banned_via_sites=banned_via_sites,
-    )
-    island_notes: dict[int, str] = {}
-
-    for seg_id in order:
-        req = _seg_request(
-            ir,
-            seg_id,
-            config,
-            rules_by_net,
-            clearance,
-            signal_layers,
-            island_terminals,
-            net_layers,
-        )
-        if req is None:
-            continue  # no L3 position yet — nothing to draw, not a failure
-        if req.failed:
-            unrouted.append(seg_id)
-            continue
-        if seg_expansions and seg_id in seg_expansions:
-            req.route_kwargs["max_expansions"] = seg_expansions[seg_id]
-        net_id, rules, n_vias = req.net_id, req.rules, req.n_vias
-        group_extent, terms = req.group_extent, req.terms
-        start, end = req.start, req.end
-        held = (kept or {}).get(seg_id)
-        pref = (preferred or {}).get(seg_id)
-        committed = (
-            held is None and pref is not None and _preferred_fits(grid, pref.raw, req)
-        )
-        if held is not None:
-            path: maze.RoutePath | None = held
-        elif committed:
-            assert pref is not None
-            path = pref.raw
-            if accepted is not None:
-                accepted.append(seg_id)
-        else:
-            path = grid.route(net_id, req.eff_start, req.eff_goal, **req.route_kwargs)
-            if path is None and grid.last_route_exhausted and exhausted is not None:
-                exhausted.add(seg_id)
-        if path is None or len(path.points) < 2:
-            unrouted.append(seg_id)
-            continue
-        if held is None:
-            note = _describe_used_terminal(path, terms)
-            if note is not None:
-                island_notes[seg_id] = note
-        if committed:
-            # Verbatim: the negotiation claimed and attached to exactly this
-            # copper, so a later branch's attach point is still on it. A
-            # straighten here would move the copper under that branch.
-            assert pref is not None
-            path = pref.copper
-        elif held is None:
-            path = _snap_to_pads(path, start, end, spec.pitch)
-        if config.straighten and not committed and held is None:
-            path = _straighten(
-                path,
-                grid,
-                net_id,
-                rules.track_width_mm,
-                shove_vias=config.shove_vias,
-                via_group_extent_mm=group_extent,
-                via_shove_radius_mm=config.via_shove_radius_mm,
-                ink_field=ink_field,
-            )
-        grid.stamp_path(path, rules.track_width_mm)
-        if stamped is not None:
-            stamped[seg_id] = path
-        via_r = (
-            grid.core_radius_mm(rules.via_dia_mm)
-            if rules.via_dia_mm is not None
-            else 0.0
-        )
-        through_lo, through_hi = through_span(spec.n_layers)
-        for vx, vy, lo, hi in path.vias:
-            if rules.via_dia_mm is None or rules.via_drill_mm is None:
-                continue  # this fab publishes no via figures — don't invent any
-            # The stitched group, spread along x at the transition. The
-            # search already cleared a disk of the group's full extent
-            # there (`group_extent` above), so every member lands in
-            # cleared space rather than the first one landing legally and
-            # the rest wherever they fall.
-            pitch = rules.via_dia_mm + clearance
-            for k in range(n_vias):
-                gx = vx + (k - (n_vias - 1) / 2.0) * pitch
-                grid.stamp_disk(range(0, spec.n_layers), gx, vy, via_r, net_id)
-                grid.register_via(gx, vy, rules.via_dia_mm / 2.0)
-                vias.append(
-                    RealizedVia(
-                        seg_id=seg_id,
-                        net_id=net_id,
-                        x=gx,
-                        y=vy,
-                        dia_mm=rules.via_dia_mm,
-                        drill_mm=rules.via_drill_mm,
-                        layer_lo=through_lo,
-                        layer_hi=through_hi,
-                        endpoint="a",
-                    )
-                )
-            # A group of n>1 is spread AROUND the transition point, so for
-            # even n no via sits where the trace ends and for odd n only the
-            # middle one does: the outer annuli are copper islands and the
-            # ampacity the group was sized for does not exist. Join them
-            # with a bar, on each layer the trace is actually on. It runs
-            # inside the group extent the search already cleared, at the
-            # annulus width, so it adds no new clearance obligation.
-            if n_vias > 1 and rules.via_dia_mm is not None:
-                half = (n_vias - 1) / 2.0 * (rules.via_dia_mm + clearance)
-                for layer in (lo, hi):
-                    tracks += _track_from_run(
-                        seg_id,
-                        net_id,
-                        layer,
-                        [(vx - half, vy), (vx + half, vy)],
-                        rules.via_dia_mm,
-                    )
-        tracks.extend(
-            _tracks_from_path(
-                seg_id,
-                net_id,
-                path,
-                rules.track_width_mm,
-                fillet_radius_mm=config.fillet_radius_tracks * rules.track_width_mm,
-            )
-        )
-    return tracks, vias, unrouted, island_notes, failed_pins
 
 
 def _pad_blockers(
@@ -4256,7 +2091,7 @@ def _mounting_hole_blockers(
     an antipad; the diameter is the larger of drill and ring, unbuffered
     (``plane_pours`` applies its own uniform ``clearance_mm``). A bare
     NPTH hole grows by ``npth_clearance_mm - clearance`` per side, so the
-    pour clears it by the fab's NPTH figure, as :func:`_claim_mounting_holes`
+    pour clears it by the fab's NPTH figure, as :func:`_keepout_obstacles`
     does for routed copper."""
     out: list[dict[str, Any]] = []
     for hole in ir.mounting_holes:
@@ -4366,7 +2201,7 @@ def derive_power_regions(
     for such a net (:func:`_plane_fanout`), so a pin whose near sites are
     all taken looks further out within it, and failing that is a stranded
     pin the rescue pass routes — never a via dropped outside its region.
-    The edge inset is the pour rim's (:func:`_realize_maze`)."""
+    The edge inset is the pour rim's (:func:`_realize_vector`)."""
     layers = [i for i, e in enumerate(ir.stackup) if e.get("power_regions")]
     if not layers or not ir.outline:
         return [], []
@@ -4450,7 +2285,7 @@ def _pour_planes(
     additional unrouted segments the pouring revealed.
 
     **AUTHORED fixed copper blocks too** (``fixed_copper`` — the same rows
-    :func:`_claim_fixed_copper` claims on the router's grid). Those rows
+    :func:`_static_obstacles` claims on the router's grid). Those rows
     are already in :mod:`precis.pcb.gerber` model shape (``pcb_copper_
     list`` unions them into exactly this dict shape for DRC), so they go
     in verbatim: a fixed track carries ``layer``/``width_mm``/``segments``
@@ -4581,7 +2416,7 @@ def fixed_copper_pours(
 # each defer to courtyard ink SOFTLY: prefer an ink-free legal site, but
 # place the via under ink rather than fail the net outright -- a routed
 # connection beats an unrouted one every time, silk legibility is a review
-# concern, not a DRC one. The maze search's own in-grid via mask/cost is
+# concern, not a DRC one. The route search's own via mask/cost is
 # deliberately untouched (out of scope): these two sites are where the
 # round-4 review's remaining clips (U1/C5 motor board, D4 nano board) were
 # traced to -- THT/plane-heavy spots, i.e. plane drop vias, with a route
@@ -4604,7 +2439,7 @@ _INK_HALF_STROKE_MM = pcb_silk.DEFAULT_SILK_WIDTH_MM / 2.0
 class _InkField:
     """Every drawn-courtyard-ring edge on the board, in world coordinates,
     each carrying its own precomputed bbox -- built ONCE per
-    :func:`_realize_maze` call (route-independent, module note above) and
+    :func:`_realize_vector` call (route-independent, module note above) and
     threaded read-only through every route attempt and via-placement site
     that wants to avoid it. :meth:`clips` rejects a candidate with four
     float compares before it ever runs the real point-to-segment distance,
@@ -4693,60 +2528,58 @@ def _courtyard_ink_field(ir: PcbIR, capability: CapabilityRow) -> _InkField:
     return _ink_field_from_rings(rings)
 
 
-def _courtyard_body_mask(ir: PcbIR, spec: maze.GridSpec) -> np.ndarray:
-    """``(spec.ny, spec.nx)`` boolean: True where a grid cell CENTRE falls
-    inside a placed instance's own courtyard footprint —
-    :func:`~precis.pcb.silk.world_courtyard_rings`'s clearance-0 hull, the
-    part's real body, not the silk stroke :func:`_courtyard_ink_field`
-    tracks around it (a via can sit millimetres outside the courtyard and
-    still clip that ring's ink; this asks a different question — is the
-    via UNDER the part at all). Feeds :meth:`~precis.pcb.maze.
-    OccupancyGrid.set_body_mask`, which :meth:`~precis.pcb.maze.
-    OccupancyGrid.route` consults for the ``via_body_cost_mm`` surcharge
-    (:attr:`RealizeConfig.via_body_cost_mm`) — a reworkability PREFERENCE,
-    not a keep-out, so this mask only ever prices a cell, never removes it
-    from ``passable``.
+@dataclass(frozen=True, slots=True)
+class _FanoutPin:
+    """One plane pin's drop-via request, resolved by :func:`_plane_fanout`
+    before any pin places copper."""
 
-    Built ONCE per :func:`_realize_maze` call, like :func:`
-    _courtyard_ink_field` right above it — placement-derived, so identical
-    on every rip-up-and-retry attempt.
+    pid: int
+    net_id: int
+    seg_id: int
+    point: Point
+    direction: tuple[float, float]
+    pad_layer: int
+    lo: int
+    hi: int
+    pad_radius: float
+    rules: NetRules
+    pour_reaches_pad: bool
+    edge_clip: tuple[float, float, float, float] | None
+    #: The net's derived region shrunk by the via radius, or ``None``
+    #: (:func:`_drop_via_site`'s ``inside``).
+    region_area: Any = None
+    #: ``rules`` with the stub at the fab floor, tried when the net's own
+    #: width finds no site; ``None`` when the net is already at the floor.
+    narrow_rules: NetRules | None = None
+    #: Which of the pin's parallel drops this is (0 = the primary); the
+    #: extra drops carry the pad's current beyond one via's ampacity.
+    copy: int = 0
+    #: Unique reservation key: ``pid`` for the primary drop.
+    key: int = -1
 
-    Per-cell ``shapely`` point-in-polygon over each ring's own bounding
-    box, not a full-grid scan: a part's courtyard is a handful of grid
-    cells even on a fine-pitch board, while the grid itself can be
-    hundreds of cells on a side.
-    """
-    mask = np.zeros((spec.ny, spec.nx), dtype=bool)
-    for ring in pcb_silk.world_courtyard_rings(ir):
-        if len(ring) < 3:
+
+def _region_areas(ir: PcbIR, rules_by_net: dict[int, NetRules]) -> dict[int, Any]:
+    """Net id -> its derived region (:attr:`PcbIR.plane_regions`) shrunk by
+    its via radius, for every net poured inside a region."""
+    out: dict[int, Any] = {}
+    for (net_id, _layer), (region, _priority) in ir.plane_regions.items():
+        poly = region_polygon(region)
+        if poly is None:
             continue
-        poly = _ShapelyPolygon(ring)
-        if not poly.is_valid or poly.is_empty:
-            continue
-        minx, miny, maxx, maxy = poly.bounds
-        lo_x, lo_y = spec.to_cell(minx, miny)
-        hi_x, hi_y = spec.to_cell(maxx, maxy)
-        lo_x, hi_x = (lo_x, hi_x) if lo_x <= hi_x else (hi_x, lo_x)
-        lo_y, hi_y = (lo_y, hi_y) if lo_y <= hi_y else (hi_y, lo_y)
-        for iy in range(lo_y, hi_y + 1):
-            y = spec.y0 + iy * spec.pitch
-            for ix in range(lo_x, hi_x + 1):
-                x = spec.x0 + ix * spec.pitch
-                if poly.contains(_ShapelyPoint(x, y)):
-                    mask[iy, ix] = True
-    return mask
+        via_r = float(rules_by_net[net_id].via_dia_mm or 0.0) / 2.0
+        out[net_id] = poly.buffer(-via_r)
+    return out
 
 
 def _plane_fanout(
     ir: PcbIR,
     plane_ids: list[int],
-    grid: maze.OccupancyGrid,
+    space: vroute.Space,
     config: RealizeConfig,
     rules_by_net: dict[int, NetRules],
     pad_geoms: list[PadGeom],
     ink_field: _InkField | None = None,
     served_pins: frozenset[int] = frozenset(),
-    banned_via_sites: tuple[Point, ...] = (),
 ) -> tuple[list[RealizedTrack], list[RealizedVia], list[int]]:
     """Connect every pin of a plane-promoted net DOWN to its plane.
 
@@ -4754,34 +2587,28 @@ def _plane_fanout(
     fixed copper already carries onto a poured layer; they get no stub
     and no drop via here.
 
-    ``banned_via_sites`` (the route clean-up pass,
-    :mod:`precis.pcb.routeclean`) are drop-via sites the search must skip,
-    so the pin takes its next legal site instead; empty = the ordinary
-    search.
-
     Two passes (pcb-stackup-regions slice 1): every pin's site is found
-    and reserved on the grid first, then each pin releases its own
-    reservation and places its stub and via, so pin order no longer
-    decides which neighbour loses its site.
+    and reserved first (``held`` — the reservation is pure geometry, the
+    Space's incremental claim index being unchanged between a site check
+    and its placement), then each pin releases its own reservation and
+    places its stub and via, so pin order no longer decides which
+    neighbour loses its site.
 
     ``ink_field`` (:func:`_courtyard_ink_field`), forwarded to
     :func:`_drop_via_site` unchanged, is the plane drop via's own defer-
-    to-silk-softly preference -- see this section's module note.
+    to-silk-softly preference.
 
     One stub plus one drop via per PIN, not per segment. A net's segments
     are a spanning TREE over its pins (``ir.from_graph``), so per-segment
-    fanout emitted a stub once per tree EDGE — several for a high-degree pin,
-    none for a pin the tree happened to reach once — and it drew each stub on ``ir.seg_layer``, the L1
-    sketch layer, which for a pad on ``PAD_LAYER`` means a stub that starts
-    on a layer its own pad is not on. Both bugs are the same mistake:
-    treating a plane connection as a property of a *connection* when it is
-    a property of a *pin*.
+    fanout emitted a stub once per tree EDGE — several for a high-degree
+    pin, none for a pin the tree happened to reach once. Both a plane
+    connection is a property of a *pin*, not of a connection.
 
     The stub runs outward along the pin's own land-pattern offset — away
     from the part body, which is where the escape has to go anyway — on
-    the pin's OWN copper layer (:func:`_side_layer`; a bottom-mounted part
-    gets a B.Cu stub, not an F.Cu one), and ends in a via spanning that
-    layer to the plane layer. That via is
+    the pin's OWN copper layer (:func:`_side_layer`; a bottom-mounted
+    part gets a B.Cu stub, not an F.Cu one), and ends in a via spanning
+    that layer to the plane layer. That via is
     what :func:`precis.pcb.planes.plane_pours` deliberately does not carve
     an antipad around: it is the connection.
 
@@ -4789,10 +2616,7 @@ def _plane_fanout(
     net's only pour is on its own layer: that one trusts the pour, and the
     post-pour connectivity check reports it if the fill misses its land
     (the comment at ``pour_reaches_pad``). A plane connection
-    that will not fit is an unrouted connection and is reported as one; the
-    alternative — stamping the via anyway — is how this function first put
-    26 clearance errors on a board the occupancy grid had guaranteed clean.
-    """
+    that will not fit is an unrouted connection and is reported as one."""
     tracks: list[RealizedTrack] = []
     vias: list[RealizedVia] = []
     failed: list[int] = []
@@ -4807,7 +2631,7 @@ def _plane_fanout(
         seg_of_net.setdefault(int(ir.seg_net[seg_id]), seg_id)
     # Every drop via this call places, (x, y, via_radius_mm), NET-BLIND —
     # shared across every net's pins in this one pass, not reset per net.
-    # `disk_is_free`'s same-net exemption (right for a trace legally
+    # ``Space.clears``' same-net exemption (right for a trace legally
     # ending on its own pad) is the wrong exemption for two via BARRELS:
     # a same-net cluster of GND drop vias is exactly where two are most
     # likely to land close together, and their drilled holes do not care
@@ -4816,13 +2640,7 @@ def _plane_fanout(
     # dia 0.75mm each — copper overlapping by 0.590mm and, worse, their
     # 0.25mm drills overlapping too).
     # Seeded with the board's AUTHORED vias (``ir.fixed_vias``, every
-    # ``pcb_fixed_copper`` via row), for the same net-blind reason: the
-    # grid's claim of a same-net fixed via is passable to its own net, so
-    # a drop via for a pin whose source routing already has a via right
-    # there landed ON it. taz15 (2026-10-15, an EasyEDA import routed at
-    # source): 12V_POWER and PV+ drop vias 0.23-0.32mm from the source's
-    # own vias, barrels overlapping by 0.28-0.37mm, both nets stripped by
-    # the post-route gate as via_via_keepout.
+    # ``pcb_fixed_copper`` via row), for the same net-blind reason.
     placed_via_sites: list[tuple[float, float, float]] = [
         (float(v.x), float(v.y), float(v.dia_mm) / 2.0) for v in ir.fixed_vias
     ]
@@ -4844,15 +2662,10 @@ def _plane_fanout(
         # (net_plane_layers is a bitmask). One drop via per pin still
         # suffices: a via is ALWAYS a contiguous span (RealizedVia's own
         # docstring — never a scalar layer) and a through barrel connects
-        # every layer it passes, not just its two ends (confirmed by
-        # connectivity.py's via-group union, which joins a via's
-        # primitives on EVERY layer `_via_layer_names` reports for it, not
-        # just `layer_lo`/`layer_hi`). So spanning from the pad's own
-        # layer to the FARTHEST of this net's poured layers reaches every
-        # nearer poured layer for free, and is simultaneously the
-        # stitching connection between them — a GND fill on F.Cu and
-        # In1.Cu is tied into ONE net the moment any GND pin's drop via
-        # spans both, no separate stitching-via pass required.
+        # every layer it passes, not just its two ends. So spanning from
+        # the pad's own layer to the FARTHEST of this net's poured layers
+        # reaches every nearer poured layer for free, and is
+        # simultaneously the stitching connection between them.
         plane_layers = plane_layers_of(int(ir.net_plane_layers[net_id]))
         rules = rules_by_net[net_id]
         for pid in range(ir.n_pins):
@@ -4865,66 +2678,27 @@ def _plane_fanout(
                 continue
             # THIS pin's own copper layer (:func:`_side_layer`, the same
             # bottom/top rule `pads_for_ir` builds the DRC/gerber pad set
-            # with), never the shared `PAD_LAYER` — which is exactly the
-            # mistake this docstring diagnoses for `ir.seg_layer` and then
-            # made again one line down. A bottom-mounted pin got a stub
-            # drawn on F.Cu, starting on bare board above its own pad, and
-            # a drop via spanning F.Cu->plane that never reaches B.Cu at
-            # all. Measured 2026-09-28 on the EWOD dogfood the first time a
-            # GND plane was authored on In1.Cu: GND came out `realized` in
-            # THREE islands, the two extra witnesses being its two
-            # bottom-side SMD lands (8.417, 0.358) and (19.0, 0.0), while
-            # all five GND drop vias reported span ['F.Cu', 'In1.Cu'].
-            # Silent twice over: the net reports realized, and the stray
-            # stub lands on the electrode layer this board forbids.
+            # with), never the shared `PAD_LAYER` — a bottom-mounted pin
+            # gets a stub on B.Cu, starting on the copper its own pad sits
+            # on (measured 2026-09-28 on the EWOD dogfood).
             pad_layer = _side_layer(ir, int(ir.pin_instance[pid]), outer_layers)
             # The net's ONLY pour is on this pin's own copper layer. The
-            # land USUALLY sits inside the fill, but not always: the pour
-            # is cut around every piece of FOREIGN copper, so a pad among
-            # them can end up in a fragment of its own, or with no fill
-            # reaching it at all. The fab-render board, seed 3 (2026-10-16):
-            # skipping every such pin (2bf9dc75e) left one GND pad that
-            # the pour missed, and the net failed as not realized. So the
+            # land USUALLY sits inside the fill, but not always — so the
             # pin still gets its stub and zero-span drop via whenever one
-            # has a legal site, which ties it into the fill. Only a pin
-            # with NO legal site trusts the pour to reach its land instead
-            # of failing the whole net as `plane_drop_blocked` (a land the
-            # fill then misses is still caught: the post-pour connectivity
-            # check reports the net not realized, as on seed 3): taz15's
-            # 3V3 (poured on F.Cu) and GND (poured on B.Cu), 108 pins
-            # served this way at source. A net poured on MORE layers
-            # always needs its via: the span from the pad layer to the
-            # farthest pour is what stitches the pours into one net (the
-            # note above).
+            # has a legal site. Only a pin with NO legal site trusts the
+            # pour instead of failing the net as `plane_drop_blocked`.
             pour_reaches_pad = set(plane_layers) == {pad_layer}
-            # The span still reaches the FARTHEST poured layer, so a via
-            # from a bottom pad crosses (and therefore stitches) every
-            # nearer pour on the way — the property the note above relies
-            # on, now measured from the right end.
             lo, hi = through_span(len(ir.stackup))
             dx, dy = float(ir.pin_dx[pid]), float(ir.pin_dy[pid])
             norm = math.hypot(dx, dy)
             # A pin at its instance's exact centroid has no outward
-            # direction to offer. +x is arbitrary but deterministic, and
-            # the grid still refuses to let the stub overlap anything.
+            # direction to offer. +x is arbitrary but deterministic.
             ux, uy = (dx / norm, dy / norm) if norm > 1e-9 else (1.0, 0.0)
-            # Deliberately the conservative ENCLOSING circle, not
-            # `_pad_shape`'s true (possibly rect/poly) claim
-            # `_realize_maze`'s own pad-claim loop now stamps (gripe
-            # 346962) — `_drop_via_site` picks a placer-chosen SITE by
-            # scanning outward from the pad, not asking the grid a
-            # shape-exact query, so it stays on the same circle-radius
-            # arithmetic `disk_is_free`/`via_clears_pads` already use
-            # elsewhere; kept as its own read here (not `_pad_shape`'s
-            # `enclosing_radius_mm`) so this call site and the maze
-            # claim's true shape can never silently drift onto different
-            # numbers for the same pad.
             geom = pad_geoms[pid]
             pad_radius = math.hypot(geom.w_mm, geom.h_mm) / 2.0
             # The stub carries the pad's own current — the pin's resolved
             # exchange (gr497904), not the net's peak — necked to the pad
-            # where the pad is narrower (never under the fab floor). A pin
-            # with no resolved figure keeps the net's rules row.
+            # where the pad is narrower (never under the fab floor).
             pin_a = pin_current_a_or_none(ir, pid)
             pin_rules = rules
             if pin_a is not None and pin_a != net_current_a_or_none(
@@ -4976,108 +2750,86 @@ def _plane_fanout(
                     )
     pending.extend(extra_drops)
 
-    def site_for(
-        pin: _FanoutPin, others: list[tuple[float, float, float]]
-    ) -> tuple[Point, NetRules] | None:
+    # A held reservation: ``key -> (via site, via radius, stub leg ends,
+    # stub half-width, stub layer)``. The Space itself is never touched by
+    # a reservation — every site check against it is the kernel-exact
+    # query (:meth:`vroute.Space.clears` with ``via_site=True``,
+    # :meth:`vroute.Space.clears_legs`), and the held set supplies exactly
+    # the mutual-collision checks two un-placed reservations still owe
+    # each other: via-to-via (``_via_clears_vias``), stub-leg-to-stub-leg
+    # and stub-leg-to-held-via on the pad's own layer.
+    held: dict[int, tuple[Point, float, Point, Point, float, int, NetRules]] = {}
+
+    def held_sites() -> list[tuple[float, float, float]]:
+        return [(h[0][0], h[0][1], h[1]) for h in held.values()]
+
+    def held_legs() -> list[tuple[Point, Point, float, int]]:
+        return [(h[2], h[3], h[4], h[5]) for h in held.values()]
+
+    def site_for(pin: _FanoutPin) -> tuple[Point, NetRules] | None:
         """The pin's drop site and the rules its stub is drawn with: the
         net's own width first, then the fab floor."""
+        name = str(ir.net_name[pin.net_id])
         for rules in (pin.rules, pin.narrow_rules):
             if rules is None:
                 continue
             site = _drop_via_site(
-                grid,
+                space,
                 pin.point,
                 pin.direction,
-                pin.net_id,
+                name,
                 rules,
                 config,
                 range(pin.lo, pin.hi + 1),
                 pin.pad_layer,
                 pin.pad_radius,
-                placed_via_sites + others,
+                placed_via_sites + held_sites(),
                 pin.edge_clip,
                 ink_field=ink_field,
                 inside=pin.region_area,
-                banned_sites=banned_via_sites,
+                held_legs=held_legs(),
+                held_sites=held_sites(),
             )
             if site is not None:
                 return site, rules
         return None
 
-    # Pass 1 — reserve. Every pin's preferred site (stub and via) is held
-    # on the grid under its own sentinel before any pin draws copper, the
-    # way `_claim_fiducial_keepouts` holds fiducial sites: a pin placed
-    # early can no longer run its stub or drop its via across the site a
-    # later neighbour needed (pcb-stackup-regions slice 1). Reserved sites
-    # also join the via-to-via spacing check, so two reservations are as
-    # far apart as two real drop vias.
-    token_base = int(ir.n_nets) + int(ir.n_pins) + _DROP_RESERVE_NET_OFFSET
-    held: dict[int, tuple[np.ndarray, tuple[float, float, float], NetRules]] = {}
-
-    def reserve(pin: _FanoutPin, site: Point, rules: NetRules) -> None:
-        assert rules.via_dia_mm is not None
-        token = token_base + pin.key
-        cells = [
-            grid.reserve_disk(
-                range(pin.lo, pin.hi + 1),
-                site[0],
-                site[1],
-                # `stamp_disk` adds the net's class-clearance extra; the
-                # hold covers what the pin will really claim.
-                grid.core_radius_mm(rules.via_dia_mm) + grid.extra_mm(pin.net_id),
-                token,
-            )
-        ]
-        stub_r = grid.core_radius_mm(rules.track_width_mm) + grid.extra_mm(pin.net_id)
-        n = max(1, int(dist(pin.point, site) / (grid.spec.pitch / 2.0)))
-        for k in range(1, n):
-            cells.append(
-                grid.reserve_disk(
-                    (pin.pad_layer,),
-                    pin.point[0] + (site[0] - pin.point[0]) * k / n,
-                    pin.point[1] + (site[1] - pin.point[1]) * k / n,
-                    stub_r,
-                    token,
-                )
-            )
-        held[pin.key] = (
-            np.concatenate(cells),
-            (site[0], site[1], rules.via_dia_mm / 2.0),
-            rules,
-        )
-
-    def release(key: int) -> tuple[Point, NetRules] | None:
-        entry = held.pop(key, None)
-        if entry is None:
-            return None
-        grid.release(entry[0], token_base + key)
-        return (entry[1][0], entry[1][1]), entry[2]
-
-    def reserved_sites() -> list[tuple[float, float, float]]:
-        return [site for _cells, site, _rules in held.values()]
-
+    # Pass 1 — reserve. Every pin's preferred site (via disk and stub
+    # corridor) is held before any pin draws copper: a pin placed early
+    # can no longer run its stub or drop its via across the site a later
+    # neighbour needed (pcb-stackup-regions slice 1).
     for pin in pending:
-        found = site_for(pin, reserved_sites())
+        found = site_for(pin)
         if found is not None:
-            reserve(pin, *found)
+            site, rules = found
+            assert rules.via_dia_mm is not None
+            held[pin.key] = (
+                site,
+                rules.via_dia_mm / 2.0,
+                pin.point,
+                site,
+                rules.track_width_mm / 2.0,
+                pin.pad_layer,
+                rules,
+            )
 
     # Pass 2 — place, releasing each pin's reservation just before its own
     # search. A pin the reservations starve gets one retry with every
     # remaining reservation lifted; those pins are re-reserved at their
-    # sites afterwards (only cells still free), so the hold can cost a
-    # pin its preferred site but never its drop.
+    # sites afterwards, so the hold can cost a pin its preferred site but
+    # never its drop.
     for i, pin in enumerate(pending):
-        release(pin.key)
-        stub_end = site_for(pin, reserved_sites())
+        held.pop(pin.key, None)
+        stub_end = site_for(pin)
         if stub_end is None and held:
-            lifted = {q: release(q) for q in list(held)}
-            stub_end = site_for(pin, [])
+            lifted = {q: held.pop(q) for q in list(held)}
+            stub_end = site_for(pin)
             if stub_end is not None:
-                _place_drop(pin, *stub_end, grid, tracks, vias, placed_via_sites)
+                _place_drop(pin, *stub_end, space, ir, tracks, vias, placed_via_sites)
             for later in pending[i + 1 :]:
                 old = lifted.get(later.key)
                 if old is not None:
-                    reserve(later, *old)
+                    held[later.key] = old
             # An extra (parallel) drop that finds no site is not a failed
             # pin: the primary drop connects it; the shortfall is reported
             # by the power-drop ampacity check on the finished copper.
@@ -5088,72 +2840,25 @@ def _plane_fanout(
             if not pin.pour_reaches_pad and pin.copy == 0:
                 failed.append(pin.pid)
             continue
-        _place_drop(pin, *stub_end, grid, tracks, vias, placed_via_sites)
+        _place_drop(pin, *stub_end, space, ir, tracks, vias, placed_via_sites)
     return tracks, vias, failed
-
-
-#: Sentinel-net offset for the plane fan-out's drop-site reservations
-#: (``n_nets + n_pins + _DROP_RESERVE_NET_OFFSET + pid``), above the
-#: fiducial, mounting-hole and unclaimed-pad bands so no two claim families
-#: share an id.
-_DROP_RESERVE_NET_OFFSET = 1 << 20
-
-
-@dataclass(frozen=True, slots=True)
-class _FanoutPin:
-    """One plane pin's drop-via request, resolved by :func:`_plane_fanout`
-    before any pin places copper."""
-
-    pid: int
-    net_id: int
-    seg_id: int
-    point: Point
-    direction: tuple[float, float]
-    pad_layer: int
-    lo: int
-    hi: int
-    pad_radius: float
-    rules: NetRules
-    pour_reaches_pad: bool
-    edge_clip: tuple[float, float, float, float] | None
-    #: The net's derived region shrunk by the via radius, or ``None``
-    #: (:func:`_drop_via_site`'s ``inside``).
-    region_area: Any = None
-    #: ``rules`` with the stub at the fab floor, tried when the net's own
-    #: width finds no site; ``None`` when the net is already at the floor.
-    narrow_rules: NetRules | None = None
-    #: Which of the pin's parallel drops this is (0 = the primary); the
-    #: extra drops carry the pad's current beyond one via's ampacity.
-    copy: int = 0
-    #: Unique reservation key: ``pid`` for the primary drop.
-    key: int = -1
-
-
-def _region_areas(ir: PcbIR, rules_by_net: dict[int, NetRules]) -> dict[int, Any]:
-    """Net id -> its derived region (:attr:`PcbIR.plane_regions`) shrunk by
-    its via radius, for every net poured inside a region."""
-    out: dict[int, Any] = {}
-    for (net_id, _layer), (region, _priority) in ir.plane_regions.items():
-        poly = region_polygon(region)
-        if poly is None:
-            continue
-        via_r = float(rules_by_net[net_id].via_dia_mm or 0.0) / 2.0
-        out[net_id] = poly.buffer(-via_r)
-    return out
 
 
 def _place_drop(
     pin: _FanoutPin,
     stub_end: Point,
     rules: NetRules,
-    grid: maze.OccupancyGrid,
+    space: vroute.Space,
+    ir: PcbIR,
     tracks: list[RealizedTrack],
     vias: list[RealizedVia],
     placed_via_sites: list[tuple[float, float, float]],
 ) -> None:
     """Draw and claim one pin's stub and drop via at ``stub_end``, the stub
-    at ``rules``' width (:func:`_plane_fanout`'s ``site_for``)."""
+    at ``rules``' width (:func:`_plane_fanout`'s ``site_for``) — claimed
+    into the Space so a later pin's site check already sees it."""
     point, pad_layer, lo, hi = pin.point, pin.pad_layer, pin.lo, pin.hi
+    name = str(ir.net_name[pin.net_id])
     tracks.append(
         RealizedTrack(
             pin.seg_id,
@@ -5172,26 +2877,27 @@ def _place_drop(
             is_dogbone=True,
         )
     )
-    grid.stamp_path(
-        maze.RoutePath(
-            pin.net_id,
-            (
-                (point[0], point[1], pad_layer),
-                (stub_end[0], stub_end[1], pad_layer),
+    space.add(
+        vroute.Obstacle(
+            Body(
+                _ShapelyLineString([point, stub_end]),
+                (),
+                rules.track_width_mm / 2.0,
             ),
-            dist(point, stub_end),
-        ),
-        rules.track_width_mm,
+            name,
+            frozenset((pad_layer,)),
+        )
     )
     assert rules.via_dia_mm is not None and rules.via_drill_mm is not None, (
         "_drop_via_site returns None when either is unresolved"
     )
-    grid.stamp_disk(
-        range(lo, hi + 1),
-        stub_end[0],
-        stub_end[1],
-        grid.core_radius_mm(rules.via_dia_mm),
-        pin.net_id,
+    space.add(
+        vroute.Obstacle(
+            Body(_ShapelyPoint(*stub_end), (), rules.via_dia_mm / 2.0),
+            name,
+            frozenset(range(lo, hi + 1)),
+            blocks_vias=True,
+        )
     )
     vias.append(
         RealizedVia(
@@ -5217,7 +2923,7 @@ _DROP_SEARCH_STEPS = 6
 #: The eight octilinear unit directions, counter-clockwise from +x. The
 #: diagonal component is one shared ``sqrt(0.5)`` float so a diagonal
 #: stub's |dx| equals |dy| EXACTLY, which is what keeps the emitted
-#: segment recognisably 45-degree under :func:`_is_octilinear`'s epsilon
+#: segment recognisably 45-degree under :func:`vroute.is_octilinear`'s epsilon
 #: — ``cos(pi/4)`` and ``sin(pi/4)`` can differ in the last ulp and
 #: would not.
 _OCTO = math.sqrt(0.5)
@@ -5251,19 +2957,19 @@ def _via_clears_vias(
 ) -> bool:
     """May a via of this (undilated) copper radius be centred at
     ``(x, y)`` without landing on, or crowding, ANY already-placed via in
-    ``placed`` — mirrors :meth:`~precis.pcb.maze.OccupancyGrid.
-    via_clears_pads`'s own formula and reasoning exactly, asked of OTHER
+    ``placed`` — mirrors :meth:`vroute.Space.
+    the via-site pad rule`'s own formula and reasoning exactly, asked of OTHER
     vias instead of pads, and just as deliberately NET-BLIND.
 
-    ``disk_is_free``'s same-net exemption is right for a TRACE (it must
+    ``clears``'s same-net exemption is right for a TRACE (it must
     legally end on its own pad) and wrong here for the identical reason
-    ``via_clears_pads`` itself exists: two via BARRELS this close is a
+    ``the via-site pad rule`` itself exists: two via BARRELS this close is a
     broken drill bit or an unintended slot, regardless of whose net(s)
     they carry — a same-net cluster of plane drop vias (several GND pins
     close together) is exactly where two are most likely to land close,
     so exempting same-net pairs would leave the most common case
     unguarded. Checking the COPPER (dia) radius with the same clearance
-    margin ``via_clears_pads`` uses is sufficient to also protect the
+    margin ``the via-site pad rule`` uses is sufficient to also protect the
     DRILL: a via's drill is always narrower than its own copper annulus,
     so a legal copper-to-copper gap is provably a wider drill-to-drill
     gap. Found live (gripe 269811 comment 2): two SCL drop vias 0.1598mm
@@ -5276,10 +2982,10 @@ def _via_clears_vias(
 
 
 def _drop_via_site(
-    grid: maze.OccupancyGrid,
+    space: vroute.Space,
     pad: Point,
     direction: tuple[float, float],
-    net_id: int,
+    net_name: str,
     rules: NetRules,
     config: RealizeConfig,
     layers: range,
@@ -5290,119 +2996,67 @@ def _drop_via_site(
     ink_field: _InkField | None = None,
     inside: Any = None,
     banned_sites: tuple[Point, ...] = (),
+    held_sites: list[tuple[float, float, float]] | None = None,
+    held_legs: list[tuple[Point, Point, float, int]] | None = None,
 ) -> Point | None:
     """Where this pin's drop via can legally sit, or ``None``.
 
-    ``banned_sites`` are skipped (within 1 µm), so the sweep lands on its
-    next legal candidate: the route clean-up pass moves a fan-out via off
-    a victim track's line this way.
+    ``banned_sites`` are skipped (within 1 µm); ``held_sites`` /
+    ``held_legs`` are :func:`_plane_fanout`'s un-placed reservations —
+    via disks and stub corridors another pin has already claimed for its
+    own drop, honoured exactly as placed copper (via-to-via spacing,
+    stub-leg-to-stub-leg spacing and stub-leg-to-held-via spacing).
 
     ``inside`` (a shapely polygon, pcb-stackup-regions slice 4) confines
     the via centre to the net's derived region, already shrunk by the via
     radius: a via outside it would land in another net's pour.
 
     ``pad_layer`` is the copper the STUB is drawn on — the pin's own side
-    (:func:`_side_layer`), which is what :func:`_plane_fanout` draws and
-    stamps it on. Checking the corridor on a hardcoded ``PAD_LAYER``
-    instead asks a bottom-mounted pin's question of the top layer: the
-    answer is about copper that is not there, and the stub then goes down
-    on B.Cu having cleared nothing. That is a short, not a near miss.
-    Measured 2026-09-28 on the EWOD dogfood, In1.Cu poured GND: GND's two
-    bottom-side stubs were placed across `VDD_LOGIC`'s B.Cu pads, and
-    `VDD_LOGIC` came out `failed: congestion` — the collision reported as
-    the victim's routing failure, one pass downstream of the cause.
+    (:func:`_side_layer`), which is what :func:`_plane_fanout` draws on.
+    Checking the corridor on a hardcoded ``PAD_LAYER`` instead asks a
+    bottom-mounted pin's question of the top layer: the answer is about
+    copper that is not there (measured 2026-09-28 on the EWOD dogfood).
 
     **Defers to courtyard ink, softly.** ``ink_field``
-    (:func:`_courtyard_ink_field`) is placement-derived and known before
-    this search ever runs (this section's module note) — among every
-    LEGAL candidate this sweep tries, in its existing near-to-far,
-    axis-then-off-axis order, the first one whose via annulus (plus a
-    half-stroke margin, :class:`_InkField`'s own docstring) does not touch
-    drawn courtyard ink is returned; if none is ink-free, the first legal
-    candidate found (ink or no) is returned instead of failing the net —
-    a via that must sit under ink beats a net that cannot fan out at all.
+    (:func:`_courtyard_ink_field`) — among every LEGAL candidate this
+    sweep tries, the first one whose via annulus does not touch drawn
+    courtyard ink is returned; if none is ink-free, the first legal
+    candidate found is returned instead of failing the net.
 
-    Asks the occupancy grid before claiming, for both the via annulus and
-    the stub that feeds it — the same claim-then-draw discipline every
-    routed trace already follows, applied to the one piece of copper that
-    was exempt from it.
-
-    **A drop via must also clear its OWN pad — same-net copper included.**
-    :meth:`~precis.pcb.maze.OccupancyGrid.disk_is_free` is deliberately
-    same-net-blind (a trace legally ends ON its own pad); a via is not a
-    trace, it is a hole drilled through the board, and landing it on —
-    or crowding — the very pad it drops from wicks solder down the barrel
-    exactly as it would for any other pad (:meth:`~precis.pcb.maze.
-    OccupancyGrid.via_clears_pads`'s own docstring). ``grid.route``'s own
-    via search already folds this into its candidate mask
-    (``_pad_keepout_mask``); this search used to try candidate sites
-    without ever asking the one question that mask exists to answer —
-    measured on the reference board as 55 of 57 DRC errors, one
-    ``via_pad_keepout`` at essentially every plane-promoted pin, all of
-    them this exact via landing on its own pad. Root cause was one level
-    deeper than "the call was missing": :func:`_stamp_pads` was claiming
-    every pad via plain ``stamp_disk`` rather than ``stamp_pad``, so
-    ``grid._pads`` — what :meth:`via_clears_pads` and
-    ``_pad_keepout_mask`` both actually read — was empty on every board
-    this module has ever routed; see :func:`_stamp_pads`'s own docstring
-    for the fix.
-
-    **A drop via must also clear every OTHER drop via this same fan-out
-    pass already placed** (:func:`_via_clears_vias`, ``placed_via_sites``)
-    — a second, narrower guard than the pad one above, for the same
-    same-net-blind-is-wrong-here reason.
+    The via asks :meth:`vroute.Space.clears` with ``via_site=True`` on
+    every layer its barrel spans — which is what makes it clear its OWN
+    pad too (pads are ``blocks_vias`` obstacles, counted foreign to a via
+    site whatever their net — the kernel-exact answer to what the grid's
+    ``the via-site pad rule`` mask used to do separately; a via landing on the
+    very pad it drops from is the defect that check exists to bar). The
+    stub asks :meth:`vroute.Space.clears_legs` — an exact segment-distance
+    query, not a sampled disk sweep.
 
     **And it must stay inside the board.** ``edge_clip`` is
     :func:`_outline_clip` inset for this via's own radius; a candidate
     outside it is rejected so the search simply tries the next angle or
-    reach. Nothing else covers this site: the candidates below are
-    CONTINUOUS positions swept around the pad, never grid nodes, so the
-    inset baked into the routing grid's bounds — which is what keeps every
-    grid-placed via legal — never applied to them, and the three checks
-    above all ask about copper, not about the board's edge. Measured on
-    the 40mm reference fixture as a VCC3V3 drop via 0.010mm inside the
-    0.400mm V-cut floor. Rejecting beats clamping here precisely BECAUSE
-    this is a search: a clamped site would have to be re-tested against
-    all three copper checks anyway, and a clamp that fails them silently
-    yields a worse via than the next candidate the sweep would have found.
+    reach.
     """
     if rules.via_dia_mm is None or rules.via_drill_mm is None:
         return None  # this fab publishes no via figures — don't invent any
     via_radius_mm = rules.via_dia_mm / 2.0
-    via_r = grid.core_radius_mm(rules.via_dia_mm)
-    # The stub is a QUERY, so it pays its own half-width plus one cell, as
-    # `grid.route` does (maze module docstring): every claim it is asked
-    # against already carries that copper's clearance. `core_radius_mm` is
-    # the CLAIM radius and counted the clearance twice, which at fine pitch
-    # refused the stub over its own pad, where the neighbours' halos meet
-    # (gr492108: taz15 CN4.6/CN4.18 GND, every candidate refused at the
-    # first sample).
-    stub_r = rules.track_width_mm / 2.0 + grid.spec.pitch
+    clearance = space.cl(net_name, pad_layer)
+    stub_half = rules.track_width_mm / 2.0
     # The nominal reach a via needs from its own pad is not a flat
-    # constant (this subsystem's most-repeated defect — a courtyard
-    # radius, a seed pitch, a claim radius, PAD_RADIUS_MM, and now this,
-    # tuned to nothing rather than derived): it is exactly the distance
-    # `via_clears_pads` itself requires — the pad's own (enclosing-circle)
-    # radius, plus the via's, plus the net's clearance. `config.
-    # dogbone_stub_mm` stays as a FLOOR, not the figure itself — a courtesy
-    # minimum visible stub length for a vanishingly small pad, not a
-    # substitute for the pad-derived distance that actually varies by
-    # pad size and is the one that prevents the keep-out violation.
-    base_reach = max(
-        config.dogbone_stub_mm, pad_radius_mm + via_radius_mm + grid.clearance_mm
-    )
+    # constant: it is exactly the distance via-site clearance itself
+    # requires — the pad's own (enclosing-circle) radius, plus the via's,
+    # plus the net's clearance. `config.dogbone_stub_mm` stays as a FLOOR,
+    # not the figure itself.
+    base_reach = max(config.dogbone_stub_mm, pad_radius_mm + via_radius_mm + clearance)
     ux, uy = direction
     # Quantise the pin's outward direction to the nearest octilinear table
     # entry: the stub this search aims is drawn copper, and every drawn
-    # segment is required to be a multiple of 45 degrees (see
-    # `_DROP_SEARCH_OFFSETS`). The sweep then rotates by whole table
-    # steps, never free radians.
+    # segment is required to be a multiple of 45 degrees.
     base = round(math.atan2(uy, ux) / (math.pi / 4.0)) % 8
+    extra_sites = placed_via_sites + list(held_sites or ())
+    extra_legs = list(held_legs or ())
     # The first LEGAL site found, remembered as the fallback the ink
-    # preference below yields to when no legal candidate is ink-free —
-    # see this function's own docstring. Without this fallback the search
-    # would have to be run twice (once for real, once to recover the
-    # pre-ink-aware answer) whenever ink rules out every candidate.
+    # preference below yields to when no legal candidate is ink-free.
     fallback_site: Point | None = None
     for step in range(1, _DROP_SEARCH_STEPS + 1):
         reach = base_reach * step
@@ -5421,27 +3075,30 @@ def _drop_via_site(
                 continue
             if inside is not None and not inside.contains(_ShapelyPoint(*site)):
                 continue
-            if not grid.disk_is_free(layers, site[0], site[1], via_r, net_id):
-                continue
-            if not grid.via_clears_pads(site[0], site[1], via_radius_mm):
+            disk = Body(_ShapelyPoint(*site), (), via_radius_mm)
+            if not all(
+                space.clears(disk, net_name, layer, via_site=True) for layer in layers
+            ):
                 continue
             if not _via_clears_vias(
-                site[0], site[1], via_radius_mm, placed_via_sites, grid.clearance_mm
+                site[0], site[1], via_radius_mm, extra_sites, clearance
             ):
                 continue
             # The stub between pad and via has to be clear too — a via in
             # free space fed by a trace through someone else's copper is
-            # still a short.
-            n = max(1, int(reach / (grid.spec.pitch / 2.0)))
-            if not all(
-                grid.disk_is_free(
-                    (pad_layer,),
-                    pad[0] + vx * reach * k / n,
-                    pad[1] + vy * reach * k / n,
-                    stub_r,
-                    net_id,
-                )
-                for k in range(n + 1)
+            # still a short. Exact leg query in the Space, plus the two
+            # reservation-collision checks no Space can answer.
+            if not space.clears_legs([(pad, site)], stub_half, net_name, pad_layer)[0]:
+                continue
+            if any(
+                layer == pad_layer
+                and _seg_seg_dist(pad, site, ha, hb) < stub_half + hh + clearance
+                for ha, hb, hh, layer in extra_legs
+            ):
+                continue
+            if any(
+                _seg_point_dist((hx, hy), pad, site) < stub_half + hr + clearance
+                for hx, hy, hr in extra_sites
             ):
                 continue
             if fallback_site is None:
@@ -5457,7 +3114,7 @@ def _drop_via_site(
 #
 # See the module docstring's "Plane fragment stitching" note for the two
 # stages and the independence-from-connectivity.py discipline. Everything
-# below is scoped to one call, from `_realize_maze`, after both routing AND
+# below is scoped to one call, from `_realize_vector`, after both routing AND
 # pouring have finished (`_stitch_plane_fragments` needs the FINISHED pour
 # polygons to know what it's joining).
 
@@ -5594,36 +3251,6 @@ def _candidate_points_in(region: Any, via_r: float) -> list[tuple[float, float]]
     return out
 
 
-def _stamp_realized_track(grid: maze.OccupancyGrid, track: RealizedTrack) -> None:
-    """Claim ``track``'s corridor on a FRESH scratch grid — replaying
-    :meth:`~precis.pcb.maze.OccupancyGrid.stamp_path`'s own discipline by
-    hand, because :func:`_stitch_plane_fragments` builds a NEW grid from
-    the finished :class:`RealizeResult` rather than reusing a route pass's
-    own (``_realize_maze`` opens one ``OccupancyGrid`` per attempt and
-    keeps none of them once routing is decided — see that function's own
-    docstring). Only handles a ``"line"`` segment: this pass runs only
-    under the maze router (:func:`realize`'s ``'maze'`` branch is the only
-    caller of :func:`_stitch_plane_fragments`), which never emits an arc."""
-    if track.layer < 0:
-        return
-    radius = grid.core_radius_mm(track.width_mm)
-    step = grid.spec.pitch / 2.0
-    for seg in track.segments:
-        ax, ay = float(seg["start"][0]), float(seg["start"][1])
-        bx, by = float(seg["end"][0]), float(seg["end"][1])
-        span = math.hypot(bx - ax, by - ay)
-        n = max(1, math.ceil(span / step))
-        for k in range(n + 1):
-            t = k / n
-            grid.stamp_disk(
-                (track.layer,),
-                ax + (bx - ax) * t,
-                ay + (by - ay) * t,
-                radius,
-                track.net_id,
-            )
-
-
 #: ``seg_id`` for copper this stitching pass invents. Every other track and
 #: via in this module is the realization of ONE L1 segment and carries that
 #: segment's id; a stitching via or jumper answers a property of the
@@ -5663,63 +3290,38 @@ _JUMPER_SWEEP_DIVISIONS = 6
 _JUMPER_ROUTE_ATTEMPTS = 12
 
 
-def _snapped_sites_in(region: Any, spec: maze.GridSpec, via_r: float) -> list[Point]:
-    """Candidate via sites spread across ``region``, SNAPPED to
-    routing-grid cell centres and re-filtered for containment.
-
-    The snap is what makes a jumper's connectivity provable rather than
-    lucky. :meth:`~precis.pcb.maze.OccupancyGrid.route` returns cell
-    CENTRES (:func:`~precis.pcb.maze._merge_collinear`), so a track routed
-    from an unsnapped point would start up to half a cell diagonal away
-    from the via meant to anchor it — the exact defect
-    :mod:`precis.pcb.connectivity`'s own module docstring opens with
-    ("track ends short of a pad", found by measuring a rendered board).
-    Snapping FIRST makes the two coincide exactly, because
-    ``to_point(to_cell(p))`` is the identity on a point already produced by
-    ``to_point``.
-
-    Re-filtering after the snap is not belt-and-braces: a candidate near a
-    fragment's edge can snap OUT of the polygon it came from, and a via
-    there would sit on this net's name but not on this net's copper.
-
-    The representative point is tried first — it is the one point shapely
-    guarantees is inside the polygon — but it is snapped and re-filtered
-    like every other candidate, and it can therefore be rejected. **A
-    fragment thinner than one grid pitch in some direction can end up
-    offering NO site at all, and that is the honest answer rather than a
-    gap**: the anchor has to be a via that a grid route can actually reach,
-    and a fragment containing no cell centre contains nowhere for one to
-    land. The caller reports "no legal jumper" for it, which is true —
-    though note it is true of THIS mechanism, not of the geometry in
-    general, and a finer grid would change the answer."""
+def _sites_in(region: Any, via_r: float, pitch: float) -> list[Point]:
+    """Candidate via sites spread across ``region`` — the port of the old
+    ``_snapped_sites_in``, minus the snap: the vector router reaches any
+    coordinate exactly, so no cell-centre constraint exists. The
+    representative point is tried first (it is the one point shapely
+    guarantees is inside the polygon), then a sparse sweep — same spread
+    discipline as before, continuous sites instead of grid nodes. A
+    fragment that fits no via radius at all offers no site, which is the
+    honest answer, not a gap."""
+    if region.is_empty:
+        return []
     minx, miny, maxx, maxy = region.bounds
     step = max(
         max(maxx - minx, maxy - miny) / _JUMPER_SWEEP_DIVISIONS,
         2.0 * via_r,
-        spec.pitch,
+        pitch,
     )
     rp = region.representative_point()
-    raw: list[Point] = [(rp.x, rp.y)]
+    out: list[Point] = [(rp.x, rp.y)]
+    seen: set[tuple[int, int]] = set()
     y = miny + step / 2.0
     while y <= maxy:
         x = minx + step / 2.0
         while x <= maxx:
-            raw.append((x, y))
+            key = (round(x / via_r), round(y / via_r))
+            if key not in seen and region.contains(_ShapelyPoint(x, y)):
+                seen.add(key)
+                out.append((x, y))
+            if len(out) >= _JUMPER_SITES_PER_FRAGMENT:
+                return out
             x += step
         y += step
-
-    out: list[Point] = []
-    seen: set[tuple[int, int]] = set()
-    for cand in raw:
-        cell = spec.to_cell(*cand)
-        if cell in seen:
-            continue
-        seen.add(cell)
-        site = spec.to_point(*cell)
-        if region.contains(_ShapelyPoint(*site)):
-            out.append(site)
-        if len(out) >= _JUMPER_SITES_PER_FRAGMENT:
-            break
     return out
 
 
@@ -5729,16 +3331,16 @@ def _clears_foreign_pours(
     """Does ``shape`` (already grown by clearance) miss every OTHER net's
     poured copper on every layer in ``layers``?
 
-    **This is the one keep-out the occupancy grid cannot answer.** The
-    scratch grid :func:`_stitch_plane_fragments` builds is stamped from
-    tracks, vias and pads — never from pours, which do not exist yet when a
-    route pass runs and are not stamped afterwards. That gap is stated as a
-    known limitation for a stitching VIA, where both fixtures happen to
-    avoid it. A jumper cannot inherit that reasoning: it puts a whole
-    TRACE, of arbitrary length, on a layer chosen precisely because this
-    net was not already using it — which on any real board is where another
-    net's plane lives. So the guard is asked here, geometrically, against
-    the finished pour polygons themselves."""
+    **This is the one keep-out the Space cannot answer.** The Space
+    :func:`_stitch_plane_fragments` builds is stamped from tracks, vias
+    and pads — never from pours, which do not exist yet when a route pass
+    runs and are not stamped afterwards. That gap is stated as a known
+    limitation for a stitching VIA, where both fixtures happen to avoid
+    it. A jumper cannot inherit that reasoning: it puts a whole TRACE, of
+    arbitrary length, on a layer chosen precisely because this net was
+    not already using it — which on any real board is where another net's
+    plane lives. So the guard is asked here, geometrically, against the
+    finished pour polygons themselves."""
     for layer in layers:
         for poly in foreign_pours.get(layer, ()):
             if not poly.is_empty and poly.intersects(shape):
@@ -5751,13 +3353,16 @@ def _try_plane_jumper(
     frag_a: tuple[int, Any],
     frag_b: tuple[int, Any],
     *,
-    grid: maze.OccupancyGrid,
+    space: vroute.Space,
+    net_name: str,
+    n_layers: int,
     via_dia_mm: float,
     via_drill_mm: float,
     via_is_legal: Any,
     track_width_by_layer: dict[int, float],
     foreign_pours: dict[int, list[Any]],
     config: RealizeConfig,
+    bounds: tuple[float, float, float, float],
 ) -> tuple[list[RealizedVia], RealizedTrack] | None:
     """A same-net JUMPER between two poured fragments: a via down out of
     fragment A, a trace across a spare layer, a via back up into fragment
@@ -5768,23 +3373,15 @@ def _try_plane_jumper(
     that a single via can only join two fragments that geometrically
     OVERLAP — so two fragments of one net on the SAME layer, which by
     definition never overlap, are unreachable by any number of vias.
-    Measured on the 40mm fixture: ``GND`` poured on ``F.Cu`` alone, in four
-    pieces, reported by :func:`precis.pcb.connectivity.net_islands` and
-    unfixable by the pass that was supposed to fix it. A plane in pieces is
-    a real manufacturing defect — the return path the plane exists to
-    provide is not there — so the mechanism, not the report, was what
-    needed to change.
 
     **The detour layer is never either fragment's own layer**, and that
     restriction is about the CHECKER, not about taste. A pour joins the
     connectivity union-find by containment of a primitive's FIRST point
     only (:func:`precis.pcb.connectivity.net_islands`), so a bare trace
-    ending inside fragment B registers as connected to A and not to B — it
-    would look like a fix and measure as one fewer piece only by accident.
+    ending inside fragment B registers as connected to A and not to B.
     A via at each end has its own centre inside its own fragment, so both
     joins are containment-true by construction, and the barrel asserts the
-    layer change independently of any geometry. Requiring ``D`` to differ
-    from both layers is what guarantees both ends actually get one.
+    layer change independently of any geometry.
 
     Every candidate is checked in cost order — the cheap arithmetic guards
     (containment, via legality, mutual barrel spacing) before the A* — and
@@ -5794,15 +3391,16 @@ def _try_plane_jumper(
     layer_a, poly_a = frag_a
     layer_b, poly_b = frag_b
     via_r = via_dia_mm / 2.0
-    clearance = grid.clearance_mm
-    sites_a = _snapped_sites_in(poly_a, grid.spec, via_r)
-    sites_b = _snapped_sites_in(poly_b, grid.spec, via_r)
+    clearance = space.cl(net_name, layer_a)
+    pitch = max(2.0 * via_r, clearance)
+    sites_a = _sites_in(poly_a, via_r, pitch)
+    sites_b = _sites_in(poly_b, via_r, pitch)
     if not sites_a or not sites_b:
         return None
 
     detours = [
         d
-        for d in range(grid.spec.n_layers)
+        for d in range(n_layers)
         if d != layer_a and d != layer_b and d in track_width_by_layer
     ]
     # Nearest pair first: the shortest jumper is the least copper, the
@@ -5820,44 +3418,44 @@ def _try_plane_jumper(
     # is on what a single jumper may spend, and a board with three spare
     # layers should not silently cost three times as much searching.
     attempts = 0
+    lo, hi = through_span(n_layers)
     for detour in detours:
         width_mm = track_width_by_layer[detour]
-        lo_a, hi_a = lo_b, hi_b = through_span(grid.spec.n_layers)
         for gap, qa, qb in pairs:
             if attempts >= _JUMPER_ROUTE_ATTEMPTS:
                 break
             # The two barrels are checked against each OTHER by hand:
-            # `via_is_legal` asks about vias already PLACED, and neither
+            # ``via_is_legal`` asks about vias already PLACED, and neither
             # of these is placed yet.
             if gap - 2.0 * via_r < clearance:
                 continue
-            if not via_is_legal(qa[0], qa[1], lo_a, hi_a):
+            if not via_is_legal(qa[0], qa[1], lo, hi):
                 continue
-            if not via_is_legal(qb[0], qb[1], lo_b, hi_b):
+            if not via_is_legal(qb[0], qb[1], lo, hi):
                 continue
             # A through barrel may cross a foreign plane: the re-pour that
             # follows cuts its antipad, as it does for any other via.
             attempts += 1
-            path = grid.route(
-                net_id,
-                qa,
-                qb,
-                layers=[detour],
-                width_mm=width_mm,
-                # No via geometry offered, so the search may not change
-                # layer: this trace stays on `detour`, which is what
-                # makes the two barrels above the whole layer story.
-                via_dia_mm=None,
-                pad_layer=detour,
-                # Never attach: a multi-source start would begin the
-                # path on this net's copper somewhere else entirely,
-                # and the trace would no longer meet the via at `qa`.
-                attach=False,
-                max_expansions=config.max_expansions,
+            path = vroute.route(
+                space,
+                vroute.Request(
+                    net=net_name,
+                    width_mm=width_mm,
+                    layers=(detour,),
+                    start=vroute.Terminal(qa[0], qa[1], frozenset({detour})),
+                    goal=vroute.Terminal(qb[0], qb[1], frozenset({detour})),
+                    bounds=bounds,
+                    # No via geometry offered, so the search may not
+                    # change layer: this trace stays on `detour`.
+                    via=None,
+                    max_expansions=config.max_expansions,
+                ),
             )
-            if path is None or len(path.points) < 2:
+            if path is None:
                 continue
-            run = [(x, y) for x, y, _ in path.points]
+            run = next((pts for layer, pts in path.runs if layer == detour), [])
+            if len(run) < 2:
+                continue
             corridor = _ShapelyLineString(run).buffer(
                 width_mm / 2.0 + clearance, quad_segs=_JUMPER_QUAD_SEGS
             )
@@ -5886,8 +3484,8 @@ def _try_plane_jumper(
                     y=qa[1],
                     dia_mm=via_dia_mm,
                     drill_mm=via_drill_mm,
-                    layer_lo=lo_a,
-                    layer_hi=hi_a,
+                    layer_lo=lo,
+                    layer_hi=hi,
                     endpoint="a",
                 ),
                 RealizedVia(
@@ -5897,8 +3495,8 @@ def _try_plane_jumper(
                     y=qb[1],
                     dia_mm=via_dia_mm,
                     drill_mm=via_drill_mm,
-                    layer_lo=lo_b,
-                    layer_hi=hi_b,
+                    layer_lo=lo,
+                    layer_hi=hi,
                     endpoint="b",
                 ),
             ]
@@ -5906,138 +3504,105 @@ def _try_plane_jumper(
     return None
 
 
+def _stamp_track(space: vroute.Space, track: RealizedTrack, net_name: str) -> None:
+    """One jumper trace's copper stamped into the Space — one leg-shaped
+    obstacle per straight segment, at the track's own half-width (arc
+    segments keep their polyline legs: a jumper is drawn unfilleted, so
+    they never appear here, but the fallback keeps the function honest
+    for any track shape)."""
+    half = track.width_mm / 2.0
+    for seg in track.segments:
+        if seg["shape"] == "line":
+            space.add(
+                vroute.Obstacle(
+                    Body(
+                        _ShapelyLineString([seg["start"], seg["end"]]),
+                        (),
+                        half,
+                    ),
+                    net_name,
+                    frozenset((track.layer,)),
+                )
+            )
+        elif seg["shape"] == "arc":
+            pts = [seg["start"], *seg.get("pts", []), seg["end"]]
+            space.add(
+                vroute.Obstacle(
+                    Body(_ShapelyLineString(pts), (), half),
+                    net_name,
+                    frozenset((track.layer,)),
+                )
+            )
+
+
 def _stitch_one_net(
+    ir: PcbIR,
     net_id: int,
     net_name: str,
     frags: list[tuple[int, Any]],
     existing_vias: list[RealizedVia],
-    grid: maze.OccupancyGrid,
+    space: vroute.Space,
     rules: NetRules,
     config: RealizeConfig,
     placed_via_sites: list[tuple[float, float, float]],
     track_width_by_layer: dict[int, float],
     foreign_pours: dict[int, list[Any]],
     net_tracks: list[RealizedTrack],
+    n_layers: int,
+    bounds: tuple[float, float, float, float],
     floor_width_by_layer: dict[int, float] | None = None,
 ) -> tuple[list[RealizedVia], list[RealizedTrack], int, int, str]:
     """One net's stitching attempt, both stages of the module docstring.
 
     **The graph has TWO kinds of node, not one — ``frags`` (this net's own
-    poured fragments, one entry per ``(layer_idx, polygon)``; a "sheet" may
-    already be more than one fragment on the SAME layer, antipad-cut by
-    foreign copper) AND ``existing_vias`` (this net's already-realized
-    per-pin drop vias).** An earlier version of this function unioned only
-    fragments and treated a via purely as a JOINER between them — which
-    silently dropped a via that touches NO fragment at all off the graph
-    entirely: :func:`precis.pcb.connectivity.net_islands` never turns a
-    bare, untouched pour into a graph node either (a pour merges whatever
-    already falls inside it; it is never a node on its own), so that via
-    (with its own pad and dog-bone stub) is real, disconnected copper the
-    independent checker WILL flag — measured live on the
-    ``esp32c3_reference`` flood-all-four fixture (gr270637): VCC3V3's 23rd
-    drop via landed nowhere near either poured sheet, this function's
-    fragment-only graph had no way to even represent that as a problem, and
-    it reported "fully stitched" while ``net_islands`` reported a real
-    2-piece split. A via node is now first-class in the graph FOR COUNTING
-    PURPOSES: it can join a fragment (the seed step below) and its
-    isolation is visible in the returned piece count either way.
-
-    **This net's own TRACKS are a third thing again: joiners, not nodes.**
-    A routed trace is never something this pass would stitch TO, so it gets
-    no node — but it is real copper, and copper landing in two fragments
-    connects them. Omitting them made the piece count over-report; see the
-    seed step below for the measurement that caught it.
-
-    **A via node is never a BRIDGING TARGET for a new via, and this is a
-    proof, not a missing feature.** Two DISTINCT, DRC-legal vias of the
-    SAME net must still be at least ``clearance_mm`` apart
-    (:func:`_via_clears_vias`'s own docstring: a barrel-to-barrel gap this
-    close "is a broken drill bit... regardless of whose net(s) they
-    carry") — but :mod:`precis.pcb.connectivity`'s own via-via rule only
-    counts two vias as CONNECTED when their gap is <= ``TOUCH_EPS_MM``
-    (effectively zero). Those two thresholds can never both hold at once
-    (``clearance_mm > 0``), so a brand-new via can never be close enough to
-    an EXISTING via to register as "touching" it without first being
-    illegal. This is a hard, board-geometry-independent fact, not
-    something a smarter search could someday satisfy — so stage 2 below
-    never treats a via node as one half of a bridge.
+    poured fragments, one entry per ``(layer_idx, polygon)``) AND
+    ``existing_vias`` (this net's already-realized per-pin drop vias).**
+    A via node is first-class in the graph FOR COUNTING PURPOSES (its
+    isolation shows in the returned piece count) but never a BRIDGING
+    TARGET for a new via: two DRC-legal vias of one net must still sit at
+    least ``clearance_mm`` apart, while a touch counts only at ~zero gap
+    — a hard fact, not a tuning failure.
 
     **The same proof condemns two fragments on the SAME layer, and stage 3
-    is the answer to it.** A via joins copper at one ``(x, y)``, so it can
-    only bridge fragments that geometrically OVERLAP; two fragments of one
-    net on one layer never do. That is not a tuning failure either, and it
-    is not rare — ``GND`` on the 40mm fixture is poured on ``F.Cu`` alone
-    and comes out in four pieces. The mechanism that CAN close it is a
-    jumper: a via out of each fragment and a trace between them on a spare
-    layer (:func:`_try_plane_jumper`), which is why this function now
-    returns tracks as well as vias. It remains true that a STRAY VIA — one
-    of this net's own drop vias touching no fragment at all — has no fix
-    here: a jumper anchors on poured copper at both ends, and a bare via
-    offers nothing to anchor to. Moving that via (a "shove", a different
-    mechanism this pass does not perform) is still its only remedy, and the
-    returned message still says so.
+    is the answer to it** (:func:`_try_plane_jumper` — a via out of each
+    fragment plus a spare-layer trace). A STRAY VIA — one of this net's
+    drop vias touching no fragment — has no fix here: a jumper anchors on
+    poured copper at both ends.
 
     Returns the vias and the jumper tracks it placed, the number of
-    DISTINCT connected pieces remaining afterward across ALL nodes (0 or 1
-    means fully stitched, never more than
-    ``len(frags) + len(existing_vias)``), and a message that is non-empty
-    only when that count is > 1.
+    DISTINCT connected pieces remaining afterward across ALL nodes, and a
+    message that is non-empty only when that count is > 1.
 
-    Assumes ``rules.via_dia_mm``/``via_drill_mm`` are already known — the
-    caller filters out nets whose fab publishes neither (nothing to stitch
-    WITH, the same refusal every other via-placing function in this module
-    already makes rather than inventing a figure)."""
+    Via legality asks the Space's kernel-exact predicates: a candidate
+    disk must clear foreign copper AND every pad (``via_site=True`` —
+    :meth:`vroute.Space.clears`) on every layer the barrel spans, keep
+    ``_via_clears_vias``' net-blind spacing from placed barrels, and sit
+    inside the board's usable edge band (:func:`_outline_clip`, the
+    edge-clearance inset the old ``edge_clear`` grid check carried)."""
     n_frags = len(frags)
     n = n_frags + len(existing_vias)
     dsu = _UnionFind(n)
     assert rules.via_dia_mm is not None and rules.via_drill_mm is not None
     via_dia_mm, via_drill_mm = rules.via_dia_mm, rules.via_drill_mm
     via_r = via_dia_mm / 2.0
+    clearance = space.cl(net_name, 0)
+    # A via centre must sit inside the board's usable edge band —
+    # :func:`_outline_clip` inset by edge clearance plus the barrel radius,
+    # the contains-check port of the edge keep-out's.
+    edge_clip = _outline_clip(ir, _board_edge_min_mm(config) + via_r)
 
     # Seed: any of this net's ALREADY-realized drop vias that touch one or
     # more fragments joins them (and joins the via itself into that group)
-    # for free — the "lucky" case gripe 270637 itself measured (GND, more
-    # pins, already comes out as one island on every seed without this
-    # pass doing anything). Both stages below only ever need to close what
-    # this seed did not. Point-exact on purpose (never via-radius-tolerant)
-    # — this is :func:`precis.pcb.planes.point_in_pour`'s own convention,
-    # the SAME test :mod:`precis.pcb.connectivity` uses for pour
-    # membership (class docstring's independence note: this is physics
-    # copied from the checker's own model, not the checker consulted at
-    # runtime).
-    #: Fragment indices with at least one of this net's own vias or traces
-    #: inside them — the fragments the independent checker can even SEE, and
-    #: the distinction the closing message turns into "floating copper" vs.
-    #: "electrically split".
+    # for free. Point-exact on purpose — the same test
+    # :mod:`precis.pcb.connectivity` uses for pour membership.
     populated: set[int] = set()
-    for k, v in enumerate(existing_vias):
-        node = n_frags + k
-        for i, (layer, poly) in enumerate(frags):
+    for i, (layer, poly) in enumerate(frags):
+        for k, v in enumerate(existing_vias):
             if v.layer_lo <= layer <= v.layer_hi and _touches(poly, v.x, v.y):
-                dsu.union(node, i)
+                dsu.union(i, n_frags + k)
                 populated.add(i)
-
-    # Seed, part two: **this net's own TRACKS are joiners too.** They are
-    # not nodes — a routed trace is never a thing this pass would stitch TO
-    # — but they are real copper, and copper that lands in two fragments
-    # connects them just as surely as a via does.
-    #
-    # Leaving them out made this function over-report, and the
-    # over-reporting was invisible until `RealizeResult.unstitched` got its
-    # first reader. Measured on the 40mm fixture: the pass claimed 2
-    # remaining pieces with ZERO stray vias (so both were fragment groups),
-    # while :func:`precis.pcb.connectivity.net_islands` — which models pads
-    # and tracks as primitives too — said one component. The checker was
-    # right; the producer's graph simply had no way to see the trace doing
-    # the joining. A producer independent of its checker still has to model
-    # the copper that exists.
-    #
-    # Union-only, never a split: adding a joiner can lower the piece count
-    # and can never raise it, so this cannot manufacture a fragmentation
-    # report. Its one behavioural consequence is that a pair already joined
-    # by a trace no longer buys stitching vias — correct, since they are
-    # connected, and consistent with stage 1's existing "extra density
-    # beyond what connectivity needs is not this pass's job".
+    # This net's own tracks are joiners, not nodes: a trace's endpoints
+    # landing in two fragments connect them.
     for track in net_tracks:
         touched: list[int] = []
         endpoints = [
@@ -6060,29 +3625,43 @@ def _stitch_one_net(
     if n <= 1:
         return [], [], min(n, 1), 0, ""
 
-    core_r = grid.core_radius_mm(via_dia_mm)
-    pitch = config.stitch_pitch_mm or _default_stitch_pitch(rules, grid.clearance_mm)
+    pitch = config.stitch_pitch_mm or _default_stitch_pitch(rules, clearance)
     new_vias: list[RealizedVia] = []
     new_tracks: list[RealizedTrack] = []
 
     def via_is_legal(x: float, y: float, lo: int, hi: int) -> bool:
         """The three keep-outs a stitching via must satisfy, asked WITHOUT
-        placing anything — stage 3 needs to know both of a jumper's barrels
-        are legal before it commits either one."""
+        placing anything — stage 3 needs to know both of a jumper's
+        barrels are legal before it commits either one."""
         return (
-            grid.disk_is_free(range(lo, hi + 1), x, y, core_r, net_id)
-            and grid.via_clears_pads(x, y, via_r)
-            and _via_clears_vias(x, y, via_r, placed_via_sites, grid.clearance_mm)
-            # Snapped to grid cell centres, which — since gr497865 — may
-            # sit in the edge band a pad stretched the grid across; the
-            # keep-out the routed search honours applies here too.
-            and grid.edge_clear(net_id, x, y, via_r)
+            all(
+                space.clears(
+                    Body(_ShapelyPoint(x, y), (), via_r),
+                    net_name,
+                    layer,
+                    via_site=True,
+                )
+                for layer in range(lo, hi + 1)
+            )
+            and _via_clears_vias(x, y, via_r, placed_via_sites, clearance)
+            and (
+                edge_clip is None
+                or (
+                    edge_clip[0] <= x <= edge_clip[2]
+                    and edge_clip[1] <= y <= edge_clip[3]
+                )
+            )
         )
 
     def claim_via(via: RealizedVia) -> None:
         new_vias.append(via)
-        grid.stamp_disk(
-            range(via.layer_lo, via.layer_hi + 1), via.x, via.y, core_r, net_id
+        space.add(
+            vroute.Obstacle(
+                Body(_ShapelyPoint(via.x, via.y), (), via_r),
+                net_name,
+                frozenset(range(via.layer_lo, via.layer_hi + 1)),
+                blocks_vias=True,
+            )
         )
         placed_via_sites.append((via.x, via.y, via_r))
 
@@ -6105,24 +3684,9 @@ def _stitch_one_net(
         return True
 
     # Stage 1 -- sprinkle: every pair of DIFFERENT sheets whose footprints
-    # overlap gets a generous grid of stitching vias across that overlap
-    # (module docstring: "what real tools do"). A candidate is only ever
-    # drawn from the literal polygon INTERSECTION (``poly.contains``), so
-    # its centre is, by construction, exactly inside both fragments — the
-    # point-exact touch rule the seed step above uses, satisfied for free
-    # rather than checked after the fact. A pair the seed step already
-    # joined is skipped -- extra density beyond what connectivity needs is
-    # a real feature (thermal/EMI margin) but not this pass's job.
-    # Same-layer pairs are left to stage 2 (they never spatially overlap
-    # by definition — see stage 2's own note).
-    #
+    # overlap gets a generous grid of stitching vias across that overlap.
     # The via BUDGET is allocated per disjoint PART of the overlap (min 1
-    # each) and each part's share is consumed in `_spread_order` — two
-    # deliberate distribution choices from the round-3 review: a small
-    # island must always get its stitch (user 2026-09-01: the ideal spots
-    # are "smallish islands" and thin necks), and a large field's share
-    # must sample the whole region instead of piling into the grid's
-    # first rows (the measured two-rows-along-the-board-bottom defect).
+    # each) and each part's share is consumed in `_spread_order`.
     for i, j in itertools.combinations(range(n_frags), 2):
         li, poly_i = frags[i]
         lj, poly_j = frags[j]
@@ -6131,7 +3695,7 @@ def _stitch_one_net(
         overlap = poly_i.intersection(poly_j)
         if overlap.is_empty or overlap.area <= 0.0:
             continue
-        lo, hi = through_span(grid.spec.n_layers)
+        lo, hi = through_span(n_layers)
         parts = [g for g in getattr(overlap, "geoms", [overlap]) if g.area > 0.0]
         # Smallest part first: an island's single guaranteed slot must
         # not depend on how much budget the big field consumed.
@@ -6146,35 +3710,10 @@ def _stitch_one_net(
                     dsu.union(i, j)
                     placed += 1
 
-    # Stage 2 -- targeted residue over FRAGMENT PAIRS ONLY (class
-    # docstring's proof: a via node can never be a legal bridging target).
-    # Whatever stage 1 left disconnected — a narrow overlap sliver the
-    # fixed pitch stepped over, or every candidate in a small overlap
-    # already claimed — gets a bounded, closest-pair-first attempt with
-    # the overlap's own interior point rather than a grid.
-    #
-    # **The provable limit.** A via joins copper at ONE (x, y) with a FIXED
-    # radius (``via_r``): for it to touch both fragment A and fragment B
-    # (point-exact, per the seed step's own rule), some point must lie
-    # inside BOTH polygons at once — which is only possible if they
-    # geometrically overlap. Two fragments with NO overlap at all cannot
-    # be joined by ANY single via, full stop, independent of pitch or
-    # search effort — this pass proves that rather than merely having
-    # failed to find a site.
-    #
-    # **Stage 3 rides inside the same loop, as the fallback for a pair
-    # stage 2 just proved un-bridgeable** (:func:`_try_plane_jumper`): two
-    # vias and a spare-layer trace, which is the only mechanism that can
-    # join two fragments that do not overlap. It is deliberately second —
-    # a jumper is real copper on a layer this net was not using, so a pair
-    # a single via CAN close should never buy one.
-    #
-    # **Closest-pair-first over a union-find IS a minimum spanning tree**
-    # (that is Kruskal's algorithm), which settles the "one jumper per
-    # pair, or a spanning tree?" question without any extra machinery: a
-    # pair whose two sides are already in one component is skipped by the
-    # `roots[i] != roots[j]` filter above, so a net in k pieces buys
-    # exactly k-1 jumpers and never a redundant one.
+    # Stage 2 -- targeted residue over FRAGMENT PAIRS ONLY (the via-node
+    # proof above). Closest-pair-first over a union-find IS a minimum
+    # spanning tree (Kruskal). Stage 3 rides inside the same loop as the
+    # fallback for a pair no single via can bridge.
     impossible: set[tuple[int, int]] = set()
     jumpers = 0
     for _ in range(config.max_stitch_iterations):
@@ -6195,7 +3734,7 @@ def _stitch_one_net(
         _gap, i, j = candidates[0]
         li, poly_i = frags[i]
         lj, poly_j = frags[j]
-        lo, hi = through_span(grid.spec.n_layers)
+        lo, hi = through_span(n_layers)
         overlap = poly_i.intersection(poly_j)
         placed_here = False
         if not overlap.is_empty and overlap.area > 0.0:
@@ -6215,13 +3754,16 @@ def _stitch_one_net(
                     net_id,
                     frags[i],
                     frags[j],
-                    grid=grid,
+                    space=space,
+                    net_name=net_name,
+                    n_layers=n_layers,
                     via_dia_mm=via_dia_mm,
                     via_drill_mm=via_drill_mm,
                     via_is_legal=via_is_legal,
                     track_width_by_layer=widths,
                     foreign_pours=foreign_pours,
                     config=config,
+                    bounds=bounds,
                 )
                 if jumper is not None:
                     break
@@ -6230,7 +3772,7 @@ def _stitch_one_net(
                 for v in jumper_vias:
                     claim_via(v)
                 new_tracks.append(jumper_track)
-                _stamp_realized_track(grid, jumper_track)
+                _stamp_track(space, jumper_track, net_name)
                 dsu.union(i, j)
                 jumpers += 1
                 placed_here = True
@@ -6241,27 +3783,7 @@ def _stitch_one_net(
     message = ""
     bare_pieces = 0
     if remaining > 1:
-        # **Which of the remaining pieces carry any of this net's actual
-        # copper?** A fragment is a node here whether or not a single via,
-        # trace or pad lands inside it, but
-        # :func:`precis.pcb.connectivity.net_islands` counts PRIMITIVES and
-        # treats a pour purely as a joiner — so a poured island with
-        # nothing in it is a piece to this pass and invisible to the
-        # checker. That is not the checker being wrong: an empty island is
-        # floating copper, a different defect with a different remedy
-        # (shrink or grow the pour) than a net split in two. Saying which
-        # kind is left is the difference between a report someone can act
-        # on and a number that sends them back to instrument a run.
-        # **Refresh `populated` with the copper THIS pass just placed.** It
-        # was seeded from the board as it arrived, and the stages above
-        # then put stitching vias and jumper traces into fragments that had
-        # none — so reading the stale set here would call a fragment
-        # "empty" that now demonstrably holds this net's copper. The error
-        # runs in the dangerous direction: an inflated `bare_fragments`
-        # makes `pcb_route` classify a genuine remaining split as mere
-        # floating copper (its `fragments - bare_fragments > 1` test), i.e.
-        # it downgrades a real failure to a note. Same touch rule as the
-        # seed steps, asked of the new copper.
+        # Refresh `populated` with the copper THIS pass just placed.
         for v in new_vias:
             for i, (layer, poly) in enumerate(frags):
                 if v.layer_lo <= layer <= v.layer_hi and _touches(poly, v.x, v.y):
@@ -6280,13 +3802,13 @@ def _stitch_one_net(
             dsu.find(n_frags + k) for k in range(len(existing_vias))
         }
         bare_pieces = len({dsu.find(i) for i in range(n_frags)} - roots_with_copper)
-        # Name the reason each bare piece stayed unjoined: no via fits in it,
-        # or a site exists but no legal jumper reaches the rest of the net.
+        # Name the reason each bare piece stayed unjoined: no via fits in
+        # it, or a site exists but no legal jumper reaches the rest.
         bare_why: list[str] = []
         for i, (layer, poly) in enumerate(frags):
             if dsu.find(i) in roots_with_copper:
                 continue
-            sites = _snapped_sites_in(poly, grid.spec, via_r)
+            sites = _sites_in(poly, via_r, pitch)
             bare_why.append(
                 f"{poly.area:.2f}mm2 on layer {layer} at "
                 f"({poly.centroid.x:.1f}, {poly.centroid.y:.1f}): "
@@ -6336,6 +3858,117 @@ def _stitch_one_net(
             )
         )
     return new_vias, new_tracks, remaining, bare_pieces, message
+
+
+def _stitch_plane_fragments(
+    ir: PcbIR,
+    tracks: list[RealizedTrack],
+    vias: list[RealizedVia],
+    pours: list[dict[str, Any]],
+    *,
+    ctx: _RouteContext,
+    config: RealizeConfig,
+    footprints: dict[str, dict[str, Any]] | None = None,
+    fixed_copper: list[dict[str, Any]] | None = None,
+) -> tuple[list[RealizedVia], list[RealizedTrack], list[UnstitchedNet]]:
+    """Deliberate stitching vias for every plane-promoted net whose own
+    poured copper is not already one piece — see the module docstring for
+    the two-stage approach and why this function computes its own
+    connectivity rather than asking
+    :func:`precis.pcb.connectivity.net_islands`.
+
+    Builds a FRESH :class:`vroute.Space` from the already-finished
+    ``tracks``/``vias``/``pads`` (:func:`_final_board_space`), so every
+    keep-out check below sees the REAL, final board.
+
+    **Board-edge clearance needs no separate check for a SPRINKLE via.**
+    Every sprinkle candidate comes from INSIDE an already-computed pour
+    polygon, and :func:`precis.pcb.planes.plane_pours` already insets its
+    region by the edge clearance before it ever produces one. The
+    targeted-residue and jumper sites get the explicit
+    :func:`_outline_clip` contains-check inside ``via_is_legal``.
+
+    **Known limitation, stated rather than hidden**: a stitching via's
+    keep-out check is asked only about copper this module has already
+    claimed (routed tracks, vias, pads) — it has no notion of a THIRD
+    net's finished pour on a layer the stitching via merely passes
+    through. **A JUMPER does not inherit that limitation**: the pour
+    polygons are handed down per net (``foreign_pours``) and
+    :func:`_clears_foreign_pours` checks the jumper's own copper against
+    them geometrically.
+    """
+    plane_net_ids = [n for n in range(ir.n_nets) if int(ir.net_plane_layers[n]) != 0]
+    if not plane_net_ids or not pours:
+        return [], [], []
+    pour_polys = _pour_polygons(ir, pours)
+    space = _final_board_space(ir, tracks, vias, ctx, config, footprints, fixed_copper)
+    n_layers = len(ir.stackup) or 1
+    placed_via_sites: list[tuple[float, float, float]] = [
+        (v.x, v.y, v.dia_mm / 2.0) for v in vias
+    ]
+    # Route bounds for a jumper's detour trace — the same inset the route
+    # pass uses.
+    bounds = (0.0, 0.0, 0.0, 0.0)
+    bbox = _outline_bbox(ir)
+    if bbox is not None:
+        inset = ctx.edge_min + ctx.clearance + vroute.DELTA_MM
+        bounds = (bbox[0] + inset, bbox[1] + inset, bbox[2] - inset, bbox[3] - inset)
+
+    extra_vias: list[RealizedVia] = []
+    extra_tracks: list[RealizedTrack] = []
+    unstitched: list[UnstitchedNet] = []
+    for net_id in plane_net_ids:
+        net_name = str(ir.net_name[net_id])
+        rules = ctx.rules_by_net[net_id]
+        if rules.via_dia_mm is None or rules.via_drill_mm is None:
+            continue
+        frags = [(idx, poly) for net, idx, poly in pour_polys if net == net_name]
+        if not frags:
+            continue  # nothing poured for this net at all -- nothing to stitch TO
+        existing = [v for v in vias if v.net_id == net_id]
+        if len(frags) + len(existing) <= 1:
+            continue  # a single node, alone, cannot be disconnected from itself
+        foreign_pours: dict[int, list[Any]] = {}
+        for net, idx, poly in pour_polys:
+            if net != net_name:
+                foreign_pours.setdefault(idx, []).append(poly)
+        # A jumper's trace is a real trace, so its width is this net's
+        # resolved rule for the layer it lands on — asked per candidate
+        # detour layer. Keying on ``routable_layers`` is what confines a
+        # jumper to a layer that may legally carry a trace at all.
+        track_width_by_layer = {
+            layer: _resolve_track_rules(ir, net_id, layer, config).track_width_mm
+            for layer in routable_layers(ir)
+        }
+        floor_width = resolve_net_rules(
+            "", layer_is_outer=True, fab_caps=config.fab_caps
+        ).track_width_mm
+        floor_width_by_layer = {
+            layer: min(width, floor_width)
+            for layer, width in track_width_by_layer.items()
+        }
+        net_vias, net_tracks, remaining, bare, message = _stitch_one_net(
+            ir,
+            net_id,
+            net_name,
+            frags,
+            existing,
+            space,
+            rules,
+            config,
+            placed_via_sites,
+            track_width_by_layer,
+            foreign_pours,
+            [t for t in tracks if t.net_id == net_id],
+            n_layers,
+            bounds,
+            floor_width_by_layer,
+        )
+        extra_vias += net_vias
+        extra_tracks += net_tracks
+        if remaining > 1:
+            unstitched.append(UnstitchedNet(net_id, net_name, remaining, bare, message))
+    return extra_vias, extra_tracks, unstitched
 
 
 @dataclass(frozen=True, slots=True)
@@ -6529,41 +4162,6 @@ def _pour_polygons(
     return out
 
 
-def _final_board_grid(
-    ir: PcbIR,
-    tracks: list[RealizedTrack],
-    vias: list[RealizedVia],
-    spec: maze.GridSpec,
-    clearance: float,
-    pads: list[tuple[Point, int, maze.PadShape, tuple[int, ...]]],
-    rules_by_net: dict[int, NetRules],
-    config: RealizeConfig,
-) -> maze.OccupancyGrid:
-    """A FRESH scratch grid stamped from the finished tracks, vias and pads:
-    the real final board (pours are never stamped)."""
-    grid = maze.OccupancyGrid(
-        spec,
-        clearance_mm=clearance,
-        net_clearance_mm=_net_clearances(rules_by_net, config),
-        net_layer_clearance_mm=_net_layer_clearances(ir, rules_by_net, config),
-    )
-    _claim_fiducial_keepouts(grid, ir)
-    _claim_silk_keepouts(grid, ir, config)
-    _claim_mounting_holes(grid, ir, npth_clearance_mm=_npth_clearance_mm(config))
-    _stamp_pads(grid, pads)
-    for t in tracks:
-        _stamp_realized_track(grid, t)
-    for v in vias:
-        grid.stamp_disk(
-            range(v.layer_lo, v.layer_hi + 1),
-            v.x,
-            v.y,
-            grid.core_radius_mm(v.dia_mm),
-            v.net_id,
-        )
-    return grid
-
-
 @dataclass(frozen=True)
 class _PlaneRescue:
     """One plane pin's rescue (:func:`_rescue_plane_pins`): the copper it
@@ -6581,7 +4179,7 @@ def _pour_pieces(
     tracks: list[RealizedTrack],
     vias: list[RealizedVia],
     pours: list[dict[str, Any]],
-    pads: list[tuple[Point, int, maze.PadShape, tuple[int, ...]]],
+    pads: list[tuple[Point, int, float, tuple[int, ...]]],
 ) -> dict[tuple[str, int], int]:
     """``(net, layer) -> how many electrical pieces that net's pour on that
     layer is in``: poured pieces joined through the net's own vias, pads and
@@ -6695,11 +4293,10 @@ def _rescue_plane_pins(
     pours: list[dict[str, Any]],
     failed_pins: list[int],
     *,
-    spec: maze.GridSpec,
-    clearance: float,
-    pads: list[tuple[Point, int, maze.PadShape, tuple[int, ...]]],
-    rules_by_net: dict[int, NetRules],
+    ctx: _RouteContext,
     config: RealizeConfig,
+    footprints: dict[str, dict[str, Any]] | None = None,
+    fixed_copper: list[dict[str, Any]] | None = None,
     pour_clearance: float | None = None,
 ) -> list[_PlaneRescue]:
     """Give a plane pin that found no drop-via site a ROUTED connection to
@@ -6708,33 +4305,34 @@ def _rescue_plane_pins(
 
     The fan-out only looks ``_DROP_SEARCH_STEPS`` stubs out from the pad. A
     pin walled in beyond that can still have a legal trace to a drop via
-    further away, which the maze router finds on the final board. The trace
-    may change layer; the re-pour that follows carves the planes around
-    whatever it adds. Returns one :class:`_PlaneRescue` per pin rescued, in
-    order; a pin with no reachable same-net drop stays failed and keeps its
-    ``plane_drop_blocked`` reason.
+    further away, which the vector router finds on the final board. The
+    trace may change layer; the re-pour that follows carves the planes
+    around whatever it adds. Returns one :class:`_PlaneRescue` per pin
+    rescued, in order; a pin with no reachable same-net drop stays failed
+    and keeps its ``plane_drop_blocked`` reason.
 
     A trace on a layer another net pours, or a via through it, is accepted
     only when that plane survives it (:func:`_pour_yields`): cut by the
     trace, or by the via's antipad on every layer its barrel spans, at
     ``pour_clearance`` (the clearance the re-pour carves at), each yielding
     pour gains no piece and still covers every one of its net's pads it
-    covered before. Otherwise it is refused, as the jumper refuses (gr492108:
-    taz15's F.Cu pins under the 3V3 pour had no other way out). This is the
-    geometric pre-check; the caller re-pours and judges the electrical
-    pieces (:func:`_keep_splitless_rescues`)."""
+    covered before. Otherwise it is refused, as the jumper refuses
+    (gr492108: taz15's F.Cu pins under the 3V3 pour had no other way out).
+    This is the geometric pre-check; the caller re-pours and judges the
+    electrical pieces (:func:`_keep_splitless_rescues`)."""
     if not failed_pins or not pours:
         return []
     pour_polys = _pour_polygons(ir, pours)
+    clearance = ctx.clearance
     cut_clearance = clearance if pour_clearance is None else pour_clearance
     # Each net's pour per layer, cut as rescues are accepted, and the pads
     # each one covers: what a yielding plane must still be and still reach.
     pour_state: dict[tuple[str, int], Any] = {}
-    for n, i, poly in pour_polys:
-        prev = pour_state.get((n, i))
-        pour_state[(n, i)] = poly if prev is None else prev.union(poly)
+    for n_, i, poly in pour_polys:
+        prev = pour_state.get((n_, i))
+        pour_state[(n_, i)] = poly if prev is None else prev.union(poly)
     covered: dict[tuple[str, int], list[Point]] = {}
-    for pt, pad_net, _shape, pad_layers in pads:
+    for pt, pad_net, _radius, pad_layers in ctx.pads:
         if pad_net < 0 or pad_net >= ir.n_nets:
             continue
         name = str(ir.net_name[pad_net])
@@ -6742,14 +4340,15 @@ def _rescue_plane_pins(
             poly = pour_state.get((name, layer))
             if poly is not None and _touches(poly, pt[0], pt[1]):
                 covered.setdefault((name, layer), []).append(pt)
-    grid = _final_board_grid(
-        ir, tracks, vias, spec, clearance, pads, rules_by_net, config
-    )
-    all_layers = range(len(ir.stackup))
+    space = _final_board_space(ir, tracks, vias, ctx, config, footprints, fixed_copper)
+    n_layers = len(ir.stackup) or 1
+    names, _index, _n = _layer_index(ir)
+    all_layers = range(n_layers)
     signal = list(routable_layers(ir))
     floor_width = resolve_net_rules(
         "", layer_is_outer=True, fab_caps=config.fab_caps
     ).track_width_mm
+    bbox = _outline_bbox(ir)
     new_vias: list[RealizedVia] = []
     #: Which rescue placed each of ``new_vias`` (a later rescue may end on
     #: one, and depends on it).
@@ -6759,14 +4358,14 @@ def _rescue_plane_pins(
     lo, hi = through_span(len(all_layers))
     for pid in failed_pins:
         net_id = int(ir.pin_net[pid])
-        rules = rules_by_net[net_id]
+        rules = ctx.rules_by_net[net_id]
         point = pin_point(ir, pid)
         if point is None or rules.via_dia_mm is None or rules.via_drill_mm is None:
             continue
         pad_layer = _side_layer(ir, int(ir.pin_instance[pid]), all_layers)
         net_name = str(ir.net_name[net_id])
         widths = sorted({rules.track_width_mm, floor_width}, reverse=True)
-        polys = [(i, poly) for n, i, poly in pour_polys if n == net_name]
+        polys = [(i, poly) for n_, i, poly in pour_polys if n_ == net_name]
         targets = sorted(
             (
                 v
@@ -6779,12 +4378,18 @@ def _rescue_plane_pins(
             ),
             key=lambda v: dist(point, (v.x, v.y)),
         )[:_RESCUE_TARGETS]
-        # The net's own width first; a power class's current-sized width often
-        # fits no corridor out of a crowded pad, so the fab floor is the
-        # fallback (a single-pin tie to the plane, not a power trunk).
+        # The net's own width first; a power class's current-sized width
+        # often fits no corridor out of a crowded pad, so the fab floor is
+        # the fallback (a single-pin tie to the plane, not a power trunk).
         for width in widths:
             if pid in rescued:
                 break
+            inset = ctx.edge_min + width / 2.0 + vroute.DELTA_MM
+            bounds = (
+                (bbox[0] + inset, bbox[1] + inset, bbox[2] - inset, bbox[3] - inset)
+                if bbox is not None
+                else (-1e6, -1e6, 1e6, 1e6)
+            )
             for v in targets:
                 goal_layer = next(
                     (layer for layer in (v.layer_lo, v.layer_hi) if layer in signal),
@@ -6792,27 +4397,30 @@ def _rescue_plane_pins(
                 )
                 if goal_layer is None:
                     continue
-                path = grid.route(
-                    net_id,
-                    point,
-                    (v.x, v.y),
-                    layers=signal,
-                    width_mm=width,
-                    via_dia_mm=rules.via_dia_mm,
-                    start_layer=pad_layer,
-                    goal_layer=goal_layer,
-                    attach=False,
-                    max_expansions=config.max_expansions,
+                path = vroute.route(
+                    space,
+                    vroute.Request(
+                        net=net_name,
+                        width_mm=width,
+                        layers=tuple(signal),
+                        start=vroute.Terminal(
+                            point[0], point[1], frozenset({pad_layer})
+                        ),
+                        goal=vroute.Terminal(v.x, v.y, frozenset({goal_layer})),
+                        bounds=bounds,
+                        via=vroute.ViaSpec(rules.via_dia_mm, rules.via_drill_mm),
+                        via_layers=tuple(range(n_layers)),
+                        max_expansions=config.max_expansions,
+                    ),
                 )
-                if path is None or len(path.points) < 2:
+                if path is None:
                     continue
                 # A TRACK on a layer another net pours cuts that plane, and
                 # so does a VIA's antipad on every layer its barrel spans
-                # (the re-pour carves both); each is kept only if the plane
-                # survives the cut.
+                # (the re-pour carves both); each is kept only if the
+                # plane survives the cut.
                 cuts: list[tuple[int, Any]] = []
-                for layer in {int(p[2]) for p in path.points}:
-                    pts = [(x, y) for x, y, lyr in path.points if int(lyr) == layer]
+                for layer, pts in path.runs:
                     if len(pts) >= 2:
                         cuts.append(
                             (
@@ -6823,7 +4431,7 @@ def _rescue_plane_pins(
                                 ),
                             )
                         )
-                for vx, vy, _lo, _hi in path.vias:
+                for vx, vy in path.vias:
                     disk = _ShapelyPoint(vx, vy).buffer(
                         rules.via_dia_mm / 2.0 + cut_clearance,
                         quad_segs=_JUMPER_QUAD_SEGS,
@@ -6832,26 +4440,39 @@ def _rescue_plane_pins(
                 yielded: dict[tuple[str, int], Any] = {}
                 refused = False
                 for layer, cut in cuts:
-                    for (n, i), poly in pour_state.items():
-                        if i != layer or n == net_name or not poly.intersects(cut):
+                    for (n_, i), poly in pour_state.items():
+                        if i != layer or n_ == net_name or not poly.intersects(cut):
                             continue
                         after = _pour_yields(
-                            yielded.get((n, i), poly), cut, covered.get((n, i), [])
+                            yielded.get((n_, i), poly), cut, covered.get((n_, i), [])
                         )
                         if after is None:
                             refused = True
                             break
-                        yielded[(n, i)] = after
+                        yielded[(n_, i)] = after
                     if refused:
                         break
                 if refused:
                     continue
                 pour_state.update(yielded)
-                grid.stamp_path(path, width)
-                via_core = grid.core_radius_mm(rules.via_dia_mm)
+                made_tracks = [
+                    t
+                    for layer, pts in path.runs
+                    for t in _track_from_run(_STITCH_SEG_ID, net_id, layer, pts, width)
+                ]
+                for ob in _copper_obstacles(made_tracks, [], ir, _index, _n, names):
+                    space.add(ob)
                 path_vias: list[RealizedVia] = []
-                for vx, vy, _lo, _hi in path.vias:
-                    grid.stamp_disk(range(lo, hi + 1), vx, vy, via_core, net_id)
+                made_via_obs: list[vroute.Obstacle] = []
+                for vx, vy in path.vias:
+                    made_via_obs.append(
+                        vroute.Obstacle(
+                            Body(_ShapelyPoint(vx, vy), (), rules.via_dia_mm / 2.0),
+                            net_name,
+                            frozenset(range(lo, hi + 1)),
+                            blocks_vias=True,
+                        )
+                    )
                     path_vias.append(
                         RealizedVia(
                             seg_id=_STITCH_SEG_ID,
@@ -6865,880 +4486,318 @@ def _rescue_plane_pins(
                             endpoint="a",
                         )
                     )
+                for ob in made_via_obs:
+                    space.add(ob)
                 after = next(
                     (via_owner[k] for k, nv in enumerate(new_vias) if nv is v), None
                 )
                 new_vias += path_vias
                 via_owner += [pid] * len(path_vias)
-                rescues.append(
-                    _PlaneRescue(
-                        pid,
-                        _tracks_from_path(_STITCH_SEG_ID, net_id, path, width),
-                        path_vias,
-                        after,
-                    )
-                )
+                rescues.append(_PlaneRescue(pid, made_tracks, path_vias, after))
                 rescued.add(pid)
                 break
     return rescues
 
 
-def _stitch_plane_fragments(
+def _diagnose_all(
     ir: PcbIR,
-    tracks: list[RealizedTrack],
-    vias: list[RealizedVia],
-    pours: list[dict[str, Any]],
-    *,
-    spec: maze.GridSpec,
-    clearance: float,
-    pads: list[tuple[Point, int, maze.PadShape, tuple[int, ...]]],
-    rules_by_net: dict[int, NetRules],
+    unrouted: list[int],
+    extra_unrouted: list[int],
+    plane_id_set: set[int],
+    ctx: _RouteContext,
     config: RealizeConfig,
-) -> tuple[list[RealizedVia], list[RealizedTrack], list[UnstitchedNet]]:
-    """Deliberate stitching vias for every plane-promoted net whose own
-    poured copper is not already one piece — see the module docstring for
-    the two-stage approach and why this function computes its own
-    connectivity rather than asking
-    :func:`precis.pcb.connectivity.net_islands`.
-
-    Builds a FRESH scratch :class:`~precis.pcb.maze.OccupancyGrid` from the
-    already-finished ``tracks``/``vias``/``pads`` (not the grid a route
-    pass used — ``_realize_maze`` keeps none of those once routing is
-    decided) so every keep-out check below (:meth:`~precis.pcb.maze.
-    OccupancyGrid.disk_is_free`, :meth:`~precis.pcb.maze.OccupancyGrid.
-    via_clears_pads`, :func:`_via_clears_vias`) sees the REAL, final board,
-    not an intermediate one.
-
-    **Board-edge clearance needs no separate check here.** Every candidate
-    site this function ever proposes comes from INSIDE an already-computed
-    pour polygon, and :func:`precis.pcb.planes.plane_pours` already insets
-    its region by the edge clearance before it ever produces one — a site
-    strictly inside a pour is, by construction, already inside the board's
-    usable rectangle. Re-deriving that inset here would be the exact
-    "second copy of a shared definition" this codebase's own discipline
-    warns against.
-
-    Nets whose fab publishes no via figures are skipped (nothing to stitch
-    WITH); a net with no poured fragment at all is skipped (nothing to
-    stitch TO — this includes every non-plane-promoted net, since
-    ``pours`` never contains an entry for one); a net reduced to exactly
-    one node total (one fragment and no drop vias, say) is skipped too —
-    a single node cannot be disconnected from itself. Otherwise every
-    plane-promoted net is checked, including one with only a SINGLE
-    poured sheet: :func:`_stitch_one_net`'s graph includes this net's own
-    drop vias as nodes too, so a lone stray via that missed its net's one
-    and only sheet is exactly the case this pass exists to catch (see that
-    function's own docstring for the gr270637 measurement that found it).
-
-    **Known limitation, stated rather than hidden**: a stitching via's
-    keep-out check (``disk_is_free``) is asked only about copper this
-    module has already CLAIMED on the occupancy grid (routed tracks,
-    vias, pads) — it has no notion of a THIRD net's finished pour on a
-    layer the stitching via merely passes through. On both reference
-    fixtures every plane-promoted net's own poured layers are adjacent
-    (no foreign pour sits between them), so this never arises in the
-    boards this module is tested against; a design that pours three
-    different nets on three adjacent layers and stitches across all three
-    could, in principle, place a via that shorts to the middle one. Fixing
-    that would mean re-running :func:`_pour_planes` after stitching (to
-    carve fresh antipads around the new vias) rather than stitching after
-    pouring, a bigger reordering than this task's scope.
-
-    **A JUMPER does not inherit that limitation**, and must not: it lays a
-    whole trace on a layer picked precisely because this net was not on it,
-    which is exactly where a foreign plane is likely to be. So the pour
-    polygons are handed down per net (``foreign_pours``, keyed by layer
-    index) and :func:`_clears_foreign_pours` checks the jumper's own copper
-    against them geometrically. That guard is narrow on purpose — it
-    answers only for the copper THIS function invents, and does not
-    retroactively make the paragraph above true for anything else.
-    """
-    plane_net_ids = [n for n in range(ir.n_nets) if int(ir.net_plane_layers[n]) != 0]
-    if not plane_net_ids or not pours:
-        return [], [], []
-    # Every pour's polygon, once — the per-net `foreign_pours` views below
-    # are filtered from this list rather than rebuilt, so a board with many
-    # planes does not pay to re-triangulate the same rings per net.
-    pour_polys = _pour_polygons(ir, pours)
-    grid = _final_board_grid(
-        ir, tracks, vias, spec, clearance, pads, rules_by_net, config
-    )
-    placed_via_sites: list[tuple[float, float, float]] = [
-        (v.x, v.y, v.dia_mm / 2.0) for v in vias
-    ]
-
-    extra_vias: list[RealizedVia] = []
-    extra_tracks: list[RealizedTrack] = []
-    unstitched: list[UnstitchedNet] = []
-    for net_id in plane_net_ids:
-        net_name = str(ir.net_name[net_id])
-        rules = rules_by_net[net_id]
-        if rules.via_dia_mm is None or rules.via_drill_mm is None:
-            continue
-        frags = [(idx, poly) for net, idx, poly in pour_polys if net == net_name]
-        if not frags:
-            continue  # nothing poured for this net at all -- nothing to stitch TO
-        existing = [v for v in vias if v.net_id == net_id]
-        if len(frags) + len(existing) <= 1:
-            continue  # a single node, alone, cannot be disconnected from itself
-        foreign_pours: dict[int, list[Any]] = {}
-        for net, idx, poly in pour_polys:
-            if net != net_name:
-                foreign_pours.setdefault(idx, []).append(poly)
-        # A jumper's trace is a real trace, so its width is this net's
-        # resolved rule for the layer it lands on — the same single
-        # resolver every other track in this module goes through, asked per
-        # candidate detour layer rather than reusing the caller's `rules`
-        # (which were resolved for one layer and would silently apply an
-        # outer-layer width to an inner-layer run). Keying on
-        # `routable_layers` is also what confines a jumper to a layer that
-        # may legally carry a trace at all — a plane-only or non-copper
-        # layer never appears here, so it is never offered as a detour.
-        track_width_by_layer = {
-            layer: _resolve_track_rules(ir, net_id, layer, config).track_width_mm
-            for layer in routable_layers(ir)
-        }
-        # A power class's current-sized width often fits no corridor between
-        # two fragments; the jumper retries at the fab floor before giving up.
-        floor_width = resolve_net_rules(
-            "", layer_is_outer=True, fab_caps=config.fab_caps
-        ).track_width_mm
-        floor_width_by_layer = {
-            layer: min(width, floor_width)
-            for layer, width in track_width_by_layer.items()
-        }
-        net_vias, net_tracks, remaining, bare, message = _stitch_one_net(
-            net_id,
-            net_name,
-            frags,
-            existing,
-            grid,
-            rules,
-            config,
-            placed_via_sites,
-            track_width_by_layer,
-            foreign_pours,
-            [t for t in tracks if t.net_id == net_id],
-            floor_width_by_layer,
-        )
-        extra_vias += net_vias
-        extra_tracks += net_tracks
-        if remaining > 1:
-            unstitched.append(UnstitchedNet(net_id, net_name, remaining, bare, message))
-    return extra_vias, extra_tracks, unstitched
-
-
-def _straighten(
-    path: maze.RoutePath,
-    grid: maze.OccupancyGrid,
-    net_id: int,
-    width_mm: float,
     *,
-    shove_vias: bool = False,
-    via_group_extent_mm: float | None = None,
-    via_shove_radius_mm: float = 0.5,
-    ink_field: _InkField | None = None,
-) -> maze.RoutePath:
-    """Pull a routed path taut — WITHIN the octilinear direction set.
+    fixed_copper: list[dict[str, Any]] | None = None,
+    footprints: dict[str, dict[str, Any]] | None = None,
+    net_layer_lock_fail: dict[int, str] | None = None,
+    routed_tracks: list[RealizedTrack] | None = None,
+    routed_vias: list[RealizedVia] | None = None,
+    plane_failed_pins: list[int] | None = None,
+    exhausted: set[int] | None = None,
+) -> list[UnroutedReason]:
+    """One :class:`UnroutedReason` per segment in ``unrouted +
+    extra_unrouted``.
 
-    An octile grid search cannot produce a line that is not a multiple of
-    45 degrees, so a run to a pad that sits at some other angle comes out
-    as a staircase — measured on the reference board, 431 segments over 78
-    tracks with a 0.41mm median segment. Every one of those corners is real
-    copper with a real bend in it. The original cure replaced a staircase
-    with the direct chord at whatever angle joined its ends — which traded
-    the staircase for arbitrary-angle copper, the very thing a fabbed
-    board should not carry (user review 2026-08-31: every wire on every
-    layer fully 90/45). Since then the pull is octilinear-preserving: a
-    staircase collapses to at most one straight run plus one taut 45/90
-    elbow (:func:`_octilinear_connect`), and the off-angle end segments
-    :func:`_snap_to_pads` necessarily creates (pad centres are continuous,
-    grid vertices are not) get an elbow inserted the same way.
+    ``plane_failed_pins`` is the actual per-PIN list of terminals
+    :func:`_plane_fanout` could not give a legal drop — grouped per net
+    and stamped on the matching ``'plane_drop_blocked'`` reasons as
+    ``UnroutedReason.pins``, so the actual terminal that could not
+    escape survives into evidence.
 
-    The chord is tested against the SAME occupancy grid that proved the
-    original path clear, at the same radius the search itself queries with
-    (own half-width plus a cell of discretisation slack — not
-    ``core_radius_mm``, which already contains the other net's clearance
-    and would double-count it). So a straightened path is clear of
-    everything routed before it, and it is stamped before anything routed
-    after it. The clearance guarantee is not weakened; this pass can only
-    ever remove copper — EXCEPT for the one bounded exception below.
+    ``net_layer_lock_fail`` (Rulings 2026-09-19 item 7) is checked FIRST:
+    a net whose class named a layer this board can't route it on never
+    reached ``vroute.route`` at all, so re-running the point-to-point
+    probes below would ask the wrong question.
 
-    **Vias are fixed points by default** — a vertex where the layer changes
-    is never dropped, because moving it would move a hole. With
-    ``shove_vias=True`` (:attr:`RealizeConfig.shove_vias`) a via MAY move,
-    within ``via_shove_radius_mm``, onto an octilinear-taut point
-    (:func:`_octilinear_shove_target`) between its
-    two outer (non-via) neighbours — see :func:`_shove_vias` for the
-    validation a candidate move must pass before it is accepted. A second
-    collapse pass runs afterward so any run that only became collinear
-    because of the shove gets the same treatment as everything else.
-
-    ``ink_field`` (:func:`_courtyard_ink_field`), forwarded to
-    :func:`_shove_vias` unchanged, lets a via transition sitting under
-    courtyard ink move even when it is not otherwise a shove candidate —
-    see that function's own docstring.
-    """
-    pts = list(path.points)
-    if len(pts) < 2:
-        return path
-    radius = width_mm / 2.0 + grid.spec.pitch
-    step = grid.spec.pitch / 2.0
-    edge_half = width_mm / 2.0
-    pts = _collapse_straight(pts, grid, net_id, radius, step, edge_half_mm=edge_half)
-    if shove_vias and via_group_extent_mm is not None and len(pts) >= 4:
-        pts, moved = _shove_vias(
-            pts,
-            grid,
-            net_id,
-            via_group_extent_mm,
-            via_shove_radius_mm,
-            radius,
-            step,
-            ink_field=ink_field,
-            track_half_mm=edge_half,
-        )
-        if moved:
-            pts = _collapse_straight(
-                pts, grid, net_id, radius, step, edge_half_mm=edge_half
+    ``exhausted`` (:func:`_realize_vector`'s record of which segments'
+    REAL search ended on the expansion cap, from the route's own
+    ``stats['stop']``) is checked before the probes for the same reason:
+    the busy-space search already answered why this segment failed — the
+    budget ran out — so a pads-only probe that then finds a corridor
+    would misreport the failure as a lost race (gr489909)."""
+    reasons: list[UnroutedReason] = []
+    pins_by_net: dict[int, list[int]] = {}
+    for pid in plane_failed_pins or ():
+        pins_by_net.setdefault(int(ir.pin_net[pid]), []).append(pid)
+    probe: vroute.Space | None = None
+    routed_copper = (
+        (routed_tracks, routed_vias)
+        if routed_tracks is not None and routed_vias is not None
+        else None
+    )
+    for seg_id in unrouted:
+        net_id = int(ir.seg_net[seg_id])
+        if net_layer_lock_fail and net_id in net_layer_lock_fail:
+            reasons.append(
+                UnroutedReason(
+                    seg_id, net_id, "layer_lock", net_layer_lock_fail[net_id]
+                )
             )
-    length = sum(
-        dist((a[0], a[1]), (b[0], b[1]))
-        for a, b in itertools.pairwise(pts)
-        if a[2] == b[2]
-    )
-    return maze.RoutePath(path.net_id, tuple(pts), length, path.attached)
-
-
-#: Float-noise tolerance for the 45-degree direction test. Grid vertices
-#: are exact pitch multiples and the elbow construction in
-#: :func:`_octilinear_corners` reuses one shared min() for both diagonal
-#: components, so a genuinely octilinear segment misses by rounding only
-#: (~1e-14 at board scale); anything a snapped pad centre or shoved via
-#: bends off-axis misses by whole hundredths of a millimetre.
-_OCTILINEAR_EPS_MM = 1e-6
-
-
-def _is_octilinear(
-    a: tuple[float, float, int] | tuple[float, float],
-    c: tuple[float, float, int] | tuple[float, float],
-) -> bool:
-    """Is the straight segment ``a``→``c`` a multiple of 45 degrees —
-    axis-aligned or a true diagonal (|dx| == |dy|) — within float noise?
-    These are the only directions drawn copper is allowed to take (user
-    requirement 2026-08-31: every wire on every layer fully 90/45)."""
-    dx, dy = abs(c[0] - a[0]), abs(c[1] - a[1])
-    return (
-        dx <= _OCTILINEAR_EPS_MM
-        or dy <= _OCTILINEAR_EPS_MM
-        or abs(dx - dy) <= _OCTILINEAR_EPS_MM
-    )
-
-
-def _octilinear_corners(
-    a: tuple[float, float, int], c: tuple[float, float, int]
-) -> tuple[tuple[float, float], tuple[float, float]]:
-    """The two taut octilinear elbow points between ``a`` and ``c``:
-    diagonal-first, then axis-first. Either elbow yields the SHORTEST
-    45/90 path between the endpoints (one diagonal of the smaller extent
-    plus one axis run of the difference) — they differ only in which leg
-    comes first, i.e. which side of the straight chord the copper bulges
-    toward, which is exactly the degree of freedom that lets a blocked
-    elbow try the mirror."""
-    dx, dy = c[0] - a[0], c[1] - a[1]
-    d = min(abs(dx), abs(dy))
-    sx = 1.0 if dx >= 0 else -1.0
-    sy = 1.0 if dy >= 0 else -1.0
-    return (
-        (a[0] + sx * d, a[1] + sy * d),
-        (c[0] - sx * d, c[1] - sy * d),
-    )
-
-
-def _octilinear_connect(
-    grid: maze.OccupancyGrid,
-    a: tuple[float, float, int],
-    c: tuple[float, float, int],
-    net_id: int,
-    radius: float,
-    step: float,
-    edge_half_mm: float | None = None,
-) -> list[tuple[float, float, int]] | None:
-    """The interior vertices of a FREE octilinear connection ``a``→``c``
-    (same layer): ``[]`` when the straight chord is itself octilinear and
-    clear, ``[elbow]`` for a taut two-segment dogleg (diagonal-first
-    preferred, mirror as fallback), ``None`` when nothing octilinear
-    clears. The one shared answer to "may copper run between these two
-    points, and along what path?" — used by the taut pull, by the via
-    shove's feasibility test, and (transitively) for the off-angle end
-    segments :func:`_snap_to_pads` creates, so every accepted connection
-    is provably re-derivable by the next pass over the same grid."""
-    if _is_octilinear(a, c):
-        return (
-            []
-            if _chord_is_free(
-                grid, a, c, net_id, radius, step, edge_half_mm=edge_half_mm
-            )
-            else None
-        )
-    for mx, my in _octilinear_corners(a, c):
-        m = (mx, my, a[2])
-        if _chord_is_free(
-            grid, a, m, net_id, radius, step, edge_half_mm=edge_half_mm
-        ) and _chord_is_free(
-            grid, m, c, net_id, radius, step, edge_half_mm=edge_half_mm
-        ):
-            return [m]
-    return None
-
-
-def _polyline_len(pts: list[tuple[float, float, int]]) -> float:
-    return sum(
-        dist((a[0], a[1]), (b[0], b[1]))
-        for a, b in itertools.pairwise(pts)
-        if a[2] == b[2]
-    )
-
-
-def _collapse_straight(
-    pts: list[tuple[float, float, int]],
-    grid: maze.OccupancyGrid,
-    net_id: int,
-    radius: float,
-    step: float,
-    edge_half_mm: float | None = None,
-) -> list[tuple[float, float, int]]:
-    """Taut-pull passes until fixpoint — OCTILINEAR-preserving since
-    2026-08-31. The old pass replaced a staircase with the direct chord at
-    whatever angle connected its ends; those chords were the largest
-    source of arbitrary-angle copper on a rendered board. Now a span is
-    only ever replaced by :func:`_octilinear_connect`'s straight-or-elbow
-    result, so pulling taut can never mint a direction the grid search
-    itself could not have drawn. The vertex-collapse half of
-    :func:`_straighten`, factored out so a via shove (which can create NEW
-    collapsible runs on either side of the moved via) gets a second pass
-    through the exact same logic.
-
-    Termination: a span replacement is accepted only when it strictly
-    reduces the vertex count or strictly shortens the copper, and an
-    elbow insertion (fixing an off-angle segment a snap or shove left
-    behind) is idempotent — so every pass monotonically decreases
-    (vertices, length) and the fixpoint loop is finite."""
-    changed = True
-    while changed:
-        pts, changed = _taut_pass(
-            pts, grid, net_id, radius, step, edge_half_mm=edge_half_mm
-        )
-    return pts
-
-
-def _taut_pass(
-    pts: list[tuple[float, float, int]],
-    grid: maze.OccupancyGrid,
-    net_id: int,
-    radius: float,
-    step: float,
-    edge_half_mm: float | None = None,
-) -> tuple[list[tuple[float, float, int]], bool]:
-    """One forward greedy pass of the octilinear taut pull: from each kept
-    vertex, splice in the farthest same-layer span that
-    :func:`_octilinear_connect` can replace with fewer/shorter copper;
-    where no span improves, still repair an off-angle SEGMENT (snapped pad
-    end, shoved via flank) by inserting its free elbow. Layer-change
-    vertices (vias) are span boundaries and never move."""
-    if len(pts) < 2:
-        return pts, False
-    out: list[tuple[float, float, int]] = [pts[0]]
-    changed = False
-    i = 0
-    while i < len(pts) - 1:
-        layer = pts[i][2]
-        best_j = -1
-        best_mids: list[tuple[float, float, int]] = []
-        j = i + 2
-        while j < len(pts) and pts[j - 1][2] == layer and pts[j][2] == layer:
-            mids = _octilinear_connect(
-                grid, pts[i], pts[j], net_id, radius, step, edge_half_mm
-            )
-            if mids is not None:
-                replaced = pts[i : j + 1]
-                candidate = [pts[i], *mids, pts[j]]
-                if (
-                    len(candidate) < len(replaced)
-                    or _polyline_len(candidate) < _polyline_len(replaced) - 1e-9
-                ):
-                    best_j, best_mids = j, mids
-            j += 1
-        if best_j >= 0:
-            out.extend(best_mids)
-            out.append(pts[best_j])
-            i = best_j
-            changed = True
             continue
-        nxt = pts[i + 1]
-        if nxt[2] == layer and not _is_octilinear(pts[i], nxt):
-            mids = _octilinear_connect(
-                grid, pts[i], nxt, net_id, radius, step, edge_half_mm
+        if seg_id in plane_id_set:
+            # This segment never went through the point-to-point route at
+            # all — its failure is a PIN's drop-via search coming up empty
+            # (`_plane_fanout`/`_drop_via_site`).
+            reasons.append(
+                UnroutedReason(
+                    seg_id,
+                    net_id,
+                    "plane_drop_blocked",
+                    "this plane-promoted net had at least one pin with no "
+                    "legal drop-via site within its search radius (blocked by "
+                    "other copper) -- not a point-to-point route failure",
+                    pins=tuple(pins_by_net.get(net_id, ())),
+                )
             )
-            if mids is None:
-                # Tight-corridor fallback. The off-angle segment being
-                # repaired was DRAWN — its corridor exists — but `radius`
-                # carries a full cell of discretisation slack, so in a
-                # corridor tighter than that slack both elbow variants can
-                # test blocked even though they deviate from the proven
-                # segment by no more than the nub (min-axis extent). When
-                # that nub is within the one-cell dilation the route
-                # search itself already granted, re-ask at bare copper
-                # radius: the elbow then stays inside the cleared
-                # corridor by construction. Found live 2026-09-01 as the
-                # nano board's single `octilinear` DRC finding — a snapped
-                # pad end 0.023mm off-diagonal whose elbow was refused.
-                adx, ady = abs(nxt[0] - pts[i][0]), abs(nxt[1] - pts[i][1])
-                # The elbow's SHORT leg bounds its deviation from the
-                # proven chord: the axis remainder for a near-diagonal
-                # segment, the diagonal bite for a near-axis one.
-                nub = min(min(adx, ady), abs(adx - ady))
-                if nub <= 2.0 * step:
-                    tight = max(radius - 2.0 * step, step)
-                    mids = _octilinear_connect(
-                        grid, pts[i], nxt, net_id, tight, step, edge_half_mm
-                    )
-            if mids:
-                out.extend(mids)
-                changed = True
-        out.append(nxt)
-        i += 1
-    return out, changed
-
-
-def _project_onto_segment(p: Point, a: Point, b: Point) -> Point:
-    """The closest point to ``p`` on segment ``a``-``b`` (clamped, never
-    the infinite line — a via should not be pulled past either of its own
-    neighbours)."""
-    ax, ay = a
-    bx, by = b
-    px, py = p
-    dx, dy = bx - ax, by - ay
-    length2 = dx * dx + dy * dy
-    if length2 < 1e-12:
-        return a
-    t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / length2))
-    return (ax + t * dx, ay + t * dy)
-
-
-def _octilinear_shove_candidates(
-    prev_pt: Point,
-    next_pt: Point,
-    origin: Point,
-    radius_mm: float,
-    *,
-    allow_no_gain: bool,
-) -> list[Point]:
-    """Every geometric via-shove target within ``radius_mm`` of ``origin``
-    that keeps BOTH flanks single straight octilinear segments, shortest
-    total flank length first — the full ranked list, where
-    :func:`_octilinear_shove_target` (below, now a thin wrapper) only ever
-    exposed the winner. A second caller, the courtyard-ink escape in
-    :func:`_shove_vias`, needs to walk past an ink-free candidate that
-    turns out illegal to the next-best ink-free one, which needs the
-    whole ranking, not just the best entry.
-
-    The candidates that genuinely straighten are the intersection points
-    of the eight octilinear rays out of each fixed neighbour (at most one
-    per direction pair), plus — when the neighbours' own chord is itself
-    octilinear — the origin's projection onto that chord (the via sliding
-    INTO the straight run, the ideal outcome).
-
-    ``allow_no_gain=False`` (the ONLY behaviour before this function
-    existed) keeps a candidate only when it STRICTLY shortens the two
-    flanks — the shove's "only ever removes copper" invariant under the
-    octilinear metric. ``allow_no_gain=True`` — used only when ``origin``
-    itself sits under courtyard ink (:func:`_shove_vias`) — additionally
-    keeps equal-or-longer candidates: escaping ink is worth some flank
-    length a pure taut-pull would never spend. Geometry only — the caller
-    still owns every occupancy/pad/via check."""
-    current = dist(prev_pt, origin) + dist(origin, next_pt)
-    out: list[tuple[float, Point]] = []
-
-    def consider(x: float, y: float) -> None:
-        cand = (x, y)
-        offset = dist(cand, origin)
-        if offset > radius_mm or offset < 1e-9:
-            return
-        total = dist(prev_pt, cand) + dist(cand, next_pt)
-        if not allow_no_gain and total >= current - 1e-9:
-            return
-        out.append((total, cand))
-
-    if _is_octilinear(prev_pt, next_pt):
-        px, py = _project_onto_segment(origin, prev_pt, next_pt)
-        consider(px, py)
-    wx, wy = next_pt[0] - prev_pt[0], next_pt[1] - prev_pt[1]
-    for ux, uy in _OCTO_DIRS:
-        for vx, vy in _OCTO_DIRS:
-            # Solve prev + s*u == next + t*v for s, t >= 0 (Cramer); a
-            # near-zero determinant is a parallel pair with no single
-            # intersection, and t < 0 is the same point some other pair
-            # reaches with the reversed direction — both skipped.
-            det = vx * uy - ux * vy
-            if abs(det) < 1e-9:
-                continue
-            s = (vx * wy - vy * wx) / det
-            t = (ux * wy - uy * wx) / det
-            if s < 1e-9 or t < 1e-9:
-                continue
-            consider(prev_pt[0] + s * ux, prev_pt[1] + s * uy)
-    out.sort(key=lambda entry: entry[0])
-    return [cand for _, cand in out]
-
-
-def _octilinear_shove_target(
-    prev_pt: Point, next_pt: Point, origin: Point, radius_mm: float
-) -> Point | None:
-    """The single best geometric target for a via shove, or ``None`` when
-    no move helps — the strictly-shortening winner of
-    :func:`_octilinear_shove_candidates`, kept as its own name because it
-    is still the right call for a shortening-only search (this function's
-    prior full docstring, on the candidate GEOMETRY, now lives there)."""
-    candidates = _octilinear_shove_candidates(
-        prev_pt, next_pt, origin, radius_mm, allow_no_gain=False
-    )
-    return candidates[0] if candidates else None
-
-
-def _shove_candidate_legal(
-    grid: maze.OccupancyGrid,
-    prev_pt: tuple[float, float, int],
-    next_pt: tuple[float, float, int],
-    v_pre_layer: int,
-    v_post_layer: int,
-    candidate: Point,
-    net_id: int,
-    via_group_extent_mm: float,
-    chord_radius_mm: float,
-    step: float,
-    track_half_mm: float | None = None,
-) -> bool:
-    """May the via transition move to ``candidate`` — both flanks clear
-    (plain chord test: both are single straight octilinear segments by
-    construction, :func:`_octilinear_shove_candidates`, so no elbow case
-    to consider) AND the via's own annulus clears, at
-    ``via_group_extent_mm`` collapsed across every layer, same as
-    :func:`_shove_vias`'s own docstring on why. Split out of that
-    function's loop body so the courtyard-ink fallback below can test
-    several ranked candidates without duplicating this logic."""
-    near_ok = _chord_is_free(
-        grid,
-        (prev_pt[0], prev_pt[1], v_pre_layer),
-        (candidate[0], candidate[1], v_pre_layer),
-        net_id,
-        chord_radius_mm,
-        step,
-        edge_half_mm=track_half_mm,
-    )
-    far_ok = near_ok and _chord_is_free(
-        grid,
-        (candidate[0], candidate[1], v_post_layer),
-        (next_pt[0], next_pt[1], v_post_layer),
-        net_id,
-        chord_radius_mm,
-        step,
-        edge_half_mm=track_half_mm,
-    )
-    return (
-        far_ok
-        # The board edge too: since gr497865 a pad may stretch the grid
-        # past the outline clip, so "in-bounds" no longer implies inside
-        # the copper-legal rect — ask the grid's own edge keep-out at the
-        # via's (conservative group-extent) radius.
-        and grid.edge_clear(
-            net_id, candidate[0], candidate[1], via_group_extent_mm / 2.0
-        )
-        and grid.disk_is_free(
-            range(0, grid.spec.n_layers),
-            candidate[0],
-            candidate[1],
-            grid.core_radius_mm(via_group_extent_mm),
-            net_id,
-        )
-        # `disk_is_free` is deliberately SAME-NET-blind (right for a
-        # trace legally ending on its own pad, `_shove_vias`'s own
-        # docstring) — a shoved via is not a trace, so it must also clear
-        # `via_clears_pads` (net-blind, checks a pad's own net too) or a
-        # shove can walk a via straight onto its own pad. Found
-        # 2026-08-29 (gripe 269811): this loop moved a via by testing
-        # only `disk_is_free`, so a candidate site that was merely "not
-        # foreign copper" was accepted even when it sat on the via's own
-        # net's pad, at the SAME group-extent radius the occupancy check
-        # above already uses (the conservative stitched-group footprint,
-        # never the single via's own smaller diameter).
-        and grid.via_clears_pads(candidate[0], candidate[1], via_group_extent_mm / 2.0)
-    )
-
-
-def _shove_vias(
-    pts: list[tuple[float, float, int]],
-    grid: maze.OccupancyGrid,
-    net_id: int,
-    via_group_extent_mm: float,
-    shove_radius_mm: float,
-    chord_radius_mm: float,
-    step: float,
-    ink_field: _InkField | None = None,
-    track_half_mm: float | None = None,
-) -> tuple[list[tuple[float, float, int]], bool]:
-    """One pass over every via TRANSITION in ``pts`` — a same-coordinate,
-    different-layer consecutive pair with a fixed neighbour on each side
-    (an edge-of-path via, with no outer neighbour to straighten toward, is
-    left alone: moving it would need a new rule for what it is straightening
-    against, not a smaller version of this one).
-
-    **A via move must clear the via's OWN, wider mask — never the track's.**
-    A via is not a track (:mod:`precis.pcb.maze`'s own module docstring):
-    it is an annulus, wider than the trace, and it exists on every layer it
-    spans. So the candidate disk is tested with :meth:`~precis.pcb.maze.
-    OccupancyGrid.disk_is_free` at ``via_group_extent_mm`` (the SAME
-    conservative group footprint :func:`_route_pass` clears for the search
-    to place a via there in the first place — never the single via's own
-    smaller diameter, which would under-claim relative to what the
-    stitched group actually needs), collapsed across EVERY layer
-    (``range(0, grid.spec.n_layers)``) — the identical discipline
-    :meth:`~precis.pcb.maze.OccupancyGrid.route`'s own via mask uses,
-    reused rather than re-derived. That collapse is also what keeps the
-    move drill-to-drill AND drill-to-copper safe: every other net's copper
-    on every layer, and every other via's own claimed disk, is already
-    baked into ``grid``'s occupancy, on whichever layer it actually sits.
-
-    **Every layer the via anchors moves together, for free.** Both the
-    pre-transition point (this net's copper on the near layer) and the
-    post-transition point (the far layer) share ONE coordinate in ``pts``
-    — the same coordinate :func:`_route_pass` later reads to place the
-    via disk, the stitched group, and the stitch bar. Moving that one
-    coordinate here moves all of it coherently; there is no second place
-    a via's position is decided from.
-
-    A rejected candidate leaves the via exactly where the search put it —
-    this can only change WHERE a via sits, never how many exist or what it
-    connects, so it cannot sever a net the way a naive "just move it"
-    edit could.
-
-    **Courtyard ink is a second, SOFT reason to move a via — see the
-    module note ahead of :func:`_courtyard_ink_field`.** When ``ink_field``
-    is given and the via transition's OWN disk (at
-    ``via_group_extent_mm / 2.0``, the same radius the legality check
-    above already uses) touches drawn courtyard ink, this transition
-    becomes a shove candidate even when it is already octilinear-taut —
-    :func:`_octilinear_shove_candidates` is asked with
-    ``allow_no_gain=True`` and the pool is narrowed to INK-FREE candidates
-    only (moving to a different inked spot fixes nothing and is not a
-    shortening move either, so it would spend flank length for zero
-    benefit); the first of those that also passes every existing legality
-    check is taken, and no ink-free legal candidate in range leaves the
-    via exactly where it is, same as "no move helps" always has. A
-    transition that is NOT under ink is untouched by any of this — it
-    still only ever moves to strictly shorten, exactly as before
-    ``ink_field`` existed, so the "only ever removes copper" invariant is
-    unweakened for the common case.
-    """
-    pts = list(pts)
-    moved = False
-    i = 1
-    while i + 2 <= len(pts) - 1:
-        v_pre, v_post = pts[i], pts[i + 1]
-        if v_pre[2] == v_post[2]:
-            i += 1
             continue
-        prev_pt, next_pt = pts[i - 1], pts[i + 2]
-        origin = (v_pre[0], v_pre[1])
-        via_r = via_group_extent_mm / 2.0
-        origin_inked = ink_field is not None and ink_field.clips(
-            origin[0], origin[1], via_r
+        if exhausted and seg_id in exhausted:
+            reasons.append(
+                UnroutedReason(
+                    seg_id,
+                    net_id,
+                    "search_budget",
+                    "this connection's route search ran out of expansions "
+                    "(max_expansions) on the busy space before finding a "
+                    "path or proving none — a budget failure, not a lost "
+                    "corridor race; the diagnosis's pads-only probe is not "
+                    "re-run, since its verdict could only mislabel this "
+                    "congestion",
+                )
+            )
+            continue
+        rules = _seg_rules(ir, seg_id, ctx.rules_by_net, config)
+        n_vias, group_extent = _via_group_extent(ir, seg_id, rules, ctx.clearance)
+        if probe is None:
+            probe = _pads_only_space(ir, ctx, config, footprints, fixed_copper)
+        reasons.append(
+            _diagnose_unrouted(
+                ir,
+                seg_id,
+                ctx,
+                rules,
+                n_vias,
+                group_extent,
+                config.max_expansions,
+                probe=probe,
+                routed_copper=routed_copper,
+            )
         )
-        if origin_inked:
-            assert ink_field is not None  # narrows for mypy; origin_inked implies this
-            # Only INK-FREE candidates are considered here — moving to
-            # another inked spot fixes nothing and is not itself a
-            # shortening move, so it would spend real flank length for
-            # zero benefit. No ink-free candidate in range means this
-            # via is left exactly where it is, same as today's "no move
-            # helps" outcome.
-            pool = _octilinear_shove_candidates(
-                (prev_pt[0], prev_pt[1]),
-                (next_pt[0], next_pt[1]),
-                origin,
-                shove_radius_mm,
-                allow_no_gain=True,
-            )
-            ordered = [c for c in pool if not ink_field.clips(c[0], c[1], via_r)]
-        else:
-            candidate = _octilinear_shove_target(
-                (prev_pt[0], prev_pt[1]),
-                (next_pt[0], next_pt[1]),
-                origin,
-                shove_radius_mm,
-            )
-            ordered = [candidate] if candidate is not None else []
-
-        accepted: Point | None = None
-        for candidate in ordered:
-            if _shove_candidate_legal(
-                grid,
-                prev_pt,
-                next_pt,
-                v_pre[2],
-                v_post[2],
-                candidate,
-                net_id,
-                via_group_extent_mm,
-                chord_radius_mm,
-                step,
-                track_half_mm=track_half_mm,
-            ):
-                accepted = candidate
-                break
-        if accepted is not None:
-            pts[i] = (accepted[0], accepted[1], v_pre[2])
-            pts[i + 1] = (accepted[0], accepted[1], v_post[2])
-            moved = True
-        i += 1
-    return pts, moved
-
-
-def _chord_is_free(
-    grid: maze.OccupancyGrid,
-    a: tuple[float, float, int],
-    b: tuple[float, float, int],
-    net_id: int,
-    radius: float,
-    step: float,
-    edge_half_mm: float | None = None,
-) -> bool:
-    span = dist((a[0], a[1]), (b[0], b[1]))
-    n = max(1, int(span / step))
-    # `disk_is_free` at each of the n + 1 samples, compiled. `edge_half_mm`
-    # is the drawn track's own half-width — the straighten pass can pull a
-    # chord off the pad-escape cells a searched path hugged, so the same
-    # edge keep-out the search honours is asked again here (gr497865).
-    return grid.chord_is_free(
-        a[2],
-        (a[0], a[1]),
-        (b[0], b[1]),
-        n,
-        radius,
-        net_id,
-        edge_half_mm=edge_half_mm,
-    )
-
-
-def _snap_to_pads(
-    path: maze.RoutePath, start: Point, end: Point, pitch: float
-) -> maze.RoutePath:
-    """Pull a routed path's ends onto the exact pad centres.
-
-    The search works in cells, so its endpoints are cell CENTRES — up to
-    half a cell diagonal from the pad they are supposed to land on.
-    Measured on the reference board: 120 of 162 track ends stopped
-    0.04-0.06mm short of their pad. That is inside a 0.2mm pad, so the
-    connection happens to be made — by luck, not by construction, and the
-    luck runs out as soon as pad geometry gets smaller than the routing
-    grid. A track that ends *near* its pad is not connected to it.
-
-    The far end is always the target pad, so it always snaps. **The near
-    end snaps only when the path did not attach to its own net's copper**,
-    which :attr:`maze.RoutePath.attached` reports and no distance test can:
-    ``ir.from_graph`` decomposes a net into a spanning TREE over its pins,
-    so adjacent connections share a pin and the trunk runs right past that
-    pad. The earlier proximity proxy therefore fired on branches that
-    had attached to the trunk — dragging the head off the trunk and onto
-    the shared pad, on whichever layer the branch happened to be. Measured on
-    seed 2: SDA in five pieces, three B.Cu branches sitting on the
-    coordinates of an F.Cu pad they were never connected to, with DRC
-    clean and nothing reported unrouted. Snapping an attached head is not
-    a smaller version of connecting it; it is a disconnection.
-
-    The move is bounded by half a cell diagonal, which is inside the one
-    cell of slack :meth:`maze.OccupancyGrid.route` already adds to its
-    query dilation, so this cannot walk copper out of its cleared
-    corridor.
-    """
-    points = list(path.points)
-    limit = pitch * math.sqrt(2.0) / 2.0 + 1e-9
-    # Far end first, then near end: a head insertion would shift tail
-    # indices, the reverse order cannot.
-    if dist((points[-1][0], points[-1][1]), end) <= limit:
-        points[-1] = (end[0], end[1], points[-1][2])
-        if (
-            len(points) >= 2
-            and points[-2][2] == points[-1][2]
-            and (not _is_octilinear(points[-2], points[-1]))
-        ):
-            # A pad centre is continuous, a grid vertex is not, so the
-            # snapped final segment is generically a hair off-angle. Fix
-            # it HERE with the taut elbow, UNCHECKED against the grid on
-            # purpose: the elbow deviates from the pre-snap (octilinear,
-            # grid-cleared) segment by no more than the snap distance —
-            # the same half-cell bound, inside the same one-cell dilation
-            # slack, that justifies the snap itself — and it terminates
-            # inside the pad's own claimed core, which no foreign copper
-            # may legally approach. A grid re-check at corridor radius
-            # was tried first and false-refuses in any minimum-clearance
-            # parallel corridor (nano board 2026-09-01: one 134.8-degree
-            # segment surviving as the board's only `octilinear` DRC
-            # finding), because the check radius carries discretisation
-            # slack the corridor genuinely does not have.
-            mx, my = _octilinear_corners(points[-2], points[-1])[0]
-            points.insert(len(points) - 1, (mx, my, points[-1][2]))
-    if not path.attached and dist((points[0][0], points[0][1]), start) <= limit:
-        points[0] = (start[0], start[1], points[0][2])
-        if (
-            len(points) >= 2
-            and points[1][2] == points[0][2]
-            and (not _is_octilinear(points[0], points[1]))
-        ):
-            # Same construction as the far end above.
-            mx, my = _octilinear_corners(points[0], points[1])[0]
-            points.insert(1, (mx, my, points[0][2]))
-    length = sum(
-        dist((a[0], a[1]), (b[0], b[1]))
-        for a, b in itertools.pairwise(points)
-        if a[2] == b[2]
-    )
-    return maze.RoutePath(path.net_id, tuple(points), length, path.attached)
-
-
-def _tracks_from_path(
-    seg_id: int,
-    net_id: int,
-    path: maze.RoutePath,
-    width_mm: float,
-    *,
-    fillet_radius_mm: float | None = None,
-) -> list[RealizedTrack]:
-    """Split one routed path into per-layer :class:`RealizedTrack`\\ s —
-    that class carries a single ``layer``, so a route that changes layer
-    becomes several tracks sharing one ``seg_id`` (which is what a real
-    multi-layer net is)."""
-    out: list[RealizedTrack] = []
-    run: list[tuple[float, float]] = []
-    layer = path.points[0][2]
-    for x, y, this_layer in path.points:
-        if this_layer != layer:
-            out += _track_from_run(
+    for seg_id in extra_unrouted:
+        net_id = int(ir.seg_net[seg_id])
+        reasons.append(
+            UnroutedReason(
                 seg_id,
                 net_id,
-                layer,
-                run,
-                width_mm,
-                fillet_radius_mm=fillet_radius_mm,
+                "unpourable_plane",
+                f"net {ir.net_name[net_id]} is plane-promoted but the board has "
+                "no outline to pour a plane into, so this connection has "
+                "nowhere to land",
             )
-            run = [(x, y)]
-            layer = this_layer
-        else:
-            run.append((x, y))
-    out += _track_from_run(
-        seg_id, net_id, layer, run, width_mm, fillet_radius_mm=fillet_radius_mm
+        )
+    return reasons
+
+
+def _diagnose_unrouted(
+    ir: PcbIR,
+    seg_id: int,
+    ctx: _RouteContext,
+    rules: NetRules,
+    n_vias: int,
+    group_extent: float | None,
+    max_expansions: int,
+    *,
+    probe: vroute.Space | None = None,
+    routed_copper: tuple[list[RealizedTrack], list[RealizedVia]] | None = None,
+) -> UnroutedReason:
+    """WHY ``seg_id`` never routed, in one of :class:`UnroutedReason`'s
+    three route-search categories.
+
+    **The technique: a fresh Space with only the static obstacles — no
+    other net's routed copper — answers "does a corridor exist at all",
+    independent of routing order.** Re-running the real search there at
+    the connection's REAL required width (trace width, or — at a layer
+    transition — the via GROUP's full extent) either finds a path (a
+    corridor DOES exist physically, so the failure on the busy space was
+    losing a race: ``'congestion'``) or does not. If it does not, a
+    second probe at a near-zero width with no via requirement asks the
+    weaker question — does ANY path exist, at ANY width: if that also
+    fails, the endpoint is topologically unreachable (``'no_path'``); if
+    it succeeds, a path exists but not one wide enough (``'width'``).
+
+    ``probe`` is that pads-only space, prebuilt: it is the same for every
+    segment and ``vroute.route`` never stamps the space it searches, so
+    :func:`_diagnose_all` builds it once.
+
+    ``routed_copper`` (the finished tracks and vias, gr472026) lets a
+    ``'congestion'`` verdict be checked: when the pads-only probe finds a
+    corridor but NO other net's routed copper lies in it, the connection
+    did not lose a race — it failed alone, so it is reported as
+    ``'no_path'`` with a message saying so.
+    """
+    net_id = int(ir.seg_net[seg_id])
+    a, b = int(ir.seg_pin_a[seg_id]), int(ir.seg_pin_b[seg_id])
+    start, end = pin_point(ir, a), pin_point(ir, b)
+    if start is None or end is None:
+        return UnroutedReason(
+            seg_id,
+            net_id,
+            "no_path",
+            "this connection's endpoint has no placed (x, y) yet — nothing to route",
+        )
+    # This segment's OWN two pad layers (`_side_layer`), never a shared
+    # `PAD_LAYER`.
+    start_layer = _side_layer(ir, int(ir.pin_instance[a]), ctx.signal_layers)
+    goal_layer = _side_layer(ir, int(ir.pin_instance[b]), ctx.signal_layers)
+    name = str(ir.net_name[net_id])
+    width = float(rules.track_width_mm)
+    inset = ctx.edge_min + width / 2.0 + vroute.DELTA_MM
+    bbox = _outline_bbox(ir)
+    bounds = (
+        (bbox[0] + inset, bbox[1] + inset, bbox[2] - inset, bbox[3] - inset)
+        if bbox is not None
+        else (-1e6, -1e6, 1e6, 1e6)
     )
-    return out
+    n_layers = len(ir.stackup) or 1
+    if probe is None:
+        raise AssertionError("probe space must be supplied by _diagnose_all")
+    stats: dict[str, Any] = {}
+    clear_path = vroute.route(
+        probe,
+        vroute.Request(
+            net=name,
+            width_mm=width,
+            layers=tuple(ctx.signal_layers),
+            start=vroute.Terminal(start[0], start[1], frozenset({start_layer})),
+            goal=vroute.Terminal(end[0], end[1], frozenset({goal_layer})),
+            bounds=bounds,
+            via=(
+                vroute.ViaSpec(group_extent, rules.via_drill_mm)
+                if group_extent is not None and rules.via_drill_mm is not None
+                else None
+            ),
+            via_layers=tuple(range(n_layers)),
+            max_expansions=max_expansions,
+        ),
+        stats=stats,
+    )
+    clear_stop = stats.get("stop")
+    if clear_path is not None:
+        blockers: dict[int, set[int]] = {}
+        if routed_copper is not None:
+            blockers = _foreign_copper_near_path(
+                _vpath_points(clear_path),
+                net_id,
+                routed_copper[0],
+                routed_copper[1],
+                width / 2.0 + ctx.clearance,
+            )
+        if routed_copper is not None and not blockers:
+            return UnroutedReason(
+                seg_id,
+                net_id,
+                "no_path",
+                "this connection failed with no other net's routed copper in "
+                "its corridor: a pads-only probe finds a path, so the blocker "
+                "is static (fixed copper, pads, a layer restriction on its "
+                "class) or the search itself, not contention with another "
+                "net's routing",
+            )
+        via_note = (
+            f", stitching {n_vias} via(s) at a layer change" if group_extent else ""
+        )
+        who = ""
+        if blockers:
+            who = " — contested by " + ", ".join(
+                f"{ir.net_name[n] if 0 <= n < len(ir.net_name) else f'net#{n}'} "
+                f"on {'/'.join(layer_names(ir, sorted(ls)))}"
+                for n, ls in sorted(blockers.items())[:4]
+            )
+        return UnroutedReason(
+            seg_id,
+            net_id,
+            "congestion",
+            f"a corridor wide enough for this net ({width:.3f}mm"
+            f"{via_note}) exists between its endpoints once every OTHER net's "
+            f"copper is cleared away, so this connection lost a race for it to "
+            f"a net that routed first{who}",
+        )
+    thin_stats: dict[str, Any] = {}
+    thin_path = vroute.route(
+        probe,
+        vroute.Request(
+            net=name,
+            width_mm=0.05,
+            layers=tuple(ctx.signal_layers),
+            start=vroute.Terminal(start[0], start[1], frozenset({start_layer})),
+            goal=vroute.Terminal(end[0], end[1], frozenset({goal_layer})),
+            bounds=bounds,
+            via=None,
+            max_expansions=max_expansions,
+        ),
+        stats=thin_stats,
+    )
+    thin_stop = thin_stats.get("stop")
+    # A verdict resting on a search that gave up is not a verdict.
+    if (thin_path is not None and clear_stop in ("budget", "exhausted")) or (
+        thin_path is None and thin_stop in ("budget", "exhausted")
+    ):
+        return UnroutedReason(
+            seg_id,
+            net_id,
+            "search_budget",
+            f"the search gave up after {max_expansions} expansions before "
+            "finding a path or proving there is none — the endpoints may be "
+            "walled in, or simply too far apart for the budget",
+        )
+    if thin_path is not None:
+        via_note = (
+            f" (including a {group_extent:.3f}mm via GROUP at a layer change)"
+            if group_extent
+            else ""
+        )
+        pinchers = _constricting_pad_names(
+            ir, _vpath_points(thin_path), net_id, ctx.pads, width, ctx.clearance
+        )
+        pinched = f" — constricted by {', '.join(pinchers)}" if pinchers else ""
+        return UnroutedReason(
+            seg_id,
+            net_id,
+            "width",
+            f"a path exists between this connection's endpoints "
+            f"(on {'/'.join(layer_names(ir, ctx.signal_layers))}, "
+            "corridor ≥0.05mm wide), but this net's required width "
+            f"({width:.3f}mm{via_note}) does not fit any "
+            f"corridor along it — the width itself is the blocker, not "
+            f"routing order{pinched}",
+        )
+    return UnroutedReason(
+        seg_id,
+        net_id,
+        "no_path",
+        "no path connects this connection's endpoints on the allowed layers "
+        f"({'/'.join(layer_names(ir, ctx.signal_layers))}) at "
+        "any width — the endpoint is walled in, not merely too tight",
+    )
 
 
 def _track_from_run(
@@ -7779,7 +4838,7 @@ def _track_from_run(
     thing this budget exists to prevent.
 
     ``length`` stays the PRE-fillet centreline length: it is the routing
-    cost figure the maze search itself optimised and is reported against,
+    cost figure the route search itself optimised and is reported against,
     not a fabrication dimension. Filleting shortens the real copper
     slightly; quoting the router's own number here keeps the reported
     length comparable across a change to the corner treatment.
@@ -7803,6 +4862,81 @@ def _track_from_run(
 
 
 # ── the checkpoint entry point ────────────────────────────────────────────
+
+
+def realize(
+    ir: PcbIR,
+    *,
+    config: RealizeConfig = RealizeConfig(),
+    seg_ids: list[int] | None = None,
+    footprints: dict[str, dict[str, Any]] | None = None,
+    fixed_copper: list[dict[str, Any]] | None = None,
+) -> RealizeResult:
+    """Realize every segment in ``seg_ids`` (default: the whole board) —
+    the checkpoint call. Never touches the IR (module docstring); pure
+    function of a snapshot in, geometry + vias + a legible congestion
+    digest out.
+
+    ``config.router`` exists only to reject the removed routers' names:
+    the vector router (:mod:`precis.pcb.vroute`) is the sole drawer.
+    ``footprints`` is forwarded to :func:`pad_geometry` so pads claim and
+    are probed at their real footprint geometry; ``None`` (the default)
+    claims every pad at :mod:`precis.pcb.landpattern`'s synthesized size.
+
+    ``fixed_copper`` (pcb-pre-place-route-blocks Slice 1 —
+    ``store.pcb_fixed_copper_list``'s own row shape) is AUTHORED copper
+    this call must treat as already real: every row is a Space obstacle as
+    its own net's copper before any segment is searched (so same-net
+    routing may still touch it and every foreign net treats it as
+    blocked, same as a pad), and any segment whose two pins ALREADY sit
+    in one connectivity component of ``fixed_copper`` alone is never
+    searched at all — see :func:`_split_fixed_realized` and
+    :attr:`RealizeResult.fixed_realized`. ``None`` (the default)
+    reproduces the prior behaviour exactly: nothing is claimed, nothing
+    is short-circuited."""
+    ids = list(range(ir.n_segments)) if seg_ids is None else seg_ids
+    if config.router != "vector":
+        raise ValueError(
+            f"router={config.router!r} — the grid maze router and the "
+            "tangent drawer were removed (Reto 2026-10-20); only 'vector' "
+            "exists — see docs/backlog/pcb-place-route-datamodel.md"
+        )
+    route_ids, fixed_realized = _split_fixed_realized(ir, ids, footprints, fixed_copper)
+    (
+        tracks,
+        vias,
+        unrouted,
+        pours,
+        reasons,
+        unstitched,
+        island_notes,
+        vector,
+    ) = _realize_vector(ir, route_ids, config, footprints, fixed_copper)
+    pours, dropped = _drop_bare_islands(
+        ir,
+        tracks,
+        vias,
+        pours,
+        pads_for_ir(ir, [str(e.get("name")) for e in ir.stackup], footprints),
+        fixed_copper,
+    )
+    unstitched = _without_dropped(unstitched, dropped)
+    warnings = _gap_usage(ir, route_ids, config)
+    return RealizeResult(
+        tuple(tracks),
+        tuple(vias),
+        tuple(warnings),
+        tuple(unrouted),
+        tuple(pours),
+        tuple(reasons),
+        tuple(unstitched),
+        tuple(fixed_realized),
+        island_notes,
+        class_layer_drops=tuple(class_layer_drops(ir.stackup, config.class_rules)),
+        pour_quality=tuple(pour_quality(pours)),
+        dropped_islands=tuple(dropped),
+        vector=vector,
+    )
 
 
 def _fixed_copper_connectivity_model(
@@ -7835,7 +4969,7 @@ def _fixed_copper_connectivity_model(
 
 #: Terminal candidates for ONE end of a segment: every one of that pin's
 #: fixed-copper island terminals, paired with the resolved layer INDEX the
-#: maze router already speaks (:func:`_island_terminals_by_pin`'s own
+#: vector router already speaks (:func:`_island_terminals_by_pin`'s own
 #: output is keyed by layer NAME, connectivity's currency; this module's
 #: grid is keyed by stackup index).
 _EndTerminals = tuple[tuple[pcb_connectivity.FixedTerminal, int], ...]
@@ -7849,17 +4983,17 @@ def _island_terminals_by_pin(
     """Every pin's fixed-copper island terminals
     (:func:`~precis.pcb.connectivity.fixed_copper_pin_terminals`), with
     each terminal's LAYER NAME resolved to this stackup's own layer
-    INDEX — the same ``layer_name_to_idx`` join :func:`_claim_fixed_copper`
+    INDEX — the same ``layer_name_to_idx`` join :func:`_static_obstacles`
     already does, repeated here (not threaded through as shared state)
     because the two call sites — claiming geometry vs. offering route
     terminals — share no other state. A terminal naming a layer this
     stackup does not carry is dropped, same "nothing to check against"
-    convention :func:`_claim_fixed_copper` already applies to a row it
+    convention :func:`_static_obstacles` already applies to a row it
     cannot resolve.
 
-    Built ONCE per :func:`_realize_maze` call, outside the rip-up/retry
+    Built ONCE per :func:`_realize_vector` call, outside the rip-up/retry
     loop — same reasoning as :func:`_courtyard_ink_field`/
-    :func:`_courtyard_body_mask` right above it: this is fixed-copper- and
+    ``_keepout_obstacles`` right above it: this is fixed-copper- and
     placement-derived, identical on every attempt."""
     if not fixed_copper:
         return {}
@@ -7983,8 +5117,8 @@ def _seg_island_terminals(
 ) -> dict[int, tuple[_EndTerminals, _EndTerminals]]:
     """Restate :func:`_island_terminals_by_pin`'s per-PIN answer at
     per-SEGMENT granularity — ``(pin-a's terminals, pin-b's terminals)`` —
-    which is what :func:`_route_pass` actually needs to hand
-    :meth:`~precis.pcb.maze.OccupancyGrid.route`'s
+    which is what :func:`_realize_vector` actually needs to hand
+    :meth:`vroute.Space.route`'s
     ``extra_start_terminals``/``extra_goal_terminals``. A segment with
     neither pin in ``by_pin`` (the common case, always true when
     ``fixed_copper`` was empty to begin with) is absent from the result."""
@@ -8006,39 +5140,6 @@ def _terminal_noun(term: pcb_connectivity.FixedTerminal) -> str:
     """``"fixed via"``/``"fixed track"`` for authored copper, ``"same-pin
     pad"`` for :func:`_sibling_pad_terminals_by_pin`'s terminals."""
     return "same-pin pad" if term.kind == "pad" else f"fixed {term.kind}"
-
-
-def _describe_used_terminal(
-    path: maze.RoutePath, terms: tuple[_EndTerminals, _EndTerminals] | None
-) -> str | None:
-    """The honesty half of the island-terminal seam
-    (:attr:`RealizeResult.island_terminals`): did this successful route
-    actually start or end on one of the extra candidates offered, rather
-    than the plain pad? Matched by exact coordinate + layer — the search
-    only ever snaps a path onto a terminal's EXACT point
-    (:meth:`~precis.pcb.maze.OccupancyGrid._reconstruct`'s anchor/
-    goal-anchor snap), so an honest float equality is enough; no tolerance
-    band to get wrong."""
-    if terms is None or not path.points:
-        return None
-    parts: list[str] = []
-    head = path.points[0]
-    for t, layer in terms[0]:
-        if layer == head[2] and dist(t.point, (head[0], head[1])) < 1e-6:
-            parts.append(
-                f"started from {_terminal_noun(t)} at "
-                f"({t.point[0]:.3f}, {t.point[1]:.3f}) on {t.layer}"
-            )
-            break
-    tail = path.points[-1]
-    for t, layer in terms[1]:
-        if layer == tail[2] and dist(t.point, (tail[0], tail[1])) < 1e-6:
-            parts.append(
-                f"ended at {_terminal_noun(t)} at "
-                f"({t.point[0]:.3f}, {t.point[1]:.3f}) on {t.layer}"
-            )
-            break
-    return "; ".join(parts) if parts else None
 
 
 def _split_fixed_realized(
@@ -8085,110 +5186,6 @@ def _split_fixed_realized(
     return route_ids, fixed_realized
 
 
-def realize(
-    ir: PcbIR,
-    *,
-    obstacles: list[Obstacle] | None = None,
-    config: RealizeConfig = RealizeConfig(),
-    seg_ids: list[int] | None = None,
-    footprints: dict[str, dict[str, Any]] | None = None,
-    fixed_copper: list[dict[str, Any]] | None = None,
-    cleanup_check: CleanupCheck | None = None,
-) -> RealizeResult:
-    """Realize every segment in ``seg_ids`` (default: the whole board) —
-    the checkpoint call. Never touches the IR (module docstring); pure
-    function of a snapshot in, geometry + vias + a legible congestion
-    digest out.
-
-    ``config.router`` picks the drawer: ``'maze'`` (default) routes on a
-    shared occupancy grid and can leave segments ``unrouted``;
-    ``'tangent'`` draws every segment unconditionally and can leave them
-    overlapping. See :attr:`RealizeConfig.router`. ``footprints`` (maze
-    router only — the tangent drawer's obstacles are component courtyards,
-    not pad geometry) is forwarded to :func:`pad_geometry` for the
-    occupancy grid's own pad claims; ``None`` (the default) claims every
-    pad at :mod:`precis.pcb.landpattern`'s synthesized size.
-
-    ``fixed_copper`` (maze router only, pcb-pre-place-route-blocks
-    Slice 1 — ``store.pcb_fixed_copper_list``'s own row shape) is
-    AUTHORED copper this call must treat as already real: every row is
-    claimed on the occupancy grid as its own net's copper before any
-    segment is searched (:func:`_claim_fixed_copper`, so same-net routing
-    may still touch it and every foreign net treats it as blocked, same
-    as a pad), and any segment whose two pins ALREADY sit in one
-    connectivity component of ``fixed_copper`` alone is never searched at
-    all — see :func:`_split_fixed_realized` and :attr:`RealizeResult.
-    fixed_realized`. ``None`` (the default) reproduces the prior
-    behaviour exactly: nothing is claimed, nothing is short-circuited.
-
-    ``cleanup_check`` (maze router only) turns on the route clean-up
-    post-pass (:attr:`RealizeConfig.route_cleanup`,
-    :mod:`precis.pcb.routeclean`): it is the DRC half of that pass's accept
-    rule. ``None`` (the default) skips the pass."""
-    ids = list(range(ir.n_segments)) if seg_ids is None else seg_ids
-    if config.router == "maze":
-        route_ids, fixed_realized = _split_fixed_realized(
-            ir, ids, footprints, fixed_copper
-        )
-        (
-            tracks,
-            vias,
-            unrouted,
-            pours,
-            reasons,
-            unstitched,
-            island_notes,
-            negotiation,
-            congestion,
-            cleanup,
-            escape,
-        ) = _realize_maze(
-            ir, route_ids, config, footprints, fixed_copper, cleanup_check
-        )
-        pours, dropped = _drop_bare_islands(
-            ir,
-            tracks,
-            vias,
-            pours,
-            pads_for_ir(ir, [str(e.get("name")) for e in ir.stackup], footprints),
-            fixed_copper,
-        )
-        unstitched = _without_dropped(unstitched, dropped)
-        warnings = _gap_usage(ir, route_ids, config)
-        return RealizeResult(
-            tuple(tracks),
-            tuple(vias),
-            tuple(warnings),
-            tuple(unrouted),
-            tuple(pours),
-            tuple(reasons),
-            tuple(unstitched),
-            tuple(fixed_realized),
-            island_notes,
-            negotiation=negotiation,
-            class_layer_drops=tuple(class_layer_drops(ir.stackup, config.class_rules)),
-            congestion_cells=congestion,
-            pour_quality=tuple(pour_quality(pours)),
-            dropped_islands=tuple(dropped),
-            cleanup=cleanup,
-            escape=escape,
-        )
-    if config.router != "tangent":
-        raise ValueError(
-            f"unknown router {config.router!r} — expected 'maze' or 'tangent'"
-        )
-    if obstacles is None:
-        obstacles = _default_obstacles(ir, config)
-    tracks = [
-        t
-        for t in (realize_segment(ir, s, obstacles, config) for s in ids)
-        if t is not None
-    ]
-    vias = [v for t in tracks for v in _vias_for_track(ir, t, config)]
-    warnings = _gap_usage(ir, ids, config)
-    return RealizeResult(tuple(tracks), tuple(vias), tuple(warnings))
-
-
 # ── rip-up primitives ─────────────────────────────────────────────────────
 
 
@@ -8228,42 +5225,78 @@ def re_realize_segments(
     result: RealizeResult,
     seg_ids: list[int],
     *,
-    obstacles: list[Obstacle] | None = None,
     config: RealizeConfig = RealizeConfig(),
+    footprints: dict[str, dict[str, Any]] | None = None,
+    fixed_copper: list[dict[str, Any]] | None = None,
 ) -> RealizeResult:
     """Recompute exactly ``seg_ids``' tracks (and vias) and merge them into
     a COPY of ``result`` — every other segment's :class:`RealizedTrack` is
     the same object, untouched, never re-derived. Congestion warnings are
     recomputed from the merged track set's segment ids (cheap — a
     dict-bucket pass, not a geometry re-derivation) since a re-realized
-    segment can change which gap it binds."""
-    if obstacles is None:
-        obstacles = _default_obstacles(ir, config)
-    replaced = {
-        t.seg_id: t
-        for t in (realize_segment(ir, s, obstacles, config) for s in seg_ids)
-        if t is not None
-    }
-    existing_ids = {t.seg_id for t in result.tracks}
-    # Preserve the original ordering/objects for every untouched track;
-    # a re-realized id gets its fresh RealizedTrack in the same slot; a
-    # seg_id that's genuinely new (not in `result` yet) is appended.
-    tracks = tuple(replaced.get(t.seg_id, t) for t in result.tracks)
-    tracks += tuple(
-        replaced[s] for s in seg_ids if s in replaced and s not in existing_ids
-    )
+    segment can change which gap it binds.
+
+    The segments re-route on a Space seeded with everything EXCEPT their
+    own old copper (pads + keep-outs + fixed copper + the other
+    segments' tracks/vias), through the same per-segment helper the
+    whole-board pass uses (:func:`_route_seg_vector`)."""
+    seg_set = set(seg_ids)
+    ctx = _route_context(ir, seg_ids, config, footprints, fixed_copper)
+    replaced: dict[int, list[RealizedTrack]] = {}
+    replaced_vias: dict[int, list[RealizedVia]] = {}
+    island_notes = dict(result.island_terminals)
+    if ctx is not None:
+        names, index, n = _layer_index(ir)
+        obstacles = _static_obstacles(ir, ctx, config, footprints, fixed_copper)
+        obstacles += _copper_obstacles(
+            [t for t in result.tracks if t.seg_id not in seg_set],
+            [v for v in result.vias if v.seg_id not in seg_set],
+            ir,
+            index,
+            n,
+            names,
+        )
+        space = vroute.Space(obstacles, _space_clearance(ir, ctx))
+        spent = [0]
+        exhausted: set[int] = set()
+        for s in seg_ids:
+            pa_ = pin_point(ir, int(ir.seg_pin_a[s]))
+            pb_ = pin_point(ir, int(ir.seg_pin_b[s]))
+            if pa_ is None or pb_ is None:
+                continue
+            got = _route_seg_vector(
+                space,
+                ir,
+                s,
+                ctx,
+                config,
+                index,
+                n,
+                names,
+                spent,
+                island_notes,
+                exhausted,
+            )
+            if got is not None:
+                replaced[s], replaced_vias[s] = got
+    tracks: list[RealizedTrack] = [t for t in result.tracks if t.seg_id not in seg_set]
+    tracks += [t for s in seg_ids for t in replaced.get(s, [])]
     # Vias are keyed off their originating seg_id — drop every via that
-    # belonged to a segment this call re-realized, then recompute fresh
-    # vias for exactly the replaced tracks (a re-realized track's layer,
-    # and therefore its via need, can change). Untouched segments' vias
-    # are left as the same objects, same discipline as their tracks.
-    touched = set(seg_ids)
-    vias = tuple(v for v in result.vias if v.seg_id not in touched)
-    vias += tuple(v for t in replaced.values() for v in _vias_for_track(ir, t, config))
+    # belonged to a segment this call re-realized, then append the fresh
+    # ones. Untouched segments' vias are the same objects, same
+    # discipline as their tracks.
+    vias: list[RealizedVia] = [v for v in result.vias if v.seg_id not in seg_set]
+    vias += [v for s in seg_ids for v in replaced_vias.get(s, [])]
     warnings = tuple(_gap_usage(ir, [t.seg_id for t in tracks], config))
     # See rip_net's own comment: stitching status is a whole-board
     # diagnostic this per-segment recompute has no new information about.
-    return RealizeResult(tracks, vias, warnings, unstitched=result.unstitched)
+    return RealizeResult(
+        tuple(tracks),
+        tuple(vias),
+        warnings,
+        unstitched=result.unstitched,
+        island_terminals=island_notes,
+    )
 
 
 # ── gerber.py hand-off ────────────────────────────────────────────────────
@@ -8426,7 +5459,7 @@ class PadGeom:
     ``h_mm`` are only trustworthy as an axis-aligned board-space rect
     when this is ``True``. Defaults ``True`` (a synthesized pad's w/h are
     footprint-local, never board-rotated by this field at all — see
-    :func:`_realize_maze`'s own pad-shape builder, which resolves a
+    :func:`_realize_vector`'s own pad-shape builder, which resolves a
     synthesized rect pad's board orientation from the instance's own
     rotation directly rather than through this flag)."""
 
@@ -8649,8 +5682,8 @@ def pad_geometry(
     ir: PcbIR, footprints: dict[str, dict[str, Any]] | None = None
 ) -> list[PadGeom]:
     """Every pin's resolved pad SIZE, index-aligned with ``ir.pin_*`` —
-    the one place :func:`pads_for_ir` and the maze router's pad-claim
-    stamping (:func:`_route_pass`) both read pad size from, so they cannot
+    the one place :func:`pads_for_ir` and the vector router's pad-claim
+    stamping (:func:`_realize_vector`) both read pad size from, so they cannot
     read two different numbers for the same pad again.
 
     ``footprints`` (optional, keyed by ``refdes``, each value a cached
@@ -8776,7 +5809,7 @@ def _footprint_pad_rows(
     — DRC's ``_drc_pads``, the fab SVG, the plane pours
     (:func:`_pad_blockers`), the fixed-copper connectivity model,
     :func:`to_gerber_model`. :func:`_footprint_pad_claims` reshapes the
-    SAME rows for the maze router, which builds its own claim list from
+    SAME rows for the vector router, which builds its own claim list from
     :func:`pad_geometry` over ``ir.pin_*`` and would otherwise never see
     them. Detection without that second half only REPORTS the short after
     the router has drawn it — measured on the EWOD dogfood, 24
@@ -8862,61 +5895,36 @@ def _footprint_pad_claims(
     signal_layers: list[int],
     footprints: dict[str, dict[str, Any]] | None,
     n_board_layers: int,
-) -> list[tuple[Point, int, maze.PadShape, tuple[int, ...]]]:
+) -> list[tuple[Point, int, float, tuple[int, ...]]]:
     """The ROUTER-shaped half of :func:`_footprint_pad_rows` — every
-    non-primary footprint pad as a claim :func:`_realize_maze` can append
-    to its ``pads`` list, so the occupancy grid refuses to route through a
-    land the fab output flashes (gr451276's second half).
+    non-primary footprint pad as a claim :func:`_route_context` appends
+    to its ``pads`` list, so the vector search's pads are never routed
+    through the land the fab output flashes (gr451276's second half).
 
     A pinned pad is claimed for its pin's NET — the same owner the pin's
-    primary pad already stamps, so the net may land on either and nothing
+    primary pad already claims, so the net may land on either and nothing
     else may cross it — or, for an NC pin, that pin's own sentinel
-    (``ir.n_nets + pid``, :func:`_realize_maze`'s per-pin scheme). An
-    unpinned pad gets its own owner in this module's THIRD synthetic
-    band: ``ir.n_nets + ir.n_pins + _UNCLAIMED_PAD_NET_OFFSET + k``. The
-    offset is load-bearing -- :func:`_claim_fiducial_keepouts` already
-    owns bare ``n_nets + n_pins + k`` and :func:`_claim_mounting_holes`
-    owns that plus 4096, and all three stamp the SAME grid. Distinct per
-    pad, so two unpinned lands are never read as one shared net and
-    nothing -- including another unpinned land -- may route through
-    either.
+    (``ir.n_nets + pid``, :func:`_route_context`'s per-pin scheme). An
+    unpinned pad gets its own owner in the next free id band:
+    ``ir.n_nets + ir.n_pins + k``. Distinct per pad, so two unpinned
+    lands are never read as one shared net and nothing — including
+    another unpinned land — may route through either.
 
-    Shapes come off the PLACED dict, which is already in board
-    coordinates, rather than re-running :func:`_pad_shape` over a
-    ``PadGeom``: ``place_footprint_pads`` has done the mirror/rotate for
-    the centre, the polygon ring and (on a 90-degree multiple) the w/h
-    swap. The raw pad's own ``rot`` is why this function takes the pad
-    record too -- axis-alignment is a property of instance rotation PLUS
-    the footprint's per-pad rotation, and the placed dict drops the
-    latter.
-    """
-    claims: list[tuple[Point, int, maze.PadShape, tuple[int, ...]]] = []
-    base = int(ir.n_nets) + int(ir.n_pins) + _UNCLAIMED_PAD_NET_OFFSET
+    The radius carried is the ENCLOSING circle ``hypot(w, h) / 2`` off
+    the PLACED dict (already board coordinates — ``place_footprint_pads``
+    has done the mirror/rotate): the tuple feeds only distance probes
+    (``_constricting_pad_names``, ``_pour_pieces``), which take the
+    conservative circle on purpose. The vector search's actual pad
+    obstacles come from :func:`pads_for_ir` → :func:`vroute.obstacles_of`
+    with the true shape; the two never need to agree because only the
+    Space's copy is a keep-out."""
+    claims: list[tuple[Point, int, float, tuple[int, ...]]] = []
+    base = int(ir.n_nets) + int(ir.n_pins)
     for k, (pad, placed) in enumerate(_footprint_pad_rows(ir, layers, footprints)):
         inst_id = pad.instance
         x, y = float(placed["x"]), float(placed["y"])
         w = float(placed.get("w") or 0.0)
         h = float(placed.get("h") or w)
-        shape = str(placed.get("shape") or "")
-        ring = placed.get("poly")
-        if shape == "polygon" and ring:
-            claim = maze.PadShape(
-                "poly",
-                x,
-                y,
-                poly=tuple((float(vx), float(vy)) for vx, vy in ring),
-            )
-        elif shape == "circle":
-            claim = maze.PadShape("circle", x, y, w, h)
-        elif shape in ("rect", "obround") and padplace.pad_axis_aligned(
-            float(ir.inst_rot[inst_id]) + float(pad.raw.get("rot") or 0.0)
-        ):
-            claim = maze.PadShape("rect", x, y, w, h)
-        else:
-            # Same conservative fallback :func:`_pad_shape` takes for an
-            # oblique rotation or an unrecognised shape word.
-            diameter = math.hypot(w, h)
-            claim = maze.PadShape("circle", x, y, diameter, diameter)
         if pad.pin == NO_PIN:
             owner = base + k
         else:
@@ -8927,7 +5935,7 @@ def _footprint_pad_claims(
             if placed.get("drill")
             else (_side_layer(ir, inst_id, signal_layers),)
         )
-        claims.append(((x, y), owner, claim, layer_idxs))
+        claims.append(((x, y), owner, math.hypot(w, h) / 2.0, layer_idxs))
     return claims
 
 
@@ -8991,7 +5999,7 @@ def pads_for_ir(
     emitted pad count equals the footprint's pad count, however many nets
     reference it. See :func:`_extra_footprint_pads`; a pinned pad keeps
     its pin's net, an unpinned one has none, and none is promoted to a
-    pin. The maze router does NOT read its grid from this function (it
+    pin. The vector router does NOT read its obstacles from this function (it
     stamps :func:`pad_geometry` over ``ir.pin_*`` directly), so the same
     rows reach it through :func:`_footprint_pad_claims` — see
     :func:`_footprint_pad_rows`.
@@ -9048,7 +6056,7 @@ def pads_for_ir(
         # so this single-entry `layer` value stays honest as "this pad's
         # OUTER copper flash lands here" without this function needing a
         # second, per-layer pad-dict shape only THT pins would use.
-        # `_side_layer` (module-level, shared with `_realize_maze`'s
+        # `_side_layer` (module-level, shared with `_realize_vector`'s
         # router-side pad list) is the one implementation of this
         # ternary now -- see its own docstring for why a second hand
         # copy over a different `layers` element type stayed a live risk.
@@ -9057,7 +6065,7 @@ def pads_for_ir(
         # `geom.w_mm`/`geom.h_mm` raw: a synthesized rect pad's are
         # footprint-local, so a 90/270-rotated instance's pads were
         # emitted here transposed from the ones the occupancy grid
-        # claimed through `_pad_shape` — see that function's docstring
+        # claimed through `pads_for_ir`/`vroute.obstacles_of`
         # for the clearance error this produced on copper that is
         # actually clear.
         pad_w, pad_h = pad_board_wh(geom, float(ir.inst_rot[inst_id]))
@@ -9111,7 +6119,7 @@ def pads_for_ir(
             # "informational bbox" a polygon pad carries (gerber.py's
             # module docstring), which keeps the silk's box tests
             # conservative. The router's claim stays the enclosing circle
-            # (`_pad_shape`), which contains this ring.
+            # (`vroute.obstacles_of`'s pad body), which contains this ring.
             ring = oblique_pad_ring(
                 geom,
                 float(ir.inst_rot[inst_id]),
@@ -9216,7 +6224,6 @@ def pads_for_ir(
 __all__ = [
     "PAD_LAYER",
     "CongestionWarning",
-    "Obstacle",
     "PadGeom",
     "RealizeConfig",
     "RealizeResult",
@@ -9230,8 +6237,6 @@ __all__ = [
     "pin_topology",
     "re_realize_segments",
     "realize",
-    "realize_segment",
     "rip_net",
-    "tangent_arc_path",
     "to_gerber_model",
 ]

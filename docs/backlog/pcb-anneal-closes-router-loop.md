@@ -158,7 +158,7 @@ verified these durable anchors:
 - Requested **TermEntry** seam is currently named
   `src/precis/pcb/optimize.py::TermSummary`; `Digest.terms` carries it.
   Cite the actual symbol rather than inventing an existing TermEntry API.
-- `src/precis/pcb/maze.py::Negotiation`: `usage`, `pres_fac`, history and
+- `maze.Negotiation` (deleted with the grid router — git history): `usage`, `pres_fac`, history and
   present-congestion search surcharge; negotiated congestion is a
   per-route opt-in today, not a shipped outer-loop feedback channel.
 - Existing router worker/session, outline/stackup hydration, fab pricing,

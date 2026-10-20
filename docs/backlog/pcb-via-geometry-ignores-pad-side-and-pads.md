@@ -37,7 +37,7 @@ Two defects in the same function family, read out of the code on
 
 ### A. The fourth `PAD_LAYER` hardcode
 
-`realize.py::_vias_for_track` computes a via's layer span as
+`realize.py`'s via emission (`_vias_for_track`, now folded into `_realize_vector`) computes a via's layer span as
 
 ```python
 layer_lo, layer_hi = min(PAD_LAYER, track.layer), max(PAD_LAYER, track.layer)
@@ -180,7 +180,7 @@ rests on reading the code against its own docstring, not on that row.
 
 ## Target + blast radius
 
-`src/precis/pcb/realize.py::_vias_for_track`,
+`src/precis/pcb/realize.py`'s via-emission code (`_vias_for_track` of the grid era, now `_realize_vector`),
 `src/precis/pcb/rules.py::implied_via_count`, and
 `src/precis/pcb/cost.py`'s `via_count` term which shares that predicate.
 Changes via counts and via positions on **every** board, so it moves

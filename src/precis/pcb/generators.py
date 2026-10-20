@@ -2371,7 +2371,7 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
     # board context, so a design with a different stackup must pass
     # ``escape_layers`` explicitly.
     #
-    # Preference needs no prohibition either way: ``maze.VIA_COST_MM``
+    # Preference needs no prohibition either way: ``vroute.Request.via_cost_mm``
     # already charges every layer transition, so the router stays on the
     # outermost available layer unless a detour costs more than a via.
     escape_layers = [str(x) for x in (params.get("escape_layers") or [])]
@@ -2938,7 +2938,7 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
     # `clearance_mm` (the electrode-to-electrode floor still applies to
     # this net's own copper) plus `"layers": ["B.Cu"]`, resolved by
     # `precis.pcb.realize._net_class_layers` into the router's per-net
-    # `maze.route(layers=...)` argument.
+    # `vroute.route`'s ``layers`` argument.
     escape_class = f"ewod_{name}_escape"
     nets: list[dict[str, Any]] = []
     connections: list[dict[str, Any]] = []

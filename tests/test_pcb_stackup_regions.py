@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 from shapely.geometry import Point, Polygon
 
-from precis.pcb import STACKUP_PRESETS, maze, stackup_preset
+from precis.pcb import STACKUP_PRESETS, stackup_preset
 from precis.pcb import ir as pcb_ir
 from precis.pcb.connectivity import pour_components
 from precis.pcb.drc import check_pour_fragmented
@@ -99,42 +99,6 @@ def test_reference_defaults_to_nearest_poured_layer() -> None:
     explicit = [dict(e) for e in stack]
     explicit[0]["reference"] = "B.Cu"
     assert pcb_ir.reference_layer(explicit, 0) == "B.Cu"
-
-
-def test_an_h_layer_prices_vertical_steps_and_an_any_layer_does_not() -> None:
-    assert maze._step_penalty("h", 1, 0) == 1.0
-    assert maze._step_penalty("h", 0, 1) == maze.OFF_AXIS_PENALTY
-    assert maze._step_penalty(None, 0, 1) == 1.0
-    assert maze._step_penalty("h", 0, 1, 1.2) == 1.2
-    assert maze._step_penalty("h", 1, 1, 1.1) == 1.1  # diagonal capped
-
-
-def test_layer_preferences_read_the_stackup_direction() -> None:
-    from precis.pcb.realize import _layer_preferences
-
-    ir = pcb_ir.from_graph({"instances": [], "nets": []})
-    ir.stackup = [
-        {"name": "F.Cu", "role": "signal", "direction": "v"},
-        {"name": "In1.Cu", "role": "signal", "direction": "any"},
-        {"name": "In2.Cu", "role": "signal"},
-        {"name": "B.Cu", "role": "signal", "direction": 0},
-    ]
-    prefs = _layer_preferences(ir, [0, 1, 2, 3])
-    assert prefs[0] == "v"
-    assert 1 not in prefs
-    assert prefs[3] == "h"
-    assert prefs[2] == "v"  # index-order fallback: In1 'h', In2 'v'
-
-
-def test_layer_cost_reads_stackup_route_cost_and_the_run_overrides() -> None:
-    from precis.pcb.realize import RealizeConfig, _layer_cost
-
-    ir = pcb_ir.from_graph({"instances": [], "nets": []}, stackup=_HYBRID)
-    assert _layer_cost(ir, RealizeConfig()) == {1: 2.5}
-    over = RealizeConfig(layer_route_cost=(("In1.Cu", 3.0), ("B.Cu", 1.5)))
-    assert _layer_cost(ir, over) == {1: 3.0, 3: 1.5}
-    with pytest.raises(ValueError, match="off_axis_penalty"):
-        RealizeConfig(off_axis_penalty=0.9)
 
 
 # ── slice 3/4: effective plane assignments ────────────────────────────────

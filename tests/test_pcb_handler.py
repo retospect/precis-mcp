@@ -1187,10 +1187,6 @@ def test_op_route_corridor_and_escape_flags(store, monkeypatch):
     params = job.put.call_args.kwargs["params"]
     assert "corridor" not in params and "escape" not in params
     assert job.put.call_args.kwargs["idem_key"] != opt_key
-    with pytest.raises(BadInput, match="escape"):
-        handler._enqueue_op(ref, "route", {"escape": "maze"})
-    with pytest.raises(BadInput, match="corridor"):
-        handler._enqueue_op(ref, "route", {"corridor": -1})
 
 
 def test_op_route_accepts_corridor_and_escape_opts(pcb, store):
@@ -1345,13 +1341,6 @@ def test_op_route_negotiate_enqueues_and_dedupes_exact_params(pcb, store, negoti
     assert any("negotiate" not in r[0] for r in rows)
 
 
-@pytest.mark.parametrize("negotiate", [-1, 101])
-def test_op_route_negotiate_out_of_range_is_bad_input_not_a_long_job(pcb, negotiate):
-    pcb.put(id="op-negotiate", args=_CROSSED_OUTLINED)
-    with pytest.raises(BadInput, match="negotiate"):
-        pcb.put(id="op-negotiate", args={"op": "route", "negotiate": negotiate})
-
-
 @pytest.mark.parametrize("loop", [-1, 4])
 def test_op_route_loop_out_of_range_is_bad_input_not_a_long_job(pcb, loop):
     pcb.put(id="op-loop", args=_CROSSED_OUTLINED)
@@ -1363,7 +1352,7 @@ def test_op_route_loop_enqueues_params_and_forwards_authored_caps(store, monkeyp
     """``loop`` reaches the job params (gr469872's contract — an
     unregistered param is refused at enqueue), and the design's authored
     ``meta.expansion_caps`` rides along verbatim so the dedup hash sees
-    it; an omitted knob stays absent, exactly like ``negotiate``."""
+    it; an omitted knob stays absent."""
     from types import SimpleNamespace
     from unittest.mock import Mock
 
@@ -2296,13 +2285,14 @@ def test_congestion_view_gives_no_tick_when_nets_failed(pcb, store):
 
 
 def test_congestion_view_appends_the_capacity_map(pcb):
-    """Slice 1 of pcb-global-plan-router: the strict flow tile-capacity
-    map renders under every congestion verdict, including no-run-yet."""
+    """The capacity map renders under every congestion verdict, including
+    no-run-yet — since the grid router's removal it is the CDT portal
+    model (docs/backlog/pcb-vector-router.md slice 5)."""
     pcb.put(id="cong-map", args=_CROSSED)
     body = pcb.get(id="cong-map", view="congestion").body
     assert "no route run yet" in body
     assert "# capacity map" in body
-    assert "strict flow" in body
+    assert "portal" in body
 
 
 def test_congestion_view_appends_the_portal_map(pcb):
@@ -2316,35 +2306,6 @@ def test_congestion_view_appends_the_portal_map(pcb):
         ln for ln in body.splitlines() if ln.startswith("- ") and "portals" in ln
     ]
     assert portal_lines and all("triangles" in ln for ln in portal_lines)
-
-
-def test_congestion_capacity_map_is_cached(pcb, monkeypatch):
-    """The strict flow-graph build costs seconds; a second read of an
-    unchanged board must reuse it (the cache keys on content_hash), and
-    a board edit must rebuild."""
-    from precis.pcb import globalplan as pcb_globalplan
-
-    calls = 0
-    real = pcb_globalplan.build_tile_graph
-
-    def counting(*args: Any, **kwargs: Any):
-        nonlocal calls
-        calls += 1
-        return real(*args, **kwargs)
-
-    monkeypatch.setattr(pcb_globalplan, "build_tile_graph", counting)
-    pcb.put(id="cong-cache", args=_CROSSED)
-    pcb.get(id="cong-cache", view="congestion")
-    assert calls == 1
-    pcb.get(id="cong-cache", view="congestion")
-    assert calls == 1
-    # A board edit changes the content hash: the map rebuilds.
-    pcb.put(
-        id="cong-cache",
-        args={"op": "move", "refdes": "A", "x": 10.0, "y": 10.0},
-    )
-    pcb.get(id="cong-cache", view="congestion")
-    assert calls == 2
 
 
 def test_congestion_view_flags_a_digest_whose_nets_were_ripped_since(pcb, store):

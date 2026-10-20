@@ -16,7 +16,7 @@ never, ever derived from L3 coordinates.** If a caller recomputed L2 from
 positions on every move, a component move would silently re-derive
 topology and the whole point of the layered IR — that a move perturbs
 only nearby levels, leaving the sketch intact — evaporates; we would be
-back to maze-router behaviour with extra steps. So there is deliberately
+back to the old grid-router behaviour with extra steps. So there is deliberately
 **no `compute_embedding(positions)` method on :class:`PcbIR`.** The only
 position-aware embedding helper is :func:`propose_rotation_from_positions`,
 a free function (not a method — it cannot be reached by `ir.<tab>`) whose
@@ -884,7 +884,7 @@ class PcbIR:
         that already feeds real pad SIZE to
         :func:`precis.pcb.realize.pad_geometry` — writes them in
         afterwards. gripe 338983: before this existed every position-
-        reading consumer (DRC clearance, the maze router's pad claims,
+        reading consumer (DRC clearance, the router's pad obstacles,
         ratsnest length, courtyard hulls) measured a generic label-keyed
         guess, which is invisible for a catalog part whose label names a
         real package family and wildly wrong for an authored custom
@@ -1113,7 +1113,7 @@ def _net_tree_edges(
     build is zero. The router depends on the star shape more than its own
     docstrings admit — every segment of a net shares the hub pad, so the
     trunk necessarily runs past it and each branch has somewhere already-
-    routed to attach to (see :meth:`precis.pcb.maze.OccupancyGrid.route`'s
+    routed to attach to (see :meth:`precis.pcb.vroute.Space`'s
     multi-source start and ``realize``'s ``attached`` handling). A chain
     topology removes that guarantee. Restoring it is a router change, not a
     netlist change, so it belongs to its own round; until then the star is
@@ -1707,7 +1707,7 @@ STACKUP_DIRECTIONS = ("h", "v", "d", "any")
 
 
 def direction_token(direction: Any) -> str | None:
-    """The maze preference token (``'h'``/``'v'``/``'d'``) for a stackup
+    """The (removed) grid router's preference token (``'h'``/``'v'``/``'d'``) for a stackup
     ``direction`` value, ``None`` for ``'any'``. A numeric angle (degrees,
     0 = +x) snaps to the nearest axis the octilinear router has: 0/180 →
     ``'h'``, 90 → ``'v'``, 45/135 → ``'d'``."""

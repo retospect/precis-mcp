@@ -154,7 +154,6 @@ def route_config(tables: dict[str, Any], params: dict[str, Any]) -> dict[str, An
             for r in tables["pcb_net_classes"]
             if not r.get("retired_at")
         },
-        negotiate_iterations=int(params.get("negotiate") or 0),
     )
     optimize = OptimizeConfig(
         iters=int(params.get("iters") or 3000), seed=int(params.get("seed") or 0)

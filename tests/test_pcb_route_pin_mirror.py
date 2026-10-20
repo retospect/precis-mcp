@@ -19,7 +19,7 @@ from precis.pcb.realize import RealizeConfig, pads_for_ir, realize
 
 _U2_X = 10.0
 _PIN_DX = 3.0
-_CONFIG = RealizeConfig(router="maze")
+_CONFIG = RealizeConfig(router="vector")
 
 
 def _board() -> PcbIR:

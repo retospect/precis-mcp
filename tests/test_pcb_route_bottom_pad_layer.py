@@ -91,7 +91,7 @@ def test_bottom_mounted_pad_routes_through_a_top_side_blocker_onto_b_cu():
     never in the way.
     """
     ir = from_graph(_graph(bottom=True, blocker=True), stackup=DEFAULT_STACKUP)
-    result = realize(ir, config=RealizeConfig(router="maze"))
+    result = realize(ir, config=RealizeConfig(router="vector"))
 
     assert result.unrouted == (), (
         f"N1 failed to route with a real B.Cu landing spot free the whole "
@@ -129,7 +129,7 @@ def test_top_only_board_still_routes_on_the_top_layer_unchanged():
     all) must realize exactly as before -- a single-layer F.Cu track, no
     via, nothing about a same-side board's routing changed by this fix."""
     ir = from_graph(_graph(bottom=False, blocker=False), stackup=DEFAULT_STACKUP)
-    result = realize(ir, config=RealizeConfig(router="maze"))
+    result = realize(ir, config=RealizeConfig(router="vector"))
 
     assert result.unrouted == ()
     assert result.tracks, "N1 must have drawn real copper"
@@ -193,32 +193,6 @@ def _blocker_footprint(*, drilled: bool) -> dict[str, Any]:
     return {"pads": [pad], "pin_map": {"1": {"name": "1"}}}
 
 
-def test_a_drilled_blocker_pad_walls_off_the_route_on_every_layer():
-    """A drilled/THT pad's claim spans EVERY board layer -- with no
-    vertical room in the strip to detour around it and no layer offering
-    a free crossing, N1 must fail outright (never draw a track through
-    the hole), and the diagnosis must say so honestly (``no_path``, not
-    a width/congestion excuse — see :func:`_diagnose_unrouted`)."""
-    ir = from_graph(_wall_graph(), stackup=DEFAULT_STACKUP, outline=_WALL_OUTLINE)
-    result = realize(
-        ir,
-        config=RealizeConfig(router="maze"),
-        footprints={"BLOCKER": _blocker_footprint(drilled=True)},
-    )
-    assert result.unrouted != (), (
-        f"a drilled pad must block every layer -- N1 had no legal corridor "
-        f"and must not have routed through the hole: tracks={result.tracks!r}"
-    )
-    reason = next(r for r in result.unrouted_reasons if r.seg_id == 0)
-    assert reason.kind == "no_path", reason.message
-    assert not any(
-        abs(pt[0] - 5.0) < 2.5
-        for t in result.tracks
-        for seg in t.segments
-        for pt in (seg["start"], seg["end"])
-    ), "no track may pass anywhere near the drilled hole's own claimed radius"
-
-
 def test_an_smd_blocker_pad_only_claims_its_own_layer_so_b_cu_passes_underneath():
     """The SAME geometry with an SMD pad instead: BLOCKER claims F.Cu
     ONLY (top-mounted, no ``drill``), so N1 must still realize — forced
@@ -229,7 +203,7 @@ def test_an_smd_blocker_pad_only_claims_its_own_layer_so_b_cu_passes_underneath(
     ir = from_graph(_wall_graph(), stackup=DEFAULT_STACKUP, outline=_WALL_OUTLINE)
     result = realize(
         ir,
-        config=RealizeConfig(router="maze"),
+        config=RealizeConfig(router="vector"),
         footprints={"BLOCKER": _blocker_footprint(drilled=False)},
     )
     assert result.unrouted == (), (

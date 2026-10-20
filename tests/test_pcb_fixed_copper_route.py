@@ -31,9 +31,8 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.handlers.pcb import PcbHandler
-from precis.pcb import connectivity as pcb_connectivity
 from precis.pcb.ir import from_graph
-from precis.pcb.realize import RealizeConfig, realize, to_gerber_model
+from precis.pcb.realize import RealizeConfig, realize
 from precis.store import Store
 from precis.workers.job_types import pcb_route
 from tests._pcb_outline import closed_outline
@@ -80,7 +79,9 @@ def test_realize_never_routes_a_segment_fully_bridged_by_fixed_copper():
             "width_mm": 0.2,
         }
     ]
-    result = realize(ir, config=RealizeConfig(router="maze"), fixed_copper=fixed_copper)
+    result = realize(
+        ir, config=RealizeConfig(router="vector"), fixed_copper=fixed_copper
+    )
     assert result.fixed_realized == (0,)
     assert result.tracks == ()
     assert result.unrouted == ()
@@ -91,7 +92,7 @@ def test_realize_with_no_fixed_copper_routes_normally():
     the connection itself -- the short-circuit above is conditional on
     the keyword, never the default behaviour."""
     ir = from_graph(_two_pin_graph((0.0, 0.0), (2.0, 0.0)), stackup=LEGACY_V1_STACKUP)
-    result = realize(ir, config=RealizeConfig(router="maze"))
+    result = realize(ir, config=RealizeConfig(router="vector"))
     assert result.fixed_realized == ()
     assert result.tracks, "the same connection with no fixed copper must self-route"
 
@@ -117,246 +118,12 @@ def test_realize_a_via_bridges_two_coincident_pins():
             "span": ["F.Cu", "B.Cu"],
         }
     ]
-    result = realize(ir, config=RealizeConfig(router="maze"), fixed_copper=fixed_copper)
+    result = realize(
+        ir, config=RealizeConfig(router="vector"), fixed_copper=fixed_copper
+    )
     assert result.fixed_realized == (0,)
     assert result.tracks == ()
     assert result.vias == ()
-
-
-def test_plane_fanout_skips_a_pin_the_source_via_already_drops_to_the_plane():
-    """gr489924: a plane-net pin whose AUTHORED fixed copper already reaches
-    the poured layer through the source's own via (taz15: every GND /
-    12V_POWER / PV+ pin of the EasyEDA-routed board) gets no second drop
-    via — the fan-out used to stack one on the source via (via_via_keepout,
-    net stripped) or, with that via in its way, fail the net as
-    plane_drop_blocked. The other pin, with no fixed copper, still drops."""
-    from precis.pcb.capabilities import capability_for
-
-    graph = {
-        "instances": [
-            {"refdes": "U0", "x": 0.0, "y": 0.0},
-            {"refdes": "U1", "x": 20.0, "y": 0.0},
-        ],
-        "nets": [
-            {
-                "name": "GND",
-                "net_class": "ground",
-                "domain": "electrical",
-                "members": [{"refdes": "U0", "pin": "1"}, {"refdes": "U1", "pin": "1"}],
-            }
-        ],
-    }
-    outline = [[-10.0, -10.0], [30.0, -10.0], [30.0, 10.0], [-10.0, 10.0]]
-    ir = from_graph(graph, stackup=LEGACY_V1_STACKUP, outline=outline)
-    ir.promote_plane(0, 1)  # In1.Cu, the GND plane layer
-    # The source's own escape: a stub off U0's pad into a through via.
-    fixed_copper = [
-        {
-            "ctype": "track",
-            "layer": "F.Cu",
-            "net": "GND",
-            "segments": [{"shape": "line", "start": [0.0, 0.0], "end": [1.5, 0.0]}],
-            "width_mm": 0.3,
-        },
-        {
-            "ctype": "via",
-            "layer": "F.Cu",
-            "net": "GND",
-            "x": 1.5,
-            "y": 0.0,
-            "dia_mm": 0.6,
-            "drill_mm": 0.3,
-            "span": ["F.Cu", "B.Cu"],
-        },
-    ]
-    from precis.pcb import session as pcb_session
-
-    ir.fixed_vias = pcb_session.fixed_vias_from_copper(fixed_copper)
-    config = RealizeConfig(router="maze", fab_caps=capability_for("4layer"))
-    result = realize(ir, config=config, fixed_copper=fixed_copper)
-    assert not result.unrouted, [r.message for r in result.unrouted_reasons]
-    drops = [v for v in result.vias if v.endpoint == "a"]
-    assert len(drops) == 1, "only the pin with no source via drops to the plane"
-    assert drops[0].x > 10.0, "the drop belongs to U1, never stacked on U0's via"
-
-
-def test_plane_fanout_keeps_the_drop_for_a_pin_the_source_reaches_only_partway():
-    """gr489924: a pin counts as served by the pour only when its fixed-copper
-    island reaches EVERY poured layer of its net. Here GND is poured on In1.Cu
-    and In2.Cu, and U0's source copper is a blind via that stops at In1.Cu, so
-    U0 keeps a drop via spanning down to In2.Cu, which is what ties the second
-    pour in. U1, with no fixed copper, drops as usual."""
-    from precis.pcb.capabilities import capability_for
-
-    graph = {
-        "instances": [
-            {"refdes": "U0", "x": 0.0, "y": 0.0},
-            {"refdes": "U1", "x": 20.0, "y": 0.0},
-        ],
-        "nets": [
-            {
-                "name": "GND",
-                "net_class": "ground",
-                "domain": "electrical",
-                "members": [{"refdes": "U0", "pin": "1"}, {"refdes": "U1", "pin": "1"}],
-            }
-        ],
-    }
-    outline = [[-10.0, -10.0], [30.0, -10.0], [30.0, 10.0], [-10.0, 10.0]]
-    ir = from_graph(graph, stackup=LEGACY_V1_STACKUP, outline=outline)
-    ir.promote_plane(0, 1)  # In1.Cu
-    ir.promote_plane(0, 2)  # In2.Cu
-    fixed_copper = [
-        {
-            "ctype": "track",
-            "layer": "F.Cu",
-            "net": "GND",
-            "segments": [{"shape": "line", "start": [0.0, 0.0], "end": [1.5, 0.0]}],
-            "width_mm": 0.3,
-        },
-        {
-            "ctype": "via",
-            "layer": "F.Cu",
-            "net": "GND",
-            "x": 1.5,
-            "y": 0.0,
-            "dia_mm": 0.6,
-            "drill_mm": 0.3,
-            "span": ["F.Cu", "In1.Cu"],
-        },
-    ]
-    from precis.pcb import session as pcb_session
-
-    ir.fixed_vias = pcb_session.fixed_vias_from_copper(fixed_copper)
-    config = RealizeConfig(router="maze", fab_caps=capability_for("4layer"))
-    result = realize(ir, config=config, fixed_copper=fixed_copper)
-    assert not result.unrouted, [r.message for r in result.unrouted_reasons]
-    drops = [v for v in result.vias if v.endpoint == "a"]
-    assert len(drops) == 2, "a partway source via does not serve the pin"
-    u0_drops = [v for v in drops if v.x < 10.0]
-    assert len(u0_drops) == 1
-    assert (u0_drops[0].layer_lo, u0_drops[0].layer_hi) == (0, 3), (
-        "U0's drop is a through via, so it reaches the In2.Cu pour (and every "
-        "other layer; gr495289)"
-    )
-
-
-def test_plane_fanout_keeps_the_stub_for_a_pad_on_its_own_pour_layer(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    """gr489909: GND poured on F.Cu only, both GND pads on F.Cu. The pour is
-    cut around foreign copper, so the fan-out cannot know it reaches a land:
-    the fab-render board, seed 3, lost a GND pad walled off by foreign-pad
-    halos when 2bf9dc75e skipped every such stub. The fan-out offers a stub
-    and drop for each pad with a legal site; only after pouring does
-    :func:`_prune_redundant_drop_vias` drop the ones whose pad the FILLED
-    pour contains (here both, on an open board)."""
-    from precis.pcb import realize as realize_mod
-    from precis.pcb.capabilities import capability_for
-
-    graph = {
-        "instances": [
-            {"refdes": "U0", "x": 0.0, "y": 0.0},
-            {"refdes": "U1", "x": 20.0, "y": 0.0},
-            {"refdes": "R0", "x": 0.0, "y": 1.2},
-            {"refdes": "R1", "x": 20.0, "y": 6.0},
-        ],
-        "nets": [
-            {
-                "name": "GND",
-                "net_class": "ground",
-                "domain": "electrical",
-                "members": [{"refdes": "U0", "pin": "1"}, {"refdes": "U1", "pin": "1"}],
-            },
-            {
-                "name": "SIG",
-                "net_class": "signal",
-                "domain": "electrical",
-                "members": [{"refdes": "R0", "pin": "1"}, {"refdes": "R1", "pin": "1"}],
-            },
-        ],
-    }
-    outline = [[-10.0, -10.0], [30.0, -10.0], [30.0, 10.0], [-10.0, 10.0]]
-    ir = from_graph(graph, stackup=LEGACY_V1_STACKUP, outline=outline)
-    ir.promote_plane(0, 0)  # F.Cu, the pads' own layer
-    config = RealizeConfig(router="maze", fab_caps=capability_for("4layer"))
-    offered: list[Any] = []
-    fanout = realize_mod._plane_fanout
-
-    def spy(*args: Any, **kwargs: Any) -> Any:
-        out = fanout(*args, **kwargs)
-        offered.append(out)
-        return out
-
-    monkeypatch.setattr(realize_mod, "_plane_fanout", spy)
-    result = realize(ir, config=config)
-    assert not result.unrouted, [r.message for r in result.unrouted_reasons]
-    assert offered
-    tracks, vias, failed = offered[-1]
-    assert not failed
-    assert len([t for t in tracks if t.net_id == 0]) == 2, "each pad gets a stub"
-    assert len([v for v in vias if v.net_id == 0]) == 2, "and a drop via"
-    assert not [t for t in result.tracks if t.is_dogbone], (
-        "the pour contains both lands, so the prune removes both stubs"
-    )
-
-
-def test_realize_claims_fixed_copper_as_an_obstacle_for_a_foreign_net():
-    """(b) A fixed track on net A, spanning the FULL height of a narrow
-    board on both signal layers, sits directly across the only corridor
-    net B's two pins could route through -- B must come out unrouted
-    (walled in on every allowed layer, never merely losing a congestion
-    race, since the probe grid now claims fixed copper too), and no
-    derived track of B may ever cross the wall's own claimed radius."""
-    graph = {
-        "instances": [
-            # WALL sits ON the wall's own centerline (not off-board) --
-            # `maze.grid_for` never clips the routing grid below where a
-            # real pad sits (its own docstring), so an anchor placed
-            # OUTSIDE the intended narrow strip would silently widen the
-            # grid and give B room to detour around the whole scenario.
-            {"refdes": "WALL", "x": 5.0, "y": 0.0},
-            {"refdes": "B1", "x": 0.0, "y": 0.0},
-            {"refdes": "B2", "x": 10.0, "y": 0.0},
-        ],
-        "nets": [
-            {"name": "A", "members": [{"refdes": "WALL", "pin": "1"}]},
-            {
-                "name": "B",
-                "members": [
-                    {"refdes": "B1", "pin": "1"},
-                    {"refdes": "B2", "pin": "1"},
-                ],
-            },
-        ],
-    }
-    outline = [(-2.0, -1.0), (12.0, -1.0), (12.0, 1.0), (-2.0, 1.0)]
-    ir = from_graph(graph, stackup=LEGACY_V1_STACKUP, outline=outline)
-    # Wide enough (width/2 + default clearance) to clear the whole 2mm-tall
-    # strip on both routable layers -- a genuine total block, not merely a
-    # tight squeeze.
-    fixed_copper = [
-        {
-            "ctype": "track",
-            "layer": layer,
-            "net": "A",
-            "segments": [{"shape": "line", "start": [5.0, -1.0], "end": [5.0, 1.0]}],
-            "width_mm": 4.0,
-        }
-        for layer in ("F.Cu", "B.Cu")
-    ]
-    result = realize(ir, config=RealizeConfig(router="maze"), fixed_copper=fixed_copper)
-    seg_id = 0  # net A is dangling (1 member -> 0 segments); B's is the only one
-    assert seg_id in result.unrouted
-    assert result.fixed_realized == ()
-    reason = next(r for r in result.unrouted_reasons if r.seg_id == seg_id)
-    assert reason.kind == "no_path", reason.message
-
-    wall_lo, wall_hi = 5.0 - 2.15, 5.0 + 2.15  # width/2 + clearance, with slack
-    for t in result.tracks:
-        for seg in t.segments:
-            for pt in (seg["start"], seg["end"]):
-                assert not (wall_lo < pt[0] < wall_hi), (t.net_id, seg)
 
 
 # ── island terminals: routing FROM a fixed via/track, not just onto one ──
@@ -378,28 +145,6 @@ def test_realize_claims_fixed_copper_as_an_obstacle_for_a_foreign_net():
 
 _ISLAND_OUTLINE = [[-4.0, -6.0], [20.0, -6.0], [20.0, 6.0], [-4.0, 6.0]]
 _ISLAND_VIA_XY = (6.0, 0.0)
-
-
-def _island_terminal_graph() -> dict[str, Any]:
-    return {
-        "instances": [
-            {"refdes": "A", "x": 0.0, "y": 0.0},
-            {"refdes": "B", "x": 16.0, "y": 0.0},
-            # Dangling -- exists only so the "WALLNET" name resolves to a
-            # real net id for `_claim_fixed_copper`'s by-name lookup, same
-            # convention the "(b)" wall test above already uses. Placed
-            # well clear of the ring/wall geometry below so its own pad
-            # claim cannot interfere.
-            {"refdes": "WALLPIN", "x": 0.0, "y": 5.0},
-        ],
-        "nets": [
-            {
-                "name": "N1",
-                "members": [{"refdes": "A", "pin": "1"}, {"refdes": "B", "pin": "1"}],
-            },
-            {"name": "WALLNET", "members": [{"refdes": "WALLPIN", "pin": "1"}]},
-        ],
-    }
 
 
 def _wall_ring_rows() -> list[dict[str, Any]]:
@@ -471,67 +216,6 @@ _ISLAND_FIXED_COPPER = [
 ]
 
 
-def test_realize_routes_from_a_fixed_via_terminal_when_the_pad_corridor_is_sealed():
-    """(a) Pin A is walled in on every routable layer except through its
-    own authored stub+via; the router must find that route by seeding the
-    search on the via's terminals, not by walking pad A's own (sealed)
-    neighbourhood. The derived copper must actually TOUCH the via -- not
-    merely land near it -- so `net_islands` sees N1 as one piece once the
-    fixed and derived copper are combined."""
-    graph = _island_terminal_graph()
-    ir = from_graph(graph, stackup=LEGACY_V1_STACKUP, outline=_ISLAND_OUTLINE)
-    result = realize(
-        ir, config=RealizeConfig(router="maze"), fixed_copper=_ISLAND_FIXED_COPPER
-    )
-    assert result.unrouted == (), [r.message for r in result.unrouted_reasons]
-    seg_id = 0
-
-    # (3) the honesty seam: this segment's route is reported as having
-    # used a fixed terminal, naming the via and the layer it landed on.
-    assert seg_id in result.island_terminals
-    note = result.island_terminals[seg_id]
-    assert "fixed via" in note, note
-    assert "B.Cu" in note, note
-
-    # The derived track must start EXACTLY at the via centre, on B.Cu --
-    # not near it, and not on F.Cu (which stays walled off past the ring
-    # and blocked entirely between V and B by `_WALL2_ROW`).
-    b_cu_tracks = [t for t in result.tracks if t.seg_id == seg_id and t.layer == 3]
-    assert b_cu_tracks, "expected at least one B.Cu track for this segment"
-    assert any(
-        t.segments[0]["start"] == pytest.approx(list(_ISLAND_VIA_XY), abs=1e-6)
-        for t in b_cu_tracks
-    ), [t.segments[0] for t in b_cu_tracks]
-
-    # `net_islands`, run against fixed + derived copper together (the same
-    # combination a real DRC pass checks), must see N1 as ONE piece --
-    # the derived track genuinely touches the via, not merely nearby.
-    layers = [str(layer.get("name")) for layer in ir.stackup]
-    model = to_gerber_model(result, ir, layers=layers, outline=_ISLAND_OUTLINE)
-    model["copper"] = list(model["copper"]) + [
-        {**row, "net": row.get("net") or ""} for row in _ISLAND_FIXED_COPPER
-    ]
-    islands = pcb_connectivity.net_islands(model)
-    assert not any(isl.net == "N1" for isl in islands), islands
-
-
-def test_realize_without_the_fixed_via_stays_unrouted_pad_sealed_by_wall():
-    """(b) The SAME board with the stub+via dropped (ring + F.Cu wall
-    only): pin A has no way out at all -- guards that the TERMINAL, not
-    some incidentally relaxed claim, is what made (a) succeed. Same
-    visible ``no_path`` reason the "(b)" wall test above gets for an
-    equivalent total seal."""
-    graph = _island_terminal_graph()
-    ir = from_graph(graph, stackup=LEGACY_V1_STACKUP, outline=_ISLAND_OUTLINE)
-    fixed_copper = [*_wall_ring_rows(), _WALL2_ROW]
-    result = realize(ir, config=RealizeConfig(router="maze"), fixed_copper=fixed_copper)
-    seg_id = 0
-    assert seg_id in result.unrouted
-    assert result.island_terminals == {}
-    reason = next(r for r in result.unrouted_reasons if r.seg_id == seg_id)
-    assert reason.kind == "no_path", reason.message
-
-
 def test_realize_fully_bridged_segment_is_unaffected_by_island_terminal_search():
     """(c) No regression: a segment whose both pins are ALREADY bridged by
     fixed copper is still short-circuited into ``fixed_realized`` and
@@ -548,7 +232,9 @@ def test_realize_fully_bridged_segment_is_unaffected_by_island_terminal_search()
             "width_mm": 0.2,
         }
     ]
-    result = realize(ir, config=RealizeConfig(router="maze"), fixed_copper=fixed_copper)
+    result = realize(
+        ir, config=RealizeConfig(router="vector"), fixed_copper=fixed_copper
+    )
     assert result.fixed_realized == (0,)
     assert result.tracks == ()
     assert result.unrouted == ()

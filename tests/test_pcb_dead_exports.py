@@ -192,6 +192,11 @@ _KNOWN_UNWIRED: dict[str, str] = {
         "own docstring names this the topological proxy a later module "
         "combines with its geometric floating-tile check)"
     ),
+    "src/precis/pcb/realize.py::rip_net": (
+        "rip-up hook for the not-yet-wired route-edit loop (routeclean, "
+        "its last production caller, was deleted with the grid router "
+        "2026-10-20); pin_topology/re_realize_segments below share the gap"
+    ),
     "src/precis/pcb/realize.py::pin_topology": (
         "own docstring: a thin delegate for the same not-yet-wired "
         "rip-up/re-realize loop as rip_net"
@@ -312,8 +317,14 @@ _KNOWN_UNWIRED: dict[str, str] = {
         "real gap, not fixed here (realize.py is out of this agent's "
         "remit)"
     ),
-    # via_net left this mapping 2026-10-18: routeclean.py reads it to name
-    # a blocking via's net (gr495397).
+    # via_net re-entered this mapping 2026-10-20: routeclean.py — its
+    # 2026-10-18 reader — was deleted with the grid router; nothing reads
+    # the L1 via model's net column now.
+    "src/precis/pcb/ir.py::PcbIR.via_net": (
+        "written by add_via; its last reader (routeclean, naming a "
+        "blocking via's net) was deleted with the grid router — the L1 "
+        "via model stays for the not-yet-wired route-edit loop"
+    ),
     # via_layer_span left this mapping 2026-10-13: optimize.py now
     # remaps it on LAYER_ADD (bit-shift in _shift_layer_indices) and
     # carries it in the loop's state snapshot -- a real producer/consumer.
@@ -580,7 +591,6 @@ def _public_methods_and_properties(class_node: ast.ClassDef) -> list[str]:
 def _all_class_member_anchors() -> list[str]:
     """``relpath::Class.member`` for every public method/property on every
     public top-level class in ``src/precis/pcb/*.py`` — this is what
-    would have caught :class:`~precis.pcb.maze.GridSpec`'s ``n_cells``
     (module docstring item (4)): a public property with zero references
     anywhere, the exact shape the original function-only check could
     never see. ``_production_callers`` resolves ``Class.member`` anchors

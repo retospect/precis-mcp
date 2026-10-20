@@ -175,10 +175,7 @@ def test_router_claims_carry_the_pin_net_for_a_pinned_pad() -> None:
     tp_pin = next(p for p in range(ir.n_pins) if str(ir.pin_label[p]) == "TP")
     assert owners[(12.0, 9.0)] == gnd_net
     assert owners[(10.0, 14.0)] == ir.n_nets + tp_pin
-    assert (
-        owners[(10.0, 7.0)]
-        >= ir.n_nets + ir.n_pins + pcb_realize._UNCLAIMED_PAD_NET_OFFSET
-    )
+    assert owners[(10.0, 7.0)] >= ir.n_nets + ir.n_pins
     assert len(claims) == 3, "only the pads the per-pin loop does not stamp"
 
 

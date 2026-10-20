@@ -431,4 +431,3 @@ place/route; both are measured before landing.
   slice 5.
 - [pcb-missing-constraint-classes](pcb-missing-constraint-classes.md) §B
   (one-sided assembly cost) and §E-1 (pairwise spacing) — slices 5 and 7.
-- [pcb-global-plan-router](pcb-global-plan-router.md) — slice 8's home.

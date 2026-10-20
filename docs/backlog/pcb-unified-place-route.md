@@ -12,7 +12,7 @@ Source: Reto, 2026-10-18 (quoted below), on top of the vector-router
 rulings of 2026-10-16/18. Review inputs: `perplexity-research:496658`
 (read with `args={'no_fetch': True}`), the placer and router modules named
 in §Current state, [pcb-vector-router](pcb-vector-router.md),
-[pcb-global-plan-probe](pcb-global-plan-probe.md). This file proposes; it
+the deleted grid-era probe spec `pcb-global-plan-probe.md` (git history). This file proposes; it
 does not edit the vector-router spec (§Composition names the slot).
 
 **Acceptance sanity board:** the 100 x 100 mm four-header board
@@ -72,7 +72,7 @@ note in slice 3); they are quoted here from the brief.
 | Silk labels built at render/DRC time, not placed by the optimizer | Yes. `silk.build_silk` is a pure function of the settled `PcbIR`; the label spot is a candidate search (`LABEL_SPOT_ORDER`, `_outline_spot_candidates`, radial `_CANDIDATES`, `_inside_candidates`, else dropped → `silk_missing`). Glyphs are pinned to 0° (Reto, gr495394). Callers: `realize` (via keep-outs, off by default), `drc`, `check_run`, `handlers/pcb`. | `silk.py` docstring |
 | Floors: nano seed 1 35/29, silk_missing 35; 8-seed mean 34.375, min 28 | Dropped 2026-10-19 (Reto; pcb-vector-router §Decisions row 14): the nano test prints these numbers and no longer gates on them. Last pinned: seed 1 35/29, silk_missing 35, 8-seed mean 34.375, min 28. | `tests/test_pcb_nano_usb_pd_testboard.py` |
 | Vector router slices 0–1 landed, slice 2 WIP; VP probe 2cedf6b13 | **Not on main.** No `clearance.py`, `vroute.py`, `topo.py`, `tests/test_pcb_topo.py`, no `rules.required`/`clearance_by_layer`. They live in builder trees. The CDT-portal finding (14/14 ewod, 26/27 qfp-plaza, vs the tile model) is taken from the brief. | `ls src/precis/pcb`, grep |
-| Tile-plan corridors hurt (38–47 vs 51/55) | Yes. | [pcb-global-plan-probe](pcb-global-plan-probe.md) Parts 3–4 |
+| Tile-plan corridors hurt (38–47 vs 51/55) | Yes. | `pcb-global-plan-probe.md` Parts 3–4 (deleted with the grid router; git history) |
 
 Two facts the design builds on: the IR is already a rubber-band sketch
 whose topology (L0–L2) is invariant under a placement perturbation (L3)
@@ -481,6 +481,6 @@ Ground and pour survey source: `perplexity-reasoning:496879`.
 ## Related
 
 - [pcb-vector-router](pcb-vector-router.md) — kernel, `vroute`, `topo`; the slot above. Only its slice 7 SCP/HiGHS QP spacing cleanup is superseded, by this spec's ERBS pass + descent.
-- [pcb-global-plan-probe](pcb-global-plan-probe.md) — why hard corridors lose.
+- `pcb-global-plan-probe.md` (deleted with the grid router; git history) — why hard corridors lose.
 - `optimize.anneal_route_loop` (the shipped pcb-anneal-closes-router-loop item) — the loop this replaces.
 - `docs/backlog/threads/pcb-platform.md` Horizon.

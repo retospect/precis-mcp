@@ -565,10 +565,12 @@ def _signal_on_pour_layer(built: Built, rres: Any) -> dict[str, Any]:
     layers is cleared around signal copper by design)."""
     ir = built.ir
     layers = [str(e["name"]) for e in ir.stackup]
+    # A layer marked ``routable`` (the hybrid preset's dual-role In1) is
+    # meant to carry traces beside its pour — it is priced, not banned.
     poured = {
         i
         for i, e in enumerate(ir.stackup)
-        if e.get("plane_net") or e.get("power_regions")
+        if (e.get("plane_net") or e.get("power_regions")) and not e.get("routable")
     }
     bad = sorted(
         {

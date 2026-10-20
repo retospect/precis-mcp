@@ -38,8 +38,8 @@ PLANE_CLASSES = frozenset({"gnd", "ground", "power", "pwr", "plane"})
 
 #: Heuristic bias :func:`_mst_edges` adds to an edge's weight when its two
 #: members sit on opposite board sides — gripe 449579. Deliberately its own
-#: constant, NOT :data:`precis.pcb.maze.VIA_COST_MM`: that constant prices a
-#: layer change at the maze ROUTER's own per-cell, sub-mm path-search
+#: constant, NOT the vector router's ``via_cost_mm`` — that field prices a
+#: layer change at the router's own sub-mm path-search
 #: granularity, while this MST works at component-CENTROID granularity,
 #: where inter-member distances routinely run 5-50+mm. Sharing one number
 #: across those two length scales would make one of them wrong — here it

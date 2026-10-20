@@ -2,7 +2,7 @@
 step 2, slice 3): gridless, octilinear, measured by the exact clearance
 kernel (:mod:`precis.pcb.clearance`) instead of a grid's cells.
 
-**Why.** The maze quantises space into cells. At 0.5 mm pad pitch a legal
+**Why.** A grid router quantises space into cells (the old maze router did — it was removed 2026-10-20). At 0.5 mm pad pitch a legal
 exit between two pads (gr489923: a 0.3 mm track clears its neighbours by
 0.2 mm against a 0.152 mm rule) can have no free cell, so the segment fails
 ``no_path`` though copper fits. Here a track is a centreline polyline and
@@ -35,10 +35,9 @@ import dataclasses
 import heapq
 import itertools
 import math
-import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any
 
 import numpy as np
 import shapely
@@ -67,18 +66,22 @@ _ESCAPE_STEPS_MM = (0.4, 0.8, 1.2, 1.6, 2.0, 2.5, 3.0)
 class Obstacle:
     """One piece of copper: its exact body, net, the copper layers it
     occupies, and whether a new via must keep clear of it whatever its net:
-    every pad (no via-in-pad, Reto gr496850; ``maze.OccupancyGrid.
+    every pad (no via-in-pad, Reto gr496850; the old grid's
     via_clears_pads``'s rule) and every via (the hole-to-hole rule holds
     between one net's own vias too). A ``track_only`` obstacle is not
     copper but an area reserved for ``net``'s pour (``realize.
     _track_reserved_regions``): it keeps foreign TRACKS out and never
-    blocks a via, as on the grid (``maze.OccupancyGrid.reserve_track_cells``)."""
+    blocks a via, as the old grid's ``reserve_track_cells`` did)."""
 
     body: Body
     net: str
     layers: frozenset[int]
     blocks_vias: bool = False
     track_only: bool = False
+    #: Blocks VIA SITES, invisible to tracks (``realize``'s silk-outline
+    #: keep-out — the port of the grid's ``add_via_keepout_line``): tented
+    #: copper under ink is fine, a drilled annulus is not.
+    via_only: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,7 +101,11 @@ class ViaSpec:
 class Request:
     """One connection to route. ``bounds`` is the box a track centreline
     must stay inside (the outline inset by the edge rule and half the
-    track); ``via_layers`` the copper layers a through via occupies."""
+    track); ``via_layers`` the copper layers a through via occupies.
+    ``layers`` is the hard set a TRACK may run on; a terminal may sit on
+    a layer outside it (a surface pad's mount side under a layer
+    assignment) — that layer then admits only pad→via-site stub legs, the
+    old grid's ``start_layer``/``goal_layer`` escape."""
 
     net: str
     width_mm: float
@@ -134,6 +141,7 @@ class _Layer:
     _nets: np.ndarray | None = None
     _pads: np.ndarray | None = None
     _track_only: np.ndarray | None = None
+    _via_only: np.ndarray | None = None
     #: Each obstacle's own clearance on this layer (filled by :class:`Space`).
     _cl: np.ndarray | None = None
 
@@ -151,6 +159,7 @@ class _Layer:
         self._nets = np.array([o.net for o in self.obstacles], dtype=object)
         self._pads = np.array([o.blocks_vias for o in self.obstacles], dtype=bool)
         self._track_only = np.array([o.track_only for o in self.obstacles], dtype=bool)
+        self._via_only = np.array([o.via_only for o in self.obstacles], dtype=bool)
 
 
 class Space:
@@ -234,6 +243,8 @@ class Space:
         assert li._cores is not None and li._radii is not None
         assert li._arcs is not None and li._pads is not None
         assert li._track_only is not None
+        assert li._via_only is not None
+        assert li._pads is not None
         own = self.cl(net, layer)
         reach = max(own, self._reach.get(layer, 0.0))
         cand = li._tree.query(box(*body.bounds()), predicate="dwithin", distance=reach)
@@ -241,8 +252,10 @@ class Space:
             return True
         foreign = li._nets[cand] != net
         if via_site:
-            foreign |= li._pads[cand]
+            foreign |= li._pads[cand] | li._via_only[cand]
             foreign &= ~li._track_only[cand]
+        else:
+            foreign &= ~li._via_only[cand]
         cand = cand[foreign]
         if not len(cand):
             return True
@@ -289,8 +302,9 @@ class Space:
         zero = np.all(coords[:, 0] == coords[:, 1], axis=1)
         if zero.any():
             geoms[zero] = shapely.points(coords[zero, 0])
+        assert li._via_only is not None
         left, right = li._tree.query(geoms, predicate="dwithin", distance=reach + half)
-        foreign = li._nets[right] != net
+        foreign = (li._nets[right] != net) & ~li._via_only[right]
         left, right = left[foreign], right[foreign]
         if not len(left):
             return ok
@@ -446,15 +460,44 @@ def _route_in_window(
 
     # Nodes per layer: 0 = start, 1 = goal, then the terminals' escape rays
     # and the octagon corners, each kept only where a track end fits.
+    # ``term_only`` layers carry a TERMINAL (a pad's mount side) but no
+    # routing — the old grid's ``start_layer``/``goal_layer`` outside
+    # ``layers``: the pad is entered on its own layer, escapes at most a
+    # dogbone-length stub to a via site, and every real track leg runs on
+    # ``req.layers`` (leg_clear below refuses escape↔escape and
+    # terminal↔terminal legs there, so no through-route can sneak on).
+    term_only = sorted((req.start.layers | req.goal.layers) - set(req.layers))
+    term_only_set = frozenset(term_only)
+    #: layer -> (start's escape rays, goal's escape rays). Disjoint on
+    #: purpose: leg_clear admits only terminal↔own-ray legs on a term-only
+    #: layer, so no path can chain start→ray→goal into a whole track there.
+    term_rays: dict[int, tuple[frozenset[Coord], frozenset[Coord]]] = {}
     nodes: dict[int, list[Coord]] = {}
-    for layer in req.layers:
-        cand: list[Coord] = []
-        for tx, ty in (start, goal):
-            for ux, uy in _DIRS:
-                n = 1.0 if abs(ux) < 1e-9 or abs(uy) < 1e-9 else _SQRT2
-                for reach in _ESCAPE_STEPS_MM:
-                    cand.append((tx + ux * n * reach, ty + uy * n * reach))
-        for ob in space.obstacles_in(layer, win):
+    for layer in itertools.chain(req.layers, term_only):
+        if layer in term_only_set:
+            ray_a = [
+                (sx + ux * n_ * reach, sy + uy * n_ * reach)
+                for ux, uy in _DIRS
+                for n_ in (1.0 if abs(ux) < 1e-9 or abs(uy) < 1e-9 else _SQRT2,)
+                for reach in _ESCAPE_STEPS_MM
+            ]
+            ray_b = [
+                (gx + ux * n_ * reach, gy + uy * n_ * reach)
+                for ux, uy in _DIRS
+                for n_ in (1.0 if abs(ux) < 1e-9 or abs(uy) < 1e-9 else _SQRT2,)
+                for reach in _ESCAPE_STEPS_MM
+            ]
+            cand = [*ray_a, *ray_b]
+            term_rays[layer] = (frozenset(ray_a), frozenset(ray_b))
+        else:
+            cand = [
+                (tx + ux * n_ * reach, ty + uy * n_ * reach)
+                for tx, ty in (start, goal)
+                for ux, uy in _DIRS
+                for n_ in (1.0 if abs(ux) < 1e-9 or abs(uy) < 1e-9 else _SQRT2,)
+                for reach in _ESCAPE_STEPS_MM
+            ]
+        for ob in () if layer in term_only_set else space.obstacles_in(layer, win):
             grow = (
                 half + max(space.cl(req.net, layer), space.cl(ob.net, layer)) + DELTA_MM
             )
@@ -499,6 +542,20 @@ def _route_in_window(
     seg_ok: dict[tuple[int, Coord, Coord], bool] = {}
 
     def leg_clear(layer: int, a: Coord, b: Coord) -> bool:
+        if layer in term_only_set:
+            # A terminal-only layer admits exactly a pad→via-site stub:
+            # terminal↔terminal is a whole track on the wrong layer,
+            # escape↔escape chains are longer stubs, and a leg must land on
+            # ITS OWN terminal's rays (partitioning is what forbids the
+            # start→ray→goal cheat path across the same escape node).
+            sa, sb = term_rays[layer]
+            if a in (start, goal) and b in (start, goal):
+                return False
+            if a not in (start, goal) and b not in (start, goal):
+                return False
+            term, esc = (a, b) if a in (start, goal) else (b, a)
+            if esc not in (sa if term == start else sb):
+                return False
         key = (layer, a, b) if a <= b else (layer, b, a)
         if key not in seg_ok:
             if not (_inside(a, req.bounds) and _inside(b, req.bounds)):
@@ -546,8 +603,8 @@ def _route_in_window(
         layer: {(round(p[0], 9), round(p[1], 9)): k for k, p in enumerate(pts)}
         for layer, pts in nodes.items()
     }
-    goal_layers = req.goal.layers & set(req.layers)
-    start_layers = req.start.layers & set(req.layers)
+    goal_layers = req.goal.layers & set(nodes)
+    start_layers = req.start.layers & set(nodes)
     stats.update(nodes={layer: len(p) for layer, p in nodes.items()}, margin=margin)
     if not goal_layers or not start_layers:
         stats["stop"] = "no_layer"
@@ -601,7 +658,9 @@ def _route_in_window(
                     heap, (new + octile(nodes[layer][j], goal), new, next(tie), nxt)
                 )
         if req.via is not None and i != 1 and via_fits(here):
-            for other in req.layers:
+            # The jump may land on a terminal-only layer too — that is the
+            # whole point of one (drop back to the goal pad's own layer).
+            for other in itertools.chain(req.layers, term_only):
                 if other == layer:
                     continue
                 # The same point is a node on the other layer: add it there
@@ -712,9 +771,9 @@ def obstacles_of(row: dict[str, Any], index: dict[str, int], n: int) -> list[Obs
 
 @dataclass(frozen=True, slots=True)
 class EscapeReport:
-    """What the vector post-pass did on one board: failed segments it
-    tried, how many it routed, the search work it spent (the budget's
-    unit) and, for information only, its wall time."""
+    """What one vector route pass did on one board: segments it tried,
+    how many it routed, the search work it spent (the budget's unit)
+    and, for information only, its wall time."""
 
     tried: int
     routed: int
@@ -727,290 +786,13 @@ class EscapeReport:
         if not self.tried:
             return None
         out = (
-            f"vector escape: {self.routed} of {self.tried} failed segments "
+            f"vector route: {self.routed} of {self.tried} segments "
             f"routed gridless ({self.expansions} expansions, "
             f"{self.elapsed_s:.1f}s)"
         )
         if self.out_of_budget:
             out += " (stopped at the expansion budget)"
         return out
-
-
-def escape_pass(
-    ir: Any,
-    ctx: Any,
-    config: Any,
-    best: tuple[list[Any], list[Any], list[int], dict[int, str], list[int]],
-    footprints: dict[str, dict[str, Any]] | None,
-    fixed_copper: list[dict[str, Any]] | None,
-) -> tuple[
-    tuple[list[Any], list[Any], list[int], dict[int, str], list[int]], EscapeReport
-]:
-    """Route the winning maze pass's failed segments gridless, against its
-    frozen copper (``realize._realize_maze``, after the clean-up pass and
-    before pours). Nothing the maze routed moves; each path the router
-    returns is legal by the kernel against every pad, track, via and fixed
-    copper item, inside the board's edge inset, and its corners are
-    filleted only within the subset guarantee of
-    :func:`precis.pcb.realize._track_from_run`."""
-    from types import SimpleNamespace
-
-    from precis.pcb import realize as rz
-    from precis.pcb.ir import pin_point
-
-    tracks, vias, unrouted, notes, plane_failed = best
-    plane = set(ctx.plane_ids)
-    todo = [s for s in unrouted if s not in plane]
-    if not todo:
-        return best, EscapeReport(0, 0, 0, 0.0)
-    t0 = time.monotonic()
-    names = [str(e.get("name")) for e in ir.stackup]
-    n = len(names)
-    index = {name: i for i, name in enumerate(names)}
-    net_id = {str(ir.net_name[i]): i for i in range(len(ir.net_name))}
-
-    def clearance(net: str, layer: int) -> float:
-        nid = net_id.get(net)
-        if nid is None:
-            return float(ctx.clearance)
-        return float(
-            ctx.net_layer_clearance.get(
-                (nid, layer), ctx.net_clearance.get(nid, ctx.clearance)
-            )
-        )
-
-    rows = rz.result_copper_rows(
-        cast(Any, SimpleNamespace(tracks=tracks, vias=vias, pours=[])), ir, names
-    )
-    rows += [
-        dict(r)
-        for r in fixed_copper or []
-        if r.get("ctype") in ("track", "via", "pour")
-    ]
-    pads = rz.pads_for_ir(ir, names, footprints)
-    obstacles: list[Obstacle] = []
-    for row in rows:
-        obstacles += obstacles_of(row, index, n)
-    pad_of: dict[tuple[str, str], dict[str, Any]] = {}
-    for pad in pads:
-        row = {**pad, "ctype": "pad"}
-        obstacles += obstacles_of(row, index, n)
-        pad_of.setdefault((str(pad.get("refdes")), str(pad.get("pin"))), row)
-    # The power regions the maze kept other nets' tracks out of
-    # (``realize._claim_power_regions``) stay closed to them here too.
-    for layer, poly, owner in getattr(ctx, "reserved_regions", ()):
-        obstacles.append(
-            Obstacle(Body(poly, (), 0.0), owner, frozenset((layer,)), track_only=True)
-        )
-    space = Space(obstacles, clearance)
-
-    xs = [float(p[0]) for p in ir.outline] if ir.outline else []
-    ys = [float(p[1]) for p in ir.outline] if ir.outline else []
-    # Bounded by search work, never by the clock: the same board routes the
-    # same on any machine.
-    budget = int(getattr(config, "vector_escape_max_expansions", 60000))
-    spent = 0
-    routed: set[int] = set()
-    new_tracks: list[Any] = []
-    new_vias: list[Any] = []
-    out_of_budget = False
-    # Which nets are poured on each layer (``ir.net_plane_layers`` is a
-    # per-net bitmask over stackup indices).
-    poured_by: dict[int, set[int]] = {}
-    for nid in range(len(ir.net_plane_layers)):
-        mask = int(ir.net_plane_layers[nid])
-        for layer in range(n):
-            if mask >> layer & 1:
-                poured_by.setdefault(layer, set()).add(nid)
-
-    def ends_of(s: int) -> list[Terminal] | None:
-        ends = []
-        for pid in (int(ir.seg_pin_a[s]), int(ir.seg_pin_b[s])):
-            point = pin_point(ir, pid)
-            inst = int(ir.pin_instance[pid])
-            end_pad = pad_of.get(
-                (str(ir.instance_refdes[inst]), str(ir.pin_label[pid]))
-            )
-            if point is None or end_pad is None:
-                return None
-            ends.append(
-                Terminal(
-                    float(point[0]), float(point[1]), _row_layers(end_pad, index, n)
-                )
-            )
-        return ends
-
-    def legal(made: list[Any], made_vias: list[Any], name: str) -> bool:
-        """The final copper (filleted corners included) against the space."""
-        for row in rz.result_copper_rows(
-            cast(Any, SimpleNamespace(tracks=made, vias=made_vias, pours=[])),
-            ir,
-            names,
-        ):
-            for ob in obstacles_of(row, index, n):
-                for layer in ob.layers:
-                    if not space.clears(
-                        ob.body, name, layer, via_site=row.get("ctype") == "via"
-                    ):
-                        return False
-        return True
-
-    def route_segment(s: int) -> tuple[list[Any], list[Any]] | None:
-        net = int(ir.seg_net[s])
-        name = str(ir.net_name[net])
-        rules = ctx.rules_by_net.get(net)
-        ends = ends_of(s)
-        if rules is None or ends is None:
-            return None
-        width = float(rules.track_width_mm)
-        allowed = tuple(ctx.net_layers.get(net, ctx.signal_layers))
-        inset = float(ctx.edge_min) + width / 2.0 + DELTA_MM
-        if xs:
-            bounds = (
-                min(xs) + inset,
-                min(ys) + inset,
-                max(xs) - inset,
-                max(ys) - inset,
-            )
-        else:
-            bounds = (-1e6, -1e6, 1e6, 1e6)
-        via = None
-        if rules.via_dia_mm and rules.via_drill_mm:
-            via = ViaSpec(float(rules.via_dia_mm), float(rules.via_drill_mm))
-        req = Request(
-            net=name,
-            width_mm=width,
-            layers=allowed,
-            start=ends[0],
-            goal=ends[1],
-            bounds=bounds,
-            via=via,
-            via_layers=tuple(range(n)),
-            via_cost_mm=float(getattr(rz.maze, "VIA_COST_MM", 1.0)),
-        )
-        nonlocal spent
-        req = dataclasses.replace(
-            req, max_expansions=min(req.max_expansions, max(0, budget - spent))
-        )
-        stats: dict[str, Any] = {}
-        path = route(space, req, stats=stats)
-        spent += int(stats.get("expansions", 0))
-        if path is None:
-            return None
-        made_vias = [
-            rz.RealizedVia(s, net, x, y, via.dia_mm, via.drill_mm, 0, n - 1, "a")
-            for x, y in path.vias
-            if via is not None
-        ]
-        # A fillet bulges a corner's copper inward by up to a full track
-        # width, past the straight legs the search proved clear: keep it only
-        # where the kernel still clears it, else the straight legs.
-        made: list[Any] = []
-        fillet = float(config.fillet_radius_tracks) * width
-        for layer, pts in path.runs:
-            run = rz._track_from_run(s, net, layer, pts, width, fillet_radius_mm=fillet)
-            if not legal(run, [], name):
-                run = rz._track_from_run(s, net, layer, pts, width)
-            made += run
-        if not legal(made, made_vias, name):
-            return None
-        for row in rz.result_copper_rows(
-            cast(Any, SimpleNamespace(tracks=made, vias=made_vias, pours=[])),
-            ir,
-            names,
-        ):
-            for ob in obstacles_of(row, index, n):
-                space.add(ob)
-        return made, made_vias
-
-    # A net is realized only when every segment is, so the pass commits per
-    # net: a net with a plane segment still failed is skipped, and a net
-    # whose segments do not all route keeps none of its new copper (it would
-    # only take room from the next net). Shortest nets first.
-    plane_failed_nets = {int(ir.seg_net[s]) for s in unrouted if s in plane}
-    by_net: dict[int, list[int]] = {}
-    for s in todo:
-        net = int(ir.seg_net[s])
-        if net not in plane_failed_nets:
-            by_net.setdefault(net, []).append(s)
-
-    def net_span(segs: list[int]) -> float:
-        total = 0.0
-        for s in segs:
-            ends = ends_of(s)
-            total += (
-                math.inf
-                if ends is None
-                else octile((ends[0].x, ends[0].y), (ends[1].x, ends[1].y))
-            )
-        return total
-
-    # A pour is cut around routed copper AFTER this pass, so a run across a
-    # poured layer can split another net's plane. The pour the next step
-    # will make is computed exactly, before and with each net's new copper:
-    # a net whose copper leaves more plane segments unserved is rolled back.
-    pour_layers = {layer for layer, owners in poured_by.items() if owners}
-    plane_ids = list(ctx.plane_ids)
-
-    def plane_misses(extra_tracks: list[Any], extra_vias: list[Any]) -> tuple[int, int]:
-        """(plane segments left unserved, pour fragments): either rising
-        means the new copper split a plane."""
-        pours, missed = rz._pour_planes(
-            ir,
-            list(tracks) + new_tracks + extra_tracks,
-            list(vias) + new_vias + extra_vias,
-            list(unrouted),
-            plane_ids,
-            ctx.clearance_max,
-            max(ctx.clearance_max, ctx.edge_min) + 0.01,
-            footprints,
-            fixed_copper,
-            npth_clearance_mm=rz._npth_clearance_mm(config),
-        )
-        return len(missed), len(pours)
-
-    misses = plane_misses([], []) if pour_layers else (0, 0)
-    tried = 0
-    for net in sorted(by_net, key=lambda k: net_span(by_net[k])):
-        if spent >= budget:
-            out_of_budget = True
-            break
-        mark = space.mark()
-        net_tracks: list[Any] = []
-        net_vias: list[Any] = []
-        ok = True
-        for s in sorted(by_net[net], key=lambda s: net_span([s])):
-            tried += 1
-            got = route_segment(s)
-            if got is None:
-                ok = False
-                break
-            net_tracks += got[0]
-            net_vias += got[1]
-        if ok and pour_layers & {t.layer for t in net_tracks}:
-            now = plane_misses(net_tracks, net_vias)
-            if now[0] > misses[0] or now[1] > misses[1]:
-                ok = False
-            else:
-                misses = now
-        if not ok:
-            space.rollback(mark)
-            continue
-        new_tracks += net_tracks
-        new_vias += net_vias
-        routed.update(by_net[net])
-    elapsed = time.monotonic() - t0
-    report = EscapeReport(tried, len(routed), spent, elapsed, out_of_budget)
-    if not routed:
-        return best, report
-    still = [s for s in unrouted if s not in routed]
-    return (
-        list(tracks) + new_tracks,
-        list(vias) + new_vias,
-        still,
-        notes,
-        plane_failed,
-    ), report
 
 
 __all__ = [
@@ -1023,7 +805,6 @@ __all__ = [
     "VPath",
     "ViaSpec",
     "connectors",
-    "escape_pass",
     "is_octilinear",
     "obstacles_of",
     "octagon_corners",

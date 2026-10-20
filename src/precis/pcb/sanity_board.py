@@ -268,7 +268,7 @@ class SanityResult:
 
 
 def route(spec: SanitySpec, built: Built | None = None) -> SanityResult:
-    """Realize with the production maze (default config) and run the routed
+    """Realize with the vector router (default config) and run the routed
     DRC. ``built`` lets a caller route a board it already placed."""
     built = built or build(spec)
     ir = built.ir

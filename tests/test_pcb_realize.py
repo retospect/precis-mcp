@@ -1,7 +1,7 @@
 """Unit + property tests for precis.pcb.realize — sketch -> copper
 geometry. No DB.
 
-Covers: the tangent+arc closed form against an independently-derived
+Covers: the realize pipeline on the vector router
 formula (not the implementation's own math, restated), a clearance
 property test over many randomized obstacle placements, the gerber.py
 round-trip (verifying the "expected model shape actually matches" claim
@@ -12,15 +12,13 @@ and rip-up leaving other nets' geometry byte-identical.
 
 from __future__ import annotations
 
-import dataclasses
 import itertools
 import math
-import random
 from typing import Any
 
 import pytest
 
-from precis.pcb import DEFAULT_STACKUP, gerber, padplace
+from precis.pcb import DEFAULT_STACKUP, padplace
 from precis.pcb import drc as pcb_drc
 from precis.pcb.capabilities import capability_for
 from precis.pcb.connectivity import net_islands
@@ -29,297 +27,24 @@ from precis.pcb.planes import point_in_pour
 from precis.pcb.realize import (
     PAD_LAYER,
     CongestionWarning,
-    Obstacle,
     RealizeConfig,
-    _track_from_run,
     pad_geometry,
     pads_for_ir,
     pin_topology,
-    re_realize_segments,
     realize,
     rip_net,
-    tangent_arc_path,
     to_gerber_model,
 )
 from precis.pcb.rules import (
     ipc2221_track_width_mm,
-    via_capacity_a,
-    via_count_for_current,
 )
 from tests._pcb_outline import closed_outline
 
-#: This module tests the TANGENT drawer's contract, so it says so rather
-#: than riding the default. Those contracts — one straight-or-hugging
-#: track per segment, on the segment's own ``seg_layer``, with vias
-#: wherever that layer isn't the pad layer — are specifically what the
-#: maze router (now the default) does NOT promise: it chooses its own
-#: layers and its own path, and reports what it could not route. Both are
-#: real and both need tests; the maze router's live in
-#: ``tests/test_pcb_maze.py``.
-_TANGENT = RealizeConfig(router="tangent")
-
-# ── the closed-form geometric primitive ──────────────────────────────────
-
-
-def test_tangent_arc_path_straight_line_when_unblocked():
-    segs, length = tangent_arc_path((0.0, 0.0), (10.0, 0.0), (0.0, 10.0), 1.0)
-    assert segs == [{"shape": "line", "start": [0.0, 0.0], "end": [10.0, 0.0]}]
-    assert length == pytest.approx(10.0)
-
-
-def test_tangent_arc_path_matches_hand_computed_closed_form():
-    """S=(-3,0), E=(3,0), obstacle at the origin, radius 1 -- a fully
-    symmetric configuration whose length is independently derivable:
-    tangent length = sqrt(d^2 - r^2) (Pythagoras on the tangent-radius-
-    hypotenuse right triangle); the swept arc's central angle follows
-    from the chord between the two tangent points (both at
-    y = -r*sin(theta), separated by 2*r*cos(theta)) via the standard
-    chord/central-angle relation `chord = 2r*sin(phi/2)`, giving
-    `phi = pi - 2*theta`. This formula is written independently of
-    realize.py's own implementation (which brute-forces 4 tangent-point
-    pairings) -- a match here is a real cross-check, not a restatement.
-    """
-    d, r = 3.0, 1.0
-    theta = math.acos(r / d)
-    expected_tangent = math.sqrt(d * d - r * r)
-    expected_arc = r * (math.pi - 2 * theta)
-    expected_total = 2 * expected_tangent + expected_arc
-
-    segs, length = tangent_arc_path((-3.0, 0.0), (3.0, 0.0), (0.0, 0.0), 1.0)
-    assert length == pytest.approx(expected_total, rel=1e-9)
-
-    # shape: line, arc, line
-    assert [s["shape"] for s in segs] == ["line", "arc", "line"]
-    line1, arc, line2 = segs
-    assert math.hypot(
-        line1["end"][0] - line1["start"][0], line1["end"][1] - line1["start"][1]
-    ) == pytest.approx(expected_tangent, rel=1e-9)
-    assert math.hypot(
-        line2["end"][0] - line2["start"][0], line2["end"][1] - line2["start"][1]
-    ) == pytest.approx(expected_tangent, rel=1e-9)
-    assert arc["center"] == [0.0, 0.0]
-    # arc central angle from its own endpoints, independently of the
-    # "cw" bookkeeping -- must match the hand-derived sweep magnitude.
-    a1 = math.atan2(arc["start"][1], arc["start"][0])
-    a2 = math.atan2(arc["end"][1], arc["end"][0])
-    diff = abs((a2 - a1 + math.pi) % (2 * math.pi) - math.pi)
-    assert diff == pytest.approx(expected_arc / r, rel=1e-9)
-
-
-def test_tangent_arc_path_clears_the_obstacle_everywhere():
-    """Property test: for many randomized obstacle placements where the
-    straight line IS blocked, every sampled point along the returned
-    path (tangent lines + arc) stays outside the clearance circle."""
-    rng = random.Random(0)
-    trials = 0
-    for _ in range(600):
-        cx, cy = rng.uniform(-5, 5), rng.uniform(-5, 5)
-        r = rng.uniform(0.3, 2.0)
-        ang1, ang2 = rng.uniform(0, 2 * math.pi), rng.uniform(0, 2 * math.pi)
-        d1, d2 = rng.uniform(r + 1, r + 6), rng.uniform(r + 1, r + 6)
-        start = (cx + d1 * math.cos(ang1), cy + d1 * math.sin(ang1))
-        end = (cx + d2 * math.cos(ang2), cy + d2 * math.sin(ang2))
-
-        def dist_to_segment(p, a, b):
-            ax, ay = a
-            bx, by = b
-            px, py = p
-            dx, dy = bx - ax, by - ay
-            l2 = dx * dx + dy * dy
-            t = (
-                max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / l2))
-                if l2
-                else 0.0
-            )
-            return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
-
-        if dist_to_segment((cx, cy), start, end) >= r:
-            continue  # not actually blocked -- skip, this trial is trivial
-        trials += 1
-        segs, _length = tangent_arc_path(start, end, (cx, cy), r)
-        for seg in segs:
-            samples = _sample_segment(seg)
-            for p in samples:
-                clearance = math.hypot(p[0] - cx, p[1] - cy) - r
-                assert clearance >= -1e-6, (start, end, cx, cy, r, seg, clearance)
-    assert (
-        trials > 50
-    )  # sanity: the randomized generator actually produced blocked cases
-
-
-def _sample_segment(seg, n=20):
-    if seg["shape"] == "line":
-        ax, ay = seg["start"]
-        bx, by = seg["end"]
-        return [(ax + (bx - ax) * i / n, ay + (by - ay) * i / n) for i in range(n + 1)]
-    cx, cy = seg["center"]
-    ax, ay = seg["start"]
-    bx, by = seg["end"]
-    r = math.hypot(ax - cx, ay - cy)
-    a1 = math.atan2(ay - cy, ax - cx)
-    a2 = math.atan2(by - cy, bx - cx)
-    diff = (a2 - a1) % (2 * math.pi)
-    if not seg["cw"]:
-        sweep = diff
-    else:
-        sweep = diff - 2 * math.pi
-    return [
-        (cx + r * math.cos(a1 + sweep * i / n), cy + r * math.sin(a1 + sweep * i / n))
-        for i in range(n + 1)
-    ]
-
-
-def test_tangent_arc_path_raises_when_endpoint_inside_obstacle():
-    with pytest.raises(ValueError):
-        tangent_arc_path((0.0, 0.0), (10.0, 0.0), (0.0, 0.0), 5.0)
+#: The one router — 'vector' — is the default; tests ride it.
+_VECTOR = RealizeConfig(router="vector")
 
 
 # ── gerber.py round-trip: does the model shape actually match? ──────────
-def test_realize_output_round_trips_into_gerber_without_shape_errors():
-    graph = {
-        "instances": [
-            {"refdes": "U0", "x": 0.0, "y": 0.0},
-            {"refdes": "U1", "x": 10.0, "y": 0.0},
-            {"refdes": "OBSTACLE", "x": 5.0, "y": 0.0},
-        ],
-        "nets": [
-            {
-                "name": "SIG",
-                "net_class": "signal",
-                "domain": "electrical",
-                "members": [
-                    {"refdes": "U0", "pin": "1"},
-                    {"refdes": "U1", "pin": "1"},
-                ],
-            }
-        ],
-    }
-    ir = from_graph(graph, stackup=DEFAULT_STACKUP)
-    ir.set_layer(0, 0)
-    obstacles = [Obstacle(instance=2, center=(5.0, 0.0), radius=1.0)]
-    result = realize(
-        ir,
-        obstacles=obstacles,
-        config=RealizeConfig(clearance_mm=0.1, router="tangent"),
-    )
-    assert result.tracks
-    track = result.tracks[0]
-    assert track.blocked_by == 2  # routed around the obstacle instance
-    assert any(s["shape"] == "arc" for s in track.segments)
-
-    model = to_gerber_model(
-        result,
-        ir,
-        layers=[layer["name"] for layer in DEFAULT_STACKUP],
-        outline=[[0.0, -5.0], [20.0, -5.0], [20.0, 5.0], [0.0, 5.0]],
-    )
-    files = gerber.export_gerbers(model, name="realize-test")
-    assert files  # no shape errors raised, at least one file produced
-    fcu = files["realize-test-F_Cu.gbr"]
-    assert "G02" in fcu or "G03" in fcu  # the arc actually emitted an arc opcode
-
-
-def test_realize_dogbone_stub_for_plane_promoted_net():
-    graph = {
-        "instances": [
-            {"refdes": "U0", "x": 0.0, "y": 0.0},
-            {"refdes": "U1", "x": 20.0, "y": 0.0},
-        ],
-        "nets": [
-            {
-                "name": "GND",
-                "net_class": "ground",
-                "domain": "electrical",
-                "members": [
-                    {"refdes": "U0", "pin": "1"},
-                    {"refdes": "U1", "pin": "1"},
-                ],
-            }
-        ],
-    }
-    ir = from_graph(graph, stackup=DEFAULT_STACKUP)
-    ir.promote_plane(0, 1)  # In1.Cu, the GND plane layer
-    result = realize(ir, config=_TANGENT)
-    track = result.tracks[0]
-    assert track.is_dogbone
-    assert track.length_mm <= RealizeConfig().dogbone_stub_mm + 1e-9
-    assert track.length_mm < 20.0  # nowhere near the far end -- a stub, not a route
-
-
-def test_plane_fanout_drop_via_clears_its_own_pad():
-    """gr — ``_drop_via_site`` (the MAZE router's dog-bone drop, a
-    different code path from the tangent drawer's
-    :func:`test_realize_dogbone_stub_for_plane_promoted_net` above) used
-    to check ``grid.disk_is_free`` only — deliberately same-net-blind, the
-    exact question :meth:`~precis.pcb.maze.OccupancyGrid.via_clears_pads`
-    exists to ask instead — and never asked it. ``grid.route``'s own via
-    search already folds that guard into its candidate mask; this search
-    tried candidates without it, so a wide pad's own drop via routinely
-    landed ON that pad. Measured on the reference board: 55 of 57 DRC
-    findings were exactly this, at essentially every plane-promoted pin.
-
-    U0's pad is the board-default single-pin size (1.0mm round, no
-    footprint override needed — this is not a fixture-specific pad, it is
-    what a bare board already has), which alone makes the required
-    via-to-pad distance bigger than the OLD flat ``dogbone_stub_mm``
-    (0.5mm) reach: exactly the shape of the reported defect, not a
-    contrived one.
-    """
-    from precis.pcb.geom import dist
-
-    graph = {
-        "instances": [
-            {"refdes": "U0", "x": 0.0, "y": 0.0},
-            {"refdes": "U1", "x": 20.0, "y": 0.0},
-        ],
-        "nets": [
-            {
-                "name": "GND",
-                "net_class": "ground",
-                "domain": "electrical",
-                "members": [
-                    {"refdes": "U0", "pin": "1"},
-                    {"refdes": "U1", "pin": "1"},
-                ],
-            }
-        ],
-    }
-    outline = [[-10.0, -10.0], [30.0, -10.0], [30.0, 10.0], [-10.0, 10.0]]
-    ir = from_graph(graph, stackup=DEFAULT_STACKUP, outline=outline)
-    ir.promote_plane(0, 1)  # In1.Cu, the GND plane layer
-    cap = capability_for("4layer")
-    config = RealizeConfig(router="maze", fab_caps=cap)
-    result = realize(ir, config=config)
-    assert not result.unrouted, [r.message for r in result.unrouted_reasons]
-    dogbone_vias = [v for v in result.vias if v.endpoint == "a"]
-    assert dogbone_vias, "the plane fanout must have dropped at least one via"
-
-    # The geometric property, tied to the router's own conservative
-    # enclosing-circle pad radius (pad_geometry's own convention) rather
-    # than to the DRC rule's separate (less strict) circumscribed one --
-    # this must hold regardless of which check is reading it.
-    for pid in range(ir.n_pins):
-        point = pin_point(ir, pid)
-        if point is None or int(ir.pin_net[pid]) != 0:
-            continue
-        geom = pad_geometry(ir)[pid]
-        pad_radius = math.hypot(geom.w_mm, geom.h_mm) / 2.0
-        for v in dogbone_vias:
-            gap = dist(point, (v.x, v.y)) - pad_radius - v.dia_mm / 2.0
-            assert gap >= config.clearance_mm - 1e-9, (
-                "a drop via landed closer to its own pad than the "
-                "resolved net clearance allows",
-                pid,
-                point,
-                v,
-                gap,
-            )
-
-    model = to_gerber_model(
-        result, ir, layers=[layer["name"] for layer in DEFAULT_STACKUP], outline=[]
-    )
-    findings = pcb_drc.check_via_pad_keepout(model, cap)
-    assert not findings, [f.detail for f in findings]
 
 
 def test_signal_layers_delegates_to_ir_routable_layers_and_respects_override():
@@ -343,38 +68,6 @@ def test_signal_layers_delegates_to_ir_routable_layers_and_respects_override():
     ir = from_graph({"instances": [], "nets": []}, stackup=stackup)
     assert pcb_realize._signal_layers(ir) == [0, 1, 3]
     assert pcb_session.signal_layers(ir) == [0, 1, 3]
-
-
-def test_layer_preferences_default_stackup_matches_a_single_call():
-    from precis.pcb.realize import _layer_preferences
-
-    ir = from_graph({"instances": [], "nets": []}, stackup=DEFAULT_STACKUP)
-    # F.Cu/B.Cu are the only routable layers in DEFAULT_STACKUP -- both
-    # outer, so the outer/inner split degenerates to a single call and
-    # must reproduce today's H/V assignment exactly.
-    assert _layer_preferences(ir, [0, 3]) == {0: "h", 3: "v"}
-
-
-def test_layer_preferences_gives_in1_h_and_in2_v_when_all_four_are_routable():
-    from precis.pcb.realize import _layer_preferences
-
-    stackup: list[dict[str, Any]] = [
-        {"name": "F.Cu", "role": "signal"},
-        {"name": "In1.Cu", "role": "plane", "routable": True},
-        {"name": "In2.Cu", "role": "plane", "routable": True},
-        {"name": "B.Cu", "role": "signal"},
-    ]
-    ir = from_graph({"instances": [], "nets": []}, stackup=stackup)
-    # A single preferred_directions([0,1,2,3]) call would give
-    # F.Cu='h', In1.Cu='v', In2.Cu='diagonal', B.Cu='h' -- NOT what a
-    # caller who marked In1/In2 routable asked for. The outer/inner split
-    # restarts the H/V/diagonal cycle per group instead.
-    assert _layer_preferences(ir, [0, 1, 2, 3]) == {
-        0: "h",  # F.Cu -- first OUTER routable layer
-        3: "v",  # B.Cu -- second OUTER routable layer
-        1: "h",  # In1.Cu -- first INNER routable layer
-        2: "v",  # In2.Cu -- second INNER routable layer
-    }
 
 
 def test_plane_pour_merges_same_net_copper_and_antipads_foreign_net():
@@ -477,585 +170,6 @@ def test_plane_pour_merges_same_net_copper_and_antipads_foreign_net():
     )
 
 
-def test_plane_flooded_on_two_layers_pours_both_and_stays_one_net_island():
-    """gr — a net promoted on SEVERAL layers at once (``net_plane_layers``
-    is a bitmask now, not a scalar), which is what a real 4-layer board
-    does for GND/PWR — flooded on every plane-role layer it reaches, not
-    just one. This pins two things the multi-layer cutover must get right
-    together: (1) :func:`~precis.pcb.realize._pour_planes` actually pours
-    BOTH layers (one dict entry per layer, keyed by layer -- module note
-    on :func:`precis.pcb.planes.plane_pours`'s ``plane_nets`` shape), and
-    (2) the two poured SHEETS come out as ONE electrical net, not two
-    disconnected fragments — :func:`~precis.pcb.realize._plane_fanout`'s
-    one-via-per-pin rule spans from the pad's own layer to the FARTHEST
-    poured layer, and a through via barrel connects every layer inside
-    that span (RealizedVia is always a contiguous span, never a scalar —
-    see that class's own docstring, and :mod:`precis.pcb.connectivity`'s
-    via-group union, which joins a via's primitives on every layer
-    ``_via_layer_names`` reports, not just its two ends). No separate
-    "stitching via" pass is needed for this: the ordinary per-pin drop via
-    already IS the stitch."""
-    graph = {
-        "instances": [
-            {"refdes": "G1", "x": 5.0, "y": 15.0},
-            {"refdes": "G2", "x": 35.0, "y": 15.0},
-        ],
-        "nets": [
-            {
-                "name": "GND",
-                "net_class": "ground",
-                "domain": "electrical",
-                "members": [
-                    {"refdes": "G1", "pin": "1"},
-                    {"refdes": "G2", "pin": "1"},
-                ],
-            },
-        ],
-    }
-    outline = [[0.0, 0.0], [40.0, 0.0], [40.0, 30.0], [0.0, 30.0]]
-    ir = from_graph(graph, stackup=DEFAULT_STACKUP, outline=outline)
-    ir.promote_plane(0, 1)  # In1.Cu
-    ir.promote_plane(0, 2)  # In2.Cu -- SAME net, a second layer
-    config = RealizeConfig(fab_caps=capability_for("4layer"))
-    result = realize(ir, config=config)
-    assert not result.unrouted, [
-        (s, r.message) for s, r in zip(result.unrouted, result.unrouted_reasons)
-    ]
-
-    poured_layers = {p["layer"] for p in result.pours}
-    assert poured_layers == {"In1.Cu", "In2.Cu"}, (
-        "GND must be poured on BOTH of its promoted layers, not just one",
-        result.pours,
-    )
-
-    gnd_vias = [v for v in result.vias if v.net_id == 0]
-    assert gnd_vias, "GND's dog-bone fanout must have dropped a via into the plane(s)"
-    # The stitching claim itself: every drop via's span must reach BOTH
-    # poured layers (indices 1 and 2), not stop at the nearer one.
-    for v in gnd_vias:
-        assert v.layer_lo <= 1 and v.layer_hi >= 2, (
-            "a plane-fanout via must span every poured layer of its net, "
-            "not just the nearest one",
-            v,
-        )
-
-    model = to_gerber_model(
-        result,
-        ir,
-        layers=[layer["name"] for layer in DEFAULT_STACKUP],
-        outline=outline,
-    )
-    islands = {i.net for i in net_islands(model)}
-    assert "GND" not in islands, (
-        "GND's two poured sheets must come out as ONE connected net via the "
-        "shared through-via, not two disconnected islands",
-        net_islands(model),
-    )
-
-
-def test_plane_fanout_drops_a_bottom_mounted_pin_from_its_OWN_layer():
-    """A BOTTOM-mounted pin's plane connection starts on B.Cu.
-
-    The test above pours two layers but mounts both parts on top, so it
-    could not tell ":func:`~precis.pcb.realize._plane_fanout` spans from
-    the pad's own layer" (what its docstring claims) from "spans from
-    ``PAD_LAYER``" (what the code did). Those differ for exactly one part:
-    a bottom-mounted one. For it the old code drew the stub on F.Cu —
-    bare board above its own pad — and gave it a via spanning
-    F.Cu->plane that never reached B.Cu at all, so the pin was left
-    ELECTRICALLY UNCONNECTED while its net still reported ``realized``.
-
-    Measured 2026-09-28 on the EWOD dogfood the first time a GND plane was
-    authored on In1.Cu: GND came out ``realized`` in THREE islands, the
-    two extra witnesses being its bottom-side SMD lands, and all five drop
-    vias reported ``span ['F.Cu', 'In1.Cu']``. The stray F.Cu stub is the
-    second half of the defect — on that board F.Cu carries the electrode
-    field, which nothing may cross.
-    """
-    graph = {
-        "instances": [
-            {"refdes": "G1", "x": 5.0, "y": 15.0},
-            # The whole point of the fixture: native copper is B.Cu, the
-            # LAST stackup entry, not the first.
-            {"refdes": "G2", "x": 35.0, "y": 15.0, "layer": "bottom"},
-        ],
-        "nets": [
-            {
-                "name": "GND",
-                "net_class": "ground",
-                "domain": "electrical",
-                "members": [
-                    {"refdes": "G1", "pin": "1"},
-                    {"refdes": "G2", "pin": "1"},
-                ],
-            },
-        ],
-    }
-    outline = [[0.0, 0.0], [40.0, 0.0], [40.0, 30.0], [0.0, 30.0]]
-    ir = from_graph(graph, stackup=DEFAULT_STACKUP, outline=outline)
-    ir.promote_plane(0, 1)  # In1.Cu
-    result = realize(ir, config=RealizeConfig(fab_caps=capability_for("4layer")))
-    assert not result.unrouted, [
-        (s, r.message) for s, r in zip(result.unrouted, result.unrouted_reasons)
-    ]
-
-    bottom = len(DEFAULT_STACKUP) - 1  # B.Cu
-    g2_pin = next(
-        pid
-        for pid in range(ir.n_pins)
-        if str(ir.instance_refdes[int(ir.pin_instance[pid])]) == "G2"
-    )
-    g2_point = pin_point(ir, g2_pin)
-    assert g2_point is not None
-    # Identified by POSITION, not by index: the fanout emits one stub per
-    # pin and nothing in its contract fixes their order.
-    g2_stubs = [
-        t for t in result.tracks if tuple(t.segments[0]["start"]) == tuple(g2_point)
-    ]
-    assert g2_stubs, ("G2 got no plane stub at all", result.tracks)
-    assert {t.layer for t in g2_stubs} == {bottom}, (
-        "a bottom-mounted pin's plane stub must be drawn on B.Cu — on F.Cu "
-        "it starts on bare board above its own pad, and on this engine's "
-        "own EWOD board F.Cu is the electrode field",
-        [(t.layer, t.segments) for t in g2_stubs],
-    )
-    g2_vias = [
-        v
-        for v in result.vias
-        if any(
-            math.isclose(v.x, s.segments[0]["end"][0])
-            and math.isclose(v.y, s.segments[0]["end"][1])
-            for s in g2_stubs
-        )
-    ]
-    assert g2_vias, ("G2's stub ends in no via", result.vias)
-    for v in g2_vias:
-        assert v.layer_lo <= 1 and v.layer_hi == bottom, (
-            "a bottom-mounted pin's drop via must span its OWN layer to the "
-            "plane, not F.Cu to the plane",
-            v,
-        )
-
-    # The consequence, checked independently of how it was achieved.
-    model = to_gerber_model(
-        result,
-        ir,
-        layers=[layer["name"] for layer in DEFAULT_STACKUP],
-        outline=outline,
-    )
-    assert "GND" not in {i.net for i in net_islands(model)}, (
-        "a plane whose bottom-side pin never reached it is a net in two "
-        "pieces, however confidently the route status says realized",
-        net_islands(model),
-    )
-
-
-def test_stitch_one_net_sprinkles_a_via_and_merges_two_overlapping_sheets():
-    """gr270637 — the deliberate stitching pass (module docstring's "Plane
-    fragment stitching" note), exercised directly against
-    :func:`~precis.pcb.realize._stitch_one_net` rather than through a full
-    place+route, so the fragmentation is CONSTRUCTED rather than merely
-    hoped for: two same-net sheets on DIFFERENT layers that overlap, with
-    NO existing via connecting them at all. The test above
-    (``test_plane_flooded_on_two_layers_pours_both_and_stays_one_net_island``)
-    proves the ordinary per-pin drop via already IS the stitch when it
-    happens to span both layers — this test proves the NEW pass still
-    works when that incidental mechanism is entirely absent, i.e. it is
-    doing real work, not riding along.
-
-    The result is independently re-checked with
-    :func:`precis.pcb.connectivity.net_islands` — the SAME independent
-    checker the module docstring says this pass must never call from
-    inside itself — as a one-shot test assertion, not a loop condition."""
-    from precis.pcb import maze as pcb_maze
-    from precis.pcb.realize import _pour_polygon, _stitch_one_net
-    from precis.pcb.rules import NetRules
-
-    spec = pcb_maze.GridSpec(x0=0.0, y0=0.0, pitch=0.1, nx=300, ny=150, n_layers=4)
-    grid = pcb_maze.OccupancyGrid(spec, clearance_mm=0.15)
-    rules = NetRules(
-        track_width_mm=0.25, clearance_mm=0.15, via_dia_mm=0.5, via_drill_mm=0.25
-    )
-    config = RealizeConfig()
-
-    pour_a = {
-        "ctype": "pour",
-        "layer": "F.Cu",
-        "net": "GND",
-        "polygon": [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
-    }
-    pour_b = {
-        "ctype": "pour",
-        "layer": "B.Cu",
-        "net": "GND",
-        "polygon": [[5.0, 0.0], [15.0, 0.0], [15.0, 10.0], [5.0, 10.0]],
-    }
-    frags = [(0, _pour_polygon(pour_a)), (1, _pour_polygon(pour_b))]
-
-    new_vias, new_tracks, remaining, _bare, message = _stitch_one_net(
-        0, "GND", frags, [], grid, rules, config, [], {0: 0.25, 1: 0.25}, {}, []
-    )
-    assert remaining == 1, message
-    assert not message, "a fully-stitched net must report no failure message"
-    assert new_vias, "sprinkle stage must have placed at least one stitching via"
-    assert not new_tracks, (
-        "two OVERLAPPING sheets are bridged by a plain via -- a jumper is "
-        "real copper on a spare layer and must never be bought when the "
-        "cheap mechanism already works",
-        new_tracks,
-    )
-    for v in new_vias:
-        assert v.net_id == 0
-        assert (v.layer_lo, v.layer_hi) == (0, 3), (
-            "a stitching via is a through via: it spans every copper layer "
-            "(no blind/buried vias, gr495289), not just the two sheets it joins",
-            v,
-        )
-        # every placed via must actually land in the overlap ([5, 10] x
-        # [0, 10]) it was placed to bridge, not merely somewhere legal.
-        assert 5.0 <= v.x <= 10.0 and 0.0 <= v.y <= 10.0, v
-
-    # `net_islands` only counts TRACK/VIA primitives (a bare pour polygon
-    # is not itself a graph node -- it only unions whatever already falls
-    # inside it), so give each sheet an independent "anchor" -- standing in
-    # for a real per-pin drop via elsewhere on that one layer, same as a
-    # real board always has SOMETHING landing on a plane -- and confirm the
-    # anchors end up in ONE component only via the stitching via(s) above,
-    # not because they were placed in the same spot to begin with.
-    anchor_a = {
-        "ctype": "via",
-        "net": "GND",
-        "x": 1.0,
-        "y": 1.0,
-        "dia_mm": 0.3,
-        "layers": ["F.Cu"],
-    }
-    anchor_b = {
-        "ctype": "via",
-        "net": "GND",
-        "x": 14.0,
-        "y": 9.0,
-        "dia_mm": 0.3,
-        "layers": ["B.Cu"],
-    }
-    model = {
-        "layers": ["F.Cu", "B.Cu"],
-        "copper": [pour_a, pour_b, anchor_a, anchor_b]
-        + [
-            {
-                "ctype": "via",
-                "net": "GND",
-                "x": v.x,
-                "y": v.y,
-                "dia_mm": v.dia_mm,
-                "span": ["F.Cu", "B.Cu"],
-            }
-            for v in new_vias
-        ],
-        "pads": [],
-    }
-    islands = net_islands(model)
-    assert "GND" not in {i.net for i in islands}, (
-        "the independent connectivity checker must agree the two sheets "
-        "are now one piece",
-        islands,
-    )
-
-
-def test_stitch_one_net_announces_a_gap_no_single_via_can_bridge():
-    """gr270637 — pins the FAILURE direction the task brief asks for: two
-    same-net, same-layer pieces separated by more than one via's own
-    diameter cannot be joined by a single via (module docstring's
-    "provable limit" note in :func:`~precis.pcb.realize._stitch_one_net`
-    — a via touches copper at one (x, y) with a fixed radius, so by the
-    triangle inequality a gap wider than twice that radius is not merely
-    hard, it is impossible for one via). The pass must SAY SO rather than
-    silently returning a result that still looks stitched: a non-empty
-    ``message``, a remaining-piece count > 1, and — critically — no via
-    placed at all for this pair (a check that cannot fire must announce
-    it, not paper over it with copper that doesn't actually join anything).
-
-    **The board here has exactly ONE routable layer**, which is what keeps
-    this the failure case now that a jumper exists: a jumper needs a
-    detour layer that is neither fragment's own, so with nothing but
-    ``F.Cu`` there is no legal one to find. The test below
-    (``..._bridges_two_same_layer_pieces_with_a_jumper``) is the same
-    geometry WITH a spare layer, and closes. Together they pin that the
-    refusal is about the board, not about giving up.
-
-    Independently re-checked with
-    :func:`precis.pcb.connectivity.net_islands`: the two pieces really are
-    reported as two, confirming this isn't a false alarm from this pass's
-    own (deliberately independent, module docstring) reasoning."""
-    from precis.pcb import maze as pcb_maze
-    from precis.pcb.realize import _pour_polygon, _stitch_one_net
-    from precis.pcb.rules import NetRules
-
-    spec = pcb_maze.GridSpec(x0=0.0, y0=0.0, pitch=0.1, nx=400, ny=100, n_layers=4)
-    grid = pcb_maze.OccupancyGrid(spec, clearance_mm=0.15)
-    rules = NetRules(
-        track_width_mm=0.25, clearance_mm=0.15, via_dia_mm=0.5, via_drill_mm=0.25
-    )
-    config = RealizeConfig()
-
-    # Same layer, 15mm apart -- 30x this net's own 0.5mm via diameter, so
-    # no single via can ever touch both regardless of what else is (or
-    # isn't) on the board.
-    pour_a = {
-        "ctype": "pour",
-        "layer": "F.Cu",
-        "net": "GND",
-        "polygon": [[0.0, 0.0], [5.0, 0.0], [5.0, 5.0], [0.0, 5.0]],
-    }
-    pour_b = {
-        "ctype": "pour",
-        "layer": "F.Cu",
-        "net": "GND",
-        "polygon": [[20.0, 0.0], [25.0, 0.0], [25.0, 5.0], [20.0, 5.0]],
-    }
-    frags = [(0, _pour_polygon(pour_a)), (0, _pour_polygon(pour_b))]
-
-    new_vias, new_tracks, remaining, bare, message = _stitch_one_net(
-        0, "GND", frags, [], grid, rules, config, [], {0: 0.25}, {}, []
-    )
-    assert remaining == 2, "two genuinely disjoint same-layer pieces stay two"
-    assert bare == 2, (
-        "neither piece holds a via, trace or pad of this net, so BOTH are "
-        "floating copper rather than an electrical split -- the distinction "
-        "`pcb_route` uses to decide whether to fail the net",
-        bare,
-    )
-    assert message, "an unstitched net must announce itself, not stay silent"
-    assert "no spatial overlap" in message
-    assert not new_vias, (
-        "no via should be placed at all for a pair that is provably "
-        "unbridgeable by one -- a via that doesn't actually join anything "
-        "would be worse than none",
-        new_vias,
-    )
-    assert not new_tracks, (
-        "and no half-jumper either: a jumper with nowhere legal to route "
-        "must leave NOTHING behind, not a stranded trace",
-        new_tracks,
-    )
-
-    # Same anchor discipline as the positive test above -- a bare pour
-    # polygon is not itself a node `net_islands` counts.
-    anchor_a = {
-        "ctype": "via",
-        "net": "GND",
-        "x": 2.0,
-        "y": 2.0,
-        "dia_mm": 0.3,
-        "layers": ["F.Cu"],
-    }
-    anchor_b = {
-        "ctype": "via",
-        "net": "GND",
-        "x": 22.0,
-        "y": 2.0,
-        "dia_mm": 0.3,
-        "layers": ["F.Cu"],
-    }
-    model = {
-        "layers": ["F.Cu"],
-        "copper": [pour_a, pour_b, anchor_a, anchor_b],
-        "pads": [],
-    }
-    islands = net_islands(model)
-    assert any(i.net == "GND" and i.components == 2 for i in islands), islands
-
-
-def test_stitch_one_net_counts_a_stitched_piece_as_populated_not_floating():
-    """``bare_fragments`` must be read AFTER this pass places its own
-    copper, not from the board as it arrived.
-
-    The set of fragments known to hold this net's copper is seeded from the
-    pre-existing vias and traces, and the stitching stages then put NEW
-    vias into fragments that had none. Reading the stale seed would call
-    such a fragment empty — and the error runs the dangerous way:
-    ``pcb_route`` fails a net only when
-    ``fragments - bare_fragments > 1``, so an inflated bare count
-    downgrades a genuine electrical split to a cosmetic "floating copper"
-    note.
-
-    The fixture separates the two: sheets A (``F.Cu``) and B (``B.Cu``)
-    OVERLAP, so stage 1 sprinkles a stitching via joining them — that
-    component is populated only by copper this call created. Sheet C sits
-    far away on ``F.Cu`` with nothing in it and no detour layer offered, so
-    it stays genuinely bare. The answer must be 1, not 2."""
-    from precis.pcb import maze as pcb_maze
-    from precis.pcb.realize import _pour_polygon, _stitch_one_net
-    from precis.pcb.rules import NetRules
-
-    spec = pcb_maze.GridSpec(x0=0.0, y0=0.0, pitch=0.1, nx=300, ny=60, n_layers=2)
-    grid = pcb_maze.OccupancyGrid(spec, clearance_mm=0.15)
-    rules = NetRules(
-        track_width_mm=0.25, clearance_mm=0.15, via_dia_mm=0.5, via_drill_mm=0.25
-    )
-    config = RealizeConfig()
-
-    poly = _pour_polygon({"polygon": [[1.0, 1.0], [5.0, 1.0], [5.0, 4.0], [1.0, 4.0]]})
-    poly_b = _pour_polygon(
-        {"polygon": [[3.0, 1.0], [7.0, 1.0], [7.0, 4.0], [3.0, 4.0]]}
-    )
-    poly_c = _pour_polygon(
-        {"polygon": [[20.0, 1.0], [24.0, 1.0], [24.0, 4.0], [20.0, 4.0]]}
-    )
-    frags = [(0, poly), (1, poly_b), (0, poly_c)]
-
-    # Only layer 0 is offered as a routable width, so the A/C pair (both on
-    # layer 0) can find no detour layer and buys no jumper.
-    new_vias, _tracks, remaining, bare, message = _stitch_one_net(
-        0, "GND", frags, [], grid, rules, config, [], {0: 0.25}, {}, []
-    )
-    assert new_vias, "the overlapping A/B pair must still be stitched"
-    assert remaining == 2, message
-    assert bare == 1, (
-        "the A+B component holds the stitching via this call just placed "
-        "and is NOT floating copper; only C is",
-        bare,
-        message,
-    )
-    assert "1 of those piece(s) hold NO via or trace" in message
-
-
-def test_stitch_one_net_bridges_two_same_layer_pieces_with_a_jumper():
-    """The same geometry the test above refuses — two same-net pieces on
-    ONE layer, 15mm apart — closes the moment a spare layer exists to
-    detour through (:func:`~precis.pcb.realize._try_plane_jumper`).
-
-    Measured on the 40mm fixture, ``GND`` poured on ``F.Cu`` alone came out
-    in four pieces and no amount of via placement could ever merge them: a
-    via joins LAYERS, not lateral gaps on one layer. The fix is a via out
-    of each fragment plus a trace between them on a layer this net was not
-    using — two jumpers closed that board, and its ``connectivity`` waiver
-    went to zero rather than down.
-
-    **Asserted through the independent checker, not the producer's own
-    count.** ``remaining`` is the stitching pass grading its own homework;
-    :func:`precis.pcb.connectivity.net_islands` is the entity that actually
-    reported the defect, so the jumper's copper is fed back through it as a
-    real gerber model — the two vias AND the trace, since a jumper whose
-    trace never reached the export would connect nothing on the fab floor.
-    """
-    from precis.pcb import maze as pcb_maze
-    from precis.pcb.realize import _pour_polygon, _stitch_one_net
-    from precis.pcb.rules import NetRules
-
-    spec = pcb_maze.GridSpec(x0=0.0, y0=0.0, pitch=0.1, nx=300, ny=60, n_layers=2)
-    grid = pcb_maze.OccupancyGrid(spec, clearance_mm=0.15)
-    rules = NetRules(
-        track_width_mm=0.25, clearance_mm=0.15, via_dia_mm=0.5, via_drill_mm=0.25
-    )
-    config = RealizeConfig()
-
-    pour_a = {
-        "ctype": "pour",
-        "layer": "F.Cu",
-        "net": "GND",
-        "polygon": [[1.0, 1.0], [5.0, 1.0], [5.0, 4.0], [1.0, 4.0]],
-    }
-    pour_b = {
-        "ctype": "pour",
-        "layer": "F.Cu",
-        "net": "GND",
-        "polygon": [[20.0, 1.0], [24.0, 1.0], [24.0, 4.0], [20.0, 4.0]],
-    }
-    frags = [(0, _pour_polygon(pour_a)), (0, _pour_polygon(pour_b))]
-
-    new_vias, new_tracks, remaining, _bare, message = _stitch_one_net(
-        0, "GND", frags, [], grid, rules, config, [], {0: 0.25, 1: 0.25}, {}, []
-    )
-    assert remaining == 1, message
-    assert not message, "a jumpered net is stitched -- it must not announce"
-    assert len(new_tracks) == 1, ("one jumper, one trace", new_tracks)
-    assert len(new_vias) == 2, ("a jumper is exactly two barrels", new_vias)
-    jumper = new_tracks[0]
-    assert jumper.layer == 1, (
-        "the detour must be on the SPARE layer -- a trace on F.Cu would "
-        "leave the far end with no via to anchor it, which the checker "
-        "joins by first-point containment only",
-        jumper,
-    )
-    for v in new_vias:
-        assert (v.layer_lo, v.layer_hi) == (0, 1), v
-    # One barrel per fragment, each with its CENTRE inside that fragment --
-    # `net_islands` joins a pour to a primitive by containment of the
-    # primitive's own point, so "near the fragment" would not connect.
-    # shapely ships no py.typed marker -- same suppression realize.py and
-    # planes.py already carry at their own import sites.
-    from shapely.geometry import (
-        Point as ShapelyPoint,
-    )
-
-    poly_a, poly_b = frags[0][1], frags[1][1]
-    assert sum(1 for v in new_vias if poly_a.contains(ShapelyPoint(v.x, v.y))) == 1
-    assert sum(1 for v in new_vias if poly_b.contains(ShapelyPoint(v.x, v.y))) == 1
-    # ...and the trace's two ends sit exactly on those barrels: a cell-centre
-    # rounding gap here is the "track ends short" defect `connectivity`'s own
-    # module docstring opens with.
-    ends = {
-        (
-            round(jumper.segments[0]["start"][0], 9),
-            round(jumper.segments[0]["start"][1], 9),
-        ),
-        (
-            round(jumper.segments[-1]["end"][0], 9),
-            round(jumper.segments[-1]["end"][1], 9),
-        ),
-    }
-    assert ends == {(round(v.x, 9), round(v.y, 9)) for v in new_vias}, (ends, new_vias)
-
-    anchor_a = {
-        "ctype": "via",
-        "net": "GND",
-        "x": 2.0,
-        "y": 2.0,
-        "dia_mm": 0.3,
-        "layers": ["F.Cu"],
-    }
-    anchor_b = {
-        "ctype": "via",
-        "net": "GND",
-        "x": 22.0,
-        "y": 2.0,
-        "dia_mm": 0.3,
-        "layers": ["F.Cu"],
-    }
-    model = {
-        "layers": ["F.Cu", "B.Cu"],
-        "copper": [pour_a, pour_b, anchor_a, anchor_b]
-        + [
-            {
-                "ctype": "via",
-                "net": "GND",
-                "x": v.x,
-                "y": v.y,
-                "dia_mm": v.dia_mm,
-                "span": ["F.Cu", "B.Cu"],
-            }
-            for v in new_vias
-        ]
-        + [
-            {
-                "ctype": "track",
-                "net": "GND",
-                "layer": "B.Cu",
-                "width_mm": jumper.width_mm,
-                "segments": list(jumper.segments),
-            }
-        ],
-        "pads": [],
-    }
-    islands = net_islands(model)
-    assert "GND" not in {i.net for i in islands}, (
-        "the independent connectivity checker must agree the two same-layer "
-        "pieces are now one",
-        islands,
-    )
-
-
 def test_plane_pour_antipads_a_pad_that_has_no_track_or_via_at_all():
     """gr — a PAD is not a track or a via, and ``to_gerber_model``'s
     ``model["copper"]`` never carries one (pads are the separate
@@ -1154,7 +268,7 @@ def test_congestion_warning_when_gap_over_capacity():
         )
     graph = {"instances": instances, "nets": nets}
     ir = from_graph(graph, stackup=DEFAULT_STACKUP)
-    config = RealizeConfig(pitch_mm=0.3, router="tangent")
+    config = RealizeConfig(pitch_mm=0.3, router="vector")
     # gap from U0 to its nearest OTHER instance (HUB) is 0.1mm -- floor(0.1/0.3) = 0 capacity
     result = realize(ir, config=config)
     assert result.warnings
@@ -1184,7 +298,7 @@ def test_no_congestion_warning_when_gap_has_room():
         ],
     }
     ir = from_graph(graph, stackup=DEFAULT_STACKUP)
-    result = realize(ir, config=_TANGENT)
+    result = realize(ir, config=_VECTOR)
     assert not result.warnings
 
 
@@ -1217,7 +331,7 @@ def _two_net_ir():
 
 def test_rip_net_leaves_other_nets_geometry_untouched():
     ir = _two_net_ir()
-    result = realize(ir, config=_TANGENT)
+    result = realize(ir, config=_VECTOR)
     assert {t.net_id for t in result.tracks} == {0, 1}
     other_track_before = next(t for t in result.tracks if t.net_id == 1)
 
@@ -1225,21 +339,6 @@ def test_rip_net_leaves_other_nets_geometry_untouched():
     assert {t.net_id for t in ripped.tracks} == {1}
     other_track_after = ripped.tracks[0]
     assert other_track_after is other_track_before  # same object, not recomputed
-
-
-def test_re_realize_segments_recomputes_only_named_segments():
-    ir = _two_net_ir()
-    result = realize(ir, config=_TANGENT)
-    net_a_seg = next(t.seg_id for t in result.tracks if t.net_id == 0)
-    net_b_track_before = next(t for t in result.tracks if t.net_id == 1)
-
-    ir.move_instance(1, x=10.0, y=5.0)  # move U1 -- only net A's segment should change
-    updated = re_realize_segments(ir, result, [net_a_seg])
-
-    net_a_track_after = next(t for t in updated.tracks if t.net_id == 0)
-    net_b_track_after = next(t for t in updated.tracks if t.net_id == 1)
-    assert net_a_track_after.segments[0]["end"] == [10.0, 5.0]
-    assert net_b_track_after is net_b_track_before  # untouched
 
 
 def test_pin_topology_delegates_to_set_side():
@@ -1279,23 +378,11 @@ def test_realize_derives_track_width_from_current_on_outer_layer():
     outer-layer IPC-2221 trace actually needs."""
     ir = from_graph(_current_net_graph(5.0), stackup=DEFAULT_STACKUP)
     ir.set_layer(0, 0)  # F.Cu -- an outer layer
-    result = realize(ir, config=_TANGENT)
+    result = realize(ir, config=_VECTOR)
     track = result.tracks[0]
     expected = ipc2221_track_width_mm(5.0, layer_is_outer=True)
     assert track.width_mm == pytest.approx(expected, rel=1e-6)
     assert track.width_mm > 1.0  # nowhere near the 0.25mm fuse
-
-
-def test_realize_inner_layer_gets_a_wider_track_than_outer_for_the_same_current():
-    ir_outer = from_graph(_current_net_graph(5.0), stackup=DEFAULT_STACKUP)
-    ir_outer.set_layer(0, 0)  # F.Cu
-    outer_width = realize(ir_outer, config=_TANGENT).tracks[0].width_mm
-
-    ir_inner = from_graph(_current_net_graph(5.0), stackup=DEFAULT_STACKUP)
-    ir_inner.set_layer(0, 1)  # In1.Cu -- an internal layer
-    inner_width = realize(ir_inner, config=_TANGENT).tracks[0].width_mm
-
-    assert inner_width > outer_width
 
 
 def test_realize_no_current_annotation_falls_back_to_fab_floor_width():
@@ -1320,7 +407,7 @@ def test_realize_no_current_annotation_falls_back_to_fab_floor_width():
     }
     ir = from_graph(graph, stackup=DEFAULT_STACKUP)
     ir.set_layer(0, 0)
-    track = realize(ir, config=_TANGENT).tracks[0]
+    track = realize(ir, config=_VECTOR).tracks[0]
     cap = capability_for("4layer")
     assert track.width_mm == pytest.approx(cap.house_default["trace_width_mm"])
 
@@ -1329,7 +416,7 @@ def test_realize_class_rule_override_beats_current_derivation():
     ir = from_graph(_current_net_graph(5.0), stackup=DEFAULT_STACKUP)
     ir.set_layer(0, 0)
     config = RealizeConfig(
-        class_rules={"power": {"track_width_mm": 0.8}}, router="tangent"
+        class_rules={"power": {"track_width_mm": 0.8}}, router="vector"
     )
     track = realize(ir, config=config).tracks[0]
     assert track.width_mm == pytest.approx(0.8)
@@ -1341,7 +428,7 @@ def test_realize_fab_floor_clamps_a_too_small_class_override():
     )
     ir.set_layer(0, 0)
     config = RealizeConfig(
-        class_rules={"signal": {"track_width_mm": 0.001}}, router="tangent"
+        class_rules={"signal": {"track_width_mm": 0.001}}, router="vector"
     )
     track = realize(ir, config=config).tracks[0]
     cap = capability_for("4layer")
@@ -1353,7 +440,7 @@ def test_realize_fab_floor_clamps_a_too_small_class_override():
 def test_to_gerber_model_uses_per_track_resolved_width_by_default():
     ir = from_graph(_current_net_graph(5.0), stackup=DEFAULT_STACKUP)
     ir.set_layer(0, 0)
-    result = realize(ir, config=_TANGENT)
+    result = realize(ir, config=_VECTOR)
     model = to_gerber_model(
         result,
         ir,
@@ -1389,7 +476,7 @@ def _two_pin_graph():
 def test_realize_no_via_when_track_stays_on_pad_layer():
     ir = from_graph(_two_pin_graph(), stackup=DEFAULT_STACKUP)
     ir.set_layer(0, PAD_LAYER)
-    result = realize(ir, config=_TANGENT)
+    result = realize(ir, config=_VECTOR)
     assert result.vias == ()
 
 
@@ -1397,131 +484,14 @@ def test_realize_no_via_when_layer_is_unassigned():
     """A segment with no L1 layer assignment yet (UNSET_LAYER) has nothing
     to transition -- must not emit a via."""
     ir = from_graph(_two_pin_graph(), stackup=DEFAULT_STACKUP)
-    result = realize(ir, config=_TANGENT)
+    result = realize(ir, config=_VECTOR)
     assert result.vias == ()
-
-
-def test_realize_no_via_for_a_dogbone_stub():
-    """The plane-served dog-bone stub's via-to-plane connection is
-    planes.py's job (module docstring) -- not this task's scope."""
-    ir = from_graph(_two_pin_graph(), stackup=DEFAULT_STACKUP)
-    ir.promote_plane(0, 1)  # In1.Cu
-    result = realize(ir, config=_TANGENT)
-    assert result.tracks[0].is_dogbone
-    assert result.vias == ()
-
-
-def test_realize_emits_a_via_at_a_layer_transition():
-    """The exact gap this task closes: a segment realized on a
-    non-pad layer must get vias at BOTH its endpoints."""
-    ir = from_graph(_two_pin_graph(), stackup=DEFAULT_STACKUP)
-    ir.set_layer(0, 1)  # In1.Cu -- not PAD_LAYER
-    result = realize(ir, config=_TANGENT)
-    assert result.vias
-    endpoints = {v.endpoint for v in result.vias}
-    assert endpoints == {"a", "b"}
-    for v in result.vias:
-        assert v.net_id == 0
-        assert v.seg_id == 0
-
-
-def test_realize_via_to_an_inner_layer_is_still_a_through_via():
-    """Span correctness (gr495289, Reto 2026-10-18): a via for a transition
-    between F.Cu (pad layer) and In1.Cu is a THROUGH via, F.Cu to B.Cu --
-    blind and buried vias are a costly fab upgrade the router never emits.
-    Still a span pair, never a scalar layer (the prior scalar-layer bug)."""
-    ir = from_graph(_two_pin_graph(), stackup=DEFAULT_STACKUP)
-    ir.set_layer(0, 1)  # In1.Cu
-    result = realize(ir, config=_TANGENT)
-    layers = [layer["name"] for layer in DEFAULT_STACKUP]
-    model = to_gerber_model(
-        result,
-        ir,
-        layers=layers,
-        outline=[[0.0, -5.0], [20.0, -5.0], [20.0, 5.0], [0.0, 5.0]],
-    )
-    vias = [c for c in model["copper"] if c["ctype"] == "via"]
-    assert vias
-    for v in vias:
-        assert "layer" not in v  # never a scalar layer -- span/layers only
-        assert v["span"] == ["F.Cu", "B.Cu"]
-
-
-def test_realize_via_span_a_through_via_when_transitioning_to_the_far_outer_layer():
-    ir = from_graph(_two_pin_graph(), stackup=DEFAULT_STACKUP)
-    ir.set_layer(0, 3)  # B.Cu -- the far outer layer, still != PAD_LAYER
-    result = realize(ir, config=_TANGENT)
-    assert result.vias
-    for v in result.vias:
-        assert v.layer_lo == 0
-        assert v.layer_hi == 3
-
-
-def test_realize_via_sized_via_the_shared_resolver():
-    ir = from_graph(_two_pin_graph(), stackup=DEFAULT_STACKUP)
-    ir.set_layer(0, 1)
-    config = RealizeConfig(fab_caps=capability_for("4layer"), router="tangent")
-    result = realize(ir, config=config)
-    assert result.vias
-    expected_dia = config.fab_caps.house_default.get(
-        "via_diameter_mm"
-    ) or config.fab_caps.jlc_min.get("via_diameter_mm")
-    for v in result.vias:
-        assert v.dia_mm == pytest.approx(expected_dia)
-        assert v.drill_mm is not None and v.drill_mm > 0
-
-
-def test_realize_via_count_scales_with_net_current():
-    """A single via cannot carry a real power rail -- the current-derived
-    stitched-group requirement."""
-    ir = from_graph(_current_net_graph(5.0, net_class="power"), stackup=DEFAULT_STACKUP)
-    ir.set_layer(0, 1)  # force a layer transition so vias are emitted
-    config = RealizeConfig(fab_caps=capability_for("4layer"), router="tangent")
-    result = realize(ir, config=config)
-    assert result.vias
-    dia = result.vias[0].dia_mm
-    expected_n = via_count_for_current(5.0, dia)
-    assert expected_n > 1  # sanity: 5A genuinely needs more than one via
-    per_endpoint = {"a": 0, "b": 0}
-    for v in result.vias:
-        per_endpoint[v.endpoint] += 1
-    assert per_endpoint == {"a": expected_n, "b": expected_n}
-    assert expected_n * via_capacity_a(dia) >= 5.0
-
-
-def test_realize_via_count_defaults_to_one_with_no_current_annotation():
-    ir = from_graph(_two_pin_graph(), stackup=DEFAULT_STACKUP)
-    ir.set_layer(0, 1)
-    result = realize(ir, config=_TANGENT)
-    per_endpoint = {"a": 0, "b": 0}
-    for v in result.vias:
-        per_endpoint[v.endpoint] += 1
-    assert per_endpoint == {"a": 1, "b": 1}
-
-
-def test_rip_net_removes_its_vias_too():
-    ir = from_graph(_two_pin_graph(), stackup=DEFAULT_STACKUP)
-    ir.set_layer(0, 1)
-    result = realize(ir, config=_TANGENT)
-    assert result.vias
-    ripped = rip_net(ir, result, net_id=0)
-    assert ripped.vias == ()
-
-
-def test_re_realize_segments_recomputes_vias_for_the_replaced_segment():
-    ir = from_graph(_two_pin_graph(), stackup=DEFAULT_STACKUP)
-    ir.set_layer(0, 1)
-    result = realize(ir, config=_TANGENT)
-    assert result.vias
-    ir.set_layer(0, PAD_LAYER)  # no longer a layer transition
-    updated = re_realize_segments(ir, result, [0])
-    assert updated.vias == ()
 
 
 def test_to_gerber_model_explicit_override_still_wins_uniformly():
     ir = from_graph(_current_net_graph(5.0), stackup=DEFAULT_STACKUP)
     ir.set_layer(0, 0)
-    result = realize(ir, config=_TANGENT)
+    result = realize(ir, config=_VECTOR)
     model = to_gerber_model(
         result,
         ir,
@@ -1704,70 +674,6 @@ def test_pads_for_ir_places_unclaimed_pads_through_the_instance_pose():
     assert extra["h"] == pytest.approx(0.6)
 
 
-def test_unclaimed_pad_claims_reach_the_router_grid_with_distinct_owners():
-    """gr451276's ROUTER half. ``pads_for_ir`` feeds DRC, the plane pours
-    and the gerber model — NOT the maze router, which builds its own claim
-    list from ``pad_geometry`` over ``ir.pin_*``. So a pad no pin claims
-    needs a second entry, or DRC reports a short the router was free to
-    draw (measured on the EWOD dogfood: 24 ``track[...] <-> pad[]``
-    clearance errors at 0.000mm, all of them gone once these claims land).
-
-    Each land gets its OWN owner id in this module's THIRD synthetic
-    band: distinct from every real net, from ``maze.FREE``/``CONTESTED``,
-    from every NC pin's sentinel, from the fiducial and mounting-hole
-    bands that stamp the same grid, and from each other — two unclaimed
-    lands are not one shared net, and nothing may route through either."""
-    from precis.pcb import realize as pcb_realize
-
-    ir = from_graph(_multi_package_graph(), stackup=DEFAULT_STACKUP)
-    footprints = {
-        "U0": {
-            "pads": [
-                {"number": "1", "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0},
-                {"number": "2", "x": 2.0, "y": 0.5, "w": 0.6, "h": 0.4},
-                {"number": "9", "x": -2.0, "y": 0.5, "w": 0.6, "h": 0.4},
-            ],
-            "pin_map": {"1": {"name": "1"}, "9": {"name": "NC1"}},
-        }
-    }
-    layers = [layer["name"] for layer in DEFAULT_STACKUP]
-    claims = pcb_realize._footprint_pad_claims(
-        ir,
-        layers,
-        pcb_realize._signal_layers(ir),
-        footprints,
-        len(DEFAULT_STACKUP),
-    )
-    assert len(claims) == 2, f"both of U0's unclaimed lands, once each: {claims}"
-    points = {(round(p[0], 4), round(p[1], 4)) for p, _owner, _shape, _lay in claims}
-    assert points == {(2.0, 0.5), (-2.0, 0.5)}
-    owners = [owner for _p, owner, _shape, _lay in claims]
-    assert len(set(owners)) == len(owners), "two lands are never one net"
-    # Three claim families stamp the SAME grid and all three count from
-    # `n_nets + n_pins`: fiducial candidate sites (bare), mounting holes
-    # (+4096), unclaimed lands (+8192). Asserted against the other two
-    # bands rather than a literal, so adding a fourth family that forgets
-    # its offset fails here instead of silently sharing an owner id with
-    # a land -- `stamp_shape`'s contest test is `owner != net_id`, so two
-    # claimants sharing an id read as one and reassign instead of going
-    # CONTESTED.
-    fiducial_base = ir.n_nets + ir.n_pins
-    hole_base = fiducial_base + pcb_realize._MOUNTING_HOLE_NET_OFFSET
-    assert min(owners) > hole_base, (
-        "an owner id must clear every real net, every NC pin's own "
-        f"`ir.n_nets + pid` sentinel, and both other synthetic bands: "
-        f"{owners} vs fiducial {fiducial_base} / hole {hole_base}"
-    )
-    # The claim carries the pad's TRUE shape, not an enclosing disc --
-    # the same fine-pitch fix `_pad_shape` applies to a claimed pad.
-    shapes = {s.kind for _p, _owner, s, _lay in claims}
-    assert shapes == {"rect"}
-    # One outer layer for an SMD land, resolved by the instance's own
-    # mount side, exactly as `pads_for_ir` resolves it over layer NAMES.
-    top = pcb_realize._signal_layers(ir)[0]
-    assert all(lay == (top,) for _p, _owner, _shape, lay in claims)
-
-
 def test_pads_for_ir_invents_no_pads_for_a_synthesized_footprint():
     """No cached footprint means no unclaimed pads to discover: a
     landpattern is synthesized FROM the netlist's pins, so anything beyond
@@ -1897,60 +803,6 @@ def _wall_graph(n_wall: int = 16) -> dict:
     }
 
 
-def test_unconnected_pin_pad_is_not_invisible_to_the_router():
-    """LATENT DEFECT, found while building the ``_wall_graph`` fixture
-    above (an unconnected/NC "wall" pad that turned out not to block
-    anything): ``precis.pcb.ir.NO_NET`` is ``-1``, the exact same value as
-    ``precis.pcb.maze.FREE``. A router that stamps an unconnected pin's pad
-    under ``net=NO_NET`` makes it numerically indistinguishable from empty
-    board to every OTHER net's ``owner != FREE`` foreign-copper test — the
-    pad is real copper (a test point, an NC pin, a mounting hole) that
-    another net could then route straight through at zero clearance, with
-    DRC never the wiser (the router's own "claim before you draw"
-    guarantee is exactly what this breaks). A single obstacle pin, dead
-    centre of the only straight line between two other pins, pins the
-    fix directly rather than relying on ``_wall_graph``'s 16 pins to prove
-    it incidentally."""
-    graph = {
-        "instances": [
-            {"refdes": "U1", "x": 0.0, "y": 0.0},
-            {"refdes": "U2", "x": 10.0, "y": 0.0},
-            {"refdes": "NC1", "x": 5.0, "y": 0.0},
-        ],
-        "nets": [
-            {
-                "name": "SIG",
-                "members": [
-                    {"refdes": "U1", "pin": "1"},
-                    {"refdes": "U2", "pin": "1"},
-                ],
-            }
-        ],
-        "unconnected": [{"refdes": "NC1", "pin": "1"}],
-    }
-    ir = from_graph(graph, stackup=[{"name": "F.Cu", "role": "signal"}])
-    result = realize(ir, config=RealizeConfig(router="maze"))
-    assert result.tracks, "the router drew nothing -- this test would be vacuous"
-    for t in result.tracks:
-        for seg in t.segments:
-            if seg["shape"] != "line":
-                continue  # this fixture has no obstacle to hug -- lines only
-            ax, ay = seg["start"]
-            bx, by = seg["end"]
-            dx, dy = bx - ax, by - ay
-            length2 = dx * dx + dy * dy
-            t_param = (
-                max(0.0, min(1.0, ((5.0 - ax) * dx + (0.0 - ay) * dy) / length2))
-                if length2 > 1e-12
-                else 0.0
-            )
-            gap = math.hypot(5.0 - (ax + t_param * dx), 0.0 - (ay + t_param * dy))
-            assert gap > 0.1, (
-                "a track passed through the unconnected pin's pad "
-                f"(gap={gap:.4f}mm): {seg}"
-            )
-
-
 # ── per-net layer lock (Rulings 2026-09-19 item 7) ───────────────────────
 
 _2LAYER_STACKUP = [
@@ -2010,7 +862,7 @@ def test_net_layer_lock_routes_single_layer_where_the_unlocked_net_would_not():
     unlocked_ir = from_graph(_escape_graph(None), stackup=_2LAYER_STACKUP)
     unlocked = realize(
         unlocked_ir,
-        config=RealizeConfig(router="maze"),
+        config=RealizeConfig(router="vector"),
         fixed_copper=_ESCAPE_VIA_FIXED_COPPER,
     )
     assert unlocked.tracks, "sanity: this fixture must actually route"
@@ -2020,7 +872,7 @@ def test_net_layer_lock_routes_single_layer_where_the_unlocked_net_would_not():
     locked = realize(
         locked_ir,
         config=RealizeConfig(
-            router="maze", class_rules={"escape": {"layers": ["B.Cu"]}}
+            router="vector", class_rules={"escape": {"layers": ["B.Cu"]}}
         ),
         fixed_copper=_ESCAPE_VIA_FIXED_COPPER,
     )
@@ -2038,7 +890,7 @@ def test_net_layer_lock_to_a_layer_absent_from_the_stackup_fails_named():
     result = realize(
         ir,
         config=RealizeConfig(
-            router="maze", class_rules={"escape": {"layers": ["In1.Cu"]}}
+            router="vector", class_rules={"escape": {"layers": ["In1.Cu"]}}
         ),
     )
     assert not result.tracks
@@ -2060,7 +912,7 @@ def test_stitched_via_group_stays_connected_to_its_own_trace():
     close; something was simply not there). ``net_islands`` is exactly the
     "more than one connected component" check that catches it."""
     ir = from_graph(_wall_graph(), stackup=DEFAULT_STACKUP)
-    result = realize(ir, config=RealizeConfig(router="maze"))
+    result = realize(ir, config=RealizeConfig(router="vector"))
     assert result.tracks, "the router drew nothing -- this test would be vacuous"
     assert not result.unrouted, "the wall must not strand the connection outright"
 
@@ -2096,186 +948,10 @@ def test_stitched_via_group_stays_connected_to_its_own_trace():
 # ── the board-edge inset must honour a VIA's own width, not a track's ────
 
 
-def test_realize_maze_edge_inset_clears_a_via_wider_than_any_track():
-    """gr — a via's copper footprint is its own diameter, not the
-    thinnest track width on the board, and the shared occupancy-grid clip
-    (:func:`precis.pcb.realize._outline_clip`, fed straight into
-    :func:`precis.pcb.maze.grid_for`) is the ONE boundary both a track's
-    centreline and a via's centre are routed against. Sizing that clip
-    off ``max(track_width_mm)`` alone (the historical bug) let a via
-    search place a via's centre as close as ``edge_min +
-    track_width/2`` from the true board edge — legal for a track that
-    thin, short of the ``via_radius + edge_min`` a via that wide actually
-    needs.
-
-    The fixture: one net (class ``"bigvia"``) whose ``via_dia_mm`` is
-    forced (via ``RealizeConfig.class_rules``) to exceed its own
-    ``track_width_mm`` by more than ``2 * house_edge_min`` — the task's
-    own precondition for "this fixture actually stresses the fix", pinned
-    below rather than assumed. U1/U2 sit just inside the FIXED clip
-    (``edge_inset``, computed here from the same
-    :func:`~precis.pcb.rules.resolve_net_rules` inputs
-    :func:`_realize_maze` itself resolves — tied to the formula, not to a
-    hardcoded coordinate), and a dense picket wall of foreign-net pads —
-    real copper only on ``PAD_LAYER`` (an SMD assumption), so it blocks
-    every in-plane crossing AND every via candidate near it (``via_ok``
-    ORs the foreign mask across every layer) while leaving B.Cu
-    completely open — forces a mandatory layer-transition via right next
-    to that wall, at essentially the SAME tight y both pads already sit
-    at. If the clip regressed to a track-only inset, this exact via would
-    land inside ``[house_edge_min, edge_inset)`` of the true edge: legal
-    ground for a track, short for this via by construction.
-    """
-    from precis.pcb.rules import resolve_net_rules
-
-    cap = capability_for("4layer")
-    via_override = {"via_dia_mm": 1.5}
-    config = RealizeConfig(
-        router="maze", fab_caps=cap, class_rules={"bigvia": via_override}
-    )
-    rules = resolve_net_rules(
-        "bigvia", layer_is_outer=True, fab_caps=cap, overrides=via_override
-    )
-    edge_min = cap.house_default.get("board_edge_clearance_vcut_mm") or cap.jlc_min.get(
-        "board_edge_clearance_vcut_mm"
-    )
-    assert edge_min is not None
-    # The task's own precondition: this via must be wide enough, relative
-    # to the track it's compared against, that a track-sized inset would
-    # be a CLEAR (not epsilon-scale) shortfall for it.
-    assert rules.via_dia_mm is not None
-    assert rules.via_dia_mm - rules.track_width_mm > 2 * edge_min
-
-    clearance = max(config.clearance_mm, rules.clearance_mm)
-    edge_inset = (
-        max(clearance, edge_min) + max(rules.track_width_mm, rules.via_dia_mm) / 2.0
-    )
-    edge_inset_track_only = max(clearance, edge_min) + rules.track_width_mm / 2.0
-    assert edge_inset > edge_inset_track_only  # the fix must widen it here
-
-    margin = 0.2  # comfortably inside the FIXED clip -- a real placement,
-    # not one that forces the grid to extend past its own bounds (see
-    # _outline_clip's "never below the pads themselves" carve-out, a
-    # separate and already-acknowledged limitation this test is not
-    # about).
-    y0 = edge_inset + margin
-    board_h = edge_inset * 2.0 + 2.0
-    board_w = 24.0
-    wall_x = board_w / 2.0
-
-    wall_ys = _frange(-1.0, board_h + 1.0, 0.25)
-    graph = {
-        "instances": [
-            {"refdes": "U1", "x": 4.0, "y": y0},
-            {"refdes": "U2", "x": board_w - 4.0, "y": y0},
-        ]
-        + [{"refdes": f"W{i}", "x": wall_x, "y": y} for i, y in enumerate(wall_ys)],
-        "nets": [
-            {
-                "name": "BIGVIA",
-                "net_class": "bigvia",
-                "members": [
-                    {"refdes": "U1", "pin": "1"},
-                    {"refdes": "U2", "pin": "1"},
-                ],
-            }
-        ],
-        "unconnected": [{"refdes": f"W{i}", "pin": "1"} for i in range(len(wall_ys))],
-    }
-    outline = [[0.0, 0.0], [board_w, 0.0], [board_w, board_h], [0.0, board_h]]
-    ir = from_graph(graph, stackup=DEFAULT_STACKUP, outline=outline)
-
-    result = realize(ir, config=config)
-    assert not result.unrouted, [r.message for r in result.unrouted_reasons]
-    assert result.vias, (
-        "the wall must force a layer-transition via -- otherwise this "
-        "fixture exercises nothing"
-    )
-
-    via_radius = rules.via_dia_mm / 2.0
-    required = via_radius + edge_min
-    for v in result.vias:
-        dist_to_edge = min(v.x, board_w - v.x, v.y, board_h - v.y)
-        # This is the real, physical requirement -- independent of how
-        # _realize_maze happens to compute its own inset.
-        assert dist_to_edge >= required - 1e-9, (
-            "a via landed closer to the board edge than its own diameter "
-            f"allows: dist={dist_to_edge:.4f}mm required={required:.4f}mm",
-            v,
-        )
-        # And this fixture must actually be landing the via near the tight
-        # edge -- not somewhere far off where the fix would be untested.
-        assert dist_to_edge < edge_inset + 1.0, (
-            "via landed suspiciously far from the tight edge -- this "
-            "fixture no longer stresses the boundary",
-            v,
-            dist_to_edge,
-        )
-
-    layers = [layer["name"] for layer in DEFAULT_STACKUP]
-    model = to_gerber_model(result, ir, layers=layers, outline=outline)
-    findings = pcb_drc.check_board_edge_clearance(model, cap, outline=outline)
-    # Scoped to the VIA specifically, per this test's own remit: the wall
-    # is a stack of synthetic, deliberately edge-hugging "unconnected"
-    # pins whose only job is to force the layer-change topology above --
-    # they are not real manufacturable copper, and check_board_edge_
-    # clearance now (correctly, a separate fix) also grades PADS by the
-    # same rule, which is a different question from the one this test
-    # answers.
-    via_findings = [f for f in findings if f.objects[0].get("ctype") == "via"]
-    assert not via_findings, [f.detail for f in via_findings]
-
-
 # ── item 1: via shoving in the straighten pass ───────────────────────────
 
 
-def test_shove_vias_on_by_default():
-    """Measured to cost nothing on the ESP32-C3 reference fixture (seeds
-    1-5: DRC and routed count identical with/without, segments/copper
-    never up on any seed) — see :attr:`RealizeConfig.shove_vias`'s own
-    docstring for the table. Unlike ``preferred_directions``, there is no
-    correctness/routability trade to weigh here, so it defaults on."""
-    assert RealizeConfig().shove_vias is True
-
-
 @pytest.mark.slow  # 22s in the 2026-09-26 gate profile
-def test_shove_vias_never_increases_segment_count_or_breaks_connectivity():
-    """Shoving a via can only remove copper or leave it unchanged -- never
-    add a bend, never change which segments routed, and never touch
-    connectivity. Measured on the same (deterministic -- the maze search
-    and straighten pass have no randomness of their own) IR with and
-    without the flag."""
-    ir = from_graph(_wall_graph(), stackup=DEFAULT_STACKUP)
-    layers = [layer["name"] for layer in DEFAULT_STACKUP]
-
-    baseline = realize(ir, config=RealizeConfig(router="maze", shove_vias=False))
-    shoved = realize(ir, config=RealizeConfig(router="maze", shove_vias=True))
-
-    assert baseline.unrouted == shoved.unrouted, (
-        "shoving must never change which connections route"
-    )
-    assert len(shoved.vias) == len(baseline.vias), (
-        "shoving moves a via, it does not add or remove one"
-    )
-    n_seg_baseline = sum(len(t.segments) for t in baseline.tracks)
-    n_seg_shoved = sum(len(t.segments) for t in shoved.tracks)
-    assert n_seg_shoved <= n_seg_baseline, (
-        f"shoving produced MORE segments ({n_seg_shoved} > {n_seg_baseline}) -- "
-        "it must only ever remove copper"
-    )
-
-    model = to_gerber_model(shoved, ir, layers=layers, outline=[])
-    islands = net_islands(model)
-    assert not islands, [(isl.net, isl.components, isl.witnesses) for isl in islands]
-    findings = pcb_drc.run_geometric_drc(
-        model,
-        capability=capability_for("4layer"),
-        unrouted=[],
-        outline=closed_outline()["geom"]["path"],
-    )
-    errors = [f for f in findings if f.severity == "error"]
-    assert not errors, [f.detail for f in errors]
-
 
 # ── any-angle shortcutting: _collapse_straight ────────────────────────────
 
@@ -2302,375 +978,12 @@ def _octile_staircase(
     return pts
 
 
-def test_collapse_straight_reduces_an_octile_staircase_to_the_taut_dogleg():
-    """An 11-vertex octile staircase from (0,0) to (10,3) approximates a
-    16.7-degree line — an angle no single A* step on this grid can draw,
-    and since 2026-08-31 an angle the collapse itself must not draw
-    either (every wire fully 90/45). The taut OCTILINEAR answer is one
-    45-degree run plus one axis run: endpoints plus the diagonal-first
-    elbow at (3,3) — never the direct arbitrary-angle chord the old pass
-    emitted, and never a partial staircase."""
-    from precis.pcb import maze as pcb_maze
-    from precis.pcb import realize as pcb_realize
-
-    pts = _octile_staircase((0.0, 0.0), (10.0, 3.0))
-    assert len(pts) == 11  # a genuine staircase, not already a straight run
-
-    spec = pcb_maze.grid_for(
-        [(0.0, 0.0), (10.0, 3.0)], n_layers=1, bounds=(-5.0, -5.0, 20.0, 20.0)
-    )
-    grid = pcb_maze.OccupancyGrid(spec, clearance_mm=0.1)
-    step = spec.pitch / 2.0
-    out = pcb_realize._collapse_straight(pts, grid, net_id=0, radius=0.1, step=step)
-    assert out == [(0.0, 0.0, 0), (3.0, 3.0, 0), (10.0, 3.0, 0)]
-    for a, b in itertools.pairwise(out):
-        assert pcb_realize._is_octilinear(a, b)
-
-
-def test_collapse_straight_falls_back_to_the_mirror_elbow_when_blocked():
-    """The same staircase, with one foreign-net obstacle sitting on the
-    PREFERRED (diagonal-first) elbow path: the collapse must take the
-    mirror (axis-first) elbow rather than fall back to the staircase —
-    and every chord it emits must itself test free, the guarantee this
-    pass exists to preserve."""
-    from precis.pcb import maze as pcb_maze
-    from precis.pcb import realize as pcb_realize
-
-    # An axis-first octile path (0,0)..(7,0) then (8,1),(9,2),(10,3) —
-    # hand-built rather than `_octile_staircase`, whose diagonal-first
-    # greedy shape COINCIDES with the preferred elbow path and so could
-    # never have the preferred elbow blocked without blocking itself.
-    pts = [(float(x), 0.0, 0) for x in range(8)] + [
-        (8.0, 1.0, 0),
-        (9.0, 2.0, 0),
-        (10.0, 3.0, 0),
-    ]
-    assert len(pts) == 11
-    spec = pcb_maze.grid_for(
-        [(0.0, 0.0), (10.0, 3.0)], n_layers=1, bounds=(-5.0, -5.0, 20.0, 20.0)
-    )
-    grid = pcb_maze.OccupancyGrid(spec, clearance_mm=0.1)
-    # Foreign copper ON the preferred diagonal-first leg (0,0)->(3,3),
-    # clear of both the original path along y=0 and the axis-first
-    # (mirror) elbow path (0,0)->(7,0)->(10,3).
-    grid.stamp_disk((0,), 2.0, 2.0, 0.6, net_id=999)
-    step = spec.pitch / 2.0
-    out = pcb_realize._collapse_straight(pts, grid, net_id=0, radius=0.1, step=step)
-    assert out == [(0.0, 0.0, 0), (7.0, 0.0, 0), (10.0, 3.0, 0)]
-    # every emitted chord must itself test free -- the guarantee this pass
-    # exists to preserve, not merely assumed of its own output.
-    for a, b in itertools.pairwise(out):
-        assert pcb_realize._chord_is_free(grid, a, b, 0, 0.1, step)
-        assert pcb_realize._is_octilinear(a, b)
-
-
-def test_collapse_straight_tight_corridor_retries_elbow_at_bare_radius():
-    """The tight-corridor fallback (found live 2026-09-01 as the nano
-    board's single `octilinear` DRC finding): a DRAWN segment a hair
-    off-axis sits in a corridor tighter than the full query radius's
-    discretisation slack, so BOTH elbow variants test blocked at the
-    drawn radius — yet the elbow deviates from the proven segment by no
-    more than the nub, so the re-ask at bare copper radius must succeed
-    and the off-angle copper must still get its elbow, not survive the
-    collapse."""
-    from precis.pcb import maze as pcb_maze
-    from precis.pcb import realize as pcb_realize
-
-    # Same fixture geometry as the siblings above: pitch 0.05mm.
-    spec = pcb_maze.grid_for(
-        [(0.0, 0.0), (10.0, 3.0)], n_layers=1, bounds=(-5.0, -5.0, 20.0, 20.0)
-    )
-    grid = pcb_maze.OccupancyGrid(spec, clearance_mm=0.1)
-    step = spec.pitch / 2.0  # 0.025
-
-    # A two-point drawn segment 0.04mm off-axis: nub = 0.04 <= 2*step.
-    # Two points, so the span-splice loop never runs and only the
-    # off-angle SEGMENT repair path can fire.
-    pts = [(0.0, 0.0, 0), (5.0, 0.04, 0)]
-    assert not pcb_realize._is_octilinear(pts[0], pts[1])
-
-    # A foreign-net wall one cell row above the corridor (y=0.10): every
-    # elbow-path sample at y<=0.04 sits 0.06-0.10mm from it — inside the
-    # full 0.1mm query radius (blocked), outside the tight
-    # max(0.1 - 2*step, step) = 0.05mm one (free).
-    for k in range(121):
-        grid.stamp_disk((0,), -0.5 + 0.05 * k, 0.10, 0.02, net_id=999)
-    assert pcb_realize._octilinear_connect(grid, pts[0], pts[1], 0, 0.1, step) is None
-
-    out = pcb_realize._collapse_straight(pts, grid, net_id=0, radius=0.1, step=step)
-    assert out == [(0.0, 0.0, 0), (0.04, 0.04, 0), (5.0, 0.04, 0)]
-    tight = max(0.1 - 2.0 * step, step)
-    for a, b in itertools.pairwise(out):
-        assert pcb_realize._is_octilinear(a, b)
-        assert pcb_realize._chord_is_free(grid, a, b, 0, tight, step)
-
-
-def test_collapse_straight_never_lengthens_a_path():
-    """Every collapse drops a vertex only when its surrounding chord tests
-    free — by the triangle inequality that can only shorten or preserve
-    total length, never grow it. Checked over randomized octile-ish
-    staircases against randomized obstacle layouts, so most (not all)
-    chords are free and the collapse is doing real, partial work."""
-    from precis.pcb import maze as pcb_maze
-    from precis.pcb import realize as pcb_realize
-    from precis.pcb.geom import dist
-
-    rng = random.Random(7)
-    for _trial in range(20):
-        pts: list[tuple[float, float, int]] = [(0.0, 0.0, 0)]
-        x, y = 0.0, 0.0
-        for _ in range(rng.randint(5, 15)):
-            dx, dy = rng.choice([-1, 0, 1]), rng.choice([-1, 0, 1])
-            if dx == 0 and dy == 0:
-                continue
-            x, y = x + dx, y + dy
-            pts.append((x, y, 0))
-        if len(pts) < 3:
-            continue
-        spec = pcb_maze.grid_for(
-            [(p[0], p[1]) for p in pts], n_layers=1, bounds=(-20.0, -20.0, 20.0, 20.0)
-        )
-        grid = pcb_maze.OccupancyGrid(spec, clearance_mm=0.1)
-        for _ in range(rng.randint(0, 4)):
-            grid.stamp_disk(
-                (0,), rng.uniform(-10, 10), rng.uniform(-10, 10), 0.4, net_id=999
-            )
-        step = spec.pitch / 2.0
-        before = sum(
-            dist((a[0], a[1]), (b[0], b[1])) for a, b in itertools.pairwise(pts)
-        )
-        out = pcb_realize._collapse_straight(
-            list(pts), grid, net_id=0, radius=0.1, step=step
-        )
-        after = sum(
-            dist((a[0], a[1]), (b[0], b[1])) for a, b in itertools.pairwise(out)
-        )
-        assert after <= before + 1e-9, (before, after, pts, out)
-
-
-def test_collapse_straight_never_crosses_a_layer_change():
-    """A via -- a same-(x, y), different-layer consecutive pair -- must
-    survive untouched: shortcutting across it would draw copper straight
-    through a hole the path never actually plates on the way it takes."""
-    from precis.pcb import maze as pcb_maze
-    from precis.pcb import realize as pcb_realize
-
-    pts = [
-        (0.0, 0.0, 0),
-        (1.0, 0.0, 0),
-        (2.0, 0.0, 0),
-        (2.0, 0.0, 1),  # the via transition -- same (x, y), other layer
-        (3.0, 0.0, 1),
-        (4.0, 0.0, 1),
-    ]
-    spec = pcb_maze.grid_for([(p[0], p[1]) for p in pts], n_layers=2)
-    grid = pcb_maze.OccupancyGrid(spec, clearance_mm=0.1)
-    step = spec.pitch / 2.0
-    out = pcb_realize._collapse_straight(pts, grid, net_id=0, radius=0.1, step=step)
-    assert out == [(0.0, 0.0, 0), (2.0, 0.0, 0), (2.0, 0.0, 1), (4.0, 0.0, 1)]
-
-
 # ── item 3: a failed route must say why ──────────────────────────────────
 
 
 def _frange(a: float, b: float, step: float) -> list[float]:
     n = round((b - a) / step)
     return [a + i * step for i in range(n + 1)]
-
-
-def _boxed_scenario(*, gap_mm: float | None) -> tuple:
-    """U2 sits at the centre of a closed box of tightly-pitched pads on an
-    unrelated net (999, via the low-level ``pads`` tuple form
-    :func:`precis.pcb.realize._stamp_pads` reads); U1 sits outside it.
-    ``gap_mm=None`` seals every side solidly (U2 is topologically
-    unreachable); a float leaves a controlled notch of that width in the
-    east wall (U2 is reachable only through it, at any width up to the
-    notch's own clear opening).
-
-    Returns everything :func:`precis.pcb.realize._diagnose_unrouted` needs,
-    called directly (module-private -- this is the low-level counterpart
-    to ``tests/test_pcb_maze.py``'s own direct ``OccupancyGrid``/``route``
-    tests, chosen here because it is the only way to control the exact
-    corridor width a `'width'` vs. `'congestion'` diagnosis turns on)."""
-    from precis.pcb import maze as pcb_maze
-    from precis.pcb import realize as pcb_realize
-    from precis.pcb.rules import NetRules
-
-    cx, cy, half, pitch, radius = 5.0, 5.0, 2.0, 0.15, 0.5
-    wall_net = 999
-    # 4th element: the wall pads' claimed layer(s) -- the board below is
-    # single-layer (`stackup=[{"name": "F.Cu", ...}]`), so every pad here
-    # is `(0,)`, the SMD single-layer shape `_realize_maze` builds.
-    wall_layers = (0,)
-
-    def _wall_shape(x: float, y: float) -> pcb_maze.PadShape:
-        # A plain enclosing-circle claim -- `_pad_shape` is not needed
-        # here, this scenario only cares about a wall of foreign copper
-        # at a known radius, same as the pre-gripe-346962 disk this test
-        # built directly.
-        return pcb_maze.PadShape("circle", x, y, 2.0 * radius, 2.0 * radius)
-
-    pads: list = []
-    for y in _frange(cy - half, cy + half, pitch):
-        pads.append(((cx - half, y), wall_net, _wall_shape(cx - half, y), wall_layers))
-        if gap_mm is None or abs(y - cy) > gap_mm / 2.0:
-            pads.append(
-                ((cx + half, y), wall_net, _wall_shape(cx + half, y), wall_layers)
-            )
-    for x in _frange(cx - half, cx + half, pitch):
-        pads.append(((x, cy - half), wall_net, _wall_shape(x, cy - half), wall_layers))
-        pads.append(((x, cy + half), wall_net, _wall_shape(x, cy + half), wall_layers))
-
-    graph = {
-        "instances": [
-            {"refdes": "U1", "x": cx + half + 3.0, "y": cy},
-            {"refdes": "U2", "x": cx, "y": cy},
-        ],
-        "nets": [
-            {
-                "name": "N1",
-                "members": [
-                    {"refdes": "U1", "pin": "1"},
-                    {"refdes": "U2", "pin": "1"},
-                ],
-            }
-        ],
-    }
-    ir = from_graph(graph, stackup=[{"name": "F.Cu", "role": "signal"}])
-    all_points = [p for p, _, _, _ in pads] + [
-        (cx + half + 3.0, cy),
-        (cx, cy),
-    ]
-    spec = pcb_maze.grid_for(all_points, n_layers=1)
-    return pcb_realize, ir, 0, spec, pads, 0.15, [0], NetRules
-
-
-def test_diagnose_unrouted_reason_no_path_when_the_endpoint_is_walled_in():
-    pcb_realize, ir, seg_id, spec, pads, clearance, signal_layers, NetRules = (
-        _boxed_scenario(gap_mm=None)
-    )
-    reason = pcb_realize._diagnose_unrouted(
-        ir,
-        seg_id,
-        spec,
-        pads,
-        clearance,
-        signal_layers,
-        NetRules(track_width_mm=0.2, clearance_mm=clearance),
-        n_vias=1,
-        group_extent=None,
-        max_expansions=80_000,
-    )
-    assert reason.kind == "no_path", reason.message
-
-
-def test_diagnose_unrouted_reason_search_budget_when_the_probe_gives_up():
-    """The same walled-in board with a budget too small to finish the
-    search: it has not PROVED there is no path, so it must not say so."""
-    pcb_realize, ir, seg_id, spec, pads, clearance, signal_layers, NetRules = (
-        _boxed_scenario(gap_mm=None)
-    )
-    reason = pcb_realize._diagnose_unrouted(
-        ir,
-        seg_id,
-        spec,
-        pads,
-        clearance,
-        signal_layers,
-        NetRules(track_width_mm=0.2, clearance_mm=clearance),
-        n_vias=1,
-        group_extent=None,
-        max_expansions=5,
-    )
-    assert reason.kind == "search_budget", reason.message
-
-
-def test_diagnose_unrouted_reason_congestion_when_a_corridor_exists_in_isolation():
-    pcb_realize, ir, seg_id, spec, pads, clearance, signal_layers, NetRules = (
-        _boxed_scenario(gap_mm=3.0)
-    )
-    reason = pcb_realize._diagnose_unrouted(
-        ir,
-        seg_id,
-        spec,
-        pads,
-        clearance,
-        signal_layers,
-        NetRules(track_width_mm=0.2, clearance_mm=clearance),
-        n_vias=1,
-        group_extent=None,
-        max_expansions=80_000,
-    )
-    assert reason.kind == "congestion", reason.message
-
-
-def test_diagnose_all_reports_search_budget_when_the_real_search_exhausted():
-    """gr489909: a segment whose REAL search ended on the expansion cap
-    on the busy grid is a budget failure, not a lost race — reported as
-    ``'search_budget'`` on ``_route_pass``'s ``exhausted`` evidence alone,
-    without the pads-only probe whose corridor verdict (the scenario the
-    congestion test above proves it would give here) would mislabel it."""
-    pcb_realize, ir, seg_id, spec, pads, clearance, signal_layers, NetRules = (
-        _boxed_scenario(gap_mm=3.0)
-    )
-    reasons = pcb_realize._diagnose_all(
-        ir,
-        [seg_id],
-        [],
-        set(),
-        spec,
-        pads,
-        clearance,
-        signal_layers,
-        {0: NetRules(track_width_mm=0.2, clearance_mm=clearance)},
-        80_000,
-        pcb_realize.RealizeConfig(),
-        exhausted={seg_id},
-    )
-    assert [r.kind for r in reasons] == ["search_budget"], [r.message for r in reasons]
-
-
-def test_exhaustion_retry_pass_routes_the_net_the_budget_capped():
-    """gr489909/gr497768: a connection whose first-pass search ran out of
-    ``max_expansions`` gets one bounded retry at
-    ``max_expansions * exhaustion_retry_factor`` — appended after the
-    ordinary passes, only for the segments that actually exhausted — and
-    routes. With the retry off the same board stays unrouted and is
-    reported ``'search_budget'``."""
-    graph = {
-        "instances": [
-            {"refdes": "U0", "x": 0.0, "y": 0.0},
-            {"refdes": "U1", "x": 30.0, "y": 0.0},
-        ],
-        "nets": [
-            {
-                "name": "SIG",
-                "members": [
-                    {"refdes": "U0", "pin": "1"},
-                    {"refdes": "U1", "pin": "1"},
-                ],
-            }
-        ],
-    }
-    ir = from_graph(graph, stackup=DEFAULT_STACKUP)
-    capped = RealizeConfig(
-        router="maze",
-        fab_caps=capability_for("4layer"),
-        max_expansions=50,
-        route_passes=1,
-        vector_escape=False,
-        exhaustion_retry_factor=1.0,
-    )
-    capped_result = realize(ir, config=capped)
-    assert capped_result.unrouted
-    assert {r.kind for r in capped_result.unrouted_reasons} == {"search_budget"}
-
-    retried = dataclasses.replace(
-        capped, exhaustion_retry_factor=4000.0, exhaustion_retry_passes=1
-    )
-    result = realize(ir, config=retried)
-    assert not result.unrouted, [r.message for r in result.unrouted_reasons]
-    assert result.tracks
 
 
 def test_class_layer_drops_names_the_partial_narrowing():
@@ -2696,68 +1009,6 @@ def test_class_layer_drops_names_the_partial_narrowing():
     assert pcb_realize.class_layer_drops(stackup, None) == []
 
 
-def _diagnose_boxed_with_copper(tracks):
-    pcb_realize, ir, seg_id, spec, pads, clearance, signal_layers, NetRules = (
-        _boxed_scenario(gap_mm=3.0)
-    )
-    return pcb_realize._diagnose_unrouted(
-        ir,
-        seg_id,
-        spec,
-        pads,
-        clearance,
-        signal_layers,
-        NetRules(track_width_mm=0.2, clearance_mm=clearance),
-        n_vias=1,
-        group_extent=None,
-        max_expansions=80_000,
-        routed_copper=(tracks, []),
-    )
-
-
-def test_diagnose_unrouted_alone_on_an_empty_grid_is_not_congestion():
-    """gr472026: no foreign router copper anywhere -> the net did not
-    lose a race, so it must not be labelled congestion."""
-    reason = _diagnose_boxed_with_copper([])
-    assert reason.kind == "no_path", reason.message
-    assert "no other net's routed copper" in reason.message
-
-
-def test_diagnose_unrouted_congestion_when_foreign_copper_blocks_the_corridor():
-    from precis.pcb.realize import RealizedTrack
-
-    wall = RealizedTrack(
-        seg_id=99,
-        net_id=77,
-        layer=0,
-        segments=({"shape": "line", "start": [7.0, 3.0], "end": [7.0, 7.0]},),
-        length_mm=4.0,
-        blocked_by=None,
-        width_mm=0.2,
-    )
-    reason = _diagnose_boxed_with_copper([wall])
-    assert reason.kind == "congestion", reason.message
-
-
-def test_diagnose_unrouted_reason_width_when_the_required_trace_does_not_fit():
-    pcb_realize, ir, seg_id, spec, pads, clearance, signal_layers, NetRules = (
-        _boxed_scenario(gap_mm=3.0)
-    )
-    reason = pcb_realize._diagnose_unrouted(
-        ir,
-        seg_id,
-        spec,
-        pads,
-        clearance,
-        signal_layers,
-        NetRules(track_width_mm=5.0, clearance_mm=clearance),
-        n_vias=1,
-        group_extent=None,
-        max_expansions=80_000,
-    )
-    assert reason.kind == "width", reason.message
-
-
 def test_unrouted_reason_unpourable_plane_names_its_own_cause():
     """A plane-promoted net with no board outline used to fall into the
     generic ``unrouted`` bucket with no distinguishing cause at all
@@ -2781,7 +1032,7 @@ def test_unrouted_reason_unpourable_plane_names_its_own_cause():
     }
     ir = from_graph(graph, stackup=DEFAULT_STACKUP)
     ir.promote_plane(0, 1)  # In1.Cu -- but no outline is authored below
-    result = realize(ir, config=RealizeConfig(router="maze"))
+    result = realize(ir, config=RealizeConfig(router="vector"))
     assert result.unrouted, "a plane with nowhere to pour must be reported unrouted"
     reasons = {r.seg_id: r for r in result.unrouted_reasons}
     assert reasons, "every unrouted segment must carry a reason"
@@ -2821,54 +1072,6 @@ def _gap_to_path(p: tuple[float, float], pts: list[tuple[float, float]]) -> floa
         t = max(0.0, min(1.0, t))
         best = min(best, math.hypot(p[0] - (a[0] + t * vx), p[1] - (a[1] + t * vy)))
     return best
-
-
-def _sharp_corner_run(interior_deg: float, leg: float) -> list[tuple[float, float]]:
-    """A run whose interior angle at the middle vertex is `interior_deg`.
-    Deliberately NOT 90/135 degrees: pure grid paths cannot reach the
-    clamped regime, but `_straighten`/`_shove_vias`/`_snap_to_pads` all
-    emit off-grid angles, so that is the regime that ships."""
-    out = math.pi - math.radians(interior_deg)
-    return [(-leg, 0.0), (0.0, 0.0), (leg * math.cos(out), leg * math.sin(out))]
-
-
-@pytest.mark.parametrize("interior_deg", [30.0, 45.0, 60.0, 75.0])
-def test_track_from_run_fillet_stays_inside_the_straight_track_envelope(
-    interior_deg: float,
-):
-    """The invariant: no filleted arc point may sit further from the
-    original mitered centreline than half the track width. Measured off the
-    emitted segments -- NOT by re-running geom's own deviation formula,
-    which is the producer's math and would check nothing."""
-    width = 0.25
-    run = _sharp_corner_run(interior_deg, 4.0 * width)
-    tracks = _track_from_run(1, 1, 0, list(run), width, fillet_radius_mm=1.5 * width)
-    assert len(tracks) == 1
-    arcs = [s for s in tracks[0].segments if s.get("shape") == "arc"]
-    assert arcs, "fixture must actually produce a fillet"
-    worst = max(_gap_to_path(p, run) for s in arcs for p in _arc_points(s))
-    assert worst <= width / 2.0 + 1e-9, (
-        f"{interior_deg}deg corner: fillet bulges {worst:.6f}mm past the "
-        f"mitered path, budget is {width / 2.0:.6f}mm"
-    )
-
-
-def test_track_from_run_still_fillets_when_the_budget_is_not_binding():
-    """Failure direction for the test above: a cap that collapsed the
-    radius to ~0 would satisfy every budget assertion while silently
-    disabling the feature. A gentle, long-legged corner must still round."""
-    width = 0.25
-    run = _sharp_corner_run(150.0, 20.0)
-    tracks = _track_from_run(1, 1, 0, list(run), width, fillet_radius_mm=1.5 * width)
-    arcs = [s for s in tracks[0].segments if s.get("shape") == "arc"]
-    assert len(arcs) == 1
-    radius = math.hypot(
-        arcs[0]["start"][0] - arcs[0]["center"][0],
-        arcs[0]["start"][1] - arcs[0]["center"][1],
-    )
-    assert radius == pytest.approx(1.5 * width, rel=1e-9), (
-        "an unconstrained corner must keep the full requested radius"
-    )
 
 
 def test_prune_redundant_drop_vias_removes_only_pour_covered_pins():
@@ -2969,65 +1172,6 @@ def test_spread_order_passthrough_when_under_cap():
     assert list(pcb_realize._spread_order(cands, 10)) == cands
 
 
-def test_claim_mounting_holes_blocks_every_layer_and_the_via_keepout():
-    from types import SimpleNamespace
-    from typing import cast
-
-    from precis.pcb import maze as pcb_maze
-    from precis.pcb import realize as pcb_realize
-    from precis.pcb.ir import MountingHole, PcbIR
-
-    spec = pcb_maze.GridSpec(x0=0.0, y0=0.0, pitch=0.1, nx=100, ny=100, n_layers=4)
-    grid = pcb_maze.OccupancyGrid(spec, clearance_mm=0.15)
-    ir = cast(
-        "PcbIR",
-        SimpleNamespace(
-            mounting_holes=(
-                MountingHole(x=5.0, y=5.0, drill_mm=2.0, ring_dia_mm=3.0, plated=True),
-            ),
-            n_nets=3,
-            n_pins=7,
-        ),
-    )
-    pcb_realize._claim_mounting_holes(grid, ir)
-    ix, iy = spec.to_cell(5.0, 5.0)
-    sentinel = 3 + 7 + pcb_realize._MOUNTING_HOLE_NET_OFFSET
-    # a drilled hole exists on EVERY layer, not just the pad layer
-    for layer in range(4):
-        assert grid.owner[layer, iy, ix] == sentinel
-    # and the ring is a pad-class keep-out: a via may not land inside it
-    assert not grid.via_clears_pads(5.0, 5.0, 0.3)
-    assert grid.via_clears_pads(5.0 + 3.0, 5.0 + 3.0, 0.3)
-
-
-def test_a_bare_npth_hole_is_claimed_out_to_the_fab_npth_clearance():
-    """Reto's board, 2026-10-02: router copper sat 0.22-0.40 mm from the
-    Ø6 holes against a 0.45 mm npth floor, and the post-route gate
-    stripped 12 nets. The claim must grow by npth minus net clearance; a
-    plated ring keeps the net-clearance claim."""
-    from types import SimpleNamespace
-    from typing import cast
-
-    from precis.pcb import maze as pcb_maze
-    from precis.pcb import realize as pcb_realize
-    from precis.pcb.ir import MountingHole, PcbIR
-
-    def claimed_at(hole: MountingHole, npth: float, dx: float) -> bool:
-        spec = pcb_maze.GridSpec(x0=0.0, y0=0.0, pitch=0.1, nx=100, ny=100, n_layers=4)
-        grid = pcb_maze.OccupancyGrid(spec, clearance_mm=0.15)
-        ir = cast("PcbIR", SimpleNamespace(mounting_holes=(hole,), n_nets=1, n_pins=1))
-        pcb_realize._claim_mounting_holes(grid, ir, npth_clearance_mm=npth)
-        ix, iy = spec.to_cell(5.0 + dx, 5.0)
-        return bool(grid.owner[0, iy, ix] != pcb_maze.FREE)
-
-    bare = MountingHole(x=5.0, y=5.0, drill_mm=2.0)
-    # edge at 1.0; net clearance alone claims to 1.15, npth 0.45 to 1.45
-    assert not claimed_at(bare, 0.0, 1.3)
-    assert claimed_at(bare, 0.45, 1.3)
-    ringed = MountingHole(x=5.0, y=5.0, drill_mm=2.0, ring_dia_mm=2.0, plated=True)
-    assert not claimed_at(ringed, 0.45, 1.3)
-
-
 def test_a_pour_antipads_a_bare_npth_hole_by_the_fab_npth_clearance():
     """The pour path's hole blocker grows the same way the router's claim
     does: plane_pours adds `clearance`, so the blocker adds the rest."""
@@ -3063,80 +1207,6 @@ def test_npth_clearance_is_the_fab_field_drc_measures():
         "npth_annular_ring_mm"
     )
     assert want and pcb_realize._npth_clearance_mm(pcb_realize.RealizeConfig()) == want
-
-
-def test_a_committed_via_keeps_the_next_via_off_it_whatever_the_net():
-    """Two connections of one net dropped vias with overlapping drills on
-    Reto's board (AD2, VCC, BTN1): owner disks only keep OTHER nets away.
-    A registered via is a net-blind keep-out, in the point query and in a
-    keep-out mask cached before it was registered."""
-    from precis.pcb import maze as pcb_maze
-
-    spec = pcb_maze.GridSpec(x0=0.0, y0=0.0, pitch=0.1, nx=60, ny=60, n_layers=4)
-    grid = pcb_maze.OccupancyGrid(spec, clearance_mm=0.15)
-    mask_before = grid._pad_keepout_mask(0.3)
-    ix, iy = spec.to_cell(2.3, 2.0)
-    assert not mask_before[iy, ix]
-    assert grid.via_clears_pads(2.3, 2.0, 0.3)
-
-    grid.register_via(2.0, 2.0, 0.3)
-    assert not grid.via_clears_pads(2.3, 2.0, 0.3)
-    assert grid.via_clears_pads(3.5, 2.0, 0.3)
-    assert grid._pad_keepout_mask(0.3)[iy, ix]
-    assert mask_before[iy, ix], "the cached mask did not take the via"
-
-
-def test_registering_a_via_mid_search_fails_loudly(monkeypatch):
-    """register_via mutates cached keep-out masks in place; a search that
-    saw one registered under it would read a changed mask silently."""
-    from precis.pcb import maze as pcb_maze
-
-    spec = pcb_maze.GridSpec(x0=0.0, y0=0.0, pitch=0.1, nx=60, ny=60, n_layers=2)
-    grid = pcb_maze.OccupancyGrid(spec, clearance_mm=0.15)
-    assert grid.route(1, (1.0, 1.0), (4.0, 1.0), layers=[0], width_mm=0.1)
-    real = pcb_maze.OccupancyGrid._route_in
-
-    def meddling(self, *a, **k):
-        self.register_via(5.0, 5.0, 0.3)
-        return real(self, *a, **k)
-
-    monkeypatch.setattr(pcb_maze.OccupancyGrid, "_route_in", meddling)
-    with pytest.raises(RuntimeError, match="register_via ran during a search"):
-        grid.route(2, (1.0, 3.0), (4.0, 3.0), layers=[0], width_mm=0.1)
-
-
-def test_claim_fiducial_keepouts_owns_cells_on_every_layer():
-    """A render-time fiducial is now a whole-stack copper feature
-    (:func:`precis.pcb.silk.build_fiducials`), so the router's pre-claim
-    of its candidate sites must reserve every layer too -- same
-    discipline, and the same `_claim_mounting_holes` precedent right
-    above, as this function's own docstring now says. Without this, a
-    track legally routed on an inner layer or B.Cu could still cross a
-    corner the mint later flashes copper onto there."""
-    from precis.pcb import maze as pcb_maze
-    from precis.pcb import realize as pcb_realize
-    from precis.pcb import silk as pcb_silk
-    from precis.pcb.ir import from_graph
-
-    outline = [[0.0, 0.0], [60.0, 0.0], [60.0, 40.0], [0.0, 40.0]]
-    ir = from_graph(
-        {"instances": [], "nets": []}, stackup=DEFAULT_STACKUP, outline=outline
-    )
-
-    spec = pcb_maze.GridSpec(x0=0.0, y0=0.0, pitch=0.5, nx=140, ny=100, n_layers=4)
-    grid = pcb_maze.OccupancyGrid(spec, clearance_mm=0.15)
-    pcb_realize._claim_fiducial_keepouts(grid, ir)
-
-    sites = pcb_silk.fiducial_candidate_sites(outline, ir=ir)
-    assert sites  # the candidate superset is never empty on a real board
-    fx, fy = sites[0][1]
-    ix, iy = spec.to_cell(fx, fy)
-    # every layer the grid carries owns this cell -- not just PAD_LAYER.
-    for layer in range(spec.n_layers):
-        assert grid.owner[layer, iy, ix] != pcb_maze.FREE
-    # and it is a pad-class keep-out on every layer: a via may not land
-    # inside a fiducial's mask opening.
-    assert not grid.via_clears_pads(fx, fy, 0.05)
 
 
 def test_mounting_hole_blockers_are_every_layer_foreign_net_fakes():
@@ -3223,349 +1293,4 @@ def test_courtyard_ink_field_builds_rings_for_placed_instances_and_empty_for_non
     assert pcb_realize._courtyard_ink_field(empty_ir, cap).segments == ()
 
 
-def test_drop_via_site_prefers_ink_free_and_falls_back_to_inked_when_none_exists():
-    """gr — the plane drop via is the round-4 review's primary offender
-    (THT/plane-heavy U1/C5/D4): among every legal candidate
-    :func:`~precis.pcb.realize._drop_via_site` tries, in its existing
-    near-to-far sweep order, it must prefer one whose annulus does not
-    touch courtyard ink -- but a via that must sit under ink still beats
-    an unrouted net, so with every candidate inked it returns the same
-    site the un-aware search would have (never ``None``)."""
-    from precis.pcb import maze as pcb_maze
-    from precis.pcb import realize as pcb_realize
-    from precis.pcb.rules import NetRules
-
-    spec = pcb_maze.GridSpec(x0=0.0, y0=0.0, pitch=0.1, nx=400, ny=400, n_layers=2)
-    grid = pcb_maze.OccupancyGrid(spec, clearance_mm=0.15)
-    rules = NetRules(
-        track_width_mm=0.2, clearance_mm=0.15, via_dia_mm=0.5, via_drill_mm=0.25
-    )
-    config = RealizeConfig()
-    pad = (20.0, 20.0)
-    direction = (1.0, 0.0)
-    pad_radius_mm = 0.3
-    assert rules.via_dia_mm is not None
-    via_radius_mm = rules.via_dia_mm / 2.0
-
-    baseline = pcb_realize._drop_via_site(
-        grid, pad, direction, 0, rules, config, range(0, 1), 0, pad_radius_mm, []
-    )
-    assert baseline is not None
-
-    spot_field = pcb_realize._ink_field_from_rings([_tiny_square_ring(*baseline)])
-    # Sanity: the baseline site really does sit under this ink.
-    assert spot_field.clips(baseline[0], baseline[1], via_radius_mm)
-
-    diverted = pcb_realize._drop_via_site(
-        grid,
-        pad,
-        direction,
-        0,
-        rules,
-        config,
-        range(0, 1),
-        0,  # pad_layer — this fixture's grid has exactly one layer
-        pad_radius_mm,
-        [],
-        ink_field=spot_field,
-    )
-    assert diverted is not None
-    assert diverted != baseline, "an ink-free candidate exists and must be preferred"
-    assert not spot_field.clips(diverted[0], diverted[1], via_radius_mm)
-
-    # Blanket EVERY candidate the sweep could ever try -- no legal site is
-    # ink-free anywhere in the whole search.
-    ux, uy = direction
-    base = round(math.atan2(uy, ux) / (math.pi / 4.0)) % 8
-    base_reach = max(
-        config.dogbone_stub_mm, pad_radius_mm + via_radius_mm + grid.clearance_mm
-    )
-    blanket_rings = []
-    for search_step in range(1, pcb_realize._DROP_SEARCH_STEPS + 1):
-        reach = base_reach * search_step
-        for offset in pcb_realize._DROP_SEARCH_OFFSETS:
-            vx, vy = pcb_realize._OCTO_DIRS[(base + offset) % 8]
-            blanket_rings.append(
-                _tiny_square_ring(pad[0] + vx * reach, pad[1] + vy * reach)
-            )
-    blanket_field = pcb_realize._ink_field_from_rings(blanket_rings)
-    fallback = pcb_realize._drop_via_site(
-        grid,
-        pad,
-        direction,
-        0,
-        rules,
-        config,
-        range(0, 1),
-        0,  # pad_layer — this fixture's grid has exactly one layer
-        pad_radius_mm,
-        [],
-        ink_field=blanket_field,
-    )
-    assert fallback == baseline, (
-        "with every candidate inked, the search must still return the "
-        "first legal one rather than failing the net",
-        fallback,
-        baseline,
-    )
-
-
-def test_shove_vias_moves_a_via_out_from_under_ink_when_a_free_candidate_exists():
-    """gr — round-4 review: a via transition sitting under courtyard ink
-    must become a shove candidate even though the path either side of it
-    is already perfectly straight (so :func:`_octilinear_shove_target`'s
-    strictly-shortening search alone would never touch it, module note
-    ahead of :func:`~precis.pcb.realize._courtyard_ink_field`)."""
-    from precis.pcb import maze as pcb_maze
-    from precis.pcb import realize as pcb_realize
-
-    # A SHORT span, deliberately: the nearest off-axis octilinear ray
-    # intersection between two fixed endpoints L apart sits at height
-    # L/2 above their midpoint, so it only falls inside `shove_radius_mm`
-    # when L is small relative to it -- a wide span (e.g. 10mm at a 1mm
-    # radius) offers this pass NO candidate at all to move to, ink or not.
-    pts = [(0.0, 0.0, 0), (1.0, 0.0, 0), (1.0, 0.0, 1), (2.0, 0.0, 1)]
-    spec = pcb_maze.GridSpec(x0=-5.0, y0=-5.0, pitch=0.05, nx=400, ny=400, n_layers=2)
-    grid = pcb_maze.OccupancyGrid(spec, clearance_mm=0.1)
-    via_group_extent_mm = 0.3
-    shove_radius_mm = 2.0
-    chord_radius_mm = 0.1
-    step = spec.pitch / 2.0
-    via_r = via_group_extent_mm / 2.0
-
-    # Baseline: no ink, path already taut on both flanks -> no move helps.
-    _out, moved = pcb_realize._shove_vias(
-        pts, grid, 0, via_group_extent_mm, shove_radius_mm, chord_radius_mm, step
-    )
-    assert not moved, "an already-taut via with no ink must not move"
-
-    spot_field = pcb_realize._ink_field_from_rings([_tiny_square_ring(1.0, 0.0)])
-    assert spot_field.clips(1.0, 0.0, via_r)
-
-    out, moved = pcb_realize._shove_vias(
-        pts,
-        grid,
-        0,
-        via_group_extent_mm,
-        shove_radius_mm,
-        chord_radius_mm,
-        step,
-        ink_field=spot_field,
-    )
-    assert moved, "an ink-free candidate exists and the via must move to it"
-    new_x, new_y, _lo = out[1]
-    _nx2, _ny2, _hi = out[2]
-    assert (new_x, new_y) == (_nx2, _ny2), "both layer anchors move together"
-    assert (new_x, new_y) != (1.0, 0.0)
-    assert not spot_field.clips(new_x, new_y, via_r)
-    # untouched otherwise: the outer, non-via points are exactly as given.
-    assert out[0] == pts[0] and out[3] == pts[3]
-
-
-def test_shove_vias_leaves_an_inked_via_alone_when_no_free_candidate_exists():
-    """The same fixture as the test above, but every candidate the shove
-    could ever move to is ALSO under ink -- moving there would not fix
-    anything and is not itself a shortening move, so the via must be left
-    exactly where the search put it, not relocated to another inked
-    spot."""
-    from precis.pcb import maze as pcb_maze
-    from precis.pcb import realize as pcb_realize
-
-    pts = [(0.0, 0.0, 0), (1.0, 0.0, 0), (1.0, 0.0, 1), (2.0, 0.0, 1)]
-    spec = pcb_maze.GridSpec(x0=-5.0, y0=-5.0, pitch=0.05, nx=400, ny=400, n_layers=2)
-    grid = pcb_maze.OccupancyGrid(spec, clearance_mm=0.1)
-    via_group_extent_mm = 0.3
-    shove_radius_mm = 2.0
-    chord_radius_mm = 0.1
-    step = spec.pitch / 2.0
-
-    candidates = pcb_realize._octilinear_shove_candidates(
-        (0.0, 0.0), (2.0, 0.0), (1.0, 0.0), shove_radius_mm, allow_no_gain=True
-    )
-    assert candidates, "fixture must actually offer shove candidates"
-    blanket_rings = [_tiny_square_ring(1.0, 0.0)] + [
-        _tiny_square_ring(cx, cy) for cx, cy in candidates
-    ]
-    blanket_field = pcb_realize._ink_field_from_rings(blanket_rings)
-
-    out, moved = pcb_realize._shove_vias(
-        pts,
-        grid,
-        0,
-        via_group_extent_mm,
-        shove_radius_mm,
-        chord_radius_mm,
-        step,
-        ink_field=blanket_field,
-    )
-    assert not moved
-    assert out == pts
-
-
 # ── component-body via surcharge (reworkability) ──────────────────────────
-
-
-def test_courtyard_body_mask_marks_cells_under_a_placed_instance():
-    """:func:`~precis.pcb.realize._courtyard_body_mask` must mark grid
-    cells that fall inside a placed instance's own courtyard FOOTPRINT
-    (:func:`~precis.pcb.silk.world_courtyard_rings`'s clearance-0 hull —
-    the part's real body) and mark nothing for an IR with no placed
-    instances, mirroring :func:`_courtyard_ink_field`'s own contract
-    (``test_courtyard_ink_field_builds_rings_for_placed_instances_and_
-    empty_for_none`` above) but asking about the FILLED body a via would
-    sit under, not the silk stroke drawn around it."""
-    from precis.pcb import maze as pcb_maze
-    from precis.pcb import realize as pcb_realize
-
-    graph = {
-        "instances": [{"refdes": "U1", "x": 5.0, "y": 5.0}],
-        "nets": [
-            {
-                "name": "N1",
-                "net_class": "signal",
-                "domain": "electrical",
-                "members": [{"refdes": "U1", "pin": "1"}],
-            }
-        ],
-    }
-    ir = from_graph(graph, stackup=DEFAULT_STACKUP)
-    spec = pcb_maze.GridSpec(x0=0.0, y0=0.0, pitch=0.1, nx=100, ny=100, n_layers=2)
-    mask = pcb_realize._courtyard_body_mask(ir, spec)
-    assert mask.shape == (spec.ny, spec.nx)
-    ix, iy = spec.to_cell(5.0, 5.0)
-    assert mask[iy, ix], "the instance's own centre must fall inside its courtyard"
-    assert mask.any()
-
-    empty_ir = from_graph({"instances": [], "nets": []}, stackup=DEFAULT_STACKUP)
-    empty_mask = pcb_realize._courtyard_body_mask(empty_ir, spec)
-    assert not empty_mask.any(), "an IR with no placed instances marks no body cells"
-
-
-def test_route_pass_via_body_cost_mm_pushes_the_via_off_a_masked_body_strip():
-    """The wiring this task adds, exercised end to end through
-    :func:`~precis.pcb.realize._route_pass` (the function
-    :func:`~precis.pcb.realize._realize_maze` actually calls for every real
-    segment) rather than at :mod:`precis.pcb.maze` alone: with a body mask
-    set on the grid and ``RealizeConfig.via_body_cost_mm`` left at its
-    unpriced default, the cheapest crossing of a wall sealing layer 0 (the
-    same construction :mod:`tests.test_pcb_maze` uses) drops its via inside
-    the masked strip; raising ``via_body_cost_mm`` on the SAME grid must
-    move it off, proving the config knob actually reaches
-    ``grid.route``'s surcharge and not just that the maze module accepts
-    one in isolation."""
-
-    import numpy as np
-
-    from precis.pcb import maze as pcb_maze
-    from precis.pcb import realize as pcb_realize
-    from precis.pcb.ir import pin_point
-
-    graph = {
-        "instances": [
-            {"refdes": "U1", "x": 1.0, "y": 4.0},
-            {"refdes": "U2", "x": 5.0, "y": 4.0},
-        ],
-        "nets": [
-            {
-                "name": "SIG",
-                "members": [
-                    {"refdes": "U1", "pin": "1"},
-                    {"refdes": "U2", "pin": "1"},
-                ],
-            }
-        ],
-    }
-    ir = from_graph(graph, stackup=DEFAULT_STACKUP)
-    config = RealizeConfig()
-    pad_geoms = pad_geometry(ir)
-    pads: list[tuple[tuple[float, float], int, pcb_maze.PadShape, tuple[int, ...]]] = []
-    for pid in range(ir.n_pins):
-        point = pin_point(ir, pid)
-        assert point is not None  # every instance above is placed
-        geom = pad_geoms[pid]
-        inst_rot = float(ir.inst_rot[int(ir.pin_instance[pid])])
-        shape = pcb_realize._pad_shape(geom, point, inst_rot)
-        # 4th element: this pad's claimed layer(s), `_realize_maze`'s own
-        # shape (`_side_layer` -- both instances above are top-mounted, so
-        # this is `(0,)` for each; neither pin has a real footprint here,
-        # so `geom.drill_mm` is always `None` and nothing needs the
-        # THT/all-layer branch).
-        layers = (pcb_realize._side_layer(ir, int(ir.pin_instance[pid]), [0, 1]),)
-        pads.append((point, int(ir.pin_net[pid]), shape, layers))
-    rules_by_net = {
-        n: pcb_realize._resolve_track_rules(ir, n, PAD_LAYER, config)
-        for n in range(ir.n_nets)
-    }
-    clearance = max(
-        config.clearance_mm, max(r.clearance_mm for r in rules_by_net.values())
-    )
-    spec = pcb_maze.GridSpec(x0=0.0, y0=0.0, pitch=0.1, nx=60, ny=60, n_layers=2)
-    signal_layers = [0, 1]
-
-    def build_grid() -> pcb_maze.OccupancyGrid:
-        grid = pcb_maze.OccupancyGrid(spec, clearance_mm=clearance)
-        # A foreign net (999 -- never resolved through `rules_by_net`, only
-        # ever queried as "not this net") sealing layer 0 the full span of
-        # y, forcing SIG's only path through a layer change -- see
-        # ``tests/test_pcb_maze.py``'s ``_walled_two_layer_grid`` for the
-        # same construction pinned at the maze-module level.
-        for k in range(80):
-            grid.stamp_disk((0,), 3.0, k * 0.1, 0.12, 999)
-        return grid
-
-    mask = np.zeros((spec.ny, spec.nx), dtype=bool)
-    cx, cy = spec.to_cell(2.5, 4.0)
-    mask[cy - 3 : cy + 4, cx - 2 : cx + 3] = True
-
-    def via_lands_in_mask(vias) -> bool:
-        return any(
-            bool(mask[spec.to_cell(v.x, v.y)[1], spec.to_cell(v.x, v.y)[0]])
-            for v in vias
-        )
-
-    cheap_grid = build_grid()
-    cheap_grid.set_body_mask(mask)
-    _tracks, cheap_vias, cheap_unrouted, _island_notes, _failed_pins = (
-        pcb_realize._route_pass(
-            ir,
-            [0],
-            [],
-            cheap_grid,
-            RealizeConfig(via_body_cost_mm=0.0),
-            rules_by_net,
-            pads,
-            clearance,
-            signal_layers,
-            spec,
-            pad_geoms,
-        )
-    )
-    assert not cheap_unrouted
-    assert cheap_vias
-    assert via_lands_in_mask(cheap_vias), (
-        "the unpriced baseline must actually exercise the masked body cell"
-    )
-
-    priced_grid = build_grid()
-    priced_grid.set_body_mask(mask)
-    _tracks, priced_vias, priced_unrouted, _island_notes, _failed_pins = (
-        pcb_realize._route_pass(
-            ir,
-            [0],
-            [],
-            priced_grid,
-            RealizeConfig(via_body_cost_mm=5.0),
-            rules_by_net,
-            pads,
-            clearance,
-            signal_layers,
-            spec,
-            pad_geoms,
-        )
-    )
-    assert not priced_unrouted
-    assert priced_vias
-    assert not via_lands_in_mask(priced_vias), (
-        "RealizeConfig.via_body_cost_mm must reach grid.route and move the "
-        "via off the masked body strip"
-    )

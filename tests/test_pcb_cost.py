@@ -1096,9 +1096,15 @@ def test_via_count_matches_realized_vias_exactly():
     ir.move_instance(0, x=0.0, y=0.0, rot=0.0)
     ir.move_instance(1, x=10.0, y=0.0, rot=0.0)
     ir.set_layer(0, 1)  # a real layer transition, with a current annotation
+    # …and the vector router is pointed at it by a class lock (seg_layer
+    # is a soft preference the router may ignore).
     fab_caps = capability_for("4layer")
     cost_config = CostConfig(fab_caps=fab_caps, via_usd=0.02)
-    realize_config = RealizeConfig(fab_caps=fab_caps, router="tangent")
+    realize_config = RealizeConfig(
+        fab_caps=fab_caps,
+        router="vector",
+        class_rules={"power": {"layers": ["In1.Cu"]}},
+    )
 
     (t,) = _via_count(ir, Level.L4, cost_config)
     result = realize(ir, config=realize_config)

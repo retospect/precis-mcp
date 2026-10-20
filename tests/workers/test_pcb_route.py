@@ -147,21 +147,6 @@ def _authored_members(store: Store, ref_id: int) -> dict[str, set[tuple[str, str
     }
 
 
-@pytest.mark.parametrize("negotiate", [-1, 101])
-def test_pcb_route_direct_job_refuses_out_of_range_before_board_read(
-    store: Store, monkeypatch, negotiate
-):
-    def unexpected_read(*args, **kwargs):
-        pytest.fail("invalid negotiation must refuse before reading the board")
-
-    monkeypatch.setattr(store, "pcb_graph", unexpected_read)
-    ctx = _FakeCtx(store, params={"pcb_ref_id": -1, "negotiate": negotiate})
-    _route(ctx)
-    assert len(ctx.failures) == 1
-    assert "negotiate=" in str(ctx.failures[0])
-    assert not ctx.summaries
-
-
 @pytest.mark.parametrize("loop", [-1, 4])
 def test_pcb_route_direct_job_refuses_bad_loop_before_board_read(
     store: Store, monkeypatch, loop
@@ -226,73 +211,6 @@ def test_pcb_route_loop_malformed_expansion_caps_fails_input(store: Store):
     assert len(ctx.failures) == 1
     assert "expansion_caps" in ctx.failures[0][0]
     assert ctx.failures[0][1] == "input"
-
-
-def test_pcb_route_summary_says_what_the_negotiation_did(store: Store, monkeypatch):
-    """gr469872's follow-up: job 470129 (``negotiate=10`` on the EWOD
-    dogfood board) reported the same counts as ``negotiate=0`` and nothing
-    else. The report the realizer now returns must reach the job summary
-    and the stored ``last_route`` meta, verdict included."""
-    import dataclasses
-
-    ref_id = _seed(store, "route-negotiate-summary", _DESIGN)
-    real = pcb_route.pcb_realize.realize
-    report = pcb_route.pcb_realize.NegotiationReport(
-        iterations_run=3,
-        conflicted=(52, 52, 52),
-        proposals=53,
-        out_of_time=False,
-        elapsed_s=3.6,
-        accepted=13,
-        won=False,
-    )
-
-    def with_report(*args, **kwargs):
-        return dataclasses.replace(real(*args, **kwargs), negotiation=report)
-
-    monkeypatch.setattr(pcb_route.pcb_realize, "realize", with_report)
-    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "negotiate": 3})
-    _route(ctx)
-    summary = "\n".join(text for kind, text in ctx.summaries if kind == "job_summary")
-    assert (
-        "negotiated 3 iteration(s) in 4s: 52→52 net(s) in conflict, did not "
-        "converge; 53 proposal(s), 13 committed verbatim, result not taken"
-    ) in summary
-    ref = store.get_ref(kind="pcb", id="route-negotiate-summary")
-    assert ref is not None
-    assert ref.meta["last_route"]["negotiation"] == {
-        "iterations_run": 3,
-        "conflicted": [52, 52, 52],
-        "converged": False,
-        "proposals": 53,
-        "out_of_time": False,
-        "elapsed_s": 3.6,
-        "accepted": 13,
-        "won": False,
-    }
-
-
-@pytest.mark.parametrize("negotiate", [None, 0, 10, 100])
-def test_pcb_route_threads_negotiation_to_realizer(
-    store: Store, monkeypatch, negotiate
-):
-    ref_id = _seed(store, "route-negotiate-config", _DESIGN)
-    params = {"pcb_ref_id": ref_id, "iters": 50, "seed": 0}
-    if negotiate is not None:
-        params["negotiate"] = negotiate
-    seen = []
-    real = pcb_route.pcb_realize.realize
-
-    def record(*args, **kwargs):
-        seen.append(kwargs["config"].negotiate_iterations)
-        return real(*args, **kwargs)
-
-    monkeypatch.setattr(pcb_route.pcb_realize, "realize", record)
-    ctx = _FakeCtx(store, params=params)
-    _route(ctx)
-    assert seen == [0 if negotiate is None else negotiate]
-    assert not ctx.failures
-    assert store.pcb_route_status(ref_id)[0]["status"] == "realized"
 
 
 def test_pcb_route_writes_realized_route_and_copper(store: Store) -> None:
@@ -364,7 +282,7 @@ def test_pcb_route_persists_realized_vias_at_a_layer_transition(store: Store) ->
 
     **This used to force the layer change by pre-authoring a
     ``layer_assign`` override, and no longer can.** The maze router
-    (``RealizeConfig.router='maze'``, the production default since
+    (``RealizeConfig.router='vector'``, the production default since
     2026-08-28) chooses its own layers — ``seg_layer`` is the sketch's
     preference, not an instruction to the router — so the only way to
     make a via appear is to make one *necessary*. That is what the wall
@@ -406,6 +324,9 @@ def test_pcb_route_persists_realized_vias_at_a_layer_transition(store: Store) ->
             {"name": "VBUS", "class": "power", "current": 5.0},
             {"name": "GND", "class": "ground"},
         ],
+        # Locks VBUS to B.Cu: the F.Cu-mounted pads then force one stub+via
+        # at each end regardless of how clear the top-layer corridor is.
+        "net_classes": {"power": {"layers": ["B.Cu"]}},
         "connections": [
             {"net": "VBUS", "refdes": "U1", "pin": "1"},
             {"net": "VBUS", "refdes": "U2", "pin": "1"},
@@ -2194,16 +2115,6 @@ def test_failed_net_note_names_the_blocking_participant(
     assert "crosses GND on " in note  # names the net AND the layer name
 
 
-def test_diagnose_unrouted_names_layers_and_constricting_pads() -> None:
-    """The realize-side message must name the layers probed and, for a
-    'width' verdict, the pads constricting the corridor (gr495293)."""
-    import inspect
-
-    src = inspect.getsource(pcb_route.pcb_realize._diagnose_unrouted)
-    assert "layer_names" in src
-    assert "_constricting_pad_names" in src
-
-
 def _poses(store: Store, ref_id: int) -> dict[str, tuple[float, float]]:
     return {
         str(c["refdes"]): (float(c["x"]), float(c["y"]))
@@ -2237,4 +2148,4 @@ def test_pcb_route_summary_always_carries_a_cleanup_line(store: Store) -> None:
 
     assert not ctx.failures, ctx.failures
     text = "\n".join(t for _k, t in ctx.summaries)
-    assert "cleanup: " in text, text
+    assert "vector route:" in text, text

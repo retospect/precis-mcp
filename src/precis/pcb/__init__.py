@@ -7,7 +7,7 @@ board already placed rectangles — and keep every stage a pure function
 over it so each is unit-testable in isolation. Export is the one place a
 design leaves the relational graph. Freerouting (:mod:`~precis.pcb.route`)
 is the one rented kernel, and it is no longer the critical path: the
-in-house realizer + maze router produce the copper the gerbers are cut
+in-house realizer + vector router produce the copper the gerbers are cut
 from.
 
 Route warm starts use Hungarian Manhattan-distance assignment from connected
@@ -74,11 +74,8 @@ Map, in pipeline order (design doc:
   (computed components such as EWOD arrays), :mod:`~precis.pcb.session`
   (IR↔DB glue for the ``pcb_place``/``pcb_route`` jobs).
 * **Copper** — :mod:`~precis.pcb.realize` (sketch → copper geometry),
-  :mod:`~precis.pcb.maze` (grid router that cannot violate clearance),
-  :mod:`~precis.pcb.globalplan` (tile-capacity plan probe, experiment
-  only — docs/backlog/pcb-global-plan-router.md),
-  :mod:`~precis.pcb.routeclean` (post-route pass: move another net's
-  blocking via so a kinked track runs straight),
+  :mod:`~precis.pcb.vroute` (the one router: gridless, octilinear,
+  kernel-exact clearance),
   :mod:`~precis.pcb.planes` (pours), :mod:`~precis.pcb.tiling` (a net
   owns a region on a layer), :mod:`~precis.pcb.silk` +
   :mod:`~precis.pcb.stroke_font` (silkscreen), :mod:`~precis.pcb.geom`
@@ -132,7 +129,7 @@ are closed-form, not because the package as a whole is. No GL, no
 meshing, no embedder. The handler (:mod:`precis.handlers.pcb`) renders
 results as TOON; this package owns the algorithms.
 
-The maze-grid pitch cap retains two-thirds of clearance, bounded by grid_for's
+The route pitch cap retains two-thirds of clearance, bounded by
 existing pitch floor. A one-third experiment gained one net on the faithful
 dogfood replay (12 gains/11 losses, zero geometric DRC errors), but regressed
 ESP32 reference seed5 and fab-film seeds2/3/4. The global refinement was withdrawn:
@@ -342,7 +339,7 @@ def format_warm_start(report: list[dict[str, Any]] | None) -> list[str]:
     return lines
 
 
-#: Route cost of In1.Cu in the hybrid preset, as a multiple of the base maze
+#: Route cost of In1.Cu in the hybrid preset, as a multiple of the base
 #: step (pcb-stackup-regions rulings: "about 2-3x", "high cost does not need
 #: to be massively high"). Slice 1's table could not tune it (no board there
 #: routed on In1), so this is the middle of the ruled band.

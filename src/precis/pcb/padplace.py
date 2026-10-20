@@ -144,7 +144,7 @@ def pad_axis_aligned(rot_deg: float, *, tol_deg: float = 0.05) -> bool:
     exactly on the board axes). Exposed for callers outside this module
     that need to know "can this pad's board-space extent be represented
     by an axis-aligned box at all" without re-deriving the tolerance
-    arithmetic a third time (:mod:`precis.pcb.maze`'s pad-shape router
+    arithmetic a third time (:mod:`precis.pcb.realize`'s router
     claim, gripe 346962)."""
     r = rot_deg % 90.0
     return r <= tol_deg or r >= 90.0 - tol_deg

@@ -159,7 +159,7 @@ job applies).
   router). A closed pad row whose
   ring-crossing boundaries read zero lanes on the strict flow map gets
   an angular escape assignment — stub outward to a packed margin via
-  lattice, inner-layer run to the source — handed to the maze as wedge
+  lattice, inner-layer run to the source — handed to the vector router as wedge
   corridors at the `corridor` price (default 5 when unset); the plain
   passes still run after. Measured 2026-10-15: EWOD replay 51/55,
   QFP plaza warm 53/55 — same as plain on both.
@@ -496,7 +496,7 @@ scoped to one class). It is judged: router copper the new rules no longer admit 
 `via_drill_mm`:**
 
 - Read: the realizer (each track's width and via size come from its net's
-  class; the route job passes the stored classes in); the router's maze grid
+  class; the route job passes the stored classes in); the router's exact clearance check
   (one board-wide clearance, the largest any net's class resolves to, not a
   per-net value); the route job's post-route DRC gate (a net-class-aware
   clearance check strips violating router nets); `view='drc'`; the judged

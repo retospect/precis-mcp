@@ -2,7 +2,7 @@
 domain (``docs/backlog/pcb-vector-router.md`` slice 5);
 ``view='congestion'`` prints its per-layer portal map.
 
-The tile plan (:mod:`precis.pcb.globalplan`) prices fixed square tiles,
+The tile plan prices fixed square tiles,
 so a braid inside one tile is invisible to it. Here free space on a layer
 is triangulated with every obstacle boundary as a constraint
 (``shapely.constrained_delaunay_triangles``), so each primal edge between

@@ -634,7 +634,7 @@ def apply_real_pin_offsets(
     synthesized bound" fallback for a part with no cached/authored
     footprint or a pin its ``pin_map`` doesn't cover. gripe 338983: pad
     size was real while pad position stayed a guess, so DRC clearance, the
-    maze router's pad claims, connectivity and courtyard hulls all measured
+    the router's pad obstacles, connectivity and courtyard hulls all measured
     correctly-sized polygons anchored at the wrong places — harmless-looking
     for a catalog part whose label names a package family the synthesis
     approximates, meaningless for an authored custom footprint (an

@@ -6,7 +6,7 @@ A locked net whose pad sits on a forbidden layer can only be routed from
 an authored fixed-copper island that reaches an allowed layer — the plaza
 via, on the EWOD board. :func:`precis.pcb.realize._resolve_route_end` is
 the router's side of that rule: it substitutes the island terminal, and
-fails the segment as ``layer_lock`` when there is none, because the maze
+fails the segment as ``layer_lock`` when there is none, because the
 router never drops a via at a pad itself. This module answers the same
 question before any routing runs, from the same two inputs the router
 reads (:func:`precis.pcb.realize.pads_for_ir`'s pads and

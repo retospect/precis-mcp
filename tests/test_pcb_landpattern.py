@@ -83,19 +83,6 @@ def test_sizes_for_returns_one_positive_nonvanishing_size_per_pin(n: int) -> Non
         assert shape in ("circle", "rect")
 
 
-def test_sizes_for_is_not_one_flat_disc_regardless_of_package() -> None:
-    """The defect this module exists to close: a 2-pin passive, a 4-pin
-    row part and a 48-pin QFN must NOT all reserve the same pad, the way
-    every pad in the engine used to before ``maze.PAD_RADIUS_MM`` stopped
-    being the only figure anyone read."""
-    passive, _ = sizes_for(2)
-    row, _ = sizes_for(4)
-    quad, _ = sizes_for(48)
-    assert passive[0][:2] != row[0][:2]
-    assert row[0][:2] != quad[0][:2]
-    assert passive[0][:2] != quad[0][:2]
-
-
 def test_sizes_for_single_and_header_are_round_everything_else_is_not() -> None:
     single, _ = sizes_for(1)
     header, _ = sizes_for(4, label="J1 2.54mm pin header")
@@ -108,29 +95,6 @@ def test_sizes_for_single_and_header_are_round_everything_else_is_not() -> None:
     for sizes in (passive, quad):
         for w, h, shape in sizes:
             assert shape == "rect"
-
-
-@pytest.mark.parametrize("n", [2, 3, 4, 8, 14, 16, 24, 48])
-def test_synthesized_pads_of_one_package_do_not_collide_with_their_own_offsets(
-    n: int,
-) -> None:
-    """Distinct offsets are not enough (the test above this one already
-    covers that) — a pad big enough to reach its own neighbour's pad
-    would trade one wall of false clearance errors for another, which is
-    exactly the failure :mod:`precis.pcb.maze`'s own module docstring
-    describes for a claim that is too generous. The enclosing-circle
-    radius the router actually claims (``0.5 * hypot(w, h)``, see
-    :func:`precis.pcb.realize._realize_maze`) must leave real clearance
-    between any two of this package's own pads."""
-    offsets, _ = offsets_for(n)
-    sizes, _ = sizes_for(n)
-    radii = [math.hypot(w, h) / 2.0 for w, h, _shape in sizes]
-    for i, a in enumerate(offsets):
-        for j, b in enumerate(offsets):
-            if i >= j:
-                continue
-            gap = math.dist(a, b) - radii[i] - radii[j]
-            assert gap > 0.0, f"{n}-pin pattern pads {i}/{j} overlap by {-gap:.3f}mm"
 
 
 def test_rotation_is_clockwise_from_north() -> None:

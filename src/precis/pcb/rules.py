@@ -766,7 +766,7 @@ def pin_current_a_or_none(ir: PcbIR, pin_id: int) -> float | None:
 #: ``layer`` key off that field instead of this constant). This constant
 #: remains index 0 (the first outer layer, F.Cu in
 #: :data:`precis.pcb.DEFAULT_STACKUP`) as the one fixed frame every via
-#: transition the ROUTER draws (both :mod:`precis.pcb.realize`'s maze/
+#: transition the ROUTER draws (both :mod:`precis.pcb.realize`'s vector
 #: plane-fanout/drop-via geometry and :func:`implied_via_count`'s count
 #: below) is computed against — the router still routes every net as if
 #: every pad started from the SAME outer layer regardless of its

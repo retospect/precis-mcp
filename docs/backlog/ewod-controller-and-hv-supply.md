@@ -911,7 +911,7 @@ a B.Cu pad without a via (the gr346744 signature) — else file it as new.
   columns and jsonb).
 - Engine: `drc.py` (`undeclared_pad`, error-tier class floor),
   `rules.py::resolve_net_rules` (`min_clearance_mm`, `working_voltage_v`),
-  `realize.py::_realize_maze` + `maze.OccupancyGrid` (per-net clearance —
+  `realize.py`'s `_realize_vector` + `vroute.Space` (per-net clearance —
   the widest blast radius: every routed board), `generators.py`
   (`_SinkGrid`, `tape_land`, HV class), `capabilities.py` (reader reuse).
 - Handlers: `handlers/pcb.py` put schema (`sink_grid` keys, `tape_land`,

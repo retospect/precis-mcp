@@ -15,11 +15,11 @@ from typing import Any
 import pytest
 from shapely.geometry import Point
 
-from precis.pcb import DEFAULT_STACKUP, maze, realize
+from precis.pcb import DEFAULT_STACKUP, realize
 from precis.pcb import drc as pcb_drc
 from precis.pcb import session as pcb_session
 from precis.pcb.capabilities import capability_for
-from precis.pcb.ir import from_graph, pin_point
+from precis.pcb.ir import from_graph
 from precis.workers.job_types.pcb_route import _fixed_copper_collisions
 
 _ROT = 45.0
@@ -151,27 +151,6 @@ def test_oblique_obround_is_a_rotated_stadium_polygon():
         d = math.hypot(x - along * ax, y - along * ay)
         assert d == pytest.approx(r, abs=1e-3)
     assert max(math.hypot(x, y) for x, y in ring) == pytest.approx(_W / 2, abs=1e-3)
-
-
-def test_router_claim_contains_the_model_pad():
-    ir, footprints = _ir_and_footprints()
-    pad = _u0_pad(ir, footprints)
-    geoms = realize.pad_geometry(ir, footprints)
-    pid = next(
-        p
-        for p in range(ir.n_pins)
-        if str(ir.instance_refdes[int(ir.pin_instance[p])]) == "U0"
-    )
-    point = pin_point(ir, pid)
-    assert point is not None
-    claim = realize._pad_shape(geoms[pid], point, float(ir.inst_rot[0]))
-    assert isinstance(claim, maze.PadShape)
-    assert claim.kind == "circle"
-    radius = claim.w_mm / 2.0
-    assert radius == pytest.approx(math.hypot(_W, _H) / 2.0)
-    for x, y in pad["poly"]:
-        # The ring is rounded to 0.1 um; the corner sits ON the circle.
-        assert math.hypot(x - point[0], y - point[1]) <= radius + 1e-3
 
 
 def test_drc_polygon_branch_measures_the_ring():

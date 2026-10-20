@@ -10,7 +10,7 @@ in two electrically separate halves.
 That is not hypothetical. Two defects of exactly this shape shipped in this
 engine and were invisible to every check above:
 
-* **Track ends short of a pad.** The maze search works in cells, so its
+* **Track ends short of a pad.** The grid search that used to run here worked in cells, so its
   endpoints were cell CENTRES, up to half a cell diagonal from the pad.
   120 of 162 ends stopped 0.04-0.06mm short. Inside a 0.4mm pad that
   happens to connect — by luck, not construction.
@@ -149,7 +149,7 @@ def _pad_primitives(
     of the opposite polarity is exactly today's defect, just relocated one
     level down to the pads this fix cannot make exact — so that one
     degenerate case uses the CIRCUMSCRIBED disk (``hypot(w, h) / 2``,
-    :mod:`precis.pcb.maze`'s own ``enclosing_radius_mm`` fallback for the
+    :mod:`precis.pcb.realize`'s own enclosing-radius fallback for the
     same "cannot represent exactly" situation) instead."""
     prims: list[_Prim] = []
     polys: dict[int, tuple[Point, ...]] = {}
@@ -599,7 +599,7 @@ def fixed_copper_pin_terminals(
     falls out for free), and a track's segment endpoints on its own layer.
 
     **The router's alternate start/target set, restated per pin.**
-    :mod:`precis.pcb.realize`'s maze search normally has exactly one
+    :mod:`precis.pcb.realize`'s route search normally has exactly one
     start/goal point per connection: the pin's own pad centre. A pin whose
     fixed-copper island reaches somewhere the pad-to-pad grid search cannot
     walk to (a dense field of foreign claims with no corridor, even though

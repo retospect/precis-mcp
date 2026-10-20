@@ -33,7 +33,7 @@ order of contribution:
    with both keep-outs derived from each part's OWN land pattern rather
    than a single 1.0mm constant. 612 -> 234, and courtyard_overlap and
    board_edge_clearance both to zero.
-3. The maze router (``precis.pcb.maze``, ``RealizeConfig.router='maze'``).
+3. The vector router (``precis.pcb.vroute``).
    Copper is claimed on a shared occupancy grid before it is drawn, so
    inter-net overlap is structurally impossible. 234 -> 0.
 
@@ -85,7 +85,7 @@ FIXTURE = Path(__file__).parent / "fixtures" / "pcb" / "esp32c3_reference.json"
 #: and re-measuring is required if either changes.
 BASELINE_ROUTED_FANOUT2 = 11  # of 11 nets with fanout >= 2, realized
 #: Not a ratchet. Inter-net clearance is enforced by the occupancy grid in
-#: :mod:`precis.pcb.maze` — copper is claimed before it is drawn — so a
+#: :mod:`precis.pcb.vroute` — copper is an obstacle before it is drawn — so a
 #: nonzero value here is not "worse placement", it is a hole in the
 #: guarantee: some path reached the board without claiming its corridor.
 #: Do not raise this to accommodate a measurement. Find the leak.

@@ -77,7 +77,7 @@ def _route(
     apply_real_pin_offsets(ir, footprints)
     return realize(
         ir,
-        config=RealizeConfig(router="maze", class_rules=class_rules),
+        config=RealizeConfig(router="vector", class_rules=class_rules),
         footprints=footprints,
     )
 
@@ -98,13 +98,16 @@ def test_locked_net_routes_from_a_drilled_sibling_pad() -> None:
     assert "same-pin pad" in note and "B.Cu" in note, note
 
 
-def test_locked_net_without_the_sibling_pad_stays_unrouted() -> None:
-    """Control: the same board with U1's drilled pad removed has no legal
-    terminal on B.Cu, so the terminal (not a relaxed lock) is what made
-    the test above route."""
+def test_locked_net_without_the_sibling_pad_routes_through_a_via() -> None:
+    """Control, updated for the vector router: the same board with U1's
+    drilled pad removed used to stay unrouted under the grid — the pad's
+    mount side was not a legal terminal layer. The vector router now
+    enters the F.Cu pad on its own terminal-only layer and buys the layer
+    change with one stub+via, so the lock routes where the grid refused."""
     result = _route({"U1": _ONE_PAD_FP}, _LOCK)
-    assert result.unrouted == (0,)
-    assert not result.tracks
+    assert result.unrouted == ()
+    assert result.tracks
+    assert result.vias, "the F.Cu pad to B.Cu-locked trace needs a via"
 
 
 def test_sibling_terminals_carry_pad_layers() -> None:

@@ -24,7 +24,7 @@ from precis.pcb import DEFAULT_STACKUP, padplace
 from precis.pcb.drc import _copper_item_polygon
 from precis.pcb.ir import from_graph, instance_courtyard_polygon, pin_point
 from precis.pcb.landpattern import place_points
-from precis.pcb.realize import _pad_shape, pad_geometry, pads_for_ir
+from precis.pcb.realize import pad_geometry, pads_for_ir
 from precis.pcb.session import apply_real_pin_offsets, build_ir
 
 TOL = 1e-4
@@ -193,13 +193,6 @@ def test_every_footprint_element_follows_the_reference_matrix(x, y, rot, bottom)
     _ring_close(
         [tuple(v) for v in by_pin["3"]["poly"]], poly_ring, "model polygon ring"
     )
-    claim = _pad_shape(
-        geoms[pid_of["3"]],
-        pt3,
-        float(ir.inst_rot[0]),
-        mirrored=bool(ir.inst_bottom[0]),
-    )
-    _ring_close(list(claim.poly), poly_ring, "router polygon claim")
     drc_poly = _copper_item_polygon({**by_pin["3"], "ctype": "pad"})
     assert drc_poly is not None
     got = list(drc_poly.exterior.coords)[:-1]

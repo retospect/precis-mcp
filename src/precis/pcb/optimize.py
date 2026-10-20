@@ -801,7 +801,7 @@ class OptimizeConfig:
 # (`RouteOutcome`), which `OptimizeEngine.apply_route_feedback` folds into
 # the NEXT anneal's cost. The engine consumes this and nothing else — the
 # router call itself stays outside this module (the loop takes a callable),
-# so no realize/maze import ever enters here.
+# so no realize import ever enters here.
 
 
 @dataclass(frozen=True, slots=True)
@@ -5814,7 +5814,7 @@ def _capped_list(items: Sequence[str]) -> str:
 # change the next anneal's objective; the LLM and Reto receive the final
 # constraint-conflict digest, not placement advice or retry instructions.
 # The router call is injected (`route`), so this module stays free of
-# realize/maze imports and the loop is testable against any route that
+# realize imports and the loop is testable against any route that
 # honours the `RouteOutcome` contract.
 
 

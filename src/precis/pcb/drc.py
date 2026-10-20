@@ -3330,7 +3330,7 @@ _OCTILINEAR_EPS_MM = 1e-4
 def check_octilinear(model: dict[str, Any]) -> list[DrcFinding]:
     """Every drawn copper LINE segment must run at a multiple of 45
     degrees — axis-aligned or a true diagonal (|dx| == |dy|) — the
-    octilinear discipline every emitter on the maze-router path in
+    octilinear discipline every emitter on the router path in
     :mod:`precis.pcb.realize` guarantees since 2026-08-31 (user
     requirement: every wire on every layer fully 90/45).
 
