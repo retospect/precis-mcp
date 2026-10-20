@@ -1,0 +1,290 @@
+#!/usr/bin/env -S uv run python
+"""scripts/precis-chat — talk to castor's local model with the precis MCP tools
+(repo-dev tool, NOT product).
+
+    scripts/precis-chat                  interactive REPL
+    scripts/precis-chat -p "<question>"  one shot
+    --write   also expose put/edit/tag/link/delete (PROD writes; off by default)
+    --show    print each tool call and a result preview
+    --think   print the model's reasoning for every step (dimmed, stderr)
+
+REPL: /help, /think and /show toggle, /reset clears the conversation, /quit.
+Up/down recall history (~/.precis_chat_history); Ctrl-C cancels the running
+answer or clears the line; Ctrl-D quits.
+
+The precis MCP is the local HTTP endpoint (PRODUCTION data). Read-only by
+default: only get/search/more are offered to the model. The castor address is
+resolved at runtime and never printed. The MCP token comes from
+PRECIS_MCP_TOKEN.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import httpx
+from mcp import ClientSession
+from mcp.client.streamable_http import streamablehttp_client
+
+try:
+    import readline
+except ImportError:  # pragma: no cover — non-POSIX
+    readline = None  # type: ignore[assignment]
+
+MODEL = "openai/gpt-oss-120b"
+MCP_URL = os.environ.get("PRECIS_MCP_URL", "http://127.0.0.1:8765/mcp")
+READ_TOOLS = {"get", "search", "more"}
+REPO = Path(__file__).resolve().parent.parent
+HISTORY = Path.home() / ".precis_chat_history"
+THINK_CHARS = 2000
+SYSTEM = (
+    "You are a research assistant with the precis tools (a paper library, "
+    "knowledge base and compute kinds). Every call takes kind=. Discover with "
+    "search(kind='skill', q='<goal>') or get(kind='skill', id='toc'). Call tools "
+    "whenever the answer depends on the library; do not guess ids. Cite the "
+    "ids you used. Be concise."
+)
+HELP = (
+    "/help    this list\n"
+    "/think   toggle printing the model's reasoning\n"
+    "/show    toggle printing tool calls\n"
+    "/reset   clear the conversation\n"
+    "/quit    exit (or Ctrl-D)\n"
+    "Keys: up/down history, Ctrl-C cancels the running answer or clears the line."
+)
+
+
+def castor_base() -> str:
+    addr = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f". '{REPO}/scripts/lib/node-host.sh'; resolve_node_host castor",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    ).stdout.strip()
+    if ":" in addr:
+        addr = f"[{addr}]"
+    return f"http://{addr}:8000/v1"
+
+
+def as_text(result) -> str:
+    parts = [
+        getattr(c, "text", None) or json.dumps(c.model_dump()) for c in result.content
+    ]
+    text = "\n".join(parts)
+    return ("[error] " if result.isError else "") + text
+
+
+def dim(text: str) -> str:
+    return f"\033[2m{text}\033[0m" if sys.stderr.isatty() else text
+
+
+class Chat:
+    def __init__(
+        self, session: ClientSession, tools: list[dict], show: bool, think: bool
+    ) -> None:
+        self.session, self.tools = session, tools
+        self.show, self.think = show, think
+        self.http = httpx.AsyncClient(base_url=castor_base(), timeout=600)
+        # No system message: on SGLang's gpt-oss path a system turn makes the
+        # model stop without emitting tool calls. The guidance rides the first
+        # user turn instead.
+        self.hint = os.environ.get("PRECIS_CHAT_HINT", SYSTEM)
+        self.messages: list[dict] = []
+
+    def reset(self) -> None:
+        self.messages = []
+
+    async def turn(self, user: str, max_steps: int = 30) -> str:
+        if not self.messages and self.hint:
+            user = f"{self.hint}\n\n{user}"
+        mark = len(self.messages)
+        self.messages.append({"role": "user", "content": user})
+        try:
+            return await self._steps(max_steps)
+        except asyncio.CancelledError:
+            del self.messages[mark:]  # drop the half-finished turn
+            raise
+
+    async def _steps(self, max_steps: int) -> str:
+        for _ in range(max_steps):
+            t = time.monotonic()
+            r = await self.http.post(
+                "/chat/completions",
+                json={
+                    "model": MODEL,
+                    "messages": self.messages,
+                    "tools": self.tools,
+                    "temperature": 0.2,
+                    "max_tokens": 8000,
+                },
+            )
+            r.raise_for_status()
+            choice = r.json()["choices"][0]
+            msg = choice["message"]
+            calls = msg.get("tool_calls") or []
+            reasoning = msg.get("reasoning_content") or ""
+            if self.think and reasoning:
+                tail = reasoning[-THINK_CHARS:]
+                cut = "…" if len(reasoning) > THINK_CHARS else ""
+                print(dim(f"  ~ thinking: {cut}{tail}"), file=sys.stderr)
+            elif self.show and not calls and not msg.get("content"):
+                print(
+                    f"  ! empty: finish={choice.get('finish_reason')} reasoning…{reasoning[-300:]!r}",
+                    file=sys.stderr,
+                )
+            self.messages.append(
+                {
+                    "role": "assistant",
+                    "content": msg.get("content") or "",
+                    **({"tool_calls": calls} if calls else {}),
+                }
+            )
+            if not calls:
+                return msg.get("content") or "(no answer)"
+            for c in calls:
+                name = c["function"]["name"]
+                args: dict = {}
+                try:
+                    args = json.loads(c["function"]["arguments"] or "{}")
+                    res = as_text(await self.session.call_tool(name, args))
+                except Exception as exc:  # report the failure back to the model
+                    res = f"[error] {exc}"
+                if self.show:
+                    print(
+                        f"  → {name}({json.dumps(args)[:160]})  "
+                        f"[{time.monotonic() - t:.1f}s, {len(res)} chars]",
+                        file=sys.stderr,
+                    )
+                self.messages.append(
+                    {"role": "tool", "tool_call_id": c["id"], "content": res[:30000]}
+                )
+        return "(stopped: too many tool steps)"
+
+
+def load_history() -> None:
+    if readline is None:
+        return
+    try:
+        readline.read_history_file(HISTORY)
+    except OSError:
+        pass
+    readline.set_history_length(1000)
+
+
+def save_history() -> None:
+    if readline is not None:
+        try:
+            readline.write_history_file(HISTORY)
+        except OSError:
+            pass
+
+
+async def run_turn(chat: Chat, q: str) -> None:
+    """Run one answer; Ctrl-C cancels it and keeps the session."""
+    loop = asyncio.get_running_loop()
+    task = asyncio.ensure_future(chat.turn(q))
+    loop.add_signal_handler(signal.SIGINT, task.cancel)
+    try:
+        print("\n" + await task)
+    except asyncio.CancelledError:
+        print("\n(cancelled)", file=sys.stderr)
+    finally:
+        loop.remove_signal_handler(signal.SIGINT)
+
+
+async def repl(chat: Chat, banner: str) -> int:
+    load_history()
+    print(f"{banner} · /help for commands, Ctrl-D to quit.")
+    try:
+        while True:
+            # Plain blocking input: nothing else runs between turns, and the
+            # default handler makes Ctrl-C raise here to clear the line.
+            signal.signal(signal.SIGINT, signal.default_int_handler)
+            try:
+                q = input("\n> ").strip()
+            except EOFError:
+                return 0
+            except KeyboardInterrupt:
+                continue
+            if not q:
+                continue
+            if q.startswith("/"):
+                cmd = q.split()[0]
+                if cmd == "/quit":
+                    return 0
+                if cmd == "/help":
+                    print(HELP)
+                elif cmd == "/think":
+                    chat.think = not chat.think
+                    print(f"thinking {'on' if chat.think else 'off'}")
+                elif cmd == "/show":
+                    chat.show = not chat.show
+                    print(f"tool calls {'on' if chat.show else 'off'}")
+                elif cmd == "/reset":
+                    chat.reset()
+                    print("conversation cleared")
+                else:
+                    print(f"unknown command {cmd} — /help lists them")
+                continue
+            await run_turn(chat, q)
+    finally:
+        save_history()
+
+
+async def main() -> int:
+    ap = argparse.ArgumentParser(
+        description="Chat with castor's model over the precis MCP tools."
+    )
+    ap.add_argument("-p", "--prompt", help="one-shot question")
+    ap.add_argument(
+        "--write", action="store_true", help="also expose write tools (PROD)"
+    )
+    ap.add_argument("--show", action="store_true", help="print each tool call")
+    ap.add_argument("--think", action="store_true", help="print the model's reasoning")
+    a = ap.parse_args()
+    headers = {"Authorization": f"Bearer {os.environ['PRECIS_MCP_TOKEN']}"}
+    async with streamablehttp_client(MCP_URL, headers=headers) as (rd, wr, _):
+        async with ClientSession(rd, wr) as session:
+            await session.initialize()
+            listed = (await session.list_tools()).tools
+            tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": (t.description or "")[:3000],
+                        "parameters": t.inputSchema,
+                    },
+                }
+                for t in listed
+                if a.write or t.name in READ_TOOLS
+            ]
+            chat = Chat(session, tools, a.show, a.think)
+            if a.prompt:
+                print(await chat.turn(a.prompt))
+                return 0
+            mode = "READ+WRITE (prod)" if a.write else "read-only"
+            names = ", ".join(t["function"]["name"] for t in tools)
+            return await repl(
+                chat, f"precis-chat · {MODEL} on castor · tools: {names} · {mode}"
+            )
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(asyncio.run(main()))
+    except KeyboardInterrupt:
+        sys.exit(130)
