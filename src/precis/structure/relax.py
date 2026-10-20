@@ -40,7 +40,9 @@ in Å; never converted to SI here.
 
 from __future__ import annotations
 
+import importlib.util
 import os
+import sys
 from dataclasses import dataclass, field
 from functools import lru_cache
 
@@ -581,12 +583,21 @@ def _xtb_calculator(*, charge: int = 0, multiplicity: int | None = None):
     function never sees them. The calculator is not spin-polarised, so
     multiplicity changes the occupations, not a spin density."""
     _vet_charge_multiplicity(charge, multiplicity)
-    # gr495146: tblite's Fortran runtime segfaulted inside its
-    # handle_calculation_error callback under macOS xdist workers — macOS
-    # OpenMP worker threads start with a ~512 KB stack (Linux: ~8 MB),
-    # too small for the callback path. Floor OMP_STACKSIZE before the
-    # first TBLite instantiation; setdefault keeps operator overrides.
+    # gr495146: a larger OpenMP worker stack than macOS's ~512 KB default,
+    # set before the first TBLite instantiation; setdefault keeps operator
+    # overrides. Not the cause of the macOS xdist segfault (see
+    # :func:`_xtb_needs_isolation`); it is inherited by the isolated child.
     os.environ.setdefault("OMP_STACKSIZE", "1G")
+    if _xtb_needs_isolation():
+        from ._xtb_isolated import IsolatedTBLite
+
+        return IsolatedTBLite(charge=charge, multiplicity=multiplicity)
+    return _native_tblite(charge=charge, multiplicity=multiplicity)
+
+
+def _native_tblite(*, charge: int, multiplicity: int | None):
+    """The in-process tblite ASE calculator (GFN2-xTB, 1000 K electronic
+    temperature)."""
     try:
         from tblite.ase import TBLite
     except ImportError as exc:
@@ -602,6 +613,30 @@ def _xtb_calculator(*, charge: int = 0, multiplicity: int | None = None):
         electronic_temperature=1000.0,
         verbosity=0,
     )
+
+
+def _xtb_needs_isolation() -> bool:
+    """Whether tblite must run in a child process instead of this one
+    (gr495146).
+
+    tblite's macOS wheel carries its own OpenMP runtimes (``libgomp`` and a
+    ``libomp``) and torch — the MLIP rungs, and anything that imports mace —
+    carries a different ``libomp``. They cannot share a process, in either
+    import order: tblite's ``singlepoint`` segfaults once torch is loaded, and
+    ``import torch`` aborts (``OMP: Error #15``) once tblite is. Measured on
+    arm64 macOS with OMP_STACKSIZE unset/64M/256M/1G and OMP_NUM_THREADS
+    unset/1/2/3 (no effect), and KMP_DUPLICATE_LIB_OK only trades the crash
+    for ``OMP: Error #179``. Linux wheels share one ``libgomp``, and a macOS
+    host without torch has nothing to clash with. A long-lived worker can run
+    both rungs, so isolate whenever torch is installed, not only after it has
+    been imported. A substituted or import-blocked ``tblite.ase`` is not the
+    native library and stays in-process."""
+    if sys.platform != "darwin":
+        return False
+    mod = sys.modules.get("tblite.ase", False)
+    if mod is None or (mod is not False and not hasattr(mod, "__file__")):
+        return False
+    return importlib.util.find_spec("torch") is not None
 
 
 def _relax_xtb(
