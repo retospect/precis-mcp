@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import dataclasses
 import os
 from pathlib import Path
 from typing import Any
@@ -415,6 +416,24 @@ def test_exact_ewod_copy_matches_snapshot_and_stored_route_summary(store):
     assert ref is not None
     graph = store.pcb_graph(ref.id)
     assert len(graph["instances"]) == 2 and len(graph["nets"]) == 58
+
+
+def test_config_field_added_after_capture_leaves_reexport_identical(store, monkeypatch):
+    """gr497768: a config field added after a capture must not move its
+    re-export — replay params carry the recorded route_config verbatim."""
+    from precis.pcb.realize import RealizeConfig
+
+    @dataclasses.dataclass(frozen=True)
+    class _PostCaptureRealizeConfig(RealizeConfig):
+        post_capture_knob: float = 9.0
+
+    monkeypatch.setattr("precis.pcb.realize.RealizeConfig", _PostCaptureRealizeConfig)
+    fixture = read_snapshot(Path("tests/fixtures/pcb/ewod-dogfood-6-replay-v1.json.gz"))
+    with store.pool.connection() as conn:
+        _, params = load_snapshot(conn, fixture, "ewod-config-drift")
+        assert export_snapshot(
+            conn, "ewod-config-drift", route_params=params
+        ) == _upgrade_legacy(fixture)
 
 
 def test_production_target_denied_before_any_write():
