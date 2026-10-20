@@ -60,9 +60,19 @@ CARD_DESCRIBE_VERSION = "1.0"
 #: from its ``"chnk_kw\x00"`` key). ``"crd_dsc\x00"`` mapped signed.
 _LOCK_KEY = 0x63_72_64_5F_64_73_63_00 - 2**63
 
-#: Ref kinds this pass describes. S1 covers ``structure``; S2/S3 extend
-#: the tuple (cad/pcb, then figure with a vision prompt).
-_DESCRIBED_KINDS: tuple[str, ...] = ("structure",)
+#: Ref kinds this pass describes — S1 ``structure``, S2 ``cad`` + ``pcb``
+#: (S3 adds ``figure`` with a vision prompt). Each kind's grounding is
+#: its one ``card_combined`` chunk (``handlers/<kind>.py``'s card
+#: builder — ``card_text`` / ``CadHandler._card_text`` /
+#: ``_pcb_ops._pcb_card_text``).
+_DESCRIBED_KINDS: tuple[str, ...] = ("structure", "cad", "pcb")
+
+#: Per-kind display label for the prompt's subject line.
+_KIND_LABEL: dict[str, str] = {
+    "structure": "atomistic structure",
+    "cad": "parametric CAD design",
+    "pcb": "PCB design",
+}
 
 #: A generation shorter than this is a model miss (refusal fragment,
 #: stray whitespace) — count it failed rather than indexing junk.
@@ -87,8 +97,9 @@ _SYSTEM = (
 
 def claim_refs_without_description(
     conn: Connection, *, limit: int
-) -> list[tuple[int, str, str]]:
-    """Return up to ``limit`` ``(ref_id, title, card_text)`` rows to describe.
+) -> list[tuple[int, str, str, str]]:
+    """Return up to ``limit`` ``(ref_id, kind, title, card_text)`` rows to
+    describe.
 
     A ref is claimed when its ``card_combined`` chunk was minted after
     the ``card_description`` kind was registered (the deploy stamp — see
@@ -99,7 +110,7 @@ def claim_refs_without_description(
     if limit <= 0:
         raise ValueError("limit must be positive")
     sql = """
-        SELECT r.ref_id, r.title, card.text
+        SELECT r.ref_id, r.kind, r.title, card.text
           FROM refs r
           JOIN chunk_kinds ck ON ck.slug = 'card_description'
           JOIN chunks card
@@ -124,10 +135,12 @@ def claim_refs_without_description(
     rows = conn.execute(
         sql, (list(_DESCRIBED_KINDS), CARD_DESCRIBE_VERSION, limit)
     ).fetchall()
-    return [(int(r[0]), str(r[1] or ""), str(r[2])) for r in rows]
+    return [(int(r[0]), str(r[1]), str(r[2] or ""), str(r[3])) for r in rows]
 
 
-def describe_card(client: Any, *, title: str, card_text: str) -> tuple[str, str]:
+def describe_card(
+    client: Any, *, kind: str, title: str, card_text: str
+) -> tuple[str, str]:
     """Generate one description; return ``(text, model)``.
 
     ``client`` is the injected ``DispatchClient`` (or a test fake with the
@@ -138,7 +151,10 @@ def describe_card(client: Any, *, title: str, card_text: str) -> tuple[str, str]
         {"role": "system", "content": _SYSTEM},
         {
             "role": "user",
-            "content": f"Structure: {title}\n\nCard:\n{card_text}",
+            "content": (
+                f"{_KIND_LABEL.get(kind, kind).capitalize()}: {title}\n\n"
+                f"Card:\n{card_text}"
+            ),
         },
     ]
     res = client.complete(messages)
@@ -198,9 +214,11 @@ def _run_card_describe_batch(
     claimed = len(rows)
 
     ok = failed = 0
-    for ref_id, title, card_text in rows:
+    for ref_id, kind, title, card_text in rows:
         try:
-            text, model = describe_card(client, title=title, card_text=card_text)
+            text, model = describe_card(
+                client, kind=kind, title=title, card_text=card_text
+            )
 
             def _write(
                 ref_id: int = ref_id,

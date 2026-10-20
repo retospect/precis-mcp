@@ -10,6 +10,9 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+from precis.dispatch import Hub
+from precis.handlers.cad import CadHandler
+from precis.handlers.pcb import PcbHandler
 from precis.handlers.structure import StructureHandler
 from precis.workers.card_describe import run_card_describe_pass
 
@@ -189,3 +192,93 @@ def test_card_without_description_chunk_is_skipped_after_watermark(
     r = run_card_describe_pass(store, client=_FakeClient(), batch_size=10)
     assert r["claimed"] == 0
     assert _desc_chunks(store, ref_id) == []
+
+
+# ── S2: cad + pcb ─────────────────────────────────────────────────────
+
+_FLANGE = """
+component flange
+plate     add  cyl:r25mmh8mm
+hub_bore  cut  cyl:r8mmh10mm    @0mm,0mm,-1mm
+bolts     cut  cyl:r2.5mmh10mm  @18mm,0mm,-1mm  polar:n6r18mm
+"""
+
+_PCB_DESIGN = {
+    "components": [
+        {"refdes": "U1", "label": "ewod driver", "pins": [{"name": "1"}]},
+        {"refdes": "J1", "label": "conn", "pins": [{"name": "1"}]},
+    ],
+    "nets": [{"name": "VHV"}, {"name": "GND"}],
+}
+
+
+def _put_cad(store: Any) -> int:
+    CadHandler(hub=Hub(store=store)).put(id="flange", text=_FLANGE)
+    ref = store.get_ref(kind="cad", id="flange")
+    assert ref is not None
+    return int(ref.id)
+
+
+def _put_pcb(store: Any, slug: str = "b1") -> int:
+    PcbHandler(hub=Hub(store=store)).put(id=slug, args=dict(_PCB_DESIGN))
+    ref = store.get_ref(kind="pcb", id=slug)
+    assert ref is not None
+    return int(ref.id)
+
+
+def test_cad_description_lifecycle_and_search(store: Any) -> None:
+    ref_id = _put_cad(store)
+    client = _FakeClient(
+        "A flanged hub plate with a central bore and a six-bolt circle, "
+        "plausibly a shaft coupling or motor-mount interface."
+    )
+    r = run_card_describe_pass(store, client=client, batch_size=10)
+    assert (r["claimed"], r["ok"], r["failed"]) == (1, 1, 0)
+    assert len(_desc_chunks(store, ref_id)) == 1
+
+    # re-run is a no-op
+    r = run_card_describe_pass(store, client=_FakeClient(), batch_size=10)
+    assert r["claimed"] == 0
+
+    # description-only phrase -> lexical hit via card_kinds
+    res = CadHandler(hub=Hub(store=store)).search(q="coupling", mode="lexical")
+    assert "flange" in res.body
+
+    # edit (a re-put that changes the design) re-mints the card -> regen
+    CadHandler(hub=Hub(store=store)).put(id="flange", text="plate add cyl:r10mmh5mm")
+    r = run_card_describe_pass(store, client=_FakeClient(), batch_size=10)
+    assert r["claimed"] == 1
+    assert len(_desc_chunks(store, ref_id)) == 1
+
+
+def test_pcb_description_lifecycle_and_search(store: Any) -> None:
+    ref_id = _put_pcb(store)
+    client = _FakeClient(
+        "A two-part board pairing an EWOD high-voltage driver with a "
+        "connector, plausibly an electrowetting electrode controller."
+    )
+    r = run_card_describe_pass(store, client=client, batch_size=10)
+    assert (r["claimed"], r["ok"], r["failed"]) == (1, 1, 0)
+    assert len(_desc_chunks(store, ref_id)) == 1
+
+    r = run_card_describe_pass(store, client=_FakeClient(), batch_size=10)
+    assert r["claimed"] == 0
+
+    res = PcbHandler(hub=Hub(store=store)).search(q="electrowetting", mode="lexical")
+    assert "b1" in res.body
+
+    # a put that changes the design re-mints the card -> regen
+    PcbHandler(hub=Hub(store=store)).put(
+        id="b1",
+        args={
+            "components": [
+                {"refdes": "U1", "label": "ewod driver", "pins": [{"name": "1"}]},
+                {"refdes": "J1", "label": "conn", "pins": [{"name": "1"}]},
+                {"refdes": "C1", "label": "100nF", "pins": [{"name": "1"}]},
+            ],
+            "nets": [{"name": "VHV"}, {"name": "GND"}],
+        },
+    )
+    r = run_card_describe_pass(store, client=_FakeClient(), batch_size=10)
+    assert r["claimed"] == 1
+    assert len(_desc_chunks(store, ref_id)) == 1
