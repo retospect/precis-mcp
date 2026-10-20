@@ -14,7 +14,10 @@ Owner: catalysis-selectivity (thread file: Horizon 5a, next to
 `electrochem-kinetics-beyond-che.md`). Engine work lands in catpath
 (`~/catpath`, GPL-3) through chemistry's wheel-bump path; precis owns the
 environment block, the job, the views, the manifest store and the quest
-scalars. Revised 2026-10-19 after Reto's review (rulings in §Decisions).
+scalars. Revised 2026-10-19 after Reto's review (rulings in §Decisions);
+re-revised 2026-10-20 with the second-wave evidence (pa498800–pa498880,
+abstract-only as of 2026-10-20; full texts wait on qu500066's compute
+lane, gr500282).
 Survey evidence: `perplexity-research:498166` (Novotny lineage), `:498168`
 (rare events), `:498172` (BEP/scaling/BEEF), `:498185` (SSA variants and
 codes), `:498187` (thermodynamic consistency), `:498244` (gas boundary
@@ -157,7 +160,9 @@ environment:
     outputs: {NH3: 1.0e-3, H2O: 1.0e-3, N2: 1.0e-4, N2O: 1.0e-5, NH2OH: 1.0e-6}
     inerts:  {}                     # e.g. {Ar: 0.9}; priced nowhere, counted in p_total
     unlisted: refuse                # refuse | reference  (reference = 1 bar + warning, today's behaviour)
-  sticking: {NO: 1.0, H2: 0.1}      # s0 per impinging molecule; default 1.0, stated in output
+  sticking: {NO: {s0: 0.5, source: pa498804}, H2: {s0: 0.1, source: null}}
+                                    # s0 per impinging molecule + its source; a bare number = source null;
+                                    # default {s0: 1.0, source: null}, listed in warnings, trips the trust gate
   electrochemical: null             # optional; schema owned by the electrochem spec, keys reserved:
                                     #   {U_vs_RHE, pH, sigma_uC_cm2, U_pzc, cation, provider}
 objective:                          # optional; drives the sweep's optimum (D7)
@@ -184,6 +189,13 @@ Rules:
   mean-field coverages). Their competitive coverage map over (T, p_total)
   is a standard output of the sweep; the optimum of `maximise` under
   `subject_to` is reported with its (T, p_total, composition) point.
+- `sticking` entries carry a `source` (paper handle or `null`). The quest
+  rubric (qu500066) demands cited sticking coefficients, so an entry
+  without a source is reported in `warnings` as `sticking uncited: <gas>`
+  and `_kinetics_scalars` sets `kinetics_trusted=False` with that note; a
+  bare number is accepted as `source: null`. Measured anchor: s0(NO) on
+  Pd(111) = 0.5, constant to ~75 % coverage at 300–350 K (pa498804,
+  fi499138).
 - The block hashes into the correction basis
   (`pathway-correction-basis.md`) and into the validation manifest (D10):
   two solves compare only on equal `(environment_schema=2, T, p_total,
@@ -268,7 +280,7 @@ for the current environment. The check battery is cut to what matters
 |---|---|---|---|
 | **Core, always** | Elementary ratio `ln(k_f/k_b) + ΔG/kT < 1e−8` per transition (exists today, kept) | prefactor or clipping asymmetry | chain, MF, KMC catalogue |
 | **Core, always** | Barrier identity `Ea_f − Ea_b = ΔG` after floors, shifts and TPD offsets | TS shifted on one side; a `tpd_corrected` state offset applied without the ω rule | chain, MF, KMC catalogue |
-| **Core, always** | Equilibrium flux: set `outputs` so that Q = K for the overall reaction; every `\|r⁺ − r⁻\|/r⁺ < ε`, net production ≈ 0 | hidden circulating fluxes; a gas priced on one side only | MF (exact, ε = 10⁻⁸); KMC (statistical, below) |
+| **Core, always** | Equilibrium flux: set every gas μ from **one** equilibrium composition — the network releases several products, so there are `n_gas − rank(ν)` independent overall reactions and every one of their affinities must vanish, not one chosen "overall reaction" — then every `\|r⁺ − r⁻\|/r⁺ < ε` and net production ≈ 0 for every gas | hidden circulating fluxes; a gas priced on one side only | MF (exact, ε = 10⁻⁸); KMC (statistical, below) |
 | **Core, KMC only** | Kolmogorov loop on the lattice: random configurations, random closed event loops of length ≤ 4: `Π k_cw = Π k_ccw` | event-catalogue errors, a pattern whose reverse pattern differs | KMC catalogue; trivial in v1 (no interactions), load-bearing from slice 7 |
 | Optional, cheap | Standard-state invariance (change p° and site density; physical rates invariant) | missing concentration factors | MF |
 | Optional, cheap | Temperature consistency `K(T)` from `k_f/k_b` vs `exp(−ΔG(T)/kT)` at 3 T | entropy terms applied on one side | MF |
@@ -290,11 +302,19 @@ simulated time at 1 bar H₂). The acceptance is `ε = 10⁻²` on every channel
 with ≥ 10⁴ firings and `net production within its 90 % CI of zero`.
 
 Entropies: `thermo.ThermoConfig.adsorbate_mode: ts0 | harmonic | hindered`
-(default stays `ts0` until Reto rules — Q4 in §Decisions). `hindered`
-= Sprowl–Campbell (pa2203) for the two frustrated translations and the
-azimuthal rotation, harmonic for the rest, with `freq_floor` as today;
-the TS inherits its reactant's correction minus the reaction coordinate
-(unchanged convention, stated in output). A mode change bumps
+(default becomes `hindered` in slice 2 — Q4 in §Decisions, proposed
+2026-10-20). `hindered` = Sprowl–Campbell (pa2203) for the two frustrated
+translations and the azimuthal rotation, harmonic for the rest, with
+`freq_floor` as today; the TS inherits its reactant's correction minus
+the reaction coordinate (unchanged convention, stated in output). Against
+experiment the ranking is CPES (complete potential-energy sampling) >
+hindered translator > harmonic > free translator (Jørgensen–Grönbeck
+pa498867), so `hindered` is the floor and `cpes` is a named follow-on
+mode, not an open question. The reference-state convention for adsorbate
+K and k_TST (seven are in use and they disagree systematically,
+Ye–Truhlar pa498877) is stamped next to the mode: `thermo.reference_state`
+is part of `corrections.VERSION` and of the manifest's
+`inputs.corrections`. A mode or reference-state change bumps
 `corrections.VERSION` so margins never compare across it.
 
 ### D4. Barrier sources, scaling and uncertainty — the maths
@@ -324,6 +344,14 @@ E_TS,i = E_IS,i + max(Ea_i, 0, ΔE_i)      (the once-applied floor of D2)
 `σ_c = band_eV` the class residual. A TS-scaling form `E_TS = γ_c·E_FS +
 δ_c` (Abild-Pedersen pa34732) is the same relation re-parameterised
 (`α = γ`, `β = δ − (1 − γ)·E_IS` per step) and is not a second source.
+A class is a valence family: one bond type made or broken on one
+adsorbate valence structure, as `bep.py` classes them. C and O
+chemisorption energies do not scale across surfaces because their
+renormalised valence energies differ (Vijay–Kastlunger–Chan–Nørskov
+pa498812), so a class that spans unlike valence structures carries that
+model error into both `β_c` and the correlated draw. Classes stay narrow;
+anything shared across families is model-form error and belongs to
+`z_model` below, never to `z_c`.
 
 **TS from ΔG — the interpolation that keeps one ledger.** Every TS is
 priced as a free energy relative to the root, `G_TS,i = G_IS,i + Ea_i +
@@ -435,6 +463,19 @@ reported next to `Var_m[E(TOF | m)]` and never folded into the band
   validation references. Zacros is *the* reference (Reto, Q7): with a
   licence, validation case C and the TPD cases run through Zacros on a
   node outside the agent image and their outputs are stored as fixtures.
+- **Pluggable backend (Reto 2026-10-20: keep it pluggable in any case).**
+  The core sits behind one seam so Zacros, kmos or eOn can run the same
+  problem: `KmcBackend.run(lattice, catalogue, env, seed, accelerator) ->
+  KmcRun`, ids `catpath` (the core here), `zacros` (external: writes the
+  four Zacros input files from the same lattice + catalogue + environment,
+  runs the binary where licensed, parses `procstat`/`specnum` output into
+  the same `TofKmc`; driver shape of `ZacrosTools`/`pyZacros`), `kmos`
+  (generates and builds the model). A backend that cannot run on the host
+  refuses with the reason (`zacros binary not found`), never substitutes.
+  `kmc.compare(backends=[…])` is the D6 harness with the backend as the
+  axis. Slice 5 ships `catpath` plus the `zacros` writer/reader (testable
+  without the binary on stored output fixtures); the binary itself only
+  ever runs on a node outside the agent image.
 - **Size, re-estimated** (Reto: "is ~800 anywhere near real?"). No. 800 was
   the selector + lattice only. Comparable cores: kmcos runtime kernel
   ≈ 3.8 k lines Fortran template + 3.2 k Python (`run/__init__.py`);
@@ -513,6 +554,10 @@ class Accelerator(Protocol):
     id: str                                             # "none" | "bkl" | "mcamc_s2" | "mcamc_bfs" | "channel_scaling" | "eon_mcamc" (external)
     def step(self, state: LatticeState, cat: Catalogue, rng: Streams) -> tuple[float, Event]   # (Δt, fired event)
     def diagnostics(self) -> dict[str, float]           # amc_leak, basin sizes, scaling factors, …
+
+class KmcBackend(Protocol):                             # D5: the core itself is one of several
+    id: str                                             # "catpath" | "zacros" | "kmos"
+    def run(self, lattice: Lattice, cat: Catalogue, env: Environment, seed: int, accelerator: Accelerator | None) -> KmcRun
 ```
 
 `kmc.run(..., accelerator=...)` takes one; `kmc.compare(accelerators=[…])`
@@ -531,12 +576,23 @@ Sullivan pa498727 is the O(log M) tree alternative; Maksym pa498728 the
 kinetic coefficient" in Reto's words; it is the D5 selector and is also
 `s = 1` of MCAMC, so the accelerator ladder shares one selector.
 
-**Fallback — channel scaling** (Dybeck pa498257): per reversible channel,
-after `n_min` executions, `|n⁺ − n⁻|/(n⁺ + n⁻) ≤ δ` marks it
-quasi-equilibrated; both directions are divided by the same factor `f`
-while it stays so; any non-equilibrated event resets the channel. The
-solve runs at `(δ, f)` and `(δ/2, f/2)`; `tof_scaling_drift = |Δlog₁₀ TOF|`;
-drift > 0.3 marks the KMC TOF untrusted.
+**Fallback — windowed channel scaling** (Dybeck pa498257 as generalised
+in Zacros 5.0, Prats–Li–Stamatakis pa498860, fi499142): per reversible
+channel, after `n_min` executions, `|n⁺ − n⁻|/(n⁺ + n⁻) ≤ δ` marks it
+quasi-equilibrated. A quasi-equilibrated channel is not divided by one
+fixed factor: both directions are scaled by one factor `f_c` chosen so
+the channel's rate sits inside a time-scale window `[w_lo·k_ref,
+w_hi·k_ref]` above `k_ref`, the fastest rate of any non-equilibrated
+event (defaults `w_lo = 10`, `w_hi = 100`) — downscaled when above the
+window, restored toward nominal over the next firings (not snapped back)
+when it drops below the window or leaves quasi-equilibrium. K is
+preserved either way. The one-way Dybeck form is this window with
+`w_hi = ∞` and an instant reset, which is where the rate shock on a basin
+exit comes from. The solve runs at `(δ, w)` and `(δ/2, w/2)`;
+`tof_scaling_drift = |Δlog₁₀ TOF|`; drift > 0.3 marks the KMC TOF
+untrusted. Exits from an enumerated basin can be non-exponential (LSKMC,
+pa498846, fi498900); that is why `amc_leak` and the brute-force
+comparison fixture exist rather than an assumed exit law.
 
 The single-site chain keeps its exact linear solve and additionally
 reports the root→product mean first-passage time from the fundamental
@@ -575,7 +631,12 @@ free self-check of the chain.
   log₁₀(tof_kmc/tof_mf)` is computed only at the `kmc_points` where both
   exist, reported with the KMC CI, and read as a *diagnostic* of the MF
   assumption, not as an error of either. It is absent elsewhere and never
-  gates trust.
+  gates trust. The gap is real physics even with zero interactions:
+  reaction-driven vacancy pairs make MF underpredict CO oxidation on
+  RuO₂(110) by orders of magnitude (Matera–Meskine–Reuter pa498837,
+  fi498930), and on an A*+A* → A₂ benchmark MF overpredicts the rate
+  ≈ 25×, misses the apparent order by up to 0.68 and names the wrong
+  controlling step (Razdan–Bhan pa498858, fi498928).
 - **Sweep**: `kinetics.sweep: {design: grid | lhs, axes: {T: [298, 450],
   p_total: [0.1, 30], NO: [1e-3, 1], H2: [0.1, 10], NH3: [1e-6, 1e-2]},
   log: {p_total: true, NO: true, H2: true, NH3: true}, n: 48,
@@ -716,7 +777,7 @@ per-edge Eyring table.
 | environment block + objective in `put(kind='pathway')` params and `_prep`; config snapshot; manifest fields | `precis_pathway/runner.py`, `types.py` | — |
 | `autocatpath_kinetics` job (new): inputs = pathway handle + environment (+ objective, sweep, tpd); reads `results_json`, writes `meta.kinetics_v2` (the D8 record), `meta.validation_manifest` and a `kinetics_sweep` artifact | `precis_pathway/kinetics_job.py` (new), registered via `precis.job_types` | CPU worker pool, never the GPU seed lane; 1 core per replica, wall 1 h default, own `PRECIS_AUTOCATPATH_KINETICS_SECONDS`; no LLM executor (D10) |
 | `autocatpath_revalidate` job (new): input = a manifest id; re-runs the manifest and writes the drift report | `precis_pathway/revalidate_job.py` (new) | CPU pool for kinetics/TPD/sweep; the GPU seed lane for the min-energy-path leg |
-| aggregate keeps the cheap MF+chain solve in-process (replaces today's call, same 900 s cap); KMC and TPD never run inside the aggregate | `aggregate_job.py` | as today |
+| aggregate keeps the cheap MF+chain solve in-process (replaces today's call, same 900 s cap); KMC, the sweep and TPD never run inside the aggregate — the tier ladder mints one `autocatpath_kinetics` job (MF + sweep + TPD) after every verify-tier aggregate, and the quest requests the KMC rung per frontier candidate (Q6) | `aggregate_job.py`, the ladder | as today |
 | quest harvest: new scalars as `meta.rubric_objectives` candidates; promotion gate unchanged | `precis.quest.compute` | — |
 | views: `view='kinetics'` (record), `view='kinetics-sweep'` (TOON rows), `view='tpd'` (the comparison table), `view='manifest'` | `handler.py`, `toon_views.py` | — |
 
@@ -864,7 +925,7 @@ sealed):
 
 | Adsorbate / surface | Reference | β (K s⁻¹) | `T_p` (K) | Published E_des, ν | Complication |
 |---|---|---|---|---|---|
-| CO / Pd(111) | Conrad–Ertl–Koch–Latta pa498699; Butorac pa498702; Peter calorimetry pa498703; Turaczy pa186444 | 0.5 (pa498702); 0.5–4 (pa186444) | ≈ 530 at 2–4 L (pa498702); atop < 300, bridge ≈ 400, hollow > 450 | 1.39–1.55 eV low-θ (pa498699, pa498703: 149 ± 4 kJ mol⁻¹ initial falling to 75 ± 9 at θ ≈ 0.5); ν ≈ 10¹⁴·⁴ | strong θ dependence and site conversion; no dissociation |
+| CO / Pd(111) | Conrad–Ertl–Koch–Latta pa498699; Butorac pa498702; Peter calorimetry pa498703; Turaczy pa186444 | 0.5 (pa498702); 0.5–4 (pa186444) | ≈ 530 at 2–4 L (pa498702); atop < 300, bridge ≈ 400, hollow > 450 | 1.39–1.55 eV low-θ (pa498699, pa498703: 149 ± 4 kJ mol⁻¹ initial falling to 75 ± 9 at θ ≈ 0.5); ν ≈ 10¹⁴·⁴ (pa498800 reports ν₀ = 10¹³·⁵ with E–ν compensation, T_c = 519 K, fi498888 — resolve before sealing) | strong θ dependence and site conversion; no dissociation |
 | H / Pd(111) | Conrad–Ertl–Latta pa498700; Gdowski pa498701; Turaczy pa186444; Schwarzer (isothermal) pa498704 | 2 (pa186444) | β-state 300–320; subsurface α ≈ 170 (cryogenic dosing); bulk ≈ 800 | 0.87–0.90 eV per H₂ surface (pa498700, pa186444); 1.02 ± 0.03 eV per H₂ dissociative adsorption energy (pa498704) | subsurface/bulk H reservoirs; second order |
 | NO / Pd(111) | Ramsier pa498706; Wickham–Banse–Koel pa498707; Schmick–Wassmuth pa498708; Butorac pa498702; Borodin (isothermal) pa498705 | 0.5 (pa498702) | 500–560 molecular | 1.5–1.9 eV, ν 10¹⁴–10¹⁸ (E–ν compensation, pa498706); cleanest: 1.766 ± 0.024 eV, ν = 10¹⁵·⁶⁵ (pa498705) | dissociation at defects → N₂, N₂O; E–ν compensation |
 | N → N₂ / Pd(111) | none found | — | — | — | no standalone recombinative-N₂ TPD located (`perplexity-research:498670`); N₂ appears only as an NO-TPD product; **no fixture; `tpd.N.reference = null`** |
@@ -929,8 +990,9 @@ where the paper gives them and records `theta0` otherwise.
    reversibility in today's chain solve, basis hash. Acceptance: a config
    lacking a product gas the network releases refuses naming the gas;
    pw455722 replay at `outputs: far` vs today's 1 bar changes `selectivity`
-   and both are stamped with different bases; at `outputs` solved for
-   Q = K every `|r⁺ − r⁻| < 1e−6·k_scale`; `p_total: 10` with a composition
+   and both are stamped with different bases; at an `outputs` table solved
+   from one equilibrium composition (every independent affinity zero, D3)
+   every `|r⁺ − r⁻| < 1e−6·k_scale`; `p_total: 10` with a composition
    reproduces the explicit-table result.
 2. **Ledger + provider seam + core checks + records.** `VacuumProvider`,
    the rate builder as the only rate path, the four core checks and the
@@ -950,7 +1012,10 @@ where the paper gives them and records `theta0` otherwise.
    today's independent band for the candidate-vs-reference ratio and wider
    for the absolute TOF; ρ = 0 reproduces today's independent band.
 4. **Mean-field MKM + orders + sweep job + coverage optimum.** Acceptance:
-   non-interacting single-site limit reproduces `tof_chain` to 1 %;
+   non-interacting single-site fixture reproduces `tof_chain` to 1 % in the
+   dilute limit (θ_* > 0.95 on every site class; the chain has no site
+   balance, so agreement is expected only there) and the departure at
+   high coverage is reported, not gated;
    `Σ X_RC = 1 ± 0.05`; orders for every input and output gas; the
    `autocatpath_kinetics` job runs a `(T, p_total)` grid on a fixture
    pathway on a CPU worker, `view='kinetics-sweep'` renders it and
@@ -963,7 +1028,9 @@ where the paper gives them and records `theta0` otherwise.
    (Piccinin–Stamatakis CO oxidation on Pd(111) pa201772,
    `tests/validation/`) within 0.5 log₁₀ of the published TOF at its
    conditions; equilibrium-flux and loop checks pass on the lattice;
-   `correlation_effect` reported only at `kmc_points`.
+   `correlation_effect` reported only at `kmc_points`; the `zacros`
+   backend round-trips validation case C into Zacros input files and
+   parses a stored Zacros output fixture into the same `TofKmc`.
 6. **MCAMC + accelerator harness + channel-scaling fallback.** Acceptance:
    the D6 pitfall tests (reflecting-walk stationary distribution; `Q·1 +
    B·1 = 0`; ramp under `s = 2`; 18-decade conditioning; Novotny's Ising
@@ -1069,22 +1136,27 @@ affiliation beyond the work e-mail, and the exact licence term text.
   keeps the frontier comparable but every D11 TPD prefactor is wrong by
   10³–10⁵ until the switch; `hindered` makes TPD and kinetics right and
   demotes every existing margin to a new basis in one step.
-  **Recommendation: switch to `hindered` in slice 2 and re-stamp once;**
-  D11 is not meaningful on `ts0`.
+  **Proposed 2026-10-20 (applied in D3, awaiting Reto): switch to
+  `hindered` in slice 2 and re-stamp once;** D11 is not meaningful on
+  `ts0`; CPES is the named follow-on (pa498867).
 - **Q6 — where does `autocatpath_kinetics` run?** Join the tier ladder
   (runs automatically on every `verify`-tier candidate after its
   aggregate) or be its own rung the quest requests per candidate?
   Trade-off: on the ladder every verify candidate gets kinetics (≈ 1–2
   CPU-hours each with the sweep; MF-only ≈ seconds) with no quest logic;
   as its own rung the quest spends it only on the frontier.
-  **Recommendation: MF + sweep + TPD on the ladder (cheap, every verify
-  candidate); KMC as its own rung** the quest requests for the frontier
-  and for the optimum point.
+  **Proposed 2026-10-20 (applied in D9, awaiting Reto): MF + sweep + TPD
+  on the ladder (cheap, every verify candidate); KMC as its own rung** the
+  quest requests for the frontier and for the optimum point. The MF
+  failure modes without interactions (pa498837, pa498858) are invisible to
+  the MF solve itself, which is why the KMC rung cannot be dropped.
 - **Q9 — σ-shift extension** (Ringe, youtube `NCvmskkpvws` chunks 18,
   30–33, 38, 49): strongly affected species OH and CO₂, weakly H and CO;
-  the coordinator wants it optional. Confirm the sibling spec owns `a_i`
-  values and the PZC/cation model, this spec only the seam. **Unanswered;
-  stays open.**
+  the coordinator wants it optional. **Proposed 2026-10-20 (awaiting
+  Reto): the sibling spec owns the `a_i` values, the PZC and the cation
+  model; this spec owns only the seam (D2) and the CHE instance (slice
+  8). The σ term enters as `ShiftProvider` shifts and is optional per the
+  coordinator.**
 
 ## Data flow
 

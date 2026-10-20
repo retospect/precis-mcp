@@ -123,6 +123,15 @@ Code: workers `src/precis/workers/`, ingest `src/precis/ingest/`, web UI
   `main::` is the live main checkout; a worktree session queries its own tree
   as `wt-<tree name>::<qualname>` (git-registered worktrees, read-only; Grep
   if the alias doesn't resolve) — Grep is truth for code you changed here. Skill `precis-python-help`.
+  Repo prose the same way: the md kind (`get(kind='md',
+  id='main/docs/backlog/<item>.md')` for the heading outline, `~<heading>`
+  for one section, `search(kind='md', q=..., scope='main/docs/backlog')`)
+  before cat/grep on docs; roots are `main` (live main) and `repo` (the
+  image checkout), no worktree root. Skill `precis-md-help`.
+- Product data (paper, quest, gripe, job, memory, finding) goes through the
+  session MCP first (`get`/`search`, links, `extent='fisheye+1hop'`);
+  `scripts/prod-psql` only when the MCP has no affordance for the question,
+  and then name the missing affordance in a gripe (Reto 2026-10-20).
 - Cite durable anchors, not line numbers, in docs/memory. →
   `docs/conventions/code-anchors.md`
 - Bug intake → the `bug` skill before fixing; masked root cause → dispatch
