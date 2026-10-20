@@ -296,7 +296,19 @@ Reto: gr482121 backfill of the 559 overwritten `pw-*` structure refs.
    it owns the environment block and the ΔG/TS provider seam that
    Horizon 5 and the electrochemical-interface spec plug into; slices
    1–4 and 10 need no KMC and no U.
-6. **backlog/quest-batch-coverage-scan.md** (gr491442) — a quest-tier op to
+5b. **backlog/catpath-repro-bundle.md** (Reto, 2026-10-19: draft) — one
+   Zenodo-publishable zip per finished compound (seeds, lock, weights
+   hashes, outputs, offline viewer, `verify.py`). Slices 1-2 need nothing
+   else; slice 3 waits on kinetics-engine-v2 slice 10. Ranked after 5a
+   because it consumes the validation manifest.
+6. **backlog/electrochem-mlip-ladder.md** (filed 2026-10-19 from Ringe's
+   talk, draft) — the σ side of Horizon 5: `a_i = ∂ΔE_i/∂σ` from three
+   GC-DFT points (tier 0), a σ-conditioned fine-tuned MACE (tier 1),
+   explicit double-layer MD (tier 2), one `Ω(U, pH, cation)` contract for
+   states and TS. Ranked with Horizon 5 because it supplies the energies
+   that item and the KINETICS spec consume; its slices 1–2 are pure
+   modules shippable behind `response: off`.
+7. **backlog/quest-batch-coverage-scan.md** (gr491442) — a quest-tier op to
    scan a named list of candidates × models; convenience over the documented
    per-candidate put recipe, so it ranks below the experiments that use it.
 

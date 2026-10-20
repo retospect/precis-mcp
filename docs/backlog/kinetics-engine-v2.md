@@ -1000,7 +1000,9 @@ where the paper gives them and records `theta0` otherwise.
     on the macOS arm64 host returns `reproduced` or `drifted` within the
     cross-platform column with both platforms named; a lock-hash mismatch
     refuses with the mismatch named; the job type's executors exclude every
-    LLM executor.
+    LLM executor. The manifest is also the tolerance contract inside the
+    published Zenodo bundle: `catpath-repro-bundle.md` (its slice 3 waits on
+    this slice).
 
 Order: 1 → 2 → 3 (one build each, engine + glue), 4 (one build), 10 (one
 build; needed before any result is called validated), 5 → 6 (two builds),

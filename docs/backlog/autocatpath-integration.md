@@ -57,6 +57,9 @@ GPU node, per-`(model, seed)` fan-out (`autocatpath_seed` /
 
 ## Related
 
+- `catpath-repro-bundle.md` — one reproducible archive per finished
+  compound (inputs, seeds, env, outputs, offline viewer, verify script) for
+  Zenodo.
 - `pathway-frame-capture.md` — retains NEB/relax geometries as
   `struct_frames` + cross-state atom identity (the motion half).
 - `catalyst-physical-realism.md` — defect ensembles + poisoning-awareness

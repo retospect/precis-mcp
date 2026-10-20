@@ -13,6 +13,8 @@ built. Three legs plus a closed loop.
 
 ## Leg 1 — Zenodo repo sync, regularly
 
+(Per-compound data deposits are a different Zenodo use: `catpath-repro-bundle.md`.)
+
 Archival DOI-stamped snapshots of the (already public) repo. GitHub
 history alone is weak prior art — mutable, no archival guarantee; Zenodo
 gives a DOI, an immutable timestamp, and CERN-backed permanence, with

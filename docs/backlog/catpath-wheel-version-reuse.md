@@ -60,6 +60,11 @@ conventionally signals a bug fix and docs-only commits would consume it.
 Low. The common path is covered, and releases are infrequent. This matters
 only when someone hand-passes a wheel built on the release machine.
 
+## Also needed by
+
+`catpath-repro-bundle.md` slice 2 ships the built wheel inside a published
+bundle and must identify it by sha256, so it takes the sha-assert option here.
+
 ## Target + blast radius
 
 The catpath repo (build backend / version config), not this one. Consumer

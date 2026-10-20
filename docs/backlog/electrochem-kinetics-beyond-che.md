@@ -53,11 +53,12 @@ the papers and use the Julia code as a cross-check.
    (default 0.5, per-step override, provenance recorded), U and pH as solve
    arguments. Feeds `pathway-selectivity-u-ph-window` and
    `pathway-kinetics-promotion-gate` a kinetic `U_sel`.
-2. **Surface-charge terms.** Fit `E(F) = E₀ + μF − ½αF²` per intermediate
-   from QE sawtooth-field single points (`tefield`/`dipfield` already in
-   `dft.py`), map to `a·σ + b·σ²`; Helmholtz `σ = C_dl·(U − U_pzc)` as the
-   no-transport default. DFT tier only — MLIPs have no field response, so
-   results without field runs must say "β·U only".
+2. **Surface-charge terms.** Superseded by `electrochem-mlip-ladder.md`
+   (2026-10-19): `a·σ + b·σ²` per state and TS from three GC-DFT points
+   (tier 0), a σ-conditioned MLIP (tier 1), and the `σ(U, pH, cation)`
+   equation of state live there; this item consumes its
+   `potential_response` + `double_layer` records. Results without them
+   must say "β·U only".
 3. **CatMAP parity export.** `.mkm` + `energies.txt` from `results_json`
    (CatMAP species names, `^` transition states, `vib`-tier frequencies,
    barrier source tagged); run CatMAP once and compare TOF and degree of

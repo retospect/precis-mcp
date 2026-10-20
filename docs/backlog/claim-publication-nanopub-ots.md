@@ -15,6 +15,12 @@ open-work residue.
 Blocked on `taproot-compound-migration`, but per hub, not globally: a decomposed,
 reviewed hub can publish while the rest of the graph is still composite.
 
+## Supporting dataset (catpath bundle)
+
+A published claim about a catalyst should cite the reproducible bundle
+(Zenodo DOI + `bundle_id`) that holds the computation. Field and signing
+shape are open; spec in `catpath-repro-bundle.md` (slice 5).
+
 ## Patent / book (ISBN) grounding
 
 Mint's grounding gate hard-requires a DOI per passage
