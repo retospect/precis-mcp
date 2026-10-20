@@ -38,9 +38,10 @@ from __future__ import annotations
 from typing import Any
 
 from precis.pcb import DEFAULT_STACKUP
+from precis.pcb.capabilities import capability_for
 from precis.pcb.ir import from_graph
 from precis.pcb.realize import RealizeConfig, realize
-from tests.fixtures.pcb.stackups import LEGACY_V1_STACKUP
+from precis.pcb.session import routed_drc_findings
 
 _TOP_LAYER = 0  # F.Cu -- DEFAULT_STACKUP index 0, also `rules.PAD_LAYER`
 _BOTTOM_LAYER = 3  # B.Cu -- DEFAULT_STACKUP index 3, the last signal layer
@@ -250,29 +251,36 @@ def test_an_smd_blocker_pad_only_claims_its_own_layer_so_b_cu_passes_underneath(
     )
 
 
-def test_a_drilled_pad_connects_on_its_far_layer_with_no_via():
+def test_a_drilled_pad_behind_a_wall_routes_legally():
     """gr489175: a drilled pad is copper on EVERY layer, so a route may
-    leave it from the far side. U1 is top-mounted but drilled; U2 sits on
-    B.Cu; BLOCKER's SMD pad walls off F.Cu across the strip. The route
-    must start on U1's own B.Cu landing and reach U2 on B.Cu with no via:
-    a router that seeds U1 on F.Cu only has to drop a via beside the pad
-    to get under the wall.
+    leave it from any of them. U1 is top-mounted but drilled; U2 sits on
+    B.Cu; BLOCKER's SMD pad walls off F.Cu across the strip. The net must
+    route, on the default stackup and router, with no DRC error.
 
-    Pinned to the legacy stackup (inner layers not routable): under the
-    (c) default the maze leaves U1 on In1.Cu and drops a via to B.Cu
-    instead (gr500163, to be checked on the vector router; the maze is
-    frozen)."""
-    ir = from_graph(_wall_graph(), stackup=LEGACY_V1_STACKUP, outline=_WALL_OUTLINE)
+    Router-neutral (Reto 2026-10-20 cutover: the grid maze is frozen and
+    the vector router becomes the default): no layer path or via count is
+    required. The maze takes In1.Cu and a via under the (c) default where
+    B.Cu alone would do (gr500163)."""
+    ir = from_graph(_wall_graph(), stackup=DEFAULT_STACKUP, outline=_WALL_OUTLINE)
     u1 = _blocker_footprint(drilled=True)
     u1["pads"][0].update(w=1.6, h=1.6)
-    result = realize(
-        ir,
-        config=RealizeConfig(router="maze"),
-        footprints={"U1": u1, "BLOCKER": _blocker_footprint(drilled=False)},
-    )
+    footprints = {"U1": u1, "BLOCKER": _blocker_footprint(drilled=False)}
+    result = realize(ir, config=RealizeConfig(), footprints=footprints)
     assert result.unrouted == (), result.unrouted_reasons
-    assert result.vias == (), (
-        f"U1's drilled pad is already on B.Cu: no via is needed to reach "
-        f"U2 under the F.Cu wall, got vias={result.vias!r}"
+    assert result.tracks, "the net must have copper"
+    findings = routed_drc_findings(
+        ir,
+        result,
+        capability=capability_for("4layer"),
+        footprints=footprints,
+        outline=[list(p) for p in _WALL_OUTLINE],
     )
-    assert all(t.layer == _BOTTOM_LAYER for t in result.tracks), result.tracks
+    # The routed copper's errors; the strip's own pads sit inside the edge
+    # rule before anything routes (placement, not this route).
+    errors = [
+        f
+        for f in findings
+        if f.severity == "error"
+        and any(o.get("ctype") in ("track", "via") for o in f.objects)
+    ]
+    assert errors == [], errors
